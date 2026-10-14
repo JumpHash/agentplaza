@@ -3,62 +3,156 @@
 use std::collections::HashSet;
 
 use crate::doc::{Block, Doc};
-use crate::{unknown_vars, Finding, Kind, Rule, Severity, VARIABLES};
+use crate::{Finding, Kind, Rule, Severity, VARIABLES, unknown_vars};
 
 const SK: &[Kind] = &[Kind::System, Kind::AgentsMd];
 
 pub const RULES: &[Rule] = &[
-    Rule { id: "empty", severity: Severity::Error, kinds: &[], title: "The prompt is empty",
-        why: "An empty prompt gives the model nothing to work from." },
-    Rule { id: "too-long", severity: Severity::Warning, kinds: &[], title: "Too long",
-        why: "Every token of a system prompt is paid on every turn and long prompts dilute attention. Warning above 32,000 characters, error above 200,000." },
-    Rule { id: "secret", severity: Severity::Error, kinds: &[], title: "Looks like a credential",
-        why: "Prompts are shown to models, stored in history and exported. Keys belong in the vault, never in a prompt." },
-    Rule { id: "unclosed-fence", severity: Severity::Error, kinds: &[], title: "Unclosed code fence",
-        why: "An open ``` swallows the rest of the prompt into a code block, so the model reads instructions as code." },
-    Rule { id: "template-var", severity: Severity::Error, kinds: &[], title: "Unknown template variable",
-        why: "Only name, role, cid, tier and plaza are filled in; any other {{variable}} reaches the model as literal braces." },
-    Rule { id: "heading-first", severity: Severity::Warning, kinds: SK, title: "Start with a heading",
-        why: "A title heading says what the document is, for the model and for the people who maintain it." },
-    Rule { id: "heading-skip", severity: Severity::Warning, kinds: &[], title: "Heading level skipped",
-        why: "Going from # to ### breaks the outline that structures the instructions." },
-    Rule { id: "empty-section", severity: Severity::Warning, kinds: &[], title: "Empty section",
-        why: "A heading with nothing under it promises guidance that is not there." },
-    Rule { id: "duplicate-heading", severity: Severity::Warning, kinds: &[], title: "Duplicate heading",
-        why: "Two sections with one name split the guidance and invite contradictions." },
-    Rule { id: "duplicate-line", severity: Severity::Warning, kinds: &[], title: "Repeated line",
-        why: "Repeating an instruction wastes tokens and, once one copy is edited, the two disagree." },
-    Rule { id: "shouting", severity: Severity::Warning, kinds: &[], title: "Emphasis inflation",
-        why: "When MUST, NEVER and capitals are everywhere, nothing stands out; current models follow calm, specific instructions well. Keep emphasis for the one or two rules that matter most." },
-    Rule { id: "vague", severity: Severity::Info, kinds: &[], title: "Vague wording",
-        why: "Hedges such as \"try to\", \"if possible\" or \"etc.\" leave the model guessing. Say exactly what to do and when." },
-    Rule { id: "negative-only", severity: Severity::Info, kinds: &[], title: "Mostly don'ts",
-        why: "A list of prohibitions without the behaviour you want leaves the model to guess the alternative. Say what to do instead." },
-    Rule { id: "long-line", severity: Severity::Info, kinds: &[], title: "Very long paragraph line",
-        why: "A line over 400 characters usually holds several instructions; a list makes each one visible." },
-    Rule { id: "fence-language", severity: Severity::Info, kinds: &[], title: "Code fence without a language",
-        why: "Naming the language (```bash, ```json) tells the model and the preview how to read the block." },
-    Rule { id: "trailing-space", severity: Severity::Info, kinds: &[], title: "Trailing whitespace",
-        why: "Invisible noise in diffs and, in markdown, two trailing spaces force a line break." },
+    Rule {
+        id: "empty",
+        severity: Severity::Error,
+        kinds: &[],
+        title: "The prompt is empty",
+        why: "An empty prompt gives the model nothing to work from.",
+    },
+    Rule {
+        id: "too-long",
+        severity: Severity::Warning,
+        kinds: &[],
+        title: "Too long",
+        why: "Every token of a system prompt is paid on every turn and long prompts dilute attention. Warning above 32,000 characters, error above 200,000.",
+    },
+    Rule {
+        id: "secret",
+        severity: Severity::Error,
+        kinds: &[],
+        title: "Looks like a credential",
+        why: "Prompts are shown to models, stored in history and exported. Keys belong in the vault, never in a prompt.",
+    },
+    Rule {
+        id: "unclosed-fence",
+        severity: Severity::Error,
+        kinds: &[],
+        title: "Unclosed code fence",
+        why: "An open ``` swallows the rest of the prompt into a code block, so the model reads instructions as code.",
+    },
+    Rule {
+        id: "template-var",
+        severity: Severity::Error,
+        kinds: &[],
+        title: "Unknown template variable",
+        why: "Only name, role, cid, tier and plaza are filled in; any other {{variable}} reaches the model as literal braces.",
+    },
+    Rule {
+        id: "heading-first",
+        severity: Severity::Warning,
+        kinds: SK,
+        title: "Start with a heading",
+        why: "A title heading says what the document is, for the model and for the people who maintain it.",
+    },
+    Rule {
+        id: "heading-skip",
+        severity: Severity::Warning,
+        kinds: &[],
+        title: "Heading level skipped",
+        why: "Going from # to ### breaks the outline that structures the instructions.",
+    },
+    Rule {
+        id: "empty-section",
+        severity: Severity::Warning,
+        kinds: &[],
+        title: "Empty section",
+        why: "A heading with nothing under it promises guidance that is not there.",
+    },
+    Rule {
+        id: "duplicate-heading",
+        severity: Severity::Warning,
+        kinds: &[],
+        title: "Duplicate heading",
+        why: "Two sections with one name split the guidance and invite contradictions.",
+    },
+    Rule {
+        id: "duplicate-line",
+        severity: Severity::Warning,
+        kinds: &[],
+        title: "Repeated line",
+        why: "Repeating an instruction wastes tokens and, once one copy is edited, the two disagree.",
+    },
+    Rule {
+        id: "shouting",
+        severity: Severity::Warning,
+        kinds: &[],
+        title: "Emphasis inflation",
+        why: "When MUST, NEVER and capitals are everywhere, nothing stands out; current models follow calm, specific instructions well. Keep emphasis for the one or two rules that matter most.",
+    },
+    Rule {
+        id: "vague",
+        severity: Severity::Info,
+        kinds: &[],
+        title: "Vague wording",
+        why: "Hedges such as \"try to\", \"if possible\" or \"etc.\" leave the model guessing. Say exactly what to do and when.",
+    },
+    Rule {
+        id: "negative-only",
+        severity: Severity::Info,
+        kinds: &[],
+        title: "Mostly don'ts",
+        why: "A list of prohibitions without the behaviour you want leaves the model to guess the alternative. Say what to do instead.",
+    },
+    Rule {
+        id: "long-line",
+        severity: Severity::Info,
+        kinds: &[],
+        title: "Very long paragraph line",
+        why: "A line over 400 characters usually holds several instructions; a list makes each one visible.",
+    },
+    Rule {
+        id: "fence-language",
+        severity: Severity::Info,
+        kinds: &[],
+        title: "Code fence without a language",
+        why: "Naming the language (```bash, ```json) tells the model and the preview how to read the block.",
+    },
+    Rule {
+        id: "trailing-space",
+        severity: Severity::Info,
+        kinds: &[],
+        title: "Trailing whitespace",
+        why: "Invisible noise in diffs and, in markdown, two trailing spaces force a line break.",
+    },
 ];
 
 /// Capitalised words that are acronyms or project words, not emphasis.
 const ACRONYMS: &[&str] = &[
-    "API", "APIS", "URL", "URLS", "JSON", "HTTP", "HTTPS", "YAML", "HTML", "TOML", "AGENTS", "README", "TODO", "UUID",
-    "UTF", "WASM", "NOTE", "ASCII", "CSV", "PDF", "SQL", "CLI", "GPU", "CPU", "LLM", "LLMS", "AWS", "REST", "CRUD",
+    "API", "APIS", "URL", "URLS", "JSON", "HTTP", "HTTPS", "YAML", "HTML", "TOML", "AGENTS",
+    "README", "TODO", "UUID", "UTF", "WASM", "NOTE", "ASCII", "CSV", "PDF", "SQL", "CLI", "GPU",
+    "CPU", "LLM", "LLMS", "AWS", "REST", "CRUD",
 ];
 /// The capitalised words that count as emphasis.
 const EMPHASIS: &[&str] = &["MUST", "NEVER", "ALWAYS", "IMPORTANT", "CRITICAL"];
 /// Hedges, matched case-insensitively; a phrase must start and end on a word boundary.
-const VAGUE: &[&str] =
-    &["try to", "if possible", "maybe", "etc.", "and so on", "as needed", "as appropriate", "various"];
+const VAGUE: &[&str] = &[
+    "try to",
+    "if possible",
+    "maybe",
+    "etc.",
+    "and so on",
+    "as needed",
+    "as appropriate",
+    "various",
+];
 /// How a list item that prohibits something starts, lower-cased.
 const NEGATIVE: &[&str] = &["don't", "don\u{2019}t", "do not", "never", "avoid", "no "];
 
 /// The findings of the rules above for `kind`.
 pub fn check(kind: Kind, doc: &Doc) -> Vec<Finding> {
     let applies = |id: &str| RULES.iter().any(|r| r.id == id && r.applies_to(kind));
-    let text = doc.lines.iter().map(|l| l.raw).collect::<Vec<_>>().join("\n");
+    let text = doc
+        .lines
+        .iter()
+        .map(|l| l.raw)
+        .collect::<Vec<_>>()
+        .join("\n");
     let mut out = Vec::new();
     empty(doc, &mut out);
     too_long(&text, &mut out);
@@ -83,7 +177,12 @@ pub fn check(kind: Kind, doc: &Doc) -> Vec<Finding> {
 
 fn empty(doc: &Doc, out: &mut Vec<Finding>) {
     if doc.lines.iter().all(|l| matches!(l.block, Block::Blank)) {
-        out.push(Finding::new("empty", Severity::Error, 0, "The prompt is empty; write the instructions before saving."));
+        out.push(Finding::new(
+            "empty",
+            Severity::Error,
+            0,
+            "The prompt is empty; write the instructions before saving.",
+        ));
     }
 }
 
@@ -109,7 +208,12 @@ fn too_long(text: &str, out: &mut Vec<Finding>) {
 fn secrets(doc: &Doc, out: &mut Vec<Finding>) {
     for line in &doc.lines {
         if let Some(message) = secret_message(line.raw) {
-            out.push(Finding::new("secret", Severity::Error, line.number, message));
+            out.push(Finding::new(
+                "secret",
+                Severity::Error,
+                line.number,
+                message,
+            ));
         }
     }
 }
@@ -121,20 +225,34 @@ fn secret_message(line: &str) -> Option<&'static str> {
     let upper_digit = |c: char| c.is_ascii_uppercase() || c.is_ascii_digit();
     if has_token(line, "sk-", 20, token) {
         Some("Line looks like an OpenAI-style key (sk-…); keep it in the vault, not the prompt.")
-    } else if ["ghp_", "gho_", "ghs_"].iter().any(|&p| has_token(line, p, 30, alnum)) {
-        Some("Line looks like a GitHub token (ghp_, gho_ or ghs_); keep it in the vault, not the prompt.")
-    } else if has_token(line, "github_pat_", 20, |c| c.is_ascii_alphanumeric() || c == '_') {
-        Some("Line looks like a GitHub fine-grained token (github_pat_); keep it in the vault, not the prompt.")
+    } else if ["ghp_", "gho_", "ghs_"]
+        .iter()
+        .any(|&p| has_token(line, p, 30, alnum))
+    {
+        Some(
+            "Line looks like a GitHub token (ghp_, gho_ or ghs_); keep it in the vault, not the prompt.",
+        )
+    } else if has_token(line, "github_pat_", 20, |c| {
+        c.is_ascii_alphanumeric() || c == '_'
+    }) {
+        Some(
+            "Line looks like a GitHub fine-grained token (github_pat_); keep it in the vault, not the prompt.",
+        )
     } else if has_token(line, "AKIA", 16, upper_digit) {
         Some("Line looks like an AWS access key ID (AKIA…); keep it in the vault, not the prompt.")
-    } else if ["xoxa-", "xoxb-", "xoxp-", "xoxr-"].iter().any(|&p| has_token(line, p, 10, token)) {
+    } else if ["xoxa-", "xoxb-", "xoxp-", "xoxr-"]
+        .iter()
+        .any(|&p| has_token(line, p, 10, token))
+    {
         Some("Line looks like a Slack token (xox…); keep it in the vault, not the prompt.")
     } else if has_token(line, "apz_mcp_", 16, token) {
         Some("Line looks like a plaza MCP token (apz_mcp_…); keep it in the vault, not the prompt.")
     } else if line.contains("-----BEGIN") && line.contains("PRIVATE KEY") {
         Some("Line holds a private key block; keep it in the vault, not the prompt.")
     } else if assigned_secret(line) {
-        Some("Line assigns a long key-like value to a key, token, secret or password; keep it in the vault.")
+        Some(
+            "Line assigns a long key-like value to a key, token, secret or password; keep it in the vault.",
+        )
     } else {
         None
     }
@@ -143,8 +261,17 @@ fn secret_message(line: &str) -> Option<&'static str> {
 /// Whether `line` has `prefix` at the start of a word, followed by at least `min` characters that `accept` allows.
 fn has_token(line: &str, prefix: &str, min: usize, accept: impl Fn(char) -> bool) -> bool {
     line.match_indices(prefix).any(|(at, _)| {
-        let word_start = line[..at].chars().next_back().map_or(true, |c| !c.is_ascii_alphanumeric());
-        word_start && line[at + prefix.len()..].chars().take(min).take_while(|&c| accept(c)).count() == min
+        let word_start = line[..at]
+            .chars()
+            .next_back()
+            .map_or(true, |c| !c.is_ascii_alphanumeric());
+        word_start
+            && line[at + prefix.len()..]
+                .chars()
+                .take(min)
+                .take_while(|&c| accept(c))
+                .count()
+                == min
     })
 }
 
@@ -155,7 +282,11 @@ fn assigned_secret(line: &str) -> bool {
     ["key", "token", "secret", "password"].iter().any(|&word| {
         lower.match_indices(word).any(|(at, _)| {
             let rest = &line[at + word.len()..];
-            let Some((sep, _)) = rest.char_indices().take(4).find(|&(_, c)| c == '=' || c == ':') else {
+            let Some((sep, _)) = rest
+                .char_indices()
+                .take(4)
+                .find(|&(_, c)| c == '=' || c == ':')
+            else {
                 return false;
             };
             let value: String = rest[sep + 1..]
@@ -231,10 +362,10 @@ fn heading_skip(doc: &Doc, out: &mut Vec<Finding>) {
 
 fn empty_sections(doc: &Doc, out: &mut Vec<Finding>) {
     for section in doc.sections().into_iter().filter(|s| s.level > 0) {
-        let blank = section
-            .span
-            .iter()
-            .all(|&n| doc.line(n).map_or(true, |l| matches!(l.block, Block::Blank)));
+        let blank = section.span.iter().all(|&n| {
+            doc.line(n)
+                .map_or(true, |l| matches!(l.block, Block::Blank))
+        });
         if blank {
             out.push(Finding::new(
                 "empty-section",
@@ -291,7 +422,10 @@ fn shouting(doc: &Doc, out: &mut Vec<Finding>) {
         for word in words(&plain(line.raw)) {
             if EMPHASIS.contains(&word) {
                 emphasis += 1;
-            } else if word.len() >= 4 && word.chars().all(|c| c.is_ascii_uppercase()) && !ACRONYMS.contains(&word) {
+            } else if word.len() >= 4
+                && word.chars().all(|c| c.is_ascii_uppercase())
+                && !ACRONYMS.contains(&word)
+            {
                 other += 1;
             }
         }
@@ -314,9 +448,17 @@ fn vague(doc: &Doc, out: &mut Vec<Finding>) {
             continue;
         }
         let lower = plain(line.raw).to_ascii_lowercase();
-        let found: Vec<&str> = VAGUE.iter().copied().filter(|p| has_phrase(&lower, p)).collect();
+        let found: Vec<&str> = VAGUE
+            .iter()
+            .copied()
+            .filter(|p| has_phrase(&lower, p))
+            .collect();
         if !found.is_empty() {
-            let list = found.iter().map(|p| format!("\"{p}\"")).collect::<Vec<_>>().join(", ");
+            let list = found
+                .iter()
+                .map(|p| format!("\"{p}\""))
+                .collect::<Vec<_>>()
+                .join(", ");
             out.push(Finding::new(
                 "vague",
                 Severity::Info,
@@ -379,7 +521,11 @@ fn long_lines(doc: &Doc, out: &mut Vec<Finding>) {
 
 fn fence_language(doc: &Doc, out: &mut Vec<Finding>) {
     for line in &doc.lines {
-        if let Block::Fence { opening: true, lang } = &line.block {
+        if let Block::Fence {
+            opening: true,
+            lang,
+        } = &line.block
+        {
             if lang.is_empty() {
                 out.push(Finding::new(
                     "fence-language",
@@ -396,7 +542,9 @@ fn trailing_space(doc: &Doc, out: &mut Vec<Finding>) {
     let hits: Vec<u32> = doc
         .lines
         .iter()
-        .filter(|l| !matches!(l.block, Block::Code) && (l.raw.ends_with(' ') || l.raw.ends_with('\t')))
+        .filter(|l| {
+            !matches!(l.block, Block::Code) && (l.raw.ends_with(' ') || l.raw.ends_with('\t'))
+        })
         .map(|l| l.number)
         .collect();
     if let Some(&first) = hits.first() {
@@ -404,7 +552,10 @@ fn trailing_space(doc: &Doc, out: &mut Vec<Finding>) {
             "trailing-space",
             Severity::Info,
             first,
-            format!("Trailing spaces or tabs on {} line(s); strip them.", hits.len()),
+            format!(
+                "Trailing spaces or tabs on {} line(s); strip them.",
+                hits.len()
+            ),
         ));
     }
 }
@@ -427,14 +578,22 @@ fn plain(raw: &str) -> String {
 }
 
 fn words(text: &str) -> Vec<&str> {
-    text.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect()
+    text.split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect()
 }
 
 /// Whether `phrase` occurs in `lower` (already lower-case) with a word boundary on both sides.
 fn has_phrase(lower: &str, phrase: &str) -> bool {
     lower.match_indices(phrase).any(|(at, _)| {
-        let before = lower[..at].chars().next_back().map_or(true, |c| !c.is_alphanumeric());
-        let after = lower[at + phrase.len()..].chars().next().map_or(true, |c| !c.is_alphanumeric());
+        let before = lower[..at]
+            .chars()
+            .next_back()
+            .map_or(true, |c| !c.is_alphanumeric());
+        let after = lower[at + phrase.len()..]
+            .chars()
+            .next()
+            .map_or(true, |c| !c.is_alphanumeric());
         before && after
     })
 }
@@ -445,7 +604,10 @@ mod tests {
 
     /// The findings of rule `id` for `body`, checked as `kind`.
     fn fired(kind: Kind, body: &str, id: &str) -> Vec<Finding> {
-        check(kind, &Doc::parse(body)).into_iter().filter(|f| f.rule == id).collect()
+        check(kind, &Doc::parse(body))
+            .into_iter()
+            .filter(|f| f.rule == id)
+            .collect()
     }
 
     #[test]
@@ -466,12 +628,38 @@ mod tests {
 
     #[test]
     fn secret_fires_on_keys_and_assignments_not_on_plain_words() {
-        let f = fired(Kind::Fragment, "Use sk-abcdefghijklmnopqrstuvwxyz012345 here", "secret");
+        let f = fired(
+            Kind::Fragment,
+            "Use sk-abcdefghijklmnopqrstuvwxyz012345 here",
+            "secret",
+        );
         assert_eq!((f.len(), f[0].line, f[0].severity), (1, 1, Severity::Error));
         assert!(!f[0].message.contains("abcdefgh"));
-        assert_eq!(fired(Kind::Fragment, "api_key = a1b2c3d4e5f6g7h8i9j0k1l2", "secret").len(), 1);
-        assert!(fired(Kind::Fragment, "Read the task-management-overview-document-section-two", "secret").is_empty());
-        assert!(fired(Kind::Fragment, "The key takeaway is to read the docs carefully.", "secret").is_empty());
+        assert_eq!(
+            fired(
+                Kind::Fragment,
+                "api_key = a1b2c3d4e5f6g7h8i9j0k1l2",
+                "secret"
+            )
+            .len(),
+            1
+        );
+        assert!(
+            fired(
+                Kind::Fragment,
+                "Read the task-management-overview-document-section-two",
+                "secret"
+            )
+            .is_empty()
+        );
+        assert!(
+            fired(
+                Kind::Fragment,
+                "The key takeaway is to read the docs carefully.",
+                "secret"
+            )
+            .is_empty()
+        );
     }
 
     #[test]
@@ -521,15 +709,26 @@ mod tests {
 
     #[test]
     fn duplicate_line_fires_on_a_repeat_of_twelve_characters_or_more() {
-        let f = fired(Kind::Fragment, "Always run the test suite first.\n\nAlways run the test suite first.", "duplicate-line");
+        let f = fired(
+            Kind::Fragment,
+            "Always run the test suite first.\n\nAlways run the test suite first.",
+            "duplicate-line",
+        );
         assert_eq!((f.len(), f[0].line), (1, 3));
         assert!(fired(Kind::Fragment, "Short\nShort", "duplicate-line").is_empty());
     }
 
     #[test]
     fn shouting_counts_emphasis_outside_code() {
-        let f = fired(Kind::Fragment, "MUST do a. MUST do b. MUST do c. MUST do d. MUST do e. MUST do f.", "shouting");
-        assert_eq!((f.len(), f[0].line, f[0].severity), (1, 0, Severity::Warning));
+        let f = fired(
+            Kind::Fragment,
+            "MUST do a. MUST do b. MUST do c. MUST do d. MUST do e. MUST do f.",
+            "shouting",
+        );
+        assert_eq!(
+            (f.len(), f[0].line, f[0].severity),
+            (1, 0, Severity::Warning)
+        );
         assert!(fired(
             Kind::Fragment,
             "Use `MUST`, `NEVER`, `ALWAYS`, `IMPORTANT`, `CRITICAL` and `MUST` in code only. Call the API and read JSON over HTTP.",
@@ -540,7 +739,11 @@ mod tests {
 
     #[test]
     fn vague_lists_the_hedges_on_a_line() {
-        let f = fired(Kind::Fragment, "Try to keep it short, if possible.", "vague");
+        let f = fired(
+            Kind::Fragment,
+            "Try to keep it short, if possible.",
+            "vague",
+        );
         assert_eq!((f.len(), f[0].line, f[0].severity), (1, 1, Severity::Info));
         assert!(f[0].message.contains("\"try to\"") && f[0].message.contains("\"if possible\""));
         assert!(fired(Kind::Fragment, "Keep it short and specific.", "vague").is_empty());
@@ -549,9 +752,20 @@ mod tests {
 
     #[test]
     fn negative_only_fires_when_most_items_are_prohibitions() {
-        let f = fired(Kind::Fragment, "# Rules\n- Don't lie.\n- Never guess.\n- Avoid fluff.\n- Use JSON.", "negative-only");
+        let f = fired(
+            Kind::Fragment,
+            "# Rules\n- Don't lie.\n- Never guess.\n- Avoid fluff.\n- Use JSON.",
+            "negative-only",
+        );
         assert_eq!((f.len(), f[0].line, f[0].severity), (1, 1, Severity::Info));
-        assert!(fired(Kind::Fragment, "# Rules\n- Be brief.\n- Never guess.\n- Cite sources.", "negative-only").is_empty());
+        assert!(
+            fired(
+                Kind::Fragment,
+                "# Rules\n- Be brief.\n- Never guess.\n- Cite sources.",
+                "negative-only"
+            )
+            .is_empty()
+        );
     }
 
     #[test]

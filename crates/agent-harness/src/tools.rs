@@ -293,8 +293,14 @@ mod tests {
     #[test]
     fn echo_serves_and_refuses_off_schema_arguments() {
         let workspace = Workspace::default();
-        assert_eq!(serve(&workspace, "echo", &json!({ "text": "hi" })).unwrap(), "hi");
-        assert!(matches!(serve(&workspace, "echo", &json!({ "text": 12 })), Err(ToolError::InvalidInput { .. })));
+        assert_eq!(
+            serve(&workspace, "echo", &json!({ "text": "hi" })).unwrap(),
+            "hi"
+        );
+        assert!(matches!(
+            serve(&workspace, "echo", &json!({ "text": 12 })),
+            Err(ToolError::InvalidInput { .. })
+        ));
     }
 
     #[test]
@@ -302,13 +308,22 @@ mod tests {
         let err = serve(&Workspace::default(), "exec", &json!({})).expect_err("exec is not served");
         assert_eq!(err.to_string(), "no such tool: exec");
         let reason = || "x".to_string();
-        assert_eq!(ToolError::Denied { reason: reason() }.to_string(), "denied: x");
-        assert_eq!(ToolError::LimitExceeded { reason: reason() }.to_string(), "limit exceeded: x");
+        assert_eq!(
+            ToolError::Denied { reason: reason() }.to_string(),
+            "denied: x"
+        );
+        assert_eq!(
+            ToolError::LimitExceeded { reason: reason() }.to_string(),
+            "limit exceeded: x"
+        );
     }
 
     #[test]
     fn uptime_is_the_first_two_fields_of_proc_uptime() {
-        assert_eq!(uptime_fields("12.34 56.78 0.00 0\n").as_deref(), Some("12.34 56.78"));
+        assert_eq!(
+            uptime_fields("12.34 56.78 0.00 0\n").as_deref(),
+            Some("12.34 56.78")
+        );
         assert_eq!(uptime_fields("12.34\n").as_deref(), None);
         assert_eq!(uptime_fields("up days\n").as_deref(), None);
     }

@@ -7,8 +7,8 @@
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::Arc;
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
 use std::net::Ipv4Addr;
@@ -25,7 +25,13 @@ pub const NETWORK: &str = "apz-mcp";
 /// The longest line a server may send (a larger one ends the connection).
 const MAX_LINE: usize = 4 << 20;
 /// Environment the docker client needs to find its daemon, passed through from apid.
-const PASSTHROUGH: [&str; 5] = ["PATH", "HOME", "DOCKER_HOST", "DOCKER_CONFIG", "XDG_RUNTIME_DIR"];
+const PASSTHROUGH: [&str; 5] = [
+    "PATH",
+    "HOME",
+    "DOCKER_HOST",
+    "DOCKER_CONFIG",
+    "XDG_RUNTIME_DIR",
+];
 
 /// What a launch needs: the image, the command after it, and the env the child gets.
 #[derive(Debug, Clone, PartialEq)]
@@ -101,7 +107,11 @@ pub fn docker_args(spec: &LaunchSpec) -> Vec<String> {
 pub fn child_env(spec: &LaunchSpec) -> Vec<(String, String)> {
     let mut env: Vec<(String, String)> = PASSTHROUGH
         .iter()
-        .filter_map(|name| std::env::var(name).ok().map(|value| (name.to_string(), value)))
+        .filter_map(|name| {
+            std::env::var(name)
+                .ok()
+                .map(|value| (name.to_string(), value))
+        })
         .collect();
     env.extend(spec.env.iter().cloned());
     env
@@ -113,24 +123,44 @@ pub const GATEWAY: Ipv4Addr = Ipv4Addr::new(172, 29, 250, 1);
 
 /// `docker network create` for the apz-mcp network: internal, so it has no route out.
 pub fn network_create_args() -> Vec<String> {
-    ["network", "create", "--internal", "--driver", "bridge", "--subnet", SUBNET, "--gateway"]
-        .iter()
-        .map(|s| s.to_string())
-        .chain([GATEWAY.to_string(), NETWORK.to_string()])
-        .collect()
+    [
+        "network",
+        "create",
+        "--internal",
+        "--driver",
+        "bridge",
+        "--subnet",
+        SUBNET,
+        "--gateway",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .chain([GATEWAY.to_string(), NETWORK.to_string()])
+    .collect()
 }
 
 /// `docker network inspect` for the apz-mcp network: "<internal> <subnet> <gateway>".
 pub fn network_inspect_args() -> Vec<String> {
-    ["network", "inspect", "-f", "{{.Internal}} {{range .IPAM.Config}}{{.Subnet}} {{.Gateway}}{{end}}", NETWORK]
-        .iter()
-        .map(|s| s.to_string())
-        .collect()
+    [
+        "network",
+        "inspect",
+        "-f",
+        "{{.Internal}} {{range .IPAM.Config}}{{.Subnet}} {{.Gateway}}{{end}}",
+        NETWORK,
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
 }
 
 /// `docker volume rm` for a server's storage volume.
 pub fn volume_remove_args(server: &str) -> Vec<String> {
-    vec!["volume".into(), "rm".into(), "-f".into(), volume_name(server)]
+    vec![
+        "volume".into(),
+        "rm".into(),
+        "-f".into(),
+        volume_name(server),
+    ]
 }
 
 /// What apid says when docker cannot run: the container servers are stopped, the remote ones still work.
@@ -169,7 +199,10 @@ impl Docker for SystemDocker {
     }
 
     fn run(&self, args: &[String], env: &[(&str, &str)]) -> std::io::Result<Ran> {
-        let out = Command::new("docker").args(args).envs(env.iter().copied()).output()?;
+        let out = Command::new("docker")
+            .args(args)
+            .envs(env.iter().copied())
+            .output()?;
         Ok(Ran {
             ok: out.status.success(),
             stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
@@ -179,7 +212,8 @@ impl Docker for SystemDocker {
 }
 
 fn daemon_down(stderr: &str) -> bool {
-    stderr.contains("Cannot connect to the Docker daemon") || stderr.contains("Is the docker daemon running")
+    stderr.contains("Cannot connect to the Docker daemon")
+        || stderr.contains("Is the docker daemon running")
 }
 
 fn first_line(text: &str) -> String {
@@ -193,7 +227,9 @@ enum Found {
 }
 
 fn inspect(docker: &dyn Docker) -> Result<Found, String> {
-    let ran = docker.run(&network_inspect_args(), &[]).map_err(|_| NO_DOCKER.to_string())?;
+    let ran = docker
+        .run(&network_inspect_args(), &[])
+        .map_err(|_| NO_DOCKER.to_string())?;
     if ran.ok {
         Ok(Found::Line(ran.stdout.trim().to_string()))
     } else if daemon_down(&ran.stderr) {
@@ -210,17 +246,26 @@ pub fn ensure_network(docker: &dyn Docker) -> Result<Ipv4Addr, String> {
     let line = match inspect(docker)? {
         Found::Line(line) => line,
         Found::Absent => {
-            let created = docker.run(&network_create_args(), &[]).map_err(|_| NO_DOCKER.to_string())?;
+            let created = docker
+                .run(&network_create_args(), &[])
+                .map_err(|_| NO_DOCKER.to_string())?;
             if !created.ok {
                 return Err(if daemon_down(&created.stderr) {
                     NO_DAEMON.to_string()
                 } else {
-                    format!("the {NETWORK} network could not be created ({}); remote (http) servers still work", first_line(&created.stderr))
+                    format!(
+                        "the {NETWORK} network could not be created ({}); remote (http) servers still work",
+                        first_line(&created.stderr)
+                    )
                 });
             }
             match inspect(docker)? {
                 Found::Line(line) => line,
-                Found::Absent => return Err(format!("the {NETWORK} network was created but cannot be found; remote (http) servers still work")),
+                Found::Absent => {
+                    return Err(format!(
+                        "the {NETWORK} network was created but cannot be found; remote (http) servers still work"
+                    ));
+                }
             }
         }
     };
@@ -229,7 +274,9 @@ pub fn ensure_network(docker: &dyn Docker) -> Result<Ipv4Addr, String> {
     let subnet = fields.next();
     let gateway = fields.next().and_then(|g| g.parse::<Ipv4Addr>().ok());
     if !internal {
-        return Err(format!("the {NETWORK} network exists but is not --internal; run `docker network rm {NETWORK}` and try again; remote (http) servers still work"));
+        return Err(format!(
+            "the {NETWORK} network exists but is not --internal; run `docker network rm {NETWORK}` and try again; remote (http) servers still work"
+        ));
     }
     if subnet != Some(SUBNET) {
         return Err(format!(
@@ -242,7 +289,9 @@ pub fn ensure_network(docker: &dyn Docker) -> Result<Ipv4Addr, String> {
 
 /// Removes a server's storage volume (`DELETE /v1/mcp/servers/{id}?purge=1`).
 pub fn purge_volume(server: &str) -> Result<(), String> {
-    let ran = SystemDocker.run(&volume_remove_args(server), &[]).map_err(|_| NO_DOCKER.to_string())?;
+    let ran = SystemDocker
+        .run(&volume_remove_args(server), &[])
+        .map_err(|_| NO_DOCKER.to_string())?;
     if ran.ok {
         Ok(())
     } else {
@@ -287,7 +336,10 @@ impl Launcher for PlainLauncher {
 }
 
 /// Reads one line of at most `cap` bytes. `Ok(None)` at the end of the stream.
-pub(crate) fn read_line_capped(reader: &mut impl BufRead, cap: usize) -> std::io::Result<Option<String>> {
+pub(crate) fn read_line_capped(
+    reader: &mut impl BufRead,
+    cap: usize,
+) -> std::io::Result<Option<String>> {
     let mut line = Vec::new();
     loop {
         let available = reader.fill_buf()?;
@@ -325,7 +377,11 @@ pub struct StdioTransport {
 
 impl StdioTransport {
     /// Takes over a started child. `on_stderr` gets every stderr line, as the child wrote it.
-    pub fn new(mut child: Child, on_stderr: Arc<dyn Fn(String) + Send + Sync>, lease: Option<Lease>) -> Result<StdioTransport, String> {
+    pub fn new(
+        mut child: Child,
+        on_stderr: Arc<dyn Fn(String) + Send + Sync>,
+        lease: Option<Lease>,
+    ) -> Result<StdioTransport, String> {
         let stdin = child.stdin.take().ok_or("no stdin")?;
         let stdout = child.stdout.take().ok_or("no stdout")?;
         let stderr = child.stderr.take().ok_or("no stderr")?;
@@ -352,7 +408,13 @@ impl StdioTransport {
                 on_stderr(line);
             }
         });
-        Ok(StdioTransport { child, stdin: Some(stdin), lines: rx, closed: false, _lease: lease })
+        Ok(StdioTransport {
+            child,
+            stdin: Some(stdin),
+            lines: rx,
+            closed: false,
+            _lease: lease,
+        })
     }
 }
 
@@ -361,10 +423,17 @@ impl Transport for StdioTransport {
         let Some(stdin) = self.stdin.as_mut() else {
             return Err(Error::Transport("the server is not running".into()));
         };
-        let mut line = serde_json::to_string(message).map_err(|e| Error::Protocol(e.to_string()))?;
+        let mut line =
+            serde_json::to_string(message).map_err(|e| Error::Protocol(e.to_string()))?;
         line.push('\n');
-        if stdin.write_all(line.as_bytes()).and_then(|()| stdin.flush()).is_err() {
-            return Err(Error::Transport("the server stopped reading its input".into()));
+        if stdin
+            .write_all(line.as_bytes())
+            .and_then(|()| stdin.flush())
+            .is_err()
+        {
+            return Err(Error::Transport(
+                "the server stopped reading its input".into(),
+            ));
         }
         let Some(id) = message.get("id").cloned() else {
             return Ok(Vec::new());
@@ -376,7 +445,9 @@ impl Transport for StdioTransport {
             match self.lines.recv_timeout(left) {
                 Ok(Ok(text)) => {
                     // Anything that is not JSON-RPC on stdout is noise from the server; it is skipped.
-                    let Ok(value) = serde_json::from_str::<Value>(&text) else { continue };
+                    let Ok(value) = serde_json::from_str::<Value>(&text) else {
+                        continue;
+                    };
                     let is_reply = value.get("id") == Some(&id) && value.get("method").is_none();
                     seen.push(value);
                     if is_reply {
@@ -385,7 +456,9 @@ impl Transport for StdioTransport {
                 }
                 Ok(Err(())) => return Err(Error::Transport("the server exited".into())),
                 Err(RecvTimeoutError::Timeout) => return Err(Error::Timeout),
-                Err(RecvTimeoutError::Disconnected) => return Err(Error::Transport("the server exited".into())),
+                Err(RecvTimeoutError::Disconnected) => {
+                    return Err(Error::Transport("the server exited".into()));
+                }
             }
         }
     }
@@ -430,7 +503,10 @@ pub(crate) mod tests {
             image: "ghcr.io/github/github-mcp-server".into(),
             command: vec!["stdio".into()],
             workdir: None,
-            env: vec![("GITHUB_PERSONAL_ACCESS_TOKEN".into(), "SENTINEL-TOKEN-7731".into())],
+            env: vec![(
+                "GITHUB_PERSONAL_ACCESS_TOKEN".into(),
+                "SENTINEL-TOKEN-7731".into(),
+            )],
             ip: None,
             volume: None,
         }
@@ -450,15 +526,25 @@ pub(crate) mod tests {
     #[test]
     fn secrets_are_named_in_argv_and_never_valued() {
         let args = docker_args(&spec());
-        assert!(args.windows(2).any(|w| w[0] == "-e" && w[1] == "GITHUB_PERSONAL_ACCESS_TOKEN"));
+        assert!(
+            args.windows(2)
+                .any(|w| w[0] == "-e" && w[1] == "GITHUB_PERSONAL_ACCESS_TOKEN")
+        );
         assert!(!args.iter().any(|a| a.contains("SENTINEL")));
     }
 
     #[test]
     fn the_child_env_carries_the_value_and_no_other_apid_variable() {
         let env = child_env(&spec());
-        assert!(env.iter().any(|(k, v)| k == "GITHUB_PERSONAL_ACCESS_TOKEN" && v == "SENTINEL-TOKEN-7731"));
-        assert!(env.iter().all(|(k, _)| PASSTHROUGH.contains(&k.as_str()) || k == "GITHUB_PERSONAL_ACCESS_TOKEN"));
+        assert!(
+            env.iter()
+                .any(|(k, v)| k == "GITHUB_PERSONAL_ACCESS_TOKEN" && v == "SENTINEL-TOKEN-7731")
+        );
+        assert!(
+            env.iter()
+                .all(|(k, _)| PASSTHROUGH.contains(&k.as_str())
+                    || k == "GITHUB_PERSONAL_ACCESS_TOKEN")
+        );
     }
 
     #[test]
@@ -468,14 +554,25 @@ pub(crate) mod tests {
         let args = docker_args(&with_dir);
         let at = args.iter().position(|a| a == "-w").unwrap();
         assert_eq!(args[at + 1], "/workspace");
-        assert!(at < args.iter().position(|a| a == "ghcr.io/github/github-mcp-server").unwrap());
+        assert!(
+            at < args
+                .iter()
+                .position(|a| a == "ghcr.io/github/github-mcp-server")
+                .unwrap()
+        );
     }
 
     #[test]
     fn a_capped_line_reader_splits_lines_and_refuses_an_endless_one() {
         let mut reader = std::io::Cursor::new(b"one\ntwo\n".to_vec());
-        assert_eq!(read_line_capped(&mut reader, 64).unwrap().as_deref(), Some("one"));
-        assert_eq!(read_line_capped(&mut reader, 64).unwrap().as_deref(), Some("two"));
+        assert_eq!(
+            read_line_capped(&mut reader, 64).unwrap().as_deref(),
+            Some("one")
+        );
+        assert_eq!(
+            read_line_capped(&mut reader, 64).unwrap().as_deref(),
+            Some("two")
+        );
         assert_eq!(read_line_capped(&mut reader, 64).unwrap(), None);
         let mut endless = std::io::Cursor::new(vec![b'x'; 100]);
         assert!(read_line_capped(&mut endless, 10).is_err());
@@ -493,7 +590,10 @@ pub(crate) mod tests {
     #[test]
     fn the_network_is_internal_and_has_the_fixed_subnet_and_gateway() {
         let create = network_create_args().join(" ");
-        assert_eq!(create, "network create --internal --driver bridge --subnet 172.29.250.0/24 --gateway 172.29.250.1 apz-mcp");
+        assert_eq!(
+            create,
+            "network create --internal --driver bridge --subnet 172.29.250.0/24 --gateway 172.29.250.1 apz-mcp"
+        );
         assert!(network_inspect_args().join(" ").ends_with(" apz-mcp"));
     }
 
@@ -505,30 +605,54 @@ pub(crate) mod tests {
         let args = docker_args(&with);
         let at = args.iter().position(|a| a == "--ip").unwrap();
         assert_eq!(args[at + 1], "172.29.250.7");
-        assert!(args.iter().any(|a| a == "type=volume,source=apz-mcp-memory,target=/data"));
-        assert!(!args.iter().any(|a| a.starts_with("/") && a != "/tmp:size=64m"), "{args:?}");
+        assert!(
+            args.iter()
+                .any(|a| a == "type=volume,source=apz-mcp-memory,target=/data")
+        );
+        assert!(
+            !args
+                .iter()
+                .any(|a| a.starts_with("/") && a != "/tmp:size=64m"),
+            "{args:?}"
+        );
     }
 
     #[test]
     fn the_purge_removes_the_named_volume_only() {
-        assert_eq!(volume_remove_args("memory"), ["volume", "rm", "-f", "apz-mcp-memory"]);
+        assert_eq!(
+            volume_remove_args("memory"),
+            ["volume", "rm", "-f", "apz-mcp-memory"]
+        );
     }
 
     fn ran(ok: bool, stdout: &str, stderr: &str) -> std::io::Result<Ran> {
-        Ok(Ran { ok, stdout: stdout.into(), stderr: stderr.into() })
+        Ok(Ran {
+            ok,
+            stdout: stdout.into(),
+            stderr: stderr.into(),
+        })
     }
 
     #[test]
     fn a_missing_docker_gives_one_actionable_line() {
-        let docker = MockDocker::new(Default::default(), |_: &[String]| Err(std::io::Error::from(std::io::ErrorKind::NotFound)));
+        let docker = MockDocker::new(Default::default(), |_: &[String]| {
+            Err(std::io::Error::from(std::io::ErrorKind::NotFound))
+        });
         assert_eq!(ensure_network(&docker).unwrap_err(), NO_DOCKER);
-        assert!(NO_DOCKER.contains("install Docker") && NO_DOCKER.contains("remote (http) servers still work"));
+        assert!(
+            NO_DOCKER.contains("install Docker")
+                && NO_DOCKER.contains("remote (http) servers still work")
+        );
     }
 
     #[test]
     fn an_unreachable_daemon_says_so() {
         let docker = MockDocker::new(Default::default(), |_: &[String]| {
-            ran(false, "", "Cannot connect to the Docker daemon at unix:///var/run/docker.sock.")
+            ran(
+                false,
+                "",
+                "Cannot connect to the Docker daemon at unix:///var/run/docker.sock.",
+            )
         });
         assert_eq!(ensure_network(&docker).unwrap_err(), NO_DAEMON);
     }
@@ -537,22 +661,41 @@ pub(crate) mod tests {
     fn a_network_that_cannot_be_created_names_dockers_reason_and_no_socket_error() {
         let docker = MockDocker::new(Default::default(), |args: &[String]| {
             if args.get(1).map(String::as_str) == Some("create") {
-                ran(false, "", "Error response from daemon: permission denied while trying to connect\nmore")
+                ran(
+                    false,
+                    "",
+                    "Error response from daemon: permission denied while trying to connect\nmore",
+                )
             } else {
                 ran(false, "", "Error: No such network: apz-mcp")
             }
         });
         let err = ensure_network(&docker).unwrap_err();
-        assert!(err.contains("could not be created") && err.contains("permission denied"), "{err}");
+        assert!(
+            err.contains("could not be created") && err.contains("permission denied"),
+            "{err}"
+        );
         assert!(!err.contains("os error") && !err.contains("\n"), "{err}");
     }
 
     #[test]
     fn an_existing_network_must_be_internal_with_the_fixed_subnet() {
-        let not_internal = MockDocker::new(Default::default(), |_: &[String]| ran(true, "false 172.29.250.0/24 172.29.250.1", ""));
-        assert!(ensure_network(&not_internal).unwrap_err().contains("not --internal"));
-        let other_subnet = MockDocker::new(Default::default(), |_: &[String]| ran(true, "true 10.9.0.0/24 10.9.0.1", ""));
-        assert!(ensure_network(&other_subnet).unwrap_err().contains("subnet 10.9.0.0/24"));
+        let not_internal = MockDocker::new(Default::default(), |_: &[String]| {
+            ran(true, "false 172.29.250.0/24 172.29.250.1", "")
+        });
+        assert!(
+            ensure_network(&not_internal)
+                .unwrap_err()
+                .contains("not --internal")
+        );
+        let other_subnet = MockDocker::new(Default::default(), |_: &[String]| {
+            ran(true, "true 10.9.0.0/24 10.9.0.1", "")
+        });
+        assert!(
+            ensure_network(&other_subnet)
+                .unwrap_err()
+                .contains("subnet 10.9.0.0/24")
+        );
     }
 
     #[test]
@@ -573,7 +716,11 @@ pub(crate) mod tests {
         assert_eq!(ensure_network(&docker).unwrap(), GATEWAY);
         let calls = log.lock().unwrap().clone();
         assert_eq!(calls.len(), 3, "{calls:?}");
-        assert!(calls[0].starts_with("network inspect") && calls[1].starts_with("network create") && calls[2].starts_with("network inspect"));
+        assert!(
+            calls[0].starts_with("network inspect")
+                && calls[1].starts_with("network create")
+                && calls[2].starts_with("network inspect")
+        );
     }
 
     /// A docker client that answers each command through a closure, and logs each command line. Starting the
@@ -584,13 +731,25 @@ pub(crate) mod tests {
     }
 
     impl MockDocker {
-        pub(crate) fn new(log: Arc<Mutex<Vec<String>>>, answer: impl Fn(&[String]) -> std::io::Result<Ran> + Send + Sync + 'static) -> MockDocker {
-            MockDocker { log, answer: Box::new(answer) }
+        pub(crate) fn new(
+            log: Arc<Mutex<Vec<String>>>,
+            answer: impl Fn(&[String]) -> std::io::Result<Ran> + Send + Sync + 'static,
+        ) -> MockDocker {
+            MockDocker {
+                log,
+                answer: Box::new(answer),
+            }
         }
 
         /// Every command succeeds, and nothing is logged anywhere that matters.
         pub(crate) fn silent() -> MockDocker {
-            MockDocker::new(Default::default(), |_: &[String]| Ok(Ran { ok: true, stdout: String::new(), stderr: String::new() }))
+            MockDocker::new(Default::default(), |_: &[String]| {
+                Ok(Ran {
+                    ok: true,
+                    stdout: String::new(),
+                    stderr: String::new(),
+                })
+            })
         }
     }
 

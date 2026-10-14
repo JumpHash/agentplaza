@@ -9,7 +9,10 @@ use std::sync::{Mutex, PoisonError};
 use apz_prompt::{Finding, Kind};
 use serde::{Deserialize, Serialize};
 
-use super::{Action, Event, Meta, NewPrompt, NewVersion, Prompt, PromptStore, StoreError, Version, VersionMeta};
+use super::{
+    Action, Event, Meta, NewPrompt, NewVersion, Prompt, PromptStore, StoreError, Version,
+    VersionMeta,
+};
 
 pub struct MemoryPrompts {
     /// `None` when nothing is persisted.
@@ -84,7 +87,14 @@ impl Data {
         self.prompts.get_mut(id).ok_or(StoreError::NotFound)
     }
 
-    fn log(&mut self, prompt_id: &str, action: Action, version: Option<u32>, actor: &str, at_ms: u64) {
+    fn log(
+        &mut self,
+        prompt_id: &str,
+        action: Action,
+        version: Option<u32>,
+        actor: &str,
+        at_ms: u64,
+    ) {
         self.last_event += 1;
         self.events.push(StoredEvent {
             id: self.last_event,
@@ -153,7 +163,11 @@ impl StoredVersion {
     }
 
     fn full(&self) -> Version {
-        Version { meta: self.meta(), body: self.body.clone(), findings: self.findings.clone() }
+        Version {
+            meta: self.meta(),
+            body: self.body.clone(),
+            findings: self.findings.clone(),
+        }
     }
 }
 
@@ -161,7 +175,10 @@ impl MemoryPrompts {
     /// Not persisted (tests).
     #[cfg(test)]
     pub fn in_memory() -> MemoryPrompts {
-        MemoryPrompts { path: None, inner: Mutex::new(Data::default()) }
+        MemoryPrompts {
+            path: None,
+            inner: Mutex::new(Data::default()),
+        }
     }
 
     /// Loads `<state_dir>/prompts.json` if it exists, and writes it after every change.
@@ -188,12 +205,18 @@ impl MemoryPrompts {
                 return MemoryPrompts { path: None, inner: Mutex::new(Data::default()) };
             }
         };
-        MemoryPrompts { path: Some(path), inner: Mutex::new(data) }
+        MemoryPrompts {
+            path: Some(path),
+            inner: Mutex::new(data),
+        }
     }
 
     /// Applies `change` to a copy of the data, persists the copy, and only then makes it the live data: a failed
     /// check or a failed write leaves everything as it was.
-    fn write<T>(&self, change: impl FnOnce(&mut Data) -> Result<T, StoreError>) -> Result<T, StoreError> {
+    fn write<T>(
+        &self,
+        change: impl FnOnce(&mut Data) -> Result<T, StoreError>,
+    ) -> Result<T, StoreError> {
         let mut guard = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
         let mut next = guard.clone();
         let out = change(&mut next)?;
@@ -208,7 +231,9 @@ impl MemoryPrompts {
     }
 
     fn persist(&self, data: &Data) -> Result<(), StoreError> {
-        let Some(path) = &self.path else { return Ok(()) };
+        let Some(path) = &self.path else {
+            return Ok(());
+        };
         let bytes = serde_json::to_vec_pretty(data)
             .map_err(|e| StoreError::Failed(format!("encoding the prompt library: {e}")))?;
         let tmp = path.with_extension("json.tmp");
@@ -224,7 +249,13 @@ impl MemoryPrompts {
 
 impl PromptStore for MemoryPrompts {
     fn list(&self, archived: bool) -> Result<Vec<Prompt>, String> {
-        Ok(self.read(|d| d.prompts.values().filter(|p| archived || p.live()).map(Stored::prompt).collect()))
+        Ok(self.read(|d| {
+            d.prompts
+                .values()
+                .filter(|p| archived || p.live())
+                .map(Stored::prompt)
+                .collect()
+        }))
     }
 
     fn get(&self, id: &str) -> Result<Option<Prompt>, String> {
@@ -232,20 +263,39 @@ impl PromptStore for MemoryPrompts {
     }
 
     fn versions(&self, id: &str) -> Result<Vec<VersionMeta>, String> {
-        Ok(self.read(|d| d.prompts.get(id).map(|p| p.versions.iter().map(StoredVersion::meta).collect()).unwrap_or_default()))
+        Ok(self.read(|d| {
+            d.prompts
+                .get(id)
+                .map(|p| p.versions.iter().map(StoredVersion::meta).collect())
+                .unwrap_or_default()
+        }))
     }
 
     fn version(&self, id: &str, version: u32) -> Result<Option<Version>, String> {
         Ok(self.read(|d| {
-            let v = d.prompts.get(id)?.versions.iter().find(|v| v.version == version)?;
+            let v = d
+                .prompts
+                .get(id)?
+                .versions
+                .iter()
+                .find(|v| v.version == version)?;
             Some(v.full())
         }))
     }
 
-    fn create(&self, new: &NewPrompt, first: &NewVersion, actor: &str, now_ms: u64) -> Result<Prompt, StoreError> {
+    fn create(
+        &self,
+        new: &NewPrompt,
+        first: &NewVersion,
+        actor: &str,
+        now_ms: u64,
+    ) -> Result<Prompt, StoreError> {
         self.write(|d| {
             if d.prompts.contains_key(&new.id) {
-                return Err(StoreError::Conflict(format!("a prompt named {} exists", new.id)));
+                return Err(StoreError::Conflict(format!(
+                    "a prompt named {} exists",
+                    new.id
+                )));
             }
             if let Some(b) = new.binding.as_deref() {
                 if let Some(other) = d.holder(b, &new.id) {
@@ -273,13 +323,21 @@ impl PromptStore for MemoryPrompts {
         })
     }
 
-    fn add_version(&self, id: &str, base: u32, next: &NewVersion, actor: &str, now_ms: u64)
-        -> Result<VersionMeta, StoreError> {
+    fn add_version(
+        &self,
+        id: &str,
+        base: u32,
+        next: &NewVersion,
+        actor: &str,
+        now_ms: u64,
+    ) -> Result<VersionMeta, StoreError> {
         self.write(|d| {
             let p = d.prompt_mut(id)?;
             let latest = p.versions.len() as u32;
             if base != latest {
-                return Err(StoreError::Conflict(format!("{id} is at version {latest}, not {base}")));
+                return Err(StoreError::Conflict(format!(
+                    "{id} is at version {latest}, not {base}"
+                )));
             }
             let v = StoredVersion::new(latest + 1, next, actor, now_ms);
             let meta = v.meta();
@@ -290,7 +348,13 @@ impl PromptStore for MemoryPrompts {
         })
     }
 
-    fn set_meta(&self, id: &str, meta: &Meta, actor: &str, now_ms: u64) -> Result<Prompt, StoreError> {
+    fn set_meta(
+        &self,
+        id: &str,
+        meta: &Meta,
+        actor: &str,
+        now_ms: u64,
+    ) -> Result<Prompt, StoreError> {
         self.write(|d| {
             if !d.prompts.contains_key(id) {
                 return Err(StoreError::NotFound);
@@ -312,7 +376,13 @@ impl PromptStore for MemoryPrompts {
         })
     }
 
-    fn set_active(&self, id: &str, version: Option<u32>, actor: &str, now_ms: u64) -> Result<Prompt, StoreError> {
+    fn set_active(
+        &self,
+        id: &str,
+        version: Option<u32>,
+        actor: &str,
+        now_ms: u64,
+    ) -> Result<Prompt, StoreError> {
         self.write(|d| {
             let p = d.prompt_mut(id)?;
             if let Some(v) = version {
@@ -323,13 +393,23 @@ impl PromptStore for MemoryPrompts {
             p.active_version = version;
             p.updated_ms = now_ms;
             let prompt = p.prompt();
-            let action = if version.is_some() { Action::Publish } else { Action::Unpublish };
+            let action = if version.is_some() {
+                Action::Publish
+            } else {
+                Action::Unpublish
+            };
             d.log(id, action, version, actor, now_ms);
             Ok(prompt)
         })
     }
 
-    fn set_archived(&self, id: &str, archived: bool, actor: &str, now_ms: u64) -> Result<Prompt, StoreError> {
+    fn set_archived(
+        &self,
+        id: &str,
+        archived: bool,
+        actor: &str,
+        now_ms: u64,
+    ) -> Result<Prompt, StoreError> {
         self.write(|d| {
             let binding = d.prompt_mut(id)?.binding.clone();
             if let Some(b) = binding.as_deref() {
@@ -338,10 +418,18 @@ impl PromptStore for MemoryPrompts {
                 }
             }
             let p = d.prompt_mut(id)?;
-            p.archived_ms = if archived { p.archived_ms.or(Some(now_ms)) } else { None };
+            p.archived_ms = if archived {
+                p.archived_ms.or(Some(now_ms))
+            } else {
+                None
+            };
             p.updated_ms = now_ms;
             let prompt = p.prompt();
-            let action = if archived { Action::Archive } else { Action::Restore };
+            let action = if archived {
+                Action::Archive
+            } else {
+                Action::Restore
+            };
             d.log(id, action, None, actor, now_ms);
             Ok(prompt)
         })
@@ -355,8 +443,9 @@ impl PromptStore for MemoryPrompts {
                 .filter(|e| e.prompt_id == id)
                 .take(limit as usize)
                 .map(|e| {
-                    let action = Action::parse(&e.action)
-                        .ok_or_else(|| format!("unknown action {} in the history of {id}", e.action))?;
+                    let action = Action::parse(&e.action).ok_or_else(|| {
+                        format!("unknown action {} in the history of {id}", e.action)
+                    })?;
                     Ok(Event {
                         id: e.id,
                         prompt_id: e.prompt_id.clone(),
@@ -372,7 +461,10 @@ impl PromptStore for MemoryPrompts {
 
     fn bound(&self, binding: &str) -> Result<Option<(Prompt, String)>, String> {
         Ok(self.read(|d| {
-            let p = d.prompts.values().find(|p| p.live() && p.binding.as_deref() == Some(binding))?;
+            let p = d
+                .prompts
+                .values()
+                .find(|p| p.live() && p.binding.as_deref() == Some(binding))?;
             let v = p.active_version?;
             let body = p.versions.iter().find(|x| x.version == v)?.body.clone();
             Some((p.prompt(), body))

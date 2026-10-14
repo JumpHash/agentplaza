@@ -323,9 +323,8 @@ pub fn write(
     write_atomic(&target.abs, text.as_bytes(), hooks)
         .map_err(|err| OpError::io(err, format!("cannot write {}", target.rel)))?;
     if let Some(permissions) = permissions {
-        fs::set_permissions(&target.abs, permissions).map_err(|err| {
-            OpError::io(err, format!("cannot keep the mode of {}", target.rel))
-        })?;
+        fs::set_permissions(&target.abs, permissions)
+            .map_err(|err| OpError::io(err, format!("cannot keep the mode of {}", target.rel)))?;
     }
     Ok(WriteReply {
         checkpoint,
@@ -374,7 +373,11 @@ pub fn search(
     }
     let case_blind = q == q.to_lowercase();
     let mut scan = Scan {
-        needle: if case_blind { q.to_lowercase() } else { q.to_string() },
+        needle: if case_blind {
+            q.to_lowercase()
+        } else {
+            q.to_string()
+        },
         case_blind,
         glob,
         max,
@@ -462,11 +465,8 @@ fn text_of<'a>(rel: &str, bytes: &'a [u8]) -> Result<&'a str, OpError> {
             "{rel} is binary (it holds a NUL byte); the IDE opens text only"
         )));
     }
-    std::str::from_utf8(bytes).map_err(|_| {
-        OpError::invalid(format!(
-            "{rel} is not UTF-8 text; the IDE opens text only"
-        ))
-    })
+    std::str::from_utf8(bytes)
+        .map_err(|_| OpError::invalid(format!("{rel} is not UTF-8 text; the IDE opens text only")))
 }
 
 /// Whether the first [`BINARY_PROBE`] bytes of a file hold a NUL.
@@ -668,7 +668,10 @@ mod tests {
         symlink(dir.join(".env"), dir.join("link.txt")).unwrap();
 
         for raw in ["../x", "/etc/passwd", "a/../../x"] {
-            assert!(denied(read(&root, raw, None)).contains("refused"), "read {raw}");
+            assert!(
+                denied(read(&root, raw, None)).contains("refused"),
+                "read {raw}"
+            );
             assert!(
                 denied(write(&root, raw, "x", None, &mut NoHooks)).contains("refused"),
                 "write {raw}"
@@ -680,9 +683,7 @@ mod tests {
         assert!(denied(list(&root, ".ssh", None)).contains("secret"));
         assert!(denied(read(&root, "esc/secret.txt", None)).contains("outside the workspace"));
         assert!(denied(list(&root, "esc", None)).contains("outside the workspace"));
-        assert!(
-            denied(write(&root, "esc/new.txt", "x", None, &mut NoHooks)).contains("outside")
-        );
+        assert!(denied(write(&root, "esc/new.txt", "x", None, &mut NoHooks)).contains("outside"));
         assert!(denied(write(&root, "dangle", "x", None, &mut NoHooks)).contains("symlink"));
         assert!(
             denied(read(&root, "link.txt", None)).contains("secret"),
@@ -724,7 +725,10 @@ mod tests {
         assert!(first.entries[2].binary);
         assert!(!first.entries[3].binary);
         assert!(first.entries[3].hash.is_none());
-        assert!(list(&root, "bin.dat", None).is_err(), "a file is not a directory");
+        assert!(
+            list(&root, "bin.dat", None).is_err(),
+            "a file is not a directory"
+        );
         assert!(list(&root, "", Some("x")).is_err());
     }
 
@@ -751,7 +755,10 @@ mod tests {
         assert!(chunks >= 3);
         assert_eq!(collected, content);
         assert!(read(&root, "u.txt", Some(1)).is_err(), "inside a character");
-        assert!(read(&root, "u.txt", Some(1_000_000)).is_err(), "past the end");
+        assert!(
+            read(&root, "u.txt", Some(1_000_000)).is_err(),
+            "past the end"
+        );
 
         fs::write(dir.join("bin.dat"), b"a\0b").unwrap();
         assert!(matches!(
@@ -832,12 +839,8 @@ mod tests {
         }
 
         fn created(&mut self, path: &Path) {
-            self.created.push(
-                path.file_name()
-                    .unwrap()
-                    .to_string_lossy()
-                    .into_owned(),
-            );
+            self.created
+                .push(path.file_name().unwrap().to_string_lossy().into_owned());
         }
     }
 
@@ -855,7 +858,11 @@ mod tests {
         // The folders made, deepest first, then the temp file before its rename.
         assert_eq!(hooks.created.len(), 3, "{:?}", hooks.created);
         assert_eq!(&hooks.created[..2], ["er", "deep"]);
-        assert!(hooks.created[2].starts_with(".a.txt.plaza-tmp-"), "{:?}", hooks.created);
+        assert!(
+            hooks.created[2].starts_with(".a.txt.plaza-tmp-"),
+            "{:?}",
+            hooks.created
+        );
 
         // A refused write runs no hook.
         let refused = write(&root, "deep/er/a.txt", "y", None, &mut hooks);

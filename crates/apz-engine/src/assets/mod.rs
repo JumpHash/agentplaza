@@ -134,7 +134,11 @@ impl MeshAsset {
 
     /// True when the indices are whole triangles and each one names a vertex.
     pub fn is_valid(&self) -> bool {
-        self.indices.len() % 3 == 0 && self.indices.iter().all(|&i| (i as usize) < self.vertices.len())
+        self.indices.len() % 3 == 0
+            && self
+                .indices
+                .iter()
+                .all(|&i| (i as usize) < self.vertices.len())
     }
 }
 
@@ -186,11 +190,16 @@ mod tests {
     #[test]
     fn material_keys_are_separate_from_meshes() {
         let mut registry = AssetRegistry::default();
-        let mat = registry.materials.get_or_insert_with("hull|2", || MaterialAsset {
-            palette: "hull".into(),
-            flags: material_flags::UNLIT,
-        });
-        assert_eq!(registry.materials.get(mat).map(|m| m.flags), Some(material_flags::UNLIT));
+        let mat = registry
+            .materials
+            .get_or_insert_with("hull|2", || MaterialAsset {
+                palette: "hull".into(),
+                flags: material_flags::UNLIT,
+            });
+        assert_eq!(
+            registry.materials.get(mat).map(|m| m.flags),
+            Some(material_flags::UNLIT)
+        );
         assert!(registry.meshes.is_empty());
     }
 
@@ -202,12 +211,21 @@ mod tests {
     #[test]
     fn mesh_validity() {
         let v = MeshVertex::default();
-        let ok = MeshAsset { vertices: vec![v; 3], indices: vec![0, 1, 2] };
+        let ok = MeshAsset {
+            vertices: vec![v; 3],
+            indices: vec![0, 1, 2],
+        };
         assert!(ok.is_valid());
         assert_eq!(ok.triangle_count(), 1);
-        let short = MeshAsset { vertices: vec![v; 3], indices: vec![0, 1] };
+        let short = MeshAsset {
+            vertices: vec![v; 3],
+            indices: vec![0, 1],
+        };
         assert!(!short.is_valid());
-        let dangling = MeshAsset { vertices: vec![v; 3], indices: vec![0, 1, 3] };
+        let dangling = MeshAsset {
+            vertices: vec![v; 3],
+            indices: vec![0, 1, 3],
+        };
         assert!(!dangling.is_valid());
     }
 }

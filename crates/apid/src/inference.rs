@@ -6,15 +6,14 @@
 //!
 //! The foundry's jobs and registry routes and the `invoke_model` tool wire this up next.
 
-
 use std::collections::{BTreeMap, HashMap};
 use std::io::Cursor;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value, json};
 use blake2::Blake2b;
 use blake2::digest::consts::U8;
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use tract_onnx::prelude::{
     Datum, Framework, InferenceFact, InferenceModelExt, IntoRunnable, TValue, Tensor,
@@ -387,11 +386,20 @@ fn check_graph_inputs(graph: &[String], pins: &[InputPin]) -> Result<(), String>
 /// How the pinned inputs are named in the load error: the single-input card keeps its serving width.
 fn describe_pins(pins: &[InputPin]) -> String {
     match pins {
-        [InputPin { name: None, width, .. }] => format!("{width} features (its serving block width)"),
+        [
+            InputPin {
+                name: None, width, ..
+            },
+        ] => format!("{width} features (its serving block width)"),
         _ => format!(
             "inputs ({})",
             pins.iter()
-                .map(|p| format!("{} {:?} x{}", p.name.as_deref().unwrap_or("input"), p.dtype, p.width))
+                .map(|p| format!(
+                    "{} {:?} x{}",
+                    p.name.as_deref().unwrap_or("input"),
+                    p.dtype,
+                    p.width
+                ))
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
@@ -405,7 +413,10 @@ fn width_error(pin: &InputPin, got: usize) -> String {
             "the feature vector has {got} columns but the model takes {} (the card's features)",
             pin.width
         ),
-        Some(name) => format!("input `{name}` has {got} columns but the model takes {}", pin.width),
+        Some(name) => format!(
+            "input `{name}` has {got} columns but the model takes {}",
+            pin.width
+        ),
     }
 }
 
@@ -531,7 +542,9 @@ fn serving_inputs(serving: &Value) -> Result<Vec<ServingInput>, String> {
             features: (0..features.len()).collect(),
         }]);
     };
-    let declared = declared.as_array().ok_or("serving: inputs must be an array")?;
+    let declared = declared
+        .as_array()
+        .ok_or("serving: inputs must be an array")?;
     if declared.is_empty() {
         return Err("serving: inputs is empty".into());
     }
@@ -543,7 +556,10 @@ fn serving_inputs(serving: &Value) -> Result<Vec<ServingInput>, String> {
             .and_then(Value::as_str)
             .filter(|n| !n.is_empty())
             .ok_or("serving: an input has no name")?;
-        if inputs.iter().any(|other| other.name.as_deref() == Some(name)) {
+        if inputs
+            .iter()
+            .any(|other| other.name.as_deref() == Some(name))
+        {
             return Err(format!("serving: the input `{name}` is listed twice"));
         }
         let dtype = match input.get("dtype").and_then(Value::as_str) {
@@ -566,9 +582,9 @@ fn serving_inputs(serving: &Value) -> Result<Vec<ServingInput>, String> {
             .ok_or_else(|| format!("serving: input `{name}` needs a non-empty features array"))?;
         let mut indices = Vec::with_capacity(names.len());
         for feature in names {
-            let feature = feature
-                .as_str()
-                .ok_or_else(|| format!("serving: input `{name}` lists a feature that is not a name"))?;
+            let feature = feature.as_str().ok_or_else(|| {
+                format!("serving: input `{name}` lists a feature that is not a name")
+            })?;
             let index = features
                 .iter()
                 .position(|f| f.get("name").and_then(Value::as_str) == Some(feature))
@@ -591,7 +607,10 @@ fn serving_inputs(serving: &Value) -> Result<Vec<ServingInput>, String> {
         });
     }
     if let Some(index) = uses.iter().position(|&n| n != 1) {
-        let feature = features[index].get("name").and_then(Value::as_str).unwrap_or("?");
+        let feature = features[index]
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or("?");
         return Err(format!(
             "serving: feature `{feature}` is in {} inputs; each feature belongs to exactly one",
             uses[index]
@@ -642,7 +661,11 @@ mod serving_parity {
             assert_eq!(got.len(), want.len(), "row {i}: width");
             for (j, (g, w)) in got.iter().zip(&want).enumerate() {
                 let hashed = fixture["serving"]["features"][j]["kind"] == "hash";
-                let ok = if hashed { g == w } else { (g - w).abs() <= 1e-12 };
+                let ok = if hashed {
+                    g == w
+                } else {
+                    (g - w).abs() <= 1e-12
+                };
                 assert!(ok, "row {i} column {j}: got {g}, want {w}");
             }
         }
@@ -654,7 +677,12 @@ mod serving_parity {
         let declared = fixture["serving"]["inputs"]
             .as_array()
             .expect("the fixture declares serving.inputs");
-        for (i, row) in fixture["rows"].as_array().expect("the fixture has rows").iter().enumerate() {
+        for (i, row) in fixture["rows"]
+            .as_array()
+            .expect("the fixture has rows")
+            .iter()
+            .enumerate()
+        {
             let split = featurize_inputs(&fixture["serving"], &row["input"])
                 .unwrap_or_else(|e| panic!("row {i}: {e}"));
             assert_eq!(split.len(), declared.len(), "row {i}: inputs");
@@ -673,8 +701,10 @@ mod serving_parity {
                         }
                     }
                     InputValues::Int64(got) => {
-                        let want: Vec<i64> =
-                            want.iter().map(|x| x.as_i64().expect("an integer")).collect();
+                        let want: Vec<i64> = want
+                            .iter()
+                            .map(|x| x.as_i64().expect("an integer"))
+                            .collect();
                         assert_eq!(got, &want, "row {i} `{name}`");
                     }
                 }
@@ -686,22 +716,36 @@ mod serving_parity {
     fn a_card_without_inputs_takes_every_feature_as_one_float32_input() {
         let fixture: Value = serde_json::from_str(FIXTURE).expect("the parity fixture parses");
         let mut serving = fixture["serving"].clone();
-        serving.as_object_mut().expect("a serving object").remove("inputs");
+        serving
+            .as_object_mut()
+            .expect("a serving object")
+            .remove("inputs");
         let row = &fixture["rows"][0]["input"];
         let flat: Vec<f32> = featurize_serving(&serving, row)
             .expect("the row featurizes")
             .iter()
             .map(|x| *x as f32)
             .collect();
-        assert_eq!(featurize_inputs(&serving, row).unwrap(), vec![InputValues::Float32(flat)]);
+        assert_eq!(
+            featurize_inputs(&serving, row).unwrap(),
+            vec![InputValues::Float32(flat)]
+        );
     }
 
     #[test]
     fn logits_are_softmaxed_even_when_they_look_like_probabilities() {
-        let labels: Vec<String> = ["cheap", "mid", "frontier"].iter().map(|s| s.to_string()).collect();
+        let labels: Vec<String> = ["cheap", "mid", "frontier"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         let out = classify(&labels, &[0.2, 0.3, 0.5], true).unwrap();
         let p = out["probabilities"]["frontier"].as_f64().unwrap();
-        let total: f64 = out["probabilities"].as_object().unwrap().values().map(|v| v.as_f64().unwrap()).sum();
+        let total: f64 = out["probabilities"]
+            .as_object()
+            .unwrap()
+            .values()
+            .map(|v| v.as_f64().unwrap())
+            .sum();
         assert_eq!(out["label"], "frontier");
         assert!((p - 0.5).abs() > 0.1 && (total - 1.0).abs() < 1e-9);
     }
@@ -796,7 +840,9 @@ impl LoadedModel {
         let mut pinned = model;
         for (i, pin) in pins.iter().enumerate() {
             let fact = match pin.dtype {
-                Dtype::Float32 => InferenceFact::dt_shape(f32::datum_type(), input_shape(pin.width)),
+                Dtype::Float32 => {
+                    InferenceFact::dt_shape(f32::datum_type(), input_shape(pin.width))
+                }
                 Dtype::Int64 => InferenceFact::dt_shape(i64::datum_type(), input_shape(pin.width)),
             };
             pinned = pinned
@@ -807,9 +853,16 @@ impl LoadedModel {
             .into_optimized()
             .and_then(|m| m.into_runnable())
             .map_err(|e| {
-                format!("the ONNX graph does not take the card's {}: {e:#}", describe_pins(&pins))
+                format!(
+                    "the ONNX graph does not take the card's {}: {e:#}",
+                    describe_pins(&pins)
+                )
             })?;
-        Ok(Self { card, plan, inputs: pins })
+        Ok(Self {
+            card,
+            plan,
+            inputs: pins,
+        })
     }
 
     #[allow(dead_code)] // for holders of a loaded model alone; the registry reads its own records
@@ -1350,7 +1403,8 @@ mod tests {
     fn a_dynamic_batch_graph_loads_and_runs_one_row() {
         // Exported with dynamic_axes on the input and the output (trainer/tests/make_tiny_onnx.py):
         // the declared output is ["batch", 3], which the loader must not let fail the analysis.
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/tiny_dynamic.onnx");
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/tiny_dynamic.onnx");
         let onnx = std::fs::read(&path).expect("the tiny_dynamic.onnx fixture");
         let names = ["x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8", "x9"];
         let features: Vec<FeatureSpec> = names.iter().map(|n| numeric(n)).collect();
@@ -1475,7 +1529,8 @@ mod tests {
         let onnx = std::fs::read(dir.join("tiny_two_input.onnx"))
             .expect("crates/apid/testdata/tiny_two_input.onnx (the trainer writes it)");
         let fixture: Value = serde_json::from_slice(
-            &std::fs::read(dir.join("tiny_two_input.json")).expect("tiny_two_input.json, written with the .onnx"),
+            &std::fs::read(dir.join("tiny_two_input.json"))
+                .expect("tiny_two_input.json, written with the .onnx"),
         )
         .expect("tiny_two_input.json parses");
         let num = fixture["num"].as_array().expect("num rows");
@@ -1513,13 +1568,16 @@ mod tests {
     #[test]
     fn a_card_whose_inputs_do_not_match_the_graph_is_refused() {
         // linear3 takes one input, which the card does not name `num`.
-        let numeric_feature = |n: &str| json!({ "name": n, "kind": "numeric", "transform": "signlog" });
+        let numeric_feature =
+            |n: &str| json!({ "name": n, "kind": "numeric", "transform": "signlog" });
         let mut card = xyz_card(LINEAR3);
         card.serving = Some(json!({
             "features": [numeric_feature("x0"), numeric_feature("x1"), numeric_feature("x2")],
             "inputs": [{ "name": "num", "dtype": "float32", "features": ["x0", "x1", "x2"] }]
         }));
-        let err = LoadedModel::load(LINEAR3, card.clone()).err().expect("a mismatched input name must not load");
+        let err = LoadedModel::load(LINEAR3, card.clone())
+            .err()
+            .expect("a mismatched input name must not load");
         assert!(err.contains("serving.inputs names `num`"), "{err}");
 
         card.serving = Some(json!({
@@ -1529,14 +1587,21 @@ mod tests {
                 { "name": "b", "dtype": "float32", "features": ["x1", "x2"] }
             ]
         }));
-        let err = LoadedModel::load(LINEAR3, card.clone()).err().expect("two declared inputs must not load a one-input graph");
-        assert!(err.contains("takes 1 inputs") && err.contains("declares 2"), "{err}");
+        let err = LoadedModel::load(LINEAR3, card.clone())
+            .err()
+            .expect("two declared inputs must not load a one-input graph");
+        assert!(
+            err.contains("takes 1 inputs") && err.contains("declares 2"),
+            "{err}"
+        );
 
         card.serving = Some(json!({
             "features": [numeric_feature("x0"), numeric_feature("x1"), numeric_feature("x2")],
             "inputs": [{ "name": "x", "dtype": "int64", "features": ["x0", "x1", "x2"] }]
         }));
-        let err = LoadedModel::load(LINEAR3, card).err().expect("an int64 input takes hash features only");
+        let err = LoadedModel::load(LINEAR3, card)
+            .err()
+            .expect("an int64 input takes hash features only");
         assert!(err.contains("takes hash features"), "{err}");
     }
 

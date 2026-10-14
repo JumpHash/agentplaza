@@ -123,7 +123,9 @@ impl EngineWorld {
         }
 
         let owed = (now.as_micros() * u128::from(FIXED_HZ) / 1_000_000) as u64;
-        let due = owed.saturating_sub(self.fixed_done).min(MAX_FIXED_PER_FRAME);
+        let due = owed
+            .saturating_sub(self.fixed_done)
+            .min(MAX_FIXED_PER_FRAME);
         for _ in 0..due {
             self.world.resource_mut::<FixedTime>().tick = self.fixed_done;
             self.fixed.run(&mut self.world);
@@ -178,7 +180,9 @@ impl EngineWorld {
 
     /// Spawns a root entity with a transform.
     pub fn spawn_node(&mut self, transform: Transform) -> Entity {
-        self.world.spawn((transform, GlobalTransform::default())).id()
+        self.world
+            .spawn((transform, GlobalTransform::default()))
+            .id()
     }
 
     /// Spawns an entity under `parent`.
@@ -365,9 +369,26 @@ mod tests {
 
         // The mid node's scale applies to its child's offset: (1,2,0) + 2 * (0,0,3).
         let expected = Vec3::new(1.0, 2.0, 6.0);
-        let got = Vec3::from(engine.world().get::<GlobalTransform>(leaf).unwrap().0.translation);
-        assert!((got - expected).abs().max_element() < 1e-5, "leaf at {got:?}");
-        let mid_at = Vec3::from(engine.world().get::<GlobalTransform>(mid).unwrap().0.translation);
+        let got = Vec3::from(
+            engine
+                .world()
+                .get::<GlobalTransform>(leaf)
+                .unwrap()
+                .0
+                .translation,
+        );
+        assert!(
+            (got - expected).abs().max_element() < 1e-5,
+            "leaf at {got:?}"
+        );
+        let mid_at = Vec3::from(
+            engine
+                .world()
+                .get::<GlobalTransform>(mid)
+                .unwrap()
+                .0
+                .translation,
+        );
         assert!((mid_at - Vec3::new(1.0, 2.0, 0.0)).abs().max_element() < 1e-5);
     }
 

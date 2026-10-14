@@ -4,18 +4,21 @@
 
 use std::fmt;
 
-use serde_json::{json, Map, Value};
 use iced::widget::{checkbox, pick_list, row, text, text_input};
 use iced::{Element, Length};
+use serde_json::{Map, Value, json};
 
-use super::{ago, gate, node_name, now_ms, slot_kind_label, stack, ConsumerRef, Msg, Pending, State};
+use super::{
+    ConsumerRef, Msg, Pending, State, ago, gate, node_name, now_ms, slot_kind_label, stack,
+};
 use crate::console::ui;
 
 /// The hint under the key-file button: the hub writes the file on its own disk, and a file that can be read unseals.
 pub const KEYFILE_NOTE: &str = "A key file is written on this hub's disk. Anyone who can read it can unseal the vault without a passphrase.";
 
 /// The hint under the name field, as on the web console.
-pub const NAME_HINT: &str = "Use 2 to 64 characters: a capital letter, then capitals, digits or underscores.";
+pub const NAME_HINT: &str =
+    "Use 2 to 64 characters: a capital letter, then capitals, digits or underscores.";
 
 /// How the vault is unsealed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -118,7 +121,12 @@ pub enum SecretKind {
 }
 
 impl SecretKind {
-    pub const ALL: [SecretKind; 4] = [SecretKind::ApiKey, SecretKind::Token, SecretKind::Password, SecretKind::Generic];
+    pub const ALL: [SecretKind; 4] = [
+        SecretKind::ApiKey,
+        SecretKind::Token,
+        SecretKind::Password,
+        SecretKind::Generic,
+    ];
 
     pub fn wire(self) -> &'static str {
         match self {
@@ -179,7 +187,9 @@ pub fn valid_name(name: &str) -> bool {
     let len = name.chars().count();
     (2..=64).contains(&len)
         && name.starts_with(|c: char| c.is_ascii_uppercase())
-        && name.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
 }
 
 /// The scope object: `{kind: "plaza"}`, or the ticked nodes.
@@ -187,7 +197,11 @@ fn scope_json(mode: ScopeMode, nodes: &[(String, bool)]) -> Result<Value, String
     match mode {
         ScopeMode::Plaza => Ok(json!({ "kind": "plaza" })),
         ScopeMode::Nodes => {
-            let picked: Vec<&str> = nodes.iter().filter(|(_, on)| *on).map(|(id, _)| id.as_str()).collect();
+            let picked: Vec<&str> = nodes
+                .iter()
+                .filter(|(_, on)| *on)
+                .map(|(id, _)| id.as_str())
+                .collect();
             if picked.is_empty() {
                 Err("Pick at least one node, or choose Plaza.".into())
             } else {
@@ -209,7 +223,12 @@ pub fn create_body(form: &mut SecretForm) -> Result<Value, String> {
         return Err("Enter the value.".into());
     }
     let scope = scope_json(form.scope, &form.nodes)?;
-    let bindings: Vec<&str> = form.bindings.iter().filter(|(_, on)| *on).map(|(b, _)| b.as_str()).collect();
+    let bindings: Vec<&str> = form
+        .bindings
+        .iter()
+        .filter(|(_, on)| *on)
+        .map(|(b, _)| b.as_str())
+        .collect();
     Ok(json!({
         "name": name,
         "kind": form.kind.wire(),
@@ -255,7 +274,12 @@ pub struct EditForm {
 /// The same rules as the web's: a specific scope needs at least one node.
 pub fn edit_body(form: &EditForm) -> Result<Value, String> {
     let scope = scope_json(form.scope, &form.nodes)?;
-    let bindings: Vec<&str> = form.bindings.iter().filter(|(_, on)| *on).map(|(b, _)| b.as_str()).collect();
+    let bindings: Vec<&str> = form
+        .bindings
+        .iter()
+        .filter(|(_, on)| *on)
+        .map(|(b, _)| b.as_str())
+        .collect();
     Ok(json!({ "label": form.label.trim(), "scope": scope, "bindings": bindings }))
 }
 
@@ -321,7 +345,11 @@ pub(super) fn sealed_card<'a>(state: &'a State) -> Element<'a, Msg> {
         .into(),
     ];
     if method != UnsealMethod::KeyFile {
-        let placeholder = if method == UnsealMethod::Recovery { "Recovery code" } else { "Passphrase" };
+        let placeholder = if method == UnsealMethod::Recovery {
+            "Recovery code"
+        } else {
+            "Passphrase"
+        };
         items.push(
             text_input(placeholder, &state.unseal.secret)
                 .secure(true)
@@ -331,7 +359,12 @@ pub(super) fn sealed_card<'a>(state: &'a State) -> Element<'a, Msg> {
                 .into(),
         );
     }
-    items.push(ui::btn("Unseal", None, ui::Kind::Primary, gate(state.busy, Msg::Unseal)));
+    items.push(ui::btn(
+        "Unseal",
+        None,
+        ui::Kind::Primary,
+        gate(state.busy, Msg::Unseal),
+    ));
     ui::card("Sealed", stack(items))
 }
 
@@ -360,8 +393,15 @@ pub(super) fn pending_card<'a>(pending: &Pending, busy: bool) -> Element<'a, Msg
         ),
         Pending::Rollback { name, v, .. } => ("Roll back", format!("Roll {name} back to v{v}?"), "Roll back"),
     };
-    let danger = matches!(pending, Pending::RemoveSlot { .. } | Pending::RemoveEntry { .. });
-    let kind = if danger { ui::Kind::Danger } else { ui::Kind::Primary };
+    let danger = matches!(
+        pending,
+        Pending::RemoveSlot { .. } | Pending::RemoveEntry { .. }
+    );
+    let kind = if danger {
+        ui::Kind::Danger
+    } else {
+        ui::Kind::Primary
+    };
     ui::card(
         title,
         stack(vec![
@@ -395,7 +435,9 @@ pub(super) fn recovery_card<'a>(code: &str) -> Element<'a, Msg> {
 
 /// The key slots, each removable, then the passphrase form and the recovery and rekey actions.
 pub(super) fn slots_card<'a>(state: &'a State) -> Element<'a, Msg> {
-    let Some(status) = state.status.as_ref() else { return ui::card("Key slots", ui::loading()) };
+    let Some(status) = state.status.as_ref() else {
+        return ui::card("Key slots", ui::loading());
+    };
     let now = now_ms();
     let mut items: Vec<Element<'a, Msg>> = Vec::new();
     if status.slots.is_empty() {
@@ -407,13 +449,23 @@ pub(super) fn slots_card<'a>(state: &'a State) -> Element<'a, Msg> {
         }
         items.push(
             row(vec![
-                text(slot_kind_label(&slot.kind)).width(Length::FillPortion(3)).into(),
-                ui::faint(format!("added {}", ago(slot.created_ms, now))).width(Length::FillPortion(2)).into(),
+                text(slot_kind_label(&slot.kind))
+                    .width(Length::FillPortion(3))
+                    .into(),
+                ui::faint(format!("added {}", ago(slot.created_ms, now)))
+                    .width(Length::FillPortion(2))
+                    .into(),
                 ui::btn_sm(
                     "Remove",
                     None,
                     ui::Kind::Ghost,
-                    gate(state.busy, Msg::Ask(Pending::RemoveSlot { id: slot.id.clone(), kind: slot.kind.clone() })),
+                    gate(
+                        state.busy,
+                        Msg::Ask(Pending::RemoveSlot {
+                            id: slot.id.clone(),
+                            kind: slot.kind.clone(),
+                        }),
+                    ),
                 ),
             ])
             .spacing(12)
@@ -443,14 +495,34 @@ pub(super) fn slots_card<'a>(state: &'a State) -> Element<'a, Msg> {
     );
     let has_keyfile = status.slots.iter().any(|slot| slot.kind == "keyfile");
     let mut actions: Vec<Element<'a, Msg>> = vec![
-        ui::btn("Add passphrase", None, ui::Kind::Secondary, gate(state.busy, Msg::AddPassphrase)),
-        ui::btn("Make recovery code", None, ui::Kind::Secondary, gate(state.busy, Msg::MakeRecovery)),
-        ui::btn("Rekey", None, ui::Kind::Secondary, gate(state.busy, Msg::OpenRekey)),
+        ui::btn(
+            "Add passphrase",
+            None,
+            ui::Kind::Secondary,
+            gate(state.busy, Msg::AddPassphrase),
+        ),
+        ui::btn(
+            "Make recovery code",
+            None,
+            ui::Kind::Secondary,
+            gate(state.busy, Msg::MakeRecovery),
+        ),
+        ui::btn(
+            "Rekey",
+            None,
+            ui::Kind::Secondary,
+            gate(state.busy, Msg::OpenRekey),
+        ),
     ];
     // One key-file slot at most: the hub refuses a second, so the button is shown only without one.
     if !has_keyfile {
         items.push(ui::faint(KEYFILE_NOTE).into());
-        actions.push(ui::btn("Add key file", None, ui::Kind::Secondary, gate(state.busy, Msg::AddKeyfile)));
+        actions.push(ui::btn(
+            "Add key file",
+            None,
+            ui::Kind::Secondary,
+            gate(state.busy, Msg::AddKeyfile),
+        ));
     }
     items.push(row(actions).spacing(12).into());
     ui::card("Key slots", stack(items))
@@ -475,7 +547,12 @@ pub(super) fn rekey_card<'a>(fields: &'a [RekeyField], busy: bool) -> Element<'a
     items.push(
         row(vec![
             ui::btn("Cancel", None, ui::Kind::Ghost, Some(Msg::CloseRekey)),
-            ui::btn("Review rekey", None, ui::Kind::Primary, gate(busy, Msg::Ask(Pending::Rekey))),
+            ui::btn(
+                "Review rekey",
+                None,
+                ui::Kind::Primary,
+                gate(busy, Msg::Ask(Pending::Rekey)),
+            ),
         ])
         .spacing(12)
         .into(),
@@ -524,12 +601,22 @@ pub(super) fn create_card<'a>(state: &'a State, form: &'a SecretForm) -> Element
         items.push(ui::faint("Nothing asks for a secret yet. You can bind it later.").into());
     }
     for (i, (binding, on)) in form.bindings.iter().enumerate() {
-        items.push(checkbox(*on).label(binding_label(binding, &state.consumers)).on_toggle(move |v| Msg::CBinding(i, v)).into());
+        items.push(
+            checkbox(*on)
+                .label(binding_label(binding, &state.consumers))
+                .on_toggle(move |v| Msg::CBinding(i, v))
+                .into(),
+        );
     }
     items.push(
         row(vec![
             ui::btn("Cancel", None, ui::Kind::Ghost, Some(Msg::CloseCreate)),
-            ui::btn("Save secret", None, ui::Kind::Primary, gate(state.busy, Msg::CSubmit)),
+            ui::btn(
+                "Save secret",
+                None,
+                ui::Kind::Primary,
+                gate(state.busy, Msg::CSubmit),
+            ),
         ])
         .spacing(12)
         .into(),
@@ -541,17 +628,30 @@ pub(super) fn create_card<'a>(state: &'a State, form: &'a SecretForm) -> Element
 pub(super) fn edit_card<'a>(state: &'a State, form: &'a EditForm) -> Element<'a, Msg> {
     let mut items: Vec<Element<'a, Msg>> = vec![
         ui::faint("The value does not change here. Rotate it to set a new one.").into(),
-        text_input("Label (optional)", &form.label).on_input(Msg::EditLabel).padding(8).into(),
+        text_input("Label (optional)", &form.label)
+            .on_input(Msg::EditLabel)
+            .padding(8)
+            .into(),
         row(vec![
             ui::label("Scope").into(),
-            pick_list(vec![ScopeMode::Plaza, ScopeMode::Nodes], Some(form.scope), Msg::EditScope).into(),
+            pick_list(
+                vec![ScopeMode::Plaza, ScopeMode::Nodes],
+                Some(form.scope),
+                Msg::EditScope,
+            )
+            .into(),
         ])
         .spacing(12)
         .into(),
     ];
     if form.scope == ScopeMode::Nodes {
         for (i, (id, on)) in form.nodes.iter().enumerate() {
-            items.push(checkbox(*on).label(node_name(&state.nodes, id)).on_toggle(move |v| Msg::EditNode(i, v)).into());
+            items.push(
+                checkbox(*on)
+                    .label(node_name(&state.nodes, id))
+                    .on_toggle(move |v| Msg::EditNode(i, v))
+                    .into(),
+            );
         }
     }
     items.push(ui::label("Bindings").into());
@@ -559,12 +659,22 @@ pub(super) fn edit_card<'a>(state: &'a State, form: &'a EditForm) -> Element<'a,
         items.push(ui::faint("Nothing asks for a secret yet.").into());
     }
     for (i, (binding, on)) in form.bindings.iter().enumerate() {
-        items.push(checkbox(*on).label(binding_label(binding, &state.consumers)).on_toggle(move |v| Msg::EditBinding(i, v)).into());
+        items.push(
+            checkbox(*on)
+                .label(binding_label(binding, &state.consumers))
+                .on_toggle(move |v| Msg::EditBinding(i, v))
+                .into(),
+        );
     }
     items.push(
         row(vec![
             ui::btn("Cancel", None, ui::Kind::Ghost, Some(Msg::CloseEdit)),
-            ui::btn("Save changes", None, ui::Kind::Primary, gate(state.busy, Msg::EditSubmit)),
+            ui::btn(
+                "Save changes",
+                None,
+                ui::Kind::Primary,
+                gate(state.busy, Msg::EditSubmit),
+            ),
         ])
         .spacing(12)
         .into(),
@@ -577,7 +687,8 @@ pub(super) fn rotate_card<'a>(rotate: &'a Rotate, busy: bool) -> Element<'a, Msg
     ui::card(
         &format!("Rotate {}", rotate.name),
         stack(vec![
-            ui::faint("Type the new value. It becomes the next version and is cleared on save.").into(),
+            ui::faint("Type the new value. It becomes the next version and is cleared on save.")
+                .into(),
             text_input("New value", &rotate.value)
                 .secure(true)
                 .on_input(Msg::RotateValue)
@@ -586,7 +697,12 @@ pub(super) fn rotate_card<'a>(rotate: &'a Rotate, busy: bool) -> Element<'a, Msg
                 .into(),
             row(vec![
                 ui::btn("Cancel", None, ui::Kind::Ghost, Some(Msg::CloseRotate)),
-                ui::btn("Rotate value", None, ui::Kind::Primary, gate(busy, Msg::RotateSubmit)),
+                ui::btn(
+                    "Rotate value",
+                    None,
+                    ui::Kind::Primary,
+                    gate(busy, Msg::RotateSubmit),
+                ),
             ])
             .spacing(12)
             .into(),
@@ -601,37 +717,63 @@ mod tests {
     #[test]
     fn vault_unseal_bodies_send_only_the_chosen_secret() {
         let mut pass = "hunter2".to_string();
-        assert_eq!(unseal_body(UnsealMethod::Passphrase, &mut pass).unwrap(), json!({ "passphrase": "hunter2" }));
+        assert_eq!(
+            unseal_body(UnsealMethod::Passphrase, &mut pass).unwrap(),
+            json!({ "passphrase": "hunter2" })
+        );
         assert!(pass.is_empty());
         let mut code = "  ABCD-EF  ".to_string();
-        assert_eq!(unseal_body(UnsealMethod::Recovery, &mut code).unwrap(), json!({ "recovery_code": "ABCD-EF" }));
+        assert_eq!(
+            unseal_body(UnsealMethod::Recovery, &mut code).unwrap(),
+            json!({ "recovery_code": "ABCD-EF" })
+        );
         let mut none = String::new();
-        assert_eq!(unseal_body(UnsealMethod::KeyFile, &mut none).unwrap(), json!({}));
+        assert_eq!(
+            unseal_body(UnsealMethod::KeyFile, &mut none).unwrap(),
+            json!({})
+        );
         assert!(unseal_body(UnsealMethod::Passphrase, &mut none).is_err());
     }
 
     #[test]
     fn vault_passphrase_slot_needs_a_match_and_clears_both_fields() {
-        let mut f = PassForm { pass: "a-long-one".into(), again: "a-long-onE".into() };
+        let mut f = PassForm {
+            pass: "a-long-one".into(),
+            again: "a-long-onE".into(),
+        };
         assert!(add_passphrase_body(&mut f).is_err());
         assert!(f.pass.is_empty() && f.again.is_empty());
         f.pass = "same".into();
         f.again = "same".into();
-        assert_eq!(add_passphrase_body(&mut f).unwrap(), json!({ "kind": "passphrase", "passphrase": "same" }));
+        assert_eq!(
+            add_passphrase_body(&mut f).unwrap(),
+            json!({ "kind": "passphrase", "passphrase": "same" })
+        );
         assert!(f.pass.is_empty() && f.again.is_empty());
     }
 
     #[test]
     fn vault_rekey_sends_every_slot_or_nothing() {
         let mut fields = vec![
-            RekeyField { slot: "s1".into(), kind: "passphrase".into(), secret: "p".into() },
-            RekeyField { slot: "s2".into(), kind: "recovery".into(), secret: String::new() },
+            RekeyField {
+                slot: "s1".into(),
+                kind: "passphrase".into(),
+                secret: "p".into(),
+            },
+            RekeyField {
+                slot: "s2".into(),
+                kind: "recovery".into(),
+                secret: String::new(),
+            },
         ];
         assert!(rekey_body(&mut fields).is_err());
         assert!(fields.iter().all(|f| f.secret.is_empty()));
         fields[0].secret = "p".into();
         fields[1].secret = "r".into();
-        assert_eq!(rekey_body(&mut fields).unwrap(), json!({ "secrets": { "s1": "p", "s2": "r" } }));
+        assert_eq!(
+            rekey_body(&mut fields).unwrap(),
+            json!({ "secrets": { "s1": "p", "s2": "r" } })
+        );
         assert!(fields.iter().all(|f| f.secret.is_empty()));
     }
 
@@ -658,12 +800,19 @@ mod tests {
                 "bindings": ["mcp:github"],
             })
         );
-        assert!(f.value.is_empty(), "the value must leave the form on submit");
+        assert!(
+            f.value.is_empty(),
+            "the value must leave the form on submit"
+        );
     }
 
     #[test]
     fn vault_create_body_clears_the_value_even_when_refused() {
-        let mut short = SecretForm { name: "X".into(), value: "secret-value".into(), ..Default::default() };
+        let mut short = SecretForm {
+            name: "X".into(),
+            value: "secret-value".into(),
+            ..Default::default()
+        };
         assert!(create_body(&mut short).is_err());
         assert!(short.value.is_empty());
         let mut unscoped = SecretForm {
@@ -680,8 +829,16 @@ mod tests {
     #[test]
     fn vault_name_rule_and_paths() {
         assert!(valid_name("AB") && valid_name("API_KEY_2"));
-        assert!(!valid_name("A") && !valid_name("api_key") && !valid_name("1KEY") && !valid_name(&"A".repeat(65)));
-        assert_eq!(secret_path("id/1", "/test"), "/v1/vault/secrets/id%2F1/test");
+        assert!(
+            !valid_name("A")
+                && !valid_name("api_key")
+                && !valid_name("1KEY")
+                && !valid_name(&"A".repeat(65))
+        );
+        assert_eq!(
+            secret_path("id/1", "/test"),
+            "/v1/vault/secrets/id%2F1/test"
+        );
         assert_eq!(slot_path("s-1"), "/v1/vault/slots/s-1");
     }
 
@@ -704,13 +861,23 @@ mod tests {
             })
         );
         form.scope = ScopeMode::Plaza;
-        assert_eq!(edit_body(&form).unwrap()["scope"], json!({ "kind": "plaza" }));
+        assert_eq!(
+            edit_body(&form).unwrap()["scope"],
+            json!({ "kind": "plaza" })
+        );
     }
 
     #[test]
     fn vault_edit_body_refuses_a_specific_scope_with_no_node() {
-        let form = EditForm { scope: ScopeMode::Nodes, nodes: vec![("n0".into(), false)], ..Default::default() };
-        assert_eq!(edit_body(&form).unwrap_err(), "Pick at least one node, or choose Plaza.");
+        let form = EditForm {
+            scope: ScopeMode::Nodes,
+            nodes: vec![("n0".into(), false)],
+            ..Default::default()
+        };
+        assert_eq!(
+            edit_body(&form).unwrap_err(),
+            "Pick at least one node, or choose Plaza."
+        );
     }
 
     #[test]

@@ -263,7 +263,9 @@ fn system_one_body(model: &str, req: &DecisionRequest) -> Value {
 /// levels as a `criteria` list of labels.
 fn system_one_question(q: &Question) -> Value {
     match q {
-        Question::Predicate { instructions, .. } => json!({"type": "noul", "instructions": instructions}),
+        Question::Predicate { instructions, .. } => {
+            json!({"type": "noul", "instructions": instructions})
+        }
         Question::Choice {
             instructions,
             choices,

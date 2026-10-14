@@ -63,7 +63,8 @@ impl Panel {
 pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     let area = match &app.desk {
         Some(panel) => {
-            let [main, takeover] = Layout::vertical([Constraint::Min(0), Constraint::Length(PANEL_ROWS)]).areas(area);
+            let [main, takeover] =
+                Layout::vertical([Constraint::Min(0), Constraint::Length(PANEL_ROWS)]).areas(area);
             takeover_log(frame, takeover, app, panel);
             main
         }
@@ -79,12 +80,26 @@ fn table(frame: &mut Frame, area: Rect, app: &App) {
     let all = app.array("/v1/stations");
     let block = Block::bordered().title(format!(" workstations · {} ", all.len()));
     if all.is_empty() {
-        let empty = Line::from(Span::styled("no workstations joined yet", Style::new().fg(palette.muted)));
+        let empty = Line::from(Span::styled(
+            "no workstations joined yet",
+            Style::new().fg(palette.muted),
+        ));
         frame.render_widget(Paragraph::new(empty).block(block), area);
         return;
     }
-    let head = Row::new(["ID", "NAME", "STATUS", "OS", "ACCOUNT", "LEASES", "LAST SEEN"].map(String::from))
-        .style(Style::new().fg(palette.muted).add_modifier(Modifier::BOLD));
+    let head = Row::new(
+        [
+            "ID",
+            "NAME",
+            "STATUS",
+            "OS",
+            "ACCOUNT",
+            "LEASES",
+            "LAST SEEN",
+        ]
+        .map(String::from),
+    )
+    .style(Style::new().fg(palette.muted).add_modifier(Modifier::BOLD));
     let body = all.iter().enumerate().map(|(i, station)| {
         let row = Row::new(stations::row(station));
         if i == app.selected {
@@ -107,9 +122,13 @@ fn table(frame: &mut Frame, area: Rect, app: &App) {
 
 fn details(frame: &mut Frame, area: Rect, app: &App) {
     let palette = app.palette;
-    let [facts, side] = Layout::horizontal([Constraint::Percentage(55), Constraint::Percentage(45)]).areas(area);
+    let [facts, side] =
+        Layout::horizontal([Constraint::Percentage(55), Constraint::Percentage(45)]).areas(area);
     let Some(station) = app.array("/v1/stations").get(app.selected) else {
-        frame.render_widget(Paragraph::new("").block(Block::bordered().title(" workstation ")), area);
+        frame.render_widget(
+            Paragraph::new("").block(Block::bordered().title(" workstation ")),
+            area,
+        );
         return;
     };
 
@@ -122,18 +141,31 @@ fn details(frame: &mut Frame, area: Rect, app: &App) {
         lines.push(Line::raw(""));
     }
     lines.extend(pairs(&stations::station_fields(station), palette.muted));
-    frame.render_widget(Paragraph::new(lines).block(Block::bordered().title(" workstation ")), facts);
+    frame.render_widget(
+        Paragraph::new(lines).block(Block::bordered().title(" workstation ")),
+        facts,
+    );
 
-    let [settings_area, sync_area] = Layout::vertical([Constraint::Percentage(45), Constraint::Percentage(55)]).areas(side);
-    let mut settings = pairs(&stations::settings_fields(&station["settings"]), palette.muted);
+    let [settings_area, sync_area] =
+        Layout::vertical([Constraint::Percentage(45), Constraint::Percentage(55)]).areas(side);
+    let mut settings = pairs(
+        &stations::settings_fields(&station["settings"]),
+        palette.muted,
+    );
     settings.push(Line::raw(""));
-    settings.push(Line::from(Span::styled("leases", Style::new().fg(palette.muted))));
+    settings.push(Line::from(Span::styled(
+        "leases",
+        Style::new().fg(palette.muted),
+    )));
     let leases = stations::leases(station);
     if leases.is_empty() {
         settings.push(Line::raw("  none"));
     }
     for lease in leases {
-        settings.push(Line::raw(format!("  {}", stations::lease_row(lease).join("  "))));
+        settings.push(Line::raw(format!(
+            "  {}",
+            stations::lease_row(lease).join("  ")
+        )));
     }
     frame.render_widget(
         Paragraph::new(settings).block(Block::bordered().title(" settings and leases ")),
@@ -147,30 +179,52 @@ fn takeover_log(frame: &mut Frame, area: Rect, app: &App, panel: &Panel) {
     let palette = app.palette;
     let shown = (PANEL_ROWS as usize).saturating_sub(2);
     let lines: Vec<Line> = if panel.log.is_empty() {
-        vec![Line::from(Span::styled("taking the session", Style::new().fg(palette.muted)))]
+        vec![Line::from(Span::styled(
+            "taking the session",
+            Style::new().fg(palette.muted),
+        ))]
     } else {
         let from = panel.log.len().saturating_sub(shown);
-        panel.log[from..].iter().map(|text| Line::raw(text.clone())).collect()
+        panel.log[from..]
+            .iter()
+            .map(|text| Line::raw(text.clone()))
+            .collect()
     };
     let title = format!(" takeover · {} ", panel.station);
-    frame.render_widget(Paragraph::new(lines).block(Block::bordered().title(title)), area);
+    frame.render_widget(
+        Paragraph::new(lines).block(Block::bordered().title(title)),
+        area,
+    );
 }
 
 /// The work folder's sync (its paused banner, its state and its conflicts) and the recent recordings.
 fn sync_and_recordings(frame: &mut Frame, area: Rect, app: &App, station: &Value) {
     let palette = app.palette;
-    let id = station.get("id").and_then(Value::as_str).unwrap_or_default();
+    let id = station
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
     let mut lines: Vec<Line> = Vec::new();
     match app.station_sync.get(id) {
         Some(state) => {
             if let Some(banner) = files::paused_banner(state) {
-                lines.push(Line::from(Span::styled(banner, Style::new().fg(palette.accent).add_modifier(Modifier::BOLD))));
+                lines.push(Line::from(Span::styled(
+                    banner,
+                    Style::new().fg(palette.accent).add_modifier(Modifier::BOLD),
+                )));
             }
             lines.extend(pairs(&files::sync_fields(state), palette.muted));
-            let conflicts = state.get("conflicts").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]);
+            let conflicts = state
+                .get("conflicts")
+                .and_then(Value::as_array)
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
             for conflict in conflicts.iter().take(CONFLICTS_SHOWN) {
                 let cells = files::conflict_row(conflict);
-                lines.push(Line::raw(format!("  conflict  {}  (copy of {})", cells[0], cells[1])));
+                lines.push(Line::raw(format!(
+                    "  conflict  {}  (copy of {})",
+                    cells[0], cells[1]
+                )));
             }
             if conflicts.len() > CONFLICTS_SHOWN {
                 lines.push(Line::from(Span::styled(
@@ -179,16 +233,30 @@ fn sync_and_recordings(frame: &mut Frame, area: Rect, app: &App, station: &Value
                 )));
             }
         }
-        None => lines.push(Line::from(Span::styled("sync: reading", Style::new().fg(palette.muted)))),
+        None => lines.push(Line::from(Span::styled(
+            "sync: reading",
+            Style::new().fg(palette.muted),
+        ))),
     }
     lines.push(Line::raw(""));
-    lines.push(Line::from(Span::styled("recent recordings", Style::new().fg(palette.muted))));
-    let recent = app.station_recent.get(id).and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]);
+    lines.push(Line::from(Span::styled(
+        "recent recordings",
+        Style::new().fg(palette.muted),
+    )));
+    let recent = app
+        .station_recent
+        .get(id)
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
     if recent.is_empty() {
         lines.push(Line::raw("  none"));
     }
     for recording in recent.iter().take(super::RECENT_RECORDINGS as usize) {
-        lines.push(Line::raw(format!("  {}", recordings::recording_brief(recording))));
+        lines.push(Line::raw(format!(
+            "  {}",
+            recordings::recording_brief(recording)
+        )));
     }
     frame.render_widget(
         Paragraph::new(lines).block(Block::bordered().title(" sync and recordings ")),
@@ -198,7 +266,11 @@ fn sync_and_recordings(frame: &mut Frame, area: Rect, app: &App, station: &Value
 
 /// `label  value` lines, the labels in the muted colour.
 fn pairs(pairs: &[(&'static str, String)], muted: Color) -> Vec<Line<'static>> {
-    let width = pairs.iter().map(|(label, _)| label.len()).max().unwrap_or(0);
+    let width = pairs
+        .iter()
+        .map(|(label, _)| label.len())
+        .max()
+        .unwrap_or(0);
     pairs
         .iter()
         .map(|(label, value)| {
@@ -218,21 +290,35 @@ mod tests {
     #[test]
     fn a_pair_line_has_its_label_then_its_value() {
         let lines = pairs(
-            &[("takeover", "agent-waits".to_string()), ("record fps", "2".to_string())],
+            &[
+                ("takeover", "agent-waits".to_string()),
+                ("record fps", "2".to_string()),
+            ],
             Color::Gray,
         );
         assert_eq!(lines.len(), 2);
-        let text: String = lines[1].spans.iter().map(|span| span.content.as_ref()).collect();
-        assert_eq!(text, "record fps  2", "labels right-align to the longest label");
+        let text: String = lines[1]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert_eq!(
+            text, "record fps  2",
+            "labels right-align to the longest label"
+        );
     }
 
     #[test]
     fn the_detail_names_the_owner_account_before_the_facts() {
-        let station = json!({ "id": "w1", "facts": { "account": { "mode": "owner", "name": "irfan" } } });
+        let station =
+            json!({ "id": "w1", "facts": { "account": { "mode": "owner", "name": "irfan" } } });
         assert_eq!(
             stations::account_warning(&station).as_deref(),
             Some("warning: agents act as irfan (the owner's own account)")
         );
-        assert_eq!(stations::station_fields(&station)[0], ("id", "w1".to_string()));
+        assert_eq!(
+            stations::station_fields(&station)[0],
+            ("id", "w1".to_string())
+        );
     }
 }

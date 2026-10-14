@@ -26,7 +26,12 @@ pub fn diff(old: &str, new: &str) -> Vec<DiffLine> {
     let a: Vec<&str> = old.lines().collect();
     let b: Vec<&str> = new.lines().collect();
     let prefix = a.iter().zip(&b).take_while(|(x, y)| x == y).count();
-    let suffix = a[prefix..].iter().rev().zip(b[prefix..].iter().rev()).take_while(|(x, y)| x == y).count();
+    let suffix = a[prefix..]
+        .iter()
+        .rev()
+        .zip(b[prefix..].iter().rev())
+        .take_while(|(x, y)| x == y)
+        .count();
     let (am, bm) = (&a[prefix..a.len() - suffix], &b[prefix..b.len() - suffix]);
 
     // lcs[i][j]: the LCS length of am[i..] and bm[j..].
@@ -34,13 +39,22 @@ pub fn diff(old: &str, new: &str) -> Vec<DiffLine> {
     let mut lcs = vec![vec![0u32; m + 1]; n + 1];
     for i in (0..n).rev() {
         for j in (0..m).rev() {
-            lcs[i][j] = if am[i] == bm[j] { lcs[i + 1][j + 1] + 1 } else { lcs[i + 1][j].max(lcs[i][j + 1]) };
+            lcs[i][j] = if am[i] == bm[j] {
+                lcs[i + 1][j + 1] + 1
+            } else {
+                lcs[i + 1][j].max(lcs[i][j + 1])
+            };
         }
     }
 
     let mut out = Vec::with_capacity(a.len().max(b.len()));
     let same = |out: &mut Vec<DiffLine>, i: usize, j: usize, text: &str| {
-        out.push(DiffLine { op: Op::Same, old: Some(i as u32 + 1), new: Some(j as u32 + 1), text: text.to_string() });
+        out.push(DiffLine {
+            op: Op::Same,
+            old: Some(i as u32 + 1),
+            new: Some(j as u32 + 1),
+            text: text.to_string(),
+        });
     };
     for (k, line) in a[..prefix].iter().enumerate() {
         same(&mut out, k, k, line);
@@ -52,10 +66,20 @@ pub fn diff(old: &str, new: &str) -> Vec<DiffLine> {
             i += 1;
             j += 1;
         } else if j < m && (i == n || lcs[i][j + 1] >= lcs[i + 1][j]) {
-            out.push(DiffLine { op: Op::Add, old: None, new: Some((prefix + j) as u32 + 1), text: bm[j].to_string() });
+            out.push(DiffLine {
+                op: Op::Add,
+                old: None,
+                new: Some((prefix + j) as u32 + 1),
+                text: bm[j].to_string(),
+            });
             j += 1;
         } else {
-            out.push(DiffLine { op: Op::Del, old: Some((prefix + i) as u32 + 1), new: None, text: am[i].to_string() });
+            out.push(DiffLine {
+                op: Op::Del,
+                old: Some((prefix + i) as u32 + 1),
+                new: None,
+                text: am[i].to_string(),
+            });
             i += 1;
         }
     }
@@ -71,7 +95,13 @@ mod tests {
     use super::*;
 
     fn ops(d: &[DiffLine]) -> String {
-        d.iter().map(|l| match l.op { Op::Same => '=', Op::Add => '+', Op::Del => '-' }).collect()
+        d.iter()
+            .map(|l| match l.op {
+                Op::Same => '=',
+                Op::Add => '+',
+                Op::Del => '-',
+            })
+            .collect()
     }
 
     #[test]
@@ -85,8 +115,24 @@ mod tests {
     fn an_edit_in_the_middle() {
         let d = diff("a\nb\nc\nd", "a\nB\nc\nd\ne");
         assert_eq!(ops(&d), "=+-==+");
-        assert_eq!(d[1], DiffLine { op: Op::Add, old: None, new: Some(2), text: "B".into() });
-        assert_eq!(d[2], DiffLine { op: Op::Del, old: Some(2), new: None, text: "b".into() });
+        assert_eq!(
+            d[1],
+            DiffLine {
+                op: Op::Add,
+                old: None,
+                new: Some(2),
+                text: "B".into()
+            }
+        );
+        assert_eq!(
+            d[2],
+            DiffLine {
+                op: Op::Del,
+                old: Some(2),
+                new: None,
+                text: "b".into()
+            }
+        );
         assert_eq!((d[4].old, d[4].new), (Some(4), Some(4)));
         assert_eq!(d[5].new, Some(5));
     }

@@ -18,11 +18,11 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use apz_http::{Response, Router};
 use apz_proto::chat::Usage;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-use crate::agents::{Agent, Roster, Status};
 use super::text::{self, TextContract, TextModel};
+use crate::agents::{Agent, Roster, Status};
 use crate::inference::{FeatureSpec, LoadedModel, ModelCard, Registry as Loaded, Schema};
 use crate::looks::{Looks, ORACLE};
 use crate::state::App;
@@ -158,7 +158,9 @@ impl Models {
         if let Ok(entries) = fs::read_dir(&dir) {
             for entry in entries.flatten() {
                 let path = entry.path().join("card.json");
-                match fs::read_to_string(&path).map(|text| serde_json::from_str::<ModelRecord>(&text)) {
+                match fs::read_to_string(&path)
+                    .map(|text| serde_json::from_str::<ModelRecord>(&text))
+                {
                     Ok(Ok(record)) => {
                         records.insert(record.card.id.clone(), record);
                     }
@@ -185,7 +187,8 @@ impl Models {
     /// new generation also sees the change.
     fn records_mut(&self) -> MutexGuard<'_, BTreeMap<String, ModelRecord>> {
         let guard = self.records();
-        self.generation.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.generation
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         guard
     }
 
@@ -224,9 +227,17 @@ impl Models {
                 continue;
             }
             if let Some(contract) = text_contract(&record) {
-                match record.source.as_ref().map(|s| TextModel::load(Path::new(&s.path), &contract)) {
+                match record
+                    .source
+                    .as_ref()
+                    .map(|s| TextModel::load(Path::new(&s.path), &contract))
+                {
                     Some(Ok(model)) => self.text_insert(&record.card.id, model),
-                    other => eprintln!("foundry: text model {} does not load: {:?}", record.card.id, other.and_then(|r| r.err())),
+                    other => eprintln!(
+                        "foundry: text model {} does not load: {:?}",
+                        record.card.id,
+                        other.and_then(|r| r.err())
+                    ),
                 }
                 continue;
             }
@@ -262,7 +273,11 @@ impl Models {
 
     /// Registers the model in a job directory (`model.onnx` and `model_card.json`) as `trained`.
     /// The jobs agent calls this with the finished job's directory and its id.
-    pub fn register_from_job(&self, job_dir: &Path, source_job: Option<&str>) -> Result<ModelRecord, String> {
+    pub fn register_from_job(
+        &self,
+        job_dir: &Path,
+        source_job: Option<&str>,
+    ) -> Result<ModelRecord, String> {
         self.import_dir(job_dir, source_job)
     }
 
@@ -274,9 +289,20 @@ impl Models {
     /// Registers a Hugging Face download (`hf_import.rs`). A directory with a serving contract and an
     /// ONNX graph registers like `import` (state `trained`) and gets the source attached. Anything else
     /// registers as `imported`: listed, never compiled, never promoted. Idempotent per repo and revision.
-    pub fn register_hf(&self, dir: &Path, source: Source, id: &str, size_bytes: u64) -> Result<ModelRecord, String> {
-        let same = |s: &Source| s.hf == source.hf && s.revision == source.revision && s.as_ == source.as_;
-        if let Some(existing) = self.list().into_iter().find(|r| r.source.as_ref().is_some_and(same)) {
+    pub fn register_hf(
+        &self,
+        dir: &Path,
+        source: Source,
+        id: &str,
+        size_bytes: u64,
+    ) -> Result<ModelRecord, String> {
+        let same =
+            |s: &Source| s.hf == source.hf && s.revision == source.revision && s.as_ == source.as_;
+        if let Some(existing) = self
+            .list()
+            .into_iter()
+            .find(|r| r.source.as_ref().is_some_and(same))
+        {
             return Ok(existing);
         }
         let mut source = source;
@@ -301,7 +327,11 @@ impl Models {
         if records.contains_key(id) {
             return Err(format!("a model with id {id} is already registered"));
         }
-        let empty = Schema { kind: "object".into(), properties: BTreeMap::new(), required: Vec::new() };
+        let empty = Schema {
+            kind: "object".into(),
+            properties: BTreeMap::new(),
+            required: Vec::new(),
+        };
         let card = ModelCard {
             id: id.to_string(),
             name: source.hf.clone(),
@@ -345,7 +375,14 @@ impl Models {
 
     /// Registers a text model (text.rs): derives its contract from the download, loads it, writes the contract
     /// into the download's model card and records the model as trained.
-    fn register_text(&self, dir: &Path, source: &Source, task: &str, id: &str, size_bytes: u64) -> Result<ModelRecord, String> {
+    fn register_text(
+        &self,
+        dir: &Path,
+        source: &Source,
+        task: &str,
+        id: &str,
+        size_bytes: u64,
+    ) -> Result<ModelRecord, String> {
         let graph = text::graph_in(dir)?;
         let contract = text::derive(dir, &graph, task)?;
         let model = TextModel::load(dir, &contract)?;
@@ -397,9 +434,15 @@ impl Models {
         let mut records = self.records_mut();
         let current = records.get(id).cloned().ok_or_else(|| no_model(id))?;
         if current.state != State::Imported {
-            return Err(format!("{id} is {}: only imported models are re-derived", current.state.name()));
+            return Err(format!(
+                "{id} is {}: only imported models are re-derived",
+                current.state.name()
+            ));
         }
-        let mut source = current.source.clone().ok_or_else(|| format!("{id} has no Hugging Face source"))?;
+        let mut source = current
+            .source
+            .clone()
+            .ok_or_else(|| format!("{id} has no Hugging Face source"))?;
         if task.is_some() {
             source.task = task;
         }
@@ -420,29 +463,41 @@ impl Models {
     }
 
     fn text_insert(&self, id: &str, model: TextModel) {
-        self.text.lock().unwrap_or_else(PoisonError::into_inner).insert(id.to_string(), Arc::new(model));
+        self.text
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(id.to_string(), Arc::new(model));
     }
 
     /// The text model for `id`, when it is one.
     pub fn text(&self, id: &str) -> Option<Arc<TextModel>> {
-        self.text.lock().unwrap_or_else(PoisonError::into_inner).get(id).cloned()
+        self.text
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(id)
+            .cloned()
     }
 
     fn import_dir(&self, dir: &Path, source_job: Option<&str>) -> Result<ModelRecord, String> {
         let text = fs::read_to_string(dir.join("model_card.json"))
             .map_err(|e| format!("reading model_card.json: {e}"))?;
-        let trainer: Value = serde_json::from_str(&text).map_err(|e| format!("model_card.json: {e}"))?;
-        let serving_value = trainer
-            .get("serving")
-            .ok_or("the card has no serving contract (serving: input, output, features, allowed_roles)")?;
+        let trainer: Value =
+            serde_json::from_str(&text).map_err(|e| format!("model_card.json: {e}"))?;
+        let serving_value = trainer.get("serving").ok_or(
+            "the card has no serving contract (serving: input, output, features, allowed_roles)",
+        )?;
         let serving: Serving =
             serde_json::from_value(serving_value.clone()).map_err(|e| format!("serving: {e}"))?;
         let onnx_path = onnx_path(dir);
-        let onnx = fs::read(&onnx_path).map_err(|e| format!("reading {}: {e}", onnx_path.display()))?;
+        let onnx =
+            fs::read(&onnx_path).map_err(|e| format!("reading {}: {e}", onnx_path.display()))?;
         check_serving(&serving)?;
 
         let sha = sha256_hex(&onnx);
-        let recipe = trainer.get("recipe").and_then(Value::as_str).unwrap_or("model");
+        let recipe = trainer
+            .get("recipe")
+            .and_then(Value::as_str)
+            .unwrap_or("model");
         let id = format!("{}-{}", sanitize(recipe), &sha[..8]);
         if !valid_id(&id) {
             return Err(format!("the model id {id:?} is not a valid name"));
@@ -464,12 +519,23 @@ impl Models {
         let record = ModelRecord {
             card: card.clone(),
             state: State::Trained,
-            source_job: source_job.map(str::to_string).or_else(|| trainer.get("job_id").and_then(Value::as_str).map(str::to_string)),
+            source_job: source_job.map(str::to_string).or_else(|| {
+                trainer
+                    .get("job_id")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            }),
             agent_cid: None,
             provenance: trainer.get("data").cloned().unwrap_or(Value::Null),
-            calibration: trainer.get("calibration").cloned().unwrap_or_else(|| json!({})),
+            calibration: trainer
+                .get("calibration")
+                .cloned()
+                .unwrap_or_else(|| json!({})),
             size_bytes: onnx.len() as u64,
-            parameters: trainer.get("parameters").and_then(Value::as_u64).unwrap_or(0),
+            parameters: trainer
+                .get("parameters")
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
             shadow: ShadowStats::default(),
             created_ms: card.created_ms,
             state_changed_ms: card.created_ms,
@@ -480,7 +546,8 @@ impl Models {
             return Err(format!("a model with id {id} is already registered"));
         }
         // Validate before anything is written: the bytes must compile for this card.
-        let compiled = LoadedModel::load(&onnx, card).map_err(|e| format!("validating the model: {e}"))?;
+        let compiled =
+            LoadedModel::load(&onnx, card).map_err(|e| format!("validating the model: {e}"))?;
         let target = self.model_dir(&id);
         fs::create_dir_all(&target).map_err(|e| format!("creating {}: {e}", target.display()))?;
         write_atomic(&target.join("model.onnx"), &onnx)?;
@@ -500,7 +567,8 @@ impl Models {
     /// Replaces the records with a stored snapshot; one that does not parse changes nothing. Graphs
     /// are not compiled here: startup calls [`Models::revive`] after the restore, as it always did.
     pub fn restore(&self, json: &str) -> Result<(), String> {
-        let restored: BTreeMap<String, ModelRecord> = serde_json::from_str(json).map_err(|e| e.to_string())?;
+        let restored: BTreeMap<String, ModelRecord> =
+            serde_json::from_str(json).map_err(|e| e.to_string())?;
         // The card files follow the restored records, so the list also survives a restart without Postgres.
         for record in restored.values() {
             save(&self.model_dir(&record.card.id), record)?;
@@ -525,7 +593,10 @@ impl Models {
         let mut records = self.records_mut();
         let current = records.get(id).ok_or_else(|| no_model(id))?;
         if current.state != State::Shadow {
-            return Err(format!("{id} is {}: a model is promoted from shadow", current.state.name()));
+            return Err(format!(
+                "{id} is {}: a model is promoted from shadow",
+                current.state.name()
+            ));
         }
         let cid = free_cid(roster, &records)?;
         let now = apz_plaza::now_ms();
@@ -564,7 +635,11 @@ impl Models {
         let mut records = self.records_mut();
         let current = records.get(id).ok_or_else(|| no_model(id))?;
         if !from.contains(&current.state) {
-            return Err(format!("{id} is {}: this move needs it to be {}", current.state.name(), from[0].name()));
+            return Err(format!(
+                "{id} is {}: this move needs it to be {}",
+                current.state.name(),
+                from[0].name()
+            ));
         }
         let mut record = current.clone();
         record.state = to;
@@ -576,7 +651,12 @@ impl Models {
 
     /// Adds one shadow comparison: whether the model agreed with the real decision, and the cost
     /// the real path had that the model would not (the model's own cost is 0).
-    pub fn record_shadow(&self, id: &str, agreed: bool, cost_saved_usd: f64) -> Result<ShadowStats, String> {
+    pub fn record_shadow(
+        &self,
+        id: &str,
+        agreed: bool,
+        cost_saved_usd: f64,
+    ) -> Result<ShadowStats, String> {
         let mut records = self.records();
         let record = records.get_mut(id).ok_or_else(|| no_model(id))?;
         record.shadow.runs += 1;
@@ -594,11 +674,19 @@ static ALLOWED: Mutex<BTreeMap<String, Vec<String>>> = Mutex::new(BTreeMap::new(
 
 /// The roles a model's card allows; empty for an unknown model.
 pub fn allowed_roles(id: &str) -> Vec<String> {
-    ALLOWED.lock().unwrap_or_else(PoisonError::into_inner).get(id).cloned().unwrap_or_default()
+    ALLOWED
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(id)
+        .cloned()
+        .unwrap_or_default()
 }
 
 fn remember(card: &ModelCard) {
-    ALLOWED.lock().unwrap_or_else(PoisonError::into_inner).insert(card.id.clone(), card.allowed_roles.clone());
+    ALLOWED
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .insert(card.id.clone(), card.allowed_roles.clone());
 }
 
 fn no_model(id: &str) -> String {
@@ -608,8 +696,15 @@ fn no_model(id: &str) -> String {
 /// The first CID of the range that neither the roster nor a record holds.
 fn free_cid(roster: &Roster, records: &BTreeMap<String, ModelRecord>) -> Result<u64, String> {
     (MODEL_CID_BASE..MODEL_CID_BASE + MODEL_CID_COUNT)
-        .find(|cid| roster.get(*cid).is_none() && !records.values().any(|r| r.agent_cid == Some(*cid)))
-        .ok_or_else(|| format!("no free model CID left in {MODEL_CID_BASE}..{}", MODEL_CID_BASE + MODEL_CID_COUNT))
+        .find(|cid| {
+            roster.get(*cid).is_none() && !records.values().any(|r| r.agent_cid == Some(*cid))
+        })
+        .ok_or_else(|| {
+            format!(
+                "no free model CID left in {MODEL_CID_BASE}..{}",
+                MODEL_CID_BASE + MODEL_CID_COUNT
+            )
+        })
 }
 
 /// The roster entry of a promoted model: no VM, no wallet, no tools, no chat.
@@ -641,7 +736,10 @@ fn check_serving(serving: &Serving) -> Result<(), String> {
     }
     for feature in &serving.features {
         if !serving.input.properties.contains_key(&feature.name) {
-            return Err(format!("serving: feature `{}` is not an input property", feature.name));
+            return Err(format!(
+                "serving: feature `{}` is not an input property",
+                feature.name
+            ));
         }
     }
     if serving.allowed_roles.is_empty() {
@@ -664,7 +762,9 @@ fn servable_problem(dir: &Path, kind: &str) -> Option<String> {
         None => Some("no feature contract: model_card.json has no serving block".into()),
         Some(serving) => match serde_json::from_value::<Serving>(serving) {
             Err(e) => Some(format!("the serving contract is not valid: {e}")),
-            Ok(_) if !onnx_path(dir).exists() => Some("no model.onnx (or onnx/model.onnx) in the download".into()),
+            Ok(_) if !onnx_path(dir).exists() => {
+                Some("no model.onnx (or onnx/model.onnx) in the download".into())
+            }
             Ok(_) => None,
         },
     }
@@ -694,15 +794,28 @@ fn valid_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 128
         && !id.starts_with('.')
-        && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.')
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.')
 }
 
 fn sanitize(text: &str) -> String {
-    text.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' }).collect()
+    text.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect()
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
-    Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 fn save(dir: &Path, record: &ModelRecord) -> Result<(), String> {
@@ -722,7 +835,10 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
 pub fn view(record: &ModelRecord) -> Value {
     let mut value = serde_json::to_value(record).unwrap_or(Value::Null);
     if let Value::Object(map) = &mut value {
-        map.insert("agreement_rate".into(), json!(record.shadow.agreement_rate()));
+        map.insert(
+            "agreement_rate".into(),
+            json!(record.shadow.agreement_rate()),
+        );
         map.insert("id".into(), json!(record.card.id));
     }
     value
@@ -742,7 +858,9 @@ pub fn routes(router: Router<App>) -> Router<App> {
             let base_only = match req.query_param("kind") {
                 None => false,
                 Some("base") => true,
-                Some(other) => return Response::error(400, &format!("kind must be base, got {other:?}")),
+                Some(other) => {
+                    return Response::error(400, &format!("kind must be base, got {other:?}"));
+                }
             };
             let models: Vec<Value> = app
                 .models
@@ -753,9 +871,11 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 .collect();
             Response::json(200, &json!({ "models": models }))
         })
-        .get("/v1/foundry/models/{id}", |app, _req, p| match app.models.get(&p.get("id").to_string()) {
-            Some(record) => Response::json(200, &view(&record)),
-            None => Response::error(404, "no such model"),
+        .get("/v1/foundry/models/{id}", |app, _req, p| {
+            match app.models.get(&p.get("id").to_string()) {
+                Some(record) => Response::json(200, &view(&record)),
+                None => Response::error(404, "no such model"),
+            }
         })
         .post("/v1/foundry/models/import", |app, req, _p| {
             let body: ImportBody = match crate::agents::body(req) {
@@ -771,7 +891,10 @@ pub fn routes(router: Router<App>) -> Router<App> {
             outcome(app.models.shadow(&p.get("id").to_string()))
         })
         .post("/v1/foundry/models/{id}/promote", |app, _req, p| {
-            outcome(app.models.promote(&app.agents, &app.looks, &p.get("id").to_string()))
+            outcome(
+                app.models
+                    .promote(&app.agents, &app.looks, &p.get("id").to_string()),
+            )
         })
         .post("/v1/foundry/models/{id}/invoke", |app, req, p| {
             let input: Value = match crate::agents::body(req) {
@@ -784,7 +907,10 @@ pub fn routes(router: Router<App>) -> Router<App> {
             }
         })
         .post("/v1/foundry/models/{id}/retire", |app, _req, p| {
-            outcome(app.models.retire(&app.agents, &app.looks, &p.get("id").to_string()))
+            outcome(
+                app.models
+                    .retire(&app.agents, &app.looks, &p.get("id").to_string()),
+            )
         })
 }
 
@@ -841,7 +967,9 @@ mod tests {
 
     fn serving() -> Value {
         let numeric = |name: &str| (name.to_string(), json!({ "type": "number" }));
-        let input: BTreeMap<String, Value> = [numeric("x0"), numeric("x1"), numeric("x2")].into_iter().collect();
+        let input: BTreeMap<String, Value> = [numeric("x0"), numeric("x1"), numeric("x2")]
+            .into_iter()
+            .collect();
         json!({
             "input": { "type": "object", "properties": input, "required": ["x0", "x1", "x2"] },
             "output": {
@@ -876,14 +1004,23 @@ mod tests {
         let id = record.card.id.clone();
         assert_eq!(record.state, State::Trained);
         assert_eq!(record.source_job.as_deref(), Some("job-1"));
-        assert!(models.promote(&roster, &looks, &id).is_err(), "a trained model is not promoted");
+        assert!(
+            models.promote(&roster, &looks, &id).is_err(),
+            "a trained model is not promoted"
+        );
         assert_eq!(models.shadow(&id).unwrap().state, State::Shadow);
         assert!(models.shadow(&id).is_err(), "shadow is entered once");
         let promoted = models.promote(&roster, &looks, &id).unwrap();
         assert_eq!(promoted.state, State::Promoted);
         assert!(promoted.agent_cid.is_some());
-        assert_eq!(models.retire(&roster, &looks, &id).unwrap().state, State::Retired);
-        assert!(models.retire(&roster, &looks, &id).is_err(), "retired is terminal");
+        assert_eq!(
+            models.retire(&roster, &looks, &id).unwrap().state,
+            State::Retired
+        );
+        assert!(
+            models.retire(&roster, &looks, &id).is_err(),
+            "retired is terminal"
+        );
         assert!(models.shadow(&id).is_err());
         let _ = fs::remove_dir_all(&root);
     }
@@ -906,7 +1043,10 @@ mod tests {
     fn an_import_takes_an_absolute_directory_only() {
         assert_eq!(absolute("relative/job-1").unwrap_err(), "path is absolute");
         assert_eq!(absolute("").unwrap_err(), "path is absolute");
-        assert_eq!(absolute("/srv/jobs/job-1").unwrap(), Path::new("/srv/jobs/job-1"));
+        assert_eq!(
+            absolute("/srv/jobs/job-1").unwrap(),
+            Path::new("/srv/jobs/job-1")
+        );
     }
 
     #[test]
@@ -914,12 +1054,22 @@ mod tests {
         let root = scratch("import");
         let models = Models::open(&root);
         let no_serving = job_dir(&root, "a", None);
-        assert!(models.import(&no_serving).unwrap_err().contains("no serving contract"));
+        assert!(
+            models
+                .import(&no_serving)
+                .unwrap_err()
+                .contains("no serving contract")
+        );
 
         let mut bad_feature = serving();
         bad_feature["features"][0]["name"] = json!("nope");
         let bad = job_dir(&root, "b", Some(bad_feature));
-        assert!(models.import(&bad).unwrap_err().contains("not an input property"));
+        assert!(
+            models
+                .import(&bad)
+                .unwrap_err()
+                .contains("not an input property")
+        );
 
         let missing = job_dir(&root, "c", Some(serving()));
         fs::remove_file(missing.join("model.onnx")).unwrap();
@@ -928,7 +1078,12 @@ mod tests {
         let good = job_dir(&root, "d", Some(serving()));
         let record = models.import(&good).unwrap();
         assert_eq!(record.card.onnx_sha256, sha256_hex(LINEAR3));
-        assert!(models.import(&good).unwrap_err().contains("already registered"));
+        assert!(
+            models
+                .import(&good)
+                .unwrap_err()
+                .contains("already registered")
+        );
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -937,18 +1092,32 @@ mod tests {
         let root = scratch("agent");
         let models = Models::open(&root);
         let (roster, looks) = fresh_roster();
-        let id = models.register_from_job(&job_dir(&root, "job-3", Some(serving())), None).unwrap().card.id;
+        let id = models
+            .register_from_job(&job_dir(&root, "job-3", Some(serving())), None)
+            .unwrap()
+            .card
+            .id;
         models.shadow(&id).unwrap();
-        let cid = models.promote(&roster, &looks, &id).unwrap().agent_cid.unwrap();
+        let cid = models
+            .promote(&roster, &looks, &id)
+            .unwrap()
+            .agent_cid
+            .unwrap();
         assert!(is_model_cid(cid));
         let agent = roster.get(cid).expect("the model agent is on the roster");
         assert_eq!(agent.kind, "model");
         assert_eq!(agent.role, "model");
         assert_eq!(agent.species, "oracle");
         assert!(agent.vm.is_none() && agent.run.is_none());
-        assert_eq!(looks.all().get(&cid).map(|l| l.species.as_str()), Some("oracle"));
+        assert_eq!(
+            looks.all().get(&cid).map(|l| l.species.as_str()),
+            Some("oracle")
+        );
         models.retire(&roster, &looks, &id).unwrap();
-        assert!(roster.get(cid).is_none(), "retiring removes the model agent");
+        assert!(
+            roster.get(cid).is_none(),
+            "retiring removes the model agent"
+        );
         assert!(looks.all().get(&cid).is_none());
         let _ = fs::remove_dir_all(&root);
     }
@@ -958,9 +1127,17 @@ mod tests {
         let root = scratch("revive");
         let models = Models::open(&root);
         let (roster, looks) = fresh_roster();
-        let id = models.register_from_job(&job_dir(&root, "job-4", Some(serving())), None).unwrap().card.id;
+        let id = models
+            .register_from_job(&job_dir(&root, "job-4", Some(serving())), None)
+            .unwrap()
+            .card
+            .id;
         models.shadow(&id).unwrap();
-        let cid = models.promote(&roster, &looks, &id).unwrap().agent_cid.unwrap();
+        let cid = models
+            .promote(&roster, &looks, &id)
+            .unwrap()
+            .agent_cid
+            .unwrap();
         let reopened = Models::open(&root);
         let (roster2, looks2) = fresh_roster();
         reopened.revive(&roster2, &looks2);
@@ -975,7 +1152,11 @@ mod tests {
         let models = Models::open(&root);
         let (roster, looks) = fresh_roster();
         let dir = job_dir(&root, "job-s", Some(serving()));
-        let id = models.register_from_job(&dir, Some("job-s")).unwrap().card.id;
+        let id = models
+            .register_from_job(&dir, Some("job-s"))
+            .unwrap()
+            .card
+            .id;
         models.shadow(&id).unwrap();
         models.record_shadow(&id, true, 0.5).unwrap();
         models.record_shadow(&id, false, 0.25).unwrap();
@@ -1004,7 +1185,11 @@ mod tests {
         let root = scratch("list-restart");
         let models = Models::open(&root);
         let (roster, looks) = fresh_roster();
-        let id = models.register_from_job(&job_dir(&root, "job-r", Some(serving())), Some("job-r")).unwrap().card.id;
+        let id = models
+            .register_from_job(&job_dir(&root, "job-r", Some(serving())), Some("job-r"))
+            .unwrap()
+            .card
+            .id;
         models.shadow(&id).unwrap();
         models.record_shadow(&id, true, 0.5).unwrap();
         models.promote(&roster, &looks, &id).unwrap();
@@ -1031,7 +1216,11 @@ mod tests {
         let root = scratch("db");
         let models = Models::open(&root);
         let dir = job_dir(&root, "job-db", Some(serving()));
-        let id = models.register_from_job(&dir, Some("job-db")).unwrap().card.id;
+        let id = models
+            .register_from_job(&dir, Some("job-db"))
+            .unwrap()
+            .card
+            .id;
         models.shadow(&id).unwrap();
         models.record_shadow(&id, true, 2.0).unwrap();
 
@@ -1048,7 +1237,9 @@ mod tests {
         assert_eq!(other.list(), models.list());
 
         let mut client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
-        client.execute(crate::db::sql::STATE_DELETE, &[&component]).unwrap();
+        client
+            .execute(crate::db::sql::STATE_DELETE, &[&component])
+            .unwrap();
         let _ = fs::remove_dir_all(&root);
         let _ = fs::remove_dir_all(&other_root);
     }
@@ -1070,12 +1261,20 @@ mod tests {
             servable_reason: None,
             task: None,
         };
-        let record = models.register_hf(&download, source.clone(), "hf-org-x-aaaaaaaa", 5).unwrap();
+        let record = models
+            .register_hf(&download, source.clone(), "hf-org-x-aaaaaaaa", 5)
+            .unwrap();
         assert_eq!(record.state, State::Imported);
-        let reason = record.source.as_ref().and_then(|s| s.servable_reason.clone()).unwrap_or_default();
+        let reason = record
+            .source
+            .as_ref()
+            .and_then(|s| s.servable_reason.clone())
+            .unwrap_or_default();
         assert!(reason.contains("model_card.json"), "{reason}");
         // The same repo and revision registers once.
-        let again = models.register_hf(&download, source, "hf-org-x-aaaaaaaa", 5).unwrap();
+        let again = models
+            .register_hf(&download, source, "hf-org-x-aaaaaaaa", 5)
+            .unwrap();
         assert_eq!(again.card.id, record.card.id);
         assert_eq!(models.list().len(), 1);
         // An imported model is never compiled or promoted: shadow needs a trained model.
@@ -1090,7 +1289,11 @@ mod tests {
         let download = dir.join("download");
         fs::create_dir_all(download.join("onnx")).unwrap();
         let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/text");
-        fs::copy(format!("{fixture}/classifier.onnx"), download.join("onnx").join("model_quantized.onnx")).unwrap();
+        fs::copy(
+            format!("{fixture}/classifier.onnx"),
+            download.join("onnx").join("model_quantized.onnx"),
+        )
+        .unwrap();
         for name in ["config.json", "tokenizer.json"] {
             fs::copy(format!("{fixture}/{name}"), download.join(name)).unwrap();
         }
@@ -1103,16 +1306,33 @@ mod tests {
             servable_reason: None,
             task: Some("text-classification".into()),
         };
-        let record = models.register_hf(&download, source.clone(), "hf-org-sst-bbbbbbbb", 1).unwrap();
+        let record = models
+            .register_hf(&download, source.clone(), "hf-org-sst-bbbbbbbb", 1)
+            .unwrap();
         assert_eq!(record.state, State::Trained);
-        assert_eq!(record.card.serving.as_ref().and_then(|s| s["kind"].as_str()), Some("text"));
-        let model = models.text(&record.card.id).expect("the text model is loaded");
-        let out = model.invoke(&json!({ "text": "good great movie" })).unwrap();
+        assert_eq!(
+            record
+                .card
+                .serving
+                .as_ref()
+                .and_then(|s| s["kind"].as_str()),
+            Some("text")
+        );
+        let model = models
+            .text(&record.card.id)
+            .expect("the text model is loaded");
+        let out = model
+            .invoke(&json!({ "text": "good great movie" }))
+            .unwrap();
         assert_eq!(out["label"], "POSITIVE");
         // The same repo and revision registers once, and the contract is in the download's card.
-        let again = models.register_hf(&download, source, "hf-org-sst-bbbbbbbb", 1).unwrap();
+        let again = models
+            .register_hf(&download, source, "hf-org-sst-bbbbbbbb", 1)
+            .unwrap();
         assert_eq!(again.card.id, record.card.id);
-        let card: Value = serde_json::from_str(&fs::read_to_string(download.join("model_card.json")).unwrap()).unwrap();
+        let card: Value =
+            serde_json::from_str(&fs::read_to_string(download.join("model_card.json")).unwrap())
+                .unwrap();
         assert_eq!(card["serving"]["max_len"], 8);
         let _ = fs::remove_dir_all(&dir);
     }
@@ -1124,7 +1344,11 @@ mod tests {
         let download = dir.join("download");
         fs::create_dir_all(download.join("onnx")).unwrap();
         let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/text");
-        fs::copy(format!("{fixture}/config.json"), download.join("config.json")).unwrap();
+        fs::copy(
+            format!("{fixture}/config.json"),
+            download.join("config.json"),
+        )
+        .unwrap();
         let models = Models::open(&dir.join("state"));
         let source = Source {
             hf: "org/old".into(),
@@ -1135,16 +1359,32 @@ mod tests {
             task: None,
         };
         // An import from before the text runtime: no graph, no tokenizer, no recorded task.
-        let old = models.register_hf(&download, source, "hf-org-old-cccccccc", 1).unwrap();
+        let old = models
+            .register_hf(&download, source, "hf-org-old-cccccccc", 1)
+            .unwrap();
         assert_eq!(old.state, State::Imported);
         // The files are there now: the graph and the tokenizer.
-        fs::copy(format!("{fixture}/classifier.onnx"), download.join("onnx").join("model.onnx")).unwrap();
-        fs::copy(format!("{fixture}/tokenizer.json"), download.join("tokenizer.json")).unwrap();
+        fs::copy(
+            format!("{fixture}/classifier.onnx"),
+            download.join("onnx").join("model.onnx"),
+        )
+        .unwrap();
+        fs::copy(
+            format!("{fixture}/tokenizer.json"),
+            download.join("tokenizer.json"),
+        )
+        .unwrap();
         // Re-derived with the task the lookup found: a trained text model under the same id, and it runs.
-        let upgraded = models.rederive("hf-org-old-cccccccc", Some("text-classification".into())).unwrap();
+        let upgraded = models
+            .rederive("hf-org-old-cccccccc", Some("text-classification".into()))
+            .unwrap();
         assert_eq!(upgraded.state, State::Trained);
         assert_eq!(upgraded.card.id, "hf-org-old-cccccccc");
-        let out = models.text(&upgraded.card.id).expect("the text model is loaded").invoke(&json!({ "text": "good great movie" })).unwrap();
+        let out = models
+            .text(&upgraded.card.id)
+            .expect("the text model is loaded")
+            .invoke(&json!({ "text": "good great movie" }))
+            .unwrap();
         assert_eq!(out["label"], "POSITIVE");
         // Only imported models are re-derived.
         assert!(models.rederive("hf-org-old-cccccccc", None).is_err());
@@ -1164,7 +1404,11 @@ mod tests {
     fn shadow_comparisons_count_agreement_and_cost() {
         let root = scratch("shadow");
         let models = Models::open(&root);
-        let id = models.register_from_job(&job_dir(&root, "job-5", Some(serving())), None).unwrap().card.id;
+        let id = models
+            .register_from_job(&job_dir(&root, "job-5", Some(serving())), None)
+            .unwrap()
+            .card
+            .id;
         models.shadow(&id).unwrap();
         models.record_shadow(&id, true, 0.02).unwrap();
         let stats = models.record_shadow(&id, false, 0.03).unwrap();
@@ -1200,19 +1444,35 @@ mod tests {
         // The bytes differ from the other tests' models: the id is the ONNX digest, and the roles
         // mirror is keyed by it, so a shared id would let parallel tests overwrite each other.
         let reviewers = job_dir(&root, "job-reviewers", Some(serving_for(&["reviewer"])));
-        fs::write(reviewers.join("model.onnx"), include_bytes!("../../tests/fixtures/linear3_logits.onnx")).unwrap();
+        fs::write(
+            reviewers.join("model.onnx"),
+            include_bytes!("../../tests/fixtures/linear3_logits.onnx"),
+        )
+        .unwrap();
         let only_reviewers = models.register_from_job(&reviewers, None).unwrap().card.id;
         let for_breeders = models
-            .register_from_job(&job_dir(&root, "job-breeders", Some(serving_for(&["breeder"]))), None)
+            .register_from_job(
+                &job_dir(&root, "job-breeders", Some(serving_for(&["breeder"]))),
+                None,
+            )
             .unwrap()
             .card
             .id;
         let input = |id: &str| json!({ "model": id, "input": { "x0": 1.0, "x1": 0.0, "x2": 0.0 } });
-        let refused = law_refusal(&root, 7, "builder", "invoke_model", &input(&for_breeders)).expect("no permit");
-        assert!(refused.contains("S-006h") || refused.contains("no law permits"), "{refused}");
-        let card_refused = law_refusal(&root, 7, "breeder", "invoke_model", &input(&only_reviewers)).expect("the card");
+        let refused = law_refusal(&root, 7, "builder", "invoke_model", &input(&for_breeders))
+            .expect("no permit");
+        assert!(
+            refused.contains("S-006h") || refused.contains("no law permits"),
+            "{refused}"
+        );
+        let card_refused =
+            law_refusal(&root, 7, "breeder", "invoke_model", &input(&only_reviewers))
+                .expect("the card");
         assert!(card_refused.contains("S-006h"), "{card_refused}");
-        assert_eq!(law_refusal(&root, 7, "breeder", "invoke_model", &input(&for_breeders)), None);
+        assert_eq!(
+            law_refusal(&root, 7, "breeder", "invoke_model", &input(&for_breeders)),
+            None
+        );
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -1220,13 +1480,21 @@ mod tests {
     fn a_breeder_job_over_eight_gpu_hours_is_refused_and_eight_is_not() {
         let root = scratch("laws-gpu");
         let big = json!({ "job": { "budget_gpu_hours": 9.0 } });
-        let refused = law_refusal(&root, 8, "breeder", "foundry_submit_job", &big).expect("over 8 hours");
+        let refused =
+            law_refusal(&root, 8, "breeder", "foundry_submit_job", &big).expect("over 8 hours");
         assert!(refused.contains("S-006d"), "{refused}");
         let eight = json!({ "job": { "budget_gpu_hours": 8.0 } });
-        assert_eq!(law_refusal(&root, 8, "breeder", "foundry_submit_job", &eight), None);
+        assert_eq!(
+            law_refusal(&root, 8, "breeder", "foundry_submit_job", &eight),
+            None
+        );
         let missing = json!({ "job": {} });
-        assert!(law_refusal(&root, 8, "breeder", "foundry_submit_job", &missing).is_some(), "no budget: refused");
-        let other = law_refusal(&root, 9, "mayor", "foundry_submit_job", &eight).expect("only breeders submit");
+        assert!(
+            law_refusal(&root, 8, "breeder", "foundry_submit_job", &missing).is_some(),
+            "no budget: refused"
+        );
+        let other = law_refusal(&root, 9, "mayor", "foundry_submit_job", &eight)
+            .expect("only breeders submit");
         assert!(other.contains("no law permits"), "{other}");
         let _ = fs::remove_dir_all(&root);
     }
@@ -1234,14 +1502,35 @@ mod tests {
     #[test]
     fn a_model_agent_cannot_be_tasked_or_messaged() {
         let root = scratch("laws-model-agent");
-        let assign = law_refusal(&root, 3, "mayor", "plaza_assign", &json!({ "task": "t1", "agent": 10_000 }))
-            .expect("a model agent is not tasked");
+        let assign = law_refusal(
+            &root,
+            3,
+            "mayor",
+            "plaza_assign",
+            &json!({ "task": "t1", "agent": 10_000 }),
+        )
+        .expect("a model agent is not tasked");
         assert!(assign.contains("S-006f"), "{assign}");
-        let message = law_refusal(&root, 3, "mayor", "plaza_send_message", &json!({ "to_cid": 10_500, "text": "hi" }))
-            .expect("a model agent is not messaged");
+        let message = law_refusal(
+            &root,
+            3,
+            "mayor",
+            "plaza_send_message",
+            &json!({ "to_cid": 10_500, "text": "hi" }),
+        )
+        .expect("a model agent is not messaged");
         assert!(message.contains("S-006g"), "{message}");
-        let plain = law_refusal(&root, 3, "mayor", "plaza_assign", &json!({ "task": "t1", "agent": 42 }));
-        assert!(plain.map_or(true, |r| !r.contains("S-006f")), "an ordinary agent is not caught by S-006f");
+        let plain = law_refusal(
+            &root,
+            3,
+            "mayor",
+            "plaza_assign",
+            &json!({ "task": "t1", "agent": 42 }),
+        );
+        assert!(
+            plain.map_or(true, |r| !r.contains("S-006f")),
+            "an ordinary agent is not caught by S-006f"
+        );
         let _ = fs::remove_dir_all(&root);
     }
 }

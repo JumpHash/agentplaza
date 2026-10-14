@@ -4,14 +4,16 @@ use std::io::Write;
 use std::path::PathBuf;
 
 use clap::Subcommand;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use crate::ctx::{self, confirm, Ctx};
+use crate::ctx::{self, Ctx, confirm};
 
 /// The buckets the library filters by (the Library screen's groups).
 const BUCKETS: [&str; 5] = ["video", "image", "audio", "documents", "other"];
 /// The columns of `library list`.
-const COLUMNS: [&str; 8] = ["id", "kind", "name", "title", "size", "author", "task", "audience"];
+const COLUMNS: [&str; 8] = [
+    "id", "kind", "name", "title", "size", "author", "task", "audience",
+];
 
 #[derive(Subcommand, Debug)]
 pub enum Cmd {
@@ -52,7 +54,11 @@ pub enum Cmd {
 
 pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
     match cmd {
-        Cmd::List { kind, search, file_type } => list(ctx, kind, search, file_type),
+        Cmd::List {
+            kind,
+            search,
+            file_type,
+        } => list(ctx, kind, search, file_type),
         Cmd::Show { id } => show(ctx, &id),
         Cmd::Download { id, to } => download(ctx, &id, to),
         Cmd::Delete { id, yes } => delete(ctx, &id, yes),
@@ -100,7 +106,12 @@ fn matches_bucket(file: &Value, bucket: Option<&str>) -> bool {
     bucket.is_none_or(|b| bucket_of(ctx::s(file, "content_type")) == b)
 }
 
-fn list(ctx: &Ctx, kind: Option<String>, search: Option<String>, file_type: Option<String>) -> Result<(), String> {
+fn list(
+    ctx: &Ctx,
+    kind: Option<String>,
+    search: Option<String>,
+    file_type: Option<String>,
+) -> Result<(), String> {
     let path = match kind.as_deref() {
         None => "/v1/files".to_string(),
         Some(k @ ("deliverable" | "shared")) => format!("/v1/files?kind={k}"),
@@ -114,7 +125,10 @@ fn list(ctx: &Ctx, kind: Option<String>, search: Option<String>, file_type: Opti
         .cloned()
         .collect();
     ctx.out(&json!(files), |_| {
-        let rows: Vec<Vec<String>> = files.iter().map(|f| COLUMNS.iter().map(|k| ctx::text(f, k)).collect()).collect();
+        let rows: Vec<Vec<String>> = files
+            .iter()
+            .map(|f| COLUMNS.iter().map(|k| ctx::text(f, k)).collect())
+            .collect();
         ctx::table(&COLUMNS, &rows);
     });
     Ok(())
@@ -161,8 +175,14 @@ fn download(ctx: &Ctx, id: &str, to: Option<PathBuf>) -> Result<(), String> {
             PathBuf::from(safe_name(ctx::s(&meta, "name")))
         }
     };
-    let reply = apz_http::client::request(&ctx.client.target, "GET", &format!("/v1/files/{}/content", ctx::seg(id)), None, ctx.client.timeout)
-        .map_err(|e| format!("{}: {e}", ctx.client.base()))?;
+    let reply = apz_http::client::request(
+        &ctx.client.target,
+        "GET",
+        &format!("/v1/files/{}/content", ctx::seg(id)),
+        None,
+        ctx.client.timeout,
+    )
+    .map_err(|e| format!("{}: {e}", ctx.client.base()))?;
     if !(200..300).contains(&reply.status) {
         return Err(format!("download {id}: HTTP {}", reply.status));
     }
@@ -170,10 +190,18 @@ fn download(ctx: &Ctx, id: &str, to: Option<PathBuf>) -> Result<(), String> {
         .write(true)
         .create_new(true)
         .open(&path)
-        .map_err(|e| format!("{}: {e} (downloads never overwrite; pick --to)", path.display()))?;
-    file.write_all(&reply.body).map_err(|e| format!("{}: {e}", path.display()))?;
+        .map_err(|e| {
+            format!(
+                "{}: {e} (downloads never overwrite; pick --to)",
+                path.display()
+            )
+        })?;
+    file.write_all(&reply.body)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
     let saved = json!({ "id": id, "path": path.display().to_string(), "bytes": reply.body.len() });
-    ctx.out(&saved, |v| println!("saved {} ({} bytes)", ctx::s(v, "path"), reply.body.len()));
+    ctx.out(&saved, |v| {
+        println!("saved {} ({} bytes)", ctx::s(v, "path"), reply.body.len())
+    });
     Ok(())
 }
 
@@ -199,8 +227,14 @@ mod tests {
         assert_eq!(bucket_of("application/pdf"), "documents");
         assert_eq!(bucket_of("text/markdown"), "documents");
         assert_eq!(bucket_of("application/json"), "documents");
-        assert_eq!(bucket_of("application/vnd.openxmlformats-officedocument.wordprocessingml.document"), "documents");
-        assert_eq!(bucket_of("application/vnd.oasis.opendocument.text"), "documents");
+        assert_eq!(
+            bucket_of("application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+            "documents"
+        );
+        assert_eq!(
+            bucket_of("application/vnd.oasis.opendocument.text"),
+            "documents"
+        );
         assert_eq!(bucket_of("application/zip"), "other");
         assert_eq!(bucket_of(""), "other");
     }

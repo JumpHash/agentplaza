@@ -98,11 +98,16 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
             }
             let account = flags.get("--account").map(parse_account).transpose()?;
             if let Some(node) = flags.get("--from-node") {
-                if flags.get("--hub").is_some() || flags.get("--code").is_some() || flags.get("--pin").is_some() {
+                if flags.get("--hub").is_some()
+                    || flags.get("--code").is_some()
+                    || flags.get("--pin").is_some()
+                {
                     return Err("--from-node takes the hub, its pin and the code from the node: give it alone".to_string());
                 }
                 if !node.starts_with("vsock://") {
-                    return Err("--from-node is a vsock:// address of the node's config port".to_string());
+                    return Err(
+                        "--from-node is a vsock:// address of the node's config port".to_string(),
+                    );
                 }
                 return Ok(Command::Join(JoinArgs {
                     hub: String::new(),
@@ -115,8 +120,13 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
                 }));
             }
             let hub = flags.require("--hub")?;
-            if !(hub.starts_with("https://") || hub.starts_with("http://") || hub.starts_with("vsock://")) {
-                return Err("--hub is an https:// URL, or a vsock:// address through the node".to_string());
+            if !(hub.starts_with("https://")
+                || hub.starts_with("http://")
+                || hub.starts_with("vsock://"))
+            {
+                return Err(
+                    "--hub is an https:// URL, or a vsock:// address through the node".to_string(),
+                );
             }
             let code = flags.require("--code")?;
             if code.is_empty() || code.chars().any(|c| c.is_whitespace() || c.is_control()) {

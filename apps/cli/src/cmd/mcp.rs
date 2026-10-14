@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use apz_http::client::Target;
 use clap::Subcommand;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::ctx::{self, Config, Ctx, SavedHub};
 
@@ -120,7 +120,11 @@ pub fn run(cmd: Cmd, globals: Globals) -> Result<(), String> {
             let api = ctx::resolve(globals.hub, globals.token, globals.pin, globals.json)?;
             token(&api, sub)
         }
-        Cmd::Calls { token_id, tool, limit } => {
+        Cmd::Calls {
+            token_id,
+            tool,
+            limit,
+        } => {
             let api = ctx::resolve(globals.hub, globals.token, globals.pin, globals.json)?;
             calls(&api, token_id.as_deref(), tool.as_deref(), limit)
         }
@@ -136,11 +140,30 @@ fn server(api: &Ctx, sub: ServerCmd) -> Result<(), String> {
             api.out(&status, print_status);
             Ok(())
         }
-        ServerCmd::Enable { remote, auth, open_scope, origin, confirm_open_remote } => {
-            let switch = Switch { enabled: true, remote, auth, open_scope, origins: origins_of(&origin)?, confirm_open_remote };
+        ServerCmd::Enable {
+            remote,
+            auth,
+            open_scope,
+            origin,
+            confirm_open_remote,
+        } => {
+            let switch = Switch {
+                enabled: true,
+                remote,
+                auth,
+                open_scope,
+                origins: origins_of(&origin)?,
+                confirm_open_remote,
+            };
             set_enabled(api, &switch)
         }
-        ServerCmd::Disable => set_enabled(api, &Switch { enabled: false, ..Switch::default() }),
+        ServerCmd::Disable => set_enabled(
+            api,
+            &Switch {
+                enabled: false,
+                ..Switch::default()
+            },
+        ),
     }
 }
 
@@ -161,7 +184,9 @@ fn origins_of(words: &[String]) -> Result<Option<Vec<String>>, String> {
     match words {
         [] => Ok(None),
         [word] if word == "none" => Ok(Some(Vec::new())),
-        _ if words.iter().any(|word| word == "none") => Err("--origin none clears the list: it stands alone".to_string()),
+        _ if words.iter().any(|word| word == "none") => {
+            Err("--origin none clears the list: it stands alone".to_string())
+        }
         _ => Ok(Some(words.to_vec())),
     }
 }
@@ -187,17 +212,27 @@ fn switch_body(now: &Value, switch: &Switch) -> Value {
     };
     let auth_mode = match &switch.auth {
         Some(auth) => json!(auth),
-        None => now.get("auth_mode").cloned().unwrap_or_else(|| json!("secure")),
+        None => now
+            .get("auth_mode")
+            .cloned()
+            .unwrap_or_else(|| json!("secure")),
     };
     let open_scope = match &switch.open_scope {
         Some(scope) => json!(scope),
-        None => now.get("open_scope").cloned().unwrap_or_else(|| json!("observe")),
+        None => now
+            .get("open_scope")
+            .cloned()
+            .unwrap_or_else(|| json!("observe")),
     };
     let origins = match &switch.origins {
         Some(list) => json!(list),
-        None => now.get("allowed_origins").cloned().unwrap_or_else(|| json!([])),
+        None => now
+            .get("allowed_origins")
+            .cloned()
+            .unwrap_or_else(|| json!([])),
     };
-    let kept_open_remote = now["auth_mode"].as_str() == Some("open") && now["bind"].as_str() == Some("remote");
+    let kept_open_remote =
+        now["auth_mode"].as_str() == Some("open") && now["bind"].as_str() == Some("remote");
     json!({
         "enabled": switch.enabled,
         "bind": bind,
@@ -209,25 +244,54 @@ fn switch_body(now: &Value, switch: &Switch) -> Value {
 }
 
 fn print_status(status: &Value) {
-    let origins: Vec<&str> = status["allowed_origins"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+    let origins: Vec<&str> = status["allowed_origins"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect();
     ctx::fields(&[
-        ("server", if status["enabled"].as_bool() == Some(true) { "on".to_string() } else { "off".to_string() }),
+        (
+            "server",
+            if status["enabled"].as_bool() == Some(true) {
+                "on".to_string()
+            } else {
+                "off".to_string()
+            },
+        ),
         ("bind", ctx::text(status, "bind")),
         ("url", ctx::text(status, "url")),
-        ("origins", if origins.is_empty() { "(the hub's own)".to_string() } else { origins.join(", ") }),
+        (
+            "origins",
+            if origins.is_empty() {
+                "(the hub's own)".to_string()
+            } else {
+                origins.join(", ")
+            },
+        ),
         ("tokens", ctx::text(status, "tokens")),
     ]);
 }
 
 fn token(api: &Ctx, sub: TokenCmd) -> Result<(), String> {
     match sub {
-        TokenCmd::Create { name, scope, tools, expires } => {
+        TokenCmd::Create {
+            name,
+            scope,
+            tools,
+            expires,
+        } => {
             let expires_days = expires.as_deref().map(expiry_days).transpose()?;
             let body = json!({ "name": name, "scope": scope, "tools": tools, "expires_days": expires_days });
             let made = api.client.post("/v1/hub-mcp/tokens", &body)?;
-            let secret = made["token"].as_str().ok_or("the hub did not return a token")?.to_string();
+            let secret = made["token"]
+                .as_str()
+                .ok_or("the hub did not return a token")?
+                .to_string();
             api.out(&made, |_| println!("{secret}"));
-            eprintln!("warning: this token is shown only now. It is not stored in readable form and cannot be shown again.");
+            eprintln!(
+                "warning: this token is shown only now. It is not stored in readable form and cannot be shown again."
+            );
             Ok(())
         }
         TokenCmd::List => {
@@ -246,16 +310,33 @@ fn token(api: &Ctx, sub: TokenCmd) -> Result<(), String> {
                             ctx::when(t.get("expires_ms").unwrap_or(&Value::Null)),
                             ctx::ago(t.get("last_used_ms").unwrap_or(&Value::Null)),
                             ctx::text(t, "calls"),
-                            if t["revoked_at_ms"].is_null() { "live".to_string() } else { "revoked".to_string() },
+                            if t["revoked_at_ms"].is_null() {
+                                "live".to_string()
+                            } else {
+                                "revoked".to_string()
+                            },
                         ]
                     })
                     .collect();
-                ctx::table(&["id", "name", "scope", "tools", "expires", "last used", "calls", "state"], &rows);
+                ctx::table(
+                    &[
+                        "id",
+                        "name",
+                        "scope",
+                        "tools",
+                        "expires",
+                        "last used",
+                        "calls",
+                        "state",
+                    ],
+                    &rows,
+                );
             });
             Ok(())
         }
         TokenCmd::Revoke { id } => {
-            api.client.delete(&format!("/v1/hub-mcp/tokens/{}", ctx::seg(&id)))?;
+            api.client
+                .delete(&format!("/v1/hub-mcp/tokens/{}", ctx::seg(&id)))?;
             api.out(&json!({ "revoked": id }), |_| println!("revoked {id}"));
             Ok(())
         }
@@ -266,12 +347,23 @@ fn tools_text(token: &Value) -> String {
     token["tools"]
         .as_array()
         .filter(|tools| !tools.is_empty())
-        .map(|tools| tools.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(","))
+        .map(|tools| {
+            tools
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+                .join(",")
+        })
         .unwrap_or_else(|| "all in scope".to_string())
 }
 
 /// `mcp calls`: the call log, newest first, with the filters the flags give.
-fn calls(api: &Ctx, token_id: Option<&str>, tool: Option<&str>, limit: Option<u64>) -> Result<(), String> {
+fn calls(
+    api: &Ctx,
+    token_id: Option<&str>,
+    tool: Option<&str>,
+    limit: Option<u64>,
+) -> Result<(), String> {
     let mut query = Vec::new();
     if let Some(token_id) = token_id {
         query.push(format!("token={}", ctx::seg(token_id)));
@@ -282,7 +374,11 @@ fn calls(api: &Ctx, token_id: Option<&str>, tool: Option<&str>, limit: Option<u6
     if let Some(limit) = limit {
         query.push(format!("limit={limit}"));
     }
-    let path = if query.is_empty() { "/v1/hub-mcp/calls".to_string() } else { format!("/v1/hub-mcp/calls?{}", query.join("&")) };
+    let path = if query.is_empty() {
+        "/v1/hub-mcp/calls".to_string()
+    } else {
+        format!("/v1/hub-mcp/calls?{}", query.join("&"))
+    };
     let log = api.client.get(&path)?;
     api.out(&log, |v| {
         let rows: Vec<Vec<String>> = v["calls"]
@@ -294,14 +390,22 @@ fn calls(api: &Ctx, token_id: Option<&str>, tool: Option<&str>, limit: Option<u6
                     ctx::when(c.get("at_ms").unwrap_or(&Value::Null)),
                     ctx::text(c, "token_id"),
                     ctx::text(c, "tool"),
-                    if c["ok"].as_bool() == Some(true) { "ok" } else { "error" }.to_string(),
+                    if c["ok"].as_bool() == Some(true) {
+                        "ok"
+                    } else {
+                        "error"
+                    }
+                    .to_string(),
                     ctx::text(c, "duration_ms"),
                     ctx::text(c, "client_ip"),
                     ctx::text(c, "error"),
                 ]
             })
             .collect();
-        ctx::table(&["when", "token", "tool", "result", "ms", "from", "error"], &rows);
+        ctx::table(
+            &["when", "token", "tool", "result", "ms", "from", "error"],
+            &rows,
+        );
     });
     Ok(())
 }
@@ -319,7 +423,9 @@ fn expiry_days(text: &str) -> Result<u64, String> {
 /// Reads the MCP token from `input` (stdin in the command). It must be an `apz_mcp_` token, alone on its text.
 fn read_token(mut input: impl Read) -> Result<String, String> {
     let mut text = String::new();
-    input.read_to_string(&mut text).map_err(|e| format!("reading the token from stdin: {e}"))?;
+    input
+        .read_to_string(&mut text)
+        .map_err(|e| format!("reading the token from stdin: {e}"))?;
     let token = text.trim();
     if !token.starts_with("apz_mcp_") || token.chars().any(char::is_whitespace) {
         return Err("stdin does not hold an apz_mcp_ token".to_string());
@@ -334,7 +440,11 @@ fn login(hub: Option<&str>, input: impl Read) -> Result<(), String> {
     }
     let token = read_token(input)?;
     let mut config = Config::load();
-    let url = config.hubs.get(hub).map(|saved| saved.url.clone()).unwrap_or_else(|| hub.trim_end_matches('/').to_string());
+    let url = config
+        .hubs
+        .get(hub)
+        .map(|saved| saved.url.clone())
+        .unwrap_or_else(|| hub.trim_end_matches('/').to_string());
     attach_token(&mut config, &url, &token);
     config.save()?;
     println!("saved an MCP token for {url}");
@@ -344,8 +454,18 @@ fn login(hub: Option<&str>, input: impl Read) -> Result<(), String> {
 /// Saves `token` as the MCP token of the entry for `url`, making one (named for its host) when there is none.
 /// The entry's owner token is left as it is.
 fn attach_token(config: &mut Config, url: &str, token: &str) {
-    let name = config.hubs.iter().find(|(_, saved)| saved.url == url).map(|(name, _)| name.clone()).unwrap_or_else(|| hub::host_of(url));
-    let entry = config.hubs.entry(name.clone()).or_insert_with(|| SavedHub { url: url.to_string(), token: None, pin: None, mcp_token: None });
+    let name = config
+        .hubs
+        .iter()
+        .find(|(_, saved)| saved.url == url)
+        .map(|(name, _)| name.clone())
+        .unwrap_or_else(|| hub::host_of(url));
+    let entry = config.hubs.entry(name.clone()).or_insert_with(|| SavedHub {
+        url: url.to_string(),
+        token: None,
+        pin: None,
+        mcp_token: None,
+    });
     entry.mcp_token = Some(token.to_string());
     if config.default.is_none() {
         config.default = Some(name);
@@ -356,7 +476,10 @@ fn attach_token(config: &mut Config, url: &str, token: &str) {
 fn saved_hub(config: &Config, hub: Option<&str>) -> Result<SavedHub, String> {
     let key = match hub {
         Some(key) => key.to_string(),
-        None => config.default.clone().ok_or("no saved hub: sign in with `agentplaza hub login`, or pass --hub")?,
+        None => config
+            .default
+            .clone()
+            .ok_or("no saved hub: sign in with `agentplaza hub login`, or pass --hub")?,
     };
     if let Some(saved) = config.hubs.get(&key) {
         return Ok(saved.clone());
@@ -366,7 +489,12 @@ fn saved_hub(config: &Config, hub: Option<&str>) -> Result<SavedHub, String> {
         return Ok(saved.clone());
     }
     if url.starts_with("http://") || url.starts_with("https://") {
-        return Ok(SavedHub { url: url.to_string(), token: None, pin: None, mcp_token: None });
+        return Ok(SavedHub {
+            url: url.to_string(),
+            token: None,
+            pin: None,
+            mcp_token: None,
+        });
     }
     Err(format!("no saved hub `{key}`"))
 }
@@ -374,14 +502,26 @@ fn saved_hub(config: &Config, hub: Option<&str>) -> Result<SavedHub, String> {
 fn serve(hub: Option<&str>, pin: Option<&str>) -> Result<(), String> {
     let config = Config::load();
     let saved = saved_hub(&config, hub)?;
-    let token = saved
-        .mcp_token
-        .clone()
-        .ok_or_else(|| format!("no MCP token for {}: run `agentplaza mcp login --hub {}` first", saved.url, saved.url))?;
-    let pin = pin.map(str::to_string).or_else(|| saved.pin.clone()).map(|hex| ctx::parse_pin(&hex)).transpose()?;
-    let target = Target { base: saved.url.trim_end_matches('/').to_string(), pin, bearer: Some(token), headers: Vec::new() };
+    let token = saved.mcp_token.clone().ok_or_else(|| {
+        format!(
+            "no MCP token for {}: run `agentplaza mcp login --hub {}` first",
+            saved.url, saved.url
+        )
+    })?;
+    let pin = pin
+        .map(str::to_string)
+        .or_else(|| saved.pin.clone())
+        .map(|hex| ctx::parse_pin(&hex))
+        .transpose()?;
+    let target = Target {
+        base: saved.url.trim_end_matches('/').to_string(),
+        pin,
+        bearer: Some(token),
+        headers: Vec::new(),
+    };
     let transport = bridge::HubTransport::new(target, Duration::from_secs(120));
-    bridge::serve(transport, io::stdin().lock(), io::stdout().lock()).map_err(|e| format!("the bridge stopped: {e}"))
+    bridge::serve(transport, io::stdin().lock(), io::stdout().lock())
+        .map_err(|e| format!("the bridge stopped: {e}"))
 }
 
 #[cfg(test)]
@@ -398,31 +538,58 @@ mod tests {
     }
 
     fn saved(url: &str, token: Option<&str>) -> SavedHub {
-        SavedHub { url: url.into(), token: token.map(str::to_string), pin: None, mcp_token: None }
+        SavedHub {
+            url: url.into(),
+            token: token.map(str::to_string),
+            pin: None,
+            mcp_token: None,
+        }
     }
 
     #[test]
     fn login_takes_no_token_as_an_argument() {
-        assert!(TestCli::try_parse_from(["agentplaza", "login", "apz_mcp_secret"]).is_err(), "a positional token is refused");
-        assert!(TestCli::try_parse_from(["agentplaza", "login", "--token", "apz_mcp_secret"]).is_err(), "a --token flag is refused");
+        assert!(
+            TestCli::try_parse_from(["agentplaza", "login", "apz_mcp_secret"]).is_err(),
+            "a positional token is refused"
+        );
+        assert!(
+            TestCli::try_parse_from(["agentplaza", "login", "--token", "apz_mcp_secret"]).is_err(),
+            "a --token flag is refused"
+        );
         assert!(TestCli::try_parse_from(["agentplaza", "login"]).is_ok());
     }
 
     #[test]
     fn the_login_token_comes_from_stdin_and_must_be_an_mcp_token() {
-        assert_eq!(read_token("  apz_mcp_abc123\n".as_bytes()).unwrap(), "apz_mcp_abc123");
-        assert!(read_token("owner-token".as_bytes()).is_err(), "an owner token is not an MCP token");
-        assert!(read_token("apz_mcp_a b".as_bytes()).is_err(), "one token only");
+        assert_eq!(
+            read_token("  apz_mcp_abc123\n".as_bytes()).unwrap(),
+            "apz_mcp_abc123"
+        );
+        assert!(
+            read_token("owner-token".as_bytes()).is_err(),
+            "an owner token is not an MCP token"
+        );
+        assert!(
+            read_token("apz_mcp_a b".as_bytes()).is_err(),
+            "one token only"
+        );
         assert!(read_token("".as_bytes()).is_err());
     }
 
     #[test]
     fn login_keeps_the_owner_token_and_saves_the_mcp_one_beside_it() {
         let mut config = Config::default();
-        config.hubs.insert("plaza".into(), saved("https://plaza.test", Some("owner-token")));
+        config.hubs.insert(
+            "plaza".into(),
+            saved("https://plaza.test", Some("owner-token")),
+        );
         attach_token(&mut config, "https://plaza.test", "apz_mcp_x");
         let entry = &config.hubs["plaza"];
-        assert_eq!(entry.token.as_deref(), Some("owner-token"), "the owner token is untouched");
+        assert_eq!(
+            entry.token.as_deref(),
+            Some("owner-token"),
+            "the owner token is untouched"
+        );
         assert_eq!(entry.mcp_token.as_deref(), Some("apz_mcp_x"));
     }
 
@@ -430,17 +597,32 @@ mod tests {
     fn login_makes_an_entry_named_for_an_unknown_hub() {
         let mut config = Config::default();
         attach_token(&mut config, "https://hub.example:7700", "apz_mcp_y");
-        assert_eq!(config.hubs["hub.example"].mcp_token.as_deref(), Some("apz_mcp_y"));
+        assert_eq!(
+            config.hubs["hub.example"].mcp_token.as_deref(),
+            Some("apz_mcp_y")
+        );
         assert_eq!(config.default.as_deref(), Some("hub.example"));
     }
 
     #[test]
     fn the_serve_hub_is_the_named_or_default_saved_one() {
         let mut config = Config::default();
-        config.hubs.insert("plaza".into(), SavedHub { mcp_token: Some("apz_mcp_z".into()), ..saved("https://plaza.test", None) });
+        config.hubs.insert(
+            "plaza".into(),
+            SavedHub {
+                mcp_token: Some("apz_mcp_z".into()),
+                ..saved("https://plaza.test", None)
+            },
+        );
         config.default = Some("plaza".into());
         assert_eq!(saved_hub(&config, None).unwrap().url, "https://plaza.test");
-        assert_eq!(saved_hub(&config, Some("https://plaza.test/")).unwrap().mcp_token.as_deref(), Some("apz_mcp_z"));
+        assert_eq!(
+            saved_hub(&config, Some("https://plaza.test/"))
+                .unwrap()
+                .mcp_token
+                .as_deref(),
+            Some("apz_mcp_z")
+        );
         assert!(saved_hub(&config, Some("nowhere")).is_err());
     }
 
@@ -450,12 +632,21 @@ mod tests {
             "enabled": false, "bind": "local", "auth_mode": "open", "open_scope": "operate",
             "allowed_origins": ["https://console.test"],
         });
-        let body = switch_body(&now, &Switch { enabled: true, ..Switch::default() });
+        let body = switch_body(
+            &now,
+            &Switch {
+                enabled: true,
+                ..Switch::default()
+            },
+        );
         assert_eq!(body["auth_mode"], "open");
         assert_eq!(body["open_scope"], "operate");
         assert_eq!(body["allowed_origins"], json!(["https://console.test"]));
         assert_eq!(body["bind"], "local");
-        assert_eq!(body["confirm_open_remote"], false, "a local open hub needs no confirmation");
+        assert_eq!(
+            body["confirm_open_remote"], false,
+            "a local open hub needs no confirmation"
+        );
     }
 
     #[test]
@@ -465,13 +656,23 @@ mod tests {
         assert_eq!(body["enabled"], false);
         assert_eq!(body["bind"], "remote");
         assert_eq!(body["auth_mode"], "open");
-        assert_eq!(body["confirm_open_remote"], true, "the open remote setting was confirmed when it was set");
+        assert_eq!(
+            body["confirm_open_remote"], true,
+            "the open remote setting was confirmed when it was set"
+        );
     }
 
     #[test]
     fn enabling_remote_does_not_open_a_local_secure_hub_without_a_confirmation() {
         let now = json!({ "enabled": false, "bind": "local", "auth_mode": "secure", "open_scope": "observe", "allowed_origins": [] });
-        let body = switch_body(&now, &Switch { enabled: true, remote: true, ..Switch::default() });
+        let body = switch_body(
+            &now,
+            &Switch {
+                enabled: true,
+                remote: true,
+                ..Switch::default()
+            },
+        );
         assert_eq!(body["bind"], "remote");
         assert_eq!(body["auth_mode"], "secure");
         assert_eq!(body["confirm_open_remote"], false);
@@ -495,23 +696,52 @@ mod tests {
         );
         assert_eq!(body["auth_mode"], "open");
         assert_eq!(body["open_scope"], "operate");
-        assert_eq!(body["allowed_origins"], json!(["https://a.test", "https://b.test"]), "the origins replace the list");
+        assert_eq!(
+            body["allowed_origins"],
+            json!(["https://a.test", "https://b.test"]),
+            "the origins replace the list"
+        );
         assert_eq!(body["confirm_open_remote"], false);
-        let untouched = switch_body(&now, &Switch { enabled: true, ..Switch::default() });
-        assert_eq!(untouched["allowed_origins"], json!(["https://old.test"]), "no origin flag keeps the list");
+        let untouched = switch_body(
+            &now,
+            &Switch {
+                enabled: true,
+                ..Switch::default()
+            },
+        );
+        assert_eq!(
+            untouched["allowed_origins"],
+            json!(["https://old.test"]),
+            "no origin flag keeps the list"
+        );
         assert_eq!(untouched["auth_mode"], "secure");
     }
 
     #[test]
     fn the_open_remote_confirmation_is_sent_when_the_flag_says_so() {
         let now = json!({ "enabled": false, "bind": "local", "auth_mode": "secure", "open_scope": "observe", "allowed_origins": [] });
-        let flagged = Switch { enabled: true, remote: true, auth: Some("open".into()), confirm_open_remote: true, ..Switch::default() };
+        let flagged = Switch {
+            enabled: true,
+            remote: true,
+            auth: Some("open".into()),
+            confirm_open_remote: true,
+            ..Switch::default()
+        };
         let body = switch_body(&now, &flagged);
         assert_eq!(body["bind"], "remote");
         assert_eq!(body["auth_mode"], "open");
         assert_eq!(body["confirm_open_remote"], true);
-        let unflagged = Switch { enabled: true, remote: true, auth: Some("open".into()), ..Switch::default() };
-        assert_eq!(switch_body(&now, &unflagged)["confirm_open_remote"], false, "without the flag the hub refuses");
+        let unflagged = Switch {
+            enabled: true,
+            remote: true,
+            auth: Some("open".into()),
+            ..Switch::default()
+        };
+        assert_eq!(
+            switch_body(&now, &unflagged)["confirm_open_remote"],
+            false,
+            "without the flag the hub refuses"
+        );
     }
 
     #[test]
@@ -519,12 +749,21 @@ mod tests {
         assert_eq!(origins_of(&[]).unwrap(), None);
         assert_eq!(origins_of(&["none".to_string()]).unwrap(), Some(Vec::new()));
         assert!(origins_of(&["none".to_string(), "https://a.test".to_string()]).is_err());
-        assert_eq!(origins_of(&["https://a.test".to_string()]).unwrap(), Some(vec!["https://a.test".to_string()]));
+        assert_eq!(
+            origins_of(&["https://a.test".to_string()]).unwrap(),
+            Some(vec!["https://a.test".to_string()])
+        );
     }
 
     #[test]
     fn a_hub_without_an_auth_mode_in_its_status_is_saved_secure() {
-        let body = switch_body(&json!({ "bind": "local" }), &Switch { enabled: true, ..Switch::default() });
+        let body = switch_body(
+            &json!({ "bind": "local" }),
+            &Switch {
+                enabled: true,
+                ..Switch::default()
+            },
+        );
         assert_eq!(body["auth_mode"], "secure");
         assert_eq!(body["open_scope"], "observe");
         assert_eq!(body["allowed_origins"], json!([]));
@@ -541,13 +780,46 @@ mod tests {
     #[test]
     fn the_switch_flags_and_the_call_log_flags_parse() {
         let enable = TestCli::try_parse_from([
-            "agentplaza", "server", "enable", "--auth", "open", "--open-scope", "operate", "--origin", "https://a.test",
-            "--origin", "https://b.test", "--confirm-open-remote",
+            "agentplaza",
+            "server",
+            "enable",
+            "--auth",
+            "open",
+            "--open-scope",
+            "operate",
+            "--origin",
+            "https://a.test",
+            "--origin",
+            "https://b.test",
+            "--confirm-open-remote",
         ]);
-        assert!(matches!(enable.map(|cli| cli.cmd), Ok(Cmd::Server(ServerCmd::Enable { confirm_open_remote: true, .. }))));
-        assert!(TestCli::try_parse_from(["agentplaza", "server", "enable", "--auth", "bogus"]).is_err());
-        assert!(TestCli::try_parse_from(["agentplaza", "server", "enable", "--open-scope", "root"]).is_err());
-        assert!(TestCli::try_parse_from(["agentplaza", "calls", "--token-id", "mcp_1", "--tool", "hub_status", "--limit", "20"]).is_ok());
+        assert!(matches!(
+            enable.map(|cli| cli.cmd),
+            Ok(Cmd::Server(ServerCmd::Enable {
+                confirm_open_remote: true,
+                ..
+            }))
+        ));
+        assert!(
+            TestCli::try_parse_from(["agentplaza", "server", "enable", "--auth", "bogus"]).is_err()
+        );
+        assert!(
+            TestCli::try_parse_from(["agentplaza", "server", "enable", "--open-scope", "root"])
+                .is_err()
+        );
+        assert!(
+            TestCli::try_parse_from([
+                "agentplaza",
+                "calls",
+                "--token-id",
+                "mcp_1",
+                "--tool",
+                "hub_status",
+                "--limit",
+                "20"
+            ])
+            .is_ok()
+        );
         assert!(TestCli::try_parse_from(["agentplaza", "calls", "--limit", "501"]).is_err());
     }
 
@@ -555,7 +827,12 @@ mod tests {
     fn calls_filters_by_token_id_and_never_takes_the_owner_token_flag() {
         // `--token` is the global owner flag (main.rs): on `calls` it must not filter, or it would shadow authentication.
         let filtered = TestCli::try_parse_from(["agentplaza", "calls", "--token-id", "mcp_1"]);
-        assert!(matches!(filtered.map(|cli| cli.cmd), Ok(Cmd::Calls { token_id: Some(ref id), .. }) if id == "mcp_1"));
-        assert!(TestCli::try_parse_from(["agentplaza", "calls", "--token", "mcp_1"]).is_err(), "--token is not a calls filter");
+        assert!(
+            matches!(filtered.map(|cli| cli.cmd), Ok(Cmd::Calls { token_id: Some(ref id), .. }) if id == "mcp_1")
+        );
+        assert!(
+            TestCli::try_parse_from(["agentplaza", "calls", "--token", "mcp_1"]).is_err(),
+            "--token is not a calls filter"
+        );
     }
 }

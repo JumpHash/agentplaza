@@ -10,9 +10,9 @@ mod vars;
 
 use serde::{Deserialize, Serialize};
 
-pub use diff::{diff, DiffLine, Op};
+pub use diff::{DiffLine, Op, diff};
 pub use doc::{Block, Doc};
-pub use vars::{render, slug, unknown_vars, VARIABLES};
+pub use vars::{VARIABLES, render, slug, unknown_vars};
 
 /// Bumped whenever a rule is added, removed or changes what it reports. Stored with every scored version.
 pub const RULES_VERSION: u32 = 1;
@@ -63,7 +63,9 @@ impl Severity {
     }
 
     pub fn parse(s: &str) -> Option<Severity> {
-        [Severity::Error, Severity::Warning, Severity::Info].into_iter().find(|v| v.as_str() == s)
+        [Severity::Error, Severity::Warning, Severity::Info]
+            .into_iter()
+            .find(|v| v.as_str() == s)
     }
 }
 
@@ -85,7 +87,12 @@ impl Finding {
         if message.chars().count() > 300 {
             message = message.chars().take(299).collect::<String>() + "…";
         }
-        Finding { rule: rule.to_string(), severity, line, message }
+        Finding {
+            rule: rule.to_string(),
+            severity,
+            line,
+            message,
+        }
     }
 }
 
@@ -159,7 +166,11 @@ pub fn check(kind: Kind, body: &str) -> Report {
     findings.extend(rules_kind::check(kind, &doc));
     findings.sort_by(|a, b| (a.line, a.severity, &a.rule).cmp(&(b.line, b.severity, &b.rule)));
     let count = |s: Severity| findings.iter().filter(|f| f.severity == s).count() as u32;
-    let (errors, warnings, infos) = (count(Severity::Error), count(Severity::Warning), count(Severity::Info));
+    let (errors, warnings, infos) = (
+        count(Severity::Error),
+        count(Severity::Warning),
+        count(Severity::Info),
+    );
     let chars = body.chars().count() as u32;
     let stats = Stats {
         chars,
@@ -168,7 +179,16 @@ pub fn check(kind: Kind, body: &str) -> Report {
         headings: doc.headings().count() as u32,
         est_tokens: chars.div_ceil(4),
     };
-    Report { kind, rules_version: RULES_VERSION, findings, score: score(errors, warnings, infos), errors, warnings, infos, stats }
+    Report {
+        kind,
+        rules_version: RULES_VERSION,
+        findings,
+        score: score(errors, warnings, infos),
+        errors,
+        warnings,
+        infos,
+        stats,
+    }
 }
 
 /// The starter body for a new prompt of `kind`. Each one passes every check (score 100).
@@ -182,7 +202,10 @@ pub fn template(kind: Kind) -> &'static str {
 
 /// The best of several scored versions: the highest score, ties going to the newest (largest version number).
 pub fn best_version(scores: impl IntoIterator<Item = (u32, u8)>) -> Option<u32> {
-    scores.into_iter().max_by_key(|&(version, score)| (score, version)).map(|(version, _)| version)
+    scores
+        .into_iter()
+        .max_by_key(|&(version, score)| (score, version))
+        .map(|(version, _)| version)
 }
 
 #[cfg(test)]
@@ -207,7 +230,10 @@ mod tests {
     fn kinds_round_trip_and_serialise_as_their_names() {
         for kind in Kind::ALL {
             assert_eq!(Kind::parse(kind.as_str()), Some(kind));
-            assert_eq!(serde_json::to_string(&kind).unwrap(), format!("\"{}\"", kind.as_str()));
+            assert_eq!(
+                serde_json::to_string(&kind).unwrap(),
+                format!("\"{}\"", kind.as_str())
+            );
         }
     }
 
@@ -215,7 +241,13 @@ mod tests {
     fn templates_pass_every_check() {
         for kind in Kind::ALL {
             let report = check(kind, template(kind));
-            assert_eq!(report.score, 100, "{}: {:?}", kind.as_str(), report.findings);
+            assert_eq!(
+                report.score,
+                100,
+                "{}: {:?}",
+                kind.as_str(),
+                report.findings
+            );
         }
     }
 
@@ -226,7 +258,10 @@ mod tests {
         ids.sort();
         ids.dedup();
         assert_eq!(ids.len(), rules.len());
-        assert!(ids.iter().all(|id| id.chars().all(|c| c.is_ascii_lowercase() || c == '-')));
+        assert!(
+            ids.iter()
+                .all(|id| id.chars().all(|c| c.is_ascii_lowercase() || c == '-'))
+        );
     }
 
     #[test]

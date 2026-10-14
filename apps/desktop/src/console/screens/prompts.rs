@@ -8,11 +8,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use iced::widget::{button, checkbox, column, row, text, text_editor, text_input};
 use iced::{Element, Length, Subscription, Task};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use super::{prompt_editor, Id};
-use crate::console::{client, events, ui, Ctx};
-
+use super::{Id, prompt_editor};
+use crate::console::{Ctx, client, events, ui};
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Summary {
@@ -152,7 +151,12 @@ pub fn go(msg: &Msg) -> Option<Id> {
 pub fn load(st: &mut State, ctx: &Ctx) -> Task<Msg> {
     st.loading = true;
     st.error = None;
-    let path = (if st.show_archived { "/v1/prompts?archived=true" } else { "/v1/prompts" }).to_string();
+    let path = (if st.show_archived {
+        "/v1/prompts?archived=true"
+    } else {
+        "/v1/prompts"
+    })
+    .to_string();
     let c = ctx.client.clone();
     client::task(move || c.get::<ListResp>(&path), Msg::Loaded)
 }
@@ -269,7 +273,11 @@ pub fn update(st: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             if event.kind != "prompt" {
                 return Task::none();
             }
-            let id = event.data.get("id").and_then(Value::as_str).unwrap_or_default();
+            let id = event
+                .data
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
             match st.editor.as_mut() {
                 Some(ed) if ed.id == id => prompt_editor::hub_changed(ed, ctx).map(Msg::Editor),
                 Some(_) => Task::none(),
@@ -300,7 +308,9 @@ fn open_editor(st: &mut State, id: String, ctx: &Ctx) -> Task<Msg> {
 /// Prefill the body from the kind's template while the author has not typed in it.
 fn refill(st: &mut State) {
     if !st.body_touched {
-        st.new_body = text_editor::Content::with_text(&apz_prompt::template(api_kind(st.new_kind)).to_string());
+        st.new_body = text_editor::Content::with_text(
+            &apz_prompt::template(api_kind(st.new_kind)).to_string(),
+        );
     }
 }
 
@@ -416,7 +426,11 @@ pub fn view<'a>(st: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
     ];
     let toolbar = row![
         ui::seg(&kinds, st.filter, Msg::Filter),
-        ui::seg(&[(false, "Hide archived"), (true, "Show archived")], st.show_archived, Msg::Archived),
+        ui::seg(
+            &[(false, "Hide archived"), (true, "Show archived")],
+            st.show_archived,
+            Msg::Archived
+        ),
     ]
     .spacing(12);
     let search = text_input("Search id, title, description or tags", &st.query)
@@ -432,11 +446,13 @@ pub fn view<'a>(st: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
         page = page.push(ui::loading());
     }
     if let Some(e) = st.error.as_ref() {
-        page = page.push(column![
-            ui::error_line(e),
-            ui::btn_sm("Try again", None, ui::Kind::Secondary, Some(Msg::Retry)),
-        ]
-        .spacing(8));
+        page = page.push(
+            column![
+                ui::error_line(e),
+                ui::btn_sm("Try again", None, ui::Kind::Secondary, Some(Msg::Retry)),
+            ]
+            .spacing(8),
+        );
     }
 
     let needle = st.query.trim().to_lowercase();
@@ -458,8 +474,17 @@ pub fn view<'a>(st: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
         } else if visible.is_empty() {
             page = page.push(
                 column![
-                    ui::empty("file", "Nothing matches", "Try another kind, or clear the search."),
-                    ui::btn_sm("Clear filters", None, ui::Kind::Secondary, Some(Msg::ClearFilters)),
+                    ui::empty(
+                        "file",
+                        "Nothing matches",
+                        "Try another kind, or clear the search."
+                    ),
+                    ui::btn_sm(
+                        "Clear filters",
+                        None,
+                        ui::Kind::Secondary,
+                        Some(Msg::ClearFilters)
+                    ),
                 ]
                 .spacing(12),
             );
@@ -516,15 +541,24 @@ fn row_card(p: &Summary) -> Element<'_, Msg> {
     if !p.tags.is_empty() {
         body = body.push(text(p.tags.join(" · ")).size(12.0).color(muted));
     }
-    body = body.push(text(format!("updated {}", ago(p.updated_ms))).size(12.0).color(muted));
+    body = body.push(
+        text(format!("updated {}", ago(p.updated_ms)))
+            .size(12.0)
+            .color(muted),
+    );
     ui::card(&p.id, body.into())
 }
 
 /// A form field: its label above its input.
 pub(super) fn field<'a, M: 'a>(label: &str, input: Element<'a, M>) -> Element<'a, M> {
-    column![text(label.to_string()).size(12.0).color(crate::theme::palette().ink_3), input]
-        .spacing(4)
-        .into()
+    column![
+        text(label.to_string())
+            .size(12.0)
+            .color(crate::theme::palette().ink_3),
+        input
+    ]
+    .spacing(4)
+    .into()
 }
 
 fn form_view(st: &State) -> Element<'_, Msg> {
@@ -539,8 +573,13 @@ fn form_view(st: &State) -> Element<'_, Msg> {
             .padding(8)
             .style(crate::theme::input)
             .into(),
-        PKind::AgentsMd => checkbox(st.new_all).label("Apply to every agent").on_toggle(Msg::NewAll).into(),
-        PKind::Fragment => text("Fragments are not bound to an agent.").size(13.0).into(),
+        PKind::AgentsMd => checkbox(st.new_all)
+            .label("Apply to every agent")
+            .on_toggle(Msg::NewAll)
+            .into(),
+        PKind::Fragment => text("Fragments are not bound to an agent.")
+            .size(13.0)
+            .into(),
     };
     let mut col = column![
         field("Kind", ui::seg(&kinds, st.new_kind, Msg::NewKind)),

@@ -4,7 +4,7 @@ use clap::Subcommand;
 use serde_json::Value;
 
 use crate::cmd::models::{items, none_if_empty};
-use crate::ctx::{self, confirm, Ctx};
+use crate::ctx::{self, Ctx, confirm};
 
 #[derive(Subcommand, Debug)]
 pub enum Cmd {
@@ -38,14 +38,34 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                             ctx::s(m, "arch").to_string(),
                             reachable(m),
                             ctx::text(m, "cpus"),
-                            format!("{}/{} MiB", figure(stat(m, "mem_used_mib"), ""), ctx::text(m, "memory_mib")),
+                            format!(
+                                "{}/{} MiB",
+                                figure(stat(m, "mem_used_mib"), ""),
+                                ctx::text(m, "memory_mib")
+                            ),
                             figure(stat(m, "cpu_percent"), "%"),
                             figure(stat(m, "vms_running"), ""),
-                            m.get("runs").and_then(Value::as_array).map_or(0, Vec::len).to_string(),
+                            m.get("runs")
+                                .and_then(Value::as_array)
+                                .map_or(0, Vec::len)
+                                .to_string(),
                         ]
                     })
                     .collect();
-                ctx::table(&["name", "kind", "arch", "reachable", "cpus", "memory", "cpu", "vms", "runs"], &rows);
+                ctx::table(
+                    &[
+                        "name",
+                        "kind",
+                        "arch",
+                        "reachable",
+                        "cpus",
+                        "memory",
+                        "cpu",
+                        "vms",
+                        "runs",
+                    ],
+                    &rows,
+                );
             });
             Ok(())
         }
@@ -71,7 +91,9 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
 
 /// One figure from a machine's live stats (`-` when the node reports none).
 fn stat<'a>(m: &'a Value, key: &str) -> Option<&'a Value> {
-    m.get("stats").filter(|s| !s.is_null()).and_then(|s| s.get(key))
+    m.get("stats")
+        .filter(|s| !s.is_null())
+        .and_then(|s| s.get(key))
 }
 
 fn figure(v: Option<&Value>, unit: &str) -> String {
@@ -90,10 +112,21 @@ fn reachable(m: &Value) -> String {
 }
 
 fn print_machine(m: &Value) {
-    let gpus: Vec<&str> = m.get("gpus").and_then(Value::as_array).into_iter().flatten().map(|g| ctx::s(g, "name")).collect();
+    let gpus: Vec<&str> = m
+        .get("gpus")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .map(|g| ctx::s(g, "name"))
+        .collect();
     let load = stat(m, "load")
         .and_then(Value::as_array)
-        .map(|l| l.iter().map(|n| format!("{:.2}", n.as_f64().unwrap_or(0.0))).collect::<Vec<_>>().join(" "))
+        .map(|l| {
+            l.iter()
+                .map(|n| format!("{:.2}", n.as_f64().unwrap_or(0.0)))
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
         .unwrap_or_else(|| "-".into());
     ctx::fields(&[
         ("id", ctx::s(m, "id").to_string()),
@@ -104,7 +137,14 @@ fn print_machine(m: &Value) {
         ("cpus", ctx::text(m, "cpus")),
         ("memory", format!("{} MiB", ctx::text(m, "memory_mib"))),
         ("reachable", reachable(m)),
-        ("gpus", if gpus.is_empty() { "none".into() } else { gpus.join(", ") }),
+        (
+            "gpus",
+            if gpus.is_empty() {
+                "none".into()
+            } else {
+                gpus.join(", ")
+            },
+        ),
         ("cpu", figure(stat(m, "cpu_percent"), "%")),
         ("load", load),
         ("memory used", figure(stat(m, "mem_used_mib"), " MiB")),
@@ -116,7 +156,10 @@ fn print_machine(m: &Value) {
         println!();
         ctx::fields(&[
             ("plaza cpu", figure(total.get("services_cpu_percent"), "%")),
-            ("plaza memory", figure(total.get("services_rss_mib"), " MiB")),
+            (
+                "plaza memory",
+                figure(total.get("services_rss_mib"), " MiB"),
+            ),
             ("agents cpu", figure(total.get("vms_cpu_percent"), "%")),
             ("agents memory", figure(total.get("vms_rss_mib"), " MiB")),
         ]);
@@ -134,7 +177,10 @@ fn print_machine(m: &Value) {
                 none_if_empty(ctx::s(r, "role").to_string()),
                 ctx::text(r, "vcpus"),
                 ctx::text(r, "memory_mib"),
-                r.get("vms").and_then(Value::as_array).map_or(0, Vec::len).to_string(),
+                r.get("vms")
+                    .and_then(Value::as_array)
+                    .map_or(0, Vec::len)
+                    .to_string(),
             ]
         })
         .collect();

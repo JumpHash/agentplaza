@@ -29,7 +29,11 @@ impl Step {
         if self.params.is_empty() {
             self.action.clone()
         } else {
-            let ps: Vec<String> = self.params.iter().map(|(k, v)| format!("{k} = {v}")).collect();
+            let ps: Vec<String> = self
+                .params
+                .iter()
+                .map(|(k, v)| format!("{k} = {v}"))
+                .collect();
             format!("{}({})", self.action, ps.join(", "))
         }
     }
@@ -87,7 +91,11 @@ pub struct Options {
 
 impl Default for Options {
     fn default() -> Options {
-        Options { stop_at_first: true, force_deadlock_check: false, max_states: 5_000_000 }
+        Options {
+            stop_at_first: true,
+            force_deadlock_check: false,
+            max_states: 5_000_000,
+        }
     }
 }
 
@@ -170,7 +178,11 @@ impl<'a> Search<'a> {
             match v {
                 Value::Bool(true) => {}
                 Value::Bool(false) => bad.push(name.to_string()),
-                other => return Err(Diag::bare(format!("invariant \"{name}\" evaluates to {other}, not a Bool"))),
+                other => {
+                    return Err(Diag::bare(format!(
+                        "invariant \"{name}\" evaluates to {other}, not a Bool"
+                    )))
+                }
             }
         }
         Ok(bad)
@@ -185,7 +197,14 @@ impl<'a> Search<'a> {
                 Some(st) => format!("{m} after {}", st.label()),
                 None => m,
             };
-            self.record(Violation { what: Found::Type(m), state: idx, step: None }, depth);
+            self.record(
+                Violation {
+                    what: Found::Type(m),
+                    state: idx,
+                    step: None,
+                },
+                depth,
+            );
             if self.stop {
                 return;
             }
@@ -193,7 +212,14 @@ impl<'a> Search<'a> {
         match self.check_state(&s) {
             Ok(bad) => {
                 for b in bad {
-                    self.record(Violation { what: Found::Invariant(b), state: idx, step: None }, depth);
+                    self.record(
+                        Violation {
+                            what: Found::Invariant(b),
+                            state: idx,
+                            step: None,
+                        },
+                        depth,
+                    );
                     if self.stop {
                         return;
                     }
@@ -201,14 +227,28 @@ impl<'a> Search<'a> {
             }
             Err(d) => {
                 let msg = self.render(&d);
-                self.record(Violation { what: Found::Error(msg), state: idx, step: None }, depth);
+                self.record(
+                    Violation {
+                        what: Found::Error(msg),
+                        state: idx,
+                        step: None,
+                    },
+                    depth,
+                );
             }
         }
     }
 }
 
-pub fn explore(prog: &Program, model_pack: usize, model: &ModelDecl, opts: &Options) -> Result<Report, Diag> {
-    let (mpack, mdecl) = prog.machine(model_pack, &model.machine).map_err(|e| Diag::error(model.span, e))?;
+pub fn explore(
+    prog: &Program,
+    model_pack: usize,
+    model: &ModelDecl,
+    opts: &Options,
+) -> Result<Report, Diag> {
+    let (mpack, mdecl) = prog
+        .machine(model_pack, &model.machine)
+        .map_err(|e| Diag::error(model.span, e))?;
     let ctx = MachineCtx::new(prog, mpack, mdecl, Some((model, model_pack)), &[])?;
     let mut invs: Vec<(&str, &InvBody)> = Vec::new();
     let mut trans: Vec<(&str, &Expr)> = Vec::new();
@@ -231,7 +271,9 @@ pub fn explore(prog: &Program, model_pack: usize, model: &ModelDecl, opts: &Opti
             MOpt::Terminal(e) => terminals.push((e, model_pack)),
             MOpt::Constraint(e) => constraints.push(e),
             MOpt::DeadlockAllowed => deadlock_allowed = true,
-            MOpt::Symmetry(s) if s != "none" => notes.push(format!("symmetry {s} not applied (v0 explores the full space)")),
+            MOpt::Symmetry(s) if s != "none" => notes.push(format!(
+                "symmetry {s} not applied (v0 explores the full space)"
+            )),
             _ => {}
         }
     }
@@ -251,7 +293,16 @@ pub fn explore(prog: &Program, model_pack: usize, model: &ModelDecl, opts: &Opti
         deadlock_checked: check_deadlock,
         notes,
     };
-    let mut s = Search { prog, ctx: &ctx, invs, trans, opts, rep, cutoff: None, stop: false };
+    let mut s = Search {
+        prog,
+        ctx: &ctx,
+        invs,
+        trans,
+        opts,
+        rep,
+        cutoff: None,
+        stop: false,
+    };
     let mut seen: HashMap<Vec<u8>, usize> = HashMap::new();
     let mut queue = VecDeque::new();
 
@@ -259,7 +310,11 @@ pub fn explore(prog: &Program, model_pack: usize, model: &ModelDecl, opts: &Opti
         Ok(v) => v,
         Err(d) => {
             let msg = s.render(&d);
-            s.rep.violations.push(Violation { what: Found::Error(msg), state: 0, step: None });
+            s.rep.violations.push(Violation {
+                what: Found::Error(msg),
+                state: 0,
+                step: None,
+            });
             return Ok(s.rep);
         }
     };
@@ -270,7 +325,12 @@ pub fn explore(prog: &Program, model_pack: usize, model: &ModelDecl, opts: &Opti
         }
         let idx = s.rep.states.len();
         seen.insert(key, idx);
-        s.rep.states.push(StateRec { vals: st, parent: None, via: None, depth: 1 });
+        s.rep.states.push(StateRec {
+            vals: st,
+            parent: None,
+            via: None,
+            depth: 1,
+        });
         s.rep.generated += 1;
         s.rep.depth = 1;
         s.check_new(idx, None);
@@ -298,7 +358,14 @@ pub fn explore(prog: &Program, model_pack: usize, model: &ModelDecl, opts: &Opti
                 Ok(_) => inside = false,
                 Err(d) => {
                     let msg = s.render(&d);
-                    s.record(Violation { what: Found::Error(msg), state: idx, step: None }, depth);
+                    s.record(
+                        Violation {
+                            what: Found::Error(msg),
+                            state: idx,
+                            step: None,
+                        },
+                        depth,
+                    );
                     return Ok(s.rep);
                 }
             }
@@ -311,8 +378,20 @@ pub fn explore(prog: &Program, model_pack: usize, model: &ModelDecl, opts: &Opti
             let succs = match ctx.successors(prog, a, &cur) {
                 Ok(v) => v,
                 Err(d) => {
-                    let msg = format!("{} (in action {} from {})", s.render(&d), a.name, ctx.show(&cur, None));
-                    s.record(Violation { what: Found::Error(msg), state: idx, step: None }, depth);
+                    let msg = format!(
+                        "{} (in action {} from {})",
+                        s.render(&d),
+                        a.name,
+                        ctx.show(&cur, None)
+                    );
+                    s.record(
+                        Violation {
+                            what: Found::Error(msg),
+                            state: idx,
+                            step: None,
+                        },
+                        depth,
+                    );
                     return Ok(s.rep);
                 }
             };
@@ -322,7 +401,10 @@ pub fn explore(prog: &Program, model_pack: usize, model: &ModelDecl, opts: &Opti
             }
             for sc in succs {
                 s.rep.generated += 1;
-                let step = Step { action: a.name.clone(), params: sc.params };
+                let step = Step {
+                    action: a.name.clone(),
+                    params: sc.params,
+                };
                 let next = sc.next;
                 if next != cur {
                     let nx: Vec<Option<Value>> = next.iter().cloned().map(Some).collect();
@@ -333,16 +415,36 @@ pub fn explore(prog: &Program, model_pack: usize, model: &ModelDecl, opts: &Opti
                         match env.eval(e) {
                             Ok(Value::Bool(true)) => {}
                             Ok(Value::Bool(false)) => {
-                                let v = Violation { what: Found::Transition(name.to_string()), state: idx, step: Some((step.clone(), next.clone())) };
+                                let v = Violation {
+                                    what: Found::Transition(name.to_string()),
+                                    state: idx,
+                                    step: Some((step.clone(), next.clone())),
+                                };
                                 s.record(v, depth + 1);
                             }
                             Ok(other) => {
-                                let msg = format!("transition \"{name}\" evaluates to {other}, not a Bool");
-                                s.record(Violation { what: Found::Error(msg), state: idx, step: None }, depth + 1);
+                                let msg = format!(
+                                    "transition \"{name}\" evaluates to {other}, not a Bool"
+                                );
+                                s.record(
+                                    Violation {
+                                        what: Found::Error(msg),
+                                        state: idx,
+                                        step: None,
+                                    },
+                                    depth + 1,
+                                );
                             }
                             Err(d) => {
                                 let msg = s.render(&d);
-                                s.record(Violation { what: Found::Error(msg), state: idx, step: None }, depth + 1);
+                                s.record(
+                                    Violation {
+                                        what: Found::Error(msg),
+                                        state: idx,
+                                        step: None,
+                                    },
+                                    depth + 1,
+                                );
                             }
                         }
                         if s.stop {
@@ -356,11 +458,26 @@ pub fn explore(prog: &Program, model_pack: usize, model: &ModelDecl, opts: &Opti
                 }
                 let nidx = s.rep.states.len();
                 seen.insert(key, nidx);
-                s.rep.states.push(StateRec { vals: next, parent: Some(idx), via: Some(step.clone()), depth: depth + 1 });
+                s.rep.states.push(StateRec {
+                    vals: next,
+                    parent: Some(idx),
+                    via: Some(step.clone()),
+                    depth: depth + 1,
+                });
                 s.rep.depth = s.rep.depth.max(depth + 1);
                 if s.rep.states.len() > opts.max_states {
-                    let msg = format!("more than {} states; tighten the model's bounds", opts.max_states);
-                    s.record(Violation { what: Found::Error(msg), state: nidx, step: None }, depth + 1);
+                    let msg = format!(
+                        "more than {} states; tighten the model's bounds",
+                        opts.max_states
+                    );
+                    s.record(
+                        Violation {
+                            what: Found::Error(msg),
+                            state: nidx,
+                            step: None,
+                        },
+                        depth + 1,
+                    );
                     return Ok(s.rep);
                 }
                 s.check_new(nidx, Some(&step));
@@ -380,7 +497,14 @@ pub fn explore(prog: &Program, model_pack: usize, model: &ModelDecl, opts: &Opti
                 }
             }
             if !terminal {
-                s.record(Violation { what: Found::Deadlock, state: idx, step: None }, depth);
+                s.record(
+                    Violation {
+                        what: Found::Deadlock,
+                        state: idx,
+                        step: None,
+                    },
+                    depth,
+                );
                 if s.stop {
                     return Ok(s.rep);
                 }
@@ -390,7 +514,10 @@ pub fn explore(prog: &Program, model_pack: usize, model: &ModelDecl, opts: &Opti
     // In level mode keep only the shallowest violations.
     if let Some(c) = s.cutoff {
         let states = &s.rep.states;
-        s.rep.violations.retain(|v| states[v.state].depth + v.step.is_some() as u32 == c || matches!(v.what, Found::Error(_)));
+        s.rep.violations.retain(|v| {
+            states[v.state].depth + v.step.is_some() as u32 == c
+                || matches!(v.what, Found::Error(_))
+        });
     }
     Ok(s.rep)
 }
@@ -414,12 +541,19 @@ impl Report {
         let mut prev: Option<&State> = None;
         for &i in &path {
             let s = &self.states[i];
-            let label = s.via.as_ref().map(|x| x.label()).unwrap_or_else(|| "init".into());
+            let label = s
+                .via
+                .as_ref()
+                .map(|x| x.label())
+                .unwrap_or_else(|| "init".into());
             rows.push((label, self.ctx.show(&s.vals, prev.map(|p| p.as_slice()))));
             prev = Some(&s.vals);
         }
         if let Some((step, next)) = &v.step {
-            rows.push((step.label(), self.ctx.show(next, prev.map(|p| p.as_slice()))));
+            rows.push((
+                step.label(),
+                self.ctx.show(next, prev.map(|p| p.as_slice())),
+            ));
         }
         let w = rows.iter().map(|r| r.0.chars().count()).max().unwrap_or(0);
         let mut out = String::new();
@@ -449,11 +583,17 @@ impl Report {
 /// and `remove action` then edit the syntax tree.
 pub fn mutate(prog: &Program, pack: usize, m: &MutantDecl) -> Result<Program, Diag> {
     let Some(mref) = prog.lookup_decl(pack, &m.machine) else {
-        return Err(Diag::error(m.span, format!("unknown machine `{}`", m.machine)));
+        return Err(Diag::error(
+            m.span,
+            format!("unknown machine `{}`", m.machine),
+        ));
     };
     let find_action = |p: &Program, name: &str, span: Span| -> Result<Span, Diag> {
         let Item::Machine(md) = p.item(mref) else {
-            return Err(Diag::error(span, "the mutated file no longer has the machine at the same place"));
+            return Err(Diag::error(
+                span,
+                "the mutated file no longer has the machine at the same place",
+            ));
         };
         md.actions()
             .find(|a| a.name == name)
@@ -462,7 +602,13 @@ pub fn mutate(prog: &Program, pack: usize, m: &MutantDecl) -> Result<Program, Di
     };
     let mut p = prog.clone();
     for op in &m.ops {
-        if let MutOp::Replace { text, action, with, span } = op {
+        if let MutOp::Replace {
+            text,
+            action,
+            with,
+            span,
+        } = op
+        {
             let aspan = find_action(&p, action, *span)?;
             let src = &p.sources.files[mref.file as usize].text;
             let body = &src[aspan.lo as usize..aspan.hi as usize];
@@ -473,7 +619,13 @@ pub fn mutate(prog: &Program, pack: usize, m: &MutantDecl) -> Result<Program, Di
             let at = aspan.lo as usize + body.find(text.as_str()).unwrap();
             let new_text = format!("{}{}{}", &src[..at], with, &src[at + text.len()..]);
             p = p.with_source(mref.file, new_text).map_err(|d| {
-                Diag::error(*span, format!("the mutated machine does not parse: {}", d.render(&prog.sources)))
+                Diag::error(
+                    *span,
+                    format!(
+                        "the mutated machine does not parse: {}",
+                        d.render(&prog.sources)
+                    ),
+                )
             })?;
         }
     }
@@ -489,15 +641,25 @@ pub fn mutate(prog: &Program, pack: usize, m: &MutantDecl) -> Result<Program, Di
                 }) else {
                     return Err(Diag::error(*span, format!("no action `{action}`")));
                 };
-                let pos: Vec<usize> = a.body.iter().enumerate().filter(|(_, s)| matches!(s.kind, StmtKind::When(_))).map(|(i, _)| i).collect();
+                let pos: Vec<usize> = a
+                    .body
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, s)| matches!(s.kind, StmtKind::When(_)))
+                    .map(|(i, _)| i)
+                    .collect();
                 if *n == 0 || *n > pos.len() {
-                    return Err(Diag::error(*span, format!("action {action} has {} top-level guard(s)", pos.len())));
+                    return Err(Diag::error(
+                        *span,
+                        format!("action {action} has {} top-level guard(s)", pos.len()),
+                    ));
                 }
                 a.body.remove(pos[*n - 1]);
             }
             MutOp::RemoveAction { action, span } => {
                 let before = md.items.len();
-                md.items.retain(|i| !matches!(i, MItem::Action(a) if a.name == *action));
+                md.items
+                    .retain(|i| !matches!(i, MItem::Action(a) if a.name == *action));
                 if md.items.len() == before {
                     return Err(Diag::error(*span, format!("no action `{action}`")));
                 }
@@ -515,25 +677,40 @@ pub struct MutantOutcome {
 }
 
 pub fn run_mutant(prog: &Program, pack: usize, m: &MutantDecl) -> MutantOutcome {
-    let fail = |msg: String| MutantOutcome { caught: false, line: msg, detail: vec![] };
+    let fail = |msg: String| MutantOutcome {
+        caught: false,
+        line: msg,
+        detail: vec![],
+    };
     let Some(mref) = prog.lookup_decl(pack, &m.machine) else {
         return fail(format!("unknown machine `{}`", m.machine));
     };
     let models = models_of(prog, mref);
     if models.is_empty() {
-        return fail(format!("machine {} has no model to check the mutant in", m.machine));
+        return fail(format!(
+            "machine {} has no model to check the mutant in",
+            m.machine
+        ));
     }
     if let Expect::Property(p) = &m.expect {
-        return fail(format!("expects property \"{p}\", but property checking is not in v0"));
+        return fail(format!(
+            "expects property \"{p}\", but property checking is not in v0"
+        ));
     }
     let mp = match mutate(prog, pack, m) {
         Ok(p) => p,
         Err(d) => return fail(d.render(&prog.sources)),
     };
-    let opts = Options { stop_at_first: false, force_deadlock_check: m.expect == Expect::Deadlock, ..Options::default() };
+    let opts = Options {
+        stop_at_first: false,
+        force_deadlock_check: m.expect == Expect::Deadlock,
+        ..Options::default()
+    };
     let mut seen = Vec::new();
     for (mpack, mr, _) in models {
-        let Item::Model(md) = mp.item(mr) else { return fail("model moved after mutation".into()) };
+        let Item::Model(md) = mp.item(mr) else {
+            return fail("model moved after mutation".into());
+        };
         let rep = match explore(&mp, mpack, md, &opts) {
             Ok(r) => r,
             Err(d) => return fail(d.render(&mp.sources)),
@@ -545,7 +722,12 @@ pub fn run_mutant(prog: &Program, pack: usize, m: &MutantDecl) -> MutantOutcome 
                 _ => false,
             };
             if hit {
-                let others: Vec<String> = rep.violations.iter().filter(|o| o.what != v.what).map(|o| o.what.describe()).collect();
+                let others: Vec<String> = rep
+                    .violations
+                    .iter()
+                    .filter(|o| o.what != v.what)
+                    .map(|o| o.what.describe())
+                    .collect();
                 let mut line = format!(
                     "caught in \"{}\": {} at depth {}",
                     md.name,
@@ -555,17 +737,29 @@ pub fn run_mutant(prog: &Program, pack: usize, m: &MutantDecl) -> MutantOutcome 
                 if !others.is_empty() {
                     line.push_str(&format!(" (also: {})", others.join("; ")));
                 }
-                return MutantOutcome { caught: true, line, detail: vec![rep.render_trace(v, "  ")] };
+                return MutantOutcome {
+                    caught: true,
+                    line,
+                    detail: vec![rep.render_trace(v, "  ")],
+                };
             }
         }
-        seen.extend(rep.violations.iter().map(|v| format!("\"{}\": {}", md.name, v.what.describe())));
+        seen.extend(
+            rep.violations
+                .iter()
+                .map(|v| format!("\"{}\": {}", md.name, v.what.describe())),
+        );
     }
     let what = match &m.expect {
         Expect::Violation(n) => format!("violation \"{n}\""),
         Expect::Deadlock => "deadlock".into(),
         Expect::Property(p) => format!("property \"{p}\""),
     };
-    let found = if seen.is_empty() { "no violation at all".to_string() } else { seen.join("; ") };
+    let found = if seen.is_empty() {
+        "no violation at all".to_string()
+    } else {
+        seen.join("; ")
+    };
     fail(format!("was NOT caught: expected {what}, found {found}"))
 }
 
@@ -575,7 +769,11 @@ mod tests {
 
     fn load(src: &str) -> Program {
         let (p, d) = Program::load(vec![("t.jhrl".into(), src.into())]);
-        assert!(d.is_empty(), "{:?}", d.iter().map(|x| x.render(&p.sources)).collect::<Vec<_>>());
+        assert!(
+            d.is_empty(),
+            "{:?}",
+            d.iter().map(|x| x.render(&p.sources)).collect::<Vec<_>>()
+        );
         p
     }
 
@@ -604,7 +802,9 @@ mod tests {
 
     #[test]
     fn shortest_counterexample() {
-        let src = COUNTER.replace("x <= N", "x < 3").replace("const N = 3", "const N = 5\n deadlock allowed");
+        let src = COUNTER
+            .replace("x <= N", "x < 3")
+            .replace("const N = 3", "const N = 5\n deadlock allowed");
         let p = load(&src);
         let (pk, m) = model(&p, "m");
         let r = explore(&p, pk, m, &Options::default()).unwrap();
@@ -629,12 +829,21 @@ mod tests {
         let p = load(&src);
         let muts: Vec<(usize, MutantDecl)> = p
             .items()
-            .filter_map(|(pk, _, it)| if let Item::Mutant(m) = it { Some((pk, m.clone())) } else { None })
+            .filter_map(|(pk, _, it)| {
+                if let Item::Mutant(m) = it {
+                    Some((pk, m.clone()))
+                } else {
+                    None
+                }
+            })
             .collect();
-        let out: Vec<(String, bool, String)> = muts.iter().map(|(pk, m)| {
-            let o = run_mutant(&p, *pk, m);
-            (m.name.clone(), o.caught, o.line)
-        }).collect();
+        let out: Vec<(String, bool, String)> = muts
+            .iter()
+            .map(|(pk, m)| {
+                let o = run_mutant(&p, *pk, m);
+                (m.name.clone(), o.caught, o.line)
+            })
+            .collect();
         assert!(out[0].1, "{:?}", out[0]);
         assert!(!out[1].1 && out[1].2.contains("occurs"), "{:?}", out[1]);
         assert!(out[2].1, "{:?}", out[2]);
@@ -673,6 +882,10 @@ mod tests {
         );
         let (pk, m) = model(&p, "m");
         let r = explore(&p, pk, m, &Options::default()).unwrap();
-        assert!(matches!(&r.violations[0].what, Found::Type(e) if e.contains("\"c\" is not of type S")), "{:?}", r.violations);
+        assert!(
+            matches!(&r.violations[0].what, Found::Type(e) if e.contains("\"c\" is not of type S")),
+            "{:?}",
+            r.violations
+        );
     }
 }

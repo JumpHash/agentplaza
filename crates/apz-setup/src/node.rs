@@ -23,7 +23,15 @@ pub const NAMES: [&str; 3] = ["apz-link", "vsockd", "noded"];
 
 /// apz-link as `run`: noded on 8899, vsockd's HTTP port 19080 (apz-link's own default, 9180, is not
 /// where vsockd listens), and the forwarder on 7701, which vsockd uses as its `--apid`.
-pub const LINK_RUN: [&str; 7] = ["run", "--noded", "8899", "--vsockd", "19080", "--forward", "7701"];
+pub const LINK_RUN: [&str; 7] = [
+    "run",
+    "--noded",
+    "8899",
+    "--vsockd",
+    "19080",
+    "--forward",
+    "7701",
+];
 
 /// One process of the plan: its binary (by name), its exact arguments and an environment variable it needs.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,7 +66,11 @@ impl Layout {
 
 /// apz-link as the node runs it. Its arguments do not depend on the identity.
 pub fn link() -> PlanProcess {
-    PlanProcess { name: "apz-link", args: argv(&LINK_RUN), env: None }
+    PlanProcess {
+        name: "apz-link",
+        args: argv(&LINK_RUN),
+        env: None,
+    }
 }
 
 /// The node's processes for CIDs `base..base+count`, in start order.
@@ -75,14 +87,33 @@ pub fn plan(base: u64, count: u64, layout: &Layout) -> Vec<PlanProcess> {
         PlanProcess {
             name: "vsockd",
             args: argv(&[
-                "--uds-dir", &uds, "--cids", &cids, "--port", "5000", "--http-port", "19080", "--apid", "http://127.0.0.1:7701",
-                "--internal-token-file", &token,
+                "--uds-dir",
+                &uds,
+                "--cids",
+                &cids,
+                "--port",
+                "5000",
+                "--http-port",
+                "19080",
+                "--apid",
+                "http://127.0.0.1:7701",
+                "--internal-token-file",
+                &token,
             ]),
             env: None,
         },
         PlanProcess {
             name: "noded",
-            args: argv(&["--port", "8899", "--uds-dir", &uds, "--agents", &roles, "--run-cids", &run]),
+            args: argv(&[
+                "--port",
+                "8899",
+                "--uds-dir",
+                &uds,
+                "--agents",
+                &roles,
+                "--run-cids",
+                &run,
+            ]),
             env: vmm,
         },
     ]
@@ -95,7 +126,9 @@ pub fn dir() -> PathBuf {
 
 /// The log file of a node process: `<state>/logs/<name>.log`.
 pub fn log_file(name: &str) -> PathBuf {
-    apz_os::dirs::state().join("logs").join(format!("{name}.log"))
+    apz_os::dirs::state()
+        .join("logs")
+        .join(format!("{name}.log"))
 }
 
 /// The CID range this machine was given when it joined, from `node.json` (`cid_base`, `cid_count`).
@@ -113,7 +146,10 @@ pub fn parse_identity(text: &str) -> Option<(u64, u64)> {
 
 /// `base, base+1, …, base+count-1` as a comma list (`vsockd --cids`).
 pub fn cid_list(base: u64, count: u64) -> String {
-    (base..base + count).map(|cid| cid.to_string()).collect::<Vec<_>>().join(",")
+    (base..base + count)
+        .map(|cid| cid.to_string())
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 /// `A-B` (`noded --run-cids`) for `count` CIDs from `base`.
@@ -128,7 +164,9 @@ pub fn cid_range(base: u64, count: u64) -> String {
 /// so a subset match would let a hub's stop take a node's process.
 pub fn runs_plan(command: &[String], process: &PlanProcess) -> bool {
     match command.split_first() {
-        Some((program, args)) => program_is(program, process.name) && args == process.args.as_slice(),
+        Some((program, args)) => {
+            program_is(program, process.name) && args == process.args.as_slice()
+        }
         None => false,
     }
 }
@@ -158,7 +196,11 @@ pub fn find_plan_pids(process: &PlanProcess) -> Vec<u32> {
 /// The pids of the running processes of `process`'s plan, from `ps` (macOS and the BSDs). Sorted.
 #[cfg(all(unix, not(target_os = "linux")))]
 pub fn find_plan_pids(process: &PlanProcess) -> Vec<u32> {
-    let Ok(out) = Command::new("ps").args(["-axo", "pid=,args="]).stdin(Stdio::null()).output() else {
+    let Ok(out) = Command::new("ps")
+        .args(["-axo", "pid=,args="])
+        .stdin(Stdio::null())
+        .output()
+    else {
         return Vec::new();
     };
     let mut pids: Vec<u32> = String::from_utf8_lossy(&out.stdout)
@@ -193,7 +235,11 @@ pub fn stop_pids(process: &PlanProcess, _recorded: &[u32]) -> Vec<u32> {
 #[cfg(windows)]
 pub fn stop_pids(process: &PlanProcess, recorded: &[u32]) -> Vec<u32> {
     let running = named_pids(process.name);
-    recorded.iter().copied().filter(|pid| running.contains(pid)).collect()
+    recorded
+        .iter()
+        .copied()
+        .filter(|pid| running.contains(pid))
+        .collect()
 }
 
 /// The pids of the processes whose binary is `name`, by name only. Sorted; empty when none runs.
@@ -215,10 +261,17 @@ pub fn named_pids(name: &str) -> Vec<u32> {
 /// The pids of processes named exactly `name`: `pgrep -x` (macOS and the BSDs). Sorted.
 #[cfg(all(unix, not(target_os = "linux")))]
 pub fn named_pids(name: &str) -> Vec<u32> {
-    let Ok(out) = Command::new("pgrep").args(["-x", name]).stdin(Stdio::null()).output() else {
+    let Ok(out) = Command::new("pgrep")
+        .args(["-x", name])
+        .stdin(Stdio::null())
+        .output()
+    else {
         return Vec::new();
     };
-    let mut pids: Vec<u32> = String::from_utf8_lossy(&out.stdout).lines().filter_map(|l| l.trim().parse().ok()).collect();
+    let mut pids: Vec<u32> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| l.trim().parse().ok())
+        .collect();
     pids.sort_unstable();
     pids
 }
@@ -228,7 +281,11 @@ pub fn named_pids(name: &str) -> Vec<u32> {
 pub fn named_pids(name: &str) -> Vec<u32> {
     let image = apz_os::process::exe(name);
     let filter = format!("IMAGENAME eq {image}");
-    let Ok(out) = Command::new("tasklist").args(["/FI", &filter, "/FO", "CSV", "/NH"]).stdin(Stdio::null()).output() else {
+    let Ok(out) = Command::new("tasklist")
+        .args(["/FI", &filter, "/FO", "CSV", "/NH"])
+        .stdin(Stdio::null())
+        .output()
+    else {
         return Vec::new();
     };
     let mut pids: Vec<u32> = String::from_utf8_lossy(&out.stdout)
@@ -236,7 +293,9 @@ pub fn named_pids(name: &str) -> Vec<u32> {
         .filter_map(|line| {
             let mut fields = line.split("\",\"");
             let first = fields.next()?.trim_start_matches('"');
-            first.eq_ignore_ascii_case(&image).then(|| fields.next()?.trim_end_matches('"').parse().ok())?
+            first
+                .eq_ignore_ascii_case(&image)
+                .then(|| fields.next()?.trim_end_matches('"').parse().ok())?
         })
         .collect();
     pids.sort_unstable();
@@ -247,7 +306,11 @@ pub fn named_pids(name: &str) -> Vec<u32> {
 /// in `/<name>`. Sorted.
 #[cfg(any(target_os = "linux", test))]
 fn pids_running(name: &str, procs: impl IntoIterator<Item = (u32, Vec<u8>)>) -> Vec<u32> {
-    let mut pids: Vec<u32> = procs.into_iter().filter(|(_, cmdline)| argv0_is(cmdline, name)).map(|(pid, _)| pid).collect();
+    let mut pids: Vec<u32> = procs
+        .into_iter()
+        .filter(|(_, cmdline)| argv0_is(cmdline, name))
+        .map(|(pid, _)| pid)
+        .collect();
     pids.sort_unstable();
     pids
 }
@@ -255,10 +318,15 @@ fn pids_running(name: &str, procs: impl IntoIterator<Item = (u32, Vec<u8>)>) -> 
 /// The pids among `procs` (pid, and the `/proc/<pid>/cmdline` bytes) that run `process` (see
 /// [`runs_plan`]). Sorted.
 #[cfg(any(target_os = "linux", test))]
-fn pids_running_plan(process: &PlanProcess, procs: impl IntoIterator<Item = (u32, Vec<u8>)>) -> Vec<u32> {
+fn pids_running_plan(
+    process: &PlanProcess,
+    procs: impl IntoIterator<Item = (u32, Vec<u8>)>,
+) -> Vec<u32> {
     let mut pids: Vec<u32> = procs
         .into_iter()
-        .filter(|(_, cmdline)| cmdline_argv(cmdline).is_some_and(|command| runs_plan(&command, process)))
+        .filter(|(_, cmdline)| {
+            cmdline_argv(cmdline).is_some_and(|command| runs_plan(&command, process))
+        })
         .map(|(pid, _)| pid)
         .collect();
     pids.sort_unstable();
@@ -283,7 +351,9 @@ fn cmdline_argv(cmdline: &[u8]) -> Option<Vec<String>> {
         return None;
     }
     let body = cmdline.strip_suffix(&[0u8]).unwrap_or(cmdline);
-    body.split(|b| *b == 0).map(|arg| std::str::from_utf8(arg).ok().map(str::to_string)).collect()
+    body.split(|b| *b == 0)
+        .map(|arg| std::str::from_utf8(arg).ok().map(str::to_string))
+        .collect()
 }
 
 /// Whether a `ps -o args=` line (the program, a space, then the arguments as ps joins them) is `process`.
@@ -309,7 +379,10 @@ pub fn resource(rel_in_share: &str, rel_in_repo: &str) -> PathBuf {
 pub fn repo_dir() -> PathBuf {
     match std::env::var_os("APZ_REPO").filter(|v| !v.is_empty()) {
         Some(repo) => PathBuf::from(repo),
-        None => std::env::current_exe().ok().and_then(|exe| exe.ancestors().nth(3).map(Path::to_path_buf)).unwrap_or_default(),
+        None => std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.ancestors().nth(3).map(Path::to_path_buf))
+            .unwrap_or_default(),
     }
 }
 
@@ -326,21 +399,33 @@ mod tests {
     use super::*;
 
     fn layout() -> Layout {
-        Layout { roles: "/share/roles.json".into(), uds_dir: "/run/uds".into(), token: "/state/node/internal-token".into() }
+        Layout {
+            roles: "/share/roles.json".into(),
+            uds_dir: "/run/uds".into(),
+            token: "/state/node/internal-token".into(),
+        }
     }
 
     fn flag<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
-        args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).map(String::as_str)
+        args.iter()
+            .position(|a| a == name)
+            .and_then(|i| args.get(i + 1))
+            .map(String::as_str)
     }
 
     /// The command line a process of `process`'s plan runs: its program, then its arguments.
     fn command_of(process: &PlanProcess) -> Vec<String> {
-        std::iter::once(format!("/usr/bin/{}", process.name)).chain(process.args.iter().cloned()).collect()
+        std::iter::once(format!("/usr/bin/{}", process.name))
+            .chain(process.args.iter().cloned())
+            .collect()
     }
 
     /// The bytes of a `/proc/<pid>/cmdline` for `parts` (NUL after each argument).
     fn cmdline(parts: &[&str]) -> Vec<u8> {
-        parts.iter().flat_map(|part| part.bytes().chain(std::iter::once(0))).collect()
+        parts
+            .iter()
+            .flat_map(|part| part.bytes().chain(std::iter::once(0)))
+            .collect()
     }
 
     #[test]
@@ -349,12 +434,21 @@ mod tests {
         let names: Vec<&str> = plan.iter().map(|p| p.name).collect();
         assert_eq!(names, NAMES);
         assert_eq!(plan[0].args, LINK_RUN);
-        assert!(plan[0].args.windows(2).any(|pair| pair == ["--vsockd", "19080"]), "apz-link must reach vsockd's 19080");
+        assert!(
+            plan[0]
+                .args
+                .windows(2)
+                .any(|pair| pair == ["--vsockd", "19080"]),
+            "apz-link must reach vsockd's 19080"
+        );
         assert_eq!(flag(&plan[1].args, "--cids"), Some("20,21,22,23"));
         assert_eq!(flag(&plan[1].args, "--apid"), Some("http://127.0.0.1:7701"));
         assert_eq!(flag(&plan[1].args, "--http-port"), Some("19080"));
         assert_eq!(flag(&plan[1].args, "--uds-dir"), Some("/run/uds"));
-        assert_eq!(flag(&plan[1].args, "--internal-token-file"), Some("/state/node/internal-token"));
+        assert_eq!(
+            flag(&plan[1].args, "--internal-token-file"),
+            Some("/state/node/internal-token")
+        );
         assert_eq!(flag(&plan[2].args, "--run-cids"), Some("20-23"));
         assert_eq!(flag(&plan[2].args, "--agents"), Some("/share/roles.json"));
         assert_eq!(flag(&plan[2].args, "--port"), Some("8899"));
@@ -383,7 +477,10 @@ mod tests {
 
     #[test]
     fn a_node_identity_needs_cids() {
-        assert_eq!(parse_identity(r#"{"cid_base":20,"cid_count":4,"node_id":"n3"}"#), Some((20, 4)));
+        assert_eq!(
+            parse_identity(r#"{"cid_base":20,"cid_count":4,"node_id":"n3"}"#),
+            Some((20, 4))
+        );
         assert_eq!(parse_identity(r#"{"cid_base":20,"cid_count":0}"#), None);
         assert_eq!(parse_identity(r#"{"cid_base":20}"#), None);
         assert_eq!(parse_identity("not json"), None);
@@ -393,7 +490,10 @@ mod tests {
     fn a_proc_scan_finds_the_program_by_its_argv0_only() {
         // A fixture of /proc/<pid>/cmdline: the desktop's services and a CLI-started node run the same binaries.
         let procs = vec![
-            (4242, b"/usr/bin/noded\0--port\x008899\0--run-cids\x0020-23\0".to_vec()),
+            (
+                4242,
+                b"/usr/bin/noded\0--port\x008899\0--run-cids\x0020-23\0".to_vec(),
+            ),
             (311, b"noded\0".to_vec()),
             (900, b"/opt/tools/noded-helper\0".to_vec()),
             (901, b"/usr/bin/vsockd\0--cids\x0020,21\0".to_vec()),
@@ -415,18 +515,89 @@ mod tests {
         let hub_vsockd = PlanProcess {
             name: "vsockd",
             args: argv(&[
-                "--uds-dir", "/run/uds", "--cids", "20,21,22,23,24", "--port", "5000", "--http-port", "19080",
-                "--apid", "http://127.0.0.1:7700", "--internal-token-file", "/state/internal.token",
+                "--uds-dir",
+                "/run/uds",
+                "--cids",
+                "20,21,22,23,24",
+                "--port",
+                "5000",
+                "--http-port",
+                "19080",
+                "--apid",
+                "http://127.0.0.1:7700",
+                "--internal-token-file",
+                "/state/internal.token",
             ]),
             env: None,
         };
         let procs = vec![
-            (100, cmdline(&["/usr/bin/vsockd", "--uds-dir", "/run/uds", "--cids", "20,21,22,23", "--port", "5000", "--http-port", "19080", "--apid", "http://127.0.0.1:7701", "--internal-token-file", "/state/node/internal-token"])),
-            (101, cmdline(&["/usr/bin/vsockd", "--uds-dir", "/run/uds", "--cids", "20,21,22,23,24", "--port", "5000", "--http-port", "19080", "--apid", "http://127.0.0.1:7700", "--internal-token-file", "/state/internal.token"])),
+            (
+                100,
+                cmdline(&[
+                    "/usr/bin/vsockd",
+                    "--uds-dir",
+                    "/run/uds",
+                    "--cids",
+                    "20,21,22,23",
+                    "--port",
+                    "5000",
+                    "--http-port",
+                    "19080",
+                    "--apid",
+                    "http://127.0.0.1:7701",
+                    "--internal-token-file",
+                    "/state/node/internal-token",
+                ]),
+            ),
+            (
+                101,
+                cmdline(&[
+                    "/usr/bin/vsockd",
+                    "--uds-dir",
+                    "/run/uds",
+                    "--cids",
+                    "20,21,22,23,24",
+                    "--port",
+                    "5000",
+                    "--http-port",
+                    "19080",
+                    "--apid",
+                    "http://127.0.0.1:7700",
+                    "--internal-token-file",
+                    "/state/internal.token",
+                ]),
+            ),
             // The owner's main plaza's vsockd: its own directory and CIDs.
-            (102, cmdline(&["vsockd", "--uds-dir", "/home/u/.local/state/agentplaza/vsock", "--cids", "200,201,202"])),
+            (
+                102,
+                cmdline(&[
+                    "vsockd",
+                    "--uds-dir",
+                    "/home/u/.local/state/agentplaza/vsock",
+                    "--cids",
+                    "200,201,202",
+                ]),
+            ),
             // The node's vsockd with one argument more: not the node's.
-            (103, cmdline(&["/usr/bin/vsockd", "--uds-dir", "/run/uds", "--cids", "20,21,22,23", "--port", "5000", "--http-port", "19080", "--apid", "http://127.0.0.1:7701", "--internal-token-file", "/state/node/internal-token", "--extra"])),
+            (
+                103,
+                cmdline(&[
+                    "/usr/bin/vsockd",
+                    "--uds-dir",
+                    "/run/uds",
+                    "--cids",
+                    "20,21,22,23",
+                    "--port",
+                    "5000",
+                    "--http-port",
+                    "19080",
+                    "--apid",
+                    "http://127.0.0.1:7701",
+                    "--internal-token-file",
+                    "/state/node/internal-token",
+                    "--extra",
+                ]),
+            ),
         ];
         assert_eq!(pids_running_plan(&node_vsockd, procs.clone()), vec![100]);
         assert_eq!(pids_running_plan(&hub_vsockd, procs), vec![101]);
@@ -437,7 +608,14 @@ mod tests {
         let node_noded = plan(20, 4, &layout())[2].clone();
         let hub_noded = PlanProcess {
             name: "noded",
-            args: argv(&["--port", "8899", "--uds-dir", "/run/uds", "--agents", "/share/roles.json"]),
+            args: argv(&[
+                "--port",
+                "8899",
+                "--uds-dir",
+                "/run/uds",
+                "--agents",
+                "/share/roles.json",
+            ]),
             env: None,
         };
         // The node's noded is the hub's plus --run-cids: a subset match would have stopped it from the hub.
@@ -448,7 +626,18 @@ mod tests {
         assert!(runs_plan(&hub_cmd, &hub_noded));
         assert!(!runs_plan(&hub_cmd, &node_noded));
         // The owner's main plaza's noded, started with its own paths.
-        let procs = vec![(200, cmdline(&["noded", "--port", "8899", "--uds-dir", "/home/u/.local/state/agentplaza/vsock", "--agents", "/srv/roles.json"]))];
+        let procs = vec![(
+            200,
+            cmdline(&[
+                "noded",
+                "--port",
+                "8899",
+                "--uds-dir",
+                "/home/u/.local/state/agentplaza/vsock",
+                "--agents",
+                "/srv/roles.json",
+            ]),
+        )];
         assert!(pids_running_plan(&node_noded, procs.clone()).is_empty());
         assert!(pids_running_plan(&hub_noded, procs).is_empty());
     }
@@ -456,8 +645,30 @@ mod tests {
     #[test]
     fn apz_link_is_the_nodes_only_with_its_own_arguments() {
         let procs = vec![
-            (300, cmdline(&["/usr/bin/apz-link", "run", "--noded", "8899", "--vsockd", "19080", "--forward", "7701"])),
-            (301, cmdline(&["/usr/bin/apz-link", "run", "--noded", "8899", "--vsockd", "19080"])),
+            (
+                300,
+                cmdline(&[
+                    "/usr/bin/apz-link",
+                    "run",
+                    "--noded",
+                    "8899",
+                    "--vsockd",
+                    "19080",
+                    "--forward",
+                    "7701",
+                ]),
+            ),
+            (
+                301,
+                cmdline(&[
+                    "/usr/bin/apz-link",
+                    "run",
+                    "--noded",
+                    "8899",
+                    "--vsockd",
+                    "19080",
+                ]),
+            ),
             (302, cmdline(&["/usr/bin/apz-link", "join", "code"])),
         ];
         assert_eq!(pids_running_plan(&link(), procs), vec![300]);
@@ -469,23 +680,36 @@ mod tests {
         let node_line = command_of(&node_vsockd).join(" ");
         assert!(ps_args_run_plan(&node_line, &node_vsockd));
         // Another binary path in front of the same arguments is still the program.
-        assert!(ps_args_run_plan(&node_line.replacen("/usr/bin/vsockd", "/opt/x/vsockd", 1), &node_vsockd));
+        assert!(ps_args_run_plan(
+            &node_line.replacen("/usr/bin/vsockd", "/opt/x/vsockd", 1),
+            &node_vsockd
+        ));
         // The hub's vsockd (apid on 7700) and a `vsockd-helper` are not.
         let hub_line = node_line.replace("127.0.0.1:7701", "127.0.0.1:7700");
         assert!(!ps_args_run_plan(&hub_line, &node_vsockd));
-        assert!(!ps_args_run_plan(&node_line.replacen("/usr/bin/vsockd", "/usr/bin/vsockd-helper", 1), &node_vsockd));
+        assert!(!ps_args_run_plan(
+            &node_line.replacen("/usr/bin/vsockd", "/usr/bin/vsockd-helper", 1),
+            &node_vsockd
+        ));
     }
 
     #[test]
     fn a_command_line_is_split_into_its_arguments() {
         assert_eq!(cmdline_argv(b""), None);
         assert_eq!(cmdline_argv(b"noded\0"), Some(vec!["noded".to_string()]));
-        assert_eq!(cmdline_argv(b"x\0\0"), Some(vec!["x".to_string(), String::new()]));
+        assert_eq!(
+            cmdline_argv(b"x\0\0"),
+            Some(vec!["x".to_string(), String::new()])
+        );
     }
 
     #[test]
     fn a_name_that_runs_nowhere_finds_no_pid() {
-        let nowhere = PlanProcess { name: "agentplaza-no-such-service-zz9", args: vec!["--x".into()], env: None };
+        let nowhere = PlanProcess {
+            name: "agentplaza-no-such-service-zz9",
+            args: vec!["--x".into()],
+            env: None,
+        };
         assert!(find_plan_pids(&nowhere).is_empty());
         assert!(named_pids("agentplaza-no-such-service-zz9").is_empty());
     }

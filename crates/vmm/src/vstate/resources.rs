@@ -11,11 +11,11 @@
 // (`pub use crate::arch::x86_64::{layout::*, ...}` in its `arch/mod.rs`); this
 // tree's `arch/mod.rs` declares the per-arch modules only, so select the
 // current arch's `layout` module here.
-#[cfg(all(any(target_os = "linux", windows), target_arch = "x86_64"))]
-use crate::arch::x86_64::layout as arch_layout;
+use crate::align_up;
 #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
 use crate::arch::aarch64::layout as arch_layout;
-use crate::align_up;
+#[cfg(all(any(target_os = "linux", windows), target_arch = "x86_64"))]
+use crate::arch::x86_64::layout as arch_layout;
 
 /// Errors associated with the resource allocators (mirroring the variants of
 /// the upstream `vm_allocator::Error` that this port can produce).
@@ -190,9 +190,7 @@ impl IdAllocator {
     // Returns `Error::Overflow` if the index would map to an overflowed id.
     fn id_for_index(&self, index: usize) -> Result<u32, Error> {
         let offset = u32::try_from(index).map_err(|_| Error::Overflow)?;
-        self.range_base
-            .checked_add(offset)
-            .ok_or(Error::Overflow)
+        self.range_base.checked_add(offset).ok_or(Error::Overflow)
     }
 
     /// Allocate an ID from the managed range.Returns the first available id
@@ -273,7 +271,11 @@ impl AddressAllocator {
         if size == 0 || end == 0 {
             return Err(Error::InvalidRange(base, size));
         }
-        Ok(AddressAllocator { base, size, next: base })
+        Ok(AddressAllocator {
+            base,
+            size,
+            next: base,
+        })
     }
 
     /// Allocate `size` bytes aligned to `alignment` (a power of two) from the
@@ -288,7 +290,10 @@ impl AddressAllocator {
         // the upstream `AllocPolicy::FirstMatch`); keep the policy parameter
         // so callers stay in the upstream shape.
         let _ = policy;
-        assert!(alignment.is_power_of_two(), "alignment must be a power of two");
+        assert!(
+            alignment.is_power_of_two(),
+            "alignment must be a power of two"
+        );
         if size == 0 {
             return Err(Error::InvalidRange(self.base, 0));
         }
@@ -358,10 +363,7 @@ mod tests {
             id_allocator.allocate_id_at(5).unwrap_err(),
             Error::ResourceNotAvailable
         );
-        assert_eq!(
-            id_allocator.allocate_id_at(6).unwrap(),
-            6
-        );
+        assert_eq!(id_allocator.allocate_id_at(6).unwrap(), 6);
         assert_eq!(
             id_allocator.allocate_id_at(8).unwrap_err(),
             Error::OutOfRange(8)
@@ -379,7 +381,10 @@ mod tests {
         // Freeing an unallocated id fails; freeing an allocated one works and
         // makes it allocatable again.
         id_allocator.free_id(7).unwrap();
-        assert_eq!(id_allocator.free_id(7).unwrap_err(), Error::NeverAllocated(7));
+        assert_eq!(
+            id_allocator.free_id(7).unwrap_err(),
+            Error::NeverAllocated(7)
+        );
         assert_eq!(id_allocator.free_id(5).unwrap(), 5);
         assert_eq!(id_allocator.allocate_id().unwrap(), 5);
 
@@ -399,7 +404,9 @@ mod tests {
         );
 
         // First allocation starts at the base and honors alignment.
-        let range = allocator.allocate(1024, 1024, AllocPolicy::FirstMatch).unwrap();
+        let range = allocator
+            .allocate(1024, 1024, AllocPolicy::FirstMatch)
+            .unwrap();
         assert_eq!(*range.start(), 0x9fc00);
         assert_eq!(*range.end(), 0x9fc00 + 1023);
 

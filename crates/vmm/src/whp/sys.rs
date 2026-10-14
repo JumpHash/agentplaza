@@ -246,7 +246,11 @@ impl Api {
             WHvDeletePartition: resolve!(platform, PLATFORM_DLL, "WHvDeletePartition"),
             WHvSetPartitionProperty: resolve!(platform, PLATFORM_DLL, "WHvSetPartitionProperty"),
             WHvMapGpaRange: resolve!(platform, PLATFORM_DLL, "WHvMapGpaRange"),
-            WHvCreateVirtualProcessor: resolve!(platform, PLATFORM_DLL, "WHvCreateVirtualProcessor"),
+            WHvCreateVirtualProcessor: resolve!(
+                platform,
+                PLATFORM_DLL,
+                "WHvCreateVirtualProcessor"
+            ),
             WHvRunVirtualProcessor: resolve!(platform, PLATFORM_DLL, "WHvRunVirtualProcessor"),
             WHvCancelRunVirtualProcessor: resolve!(
                 platform,
@@ -265,13 +269,21 @@ impl Api {
             ),
             WHvRequestInterrupt: resolve!(platform, PLATFORM_DLL, "WHvRequestInterrupt"),
             WHvTranslateGva: resolve!(platform, PLATFORM_DLL, "WHvTranslateGva"),
-            WHvEmulatorCreateEmulator: resolve!(emulation, EMULATION_DLL, "WHvEmulatorCreateEmulator"),
+            WHvEmulatorCreateEmulator: resolve!(
+                emulation,
+                EMULATION_DLL,
+                "WHvEmulatorCreateEmulator"
+            ),
             WHvEmulatorDestroyEmulator: resolve!(
                 emulation,
                 EMULATION_DLL,
                 "WHvEmulatorDestroyEmulator"
             ),
-            WHvEmulatorTryIoEmulation: resolve!(emulation, EMULATION_DLL, "WHvEmulatorTryIoEmulation"),
+            WHvEmulatorTryIoEmulation: resolve!(
+                emulation,
+                EMULATION_DLL,
+                "WHvEmulatorTryIoEmulation"
+            ),
             WHvEmulatorTryMmioEmulation: resolve!(
                 emulation,
                 EMULATION_DLL,

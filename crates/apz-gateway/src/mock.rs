@@ -13,14 +13,20 @@ use serde_json::{Value, json};
 
 pub(crate) const MODELS: [&str; 2] = ["agent", "echo"];
 
-pub(crate) fn complete(req: &ChatRequest, model: &str, sink: &mut dyn FnMut(Delta)) -> ChatResponse {
+pub(crate) fn complete(
+    req: &ChatRequest,
+    model: &str,
+    sink: &mut dyn FnMut(Delta),
+) -> ChatResponse {
     let model = if model == "echo" { "echo" } else { "agent" };
     let (text, call) = match model {
         "echo" => (last_user_text(&req.messages), None),
         _ => agent(req),
     };
     for chunk in text.split_inclusive(' ') {
-        sink(Delta::Text { text: chunk.to_string() });
+        sink(Delta::Text {
+            text: chunk.to_string(),
+        });
     }
     let mut content = Vec::new();
     let mut output_chars = text.len();
@@ -29,16 +35,32 @@ pub(crate) fn complete(req: &ChatRequest, model: &str, sink: &mut dyn FnMut(Delt
     }
     let stop = match call {
         Some((name, input)) => {
-            sink(Delta::ToolUse { name: name.to_string() });
+            sink(Delta::ToolUse {
+                name: name.to_string(),
+            });
             output_chars += name.len() + input.to_string().len();
             let id = format!("mock_{}", crate::tool_use_count(&req.messages));
-            content.push(Block::ToolUse { id, name: name.to_string(), input, meta: None });
+            content.push(Block::ToolUse {
+                id,
+                name: name.to_string(),
+                input,
+                meta: None,
+            });
             StopReason::ToolUse
         }
         None => StopReason::EndTurn,
     };
-    let usage = Usage { input_tokens: tokens(input_chars(req)), output_tokens: tokens(output_chars), ..Usage::default() };
-    ChatResponse { model: model.to_string(), content, stop, usage }
+    let usage = Usage {
+        input_tokens: tokens(input_chars(req)),
+        output_tokens: tokens(output_chars),
+        ..Usage::default()
+    };
+    ChatResponse {
+        model: model.to_string(),
+        content,
+        stop,
+        usage,
+    }
 }
 
 /// The agent's reply text and tool call.
@@ -46,7 +68,11 @@ fn agent(req: &ChatRequest) -> (String, Option<(&'static str, Value)>) {
     let last = req.messages.last();
     let result = last.filter(|m| m.role == Role::User).and_then(|m| {
         m.content.iter().find_map(|b| match b {
-            Block::ToolResult { tool_use_id, content, is_error } => Some((tool_use_id, content, *is_error)),
+            Block::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+            } => Some((tool_use_id, content, *is_error)),
             _ => None,
         })
     });
@@ -59,50 +85,94 @@ fn agent(req: &ChatRequest) -> (String, Option<(&'static str, Value)>) {
     if let (Some(motion), true) = (&motion, offered("plaza_vote")) {
         let reason = "The mock agent supports it: the motion is clear and cheap to try.";
         let input = json!({"motion": motion, "vote": "yes", "reason": reason});
-        return (format!("I'll vote yes on {motion}."), Some(("plaza_vote", input)));
+        return (
+            format!("I'll vote yes on {motion}."),
+            Some(("plaza_vote", input)),
+        );
     }
     if offered("write_file") {
         let path = format!("notes/{}.md", slug(&prompt));
-        let content = format!("# Notes\n\nTask: {}\n\nThe mock agent wrote this note.\n", excerpt(&prompt, 400));
-        return (format!("I'll write a note to {path}."), Some(("write_file", json!({"path": path, "content": content}))));
+        let content = format!(
+            "# Notes\n\nTask: {}\n\nThe mock agent wrote this note.\n",
+            excerpt(&prompt, 400)
+        );
+        return (
+            format!("I'll write a note to {path}."),
+            Some(("write_file", json!({"path": path, "content": content}))),
+        );
     }
     if offered("bash") {
-        return ("I'll look at the workspace.".into(), Some(("bash", json!({"command": "ls -la /workspace"}))));
+        return (
+            "I'll look at the workspace.".into(),
+            Some(("bash", json!({"command": "ls -la /workspace"}))),
+        );
     }
-    (format!("Mock agent here; no tools to use. You asked: {}", excerpt(&prompt, 200)), None)
+    (
+        format!(
+            "Mock agent here; no tools to use. You asked: {}",
+            excerpt(&prompt, 200)
+        ),
+        None,
+    )
 }
 
 /// A one-line account of the call `id` and how it went.
 fn summary(messages: &[Message], id: &str, output: &str, failed: bool) -> String {
-    let call = messages.iter().flat_map(|m| &m.content).find_map(|b| match b {
-        Block::ToolUse { id: call_id, name, input, .. } if call_id == id => Some((name.as_str(), input)),
-        _ => None,
-    });
+    let call = messages
+        .iter()
+        .flat_map(|m| &m.content)
+        .find_map(|b| match b {
+            Block::ToolUse {
+                id: call_id,
+                name,
+                input,
+                ..
+            } if call_id == id => Some((name.as_str(), input)),
+            _ => None,
+        });
     let did = match call {
-        Some(("write_file", input)) => format!("wrote {}", input["path"].as_str().unwrap_or("a note")),
-        Some(("plaza_vote", input)) => {
-            format!("voted {} on {}", input["vote"].as_str().unwrap_or("yes"), input["motion"].as_str().unwrap_or("the motion"))
+        Some(("write_file", input)) => {
+            format!("wrote {}", input["path"].as_str().unwrap_or("a note"))
         }
-        Some(("bash", input)) => format!("ran `{}`", input["command"].as_str().unwrap_or("a command")),
+        Some(("plaza_vote", input)) => {
+            format!(
+                "voted {} on {}",
+                input["vote"].as_str().unwrap_or("yes"),
+                input["motion"].as_str().unwrap_or("the motion")
+            )
+        }
+        Some(("bash", input)) => {
+            format!("ran `{}`", input["command"].as_str().unwrap_or("a command"))
+        }
         Some((name, _)) => format!("used {name}"),
         None => "used a tool".into(),
     };
     if failed {
         let first = output.lines().next().unwrap_or("");
-        format!("I tried: {did}, but it failed ({}). Stopping here.", excerpt(first, 120))
+        format!(
+            "I tried: {did}, but it failed ({}). Stopping here.",
+            excerpt(first, 120)
+        )
     } else {
         format!("Done: I {did}.")
     }
 }
 
 fn last_user_text(messages: &[Message]) -> String {
-    messages.iter().rev().find(|m| m.role == Role::User).map(Message::text).unwrap_or_default()
+    messages
+        .iter()
+        .rev()
+        .find(|m| m.role == Role::User)
+        .map(Message::text)
+        .unwrap_or_default()
 }
 
 /// The first motion id (`m` + digits) mentioned in `text`.
 fn motion_id(text: &str) -> Option<String> {
     text.split(|c: char| !c.is_ascii_alphanumeric())
-        .find(|w| w.len() > 1 && w.starts_with(['m', 'M']) && w[1..].bytes().all(|b| b.is_ascii_digit()))
+        .find(|w| {
+            w.len() > 1 && w.starts_with(['m', 'M']) && w[1..].bytes().all(|b| b.is_ascii_digit())
+        })
         .map(|w| w.to_ascii_lowercase())
 }
 
@@ -114,7 +184,10 @@ fn slug(text: &str) -> String {
         .take(6)
         .map(str::to_lowercase)
         .collect();
-    let slug = crate::error::truncate(&words.join("-"), 48).trim_end_matches('…').trim_end_matches('-').to_string();
+    let slug = crate::error::truncate(&words.join("-"), 48)
+        .trim_end_matches('…')
+        .trim_end_matches('-')
+        .to_string();
     if slug.is_empty() { "note".into() } else { slug }
 }
 
@@ -134,7 +207,11 @@ fn input_chars(req: &ChatRequest) -> usize {
             Block::Opaque { raw, .. } => raw.to_string().len(),
         })
         .sum();
-    let tools: usize = req.tools.iter().map(|t| t.name.len() + t.description.len() + t.input_schema.to_string().len()).sum();
+    let tools: usize = req
+        .tools
+        .iter()
+        .map(|t| t.name.len() + t.description.len() + t.input_schema.to_string().len())
+        .sum();
     blocks + tools + req.system.as_ref().map_or(0, String::len)
 }
 
@@ -151,11 +228,18 @@ mod tests {
     use apz_proto::chat::ToolSpec;
 
     fn tool(name: &str) -> ToolSpec {
-        ToolSpec { name: name.into(), description: format!("the {name} tool"), input_schema: json!({"type": "object"}) }
+        ToolSpec {
+            name: name.into(),
+            description: format!("the {name} tool"),
+            input_schema: json!({"type": "object"}),
+        }
     }
 
     fn mock() -> Gateway {
-        Gateway::new(vec![ProviderConfig::new("mock", ProviderKind::Mock)], |_: &str, _: &crate::SecretRead<'_>| None)
+        Gateway::new(
+            vec![ProviderConfig::new("mock", ProviderKind::Mock)],
+            |_: &str, _: &crate::SecretRead<'_>| None,
+        )
     }
 
     #[test]
@@ -174,25 +258,62 @@ mod tests {
         assert_eq!(name, "write_file");
         assert_eq!(input["path"], "notes/summarise-the-q3-plan-for-the.md");
         assert!(first.usage.input_tokens > 0 && first.usage.output_tokens > 0);
-        assert!(deltas.iter().any(|d| matches!(d, Delta::Text { .. })) && deltas.contains(&Delta::ToolUse { name: "write_file".into() }));
+        assert!(
+            deltas.iter().any(|d| matches!(d, Delta::Text { .. }))
+                && deltas.contains(&Delta::ToolUse {
+                    name: "write_file".into()
+                })
+        );
 
         let id = id.to_string();
         req.messages.push(Message::assistant(first.content));
         req.messages.push(Message {
             role: Role::User,
-            content: vec![Block::ToolResult { tool_use_id: id, content: "ok".into(), is_error: false }],
+            content: vec![Block::ToolResult {
+                tool_use_id: id,
+                content: "ok".into(),
+                is_error: false,
+            }],
         });
         let second = gw.complete(&req, &mut |_| {}).unwrap();
         assert_eq!(second.stop, StopReason::EndTurn);
-        assert_eq!(second.text(), "Done: I wrote notes/summarise-the-q3-plan-for-the.md.");
+        assert_eq!(
+            second.text(),
+            "Done: I wrote notes/summarise-the-q3-plan-for-the.md."
+        );
 
-        let vote = ChatRequest { tools: vec![tool("write_file"), tool("plaza_vote")], ..request("Council: vote on m3 please") };
-        let vote = gw.complete(&ChatRequest { model: "mock/agent".into(), ..vote }, &mut |_| {}).unwrap();
+        let vote = ChatRequest {
+            tools: vec![tool("write_file"), tool("plaza_vote")],
+            ..request("Council: vote on m3 please")
+        };
+        let vote = gw
+            .complete(
+                &ChatRequest {
+                    model: "mock/agent".into(),
+                    ..vote
+                },
+                &mut |_| {},
+            )
+            .unwrap();
         let (_, name, input) = vote.tool_uses().next().unwrap();
-        assert_eq!((name, &input["motion"], &input["vote"]), ("plaza_vote", &json!("m3"), &json!("yes")));
+        assert_eq!(
+            (name, &input["motion"], &input["vote"]),
+            ("plaza_vote", &json!("m3"), &json!("yes"))
+        );
 
-        let echo = gw.complete(&ChatRequest { model: "mock/echo".into(), ..request("hello there") }, &mut |_| {}).unwrap();
-        assert_eq!((echo.text().as_str(), echo.stop), ("hello there", StopReason::EndTurn));
+        let echo = gw
+            .complete(
+                &ChatRequest {
+                    model: "mock/echo".into(),
+                    ..request("hello there")
+                },
+                &mut |_| {},
+            )
+            .unwrap();
+        assert_eq!(
+            (echo.text().as_str(), echo.stop),
+            ("hello there", StopReason::EndTurn)
+        );
         assert_eq!(gw.list_models("mock").unwrap().len(), 2);
         let report = gw.test("mock", None).unwrap();
         assert!(report.ok && report.model == "mock/agent", "{report:?}");

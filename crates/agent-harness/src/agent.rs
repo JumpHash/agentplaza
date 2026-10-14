@@ -23,16 +23,17 @@ use std::time::{Duration, Instant};
 use apz_proto::chat::{Block, ChatRequest, ChatResponse, Message, Role, StopReason, blocks_text};
 use apz_proto::line::Lines;
 use apz_proto::wire::{
-    AgentProfile, Control, Decision, GuestMessage, HostMessage, MAX_TOOL_OUTPUT, WorkKind, WorkStatus, cap_output,
+    AgentProfile, Control, Decision, GuestMessage, HostMessage, MAX_TOOL_OUTPUT, WorkKind,
+    WorkStatus, cap_output,
 };
 use serde_json::{Value, json};
 
 use crate::bash;
 use crate::files::{self, Workspace};
 use crate::lane::{Duplex, Inbound, OPERATOR_EXPIRY, Shared, read_host, serve_operators};
-use crate::{checkpoints, engines, library, plan, search_tools, shells};
 use crate::session::{SessionError, escape_for_transcript, kind_of};
 use crate::tools;
+use crate::{checkpoints, engines, library, plan, search_tools, shells};
 
 /// A chat thread whose history serializes past this is closed: its next work
 /// starts a new conversation, opened with the thread's last summary.
@@ -142,7 +143,9 @@ pub fn serve<S: Duplex, W: Write + Send>(
     let outcome = thread::scope(|scope| {
         scope.spawn(move || read_host(lines, shared_ref, inbox_tx, operator_tx));
         scope.spawn(move || {
-            let exec = |name: &str, args: &Value| tools::serve(workspace, name, args).map_err(|err| err.to_string());
+            let exec = |name: &str, args: &Value| {
+                tools::serve(workspace, name, args).map_err(|err| err.to_string())
+            };
             serve_operators(operator_rx, shared_ref, exec, OPERATOR_EXPIRY)
         });
         let mut agent = Agent {
@@ -164,7 +167,12 @@ pub fn serve<S: Duplex, W: Write + Send>(
             compressed_size: 0,
             extra_turns: 0,
         };
-        agent.clock = agent.threads.values().map(|thread| thread.at).max().unwrap_or(0);
+        agent.clock = agent
+            .threads
+            .values()
+            .map(|thread| thread.at)
+            .max()
+            .unwrap_or(0);
         let outcome = agent.run();
         shared_ref.stop();
         outcome
@@ -200,8 +208,15 @@ impl<S: Write, W: Write> Agent<'_, '_, S, W> {
 
     /// Records the host's stop; the `bye` follows once the lanes have drained.
     fn end(&self, reason: &str) {
-        let reason = if reason.is_empty() { "no reason given" } else { reason };
-        self.shared.note(&format!("agent-harness: the hub stopped the agent ({})", escape_for_transcript(reason)));
+        let reason = if reason.is_empty() {
+            "no reason given"
+        } else {
+            reason
+        };
+        self.shared.note(&format!(
+            "agent-harness: the hub stopped the agent ({})",
+            escape_for_transcript(reason)
+        ));
     }
 
     fn say(&self, message: &GuestMessage) -> Result<(), SessionError> {
@@ -213,7 +228,10 @@ impl<S: Write, W: Write> Agent<'_, '_, S, W> {
         self.seq += 1;
         let seq = self.seq;
         let busy = self.current.is_some();
-        self.say(&GuestMessage::Heartbeat { seq, busy: Some(busy) })?;
+        self.say(&GuestMessage::Heartbeat {
+            seq,
+            busy: Some(busy),
+        })?;
         self.shared.note(&format!("agent-harness: heartbeat {seq}"));
         self.next_beat = Instant::now() + self.heartbeat;
         Ok(())
@@ -226,7 +244,9 @@ impl<S: Write, W: Write> Agent<'_, '_, S, W> {
         let wait = self.next_beat.saturating_duration_since(Instant::now());
         let message = match self.inbox.recv_timeout(wait) {
             Ok(Inbound::Message(message)) => message,
-            Ok(Inbound::Closed) | Err(RecvTimeoutError::Disconnected) => return Err(SessionError::HostClosed),
+            Ok(Inbound::Closed) | Err(RecvTimeoutError::Disconnected) => {
+                return Err(SessionError::HostClosed);
+            }
             Ok(Inbound::Failed(err)) => return Err(SessionError::Io(err)),
             Err(RecvTimeoutError::Timeout) => {
                 self.beat()?;
@@ -235,8 +255,18 @@ impl<S: Write, W: Write> Agent<'_, '_, S, W> {
         };
         Ok(match message {
             HostMessage::Stop { reason } => Incoming::Stop(reason),
-            HostMessage::Work { work, kind, thread, prompt } => {
-                self.queue.push_back(Job { work, kind, thread, prompt });
+            HostMessage::Work {
+                work,
+                kind,
+                thread,
+                prompt,
+            } => {
+                self.queue.push_back(Job {
+                    work,
+                    kind,
+                    thread,
+                    prompt,
+                });
                 Incoming::Handled
             }
             HostMessage::Cancel { work, reason } => {
@@ -252,10 +282,14 @@ impl<S: Write, W: Write> Agent<'_, '_, S, W> {
                     match control {
                         Control::Compress => self.compress_requested = true,
                         Control::Steer { from, text } => self.steers.push((from, text)),
-                        Control::ExtendTurns { turns } => self.extra_turns = self.extra_turns.saturating_add(turns),
+                        Control::ExtendTurns { turns } => {
+                            self.extra_turns = self.extra_turns.saturating_add(turns)
+                        }
                     }
                 } else {
-                    self.shared.note(&format!("agent-harness: ignoring control for work {work}, which is not running"));
+                    self.shared.note(&format!(
+                        "agent-harness: ignoring control for work {work}, which is not running"
+                    ));
                 }
                 Incoming::Handled
             }
@@ -276,7 +310,9 @@ impl<S: Write, W: Write> Agent<'_, '_, S, W> {
                     Ok(picked) => return Ok(picked),
                     Err(other) => {
                         let kind = kind_of(&other);
-                        self.shared.note(&format!("agent-harness: ignoring {kind} while waiting for {awaited}"));
+                        self.shared.note(&format!(
+                            "agent-harness: ignoring {kind} while waiting for {awaited}"
+                        ));
                     }
                 },
                 Incoming::Stop(reason) => return Err(Halt::Stop(reason)),
@@ -296,7 +332,9 @@ impl<S: Write, W: Write> Agent<'_, '_, S, W> {
                 }
                 thread::sleep(LOCAL_POLL);
             }
-            Ok(handle.join().unwrap_or_else(|_| Err("internal: the tool panicked".to_string())))
+            Ok(handle
+                .join()
+                .unwrap_or_else(|_| Err("internal: the tool panicked".to_string())))
         })
     }
 
@@ -309,14 +347,23 @@ impl<S: Write, W: Write> Agent<'_, '_, S, W> {
             self.queue.remove(at);
             self.finish(work, WorkStatus::Stopped, &reason)?;
         } else {
-            self.shared.note(&format!("agent-harness: ignoring cancel for work {work}, which is not queued"));
+            self.shared.note(&format!(
+                "agent-harness: ignoring cancel for work {work}, which is not queued"
+            ));
         }
         Ok(())
     }
 
     fn finish(&mut self, work: u64, status: WorkStatus, summary: &str) -> Result<(), SessionError> {
-        self.shared.note(&format!("agent-harness: work {work} {status:?}: {}", escape_for_transcript(summary)));
-        self.say(&GuestMessage::WorkDone { work, status, summary: summary.to_string() })
+        self.shared.note(&format!(
+            "agent-harness: work {work} {status:?}: {}",
+            escape_for_transcript(summary)
+        ));
+        self.say(&GuestMessage::WorkDone {
+            work,
+            status,
+            summary: summary.to_string(),
+        })
     }
 
     /// Runs one work item to its end. A chat item extends its thread's
@@ -332,7 +379,10 @@ impl<S: Write, W: Write> Agent<'_, '_, S, W> {
         if chat {
             let thread = self.threads.remove(&job.thread).unwrap_or_default();
             if serialized_len(&thread.messages) > THREAD_CLOSE_BYTES {
-                prompt = format!("Earlier in this conversation: {}\n\n{prompt}", thread.summary);
+                prompt = format!(
+                    "Earlier in this conversation: {}\n\n{prompt}",
+                    thread.summary
+                );
             } else {
                 messages = thread.messages;
             }
@@ -340,7 +390,9 @@ impl<S: Write, W: Write> Agent<'_, '_, S, W> {
         // A conversation that ended on tool results (a stopped item) gets the
         // prompt in that same user turn, so roles still alternate.
         match messages.last_mut() {
-            Some(last) if last.role == Role::User => last.content.push(Block::Text { text: prompt }),
+            Some(last) if last.role == Role::User => {
+                last.content.push(Block::Text { text: prompt })
+            }
             _ => messages.push(Message::user_text(prompt)),
         }
 
@@ -357,9 +409,17 @@ impl<S: Write, W: Write> Agent<'_, '_, S, W> {
         if chat {
             self.clock += 1;
             let at = self.clock;
-            self.threads.insert(job.thread, Thread { messages, summary: summary.clone(), at });
+            self.threads.insert(
+                job.thread,
+                Thread {
+                    messages,
+                    summary: summary.clone(),
+                    at,
+                },
+            );
             if let Err(err) = save_threads(self.workspace, &self.threads) {
-                self.shared.note(&format!("agent-harness: chat threads not saved: {err}"));
+                self.shared
+                    .note(&format!("agent-harness: chat threads not saved: {err}"));
             }
         }
         self.finish(job.work, status, &summary)?;
@@ -385,7 +445,9 @@ impl<S: Write, W: Write> Agent<'_, '_, S, W> {
             for (from, text) in std::mem::take(&mut self.steers) {
                 let note_text = format!("[note from {from}]: {text}");
                 match messages.last_mut() {
-                    Some(last) if last.role == Role::User => last.content.push(Block::Text { text: note_text }),
+                    Some(last) if last.role == Role::User => {
+                        last.content.push(Block::Text { text: note_text })
+                    }
                     _ => messages.push(Message::user_text(note_text)),
                 }
             }
@@ -394,7 +456,11 @@ impl<S: Write, W: Write> Agent<'_, '_, S, W> {
                 && size > profile.compress_at
                 && size > self.compressed_size.saturating_add(profile.compress_at / 4);
             if self.compress_requested || auto {
-                let reason = if self.compress_requested { "asked" } else { "auto" };
+                let reason = if self.compress_requested {
+                    "asked"
+                } else {
+                    "auto"
+                };
                 self.compress_requested = false;
                 self.compress(work, profile, messages, reason)?;
             }
@@ -412,9 +478,12 @@ impl<S: Write, W: Write> Agent<'_, '_, S, W> {
             let uses: Vec<(String, String, Value, Option<Value>)> = content
                 .iter()
                 .filter_map(|block| match block {
-                    Block::ToolUse { id, name, input, meta } => {
-                        Some((id.clone(), name.clone(), input.clone(), meta.clone()))
-                    }
+                    Block::ToolUse {
+                        id,
+                        name,
+                        input,
+                        meta,
+                    } => Some((id.clone(), name.clone(), input.clone(), meta.clone())),
                     _ => None,
                 })
                 .collect();
@@ -429,13 +498,23 @@ impl<S: Write, W: Write> Agent<'_, '_, S, W> {
                     (true, Some((last, count))) if last == key => Some((last, count + 1)),
                     (true, _) => Some((key, 1)),
                 };
-                if matches!(failing, Some((_, count)) if count >= STUCK_FAILURES) && stuck.is_none() {
-                    stuck = Some(format!("stuck: {name} failed {STUCK_FAILURES} times in a row with the same input"));
+                if matches!(failing, Some((_, count)) if count >= STUCK_FAILURES) && stuck.is_none()
+                {
+                    stuck = Some(format!(
+                        "stuck: {name} failed {STUCK_FAILURES} times in a row with the same input"
+                    ));
                 }
-                results.push(Block::ToolResult { tool_use_id: id, content: text, is_error });
+                results.push(Block::ToolResult {
+                    tool_use_id: id,
+                    content: text,
+                    is_error,
+                });
             }
             if ran_tools {
-                messages.push(Message { role: Role::User, content: results });
+                messages.push(Message {
+                    role: Role::User,
+                    content: results,
+                });
             }
             if let Some(reason) = stuck {
                 return Ok((WorkStatus::Stopped, reason));
@@ -443,18 +522,26 @@ impl<S: Write, W: Write> Agent<'_, '_, S, W> {
 
             match stop {
                 StopReason::EndTurn => return Ok((WorkStatus::Done, blocks_text(&content))),
-                StopReason::Refusal => return Ok((WorkStatus::Failed, "the model declined".to_string())),
+                StopReason::Refusal => {
+                    return Ok((WorkStatus::Failed, "the model declined".to_string()));
+                }
                 StopReason::MaxTokens => {
                     token_limit_hits += 1;
                     if token_limit_hits > TOKEN_LIMIT_CONTINUES {
-                        return Ok((WorkStatus::Stopped, "the model hit its token limit".to_string()));
+                        return Ok((
+                            WorkStatus::Stopped,
+                            "the model hit its token limit".to_string(),
+                        ));
                     }
                     if !ran_tools {
                         messages.push(Message::user_text("continue"));
                     }
                 }
                 other if !ran_tools => {
-                    return Ok((WorkStatus::Failed, format!("the model stopped without an answer ({other:?})")));
+                    return Ok((
+                        WorkStatus::Failed,
+                        format!("the model stopped without an answer ({other:?})"),
+                    ));
                 }
                 _ => {}
             }
@@ -472,7 +559,11 @@ impl<S: Write, W: Write> Agent<'_, '_, S, W> {
         messages: &mut Vec<Message>,
         reason: &str,
     ) -> Result<(), Halt> {
-        let budget = if profile.compress_at > 0 { (profile.compress_at / 2) as usize } else { usize::MAX };
+        let budget = if profile.compress_at > 0 {
+            (profile.compress_at / 2) as usize
+        } else {
+            usize::MAX
+        };
         let Some(cut) = compress_cut(messages.as_slice(), profile.keep_recent, budget) else {
             return Ok(());
         };
@@ -489,13 +580,19 @@ impl<S: Write, W: Write> Agent<'_, '_, S, W> {
                 _ => None,
             })
             .collect();
-        messages[0].content.retain(|block| !matches!(block, Block::Text { text } if text.starts_with(SUMMARY_HEAD)));
+        messages[0].content.retain(
+            |block| !matches!(block, Block::Text { text } if text.starts_with(SUMMARY_HEAD)),
+        );
         let mut transcript = previous.join("\n");
         if !transcript.is_empty() {
             transcript.push('\n');
         }
         for message in &messages[1..cut] {
-            let role = if message.role == Role::User { "user" } else { "assistant" };
+            let role = if message.role == Role::User {
+                "user"
+            } else {
+                "assistant"
+            };
             for block in &message.content {
                 let line = match block {
                     Block::Text { text } => text.clone(),
@@ -516,17 +613,23 @@ impl<S: Write, W: Write> Agent<'_, '_, S, W> {
             Ok(response) => response,
             Err(reason) => {
                 let reason = escape_for_transcript(&reason);
-                self.shared.note(&format!("agent-harness: work {work} not compressed: {reason}"));
+                self.shared.note(&format!(
+                    "agent-harness: work {work} not compressed: {reason}"
+                ));
                 return Ok(());
             }
         };
         let summary = blocks_text(&response.content);
-        messages[0].content.push(Block::Text { text: format!("{SUMMARY_HEAD}\n{summary}") });
+        messages[0].content.push(Block::Text {
+            text: format!("{SUMMARY_HEAD}\n{summary}"),
+        });
         messages.drain(1..cut);
         clip_old_results(messages);
         let after = serialized_len(messages.as_slice()) as u64;
         self.compressed_size = after;
-        self.shared.note(&format!("agent-harness: work {work} compressed ({reason}): {before} -> {after} bytes"));
+        self.shared.note(&format!(
+            "agent-harness: work {work} compressed ({reason}): {before} -> {after} bytes"
+        ));
         self.say(&GuestMessage::Compressed {
             work,
             before,
@@ -557,10 +660,16 @@ impl<S: Write, W: Write> Agent<'_, '_, S, W> {
             effort: None,
         };
         self.say(&GuestMessage::ModelCall { req, work, request })?;
-        let (ok, response, error) = self.await_message("model_result", |message| match message {
-            HostMessage::ModelResult { req: got, ok, response, error } if got == req => Ok((ok, response, error)),
-            other => Err(other),
-        })?;
+        let (ok, response, error) =
+            self.await_message("model_result", |message| match message {
+                HostMessage::ModelResult {
+                    req: got,
+                    ok,
+                    response,
+                    error,
+                } if got == req => Ok((ok, response, error)),
+                other => Err(other),
+            })?;
         Ok(match (ok, response) {
             (true, Some(response)) => Ok(response),
             (true, None) => Err("the host sent no answer".to_string()),
@@ -588,18 +697,25 @@ impl<S: Write, W: Write> Agent<'_, '_, S, W> {
             name: name.to_string(),
             input: input.clone(),
         })?;
-        let (decision, output, is_error, program) = self.await_message("tool_decision", |message| match message {
-            HostMessage::ToolDecision { call, decision, output, is_error, program } if call == id => {
-                Ok((decision, output, is_error, program))
-            }
-            other => Err(other),
-        })?;
+        let (decision, output, is_error, program) =
+            self.await_message("tool_decision", |message| match message {
+                HostMessage::ToolDecision {
+                    call,
+                    decision,
+                    output,
+                    is_error,
+                    program,
+                } if call == id => Ok((decision, output, is_error, program)),
+                other => Err(other),
+            })?;
         match decision {
             Decision::Allow => {
                 let workspace = self.workspace;
                 // A library tool comes with its program; built-in tools run from this harness.
                 let outcome = match program {
-                    Some(program) => self.run_local(move || library::run(workspace, &program, input))?,
+                    Some(program) => {
+                        self.run_local(move || library::run(workspace, &program, input))?
+                    }
                     None => self.run_local(move || run_guest_tool(workspace, name, input))?,
                 };
                 let (ok, output) = match outcome {
@@ -609,15 +725,27 @@ impl<S: Write, W: Write> Agent<'_, '_, S, W> {
                 // A packaged tool travels to the host whole (the library files it from the report);
                 // the model only needs to hear what was packaged.
                 if name == "tool_package" && ok {
-                    self.say(&GuestMessage::ToolReport { work, call: id.to_string(), ok, output: output.clone() })?;
+                    self.say(&GuestMessage::ToolReport {
+                        work,
+                        call: id.to_string(),
+                        ok,
+                        output: output.clone(),
+                    })?;
                     return Ok((library::summary(&output), false));
                 }
                 let output = cap_output(&output, MAX_TOOL_OUTPUT);
-                self.say(&GuestMessage::ToolReport { work, call: id.to_string(), ok, output: output.clone() })?;
+                self.say(&GuestMessage::ToolReport {
+                    work,
+                    call: id.to_string(),
+                    ok,
+                    output: output.clone(),
+                })?;
                 Ok((output, !ok))
             }
             Decision::Done => Ok((cap_output(&output, MAX_TOOL_OUTPUT), is_error)),
-            Decision::Deny if output.is_empty() => Ok(("the host denied this tool call".to_string(), true)),
+            Decision::Deny if output.is_empty() => {
+                Ok(("the host denied this tool call".to_string(), true))
+            }
             Decision::Deny => Ok((output, true)),
         }
     }
@@ -664,7 +792,9 @@ fn run_guest_tool(workspace: &Workspace, name: &str, input: &Value) -> Outcome {
             tools::serve(workspace, name, &args).map_err(|err| err.to_string())
         }
         // The owner's IDE tools come from the hub's operator, never from the model's own calls.
-        name if name.starts_with("ide_") => Err(format!("denied: {name} is an owner tool; the model is not offered it")),
+        name if name.starts_with("ide_") => Err(format!(
+            "denied: {name} is an owner tool; the model is not offered it"
+        )),
         _ => tools::serve(workspace, name, input).map_err(|err| err.to_string()),
     }
 }
@@ -708,7 +838,8 @@ fn compress_cut(messages: &[Message], keep_recent: u32, budget: usize) -> Option
         .collect();
     let last = *assistants.last()?;
     let mut position = assistants.len().checked_sub(keep)?;
-    while assistants[position] < last && serialized_len(&messages[assistants[position]..]) > budget {
+    while assistants[position] < last && serialized_len(&messages[assistants[position]..]) > budget
+    {
         position += 1;
     }
     Some(assistants[position])
@@ -717,7 +848,10 @@ fn compress_cut(messages: &[Message], keep_recent: u32, budget: usize) -> Option
 /// Clips every tool result before the latest turn to KEPT_RESULT_BYTES: what was read long
 /// ago is in the summary; the latest results stay whole.
 fn clip_old_results(messages: &mut [Message]) {
-    let latest = messages.iter().rposition(|message| message.role == Role::Assistant).unwrap_or(0);
+    let latest = messages
+        .iter()
+        .rposition(|message| message.role == Role::Assistant)
+        .unwrap_or(0);
     for message in &mut messages[..latest] {
         for block in &mut message.content {
             if let Block::ToolResult { content, .. } = block {
@@ -775,11 +909,16 @@ fn save_threads(workspace: &Workspace, threads: &HashMap<String, Thread>) -> std
         return Ok(());
     }
     // Newest first, so the oldest is last and goes first.
-    let mut kept: Vec<(&String, &Thread)> = threads.iter().filter(|(id, _)| id.starts_with("op-")).collect();
+    let mut kept: Vec<(&String, &Thread)> = threads
+        .iter()
+        .filter(|(id, _)| id.starts_with("op-"))
+        .collect();
     kept.sort_by(|a, b| b.1.at.cmp(&a.1.at));
     let render = |kept: &[(&String, &Thread)]| {
-        let object: serde_json::Map<String, Value> =
-            kept.iter().map(|(id, thread)| ((*id).clone(), thread_json(thread))).collect();
+        let object: serde_json::Map<String, Value> = kept
+            .iter()
+            .map(|(id, thread)| ((*id).clone(), thread_json(thread)))
+            .collect();
         serde_json::to_vec(&object)
     };
     let mut bytes = render(&kept)?;
@@ -809,10 +948,21 @@ mod thread_store_tests {
         let mut threads = HashMap::new();
         threads.insert(
             "op-1".to_string(),
-            Thread { messages: vec![Message::user_text("hello".to_string())], summary: "greeted".into(), at: 1 },
+            Thread {
+                messages: vec![Message::user_text("hello".to_string())],
+                summary: "greeted".into(),
+                at: 1,
+            },
         );
         // A non-operator thread is not kept across restarts.
-        threads.insert("job-9".to_string(), Thread { messages: Vec::new(), summary: String::new(), at: 2 });
+        threads.insert(
+            "job-9".to_string(),
+            Thread {
+                messages: Vec::new(),
+                summary: String::new(),
+                at: 2,
+            },
+        );
         save_threads(&workspace, &threads).expect("threads save");
 
         let loaded = load_threads(&workspace);
@@ -835,11 +985,15 @@ mod tests {
     use apz_proto::line::Lines;
     use std::os::unix::net::UnixStream;
 
-    const IDENTITY: Identity = Identity { guest_cid: 104, vm: 4 };
+    const IDENTITY: Identity = Identity {
+        guest_cid: 104,
+        vm: 4,
+    };
     const HEARTBEAT: Duration = Duration::from_millis(20);
 
     fn scratch(name: &str) -> Workspace {
-        let dir = std::env::temp_dir().join(format!("apz-harness-agent-{name}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("apz-harness-agent-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("a scratch workspace");
         Workspace::at(dir)
@@ -848,8 +1002,12 @@ mod tests {
     #[test]
     fn the_owners_ide_tools_are_refused_when_the_model_asks_for_them() {
         let workspace = scratch("ide-guard");
-        let err = run_guest_tool(&workspace, "ide_write", &json!({"path": "a.txt", "text": "x", "expected_hash": null}))
-            .expect_err("the model may not write through the owner's tools");
+        let err = run_guest_tool(
+            &workspace,
+            "ide_write",
+            &json!({"path": "a.txt", "text": "x", "expected_hash": null}),
+        )
+        .expect_err("the model may not write through the owner's tools");
         assert!(err.starts_with("denied: ide_write"), "{err}");
         assert!(!workspace.dir().join("a.txt").exists());
     }
@@ -867,7 +1025,8 @@ mod tests {
     }
 
     fn work(id: u64, kind: &str, thread: &str, prompt: &str) -> String {
-        json!({"type": "work", "work": id, "kind": kind, "thread": thread, "prompt": prompt}).to_string()
+        json!({"type": "work", "work": id, "kind": kind, "thread": thread, "prompt": prompt})
+            .to_string()
     }
 
     fn answer(req: u64, content: Value, stop: &str) -> String {
@@ -910,19 +1069,30 @@ mod tests {
 
     /// Ends the session the way the hub does, and checks the `bye`.
     fn stop(host: &mut Lines<UnixStream>) {
-        host.send(r#"{"type":"stop","reason":"test over"}"#).unwrap();
+        host.send(r#"{"type":"stop","reason":"test over"}"#)
+            .unwrap();
         expect_type(host, "bye");
     }
 
     /// Runs a keepalive session whose hub is `script`, and returns the calls served.
-    fn run_hub(workspace: &Workspace, script: impl FnOnce(&mut Lines<UnixStream>) + Send + 'static) -> u64 {
+    fn run_hub(
+        workspace: &Workspace,
+        script: impl FnOnce(&mut Lines<UnixStream>) + Send + 'static,
+    ) -> u64 {
         let (mut guest, mut host) = pair();
         let hub = thread::spawn(move || {
             next(&mut host);
             script(&mut host);
         });
         let mut log = Vec::new();
-        let result = keepalive::session(&mut guest, &mut log, &IDENTITY, workspace, Some("builder"), HEARTBEAT);
+        let result = keepalive::session(
+            &mut guest,
+            &mut log,
+            &IDENTITY,
+            workspace,
+            Some("builder"),
+            HEARTBEAT,
+        );
         drop(guest);
         hub.join().expect("the scripted hub finished");
         result.expect("the hub stops the agent")
@@ -935,21 +1105,47 @@ mod tests {
             host.send(&welcome(10)).unwrap();
             host.send(&work(1, "task", "t", "say hi")).unwrap();
             let first = expect_type(host, "model_call");
-            assert_eq!((first["req"].clone(), first["request"]["system"].clone()), (json!(1), json!("be brief")));
-            assert_eq!(first["request"]["messages"][0]["content"][0]["text"], "say hi");
-            host.send(&answer(1, json!([tool_use("t1", "bash", json!({"command": "echo hi"}))]), "tool_use"))
-                .unwrap();
+            assert_eq!(
+                (first["req"].clone(), first["request"]["system"].clone()),
+                (json!(1), json!("be brief"))
+            );
+            assert_eq!(
+                first["request"]["messages"][0]["content"][0]["text"],
+                "say hi"
+            );
+            host.send(&answer(
+                1,
+                json!([tool_use("t1", "bash", json!({"command": "echo hi"}))]),
+                "tool_use",
+            ))
+            .unwrap();
             let request = expect_type(host, "tool_request");
-            assert_eq!((request["call"].clone(), request["name"].clone()), (json!("t1"), json!("bash")));
+            assert_eq!(
+                (request["call"].clone(), request["name"].clone()),
+                (json!("t1"), json!("bash"))
+            );
             host.send(&decision("t1", "allow", "", false)).unwrap();
             let report = expect_type(host, "tool_report");
-            assert_eq!((report["ok"].clone(), report["output"].clone()), (json!(true), json!("hi\nexit 0")));
+            assert_eq!(
+                (report["ok"].clone(), report["output"].clone()),
+                (json!(true), json!("hi\nexit 0"))
+            );
             let second = expect_type(host, "model_call");
-            assert_eq!(second["request"]["messages"][2]["content"][0]["content"], "hi\nexit 0");
-            host.send(&answer(2, json!([text("all done")]), "end_turn")).unwrap();
+            assert_eq!(
+                second["request"]["messages"][2]["content"][0]["content"],
+                "hi\nexit 0"
+            );
+            host.send(&answer(2, json!([text("all done")]), "end_turn"))
+                .unwrap();
             let done = expect_type(host, "work_done");
-            assert_eq!((done["work"].clone(), done["status"].clone(), done["summary"].clone()),
-                (json!(1), json!("done"), json!("all done")));
+            assert_eq!(
+                (
+                    done["work"].clone(),
+                    done["status"].clone(),
+                    done["summary"].clone()
+                ),
+                (json!(1), json!("done"), json!("all done"))
+            );
             stop(host);
         });
     }
@@ -961,12 +1157,21 @@ mod tests {
             host.send(&welcome(10)).unwrap();
             host.send(&work(1, "task", "t", "find it")).unwrap();
             expect_type(host, "model_call");
-            host.send(&answer(1, json!([tool_use("s1", "search", json!({"pattern": "x"}))]), "tool_use")).unwrap();
+            host.send(&answer(
+                1,
+                json!([tool_use("s1", "search", json!({"pattern": "x"}))]),
+                "tool_use",
+            ))
+            .unwrap();
             expect_type(host, "tool_request");
             host.send(&decision("s1", "done", "3 hits", false)).unwrap();
             let next = expect_type(host, "model_call");
-            assert_eq!(next["request"]["messages"][2]["content"][0]["content"], "3 hits");
-            host.send(&answer(2, json!([text("found")]), "end_turn")).unwrap();
+            assert_eq!(
+                next["request"]["messages"][2]["content"][0]["content"],
+                "3 hits"
+            );
+            host.send(&answer(2, json!([text("found")]), "end_turn"))
+                .unwrap();
             expect_type(host, "work_done");
             stop(host);
         });
@@ -996,15 +1201,27 @@ mod tests {
             host.send(&welcome(10)).unwrap();
             host.send(&work(1, "task", "t", "go")).unwrap();
             expect_type(host, "model_call");
-            host.send(&control(1, json!({"action": "steer", "from": "mayor", "text": "focus on the parser"})))
-                .unwrap();
-            host.send(&answer(1, json!([tool_use("s1", "search", json!({"pattern": "x"}))]), "tool_use")).unwrap();
+            host.send(&control(
+                1,
+                json!({"action": "steer", "from": "mayor", "text": "focus on the parser"}),
+            ))
+            .unwrap();
+            host.send(&answer(
+                1,
+                json!([tool_use("s1", "search", json!({"pattern": "x"}))]),
+                "tool_use",
+            ))
+            .unwrap();
             expect_type(host, "tool_request");
             host.send(&decision("s1", "done", "3 hits", false)).unwrap();
             let next = expect_type(host, "model_call");
             let results = &next["request"]["messages"][2]["content"];
-            assert_eq!(results[1]["text"], "[note from mayor]: focus on the parser", "{results}");
-            host.send(&answer(2, json!([text("found")]), "end_turn")).unwrap();
+            assert_eq!(
+                results[1]["text"], "[note from mayor]: focus on the parser",
+                "{results}"
+            );
+            host.send(&answer(2, json!([text("found")]), "end_turn"))
+                .unwrap();
             expect_type(host, "work_done");
             stop(host);
         });
@@ -1018,24 +1235,44 @@ mod tests {
             host.send(&work(1, "task", "t", "go")).unwrap();
             for (req, id) in [(1, "s1"), (2, "s2")] {
                 expect_type(host, "model_call");
-                host.send(&answer(req, json!([tool_use(id, "search", json!({"pattern": id}))]), "tool_use")).unwrap();
+                host.send(&answer(
+                    req,
+                    json!([tool_use(id, "search", json!({"pattern": id}))]),
+                    "tool_use",
+                ))
+                .unwrap();
                 expect_type(host, "tool_request");
                 host.send(&decision(id, "done", "hits", false)).unwrap();
             }
             let summary_call = expect_type(host, "model_call");
             let asked = &summary_call["request"]["messages"][0]["content"][0]["text"];
-            assert!(asked.as_str().is_some_and(|text| text.starts_with("Summarize")), "{asked}");
-            host.send(&answer(3, json!([text("the summary")]), "end_turn")).unwrap();
+            assert!(
+                asked
+                    .as_str()
+                    .is_some_and(|text| text.starts_with("Summarize")),
+                "{asked}"
+            );
+            host.send(&answer(3, json!([text("the summary")]), "end_turn"))
+                .unwrap();
             let compressed = expect_type(host, "compressed");
             assert_eq!(
-                (compressed["work"].clone(), compressed["folded"].clone(), compressed["reason"].clone()),
+                (
+                    compressed["work"].clone(),
+                    compressed["folded"].clone(),
+                    compressed["reason"].clone()
+                ),
                 (json!(1), json!(2), json!("auto"))
             );
             let next = expect_type(host, "model_call");
             let messages = &next["request"]["messages"];
             assert_eq!(messages.as_array().map(Vec::len), Some(3), "{messages}");
-            assert!(messages[0]["content"][1]["text"].as_str().is_some_and(|text| text.contains("the summary")));
-            host.send(&answer(4, json!([text("done")]), "end_turn")).unwrap();
+            assert!(
+                messages[0]["content"][1]["text"]
+                    .as_str()
+                    .is_some_and(|text| text.contains("the summary"))
+            );
+            host.send(&answer(4, json!([text("done")]), "end_turn"))
+                .unwrap();
             expect_type(host, "work_done");
             stop(host);
         });
@@ -1044,7 +1281,11 @@ mod tests {
     #[test]
     fn the_compression_cut_keeps_the_latest_assistant_turns() {
         let user = || Message::user_text("u");
-        let assistant = || Message::assistant(vec![Block::Text { text: "a".to_string() }]);
+        let assistant = || {
+            Message::assistant(vec![Block::Text {
+                text: "a".to_string(),
+            }])
+        };
         let messages = vec![user(), assistant(), user(), assistant(), user()];
         assert_eq!(compress_cut(&messages, 1, usize::MAX), Some(3));
         assert_eq!(compress_cut(&messages, 0, usize::MAX), Some(3));
@@ -1061,13 +1302,23 @@ mod tests {
             host.send(&welcome(10)).unwrap();
             host.send(&work(1, "task", "t", "rm it")).unwrap();
             expect_type(host, "model_call");
-            host.send(&answer(1, json!([tool_use("d1", "bash", json!({"command": "rm -rf /"}))]), "tool_use")).unwrap();
+            host.send(&answer(
+                1,
+                json!([tool_use("d1", "bash", json!({"command": "rm -rf /"}))]),
+                "tool_use",
+            ))
+            .unwrap();
             expect_type(host, "tool_request");
-            host.send(&decision("d1", "deny", "not allowed here", true)).unwrap();
+            host.send(&decision("d1", "deny", "not allowed here", true))
+                .unwrap();
             let next = expect_type(host, "model_call");
             let result = &next["request"]["messages"][2]["content"][0];
-            assert_eq!((result["content"].clone(), result["is_error"].clone()), (json!("not allowed here"), json!(true)));
-            host.send(&answer(2, json!([text("ok")]), "end_turn")).unwrap();
+            assert_eq!(
+                (result["content"].clone(), result["is_error"].clone()),
+                (json!("not allowed here"), json!(true))
+            );
+            host.send(&answer(2, json!([text("ok")]), "end_turn"))
+                .unwrap();
             expect_type(host, "work_done");
             stop(host);
         });
@@ -1083,13 +1334,25 @@ mod tests {
             let not_an_object = tool_use("i1", "bash", json!("ls"));
             let gateway_meta = json!({"type": "tool_use", "id": "i2", "name": "bash", "input": {},
                                       "meta": {"kind": "gateway", "error": "INVALID_JSON"}});
-            host.send(&answer(1, json!([not_an_object, gateway_meta]), "tool_use")).unwrap();
+            host.send(&answer(1, json!([not_an_object, gateway_meta]), "tool_use"))
+                .unwrap();
             let next = expect_type(host, "model_call");
             let results = &next["request"]["messages"][2]["content"];
-            assert!(results[0]["content"].as_str().is_some_and(|c| c.starts_with("INVALID_INPUT: ")), "{results}");
-            assert!(results[1]["content"].as_str().is_some_and(|c| c.starts_with("INVALID_INPUT: ")), "{results}");
+            assert!(
+                results[0]["content"]
+                    .as_str()
+                    .is_some_and(|c| c.starts_with("INVALID_INPUT: ")),
+                "{results}"
+            );
+            assert!(
+                results[1]["content"]
+                    .as_str()
+                    .is_some_and(|c| c.starts_with("INVALID_INPUT: ")),
+                "{results}"
+            );
             assert_eq!(results[1]["is_error"], true);
-            host.send(&answer(2, json!([text("ok")]), "end_turn")).unwrap();
+            host.send(&answer(2, json!([text("ok")]), "end_turn"))
+                .unwrap();
             expect_type(host, "work_done");
             stop(host);
         });
@@ -1102,9 +1365,13 @@ mod tests {
             host.send(&welcome(10)).unwrap();
             host.send(&work(1, "task", "t", "x")).unwrap();
             expect_type(host, "model_call");
-            host.send(&answer(1, json!([text("no")]), "refusal")).unwrap();
+            host.send(&answer(1, json!([text("no")]), "refusal"))
+                .unwrap();
             let done = expect_type(host, "work_done");
-            assert_eq!((done["status"].clone(), done["summary"].clone()), (json!("failed"), json!("the model declined")));
+            assert_eq!(
+                (done["status"].clone(), done["summary"].clone()),
+                (json!("failed"), json!("the model declined"))
+            );
             stop(host);
         });
     }
@@ -1116,14 +1383,21 @@ mod tests {
             host.send(&welcome(10)).unwrap();
             host.send(&work(1, "task", "t", "long")).unwrap();
             expect_type(host, "model_call");
-            host.send(&answer(1, json!([text("partial")]), "max_tokens")).unwrap();
+            host.send(&answer(1, json!([text("partial")]), "max_tokens"))
+                .unwrap();
             let again = expect_type(host, "model_call");
             let messages = &again["request"]["messages"];
-            assert_eq!(messages[messages.as_array().unwrap().len() - 1]["content"][0]["text"], "continue");
-            host.send(&answer(2, json!([text("more")]), "max_tokens")).unwrap();
+            assert_eq!(
+                messages[messages.as_array().unwrap().len() - 1]["content"][0]["text"],
+                "continue"
+            );
+            host.send(&answer(2, json!([text("more")]), "max_tokens"))
+                .unwrap();
             let done = expect_type(host, "work_done");
-            assert_eq!((done["status"].clone(), done["summary"].clone()),
-                (json!("stopped"), json!("the model hit its token limit")));
+            assert_eq!(
+                (done["status"].clone(), done["summary"].clone()),
+                (json!("stopped"), json!("the model hit its token limit"))
+            );
             stop(host);
         });
     }
@@ -1135,16 +1409,28 @@ mod tests {
             host.send(&welcome(2)).unwrap();
             host.send(&work(1, "task", "t", "loop")).unwrap();
             expect_type(host, "model_call");
-            host.send(&answer(1, json!([tool_use("b1", "list", json!({"path": "a"}))]), "tool_use")).unwrap();
+            host.send(&answer(
+                1,
+                json!([tool_use("b1", "list", json!({"path": "a"}))]),
+                "tool_use",
+            ))
+            .unwrap();
             expect_type(host, "tool_request");
             host.send(&decision("b1", "done", "[]", false)).unwrap();
             expect_type(host, "model_call");
-            host.send(&answer(2, json!([tool_use("b2", "list", json!({"path": "b"}))]), "tool_use")).unwrap();
+            host.send(&answer(
+                2,
+                json!([tool_use("b2", "list", json!({"path": "b"}))]),
+                "tool_use",
+            ))
+            .unwrap();
             expect_type(host, "tool_request");
             host.send(&decision("b2", "done", "[]", false)).unwrap();
             let done = expect_type(host, "work_done");
-            assert_eq!((done["status"].clone(), done["summary"].clone()),
-                (json!("stopped"), json!("turn budget reached")));
+            assert_eq!(
+                (done["status"].clone(), done["summary"].clone()),
+                (json!("stopped"), json!("turn budget reached"))
+            );
             stop(host);
         });
     }
@@ -1158,14 +1444,23 @@ mod tests {
             for req in 1..=3 {
                 expect_type(host, "model_call");
                 let call = format!("s{req}");
-                host.send(&answer(req, json!([tool_use(&call, "bash", json!({"command": "x"}))]), "tool_use"))
-                    .unwrap();
+                host.send(&answer(
+                    req,
+                    json!([tool_use(&call, "bash", json!({"command": "x"}))]),
+                    "tool_use",
+                ))
+                .unwrap();
                 expect_type(host, "tool_request");
                 host.send(&decision(&call, "deny", "no", true)).unwrap();
             }
             let done = expect_type(host, "work_done");
-            assert_eq!((done["status"].clone(), done["summary"].clone()), (json!("stopped"),
-                json!("stuck: bash failed 3 times in a row with the same input")));
+            assert_eq!(
+                (done["status"].clone(), done["summary"].clone()),
+                (
+                    json!("stopped"),
+                    json!("stuck: bash failed 3 times in a row with the same input")
+                )
+            );
             stop(host);
         });
     }
@@ -1177,14 +1472,22 @@ mod tests {
             host.send(&welcome(10)).unwrap();
             host.send(&work(1, "task", "t", "stop me")).unwrap();
             expect_type(host, "model_call");
-            host.send(r#"{"type":"cancel","work":1,"reason":"operator stop"}"#).unwrap();
-            host.send(&answer(1, json!([tool_use("c1", "bash", json!({"command": "echo hi"}))]), "tool_use"))
+            host.send(r#"{"type":"cancel","work":1,"reason":"operator stop"}"#)
                 .unwrap();
+            host.send(&answer(
+                1,
+                json!([tool_use("c1", "bash", json!({"command": "echo hi"}))]),
+                "tool_use",
+            ))
+            .unwrap();
             expect_type(host, "tool_request");
             host.send(&decision("c1", "allow", "", false)).unwrap();
             expect_type(host, "tool_report");
             let done = expect_type(host, "work_done");
-            assert_eq!((done["status"].clone(), done["summary"].clone()), (json!("stopped"), json!("operator stop")));
+            assert_eq!(
+                (done["status"].clone(), done["summary"].clone()),
+                (json!("stopped"), json!("operator stop"))
+            );
             stop(host);
         });
     }
@@ -1197,23 +1500,38 @@ mod tests {
             host.send(&welcome(10)).unwrap();
             host.send(&work(1, "chat", "room", "hello")).unwrap();
             expect_type(host, "model_call");
-            host.send(&answer(1, json!([opaque.clone(), text("hi there")]), "end_turn")).unwrap();
+            host.send(&answer(
+                1,
+                json!([opaque.clone(), text("hi there")]),
+                "end_turn",
+            ))
+            .unwrap();
             expect_type(host, "work_done");
 
             host.send(&work(2, "chat", "room", "again")).unwrap();
             let second = expect_type(host, "model_call");
             let messages = &second["request"]["messages"];
             assert_eq!(messages[0]["content"][0]["text"], "hello");
-            assert_eq!(messages[1]["content"], json!([opaque.clone(), text("hi there")]));
+            assert_eq!(
+                messages[1]["content"],
+                json!([opaque.clone(), text("hi there")])
+            );
             assert_eq!(messages[2]["content"][0]["text"], "again");
             // Work 3 arrives while work 2 waits for its model answer, and runs after it.
-            host.send(&answer(2, json!([text("again!")]), "end_turn")).unwrap();
+            host.send(&answer(2, json!([text("again!")]), "end_turn"))
+                .unwrap();
             host.send(&work(3, "task", "other", "queued")).unwrap();
             expect_type(host, "work_done");
             let third = expect_type(host, "model_call");
-            assert_eq!((third["work"].clone(), third["request"]["messages"][0]["content"][0]["text"].clone()),
-                (json!(3), json!("queued")));
-            host.send(&answer(3, json!([text("queued done")]), "end_turn")).unwrap();
+            assert_eq!(
+                (
+                    third["work"].clone(),
+                    third["request"]["messages"][0]["content"][0]["text"].clone()
+                ),
+                (json!(3), json!("queued"))
+            );
+            host.send(&answer(3, json!([text("queued done")]), "end_turn"))
+                .unwrap();
             expect_type(host, "work_done");
             stop(host);
         });
@@ -1233,7 +1551,8 @@ mod tests {
                     busy_beats += 1;
                 }
             }
-            host.send(&answer(1, json!([text("late")]), "end_turn")).unwrap();
+            host.send(&answer(1, json!([text("late")]), "end_turn"))
+                .unwrap();
             expect_type(host, "work_done");
             let mut idle_beat = false;
             while !idle_beat {
@@ -1249,16 +1568,27 @@ mod tests {
         let workspace = scratch("close");
         run_hub(&workspace, |host| {
             host.send(&welcome(10)).unwrap();
-            host.send(&work(1, "chat", "long", &"x".repeat(THREAD_CLOSE_BYTES + 1))).unwrap();
+            host.send(&work(
+                1,
+                "chat",
+                "long",
+                &"x".repeat(THREAD_CLOSE_BYTES + 1),
+            ))
+            .unwrap();
             expect_type(host, "model_call");
-            host.send(&answer(1, json!([text("summary one")]), "end_turn")).unwrap();
+            host.send(&answer(1, json!([text("summary one")]), "end_turn"))
+                .unwrap();
             expect_type(host, "work_done");
             host.send(&work(2, "chat", "long", "second")).unwrap();
             let next = expect_type(host, "model_call");
             let messages = next["request"]["messages"].as_array().unwrap();
             assert_eq!(messages.len(), 1, "{messages:?}");
-            assert_eq!(messages[0]["content"][0]["text"], "Earlier in this conversation: summary one\n\nsecond");
-            host.send(&answer(2, json!([text("ok")]), "end_turn")).unwrap();
+            assert_eq!(
+                messages[0]["content"][0]["text"],
+                "Earlier in this conversation: summary one\n\nsecond"
+            );
+            host.send(&answer(2, json!([text("ok")]), "end_turn"))
+                .unwrap();
             expect_type(host, "work_done");
             stop(host);
         });
@@ -1271,21 +1601,31 @@ mod tests {
             host.send(&welcome(10)).unwrap();
             host.send(&work(1, "task", "t", "wait")).unwrap();
             expect_type(host, "model_call");
-            host.send(&answer(1, json!([tool_use("slow", "bash", json!({"command": "sleep 1"}))]), "tool_use"))
-                .unwrap();
+            host.send(&answer(
+                1,
+                json!([tool_use("slow", "bash", json!({"command": "sleep 1"}))]),
+                "tool_use",
+            ))
+            .unwrap();
             expect_type(host, "tool_request");
             host.send(&decision("slow", "allow", "", false)).unwrap();
             // The local tool is sleeping now; the owner's call must not wait for it.
-            host.send(r#"{"type":"tool_call","call":77,"name":"echo","args":{"text":"owner"}}"#).unwrap();
+            host.send(r#"{"type":"tool_call","call":77,"name":"echo","args":{"text":"owner"}}"#)
+                .unwrap();
             let first = next_msg(host);
             assert_eq!(
-                (first["type"].clone(), first["call"].clone(), first["output"].clone()),
+                (
+                    first["type"].clone(),
+                    first["call"].clone(),
+                    first["output"].clone()
+                ),
                 (json!("tool_result"), json!(77), json!("owner")),
                 "{first}"
             );
             expect_type(host, "tool_report");
             expect_type(host, "model_call");
-            host.send(&answer(2, json!([text("done")]), "end_turn")).unwrap();
+            host.send(&answer(2, json!([text("done")]), "end_turn"))
+                .unwrap();
             expect_type(host, "work_done");
             stop(host);
         });
@@ -1306,7 +1646,11 @@ mod tests {
             for call in 1..=200u64 {
                 let answer = next_msg(host);
                 assert_eq!(
-                    (answer["type"].clone(), answer["call"].clone(), answer["ok"].clone()),
+                    (
+                        answer["type"].clone(),
+                        answer["call"].clone(),
+                        answer["ok"].clone()
+                    ),
                     (json!("tool_result"), json!(call), json!(true)),
                     "{answer}"
                 );
@@ -1318,7 +1662,14 @@ mod tests {
     #[test]
     fn the_model_edit_arguments_map_onto_the_file_tools_names() {
         let mapped = edit_args(&json!({"path": "a.txt", "old": "x", "new": "y"})).unwrap();
-        assert_eq!((mapped["find"].clone(), mapped["replace"].clone()), (json!("x"), json!("y")));
-        assert!(edit_args(&json!({"path": "a.txt", "old": "x"})).unwrap_err().starts_with("invalid input:"));
+        assert_eq!(
+            (mapped["find"].clone(), mapped["replace"].clone()),
+            (json!("x"), json!("y"))
+        );
+        assert!(
+            edit_args(&json!({"path": "a.txt", "old": "x"}))
+                .unwrap_err()
+                .starts_with("invalid input:")
+        );
     }
 }

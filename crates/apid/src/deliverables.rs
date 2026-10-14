@@ -90,14 +90,18 @@ impl Store {
 
     /// Whether agent `cid` may read file `id` (its author, a public file, or one shared with it).
     pub fn can_read(&self, id: &str, cid: u64) -> bool {
-        self.find(id)
-            .is_some_and(|d| d.audience == "public" || d.author_cid == cid || d.allowed.contains(&cid))
+        self.find(id).is_some_and(|d| {
+            d.audience == "public" || d.author_cid == cid || d.allowed.contains(&cid)
+        })
     }
 
     /// Makes file `id` public (attached to a board post or comment). Only its author may.
     pub fn publish(&self, id: &str, by: u64) -> Result<(), String> {
         let mut index = lock(&self.index);
-        let pos = index.iter().position(|d| d.id == id).ok_or_else(|| "no such file".to_string())?;
+        let pos = index
+            .iter()
+            .position(|d| d.id == id)
+            .ok_or_else(|| "no such file".to_string())?;
         if index[pos].audience == "public" {
             return Ok(());
         }
@@ -106,7 +110,8 @@ impl Store {
         }
         let mut next = index.to_vec();
         next[pos].audience = "public".to_string();
-        self.save(&next).map_err(|e| format!("cannot save the index: {e}"))?;
+        self.save(&next)
+            .map_err(|e| format!("cannot save the index: {e}"))?;
         *index = next;
         Ok(())
     }
@@ -114,7 +119,10 @@ impl Store {
     /// Gives agents `to` access to file `id` (attached to a direct message). Only its author may.
     pub fn grant(&self, id: &str, by: u64, to: &[u64]) -> Result<(), String> {
         let mut index = lock(&self.index);
-        let pos = index.iter().position(|d| d.id == id).ok_or_else(|| "no such file".to_string())?;
+        let pos = index
+            .iter()
+            .position(|d| d.id == id)
+            .ok_or_else(|| "no such file".to_string())?;
         if index[pos].audience == "public" {
             return Ok(());
         }
@@ -127,14 +135,19 @@ impl Store {
                 next[pos].allowed.push(*cid);
             }
         }
-        self.save(&next).map_err(|e| format!("cannot save the index: {e}"))?;
+        self.save(&next)
+            .map_err(|e| format!("cannot save the index: {e}"))?;
         *index = next;
         Ok(())
     }
 
     /// Loads `<state-dir>/files/index.json` (a missing file is an empty library) and picks
     /// the store: Garage when the environment configures it, else a local folder.
-    pub fn load(state_dir: &Path, env: &BTreeMap<String, String>, vault: Arc<crate::vault::Store>) -> io::Result<Self> {
+    pub fn load(
+        state_dir: &Path,
+        env: &BTreeMap<String, String>,
+        vault: Arc<crate::vault::Store>,
+    ) -> io::Result<Self> {
         let dir = state_dir.join("files");
         std::fs::create_dir_all(&dir)?;
         let index: Vec<Deliverable> = match std::fs::read(dir.join(INDEX)) {
@@ -146,13 +159,22 @@ impl Store {
         for name in GARAGE_KEYS {
             vault.register_consumer(GARAGE_BINDING, "Garage object store", name);
         }
-        Ok(Self { dir, garage: garage_from(env), vault, index: Mutex::new(index) })
+        Ok(Self {
+            dir,
+            garage: garage_from(env),
+            vault,
+            index: Mutex::new(index),
+        })
     }
 
     /// Stores the bytes and indexes them. The bytes go first, so an index entry never names
     /// a missing object; a failed index save removes them again.
     pub fn add(&self, upload: Upload, body: &[u8]) -> Result<Deliverable, String> {
-        let store = if self.garage.is_some() && self.keys().is_some() { "garage" } else { "local" };
+        let store = if self.garage.is_some() && self.keys().is_some() {
+            "garage"
+        } else {
+            "local"
+        };
         let item = Deliverable {
             id: new_id(),
             name: upload.name,
@@ -201,11 +223,14 @@ impl Store {
 
     /// Removes a deliverable's bytes, then its entry. Returns the entry, or None when unknown.
     pub fn remove(&self, id: &str) -> Result<Option<Deliverable>, String> {
-        let Some(item) = self.find(id) else { return Ok(None) };
+        let Some(item) = self.find(id) else {
+            return Ok(None);
+        };
         self.delete_blob(&item)?;
         let mut index = lock(&self.index);
         let next: Vec<Deliverable> = index.iter().filter(|d| d.id != id).cloned().collect();
-        self.save(&next).map_err(|e| format!("cannot save the index: {e}"))?;
+        self.save(&next)
+            .map_err(|e| format!("cannot save the index: {e}"))?;
         *index = next;
         Ok(Some(item))
     }
@@ -213,15 +238,24 @@ impl Store {
     /// Garage's key pair from the vault (`tool:garage`), or the process environment when no entry of that name is
     /// bound to it. Read per use.
     fn keys(&self) -> Option<(String, String)> {
-        let access = self.vault.value_for(GARAGE_KEYS[0], GARAGE_BINDING, &OnBehalf::Hub)?;
-        let secret = self.vault.value_for(GARAGE_KEYS[1], GARAGE_BINDING, &OnBehalf::Hub)?;
+        let access = self
+            .vault
+            .value_for(GARAGE_KEYS[0], GARAGE_BINDING, &OnBehalf::Hub)?;
+        let secret = self
+            .vault
+            .value_for(GARAGE_KEYS[1], GARAGE_BINDING, &OnBehalf::Hub)?;
         Some((access, secret))
     }
 
     /// A client for Garage: the address from the settings, the keys from the vault.
     fn garage(&self) -> Result<S3, String> {
-        let address = self.garage.as_ref().ok_or_else(|| "the file is in Garage, which is not configured".to_string())?;
-        let (access_key, secret_key) = self.keys().ok_or_else(|| "the Garage keys are not in the vault (or the vault is sealed)".to_string())?;
+        let address = self
+            .garage
+            .as_ref()
+            .ok_or_else(|| "the file is in Garage, which is not configured".to_string())?;
+        let (access_key, secret_key) = self.keys().ok_or_else(|| {
+            "the Garage keys are not in the vault (or the vault is sealed)".to_string()
+        })?;
         Ok(S3 {
             endpoint: address.endpoint.clone(),
             bucket: address.bucket.clone(),
@@ -277,7 +311,11 @@ impl Store {
 
     /// `<dir>/objects/<key>`, for a key of plain segments only.
     fn object_path(&self, key: &str) -> Result<PathBuf, String> {
-        if key.is_empty() || key.split('/').any(|s| s.is_empty() || s == "." || s == "..") {
+        if key.is_empty()
+            || key
+                .split('/')
+                .any(|s| s.is_empty() || s == "." || s == "..")
+        {
             return Err(format!("{key:?} is not an object key"));
         }
         Ok(self.dir.join("objects").join(key))
@@ -289,7 +327,9 @@ impl Store {
 
     fn write_blob(&self, item: &Deliverable, body: &[u8]) -> Result<(), String> {
         if item.store == "garage" {
-            return self.garage()?.put(&object_key(item), body, &item.content_type);
+            return self
+                .garage()?
+                .put(&object_key(item), body, &item.content_type);
         }
         std::fs::create_dir_all(self.dir.join("blobs")).map_err(|e| e.to_string())?;
         write_atomic(&self.blob_path(&item.id), body, 0o600).map_err(|e| e.to_string())
@@ -316,7 +356,10 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .get("/v1/files/{id}/content", content_route)
         .delete("/v1/files/{id}", delete_route)
         .route("PUT", "/internal/v1/agents/{cid}/gateway/files", put_route)
-        .get("/internal/v1/agents/{cid}/gateway/files/{id}", agent_get_route)
+        .get(
+            "/internal/v1/agents/{cid}/gateway/files/{id}",
+            agent_get_route,
+        )
 }
 
 /// Every deliverable, or only one `kind` when the query names it.
@@ -348,7 +391,8 @@ fn content_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
 fn delete_route(app: &App, _: &Request, p: &Params<'_>) -> Response {
     match app.deliverables.remove(p.get("id")) {
         Ok(Some(item)) => {
-            app.bus.publish("file", &json!({ "id": item.id, "deleted": true }));
+            app.bus
+                .publish("file", &json!({ "id": item.id, "deleted": true }));
             Response::json(200, &json!({ "deleted": item.id }))
         }
         Ok(None) => Response::error(404, "no such file"),
@@ -384,18 +428,40 @@ fn put_file(app: &App, req: &Request, cid: u64) -> Response {
     }
     // Publishing a file is an artifact.publish, checked whichever way the agent reaches this route:
     // the share/deliver tools, or a PUT from its own VM (C-003b reads the content for impersonation).
-    let role = app.agents.get(cid).map(|agent| agent.role).unwrap_or_default();
+    let role = app
+        .agents
+        .get(cid)
+        .map(|agent| agent.role)
+        .unwrap_or_default();
     let content = serde_json::Value::String(String::from_utf8_lossy(&req.body).into_owned());
-    let artifact = jhrl::authz::Entity { ty: "Artifact".into(), id: name.clone() };
-    if let Some(why) = app.laws.refuse_op(cid, &role, "artifact.publish", artifact, BTreeMap::new(), &content) {
+    let artifact = jhrl::authz::Entity {
+        ty: "Artifact".into(),
+        id: name.clone(),
+    };
+    if let Some(why) = app.laws.refuse_op(
+        cid,
+        &role,
+        "artifact.publish",
+        artifact,
+        BTreeMap::new(),
+        &content,
+    ) {
         return Response::error(403, &why);
     }
-    let kind = if query(req, "kind").as_deref() == Some("shared") { "shared" } else { "deliverable" };
+    let kind = if query(req, "kind").as_deref() == Some("shared") {
+        "shared"
+    } else {
+        "deliverable"
+    };
     let to = match parse_cids(query(req, "to").as_deref()) {
         Ok(to) => to,
         Err(e) => return Response::error(400, &e),
     };
-    let (audience, allowed) = if to.is_empty() { ("public", Vec::new()) } else { ("private", to) };
+    let (audience, allowed) = if to.is_empty() {
+        ("public", Vec::new())
+    } else {
+        ("private", to)
+    };
     let upload = Upload {
         kind: kind.to_string(),
         audience: audience.to_string(),
@@ -403,8 +469,14 @@ fn put_file(app: &App, req: &Request, cid: u64) -> Response {
         title: query(req, "title").unwrap_or_else(|| name.clone()),
         description: query(req, "description"),
         task: query(req, "task"),
-        content_type: optional(req.header("content-type")).unwrap_or_else(|| guess_type(&name).to_string()),
-        author: app.agents.get(cid).map(|a| a.name).filter(|n| !n.is_empty()).unwrap_or_else(|| format!("agent {cid}")),
+        content_type: optional(req.header("content-type"))
+            .unwrap_or_else(|| guess_type(&name).to_string()),
+        author: app
+            .agents
+            .get(cid)
+            .map(|a| a.name)
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| format!("agent {cid}")),
         author_cid: cid,
         name,
     };
@@ -434,22 +506,35 @@ const HTML_CSP: &str = "sandbox allow-scripts; default-src 'self' data: blob: ht
 
 /// A file is HTML when its content type says so or its name ends `.html` or `.htm`.
 fn is_html(content_type: &str, name: &str) -> bool {
-    let ext = name.rsplit_once('.').map(|(_, ext)| ext.to_ascii_lowercase());
+    let ext = name
+        .rsplit_once('.')
+        .map(|(_, ext)| ext.to_ascii_lowercase());
     content_type.starts_with("text/html") || matches!(ext.as_deref(), Some("html" | "htm"))
 }
 
 /// What a stored file is served as: its content type and its extra headers. HTML is served inline as text/html under
 /// `HTML_CSP`, so the console's frame and a direct open both run it sandboxed. SVG (which can carry script) always
 /// downloads, and `download=1` downloads anything.
-pub(crate) fn served(content_type: &str, name: &str, download: bool) -> (String, Vec<(&'static str, String)>) {
+pub(crate) fn served(
+    content_type: &str,
+    name: &str,
+    download: bool,
+) -> (String, Vec<(&'static str, String)>) {
     let html = is_html(content_type, name);
-    let served_type = if html { "text/html; charset=utf-8".to_string() } else { content_type.to_string() };
+    let served_type = if html {
+        "text/html; charset=utf-8".to_string()
+    } else {
+        content_type.to_string()
+    };
     let mut headers = vec![("x-content-type-options", "nosniff".to_string())];
     if html {
         headers.push(("content-security-policy", HTML_CSP.to_string()));
     }
     if download || content_type.contains("svg") {
-        headers.push(("content-disposition", format!("attachment; filename=\"{name}\"")));
+        headers.push((
+            "content-disposition",
+            format!("attachment; filename=\"{name}\""),
+        ));
     }
     (served_type, headers)
 }
@@ -461,16 +546,28 @@ fn serve(app: &App, item: &Deliverable, download: bool) -> Response {
         Err(e) => return Response::error(500, &e),
     };
     let (content_type, headers) = served(&item.content_type, &item.name, download);
-    headers.into_iter().fold(Response::new(200, &content_type, bytes), |response, (name, value)| response.with_header(name, &value))
+    headers.into_iter().fold(
+        Response::new(200, &content_type, bytes),
+        |response, (name, value)| response.with_header(name, &value),
+    )
 }
 
 /// The name as stored: its basename, with anything outside `[A-Za-z0-9._-]` made `_`. A name
 /// that is empty, only dots, or longer than 120 characters is refused.
 pub fn clean_name(raw: &str) -> Result<String, String> {
-    let base = raw.rsplit(|c: char| c == '/' || c == '\\').next().unwrap_or("");
+    let base = raw
+        .rsplit(|c: char| c == '/' || c == '\\')
+        .next()
+        .unwrap_or("");
     let name: String = base
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     if name.chars().all(|c| c == '.') {
         return Err("the name is empty".into());
@@ -483,7 +580,9 @@ pub fn clean_name(raw: &str) -> Result<String, String> {
 
 /// The content type a name's extension suggests.
 pub fn guess_type(name: &str) -> &'static str {
-    let Some((_, ext)) = name.rsplit_once('.') else { return "application/octet-stream" };
+    let Some((_, ext)) = name.rsplit_once('.') else {
+        return "application/octet-stream";
+    };
     match ext.to_ascii_lowercase().as_str() {
         "mp4" => "video/mp4",
         "webm" => "video/webm",
@@ -543,7 +642,10 @@ fn new_id() -> String {
     let mut bytes = [0u8; 6];
     let random = apz_os::random::fill(&mut bytes);
     if random.is_err() {
-        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
         bytes.copy_from_slice(&nanos.to_be_bytes()[10..]);
     }
     let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
@@ -551,11 +653,17 @@ fn new_id() -> String {
 }
 
 fn now_ms() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
-    Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 /// A query value, percent-decoded (`+` is a space), trimmed; `None` when absent or empty.
@@ -573,7 +681,10 @@ fn decode(raw: &str) -> String {
             b'+' => out.push(b' '),
             // Both hex digits must be there: positions i + 1 and i + 2.
             b'%' if i + 2 < bytes.len() => {
-                match u8::from_str_radix(std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or("zz"), 16) {
+                match u8::from_str_radix(
+                    std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or("zz"),
+                    16,
+                ) {
                     Ok(byte) => {
                         out.push(byte);
                         i += 2;
@@ -589,21 +700,29 @@ fn decode(raw: &str) -> String {
 }
 
 fn optional(value: Option<&str>) -> Option<String> {
-    value.map(str::trim).filter(|v| !v.is_empty()).map(str::to_string)
+    value
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_string)
 }
 
 /// The agent cids a `to` query lists, comma-separated (`203,207`); absent is none.
 fn parse_cids(raw: Option<&str>) -> Result<Vec<u64>, String> {
-    let Some(raw) = raw else { return Ok(Vec::new()) };
+    let Some(raw) = raw else {
+        return Ok(Vec::new());
+    };
     raw.split(',')
-        .map(|s| s.trim().parse::<u64>().map_err(|_| "to must list agent cids".to_string()))
+        .map(|s| {
+            s.trim()
+                .parse::<u64>()
+                .map_err(|_| "to must list agent cids".to_string())
+        })
         .collect()
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|e| e.into_inner())
 }
-
 
 impl Store {
     /// The whole state as JSON, for Postgres (`crate::db`); "" when there is nothing to save.
@@ -643,16 +762,27 @@ mod tests {
     #[test]
     fn snapshot_restores_into_a_fresh_store() {
         let env = BTreeMap::new();
-        let a = Store::load(&scratch("snapshot"), &env, vault_in(&scratch("snapshot-vault"))).unwrap();
+        let a = Store::load(
+            &scratch("snapshot"),
+            &env,
+            vault_in(&scratch("snapshot-vault")),
+        )
+        .unwrap();
         a.add(upload("report.txt"), b"hello").unwrap();
-        let b = Store::load(&scratch("snapshot-restored"), &env, vault_in(&scratch("snapshot-restored-vault"))).unwrap();
+        let b = Store::load(
+            &scratch("snapshot-restored"),
+            &env,
+            vault_in(&scratch("snapshot-restored-vault")),
+        )
+        .unwrap();
         b.restore(&a.snapshot()).unwrap();
         assert_eq!(b.snapshot(), a.snapshot());
         assert_eq!(b.list().len(), 1);
     }
 
     fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("apid-deliverables-{}-{name}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("apid-deliverables-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         dir
     }
@@ -698,7 +828,10 @@ mod tests {
     #[test]
     fn names_are_basenames_of_safe_characters() {
         assert_eq!(clean_name("../../etc/passwd").unwrap(), "passwd");
-        assert_eq!(clean_name("C:\\out\\my report (final).pdf").unwrap(), "my_report__final_.pdf");
+        assert_eq!(
+            clean_name("C:\\out\\my report (final).pdf").unwrap(),
+            "my_report__final_.pdf"
+        );
         assert!(clean_name("..").is_err());
         assert!(clean_name("").is_err());
         assert!(clean_name(&"a".repeat(121)).is_err());
@@ -709,7 +842,12 @@ mod tests {
     fn html_is_served_inline_under_the_sandbox_policy() {
         let (kind, headers) = served("text/html; charset=utf-8", "page.html", false);
         assert_eq!(kind, "text/html; charset=utf-8");
-        let get = |name: &str| headers.iter().find(|(k, _)| *k == name).map(|(_, v)| v.clone());
+        let get = |name: &str| {
+            headers
+                .iter()
+                .find(|(k, _)| *k == name)
+                .map(|(_, v)| v.clone())
+        };
         assert_eq!(get("content-security-policy").as_deref(), Some(HTML_CSP));
         assert_eq!(get("x-content-type-options").as_deref(), Some("nosniff"));
         assert_eq!(get("content-disposition"), None);
@@ -724,14 +862,33 @@ mod tests {
         assert!(!policy.contains("allow-same-origin"));
         assert!(!policy.contains("allow-top-navigation"));
         // The directives the reports need: inline styles, and images from data:, blob: and https:.
-        let directive = |name: &str| policy.split(';').map(str::trim).find(|d| d.starts_with(name)).map(str::to_string);
-        assert_eq!(directive("style-src").as_deref(), Some("style-src 'self' 'unsafe-inline' https:"));
-        assert_eq!(directive("img-src").as_deref(), Some("img-src 'self' data: blob: https:"));
+        let directive = |name: &str| {
+            policy
+                .split(';')
+                .map(str::trim)
+                .find(|d| d.starts_with(name))
+                .map(str::to_string)
+        };
+        assert_eq!(
+            directive("style-src").as_deref(),
+            Some("style-src 'self' 'unsafe-inline' https:")
+        );
+        assert_eq!(
+            directive("img-src").as_deref(),
+            Some("img-src 'self' data: blob: https:")
+        );
         // Scripts keep their own rule, unchanged.
-        assert_eq!(directive("script-src").as_deref(), Some("script-src 'unsafe-inline' 'self' https:"));
+        assert_eq!(
+            directive("script-src").as_deref(),
+            Some("script-src 'unsafe-inline' 'self' https:")
+        );
         // The policy is served with HTML, and nothing else gets it.
         let (_, headers) = served("text/html", "report.html", false);
-        assert!(headers.iter().any(|(k, v)| *k == "content-security-policy" && v == policy));
+        assert!(
+            headers
+                .iter()
+                .any(|(k, v)| *k == "content-security-policy" && v == policy)
+        );
     }
 
     #[test]
@@ -747,11 +904,19 @@ mod tests {
     fn svg_downloads_and_other_files_carry_no_policy() {
         let (kind, headers) = served("image/svg+xml", "logo.svg", false);
         assert_eq!(kind, "image/svg+xml");
-        assert!(headers.iter().any(|(k, v)| *k == "content-disposition" && v == "attachment; filename=\"logo.svg\""));
+        assert!(
+            headers
+                .iter()
+                .any(|(k, v)| *k == "content-disposition"
+                    && v == "attachment; filename=\"logo.svg\"")
+        );
         assert!(!headers.iter().any(|(k, _)| *k == "content-security-policy"));
         let (kind, headers) = served("image/png", "shot.png", false);
         assert_eq!(kind, "image/png");
-        assert_eq!(headers, vec![("x-content-type-options", "nosniff".to_string())]);
+        assert_eq!(
+            headers,
+            vec![("x-content-type-options", "nosniff".to_string())]
+        );
         let (_, headers) = served("text/html", "page.html", true);
         assert!(headers.iter().any(|(k, _)| *k == "content-disposition"));
     }

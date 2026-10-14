@@ -12,7 +12,7 @@ use glam::{Mat4, Vec3};
 use super::geometry;
 use super::scene::{Color, Geo, Mat, Obj};
 use super::textures::Rng;
-use super::toon::{outline};
+use super::toon::outline;
 
 /// `part(parent, geo, mat, x, y, z)`: a mesh placed under `parent`.
 fn part(parent: &Obj, geo: &Geo, mat: &Mat, x: f32, y: f32, z: f32) -> Obj {
@@ -34,7 +34,10 @@ pub fn build_backdrop() -> Obj {
     let cap = Mat::toon(Color::hex(0x4d4794));
     let block = Mat::toon(Color::hex(0x323a72));
     let roof = Mat::toon(Color::hex(0x434c8e));
-    let lit: Vec<Mat> = [0xffd27a, 0x7fe8ff, 0xff9ad8].iter().map(|&c| Mat::basic(Color::hex(c))).collect();
+    let lit: Vec<Mat> = [0xffd27a, 0x7fe8ff, 0xff9ad8]
+        .iter()
+        .map(|&c| Mat::basic(Color::hex(c)))
+        .collect();
     const N: usize = 34;
     for i in 0..N {
         let a = (i as f32 / N as f32) * TAU + rand.next() * 0.08;
@@ -47,7 +50,14 @@ pub fn build_backdrop() -> Obj {
             // A mesa: a wide rounded hill with a lighter cap, sometimes a second, smaller one beside it.
             let w = 8.0 + rand.next() * 9.0;
             let h = 4.0 + rand.next() * 7.0;
-            part(&node, &geometry::cylinder(w * 0.8, w, h, 28), &rock, 0.0, h / 2.0, 0.0);
+            part(
+                &node,
+                &geometry::cylinder(w * 0.8, w, h, 28),
+                &rock,
+                0.0,
+                h / 2.0,
+                0.0,
+            );
             let cap_geo = geometry::transformed(
                 &geometry::sphere_part(w * 0.8, 28, 10, 0.0, TAU, 0.0, FRAC_PI_2),
                 Mat4::from_scale(Vec3::new(1.0, 0.25, 1.0)),
@@ -56,7 +66,14 @@ pub fn build_backdrop() -> Obj {
             if rand.next() < 0.6 {
                 let w2 = w * 0.55;
                 let h2 = h * (0.5 + rand.next() * 0.4);
-                part(&node, &geometry::cylinder(w2 * 0.8, w2, h2, 24), &rock, w * 1.1, h2 / 2.0, 2.0);
+                part(
+                    &node,
+                    &geometry::cylinder(w2 * 0.8, w2, h2, 24),
+                    &rock,
+                    w * 1.1,
+                    h2 / 2.0,
+                    2.0,
+                );
                 let cap2 = geometry::transformed(
                     &geometry::sphere_part(w2 * 0.8, 24, 8, 0.0, TAU, 0.0, FRAC_PI_2),
                     Mat4::from_scale(Vec3::new(1.0, 0.25, 1.0)),
@@ -70,18 +87,53 @@ pub fn build_backdrop() -> Obj {
                 let w = 3.0 + rand.next() * 3.0;
                 let h = 12.0 + rand.next() * 22.0;
                 let x = (k as f32 - (count as f32 - 1.0) / 2.0) * (w + 1.5);
-                part(&node, &geometry::rounded_box(w, h, w, 3, 0.9), &block, x, h / 2.0, 0.0);
-                part(&node, &geometry::rounded_box(w * 0.7, 1.4, w * 0.7, 3, 0.5), &roof, x, h + 0.7, 0.0);
+                part(
+                    &node,
+                    &geometry::rounded_box(w, h, w, 3, 0.9),
+                    &block,
+                    x,
+                    h / 2.0,
+                    0.0,
+                );
+                part(
+                    &node,
+                    &geometry::rounded_box(w * 0.7, 1.4, w * 0.7, 3, 0.5),
+                    &roof,
+                    x,
+                    h + 0.7,
+                    0.0,
+                );
                 let light = &lit[(i + k) % lit.len()];
                 let mut y = 3.0_f32;
                 while y < h - 2.0 {
                     if rand.next() >= 0.25 {
-                        part(&node, &geometry::box_geo(w * 0.62, 0.45, 0.1), light, x, y, w / 2.0 + 0.02);
+                        part(
+                            &node,
+                            &geometry::box_geo(w * 0.62, 0.45, 0.1),
+                            light,
+                            x,
+                            y,
+                            w / 2.0 + 0.02,
+                        );
                     }
                     y += 2.6;
                 }
-                part(&node, &geometry::cylinder(0.12, 0.12, 3.0, 6), &roof, x, h + 2.9, 0.0);
-                part(&node, &geometry::sphere(0.45, 10, 8), &lit[0], x, h + 4.5, 0.0);
+                part(
+                    &node,
+                    &geometry::cylinder(0.12, 0.12, 3.0, 6),
+                    &roof,
+                    x,
+                    h + 2.9,
+                    0.0,
+                );
+                part(
+                    &node,
+                    &geometry::sphere(0.45, 10, 8),
+                    &lit[0],
+                    x,
+                    h + 4.5,
+                    0.0,
+                );
             }
         }
         g.add(&node);

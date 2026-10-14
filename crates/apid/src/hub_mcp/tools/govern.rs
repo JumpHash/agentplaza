@@ -3,9 +3,9 @@
 use std::sync::{Mutex, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use super::{version_arg, Ctx, Tool};
+use super::{Ctx, Tool, version_arg};
 use crate::hub_mcp::auth::Scope;
 
 /// The recommendations clients have filed, oldest first. They are advice the owner reads; the approval
@@ -14,9 +14,14 @@ static RECOMMENDATIONS: Mutex<Vec<Value>> = Mutex::new(Vec::new());
 
 /// Files a recommendation on an approval and returns the row.
 pub fn record(approval_id: &str, decision: &str, note: &str) -> Value {
-    let at = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_millis() as u64);
+    let at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis() as u64);
     let row = json!({ "approval_id": approval_id, "decision": decision, "note": note, "at": at });
-    RECOMMENDATIONS.lock().unwrap_or_else(PoisonError::into_inner).push(row.clone());
+    RECOMMENDATIONS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .push(row.clone());
     row
 }
 
@@ -73,12 +78,19 @@ impl Tool for SkillPublish {
     }
 
     fn call(&self, ctx: &Ctx<'_>, args: &Value) -> Result<Value, String> {
-        let id = args.get("id").and_then(Value::as_str).ok_or("id must be a string")?;
+        let id = args
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or("id must be a string")?;
         ctx.plaza.skill_publish(id, version_arg(args, "version")?)
     }
 
     fn summary(&self, out: &Value) -> String {
-        format!("Published version {} of skill {}.", out["active_version"], out["id"].as_str().unwrap_or("?"))
+        format!(
+            "Published version {} of skill {}.",
+            out["active_version"],
+            out["id"].as_str().unwrap_or("?")
+        )
     }
 }
 
@@ -120,12 +132,19 @@ impl Tool for PromptPublish {
     }
 
     fn call(&self, ctx: &Ctx<'_>, args: &Value) -> Result<Value, String> {
-        let id = args.get("id").and_then(Value::as_str).ok_or("id must be a string")?;
+        let id = args
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or("id must be a string")?;
         ctx.plaza.prompt_publish(id, version_arg(args, "version")?)
     }
 
     fn summary(&self, out: &Value) -> String {
-        format!("Published version {} of {}.", out["active_version"], out["id"].as_str().unwrap_or("?"))
+        format!(
+            "Published version {} of {}.",
+            out["active_version"],
+            out["id"].as_str().unwrap_or("?")
+        )
     }
 }
 
@@ -169,7 +188,10 @@ impl Tool for RequestDecision {
     }
 
     fn call(&self, ctx: &Ctx<'_>, args: &Value) -> Result<Value, String> {
-        let approval_id = args.get("approval_id").and_then(Value::as_str).ok_or("approval_id must be a string")?;
+        let approval_id = args
+            .get("approval_id")
+            .and_then(Value::as_str)
+            .ok_or("approval_id must be a string")?;
         let decision = args
             .get("decision")
             .and_then(Value::as_str)
@@ -180,6 +202,9 @@ impl Tool for RequestDecision {
     }
 
     fn summary(&self, out: &Value) -> String {
-        format!("Recommendation recorded on approval {}; the owner decides.", out["approval_id"].as_str().unwrap_or("?"))
+        format!(
+            "Recommendation recorded on approval {}; the owner decides.",
+            out["approval_id"].as_str().unwrap_or("?")
+        )
     }
 }

@@ -19,9 +19,9 @@ use std::fmt::Debug;
 use std::io;
 use std::sync::{Arc, Barrier, Mutex};
 
-use vm_superio::serial::{Error as SerialError, SerialEvents};
-use vm_superio::Serial;
 use crate::pal::eventfd::EventFd;
+use vm_superio::Serial;
+use vm_superio::serial::{Error as SerialError, SerialEvents};
 
 use crate::devices::legacy::EventFdTrigger;
 use crate::vstate::bus::BusDevice;
@@ -163,7 +163,8 @@ pub type SerialDevice = SerialWrapper;
 impl SerialDevice {
     pub fn new(serial_out: SerialOut) -> Result<Self, std::io::Error> {
         let interrupt_evt = EventFdTrigger::new(EventFd::new(crate::pal::eventfd::EFD_NONBLOCK)?);
-        let buffer_read_event_fd = EventFdTrigger::new(EventFd::new(crate::pal::eventfd::EFD_NONBLOCK)?);
+        let buffer_read_event_fd =
+            EventFdTrigger::new(EventFd::new(crate::pal::eventfd::EFD_NONBLOCK)?);
         let events = SerialEventsWrapper {
             buffer_ready_event_fd: Some(buffer_read_event_fd),
         };
@@ -254,7 +255,8 @@ mod tests {
 
         // vm-superio rebuilds a device from a saved state (the path a VM
         // restore takes); the trigger and the sink are fresh.
-        let interrupt_evt = EventFdTrigger::new(EventFd::new(crate::pal::eventfd::EFD_NONBLOCK).unwrap());
+        let interrupt_evt =
+            EventFdTrigger::new(EventFd::new(crate::pal::eventfd::EFD_NONBLOCK).unwrap());
         let events = SerialEventsWrapper {
             buffer_ready_event_fd: None,
         };

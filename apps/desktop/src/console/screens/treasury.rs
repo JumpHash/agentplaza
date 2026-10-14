@@ -10,18 +10,34 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use iced::font::{self, Font};
 use iced::widget::canvas::{self, Path, Stroke};
 use iced::widget::text::Wrapping;
-use iced::widget::{button, column, container, pick_list, responsive, row, text_input, Space};
-use iced::{alignment, mouse, Alignment, Border, Color, Element, Event, Length, Padding, Pixels, Point, Rectangle, Renderer, Size, Subscription, Task, Theme};
-use serde_json::{json, Value};
+use iced::widget::{Space, button, column, container, pick_list, responsive, row, text_input};
+use iced::{
+    Alignment, Border, Color, Element, Event, Length, Padding, Pixels, Point, Rectangle, Renderer,
+    Size, Subscription, Task, Theme, alignment, mouse,
+};
+use serde_json::{Value, json};
 
-use super::usage::usd;
 use super::Id;
-use crate::console::{chart, client::{self, Client}, events, ui, Ctx};
+use super::usage::usd;
+use crate::console::{
+    Ctx, chart,
+    client::{self, Client},
+    events, ui,
+};
 use crate::theme::{self, SANS};
 
-const VALUE: Font = Font { weight: font::Weight::Bold, ..theme::SANS };
-const AMOUNT: Font = Font { weight: font::Weight::Semibold, ..theme::SANS };
-const ITALIC: Font = Font { style: font::Style::Italic, ..theme::SANS };
+const VALUE: Font = Font {
+    weight: font::Weight::Bold,
+    ..theme::SANS
+};
+const AMOUNT: Font = Font {
+    weight: font::Weight::Semibold,
+    ..theme::SANS
+};
+const ITALIC: Font = Font {
+    style: font::Style::Italic,
+    ..theme::SANS
+};
 
 const ANIM: Duration = Duration::from_millis(600);
 const DAY_MS: u64 = 86_400_000;
@@ -30,10 +46,24 @@ const JOURNAL_PAGE: usize = 50;
 const SERIES_PAGE: usize = 25;
 /// One credit is a tenth of a cent.
 const CREDIT_USD: f64 = 0.001;
-const KNOWN_KINDS: [&str; 11] = ["mint", "budget_move", "payment", "refund", "fine", "fee", "clawback", "spend", "subcontract", "transfer", "model"];
+const KNOWN_KINDS: [&str; 11] = [
+    "mint",
+    "budget_move",
+    "payment",
+    "refund",
+    "fine",
+    "fee",
+    "clawback",
+    "spend",
+    "subcontract",
+    "transfer",
+    "model",
+];
 const BLUE: Color = Color::from_rgb8(0x6f, 0xa8, 0xdc);
 const PURPLE: Color = Color::from_rgb8(0xb4, 0x8e, 0xd6);
-const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const MONTHS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
 const DASH: f32 = 7.0;
 const DASH_PERIOD: f32 = 14.0;
 const BAR_PAD_LEFT: f32 = 58.0;
@@ -196,7 +226,12 @@ pub enum Range {
 }
 
 impl Range {
-    const ALL: [(Range, &'static str); 4] = [(Range::Week, "7 d"), (Range::Month, "30 d"), (Range::Quarter, "90 d"), (Range::All, "All")];
+    const ALL: [(Range, &'static str); 4] = [
+        (Range::Week, "7 d"),
+        (Range::Month, "30 d"),
+        (Range::Quarter, "90 d"),
+        (Range::All, "All"),
+    ];
 
     /// The window's length in days; `All` has none of its own.
     fn days(self) -> Option<u64> {
@@ -213,11 +248,7 @@ impl Range {
     }
 
     fn bucket(self) -> &'static str {
-        if self.hourly() {
-            "hour"
-        } else {
-            "day"
-        }
+        if self.hourly() { "hour" } else { "day" }
     }
 }
 
@@ -312,7 +343,12 @@ pub fn subscription(state: &State, ctx: &Ctx) -> Subscription<Msg> {
 /// when it opens and on every poll tick).
 pub fn load(state: &mut State, ctx: &Ctx) -> Task<Msg> {
     state.loading = true;
-    let query = Query { range: state.range, to: now_ms() as u64, bucket: state.range.bucket(), filter: state.filter.clone() };
+    let query = Query {
+        range: state.range,
+        to: now_ms() as u64,
+        bucket: state.range.bucket(),
+        filter: state.filter.clone(),
+    };
     let client = ctx.client.clone();
     client::task(move || fetch(&client, &query), Msg::Loaded)
 }
@@ -337,11 +373,18 @@ struct Query {
 fn fetch(c: &Client, q: &Query) -> Result<Snapshot, String> {
     let treasury: Value = c.get("/v1/treasury")?;
     // The first account's creation time, as the web's `firstAt`: `now` when there is none.
-    let first_at = list(&treasury, "accounts").iter().map(|a| num(a, "created_at") as u64).min().unwrap_or(q.to);
+    let first_at = list(&treasury, "accounts")
+        .iter()
+        .map(|a| num(a, "created_at") as u64)
+        .min()
+        .unwrap_or(q.to);
     let from = window_from(q.range, q.to, first_at);
     let wallets: Value = c.get("/v1/treasury/wallets")?;
     let roster: Value = c.get("/v1/agents")?;
-    let series: Value = c.get(&format!("/v1/treasury/series?from={}&to={}&bucket={}", from, q.to, q.bucket))?;
+    let series: Value = c.get(&format!(
+        "/v1/treasury/series?from={}&to={}&bucket={}",
+        from, q.to, q.bucket
+    ))?;
     let usage: Value = c.get(&format!("/v1/usage/summary?from={}&to={}", from, q.to))?;
     let page = journal_page(c, &q.filter, None)?;
     let mut data = Data::parse(&treasury, &wallets, &roster, &series, &usage);
@@ -353,10 +396,18 @@ fn fetch(c: &Client, q: &Query) -> Result<Snapshot, String> {
             w.spent = Some(num(&p, "spent"));
         }
     }
-    Ok(Snapshot { data, filter: q.filter.clone(), page })
+    Ok(Snapshot {
+        data,
+        filter: q.filter.clone(),
+        page,
+    })
 }
 
-fn journal_page(c: &Client, filter: &JournalFilter, before: Option<i64>) -> Result<JournalPage, String> {
+fn journal_page(
+    c: &Client,
+    filter: &JournalFilter,
+    before: Option<i64>,
+) -> Result<JournalPage, String> {
     let v: Value = c.get(&journal_path(filter, before))?;
     Ok(JournalPage::parse(&v))
 }
@@ -384,7 +435,9 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         Msg::Go(_) => Task::none(),
         Msg::Frame => {
             let now = Instant::now();
-            state.fresh.retain(|(_, at)| now.saturating_duration_since(*at) < ANIM);
+            state
+                .fresh
+                .retain(|(_, at)| now.saturating_duration_since(*at) < ANIM);
             Task::none()
         }
         Msg::Loaded(Ok(snap)) => {
@@ -443,7 +496,12 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             Task::none()
         }
         Msg::WalletSort(sort) => {
-            resort(&mut state.wallet_sort, &mut state.wallet_asc, sort, matches!(sort, WalletSort::Name | WalletSort::Role));
+            resort(
+                &mut state.wallet_sort,
+                &mut state.wallet_asc,
+                sort,
+                matches!(sort, WalletSort::Name | WalletSort::Role),
+            );
             Task::none()
         }
         Msg::KindPicked(choice) => {
@@ -463,7 +521,9 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             refilter(state, ctx)
         }
         Msg::OlderPressed => {
-            let Some(before) = state.journal_next else { return Task::none() };
+            let Some(before) = state.journal_next else {
+                return Task::none();
+            };
             if state.older_busy {
                 return Task::none();
             }
@@ -471,7 +531,10 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             let filter = state.filter.clone();
             let client = ctx.client.clone();
             let for_reply = filter.clone();
-            client::task(move || journal_page(&client, &filter, Some(before)), move |res| Msg::Older(for_reply.clone(), res))
+            client::task(
+                move || journal_page(&client, &filter, Some(before)),
+                move |res| Msg::Older(for_reply.clone(), res),
+            )
         }
         Msg::Older(filter, res) => {
             state.older_busy = false;
@@ -518,7 +581,10 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             state.busy = false;
             state.mint_open = false;
             state.mint_amount.clear();
-            state.notice = Some(format!("Minted {} into the plaza budget.", money(amount as f64)));
+            state.notice = Some(format!(
+                "Minted {} into the plaza budget.",
+                money(amount as f64)
+            ));
             load(state, ctx)
         }
         Msg::Minted(_, Err(err)) => {
@@ -563,7 +629,12 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             let client = ctx.client.clone();
             let cid = target.cid;
             client::task(
-                move || client.post::<Value>("/v1/treasury/fine", &json!({ "cid": cid, "amount": amount, "memo": memo })),
+                move || {
+                    client.post::<Value>(
+                        "/v1/treasury/fine",
+                        &json!({ "cid": cid, "amount": amount, "memo": memo }),
+                    )
+                },
                 move |res| Msg::Fined(amount, res),
             )
         }
@@ -642,8 +713,18 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
     let head = ui::view_head(
         "Treasury",
         vec![
-            ui::btn("Fine an agent", None, ui::Kind::Secondary, Some(Msg::ToggleFine)),
-            ui::btn("Mint budget", None, ui::Kind::Primary, Some(Msg::ToggleMint)),
+            ui::btn(
+                "Fine an agent",
+                None,
+                ui::Kind::Secondary,
+                Some(Msg::ToggleFine),
+            ),
+            ui::btn(
+                "Mint budget",
+                None,
+                ui::Kind::Primary,
+                Some(Msg::ToggleMint),
+            ),
         ],
     );
     let mut parts: Vec<Element<'a, Msg>> = Vec::new();
@@ -668,7 +749,13 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
             parts.extend(sections(data, state, now));
         }
     }
-    ui::sheet(head, ui::scroll(column(parts).spacing(GAP).width(Length::Fill)).spacing(GAP).height(Length::Fill).into())
+    ui::sheet(
+        head,
+        ui::scroll(column(parts).spacing(GAP).width(Length::Fill))
+            .spacing(GAP)
+            .height(Length::Fill)
+            .into(),
+    )
 }
 
 /// The read-only body: tallies, the range and view controls, the charts or the series table, the
@@ -695,13 +782,37 @@ fn tallies<'a>(d: &Data, state: &State, now: Instant) -> Element<'a, Msg> {
     let cost = c.usd.at(now);
     let stats: Vec<(&'static str, String, String, Option<Msg>)> = vec![
         ("Plaza budget", money(c.budget.at(now)), String::new(), None),
-        ("In circulation", money(c.circulating.at(now)), "held in agents’ wallets".to_string(), None),
-        ("Paid out", money(c.paid.at(now)), "margins for verified work".to_string(), None),
-        ("Real model cost", usd(cost), format!("≈ {} credits metered", money(cost / CREDIT_USD)), Some(Msg::Go(Id::Usage))),
-        ("Treasury", money(c.treasury.at(now)), format!("{} fined in range", money(d.fined())), None),
+        (
+            "In circulation",
+            money(c.circulating.at(now)),
+            "held in agents’ wallets".to_string(),
+            None,
+        ),
+        (
+            "Paid out",
+            money(c.paid.at(now)),
+            "margins for verified work".to_string(),
+            None,
+        ),
+        (
+            "Real model cost",
+            usd(cost),
+            format!("≈ {} credits metered", money(cost / CREDIT_USD)),
+            Some(Msg::Go(Id::Usage)),
+        ),
+        (
+            "Treasury",
+            money(c.treasury.at(now)),
+            format!("{} fined in range", money(d.fined())),
+            None,
+        ),
     ];
     responsive(move |size| {
-        let per_row = if size.width >= 5.0 * TILE_MIN + 4.0 * GAP { 5 } else { 3 };
+        let per_row = if size.width >= 5.0 * TILE_MIN + 4.0 * GAP {
+            5
+        } else {
+            3
+        };
         let rows: Vec<Element<'a, Msg>> = stats
             .chunks(per_row)
             .map(|chunk| {
@@ -722,27 +833,43 @@ fn tallies<'a>(d: &Data, state: &State, now: Instant) -> Element<'a, Msg> {
 }
 
 fn controls<'a>(state: &State) -> Element<'a, Msg> {
-    row![segmented(&Range::ALL, state.range, Msg::Range), Space::new().width(Length::Fill), segmented(&Mode::ALL, state.mode, Msg::Mode)]
-        .spacing(16)
-        .align_y(Alignment::Center)
-        .into()
+    row![
+        segmented(&Range::ALL, state.range, Msg::Range),
+        Space::new().width(Length::Fill),
+        segmented(&Mode::ALL, state.mode, Msg::Mode)
+    ]
+    .spacing(16)
+    .align_y(Alignment::Center)
+    .into()
 }
 
 /// The series the chart draws: those whose legend key is not turned off.
 fn visible(series: Vec<chart::Series>, hidden: &BTreeSet<String>) -> Vec<chart::Series> {
-    series.into_iter().filter(|s| !hidden.contains(&s.key)).collect()
+    series
+        .into_iter()
+        .filter(|s| !hidden.contains(&s.key))
+        .collect()
 }
 
 /// The chart view: balances over time, and the flows per bucket stacked by kind.
 fn charts<'a>(d: &Data, state: &State, now: Instant) -> Vec<Element<'a, Msg>> {
-    let labels: Vec<String> = d.points.iter().map(|p| point_label(p.at as i64, state.range.hourly())).collect();
+    let labels: Vec<String> = d
+        .points
+        .iter()
+        .map(|p| point_label(p.at as i64, state.range.hourly()))
+        .collect();
     let balances = state.balances.current(now);
     let flows = state.flows.current(now);
     let balance_card = ui::card(
         "Balances over time",
         column![
             legend(&balances, &state.hidden, money, true),
-            chart::stacked_area(visible(balances, &state.hidden), labels.clone(), money, "No balances in this range"),
+            chart::stacked_area(
+                visible(balances, &state.hidden),
+                labels.clone(),
+                money,
+                "No balances in this range"
+            ),
         ]
         .spacing(12)
         .into(),
@@ -751,7 +878,12 @@ fn charts<'a>(d: &Data, state: &State, now: Instant) -> Vec<Element<'a, Msg>> {
         "Flows per bucket",
         column![
             legend(&flows, &state.hidden, money, false),
-            iced::widget::canvas(StackedBars { series: visible(flows, &state.hidden), labels }).width(Length::Fill).height(Length::Fixed(220.0)),
+            iced::widget::canvas(StackedBars {
+                series: visible(flows, &state.hidden),
+                labels
+            })
+            .width(Length::Fill)
+            .height(Length::Fixed(220.0)),
         ]
         .spacing(12)
         .into(),
@@ -763,20 +895,47 @@ fn charts<'a>(d: &Data, state: &State, now: Instant) -> Vec<Element<'a, Msg>> {
 /// a link under it when there is one (the model cost's "see usage").
 fn tile<'a>(title: &str, value: String, note: String, link: Option<Msg>) -> Element<'a, Msg> {
     // Long figures step down a size so they stay inside the tile.
-    let size = if value.chars().count() > 8 { 22.0 } else { 28.0 };
-    let mut stack = column![iced::widget::text(value).font(VALUE).size(size).color(crate::theme::palette().ink).wrapping(Wrapping::None), ui::label(title).wrapping(Wrapping::None)]
-        .spacing(6);
+    let size = if value.chars().count() > 8 {
+        22.0
+    } else {
+        28.0
+    };
+    let mut stack = column![
+        iced::widget::text(value)
+            .font(VALUE)
+            .size(size)
+            .color(crate::theme::palette().ink)
+            .wrapping(Wrapping::None),
+        ui::label(title).wrapping(Wrapping::None)
+    ]
+    .spacing(6);
     // A note wraps onto as many lines as it needs and the tile grows with it; a tile without one keeps
     // a blank line, so the tiles beside it stay the same height.
-    let note = if note.is_empty() { "\u{a0}".to_string() } else { note };
-    stack = stack.push(iced::widget::text(note).font(ITALIC).size(13.0).color(crate::theme::palette().ink_2));
+    let note = if note.is_empty() {
+        "\u{a0}".to_string()
+    } else {
+        note
+    };
+    stack = stack.push(
+        iced::widget::text(note)
+            .font(ITALIC)
+            .size(13.0)
+            .color(crate::theme::palette().ink_2),
+    );
     if let Some(msg) = link {
         stack = stack.push(ui::link("see usage", msg, false));
     }
     container(stack)
         .padding(Padding::from(16.0))
         .width(Length::FillPortion(1))
-        .style(|_: &Theme| container::Style { border: Border { color: crate::theme::palette().rule, width: 1.0, radius: 0.0.into() }, ..Default::default() })
+        .style(|_: &Theme| container::Style {
+            border: Border {
+                color: crate::theme::palette().rule,
+                width: 1.0,
+                radius: 0.0.into(),
+            },
+            ..Default::default()
+        })
         .into()
 }
 
@@ -784,8 +943,20 @@ fn tile<'a>(title: &str, value: String, note: String, link: Option<Msg>) -> Elem
 /// (agents), then wallets. The arrows carry dashes that run along them, faster for larger flows.
 fn flow<'a>(d: &Data) -> Element<'a, Msg> {
     // The same range totals as the flows chart's legend: the series summed over the selected range.
-    let diagram = FlowChart { budget: d.budget, escrow: d.escrow, escrowed: d.escrowed(), refunded: d.refunded(), spent: d.spent(), paid: d.paid(), wallets: d.wallets_total(), t: now_ms() / 1000.0 };
-    iced::widget::canvas(diagram).width(Length::Fill).height(Length::Fixed(180.0)).into()
+    let diagram = FlowChart {
+        budget: d.budget,
+        escrow: d.escrow,
+        escrowed: d.escrowed(),
+        refunded: d.refunded(),
+        spent: d.spent(),
+        paid: d.paid(),
+        wallets: d.wallets_total(),
+        t: now_ms() / 1000.0,
+    };
+    iced::widget::canvas(diagram)
+        .width(Length::Fill)
+        .height(Length::Fixed(180.0))
+        .into()
 }
 
 struct FlowChart {
@@ -804,7 +975,14 @@ struct FlowChart {
 impl canvas::Program<Msg> for FlowChart {
     type State = ();
 
-    fn draw(&self, _state: &(), renderer: &iced::Renderer, _theme: &Theme, bounds: Rectangle, _cursor: mouse::Cursor) -> Vec<canvas::Geometry> {
+    fn draw(
+        &self,
+        _state: &(),
+        renderer: &iced::Renderer,
+        _theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<canvas::Geometry> {
         let scale = (bounds.width / 830.0).min(bounds.height / 180.0).max(0.1);
         let ox = (bounds.width - 830.0 * scale) / 2.0;
         let oy = (bounds.height - 180.0 * scale) / 2.0;
@@ -814,7 +992,12 @@ impl canvas::Program<Msg> for FlowChart {
         let boxed = |frame: &mut canvas::Frame, x: f32, y: f32, label: &str, value: f64| {
             let (tl, size) = (at(x, y), Size::new(170.0 * scale, 70.0 * scale));
             frame.fill_rectangle(tl, size, crate::theme::palette().sheet);
-            frame.stroke(&Path::rectangle(tl, size), Stroke::default().with_color(crate::theme::palette().ink).with_width(1.0));
+            frame.stroke(
+                &Path::rectangle(tl, size),
+                Stroke::default()
+                    .with_color(crate::theme::palette().ink)
+                    .with_width(1.0),
+            );
             frame.fill_text(canvas::Text {
                 content: label.to_string(),
                 position: at(x + 12.0, y + 12.0),
@@ -832,49 +1015,64 @@ impl canvas::Program<Msg> for FlowChart {
                 ..canvas::Text::default()
             });
         };
-        let arrow = |frame: &mut canvas::Frame, from: (f32, f32), to: (f32, f32), flow: f64, max: f64| {
-            let share = (flow.max(0.0) / max) as f32;
-            let (dx, dy) = (to.0 - from.0, to.1 - from.1);
-            let len = (dx * dx + dy * dy).sqrt().max(1.0);
-            let (ux, uy) = (dx / len, dy / len);
-            let head = 8.75;
-            let base = (to.0 - ux * head, to.1 - uy * head);
-            frame.stroke(&Path::line(at(from.0, from.1), at(base.0, base.1)), Stroke::default().with_color(crate::theme::palette().ink_2).with_width((1.0 + 3.0 * share) * scale));
-            let (px, py) = (-uy * head * 0.5, ux * head * 0.5);
-            let (wing_a, wing_b, tip) = (at(base.0 + px, base.1 + py), at(base.0 - px, base.1 - py), at(to.0, to.1));
-            let head_path = Path::new(|b| {
-                b.move_to(tip);
-                b.line_to(wing_a);
-                b.line_to(wing_b);
-                b.close();
-            });
-            frame.fill(&head_path, crate::theme::palette().ink_2);
-            // The dashes: they travel from the source toward the head, at a speed that grows with the flow.
-            let speed = (20.0 + 30.0 * (1.0 + flow.max(0.0)).log10()).min(140.0) as f32;
-            let travel = (self.t as f32 * speed) % DASH_PERIOD;
-            let run = len - head;
-            let mut s = travel - DASH_PERIOD;
-            while s < run {
-                let (a, b) = (s.max(0.0), (s + DASH).min(run));
-                if b > a {
-                    let p = at(from.0 + ux * a, from.1 + uy * a);
-                    let q = at(from.0 + ux * b, from.1 + uy * b);
-                    frame.stroke(&Path::line(p, q), Stroke::default().with_color(crate::theme::palette().signal).with_width(2.0 * scale));
-                }
-                s += DASH_PERIOD;
-            }
-            if flow > 0.0 {
-                frame.fill_text(canvas::Text {
-                    content: money(flow),
-                    position: at((from.0 + to.0) / 2.0, (from.1 + to.1) / 2.0 - 6.0),
-                    color: crate::theme::palette().ink_2,
-                    size: Pixels(10.5 * scale),
-                    font: SANS,
-                    align_x: alignment::Horizontal::Center.into(),
-                    ..canvas::Text::default()
+        let arrow =
+            |frame: &mut canvas::Frame, from: (f32, f32), to: (f32, f32), flow: f64, max: f64| {
+                let share = (flow.max(0.0) / max) as f32;
+                let (dx, dy) = (to.0 - from.0, to.1 - from.1);
+                let len = (dx * dx + dy * dy).sqrt().max(1.0);
+                let (ux, uy) = (dx / len, dy / len);
+                let head = 8.75;
+                let base = (to.0 - ux * head, to.1 - uy * head);
+                frame.stroke(
+                    &Path::line(at(from.0, from.1), at(base.0, base.1)),
+                    Stroke::default()
+                        .with_color(crate::theme::palette().ink_2)
+                        .with_width((1.0 + 3.0 * share) * scale),
+                );
+                let (px, py) = (-uy * head * 0.5, ux * head * 0.5);
+                let (wing_a, wing_b, tip) = (
+                    at(base.0 + px, base.1 + py),
+                    at(base.0 - px, base.1 - py),
+                    at(to.0, to.1),
+                );
+                let head_path = Path::new(|b| {
+                    b.move_to(tip);
+                    b.line_to(wing_a);
+                    b.line_to(wing_b);
+                    b.close();
                 });
-            }
-        };
+                frame.fill(&head_path, crate::theme::palette().ink_2);
+                // The dashes: they travel from the source toward the head, at a speed that grows with the flow.
+                let speed = (20.0 + 30.0 * (1.0 + flow.max(0.0)).log10()).min(140.0) as f32;
+                let travel = (self.t as f32 * speed) % DASH_PERIOD;
+                let run = len - head;
+                let mut s = travel - DASH_PERIOD;
+                while s < run {
+                    let (a, b) = (s.max(0.0), (s + DASH).min(run));
+                    if b > a {
+                        let p = at(from.0 + ux * a, from.1 + uy * a);
+                        let q = at(from.0 + ux * b, from.1 + uy * b);
+                        frame.stroke(
+                            &Path::line(p, q),
+                            Stroke::default()
+                                .with_color(crate::theme::palette().signal)
+                                .with_width(2.0 * scale),
+                        );
+                    }
+                    s += DASH_PERIOD;
+                }
+                if flow > 0.0 {
+                    frame.fill_text(canvas::Text {
+                        content: money(flow),
+                        position: at((from.0 + to.0) / 2.0, (from.1 + to.1) / 2.0 - 6.0),
+                        color: crate::theme::palette().ink_2,
+                        size: Pixels(10.5 * scale),
+                        font: SANS,
+                        align_x: alignment::Horizontal::Center.into(),
+                        ..canvas::Text::default()
+                    });
+                }
+            };
 
         boxed(&mut frame, 0.0, 55.0, "Budget · now", self.budget);
         boxed(&mut frame, 220.0, 55.0, "Escrow · now", self.escrow);
@@ -918,14 +1116,25 @@ fn bar_at(x: f32, n: usize, left: f32, width: f32) -> Option<usize> {
     Some((((x - left) / slot) as usize).min(n - 1))
 }
 
-fn caption(frame: &mut canvas::Frame, content: String, at: Point, color: Color, size: f32, right: bool) {
+fn caption(
+    frame: &mut canvas::Frame,
+    content: String,
+    at: Point,
+    color: Color,
+    size: f32,
+    right: bool,
+) {
     frame.fill_text(canvas::Text {
         content,
         position: at,
         color,
         size: Pixels(size),
         font: SANS,
-        align_x: if right { alignment::Horizontal::Right.into() } else { alignment::Horizontal::Left.into() },
+        align_x: if right {
+            alignment::Horizontal::Right.into()
+        } else {
+            alignment::Horizontal::Left.into()
+        },
         ..canvas::Text::default()
     });
 }
@@ -933,12 +1142,20 @@ fn caption(frame: &mut canvas::Frame, content: String, at: Point, color: Color, 
 impl canvas::Program<Msg> for StackedBars {
     type State = Option<usize>;
 
-    fn update(&self, hover: &mut Option<usize>, event: &Event, bounds: Rectangle, cursor: mouse::Cursor) -> Option<canvas::Action<Msg>> {
+    fn update(
+        &self,
+        hover: &mut Option<usize>,
+        event: &Event,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
+    ) -> Option<canvas::Action<Msg>> {
         if !matches!(event, Event::Mouse(_)) {
             return None;
         }
         let (left, _, width, _) = bars_plot(bounds);
-        let next = cursor.position_in(bounds).and_then(|p| bar_at(p.x, self.labels.len(), left, width));
+        let next = cursor
+            .position_in(bounds)
+            .and_then(|p| bar_at(p.x, self.labels.len(), left, width));
         if next != *hover {
             *hover = next;
             return Some(canvas::Action::request_redraw());
@@ -946,12 +1163,21 @@ impl canvas::Program<Msg> for StackedBars {
         None
     }
 
-    fn draw(&self, hover: &Option<usize>, renderer: &Renderer, _theme: &Theme, bounds: Rectangle, _cursor: mouse::Cursor) -> Vec<canvas::Geometry> {
+    fn draw(
+        &self,
+        hover: &Option<usize>,
+        renderer: &Renderer,
+        _theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<canvas::Geometry> {
         let mut frame = canvas::Frame::new(renderer, bounds.size());
         let (left, top, width, height) = bars_plot(bounds);
         let tops = chart::stacked_tops(&self.series);
         let n = tops.first().map_or(0, Vec::len);
-        let peak = tops.last().map_or(0.0, |t| t.iter().copied().fold(0.0, f64::max));
+        let peak = tops
+            .last()
+            .map_or(0.0, |t| t.iter().copied().fold(0.0, f64::max));
         let ceiling = chart::nice_ceiling(peak);
         let y = |v: f64| top + height - (v / ceiling) as f32 * height;
         let at = |v: &[f64], i: usize| v.get(i).copied().unwrap_or(0.0);
@@ -959,12 +1185,33 @@ impl canvas::Program<Msg> for StackedBars {
         for k in 0..=4 {
             let v = ceiling * k as f64 / 4.0;
             let yy = y(v);
-            let rule = if k == 0 { crate::theme::palette().rule } else { crate::theme::palette().rule_faint };
-            frame.stroke(&Path::line(Point::new(left, yy), Point::new(left + width, yy)), Stroke::default().with_color(rule).with_width(1.0));
-            caption(&mut frame, money(v), Point::new(left - 8.0, yy - 6.0), crate::theme::palette().ink_3, 10.5, true);
+            let rule = if k == 0 {
+                crate::theme::palette().rule
+            } else {
+                crate::theme::palette().rule_faint
+            };
+            frame.stroke(
+                &Path::line(Point::new(left, yy), Point::new(left + width, yy)),
+                Stroke::default().with_color(rule).with_width(1.0),
+            );
+            caption(
+                &mut frame,
+                money(v),
+                Point::new(left - 8.0, yy - 6.0),
+                crate::theme::palette().ink_3,
+                10.5,
+                true,
+            );
         }
         if n == 0 || peak <= 0.0 {
-            caption(&mut frame, "No flows in this range".to_string(), Point::new(left + width / 2.0, top + height / 2.0 - 7.0), crate::theme::palette().ink_3, 13.0, false);
+            caption(
+                &mut frame,
+                "No flows in this range".to_string(),
+                Point::new(left + width / 2.0, top + height / 2.0 - 7.0),
+                crate::theme::palette().ink_3,
+                13.0,
+                false,
+            );
             return vec![frame.into_geometry()];
         }
 
@@ -977,23 +1224,46 @@ impl canvas::Program<Msg> for StackedBars {
                 if hi > lo {
                     let bx = left + slot * i as f32 + (slot - bar) / 2.0;
                     let top_y = y(hi);
-                    frame.fill_rectangle(Point::new(bx, top_y), Size::new(bar, y(lo) - top_y), series.color);
+                    frame.fill_rectangle(
+                        Point::new(bx, top_y),
+                        Size::new(bar, y(lo) - top_y),
+                        series.color,
+                    );
                 }
             }
         }
 
         let ticks = n.min(6);
         for k in 0..ticks {
-            let i = if ticks <= 1 { 0 } else { k * (n - 1) / (ticks - 1) };
+            let i = if ticks <= 1 {
+                0
+            } else {
+                k * (n - 1) / (ticks - 1)
+            };
             let x = left + slot * i as f32 + slot / 2.0;
             let last_tick = k + 1 == ticks && ticks > 1;
-            let anchor = if last_tick { Point::new(left + width, top + height + 6.0) } else { Point::new(x, top + height + 6.0) };
-            caption(&mut frame, self.labels.get(i).cloned().unwrap_or_default(), anchor, crate::theme::palette().ink_3, 10.5, last_tick);
+            let anchor = if last_tick {
+                Point::new(left + width, top + height + 6.0)
+            } else {
+                Point::new(x, top + height + 6.0)
+            };
+            caption(
+                &mut frame,
+                self.labels.get(i).cloned().unwrap_or_default(),
+                anchor,
+                crate::theme::palette().ink_3,
+                10.5,
+                last_tick,
+            );
         }
 
         if let Some(i) = hover.filter(|i| *i < n) {
             let hx = left + slot * i as f32;
-            frame.fill_rectangle(Point::new(hx, top), Size::new(slot, height), crate::theme::palette().hover);
+            frame.fill_rectangle(
+                Point::new(hx, top),
+                Size::new(slot, height),
+                crate::theme::palette().hover,
+            );
             let rows: Vec<(Color, String)> = self
                 .series
                 .iter()
@@ -1005,15 +1275,45 @@ impl canvas::Program<Msg> for StackedBars {
                 .collect();
             let box_w = 200.0;
             let box_h = 14.0 + 16.0 * (rows.len() as f32 + 1.0) + 6.0;
-            let bx = if hx > left + width / 2.0 { hx - 12.0 - box_w } else { hx + slot + 12.0 };
+            let bx = if hx > left + width / 2.0 {
+                hx - 12.0 - box_w
+            } else {
+                hx + slot + 12.0
+            };
             let by = top + 4.0;
-            frame.fill_rectangle(Point::new(bx, by), Size::new(box_w, box_h), crate::theme::palette().sheet);
-            frame.stroke(&Path::rectangle(Point::new(bx, by), Size::new(box_w, box_h)), Stroke::default().with_color(crate::theme::palette().rule).with_width(1.0));
-            caption(&mut frame, self.labels.get(i).cloned().unwrap_or_default(), Point::new(bx + 10.0, by + 8.0), crate::theme::palette().ink, 11.0, false);
+            frame.fill_rectangle(
+                Point::new(bx, by),
+                Size::new(box_w, box_h),
+                crate::theme::palette().sheet,
+            );
+            frame.stroke(
+                &Path::rectangle(Point::new(bx, by), Size::new(box_w, box_h)),
+                Stroke::default()
+                    .with_color(crate::theme::palette().rule)
+                    .with_width(1.0),
+            );
+            caption(
+                &mut frame,
+                self.labels.get(i).cloned().unwrap_or_default(),
+                Point::new(bx + 10.0, by + 8.0),
+                crate::theme::palette().ink,
+                11.0,
+                false,
+            );
             for (k, (color, text)) in rows.into_iter().enumerate() {
                 let row_y = by + 8.0 + 16.0 * (k as f32 + 1.0);
-                frame.fill(&Path::circle(Point::new(bx + 14.0, row_y + 6.0), 3.5), color);
-                caption(&mut frame, text, Point::new(bx + 24.0, row_y), crate::theme::palette().ink_2, 11.0, false);
+                frame.fill(
+                    &Path::circle(Point::new(bx + 14.0, row_y + 6.0), 3.5),
+                    color,
+                );
+                caption(
+                    &mut frame,
+                    text,
+                    Point::new(bx + 24.0, row_y),
+                    crate::theme::palette().ink_2,
+                    11.0,
+                    false,
+                );
             }
         }
         vec![frame.into_geometry()]
@@ -1023,12 +1323,26 @@ impl canvas::Program<Msg> for StackedBars {
 /// A row of swatches, each series' name and its value: the total over the range, or the last value
 /// when `last` (for balances, which are levels rather than flows). Each entry is a toggle: a series in
 /// `hidden` is off in the charts and its entry shows dimmed; a click flips it.
-fn legend<'a>(series: &[chart::Series], hidden: &BTreeSet<String>, format: fn(f64) -> String, last: bool) -> Element<'a, Msg> {
+fn legend<'a>(
+    series: &[chart::Series],
+    hidden: &BTreeSet<String>,
+    format: fn(f64) -> String,
+    last: bool,
+) -> Element<'a, Msg> {
     let items: Vec<(Color, String, String, bool)> = series
         .iter()
         .map(|s| {
-            let total: f64 = if last { s.values.last().copied().unwrap_or(0.0) } else { s.values.iter().sum() };
-            (s.color, s.key.clone(), format(total), hidden.contains(&s.key))
+            let total: f64 = if last {
+                s.values.last().copied().unwrap_or(0.0)
+            } else {
+                s.values.iter().sum()
+            };
+            (
+                s.color,
+                s.key.clone(),
+                format(total),
+                hidden.contains(&s.key),
+            )
         })
         .collect();
     responsive(move |size| {
@@ -1036,7 +1350,8 @@ fn legend<'a>(series: &[chart::Series], hidden: &BTreeSet<String>, format: fn(f6
         let mut lines: Vec<Vec<&(Color, String, String, bool)>> = vec![Vec::new()];
         let mut used = 0.0_f32;
         for item in &items {
-            let width = LEGEND_SWATCH + (item.1.chars().count() + item.2.chars().count() + 1) as f32 * MONO11_CHAR;
+            let width = LEGEND_SWATCH
+                + (item.1.chars().count() + item.2.chars().count() + 1) as f32 * MONO11_CHAR;
             let gap = if used > 0.0 { LEGEND_GAP } else { 0.0 };
             if used > 0.0 && used + gap + width > size.width {
                 lines.push(Vec::new());
@@ -1056,22 +1371,49 @@ fn legend<'a>(series: &[chart::Series], hidden: &BTreeSet<String>, format: fn(f6
                     let (color, off) = (*color, *off);
                     let p = crate::theme::palette();
                     // A series turned off shows dimmed: a faded swatch and ink-3 text (iced text has no strike-through).
-                    let swatch = container(Space::new().width(10.0).height(10.0)).style(move |_: &Theme| container::Style {
-                        background: Some(if off { Color { a: 0.3, ..color } } else { color }.into()),
-                        ..Default::default()
-                    });
-                    let (key_ink, value_ink) = if off { (p.ink_3, p.ink_3) } else { (p.ink_2, p.ink) };
+                    let swatch =
+                        container(Space::new().width(10.0).height(10.0)).style(move |_: &Theme| {
+                            container::Style {
+                                background: Some(
+                                    if off {
+                                        Color { a: 0.3, ..color }
+                                    } else {
+                                        color
+                                    }
+                                    .into(),
+                                ),
+                                ..Default::default()
+                            }
+                        });
+                    let (key_ink, value_ink) = if off {
+                        (p.ink_3, p.ink_3)
+                    } else {
+                        (p.ink_2, p.ink)
+                    };
                     let entry = row![
                         swatch,
-                        iced::widget::text(key.clone()).font(SANS).size(11.0).color(key_ink).wrapping(Wrapping::None),
-                        iced::widget::text(value.clone()).font(SANS).size(11.0).color(value_ink).wrapping(Wrapping::None),
+                        iced::widget::text(key.clone())
+                            .font(SANS)
+                            .size(11.0)
+                            .color(key_ink)
+                            .wrapping(Wrapping::None),
+                        iced::widget::text(value.clone())
+                            .font(SANS)
+                            .size(11.0)
+                            .color(value_ink)
+                            .wrapping(Wrapping::None),
                     ]
                     .spacing(6)
                     .align_y(Alignment::Center);
                     let toggle = button(entry)
                         .padding(0.0)
                         .style(move |_: &Theme, status: button::Status| button::Style {
-                            background: matches!(status, button::Status::Hovered | button::Status::Pressed).then_some(p.hover).map(Into::into),
+                            background: matches!(
+                                status,
+                                button::Status::Hovered | button::Status::Pressed
+                            )
+                            .then_some(p.hover)
+                            .map(Into::into),
                             text_color: key_ink,
                             ..Default::default()
                         })
@@ -1095,31 +1437,64 @@ fn series_table<'a>(d: &Data, state: &State) -> Element<'a, Msg> {
     let mut points: Vec<&Bucket> = d.points.iter().collect();
     points.sort_by(|a, b| {
         let o = series_value(a, state.series_sort).total_cmp(&series_value(b, state.series_sort));
-        if state.series_asc {
-            o
-        } else {
-            o.reverse()
-        }
+        if state.series_asc { o } else { o.reverse() }
     });
     let pages = page_count(points.len(), SERIES_PAGE);
     let page = state.series_page.min(pages - 1);
     let heads: Vec<Element<'a, Msg>> = SERIES_COLUMNS
         .iter()
-        .map(|(sort, label, portion)| sort_head(label, *portion, *sort, state.series_sort, state.series_asc, Msg::SeriesSort))
+        .map(|(sort, label, portion)| {
+            sort_head(
+                label,
+                *portion,
+                *sort,
+                state.series_sort,
+                state.series_asc,
+                Msg::SeriesSort,
+            )
+        })
         .collect();
     let mut lines = column![row(heads).spacing(8)].spacing(8);
-    for p in points.iter().copied().skip(page * SERIES_PAGE).take(SERIES_PAGE) {
+    for p in points
+        .iter()
+        .copied()
+        .skip(page * SERIES_PAGE)
+        .take(SERIES_PAGE)
+    {
         lines = lines.push(ui::hairline());
-        lines = lines.push(row(series_cells(p, point_label(p.at as i64, hourly))).spacing(8).align_y(Alignment::Center));
+        lines = lines.push(
+            row(series_cells(p, point_label(p.at as i64, hourly)))
+                .spacing(8)
+                .align_y(Alignment::Center),
+        );
     }
     let all = totals(&d.points);
     lines = lines.push(ui::hairline());
-    lines = lines.push(row(series_cells(&all, "Total · end".to_string())).spacing(8).align_y(Alignment::Center));
+    lines = lines.push(
+        row(series_cells(&all, "Total · end".to_string()))
+            .spacing(8)
+            .align_y(Alignment::Center),
+    );
     let footer = row![
-        ui::faint(format!("{} buckets · page {} of {}", points.len(), page + 1, pages)),
+        ui::faint(format!(
+            "{} buckets · page {} of {}",
+            points.len(),
+            page + 1,
+            pages
+        )),
         Space::new().width(Length::Fill),
-        ui::btn("Prev", None, ui::Kind::Secondary, (page > 0).then_some(Msg::SeriesPage(-1))),
-        ui::btn("Next", None, ui::Kind::Secondary, (page + 1 < pages).then_some(Msg::SeriesPage(1))),
+        ui::btn(
+            "Prev",
+            None,
+            ui::Kind::Secondary,
+            (page > 0).then_some(Msg::SeriesPage(-1))
+        ),
+        ui::btn(
+            "Next",
+            None,
+            ui::Kind::Secondary,
+            (page + 1 < pages).then_some(Msg::SeriesPage(1))
+        ),
     ]
     .spacing(10)
     .align_y(Alignment::Center);
@@ -1135,25 +1510,73 @@ fn balance_table<'a>(d: &Data, state: &State) -> Element<'a, Msg> {
     let hourly = state.range.hourly();
     let mut points: Vec<&Bucket> = d.points.iter().collect();
     points.sort_by(|a, b| {
-        let o = balance_value(a, state.balance_sort).total_cmp(&balance_value(b, state.balance_sort));
-        if state.balance_asc {
-            o
-        } else {
-            o.reverse()
-        }
+        let o =
+            balance_value(a, state.balance_sort).total_cmp(&balance_value(b, state.balance_sort));
+        if state.balance_asc { o } else { o.reverse() }
     });
     let heads: Vec<Element<'a, Msg>> = vec![
-        sort_head("When", 3, BalanceSort::Time, state.balance_sort, state.balance_asc, Msg::BalanceSort),
-        sort_head("Plaza budget", 2, BalanceSort::Budget, state.balance_sort, state.balance_asc, Msg::BalanceSort),
-        sort_head("In circulation", 2, BalanceSort::Circulating, state.balance_sort, state.balance_asc, Msg::BalanceSort),
-        sort_head("Treasury", 2, BalanceSort::Treasury, state.balance_sort, state.balance_asc, Msg::BalanceSort),
+        sort_head(
+            "When",
+            3,
+            BalanceSort::Time,
+            state.balance_sort,
+            state.balance_asc,
+            Msg::BalanceSort,
+        ),
+        sort_head(
+            "Plaza budget",
+            2,
+            BalanceSort::Budget,
+            state.balance_sort,
+            state.balance_asc,
+            Msg::BalanceSort,
+        ),
+        sort_head(
+            "In circulation",
+            2,
+            BalanceSort::Circulating,
+            state.balance_sort,
+            state.balance_asc,
+            Msg::BalanceSort,
+        ),
+        sort_head(
+            "Treasury",
+            2,
+            BalanceSort::Treasury,
+            state.balance_sort,
+            state.balance_asc,
+            Msg::BalanceSort,
+        ),
     ];
-    let figure = |x: f64| cell(2, true, ui::sans(money(x), 12.0, crate::theme::palette().ink));
+    let figure = |x: f64| {
+        cell(
+            2,
+            true,
+            ui::sans(money(x), 12.0, crate::theme::palette().ink),
+        )
+    };
     let mut lines = column![row(heads).spacing(8)].spacing(8);
     for p in points {
-        let label = cell(3, false, ui::sans(point_label(p.at as i64, hourly), 11.5, crate::theme::palette().ink_2));
+        let label = cell(
+            3,
+            false,
+            ui::sans(
+                point_label(p.at as i64, hourly),
+                11.5,
+                crate::theme::palette().ink_2,
+            ),
+        );
         lines = lines.push(ui::hairline());
-        lines = lines.push(row![label, figure(p.budget), figure(p.circulating), figure(p.treasury)].spacing(8).align_y(Alignment::Center));
+        lines = lines.push(
+            row![
+                label,
+                figure(p.budget),
+                figure(p.circulating),
+                figure(p.treasury)
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center),
+        );
     }
     lines.into()
 }
@@ -1168,36 +1591,86 @@ fn flow_table<'a>(d: &Data, state: &State) -> Element<'a, Msg> {
     let kinds = flow_kinds(&d.points);
     let mut points: Vec<&Bucket> = d.points.iter().collect();
     points.sort_by(|a, b| {
-        let o = flow_value(a, state.flow_sort, &kinds).total_cmp(&flow_value(b, state.flow_sort, &kinds));
-        if state.flow_asc {
-            o
-        } else {
-            o.reverse()
-        }
+        let o = flow_value(a, state.flow_sort, &kinds).total_cmp(&flow_value(
+            b,
+            state.flow_sort,
+            &kinds,
+        ));
+        if state.flow_asc { o } else { o.reverse() }
     });
     let mut heads: Vec<Element<'a, Msg>> = vec![
-        sort_head("When", 3, FlowSort::Time, state.flow_sort, state.flow_asc, Msg::FlowSort),
-        sort_head("Entries", 2, FlowSort::Entries, state.flow_sort, state.flow_asc, Msg::FlowSort),
+        sort_head(
+            "When",
+            3,
+            FlowSort::Time,
+            state.flow_sort,
+            state.flow_asc,
+            Msg::FlowSort,
+        ),
+        sort_head(
+            "Entries",
+            2,
+            FlowSort::Entries,
+            state.flow_sort,
+            state.flow_asc,
+            Msg::FlowSort,
+        ),
     ];
     for (i, kind) in kinds.iter().enumerate() {
-        heads.push(sort_head(&kind_label(kind), 2, FlowSort::Kind(i), state.flow_sort, state.flow_asc, Msg::FlowSort));
+        heads.push(sort_head(
+            &kind_label(kind),
+            2,
+            FlowSort::Kind(i),
+            state.flow_sort,
+            state.flow_asc,
+            Msg::FlowSort,
+        ));
     }
-    let figure = |x: f64| cell(2, true, ui::sans(money(x), 12.0, crate::theme::palette().ink));
+    let figure = |x: f64| {
+        cell(
+            2,
+            true,
+            ui::sans(money(x), 12.0, crate::theme::palette().ink),
+        )
+    };
     let mut lines = column![row(heads).spacing(8)].spacing(8);
     for p in points {
         let mut cells: Vec<Element<'a, Msg>> = vec![
-            cell(3, false, ui::sans(point_label(p.at as i64, hourly), 11.5, crate::theme::palette().ink_2)),
+            cell(
+                3,
+                false,
+                ui::sans(
+                    point_label(p.at as i64, hourly),
+                    11.5,
+                    crate::theme::palette().ink_2,
+                ),
+            ),
             figure(p.entries),
         ];
-        cells.extend(kinds.iter().map(|k| figure(p.by_kind.get(k).copied().unwrap_or(0.0))));
+        cells.extend(
+            kinds
+                .iter()
+                .map(|k| figure(p.by_kind.get(k).copied().unwrap_or(0.0))),
+        );
         lines = lines.push(ui::hairline());
         lines = lines.push(row(cells).spacing(8).align_y(Alignment::Center));
     }
     let mut foot: Vec<Element<'a, Msg>> = vec![
-        cell(3, false, ui::sans("Total".to_string(), 11.5, crate::theme::palette().ink_2)),
+        cell(
+            3,
+            false,
+            ui::sans("Total".to_string(), 11.5, crate::theme::palette().ink_2),
+        ),
         figure(d.points.iter().map(|p| p.entries).sum::<f64>()),
     ];
-    foot.extend(kinds.iter().map(|k| figure(d.points.iter().map(|p| p.by_kind.get(k).copied().unwrap_or(0.0)).sum::<f64>())));
+    foot.extend(kinds.iter().map(|k| {
+        figure(
+            d.points
+                .iter()
+                .map(|p| p.by_kind.get(k).copied().unwrap_or(0.0))
+                .sum::<f64>(),
+        )
+    }));
     lines = lines.push(ui::hairline());
     lines = lines.push(row(foot).spacing(8).align_y(Alignment::Center));
     lines.into()
@@ -1216,15 +1689,29 @@ fn flow_value(p: &Bucket, sort: FlowSort, kinds: &[String]) -> f64 {
     match sort {
         FlowSort::Time => p.at,
         FlowSort::Entries => p.entries,
-        FlowSort::Kind(i) => kinds.get(i).and_then(|k| p.by_kind.get(k)).copied().unwrap_or(0.0),
+        FlowSort::Kind(i) => kinds
+            .get(i)
+            .and_then(|k| p.by_kind.get(k))
+            .copied()
+            .unwrap_or(0.0),
     }
 }
 
 /// One series row, in the order of `SERIES_COLUMNS`.
 fn series_cells<'a>(p: &Bucket, label: String) -> Vec<Element<'a, Msg>> {
-    let figure = |x: f64| cell(2, true, ui::sans(money(x), 12.0, crate::theme::palette().ink));
+    let figure = |x: f64| {
+        cell(
+            2,
+            true,
+            ui::sans(money(x), 12.0, crate::theme::palette().ink),
+        )
+    };
     vec![
-        cell(3, false, ui::sans(label, 11.5, crate::theme::palette().ink_2)),
+        cell(
+            3,
+            false,
+            ui::sans(label, 11.5, crate::theme::palette().ink_2),
+        ),
         figure(p.minted),
         figure(p.escrowed),
         figure(p.paid),
@@ -1288,37 +1775,124 @@ fn wallets_card<'a>(d: &Data, state: &State) -> Element<'a, Msg> {
             WalletSort::Spent => a.spent.unwrap_or(0.0).total_cmp(&b.spent.unwrap_or(0.0)),
             _ => a.balance.total_cmp(&b.balance),
         };
-        if state.wallet_asc {
-            o
-        } else {
-            o.reverse()
-        }
+        if state.wallet_asc { o } else { o.reverse() }
     });
     let heads: Vec<Element<'a, Msg>> = vec![
-        sort_head("Agent", 3, WalletSort::Name, state.wallet_sort, state.wallet_asc, Msg::WalletSort),
-        sort_head("Role", 2, WalletSort::Role, state.wallet_sort, state.wallet_asc, Msg::WalletSort),
-        sort_head("Balance", 2, WalletSort::Balance, state.wallet_sort, state.wallet_asc, Msg::WalletSort),
-        sort_head("Earned", 2, WalletSort::Earned, state.wallet_sort, state.wallet_asc, Msg::WalletSort),
-        sort_head("Spent", 2, WalletSort::Spent, state.wallet_sort, state.wallet_asc, Msg::WalletSort),
-        sort_head("Share", 3, WalletSort::Share, state.wallet_sort, state.wallet_asc, Msg::WalletSort),
+        sort_head(
+            "Agent",
+            3,
+            WalletSort::Name,
+            state.wallet_sort,
+            state.wallet_asc,
+            Msg::WalletSort,
+        ),
+        sort_head(
+            "Role",
+            2,
+            WalletSort::Role,
+            state.wallet_sort,
+            state.wallet_asc,
+            Msg::WalletSort,
+        ),
+        sort_head(
+            "Balance",
+            2,
+            WalletSort::Balance,
+            state.wallet_sort,
+            state.wallet_asc,
+            Msg::WalletSort,
+        ),
+        sort_head(
+            "Earned",
+            2,
+            WalletSort::Earned,
+            state.wallet_sort,
+            state.wallet_asc,
+            Msg::WalletSort,
+        ),
+        sort_head(
+            "Spent",
+            2,
+            WalletSort::Spent,
+            state.wallet_sort,
+            state.wallet_asc,
+            Msg::WalletSort,
+        ),
+        sort_head(
+            "Share",
+            3,
+            WalletSort::Share,
+            state.wallet_sort,
+            state.wallet_asc,
+            Msg::WalletSort,
+        ),
     ];
     let mut lines = column![row(heads).spacing(8)].spacing(8);
     for w in wallets {
-        let role = d.roster.iter().find(|m| m.cid == w.cid).map_or_else(|| "—".to_string(), |m| m.role_label.clone());
-        let name = button(iced::widget::text(w.name.clone()).font(theme::SANS).size(14.0).color(crate::theme::palette().ink))
-            .padding(0.0)
-            .style(link)
-            .on_press(Msg::Go(Id::Agent(w.cid)));
+        let role = d
+            .roster
+            .iter()
+            .find(|m| m.cid == w.cid)
+            .map_or_else(|| "—".to_string(), |m| m.role_label.clone());
+        let name = button(
+            iced::widget::text(w.name.clone())
+                .font(theme::SANS)
+                .size(14.0)
+                .color(crate::theme::palette().ink),
+        )
+        .padding(0.0)
+        .style(link)
+        .on_press(Msg::Go(Id::Agent(w.cid)));
         let share = if total > 0.0 { w.balance / total } else { 0.0 };
         lines = lines.push(ui::hairline());
         lines = lines.push(
             row![
                 cell(3, false, name),
-                cell(2, false, iced::widget::text(role).font(theme::SANS).size(14.0).color(crate::theme::palette().ink_2)),
-                cell(2, true, ui::sans(money(w.balance), 12.5, crate::theme::palette().ink)),
-                cell(2, true, ui::sans(w.earned.map_or_else(|| "—".to_string(), money), 12.5, crate::theme::palette().ink)),
-                cell(2, true, ui::sans(w.spent.map_or_else(|| "—".to_string(), money), 12.5, crate::theme::palette().ink)),
-                cell(3, false, row![share_bar(share), ui::sans(format!("{:.1}%", share * 100.0), 11.0, crate::theme::palette().ink_2)].spacing(10).align_y(Alignment::Center)),
+                cell(
+                    2,
+                    false,
+                    iced::widget::text(role)
+                        .font(theme::SANS)
+                        .size(14.0)
+                        .color(crate::theme::palette().ink_2)
+                ),
+                cell(
+                    2,
+                    true,
+                    ui::sans(money(w.balance), 12.5, crate::theme::palette().ink)
+                ),
+                cell(
+                    2,
+                    true,
+                    ui::sans(
+                        w.earned.map_or_else(|| "—".to_string(), money),
+                        12.5,
+                        crate::theme::palette().ink
+                    )
+                ),
+                cell(
+                    2,
+                    true,
+                    ui::sans(
+                        w.spent.map_or_else(|| "—".to_string(), money),
+                        12.5,
+                        crate::theme::palette().ink
+                    )
+                ),
+                cell(
+                    3,
+                    false,
+                    row![
+                        share_bar(share),
+                        ui::sans(
+                            format!("{:.1}%", share * 100.0),
+                            11.0,
+                            crate::theme::palette().ink_2
+                        )
+                    ]
+                    .spacing(10)
+                    .align_y(Alignment::Center)
+                ),
             ]
             .spacing(8)
             .align_y(Alignment::Center),
@@ -1330,7 +1904,14 @@ fn wallets_card<'a>(d: &Data, state: &State) -> Element<'a, Msg> {
     lines = lines.push(ui::hairline());
     lines = lines.push(
         row![
-            cell(3, false, iced::widget::text("Total").font(theme::SANS).size(14.0).color(crate::theme::palette().ink)),
+            cell(
+                3,
+                false,
+                iced::widget::text("Total")
+                    .font(theme::SANS)
+                    .size(14.0)
+                    .color(crate::theme::palette().ink)
+            ),
             cell(2, false, Space::new()),
             cell(2, true, bold(money(sum(&|w| w.balance)))),
             cell(2, true, bold(money(sum(&|w| w.earned.unwrap_or(0.0))))),
@@ -1345,7 +1926,10 @@ fn wallets_card<'a>(d: &Data, state: &State) -> Element<'a, Msg> {
 
 /// The role label of the agent `cid` on the roster, or empty when it is not there.
 fn role_of(d: &Data, cid: u64) -> String {
-    d.roster.iter().find(|m| m.cid == cid).map_or_else(String::new, |m| m.role_label.clone())
+    d.roster
+        .iter()
+        .find(|m| m.cid == cid)
+        .map_or_else(String::new, |m| m.role_label.clone())
 }
 
 /// A bar of `share` (0 to 1) of the row's width.
@@ -1355,13 +1939,20 @@ fn share_bar<'a>(share: f64) -> Element<'a, Msg> {
         container(Space::new().width(Length::Fill).height(6.0))
             .width(Length::FillPortion(portion))
             .height(Length::Fixed(6.0))
-            .style(move |_: &Theme| container::Style { background: Some(color.into()), ..Default::default() })
+            .style(move |_: &Theme| container::Style {
+                background: Some(color.into()),
+                ..Default::default()
+            })
             .into()
     };
     let bar: Element<'a, Msg> = match filled {
         0 => segment(100, crate::theme::palette().rule_faint),
         100 => segment(100, crate::theme::palette().ok),
-        f => row![segment(f, crate::theme::palette().ok), segment(100 - f, crate::theme::palette().rule_faint)].into(),
+        f => row![
+            segment(f, crate::theme::palette().ok),
+            segment(100 - f, crate::theme::palette().rule_faint)
+        ]
+        .into(),
     };
     container(bar).width(Length::Fill).into()
 }
@@ -1372,10 +1963,19 @@ fn journal_card<'a>(d: Option<&Data>, state: &State, now: Instant) -> Element<'a
     let selected_kind = kinds.iter().find(|o| o.kind == state.filter.kind).cloned();
     let kind_pick = pick_list(kinds, selected_kind, Msg::KindPicked);
     let wallets = wallet_options(d);
-    let selected_wallet = wallets.iter().find(|o| o.cid == state.filter.wallet).cloned();
+    let selected_wallet = wallets
+        .iter()
+        .find(|o| o.cid == state.filter.wallet)
+        .cloned();
     let wallet_pick = pick_list(wallets, selected_wallet, Msg::WalletPicked);
-    let task = text_input("Task id", &state.task_draft).on_input(Msg::TaskDraft).on_submit(Msg::TaskApply).style(theme::input).width(Length::Fill);
-    let filters = row![kind_pick, wallet_pick, task].spacing(12).align_y(Alignment::Center);
+    let task = text_input("Task id", &state.task_draft)
+        .on_input(Msg::TaskDraft)
+        .on_submit(Msg::TaskApply)
+        .style(theme::input)
+        .width(Length::Fill);
+    let filters = row![kind_pick, wallet_pick, task]
+        .spacing(12)
+        .align_y(Alignment::Center);
 
     let body: Element<'a, Msg> = if state.journal.is_empty() {
         ui::empty::<Msg>("clock", "No entries.", "")
@@ -1385,26 +1985,48 @@ fn journal_card<'a>(d: Option<&Data>, state: &State, now: Instant) -> Element<'a
         for (i, e) in state.journal.iter().enumerate() {
             ledger = ledger.push(entry_row(e, fade(&state.fresh, e.id, now)));
             if i < last {
-                ledger = ledger.push(container(Space::new().height(1.0)).width(Length::Fill).style(|_: &Theme| container::Style {
-                    background: Some(crate::theme::palette().rule_faint.into()),
-                    ..Default::default()
-                }));
+                ledger = ledger.push(
+                    container(Space::new().height(1.0))
+                        .width(Length::Fill)
+                        .style(|_: &Theme| container::Style {
+                            background: Some(crate::theme::palette().rule_faint.into()),
+                            ..Default::default()
+                        }),
+                );
             }
         }
         ledger.into()
     };
     let footer = row![
-        ui::faint(format!("Newest first · {} of {} shown", state.journal.len(), state.journal_total)),
+        ui::faint(format!(
+            "Newest first · {} of {} shown",
+            state.journal.len(),
+            state.journal_total
+        )),
         Space::new().width(Length::Fill),
-        ui::btn("Load older", None, ui::Kind::Secondary, (state.journal_next.is_some() && !state.older_busy).then_some(Msg::OlderPressed)),
+        ui::btn(
+            "Load older",
+            None,
+            ui::Kind::Secondary,
+            (state.journal_next.is_some() && !state.older_busy).then_some(Msg::OlderPressed)
+        ),
     ]
     .align_y(Alignment::Center);
-    ui::card("Journal", column![filters, body, footer].spacing(GAP).width(Length::Fill).into())
+    ui::card(
+        "Journal",
+        column![filters, body, footer]
+            .spacing(GAP)
+            .width(Length::Fill)
+            .into(),
+    )
 }
 
 /// How far a fresh row has faded in (0 at its arrival, 1 once settled).
 fn fade(fresh: &[(i64, Instant)], id: i64, now: Instant) -> f32 {
-    fresh.iter().find(|(i, _)| *i == id).map_or(1.0, |(_, at)| chart::ease(progress(*at, now)) as f32)
+    fresh
+        .iter()
+        .find(|(i, _)| *i == id)
+        .map_or(1.0, |(_, at)| chart::ease(progress(*at, now)) as f32)
 }
 
 /// One journal row: the id, the time, the kind's badge, the memo (cut with an ellipsis to the room
@@ -1418,24 +2040,64 @@ fn entry_row<'a>(e: &Entry, alpha: f32) -> Element<'a, Msg> {
     } else {
         e.memo.clone()
     };
-    let (id, when, kind, amount, tone) = (format!("#{}", e.id), ago(e.at), kind_label(&e.kind), money(e.amount), kind_tone(&e.kind));
+    let (id, when, kind, amount, tone) = (
+        format!("#{}", e.id),
+        ago(e.at),
+        kind_label(&e.kind),
+        money(e.amount),
+        kind_tone(&e.kind),
+    );
     responsive(move |size| {
-        let fade = |c: Color| Color { a: c.a * alpha, ..c };
+        let fade = |c: Color| Color {
+            a: c.a * alpha,
+            ..c
+        };
         let room = (size.width - JOURNAL_FIXED).max(0.0);
         let memo = ellipsize(&memo, (room / SERIF15_CHAR) as usize);
         row![
-            container(ui::mono(id.clone(), 11.5, fade(crate::theme::palette().ink_3))).width(Length::Fixed(56.0)).clip(true),
-            container(ui::sans(when.clone(), 11.5, fade(crate::theme::palette().ink_3))).width(Length::Fixed(92.0)).clip(true),
-            container(ui::badge::<Msg>(&kind, tone)).width(Length::Fixed(120.0)).clip(true),
-            container(iced::widget::text(memo).font(theme::SANS).size(15.0).color(fade(crate::theme::palette().ink)).wrapping(Wrapping::None))
-                .width(Length::Fill)
+            container(ui::mono(
+                id.clone(),
+                11.5,
+                fade(crate::theme::palette().ink_3)
+            ))
+            .width(Length::Fixed(56.0))
+            .clip(true),
+            container(ui::sans(
+                when.clone(),
+                11.5,
+                fade(crate::theme::palette().ink_3)
+            ))
+            .width(Length::Fixed(92.0))
+            .clip(true),
+            container(ui::badge::<Msg>(&kind, tone))
+                .width(Length::Fixed(120.0))
                 .clip(true),
-            container(iced::widget::text(amount.clone()).font(AMOUNT).size(14.0).color(fade(crate::theme::palette().ink)).wrapping(Wrapping::None))
-                .width(Length::Fixed(90.0))
-                .align_right(Length::Fixed(90.0)),
+            container(
+                iced::widget::text(memo)
+                    .font(theme::SANS)
+                    .size(15.0)
+                    .color(fade(crate::theme::palette().ink))
+                    .wrapping(Wrapping::None)
+            )
+            .width(Length::Fill)
+            .clip(true),
+            container(
+                iced::widget::text(amount.clone())
+                    .font(AMOUNT)
+                    .size(14.0)
+                    .color(fade(crate::theme::palette().ink))
+                    .wrapping(Wrapping::None)
+            )
+            .width(Length::Fixed(90.0))
+            .align_right(Length::Fixed(90.0)),
         ]
         .spacing(12)
-        .padding(Padding { top: 9.0, right: 0.0, bottom: 9.0, left: 0.0 })
+        .padding(Padding {
+            top: 9.0,
+            right: 0.0,
+            bottom: 9.0,
+            left: 0.0,
+        })
         .align_y(Alignment::Center)
         .into()
     })
@@ -1460,8 +2122,17 @@ fn mint_form<'a>(state: &State) -> Element<'a, Msg> {
         .on_submit(Msg::SubmitMint)
         .style(theme::input);
     column![
-        field("Amount", amount.into(), "Whole units added to the plaza budget."),
-        ui::btn("Mint", None, ui::Kind::Primary, (!state.busy).then_some(Msg::SubmitMint)),
+        field(
+            "Amount",
+            amount.into(),
+            "Whole units added to the plaza budget."
+        ),
+        ui::btn(
+            "Mint",
+            None,
+            ui::Kind::Primary,
+            (!state.busy).then_some(Msg::SubmitMint)
+        ),
     ]
     .spacing(12)
     .into()
@@ -1485,40 +2156,63 @@ fn fine_form<'a>(state: &State) -> Element<'a, Msg> {
         field("Agent", who.into(), ""),
         field("Amount", amount.into(), "Taken from the agent’s wallet."),
         field("Memo", memo.into(), "Shown in the journal."),
-        ui::btn("Fine", None, ui::Kind::Danger, (!state.busy).then_some(Msg::SubmitFine)),
+        ui::btn(
+            "Fine",
+            None,
+            ui::Kind::Danger,
+            (!state.busy).then_some(Msg::SubmitFine)
+        ),
     ]
     .spacing(12)
     .into()
 }
 
 fn field<'a>(title: &str, input: Element<'a, Msg>, hint: &str) -> Element<'a, Msg> {
-    column![ui::label(title), input, ui::faint(hint.to_string())].spacing(6).into()
+    column![ui::label(title), input, ui::faint(hint.to_string())]
+        .spacing(6)
+        .into()
 }
 
 /// One table cell: a fixed share of the row, its content right-aligned when `right`.
 fn cell<'a>(portion: u16, right: bool, content: impl Into<Element<'a, Msg>>) -> Element<'a, Msg> {
     container(content.into())
         .width(Length::FillPortion(portion))
-        .align_x(if right { Alignment::End } else { Alignment::Start })
+        .align_x(if right {
+            Alignment::End
+        } else {
+            Alignment::Start
+        })
         .into()
 }
 
 /// A sortable header cell: the active column in ink, with its direction.
-fn sort_head<'a, T: Copy + PartialEq>(label: &str, portion: u16, value: T, current: T, asc: bool, make: fn(T) -> Msg) -> Element<'a, Msg> {
+fn sort_head<'a, T: Copy + PartialEq>(
+    label: &str,
+    portion: u16,
+    value: T,
+    current: T,
+    asc: bool,
+    make: fn(T) -> Msg,
+) -> Element<'a, Msg> {
     let active = value == current;
     let arrow = if active {
-        if asc {
-            " ^"
-        } else {
-            " v"
-        }
+        if asc { " ^" } else { " v" }
     } else {
         ""
     };
-    let content = button(iced::widget::text(format!("{label}{arrow}")).font(SANS).size(11.0).color(if active { crate::theme::palette().ink } else { crate::theme::palette().ink_3 }))
-        .style(link)
-        .padding(0)
-        .on_press(make(value));
+    let content = button(
+        iced::widget::text(format!("{label}{arrow}"))
+            .font(SANS)
+            .size(11.0)
+            .color(if active {
+                crate::theme::palette().ink
+            } else {
+                crate::theme::palette().ink_3
+            }),
+    )
+    .style(link)
+    .padding(0)
+    .on_press(make(value));
     cell(portion, false, content)
 }
 
@@ -1533,10 +2227,18 @@ fn resort<T: Copy + PartialEq>(current: &mut T, asc: &mut bool, next: T, asc_fir
 }
 
 /// A segmented control: the current option solid, the others plain.
-fn segmented<'a, T: Copy + PartialEq + 'a>(options: &[(T, &str)], current: T, make: fn(T) -> Msg) -> Element<'a, Msg> {
+fn segmented<'a, T: Copy + PartialEq + 'a>(
+    options: &[(T, &str)],
+    current: T,
+    make: fn(T) -> Msg,
+) -> Element<'a, Msg> {
     let mut line = row![].spacing(6);
     for (value, label) in options {
-        let kind = if *value == current { ui::Kind::Primary } else { ui::Kind::Secondary };
+        let kind = if *value == current {
+            ui::Kind::Primary
+        } else {
+            ui::Kind::Secondary
+        };
         line = line.push(ui::btn(label, None, kind, Some(make(*value))));
     }
     line.into()
@@ -1544,20 +2246,34 @@ fn segmented<'a, T: Copy + PartialEq + 'a>(options: &[(T, &str)], current: T, ma
 
 /// A plain link-looking button for an agent's name.
 fn link(_: &Theme, _: button::Status) -> button::Style {
-    button::Style { text_color: crate::theme::palette().ink, ..Default::default() }
+    button::Style {
+        text_color: crate::theme::palette().ink,
+        ..Default::default()
+    }
 }
 
 fn roster_choices(state: &State) -> Vec<AgentChoice> {
     state
         .data
         .as_ref()
-        .map(|d| d.roster.iter().map(|a| AgentChoice { cid: a.cid, label: a.name.clone() }).collect())
+        .map(|d| {
+            d.roster
+                .iter()
+                .map(|a| AgentChoice {
+                    cid: a.cid,
+                    label: a.name.clone(),
+                })
+                .collect()
+        })
         .unwrap_or_default()
 }
 
 /// The agent the fine form targets: the picked one, else the first on the roster (as the web's select).
 fn fine_choice(state: &State) -> Option<AgentChoice> {
-    state.fine_target.clone().or_else(|| roster_choices(state).into_iter().next())
+    state
+        .fine_target
+        .clone()
+        .or_else(|| roster_choices(state).into_iter().next())
 }
 
 /// The journal's kinds: all kinds first, then the known and seen ones, each once.
@@ -1568,18 +2284,30 @@ fn kind_options(d: Option<&Data>, journal: &[Entry]) -> Vec<KindChoice> {
         kinds.extend(d.points.iter().flat_map(|p| p.by_kind.keys().cloned()));
     }
     sort_kinds(&mut kinds);
-    let mut options = vec![KindChoice { kind: None, label: "All kinds".to_string() }];
-    options.extend(kinds.into_iter().map(|k| KindChoice { label: kind_label(&k), kind: Some(k) }));
+    let mut options = vec![KindChoice {
+        kind: None,
+        label: "All kinds".to_string(),
+    }];
+    options.extend(kinds.into_iter().map(|k| KindChoice {
+        label: kind_label(&k),
+        kind: Some(k),
+    }));
     options
 }
 
 /// The journal's agents: every agent, by name, after "All agents".
 fn wallet_options(d: Option<&Data>) -> Vec<WalletChoice> {
-    let mut options = vec![WalletChoice { cid: None, label: "All agents".to_string() }];
+    let mut options = vec![WalletChoice {
+        cid: None,
+        label: "All agents".to_string(),
+    }];
     if let Some(d) = d {
         let mut roster: Vec<&Member> = d.roster.iter().collect();
         roster.sort_by(|a, b| a.name.cmp(&b.name));
-        options.extend(roster.into_iter().map(|m| WalletChoice { cid: Some(m.cid), label: m.name.clone() }));
+        options.extend(roster.into_iter().map(|m| WalletChoice {
+            cid: Some(m.cid),
+            label: m.name.clone(),
+        }));
     }
     options
 }
@@ -1618,7 +2346,11 @@ fn kind_color(kind: &str) -> Color {
 
 /// The budget's balances over the buckets: the plaza budget, the circulating money and the treasury.
 fn balance_series(points: &[Bucket]) -> Vec<chart::Series> {
-    let pick = |key: &str, color: Color, f: fn(&Bucket) -> f64| chart::Series { key: key.to_string(), color, values: points.iter().map(f).collect() };
+    let pick = |key: &str, color: Color, f: fn(&Bucket) -> f64| chart::Series {
+        key: key.to_string(),
+        color,
+        values: points.iter().map(f).collect(),
+    };
     vec![
         pick("Budget", crate::theme::palette().ok, |p| p.budget),
         pick("Circulating", BLUE, |p| p.circulating),
@@ -1632,24 +2364,43 @@ fn flow_series(points: &[Bucket]) -> Vec<chart::Series> {
     flow_kinds(points)
         .into_iter()
         .map(|kind| {
-            let values: Vec<f64> = points.iter().map(|p| p.by_kind.get(&kind).copied().unwrap_or(0.0)).collect();
-            chart::Series { color: kind_color(&kind), key: kind_label(&kind), values }
+            let values: Vec<f64> = points
+                .iter()
+                .map(|p| p.by_kind.get(&kind).copied().unwrap_or(0.0))
+                .collect();
+            chart::Series {
+                color: kind_color(&kind),
+                key: kind_label(&kind),
+                values,
+            }
         })
         .collect()
 }
 
 /// Kinds in the web's order (`KNOWN_KINDS`, as treasury.ts `KINDS`), then any other kind by name; duplicates dropped.
 fn sort_kinds(kinds: &mut Vec<String>) {
-    let rank = |k: &str| KNOWN_KINDS.iter().position(|known| *known == k).unwrap_or(KNOWN_KINDS.len());
+    let rank = |k: &str| {
+        KNOWN_KINDS
+            .iter()
+            .position(|known| *known == k)
+            .unwrap_or(KNOWN_KINDS.len())
+    };
     kinds.sort_by(|a, b| rank(a).cmp(&rank(b)).then_with(|| a.cmp(b)));
     kinds.dedup();
 }
 
 /// The kinds that moved money in the range, in the web's kind order.
 fn flow_kinds(points: &[Bucket]) -> Vec<String> {
-    let mut kinds: Vec<String> = points.iter().flat_map(|p| p.by_kind.keys().cloned()).collect();
+    let mut kinds: Vec<String> = points
+        .iter()
+        .flat_map(|p| p.by_kind.keys().cloned())
+        .collect();
     sort_kinds(&mut kinds);
-    kinds.retain(|kind| points.iter().any(|p| p.by_kind.get(kind).is_some_and(|v| *v != 0.0)));
+    kinds.retain(|kind| {
+        points
+            .iter()
+            .any(|p| p.by_kind.get(kind).is_some_and(|v| *v != 0.0))
+    });
     kinds
 }
 
@@ -1677,11 +2428,7 @@ fn money(n: f64) -> String {
         }
         out.push(c);
     }
-    if rounded < 0 {
-        format!("-{out}")
-    } else {
-        out
-    }
+    if rounded < 0 { format!("-{out}") } else { out }
 }
 
 /// A chart or table label for a bucket that starts at `ms` (UTC): "14 Nov 22:00" hourly, else "14 Nov".
@@ -1717,7 +2464,9 @@ fn page_count(len: usize, size: usize) -> usize {
 }
 
 fn now_ms() -> f64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0.0, |d| d.as_millis() as f64)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0.0, |d| d.as_millis() as f64)
 }
 
 /// A relative time, as the web's `ago`; `ms` is epoch milliseconds.
@@ -1739,7 +2488,9 @@ fn ago(ms: f64) -> String {
 fn enc(s: &str) -> String {
     s.bytes()
         .map(|b| match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (b as char).to_string()
+            }
             _ => format!("%{b:02X}"),
         })
         .collect()
@@ -1752,7 +2503,9 @@ fn progress(start: Instant, now: Instant) -> f64 {
 
 /// The journal rows: `head` (the newest page) over the older rows already loaded, newest first.
 fn merge_head(existing: &[Entry], head: Vec<Entry>) -> Vec<Entry> {
-    let Some(oldest) = head.iter().map(|e| e.id).min() else { return head };
+    let Some(oldest) = head.iter().map(|e| e.id).min() else {
+        return head;
+    };
     let mut out = head;
     out.extend(existing.iter().filter(|e| e.id < oldest).cloned());
     out.sort_by(|a, b| b.id.cmp(&a.id));
@@ -1892,9 +2645,21 @@ struct Member {
 }
 
 impl Data {
-    fn parse(treasury: &Value, wallets: &Value, roster: &Value, series: &Value, usage: &Value) -> Data {
+    fn parse(
+        treasury: &Value,
+        wallets: &Value,
+        roster: &Value,
+        series: &Value,
+        usage: &Value,
+    ) -> Data {
         let accounts = list(treasury, "accounts");
-        let balance = |kind: &str| accounts.iter().filter(|a| text(a, "kind") == kind).map(|a| num(a, "balance")).sum::<f64>();
+        let balance = |kind: &str| {
+            accounts
+                .iter()
+                .filter(|a| text(a, "kind") == kind)
+                .map(|a| num(a, "balance"))
+                .sum::<f64>()
+        };
         let totals = usage.get("totals").cloned().unwrap_or(Value::Null);
         Data {
             budget: num(treasury, "plaza_budget"),
@@ -1902,11 +2667,21 @@ impl Data {
             treasury: balance("treasury"),
             wallets: list(wallets, "wallets")
                 .iter()
-                .map(|w| Wallet { cid: uint(w, "cid"), name: text(w, "name"), balance: num(w, "balance"), earned: None, spent: None })
+                .map(|w| Wallet {
+                    cid: uint(w, "cid"),
+                    name: text(w, "name"),
+                    balance: num(w, "balance"),
+                    earned: None,
+                    spent: None,
+                })
                 .collect(),
             roster: list(roster, "agents")
                 .iter()
-                .map(|a| Member { cid: uint(a, "cid"), name: text(a, "name"), role_label: text(a, "role_label") })
+                .map(|a| Member {
+                    cid: uint(a, "cid"),
+                    name: text(a, "name"),
+                    role_label: text(a, "role_label"),
+                })
                 .collect(),
             points: list(series, "points").iter().map(Bucket::parse).collect(),
             cost: num(&totals, "usd"),
@@ -1940,7 +2715,9 @@ impl Data {
 
     /// The money in circulation at the end of the range (the wallets, when there is no series).
     fn circulating(&self) -> f64 {
-        self.points.last().map_or_else(|| self.wallets_total(), |p| p.circulating)
+        self.points
+            .last()
+            .map_or_else(|| self.wallets_total(), |p| p.circulating)
     }
 
     fn treasury_now(&self) -> f64 {
@@ -1965,7 +2742,11 @@ impl Bucket {
             by_kind: v
                 .get("by_kind")
                 .and_then(Value::as_object)
-                .map(|m| m.iter().map(|(k, x)| (k.clone(), x.as_f64().unwrap_or(0.0))).collect())
+                .map(|m| {
+                    m.iter()
+                        .map(|(k, x)| (k.clone(), x.as_f64().unwrap_or(0.0)))
+                        .collect()
+                })
                 .unwrap_or_default(),
         }
     }
@@ -1988,23 +2769,40 @@ impl Entry {
         let legs: f64 = v
             .get("postings")
             .and_then(Value::as_array)
-            .map(|ps| ps.iter().map(|p| num(p, "amount")).filter(|a| *a > 0.0).sum())
+            .map(|ps| {
+                ps.iter()
+                    .map(|p| num(p, "amount"))
+                    .filter(|a| *a > 0.0)
+                    .sum()
+            })
             .unwrap_or(0.0);
         let created = num(v, "created_at");
         Entry {
             id: v.get("id").and_then(Value::as_i64).unwrap_or(0),
             kind: text(v, "kind"),
             at: if created > 0.0 { created } else { num(v, "at") },
-            amount: if v.get("amount").is_some() { num(v, "amount") } else { legs },
+            amount: if v.get("amount").is_some() {
+                num(v, "amount")
+            } else {
+                legs
+            },
             memo: text(v, "memo"),
-            task: v.get("task_id").or_else(|| v.get("task")).and_then(Value::as_str).filter(|t| !t.is_empty()).map(str::to_string),
+            task: v
+                .get("task_id")
+                .or_else(|| v.get("task"))
+                .and_then(Value::as_str)
+                .filter(|t| !t.is_empty())
+                .map(str::to_string),
         }
     }
 }
 
 /// An array at the root, or under `key` (the journal may come wrapped).
 fn list<'a>(v: &'a Value, key: &str) -> &'a [Value] {
-    v.as_array().or_else(|| v.get(key).and_then(Value::as_array)).map(Vec::as_slice).unwrap_or(&[])
+    v.as_array()
+        .or_else(|| v.get(key).and_then(Value::as_array))
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
 }
 
 fn num(v: &Value, key: &str) -> f64 {
@@ -2016,7 +2814,10 @@ fn uint(v: &Value, key: &str) -> u64 {
 }
 
 fn text(v: &Value, key: &str) -> String {
-    v.get(key).and_then(Value::as_str).unwrap_or_default().to_string()
+    v.get(key)
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
 }
 
 #[cfg(test)]
@@ -2024,7 +2825,14 @@ mod tests {
     use super::*;
 
     fn entry(id: i64, kind: &str) -> Entry {
-        Entry { id, kind: kind.to_string(), at: 0.0, amount: 0.0, memo: String::new(), task: None }
+        Entry {
+            id,
+            kind: kind.to_string(),
+            at: 0.0,
+            amount: 0.0,
+            memo: String::new(),
+            task: None,
+        }
     }
 
     fn ids(v: &[Entry]) -> Vec<i64> {
@@ -2035,7 +2843,10 @@ mod tests {
     fn all_starts_at_the_first_account_as_the_web_does() {
         let to = 3_000 * DAY_MS;
         // Ten days and a millisecond old rounds up to eleven days.
-        assert_eq!(window_from(Range::All, to, to - 10 * DAY_MS - 1), to - 11 * DAY_MS);
+        assert_eq!(
+            window_from(Range::All, to, to - 10 * DAY_MS - 1),
+            to - 11 * DAY_MS
+        );
         // No account (first_at == now) still spans a day.
         assert_eq!(window_from(Range::All, to, to), to - DAY_MS);
         // Older than the cap: 1999 days.
@@ -2067,9 +2878,19 @@ mod tests {
 
     #[test]
     fn journal_path_carries_the_filters_and_the_cursor() {
-        let f = JournalFilter { kind: Some("spend".into()), wallet: Some(7), task: "fix bug".into() };
-        assert_eq!(journal_path(&f, None), "/v1/treasury/journal?limit=50&kind=spend&wallet=7&task=fix%20bug");
-        assert_eq!(journal_path(&JournalFilter::default(), Some(42)), "/v1/treasury/journal?limit=50&before=42");
+        let f = JournalFilter {
+            kind: Some("spend".into()),
+            wallet: Some(7),
+            task: "fix bug".into(),
+        };
+        assert_eq!(
+            journal_path(&f, None),
+            "/v1/treasury/journal?limit=50&kind=spend&wallet=7&task=fix%20bug"
+        );
+        assert_eq!(
+            journal_path(&JournalFilter::default(), Some(42)),
+            "/v1/treasury/journal?limit=50&before=42"
+        );
     }
 
     #[test]
@@ -2082,7 +2903,10 @@ mod tests {
 
     #[test]
     fn a_head_page_merges_over_the_older_rows_already_loaded() {
-        let merged = merge_head(&[entry(8, "spend"), entry(7, "fine")], vec![entry(9, "mint"), entry(8, "spend")]);
+        let merged = merge_head(
+            &[entry(8, "spend"), entry(7, "fine")],
+            vec![entry(9, "mint"), entry(8, "spend")],
+        );
         assert_eq!(ids(&merged), vec![9, 8, 7]);
         assert!(ids(&merge_head(&[entry(3, "mint")], vec![])).is_empty());
     }
@@ -2131,7 +2955,12 @@ mod tests {
         let k = kind_options(None, &[entry(1, "zeta"), entry(2, "mint")]);
         assert_eq!(k[0].label, "All kinds");
         assert!(k.iter().any(|c| c.kind.as_deref() == Some("zeta")));
-        assert_eq!(k.iter().filter(|c| c.kind.as_deref() == Some("mint")).count(), 1);
+        assert_eq!(
+            k.iter()
+                .filter(|c| c.kind.as_deref() == Some("mint"))
+                .count(),
+            1
+        );
     }
 
     #[test]
@@ -2161,6 +2990,9 @@ mod tests {
         assert_eq!(flows[0].values, vec![5.0, 0.0]);
         assert_eq!(balance_series(&points)[0].values, vec![10.0, 8.0]);
         let all = totals(&points);
-        assert_eq!((all.minted, all.paid, all.budget, all.circulating), (5.0, 3.0, 8.0, 6.0));
+        assert_eq!(
+            (all.minted, all.paid, all.budget, all.circulating),
+            (5.0, 3.0, 8.0, 6.0)
+        );
     }
 }

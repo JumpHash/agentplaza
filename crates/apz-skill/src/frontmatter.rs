@@ -29,9 +29,14 @@ pub fn parse(skill_md: &str) -> Res<Parsed> {
     let close = (1..raws.len())
         .find(|&i| text(raws[i]) == "---")
         .ok_or((1u32, "the frontmatter has no closing --- line".to_string()))?;
-    let lines: Vec<Line<'_>> = (1..close).map(|i| ((i + 1) as u32, text(raws[i]))).collect();
+    let lines: Vec<Line<'_>> = (1..close)
+        .map(|i| ((i + 1) as u32, text(raws[i])))
+        .collect();
     for &(no, t) in &lines {
-        if t.chars().take_while(|c| c.is_whitespace()).any(|c| c == '\t') {
+        if t.chars()
+            .take_while(|c| c.is_whitespace())
+            .any(|c| c == '\t')
+        {
             return Err((no, "tabs are not allowed for indentation".into()));
         }
     }
@@ -89,7 +94,9 @@ fn split_key(no: u32, t: &str) -> Res<(&str, &str)> {
         .ok_or((no, "expected a `key: value` line".to_string()))?;
     let valid = !key.is_empty()
         && !key.starts_with('-')
-        && key.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+        && key
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
     if !valid {
         return Err((no, format!("`{key}` is not a key")));
     }
@@ -275,7 +282,9 @@ fn assign(fm: &mut Frontmatter, no: u32, key: &str, value: Value) -> Res<()> {
                     .filter(|t| !t.is_empty())
                     .map(str::to_string)
                     .collect(),
-                Value::Map(_) => return Err((no, "`allowed-tools` takes a list or a string".into())),
+                Value::Map(_) => {
+                    return Err((no, "`allowed-tools` takes a list or a string".into()));
+                }
             }
         }
         "metadata" => {
@@ -322,16 +331,23 @@ mod tests {
 
     #[test]
     fn plain_keys_and_the_body() {
-        let p = ok("---\nname: pdf-forms\ndescription: Fill forms. Use when: a PDF has fields.\n---\n# Title\nbody\n");
+        let p = ok(
+            "---\nname: pdf-forms\ndescription: Fill forms. Use when: a PDF has fields.\n---\n# Title\nbody\n",
+        );
         assert_eq!(p.frontmatter.name, "pdf-forms");
-        assert_eq!(p.frontmatter.description, "Fill forms. Use when: a PDF has fields.");
+        assert_eq!(
+            p.frontmatter.description,
+            "Fill forms. Use when: a PDF has fields."
+        );
         assert_eq!(p.body, "# Title\nbody\n");
         assert_eq!(p.body_line, 5);
     }
 
     #[test]
     fn quoted_values_unescape() {
-        let p = ok("---\nname: \"a-b\"\ndescription: \"Say \\\"hi\\\" # not a comment\" # real comment\nlicense: 'it''s MIT'\n---\n");
+        let p = ok(
+            "---\nname: \"a-b\"\ndescription: \"Say \\\"hi\\\" # not a comment\" # real comment\nlicense: 'it''s MIT'\n---\n",
+        );
         assert_eq!(p.frontmatter.name, "a-b");
         assert_eq!(p.frontmatter.description, "Say \"hi\" # not a comment");
         assert_eq!(p.frontmatter.license.as_deref(), Some("it's MIT"));
@@ -339,8 +355,13 @@ mod tests {
 
     #[test]
     fn folded_and_literal_block_scalars() {
-        let p = ok("---\ndescription: >\n  Fill forms\n  for PDFs.\n\n  Use when needed.\nname: x\n---\n");
-        assert_eq!(p.frontmatter.description, "Fill forms for PDFs.\nUse when needed.");
+        let p = ok(
+            "---\ndescription: >\n  Fill forms\n  for PDFs.\n\n  Use when needed.\nname: x\n---\n",
+        );
+        assert_eq!(
+            p.frontmatter.description,
+            "Fill forms for PDFs.\nUse when needed."
+        );
         assert_eq!(p.frontmatter.name, "x");
         let p = ok("---\ndescription: |\n  one\n    indented\n  two\nname: x\n---\n");
         assert_eq!(p.frontmatter.description, "one\n  indented\ntwo");
@@ -356,10 +377,21 @@ mod tests {
 
     #[test]
     fn metadata_map_and_extra_keys() {
-        let p = ok("---\nmetadata:\n  author: me\n  version: \"1\" # x\ncompatibility: any tool\n---\n");
-        assert_eq!(p.frontmatter.metadata.get("author").map(String::as_str), Some("me"));
-        assert_eq!(p.frontmatter.metadata.get("version").map(String::as_str), Some("1"));
-        assert_eq!(p.frontmatter.extra.get("compatibility").map(String::as_str), Some("any tool"));
+        let p = ok(
+            "---\nmetadata:\n  author: me\n  version: \"1\" # x\ncompatibility: any tool\n---\n",
+        );
+        assert_eq!(
+            p.frontmatter.metadata.get("author").map(String::as_str),
+            Some("me")
+        );
+        assert_eq!(
+            p.frontmatter.metadata.get("version").map(String::as_str),
+            Some("1")
+        );
+        assert_eq!(
+            p.frontmatter.extra.get("compatibility").map(String::as_str),
+            Some("any tool")
+        );
     }
 
     #[test]

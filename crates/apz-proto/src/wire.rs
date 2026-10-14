@@ -48,27 +48,61 @@ pub enum GuestMessage {
         keepalive: Option<bool>,
     },
     /// v1: the guest asks the host to run a diagnostic tool.
-    ToolCall { call: u64, name: String, args: Value },
+    ToolCall {
+        call: u64,
+        name: String,
+        args: Value,
+    },
     /// v2: the answer to a host [`HostMessage::ToolCall`].
-    ToolResult { call: u64, ok: bool, output: String },
+    ToolResult {
+        call: u64,
+        ok: bool,
+        output: String,
+    },
     Heartbeat {
         seq: u64,
         /// v3: whether a work item is in progress.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         busy: Option<bool>,
     },
-    Bye { calls: u64 },
+    Bye {
+        calls: u64,
+    },
     /// v3: one model call for work item `work`.
-    ModelCall { req: u64, work: u64, request: ChatRequest },
+    ModelCall {
+        req: u64,
+        work: u64,
+        request: ChatRequest,
+    },
     /// v3: the model asked for tool `name`; `call` is its tool_use id.
-    ToolRequest { work: u64, call: String, name: String, input: Value },
+    ToolRequest {
+        work: u64,
+        call: String,
+        name: String,
+        input: Value,
+    },
     /// v3: the result of a tool the host allowed and the guest ran.
-    ToolReport { work: u64, call: String, ok: bool, output: String },
+    ToolReport {
+        work: u64,
+        call: String,
+        ok: bool,
+        output: String,
+    },
     /// v3: the work item is over.
-    WorkDone { work: u64, status: WorkStatus, summary: String },
+    WorkDone {
+        work: u64,
+        status: WorkStatus,
+        summary: String,
+    },
     /// v3: the harness compressed work item `work`'s conversation: its size in bytes before
     /// and after, how many messages were folded into the summary, and why ("auto" or "asked").
-    Compressed { work: u64, before: u64, after: u64, folded: u32, reason: String },
+    Compressed {
+        work: u64,
+        before: u64,
+        after: u64,
+        folded: u32,
+        reason: String,
+    },
 }
 
 /// An agent-made tool from the plaza's library, as the guest runs it: its files are
@@ -114,14 +148,23 @@ pub enum HostMessage {
     /// v1: the answer to a guest [`GuestMessage::ToolCall`].
     ToolResult { call: u64, ok: bool, output: String },
     /// v2: the operator drives one tool in the guest.
-    ToolCall { call: u64, name: String, args: Value },
+    ToolCall {
+        call: u64,
+        name: String,
+        args: Value,
+    },
     Stop {
         /// Always written; a `stop` without one still parses.
         #[serde(default)]
         reason: String,
     },
     /// v3: a unit of work for the agent loop.
-    Work { work: u64, kind: WorkKind, thread: String, prompt: String },
+    Work {
+        work: u64,
+        kind: WorkKind,
+        thread: String,
+        prompt: String,
+    },
     /// v3: the answer to a [`GuestMessage::ModelCall`].
     ModelResult {
         req: u64,
@@ -237,8 +280,17 @@ impl HostMessage {
         serde_json::to_string(self)
     }
 
-    pub fn welcome(role: Option<String>, keepalive: Option<bool>, profile: Option<AgentProfile>) -> Self {
-        HostMessage::Welcome { echo: WELCOME_ECHO.to_string(), role, keepalive, profile }
+    pub fn welcome(
+        role: Option<String>,
+        keepalive: Option<bool>,
+        profile: Option<AgentProfile>,
+    ) -> Self {
+        HostMessage::Welcome {
+            echo: WELCOME_ECHO.to_string(),
+            role,
+            keepalive,
+            profile,
+        }
     }
 }
 
@@ -256,7 +308,12 @@ pub fn cap_output(text: &str, max: usize) -> String {
     while !text.is_char_boundary(tail) {
         tail += 1;
     }
-    format!("{}\n[... {} bytes cut ...]\n{}", &text[..head], tail - head, &text[tail..])
+    format!(
+        "{}\n[... {} bytes cut ...]\n{}",
+        &text[..head],
+        tail - head,
+        &text[tail..]
+    )
 }
 
 #[cfg(test)]
@@ -266,34 +323,95 @@ mod tests {
 
     #[test]
     fn v1_and_v2_lines_are_byte_stable() {
-        let hello = GuestMessage::Hello { vm: 0, guest_cid: 3, role: None, keepalive: None };
-        assert_eq!(hello.to_line().unwrap(), r#"{"type":"hello","vm":0,"guest_cid":3}"#);
+        let hello = GuestMessage::Hello {
+            vm: 0,
+            guest_cid: 3,
+            role: None,
+            keepalive: None,
+        };
+        assert_eq!(
+            hello.to_line().unwrap(),
+            r#"{"type":"hello","vm":0,"guest_cid":3}"#
+        );
         assert_eq!(
             HostMessage::welcome(None, None, None).to_line().unwrap(),
             r#"{"type":"welcome","echo":"plaza-orchestrator"}"#
         );
         assert_eq!(
-            HostMessage::welcome(Some("builder".into()), Some(true), None).to_line().unwrap(),
+            HostMessage::welcome(Some("builder".into()), Some(true), None)
+                .to_line()
+                .unwrap(),
             r#"{"type":"welcome","echo":"plaza-orchestrator","role":"builder","keepalive":true}"#
         );
         assert_eq!(
-            GuestMessage::Heartbeat { seq: 7, busy: None }.to_line().unwrap(),
+            GuestMessage::Heartbeat { seq: 7, busy: None }
+                .to_line()
+                .unwrap(),
             r#"{"type":"heartbeat","seq":7}"#
         );
-        let keepalive = GuestMessage::Hello { vm: 0, guest_cid: 7, role: None, keepalive: Some(true) };
-        assert_eq!(keepalive.to_line().unwrap(), r#"{"type":"hello","vm":0,"guest_cid":7,"keepalive":true}"#);
-        let call = GuestMessage::ToolCall { call: 1, name: "echo".into(), args: json!({"text": "hi"}) };
-        assert_eq!(call.to_line().unwrap(), r#"{"type":"tool_call","call":1,"name":"echo","args":{"text":"hi"}}"#);
-        let result = GuestMessage::ToolResult { call: 2, ok: false, output: "no such tool: x".into() };
-        assert_eq!(result.to_line().unwrap(), r#"{"type":"tool_result","call":2,"ok":false,"output":"no such tool: x"}"#);
-        assert_eq!(GuestMessage::Bye { calls: 2 }.to_line().unwrap(), r#"{"type":"bye","calls":2}"#);
-        let host_result = HostMessage::ToolResult { call: 2, ok: true, output: "12.34 56.78".into() };
-        assert_eq!(host_result.to_line().unwrap(), r#"{"type":"tool_result","call":2,"ok":true,"output":"12.34 56.78"}"#);
-        let host_call = HostMessage::ToolCall { call: 3, name: "uptime".into(), args: json!({}) };
-        assert_eq!(host_call.to_line().unwrap(), r#"{"type":"tool_call","call":3,"name":"uptime","args":{}}"#);
-        let stop = HostMessage::Stop { reason: "fleet shutdown".into() };
-        assert_eq!(stop.to_line().unwrap(), r#"{"type":"stop","reason":"fleet shutdown"}"#);
-        assert_eq!(HostMessage::from_line(r#"{"type":"stop"}"#).unwrap(), HostMessage::Stop { reason: String::new() });
+        let keepalive = GuestMessage::Hello {
+            vm: 0,
+            guest_cid: 7,
+            role: None,
+            keepalive: Some(true),
+        };
+        assert_eq!(
+            keepalive.to_line().unwrap(),
+            r#"{"type":"hello","vm":0,"guest_cid":7,"keepalive":true}"#
+        );
+        let call = GuestMessage::ToolCall {
+            call: 1,
+            name: "echo".into(),
+            args: json!({"text": "hi"}),
+        };
+        assert_eq!(
+            call.to_line().unwrap(),
+            r#"{"type":"tool_call","call":1,"name":"echo","args":{"text":"hi"}}"#
+        );
+        let result = GuestMessage::ToolResult {
+            call: 2,
+            ok: false,
+            output: "no such tool: x".into(),
+        };
+        assert_eq!(
+            result.to_line().unwrap(),
+            r#"{"type":"tool_result","call":2,"ok":false,"output":"no such tool: x"}"#
+        );
+        assert_eq!(
+            GuestMessage::Bye { calls: 2 }.to_line().unwrap(),
+            r#"{"type":"bye","calls":2}"#
+        );
+        let host_result = HostMessage::ToolResult {
+            call: 2,
+            ok: true,
+            output: "12.34 56.78".into(),
+        };
+        assert_eq!(
+            host_result.to_line().unwrap(),
+            r#"{"type":"tool_result","call":2,"ok":true,"output":"12.34 56.78"}"#
+        );
+        let host_call = HostMessage::ToolCall {
+            call: 3,
+            name: "uptime".into(),
+            args: json!({}),
+        };
+        assert_eq!(
+            host_call.to_line().unwrap(),
+            r#"{"type":"tool_call","call":3,"name":"uptime","args":{}}"#
+        );
+        let stop = HostMessage::Stop {
+            reason: "fleet shutdown".into(),
+        };
+        assert_eq!(
+            stop.to_line().unwrap(),
+            r#"{"type":"stop","reason":"fleet shutdown"}"#
+        );
+        assert_eq!(
+            HostMessage::from_line(r#"{"type":"stop"}"#).unwrap(),
+            HostMessage::Stop {
+                reason: String::new()
+            }
+        );
     }
 
     #[test]
@@ -305,7 +423,10 @@ mod tests {
         ] {
             assert!(GuestMessage::from_line(line).is_err(), "{line}");
         }
-        for line in [r#"{"type":"heartbeat","seq":1}"#, r#"{"type":"bye","calls":2}"#] {
+        for line in [
+            r#"{"type":"heartbeat","seq":1}"#,
+            r#"{"type":"bye","calls":2}"#,
+        ] {
             assert!(HostMessage::from_line(line).is_err(), "{line}");
         }
     }
@@ -318,7 +439,10 @@ mod tests {
             name: "bash".into(),
             input: json!({"command": "ls"}),
         };
-        assert_eq!(GuestMessage::from_line(&call.to_line().unwrap()).unwrap(), call);
+        assert_eq!(
+            GuestMessage::from_line(&call.to_line().unwrap()).unwrap(),
+            call
+        );
         let decision = HostMessage::ToolDecision {
             call: "toolu_1".into(),
             decision: Decision::Allow,
@@ -326,7 +450,10 @@ mod tests {
             is_error: false,
             program: None,
         };
-        assert_eq!(HostMessage::from_line(&decision.to_line().unwrap()).unwrap(), decision);
+        assert_eq!(
+            HostMessage::from_line(&decision.to_line().unwrap()).unwrap(),
+            decision
+        );
     }
 
     #[test]

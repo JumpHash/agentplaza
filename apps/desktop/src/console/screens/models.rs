@@ -11,22 +11,30 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use iced::font::{Font, Weight};
 use iced::widget::text::{self as text_mod, Wrapping};
-use iced::widget::{button, column, container, pick_list, rich_text, row, span, text, text_editor, text_input, Space};
+use iced::widget::{
+    Space, button, column, container, pick_list, rich_text, row, span, text, text_editor,
+    text_input,
+};
 use iced::{Alignment, Border, Element, Length, Padding, Task, Theme};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
-use super::usage::enc;
 use super::Id;
+use super::usage::enc;
 use crate::console::client::{self, Client};
 use crate::console::ui::{Kind, Tone};
-use crate::console::{ui, Ctx};
+use crate::console::{Ctx, ui};
 use crate::theme::{self, SANS};
 
-const SANS_SEMIBOLD: Font = Font { weight: Weight::Semibold, ..SANS };
+const SANS_SEMIBOLD: Font = Font {
+    weight: Weight::Semibold,
+    ..SANS
+};
 
 const GROUPS: [&str; 3] = ["Configured with a key", "Needs a key", "Local"];
-const EFFORTS: [&str; 8] = ["default", "none", "minimal", "low", "medium", "high", "xhigh", "max"];
+const EFFORTS: [&str; 8] = [
+    "default", "none", "minimal", "low", "medium", "high", "xhigh", "max",
+];
 const DECISIONS_LEDE: &str = "Models that answer typed questions with calibrated probabilities instead of writing text. The plaza uses them to decide; agents never chat with them.";
 
 /// The model group a provider view belongs to when the hub does not say ("chat" or "decisions").
@@ -343,9 +351,18 @@ pub struct Form {
 pub enum Dialog {
     #[default]
     Closed,
-    Key { provider: String, value: String, saving: bool },
-    Remove { provider: String, busy: bool },
-    Catalogue { search: String },
+    Key {
+        provider: String,
+        value: String,
+        saving: bool,
+    },
+    Remove {
+        provider: String,
+        busy: bool,
+    },
+    Catalogue {
+        search: String,
+    },
     Form(Form),
 }
 
@@ -381,7 +398,11 @@ pub struct Policy {
 impl Policy {
     fn new(settings: Settings, view: ModelsView) -> Policy {
         let block = text_editor::Content::with_text(&settings.fetch_block.join("\n"));
-        let known: BTreeSet<String> = view.models.iter().map(|m| format!("{}/{}", m.provider, m.id)).collect();
+        let known: BTreeSet<String> = view
+            .models
+            .iter()
+            .map(|m| format!("{}/{}", m.provider, m.id))
+            .collect();
         Policy {
             saved: settings.clone(),
             copy: settings,
@@ -555,7 +576,10 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         }
         Msg::Test(id) => {
             let c = ctx.client.clone();
-            client::task(move || c.post::<TestReport>(&format!("/v1/providers/{id}/test"), &json!({})), Msg::Tested)
+            client::task(
+                move || c.post::<TestReport>(&format!("/v1/providers/{id}/test"), &json!({})),
+                Msg::Tested,
+            )
         }
         Msg::Tested(Ok(report)) => {
             if report.ok {
@@ -588,7 +612,10 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                     let c = ctx.client.clone();
                     let key = format!("{id}/{}", m.id);
                     let path = price_path(&key);
-                    client::task(move || c.get::<Value>(&path), move |r| Msg::Price(key.clone(), r))
+                    client::task(
+                        move || c.get::<Value>(&path),
+                        move |r| Msg::Price(key.clone(), r),
+                    )
                 })
                 .collect();
             state.listed.insert(id, list);
@@ -608,7 +635,11 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             Task::none()
         }
         Msg::OpenKey(id) => {
-            state.dialog = Dialog::Key { provider: id, value: String::new(), saving: false };
+            state.dialog = Dialog::Key {
+                provider: id,
+                value: String::new(),
+                saving: false,
+            };
             Task::none()
         }
         Msg::KeyInput(v) => {
@@ -618,7 +649,14 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             Task::none()
         }
         Msg::SaveKey => {
-            let Dialog::Key { provider, value, saving } = &mut state.dialog else { return Task::none() };
+            let Dialog::Key {
+                provider,
+                value,
+                saving,
+            } = &mut state.dialog
+            else {
+                return Task::none();
+            };
             let key = value.trim().to_string();
             if key.is_empty() || *saving {
                 return Task::none();
@@ -626,7 +664,13 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             *saving = true;
             let path = format!("/v1/providers/{provider}/secret");
             let c = ctx.client.clone();
-            client::task(move || c.call("PUT", &path, Some(&json!({ "value": key }))).map(|_| "Key saved".to_string()), Msg::Done)
+            client::task(
+                move || {
+                    c.call("PUT", &path, Some(&json!({ "value": key })))
+                        .map(|_| "Key saved".to_string())
+                },
+                Msg::Done,
+            )
         }
         Msg::OpenEdit(id) => {
             if let Some(p) = state.providers.iter().find(|p| p.id == id).cloned() {
@@ -645,11 +689,16 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             Task::none()
         }
         Msg::OpenRemove(id) => {
-            state.dialog = Dialog::Remove { provider: id, busy: false };
+            state.dialog = Dialog::Remove {
+                provider: id,
+                busy: false,
+            };
             Task::none()
         }
         Msg::ConfirmRemove => {
-            let Dialog::Remove { provider, busy } = &mut state.dialog else { return Task::none() };
+            let Dialog::Remove { provider, busy } = &mut state.dialog else {
+                return Task::none();
+            };
             if *busy {
                 return Task::none();
             }
@@ -660,7 +709,9 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             client::task(move || c.delete(&path).map(|_| note), Msg::Done)
         }
         Msg::OpenCatalogue => {
-            state.dialog = Dialog::Catalogue { search: String::new() };
+            state.dialog = Dialog::Catalogue {
+                search: String::new(),
+            };
             Task::none()
         }
         Msg::CatalogueSearch(s) => {
@@ -691,7 +742,10 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                 id_editable: true,
                 base_url: String::new(),
                 env: Some(String::new()),
-                kind: distinct_kinds(&state.kinds).into_iter().next().unwrap_or_default(),
+                kind: distinct_kinds(&state.kinds)
+                    .into_iter()
+                    .next()
+                    .unwrap_or_default(),
                 models: None,
                 key: None,
                 saving: false,
@@ -736,7 +790,9 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             Task::none()
         }
         Msg::FormSave => {
-            let Dialog::Form(form) = &mut state.dialog else { return Task::none() };
+            let Dialog::Form(form) = &mut state.dialog else {
+                return Task::none();
+            };
             if form.saving {
                 return Task::none();
             }
@@ -762,7 +818,10 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                 Target::Custom => {
                     let body = custom_body(&id, &kind, base.as_deref().unwrap_or_default(), &env);
                     let note = format!("Added {id}");
-                    client::task(move || c.post::<Value>("/v1/providers", &body).map(|_| note), Msg::Done)
+                    client::task(
+                        move || c.post::<Value>("/v1/providers", &body).map(|_| note),
+                        Msg::Done,
+                    )
                 }
                 Target::Edit(p) => {
                     let mut body = json!({
@@ -777,7 +836,13 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                         body["options"] = o.clone();
                     }
                     let path = format!("/v1/providers/{}", p.id);
-                    client::task(move || c.call("PUT", &path, Some(&body)).map(|_| "Saved".to_string()), Msg::Done)
+                    client::task(
+                        move || {
+                            c.call("PUT", &path, Some(&body))
+                                .map(|_| "Saved".to_string())
+                        },
+                        Msg::Done,
+                    )
                 }
                 Target::Add(k) => {
                     let mut body = json!({
@@ -795,7 +860,11 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                         move || -> Result<String, String> {
                             c.post::<Value>("/v1/providers", &body)?;
                             if !key.is_empty() {
-                                c.call("PUT", &format!("/v1/providers/{id}/secret"), Some(&json!({ "value": key })))?;
+                                c.call(
+                                    "PUT",
+                                    &format!("/v1/providers/{id}/secret"),
+                                    Some(&json!({ "value": key })),
+                                )?;
                             }
                             Ok(note)
                         },
@@ -820,7 +889,11 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             Task::none()
         }
         Msg::PolicyLoaded(Ok((settings, view))) => {
-            if state.policy.as_ref().map_or(true, |p| !p.dirty() && !p.saving) {
+            if state
+                .policy
+                .as_ref()
+                .map_or(true, |p| !p.dirty() && !p.saving)
+            {
                 state.policy = Some(Policy::new(settings, view));
             }
             Task::none()
@@ -836,7 +909,9 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             Task::none()
         }
         Msg::PolicyAdd(tier) => {
-            let Some(p) = state.policy.as_mut() else { return Task::none() };
+            let Some(p) = state.policy.as_mut() else {
+                return Task::none();
+            };
             let value = p.add_text(tier).trim().to_string();
             if value.is_empty() {
                 return Task::none();
@@ -891,7 +966,9 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             Task::none()
         }
         Msg::PolicyNumber(num, text) => {
-            let Some(p) = state.policy.as_mut() else { return Task::none() };
+            let Some(p) = state.policy.as_mut() else {
+                return Task::none();
+            };
             let key = match &num {
                 Num::MaxTurns => "max_turns".to_string(),
                 Num::MaxTokens => "max_tokens".to_string(),
@@ -944,7 +1021,9 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             Task::none()
         }
         Msg::PolicySave => {
-            let Some(p) = state.policy.as_mut() else { return Task::none() };
+            let Some(p) = state.policy.as_mut() else {
+                return Task::none();
+            };
             if p.saving || !p.errors.is_empty() || !p.dirty() {
                 return Task::none();
             }
@@ -982,11 +1061,19 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             Task::none()
         }
         Msg::DecisionPick(id) => {
-            let Some((provider, model)) = id.split_once('/') else { return Task::none() };
+            let Some((provider, model)) = id.split_once('/') else {
+                return Task::none();
+            };
             let body = json!({ "provider": provider, "model": model });
             state.decision_pending = Some(id.clone());
             let c = ctx.client.clone();
-            client::task(move || c.call("PUT", "/v1/decisions/default", Some(&body)).map(|_| id), Msg::DecisionSaved)
+            client::task(
+                move || {
+                    c.call("PUT", "/v1/decisions/default", Some(&body))
+                        .map(|_| id)
+                },
+                Msg::DecisionSaved,
+            )
         }
         Msg::DecisionSaved(Ok(id)) => {
             state.decision_default = Some(id);
@@ -1036,12 +1123,17 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                     return Task::none();
                 }
             };
-            let Some((provider, model)) = target.split_once('/') else { return Task::none() };
+            let Some((provider, model)) = target.split_once('/') else {
+                return Task::none();
+            };
             let body = json!({ "provider": provider, "model": model, "input": input, "questions": [question] });
             t.asking = true;
             t.error = None;
             let c = ctx.client.clone();
-            client::task(move || c.post::<DecisionReply>("/v1/decisions", &body), Msg::Asked)
+            client::task(
+                move || c.post::<DecisionReply>("/v1/decisions", &body),
+                Msg::Asked,
+            )
         }
         Msg::Asked(Ok(reply)) => {
             state.try_it.asking = false;
@@ -1070,29 +1162,54 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
         Tab::Providers => providers_view(state),
         Tab::Policy => policy_view(state),
     });
-    ui::sheet(ui::view_head("Models", vec![]), column(parts).spacing(16).into())
+    ui::sheet(
+        ui::view_head("Models", vec![]),
+        column(parts).spacing(16).into(),
+    )
 }
 
 /// The tab strip, as the web's `.tabs`: mono caps, the chosen tab underlined, a hairline under the
 /// strip. The shared `ui::tabs` stretches each cell across the strip; these cells keep to their labels.
 fn tabs_strip<'a>(state: &'a State) -> Element<'a, Msg> {
     let mut strip = row(Vec::new()).spacing(22);
-    for (tab, name) in [(Tab::Providers, "Providers"), (Tab::Policy, "Policy & defaults")] {
+    for (tab, name) in [
+        (Tab::Providers, "Providers"),
+        (Tab::Policy, "Policy & defaults"),
+    ] {
         let on = state.tab == tab;
-        let spans: Vec<text_mod::Span<'a>> = vec![span(name.to_string()).font(SANS_SEMIBOLD).size(11.5).color(if on { crate::theme::palette().ink } else { crate::theme::palette().ink_3 }).underline(on)];
+        let spans: Vec<text_mod::Span<'a>> = vec![
+            span(name.to_string())
+                .font(SANS_SEMIBOLD)
+                .size(11.5)
+                .color(if on {
+                    crate::theme::palette().ink
+                } else {
+                    crate::theme::palette().ink_3
+                })
+                .underline(on),
+        ];
         let label = rich_text(spans);
-        let cell = button(container(label).padding(Padding { top: 10.0, right: 0.0, bottom: 8.0, left: 0.0 }))
-            .padding(0.0)
-            .style(move |_: &Theme, status: button::Status| {
-                let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
-                button::Style {
-                    background: None,
-                    text_color: if on || hovered { crate::theme::palette().ink } else { crate::theme::palette().ink_3 },
-                    border: Border::default(),
-                    ..Default::default()
-                }
-            })
-            .on_press(Msg::Tab(tab));
+        let cell = button(container(label).padding(Padding {
+            top: 10.0,
+            right: 0.0,
+            bottom: 8.0,
+            left: 0.0,
+        }))
+        .padding(0.0)
+        .style(move |_: &Theme, status: button::Status| {
+            let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+            button::Style {
+                background: None,
+                text_color: if on || hovered {
+                    crate::theme::palette().ink
+                } else {
+                    crate::theme::palette().ink_3
+                },
+                border: Border::default(),
+                ..Default::default()
+            }
+        })
+        .on_press(Msg::Tab(tab));
         strip = strip.push(cell);
     }
     column(vec![strip.into(), ui::hairline()]).into()
@@ -1100,7 +1217,11 @@ fn tabs_strip<'a>(state: &'a State) -> Element<'a, Msg> {
 
 /// What the providers tab loads: the provider kinds, the providers, and the listing (the providers whose models
 /// could not be listed, or why the listing itself could not be read). Only the first two failing fails the load.
-type ProvidersLoad = (Vec<ProviderKind>, Vec<Provider>, Result<Vec<ListingError>, String>);
+type ProvidersLoad = (
+    Vec<ProviderKind>,
+    Vec<Provider>,
+    Result<Vec<ListingError>, String>,
+);
 
 fn providers_task(ctx: &Ctx) -> Task<Msg> {
     let c = ctx.client.clone();
@@ -1155,7 +1276,10 @@ fn policy_task(ctx: &Ctx) -> Task<Msg> {
     let c = ctx.client.clone();
     client::task(
         move || -> Result<(Settings, ModelsView), String> {
-            Ok((c.get::<Settings>("/v1/settings")?, c.get::<ModelsView>("/v1/models")?))
+            Ok((
+                c.get::<Settings>("/v1/settings")?,
+                c.get::<ModelsView>("/v1/models")?,
+            ))
         },
         Msg::PolicyLoaded,
     )
@@ -1164,7 +1288,10 @@ fn policy_task(ctx: &Ctx) -> Task<Msg> {
 fn listed_task(ctx: &Ctx, id: String) -> Task<Msg> {
     let c = ctx.client.clone();
     let id2 = id.clone();
-    client::task(move || c.get::<Vec<ListedModel>>(&format!("/v1/providers/{id}/models")), move |r| Msg::Listed(id2.clone(), r))
+    client::task(
+        move || c.get::<Vec<ListedModel>>(&format!("/v1/providers/{id}/models")),
+        move |r| Msg::Listed(id2.clone(), r),
+    )
 }
 
 fn save_settings(c: &Client, s: &Settings) -> Result<Settings, String> {
@@ -1176,7 +1303,11 @@ fn save_settings(c: &Client, s: &Settings) -> Result<Settings, String> {
 /// The kind entry a configured provider was made from: same id, else the first of the same kind.
 /// A policy sub-heading: serif semibold 13px in ink-3, as the web's `.models-policy h3`.
 fn h3<'a>(title: &str) -> Element<'a, Msg> {
-    text(title.to_string()).font(SANS_SEMIBOLD).size(13.0).color(crate::theme::palette().ink_3).into()
+    text(title.to_string())
+        .font(SANS_SEMIBOLD)
+        .size(13.0)
+        .color(crate::theme::palette().ink_3)
+        .into()
 }
 
 /// The provider kinds that answer decision questions; the rest are chat (as the web's `isDecisionKind`).
@@ -1185,7 +1316,11 @@ fn is_decision_kind(kind: &str) -> bool {
 }
 
 fn kind_of<'a>(state: &'a State, p: &Provider) -> Option<&'a ProviderKind> {
-    state.kinds.iter().find(|k| k.id == p.id).or_else(|| state.kinds.iter().find(|k| k.kind == p.kind))
+    state
+        .kinds
+        .iter()
+        .find(|k| k.id == p.id)
+        .or_else(|| state.kinds.iter().find(|k| k.kind == p.kind))
 }
 
 fn group_of(p: &Provider) -> &'static str {
@@ -1224,7 +1359,11 @@ fn auth_env(auth: &Value) -> Option<String> {
 
 /// Comma- or newline-separated values, trimmed, without blanks.
 fn split_list(text: &str) -> Vec<String> {
-    text.split(|c: char| c == ',' || c == '\n').map(str::trim).filter(|s| !s.is_empty()).map(str::to_string).collect()
+    text.split(|c: char| c == ',' || c == '\n')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 /// Splits `provider/model[@effort]` into its base id and its pinned effort.
@@ -1239,7 +1378,12 @@ fn parse_entry(entry: &str) -> (&str, Option<&str>) {
 fn valid_entry(value: &str) -> bool {
     let (base, _) = parse_entry(value);
     match base.split_once('/') {
-        Some((p, m)) => !p.is_empty() && !m.is_empty() && !p.chars().any(char::is_whitespace) && !m.chars().any(char::is_whitespace),
+        Some((p, m)) => {
+            !p.is_empty()
+                && !m.is_empty()
+                && !p.chars().any(char::is_whitespace)
+                && !m.chars().any(char::is_whitespace)
+        }
         None => false,
     }
 }
@@ -1277,14 +1421,21 @@ fn price_key(model: &str, side: Side) -> String {
 fn model_options(p: &Policy, tier: Tier, current: &str, inherit: Option<&str>) -> Vec<Opt> {
     let mut out = Vec::new();
     if let Some(label) = inherit {
-        out.push(Opt { value: String::new(), label: label.to_string() });
+        out.push(Opt {
+            value: String::new(),
+            label: label.to_string(),
+        });
     }
     let names: BTreeMap<String, String> = p
         .models
         .iter()
         .map(|m| {
             let name = m.name.clone().unwrap_or_else(|| m.id.clone());
-            let label = if m.trains_on_data { format!("{name} · WARNING: trains on your data") } else { name };
+            let label = if m.trains_on_data {
+                format!("{name} · WARNING: trains on your data")
+            } else {
+                name
+            };
             (format!("{}/{}", m.provider, m.id), label)
         })
         .collect();
@@ -1297,20 +1448,31 @@ fn model_options(p: &Policy, tier: Tier, current: &str, inherit: Option<&str>) -
         }
     }
     if !current.is_empty() && !seen.contains(current) {
-        let label = names.get(current).cloned().unwrap_or_else(|| current.to_string());
-        out.push(Opt { value: current.to_string(), label });
+        let label = names
+            .get(current)
+            .cloned()
+            .unwrap_or_else(|| current.to_string());
+        out.push(Opt {
+            value: current.to_string(),
+            label,
+        });
     }
     out
 }
 
 /// Whether the `provider/model` `base` is a contributor model the hub listed (`/v1/models`).
 fn listed_trains(models: &[ModelInfo], base: &str) -> bool {
-    models.iter().any(|m| m.trains_on_data && format!("{}/{}", m.provider, m.id) == base)
+    models
+        .iter()
+        .any(|m| m.trains_on_data && format!("{}/{}", m.provider, m.id) == base)
 }
 
 /// Whether a preset's `options.trains_on_data` names the model `id`.
 fn options_trains(options: Option<&Value>, id: &str) -> bool {
-    options.and_then(|o| o.get("trains_on_data")).and_then(Value::as_array).is_some_and(|names| names.iter().any(|n| n.as_str() == Some(id)))
+    options
+        .and_then(|o| o.get("trains_on_data"))
+        .and_then(Value::as_array)
+        .is_some_and(|names| names.iter().any(|n| n.as_str() == Some(id)))
 }
 
 fn spacer<'a>() -> Element<'a, Msg> {
@@ -1324,7 +1486,11 @@ fn labelled<'a>(label: &str, input: Element<'a, Msg>) -> Element<'a, Msg> {
 
 fn picker<'a>(options: Vec<Opt>, current: &str, slot: Slot) -> Element<'a, Msg> {
     let selected = options.iter().find(|o| o.value == current).cloned();
-    pick_list(options, selected, move |o: Opt| Msg::PolicyDefault(slot.clone(), o)).width(Length::Fill).into()
+    pick_list(options, selected, move |o: Opt| {
+        Msg::PolicyDefault(slot.clone(), o)
+    })
+    .width(Length::Fill)
+    .into()
 }
 
 // ----- Providers tab -------------------------------------------------------------------------
@@ -1332,12 +1498,35 @@ fn picker<'a>(options: Vec<Opt>, current: &str, slot: Slot) -> Element<'a, Msg> 
 /// Cards per row in a provider or kind grid, as the web's `minmax(300px, 1fr)` at the console's width.
 
 fn providers_view<'a>(state: &'a State) -> Element<'a, Msg> {
-    let mut parts: Vec<Element<'a, Msg>> = vec![row(vec![spacer(), ui::btn("Add provider", None, Kind::Primary, Some(Msg::OpenCatalogue))]).into()];
+    let mut parts: Vec<Element<'a, Msg>> = vec![
+        row(vec![
+            spacer(),
+            ui::btn(
+                "Add provider",
+                None,
+                Kind::Primary,
+                Some(Msg::OpenCatalogue),
+            ),
+        ])
+        .into(),
+    ];
     for e in &state.listing_errors {
-        parts.push(text(listing_warning(e)).font(theme::SANS).size(13.0).color(Tone::Warn.color()).into());
+        parts.push(
+            text(listing_warning(e))
+                .font(theme::SANS)
+                .size(13.0)
+                .color(Tone::Warn.color())
+                .into(),
+        );
     }
     if let Some(error) = &state.listing_unavailable {
-        parts.push(text(listing_unavailable_line(error)).font(theme::SANS).size(13.0).color(Tone::Warn.color()).into());
+        parts.push(
+            text(listing_unavailable_line(error))
+                .font(theme::SANS)
+                .size(13.0)
+                .color(Tone::Warn.color())
+                .into(),
+        );
     }
     if let Some(d) = dialog_view(state) {
         parts.push(d);
@@ -1352,31 +1541,65 @@ fn providers_view<'a>(state: &'a State) -> Element<'a, Msg> {
 
 /// The providers tab's section heading: mono caps, as the web's `.prov-section-title`.
 fn section_title<'a>(title: &str) -> Element<'a, Msg> {
-    text(title.to_string()).font(SANS_SEMIBOLD).size(16.0).color(crate::theme::palette().ink).into()
+    text(title.to_string())
+        .font(SANS_SEMIBOLD)
+        .size(16.0)
+        .color(crate::theme::palette().ink)
+        .into()
 }
 
 /// A credential group's heading: small mono caps over a hairline, as the web's `.prov-group-title`.
 fn group_title<'a>(title: &str) -> Element<'a, Msg> {
-    column(vec![text(title.to_string()).font(SANS).size(11.0).color(crate::theme::palette().ink_3).into(), ui::hairline()]).spacing(6).into()
+    column(vec![
+        text(title.to_string())
+            .font(SANS)
+            .size(11.0)
+            .color(crate::theme::palette().ink_3)
+            .into(),
+        ui::hairline(),
+    ])
+    .spacing(6)
+    .into()
 }
 
 /// The chat providers, under their credential groups.
 fn chat_section<'a>(state: &'a State) -> Element<'a, Msg> {
     let mut items: Vec<Element<'a, Msg>> = vec![section_title("Chat models")];
     for credential in GROUPS {
-        let cards: Vec<Element<'a, Msg>> = state.providers.iter().filter(|p| p.group == "chat" && group_of(p) == credential).map(|p| provider_card(state, p)).collect();
+        let cards: Vec<Element<'a, Msg>> = state
+            .providers
+            .iter()
+            .filter(|p| p.group == "chat" && group_of(p) == credential)
+            .map(|p| provider_card(state, p))
+            .collect();
         if cards.is_empty() {
             continue;
         }
-        items.push(column(vec![group_title(credential), ui::card_grid(cards)]).spacing(12).into());
+        items.push(
+            column(vec![group_title(credential), ui::card_grid(cards)])
+                .spacing(12)
+                .into(),
+        );
     }
     column(items).spacing(12).into()
 }
 
 /// The Decisions section: the decision providers, the decision model and the Try-it form.
 fn decisions_section<'a>(state: &'a State) -> Element<'a, Msg> {
-    let cards: Vec<Element<'a, Msg>> = state.providers.iter().filter(|p| p.group == "decisions").map(|p| provider_card(state, p)).collect();
-    let mut items: Vec<Element<'a, Msg>> = vec![section_title("Decisions"), text(DECISIONS_LEDE).font(theme::SANS).size(16.0).color(crate::theme::palette().ink_2).into()];
+    let cards: Vec<Element<'a, Msg>> = state
+        .providers
+        .iter()
+        .filter(|p| p.group == "decisions")
+        .map(|p| provider_card(state, p))
+        .collect();
+    let mut items: Vec<Element<'a, Msg>> = vec![
+        section_title("Decisions"),
+        text(DECISIONS_LEDE)
+            .font(theme::SANS)
+            .size(16.0)
+            .color(crate::theme::palette().ink_2)
+            .into(),
+    ];
     if !cards.is_empty() {
         items.push(ui::card_grid(cards));
     }
@@ -1385,20 +1608,31 @@ fn decisions_section<'a>(state: &'a State) -> Element<'a, Msg> {
     column(items).spacing(16).into()
 }
 
-
 /// The decision models the plaza may use: every decisions-group provider's models, as `provider/model`.
 fn decision_options(providers: &[Provider]) -> Vec<String> {
-    providers.iter().filter(|p| p.group == "decisions").flat_map(|p| p.models.iter().map(move |m| format!("{}/{m}", p.id))).collect()
+    providers
+        .iter()
+        .filter(|p| p.group == "decisions")
+        .flat_map(|p| p.models.iter().map(move |m| format!("{}/{m}", p.id)))
+        .collect()
 }
 
 fn decision_model_card<'a>(state: &'a State) -> Element<'a, Msg> {
     let options = decision_options(&state.providers);
-    let current = state.decision_pending.clone().or_else(|| state.decision_default.clone());
-    let mut items: Vec<Element<'a, Msg>> = vec![ui::faint("The model the plaza decides with.").into()];
+    let current = state
+        .decision_pending
+        .clone()
+        .or_else(|| state.decision_default.clone());
+    let mut items: Vec<Element<'a, Msg>> =
+        vec![ui::faint("The model the plaza decides with.").into()];
     if options.is_empty() {
         items.push(ui::faint("Add a decisions provider to choose one.").into());
     } else {
-        items.push(pick_list(options, current, Msg::DecisionPick).width(Length::Fill).into());
+        items.push(
+            pick_list(options, current, Msg::DecisionPick)
+                .width(Length::Fill)
+                .into(),
+        );
     }
     if state.decision_pending.is_some() {
         items.push(ui::faint("Saving…").into());
@@ -1408,18 +1642,54 @@ fn decision_model_card<'a>(state: &'a State) -> Element<'a, Msg> {
 
 fn try_it_card<'a>(state: &'a State) -> Element<'a, Msg> {
     let t = &state.try_it;
-    let input: Element<'a, Msg> = text_editor(&t.input).placeholder("The input the question is about").on_action(Msg::TryInput).height(120.0).into();
+    let input: Element<'a, Msg> = text_editor(&t.input)
+        .placeholder("The input the question is about")
+        .on_action(Msg::TryInput)
+        .height(120.0)
+        .into();
     let kinds: Vec<QKind> = vec![QKind::Predicate, QKind::Choice, QKind::Score];
     let mut items: Vec<Element<'a, Msg>> = vec![
         labelled("Input", input),
-        labelled("Question", pick_list(kinds, Some(t.kind), Msg::TryKind).width(Length::Fill).into()),
-        labelled("Instructions", text_input("What to decide", &t.instructions).on_input(Msg::TryInstructions).padding(8).into()),
+        labelled(
+            "Question",
+            pick_list(kinds, Some(t.kind), Msg::TryKind)
+                .width(Length::Fill)
+                .into(),
+        ),
+        labelled(
+            "Instructions",
+            text_input("What to decide", &t.instructions)
+                .on_input(Msg::TryInstructions)
+                .padding(8)
+                .into(),
+        ),
     ];
     if t.kind != QKind::Predicate {
-        let (label, hint) = if t.kind == QKind::Choice { ("Choices", "Comma-separated, at least two") } else { ("Levels", "Comma-separated, lowest first") };
-        items.push(labelled(label, text_input(hint, &t.options).on_input(Msg::TryOptions).padding(8).into()));
+        let (label, hint) = if t.kind == QKind::Choice {
+            ("Choices", "Comma-separated, at least two")
+        } else {
+            ("Levels", "Comma-separated, lowest first")
+        };
+        items.push(labelled(
+            label,
+            text_input(hint, &t.options)
+                .on_input(Msg::TryOptions)
+                .padding(8)
+                .into(),
+        ));
     }
-    items.push(row(vec![spacer(), ui::btn("Ask", None, Kind::Primary, (!t.asking).then_some(Msg::TryAsk))]).into());
+    items.push(
+        row(vec![
+            spacer(),
+            ui::btn(
+                "Ask",
+                None,
+                Kind::Primary,
+                (!t.asking).then_some(Msg::TryAsk),
+            ),
+        ])
+        .into(),
+    );
     if let Some(e) = &t.error {
         items.push(ui::error_line(e));
     }
@@ -1432,20 +1702,29 @@ fn try_it_card<'a>(state: &'a State) -> Element<'a, Msg> {
 /// The one question the Try-it form asks, in the plaza's request shape.
 fn question_json(kind: QKind, instructions: &str, options: &str) -> Result<Value, String> {
     let items = split_list(options);
-    let mut question = json!({ "type": kind.key(), "name": "question", "instructions": instructions.trim() });
+    let mut question =
+        json!({ "type": kind.key(), "name": "question", "instructions": instructions.trim() });
     match kind {
         QKind::Predicate => {}
         QKind::Choice => {
             if items.len() < 2 {
                 return Err("A choice question needs at least two choices".to_string());
             }
-            question["choices"] = items.iter().map(|v| json!({ "value": v })).collect::<Vec<Value>>().into();
+            question["choices"] = items
+                .iter()
+                .map(|v| json!({ "value": v }))
+                .collect::<Vec<Value>>()
+                .into();
         }
         QKind::Score => {
             if items.len() < 2 {
                 return Err("A score question needs at least two levels".to_string());
             }
-            question["levels"] = items.iter().map(|v| json!({ "label": v })).collect::<Vec<Value>>().into();
+            question["levels"] = items
+                .iter()
+                .map(|v| json!({ "label": v }))
+                .collect::<Vec<Value>>()
+                .into();
         }
     }
     Ok(question)
@@ -1463,29 +1742,74 @@ fn answers_view<'a>(reply: &'a DecisionReply) -> Element<'a, Msg> {
 fn answer_view<'a>(answer: &'a Answer) -> Element<'a, Msg> {
     match answer {
         Answer::Predicate { name, probability } => bar_line(name.clone(), *probability),
-        Answer::Choice { name, choice, probabilities, confidence } => {
-            let head: Element<'a, Msg> = row(vec![ui::sans(name.clone(), 12.0, crate::theme::palette().ink).into(), spacer(), ui::badge(&value_text(choice), Tone::Signal)]).spacing(8).into();
+        Answer::Choice {
+            name,
+            choice,
+            probabilities,
+            confidence,
+        } => {
+            let head: Element<'a, Msg> = row(vec![
+                ui::sans(name.clone(), 12.0, crate::theme::palette().ink).into(),
+                spacer(),
+                ui::badge(&value_text(choice), Tone::Signal),
+            ])
+            .spacing(8)
+            .into();
             let mut items: Vec<Element<'a, Msg>> = vec![head];
-            items.extend(probabilities.iter().map(|w| bar_line(weighted_label(w), w.probability)));
+            items.extend(
+                probabilities
+                    .iter()
+                    .map(|w| bar_line(weighted_label(w), w.probability)),
+            );
             items.extend(confidence.map(confidence_line));
             column(items).spacing(6).into()
         }
-        Answer::Score { name, score, probabilities, confidence } => {
-            let head: Element<'a, Msg> = row(vec![ui::sans(name.clone(), 12.0, crate::theme::palette().ink).into(), spacer(), ui::badge(&format!("{score:.2}"), Tone::Signal)]).spacing(8).into();
+        Answer::Score {
+            name,
+            score,
+            probabilities,
+            confidence,
+        } => {
+            let head: Element<'a, Msg> = row(vec![
+                ui::sans(name.clone(), 12.0, crate::theme::palette().ink).into(),
+                spacer(),
+                ui::badge(&format!("{score:.2}"), Tone::Signal),
+            ])
+            .spacing(8)
+            .into();
             let mut items: Vec<Element<'a, Msg>> = vec![head];
-            items.extend(probabilities.iter().map(|w| bar_line(weighted_label(w), w.probability)));
+            items.extend(
+                probabilities
+                    .iter()
+                    .map(|w| bar_line(weighted_label(w), w.probability)),
+            );
             items.extend(confidence.map(confidence_line));
             column(items).spacing(6).into()
         }
-        Answer::Refusal { name } => row(vec![ui::sans(name.clone(), 12.0, crate::theme::palette().ink).into(), spacer(), ui::badge("Refused", Tone::Warn)]).spacing(8).into(),
+        Answer::Refusal { name } => row(vec![
+            ui::sans(name.clone(), 12.0, crate::theme::palette().ink).into(),
+            spacer(),
+            ui::badge("Refused", Tone::Warn),
+        ])
+        .spacing(8)
+        .into(),
     }
 }
 
 /// A label with its percentage, and the probability as a bar under it.
 fn bar_line<'a>(label: String, probability: f64) -> Element<'a, Msg> {
-    let head: Element<'a, Msg> = row(vec![ui::sans(label, 12.0, crate::theme::palette().ink).into(), spacer(), ui::sans(format!("{:.1}%", probability * 100.0), 11.0, crate::theme::palette().ink_3).into()])
-        .spacing(8)
-        .into();
+    let head: Element<'a, Msg> = row(vec![
+        ui::sans(label, 12.0, crate::theme::palette().ink).into(),
+        spacer(),
+        ui::sans(
+            format!("{:.1}%", probability * 100.0),
+            11.0,
+            crate::theme::palette().ink_3,
+        )
+        .into(),
+    ])
+    .spacing(8)
+    .into();
     column(vec![head, bar(probability)]).spacing(4).into()
 }
 
@@ -1496,12 +1820,18 @@ fn bar<'a>(probability: f64) -> Element<'a, Msg> {
         container(Space::new())
             .width(Length::FillPortion(filled))
             .height(6.0)
-            .style(|_: &Theme| container::Style { background: Some(crate::theme::palette().signal.into()), ..Default::default() })
+            .style(|_: &Theme| container::Style {
+                background: Some(crate::theme::palette().signal.into()),
+                ..Default::default()
+            })
             .into(),
         container(Space::new())
             .width(Length::FillPortion(1000 - filled))
             .height(6.0)
-            .style(|_: &Theme| container::Style { background: Some(crate::theme::palette().rule_faint.into()), ..Default::default() })
+            .style(|_: &Theme| container::Style {
+                background: Some(crate::theme::palette().rule_faint.into()),
+                ..Default::default()
+            })
             .into(),
     ])
     .width(Length::Fill)
@@ -1526,7 +1856,10 @@ fn weighted_label(w: &Weighted) -> String {
 
 fn default_task(ctx: &Ctx) -> Task<Msg> {
     let c = ctx.client.clone();
-    client::task(move || c.get::<DecisionDefault>("/v1/decisions/default"), Msg::DefaultLoaded)
+    client::task(
+        move || c.get::<DecisionDefault>("/v1/decisions/default"),
+        Msg::DefaultLoaded,
+    )
 }
 
 fn provider_card<'a>(state: &'a State, p: &'a Provider) -> Element<'a, Msg> {
@@ -1535,54 +1868,133 @@ fn provider_card<'a>(state: &'a State, p: &'a Provider) -> Element<'a, Msg> {
     let brand = kind.map_or("mock", |k| k.brand.as_str());
     let title = kind.map_or(p.id.as_str(), |k| k.label.as_str());
     let n = p.models.len();
-    let key_label = if p.credential == "missing" { "Add key" } else { "Key" };
-    let sub = format!("{} · {}", p.id, p.base_url.clone().unwrap_or_else(|| "—".to_string()));
+    let key_label = if p.credential == "missing" {
+        "Add key"
+    } else {
+        "Key"
+    };
+    let sub = format!(
+        "{} · {}",
+        p.id,
+        p.base_url.clone().unwrap_or_else(|| "—".to_string())
+    );
 
     // The brand in a ruled 48px tile, then the kind's name and the id and URL in mono.
     let logo: Element<'a, Msg> = container(ui::brand_logo::<Msg>(brand, 26.0))
         .padding(10)
         .style(|_: &Theme| container::Style {
             background: Some(crate::theme::palette().paper.into()),
-            border: Border { color: crate::theme::palette().rule, width: 1.0, radius: 0.0.into() },
+            border: Border {
+                color: crate::theme::palette().rule,
+                width: 1.0,
+                radius: 0.0.into(),
+            },
             ..Default::default()
         })
         .into();
     let names: Element<'a, Msg> = column(vec![
-        text(title.to_string()).font(SANS_SEMIBOLD).size(16.5).color(crate::theme::palette().ink).wrapping(Wrapping::None).into(),
-        ui::sans(ui::ellipsize(&sub, 28), 11.5, crate::theme::palette().ink_3).wrapping(Wrapping::None).into(),
+        text(title.to_string())
+            .font(SANS_SEMIBOLD)
+            .size(16.5)
+            .color(crate::theme::palette().ink)
+            .wrapping(Wrapping::None)
+            .into(),
+        ui::sans(ui::ellipsize(&sub, 28), 11.5, crate::theme::palette().ink_3)
+            .wrapping(Wrapping::None)
+            .into(),
     ])
     .spacing(2)
     .width(Length::Fill)
     .into();
-    let head: Element<'a, Msg> = row(vec![logo, names]).spacing(12).align_y(Alignment::Center).into();
+    let head: Element<'a, Msg> = row(vec![logo, names])
+        .spacing(12)
+        .align_y(Alignment::Center)
+        .into();
 
     let kind_id = kind.map_or(p.id.as_str(), |k| k.id.as_str());
     let n_label = ui::faint(model_count_label(kind_id, n));
-    let meta: Element<'a, Msg> = row(vec![ui::badge(credential, tone), spacer(), n_label.into()]).align_y(Alignment::Center).into();
+    let meta: Element<'a, Msg> = row(vec![ui::badge(credential, tone), spacer(), n_label.into()])
+        .align_y(Alignment::Center)
+        .into();
 
     let actions: Element<'a, Msg> = row(vec![
         ui::btn_sm("Test", None, Kind::Secondary, Some(Msg::Test(p.id.clone()))),
-        ui::btn_sm(key_label, None, Kind::Secondary, Some(Msg::OpenKey(p.id.clone()))),
+        ui::btn_sm(
+            key_label,
+            None,
+            Kind::Secondary,
+            Some(Msg::OpenKey(p.id.clone())),
+        ),
         spacer(),
-        ui::btn_sm("", Some("models"), Kind::Ghost, Some(Msg::ToggleModels(p.id.clone()))),
-        ui::btn_sm("", Some("edit"), Kind::Ghost, Some(Msg::OpenEdit(p.id.clone()))),
-        ui::btn_sm("", Some("trash"), Kind::Ghost, Some(Msg::OpenRemove(p.id.clone()))),
+        ui::btn_sm(
+            "",
+            Some("models"),
+            Kind::Ghost,
+            Some(Msg::ToggleModels(p.id.clone())),
+        ),
+        ui::btn_sm(
+            "",
+            Some("edit"),
+            Kind::Ghost,
+            Some(Msg::OpenEdit(p.id.clone())),
+        ),
+        ui::btn_sm(
+            "",
+            Some("trash"),
+            Kind::Ghost,
+            Some(Msg::OpenRemove(p.id.clone())),
+        ),
     ])
     .spacing(4)
     .align_y(Alignment::Center)
     .into();
 
-    let mut body: Vec<Element<'a, Msg>> = vec![head, meta, column(vec![ui::hairline(), container(actions).padding(Padding { top: 10.0, right: 0.0, bottom: 0.0, left: 0.0 }).into()]).into()];
+    let mut body: Vec<Element<'a, Msg>> = vec![
+        head,
+        meta,
+        column(vec![
+            ui::hairline(),
+            container(actions)
+                .padding(Padding {
+                    top: 10.0,
+                    right: 0.0,
+                    bottom: 0.0,
+                    left: 0.0,
+                })
+                .into(),
+        ])
+        .into(),
+    ];
     if state.expanded.contains(&p.id) {
         body.push(
-            column(vec![ui::hairline(), container(model_list(state, p)).padding(Padding { top: 12.0, right: 0.0, bottom: 0.0, left: 0.0 }).into()]).into(),
+            column(vec![
+                ui::hairline(),
+                container(model_list(state, p))
+                    .padding(Padding {
+                        top: 12.0,
+                        right: 0.0,
+                        bottom: 0.0,
+                        left: 0.0,
+                    })
+                    .into(),
+            ])
+            .into(),
         );
     }
     container(column(body).spacing(12))
-        .padding(Padding { top: 16.0, right: 16.0, bottom: 12.0, left: 16.0 })
+        .padding(Padding {
+            top: 16.0,
+            right: 16.0,
+            bottom: 12.0,
+            left: 16.0,
+        })
         .width(Length::Fill)
         .style(|_: &Theme| container::Style {
-            border: Border { color: crate::theme::palette().rule, width: 1.0, radius: 0.0.into() },
+            border: Border {
+                color: crate::theme::palette().rule,
+                width: 1.0,
+                radius: 0.0.into(),
+            },
             ..Default::default()
         })
         .into()
@@ -1590,7 +2002,10 @@ fn provider_card<'a>(state: &'a State, p: &'a Provider) -> Element<'a, Msg> {
 
 fn model_list<'a>(state: &'a State, p: &'a Provider) -> Element<'a, Msg> {
     let kind = kind_of(state, p);
-    let trains = |id: &str| options_trains(p.options.as_ref(), id) || options_trains(kind.and_then(|k| k.options.as_ref()), id);
+    let trains = |id: &str| {
+        options_trains(p.options.as_ref(), id)
+            || options_trains(kind.and_then(|k| k.options.as_ref()), id)
+    };
     match state.listed.get(&p.id) {
         None => ui::faint("Loading…").into(),
         Some(list) if list.is_empty() => ui::faint("No models listed").into(),
@@ -1598,7 +2013,8 @@ fn model_list<'a>(state: &'a State, p: &'a Provider) -> Element<'a, Msg> {
             let mut items: Vec<Element<'a, Msg>> = list
                 .iter()
                 .map(|m| {
-                    let mut line: Vec<Element<'a, Msg>> = vec![ui::mono(m.id.clone(), 12.0, crate::theme::palette().ink).into()];
+                    let mut line: Vec<Element<'a, Msg>> =
+                        vec![ui::mono(m.id.clone(), 12.0, crate::theme::palette().ink).into()];
                     if trains(&m.id) {
                         line.push(ui::trains_badge());
                     }
@@ -1619,18 +2035,46 @@ fn model_list<'a>(state: &'a State, p: &'a Provider) -> Element<'a, Msg> {
 fn dialog_view<'a>(state: &'a State) -> Option<Element<'a, Msg>> {
     match &state.dialog {
         Dialog::Closed => None,
-        Dialog::Key { provider, value, saving } => {
-            let input: Element<'a, Msg> = text_input("API key", value).secure(true).on_input(Msg::KeyInput).on_submit(Msg::SaveKey).padding(8).into();
-            let save = ui::btn("Save key", None, Kind::Primary, (!*saving).then_some(Msg::SaveKey));
-            let actions: Element<'a, Msg> = row(vec![spacer(), ui::btn("Cancel", None, Kind::Ghost, Some(Msg::Close)), save]).spacing(8).into();
+        Dialog::Key {
+            provider,
+            value,
+            saving,
+        } => {
+            let input: Element<'a, Msg> = text_input("API key", value)
+                .secure(true)
+                .on_input(Msg::KeyInput)
+                .on_submit(Msg::SaveKey)
+                .padding(8)
+                .into();
+            let save = ui::btn(
+                "Save key",
+                None,
+                Kind::Primary,
+                (!*saving).then_some(Msg::SaveKey),
+            );
+            let actions: Element<'a, Msg> = row(vec![
+                spacer(),
+                ui::btn("Cancel", None, Kind::Ghost, Some(Msg::Close)),
+                save,
+            ])
+            .spacing(8)
+            .into();
             let items: Vec<Element<'a, Msg>> = vec![input, actions];
-            Some(ui::card(&format!("Set key · {provider}"), column(items).spacing(12).into()))
+            Some(ui::card(
+                &format!("Set key · {provider}"),
+                column(items).spacing(12).into(),
+            ))
         }
         Dialog::Remove { provider, busy } => {
             let actions: Element<'a, Msg> = row(vec![
                 spacer(),
                 ui::btn("Cancel", None, Kind::Ghost, Some(Msg::Close)),
-                ui::btn("Remove provider", None, Kind::Danger, (!*busy).then_some(Msg::ConfirmRemove)),
+                ui::btn(
+                    "Remove provider",
+                    None,
+                    Kind::Danger,
+                    (!*busy).then_some(Msg::ConfirmRemove),
+                ),
             ])
             .spacing(8)
             .into();
@@ -1638,16 +2082,30 @@ fn dialog_view<'a>(state: &'a State) -> Option<Element<'a, Msg>> {
         }
         Dialog::Catalogue { search } => {
             let taken: BTreeSet<&str> = state.providers.iter().map(|p| p.id.as_str()).collect();
-            let free: Vec<&'a ProviderKind> = state.kinds.iter().filter(|k| !taken.contains(k.id.as_str())).collect();
+            let free: Vec<&'a ProviderKind> = state
+                .kinds
+                .iter()
+                .filter(|k| !taken.contains(k.id.as_str()))
+                .collect();
             let q = search.trim().to_lowercase();
             let shown: Vec<&'a ProviderKind> = free
                 .iter()
                 .copied()
-                .filter(|k| q.is_empty() || format!("{} {} {}", k.label, k.id, k.kind).to_lowercase().contains(&q))
+                .filter(|k| {
+                    q.is_empty()
+                        || format!("{} {} {}", k.label, k.id, k.kind)
+                            .to_lowercase()
+                            .contains(&q)
+                })
                 .collect();
             let mut parts: Vec<Element<'a, Msg>> = Vec::new();
             for (title, decisions) in [("Chat", false), ("Decisions", true)] {
-                let tiles: Vec<Element<'a, Msg>> = shown.iter().copied().filter(|k| is_decision_kind(&k.kind) == decisions).map(kind_tile).collect();
+                let tiles: Vec<Element<'a, Msg>> = shown
+                    .iter()
+                    .copied()
+                    .filter(|k| is_decision_kind(&k.kind) == decisions)
+                    .map(kind_tile)
+                    .collect();
                 if !tiles.is_empty() {
                     parts.push(group_title(title));
                     parts.push(ui::card_grid(tiles));
@@ -1658,12 +2116,22 @@ fn dialog_view<'a>(state: &'a State) -> Option<Element<'a, Msg>> {
                 parts.push(ui::card_grid(vec![custom_tile()]));
             }
             let catalogue: Element<'a, Msg> = if parts.is_empty() {
-                let none = if free.is_empty() { "Every provider is already configured" } else { "No matches" };
+                let none = if free.is_empty() {
+                    "Every provider is already configured"
+                } else {
+                    "No matches"
+                };
                 ui::faint(none).into()
             } else {
                 column(parts).spacing(12).into()
             };
-            let items: Vec<Element<'a, Msg>> = vec![text_input("Search providers", search).on_input(Msg::CatalogueSearch).padding(8).into(), catalogue];
+            let items: Vec<Element<'a, Msg>> = vec![
+                text_input("Search providers", search)
+                    .on_input(Msg::CatalogueSearch)
+                    .padding(8)
+                    .into(),
+                catalogue,
+            ];
             Some(ui::card("Add provider", column(items).spacing(12).into()))
         }
         Dialog::Form(form) => Some(form_view(state, form)),
@@ -1674,15 +2142,28 @@ fn dialog_view<'a>(state: &'a State) -> Option<Element<'a, Msg>> {
 fn kind_tile<'a>(k: &'a ProviderKind) -> Element<'a, Msg> {
     let content: Vec<Element<'a, Msg>> = vec![
         ui::brand_logo::<Msg>(&k.brand, 18.0),
-        text(k.label.as_str()).font(theme::SANS).size(14.0).color(crate::theme::palette().ink).wrapping(Wrapping::None).width(Length::Fill).into(),
+        text(k.label.as_str())
+            .font(theme::SANS)
+            .size(14.0)
+            .color(crate::theme::palette().ink)
+            .wrapping(Wrapping::None)
+            .width(Length::Fill)
+            .into(),
     ];
     tile(content, Msg::PickKind(k.id.clone()))
 }
 
 /// The catalogue's Custom tile: a provider of any kind, with its own id.
 fn custom_tile<'a>() -> Element<'a, Msg> {
-    let content: Vec<Element<'a, Msg>> =
-        vec![text("Custom provider").font(theme::SANS).size(14.0).color(crate::theme::palette().ink).wrapping(Wrapping::None).width(Length::Fill).into()];
+    let content: Vec<Element<'a, Msg>> = vec![
+        text("Custom provider")
+            .font(theme::SANS)
+            .size(14.0)
+            .color(crate::theme::palette().ink)
+            .wrapping(Wrapping::None)
+            .width(Length::Fill)
+            .into(),
+    ];
     tile(content, Msg::OpenCustom)
 }
 
@@ -1695,9 +2176,24 @@ fn tile<'a>(content: Vec<Element<'a, Msg>>, on_press: Msg) -> Element<'a, Msg> {
         .style(|_: &Theme, status: button::Status| {
             let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
             button::Style {
-                background: Some(if hovered { crate::theme::palette().hover } else { crate::theme::palette().sheet }.into()),
+                background: Some(
+                    if hovered {
+                        crate::theme::palette().hover
+                    } else {
+                        crate::theme::palette().sheet
+                    }
+                    .into(),
+                ),
                 text_color: crate::theme::palette().ink,
-                border: Border { color: if hovered { crate::theme::palette().ink_3 } else { crate::theme::palette().rule }, width: 1.0, radius: 0.0.into() },
+                border: Border {
+                    color: if hovered {
+                        crate::theme::palette().ink_3
+                    } else {
+                        crate::theme::palette().rule
+                    },
+                    width: 1.0,
+                    radius: 0.0.into(),
+                },
                 ..Default::default()
             }
         })
@@ -1707,7 +2203,11 @@ fn tile<'a>(content: Vec<Element<'a, Msg>>, on_press: Msg) -> Element<'a, Msg> {
 /// The shared add and edit form.
 fn form_view<'a>(state: &'a State, form: &'a Form) -> Element<'a, Msg> {
     let (title, submit, notes) = match &form.target {
-        Target::Edit(p) => (format!("Edit {}", p.id), "Save", kind_of(state, p).map(|k| k.notes.clone())),
+        Target::Edit(p) => (
+            format!("Edit {}", p.id),
+            "Save",
+            kind_of(state, p).map(|k| k.notes.clone()),
+        ),
         Target::Add(k) => (k.label.clone(), "Add provider", Some(k.notes.clone())),
         Target::Custom => ("Custom provider".to_string(), "Add provider", None),
     };
@@ -1722,23 +2222,56 @@ fn form_view<'a>(state: &'a State, form: &'a Form) -> Element<'a, Msg> {
     fields.push(labelled("Provider id", id_input.into()));
     if matches!(form.target, Target::Custom) {
         let selected = Some(form.kind.clone()).filter(|k| !k.is_empty());
-        let kind_picker: Element<'a, Msg> = pick_list(distinct_kinds(&state.kinds), selected, Msg::FormKind).width(Length::Fill).into();
+        let kind_picker: Element<'a, Msg> =
+            pick_list(distinct_kinds(&state.kinds), selected, Msg::FormKind)
+                .width(Length::Fill)
+                .into();
         fields.push(labelled("Kind", kind_picker));
     }
-    fields.push(labelled("Base URL", text_input("https://", &form.base_url).on_input(Msg::FormUrl).padding(8).into()));
+    fields.push(labelled(
+        "Base URL",
+        text_input("https://", &form.base_url)
+            .on_input(Msg::FormUrl)
+            .padding(8)
+            .into(),
+    ));
     if let Some(env) = &form.env {
-        fields.push(labelled("Auth env var", text_input("ENV_VAR_NAME", env).on_input(Msg::FormEnv).padding(8).into()));
+        fields.push(labelled(
+            "Auth env var",
+            text_input("ENV_VAR_NAME", env)
+                .on_input(Msg::FormEnv)
+                .padding(8)
+                .into(),
+        ));
     }
     if let Some(models) = &form.models {
-        fields.push(labelled("Models", text_input("Comma-separated", models).on_input(Msg::FormModels).padding(8).into()));
+        fields.push(labelled(
+            "Models",
+            text_input("Comma-separated", models)
+                .on_input(Msg::FormModels)
+                .padding(8)
+                .into(),
+        ));
     }
     if let Some(key) = &form.key {
-        fields.push(labelled("API key", text_input("Optional", key).secure(true).on_input(Msg::FormKey).padding(8).into()));
+        fields.push(labelled(
+            "API key",
+            text_input("Optional", key)
+                .secure(true)
+                .on_input(Msg::FormKey)
+                .padding(8)
+                .into(),
+        ));
     }
     let actions: Element<'a, Msg> = row(vec![
         spacer(),
         ui::btn("Cancel", None, Kind::Ghost, Some(Msg::Close)),
-        ui::btn(submit, None, Kind::Primary, (!form.saving).then_some(Msg::FormSave)),
+        ui::btn(
+            submit,
+            None,
+            Kind::Primary,
+            (!form.saving).then_some(Msg::FormSave),
+        ),
     ])
     .spacing(8)
     .into();
@@ -1751,31 +2284,63 @@ fn form_view<'a>(state: &'a State, form: &'a Form) -> Element<'a, Msg> {
 fn policy_view<'a>(state: &'a State) -> Element<'a, Msg> {
     let Some(p) = state.policy.as_ref() else {
         return if state.error.is_some() {
-            ui::empty("alert", "Models unavailable", "apid did not answer. Reload to try again.")
+            ui::empty(
+                "alert",
+                "Models unavailable",
+                "apid did not answer. Reload to try again.",
+            )
         } else {
             ui::loading()
         };
     };
     let save_enabled = !p.saving && p.errors.is_empty() && p.dirty();
-    let bar: Element<'a, Msg> = row(vec![spacer(), ui::btn("Save", Some("check"), Kind::Primary, save_enabled.then_some(Msg::PolicySave))]).into();
+    let bar: Element<'a, Msg> = row(vec![
+        spacer(),
+        ui::btn(
+            "Save",
+            Some("check"),
+            Kind::Primary,
+            save_enabled.then_some(Msg::PolicySave),
+        ),
+    ])
+    .into();
     let s = &p.copy;
-    let trains = s.model_policy.orchestrator.iter().chain(&s.model_policy.worker).any(|e| listed_trains(&p.models, parse_entry(e).0))
-        || [&s.default_model, &s.orchestrator_model].into_iter().chain(s.role_models.values()).any(|e| listed_trains(&p.models, parse_entry(e).0));
+    let trains = s
+        .model_policy
+        .orchestrator
+        .iter()
+        .chain(&s.model_policy.worker)
+        .any(|e| listed_trains(&p.models, parse_entry(e).0))
+        || [&s.default_model, &s.orchestrator_model]
+            .into_iter()
+            .chain(s.role_models.values())
+            .any(|e| listed_trains(&p.models, parse_entry(e).0));
     let mut items: Vec<Element<'a, Msg>> = vec![bar];
     if trains {
         items.push(ui::faint(ui::TRAINS_NOTE).into());
     }
-    items.extend([policy_card(p), defaults_card(p), limits_card(p), prices_card(state, p)]);
+    items.extend([
+        policy_card(p),
+        defaults_card(p),
+        limits_card(p),
+        prices_card(state, p),
+    ]);
     column(items).spacing(16).into()
 }
 
 fn policy_card<'a>(p: &'a Policy) -> Element<'a, Msg> {
     let mut body: Vec<Element<'a, Msg>> = Vec::new();
     if p.saved.dev_models == Some(true) {
-        body.push(ui::badge("Development models enabled — policy relaxed", Tone::Warn));
+        body.push(ui::badge(
+            "Development models enabled — policy relaxed",
+            Tone::Warn,
+        ));
     }
     body.push(ui::prose("Agents may only run the models on their tier's list.").into());
-    let cols: Vec<Element<'a, Msg>> = vec![tier_column(p, Tier::Orchestrator, "Orchestrator"), tier_column(p, Tier::Worker, "Workers")];
+    let cols: Vec<Element<'a, Msg>> = vec![
+        tier_column(p, Tier::Orchestrator, "Orchestrator"),
+        tier_column(p, Tier::Worker, "Workers"),
+    ];
     body.push(row(cols).spacing(16).into());
     ui::card("Model policy", column(body).spacing(12).into())
 }
@@ -1794,9 +2359,22 @@ fn tier_column<'a>(p: &'a Policy, tier: Tier, title: &str) -> Element<'a, Msg> {
         .on_submit(Msg::PolicyAdd(tier))
         .padding(8)
         .into();
-    let add_row: Element<'a, Msg> = row(vec![add, ui::btn("Add model", None, Kind::Secondary, Some(Msg::PolicyAdd(tier)))]).spacing(8).into();
+    let add_row: Element<'a, Msg> = row(vec![
+        add,
+        ui::btn(
+            "Add model",
+            None,
+            Kind::Secondary,
+            Some(Msg::PolicyAdd(tier)),
+        ),
+    ])
+    .spacing(8)
+    .into();
     let items: Vec<Element<'a, Msg>> = vec![h3(title), column(rows).spacing(6).into(), add_row];
-    column(items).spacing(10).width(Length::FillPortion(1)).into()
+    column(items)
+        .spacing(10)
+        .width(Length::FillPortion(1))
+        .into()
 }
 
 fn policy_row<'a>(p: &'a Policy, tier: Tier, index: usize, entry: &'a str) -> Element<'a, Msg> {
@@ -1807,13 +2385,30 @@ fn policy_row<'a>(p: &'a Policy, tier: Tier, index: usize, entry: &'a str) -> El
         .width(Length::Fixed(8.0))
         .height(Length::Fixed(8.0))
         .style(move |_: &Theme| container::Style {
-            background: if listed { Some(crate::theme::palette().ok.into()) } else { None },
-            border: Border { color: if listed { crate::theme::palette().ok } else { crate::theme::palette().ink_3 }, width: 1.0, radius: 0.0.into() },
+            background: if listed {
+                Some(crate::theme::palette().ok.into())
+            } else {
+                None
+            },
+            border: Border {
+                color: if listed {
+                    crate::theme::palette().ok
+                } else {
+                    crate::theme::palette().ink_3
+                },
+                width: 1.0,
+                radius: 0.0.into(),
+            },
             ..Default::default()
         })
         .into();
     // The whole id, nested slashes included: it wraps rather than being cut off.
-    let mut items: Vec<Element<'a, Msg>> = vec![marker, ui::sans(base.to_string(), 12.0, crate::theme::palette().ink).wrapping(Wrapping::WordOrGlyph).into()];
+    let mut items: Vec<Element<'a, Msg>> = vec![
+        marker,
+        ui::sans(base.to_string(), 12.0, crate::theme::palette().ink)
+            .wrapping(Wrapping::WordOrGlyph)
+            .into(),
+    ];
     if effort.is_some() {
         items.push(ui::badge("effort pinned", Tone::Signal));
     }
@@ -1821,9 +2416,21 @@ fn policy_row<'a>(p: &'a Policy, tier: Tier, index: usize, entry: &'a str) -> El
         items.push(ui::trains_badge());
     }
     items.push(spacer());
-    items.push(ui::btn("", Some("x"), Kind::Ghost, Some(Msg::PolicyRemove(tier, index))));
+    items.push(ui::btn(
+        "",
+        Some("x"),
+        Kind::Ghost,
+        Some(Msg::PolicyRemove(tier, index)),
+    ));
     column(vec![
-        container(row(items).spacing(8).align_y(Alignment::Center)).padding(Padding { top: 8.0, right: 0.0, bottom: 8.0, left: 0.0 }).into(),
+        container(row(items).spacing(8).align_y(Alignment::Center))
+            .padding(Padding {
+                top: 8.0,
+                right: 0.0,
+                bottom: 8.0,
+                left: 0.0,
+            })
+            .into(),
         ui::hairline(),
     ])
     .into()
@@ -1832,8 +2439,22 @@ fn policy_row<'a>(p: &'a Policy, tier: Tier, index: usize, entry: &'a str) -> El
 fn defaults_card<'a>(p: &'a Policy) -> Element<'a, Msg> {
     let s = &p.copy;
     let mut items: Vec<Element<'a, Msg>> = vec![
-        labelled("Orchestrator model", picker(model_options(p, Tier::Orchestrator, &s.orchestrator_model, None), &s.orchestrator_model, Slot::Orchestrator)),
-        labelled("Worker default", picker(model_options(p, Tier::Worker, &s.default_model, None), &s.default_model, Slot::Worker)),
+        labelled(
+            "Orchestrator model",
+            picker(
+                model_options(p, Tier::Orchestrator, &s.orchestrator_model, None),
+                &s.orchestrator_model,
+                Slot::Orchestrator,
+            ),
+        ),
+        labelled(
+            "Worker default",
+            picker(
+                model_options(p, Tier::Worker, &s.default_model, None),
+                &s.default_model,
+                Slot::Worker,
+            ),
+        ),
         h3("Per role"),
     ];
     if s.role_models.is_empty() {
@@ -1868,19 +2489,23 @@ fn defaults_card<'a>(p: &'a Policy) -> Element<'a, Msg> {
 
 fn limits_card<'a>(p: &'a Policy) -> Element<'a, Msg> {
     let s = &p.copy;
-    let turns: Element<'a, Msg> = text_input("1–200", &p.shown("max_turns", s.max_turns.to_string()))
-        .on_input(|v| Msg::PolicyNumber(Num::MaxTurns, v))
-        .padding(8)
-        .into();
-    let tokens: Element<'a, Msg> = text_input("0", &p.shown("max_tokens", s.max_tokens.to_string()))
-        .on_input(|v| Msg::PolicyNumber(Num::MaxTokens, v))
-        .padding(8)
-        .into();
+    let turns: Element<'a, Msg> =
+        text_input("1–200", &p.shown("max_turns", s.max_turns.to_string()))
+            .on_input(|v| Msg::PolicyNumber(Num::MaxTurns, v))
+            .padding(8)
+            .into();
+    let tokens: Element<'a, Msg> =
+        text_input("0", &p.shown("max_tokens", s.max_tokens.to_string()))
+            .on_input(|v| Msg::PolicyNumber(Num::MaxTokens, v))
+            .padding(8)
+            .into();
     let effort_current = s.effort.clone().unwrap_or_else(|| "default".to_string());
     let effort_options: Vec<String> = EFFORTS.iter().map(|e| e.to_string()).collect();
-    let effort: Element<'a, Msg> = pick_list(effort_options, Some(effort_current), |v: String| Msg::PolicyEffort(v))
-        .width(Length::Fill)
-        .into();
+    let effort: Element<'a, Msg> = pick_list(effort_options, Some(effort_current), |v: String| {
+        Msg::PolicyEffort(v)
+    })
+    .width(Length::Fill)
+    .into();
     let block: Element<'a, Msg> = text_editor(&p.block)
         .placeholder("example.com\n*.example.net")
         .on_action(Msg::PolicyFetchBlock)
@@ -1898,7 +2523,12 @@ fn limits_card<'a>(p: &'a Policy) -> Element<'a, Msg> {
 fn prices_card<'a>(state: &'a State, p: &'a Policy) -> Element<'a, Msg> {
     let s = &p.copy;
     let mut keys: BTreeSet<String> = BTreeSet::new();
-    for entry in s.model_policy.orchestrator.iter().chain(s.model_policy.worker.iter()) {
+    for entry in s
+        .model_policy
+        .orchestrator
+        .iter()
+        .chain(s.model_policy.worker.iter())
+    {
         keys.insert(parse_entry(entry).0.to_string());
     }
     keys.extend(s.prices.keys().cloned());
@@ -1932,7 +2562,13 @@ fn prices_card<'a>(state: &'a State, p: &'a Policy) -> Element<'a, Msg> {
                 .into()
         };
         let key_cell: Element<'a, Msg> = if listed_trains(&p.models, &key) {
-            row(vec![ui::sans(key.clone(), 12.0, crate::theme::palette().ink).into(), ui::trains_badge()]).spacing(8).align_y(Alignment::Center).into()
+            row(vec![
+                ui::sans(key.clone(), 12.0, crate::theme::palette().ink).into(),
+                ui::trains_badge(),
+            ])
+            .spacing(8)
+            .align_y(Alignment::Center)
+            .into()
         } else {
             ui::sans(key.clone(), 12.0, crate::theme::palette().ink).into()
         };
@@ -1955,17 +2591,30 @@ mod tests {
 
     #[test]
     fn price_path_encodes_the_provider_model_key() {
-        assert_eq!(price_path("anthropic/claude-opus-5-5"), "/v1/prices/anthropic%2Fclaude-opus-5-5");
+        assert_eq!(
+            price_path("anthropic/claude-opus-5-5"),
+            "/v1/prices/anthropic%2Fclaude-opus-5-5"
+        );
     }
 
     #[test]
     fn the_effort_list_is_the_hubs_levels_after_default() {
-        assert_eq!(EFFORTS, ["default", "none", "minimal", "low", "medium", "high", "xhigh", "max"]);
+        assert_eq!(
+            EFFORTS,
+            [
+                "default", "none", "minimal", "low", "medium", "high", "xhigh", "max"
+            ]
+        );
     }
 
     #[test]
     fn a_custom_provider_is_added_with_the_clis_body() {
-        let body = custom_body("local", "openai-compatible", " http://127.0.0.1:8080 ", " LOCAL_KEY ");
+        let body = custom_body(
+            "local",
+            "openai-compatible",
+            " http://127.0.0.1:8080 ",
+            " LOCAL_KEY ",
+        );
         assert_eq!(
             body,
             json!({ "id": "local", "kind": "openai-compatible", "base_url": "http://127.0.0.1:8080", "auth": { "env": "LOCAL_KEY" }, "models": [] })
@@ -1975,7 +2624,10 @@ mod tests {
     #[test]
     fn a_blank_endpoint_and_env_var_are_null_and_none() {
         let body = custom_body("local", "openai", "  ", "");
-        assert_eq!(body, json!({ "id": "local", "kind": "openai", "base_url": null, "auth": "none", "models": [] }));
+        assert_eq!(
+            body,
+            json!({ "id": "local", "kind": "openai", "base_url": null, "auth": "none", "models": [] })
+        );
     }
 
     #[test]
@@ -1991,18 +2643,31 @@ mod tests {
             models: Vec::new(),
             options: None,
         };
-        let kinds = [kind("openai", "openai"), kind("openrouter", "openai"), kind("anthropic", "anthropic")];
-        assert_eq!(distinct_kinds(&kinds), vec!["openai".to_string(), "anthropic".to_string()]);
+        let kinds = [
+            kind("openai", "openai"),
+            kind("openrouter", "openai"),
+            kind("anthropic", "anthropic"),
+        ];
+        assert_eq!(
+            distinct_kinds(&kinds),
+            vec!["openai".to_string(), "anthropic".to_string()]
+        );
     }
 
     #[test]
     fn a_listing_error_reads_as_the_provider_and_its_error() {
-        let e = ListingError { provider: "ollama".into(), error: "connection refused".into() };
+        let e = ListingError {
+            provider: "ollama".into(),
+            error: "connection refused".into(),
+        };
         assert_eq!(listing_warning(&e), "ollama: connection refused");
     }
 
     #[test]
     fn a_failed_model_listing_reads_as_one_warning_line() {
-        assert_eq!(listing_unavailable_line("HTTP 503"), "Model listing unavailable: HTTP 503");
+        assert_eq!(
+            listing_unavailable_line("HTTP 503"),
+            "Model listing unavailable: HTTP 503"
+        );
     }
 }

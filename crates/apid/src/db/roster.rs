@@ -3,8 +3,8 @@
 //! and loads the active rows at start. Every statement lives in `sql/queries/agents_*.sql`.
 
 use crate::agents::{Agent, Status};
-use crate::db::sql;
 use crate::db::Db;
+use crate::db::sql;
 
 /// An active `agents` row: what the roster needs at start.
 pub struct StoredAgent {
@@ -45,7 +45,16 @@ impl Db {
         }
         let cid = agent.cid as i64;
         let result = self.run(|c| {
-            c.execute(sql::AGENTS_UPSERT, &[&cid, &agent.name, &agent.role, &agent.model_override, &agent.species])
+            c.execute(
+                sql::AGENTS_UPSERT,
+                &[
+                    &cid,
+                    &agent.name,
+                    &agent.role,
+                    &agent.model_override,
+                    &agent.species,
+                ],
+            )
         });
         if let Err(e) = result {
             eprintln!("apid: agent {cid} not written to the database: {e}");
@@ -128,7 +137,9 @@ mod tests {
     /// a remove soft-deletes the row, and the table answers a GROUP BY on role.
     #[test]
     fn roster_writes_through_and_loads_back() {
-        let Some(db) = database("agents_roster") else { return };
+        let Some(db) = database("agents_roster") else {
+            return;
+        };
         let roster = Roster::with_db(Some(Arc::clone(&db)));
         let mut marlow = agent(101, "Marlow", "builder");
         marlow.model_override = Some("model-a".into());
@@ -137,7 +148,12 @@ mod tests {
         roster.upsert(agent(103, "Quill", "planner"));
 
         let fresh = Roster::default();
-        fresh.restore(db.active_agents().into_iter().map(StoredAgent::into_agent).collect());
+        fresh.restore(
+            db.active_agents()
+                .into_iter()
+                .map(StoredAgent::into_agent)
+                .collect(),
+        );
         let loaded = fresh.get(101).expect("101 loaded from the table");
         assert_eq!(loaded.name, "Marlow");
         assert_eq!(loaded.role, "builder");
@@ -151,13 +167,20 @@ mod tests {
             a.role = "planner".into();
             a.model_override = Some("model-b".into());
         }));
-        let row = db.active_agents().into_iter().find(|row| row.cid == 101).expect("101 active");
+        let row = db
+            .active_agents()
+            .into_iter()
+            .find(|row| row.cid == 101)
+            .expect("101 active");
         assert_eq!(row.role, "planner");
         assert_eq!(row.model.as_deref(), Some("model-b"));
 
         // A remove marks the row retired: it leaves the active rows and the roster.
         assert!(roster.remove(103));
-        let state: String = db.run(|c| c.query_one(STATE_OF, &[&103i64])).expect("state of 103").get(0);
+        let state: String = db
+            .run(|c| c.query_one(STATE_OF, &[&103i64]))
+            .expect("state of 103")
+            .get(0);
         assert_eq!(state, "retired");
         assert!(db.active_agents().iter().all(|row| row.cid != 103));
         assert!(roster.get(103).is_none());
@@ -169,6 +192,9 @@ mod tests {
             .iter()
             .map(|row| (row.get(0), row.get(1)))
             .collect();
-        assert_eq!(counts, vec![("builder".to_string(), 1), ("planner".to_string(), 2)]);
+        assert_eq!(
+            counts,
+            vec![("builder".to_string(), 1), ("planner".to_string(), 2)]
+        );
     }
 }

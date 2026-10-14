@@ -215,14 +215,16 @@ mod tests {
         let b = id.as_bytes();
         (2..=32).contains(&b.len())
             && b[0].is_ascii_lowercase()
-            && b.iter().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'-')
+            && b.iter()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'-')
     }
 
     fn valid_env_name(name: &str) -> bool {
         let b = name.as_bytes();
         !b.is_empty()
             && (b[0].is_ascii_uppercase() || b[0] == b'_')
-            && b.iter().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || *c == b'_')
+            && b.iter()
+                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || *c == b'_')
     }
 
     #[test]
@@ -237,17 +239,29 @@ mod tests {
     #[test]
     fn statuses_and_transports_are_known() {
         for p in PRESETS {
-            assert!(p.status == "verified" || p.status == "custom image needed", "{}", p.id);
+            assert!(
+                p.status == "verified" || p.status == "custom image needed",
+                "{}",
+                p.id
+            );
             assert!(p.transport == "stdio" || p.transport == "http", "{}", p.id);
             assert!(p.docs.starts_with("https://"), "{} docs", p.id);
-            assert!(!p.name.is_empty() && !p.description.is_empty() && !p.note.is_empty(), "{}", p.id);
+            assert!(
+                !p.name.is_empty() && !p.description.is_empty() && !p.note.is_empty(),
+                "{}",
+                p.id
+            );
         }
     }
 
     #[test]
     fn stdio_presets_have_an_image_or_need_one() {
         for p in PRESETS.iter().filter(|p| p.transport == "stdio") {
-            assert!(p.image.is_some() || p.status == "custom image needed", "{}", p.id);
+            assert!(
+                p.image.is_some() || p.status == "custom image needed",
+                "{}",
+                p.id
+            );
             if p.status == "verified" {
                 assert!(p.image.is_some(), "{} verified without image", p.id);
             }
@@ -273,7 +287,12 @@ mod tests {
                 assert!(valid_env_name(s.name), "{} env {}", p.id, s.name);
             }
             for s in p.headers {
-                assert!(!s.name.is_empty() && !s.name.contains(' ') && !s.name.contains(':'), "{} header {}", p.id, s.name);
+                assert!(
+                    !s.name.is_empty() && !s.name.contains(' ') && !s.name.contains(':'),
+                    "{} header {}",
+                    p.id,
+                    s.name
+                );
             }
             for s in p.env.iter().chain(p.headers.iter()) {
                 assert!(!s.help.is_empty(), "{} spec {} has no help", p.id, s.name);
@@ -283,5 +302,4 @@ mod tests {
             }
         }
     }
-
 }

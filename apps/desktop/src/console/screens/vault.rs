@@ -10,25 +10,26 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
-#[path = "vault_forms.rs"]
-mod forms;
 #[path = "vault_audit.rs"]
 mod audit;
+#[path = "vault_forms.rs"]
+mod forms;
 
 use audit::{AuditPage, AuditState, ImportForm, ImportResult};
 
 use forms::{
-    add_passphrase_body, create_body, create_card, edit_body, edit_card, pending_card, recovery_card, rekey_body, rekey_card, rollback_body,
-    rotate_body, rotate_card, sealed_card, secret_path, slot_path, slots_card, test_body, unseal_body, EditForm, PassForm, RekeyField,
-    Rotate, ScopeMode, SecretForm, SecretKind, UnsealForm, UnsealMethod,
+    EditForm, PassForm, RekeyField, Rotate, ScopeMode, SecretForm, SecretKind, UnsealForm,
+    UnsealMethod, add_passphrase_body, create_body, create_card, edit_body, edit_card,
+    pending_card, recovery_card, rekey_body, rekey_card, rollback_body, rotate_body, rotate_card,
+    sealed_card, secret_path, slot_path, slots_card, test_body, unseal_body,
 };
 use iced::widget::{column, pick_list, row, text, text_input};
 use iced::{Element, Length, Task};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::Id;
-use crate::console::{client, ui, Ctx};
+use crate::console::{Ctx, client, ui};
 
 // ---- The hub's shapes (as apps/web/src/api.ts types them, trimmed to what this screen uses) ----
 
@@ -70,7 +71,9 @@ pub struct VaultSlot {
 pub enum VaultScope {
     #[default]
     Plaza,
-    Nodes { nodes: Vec<String> },
+    Nodes {
+        nodes: Vec<String>,
+    },
 }
 
 /// One version of an entry; only its number is shown (the rollback target).
@@ -147,7 +150,10 @@ pub fn in_selection(entry: &VaultEntry, selection: &Selection) -> bool {
 
 /// The entries a selection shows, in their loaded order.
 pub fn filter_entries<'a>(entries: &'a [VaultEntry], selection: &Selection) -> Vec<&'a VaultEntry> {
-    entries.iter().filter(|e| in_selection(e, selection)).collect()
+    entries
+        .iter()
+        .filter(|e| in_selection(e, selection))
+        .collect()
 }
 
 /// One option of the selector.
@@ -166,12 +172,22 @@ impl fmt::Display for Choice {
 /// All, Plaza, then each node.
 fn choices(nodes: &[NodeRef]) -> Vec<Choice> {
     let mut out = vec![
-        Choice { selection: Selection::All, label: "All".into() },
-        Choice { selection: Selection::Plaza, label: "Plaza".into() },
+        Choice {
+            selection: Selection::All,
+            label: "All".into(),
+        },
+        Choice {
+            selection: Selection::Plaza,
+            label: "Plaza".into(),
+        },
     ];
     out.extend(nodes.iter().map(|n| Choice {
         selection: Selection::Node(n.id.clone()),
-        label: if n.name.is_empty() { n.id.clone() } else { n.name.clone() },
+        label: if n.name.is_empty() {
+            n.id.clone()
+        } else {
+            n.name.clone()
+        },
     }));
     out
 }
@@ -180,13 +196,24 @@ fn node_name(nodes: &[NodeRef], id: &str) -> String {
     nodes
         .iter()
         .find(|n| n.id == id)
-        .map(|n| if n.name.is_empty() { n.id.clone() } else { n.name.clone() })
+        .map(|n| {
+            if n.name.is_empty() {
+                n.id.clone()
+            } else {
+                n.name.clone()
+            }
+        })
         .unwrap_or_else(|| id.to_string())
 }
 
 /// The version a rollback goes back to: the newest one before the current.
 fn previous_version(entry: &VaultEntry) -> Option<u64> {
-    entry.versions.iter().map(|v| v.v).filter(|v| *v < entry.current).max()
+    entry
+        .versions
+        .iter()
+        .map(|v| v.v)
+        .filter(|v| *v < entry.current)
+        .max()
 }
 
 /// A slot's kind as the owner reads it.
@@ -206,7 +233,11 @@ pub fn rekey_fields(status: &VaultStatus) -> Vec<RekeyField> {
         .slots
         .iter()
         .filter(|slot| slot.kind != "keyfile" && !slot.unsealed_with)
-        .map(|slot| RekeyField { slot: slot.id.clone(), kind: slot.kind.clone(), secret: String::new() })
+        .map(|slot| RekeyField {
+            slot: slot.id.clone(),
+            kind: slot.kind.clone(),
+            secret: String::new(),
+        })
         .collect()
 }
 
@@ -252,7 +283,12 @@ pub enum Tab {
     Import,
 }
 
-const TABS: [(Tab, &str); 4] = [(Tab::Secrets, "Secrets"), (Tab::Consumers, "Consumers"), (Tab::Audit, "Audit log"), (Tab::Import, ".env import")];
+const TABS: [(Tab, &str); 4] = [
+    (Tab::Secrets, "Secrets"),
+    (Tab::Consumers, "Consumers"),
+    (Tab::Audit, "Audit log"),
+    (Tab::Import, ".env import"),
+];
 
 /// An act that asks for confirmation before it runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -400,7 +436,10 @@ pub fn go(_msg: &Msg) -> Option<Id> {
 
 /// Loads the screen's data (called when it opens and on every poll tick).
 pub fn load(_state: &mut State, ctx: &Ctx) -> Task<Msg> {
-    Task::batch([fetch::<VaultStatus>(ctx, "/v1/vault", Msg::Status), fetch::<Vec<NodeRef>>(ctx, "/v1/nodes", Msg::Nodes)])
+    Task::batch([
+        fetch::<VaultStatus>(ctx, "/v1/vault", Msg::Status),
+        fetch::<Vec<NodeRef>>(ctx, "/v1/nodes", Msg::Nodes),
+    ])
 }
 
 fn fetch<T>(ctx: &Ctx, path: &str, map: fn(Result<T, String>) -> Msg) -> Task<Msg>
@@ -413,12 +452,22 @@ where
 }
 
 /// Runs one owner call in the background. Its answer comes back as `Mutated` with `note` on success.
-fn call(state: &mut State, ctx: &Ctx, method: &'static str, path: String, body: Option<Value>, note: String) -> Task<Msg> {
+fn call(
+    state: &mut State,
+    ctx: &Ctx,
+    method: &'static str,
+    path: String,
+    body: Option<Value>,
+    note: String,
+) -> Task<Msg> {
     state.busy = true;
     state.failure = None;
     state.notice = None;
     let c = ctx.client.clone();
-    client::task(move || c.call(method, &path, body.as_ref()).map(|_| note), Msg::Mutated)
+    client::task(
+        move || c.call(method, &path, body.as_ref()).map(|_| note),
+        Msg::Mutated,
+    )
 }
 
 /// The recovery reveal after a copy that did not reach the clipboard: the code in a read-only field to select.
@@ -441,7 +490,10 @@ fn recovery_card_selectable<'a>(code: &str) -> Element<'a, Msg> {
 
 /// The recovery code from `POST /v1/vault/recovery`.
 fn recovery_code(v: &Value) -> Result<String, String> {
-    v.get("recovery_code").and_then(Value::as_str).map(str::to_string).ok_or_else(|| "The hub sent no recovery code.".to_string())
+    v.get("recovery_code")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .ok_or_else(|| "The hub sent no recovery code.".to_string())
 }
 
 /// Applies an edit to the open create form, if there is one.
@@ -535,7 +587,15 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             Task::none()
         }
         Msg::Tested(Ok(test)) => {
-            state.test_note = Some(format!("{}: {}", if test.ok { "Test passed" } else { "Test failed" }, test.detail));
+            state.test_note = Some(format!(
+                "{}: {}",
+                if test.ok {
+                    "Test passed"
+                } else {
+                    "Test failed"
+                },
+                test.detail
+            ));
             Task::none()
         }
         Msg::Tested(Err(error)) => {
@@ -545,7 +605,10 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
 
         // Unseal.
         Msg::PickMethod(method) => {
-            state.unseal = UnsealForm { method, secret: String::new() };
+            state.unseal = UnsealForm {
+                method,
+                secret: String::new(),
+            };
             Task::none()
         }
         Msg::UnsealSecret(secret) => {
@@ -555,7 +618,14 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         Msg::Unseal => {
             let method = state.unseal.method;
             match unseal_body(method, &mut state.unseal.secret) {
-                Ok(body) => call(state, ctx, "POST", "/v1/vault/unseal".into(), Some(body), "Vault unsealed".into()),
+                Ok(body) => call(
+                    state,
+                    ctx,
+                    "POST",
+                    "/v1/vault/unseal".into(),
+                    Some(body),
+                    "Vault unsealed".into(),
+                ),
                 Err(e) => {
                     state.failure = Some(e);
                     Task::none()
@@ -574,16 +644,35 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         }
         Msg::RunPending => match state.pending.take() {
             None => Task::none(),
-            Some(Pending::Seal) => call(state, ctx, "POST", "/v1/vault/seal".into(), Some(json!({})), "Vault sealed".into()),
-            Some(Pending::RemoveSlot { id, kind }) => {
-                call(state, ctx, "DELETE", slot_path(&id), None, format!("Removed the {} slot", slot_kind_label(&kind).to_lowercase()))
-            }
+            Some(Pending::Seal) => call(
+                state,
+                ctx,
+                "POST",
+                "/v1/vault/seal".into(),
+                Some(json!({})),
+                "Vault sealed".into(),
+            ),
+            Some(Pending::RemoveSlot { id, kind }) => call(
+                state,
+                ctx,
+                "DELETE",
+                slot_path(&id),
+                None,
+                format!("Removed the {} slot", slot_kind_label(&kind).to_lowercase()),
+            ),
             Some(Pending::Rekey) => {
                 let mut fields = state.rekey.take().unwrap_or_default();
                 match rekey_body(&mut fields) {
                     Ok(body) => {
                         state.rekey = None;
-                        call(state, ctx, "POST", "/v1/vault/rekey".into(), Some(body), "Vault rekeyed".into())
+                        call(
+                            state,
+                            ctx,
+                            "POST",
+                            "/v1/vault/rekey".into(),
+                            Some(body),
+                            "Vault rekeyed".into(),
+                        )
                     }
                     Err(e) => {
                         state.rekey = Some(fields);
@@ -592,9 +681,14 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                     }
                 }
             }
-            Some(Pending::RemoveEntry { id, name }) => {
-                call(state, ctx, "DELETE", secret_path(&id, ""), None, format!("Removed {name}"))
-            }
+            Some(Pending::RemoveEntry { id, name }) => call(
+                state,
+                ctx,
+                "DELETE",
+                secret_path(&id, ""),
+                None,
+                format!("Removed {name}"),
+            ),
             Some(Pending::Rollback { id, name, v }) => call(
                 state,
                 ctx,
@@ -615,7 +709,14 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             Task::none()
         }
         Msg::AddPassphrase => match add_passphrase_body(&mut state.add_pass) {
-            Ok(body) => call(state, ctx, "POST", "/v1/vault/slots".into(), Some(body), "Passphrase slot added".into()),
+            Ok(body) => call(
+                state,
+                ctx,
+                "POST",
+                "/v1/vault/slots".into(),
+                Some(body),
+                "Passphrase slot added".into(),
+            ),
             Err(e) => {
                 state.failure = Some(e);
                 Task::none()
@@ -635,22 +736,34 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             state.failure = None;
             state.notice = None;
             let c = ctx.client.clone();
-            client::task(move || c.call("POST", "/v1/vault/recovery", Some(&json!({}))).and_then(|v| recovery_code(&v)), Msg::Recovery)
+            client::task(
+                move || {
+                    c.call("POST", "/v1/vault/recovery", Some(&json!({})))
+                        .and_then(|v| recovery_code(&v))
+                },
+                Msg::Recovery,
+            )
         }
-        Msg::CopyRecovery => match &state.recovery {
-            // iced's clipboard write cannot report failure, so the code is read back: a copy that did not
-            // land (no clipboard) reads back as nothing, and the card then shows the code to select.
-            Some(code) => {
-                let expected = code.clone();
-                iced::clipboard::write::<Msg>(code.clone()).chain(
-                    iced::clipboard::read().map(move |got| Msg::CopyChecked(got.as_deref() == Some(expected.as_str()))),
-                )
+        Msg::CopyRecovery => {
+            match &state.recovery {
+                // iced's clipboard write cannot report failure, so the code is read back: a copy that did not
+                // land (no clipboard) reads back as nothing, and the card then shows the code to select.
+                Some(code) => {
+                    let expected = code.clone();
+                    iced::clipboard::write::<Msg>(code.clone()).chain(iced::clipboard::read().map(
+                        move |got| Msg::CopyChecked(got.as_deref() == Some(expected.as_str())),
+                    ))
+                }
+                None => Task::none(),
             }
-            None => Task::none(),
-        },
+        }
         Msg::CopyChecked(ok) => {
             state.copy_failed = !ok;
-            state.notice = if ok { Some("Copied the recovery code.".into()) } else { None };
+            state.notice = if ok {
+                Some("Copied the recovery code.".into())
+            } else {
+                None
+            };
             Task::none()
         }
         Msg::Noop => Task::none(),
@@ -685,7 +798,11 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             state.tab = Tab::Secrets;
             state.create = Some(SecretForm {
                 nodes: state.nodes.iter().map(|n| (n.id.clone(), false)).collect(),
-                bindings: state.consumers.iter().map(|c| (c.binding.clone(), false)).collect(),
+                bindings: state
+                    .consumers
+                    .iter()
+                    .map(|c| (c.binding.clone(), false))
+                    .collect(),
                 ..Default::default()
             });
             Task::none()
@@ -731,7 +848,9 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             Task::none()
         }
         Msg::CSubmit => {
-            let Some(form) = state.create.as_mut() else { return Task::none() };
+            let Some(form) = state.create.as_mut() else {
+                return Task::none();
+            };
             match create_body(form) {
                 Ok(body) => {
                     let note = format!("Saved {}", body["name"].as_str().unwrap_or("the secret"));
@@ -739,7 +858,13 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                     state.failure = None;
                     state.notice = None;
                     let c = ctx.client.clone();
-                    client::task(move || c.call("POST", "/v1/vault/secrets", Some(&body)).map(|_| note), Msg::Created)
+                    client::task(
+                        move || {
+                            c.call("POST", "/v1/vault/secrets", Some(&body))
+                                .map(|_| note)
+                        },
+                        Msg::Created,
+                    )
                 }
                 Err(e) => {
                     state.failure = Some(e);
@@ -750,7 +875,11 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
 
         // Rotate (a new version of the value, through the one write route).
         Msg::OpenRotate(id, name) => {
-            state.rotate = Some(Rotate { id, name, value: String::new() });
+            state.rotate = Some(Rotate {
+                id,
+                name,
+                value: String::new(),
+            });
             Task::none()
         }
         Msg::RotateValue(v) => {
@@ -764,7 +893,9 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             Task::none()
         }
         Msg::RotateSubmit => {
-            let Some(r) = state.rotate.as_mut() else { return Task::none() };
+            let Some(r) = state.rotate.as_mut() else {
+                return Task::none();
+            };
             match rotate_body(&mut r.value) {
                 Ok(body) => {
                     let path = secret_path(&r.id, "/value");
@@ -781,14 +912,19 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
 
         // Edit: the label, scope and bindings (PATCH); the value is not part of it.
         Msg::OpenEdit(id) => {
-            let Some(entry) = state.entries.iter().find(|e| e.id == id) else { return Task::none() };
+            let Some(entry) = state.entries.iter().find(|e| e.id == id) else {
+                return Task::none();
+            };
             let scoped: Vec<String> = match &entry.scope {
                 VaultScope::Nodes { nodes } => nodes.clone(),
                 VaultScope::Plaza => Vec::new(),
             };
             // The entry's current bindings stay ticked even when no consumer lists them.
-            let mut bindings: Vec<(String, bool)> =
-                state.consumers.iter().map(|c| (c.binding.clone(), entry.bindings.contains(&c.binding))).collect();
+            let mut bindings: Vec<(String, bool)> = state
+                .consumers
+                .iter()
+                .map(|c| (c.binding.clone(), entry.bindings.contains(&c.binding)))
+                .collect();
             bindings.extend(
                 entry
                     .bindings
@@ -800,8 +936,16 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                 id: entry.id.clone(),
                 name: entry.name.clone(),
                 label: entry.label.clone(),
-                scope: if matches!(entry.scope, VaultScope::Nodes { .. }) { ScopeMode::Nodes } else { ScopeMode::Plaza },
-                nodes: state.nodes.iter().map(|n| (n.id.clone(), scoped.contains(&n.id))).collect(),
+                scope: if matches!(entry.scope, VaultScope::Nodes { .. }) {
+                    ScopeMode::Nodes
+                } else {
+                    ScopeMode::Plaza
+                },
+                nodes: state
+                    .nodes
+                    .iter()
+                    .map(|n| (n.id.clone(), scoped.contains(&n.id)))
+                    .collect(),
                 bindings,
             });
             Task::none()
@@ -835,7 +979,9 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             Task::none()
         }
         Msg::EditSubmit => {
-            let Some(form) = state.edit.as_ref() else { return Task::none() };
+            let Some(form) = state.edit.as_ref() else {
+                return Task::none();
+            };
             match edit_body(form) {
                 Ok(body) => {
                     let path = secret_path(&form.id, "");
@@ -844,7 +990,10 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                     state.failure = None;
                     state.notice = None;
                     let c = ctx.client.clone();
-                    client::task(move || c.call("PATCH", &path, Some(&body)).map(|_| note), Msg::Edited)
+                    client::task(
+                        move || c.call("PATCH", &path, Some(&body)).map(|_| note),
+                        Msg::Edited,
+                    )
                 }
                 Err(e) => {
                     state.failure = Some(e);
@@ -892,8 +1041,16 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             state.create = Some(SecretForm {
                 name,
                 scope: ScopeMode::Nodes,
-                nodes: state.nodes.iter().map(|n| (n.id.clone(), n.id == node)).collect(),
-                bindings: state.consumers.iter().map(|c| (c.binding.clone(), c.binding == binding)).collect(),
+                nodes: state
+                    .nodes
+                    .iter()
+                    .map(|n| (n.id.clone(), n.id == node))
+                    .collect(),
+                bindings: state
+                    .consumers
+                    .iter()
+                    .map(|c| (c.binding.clone(), c.binding == binding))
+                    .collect(),
                 ..Default::default()
             });
             Task::none()
@@ -952,7 +1109,11 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                 source: Some(name),
                 raw,
                 picked: valid.iter().map(|n| (n.clone(), true)).collect(),
-                bindings: state.consumers.iter().map(|c| (c.binding.clone(), valid.contains(&c.wants))).collect(),
+                bindings: state
+                    .consumers
+                    .iter()
+                    .map(|c| (c.binding.clone(), valid.contains(&c.wants)))
+                    .collect(),
                 nodes: state.nodes.iter().map(|n| (n.id.clone(), false)).collect(),
                 scope,
                 invalid,
@@ -993,7 +1154,13 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             Task::none()
         }
         Msg::ImportSubmit => {
-            let names: Vec<String> = state.import.picked.iter().filter(|(_, on)| *on).map(|(n, _)| n.clone()).collect();
+            let names: Vec<String> = state
+                .import
+                .picked
+                .iter()
+                .filter(|(_, on)| *on)
+                .map(|(n, _)| n.clone())
+                .collect();
             if names.is_empty() {
                 state.failure = Some("Pick at least one name to import.".into());
                 return Task::none();
@@ -1020,7 +1187,10 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             state.failure = None;
             state.notice = None;
             let c = ctx.client.clone();
-            client::task(move || c.post::<ImportResult>("/v1/vault/import", &body), Msg::ImportDone)
+            client::task(
+                move || c.post::<ImportResult>("/v1/vault/import", &body),
+                Msg::ImportDone,
+            )
         }
         Msg::ImportDone(Ok(result)) => {
             state.busy = false;
@@ -1029,7 +1199,9 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         }
         Msg::ImportDone(Err(error)) => {
             state.busy = false;
-            state.failure = Some(format!("{error} The file was cleared, so choose it again to retry."));
+            state.failure = Some(format!(
+                "{error} The file was cleared, so choose it again to retry."
+            ));
             Task::none()
         }
     }
@@ -1039,11 +1211,7 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
 
 /// A button that is inert while an owner call is in flight.
 fn gate(busy: bool, msg: Msg) -> Option<Msg> {
-    if busy {
-        None
-    } else {
-        Some(msg)
-    }
+    if busy { None } else { Some(msg) }
 }
 
 /// A column of elements with the screen's spacing.
@@ -1052,7 +1220,8 @@ fn stack<'a>(items: Vec<Element<'a, Msg>>) -> Element<'a, Msg> {
 }
 
 pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
-    let mut parts: Vec<Element<'a, Msg>> = vec![ui::faint("Values are write-only: the vault never shows or returns a secret.").into()];
+    let mut parts: Vec<Element<'a, Msg>> =
+        vec![ui::faint("Values are write-only: the vault never shows or returns a secret.").into()];
     if let Some(error) = &state.error {
         parts.push(ui::error_line(error));
     }
@@ -1073,20 +1242,37 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
             match status.state.as_str() {
                 "unsealed" => {
                     if state.create.is_none() {
-                        actions.push(ui::btn("New secret", None, ui::Kind::Primary, gate(state.busy, Msg::OpenCreate)));
+                        actions.push(ui::btn(
+                            "New secret",
+                            None,
+                            ui::Kind::Primary,
+                            gate(state.busy, Msg::OpenCreate),
+                        ));
                     }
                     parts.extend(unsealed_section(state));
                 }
                 "sealed" => parts.push(sealed_card(state)),
                 "tampered" => parts.push(ui::card(
                     "Tampered",
-                    ui::error_line(status.tampered.as_deref().unwrap_or("The vault failed its integrity check.")),
+                    ui::error_line(
+                        status
+                            .tampered
+                            .as_deref()
+                            .unwrap_or("The vault failed its integrity check."),
+                    ),
                 )),
-                _ => parts.push(ui::card("Not set up", ui::faint("The vault has not been set up. Set it up in the web console.").into())),
+                _ => parts.push(ui::card(
+                    "Not set up",
+                    ui::faint("The vault has not been set up. Set it up in the web console.")
+                        .into(),
+                )),
             }
         }
     }
-    ui::sheet(ui::view_head("Vault", actions), column(parts).spacing(16).into())
+    ui::sheet(
+        ui::view_head("Vault", actions),
+        column(parts).spacing(16).into(),
+    )
 }
 
 /// The status card: the state, the counts and the audit chain's line, then when the vault was last rekeyed.
@@ -1098,12 +1284,20 @@ fn header<'a>(status: &VaultStatus) -> Element<'a, Msg> {
         "tampered" => "Tampered",
         other => other,
     };
-    let line = format!("{state}  ·  {} key slots  ·  {} entries  ·  {}", status.slots.len(), status.entries, audit_line(status.audit_ok));
+    let line = format!(
+        "{state}  ·  {} key slots  ·  {} entries  ·  {}",
+        status.slots.len(),
+        status.entries,
+        audit_line(status.audit_ok)
+    );
     let rekeyed = match status.rekeyed_ms {
         Some(ms) => format!("Rekeyed: {}", ago(ms, now_ms())),
         None => "Rekeyed: never".to_string(),
     };
-    ui::card("Status", stack(vec![text(line).into(), ui::faint(rekeyed).into()]))
+    ui::card(
+        "Status",
+        stack(vec![text(line).into(), ui::faint(rekeyed).into()]),
+    )
 }
 
 /// The env-file banner, in the web console's words: keys that were in an env file now live in the vault.
@@ -1126,7 +1320,11 @@ fn unsealed_parts<'a>(state: &'a State) -> Vec<Element<'a, Msg>> {
         parts.push(pending_card(pending, state.busy));
     }
     if let Some(code) = &state.recovery {
-        parts.push(if state.copy_failed { recovery_card_selectable(code) } else { recovery_card(code) });
+        parts.push(if state.copy_failed {
+            recovery_card_selectable(code)
+        } else {
+            recovery_card(code)
+        });
     }
     parts.push(slots_card(state));
     if let Some(fields) = &state.rekey {
@@ -1159,8 +1357,17 @@ fn unsealed_section<'a>(state: &'a State) -> Vec<Element<'a, Msg>> {
 
 fn selector<'a>(state: &'a State) -> Element<'a, Msg> {
     let options = choices(&state.nodes);
-    let current = options.iter().find(|c| c.selection == state.selection).cloned().unwrap_or_else(|| options[0].clone());
-    row(vec![ui::faint("Scope").into(), pick_list(options, Some(current), Msg::Pick).into()]).spacing(12).into()
+    let current = options
+        .iter()
+        .find(|c| c.selection == state.selection)
+        .cloned()
+        .unwrap_or_else(|| options[0].clone());
+    row(vec![
+        ui::faint("Scope").into(),
+        pick_list(options, Some(current), Msg::Pick).into(),
+    ])
+    .spacing(12)
+    .into()
 }
 
 /// The secrets: the scope selector, the test answer, and the entries with their row actions.
@@ -1186,31 +1393,88 @@ fn secrets_card<'a>(state: &'a State) -> Element<'a, Msg> {
 fn entry_row<'a>(entry: &VaultEntry, state: &'a State, now: f64) -> Element<'a, Msg> {
     let scope = match &entry.scope {
         VaultScope::Plaza => "Plaza".to_string(),
-        VaultScope::Nodes { nodes: ids } => ids.iter().map(|id| node_name(&state.nodes, id)).collect::<Vec<_>>().join(", "),
+        VaultScope::Nodes { nodes: ids } => ids
+            .iter()
+            .map(|id| node_name(&state.nodes, id))
+            .collect::<Vec<_>>()
+            .join(", "),
     };
-    let bindings = if entry.bindings.is_empty() { "no bindings".to_string() } else { entry.bindings.join(", ") };
-    let name = if entry.label.is_empty() { entry.name.clone() } else { format!("{}  ({})", entry.name, entry.label) };
+    let bindings = if entry.bindings.is_empty() {
+        "no bindings".to_string()
+    } else {
+        entry.bindings.join(", ")
+    };
+    let name = if entry.label.is_empty() {
+        entry.name.clone()
+    } else {
+        format!("{}  ({})", entry.name, entry.label)
+    };
     let top: Element<'a, Msg> = row(vec![
         text(name).width(Length::FillPortion(3)).into(),
-        text(entry.kind.clone()).width(Length::FillPortion(2)).into(),
+        text(entry.kind.clone())
+            .width(Length::FillPortion(2))
+            .into(),
         text(scope).width(Length::FillPortion(3)).into(),
-        text(format!("v{}", entry.current)).width(Length::FillPortion(1)).into(),
+        text(format!("v{}", entry.current))
+            .width(Length::FillPortion(1))
+            .into(),
     ])
     .spacing(12)
     .into();
-    let detail = ui::faint(format!("Bindings: {bindings}  ·  used {} times, last {}", entry.use_count, ago(entry.last_used_ms, now)));
+    let detail = ui::faint(format!(
+        "Bindings: {bindings}  ·  used {} times, last {}",
+        entry.use_count,
+        ago(entry.last_used_ms, now)
+    ));
     let mut actions: Vec<Element<'a, Msg>> = vec![
-        ui::btn_sm("Edit", None, ui::Kind::Secondary, gate(state.busy, Msg::OpenEdit(entry.id.clone()))),
-        ui::btn_sm("Rotate", None, ui::Kind::Secondary, gate(state.busy, Msg::OpenRotate(entry.id.clone(), entry.name.clone()))),
-        ui::btn_sm("Test", None, ui::Kind::Secondary, gate(state.busy, Msg::RunTest(entry.id.clone()))),
+        ui::btn_sm(
+            "Edit",
+            None,
+            ui::Kind::Secondary,
+            gate(state.busy, Msg::OpenEdit(entry.id.clone())),
+        ),
+        ui::btn_sm(
+            "Rotate",
+            None,
+            ui::Kind::Secondary,
+            gate(
+                state.busy,
+                Msg::OpenRotate(entry.id.clone(), entry.name.clone()),
+            ),
+        ),
+        ui::btn_sm(
+            "Test",
+            None,
+            ui::Kind::Secondary,
+            gate(state.busy, Msg::RunTest(entry.id.clone())),
+        ),
     ];
     if let Some(v) = previous_version(entry) {
-        let pending = Pending::Rollback { id: entry.id.clone(), name: entry.name.clone(), v };
-        actions.push(ui::btn_sm(&format!("Roll back to v{v}"), None, ui::Kind::Secondary, gate(state.busy, Msg::Ask(pending))));
+        let pending = Pending::Rollback {
+            id: entry.id.clone(),
+            name: entry.name.clone(),
+            v,
+        };
+        actions.push(ui::btn_sm(
+            &format!("Roll back to v{v}"),
+            None,
+            ui::Kind::Secondary,
+            gate(state.busy, Msg::Ask(pending)),
+        ));
     }
-    let remove = Pending::RemoveEntry { id: entry.id.clone(), name: entry.name.clone() };
-    actions.push(ui::btn_sm("Remove", None, ui::Kind::Ghost, gate(state.busy, Msg::Ask(remove))));
-    column(vec![top, detail.into(), row(actions).spacing(8).into(), ]).spacing(4).into()
+    let remove = Pending::RemoveEntry {
+        id: entry.id.clone(),
+        name: entry.name.clone(),
+    };
+    actions.push(ui::btn_sm(
+        "Remove",
+        None,
+        ui::Kind::Ghost,
+        gate(state.busy, Msg::Ask(remove)),
+    ));
+    column(vec![top, detail.into(), row(actions).spacing(8).into()])
+        .spacing(4)
+        .into()
 }
 
 #[cfg(test)]
@@ -1218,7 +1482,11 @@ mod tests {
     use super::*;
 
     fn entry(name: &str, scope: VaultScope) -> VaultEntry {
-        VaultEntry { name: name.into(), scope, ..Default::default() }
+        VaultEntry {
+            name: name.into(),
+            scope,
+            ..Default::default()
+        }
     }
 
     fn names(entries: Vec<&VaultEntry>) -> Vec<&str> {
@@ -1229,13 +1497,35 @@ mod tests {
     fn vault_filter_by_node_selection() {
         let entries = vec![
             entry("plaza-key", VaultScope::Plaza),
-            entry("n0-only", VaultScope::Nodes { nodes: vec!["n0".into()] }),
-            entry("both", VaultScope::Nodes { nodes: vec!["n0".into(), "n1".into()] }),
+            entry(
+                "n0-only",
+                VaultScope::Nodes {
+                    nodes: vec!["n0".into()],
+                },
+            ),
+            entry(
+                "both",
+                VaultScope::Nodes {
+                    nodes: vec!["n0".into(), "n1".into()],
+                },
+            ),
         ];
-        assert_eq!(names(filter_entries(&entries, &Selection::All)), vec!["plaza-key", "n0-only", "both"]);
-        assert_eq!(names(filter_entries(&entries, &Selection::Plaza)), vec!["plaza-key"]);
-        assert_eq!(names(filter_entries(&entries, &Selection::Node("n0".into()))), vec!["n0-only", "both"]);
-        assert_eq!(names(filter_entries(&entries, &Selection::Node("n1".into()))), vec!["both"]);
+        assert_eq!(
+            names(filter_entries(&entries, &Selection::All)),
+            vec!["plaza-key", "n0-only", "both"]
+        );
+        assert_eq!(
+            names(filter_entries(&entries, &Selection::Plaza)),
+            vec!["plaza-key"]
+        );
+        assert_eq!(
+            names(filter_entries(&entries, &Selection::Node("n0".into()))),
+            vec!["n0-only", "both"]
+        );
+        assert_eq!(
+            names(filter_entries(&entries, &Selection::Node("n1".into()))),
+            vec!["both"]
+        );
         assert!(filter_entries(&entries, &Selection::Node("n9".into())).is_empty());
     }
 
@@ -1243,7 +1533,11 @@ mod tests {
     fn vault_previous_version_is_the_newest_below_current() {
         let mut e = entry("K", VaultScope::Plaza);
         e.current = 3;
-        e.versions = vec![VersionRef { v: 1 }, VersionRef { v: 2 }, VersionRef { v: 3 }];
+        e.versions = vec![
+            VersionRef { v: 1 },
+            VersionRef { v: 2 },
+            VersionRef { v: 3 },
+        ];
         assert_eq!(previous_version(&e), Some(2));
         e.versions = vec![VersionRef { v: 3 }];
         assert_eq!(previous_version(&e), None);
@@ -1257,16 +1551,25 @@ mod tests {
         )
         .expect("a status with a null audit chain parses");
         assert_eq!(fresh.audit_ok, None);
-        assert_eq!(audit_line(fresh.audit_ok), "Audit chain not checked until unsealed");
+        assert_eq!(
+            audit_line(fresh.audit_ok),
+            "Audit chain not checked until unsealed"
+        );
         assert!(fresh.rekeyed_ms.is_none());
         assert_eq!(fresh.env_file_keys, 3);
         assert!(fresh.slots[0].unsealed_with && !fresh.slots[1].unsealed_with);
 
-        let intact: VaultStatus = serde_json::from_str(r#"{"state":"unsealed","audit_ok":true,"rekeyed_ms":5.0}"#).unwrap();
+        let intact: VaultStatus =
+            serde_json::from_str(r#"{"state":"unsealed","audit_ok":true,"rekeyed_ms":5.0}"#)
+                .unwrap();
         assert_eq!(audit_line(intact.audit_ok), "Audit chain intact");
         assert_eq!(intact.rekeyed_ms, Some(5.0));
-        let broken: VaultStatus = serde_json::from_str(r#"{"state":"unsealed","audit_ok":false}"#).unwrap();
-        assert_eq!(audit_line(broken.audit_ok), "Audit chain broken, see the Audit log tab");
+        let broken: VaultStatus =
+            serde_json::from_str(r#"{"state":"unsealed","audit_ok":false}"#).unwrap();
+        assert_eq!(
+            audit_line(broken.audit_ok),
+            "Audit chain broken, see the Audit log tab"
+        );
     }
 
     #[test]
@@ -1279,16 +1582,29 @@ mod tests {
         )
         .unwrap();
         let fields = rekey_fields(&status);
-        assert_eq!(fields.iter().map(|f| f.slot.as_str()).collect::<Vec<_>>(), vec!["rec"]);
+        assert_eq!(
+            fields.iter().map(|f| f.slot.as_str()).collect::<Vec<_>>(),
+            vec!["rec"]
+        );
     }
 
     #[test]
     fn vault_wipe_drops_every_secret_form() {
         let mut state = State {
-            create: Some(SecretForm { value: "v".into(), ..Default::default() }),
-            rotate: Some(Rotate { id: "a".into(), name: "A".into(), value: "v".into() }),
+            create: Some(SecretForm {
+                value: "v".into(),
+                ..Default::default()
+            }),
+            rotate: Some(Rotate {
+                id: "a".into(),
+                name: "A".into(),
+                value: "v".into(),
+            }),
             recovery: Some("code".into()),
-            add_pass: PassForm { pass: "p".into(), again: "p".into() },
+            add_pass: PassForm {
+                pass: "p".into(),
+                again: "p".into(),
+            },
             ..Default::default()
         };
         state.wipe();

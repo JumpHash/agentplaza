@@ -13,11 +13,11 @@ use apz_prompt::{Finding, Kind, Report, Severity};
 use iced::widget::text_editor::{Cursor, Position};
 use iced::widget::{checkbox, column, container, operation, row, text_editor, text_input};
 use iced::{Alignment, Element, Font, Length, Task};
-use serde::de::DeserializeOwned;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde::de::DeserializeOwned;
+use serde_json::{Value, json};
 
-use crate::console::{client, ui, Ctx};
+use crate::console::{Ctx, client, ui};
 use crate::theme::palette;
 
 use super::{mcp_hub, prompts};
@@ -121,7 +121,12 @@ pub enum Tab {
     Rules,
 }
 
-const TABS: [(Tab, &str); 4] = [(Tab::Edit, "Edit"), (Tab::Versions, "Versions"), (Tab::History, "History"), (Tab::Rules, "Rules")];
+const TABS: [(Tab, &str); 4] = [
+    (Tab::Edit, "Edit"),
+    (Tab::Versions, "Versions"),
+    (Tab::History, "History"),
+    (Tab::Rules, "Rules"),
+];
 
 #[derive(Debug, Clone)]
 pub enum Msg {
@@ -196,7 +201,13 @@ impl Details {
     fn of(summary: &PromptSummary) -> Self {
         let (role, every) = match summary.binding.as_deref() {
             Some("plaza") => (String::new(), true),
-            Some(binding) => (binding.strip_prefix("role:").unwrap_or_default().to_string(), false),
+            Some(binding) => (
+                binding
+                    .strip_prefix("role:")
+                    .unwrap_or_default()
+                    .to_string(),
+                false,
+            ),
             None => (String::new(), false),
         };
         Details {
@@ -252,7 +263,19 @@ pub struct State {
 /// The editor for prompt `id`, and the task that loads it.
 pub fn open(id: String, ctx: &Ctx) -> (State, Task<Msg>) {
     let task = load(&id, ctx);
-    (State { id, tab: Tab::Edit, loaded: None, error: None, notice: None, conflict: false, leaving: false, changed: false }, task)
+    (
+        State {
+            id,
+            tab: Tab::Edit,
+            loaded: None,
+            error: None,
+            notice: None,
+            conflict: false,
+            leaving: false,
+            changed: false,
+        },
+        task,
+    )
 }
 
 /// Whether the draft differs from the body last loaded or saved.
@@ -291,7 +314,8 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         }
         Msg::Tab(tab) => {
             state.tab = tab;
-            let wants_history = tab == Tab::History && state.loaded.as_ref().is_some_and(|l| l.events.is_none());
+            let wants_history =
+                tab == Tab::History && state.loaded.as_ref().is_some_and(|l| l.events.is_none());
             if wants_history {
                 history(&state.id, ctx)
             } else {
@@ -360,7 +384,10 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             state.notice = Some(if added.created {
                 (format!("Saved as v{}", added.version.version), false)
             } else {
-                ("No changes: the body is the same as the latest version.".to_string(), false)
+                (
+                    "No changes: the body is the same as the latest version.".to_string(),
+                    false,
+                )
             });
             if let Some(l) = state.loaded.as_mut() {
                 l.saved = std::mem::take(&mut l.pending);
@@ -388,10 +415,19 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             state.notice = Some((e, true));
             Task::none()
         }
-        Msg::Publish(version) => act(&state.id, ctx, "publish", Some(json!({ "version": version })), format!("Published v{version}")),
+        Msg::Publish(version) => act(
+            &state.id,
+            ctx,
+            "publish",
+            Some(json!({ "version": version })),
+            format!("Published v{version}"),
+        ),
         Msg::Unpublish => act(&state.id, ctx, "unpublish", None, "Unpublished".to_string()),
         Msg::ToggleArchive => {
-            let archived = state.loaded.as_ref().is_some_and(|l| l.summary.archived_ms.is_some());
+            let archived = state
+                .loaded
+                .as_ref()
+                .is_some_and(|l| l.summary.archived_ms.is_some());
             if archived {
                 act(&state.id, ctx, "restore", None, "Restored".to_string())
             } else {
@@ -439,7 +475,15 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             Some(l) if l.picked.len() == 2 => {
                 let (from, to) = (l.picked[0].min(l.picked[1]), l.picked[0].max(l.picked[1]));
                 let (c, id) = (ctx.client.clone(), state.id.clone());
-                client::task(move || get::<PromptDiff>(&c, &format!("{}/diff?from={from}&to={to}", prompt_path(&id))), Msg::Compared)
+                client::task(
+                    move || {
+                        get::<PromptDiff>(
+                            &c,
+                            &format!("{}/diff?from={from}&to={to}", prompt_path(&id)),
+                        )
+                    },
+                    Msg::Compared,
+                )
             }
             _ => Task::none(),
         },
@@ -461,7 +505,13 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                 l.note = format!("Restored from v{}", version.version);
             }
             state.tab = Tab::Edit;
-            state.notice = Some((format!("v{} is in the editor. Save it to make it the latest version.", version.version), false));
+            state.notice = Some((
+                format!(
+                    "v{} is in the editor. Save it to make it the latest version.",
+                    version.version
+                ),
+                false,
+            ));
             Task::none()
         }
         Msg::Restored(Err(e)) => {
@@ -480,7 +530,11 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         }
         Msg::Download => match state.loaded.as_ref() {
             Some(l) => {
-                let name = if matches!(l.kind, Kind::AgentsMd) { "AGENTS.md".to_string() } else { format!("{}-v{}.md", state.id, l.summary.latest_version) };
+                let name = if matches!(l.kind, Kind::AgentsMd) {
+                    "AGENTS.md".to_string()
+                } else {
+                    format!("{}-v{}.md", state.id, l.summary.latest_version)
+                };
                 Task::perform(
                     async move {
                         rfd::AsyncFileDialog::new()
@@ -499,14 +553,30 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         Msg::DownloadPicked(None) => Task::none(),
         Msg::DownloadPicked(Some(path)) => match state.loaded.as_ref() {
             Some(l) => {
-                let (c, id, version) = (ctx.client.clone(), state.id.clone(), l.summary.latest_version);
-                client::task(move || get::<PromptVersion>(&c, &format!("{}/versions/{version}", prompt_path(&id))).map(|v| (v, path)), Msg::Downloaded)
+                let (c, id, version) = (
+                    ctx.client.clone(),
+                    state.id.clone(),
+                    l.summary.latest_version,
+                );
+                client::task(
+                    move || {
+                        get::<PromptVersion>(
+                            &c,
+                            &format!("{}/versions/{version}", prompt_path(&id)),
+                        )
+                        .map(|v| (v, path))
+                    },
+                    Msg::Downloaded,
+                )
             }
             None => Task::none(),
         },
         Msg::Downloaded(Ok((version, path))) => {
             state.notice = Some(match std::fs::write(&path, version.body.as_bytes()) {
-                Ok(()) => (format!("Saved v{} to {}", version.version, path.display()), false),
+                Ok(()) => (
+                    format!("Saved v{} to {}", version.version, path.display()),
+                    false,
+                ),
                 Err(e) => (format!("The file could not be written: {e}"), true),
             });
             Task::none()
@@ -516,7 +586,10 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             Task::none()
         }
         Msg::Jump(line) => {
-            let cursor = state.loaded.as_ref().and_then(|l| finding_cursor(&source_text(&l.source), line));
+            let cursor = state
+                .loaded
+                .as_ref()
+                .and_then(|l| finding_cursor(&source_text(&l.source), line));
             if let (Some(l), Some(cursor)) = (state.loaded.as_mut(), cursor) {
                 l.source.move_to(cursor);
             }
@@ -552,11 +625,21 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             Task::none()
         }
         Msg::SaveDetails => {
-            let body = state.loaded.as_ref().and_then(|l| l.details.as_ref().map(|d| meta_body(l.kind, d)));
+            let body = state
+                .loaded
+                .as_ref()
+                .and_then(|l| l.details.as_ref().map(|d| meta_body(l.kind, d)));
             match body {
                 Some(Ok(body)) => {
                     let (c, id) = (ctx.client.clone(), state.id.clone());
-                    client::task(move || send(&c, "PUT", &prompt_path(&id), Some(&body)).and_then(expect::<Value>).map(|_| ()), Msg::DetailsSaved)
+                    client::task(
+                        move || {
+                            send(&c, "PUT", &prompt_path(&id), Some(&body))
+                                .and_then(expect::<Value>)
+                                .map(|_| ())
+                        },
+                        Msg::DetailsSaved,
+                    )
                 }
                 Some(Err(e)) => {
                     state.notice = Some((e, true));
@@ -586,14 +669,28 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
             Some(e) => ui::error_line(e),
             None => ui::loading(),
         };
-        return column![ui::btn_sm("Back", None, ui::Kind::Secondary, Some(Msg::Back)), status].spacing(16).into();
+        return column![
+            ui::btn_sm("Back", None, ui::Kind::Secondary, Some(Msg::Back)),
+            status
+        ]
+        .spacing(16)
+        .into();
     };
     let mut parts: Vec<Element<'a, Msg>> = vec![header(l)];
     if let Some((text, is_error)) = &state.notice {
-        parts.push(if *is_error { ui::error_line(text) } else { ui::faint(text.clone()).into() });
+        parts.push(if *is_error {
+            ui::error_line(text)
+        } else {
+            ui::faint(text.clone()).into()
+        });
     }
     if state.conflict {
-        parts.push(ui::btn_sm("Reload latest", None, ui::Kind::Secondary, Some(Msg::ReloadLatest)));
+        parts.push(ui::btn_sm(
+            "Reload latest",
+            None,
+            ui::Kind::Secondary,
+            Some(Msg::ReloadLatest),
+        ));
     }
     if state.changed && !state.conflict {
         parts.push(changed_notice());
@@ -603,7 +700,12 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
             row![
                 ui::faint("Discard your changes?"),
                 ui::btn_sm("Discard", None, ui::Kind::Secondary, Some(Msg::Discard)),
-                ui::btn_sm("Keep editing", None, ui::Kind::Ghost, Some(Msg::KeepEditing)),
+                ui::btn_sm(
+                    "Keep editing",
+                    None,
+                    ui::Kind::Ghost,
+                    Some(Msg::KeepEditing)
+                ),
             ]
             .spacing(12)
             .align_y(Alignment::Center)
@@ -632,8 +734,14 @@ fn prompt_path(id: &str) -> String {
     format!("/v1/prompts/{id}")
 }
 
-fn send(c: &client::Client, method: &str, path: &str, body: Option<&Value>) -> Result<Answer, String> {
-    apz_http::client::request_json(&c.target, method, path, body, c.timeout).map_err(|e| e.to_string())
+fn send(
+    c: &client::Client,
+    method: &str,
+    path: &str,
+    body: Option<&Value>,
+) -> Result<Answer, String> {
+    apz_http::client::request_json(&c.target, method, path, body, c.timeout)
+        .map_err(|e| e.to_string())
 }
 
 /// A 2xx answer as `T`; anything else as the hub's `error` text (or the status).
@@ -641,7 +749,11 @@ fn expect<T: DeserializeOwned>((status, value): Answer) -> Result<T, String> {
     if (200..300).contains(&status) {
         serde_json::from_value(value).map_err(|e| e.to_string())
     } else {
-        Err(value.get("error").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| format!("HTTP {status}")))
+        Err(value
+            .get("error")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("HTTP {status}")))
     }
 }
 
@@ -654,7 +766,14 @@ fn load(id: &str, ctx: &Ctx) -> Task<Msg> {
     client::task(
         move || {
             let detail: PromptDetail = get(&c, &prompt_path(&id))?;
-            let latest: PromptVersion = get(&c, &format!("{}/versions/{}", prompt_path(&id), detail.prompt.latest_version))?;
+            let latest: PromptVersion = get(
+                &c,
+                &format!(
+                    "{}/versions/{}",
+                    prompt_path(&id),
+                    detail.prompt.latest_version
+                ),
+            )?;
             Ok((detail, latest))
         },
         Msg::Loaded,
@@ -663,17 +782,31 @@ fn load(id: &str, ctx: &Ctx) -> Task<Msg> {
 
 fn refresh(id: &str, ctx: &Ctx) -> Task<Msg> {
     let (c, id) = (ctx.client.clone(), id.to_string());
-    client::task(move || get::<PromptDetail>(&c, &prompt_path(&id)), Msg::Refreshed)
+    client::task(
+        move || get::<PromptDetail>(&c, &prompt_path(&id)),
+        Msg::Refreshed,
+    )
 }
 
 fn history(id: &str, ctx: &Ctx) -> Task<Msg> {
     let (c, id) = (ctx.client.clone(), id.to_string());
-    client::task(move || get::<Events>(&c, &format!("{}/history", prompt_path(&id))).map(|list| list.events), Msg::HistoryLoaded)
+    client::task(
+        move || get::<Events>(&c, &format!("{}/history", prompt_path(&id))).map(|list| list.events),
+        Msg::HistoryLoaded,
+    )
 }
 
-fn version_task(id: &str, ctx: &Ctx, version: u32, map: fn(Result<PromptVersion, String>) -> Msg) -> Task<Msg> {
+fn version_task(
+    id: &str,
+    ctx: &Ctx,
+    version: u32,
+    map: fn(Result<PromptVersion, String>) -> Msg,
+) -> Task<Msg> {
     let (c, id) = (ctx.client.clone(), id.to_string());
-    client::task(move || get::<PromptVersion>(&c, &format!("{}/versions/{version}", prompt_path(&id))), map)
+    client::task(
+        move || get::<PromptVersion>(&c, &format!("{}/versions/{version}", prompt_path(&id))),
+        map,
+    )
 }
 
 /// Save the draft as a new version on top of the latest one. 409 means someone saved a newer version first.
@@ -684,7 +817,12 @@ fn save(id: &str, l: &Loaded, ctx: &Ctx) -> Task<Msg> {
     let base = l.summary.latest_version;
     client::task(
         move || {
-            let answer = send(&c, "POST", &format!("{}/versions", prompt_path(&id)), Some(&json!({ "body": body, "note": note, "base_version": base })))?;
+            let answer = send(
+                &c,
+                "POST",
+                &format!("{}/versions", prompt_path(&id)),
+                Some(&json!({ "body": body, "note": note, "base_version": base })),
+            )?;
             if answer.0 == 409 {
                 return Err(CONFLICT.to_string());
             }
@@ -697,7 +835,14 @@ fn save(id: &str, l: &Loaded, ctx: &Ctx) -> Task<Msg> {
 /// A POST to one of the prompt's action routes (publish, unpublish, archive, restore); `done` is the notice on success.
 fn act(id: &str, ctx: &Ctx, action: &str, body: Option<Value>, done: String) -> Task<Msg> {
     let (c, path) = (ctx.client.clone(), format!("{}/{action}", prompt_path(id)));
-    client::task(move || send(&c, "POST", &path, body.as_ref()).and_then(expect::<Value>).map(|_| done), Msg::Acted)
+    client::task(
+        move || {
+            send(&c, "POST", &path, body.as_ref())
+                .and_then(expect::<Value>)
+                .map(|_| done)
+        },
+        Msg::Acted,
+    )
 }
 
 // ---- Helpers -------------------------------------------------------------------------------------------------------
@@ -719,7 +864,10 @@ fn sorted(mut versions: Vec<PromptVersion>) -> Vec<PromptVersion> {
 }
 
 fn now_ms() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 fn score_tone(score: u8) -> ui::Tone {
@@ -756,12 +904,25 @@ pub fn finding_cursor(text: &str, line: u32) -> Option<Cursor> {
     let lines: Vec<&str> = text.split('\n').collect();
     let at = (line as usize).min(lines.len()) - 1;
     let end = lines[at].len();
-    Some(Cursor { position: Position { line: at, column: end }, selection: Some(Position { line: at, column: 0 }) })
+    Some(Cursor {
+        position: Position {
+            line: at,
+            column: end,
+        },
+        selection: Some(Position {
+            line: at,
+            column: 0,
+        }),
+    })
 }
 
 /// The tags typed comma separated: each trimmed, the empty ones dropped (the create form's rule).
 pub fn parse_tags(text: &str) -> Vec<String> {
-    text.split(',').map(str::trim).filter(|t| !t.is_empty()).map(String::from).collect()
+    text.split(',')
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(String::from)
+        .collect()
 }
 
 /// The binding a prompt of `kind` takes from its form: a role for a system prompt, every agent for AGENTS.md, none for a
@@ -798,7 +959,13 @@ mod tests {
     fn a_finding_on_a_line_selects_that_line() {
         let text = "# Title\nfirst line\nsecond";
         let c = finding_cursor(text, 2).expect("line 2 has a cursor");
-        assert_eq!(c.position, Position { line: 1, column: "first line".len() });
+        assert_eq!(
+            c.position,
+            Position {
+                line: 1,
+                column: "first line".len()
+            }
+        );
         assert_eq!(c.selection, Some(Position { line: 1, column: 0 }));
     }
 
@@ -815,15 +982,24 @@ mod tests {
 
     #[test]
     fn the_tags_are_trimmed_and_the_empty_ones_dropped() {
-        assert_eq!(parse_tags(" review, , safety ,"), vec!["review".to_string(), "safety".to_string()]);
+        assert_eq!(
+            parse_tags(" review, , safety ,"),
+            vec!["review".to_string(), "safety".to_string()]
+        );
         assert!(parse_tags("").is_empty());
     }
 
     #[test]
     fn the_binding_follows_the_kind() {
-        assert_eq!(binding_for(Kind::System, " builder ", false), Some("role:builder".to_string()));
+        assert_eq!(
+            binding_for(Kind::System, " builder ", false),
+            Some("role:builder".to_string())
+        );
         assert_eq!(binding_for(Kind::System, "  ", true), None);
-        assert_eq!(binding_for(Kind::AgentsMd, "", true), Some("plaza".to_string()));
+        assert_eq!(
+            binding_for(Kind::AgentsMd, "", true),
+            Some("plaza".to_string())
+        );
         assert_eq!(binding_for(Kind::AgentsMd, "builder", false), None);
         assert_eq!(binding_for(Kind::Fragment, "builder", true), None);
     }
@@ -845,13 +1021,24 @@ mod tests {
 
     #[test]
     fn the_meta_body_refuses_a_blank_title() {
-        let d = Details { title: "   ".to_string(), ..Details::default() };
-        assert_eq!(meta_body(Kind::Fragment, &d), Err("Give the prompt a title.".to_string()));
+        let d = Details {
+            title: "   ".to_string(),
+            ..Details::default()
+        };
+        assert_eq!(
+            meta_body(Kind::Fragment, &d),
+            Err("Give the prompt a title.".to_string())
+        );
     }
 
     #[test]
     fn a_fragment_sends_no_binding() {
-        let d = Details { title: "Note".to_string(), role: "builder".to_string(), every: true, ..Details::default() };
+        let d = Details {
+            title: "Note".to_string(),
+            role: "builder".to_string(),
+            every: true,
+            ..Details::default()
+        };
         let body = meta_body(Kind::Fragment, &d).unwrap();
         assert_eq!(body["binding"], Value::Null);
     }
@@ -873,7 +1060,11 @@ mod tests {
         let d = Details::of(&summary);
         assert!(d.every);
         assert_eq!(d.tags, "a, b");
-        let role_summary = PromptSummary { binding: Some("role:builder".to_string()), kind: "system".to_string(), ..summary };
+        let role_summary = PromptSummary {
+            binding: Some("role:builder".to_string()),
+            kind: "system".to_string(),
+            ..summary
+        };
         let d = Details::of(&role_summary);
         assert_eq!((d.role.as_str(), d.every), ("builder", false));
     }
@@ -892,24 +1083,54 @@ fn header(l: &Loaded) -> Element<'_, Msg> {
             if editing { "Close details" } else { "Details" },
             None,
             ui::Kind::Secondary,
-            Some(if editing { Msg::CloseDetails } else { Msg::OpenDetails }),
+            Some(if editing {
+                Msg::CloseDetails
+            } else {
+                Msg::OpenDetails
+            }),
         ),
-        ui::btn_sm("Download .md", None, ui::Kind::Secondary, Some(Msg::Download)),
-        ui::btn_sm("Publish", None, ui::Kind::Secondary, Some(Msg::Publish(s.latest_version))),
-        ui::btn_sm("Unpublish", None, ui::Kind::Secondary, s.active_version.map(|_| Msg::Unpublish)),
-        ui::btn_sm(if archived { "Restore" } else { "Archive" }, None, ui::Kind::Secondary, Some(Msg::ToggleArchive)),
+        ui::btn_sm(
+            "Download .md",
+            None,
+            ui::Kind::Secondary,
+            Some(Msg::Download),
+        ),
+        ui::btn_sm(
+            "Publish",
+            None,
+            ui::Kind::Secondary,
+            Some(Msg::Publish(s.latest_version)),
+        ),
+        ui::btn_sm(
+            "Unpublish",
+            None,
+            ui::Kind::Secondary,
+            s.active_version.map(|_| Msg::Unpublish),
+        ),
+        ui::btn_sm(
+            if archived { "Restore" } else { "Archive" },
+            None,
+            ui::Kind::Secondary,
+            Some(Msg::ToggleArchive),
+        ),
     ];
     let live = match (s.active_version, s.score) {
         (Some(v), Some(score)) => format!("live v{v} · score {score}"),
         (Some(v), None) => format!("live v{v}"),
         _ => "not published".to_string(),
     };
-    let binding = s.binding.clone().unwrap_or_else(|| "no binding".to_string());
+    let binding = s
+        .binding
+        .clone()
+        .unwrap_or_else(|| "no binding".to_string());
     let mut meta: Vec<Element<'_, Msg>> = vec![
         ui::badge(l.kind.as_str(), ui::Tone::Muted),
         ui::faint(binding).into(),
         ui::faint(live).into(),
-        ui::badge(&format!("score {}", l.report.score), score_tone(l.report.score)),
+        ui::badge(
+            &format!("score {}", l.report.score),
+            score_tone(l.report.score),
+        ),
     ];
     if dirty(l) {
         meta.push(ui::badge("Unsaved", ui::Tone::Warn));
@@ -917,7 +1138,10 @@ fn header(l: &Loaded) -> Element<'_, Msg> {
     if archived {
         meta.push(ui::badge("archived", ui::Tone::Warn));
     }
-    let mut parts: Vec<Element<'_, Msg>> = vec![ui::view_head(&s.title, actions), row(meta).spacing(12).align_y(Alignment::Center).into()];
+    let mut parts: Vec<Element<'_, Msg>> = vec![
+        ui::view_head(&s.title, actions),
+        row(meta).spacing(12).align_y(Alignment::Center).into(),
+    ];
     if !s.description.is_empty() {
         parts.push(ui::faint(s.description.clone()).into());
     }
@@ -929,7 +1153,11 @@ fn header(l: &Loaded) -> Element<'_, Msg> {
 
 /// One finding. With `jump`, a finding that has a line is a link that moves the source to that line.
 fn finding_row(f: &Finding, jump: bool) -> Element<'static, Msg> {
-    let place = if f.line == 0 { "document".to_string() } else { format!("line {}", f.line) };
+    let place = if f.line == 0 {
+        "document".to_string()
+    } else {
+        format!("line {}", f.line)
+    };
     let place: Element<'static, Msg> = if jump && f.line > 0 {
         ui::link(&place, Msg::Jump(f.line), true)
     } else {
@@ -950,7 +1178,12 @@ fn finding_row(f: &Finding, jump: bool) -> Element<'static, Msg> {
 fn changed_notice<'a>() -> Element<'a, Msg> {
     row![
         ui::faint("Changed on the hub — reload. Reloading replaces the draft."),
-        ui::btn_sm("Reload latest", None, ui::Kind::Secondary, Some(Msg::ReloadLatest)),
+        ui::btn_sm(
+            "Reload latest",
+            None,
+            ui::Kind::Secondary,
+            Some(Msg::ReloadLatest)
+        ),
     ]
     .spacing(12)
     .align_y(Alignment::Center)
@@ -965,7 +1198,10 @@ fn details_form(kind: Kind, d: &Details) -> Element<'_, Msg> {
             .padding(8)
             .style(crate::theme::input)
             .into(),
-        Kind::AgentsMd => checkbox(d.every).label("Apply to every agent").on_toggle(Msg::DetailEvery).into(),
+        Kind::AgentsMd => checkbox(d.every)
+            .label("Apply to every agent")
+            .on_toggle(Msg::DetailEvery)
+            .into(),
         Kind::Fragment => ui::faint("Fragments are not bound to an agent.").into(),
     };
     let body = column![
@@ -995,7 +1231,12 @@ fn details_form(kind: Kind, d: &Details) -> Element<'_, Msg> {
         ),
         prompts::field("Binding", binding),
         row![
-            ui::btn("Save details", None, ui::Kind::Primary, Some(Msg::SaveDetails)),
+            ui::btn(
+                "Save details",
+                None,
+                ui::Kind::Primary,
+                Some(Msg::SaveDetails)
+            ),
             ui::btn("Cancel", None, ui::Kind::Ghost, Some(Msg::CloseDetails)),
         ]
         .spacing(8),
@@ -1006,9 +1247,17 @@ fn details_form(kind: Kind, d: &Details) -> Element<'_, Msg> {
 
 fn edit_tab(l: &Loaded) -> Element<'_, Msg> {
     let body = source_text(&l.source);
-    let editor = text_editor(&l.source).id(source_id()).on_action(Msg::Edit).font(Font::MONOSPACE).height(Length::Fixed(420.0));
+    let editor = text_editor(&l.source)
+        .id(source_id())
+        .on_action(Msg::Edit)
+        .font(Font::MONOSPACE)
+        .height(Length::Fixed(420.0));
     let preview = ui::scroll(ui::markdown::<Msg>(&body)).height(Length::Fixed(420.0));
-    let panes = row![container(editor).width(Length::FillPortion(1)), container(preview).width(Length::FillPortion(1))].spacing(16);
+    let panes = row![
+        container(editor).width(Length::FillPortion(1)),
+        container(preview).width(Length::FillPortion(1))
+    ]
+    .spacing(16);
 
     let r = &l.report;
     let mut findings: Vec<Element<'_, Msg>> = Vec::new();
@@ -1017,14 +1266,20 @@ fn edit_tab(l: &Loaded) -> Element<'_, Msg> {
     }
     findings.extend(r.findings.iter().map(|f| finding_row(f, true)));
 
-    let counts = ui::faint(format!("{} errors · {} warnings · {} infos · score {}", r.errors, r.warnings, r.infos, r.score));
+    let counts = ui::faint(format!(
+        "{} errors · {} warnings · {} infos · score {}",
+        r.errors, r.warnings, r.infos, r.score
+    ));
     let stats = ui::faint(format!(
         "{} words · {} lines · {} headings · ~{} tokens",
         r.stats.words, r.stats.lines, r.stats.headings, r.stats.est_tokens
     ));
     column![
         panes,
-        text_input("Note for this version", &l.note).on_input(Msg::Note).padding(8).style(crate::theme::input),
+        text_input("Note for this version", &l.note)
+            .on_input(Msg::Note)
+            .padding(8)
+            .style(crate::theme::input),
         counts,
         stats,
         column(findings).spacing(8),
@@ -1045,8 +1300,18 @@ fn versions_tab(l: &Loaded) -> Element<'_, Msg> {
     parts.push(
         row![
             ui::faint(format!("{picked} of 2 picked to compare")),
-            ui::btn_sm("Compare", None, ui::Kind::Secondary, (picked == 2).then_some(Msg::Compare)),
-            ui::btn_sm("Clear", None, ui::Kind::Ghost, (picked > 0).then_some(Msg::ClearPicks)),
+            ui::btn_sm(
+                "Compare",
+                None,
+                ui::Kind::Secondary,
+                (picked == 2).then_some(Msg::Compare)
+            ),
+            ui::btn_sm(
+                "Clear",
+                None,
+                ui::Kind::Ghost,
+                (picked > 0).then_some(Msg::ClearPicks)
+            ),
         ]
         .spacing(12)
         .align_y(Alignment::Center)
@@ -1071,11 +1336,15 @@ fn version_row<'a>(l: &'a Loaded, v: &'a PromptVersion) -> Element<'a, Msg> {
     if v.rules_version < apz_prompt::RULES_VERSION {
         marks.push("stale");
     }
-    let mut head: Vec<Element<'a, Msg>> = vec![ui::sans(format!("v{n}"), 13.0, palette().ink).into(), ui::badge(&format!("score {}", v.score), score_tone(v.score))];
+    let mut head: Vec<Element<'a, Msg>> = vec![
+        ui::sans(format!("v{n}"), 13.0, palette().ink).into(),
+        ui::badge(&format!("score {}", v.score), score_tone(v.score)),
+    ];
     for mark in marks {
         head.push(ui::badge(mark, ui::Tone::Signal));
     }
-    let mut body: Vec<Element<'a, Msg>> = vec![row(head).spacing(10).align_y(Alignment::Center).into()];
+    let mut body: Vec<Element<'a, Msg>> =
+        vec![row(head).spacing(10).align_y(Alignment::Center).into()];
     if !v.note.is_empty() {
         body.push(ui::prose(v.note.clone()).into());
     }
@@ -1100,7 +1369,12 @@ fn version_row<'a>(l: &'a Loaded, v: &'a PromptVersion) -> Element<'a, Msg> {
             pick,
             ui::btn_sm("View", None, ui::Kind::Ghost, Some(Msg::View(n))),
             ui::btn_sm("Publish", None, ui::Kind::Secondary, Some(Msg::Publish(n))),
-            ui::btn_sm("Restore as new", None, ui::Kind::Secondary, Some(Msg::RestoreVersion(n))),
+            ui::btn_sm(
+                "Restore as new",
+                None,
+                ui::Kind::Secondary,
+                Some(Msg::RestoreVersion(n))
+            ),
         ]
         .spacing(12)
         .align_y(Alignment::Center)
@@ -1113,7 +1387,11 @@ fn viewing(v: &PromptVersion) -> Element<'_, Msg> {
     let stale = if v.stale { " · stale" } else { "" };
     let mut parts: Vec<Element<'_, Msg>> = vec![
         row![
-            ui::sans(format!("v{} · {} findings{stale}", v.version, v.findings.len()), 12.0, palette().ink_3),
+            ui::sans(
+                format!("v{} · {} findings{stale}", v.version, v.findings.len()),
+                12.0,
+                palette().ink_3
+            ),
             ui::btn_sm("Close", None, ui::Kind::Ghost, Some(Msg::CloseView)),
         ]
         .spacing(12)
@@ -1128,7 +1406,10 @@ fn viewing(v: &PromptVersion) -> Element<'_, Msg> {
 fn compare(d: &PromptDiff) -> Element<'_, Msg> {
     let side = |v: &PromptVersion| {
         ui::sans(
-            format!("v{} · score {} · {} errors, {} warnings", v.version, v.score, v.errors, v.warnings),
+            format!(
+                "v{} · score {} · {} errors, {} warnings",
+                v.version, v.score, v.errors, v.warnings
+            ),
             12.0,
             palette().ink,
         )
@@ -1140,7 +1421,19 @@ fn compare(d: &PromptDiff) -> Element<'_, Msg> {
             "del" => ("−", ui::Tone::Danger.color()),
             _ => (" ", ui::Tone::Muted.color()),
         };
-        lines.push(ui::mono(format!("{:>4} {:>4} {mark} {}", num(line.old), num(line.new), line.text), 12.0, colour).into());
+        lines.push(
+            ui::mono(
+                format!(
+                    "{:>4} {:>4} {mark} {}",
+                    num(line.old),
+                    num(line.new),
+                    line.text
+                ),
+                12.0,
+                colour,
+            )
+            .into(),
+        );
     }
     column![
         row![side(&d.from), side(&d.to)].spacing(24),
@@ -1180,15 +1473,26 @@ fn history_tab(l: &Loaded) -> Element<'_, Msg> {
 fn rules_tab(kind: Kind) -> Element<'static, Msg> {
     let rules = apz_prompt::rules();
     let mut parts: Vec<Element<'static, Msg>> = vec![
-        ui::faint(format!("The rules for {} prompts (rules version {}).", kind.as_str(), apz_prompt::RULES_VERSION)).into(),
+        ui::faint(format!(
+            "The rules for {} prompts (rules version {}).",
+            kind.as_str(),
+            apz_prompt::RULES_VERSION
+        ))
+        .into(),
     ];
     for severity in [Severity::Error, Severity::Warning, Severity::Info] {
         parts.push(ui::label(severity.as_str()).into());
-        for rule in rules.iter().filter(|r| r.severity == severity && r.applies_to(kind)) {
+        for rule in rules
+            .iter()
+            .filter(|r| r.severity == severity && r.applies_to(kind))
+        {
             parts.push(
-                column![ui::mono(format!("{} · {}", rule.title, rule.id), 13.0, palette().ink), ui::prose(rule.why)]
-                    .spacing(4)
-                    .into(),
+                column![
+                    ui::mono(format!("{} · {}", rule.title, rule.id), 13.0, palette().ink),
+                    ui::prose(rule.why)
+                ]
+                .spacing(4)
+                .into(),
             );
         }
     }

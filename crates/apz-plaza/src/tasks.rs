@@ -76,8 +76,8 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use serde::{Deserialize, Serialize};
 
 use crate::events::{Event, EventBus};
-use crate::{ConnectedAgent, now_ms};
 use crate::treasury::{PostError, Treasury};
+use crate::{ConnectedAgent, now_ms};
 
 /// The most tasks the ledger holds. v0 never removes a task (a task ends
 /// `done`, `failed` or `withdrawn` and stays readable), so the cap is
@@ -397,7 +397,11 @@ pub(crate) fn required_text(name: &str, value: &str, max: usize) -> Result<Strin
 
 /// An optional text field: absent, or present and held to the same rule
 /// ([`required_text`], whose `pub(crate)` visibility this shares).
-pub(crate) fn optional_text(name: &str, value: &Option<String>, max: usize) -> Result<Option<String>, String> {
+pub(crate) fn optional_text(
+    name: &str,
+    value: &Option<String>,
+    max: usize,
+) -> Result<Option<String>, String> {
     match value {
         None => Ok(None),
         Some(value) => required_text(name, value, max).map(Some),
@@ -707,11 +711,7 @@ impl Task {
     /// goes back to the mint (a `refund` entry). The refund is posted **before**
     /// the state is committed, so a treasury that refuses it leaves the task in
     /// the state it had — a terminal task is never left holding its budget.
-    pub fn finish(
-        &self,
-        outcome: FinishOutcome,
-        note: Option<String>,
-    ) -> Result<(), EndError> {
+    pub fn finish(&self, outcome: FinishOutcome, note: Option<String>) -> Result<(), EndError> {
         let to = outcome.state();
         let mut inner = self.lock();
         let from = inner.state;
@@ -892,7 +892,6 @@ impl TaskLedger {
     }
 }
 
-
 /// The ledger's state as a snapshot holds it: the id counter and every task's
 /// record, oldest first. The `Arc`s a live task holds (the bus and the treasury)
 /// are not state, so they are not in it; restore hands them back.
@@ -1072,7 +1071,6 @@ mod tests {
             .expect("a budgeted task inside the contract")
     }
 
-
     /// `core.task_transitions`, restricted to the states noded v0 implements
     /// (`awaiting_review` is the schema's `verifying`), and the v0 requeue
     /// (`claimed` -> `open`), which the schema has no row for.
@@ -1157,7 +1155,10 @@ mod tests {
     fn a_requeue_puts_a_claimed_task_back_in_the_queue_and_only_a_claimed_one() {
         let ledger = TaskLedger::new(EventBus::new());
         let task = create(&ledger, "render the reel");
-        assert!(task.requeue("owner took the workstation").is_err(), "an open task has no claim to release");
+        assert!(
+            task.requeue("owner took the workstation").is_err(),
+            "an open task has no claim to release"
+        );
 
         task.claim(&ConnectedAgent {
             cid: 100,
@@ -1166,7 +1167,8 @@ mod tests {
             vm: 2,
         })
         .expect("open -> claimed");
-        task.requeue("owner took the workstation").expect("claimed -> open");
+        task.requeue("owner took the workstation")
+            .expect("claimed -> open");
         let view = task.view();
         assert_eq!(view.state, "open");
         assert_eq!(view.assignee_id, None);
@@ -1183,8 +1185,12 @@ mod tests {
         })
         .expect("claimed again by another agent");
         assert_eq!(task.view().agent_cid, Some(101));
-        task.finish(FinishOutcome::Done, None).expect("and it finishes");
-        assert!(task.requeue("late").is_err(), "a finished task is not requeued");
+        task.finish(FinishOutcome::Done, None)
+            .expect("and it finishes");
+        assert!(
+            task.requeue("late").is_err(),
+            "a finished task is not requeued"
+        );
     }
 
     #[test]
@@ -1233,10 +1239,7 @@ mod tests {
         let refused = open
             .finish(FinishOutcome::Done, None)
             .expect_err("open -> done is refused");
-        assert_eq!(
-            refused.to_string(),
-            "a task may not go from open to done"
-        );
+        assert_eq!(refused.to_string(), "a task may not go from open to done");
         assert_eq!(open.view().state, "open");
         assert_eq!(open.view().outcome, None);
 
@@ -1253,10 +1256,7 @@ mod tests {
         let refused = done
             .finish(FinishOutcome::Failed, None)
             .expect_err("done is final");
-        assert_eq!(
-            refused.to_string(),
-            "a task may not go from done to failed"
-        );
+        assert_eq!(refused.to_string(), "a task may not go from done to failed");
 
         let failed = create(&ledger, "failed");
         failed.claim(&agent(100, "builder")).expect("claim");
@@ -1287,9 +1287,7 @@ mod tests {
         assert_eq!(claimed.view().assignee_id.as_deref(), Some("builder"));
         assert_eq!(claimed.view().agent_cid, Some(100));
 
-        let refused = claimed
-            .withdraw()
-            .expect_err("a withdrawn task is final");
+        let refused = claimed.withdraw().expect_err("a withdrawn task is final");
         assert_eq!(
             refused.to_string(),
             "a task may not go from withdrawn to withdrawn"
@@ -1314,10 +1312,7 @@ mod tests {
             })
             .expect_err("the ledger is full");
         assert_eq!(refused, CreateError::Full { max: MAX_TASKS });
-        assert_eq!(
-            refused.to_string(),
-            "the task ledger is full (1024 tasks)"
-        );
+        assert_eq!(refused.to_string(), "the task ledger is full (1024 tasks)");
         assert_eq!(refused.status(), 409);
         assert_eq!(
             ledger.list().len(),
@@ -1346,14 +1341,15 @@ mod tests {
     #[test]
     fn a_request_outside_the_contract_creates_nothing() {
         let ledger = TaskLedger::new(EventBus::new());
-        let request = |goal: &str, acceptance: Option<&str>, budget: Option<u64>, role: Option<&str>| {
-            CreateTask {
-                goal: goal.to_string(),
-                acceptance: acceptance.map(String::from),
-                budget,
-                role: role.map(String::from),
-            }
-        };
+        let request =
+            |goal: &str, acceptance: Option<&str>, budget: Option<u64>, role: Option<&str>| {
+                CreateTask {
+                    goal: goal.to_string(),
+                    acceptance: acceptance.map(String::from),
+                    budget,
+                    role: role.map(String::from),
+                }
+            };
 
         for bad in [
             request("", None, None, None),
@@ -1374,22 +1370,38 @@ mod tests {
         }
         assert!(ledger.list().is_empty(), "no refused request created one");
 
-        ledger.treasury().mint_plaza_budget(i64::MAX).expect("the plaza covers the largest budget");
+        ledger
+            .treasury()
+            .mint_plaza_budget(i64::MAX)
+            .expect("the plaza covers the largest budget");
         // The edges are inside the contract.
         let edges = [
             request("g", None, None, None),
             request("g", Some("a"), Some(i64::MAX as u64), Some("builder")),
-            request(&"g".repeat(MAX_TEXT), Some(&"a".repeat(MAX_TEXT)), Some(0), Some(&"r".repeat(MAX_ROLE))),
+            request(
+                &"g".repeat(MAX_TEXT),
+                Some(&"a".repeat(MAX_TEXT)),
+                Some(0),
+                Some(&"r".repeat(MAX_ROLE)),
+            ),
         ];
         let ids: Vec<String> = edges
             .iter()
-            .map(|edge| ledger.create(edge).expect("inside the contract").id().to_string())
+            .map(|edge| {
+                ledger
+                    .create(edge)
+                    .expect("inside the contract")
+                    .id()
+                    .to_string()
+            })
             .collect();
         // The refused requests handed out no ids, so the first task is t1.
         assert_eq!(ids, vec!["t1", "t2", "t3"]);
 
         // The optional fields default to the schema's.
-        let defaulted = ledger.create(&request("just a goal", None, None, None)).expect("a task");
+        let defaulted = ledger
+            .create(&request("just a goal", None, None, None))
+            .expect("a task");
         let view = defaulted.view();
         assert_eq!(view.goal, "just a goal");
         assert_eq!(view.acceptance, None);
@@ -1432,11 +1444,7 @@ mod tests {
         assert!(view["updated_at"].as_u64().expect("updated_at") >= created_at);
 
         let list = serde_json::to_value(TasksView {
-            tasks: ledger
-                .list()
-                .iter()
-                .map(|task| task.view())
-                .collect(),
+            tasks: ledger.list().iter().map(|task| task.view()).collect(),
         })
         .expect("the list serializes");
         assert_eq!(list["tasks"].as_array().expect("an array").len(), 1);
@@ -1527,8 +1535,16 @@ mod tests {
         assert_eq!(task.state(), "awaiting_review");
         assert_eq!(task.view().note.as_deref(), Some("built it"));
         assert!(!task.is_open());
-        assert_eq!(ledger.treasury().escrow_balance("t1"), 80, "the escrow is still held");
-        assert_eq!(ledger.treasury().view().totals.entries, 2, "no refund was posted");
+        assert_eq!(
+            ledger.treasury().escrow_balance("t1"),
+            80,
+            "the escrow is still held"
+        );
+        assert_eq!(
+            ledger.treasury().view().totals.entries,
+            2,
+            "no refund was posted"
+        );
 
         // Only a verdict ends it, and the refund is what the escrow still holds.
         task.finish(FinishOutcome::Done, Some("pass".to_string()))
@@ -1545,11 +1561,17 @@ mod tests {
         let refused = task
             .await_review(None)
             .expect_err("open -> awaiting_review is refused");
-        assert_eq!(refused.to_string(), "a task may not go from open to awaiting_review");
+        assert_eq!(
+            refused.to_string(),
+            "a task may not go from open to awaiting_review"
+        );
 
         task.claim(&agent(100, "builder")).expect("claim");
         task.await_review(None).expect("claimed -> awaiting_review");
-        assert!(task.claim(&agent(101, "builder")).is_err(), "waiting is not open");
+        assert!(
+            task.claim(&agent(101, "builder")).is_err(),
+            "waiting is not open"
+        );
         assert_eq!(task.state(), "awaiting_review");
         assert_eq!(ledger.treasury().escrow_balance("t1"), 10);
     }
@@ -1604,8 +1626,14 @@ mod tests {
         assert_eq!(resolve_budget(Some(5000)), Ok(5000));
         for low in [0, 1, 199] {
             let refusal = resolve_budget(Some(low)).expect_err("below the minimum");
-            assert!(refusal.contains("minimum of 200"), "names the minimum: {refusal}");
-            assert!(refusal.contains(&format!("{low} credits")), "names the budget: {refusal}");
+            assert!(
+                refusal.contains("minimum of 200"),
+                "names the minimum: {refusal}"
+            );
+            assert!(
+                refusal.contains(&format!("{low} credits")),
+                "names the budget: {refusal}"
+            );
         }
         assert_eq!(DEFAULT_TASK_BUDGET, 2000);
         assert_eq!(MIN_TASK_BUDGET, 200);
@@ -1659,7 +1687,11 @@ mod tests {
         for index in 0..crate::treasury::MAX_ACCOUNTS - 2 {
             ledger
                 .treasury()
-                .open_account(crate::treasury::AccountKind::TownBudget, &format!("town{index}"), 0)
+                .open_account(
+                    crate::treasury::AccountKind::TownBudget,
+                    &format!("town{index}"),
+                    0,
+                )
                 .expect("an account under the cap");
         }
         let refused = ledger
@@ -1701,14 +1733,20 @@ mod tests {
         let open = budgeted(&ledger, "still open", 10);
         assert_eq!(open.id(), "t1");
         let claimed = budgeted(&ledger, "claimed", 20);
-        claimed.claim(&agent(100, "builder")).expect("open -> claimed");
+        claimed
+            .claim(&agent(100, "builder"))
+            .expect("open -> claimed");
         let done = budgeted(&ledger, "done", 30);
         done.claim(&agent(101, "builder")).expect("open -> claimed");
         done.finish(FinishOutcome::Done, Some("shipped".to_string()))
             .expect("claimed -> done");
         let failed = create(&ledger, "failed");
-        failed.claim(&agent(102, "tester")).expect("open -> claimed");
-        failed.finish(FinishOutcome::Failed, None).expect("claimed -> failed");
+        failed
+            .claim(&agent(102, "tester"))
+            .expect("open -> claimed");
+        failed
+            .finish(FinishOutcome::Failed, None)
+            .expect("claimed -> failed");
         let withdrawn = create(&ledger, "withdrawn");
         withdrawn.withdraw().expect("open -> withdrawn");
 
@@ -1721,9 +1759,15 @@ mod tests {
         let treasury = Arc::clone(ledger.treasury());
         let version = treasury.version();
         let restored = TaskLedger::with_treasury(Arc::clone(&events), Arc::clone(&treasury));
-        restored.restore(&json).expect("a snapshot of a ledger restores");
+        restored
+            .restore(&json)
+            .expect("a snapshot of a ledger restores");
         assert_eq!(views(&restored), before);
-        assert_eq!(treasury.version(), version, "a restore posts nothing to the treasury");
+        assert_eq!(
+            treasury.version(),
+            version,
+            "a restore posts nothing to the treasury"
+        );
         assert!(Arc::ptr_eq(restored.treasury(), &treasury));
         // The id counter came back too: the next task is t6, never a reused id.
         assert_eq!(create(&restored, "next").id(), "t6");

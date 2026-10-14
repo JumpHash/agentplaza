@@ -12,8 +12,10 @@ use glam::{Mat4, Quat, Vec3};
 
 use super::robots::clips::{eval_clip, rest_of};
 use super::robots::files::{registry, warn_once};
-use super::robots::fx::{seed, Fx};
-use super::robots::rig::{add_bone, bake_species, bake_tool, instantiate, robot_mats, BoneGeo, Rig, RobotMats, SpeciesGeo};
+use super::robots::fx::{Fx, seed};
+use super::robots::rig::{
+    BoneGeo, Rig, RobotMats, SpeciesGeo, add_bone, bake_species, bake_tool, instantiate, robot_mats,
+};
 use super::robots::types::{Clip, Species, Tool};
 use super::scene::{Color, Obj};
 
@@ -78,14 +80,25 @@ pub fn robot_variant(cid: u64) -> &'static str {
     if n == 0 {
         return "rover";
     }
-    list.iter().filter(dealt).nth((cid % n as u64) as usize).map_or("rover", String::as_str)
+    list.iter()
+        .filter(dealt)
+        .nth((cid % n as u64) as usize)
+        .map_or("rover", String::as_str)
 }
 
 /// A robot's species: the hub's `species` on the agent record (an unknown id is the rover, as `Robot::with_variant` draws
 /// it), else `robot_variant(cid)` when the record has none.
 pub fn species_of(hub: Option<&str>, cid: u64) -> &'static str {
-    let Some(id) = hub.map(str::trim).filter(|s| !s.is_empty()) else { return robot_variant(cid) };
-    registry().index.species.iter().map(String::as_str).find(|s| *s == id).unwrap_or("rover")
+    let Some(id) = hub.map(str::trim).filter(|s| !s.is_empty()) else {
+        return robot_variant(cid);
+    };
+    registry()
+        .index
+        .species
+        .iter()
+        .map(String::as_str)
+        .find(|s| *s == id)
+        .unwrap_or("rover")
 }
 
 /// The console palette the robot is painted in (`Palette` in robot.ts): read from `palette.json`.
@@ -125,7 +138,9 @@ const WALK_FEET_RATE: f32 = 9.0; // rad/s of the feet's step while walking
 const FLOAT_OFFLINE: f32 = -0.07; // a hover robot sets down when offline
 /// A bone's joints: rotation x, y, z, offset x, y, z, and scale. The eye lids follow them all.
 const PROPS: usize = 7;
-const PROP_NAMES: [&str; PROPS] = ["rot.x", "rot.y", "rot.z", "pos.x", "pos.y", "pos.z", "scale"];
+const PROP_NAMES: [&str; PROPS] = [
+    "rot.x", "rot.y", "rot.z", "pos.x", "pos.y", "pos.z", "scale",
+];
 
 static SPECIES_GEO: Mutex<BTreeMap<(String, bool), Arc<SpeciesGeo>>> = Mutex::new(BTreeMap::new());
 static TOOL_GEO: Mutex<BTreeMap<String, Arc<BoneGeo>>> = Mutex::new(BTreeMap::new());
@@ -133,12 +148,20 @@ static ROBOTS: AtomicU64 = AtomicU64::new(1);
 
 fn species_geo(sp: &Species, palette: &RobotPalette, orchestrator: bool) -> Arc<SpeciesGeo> {
     let mut cache = SPECIES_GEO.lock().unwrap_or_else(PoisonError::into_inner);
-    Arc::clone(cache.entry((sp.id.clone(), orchestrator)).or_insert_with(|| Arc::new(bake_species(sp, palette, orchestrator))))
+    Arc::clone(
+        cache
+            .entry((sp.id.clone(), orchestrator))
+            .or_insert_with(|| Arc::new(bake_species(sp, palette, orchestrator))),
+    )
 }
 
 fn tool_geo(id: &str, tool: &Tool, palette: &RobotPalette) -> Arc<BoneGeo> {
     let mut cache = TOOL_GEO.lock().unwrap_or_else(PoisonError::into_inner);
-    Arc::clone(cache.entry(id.to_string()).or_insert_with(|| Arc::new(bake_tool(tool, palette))))
+    Arc::clone(
+        cache
+            .entry(id.to_string())
+            .or_insert_with(|| Arc::new(bake_tool(tool, palette))),
+    )
 }
 
 /// A species' clip by name: its own (an override first), else the shared one.
@@ -153,7 +176,10 @@ fn clip_named(sp: &'static Species, name: &str) -> Option<&'static Clip> {
 fn walk_clip(sp: &'static Species) -> Option<&'static Clip> {
     let walk = format!("walk.{}", sp.locomotion);
     clip_named(sp, &walk).or_else(|| {
-        warn_once(&format!("no clip \"{walk}\" for locomotion \"{}\" (the treads walk is used)", sp.locomotion));
+        warn_once(&format!(
+            "no clip \"{walk}\" for locomotion \"{}\" (the treads walk is used)",
+            sp.locomotion
+        ));
         clip_named(sp, "walk.treads")
     })
 }
@@ -265,19 +291,33 @@ impl Robot {
 
     /// `makeRobot(hue, orchestrator, palette, bodyHue, variant)`: `variant` is a species id. The
     /// orchestrator is always the rover, larger and with its antenna light; an unknown species is the rover.
-    pub fn with_variant(hue: f32, orchestrator: bool, palette: &RobotPalette, body_hue: f32, variant: &str) -> Robot {
+    pub fn with_variant(
+        hue: f32,
+        orchestrator: bool,
+        palette: &RobotPalette,
+        body_hue: f32,
+        variant: &str,
+    ) -> Robot {
         let reg = registry();
         let wanted = if orchestrator { "rover" } else { variant };
         let sp: &'static Species = match reg.species.get(wanted) {
             Some(sp) => sp,
             None => {
-                warn_once(&format!("species \"{wanted}\" is not valid (see registry().errors); the rover is used"));
-                reg.species.get("rover").expect("the rover species is valid")
+                warn_once(&format!(
+                    "species \"{wanted}\" is not valid (see registry().errors); the rover is used"
+                ));
+                reg.species
+                    .get("rover")
+                    .expect("the rover species is valid")
             }
         };
         let palette = *palette;
         let root = Obj::group();
-        root.set_name(if orchestrator { "robot-orchestrator" } else { "robot" });
+        root.set_name(if orchestrator {
+            "robot-orchestrator"
+        } else {
+            "robot"
+        });
         root.set_scalar(if orchestrator { ORCH_SCALE } else { SCALE });
         root.set_dynamic(true);
 
@@ -286,7 +326,13 @@ impl Robot {
         let rig = instantiate(sp, &geo, &mats, &root);
         let bones = rig.bones.len();
         let joints = bones * PROPS + 1;
-        let rest_joint = |j: usize| if j == bones * PROPS { 1.0 } else { rest_of(PROP_NAMES[j % PROPS]) };
+        let rest_joint = |j: usize| {
+            if j == bones * PROPS {
+                1.0
+            } else {
+                rest_of(PROP_NAMES[j % PROPS])
+            }
+        };
         let mut robot = Robot {
             group: root,
             sp,
@@ -330,7 +376,10 @@ impl Robot {
 
     /// The world point at the species' label height above the root (the status label's anchor).
     pub fn label_anchor(&self) -> Vec3 {
-        let to_world = self.group.world_matrix_of(&self.group).unwrap_or(Mat4::IDENTITY);
+        let to_world = self
+            .group
+            .world_matrix_of(&self.group)
+            .unwrap_or(Mat4::IDENTITY);
         to_world.transform_point3(Vec3::new(0.0, self.sp.label_top, 0.0))
     }
 
@@ -361,7 +410,11 @@ impl Robot {
             RobotState::Working => 2.0,
             _ => 1.3,
         };
-        self.mats.thruster.get().color = if next == RobotState::Offline { self.palette.ink_muted } else { self.palette.info };
+        self.mats.thruster.get().color = if next == RobotState::Offline {
+            self.palette.ink_muted
+        } else {
+            self.palette.info
+        };
     }
 
     /// The state's clip: idle, type (working), the walk for the locomotion, or offline.
@@ -464,7 +517,10 @@ impl Robot {
                 return (obj, Vec3::ZERO);
             }
         }
-        (self.bone_obj("head").unwrap_or_else(|| self.group.clone()), Vec3::new(0.0, 0.3, 0.0))
+        (
+            self.bone_obj("head").unwrap_or_else(|| self.group.clone()),
+            Vec3::new(0.0, 0.3, 0.0),
+        )
     }
 
     fn spawn_at(&mut self, kind: &str, anchor: &str) {
@@ -472,7 +528,10 @@ impl Robot {
         if kind == "trail" {
             // A trail is left where the robot was: its puff goes under the root, at the bone's point in the root's
             // parent frame (the frame the robot walks in), so it does not move with the robot.
-            let stage = self.group.world_matrix_of(&obj).map_or(at, |m| m.transform_point3(at));
+            let stage = self
+                .group
+                .world_matrix_of(&obj)
+                .map_or(at, |m| m.transform_point3(at));
             self.fx.spawn(kind, &self.group, stage);
         } else {
             self.fx.spawn(kind, &obj, at);
@@ -504,8 +563,16 @@ impl Robot {
             let a = b * 3;
             let rest = self.rig.rest[b];
             let e = self.extras[b];
-            obj.set_rotation(self.cur[c] + self.acc[a], self.cur[c + 1] + self.acc[a + 1], self.cur[c + 2] + self.acc[a + 2]);
-            obj.set_position(rest[0] + self.cur[c + 3] + e.x, rest[1] + self.cur[c + 4] + e.y, rest[2] + self.cur[c + 5] + e.z);
+            obj.set_rotation(
+                self.cur[c] + self.acc[a],
+                self.cur[c + 1] + self.acc[a + 1],
+                self.cur[c + 2] + self.acc[a + 2],
+            );
+            obj.set_position(
+                rest[0] + self.cur[c + 3] + e.x,
+                rest[1] + self.cur[c + 4] + e.y,
+                rest[2] + self.cur[c + 5] + e.z,
+            );
             obj.set_scalar(self.cur[c + 6]);
         }
         let lid = self.cur[self.lid()];
@@ -566,7 +633,11 @@ impl Robot {
             *e = Vec3::ZERO;
         }
         for (i, bone) in sp.feet.iter().enumerate() {
-            let p = if self.state == RobotState::Walking { (WALK_FEET_RATE * t + i as f32 * PI).sin() } else { 0.0 };
+            let p = if self.state == RobotState::Walking {
+                (WALK_FEET_RATE * t + i as f32 * PI).sin()
+            } else {
+                0.0
+            };
             if let Some(b) = self.rig.index_of(bone) {
                 self.extras[b].y += 0.035 * p.max(0.0);
                 self.extras[b].z += 0.06 * p;
@@ -580,7 +651,11 @@ impl Robot {
             }
         }
         if sp.floats {
-            let lift = if self.state == RobotState::Offline { FLOAT_OFFLINE } else { 0.035 * (2.2 * t).sin() };
+            let lift = if self.state == RobotState::Offline {
+                FLOAT_OFFLINE
+            } else {
+                0.035 * (2.2 * t).sin()
+            };
             for name in ["base", "body"] {
                 if let Some(b) = self.rig.index_of(name) {
                     self.extras[b].y += lift;
@@ -590,7 +665,11 @@ impl Robot {
 
         self.apply();
         self.fx.update(dt, self.group.local_matrix());
-        self.mats.eye.get().emissive_intensity = if self.state == RobotState::Working { self.eye_intensity + 0.3 * (5.0 * t).sin() } else { self.eye_intensity };
+        self.mats.eye.get().emissive_intensity = if self.state == RobotState::Working {
+            self.eye_intensity + 0.3 * (5.0 * t).sin()
+        } else {
+            self.eye_intensity
+        };
         if self.orchestrator {
             self.mats.light.get().emissive_intensity = 1.1 + 0.5 * (3.0 * t).sin();
         }
@@ -599,7 +678,11 @@ impl Robot {
     /// The highlight: the matte takes the signal glow (not the glass, which never glows).
     pub fn set_highlighted(&mut self, on: bool) {
         let mut matte = self.mats.matte.get();
-        matte.emissive = if on { self.palette.signal } else { Color::BLACK };
+        matte.emissive = if on {
+            self.palette.signal
+        } else {
+            Color::BLACK
+        };
         matte.emissive_intensity = if on { 0.35 } else { 0.0 };
     }
 
@@ -614,7 +697,10 @@ impl Robot {
         let Some(clip) = clip_named(self.sp, name) else {
             return warn_once(&format!("no pose clip \"{name}\""));
         };
-        self.held_clip = Some(Timed { clip, start: self.last_t });
+        self.held_clip = Some(Timed {
+            clip,
+            start: self.last_t,
+        });
         self.once_clip = None;
         self.wave_back = None;
         let now = self.last_t;
@@ -649,10 +735,17 @@ impl Robot {
             return warn_once(&format!("no clip \"{id}\" for species \"{}\"", self.sp.id));
         };
         if looped.unwrap_or(clip.looped != Some(false)) {
-            self.held_clip = Some(Timed { clip, start: self.last_t });
+            self.held_clip = Some(Timed {
+                clip,
+                start: self.last_t,
+            });
             self.once_clip = None;
         } else {
-            self.once_clip = Some(Once { clip, start: self.last_t, dur: clip.dur.unwrap_or(1.6) });
+            self.once_clip = Some(Once {
+                clip,
+                start: self.last_t,
+                dur: clip.dur.unwrap_or(1.6),
+            });
         }
     }
 
@@ -667,9 +760,16 @@ impl Robot {
             return;
         }
         let Some(clip) = clip_named(self.sp, name) else {
-            return warn_once(&format!("no body clip \"{name}\" for species \"{}\"", self.sp.id));
+            return warn_once(&format!(
+                "no body clip \"{name}\" for species \"{}\"",
+                self.sp.id
+            ));
         };
-        self.body = Some(Body { mode, clip, start: now });
+        self.body = Some(Body {
+            mode,
+            clip,
+            start: now,
+        });
     }
 
     /// The body layer's mode (`Ground` when none is set).
@@ -686,11 +786,20 @@ impl Robot {
         let Some(tool) = registry().tools.get(id) else {
             return warn_once(&format!("no tool \"{id}\""));
         };
-        let bone_name = if tool.grip == "carry" { "carry" } else { "gripR" };
-        let Some(bone) = self.bone_obj(bone_name) else { return };
+        let bone_name = if tool.grip == "carry" {
+            "carry"
+        } else {
+            "gripR"
+        };
+        let Some(bone) = self.bone_obj(bone_name) else {
+            return;
+        };
         let holder = attach(&bone, &tool_geo(id, tool, &self.palette), &self.mats);
         if tool.grip == "two" {
-            holder.set_quaternion(Quat::from_rotation_arc(Vec3::X, self.to_grip_l.normalize_or_zero()));
+            holder.set_quaternion(Quat::from_rotation_arc(
+                Vec3::X,
+                self.to_grip_l.normalize_or_zero(),
+            ));
         } else if tool.grip == "one" {
             // The parts hang along −y; a fist turns them ahead (−y → +z), or stands them up.
             let angle = match tool.aim.as_deref() {
@@ -712,7 +821,9 @@ impl Robot {
         let Some(item) = registry().tools.get(id) else {
             return warn_once(&format!("no item \"{id}\""));
         };
-        let Some(bone) = self.bone_obj("carry") else { return };
+        let Some(bone) = self.bone_obj("carry") else {
+            return;
+        };
         let holder = attach(&bone, &tool_geo(id, item, &self.palette), &self.mats);
         self.carried = Some((bone, holder));
     }
@@ -742,11 +853,19 @@ mod tests {
         let mut checked = 0;
         for species in registry().index.species.iter().filter(|s| *s != "oracle") {
             // The shared clips with effects, and the species' own.
-            let own: Vec<String> = registry().species.get(species).map_or_else(Vec::new, |sp| sp.clips.iter().filter(|(_, c)| !c.fx.is_empty()).map(|(id, _)| id.clone()).collect());
+            let own: Vec<String> = registry().species.get(species).map_or_else(Vec::new, |sp| {
+                sp.clips
+                    .iter()
+                    .filter(|(_, c)| !c.fx.is_empty())
+                    .map(|(id, _)| id.clone())
+                    .collect()
+            });
             for clip in clips.iter().map(|(id, _)| id).chain(own.iter()) {
                 let mut robot = Robot::with_variant(200.0, false, &palette, 200.0, species);
                 // The clip that plays: a species' own clip of the name (crab.pour) replaces the shared one, effects and all.
-                let Some(played) = clip_named(robot.sp, clip) else { continue };
+                let Some(played) = clip_named(robot.sp, clip) else {
+                    continue;
+                };
                 let kinds: Vec<String> = played.fx.iter().map(|f| f.kind.clone()).collect();
                 robot.play(Some(clip), None);
                 let mut seen = std::collections::BTreeSet::new();
@@ -755,7 +874,10 @@ mod tests {
                     seen.extend(robot.fx.live_kinds());
                 }
                 for kind in &kinds {
-                    assert!(seen.contains(kind.as_str()), "{species}: clip {clip} spawned no {kind} (saw {seen:?})");
+                    assert!(
+                        seen.contains(kind.as_str()),
+                        "{species}: clip {clip} spawned no {kind} (saw {seen:?})"
+                    );
                 }
                 checked += 1;
             }
@@ -765,7 +887,13 @@ mod tests {
 
     #[test]
     fn robot_variant_cycles_through_the_species() {
-        let list: Vec<&str> = registry().index.species.iter().map(String::as_str).filter(|s| *s != "oracle").collect();
+        let list: Vec<&str> = registry()
+            .index
+            .species
+            .iter()
+            .map(String::as_str)
+            .filter(|s| *s != "oracle")
+            .collect();
         assert_eq!(robot_variant(0), list[0]);
         assert_eq!(robot_variant(list.len() as u64), list[0]);
         assert_eq!(robot_variant(1), list[1]);
@@ -773,7 +901,10 @@ mod tests {
 
     #[test]
     fn fallback_never_deals_the_oracle() {
-        assert!(registry().index.species.iter().any(|s| s == "oracle"), "the oracle is in the index");
+        assert!(
+            registry().index.species.iter().any(|s| s == "oracle"),
+            "the oracle is in the index"
+        );
         for cid in 0..10_000u64 {
             assert_ne!(robot_variant(cid), "oracle", "cid {cid}");
             assert_ne!(species_of(None, cid), "oracle", "cid {cid}");
@@ -784,15 +915,27 @@ mod tests {
     #[test]
     fn a_record_species_still_wins_when_it_is_the_oracle() {
         for cid in [0u64, 1, 7, 9_999] {
-            assert_eq!(species_of(Some("oracle"), cid), "oracle", "the record's own species, cid {cid}");
+            assert_eq!(
+                species_of(Some("oracle"), cid),
+                "oracle",
+                "the record's own species, cid {cid}"
+            );
         }
     }
 
     #[test]
     fn species_comes_from_the_agent_record() {
         let named = registry().index.species.last().expect("a species").as_str();
-        assert_eq!(species_of(Some(named), 0), named, "the record's species wins over the cid");
-        assert_eq!(species_of(Some(named), 1), named, "the record's species wins over the cid");
+        assert_eq!(
+            species_of(Some(named), 0),
+            named,
+            "the record's species wins over the cid"
+        );
+        assert_eq!(
+            species_of(Some(named), 1),
+            named,
+            "the record's species wins over the cid"
+        );
     }
 
     #[test]
@@ -819,7 +962,15 @@ mod tests {
 
     /// The joints at rest (`restOf`): a scale and the eye lids at 1, the rest at 0.
     fn web_rest(robot: &Robot) -> Vec<f32> {
-        (0..robot.cur.len()).map(|j| if j == robot.lid() || j % PROPS == 6 { 1.0 } else { 0.0 }).collect()
+        (0..robot.cur.len())
+            .map(|j| {
+                if j == robot.lid() || j % PROPS == 6 {
+                    1.0
+                } else {
+                    0.0
+                }
+            })
+            .collect()
     }
 
     /// The goals of a body clip: its bases over the rest.
@@ -828,8 +979,13 @@ mod tests {
         let clip = registry().clips.get(clip_id).expect("the shared body clip");
         let mut goals = rest.to_vec();
         for ch in &clip.channels {
-            assert!(ch.amp.is_none() && ch.freq.is_none() && ch.rate.is_none(), "{clip_id} holds still");
-            let Some(Param::Num(base)) = &ch.base else { panic!("{clip_id} has a numeric base") };
+            assert!(
+                ch.amp.is_none() && ch.freq.is_none() && ch.rate.is_none(),
+                "{clip_id} holds still"
+            );
+            let Some(Param::Num(base)) = &ch.base else {
+                panic!("{clip_id} has a numeric base")
+            };
             goals[robot.joint_of(&ch.bone, &ch.prop).expect("a joint")] = *base;
         }
         goals
@@ -857,7 +1013,12 @@ mod tests {
         let palette = robot_palette();
         let dt = 1.0 / 12.0; // the Ambient tier's rate
         let samples = [1usize, 3, 12]; // 1/12 s, 1/4 s and 1 s into the mode
-        for mode in [BodyMode::Crouch, BodyMode::Air, BodyMode::Fall, BodyMode::Land] {
+        for mode in [
+            BodyMode::Crouch,
+            BodyMode::Air,
+            BodyMode::Fall,
+            BodyMode::Land,
+        ] {
             // The clip depends only on the time since entry, so an entry at 7.5 s is the same as one at 0.
             for entered in [0.0f32, 7.5] {
                 let mut robot = Robot::new(200.0, false, &palette, 120.0);
@@ -872,7 +1033,10 @@ mod tests {
                     }
                     let want = web_joints(&robot, mode, n, dt);
                     for (j, (got, exp)) in robot.cur.iter().zip(&want).enumerate() {
-                        assert!((got - exp).abs() < 1e-5, "{mode:?} entered {entered}, {n} frames, joint {j}: {got} vs {exp}");
+                        assert!(
+                            (got - exp).abs() < 1e-5,
+                            "{mode:?} entered {entered}, {n} frames, joint {j}: {got} vs {exp}"
+                        );
                     }
                 }
             }
@@ -902,7 +1066,11 @@ mod tests {
                 robot.update(1.0 / 12.0, 1.0 / 12.0);
                 for bone in &feet {
                     let b = robot.rig.index_of(bone).expect("a foot bone");
-                    assert!((robot.extras[b].y - want).abs() < 1e-6, "{id} {mode:?}: {bone} lifts {want}, got {}", robot.extras[b].y);
+                    assert!(
+                        (robot.extras[b].y - want).abs() < 1e-6,
+                        "{id} {mode:?}: {bone} lifts {want}, got {}",
+                        robot.extras[b].y
+                    );
                 }
             }
         }

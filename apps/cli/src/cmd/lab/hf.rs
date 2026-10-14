@@ -5,7 +5,7 @@
 use std::io::{IsTerminal, Read, Write};
 
 use clap::Subcommand;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::{repo_path, size_text};
 use crate::cmd::models::{items, joined, none_if_empty};
@@ -97,7 +97,9 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
         }
         Cmd::Token(TokenCmd::Set) => {
             let value = token_from_terminal()?;
-            let reply = ctx.client.put("/v1/foundry/hf/token", &json!({ "value": value }))?;
+            let reply = ctx
+                .client
+                .put("/v1/foundry/hf/token", &json!({ "value": value }))?;
             ctx.out(&reply, |_| println!("Hugging Face token stored"));
             Ok(())
         }
@@ -106,7 +108,14 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             ctx.out(&reply, |_| println!("Hugging Face token removed"));
             Ok(())
         }
-        Cmd::Search { query, sort, task, library, limit, cursor } => {
+        Cmd::Search {
+            query,
+            sort,
+            task,
+            library,
+            limit,
+            cursor,
+        } => {
             let path = search_path(&[
                 ("search", query),
                 ("sort", sort),
@@ -128,13 +137,21 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             ctx.out(&detail, print_detail);
             Ok(())
         }
-        Cmd::Import { repo, kind, revision, files } => {
+        Cmd::Import {
+            repo,
+            kind,
+            revision,
+            files,
+        } => {
             let body = import_body(&repo, revision.as_deref(), &kind, &files);
             let reply = ctx.client.post("/v1/foundry/hf/import", &body)?;
             ctx.out(&reply, |r| {
                 let n = ctx::text(&r["import"], "n");
                 if r.get("already").and_then(Value::as_bool) == Some(true) {
-                    println!("already imported as #{n} ({})", ctx::text(&r["import"], "state"));
+                    println!(
+                        "already imported as #{n} ({})",
+                        ctx::text(&r["import"], "state")
+                    );
                 } else {
                     println!("import #{n} queued");
                 }
@@ -151,13 +168,28 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                             ctx::s(i, "id").to_string(),
                             ctx::s(i, "as").to_string(),
                             ctx::s(i, "state").to_string(),
-                            format!("{} of {}", size_text(i["bytes"].as_f64().unwrap_or(0.0)), size_text(i["total"].as_f64().unwrap_or(0.0))),
+                            format!(
+                                "{} of {}",
+                                size_text(i["bytes"].as_f64().unwrap_or(0.0)),
+                                size_text(i["total"].as_f64().unwrap_or(0.0))
+                            ),
                             ctx::when(&i["updated_ms"]),
                             outcome(i),
                         ]
                     })
                     .collect();
-                ctx::table(&["no.", "repo", "as", "state", "progress", "updated", "model or error"], &rows);
+                ctx::table(
+                    &[
+                        "no.",
+                        "repo",
+                        "as",
+                        "state",
+                        "progress",
+                        "updated",
+                        "model or error",
+                    ],
+                    &rows,
+                );
             });
             Ok(())
         }
@@ -165,7 +197,9 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             let import = ctx.client.get(&format!("/v1/foundry/hf/imports/{n}"))?;
             let state = ctx::text(&import["import"], "state");
             if !CANCELLABLE.contains(&state.as_str()) {
-                return Err(format!("import #{n} is {state}: only a queued or running import cancels (use `lab hf remove {n}`)"));
+                return Err(format!(
+                    "import #{n} is {state}: only a queued or running import cancels (use `lab hf remove {n}`)"
+                ));
             }
             let reply = ctx.client.delete(&format!("/v1/foundry/hf/imports/{n}"))?;
             ctx.out(&reply, |_| println!("import #{n} cancelled"));
@@ -191,7 +225,12 @@ fn search_path(query: &[(&str, Option<String>)]) -> String {
     let base = "/v1/foundry/hf/models";
     let pairs: Vec<String> = query
         .iter()
-        .filter_map(|(key, value)| value.as_ref().filter(|v| !v.is_empty()).map(|v| format!("{key}={}", ctx::seg(v))))
+        .filter_map(|(key, value)| {
+            value
+                .as_ref()
+                .filter(|v| !v.is_empty())
+                .map(|v| format!("{key}={}", ctx::seg(v)))
+        })
         .collect();
     if pairs.is_empty() {
         base.to_string()
@@ -223,8 +262,14 @@ fn access(gated: &Value) -> &'static str {
 
 /// The token's state, the cap, the free space and the downloads folder. Never the token.
 fn print_status(s: &Value) {
-    let token = if s["hf_token_set"].as_bool() == Some(true) { "set" } else { "not set" };
-    let free = s["free_bytes"].as_f64().map_or_else(|| "—".to_string(), size_text);
+    let token = if s["hf_token_set"].as_bool() == Some(true) {
+        "set"
+    } else {
+        "not set"
+    };
+    let free = s["free_bytes"]
+        .as_f64()
+        .map_or_else(|| "—".to_string(), size_text);
     ctx::fields(&[
         ("token", token.to_string()),
         ("size cap", format!("{} GiB", ctx::text(s, "hf_max_gb"))),
@@ -248,7 +293,19 @@ fn print_search(page: &Value) {
             ]
         })
         .collect();
-    ctx::table(&["model", "task", "library", "downloads", "likes", "updated", "access", "license"], &rows);
+    ctx::table(
+        &[
+            "model",
+            "task",
+            "library",
+            "downloads",
+            "likes",
+            "updated",
+            "access",
+            "license",
+        ],
+        &rows,
+    );
     if let Some(next) = page["next_cursor"].as_str() {
         println!("more: --cursor {next}");
     }
@@ -268,15 +325,26 @@ fn print_detail(d: &Value) {
         ("downloads", ctx::text(d, "downloads")),
         ("likes", ctx::text(d, "likes")),
         ("tags", none_if_empty(joined(d.get("tags")))),
-        ("as base", importable_text(importable, "base", "base_reason")),
-        ("as servable", importable_text(importable, "servable", "servable_reason")),
+        (
+            "as base",
+            importable_text(importable, "base", "base_reason"),
+        ),
+        (
+            "as servable",
+            importable_text(importable, "servable", "servable_reason"),
+        ),
     ]);
     let rows: Vec<Vec<String>> = items(&d["files"])
         .map(|f| {
             vec![
                 ctx::s(f, "path").to_string(),
                 size_text(f["size"].as_f64().unwrap_or(0.0)),
-                if f["lfs"].as_bool() == Some(true) { "lfs" } else { "" }.to_string(),
+                if f["lfs"].as_bool() == Some(true) {
+                    "lfs"
+                } else {
+                    ""
+                }
+                .to_string(),
             ]
         })
         .collect();
@@ -300,7 +368,11 @@ fn short_sha(sha: &str) -> String {
 
 /// An import's outcome in the queue: its model when it is done, its error when it failed, else its reason.
 fn outcome(i: &Value) -> String {
-    match (i["model_id"].as_str(), i["error"].as_str(), i["reason"].as_str()) {
+    match (
+        i["model_id"].as_str(),
+        i["error"].as_str(),
+        i["reason"].as_str(),
+    ) {
         (Some(model), _, _) => model.to_string(),
         (None, Some(error), _) => error.to_string(),
         (None, None, Some(reason)) => reason.to_string(),
@@ -317,7 +389,9 @@ fn token_from_terminal() -> Result<String, String> {
         read_hidden()?
     } else {
         let mut buf = String::new();
-        std::io::stdin().read_to_string(&mut buf).map_err(|e| format!("reading stdin: {e}"))?;
+        std::io::stdin()
+            .read_to_string(&mut buf)
+            .map_err(|e| format!("reading stdin: {e}"))?;
         buf
     };
     let token = text.trim().to_string();
@@ -368,16 +442,29 @@ mod tests {
     #[test]
     fn a_search_names_only_the_flags_given_and_encodes_their_values() {
         assert_eq!(
-            search_path(&[("search", Some("sst 2".into())), ("sort", Some("likes".into())), ("task", None)]),
+            search_path(&[
+                ("search", Some("sst 2".into())),
+                ("sort", Some("likes".into())),
+                ("task", None)
+            ]),
             "/v1/foundry/hf/models?search=sst%202&sort=likes"
         );
-        assert_eq!(search_path(&[("search", None), ("cursor", Some(String::new()))]), "/v1/foundry/hf/models");
-        assert_eq!(search_path(&[("limit", Some("5".into())), ("cursor", Some("a+b".into()))]), "/v1/foundry/hf/models?limit=5&cursor=a%2Bb");
+        assert_eq!(
+            search_path(&[("search", None), ("cursor", Some(String::new()))]),
+            "/v1/foundry/hf/models"
+        );
+        assert_eq!(
+            search_path(&[("limit", Some("5".into())), ("cursor", Some("a+b".into()))]),
+            "/v1/foundry/hf/models?limit=5&cursor=a%2Bb"
+        );
     }
 
     #[test]
     fn an_import_names_the_repo_and_kind_and_only_the_revision_and_files_given() {
-        assert_eq!(import_body("org/m", None, "base", &[]), json!({ "id": "org/m", "as": "base" }));
+        assert_eq!(
+            import_body("org/m", None, "base", &[]),
+            json!({ "id": "org/m", "as": "base" })
+        );
         assert_eq!(
             import_body("m", Some("abc1234"), "servable", &["model.onnx".into()]),
             json!({ "id": "m", "as": "servable", "revision": "abc1234", "files": ["model.onnx"] })
@@ -395,9 +482,18 @@ mod tests {
 
     #[test]
     fn an_import_says_what_it_made_or_why_it_failed() {
-        assert_eq!(outcome(&json!({ "model_id": "hf-m-1a2b", "error": null })), "hf-m-1a2b");
-        assert_eq!(outcome(&json!({ "model_id": null, "error": "disk full" })), "disk full");
-        assert_eq!(outcome(&json!({ "model_id": null, "error": null, "reason": "no onnx" })), "no onnx");
+        assert_eq!(
+            outcome(&json!({ "model_id": "hf-m-1a2b", "error": null })),
+            "hf-m-1a2b"
+        );
+        assert_eq!(
+            outcome(&json!({ "model_id": null, "error": "disk full" })),
+            "disk full"
+        );
+        assert_eq!(
+            outcome(&json!({ "model_id": null, "error": null, "reason": "no onnx" })),
+            "no onnx"
+        );
         assert_eq!(outcome(&json!({})), "");
     }
 
@@ -410,11 +506,19 @@ mod tests {
 
     #[test]
     fn the_import_kind_and_the_search_sort_are_checked_by_the_parser() {
-        assert!(Probe::command().find_subcommand("token").and_then(|t| t.find_subcommand("set")).is_some());
+        assert!(
+            Probe::command()
+                .find_subcommand("token")
+                .and_then(|t| t.find_subcommand("set"))
+                .is_some()
+        );
         assert!(Probe::try_parse_from(["hf", "token", "set", "hf_x"]).is_err());
         assert!(Probe::try_parse_from(["hf", "import", "m", "--as", "base"]).is_ok());
         assert!(Probe::try_parse_from(["hf", "import", "m", "--as", "gguf"]).is_err());
         assert!(Probe::try_parse_from(["hf", "search", "--sort", "stars"]).is_err());
-        assert!(Probe::try_parse_from(["hf", "search", "--sort", "trending", "--library", "onnx"]).is_ok());
+        assert!(
+            Probe::try_parse_from(["hf", "search", "--sort", "trending", "--library", "onnx"])
+                .is_ok()
+        );
     }
 }

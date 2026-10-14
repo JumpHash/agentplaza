@@ -38,7 +38,10 @@ pub fn resolve(v: Option<&Param>, gait: &Gait, fallback: f64) -> f64 {
     match v {
         None => fallback,
         Some(Param::Num(n)) => f64::from(*n),
-        Some(Param::Gait(name)) => name.strip_prefix("gait.").and_then(|k| gait.get(k)).map_or(fallback, f64::from),
+        Some(Param::Gait(name)) => name
+            .strip_prefix("gait.")
+            .and_then(|k| gait.get(k))
+            .map_or(fallback, f64::from),
     }
 }
 
@@ -48,9 +51,17 @@ pub fn channel_value(ch: &Channel, t: f64, gait: &Gait, elapsed: f64, dur: f64) 
     let base = resolve(ch.base.as_ref(), gait, 0.0);
     let amp = resolve(ch.amp.as_ref(), gait, 0.0);
     let freq = resolve(ch.freq.as_ref(), gait, 0.0);
-    let env = if ch.env.as_deref() == Some("in-out") && dur > 0.0 { (PI * (elapsed / dur).clamp(0.0, 1.0)).sin() } else { 1.0 };
+    let env = if ch.env.as_deref() == Some("in-out") && dur > 0.0 {
+        (PI * (elapsed / dur).clamp(0.0, 1.0)).sin()
+    } else {
+        1.0
+    };
     let phase = f64::from(ch.phase.unwrap_or(0.0)) / TAU;
-    let w = wave_at(ch.wave.as_deref().unwrap_or("sin"), freq * t + phase, f64::from(ch.duty.unwrap_or(0.5)));
+    let w = wave_at(
+        ch.wave.as_deref().unwrap_or("sin"),
+        freq * t + phase,
+        f64::from(ch.duty.unwrap_or(0.5)),
+    );
     base + amp * env * w
 }
 

@@ -191,7 +191,10 @@ pub fn reconcile(
         let reason = if missing {
             "the work folder is missing on the station".to_string()
         } else {
-            format!("{} of {mirrored} mirrored files would be deleted", deletions.len())
+            format!(
+                "{} of {mirrored} mirrored files would be deleted",
+                deletions.len()
+            )
         };
         return Ok(Outcome {
             paused: Some(SyncPause {
@@ -336,7 +339,10 @@ impl Pass<'_> {
     /// The station lost a file the hub holds unchanged, and the owner chose to restore it: the hub's copy goes back.
     fn restore_file(&mut self, path: &str, row: Option<Row>) -> Result<(), String> {
         let mut row = row.ok_or("the hub has no row for the file it restores")?;
-        let hash = row.hash.clone().ok_or("the hub has no copy of the file it restores")?;
+        let hash = row
+            .hash
+            .clone()
+            .ok_or("the hub has no copy of the file it restores")?;
         let bytes = self.blobs.get(&hash)?;
         self.remote.push(path, &hash, &bytes, None)?;
         self.out.restored += 1;
@@ -511,7 +517,10 @@ pub fn conflict_name(path: &str, station: &str, now_ms: u64, n: u32) -> String {
     } else {
         String::new()
     };
-    let name = format!("{stem} (conflict {station} {} UTC{count}){ext}", utc_stamp(now_ms));
+    let name = format!(
+        "{stem} (conflict {station} {} UTC{count}){ext}",
+        utc_stamp(now_ms)
+    );
     match dir {
         Some(dir) => format!("{dir}/{name}"),
         None => name,
@@ -693,12 +702,19 @@ impl Gate {
 
     /// Records the owner's decision for the next pass of `station`.
     pub fn decide(&self, station: &str, guard: Guard) {
-        self.guards.lock().unwrap_or_else(PoisonError::into_inner).insert(station.to_string(), guard);
+        self.guards
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(station.to_string(), guard);
     }
 
     /// Takes the decision for the pass starting now: `Check` when the owner has decided nothing since the last pass.
     fn take_guard(&self, station: &str) -> Guard {
-        self.guards.lock().unwrap_or_else(PoisonError::into_inner).remove(station).unwrap_or_default()
+        self.guards
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(station)
+            .unwrap_or_default()
     }
 
     /// Claims a pass for `station`. False when one runs already: it is asked to run once more.
@@ -800,7 +816,9 @@ fn settle_pause(app: &App, station: &str, found: Option<SyncPause>) {
     let now = apz_plaza::now_ms();
     match found {
         Some(mut pause) => {
-            let began = before.as_ref().is_none_or(|held| held.reason != pause.reason);
+            let began = before
+                .as_ref()
+                .is_none_or(|held| held.reason != pause.reason);
             pause.since_ms = match &before {
                 Some(held) if !began => held.since_ms,
                 _ => now,
@@ -808,15 +826,32 @@ fn settle_pause(app: &App, station: &str, found: Option<SyncPause>) {
             let (reason, count) = (pause.reason.clone(), pause.deletions.len());
             app.stations.set_sync_pause(station, Some(pause));
             if began {
-                if let Err(e) = ops::audit(app, Some(station), None, "sync_paused", "station", json!({"reason": reason, "deletions": count})) {
+                if let Err(e) = ops::audit(
+                    app,
+                    Some(station),
+                    None,
+                    "sync_paused",
+                    "station",
+                    json!({"reason": reason, "deletions": count}),
+                ) {
                     eprintln!("apid: workstation {station}: sync pause not audited: {e}");
                 }
-                app.bus.publish("station_sync_paused", &json!({"station": station, "reason": reason, "deletions": count}));
+                app.bus.publish(
+                    "station_sync_paused",
+                    &json!({"station": station, "reason": reason, "deletions": count}),
+                );
             }
         }
         None if before.is_some() => {
             app.stations.set_sync_pause(station, None);
-            if let Err(e) = ops::audit(app, Some(station), None, "sync_resumed", "station", json!({"by": "pass"})) {
+            if let Err(e) = ops::audit(
+                app,
+                Some(station),
+                None,
+                "sync_resumed",
+                "station",
+                json!({"by": "pass"}),
+            ) {
                 eprintln!("apid: workstation {station}: sync resume not audited: {e}");
             }
         }
@@ -827,13 +862,21 @@ fn settle_pause(app: &App, station: &str, found: Option<SyncPause>) {
 /// The owner resumes a paused station's sync. `apply_deletions` lets the held deletions through; without it, the hub's
 /// copies go back to the station. The pass runs now, over the station's live link, so the answer is the state before
 /// it. A pass that finds the cause still there pauses again.
-pub fn resume(app: &App, station: &str, apply_deletions: bool, actor: &str) -> Result<Value, Failure> {
+pub fn resume(
+    app: &App,
+    station: &str,
+    apply_deletions: bool,
+    actor: &str,
+) -> Result<Value, Failure> {
     station_or_404(app, station)?;
     let Some(pause) = app.stations.sync_pause(station) else {
         return Err((409, "the work-folder sync is not paused".into()));
     };
     if app.stations.live(station).is_none() {
-        return Err((409, "this workstation is not linked; its sync resumes when it links".into()));
+        return Err((
+            409,
+            "this workstation is not linked; its sync resumes when it links".into(),
+        ));
     }
     ops::audit(
         app,
@@ -844,7 +887,11 @@ pub fn resume(app: &App, station: &str, apply_deletions: bool, actor: &str) -> R
         json!({"apply_deletions": apply_deletions, "reason": pause.reason, "deletions": pause.deletions.len()}),
     )
     .map_err(server_error)?;
-    let guard = if apply_deletions { Guard::ApplyDeletions } else { Guard::RestoreDeletions };
+    let guard = if apply_deletions {
+        Guard::ApplyDeletions
+    } else {
+        Guard::RestoreDeletions
+    };
     app.stations.sync.decide(station, guard);
     kick(app, station);
     state(app, station)
@@ -895,13 +942,22 @@ pub fn state(app: &App, station: &str) -> Result<Value, Failure> {
     station_or_404(app, station)?;
     let rows = rows_of(app, station)?;
     let pause = app.stations.sync_pause(station);
-    Ok(state_json(station, app.stations.live(station).is_some(), &rows, pause.as_ref()))
+    Ok(state_json(
+        station,
+        app.stations.live(station).is_some(),
+        &rows,
+        pause.as_ref(),
+    ))
 }
 
 /// The body of `GET .../sync`, built from the station's rows and its pause.
 fn state_json(station: &str, linked: bool, rows: &[Row], pause: Option<&SyncPause>) -> Value {
     let live: Vec<&Row> = rows.iter().filter(|r| r.hash.is_some()).collect();
-    let conflicts: Vec<FileView> = live.iter().filter(|r| r.conflict_of.is_some()).map(|r| view(r)).collect();
+    let conflicts: Vec<FileView> = live
+        .iter()
+        .filter(|r| r.conflict_of.is_some())
+        .map(|r| view(r))
+        .collect();
     json!({
         "station": station,
         "linked": linked,
@@ -1240,7 +1296,16 @@ mod tests {
         now: u64,
         limits: Limits,
     ) -> Result<Outcome, String> {
-        super::reconcile(station, station_name, remote, blobs, ledger, now, limits, Guard::Check)
+        super::reconcile(
+            station,
+            station_name,
+            remote,
+            blobs,
+            ledger,
+            now,
+            limits,
+            Guard::Check,
+        )
     }
 
     fn pass(station: &Station, hub: &Hub) -> Outcome {
@@ -1512,8 +1577,13 @@ mod tests {
 
     /// A station with `total` files, all mirrored and agreed on the hub.
     fn mirror_of(total: usize) -> (Station, Hub) {
-        let files: Vec<(String, Vec<u8>)> = (0..total).map(|i| (format!("f{i:03}.txt"), format!("content {i}").into_bytes())).collect();
-        let refs: Vec<(&str, &[u8])> = files.iter().map(|(p, b)| (p.as_str(), b.as_slice())).collect();
+        let files: Vec<(String, Vec<u8>)> = (0..total)
+            .map(|i| (format!("f{i:03}.txt"), format!("content {i}").into_bytes()))
+            .collect();
+        let refs: Vec<(&str, &[u8])> = files
+            .iter()
+            .map(|(p, b)| (p.as_str(), b.as_slice()))
+            .collect();
         let station = Station::with(&refs);
         let hub = Hub::default();
         pass(&station, &hub);
@@ -1521,11 +1591,25 @@ mod tests {
     }
 
     fn live_rows(hub: &Hub) -> usize {
-        hub.rows.borrow().values().filter(|r| r.hash.is_some()).count()
+        hub.rows
+            .borrow()
+            .values()
+            .filter(|r| r.hash.is_some())
+            .count()
     }
 
     fn decide(station: &Station, hub: &Hub, guard: Guard) -> Outcome {
-        super::reconcile("ws-7", "desk-1", station, hub, hub, NOW, Limits::default(), guard).unwrap()
+        super::reconcile(
+            "ws-7",
+            "desk-1",
+            station,
+            hub,
+            hub,
+            NOW,
+            Limits::default(),
+            guard,
+        )
+        .unwrap()
     }
 
     #[test]
@@ -1535,17 +1619,38 @@ mod tests {
         let out = pass(&station, &hub);
         let pause = out.paused.expect("the sync pauses");
         assert_eq!(pause.reason, "the work folder is missing on the station");
-        assert_eq!(pause.deletions.len(), 40, "every file it would delete is held");
-        assert_eq!((out.deleted, out.pulled, out.pushed), (0, 0, 0), "nothing moves while paused");
+        assert_eq!(
+            pause.deletions.len(),
+            40,
+            "every file it would delete is held"
+        );
+        assert_eq!(
+            (out.deleted, out.pulled, out.pushed),
+            (0, 0, 0),
+            "nothing moves while paused"
+        );
         assert_eq!(live_rows(&hub), 40, "the hub keeps every file");
 
-        assert!(decide(&station, &hub, Guard::ApplyDeletions).paused.is_some(), "a missing folder never loses files to a decision");
-        assert!(decide(&station, &hub, Guard::RestoreDeletions).paused.is_some(), "nor is anything restored into it");
+        assert!(
+            decide(&station, &hub, Guard::ApplyDeletions)
+                .paused
+                .is_some(),
+            "a missing folder never loses files to a decision"
+        );
+        assert!(
+            decide(&station, &hub, Guard::RestoreDeletions)
+                .paused
+                .is_some(),
+            "nor is anything restored into it"
+        );
         assert_eq!(live_rows(&hub), 40);
 
         station.set_missing(false);
         let back = pass(&station, &hub);
-        assert!(back.paused.is_none(), "the folder is back: nothing is held any more");
+        assert!(
+            back.paused.is_none(),
+            "the folder is back: nothing is held any more"
+        );
         assert_eq!(back, Outcome::default());
     }
 
@@ -1568,7 +1673,10 @@ mod tests {
         assert_eq!(live_rows(&hub), 40, "no deletion reached the hub");
 
         let applied = decide(&station, &hub, Guard::ApplyDeletions);
-        assert!(applied.paused.is_none(), "the owner's decision lets the pass through");
+        assert!(
+            applied.paused.is_none(),
+            "the owner's decision lets the pass through"
+        );
         assert_eq!(applied.deleted, 40);
         assert_eq!(live_rows(&hub), 0);
     }
@@ -1585,7 +1693,11 @@ mod tests {
         assert_eq!(station.files.borrow().len(), 40);
         assert_eq!(station.files.borrow()["f003.txt"], b"content 3");
         assert_eq!(live_rows(&hub), 40, "the hub's copies stay live");
-        assert_eq!(pass(&station, &hub), Outcome::default(), "the next pass has nothing to move");
+        assert_eq!(
+            pass(&station, &hub),
+            Outcome::default(),
+            "the next pass has nothing to move"
+        );
     }
 
     #[test]
@@ -1598,13 +1710,25 @@ mod tests {
             }
             pass(&station, &hub)
         };
-        assert!(after(40, 20).paused.is_none(), "twenty is not more than twenty");
-        assert!(after(100, 21).paused.is_none(), "21 is less than a quarter of 100");
-        assert!(after(40, 21).paused.is_some(), "21 of 40 is more than a quarter");
+        assert!(
+            after(40, 20).paused.is_none(),
+            "twenty is not more than twenty"
+        );
+        assert!(
+            after(100, 21).paused.is_none(),
+            "21 is less than a quarter of 100"
+        );
+        assert!(
+            after(40, 21).paused.is_some(),
+            "21 of 40 is more than a quarter"
+        );
         assert!(after(21, 21).paused.is_some());
         let few = after(100, 5);
         assert!(few.paused.is_none());
-        assert_eq!(few.deleted, 5, "a few deletions go through as they always did");
+        assert_eq!(
+            few.deleted, 5,
+            "a few deletions go through as they always did"
+        );
     }
 
     #[test]
@@ -1640,12 +1764,24 @@ mod tests {
     #[test]
     fn the_owners_decision_is_taken_once_by_the_next_pass() {
         let gate = Gate::default();
-        assert_eq!(gate.take_guard("ws-7"), Guard::Check, "no decision: a check");
+        assert_eq!(
+            gate.take_guard("ws-7"),
+            Guard::Check,
+            "no decision: a check"
+        );
         gate.decide("ws-7", Guard::RestoreDeletions);
         assert_eq!(gate.take_guard("ws-7"), Guard::RestoreDeletions);
-        assert_eq!(gate.take_guard("ws-7"), Guard::Check, "a later pass checks again");
+        assert_eq!(
+            gate.take_guard("ws-7"),
+            Guard::Check,
+            "a later pass checks again"
+        );
         gate.decide("ws-7", Guard::ApplyDeletions);
-        assert_eq!(gate.take_guard("ws-8"), Guard::Check, "a decision is for its own station");
+        assert_eq!(
+            gate.take_guard("ws-8"),
+            Guard::Check,
+            "a decision is for its own station"
+        );
     }
 
     #[test]

@@ -47,11 +47,13 @@ use crate::devices::virtio::vsock::Vsock;
 use crate::devices::virtio::vsock::mmio_device::VsockMmioDevice;
 use crate::devices::virtio::vsock::unix::VsockUnixBackend;
 use crate::devices::virtio::vsock::{VsockError, event_thread};
+use crate::pal::AsRawFd;
 use crate::pal::epoll::{ControlOperation, Epoll, EpollEvent, EventSet};
 use crate::pal::eventfd::{EFD_NONBLOCK, EventFd};
-use crate::pal::AsRawFd;
 use crate::spawner::{SpawnError, VmRuntime, VmSpec};
-use crate::vstate::memory::{GuestMemoryMmap, GuestRegionMmapExt, MemoryError, anonymous, mib_to_bytes};
+use crate::vstate::memory::{
+    GuestMemoryMmap, GuestRegionMmapExt, MemoryError, anonymous, mib_to_bytes,
+};
 use crate::vstate::resources::ResourceAllocator;
 
 /// Serial port 1 (`COM1`): base and window, and its ISA IRQ.
@@ -191,7 +193,11 @@ fn boot_inner(spec: &VmSpec, runtime: &Arc<VmRuntime>) -> Result<(), BootError> 
         // reference only when the vCPU threads have finished.
         #[allow(unsafe_code)]
         unsafe {
-            partition.map_memory(region.as_ptr(), region.start_addr().raw_value(), region.len())?;
+            partition.map_memory(
+                region.as_ptr(),
+                region.start_addr().raw_value(),
+                region.len(),
+            )?;
         }
     }
 
@@ -319,24 +325,35 @@ fn boot_inner(spec: &VmSpec, runtime: &Arc<VmRuntime>) -> Result<(), BootError> 
         Arc::clone(&vm.exit.finish_requested),
     )));
     let ioapic = Arc::new(Mutex::new(IoApicMmio(Arc::clone(&interrupts))));
-    vm.pio.insert(serial.clone(), SERIAL_PORT_ADDRESS, SERIAL_PORT_SIZE)?;
-    vm.pio.insert(i8042.clone(), I8042_DATA_PORT, I8042_DATA_PORT_SIZE)?;
-    vm.pio.insert(pm1.clone(), SLEEP_CONTROL_PORT, PM1_CNT_SIZE)?;
-    vm.mmio.insert(ioapic.clone(), IOAPIC_WINDOW.0, IOAPIC_WINDOW.1)?;
+    vm.pio
+        .insert(serial.clone(), SERIAL_PORT_ADDRESS, SERIAL_PORT_SIZE)?;
+    vm.pio
+        .insert(i8042.clone(), I8042_DATA_PORT, I8042_DATA_PORT_SIZE)?;
+    vm.pio
+        .insert(pm1.clone(), SLEEP_CONTROL_PORT, PM1_CNT_SIZE)?;
+    vm.mmio
+        .insert(ioapic.clone(), IOAPIC_WINDOW.0, IOAPIC_WINDOW.1)?;
 
     // Interrupt sources the relay polls: (event, I/O APIC pin).
     let mut irq_sources: Vec<(EventFd, usize)> = Vec::new();
     {
-        let serial = serial.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let serial = serial
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         irq_sources.push((
             EventFd::try_clone(serial.serial.interrupt_evt()).map_err(BootError::Device)?,
             COM1_IRQ,
         ));
     }
     {
-        let i8042 = i8042.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let i8042 = i8042
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         irq_sources.push((
-            i8042.kbd_interrupt_evt.try_clone().map_err(BootError::Device)?,
+            i8042
+                .kbd_interrupt_evt
+                .try_clone()
+                .map_err(BootError::Device)?,
             KBD_IRQ,
         ));
     }
@@ -347,7 +364,10 @@ fn boot_inner(spec: &VmSpec, runtime: &Arc<VmRuntime>) -> Result<(), BootError> 
     let vsock = match &spec.vsock {
         Some(config) => {
             let irq = EventFd::new(EFD_NONBLOCK).map_err(BootError::Device)?;
-            irq_sources.push((irq.try_clone().map_err(BootError::Device)?, VSOCK_GSI as usize));
+            irq_sources.push((
+                irq.try_clone().map_err(BootError::Device)?,
+                VSOCK_GSI as usize,
+            ));
             let backend = VsockUnixBackend::new(
                 config.guest_cid,
                 config.uds_path.to_string_lossy().into_owned(),
@@ -370,7 +390,8 @@ fn boot_inner(spec: &VmSpec, runtime: &Arc<VmRuntime>) -> Result<(), BootError> 
                 vm.memory.clone(),
                 irq,
             )));
-            vm.mmio.insert(transport.clone(), VSOCK_MMIO_START, MMIO_LEN)?;
+            vm.mmio
+                .insert(transport.clone(), VSOCK_MMIO_START, MMIO_LEN)?;
             Some(transport)
         }
         None => None,
@@ -569,4 +590,3 @@ fn wait_for_exit(vm: &WhpVm) {
         }
     }
 }
-

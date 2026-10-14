@@ -2,8 +2,8 @@
 //! the plaza's state, plus the visible tab's endpoint); the event thread holds the `/v1/ws` socket.
 //! Both send to the UI thread, which owns all the state and draws about 20 times a second.
 
-use std::collections::{HashMap, VecDeque};
 use std::collections::vec_deque;
+use std::collections::{HashMap, VecDeque};
 use std::io::{self, Write};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread;
@@ -161,7 +161,12 @@ impl Palette {
                 muted: Color::Rgb(0x86, 0x8e, 0x96),
             }
         } else {
-            Palette { accent: Color::Red, paper: Color::White, ok: Color::Green, muted: Color::DarkGray }
+            Palette {
+                accent: Color::Red,
+                paper: Color::White,
+                ok: Color::Green,
+                muted: Color::DarkGray,
+            }
         }
     }
 }
@@ -197,7 +202,10 @@ pub struct EventLog {
 
 impl EventLog {
     pub fn new(cap: usize) -> EventLog {
-        EventLog { lines: VecDeque::new(), cap }
+        EventLog {
+            lines: VecDeque::new(),
+            cap,
+        }
     }
 
     pub fn push(&mut self, line: String) {
@@ -382,8 +390,12 @@ impl App {
     }
 
     fn on_onboarding_key(&mut self, code: KeyCode) {
-        let Some(input) = onboarding::input_for(code) else { return };
-        let Some(ob) = self.onboarding.as_mut() else { return };
+        let Some(input) = onboarding::input_for(code) else {
+            return;
+        };
+        let Some(ob) = self.onboarding.as_mut() else {
+            return;
+        };
         match ob.deps_key(input) {
             DepsKey::Handled => return,
             DepsKey::Run(needs) => {
@@ -392,7 +404,9 @@ impl App {
             }
             DepsKey::Pass => {}
         }
-        let Some(stage) = self.onboarding.as_ref().map(|ob| ob.stage) else { return };
+        let Some(stage) = self.onboarding.as_ref().map(|ob| ob.stage) else {
+            return;
+        };
         let Step { next, mark } = onboarding::advance(stage, input);
         match next {
             Some(to) => {
@@ -421,7 +435,11 @@ impl App {
 
     /// An endpoint's answer when it is an array.
     pub fn array(&self, path: &str) -> &[Value] {
-        self.data.get(path).and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[])
+        self.data
+            .get(path)
+            .and_then(Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
     }
 
     /// The classifier's context for the agent text on screen: the agents the app has polled, so `@Name` is a chip.
@@ -440,7 +458,11 @@ impl App {
     }
 
     pub fn paused(&self) -> bool {
-        self.data.get("/v1/plaza/state").and_then(|v| v.get("paused")).and_then(Value::as_bool).unwrap_or(false)
+        self.data
+            .get("/v1/plaza/state")
+            .and_then(|v| v.get("paused"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
     }
 
     /// The rows of the visible tab's list (0 for the tabs without one).
@@ -557,7 +579,12 @@ impl App {
     /// Points the detail poller at the workstation the Workstations tab selects (and at none, off that tab).
     fn follow_selected_station(&mut self) {
         let wanted = match self.tab {
-            Tab::Workstations => self.array("/v1/stations").get(self.selected).and_then(|s| s.get("id")).and_then(Value::as_str).map(str::to_string),
+            Tab::Workstations => self
+                .array("/v1/stations")
+                .get(self.selected)
+                .and_then(|s| s.get("id"))
+                .and_then(Value::as_str)
+                .map(str::to_string),
             _ => None,
         };
         if wanted != self.station_watched {
@@ -590,7 +617,8 @@ impl App {
         screens::tab_bar(frame, tabs, self);
         match self.tab {
             Tab::Floor => {
-                let [floor, events] = Layout::vertical([Constraint::Min(0), Constraint::Length(7)]).areas(body);
+                let [floor, events] =
+                    Layout::vertical([Constraint::Min(0), Constraint::Length(7)]).areas(body);
                 self.floor.render(frame, floor);
                 screens::event_log(frame, events, self);
             }
@@ -618,7 +646,11 @@ impl App {
         }
         let typing = self.tab == Tab::Workspace && self.ws.captures_keys();
         // With a takeover panel open, Ctrl+C gives the session back rather than quitting (the panel takes it below).
-        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') && !typing && self.desk.is_none() {
+        if key.modifiers.contains(KeyModifiers::CONTROL)
+            && key.code == KeyCode::Char('c')
+            && !typing
+            && self.desk.is_none()
+        {
             if self.draft.is_none() {
                 return true;
             }
@@ -676,7 +708,11 @@ impl App {
             KeyCode::Char('a') => self.ask_decision(true),
             KeyCode::Char('d') => self.ask_decision(false),
             KeyCode::Char('s') => {
-                self.confirm = Some(if self.paused() { Confirm::Resume } else { Confirm::StopAll });
+                self.confirm = Some(if self.paused() {
+                    Confirm::Resume
+                } else {
+                    Confirm::StopAll
+                });
             }
             KeyCode::Char('r') => {
                 let _ = self.watch.send(self.tab.path());
@@ -713,7 +749,10 @@ impl App {
     }
 
     fn selected_agent_cid(&self) -> Option<i64> {
-        self.agents().get(self.selected).and_then(|a| a.get("cid")).and_then(Value::as_i64)
+        self.agents()
+            .get(self.selected)
+            .and_then(|a| a.get("cid"))
+            .and_then(Value::as_i64)
     }
 
     fn start_draft(&mut self) {
@@ -726,7 +765,9 @@ impl App {
     }
 
     fn on_draft_key(&mut self, code: KeyCode) {
-        let Some((cid, mut text)) = self.draft.take() else { return };
+        let Some((cid, mut text)) = self.draft.take() else {
+            return;
+        };
         match code {
             KeyCode::Esc => {}
             KeyCode::Enter => {
@@ -774,14 +815,24 @@ impl App {
             let say = |report: control::Report| {
                 let _ = tx.send(Msg::Desk(number, report));
             };
-            control::run_panel(&target, &taking, cmd::stations::screen::DEFAULT_SESSION, &rx, &say);
+            control::run_panel(
+                &target,
+                &taking,
+                cmd::stations::screen::DEFAULT_SESSION,
+                &rx,
+                &say,
+            );
         });
         self.desk = Some(workstations::Panel::new(number, station, orders));
     }
 
     /// A report of the takeover panel with that number. Its end closes the panel, unless it is already closed.
     fn on_desk_report(&mut self, number: u64, report: control::Report) {
-        if self.desk.as_ref().is_none_or(|panel| panel.number != number) {
+        if self
+            .desk
+            .as_ref()
+            .is_none_or(|panel| panel.number != number)
+        {
             return;
         }
         match report {
@@ -808,7 +859,9 @@ impl App {
             self.close_desk();
             return;
         }
-        let Some(panel) = self.desk.as_mut() else { return };
+        let Some(panel) = self.desk.as_mut() else {
+            return;
+        };
         match key.code {
             KeyCode::Enter => {
                 let line = std::mem::take(&mut panel.line);
@@ -840,26 +893,42 @@ impl App {
         if self.tab != Tab::Approvals {
             return;
         }
-        let Some(item) = self.array("/v1/approvals").get(self.selected) else { return };
-        let id = item.get("id").and_then(Value::as_str).unwrap_or_default().to_string();
+        let Some(item) = self.array("/v1/approvals").get(self.selected) else {
+            return;
+        };
+        let id = item
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
         if item.get("state").and_then(Value::as_str) != Some("pending") {
             self.notice = Some("that approval is already decided".to_string());
             return;
         }
-        self.confirm = Some(if approve { Confirm::Approve(id) } else { Confirm::Deny(id) });
+        self.confirm = Some(if approve {
+            Confirm::Approve(id)
+        } else {
+            Confirm::Deny(id)
+        });
     }
 
     fn run(&mut self, confirm: Confirm) {
         match confirm {
             Confirm::StopAll => self.run_job("stop all".to_string(), |c| {
-                c.post("/v1/plaza/stop", &json!({ "reason": "stopped from the terminal" }))
+                c.post(
+                    "/v1/plaza/stop",
+                    &json!({ "reason": "stopped from the terminal" }),
+                )
             }),
-            Confirm::Resume => self.run_job("resume".to_string(), |c| c.post("/v1/plaza/resume", &json!({}))),
+            Confirm::Resume => self.run_job("resume".to_string(), |c| {
+                c.post("/v1/plaza/resume", &json!({}))
+            }),
             Confirm::Approve(id) => self.decide(id, true),
             Confirm::Deny(id) => self.decide(id, false),
-            Confirm::CancelWork(cid) => self.run_job(format!("stop agent {cid}'s work"), move |c| {
-                c.post(&format!("/v1/agents/{cid}/cancel"), &json!({}))
-            }),
+            Confirm::CancelWork(cid) => self
+                .run_job(format!("stop agent {cid}'s work"), move |c| {
+                    c.post(&format!("/v1/agents/{cid}/cancel"), &json!({}))
+                }),
         }
     }
 
@@ -870,18 +939,24 @@ impl App {
             match effect {
                 Effect::Fetch(want) => self.fetch(want),
                 Effect::Agents => self.fetch_agents(),
-                Effect::Steer { cid, text } => self.run_job(format!("message to agent {cid}"), move |c| {
-                    c.post(&format!("/v1/agents/{cid}/chat"), &json!({ "text": text }))
-                }),
+                Effect::Steer { cid, text } => self
+                    .run_job(format!("message to agent {cid}"), move |c| {
+                        c.post(&format!("/v1/agents/{cid}/chat"), &json!({ "text": text }))
+                    }),
                 Effect::Post { project, body } => {
                     let mentions = cmd::board::mentions_in(&body);
                     self.run_job("post to the board".to_string(), move |c| {
-                        c.post("/v1/board/posts", &json!({ "body": body, "project": project, "mentions": mentions }))
+                        c.post(
+                            "/v1/board/posts",
+                            &json!({ "body": body, "project": project, "mentions": mentions }),
+                        )
                     });
                 }
                 Effect::Pause { project, on } => {
                     let label = format!("{} the board", if on { "pause" } else { "resume" });
-                    self.run_job(label, move |c| c.post("/v1/board/pause", &json!({ "on": on, "project": project })));
+                    self.run_job(label, move |c| {
+                        c.post("/v1/board/pause", &json!({ "on": on, "project": project }))
+                    });
                 }
                 Effect::Export { project } => self.export(project),
                 Effect::AskStop(cid) => self.confirm = Some(Confirm::CancelWork(cid)),
@@ -903,14 +978,22 @@ impl App {
                         Some(id) => format!("/v1/board?project={}", seg(id)),
                         None => "/v1/board".to_string(),
                     };
-                    Got::Board { project, result: client.get(&path) }
+                    Got::Board {
+                        project,
+                        result: client.get(&path),
+                    }
                 }
                 Want::Transcript { cid, after } => {
                     let path = match after {
                         Some(seq) => format!("/v1/agents/{cid}/transcript?after={seq}&limit=1000"),
-                        None => format!("/v1/agents/{cid}/transcript?last={}", workspace::FIRST_LOAD),
+                        None => {
+                            format!("/v1/agents/{cid}/transcript?last={}", workspace::FIRST_LOAD)
+                        }
                     };
-                    Got::Transcript { cid, result: client.get(&path) }
+                    Got::Transcript {
+                        cid,
+                        result: client.get(&path),
+                    }
                 }
             };
             let _ = tx.send(Msg::Workspace(got));
@@ -929,7 +1012,10 @@ impl App {
     /// The board (all of it, or the project's) as a Markdown file in the working directory: `E` in the workspace.
     fn export(&mut self, project: Option<String>) {
         let scope: String = match project.as_deref() {
-            Some(id) => id.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_').collect(),
+            Some(id) => id
+                .chars()
+                .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+                .collect(),
             None => "all".to_string(),
         };
         let name = format!("agentplaza-board-{scope}.md");
@@ -950,9 +1036,15 @@ impl App {
     }
 
     fn decide(&mut self, id: String, approve: bool) {
-        let label = format!("{} {}", if approve { "approve" } else { "deny" }, short(&id));
+        let label = format!(
+            "{} {}",
+            if approve { "approve" } else { "deny" },
+            short(&id)
+        );
         let path = format!("/v1/approvals/{}", seg(&id));
-        self.run_job(label, move |c| c.post(&path, &json!({ "approve": approve })));
+        self.run_job(label, move |c| {
+            c.post(&path, &json!({ "approve": approve }))
+        });
     }
 
     /// Runs one hub call on its own thread; its result comes back as a notice.
@@ -1022,7 +1114,10 @@ fn follow_station(mut client: Client, watched: Receiver<Option<String>>, tx: Sen
     loop {
         if let Some(id) = current.clone() {
             let sync = client.get(&format!("/v1/stations/{}/sync", seg(&id)));
-            let recent = client.get(&format!("/v1/stations/recordings?station={}&limit={RECENT_RECORDINGS}", seg(&id)));
+            let recent = client.get(&format!(
+                "/v1/stations/recordings?station={}&limit={RECENT_RECORDINGS}",
+                seg(&id)
+            ));
             if tx.send(Msg::Station(id.clone(), "sync", sync)).is_err() {
                 return;
             }
@@ -1042,9 +1137,13 @@ fn follow_station(mut client: Client, watched: Receiver<Option<String>>, tx: Sen
 fn follow_events(target: Target, tx: Sender<Msg>) {
     let mut wait = Duration::from_millis(500);
     loop {
-        if let Ok(mut socket) =
-            ws::connect(&target, "/v1/ws", Some("apz.events.v1"), Duration::from_secs(10), ws::Limits::default())
-        {
+        if let Ok(mut socket) = ws::connect(
+            &target,
+            "/v1/ws",
+            Some("apz.events.v1"),
+            Duration::from_secs(10),
+            ws::Limits::default(),
+        ) {
             wait = Duration::from_millis(500);
             if tx.send(Msg::Link(true)).is_err() {
                 return;
@@ -1157,7 +1256,8 @@ pub fn run(client: Client, start: Option<Stage>) -> Result<(), String> {
     let mut last = Instant::now();
     loop {
         app.drain();
-        term.draw(|frame| app.draw(frame)).map_err(|e| e.to_string())?;
+        term.draw(|frame| app.draw(frame))
+            .map_err(|e| e.to_string())?;
         if event::poll(FRAME).map_err(|e| e.to_string())? {
             if let Event::Key(key) = event::read().map_err(|e| e.to_string())? {
                 if app.on_key(key) {
@@ -1174,7 +1274,13 @@ pub fn run(client: Client, start: Option<Stage>) -> Result<(), String> {
 /// `APZ_TUI_SNAPSHOT=<file>`: runs the app off-screen for `secs` seconds against the hub (polls and
 /// live events as usual), then writes every tab as plain text, `width`×`height`, into `path` —
 /// the terminal UI's equivalent of the desktop app's `APZ_SNAPSHOT`.
-pub fn snapshot(client: Client, path: &std::path::Path, width: u16, height: u16, secs: f32) -> Result<(), String> {
+pub fn snapshot(
+    client: Client,
+    path: &std::path::Path,
+    width: u16,
+    height: u16,
+    secs: f32,
+) -> Result<(), String> {
     let mut app = App::new(client);
     let started = Instant::now();
     let mut last = started;
@@ -1195,12 +1301,16 @@ pub fn snapshot(client: Client, path: &std::path::Path, width: u16, height: u16,
             thread::sleep(Duration::from_millis(50));
             app.tick(0.05);
         }
-        let mut term = Terminal::new(ratatui::backend::TestBackend::new(width, height)).map_err(|e| e.to_string())?;
-        term.draw(|frame| app.draw(frame)).map_err(|e| e.to_string())?;
+        let mut term = Terminal::new(ratatui::backend::TestBackend::new(width, height))
+            .map_err(|e| e.to_string())?;
+        term.draw(|frame| app.draw(frame))
+            .map_err(|e| e.to_string())?;
         let buffer = term.backend().buffer();
         out.push_str(&format!("──── tab {} {:?} ────\n", i + 1, tab));
         for y in 0..buffer.area.height {
-            let line: String = (0..buffer.area.width).map(|x| buffer[(x, y)].symbol().to_string()).collect();
+            let line: String = (0..buffer.area.width)
+                .map(|x| buffer[(x, y)].symbol().to_string())
+                .collect();
             out.push_str(line.trim_end());
             out.push('\n');
         }
@@ -1227,10 +1337,19 @@ mod tests {
 
     #[test]
     fn the_takeover_and_sync_events_refresh_the_workstations_tab() {
-        for kind in ["station_takeover", "station_give_back", "station_sync_conflict", "station_sync_paused", "lease_granted"] {
+        for kind in [
+            "station_takeover",
+            "station_give_back",
+            "station_sync_conflict",
+            "station_sync_paused",
+            "lease_granted",
+        ] {
             assert!(is_station_change(kind), "{kind} changes the tab");
         }
-        assert!(!is_station_change("station_sync"), "a pass that moved files is read on the next poll");
+        assert!(
+            !is_station_change("station_sync"),
+            "a pass that moved files is read on the next poll"
+        );
         assert!(!is_station_change("owner_input"));
     }
 

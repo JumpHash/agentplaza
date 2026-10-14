@@ -6,17 +6,20 @@
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 
-use iced::widget::{column, container, image, row, text, text_input, Space};
-use iced::{font, Element, Fill, Font, Length, Task};
+use iced::widget::{Space, column, container, image, row, text, text_input};
+use iced::{Element, Fill, Font, Length, Task, font};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::Id;
-use crate::console::{client, events, ui, Ctx};
+use crate::console::{Ctx, client, events, ui};
 use crate::theme;
 
 /// Serif semibold: a card's title (the web's `.prov-title h3`).
-const SEMIBOLD: Font = Font { weight: font::Weight::Semibold, ..theme::SANS };
+const SEMIBOLD: Font = Font {
+    weight: font::Weight::Semibold,
+    ..theme::SANS
+};
 
 /// Text files up to this size are read into the detail view; larger ones are save-only.
 const TEXT_LIMIT: usize = 200 * 1024;
@@ -113,7 +116,13 @@ pub enum Group {
 }
 
 impl Group {
-    const ALL: [Group; 5] = [Group::Video, Group::Image, Group::Audio, Group::Documents, Group::Other];
+    const ALL: [Group; 5] = [
+        Group::Video,
+        Group::Image,
+        Group::Audio,
+        Group::Documents,
+        Group::Other,
+    ];
 
     fn of(content_type: &str) -> Group {
         let t = content_type.to_lowercase();
@@ -275,9 +284,15 @@ pub fn go(msg: &Msg) -> Option<Id> {
 pub fn load(state: &mut State, ctx: &Ctx) -> Task<Msg> {
     let files_client = ctx.client.clone();
     let path = format!("/v1/files?kind={}", state.scope.param());
-    let files = client::task(move || files_client.get::<Vec<Deliverable>>(&path), Msg::Files);
+    let files = client::task(
+        move || files_client.get::<Vec<Deliverable>>(&path),
+        Msg::Files,
+    );
     let tools_client = ctx.client.clone();
-    let tools = client::task(move || tools_client.get::<Vec<LibraryTool>>("/v1/library"), Msg::Tools);
+    let tools = client::task(
+        move || tools_client.get::<Vec<LibraryTool>>("/v1/library"),
+        Msg::Tools,
+    );
     Task::batch([files, tools])
 }
 
@@ -327,7 +342,9 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             if state.open.is_some() {
                 return Task::none();
             }
-            let picked = state.kbd.and_then(|i| visible(state).get(i).map(|d| d.id.clone()));
+            let picked = state
+                .kbd
+                .and_then(|i| visible(state).get(i).map(|d| d.id.clone()));
             match picked.or_else(|| state.selected.clone()) {
                 Some(id) => open(state, id, ctx),
                 None => Task::none(),
@@ -485,12 +502,18 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
     if let Some(n) = &state.notice {
         items.push(ui::faint(n.as_str()).into());
     }
-    let open = state.open.as_deref().and_then(|id| state.files.iter().find(|d| d.id == id));
+    let open = state
+        .open
+        .as_deref()
+        .and_then(|id| state.files.iter().find(|d| d.id == id));
     match open {
         Some(d) => items.push(detail(state, d)),
         None => list(state, &mut items),
     }
-    ui::sheet(ui::view_head("Library", vec![]), ui::scroll(column(items).spacing(16).width(Fill)).into())
+    ui::sheet(
+        ui::view_head("Library", vec![]),
+        ui::scroll(column(items).spacing(16).width(Fill)).into(),
+    )
 }
 
 // ---- Files ----------------------------------------------------------------------------------
@@ -498,8 +521,14 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
 /// Opens a file: loads its preview if the type has one, else says so.
 fn open(state: &mut State, id: String, ctx: &Ctx) -> Task<Msg> {
     state.selected = Some(id.clone());
-    let video = state.files.iter().any(|d| d.id == id && Group::of(&d.content_type) == Group::Video);
-    let pdf = state.files.iter().any(|d| d.id == id && is_pdf(&d.content_type));
+    let video = state
+        .files
+        .iter()
+        .any(|d| d.id == id && Group::of(&d.content_type) == Group::Video);
+    let pdf = state
+        .files
+        .iter()
+        .any(|d| d.id == id && is_pdf(&d.content_type));
     if video || pdf {
         state.open = Some(id);
         state.notice = None;
@@ -520,7 +549,10 @@ fn open(state: &mut State, id: String, ctx: &Ctx) -> Task<Msg> {
             fetch_preview(ctx, id)
         }
         Shown::TooLarge => {
-            state.preview = Preview::Note(format!("Too large to preview ({}). Save it to read it.", human_size(size)));
+            state.preview = Preview::Note(format!(
+                "Too large to preview ({}). Save it to read it.",
+                human_size(size)
+            ));
             Task::none()
         }
         Shown::Nothing => {
@@ -533,7 +565,10 @@ fn open(state: &mut State, id: String, ctx: &Ctx) -> Task<Msg> {
 fn fetch_preview(ctx: &Ctx, id: String) -> Task<Msg> {
     let client = ctx.client.clone();
     let path = format!("/v1/files/{id}/content");
-    client::task(move || fetch_bytes(&client, &path), move |r| Msg::PreviewLoaded(id.clone(), r))
+    client::task(
+        move || fetch_bytes(&client, &path),
+        move |r| Msg::PreviewLoaded(id.clone(), r),
+    )
 }
 
 fn preview_loaded(state: &mut State, id: &str, result: Result<Vec<u8>, String>) {
@@ -556,7 +591,12 @@ fn preview_loaded(state: &mut State, id: &str, result: Result<Vec<u8>, String>) 
 }
 
 fn save(state: &State, id: &str, ctx: &Ctx) -> Task<Msg> {
-    let Some(name) = state.files.iter().find(|d| d.id == id).map(|d| d.name.clone()) else {
+    let Some(name) = state
+        .files
+        .iter()
+        .find(|d| d.id == id)
+        .map(|d| d.name.clone())
+    else {
         return Task::none();
     };
     let client = ctx.client.clone();
@@ -573,7 +613,12 @@ fn save(state: &State, id: &str, ctx: &Ctx) -> Task<Msg> {
 /// Plays a video or opens a PDF: hands the file to the system's app from the open cache (see
 /// `cache_copy`), so viewing never fills ~/Downloads. Download saves a copy there instead.
 fn play(state: &State, id: &str, ctx: &Ctx) -> Task<Msg> {
-    let Some((name, size)) = state.files.iter().find(|d| d.id == id).map(|d| (d.name.clone(), d.size)) else {
+    let Some((name, size)) = state
+        .files
+        .iter()
+        .find(|d| d.id == id)
+        .map(|d| (d.name.clone(), d.size))
+    else {
         return Task::none();
     };
     let client = ctx.client.clone();
@@ -592,21 +637,41 @@ fn play(state: &State, id: &str, ctx: &Ctx) -> Task<Msg> {
 /// Where a file opened for viewing is kept: a per-app folder under the system's temp directory, named
 /// by the file's id and extension. The id is kept to plain characters, so it cannot name a path.
 fn open_cache_path(id: &str, name: &str) -> PathBuf {
-    let stem: String = id.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_').collect();
-    let ext: String = Path::new(name).extension().and_then(|e| e.to_str()).unwrap_or("").chars().filter(|c| c.is_ascii_alphanumeric()).collect();
-    let file = if ext.is_empty() { stem } else { format!("{stem}.{ext}") };
+    let stem: String = id
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .collect();
+    let ext: String = Path::new(name)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect();
+    let file = if ext.is_empty() {
+        stem
+    } else {
+        format!("{stem}.{ext}")
+    };
     std::env::temp_dir().join("agentplaza-open").join(file)
 }
 
 /// The file's copy in the open cache, ready to hand to an app. A file's id names its content, so a copy
 /// of the same size is reused without a download; otherwise `fetch` brings the bytes, which are written
 /// under a `.part` name and renamed into place, so an interrupted write is never reused.
-fn cache_copy(id: &str, name: &str, size: u64, fetch: impl FnOnce() -> Result<Vec<u8>, String>) -> Result<String, String> {
+fn cache_copy(
+    id: &str,
+    name: &str,
+    size: u64,
+    fetch: impl FnOnce() -> Result<Vec<u8>, String>,
+) -> Result<String, String> {
     let path = open_cache_path(id, name);
     if std::fs::metadata(&path).is_ok_and(|m| m.len() == size) {
         return Ok(path.display().to_string());
     }
-    let dir = path.parent().ok_or_else(|| "the open cache has no folder".to_string())?;
+    let dir = path
+        .parent()
+        .ok_or_else(|| "the open cache has no folder".to_string())?;
     let mut builder = std::fs::DirBuilder::new();
     builder.recursive(true);
     #[cfg(unix)]
@@ -637,7 +702,11 @@ fn open_file(path: &str) -> Result<(), String> {
     };
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     let mut command = std::process::Command::new("xdg-open");
-    command.arg(path).spawn().map(|_| ()).map_err(|e| e.to_string())
+    command
+        .arg(path)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 
 fn delete(id: String, ctx: &Ctx) -> Task<Msg> {
@@ -649,29 +718,55 @@ fn delete(id: String, ctx: &Ctx) -> Task<Msg> {
 fn list<'a>(state: &'a State, items: &mut Vec<Element<'a, Msg>>) {
     let tabs: Vec<Element<'a, Msg>> = [Scope::Deliverable, Scope::Shared]
         .into_iter()
-        .map(|scope| ui::btn(scope.label(), None, kind_for(state.scope == scope), Some(Msg::Scope(scope))))
+        .map(|scope| {
+            ui::btn(
+                scope.label(),
+                None,
+                kind_for(state.scope == scope),
+                Some(Msg::Scope(scope)),
+            )
+        })
         .collect();
     items.push(row(tabs).spacing(8).into());
     items.push(ui::faint(state.scope.intro()).into());
 
-    let search = text_input("Search by title or name", &state.query).on_input(Msg::Query).style(theme::input).padding(8);
-    let mut filters: Vec<Element<'a, Msg>> =
-        vec![ui::btn("All", None, kind_for(state.filter.is_none()), Some(Msg::Filter(None)))];
+    let search = text_input("Search by title or name", &state.query)
+        .on_input(Msg::Query)
+        .style(theme::input)
+        .padding(8);
+    let mut filters: Vec<Element<'a, Msg>> = vec![ui::btn(
+        "All",
+        None,
+        kind_for(state.filter.is_none()),
+        Some(Msg::Filter(None)),
+    )];
     for group in Group::ALL {
-        filters.push(ui::btn(group.label(), None, kind_for(state.filter == Some(group)), Some(Msg::Filter(Some(group)))));
+        filters.push(ui::btn(
+            group.label(),
+            None,
+            kind_for(state.filter == Some(group)),
+            Some(Msg::Filter(Some(group))),
+        ));
     }
     items.push(column![search, row(filters).spacing(6)].spacing(8).into());
 
     if state.files.is_empty() {
-        items.push(ui::empty("board", "Nothing handed in yet", "Agents deliver finished work with deliver_file."));
+        items.push(ui::empty(
+            "board",
+            "Nothing handed in yet",
+            "Agents deliver finished work with deliver_file.",
+        ));
     } else {
         let shown_files = visible(state);
         if shown_files.is_empty() {
             items.push(ui::faint("Nothing matches that search.").into());
         }
         for (row_no, chunk) in shown_files.chunks(3).enumerate() {
-            let mut cells: Vec<Element<'a, Msg>> =
-                chunk.iter().enumerate().map(|(col, d)| card(d, state.kbd == Some(row_no * 3 + col))).collect();
+            let mut cells: Vec<Element<'a, Msg>> = chunk
+                .iter()
+                .enumerate()
+                .map(|(col, d)| card(d, state.kbd == Some(row_no * 3 + col)))
+                .collect();
             while cells.len() < 3 {
                 cells.push(Space::new().width(Fill).into());
             }
@@ -709,8 +804,12 @@ fn list<'a>(state: &'a State, items: &mut Vec<Element<'a, Msg>>) {
 
 fn matches(state: &State, d: &Deliverable) -> bool {
     let q = state.query.trim().to_lowercase();
-    state.filter.map_or(true, |g| g == Group::of(&d.content_type))
-        && (q.is_empty() || d.title.to_lowercase().contains(&q) || d.name.to_lowercase().contains(&q))
+    state
+        .filter
+        .map_or(true, |g| g == Group::of(&d.content_type))
+        && (q.is_empty()
+            || d.title.to_lowercase().contains(&q)
+            || d.name.to_lowercase().contains(&q))
 }
 
 /// The files the list shows, in its order: the type filter and the search applied.
@@ -727,20 +826,38 @@ fn clamp_kbd(state: &mut State) {
 /// One file's card: its tile (the monogram of its extension), title, name, and who and when. A card the
 /// keyboard has picked takes the same selected-row style as a picked row.
 fn card<'a>(d: &'a Deliverable, picked: bool) -> Element<'a, Msg> {
-    let title = if d.title.is_empty() { d.name.as_str() } else { d.title.as_str() };
+    let title = if d.title.is_empty() {
+        d.name.as_str()
+    } else {
+        d.title.as_str()
+    };
     let mut body: Vec<Element<'a, Msg>> = vec![
         container(ui::faint(d.store.as_str())).into(),
         container(ui::sans(
-            if Group::of(&d.content_type) == Group::Video { "▶".to_string() } else { monogram(&d.name) },
+            if Group::of(&d.content_type) == Group::Video {
+                "▶".to_string()
+            } else {
+                monogram(&d.name)
+            },
             20.0,
             crate::theme::palette().ink_2,
         ))
         .padding(12)
         .width(Fill)
         .into(),
-        text(title).font(SEMIBOLD).size(15.0).color(crate::theme::palette().ink).into(),
+        text(title)
+            .font(SEMIBOLD)
+            .size(15.0)
+            .color(crate::theme::palette().ink)
+            .into(),
         ui::sans(d.name.as_str(), 11.0, crate::theme::palette().ink_3).into(),
-        ui::faint(format!("by {} · {} · {}", d.author, ago(d.created_ms), human_size(d.size))).into(),
+        ui::faint(format!(
+            "by {} · {} · {}",
+            d.author,
+            ago(d.created_ms),
+            human_size(d.size)
+        ))
+        .into(),
     ];
     if d.kind == "shared" && d.audience == "private" {
         body.push(ui::faint(format!("private · {} agents", d.allowed.len())).into());
@@ -762,23 +879,44 @@ fn button_card<'a>(body: Vec<Element<'a, Msg>>, on_press: Msg, picked: bool) -> 
 
 /// The open file, in place of the list: its preview, facts, description, Save and Delete.
 fn detail<'a>(state: &'a State, d: &'a Deliverable) -> Element<'a, Msg> {
-    let title = if d.title.is_empty() { d.name.as_str() } else { d.title.as_str() };
+    let title = if d.title.is_empty() {
+        d.name.as_str()
+    } else {
+        d.title.as_str()
+    };
     let preview: Element<'a, Msg> = match &state.preview {
         Preview::Idle => ui::faint("").into(),
         Preview::Loading => ui::loading(),
         Preview::Image(handle) => image(handle.clone()).width(Fill).into(),
-        Preview::Text(s) => container(ui::sans(s.as_str(), 12.0, crate::theme::palette().ink)).padding(12).width(Fill).into(),
+        Preview::Text(s) => container(ui::sans(s.as_str(), 12.0, crate::theme::palette().ink))
+            .padding(12)
+            .width(Fill)
+            .into(),
         Preview::Markdown(s) => ui::markdown(s),
         Preview::Note(s) => ui::faint(s.as_str()).into(),
         Preview::Video => column![
-            container(ui::sans("▶", 40.0, crate::theme::palette().ink_2)).padding(24).width(Fill),
-            ui::btn("Play", None, ui::Kind::Primary, Some(Msg::Play(d.id.clone()))),
+            container(ui::sans("▶", 40.0, crate::theme::palette().ink_2))
+                .padding(24)
+                .width(Fill),
+            ui::btn(
+                "Play",
+                None,
+                ui::Kind::Primary,
+                Some(Msg::Play(d.id.clone()))
+            ),
         ]
         .spacing(12)
         .into(),
         Preview::Pdf => column![
-            container(ui::sans("PDF", 40.0, crate::theme::palette().ink_2)).padding(24).width(Fill),
-            ui::btn("Open", None, ui::Kind::Primary, Some(Msg::Play(d.id.clone()))),
+            container(ui::sans("PDF", 40.0, crate::theme::palette().ink_2))
+                .padding(24)
+                .width(Fill),
+            ui::btn(
+                "Open",
+                None,
+                ui::Kind::Primary,
+                Some(Msg::Play(d.id.clone()))
+            ),
         ]
         .spacing(12)
         .into(),
@@ -789,7 +927,12 @@ fn detail<'a>(state: &'a State, d: &'a Deliverable) -> Element<'a, Msg> {
     }
     body.push(file_actions(state, d));
     column![
-        ui::btn("Back to the library", None, ui::Kind::Ghost, Some(Msg::Close)),
+        ui::btn(
+            "Back to the library",
+            None,
+            ui::Kind::Ghost,
+            Some(Msg::Close)
+        ),
         ui::card(title, column(body).spacing(12).into()),
     ]
     .spacing(12)
@@ -803,7 +946,12 @@ fn file_actions<'a>(state: &'a State, d: &'a Deliverable) -> Element<'a, Msg> {
             row![
                 Space::new().width(Fill),
                 ui::btn("Cancel", None, ui::Kind::Ghost, Some(Msg::CancelDelete)),
-                ui::btn("Delete", None, ui::Kind::Primary, Some(Msg::Delete(d.id.clone()))),
+                ui::btn(
+                    "Delete",
+                    None,
+                    ui::Kind::Primary,
+                    Some(Msg::Delete(d.id.clone()))
+                ),
             ]
             .spacing(8),
         ]
@@ -813,7 +961,12 @@ fn file_actions<'a>(state: &'a State, d: &'a Deliverable) -> Element<'a, Msg> {
         row![
             Space::new().width(Fill),
             ui::btn("Delete", None, ui::Kind::Ghost, Some(Msg::AskDelete)),
-            ui::btn("Download", None, ui::Kind::Primary, Some(Msg::Save(d.id.clone()))),
+            ui::btn(
+                "Download",
+                None,
+                ui::Kind::Primary,
+                Some(Msg::Save(d.id.clone()))
+            ),
         ]
         .spacing(8)
         .into()
@@ -824,7 +977,11 @@ fn facts<'a>(d: &'a Deliverable) -> Element<'a, Msg> {
     let mut rows: Vec<Element<'a, Msg>> = vec![
         fact("Name", d.name.clone(), true),
         fact("Content type", d.content_type.clone(), true),
-        fact("Size", format!("{} ({} bytes)", human_size(d.size), d.size), false),
+        fact(
+            "Size",
+            format!("{} ({} bytes)", human_size(d.size), d.size),
+            false,
+        ),
         fact("sha256", d.sha256.clone(), true),
         fact("Handed in by", d.author.clone(), false),
         fact("When", when(d.created_ms), false),
@@ -838,22 +995,36 @@ fn facts<'a>(d: &'a Deliverable) -> Element<'a, Msg> {
 
 /// One fact: a faint label, then the value (mono for names, hashes and ids; serif otherwise).
 fn fact<'a>(label: &'static str, value: String, mono: bool) -> Element<'a, Msg> {
-    let value: Element<'a, Msg> = if mono { ui::sans(value, 12.0, crate::theme::palette().ink).into() } else { ui::prose(value).size(13.0).into() };
-    row![container(ui::faint(label)).width(Length::Fixed(120.0)), value].spacing(8).into()
+    let value: Element<'a, Msg> = if mono {
+        ui::sans(value, 12.0, crate::theme::palette().ink).into()
+    } else {
+        ui::prose(value).size(13.0).into()
+    };
+    row![
+        container(ui::faint(label)).width(Length::Fixed(120.0)),
+        value
+    ]
+    .spacing(8)
+    .into()
 }
 
 // ---- Library tools --------------------------------------------------------------------------
 
 fn tool_card<'a>(state: &'a State, t: &'a LibraryTool) -> Element<'a, Msg> {
-    let me = ToolRef { name: t.name.clone(), version: t.version };
-    let mut body: Vec<Element<'a, Msg>> = vec![ui::faint(format!(
-        "v{} · by {} · {} · {} calls",
-        t.version,
-        t.author,
-        ago(t.created_ms),
-        t.calls
-    ))
-    .into()];
+    let me = ToolRef {
+        name: t.name.clone(),
+        version: t.version,
+    };
+    let mut body: Vec<Element<'a, Msg>> = vec![
+        ui::faint(format!(
+            "v{} · by {} · {} · {} calls",
+            t.version,
+            t.author,
+            ago(t.created_ms),
+            t.calls
+        ))
+        .into(),
+    ];
     if !t.description.is_empty() {
         body.push(ui::prose(t.description.as_str()).into());
     }
@@ -866,13 +1037,33 @@ fn tool_card<'a>(state: &'a State, t: &'a LibraryTool) -> Element<'a, Msg> {
 
     let mut bar: Vec<Element<'a, Msg>> = vec![Space::new().width(Fill).into()];
     if t.state == "pending" {
-        bar.push(ui::btn("Publish", None, ui::Kind::Primary, Some(Msg::ToolAsk(ToolAction::Publish(me.clone())))));
-        bar.push(ui::btn("Reject", None, ui::Kind::Ghost, Some(Msg::ToolAsk(ToolAction::Reject(me.clone())))));
+        bar.push(ui::btn(
+            "Publish",
+            None,
+            ui::Kind::Primary,
+            Some(Msg::ToolAsk(ToolAction::Publish(me.clone()))),
+        ));
+        bar.push(ui::btn(
+            "Reject",
+            None,
+            ui::Kind::Ghost,
+            Some(Msg::ToolAsk(ToolAction::Reject(me.clone()))),
+        ));
     }
     if !t.files.is_empty() {
-        bar.push(ui::btn("Files", None, ui::Kind::Ghost, Some(Msg::ToolFiles(me.clone()))));
+        bar.push(ui::btn(
+            "Files",
+            None,
+            ui::Kind::Ghost,
+            Some(Msg::ToolFiles(me.clone())),
+        ));
     }
-    bar.push(ui::btn("Remove", None, ui::Kind::Ghost, Some(Msg::ToolAsk(ToolAction::Remove(me.clone())))));
+    bar.push(ui::btn(
+        "Remove",
+        None,
+        ui::Kind::Ghost,
+        Some(Msg::ToolAsk(ToolAction::Remove(me.clone()))),
+    ));
     body.push(row(bar).spacing(8).into());
 
     match state.tool_action.as_ref().filter(|a| a.target() == &me) {
@@ -888,7 +1079,11 @@ fn tool_card<'a>(state: &'a State, t: &'a LibraryTool) -> Element<'a, Msg> {
         }
         Some(ToolAction::Remove(_)) => {
             body.push(
-                ui::faint(format!("Removes v{} and its files from the library. This cannot be undone.", t.version)).into(),
+                ui::faint(format!(
+                    "Removes v{} and its files from the library. This cannot be undone.",
+                    t.version
+                ))
+                .into(),
             );
             body.push(confirm_row("Remove"));
         }
@@ -898,11 +1093,25 @@ fn tool_card<'a>(state: &'a State, t: &'a LibraryTool) -> Element<'a, Msg> {
     if state.tool_open.as_ref() == Some(&me) {
         for f in &t.files {
             let label = format!("{} · {}", f.path, human_size(f.size));
-            body.push(ui::btn(&label, None, ui::Kind::Ghost, Some(Msg::ToolFile(me.clone(), f.path.clone()))));
+            body.push(ui::btn(
+                &label,
+                None,
+                ui::Kind::Ghost,
+                Some(Msg::ToolFile(me.clone(), f.path.clone())),
+            ));
         }
         if let Some(view) = state.tool_view.as_ref().filter(|v| v.tool == me) {
             body.push(ui::faint(view.path.as_str()).into());
-            body.push(container(ui::sans(view.content.as_str(), 12.0, crate::theme::palette().ink)).padding(12).width(Fill).into());
+            body.push(
+                container(ui::sans(
+                    view.content.as_str(),
+                    12.0,
+                    crate::theme::palette().ink,
+                ))
+                .padding(12)
+                .width(Fill)
+                .into(),
+            );
         }
     }
 
@@ -925,8 +1134,16 @@ fn tool_file(tool: ToolRef, path: String, ctx: &Ctx) -> Task<Msg> {
     client::task(
         move || {
             let value = client.get::<Value>(&url)?;
-            let content = value.get("content").and_then(Value::as_str).unwrap_or_default().to_string();
-            Ok(ToolFileView { tool, path, content })
+            let content = value
+                .get("content")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            Ok(ToolFileView {
+                tool,
+                path,
+                content,
+            })
         },
         Msg::ToolFileLoaded,
     )
@@ -946,7 +1163,12 @@ fn run_tool(ctx: &Ctx, action: ToolAction, note: String) -> Task<Msg> {
     let client = ctx.client.clone();
     match action {
         ToolAction::Publish(tool) => review(client, tool, true, None),
-        ToolAction::Reject(tool) => review(client, tool, false, Some(note).filter(|n| !n.trim().is_empty())),
+        ToolAction::Reject(tool) => review(
+            client,
+            tool,
+            false,
+            Some(note).filter(|n| !n.trim().is_empty()),
+        ),
         ToolAction::Remove(tool) => {
             let label = format!("x_{} removed", tool.name);
             let path = tool_path(&tool);
@@ -963,7 +1185,10 @@ fn review(client: client::Client, tool: ToolRef, approve: bool, note: Option<Str
         body["note"] = json!(note.trim());
     }
     let path = format!("{}/review", tool_path(&tool));
-    client::task(move || client.post::<Value>(&path, &body).map(|_| label), Msg::Done)
+    client::task(
+        move || client.post::<Value>(&path, &body).map(|_| label),
+        Msg::Done,
+    )
 }
 
 // ---- Helpers --------------------------------------------------------------------------------
@@ -1009,7 +1234,9 @@ fn shown(d: &Deliverable) -> Shown {
         Shown::Nothing
     } else if d.size > TEXT_LIMIT as u64 {
         Shown::TooLarge
-    } else if d.name.to_lowercase().ends_with(".md") || d.content_type.eq_ignore_ascii_case("text/markdown") {
+    } else if d.name.to_lowercase().ends_with(".md")
+        || d.content_type.eq_ignore_ascii_case("text/markdown")
+    {
         Shown::Markdown
     } else {
         Shown::Text
@@ -1086,7 +1313,11 @@ fn when(ms: i64) -> String {
     let d = doy - (153 * mp + 2) / 5 + 1;
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = yoe + era * 400 + i64::from(m <= 2);
-    format!("{y:04}-{m:02}-{d:02} {:02}:{:02} UTC", rem / 3600, rem % 3600 / 60)
+    format!(
+        "{y:04}-{m:02}-{d:02} {:02}:{:02} UTC",
+        rem / 3600,
+        rem % 3600 / 60
+    )
 }
 
 fn tool_path(tool: &ToolRef) -> String {
@@ -1097,7 +1328,9 @@ fn tool_path(tool: &ToolRef) -> String {
 fn enc(s: &str) -> String {
     s.bytes()
         .map(|b| match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (b as char).to_string()
+            }
             _ => format!("%{b:02X}"),
         })
         .collect()
@@ -1105,7 +1338,8 @@ fn enc(s: &str) -> String {
 
 /// The raw bytes of a hub path (the file's content), or the hub's error.
 fn fetch_bytes(client: &client::Client, path: &str) -> Result<Vec<u8>, String> {
-    let reply = apz_http::client::request(&client.target, "GET", path, None, client.timeout).map_err(|e| e.to_string())?;
+    let reply = apz_http::client::request(&client.target, "GET", path, None, client.timeout)
+        .map_err(|e| e.to_string())?;
     if (200..300).contains(&reply.status) {
         Ok(reply.body)
     } else {
@@ -1117,7 +1351,9 @@ fn fetch_bytes(client: &client::Client, path: &str) -> Result<Vec<u8>, String> {
 /// never overwrites: when the name is taken, the first free one of `name (1).ext`, `name (2).ext`, …
 /// is used.
 fn save_download(name: &str, bytes: &[u8]) -> Result<String, String> {
-    let dir = apz_os::dirs::home().ok_or_else(|| "the home directory is not set".to_string())?.join("Downloads");
+    let dir = apz_os::dirs::home()
+        .ok_or_else(|| "the home directory is not set".to_string())?
+        .join("Downloads");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let file = Path::new(name)
         .file_name()
@@ -1127,7 +1363,11 @@ fn save_download(name: &str, bytes: &[u8]) -> Result<String, String> {
     let mut n = 0;
     loop {
         let target = dir.join(numbered(file, n));
-        match std::fs::OpenOptions::new().write(true).create_new(true).open(&target) {
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&target)
+        {
             Ok(mut out) => {
                 if let Err(e) = out.write_all(bytes) {
                     // Do not leave a part-written file under the name the next download wants.
@@ -1164,14 +1404,27 @@ mod tests {
     fn the_open_cache_names_a_file_by_its_id_and_extension() {
         let path = open_cache_path("a1-b2", "Clip.MP4");
         assert_eq!(path.file_name().unwrap(), "a1-b2.MP4");
-        assert_eq!(path.parent().unwrap().file_name().unwrap(), "agentplaza-open");
+        assert_eq!(
+            path.parent().unwrap().file_name().unwrap(),
+            "agentplaza-open"
+        );
         // A hostile id keeps only plain characters, so it stays one file name in that folder.
-        assert_eq!(open_cache_path("../x/y", "notes").file_name().unwrap(), "xy");
+        assert_eq!(
+            open_cache_path("../x/y", "notes").file_name().unwrap(),
+            "xy"
+        );
     }
 
     #[test]
     fn an_opened_file_is_fetched_once_and_then_reused_at_the_same_size() {
-        let id = format!("test-reuse-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos());
+        let id = format!(
+            "test-reuse-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
         let fetches = Cell::new(0);
         let bytes = b"%PDF-1.4 test".to_vec();
         let fetch = || {

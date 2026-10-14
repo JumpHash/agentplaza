@@ -15,7 +15,10 @@ pub struct Line {
 /// Every pair in `text`, in order. Duplicates are kept: the caller decides.
 pub fn parse(text: &str) -> Result<Vec<Line>, String> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
-    let lines: Vec<&str> = text.split('\n').map(|l| l.strip_suffix('\r').unwrap_or(l)).collect();
+    let lines: Vec<&str> = text
+        .split('\n')
+        .map(|l| l.strip_suffix('\r').unwrap_or(l))
+        .collect();
     let mut out = Vec::new();
     let mut i = 0;
     while i < lines.len() {
@@ -41,7 +44,10 @@ pub fn parse(text: &str) -> Result<Vec<Line>, String> {
             }
             _ => unquoted(value_text),
         };
-        out.push(Line { name: name.trim().to_string(), value: Zeroizing::new(value) });
+        out.push(Line {
+            name: name.trim().to_string(),
+            value: Zeroizing::new(value),
+        });
     }
     Ok(out)
 }
@@ -63,7 +69,13 @@ fn unquoted(text: &str) -> String {
 
 /// A quoted value that starts in `first` (the line after the opening quote) and may continue on the
 /// lines from `next` on. Returns the value and the index of the next unread line.
-fn read_quoted(lines: &[&str], next: usize, first: &str, double: bool, number: usize) -> Result<(String, usize), String> {
+fn read_quoted(
+    lines: &[&str],
+    next: usize,
+    first: &str,
+    double: bool,
+    number: usize,
+) -> Result<(String, usize), String> {
     let mut value = Zeroizing::new(String::new());
     let mut current = Zeroizing::new(first.to_string());
     let mut next = next;
@@ -112,7 +124,11 @@ mod tests {
     use super::*;
 
     fn pairs(text: &str) -> Vec<(String, String)> {
-        parse(text).expect("parsed").into_iter().map(|l| (l.name, l.value.to_string())).collect()
+        parse(text)
+            .expect("parsed")
+            .into_iter()
+            .map(|l| (l.name, l.value.to_string()))
+            .collect()
     }
 
     #[test]
@@ -134,7 +150,13 @@ mod tests {
     #[test]
     fn double_quotes_take_escapes_and_may_span_lines() {
         let text = "KEY=\"line one\\nline \\\"two\\\"\nline three\" # done\nNEXT=1\n";
-        assert_eq!(pairs(text), vec![("KEY".into(), "line one\nline \"two\"\nline three".into()), ("NEXT".into(), "1".into())]);
+        assert_eq!(
+            pairs(text),
+            vec![
+                ("KEY".into(), "line one\nline \"two\"\nline three".into()),
+                ("NEXT".into(), "1".into())
+            ]
+        );
     }
 
     #[test]

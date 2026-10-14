@@ -24,7 +24,9 @@ pub struct Warm<T> {
 
 impl<T> Warm<T> {
     pub fn new(job: impl FnMut() -> Step<T> + 'static) -> Self {
-        Warm { job: Some(Box::new(job)) }
+        Warm {
+            job: Some(Box::new(job)),
+        }
     }
 
     /// Whether a build is queued and not yet done.
@@ -56,7 +58,11 @@ impl<T> Warm<T> {
 #[cfg(not(target_arch = "wasm32"))]
 pub fn native_clock() -> f64 {
     static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
-    START.get_or_init(std::time::Instant::now).elapsed().as_secs_f64() * 1000.0
+    START
+        .get_or_init(std::time::Instant::now)
+        .elapsed()
+        .as_secs_f64()
+        * 1000.0
 }
 
 /// A small LRU of built values keyed by string (a board's key: its model key, its params and its agent list). It holds
@@ -70,7 +76,10 @@ pub struct BuildCache<V> {
 
 impl<V> BuildCache<V> {
     pub fn new(max: usize) -> Self {
-        BuildCache { max, entries: VecDeque::new() }
+        BuildCache {
+            max,
+            entries: VecDeque::new(),
+        }
     }
 
     pub fn len(&self) -> usize {
@@ -154,7 +163,10 @@ mod tests {
             let before = clock.get();
             let out = warm.run(|| clock.get(), budget);
             // A call stops once the budget is spent: at most the budget plus the one step that crosses it.
-            assert!(clock.get() - before <= budget + 1.0, "call {calls} ran past its budget");
+            assert!(
+                clock.get() - before <= budget + 1.0,
+                "call {calls} ran past its budget"
+            );
             if let Some(v) = out {
                 break v;
             }

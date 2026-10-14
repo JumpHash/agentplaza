@@ -2,14 +2,14 @@
 //! reasoning effort (the model picker), harness limits and loops, permissions. Also the memory
 //! library the page's Memory tab shows (`memory.ts`): the notes, a find box, and a reader.
 
-use iced::widget::{button, column, container, row, text_input, Space};
+use iced::widget::{Space, button, column, container, row, text_input};
 use iced::{Alignment, Border, Color, Element, Length, Task, Theme};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::agent::ago;
 use crate::console::picker::{self, Choice, Picker, PickerMsg};
-use crate::console::{client, rich, ui, Ctx};
+use crate::console::{Ctx, client, rich, ui};
 
 /// The reasoning efforts a model name can pin (`provider/model@effort`).
 const EFFORTS: [&str; 7] = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
@@ -17,7 +17,11 @@ const EFFORTS: [&str; 7] = ["none", "minimal", "low", "medium", "high", "xhigh",
 /// The permission modes as the web offers them: (mode, label, hint).
 const PERMISSIONS: [(&str, &str, &str); 3] = [
     ("autonomous", "Autonomous", "acts on its own"),
-    ("ask", "Ask first", "write and irreversible actions wait for your approval in Approvals"),
+    (
+        "ask",
+        "Ask first",
+        "write and irreversible actions wait for your approval in Approvals",
+    ),
     ("read_only", "Read-only", "can look, not change"),
 ];
 
@@ -168,7 +172,11 @@ pub enum SideMsg {
     Steer,
     CompressNow,
     ExtendTurns,
-    Control { fallback: &'static str, after: After, result: Result<Value, String> },
+    Control {
+        fallback: &'static str,
+        after: After,
+        result: Result<Value, String>,
+    },
     Loops(Result<Vec<Loop>, String>),
     LoopPrompt(String),
     LoopEvery(String),
@@ -218,12 +226,19 @@ struct NotesEnvelope {
 /// open note survive the 4 s reloads.
 pub fn load(side: &mut Side, cid: u64, ctx: &Ctx) -> Task<SideMsg> {
     if side.cid != cid {
-        *side = Side { cid, ..Side::default() };
+        *side = Side {
+            cid,
+            ..Side::default()
+        };
         side.loop_every = "30".into();
         side.loop_max = "0".into();
     }
     side.error = None;
-    let mut tasks = vec![fetch_agent(ctx, cid), fetch_loops(ctx, cid), fetch_memory(ctx, cid)];
+    let mut tasks = vec![
+        fetch_agent(ctx, cid),
+        fetch_loops(ctx, cid),
+        fetch_memory(ctx, cid),
+    ];
     if !side.catalogue_loaded {
         tasks.push(fetch_catalogue(ctx));
     }
@@ -280,7 +295,11 @@ pub fn update(side: &mut Side, msg: SideMsg, ctx: &Ctx) -> Task<SideMsg> {
                 }
                 PickerMsg::Effort(e) => {
                     // Effort on the default model pins that model for this agent, as the web does.
-                    let base = if side.choice.is_empty() { strip_effort(&side.model).to_string() } else { side.choice.clone() };
+                    let base = if side.choice.is_empty() {
+                        strip_effort(&side.model).to_string()
+                    } else {
+                        side.choice.clone()
+                    };
                     side.effort = e.clone();
                     if base.is_empty() {
                         Task::none()
@@ -306,7 +325,13 @@ pub fn update(side: &mut Side, msg: SideMsg, ctx: &Ctx) -> Task<SideMsg> {
             let c = ctx.client.clone();
             let path = format!("/v1/agents/{cid}/permissions");
             let m = mode.clone();
-            client::task(move || c.call("PUT", &path, Some(&json!({ "mode": m.clone() }))).map(|_| m), SideMsg::PermissionSaved)
+            client::task(
+                move || {
+                    c.call("PUT", &path, Some(&json!({ "mode": m.clone() })))
+                        .map(|_| m)
+                },
+                SideMsg::PermissionSaved,
+            )
         }
         SideMsg::PermissionSaved(Ok(mode)) => {
             side.permission = Some(mode);
@@ -340,7 +365,11 @@ pub fn update(side: &mut Side, msg: SideMsg, ctx: &Ctx) -> Task<SideMsg> {
             Task::none()
         }
         SideMsg::SaveLimits => {
-            let (turns, kb, keep) = match (parse_limit(&side.turns), parse_limit(&side.compress), parse_limit(&side.keep)) {
+            let (turns, kb, keep) = match (
+                parse_limit(&side.turns),
+                parse_limit(&side.compress),
+                parse_limit(&side.keep),
+            ) {
                 (Ok(t), Ok(k), Ok(p)) => (t, k, p),
                 _ => {
                     side.error = Some("Limits must be numbers of 0 or more".into());
@@ -372,21 +401,43 @@ pub fn update(side: &mut Side, msg: SideMsg, ctx: &Ctx) -> Task<SideMsg> {
             if text.is_empty() || !side.working {
                 return Task::none();
             }
-            control(cid, ctx, json!({ "action": "steer", "text": text }), "Steer sent", After::ClearSteer)
+            control(
+                cid,
+                ctx,
+                json!({ "action": "steer", "text": text }),
+                "Steer sent",
+                After::ClearSteer,
+            )
         }
         SideMsg::CompressNow => {
             if !side.working {
                 return Task::none();
             }
-            control(cid, ctx, json!({ "action": "compress" }), "Compression requested", After::Keep)
+            control(
+                cid,
+                ctx,
+                json!({ "action": "compress" }),
+                "Compression requested",
+                After::Keep,
+            )
         }
         SideMsg::ExtendTurns => {
             if !side.working {
                 return Task::none();
             }
-            control(cid, ctx, json!({ "action": "extend_turns", "turns": 20 }), "Turns extended", After::Keep)
+            control(
+                cid,
+                ctx,
+                json!({ "action": "extend_turns", "turns": 20 }),
+                "Turns extended",
+                After::Keep,
+            )
         }
-        SideMsg::Control { fallback, after, result } => match result {
+        SideMsg::Control {
+            fallback,
+            after,
+            result,
+        } => match result {
             Ok(v) => {
                 side.notice = Some(result_text(&v, fallback));
                 match after {
@@ -438,15 +489,24 @@ pub fn update(side: &mut Side, msg: SideMsg, ctx: &Ctx) -> Task<SideMsg> {
                 side.error = Some("Write the loop prompt first".into());
                 return Task::none();
             }
-            let minutes = side.loop_every.trim().parse::<u64>().ok().filter(|m| *m >= 1);
+            let minutes = side
+                .loop_every
+                .trim()
+                .parse::<u64>()
+                .ok()
+                .filter(|m| *m >= 1);
             let runs = side.loop_max.trim().parse::<u64>().ok();
             let (Some(minutes), Some(runs)) = (minutes, runs) else {
                 side.error = Some("Every must be at least 1 minute, and max runs 0 or more".into());
                 return Task::none();
             };
             let c = ctx.client.clone();
-            let body = json!({ "cid": cid, "prompt": text, "every_minutes": minutes, "max_runs": runs });
-            client::task(move || c.post::<Value>("/v1/loops", &body), SideMsg::LoopStarted)
+            let body =
+                json!({ "cid": cid, "prompt": text, "every_minutes": minutes, "max_runs": runs });
+            client::task(
+                move || c.post::<Value>("/v1/loops", &body),
+                SideMsg::LoopStarted,
+            )
         }
         SideMsg::LoopStarted(Ok(_)) => {
             side.loop_prompt.clear();
@@ -475,10 +535,21 @@ pub fn update(side: &mut Side, msg: SideMsg, ctx: &Ctx) -> Task<SideMsg> {
             side.memory_loaded = true;
             // Show the newest note until one is open; refresh an open note that changed.
             let fetch = match side.reading.as_ref() {
-                Some(open) => list.iter().find(|n| n.slug == open.slug).filter(|n| n.updated_ms != open.updated_ms).map(|n| n.slug.clone()),
-                None => list.iter().max_by_key(|n| n.updated_ms).map(|n| n.slug.clone()),
+                Some(open) => list
+                    .iter()
+                    .find(|n| n.slug == open.slug)
+                    .filter(|n| n.updated_ms != open.updated_ms)
+                    .map(|n| n.slug.clone()),
+                None => list
+                    .iter()
+                    .max_by_key(|n| n.updated_ms)
+                    .map(|n| n.slug.clone()),
             };
-            if side.reading.as_ref().is_some_and(|open| !list.iter().any(|n| n.slug == open.slug)) {
+            if side
+                .reading
+                .as_ref()
+                .is_some_and(|open| !list.iter().any(|n| n.slug == open.slug))
+            {
                 side.reading = None;
             }
             side.graph.refresh(&list);
@@ -500,7 +571,11 @@ pub fn update(side: &mut Side, msg: SideMsg, ctx: &Ctx) -> Task<SideMsg> {
         // Enter opens the first note whose title holds the find text, as the web does.
         SideMsg::SearchSubmit => {
             let q = side.search.trim().to_lowercase();
-            match side.notes.iter().find(|n| n.title.to_lowercase().contains(&q)) {
+            match side
+                .notes
+                .iter()
+                .find(|n| n.title.to_lowercase().contains(&q))
+            {
                 Some(n) => fetch_note(ctx, cid, n.slug.clone()),
                 None => Task::none(),
             }
@@ -558,7 +633,9 @@ fn on_rich(action: rich::RichAction) -> SideMsg {
 
 /// Asks the hub for the cards of the note being read that it does not hold yet.
 fn prefetch_reading(side: &mut Side, ctx: &Ctx) -> Task<SideMsg> {
-    let Some(note) = side.reading.as_ref() else { return Task::none() };
+    let Some(note) = side.reading.as_ref() else {
+        return Task::none();
+    };
     let body = note.body.clone();
     let rctx = rich::context(&side.cards, None, None, None);
     rich::prefetch(&mut side.cards, &ctx.client, &rctx, &[body.as_str()]).map(SideMsg::Rich)
@@ -587,9 +664,24 @@ fn model_card<'a>(side: &'a Side) -> Element<'a, SideMsg> {
         "role" => "from role",
         _ => "default",
     };
-    let current = row![ui::sans(side.model.clone(), 12.0, crate::theme::palette().ink), ui::faint(source)].spacing(8);
-    let choose = picker::view(&side.picker, &side.choices, side.choice.as_str(), Some(side.effort.as_str()), SideMsg::Picker);
-    ui::card("Model", column![current, ui::label("Change model"), choose].spacing(8).into())
+    let current = row![
+        ui::sans(side.model.clone(), 12.0, crate::theme::palette().ink),
+        ui::faint(source)
+    ]
+    .spacing(8);
+    let choose = picker::view(
+        &side.picker,
+        &side.choices,
+        side.choice.as_str(),
+        Some(side.effort.as_str()),
+        SideMsg::Picker,
+    );
+    ui::card(
+        "Model",
+        column![current, ui::label("Change model"), choose]
+            .spacing(8)
+            .into(),
+    )
 }
 
 fn harness_card<'a>(side: &'a Side) -> Element<'a, SideMsg> {
@@ -597,10 +689,28 @@ fn harness_card<'a>(side: &'a Side) -> Element<'a, SideMsg> {
     let go = |m: SideMsg| working.then_some(m);
 
     let limits = column![
-        field("Turns per work item", "default", &side.turns, SideMsg::TurnsIn),
-        field("Compress at (KB)", "default", &side.compress, SideMsg::CompressIn),
+        field(
+            "Turns per work item",
+            "default",
+            &side.turns,
+            SideMsg::TurnsIn
+        ),
+        field(
+            "Compress at (KB)",
+            "default",
+            &side.compress,
+            SideMsg::CompressIn
+        ),
         field("Keep recent turns", "default", &side.keep, SideMsg::KeepIn),
-        row![Space::new().width(Length::Fill), ui::btn("Save limits", None, ui::Kind::Primary, Some(SideMsg::SaveLimits))],
+        row![
+            Space::new().width(Length::Fill),
+            ui::btn(
+                "Save limits",
+                None,
+                ui::Kind::Primary,
+                Some(SideMsg::SaveLimits)
+            )
+        ],
     ]
     .spacing(10);
 
@@ -610,15 +720,28 @@ fn harness_card<'a>(side: &'a Side) -> Element<'a, SideMsg> {
     }
     running.push(
         row![
-            ui::btn("Compress now", None, ui::Kind::Secondary, go(SideMsg::CompressNow)),
-            ui::btn("+20 turns", None, ui::Kind::Secondary, go(SideMsg::ExtendTurns)),
+            ui::btn(
+                "Compress now",
+                None,
+                ui::Kind::Secondary,
+                go(SideMsg::CompressNow)
+            ),
+            ui::btn(
+                "+20 turns",
+                None,
+                ui::Kind::Secondary,
+                go(SideMsg::ExtendTurns)
+            ),
         ]
         .spacing(8)
         .into(),
     );
     running.push(
         row![
-            text_input("Steer the current work…", &side.steer).on_input(SideMsg::SteerIn).on_submit(SideMsg::Steer).style(crate::theme::input),
+            text_input("Steer the current work…", &side.steer)
+                .on_input(SideMsg::SteerIn)
+                .on_submit(SideMsg::Steer)
+                .style(crate::theme::input),
             ui::btn("Steer", None, ui::Kind::Primary, go(SideMsg::Steer)),
         ]
         .spacing(8)
@@ -638,11 +761,26 @@ fn harness_card<'a>(side: &'a Side) -> Element<'a, SideMsg> {
             .on_submit(SideMsg::StartLoop)
             .style(crate::theme::input),
         row![
-            field("Every (minutes)", "30", &side.loop_every, SideMsg::LoopEvery),
-            field("Max runs", "0 = until the agent says LOOP DONE", &side.loop_max, SideMsg::LoopMax),
+            field(
+                "Every (minutes)",
+                "30",
+                &side.loop_every,
+                SideMsg::LoopEvery
+            ),
+            field(
+                "Max runs",
+                "0 = until the agent says LOOP DONE",
+                &side.loop_max,
+                SideMsg::LoopMax
+            ),
         ]
         .spacing(8),
-        ui::btn("Start loop", None, ui::Kind::Primary, Some(SideMsg::StartLoop)),
+        ui::btn(
+            "Start loop",
+            None,
+            ui::Kind::Primary,
+            Some(SideMsg::StartLoop)
+        ),
     ]
     .spacing(8);
 
@@ -650,7 +788,12 @@ fn harness_card<'a>(side: &'a Side) -> Element<'a, SideMsg> {
     let loops_head = row![
         ui::label("Loops"),
         Space::new().width(Length::Fill),
-        ui::btn("New loop", None, ui::Kind::Secondary, Some(SideMsg::ToggleNewLoop)),
+        ui::btn(
+            "New loop",
+            None,
+            ui::Kind::Secondary,
+            Some(SideMsg::ToggleNewLoop)
+        ),
     ]
     .align_y(Alignment::Center);
     let mut loop_block: Vec<Element<'a, SideMsg>> = vec![loops_head.into(), loop_list];
@@ -683,15 +826,34 @@ fn permission_card<'a>(side: &'a Side) -> Element<'a, SideMsg> {
             .into_iter()
             .map(|(mode, label, hint)| {
                 let active = side.permission.as_deref() == Some(mode);
-                let body = column![ui::sans(label.to_string(), 12.0, crate::theme::palette().ink), ui::faint(hint)].spacing(2).width(Length::Fill);
+                let body = column![
+                    ui::sans(label.to_string(), 12.0, crate::theme::palette().ink),
+                    ui::faint(hint)
+                ]
+                .spacing(2)
+                .width(Length::Fill);
                 button(body)
                     .padding([8, 10])
                     .width(Length::Fill)
                     .style(move |_: &Theme, _: button::Status| button::Style {
-                        background: Some(if active { Color { a: 0.08, ..crate::theme::palette().signal } } else { crate::theme::palette().sheet }.into()),
+                        background: Some(
+                            if active {
+                                Color {
+                                    a: 0.08,
+                                    ..crate::theme::palette().signal
+                                }
+                            } else {
+                                crate::theme::palette().sheet
+                            }
+                            .into(),
+                        ),
                         text_color: crate::theme::palette().ink,
                         border: Border {
-                            color: if active { crate::theme::palette().signal } else { crate::theme::palette().rule },
+                            color: if active {
+                                crate::theme::palette().signal
+                            } else {
+                                crate::theme::palette().rule
+                            },
                             width: if active { 2.0 } else { 1.0 },
                             radius: 0.0.into(),
                         },
@@ -723,7 +885,9 @@ pub fn memory_changed(side: &mut Side) -> Task<SideMsg> {
 /// The note a backlink or `[[link]]` names: its slug, or the slug of its title (the web's `resolveRef`).
 fn resolve_ref<'a>(notes: &'a [Note], r: &str) -> Option<&'a Note> {
     let want = slugify(r);
-    notes.iter().find(|n| n.slug == r || n.slug == want || slugify(&n.title) == want)
+    notes
+        .iter()
+        .find(|n| n.slug == r || n.slug == want || slugify(&n.title) == want)
 }
 
 /// The web's slug rule: lower case, runs of other characters become one dash, no edge dashes, at most 60.
@@ -746,19 +910,48 @@ pub fn memory_view<'a>(side: &'a Side) -> Element<'a, SideMsg> {
         return ui::loading();
     }
     if side.notes.is_empty() {
-        return ui::empty("memory", "No memories yet", "Notes the agent writes appear here, linked like a little brain.");
+        return ui::empty(
+            "memory",
+            "No memories yet",
+            "Notes the agent writes appear here, linked like a little brain.",
+        );
     }
-    let count = format!("{} {}", side.notes.len(), if side.notes.len() == 1 { "note" } else { "notes" });
+    let count = format!(
+        "{} {}",
+        side.notes.len(),
+        if side.notes.len() == 1 {
+            "note"
+        } else {
+            "notes"
+        }
+    );
     let find = text_input("Find a note…", &side.search)
         .on_input(SideMsg::Search)
         .on_submit(SideMsg::SearchSubmit)
         .style(crate::theme::input)
         .width(Length::Fixed(240.0));
-    let toggle = ui::btn(if side.graph_on { "List" } else { "Graph" }, None, ui::Kind::Ghost, Some(SideMsg::ToggleGraph));
-    let head = row![ui::faint(count), Space::new().width(Length::Fill), toggle, find].spacing(12).align_y(Alignment::Center);
+    let toggle = ui::btn(
+        if side.graph_on { "List" } else { "Graph" },
+        None,
+        ui::Kind::Ghost,
+        Some(SideMsg::ToggleGraph),
+    );
+    let head = row![
+        ui::faint(count),
+        Space::new().width(Length::Fill),
+        toggle,
+        find
+    ]
+    .spacing(12)
+    .align_y(Alignment::Center);
     if side.graph_on {
         let q = side.search.trim().to_lowercase();
-        return column![head, super::memory_graph::view(&side.graph, q, side.graph_kb.as_deref()).map(SideMsg::Graph)].spacing(12).into();
+        return column![
+            head,
+            super::memory_graph::view(&side.graph, q, side.graph_kb.as_deref()).map(SideMsg::Graph)
+        ]
+        .spacing(12)
+        .into();
     }
 
     let q = side.search.trim().to_lowercase();
@@ -768,7 +961,8 @@ pub fn memory_view<'a>(side: &'a Side) -> Element<'a, SideMsg> {
         .filter(|n| q.is_empty() || n.title.to_lowercase().contains(&q))
         .map(|n| note_row(n, side.reading.as_ref().is_some_and(|r| r.slug == n.slug)))
         .collect();
-    let list = ui::scroll(column(rows).spacing(10).width(Length::Fill)).height(Length::Fixed(480.0));
+    let list =
+        ui::scroll(column(rows).spacing(10).width(Length::Fill)).height(Length::Fixed(480.0));
     let reader: Element<'a, SideMsg> = match &side.reading {
         Some(doc) => {
             let rctx = rich::context(&side.cards, None, None, None);
@@ -790,7 +984,11 @@ fn loop_row<'a>(l: &'a Loop) -> Element<'a, SideMsg> {
         "done" => ui::Tone::Ok,
         _ => ui::Tone::Muted,
     };
-    let max = if l.max_runs > 0 { l.max_runs.to_string() } else { "∞".to_string() };
+    let max = if l.max_runs > 0 {
+        l.max_runs.to_string()
+    } else {
+        "∞".to_string()
+    };
     let mut meta = row![
         ui::badge(&l.state, tone),
         ui::faint(format!("every {} min", l.every_secs / 60)),
@@ -801,9 +999,17 @@ fn loop_row<'a>(l: &'a Loop) -> Element<'a, SideMsg> {
         meta = meta.push(ui::faint(format!("last {}", ago(at))));
     }
     if l.state == "running" {
-        meta = meta.push(ui::btn("Stop", None, ui::Kind::Danger, Some(SideMsg::StopLoop(l.id.clone()))));
+        meta = meta.push(ui::btn(
+            "Stop",
+            None,
+            ui::Kind::Danger,
+            Some(SideMsg::StopLoop(l.id.clone())),
+        ));
     }
-    let mut items: Vec<Element<'a, SideMsg>> = vec![ui::sans(clip(&l.prompt, 80), 12.0, crate::theme::palette().ink).into(), meta.into()];
+    let mut items: Vec<Element<'a, SideMsg>> = vec![
+        ui::sans(clip(&l.prompt, 80), 12.0, crate::theme::palette().ink).into(),
+        meta.into(),
+    ];
     if let Some(summary) = &l.last_summary {
         items.push(ui::faint(clip(summary, 120)).into());
     }
@@ -816,10 +1022,28 @@ fn note_row<'a>(n: &'a Note, open: bool) -> Element<'a, SideMsg> {
         "journal" => ui::Tone::Warn,
         _ => ui::Tone::Info,
     };
-    let kind = if open { ui::Kind::Primary } else { ui::Kind::Ghost };
-    let tags = n.tags.iter().map(|t| format!("#{t}")).collect::<Vec<_>>().join(" ");
+    let kind = if open {
+        ui::Kind::Primary
+    } else {
+        ui::Kind::Ghost
+    };
+    let tags = n
+        .tags
+        .iter()
+        .map(|t| format!("#{t}"))
+        .collect::<Vec<_>>()
+        .join(" ");
     column![
-        row![ui::badge(&n.kind, tone), ui::btn(&n.title, None, kind, Some(SideMsg::OpenNote(n.slug.clone())))].spacing(8),
+        row![
+            ui::badge(&n.kind, tone),
+            ui::btn(
+                &n.title,
+                None,
+                kind,
+                Some(SideMsg::OpenNote(n.slug.clone()))
+            )
+        ]
+        .spacing(8),
         ui::faint(tags),
     ]
     .spacing(2)
@@ -828,13 +1052,23 @@ fn note_row<'a>(n: &'a Note, open: bool) -> Element<'a, SideMsg> {
 
 /// One note open: its kind and tags, its title, the stamp (when it was updated and by which work),
 /// its body, and the notes that link to it.
-fn reader_view<'a>(doc: &'a Note, notes: &'a [Note], rctx: &rich::RichCtx, cards: &rich::Cards) -> Element<'a, SideMsg> {
+fn reader_view<'a>(
+    doc: &'a Note,
+    notes: &'a [Note],
+    rctx: &rich::RichCtx,
+    cards: &rich::Cards,
+) -> Element<'a, SideMsg> {
     let tone = match doc.kind.as_str() {
         "person" => ui::Tone::Signal,
         "journal" => ui::Tone::Warn,
         _ => ui::Tone::Info,
     };
-    let tags = doc.tags.iter().map(|t| format!("#{t}")).collect::<Vec<_>>().join(" ");
+    let tags = doc
+        .tags
+        .iter()
+        .map(|t| format!("#{t}"))
+        .collect::<Vec<_>>()
+        .join(" ");
     let mut stamp = vec![format!("Updated {}", ago(doc.updated_ms))];
     if let Some(p) = &doc.provenance {
         if let Some(task) = &p.task {
@@ -845,7 +1079,10 @@ fn reader_view<'a>(doc: &'a Note, notes: &'a [Note], rctx: &rich::RichCtx, cards
         }
     }
     let mut items: Vec<Element<'a, SideMsg>> = vec![
-        row![ui::badge(&doc.kind, tone), ui::faint(tags)].spacing(8).align_y(Alignment::Center).into(),
+        row![ui::badge(&doc.kind, tone), ui::faint(tags)]
+            .spacing(8)
+            .align_y(Alignment::Center)
+            .into(),
         ui::sans(doc.title.clone(), 18.0, crate::theme::palette().ink).into(),
         ui::faint(stamp.join(" · ")).into(),
         rich::view(&doc.body, rctx, cards, &on_rich),
@@ -857,19 +1094,44 @@ fn reader_view<'a>(doc: &'a Note, notes: &'a [Note], rctx: &rich::RichCtx, cards
             .iter()
             .map(|b| -> Element<'a, SideMsg> {
                 match resolve_ref(notes, b) {
-                    Some(n) => ui::btn(&n.title, None, ui::Kind::Ghost, Some(SideMsg::OpenNote(n.slug.clone()))).into(),
+                    Some(n) => ui::btn(
+                        &n.title,
+                        None,
+                        ui::Kind::Ghost,
+                        Some(SideMsg::OpenNote(n.slug.clone())),
+                    )
+                    .into(),
                     None => ui::faint(format!("{b} (missing)")).into(),
                 }
             })
             .collect();
-        items.push(column![ui::label("Linked from"), iced::widget::Row::with_children(chips).spacing(6)].spacing(4).into());
+        items.push(
+            column![
+                ui::label("Linked from"),
+                iced::widget::Row::with_children(chips).spacing(6)
+            ]
+            .spacing(4)
+            .into(),
+        );
     }
     column(items).spacing(10).into()
 }
 
 /// A labelled limit field; the placeholder says the plaza default applies when it is blank.
-fn field<'a>(label: &'static str, placeholder: &'static str, value: &'a str, on_input: fn(String) -> SideMsg) -> Element<'a, SideMsg> {
-    column![ui::label(label), text_input(placeholder, value).on_input(on_input).style(crate::theme::input)].spacing(4).into()
+fn field<'a>(
+    label: &'static str,
+    placeholder: &'static str,
+    value: &'a str,
+    on_input: fn(String) -> SideMsg,
+) -> Element<'a, SideMsg> {
+    column![
+        ui::label(label),
+        text_input(placeholder, value)
+            .on_input(on_input)
+            .style(crate::theme::input)
+    ]
+    .spacing(4)
+    .into()
 }
 
 // ---- Model and effort helpers (`agent-detail.ts`) ----
@@ -911,14 +1173,31 @@ fn sync_choice(side: &mut Side, value: &str) {
 fn rebuild(side: &mut Side) {
     let all = picker::choices(&side.models);
     let orchestrator = side.tier == "orchestrator";
-    let policy: &[String] = if orchestrator { &side.policy_orchestrator } else { &side.policy_worker };
-    let label_of = |id: &str| all.iter().find(|c| c.id == id).map(|c| c.label.clone()).unwrap_or_else(|| id.to_string());
+    let policy: &[String] = if orchestrator {
+        &side.policy_orchestrator
+    } else {
+        &side.policy_worker
+    };
+    let label_of = |id: &str| {
+        all.iter()
+            .find(|c| c.id == id)
+            .map(|c| c.label.clone())
+            .unwrap_or_else(|| id.to_string())
+    };
     let provider_of = |id: &str| id.split('/').next().unwrap_or_default().to_string();
 
-    let mut out = vec![Choice { id: String::new(), provider: String::new(), label: "Use the default".into() }];
+    let mut out = vec![Choice {
+        id: String::new(),
+        provider: String::new(),
+        label: "Use the default".into(),
+    }];
     for id in policy {
         if !out.iter().any(|c| c.id == *id) {
-            out.push(Choice { id: id.clone(), provider: provider_of(id.as_str()), label: label_of(id.as_str()) });
+            out.push(Choice {
+                id: id.clone(),
+                provider: provider_of(id.as_str()),
+                label: label_of(id.as_str()),
+            });
         }
     }
     if !orchestrator {
@@ -929,7 +1208,11 @@ fn rebuild(side: &mut Side) {
         }
     }
     if !side.choice.is_empty() && !out.iter().any(|o| o.id == side.choice) {
-        out.push(Choice { id: side.choice.clone(), provider: provider_of(side.choice.as_str()), label: side.choice.clone() });
+        out.push(Choice {
+            id: side.choice.clone(),
+            provider: provider_of(side.choice.as_str()),
+            label: side.choice.clone(),
+        });
     }
     side.choices = out;
 }
@@ -950,7 +1233,11 @@ fn apply_agent(side: &mut Side, a: AgentRec) {
 fn save_model(side: &Side, ctx: &Ctx, value: String) -> Task<SideMsg> {
     let c = ctx.client.clone();
     let path = format!("/v1/agents/{}", side.cid);
-    let model = if value.is_empty() { Value::Null } else { Value::String(value) };
+    let model = if value.is_empty() {
+        Value::Null
+    } else {
+        Value::String(value)
+    };
     let body = json!({ "model": model });
     client::task(move || c.patch::<Value>(&path, &body), SideMsg::ModelSaved)
 }
@@ -993,7 +1280,10 @@ fn result_text(v: &Value, fallback: &str) -> String {
         .as_str()
         .or_else(|| v.get("message").and_then(Value::as_str))
         .or_else(|| v.get("note").and_then(Value::as_str));
-    text.map(str::trim).filter(|t| !t.is_empty()).map(str::to_string).unwrap_or_else(|| fallback.to_string())
+    text.map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| fallback.to_string())
 }
 
 fn clip(text: &str, max: usize) -> String {
@@ -1005,26 +1295,50 @@ fn clip(text: &str, max: usize) -> String {
 }
 
 fn strings(v: &Value) -> Vec<String> {
-    v.as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect()).unwrap_or_default()
+    v.as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 // ---- Requests ----
 
-fn control(cid: u64, ctx: &Ctx, body: Value, fallback: &'static str, after: After) -> Task<SideMsg> {
+fn control(
+    cid: u64,
+    ctx: &Ctx,
+    body: Value,
+    fallback: &'static str,
+    after: After,
+) -> Task<SideMsg> {
     let c = ctx.client.clone();
     let path = format!("/v1/agents/{cid}/control");
-    client::task(move || c.post::<Value>(&path, &body), move |result| SideMsg::Control { fallback, after, result })
+    client::task(
+        move || c.post::<Value>(&path, &body),
+        move |result| SideMsg::Control {
+            fallback,
+            after,
+            result,
+        },
+    )
 }
 
 fn fetch_agent(ctx: &Ctx, cid: u64) -> Task<SideMsg> {
     let c = ctx.client.clone();
-    client::task(move || c.get::<Value>(&format!("/v1/agents/{cid}")), SideMsg::Agent)
+    client::task(
+        move || c.get::<Value>(&format!("/v1/agents/{cid}")),
+        SideMsg::Agent,
+    )
 }
 
 fn fetch_catalogue(ctx: &Ctx) -> Task<SideMsg> {
     let c = ctx.client.clone();
     client::task(
-        move || -> Result<(Value, Value), String> { Ok((c.get("/v1/models")?, c.get("/v1/settings")?)) },
+        move || -> Result<(Value, Value), String> {
+            Ok((c.get("/v1/models")?, c.get("/v1/settings")?))
+        },
         SideMsg::Catalogue,
     )
 }
@@ -1032,32 +1346,53 @@ fn fetch_catalogue(ctx: &Ctx) -> Task<SideMsg> {
 fn fetch_permission(ctx: &Ctx, cid: u64) -> Task<SideMsg> {
     let c = ctx.client.clone();
     client::task(
-        move || c.get::<Value>(&format!("/v1/agents/{cid}/permissions")).map(|v| v["mode"].as_str().unwrap_or_default().to_string()),
+        move || {
+            c.get::<Value>(&format!("/v1/agents/{cid}/permissions"))
+                .map(|v| v["mode"].as_str().unwrap_or_default().to_string())
+        },
         SideMsg::PermissionLoaded,
     )
 }
 
 fn fetch_limits(ctx: &Ctx, cid: u64) -> Task<SideMsg> {
     let c = ctx.client.clone();
-    client::task(move || c.get::<Limits>(&format!("/v1/agents/{cid}/limits")), SideMsg::LimitsLoaded)
+    client::task(
+        move || c.get::<Limits>(&format!("/v1/agents/{cid}/limits")),
+        SideMsg::LimitsLoaded,
+    )
 }
 
 fn fetch_loops(ctx: &Ctx, cid: u64) -> Task<SideMsg> {
     let c = ctx.client.clone();
     client::task(
-        move || c.get::<Vec<Loop>>("/v1/loops").map(|all| all.into_iter().filter(|l| l.cid == cid).collect::<Vec<Loop>>()),
+        move || {
+            c.get::<Vec<Loop>>("/v1/loops").map(|all| {
+                all.into_iter()
+                    .filter(|l| l.cid == cid)
+                    .collect::<Vec<Loop>>()
+            })
+        },
         SideMsg::Loops,
     )
 }
 
 fn fetch_memory(ctx: &Ctx, cid: u64) -> Task<SideMsg> {
     let c = ctx.client.clone();
-    client::task(move || c.get::<NotesEnvelope>(&format!("/v1/agents/{cid}/memory")).map(|e| e.notes), SideMsg::Memory)
+    client::task(
+        move || {
+            c.get::<NotesEnvelope>(&format!("/v1/agents/{cid}/memory"))
+                .map(|e| e.notes)
+        },
+        SideMsg::Memory,
+    )
 }
 
 fn fetch_note(ctx: &Ctx, cid: u64, slug: String) -> Task<SideMsg> {
     let c = ctx.client.clone();
-    client::task(move || c.get::<Note>(&format!("/v1/agents/{cid}/memory/{slug}")), SideMsg::NoteRead)
+    client::task(
+        move || c.get::<Note>(&format!("/v1/agents/{cid}/memory/{slug}")),
+        SideMsg::NoteRead,
+    )
 }
 
 #[cfg(test)]

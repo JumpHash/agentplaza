@@ -14,7 +14,11 @@ pub struct Limits {
 
 impl Limits {
     /// A whole uploaded or downloaded archive (a repo may hold many skills).
-    pub const ARCHIVE: Limits = Limits { max_entries: 5000, max_file: 5 * 1024 * 1024, max_total: 100 * 1024 * 1024 };
+    pub const ARCHIVE: Limits = Limits {
+        max_entries: 5000,
+        max_file: 5 * 1024 * 1024,
+        max_total: 100 * 1024 * 1024,
+    };
 }
 
 /// One file read from an archive.
@@ -44,14 +48,20 @@ const S_IFLNK: u32 = 0o120000;
 /// `./` segments are dropped. The per-file size is checked against the declared size and again while reading, so a
 /// lying header cannot pass a zip bomb.
 pub fn read_zip(bytes: &[u8], limits: Limits) -> Result<Vec<Entry>, String> {
-    let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).map_err(|e| format!("not a zip: {e}"))?;
+    let mut archive =
+        zip::ZipArchive::new(Cursor::new(bytes)).map_err(|e| format!("not a zip: {e}"))?;
     if archive.len() > limits.max_entries {
-        return Err(format!("too many entries: more than {}", limits.max_entries));
+        return Err(format!(
+            "too many entries: more than {}",
+            limits.max_entries
+        ));
     }
     let mut out = Vec::new();
     let mut total = 0u64;
     for index in 0..archive.len() {
-        let mut file = archive.by_index(index).map_err(|e| format!("entry {index}: {e}"))?;
+        let mut file = archive
+            .by_index(index)
+            .map_err(|e| format!("entry {index}: {e}"))?;
         let raw = std::str::from_utf8(file.name_raw())
             .map_err(|_| format!("entry {index}: the name is not UTF-8"))?
             .to_string();
@@ -68,16 +78,26 @@ pub fn read_zip(bytes: &[u8], limits: Limits) -> Result<Vec<Entry>, String> {
         }
         let cap = limits.max_file.min(limits.max_total - total);
         let mut data = Vec::new();
-        (&mut file).take(cap + 1).read_to_end(&mut data).map_err(|e| format!("{path}: {e}"))?;
+        (&mut file)
+            .take(cap + 1)
+            .read_to_end(&mut data)
+            .map_err(|e| format!("{path}: {e}"))?;
         let got = data.len() as u64;
         if got > limits.max_file {
             return Err(format!("{path}: larger than {} bytes", limits.max_file));
         }
         if got > cap {
-            return Err(format!("the archive is larger than {} bytes", limits.max_total));
+            return Err(format!(
+                "the archive is larger than {} bytes",
+                limits.max_total
+            ));
         }
         total += got;
-        out.push(Entry { path, bytes: data, executable: mode.is_some_and(|m| m & 0o111 != 0) });
+        out.push(Entry {
+            path,
+            bytes: data,
+            executable: mode.is_some_and(|m| m & 0o111 != 0),
+        });
     }
     Ok(out)
 }
@@ -94,7 +114,11 @@ pub fn find_skills(entries: &[Entry], under: &str) -> Vec<FoundSkill> {
     let top = common_top(entries);
     let mut skill_mds: BTreeMap<&str, &Entry> = BTreeMap::new();
     for entry in entries {
-        let dir = if entry.path == "SKILL.md" { Some("") } else { entry.path.strip_suffix("/SKILL.md") };
+        let dir = if entry.path == "SKILL.md" {
+            Some("")
+        } else {
+            entry.path.strip_suffix("/SKILL.md")
+        };
         if let Some(dir) = dir {
             skill_mds.insert(dir, entry);
         }
@@ -108,11 +132,17 @@ pub fn find_skills(entries: &[Entry], under: &str) -> Vec<FoundSkill> {
     // Each file belongs to the nearest folder above it that holds a SKILL.md.
     let mut files: BTreeMap<&str, Vec<Entry>> = BTreeMap::new();
     for entry in entries {
-        let Some(owner) = owner_of(&entry.path, &skill_mds) else { continue };
+        let Some(owner) = owner_of(&entry.path, &skill_mds) else {
+            continue;
+        };
         if !wanted.contains(owner) {
             continue;
         }
-        let rel = if owner.is_empty() { entry.path.as_str() } else { &entry.path[owner.len() + 1..] };
+        let rel = if owner.is_empty() {
+            entry.path.as_str()
+        } else {
+            &entry.path[owner.len() + 1..]
+        };
         if rel == "SKILL.md" {
             continue;
         }
@@ -126,7 +156,9 @@ pub fn find_skills(entries: &[Entry], under: &str) -> Vec<FoundSkill> {
         .into_iter()
         .map(|dir| FoundSkill {
             dir: dir.to_string(),
-            skill_md: std::str::from_utf8(&skill_mds[dir].bytes).unwrap_or("").to_string(),
+            skill_md: std::str::from_utf8(&skill_mds[dir].bytes)
+                .unwrap_or("")
+                .to_string(),
             files: files.remove(dir).unwrap_or_default(),
         })
         .collect()
@@ -137,13 +169,23 @@ pub fn write_zip(skills: &[FoundSkill]) -> Result<Vec<u8>, String> {
     let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
     for skill in skills {
         let dir = normalise(&skill.dir)?;
-        put(&mut writer, &join(&dir, "SKILL.md")?, skill.skill_md.as_bytes(), false)?;
+        put(
+            &mut writer,
+            &join(&dir, "SKILL.md")?,
+            skill.skill_md.as_bytes(),
+            false,
+        )?;
         for file in &skill.files {
             let rel = normalise(&file.path)?;
             if rel.is_empty() || rel == "SKILL.md" {
                 continue;
             }
-            put(&mut writer, &join(&dir, &rel)?, &file.bytes, file.executable)?;
+            put(
+                &mut writer,
+                &join(&dir, &rel)?,
+                &file.bytes,
+                file.executable,
+            )?;
         }
     }
     let cursor = writer.finish().map_err(|e| e.to_string())?;
@@ -183,9 +225,14 @@ pub fn parse_github_url(url: &str) -> Result<GithubRef, String> {
         return Err("the URL needs an owner and a repo: https://github.com/<owner>/<repo>".into());
     }
     let (owner, repo_raw) = (segs[0], segs[1]);
-    let repo = repo_raw.strip_suffix(".git").filter(|r| !r.is_empty()).unwrap_or(repo_raw);
+    let repo = repo_raw
+        .strip_suffix(".git")
+        .filter(|r| !r.is_empty())
+        .unwrap_or(repo_raw);
     if !valid_name(owner) || !valid_name(repo) {
-        return Err(format!("{owner}/{repo_raw}: names use letters, digits, '_', '.' and '-'"));
+        return Err(format!(
+            "{owner}/{repo_raw}: names use letters, digits, '_', '.' and '-'"
+        ));
     }
     let (git_ref, folder): (Option<String>, &[&str]) = match segs.get(2).copied() {
         None => (None, &[]),
@@ -199,12 +246,25 @@ pub fn parse_github_url(url: &str) -> Result<GithubRef, String> {
             }
             (Some(git_ref.to_string()), folder)
         }
-        Some(other) => return Err(format!("not a folder link: /{other}/ is not a tree or blob URL")),
+        Some(other) => {
+            return Err(format!(
+                "not a folder link: /{other}/ is not a tree or blob URL"
+            ));
+        }
     };
-    if segs.iter().skip(3).any(|s| *s == "." || *s == ".." || s.contains('\\')) {
+    if segs
+        .iter()
+        .skip(3)
+        .any(|s| *s == "." || *s == ".." || s.contains('\\'))
+    {
         return Err("the path has a '.', '..' or backslash segment".into());
     }
-    Ok(GithubRef { owner: owner.to_string(), repo: repo.to_string(), git_ref, path: folder.join("/") })
+    Ok(GithubRef {
+        owner: owner.to_string(),
+        repo: repo.to_string(),
+        git_ref,
+        path: folder.join("/"),
+    })
 }
 
 /// Normalises an archive path: refuses `..`, a leading `/`, a backslash or a drive letter; drops `.` and empty segments.
@@ -245,11 +305,16 @@ fn common_top(entries: &[Entry]) -> Option<&str> {
 }
 
 fn in_scope(dir: &str, under: &str, top: Option<&str>) -> bool {
-    under.is_empty() || within(dir, under) || top.is_some_and(|t| within(dir, &format!("{t}/{under}")))
+    under.is_empty()
+        || within(dir, under)
+        || top.is_some_and(|t| within(dir, &format!("{t}/{under}")))
 }
 
 fn within(path: &str, base: &str) -> bool {
-    path == base || path.strip_prefix(base).is_some_and(|rest| rest.starts_with('/'))
+    path == base
+        || path
+            .strip_prefix(base)
+            .is_some_and(|rest| rest.starts_with('/'))
 }
 
 /// The nearest folder above `path` that holds a SKILL.md, the root ("") included.
@@ -269,11 +334,17 @@ fn valid_name(name: &str) -> bool {
     !name.is_empty()
         && name != "."
         && name != ".."
-        && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
 }
 
 fn join(dir: &str, rel: &str) -> Result<String, String> {
-    let joined = if dir.is_empty() { rel.to_string() } else { format!("{dir}/{rel}") };
+    let joined = if dir.is_empty() {
+        rel.to_string()
+    } else {
+        format!("{dir}/{rel}")
+    };
     normalise(&joined)
 }
 
@@ -286,7 +357,9 @@ fn put(
     let options = zip::write::SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated)
         .unix_permissions(if executable { 0o755 } else { 0o644 });
-    writer.start_file(path, options).map_err(|e| format!("{path}: {e}"))?;
+    writer
+        .start_file(path, options)
+        .map_err(|e| format!("{path}: {e}"))?;
     writer.write_all(data).map_err(|e| format!("{path}: {e}"))
 }
 
@@ -294,19 +367,29 @@ fn put(
 mod tests {
     use super::*;
 
-    const SMALL: Limits = Limits { max_entries: 100, max_file: 1024, max_total: 4096 };
+    const SMALL: Limits = Limits {
+        max_entries: 100,
+        max_file: 1024,
+        max_total: 4096,
+    };
 
     fn raw_zip(files: &[(&str, &str)]) -> Vec<u8> {
         let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
         for (name, data) in files {
-            writer.start_file(*name, zip::write::SimpleFileOptions::default()).unwrap();
+            writer
+                .start_file(*name, zip::write::SimpleFileOptions::default())
+                .unwrap();
             writer.write_all(data.as_bytes()).unwrap();
         }
         writer.finish().unwrap().into_inner()
     }
 
     fn file(path: &str, data: &str, executable: bool) -> Entry {
-        Entry { path: path.into(), bytes: data.as_bytes().to_vec(), executable }
+        Entry {
+            path: path.into(),
+            bytes: data.as_bytes().to_vec(),
+            executable,
+        }
     }
 
     #[test]
@@ -315,31 +398,73 @@ mod tests {
             FoundSkill {
                 dir: "a".into(),
                 skill_md: "# a".into(),
-                files: vec![file("run.sh", "#!/bin/sh", true), file("lib/x.txt", "x", false)],
+                files: vec![
+                    file("run.sh", "#!/bin/sh", true),
+                    file("lib/x.txt", "x", false),
+                ],
             },
-            FoundSkill { dir: "a/b".into(), skill_md: "# b".into(), files: vec![file("y.txt", "y", false)] },
-            FoundSkill { dir: "c".into(), skill_md: "# c".into(), files: vec![] },
+            FoundSkill {
+                dir: "a/b".into(),
+                skill_md: "# b".into(),
+                files: vec![file("y.txt", "y", false)],
+            },
+            FoundSkill {
+                dir: "c".into(),
+                skill_md: "# c".into(),
+                files: vec![],
+            },
         ];
         let zip = write_zip(&skills).unwrap();
         let entries = read_zip(&zip, Limits::ARCHIVE).unwrap();
         let found = find_skills(&entries, "");
-        assert_eq!(found.iter().map(|s| s.dir.as_str()).collect::<Vec<_>>(), ["a", "a/b", "c"]);
+        assert_eq!(
+            found.iter().map(|s| s.dir.as_str()).collect::<Vec<_>>(),
+            ["a", "a/b", "c"]
+        );
         assert_eq!(found[0].skill_md, "# a");
-        let mut names: Vec<(&str, bool)> = found[0].files.iter().map(|f| (f.path.as_str(), f.executable)).collect();
+        let mut names: Vec<(&str, bool)> = found[0]
+            .files
+            .iter()
+            .map(|f| (f.path.as_str(), f.executable))
+            .collect();
         names.sort();
         assert_eq!(names, vec![("lib/x.txt", false), ("run.sh", true)]);
-        assert_eq!(found[1].files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(), ["y.txt"]);
+        assert_eq!(
+            found[1]
+                .files
+                .iter()
+                .map(|f| f.path.as_str())
+                .collect::<Vec<_>>(),
+            ["y.txt"]
+        );
     }
 
     #[test]
     fn root_skill_and_under_filter() {
-        let zip = raw_zip(&[("SKILL.md", "# root"), ("tool.py", "print(1)"), ("skills/x/SKILL.md", "# x")]);
+        let zip = raw_zip(&[
+            ("SKILL.md", "# root"),
+            ("tool.py", "print(1)"),
+            ("skills/x/SKILL.md", "# x"),
+        ]);
         let entries = read_zip(&zip, Limits::ARCHIVE).unwrap();
         let all = find_skills(&entries, "");
-        assert_eq!(all.iter().map(|s| s.dir.as_str()).collect::<Vec<_>>(), ["", "skills/x"]);
-        assert_eq!(all[0].files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(), ["tool.py"]);
+        assert_eq!(
+            all.iter().map(|s| s.dir.as_str()).collect::<Vec<_>>(),
+            ["", "skills/x"]
+        );
+        assert_eq!(
+            all[0]
+                .files
+                .iter()
+                .map(|f| f.path.as_str())
+                .collect::<Vec<_>>(),
+            ["tool.py"]
+        );
         let under = find_skills(&entries, "skills");
-        assert_eq!(under.iter().map(|s| s.dir.as_str()).collect::<Vec<_>>(), ["skills/x"]);
+        assert_eq!(
+            under.iter().map(|s| s.dir.as_str()).collect::<Vec<_>>(),
+            ["skills/x"]
+        );
     }
 
     #[test]
@@ -351,17 +476,33 @@ mod tests {
         ]);
         let entries = read_zip(&zip, Limits::ARCHIVE).unwrap();
         let all = find_skills(&entries, "");
-        assert_eq!(all.iter().map(|s| s.dir.as_str()).collect::<Vec<_>>(), ["repo-abc", "repo-abc/skills/x"]);
+        assert_eq!(
+            all.iter().map(|s| s.dir.as_str()).collect::<Vec<_>>(),
+            ["repo-abc", "repo-abc/skills/x"]
+        );
         let under = find_skills(&entries, "skills/x");
-        assert_eq!(under.iter().map(|s| s.dir.as_str()).collect::<Vec<_>>(), ["repo-abc/skills/x"]);
-        assert_eq!(under[0].files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(), ["a.txt"]);
+        assert_eq!(
+            under.iter().map(|s| s.dir.as_str()).collect::<Vec<_>>(),
+            ["repo-abc/skills/x"]
+        );
+        assert_eq!(
+            under[0]
+                .files
+                .iter()
+                .map(|f| f.path.as_str())
+                .collect::<Vec<_>>(),
+            ["a.txt"]
+        );
     }
 
     #[test]
     fn zip_slip_and_bad_names_are_refused() {
         for bad in ["../x", "a/../../x", "/etc/passwd", "a\\b", "C:/x", "C:x"] {
             let zip = raw_zip(&[(bad, "evil")]);
-            assert!(read_zip(&zip, Limits::ARCHIVE).is_err(), "{bad} must be refused");
+            assert!(
+                read_zip(&zip, Limits::ARCHIVE).is_err(),
+                "{bad} must be refused"
+            );
         }
         let ok = read_zip(&raw_zip(&[("./a/b.txt", "x")]), Limits::ARCHIVE).unwrap();
         assert_eq!(ok[0].path, "a/b.txt");
@@ -370,25 +511,63 @@ mod tests {
     #[test]
     fn symlinks_are_refused() {
         let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
-        writer.add_symlink("link", "target", zip::write::SimpleFileOptions::default()).unwrap();
+        writer
+            .add_symlink("link", "target", zip::write::SimpleFileOptions::default())
+            .unwrap();
         let zip = writer.finish().unwrap().into_inner();
-        assert!(read_zip(&zip, Limits::ARCHIVE).unwrap_err().contains("link"));
+        assert!(
+            read_zip(&zip, Limits::ARCHIVE)
+                .unwrap_err()
+                .contains("link")
+        );
     }
 
     #[test]
     fn limits_are_enforced() {
         let big = "x".repeat(50);
         let big_zip = raw_zip(&[("big.txt", big.as_str())]);
-        let per_file = Limits { max_entries: 10, max_file: 10, max_total: 100 };
-        assert!(read_zip(&big_zip, per_file).unwrap_err().contains("big.txt"));
+        let per_file = Limits {
+            max_entries: 10,
+            max_file: 10,
+            max_total: 100,
+        };
+        assert!(
+            read_zip(&big_zip, per_file)
+                .unwrap_err()
+                .contains("big.txt")
+        );
         assert!(read_zip(&big_zip, SMALL).is_ok());
 
         let fifteen = "y".repeat(15);
         let two = raw_zip(&[("a.txt", fifteen.as_str()), ("b.txt", fifteen.as_str())]);
-        let total = Limits { max_entries: 10, max_file: 100, max_total: 20 };
+        let total = Limits {
+            max_entries: 10,
+            max_file: 100,
+            max_total: 20,
+        };
         assert!(read_zip(&two, total).is_err());
-        assert!(read_zip(&two, Limits { max_entries: 1, ..total }).is_err());
-        assert_eq!(read_zip(&two, Limits { max_total: 30, ..total }).unwrap().len(), 2);
+        assert!(
+            read_zip(
+                &two,
+                Limits {
+                    max_entries: 1,
+                    ..total
+                }
+            )
+            .is_err()
+        );
+        assert_eq!(
+            read_zip(
+                &two,
+                Limits {
+                    max_total: 30,
+                    ..total
+                }
+            )
+            .unwrap()
+            .len(),
+            2
+        );
     }
 
     #[test]
@@ -406,10 +585,26 @@ mod tests {
         ok("github.com/o/r", None, "");
         ok("https://github.com/o/r?tab=readme#x", None, "");
         ok("https://github.com/o/r/tree/main", Some("main"), "");
-        ok("https://github.com/o/r/tree/main/skills/x", Some("main"), "skills/x");
-        ok("https://github.com/o/r/blob/v1.2/skills/x/SKILL.md", Some("v1.2"), "skills/x");
-        ok("https://github.com/o/r/blob/main/SKILL.md", Some("main"), "");
-        ok("https://github.com/o/r/tree/feat/x/skills/y", Some("feat"), "x/skills/y");
+        ok(
+            "https://github.com/o/r/tree/main/skills/x",
+            Some("main"),
+            "skills/x",
+        );
+        ok(
+            "https://github.com/o/r/blob/v1.2/skills/x/SKILL.md",
+            Some("v1.2"),
+            "skills/x",
+        );
+        ok(
+            "https://github.com/o/r/blob/main/SKILL.md",
+            Some("main"),
+            "",
+        );
+        ok(
+            "https://github.com/o/r/tree/feat/x/skills/y",
+            Some("feat"),
+            "x/skills/y",
+        );
         for bad in [
             "https://gitlab.com/o/r",
             "https://github.com.evil.com/o/r",

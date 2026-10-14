@@ -20,11 +20,26 @@ impl Upstream {
     }
 
     /// `method path` with an optional JSON body; `(status, json)`.
-    pub fn call(&self, method: &str, path: &str, body: Option<&Value>) -> Result<(u16, Value), String> {
+    pub fn call(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<&Value>,
+    ) -> Result<(u16, Value), String> {
         let bytes = body.map(Value::to_string);
-        let reply = apz_http::client::send(self.port, method, path, bytes.as_deref().map(str::as_bytes), TIMEOUT)
-            .map_err(|e| format!("127.0.0.1:{} unreachable: {e}", self.port))?;
-        let json = if reply.body.is_empty() { Value::Null } else { reply.json().unwrap_or(Value::Null) };
+        let reply = apz_http::client::send(
+            self.port,
+            method,
+            path,
+            bytes.as_deref().map(str::as_bytes),
+            TIMEOUT,
+        )
+        .map_err(|e| format!("127.0.0.1:{} unreachable: {e}", self.port))?;
+        let json = if reply.body.is_empty() {
+            Value::Null
+        } else {
+            reply.json().unwrap_or(Value::Null)
+        };
         Ok((reply.status, json))
     }
 

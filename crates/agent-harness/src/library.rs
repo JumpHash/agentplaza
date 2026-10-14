@@ -146,7 +146,9 @@ fn deliver_via(workspace: &Workspace, input: &Value, proxy: &str) -> Result<Stri
         query.push_str(&format!("&task={}", encode_query(text)));
     }
     let (id, url) = upload_via(workspace, rel, &query, proxy)?;
-    Ok(format!("delivered \"{title}\" to the Library: id {id}, {url}"))
+    Ok(format!(
+        "delivered \"{title}\" to the Library: id {id}, {url}"
+    ))
 }
 
 /// Uploads the workspace file `rel` by a PUT to `query` (the path and query, starting
@@ -188,9 +190,8 @@ fn upload_via(
             excerpt(body)
         ));
     }
-    let value: Value = serde_json::from_slice(body).map_err(|err| {
-        format!("the Library's reply is not JSON ({err}): {}", excerpt(body))
-    })?;
+    let value: Value = serde_json::from_slice(body)
+        .map_err(|err| format!("the Library's reply is not JSON ({err}): {}", excerpt(body)))?;
     let id = value["id"]
         .as_str()
         .ok_or_else(|| format!("the Library's reply has no id: {}", excerpt(body)))?;
@@ -225,7 +226,11 @@ fn workspace_file(workspace: &Workspace, rel: &str) -> Result<PathBuf, String> {
                 )));
             }
             Component::Normal(_) | Component::CurDir => {}
-            _ => return Err(invalid(format!("{rel:?} must be a path inside the workspace"))),
+            _ => {
+                return Err(invalid(format!(
+                    "{rel:?} must be a path inside the workspace"
+                )));
+            }
         }
     }
     let root = fs::canonicalize(workspace.dir())
@@ -457,7 +462,10 @@ pub fn package(workspace: &Workspace, input: &Value) -> Result<String, String> {
 /// `command` in the unpacked directory, the input on stdin and in `TOOL_INPUT`.
 pub fn run(workspace: &Workspace, program: &Program, input: &Value) -> Result<String, String> {
     if !name_ok(&program.name) {
-        return Err(format!("the library program's name {:?} is not a tool name", program.name));
+        return Err(format!(
+            "the library program's name {:?} is not a tool name",
+            program.name
+        ));
     }
     if program.command.is_empty() {
         return Err("the library program has no command".to_string());
@@ -582,7 +590,8 @@ fn collect(
     files: &mut Vec<Collected>,
     total: &mut u64,
 ) -> Result<(), String> {
-    let entries = fs::read_dir(dir).map_err(|err| format!("cannot read {}: {err}", dir.display()))?;
+    let entries =
+        fs::read_dir(dir).map_err(|err| format!("cannot read {}: {err}", dir.display()))?;
     for entry in entries {
         let entry = entry.map_err(|err| format!("cannot read {}: {err}", dir.display()))?;
         let name = entry
@@ -634,7 +643,9 @@ fn collect(
 /// harness's own state, and a real directory once symlinks are followed.
 fn tool_dir(workspace: &Workspace, rel: &str) -> Result<PathBuf, String> {
     if rel.is_empty() {
-        return Err(invalid("\"dir\" must name a directory inside the workspace"));
+        return Err(invalid(
+            "\"dir\" must name a directory inside the workspace",
+        ));
     }
     for component in Path::new(rel).components() {
         match component {
@@ -644,14 +655,22 @@ fn tool_dir(workspace: &Workspace, rel: &str) -> Result<PathBuf, String> {
                 )));
             }
             Component::Normal(_) | Component::CurDir => {}
-            _ => return Err(invalid(format!("{rel:?} must be a path inside the workspace"))),
+            _ => {
+                return Err(invalid(format!(
+                    "{rel:?} must be a path inside the workspace"
+                )));
+            }
         }
     }
     let root = fs::canonicalize(workspace.dir())
         .map_err(|err| format!("the workspace is not available: {err}"))?;
     let dir = match fs::canonicalize(root.join(rel)) {
         Ok(dir) if dir.is_dir() => dir,
-        _ => return Err(invalid(format!("{rel:?} is not a directory in the workspace"))),
+        _ => {
+            return Err(invalid(format!(
+                "{rel:?} is not a directory in the workspace"
+            )));
+        }
     };
     if !dir.starts_with(&root) || dir.starts_with(root.join(PLAZA_DIR)) {
         return Err(invalid(format!(
@@ -692,7 +711,10 @@ fn name_ok(name: &str) -> bool {
 
 /// A program file's path: relative, with normal components only.
 fn file_path_ok(rel: &str) -> bool {
-    !rel.is_empty() && Path::new(rel).components().all(|part| matches!(part, Component::Normal(_)))
+    !rel.is_empty()
+        && Path::new(rel)
+            .components()
+            .all(|part| matches!(part, Component::Normal(_)))
 }
 
 fn invalid(reason: impl std::fmt::Display) -> String {
@@ -715,7 +737,9 @@ fn strings(input: &Value, key: &str) -> Result<Vec<String>, String> {
         .iter()
         .map(|item| match item.as_str() {
             Some(text) if !text.is_empty() => Ok(text.to_string()),
-            _ => Err(invalid(format!("{key:?} must be a list of non-empty strings"))),
+            _ => Err(invalid(format!(
+                "{key:?} must be a list of non-empty strings"
+            ))),
         })
         .collect()
 }
@@ -729,8 +753,16 @@ fn base64_encode(bytes: &[u8]) -> String {
         let n = (first << 16) | (second << 8) | third;
         out.push(BASE64[(n >> 18) as usize & 63] as char);
         out.push(BASE64[(n >> 12) as usize & 63] as char);
-        out.push(if chunk.len() > 1 { BASE64[(n >> 6) as usize & 63] as char } else { '=' });
-        out.push(if chunk.len() > 2 { BASE64[n as usize & 63] as char } else { '=' });
+        out.push(if chunk.len() > 1 {
+            BASE64[(n >> 6) as usize & 63] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            BASE64[n as usize & 63] as char
+        } else {
+            '='
+        });
     }
     out
 }
@@ -787,7 +819,8 @@ mod tests {
     use apz_proto::wire::ProgramFile;
 
     fn scratch(name: &str) -> Workspace {
-        let dir = std::env::temp_dir().join(format!("apz-harness-library-{name}-{}", process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("apz-harness-library-{name}-{}", process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).expect("a scratch workspace");
         Workspace::at(dir)
@@ -868,7 +901,10 @@ mod tests {
         assert_eq!(files[0]["executable"], true);
         assert_eq!(files[1]["path"], "sub/data.txt");
         assert_eq!(files[1]["executable"], false);
-        assert_eq!(base64_decode(files[1]["content_b64"].as_str().expect("content")).expect("base64"), b"hello");
+        assert_eq!(
+            base64_decode(files[1]["content_b64"].as_str().expect("content")).expect("base64"),
+            b"hello"
+        );
         let expected = bundle_hash(&[("main.sh", &b"cat\n"[..]), ("sub/data.txt", &b"hello"[..])]);
         assert_eq!(pkg["hash"], expected.as_str());
     }
@@ -876,7 +912,10 @@ mod tests {
     #[test]
     fn run_unpacks_the_program_and_feeds_it_its_input() {
         let ws = scratch("run");
-        echo_tool(&ws, b"cat\necho\ntest -f \"$TOOL_INPUT\" && echo has-input\n");
+        echo_tool(
+            &ws,
+            b"cat\necho\ntest -f \"$TOOL_INPUT\" && echo has-input\n",
+        );
         let program = program_from(&package(&ws, &input("tool")).expect("packages"));
 
         let output = run(&ws, &program, &json!({"text": "hi"})).expect("exit 0");
@@ -886,8 +925,14 @@ mod tests {
             .plaza_dir()
             .join("tools")
             .join(format!("echo_tool@1-{}", &program.hash[..12]));
-        assert_eq!(fs::read(dir.join("sub/data.txt")).expect("unpacked"), b"hello");
-        let mode = fs::metadata(dir.join("main.sh")).expect("unpacked").permissions().mode();
+        assert_eq!(
+            fs::read(dir.join("sub/data.txt")).expect("unpacked"),
+            b"hello"
+        );
+        let mode = fs::metadata(dir.join("main.sh"))
+            .expect("unpacked")
+            .permissions()
+            .mode();
         assert!(mode & 0o111 != 0, "{mode:o}");
         let leftovers = fs::read_dir(&dir)
             .expect("the tool directory")
@@ -910,7 +955,10 @@ mod tests {
     fn packaging_refuses_more_than_fifty_files() {
         let ws = scratch("count");
         for index in 0..=MAX_FILES {
-            write(&ws.dir().join("tool").join(format!("f{index:02}.txt")), b"x");
+            write(
+                &ws.dir().join("tool").join(format!("f{index:02}.txt")),
+                b"x",
+            );
         }
         let err = package(&ws, &input("tool")).expect_err("too many files");
         assert!(err.contains("more than 50 files"), "{err}");
@@ -938,21 +986,45 @@ mod tests {
 
         let mut empty = input("tool");
         empty["description"] = json!("");
-        assert!(package(&ws, &empty).expect_err("empty").contains("description"));
+        assert!(
+            package(&ws, &empty)
+                .expect_err("empty")
+                .contains("description")
+        );
         let mut long_description = input("tool");
         long_description["description"] = json!("d".repeat(501));
-        assert!(package(&ws, &long_description).expect_err("long").contains("description"));
+        assert!(
+            package(&ws, &long_description)
+                .expect_err("long")
+                .contains("description")
+        );
 
-        assert!(package(&ws, &input("nope")).expect_err("missing").contains("not a directory"));
-        assert!(package(&ws, &input("../tool")).expect_err("escape").contains("inside the workspace"));
+        assert!(
+            package(&ws, &input("nope"))
+                .expect_err("missing")
+                .contains("not a directory")
+        );
+        assert!(
+            package(&ws, &input("../tool"))
+                .expect_err("escape")
+                .contains("inside the workspace")
+        );
         assert!(package(&ws, &input(".plaza/tools")).is_err());
 
         let mut no_command = input("tool");
         no_command["command"] = json!([]);
-        assert!(package(&ws, &no_command).expect_err("no command").contains("command"));
+        assert!(
+            package(&ws, &no_command)
+                .expect_err("no command")
+                .contains("command")
+        );
         let mut no_schema = input("tool");
         no_schema["input_schema"] = json!("object");
-        assert!(package(&ws, &no_schema).expect_err("schema").contains("input_schema"));
+        assert!(
+            package(&ws, &no_schema)
+                .expect_err("schema")
+                .contains("input_schema")
+        );
     }
 
     #[test]
@@ -965,7 +1037,13 @@ mod tests {
 
     #[test]
     fn base64_round_trips_with_padding() {
-        for (plain, text) in [("", ""), ("f", "Zg=="), ("fo", "Zm8="), ("foo", "Zm9v"), ("foob", "Zm9vYg==")] {
+        for (plain, text) in [
+            ("", ""),
+            ("f", "Zg=="),
+            ("fo", "Zm8="),
+            ("foo", "Zm9v"),
+            ("foob", "Zm9vYg=="),
+        ] {
             assert_eq!(base64_encode(plain.as_bytes()), text);
             assert_eq!(base64_decode(text).expect("decodes"), plain.as_bytes());
         }
@@ -976,7 +1054,10 @@ mod tests {
     #[test]
     fn query_values_are_percent_encoded() {
         assert_eq!(encode_query("plain-name_1.mp4~"), "plain-name_1.mp4~");
-        assert_eq!(encode_query("a b&c=d/e?f#g%"), "a%20b%26c%3Dd%2Fe%3Ff%23g%25");
+        assert_eq!(
+            encode_query("a b&c=d/e?f#g%"),
+            "a%20b%26c%3Dd%2Fe%3Ff%23g%25"
+        );
         assert_eq!(encode_query("é"), "%C3%A9");
     }
 
@@ -1014,10 +1095,26 @@ mod tests {
         write(&ws.dir().join("out/report.txt"), b"x");
         write(&ws.dir().join(".plaza/secret.txt"), b"x");
         let input = |path: &str| json!({"path": path, "title": "t"});
-        assert!(deliver(&ws, &input("../report.txt")).expect_err("escape").contains("inside the workspace"));
-        assert!(deliver(&ws, &input(".plaza/secret.txt")).expect_err("state").contains("harness"));
-        assert!(deliver(&ws, &input("out/missing.txt")).expect_err("missing").contains("not a file"));
-        assert!(deliver(&ws, &input("out")).expect_err("a folder").contains("not a file"));
+        assert!(
+            deliver(&ws, &input("../report.txt"))
+                .expect_err("escape")
+                .contains("inside the workspace")
+        );
+        assert!(
+            deliver(&ws, &input(".plaza/secret.txt"))
+                .expect_err("state")
+                .contains("harness")
+        );
+        assert!(
+            deliver(&ws, &input("out/missing.txt"))
+                .expect_err("missing")
+                .contains("not a file")
+        );
+        assert!(
+            deliver(&ws, &input("out"))
+                .expect_err("a folder")
+                .contains("not a file")
+        );
     }
 
     fn reply(status: &str, body: &str) -> String {
@@ -1097,7 +1194,10 @@ mod tests {
             "task": "t-1",
         });
         let out = deliver_via(&ws, &input, &proxy).expect("delivered");
-        assert_eq!(out, "delivered \"Hello there\" to the Library: id f1, http://plaza.gateway/files/f1");
+        assert_eq!(
+            out,
+            "delivered \"Hello there\" to the Library: id f1, http://plaza.gateway/files/f1"
+        );
 
         let request = server.join().expect("the server");
         let split = request
@@ -1109,7 +1209,9 @@ mod tests {
         let mut lines = head.split("\r\n");
         assert_eq!(
             lines.next(),
-            Some("PUT http://plaza.gateway/files?name=hello.txt&title=Hello%20there&description=a%20note%20%26%20more&task=t-1 HTTP/1.1")
+            Some(
+                "PUT http://plaza.gateway/files?name=hello.txt&title=Hello%20there&description=a%20note%20%26%20more&task=t-1 HTTP/1.1"
+            )
         );
         let headers: Vec<&str> = lines.collect();
         assert!(headers.contains(&"Host: plaza.gateway"), "{headers:?}");
@@ -1139,7 +1241,8 @@ fn give_to_agent(dir: &Path) -> Result<(), String> {
     let id = crate::bash::UNPRIVILEGED;
     let mut stack = vec![dir.to_path_buf()];
     while let Some(path) = stack.pop() {
-        std::os::unix::fs::lchown(&path, Some(id), Some(id)).map_err(|e| format!("cannot hand {} to the agent: {e}", path.display()))?;
+        std::os::unix::fs::lchown(&path, Some(id), Some(id))
+            .map_err(|e| format!("cannot hand {} to the agent: {e}", path.display()))?;
         if path.is_dir() {
             for entry in fs::read_dir(&path).map_err(|e| e.to_string())? {
                 stack.push(entry.map_err(|e| e.to_string())?.path());
@@ -1156,12 +1259,21 @@ pub fn summary(bundle: &str) -> String {
     };
     let p = &value["package"];
     let files = p["files"].as_array().map_or(0, Vec::len);
-    let bytes: usize = p["files"].as_array().map_or(0, |f| f.iter().filter_map(|x| x["content_b64"].as_str()).map(|s| s.len() * 3 / 4).sum());
+    let bytes: usize = p["files"].as_array().map_or(0, |f| {
+        f.iter()
+            .filter_map(|x| x["content_b64"].as_str())
+            .map(|s| s.len() * 3 / 4)
+            .sum()
+    });
     format!(
         "packaged x_{} ({files} files, ~{} KiB, hash {}) for the plaza's library{}",
         p["name"].as_str().unwrap_or("?"),
         bytes.div_ceil(1024),
         p["hash"].as_str().map_or("?", |h| &h[..h.len().min(12)]),
-        if p["publish"].as_bool() == Some(true) { "; publishing to every agent awaits review" } else { "; it is yours to use now as a tool" },
+        if p["publish"].as_bool() == Some(true) {
+            "; publishing to every agent awaits review"
+        } else {
+            "; it is yours to use now as a tool"
+        },
     )
 }

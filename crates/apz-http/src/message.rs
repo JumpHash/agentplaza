@@ -23,7 +23,10 @@ pub struct Limits {
 
 impl Default for Limits {
     fn default() -> Self {
-        Self { max_head: 16 << 10, max_body: 1 << 20 }
+        Self {
+            max_head: 16 << 10,
+            max_body: 1 << 20,
+        }
     }
 }
 
@@ -150,7 +153,11 @@ impl Request {
 }
 
 /// Reads one `\n`-terminated line into `line`, without its `\r\n`.
-fn read_line(reader: &mut impl BufRead, limit: usize, line: &mut Vec<u8>) -> Result<(), &'static str> {
+fn read_line(
+    reader: &mut impl BufRead,
+    limit: usize,
+    line: &mut Vec<u8>,
+) -> Result<(), &'static str> {
     line.clear();
     let read = reader
         .take(limit as u64 + 1)
@@ -233,7 +240,11 @@ impl Response {
 
     /// `{"error": message}`.
     pub fn error(status: u16, message: &str) -> Self {
-        Self::new(status, JSON, serde_json::json!({ "error": message }).to_string())
+        Self::new(
+            status,
+            JSON,
+            serde_json::json!({ "error": message }).to_string(),
+        )
     }
 
     pub fn text(status: u16, text: &str) -> Self {
@@ -274,7 +285,11 @@ impl Response {
         if let Body::Bytes(bytes) = &self.body {
             head.push_str(&format!("Content-Length: {}\r\n", bytes.len()));
         }
-        if !self.headers.iter().any(|(name, _)| name.eq_ignore_ascii_case("cache-control")) {
+        if !self
+            .headers
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case("cache-control"))
+        {
             head.push_str("Cache-Control: no-store\r\n");
         }
         if !matches!(self.body, Body::Upgrade(_)) {
@@ -301,13 +316,27 @@ impl Response {
 
 fn reason(status: u16) -> &'static str {
     const REASONS: [(u16, &str); 16] = [
-        (101, "Switching Protocols"), (200, "OK"), (201, "Created"), (202, "Accepted"),
-        (400, "Bad Request"), (403, "Forbidden"), (404, "Not Found"), (405, "Method Not Allowed"),
-        (409, "Conflict"), (413, "Content Too Large"), (422, "Unprocessable Content"),
-        (426, "Upgrade Required"), (500, "Internal Server Error"), (502, "Bad Gateway"),
-        (503, "Service Unavailable"), (504, "Gateway Timeout"),
+        (101, "Switching Protocols"),
+        (200, "OK"),
+        (201, "Created"),
+        (202, "Accepted"),
+        (400, "Bad Request"),
+        (403, "Forbidden"),
+        (404, "Not Found"),
+        (405, "Method Not Allowed"),
+        (409, "Conflict"),
+        (413, "Content Too Large"),
+        (422, "Unprocessable Content"),
+        (426, "Upgrade Required"),
+        (500, "Internal Server Error"),
+        (502, "Bad Gateway"),
+        (503, "Service Unavailable"),
+        (504, "Gateway Timeout"),
     ];
-    REASONS.iter().find(|(code, _)| *code == status).map_or("Unknown", |(_, text)| text)
+    REASONS
+        .iter()
+        .find(|(code, _)| *code == status)
+        .map_or("Unknown", |(_, text)| text)
 }
 
 /// Writes server-sent events: `event: <name>` plus one `data:` line, and
@@ -321,10 +350,14 @@ impl Sse<'_> {
     /// One event. `event` and `data` must each be a single line.
     pub fn event(&mut self, event: &str, data: &str) -> io::Result<()> {
         if event.contains(['\n', '\r']) || data.contains(['\n', '\r']) {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "an SSE field spans lines"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "an SSE field spans lines",
+            ));
         }
         // One write per frame: a reader never sees half of one.
-        self.out.write_all(format!("event: {event}\ndata: {data}\n\n").as_bytes())?;
+        self.out
+            .write_all(format!("event: {event}\ndata: {data}\n\n").as_bytes())?;
         self.out.flush()
     }
 
@@ -360,7 +393,10 @@ mod tests {
     fn malformed_and_oversized_requests_are_refused() {
         let long_header = format!("GET / HTTP/1.1\r\nX: {}\r\n\r\n", "a".repeat(16 << 10));
         let many_headers = format!("GET / HTTP/1.1\r\n{}\r\n", "X: 1\r\n".repeat(4 << 10));
-        let huge_body = format!("POST / HTTP/1.1\r\nContent-Length: {}\r\n\r\n", (1 << 20) + 1);
+        let huge_body = format!(
+            "POST / HTTP/1.1\r\nContent-Length: {}\r\n\r\n",
+            (1 << 20) + 1
+        );
         for raw in [
             "",
             "GET\r\n\r\n",
@@ -380,17 +416,31 @@ mod tests {
             &many_headers,
             &huge_body,
         ] {
-            assert!(read(raw.as_bytes()).is_err(), "should have been refused: {raw:.60?}");
+            assert!(
+                read(raw.as_bytes()).is_err(),
+                "should have been refused: {raw:.60?}"
+            );
         }
         assert!(read(b"GET /x HTTP/1.1\r\nX: \xff\r\n\r\n").is_err());
     }
 
     #[test]
     fn only_loopback_hosts_pass_the_guard() {
-        for host in ["127.0.0.1", "127.0.0.1:8899", "localhost", "LOCALHOST:19080"] {
+        for host in [
+            "127.0.0.1",
+            "127.0.0.1:8899",
+            "localhost",
+            "LOCALHOST:19080",
+        ] {
             assert!(host_is_loopback(host), "{host}");
         }
-        for host in ["evil.example", "127.0.0.1.evil.example", "10.0.0.1:8899", "[::1]:8899", ""] {
+        for host in [
+            "evil.example",
+            "127.0.0.1.evil.example",
+            "10.0.0.1:8899",
+            "[::1]:8899",
+            "",
+        ] {
             assert!(!host_is_loopback(host), "{host}");
         }
     }
@@ -398,19 +448,35 @@ mod tests {
     #[test]
     fn a_response_carries_its_length_and_closes() {
         let mut written = Vec::new();
-        Response::error(404, "say \"what\"").write_to(&mut written).expect("a Vec takes it");
+        Response::error(404, "say \"what\"")
+            .write_to(&mut written)
+            .expect("a Vec takes it");
         let written = String::from_utf8(written).expect("ASCII");
-        assert!(written.starts_with("HTTP/1.1 404 Not Found\r\n"), "{written}");
-        assert!(written.contains("Content-Length: 24\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n"));
-        assert!(written.ends_with("{\"error\":\"say \\\"what\\\"\"}"), "{written}");
+        assert!(
+            written.starts_with("HTTP/1.1 404 Not Found\r\n"),
+            "{written}"
+        );
+        assert!(written.contains(
+            "Content-Length: 24\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n"
+        ));
+        assert!(
+            written.ends_with("{\"error\":\"say \\\"what\\\"\"}"),
+            "{written}"
+        );
     }
 
     #[test]
     fn a_handler_cache_control_replaces_no_store() {
         let mut written = Vec::new();
-        Response::text(200, "x").with_header("Cache-Control", "max-age=60").write_to(&mut written).expect("a Vec takes it");
+        Response::text(200, "x")
+            .with_header("Cache-Control", "max-age=60")
+            .write_to(&mut written)
+            .expect("a Vec takes it");
         let written = String::from_utf8(written).expect("ASCII");
-        assert!(written.contains("Cache-Control: max-age=60\r\n"), "{written}");
+        assert!(
+            written.contains("Cache-Control: max-age=60\r\n"),
+            "{written}"
+        );
         assert!(!written.contains("no-store"), "{written}");
     }
 }

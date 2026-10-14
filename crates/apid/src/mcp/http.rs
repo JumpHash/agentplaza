@@ -23,7 +23,7 @@ use ureq::http::Uri;
 use ureq::unversioned::resolver::{DefaultResolver, ResolvedSocketAddrs, Resolver};
 use ureq::unversioned::transport::{DefaultConnector, NextTimeout};
 
-use super::client::{Error, Transport, PROTOCOLS};
+use super::client::{Error, PROTOCOLS, Transport};
 use super::runtime::redact;
 use super::stdio::read_line_capped;
 
@@ -43,7 +43,11 @@ pub struct Policy {
 
 /// The host part of a URL, without brackets.
 fn host_of(uri: &Uri) -> String {
-    uri.host().unwrap_or("").trim_start_matches('[').trim_end_matches(']').to_string()
+    uri.host()
+        .unwrap_or("")
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .to_string()
 }
 
 /// Why an address is refused for this policy, if it is.
@@ -62,13 +66,23 @@ pub struct CheckedResolver {
 }
 
 impl Resolver for CheckedResolver {
-    fn resolve(&self, uri: &Uri, config: &Config, timeout: NextTimeout) -> Result<ResolvedSocketAddrs, ureq::Error> {
+    fn resolve(
+        &self,
+        uri: &Uri,
+        config: &Config,
+        timeout: NextTimeout,
+    ) -> Result<ResolvedSocketAddrs, ureq::Error> {
         let host = host_of(uri);
         if crate::internal::on_fetch_blocklist(&self.policy.blocklist, &host) {
-            return Err(ureq::Error::Io(std::io::Error::other(format!("refused: {host} is on the fetch blocklist"))));
+            return Err(ureq::Error::Io(std::io::Error::other(format!(
+                "refused: {host} is on the fetch blocklist"
+            ))));
         }
         let addresses = DefaultResolver::default().resolve(uri, config, timeout)?;
-        if let Some(address) = addresses.iter().find(|a| refused_address(&self.policy, a.ip()).is_some()) {
+        if let Some(address) = addresses
+            .iter()
+            .find(|a| refused_address(&self.policy, a.ip()).is_some())
+        {
             let why = refused_address(&self.policy, address.ip()).unwrap_or("private");
             return Err(ureq::Error::Io(std::io::Error::other(format!(
                 "refused: {host} resolves to a {why} address ({}); set allow_private to reach it",
@@ -86,7 +100,13 @@ fn agent_for(policy: &Policy, timeout: Duration) -> ureq::Agent {
         .http_status_as_error(false)
         .max_redirects(0)
         .build();
-    ureq::Agent::with_parts(config, DefaultConnector::default(), CheckedResolver { policy: policy.clone() })
+    ureq::Agent::with_parts(
+        config,
+        DefaultConnector::default(),
+        CheckedResolver {
+            policy: policy.clone(),
+        },
+    )
 }
 
 /// One HTTP answer, as the transport reads it.
@@ -100,19 +120,35 @@ pub struct Reply {
 
 /// Sends one POST. The production exchange is ureq; tests script replies.
 pub trait Exchange: Send {
-    fn send(&mut self, url: &str, headers: &[(String, String)], body: &[u8], timeout: Duration, policy: &Policy) -> Result<Reply, Error>;
+    fn send(
+        &mut self,
+        url: &str,
+        headers: &[(String, String)],
+        body: &[u8],
+        timeout: Duration,
+        policy: &Policy,
+    ) -> Result<Reply, Error>;
 }
 
 /// The production exchange: a ureq request through [`agent_for`].
 pub struct UreqExchange;
 
 impl Exchange for UreqExchange {
-    fn send(&mut self, url: &str, headers: &[(String, String)], body: &[u8], timeout: Duration, policy: &Policy) -> Result<Reply, Error> {
+    fn send(
+        &mut self,
+        url: &str,
+        headers: &[(String, String)],
+        body: &[u8],
+        timeout: Duration,
+        policy: &Policy,
+    ) -> Result<Reply, Error> {
         let mut builder = ureq::http::Request::builder().method("POST").uri(url);
         for (name, value) in headers {
             builder = builder.header(name.as_str(), value.as_str());
         }
-        let request = builder.body(body.to_vec()).map_err(|e| Error::Transport(format!("bad request: {e}")))?;
+        let request = builder
+            .body(body.to_vec())
+            .map_err(|e| Error::Transport(format!("bad request: {e}")))?;
         let response = agent_for(policy, timeout).run(request).map_err(|e| {
             let text = e.to_string();
             if text.to_ascii_lowercase().contains("timed out") {
@@ -121,7 +157,13 @@ impl Exchange for UreqExchange {
                 Error::Transport(text)
             }
         })?;
-        let header = |name: &str| response.headers().get(name).and_then(|v| v.to_str().ok()).map(str::to_string);
+        let header = |name: &str| {
+            response
+                .headers()
+                .get(name)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string)
+        };
         Ok(Reply {
             status: response.status().as_u16(),
             content_type: header("content-type").unwrap_or_default(),
@@ -142,22 +184,36 @@ pub fn check_endpoint(url: &str, allow_private: bool, blocklist: &[String]) -> R
         return Err(format!("refused: {host} is on the fetch blocklist"));
     }
     if uri.scheme_str() == Some("http") && !allow_private {
-        return Err(format!("refused: {host} is reached over http; https is required unless allow_private is set"));
+        return Err(format!(
+            "refused: {host} is reached over http; https is required unless allow_private is set"
+        ));
     }
     if allow_private {
         return Ok(());
     }
-    let port = uri.port_u16().unwrap_or(if uri.scheme_str() == Some("http") { 80 } else { 443 });
+    let port = uri
+        .port_u16()
+        .unwrap_or(if uri.scheme_str() == Some("http") {
+            80
+        } else {
+            443
+        });
     if let Ok(ip) = host.parse::<std::net::IpAddr>() {
         return match super::egress::refusal(ip) {
-            Some(why) => Err(format!("refused: {host} is a {why} address; set allow_private to reach it")),
+            Some(why) => Err(format!(
+                "refused: {host} is a {why} address; set allow_private to reach it"
+            )),
             None => Ok(()),
         };
     }
-    let addresses = (host.as_str(), port).to_socket_addrs().map_err(|_| format!("cannot resolve {host}"))?;
+    let addresses = (host.as_str(), port)
+        .to_socket_addrs()
+        .map_err(|_| format!("cannot resolve {host}"))?;
     for address in addresses {
         if let Some(why) = super::egress::refusal(address.ip()) {
-            return Err(format!("refused: {host} resolves to a {why} address; set allow_private to reach it"));
+            return Err(format!(
+                "refused: {host} resolves to a {why} address; set allow_private to reach it"
+            ));
         }
     }
     Ok(())
@@ -182,7 +238,9 @@ fn next_url(current: &str, location: &str) -> Result<String, String> {
     } else if location.starts_with('/') && !location.starts_with("//") {
         Ok(format!("{}{location}", origin_of(current)))
     } else {
-        Err(format!("refused: a redirect to `{location}` is not an absolute URL or a path"))
+        Err(format!(
+            "refused: a redirect to `{location}` is not an absolute URL or a path"
+        ))
     }
 }
 
@@ -201,12 +259,31 @@ pub struct HttpTransport {
 }
 
 impl HttpTransport {
-    pub fn new(url: String, headers: Vec<(String, String)>, secrets: Vec<String>, policy: Policy) -> HttpTransport {
+    pub fn new(
+        url: String,
+        headers: Vec<(String, String)>,
+        secrets: Vec<String>,
+        policy: Policy,
+    ) -> HttpTransport {
         HttpTransport::with_exchange(url, headers, secrets, policy, Box::new(UreqExchange))
     }
 
-    pub fn with_exchange(url: String, headers: Vec<(String, String)>, secrets: Vec<String>, policy: Policy, exchange: Box<dyn Exchange>) -> HttpTransport {
-        HttpTransport { url, headers, secrets, session: None, protocol: None, policy, exchange }
+    pub fn with_exchange(
+        url: String,
+        headers: Vec<(String, String)>,
+        secrets: Vec<String>,
+        policy: Policy,
+        exchange: Box<dyn Exchange>,
+    ) -> HttpTransport {
+        HttpTransport {
+            url,
+            headers,
+            secrets,
+            session: None,
+            protocol: None,
+            policy,
+            exchange,
+        }
     }
 
     fn scrub(&self, text: &str) -> String {
@@ -218,7 +295,10 @@ impl HttpTransport {
     fn headers_for(&self, same_origin: bool) -> Vec<(String, String)> {
         let mut headers = vec![
             ("Content-Type".to_string(), "application/json".to_string()),
-            ("Accept".to_string(), "application/json, text/event-stream".to_string()),
+            (
+                "Accept".to_string(),
+                "application/json, text/event-stream".to_string(),
+            ),
         ];
         if let Some(protocol) = &self.protocol {
             headers.push(("MCP-Protocol-Version".to_string(), protocol.clone()));
@@ -235,7 +315,9 @@ impl HttpTransport {
 
 /// Whether `value` is the reply to request `id`.
 fn is_reply(value: &Value, id: &Value) -> bool {
-    value.get("id") == Some(id) && value.get("method").is_none() && (value.get("result").is_some() || value.get("error").is_some())
+    value.get("id") == Some(id)
+        && value.get("method").is_none()
+        && (value.get("result").is_some() || value.get("error").is_some())
 }
 
 impl Transport for HttpTransport {
@@ -246,11 +328,16 @@ impl Transport for HttpTransport {
         let mut current = endpoint.clone();
         let mut hops = 0;
         let mut reply = loop {
-            if let Err(why) = check_endpoint(&current, self.policy.allow_private, &self.policy.blocklist) {
+            if let Err(why) =
+                check_endpoint(&current, self.policy.allow_private, &self.policy.blocklist)
+            {
                 return Err(Error::Transport(self.scrub(&why)));
             }
             let headers = self.headers_for(origin_of(&current) == origin_of(&endpoint));
-            let answer = match self.exchange.send(&current, &headers, &body, timeout, &self.policy) {
+            let answer = match self
+                .exchange
+                .send(&current, &headers, &body, timeout, &self.policy)
+            {
                 Ok(answer) => answer,
                 Err(Error::Transport(text)) => return Err(Error::Transport(self.scrub(&text))),
                 Err(other) => return Err(other),
@@ -259,12 +346,18 @@ impl Transport for HttpTransport {
                 break answer;
             }
             if hops == MAX_REDIRECTS {
-                return Err(Error::Transport(format!("refused: more than {MAX_REDIRECTS} redirects")));
+                return Err(Error::Transport(format!(
+                    "refused: more than {MAX_REDIRECTS} redirects"
+                )));
             }
             let Some(location) = answer.location else {
-                return Err(Error::Transport(format!("HTTP {}: a redirect with no Location", answer.status)));
+                return Err(Error::Transport(format!(
+                    "HTTP {}: a redirect with no Location",
+                    answer.status
+                )));
             };
-            current = next_url(&current, &location).map_err(|why| Error::Transport(self.scrub(&why)))?;
+            current =
+                next_url(&current, &location).map_err(|why| Error::Transport(self.scrub(&why)))?;
             hops += 1;
         };
         let status = reply.status;
@@ -276,7 +369,9 @@ impl Transport for HttpTransport {
             let mut snippet = Vec::new();
             let _ = reply.body.by_ref().take(512).read_to_end(&mut snippet);
             let text = String::from_utf8_lossy(&snippet).into_owned();
-            return Err(Error::Transport(self.scrub(&format!("HTTP {status}: {}", text.trim()))));
+            return Err(Error::Transport(
+                self.scrub(&format!("HTTP {status}: {}", text.trim())),
+            ));
         }
         if let Some(session) = reply.session.take() {
             self.session = Some(session);
@@ -301,15 +396,25 @@ impl Transport for HttpTransport {
             if bytes.len() > MAX_BODY {
                 return Err(Error::Protocol("a reply over 8 MiB".into()));
             }
-            match serde_json::from_slice::<Value>(&bytes).map_err(|e| Error::Protocol(e.to_string()))? {
+            match serde_json::from_slice::<Value>(&bytes)
+                .map_err(|e| Error::Protocol(e.to_string()))?
+            {
                 Value::Array(items) => items,
                 single => vec![single],
             }
         } else {
-            return Err(Error::Protocol(format!("unexpected content type `{}`", reply.content_type)));
+            return Err(Error::Protocol(format!(
+                "unexpected content type `{}`",
+                reply.content_type
+            )));
         };
         if message.get("method").and_then(Value::as_str) == Some("initialize") {
-            if let Some(version) = messages.iter().find(|m| is_reply(m, &id)).and_then(|m| m.pointer("/result/protocolVersion")).and_then(Value::as_str) {
+            if let Some(version) = messages
+                .iter()
+                .find(|m| is_reply(m, &id))
+                .and_then(|m| m.pointer("/result/protocolVersion"))
+                .and_then(Value::as_str)
+            {
                 if PROTOCOLS.contains(&version) {
                     self.protocol = Some(version.to_string());
                 }
@@ -333,12 +438,14 @@ fn read_events(mut reader: impl BufRead, id: &Value) -> Result<Vec<Value>, Error
     let mut messages = Vec::new();
     let mut data = String::new();
     loop {
-        let line = read_line_capped(&mut reader, MAX_LINE).map_err(|e| Error::Transport(e.to_string()))?;
+        let line =
+            read_line_capped(&mut reader, MAX_LINE).map_err(|e| Error::Transport(e.to_string()))?;
         let finished = line.is_none();
         let line = line.unwrap_or_default();
         if line.is_empty() || finished {
             if !data.is_empty() {
-                let value: Value = serde_json::from_str(&data).map_err(|e| Error::Protocol(e.to_string()))?;
+                let value: Value =
+                    serde_json::from_str(&data).map_err(|e| Error::Protocol(e.to_string()))?;
                 let done = is_reply(&value, id);
                 messages.push(value);
                 if done {
@@ -381,8 +488,18 @@ pub(crate) mod tests {
     }
 
     impl Exchange for Scripted {
-        fn send(&mut self, url: &str, headers: &[(String, String)], _body: &[u8], _timeout: Duration, _policy: &Policy) -> Result<Reply, Error> {
-            self.sent.lock().unwrap().push((url.to_string(), headers.to_vec()));
+        fn send(
+            &mut self,
+            url: &str,
+            headers: &[(String, String)],
+            _body: &[u8],
+            _timeout: Duration,
+            _policy: &Policy,
+        ) -> Result<Reply, Error> {
+            self.sent
+                .lock()
+                .unwrap()
+                .push((url.to_string(), headers.to_vec()));
             let answer = self.answers.pop_front().expect("an unscripted request");
             Ok(Reply {
                 status: answer.status,
@@ -395,22 +512,54 @@ pub(crate) mod tests {
     }
 
     fn policy(allow_private: bool, blocklist: &[&str]) -> Policy {
-        Policy { allow_private, blocklist: blocklist.iter().map(|s| s.to_string()).collect() }
+        Policy {
+            allow_private,
+            blocklist: blocklist.iter().map(|s| s.to_string()).collect(),
+        }
     }
 
     fn ok_json(id: u64) -> Answer {
-        Answer { status: 200, location: None, body: if id == 1 { r#"{"jsonrpc":"2.0","id":1,"result":{}}"# } else { r#"{"jsonrpc":"2.0","id":2,"result":{}}"# }, content_type: "application/json" }
+        Answer {
+            status: 200,
+            location: None,
+            body: if id == 1 {
+                r#"{"jsonrpc":"2.0","id":1,"result":{}}"#
+            } else {
+                r#"{"jsonrpc":"2.0","id":2,"result":{}}"#
+            },
+            content_type: "application/json",
+        }
     }
 
     fn redirect(to: &'static str) -> Answer {
-        Answer { status: 307, location: Some(to), body: "", content_type: "text/plain" }
+        Answer {
+            status: 307,
+            location: Some(to),
+            body: "",
+            content_type: "text/plain",
+        }
     }
 
-    fn secured(answers: Vec<Answer>, policy: Policy) -> (HttpTransport, Arc<Mutex<Vec<(String, Vec<(String, String)>)>>>) {
+    fn secured(
+        answers: Vec<Answer>,
+        policy: Policy,
+    ) -> (
+        HttpTransport,
+        Arc<Mutex<Vec<(String, Vec<(String, String)>)>>>,
+    ) {
         let sent = Arc::new(Mutex::new(Vec::new()));
-        let exchange = Scripted { answers: answers.into(), sent: Arc::clone(&sent) };
+        let exchange = Scripted {
+            answers: answers.into(),
+            sent: Arc::clone(&sent),
+        };
         let headers = vec![("Authorization".to_string(), "Bearer SECRET-XYZ".to_string())];
-        let transport = HttpTransport::with_exchange("https://8.8.8.8/mcp".into(), headers, vec!["SECRET-XYZ".into()], policy, Box::new(exchange));
+        let transport = HttpTransport::with_exchange(
+            "https://8.8.8.8/mcp".into(),
+            headers,
+            vec!["SECRET-XYZ".into()],
+            policy,
+            Box::new(exchange),
+        );
         (transport, sent)
     }
 
@@ -448,43 +597,85 @@ pub(crate) mod tests {
     #[test]
     fn a_multi_line_event_is_joined_before_it_is_parsed() {
         let stream = "data: {\"jsonrpc\":\"2.0\",\ndata: \"id\":3,\"result\":{}}\n\n";
-        let messages = read_events(std::io::Cursor::new(stream.as_bytes().to_vec()), &serde_json::json!(3)).unwrap();
+        let messages = read_events(
+            std::io::Cursor::new(stream.as_bytes().to_vec()),
+            &serde_json::json!(3),
+        )
+        .unwrap();
         assert_eq!(messages[0]["id"], 3);
     }
 
     #[test]
     fn a_redirect_to_loopback_is_refused_before_anything_is_sent_there() {
-        let (mut transport, sent) = secured(vec![redirect("http://127.0.0.1:9/mcp")], policy(false, &[]));
-        let err = transport.send(&request(2), Duration::from_secs(5)).unwrap_err();
+        let (mut transport, sent) =
+            secured(vec![redirect("http://127.0.0.1:9/mcp")], policy(false, &[]));
+        let err = transport
+            .send(&request(2), Duration::from_secs(5))
+            .unwrap_err();
         assert!(err.to_string().contains("refused"), "{err}");
-        assert_eq!(sent.lock().unwrap().len(), 1, "only the origin was asked; the loopback target was never sent to");
+        assert_eq!(
+            sent.lock().unwrap().len(),
+            1,
+            "only the origin was asked; the loopback target was never sent to"
+        );
     }
 
     #[test]
     fn a_redirect_to_a_blocklisted_host_is_refused() {
-        let (mut transport, sent) = secured(vec![redirect("https://evil.example/mcp")], policy(false, &["evil.example"]));
-        let err = transport.send(&request(2), Duration::from_secs(5)).unwrap_err();
+        let (mut transport, sent) = secured(
+            vec![redirect("https://evil.example/mcp")],
+            policy(false, &["evil.example"]),
+        );
+        let err = transport
+            .send(&request(2), Duration::from_secs(5))
+            .unwrap_err();
         assert!(err.to_string().contains("blocklist"), "{err}");
         assert_eq!(sent.lock().unwrap().len(), 1);
     }
 
     #[test]
     fn an_allowed_hop_works_and_the_endpoint_moves_to_it() {
-        let (mut transport, sent) = secured(vec![redirect("https://1.1.1.1/mcp"), ok_json(2), ok_json(2)], policy(false, &[]));
+        let (mut transport, sent) = secured(
+            vec![redirect("https://1.1.1.1/mcp"), ok_json(2), ok_json(2)],
+            policy(false, &[]),
+        );
         let messages = transport.send(&request(2), Duration::from_secs(5)).unwrap();
         assert_eq!(messages[0]["id"], 2);
         transport.send(&request(2), Duration::from_secs(5)).unwrap();
-        let urls: Vec<String> = sent.lock().unwrap().iter().map(|(u, _)| u.clone()).collect();
-        assert_eq!(urls, ["https://8.8.8.8/mcp", "https://1.1.1.1/mcp", "https://1.1.1.1/mcp"]);
+        let urls: Vec<String> = sent
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(u, _)| u.clone())
+            .collect();
+        assert_eq!(
+            urls,
+            [
+                "https://8.8.8.8/mcp",
+                "https://1.1.1.1/mcp",
+                "https://1.1.1.1/mcp"
+            ]
+        );
     }
 
     #[test]
     fn the_configured_headers_stay_on_the_origin() {
-        let (mut transport, sent) = secured(vec![redirect("https://1.1.1.1/mcp"), ok_json(2)], policy(false, &[]));
+        let (mut transport, sent) = secured(
+            vec![redirect("https://1.1.1.1/mcp"), ok_json(2)],
+            policy(false, &[]),
+        );
         transport.send(&request(2), Duration::from_secs(5)).unwrap();
         let log = sent.lock().unwrap();
-        assert!(log[0].1.iter().any(|(k, v)| k == "Authorization" && v == "Bearer SECRET-XYZ"));
-        assert!(!log[1].1.iter().any(|(k, _)| k == "Authorization"), "a credential is never sent to another origin");
+        assert!(
+            log[0]
+                .1
+                .iter()
+                .any(|(k, v)| k == "Authorization" && v == "Bearer SECRET-XYZ")
+        );
+        assert!(
+            !log[1].1.iter().any(|(k, _)| k == "Authorization"),
+            "a credential is never sent to another origin"
+        );
     }
 
     #[test]
@@ -496,16 +687,25 @@ pub(crate) mod tests {
             redirect("https://1.1.1.1/d"),
         ];
         let (mut transport, sent) = secured(answers, policy(false, &[]));
-        let err = transport.send(&request(2), Duration::from_secs(5)).unwrap_err();
+        let err = transport
+            .send(&request(2), Duration::from_secs(5))
+            .unwrap_err();
         assert!(err.to_string().contains("more than 3 redirects"), "{err}");
-        assert_eq!(sent.lock().unwrap().len(), 4, "the fourth hop is refused before it is sent");
+        assert_eq!(
+            sent.lock().unwrap().len(),
+            4,
+            "the fourth hop is refused before it is sent"
+        );
     }
 
     #[test]
     fn a_relative_or_scheme_changing_redirect_is_refused() {
         let (mut transport, _) = secured(vec![redirect("ftp://1.1.1.1/mcp")], policy(false, &[]));
         assert!(transport.send(&request(2), Duration::from_secs(5)).is_err());
-        assert_eq!(next_url("https://8.8.8.8/mcp", "/other").unwrap(), "https://8.8.8.8/other");
+        assert_eq!(
+            next_url("https://8.8.8.8/mcp", "/other").unwrap(),
+            "https://8.8.8.8/other"
+        );
         assert!(next_url("https://8.8.8.8/mcp", "other").is_err());
     }
 

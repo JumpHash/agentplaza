@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::agents::Status;
 use crate::state::App;
@@ -56,7 +56,10 @@ pub fn target(state: &Sample, now_ms: u64) -> Option<u32> {
     } else if idle_long {
         // Shrink a step, but never below what the guest uses plus headroom,
         // and never upward.
-        wanted = wanted.saturating_sub(SHRINK_MIB).max(used + HEADROOM_MIB).min(state.usable_mib);
+        wanted = wanted
+            .saturating_sub(SHRINK_MIB)
+            .max(used + HEADROOM_MIB)
+            .min(state.usable_mib);
     }
     let clamped = wanted.clamp(FLOOR_MIB.min(state.max_mib), state.max_mib);
     (clamped.abs_diff(state.usable_mib) >= MIN_CHANGE_MIB).then_some(clamped)
@@ -95,7 +98,9 @@ fn pass(app: &App, last_busy: &mut BTreeMap<u64, u64>) {
         let (Some(run), Some(_)) = (agent.run.clone(), agent.vm) else {
             continue;
         };
-        let cached = runs.entry(run.clone()).or_insert_with(|| read_run(app, &run));
+        let cached = runs
+            .entry(run.clone())
+            .or_insert_with(|| read_run(app, &run));
         let Some(view) = cached.as_ref() else {
             continue;
         };
@@ -131,14 +136,26 @@ fn pass(app: &App, last_busy: &mut BTreeMap<u64, u64>) {
             continue;
         };
         let reason = if working { "working" } else { "idle" };
-        match app.noded.post(&format!("/v1/runs/{run}/vms/{index}/memory"), &json!({"usable_mib": next})) {
+        match app.noded.post(
+            &format!("/v1/runs/{run}/vms/{index}/memory"),
+            &json!({"usable_mib": next}),
+        ) {
             Ok((status, _)) if status < 300 => {
-                eprintln!("apid: agent {} VM {run}/{index} memory {usable} -> {next} MiB ({reason})", agent.cid);
+                eprintln!(
+                    "apid: agent {} VM {run}/{index} memory {usable} -> {next} MiB ({reason})",
+                    agent.cid
+                );
             }
             Ok((status, _)) => {
-                eprintln!("apid: agent {} VM {run}/{index} memory resize refused: noded {status}", agent.cid);
+                eprintln!(
+                    "apid: agent {} VM {run}/{index} memory resize refused: noded {status}",
+                    agent.cid
+                );
             }
-            Err(err) => eprintln!("apid: agent {} VM {run}/{index} memory resize failed: {err}", agent.cid),
+            Err(err) => eprintln!(
+                "apid: agent {} VM {run}/{index} memory resize failed: {err}",
+                agent.cid
+            ),
         }
     }
 }
@@ -162,7 +179,13 @@ mod tests {
     const NOW: u64 = 1_000_000;
 
     fn sample(working: bool, last_busy_ms: u64, max: u32, usable: u32, available: u32) -> Sample {
-        Sample { working, last_busy_ms, max_mib: max, usable_mib: usable, available_mib: available }
+        Sample {
+            working,
+            last_busy_ms,
+            max_mib: max,
+            usable_mib: usable,
+            available_mib: available,
+        }
     }
 
     #[test]
@@ -182,7 +205,10 @@ mod tests {
     fn idle_shrinks_gradually_after_a_minute() {
         assert_eq!(target(&sample(false, 0, 512, 256, 400), NOW), Some(224));
         assert_eq!(target(&sample(false, 0, 512, 224, 400), NOW), Some(192));
-        assert_eq!(target(&sample(false, NOW - 59_000, 512, 256, 400), NOW), None);
+        assert_eq!(
+            target(&sample(false, NOW - 59_000, 512, 256, 400), NOW),
+            None
+        );
     }
 
     #[test]

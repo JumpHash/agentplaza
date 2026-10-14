@@ -16,10 +16,10 @@ use std::sync::Mutex;
 use apz_gateway::{DecisionRequest, DecisionResponse, ProviderConfig};
 use apz_http::{Params, Request, Response, Router};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::db::Db;
-use crate::providers::{failure, lock, Failure};
+use crate::providers::{Failure, failure, lock};
 use crate::state::App;
 
 /// The Postgres key the saved default lives under.
@@ -50,7 +50,9 @@ impl DefaultStore {
         let mut state = lock(&self.state);
         if !state.loaded {
             state.loaded = true;
-            state.pick = db.load(KEY).and_then(|text| serde_json::from_str(&text).ok());
+            state.pick = db
+                .load(KEY)
+                .and_then(|text| serde_json::from_str(&text).ok());
         }
         state.pick.clone()
     }
@@ -69,7 +71,9 @@ fn current(app: &App) -> Option<Pick> {
 /// Saves the default in Postgres, then makes it the live one.
 fn save(app: &App, pick: &Pick) -> Result<(), Failure> {
     let json = serde_json::to_string(pick).map_err(|e| (500, e.to_string()))?;
-    app.db.store(KEY, &json).map_err(|e| (500, format!("cannot save: {e}")))?;
+    app.db
+        .store(KEY, &json)
+        .map_err(|e| (500, format!("cannot save: {e}")))?;
     app.providers.decisions.set(pick.clone());
     Ok(())
 }
@@ -81,16 +85,32 @@ fn check(providers: &[ProviderConfig], pick: &Pick) -> Result<(), Failure> {
         .find(|p| p.id == pick.provider)
         .ok_or_else(|| (400, format!("no provider `{}`", pick.provider)))?;
     if provider.kind.group() != "decisions" {
-        return Err((400, format!("`{}` is a chat provider, not a decision model", pick.provider)));
+        return Err((
+            400,
+            format!(
+                "`{}` is a chat provider, not a decision model",
+                pick.provider
+            ),
+        ));
     }
     if !provider.models.iter().any(|m| *m == pick.model) {
-        return Err((400, format!("`{}` does not list the model `{}`", pick.provider, pick.model)));
+        return Err((
+            400,
+            format!(
+                "`{}` does not list the model `{}`",
+                pick.provider, pick.model
+            ),
+        ));
     }
     Ok(())
 }
 
 /// The pick a call names, with the saved default filling in what it leaves out.
-fn resolve(default: Option<Pick>, provider: Option<String>, model: Option<String>) -> Result<Pick, Failure> {
+fn resolve(
+    default: Option<Pick>,
+    provider: Option<String>,
+    model: Option<String>,
+) -> Result<Pick, Failure> {
     match (provider, model, default) {
         (Some(provider), Some(model), _) => Ok(Pick { provider, model }),
         (None, None, Some(saved)) => Ok(saved),
@@ -120,7 +140,10 @@ fn plan(
 
 /// One decision call through the gateway. The caller holds no lock while it runs.
 fn answer(app: &App, pick: &Pick, request: &DecisionRequest) -> Result<DecisionResponse, Failure> {
-    app.providers.gateway().decide(&pick.provider, &pick.model, request).map_err(|e| (502, e.to_string()))
+    app.providers
+        .gateway()
+        .decide(&pick.provider, &pick.model, request)
+        .map_err(|e| (502, e.to_string()))
 }
 
 /// The answer as clients read it: `{provider, model, answers, usage}`.
@@ -145,7 +168,14 @@ pub(crate) fn agent_decision(app: &App, cid: u64, req: &Request) -> Response {
         Err(e) => return Response::error(400, &format!("bad body: {e}")),
     };
     let providers = app.providers.gateway().providers();
-    let pick = match plan(app.control.paused(), current(app), &providers, None, None, &request) {
+    let pick = match plan(
+        app.control.paused(),
+        current(app),
+        &providers,
+        None,
+        None,
+        &request,
+    ) {
         Ok(pick) => pick,
         Err(f) => return failure(f),
     };
@@ -156,7 +186,9 @@ pub(crate) fn agent_decision(app: &App, cid: u64, req: &Request) -> Response {
     let work = app.work.current(cid).map_or(0, |item| item.id);
     // pricing: no decision model has a price in the plaza's settings yet, so its tokens cost
     // nothing here and the call costs the one credit a model call costs at least.
-    if let Err(message) = crate::internal::meter(app, cid, work, 1, &format!("decision {}", pick.model)) {
+    if let Err(message) =
+        crate::internal::meter(app, cid, work, 1, &format!("decision {}", pick.model))
+    {
         return Response::json(402, &json!({ "error": message }));
     }
     app.transcripts.record(
@@ -197,7 +229,10 @@ fn put_default_route(app: &App, req: &Request, _: &Params<'_>) -> Response {
         Err(e) => return failure((400, format!("bad body: {e}"))),
     };
     let (Some(provider), Some(model)) = (body.provider, body.model) else {
-        return failure((400, "body must be {\"provider\": \"...\", \"model\": \"...\"}".into()));
+        return failure((
+            400,
+            "body must be {\"provider\": \"...\", \"model\": \"...\"}".into(),
+        ));
     };
     let pick = Pick { provider, model };
     if let Err(f) = check(&app.providers.gateway().providers(), &pick) {
@@ -223,7 +258,14 @@ fn post_route(app: &App, req: &Request, _: &Params<'_>) -> Response {
         Err(e) => return failure((400, format!("bad body: {e}"))),
     };
     let providers = app.providers.gateway().providers();
-    let pick = match plan(app.control.paused(), current(app), &providers, body.provider, body.model, &body.request) {
+    let pick = match plan(
+        app.control.paused(),
+        current(app),
+        &providers,
+        body.provider,
+        body.model,
+        &body.request,
+    ) {
         Ok(pick) => pick,
         Err(f) => return failure(f),
     };
@@ -249,7 +291,11 @@ mod tests {
     use apz_gateway::presets;
 
     fn preset(id: &str) -> ProviderConfig {
-        presets().iter().find(|p| p.id == id).unwrap_or_else(|| panic!("no preset {id}")).config()
+        presets()
+            .iter()
+            .find(|p| p.id == id)
+            .unwrap_or_else(|| panic!("no preset {id}"))
+            .config()
     }
 
     fn providers() -> Vec<ProviderConfig> {
@@ -257,11 +303,15 @@ mod tests {
     }
 
     fn pick(provider: &str, model: &str) -> Pick {
-        Pick { provider: provider.into(), model: model.into() }
+        Pick {
+            provider: provider.into(),
+            model: model.into(),
+        }
     }
 
     fn request(questions: Value) -> DecisionRequest {
-        serde_json::from_value(json!({ "input": "a call from the lobby", "questions": questions })).unwrap()
+        serde_json::from_value(json!({ "input": "a call from the lobby", "questions": questions }))
+            .unwrap()
     }
 
     fn one_question() -> DecisionRequest {
@@ -271,9 +321,23 @@ mod tests {
     #[test]
     fn the_default_must_be_a_decision_model_that_lists_the_model() {
         let providers = providers();
-        assert_eq!(check(&providers, &pick("openai", "gpt-4o")).unwrap_err().0, 400, "a chat provider is refused");
-        assert_eq!(check(&providers, &pick("openai-decisions", "not-a-model")).unwrap_err().0, 400);
-        assert_eq!(check(&providers, &pick("nope", "gpt-6-luna")).unwrap_err().0, 400);
+        assert_eq!(
+            check(&providers, &pick("openai", "gpt-4o")).unwrap_err().0,
+            400,
+            "a chat provider is refused"
+        );
+        assert_eq!(
+            check(&providers, &pick("openai-decisions", "not-a-model"))
+                .unwrap_err()
+                .0,
+            400
+        );
+        assert_eq!(
+            check(&providers, &pick("nope", "gpt-6-luna"))
+                .unwrap_err()
+                .0,
+            400
+        );
         assert!(check(&providers, &pick("openai-decisions", "gpt-6-luna")).is_ok());
     }
 
@@ -282,20 +346,67 @@ mod tests {
         let providers = providers();
         let req = one_question();
         let saved = pick("openai-decisions", "gpt-6-luna");
-        assert_eq!(plan(true, Some(saved.clone()), &providers, None, None, &req).unwrap_err().0, 409);
-        assert_eq!(plan(false, None, &providers, None, None, &req).unwrap_err().0, 400);
-        assert_eq!(plan(false, Some(saved.clone()), &providers, None, None, &req).unwrap(), saved);
+        assert_eq!(
+            plan(true, Some(saved.clone()), &providers, None, None, &req)
+                .unwrap_err()
+                .0,
+            409
+        );
+        assert_eq!(
+            plan(false, None, &providers, None, None, &req)
+                .unwrap_err()
+                .0,
+            400
+        );
+        assert_eq!(
+            plan(false, Some(saved.clone()), &providers, None, None, &req).unwrap(),
+            saved
+        );
     }
 
     #[test]
     fn a_call_is_validated_and_names_or_inherits_its_model() {
         let providers = providers();
         let empty = request(json!([]));
-        let named = (Some("openai-decisions".to_string()), Some("gpt-6-luna".to_string()));
-        assert_eq!(plan(false, None, &providers, named.0.clone(), named.1.clone(), &empty).unwrap_err().0, 400);
+        let named = (
+            Some("openai-decisions".to_string()),
+            Some("gpt-6-luna".to_string()),
+        );
+        assert_eq!(
+            plan(
+                false,
+                None,
+                &providers,
+                named.0.clone(),
+                named.1.clone(),
+                &empty
+            )
+            .unwrap_err()
+            .0,
+            400
+        );
         let saved = pick("openai-decisions", "gpt-6-luna");
-        let inherited = plan(false, Some(saved.clone()), &providers, None, Some("gpt-6-luna".into()), &one_question());
+        let inherited = plan(
+            false,
+            Some(saved.clone()),
+            &providers,
+            None,
+            Some("gpt-6-luna".into()),
+            &one_question(),
+        );
         assert_eq!(inherited.unwrap(), saved);
-        assert_eq!(plan(false, Some(saved), &providers, Some("openai".into()), None, &one_question()).unwrap_err().0, 400);
+        assert_eq!(
+            plan(
+                false,
+                Some(saved),
+                &providers,
+                Some("openai".into()),
+                None,
+                &one_question()
+            )
+            .unwrap_err()
+            .0,
+            400
+        );
     }
 }

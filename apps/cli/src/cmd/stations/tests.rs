@@ -657,12 +657,19 @@ fn take_and_input_parse_with_the_shared_session_by_default() {
 
 #[test]
 fn input_takes_its_command_words_including_negative_numbers() {
-    let Cmd::Input { id, session, command } = parsed(&["input", "w1", "scroll", "0", "-3", "10", "20"]) else {
+    let Cmd::Input {
+        id,
+        session,
+        command,
+    } = parsed(&["input", "w1", "scroll", "0", "-3", "10", "20"])
+    else {
         panic!("input scroll")
     };
     assert_eq!((id.as_str(), session.as_str()), ("w1", "shared"));
     assert_eq!(command, ["scroll", "0", "-3", "10", "20"]);
-    let Cmd::Input { command, .. } = parsed(&["input", "w1", "--session", "3", "type", "hello world"]) else {
+    let Cmd::Input { command, .. } =
+        parsed(&["input", "w1", "--session", "3", "type", "hello world"])
+    else {
         panic!("input type")
     };
     assert_eq!(command, ["type", "hello world"]);
@@ -691,7 +698,19 @@ fn vms_parse_with_the_list_as_the_default() {
 fn vms_create_takes_the_name_and_its_sizes_and_defaults_the_os_and_backend() {
     let Cmd::Vms {
         action: Some(vms::VmsCmd::Create(args)),
-    } = parsed(&["vms", "create", "desk-1", "--node", "n1", "--cpus", "4", "--ram-mb", "8192", "--disk-gb", "40"])
+    } = parsed(&[
+        "vms",
+        "create",
+        "desk-1",
+        "--node",
+        "n1",
+        "--cpus",
+        "4",
+        "--ram-mb",
+        "8192",
+        "--disk-gb",
+        "40",
+    ])
     else {
         panic!("vms create")
     };
@@ -705,8 +724,25 @@ fn vms_create_takes_the_name_and_its_sizes_and_defaults_the_os_and_backend() {
     let Cmd::Vms {
         action: Some(vms::VmsCmd::Create(args)),
     } = parsed(&[
-        "vms", "create", "win-1", "--node", "n2", "--os", "windows", "--cpus", "4", "--ram-mb", "8192", "--disk-gb", "80",
-        "--image", "/srv/win.img", "--gpu", "vfio:0000:01:00.0", "--backend", "qemu",
+        "vms",
+        "create",
+        "win-1",
+        "--node",
+        "n2",
+        "--os",
+        "windows",
+        "--cpus",
+        "4",
+        "--ram-mb",
+        "8192",
+        "--disk-gb",
+        "80",
+        "--image",
+        "/srv/win.img",
+        "--gpu",
+        "vfio:0000:01:00.0",
+        "--backend",
+        "qemu",
     ])
     else {
         panic!("vms create windows")
@@ -715,6 +751,29 @@ fn vms_create_takes_the_name_and_its_sizes_and_defaults_the_os_and_backend() {
     assert_eq!(args.backend, vms::BackendArg::Qemu);
     assert_eq!(args.image.as_deref(), Some("/srv/win.img"));
     assert_eq!(args.gpu.as_deref(), Some("vfio:0000:01:00.0"));
-    assert!(parse(&["vms", "create", "x", "--node", "n1", "--cpus", "2", "--ram-mb", "4096"]).is_err(), "disk is required");
-    assert!(parse(&["vms", "create", "x", "--node", "n1", "--cpus", "2", "--ram-mb", "4096", "--disk-gb", "8", "--os", "beos"]).is_err());
+    assert!(
+        parse(&[
+            "vms", "create", "x", "--node", "n1", "--cpus", "2", "--ram-mb", "4096"
+        ])
+        .is_err(),
+        "disk is required"
+    );
+    assert!(
+        parse(&[
+            "vms",
+            "create",
+            "x",
+            "--node",
+            "n1",
+            "--cpus",
+            "2",
+            "--ram-mb",
+            "4096",
+            "--disk-gb",
+            "8",
+            "--os",
+            "beos"
+        ])
+        .is_err()
+    );
 }

@@ -7,24 +7,43 @@ use std::fmt;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use iced::font::{self, Font};
-use iced::widget::{button, column, container, pick_list, row, text, Space};
-use iced::{alignment, Alignment, Border, Color, Element, Length, Padding, Subscription, Task, Theme};
+use iced::widget::{Space, button, column, container, pick_list, row, text};
+use iced::{
+    Alignment, Border, Color, Element, Length, Padding, Subscription, Task, Theme, alignment,
+};
 use serde::Deserialize;
 use serde_json::json;
 
 use super::Id;
-use crate::console::{chart, client::{self, Client}, ui, Ctx};
+use crate::console::{
+    Ctx, chart,
+    client::{self, Client},
+    ui,
+};
 use crate::theme::{self, SANS};
 
-const VALUE: Font = Font { weight: font::Weight::Bold, ..theme::SANS };
-const ITALIC: Font = Font { style: font::Style::Italic, ..theme::SANS };
+const VALUE: Font = Font {
+    weight: font::Weight::Bold,
+    ..theme::SANS
+};
+const ITALIC: Font = Font {
+    style: font::Style::Italic,
+    ..theme::SANS
+};
 /// How long a figure or a chart takes to settle after its data changes.
 const ANIM: Duration = Duration::from_millis(600);
 /// Groups drawn as their own band; the rest sum into "other".
 const TOP: usize = 6;
 const OTHER: &str = "*other*";
 fn palette() -> [Color; TOP] {
-    [crate::theme::palette().signal, crate::theme::palette().ok, Color::from_rgb8(0x6f, 0xa8, 0xdc), crate::theme::palette().warn, Color::from_rgb8(0xb4, 0x8e, 0xd6), Color::from_rgb8(0x4f, 0xc3, 0xc3)]
+    [
+        crate::theme::palette().signal,
+        crate::theme::palette().ok,
+        Color::from_rgb8(0x6f, 0xa8, 0xdc),
+        crate::theme::palette().warn,
+        Color::from_rgb8(0xb4, 0x8e, 0xd6),
+        Color::from_rgb8(0x4f, 0xc3, 0xc3),
+    ]
 }
 const DAY_MS: u64 = 86_400_000;
 const CALLS_PAGE: usize = 50;
@@ -43,7 +62,12 @@ pub enum Range {
 }
 
 impl Range {
-    const ALL: [(Range, &'static str); 4] = [(Range::H24, "24 h"), (Range::D7, "7 d"), (Range::D30, "30 d"), (Range::D90, "90 d")];
+    const ALL: [(Range, &'static str); 4] = [
+        (Range::H24, "24 h"),
+        (Range::D7, "7 d"),
+        (Range::D30, "30 d"),
+        (Range::D90, "90 d"),
+    ];
 
     fn ms(self) -> u64 {
         match self {
@@ -74,7 +98,12 @@ pub enum GroupBy {
 }
 
 impl GroupBy {
-    const ALL: [(GroupBy, &'static str); 4] = [(GroupBy::Model, "Model"), (GroupBy::Agent, "Agent"), (GroupBy::Role, "Role"), (GroupBy::Provider, "Provider")];
+    const ALL: [(GroupBy, &'static str); 4] = [
+        (GroupBy::Model, "Model"),
+        (GroupBy::Agent, "Agent"),
+        (GroupBy::Role, "Role"),
+        (GroupBy::Provider, "Provider"),
+    ];
 
     fn key(self) -> &'static str {
         match self {
@@ -103,7 +132,12 @@ impl GroupBy {
             return "unknown".to_string();
         }
         match self {
-            GroupBy::Agent => key.parse::<u64>().ok().and_then(|cid| agents.get(&cid)).cloned().unwrap_or_else(|| format!("agent {key}")),
+            GroupBy::Agent => key
+                .parse::<u64>()
+                .ok()
+                .and_then(|cid| agents.get(&cid))
+                .cloned()
+                .unwrap_or_else(|| format!("agent {key}")),
             _ => key.to_string(),
         }
     }
@@ -386,7 +420,8 @@ impl Animated {
     }
 
     fn running(&self, now: Instant) -> bool {
-        self.start.is_some_and(|s| now.saturating_duration_since(s) < ANIM)
+        self.start
+            .is_some_and(|s| now.saturating_duration_since(s) < ANIM)
     }
 }
 
@@ -416,7 +451,8 @@ impl Tween {
     }
 
     fn running(&self, now: Instant) -> bool {
-        self.start.is_some_and(|s| now.saturating_duration_since(s) < ANIM)
+        self.start
+            .is_some_and(|s| now.saturating_duration_since(s) < ANIM)
     }
 }
 
@@ -505,7 +541,11 @@ struct Query {
 pub fn load(state: &mut State, ctx: &Ctx) -> Task<Msg> {
     let to = now_ms();
     let (cache, want_head, limit) = match &state.data {
-        Some(d) => (d.prices.clone(), d.head.is_none(), d.calls.len().clamp(CALLS_PAGE, CALLS_LIMIT)),
+        Some(d) => (
+            d.prices.clone(),
+            d.head.is_none(),
+            d.calls.len().clamp(CALLS_PAGE, CALLS_LIMIT),
+        ),
         None => (BTreeMap::new(), true, CALLS_PAGE),
     };
     let q = Query {
@@ -525,15 +565,24 @@ pub fn load(state: &mut State, ctx: &Ctx) -> Task<Msg> {
 
 fn fetch(c: &Client, q: Query) -> Result<Data, String> {
     let summary: Summary = c.get(&format!("/v1/usage/summary?from={}&to={}", q.from, q.to))?;
-    let timeline: Timeline = c.get(&format!("/v1/usage/series?from={}&to={}&bucket={}&by={}", q.from, q.to, q.bucket, q.by))?;
+    let timeline: Timeline = c.get(&format!(
+        "/v1/usage/series?from={}&to={}&bucket={}&by={}",
+        q.from, q.to, q.bucket, q.by
+    ))?;
     let page: CallsPage = c.get(&calls_path(q.limit, None, q.model.as_deref(), q.agent))?;
     let roster: Vec<AgentRow> = c.get("/v1/agents")?;
     let settings: SettingsView = c.get("/v1/settings")?;
     let mut prices = q.cache;
     for model in models_in_use(&summary, &settings) {
-        prices.entry(model).or_insert_with_key(|model| price_of(c, model));
+        prices
+            .entry(model)
+            .or_insert_with_key(|model| price_of(c, model));
     }
-    let head = if q.want_head { c.get::<PriceHead>("/v1/prices").ok() } else { None };
+    let head = if q.want_head {
+        c.get::<PriceHead>("/v1/prices").ok()
+    } else {
+        None
+    };
     let kinds: Vec<serde_json::Value> = c.get("/v1/provider-kinds").unwrap_or_default();
     Ok(Data {
         summary,
@@ -551,7 +600,11 @@ fn fetch(c: &Client, q: Query) -> Result<Data, String> {
 
 /// A model's price: its exact id, else the id without its `@effort` suffix (the web's `priceOf`).
 fn price_of(c: &Client, model: &str) -> Option<Price> {
-    let get = |id: &str| c.get::<Priced>(&format!("/v1/prices/{}", enc(id))).ok().map(|p| p.price);
+    let get = |id: &str| {
+        c.get::<Priced>(&format!("/v1/prices/{}", enc(id)))
+            .ok()
+            .map(|p| p.price)
+    };
     get(model).or_else(|| model.split_once('@').and_then(|(base, _)| get(base)))
 }
 
@@ -561,8 +614,14 @@ fn cache_saving(by_model: &[Group], prices: &BTreeMap<String, Option<Price>>) ->
     let mut saved = 0.0;
     let mut complete = true;
     for m in by_model.iter().filter(|m| m.totals.cache_read > 0) {
-        match prices.get(&m.key).and_then(Option::as_ref).and_then(|p| Some((p.input, p.cache_read?))) {
-            Some((input, cache_read)) => saved += m.totals.cache_read as f64 * (input - cache_read).max(0.0) / 1e6,
+        match prices
+            .get(&m.key)
+            .and_then(Option::as_ref)
+            .and_then(|p| Some((p.input, p.cache_read?)))
+        {
+            Some((input, cache_read)) => {
+                saved += m.totals.cache_read as f64 * (input - cache_read).max(0.0) / 1e6
+            }
             None => complete = false,
         }
     }
@@ -592,7 +651,12 @@ fn trains_models(kinds: &[serde_json::Value]) -> BTreeSet<String> {
 }
 
 /// `GET /v1/usage/calls` with its filters; `before` pages back from an id.
-fn calls_path(limit: usize, before: Option<u64>, model: Option<&str>, agent: Option<u64>) -> String {
+fn calls_path(
+    limit: usize,
+    before: Option<u64>,
+    model: Option<&str>,
+    agent: Option<u64>,
+) -> String {
     let mut q = format!("limit={limit}");
     if let Some(b) = before {
         q.push_str(&format!("&before={b}"));
@@ -608,7 +672,12 @@ fn calls_path(limit: usize, before: Option<u64>, model: Option<&str>, agent: Opt
 
 /// Every model the screen prices: the ones with calls, the unpriced ones and the settings' models.
 fn models_in_use(s: &Summary, settings: &SettingsView) -> BTreeSet<String> {
-    let mut out: BTreeSet<String> = s.by_model.iter().map(|g| g.key.clone()).chain(s.unpriced.iter().cloned()).collect();
+    let mut out: BTreeSet<String> = s
+        .by_model
+        .iter()
+        .map(|g| g.key.clone())
+        .chain(s.unpriced.iter().cloned())
+        .collect();
     out.insert(settings.default_model.clone());
     out.insert(settings.orchestrator_model.clone());
     out.extend(settings.role_models.values().cloned());
@@ -696,7 +765,10 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         Msg::RefreshPrices => {
             state.busy = true;
             let c = ctx.client.clone();
-            client::task(move || c.post::<PriceHead>("/v1/prices/refresh", &json!({})), Msg::Refreshed)
+            client::task(
+                move || c.post::<PriceHead>("/v1/prices/refresh", &json!({})),
+                Msg::Refreshed,
+            )
         }
         Msg::Refreshed(Ok(head)) => {
             state.busy = false;
@@ -712,12 +784,19 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             Task::none()
         }
         Msg::LoadOlder => {
-            let Some(before) = state.data.as_ref().and_then(|d| d.calls_next) else { return Task::none() };
+            let Some(before) = state.data.as_ref().and_then(|d| d.calls_next) else {
+                return Task::none();
+            };
             if state.calls_busy {
                 return Task::none();
             }
             state.calls_busy = true;
-            let path = calls_path(CALLS_PAGE, Some(before), state.model_filter.as_deref(), state.agent_filter);
+            let path = calls_path(
+                CALLS_PAGE,
+                Some(before),
+                state.model_filter.as_deref(),
+                state.agent_filter,
+            );
             let c = ctx.client.clone();
             client::task(move || c.get::<CallsPage>(&path), Msg::Older)
         }
@@ -743,7 +822,17 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
 /// The chart's series for a timeline in `unit`: the top groups in rank order, then "other" for the
 /// rest of each point, plus one label per point.
 fn chart_series(tl: &Timeline, unit: Unit) -> (Vec<chart::Series>, Vec<String>) {
-    let labels = tl.points.iter().map(|p| if tl.bucket_ms >= DAY_MS { day_label(p.at_ms) } else { stamp(p.at_ms) }).collect();
+    let labels = tl
+        .points
+        .iter()
+        .map(|p| {
+            if tl.bucket_ms >= DAY_MS {
+                day_label(p.at_ms)
+            } else {
+                stamp(p.at_ms)
+            }
+        })
+        .collect();
     let mut totals: BTreeMap<&str, f64> = BTreeMap::new();
     for p in &tl.points {
         for (key, t) in &p.groups {
@@ -759,7 +848,11 @@ fn chart_series(tl: &Timeline, unit: Unit) -> (Vec<chart::Series>, Vec<String>) 
         .map(|(i, (key, _))| chart::Series {
             key: key.to_string(),
             color: palette()[i],
-            values: tl.points.iter().map(|p| p.groups.get(*key).map_or(0.0, |t| unit.value(t))).collect(),
+            values: tl
+                .points
+                .iter()
+                .map(|p| p.groups.get(*key).map_or(0.0, |t| unit.value(t)))
+                .collect(),
         })
         .collect();
     let rest: Vec<f64> = tl
@@ -772,7 +865,11 @@ fn chart_series(tl: &Timeline, unit: Unit) -> (Vec<chart::Series>, Vec<String>) 
         })
         .collect();
     if rest.iter().any(|v| *v > 0.0) {
-        out.push(chart::Series { key: OTHER.to_string(), color: crate::theme::palette().ink_3, values: rest });
+        out.push(chart::Series {
+            key: OTHER.to_string(),
+            color: crate::theme::palette().ink_3,
+            values: rest,
+        });
     }
     (out, labels)
 }
@@ -795,7 +892,9 @@ fn column_value(t: &Totals, sort: Sort) -> f64 {
 // ---- Formatting ----
 
 fn now_ms() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
 }
 
 /// Digits with thousands separators.
@@ -856,7 +955,9 @@ fn civil(ms: u64) -> (i64, usize, i64, u64, u64) {
     (y, m as usize, d, h, mi)
 }
 
-const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const MONTHS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
 
 /// "Oct 12 14:03" in UTC.
 fn stamp(ms: u64) -> String {
@@ -889,7 +990,9 @@ fn ago(ms: u64) -> String {
 pub(crate) fn enc(s: &str) -> String {
     s.bytes()
         .map(|b| match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (b as char).to_string()
+            }
             _ => format!("%{b:02X}"),
         })
         .collect()
@@ -903,7 +1006,10 @@ fn per_million(v: Option<f64>) -> String {
 
 pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
     let now = Instant::now();
-    let head = ui::view_head("Usage", vec![segmented(&Range::ALL, state.range, Msg::Range)]);
+    let head = ui::view_head(
+        "Usage",
+        vec![segmented(&Range::ALL, state.range, Msg::Range)],
+    );
     let mut parts: Vec<Element<'a, Msg>> = vec![prices_line(state), group_tabs(state)];
     match &state.data {
         None => parts.push(match &state.error {
@@ -920,7 +1026,12 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
             parts.push(prices_card(d));
         }
     }
-    ui::sheet(head, ui::scroll(column(parts).spacing(22).width(Length::Fill)).height(Length::Fill).into())
+    ui::sheet(
+        head,
+        ui::scroll(column(parts).spacing(22).width(Length::Fill))
+            .height(Length::Fill)
+            .into(),
+    )
 }
 
 /// The prices' source and age, with the refresh button.
@@ -941,7 +1052,11 @@ fn prices_line<'a>(state: &'a State) -> Element<'a, Msg> {
             if names.is_empty() {
                 "No price list yet".to_string()
             } else {
-                format!("Prices from {} · updated {}", names.join(" and "), ago(h.fetched_at_ms))
+                format!(
+                    "Prices from {} · updated {}",
+                    names.join(" and "),
+                    ago(h.fetched_at_ms)
+                )
             }
         }
         None => "Prices not fetched yet".to_string(),
@@ -949,21 +1064,40 @@ fn prices_line<'a>(state: &'a State) -> Element<'a, Msg> {
     row![
         ui::faint(note),
         Space::new().width(Length::Fill),
-        ui::btn("Refresh", Some("refresh"), ui::Kind::Secondary, (!state.busy).then_some(Msg::RefreshPrices)),
+        ui::btn(
+            "Refresh",
+            Some("refresh"),
+            ui::Kind::Secondary,
+            (!state.busy).then_some(Msg::RefreshPrices)
+        ),
     ]
     .align_y(Alignment::Center)
     .into()
 }
 
 fn group_tabs<'a>(state: &'a State) -> Element<'a, Msg> {
-    row![ui::label("Group by"), segmented(&GroupBy::ALL, state.group, Msg::Group)].spacing(16).align_y(Alignment::Center).into()
+    row![
+        ui::label("Group by"),
+        segmented(&GroupBy::ALL, state.group, Msg::Group)
+    ]
+    .spacing(16)
+    .align_y(Alignment::Center)
+    .into()
 }
 
 /// A segmented control: the current option solid, the others plain.
-fn segmented<'a, T: Copy + PartialEq + 'a>(options: &[(T, &str)], current: T, make: fn(T) -> Msg) -> Element<'a, Msg> {
+fn segmented<'a, T: Copy + PartialEq + 'a>(
+    options: &[(T, &str)],
+    current: T,
+    make: fn(T) -> Msg,
+) -> Element<'a, Msg> {
     let mut line = row![].spacing(6);
     for (value, label) in options {
-        let kind = if *value == current { ui::Kind::Primary } else { ui::Kind::Secondary };
+        let kind = if *value == current {
+            ui::Kind::Primary
+        } else {
+            ui::Kind::Secondary
+        };
         line = line.push(ui::btn(label, None, kind, Some(make(*value))));
     }
     line.into()
@@ -974,48 +1108,118 @@ fn tiles<'a>(state: &'a State, d: &'a Data, now: Instant) -> Element<'a, Msg> {
     let c = &state.counters;
     let t = &d.summary.totals;
     let spark: Vec<f64> = d.timeline.points.iter().map(|p| p.totals.usd).collect();
-    let spend_note = format!("reported {} · estimated {}", usd(t.cost_usd), usd(t.est_usd));
-    let calls_note = if t.calls == 0 { "no calls in this range yet" } else { "in this range" };
+    let spend_note = format!(
+        "reported {} · estimated {}",
+        usd(t.cost_usd),
+        usd(t.est_usd)
+    );
+    let calls_note = if t.calls == 0 {
+        "no calls in this range yet"
+    } else {
+        "in this range"
+    };
     let cache_note = if t.cache_read == 0 {
         "no cache reads yet".to_string()
     } else {
         let (saved, complete) = cache_saving(&d.summary.by_model, &d.prices);
-        format!("{} cached tokens saved ~{}{}", compact(t.cache_read as f64), usd(saved), if complete { "" } else { " (partly priced)" })
+        format!(
+            "{} cached tokens saved ~{}{}",
+            compact(t.cache_read as f64),
+            usd(saved),
+            if complete { "" } else { " (partly priced)" }
+        )
     };
     row![
-        tile(usd(c.usd.at(now)), "Spend", spend_note, Some(chart::sparkline(spark, crate::theme::palette().signal))),
         tile(
-            format!("{} / {}", compact(c.input.at(now)), compact(c.output.at(now))),
+            usd(c.usd.at(now)),
+            "Spend",
+            spend_note,
+            Some(chart::sparkline(spark, crate::theme::palette().signal))
+        ),
+        tile(
+            format!(
+                "{} / {}",
+                compact(c.input.at(now)),
+                compact(c.output.at(now))
+            ),
             "Tokens in / out",
-            format!("cache read {} · write {}", compact(t.cache_read as f64), compact(t.cache_write as f64)),
+            format!(
+                "cache read {} · write {}",
+                compact(t.cache_read as f64),
+                compact(t.cache_write as f64)
+            ),
             None,
         ),
-        tile(pct(c.hit.at(now) / 100.0), "Cache hit rate", cache_note, None),
-        tile(commas(&(c.calls.at(now).round() as u64).to_string()), "Calls", calls_note.to_string(), None),
+        tile(
+            pct(c.hit.at(now) / 100.0),
+            "Cache hit rate",
+            cache_note,
+            None
+        ),
+        tile(
+            commas(&(c.calls.at(now).round() as u64).to_string()),
+            "Calls",
+            calls_note.to_string(),
+            None
+        ),
     ]
     .spacing(12)
     .into()
 }
 
 /// A tally tile (the web's `.stat`): the figure, its label, an optional extra, then an italic note.
-fn tile<'a>(figure: String, title: &str, note: String, extra: Option<Element<'a, Msg>>) -> Element<'a, Msg> {
-    let mut stack = column![text(figure).font(VALUE).size(30.0).color(crate::theme::palette().ink), ui::label(title)].spacing(4);
+fn tile<'a>(
+    figure: String,
+    title: &str,
+    note: String,
+    extra: Option<Element<'a, Msg>>,
+) -> Element<'a, Msg> {
+    let mut stack = column![
+        text(figure)
+            .font(VALUE)
+            .size(30.0)
+            .color(crate::theme::palette().ink),
+        ui::label(title)
+    ]
+    .spacing(4);
     if let Some(e) = extra {
         stack = stack.push(e);
     }
-    stack = stack.push(text(note).font(ITALIC).size(13.0).color(crate::theme::palette().ink_2));
+    stack = stack.push(
+        text(note)
+            .font(ITALIC)
+            .size(13.0)
+            .color(crate::theme::palette().ink_2),
+    );
     container(stack)
-        .padding(Padding { top: 14.0, right: 16.0, bottom: 16.0, left: 16.0 })
+        .padding(Padding {
+            top: 14.0,
+            right: 16.0,
+            bottom: 16.0,
+            left: 16.0,
+        })
         .width(Length::FillPortion(1))
         .height(Length::Fixed(156.0))
-        .style(|_: &Theme| container::Style { border: Border { color: crate::theme::palette().rule, width: 1.0, radius: 0.0.into() }, ..Default::default() })
+        .style(|_: &Theme| container::Style {
+            border: Border {
+                color: crate::theme::palette().rule,
+                width: 1.0,
+                radius: 0.0.into(),
+            },
+            ..Default::default()
+        })
         .into()
 }
 
 /// The main panel: the chart (with its legend and calls per bucket) or the table.
 fn chart_panel<'a>(state: &'a State, d: &'a Data, now: Instant) -> Element<'a, Msg> {
     let toolbar: Element<'a, Msg> = match state.view {
-        View::Chart => row![segmented(&View::ALL, state.view, Msg::View), segmented(&Unit::ALL, state.unit, Msg::Unit)].spacing(16).into(),
+        View::Chart => row![
+            segmented(&View::ALL, state.view, Msg::View),
+            segmented(&Unit::ALL, state.unit, Msg::Unit)
+        ]
+        .spacing(16)
+        .into(),
         View::Table => row![segmented(&View::ALL, state.view, Msg::View)].into(),
     };
     if state.view == View::Chart && d.summary.totals.calls == 0 {
@@ -1032,18 +1236,49 @@ fn chart_panel<'a>(state: &'a State, d: &'a Data, now: Instant) -> Element<'a, M
             let format = state.unit.format();
             let legend = series.iter().fold(row![].spacing(18), |line, s| {
                 let total: f64 = s.values.iter().sum();
-                let name = if s.key == OTHER { "Other".to_string() } else { state.group.display(&s.key, &d.agents) };
+                let name = if s.key == OTHER {
+                    "Other".to_string()
+                } else {
+                    state.group.display(&s.key, &d.agents)
+                };
                 let color = s.color;
-                let swatch = container(Space::new().width(10.0).height(10.0)).style(move |_: &Theme| container::Style {
-                    background: Some(color.into()),
-                    ..Default::default()
-                });
-                line.push(row![swatch, text(name).font(SANS).size(11.0).color(crate::theme::palette().ink_2), text(format(total)).font(SANS).size(11.0).color(crate::theme::palette().ink)].spacing(6).align_y(Alignment::Center))
+                let swatch =
+                    container(Space::new().width(10.0).height(10.0)).style(move |_: &Theme| {
+                        container::Style {
+                            background: Some(color.into()),
+                            ..Default::default()
+                        }
+                    });
+                line.push(
+                    row![
+                        swatch,
+                        text(name)
+                            .font(SANS)
+                            .size(11.0)
+                            .color(crate::theme::palette().ink_2),
+                        text(format(total))
+                            .font(SANS)
+                            .size(11.0)
+                            .color(crate::theme::palette().ink)
+                    ]
+                    .spacing(6)
+                    .align_y(Alignment::Center),
+                )
             });
-            let calls: Vec<f64> = d.timeline.points.iter().map(|p| p.totals.calls as f64).collect();
+            let calls: Vec<f64> = d
+                .timeline
+                .points
+                .iter()
+                .map(|p| p.totals.calls as f64)
+                .collect();
             column![
                 toolbar,
-                chart::stacked_area(series, state.labels.clone(), format, "No calls in this range"),
+                chart::stacked_area(
+                    series,
+                    state.labels.clone(),
+                    format,
+                    "No calls in this range"
+                ),
                 legend,
                 ui::faint("Calls per bucket"),
                 chart::bars(calls, crate::theme::palette().ink_2),
@@ -1058,16 +1293,33 @@ fn chart_panel<'a>(state: &'a State, d: &'a Data, now: Instant) -> Element<'a, M
 /// A sortable header cell: the active column in ink.
 fn sort_head<'a>(label: &str, sort: Sort, state: &State, portion: u16) -> Element<'a, Msg> {
     let active = state.sort == sort;
-    let arrow = if active { if state.asc { " ^" } else { " v" } } else { "" };
-    let content = button(text(format!("{label}{arrow}")).font(SANS).size(11.0).color(if active { crate::theme::palette().ink } else { crate::theme::palette().ink_3 }))
-        .style(link)
-        .padding(0)
-        .on_press(Msg::Sort(sort));
+    let arrow = if active {
+        if state.asc { " ^" } else { " v" }
+    } else {
+        ""
+    };
+    let content = button(
+        text(format!("{label}{arrow}"))
+            .font(SANS)
+            .size(11.0)
+            .color(if active {
+                crate::theme::palette().ink
+            } else {
+                crate::theme::palette().ink_3
+            }),
+    )
+    .style(link)
+    .padding(0)
+    .on_press(Msg::Sort(sort));
     cell(portion, false, content)
 }
 
 fn link(_: &Theme, _: button::Status) -> button::Style {
-    button::Style { background: None, text_color: crate::theme::palette().ink, ..Default::default() }
+    button::Style {
+        background: None,
+        text_color: crate::theme::palette().ink,
+        ..Default::default()
+    }
 }
 
 /// The table: one row per group, sorted, with a share bar, and a total row.
@@ -1078,18 +1330,21 @@ fn table<'a>(state: &'a State, d: &'a Data) -> Element<'a, Msg> {
     rows.sort_by(|a, b| {
         let ord = match state.sort {
             Sort::Name => a.key.cmp(&b.key),
-            Sort::Share => state.unit.value(&a.totals).total_cmp(&state.unit.value(&b.totals)),
+            Sort::Share => state
+                .unit
+                .value(&a.totals)
+                .total_cmp(&state.unit.value(&b.totals)),
             other => column_value(&a.totals, other).total_cmp(&column_value(&b.totals, other)),
         };
-        if state.asc {
-            ord
-        } else {
-            ord.reverse()
-        }
+        if state.asc { ord } else { ord.reverse() }
     });
     // As the web's table pane: with no rows, the empty state stands in for the whole table.
     if rows.is_empty() {
-        return ui::empty("zap", "Nothing to rank yet", "The table ranks each group once calls are recorded.");
+        return ui::empty(
+            "zap",
+            "Nothing to rank yet",
+            "The table ranks each group once calls are recorded.",
+        );
     }
     let head = row![
         sort_head("Name", Sort::Name, state, 5),
@@ -1102,14 +1357,29 @@ fn table<'a>(state: &'a State, d: &'a Data) -> Element<'a, Msg> {
         sort_head("Reported", Sort::Reported, state, 2),
         sort_head("Estimated", Sort::Estimated, state, 2),
         sort_head("Share", Sort::Share, state, 4),
-    ].spacing(10);
+    ]
+    .spacing(10);
     let mut lines = column![head].spacing(8);
     for g in rows {
-        let share = if total_value > 0.0 { state.unit.value(&g.totals) / total_value } else { 0.0 };
+        let share = if total_value > 0.0 {
+            state.unit.value(&g.totals) / total_value
+        } else {
+            0.0
+        };
         let trains = matches!(state.group, GroupBy::Model) && trains_on_data(d, &g.key);
-        lines = lines.push(table_row(state.group.display(&g.key, &d.agents), trains, &g.totals, Some(share)));
+        lines = lines.push(table_row(
+            state.group.display(&g.key, &d.agents),
+            trains,
+            &g.totals,
+            Some(share),
+        ));
     }
-    lines = lines.push(table_row("Total".to_string(), false, &d.summary.totals, None));
+    lines = lines.push(table_row(
+        "Total".to_string(),
+        false,
+        &d.summary.totals,
+        None,
+    ));
     lines.into()
 }
 
@@ -1117,7 +1387,10 @@ fn table<'a>(state: &'a State, d: &'a Data) -> Element<'a, Msg> {
 fn with_badge<'a>(content: impl Into<Element<'a, Msg>>, trains: bool) -> Element<'a, Msg> {
     let content = content.into();
     if trains {
-        row![content, ui::trains_badge()].spacing(8).align_y(Alignment::Center).into()
+        row![content, ui::trains_badge()]
+            .spacing(8)
+            .align_y(Alignment::Center)
+            .into()
     } else {
         content
     }
@@ -1130,11 +1403,21 @@ fn table_row<'a>(name: String, trains: bool, t: &Totals, share: Option<f64>) -> 
             row![
                 container(Space::new().width(Length::Fill).height(6.0))
                     .width(Length::FillPortion(pct.max(1)))
-                    .style(|_: &Theme| container::Style { background: Some(crate::theme::palette().signal.into()), ..Default::default() }),
+                    .style(|_: &Theme| container::Style {
+                        background: Some(crate::theme::palette().signal.into()),
+                        ..Default::default()
+                    }),
                 container(Space::new().width(Length::Fill).height(6.0))
                     .width(Length::FillPortion((100 - pct).max(1)))
-                    .style(|_: &Theme| container::Style { background: Some(crate::theme::palette().rule_faint.into()), ..Default::default() }),
-                text(format!("{:.0}%", s * 100.0)).font(SANS).size(11.0).color(crate::theme::palette().ink_2).width(Length::Fixed(40.0)),
+                    .style(|_: &Theme| container::Style {
+                        background: Some(crate::theme::palette().rule_faint.into()),
+                        ..Default::default()
+                    }),
+                text(format!("{:.0}%", s * 100.0))
+                    .font(SANS)
+                    .size(11.0)
+                    .color(crate::theme::palette().ink_2)
+                    .width(Length::Fixed(40.0)),
             ]
             .spacing(8)
             .align_y(Alignment::Center)
@@ -1142,9 +1425,28 @@ fn table_row<'a>(name: String, trains: bool, t: &Totals, share: Option<f64>) -> 
         }
         None => text("").into(),
     };
-    let num = |v: String| cell(2, true, text(v).font(SANS).size(12.0).color(crate::theme::palette().ink_2));
+    let num = |v: String| {
+        cell(
+            2,
+            true,
+            text(v)
+                .font(SANS)
+                .size(12.0)
+                .color(crate::theme::palette().ink_2),
+        )
+    };
     row![
-        cell(5, false, with_badge(text(name).font(SANS).size(12.0).color(crate::theme::palette().ink), trains)),
+        cell(
+            5,
+            false,
+            with_badge(
+                text(name)
+                    .font(SANS)
+                    .size(12.0)
+                    .color(crate::theme::palette().ink),
+                trains
+            )
+        ),
         num(commas(&t.calls.to_string())),
         num(compact(t.input as f64)),
         num(compact(t.output as f64)),
@@ -1171,33 +1473,63 @@ fn cell<'a>(portion: u16, right: bool, content: impl Into<Element<'a, Msg>>) -> 
 
 /// The calls log: filters, a header, the rows, and "Load older" while the hub has more.
 fn calls_card<'a>(state: &'a State, d: &'a Data) -> Element<'a, Msg> {
-    let mut models = vec![Choice { value: None, label: "All models".to_string() }];
-    models.extend(d.summary.by_model.iter().map(|g| Choice { value: Some(g.key.clone()), label: g.key.clone() }));
-    let model_sel = models.iter().find(|c| c.value == state.model_filter).cloned();
-    let mut agents = vec![Choice { value: None, label: "All agents".to_string() }];
-    agents.extend(d.agents.iter().map(|(cid, name)| Choice { value: Some(*cid), label: name.clone() }));
-    let agent_sel = agents.iter().find(|c| c.value == state.agent_filter).cloned();
+    let mut models = vec![Choice {
+        value: None,
+        label: "All models".to_string(),
+    }];
+    models.extend(d.summary.by_model.iter().map(|g| Choice {
+        value: Some(g.key.clone()),
+        label: g.key.clone(),
+    }));
+    let model_sel = models
+        .iter()
+        .find(|c| c.value == state.model_filter)
+        .cloned();
+    let mut agents = vec![Choice {
+        value: None,
+        label: "All agents".to_string(),
+    }];
+    agents.extend(d.agents.iter().map(|(cid, name)| Choice {
+        value: Some(*cid),
+        label: name.clone(),
+    }));
+    let agent_sel = agents
+        .iter()
+        .find(|c| c.value == state.agent_filter)
+        .cloned();
     let filters = row![
         pick_list(models, model_sel, Msg::ModelFilter).width(Length::Fixed(240.0)),
         pick_list(agents, agent_sel, Msg::AgentFilter).width(Length::Fixed(220.0)),
     ]
     .spacing(12);
 
-    let mut lines = column![row![
-        cell(3, false, ui::faint("When (UTC)")),
-        cell(3, false, ui::faint("Agent")),
-        cell(2, false, ui::faint("Role")),
-        cell(4, false, ui::faint("Model")),
-        cell(2, true, ui::faint("In")),
-        cell(2, true, ui::faint("Out")),
-        cell(2, true, ui::faint("Cache read")),
-        cell(2, true, ui::faint("Cost")),
-        cell(3, false, ui::faint("Via")),
-    ].spacing(10)]
+    let mut lines = column![
+        row![
+            cell(3, false, ui::faint("When (UTC)")),
+            cell(3, false, ui::faint("Agent")),
+            cell(2, false, ui::faint("Role")),
+            cell(4, false, ui::faint("Model")),
+            cell(2, true, ui::faint("In")),
+            cell(2, true, ui::faint("Out")),
+            cell(2, true, ui::faint("Cache read")),
+            cell(2, true, ui::faint("Cost")),
+            cell(3, false, ui::faint("Via")),
+        ]
+        .spacing(10)
+    ]
     .spacing(6);
-    let txt = |s: String| text(s).font(SANS).size(12.0).color(crate::theme::palette().ink_2);
+    let txt = |s: String| {
+        text(s)
+            .font(SANS)
+            .size(12.0)
+            .color(crate::theme::palette().ink_2)
+    };
     for c in &d.calls {
-        let agent = d.agents.get(&c.cid).cloned().unwrap_or_else(|| format!("#{}", c.cid));
+        let agent = d
+            .agents
+            .get(&c.cid)
+            .cloned()
+            .unwrap_or_else(|| format!("#{}", c.cid));
         let cost = match c.cost_usd {
             Some(v) => usd(v),
             None => format!("{} est", usd(c.est_usd)),
@@ -1206,30 +1538,56 @@ fn calls_card<'a>(state: &'a State, d: &'a Data) -> Element<'a, Msg> {
             Some(task) => format!("{} · {task}", c.via),
             None => c.via.clone(),
         };
-        lines = lines.push(row![
-            cell(3, false, txt(stamp(c.at_ms))),
-            cell(3, false, txt(agent)),
-            cell(2, false, txt(c.role.clone())),
-            cell(4, false, with_badge(txt(c.model.clone()), trains_on_data(d, &c.model))),
-            cell(2, true, txt(compact(c.input as f64))),
-            cell(2, true, txt(compact(c.output as f64))),
-            cell(2, true, txt(compact(c.cache_read as f64))),
-            cell(2, true, txt(cost)),
-            cell(3, false, txt(via)),
-        ].spacing(10));
+        lines = lines.push(
+            row![
+                cell(3, false, txt(stamp(c.at_ms))),
+                cell(3, false, txt(agent)),
+                cell(2, false, txt(c.role.clone())),
+                cell(
+                    4,
+                    false,
+                    with_badge(txt(c.model.clone()), trains_on_data(d, &c.model))
+                ),
+                cell(2, true, txt(compact(c.input as f64))),
+                cell(2, true, txt(compact(c.output as f64))),
+                cell(2, true, txt(compact(c.cache_read as f64))),
+                cell(2, true, txt(cost)),
+                cell(3, false, txt(via)),
+            ]
+            .spacing(10),
+        );
     }
     if d.calls.is_empty() {
         let filtered = state.model_filter.is_some() || state.agent_filter.is_some();
-        let sentence = if filtered { "Clear the filters to see every call." } else { "Calls appear here as agents work." };
+        let sentence = if filtered {
+            "Clear the filters to see every call."
+        } else {
+            "Calls appear here as agents work."
+        };
         lines = lines.push(ui::empty("zap", "No calls match", sentence));
         if filtered {
-            lines = lines.push(ui::btn("Clear filters", None, ui::Kind::Ghost, Some(Msg::ClearFilters)));
+            lines = lines.push(ui::btn(
+                "Clear filters",
+                None,
+                ui::Kind::Ghost,
+                Some(Msg::ClearFilters),
+            ));
         }
     }
-    let mut footer = row![ui::faint(format!("{} of {} calls", d.calls.len(), commas(&d.calls_total.to_string())))].align_y(Alignment::Center);
+    let mut footer = row![ui::faint(format!(
+        "{} of {} calls",
+        d.calls.len(),
+        commas(&d.calls_total.to_string())
+    ))]
+    .align_y(Alignment::Center);
     footer = footer.push(Space::new().width(Length::Fill));
     if d.calls_next.is_some() {
-        footer = footer.push(ui::btn("Load older", Some("chevronDown"), ui::Kind::Secondary, (!state.calls_busy).then_some(Msg::LoadOlder)));
+        footer = footer.push(ui::btn(
+            "Load older",
+            Some("chevronDown"),
+            ui::Kind::Secondary,
+            (!state.calls_busy).then_some(Msg::LoadOlder),
+        ));
     }
     let body = column![filters, lines, footer].spacing(14);
     ui::card("Calls", body.into())
@@ -1248,28 +1606,86 @@ fn prices_card<'a>(d: &'a Data) -> Element<'a, Msg> {
         cell(2, true, ui::faint("Cache read")),
         cell(2, true, ui::faint("Cache write")),
         cell(3, false, ui::faint("Source")),
-    ].spacing(10);
+    ]
+    .spacing(10);
     let mut lines = column![head].spacing(6);
     if models.is_empty() {
-        lines = lines.push(ui::empty("models", "No models in use", "Models appear here once a model is called or set as a default."));
+        lines = lines.push(ui::empty(
+            "models",
+            "No models in use",
+            "Models appear here once a model is called or set as a default.",
+        ));
     }
-    let txt = |s: String| text(s).font(SANS).size(12.0).color(crate::theme::palette().ink_2);
+    let txt = |s: String| {
+        text(s)
+            .font(SANS)
+            .size(12.0)
+            .color(crate::theme::palette().ink_2)
+    };
     for model in &models {
-        let calls = d.summary.by_model.iter().find(|g| &g.key == model).map_or(0, |g| g.totals.calls);
+        let calls = d
+            .summary
+            .by_model
+            .iter()
+            .find(|g| &g.key == model)
+            .map_or(0, |g| g.totals.calls);
         let used = uses.get(model).map(|v| v.join(", ")).unwrap_or_default();
         let (input, output, cache_read, cache_write, source, flag) = match d.prices.get(model) {
-            Some(Some(p)) => (per_million(Some(p.input)), per_million(Some(p.output)), per_million(p.cache_read), per_million(p.cache_write), p.source.clone(), None),
-            Some(None) => ("—".into(), "—".into(), "—".into(), "—".into(), String::new(), Some(Element::from(row![ui::badge::<Msg>("Unpriced", ui::Tone::Warn), ui::link("set a price under Models", Msg::Go(Id::Models), false)].spacing(6).align_y(Alignment::Center)))),
-            None =>("…".into(), "…".into(), "…".into(), "…".into(), String::new(), None),
+            Some(Some(p)) => (
+                per_million(Some(p.input)),
+                per_million(Some(p.output)),
+                per_million(p.cache_read),
+                per_million(p.cache_write),
+                p.source.clone(),
+                None,
+            ),
+            Some(None) => (
+                "—".into(),
+                "—".into(),
+                "—".into(),
+                "—".into(),
+                String::new(),
+                Some(Element::from(
+                    row![
+                        ui::badge::<Msg>("Unpriced", ui::Tone::Warn),
+                        ui::link("set a price under Models", Msg::Go(Id::Models), false)
+                    ]
+                    .spacing(6)
+                    .align_y(Alignment::Center),
+                )),
+            ),
+            None => (
+                "…".into(),
+                "…".into(),
+                "…".into(),
+                "…".into(),
+                String::new(),
+                None,
+            ),
         };
-        let flagged = flag.or_else(|| d.summary.unpriced.contains(model).then(|| ui::badge::<Msg>("Unpriced", ui::Tone::Warn)));
+        let flagged = flag.or_else(|| {
+            d.summary
+                .unpriced
+                .contains(model)
+                .then(|| ui::badge::<Msg>("Unpriced", ui::Tone::Warn))
+        });
         let source_cell: Element<'_, Msg> = match flagged {
-            Some(badge) => row![txt(source), badge].spacing(8).align_y(Alignment::Center).into(),
+            Some(badge) => row![txt(source), badge]
+                .spacing(8)
+                .align_y(Alignment::Center)
+                .into(),
             None => txt(source).into(),
         };
         lines = lines.push(
             row![
-                cell(5, false, text(model.clone()).font(SANS).size(12.0).color(crate::theme::palette().ink)),
+                cell(
+                    5,
+                    false,
+                    text(model.clone())
+                        .font(SANS)
+                        .size(12.0)
+                        .color(crate::theme::palette().ink)
+                ),
                 cell(3, false, txt(used)),
                 cell(2, true, txt(commas(&calls.to_string()))),
                 cell(2, true, txt(input)),
@@ -1290,7 +1706,13 @@ mod tests {
     use super::*;
 
     fn t(usd: f64, calls: u64) -> Totals {
-        Totals { usd, calls, input: 10, output: 5, ..Default::default() }
+        Totals {
+            usd,
+            calls,
+            input: 10,
+            output: 5,
+            ..Default::default()
+        }
     }
 
     fn point(at_ms: u64, groups: &[(&str, f64)]) -> Point {
@@ -1302,7 +1724,11 @@ mod tests {
             map.insert(k.to_string(), t(*v, 1));
         }
         total.calls = groups.len() as u64;
-        Point { at_ms, groups: map, totals: total }
+        Point {
+            at_ms,
+            groups: map,
+            totals: total,
+        }
     }
 
     #[test]
@@ -1327,8 +1753,14 @@ mod tests {
 
     #[test]
     fn enc_escapes_model_ids() {
-        assert_eq!(enc("anthropic/claude-haiku-5-5"), "anthropic%2Fclaude-haiku-5-5");
-        assert_eq!(calls_path(50, Some(9), Some("a/b"), Some(3)), "/v1/usage/calls?limit=50&before=9&model=a%2Fb&cid=3");
+        assert_eq!(
+            enc("anthropic/claude-haiku-5-5"),
+            "anthropic%2Fclaude-haiku-5-5"
+        );
+        assert_eq!(
+            calls_path(50, Some(9), Some("a/b"), Some(3)),
+            "/v1/usage/calls?limit=50&before=9&model=a%2Fb&cid=3"
+        );
     }
 
     #[test]
@@ -1336,10 +1768,17 @@ mod tests {
         let names = ["a", "b", "c", "d", "e", "f", "g", "h"];
         let mut points = Vec::new();
         for i in 0..3u64 {
-            let groups: Vec<(&str, f64)> = names.iter().enumerate().map(|(k, n)| (*n, (k as f64 + 1.0) * (i as f64 + 1.0))).collect();
+            let groups: Vec<(&str, f64)> = names
+                .iter()
+                .enumerate()
+                .map(|(k, n)| (*n, (k as f64 + 1.0) * (i as f64 + 1.0)))
+                .collect();
             points.push(point(i * 3_600_000, &groups));
         }
-        let tl = Timeline { bucket_ms: 3_600_000, points };
+        let tl = Timeline {
+            bucket_ms: 3_600_000,
+            points,
+        };
         let (series, labels) = chart_series(&tl, Unit::Usd);
         assert_eq!(labels.len(), 3);
         assert_eq!(series.len(), TOP + 1);
@@ -1352,7 +1791,10 @@ mod tests {
 
     #[test]
     fn chart_series_is_empty_without_groups_and_other_is_only_kept_when_non_zero() {
-        let tl = Timeline { bucket_ms: DAY_MS, points: vec![point(0, &[]), point(DAY_MS, &[])] };
+        let tl = Timeline {
+            bucket_ms: DAY_MS,
+            points: vec![point(0, &[]), point(DAY_MS, &[])],
+        };
         let (series, labels) = chart_series(&tl, Unit::Tokens);
         assert!(series.is_empty());
         assert_eq!(labels, vec!["Jan 1".to_string(), "Jan 2".to_string()]);
@@ -1384,9 +1826,16 @@ mod tests {
     fn settings_uses_lists_where_each_model_is_used() {
         let mut roles = BTreeMap::new();
         roles.insert("architect".to_string(), "m/a".to_string());
-        let s = SettingsView { default_model: "m/a".into(), orchestrator_model: "m/o".into(), role_models: roles };
+        let s = SettingsView {
+            default_model: "m/a".into(),
+            orchestrator_model: "m/o".into(),
+            role_models: roles,
+        };
         let uses = settings_uses(&s);
-        assert_eq!(uses["m/a"], vec!["default".to_string(), "role architect".to_string()]);
+        assert_eq!(
+            uses["m/a"],
+            vec!["default".to_string(), "role architect".to_string()]
+        );
         assert_eq!(uses["m/o"], vec!["orchestrator".to_string()]);
     }
 

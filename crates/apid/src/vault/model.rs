@@ -5,7 +5,7 @@
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::crypto;
 
@@ -117,7 +117,9 @@ pub fn enc(bytes: &[u8]) -> String {
 }
 
 pub fn dec(text: &str) -> Result<Vec<u8>, String> {
-    STANDARD.decode(text).map_err(|_| "a stored value is not base64".to_string())
+    STANDARD
+        .decode(text)
+        .map_err(|_| "a stored value is not base64".to_string())
 }
 
 impl Scope {

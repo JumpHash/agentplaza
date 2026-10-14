@@ -11,18 +11,19 @@
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use apz_engine::input::{Button, Event};
 use apz_engine::world::view::Label;
 use apz_engine::{Cmd, Engine, Motion, Pick};
-use js_sys::{Array, Float32Array, Function, Object, Promise, Reflect, Uint32Array, Uint8Array};
-use wasm_bindgen::prelude::*;
+use js_sys::{Array, Float32Array, Function, Object, Promise, Reflect, Uint8Array, Uint32Array};
 use wasm_bindgen::JsCast;
+use wasm_bindgen::prelude::*;
 use web_sys::{
-    Document, DomRect, Event as DomEvent, HtmlCanvasElement, IntersectionObserver, IntersectionObserverEntry,
-    KeyboardEvent, MediaQueryList, PointerEvent, ResizeObserver, Window, WheelEvent,
+    Document, DomRect, Event as DomEvent, HtmlCanvasElement, IntersectionObserver,
+    IntersectionObserverEntry, KeyboardEvent, MediaQueryList, PointerEvent, ResizeObserver,
+    WheelEvent, Window,
 };
 use web_time::{Duration, Instant};
 
@@ -162,9 +163,13 @@ pub async fn start(canvas: HtmlCanvasElement, opts: JsValue) -> Result<WebEngine
     }
     let mode = mode_of(&opts)?;
     let window = web_sys::window().ok_or_else(|| JsValue::from_str("there is no window"))?;
-    let document = window.document().ok_or_else(|| JsValue::from_str("the window has no document"))?;
+    let document = window
+        .document()
+        .ok_or_else(|| JsValue::from_str("the window has no document"))?;
     let dpr = window.device_pixel_ratio();
-    let gpu = open_gpu(&canvas, &window, mode).await.map_err(|e| JsValue::from_str(&e))?;
+    let gpu = open_gpu(&canvas, &window, mode)
+        .await
+        .map_err(|e| JsValue::from_str(&e))?;
 
     let (width, height) = backing_size(&canvas, dpr);
     canvas.set_width(width);
@@ -213,7 +218,10 @@ pub async fn start(canvas: HtmlCanvasElement, opts: JsValue) -> Result<WebEngine
 
     let hooks = install(&shared, &window, &canvas)?;
     fit(&mut shared.borrow_mut());
-    let engine_web = WebEngine { shared, hooks: RefCell::new(Some(hooks)) };
+    let engine_web = WebEngine {
+        shared,
+        hooks: RefCell::new(Some(hooks)),
+    };
     Ok(engine_web)
 }
 
@@ -270,7 +278,8 @@ const ROOM_LAB_OPTIONS: [(&str, &str); 7] = [
 #[wasm_bindgen]
 pub async fn start_lab(canvas: HtmlCanvasElement, opts: JsValue) -> Result<WebEngine, JsValue> {
     let mut vars = lab_env(&opts, &LAB_OPTIONS);
-    vars.entry("APZ_ROBOT_LAB".to_string()).or_insert_with(|| "all".to_string());
+    vars.entry("APZ_ROBOT_LAB".to_string())
+        .or_insert_with(|| "all".to_string());
     // The lab is built when the first fleet arrives (Stage::apply_fleet), after `start` resolves, so the options stay
     // set for the lab engine's life; `destroy` clears them. One engine per page, so nothing else reads them meanwhile.
     apz_engine::set_env_overrides(vars);
@@ -285,9 +294,13 @@ pub async fn start_lab(canvas: HtmlCanvasElement, opts: JsValue) -> Result<WebEn
 /// options as the web reads them: `role` a role id or `all` (APZ_ROOM_LAB, default `orchestrator`), `size` `WxD` in units
 /// (APZ_ROOM_SIZE), `seed` a u32, `door` n | e | s | w, `grid` 1 or 0 (a boolean is 1 or 0). Set as `start_lab` sets its own.
 #[wasm_bindgen]
-pub async fn start_room_lab(canvas: HtmlCanvasElement, opts: JsValue) -> Result<WebEngine, JsValue> {
+pub async fn start_room_lab(
+    canvas: HtmlCanvasElement,
+    opts: JsValue,
+) -> Result<WebEngine, JsValue> {
     let mut vars = lab_env(&opts, &ROOM_LAB_OPTIONS);
-    vars.entry("APZ_ROOM_LAB".to_string()).or_insert_with(|| "orchestrator".to_string());
+    vars.entry("APZ_ROOM_LAB".to_string())
+        .or_insert_with(|| "orchestrator".to_string());
     apz_engine::set_env_overrides(vars);
     let started = start(canvas, opts).await;
     if started.is_err() {
@@ -329,12 +342,16 @@ fn hardware_params(opts: &JsValue) -> Option<String> {
 /// params? }` (a missing model is `board/workstation`; a boolean `traces` is 1 or 0; `params` is the model's own numbers,
 /// by name). The options are set as env names only while the stage builds, as `start_lab` does.
 #[wasm_bindgen]
-pub async fn start_hardware_lab(canvas: HtmlCanvasElement, opts: JsValue) -> Result<WebEngine, JsValue> {
+pub async fn start_hardware_lab(
+    canvas: HtmlCanvasElement,
+    opts: JsValue,
+) -> Result<WebEngine, JsValue> {
     let mut vars = lab_env(&opts, &HARDWARE_LAB_OPTIONS);
     if let Some(params) = hardware_params(&opts) {
         vars.insert("APZ_HW_PARAMS".to_string(), params);
     }
-    vars.entry("APZ_HW_LAB".to_string()).or_insert_with(|| "board/workstation".to_string());
+    vars.entry("APZ_HW_LAB".to_string())
+        .or_insert_with(|| "board/workstation".to_string());
     apz_engine::set_env_overrides(vars);
     let started = start(canvas, opts).await;
     if started.is_err() {
@@ -359,7 +376,8 @@ impl WebEngine {
     /// An agent's robot portrait, w by h: `json_spec` is the web's portrait spec (`cid`, `roleHue`, `bodyHue`, `orchestrator`,
     /// `offline`, `species`). Resolves to RGBA8 bytes; a bad spec rejects with the reason as text.
     pub fn portrait(&self, json_spec: String, w: u32, h: u32) -> Promise {
-        let started = apz_engine::portrait::PortraitSpec::from_json(&json_spec).and_then(|spec| self.shared.borrow_mut().engine.portrait_begin(&spec, w, h));
+        let started = apz_engine::portrait::PortraitSpec::from_json(&json_spec)
+            .and_then(|spec| self.shared.borrow_mut().engine.portrait_begin(&spec, w, h));
         wasm_bindgen_futures::future_to_promise(async move {
             let thumb = started.map_err(|e| JsValue::from_str(&e))?;
             let pixels = thumb.pixels().await.map_err(|e| JsValue::from_str(&e))?;
@@ -375,7 +393,8 @@ impl WebEngine {
     /// One event from the console's stream, as the desktop forwards it (`Floor::on_event`): `kind` is the channel
     /// ("transcript", "delta", "conversation", "project", "file", "work") and `json` its data. A parse error is thrown.
     pub fn event(&self, kind: &str, json: &str) -> Result<(), JsValue> {
-        let data: serde_json::Value = serde_json::from_str(json).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let data: serde_json::Value =
+            serde_json::from_str(json).map_err(|e| JsValue::from_str(&e.to_string()))?;
         let mut inner = self.shared.borrow_mut();
         inner.engine.stage.floor.on_event(kind, &data);
         inner.engine.touch();
@@ -385,17 +404,23 @@ impl WebEngine {
     /// The shared board layouts the floors asked for since the last call, as a JSON array of keys: the page computes
     /// each in its worker (`shared_layout`) and hands it back with `provide_layout`.
     pub fn layout_requests(&self) -> String {
-        serde_json::to_string(&apz_engine::world::board_layout::take_wanted_shared()).unwrap_or_else(|_| "[]".to_string())
+        serde_json::to_string(&apz_engine::world::board_layout::take_wanted_shared())
+            .unwrap_or_else(|_| "[]".to_string())
     }
 
     /// A shared board layout the page's worker computed: its key and the worker's answer, as `shared_layout` gave them.
     /// The floor adopts it on its next step.
     pub fn provide_layout(&self, key_json: &str, answer_json: &str) -> Result<(), JsValue> {
         let key = serde_json::from_str(key_json).map_err(|e| JsValue::from_str(&e.to_string()))?;
-        let answer: serde_json::Value = serde_json::from_str(answer_json).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let answer: serde_json::Value =
+            serde_json::from_str(answer_json).map_err(|e| JsValue::from_str(&e.to_string()))?;
         let outcome = match answer.get("ok") {
             Some(layout) => serde_json::from_value(layout.clone()).map_err(|e| e.to_string()),
-            None => Err(answer.get("err").and_then(|e| e.as_str()).unwrap_or("the worker gave no layout").to_string()),
+            None => Err(answer
+                .get("err")
+                .and_then(|e| e.as_str())
+                .unwrap_or("the worker gave no layout")
+                .to_string()),
         };
         apz_engine::world::board_layout::provide_shared(key, outcome);
         self.shared.borrow_mut().engine.touch();
@@ -433,7 +458,10 @@ impl WebEngine {
         let (sp, cp) = polar.sin_cos();
         let (sa, ca) = azimuth.sin_cos();
         let eye = [x + dist * sp * sa, y + dist * cp, z + dist * sp * ca];
-        self.shared.borrow_mut().engine.look_at([x, y, z], Some(eye));
+        self.shared
+            .borrow_mut()
+            .engine
+            .look_at([x, y, z], Some(eye));
     }
 
     /// Registers `cb(kind, id)`, called on each click in the scene: kind 'machine', 'robot' or 'none', and id the
@@ -570,12 +598,20 @@ impl WebEngine {
     /// Sends the `n` robots nearest lift `index` on a real trip through it (`__apzLiftRide`): JSON `{ok, goal, robots}`
     /// or `{ok: false, reason}` (see `apz_engine::debug`).
     pub fn lift_ride(&self, index: i32, n: i32) -> String {
-        self.shared.borrow_mut().engine.stage.lift_ride_json(i64::from(index), i64::from(n))
+        self.shared
+            .borrow_mut()
+            .engine
+            .stage
+            .lift_ride_json(i64::from(index), i64::from(n))
     }
 
     /// Moves an agent's robot to (x, z) on the board (`__apzShove`). False without a board or a robot for the agent.
     pub fn shove(&self, cid: f64, x: f64, z: f64) -> bool {
-        self.shared.borrow_mut().engine.stage.shove(cid as u64, x, z)
+        self.shared
+            .borrow_mut()
+            .engine
+            .stage
+            .shove(cid as u64, x, z)
     }
 
     /// Stops the loop, disconnects the observers, removes every listener and drops the surface.
@@ -588,7 +624,9 @@ impl WebEngine {
 
 impl WebEngine {
     fn teardown(&self) {
-        let Some(hooks) = self.hooks.borrow_mut().take() else { return };
+        let Some(hooks) = self.hooks.borrow_mut().take() else {
+            return;
+        };
         let (window, canvas) = {
             let mut guard = self.shared.borrow_mut();
             let s = &mut *guard;
@@ -616,14 +654,26 @@ impl WebEngine {
             visibility: _visibility,
             tick: _tick,
         } = hooks;
-        let _ = canvas.remove_event_listener_with_callback("pointerdown", pointerdown.as_ref().unchecked_ref());
-        let _ = canvas.remove_event_listener_with_callback("pointermove", pointermove.as_ref().unchecked_ref());
-        let _ = canvas.remove_event_listener_with_callback("pointerup", pointerup.as_ref().unchecked_ref());
-        let _ = canvas.remove_event_listener_with_callback("pointerleave", pointerleave.as_ref().unchecked_ref());
+        let _ = canvas.remove_event_listener_with_callback(
+            "pointerdown",
+            pointerdown.as_ref().unchecked_ref(),
+        );
+        let _ = canvas.remove_event_listener_with_callback(
+            "pointermove",
+            pointermove.as_ref().unchecked_ref(),
+        );
+        let _ = canvas
+            .remove_event_listener_with_callback("pointerup", pointerup.as_ref().unchecked_ref());
+        let _ = canvas.remove_event_listener_with_callback(
+            "pointerleave",
+            pointerleave.as_ref().unchecked_ref(),
+        );
         let _ = canvas.remove_event_listener_with_callback("wheel", wheel.as_ref().unchecked_ref());
-        let _ = window.remove_event_listener_with_callback("keydown", keydown.as_ref().unchecked_ref());
+        let _ =
+            window.remove_event_listener_with_callback("keydown", keydown.as_ref().unchecked_ref());
         if let Some((query, change)) = motion {
-            let _ = query.remove_event_listener_with_callback("change", change.as_ref().unchecked_ref());
+            let _ = query
+                .remove_event_listener_with_callback("change", change.as_ref().unchecked_ref());
         }
         resize_observer.disconnect();
         visibility_observer.disconnect();
@@ -638,7 +688,9 @@ impl Drop for WebEngine {
 
 /// Sends a Rust panic's message to the console (the default hook on wasm says nothing, and the page sees only "unreachable").
 fn install_panic_hook() {
-    std::panic::set_hook(Box::new(|info| web_sys::console::error_1(&JsValue::from_str(&info.to_string()))));
+    std::panic::set_hook(Box::new(|info| {
+        web_sys::console::error_1(&JsValue::from_str(&info.to_string()))
+    }));
 }
 
 /// Reads `opts.backend`: 'auto' (or missing) or 'webgl2'.
@@ -650,7 +702,9 @@ fn mode_of(opts: &JsValue) -> Result<Mode, JsValue> {
     match value.as_string().as_deref() {
         None | Some("auto") => Ok(Mode::Auto),
         Some("webgl2") => Ok(Mode::WebGl2),
-        Some(other) => Err(JsValue::from_str(&format!("unknown backend \"{other}\": use 'auto' or 'webgl2'"))),
+        Some(other) => Err(JsValue::from_str(&format!(
+            "unknown backend \"{other}\": use 'auto' or 'webgl2'"
+        ))),
     }
 }
 
@@ -681,7 +735,9 @@ async fn open_gpu(canvas: &HtmlCanvasElement, window: &Window, mode: Mode) -> Re
             }
             open_backend(canvas, wgpu::Backends::GL)
                 .await?
-                .ok_or_else(|| "no WebGPU or WebGL2 adapter is available in this browser".to_string())
+                .ok_or_else(|| {
+                    "no WebGPU or WebGL2 adapter is available in this browser".to_string()
+                })
         }
     }
 }
@@ -690,19 +746,33 @@ async fn open_gpu(canvas: &HtmlCanvasElement, window: &Window, mode: Mode) -> Re
 /// `navigator.gpu` itself, not through a second wgpu instance: dropping one left Chrome's WebGPU without "a valid
 /// external Instance reference", and every buffer map after it failed (no thumbnail or portrait read back).
 async fn webgpu_adapter_exists() -> bool {
-    let Some(window) = web_sys::window() else { return false };
-    let Ok(gpu) = Reflect::get(&window.navigator(), &JsValue::from_str("gpu")) else { return false };
-    let Ok(request) = Reflect::get(&gpu, &JsValue::from_str("requestAdapter")).and_then(|f| f.dyn_into::<Function>()) else {
+    let Some(window) = web_sys::window() else {
         return false;
     };
-    let Ok(promise) = request.call0(&gpu).and_then(|p| p.dyn_into::<Promise>()) else { return false };
+    let Ok(gpu) = Reflect::get(&window.navigator(), &JsValue::from_str("gpu")) else {
+        return false;
+    };
+    let Ok(request) = Reflect::get(&gpu, &JsValue::from_str("requestAdapter"))
+        .and_then(|f| f.dyn_into::<Function>())
+    else {
+        return false;
+    };
+    let Ok(promise) = request.call0(&gpu).and_then(|p| p.dyn_into::<Promise>()) else {
+        return false;
+    };
     matches!(wasm_bindgen_futures::JsFuture::from(promise).await, Ok(adapter) if !adapter.is_null() && !adapter.is_undefined())
 }
 
 /// One backend: an instance, the canvas surface, an adapter compatible with it, and a device. None when the
 /// backend has no adapter (the caller tries the next one).
-async fn open_backend(canvas: &HtmlCanvasElement, backends: wgpu::Backends) -> Result<Option<Gpu>, String> {
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor { backends, ..Default::default() });
+async fn open_backend(
+    canvas: &HtmlCanvasElement,
+    backends: wgpu::Backends,
+) -> Result<Option<Gpu>, String> {
+    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+        backends,
+        ..Default::default()
+    });
     let surface = instance
         .create_surface(wgpu::SurfaceTarget::Canvas(canvas.clone()))
         .map_err(|e| format!("cannot create the canvas surface: {e}"))?;
@@ -742,9 +812,21 @@ async fn open_backend(canvas: &HtmlCanvasElement, backends: wgpu::Backends) -> R
     let alpha_mode = if caps.alpha_modes.contains(&wgpu::CompositeAlphaMode::Opaque) {
         wgpu::CompositeAlphaMode::Opaque
     } else {
-        caps.alpha_modes.first().copied().unwrap_or(wgpu::CompositeAlphaMode::Auto)
+        caps.alpha_modes
+            .first()
+            .copied()
+            .unwrap_or(wgpu::CompositeAlphaMode::Auto)
     };
-    Ok(Some(Gpu { backend, device, queue, surface, format, alpha_mode, instance, adapter }))
+    Ok(Some(Gpu {
+        backend,
+        device,
+        queue,
+        surface,
+        format,
+        alpha_mode,
+        instance,
+        adapter,
+    }))
 }
 
 /// The canvas's backing size: its CSS size times the device pixel ratio, rounded, at least 1 by 1.
@@ -776,7 +858,10 @@ fn fit(s: &mut Inner) {
 
 /// A client point in logical px relative to the canvas.
 fn local_point(rect: &DomRect, client_x: f64, client_y: f64) -> (f32, f32) {
-    ((client_x - rect.left()) as f32, (client_y - rect.top()) as f32)
+    (
+        (client_x - rect.left()) as f32,
+        (client_y - rect.top()) as f32,
+    )
 }
 
 /// The point when it is inside the canvas, else None.
@@ -787,7 +872,11 @@ fn inside(rect: &DomRect, p: (f32, f32)) -> Option<(f32, f32)> {
 }
 
 fn button_of(ev: &PointerEvent) -> Button {
-    if ev.button() == 0 { Button::Left } else { Button::Other }
+    if ev.button() == 0 {
+        Button::Left
+    } else {
+        Button::Other
+    }
 }
 
 fn distance(a: (f32, f32), b: (f32, f32)) -> f32 {
@@ -803,16 +892,20 @@ fn pick_pair(pick: Option<Pick>) -> (&'static str, String) {
 }
 
 fn emit_pick(cb: &Function, kind: &str, id: &str) {
-    if let Err(e) = cb.call2(&JsValue::NULL, &JsValue::from_str(kind), &JsValue::from_str(id)) {
+    if let Err(e) = cb.call2(
+        &JsValue::NULL,
+        &JsValue::from_str(kind),
+        &JsValue::from_str(id),
+    ) {
         web_sys::console::error_1(&e);
     }
 }
 
 fn same_text(a: &[Label], b: &[Label]) -> bool {
     a.len() == b.len()
-        && a.iter()
-            .zip(b)
-            .all(|(x, y)| x.cid == y.cid && x.name == y.name && x.role == y.role && x.line == y.line)
+        && a.iter().zip(b).all(|(x, y)| {
+            x.cid == y.cid && x.name == y.name && x.role == y.role && x.line == y.line
+        })
 }
 
 fn set(object: &Object, key: &str, value: JsValue) {
@@ -834,7 +927,11 @@ fn label_array(labels: &[Label]) -> Array {
 }
 
 /// Wires the canvas, window and observers to the shared state.
-fn install(shared: &Rc<RefCell<Inner>>, window: &Window, canvas: &HtmlCanvasElement) -> Result<Hooks, JsValue> {
+fn install(
+    shared: &Rc<RefCell<Inner>>,
+    window: &Window,
+    canvas: &HtmlCanvasElement,
+) -> Result<Hooks, JsValue> {
     let pointerdown = {
         let shared = shared.clone();
         Closure::<dyn FnMut(PointerEvent)>::new(move |ev: PointerEvent| {
@@ -844,7 +941,10 @@ fn install(shared: &Rc<RefCell<Inner>>, window: &Window, canvas: &HtmlCanvasElem
             let p = local_point(&rect, ev.client_x() as f64, ev.client_y() as f64);
             let _ = s.canvas.set_pointer_capture(ev.pointer_id());
             s.down = (ev.button() == 0).then_some(p);
-            s.engine.input(Event::Pressed { button: button_of(&ev), at: inside(&rect, p) });
+            s.engine.input(Event::Pressed {
+                button: button_of(&ev),
+                at: inside(&rect, p),
+            });
         })
     };
     let pointermove = {
@@ -854,7 +954,10 @@ fn install(shared: &Rc<RefCell<Inner>>, window: &Window, canvas: &HtmlCanvasElem
             let s = &mut *guard;
             let rect = s.canvas.get_bounding_client_rect();
             let p = local_point(&rect, ev.client_x() as f64, ev.client_y() as f64);
-            s.engine.input(Event::Moved { at: inside(&rect, p), to: p });
+            s.engine.input(Event::Moved {
+                at: inside(&rect, p),
+                to: p,
+            });
         })
     };
     let pointerup = {
@@ -864,7 +967,10 @@ fn install(shared: &Rc<RefCell<Inner>>, window: &Window, canvas: &HtmlCanvasElem
             let s = &mut *guard;
             let rect = s.canvas.get_bounding_client_rect();
             let p = local_point(&rect, ev.client_x() as f64, ev.client_y() as f64);
-            s.engine.input(Event::Released { button: button_of(&ev), at: inside(&rect, p) });
+            s.engine.input(Event::Released {
+                button: button_of(&ev),
+                at: inside(&rect, p),
+            });
             let click = match s.down.take() {
                 Some(down) => ev.button() == 0 && distance(down, p) <= CLICK_SLOP,
                 None => false,
@@ -896,7 +1002,11 @@ fn install(shared: &Rc<RefCell<Inner>>, window: &Window, canvas: &HtmlCanvasElem
             ev.prevent_default();
             // Web deltaY is positive down; the engine's lines are positive up. Pixel deltas come in about 40 per line.
             let dy = ev.delta_y() as f32;
-            let lines = if ev.delta_mode() == 0 { -dy / 40.0 } else { -dy };
+            let lines = if ev.delta_mode() == 0 {
+                -dy / 40.0
+            } else {
+                -dy
+            };
             shared.borrow_mut().engine.input(Event::Wheel { lines });
         })
     };
@@ -908,14 +1018,19 @@ fn install(shared: &Rc<RefCell<Inner>>, window: &Window, canvas: &HtmlCanvasElem
             }
             let mut guard = shared.borrow_mut();
             let s = &mut *guard;
-            let cmd = if s.engine.stage.popup.is_some() { Cmd::OpenPopup(None) } else { Cmd::Back };
+            let cmd = if s.engine.stage.popup.is_some() {
+                Cmd::OpenPopup(None)
+            } else {
+                Cmd::Back
+            };
             s.engine.command(cmd);
         })
     };
     canvas.add_event_listener_with_callback("pointerdown", pointerdown.as_ref().unchecked_ref())?;
     canvas.add_event_listener_with_callback("pointermove", pointermove.as_ref().unchecked_ref())?;
     canvas.add_event_listener_with_callback("pointerup", pointerup.as_ref().unchecked_ref())?;
-    canvas.add_event_listener_with_callback("pointerleave", pointerleave.as_ref().unchecked_ref())?;
+    canvas
+        .add_event_listener_with_callback("pointerleave", pointerleave.as_ref().unchecked_ref())?;
     canvas.add_event_listener_with_callback("wheel", wheel.as_ref().unchecked_ref())?;
     window.add_event_listener_with_callback("keydown", keydown.as_ref().unchecked_ref())?;
 
@@ -945,24 +1060,28 @@ fn install(shared: &Rc<RefCell<Inner>>, window: &Window, canvas: &HtmlCanvasElem
 
     let visibility = {
         let shared = shared.clone();
-        Closure::<dyn FnMut(Array, IntersectionObserver)>::new(move |entries: Array, _observer: IntersectionObserver| {
-            let last = entries
-                .iter()
-                .filter_map(|entry| entry.dyn_into::<IntersectionObserverEntry>().ok())
-                .last();
-            if let Some(entry) = last {
-                shared.borrow_mut().visible = entry.is_intersecting();
-            }
-        })
+        Closure::<dyn FnMut(Array, IntersectionObserver)>::new(
+            move |entries: Array, _observer: IntersectionObserver| {
+                let last = entries
+                    .iter()
+                    .filter_map(|entry| entry.dyn_into::<IntersectionObserverEntry>().ok())
+                    .last();
+                if let Some(entry) = last {
+                    shared.borrow_mut().visible = entry.is_intersecting();
+                }
+            },
+        )
     };
     let visibility_observer = IntersectionObserver::new(visibility.as_ref().unchecked_ref())?;
     visibility_observer.observe(canvas);
 
     let resize = {
         let shared = shared.clone();
-        Closure::<dyn FnMut(Array, ResizeObserver)>::new(move |_entries: Array, _observer: ResizeObserver| {
-            fit(&mut shared.borrow_mut());
-        })
+        Closure::<dyn FnMut(Array, ResizeObserver)>::new(
+            move |_entries: Array, _observer: ResizeObserver| {
+                fit(&mut shared.borrow_mut());
+            },
+        )
     };
     let resize_observer = ResizeObserver::new(resize.as_ref().unchecked_ref())?;
     resize_observer.observe(canvas);
@@ -1011,13 +1130,16 @@ fn frame_tick(shared: &Rc<RefCell<Inner>>) {
     // Ambient frames are throttled to 30 per second; with reduced motion they are treated as Rest (no throttle).
     let ambient_wait = s.last_motion == Motion::Ambient
         && !s.reduced_motion
-        && s.last_draw.is_some_and(|t| now.saturating_duration_since(t) < AMBIENT_INTERVAL);
+        && s.last_draw
+            .is_some_and(|t| now.saturating_duration_since(t) < AMBIENT_INTERVAL);
     let drawable = s.visible && !s.document.hidden() && !ambient_wait && s.engine.busy();
     if !(first || drawable) || s.in_flight.load(Ordering::SeqCst) >= MAX_FRAMES_IN_FLIGHT {
         return;
     }
 
-    let Some(surface) = s.surface.as_ref() else { return };
+    let Some(surface) = s.surface.as_ref() else {
+        return;
+    };
     let texture = match surface.get_current_texture() {
         Ok(texture) => texture,
         Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
@@ -1025,12 +1147,21 @@ fn frame_tick(shared: &Rc<RefCell<Inner>>) {
             return;
         }
         Err(_) => {
-            web_sys::console::error_1(&JsValue::from_str("apz-engine-web: no surface texture for this frame"));
+            web_sys::console::error_1(&JsValue::from_str(
+                "apz-engine-web: no surface texture for this frame",
+            ));
             return;
         }
     };
-    let view = texture.texture.create_view(&wgpu::TextureViewDescriptor::default());
-    let out = s.engine.frame(now, &view, (s.canvas.width(), s.canvas.height()), s.dpr as f32);
+    let view = texture
+        .texture
+        .create_view(&wgpu::TextureViewDescriptor::default());
+    let out = s.engine.frame(
+        now,
+        &view,
+        (s.canvas.width(), s.canvas.height()),
+        s.dpr as f32,
+    );
     drop(view);
     texture.present();
     let pending = Arc::clone(&s.in_flight);
@@ -1044,7 +1175,8 @@ fn frame_tick(shared: &Rc<RefCell<Inner>>) {
     s.positions.clear();
     for label in &out.labels {
         let visible = if label.is_shown() { 1.0 } else { 0.0 };
-        s.positions.extend_from_slice(&[label.cid as f32, label.x, label.y, visible]);
+        s.positions
+            .extend_from_slice(&[label.cid as f32, label.x, label.y, visible]);
     }
     let mut labels_call = None;
     if !same_text(&s.text, &out.labels) {

@@ -79,7 +79,10 @@ pub struct Memory {
 
 impl Memory {
     pub fn new(root: PathBuf) -> Self {
-        Self { root, listener: std::sync::OnceLock::new() }
+        Self {
+            root,
+            listener: std::sync::OnceLock::new(),
+        }
     }
 
     /// Sets the function told about every note written (once).
@@ -104,7 +107,12 @@ impl Memory {
             .filter(|s| s.meta.slug != slug && s.meta.links.iter().any(|l| l == slug))
             .map(|s| s.meta.slug)
             .collect();
-        Some(NoteDoc { meta: stored.meta, body: stored.body, backlinks, provenance: stored.provenance })
+        Some(NoteDoc {
+            meta: stored.meta,
+            body: stored.body,
+            backlinks,
+            provenance: stored.provenance,
+        })
     }
 
     /// Creates or replaces the note whose slug is the slug of `title`.
@@ -129,7 +137,9 @@ impl Memory {
         let _guard = LOCK.lock().unwrap_or_else(PoisonError::into_inner);
         let title = format!("Journal {}", utc_date(now_ms));
         let slug = slug(&title);
-        let mut body = read_note(&self.path(cid, &slug), &slug).map(|s| s.body).unwrap_or_default();
+        let mut body = read_note(&self.path(cid, &slug), &slug)
+            .map(|s| s.body)
+            .unwrap_or_default();
         if !body.is_empty() && !body.ends_with('\n') {
             body.push('\n');
         }
@@ -142,8 +152,10 @@ impl Memory {
     /// times a body hit. Case-insensitive; the snippet is about 160 characters
     /// around the first body hit.
     pub fn search(&self, cid: u64, query: &str, limit: usize) -> Vec<Hit> {
-        let terms: Vec<Vec<char>> =
-            query.split_whitespace().map(|w| w.chars().map(fold).collect::<Vec<char>>()).collect();
+        let terms: Vec<Vec<char>> = query
+            .split_whitespace()
+            .map(|w| w.chars().map(fold).collect::<Vec<char>>())
+            .collect();
         if terms.is_empty() {
             return Vec::new();
         }
@@ -166,7 +178,14 @@ impl Memory {
                 continue;
             }
             let snippet = snippet(&body_chars, first_hit.unwrap_or(0));
-            scored.push((score, Hit { slug: note.meta.slug, title: note.meta.title, snippet }));
+            scored.push((
+                score,
+                Hit {
+                    slug: note.meta.slug,
+                    title: note.meta.title,
+                    snippet,
+                },
+            ));
         }
         // A stable sort keeps the newest-first order among equal scores.
         scored.sort_by(|a, b| b.0.cmp(&a.0));
@@ -229,7 +248,9 @@ impl Memory {
             .map(|t| t.replace([',', '\r', '\n'], " ").trim().to_string())
             .filter(|t| !t.is_empty())
             .collect();
-        let task = task.map(|t| t.replace(['\r', '\n'], " ").trim().to_string()).filter(|t| !t.is_empty());
+        let task = task
+            .map(|t| t.replace(['\r', '\n'], " ").trim().to_string())
+            .filter(|t| !t.is_empty());
         let slug = slug(&title);
         let dir = self.dir(cid);
         let path = dir.join(format!("{slug}.md"));
@@ -285,7 +306,9 @@ impl Memory {
 
     /// The note files of `cid`, in no particular order.
     fn note_files(&self, cid: u64) -> Vec<PathBuf> {
-        let Ok(entries) = std::fs::read_dir(self.dir(cid)) else { return Vec::new() };
+        let Ok(entries) = std::fs::read_dir(self.dir(cid)) else {
+            return Vec::new();
+        };
         entries
             .flatten()
             .map(|e| e.path())
@@ -304,7 +327,10 @@ impl Memory {
             })
             .collect();
         notes.sort_by(|a, b| {
-            b.meta.updated_ms.cmp(&a.meta.updated_ms).then_with(|| a.meta.slug.cmp(&b.meta.slug))
+            b.meta
+                .updated_ms
+                .cmp(&a.meta.updated_ms)
+                .then_with(|| a.meta.slug.cmp(&b.meta.slug))
         });
         notes
     }
@@ -341,7 +367,9 @@ pub fn slug(title: &str) -> String {
 fn valid_slug(slug: &str) -> bool {
     !slug.is_empty()
         && slug.len() <= SLUG_MAX
-        && slug.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        && slug
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 
 /// The slugs of every `[[...]]` in `body`, in order, without repeats.
@@ -379,7 +407,10 @@ fn read_note(path: &Path, slug: &str) -> Option<Stored> {
             size: body.len(),
         },
         body: body.to_string(),
-        provenance: Provenance { task: fields.task, work: fields.work },
+        provenance: Provenance {
+            task: fields.task,
+            work: fields.work,
+        },
     })
 }
 
@@ -412,13 +443,20 @@ impl Fields {
             updated_ms: 0,
         };
         for line in header.lines() {
-            let Some((key, value)) = line.split_once(':') else { continue };
+            let Some((key, value)) = line.split_once(':') else {
+                continue;
+            };
             let value = value.trim();
             match key.trim() {
                 "title" => f.title = value.to_string(),
                 "kind" => f.kind = value.to_string(),
                 "tags" => {
-                    f.tags = value.split(',').map(str::trim).filter(|t| !t.is_empty()).map(String::from).collect()
+                    f.tags = value
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|t| !t.is_empty())
+                        .map(String::from)
+                        .collect()
                 }
                 "task" => f.task = (!value.is_empty()).then(|| value.to_string()),
                 "work" => f.work = value.parse().ok(),
@@ -445,7 +483,9 @@ fn occurrences(hay: &[char], needle: &[char]) -> Vec<usize> {
     if needle.is_empty() || needle.len() > hay.len() {
         return Vec::new();
     }
-    (0..=hay.len() - needle.len()).filter(|&i| hay[i..].starts_with(needle)).collect()
+    (0..=hay.len() - needle.len())
+        .filter(|&i| hay[i..].starts_with(needle))
+        .collect()
 }
 
 /// About 160 characters of `body` around `at`, with `…` where cut.
@@ -482,12 +522,19 @@ fn utc_date(now_ms: u64) -> String {
 /// `GET /v1/agents/{cid}/memory/{slug}` (one note with its body).
 pub fn routes(router: Router<App>) -> Router<App> {
     router
-        .get("/v1/agents/{cid}/memory", |app, _, p| match p.get("cid").parse::<u64>() {
-            Ok(cid) => Response::json(200, &json!({"notes": app.memory.list(cid)})),
-            Err(_) => Response::error(400, "bad cid"),
+        .get("/v1/agents/{cid}/memory", |app, _, p| {
+            match p.get("cid").parse::<u64>() {
+                Ok(cid) => Response::json(200, &json!({"notes": app.memory.list(cid)})),
+                Err(_) => Response::error(400, "bad cid"),
+            }
         })
         .get("/v1/agents/{cid}/memory/{slug}", |app, _, p| {
-            match p.get("cid").parse::<u64>().ok().and_then(|cid| app.memory.get(cid, p.get("slug"))) {
+            match p
+                .get("cid")
+                .parse::<u64>()
+                .ok()
+                .and_then(|cid| app.memory.get(cid, p.get("slug")))
+            {
                 Some(doc) => Response::json(200, &doc),
                 None => Response::error(404, "not found"),
             }
@@ -510,10 +557,32 @@ mod tests {
         let memory = Memory::new(root.clone());
         let body = "See [[Beta Note]], then [[beta note]] and [[Gamma]].\n";
         let tags = vec!["x".to_string(), "y".to_string()];
-        let alpha = memory.write(7, "Alpha Note", body, "note", &tags, Some("t12".into()), Some(34), 1000).unwrap();
+        let alpha = memory
+            .write(
+                7,
+                "Alpha Note",
+                body,
+                "note",
+                &tags,
+                Some("t12".into()),
+                Some(34),
+                1000,
+            )
+            .unwrap();
         assert_eq!(alpha.slug, "alpha-note");
         assert_eq!(alpha.links, vec!["beta-note", "gamma"]);
-        memory.write(7, "Beta Note", "Back to [[Alpha Note]].", "note", &[], None, None, 2000).unwrap();
+        memory
+            .write(
+                7,
+                "Beta Note",
+                "Back to [[Alpha Note]].",
+                "note",
+                &[],
+                None,
+                None,
+                2000,
+            )
+            .unwrap();
 
         let doc = memory.get(7, "alpha-note").unwrap();
         assert_eq!(doc.body, body);
@@ -530,7 +599,10 @@ mod tests {
         assert_eq!(slugs, vec!["beta-note", "alpha-note"], "newest first");
         assert!(memory.get(7, "missing").is_none());
         assert!(memory.get(7, "../escape").is_none());
-        assert!(memory.get(8, "alpha-note").is_none(), "each agent has its own library");
+        assert!(
+            memory.get(8, "alpha-note").is_none(),
+            "each agent has its own library"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -541,15 +613,32 @@ mod tests {
         assert_eq!(slug("!!!"), "untitled");
         assert_eq!(slug(""), "untitled");
         assert_eq!(slug(&"A".repeat(100)).len(), 60);
-        assert_eq!(slug(&format!("{} b", "a".repeat(59))), "a".repeat(59), "a dash left by the cut is trimmed");
+        assert_eq!(
+            slug(&format!("{} b", "a".repeat(59))),
+            "a".repeat(59),
+            "a dash left by the cut is trimmed"
+        );
     }
 
     #[test]
     fn search_ranks_a_title_hit_first() {
         let root = scratch("search");
         let memory = Memory::new(root.clone());
-        memory.write(1, "Notes", "rust rust and more", "note", &[], None, None, 1).unwrap();
-        memory.write(1, "Rust", "nothing relevant here", "note", &[], None, None, 2).unwrap();
+        memory
+            .write(1, "Notes", "rust rust and more", "note", &[], None, None, 1)
+            .unwrap();
+        memory
+            .write(
+                1,
+                "Rust",
+                "nothing relevant here",
+                "note",
+                &[],
+                None,
+                None,
+                2,
+            )
+            .unwrap();
         let hits = memory.search(1, "RUST", 10);
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].slug, "rust");
@@ -574,7 +663,10 @@ mod tests {
         assert_eq!(doc.meta.title, "Journal 2025-10-09");
         memory.journal(1, "next day", day + 86_400_000).unwrap();
         assert_eq!(memory.list(1).len(), 2);
-        assert_eq!(memory.index(1, 1), "- Journal 2025-10-10 (journal-2025-10-10)\n");
+        assert_eq!(
+            memory.index(1, 1),
+            "- Journal 2025-10-10 (journal-2025-10-10)\n"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -582,10 +674,44 @@ mod tests {
     fn caps_refuse_oversize_bodies_and_titles() {
         let root = scratch("caps");
         let memory = Memory::new(root.clone());
-        assert!(memory.write(1, "Big", &"x".repeat(BODY_MAX), "note", &[], None, None, 1).is_ok());
-        assert!(memory.write(1, "Bigger", &"x".repeat(BODY_MAX + 1), "note", &[], None, None, 1).is_err());
-        assert!(memory.write(1, &"t".repeat(TITLE_MAX + 1), "", "note", &[], None, None, 1).is_err());
-        assert!(memory.write(1, "Odd", "", "gossip", &[], None, None, 1).is_err());
+        assert!(
+            memory
+                .write(1, "Big", &"x".repeat(BODY_MAX), "note", &[], None, None, 1)
+                .is_ok()
+        );
+        assert!(
+            memory
+                .write(
+                    1,
+                    "Bigger",
+                    &"x".repeat(BODY_MAX + 1),
+                    "note",
+                    &[],
+                    None,
+                    None,
+                    1
+                )
+                .is_err()
+        );
+        assert!(
+            memory
+                .write(
+                    1,
+                    &"t".repeat(TITLE_MAX + 1),
+                    "",
+                    "note",
+                    &[],
+                    None,
+                    None,
+                    1
+                )
+                .is_err()
+        );
+        assert!(
+            memory
+                .write(1, "Odd", "", "gossip", &[], None, None, 1)
+                .is_err()
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 }

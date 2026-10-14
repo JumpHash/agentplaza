@@ -316,7 +316,12 @@ pub fn frame_rows(detail: &Value) -> Vec<Vec<String>> {
 
 /// A time into a recording as `m:ss.mmm`, or `h:mm:ss.mmm` past an hour.
 pub fn offset_text(ms: u64) -> String {
-    let (h, m, s, milli) = (ms / 3_600_000, ms % 3_600_000 / 60_000, ms % 60_000 / 1000, ms % 1000);
+    let (h, m, s, milli) = (
+        ms / 3_600_000,
+        ms % 3_600_000 / 60_000,
+        ms % 60_000 / 1000,
+        ms % 1000,
+    );
     if h > 0 {
         format!("{h}:{m:02}:{s:02}.{milli:03}")
     } else {
@@ -426,8 +431,15 @@ mod tests {
 
     #[test]
     fn a_frame_file_names_its_capture_time_when_the_hub_has_it() {
-        assert_eq!(frame_file_name(3, 5, Some(1_700_000_000_123)), "frame-00003-1700000000123.jpg");
-        assert_eq!(frame_file_name(3, 5, None), "frame-00003.jpg", "a frame without a time keeps the plain name");
+        assert_eq!(
+            frame_file_name(3, 5, Some(1_700_000_000_123)),
+            "frame-00003-1700000000123.jpg"
+        );
+        assert_eq!(
+            frame_file_name(3, 5, None),
+            "frame-00003.jpg",
+            "a frame without a time keeps the plain name"
+        );
     }
 
     #[test]
@@ -443,7 +455,10 @@ mod tests {
         assert_eq!(rows[0][0], "1");
         assert_eq!(rows[1][1], "0:00.500");
         assert_eq!(rows[2][1], "1:05.250");
-        assert!(frame_stamps(&json!({"frame_times": []})).is_empty(), "an older recording has none");
+        assert!(
+            frame_stamps(&json!({"frame_times": []})).is_empty(),
+            "an older recording has none"
+        );
         assert!(frame_rows(&json!({})).is_empty());
     }
 

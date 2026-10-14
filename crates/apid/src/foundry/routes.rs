@@ -4,16 +4,16 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use apz_http::{Params, Request, Response, Router};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::fleet;
 use crate::foundry::datasets::{self, ExportSpec};
 use crate::foundry::diloco::{Config as HubConfig, Hub};
-use crate::foundry::plan::Mode;
-use crate::foundry::wire;
 use crate::foundry::jobs::{self, NodeCalls};
+use crate::foundry::plan::Mode;
 use crate::foundry::plan::{Accelerator, Machine, Reach};
 use crate::foundry::store::Job;
+use crate::foundry::wire;
 use crate::state::App;
 
 /// A machine whose heartbeat is older than this is offline (the fleet's own rule).
@@ -23,7 +23,13 @@ const OFFLINE_AFTER_MS: u64 = crate::nodes::OFFLINE_AFTER_MS;
 pub struct Fleet<'a>(pub &'a App);
 
 impl NodeCalls for Fleet<'_> {
-    fn call(&self, node: &str, method: &str, path: &str, body: Option<&Value>) -> Result<(u16, Value), String> {
+    fn call(
+        &self,
+        node: &str,
+        method: &str,
+        path: &str,
+        body: Option<&Value>,
+    ) -> Result<(u16, Value), String> {
         fleet::noded(self.0, node, method, path, body)
     }
 }
@@ -31,33 +37,82 @@ impl NodeCalls for Fleet<'_> {
 pub fn routes(router: Router<App>) -> Router<App> {
     let router = super::hf_import::routes(router);
     router
-        .get("/v1/foundry/recipes", |app, _, _| Response::json(200, &app.foundry.read(|s| s.recipes.values().cloned().collect::<Vec<_>>())))
-        .post("/v1/foundry/recipes/{id}/vet", |app, req, p| vet(app, p.get("id"), &req.body))
-        .get("/v1/foundry/datasets", |app, _, _| Response::json(200, &app.foundry.read(|s| s.datasets.values().cloned().collect::<Vec<_>>())))
+        .get("/v1/foundry/recipes", |app, _, _| {
+            Response::json(
+                200,
+                &app.foundry
+                    .read(|s| s.recipes.values().cloned().collect::<Vec<_>>()),
+            )
+        })
+        .post("/v1/foundry/recipes/{id}/vet", |app, req, p| {
+            vet(app, p.get("id"), &req.body)
+        })
+        .get("/v1/foundry/datasets", |app, _, _| {
+            Response::json(
+                200,
+                &app.foundry
+                    .read(|s| s.datasets.values().cloned().collect::<Vec<_>>()),
+            )
+        })
         .post("/v1/foundry/datasets", |app, req, _| export(app, &req.body))
-        .post("/v1/foundry/datasets/upload", |app, req, _| upload(app, req))
-        .get("/v1/foundry/devices", |app, _, _| Response::json(200, &devices_view(app)))
+        .post("/v1/foundry/datasets/upload", |app, req, _| {
+            upload(app, req)
+        })
+        .get("/v1/foundry/devices", |app, _, _| {
+            Response::json(200, &devices_view(app))
+        })
         .post("/v1/foundry/plan", |app, req, _| dry_run(app, &req.body))
         .post("/v1/foundry/jobs", |app, req, _| submit(app, &req.body))
-        .get("/v1/foundry/jobs", |app, _, _| Response::json(200, &job_list(&app.foundry.read(|s| s.jobs.values().cloned().collect::<Vec<Job>>()))))
-        .get("/v1/foundry/jobs/{id}", |app, _, p| match app.foundry.read(|s| s.jobs.get(p.get("id")).cloned()) {
-            Some(job) => Response::json(200, &job_view(&job)),
-            None => Response::error(404, "no such job"),
+        .get("/v1/foundry/jobs", |app, _, _| {
+            Response::json(
+                200,
+                &job_list(
+                    &app.foundry
+                        .read(|s| s.jobs.values().cloned().collect::<Vec<Job>>()),
+                ),
+            )
         })
-        .get("/v1/foundry/jobs/{id}/events", |app, req, p| events(app, req, p))
-        .post("/v1/foundry/jobs/{id}/hub/init", |app, req, p| hub_call(app, req, p, HubCall::Init))
-        .get("/v1/foundry/jobs/{id}/hub/state", |app, req, p| hub_call(app, req, p, HubCall::State))
-        .post("/v1/foundry/jobs/{id}/hub/round", |app, req, p| hub_call(app, req, p, HubCall::Round))
-        .get("/v1/foundry/jobs/{id}/hub/health", |app, req, p| hub_call(app, req, p, HubCall::Health))
-        .post("/v1/foundry/jobs/{id}/cancel", |app, _, p| match jobs::cancel(&Fleet(app), &app.foundry, p.get("id"), apz_plaza::now_ms()) {
-            Some(job) => Response::json(200, &job_view(&job)),
-            None => Response::error(404, "no such job"),
+        .get("/v1/foundry/jobs/{id}", |app, _, p| {
+            match app.foundry.read(|s| s.jobs.get(p.get("id")).cloned()) {
+                Some(job) => Response::json(200, &job_view(&job)),
+                None => Response::error(404, "no such job"),
+            }
         })
+        .get("/v1/foundry/jobs/{id}/events", |app, req, p| {
+            events(app, req, p)
+        })
+        .post("/v1/foundry/jobs/{id}/hub/init", |app, req, p| {
+            hub_call(app, req, p, HubCall::Init)
+        })
+        .get("/v1/foundry/jobs/{id}/hub/state", |app, req, p| {
+            hub_call(app, req, p, HubCall::State)
+        })
+        .post("/v1/foundry/jobs/{id}/hub/round", |app, req, p| {
+            hub_call(app, req, p, HubCall::Round)
+        })
+        .get("/v1/foundry/jobs/{id}/hub/health", |app, req, p| {
+            hub_call(app, req, p, HubCall::Health)
+        })
+        .post(
+            "/v1/foundry/jobs/{id}/cancel",
+            |app, _, p| match jobs::cancel(
+                &Fleet(app),
+                &app.foundry,
+                p.get("id"),
+                apz_plaza::now_ms(),
+            ) {
+                Some(job) => Response::json(200, &job_view(&job)),
+                None => Response::error(404, "no such job"),
+            },
+        )
 }
 
 /// `POST /v1/foundry/recipes/{id}/vet` with `{commit}`: the owner vets a commit of a recipe.
 fn vet(app: &App, id: &str, body: &[u8]) -> Response {
-    let commit = serde_json::from_slice::<Value>(body).ok().and_then(|v| v["commit"].as_str().map(str::to_string)).unwrap_or_default();
+    let commit = serde_json::from_slice::<Value>(body)
+        .ok()
+        .and_then(|v| v["commit"].as_str().map(str::to_string))
+        .unwrap_or_default();
     if !valid_commit(&commit) {
         return Response::error(400, "commit is 7 to 64 hex characters");
     }
@@ -75,7 +130,8 @@ fn vet(app: &App, id: &str, body: &[u8]) -> Response {
 }
 
 fn valid_commit(commit: &str) -> bool {
-    ((7..=64).contains(&commit.len()) && commit.chars().all(|c| c.is_ascii_hexdigit())) || (commit.starts_with("dev-") && commit.len() > 4)
+    ((7..=64).contains(&commit.len()) && commit.chars().all(|c| c.is_ascii_hexdigit()))
+        || (commit.starts_with("dev-") && commit.len() > 4)
 }
 
 /// `POST /v1/foundry/datasets` with an export spec.
@@ -94,7 +150,10 @@ fn export(app: &App, body: &[u8]) -> Response {
 /// breeder's `foundry_export` tool both run it.
 pub(crate) fn export_dataset(app: &App, spec: &ExportSpec) -> Result<datasets::Dataset, String> {
     let ds = datasets::export(app, &app.foundry.dir, spec)?;
-    app.foundry.write().datasets.insert(ds.id.clone(), ds.clone());
+    app.foundry
+        .write()
+        .datasets
+        .insert(ds.id.clone(), ds.clone());
     Ok(ds)
 }
 
@@ -125,7 +184,10 @@ fn upload(app: &App, req: &Request) -> Response {
     };
     match result {
         Ok(ds) => {
-            app.foundry.write().datasets.insert(ds.id.clone(), ds.clone());
+            app.foundry
+                .write()
+                .datasets
+                .insert(ds.id.clone(), ds.clone());
             Response::json(201, &ds)
         }
         Err(err) => Response::error(400, &err),
@@ -260,10 +322,25 @@ pub(crate) fn submit_job(app: &App, doc: Value) -> Result<Job, (u16, String)> {
     let hub_base = format!("http://127.0.0.1:{}", app.config.port);
     if plan.mode == Mode::Loose {
         let islands: Vec<String> = plan.islands.iter().map(|i| i.id.clone()).collect();
-        let cfg = HubConfig { staleness: u64::from(plan.staleness), ..HubConfig::default() };
-        app.foundry.hubs.write().unwrap_or_else(|e| e.into_inner()).insert(spec.job_id.clone(), Arc::new(Hub::new(&islands, cfg)));
+        let cfg = HubConfig {
+            staleness: u64::from(plan.staleness),
+            ..HubConfig::default()
+        };
+        app.foundry
+            .hubs
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(spec.job_id.clone(), Arc::new(Hub::new(&islands, cfg)));
     }
-    let dispatched = jobs::dispatch(&Fleet(app), &spec.job_id, &plan, &dir, &app.foundry.recipes_dir(), &hub_base, now);
+    let dispatched = jobs::dispatch(
+        &Fleet(app),
+        &spec.job_id,
+        &plan,
+        &dir,
+        &app.foundry.recipes_dir(),
+        &hub_base,
+        now,
+    );
     let (status, error, runs) = match dispatched {
         Ok(runs) => ("running".to_string(), None, runs),
         Err((_, msg)) => ("failed".to_string(), Some(msg), Vec::new()),
@@ -296,7 +373,11 @@ pub(crate) fn submit_job(app: &App, doc: Value) -> Result<Job, (u16, String)> {
 /// The job list, newest first, without the series (that is in the job view).
 fn job_list(jobs: &[Job]) -> Value {
     let mut rows: Vec<&Job> = jobs.iter().collect();
-    rows.sort_by(|a, b| b.created_ms.cmp(&a.created_ms).then_with(|| b.id.cmp(&a.id)));
+    rows.sort_by(|a, b| {
+        b.created_ms
+            .cmp(&a.created_ms)
+            .then_with(|| b.id.cmp(&a.id))
+    });
     Value::Array(rows.into_iter().map(|j| job_summary(j)).collect())
 }
 
@@ -328,12 +409,18 @@ fn events(app: &App, req: &Request, p: &Params) -> Response {
     if app.foundry.read(|s| !s.jobs.contains_key(id)) {
         return Response::error(404, "no such job");
     }
-    let after = req.query_param("after").and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
-    let text = std::fs::read_to_string(app.foundry.jobs_dir().join(id).join("events.jsonl")).unwrap_or_default();
+    let after = req
+        .query_param("after")
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(0);
+    let text = std::fs::read_to_string(app.foundry.jobs_dir().join(id).join("events.jsonl"))
+        .unwrap_or_default();
     let mut next = after;
     let mut events = Vec::new();
     for line in text.lines() {
-        let Ok(event) = serde_json::from_str::<Value>(line) else { continue };
+        let Ok(event) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
         let seq = event["seq"].as_u64().unwrap_or(0);
         next = next.max(seq);
         if seq > after {
@@ -346,12 +433,27 @@ fn events(app: &App, req: &Request, p: &Params) -> Response {
 /// The tracker: every two seconds, poll each running job's runs, publish the events on the bus
 /// (`training`) and keep the series. Runs for the life of the process.
 pub fn spawn_tracker(app: Arc<App>) {
-    std::thread::spawn(move || loop {
-        std::thread::sleep(Duration::from_secs(2));
-        let running: Vec<String> = app.foundry.read(|s| s.jobs.values().filter(|j| j.status == "running").map(|j| j.id.clone()).collect());
-        for id in running {
-            for line in jobs::poll(&Fleet(&app), &app.foundry, &app.models, &id, apz_plaza::now_ms()) {
-                app.bus.publish("training", &json!({"job": id, "line": line}));
+    std::thread::spawn(move || {
+        loop {
+            std::thread::sleep(Duration::from_secs(2));
+            let running: Vec<String> = app.foundry.read(|s| {
+                s.jobs
+                    .values()
+                    .filter(|j| j.status == "running")
+                    .map(|j| j.id.clone())
+                    .collect()
+            });
+            for id in running {
+                for line in jobs::poll(
+                    &Fleet(&app),
+                    &app.foundry,
+                    &app.models,
+                    &id,
+                    apz_plaza::now_ms(),
+                ) {
+                    app.bus
+                        .publish("training", &json!({"job": id, "line": line}));
+                }
             }
         }
     });
@@ -372,9 +474,17 @@ mod tests {
 
     #[test]
     fn the_job_list_is_newest_first_without_the_series() {
-        let mut older = Job { id: "a".into(), created_ms: 1, ..Job::default() };
+        let mut older = Job {
+            id: "a".into(),
+            created_ms: 1,
+            ..Job::default()
+        };
         older.series = vec![json!({"step": 1})];
-        let newer = Job { id: "b".into(), created_ms: 2, ..Job::default() };
+        let newer = Job {
+            id: "b".into(),
+            created_ms: 2,
+            ..Job::default()
+        };
         let list = job_list(&[older, newer]);
         assert_eq!(list[0]["id"], "b");
         assert!(list[1].get("series").is_none());
@@ -397,11 +507,22 @@ fn hub_call(app: &App, req: &Request, p: &Params, call: HubCall) -> Response {
         return Response::error(403, "the hub takes calls from its own machine only");
     }
     let id = p.get("id");
-    let Some(hub) = app.foundry.hubs.read().unwrap_or_else(|e| e.into_inner()).get(id).cloned() else {
+    let Some(hub) = app
+        .foundry
+        .hubs
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(id)
+        .cloned()
+    else {
         return Response::error(404, "no loose hub for this job");
     };
     let binary = |status: u16, meta: &Value, tensors: &wire::Tensors| {
-        Response::new(status, "application/octet-stream", wire::pack(meta, tensors))
+        Response::new(
+            status,
+            "application/octet-stream",
+            wire::pack(meta, tensors),
+        )
     };
     match call {
         HubCall::Health => Response::json(200, &json!({"ok": true})),
@@ -423,13 +544,21 @@ fn hub_call(app: &App, req: &Request, p: &Params, call: HubCall) -> Response {
                 Ok(parsed) => parsed,
                 Err(err) => return Response::error(400, &err),
             };
-            let (Some(island), Some(round), Some(samples)) = (meta["island"].as_str(), meta["round"].as_u64(), meta["samples"].as_f64()) else {
+            let (Some(island), Some(round), Some(samples)) = (
+                meta["island"].as_str(),
+                meta["round"].as_u64(),
+                meta["samples"].as_f64(),
+            ) else {
                 return Response::error(400, "meta needs island, round and samples");
             };
             match hub.submit(island, round, samples, delta) {
                 Ok(done) => {
                     let status = if done.accepted { 200 } else { 409 };
-                    binary(status, &json!({"round": done.round, "accepted": done.accepted}), &done.weights)
+                    binary(
+                        status,
+                        &json!({"round": done.round, "accepted": done.accepted}),
+                        &done.weights,
+                    )
                 }
                 Err(err) => Response::error(400, &err),
             }

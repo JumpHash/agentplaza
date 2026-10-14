@@ -52,7 +52,11 @@ pub struct Cell {
 
 impl Default for Cell {
     fn default() -> Self {
-        Cell { ch: ' ', width: 1, style: Style::default() }
+        Cell {
+            ch: ' ',
+            width: 1,
+            style: Style::default(),
+        }
     }
 }
 
@@ -66,7 +70,17 @@ pub struct Row {
 
 impl Row {
     fn blank(cols: usize, style: Style) -> Row {
-        Row { cells: vec![Cell { ch: ' ', width: 1, style }; cols], wrapped: false }
+        Row {
+            cells: vec![
+                Cell {
+                    ch: ' ',
+                    width: 1,
+                    style
+                };
+                cols
+            ],
+            wrapped: false,
+        }
     }
 }
 
@@ -131,7 +145,11 @@ fn extended(groups: &[Vec<u16>], i: &mut usize) -> Option<Color> {
         return match *group.get(1)? {
             5 => group.get(2).map(|&n| Color::Indexed(clamp8(n))),
             2 => {
-                let rgb = if group.len() >= 6 { group.get(3..6)? } else { group.get(2..5)? };
+                let rgb = if group.len() >= 6 {
+                    group.get(3..6)?
+                } else {
+                    group.get(2..5)?
+                };
                 Some(Color::Rgb(clamp8(rgb[0]), clamp8(rgb[1]), clamp8(rgb[2])))
             }
             _ => None,
@@ -267,7 +285,11 @@ impl Screen {
 
     /// Lines above the active rows: the scrollback on the main screen, none on the alternate one.
     pub fn history_len(&self) -> usize {
-        if self.alt_screen() { 0 } else { self.scrollback.len() }
+        if self.alt_screen() {
+            0
+        } else {
+            self.scrollback.len()
+        }
     }
 
     /// Lines that fell off the far end of the scrollback so far. A line's absolute id is this
@@ -318,14 +340,20 @@ impl Screen {
         let Some(row) = self.line(index) else {
             return String::new();
         };
-        row_text(row, 0, self.cols).trim_end_matches(' ').to_string()
+        row_text(row, 0, self.cols)
+            .trim_end_matches(' ')
+            .to_string()
     }
 
     /// The text from one cell to another, both inclusive, as absolute line ids and columns. Rows
     /// the text wraps across join without a newline; other rows end with one. Ids no longer kept
     /// read as the oldest line.
     pub fn text_between(&self, start: (u64, usize), end: (u64, usize)) -> String {
-        let (a, b) = if start <= end { (start, end) } else { (end, start) };
+        let (a, b) = if start <= end {
+            (start, end)
+        } else {
+            (end, start)
+        };
         let last = self.line_count().saturating_sub(1);
         let first_index = self.index_of_abs(a.0).unwrap_or(0).min(last);
         let last_index = self.index_of_abs(b.0).unwrap_or(last).min(last);
@@ -335,7 +363,11 @@ impl Screen {
                 continue;
             };
             let from = if index == first_index { a.1 } else { 0 };
-            let to = if index == last_index { b.1 + 1 } else { self.cols };
+            let to = if index == last_index {
+                b.1 + 1
+            } else {
+                self.cols
+            };
             let text = row_text(row, from, to.min(self.cols));
             if index == last_index {
                 out.push_str(text.trim_end_matches(' '));
@@ -368,7 +400,11 @@ impl Screen {
         if cols == self.cols && rows == self.rows {
             return;
         }
-        let shift = if rows < self.rows { (self.rows - rows).min(self.row) } else { 0 };
+        let shift = if rows < self.rows {
+            (self.rows - rows).min(self.row)
+        } else {
+            0
+        };
         let mut grid = mem::take(&mut self.grid);
         let on_main = self.saved_main.is_none();
         for _ in 0..shift {
@@ -403,11 +439,21 @@ impl Screen {
 
     /// A blank cell that keeps the current background, as erasing does.
     fn blank_cell(&self) -> Cell {
-        Cell { ch: ' ', width: 1, style: Style { bg: self.style.bg, ..Style::default() } }
+        Cell {
+            ch: ' ',
+            width: 1,
+            style: Style {
+                bg: self.style.bg,
+                ..Style::default()
+            },
+        }
     }
 
     fn blank_row(&self) -> Row {
-        Row { cells: vec![self.blank_cell(); self.cols], wrapped: false }
+        Row {
+            cells: vec![self.blank_cell(); self.cols],
+            wrapped: false,
+        }
     }
 
     fn push_history(&mut self, row: Row) {
@@ -469,13 +515,21 @@ impl Screen {
     /// region when the cursor is inside it, else the screen.
     fn move_limits(&self) -> (usize, usize) {
         let up = if self.row >= self.top { self.top } else { 0 };
-        let down = if self.row <= self.bottom { self.bottom } else { self.rows - 1 };
+        let down = if self.row <= self.bottom {
+            self.bottom
+        } else {
+            self.rows - 1
+        };
         (up, down)
     }
 
     /// Places the cursor at (`row`, `col`), both relative to the origin when origin mode is on.
     fn place(&mut self, row: usize, col: usize) {
-        let (base, limit) = if self.origin { (self.top, self.bottom) } else { (0, self.rows - 1) };
+        let (base, limit) = if self.origin {
+            (self.top, self.bottom)
+        } else {
+            (0, self.rows - 1)
+        };
         self.row = (base + row).min(limit);
         self.col = col.min(self.cols - 1);
         self.wrap_next = false;
@@ -514,11 +568,19 @@ impl Screen {
     }
 
     fn save_cursor(&mut self) -> Saved {
-        Saved { row: self.row, col: self.col, style: self.style }
+        Saved {
+            row: self.row,
+            col: self.col,
+            style: self.style,
+        }
     }
 
     fn restore_cursor(&mut self, saved: Option<Saved>) {
-        let saved = saved.unwrap_or(Saved { row: 0, col: 0, style: Style::default() });
+        let saved = saved.unwrap_or(Saved {
+            row: 0,
+            col: 0,
+            style: Style::default(),
+        });
         self.row = saved.row.min(self.rows - 1);
         self.col = saved.col.min(self.cols - 1);
         self.style = saved.style;
@@ -667,9 +729,17 @@ impl Perform for Screen {
         }
         let style = self.style;
         let cells = &mut self.grid[row].cells;
-        cells[col] = Cell { ch: c, width: width as u8, style };
+        cells[col] = Cell {
+            ch: c,
+            width: width as u8,
+            style,
+        };
         if width == 2 {
-            cells[col + 1] = Cell { ch: ' ', width: 0, style };
+            cells[col + 1] = Cell {
+                ch: ' ',
+                width: 0,
+                style,
+            };
         }
         let next = col + width;
         if next >= self.cols {
@@ -713,7 +783,10 @@ impl Perform for Screen {
             self.sgr(params);
             return;
         }
-        let nums: Vec<u16> = params.iter().map(|group| group.first().copied().unwrap_or(0)).collect();
+        let nums: Vec<u16> = params
+            .iter()
+            .map(|group| group.first().copied().unwrap_or(0))
+            .collect();
         let private = intermediates.first() == Some(&b'?');
         if private && intermediates.len() == 1 {
             match action {
@@ -736,7 +809,17 @@ impl Perform for Screen {
                 let row = &mut self.grid[self.row].cells;
                 for _ in 0..n {
                     row.pop();
-                    row.insert(self.col, Cell { ch: ' ', width: 1, style: Style { bg: self.style.bg, ..Style::default() } });
+                    row.insert(
+                        self.col,
+                        Cell {
+                            ch: ' ',
+                            width: 1,
+                            style: Style {
+                                bg: self.style.bg,
+                                ..Style::default()
+                            },
+                        },
+                    );
                 }
             }
             'A' | 'F' => {

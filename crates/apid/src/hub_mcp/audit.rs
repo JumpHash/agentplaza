@@ -30,7 +30,10 @@ pub trait Audit: Send + Sync {
         self.list()
             .into_iter()
             .rev()
-            .filter(|call| token.map_or(true, |id| call.token_id.as_deref() == Some(id)) && tool.map_or(true, |name| call.tool == name))
+            .filter(|call| {
+                token.map_or(true, |id| call.token_id.as_deref() == Some(id))
+                    && tool.map_or(true, |name| call.tool == name)
+            })
             .take(limit)
             .collect()
     }

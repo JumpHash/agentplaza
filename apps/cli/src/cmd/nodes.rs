@@ -1,9 +1,9 @@
 //! `agentplaza nodes`: The network's nodes: list, one node, join codes, drain, revoke.
 
 use clap::Subcommand;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use crate::ctx::{self, confirm, Ctx};
+use crate::ctx::{self, Ctx, confirm};
 
 #[derive(Subcommand, Debug)]
 pub enum Cmd {
@@ -63,8 +63,14 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
         Cmd::List => {
             let nodes = ctx.client.get("/v1/nodes")?;
             ctx.out(&nodes, |v| {
-                let rows: Vec<Vec<String>> = v.as_array().map(|a| a.iter().map(row).collect()).unwrap_or_default();
-                ctx::table(&["id", "host", "state", "cids", "agents", "last seen"], &rows);
+                let rows: Vec<Vec<String>> = v
+                    .as_array()
+                    .map(|a| a.iter().map(row).collect())
+                    .unwrap_or_default();
+                ctx::table(
+                    &["id", "host", "state", "cids", "agents", "last seen"],
+                    &rows,
+                );
             });
         }
         Cmd::Show { id } => {
@@ -75,7 +81,10 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                 .cloned()
                 .ok_or_else(|| format!("no node {id}"))?;
             // The machine's details need the node online; without them the list's view still shows.
-            let machine = ctx.client.get(&format!("/v1/nodes/{}/machine", ctx::seg(&id))).ok();
+            let machine = ctx
+                .client
+                .get(&format!("/v1/nodes/{}/machine", ctx::seg(&id)))
+                .ok();
             let value = json!({ "node": node, "machine": machine });
             ctx.out(&value, |v| {
                 let n = &v["node"];
@@ -83,7 +92,13 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                 let machine_line = if m.is_null() {
                     "unknown (the node has not answered)".to_string()
                 } else {
-                    format!("{} {} cpus, {} MiB, {}", ctx::s(m, "arch"), ctx::text(m, "cpus"), ctx::text(m, "memory_mib"), ctx::s(m, "backend"))
+                    format!(
+                        "{} {} cpus, {} MiB, {}",
+                        ctx::s(m, "arch"),
+                        ctx::text(m, "cpus"),
+                        ctx::text(m, "memory_mib"),
+                        ctx::s(m, "backend")
+                    )
                 };
                 ctx::fields(&[
                     ("id", ctx::s(n, "id").to_string()),
@@ -99,7 +114,10 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             });
         }
         Cmd::Code { label, ttl } => {
-            let made = ctx.client.post("/v1/nodes/codes", &json!({ "label": label, "ttl_minutes": ttl }))?;
+            let made = ctx.client.post(
+                "/v1/nodes/codes",
+                &json!({ "label": label, "ttl_minutes": ttl }),
+            )?;
             ctx.out(&made, |v| {
                 let token = ctx::s(v, "token");
                 println!("join code for {label}, valid {ttl} minutes (shown once):");
@@ -110,28 +128,51 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
         Cmd::Codes { action: None } => {
             let codes = ctx.client.get("/v1/nodes/codes")?;
             ctx.out(&codes, |v| {
-                let rows: Vec<Vec<String>> = v.as_array().map(|a| a.iter().map(code_row).collect()).unwrap_or_default();
-                ctx::table(&["id", "label", "state", "created", "expires", "used"], &rows);
+                let rows: Vec<Vec<String>> = v
+                    .as_array()
+                    .map(|a| a.iter().map(code_row).collect())
+                    .unwrap_or_default();
+                ctx::table(
+                    &["id", "label", "state", "created", "expires", "used"],
+                    &rows,
+                );
             });
         }
-        Cmd::Codes { action: Some(CodesCmd::Revoke { id }) } => {
-            let revoked = ctx.client.delete(&format!("/v1/nodes/codes/{}", ctx::seg(&id)))?;
+        Cmd::Codes {
+            action: Some(CodesCmd::Revoke { id }),
+        } => {
+            let revoked = ctx
+                .client
+                .delete(&format!("/v1/nodes/codes/{}", ctx::seg(&id)))?;
             ctx.out(&revoked, |_| println!("join code {id} revoked"));
         }
         Cmd::Drain { id } => {
-            let node = ctx.client.post(&format!("/v1/nodes/{}/drain", ctx::seg(&id)), &json!({ "on": true }))?;
+            let node = ctx.client.post(
+                &format!("/v1/nodes/{}/drain", ctx::seg(&id)),
+                &json!({ "on": true }),
+            )?;
             ctx.out(&node, |v| println!("{} is draining", name_or(v, &id)));
         }
         Cmd::Undrain { id } => {
-            let node = ctx.client.post(&format!("/v1/nodes/{}/drain", ctx::seg(&id)), &json!({ "on": false }))?;
-            ctx.out(&node, |v| println!("{} is back in service", name_or(v, &id)));
+            let node = ctx.client.post(
+                &format!("/v1/nodes/{}/drain", ctx::seg(&id)),
+                &json!({ "on": false }),
+            )?;
+            ctx.out(&node, |v| {
+                println!("{} is back in service", name_or(v, &id))
+            });
         }
         Cmd::Revoke { id, yes } => {
-            if !confirm(yes, &format!("Revoke node {id}? It leaves the network for good."))? {
+            if !confirm(
+                yes,
+                &format!("Revoke node {id}? It leaves the network for good."),
+            )? {
                 println!("not revoked");
                 return Ok(());
             }
-            let node = ctx.client.post(&format!("/v1/nodes/{}/revoke", ctx::seg(&id)), &json!({}))?;
+            let node = ctx
+                .client
+                .post(&format!("/v1/nodes/{}/revoke", ctx::seg(&id)), &json!({}))?;
             ctx.out(&node, |v| println!("{} revoked", name_or(v, &id)));
         }
     }
@@ -140,11 +181,22 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
 
 fn name_or(v: &Value, id: &str) -> String {
     let name = ctx::s(v, "name");
-    if name.is_empty() { id.to_string() } else { name.to_string() }
+    if name.is_empty() {
+        id.to_string()
+    } else {
+        name.to_string()
+    }
 }
 
 fn row(n: &Value) -> Vec<String> {
-    vec![ctx::s(n, "id").to_string(), host(n), state(n).to_string(), cids(n), ctx::text(n, "agents"), last_seen(n)]
+    vec![
+        ctx::s(n, "id").to_string(),
+        host(n),
+        state(n).to_string(),
+        cids(n),
+        ctx::text(n, "agents"),
+        last_seen(n),
+    ]
 }
 
 fn code_row(c: &Value) -> Vec<String> {
@@ -152,8 +204,10 @@ fn code_row(c: &Value) -> Vec<String> {
         ctx::s(c, "id").to_string(),
         ctx::s(c, "label").to_string(),
         ctx::s(c, "state").to_string(),
-        c.get("created_ms").map_or_else(|| "-".to_string(), ctx::when),
-        c.get("expires_ms").map_or_else(|| "-".to_string(), ctx::when),
+        c.get("created_ms")
+            .map_or_else(|| "-".to_string(), ctx::when),
+        c.get("expires_ms")
+            .map_or_else(|| "-".to_string(), ctx::when),
         used_by(c),
     ]
 }
@@ -161,13 +215,25 @@ fn code_row(c: &Value) -> Vec<String> {
 /// Who used a join code: the machine's name, or "-" while it is unused.
 fn used_by(c: &Value) -> String {
     let who = ctx::s(c, "used_by");
-    if who.is_empty() { "-".to_string() } else { who.to_string() }
+    if who.is_empty() {
+        "-".to_string()
+    } else {
+        who.to_string()
+    }
 }
 
 /// The machine's host name as the node reports it, else the node's name.
 fn host(n: &Value) -> String {
-    let host = n.get("machine").and_then(|m| m.get("host")).and_then(Value::as_str).unwrap_or("");
-    if host.is_empty() { ctx::s(n, "name").to_string() } else { host.to_string() }
+    let host = n
+        .get("machine")
+        .and_then(|m| m.get("host"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if host.is_empty() {
+        ctx::s(n, "name").to_string()
+    } else {
+        host.to_string()
+    }
 }
 
 fn state(n: &Value) -> &'static str {
@@ -187,7 +253,11 @@ fn state(n: &Value) -> &'static str {
 fn cids(n: &Value) -> String {
     let base = n.get("cid_base").and_then(Value::as_u64).unwrap_or(0);
     let count = n.get("cid_count").and_then(Value::as_u64).unwrap_or(0);
-    if count == 0 { "-".to_string() } else { format!("{}-{}", base, base + count - 1) }
+    if count == 0 {
+        "-".to_string()
+    } else {
+        format!("{}-{}", base, base + count - 1)
+    }
 }
 
 /// "just now", "5 min ago" from `last_seen_ms`; "never" when the node has not been seen.
@@ -212,7 +282,9 @@ mod tests {
 
     #[test]
     fn a_code_row_keeps_the_hubs_state_word() {
-        let row = code_row(&json!({ "id": "c1", "label": "lab", "state": "used", "created_ms": 0, "expires_ms": 0, "used_by": "pi" }));
+        let row = code_row(
+            &json!({ "id": "c1", "label": "lab", "state": "used", "created_ms": 0, "expires_ms": 0, "used_by": "pi" }),
+        );
         assert_eq!(row[0], "c1");
         assert_eq!(row[2], "used");
         assert_eq!(row[5], "pi");

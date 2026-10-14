@@ -4,11 +4,11 @@
 
 use apz_http::{Request, Response, Router};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::audit::CallRecord;
 use super::auth::{NewToken, Scope, TokenRecord};
-use super::{tools, AuthMode, Bind, HubMcp, Settings};
+use super::{AuthMode, Bind, HubMcp, Settings, tools};
 use crate::db::Db;
 use crate::state::App;
 
@@ -24,26 +24,49 @@ pub struct Ctx<'a> {
 }
 
 fn ctx(app: &App) -> Ctx<'_> {
-    Ctx { hub: &app.hub_mcp, db: &app.db, public_url: &app.config.public_url }
+    Ctx {
+        hub: &app.hub_mcp,
+        db: &app.db,
+        public_url: &app.config.public_url,
+    }
 }
 
 pub fn routes(router: Router<App>) -> Router<App> {
     router
         .get("/v1/hub-mcp", |app, _, _| status(&ctx(app)))
-        .route("PUT", "/v1/hub-mcp", |app, req, _| put_settings(&ctx(app), req))
+        .route("PUT", "/v1/hub-mcp", |app, req, _| {
+            put_settings(&ctx(app), req)
+        })
         .get("/v1/hub-mcp/tokens", |app, _, _| list_tokens(&ctx(app)))
-        .post("/v1/hub-mcp/tokens", |app, req, _| create_token(&ctx(app), req))
-        .delete("/v1/hub-mcp/tokens/{id}", |app, _, p| revoke_token(&ctx(app), p.get("id")))
+        .post("/v1/hub-mcp/tokens", |app, req, _| {
+            create_token(&ctx(app), req)
+        })
+        .delete("/v1/hub-mcp/tokens/{id}", |app, _, p| {
+            revoke_token(&ctx(app), p.get("id"))
+        })
         .get("/v1/hub-mcp/calls", |app, req, _| calls(&ctx(app), req))
 }
 
 /// `GET /v1/hub-mcp`: the switch, the bind, the auth mode, the origins, the URL to use, and the live token count.
 pub fn status(ctx: &Ctx) -> Response {
     let settings = ctx.hub.settings();
-    let live = ctx.hub.tokens.list().iter().filter(|token| token.revoked_at_ms.is_none()).count();
+    let live = ctx
+        .hub
+        .tokens
+        .list()
+        .iter()
+        .filter(|token| token.revoked_at_ms.is_none())
+        .count();
     let warning = (settings.auth_mode == AuthMode::Open).then(|| {
-        let reach = if settings.bind == Bind::Remote { "from any network that reaches this hub" } else { "from this machine only" };
-        format!("open mode: a call with no token gets the {} scope, {reach}", settings.open_scope.as_str())
+        let reach = if settings.bind == Bind::Remote {
+            "from any network that reaches this hub"
+        } else {
+            "from this machine only"
+        };
+        format!(
+            "open mode: a call with no token gets the {} scope, {reach}",
+            settings.open_scope.as_str()
+        )
     });
     Response::json(
         200,
@@ -91,7 +114,10 @@ fn observe_text() -> String {
 pub fn put_settings(ctx: &Ctx, req: &Request) -> Response {
     match req.json::<SettingsBody>() {
         Ok(body) => apply_settings(ctx, body),
-        Err(_) => Response::error(400, "the body is {enabled, bind, auth_mode, open_scope, allowed_origins, confirm_open_remote?}"),
+        Err(_) => Response::error(
+            400,
+            "the body is {enabled, bind, auth_mode, open_scope, allowed_origins, confirm_open_remote?}",
+        ),
     }
 }
 
@@ -107,8 +133,15 @@ pub fn apply_settings(ctx: &Ctx, body: SettingsBody) -> Response {
     let Some(open_scope) = Scope::parse(&body.open_scope) else {
         return Response::error(400, "open_scope is observe, operate or govern");
     };
-    if let Some(bad) = body.allowed_origins.iter().find(|origin| !valid_origin(origin)) {
-        return Response::error(400, &format!("{bad} is not an origin: a scheme and a host, with no path"));
+    if let Some(bad) = body
+        .allowed_origins
+        .iter()
+        .find(|origin| !valid_origin(origin))
+    {
+        return Response::error(
+            400,
+            &format!("{bad} is not an origin: a scheme and a host, with no path"),
+        );
     }
     if bind == Bind::Remote && !ctx.hub.listens_tls() {
         return Response::error(400, "the hub is not serving TLS; remote MCP needs it");
@@ -119,7 +152,13 @@ pub fn apply_settings(ctx: &Ctx, body: SettingsBody) -> Response {
             "open over remote lets anyone on the network call the tools open_scope allows: send confirm_open_remote true to allow it",
         );
     }
-    let next = Settings { enabled: body.enabled, bind, allowed_origins: body.allowed_origins, auth_mode, open_scope };
+    let next = Settings {
+        enabled: body.enabled,
+        bind,
+        allowed_origins: body.allowed_origins,
+        auth_mode,
+        open_scope,
+    };
     if ctx.db.enabled() {
         if let Err(err) = ctx.db.hub_mcp_settings_put(&next) {
             return Response::error(500, &format!("the settings are not saved: {err}"));
@@ -131,7 +170,9 @@ pub fn apply_settings(ctx: &Ctx, body: SettingsBody) -> Response {
 
 /// An origin: `http://` or `https://`, then a host, and nothing after it.
 fn valid_origin(origin: &str) -> bool {
-    let rest = origin.strip_prefix("https://").or_else(|| origin.strip_prefix("http://"));
+    let rest = origin
+        .strip_prefix("https://")
+        .or_else(|| origin.strip_prefix("http://"));
     rest.is_some_and(|host| !host.is_empty() && !host.contains(['/', ' ']))
 }
 
@@ -183,8 +224,14 @@ pub fn issue(ctx: &Ctx, body: TokenBody, now: u64) -> Response {
         return Response::error(400, "name is 1 to 80 characters");
     }
     for tool in &body.tools {
-        if tools::find(tool).filter(|found| scope.permits(found.scope())).is_none() {
-            return Response::error(400, &format!("{tool} is not a tool of scope {}", scope.as_str()));
+        if tools::find(tool)
+            .filter(|found| scope.permits(found.scope()))
+            .is_none()
+        {
+            return Response::error(
+                400,
+                &format!("{tool} is not a tool of scope {}", scope.as_str()),
+            );
         }
     }
     let expires_ms = match body.expires_days {
@@ -192,8 +239,19 @@ pub fn issue(ctx: &Ctx, body: TokenBody, now: u64) -> Response {
         Some(days) if (1..=MAX_EXPIRY_DAYS).contains(&days) => Some(now + days * DAY_MS),
         Some(_) => return Response::error(400, "expires_days is 1 to 3650"),
     };
-    match ctx.hub.tokens.create(NewToken { name, scope, allowlist: body.tools, expires_ms }, now) {
-        Ok((token, record)) => Response::json(201, &json!({ "token": token, "record": token_json(&record) })),
+    match ctx.hub.tokens.create(
+        NewToken {
+            name,
+            scope,
+            allowlist: body.tools,
+            expires_ms,
+        },
+        now,
+    ) {
+        Ok((token, record)) => Response::json(
+            201,
+            &json!({ "token": token, "record": token_json(&record) }),
+        ),
         Err(err) => Response::error(500, &format!("the token is not created: {err}")),
     }
 }
@@ -269,11 +327,22 @@ mod tests {
     const URL: &str = "https://hub.test";
 
     fn hub() -> HubMcp {
-        HubMcp::new(false, vec![], Box::new(MemoryTokens::default()), Box::new(MemoryAudit::default()), Box::new(|| T0)).listening(true, Vec::new())
+        HubMcp::new(
+            false,
+            vec![],
+            Box::new(MemoryTokens::default()),
+            Box::new(MemoryAudit::default()),
+            Box::new(|| T0),
+        )
+        .listening(true, Vec::new())
     }
 
     fn test_ctx<'a>(hub: &'a HubMcp, db: &'a Db) -> Ctx<'a> {
-        Ctx { hub, db, public_url: URL }
+        Ctx {
+            hub,
+            db,
+            public_url: URL,
+        }
     }
 
     fn text(resp: &Response) -> String {
@@ -304,9 +373,15 @@ mod tests {
             ("GET", "/v1/hub-mcp/calls"),
         ];
         for (method, path) in paths {
-            assert!(!crate::hub_auth::is_public(method, path), "{method} {path} must need the owner token");
+            assert!(
+                !crate::hub_auth::is_public(method, path),
+                "{method} {path} must need the owner token"
+            );
         }
-        assert!(crate::hub_auth::is_public("POST", "/mcp"), "/mcp sits outside /v1: its own bearer token guards it");
+        assert!(
+            crate::hub_auth::is_public("POST", "/mcp"),
+            "/mcp sits outside /v1: its own bearer token guards it"
+        );
     }
 
     #[test]
@@ -315,18 +390,37 @@ mod tests {
         let ctx = test_ctx(&hub, &db);
         let created = issue(&ctx, token_body("laptop", "operate", &[], Some(30)), T0);
         assert_eq!(created.status, 201);
-        let token = body(&created)["token"].as_str().expect("the token").to_string();
+        let token = body(&created)["token"]
+            .as_str()
+            .expect("the token")
+            .to_string();
         assert!(token.starts_with("apz_mcp_"));
-        assert_eq!(body(&created)["record"]["expires_ms"].as_u64(), Some(T0 + 30 * DAY_MS));
-        let id = body(&created)["record"]["id"].as_str().expect("the id").to_string();
+        assert_eq!(
+            body(&created)["record"]["expires_ms"].as_u64(),
+            Some(T0 + 30 * DAY_MS)
+        );
+        let id = body(&created)["record"]["id"]
+            .as_str()
+            .expect("the id")
+            .to_string();
 
         let listing = text(&list_tokens(&ctx));
-        assert!(!listing.contains(&token), "the listing never carries a token");
+        assert!(
+            !listing.contains(&token),
+            "the listing never carries a token"
+        );
         assert!(listing.contains("laptop") && listing.contains(&id));
-        assert_eq!(hub.tokens.verify(&token, T0).map(|record| record.name), Ok("laptop".to_string()));
+        assert_eq!(
+            hub.tokens.verify(&token, T0).map(|record| record.name),
+            Ok("laptop".to_string())
+        );
 
         assert_eq!(revoke_token(&ctx, &id).status, 204);
-        assert_eq!(revoke_token(&ctx, &id).status, 404, "a second revoke finds nothing live");
+        assert_eq!(
+            revoke_token(&ctx, &id).status,
+            404,
+            "a second revoke finds nothing live"
+        );
         assert_eq!(hub.tokens.verify(&token, T0), Err(AuthError::Revoked));
     }
 
@@ -334,10 +428,27 @@ mod tests {
     fn bad_input_is_refused_and_mints_nothing() {
         let (hub, db) = (hub(), Db::connect(&BTreeMap::new()));
         let ctx = test_ctx(&hub, &db);
-        assert_eq!(issue(&ctx, token_body("x", "root", &[], None), T0).status, 400);
-        assert_eq!(issue(&ctx, token_body("x", "observe", &["no_such_tool"], None), T0).status, 400);
-        assert_eq!(issue(&ctx, token_body("x", "observe", &[], Some(0)), T0).status, 400);
-        assert_eq!(issue(&ctx, token_body("  ", "observe", &[], None), T0).status, 400);
+        assert_eq!(
+            issue(&ctx, token_body("x", "root", &[], None), T0).status,
+            400
+        );
+        assert_eq!(
+            issue(
+                &ctx,
+                token_body("x", "observe", &["no_such_tool"], None),
+                T0
+            )
+            .status,
+            400
+        );
+        assert_eq!(
+            issue(&ctx, token_body("x", "observe", &[], Some(0)), T0).status,
+            400
+        );
+        assert_eq!(
+            issue(&ctx, token_body("  ", "observe", &[], None), T0).status,
+            400
+        );
         assert!(hub.tokens.list().is_empty());
     }
 
@@ -346,16 +457,44 @@ mod tests {
         let (hub, db) = (hub(), Db::connect(&BTreeMap::new()));
         let ctx = test_ctx(&hub, &db);
         assert!(!hub.enabled());
-        let on = SettingsBody { enabled: true, bind: "remote".into(), allowed_origins: vec!["https://console.test".into()], auth_mode: "secure".into(), open_scope: "observe".into(), confirm_open_remote: false };
+        let on = SettingsBody {
+            enabled: true,
+            bind: "remote".into(),
+            allowed_origins: vec!["https://console.test".into()],
+            auth_mode: "secure".into(),
+            open_scope: "observe".into(),
+            confirm_open_remote: false,
+        };
         assert_eq!(apply_settings(&ctx, on).status, 200);
         assert!(hub.enabled());
         assert_eq!(hub.settings().bind, Bind::Remote);
-        let bad_bind = SettingsBody { enabled: false, bind: "everywhere".into(), allowed_origins: vec![], auth_mode: "secure".into(), open_scope: "observe".into(), confirm_open_remote: false };
+        let bad_bind = SettingsBody {
+            enabled: false,
+            bind: "everywhere".into(),
+            allowed_origins: vec![],
+            auth_mode: "secure".into(),
+            open_scope: "observe".into(),
+            confirm_open_remote: false,
+        };
         assert_eq!(apply_settings(&ctx, bad_bind).status, 400);
-        let bad_origin = SettingsBody { enabled: false, bind: "local".into(), allowed_origins: vec!["console.test/".into()], auth_mode: "secure".into(), open_scope: "observe".into(), confirm_open_remote: false };
+        let bad_origin = SettingsBody {
+            enabled: false,
+            bind: "local".into(),
+            allowed_origins: vec!["console.test/".into()],
+            auth_mode: "secure".into(),
+            open_scope: "observe".into(),
+            confirm_open_remote: false,
+        };
         assert_eq!(apply_settings(&ctx, bad_origin).status, 400);
         assert!(hub.enabled(), "a refused body changes nothing");
-        let off = SettingsBody { enabled: false, bind: "local".into(), allowed_origins: vec![], auth_mode: "secure".into(), open_scope: "observe".into(), confirm_open_remote: false };
+        let off = SettingsBody {
+            enabled: false,
+            bind: "local".into(),
+            allowed_origins: vec![],
+            auth_mode: "secure".into(),
+            open_scope: "observe".into(),
+            confirm_open_remote: false,
+        };
         assert_eq!(apply_settings(&ctx, off).status, 200);
         assert!(!hub.enabled());
     }
@@ -366,12 +505,21 @@ mod tests {
         let ctx = test_ctx(&hub, &db);
         let (_, record) = hub
             .tokens
-            .create(NewToken { name: "reader".into(), scope: Scope::Observe, allowlist: vec![], expires_ms: None }, T0)
+            .create(
+                NewToken {
+                    name: "reader".into(),
+                    scope: Scope::Observe,
+                    allowlist: vec![],
+                    expires_ms: None,
+                },
+                T0,
+            )
             .expect("create");
         for (at, tool) in [(T0 + 1, "hub_status"), (T0 + 2, "hub_agents")] {
             hub.audit.record(CallRecord {
                 at_ms: at,
-                token_id: Some(record.id.clone()), client_ip: None,
+                token_id: Some(record.id.clone()),
+                client_ip: None,
                 tool: tool.into(),
                 args_sha256: "0".repeat(64),
                 ok: true,
@@ -380,8 +528,35 @@ mod tests {
             });
         }
         let count = |resp: Response| body(&resp)["calls"].as_array().map_or(0, |rows| rows.len());
-        assert_eq!(count(list_calls(&ctx, CallsQuery { token: Some(record.id.clone()), ..Default::default() })), 2);
-        assert_eq!(count(list_calls(&ctx, CallsQuery { tool: Some("hub_agents".into()), ..Default::default() })), 1);
-        assert_eq!(count(list_calls(&ctx, CallsQuery { token: Some("mcp_000000000000".into()), ..Default::default() })), 0);
+        assert_eq!(
+            count(list_calls(
+                &ctx,
+                CallsQuery {
+                    token: Some(record.id.clone()),
+                    ..Default::default()
+                }
+            )),
+            2
+        );
+        assert_eq!(
+            count(list_calls(
+                &ctx,
+                CallsQuery {
+                    tool: Some("hub_agents".into()),
+                    ..Default::default()
+                }
+            )),
+            1
+        );
+        assert_eq!(
+            count(list_calls(
+                &ctx,
+                CallsQuery {
+                    token: Some("mcp_000000000000".into()),
+                    ..Default::default()
+                }
+            )),
+            0
+        );
     }
 }

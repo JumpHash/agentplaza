@@ -4,7 +4,7 @@ use std::io::{Read, Write};
 use std::path::PathBuf;
 
 use clap::Subcommand;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::cmd::prompts::get_bytes;
 use crate::cmd::skills::write_out;
@@ -77,7 +77,12 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
         Cmd::Reply { id, text } => reply(ctx, &id, &text),
         Cmd::Post { project, text } => post(ctx, project, &text),
         Cmd::Pause { project, state } => pause(ctx, project, &state),
-        Cmd::Export { project, format, output, force } => export(ctx, project, &format, output, force),
+        Cmd::Export {
+            project,
+            format,
+            output,
+            force,
+        } => export(ctx, project, &format, output, force),
     }
 }
 
@@ -91,7 +96,9 @@ fn posts(v: &Value) -> &[Value] {
 }
 
 fn comment_count(p: &Value) -> usize {
-    p.get("comments").and_then(Value::as_array).map_or(0, Vec::len)
+    p.get("comments")
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len)
 }
 
 /// Whether a post is by `author` (when one is given) and its subject or body holds `needle` (lowercase; empty
@@ -107,7 +114,11 @@ fn list(ctx: &Ctx, author: Option<u64>, search: Option<String>) -> Result<(), St
     // is the hub's with its posts narrowed.
     let mut view = ctx.client.get("/v1/board")?;
     let needle = search.as_deref().unwrap_or("").trim().to_lowercase();
-    let kept: Vec<Value> = posts(&view).iter().filter(|p| keeps(p, author, &needle)).cloned().collect();
+    let kept: Vec<Value> = posts(&view)
+        .iter()
+        .filter(|p| keeps(p, author, &needle))
+        .cloned()
+        .collect();
     view["posts"] = Value::Array(kept);
     ctx.out(&view, |v| {
         let rows: Vec<Vec<String>> = posts(v)
@@ -124,14 +135,28 @@ fn list(ctx: &Ctx, author: Option<u64>, search: Option<String>) -> Result<(), St
                 ]
             })
             .collect();
-        ctx::table(&["id", "role", "agent", "subject", "task", "comments", "created at"], &rows);
+        ctx::table(
+            &[
+                "id",
+                "role",
+                "agent",
+                "subject",
+                "task",
+                "comments",
+                "created at",
+            ],
+            &rows,
+        );
     });
     Ok(())
 }
 
 fn show(ctx: &Ctx, id: &str) -> Result<(), String> {
     let value = ctx.client.get("/v1/board")?;
-    let post = posts(&value).iter().find(|p| ctx::s(p, "id") == id).ok_or_else(|| format!("no board post {id}"))?;
+    let post = posts(&value)
+        .iter()
+        .find(|p| ctx::s(p, "id") == id)
+        .ok_or_else(|| format!("no board post {id}"))?;
     let rich_ctx = rich::context_for(ctx);
     ctx.out(post, |p| {
         ctx::fields(&[
@@ -143,10 +168,17 @@ fn show(ctx: &Ctx, id: &str) -> Result<(), String> {
             ("created", ctx::when(&p["created_at"])),
             ("attachments", ctx::text(p, "attachments")),
         ]);
-        println!("\n{}", rich::render(ctx::s(p, "body"), &rich_ctx, &ctx.rich));
+        println!(
+            "\n{}",
+            rich::render(ctx::s(p, "body"), &rich_ctx, &ctx.rich)
+        );
         for c in p.get("comments").map(array).unwrap_or_default() {
             let body = rich::render(ctx::s(c, "body"), &rich_ctx, &ctx.rich);
-            println!("\n[{}] {}: {body}", ctx::when(&c["created_at"]), ctx::s(c, "author"));
+            println!(
+                "\n[{}] {}: {body}",
+                ctx::when(&c["created_at"]),
+                ctx::s(c, "author")
+            );
         }
     });
     Ok(())
@@ -155,7 +187,9 @@ fn show(ctx: &Ctx, id: &str) -> Result<(), String> {
 fn reply(ctx: &Ctx, id: &str, text: &str) -> Result<(), String> {
     let body = if text == "-" {
         let mut stdin = String::new();
-        std::io::stdin().read_to_string(&mut stdin).map_err(|e| e.to_string())?;
+        std::io::stdin()
+            .read_to_string(&mut stdin)
+            .map_err(|e| e.to_string())?;
         stdin
     } else {
         text.to_string()
@@ -164,17 +198,31 @@ fn reply(ctx: &Ctx, id: &str, text: &str) -> Result<(), String> {
     if body.is_empty() {
         return Err("a reply needs text".into());
     }
-    let value = ctx.client.post(&format!("/v1/board/{}/comments", ctx::seg(id)), &json!({ "text": body }))?;
+    let value = ctx.client.post(
+        &format!("/v1/board/{}/comments", ctx::seg(id)),
+        &json!({ "text": body }),
+    )?;
     ctx.out(&value, |_| println!("replied on board post {id}"));
     Ok(())
 }
 
 /// A project named on the command line: its id (letters, digits, `-` and `_`), or none.
 fn project_arg(project: Option<String>) -> Result<Option<String>, String> {
-    match project.map(|p| p.trim().to_string()).filter(|p| !p.is_empty()) {
+    match project
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty())
+    {
         None => Ok(None),
-        Some(id) if id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') => Ok(Some(id)),
-        Some(id) => Err(format!("a project id is letters, digits, - and _, not {id:?}")),
+        Some(id)
+            if id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') =>
+        {
+            Ok(Some(id))
+        }
+        Some(id) => Err(format!(
+            "a project id is letters, digits, - and _, not {id:?}"
+        )),
     }
 }
 
@@ -218,27 +266,53 @@ fn export_format(format: &str) -> Result<&str, String> {
 
 /// The board a command names, for a line of output.
 fn scope(project: Option<&str>) -> String {
-    project.map_or_else(|| "the board".to_string(), |id| format!("project {id}'s board"))
+    project.map_or_else(
+        || "the board".to_string(),
+        |id| format!("project {id}'s board"),
+    )
 }
 
 fn post(ctx: &Ctx, project: Option<String>, text: &str) -> Result<(), String> {
     let body = ctx::text_arg(text)?;
     let project = project_arg(project)?;
     let mentions = mentions_in(&body);
-    let value = ctx.client.post("/v1/board/posts", &json!({ "body": body, "project": project, "mentions": mentions }))?;
-    ctx.out(&value, |p| println!("posted {} on {}", ctx::s(p, "id"), scope(project.as_deref())));
+    let value = ctx.client.post(
+        "/v1/board/posts",
+        &json!({ "body": body, "project": project, "mentions": mentions }),
+    )?;
+    ctx.out(&value, |p| {
+        println!(
+            "posted {} on {}",
+            ctx::s(p, "id"),
+            scope(project.as_deref())
+        )
+    });
     Ok(())
 }
 
 fn pause(ctx: &Ctx, project: Option<String>, state: &str) -> Result<(), String> {
     let on = pause_state(state)?;
     let project = project_arg(project)?;
-    let value = ctx.client.post("/v1/board/pause", &json!({ "on": on, "project": project }))?;
-    ctx.out(&value, |_| println!("{} {}", if on { "paused" } else { "resumed" }, scope(project.as_deref())));
+    let value = ctx
+        .client
+        .post("/v1/board/pause", &json!({ "on": on, "project": project }))?;
+    ctx.out(&value, |_| {
+        println!(
+            "{} {}",
+            if on { "paused" } else { "resumed" },
+            scope(project.as_deref())
+        )
+    });
     Ok(())
 }
 
-fn export(ctx: &Ctx, project: Option<String>, format: &str, output: Option<PathBuf>, force: bool) -> Result<(), String> {
+fn export(
+    ctx: &Ctx,
+    project: Option<String>,
+    format: &str,
+    output: Option<PathBuf>,
+    force: bool,
+) -> Result<(), String> {
     let format = export_format(format)?;
     let project = project_arg(project)?;
     let mut path = format!("/v1/board/export?format={format}");
@@ -247,15 +321,23 @@ fn export(ctx: &Ctx, project: Option<String>, format: &str, output: Option<PathB
     }
     let bytes = get_bytes(ctx, &path)?;
     match output {
-        None => std::io::stdout().write_all(&bytes).map_err(|e| e.to_string())?,
+        None => std::io::stdout()
+            .write_all(&bytes)
+            .map_err(|e| e.to_string())?,
         Some(out) => {
             if !force && out.exists() {
-                return Err(format!("{} exists: pass --force to overwrite it", out.display()));
+                return Err(format!(
+                    "{} exists: pass --force to overwrite it",
+                    out.display()
+                ));
             }
             write_out(&out, &bytes, force)?;
-            ctx.out(&json!({ "file": out.display().to_string(), "bytes": bytes.len() }), |_| {
-                println!("exported {} bytes to {}", bytes.len(), out.display());
-            });
+            ctx.out(
+                &json!({ "file": out.display().to_string(), "bytes": bytes.len() }),
+                |_| {
+                    println!("exported {} bytes to {}", bytes.len(), out.display());
+                },
+            );
         }
     }
     Ok(())
@@ -284,16 +366,29 @@ mod tests {
     fn the_owner_posts_pauses_and_exports_with_their_flags() {
         Probe::command().debug_assert();
         match parse(&["post", "--project", "pr1", "@all ship it"]).unwrap() {
-            Cmd::Post { project, text } => assert_eq!((project.as_deref(), text.as_str()), (Some("pr1"), "@all ship it")),
+            Cmd::Post { project, text } => assert_eq!(
+                (project.as_deref(), text.as_str()),
+                (Some("pr1"), "@all ship it")
+            ),
             other => panic!("not a post: {other:?}"),
         }
         match parse(&["pause", "--project", "pr1", "on"]).unwrap() {
-            Cmd::Pause { project, state } => assert_eq!((project.as_deref(), state.as_str()), (Some("pr1"), "on")),
+            Cmd::Pause { project, state } => {
+                assert_eq!((project.as_deref(), state.as_str()), (Some("pr1"), "on"))
+            }
             other => panic!("not a pause: {other:?}"),
         }
         match parse(&["export", "-o", "thread.json", "--format", "json"]).unwrap() {
-            Cmd::Export { project, format, output, force } => {
-                assert_eq!((project, format.as_str(), output, force), (None, "json", Some(PathBuf::from("thread.json")), false));
+            Cmd::Export {
+                project,
+                format,
+                output,
+                force,
+            } => {
+                assert_eq!(
+                    (project, format.as_str(), output, force),
+                    (None, "json", Some(PathBuf::from("thread.json")), false)
+                );
             }
             other => panic!("not an export: {other:?}"),
         }
@@ -303,8 +398,14 @@ mod tests {
 
     #[test]
     fn mentions_are_the_names_after_an_at_sign_in_order_once() {
-        assert_eq!(mentions_in("ping @all and @ana, then @ana again and @dev-2_x."), vec!["all", "ana", "dev-2_x"]);
-        assert!(mentions_in("mail a@b.com now").is_empty(), "an address is not a mention");
+        assert_eq!(
+            mentions_in("ping @all and @ana, then @ana again and @dev-2_x."),
+            vec!["all", "ana", "dev-2_x"]
+        );
+        assert!(
+            mentions_in("mail a@b.com now").is_empty(),
+            "an address is not a mention"
+        );
         assert!(mentions_in("nobody @ here").is_empty());
     }
 
@@ -314,7 +415,10 @@ mod tests {
         assert_eq!(project_arg(Some("  ".into())), Ok(None));
         assert_eq!(project_arg(None), Ok(None));
         assert!(project_arg(Some("../etc".into())).is_err());
-        assert!(project_arg(Some("a&b".into())).is_err(), "a query value is never smuggled");
+        assert!(
+            project_arg(Some("a&b".into())).is_err(),
+            "a query value is never smuggled"
+        );
     }
 
     #[test]
@@ -337,7 +441,10 @@ mod tests {
         assert!(keeps(&p, None, ""));
         assert!(keeps(&p, Some(7), ""));
         assert!(!keeps(&p, Some(8), ""));
-        assert!(keeps(&p, None, "rust reviewer"), "the subject is searched, case-insensitively");
+        assert!(
+            keeps(&p, None, "rust reviewer"),
+            "the subject is searched, case-insensitively"
+        );
         assert!(keeps(&p, None, "cli experience"), "the body is searched");
         assert!(!keeps(&p, None, "budget"));
         assert!(!keeps(&p, Some(8), "rust"), "both filters must hold");

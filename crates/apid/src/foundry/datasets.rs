@@ -34,17 +34,16 @@
 //! string. Anything else rejects the file, with the line number. Extra keys are kept out of the
 //! row and flag the upload `unverified_upload`.
 
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::io::Write;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-use crate::settings::{tier_of, Tier};
+use crate::settings::{Tier, tier_of};
 use crate::state::App;
 use crate::usage::CALLS_LIMIT;
 
@@ -66,7 +65,14 @@ pub const MID_BELOW_USD_PER_MTOK: f64 = 15.0;
 /// The value of a categorical feature the records do not name.
 pub const MISSING: &str = "__missing__";
 pub const CLASSES: [&str; 3] = ["cheap", "mid", "frontier"];
-const NUMERIC: [&str; 6] = ["prompt_chars", "prompt_tokens", "tool_count", "history_turns", "attachments", "prior_failures"];
+const NUMERIC: [&str; 6] = [
+    "prompt_chars",
+    "prompt_tokens",
+    "tool_count",
+    "history_turns",
+    "attachments",
+    "prior_failures",
+];
 const CATEGORICAL: [&str; 4] = ["task_kind", "domain", "tenant_tier", "requested_model"];
 
 /// One dataset: the training file (`file`), its held-out rows (`frozen_file`), and the hygiene
@@ -206,7 +212,10 @@ pub struct Assembled {
 /// Exports the plaza's records into a dataset under `data_dir` (the parent passes <state>/foundry).
 pub fn export(app: &App, data_dir: &Path, spec: &ExportSpec) -> Result<Dataset, String> {
     if !matches!(spec.kind.as_str(), "cascade" | "tasks" | "usage" | "all") {
-        return Err(format!("unknown dataset kind {:?}; use cascade, tasks, usage or all", spec.kind));
+        return Err(format!(
+            "unknown dataset kind {:?}; use cascade, tasks, usage or all",
+            spec.kind
+        ));
     }
     let now = apz_plaza::now_ms();
     let tasks: Vec<TaskRec> = app
@@ -244,25 +253,50 @@ pub fn export(app: &App, data_dir: &Path, spec: &ExportSpec) -> Result<Dataset, 
             None => break,
         }
     }
-    let cids: BTreeSet<u64> = calls.iter().map(|c| c.cid).chain(tasks.iter().filter_map(|t| t.agent_cid)).collect();
+    let cids: BTreeSet<u64> = calls
+        .iter()
+        .map(|c| c.cid)
+        .chain(tasks.iter().filter_map(|t| t.agent_cid))
+        .collect();
     let mut entries: Vec<(u64, u64, String, Value)> = Vec::new();
     for cid in &cids {
         for entry in app.transcripts.after(*cid, 0, usize::MAX) {
             entries.push((entry.cid, entry.work, entry.kind, entry.data));
         }
     }
-    let refs: Vec<(u64, u64, &str, &Value)> = entries.iter().map(|(c, w, k, d)| (*c, *w, k.as_str(), d)).collect();
+    let refs: Vec<(u64, u64, &str, &Value)> = entries
+        .iter()
+        .map(|(c, w, k, d)| (*c, *w, k.as_str(), d))
+        .collect();
     let works = works_from(&refs);
     let breaches: Vec<Breach> = app
         .laws
         .all_violations()
         .into_iter()
-        .map(|(cid, v)| Breach { cid, at_ms: v.at_ms, law: v.law })
+        .map(|(cid, v)| Breach {
+            cid,
+            at_ms: v.at_ms,
+            law: v.law,
+        })
         .collect();
     let manual = app.settings.get().prices;
-    let rung = |model: &str| rung_for_price(app.prices.lookup(model, &manual).map(|p| p.price.output));
-    let gathered = gather(&spec.kind, &tasks, &calls, &works, &breaches, &rung, spec.since_ms, spec.until_ms);
-    let name = if spec.name.trim().is_empty() { format!("{}-{now}", spec.kind) } else { spec.name.trim().to_string() };
+    let rung =
+        |model: &str| rung_for_price(app.prices.lookup(model, &manual).map(|p| p.price.output));
+    let gathered = gather(
+        &spec.kind,
+        &tasks,
+        &calls,
+        &works,
+        &breaches,
+        &rung,
+        spec.since_ms,
+        spec.until_ms,
+    );
+    let name = if spec.name.trim().is_empty() {
+        format!("{}-{now}", spec.kind)
+    } else {
+        spec.name.trim().to_string()
+    };
     let provenance = json!({
         "source": "plaza",
         "spec": { "kind": spec.kind, "since_ms": spec.since_ms, "until_ms": spec.until_ms },
@@ -311,17 +345,28 @@ pub fn export(app: &App, data_dir: &Path, spec: &ExportSpec) -> Result<Dataset, 
 /// exports); rows are validated and hygiene-checked the same way.
 pub fn upload(data_dir: &Path, name: &str, jsonl: &[u8], now_ms: u64) -> Result<Dataset, String> {
     if jsonl.len() > MAX_UPLOAD_BYTES {
-        return Err(format!("upload is {} bytes; the limit is {MAX_UPLOAD_BYTES}", jsonl.len()));
+        return Err(format!(
+            "upload is {} bytes; the limit is {MAX_UPLOAD_BYTES}",
+            jsonl.len()
+        ));
     }
     let text = std::str::from_utf8(jsonl).map_err(|_| "upload is not UTF-8".to_string())?;
-    let lines: Vec<(usize, &str)> = text.lines().enumerate().filter(|(_, l)| !l.trim().is_empty()).collect();
+    let lines: Vec<(usize, &str)> = text
+        .lines()
+        .enumerate()
+        .filter(|(_, l)| !l.trim().is_empty())
+        .collect();
     if lines.len() > MAX_UPLOAD_ROWS {
-        return Err(format!("upload has {} rows; the limit is {MAX_UPLOAD_ROWS}", lines.len()));
+        return Err(format!(
+            "upload has {} rows; the limit is {MAX_UPLOAD_ROWS}",
+            lines.len()
+        ));
     }
     let mut items = Vec::with_capacity(lines.len());
     let mut unknown = false;
     for (number, line) in lines {
-        let (item, unknown_line) = parse_upload_line(line).map_err(|e| format!("line {}: {e}", number + 1))?;
+        let (item, unknown_line) =
+            parse_upload_line(line).map_err(|e| format!("line {}: {e}", number + 1))?;
         unknown |= unknown_line;
         items.push(item);
     }
@@ -331,7 +376,11 @@ pub fn upload(data_dir: &Path, name: &str, jsonl: &[u8], now_ms: u64) -> Result<
         "lines": items.len(),
         "unknown_columns": unknown,
     });
-    let name = if name.trim().is_empty() { format!("upload-{now_ms}") } else { name.trim().to_string() };
+    let name = if name.trim().is_empty() {
+        format!("upload-{now_ms}")
+    } else {
+        name.trim().to_string()
+    };
     let assembled = assemble(&name, "upload", now_ms, items, unknown, provenance);
     store(data_dir, &assembled)?;
     Ok(assembled.dataset)
@@ -339,7 +388,14 @@ pub fn upload(data_dir: &Path, name: &str, jsonl: &[u8], now_ms: u64) -> Result<
 
 /// The hygiene flags that stop a job from using a dataset. Anything in this list blocks.
 pub fn blocking(flag: &str) -> bool {
-    matches!(flag, "empty" | "single_class" | "contains_violation" | "credential_seeking" | "unverified_upload")
+    matches!(
+        flag,
+        "empty"
+            | "single_class"
+            | "contains_violation"
+            | "credential_seeking"
+            | "unverified_upload"
+    )
 }
 
 /// The rung of a model from its catalog output price (USD per million tokens); `None` when no
@@ -383,15 +439,29 @@ pub fn row_value(task_id: Option<&str>, ts: u64, f: &Features, label: &str) -> V
 pub fn works_from(entries: &[(u64, u64, &str, &Value)]) -> Vec<WorkRec> {
     let mut works: BTreeMap<(u64, u64), WorkRec> = BTreeMap::new();
     for &(cid, work, kind, data) in entries {
-        let rec = works.entry((cid, work)).or_insert_with(|| WorkRec { cid, work, ..WorkRec::default() });
+        let rec = works.entry((cid, work)).or_insert_with(|| WorkRec {
+            cid,
+            work,
+            ..WorkRec::default()
+        });
         match kind {
             "work_start" => {
-                rec.task = data.get("origin").and_then(|o| o.get("task")).and_then(Value::as_str).map(String::from);
-                rec.prompt_chars = data.get("prompt").and_then(Value::as_str).map_or(0, |p| p.chars().count() as u64);
+                rec.task = data
+                    .get("origin")
+                    .and_then(|o| o.get("task"))
+                    .and_then(Value::as_str)
+                    .map(String::from);
+                rec.prompt_chars = data
+                    .get("prompt")
+                    .and_then(Value::as_str)
+                    .map_or(0, |p| p.chars().count() as u64);
             }
             "model_request" => {
                 if rec.requests == 0 {
-                    rec.tools = data.get("tools").and_then(Value::as_array).map_or(0, |t| t.len() as u64);
+                    rec.tools = data
+                        .get("tools")
+                        .and_then(Value::as_array)
+                        .map_or(0, |t| t.len() as u64);
                     rec.messages = data.get("messages").and_then(Value::as_u64).unwrap_or(0);
                 }
                 rec.requests += 1;
@@ -456,14 +526,23 @@ pub fn gather(
             }
         }
         let work = work_by_task.get(task.id.as_str()).copied();
-        let (violation, credential) = breach_flags(breaches, task.agent_cid.or(Some(last.cid)), task.created_ms, task.updated_ms);
+        let (violation, credential) = breach_flags(
+            breaches,
+            task.agent_cid.or(Some(last.cid)),
+            task.created_ms,
+            task.updated_ms,
+        );
         let base = Features {
             prompt_chars: work.map_or(0, |w| w.prompt_chars),
             tool_count: work.map_or(0, |w| w.tools),
             history_turns: work.map_or(0, |w| w.messages),
             attachments: 0,
             prior_failures: prior_failures(tasks, task),
-            task_kind: task.role.clone().filter(|r| !r.is_empty()).unwrap_or_else(|| MISSING.to_string()),
+            task_kind: task
+                .role
+                .clone()
+                .filter(|r| !r.is_empty())
+                .unwrap_or_else(|| MISSING.to_string()),
             domain: MISSING.to_string(),
             ..Features::default()
         };
@@ -479,7 +558,17 @@ pub fn gather(
                     requested_model: call.model.clone(),
                     ..base.clone()
                 };
-                push(&mut out, Some(&task.id), call.at_ms, features, label, violation, credential, since, until);
+                push(
+                    &mut out,
+                    Some(&task.id),
+                    call.at_ms,
+                    features,
+                    label,
+                    violation,
+                    credential,
+                    since,
+                    until,
+                );
             }
         } else {
             let Some(label) = rung(&last.model) else {
@@ -492,7 +581,17 @@ pub fn gather(
                 requested_model: last.model.clone(),
                 ..base
             };
-            push(&mut out, Some(&task.id), task.created_ms, features, label, violation, credential, since, until);
+            push(
+                &mut out,
+                Some(&task.id),
+                task.created_ms,
+                features,
+                label,
+                violation,
+                credential,
+                since,
+                until,
+            );
         }
     }
     out
@@ -502,10 +601,24 @@ pub fn gather(
 /// not know (those are dropped from the row).
 pub fn parse_upload_line(line: &str) -> Result<(Item, bool), String> {
     let value: Value = serde_json::from_str(line).map_err(|e| format!("not JSON: {e}"))?;
-    let obj = value.as_object().ok_or_else(|| "not a JSON object".to_string())?;
-    let ts = obj.get("ts").and_then(Value::as_u64).ok_or_else(|| "ts must be a unix millisecond number".to_string())?;
-    let num = |key: &str| obj.get(key).and_then(Value::as_u64).ok_or_else(|| format!("{key} must be a whole number"));
-    let text = |key: &str| obj.get(key).and_then(Value::as_str).map(String::from).ok_or_else(|| format!("{key} must be a string"));
+    let obj = value
+        .as_object()
+        .ok_or_else(|| "not a JSON object".to_string())?;
+    let ts = obj
+        .get("ts")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| "ts must be a unix millisecond number".to_string())?;
+    let num = |key: &str| {
+        obj.get(key)
+            .and_then(Value::as_u64)
+            .ok_or_else(|| format!("{key} must be a whole number"))
+    };
+    let text = |key: &str| {
+        obj.get(key)
+            .and_then(Value::as_str)
+            .map(String::from)
+            .ok_or_else(|| format!("{key} must be a string"))
+    };
     let features = Features {
         prompt_chars: num("prompt_chars")?,
         prompt_tokens: num("prompt_tokens")?,
@@ -520,7 +633,9 @@ pub fn parse_upload_line(line: &str) -> Result<(Item, bool), String> {
     };
     let label = match obj.get("label") {
         Some(Value::String(s)) if CLASSES.contains(&s.as_str()) => s.clone(),
-        Some(v) if v.as_u64().is_some_and(|n| n < 3) => CLASSES[v.as_u64().unwrap_or(0) as usize].to_string(),
+        Some(v) if v.as_u64().is_some_and(|n| n < 3) => {
+            CLASSES[v.as_u64().unwrap_or(0) as usize].to_string()
+        }
         _ => return Err("label must be cheap, mid, frontier, or 0, 1, 2".to_string()),
     };
     let task_id = match obj.get("task_id") {
@@ -528,10 +643,25 @@ pub fn parse_upload_line(line: &str) -> Result<(Item, bool), String> {
         Some(Value::String(s)) => Some(s.clone()),
         Some(_) => return Err("task_id must be a string".to_string()),
     };
-    let known: BTreeSet<&str> = NUMERIC.iter().chain(CATEGORICAL.iter()).copied().chain(["ts", "label", "task_id"]).collect();
+    let known: BTreeSet<&str> = NUMERIC
+        .iter()
+        .chain(CATEGORICAL.iter())
+        .copied()
+        .chain(["ts", "label", "task_id"])
+        .collect();
     let unknown = obj.keys().any(|k| !known.contains(k.as_str()));
     let row = row_value(task_id.as_deref(), ts, &features, &label);
-    Ok((Item { task_id, ts, row, label, violation: false, credential: false }, unknown))
+    Ok((
+        Item {
+            task_id,
+            ts,
+            row,
+            label,
+            violation: false,
+            credential: false,
+        },
+        unknown,
+    ))
 }
 
 /// The training rows' class counts.
@@ -592,11 +722,31 @@ pub fn is_frozen(task_id: Option<&str>, row: &Value) -> bool {
 }
 
 /// Splits, sorts and flags the rows, and builds the two files' bytes (pure; [`store`] writes them).
-pub fn assemble(name: &str, kind: &str, created_ms: u64, mut items: Vec<Item>, unknown_columns: bool, provenance: Value) -> Assembled {
+pub fn assemble(
+    name: &str,
+    kind: &str,
+    created_ms: u64,
+    mut items: Vec<Item>,
+    unknown_columns: bool,
+    provenance: Value,
+) -> Assembled {
     items.sort_by_cached_key(|i| (i.ts, i.task_id.clone(), i.row.to_string()));
-    let held_mask: Vec<bool> = items.iter().map(|i| is_frozen(i.task_id.as_deref(), &i.row)).collect();
-    let training: Vec<&Item> = items.iter().zip(&held_mask).filter(|(_, held)| !**held).map(|(i, _)| i).collect();
-    let held: Vec<&Item> = items.iter().zip(&held_mask).filter(|(_, held)| **held).map(|(i, _)| i).collect();
+    let held_mask: Vec<bool> = items
+        .iter()
+        .map(|i| is_frozen(i.task_id.as_deref(), &i.row))
+        .collect();
+    let training: Vec<&Item> = items
+        .iter()
+        .zip(&held_mask)
+        .filter(|(_, held)| !**held)
+        .map(|(i, _)| i)
+        .collect();
+    let held: Vec<&Item> = items
+        .iter()
+        .zip(&held_mask)
+        .filter(|(_, held)| **held)
+        .map(|(i, _)| i)
+        .collect();
     let flags = taint_flags(&training, &held, unknown_columns);
     let training_bytes = lines_of(&training);
     let frozen_bytes = lines_of(&held);
@@ -617,7 +767,11 @@ pub fn assemble(name: &str, kind: &str, created_ms: u64, mut items: Vec<Item>, u
         frozen_file: format!("datasets/{id}.frozen.jsonl"),
         sha256: hex(&sha256(&training_bytes)),
     };
-    Assembled { dataset, training: training_bytes, frozen: frozen_bytes }
+    Assembled {
+        dataset,
+        training: training_bytes,
+        frozen: frozen_bytes,
+    }
 }
 
 /// Writes the two files under `data_dir/datasets`, each through a temporary file and a rename.
@@ -630,10 +784,15 @@ pub fn store(data_dir: &Path, assembled: &Assembled) -> Result<(), String> {
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    let name = path.file_name().and_then(|n| n.to_str()).ok_or_else(|| format!("bad path {}", path.display()))?;
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| format!("bad path {}", path.display()))?;
     let tmp = path.with_file_name(format!(".{name}.{}.tmp", std::process::id()));
     let mut file = File::create(&tmp).map_err(|e| format!("create {}: {e}", tmp.display()))?;
-    file.write_all(bytes).and_then(|_| file.sync_all()).map_err(|e| format!("write {}: {e}", tmp.display()))?;
+    file.write_all(bytes)
+        .and_then(|_| file.sync_all())
+        .map_err(|e| format!("write {}: {e}", tmp.display()))?;
     drop(file);
     std::fs::rename(&tmp, path).map_err(|e| format!("rename to {}: {e}", path.display()))
 }
@@ -678,7 +837,12 @@ fn tier_name(role: &str) -> String {
 fn prior_failures(tasks: &[TaskRec], task: &TaskRec) -> u64 {
     tasks
         .iter()
-        .filter(|u| u.id != task.id && u.state == "failed" && u.role == task.role && u.updated_ms <= task.created_ms)
+        .filter(|u| {
+            u.id != task.id
+                && u.state == "failed"
+                && u.role == task.role
+                && u.updated_ms <= task.created_ms
+        })
         .count() as u64
 }
 
@@ -689,7 +853,10 @@ fn breach_flags(breaches: &[Breach], cid: Option<u64>, from: u64, to: u64) -> (b
     };
     let mut violation = false;
     let mut credential = false;
-    for b in breaches.iter().filter(|b| b.cid == cid && b.at_ms >= from && b.at_ms <= to) {
+    for b in breaches
+        .iter()
+        .filter(|b| b.cid == cid && b.at_ms >= from && b.at_ms <= to)
+    {
         violation = true;
         credential |= b.law.to_lowercase().contains("credential");
     }
@@ -714,7 +881,14 @@ fn push(
     }
     let task_id = task_id.cloned();
     let row = row_value(task_id.as_deref(), ts, &features, label);
-    out.items.push(Item { task_id, ts, row, label: label.to_string(), violation, credential });
+    out.items.push(Item {
+        task_id,
+        ts,
+        row,
+        label: label.to_string(),
+        violation,
+        credential,
+    });
     bump(&mut out.counts, "rows");
 }
 
@@ -734,15 +908,37 @@ mod tests {
 
     fn item(task: &str, ts: u64, label: &str) -> Item {
         let row = row_value(Some(task), ts, &features("dev", "m"), label);
-        Item { task_id: Some(task.into()), ts, row, label: label.into(), violation: false, credential: false }
+        Item {
+            task_id: Some(task.into()),
+            ts,
+            row,
+            label: label.into(),
+            violation: false,
+            credential: false,
+        }
     }
 
     fn task(id: &str, state: &str, created: u64) -> TaskRec {
-        TaskRec { id: id.into(), role: Some("coder".into()), state: state.into(), agent_cid: Some(3), created_ms: created, updated_ms: created + 1_000 }
+        TaskRec {
+            id: id.into(),
+            role: Some("coder".into()),
+            state: state.into(),
+            agent_cid: Some(3),
+            created_ms: created,
+            updated_ms: created + 1_000,
+        }
     }
 
     fn call(id: u64, at: u64, model: &str, task: &str) -> CallRec {
-        CallRec { id, at_ms: at, cid: 3, role: "coder".into(), model: model.into(), task: Some(task.into()), prompt_tokens: 420 }
+        CallRec {
+            id,
+            at_ms: at,
+            cid: 3,
+            role: "coder".into(),
+            model: model.into(),
+            task: Some(task.into()),
+            prompt_tokens: 420,
+        }
     }
 
     fn rung_map(model: &str) -> Option<&'static str> {
@@ -757,7 +953,15 @@ mod tests {
     fn a_finished_task_maps_to_one_row_in_the_trainer_shape() {
         let tasks = vec![task("t7", "done", 1_000)];
         let calls = vec![call(11, 1_100, "cheap-model", "t7")];
-        let works = vec![WorkRec { cid: 3, work: 5, task: Some("t7".into()), prompt_chars: 1_200, tools: 4, messages: 2, requests: 1 }];
+        let works = vec![WorkRec {
+            cid: 3,
+            work: 5,
+            task: Some("t7".into()),
+            prompt_chars: 1_200,
+            tools: 4,
+            messages: 2,
+            requests: 1,
+        }];
         let g = gather("tasks", &tasks, &calls, &works, &[], &rung_map, None, None);
         assert_eq!(g.items.len(), 1);
         assert_eq!(
@@ -797,9 +1001,25 @@ mod tests {
     #[test]
     fn usage_rows_are_per_call_and_a_breach_marks_its_task() {
         let tasks = vec![task("t1", "done", 1_000)];
-        let calls = vec![call(1, 1_100, "cheap-model", "t1"), call(2, 1_200, "frontier-model", "t1")];
-        let breaches = vec![Breach { cid: 3, at_ms: 1_500, law: "credential_seeking".into() }];
-        let g = gather("usage", &tasks, &calls, &[], &breaches, &rung_map, None, None);
+        let calls = vec![
+            call(1, 1_100, "cheap-model", "t1"),
+            call(2, 1_200, "frontier-model", "t1"),
+        ];
+        let breaches = vec![Breach {
+            cid: 3,
+            at_ms: 1_500,
+            law: "credential_seeking".into(),
+        }];
+        let g = gather(
+            "usage",
+            &tasks,
+            &calls,
+            &[],
+            &breaches,
+            &rung_map,
+            None,
+            None,
+        );
         assert_eq!(g.items.len(), 2);
         assert!(g.items.iter().all(|i| i.violation && i.credential));
         assert_eq!(g.items[1].label, "frontier");
@@ -818,14 +1038,28 @@ mod tests {
         let works = works_from(&entries);
         assert_eq!(works.len(), 1);
         assert_eq!(works[0].task.as_deref(), Some("t7"));
-        assert_eq!((works[0].prompt_chars, works[0].tools, works[0].messages, works[0].requests), (5, 3, 2, 2));
+        assert_eq!(
+            (
+                works[0].prompt_chars,
+                works[0].tools,
+                works[0].messages,
+                works[0].requests
+            ),
+            (5, 3, 2, 2)
+        );
     }
 
     #[test]
     fn the_frozen_split_is_deterministic_and_about_a_tenth() {
         let ids: Vec<String> = (0..10_000).map(|i| format!("t{i}")).collect();
-        let first: Vec<bool> = ids.iter().map(|id| is_frozen(Some(id), &Value::Null)).collect();
-        let second: Vec<bool> = ids.iter().map(|id| is_frozen(Some(id), &Value::Null)).collect();
+        let first: Vec<bool> = ids
+            .iter()
+            .map(|id| is_frozen(Some(id), &Value::Null))
+            .collect();
+        let second: Vec<bool> = ids
+            .iter()
+            .map(|id| is_frozen(Some(id), &Value::Null))
+            .collect();
         assert_eq!(first, second);
         let frozen = first.iter().filter(|f| **f).count();
         assert!((800..=1_200).contains(&frozen), "frozen {frozen} of 10000");
@@ -843,7 +1077,9 @@ mod tests {
         assert!(flags.contains(&"single_class".to_string()));
         assert!(flags.contains(&"too_few_rows".to_string()));
 
-        let items: Vec<Item> = (0..100).map(|i| item(&format!("x{i}"), i, if i < 96 { "cheap" } else { "mid" })).collect();
+        let items: Vec<Item> = (0..100)
+            .map(|i| item(&format!("x{i}"), i, if i < 96 { "cheap" } else { "mid" }))
+            .collect();
         let refs: Vec<&Item> = items.iter().collect();
         let flags = taint_flags(&refs, &[], false);
         assert!(flags.contains(&"label_skew".to_string()));
@@ -859,7 +1095,12 @@ mod tests {
         let flags = taint_flags(&[&a], &[], false);
         assert!(flags.contains(&"contains_violation".to_string()));
         assert!(blocking("contains_violation"));
-        assert!(blocking("empty") && blocking("single_class") && blocking("credential_seeking") && blocking("unverified_upload"));
+        assert!(
+            blocking("empty")
+                && blocking("single_class")
+                && blocking("credential_seeking")
+                && blocking("unverified_upload")
+        );
     }
 
     #[test]
@@ -869,11 +1110,17 @@ mod tests {
         assert_eq!(accepted.label, "mid");
         assert!(!unknown);
         assert!(parse_upload_line(&good.replace(r#""label":"mid""#, r#""label":"huge""#)).is_err());
-        assert!(parse_upload_line(&good.replace(r#""prompt_chars":10"#, r#""prompt_chars":"ten""#)).is_err());
+        assert!(
+            parse_upload_line(&good.replace(r#""prompt_chars":10"#, r#""prompt_chars":"ten""#))
+                .is_err()
+        );
         assert!(parse_upload_line(&good.replace(r#""ts":1700000000000,"#, "")).is_err());
         assert!(parse_upload_line("[1,2]").is_err());
         let by_index = good.replace(r#""label":"mid""#, r#""label":2"#);
-        assert_eq!(parse_upload_line(&by_index).expect("index label").0.label, "frontier");
+        assert_eq!(
+            parse_upload_line(&by_index).expect("index label").0.label,
+            "frontier"
+        );
         let extra = good.replace('}', r#","extra":1}"#);
         assert!(parse_upload_line(&extra).is_ok_and(|(_, unknown)| unknown));
     }

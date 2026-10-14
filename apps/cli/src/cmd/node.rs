@@ -12,9 +12,9 @@ use std::fs::{self, OpenOptions};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
-use apz_setup::node::{self, Layout, PlanProcess, LINK_RUN};
+use apz_setup::node::{self, LINK_RUN, Layout, PlanProcess};
 use clap::Subcommand;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::ctx::confirm;
 
@@ -50,8 +50,15 @@ pub fn run(cmd: Cmd, json: bool) -> Result<(), String> {
         Cmd::Start => start(),
         Cmd::Leave { forget, yes } => leave(forget, yes),
         Cmd::Run => {
-            let status = Command::new(bin("apz-link")).args(LINK_RUN).status().map_err(|e| format!("apz-link run: {e}"))?;
-            if status.success() { Ok(()) } else { Err(format!("apz-link run exited with {status}")) }
+            let status = Command::new(bin("apz-link"))
+                .args(LINK_RUN)
+                .status()
+                .map_err(|e| format!("apz-link run: {e}"))?;
+            if status.success() {
+                Ok(())
+            } else {
+                Err(format!("apz-link run exited with {status}"))
+            }
         }
     }
 }
@@ -75,15 +82,24 @@ fn pid_file(name: &str) -> PathBuf {
 /// else the first one on PATH.
 fn bin(name: &str) -> PathBuf {
     let file = apz_os::process::exe(name);
-    match std::env::current_exe().ok().map(|exe| exe.with_file_name(&file)).filter(|path| path.is_file()) {
+    match std::env::current_exe()
+        .ok()
+        .map(|exe| exe.with_file_name(&file))
+        .filter(|path| path.is_file())
+    {
         Some(sibling) => sibling,
         None => PathBuf::from(file),
     }
 }
 
 fn join(code: &str) -> Result<(), String> {
-    if let Some((name, pid)) = processes().iter().find_map(|process| running_pid(process).map(|pid| (process.name, pid))) {
-        return Err(format!("this machine's node is already running ({name}, pid {pid}); leave it first"));
+    if let Some((name, pid)) = processes()
+        .iter()
+        .find_map(|process| running_pid(process).map(|pid| (process.name, pid)))
+    {
+        return Err(format!(
+            "this machine's node is already running ({name}, pid {pid}); leave it first"
+        ));
     }
     let out = Command::new(bin("apz-link"))
         .arg("join")
@@ -93,7 +109,11 @@ fn join(code: &str) -> Result<(), String> {
         .map_err(|e| format!("apz-link: {e}"))?;
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        return Err(if err.is_empty() { "apz-link join failed".into() } else { err });
+        return Err(if err.is_empty() {
+            "apz-link join failed".into()
+        } else {
+            err
+        });
     }
     print!("{}", String::from_utf8_lossy(&out.stdout));
     start()
@@ -104,8 +124,9 @@ fn join(code: &str) -> Result<(), String> {
 /// the same name that is not the plan's (a hub's, on the same ports) is not started over: the node's
 /// would fail to bind its ports.
 fn start() -> Result<(), String> {
-    let (base, count) = node::identity()
-        .ok_or_else(|| "this machine has not joined a network: join with `agentplaza node join <code>`".to_string())?;
+    let (base, count) = node::identity().ok_or_else(|| {
+        "this machine has not joined a network: join with `agentplaza node join <code>`".to_string()
+    })?;
     let mut failed = Vec::new();
     for svc in node::plan(base, count, &Layout::current()) {
         if let Some(pid) = running_pid(&svc) {
@@ -113,12 +134,19 @@ fn start() -> Result<(), String> {
             continue;
         }
         if let Some(pid) = node::named_pids(svc.name).first() {
-            println!("{}: not started: another {} runs (pid {pid}) that is not this node's", svc.name, svc.name);
+            println!(
+                "{}: not started: another {} runs (pid {pid}) that is not this node's",
+                svc.name, svc.name
+            );
             failed.push(svc.name);
             continue;
         }
         match spawn(&svc) {
-            Ok(pid) => println!("{}: started (pid {pid}); log: {}", svc.name, node::log_file(svc.name).display()),
+            Ok(pid) => println!(
+                "{}: started (pid {pid}); log: {}",
+                svc.name,
+                node::log_file(svc.name).display()
+            ),
             Err(e) => {
                 println!("{}: failed ({e})", svc.name);
                 failed.push(svc.name);
@@ -138,10 +166,17 @@ fn spawn(svc: &PlanProcess) -> Result<u32, String> {
     if let Some(dir) = log.parent() {
         fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     }
-    let stdout = OpenOptions::new().create(true).append(true).open(&log).map_err(|e| format!("{}: {e}", log.display()))?;
+    let stdout = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log)
+        .map_err(|e| format!("{}: {e}", log.display()))?;
     let stderr = stdout.try_clone().map_err(|e| e.to_string())?;
     let mut cmd = Command::new(bin(svc.name));
-    cmd.args(&svc.args).stdin(Stdio::null()).stdout(Stdio::from(stdout)).stderr(Stdio::from(stderr));
+    cmd.args(&svc.args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(stdout))
+        .stderr(Stdio::from(stderr));
     apz_os::process::detach(&mut cmd);
     if let Some((key, value)) = svc.env {
         cmd.env(key, value);
@@ -151,12 +186,15 @@ fn spawn(svc: &PlanProcess) -> Result<u32, String> {
     if let Some(dir) = pid_path.parent() {
         fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     }
-    fs::write(&pid_path, child.id().to_string()).map_err(|e| format!("{}: {e}", pid_path.display()))?;
+    fs::write(&pid_path, child.id().to_string())
+        .map_err(|e| format!("{}: {e}", pid_path.display()))?;
     Ok(child.id())
 }
 
 fn status(json: bool) -> Result<(), String> {
-    let identity = fs::read_to_string(node::dir().join("node.json")).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok());
+    let identity = fs::read_to_string(node::dir().join("node.json"))
+        .ok()
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok());
     let Some(id) = identity else {
         if json {
             println!("{}", json!({ "joined": false }));
@@ -165,16 +203,26 @@ fn status(json: bool) -> Result<(), String> {
         }
         return Ok(());
     };
-    let services: Vec<(&str, Option<u32>)> = processes().iter().map(|process| (process.name, running_pid(process))).collect();
+    let services: Vec<(&str, Option<u32>)> = processes()
+        .iter()
+        .map(|process| (process.name, running_pid(process)))
+        .collect();
     let running = services.iter().all(|(_, pid)| pid.is_some());
     let base = id.get("cid_base").and_then(Value::as_u64).unwrap_or(0);
     let count = id.get("cid_count").and_then(Value::as_u64).unwrap_or(0);
-    let cids = if count == 0 { "-".to_string() } else { format!("{}-{}", base, base + count - 1) };
+    let cids = if count == 0 {
+        "-".to_string()
+    } else {
+        format!("{}-{}", base, base + count - 1)
+    };
     let hub = text(&id, "hub_url");
     let name = text(&id, "hub_name");
     let node_id = text(&id, "node_id");
     if json {
-        let processes: serde_json::Map<String, Value> = services.iter().map(|(n, pid)| (n.to_string(), json!(pid))).collect();
+        let processes: serde_json::Map<String, Value> = services
+            .iter()
+            .map(|(n, pid)| (n.to_string(), json!(pid)))
+            .collect();
         let value = json!({
             "joined": true, "hub": hub, "hub_name": name, "node": node_id, "cids": cids,
             "running": running, "pid": services[0].1, "services": processes, "log": node::log_file("apz-link").display().to_string(),
@@ -238,7 +286,10 @@ fn leave(forget: bool, yes: bool) -> Result<(), String> {
         println!("not joined; nothing to forget");
         return Ok(());
     }
-    if !confirm(yes, "Forget this machine's node identity? It can rejoin only with a new code.")? {
+    if !confirm(
+        yes,
+        "Forget this machine's node identity? It can rejoin only with a new code.",
+    )? {
         println!("kept the node identity");
         return Ok(());
     }
@@ -287,7 +338,12 @@ fn signal(pid: u32) -> bool {
         c.arg(pid.to_string());
         c
     };
-    cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status().map(|s| s.success()).unwrap_or(false)
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -297,12 +353,19 @@ mod tests {
     use super::*;
 
     fn layout() -> Layout {
-        Layout { roles: "/r.json".into(), uds_dir: "/u".into(), token: "/t".into() }
+        Layout {
+            roles: "/r.json".into(),
+            uds_dir: "/u".into(),
+            token: "/t".into(),
+        }
     }
 
     #[test]
     fn the_cli_starts_the_shared_plan_in_its_order() {
-        let names: Vec<&str> = node::plan(20, 4, &layout()).iter().map(|svc| svc.name).collect();
+        let names: Vec<&str> = node::plan(20, 4, &layout())
+            .iter()
+            .map(|svc| svc.name)
+            .collect();
         assert_eq!(names, NAMES);
         assert_eq!(names, ["apz-link", "vsockd", "noded"]);
     }
@@ -312,13 +375,25 @@ mod tests {
         let node_vsockd = node::plan(20, 4, &layout())[1].clone();
         // The hub's vsockd: its CIDs and its apid on 7700, not the node's 7701.
         let hub_args: Vec<String> = [
-            "--uds-dir", "/u", "--cids", "20,21,22,23", "--port", "5000", "--http-port", "19080", "--apid",
-            "http://127.0.0.1:7700", "--internal-token-file", "/t",
+            "--uds-dir",
+            "/u",
+            "--cids",
+            "20,21,22,23",
+            "--port",
+            "5000",
+            "--http-port",
+            "19080",
+            "--apid",
+            "http://127.0.0.1:7700",
+            "--internal-token-file",
+            "/t",
         ]
         .iter()
         .map(|s| s.to_string())
         .collect();
-        let hub_command: Vec<String> = std::iter::once("vsockd".to_string()).chain(hub_args).collect();
+        let hub_command: Vec<String> = std::iter::once("vsockd".to_string())
+            .chain(hub_args)
+            .collect();
         assert!(!node::runs_plan(&hub_command, &node_vsockd));
     }
 

@@ -17,7 +17,12 @@ pub fn version() -> &'static str {
         dirs::resources()
             .and_then(|share| std::fs::read_to_string(share.join("VERSION")).ok())
             .map(|text| text.trim().to_string())
-            .filter(|v| !v.is_empty() && v.len() <= 64 && v.chars().all(|c| c.is_ascii_alphanumeric() || ".-+".contains(c)))
+            .filter(|v| {
+                !v.is_empty()
+                    && v.len() <= 64
+                    && v.chars()
+                        .all(|c| c.is_ascii_alphanumeric() || ".-+".contains(c))
+            })
             .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string())
     })
 }
@@ -39,7 +44,9 @@ pub mod dirs {
     /// The user's home directory (`HOME`, or `USERPROFILE` on Windows).
     pub fn home() -> Option<PathBuf> {
         let var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
-        std::env::var_os(var).filter(|v| !v.is_empty()).map(PathBuf::from)
+        std::env::var_os(var)
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
     }
 
     /// Where the plaza keeps its state (the hub's records, node identities, tokens).
@@ -105,12 +112,24 @@ pub mod dirs {
     }
 
     /// [`resources`] for a given `APZ_SHARE` value and binary path.
-    pub fn resources_from(share_env: Option<&std::ffi::OsStr>, exe: &std::path::Path) -> Option<PathBuf> {
-        let mut candidates: Vec<PathBuf> = share_env.filter(|v| !v.is_empty()).map(PathBuf::from).into_iter().collect();
+    pub fn resources_from(
+        share_env: Option<&std::ffi::OsStr>,
+        exe: &std::path::Path,
+    ) -> Option<PathBuf> {
+        let mut candidates: Vec<PathBuf> = share_env
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+            .into_iter()
+            .collect();
         if let Some(dir) = exe.parent() {
             candidates.push(dir.join("..").join("share").join("agentplaza"));
             if cfg!(target_os = "macos") {
-                candidates.push(dir.join("..").join("Resources").join("share").join("agentplaza"));
+                candidates.push(
+                    dir.join("..")
+                        .join("Resources")
+                        .join("share")
+                        .join("agentplaza"),
+                );
             }
         }
         candidates.into_iter().find(|p| p.is_dir())
@@ -191,9 +210,16 @@ pub mod private {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mode = fs::metadata(dir).map_err(|e| format!("{}: {e}", dir.display()))?.permissions().mode();
+            let mode = fs::metadata(dir)
+                .map_err(|e| format!("{}: {e}", dir.display()))?
+                .permissions()
+                .mode();
             if mode & 0o077 != 0 {
-                return Err(format!("{} is readable by other users (mode {:o}); it must be 0700", dir.display(), mode & 0o777));
+                return Err(format!(
+                    "{} is readable by other users (mode {:o}); it must be 0700",
+                    dir.display(),
+                    mode & 0o777
+                ));
             }
             Ok(())
         }
@@ -205,13 +231,20 @@ pub mod private {
             if dir.starts_with(&profile) {
                 Ok(())
             } else {
-                Err(format!("{} is outside your profile ({}); secrets must live under it", dir.display(), profile.display()))
+                Err(format!(
+                    "{} is outside your profile ({}); secrets must live under it",
+                    dir.display(),
+                    profile.display()
+                ))
             }
         }
     }
 
     fn tmp_beside(path: &Path) -> PathBuf {
-        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
         path.with_file_name(format!(".{name}.tmp.{}", std::process::id()))
     }
 
@@ -271,9 +304,17 @@ pub mod machine {
         let mut bytes = 0u32;
         // SAFETY: the key and value names are static, NUL-terminated strings; the first call only asks for the size.
         unsafe {
-            RegGetValueW(HKEY_LOCAL_MACHINE, key, value, RRF_RT_REG_SZ, None, None, Some(&mut bytes))
-                .ok()
-                .ok()?;
+            RegGetValueW(
+                HKEY_LOCAL_MACHINE,
+                key,
+                value,
+                RRF_RT_REG_SZ,
+                None,
+                None,
+                Some(&mut bytes),
+            )
+            .ok()
+            .ok()?;
         }
         let mut units = vec![0u16; (bytes as usize).div_ceil(2).max(1)];
         let mut len = (units.len() * 2) as u32;
@@ -308,7 +349,10 @@ pub mod machine {
         #[test]
         fn the_ioreg_uuid_is_read_from_its_line() {
             let text = "+-o Root  <class IORegistryEntry>\n    |   \"IOPlatformSerialNumber\" = \"C02X\"\n    |   \"IOPlatformUUID\" = \"4C2F1E0A-1234-5678-9ABC-DEF012345678\"\n";
-            assert_eq!(parse_ioreg(text).as_deref(), Some("4C2F1E0A-1234-5678-9ABC-DEF012345678"));
+            assert_eq!(
+                parse_ioreg(text).as_deref(),
+                Some("4C2F1E0A-1234-5678-9ABC-DEF012345678")
+            );
             assert_eq!(parse_ioreg("nothing here"), None);
         }
 
@@ -324,7 +368,8 @@ pub mod random {
 
     /// Fills `buf` with random bytes.
     pub fn fill(buf: &mut [u8]) -> std::io::Result<()> {
-        getrandom::fill(buf).map_err(|e| std::io::Error::other(format!("the OS random source failed: {e}")))
+        getrandom::fill(buf)
+            .map_err(|e| std::io::Error::other(format!("the OS random source failed: {e}")))
     }
 
     /// `n` random bytes as lowercase hex (`2n` characters): tokens and nonces.
@@ -360,7 +405,11 @@ pub mod process {
 
     /// The executable name for `name` on this platform (`name.exe` on Windows).
     pub fn exe(name: &str) -> String {
-        if cfg!(windows) { format!("{name}.exe") } else { name.to_string() }
+        if cfg!(windows) {
+            format!("{name}.exe")
+        } else {
+            name.to_string()
+        }
     }
 }
 
@@ -379,7 +428,11 @@ mod tests {
     }
 
     fn scratch(tag: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("apz-os-{tag}-{}-{}", std::process::id(), random::hex(4).unwrap()));
+        let dir = std::env::temp_dir().join(format!(
+            "apz-os-{tag}-{}-{}",
+            std::process::id(),
+            random::hex(4).unwrap()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         dir
     }
@@ -392,13 +445,23 @@ mod tests {
         private::write(&file, b"one").unwrap();
         private::write(&file, b"two").unwrap();
         assert_eq!(std::fs::read(&file).unwrap(), b"two");
-        let leftovers: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().filter(|e| e.file_name() != "key").collect();
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name() != "key")
+            .collect();
         assert!(leftovers.is_empty(), "no temporary file is left behind");
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
-            assert_eq!(std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777, 0o700);
+            assert_eq!(
+                std::fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+            assert_eq!(
+                std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
             assert!(private::check_dir(&dir).is_ok());
         }
         std::fs::remove_dir_all(&dir).unwrap();
@@ -413,7 +476,10 @@ mod tests {
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
         assert!(private::check_dir(&dir).is_err());
         private::create_dir(&dir).unwrap();
-        assert!(private::check_dir(&dir).is_ok(), "create_dir narrows an existing directory");
+        assert!(
+            private::check_dir(&dir).is_ok(),
+            "create_dir narrows an existing directory"
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -427,9 +493,18 @@ mod tests {
             std::fs::create_dir_all(dir).unwrap();
         }
         let exe = bin.join("apid");
-        assert_eq!(dirs::resources_from(Some(elsewhere.as_os_str()), &exe), Some(elsewhere.clone()));
-        assert_eq!(dirs::resources_from(None, &exe), Some(bin.join("..").join("share").join("agentplaza")));
-        assert_eq!(dirs::resources_from(None, std::path::Path::new("/nonexistent/bin/apid")), None);
+        assert_eq!(
+            dirs::resources_from(Some(elsewhere.as_os_str()), &exe),
+            Some(elsewhere.clone())
+        );
+        assert_eq!(
+            dirs::resources_from(None, &exe),
+            Some(bin.join("..").join("share").join("agentplaza"))
+        );
+        assert_eq!(
+            dirs::resources_from(None, std::path::Path::new("/nonexistent/bin/apid")),
+            None
+        );
         std::fs::remove_dir_all(&root).unwrap();
     }
 
@@ -445,7 +520,11 @@ mod tests {
         let (s, d, c) = (dirs::state(), dirs::data(), dirs::config());
         assert!(s != d && d != c && s != c);
         for p in [&s, &d, &c] {
-            assert!(p.to_string_lossy().to_lowercase().contains("agentplaza"), "{}", p.display());
+            assert!(
+                p.to_string_lossy().to_lowercase().contains("agentplaza"),
+                "{}",
+                p.display()
+            );
         }
     }
 }

@@ -163,7 +163,12 @@ impl Partition {
     pub fn cancel_vcpu(&self, index: u32) -> Result<(), WhpError> {
         // SAFETY: plain call; cancelling a processor that is not running makes
         // its next run return at once.
-        unsafe { call!(self.api, WHvCancelRunVirtualProcessor(self.handle, index, 0)) }
+        unsafe {
+            call!(
+                self.api,
+                WHvCancelRunVirtualProcessor(self.handle, index, 0)
+            )
+        }
     }
 
     /// Reads registers of processor `index`.
@@ -269,9 +274,7 @@ impl Drop for Partition {
 /// destination mode in bits 8..11, trigger mode in bits 12..15.
 fn interrupt_control(interrupt: Interrupt) -> WHV_INTERRUPT_CONTROL {
     let kind = match interrupt.delivery {
-        DeliveryMode::Fixed | DeliveryMode::ExtInt | DeliveryMode::Smi => {
-            WHvX64InterruptTypeFixed
-        }
+        DeliveryMode::Fixed | DeliveryMode::ExtInt | DeliveryMode::Smi => WHvX64InterruptTypeFixed,
         DeliveryMode::LowestPriority => WHvX64InterruptTypeLowestPriority,
         DeliveryMode::Nmi => WHvX64InterruptTypeNmi,
         DeliveryMode::Init => WHvX64InterruptTypeInit,

@@ -13,14 +13,16 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io::{self, BufRead, BufReader, Write};
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
+use std::net::{
+    IpAddr, Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs,
+};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{Duration, Instant};
 
-use super::relay::{self, RelayProcess, RELAY_LAN_IP};
-use super::stdio::{ensure_network, read_line_capped, Docker, SystemDocker};
+use super::relay::{self, RELAY_LAN_IP, RelayProcess};
+use super::stdio::{Docker, SystemDocker, ensure_network, read_line_capped};
 
 /// The proxy's default port on the host (apid's range).
 pub const DEFAULT_PORT: u16 = 19128;
@@ -55,7 +57,11 @@ pub struct Handshake {
 
 impl Default for Handshake {
     fn default() -> Self {
-        Handshake { timeout: Duration::from_secs(2), tarpit: Duration::from_secs(2), max_pending: 16 }
+        Handshake {
+            timeout: Duration::from_secs(2),
+            tarpit: Duration::from_secs(2),
+            max_pending: 16,
+        }
     }
 }
 
@@ -63,7 +69,10 @@ impl Default for Handshake {
 impl Handshake {
     /// The same bounds with a short tarpit, so tests with many failures stay fast.
     pub fn fast() -> Handshake {
-        Handshake { tarpit: Duration::from_millis(10), ..Handshake::default() }
+        Handshake {
+            tarpit: Duration::from_millis(10),
+            ..Handshake::default()
+        }
     }
 }
 
@@ -95,13 +104,18 @@ struct EvictionLog {
 impl EvictionLog {
     /// Records one eviction at `now`. Returns the line to log, or None when this eviction is suppressed.
     fn record(&mut self, now: Instant) -> Option<String> {
-        if self.last_logged.is_some_and(|at| now.duration_since(at) < EVICTION_LOG_WINDOW) {
+        if self
+            .last_logged
+            .is_some_and(|at| now.duration_since(at) < EVICTION_LOG_WINDOW)
+        {
             self.suppressed += 1;
             return None;
         }
         let line = match self.suppressed {
             0 => "closed the oldest unauthenticated relay connection to make room".to_string(),
-            n => format!("closed the oldest unauthenticated relay connection to make room; {n} more since the last log line"),
+            n => format!(
+                "closed the oldest unauthenticated relay connection to make room; {n} more since the last log line"
+            ),
         };
         self.last_logged = Some(now);
         self.suppressed = 0;
@@ -226,7 +240,12 @@ impl Egress {
 
     /// Makes the networks, binds the proxy, and starts the relay if it is not running. Then gives `server` a free
     /// address on `apz-mcp`.
-    pub fn attach(self: &Arc<Self>, server: &str, allow_private: bool, blocklist: &[String]) -> Result<Lease, String> {
+    pub fn attach(
+        self: &Arc<Self>,
+        server: &str,
+        allow_private: bool,
+        blocklist: &[String],
+    ) -> Result<Lease, String> {
         self.ensure_listeners()?;
         self.set_blocklist(blocklist);
         self.ensure_relay()?;
@@ -238,12 +257,22 @@ impl Egress {
                 .ok_or("no free address on the apz-mcp network")?
         };
         self.admit_at(ip, server, allow_private);
-        Ok(Lease { ip, proxy: format!("http://{RELAY_LAN_IP}:{RELAY_PORT}"), egress: Arc::clone(self) })
+        Ok(Lease {
+            ip,
+            proxy: format!("http://{RELAY_LAN_IP}:{RELAY_PORT}"),
+            egress: Arc::clone(self),
+        })
     }
 
     /// Records that a container at `ip` belongs to `server`. The proxy answers that address from now on.
     pub fn admit_at(&self, ip: Ipv4Addr, server: &str, allow_private: bool) {
-        lock(&self.tenants).insert(ip, Tenant { server: server.to_string(), allow_private });
+        lock(&self.tenants).insert(
+            ip,
+            Tenant {
+                server: server.to_string(),
+                allow_private,
+            },
+        );
     }
 
     /// The fetch blocklist the proxy applies (the settings' list, as the last attach saw it).
@@ -264,7 +293,9 @@ impl Egress {
     }
 
     fn tenant(&self, ip: Ipv4Addr) -> Option<(String, bool)> {
-        lock(&self.tenants).get(&ip).map(|t| (t.server.clone(), t.allow_private))
+        lock(&self.tenants)
+            .get(&ip)
+            .map(|t| (t.server.clone(), t.allow_private))
     }
 
     /// Admits a connection as pending. When the cap is full, the oldest pending connection is closed to make room. A
@@ -304,7 +335,12 @@ impl Egress {
         if *bound {
             return Ok(());
         }
-        let loopback = (self.bind)(Ipv4Addr::LOCALHOST).map_err(|_| format!("the egress proxy cannot listen on 127.0.0.1:{}; remote (http) servers still work", self.port))?;
+        let loopback = (self.bind)(Ipv4Addr::LOCALHOST).map_err(|_| {
+            format!(
+                "the egress proxy cannot listen on 127.0.0.1:{}; remote (http) servers still work",
+                self.port
+            )
+        })?;
         let egress = Arc::clone(self);
         std::thread::spawn(move || serve(loopback, egress));
         if let Some(gateway) = bridge_gateway(self.docker.as_ref()) {
@@ -313,7 +349,10 @@ impl Egress {
                     let egress = Arc::clone(self);
                     std::thread::spawn(move || serve(listener, egress));
                 }
-                Err(_) => eprintln!("apid: mcp: the proxy is on 127.0.0.1:{} only (the bridge gateway {gateway} is not on this host)", self.port),
+                Err(_) => eprintln!(
+                    "apid: mcp: the proxy is on 127.0.0.1:{} only (the bridge gateway {gateway} is not on this host)",
+                    self.port
+                ),
             }
         }
         *bound = true;
@@ -334,9 +373,15 @@ impl Egress {
         relay::ensure_uplink(self.docker.as_ref())?;
         let arch = relay::docker_arch(self.docker.as_ref())?;
         let installed = relay::install(&(self.relay_for)(arch), &self.state_dir)?;
-        let token = apz_os::random::hex(32).map_err(|e| format!("cannot make a relay token: {e}"))?;
+        let token =
+            apz_os::random::hex(32).map_err(|e| format!("cannot make a relay token: {e}"))?;
         self.set_token(&token);
-        *slot = Some(relay::start(Arc::clone(&self.docker), &installed, &token, self.port)?);
+        *slot = Some(relay::start(
+            Arc::clone(&self.docker),
+            &installed,
+            &token,
+            self.port,
+        )?);
         Ok(())
     }
 
@@ -344,7 +389,11 @@ impl Egress {
     fn log(&self, server: &str, host: &str, allowed: bool, why: &str) {
         if lock(&self.logged).insert((server.to_string(), host.to_string(), allowed)) {
             let verdict = if allowed { "allowed" } else { "refused" };
-            let suffix = if why.is_empty() { String::new() } else { format!(" ({why})") };
+            let suffix = if why.is_empty() {
+                String::new()
+            } else {
+                format!(" ({why})")
+            };
             eprintln!("apid: mcp {server}: {verdict} {host}{suffix}");
         }
     }
@@ -353,7 +402,16 @@ impl Egress {
 /// The bridge gateway of Docker's default bridge: the address `host-gateway` names on a native Linux engine. None
 /// when docker cannot say, which on Docker Desktop is normal.
 pub fn bridge_gateway(docker: &dyn Docker) -> Option<Ipv4Addr> {
-    let args: Vec<String> = ["network", "inspect", "bridge", "-f", "{{range .IPAM.Config}}{{.Gateway}}{{end}}"].iter().map(|s| s.to_string()).collect();
+    let args: Vec<String> = [
+        "network",
+        "inspect",
+        "bridge",
+        "-f",
+        "{{range .IPAM.Config}}{{.Gateway}}{{end}}",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
     let ran = docker.run(&args, &[]).ok()?;
     if !ran.ok {
         return None;
@@ -379,7 +437,9 @@ pub fn proxy_env(proxy: &str) -> Vec<(String, String)> {
 /// Accepts relay connections on a listener, one thread each. Each is admitted as pending, which may evict the oldest.
 pub fn serve(listener: TcpListener, egress: Arc<Egress>) {
     for stream in listener.incoming().flatten() {
-        let Ok(socket) = stream.try_clone() else { continue };
+        let Ok(socket) = stream.try_clone() else {
+            continue;
+        };
         let id = egress.admit_pending(socket);
         let egress = Arc::clone(&egress);
         std::thread::spawn(move || relay_connection(stream, &egress, id));
@@ -428,15 +488,22 @@ fn relay_connection(stream: TcpStream, egress: &Egress, id: u64) {
 
 /// The handshake: the token line, then the PROXY line. Returns the reader (with anything read past the two lines)
 /// and the source address.
-fn handshake(stream: &TcpStream, egress: &Egress) -> Result<(BufReader<TcpStream>, Ipv4Addr), &'static str> {
+fn handshake(
+    stream: &TcpStream,
+    egress: &Egress,
+) -> Result<(BufReader<TcpStream>, Ipv4Addr), &'static str> {
     let clone = stream.try_clone().map_err(|_| "the connection failed")?;
     let mut reader = BufReader::new(clone);
-    let hello = read_line_capped(&mut reader, 256).map_err(|_| "no token before the timeout")?.ok_or("no token")?;
+    let hello = read_line_capped(&mut reader, 256)
+        .map_err(|_| "no token before the timeout")?
+        .ok_or("no token")?;
     let token = hello.trim_end().strip_prefix(TOKEN_PREFIX).unwrap_or("");
     if token.is_empty() || !egress.token_matches(token) {
         return Err("the token is missing or wrong");
     }
-    let proxy_line = read_line_capped(&mut reader, 128).map_err(|_| "no PROXY line before the timeout")?.ok_or("no PROXY line")?;
+    let proxy_line = read_line_capped(&mut reader, 128)
+        .map_err(|_| "no PROXY line before the timeout")?
+        .ok_or("no PROXY line")?;
     let source = parse_proxy_v1(proxy_line.trim_end()).ok_or("the PROXY line is not valid")?;
     Ok((reader, source))
 }
@@ -473,19 +540,39 @@ fn read_head(reader: &mut impl BufRead) -> Result<Vec<String>, Option<u16>> {
 }
 
 /// The request for one client: the policy for the server `source` belongs to, then the tunnel or the request.
-fn serve_request(mut client: TcpStream, mut reader: BufReader<TcpStream>, source: Ipv4Addr, egress: &Egress) {
+fn serve_request(
+    mut client: TcpStream,
+    mut reader: BufReader<TcpStream>,
+    source: Ipv4Addr,
+    egress: &Egress,
+) {
     // The head is read before any answer, whoever the client is, so nothing is left unread on close.
     let head = match read_head(&mut reader) {
         Ok(head) => head,
         Err(None) => return,
-        Err(Some(code)) => return respond(&mut client, code, "Request Header Fields Too Large", ""),
+        Err(Some(code)) => {
+            return respond(&mut client, code, "Request Header Fields Too Large", "");
+        }
     };
     let Some((server, allow_private)) = egress.tenant(source) else {
-        return respond(&mut client, 403, "Forbidden", "no network lease for this address");
+        return respond(
+            &mut client,
+            403,
+            "Forbidden",
+            "no network lease for this address",
+        );
     };
-    let parts: Vec<String> = head.first().map(|l| l.split_whitespace().map(str::to_string).collect()).unwrap_or_default();
+    let parts: Vec<String> = head
+        .first()
+        .map(|l| l.split_whitespace().map(str::to_string).collect())
+        .unwrap_or_default();
     let [method, target, version] = parts.as_slice() else {
-        return respond(&mut client, 400, "Bad Request", "a request line is method, target and version");
+        return respond(
+            &mut client,
+            400,
+            "Bad Request",
+            "a request line is method, target and version",
+        );
     };
     let connect = method.eq_ignore_ascii_case("CONNECT");
     let (host, port, rewritten) = if connect {
@@ -495,7 +582,12 @@ fn serve_request(mut client: TcpStream, mut reader: BufReader<TcpStream>, source
         }
     } else {
         let Some(rest) = target.strip_prefix("http://") else {
-            return respond(&mut client, 400, "Bad Request", "only http:// URLs and CONNECT are proxied");
+            return respond(
+                &mut client,
+                400,
+                "Bad Request",
+                "only http:// URLs and CONNECT are proxied",
+            );
         };
         let (authority, path) = match rest.find('/') {
             Some(at) => (&rest[..at], &rest[at..]),
@@ -528,7 +620,10 @@ fn serve_request(mut client: TcpStream, mut reader: BufReader<TcpStream>, source
     };
     match rewritten {
         None => {
-            if client.write_all(b"HTTP/1.1 200 Connection established\r\n\r\n").is_err() {
+            if client
+                .write_all(b"HTTP/1.1 200 Connection established\r\n\r\n")
+                .is_err()
+            {
                 return;
             }
         }
@@ -551,9 +646,18 @@ fn serve_request(mut client: TcpStream, mut reader: BufReader<TcpStream>, source
 }
 
 /// The decision for a connection to `host:port`: the address to connect to, or why not.
-pub fn decide(host: &str, port: u16, allow_private: bool, blocklist: &[String]) -> Result<SocketAddr, String> {
+pub fn decide(
+    host: &str,
+    port: u16,
+    allow_private: bool,
+    blocklist: &[String],
+) -> Result<SocketAddr, String> {
     let host = host.trim_start_matches('[').trim_end_matches(']');
-    let verdict = crate::internal::egress_verdict(crate::internal::on_fetch_blocklist(blocklist, host), None, host);
+    let verdict = crate::internal::egress_verdict(
+        crate::internal::on_fetch_blocklist(blocklist, host),
+        None,
+        host,
+    );
     if !verdict.allow {
         return Err(verdict.reason.unwrap_or_else(|| format!("refused: {host}")));
     }
@@ -569,8 +673,13 @@ pub fn decide(host: &str, port: u16, allow_private: bool, blocklist: &[String]) 
         return Err(format!("refused: {host} does not resolve"));
     }
     if !allow_private {
-        if let Some((ip, why)) = addresses.iter().find_map(|ip| refusal(*ip).map(|why| (*ip, why))) {
-            return Err(format!("refused: {host} is a {why} address ({ip}); set allow_private to reach it"));
+        if let Some((ip, why)) = addresses
+            .iter()
+            .find_map(|ip| refusal(*ip).map(|why| (*ip, why)))
+        {
+            return Err(format!(
+                "refused: {host} is a {why} address ({ip}); set allow_private to reach it"
+            ));
         }
     }
     Ok(SocketAddr::new(addresses[0], port))
@@ -638,7 +747,9 @@ fn split_host_port(authority: &str, default: u16) -> Option<(String, u16)> {
         return Some((rest[..end].to_string(), port));
     }
     match authority.rsplit_once(':') {
-        Some((host, port)) if !host.is_empty() && !host.contains(':') => Some((host.to_string(), port.parse().ok()?)),
+        Some((host, port)) if !host.is_empty() && !host.contains(':') => {
+            Some((host.to_string(), port.parse().ok()?))
+        }
         None if !authority.is_empty() => Some((authority.to_string(), default)),
         _ => None,
     }
@@ -646,7 +757,9 @@ fn split_host_port(authority: &str, default: u16) -> Option<(String, u16)> {
 
 /// Copies both ways until either side closes.
 fn pump(mut client_read: TcpStream, mut client_write: TcpStream, mut upstream: TcpStream) {
-    let Ok(mut upstream_write) = upstream.try_clone() else { return };
+    let Ok(mut upstream_write) = upstream.try_clone() else {
+        return;
+    };
     let forward = std::thread::spawn(move || {
         let _ = io::copy(&mut client_read, &mut upstream_write);
         let _ = upstream_write.shutdown(Shutdown::Write);
@@ -669,30 +782,66 @@ mod tests {
     #[test]
     fn the_blocklist_refuses_even_when_private_is_allowed() {
         let block = list(&["evil.example"]);
-        assert!(decide("evil.example", 443, false, &block).unwrap_err().contains("blocklist"));
-        assert!(decide("evil.example", 443, true, &block).unwrap_err().contains("blocklist"));
+        assert!(
+            decide("evil.example", 443, false, &block)
+                .unwrap_err()
+                .contains("blocklist")
+        );
+        assert!(
+            decide("evil.example", 443, true, &block)
+                .unwrap_err()
+                .contains("blocklist")
+        );
         assert!(decide("api.evil.example", 443, true, &block).is_err());
     }
 
     #[test]
     fn private_loopback_link_local_and_metadata_are_refused_unless_allowed() {
-        for host in ["127.0.0.1", "10.0.0.5", "192.168.1.1", "169.254.169.254", "[fe80::1]", "[fd00:ec2::254]", "localhost", "0.0.0.0"] {
-            assert!(decide(host, 80, false, &[]).is_err(), "{host} must be refused");
-            assert!(decide(host, 80, true, &[]).is_ok(), "{host} is allowed with allow_private");
+        for host in [
+            "127.0.0.1",
+            "10.0.0.5",
+            "192.168.1.1",
+            "169.254.169.254",
+            "[fe80::1]",
+            "[fd00:ec2::254]",
+            "localhost",
+            "0.0.0.0",
+        ] {
+            assert!(
+                decide(host, 80, false, &[]).is_err(),
+                "{host} must be refused"
+            );
+            assert!(
+                decide(host, 80, true, &[]).is_ok(),
+                "{host} is allowed with allow_private"
+            );
         }
-        assert!(decide("169.254.169.254", 80, false, &[]).unwrap_err().contains("metadata"));
+        assert!(
+            decide("169.254.169.254", 80, false, &[])
+                .unwrap_err()
+                .contains("metadata")
+        );
     }
 
     #[test]
     fn a_public_address_is_allowed() {
-        assert_eq!(decide("8.8.8.8", 443, false, &[]).unwrap(), "8.8.8.8:443".parse().unwrap());
+        assert_eq!(
+            decide("8.8.8.8", 443, false, &[]).unwrap(),
+            "8.8.8.8:443".parse().unwrap()
+        );
         assert!(decide("[2001:4860:4860::8888]", 443, false, &[]).is_ok());
     }
 
     #[test]
     fn authorities_split_into_host_and_port() {
-        assert_eq!(split_host_port("example.com:8443", 443), Some(("example.com".into(), 8443)));
-        assert_eq!(split_host_port("example.com", 443), Some(("example.com".into(), 443)));
+        assert_eq!(
+            split_host_port("example.com:8443", 443),
+            Some(("example.com".into(), 8443))
+        );
+        assert_eq!(
+            split_host_port("example.com", 443),
+            Some(("example.com".into(), 443))
+        );
         assert_eq!(split_host_port("[::1]:9", 443), Some(("::1".into(), 9)));
         assert_eq!(split_host_port("::1", 443), None);
         assert_eq!(split_host_port("host:notaport", 443), None);
@@ -701,9 +850,19 @@ mod tests {
     #[test]
     fn containers_get_the_proxy_variables_and_an_empty_no_proxy() {
         let env = proxy_env("http://172.29.250.2:3128");
-        let get = |k: &str| env.iter().find(|(name, _)| name == k).map(|(_, v)| v.clone());
-        assert_eq!(get("HTTPS_PROXY").as_deref(), Some("http://172.29.250.2:3128"));
-        assert_eq!(get("https_proxy").as_deref(), Some("http://172.29.250.2:3128"));
+        let get = |k: &str| {
+            env.iter()
+                .find(|(name, _)| name == k)
+                .map(|(_, v)| v.clone())
+        };
+        assert_eq!(
+            get("HTTPS_PROXY").as_deref(),
+            Some("http://172.29.250.2:3128")
+        );
+        assert_eq!(
+            get("https_proxy").as_deref(),
+            Some("http://172.29.250.2:3128")
+        );
         assert_eq!(get("NO_PROXY").as_deref(), Some(""));
         assert_eq!(get("NODE_USE_ENV_PROXY").as_deref(), Some("1"));
         assert_eq!(env.len(), 6);
@@ -711,12 +870,24 @@ mod tests {
 
     #[test]
     fn the_proxy_line_parses_only_when_it_is_exact() {
-        assert_eq!(parse_proxy_v1("PROXY TCP4 172.29.250.9 172.29.250.2 5000 3128"), Some(Ipv4Addr::new(172, 29, 250, 9)));
+        assert_eq!(
+            parse_proxy_v1("PROXY TCP4 172.29.250.9 172.29.250.2 5000 3128"),
+            Some(Ipv4Addr::new(172, 29, 250, 9))
+        );
         assert_eq!(parse_proxy_v1("PROXY TCP6 ::1 ::1 1 2"), None);
-        assert_eq!(parse_proxy_v1("PROXY TCP4 172.29.250.9 172.29.250.2 5000"), None);
-        assert_eq!(parse_proxy_v1("PROXY TCP4 172.29.250.9 172.29.250.2 5000 3128 extra"), None);
+        assert_eq!(
+            parse_proxy_v1("PROXY TCP4 172.29.250.9 172.29.250.2 5000"),
+            None
+        );
+        assert_eq!(
+            parse_proxy_v1("PROXY TCP4 172.29.250.9 172.29.250.2 5000 3128 extra"),
+            None
+        );
         assert_eq!(parse_proxy_v1("GET / HTTP/1.1"), None);
-        assert_eq!(parse_proxy_v1("PROXY TCP4 not-an-ip 172.29.250.2 1 2"), None);
+        assert_eq!(
+            parse_proxy_v1("PROXY TCP4 not-an-ip 172.29.250.2 1 2"),
+            None
+        );
     }
 
     /// A proxy that accepts relay connections on loopback, with the token `tok`.
@@ -732,7 +903,9 @@ mod tests {
         (addr, egress)
     }
 
-    fn test_egress(bind: impl Fn(Ipv4Addr) -> io::Result<TcpListener> + Send + Sync + 'static) -> Arc<Egress> {
+    fn test_egress(
+        bind: impl Fn(Ipv4Addr) -> io::Result<TcpListener> + Send + Sync + 'static,
+    ) -> Arc<Egress> {
         Egress::with_setup(Setup {
             docker: Arc::new(crate::mcp::stdio::tests::MockDocker::silent()),
             bind: Box::new(bind),
@@ -746,7 +919,8 @@ mod tests {
     /// Sends the relay's hello (token, PROXY line from `source`) and then `request`; returns what came back.
     fn relayed(addr: SocketAddr, token: &str, source: &str, request: &str) -> String {
         let mut stream = TcpStream::connect(addr).unwrap();
-        let hello = format!("APZ-RELAY-TOKEN {token}\r\nPROXY TCP4 {source} 172.29.250.2 5000 3128\r\n");
+        let hello =
+            format!("APZ-RELAY-TOKEN {token}\r\nPROXY TCP4 {source} 172.29.250.2 5000 3128\r\n");
         stream.write_all(hello.as_bytes()).unwrap();
         stream.write_all(request.as_bytes()).unwrap();
         let mut out = String::new();
@@ -758,12 +932,36 @@ mod tests {
     #[test]
     fn a_relayed_request_is_policed_for_the_server_its_proxy_source_names() {
         let (addr, _) = proxy(false, &["evil.example"]);
-        let blocked = relayed(addr, "tok", "172.29.250.9", "CONNECT evil.example:443 HTTP/1.1\r\nHost: x\r\n\r\n");
-        assert!(blocked.starts_with("HTTP/1.1 403") && blocked.contains("blocklist"), "{blocked}");
-        let private = relayed(addr, "tok", "172.29.250.9", "CONNECT 127.0.0.1:9 HTTP/1.1\r\nHost: x\r\n\r\n");
-        assert!(private.starts_with("HTTP/1.1 403") && private.contains("loopback"), "{private}");
-        let plain = relayed(addr, "tok", "172.29.250.9", "GET http://10.1.1.1/secret?token=1 HTTP/1.1\r\nHost: 10.1.1.1\r\n\r\n");
-        assert!(plain.starts_with("HTTP/1.1 403") && !plain.contains("token"), "{plain}");
+        let blocked = relayed(
+            addr,
+            "tok",
+            "172.29.250.9",
+            "CONNECT evil.example:443 HTTP/1.1\r\nHost: x\r\n\r\n",
+        );
+        assert!(
+            blocked.starts_with("HTTP/1.1 403") && blocked.contains("blocklist"),
+            "{blocked}"
+        );
+        let private = relayed(
+            addr,
+            "tok",
+            "172.29.250.9",
+            "CONNECT 127.0.0.1:9 HTTP/1.1\r\nHost: x\r\n\r\n",
+        );
+        assert!(
+            private.starts_with("HTTP/1.1 403") && private.contains("loopback"),
+            "{private}"
+        );
+        let plain = relayed(
+            addr,
+            "tok",
+            "172.29.250.9",
+            "GET http://10.1.1.1/secret?token=1 HTTP/1.1\r\nHost: 10.1.1.1\r\n\r\n",
+        );
+        assert!(
+            plain.starts_with("HTTP/1.1 403") && !plain.contains("token"),
+            "{plain}"
+        );
     }
 
     #[test]
@@ -775,12 +973,27 @@ mod tests {
                 let mut buf = [0u8; 512];
                 let n = s.read(&mut buf).unwrap_or(0);
                 let head = String::from_utf8_lossy(&buf[..n]).into_owned();
-                let body = if head.starts_with("GET /hello HTTP/1.1") { "origin-ok" } else { "wrong-path" };
-                let _ = write!(s, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                let body = if head.starts_with("GET /hello HTTP/1.1") {
+                    "origin-ok"
+                } else {
+                    "wrong-path"
+                };
+                let _ = write!(
+                    s,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
             }
         });
         let (addr, _) = proxy(true, &[]);
-        let reply = relayed(addr, "tok", "172.29.250.9", &format!("GET http://127.0.0.1:{origin_port}/hello HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"));
+        let reply = relayed(
+            addr,
+            "tok",
+            "172.29.250.9",
+            &format!(
+                "GET http://127.0.0.1:{origin_port}/hello HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"
+            ),
+        );
         assert!(reply.ends_with("origin-ok"), "{reply}");
     }
 
@@ -790,7 +1003,9 @@ mod tests {
         let request = "CONNECT 8.8.8.8:443 HTTP/1.1\r\n\r\n";
         assert_eq!(relayed(addr, "forged", "172.29.250.9", request), "");
         let mut stream = TcpStream::connect(addr).unwrap();
-        stream.write_all(format!("PROXY TCP4 172.29.250.9 172.29.250.2 1 2\r\n{request}").as_bytes()).unwrap();
+        stream
+            .write_all(format!("PROXY TCP4 172.29.250.9 172.29.250.2 1 2\r\n{request}").as_bytes())
+            .unwrap();
         let mut out = String::new();
         let _ = stream.read_to_string(&mut out);
         assert_eq!(out, "", "no token line, no answer");
@@ -800,7 +1015,12 @@ mod tests {
     fn the_source_address_of_the_relay_is_not_checked_the_token_is_the_gate() {
         // Docker Desktop NATs the relay, so its address is no gate: a connection from loopback with the right token works.
         let (addr, _) = proxy(false, &["evil.example"]);
-        let reply = relayed(addr, "tok", "172.29.250.9", "CONNECT evil.example:443 HTTP/1.1\r\n\r\n");
+        let reply = relayed(
+            addr,
+            "tok",
+            "172.29.250.9",
+            "CONNECT evil.example:443 HTTP/1.1\r\n\r\n",
+        );
         assert!(reply.starts_with("HTTP/1.1 403"), "{reply}");
     }
 
@@ -808,7 +1028,9 @@ mod tests {
     fn bounded(handshake: Handshake) -> (SocketAddr, Arc<Egress>) {
         let egress = Egress::with_setup(Setup {
             docker: Arc::new(crate::mcp::stdio::tests::MockDocker::silent()),
-            bind: Box::new(|_: Ipv4Addr| -> io::Result<TcpListener> { panic!("no bind in this test") }),
+            bind: Box::new(|_: Ipv4Addr| -> io::Result<TcpListener> {
+                panic!("no bind in this test")
+            }),
             port: DEFAULT_PORT,
             state_dir: std::env::temp_dir(),
             relay_for: relay_to(PathBuf::from("mcp_relay")),
@@ -827,19 +1049,51 @@ mod tests {
     fn a_hundred_bad_handshakes_then_a_good_one_still_succeeds() {
         let (addr, _) = bounded(Handshake::fast());
         for _ in 0..100 {
-            assert_eq!(relayed(addr, "forged", "172.29.250.9", "CONNECT 8.8.8.8:443 HTTP/1.1\r\n\r\n"), "");
+            assert_eq!(
+                relayed(
+                    addr,
+                    "forged",
+                    "172.29.250.9",
+                    "CONNECT 8.8.8.8:443 HTTP/1.1\r\n\r\n"
+                ),
+                ""
+            );
         }
         // The valid token is accepted whatever the failure count: the request reaches the policy (loopback is refused).
-        let reply = relayed(addr, "tok", "172.29.250.9", "CONNECT 127.0.0.1:9 HTTP/1.1\r\n\r\n");
-        assert!(reply.starts_with("HTTP/1.1 403") && reply.contains("loopback"), "{reply}");
+        let reply = relayed(
+            addr,
+            "tok",
+            "172.29.250.9",
+            "CONNECT 127.0.0.1:9 HTTP/1.1\r\n\r\n",
+        );
+        assert!(
+            reply.starts_with("HTTP/1.1 403") && reply.contains("loopback"),
+            "{reply}"
+        );
     }
 
     #[test]
     fn a_failed_handshake_is_held_until_the_tarpit_time() {
-        let (addr, _) = bounded(Handshake { timeout: Duration::from_secs(2), tarpit: Duration::from_millis(400), max_pending: 16 });
+        let (addr, _) = bounded(Handshake {
+            timeout: Duration::from_secs(2),
+            tarpit: Duration::from_millis(400),
+            max_pending: 16,
+        });
         let started = Instant::now();
-        assert_eq!(relayed(addr, "forged", "172.29.250.9", "CONNECT 8.8.8.8:443 HTTP/1.1\r\n\r\n"), "");
-        assert!(started.elapsed() >= Duration::from_millis(350), "{:?}", started.elapsed());
+        assert_eq!(
+            relayed(
+                addr,
+                "forged",
+                "172.29.250.9",
+                "CONNECT 8.8.8.8:443 HTTP/1.1\r\n\r\n"
+            ),
+            ""
+        );
+        assert!(
+            started.elapsed() >= Duration::from_millis(350),
+            "{:?}",
+            started.elapsed()
+        );
     }
 
     #[test]
@@ -847,20 +1101,31 @@ mod tests {
         let mut log = EvictionLog::default();
         let t0 = Instant::now();
         // 100 evictions within one second: the first is logged at once, the rest are suppressed.
-        let lines: Vec<String> = (0..100u64).filter_map(|k| log.record(t0 + Duration::from_millis(k * 10))).collect();
+        let lines: Vec<String> = (0..100u64)
+            .filter_map(|k| log.record(t0 + Duration::from_millis(k * 10)))
+            .collect();
         assert_eq!(lines.len(), 1, "{lines:?}");
         assert!(lines[0].starts_with("closed the oldest"), "{}", lines[0]);
         assert!(!lines[0].contains("more since"), "{}", lines[0]);
         // The next eviction after the window is logged, and reports the 99 suppressed.
-        let next = log.record(t0 + EVICTION_LOG_WINDOW).expect("logged after the window");
+        let next = log
+            .record(t0 + EVICTION_LOG_WINDOW)
+            .expect("logged after the window");
         assert!(next.contains("99 more since the last log line"), "{next}");
         // And the count restarts from there.
-        assert!(log.record(t0 + EVICTION_LOG_WINDOW + Duration::from_secs(1)).is_none());
+        assert!(
+            log.record(t0 + EVICTION_LOG_WINDOW + Duration::from_secs(1))
+                .is_none()
+        );
     }
 
     #[test]
     fn the_oldest_pending_connection_is_evicted_for_a_new_one() {
-        let handshake = Handshake { timeout: Duration::from_secs(5), tarpit: Duration::from_millis(10), max_pending: 16 };
+        let handshake = Handshake {
+            timeout: Duration::from_secs(5),
+            tarpit: Duration::from_millis(10),
+            max_pending: 16,
+        };
         let (addr, _) = bounded(handshake);
         // Sixteen connections that send nothing fill the pending set; their handshakes have seconds to finish.
         let mut held: Vec<TcpStream> = (0..16).map(|_| TcpStream::connect(addr).unwrap()).collect();
@@ -868,49 +1133,89 @@ mod tests {
         // A seventeenth arrives: it is accepted, and the oldest of the held is closed.
         let mut newest = TcpStream::connect(addr).unwrap();
         let mut oldest = held.remove(0);
-        oldest.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        oldest
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
         let started = Instant::now();
         let mut out = String::new();
         let _ = oldest.read_to_string(&mut out);
         assert_eq!(out, "");
-        assert!(started.elapsed() < Duration::from_secs(2), "evicted at once, not timed out: {:?}", started.elapsed());
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "evicted at once, not timed out: {:?}",
+            started.elapsed()
+        );
         // The new connection is still open.
-        newest.set_read_timeout(Some(Duration::from_millis(300))).unwrap();
+        newest
+            .set_read_timeout(Some(Duration::from_millis(300)))
+            .unwrap();
         let mut buf = [0u8; 1];
         let err = newest.read(&mut buf).unwrap_err();
-        assert!(matches!(err.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut), "{err:?}");
+        assert!(
+            matches!(
+                err.kind(),
+                io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+            ),
+            "{err:?}"
+        );
         drop(held);
         drop(newest);
     }
 
     #[test]
     fn a_relay_is_served_at_once_among_sixteen_attackers_fifty_times_and_is_never_evicted() {
-        let handshake = Handshake { timeout: Duration::from_secs(2), tarpit: Duration::from_millis(10), max_pending: 16 };
+        let handshake = Handshake {
+            timeout: Duration::from_secs(2),
+            tarpit: Duration::from_millis(10),
+            max_pending: 16,
+        };
         let (addr, _) = bounded(handshake);
         for round in 0..50 {
             // Sixteen attackers hold the pending set. The relay arrives after them, so the oldest attacker is
             // evicted for it, and it authenticates within milliseconds: nothing arrives after it to evict it.
-            let attackers: Vec<TcpStream> = (0..16).map(|_| TcpStream::connect(addr).unwrap()).collect();
+            let attackers: Vec<TcpStream> =
+                (0..16).map(|_| TcpStream::connect(addr).unwrap()).collect();
             let started = Instant::now();
-            let reply = relayed(addr, "tok", "172.29.250.9", "CONNECT 127.0.0.1:9 HTTP/1.1\r\n\r\n");
-            assert!(reply.starts_with("HTTP/1.1 403") && reply.contains("loopback"), "round {round}: {reply:?}");
-            assert!(started.elapsed() < Duration::from_secs(1), "round {round}: served at once, took {:?}", started.elapsed());
+            let reply = relayed(
+                addr,
+                "tok",
+                "172.29.250.9",
+                "CONNECT 127.0.0.1:9 HTTP/1.1\r\n\r\n",
+            );
+            assert!(
+                reply.starts_with("HTTP/1.1 403") && reply.contains("loopback"),
+                "round {round}: {reply:?}"
+            );
+            assert!(
+                started.elapsed() < Duration::from_secs(1),
+                "round {round}: served at once, took {:?}",
+                started.elapsed()
+            );
             drop(attackers);
         }
     }
 
     #[test]
     fn a_handshake_that_sends_nothing_or_a_partial_token_times_out() {
-        let handshake = Handshake { timeout: Duration::from_millis(200), tarpit: Duration::ZERO, max_pending: 16 };
+        let handshake = Handshake {
+            timeout: Duration::from_millis(200),
+            tarpit: Duration::ZERO,
+            max_pending: 16,
+        };
         let (addr, _) = bounded(handshake);
         let started = Instant::now();
         let mut silent = TcpStream::connect(addr).unwrap();
-        silent.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        silent
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
         let mut out = String::new();
         let _ = silent.read_to_string(&mut out);
         let waited = started.elapsed();
         assert_eq!(out, "");
-        assert!(waited >= Duration::from_millis(150) && waited < Duration::from_secs(3), "{waited:?}");
+        assert!(
+            waited >= Duration::from_millis(150) && waited < Duration::from_secs(3),
+            "{waited:?}"
+        );
         // A slowloris: part of the token line, and no newline, so the line never completes.
         let mut slow = TcpStream::connect(addr).unwrap();
         slow.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
@@ -919,30 +1224,47 @@ mod tests {
         let mut out = String::new();
         let _ = slow.read_to_string(&mut out);
         assert_eq!(out, "");
-        assert!(started.elapsed() >= Duration::from_millis(150) && started.elapsed() < Duration::from_secs(3));
+        assert!(
+            started.elapsed() >= Duration::from_millis(150)
+                && started.elapsed() < Duration::from_secs(3)
+        );
     }
 
     #[test]
     fn a_relayed_source_with_no_lease_gets_nothing_useful() {
         let (addr, _) = proxy(false, &[]);
-        let reply = relayed(addr, "tok", "172.29.250.99", "CONNECT 8.8.8.8:443 HTTP/1.1\r\n\r\n");
-        assert!(reply.starts_with("HTTP/1.1 403") && reply.contains("no network lease"), "{reply}");
+        let reply = relayed(
+            addr,
+            "tok",
+            "172.29.250.99",
+            "CONNECT 8.8.8.8:443 HTTP/1.1\r\n\r\n",
+        );
+        assert!(
+            reply.starts_with("HTTP/1.1 403") && reply.contains("no network lease"),
+            "{reply}"
+        );
     }
 }
 
 #[cfg(test)]
 mod listener_tests {
     use super::*;
-    use crate::mcp::stdio::tests::MockDocker;
     use crate::mcp::stdio::Ran;
+    use crate::mcp::stdio::tests::MockDocker;
     use std::sync::Arc;
 
     fn ok(stdout: &str) -> io::Result<Ran> {
-        Ok(Ran { ok: true, stdout: stdout.into(), stderr: String::new() })
+        Ok(Ran {
+            ok: true,
+            stdout: stdout.into(),
+            stderr: String::new(),
+        })
     }
 
     /// A healthy host: both networks exist, and the default bridge has `gateway` (or none).
-    fn healthy(gateway: Option<&'static str>) -> impl Fn(&[String]) -> io::Result<Ran> + Send + Sync {
+    fn healthy(
+        gateway: Option<&'static str>,
+    ) -> impl Fn(&[String]) -> io::Result<Ran> + Send + Sync {
         move |args: &[String]| {
             if args.first().map(String::as_str) == Some("info") {
                 return ok("x86_64");
@@ -950,7 +1272,11 @@ mod listener_tests {
             if args.iter().any(|a| a == "bridge") && args.iter().any(|a| a == "inspect") {
                 return match gateway {
                     Some(g) => ok(g),
-                    None => Ok(Ran { ok: false, stdout: String::new(), stderr: "no".into() }),
+                    None => Ok(Ran {
+                        ok: false,
+                        stdout: String::new(),
+                        stderr: "no".into(),
+                    }),
                 };
             }
             if args.iter().any(|a| a == "inspect") && args.iter().any(|a| a == relay::UPLINK) {
@@ -961,7 +1287,8 @@ mod listener_tests {
     }
 
     fn binary(name: &str) -> PathBuf {
-        let path = std::env::temp_dir().join(format!("apz-mcp-relay-src-{name}-{}", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("apz-mcp-relay-src-{name}-{}", std::process::id()));
         std::fs::write(&path, b"stand-in").unwrap();
         path
     }
@@ -971,7 +1298,10 @@ mod listener_tests {
         let bound = Arc::new(Mutex::new(Vec::new()));
         let record = Arc::clone(&bound);
         let egress = Egress::with_setup(Setup {
-            docker: Arc::new(MockDocker::new(Default::default(), healthy(Some("172.17.0.1")))),
+            docker: Arc::new(MockDocker::new(
+                Default::default(),
+                healthy(Some("172.17.0.1")),
+            )),
             bind: Box::new(move |ip: Ipv4Addr| {
                 record.lock().unwrap().push(ip);
                 TcpListener::bind("127.0.0.1:0")
@@ -982,7 +1312,10 @@ mod listener_tests {
             handshake: Handshake::fast(),
         });
         egress.ensure_listeners().unwrap();
-        assert_eq!(*bound.lock().unwrap(), [Ipv4Addr::LOCALHOST, Ipv4Addr::new(172, 17, 0, 1)]);
+        assert_eq!(
+            *bound.lock().unwrap(),
+            [Ipv4Addr::LOCALHOST, Ipv4Addr::new(172, 17, 0, 1)]
+        );
     }
 
     #[test]
@@ -990,7 +1323,10 @@ mod listener_tests {
         let bound = Arc::new(Mutex::new(Vec::new()));
         let record = Arc::clone(&bound);
         let egress = Egress::with_setup(Setup {
-            docker: Arc::new(MockDocker::new(Default::default(), healthy(Some("172.17.0.1")))),
+            docker: Arc::new(MockDocker::new(
+                Default::default(),
+                healthy(Some("172.17.0.1")),
+            )),
             bind: Box::new(move |ip: Ipv4Addr| {
                 record.lock().unwrap().push(ip);
                 if ip == Ipv4Addr::LOCALHOST {
@@ -1005,7 +1341,11 @@ mod listener_tests {
             handshake: Handshake::fast(),
         });
         egress.ensure_listeners().unwrap();
-        assert_eq!(bound.lock().unwrap().len(), 2, "both were tried; the gateway one was optional");
+        assert_eq!(
+            bound.lock().unwrap().len(),
+            2,
+            "both were tried; the gateway one was optional"
+        );
     }
 
     #[test]
@@ -1019,18 +1359,23 @@ mod listener_tests {
             handshake: Handshake::fast(),
         });
         let err = egress.ensure_listeners().unwrap_err();
-        assert!(err.contains("127.0.0.1") && !err.contains("os error"), "{err}");
+        assert!(
+            err.contains("127.0.0.1") && !err.contains("os error"),
+            "{err}"
+        );
     }
 
     #[test]
-    fn the_relay_starts_after_the_networks_with_the_host_upstream_and_its_token_only_in_the_environment() {
+    fn the_relay_starts_after_the_networks_with_the_host_upstream_and_its_token_only_in_the_environment()
+     {
         let log = Arc::new(Mutex::new(Vec::new()));
         let docker = Arc::new(MockDocker::new(Arc::clone(&log), healthy(None)));
         let egress = Egress::with_setup(Setup {
             docker: Arc::clone(&docker) as Arc<dyn Docker>,
             bind: Box::new(|_: Ipv4Addr| TcpListener::bind("127.0.0.1:0")),
             port: 19555,
-            state_dir: std::env::temp_dir().join(format!("apz-egress-state-{}", std::process::id())),
+            state_dir: std::env::temp_dir()
+                .join(format!("apz-egress-state-{}", std::process::id())),
             relay_for: relay_to(binary("order")),
             handshake: Handshake::fast(),
         });
@@ -1039,12 +1384,32 @@ mod listener_tests {
         let calls = log.lock().unwrap().clone();
         let token = lock(&egress.token).clone().unwrap();
         assert_eq!(token.len(), 64, "a 256-bit token, in hex");
-        assert!(calls.iter().all(|c| !c.contains(&token)), "the token is never in a command line");
-        let create = calls.iter().position(|c| c.starts_with("create --name apz-mcp-relay")).unwrap();
-        assert!(calls[create].contains("--add-host=host.docker.internal:host-gateway"), "{}", calls[create]);
-        assert!(calls[create].contains("APZ_RELAY_UPSTREAM=host.docker.internal:19555"), "{}", calls[create]);
-        let connect = calls.iter().position(|c| c.starts_with("network connect")).unwrap();
-        let start = calls.iter().position(|c| c.contains("start -a -i")).unwrap();
+        assert!(
+            calls.iter().all(|c| !c.contains(&token)),
+            "the token is never in a command line"
+        );
+        let create = calls
+            .iter()
+            .position(|c| c.starts_with("create --name apz-mcp-relay"))
+            .unwrap();
+        assert!(
+            calls[create].contains("--add-host=host.docker.internal:host-gateway"),
+            "{}",
+            calls[create]
+        );
+        assert!(
+            calls[create].contains("APZ_RELAY_UPSTREAM=host.docker.internal:19555"),
+            "{}",
+            calls[create]
+        );
+        let connect = calls
+            .iter()
+            .position(|c| c.starts_with("network connect"))
+            .unwrap();
+        let start = calls
+            .iter()
+            .position(|c| c.contains("start -a -i"))
+            .unwrap();
         assert!(create < connect && connect < start, "{calls:?}");
         drop(lease);
         drop(egress);

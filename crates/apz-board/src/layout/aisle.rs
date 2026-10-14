@@ -11,8 +11,8 @@ use std::collections::BTreeSet;
 use serde::{Deserialize, Serialize};
 
 use super::geom::Frame;
-use super::rooms::{Config, AISLE};
-use crate::grid::{Grid, DIRS8, NAV_CELL};
+use super::rooms::{AISLE, Config};
+use crate::grid::{DIRS8, Grid, NAV_CELL};
 
 /// How far an exit's search may walk, in grid cells (board-layout.ts used 40, which left a 4-GPU server with no slot
 /// that reaches the main walk).
@@ -79,14 +79,25 @@ pub struct Gap {
 
 /// The outward samples from an edge: for each edge point whose plate cell just inside the edge is open (the landing's
 /// plate end), the unblocked cells 1..=8 half-cells out along `dir` (board-layout.ts outwardSources).
-fn outward_sources(grid: &Grid, edge: &[[f64; 2]], dir: [f64; 2], label: usize) -> Vec<(usize, usize)> {
+fn outward_sources(
+    grid: &Grid,
+    edge: &[[f64; 2]],
+    dir: [f64; 2],
+    label: usize,
+) -> Vec<(usize, usize)> {
     let mut out = Vec::new();
     for &[x, z] in edge {
-        if !grid.cell_at(x - dir[0] * EDGE, z - dir[1] * EDGE).is_some_and(|c| grid.blocked[c] == 0 && grid.inflated[c] == 0) {
+        if !grid
+            .cell_at(x - dir[0] * EDGE, z - dir[1] * EDGE)
+            .is_some_and(|c| grid.blocked[c] == 0 && grid.inflated[c] == 0)
+        {
             continue;
         }
         for k in 1..=8 {
-            if let Some(c) = grid.cell_at(x + dir[0] * k as f64 * EDGE, z + dir[1] * k as f64 * EDGE).filter(|&c| grid.blocked[c] == 0) {
+            if let Some(c) = grid
+                .cell_at(x + dir[0] * k as f64 * EDGE, z + dir[1] * k as f64 * EDGE)
+                .filter(|&c| grid.blocked[c] == 0)
+            {
                 out.push((c, label));
             }
         }
@@ -122,7 +133,12 @@ pub fn perimeter_open(grid: &Grid, f: &Frame) -> bool {
 /// The multi-source search from the sources (open cells only) over the grid's walk cells, within LANDING_REACH steps, to
 /// the first cell of the main component. The plate's own footprint is not a way off. Returns (label, cell) of the first
 /// hit, or None (board-layout.ts reachMain).
-fn reach_main(grid: &Grid, rect: [f64; 4], sources: &[(usize, usize)], main: i32) -> Option<(usize, usize)> {
+fn reach_main(
+    grid: &Grid,
+    rect: [f64; 4],
+    sources: &[(usize, usize)],
+    main: i32,
+) -> Option<(usize, usize)> {
     if main < 0 {
         return None;
     }
@@ -152,7 +168,9 @@ fn reach_main(grid: &Grid, rect: [f64; 4], sources: &[(usize, usize)], main: i32
             continue;
         }
         for (k, &(di, dj)) in DIRS8.iter().enumerate() {
-            let Some(v) = grid.neighbour(u, k) else { continue };
+            let Some(v) = grid.neighbour(u, k) else {
+                continue;
+            };
             if dist[v] >= 0 || !open(v) {
                 continue;
             }
@@ -188,9 +206,19 @@ pub struct Site<'a> {
 /// The exit of an aisle configuration (board-layout.ts exitOf): the nearer aisle end (both ends searched together, the
 /// first hit wins); else a spur, a 1.0 gap through a row from an aisle cell to the row's outer perimeter, searched the same
 /// way. Keys in `excluded` are not used. The spurs are tried in row, then cut order, so the first hit is the TS's.
-pub fn exit_of(site: &Site, cfg: &Config, grid: &Grid, main: i32, excluded: &BTreeSet<String>) -> Option<Exit> {
+pub fn exit_of(
+    site: &Site,
+    cfg: &Config,
+    grid: &Grid,
+    main: i32,
+    excluded: &BTreeSet<String>,
+) -> Option<Exit> {
     let f = site.f;
-    let kind = if site.rise <= NAV_LIFT_RISE { ExitKind::Ramp } else { ExitKind::Lift };
+    let kind = if site.rise <= NAV_LIFT_RISE {
+        ExitKind::Ramp
+    } else {
+        ExitKind::Lift
+    };
     let vm = (cfg.aisle[0] + cfg.aisle[1]) / 2.0;
     let mut sources = Vec::new();
     let mut ends: Vec<([f64; 2], [f64; 2])> = Vec::new();
@@ -212,7 +240,16 @@ pub fn exit_of(site: &Site, cfg: &Config, grid: &Grid, main: i32, excluded: &BTr
     if let Some((end, cell)) = reach_main(grid, site.rect, &sources, main) {
         let (plate_at, dir) = ends[end];
         let key = format!("{}|end{end}", site.ck);
-        return Some(Exit { kind, plate_at, board_at: grid.cell_centre(cell), dir, end, bridge: Vec::new(), key, spur: None });
+        return Some(Exit {
+            kind,
+            plate_at,
+            board_at: grid.cell_centre(cell),
+            dir,
+            end,
+            bridge: Vec::new(),
+            key,
+            spur: None,
+        });
     }
 
     // Spur candidates: a 1.0 gap in each row, centred on each sample column, clear of tall parts. Its perimeter point is the
@@ -236,12 +273,21 @@ pub fn exit_of(site: &Site, cfg: &Config, grid: &Grid, main: i32, excluded: &BTr
             let span = [c - GAP / 2.0, c + GAP / 2.0];
             let centre = c;
             c += SAMPLE;
-            if (site.tall)(f.rect(span[0], span[1], row.v0, row.v1)) || !spur_ok(span[0]) || !spur_ok(f.l - span[1]) {
+            if (site.tall)(f.rect(span[0], span[1], row.v0, row.v1))
+                || !spur_ok(span[0])
+                || !spur_ok(f.l - span[1])
+            {
                 continue;
             }
             let k = spurs.len();
             let key = format!("{}|spur{r}:{:.3}", site.ck, span[0]);
-            spurs.push(Spur { row: r, span, plate_at: f.point(centre, outer_v - nv * EDGE), normal, key: key.clone() });
+            spurs.push(Spur {
+                row: r,
+                span,
+                plate_at: f.point(centre, outer_v - nv * EDGE),
+                normal,
+                key: key.clone(),
+            });
             if excluded.contains(&key) {
                 continue;
             }
@@ -266,14 +312,22 @@ pub fn exit_of(site: &Site, cfg: &Config, grid: &Grid, main: i32, excluded: &BTr
         end: 2,
         bridge: Vec::new(),
         key: s.key.clone(),
-        spur: Some(Gap { row: s.row, span: s.span }),
+        spur: Some(Gap {
+            row: s.row,
+            span: s.span,
+        }),
     })
 }
 
 /// A straight gangway from a plate edge point out along `dir` (board-layout.ts gangwayFrom): the cells it passes may be
 /// blocked (it bridges over them); the first walk cell must be in the main component, and the two cells beyond it too.
 /// Returns the bridge's cell centres and the landing cell, or None.
-fn gangway_from(grid: &Grid, edge: [f64; 2], dir: [f64; 2], main: i32) -> Option<(Vec<[f64; 2]>, usize)> {
+fn gangway_from(
+    grid: &Grid,
+    edge: [f64; 2],
+    dir: [f64; 2],
+    main: i32,
+) -> Option<(Vec<[f64; 2]>, usize)> {
     if main < 0 {
         return None;
     }
@@ -310,7 +364,13 @@ fn gangway_from(grid: &Grid, edge: [f64; 2], dir: [f64; 2], main: i32) -> Option
 /// A slot's gangway exit for one configuration (board-layout.ts gangwayOf): from each perimeter cell of the aisle's ends
 /// (and a single aisle's outer long side), the shortest gangway that lands in the main component. Null when none does.
 /// Candidates are keyed `<configuration>|gang<index>` in order; a key in `excluded` is skipped.
-pub fn gangway_of(site: &Site, cfg: &Config, grid: &Grid, main: i32, excluded: &BTreeSet<String>) -> Option<Exit> {
+pub fn gangway_of(
+    site: &Site,
+    cfg: &Config,
+    grid: &Grid,
+    main: i32,
+    excluded: &BTreeSet<String>,
+) -> Option<Exit> {
     let f = site.f;
     let mut cands: Vec<([f64; 2], [f64; 2], usize)> = Vec::new();
     let across = |u: f64, v0: f64, v1: f64| {
@@ -343,15 +403,28 @@ pub fn gangway_of(site: &Site, cfg: &Config, grid: &Grid, main: i32, excluded: &
         if excluded.contains(&format!("{}|gang{idx}", site.ck)) {
             continue;
         }
-        let Some((bridge, cell)) = gangway_from(grid, edge, dir, main) else { continue };
-        let len = ((grid.cell_centre(cell)[0] - edge[0]).powi(2) + (grid.cell_centre(cell)[1] - edge[1]).powi(2)).sqrt();
+        let Some((bridge, cell)) = gangway_from(grid, edge, dir, main) else {
+            continue;
+        };
+        let len = ((grid.cell_centre(cell)[0] - edge[0]).powi(2)
+            + (grid.cell_centre(cell)[1] - edge[1]).powi(2))
+        .sqrt();
         if best.as_ref().is_none_or(|b| len < b.2 - 1e-9) {
             best = Some((bridge, cell, len, dir, end, idx));
         }
     }
     let (bridge, cell, _, dir, end, idx) = best?;
     let key = format!("{}|gang{idx}", site.ck);
-    Some(Exit { kind: ExitKind::Gangway, plate_at: bridge[0], board_at: grid.cell_centre(cell), dir, end, bridge, key, spur: None })
+    Some(Exit {
+        kind: ExitKind::Gangway,
+        plate_at: bridge[0],
+        board_at: grid.cell_centre(cell),
+        dir,
+        end,
+        bridge,
+        key,
+        spur: None,
+    })
 }
 
 /// The share of walk cells in a strip of the board-only grid (board-layout.ts openShare), sampled at cell centres.

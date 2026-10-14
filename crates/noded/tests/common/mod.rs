@@ -86,7 +86,9 @@ pub fn send(port: u16, raw: &[u8]) -> Reply {
     stream
         .set_read_timeout(Some(TIMEOUT))
         .expect("a read timeout");
-    stream.write_all(raw).expect("the request should be written");
+    stream
+        .write_all(raw)
+        .expect("the request should be written");
     stream.flush().expect("the request should be flushed");
     // The tests send exactly one request, so the daemon can be told the
     // request is over: a request whose body is short then fails at once
@@ -97,9 +99,7 @@ pub fn send(port: u16, raw: &[u8]) -> Reply {
 
     let mut reader = BufReader::new(stream);
     let mut status_line = String::new();
-    reader
-        .read_line(&mut status_line)
-        .expect("a status line");
+    reader.read_line(&mut status_line).expect("a status line");
     let status = status_line
         .split(' ')
         .nth(1)
@@ -118,10 +118,7 @@ pub fn send(port: u16, raw: &[u8]) -> Reply {
             content_type = value.trim().to_string();
         }
         if let Some(value) = line.strip_prefix("Content-Length:") {
-            content_length = value
-                .trim()
-                .parse()
-                .expect("a numeric Content-Length");
+            content_length = value.trim().parse().expect("a numeric Content-Length");
         }
     }
     let mut body = vec![0u8; content_length];

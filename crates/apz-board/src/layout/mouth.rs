@@ -11,9 +11,9 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::Door;
 use super::aisle::{Exit, ExitKind};
 use super::geom::Rect;
-use super::Door;
 use crate::grid::{NAV_CELL, NAV_STEP};
 use crate::walk::{Plane, SurfaceKind};
 
@@ -29,17 +29,37 @@ const HALF_WIDTH: f64 = 1.5 * NAV_CELL;
 pub enum Mouth {
     /// A ramp: its footprint, its plane (height over the footprint), the plate's edge point, the point at its far end, and
     /// the points the two links join at (a point inside the plate, and a point on the board beyond the far end).
-    Ramp { rect: Rect, plane: Plane, edge: [f64; 2], far: [f64; 2], inside: [f64; 2], beyond: [f64; 2] },
+    Ramp {
+        rect: Rect,
+        plane: Plane,
+        edge: [f64; 2],
+        far: [f64; 2],
+        inside: [f64; 2],
+        beyond: [f64; 2],
+    },
     /// A lift (or a gangway): the cab's footprint, the bottom landing's, the top's (a landing on the plate, or a gangway's
     /// bridge), the top's kind, the cab's door side (the side facing the top), and the heights of the two stops.
-    Lift { cab: Rect, bottom: Rect, top: Rect, top_kind: SurfaceKind, edge: [f64; 2], door: Door, gangway: bool, bottom_y: f64, top_y: f64 },
+    Lift {
+        cab: Rect,
+        bottom: Rect,
+        top: Rect,
+        top_kind: SurfaceKind,
+        edge: [f64; 2],
+        door: Door,
+        gangway: bool,
+        bottom_y: f64,
+        top_y: f64,
+    },
 }
 
 /// The mouth of an exit of a plate `[x, z, w, d]` at height `plate_y` above a PCB at `pcb_top`. None when the exit cannot
 /// be laid out (a gangway with no bridge length).
 pub fn mouth(exit: &Exit, plate: [f64; 4], plate_y: f64, pcb_top: f64) -> Option<Mouth> {
     let dir = exit.dir;
-    let edge = [exit.plate_at[0] + dir[0] * EDGE, exit.plate_at[1] + dir[1] * EDGE];
+    let edge = [
+        exit.plate_at[0] + dir[0] * EDGE,
+        exit.plate_at[1] + dir[1] * EDGE,
+    ];
     let perp = [-dir[1], dir[0]];
     let centre = exit.board_at;
     match exit.kind {
@@ -53,13 +73,34 @@ pub fn mouth(exit: &Exit, plate: [f64; 4], plate_y: f64, pcb_top: f64) -> Option
             let far = [edge[0] + dir[0] * run, edge[1] + dir[1] * run];
             let rect = piece(edge, dir, perp, 0.0, run);
             let k = rise / run;
-            let plane = Plane { c: plate_y + k * dot(edge, dir), dx: -k * dir[0], dz: -k * dir[1] };
+            let plane = Plane {
+                c: plate_y + k * dot(edge, dir),
+                dx: -k * dir[0],
+                dz: -k * dir[1],
+            };
             let beyond = [far[0] + dir[0] * EDGE, far[1] + dir[1] * EDGE];
-            Some(Mouth::Ramp { rect, plane, edge, far, inside: exit.plate_at, beyond })
+            Some(Mouth::Ramp {
+                rect,
+                plane,
+                edge,
+                far,
+                inside: exit.plate_at,
+                beyond,
+            })
         }
         ExitKind::Lift => {
             let top = piece(edge, dir, perp, -2.0 * CELL, 0.0);
-            Some(lift(dir, piece(centre, dir, perp, -CELL, CELL), piece(centre, dir, perp, CELL, 3.0 * CELL), top, SurfaceKind::Landing, false, edge, pcb_top, plate_y))
+            Some(lift(
+                dir,
+                piece(centre, dir, perp, -CELL, CELL),
+                piece(centre, dir, perp, CELL, 3.0 * CELL),
+                top,
+                SurfaceKind::Landing,
+                false,
+                edge,
+                pcb_top,
+                plate_y,
+            ))
         }
         ExitKind::Gangway => {
             // The bridge runs from the plate's edge to the cab's near side. Its first cell is the plate's edge cell, whose
@@ -76,30 +117,75 @@ pub fn mouth(exit: &Exit, plate: [f64; 4], plate_y: f64, pcb_top: f64) -> Option
                 return None;
             }
             let bridge = bounds(&strip(edge, cab_near, perp, HALF_WIDTH));
-            Some(lift(dir, piece(centre, dir, perp, -CELL, CELL), piece(centre, dir, perp, CELL, 3.0 * CELL), bridge, SurfaceKind::Bridge, true, edge, pcb_top, plate_y))
+            Some(lift(
+                dir,
+                piece(centre, dir, perp, -CELL, CELL),
+                piece(centre, dir, perp, CELL, 3.0 * CELL),
+                bridge,
+                SurfaceKind::Bridge,
+                true,
+                edge,
+                pcb_top,
+                plate_y,
+            ))
         }
     }
 }
 
 /// The lift's pieces (shared by a lift and a gangway): the cab, its queue (the bottom landing), the top, and the door.
 #[allow(clippy::too_many_arguments)]
-fn lift(dir: [f64; 2], cab: Rect, bottom: Rect, top: Rect, top_kind: SurfaceKind, gangway: bool, edge: [f64; 2], pcb_top: f64, plate_y: f64) -> Mouth {
-    Mouth::Lift { cab, bottom, top, top_kind, edge, door: door_of([-dir[0], -dir[1]]), gangway, bottom_y: pcb_top, top_y: plate_y }
+fn lift(
+    dir: [f64; 2],
+    cab: Rect,
+    bottom: Rect,
+    top: Rect,
+    top_kind: SurfaceKind,
+    gangway: bool,
+    edge: [f64; 2],
+    pcb_top: f64,
+    plate_y: f64,
+) -> Mouth {
+    Mouth::Lift {
+        cab,
+        bottom,
+        top,
+        top_kind,
+        edge,
+        door: door_of([-dir[0], -dir[1]]),
+        gangway,
+        bottom_y: pcb_top,
+        top_y: plate_y,
+    }
 }
 
 /// The axis-aligned box of the strip from `a` to `b` along a direction, `half` wide to either side of the line.
 fn strip(a: [f64; 2], b: [f64; 2], perp: [f64; 2], half: f64) -> [[f64; 2]; 4] {
-    [offset(a, perp, half), offset(a, perp, -half), offset(b, perp, half), offset(b, perp, -half)]
+    [
+        offset(a, perp, half),
+        offset(a, perp, -half),
+        offset(b, perp, half),
+        offset(b, perp, -half),
+    ]
 }
 
 /// The mouth piece from `c` out along `dir` from `t0` to `t1` (distances), HALF_WIDTH wide across.
 fn piece(c: [f64; 2], dir: [f64; 2], perp: [f64; 2], t0: f64, t1: f64) -> Rect {
-    bounds(&strip(offset(c, dir, t0), offset(c, dir, t1), perp, HALF_WIDTH))
+    bounds(&strip(
+        offset(c, dir, t0),
+        offset(c, dir, t1),
+        perp,
+        HALF_WIDTH,
+    ))
 }
 
 /// The bounding rect of a set of points.
 fn bounds(pts: &[[f64; 2]]) -> Rect {
-    let mut r = Rect { x0: f64::INFINITY, z0: f64::INFINITY, x1: f64::NEG_INFINITY, z1: f64::NEG_INFINITY };
+    let mut r = Rect {
+        x0: f64::INFINITY,
+        z0: f64::INFINITY,
+        x1: f64::NEG_INFINITY,
+        z1: f64::NEG_INFINITY,
+    };
     for p in pts {
         r.x0 = r.x0.min(p[0]);
         r.z0 = r.z0.min(p[1]);
@@ -108,7 +194,6 @@ fn bounds(pts: &[[f64; 2]]) -> Rect {
     }
     r
 }
-
 
 /// The point `p` moved `t` along `dir`.
 fn offset(p: [f64; 2], dir: [f64; 2], t: f64) -> [f64; 2] {
@@ -122,11 +207,7 @@ fn dot(a: [f64; 2], b: [f64; 2]) -> f64 {
 /// The room door side a world direction faces (the room's N is -z, S is +z, E is +x, W is -x).
 fn door_of(v: [f64; 2]) -> Door {
     if v[0].abs() > v[1].abs() {
-        if v[0] > 0.0 {
-            Door::E
-        } else {
-            Door::W
-        }
+        if v[0] > 0.0 { Door::E } else { Door::W }
     } else if v[1] > 0.0 {
         Door::S
     } else {
@@ -138,7 +219,9 @@ fn door_of(v: [f64; 2]) -> Door {
 pub fn footprint(m: &Mouth) -> Vec<Rect> {
     match m {
         Mouth::Ramp { rect, .. } => vec![*rect],
-        Mouth::Lift { cab, bottom, top, .. } => vec![*cab, *bottom, *top],
+        Mouth::Lift {
+            cab, bottom, top, ..
+        } => vec![*cab, *bottom, *top],
     }
 }
 

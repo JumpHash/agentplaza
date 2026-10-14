@@ -28,9 +28,9 @@ use std::io;
 use std::ops::Deref;
 
 #[cfg(any(target_os = "linux", windows))]
-use vm_superio::Trigger;
-#[cfg(any(target_os = "linux", windows))]
 use crate::pal::eventfd::EventFd;
+#[cfg(any(target_os = "linux", windows))]
+use vm_superio::Trigger;
 
 #[cfg(any(target_os = "linux", windows))]
 pub use self::i8042::{I8042Device, I8042Error as I8042DeviceError};
@@ -39,7 +39,9 @@ pub use self::pm1_cnt::{
     PM1_CNT_SIZE, Pm1CntDevice, RESET_PORT, RESET_VALUE, SLEEP_CONTROL_PORT, SLEEP_STATUS_PORT,
 };
 #[cfg(any(target_os = "linux", windows))]
-pub use self::serial::{SerialDevice, SerialEventsWrapper, SerialOut, SerialOutInner, SerialWrapper};
+pub use self::serial::{
+    SerialDevice, SerialEventsWrapper, SerialOut, SerialOutInner, SerialWrapper,
+};
 #[cfg(any(target_os = "linux", windows))]
 /// Wrapper for implementing the trigger functionality for `EventFd`.
 ///

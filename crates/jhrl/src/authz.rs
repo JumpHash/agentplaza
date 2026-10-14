@@ -31,8 +31,13 @@ pub struct Request {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Decision {
-    Allow { by: Vec<String> },
-    Deny { by: Vec<String>, missing: Vec<String> },
+    Allow {
+        by: Vec<String>,
+    },
+    Deny {
+        by: Vec<String>,
+        missing: Vec<String>,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -58,7 +63,11 @@ impl EntityStore {
     pub fn from_fixture(fx: &Fixture) -> EntityStore {
         let mut store = EntityStore::default();
         for e in &fx.entities {
-            let attrs: BTreeMap<String, Value> = e.fields.iter().map(|(n, x)| (n.clone(), konst(x))).collect();
+            let attrs: BTreeMap<String, Value> = e
+                .fields
+                .iter()
+                .map(|(n, x)| (n.clone(), konst(x)))
+                .collect();
             store.attrs.insert((e.ty.clone(), e.id.clone()), attrs);
         }
         store
@@ -91,8 +100,13 @@ pub fn entity_value(e: &Entity) -> Value {
 
 fn entity_of(v: &Value) -> Option<Entity> {
     let Value::Record(m) = v else { return None };
-    let (Some(Value::Str(t)), Some(Value::Str(i))) = (m.get("$type"), m.get("$id")) else { return None };
-    Some(Entity { ty: t.to_string(), id: i.to_string() })
+    let (Some(Value::Str(t)), Some(Value::Str(i))) = (m.get("$type"), m.get("$id")) else {
+        return None;
+    };
+    Some(Entity {
+        ty: t.to_string(),
+        id: i.to_string(),
+    })
 }
 
 fn path_of(e: &Expr) -> String {
@@ -108,7 +122,13 @@ fn konst(e: &Expr) -> Value {
     let store = EntityStore::default();
     let nobody = Entity::default();
     let ctx = Value::record(BTreeMap::new());
-    Eval { store: &store, principal: &nobody, resource: &nobody, context: &ctx }.eval(e)
+    Eval {
+        store: &store,
+        principal: &nobody,
+        resource: &nobody,
+        context: &ctx,
+    }
+    .eval(e)
 }
 
 fn not(v: Value) -> Value {
@@ -175,7 +195,11 @@ impl Eval<'_> {
                     Value::Unknown(p) => Value::Unknown(p),
                     v => {
                         if let Some(ent) = entity_of(&v) {
-                            return self.store.attr(&ent, f).cloned().unwrap_or(Value::Unknown(path));
+                            return self
+                                .store
+                                .attr(&ent, f)
+                                .cloned()
+                                .unwrap_or(Value::Unknown(path));
                         }
                         match &v {
                             Value::Record(m) => m.get(f).cloned().unwrap_or(Value::Unknown(path)),
@@ -203,9 +227,12 @@ impl Eval<'_> {
                 u => u,
             },
             ExprKind::Call(callee, args) => self.call(callee, args),
-            ExprKind::Record(fields) => {
-                Value::record(fields.iter().map(|(n, x)| (n.clone(), self.eval(x))).collect())
-            }
+            ExprKind::Record(fields) => Value::record(
+                fields
+                    .iter()
+                    .map(|(n, x)| (n.clone(), self.eval(x)))
+                    .collect(),
+            ),
             ExprKind::Set(xs) => Value::set(xs.iter().map(|x| self.eval(x)).collect::<Vec<_>>()),
             ExprKind::List(xs) => Value::list(xs.iter().map(|x| self.eval(x)).collect()),
             ExprKind::Tuple(xs) => Value::tuple(xs.iter().map(|x| self.eval(x)).collect()),
@@ -259,7 +286,10 @@ impl Eval<'_> {
                 _ => Value::Bool(true),
             },
             (ExprKind::Name(ty), [arg]) => match &arg.value.kind {
-                ExprKind::Str(id) => entity_value(&Entity { ty: ty.clone(), id: id.to_string() }),
+                ExprKind::Str(id) => entity_value(&Entity {
+                    ty: ty.clone(),
+                    id: id.to_string(),
+                }),
                 _ => Value::Unknown(format!("{ty}(...) needs a string id")),
             },
             _ => Value::Unknown("unsupported call".into()),
@@ -310,8 +340,18 @@ pub fn authorize(program: &Program, entities: &EntityStore, req: &Request) -> Ou
 }
 
 /// [`authorize`] with the laws whose ids are in `off` left out: a law that is off applies to nothing.
-pub fn authorize_except(program: &Program, entities: &EntityStore, req: &Request, off: &HashSet<String>) -> Outcome {
-    let ev = Eval { store: entities, principal: &req.principal, resource: &req.resource, context: &req.context };
+pub fn authorize_except(
+    program: &Program,
+    entities: &EntityStore,
+    req: &Request,
+    off: &HashSet<String>,
+) -> Outcome {
+    let ev = Eval {
+        store: entities,
+        principal: &req.principal,
+        resource: &req.resource,
+        context: &req.context,
+    };
     let mut allow_by = Vec::new();
     let mut deny_by = Vec::new();
     let mut missing = Vec::new();
@@ -321,7 +361,10 @@ pub fn authorize_except(program: &Program, entities: &EntityStore, req: &Request
         if off.contains(&law.id) || !law.ops.iter().any(|o| o == "any" || *o == req.operation) {
             continue;
         }
-        let judgment = matches!(law.enforcement.as_deref(), Some("detective") | Some("judgment"));
+        let judgment = matches!(
+            law.enforcement.as_deref(),
+            Some("detective") | Some("judgment")
+        );
         match (law.effect, ev.law_applies(law)) {
             (Effect::Forbid, applies) if !matches!(applies, Value::Bool(false)) => {
                 deny_by.push(law.id.clone());
@@ -337,13 +380,22 @@ pub fn authorize_except(program: &Program, entities: &EntityStore, req: &Request
         }
     }
     let decision = if !deny_by.is_empty() {
-        Decision::Deny { by: deny_by, missing }
+        Decision::Deny {
+            by: deny_by,
+            missing,
+        }
     } else if !allow_by.is_empty() {
         Decision::Allow { by: allow_by }
     } else {
-        Decision::Deny { by: Vec::new(), missing: Vec::new() }
+        Decision::Deny {
+            by: Vec::new(),
+            missing: Vec::new(),
+        }
     };
-    Outcome { decision, violations }
+    Outcome {
+        decision,
+        violations,
+    }
 }
 
 /// Static checks of the authorization items: laws name declared operations, law ids are unique,
@@ -372,22 +424,37 @@ pub fn check_authz(program: &Program) -> Vec<Diag> {
         match it {
             Item::Law(l) => {
                 if !seen.insert(l.id.clone()) {
-                    out.push(Diag::error(l.span, format!("law `{}` is declared more than once", l.id)));
+                    out.push(Diag::error(
+                        l.span,
+                        format!("law `{}` is declared more than once", l.id),
+                    ));
                 }
                 for op in &l.ops {
                     if op != "any" && !ops.contains(op) {
-                        out.push(Diag::error(l.span, format!("law `{}`: operation `{op}` is not declared", l.id)));
+                        out.push(Diag::error(
+                            l.span,
+                            format!("law `{}`: operation `{op}` is not declared", l.id),
+                        ));
                     }
                 }
             }
             Item::Authz(az) => {
                 if !fixtures.contains(&az.fixture) {
-                    out.push(Diag::error(az.span, format!("authz `{}`: fixture `{}` is not declared", az.name, az.fixture)));
+                    out.push(Diag::error(
+                        az.span,
+                        format!(
+                            "authz `{}`: fixture `{}` is not declared",
+                            az.name, az.fixture
+                        ),
+                    ));
                 }
                 for c in &az.cases {
                     if let Some(by) = &c.law {
                         if !law_ids.contains(by) {
-                            out.push(Diag::error(c.span, format!("authz case `{}`: law `{by}` is not declared", c.label)));
+                            out.push(Diag::error(
+                                c.span,
+                                format!("authz case `{}`: law `{by}` is not declared", c.label),
+                            ));
                         }
                     }
                 }
@@ -418,18 +485,34 @@ pub fn run_authz(program: &Program) -> Vec<(String, bool, String)> {
         let Item::Authz(az) = it else { continue };
         let Some(store) = fixtures.get(&az.fixture) else {
             for c in &az.cases {
-                out.push((c.label.clone(), false, format!("fixture `{}` is not declared", az.fixture)));
+                out.push((
+                    c.label.clone(),
+                    false,
+                    format!("fixture `{}` is not declared", az.fixture),
+                ));
             }
             continue;
         };
         for c in &az.cases {
             let mut req = Request {
-                principal: Entity { ty: c.subject.ty.clone(), id: c.subject.id.clone() },
+                principal: Entity {
+                    ty: c.subject.ty.clone(),
+                    id: c.subject.id.clone(),
+                },
                 operation: c.op.clone(),
-                resource: Entity { ty: c.object.ty.clone(), id: c.object.id.clone() },
+                resource: Entity {
+                    ty: c.object.ty.clone(),
+                    id: c.object.id.clone(),
+                },
                 context: Value::record(BTreeMap::new()),
             };
-            let ctx = Eval { store, principal: &req.principal, resource: &req.resource, context: &req.context }.eval(&c.record);
+            let ctx = Eval {
+                store,
+                principal: &req.principal,
+                resource: &req.resource,
+                context: &req.context,
+            }
+            .eval(&c.record);
             req.context = ctx;
             let outcome = authorize(program, store, &req);
             let allowed = matches!(outcome.decision, Decision::Allow { .. });

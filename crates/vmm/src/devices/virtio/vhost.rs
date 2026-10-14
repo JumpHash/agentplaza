@@ -463,8 +463,7 @@ impl VhostVsock {
         mem: &GuestMemoryMmap,
         queue: &QueueConfig,
     ) -> Result<(), VhostError> {
-        let [desc_user_addr, used_user_addr, avail_user_addr] =
-            translate_rings(index, mem, queue)?;
+        let [desc_user_addr, used_user_addr, avail_user_addr] = translate_rings(index, mem, queue)?;
         let address = VhostVringAddr {
             index,
             flags: 0,

@@ -32,15 +32,44 @@ use crate::state::App;
 /// Every snapshotted component, by name, in restore order (the treasury before the task
 /// ledger, whose escrows live in it).
 pub const COMPONENTS: &[&str] = &[
-    "treasury", "tasks", "agora", "social", "council", "bonds",
-    "projects", "toolbox", "harness", "approvals", "library", "deliverables", "connectors",
-    "names", "settings", "providers", "spawned", "laws", "rules", "society", "work",
-    "control", "custom_roles", "agent_proposals", "nodes", "stations", "prices", "usage", "looks", "foundry",
-    "models", "sanctions", "vault", "mcp",
+    "treasury",
+    "tasks",
+    "agora",
+    "social",
+    "council",
+    "bonds",
+    "projects",
+    "toolbox",
+    "harness",
+    "approvals",
+    "library",
+    "deliverables",
+    "connectors",
+    "names",
+    "settings",
+    "providers",
+    "spawned",
+    "laws",
+    "rules",
+    "society",
+    "work",
+    "control",
+    "custom_roles",
+    "agent_proposals",
+    "nodes",
+    "stations",
+    "prices",
+    "usage",
+    "looks",
+    "foundry",
+    "models",
+    "sanctions",
+    "vault",
+    "mcp",
 ];
 
-pub mod files;
 pub mod data_migrate;
+pub mod files;
 pub mod hub_mcp;
 pub mod migrate;
 pub mod recordings;
@@ -266,8 +295,14 @@ impl Db {
     }
 
     /// Runs `op` on the connection; on a closed connection, reconnects once and retries.
-    pub(crate) fn run<T>(&self, mut op: impl FnMut(&mut postgres::Client) -> Result<T, postgres::Error>) -> Result<T, String> {
-        let slot = self.client.as_ref().ok_or_else(|| "no database".to_string())?;
+    pub(crate) fn run<T>(
+        &self,
+        mut op: impl FnMut(&mut postgres::Client) -> Result<T, postgres::Error>,
+    ) -> Result<T, String> {
+        let slot = self
+            .client
+            .as_ref()
+            .ok_or_else(|| "no database".to_string())?;
         let mut client = slot.lock().unwrap_or_else(PoisonError::into_inner);
         match op(&mut *client) {
             Ok(value) => Ok(value),
@@ -280,11 +315,17 @@ impl Db {
     }
 
     fn hold(&self, component: &str) {
-        self.held.lock().unwrap_or_else(PoisonError::into_inner).insert(component.to_string());
+        self.held
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(component.to_string());
     }
 
     pub fn is_held(&self, component: &str) -> bool {
-        self.held.lock().unwrap_or_else(PoisonError::into_inner).contains(component)
+        self.held
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains(component)
     }
 
     /// The stored snapshot of `component`, if any. A failed read holds the component out of
@@ -297,7 +338,10 @@ impl Db {
             Ok(Some(row)) => {
                 let text: String = row.get(0);
                 let hash = fnv1a(text.as_bytes());
-                self.stored.lock().unwrap_or_else(PoisonError::into_inner).insert(component.to_string(), hash);
+                self.stored
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .insert(component.to_string(), hash);
                 Some(text)
             }
             Ok(None) => None,
@@ -326,13 +370,26 @@ impl Db {
 
     /// Appends one transcript record. A failed append is dropped; the failure is logged at
     /// most once a minute.
-    pub fn append_transcript(&self, cid: u64, seq: u64, work: u64, kind: &str, at_ms: u64, data: &Value) {
+    pub fn append_transcript(
+        &self,
+        cid: u64,
+        seq: u64,
+        work: u64,
+        kind: &str,
+        at_ms: u64,
+        data: &Value,
+    ) {
         if let Some(files) = self.file_store() {
             if let Err(e) = files.append_transcript(cid, seq, work, kind, at_ms, data) {
-                let mut logged = self.append_logged.lock().unwrap_or_else(PoisonError::into_inner);
+                let mut logged = self
+                    .append_logged
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
                 if due(*logged) {
                     *logged = Some(Instant::now());
-                    eprintln!("db: transcript append to files failed: {e} (dropped; logged once a minute)");
+                    eprintln!(
+                        "db: transcript append to files failed: {e} (dropped; logged once a minute)"
+                    );
                 }
             }
             return;
@@ -341,8 +398,16 @@ impl Db {
             return;
         }
         let (cid, seq, work, at_ms) = (cid as i64, seq as i64, work as i64, at_ms as i64);
-        if let Err(e) = self.run(|c| c.execute(sql::TRANSCRIPT_APPEND, &[&cid, &seq, &work, &kind, &at_ms, data])) {
-            let mut logged = self.append_logged.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Err(e) = self.run(|c| {
+            c.execute(
+                sql::TRANSCRIPT_APPEND,
+                &[&cid, &seq, &work, &kind, &at_ms, data],
+            )
+        }) {
+            let mut logged = self
+                .append_logged
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
             if due(*logged) {
                 *logged = Some(Instant::now());
                 eprintln!("db: transcript append failed: {e} (dropped; logged once a minute)");
@@ -362,9 +427,7 @@ impl Db {
             return Vec::new();
         }
         let cid = cid as i64;
-        let rows = self.run(|c| {
-            c.query(sql::TRANSCRIPT_PAGE, &[&cid, &limit])
-        });
+        let rows = self.run(|c| c.query(sql::TRANSCRIPT_PAGE, &[&cid, &limit]));
         match rows {
             Ok(rows) => rows
                 .iter()
@@ -423,10 +486,15 @@ impl Db {
     pub fn append_infraction(&self, infraction: &Infraction) {
         if let Some(files) = self.file_store() {
             if let Err(e) = files.append_infraction(infraction) {
-                let mut logged = self.infraction_logged.lock().unwrap_or_else(PoisonError::into_inner);
+                let mut logged = self
+                    .infraction_logged
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
                 if due(*logged) {
                     *logged = Some(Instant::now());
-                    eprintln!("db: infraction append to files failed: {e} (dropped; logged once a minute)");
+                    eprintln!(
+                        "db: infraction append to files failed: {e} (dropped; logged once a minute)"
+                    );
                 }
             }
             return;
@@ -438,8 +506,13 @@ impl Db {
         let law = &infraction.law;
         let tool = &infraction.tool;
         let detail = &infraction.detail;
-        if let Err(e) = self.run(|c| c.execute(sql::INFRACTION_APPEND, &[&cid, law, &at_ms, tool, detail])) {
-            let mut logged = self.infraction_logged.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Err(e) =
+            self.run(|c| c.execute(sql::INFRACTION_APPEND, &[&cid, law, &at_ms, tool, detail]))
+        {
+            let mut logged = self
+                .infraction_logged
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
             if due(*logged) {
                 *logged = Some(Instant::now());
                 eprintln!("db: infraction append failed: {e} (dropped; logged once a minute)");
@@ -498,10 +571,15 @@ impl Db {
     pub fn append_ide_audit(&self, row: &Value) -> Result<(), String> {
         let written = self.write_ide_audit(row);
         if let Err(e) = &written {
-            let mut logged = self.ide_audit_logged.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut logged = self
+                .ide_audit_logged
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
             if due(*logged) {
                 *logged = Some(Instant::now());
-                eprintln!("db: ide audit append failed: {e} (answered to the owner; logged once a minute)");
+                eprintln!(
+                    "db: ide audit append failed: {e} (answered to the owner; logged once a minute)"
+                );
             }
         }
         written
@@ -509,7 +587,9 @@ impl Db {
 
     fn write_ide_audit(&self, row: &Value) -> Result<(), String> {
         let at_ms = row["at_ms"].as_u64().ok_or("the audit row has no at_ms")? as i64;
-        let workspace = row["workspace"].as_str().ok_or("the audit row has no workspace")?;
+        let workspace = row["workspace"]
+            .as_str()
+            .ok_or("the audit row has no workspace")?;
         let kind = row["kind"].as_str().ok_or("the audit row has no kind")?;
         if let Some(files) = self.file_store() {
             return files.append_ide_audit(row);
@@ -517,7 +597,8 @@ impl Db {
         if !self.enabled() {
             return Err("no database and no state directory for the IDE audit".to_string());
         }
-        self.run(|c| c.execute(sql::IDE_AUDIT_APPEND, &[&at_ms, &workspace, &kind, row])).map(|_| ())
+        self.run(|c| c.execute(sql::IDE_AUDIT_APPEND, &[&at_ms, &workspace, &kind, row]))
+            .map(|_| ())
     }
 
     /// IDE audit rows, newest first (by `at_ms`, then the later row first), of one workspace when
@@ -530,12 +611,15 @@ impl Db {
             return Err("no database and no state directory for the IDE audit".to_string());
         }
         let rows = match workspace {
-            Some(workspace) => self.run(|c| c.query(sql::IDE_AUDIT_PAGE_BY_WORKSPACE, &[&workspace, &limit])),
+            Some(workspace) => {
+                self.run(|c| c.query(sql::IDE_AUDIT_PAGE_BY_WORKSPACE, &[&workspace, &limit]))
+            }
             None => self.run(|c| c.query(sql::IDE_AUDIT_PAGE, &[&limit])),
         };
-        rows.map(|rows| rows.iter().map(|r| r.get::<_, Value>(0)).collect()).inspect_err(|e| {
-            eprintln!("db: ide audit read failed: {e}");
-        })
+        rows.map(|rows| rows.iter().map(|r| r.get::<_, Value>(0)).collect())
+            .inspect_err(|e| {
+                eprintln!("db: ide audit read failed: {e}");
+            })
     }
 }
 
@@ -547,10 +631,15 @@ impl Db {
     pub fn append_station_audit(&self, row: &Value) -> Result<(), String> {
         let written = self.write_station_audit(row);
         if let Err(e) = &written {
-            let mut logged = self.station_audit_logged.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut logged = self
+                .station_audit_logged
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
             if due(*logged) {
                 *logged = Some(Instant::now());
-                eprintln!("db: station audit append failed: {e} (answered to the owner; logged once a minute)");
+                eprintln!(
+                    "db: station audit append failed: {e} (answered to the owner; logged once a minute)"
+                );
             }
         }
         written
@@ -567,7 +656,13 @@ impl Db {
         }
         let station = row["station"].as_str();
         let agent = row["agent"].as_u64().map(|cid| cid as i64);
-        self.run(|c| c.execute(sql::STATION_AUDIT_APPEND, &[&at_ms, &station, &agent, &kind, row])).map(|_| ())
+        self.run(|c| {
+            c.execute(
+                sql::STATION_AUDIT_APPEND,
+                &[&at_ms, &station, &agent, &kind, row],
+            )
+        })
+        .map(|_| ())
     }
 
     /// Station audit rows, newest first, of one workstation when `station` is given. A failed read is an error.
@@ -579,12 +674,15 @@ impl Db {
             return Err("no database and no state directory for the station audit".to_string());
         }
         let rows = match station {
-            Some(station) => self.run(|c| c.query(sql::STATION_AUDIT_PAGE_BY_STATION, &[&station, &limit])),
+            Some(station) => {
+                self.run(|c| c.query(sql::STATION_AUDIT_PAGE_BY_STATION, &[&station, &limit]))
+            }
             None => self.run(|c| c.query(sql::STATION_AUDIT_PAGE, &[&limit])),
         };
-        rows.map(|rows| rows.iter().map(|r| r.get::<_, Value>(0)).collect()).inspect_err(|e| {
-            eprintln!("db: station audit read failed: {e}");
-        })
+        rows.map(|rows| rows.iter().map(|r| r.get::<_, Value>(0)).collect())
+            .inspect_err(|e| {
+                eprintln!("db: station audit read failed: {e}");
+            })
     }
 }
 
@@ -597,13 +695,26 @@ impl Db {
             return Ok(None);
         }
         let row = self.run(|c| c.query_opt(sql::UNFURL_GET, &[&key]))?;
-        Ok(row.map(|row| (row.get::<_, Value>(0), row.get::<_, bool>(1), row.get::<_, i64>(2) as u64)))
+        Ok(row.map(|row| {
+            (
+                row.get::<_, Value>(0),
+                row.get::<_, bool>(1),
+                row.get::<_, i64>(2) as u64,
+            )
+        }))
     }
 
     /// Stores `data` as the answer for `key`, replacing the one stored.
-    pub fn unfurl_put(&self, key: &str, data: &Value, ok: bool, fetched_ms: u64) -> Result<(), String> {
+    pub fn unfurl_put(
+        &self,
+        key: &str,
+        data: &Value,
+        ok: bool,
+        fetched_ms: u64,
+    ) -> Result<(), String> {
         let fetched = fetched_ms as i64;
-        self.run(|c| c.execute(sql::UNFURL_PUT, &[&key, data, &ok, &fetched])).map(|_| ())
+        self.run(|c| c.execute(sql::UNFURL_PUT, &[&key, data, &ok, &fetched]))
+            .map(|_| ())
     }
 }
 
@@ -615,7 +726,9 @@ pub fn restore_all(app: &App) {
         restore_components(app);
         import_ide_audit(app);
     } else {
-        eprintln!("db: no APZ_DATABASE_URL; components stay in their files; transcripts, infractions and the IDE audit go to files under the state dir");
+        eprintln!(
+            "db: no APZ_DATABASE_URL; components stay in their files; transcripts, infractions and the IDE audit go to files under the state dir"
+        );
         app.db.attach_files(&app.config.state_dir);
         crate::sanctions::migrate(app);
     }
@@ -685,14 +798,22 @@ fn restore_transcripts_and_infractions(app: &App) {
         app.transcripts.preload(cid, app.db.transcript(cid, 500));
     }
     let db = Arc::clone(&app.db);
-    app.transcripts.set_sink(Box::new(move |cid: u64, seq: u64, work: u64, kind: &str, at_ms: u64, data: &Value| {
-        db.append_transcript(cid, seq, work, kind, at_ms, data)
-    }));
+    app.transcripts.set_sink(Box::new(
+        move |cid: u64, seq: u64, work: u64, kind: &str, at_ms: u64, data: &Value| {
+            db.append_transcript(cid, seq, work, kind, at_ms, data)
+        },
+    ));
     // Infractions recorded before Postgres held any (from the laws' own file) are imported once.
     if app.db.no_infractions() {
         for (cid, v) in app.laws.all_violations() {
             let tool = String::new();
-            app.db.append_infraction(&Infraction { cid, law: v.law, at_ms: v.at_ms, tool, detail: v.detail });
+            app.db.append_infraction(&Infraction {
+                cid,
+                law: v.law,
+                at_ms: v.at_ms,
+                tool,
+                detail: v.detail,
+            });
         }
     }
 }
@@ -702,18 +823,20 @@ fn restore_transcripts_and_infractions(app: &App) {
 fn wire_violations(app: &App) {
     let db = Arc::clone(&app.db);
     let me = app.handle();
-    app.laws.set_sink(Box::new(move |cid: u64, v: &crate::laws::Violation, tool: &str| {
-        db.append_infraction(&Infraction {
-            cid,
-            law: v.law.clone(),
-            at_ms: v.at_ms,
-            tool: tool.to_string(),
-            detail: v.detail.clone(),
-        });
-        if let Some(app) = me.upgrade() {
-            crate::sanctions::on_violation(&app, cid, v, tool);
-        }
-    }));
+    app.laws.set_sink(Box::new(
+        move |cid: u64, v: &crate::laws::Violation, tool: &str| {
+            db.append_infraction(&Infraction {
+                cid,
+                law: v.law.clone(),
+                at_ms: v.at_ms,
+                tool: tool.to_string(),
+                detail: v.detail.clone(),
+            });
+            if let Some(app) = me.upgrade() {
+                crate::sanctions::on_violation(&app, cid, v, tool);
+            }
+        },
+    ));
 }
 
 /// The writer: every two seconds, store each component whose snapshot changed.
@@ -721,26 +844,28 @@ pub fn spawn_writer(app: Arc<App>) {
     if !app.db.enabled() && app.db.file_store().is_none() {
         return;
     }
-    let spawned = std::thread::Builder::new().name("db-writer".into()).spawn(move || {
-        let mut logged: BTreeMap<&str, Instant> = BTreeMap::new();
-        loop {
-            std::thread::sleep(Duration::from_secs(2));
-            // A run without Postgres has no component stores to write; its files are only synced.
-            let components: &[&str] = if app.db.enabled() { COMPONENTS } else { &[] };
-            for &name in components {
-                if app.db.is_held(name) {
-                    continue;
-                }
-                if let Err(e) = app.db.store(name, &snapshot_of(&app, name)) {
-                    if due(logged.get(name).copied()) {
-                        eprintln!("db: store {name} failed: {e}");
-                        logged.insert(name, Instant::now());
+    let spawned = std::thread::Builder::new()
+        .name("db-writer".into())
+        .spawn(move || {
+            let mut logged: BTreeMap<&str, Instant> = BTreeMap::new();
+            loop {
+                std::thread::sleep(Duration::from_secs(2));
+                // A run without Postgres has no component stores to write; its files are only synced.
+                let components: &[&str] = if app.db.enabled() { COMPONENTS } else { &[] };
+                for &name in components {
+                    if app.db.is_held(name) {
+                        continue;
+                    }
+                    if let Err(e) = app.db.store(name, &snapshot_of(&app, name)) {
+                        if due(logged.get(name).copied()) {
+                            eprintln!("db: store {name} failed: {e}");
+                            logged.insert(name, Instant::now());
+                        }
                     }
                 }
+                app.db.sync_files();
             }
-            app.db.sync_files();
-        }
-    });
+        });
     if let Err(e) = spawned {
         eprintln!("db: writer thread not started: {e}");
     }
@@ -765,11 +890,15 @@ pub fn test_database(label: &str) -> Option<String> {
         "APZ_TEST_DATABASE_URL must not be the live APZ_DATABASE_URL"
     );
     assert!(
-        label.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_'),
+        label
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_'),
         "test database label {label:?}: want lowercase letters, digits and underscores"
     );
     let name = format!("apz_test_{label}_{}", std::process::id());
-    let (server, _) = base.rsplit_once('/').expect("APZ_TEST_DATABASE_URL names a database");
+    let (server, _) = base
+        .rsplit_once('/')
+        .expect("APZ_TEST_DATABASE_URL names a database");
     let mut admin = match postgres::Client::connect(&base, postgres::NoTls) {
         Ok(client) => client,
         Err(err) => {
@@ -777,7 +906,9 @@ pub fn test_database(label: &str) -> Option<String> {
             return None;
         }
     };
-    admin.batch_execute(&DATABASE_CREATE.replace("{name}", &name)).expect("create the test database");
+    admin
+        .batch_execute(&DATABASE_CREATE.replace("{name}", &name))
+        .expect("create the test database");
     Some(format!("{server}/{name}"))
 }
 
@@ -800,23 +931,53 @@ mod tests {
         assert_eq!(disabled.unfurl_get("k"), Ok(None));
         assert!(disabled.unfurl_put("k", &json!({}), true, 1).is_err());
 
-        let Some(url) = test_database("unfurl_cache") else { return };
+        let Some(url) = test_database("unfurl_cache") else {
+            return;
+        };
         let env = BTreeMap::from([("APZ_DATABASE_URL".to_string(), url)]);
         let db = Db::connect(&env);
         assert!(db.enabled());
         let key = format!("test-key-{}", std::process::id());
         assert_eq!(db.unfurl_get(&key), Ok(None));
-        db.unfurl_put(&key, &json!({"ok": true, "card": {"title": "a"}}), true, 1_000).expect("stored");
-        assert_eq!(db.unfurl_get(&key), Ok(Some((json!({"ok": true, "card": {"title": "a"}}), true, 1_000))));
-        db.unfurl_put(&key, &json!({"ok": false, "error": "rate_limited"}), false, 2_000).expect("replaced");
-        assert_eq!(db.unfurl_get(&key), Ok(Some((json!({"ok": false, "error": "rate_limited"}), false, 2_000))));
+        db.unfurl_put(
+            &key,
+            &json!({"ok": true, "card": {"title": "a"}}),
+            true,
+            1_000,
+        )
+        .expect("stored");
+        assert_eq!(
+            db.unfurl_get(&key),
+            Ok(Some((
+                json!({"ok": true, "card": {"title": "a"}}),
+                true,
+                1_000
+            )))
+        );
+        db.unfurl_put(
+            &key,
+            &json!({"ok": false, "error": "rate_limited"}),
+            false,
+            2_000,
+        )
+        .expect("replaced");
+        assert_eq!(
+            db.unfurl_get(&key),
+            Ok(Some((
+                json!({"ok": false, "error": "rate_limited"}),
+                false,
+                2_000
+            )))
+        );
     }
 
     /// Runs on a fresh database of the test server (skipped without APZ_TEST_DATABASE_URL); uses a
     /// test-only component and a unique cid. Exercises every runtime query in `sql`.
     #[test]
     fn db_round_trip() {
-        let Some(url) = test_database("round_trip") else { return };
+        let Some(url) = test_database("round_trip") else {
+            return;
+        };
         let env = BTreeMap::from([("APZ_DATABASE_URL".to_string(), url)]);
         let db = Db::connect(&env);
         assert!(db.enabled());
@@ -844,75 +1005,158 @@ mod tests {
         assert_eq!(rows[1].2, "test");
         assert_eq!(rows[1].4, data);
 
-        let infraction = Infraction { cid, law: "law.test".into(), at_ms: 10, tool: "tool.test".into(), detail: "first".into() };
-        let newer = Infraction { at_ms: 11, detail: "second".into(), ..infraction.clone() };
+        let infraction = Infraction {
+            cid,
+            law: "law.test".into(),
+            at_ms: 10,
+            tool: "tool.test".into(),
+            detail: "first".into(),
+        };
+        let newer = Infraction {
+            at_ms: 11,
+            detail: "second".into(),
+            ..infraction.clone()
+        };
         db.append_infraction(&infraction);
         db.append_infraction(&newer);
-        assert_eq!(db.infractions(Some(cid), 10), vec![newer.clone(), infraction.clone()]);
+        assert_eq!(
+            db.infractions(Some(cid), 10),
+            vec![newer.clone(), infraction.clone()]
+        );
         assert_eq!(db.infractions(None, 1), vec![newer]);
 
         db.delete_transcript(cid);
         assert!(db.transcript(cid, 500).is_empty());
         assert!(!db.transcript_cids().contains(&cid));
-        db.run(|c| c.execute(sql::STATE_DELETE, &[&component])).unwrap();
+        db.run(|c| c.execute(sql::STATE_DELETE, &[&component]))
+            .unwrap();
         assert!(db.load(component).is_none());
     }
 
     /// The query-level behaviour both backends must show: the same records in the same orders.
     fn check_queries(db: &Db, cid: u64) {
         db.append_transcript(cid, 1, 9, "work_start", 100, &serde_json::json!({ "n": 1 }));
-        db.append_transcript(cid, 2, 9, "model_request", 101, &serde_json::json!({ "n": 2 }));
-        db.append_transcript(cid, 2, 9, "model_request", 101, &serde_json::json!({ "again": true })); // duplicate seq
+        db.append_transcript(
+            cid,
+            2,
+            9,
+            "model_request",
+            101,
+            &serde_json::json!({ "n": 2 }),
+        );
+        db.append_transcript(
+            cid,
+            2,
+            9,
+            "model_request",
+            101,
+            &serde_json::json!({ "again": true }),
+        ); // duplicate seq
         db.append_transcript(cid, 3, 9, "work_end", 102, &serde_json::json!({ "n": 3 }));
         let all = db.transcript(cid, 500);
-        assert_eq!(all.iter().map(|r| r.0).collect::<Vec<_>>(), vec![1, 2, 3], "oldest first");
-        assert_eq!(all[1].4, serde_json::json!({ "n": 2 }), "the duplicate is ignored");
-        assert_eq!(db.transcript(cid, 2).iter().map(|r| r.0).collect::<Vec<_>>(), vec![2, 3], "the newest two");
+        assert_eq!(
+            all.iter().map(|r| r.0).collect::<Vec<_>>(),
+            vec![1, 2, 3],
+            "oldest first"
+        );
+        assert_eq!(
+            all[1].4,
+            serde_json::json!({ "n": 2 }),
+            "the duplicate is ignored"
+        );
+        assert_eq!(
+            db.transcript(cid, 2)
+                .iter()
+                .map(|r| r.0)
+                .collect::<Vec<_>>(),
+            vec![2, 3],
+            "the newest two"
+        );
         assert!(db.transcript(cid, 0).is_empty());
         assert!(db.transcript_cids().contains(&cid));
 
-        let first = Infraction { cid, law: "law.test".into(), at_ms: 50, tool: "tool.test".into(), detail: "first".into() };
-        let second = Infraction { at_ms: 60, detail: "second".into(), ..first.clone() };
+        let first = Infraction {
+            cid,
+            law: "law.test".into(),
+            at_ms: 50,
+            tool: "tool.test".into(),
+            detail: "first".into(),
+        };
+        let second = Infraction {
+            at_ms: 60,
+            detail: "second".into(),
+            ..first.clone()
+        };
         // Same at_ms as `second`: the later record (higher id) comes first.
-        let third = Infraction { detail: "third".into(), ..second.clone() };
+        let third = Infraction {
+            detail: "third".into(),
+            ..second.clone()
+        };
         for row in [&first, &second, &third] {
             db.append_infraction(row);
         }
-        assert_eq!(db.infractions(Some(cid), 10), vec![third.clone(), second.clone(), first.clone()]);
+        assert_eq!(
+            db.infractions(Some(cid), 10),
+            vec![third.clone(), second.clone(), first.clone()]
+        );
         assert_eq!(db.infractions(Some(cid), 1), vec![third.clone()]);
         assert_eq!(db.infractions(None, 10), vec![third, second, first]);
 
         // The IDE audit: newest first by at_ms (a tie goes to the later row), filtered by workspace.
         let (ws, other) = (format!("agent:{cid}"), format!("agent:{}", cid + 1));
-        let audit = |at_ms: u64, workspace: &str, kind: &str| {
-            serde_json::json!({ "at_ms": at_ms, "actor": "owner", "workspace": workspace, "kind": kind, "path": null })
-        };
-        let (w1, w2, w3) = (audit(10, &ws, "write"), audit(20, &other, "write"), audit(20, &ws, "restore"));
+        let audit = |at_ms: u64, workspace: &str, kind: &str| serde_json::json!({ "at_ms": at_ms, "actor": "owner", "workspace": workspace, "kind": kind, "path": null });
+        let (w1, w2, w3) = (
+            audit(10, &ws, "write"),
+            audit(20, &other, "write"),
+            audit(20, &ws, "restore"),
+        );
         for row in [&w1, &w2, &w3] {
             db.append_ide_audit(row).unwrap();
         }
-        assert_eq!(db.ide_audit(None, 10).unwrap(), vec![w3.clone(), w2.clone(), w1.clone()]);
-        assert_eq!(db.ide_audit(Some(&ws), 10).unwrap(), vec![w3.clone(), w1.clone()]);
+        assert_eq!(
+            db.ide_audit(None, 10).unwrap(),
+            vec![w3.clone(), w2.clone(), w1.clone()]
+        );
+        assert_eq!(
+            db.ide_audit(Some(&ws), 10).unwrap(),
+            vec![w3.clone(), w1.clone()]
+        );
         assert_eq!(db.ide_audit(Some(&ws), 1).unwrap(), vec![w3.clone()]);
         assert_eq!(db.ide_audit(Some(&other), 10).unwrap(), vec![w2.clone()]);
         assert!(db.ide_audit(Some("agent:0"), 10).unwrap().is_empty());
-        assert!(db.append_ide_audit(&serde_json::json!({ "kind": "write" })).is_err(), "a row with no at_ms is refused");
+        assert!(
+            db.append_ide_audit(&serde_json::json!({ "kind": "write" }))
+                .is_err(),
+            "a row with no at_ms is refused"
+        );
 
         // The station audit: newest first by at_ms (a tie goes to the later row), filtered by station; the
         // registry-wide rows (station null) appear only in the whole list.
         let (st, st_other) = (format!("ws-{cid}"), format!("ws-{}", cid + 1));
-        let station_row = |at_ms: u64, station: Option<&str>, kind: &str| {
-            serde_json::json!({ "at_ms": at_ms, "actor": "owner", "station": station, "agent": null, "kind": kind })
-        };
-        let (s1, s2, s3) = (station_row(10, Some(&st), "join"), station_row(20, Some(&st_other), "join"), station_row(20, None, "code_issue"));
+        let station_row = |at_ms: u64, station: Option<&str>, kind: &str| serde_json::json!({ "at_ms": at_ms, "actor": "owner", "station": station, "agent": null, "kind": kind });
+        let (s1, s2, s3) = (
+            station_row(10, Some(&st), "join"),
+            station_row(20, Some(&st_other), "join"),
+            station_row(20, None, "code_issue"),
+        );
         for row in [&s1, &s2, &s3] {
             db.append_station_audit(row).unwrap();
         }
-        assert_eq!(db.station_audit(None, 10).unwrap(), vec![s3.clone(), s2.clone(), s1.clone()]);
+        assert_eq!(
+            db.station_audit(None, 10).unwrap(),
+            vec![s3.clone(), s2.clone(), s1.clone()]
+        );
         assert_eq!(db.station_audit(Some(&st), 10).unwrap(), vec![s1.clone()]);
-        assert_eq!(db.station_audit(Some(&st_other), 10).unwrap(), vec![s2.clone()]);
+        assert_eq!(
+            db.station_audit(Some(&st_other), 10).unwrap(),
+            vec![s2.clone()]
+        );
         assert!(db.station_audit(Some("ws-0"), 10).unwrap().is_empty());
-        assert!(db.append_station_audit(&serde_json::json!({ "kind": "join" })).is_err(), "a row with no at_ms is refused");
+        assert!(
+            db.append_station_audit(&serde_json::json!({ "kind": "join" }))
+                .is_err(),
+            "a row with no at_ms is refused"
+        );
 
         db.delete_transcript(cid);
         assert!(db.transcript(cid, 500).is_empty());
@@ -946,15 +1190,31 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let store = crate::settings::Store::load(&dir, false).unwrap();
-        assert_eq!(store.set_board_pause(Some("pr4"), true).map(|(changed, _)| changed), Ok(true));
-        assert_eq!(store.set_board_pause(Some("pr4"), true).map(|(changed, _)| changed), Ok(false));
+        assert_eq!(
+            store
+                .set_board_pause(Some("pr4"), true)
+                .map(|(changed, _)| changed),
+            Ok(true)
+        );
+        assert_eq!(
+            store
+                .set_board_pause(Some("pr4"), true)
+                .map(|(changed, _)| changed),
+            Ok(false)
+        );
         let reloaded = crate::settings::Store::load(&dir, false).unwrap();
         let pauses = reloaded.get().board_pauses;
         assert!(pauses.holds(Some("pr4")) && !pauses.holds(Some("pr5")) && !pauses.holds(None));
         // A save that names no pauses keeps the ones in force.
-        let saved = crate::settings::Settings { board_pauses: Default::default(), ..reloaded.get() };
+        let saved = crate::settings::Settings {
+            board_pauses: Default::default(),
+            ..reloaded.get()
+        };
         reloaded.put(saved).unwrap();
-        assert!(reloaded.get().board_pauses.holds(Some("pr4")), "a save keeps the pauses in force");
+        assert!(
+            reloaded.get().board_pauses.holds(Some("pr4")),
+            "a save keeps the pauses in force"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -962,7 +1222,9 @@ mod tests {
     /// the same boards. Skipped without a test server.
     #[test]
     fn board_pauses_survive_in_postgres() {
-        let Some(url) = test_database("board_pauses") else { return };
+        let Some(url) = test_database("board_pauses") else {
+            return;
+        };
         let env = BTreeMap::from([("APZ_DATABASE_URL".to_string(), url)]);
         let db = Db::connect(&env);
         assert!(db.enabled());
@@ -972,16 +1234,24 @@ mod tests {
         let store = crate::settings::Store::load(&dir, false).unwrap();
         store.set_board_pause(Some("pr4"), true).unwrap();
         store.set_board_pause(None, true).unwrap();
-        assert!(db.store("settings", &store.snapshot()).is_ok(), "the settings are stored");
+        assert!(
+            db.store("settings", &store.snapshot()).is_ok(),
+            "the settings are stored"
+        );
 
         let loaded = db.load("settings").expect("the stored settings");
         let other = std::env::temp_dir().join(format!("apid-pauses-pg-b-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&other);
         std::fs::create_dir_all(&other).unwrap();
         let restored = crate::settings::Store::load(&other, false).unwrap();
-        restored.restore(&loaded).expect("the stored settings restore");
+        restored
+            .restore(&loaded)
+            .expect("the stored settings restore");
         let pauses = restored.get().board_pauses;
-        assert!(pauses.all && pauses.holds(Some("pr9")), "the whole board's pause came back");
+        assert!(
+            pauses.all && pauses.holds(Some("pr9")),
+            "the whole board's pause came back"
+        );
         assert!(pauses.projects.contains("pr4"));
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&other);

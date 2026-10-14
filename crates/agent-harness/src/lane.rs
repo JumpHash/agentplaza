@@ -152,7 +152,12 @@ pub fn read_host<S: Duplex, W: Write>(
         shared.note(&format!("[vsock<-] {}", escape_for_transcript(&line)));
         match HostMessage::from_line(&line) {
             Ok(HostMessage::ToolCall { call, name, args }) => {
-                let queued = OperatorCall { call, name, args, received: Instant::now() };
+                let queued = OperatorCall {
+                    call,
+                    name,
+                    args,
+                    received: Instant::now(),
+                };
                 if operator.send(queued).is_err() {
                     return;
                 }
@@ -162,7 +167,9 @@ pub fn read_host<S: Duplex, W: Write>(
                     return;
                 }
             }
-            Err(err) => shared.note(&format!("agent-harness: ignoring malformed host line ({err})")),
+            Err(err) => shared.note(&format!(
+                "agent-harness: ignoring malformed host line ({err})"
+            )),
         }
     }
 }
@@ -176,7 +183,13 @@ pub fn serve_operators<S: Write, W: Write>(
     exec: impl Fn(&str, &Value) -> Result<String, String>,
     expiry: Duration,
 ) {
-    for OperatorCall { call, name, args, received } in calls {
+    for OperatorCall {
+        call,
+        name,
+        args,
+        received,
+    } in calls
+    {
         let waited = received.elapsed();
         let (ok, output) = if waited > expiry {
             shared.note(&format!(
@@ -189,16 +202,24 @@ pub fn serve_operators<S: Write, W: Write>(
                 Ok(output) => (true, output),
                 Err(err) => {
                     let shown = escape_for_transcript(&name);
-                    shared.note(&format!("agent-harness: tool {shown} call {call} refused: {err}"));
+                    shared.note(&format!(
+                        "agent-harness: tool {shown} call {call} refused: {err}"
+                    ));
                     (false, err)
                 }
             }
         };
         shared.count_call();
-        let answer = GuestMessage::ToolResult { call, ok, output: cap_output(&output, MAX_TOOL_OUTPUT) };
+        let answer = GuestMessage::ToolResult {
+            call,
+            ok,
+            output: cap_output(&output, MAX_TOOL_OUTPUT),
+        };
         if let Err(err) = shared.say(&answer) {
             // The connection is broken; the reader sees that too and ends the session.
-            shared.note(&format!("agent-harness: tool call {call} answer not sent: {err}"));
+            shared.note(&format!(
+                "agent-harness: tool call {call} answer not sent: {err}"
+            ));
             return;
         }
     }
@@ -216,11 +237,15 @@ mod tests {
     fn the_reader_sends_operator_calls_apart_from_the_agents_messages() {
         let (mut guest, mut host) = pair();
         let mut log = Vec::new();
-        let shared = Shared::new(Lines::new(guest.get_ref().try_clone().expect("a second handle")), &mut log);
+        let shared = Shared::new(
+            Lines::new(guest.get_ref().try_clone().expect("a second handle")),
+            &mut log,
+        );
         let (inbox_tx, inbox_rx) = mpsc::channel();
         let (operator_tx, operator_rx) = mpsc::channel();
         let hub = thread::spawn(move || {
-            host.send(r#"{"type":"tool_call","call":5,"name":"echo","args":{"text":"hi"}}"#).unwrap();
+            host.send(r#"{"type":"tool_call","call":5,"name":"echo","args":{"text":"hi"}}"#)
+                .unwrap();
             host.send(r#"{"type":"stop","reason":"done"}"#).unwrap();
             host.send("not json").unwrap();
         });
@@ -228,24 +253,44 @@ mod tests {
         hub.join().unwrap();
         drop(shared);
 
-        let call = operator_rx.try_recv().expect("the operator call was queued");
-        assert_eq!((call.call, call.name.as_str(), call.args), (5, "echo", json!({"text": "hi"})));
-        assert!(matches!(inbox_rx.try_recv(), Ok(Inbound::Message(HostMessage::Stop { .. }))));
+        let call = operator_rx
+            .try_recv()
+            .expect("the operator call was queued");
+        assert_eq!(
+            (call.call, call.name.as_str(), call.args),
+            (5, "echo", json!({"text": "hi"}))
+        );
+        assert!(matches!(
+            inbox_rx.try_recv(),
+            Ok(Inbound::Message(HostMessage::Stop { .. }))
+        ));
         assert!(matches!(inbox_rx.try_recv(), Ok(Inbound::Closed)));
         let log = String::from_utf8(log).unwrap();
-        assert!(log.contains("agent-harness: ignoring malformed host line"), "{log}");
+        assert!(
+            log.contains("agent-harness: ignoring malformed host line"),
+            "{log}"
+        );
     }
 
     #[test]
     fn a_call_queued_past_the_expiry_is_answered_expired_and_not_run() {
         let (guest, mut host) = pair();
         let mut log = Vec::new();
-        let shared = Shared::new(Lines::new(guest.get_ref().try_clone().expect("a second handle")), &mut log);
+        let shared = Shared::new(
+            Lines::new(guest.get_ref().try_clone().expect("a second handle")),
+            &mut log,
+        );
         let (tx, rx) = mpsc::channel();
         // Both calls were received at the same moment; the first runs for longer than the expiry.
         let received = Instant::now();
         for (call, name) in [(1, "slow"), (2, "write_file")] {
-            tx.send(OperatorCall { call, name: name.to_string(), args: json!({}), received }).unwrap();
+            tx.send(OperatorCall {
+                call,
+                name: name.to_string(),
+                args: json!({}),
+                received,
+            })
+            .unwrap();
         }
         drop(tx);
         let ran = Mutex::new(Vec::new());
@@ -261,11 +306,21 @@ mod tests {
             },
             Duration::from_millis(200),
         );
-        assert_eq!(*ran.lock().unwrap(), ["slow"], "the expired call never runs");
+        assert_eq!(
+            *ran.lock().unwrap(),
+            ["slow"],
+            "the expired call never runs"
+        );
         let first: Value = serde_json::from_str(&next(&mut host)).unwrap();
-        assert_eq!(first, json!({"type": "tool_result", "call": 1, "ok": true, "output": "ran slow"}));
+        assert_eq!(
+            first,
+            json!({"type": "tool_result", "call": 1, "ok": true, "output": "ran slow"})
+        );
         let second: Value = serde_json::from_str(&next(&mut host)).unwrap();
-        assert_eq!(second, json!({"type": "tool_result", "call": 2, "ok": false, "output": "expired"}));
+        assert_eq!(
+            second,
+            json!({"type": "tool_result", "call": 2, "ok": false, "output": "expired"})
+        );
         assert_eq!(shared.calls(), 2);
     }
 
@@ -277,13 +332,17 @@ mod tests {
         let collector = thread::spawn(move || {
             let mut seen = std::collections::BTreeSet::new();
             for _ in 0..400 {
-                let line: Value = serde_json::from_str(&next(&mut host)).expect("every line is whole JSON");
+                let line: Value =
+                    serde_json::from_str(&next(&mut host)).expect("every line is whole JSON");
                 seen.insert(line["call"].as_u64().unwrap());
             }
             seen
         });
         let mut log = Vec::new();
-        let shared = Shared::new(Lines::new(guest.get_ref().try_clone().expect("a second handle")), &mut log);
+        let shared = Shared::new(
+            Lines::new(guest.get_ref().try_clone().expect("a second handle")),
+            &mut log,
+        );
         let long = "y".repeat(3000);
         thread::scope(|scope| {
             for writer in 0..4u64 {
@@ -302,6 +361,10 @@ mod tests {
             }
         });
         drop(shared);
-        assert_eq!(collector.join().unwrap().len(), 400, "every call's line arrived whole, exactly once");
+        assert_eq!(
+            collector.join().unwrap().len(),
+            400,
+            "every call's line arrived whole, exactly once"
+        );
     }
 }

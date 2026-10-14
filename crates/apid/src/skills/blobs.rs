@@ -2,14 +2,17 @@
 //! the Library's store (`deliverables::Store`), under the key `skills/<sha256>`.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
-use super::{sha256_hex, Blobs};
+use super::{Blobs, sha256_hex};
 
 /// A sha256 as the stores name blobs: 64 lower-case hex characters.
 fn valid_sha(sha256: &str) -> bool {
-    sha256.len() == 64 && sha256.bytes().all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+    sha256.len() == 64
+        && sha256
+            .bytes()
+            .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
 }
 
 fn checked(sha256: &str, bytes: Vec<u8>) -> Result<Vec<u8>, String> {
@@ -26,7 +29,9 @@ pub struct FsBlobs {
 
 impl FsBlobs {
     pub fn open(state_dir: &Path) -> FsBlobs {
-        FsBlobs { dir: state_dir.join("skills").join("blobs") }
+        FsBlobs {
+            dir: state_dir.join("skills").join("blobs"),
+        }
     }
 
     fn path(&self, sha256: &str) -> Result<PathBuf, String> {
@@ -44,10 +49,15 @@ impl Blobs for FsBlobs {
         if path.is_file() {
             return Ok(sha256);
         }
-        std::fs::create_dir_all(&self.dir).map_err(|e| format!("creating {}: {e}", self.dir.display()))?;
+        std::fs::create_dir_all(&self.dir)
+            .map_err(|e| format!("creating {}: {e}", self.dir.display()))?;
         // A temporary name no other write uses, so two writers of the same bytes never share one file.
         static NEXT: AtomicU64 = AtomicU64::new(0);
-        let tmp = self.dir.join(format!(".{sha256}.{}.{}.tmp", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+        let tmp = self.dir.join(format!(
+            ".{sha256}.{}.{}.tmp",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
         let written = std::fs::File::create(&tmp)
             .and_then(|mut f| {
                 use std::io::Write;

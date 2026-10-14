@@ -2,7 +2,7 @@
 //! (the hub, the node, the model keys, and this machine's requirements from the first-run checks),
 //! and the guided setup and the tour again.
 
-use iced::widget::{column, row, Space};
+use iced::widget::{Space, column, row};
 use iced::{Alignment, Element, Length, Task};
 use serde_json::Value;
 
@@ -10,7 +10,7 @@ use super::Id;
 use crate::console::onboard::{self, Status};
 use crate::console::setup::Check;
 use crate::console::ui::{self, Kind, Tone};
-use crate::console::{client, Ctx};
+use crate::console::{Ctx, client};
 
 #[derive(Debug, Default)]
 pub struct State {
@@ -88,7 +88,11 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             for source in SOURCES.iter() {
                 *slot_mut(state, *source) = None;
             }
-            Task::batch([onboard::status_task(ctx).map(Msg::Status), onboard::local_task().map(Msg::Local), fetch_all(ctx)])
+            Task::batch([
+                onboard::status_task(ctx).map(Msg::Status),
+                onboard::local_task().map(Msg::Local),
+                fetch_all(ctx),
+            ])
         }
         Msg::Status(status) => {
             state.status = Some(status);
@@ -110,19 +114,40 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
 pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
     let head = ui::view_head(
         onboard::copy_text("setup.title"),
-        vec![ui::btn(onboard::copy_text("setup.check_again"), None, Kind::Ghost, Some(Msg::Check))],
+        vec![ui::btn(
+            onboard::copy_text("setup.check_again"),
+            None,
+            Kind::Ghost,
+            Some(Msg::Check),
+        )],
     );
     let intro = ui::faint(onboard::copy_text("setup.intro"));
-    let rows = onboard::rows(state.status.as_ref(), state.local.as_deref()).into_iter().map(|r| {
-        row![ui::sans(r.label, 12.0, ui::INK_2), Space::new().width(Length::Fill), ui::badge(&r.detail, r.tone)]
+    let rows = onboard::rows(state.status.as_ref(), state.local.as_deref())
+        .into_iter()
+        .map(|r| {
+            row![
+                ui::sans(r.label, 12.0, ui::INK_2),
+                Space::new().width(Length::Fill),
+                ui::badge(&r.detail, r.tone)
+            ]
             .spacing(10)
             .align_y(Alignment::Center)
             .into()
-    });
+        });
     let checks = column(rows).spacing(10);
     let guided = row![
-        ui::btn(onboard::copy_text("replay.setup"), None, Kind::Primary, Some(Msg::Wizard)),
-        ui::btn(onboard::copy_text("replay.tour"), None, Kind::Secondary, Some(Msg::Tour)),
+        ui::btn(
+            onboard::copy_text("replay.setup"),
+            None,
+            Kind::Primary,
+            Some(Msg::Wizard)
+        ),
+        ui::btn(
+            onboard::copy_text("replay.tour"),
+            None,
+            Kind::Secondary,
+            Some(Msg::Tour)
+        ),
     ]
     .spacing(8);
     ui::sheet(
@@ -179,7 +204,10 @@ fn slot_mut(state: &mut State, source: Source) -> &mut Option<Result<Value, Stri
 fn fetch(ctx: &Ctx, source: Source) -> Task<Msg> {
     let client = ctx.client.clone();
     let path = path_of(source);
-    client::task(move || client.call("GET", path, None), move |result| Msg::Fetched(source, result))
+    client::task(
+        move || client.call("GET", path, None),
+        move |result| Msg::Fetched(source, result),
+    )
 }
 
 fn fetch_all(ctx: &Ctx) -> Task<Msg> {
@@ -211,8 +239,18 @@ struct CheckRow {
     fix: Option<(&'static str, Id)>,
 }
 
-fn check(label: &'static str, tone: Tone, detail: impl Into<String>, fix: Option<(&'static str, Id)>) -> CheckRow {
-    CheckRow { label, tone, detail: detail.into(), fix }
+fn check(
+    label: &'static str,
+    tone: Tone,
+    detail: impl Into<String>,
+    fix: Option<(&'static str, Id)>,
+) -> CheckRow {
+    CheckRow {
+        label,
+        tone,
+        detail: detail.into(),
+        fix,
+    }
 }
 
 fn pending(label: &'static str) -> CheckRow {
@@ -238,13 +276,35 @@ fn hub_checks(state: &State) -> Vec<CheckRow> {
     match got(slot(state, Source::Overview)) {
         Got::Pending => rows.push(pending("Hub reachable")),
         Got::Value(overview) => {
-            let agents = overview.get("agents").and_then(|a| a.get("total")).and_then(Value::as_u64).unwrap_or(0);
-            rows.push(check("Hub reachable", Tone::Ok, format!("apid answers, {} on this plaza", plural(agents as usize, "agent")), None));
+            let agents = overview
+                .get("agents")
+                .and_then(|a| a.get("total"))
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            rows.push(check(
+                "Hub reachable",
+                Tone::Ok,
+                format!(
+                    "apid answers, {} on this plaza",
+                    plural(agents as usize, "agent")
+                ),
+                None,
+            ));
         }
         Got::Failed(message) if message.contains("401") => {
-            rows.push(check("Hub reachable", Tone::Warn, "the hub wants the owner signed in", None));
+            rows.push(check(
+                "Hub reachable",
+                Tone::Warn,
+                "the hub wants the owner signed in",
+                None,
+            ));
         }
-        Got::Failed(_) => rows.push(check("Hub reachable", Tone::Danger, "apid does not answer", None)),
+        Got::Failed(_) => rows.push(check(
+            "Hub reachable",
+            Tone::Danger,
+            "apid does not answer",
+            None,
+        )),
     }
 
     match got(slot(state, Source::Identity)) {
@@ -254,20 +314,41 @@ fn hub_checks(state: &State) -> Vec<CheckRow> {
             let identity = &v;
             let fingerprint = str_at(identity, "fingerprint");
             let nodes = uint(identity, "nodes");
-            let who = format!("{} {}", str_at(identity, "name"), str_at(identity, "version"));
+            let who = format!(
+                "{} {}",
+                str_at(identity, "name"),
+                str_at(identity, "version")
+            );
             if !fingerprint.is_empty() || nodes == 0 {
-                let wire = if fingerprint.is_empty() { "plain HTTP" } else { "HTTPS" };
-                rows.push(check("Hub identity", Tone::Ok, format!("{who}, {wire}"), None));
+                let wire = if fingerprint.is_empty() {
+                    "plain HTTP"
+                } else {
+                    "HTTPS"
+                };
+                rows.push(check(
+                    "Hub identity",
+                    Tone::Ok,
+                    format!("{who}, {wire}"),
+                    None,
+                ));
             } else {
                 rows.push(check(
                     "Hub identity",
                     Tone::Warn,
-                    format!("{who}, plain HTTP with {} joined", plural(nodes as usize, "node")),
+                    format!(
+                        "{who}, plain HTTP with {} joined",
+                        plural(nodes as usize, "node")
+                    ),
                     Some(("Other machines should join over HTTPS", Id::Nodes)),
                 ));
             }
         }
-        _ => rows.push(check("Hub identity", Tone::Danger, "the hub does not say who it is", None)),
+        _ => rows.push(check(
+            "Hub identity",
+            Tone::Danger,
+            "the hub does not say who it is",
+            None,
+        )),
     }
 
     match got(slot(state, Source::Overview)) {
@@ -277,14 +358,29 @@ fn hub_checks(state: &State) -> Vec<CheckRow> {
         }
         Got::Value(overview) => {
             rows.push(if flag(overview, "hub") {
-                check("Hub service", Tone::Ok, "the hub serves the console and the API", None)
+                check(
+                    "Hub service",
+                    Tone::Ok,
+                    "the hub serves the console and the API",
+                    None,
+                )
             } else {
-                check("Hub service", Tone::Danger, "the hub service is not running", None)
+                check(
+                    "Hub service",
+                    Tone::Danger,
+                    "the hub service is not running",
+                    None,
+                )
             });
             rows.push(if flag(overview, "noded") {
                 check("Node here", Tone::Ok, "this machine runs agents", None)
             } else {
-                check("Node here", Tone::Warn, "no node on this machine: agents cannot run here", Some(("Add this machine as a node", Id::Nodes)))
+                check(
+                    "Node here",
+                    Tone::Warn,
+                    "no node on this machine: agents cannot run here",
+                    Some(("Add this machine as a node", Id::Nodes)),
+                )
             });
         }
         Got::Failed(_) => {}
@@ -297,14 +393,23 @@ fn hub_checks(state: &State) -> Vec<CheckRow> {
                 check("Network", Tone::Ok, "this hub runs its own network", None)
             } else {
                 let running = flag(link, "running");
-                let hub = link.get("hub").and_then(Value::as_str).filter(|h| !h.is_empty()).unwrap_or("another hub");
+                let hub = link
+                    .get("hub")
+                    .and_then(Value::as_str)
+                    .filter(|h| !h.is_empty())
+                    .unwrap_or("another hub");
                 let node = if running { "running" } else { "stopped" };
                 let tone = if running { Tone::Ok } else { Tone::Warn };
                 let fix = (!running).then_some(("Start the node", Id::Nodes));
                 check("Network", tone, format!("joined {hub}, node {node}"), fix)
             }
         }
-        Got::Failed(_) => check("Network", Tone::Warn, "could not read the node link", Some(("Open Nodes", Id::Nodes))),
+        Got::Failed(_) => check(
+            "Network",
+            Tone::Warn,
+            "could not read the node link",
+            Some(("Open Nodes", Id::Nodes)),
+        ),
     });
 
     match got(slot(state, Source::Machine)) {
@@ -313,11 +418,23 @@ fn hub_checks(state: &State) -> Vec<CheckRow> {
             // Without a machine the existing local checks cover this machine, so the row is left out.
             if let Some(machine) = v.get("machine").filter(|m| m.is_object()) {
                 let backend = str_at(machine, "backend");
-                let (tone, backend) = if backend.is_empty() { (Tone::Warn, "no hypervisor backend") } else { (Tone::Ok, backend) };
+                let (tone, backend) = if backend.is_empty() {
+                    (Tone::Warn, "no hypervisor backend")
+                } else {
+                    (Tone::Ok, backend)
+                };
                 let arch = str_at(machine, "arch");
                 let cpus = uint(machine, "cpus");
                 let mib = uint(machine, "memory_mib");
-                rows.push(check("Machine and hypervisor", tone, format!("{backend} on {arch}, {}, {mib} MiB", plural(cpus as usize, "CPU")), None));
+                rows.push(check(
+                    "Machine and hypervisor",
+                    tone,
+                    format!(
+                        "{backend} on {arch}, {}, {mib} MiB",
+                        plural(cpus as usize, "CPU")
+                    ),
+                    None,
+                ));
             }
         }
         Got::Failed(_) => {}
@@ -326,13 +443,25 @@ fn hub_checks(state: &State) -> Vec<CheckRow> {
     rows.push(match got(slot(state, Source::Vault)) {
         Got::Pending => pending("Vault"),
         Got::Value(v) if v.get("vault").is_some_and(Value::is_object) => vault_row(&v["vault"]),
-        _ => check("Vault", Tone::Warn, "could not read the vault", Some(("Open the Vault", Id::Vault))),
+        _ => check(
+            "Vault",
+            Tone::Warn,
+            "could not read the vault",
+            Some(("Open the Vault", Id::Vault)),
+        ),
     });
 
     rows.push(match got(slot(state, Source::Providers)) {
-        Got::Value(v) if v.is_array() => providers_row(v.as_array().map(Vec::as_slice).unwrap_or_default()),
+        Got::Value(v) if v.is_array() => {
+            providers_row(v.as_array().map(Vec::as_slice).unwrap_or_default())
+        }
         Got::Pending => pending("Model providers"),
-        _ => check("Model providers", Tone::Warn, "could not list the providers", Some(("Open Models", Id::Models))),
+        _ => check(
+            "Model providers",
+            Tone::Warn,
+            "could not list the providers",
+            Some(("Open Models", Id::Models)),
+        ),
     });
 
     match got(slot(state, Source::Overview)) {
@@ -340,7 +469,12 @@ fn hub_checks(state: &State) -> Vec<CheckRow> {
         Got::Value(overview) => {
             let model = str_at(overview, "default_model");
             rows.push(if model.is_empty() {
-                check("Default model", Tone::Warn, "none set: agents have no model by default", Some(("Pick a default model", Id::Models)))
+                check(
+                    "Default model",
+                    Tone::Warn,
+                    "none set: agents have no model by default",
+                    Some(("Pick a default model", Id::Models)),
+                )
             } else {
                 check("Default model", Tone::Ok, model, None)
             });
@@ -353,17 +487,30 @@ fn hub_checks(state: &State) -> Vec<CheckRow> {
         Got::Value(v) if v.get("git").is_some_and(Value::is_object) => {
             let git = &v["git"];
             if flag(git, "configured") {
-                check("Git host", Tone::Ok, format!("org {}", str_at(git, "org")), None)
+                check(
+                    "Git host",
+                    Tone::Ok,
+                    format!("org {}", str_at(git, "org")),
+                    None,
+                )
             } else {
                 check(
                     "Git host",
                     Tone::Warn,
                     "the git host is not configured",
-                    Some(("Set FORGEJO_URL and FORGEJO_TOKEN for the hub, then restart apid", Id::Git)),
+                    Some((
+                        "Set FORGEJO_URL and FORGEJO_TOKEN for the hub, then restart apid",
+                        Id::Git,
+                    )),
                 )
             }
         }
-        _ => check("Git host", Tone::Warn, "could not ask the git host", Some(("Open Git", Id::Git))),
+        _ => check(
+            "Git host",
+            Tone::Warn,
+            "could not ask the git host",
+            Some(("Open Git", Id::Git)),
+        ),
     });
 
     rows
@@ -377,44 +524,101 @@ fn vault_row(vault: &Value) -> CheckRow {
         _ => String::new(),
     };
     if state == "uninitialized" {
-        return check("Vault", Tone::Warn, "not created yet: secrets have no encrypted home", Some(("Create the vault", Id::Vault)));
+        return check(
+            "Vault",
+            Tone::Warn,
+            "not created yet: secrets have no encrypted home",
+            Some(("Create the vault", Id::Vault)),
+        );
     }
     if state == "sealed" {
-        return check("Vault", Tone::Warn, "sealed: agents cannot read secrets until it is unsealed", Some(("Unseal the vault", Id::Vault)));
+        return check(
+            "Vault",
+            Tone::Warn,
+            "sealed: agents cannot read secrets until it is unsealed",
+            Some(("Unseal the vault", Id::Vault)),
+        );
     }
     if state == "tampered" || !tampered.is_empty() {
-        let why = if tampered.is_empty() { "the records do not verify" } else { tampered.as_str() };
-        return check("Vault", Tone::Danger, format!("tampered: {why}"), Some(("Read the audit log and recover", Id::Vault)));
+        let why = if tampered.is_empty() {
+            "the records do not verify"
+        } else {
+            tampered.as_str()
+        };
+        return check(
+            "Vault",
+            Tone::Danger,
+            format!("tampered: {why}"),
+            Some(("Read the audit log and recover", Id::Vault)),
+        );
     }
     let env_keys = uint(vault, "env_file_keys");
     if env_keys > 0 {
         return check(
             "Vault",
             Tone::Warn,
-            format!("{} still in the env file, not in the vault", plural(env_keys as usize, "key")),
+            format!(
+                "{} still in the env file, not in the vault",
+                plural(env_keys as usize, "key")
+            ),
             Some(("Import them into the vault", Id::Vault)),
         );
     }
     if vault.get("audit_ok").and_then(Value::as_bool) == Some(false) {
-        return check("Vault", Tone::Warn, "unsealed, but the audit chain does not verify", Some(("Check the audit log", Id::Vault)));
+        return check(
+            "Vault",
+            Tone::Warn,
+            "unsealed, but the audit chain does not verify",
+            Some(("Check the audit log", Id::Vault)),
+        );
     }
     let entries = uint(vault, "entries");
-    let slots = vault.get("slots").and_then(Value::as_array).map_or(0, Vec::len);
-    check("Vault", Tone::Ok, format!("unsealed: {}, {}", plural(entries as usize, "secret"), plural(slots as usize, "unlock slot")), None)
+    let slots = vault
+        .get("slots")
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len);
+    check(
+        "Vault",
+        Tone::Ok,
+        format!(
+            "unsealed: {}, {}",
+            plural(entries as usize, "secret"),
+            plural(slots as usize, "unlock slot")
+        ),
+        None,
+    )
 }
 
 fn providers_row(list: &[Value]) -> CheckRow {
     if list.is_empty() {
-        return check("Model providers", Tone::Danger, "none: agents cannot call a model", Some(("Add a provider and its key", Id::Models)));
+        return check(
+            "Model providers",
+            Tone::Danger,
+            "none: agents cannot call a model",
+            Some(("Add a provider and its key", Id::Models)),
+        );
     }
-    let without: Vec<&str> = list.iter().filter(|p| str_at(p, "credential") == "missing").map(|p| str_at(p, "id")).collect();
+    let without: Vec<&str> = list
+        .iter()
+        .filter(|p| str_at(p, "credential") == "missing")
+        .map(|p| str_at(p, "id"))
+        .collect();
     if without.is_empty() {
-        check("Model providers", Tone::Ok, format!("{}, every key set", plural(list.len(), "provider")), None)
+        check(
+            "Model providers",
+            Tone::Ok,
+            format!("{}, every key set", plural(list.len(), "provider")),
+            None,
+        )
     } else {
         check(
             "Model providers",
             Tone::Warn,
-            format!("{} without a key (of {})", without.join(", "), plural(list.len(), "provider")),
+            format!(
+                "{} without a key (of {})",
+                without.join(", "),
+                plural(list.len(), "provider")
+            ),
             Some(("Set the key for each one", Id::Models)),
         )
     }
@@ -440,16 +644,25 @@ fn hub_card<'a>(state: &State) -> Element<'a, Msg> {
         if items == 1 { "item" } else { "items" },
     );
     let lines: Vec<Element<'a, Msg>> = rows.into_iter().map(check_line).collect();
-    column![ui::faint(summary), column(lines).spacing(10)].spacing(14).into()
+    column![ui::faint(summary), column(lines).spacing(10)]
+        .spacing(14)
+        .into()
 }
 
 fn check_line<'a>(item: CheckRow) -> Element<'a, Msg> {
     let fix: Element<'a, Msg> = match item.fix {
-        Some((label, id)) if matches!(item.tone, Tone::Warn | Tone::Danger) => ui::link(label, Msg::Go(id), false),
+        Some((label, id)) if matches!(item.tone, Tone::Warn | Tone::Danger) => {
+            ui::link(label, Msg::Go(id), false)
+        }
         _ => Space::new().into(),
     };
     row![
-        column![ui::sans(item.label, 12.0, ui::INK_2), ui::faint(item.detail)].spacing(4).width(Length::Fill),
+        column![
+            ui::sans(item.label, 12.0, ui::INK_2),
+            ui::faint(item.detail)
+        ]
+        .spacing(4)
+        .width(Length::Fill),
         ui::badge(status_word(item.tone), item.tone),
         fix,
     ]

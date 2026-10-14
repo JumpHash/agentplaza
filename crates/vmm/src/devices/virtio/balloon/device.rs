@@ -18,16 +18,16 @@ use vmm_sys_util::eventfd::EventFd;
 
 use super::{
     BALLOON_QUEUE_NUM, BALLOON_QUEUE_SIZE, BalloonError, BalloonStats, DEFLATE_QUEUE,
-    INFLATE_QUEUE, PAGE_SHIFT, PAGE_SIZE, REPORTING_QUEUE, STAT_AVAILABLE_MEMORY,
-    STAT_FREE_MEMORY, STAT_TOTAL_MEMORY, STATS_QUEUE, VIRTIO_BALLOON_F_DEFLATE_ON_OOM,
-    VIRTIO_BALLOON_F_REPORTING, VIRTIO_BALLOON_F_STATS_VQ, VIRTIO_ID_BALLOON,
+    INFLATE_QUEUE, PAGE_SHIFT, PAGE_SIZE, REPORTING_QUEUE, STAT_AVAILABLE_MEMORY, STAT_FREE_MEMORY,
+    STAT_TOTAL_MEMORY, STATS_QUEUE, VIRTIO_BALLOON_F_DEFLATE_ON_OOM, VIRTIO_BALLOON_F_REPORTING,
+    VIRTIO_BALLOON_F_STATS_VQ, VIRTIO_ID_BALLOON,
 };
 use crate::devices::virtio::VirtioError;
+use crate::devices::virtio::ack_feature_page;
 use crate::devices::virtio::mmio::{
     QueueConfig, VIRTIO_MMIO_INT_CONFIG, VIRTIO_MMIO_INT_VRING, VirtioDevice,
 };
 use crate::devices::virtio::queue::{DescriptorChain, Queue};
-use crate::devices::virtio::ack_feature_page;
 use crate::vstate::memory::{Bytes, GuestAddress, GuestMemoryMmap};
 
 /// `VIRTIO_F_VERSION_1` (feature bit 32): the device conforms to virtio 1.0.
@@ -220,8 +220,7 @@ impl VirtioDevice for VirtioBalloon {
     }
 
     fn ack_features_by_page(&mut self, page: u32, value: u32) -> Result<(), VirtioError> {
-        self.acked_features =
-            ack_feature_page(self.features(), self.acked_features, page, value)?;
+        self.acked_features = ack_feature_page(self.features(), self.acked_features, page, value)?;
         Ok(())
     }
 
@@ -248,7 +247,9 @@ impl VirtioDevice for VirtioBalloon {
         // Linux queues its first stats buffer while probing, before the driver
         // is ready: that kick reached a device with no rings yet. Pick the
         // buffer up now, or the guest never reports its memory.
-        if let Some(head) = take_stats(&mut self.rings[STATS_QUEUE], mem, &mut self.stats).map_err(VirtioError::from)? {
+        if let Some(head) = take_stats(&mut self.rings[STATS_QUEUE], mem, &mut self.stats)
+            .map_err(VirtioError::from)?
+        {
             self.stats_held = Some(head);
         }
         Ok(())
@@ -262,7 +263,10 @@ impl VirtioDevice for VirtioBalloon {
         let config = self.config_bytes();
         let start = usize::try_from(offset).unwrap_or(usize::MAX);
         for (index, byte) in data.iter_mut().enumerate() {
-            *byte = config.get(start.saturating_add(index)).copied().unwrap_or(0);
+            *byte = config
+                .get(start.saturating_add(index))
+                .copied()
+                .unwrap_or(0);
         }
     }
 
@@ -338,7 +342,9 @@ impl SharedBalloon {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, VirtioBalloon> {
-        self.device.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.device
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Hands the device the transport's interrupt status (see
@@ -438,7 +444,10 @@ fn take_stats(
 
 /// Pops every available buffer, hands each chain to `handle`, and returns it to
 /// the driver. The length is 0: the device writes nothing into a balloon buffer.
-fn drain(queue: &mut Queue, mut handle: impl FnMut(&DescriptorChain)) -> Result<bool, BalloonError> {
+fn drain(
+    queue: &mut Queue,
+    mut handle: impl FnMut(&DescriptorChain),
+) -> Result<bool, BalloonError> {
     let mut used_any = false;
     while let Some(chain) = queue.pop()? {
         handle(&chain);
@@ -533,7 +542,11 @@ fn read_buffer(desc: &DescriptorChain, mem: &GuestMemoryMmap) -> Option<Vec<u8>>
 /// Discards the host memory behind the page frames `pfns`. Frames that are
 /// adjacent in host memory are discarded with one call; a frame outside guest
 /// memory is skipped.
-fn discard_pages(mem: &GuestMemoryMmap, discard: &mut dyn Discard, pfns: impl Iterator<Item = u64>) {
+fn discard_pages(
+    mem: &GuestMemoryMmap,
+    discard: &mut dyn Discard,
+    pfns: impl Iterator<Item = u64>,
+) {
     // The run being built: (host address, length in bytes).
     let mut run: Option<(usize, usize)> = None;
     for pfn in pfns {
@@ -652,7 +665,10 @@ mod tests {
         let mut recorder = Recorder::default();
         serve(&mut queue, INFLATE_QUEUE, &mem, &mut recorder).unwrap();
 
-        let host = |pfn: u64| mem.get_host_address(GuestAddress(pfn << PAGE_SHIFT)).unwrap() as usize;
+        let host = |pfn: u64| {
+            mem.get_host_address(GuestAddress(pfn << PAGE_SHIFT))
+                .unwrap() as usize
+        };
         assert_eq!(
             recorder.calls,
             vec![(host(4), 4 * PAGE_SIZE), (host(9), PAGE_SIZE)]
@@ -706,11 +722,17 @@ mod tests {
                 (STAT_SWAP_IN, 9),
             ]),
         );
-        assert_eq!(take_stats(&mut queue, &mem, &mut balloon.stats).unwrap(), Some(0));
+        assert_eq!(
+            take_stats(&mut queue, &mem, &mut balloon.stats).unwrap(),
+            Some(0)
+        );
 
         // A later report replaces the free-memory value and leaves the others.
         publish_buffer(&mem, &vq, 0, &encode(&[(STAT_FREE_MEMORY, 1 << 30)]));
-        assert_eq!(take_stats(&mut queue, &mem, &mut balloon.stats).unwrap(), Some(0));
+        assert_eq!(
+            take_stats(&mut queue, &mem, &mut balloon.stats).unwrap(),
+            Some(0)
+        );
 
         // The buffer is held until the host asks for fresh counters.
         assert_eq!(vq.used_idx(), 0);

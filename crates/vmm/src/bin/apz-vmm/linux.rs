@@ -431,8 +431,12 @@ fn serve_control(path: PathBuf, memory: Arc<dyn MemoryControl>) -> Result<(), St
     }
     let listener = UnixListener::bind(&path)
         .map_err(|err| format!("cannot bind the control socket {}: {err}", path.display()))?;
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
-        .map_err(|err| format!("cannot restrict the control socket {}: {err}", path.display()))?;
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).map_err(|err| {
+        format!(
+            "cannot restrict the control socket {}: {err}",
+            path.display()
+        )
+    })?;
     thread::Builder::new()
         .name("apz_vmm_control".to_string())
         .spawn(move || {

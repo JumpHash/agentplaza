@@ -4,17 +4,23 @@
 use std::collections::BTreeSet;
 use std::f64::consts::PI;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use super::super::robot::{robot_palette, Robot};
+use super::super::robot::{Robot, robot_palette};
 use super::super::scene::{Kind, Obj};
 use super::clips::{channel_value, eval_clip, wave_at};
-use super::files::{registry, ROBOT_FILES};
+use super::files::{ROBOT_FILES, registry};
 use super::types::{Channel, Clip, Gait, REQUIRED_BONES};
-use super::validate::{validate_clips, validate_index, validate_palette, validate_species, validate_tool};
+use super::validate::{
+    validate_clips, validate_index, validate_palette, validate_species, validate_tool,
+};
 
 fn file_text(key: &str) -> &'static str {
-    ROBOT_FILES.iter().find(|(k, _)| *k == key).map(|(_, v)| *v).unwrap_or_else(|| panic!("no robot file {key}"))
+    ROBOT_FILES
+        .iter()
+        .find(|(k, _)| *k == key)
+        .map(|(_, v)| *v)
+        .unwrap_or_else(|| panic!("no robot file {key}"))
 }
 
 fn rover_gait() -> Gait {
@@ -49,8 +55,16 @@ fn every_robot_file_parses_and_validates() {
             errors.extend(validate_index(&v));
         }
     }
-    assert!(errors.is_empty(), "robot files do not validate:\n{}", errors.join("\n"));
-    assert!(registry().errors.is_empty(), "the registry has errors:\n{}", registry().errors.join("\n"));
+    assert!(
+        errors.is_empty(),
+        "robot files do not validate:\n{}",
+        errors.join("\n")
+    );
+    assert!(
+        registry().errors.is_empty(),
+        "the registry has errors:\n{}",
+        registry().errors.join("\n")
+    );
 }
 
 #[test]
@@ -63,9 +77,15 @@ fn every_species_has_the_required_bones_and_is_listed() {
         }
         assert!(reg.index.species.contains(id), "{id} is not in index.json");
     }
-    for (key, _) in ROBOT_FILES.iter().filter(|(k, _)| k.starts_with("species/")) {
+    for (key, _) in ROBOT_FILES
+        .iter()
+        .filter(|(k, _)| k.starts_with("species/"))
+    {
         let id = key.strip_prefix("species/").unwrap_or(key);
-        assert!(reg.index.species.iter().any(|s| s == id), "{id} has a file but is not in index.json");
+        assert!(
+            reg.index.species.iter().any(|s| s == id),
+            "{id} has a file but is not in index.json"
+        );
     }
 }
 
@@ -73,7 +93,8 @@ fn every_species_has_the_required_bones_and_is_listed() {
 fn clip_evaluation_matches_hand_values() {
     let gait = rover_gait();
     // A sin: base + amp × sin(2π·freq·t).
-    let arm = channel(json!({"bone": "armL", "prop": "rot.x", "base": -0.9, "amp": 0.2, "freq": 11.0}));
+    let arm =
+        channel(json!({"bone": "armL", "prop": "rot.x", "base": -0.9, "amp": 0.2, "freq": 11.0}));
     let expected = -0.9 + 0.2 * (2.0 * PI * 1.1).sin();
     // The values are f32 in the file (-0.9 is not exact in f32), so the tolerance is 1e-6.
     assert!((channel_value(&arm, 0.1, &gait, 0.0, 0.0) - expected).abs() < 1e-6);
@@ -91,7 +112,9 @@ fn clip_evaluation_matches_hand_values() {
     assert_eq!(wave_at("hold", 0.3, 0.5), 0.0);
 
     // An in-out envelope: at the middle of a one-shot the sine is at its full amplitude.
-    let swell = channel(json!({"bone": "head", "prop": "rot.x", "amp": 0.5, "freq": 0.25, "env": "in-out"}));
+    let swell = channel(
+        json!({"bone": "head", "prop": "rot.x", "amp": 0.5, "freq": 0.25, "env": "in-out"}),
+    );
     assert!((channel_value(&swell, 1.0, &gait, 1.0, 2.0) - 0.5).abs() < 1e-12);
 
     // A gait reference: "gait.bob" is the species' bob.
@@ -111,27 +134,46 @@ fn rate_channels_accumulate_and_are_not_blended() {
     }))
     .expect("a clip");
     let mut seen = Vec::new();
-    eval_clip(&clip, 0.0, &gait, 0.0, |ch, v| seen.push((ch.prop.clone(), v)));
+    eval_clip(&clip, 0.0, &gait, 0.0, |ch, v| {
+        seen.push((ch.prop.clone(), v))
+    });
     assert_eq!(seen, vec![("rot.x".to_string(), 0.5)]);
 }
 
 #[test]
 fn validation_names_the_path_of_each_error() {
-    let mut rover: Value = serde_json::from_str(file_text("species/rover")).expect("the rover parses");
-    rover["bones"].as_object_mut().expect("bones").remove("head");
+    let mut rover: Value =
+        serde_json::from_str(file_text("species/rover")).expect("the rover parses");
+    rover["bones"]
+        .as_object_mut()
+        .expect("bones")
+        .remove("head");
     rover["parts"][0]["bone"] = Value::from("nope");
     let errs = validate_species(&rover, "rover", &BTreeSet::new());
-    assert!(errs.iter().any(|e| e == "rover.bones: the required bone \"head\" is missing"), "{errs:?}");
-    assert!(errs.iter().any(|e| e.starts_with("rover.parts[0].bone: \"nope\"")), "{errs:?}");
+    assert!(
+        errs.iter()
+            .any(|e| e == "rover.bones: the required bone \"head\" is missing"),
+        "{errs:?}"
+    );
+    assert!(
+        errs.iter()
+            .any(|e| e.starts_with("rover.parts[0].bone: \"nope\"")),
+        "{errs:?}"
+    );
 }
 
 #[test]
 fn validation_finds_a_parent_cycle() {
-    let mut rover: Value = serde_json::from_str(file_text("species/rover")).expect("the rover parses");
+    let mut rover: Value =
+        serde_json::from_str(file_text("species/rover")).expect("the rover parses");
     rover["bones"]["base"]["parent"] = Value::from("body");
     rover["bones"]["body"]["parent"] = Value::from("base");
     let errs = validate_species(&rover, "rover", &BTreeSet::new());
-    assert!(errs.iter().any(|e| e.starts_with("rover.bones.base.parent") || e.starts_with("rover.bones.body.parent")), "{errs:?}");
+    assert!(
+        errs.iter().any(|e| e.starts_with("rover.bones.base.parent")
+            || e.starts_with("rover.bones.body.parent")),
+        "{errs:?}"
+    );
 }
 
 /// The meshes a robot adds, counted as the web counts its draw calls: each mesh node, and each ink hull.
@@ -157,10 +199,19 @@ fn each_species_builds_within_the_draw_budget() {
         let draws = meshes_under(&robot.group);
         robot.hold(Some("wrench"));
         let held = meshes_under(&robot.group);
-        println!("robots: {id}: {draws} draw calls, {} with a held wrench", held);
-        assert!(draws <= 14, "{id} builds {draws} draw calls (the budget is 14)");
+        println!(
+            "robots: {id}: {draws} draw calls, {} with a held wrench",
+            held
+        );
+        assert!(
+            draws <= 14,
+            "{id} builds {draws} draw calls (the budget is 14)"
+        );
         assert_eq!(held - draws, 2, "{id}: a held tool adds two draw calls");
     }
     let orchestrator = Robot::new(200.0, true, &palette, 120.0);
-    println!("robots: rover as the orchestrator: {} draw calls", meshes_under(&orchestrator.group));
+    println!(
+        "robots: rover as the orchestrator: {} draw calls",
+        meshes_under(&orchestrator.group)
+    );
 }

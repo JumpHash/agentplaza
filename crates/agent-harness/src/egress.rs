@@ -85,7 +85,9 @@ impl Link for VsockStream {
 pub fn spawn_shim() {
     match TcpListener::bind(PROXY_ADDR) {
         Ok(listener) => {
-            println!("agent-harness: egress: proxy on {PROXY_ADDR} -> host CID {HOST_CID} port {EGRESS_PORT}");
+            println!(
+                "agent-harness: egress: proxy on {PROXY_ADDR} -> host CID {HOST_CID} port {EGRESS_PORT}"
+            );
             thread::spawn(move || serve(listener, || VsockStream::connect(HOST_CID, EGRESS_PORT)));
         }
         Err(err) => println!("agent-harness: egress: cannot listen on {PROXY_ADDR}: {err}"),
@@ -167,10 +169,16 @@ pub fn fetch_url(_workspace: &Workspace, args: &Value) -> Result<String, ToolErr
     let url = http_url_arg(args)?;
     let fetched = fetch(&url, FETCH_CAP)?;
     let raw = String::from_utf8_lossy(&fetched.body);
-    let text = if fetched.html { html_to_text(&raw) } else { raw.into_owned() };
+    let text = if fetched.html {
+        html_to_text(&raw)
+    } else {
+        raw.into_owned()
+    };
     let mut reply = format!("Fetched {url}:\n{text}");
     if fetched.truncated {
-        reply.push_str(&format!("\n[truncated: the body is over the {FETCH_CAP}-byte read cap]"));
+        reply.push_str(&format!(
+            "\n[truncated: the body is over the {FETCH_CAP}-byte read cap]"
+        ));
     }
     Ok(cap_output(&reply, MAX_TOOL_OUTPUT))
 }
@@ -205,9 +213,12 @@ pub struct Fetched {
 /// and the status.
 pub fn fetch(url: &str, cap: u64) -> Result<Fetched, ToolError> {
     let agent = agent()?;
-    let response = agent.get(url).call().map_err(|err| ToolError::Unavailable {
-        reason: format!("GET {url} failed: {err}"),
-    })?;
+    let response = agent
+        .get(url)
+        .call()
+        .map_err(|err| ToolError::Unavailable {
+            reason: format!("GET {url} failed: {err}"),
+        })?;
     let html = response
         .headers()
         .get("content-type")
@@ -215,12 +226,18 @@ pub fn fetch(url: &str, cap: u64) -> Result<Fetched, ToolError> {
         .is_some_and(|value| value.to_ascii_lowercase().contains("text/html"));
     let mut reader = response.into_body().into_reader().take(cap + 1);
     let mut body = Vec::new();
-    reader.read_to_end(&mut body).map_err(|err| ToolError::Unavailable {
-        reason: format!("the body of {url} did not finish: {err}"),
-    })?;
+    reader
+        .read_to_end(&mut body)
+        .map_err(|err| ToolError::Unavailable {
+            reason: format!("the body of {url} did not finish: {err}"),
+        })?;
     let truncated = body.len() as u64 > cap;
     body.truncate(usize::try_from(cap).unwrap_or(usize::MAX));
-    Ok(Fetched { body, truncated, html })
+    Ok(Fetched {
+        body,
+        truncated,
+        html,
+    })
 }
 
 /// The HTTP client, configured to send every request through the shim.
@@ -270,7 +287,12 @@ pub fn html_to_text(html: &str) -> String {
         let tag = &rest[1..gt];
         rest = &rest[gt + 1..];
         let (closing, name) = tag_name(tag);
-        if !closing && matches!(name.as_str(), "script" | "style" | "noscript" | "svg" | "title") {
+        if !closing
+            && matches!(
+                name.as_str(),
+                "script" | "style" | "noscript" | "svg" | "title"
+            )
+        {
             rest = after_close_tag(rest, &name);
         } else if name == "a" {
             if closing {
@@ -424,7 +446,10 @@ fn decode_entities(text: &str) -> String {
 
 /// The character a leading `&...;` names, and how many bytes that spans.
 fn decode_entity(tail: &str) -> Option<(char, usize)> {
-    let window_end = tail.char_indices().nth(12).map_or(tail.len(), |(index, _)| index);
+    let window_end = tail
+        .char_indices()
+        .nth(12)
+        .map_or(tail.len(), |(index, _)| index);
     let semi = tail[..window_end].find(';')?;
     let ch = match &tail[1..semi] {
         "amp" => '&',
@@ -482,7 +507,9 @@ mod tests {
         client
             .set_read_timeout(Some(Duration::from_secs(5)))
             .expect("a read timeout");
-        client.write_all(message).expect("the request crosses the shim");
+        client
+            .write_all(message)
+            .expect("the request crosses the shim");
         let mut echoed = vec![0u8; message.len()];
         client.read_exact(&mut echoed).expect("the echo comes back");
         assert_eq!(echoed, message);
@@ -496,13 +523,17 @@ mod tests {
 
     #[test]
     fn links_keep_their_address() {
-        let text = html_to_text(r#"<p>See <a href="https://x.test/a?b=1&amp;c=2">the docs</a>.</p>"#);
+        let text =
+            html_to_text(r#"<p>See <a href="https://x.test/a?b=1&amp;c=2">the docs</a>.</p>"#);
         assert_eq!(text, "See the docs (https://x.test/a?b=1&c=2).");
     }
 
     #[test]
     fn list_items_become_dash_lines() {
-        assert_eq!(html_to_text("<ul><li>one</li><li>two</li></ul>"), "- one\n- two");
+        assert_eq!(
+            html_to_text("<ul><li>one</li><li>two</li></ul>"),
+            "- one\n- two"
+        );
     }
 
     #[test]
@@ -513,13 +544,17 @@ mod tests {
         let text = html_to_text(page);
         assert_eq!(text, "keep\n\nalso");
         for dropped in ["gone", "color", "no js", "drawn", "hidden"] {
-            assert!(!text.contains(dropped), "{dropped} should be dropped: {text}");
+            assert!(
+                !text.contains(dropped),
+                "{dropped} should be dropped: {text}"
+            );
         }
     }
 
     #[test]
     fn common_entities_are_decoded() {
-        let text = html_to_text("<p>&amp; &lt;b&gt; &quot;q&quot; &#39;s&#39; a&nbsp;b &#x41;&#66;</p>");
+        let text =
+            html_to_text("<p>&amp; &lt;b&gt; &quot;q&quot; &#39;s&#39; a&nbsp;b &#x41;&#66;</p>");
         assert_eq!(text, "& <b> \"q\" 's' a b AB");
     }
 

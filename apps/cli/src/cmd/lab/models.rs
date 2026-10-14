@@ -3,11 +3,11 @@
 //! retire takes it out of service.
 
 use clap::Subcommand;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::{model_path, size_text};
 use crate::cmd::models::{items, joined, none_if_empty};
-use crate::ctx::{self, confirm, Ctx};
+use crate::ctx::{self, Ctx, confirm};
 
 #[derive(Subcommand, Debug)]
 pub enum Cmd {
@@ -72,7 +72,11 @@ pub enum Cmd {
 pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
     match cmd {
         Cmd::List { base } => {
-            let path = if base { "/v1/foundry/models?kind=base" } else { "/v1/foundry/models" };
+            let path = if base {
+                "/v1/foundry/models?kind=base"
+            } else {
+                "/v1/foundry/models"
+            };
             let view = ctx.client.get(path)?;
             ctx.out(&view, |v| {
                 let rows: Vec<Vec<String>> = items(&v["models"])
@@ -88,7 +92,18 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                         ]
                     })
                     .collect();
-                ctx::table(&["id", "state", "name", "version", "parameters", "size", "created"], &rows);
+                ctx::table(
+                    &[
+                        "id",
+                        "state",
+                        "name",
+                        "version",
+                        "parameters",
+                        "size",
+                        "created",
+                    ],
+                    &rows,
+                );
             });
             Ok(())
         }
@@ -99,20 +114,42 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
         }
         Cmd::Import { dir } => {
             let path = absolute(&dir)?;
-            let model = ctx.client.post("/v1/foundry/models/import", &json!({ "path": path }))?;
-            ctx.out(&model, |m| println!("registered {} as {}", ctx::s(m, "id"), ctx::s(m, "state")));
+            let model = ctx
+                .client
+                .post("/v1/foundry/models/import", &json!({ "path": path }))?;
+            ctx.out(&model, |m| {
+                println!("registered {} as {}", ctx::s(m, "id"), ctx::s(m, "state"))
+            });
             Ok(())
         }
-        Cmd::Shadow { id, yes } => act(ctx, &id, "shadow", yes, &format!("Put model {id} in shadow.")),
-        Cmd::Promote { id, yes } => act(ctx, &id, "promote", yes, &format!("Promote model {id} to live.")),
+        Cmd::Shadow { id, yes } => act(
+            ctx,
+            &id,
+            "shadow",
+            yes,
+            &format!("Put model {id} in shadow."),
+        ),
+        Cmd::Promote { id, yes } => act(
+            ctx,
+            &id,
+            "promote",
+            yes,
+            &format!("Promote model {id} to live."),
+        ),
         Cmd::Retire { id, yes } => act(ctx, &id, "retire", yes, &format!("Retire model {id}.")),
         Cmd::Invoke { id, text } => {
             let text = ctx::text_arg(&text)?;
-            let reply = ctx.client.post(&format!("{}/invoke", model_path(&id)), &json!({ "text": text }))?;
+            let reply = ctx.client.post(
+                &format!("{}/invoke", model_path(&id)),
+                &json!({ "text": text }),
+            )?;
             ctx.out(&reply, |r| {
                 match r.get("output") {
                     Some(Value::String(text)) => println!("{text}"),
-                    Some(other) => println!("{}", serde_json::to_string_pretty(other).unwrap_or_default()),
+                    Some(other) => println!(
+                        "{}",
+                        serde_json::to_string_pretty(other).unwrap_or_default()
+                    ),
                     None => {}
                 }
                 println!("{} ms", ctx::text(r, "ms"));
@@ -123,8 +160,16 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             if !confirm(yes, &format!("Re-derive model {id} from its download."))? {
                 return Err("cancelled".into());
             }
-            let reply = ctx.client.call("POST", &format!("{}/rederive", model_path(&id)), None)?;
-            ctx.out(&reply, |r| println!("model {} is {}", ctx::text(&r["model"], "id"), ctx::s(r, "state")));
+            let reply = ctx
+                .client
+                .call("POST", &format!("{}/rederive", model_path(&id)), None)?;
+            ctx.out(&reply, |r| {
+                println!(
+                    "model {} is {}",
+                    ctx::text(&r["model"], "id"),
+                    ctx::s(r, "state")
+                )
+            });
             Ok(())
         }
     }
@@ -135,8 +180,12 @@ fn act(ctx: &Ctx, id: &str, action: &str, yes: bool, question: &str) -> Result<(
     if !confirm(yes, question)? {
         return Err("cancelled".into());
     }
-    let model = ctx.client.call("POST", &format!("{}/{action}", model_path(id)), None)?;
-    ctx.out(&model, |m| println!("model {} is {}", ctx::s(m, "id"), ctx::s(m, "state")));
+    let model = ctx
+        .client
+        .call("POST", &format!("{}/{action}", model_path(id)), None)?;
+    ctx.out(&model, |m| {
+        println!("model {} is {}", ctx::s(m, "id"), ctx::s(m, "state"))
+    });
     Ok(())
 }
 
@@ -146,7 +195,9 @@ fn absolute(dir: &str) -> Result<String, String> {
     if !path.is_dir() {
         return Err(format!("{dir} is not a directory"));
     }
-    path.to_str().map(str::to_string).ok_or_else(|| format!("{dir}: the path is not UTF-8"))
+    path.to_str()
+        .map(str::to_string)
+        .ok_or_else(|| format!("{dir}: the path is not UTF-8"))
 }
 
 /// A model in full: its identity, its card, and its shadow totals.

@@ -216,7 +216,10 @@ impl ReadTimeout for VsockStream {
     /// `SO_RCVTIMEO`: a read that waits longer fails with `WouldBlock`.
     fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
         if timeout == Some(Duration::ZERO) {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "a zero read timeout"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "a zero read timeout",
+            ));
         }
         let timeout = timeout.unwrap_or(Duration::ZERO);
         let value = libc::timeval {

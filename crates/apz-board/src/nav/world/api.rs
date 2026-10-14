@@ -6,8 +6,8 @@
 
 use super::follow::clear_stuck;
 use super::*;
-use crate::nav::drawn::{bake_drawn_tops, DRAWN_STEP};
-use crate::nav::height::{body_scale, new_body, step_body, BodyMode};
+use crate::nav::drawn::{DRAWN_STEP, bake_drawn_tops};
+use crate::nav::height::{BodyMode, body_scale, new_body, step_body};
 use crate::nav::plan::snap_walk;
 use crate::nav::{NavPose, NavRobotSpec};
 
@@ -25,7 +25,16 @@ pub fn components_of(grid: &NavGrid) -> Vec<i32> {
             links[b].push(a);
         }
     }
-    const STEPS: [(i64, i64); 8] = [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (-1, 1), (1, -1), (-1, -1)];
+    const STEPS: [(i64, i64); 8] = [
+        (1, 0),
+        (-1, 0),
+        (0, 1),
+        (0, -1),
+        (1, 1),
+        (-1, 1),
+        (1, -1),
+        (-1, -1),
+    ];
     let mut comp = vec![-1i32; n];
     let mut next = 0i32;
     let mut stack: Vec<usize> = Vec::new();
@@ -46,7 +55,11 @@ pub fn components_of(grid: &NavGrid) -> Vec<i32> {
                     continue;
                 }
                 // A diagonal step needs both orthogonal cells walkable.
-                if di != 0 && dj != 0 && (grid.walk[(j * cols + ni) as usize] != 1 || grid.walk[(nj * cols + i) as usize] != 1) {
+                if di != 0
+                    && dj != 0
+                    && (grid.walk[(j * cols + ni) as usize] != 1
+                        || grid.walk[(nj * cols + i) as usize] != 1)
+                {
                     continue;
                 }
                 nbrs.push((nj * cols + ni) as usize);
@@ -85,7 +98,9 @@ impl NavWorld {
 
     /// The drawn supports the walk heights bake from (None: the grid's heights, no hover audit).
     pub fn set_drawn(&mut self, sups: Option<Vec<Support>>) {
-        self.drawn = sups.as_ref().map(|s| bake_drawn_tops(&self.grid, s, DRAWN_STEP));
+        self.drawn = sups
+            .as_ref()
+            .map(|s| bake_drawn_tops(&self.grid, s, DRAWN_STEP));
         self.sups = sups;
     }
 
@@ -125,11 +140,15 @@ impl NavWorld {
     pub fn set_grid(&mut self, grid: NavGrid) {
         self.grid = grid;
         self.comp = components_of(&self.grid);
-        self.drawn = self.sups.as_ref().map(|s| bake_drawn_tops(&self.grid, s, DRAWN_STEP));
+        self.drawn = self
+            .sups
+            .as_ref()
+            .map(|s| bake_drawn_tops(&self.grid, s, DRAWN_STEP));
         self.cache.clear();
         self.sync_lifts();
         for id in self.robot_ids() {
-            let Some((riding, lift_id)) = self.robots.get(&id).map(|r| (r.riding, r.lift_id)) else {
+            let Some((riding, lift_id)) = self.robots.get(&id).map(|r| (r.riding, r.lift_id))
+            else {
                 continue;
             };
             if riding {
@@ -185,7 +204,9 @@ impl NavWorld {
 
     /// The body follows the surface under the robot now: the body rules with no time passed (a step, not a fade or a fall).
     pub(super) fn reground(&mut self, id: u32) {
-        let Some((riding, x, z, floats)) = self.robots.get(&id).map(|r| (r.riding, r.x, r.z, r.floats)) else {
+        let Some((riding, x, z, floats)) =
+            self.robots.get(&id).map(|r| (r.riding, r.x, r.z, r.floats))
+        else {
             return;
         };
         if riding {
@@ -223,7 +244,13 @@ impl NavWorld {
             goal: None,
             path: None,
             next: 0,
-            from: NavPoint { x: spec.x, y: 0.0, z: spec.z, portal: -1, edge: None },
+            from: NavPoint {
+                x: spec.x,
+                y: 0.0,
+                z: spec.z,
+                portal: -1,
+                edge: None,
+            },
             final_face: None,
             riding: false,
             lift_id: -1,
@@ -263,7 +290,13 @@ impl NavWorld {
         if let Some(r) = self.robots.get_mut(&spec.id) {
             r.y = y;
             r.body = new_body(y);
-            r.from = NavPoint { x: r.x, y, z: r.z, portal: -1, edge: None };
+            r.from = NavPoint {
+                x: r.x,
+                y,
+                z: r.z,
+                portal: -1,
+                edge: None,
+            };
         }
     }
 
@@ -349,7 +382,8 @@ impl NavWorld {
         }
         let ids = self.robot_ids();
         for &id in &ids {
-            let Some((riding, lift_id)) = self.robots.get(&id).map(|r| (r.riding, r.lift_id)) else {
+            let Some((riding, lift_id)) = self.robots.get(&id).map(|r| (r.riding, r.lift_id))
+            else {
                 continue;
             };
             if riding {
@@ -462,7 +496,9 @@ impl NavWorld {
 
     /// The key of lift `id` when such a lift exists (a robot's lift_id is -1 when it has none).
     fn lift_key(&self, id: i64) -> Option<usize> {
-        usize::try_from(id).ok().filter(|l| self.lifts.contains_key(l))
+        usize::try_from(id)
+            .ok()
+            .filter(|l| self.lifts.contains_key(l))
     }
 
     fn robot_has_path(&self, id: u32) -> bool {

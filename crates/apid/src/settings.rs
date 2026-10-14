@@ -9,8 +9,8 @@ use std::sync::Mutex;
 
 use apz_gateway::ModelRef;
 use apz_http::{Response, Router};
-use apz_station::StationSettings;
 use apz_plaza::social::{self, Prune};
+use apz_station::StationSettings;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -29,7 +29,11 @@ pub const ORCHESTRATOR_ROLE: &str = "orchestrator";
 
 pub fn tier_of(role: &str) -> Tier {
     // contract
-    if role == ORCHESTRATOR_ROLE { Tier::Orchestrator } else { Tier::Worker }
+    if role == ORCHESTRATOR_ROLE {
+        Tier::Orchestrator
+    } else {
+        Tier::Worker
+    }
 }
 
 /// The models each tier's list names (canonical `provider/model[@effort]`). The orchestrator may run
@@ -221,7 +225,12 @@ pub struct Sanctions {
 
 impl Default for Sanctions {
     fn default() -> Self {
-        Self { enabled: true, fines: true, suspensions: true, max_fine: 300 }
+        Self {
+            enabled: true,
+            fines: true,
+            suspensions: true,
+            max_fine: 300,
+        }
     }
 }
 
@@ -248,7 +257,10 @@ pub struct Payments {
 
 impl Default for Payments {
     fn default() -> Self {
-        Self { approve_over: 500, charge_models: true }
+        Self {
+            approve_over: 500,
+            charge_models: true,
+        }
     }
 }
 
@@ -319,7 +331,9 @@ pub struct Store {
 
 /// The model in canonical `provider/model[@effort]` form.
 fn canonical(model: &str) -> Result<String, String> {
-    ModelRef::parse(model).map(|r| r.to_string()).map_err(|e| e.to_string())
+    ModelRef::parse(model)
+        .map(|r| r.to_string())
+        .map_err(|e| e.to_string())
 }
 
 fn tier_name(tier: Tier) -> &'static str {
@@ -346,7 +360,10 @@ impl Store {
             Ok(bytes) => match serde_json::from_slice(&bytes) {
                 Ok(settings) => settings,
                 Err(e) => {
-                    eprintln!("settings: {} is not valid settings JSON ({e}); using the defaults", path.display());
+                    eprintln!(
+                        "settings: {} is not valid settings JSON ({e}); using the defaults",
+                        path.display()
+                    );
                     fresh(dev_models)
                 }
             },
@@ -358,12 +375,19 @@ impl Store {
             eprintln!("settings: {} repaired on load: {note}", path.display());
         }
         crate::laws::global().set_strict(settings.laws.strict_permits);
-        Ok(Self { path, dev_models, inner: Mutex::new(settings) })
+        Ok(Self {
+            path,
+            dev_models,
+            inner: Mutex::new(settings),
+        })
     }
 
     pub fn get(&self) -> Settings {
         // contract
-        self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     pub fn dev_models(&self) -> bool {
@@ -389,7 +413,11 @@ impl Store {
 
     /// Pauses (`on`) or resumes the deliveries of one project's board, or of the whole board (`project`
     /// `None`), and saves it. Returns whether the pauses changed, and the pauses now in force.
-    pub fn set_board_pause(&self, project: Option<&str>, on: bool) -> Result<(bool, BoardPauses), String> {
+    pub fn set_board_pause(
+        &self,
+        project: Option<&str>,
+        on: bool,
+    ) -> Result<(bool, BoardPauses), String> {
         let mut guard = self.lock();
         let mut next = guard.clone();
         let before = next.board_pauses.clone();
@@ -408,7 +436,9 @@ impl Store {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Settings> {
-        self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// The checks every saved settings value passes (`put` and `restore`).
@@ -460,7 +490,12 @@ const EFFORT_LEVELS: [&str; 7] = ["none", "minimal", "low", "medium", "high", "x
 /// The orchestrator tier may run only its list, and an empty list admits nothing. Workers may run
 /// any well-formed model: their list is the presets offered first and the default, not a limit. An
 /// entry without an effort pin admits that model at any effort; a pinned entry only itself.
-fn allowed_under(policy: &ModelPolicy, dev_models: bool, tier: Tier, model: &str) -> Result<(), String> {
+fn allowed_under(
+    policy: &ModelPolicy,
+    dev_models: bool,
+    tier: Tier,
+    model: &str,
+) -> Result<(), String> {
     if dev_models {
         return Ok(());
     }
@@ -470,12 +505,21 @@ fn allowed_under(policy: &ModelPolicy, dev_models: bool, tier: Tier, model: &str
     }
     let list = &policy.orchestrator;
     let names: Vec<String> = list.iter().filter_map(|m| canonical(m).ok()).collect();
-    let base = ModelRef::parse(model).map(|r| r.base_name()).map_err(|e| e.to_string())?;
+    let base = ModelRef::parse(model)
+        .map(|r| r.base_name())
+        .map_err(|e| e.to_string())?;
     if names.contains(&wanted) || names.contains(&base) {
         return Ok(());
     }
-    let shown = if names.is_empty() { "none".to_string() } else { names.join(", ") };
-    Err(format!("{model} is not allowed for the {} tier; allowed: {shown}", tier_name(tier)))
+    let shown = if names.is_empty() {
+        "none".to_string()
+    } else {
+        names.join(", ")
+    };
+    Err(format!(
+        "{model} is not allowed for the {} tier; allowed: {shown}",
+        tier_name(tier)
+    ))
 }
 
 /// The checks every settings value passes: on save and restore (`Store::put`, `Store::restore`),
@@ -499,7 +543,12 @@ fn check_settings(new: &Settings, dev_models: bool) -> Result<(), String> {
     }
     let policy = &new.model_policy;
     allowed_under(policy, dev_models, Tier::Worker, &new.default_model)?;
-    allowed_under(policy, dev_models, Tier::Orchestrator, &new.orchestrator_model)?;
+    allowed_under(
+        policy,
+        dev_models,
+        Tier::Orchestrator,
+        &new.orchestrator_model,
+    )?;
     for (role, model) in &new.role_models {
         allowed_under(policy, dev_models, tier_of(role), model)?;
     }
@@ -508,14 +557,26 @@ fn check_settings(new: &Settings, dev_models: bool) -> Result<(), String> {
     }
     if let Some(effort) = &new.effort {
         if !EFFORT_LEVELS.contains(&effort.as_str()) {
-            return Err(format!("unknown effort {effort:?}; expected one of {}", EFFORT_LEVELS.join(", ")));
+            return Err(format!(
+                "unknown effort {effort:?}; expected one of {}",
+                EFFORT_LEVELS.join(", ")
+            ));
         }
     }
     if !(1..=500).contains(&new.foundry.hf_max_gb) {
-        return Err(format!("foundry.hf_max_gb must be 1..=500, got {}", new.foundry.hf_max_gb));
+        return Err(format!(
+            "foundry.hf_max_gb must be 1..=500, got {}",
+            new.foundry.hf_max_gb
+        ));
     }
-    if let Some(bad) = new.fetch_block.iter().find(|h| !is_bare_host(h) || h.trim_start_matches("*.").contains('*')) {
-        return Err(format!("fetch_block entry {bad:?} is not a bare hostname (or *.domain)"));
+    if let Some(bad) = new
+        .fetch_block
+        .iter()
+        .find(|h| !is_bare_host(h) || h.trim_start_matches("*.").contains('*'))
+    {
+        return Err(format!(
+            "fetch_block entry {bad:?} is not a bare hostname (or *.domain)"
+        ));
     }
     let retention = &new.retention;
     for (name, max) in [
@@ -524,7 +585,9 @@ fn check_settings(new: &Settings, dev_models: bool) -> Result<(), String> {
         ("usage_calls_max", retention.usage_calls_max),
     ] {
         if !(RETENTION_MIN..=RETENTION_MAX).contains(&max) {
-            return Err(format!("retention.{name} must be {RETENTION_MIN}..={RETENTION_MAX}, got {max}"));
+            return Err(format!(
+                "retention.{name} must be {RETENTION_MIN}..={RETENTION_MAX}, got {max}"
+            ));
         }
     }
     for (name, days) in [
@@ -539,7 +602,10 @@ fn check_settings(new: &Settings, dev_models: bool) -> Result<(), String> {
         }
     }
     if new.sanctions.max_fine > FINES_PER_WEEK_MAX {
-        return Err(format!("sanctions.max_fine must be 0..={FINES_PER_WEEK_MAX}, got {}", new.sanctions.max_fine));
+        return Err(format!(
+            "sanctions.max_fine must be 0..={FINES_PER_WEEK_MAX}, got {}",
+            new.sanctions.max_fine
+        ));
     }
     Ok(())
 }
@@ -564,11 +630,20 @@ fn safe_model(policy: &ModelPolicy, dev_models: bool, tier: Tier, default: &str)
         Tier::Orchestrator => &policy.orchestrator,
         Tier::Worker => &policy.worker,
     };
-    list.iter().find(|m| canonical(m).is_ok()).cloned().unwrap_or_else(|| default.to_string())
+    list.iter()
+        .find(|m| canonical(m).is_ok())
+        .cloned()
+        .unwrap_or_else(|| default.to_string())
 }
 
 /// `value` when `ok`, else `default`, naming the reset in `notes`.
-fn or_default<T: Copy + std::fmt::Display>(notes: &mut Vec<String>, name: &str, value: T, default: T, ok: bool) -> T {
+fn or_default<T: Copy + std::fmt::Display>(
+    notes: &mut Vec<String>,
+    name: &str,
+    value: T,
+    default: T,
+    ok: bool,
+) -> T {
     if ok {
         value
     } else {
@@ -587,7 +662,11 @@ fn repair(mut s: Settings, dev_models: bool) -> (Settings, Vec<String>) {
     if !s.allow_training_models {
         let trains = apz_gateway::trains_on_data;
         for (tier, list, default) in [
-            ("orchestrator", &mut s.model_policy.orchestrator, &d.model_policy.orchestrator),
+            (
+                "orchestrator",
+                &mut s.model_policy.orchestrator,
+                &d.model_policy.orchestrator,
+            ),
             ("worker", &mut s.model_policy.worker, &d.model_policy.worker),
         ] {
             let before = list.len();
@@ -611,11 +690,17 @@ fn repair(mut s: Settings, dev_models: bool) -> (Settings, Vec<String>) {
             keep
         });
         if trains(&s.default_model) {
-            notes.push(format!("default_model {} is a contributor model; using {}", s.default_model, d.default_model));
+            notes.push(format!(
+                "default_model {} is a contributor model; using {}",
+                s.default_model, d.default_model
+            ));
             s.default_model = d.default_model.clone();
         }
         if trains(&s.orchestrator_model) {
-            notes.push(format!("orchestrator_model {} is a contributor model; using {}", s.orchestrator_model, d.orchestrator_model));
+            notes.push(format!(
+                "orchestrator_model {} is a contributor model; using {}",
+                s.orchestrator_model, d.orchestrator_model
+            ));
             s.orchestrator_model = d.orchestrator_model.clone();
         }
     }
@@ -623,9 +708,24 @@ fn repair(mut s: Settings, dev_models: bool) -> (Settings, Vec<String>) {
     // Only the orchestrator is held to its list: workers may run any model, so no worker default or
     // worker role model is dropped for being off a list.
     let policy = s.model_policy.clone();
-    if allowed_under(&policy, dev_models, Tier::Orchestrator, &s.orchestrator_model).is_err() {
-        let fallback = safe_model(&policy, dev_models, Tier::Orchestrator, &d.orchestrator_model);
-        notes.push(format!("orchestrator_model {} is not on the orchestrator list; using {fallback}", s.orchestrator_model));
+    if allowed_under(
+        &policy,
+        dev_models,
+        Tier::Orchestrator,
+        &s.orchestrator_model,
+    )
+    .is_err()
+    {
+        let fallback = safe_model(
+            &policy,
+            dev_models,
+            Tier::Orchestrator,
+            &d.orchestrator_model,
+        );
+        notes.push(format!(
+            "orchestrator_model {} is not on the orchestrator list; using {fallback}",
+            s.orchestrator_model
+        ));
         s.orchestrator_model = fallback;
     }
     s.role_models.retain(|role, model| {
@@ -636,20 +736,35 @@ fn repair(mut s: Settings, dev_models: bool) -> (Settings, Vec<String>) {
         keep
     });
 
-    s.max_turns = or_default(&mut notes, "max_turns", s.max_turns, d.max_turns, (1..=200).contains(&s.max_turns));
+    s.max_turns = or_default(
+        &mut notes,
+        "max_turns",
+        s.max_turns,
+        d.max_turns,
+        (1..=200).contains(&s.max_turns),
+    );
     s.effort = match s.effort.take() {
         Some(level) if !EFFORT_LEVELS.contains(&level.as_str()) => {
-            notes.push(format!("effort {level:?} is not a known level; it is unset"));
+            notes.push(format!(
+                "effort {level:?} is not a known level; it is unset"
+            ));
             None
         }
         kept => kept,
     };
-    s.foundry.hf_max_gb =
-        or_default(&mut notes, "foundry.hf_max_gb", s.foundry.hf_max_gb, d.foundry.hf_max_gb, (1..=500).contains(&s.foundry.hf_max_gb));
+    s.foundry.hf_max_gb = or_default(
+        &mut notes,
+        "foundry.hf_max_gb",
+        s.foundry.hf_max_gb,
+        d.foundry.hf_max_gb,
+        (1..=500).contains(&s.foundry.hf_max_gb),
+    );
     s.fetch_block.retain(|host| {
         let ok = is_bare_host(host) && !host.trim_start_matches("*.").contains('*');
         if !ok {
-            notes.push(format!("dropped fetch_block entry {host:?}: not a bare hostname (or *.domain)"));
+            notes.push(format!(
+                "dropped fetch_block entry {host:?}: not a bare hostname (or *.domain)"
+            ));
         }
         ok
     });
@@ -657,12 +772,48 @@ fn repair(mut s: Settings, dev_models: bool) -> (Settings, Vec<String>) {
     let count_ok = |v: u32| (RETENTION_MIN..=RETENTION_MAX).contains(&v);
     let days_ok = |v: u32| v <= RETENTION_DAYS_MAX;
     s.retention = Retention {
-        conversations_max: or_default(&mut notes, "retention.conversations_max", r.conversations_max, rd.conversations_max, count_ok(r.conversations_max)),
-        conversations_days: or_default(&mut notes, "retention.conversations_days", r.conversations_days, rd.conversations_days, days_ok(r.conversations_days)),
-        posts_max: or_default(&mut notes, "retention.posts_max", r.posts_max, rd.posts_max, count_ok(r.posts_max)),
-        posts_days: or_default(&mut notes, "retention.posts_days", r.posts_days, rd.posts_days, days_ok(r.posts_days)),
-        usage_calls_max: or_default(&mut notes, "retention.usage_calls_max", r.usage_calls_max, rd.usage_calls_max, count_ok(r.usage_calls_max)),
-        usage_days: or_default(&mut notes, "retention.usage_days", r.usage_days, rd.usage_days, days_ok(r.usage_days)),
+        conversations_max: or_default(
+            &mut notes,
+            "retention.conversations_max",
+            r.conversations_max,
+            rd.conversations_max,
+            count_ok(r.conversations_max),
+        ),
+        conversations_days: or_default(
+            &mut notes,
+            "retention.conversations_days",
+            r.conversations_days,
+            rd.conversations_days,
+            days_ok(r.conversations_days),
+        ),
+        posts_max: or_default(
+            &mut notes,
+            "retention.posts_max",
+            r.posts_max,
+            rd.posts_max,
+            count_ok(r.posts_max),
+        ),
+        posts_days: or_default(
+            &mut notes,
+            "retention.posts_days",
+            r.posts_days,
+            rd.posts_days,
+            days_ok(r.posts_days),
+        ),
+        usage_calls_max: or_default(
+            &mut notes,
+            "retention.usage_calls_max",
+            r.usage_calls_max,
+            rd.usage_calls_max,
+            count_ok(r.usage_calls_max),
+        ),
+        usage_days: or_default(
+            &mut notes,
+            "retention.usage_days",
+            r.usage_days,
+            rd.usage_days,
+            days_ok(r.usage_days),
+        ),
     };
     s.sanctions.max_fine = or_default(
         &mut notes,
@@ -673,7 +824,9 @@ fn repair(mut s: Settings, dev_models: bool) -> (Settings, Vec<String>) {
     );
 
     if let Err(e) = check_settings(&s, dev_models) {
-        notes.push(format!("the settings still fail the checks ({e}); the defaults are used"));
+        notes.push(format!(
+            "the settings still fail the checks ({e}); the defaults are used"
+        ));
         s = fresh(dev_models);
     }
     (s, notes)
@@ -695,7 +848,12 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .route("PUT", "/v1/settings", |app, req, _| {
             let new: Settings = match req.json() {
                 Ok(settings) => settings,
-                Err(e) => return Response::json(400, &json!({ "error": format!("bad settings JSON: {e}") })),
+                Err(e) => {
+                    return Response::json(
+                        400,
+                        &json!({ "error": format!("bad settings JSON: {e}") }),
+                    );
+                }
             };
             match app.settings.put(new) {
                 Ok(saved) => Response::json(200, &saved),
@@ -703,7 +861,6 @@ pub fn routes(router: Router<App>) -> Router<App> {
             }
         })
 }
-
 
 impl Store {
     /// The whole state as JSON, for Postgres (`crate::db`); "" when there is nothing to save.
@@ -713,7 +870,8 @@ impl Store {
 
     /// Replaces the state with a [`Store::snapshot`]; a refusal changes nothing.
     pub fn restore(&self, json: &str) -> Result<(), String> {
-        let new: Settings = serde_json::from_str(json).map_err(|e| format!("bad settings snapshot: {e}"))?;
+        let new: Settings =
+            serde_json::from_str(json).map_err(|e| format!("bad settings snapshot: {e}"))?;
         self.check(&new)?;
         self.replace(new).map(|_| ())
     }
@@ -736,21 +894,66 @@ mod tests {
         let dir = temp_dir("allowed");
         let store = Store::load(&dir, false).unwrap();
         // Worker tier: the effort-suffixed entry passes, the plain one does not.
-        assert!(store.allowed(Tier::Worker, "anthropic/claude-opus-5-5@low").is_ok());
-        assert!(store.allowed(Tier::Worker, "deepseek/deepseek-flash").is_ok());
-        assert!(store.allowed(Tier::Worker, "  anthropic/claude-haiku-5-5 ").is_ok());
+        assert!(
+            store
+                .allowed(Tier::Worker, "anthropic/claude-opus-5-5@low")
+                .is_ok()
+        );
+        assert!(
+            store
+                .allowed(Tier::Worker, "deepseek/deepseek-flash")
+                .is_ok()
+        );
+        assert!(
+            store
+                .allowed(Tier::Worker, "  anthropic/claude-haiku-5-5 ")
+                .is_ok()
+        );
         // Workers may run any model; their list only holds the presets.
-        assert!(store.allowed(Tier::Worker, "anthropic/claude-opus-5-5").is_ok());
-        assert!(store.allowed(Tier::Worker, "openai/gpt-4-turbo-2024-04-09").is_ok());
-        let err = store.allowed(Tier::Orchestrator, "deepseek/deepseek-flash").unwrap_err();
-        assert!(err.contains("not allowed for the orchestrator tier"), "{err}");
+        assert!(
+            store
+                .allowed(Tier::Worker, "anthropic/claude-opus-5-5")
+                .is_ok()
+        );
+        assert!(
+            store
+                .allowed(Tier::Worker, "openai/gpt-4-turbo-2024-04-09")
+                .is_ok()
+        );
+        let err = store
+            .allowed(Tier::Orchestrator, "deepseek/deepseek-flash")
+            .unwrap_err();
+        assert!(
+            err.contains("not allowed for the orchestrator tier"),
+            "{err}"
+        );
         assert!(err.contains("allowed: "), "{err}");
         // Orchestrator tier: only its own list, at any effort when the entry pins none.
-        assert!(store.allowed(Tier::Orchestrator, "anthropic/claude-opus-5-5").is_ok());
-        assert!(store.allowed(Tier::Orchestrator, "openai/gpt-6-astra@high").is_ok());
-        assert!(store.allowed(Tier::Orchestrator, "anthropic/claude-opus-5-5@max").is_ok());
-        assert!(store.allowed(Tier::Orchestrator, "deepseek/deepseek-flash@high").is_err());
-        assert!(store.allowed(Tier::Orchestrator, "deepseek/deepseek-flash").is_err());
+        assert!(
+            store
+                .allowed(Tier::Orchestrator, "anthropic/claude-opus-5-5")
+                .is_ok()
+        );
+        assert!(
+            store
+                .allowed(Tier::Orchestrator, "openai/gpt-6-astra@high")
+                .is_ok()
+        );
+        assert!(
+            store
+                .allowed(Tier::Orchestrator, "anthropic/claude-opus-5-5@max")
+                .is_ok()
+        );
+        assert!(
+            store
+                .allowed(Tier::Orchestrator, "deepseek/deepseek-flash@high")
+                .is_err()
+        );
+        assert!(
+            store
+                .allowed(Tier::Orchestrator, "deepseek/deepseek-flash")
+                .is_err()
+        );
         // Unparseable names fail with the parser's text.
         assert!(store.allowed(Tier::Worker, "no-slash-here").is_err());
         let _ = std::fs::remove_dir_all(&dir);
@@ -785,7 +988,11 @@ mod tests {
 
         let mut bad = Settings::default();
         bad.max_turns = 0;
-        assert!(other.restore(&serde_json::to_string(&bad).unwrap()).is_err());
+        assert!(
+            other
+                .restore(&serde_json::to_string(&bad).unwrap())
+                .is_err()
+        );
         assert_eq!(other.get(), s);
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&other_dir);
@@ -796,7 +1003,14 @@ mod tests {
         let dir = temp_dir("fetch");
         std::fs::create_dir_all(&dir).unwrap();
         let store = Store::load(&dir, false).unwrap();
-        for bad in ["https://example.com", "example.com/path", "has space.com", "host:8080", "", "a.*.com"] {
+        for bad in [
+            "https://example.com",
+            "example.com/path",
+            "has space.com",
+            "host:8080",
+            "",
+            "a.*.com",
+        ] {
             let mut s = Settings::default();
             s.fetch_block = vec![bad.to_string()];
             assert!(store.put(s).is_err(), "{bad:?} should be rejected");
@@ -840,11 +1054,26 @@ mod tests {
         let dir = temp_dir("retention");
         let store = Store::load(&dir, false).unwrap();
         for bad in [
-            Retention { conversations_max: RETENTION_MIN - 1, ..Retention::default() },
-            Retention { conversations_max: RETENTION_MAX + 1, ..Retention::default() },
-            Retention { posts_max: 0, ..Retention::default() },
-            Retention { conversations_days: RETENTION_DAYS_MAX + 1, ..Retention::default() },
-            Retention { posts_days: 4000, ..Retention::default() },
+            Retention {
+                conversations_max: RETENTION_MIN - 1,
+                ..Retention::default()
+            },
+            Retention {
+                conversations_max: RETENTION_MAX + 1,
+                ..Retention::default()
+            },
+            Retention {
+                posts_max: 0,
+                ..Retention::default()
+            },
+            Retention {
+                conversations_days: RETENTION_DAYS_MAX + 1,
+                ..Retention::default()
+            },
+            Retention {
+                posts_days: 4000,
+                ..Retention::default()
+            },
         ] {
             let mut s = Settings::default();
             s.retention = bad;
@@ -888,27 +1117,42 @@ mod tests {
         let mut as_default = Settings::default();
         as_default.default_model = "meta/muse-spark-1.3-contributor".into();
         let err = store.put(as_default.clone()).unwrap_err();
-        assert!(err.contains("contributor model") && err.contains("allow_training_models"), "{err}");
+        assert!(
+            err.contains("contributor model") && err.contains("allow_training_models"),
+            "{err}"
+        );
 
         let mut as_role = Settings::default();
-        as_role.role_models.insert("scout".into(), "meta/muse-spark-1.2-contributor@low".into());
+        as_role
+            .role_models
+            .insert("scout".into(), "meta/muse-spark-1.2-contributor@low".into());
         assert!(store.put(as_role.clone()).is_err());
 
         let mut in_policy = Settings::default();
-        in_policy.model_policy.worker.push("meta/muse-spark-1.3-contributor".into());
+        in_policy
+            .model_policy
+            .worker
+            .push("meta/muse-spark-1.3-contributor".into());
         assert!(store.put(in_policy.clone()).is_err());
 
         // The owner's explicit confirmation lets the save through.
         as_default.allow_training_models = true;
         assert!(store.put(as_default.clone()).is_ok());
-        assert_eq!(Store::load(&dir, false).unwrap().get().default_model, "meta/muse-spark-1.3-contributor");
+        assert_eq!(
+            Store::load(&dir, false).unwrap().get().default_model,
+            "meta/muse-spark-1.3-contributor"
+        );
 
         // Meta's own models are never contributor models: no confirmation needed.
         let mut plain = Settings::default();
         plain.default_model = "meta/muse-spark-1.3".into();
         assert!(store.put(plain).is_ok());
         // A per-agent pick is an explicit choice of one agent: the tier rules still allow it.
-        assert!(store.allowed(Tier::Worker, "meta/muse-spark-1.3-contributor@low").is_ok());
+        assert!(
+            store
+                .allowed(Tier::Worker, "meta/muse-spark-1.3-contributor@low")
+                .is_ok()
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -917,19 +1161,33 @@ mod tests {
         let dir = temp_dir("tier-rules");
         let store = Store::load(&dir, false).unwrap();
         // The orchestrator is held to its list, and the error names it.
-        assert!(store.allowed(Tier::Orchestrator, "openai/gpt-6-astra@high").is_ok());
-        let err = store.allowed(Tier::Orchestrator, "deepseek/deepseek-flash").unwrap_err();
-        assert!(err.contains("not allowed for the orchestrator tier") && err.contains("allowed: anthropic/claude-opus-5-5"), "{err}");
+        assert!(
+            store
+                .allowed(Tier::Orchestrator, "openai/gpt-6-astra@high")
+                .is_ok()
+        );
+        let err = store
+            .allowed(Tier::Orchestrator, "deepseek/deepseek-flash")
+            .unwrap_err();
+        assert!(
+            err.contains("not allowed for the orchestrator tier")
+                && err.contains("allowed: anthropic/claude-opus-5-5"),
+            "{err}"
+        );
         // An orchestrator role model off its list is refused.
         let mut orch_role = Settings::default();
-        orch_role.role_models.insert("orchestrator".into(), "deepseek/deepseek-flash".into());
+        orch_role
+            .role_models
+            .insert("orchestrator".into(), "deepseek/deepseek-flash".into());
         assert!(store.put(orch_role).is_err());
 
         // Workers are not restricted: a worker's model or role model may be anything, on or off the list.
         assert!(store.allowed(Tier::Worker, "openai/gpt-6-astra").is_ok());
         assert!(store.allowed(Tier::Worker, "anything/at-all").is_ok());
         let mut worker_role = Settings::default();
-        worker_role.role_models.insert("scout".into(), "anthropic/claude-fable-5-1".into());
+        worker_role
+            .role_models
+            .insert("scout".into(), "anthropic/claude-fable-5-1".into());
         assert!(store.put(worker_role).is_ok());
         let mut worker_default = Settings::default();
         worker_default.default_model = "openai/gpt-6-astra".into();
@@ -952,48 +1210,101 @@ mod tests {
         let mut edited = serde_json::to_value(Settings::default()).unwrap();
         {
             let obj = edited.as_object_mut().unwrap();
-            obj.insert("default_model".into(), json!("meta/muse-spark-1.3-contributor"));
-            obj.insert("orchestrator_model".into(), json!("deepseek/deepseek-flash"));
+            obj.insert(
+                "default_model".into(),
+                json!("meta/muse-spark-1.3-contributor"),
+            );
+            obj.insert(
+                "orchestrator_model".into(),
+                json!("deepseek/deepseek-flash"),
+            );
             obj.insert(
                 "role_models".into(),
                 json!({"scout": "anthropic/claude-fable-5-1", "writer": "openai/gpt-6-luna", "orchestrator": "deepseek/deepseek-flash"}),
             );
             obj.insert("max_turns".into(), json!(0));
             obj.insert("effort".into(), json!("bogus"));
-            obj.insert("fetch_block".into(), json!(["https://x.example", "ok.example"]));
-            obj.insert("retention".into(), json!({"conversations_max": 5, "posts_max": 1024, "usage_calls_max": 20000}));
-            obj.insert("sanctions".into(), json!({"enabled": true, "fines": true, "suspensions": true, "max_fine": 5000}));
+            obj.insert(
+                "fetch_block".into(),
+                json!(["https://x.example", "ok.example"]),
+            );
+            obj.insert(
+                "retention".into(),
+                json!({"conversations_max": 5, "posts_max": 1024, "usage_calls_max": 20000}),
+            );
+            obj.insert(
+                "sanctions".into(),
+                json!({"enabled": true, "fines": true, "suspensions": true, "max_fine": 5000}),
+            );
             obj["model_policy"]["worker"]
                 .as_array_mut()
                 .unwrap()
                 .push(json!("meta/muse-spark-1.3-contributor"));
         }
-        std::fs::write(dir.join("settings.json"), serde_json::to_vec(&edited).unwrap()).unwrap();
+        std::fs::write(
+            dir.join("settings.json"),
+            serde_json::to_vec(&edited).unwrap(),
+        )
+        .unwrap();
 
         let store = Store::load(&dir, false).unwrap();
         let s = store.get();
-        assert_eq!(s.default_model, "deepseek/deepseek-flash", "a contributor default falls back to the default");
+        assert_eq!(
+            s.default_model, "deepseek/deepseek-flash",
+            "a contributor default falls back to the default"
+        );
         // Workers are not held to a list: their role models stay, on or off the presets.
-        assert_eq!(s.role_models.get("scout").map(String::as_str), Some("anthropic/claude-fable-5-1"));
-        assert_eq!(s.role_models.get("writer").map(String::as_str), Some("openai/gpt-6-luna"));
+        assert_eq!(
+            s.role_models.get("scout").map(String::as_str),
+            Some("anthropic/claude-fable-5-1")
+        );
+        assert_eq!(
+            s.role_models.get("writer").map(String::as_str),
+            Some("openai/gpt-6-luna")
+        );
         // The orchestrator is held to its list: an orchestrator role model off it is dropped, and the
         // orchestrator model off it falls back to the default, which that list admits.
-        assert!(!s.role_models.contains_key("orchestrator"), "an orchestrator role model off its list is dropped");
+        assert!(
+            !s.role_models.contains_key("orchestrator"),
+            "an orchestrator role model off its list is dropped"
+        );
         assert_eq!(s.orchestrator_model, "anthropic/claude-opus-5-5");
-        assert!(!s.model_policy.worker.iter().any(|m| m.contains("contributor")), "the contributor entry is dropped");
+        assert!(
+            !s.model_policy
+                .worker
+                .iter()
+                .any(|m| m.contains("contributor")),
+            "the contributor entry is dropped"
+        );
         assert_eq!(s.max_turns, 24);
         assert_eq!(s.effort, None);
         assert_eq!(s.fetch_block, vec!["ok.example".to_string()]);
-        assert_eq!(s.retention.conversations_max, Retention::default().conversations_max);
+        assert_eq!(
+            s.retention.conversations_max,
+            Retention::default().conversations_max
+        );
         assert_eq!(s.sanctions.max_fine, 300);
-        assert!(check_settings(&s, false).is_ok(), "what loads passes the save checks");
+        assert!(
+            check_settings(&s, false).is_ok(),
+            "what loads passes the save checks"
+        );
 
         // The notes name what changed.
-        let mut edited_again = serde_json::from_slice::<Settings>(&std::fs::read(dir.join("settings.json")).unwrap()).unwrap();
+        let mut edited_again =
+            serde_json::from_slice::<Settings>(&std::fs::read(dir.join("settings.json")).unwrap())
+                .unwrap();
         edited_again.allow_training_models = false;
-        edited_again.model_policy.worker.push("meta/muse-spark-1.2-contributor".into());
+        edited_again
+            .model_policy
+            .worker
+            .push("meta/muse-spark-1.2-contributor".into());
         let (_, notes) = repair(edited_again, false);
-        assert!(notes.iter().any(|n| n.contains("meta/muse-spark-1.2-contributor")), "{notes:?}");
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.contains("meta/muse-spark-1.2-contributor")),
+            "{notes:?}"
+        );
 
         // A file that is not settings JSON loads the defaults rather than failing.
         std::fs::write(dir.join("settings.json"), b"{ not json").unwrap();
@@ -1008,9 +1319,14 @@ mod tests {
 
         // Settings saved before the review timeout existed carry no such key: they load the default.
         let mut old = serde_json::to_value(Settings::default()).unwrap();
-        old.as_object_mut().unwrap().remove("review_timeout_minutes");
+        old.as_object_mut()
+            .unwrap()
+            .remove("review_timeout_minutes");
         let loaded: Settings = serde_json::from_value(old).unwrap();
-        assert_eq!(loaded.review_timeout_minutes, DEFAULT_REVIEW_TIMEOUT_MINUTES);
+        assert_eq!(
+            loaded.review_timeout_minutes,
+            DEFAULT_REVIEW_TIMEOUT_MINUTES
+        );
 
         // A saved value is kept as it is.
         let set: Settings =
@@ -1020,7 +1336,13 @@ mod tests {
 
     #[test]
     fn payments_default_and_settings_saved_without_them_load_the_defaults() {
-        assert_eq!(Payments::default(), Payments { approve_over: 500, charge_models: true });
+        assert_eq!(
+            Payments::default(),
+            Payments {
+                approve_over: 500,
+                charge_models: true
+            }
+        );
         assert_eq!(Settings::default().payments, Payments::default());
 
         // Settings saved before payments existed carry no such key: they load the defaults.
@@ -1032,7 +1354,13 @@ mod tests {
         // A partial block keeps the fields it names and defaults the rest.
         let partial: Settings =
             serde_json::from_value(serde_json::json!({"payments": {"approve_over": 0}})).unwrap();
-        assert_eq!(partial.payments, Payments { approve_over: 0, charge_models: true });
+        assert_eq!(
+            partial.payments,
+            Payments {
+                approve_over: 0,
+                charge_models: true
+            }
+        );
     }
 
     #[test]
@@ -1040,7 +1368,10 @@ mod tests {
         let dir = temp_dir("payments");
         let store = Store::load(&dir, false).unwrap();
         let mut s = Settings::default();
-        s.payments = Payments { approve_over: 0, charge_models: false };
+        s.payments = Payments {
+            approve_over: 0,
+            charge_models: false,
+        };
         assert_eq!(store.put(s.clone()).unwrap(), s);
         assert_eq!(Store::load(&dir, false).unwrap().get().payments, s.payments);
 

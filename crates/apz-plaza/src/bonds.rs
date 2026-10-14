@@ -265,8 +265,10 @@ impl Bonds {
     /// and opinions of it (a wiped agent starts with no network and no reputation).
     pub fn forget(&self, cid: u64) -> Result<(), BondError> {
         let mut st = self.lock();
-        st.contacts.retain(|(from, to), _| *from != cid && *to != cid);
-        st.opinions.retain(|(from, to), _| *from != cid && *to != cid);
+        st.contacts
+            .retain(|(from, to), _| *from != cid && *to != cid);
+        st.opinions
+            .retain(|(from, to), _| *from != cid && *to != cid);
         self.persist(&st)
     }
 
@@ -275,7 +277,10 @@ impl Bonds {
         if from == to {
             return Err(BondError::SelfEdge);
         }
-        if note.as_ref().is_some_and(|n| n.chars().count() > MAX_NOTE_CHARS) {
+        if note
+            .as_ref()
+            .is_some_and(|n| n.chars().count() > MAX_NOTE_CHARS)
+        {
             return Err(BondError::NoteTooLong);
         }
         let mut st = self.lock();
@@ -602,11 +607,7 @@ fn view(edge: Option<&OpinionEdge>, now: i64) -> Opinion {
 }
 
 fn clamp_value(v: f64) -> f64 {
-    if v.is_nan() {
-        0.0
-    } else {
-        v.clamp(-1.0, 1.0)
-    }
+    if v.is_nan() { 0.0 } else { v.clamp(-1.0, 1.0) }
 }
 
 fn praise_count(
@@ -624,12 +625,7 @@ fn praise_count(
 }
 
 /// A ring: each of the pair has praised the other more than `RING_PRAISES` times.
-fn ring_active(
-    opinions: &BTreeMap<(u64, u64), OpinionEdge>,
-    a: u64,
-    b: u64,
-    now: i64,
-) -> bool {
+fn ring_active(opinions: &BTreeMap<(u64, u64), OpinionEdge>, a: u64, b: u64, now: i64) -> bool {
     praise_count(opinions, a, b, now) > RING_PRAISES
         && praise_count(opinions, b, a, now) > RING_PRAISES
 }
@@ -644,7 +640,6 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     fs::write(&tmp, bytes)?;
     fs::rename(&tmp, path)
 }
-
 
 impl State {
     /// The state in its on-disk form, rows in key order.

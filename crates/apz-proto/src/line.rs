@@ -64,7 +64,12 @@ pub struct Lines<S> {
 
 impl<S> Lines<S> {
     pub fn new(inner: S) -> Self {
-        Self { inner, buf: Vec::new(), scanned: 0, eof: false }
+        Self {
+            inner,
+            buf: Vec::new(),
+            scanned: 0,
+            eof: false,
+        }
     }
 
     pub fn get_ref(&self) -> &S {
@@ -81,7 +86,10 @@ impl<S: Read> Lines<S> {
     /// over [`MAX_LINE_BYTES`] or not UTF-8 is an `InvalidData` error.
     pub fn recv(&mut self) -> io::Result<Recv> {
         loop {
-            if let Some(at) = self.buf[self.scanned..].iter().position(|byte| *byte == b'\n') {
+            if let Some(at) = self.buf[self.scanned..]
+                .iter()
+                .position(|byte| *byte == b'\n')
+            {
                 let mut line: Vec<u8> = self.buf.drain(..=self.scanned + at).collect();
                 self.scanned = 0;
                 line.pop();
@@ -109,7 +117,12 @@ impl<S: Read> Lines<S> {
                 Ok(0) => self.eof = true,
                 Ok(_) => {}
                 Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
-                Err(err) if matches!(err.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) => {
+                Err(err)
+                    if matches!(
+                        err.kind(),
+                        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                    ) =>
+                {
                     return Ok(Recv::Idle);
                 }
                 Err(err) => return Err(err),
@@ -123,7 +136,10 @@ impl<S: Write> Lines<S> {
     /// frame as two and is refused.
     pub fn send(&mut self, line: &str) -> io::Result<()> {
         if line.contains('\n') {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "line contains a newline"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "line contains a newline",
+            ));
         }
         self.inner.write_all(line.as_bytes())?;
         self.inner.write_all(b"\n")?;
@@ -136,7 +152,8 @@ fn decode(mut line: Vec<u8>) -> io::Result<String> {
     if line.last() == Some(&b'\r') {
         line.pop();
     }
-    String::from_utf8(line).map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "line is not UTF-8"))
+    String::from_utf8(line)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "line is not UTF-8"))
 }
 
 #[cfg(test)]
@@ -165,7 +182,9 @@ mod tests {
     }
 
     fn script(steps: &[Option<&[u8]>]) -> Lines<Script> {
-        Lines::new(Script(steps.iter().map(|step| step.map(<[u8]>::to_vec)).collect()))
+        Lines::new(Script(
+            steps.iter().map(|step| step.map(<[u8]>::to_vec)).collect(),
+        ))
     }
 
     fn line(text: &str) -> Recv {

@@ -4,18 +4,21 @@
 //! overwrite each other's targets within a frame, so a card and a portrait never share a slot.
 
 use std::f32::consts::{PI, TAU};
-use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::time::{Duration, Instant};
 
 use glam::{Mat4, Vec3};
 use iced::widget::shader::{self, Viewport};
-use iced::{mouse, wgpu, window, Element, Length, Rectangle};
+use iced::{Element, Length, Rectangle, mouse, wgpu, window};
 
 use crate::console::engine::hardware::{self, Built, Model, Params, Status};
 use crate::console::engine::render;
-use crate::console::engine::robot::{robot_palette, Robot, RobotPose, RobotState};
-use crate::console::engine::scene::{self, Camera, Draw, DrawKind, Filter, Frame, Geometry, Material, Obj, PointLightDraw, Shading, Texture, World};
+use crate::console::engine::robot::{Robot, RobotPose, RobotState, robot_palette};
+use crate::console::engine::scene::{
+    self, Camera, Draw, DrawKind, Filter, Frame, Geometry, Material, Obj, PointLightDraw, Shading,
+    Texture, World,
+};
 
 /// The machine cards' slots (`slot` wraps at this count).
 pub(crate) const CARD_SLOTS: usize = 8;
@@ -54,16 +57,34 @@ pub(crate) struct CardPrimitive<const PORTRAIT: bool, const N: usize> {
 impl<const PORTRAIT: bool, const N: usize> shader::Primitive for CardPrimitive<PORTRAIT, N> {
     type Pipeline = CardPipeline<PORTRAIT, N>;
 
-    fn prepare(&self, p: &mut CardPipeline<PORTRAIT, N>, device: &wgpu::Device, queue: &wgpu::Queue, bounds: &Rectangle, viewport: &Viewport) {
+    fn prepare(
+        &self,
+        p: &mut CardPipeline<PORTRAIT, N>,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        bounds: &Rectangle,
+        viewport: &Viewport,
+    ) {
         let Some(frame) = &self.frame else { return };
-        let inner = render::Primitive { frame: Arc::clone(frame) };
-        let rect = render::Rect { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height };
+        let inner = render::Primitive {
+            frame: Arc::clone(frame),
+        };
+        let rect = render::Rect {
+            x: bounds.x,
+            y: bounds.y,
+            width: bounds.width,
+            height: bounds.height,
+        };
         inner.prepare(&mut p.0, device, queue, &rect, viewport.scale_factor());
     }
 
     fn draw(&self, p: &CardPipeline<PORTRAIT, N>, pass: &mut wgpu::RenderPass<'_>) -> bool {
-        let Some(frame) = &self.frame else { return true };
-        let inner = render::Primitive { frame: Arc::clone(frame) };
+        let Some(frame) = &self.frame else {
+            return true;
+        };
+        let inner = render::Primitive {
+            frame: Arc::clone(frame),
+        };
         inner.draw(&p.0, pass)
     }
 }
@@ -93,36 +114,74 @@ impl<const N: usize, M> shader::Program<M> for Card<N> {
     type State = CardState;
     type Primitive = CardPrimitive<false, N>;
 
-    fn update(&self, st: &mut CardState, event: &iced::Event, bounds: Rectangle, _cursor: mouse::Cursor) -> Option<shader::Action<M>> {
-        let iced::Event::Window(window::Event::RedrawRequested(now)) = event else { return None };
-        let dt = st.last.map_or(0.0, |t| now.saturating_duration_since(t).as_secs_f32());
+    fn update(
+        &self,
+        st: &mut CardState,
+        event: &iced::Event,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Option<shader::Action<M>> {
+        let iced::Event::Window(window::Event::RedrawRequested(now)) = event else {
+            return None;
+        };
+        let dt = st
+            .last
+            .map_or(0.0, |t| now.saturating_duration_since(t).as_secs_f32());
         st.last = Some(*now);
         if st.built.is_none() {
-            let built = hardware::build(self.model, &Params::default().with("gpus", self.gpus as f64));
+            let built = hardware::build(
+                self.model,
+                &Params::default().with("gpus", self.gpus as f64),
+            );
             let version = BUILDS.fetch_add(1, AtomicOrdering::Relaxed);
             let statics = Arc::new(scene::bake(&built.root));
             let lights = scene::flatten(&built.root, Filter::Static).1;
             st.statics = Some((version, statics, lights));
             st.built = Some(built);
         }
-        let (Some(built), Some((version, statics, lights))) = (st.built.as_mut(), st.statics.as_ref()) else { return None };
-        let status = hardware::State { status: Status::Online, activity: if self.active { 1.0 } else { 0.0 }, open: 1.0 };
+        let (Some(built), Some((version, statics, lights))) =
+            (st.built.as_mut(), st.statics.as_ref())
+        else {
+            return None;
+        };
+        let status = hardware::State {
+            status: Status::Online,
+            activity: if self.active { 1.0 } else { 0.0 },
+            open: 1.0,
+        };
         st.clock += dt;
         built.update(dt, st.clock, &status);
         let aspect = (bounds.width / bounds.height.max(1.0)).max(0.1);
-        st.frame = Some(Arc::new(card_frame(built, self.model, (*version, statics, lights), aspect)));
+        st.frame = Some(Arc::new(card_frame(
+            built,
+            self.model,
+            (*version, statics, lights),
+            aspect,
+        )));
         Some(shader::Action::request_redraw_at(*now + CARD_FRAME))
     }
 
-    fn draw(&self, st: &CardState, _cursor: mouse::Cursor, _bounds: Rectangle) -> CardPrimitive<false, N> {
-        CardPrimitive { frame: st.frame.clone() }
+    fn draw(
+        &self,
+        st: &CardState,
+        _cursor: mouse::Cursor,
+        _bounds: Rectangle,
+    ) -> CardPrimitive<false, N> {
+        CardPrimitive {
+            frame: st.frame.clone(),
+        }
     }
 }
 
 /// The frame of an exterior: its statics and its dynamic parts (the LEDs), under a camera that frames the whole model
 /// (`fit_camera`). The paper colour is the world's background, but the card's clear is transparent, so only the meshes
 /// show; no fog, so the card sits on the page.
-fn card_frame(built: &Built, model: &Model, statics: (u64, &Arc<Vec<Draw>>, &[PointLightDraw]), aspect: f32) -> Frame {
+fn card_frame(
+    built: &Built,
+    model: &Model,
+    statics: (u64, &Arc<Vec<Draw>>, &[PointLightDraw]),
+    aspect: f32,
+) -> Frame {
     let (version, statics, static_lights) = statics;
     let root = &built.root;
     let root_world = root.local_matrix();
@@ -139,7 +198,11 @@ fn card_frame(built: &Built, model: &Model, statics: (u64, &Arc<Vec<Draw>>, &[Po
     lights.extend_from_slice(static_lights);
     let camera = fit_camera(model, aspect, &draws, statics.as_slice());
     let mut world = World::default();
-    world.background = scene::Color::srgb(crate::theme::palette().paper.r, crate::theme::palette().paper.g, crate::theme::palette().paper.b);
+    world.background = scene::Color::srgb(
+        crate::theme::palette().paper.r,
+        crate::theme::palette().paper.g,
+        crate::theme::palette().paper.b,
+    );
     world.fog_near = 1.0e6;
     world.fog_far = 1.0e6 + 1.0;
     Frame {
@@ -167,7 +230,9 @@ fn fit_camera(model: &Model, aspect: f32, draws: &[Draw], statics: &[Draw]) -> C
     const MARGIN: f32 = 1.12;
     let anchor = model.anchors.camera.as_ref();
     let look = Vec3::from(anchor.map_or([0.0, model.size[1] * 0.5, 0.0], |c| c.look));
-    let dir = anchor.and_then(|c| (Vec3::from(c.at) - look).try_normalize()).unwrap_or(Vec3::Z);
+    let dir = anchor
+        .and_then(|c| (Vec3::from(c.at) - look).try_normalize())
+        .unwrap_or(Vec3::Z);
     let (mut lo, mut hi) = (Vec3::ZERO, Vec3::from(model.size));
     for d in draws.iter().chain(statics) {
         if matches!(d.kind, DrawKind::Mesh | DrawKind::Outline) {
@@ -182,11 +247,24 @@ fn fit_camera(model: &Model, aspect: f32, draws: &[Draw], statics: &[Draw]) -> C
     let t_min = t.min(t * aspect.max(0.1));
     // A sphere of angular radius asin(r / d) fits the narrower half field when d >= r * sqrt(1 + t^2) / t.
     let dist = radius * (1.0 + t_min * t_min).sqrt() / t_min * MARGIN;
-    Camera { eye: centre + dir * dist, target: centre, fov: FOV, near: 0.05, far: 1000.0, aspect }
+    Camera {
+        eye: centre + dir * dist,
+        target: centre,
+        fov: FOV,
+        near: 0.05,
+        far: 1000.0,
+        aspect,
+    }
 }
 
 /// A machine's exterior drawn in a card on card slot `slot` (wraps). Returns None when the model is missing.
-pub(crate) fn exterior<'a, M: 'a>(slot: usize, kind: &str, vendor: &str, gpus: usize, active: bool) -> Option<Element<'a, M>> {
+pub(crate) fn exterior<'a, M: 'a>(
+    slot: usize,
+    kind: &str,
+    vendor: &str,
+    gpus: usize,
+    active: bool,
+) -> Option<Element<'a, M>> {
     let name = hardware::models_for(kind, Some(vendor)).0;
     let model = hardware::model(name).or_else(|| hardware::model("exterior/workstation"))?;
     macro_rules! card {
@@ -232,18 +310,49 @@ impl<const N: usize, M> shader::Program<M> for Portrait<N> {
     type State = PortraitState;
     type Primitive = CardPrimitive<true, N>;
 
-    fn update(&self, st: &mut PortraitState, event: &iced::Event, bounds: Rectangle, _cursor: mouse::Cursor) -> Option<shader::Action<M>> {
-        let iced::Event::Window(window::Event::RedrawRequested(_)) = event else { return None };
+    fn update(
+        &self,
+        st: &mut PortraitState,
+        event: &iced::Event,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Option<shader::Action<M>> {
+        let iced::Event::Window(window::Event::RedrawRequested(_)) = event else {
+            return None;
+        };
         let spec = self.0;
         let aspect = (bounds.width / bounds.height.max(1.0)).max(0.1);
-        let key = (spec.cid, spec.orchestrator, spec.role_hue.to_bits(), spec.body_hue.to_bits(), spec.offline, aspect.to_bits(), spec.species);
+        let key = (
+            spec.cid,
+            spec.orchestrator,
+            spec.role_hue.to_bits(),
+            spec.body_hue.to_bits(),
+            spec.offline,
+            aspect.to_bits(),
+            spec.species,
+        );
         if st.key == Some(key) && st.frame.is_some() {
             return None;
         }
         let palette = robot_palette();
-        let mut robot = Robot::with_variant(spec.role_hue, spec.orchestrator, &palette, spec.body_hue, spec.species);
-        robot.set_state(if spec.offline { RobotState::Offline } else { RobotState::Idle });
-        let poses = [RobotPose::Wave, RobotPose::Proud, RobotPose::Think, RobotPose::Cheer];
+        let mut robot = Robot::with_variant(
+            spec.role_hue,
+            spec.orchestrator,
+            &palette,
+            spec.body_hue,
+            spec.species,
+        );
+        robot.set_state(if spec.offline {
+            RobotState::Offline
+        } else {
+            RobotState::Idle
+        });
+        let poses = [
+            RobotPose::Wave,
+            RobotPose::Proud,
+            RobotPose::Think,
+            RobotPose::Cheer,
+        ];
         robot.pose(poses[(spec.cid % 4) as usize]);
         robot.update(0.0, 0.0);
         let version = BUILDS.fetch_add(1, AtomicOrdering::Relaxed);
@@ -252,8 +361,15 @@ impl<const N: usize, M> shader::Program<M> for Portrait<N> {
         None
     }
 
-    fn draw(&self, st: &PortraitState, _cursor: mouse::Cursor, _bounds: Rectangle) -> CardPrimitive<true, N> {
-        CardPrimitive { frame: st.frame.clone() }
+    fn draw(
+        &self,
+        st: &PortraitState,
+        _cursor: mouse::Cursor,
+        _bounds: Rectangle,
+    ) -> CardPrimitive<true, N> {
+        CardPrimitive {
+            frame: st.frame.clone(),
+        }
     }
 }
 
@@ -290,7 +406,14 @@ fn portrait_frame(robot: &Robot, spec: PortraitSpec, version: u64, aspect: f32) 
     world.fog_far = 1.0e6 + 1.0;
     Frame {
         animated: None,
-        camera: Camera { eye: Vec3::new(1.0, 1.25, 3.4), target: Vec3::new(0.0, 0.72, 0.0), fov: 30.0, near: 0.1, far: 50.0, aspect },
+        camera: Camera {
+            eye: Vec3::new(1.0, 1.25, 3.4),
+            target: Vec3::new(0.0, 0.72, 0.0),
+            fov: 30.0,
+            near: 0.1,
+            far: 50.0,
+            aspect,
+        },
         world,
         statics: Arc::new(Vec::new()),
         statics_version: version,
@@ -308,19 +431,36 @@ fn portrait_frame(robot: &Robot, spec: PortraitSpec, version: u64, aspect: f32) 
 /// A colour pulled 85 per cent toward its own grey (CSS `grayscale(0.85)`, on luma).
 fn greyed(c: scene::Color) -> scene::Color {
     let luma = 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
-    c.lerp(scene::Color { r: luma, g: luma, b: luma }, 0.85)
+    c.lerp(
+        scene::Color {
+            r: luma,
+            g: luma,
+            b: luma,
+        },
+        0.85,
+    )
 }
 
 /// The web's 9 x 9 card at z -2.2 (`portrait.ts`'s backdrop, a basic material): the sunburst of the agent's hue. Its
 /// texture's top row is the top of the card; drawn first, so the robot stands in front of it.
 fn backdrop(hue: f32) -> Draw {
     let geo = Geometry::new(
-        vec![[-4.5, 5.7, -2.2], [-4.5, -3.3, -2.2], [4.5, -3.3, -2.2], [4.5, 5.7, -2.2]],
+        vec![
+            [-4.5, 5.7, -2.2],
+            [-4.5, -3.3, -2.2],
+            [4.5, -3.3, -2.2],
+            [4.5, 5.7, -2.2],
+        ],
         vec![[0.0, 0.0, 1.0]; 4],
         vec![[0.0, 0.0], [0.0, 1.0], [1.0, 1.0], [1.0, 0.0]],
         vec![0, 1, 2, 0, 2, 3],
     );
-    let material = Material { shading: Shading::Basic, map: Some(Arc::new(sunburst(hue))), fog: false, ..Material::default() };
+    let material = Material {
+        shading: Shading::Basic,
+        map: Some(Arc::new(sunburst(hue))),
+        fog: false,
+        ..Material::default()
+    };
     Draw {
         kind: DrawKind::Mesh,
         geo,
@@ -353,7 +493,15 @@ fn shadow_disc() -> Draw {
     }
     let normals = vec![[0.0, 1.0, 0.0]; positions.len()];
     let geo = Geometry::new(positions, normals, Vec::new(), indices);
-    let material = Material { shading: Shading::Shadow, color: scene::Color::BLACK, opacity: 0.25, transparent: true, depth_write: false, fog: false, ..Material::default() };
+    let material = Material {
+        shading: Shading::Shadow,
+        color: scene::Color::BLACK,
+        opacity: 0.25,
+        transparent: true,
+        depth_write: false,
+        fog: false,
+        ..Material::default()
+    };
     Draw {
         kind: DrawKind::Mesh,
         geo,
@@ -407,7 +555,11 @@ fn sunburst(hue: f32) -> Texture {
             if angle < 0.0 {
                 angle += TAU;
             }
-            let mut c = if ((angle / sector) as u32) % 2 == 0 { ray } else { night };
+            let mut c = if ((angle / sector) as u32) % 2 == 0 {
+                ray
+            } else {
+                night
+            };
             // The glow: 0.75 at the centre, fading to nothing 260 px out.
             let r = (dx * dx + dy * dy).sqrt();
             let a = if r <= 10.0 {
@@ -449,7 +601,11 @@ fn sunburst(hue: f32) -> Texture {
 /// An agent's robot portrait, `size` square, on portrait slot `slot`. Past the pool (`PORTRAIT_SLOTS`) there is none, and
 /// None means the caller's letter tile shows alone. The caller stacks its letter tile under it, which shows where the GPU
 /// cannot draw.
-pub(crate) fn robot_portrait<'a, M: 'a>(slot: usize, spec: PortraitSpec, size: f32) -> Option<Element<'a, M>> {
+pub(crate) fn robot_portrait<'a, M: 'a>(
+    slot: usize,
+    spec: PortraitSpec,
+    size: f32,
+) -> Option<Element<'a, M>> {
     if slot >= PORTRAIT_SLOTS {
         return None;
     }
@@ -461,5 +617,7 @@ pub(crate) fn robot_portrait<'a, M: 'a>(slot: usize, spec: PortraitSpec, size: f
             }
         };
     }
-    Some(card!(0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31))
+    Some(
+        card!(0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31),
+    )
 }

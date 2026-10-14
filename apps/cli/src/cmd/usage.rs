@@ -89,7 +89,9 @@ fn pct(fraction: f64) -> String {
 
 /// What a call cost: the provider's reported cost where it gave one, else the estimate.
 fn call_usd(call: &Value) -> f64 {
-    call.get("cost_usd").and_then(Value::as_f64).unwrap_or_else(|| num(call, "est_usd"))
+    call.get("cost_usd")
+        .and_then(Value::as_f64)
+        .unwrap_or_else(|| num(call, "est_usd"))
 }
 
 /// A price rate, or "—" when the source does not price it.
@@ -122,7 +124,12 @@ pub fn window_range(window: &str, now: u64) -> Result<(u64, u64), String> {
 fn query(params: &[(&str, Option<String>)]) -> String {
     let parts: Vec<String> = params
         .iter()
-        .filter_map(|(key, value)| value.as_ref().filter(|v| !v.is_empty()).map(|v| format!("{key}={}", ctx::seg(v))))
+        .filter_map(|(key, value)| {
+            value
+                .as_ref()
+                .filter(|v| !v.is_empty())
+                .map(|v| format!("{key}={}", ctx::seg(v)))
+        })
         .collect();
     if parts.is_empty() {
         String::new()
@@ -138,7 +145,10 @@ fn price_path(model: &str) -> String {
 
 /// Epoch milliseconds now.
 fn now_ms() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 /// One row of totals: the group's key, then its calls, tokens, cache hit rate and spend.
@@ -160,7 +170,14 @@ fn print_listing(v: &Value) {
     println!();
     let sources: Vec<Vec<String>> = array(v.get("sources").unwrap_or(&Value::Null))
         .iter()
-        .map(|s| vec![ctx::s(s, "name").to_string(), ctx::text(s, "models"), ctx::text(s, "ok"), ctx::s(s, "error").to_string()])
+        .map(|s| {
+            vec![
+                ctx::s(s, "name").to_string(),
+                ctx::text(s, "models"),
+                ctx::text(s, "ok"),
+                ctx::s(s, "error").to_string(),
+            ]
+        })
         .collect();
     ctx::table(&["source", "models", "ok", "error"], &sources);
     println!();
@@ -179,14 +196,30 @@ fn print_listing(v: &Value) {
             ]
         })
         .collect();
-    ctx::table(&["model", "input", "output", "cache read", "cache write", "source"], &rows);
+    ctx::table(
+        &[
+            "model",
+            "input",
+            "output",
+            "cache read",
+            "cache write",
+            "source",
+        ],
+        &rows,
+    );
 }
 
 pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
     match cmd {
         Cmd::Summary { window } => {
             let (from, to) = window_range(&window, now_ms())?;
-            let v = ctx.client.get(&format!("/v1/usage/summary{}", query(&[("from", Some(from.to_string())), ("to", Some(to.to_string()))])))?;
+            let v = ctx.client.get(&format!(
+                "/v1/usage/summary{}",
+                query(&[
+                    ("from", Some(from.to_string())),
+                    ("to", Some(to.to_string()))
+                ])
+            ))?;
             ctx.out(&v, |v| {
                 let t = v.get("totals").unwrap_or(&Value::Null);
                 ctx::fields(&[
@@ -206,8 +239,22 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                     .iter()
                     .map(|g| totals_row(ctx::s(g, "key"), g.get("totals").unwrap_or(&Value::Null)))
                     .collect();
-                ctx::table(&["model", "calls", "input", "output", "cache read", "cache hit", "spend"], &rows);
-                let unpriced: Vec<&str> = array(v.get("unpriced").unwrap_or(&Value::Null)).iter().filter_map(Value::as_str).collect();
+                ctx::table(
+                    &[
+                        "model",
+                        "calls",
+                        "input",
+                        "output",
+                        "cache read",
+                        "cache hit",
+                        "spend",
+                    ],
+                    &rows,
+                );
+                let unpriced: Vec<&str> = array(v.get("unpriced").unwrap_or(&Value::Null))
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .collect();
                 if !unpriced.is_empty() {
                     println!();
                     println!("no price for (estimated at $0): {}", unpriced.join(", "));
@@ -235,8 +282,11 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                 for point in array(v.get("points").unwrap_or(&Value::Null)) {
                     let at = ctx::when(&point["at_ms"]);
                     // The groups of one bucket, biggest spend first.
-                    let mut groups: Vec<(&String, &Value)> =
-                        point.get("groups").and_then(Value::as_object).map(|m| m.iter().collect()).unwrap_or_default();
+                    let mut groups: Vec<(&String, &Value)> = point
+                        .get("groups")
+                        .and_then(Value::as_object)
+                        .map(|m| m.iter().collect())
+                        .unwrap_or_default();
                     groups.sort_by(|a, b| num(b.1, "usd").total_cmp(&num(a.1, "usd")));
                     for (key, totals) in groups {
                         rows.push(vec![
@@ -249,10 +299,18 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                         ]);
                     }
                 }
-                ctx::table(&["at", by.as_str(), "calls", "input", "output", "spend"], &rows);
+                ctx::table(
+                    &["at", by.as_str(), "calls", "input", "output", "spend"],
+                    &rows,
+                );
             });
         }
-        Cmd::Calls { limit, before, model, cid } => {
+        Cmd::Calls {
+            limit,
+            before,
+            model,
+            cid,
+        } => {
             let path = format!(
                 "/v1/usage/calls{}",
                 query(&[
@@ -281,7 +339,21 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                         ]
                     })
                     .collect();
-                ctx::table(&["id", "at", "agent", "role", "model", "input", "output", "cache read", "spend", "task"], &rows);
+                ctx::table(
+                    &[
+                        "id",
+                        "at",
+                        "agent",
+                        "role",
+                        "model",
+                        "input",
+                        "output",
+                        "cache read",
+                        "spend",
+                        "task",
+                    ],
+                    &rows,
+                );
                 if let Some(next) = v.get("next_before").and_then(Value::as_u64) {
                     println!();
                     println!("next page: --before {next}");
@@ -353,16 +425,29 @@ mod tests {
 
     #[test]
     fn a_model_id_is_one_encoded_path_segment() {
-        assert_eq!(price_path("anthropic/claude-x"), "/v1/prices/anthropic%2Fclaude-x");
+        assert_eq!(
+            price_path("anthropic/claude-x"),
+            "/v1/prices/anthropic%2Fclaude-x"
+        );
         assert_eq!(price_path("glm-5.3"), "/v1/prices/glm-5.3");
     }
 
     #[test]
     fn query_strings_skip_the_unset_and_the_empty_and_encode_values() {
         assert_eq!(query(&[("from", None), ("to", None)]), "");
-        assert_eq!(query(&[("from", Some("1".into())), ("model", None), ("to", Some("2".into()))]), "?from=1&to=2");
+        assert_eq!(
+            query(&[
+                ("from", Some("1".into())),
+                ("model", None),
+                ("to", Some("2".into()))
+            ]),
+            "?from=1&to=2"
+        );
         assert_eq!(query(&[("model", Some(String::new()))]), "");
-        assert_eq!(query(&[("model", Some("anthropic/claude-x".into()))]), "?model=anthropic%2Fclaude-x");
+        assert_eq!(
+            query(&[("model", Some("anthropic/claude-x".into()))]),
+            "?model=anthropic%2Fclaude-x"
+        );
     }
 
     #[test]
@@ -387,10 +472,27 @@ mod tests {
             #[command(subcommand)]
             cmd: Cmd,
         }
-        let parse = |args: &[&str]| Wrap::try_parse_from(std::iter::once("usage").chain(args.iter().copied())).map(|w| w.cmd);
-        assert!(matches!(parse(&["prices", "refresh"]), Ok(Cmd::Prices { model: None, action: Some(PricesAction::Refresh) })));
-        assert!(matches!(parse(&["prices", "anthropic/claude-x"]), Ok(Cmd::Prices { model: Some(ref m), action: None }) if m == "anthropic/claude-x"));
-        assert!(matches!(parse(&["prices"]), Ok(Cmd::Prices { model: None, action: None })));
+        let parse = |args: &[&str]| {
+            Wrap::try_parse_from(std::iter::once("usage").chain(args.iter().copied()))
+                .map(|w| w.cmd)
+        };
+        assert!(matches!(
+            parse(&["prices", "refresh"]),
+            Ok(Cmd::Prices {
+                model: None,
+                action: Some(PricesAction::Refresh)
+            })
+        ));
+        assert!(
+            matches!(parse(&["prices", "anthropic/claude-x"]), Ok(Cmd::Prices { model: Some(ref m), action: None }) if m == "anthropic/claude-x")
+        );
+        assert!(matches!(
+            parse(&["prices"]),
+            Ok(Cmd::Prices {
+                model: None,
+                action: None
+            })
+        ));
         assert!(parse(&["summary", "--window", "2d"]).is_err());
         assert!(parse(&["calls", "--limit", "0"]).is_err());
     }

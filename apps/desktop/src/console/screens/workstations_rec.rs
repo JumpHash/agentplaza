@@ -580,9 +580,7 @@ pub fn frame_times(frames: u64, duration: u64, started_ms: u64, stamps: &[FrameS
         let before = k.checked_sub(1).map(|j| known[j]);
         let at = match (after, before) {
             (Some((s, at)), _) if s == seq => at,
-            (Some((s, at)), Some((p, pat))) => {
-                pat + (seq - p) as f64 * (at - pat) / (s - p) as f64
-            }
+            (Some((s, at)), Some((p, pat))) => pat + (seq - p) as f64 * (at - pat) / (s - p) as f64,
             (None, Some((p, pat))) => pat + (seq - p) as f64 * step,
             (Some((s, at)), None) => at - (s - seq) as f64 * step,
             (None, None) => 0.0,
@@ -975,12 +973,27 @@ mod tests {
     #[test]
     fn the_hubs_frame_times_place_each_frame_and_a_takeover_gap_shows() {
         let stamps = [
-            FrameStamp { seq: 1, ts_ms: 1_000 },
-            FrameStamp { seq: 2, ts_ms: 1_200 },
-            FrameStamp { seq: 3, ts_ms: 1_400 },
+            FrameStamp {
+                seq: 1,
+                ts_ms: 1_000,
+            },
+            FrameStamp {
+                seq: 2,
+                ts_ms: 1_200,
+            },
+            FrameStamp {
+                seq: 3,
+                ts_ms: 1_400,
+            },
             // The owner drove the session from 1.4 s to 9 s: no frames then.
-            FrameStamp { seq: 4, ts_ms: 9_000 },
-            FrameStamp { seq: 5, ts_ms: 9_200 },
+            FrameStamp {
+                seq: 4,
+                ts_ms: 9_000,
+            },
+            FrameStamp {
+                seq: 5,
+                ts_ms: 9_200,
+            },
         ];
         let times = frame_times(5, 8_200, 1_000, &stamps);
         assert_eq!(times, vec![0, 200, 400, 8_000, 8_200]);
@@ -998,8 +1011,14 @@ mod tests {
     fn frames_without_their_own_time_keep_the_spacing_and_stay_in_the_recording() {
         let stamps = [
             FrameStamp { seq: 1, ts_ms: 0 },
-            FrameStamp { seq: 2, ts_ms: 1_000 },
-            FrameStamp { seq: 3, ts_ms: 2_000 },
+            FrameStamp {
+                seq: 2,
+                ts_ms: 1_000,
+            },
+            FrameStamp {
+                seq: 3,
+                ts_ms: 2_000,
+            },
         ];
         assert_eq!(
             frame_times(6, 5_000, 0, &stamps),
@@ -1007,7 +1026,15 @@ mod tests {
             "past the known ones, at their spacing, to the end"
         );
         assert_eq!(
-            frame_times(3, 3_000, 0, &[FrameStamp { seq: 3, ts_ms: 2_000 }]),
+            frame_times(
+                3,
+                3_000,
+                0,
+                &[FrameStamp {
+                    seq: 3,
+                    ts_ms: 2_000
+                }]
+            ),
             vec![0, 1_000, 2_000],
             "before the first known one, placed back from it"
         );

@@ -6,10 +6,10 @@
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use apz_http::client::{request_json, Target};
+use apz_http::client::{Target, request_json};
 use apz_trust::node::NodeKey;
 use apz_trust::token::JoinToken;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::identity::{self, Identity};
 
@@ -31,7 +31,12 @@ pub fn join(token: &str, name: &str, machine: Value, dir: &Path) -> Result<Ident
     }
 
     let hub_url = token.hub_url.trim_end_matches('/').to_string();
-    let target = Target { base: hub_url.clone(), pin: Some(token.cert_sha256), bearer: None, headers: Vec::new() };
+    let target = Target {
+        base: hub_url.clone(),
+        pin: Some(token.cert_sha256),
+        bearer: None,
+        headers: Vec::new(),
+    };
 
     let (status, body) = request_json(&target, "GET", "/v1/hub/identity", None, TIMEOUT)
         .map_err(|e| format!("cannot reach the hub: {e}"))?;
@@ -43,7 +48,11 @@ pub fn join(token: &str, name: &str, machine: Value, dir: &Path) -> Result<Ident
             return Err("the hub's certificate does not match the code".into());
         }
     }
-    let identity_name = body.get("name").and_then(Value::as_str).unwrap_or_default().to_string();
+    let identity_name = body
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
 
     let key = NodeKey::generate();
     let request = json!({
@@ -58,10 +67,23 @@ pub fn join(token: &str, name: &str, machine: Value, dir: &Path) -> Result<Ident
         return Err(hub_error(status, &body));
     }
 
-    let node_id = body.get("node_id").and_then(Value::as_str).ok_or("the hub's join reply has no node_id")?;
-    let cid_base = body.get("cid_base").and_then(Value::as_u64).ok_or("the hub's join reply has no cid_base")?;
-    let cid_count = body.get("cid_count").and_then(Value::as_u64).ok_or("the hub's join reply has no cid_count")?;
-    let hub_name = body.get("hub").and_then(Value::as_str).map(str::to_string).unwrap_or(identity_name);
+    let node_id = body
+        .get("node_id")
+        .and_then(Value::as_str)
+        .ok_or("the hub's join reply has no node_id")?;
+    let cid_base = body
+        .get("cid_base")
+        .and_then(Value::as_u64)
+        .ok_or("the hub's join reply has no cid_base")?;
+    let cid_count = body
+        .get("cid_count")
+        .and_then(Value::as_u64)
+        .ok_or("the hub's join reply has no cid_count")?;
+    let hub_name = body
+        .get("hub")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or(identity_name);
 
     let identity = Identity {
         hub_url,
@@ -88,10 +110,16 @@ fn hub_error(status: u16, body: &Value) -> String {
 pub fn machine_summary() -> Value {
     let mut summary = serde_json::Map::new();
     if let Ok(cpuinfo) = std::fs::read_to_string("/proc/cpuinfo") {
-        let cpus = cpuinfo.lines().filter(|line| line.starts_with("processor")).count();
+        let cpus = cpuinfo
+            .lines()
+            .filter(|line| line.starts_with("processor"))
+            .count();
         summary.insert("cpus".into(), json!(cpus));
     }
-    if let Some(kb) = std::fs::read_to_string("/proc/meminfo").ok().and_then(|text| mem_total_kb(&text)) {
+    if let Some(kb) = std::fs::read_to_string("/proc/meminfo")
+        .ok()
+        .and_then(|text| mem_total_kb(&text))
+    {
         summary.insert("memory_mib".into(), json!(kb / 1024));
     }
     if let Ok(host) = std::fs::read_to_string("/etc/hostname") {
@@ -116,7 +144,10 @@ mod tests {
     use std::path::PathBuf;
 
     fn now() -> u64 {
-        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
     }
 
     fn scratch(tag: &str) -> PathBuf {
@@ -125,7 +156,8 @@ mod tests {
 
     #[test]
     fn expired_token_is_refused_before_any_network_call() {
-        let token = JoinToken::issue("https://hub.example:7443", [0; 32], now() - 1000, 900).encode();
+        let token =
+            JoinToken::issue("https://hub.example:7443", [0; 32], now() - 1000, 900).encode();
         let dir = scratch("expired");
         let err = join(&token, "node", json!({}), &dir).unwrap_err();
         assert_eq!(err, "this join code has expired");

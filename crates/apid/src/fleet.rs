@@ -4,7 +4,7 @@
 //! An agent lives on the node whose CID range holds its CID.
 
 use apz_http::{Params, Request, Response, Router};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::agents::Status;
 use crate::nodes::{Node, OFFLINE_AFTER_MS};
@@ -17,11 +17,19 @@ pub const REMOTE_WAIT_MS: u64 = 30_000;
 
 /// The node that hosts `cid`: `n0` unless a joined node's range holds it.
 pub fn node_of(app: &App, cid: u64) -> String {
-    app.nodes.owner_of_cid(cid).map_or_else(|| LOCAL.to_string(), |node| node.id)
+    app.nodes
+        .owner_of_cid(cid)
+        .map_or_else(|| LOCAL.to_string(), |node| node.id)
 }
 
 /// A call to the agent gateway that serves `cid` (`/v1/agents/{cid}/send`, `/stop`, …).
-pub fn gateway(app: &App, cid: u64, method: &str, path: &str, body: Option<&Value>) -> Result<(u16, Value), String> {
+pub fn gateway(
+    app: &App,
+    cid: u64,
+    method: &str,
+    path: &str,
+    body: Option<&Value>,
+) -> Result<(u16, Value), String> {
     let node = node_of(app, cid);
     if node == LOCAL {
         return app.hub.call(method, path, body);
@@ -31,11 +39,23 @@ pub fn gateway(app: &App, cid: u64, method: &str, path: &str, body: Option<&Valu
 
 /// Pushes one message to agent `cid` (`POST /v1/agents/{cid}/send` on its gateway).
 pub fn send(app: &App, cid: u64, body: &Value) -> Result<(u16, Value), String> {
-    gateway(app, cid, "POST", &format!("/v1/agents/{cid}/send"), Some(body))
+    gateway(
+        app,
+        cid,
+        "POST",
+        &format!("/v1/agents/{cid}/send"),
+        Some(body),
+    )
 }
 
 /// A call to noded on `node`.
-pub fn noded(app: &App, node: &str, method: &str, path: &str, body: Option<&Value>) -> Result<(u16, Value), String> {
+pub fn noded(
+    app: &App,
+    node: &str,
+    method: &str,
+    path: &str,
+    body: Option<&Value>,
+) -> Result<(u16, Value), String> {
     if node == LOCAL {
         return app.noded.call(method, path, body);
     }
@@ -43,7 +63,13 @@ pub fn noded(app: &App, node: &str, method: &str, path: &str, body: Option<&Valu
 }
 
 /// A call to the noded that runs agent `cid`'s VM.
-pub fn noded_for(app: &App, cid: u64, method: &str, path: &str, body: Option<&Value>) -> Result<(u16, Value), String> {
+pub fn noded_for(
+    app: &App,
+    cid: u64,
+    method: &str,
+    path: &str,
+    body: Option<&Value>,
+) -> Result<(u16, Value), String> {
     noded(app, &node_of(app, cid), method, path, body)
 }
 
@@ -57,7 +83,14 @@ pub fn respond(result: Result<(u16, Value), String>) -> Response {
 
 /// Queues the call on a joined node and waits for its result. Refused at once when the node is
 /// unknown, revoked or offline, so nothing piles up in a queue no one reads.
-fn remote(app: &App, node: &str, target: &str, method: &str, path: &str, body: Option<&Value>) -> Result<(u16, Value), String> {
+fn remote(
+    app: &App,
+    node: &str,
+    target: &str,
+    method: &str,
+    path: &str,
+    body: Option<&Value>,
+) -> Result<(u16, Value), String> {
     let Some(record) = app.nodes.get(node) else {
         return Err(format!("no node {node}"));
     };
@@ -67,7 +100,13 @@ fn remote(app: &App, node: &str, target: &str, method: &str, path: &str, body: O
     if apz_plaza::now_ms().saturating_sub(record.last_seen_ms) >= crate::nodes::OFFLINE_AFTER_MS {
         return Err(format!("node {node} is offline"));
     }
-    let id = app.nodes.enqueue(node, target, method, path, body.cloned().unwrap_or(Value::Null));
+    let id = app.nodes.enqueue(
+        node,
+        target,
+        method,
+        path,
+        body.cloned().unwrap_or(Value::Null),
+    );
     match app.nodes.wait_result(&id, REMOTE_WAIT_MS) {
         Some(result) => Ok((result.status, result.body)),
         None => Err(format!("node {node} did not answer {method} {path}")),
@@ -79,10 +118,24 @@ fn remote(app: &App, node: &str, target: &str, method: &str, path: &str, body: O
 /// not answer is left out.
 pub fn reports(app: &App) -> Vec<(String, Value, Value)> {
     let mut all = Vec::new();
-    let status = app.hub.get("/v1/status").ok().filter(|(code, _)| *code == 200).map(|(_, body)| body);
-    let runs = app.noded.get("/v1/runs").ok().filter(|(code, _)| *code == 200).map(|(_, body)| body);
+    let status = app
+        .hub
+        .get("/v1/status")
+        .ok()
+        .filter(|(code, _)| *code == 200)
+        .map(|(_, body)| body);
+    let runs = app
+        .noded
+        .get("/v1/runs")
+        .ok()
+        .filter(|(code, _)| *code == 200)
+        .map(|(_, body)| body);
     if status.is_some() || runs.is_some() {
-        all.push((LOCAL.to_string(), status.unwrap_or(Value::Null), runs.unwrap_or(Value::Null)));
+        all.push((
+            LOCAL.to_string(),
+            status.unwrap_or(Value::Null),
+            runs.unwrap_or(Value::Null),
+        ));
     }
     let now = apz_plaza::now_ms();
     for node in app.nodes.list() {
@@ -114,15 +167,28 @@ pub struct HubReport {
 /// The fleet for the Machines view (`GET /v1/fleet`): the hub's own machine (`n0`, from its
 /// noded) and every joined node (from its last heartbeat), each with the agents it runs.
 pub fn fleet(app: &App) -> Value {
-    let answered = |path: &str| app.noded.get(path).ok().filter(|(code, _)| *code == 200).map(|(_, body)| body);
-    let hub = HubReport { machine: answered("/v1/machine"), stats: answered("/v1/machine/stats") };
+    let answered = |path: &str| {
+        app.noded
+            .get(path)
+            .ok()
+            .filter(|(code, _)| *code == 200)
+            .map(|(_, body)| body)
+    };
+    let hub = HubReport {
+        machine: answered("/v1/machine"),
+        stats: answered("/v1/machine/stats"),
+    };
     // Agents that are offline are not running anywhere, so they are not placed.
     let placed: Vec<Placed> = app
         .agents
         .list()
         .into_iter()
         .filter(|agent| agent.status != Status::Offline)
-        .map(|agent| Placed { cid: agent.cid, node: node_of(app, agent.cid), working: agent.status == Status::Working })
+        .map(|agent| Placed {
+            cid: agent.cid,
+            node: node_of(app, agent.cid),
+            working: agent.status == Status::Working,
+        })
         .collect();
     let now = apz_plaza::now_ms();
     let mut view = assemble(now, &hub, &app.nodes.list(), &placed);
@@ -218,8 +284,16 @@ pub fn station_rows(_now_ms: u64, stations: &Value) -> (Vec<Value>, Vec<Value>) 
 /// one carries them), since its noded is reached only through the command queue.
 pub fn assemble(now_ms: u64, hub: &HubReport, nodes: &[Node], placed: &[Placed]) -> Value {
     let hub_machine = hub.machine.clone().unwrap_or(Value::Null);
-    let hub_status = if hub.machine.is_some() { "online" } else { "offline" };
-    let hub_name = hub_machine.get("name").and_then(Value::as_str).unwrap_or("hub").to_string();
+    let hub_status = if hub.machine.is_some() {
+        "online"
+    } else {
+        "offline"
+    };
+    let hub_name = hub_machine
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or("hub")
+        .to_string();
     let mut machines = vec![machine_row(
         LOCAL,
         &hub_name,
@@ -232,7 +306,8 @@ pub fn assemble(now_ms: u64, hub: &HubReport, nodes: &[Node], placed: &[Placed])
     )];
     let mut links = Vec::new();
     for node in nodes {
-        let reachable = !node.revoked && now_ms.saturating_sub(node.last_seen_ms) < OFFLINE_AFTER_MS;
+        let reachable =
+            !node.revoked && now_ms.saturating_sub(node.last_seen_ms) < OFFLINE_AFTER_MS;
         let status = if node.revoked {
             "revoked"
         } else if node.draining {
@@ -244,7 +319,16 @@ pub fn assemble(now_ms: u64, hub: &HubReport, nodes: &[Node], placed: &[Placed])
         };
         // A remote node's live stats are the ones its last heartbeat carried.
         let stats = node.machine.get("stats").cloned().unwrap_or(Value::Null);
-        machines.push(machine_row(&node.id, &node.name, "node", status, &node.machine, placed, stats, node.last_seen_ms));
+        machines.push(machine_row(
+            &node.id,
+            &node.name,
+            "node",
+            status,
+            &node.machine,
+            placed,
+            stats,
+            node.last_seen_ms,
+        ));
         links.push(json!({ "a": LOCAL, "b": node.id, "online": reachable }));
     }
     json!({ "machines": machines, "links": links })
@@ -303,15 +387,23 @@ fn stats_of(body: Option<&Value>) -> Value {
 pub fn routes(router: Router<App>) -> Router<App> {
     router
         .get("/v1/fleet", |app, _, _| Response::json(200, &fleet(app)))
-        .get("/v1/nodes/{id}/machine", |app, _, p| respond(noded(app, p.get("id"), "GET", "/v1/machine", None)))
-        .get("/v1/nodes/{id}/stats", |app, _, p| respond(noded(app, p.get("id"), "GET", "/v1/machine/stats", None)))
-        .get("/v1/nodes/{id}/runs", |app, _, p| respond(noded(app, p.get("id"), "GET", "/v1/runs", None)))
+        .get("/v1/nodes/{id}/machine", |app, _, p| {
+            respond(noded(app, p.get("id"), "GET", "/v1/machine", None))
+        })
+        .get("/v1/nodes/{id}/stats", |app, _, p| {
+            respond(noded(app, p.get("id"), "GET", "/v1/machine/stats", None))
+        })
+        .get("/v1/nodes/{id}/runs", |app, _, p| {
+            respond(noded(app, p.get("id"), "GET", "/v1/runs", None))
+        })
         .post("/v1/nodes/{id}/runs", spawn_on)
 }
 
 /// `POST /v1/nodes/{id}/runs`: a raw run on that node (the console's machine view).
 fn spawn_on(app: &App, req: &Request, p: &Params<'_>) -> Response {
-    let body: Value = if req.body.is_empty() { json!({}) } else {
+    let body: Value = if req.body.is_empty() {
+        json!({})
+    } else {
         match serde_json::from_slice(&req.body) {
             Ok(body) => body,
             Err(_) => return Response::error(400, "the body must be JSON"),
@@ -326,7 +418,14 @@ mod tests {
 
     const NOW: u64 = 1_000_000;
 
-    fn node(id: &str, name: &str, last_seen_ms: u64, machine: Value, draining: bool, revoked: bool) -> Node {
+    fn node(
+        id: &str,
+        name: &str,
+        last_seen_ms: u64,
+        machine: Value,
+        draining: bool,
+        revoked: bool,
+    ) -> Node {
         Node {
             id: id.into(),
             name: name.into(),
@@ -343,7 +442,11 @@ mod tests {
     }
 
     fn placed(cid: u64, node: &str, working: bool) -> Placed {
-        Placed { cid, node: node.into(), working }
+        Placed {
+            cid,
+            node: node.into(),
+            working,
+        }
     }
 
     fn hub() -> HubReport {
@@ -355,7 +458,9 @@ mod tests {
                 "gpus": [{ "name": "NVIDIA GeForce RTX 3090", "vendor": "NVIDIA", "memory_mib": 24576 }],
                 "storage_gib": 1863,
             })),
-            stats: Some(json!({ "cpu_percent": 7.5, "mem_used_mib": 18000, "load": [0.1, 0.2, 0.3] })),
+            stats: Some(
+                json!({ "cpu_percent": 7.5, "mem_used_mib": 18000, "load": [0.1, 0.2, 0.3] }),
+            ),
         }
     }
 
@@ -374,11 +479,29 @@ mod tests {
                 false,
                 false,
             ),
-            node("n4", "old-laptop", NOW - 5_000, json!({ "kind": "laptop" }), true, false),
-            node("n5", "silent", NOW - OFFLINE_AFTER_MS - 1, json!({}), false, false),
+            node(
+                "n4",
+                "old-laptop",
+                NOW - 5_000,
+                json!({ "kind": "laptop" }),
+                true,
+                false,
+            ),
+            node(
+                "n5",
+                "silent",
+                NOW - OFFLINE_AFTER_MS - 1,
+                json!({}),
+                false,
+                false,
+            ),
             node("n6", "banned", NOW, json!({}), false, true),
         ];
-        let agents = [placed(200, "n0", true), placed(201, "n0", false), placed(1000, "n3", false)];
+        let agents = [
+            placed(200, "n0", true),
+            placed(201, "n0", false),
+            placed(1000, "n3", false),
+        ];
         let view = assemble(NOW, &hub(), &nodes, &agents);
 
         let machines = view["machines"].as_array().unwrap();
@@ -390,7 +513,10 @@ mod tests {
         assert_eq!(hub_row["status"], "online");
         assert_eq!(hub_row["agents"], json!([200, 201]));
         assert_eq!(hub_row["working"], 1);
-        assert_eq!(hub_row["stats"], json!({ "cpu_pct": 7.5, "mem_used_mib": 18000 }));
+        assert_eq!(
+            hub_row["stats"],
+            json!({ "cpu_pct": 7.5, "mem_used_mib": 18000 })
+        );
         assert_eq!(hub_row["cpu"]["threads"], 24);
         assert_eq!(hub_row["gpus"][0]["vendor"], "NVIDIA");
         assert_eq!(hub_row["vendor"], Value::Null);
@@ -401,7 +527,15 @@ mod tests {
             .iter()
             .map(|row| (row["id"].as_str().unwrap(), row["status"].as_str().unwrap()))
             .collect();
-        assert_eq!(statuses, [("n3", "online"), ("n4", "draining"), ("n5", "offline"), ("n6", "revoked")]);
+        assert_eq!(
+            statuses,
+            [
+                ("n3", "online"),
+                ("n4", "draining"),
+                ("n5", "offline"),
+                ("n6", "revoked")
+            ]
+        );
 
         let pi = &machines[1];
         assert_eq!(pi["role"], "node");
@@ -418,14 +552,23 @@ mod tests {
         assert_eq!(pi["last_seen_ms"], NOW - 5_000);
 
         let links = view["links"].as_array().unwrap();
-        let online: Vec<(&str, bool)> = links.iter().map(|l| (l["b"].as_str().unwrap(), l["online"].as_bool().unwrap())).collect();
-        assert_eq!(online, [("n3", true), ("n4", true), ("n5", false), ("n6", false)]);
+        let online: Vec<(&str, bool)> = links
+            .iter()
+            .map(|l| (l["b"].as_str().unwrap(), l["online"].as_bool().unwrap()))
+            .collect();
+        assert_eq!(
+            online,
+            [("n3", true), ("n4", true), ("n5", false), ("n6", false)]
+        );
         assert!(links.iter().all(|l| l["a"] == "n0"));
     }
 
     #[test]
     fn a_hub_whose_noded_is_down_is_offline_without_stats() {
-        let down = HubReport { machine: None, stats: None };
+        let down = HubReport {
+            machine: None,
+            stats: None,
+        };
         let view = assemble(NOW, &down, &[], &[]);
         let hub_row = &view["machines"][0];
         assert_eq!(hub_row["status"], "offline");
@@ -486,7 +629,11 @@ mod tests {
     #[test]
     fn a_station_is_a_workstation_row_with_its_active_agents_and_a_link() {
         let stations = json!([
-            station_json("w1", "online", json!([lease_json(300, "active"), lease_json(301, "queued")])),
+            station_json(
+                "w1",
+                "online",
+                json!([lease_json(300, "active"), lease_json(301, "queued")])
+            ),
             station_json("w2", "revoked", json!([])),
         ]);
         let (machines, links) = station_rows(NOW, &stations);
@@ -499,15 +646,25 @@ mod tests {
         assert_eq!(row["os"], "macos");
         assert_eq!(row["status"], "online");
         assert_eq!(row["working"], 1);
-        assert_eq!(row["agents"], json!([300]), "the queued lease's agent is not running");
+        assert_eq!(
+            row["agents"],
+            json!([300]),
+            "the queued lease's agent is not running"
+        );
         assert_eq!(row["memory_mib"], 32768);
-        assert_eq!(row["gpus"], json!([{ "name": "Apple M3", "vendor": "apple", "memory_mib": null }]));
+        assert_eq!(
+            row["gpus"],
+            json!([{ "name": "Apple M3", "vendor": "apple", "memory_mib": null }])
+        );
         assert_eq!(row["station"]["form"], "laptop");
         assert_eq!(row["station"]["leases"], 2);
         assert_eq!(row["station"]["active"], 1);
         assert_eq!(row["station"]["account"], "owner");
         assert_eq!(row["station"]["account_name"], "zarathos");
-        assert_eq!(Value::Array(links), json!([{ "a": "n0", "b": "w1", "online": true }]));
+        assert_eq!(
+            Value::Array(links),
+            json!([{ "a": "n0", "b": "w1", "online": true }])
+        );
     }
 
     #[test]

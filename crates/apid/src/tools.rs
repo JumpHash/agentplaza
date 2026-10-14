@@ -6,14 +6,14 @@
 
 use std::sync::Arc;
 
+use apz_plaza::ConnectedAgent;
 use apz_plaza::council::{ProposeRequest, VoteRequest};
 use apz_plaza::social::PostRequest;
-use apz_plaza::tasks::{resolve_budget, CreateTask, Task, MIN_TASK_BUDGET};
-use apz_plaza::ConnectedAgent;
+use apz_plaza::tasks::{CreateTask, MIN_TASK_BUDGET, Task, resolve_budget};
 use apz_proto::chat::ToolSpec;
 use apz_proto::wire::WorkKind;
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::agents::{self, Agent};
 use crate::scheduler::Origin;
@@ -79,7 +79,14 @@ const ALWAYS: &[&str] = &[
 ];
 
 /// The guest tools that act only inside the agent's own VM, offered to every role.
-const IN_VM: &[&str] = &["bash", "read_file", "write_file", "edit_file", "list", "search"];
+const IN_VM: &[&str] = &[
+    "bash",
+    "read_file",
+    "write_file",
+    "edit_file",
+    "list",
+    "search",
+];
 
 /// Host tools offered only by tier or seat (see [`permitted`]).
 const GATED: &[&str] = &[
@@ -113,13 +120,30 @@ pub fn runs(name: &str) -> Option<Runs> {
     // contract
     match name {
         "bash" | "read_file" | "write_file" | "edit_file" | "list" | "search" | "share_file"
-        | "fetch_url" | "download" | "install_packages" | "glob" | "grep" | "multi_edit" | "bash_start"
-        | "bash_output" | "bash_kill" | "todo_write" | "code_engine" | "deliver_file" | "tool_package" | "checkpoint_diff" | "checkpoint_restore"
+        | "fetch_url" | "download" | "install_packages" | "glob" | "grep" | "multi_edit"
+        | "bash_start" | "bash_output" | "bash_kill" | "todo_write" | "code_engine"
+        | "deliver_file" | "tool_package" | "checkpoint_diff" | "checkpoint_restore"
         | "checkpoint_list" => Some(Runs::Guest),
-        "transcript_search" | "submit_claim" | "plaza_tasks" | "plaza_bid"
-        | "plaza_board_read" | "plaza_board_post" | "plaza_board_comment" | "plaza_send_message" | "plaza_vote"
-        | "plaza_propose" | "plaza_agents" | "plaza_money" | "plaza_post_task" | "plaza_assign"
-        | "plaza_cancel_task" | "plaza_task_result" | "plaza_get_file" | "plaza_set_name" | "plaza_pay" | "plaza_verdict" => Some(Runs::Host),
+        "transcript_search"
+        | "submit_claim"
+        | "plaza_tasks"
+        | "plaza_bid"
+        | "plaza_board_read"
+        | "plaza_board_post"
+        | "plaza_board_comment"
+        | "plaza_send_message"
+        | "plaza_vote"
+        | "plaza_propose"
+        | "plaza_agents"
+        | "plaza_money"
+        | "plaza_post_task"
+        | "plaza_assign"
+        | "plaza_cancel_task"
+        | "plaza_task_result"
+        | "plaza_get_file"
+        | "plaza_set_name"
+        | "plaza_pay"
+        | "plaza_verdict" => Some(Runs::Host),
         name if crate::skills::agent_tools::TOOLS.contains(&name) => Some(Runs::Host),
         name if crate::society::TOOLS.contains(&name) => Some(Runs::Host),
         name if crate::toolbox::TOOLS.contains(&name) => Some(Runs::Host),
@@ -141,9 +165,16 @@ pub fn runs(name: &str) -> Option<Runs> {
 pub fn specs_for(app: &App, role: &str) -> Vec<ToolSpec> {
     // contract
     let granted = crate::roles_custom::tools_of(app, role);
-    let mut specs: Vec<ToolSpec> = offered(role, &granted).iter().filter_map(|name| spec(name)).collect();
+    let mut specs: Vec<ToolSpec> = offered(role, &granted)
+        .iter()
+        .filter_map(|name| spec(name))
+        .collect();
     // A connector tool is offered only when the laws permit it (C-004a holds back the irreversible ones).
-    specs.extend(crate::connectors::specs_for(app, role).into_iter().filter(|spec| permitted(role, &spec.name)));
+    specs.extend(
+        crate::connectors::specs_for(app, role)
+            .into_iter()
+            .filter(|spec| permitted(role, &spec.name)),
+    );
     specs
 }
 
@@ -171,8 +202,14 @@ pub fn run_host(app: &App, agent: &Agent, work: u64, name: &str, input: &Value) 
 /// `Settings::allowed`, the rule the model gateway enforces on every call: `None` keeps the engine's
 /// default (no `model`, or an empty one). Called by the guest arm of `internal::dispatch`, before the
 /// call is forwarded to the VM.
-pub(crate) fn code_engine_model(app: &App, role: &str, input: &Value) -> Result<Option<String>, String> {
-    let Some(model) = model_input(input)? else { return Ok(None) };
+pub(crate) fn code_engine_model(
+    app: &App,
+    role: &str,
+    input: &Value,
+) -> Result<Option<String>, String> {
+    let Some(model) = model_input(input)? else {
+        return Ok(None);
+    };
     app.settings.allowed(tier_of(role), model)?;
     Ok(Some(model.to_string()))
 }
@@ -188,7 +225,9 @@ fn model_input(input: &Value) -> Result<Option<&str>, String> {
     };
     let id = model.split_once('@').map_or(model, |(id, _)| id);
     if !id.contains('/') {
-        return Err(format!("invalid input: \"model\" must be <provider>/<model>, not {model:?}"));
+        return Err(format!(
+            "invalid input: \"model\" must be <provider>/<model>, not {model:?}"
+        ));
     }
     Ok(Some(model))
 }
@@ -253,7 +292,10 @@ fn spec(name: &str) -> Option<ToolSpec> {
         ),
         "write_file" => (
             "Write a file in your VM, replacing its contents.",
-            obj(json!({"path": {"type": "string"}, "content": {"type": "string"}}), &["path", "content"]),
+            obj(
+                json!({"path": {"type": "string"}, "content": {"type": "string"}}),
+                &["path", "content"],
+            ),
         ),
         "edit_file" => (
             "Replace an exact string in a file in your VM. `old` must match exactly once unless replace_all is true; include enough surrounding lines to make it unique.",
@@ -271,7 +313,10 @@ fn spec(name: &str) -> Option<ToolSpec> {
         ),
         "glob" => (
             "Find files by glob pattern (e.g. **/*.rs, src/**/test_*.py), newest first.",
-            obj(json!({"pattern": {"type": "string"}, "path": {"type": "string"}}), &["pattern"]),
+            obj(
+                json!({"pattern": {"type": "string"}, "path": {"type": "string"}}),
+                &["pattern"],
+            ),
         ),
         "grep" => (
             "Search file contents with a regular expression (ripgrep-like). output_mode: files_with_matches (default), content (matching lines with numbers), or count. Filter files with glob; add context lines; case_insensitive; head_limit caps results.",
@@ -291,7 +336,10 @@ fn spec(name: &str) -> Option<ToolSpec> {
         ),
         "bash_output" => (
             "Read what a background command printed since you last looked, and whether it is still running. wait_s waits up to that long for more output.",
-            obj(json!({"id": {"type": "string"}, "wait_s": {"type": "integer", "minimum": 0, "maximum": 60}}), &["id"]),
+            obj(
+                json!({"id": {"type": "string"}, "wait_s": {"type": "integer", "minimum": 0, "maximum": 60}}),
+                &["id"],
+            ),
         ),
         "bash_kill" => (
             "Stop a background command.",
@@ -326,13 +374,22 @@ fn spec(name: &str) -> Option<ToolSpec> {
         ),
         "checkpoint_diff" => (
             "Show what changed in your workspace since a checkpoint (default: since this work started), as a unified diff with a file summary.",
-            obj(json!({"since": {"type": "string"}, "path": {"type": "string"}}), &[]),
+            obj(
+                json!({"since": {"type": "string"}, "path": {"type": "string"}}),
+                &[],
+            ),
         ),
         "checkpoint_restore" => (
             "Roll your workspace (or one path in it) back to a checkpoint. Use checkpoint_list to see them.",
-            obj(json!({"id": {"type": "string"}, "path": {"type": "string"}}), &["id"]),
+            obj(
+                json!({"id": {"type": "string"}, "path": {"type": "string"}}),
+                &["id"],
+            ),
         ),
-        "checkpoint_list" => ("List your workspace checkpoints, newest first.", obj(json!({}), &[])),
+        "checkpoint_list" => (
+            "List your workspace checkpoints, newest first.",
+            obj(json!({}), &[]),
+        ),
         "todo_write" => (
             "Keep your plan for this work as a todo list: pass the whole list each time, each item pending, in_progress (one at a time) or completed. Use it for anything with 3+ steps.",
             obj(
@@ -346,7 +403,10 @@ fn spec(name: &str) -> Option<ToolSpec> {
         ),
         "search" => (
             "Search files in your VM for a pattern.",
-            obj(json!({"pattern": {"type": "string"}, "path": {"type": "string"}}), &["pattern"]),
+            obj(
+                json!({"pattern": {"type": "string"}, "path": {"type": "string"}}),
+                &["pattern"],
+            ),
         ),
         "transcript_search" => (
             "Search your own past transcript entries for a word or phrase.",
@@ -359,23 +419,38 @@ fn spec(name: &str) -> Option<ToolSpec> {
                 &["summary"],
             ),
         ),
-        "plaza_tasks" => ("List the plaza's tasks and their states.", obj(json!({}), &[])),
+        "plaza_tasks" => (
+            "List the plaza's tasks and their states.",
+            obj(json!({}), &[]),
+        ),
         "plaza_board_read" => ("Read the plaza's public board.", obj(json!({}), &[])),
         "plaza_board_comment" => (
             "Comment on a board post's thread (at most 280 characters): answer, agree, disagree or offer help. attachments: ids of files you shared (share_file) or delivered — they become public with the comment.",
-            obj(json!({"post": {"type": "string"}, "text": {"type": "string"}, "attachments": {"type": "array", "items": {"type": "string"}, "maxItems": 8}}), &["post", "text"]),
+            obj(
+                json!({"post": {"type": "string"}, "text": {"type": "string"}, "attachments": {"type": "array", "items": {"type": "string"}, "maxItems": 8}}),
+                &["post", "text"],
+            ),
         ),
         "plaza_board_post" => (
             "Post a short message on the plaza's public board. attachments: ids of files you shared (share_file) or delivered — images, video, documents; they become public with the post.",
-            obj(json!({"text": {"type": "string"}, "attachments": {"type": "array", "items": {"type": "string"}, "maxItems": 8}}), &["text"]),
+            obj(
+                json!({"text": {"type": "string"}, "attachments": {"type": "array", "items": {"type": "string"}, "maxItems": 8}}),
+                &["text"],
+            ),
         ),
         "plaza_send_message" => (
             "Send a direct message to another connected agent by its cid. attachments: ids of your shared files; the recipient gets access to them.",
-            obj(json!({"to_cid": {"type": "integer"}, "text": {"type": "string"}, "attachments": {"type": "array", "items": {"type": "string"}, "maxItems": 8}}), &["to_cid", "text"]),
+            obj(
+                json!({"to_cid": {"type": "integer"}, "text": {"type": "string"}, "attachments": {"type": "array", "items": {"type": "string"}, "maxItems": 8}}),
+                &["to_cid", "text"],
+            ),
         ),
         "plaza_bid" => (
             "Bid a price on an open call (a task with a role).",
-            obj(json!({"task": {"type": "string"}, "price": {"type": "integer", "minimum": 0}}), &["task", "price"]),
+            obj(
+                json!({"task": {"type": "string"}, "price": {"type": "integer", "minimum": 0}}),
+                &["task", "price"],
+            ),
         ),
         "plaza_vote" => (
             "Cast your seat's vote on a council motion, with a reason.",
@@ -391,7 +466,10 @@ fn spec(name: &str) -> Option<ToolSpec> {
                 &["kind", "text"],
             ),
         ),
-        "plaza_agents" => ("List the connected agents with their cids and roles.", obj(json!({}), &[])),
+        "plaza_agents" => (
+            "List the connected agents with their cids and roles.",
+            obj(json!({}), &[]),
+        ),
         "plaza_money" => (
             "Your wallet, and any task's money: budget, escrow, spend, payouts, refunds.",
             obj(json!({"task": {"type": "string"}}), &[]),
@@ -413,7 +491,10 @@ fn spec(name: &str) -> Option<ToolSpec> {
         ),
         "plaza_assign" => (
             "Assign an existing task to a connected agent by its cid.",
-            obj(json!({"task": {"type": "string"}, "agent": {"type": "integer"}}), &["task", "agent"]),
+            obj(
+                json!({"task": {"type": "string"}, "agent": {"type": "integer"}}),
+                &["task", "agent"],
+            ),
         ),
         "plaza_cancel_task" => (
             "Cancel and withdraw a plaza task.",
@@ -440,7 +521,16 @@ fn spec(name: &str) -> Option<ToolSpec> {
                     "auth": {"type": "object"}, "fields": {"type": "array", "items": {"type": "object"}},
                     "actions": {"type": "array", "minItems": 1, "items": {"type": "object"}}
                 }),
-                &["id", "label", "category", "description", "base_url", "auth", "fields", "actions"],
+                &[
+                    "id",
+                    "label",
+                    "category",
+                    "description",
+                    "base_url",
+                    "auth",
+                    "fields",
+                    "actions",
+                ],
             ),
         ),
         "plaza_verdict" => (
@@ -452,7 +542,10 @@ fn spec(name: &str) -> Option<ToolSpec> {
         ),
         "share_file" => (
             "Share a file from your workspace (any kind: text, images, video, data) through the plaza's file store. Public by default; give `to` (agent cids) to share it only with them. Returns its id and a URL agents fetch with download; attach the id to a board post, comment or message.",
-            obj(json!({"path": {"type": "string"}, "title": {"type": "string"}, "to": {"type": "array", "items": {"type": "integer"}}}), &["path"]),
+            obj(
+                json!({"path": {"type": "string"}, "title": {"type": "string"}, "to": {"type": "array", "items": {"type": "integer"}}}),
+                &["path"],
+            ),
         ),
         "plaza_get_file" => (
             "Read a shared file by its id (text comes back whole; binaries return a URL).",
@@ -475,11 +568,25 @@ fn spec(name: &str) -> Option<ToolSpec> {
         ),
         "download" => (
             "Download a file from the internet into your workspace.",
-            obj(json!({"url": {"type": "string"}, "path": {"type": "string"}}), &["url", "path"]),
+            obj(
+                json!({"url": {"type": "string"}, "path": {"type": "string"}}),
+                &["url", "path"],
+            ),
         ),
         other => {
-            let (description, input_schema) = crate::society::spec(other).or_else(|| crate::toolbox::spec(other)).or_else(|| crate::projects::spec(other)).or_else(|| crate::harness_control::spec(other)).or_else(|| crate::git::spec(other)).or_else(|| crate::agent_proposals::spec(other)).or_else(|| crate::skills::agent_tools::spec(other)).or_else(|| crate::stations::tools::spec(other))?;
-            return Some(ToolSpec { name: name.to_string(), description: description.to_string(), input_schema });
+            let (description, input_schema) = crate::society::spec(other)
+                .or_else(|| crate::toolbox::spec(other))
+                .or_else(|| crate::projects::spec(other))
+                .or_else(|| crate::harness_control::spec(other))
+                .or_else(|| crate::git::spec(other))
+                .or_else(|| crate::agent_proposals::spec(other))
+                .or_else(|| crate::skills::agent_tools::spec(other))
+                .or_else(|| crate::stations::tools::spec(other))?;
+            return Some(ToolSpec {
+                name: name.to_string(),
+                description: description.to_string(),
+                input_schema,
+            });
         }
     };
     Some(ToolSpec {
@@ -501,7 +608,11 @@ const HOW_MONEY_WORKS: &str = "How money works: a task's budget is minted from t
 
 /// The plain-text `plaza_money` report: the caller's wallet, an optional task's
 /// money (`(id, state, money)`), then the rules.
-fn money_report(cid: u64, wallet: &apz_plaza::treasury::WalletMoney, task: Option<(&str, &str, &apz_plaza::treasury::TaskMoney)>) -> String {
+fn money_report(
+    cid: u64,
+    wallet: &apz_plaza::treasury::WalletMoney,
+    task: Option<(&str, &str, &apz_plaza::treasury::TaskMoney)>,
+) -> String {
     let mut lines = vec![format!(
         "your wallet (cid:{cid}): balance {} credits; sent today {} of the {} daily cap; earned {} from task payments",
         wallet.balance,
@@ -517,7 +628,11 @@ fn money_report(cid: u64, wallet: &apz_plaza::treasury::WalletMoney, task: Optio
         if money.paid.is_empty() {
             lines.push("paid to agents: none yet".to_string());
         } else {
-            let paid: Vec<String> = money.paid.iter().map(|(cid, amount)| format!("cid:{cid} {amount}")).collect();
+            let paid: Vec<String> = money
+                .paid
+                .iter()
+                .map(|(cid, amount)| format!("cid:{cid} {amount}"))
+                .collect();
             lines.push(format!("paid to agents: {}", paid.join(", ")));
         }
         lines.push(format!("refunded to the plaza: {}", money.refunded));
@@ -538,10 +653,18 @@ fn obj(properties: Value, required: &[&str]) -> Value {
 }
 
 /// Runs an already-gated host tool; `Err` carries the reason for the model.
-fn host_call(app: &App, agent: &Agent, work: u64, name: &str, input: &Value) -> Result<String, String> {
+fn host_call(
+    app: &App,
+    agent: &Agent,
+    work: u64,
+    name: &str,
+    input: &Value,
+) -> Result<String, String> {
     let me = agents::connected_agent(agent);
     match name {
-        name if crate::foundry::breeder::TOOLS.contains(&name) => crate::foundry::breeder::run(app, agent, name, input),
+        name if crate::foundry::breeder::TOOLS.contains(&name) => {
+            crate::foundry::breeder::run(app, agent, name, input)
+        }
         "submit_claim" => {
             str_arg(input, "summary")?;
             Ok("claim recorded".into())
@@ -552,11 +675,18 @@ fn host_call(app: &App, agent: &Agent, work: u64, name: &str, input: &Value) -> 
         }
         "plaza_get_file" => {
             let id = str_arg(input, "id")?;
-            let meta = app.deliverables.meta(id).ok_or_else(|| format!("no shared file {id}"))?;
+            let meta = app
+                .deliverables
+                .meta(id)
+                .ok_or_else(|| format!("no shared file {id}"))?;
             if !app.deliverables.can_read(id, agent.cid) {
                 return Err(format!("you cannot read file {id}"));
             }
-            let text = if meta.size <= 256 * 1024 { String::from_utf8(app.deliverables.read_blob(&meta)?).ok() } else { None };
+            let text = if meta.size <= 256 * 1024 {
+                String::from_utf8(app.deliverables.read_blob(&meta)?).ok()
+            } else {
+                None
+            };
             Ok(text.unwrap_or_else(|| {
                 format!(
                     "{}: {}, {} bytes — binary; fetch http://plaza.gateway/files/{id} with download",
@@ -564,7 +694,15 @@ fn host_call(app: &App, agent: &Agent, work: u64, name: &str, input: &Value) -> 
                 )
             }))
         }
-        "plaza_tasks" => Ok(Value::Array(app.plaza.tasks.list().iter().map(|t| task_json(t)).collect()).to_string()),
+        "plaza_tasks" => Ok(Value::Array(
+            app.plaza
+                .tasks
+                .list()
+                .iter()
+                .map(|t| task_json(t))
+                .collect(),
+        )
+        .to_string()),
         "plaza_task_result" => {
             let task = task_arg(app, input)?;
             Ok(task_json(&task).to_string())
@@ -574,11 +712,21 @@ fn host_call(app: &App, agent: &Agent, work: u64, name: &str, input: &Value) -> 
             let Some(task) = input.get("task").and_then(Value::as_str) else {
                 return Ok(money_report(agent.cid, &wallet, None));
             };
-            let record = app.plaza.tasks.find(task).ok_or_else(|| format!("no task {task}"))?;
+            let record = app
+                .plaza
+                .tasks
+                .find(task)
+                .ok_or_else(|| format!("no task {task}"))?;
             let json = task_json(&record);
-            let state = json["state"].as_str().map_or_else(|| json["state"].to_string(), str::to_string);
+            let state = json["state"]
+                .as_str()
+                .map_or_else(|| json["state"].to_string(), str::to_string);
             let money = app.plaza.treasury.task_money(task);
-            Ok(money_report(agent.cid, &wallet, Some((task, &state, &money))))
+            Ok(money_report(
+                agent.cid,
+                &wallet,
+                Some((task, &state, &money)),
+            ))
         }
         "plaza_board_read" => to_text(&app.plaza.social.board(&[], 50)),
         "plaza_board_comment" => {
@@ -589,14 +737,21 @@ fn host_call(app: &App, agent: &Agent, work: u64, name: &str, input: &Value) -> 
             }
             let files = attachments_arg(app, input, agent.cid)?;
             publish_files(app, &files, agent.cid)?;
-            let who = if agent.name.is_empty() { agent.role.clone() } else { agent.name.clone() };
+            let who = if agent.name.is_empty() {
+                agent.role.clone()
+            } else {
+                agent.name.clone()
+            };
             let mut comment = app
                 .plaza
                 .social
                 .comment(post, Some(agent.cid), &who, text)
                 .map_err(|e| e.message().to_string())?;
             if !files.is_empty() {
-                app.plaza.social.attach("comment", &comment.id, &files).map_err(|e| e.message().to_string())?;
+                app.plaza
+                    .social
+                    .attach("comment", &comment.id, &files)
+                    .map_err(|e| e.message().to_string())?;
                 comment.attachments = files.clone();
             }
             crate::plaza::notify_post_author(app, post, Some(agent.cid), &who, text);
@@ -607,10 +762,18 @@ fn host_call(app: &App, agent: &Agent, work: u64, name: &str, input: &Value) -> 
             let files = attachments_arg(app, input, agent.cid)?;
             publish_files(app, &files, agent.cid)?;
             let subject: String = text.chars().take(60).collect();
-            let request: PostRequest = from_req(json!({"agent_cid": agent.cid, "subject": subject, "body": text}))?;
-            let mut view = app.plaza.social.post(&me, request.checked()?).map_err(|e| e.to_string())?;
+            let request: PostRequest =
+                from_req(json!({"agent_cid": agent.cid, "subject": subject, "body": text}))?;
+            let mut view = app
+                .plaza
+                .social
+                .post(&me, request.checked()?)
+                .map_err(|e| e.to_string())?;
             if !files.is_empty() {
-                app.plaza.social.attach("post", &view.id, &files).map_err(|e| e.message().to_string())?;
+                app.plaza
+                    .social
+                    .attach("post", &view.id, &files)
+                    .map_err(|e| e.message().to_string())?;
                 view.attachments = files.clone();
             }
             to_text(&view)
@@ -634,24 +797,60 @@ fn host_call(app: &App, agent: &Agent, work: u64, name: &str, input: &Value) -> 
                 }
             }
             let to = agents::connected_agent(&recipient);
-            let deliver = |from: &ConnectedAgent, to: &ConnectedAgent, body: &str| -> (bool, Option<String>) {
-                let (low, high) = if from.cid < to.cid { (from.cid, to.cid) } else { (to.cid, from.cid) };
-                let origin = Origin { task: None, motion: None, from_cid: Some(from.cid), owner: false, mcp: false };
-                let _ = app.work.enqueue(app, to.cid, WorkKind::Message, format!("dm-{low}-{high}"), format!("{body}{suffix}"), origin);
+            let deliver = |from: &ConnectedAgent,
+                           to: &ConnectedAgent,
+                           body: &str|
+             -> (bool, Option<String>) {
+                let (low, high) = if from.cid < to.cid {
+                    (from.cid, to.cid)
+                } else {
+                    (to.cid, from.cid)
+                };
+                let origin = Origin {
+                    task: None,
+                    motion: None,
+                    from_cid: Some(from.cid),
+                    owner: false,
+                    mcp: false,
+                };
+                let _ = app.work.enqueue(
+                    app,
+                    to.cid,
+                    WorkKind::Message,
+                    format!("dm-{low}-{high}"),
+                    format!("{body}{suffix}"),
+                    origin,
+                );
                 (true, None)
             };
-            let mut view = app.plaza.social.say(&me, &to, text, &deliver).map_err(|e| e.to_string())?;
+            let mut view = app
+                .plaza
+                .social
+                .say(&me, &to, text, &deliver)
+                .map_err(|e| e.to_string())?;
             if !files.is_empty() {
-                app.plaza.social.attach("message", &view.id, &files).map_err(|e| e.message().to_string())?;
+                app.plaza
+                    .social
+                    .attach("message", &view.id, &files)
+                    .map_err(|e| e.message().to_string())?;
                 view.attachments = files.clone();
             }
-            crate::society::interact(app, agent.cid, to_cid, apz_plaza::bonds::Interaction::Message);
+            crate::society::interact(
+                app,
+                agent.cid,
+                to_cid,
+                apz_plaza::bonds::Interaction::Message,
+            );
             to_text(&view)
         }
         "plaza_bid" => {
             let task = task_arg(app, input)?;
             let price = u64_arg(input, "price")?;
-            let bid = app.plaza.agora.bid(&task, &me, price).map_err(|e| format!("{e:?}"))?;
+            let bid = app
+                .plaza
+                .agora
+                .bid(&task, &me, price)
+                .map_err(|e| format!("{e:?}"))?;
             to_text(&bid)
         }
         "plaza_vote" => {
@@ -661,7 +860,9 @@ fn host_call(app: &App, agent: &Agent, work: u64, name: &str, input: &Value) -> 
                 "vote": str_arg(input, "vote")?,
                 "reason": str_arg(input, "reason")?
             }))?;
-            let view = crate::plaza::council_now(app).vote(motion, &me, request.checked()?).map_err(|e| format!("{e:?}"))?;
+            let view = crate::plaza::council_now(app)
+                .vote(motion, &me, request.checked()?)
+                .map_err(|e| format!("{e:?}"))?;
             to_text(&view)
         }
         "plaza_propose" => {
@@ -671,7 +872,9 @@ fn host_call(app: &App, agent: &Agent, work: u64, name: &str, input: &Value) -> 
                 "text": str_arg(input, "text")?
             }))?;
             let checked = request.checked(app.plaza.treasury.minted_total())?;
-            let view = crate::plaza::council_now(app).propose(&me, checked).map_err(|e| format!("{e:?}"))?;
+            let view = crate::plaza::council_now(app)
+                .propose(&me, checked)
+                .map_err(|e| format!("{e:?}"))?;
             to_text(&view)
         }
         "plaza_agents" => {
@@ -688,13 +891,25 @@ fn host_call(app: &App, agent: &Agent, work: u64, name: &str, input: &Value) -> 
             let body = str_arg(input, "body")?;
             // An unfunded task would stop at its first model call: give it a working default.
             let budget = budget_arg(input)?;
-            let role = input.get("role").and_then(Value::as_str).map(str::to_string);
+            let role = input
+                .get("role")
+                .and_then(Value::as_str)
+                .map(str::to_string);
             // A project's task is refused until the project's plan is approved.
-            let project = input.get("project").and_then(Value::as_str).filter(|p| !p.trim().is_empty());
+            let project = input
+                .get("project")
+                .and_then(Value::as_str)
+                .filter(|p| !p.trim().is_empty());
             if let Some(pid) = project {
-                let p = app.projects.get(pid).ok_or_else(|| format!("no project {pid}"))?;
+                let p = app
+                    .projects
+                    .get(pid)
+                    .ok_or_else(|| format!("no project {pid}"))?;
                 if !matches!(p.stage.as_str(), "implementation" | "review") {
-                    return Err(format!("project {pid} is at {}: tasks can be posted only once its plan is approved", p.stage));
+                    return Err(format!(
+                        "project {pid} is at {}: tasks can be posted only once its plan is approved",
+                        p.stage
+                    ));
                 }
             }
             let task = app
@@ -702,7 +917,12 @@ fn host_call(app: &App, agent: &Agent, work: u64, name: &str, input: &Value) -> 
                 .tasks
                 .create(&CreateTask {
                     goal: format!("{title}\n\n{body}"),
-                    acceptance: input.get("acceptance").and_then(Value::as_str).map(str::trim).filter(|a| !a.is_empty()).map(str::to_string),
+                    acceptance: input
+                        .get("acceptance")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|a| !a.is_empty())
+                        .map(str::to_string),
                     budget: Some(budget),
                     role,
                 })
@@ -715,7 +935,12 @@ fn host_call(app: &App, agent: &Agent, work: u64, name: &str, input: &Value) -> 
             match input.get("assignee").and_then(Value::as_u64) {
                 Some(cid) => {
                     assign(app, &task, cid)?;
-                    crate::society::interact(app, agent.cid, cid, apz_plaza::bonds::Interaction::Task);
+                    crate::society::interact(
+                        app,
+                        agent.cid,
+                        cid,
+                        apz_plaza::bonds::Interaction::Task,
+                    );
                     Ok(task_json(&task).to_string())
                 }
                 None => Ok(task_json(&task).to_string()),
@@ -729,7 +954,9 @@ fn host_call(app: &App, agent: &Agent, work: u64, name: &str, input: &Value) -> 
             Ok(format!("assigned {} to {cid}", task.id()))
         }
         "plaza_cancel_task" => {
-            task_arg(app, input)?.withdraw().map_err(|e| format!("{e:?}"))?;
+            task_arg(app, input)?
+                .withdraw()
+                .map_err(|e| format!("{e:?}"))?;
             Ok("cancelled".into())
         }
         "plaza_set_name" => {
@@ -772,31 +999,69 @@ fn host_call(app: &App, agent: &Agent, work: u64, name: &str, input: &Value) -> 
             let notes = str_arg(input, "notes")?;
             app.work.verdict(app, task, work, pass, notes)
         }
-        other if crate::skills::agent_tools::TOOLS.contains(&other) => crate::skills::agent_tools::run(app, agent, other, input),
-        other if crate::society::TOOLS.contains(&other) => crate::society::run(app, agent, work, other, input),
-        other if crate::toolbox::TOOLS.contains(&other) => crate::toolbox::run(app, agent, other, input),
-        other if crate::projects::TOOLS.contains(&other) => crate::projects::run(app, agent, other, input),
-        other if crate::harness_control::TOOLS.contains(&other) => crate::harness_control::run(app, agent, other, input),
+        other if crate::skills::agent_tools::TOOLS.contains(&other) => {
+            crate::skills::agent_tools::run(app, agent, other, input)
+        }
+        other if crate::society::TOOLS.contains(&other) => {
+            crate::society::run(app, agent, work, other, input)
+        }
+        other if crate::toolbox::TOOLS.contains(&other) => {
+            crate::toolbox::run(app, agent, other, input)
+        }
+        other if crate::projects::TOOLS.contains(&other) => {
+            crate::projects::run(app, agent, other, input)
+        }
+        other if crate::harness_control::TOOLS.contains(&other) => {
+            crate::harness_control::run(app, agent, other, input)
+        }
         "plaza_git" => crate::git::run(app, agent, input),
-        other if crate::stations::tools::TOOLS.contains(&other) => crate::stations::tools::run(app, agent, other, input),
+        other if crate::stations::tools::TOOLS.contains(&other) => {
+            crate::stations::tools::run(app, agent, other, input)
+        }
         "plaza_agent_propose" => crate::agent_proposals::run(app, agent, input),
         "plaza_connector_propose" => crate::connectors::propose(app, agent, input),
         other if crate::connectors::by_tool(other).is_some() => {
-            let (connector, action) = crate::connectors::by_tool(other).ok_or("unknown connector tool")?;
-            let name = if agent.name.is_empty() { &agent.role } else { &agent.name };
-            crate::connectors::call(app, Some((agent.cid, name.as_str())), &agent.role, connector.id, action.name, input)
+            let (connector, action) =
+                crate::connectors::by_tool(other).ok_or("unknown connector tool")?;
+            let name = if agent.name.is_empty() {
+                &agent.role
+            } else {
+                &agent.name
+            };
+            crate::connectors::call(
+                app,
+                Some((agent.cid, name.as_str())),
+                &agent.role,
+                connector.id,
+                action.name,
+                input,
+            )
         }
-        other if other.starts_with(crate::mcp::PREFIX) => crate::mcp::call_for_agent(app, agent, work, other, input),
+        other if other.starts_with(crate::mcp::PREFIX) => {
+            crate::mcp::call_for_agent(app, agent, work, other, input)
+        }
         other => Err(format!("{other} is not implemented")),
     }
 }
 
 /// Posts a task for `poster` and assigns it to `worker` at once (a hire); returns the task id.
-pub fn post_and_assign(app: &App, poster: u64, goal: &str, acceptance: Option<String>, budget: u64, worker: u64) -> Result<String, String> {
+pub fn post_and_assign(
+    app: &App,
+    poster: u64,
+    goal: &str,
+    acceptance: Option<String>,
+    budget: u64,
+    worker: u64,
+) -> Result<String, String> {
     let task = app
         .plaza
         .tasks
-        .create(&CreateTask { goal: goal.to_string(), acceptance, budget: Some(budget), role: None })
+        .create(&CreateTask {
+            goal: goal.to_string(),
+            acceptance,
+            budget: Some(budget),
+            role: None,
+        })
         .map_err(|e| format!("{e:?}"))?;
     app.work.note_poster(task.id(), poster);
     crate::society::note_posted(app, poster);
@@ -807,10 +1072,27 @@ pub fn post_and_assign(app: &App, poster: u64, goal: &str, acceptance: Option<St
 
 /// Claims `task` for the agent `cid` and queues the work for it.
 fn assign(app: &App, task: &Task, cid: u64) -> Result<(), String> {
-    let target = app.agents.get(cid).ok_or_else(|| format!("no connected agent {cid}"))?;
-    task.claim(&agents::connected_agent(&target)).map_err(|e| format!("{e:?}"))?;
-    let origin = Origin { task: Some(task.id().to_string()), motion: None, from_cid: None, owner: false, mcp: false };
-    let _ = app.work.enqueue(app, cid, WorkKind::Task, format!("task-{}", task.id()), task_text(task), origin);
+    let target = app
+        .agents
+        .get(cid)
+        .ok_or_else(|| format!("no connected agent {cid}"))?;
+    task.claim(&agents::connected_agent(&target))
+        .map_err(|e| format!("{e:?}"))?;
+    let origin = Origin {
+        task: Some(task.id().to_string()),
+        motion: None,
+        from_cid: None,
+        owner: false,
+        mcp: false,
+    };
+    let _ = app.work.enqueue(
+        app,
+        cid,
+        WorkKind::Task,
+        format!("task-{}", task.id()),
+        task_text(task),
+        origin,
+    );
     Ok(())
 }
 
@@ -837,7 +1119,10 @@ fn task_json(task: &Task) -> Value {
 /// The task named by the `task` argument.
 fn task_arg(app: &App, input: &Value) -> Result<Arc<Task>, String> {
     let id = str_arg(input, "task")?;
-    app.plaza.tasks.find(id).ok_or_else(|| format!("no task {id}"))
+    app.plaza
+        .tasks
+        .find(id)
+        .ok_or_else(|| format!("no task {id}"))
 }
 
 /// A required, non-blank string argument.
@@ -863,7 +1148,11 @@ fn u64_arg(input: &Value, key: &str) -> Result<u64, String> {
 pub fn budget_arg(input: &Value) -> Result<u64, String> {
     let requested = match input.get("budget") {
         None | Some(Value::Null) => None,
-        Some(value) => Some(value.as_u64().ok_or("budget must be a whole number of credits")?),
+        Some(value) => Some(
+            value
+                .as_u64()
+                .ok_or("budget must be a whole number of credits")?,
+        ),
     };
     resolve_budget(requested).map_err(|refusal| {
         format!("{refusal}. It is minted from the plaza's budget; your wallet is not debited.")
@@ -876,7 +1165,11 @@ fn attachments_arg(app: &App, input: &Value, cid: u64) -> Result<Vec<String>, St
         None | Some(Value::Null) => Vec::new(),
         Some(Value::Array(items)) => items
             .iter()
-            .map(|v| v.as_str().map(str::to_string).ok_or_else(|| "attachments must be file ids (strings)".to_string()))
+            .map(|v| {
+                v.as_str()
+                    .map(str::to_string)
+                    .ok_or_else(|| "attachments must be file ids (strings)".to_string())
+            })
             .collect::<Result<_, _>>()?,
         Some(_) => return Err("attachments must be an array of file ids".to_string()),
     };
@@ -897,8 +1190,14 @@ fn attachments_arg(app: &App, input: &Value, cid: u64) -> Result<Vec<String>, St
 /// Makes each private file public, as a board post or comment does.
 fn publish_files(app: &App, files: &[String], cid: u64) -> Result<(), String> {
     for id in files {
-        if app.deliverables.meta(id).is_some_and(|m| m.audience != "public") {
-            app.deliverables.publish(id, cid).map_err(|e| format!("file {id}: {e}"))?;
+        if app
+            .deliverables
+            .meta(id)
+            .is_some_and(|m| m.audience != "public")
+        {
+            app.deliverables
+                .publish(id, cid)
+                .map_err(|e| format!("file {id}: {e}"))?;
         }
     }
     Ok(())
@@ -907,8 +1206,14 @@ fn publish_files(app: &App, files: &[String], cid: u64) -> Result<(), String> {
 /// Lets the recipient read each private file, as a direct message does.
 fn grant_files(app: &App, files: &[String], cid: u64, to: u64) -> Result<(), String> {
     for id in files {
-        if app.deliverables.meta(id).is_some_and(|m| m.audience != "public") {
-            app.deliverables.grant(id, cid, &[to]).map_err(|e| format!("file {id}: {e}"))?;
+        if app
+            .deliverables
+            .meta(id)
+            .is_some_and(|m| m.audience != "public")
+        {
+            app.deliverables
+                .grant(id, cid, &[to])
+                .map_err(|e| format!("file {id}: {e}"))?;
         }
     }
     Ok(())
@@ -933,8 +1238,14 @@ mod tests {
     fn code_engine_model_input_takes_a_provider_model() {
         let ask = |model: &str| json!({"engine": "claude", "prompt": "p", "model": model});
         // An openrouter id keeps its nested slashes; an effort suffix is part of the shape.
-        assert_eq!(model_input(&ask(" openrouter/anthropic/claude-x ")), Ok(Some("openrouter/anthropic/claude-x")));
-        assert_eq!(model_input(&ask("opencode/claude-sonnet-5-5@high")), Ok(Some("opencode/claude-sonnet-5-5@high")));
+        assert_eq!(
+            model_input(&ask(" openrouter/anthropic/claude-x ")),
+            Ok(Some("openrouter/anthropic/claude-x"))
+        );
+        assert_eq!(
+            model_input(&ask("opencode/claude-sonnet-5-5@high")),
+            Ok(Some("opencode/claude-sonnet-5-5@high"))
+        );
     }
 
     #[test]
@@ -996,9 +1307,21 @@ mod tests {
 
     #[test]
     fn the_laws_decide_the_offer() {
-        assert!(!offered("builder", &[]).iter().any(|n| n == "plaza_post_task"));
-        assert!(!offered("builder", &[]).iter().any(|n| n == "plaza_project_approve"));
-        assert!(offered("mayor", &[]).iter().any(|n| n == "plaza_project_approve"));
+        assert!(
+            !offered("builder", &[])
+                .iter()
+                .any(|n| n == "plaza_post_task")
+        );
+        assert!(
+            !offered("builder", &[])
+                .iter()
+                .any(|n| n == "plaza_project_approve")
+        );
+        assert!(
+            offered("mayor", &[])
+                .iter()
+                .any(|n| n == "plaza_project_approve")
+        );
         assert!(refusal("builder", "plaza_post_task").is_some());
     }
 
@@ -1012,7 +1335,10 @@ mod tests {
         assert_eq!(budget_arg(&json!({"budget": 5000})), Ok(5000));
         for low in [100, 0] {
             let refusal = budget_arg(&json!({"budget": low})).expect_err("below the minimum");
-            assert!(refusal.contains("minimum of 200"), "names the minimum: {refusal}");
+            assert!(
+                refusal.contains("minimum of 200"),
+                "names the minimum: {refusal}"
+            );
             assert!(refusal.contains("wallet is not debited"), "{refusal}");
         }
         assert!(budget_arg(&json!({"budget": -5})).is_err());
@@ -1031,11 +1357,33 @@ mod tests {
     #[test]
     fn host_tools_are_plaza_data_operations_only() {
         let host: Vec<&str> = [
-            "transcript_search", "submit_claim", "plaza_tasks", "plaza_bid", "plaza_board_read",
-            "plaza_board_post", "plaza_board_comment", "plaza_send_message", "plaza_vote", "plaza_propose", "plaza_agents",
-            "plaza_post_task", "plaza_assign", "plaza_cancel_task", "plaza_task_result", "plaza_get_file",
-            "plaza_set_name", "plaza_pay", "plaza_verdict", "plaza_contacts", "plaza_rate", "plaza_note",
-            "plaza_hire", "memory_write", "memory_read", "memory_search", "memory_list",
+            "transcript_search",
+            "submit_claim",
+            "plaza_tasks",
+            "plaza_bid",
+            "plaza_board_read",
+            "plaza_board_post",
+            "plaza_board_comment",
+            "plaza_send_message",
+            "plaza_vote",
+            "plaza_propose",
+            "plaza_agents",
+            "plaza_post_task",
+            "plaza_assign",
+            "plaza_cancel_task",
+            "plaza_task_result",
+            "plaza_get_file",
+            "plaza_set_name",
+            "plaza_pay",
+            "plaza_verdict",
+            "plaza_contacts",
+            "plaza_rate",
+            "plaza_note",
+            "plaza_hire",
+            "memory_write",
+            "memory_read",
+            "memory_search",
+            "memory_list",
         ]
         .into_iter()
         .filter(|name| runs(name) == Some(Runs::Host))
@@ -1055,10 +1403,22 @@ mod money_report_tests {
 
     #[test]
     fn the_report_names_the_wallet_the_task_and_the_rules() {
-        let wallet = WalletMoney { balance: 15, sent_today: 5, earned: 20 };
-        let money = TaskMoney { minted: 300, escrow: 0, spent: 100, paid: vec![(7, 20)], refunded: 180 };
+        let wallet = WalletMoney {
+            balance: 15,
+            sent_today: 5,
+            earned: 20,
+        };
+        let money = TaskMoney {
+            minted: 300,
+            escrow: 0,
+            spent: 100,
+            paid: vec![(7, 20)],
+            refunded: 180,
+        };
         let report = money_report(8, &wallet, Some(("t1", "done", &money)));
-        assert!(report.starts_with("your wallet (cid:8): balance 15 credits; sent today 5 of the 1000 daily cap"));
+        assert!(report.starts_with(
+            "your wallet (cid:8): balance 15 credits; sent today 5 of the 1000 daily cap"
+        ));
         assert!(report.contains("budget (minted into escrow): 300"));
         assert!(report.contains("real spend charged so far: 100"));
         assert!(report.contains("paid to agents: cid:7 20"));

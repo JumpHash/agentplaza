@@ -20,22 +20,35 @@ pub struct NodeKey {
 
 impl NodeKey {
     pub fn generate() -> NodeKey {
-        NodeKey { key: SigningKey::generate(&mut rand_core::OsRng) }
+        NodeKey {
+            key: SigningKey::generate(&mut rand_core::OsRng),
+        }
     }
     /// The 32-byte secret seed, for storage.
     pub fn to_bytes(&self) -> [u8; 32] {
         self.key.to_bytes()
     }
     pub fn from_bytes(seed: &[u8]) -> Result<NodeKey, String> {
-        let seed: [u8; 32] = seed.try_into().map_err(|_| "node key must be 32 bytes".to_string())?;
-        Ok(NodeKey { key: SigningKey::from_bytes(&seed) })
+        let seed: [u8; 32] = seed
+            .try_into()
+            .map_err(|_| "node key must be 32 bytes".to_string())?;
+        Ok(NodeKey {
+            key: SigningKey::from_bytes(&seed),
+        })
     }
     /// The public key, base64url (what the hub stores).
     pub fn public_b64(&self) -> String {
         crate::b64(self.key.verifying_key().as_bytes())
     }
     /// The four headers for one request, `nonce` 16 random bytes base64url, `ts` unix seconds.
-    pub fn sign(&self, node_id: &str, method: &str, path: &str, ts: u64, body: &[u8]) -> Vec<(&'static str, String)> {
+    pub fn sign(
+        &self,
+        node_id: &str,
+        method: &str,
+        path: &str,
+        ts: u64,
+        body: &[u8],
+    ) -> Vec<(&'static str, String)> {
         let nonce = crate::b64(&crate::random::<16>());
         let message = signed_message(method, path, ts, &nonce, body);
         let signature = self.key.sign(message.as_bytes());
@@ -57,7 +70,15 @@ pub fn signed_message(method: &str, path: &str, ts: u64, nonce: &str, body: &[u8
 
 /// Verifies a signature made by [`NodeKey::sign`] against the node's stored public key.
 /// Skew and replay are the caller's checks (it knows the clock and the nonce cache).
-pub fn verify(public_b64: &str, method: &str, path: &str, ts: u64, nonce: &str, body: &[u8], sig_b64: &str) -> bool {
+pub fn verify(
+    public_b64: &str,
+    method: &str,
+    path: &str,
+    ts: u64,
+    nonce: &str,
+    body: &[u8],
+    sig_b64: &str,
+) -> bool {
     let check = || -> Option<bool> {
         let public: [u8; 32] = crate::unb64(public_b64).ok()?.try_into().ok()?;
         let key = VerifyingKey::from_bytes(&public).ok()?;
@@ -105,7 +126,13 @@ mod tests {
         let s = signed(b"{}");
         assert_eq!(header(&s.headers, H_NODE), "node-1");
         assert_eq!(header(&s.headers, H_TS), "1700000000");
-        assert!(check(&s, "POST", "/v1/node/heartbeat", 1_700_000_000, b"{}"));
+        assert!(check(
+            &s,
+            "POST",
+            "/v1/node/heartbeat",
+            1_700_000_000,
+            b"{}"
+        ));
     }
 
     #[test]

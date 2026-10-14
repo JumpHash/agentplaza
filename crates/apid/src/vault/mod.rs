@@ -10,10 +10,10 @@ pub mod audit;
 mod crypto;
 mod disk;
 pub mod dotenv;
+mod migrate;
 mod model;
 pub mod process;
 pub mod routes;
-mod migrate;
 mod slots;
 #[cfg(test)]
 mod tests;
@@ -25,7 +25,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use secrecy::{ExposeSecret, SecretString};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::db::Db;
@@ -62,7 +62,9 @@ pub enum VaultError {
     /// A wrong passphrase or recovery code.
     BadSecret,
     /// Too many failed unseals: wait `retry_ms`.
-    Locked { retry_ms: u64 },
+    Locked {
+        retry_ms: u64,
+    },
     Conflict(String),
     NotFound,
     /// The secret exists for this consumer, but not on this node.
@@ -83,12 +85,17 @@ impl VaultError {
             VaultError::Sealed => "vault sealed".into(),
             VaultError::Tampered(reason) => format!("vault tampered: {reason}"),
             VaultError::BadSecret => "wrong passphrase or recovery code".into(),
-            VaultError::Locked { retry_ms } => format!("too many failed unseals; try again in {} s", retry_ms / 1000 + 1),
+            VaultError::Locked { retry_ms } => format!(
+                "too many failed unseals; try again in {} s",
+                retry_ms / 1000 + 1
+            ),
             VaultError::Conflict(message) | VaultError::Invalid(message) => message.clone(),
             VaultError::NotFound => "no such secret".into(),
             VaultError::OutOfScope => "that secret is not scoped to this node".into(),
             VaultError::LastSlot => "the last keyslot cannot be removed".into(),
-            VaultError::KeyFile(message) | VaultError::Storage(message) | VaultError::Corrupt(message) => message.clone(),
+            VaultError::KeyFile(message)
+            | VaultError::Storage(message)
+            | VaultError::Corrupt(message) => message.clone(),
         }
     }
 }
@@ -115,17 +122,25 @@ pub enum OnBehalf {
 impl Consumer {
     /// An agent's consumer. The node comes from the hub's CID ranges, never from the request.
     pub fn agent(nodes: &[Node], cid: u64, binding: &str) -> Consumer {
-        Consumer { binding: binding.to_string(), on_behalf: OnBehalf::Agent { cid, node: node_for_cid(nodes, cid) } }
+        Consumer {
+            binding: binding.to_string(),
+            on_behalf: OnBehalf::Agent {
+                cid,
+                node: node_for_cid(nodes, cid),
+            },
+        }
     }
 }
 
 /// The vault name of a credential that a provider, connector or tool names: uppercase, with `-` and
 /// `.` as `_` (so `Auth::Secret("openai-key")` reads the entry `OPENAI_KEY`).
 pub fn name_for(raw: &str) -> String {
-    raw.chars().map(|c| match c {
-        '-' | '.' => '_',
-        c => c.to_ascii_uppercase(),
-    }).collect()
+    raw.chars()
+        .map(|c| match c {
+            '-' | '.' => '_',
+            c => c.to_ascii_uppercase(),
+        })
+        .collect()
 }
 
 /// The node an agent lives on: the one whose CID range holds `cid`. A CID no joined node holds is
@@ -136,7 +151,12 @@ pub fn node_for_cid(nodes: &[Node], cid: u64) -> Option<String> {
     if nodes.iter().any(|n| n.revoked && holds(n)) {
         return None;
     }
-    Some(nodes.iter().find(|n| !n.revoked && holds(n)).map_or_else(|| LOCAL_NODE.to_string(), |n| n.id.clone()))
+    Some(
+        nodes
+            .iter()
+            .find(|n| !n.revoked && holds(n))
+            .map_or_else(|| LOCAL_NODE.to_string(), |n| n.id.clone()),
+    )
 }
 
 /// A secret about to be stored.
@@ -282,7 +302,10 @@ impl Store {
     pub fn boot(&self, now: u64) -> Result<(), VaultError> {
         let mut inner = self.lock();
         if inner.tamper.is_some() {
-            eprintln!("vault: {}; nothing resolves until the file is put right", inner.tamper.clone().unwrap_or_default());
+            eprintln!(
+                "vault: {}; nothing resolves until the file is put right",
+                inner.tamper.clone().unwrap_or_default()
+            );
             return Ok(());
         }
         if inner.doc.is_none() && self.db.is_some() {
@@ -293,7 +316,10 @@ impl Store {
                     Ok(doc) => {
                         self.save(&doc)?;
                         inner.doc = Some(doc);
-                        eprintln!("vault: copied {} into the database; the file can be deleted", self.doc_path().display());
+                        eprintln!(
+                            "vault: copied {} into the database; the file can be deleted",
+                            self.doc_path().display()
+                        );
                     }
                     Err(_) => {
                         inner.tamper = Some("vault.json is not a vault document".into());
@@ -307,7 +333,10 @@ impl Store {
         if inner.doc.is_none() {
             return self.initialise(&mut inner, now);
         }
-        let has_keyfile = inner.doc.as_ref().is_some_and(|doc| doc.slots.iter().any(|s| s.kind == "keyfile"));
+        let has_keyfile = inner
+            .doc
+            .as_ref()
+            .is_some_and(|doc| doc.slots.iter().any(|s| s.kind == "keyfile"));
         if has_keyfile && self.key_file.exists() {
             match self.unseal_in(&mut inner, Unlock::Keyfile, "hub", now) {
                 Ok(()) => eprintln!("vault: unsealed with the key file"),
@@ -315,14 +344,19 @@ impl Store {
                 Err(err) => eprintln!("vault: starts sealed: {}", err.message()),
             }
         } else {
-            eprintln!("vault: starts sealed; give the passphrase or recovery code in the console, or run `apz vault unseal`");
+            eprintln!(
+                "vault: starts sealed; give the passphrase or recovery code in the console, or run `apz vault unseal`"
+            );
         }
         Ok(())
     }
 
     fn initialise(&self, inner: &mut Inner, now: u64) -> Result<(), VaultError> {
         let root = crypto::random_key().map_err(VaultError::Storage)?;
-        let vault_id = format!("vlt_{}", crypto::base32(&crypto::random_vec(10).map_err(VaultError::Storage)?).to_lowercase());
+        let vault_id = format!(
+            "vlt_{}",
+            crypto::base32(&crypto::random_vec(10).map_err(VaultError::Storage)?).to_lowercase()
+        );
         let kek = if self.key_file.exists() {
             slots::keyfile_read(&self.key_file)?
         } else {
@@ -334,7 +368,13 @@ impl Store {
             format: FORMAT,
             vault_id: vault_id.clone(),
             created_ms: now,
-            slots: vec![Slot { id: slot_id, kind: "keyfile".into(), created_ms: now, kdf: None, wrap }],
+            slots: vec![Slot {
+                id: slot_id,
+                kind: "keyfile".into(),
+                created_ms: now,
+                kdf: None,
+                wrap,
+            }],
             entries: Vec::new(),
             tombstones: Vec::new(),
             index_mac: String::new(),
@@ -348,8 +388,16 @@ impl Store {
         inner.keys = Some(keys.clone());
         inner.head = Head::genesis();
         inner.audit_ok = Some(true);
-        self.audit(inner, &keys.audit, Record::new("init", "hub").detail("keyfile slot"), now);
-        eprintln!("vault: initialised with a key file at {}", self.key_file.display());
+        self.audit(
+            inner,
+            &keys.audit,
+            Record::new("init", "hub").detail("keyfile slot"),
+            now,
+        );
+        eprintln!(
+            "vault: initialised with a key file at {}",
+            self.key_file.display()
+        );
         Ok(())
     }
 
@@ -359,21 +407,39 @@ impl Store {
         self.unseal_in(&mut inner, unlock, actor, now)
     }
 
-    fn unseal_in(&self, inner: &mut Inner, unlock: Unlock, actor: &str, now: u64) -> Result<(), VaultError> {
+    fn unseal_in(
+        &self,
+        inner: &mut Inner,
+        unlock: Unlock,
+        actor: &str,
+        now: u64,
+    ) -> Result<(), VaultError> {
         if inner.keys.is_some() {
             return Ok(());
         }
         if let Some(reason) = inner.tamper.clone() {
             return Err(VaultError::Tampered(reason));
         }
-        let Some(doc) = inner.doc.clone() else { return Err(VaultError::Uninitialized) };
+        let Some(doc) = inner.doc.clone() else {
+            return Err(VaultError::Uninitialized);
+        };
         if now < inner.locked_until {
-            self.pend(inner, now, Record::new("unseal_failed", actor).detail("locked out"));
-            return Err(VaultError::Locked { retry_ms: inner.locked_until - now });
+            self.pend(
+                inner,
+                now,
+                Record::new("unseal_failed", actor).detail("locked out"),
+            );
+            return Err(VaultError::Locked {
+                retry_ms: inner.locked_until - now,
+            });
         }
         let attempt = match &unlock {
             Unlock::Keyfile => {
-                let slot = doc.slots.iter().find(|s| s.kind == "keyfile").ok_or_else(|| VaultError::Invalid("this vault has no key file slot".into()))?;
+                let slot = doc
+                    .slots
+                    .iter()
+                    .find(|s| s.kind == "keyfile")
+                    .ok_or_else(|| VaultError::Invalid("this vault has no key file slot".into()))?;
                 // A refused key file is an error about the file, not a wrong attempt.
                 let kek = slots::keyfile_read(&self.key_file)?;
                 match slots::unwrap_root(&kek, &doc.vault_id, slot) {
@@ -382,13 +448,21 @@ impl Store {
                 }
             }
             Unlock::Passphrase(secret) => {
-                let candidates: Vec<&Slot> = doc.slots.iter().filter(|s| s.kind == "passphrase").collect();
+                let candidates: Vec<&Slot> = doc
+                    .slots
+                    .iter()
+                    .filter(|s| s.kind == "passphrase")
+                    .collect();
                 if candidates.is_empty() {
-                    return Err(VaultError::Invalid("this vault has no passphrase slot".into()));
+                    return Err(VaultError::Invalid(
+                        "this vault has no passphrase slot".into(),
+                    ));
                 }
                 let mut found = Err(VaultError::BadSecret);
                 for slot in candidates {
-                    let kdf = slot.kdf.as_ref().ok_or_else(|| VaultError::Corrupt("a passphrase slot has no KDF".into()))?;
+                    let kdf = slot.kdf.as_ref().ok_or_else(|| {
+                        VaultError::Corrupt("a passphrase slot has no KDF".into())
+                    })?;
                     let kek = slots::kek_from_passphrase(secret.expose_secret(), kdf)?;
                     if let Ok(root) = slots::unwrap_root(&kek, &doc.vault_id, slot) {
                         found = Ok((root, slot.id.clone(), Some(kek)));
@@ -408,7 +482,9 @@ impl Store {
                         }
                     }
                     (None, Some(_)) => Err(VaultError::BadSecret),
-                    (_, None) => Err(VaultError::Invalid("this vault has no recovery slot".into())),
+                    (_, None) => Err(VaultError::Invalid(
+                        "this vault has no recovery slot".into(),
+                    )),
                 }
             }
         };
@@ -422,13 +498,22 @@ impl Store {
                     keys.unlock = Some((slot_id, kek));
                 }
                 if !index_ok(&keys, &doc) {
-                    let reason = "the index MAC does not match: the vault file was changed outside the API".to_string();
+                    let reason =
+                        "the index MAC does not match: the vault file was changed outside the API"
+                            .to_string();
                     let keys = Arc::new(keys);
-                    self.audit(inner, &keys.audit, Record::new("tamper", actor).detail("index MAC"), now);
+                    self.audit(
+                        inner,
+                        &keys.audit,
+                        Record::new("tamper", actor).detail("index MAC"),
+                        now,
+                    );
                     inner.tamper = Some(reason.clone());
                     return Err(VaultError::Tampered(reason));
                 }
-                let text = disk::read(&self.audit_path()).map_err(|e| VaultError::Storage(e.to_string()))?.unwrap_or_default();
+                let text = disk::read(&self.audit_path())
+                    .map_err(|e| VaultError::Storage(e.to_string()))?
+                    .unwrap_or_default();
                 let verdict = audit::verify(&text, &keys.audit);
                 inner.head = verdict.head.clone();
                 inner.audit_ok = Some(verdict.ok);
@@ -454,14 +539,22 @@ impl Store {
     /// and saves the document with one `migrate` line. Once done no version has a plaintext hint, so
     /// later unseals do nothing. A failed save is logged; the hints stay plaintext until the next try.
     fn encrypt_legacy_hints(&self, inner: &mut Inner, keys: &Keys, now: u64) {
-        let Some(doc) = inner.doc.as_ref() else { return };
-        if !doc.entries.iter().any(|e| e.versions.iter().any(|v| v.legacy_hint.is_some())) {
+        let Some(doc) = inner.doc.as_ref() else {
+            return;
+        };
+        if !doc
+            .entries
+            .iter()
+            .any(|e| e.versions.iter().any(|v| v.legacy_hint.is_some()))
+        {
             return;
         }
         let mut doc = doc.clone();
         for entry in doc.entries.iter_mut() {
             for version in entry.versions.iter_mut() {
-                let Some(plain) = version.legacy_hint.take() else { continue };
+                let Some(plain) = version.legacy_hint.take() else {
+                    continue;
+                };
                 match seal_hint(keys, &entry.id, version.v, &plain) {
                     Ok((nonce, ct)) => {
                         version.hint_nonce = Some(nonce);
@@ -477,19 +570,30 @@ impl Store {
         }
         let record = Record::new("migrate", "hub").detail("hints encrypted");
         if let Err(err) = self.commit(inner, keys, doc, vec![record], now) {
-            eprintln!("vault: the hints could not be saved encrypted: {}", err.message());
+            eprintln!(
+                "vault: the hints could not be saved encrypted: {}",
+                err.message()
+            );
         }
     }
 
     /// Counts a failed unseal; the fifth within a minute starts the lockout.
     fn failed(&self, inner: &mut Inner, now: u64, actor: &str) -> VaultError {
-        inner.failures.retain(|t| now.saturating_sub(*t) < UNLOCK_WINDOW_MS);
+        inner
+            .failures
+            .retain(|t| now.saturating_sub(*t) < UNLOCK_WINDOW_MS);
         inner.failures.push(now);
-        self.pend(inner, now, Record::new("unseal_failed", actor).detail("wrong passphrase or recovery code"));
+        self.pend(
+            inner,
+            now,
+            Record::new("unseal_failed", actor).detail("wrong passphrase or recovery code"),
+        );
         if inner.failures.len() >= UNLOCK_MAX_FAILURES {
             inner.failures.clear();
             inner.locked_until = now + UNLOCK_LOCKOUT_MS;
-            return VaultError::Locked { retry_ms: UNLOCK_LOCKOUT_MS };
+            return VaultError::Locked {
+                retry_ms: UNLOCK_LOCKOUT_MS,
+            };
         }
         VaultError::BadSecret
     }
@@ -504,12 +608,17 @@ impl Store {
     /// Seals: flushes the aggregated use lines, saves the counters, then forgets the keys.
     pub fn seal(&self, actor: &str, now: u64) -> Result<(), VaultError> {
         let mut inner = self.lock();
-        let Some(keys) = inner.keys.clone() else { return Ok(()) };
+        let Some(keys) = inner.keys.clone() else {
+            return Ok(());
+        };
         self.flush_uses(&mut inner, &keys, now, true);
         if let Some(doc) = &inner.doc
             && let Err(err) = self.save(doc)
         {
-            eprintln!("vault: the usage counters could not be saved: {}", err.message());
+            eprintln!(
+                "vault: the usage counters could not be saved: {}",
+                err.message()
+            );
         }
         self.audit(&mut inner, &keys.audit, Record::new("seal", actor), now);
         inner.keys = None;
@@ -520,13 +629,18 @@ impl Store {
     /// The saver's tick (every 3 s): writes the aggregated use lines of past minutes and the counters.
     pub fn flush(&self, now: u64) {
         let mut inner = self.lock();
-        let Some(keys) = inner.keys.clone() else { return };
+        let Some(keys) = inner.keys.clone() else {
+            return;
+        };
         self.flush_uses(&mut inner, &keys, now, false);
         if inner.usage_dirty {
             if let Some(doc) = &inner.doc
                 && let Err(err) = self.save(doc)
             {
-                eprintln!("vault: the usage counters could not be saved: {}", err.message());
+                eprintln!(
+                    "vault: the usage counters could not be saved: {}",
+                    err.message()
+                );
             }
             inner.usage_dirty = false;
         }
@@ -542,7 +656,9 @@ impl Store {
         let inner = self.lock();
         let keys = inner.keys.clone().ok_or_else(|| self.unavailable(&inner))?;
         drop(inner);
-        let text = disk::read(&self.audit_path()).map_err(|e| VaultError::Storage(e.to_string()))?.unwrap_or_default();
+        let text = disk::read(&self.audit_path())
+            .map_err(|e| VaultError::Storage(e.to_string()))?
+            .unwrap_or_default();
         let verdict = audit::verify(&text, &keys.audit);
         self.lock().audit_ok = Some(verdict.ok);
         Ok(verdict)
@@ -550,12 +666,19 @@ impl Store {
 
     /// The audit lines after sequence number `after`, at most `limit`. They carry no values.
     pub fn audit_page(&self, after: u64, limit: usize) -> Result<Vec<Value>, VaultError> {
-        let text = disk::read(&self.audit_path()).map_err(|e| VaultError::Storage(e.to_string()))?.unwrap_or_default();
+        let text = disk::read(&self.audit_path())
+            .map_err(|e| VaultError::Storage(e.to_string()))?
+            .unwrap_or_default();
         Ok(audit::page(&text, after, limit))
     }
 
     /// Adds a passphrase slot: Argon2id under a fresh salt, at the current cost.
-    pub fn add_passphrase(&self, passphrase: &SecretString, actor: &str, now: u64) -> Result<String, VaultError> {
+    pub fn add_passphrase(
+        &self,
+        passphrase: &SecretString,
+        actor: &str,
+        now: u64,
+    ) -> Result<String, VaultError> {
         slots::check_passphrase(passphrase.expose_secret())?;
         let mut inner = self.lock();
         let (keys, mut doc) = self.active(&inner)?;
@@ -563,8 +686,20 @@ impl Store {
         let kdf = slots::new_kdf()?;
         let kek = slots::kek_from_passphrase(passphrase.expose_secret(), &kdf)?;
         let wrap = slots::wrap_root(&kek, &doc.vault_id, &slot_id, &keys.root)?;
-        doc.slots.push(Slot { id: slot_id.clone(), kind: "passphrase".into(), created_ms: now, kdf: Some(kdf), wrap });
-        self.commit(&mut inner, &keys, doc, vec![Record::new("slot_added", actor).detail(format!("passphrase {slot_id}"))], now)?;
+        doc.slots.push(Slot {
+            id: slot_id.clone(),
+            kind: "passphrase".into(),
+            created_ms: now,
+            kdf: Some(kdf),
+            wrap,
+        });
+        self.commit(
+            &mut inner,
+            &keys,
+            doc,
+            vec![Record::new("slot_added", actor).detail(format!("passphrase {slot_id}"))],
+            now,
+        )?;
         Ok(slot_id)
     }
 
@@ -573,13 +708,27 @@ impl Store {
         let mut inner = self.lock();
         let (keys, mut doc) = self.active(&inner)?;
         if doc.slots.iter().any(|s| s.kind == "keyfile") {
-            return Err(VaultError::Conflict("this vault already has a key file slot".into()));
+            return Err(VaultError::Conflict(
+                "this vault already has a key file slot".into(),
+            ));
         }
         let kek = slots::keyfile_create(&self.key_file)?;
         let slot_id = new_id("slt")?;
         let wrap = slots::wrap_root(&kek, &doc.vault_id, &slot_id, &keys.root)?;
-        doc.slots.push(Slot { id: slot_id.clone(), kind: "keyfile".into(), created_ms: now, kdf: None, wrap });
-        if let Err(err) = self.commit(&mut inner, &keys, doc, vec![Record::new("slot_added", actor).detail(format!("keyfile {slot_id}"))], now) {
+        doc.slots.push(Slot {
+            id: slot_id.clone(),
+            kind: "keyfile".into(),
+            created_ms: now,
+            kdf: None,
+            wrap,
+        });
+        if let Err(err) = self.commit(
+            &mut inner,
+            &keys,
+            doc,
+            vec![Record::new("slot_added", actor).detail(format!("keyfile {slot_id}"))],
+            now,
+        ) {
             slots::keyfile_shred(&self.key_file);
             return Err(err);
         }
@@ -593,9 +742,19 @@ impl Store {
         if doc.slots.len() <= 1 {
             return Err(VaultError::LastSlot);
         }
-        let index = doc.slots.iter().position(|s| s.id == id).ok_or(VaultError::NotFound)?;
+        let index = doc
+            .slots
+            .iter()
+            .position(|s| s.id == id)
+            .ok_or(VaultError::NotFound)?;
         let removed = doc.slots.remove(index);
-        self.commit(&mut inner, &keys, doc, vec![Record::new("slot_removed", actor).detail(format!("{} {id}", removed.kind))], now)?;
+        self.commit(
+            &mut inner,
+            &keys,
+            doc,
+            vec![Record::new("slot_removed", actor).detail(format!("{} {id}", removed.kind))],
+            now,
+        )?;
         if removed.kind == "keyfile" {
             slots::keyfile_shred(&self.key_file);
         }
@@ -611,15 +770,32 @@ impl Store {
         doc.slots.retain(|s| s.kind != "recovery");
         let slot_id = new_id("slt")?;
         let wrap = slots::wrap_root(&kek, &doc.vault_id, &slot_id, &keys.root)?;
-        doc.slots.push(Slot { id: slot_id, kind: "recovery".into(), created_ms: now, kdf: None, wrap });
-        self.commit(&mut inner, &keys, doc, vec![Record::new("recovery_made", actor)], now)?;
+        doc.slots.push(Slot {
+            id: slot_id,
+            kind: "recovery".into(),
+            created_ms: now,
+            kdf: None,
+            wrap,
+        });
+        self.commit(
+            &mut inner,
+            &keys,
+            doc,
+            vec![Record::new("recovery_made", actor)],
+            now,
+        )?;
         Ok(text)
     }
 
     /// A new root key: every data key and every keyslot is re-wrapped, and the index and audit keys
     /// are new. A passphrase or recovery slot needs its secret, unless it is the one that unlocked
     /// this session; nothing changes unless every slot can be re-wrapped. Values are not touched.
-    pub fn rekey(&self, supplied: &[(String, SecretString)], actor: &str, now: u64) -> Result<(), VaultError> {
+    pub fn rekey(
+        &self,
+        supplied: &[(String, SecretString)],
+        actor: &str,
+        now: u64,
+    ) -> Result<(), VaultError> {
         let mut inner = self.lock();
         let (old, mut doc) = self.active(&inner)?;
         let new_root = crypto::random_key().map_err(VaultError::Storage)?;
@@ -628,7 +804,9 @@ impl Store {
         for entry in doc.entries.iter_mut() {
             for version in entry.versions.iter_mut() {
                 let dek = unwrap_dek(&old, &entry.id, version)?;
-                let (nonce, ct) = crypto::seal(&new_keys.wrap, &dek_aad(&entry.id, version.v), &dek[..]).map_err(VaultError::Storage)?;
+                let (nonce, ct) =
+                    crypto::seal(&new_keys.wrap, &dek_aad(&entry.id, version.v), &dek[..])
+                        .map_err(VaultError::Storage)?;
                 version.dek_nonce = model::enc(&nonce);
                 version.dek_ct = model::enc(&ct);
                 rehome_hint(&old, &new_keys, &entry.id, version);
@@ -640,19 +818,33 @@ impl Store {
                 let kek = crypto::random_key().map_err(VaultError::Storage)?;
                 new_keyfile = Some(kek.clone());
                 kek
-            } else if let Some(kek) = old.unlock.as_ref().and_then(|(id, kek)| (*id == slot.id).then(|| kek.clone())) {
+            } else if let Some(kek) = old
+                .unlock
+                .as_ref()
+                .and_then(|(id, kek)| (*id == slot.id).then(|| kek.clone()))
+            {
                 kek
             } else {
-                let secret = supplied.iter().find(|(id, _)| *id == slot.id).map(|(_, s)| s).ok_or_else(|| {
-                    VaultError::Invalid(format!("slot {} needs its passphrase or recovery code to be re-wrapped", slot.id))
-                })?;
+                let secret = supplied
+                    .iter()
+                    .find(|(id, _)| *id == slot.id)
+                    .map(|(_, s)| s)
+                    .ok_or_else(|| {
+                        VaultError::Invalid(format!(
+                            "slot {} needs its passphrase or recovery code to be re-wrapped",
+                            slot.id
+                        ))
+                    })?;
                 let kek = match slot.kind.as_str() {
                     "passphrase" => {
-                        let kdf = slot.kdf.as_ref().ok_or_else(|| VaultError::Corrupt("a passphrase slot has no KDF".into()))?;
+                        let kdf = slot.kdf.as_ref().ok_or_else(|| {
+                            VaultError::Corrupt("a passphrase slot has no KDF".into())
+                        })?;
                         slots::kek_from_passphrase(secret.expose_secret(), kdf)?
                     }
                     _ => {
-                        let code = slots::parse_recovery_code(secret.expose_secret()).ok_or(VaultError::BadSecret)?;
+                        let code = slots::parse_recovery_code(secret.expose_secret())
+                            .ok_or(VaultError::BadSecret)?;
                         slots::kek_from_recovery(&code, &vault_id)
                     }
                 };
@@ -662,14 +854,22 @@ impl Store {
             };
             slot.wrap = slots::wrap_root(&kek, &vault_id, &slot.id, &new_root)?;
         }
-        let previous = new_keyfile.as_ref().and_then(|_| slots::keyfile_read(&self.key_file).ok());
+        let previous = new_keyfile
+            .as_ref()
+            .and_then(|_| slots::keyfile_read(&self.key_file).ok());
         if let Some(kek) = &new_keyfile {
             slots::keyfile_replace(&self.key_file, kek)?;
         }
         new_keys.unlock = old.unlock.clone();
         new_keys.unlocked_slot = old.unlocked_slot.clone();
         // The rekey line starts the new MAC key's chain: it is written with the new audit key.
-        if let Err(err) = self.commit(&mut inner, &new_keys, doc, vec![Record::new("rekey", actor)], now) {
+        if let Err(err) = self.commit(
+            &mut inner,
+            &new_keys,
+            doc,
+            vec![Record::new("rekey", actor)],
+            now,
+        ) {
             if new_keyfile.is_some() {
                 match previous {
                     Some(kek) => {
@@ -691,7 +891,11 @@ impl Store {
         let inner = self.lock();
         let keys = inner.keys.clone().ok_or_else(|| self.unavailable(&inner))?;
         let doc = inner.doc.as_ref().ok_or(VaultError::Uninitialized)?;
-        Ok(doc.entries.iter().map(|entry| view_of(&keys, entry)).collect())
+        Ok(doc
+            .entries
+            .iter()
+            .map(|entry| view_of(&keys, entry))
+            .collect())
     }
 
     /// The entry `id` as a view (the hints are decrypted, as in [`Store::list`]).
@@ -710,34 +914,68 @@ impl Store {
 
     /// The hook for imports (the env file, and the migration of the old files): one secret, recorded
     /// as `import`. Returns its id.
-    pub fn import_entry(&self, new: NewSecret, actor: &str, now: u64) -> Result<String, VaultError> {
+    pub fn import_entry(
+        &self,
+        new: NewSecret,
+        actor: &str,
+        now: u64,
+    ) -> Result<String, VaultError> {
         self.add(new, actor, "import", now)
     }
 
-    fn add(&self, new: NewSecret, actor: &str, event: &str, now: u64) -> Result<String, VaultError> {
+    fn add(
+        &self,
+        new: NewSecret,
+        actor: &str,
+        event: &str,
+        now: u64,
+    ) -> Result<String, VaultError> {
         let mut inner = self.lock();
         let (keys, mut doc) = self.active(&inner)?;
         let entry = build_entry(&keys, &doc, new, now)?;
         let (id, name) = (entry.id.clone(), entry.name.clone());
         doc.entries.push(entry);
-        self.commit(&mut inner, &keys, doc, vec![Record::new(event, actor).entry(&id, &name)], now)?;
+        self.commit(
+            &mut inner,
+            &keys,
+            doc,
+            vec![Record::new(event, actor).entry(&id, &name)],
+            now,
+        )?;
         Ok(id)
     }
 
     /// A new version of entry `id`. The previous versions stay for rollback (up to two).
-    pub fn rotate(&self, id: &str, value: &SecretString, actor: &str, now: u64) -> Result<(), VaultError> {
+    pub fn rotate(
+        &self,
+        id: &str,
+        value: &SecretString,
+        actor: &str,
+        now: u64,
+    ) -> Result<(), VaultError> {
         validate_value(value.expose_secret())?;
         let mut inner = self.lock();
         let (keys, mut doc) = self.active(&inner)?;
         let index = position(&doc.entries, id)?;
         let entry = &mut doc.entries[index];
         let version = entry.versions.iter().map(|v| v.v).max().unwrap_or(0) + 1;
-        let sealed = seal_version(&keys, &entry.id, version, &entry.name, &entry.scope, &entry.bindings, value.expose_secret(), now)?;
+        let sealed = seal_version(
+            &keys,
+            &entry.id,
+            version,
+            &entry.name,
+            &entry.scope,
+            &entry.bindings,
+            value.expose_secret(),
+            now,
+        )?;
         entry.versions.push(sealed);
         prune(entry);
         entry.current = version;
         entry.updated_ms = now;
-        let record = Record::new("rotate", actor).entry(&entry.id, &entry.name).detail(format!("version {version}"));
+        let record = Record::new("rotate", actor)
+            .entry(&entry.id, &entry.name)
+            .detail(format!("version {version}"));
         self.commit(&mut inner, &keys, doc, vec![record], now)
     }
 
@@ -752,7 +990,9 @@ impl Store {
         }
         entry.current = v;
         entry.updated_ms = now;
-        let record = Record::new("rollback", actor).entry(&entry.id, &entry.name).detail(format!("to version {v}"));
+        let record = Record::new("rollback", actor)
+            .entry(&entry.id, &entry.name)
+            .detail(format!("to version {v}"));
         self.commit(&mut inner, &keys, doc, vec![record], now)
     }
 
@@ -772,7 +1012,12 @@ impl Store {
         let index = position(&doc.entries, id)?;
         let (name, old_scope, old_bindings, entry_id) = {
             let e = &doc.entries[index];
-            (e.name.clone(), e.scope.clone(), e.bindings.clone(), e.id.clone())
+            (
+                e.name.clone(),
+                e.scope.clone(),
+                e.bindings.clone(),
+                e.id.clone(),
+            )
         };
         let new_scope = match scope {
             Some(scope) => validate_scope(scope)?,
@@ -787,13 +1032,28 @@ impl Store {
         let entry = &mut doc.entries[index];
         if new_scope != old_scope || new_bindings != old_bindings {
             for version in entry.versions.iter_mut() {
-                rewrap_value(&keys, &entry_id, &name, (&old_scope, &old_bindings), (&new_scope, &new_bindings), version)?;
+                rewrap_value(
+                    &keys,
+                    &entry_id,
+                    &name,
+                    (&old_scope, &old_bindings),
+                    (&new_scope, &new_bindings),
+                    version,
+                )?;
             }
             if new_scope != old_scope {
-                records.push(Record::new("scope", actor).entry(&entry_id, &name).detail(scope_text(&new_scope)));
+                records.push(
+                    Record::new("scope", actor)
+                        .entry(&entry_id, &name)
+                        .detail(scope_text(&new_scope)),
+                );
             }
             if new_bindings != old_bindings {
-                records.push(Record::new("bindings", actor).entry(&entry_id, &name).detail(new_bindings.join(",")));
+                records.push(
+                    Record::new("bindings", actor)
+                        .entry(&entry_id, &name)
+                        .detail(new_bindings.join(",")),
+                );
             }
             entry.scope = new_scope;
             entry.bindings = new_bindings;
@@ -809,14 +1069,28 @@ impl Store {
     /// Each entry goes through [`Store::patch`]: its kept versions are re-encrypted under the new AAD, the
     /// index is MACed again, and the audit gets a `bindings` line per entry. An entry left with no bindings
     /// stays, and nothing can resolve it. Returns how many entries changed.
-    pub fn remove_binding(&self, binding: &str, actor: &str, now: u64) -> Result<usize, VaultError> {
+    pub fn remove_binding(
+        &self,
+        binding: &str,
+        actor: &str,
+        now: u64,
+    ) -> Result<usize, VaultError> {
         let targets: Vec<(String, Vec<String>)> = {
             let inner = self.lock();
             let (_, doc) = self.active(&inner)?;
             doc.entries
                 .iter()
                 .filter(|e| e.bindings.iter().any(|b| b == binding))
-                .map(|e| (e.id.clone(), e.bindings.iter().filter(|b| b.as_str() != binding).cloned().collect()))
+                .map(|e| {
+                    (
+                        e.id.clone(),
+                        e.bindings
+                            .iter()
+                            .filter(|b| b.as_str() != binding)
+                            .cloned()
+                            .collect(),
+                    )
+                })
                 .collect()
         };
         for (id, rest) in &targets {
@@ -834,14 +1108,23 @@ impl Store {
         for version in removed.versions.iter_mut() {
             wipe(version);
         }
-        doc.tombstones.push(Tombstone { id: removed.id.clone(), name: removed.name.clone(), at_ms: now });
+        doc.tombstones.push(Tombstone {
+            id: removed.id.clone(),
+            name: removed.name.clone(),
+            at_ms: now,
+        });
         let record = Record::new("delete", actor).entry(&removed.id, &removed.name);
         self.commit(&mut inner, &keys, doc, vec![record], now)
     }
 
     /// Checks a secret the way its bound consumer would: resolves it for its first binding on `node`
     /// (the hub's machine by default). Nothing leaves the vault. Returns the binding.
-    pub fn test(&self, id: &str, node: Option<String>, now: u64) -> Result<(String, String), VaultError> {
+    pub fn test(
+        &self,
+        id: &str,
+        node: Option<String>,
+        now: u64,
+    ) -> Result<(String, String), VaultError> {
         let (name, binding) = {
             let inner = self.lock();
             if inner.keys.is_none() {
@@ -849,14 +1132,24 @@ impl Store {
             }
             let doc = inner.doc.as_ref().ok_or(VaultError::Uninitialized)?;
             let entry = &doc.entries[position(&doc.entries, id)?];
-            let binding = entry.bindings.first().cloned().ok_or_else(|| VaultError::Invalid("the secret has no bindings to test".into()))?;
+            let binding =
+                entry.bindings.first().cloned().ok_or_else(|| {
+                    VaultError::Invalid("the secret has no bindings to test".into())
+                })?;
             (entry.name.clone(), binding)
         };
         let node = node.unwrap_or_else(|| LOCAL_NODE.to_string());
-        let consumer = Consumer { binding: binding.clone(), on_behalf: OnBehalf::Owner { node: Some(node.clone()) } };
+        let consumer = Consumer {
+            binding: binding.clone(),
+            on_behalf: OnBehalf::Owner {
+                node: Some(node.clone()),
+            },
+        };
         let (_, found) = self.resolve_entry(&name, &consumer, now)?;
         if found != id {
-            return Err(VaultError::Invalid("another secret of that name serves this binding on that node".into()));
+            return Err(VaultError::Invalid(
+                "another secret of that name serves this binding on that node".into(),
+            ));
         }
         Ok((binding, node))
     }
@@ -884,7 +1177,9 @@ impl Store {
         let mut records = Vec::new();
         for line in &lines {
             let name = line.name.as_str();
-            let skip = |reason: &str, report: &mut ImportReport| report.skipped.push((name.to_string(), reason.to_string()));
+            let skip = |reason: &str, report: &mut ImportReport| {
+                report.skipped.push((name.to_string(), reason.to_string()))
+            };
             if counts.get(name).copied().unwrap_or(0) > 1 {
                 skip("duplicate in the file", &mut report);
                 continue;
@@ -911,7 +1206,11 @@ impl Store {
             };
             match build_entry(&keys, &doc, new, now) {
                 Ok(entry) => {
-                    records.push(Record::new("import", actor).entry(&entry.id, &entry.name).detail("dotenv"));
+                    records.push(
+                        Record::new("import", actor)
+                            .entry(&entry.id, &entry.name)
+                            .detail("dotenv"),
+                    );
                     report.imported.push((entry.name.clone(), entry.id.clone()));
                     doc.entries.push(entry);
                 }
@@ -926,20 +1225,37 @@ impl Store {
 
     /// THE resolution: the value `name` for `consumer`, or why not. Every denial is audited; a use is
     /// counted, and audited in aggregate.
-    pub fn resolve(&self, name: &str, consumer: &Consumer, now: u64) -> Result<SecretString, VaultError> {
-        self.resolve_entry(name, consumer, now).map(|(secret, _)| secret)
+    pub fn resolve(
+        &self,
+        name: &str,
+        consumer: &Consumer,
+        now: u64,
+    ) -> Result<SecretString, VaultError> {
+        self.resolve_entry(name, consumer, now)
+            .map(|(secret, _)| secret)
     }
 
-    fn resolve_entry(&self, name: &str, consumer: &Consumer, now: u64) -> Result<(SecretString, String), VaultError> {
+    fn resolve_entry(
+        &self,
+        name: &str,
+        consumer: &Consumer,
+        now: u64,
+    ) -> Result<(SecretString, String), VaultError> {
         let mut inner = self.lock();
         let keys = inner.keys.clone().ok_or_else(|| self.unavailable(&inner))?;
         let (actor, node, cid) = match &consumer.on_behalf {
             OnBehalf::Agent { cid, node } => ("agent", node.clone(), Some(*cid)),
-            OnBehalf::Owner { node } => ("owner", Some(node.clone().unwrap_or_else(|| LOCAL_NODE.to_string())), None),
+            OnBehalf::Owner { node } => (
+                "owner",
+                Some(node.clone().unwrap_or_else(|| LOCAL_NODE.to_string())),
+                None,
+            ),
             OnBehalf::Hub => ("hub", None, None),
         };
         let denial = |reason: &str| {
-            let mut record = Record::new("deny", actor).binding(&consumer.binding).detail(reason);
+            let mut record = Record::new("deny", actor)
+                .binding(&consumer.binding)
+                .detail(reason);
             record.name = Some(name.to_string());
             if let Some(n) = &node {
                 record = record.node(n);
@@ -950,17 +1266,27 @@ impl Store {
             record
         };
         if node.is_none() && cid.is_some() {
-            self.audit(&mut inner, &keys.audit, denial("the agent's node is revoked"), now);
+            self.audit(
+                &mut inner,
+                &keys.audit,
+                denial("the agent's node is revoked"),
+                now,
+            );
             return Err(VaultError::OutOfScope);
         }
         let chosen = {
             let doc = inner.doc.as_ref().ok_or(VaultError::Uninitialized)?;
-            choose(&doc.entries, name, &consumer.binding, node.as_deref()).map(|index| doc.entries[index].clone())
+            choose(&doc.entries, name, &consumer.binding, node.as_deref())
+                .map(|index| doc.entries[index].clone())
         };
         let entry = match chosen {
             Ok(entry) => entry,
             Err(err) => {
-                let reason = if err == VaultError::NotFound { "no secret of that name is bound to this consumer" } else { "the secret is not scoped to this node" };
+                let reason = if err == VaultError::NotFound {
+                    "no secret of that name is bound to this consumer"
+                } else {
+                    "the secret is not scoped to this node"
+                };
                 self.audit(&mut inner, &keys.audit, denial(reason), now);
                 return Err(err);
             }
@@ -968,11 +1294,19 @@ impl Store {
         let value = match decrypt_current(&keys, &entry) {
             Ok(value) => value,
             Err(err) => {
-                self.audit(&mut inner, &keys.audit, Record::new("tamper", actor).entry(&entry.id, &entry.name).detail("value failed its check"), now);
+                self.audit(
+                    &mut inner,
+                    &keys.audit,
+                    Record::new("tamper", actor)
+                        .entry(&entry.id, &entry.name)
+                        .detail("value failed its check"),
+                    now,
+                );
                 return Err(err);
             }
         };
-        let text = std::str::from_utf8(&value).map_err(|_| VaultError::Corrupt(format!("{name} is not text")))?;
+        let text = std::str::from_utf8(&value)
+            .map_err(|_| VaultError::Corrupt(format!("{name} is not text")))?;
         let secret = SecretString::from(text.to_string());
         if let Some(doc) = inner.doc.as_mut()
             && let Some(stored) = doc.entries.iter_mut().find(|e| e.id == entry.id)
@@ -981,13 +1315,21 @@ impl Store {
             stored.use_count += 1;
         }
         inner.usage_dirty = true;
-        let key = (entry.id.clone(), consumer.binding.clone(), node.clone().unwrap_or_else(|| "-".into()));
+        let key = (
+            entry.id.clone(),
+            consumer.binding.clone(),
+            node.clone().unwrap_or_else(|| "-".into()),
+        );
         let minute = now / MINUTE_MS;
         let stale = matches!(inner.uses.get(&key), Some((seen, _, _, _)) if *seen != minute);
         if stale && let Some(old) = inner.uses.remove(&key) {
             self.emit_use(&mut inner, &keys, key.clone(), old, now);
         }
-        let slot = inner.uses.entry(key).or_insert((minute, 0, entry.name.clone(), actor.to_string()));
+        let slot =
+            inner
+                .uses
+                .entry(key)
+                .or_insert((minute, 0, entry.name.clone(), actor.to_string()));
         slot.1 += 1;
         Ok((secret, entry.id))
     }
@@ -1022,8 +1364,14 @@ impl Store {
     /// Registers a consumer: its binding, a label, and the secret name it wants.
     pub fn register_consumer(&self, binding: &str, label: &str, wants: &str) {
         let mut inner = self.lock();
-        inner.consumers.retain(|c| c.binding != binding || c.wants != wants);
-        inner.consumers.push(Registration { binding: binding.into(), label: label.into(), wants: wants.into() });
+        inner
+            .consumers
+            .retain(|c| c.binding != binding || c.wants != wants);
+        inner.consumers.push(Registration {
+            binding: binding.into(),
+            label: label.into(),
+            wants: wants.into(),
+        });
     }
 
     /// Removes every registration of `binding` (a removed provider, connector or MCP server). Returns how many went.
@@ -1043,7 +1391,9 @@ impl Store {
         if inner.keys.is_none() {
             return "sealed";
         }
-        let Some(doc) = inner.doc.as_ref() else { return "sealed" };
+        let Some(doc) = inner.doc.as_ref() else {
+            return "sealed";
+        };
         match choose(&doc.entries, name, binding, Some(LOCAL_NODE)) {
             Ok(_) => "secret",
             Err(VaultError::OutOfScope) => "out_of_scope",
@@ -1054,14 +1404,25 @@ impl Store {
     /// Stores `value` as the plaza entry for `name` that `binding` reads: a new version of the plaza
     /// entry when there is one (its bindings gain `binding`), else a new plaza entry. Write-only:
     /// the value is never returned. Returns the entry id.
-    pub fn put_plaza(&self, name: &str, binding: &str, label: &str, value: &SecretString, actor: &str, now: u64) -> Result<String, VaultError> {
+    pub fn put_plaza(
+        &self,
+        name: &str,
+        binding: &str,
+        label: &str,
+        value: &SecretString,
+        actor: &str,
+        now: u64,
+    ) -> Result<String, VaultError> {
         let found = {
             let inner = self.lock();
             if inner.keys.is_none() {
                 return Err(self.unavailable(&inner));
             }
             let doc = inner.doc.as_ref().ok_or(VaultError::Uninitialized)?;
-            doc.entries.iter().find(|e| e.name == name && e.scope == Scope::Plaza).map(|e| (e.id.clone(), e.bindings.clone()))
+            doc.entries
+                .iter()
+                .find(|e| e.name == name && e.scope == Scope::Plaza)
+                .map(|e| (e.id.clone(), e.bindings.clone()))
         };
         match found {
             Some((id, mut bindings)) => {
@@ -1089,7 +1450,12 @@ impl Store {
 
     /// The hook of the migration (migrate.rs): one secret from a plaintext file, recorded as `migrate` with
     /// `detail` (`unbound` for an entry no consumer reads). No value is logged. Returns its id.
-    pub fn migrate_entry(&self, new: NewSecret, detail: Option<&str>, now: u64) -> Result<String, VaultError> {
+    pub fn migrate_entry(
+        &self,
+        new: NewSecret,
+        detail: Option<&str>,
+        now: u64,
+    ) -> Result<String, VaultError> {
         let mut inner = self.lock();
         let (keys, mut doc) = self.active(&inner)?;
         let entry = build_entry(&keys, &doc, new, now)?;
@@ -1115,7 +1481,11 @@ impl Store {
             .entries
             .iter()
             .filter(|e| e.name == name)
-            .map(|e| Named { id: e.id.clone(), plaza: e.scope == Scope::Plaza, bindings: e.bindings.clone() })
+            .map(|e| Named {
+                id: e.id.clone(),
+                plaza: e.scope == Scope::Plaza,
+                bindings: e.bindings.clone(),
+            })
             .collect())
     }
 
@@ -1140,8 +1510,14 @@ impl Store {
     /// `None`: it never falls back to the environment.
     pub fn value_for(&self, name: &str, binding: &str, on_behalf: &OnBehalf) -> Option<String> {
         let named = self.entries_named(name).ok()?;
-        if named.iter().any(|e| e.bindings.iter().any(|b| b == binding)) {
-            let consumer = Consumer { binding: binding.to_string(), on_behalf: on_behalf.clone() };
+        if named
+            .iter()
+            .any(|e| e.bindings.iter().any(|b| b == binding))
+        {
+            let consumer = Consumer {
+                binding: binding.to_string(),
+                on_behalf: on_behalf.clone(),
+            };
             return self
                 .resolve(name, &consumer, apz_plaza::now_ms())
                 .ok()
@@ -1154,7 +1530,13 @@ impl Store {
     /// Called once after boot (state.rs). Registers the Hugging Face consumer, records the env file's key count,
     /// and on an unsealed vault runs the migration: the plaintext files and the env file's variables move into it
     /// (migrate.rs). Logs the env file line while the file still holds variables. Never fails the start.
-    pub fn startup(&self, app: &crate::state::App, env_file: Option<&Path>, env: &BTreeMap<String, String>, now: u64) {
+    pub fn startup(
+        &self,
+        app: &crate::state::App,
+        env_file: Option<&Path>,
+        env: &BTreeMap<String, String>,
+        now: u64,
+    ) {
         self.register_consumer("hf", "Hugging Face token", "HF_TOKEN");
         let providers = app.providers.gateway().providers();
         let mut provider_refs = credential_refs(&providers);
@@ -1165,16 +1547,30 @@ impl Store {
             aws.push(crate::providers::BEDROCK_BINDING.to_string());
         }
         for binding in aws {
-            provider_refs.extend(crate::providers::BEDROCK_KEYS.iter().map(|name| (binding.clone(), name_for(name))));
+            provider_refs.extend(
+                crate::providers::BEDROCK_KEYS
+                    .iter()
+                    .map(|name| (binding.clone(), name_for(name))),
+            );
         }
         // The variables both sources hold: the env file's, and the process environment's candidates it does not hold.
         let process = migrate::process_env_count(&provider_refs, env);
         self.set_env_file_keys(env.len() + process);
         if self.lock().keys.is_some() {
-            migrate::run(self, &app.config.state_dir, app.hf.dir(), &provider_refs, env, now);
+            migrate::run(
+                self,
+                &app.config.state_dir,
+                app.hf.dir(),
+                &provider_refs,
+                env,
+                now,
+            );
         }
         if let Some(path) = env_file.filter(|_| !env.is_empty()) {
-            eprintln!("apid: keys in {} were moved into the vault; delete the file", path.display());
+            eprintln!(
+                "apid: keys in {} were moved into the vault; delete the file",
+                path.display()
+            );
         }
     }
 
@@ -1191,14 +1587,18 @@ impl Store {
             "sealed"
         };
         // The slot that unlocked this session is marked; a sealed vault marks none.
-        let unlocked = inner.keys.as_ref().and_then(|keys| keys.unlocked_slot.clone());
+        let unlocked = inner
+            .keys
+            .as_ref()
+            .and_then(|keys| keys.unlocked_slot.clone());
         let (slot_views, entries) = match &inner.doc {
             Some(doc) => (
                 doc.slots
                     .iter()
                     .map(|slot| {
                         let mut view = model::slot_view(slot);
-                        view["unsealed_with"] = json!(unlocked.as_deref() == Some(slot.id.as_str()));
+                        view["unsealed_with"] =
+                            json!(unlocked.as_deref() == Some(slot.id.as_str()));
                         view
                     })
                     .collect::<Vec<_>>(),
@@ -1207,7 +1607,12 @@ impl Store {
             None => (Vec::new(), 0),
         };
         let mut node_list = vec![json!({ "id": LOCAL_NODE, "name": "this machine" })];
-        node_list.extend(nodes.iter().filter(|n| !n.revoked).map(|n| json!({ "id": n.id, "name": n.name })));
+        node_list.extend(
+            nodes
+                .iter()
+                .filter(|n| !n.revoked)
+                .map(|n| json!({ "id": n.id, "name": n.name })),
+        );
         json!({
             "state": state,
             "slots": slot_views,
@@ -1259,7 +1664,14 @@ impl Store {
     }
 
     /// Signs and saves `doc`, then makes it current and chains `records` into the audit log.
-    fn commit(&self, inner: &mut Inner, keys: &Keys, mut doc: Document, records: Vec<Record>, now: u64) -> Result<(), VaultError> {
+    fn commit(
+        &self,
+        inner: &mut Inner,
+        keys: &Keys,
+        mut doc: Document,
+        records: Vec<Record>,
+        now: u64,
+    ) -> Result<(), VaultError> {
         sign(keys, &mut doc);
         self.save(&doc)?;
         inner.doc = Some(doc);
@@ -1272,15 +1684,21 @@ impl Store {
     /// Writes the document: the database's `vault` component when Postgres is configured, else
     /// `vault.json`. Never over a component that could not be read at start.
     fn save(&self, doc: &Document) -> Result<(), VaultError> {
-        let text = serde_json::to_string_pretty(doc).map_err(|e| VaultError::Storage(e.to_string()))?;
+        let text =
+            serde_json::to_string_pretty(doc).map_err(|e| VaultError::Storage(e.to_string()))?;
         match &self.db {
             Some(db) => {
                 if db.is_held("vault") {
-                    return Err(VaultError::Storage("the stored vault could not be read at start; it is not overwritten".into()));
+                    return Err(VaultError::Storage(
+                        "the stored vault could not be read at start; it is not overwritten".into(),
+                    ));
                 }
-                db.store("vault", &text).map(|_| ()).map_err(VaultError::Storage)
+                db.store("vault", &text)
+                    .map(|_| ())
+                    .map_err(VaultError::Storage)
             }
-            None => disk::write_atomic(&self.doc_path(), text.as_bytes()).map_err(|e| VaultError::Storage(format!("vault.json: {e}"))),
+            None => disk::write_atomic(&self.doc_path(), text.as_bytes())
+                .map_err(|e| VaultError::Storage(format!("vault.json: {e}"))),
         }
     }
 
@@ -1294,8 +1712,12 @@ impl Store {
 
     fn flush_uses(&self, inner: &mut Inner, keys: &Keys, now: u64, all: bool) {
         let minute = now / MINUTE_MS;
-        let due: Vec<UseKey> =
-            inner.uses.iter().filter(|(_, (seen, _, _, _))| all || *seen < minute).map(|(k, _)| k.clone()).collect();
+        let due: Vec<UseKey> = inner
+            .uses
+            .iter()
+            .filter(|(_, (seen, _, _, _))| all || *seen < minute)
+            .map(|(k, _)| k.clone())
+            .collect();
         for key in due {
             if let Some(value) = inner.uses.remove(&key) {
                 self.emit_use(inner, keys, key, value, now);
@@ -1319,11 +1741,14 @@ impl Store {
 /// already reports a broken audit chain says so on the event stream once.
 pub fn spawn_saver(app: Arc<crate::state::App>) {
     if app.vault.audit_ok() == Some(false) {
-        app.bus.publish("vault.audit_broken", &json!({ "line": null }));
+        app.bus
+            .publish("vault.audit_broken", &json!({ "line": null }));
     }
-    std::thread::spawn(move || loop {
-        std::thread::sleep(Duration::from_secs(3));
-        app.vault.flush(apz_plaza::now_ms());
+    std::thread::spawn(move || {
+        loop {
+            std::thread::sleep(Duration::from_secs(3));
+            app.vault.flush(apz_plaza::now_ms());
+        }
     });
 }
 
@@ -1359,14 +1784,19 @@ fn new_id(prefix: &str) -> Result<String, VaultError> {
 }
 
 fn position(entries: &[Entry], id: &str) -> Result<usize, VaultError> {
-    entries.iter().position(|e| e.id == id).ok_or(VaultError::NotFound)
+    entries
+        .iter()
+        .position(|e| e.id == id)
+        .ok_or(VaultError::NotFound)
 }
 
 fn valid_name(name: &str) -> bool {
     let bytes = name.as_bytes();
     (2..=64).contains(&bytes.len())
         && bytes[0].is_ascii_uppercase()
-        && bytes.iter().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || *c == b'_')
+        && bytes
+            .iter()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || *c == b'_')
 }
 
 fn valid_node(node: &str) -> bool {
@@ -1380,7 +1810,9 @@ pub(crate) fn credential_refs(providers: &[apz_gateway::ProviderConfig]) -> Vec<
     providers
         .iter()
         .filter_map(|p| match &p.auth {
-            apz_gateway::Auth::Secret(name) | apz_gateway::Auth::Env(name) => Some((format!("provider:{}", p.id), name_for(name))),
+            apz_gateway::Auth::Secret(name) | apz_gateway::Auth::Env(name) => {
+                Some((format!("provider:{}", p.id), name_for(name)))
+            }
             _ => None,
         })
         .collect()
@@ -1392,17 +1824,23 @@ fn valid_binding(binding: &str) -> bool {
         !bytes.is_empty()
             && bytes.len() <= 64
             && bytes[0].is_ascii_alphanumeric()
-            && bytes.iter().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, b'.' | b'_' | b'-'))
+            && bytes.iter().all(|c| {
+                c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, b'.' | b'_' | b'-')
+            })
     };
     binding == "hf"
-        || binding.split_once(':').is_some_and(|(prefix, id)| matches!(prefix, "provider" | "connector" | "mcp" | "tool") && id_ok(id))
+        || binding.split_once(':').is_some_and(|(prefix, id)| {
+            matches!(prefix, "provider" | "connector" | "mcp" | "tool") && id_ok(id)
+        })
 }
 
 fn validate_bindings(list: &[String]) -> Result<Vec<String>, VaultError> {
     let mut out = Vec::with_capacity(list.len());
     for binding in list {
         if !valid_binding(binding) {
-            return Err(VaultError::Invalid(format!("{binding} is not a binding (provider:, connector:, mcp:, tool: or hf)")));
+            return Err(VaultError::Invalid(format!(
+                "{binding} is not a binding (provider:, connector:, mcp:, tool: or hf)"
+            )));
         }
         out.push(binding.clone());
     }
@@ -1416,7 +1854,9 @@ fn validate_scope(scope: Scope) -> Result<Scope, VaultError> {
         Scope::Plaza => Ok(Scope::Plaza),
         Scope::Nodes { mut nodes } => {
             if nodes.is_empty() {
-                return Err(VaultError::Invalid("a nodes scope names at least one node".into()));
+                return Err(VaultError::Invalid(
+                    "a nodes scope names at least one node".into(),
+                ));
             }
             if let Some(bad) = nodes.iter().find(|n| !valid_node(n)) {
                 return Err(VaultError::Invalid(format!("{bad} is not a node id")));
@@ -1440,7 +1880,9 @@ fn validate_value(value: &str) -> Result<(), VaultError> {
         return Err(VaultError::Invalid("the value is empty".into()));
     }
     if value.len() > MAX_VALUE_BYTES || value.contains('\0') {
-        return Err(VaultError::Invalid("the value is too long or holds a NUL byte".into()));
+        return Err(VaultError::Invalid(
+            "the value is too long or holds a NUL byte".into(),
+        ));
     }
     Ok(())
 }
@@ -1448,21 +1890,35 @@ fn validate_value(value: &str) -> Result<(), VaultError> {
 fn clean_label(label: &str) -> Result<String, VaultError> {
     let trimmed = label.trim();
     if trimmed.chars().count() > 200 {
-        return Err(VaultError::Invalid("the label is longer than 200 characters".into()));
+        return Err(VaultError::Invalid(
+            "the label is longer than 200 characters".into(),
+        ));
     }
     Ok(trimmed.to_string())
 }
 
 /// Refuses a second plaza entry for a name, and node sets that overlap another entry's.
-fn check_scope(entries: &[Entry], name: &str, scope: &Scope, except: Option<&str>) -> Result<(), VaultError> {
-    for other in entries.iter().filter(|e| e.name == name && Some(e.id.as_str()) != except) {
+fn check_scope(
+    entries: &[Entry],
+    name: &str,
+    scope: &Scope,
+    except: Option<&str>,
+) -> Result<(), VaultError> {
+    for other in entries
+        .iter()
+        .filter(|e| e.name == name && Some(e.id.as_str()) != except)
+    {
         match (scope, &other.scope) {
             (Scope::Plaza, Scope::Plaza) => {
-                return Err(VaultError::Conflict(format!("{name} already has a plaza entry; a name has one plaza entry")));
+                return Err(VaultError::Conflict(format!(
+                    "{name} already has a plaza entry; a name has one plaza entry"
+                )));
             }
             (Scope::Nodes { nodes: wanted }, Scope::Nodes { nodes: have }) => {
                 if let Some(node) = wanted.iter().find(|n| have.contains(n)) {
-                    return Err(VaultError::Conflict(format!("{name} already has an entry for node {node}")));
+                    return Err(VaultError::Conflict(format!(
+                        "{name} already has an entry for node {node}"
+                    )));
                 }
             }
             _ => {}
@@ -1472,7 +1928,12 @@ fn check_scope(entries: &[Entry], name: &str, scope: &Scope, except: Option<&str
 }
 
 /// The entry a consumer gets for `name` on `node` (`None`: the hub's background work).
-fn choose(entries: &[Entry], name: &str, binding: &str, node: Option<&str>) -> Result<usize, VaultError> {
+fn choose(
+    entries: &[Entry],
+    name: &str,
+    binding: &str,
+    node: Option<&str>,
+) -> Result<usize, VaultError> {
     let candidates: Vec<usize> = entries
         .iter()
         .enumerate()
@@ -1490,12 +1951,25 @@ fn choose(entries: &[Entry], name: &str, binding: &str, node: Option<&str>) -> R
             return Ok(index);
         }
     }
-    candidates.iter().copied().find(|&i| entries[i].scope == Scope::Plaza).ok_or(VaultError::OutOfScope)
+    candidates
+        .iter()
+        .copied()
+        .find(|&i| entries[i].scope == Scope::Plaza)
+        .ok_or(VaultError::OutOfScope)
 }
 
 fn value_aad(id: &str, version: u32, name: &str, scope: &Scope, bindings: &[String]) -> Vec<u8> {
     let v = version.to_string();
-    crypto::aad(VALUE_LABEL, &[id, &v, name, &scope.canonical(), &model::bindings_canonical(bindings)])
+    crypto::aad(
+        VALUE_LABEL,
+        &[
+            id,
+            &v,
+            name,
+            &scope.canonical(),
+            &model::bindings_canonical(bindings),
+        ],
+    )
 }
 
 fn dek_aad(id: &str, version: u32) -> Vec<u8> {
@@ -1506,7 +1980,8 @@ fn dek_aad(id: &str, version: u32) -> Vec<u8> {
 /// The hint of a value: its last 4 characters, for a value of 20 characters or more.
 fn hint(value: &str) -> Option<Zeroizing<String>> {
     let chars: Vec<char> = value.chars().collect();
-    (chars.len() >= HINT_MIN_CHARS).then(|| Zeroizing::new(chars[chars.len() - 4..].iter().collect()))
+    (chars.len() >= HINT_MIN_CHARS)
+        .then(|| Zeroizing::new(chars[chars.len() - 4..].iter().collect()))
 }
 
 fn hint_aad(id: &str, version: u32) -> Vec<u8> {
@@ -1515,8 +1990,14 @@ fn hint_aad(id: &str, version: u32) -> Vec<u8> {
 }
 
 /// A hint sealed under K_index, as base64 `(nonce, ct)`. The AAD binds it to its entry and version.
-fn seal_hint(keys: &Keys, id: &str, version: u32, hint: &str) -> Result<(String, String), VaultError> {
-    let (nonce, ct) = crypto::seal(&keys.index, &hint_aad(id, version), hint.as_bytes()).map_err(VaultError::Storage)?;
+fn seal_hint(
+    keys: &Keys,
+    id: &str,
+    version: u32,
+    hint: &str,
+) -> Result<(String, String), VaultError> {
+    let (nonce, ct) = crypto::seal(&keys.index, &hint_aad(id, version), hint.as_bytes())
+        .map_err(VaultError::Storage)?;
     Ok((model::enc(&nonce), model::enc(&ct)))
 }
 
@@ -1557,8 +2038,14 @@ fn seal_version(
     now: u64,
 ) -> Result<Version, VaultError> {
     let dek = crypto::random_key().map_err(VaultError::Storage)?;
-    let (nonce, ct) = crypto::seal(&dek, &value_aad(id, version, name, scope, bindings), value.as_bytes()).map_err(VaultError::Storage)?;
-    let (dek_nonce, dek_ct) = crypto::seal(&keys.wrap, &dek_aad(id, version), &dek[..]).map_err(VaultError::Storage)?;
+    let (nonce, ct) = crypto::seal(
+        &dek,
+        &value_aad(id, version, name, scope, bindings),
+        value.as_bytes(),
+    )
+    .map_err(VaultError::Storage)?;
+    let (dek_nonce, dek_ct) =
+        crypto::seal(&keys.wrap, &dek_aad(id, version), &dek[..]).map_err(VaultError::Storage)?;
     let (hint_nonce, hint_ct) = match hint(value) {
         Some(text) => {
             let (nonce, ct) = seal_hint(keys, id, version, &text)?;
@@ -1583,10 +2070,16 @@ fn seal_version(
 /// A new entry at version 1, checked against the document (names, scopes, sizes).
 fn build_entry(keys: &Keys, doc: &Document, new: NewSecret, now: u64) -> Result<Entry, VaultError> {
     if !valid_name(&new.name) {
-        return Err(VaultError::Invalid(format!("{} is not a name: upper case letters, digits and _, 2 to 64 characters", new.name)));
+        return Err(VaultError::Invalid(format!(
+            "{} is not a name: upper case letters, digits and _, 2 to 64 characters",
+            new.name
+        )));
     }
     if !KINDS.contains(&new.kind.as_str()) {
-        return Err(VaultError::Invalid(format!("{} is not a kind (api_key, token, password, generic)", new.kind)));
+        return Err(VaultError::Invalid(format!(
+            "{} is not a kind (api_key, token, password, generic)",
+            new.kind
+        )));
     }
     validate_value(new.value.expose_secret())?;
     let scope = validate_scope(new.scope)?;
@@ -1594,7 +2087,16 @@ fn build_entry(keys: &Keys, doc: &Document, new: NewSecret, now: u64) -> Result<
     let label = clean_label(&new.label)?;
     check_scope(&doc.entries, &new.name, &scope, None)?;
     let id = new_id("sec")?;
-    let version = seal_version(keys, &id, 1, &new.name, &scope, &bindings, new.value.expose_secret(), now)?;
+    let version = seal_version(
+        keys,
+        &id,
+        1,
+        &new.name,
+        &scope,
+        &bindings,
+        new.value.expose_secret(),
+        now,
+    )?;
     Ok(Entry {
         id,
         name: new.name,
@@ -1636,7 +2138,8 @@ fn unwrap_dek(keys: &Keys, id: &str, version: &Version) -> Result<Key, VaultErro
     let ct = model::dec(&version.dek_ct).map_err(VaultError::Corrupt)?;
     let bytes = crypto::open(&keys.wrap, &nonce, &dek_aad(id, version.v), &ct)
         .map_err(|_| VaultError::Corrupt("a data key failed its check".into()))?;
-    crypto::key_from(&bytes).ok_or_else(|| VaultError::Corrupt("a data key has the wrong length".into()))
+    crypto::key_from(&bytes)
+        .ok_or_else(|| VaultError::Corrupt("a data key has the wrong length".into()))
 }
 
 fn decrypt_current(keys: &Keys, entry: &Entry) -> Result<Zeroizing<Vec<u8>>, VaultError> {
@@ -1648,8 +2151,19 @@ fn decrypt_current(keys: &Keys, entry: &Entry) -> Result<Zeroizing<Vec<u8>>, Vau
     let dek = unwrap_dek(keys, &entry.id, version)?;
     let nonce = model::dec(&version.nonce).map_err(VaultError::Corrupt)?;
     let ct = model::dec(&version.ct).map_err(VaultError::Corrupt)?;
-    crypto::open(&dek, &nonce, &value_aad(&entry.id, version.v, &entry.name, &entry.scope, &entry.bindings), &ct)
-        .map_err(|_| VaultError::Corrupt(format!("{} failed its check", entry.name)))
+    crypto::open(
+        &dek,
+        &nonce,
+        &value_aad(
+            &entry.id,
+            version.v,
+            &entry.name,
+            &entry.scope,
+            &entry.bindings,
+        ),
+        &ct,
+    )
+    .map_err(|_| VaultError::Corrupt(format!("{} failed its check", entry.name)))
 }
 
 /// Re-encrypts one version's value under a new scope and bindings. The DEK is unchanged.
@@ -1664,9 +2178,15 @@ fn rewrap_value(
     let dek = unwrap_dek(keys, id, version)?;
     let nonce = model::dec(&version.nonce).map_err(VaultError::Corrupt)?;
     let ct = model::dec(&version.ct).map_err(VaultError::Corrupt)?;
-    let value = crypto::open(&dek, &nonce, &value_aad(id, version.v, name, old.0, old.1), &ct)
-        .map_err(|_| VaultError::Corrupt(format!("{name} failed its check")))?;
-    let (nonce, ct) = crypto::seal(&dek, &value_aad(id, version.v, name, new.0, new.1), &value).map_err(VaultError::Storage)?;
+    let value = crypto::open(
+        &dek,
+        &nonce,
+        &value_aad(id, version.v, name, old.0, old.1),
+        &ct,
+    )
+    .map_err(|_| VaultError::Corrupt(format!("{name} failed its check")))?;
+    let (nonce, ct) = crypto::seal(&dek, &value_aad(id, version.v, name, new.0, new.1), &value)
+        .map_err(VaultError::Storage)?;
     version.nonce = model::enc(&nonce);
     version.ct = model::enc(&ct);
     Ok(())

@@ -107,8 +107,15 @@ impl Orbit {
     pub fn update(&mut self) -> bool {
         self.theta += self.delta_theta * self.damping;
         self.phi += self.delta_phi * self.damping;
-        self.phi = self.phi.max(self.min_polar).min(self.max_polar).max(POLE_EPS).min(PI - POLE_EPS);
-        self.radius = (self.radius * self.scale).max(self.min_distance).min(self.max_distance);
+        self.phi = self
+            .phi
+            .max(self.min_polar)
+            .min(self.max_polar)
+            .max(POLE_EPS)
+            .min(PI - POLE_EPS);
+        self.radius = (self.radius * self.scale)
+            .max(self.min_distance)
+            .min(self.max_distance);
         self.target += self.pan * self.damping;
 
         let keep = 1.0 - self.damping;
@@ -117,13 +124,18 @@ impl Orbit {
         self.pan *= keep;
         self.scale = 1.0;
 
-        self.delta_theta.abs() > SETTLED || self.delta_phi.abs() > SETTLED || self.pan.length() > SETTLED
+        self.delta_theta.abs() > SETTLED
+            || self.delta_phi.abs() > SETTLED
+            || self.pan.length() > SETTLED
     }
 
     /// Starts the idle sway from the current azimuth (the framed view). Its clock starts at the first
     /// [`Orbit::drift_to`], so the angle depends on that tick's time, not on the frames before it.
     pub fn start_drift(&mut self) {
-        self.drift = Some(Drift { start_theta: self.theta, started: None });
+        self.drift = Some(Drift {
+            start_theta: self.theta,
+            started: None,
+        });
     }
 
     /// Stops the idle sway; the view stays where it is.
@@ -140,12 +152,20 @@ impl Orbit {
     /// either way, swinging at [`DRIFT_RATE`] (so the framed view stays in sight). The angle is a pure function of
     /// the time since the sway started. Returns whether the sway runs.
     pub fn drift_to(&mut self, now: Instant) -> bool {
-        let Some(drift) = self.drift.as_mut() else { return false };
+        let Some(drift) = self.drift.as_mut() else {
+            return false;
+        };
         let started = *drift.started.get_or_insert(now);
         let elapsed = now.saturating_duration_since(started).as_secs_f64();
         let period = f64::from(4.0 * DRIFT_AMP / DRIFT_RATE);
         let u = (elapsed / period).fract() as f32;
-        let swing = if u < 0.25 { 4.0 * u } else if u < 0.75 { 2.0 - 4.0 * u } else { 4.0 * u - 4.0 };
+        let swing = if u < 0.25 {
+            4.0 * u
+        } else if u < 0.75 {
+            2.0 - 4.0 * u
+        } else {
+            4.0 * u - 4.0
+        };
         self.theta = drift.start_theta + DRIFT_AMP * swing;
         true
     }
@@ -167,12 +187,23 @@ impl Orbit {
     /// The camera now (fov `FOV_DEG`, near 0.5, far 1000).
     pub fn camera(&self, aspect: f32) -> Camera {
         let eye = self.target + self.radius * self.eye_direction();
-        Camera { eye, target: self.target, fov: FOV_DEG, near: 0.5, far: 1000.0, aspect }
+        Camera {
+            eye,
+            target: self.target,
+            fov: FOV_DEG,
+            near: 0.5,
+            far: 1000.0,
+            aspect,
+        }
     }
 
     /// Unit vector from the target to the eye, from the spherical coordinates.
     fn eye_direction(&self) -> Vec3 {
-        Vec3::new(self.phi.sin() * self.theta.sin(), self.phi.cos(), self.phi.sin() * self.theta.cos())
+        Vec3::new(
+            self.phi.sin() * self.theta.sin(),
+            self.phi.cos(),
+            self.phi.sin() * self.theta.cos(),
+        )
     }
 
     /// The camera's right and up axes for a look at the target with world up +Y (three's lookAt).
@@ -212,10 +243,18 @@ mod tests {
         while orbit.update() {
             steps += 1;
             assert!(steps < 2000, "damping never settled");
-            assert!(orbit.phi >= orbit.min_polar && orbit.phi <= orbit.max_polar, "phi {}", orbit.phi);
+            assert!(
+                orbit.phi >= orbit.min_polar && orbit.phi <= orbit.max_polar,
+                "phi {}",
+                orbit.phi
+            );
         }
         assert!(orbit.phi >= orbit.min_polar && orbit.phi <= orbit.max_polar);
-        assert!((orbit.phi - orbit.max_polar).abs() < 1e-4, "phi {}", orbit.phi);
+        assert!(
+            (orbit.phi - orbit.max_polar).abs() < 1e-4,
+            "phi {}",
+            orbit.phi
+        );
     }
 
     #[test]
@@ -228,8 +267,16 @@ mod tests {
         for _ in 0..200 {
             orbit.dolly(1.0);
             orbit.update();
-            assert!(orbit.radius <= orbit.max_distance, "radius {}", orbit.radius);
+            assert!(
+                orbit.radius <= orbit.max_distance,
+                "radius {}",
+                orbit.radius
+            );
         }
-        assert!((orbit.radius - orbit.max_distance).abs() < 1e-3, "radius {}", orbit.radius);
+        assert!(
+            (orbit.radius - orbit.max_distance).abs() < 1e-3,
+            "radius {}",
+            orbit.radius
+        );
     }
 }

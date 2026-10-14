@@ -5,15 +5,15 @@
 use apz_gateway::Caller;
 use apz_http::{Request, Response, Router};
 use apz_proto::chat::{ChatRequest, Message, Role};
-use apz_proto::wire::{cap_output, Decision, GuestMessage, HostMessage};
+use apz_proto::wire::{Decision, GuestMessage, HostMessage, cap_output};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use crate::agents::{model_of, profile, Agent};
+use crate::agents::{Agent, model_of, profile};
 use crate::laws::Laws;
 use crate::settings::tier_of;
 use crate::state::App;
-use crate::tools::{run_host, runs, Runs};
+use crate::tools::{Runs, run_host, runs};
 
 /// How much of the last user turn the transcript keeps, in characters.
 const LAST_USER_CHARS: usize = 2_000;
@@ -59,28 +59,36 @@ pub fn routes(router: Router<App>) -> Router<App> {
     router
         .post("/internal/v1/agents/{cid}/hello", |app, req, p| {
             authorized(app, req, p.get("cid"), |cid| {
-                let hello: Hello = req.json().map_err(|e| Response::error(400, &e.to_string()))?;
+                let hello: Hello = req
+                    .json()
+                    .map_err(|e| Response::error(400, &e.to_string()))?;
                 let profile = crate::agents::hello(app, cid, &hello.role, hello.vm);
                 Ok(Response::json(200, &json!({ "profile": profile })))
             })
         })
         .post("/internal/v1/agents/{cid}/message", |app, req, p| {
             authorized(app, req, p.get("cid"), |cid| {
-                let message: GuestMessage = req.json().map_err(|e| Response::error(400, &e.to_string()))?;
+                let message: GuestMessage = req
+                    .json()
+                    .map_err(|e| Response::error(400, &e.to_string()))?;
                 let reply = handle(app, cid, message);
                 Ok(Response::json(200, &json!({ "reply": reply })))
             })
         })
         .post("/internal/v1/agents/{cid}/gone", |app, req, p| {
             authorized(app, req, p.get("cid"), |cid| {
-                let gone: Gone = req.json().unwrap_or(Gone { reason: String::new() });
+                let gone: Gone = req.json().unwrap_or(Gone {
+                    reason: String::new(),
+                });
                 crate::agents::gone(app, cid, &gone.reason);
                 Ok(Response::json(200, &json!({})))
             })
         })
         .post("/internal/v1/agents/{cid}/egress", |app, req, p| {
             authorized(app, req, p.get("cid"), |cid| {
-                let egress: Egress = req.json().map_err(|e| Response::error(400, &e.to_string()))?;
+                let egress: Egress = req
+                    .json()
+                    .map_err(|e| Response::error(400, &e.to_string()))?;
                 app.transcripts.record(
                     &app.bus,
                     cid,
@@ -104,13 +112,20 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 Ok(check) => check,
                 Err(e) => return Response::error(400, &e.to_string()),
             };
-            authorized(app, req, &check.cid.to_string(), |cid| Ok(Response::json(200, &egress_check(app, cid, &check.host))))
+            authorized(app, req, &check.cid.to_string(), |cid| {
+                Ok(Response::json(200, &egress_check(app, cid, &check.host)))
+            })
         })
         // An agent's decision (from its VM: `POST http://plaza.gateway/decisions`, which vsockd
         // forwards here with the agent's CID).
-        .post("/internal/v1/agents/{cid}/gateway/decisions", |app, req, p| {
-            authorized(app, req, p.get("cid"), |cid| Ok(crate::decisions::agent_decision(app, cid, req)))
-        })
+        .post(
+            "/internal/v1/agents/{cid}/gateway/decisions",
+            |app, req, p| {
+                authorized(app, req, p.get("cid"), |cid| {
+                    Ok(crate::decisions::agent_decision(app, cid, req))
+                })
+            },
+        )
 }
 
 /// Checks who is calling and the CID, then runs `f`. The local gateway presents the internal
@@ -133,7 +148,10 @@ pub(crate) fn authorized(
         if cid < node.cid_base || cid >= node.cid_base + node.cid_count {
             return Response::error(403, "that agent is not on this node");
         }
-    } else if !req.header("x-apz-internal").is_some_and(|token| apz_trust::ct_eq(token.as_bytes(), app.token.as_bytes())) {
+    } else if !req
+        .header("x-apz-internal")
+        .is_some_and(|token| apz_trust::ct_eq(token.as_bytes(), app.token.as_bytes()))
+    {
         return Response::error(403, "missing or wrong internal token");
     }
     f(cid).unwrap_or_else(|response| response)
@@ -143,7 +161,10 @@ pub(crate) fn authorized(
 /// subdomains, `*.example.com` only the subdomains. Case-insensitive; a trailing dot is ignored.
 pub(crate) fn on_fetch_blocklist(block: &[String], host: &str) -> bool {
     let host = host.trim_end_matches('.').to_ascii_lowercase();
-    let under = |suffix: &str| host.strip_suffix(format!(".{suffix}").as_str()).is_some_and(|label| !label.is_empty());
+    let under = |suffix: &str| {
+        host.strip_suffix(format!(".{suffix}").as_str())
+            .is_some_and(|label| !label.is_empty())
+    };
     !host.is_empty()
         && block.iter().any(|entry| {
             let entry = entry.trim().trim_end_matches('.').to_ascii_lowercase();
@@ -156,7 +177,11 @@ pub(crate) fn on_fetch_blocklist(block: &[String], host: &str) -> bool {
 
 /// The law ids in a refusal `Laws::refuse_op` made: `refused by law S-013d, C-002: titles`.
 pub(crate) fn law_of(refusal: &str) -> Option<String> {
-    let ids = refusal.strip_prefix("refused by law ")?.split(':').next()?.trim();
+    let ids = refusal
+        .strip_prefix("refused by law ")?
+        .split(':')
+        .next()?
+        .trim();
     (!ids.is_empty()).then(|| ids.to_string())
 }
 
@@ -170,14 +195,30 @@ pub(crate) struct EgressVerdict {
 
 /// The decision for a connection to `host`: a law refusal first (it names the law, and the laws
 /// have recorded it), then the blocklist; anything else is allowed.
-pub(crate) fn egress_verdict(blocked: bool, law_refusal: Option<String>, host: &str) -> EgressVerdict {
+pub(crate) fn egress_verdict(
+    blocked: bool,
+    law_refusal: Option<String>,
+    host: &str,
+) -> EgressVerdict {
     if let Some(refusal) = law_refusal {
-        return EgressVerdict { allow: false, law: law_of(&refusal), reason: Some(refusal) };
+        return EgressVerdict {
+            allow: false,
+            law: law_of(&refusal),
+            reason: Some(refusal),
+        };
     }
     if blocked {
-        return EgressVerdict { allow: false, law: None, reason: Some(format!("refused: {host} is on the fetch blocklist")) };
+        return EgressVerdict {
+            allow: false,
+            law: None,
+            reason: Some(format!("refused: {host} is on the fetch blocklist")),
+        };
     }
-    EgressVerdict { allow: true, law: None, reason: None }
+    EgressVerdict {
+        allow: true,
+        law: None,
+        reason: None,
+    }
 }
 
 /// The answer to the egress proxy for agent `cid` connecting to `host`. The laws are asked for
@@ -185,12 +226,22 @@ pub(crate) fn egress_verdict(blocked: bool, law_refusal: Option<String>, host: &
 /// refuse it too. The laws only forbid here: a permit is not required (see the report on
 /// `Laws::refuse_op`).
 fn egress_check(app: &App, cid: u64, host: &str) -> Value {
-    let role = app.agents.get(cid).map(|agent| agent.role).unwrap_or_default();
-    let resource = jhrl::authz::Entity { ty: "Host".into(), id: host.into() };
+    let role = app
+        .agents
+        .get(cid)
+        .map(|agent| agent.role)
+        .unwrap_or_default();
+    let resource = jhrl::authz::Entity {
+        ty: "Host".into(),
+        id: host.into(),
+    };
     // The host's group is not known here (the towns' host-groups document is not code), so a law
     // that names a group sees an empty one.
-    let attrs = std::collections::BTreeMap::from([("group".to_string(), jhrl::value::Value::str(""))]);
-    let refusal = app.laws.refuse_op(cid, &role, "egress.connect", resource, attrs, &Value::Null);
+    let attrs =
+        std::collections::BTreeMap::from([("group".to_string(), jhrl::value::Value::str(""))]);
+    let refusal = app
+        .laws
+        .refuse_op(cid, &role, "egress.connect", resource, attrs, &Value::Null);
     let blocked = on_fetch_blocklist(&app.settings.get().fetch_block, host);
     let verdict = egress_verdict(blocked, refusal, host);
     json!({ "allow": verdict.allow, "law": verdict.law, "reason": verdict.reason })
@@ -221,15 +272,29 @@ pub fn handle(app: &App, cid: u64, message: GuestMessage) -> Option<HostMessage>
         GuestMessage::ModelCall { req, work, request } => {
             Some(model_call(app, cid, &agent, req, work, request))
         }
-        GuestMessage::ToolRequest { work, call, name, input } => {
-            Some(tool_request(app, cid, &agent, work, call, &name, &input))
-        }
-        GuestMessage::ToolReport { work, call, ok, output } => {
+        GuestMessage::ToolRequest {
+            work,
+            call,
+            name,
+            input,
+        } => Some(tool_request(app, cid, &agent, work, call, &name, &input)),
+        GuestMessage::ToolReport {
+            work,
+            call,
+            ok,
+            output,
+        } => {
             // One credit per tool report; task work is cancelled if its escrow runs out.
             let _ = meter(app, cid, work, 1, "tool report");
             if crate::library::take_package_call(cid, &call) && ok {
                 if let Err(err) = crate::library::accept(app, cid, &output) {
-                    app.transcripts.record(&app.bus, cid, work, "error", json!({ "message": format!("tool_package: {err}") }));
+                    app.transcripts.record(
+                        &app.bus,
+                        cid,
+                        work,
+                        "error",
+                        json!({ "message": format!("tool_package: {err}") }),
+                    );
                 }
             }
             app.transcripts.record(
@@ -241,24 +306,42 @@ pub fn handle(app: &App, cid: u64, message: GuestMessage) -> Option<HostMessage>
             );
             None
         }
-        GuestMessage::WorkDone { work, status, summary } => {
+        GuestMessage::WorkDone {
+            work,
+            status,
+            summary,
+        } => {
             // The agent's journal: one line per finished piece of work (episodic memory, AP-062).
             if let Some(item) = app.work.current(cid).filter(|item| item.id == work) {
                 let clip = |text: &str, n: usize| -> String {
                     let one: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
-                    if one.chars().count() > n { format!("{}…", one.chars().take(n).collect::<String>()) } else { one }
+                    if one.chars().count() > n {
+                        format!("{}…", one.chars().take(n).collect::<String>())
+                    } else {
+                        one
+                    }
                 };
                 let line = format!(
                     "- {:?} {:?}: {} → {}",
-                    item.kind, status, clip(&item.prompt, 100), clip(&summary, 160)
-                ).to_lowercase();
+                    item.kind,
+                    status,
+                    clip(&item.prompt, 100),
+                    clip(&summary, 160)
+                )
+                .to_lowercase();
                 let _ = app.memory.journal(cid, &line, apz_plaza::now_ms());
             }
             app.work.complete(app, cid, work, status, &summary);
             crate::harness_control::work_ended(app, cid, work, &summary);
             None
         }
-        GuestMessage::Compressed { work, before, after, folded, reason } => {
+        GuestMessage::Compressed {
+            work,
+            before,
+            after,
+            folded,
+            reason,
+        } => {
             app.transcripts.record(
                 &app.bus,
                 cid,
@@ -284,14 +367,26 @@ fn model_call(
     // Held by STOP ALL: no agent thinks until the owner resumes, not even mid-turn.
     if app.control.paused() {
         let e = "the plaza is held (STOP ALL); waiting for the owner to resume".to_string();
-        app.transcripts.record(&app.bus, cid, work, "error", json!({ "message": e }));
-        return HostMessage::ModelResult { req, ok: false, response: None, error: Some(e) };
+        app.transcripts
+            .record(&app.bus, cid, work, "error", json!({ "message": e }));
+        return HostMessage::ModelResult {
+            req,
+            ok: false,
+            response: None,
+            error: Some(e),
+        };
     }
     let model = model_of(app, agent);
     let settings = app.settings.get();
     if let Err(e) = app.settings.allowed(tier_of(&agent.role), &model) {
-        app.transcripts.record(&app.bus, cid, work, "error", json!({ "message": e }));
-        return HostMessage::ModelResult { req, ok: false, response: None, error: Some(e) };
+        app.transcripts
+            .record(&app.bus, cid, work, "error", json!({ "message": e }));
+        return HostMessage::ModelResult {
+            req,
+            ok: false,
+            response: None,
+            error: Some(e),
+        };
     }
     request.model = model.clone();
     if request.max_tokens == 0 {
@@ -310,14 +405,25 @@ fn model_call(
     );
 
     let gateway = app.providers.gateway();
-    let caller = Caller::Agent { cid, node: crate::vault::node_for_cid(&app.nodes.list(), cid) };
-    let result = gateway.complete_for(&request, &mut |delta| {
-        app.bus.publish("delta", &json!({ "cid": cid, "work": work, "req": req, "delta": delta }));
-    }, &caller);
+    let caller = Caller::Agent {
+        cid,
+        node: crate::vault::node_for_cid(&app.nodes.list(), cid),
+    };
+    let result = gateway.complete_for(
+        &request,
+        &mut |delta| {
+            app.bus.publish(
+                "delta",
+                &json!({ "cid": cid, "work": work, "req": req, "delta": delta }),
+            );
+        },
+        &caller,
+    );
     match result {
         Ok(resp) => {
             let full = serde_json::to_value(&resp).unwrap_or(Value::Null);
-            app.transcripts.record(&app.bus, cid, work, "model_response", full);
+            app.transcripts
+                .record(&app.bus, cid, work, "model_response", full);
             let usage = &resp.usage;
             let task = app.work.current(cid).and_then(|item| item.origin.task);
             let tokens = crate::prices::Tokens {
@@ -331,7 +437,8 @@ fn model_call(
                 .prices
                 .get(&model)
                 .map(|p| {
-                    (resp.usage.input_tokens as f64 * p.input + resp.usage.output_tokens as f64 * p.output)
+                    (resp.usage.input_tokens as f64 * p.input
+                        + resp.usage.output_tokens as f64 * p.output)
                         / 1_000_000.0
                 })
                 .unwrap_or(0.0);
@@ -339,14 +446,30 @@ fn model_call(
             let credits = (tokens + 1.0).ceil() as i64;
             app.agents.update(cid, |a| a.usage.add(&resp.usage));
             if let Err(message) = meter(app, cid, work, credits, &format!("model {model}")) {
-                return HostMessage::ModelResult { req, ok: false, response: None, error: Some(message) };
+                return HostMessage::ModelResult {
+                    req,
+                    ok: false,
+                    response: None,
+                    error: Some(message),
+                };
             }
-            HostMessage::ModelResult { req, ok: true, response: Some(resp), error: None }
+            HostMessage::ModelResult {
+                req,
+                ok: true,
+                response: Some(resp),
+                error: None,
+            }
         }
         Err(e) => {
             let message = e.to_string();
-            app.transcripts.record(&app.bus, cid, work, "error", json!({ "message": message }));
-            HostMessage::ModelResult { req, ok: false, response: None, error: Some(message) }
+            app.transcripts
+                .record(&app.bus, cid, work, "error", json!({ "message": message }));
+            HostMessage::ModelResult {
+                req,
+                ok: false,
+                response: None,
+                error: Some(message),
+            }
         }
     }
 }
@@ -357,17 +480,32 @@ fn model_call(
 /// themselves or debating motions cost the plaza's budget nothing (their tokens are
 /// still counted in their usage). A shortfall is recorded and the task's work is
 /// cancelled.
-pub(crate) fn meter(app: &App, cid: u64, work: u64, credits: i64, memo: &str) -> Result<(), String> {
+pub(crate) fn meter(
+    app: &App,
+    cid: u64,
+    work: u64,
+    credits: i64,
+    memo: &str,
+) -> Result<(), String> {
     let Some(task) = app.work.current(cid).and_then(|item| item.origin.task) else {
         return Ok(());
     };
     let charging = app.settings.get().payments.charge_models;
     let spend = |task: &str, credits: i64| app.work.add_spend(task, credits);
-    let charge = crate::payments::charge_model_call(&app.plaza.treasury, charging, spend, cid, Some(&task), credits, memo);
+    let charge = crate::payments::charge_model_call(
+        &app.plaza.treasury,
+        charging,
+        spend,
+        cid,
+        Some(&task),
+        credits,
+        memo,
+    );
     match charge {
         Some(settled) if settled.charged < settled.wanted => {
             let message = "budget exhausted";
-            app.transcripts.record(&app.bus, cid, work, "error", json!({ "message": message }));
+            app.transcripts
+                .record(&app.bus, cid, work, "error", json!({ "message": message }));
             app.work.cancel(app, cid, message);
             Err(message.to_string())
         }
@@ -392,25 +530,35 @@ fn tool_request(
         "tool_request",
         json!({ "call": call, "name": name, "input": input }),
     );
-    let granted: Vec<String> = profile(app, agent).tools.into_iter().map(|t| t.name).collect();
+    let granted: Vec<String> = profile(app, agent)
+        .tools
+        .into_iter()
+        .map(|t| t.name)
+        .collect();
     // The plaza's laws and the grant come first (see `gate_call`).
     let verdict = gate_call(&app.laws, cid, &agent.role, &granted, name, input)
         .and_then(|runs| crate::sanctions::suspended(app, cid, name).map_or(Ok(runs), Err));
     // The owner's permission mode next — only for calls that would otherwise run, so a refused
     // or ungranted call never waits in the approvals queue.
-    let gate = if verdict.is_ok() { crate::approvals::gate(app, cid, name, input) } else { None };
+    let gate = if verdict.is_ok() {
+        crate::approvals::gate(app, cid, name, input)
+    } else {
+        None
+    };
     let mut program = None;
     let (decision, output, is_error) = match verdict {
         _ if gate.is_some() => (Decision::Deny, gate.unwrap_or_default(), true),
         Err(reason) => (Decision::Deny, reason, true),
         // An agent-made tool from the library: allowed with its program, which the guest runs.
-        Ok(Runs::Guest) if name.starts_with(crate::library::PREFIX) => match crate::library::program(app, cid, name) {
-            Some(found) => {
-                program = Some(found);
-                (Decision::Allow, String::new(), false)
+        Ok(Runs::Guest) if name.starts_with(crate::library::PREFIX) => {
+            match crate::library::program(app, cid, name) {
+                Some(found) => {
+                    program = Some(found);
+                    (Decision::Allow, String::new(), false)
+                }
+                None => (Decision::Deny, "no such library tool".to_string(), true),
             }
-            None => (Decision::Deny, "no such library tool".to_string(), true),
-        },
+        }
         Ok(Runs::Guest) => {
             if name == "tool_package" {
                 crate::library::remember_package_call(cid, &call);
@@ -441,7 +589,13 @@ fn tool_request(
             "output": cap_output(&output, DECISION_OUTPUT_BYTES),
         }),
     );
-    HostMessage::ToolDecision { call, decision, output, is_error, program }
+    HostMessage::ToolDecision {
+        call,
+        decision,
+        output,
+        is_error,
+        program,
+    }
 }
 
 /// The law gate and the grant for one tool request, decided before anything runs: `Ok(where)` when
@@ -494,13 +648,25 @@ mod tests {
     fn decide_denies_ungranted_allows_guest_and_denies_unknown() {
         let granted = vec!["read".to_string(), "calc".to_string()];
         // An ungranted tool is denied even when a runner exists for it.
-        assert!(matches!(decide(&granted, "bash", Some(Runs::Guest)), Err("not granted to this agent")));
+        assert!(matches!(
+            decide(&granted, "bash", Some(Runs::Guest)),
+            Err("not granted to this agent")
+        ));
         // A granted guest tool may run in the VM.
-        assert!(matches!(decide(&granted, "read", Some(Runs::Guest)), Ok(Runs::Guest)));
+        assert!(matches!(
+            decide(&granted, "read", Some(Runs::Guest)),
+            Ok(Runs::Guest)
+        ));
         // A granted host tool runs in apid.
-        assert!(matches!(decide(&granted, "calc", Some(Runs::Host)), Ok(Runs::Host)));
+        assert!(matches!(
+            decide(&granted, "calc", Some(Runs::Host)),
+            Ok(Runs::Host)
+        ));
         // A granted name that no runner knows is denied as unknown.
-        assert!(matches!(decide(&granted, "read", None), Err("unknown tool")));
+        assert!(matches!(
+            decide(&granted, "read", None),
+            Err("unknown tool")
+        ));
     }
 
     #[test]
@@ -514,7 +680,10 @@ mod tests {
         let summary = request_summary("m", &messages, &["read", "calc"]);
         assert_eq!(summary["messages"], 3);
         assert_eq!(summary["tools"], json!(["read", "calc"]));
-        assert_eq!(summary["last_user"].as_str().map(|s| s.chars().count()), Some(LAST_USER_CHARS));
+        assert_eq!(
+            summary["last_user"].as_str().map(|s| s.chars().count()),
+            Some(LAST_USER_CHARS)
+        );
     }
 
     #[test]
@@ -529,7 +698,7 @@ mod tests {
 #[cfg(test)]
 mod egress_check_tests {
     use super::*;
-    use crate::laws::{Laws, LAW_FILES};
+    use crate::laws::{LAW_FILES, Laws};
 
     fn list(entries: &[&str]) -> Vec<String> {
         entries.iter().map(|entry| entry.to_string()).collect()
@@ -538,11 +707,31 @@ mod egress_check_tests {
     #[test]
     fn the_blocklist_covers_a_domain_with_its_subdomains_and_a_wildcard_only_the_subdomains() {
         let block = list(&["example.com", "*.pypi.org", "  Files.Example.NET "]);
-        for host in ["example.com", "EXAMPLE.com", "sub.example.com", "example.com.", "files.example.net", "a.pypi.org", "x.y.pypi.org"] {
+        for host in [
+            "example.com",
+            "EXAMPLE.com",
+            "sub.example.com",
+            "example.com.",
+            "files.example.net",
+            "a.pypi.org",
+            "x.y.pypi.org",
+        ] {
             assert!(on_fetch_blocklist(&block, host), "{host} must be blocked");
         }
-        for host in ["pypi.org", "evilpypi.org", "a.evilpypi.org", "example.com.evil.net", "notexample.com", "pypi.org.evil.com", "example.net", ""] {
-            assert!(!on_fetch_blocklist(&block, host), "{host} must not be blocked");
+        for host in [
+            "pypi.org",
+            "evilpypi.org",
+            "a.evilpypi.org",
+            "example.com.evil.net",
+            "notexample.com",
+            "pypi.org.evil.com",
+            "example.net",
+            "",
+        ] {
+            assert!(
+                !on_fetch_blocklist(&block, host),
+                "{host} must not be blocked"
+            );
         }
     }
 
@@ -554,23 +743,42 @@ mod egress_check_tests {
 
     #[test]
     fn a_law_refusal_wins_and_names_its_law_and_a_blocked_host_is_named() {
-        let refusal = "refused by law S-013d, C-002: Researchers never write to repositories".to_string();
+        let refusal =
+            "refused by law S-013d, C-002: Researchers never write to repositories".to_string();
         assert_eq!(
             egress_verdict(true, Some(refusal.clone()), "git.hub.local"),
-            EgressVerdict { allow: false, law: Some("S-013d, C-002".into()), reason: Some(refusal) }
+            EgressVerdict {
+                allow: false,
+                law: Some("S-013d, C-002".into()),
+                reason: Some(refusal)
+            }
         );
         // A law refusal stands even for a host the blocklist doesn't name.
         assert!(!egress_verdict(false, Some("refused by law X: t".into()), "example.com").allow);
-        assert_eq!(egress_verdict(false, None, "example.com"), EgressVerdict { allow: true, law: None, reason: None });
+        assert_eq!(
+            egress_verdict(false, None, "example.com"),
+            EgressVerdict {
+                allow: true,
+                law: None,
+                reason: None
+            }
+        );
         assert_eq!(
             egress_verdict(true, None, "evil.example"),
-            EgressVerdict { allow: false, law: None, reason: Some("refused: evil.example is on the fetch blocklist".into()) }
+            EgressVerdict {
+                allow: false,
+                law: None,
+                reason: Some("refused: evil.example is on the fetch blocklist".into())
+            }
         );
     }
 
     #[test]
     fn the_law_ids_are_read_from_a_refusal() {
-        assert_eq!(law_of("refused by law S-013d: Researchers never write"), Some("S-013d".into()));
+        assert_eq!(
+            law_of("refused by law S-013d: Researchers never write"),
+            Some("S-013d".into())
+        );
         assert_eq!(law_of("refused: no law permits egress"), None);
         assert_eq!(law_of("refused by law : title"), None);
     }
@@ -580,14 +788,42 @@ mod egress_check_tests {
         let dir = std::env::temp_dir().join(format!("apid-egress-check-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let _ = std::fs::remove_file(dir.join("violations.json"));
-        let files: Vec<(String, String)> = LAW_FILES.iter().map(|(name, text)| (name.to_string(), text.to_string())).collect();
+        let files: Vec<(String, String)> = LAW_FILES
+            .iter()
+            .map(|(name, text)| (name.to_string(), text.to_string()))
+            .collect();
         let laws = Laws::from_files(&dir, files);
-        let resource = jhrl::authz::Entity { ty: "Host".into(), id: "git.hub.local".into() };
-        let attrs = std::collections::BTreeMap::from([("group".to_string(), jhrl::value::Value::str("hub-git"))]);
-        let refusal = laws.refuse_op(7, "researcher", "egress.connect", resource, attrs, &Value::Null);
+        let resource = jhrl::authz::Entity {
+            ty: "Host".into(),
+            id: "git.hub.local".into(),
+        };
+        let attrs = std::collections::BTreeMap::from([(
+            "group".to_string(),
+            jhrl::value::Value::str("hub-git"),
+        )]);
+        let refusal = laws.refuse_op(
+            7,
+            "researcher",
+            "egress.connect",
+            resource,
+            attrs,
+            &Value::Null,
+        );
         let verdict = egress_verdict(false, refusal, "git.hub.local");
-        assert!(!verdict.allow && verdict.law.as_deref().unwrap_or_default().contains("S-013d"), "{verdict:?}");
-        assert!(laws.all_violations().iter().any(|(cid, violation)| *cid == 7 && violation.law == "S-013d"));
+        assert!(
+            !verdict.allow
+                && verdict
+                    .law
+                    .as_deref()
+                    .unwrap_or_default()
+                    .contains("S-013d"),
+            "{verdict:?}"
+        );
+        assert!(
+            laws.all_violations()
+                .iter()
+                .any(|(cid, violation)| *cid == 7 && violation.law == "S-013d")
+        );
     }
 }
 
@@ -597,7 +833,7 @@ mod egress_check_tests {
 #[cfg(test)]
 mod law_gate_tests {
     use super::*;
-    use crate::laws::{Laws, LAW_FILES};
+    use crate::laws::{LAW_FILES, Laws};
 
     /// A rule an owner might add: no reading files, for any agent.
     const OWNER_RULE: &str = r#"law "O-001" "No reading files" {
@@ -620,17 +856,28 @@ mod law_gate_tests {
     }
 
     fn compiled_in() -> Vec<(String, String)> {
-        LAW_FILES.iter().map(|(name, text)| (name.to_string(), text.to_string())).collect()
+        LAW_FILES
+            .iter()
+            .map(|(name, text)| (name.to_string(), text.to_string()))
+            .collect()
     }
 
     #[test]
     fn a_forbidden_call_is_refused_with_its_law_and_recorded() {
         let laws = Laws::load(&scratch("forbidden"));
         let granted = crate::tools::offered_names("builder");
-        let input = json!({"command": "curl -H 'Authorization: sk-proj-abcdefghijklmnopqrstuvwxyz0123' x"});
+        let input =
+            json!({"command": "curl -H 'Authorization: sk-proj-abcdefghijklmnopqrstuvwxyz0123' x"});
         let reason = gate_call(&laws, 7, "builder", &granted, "bash", &input).unwrap_err();
-        assert!(reason.starts_with("refused by law ") && reason.contains("C-002b"), "{reason}");
-        assert!(laws.all_violations().iter().any(|(cid, v)| *cid == 7 && v.law == "C-002b"));
+        assert!(
+            reason.starts_with("refused by law ") && reason.contains("C-002b"),
+            "{reason}"
+        );
+        assert!(
+            laws.all_violations()
+                .iter()
+                .any(|(cid, v)| *cid == 7 && v.law == "C-002b")
+        );
         assert!(!laws.recent(7, apz_plaza::now_ms()).is_empty());
     }
 
@@ -638,8 +885,21 @@ mod law_gate_tests {
     fn a_permitted_call_runs_where_its_tool_runs() {
         let laws = Laws::load(&scratch("permitted"));
         let granted = crate::tools::offered_names("builder");
-        assert_eq!(gate_call(&laws, 7, "builder", &granted, "read_file", &json!({"path": "a.md"})), Ok(Runs::Guest));
-        assert_eq!(gate_call(&laws, 7, "builder", &granted, "plaza_tasks", &json!({})), Ok(Runs::Host));
+        assert_eq!(
+            gate_call(
+                &laws,
+                7,
+                "builder",
+                &granted,
+                "read_file",
+                &json!({"path": "a.md"})
+            ),
+            Ok(Runs::Guest)
+        );
+        assert_eq!(
+            gate_call(&laws, 7, "builder", &granted, "plaza_tasks", &json!({})),
+            Ok(Runs::Host)
+        );
         assert!(laws.all_violations().is_empty());
     }
 
@@ -647,8 +907,12 @@ mod law_gate_tests {
     fn an_unknown_tool_is_denied_by_default_and_not_recorded() {
         let laws = Laws::load(&scratch("unknown"));
         let granted = vec!["launch_missiles".to_string()];
-        let reason = gate_call(&laws, 7, "builder", &granted, "launch_missiles", &json!({})).unwrap_err();
-        assert_eq!(reason, "refused: no law permits launch_missiles for the builder role");
+        let reason =
+            gate_call(&laws, 7, "builder", &granted, "launch_missiles", &json!({})).unwrap_err();
+        assert_eq!(
+            reason,
+            "refused: no law permits launch_missiles for the builder role"
+        );
         assert!(laws.all_violations().is_empty());
     }
 
@@ -656,11 +920,19 @@ mod law_gate_tests {
     fn a_tool_the_laws_withhold_is_neither_offered_nor_run_even_if_granted() {
         let laws = Laws::load(&scratch("withheld"));
         // Posting a task is the orchestrator's (T-003): a builder is not offered it.
-        assert!(!crate::tools::offered_names("builder").iter().any(|name| name == "plaza_post_task"));
+        assert!(
+            !crate::tools::offered_names("builder")
+                .iter()
+                .any(|name| name == "plaza_post_task")
+        );
         // The model may still call it by name; the gate refuses it by default and does not record it.
         let granted = vec!["plaza_post_task".to_string()];
-        let reason = gate_call(&laws, 7, "builder", &granted, "plaza_post_task", &json!({})).unwrap_err();
-        assert!(reason.contains("no law permits plaza_post_task"), "{reason}");
+        let reason =
+            gate_call(&laws, 7, "builder", &granted, "plaza_post_task", &json!({})).unwrap_err();
+        assert!(
+            reason.contains("no law permits plaza_post_task"),
+            "{reason}"
+        );
         assert!(laws.all_violations().is_empty());
     }
 
@@ -674,6 +946,9 @@ mod law_gate_tests {
         let reason = gate_call(&added, 7, "builder", &granted, "read_file", &input).unwrap_err();
         assert!(reason.contains("O-001"), "{reason}");
         let removed = Laws::from_files(&scratch("rule-removed"), compiled_in());
-        assert_eq!(gate_call(&removed, 7, "builder", &granted, "read_file", &input), Ok(Runs::Guest));
+        assert_eq!(
+            gate_call(&removed, 7, "builder", &granted, "read_file", &input),
+            Ok(Runs::Guest)
+        );
     }
 }

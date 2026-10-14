@@ -11,10 +11,10 @@ use kvm_ioctls::Kvm as KvmFd;
 
 // Upstream re-exports the arch-specific `Kvm` through `crate::arch`; select
 // the current arch's module here.
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-pub use crate::arch::x86_64::kvm::{Kvm, KvmArchError};
 #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
 pub use crate::arch::aarch64::kvm::{Kvm, KvmArchError};
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+pub use crate::arch::x86_64::kvm::{Kvm, KvmArchError};
 
 /// Errors associated with the wrappers over KVM ioctls.
 #[derive(Debug, thiserror::Error)]
@@ -46,7 +46,8 @@ impl Kvm {
         }
 
         // Check that all desired capabilities are supported.
-        Self::check_capabilities(&kvm_fd, &Self::DEFAULT_CAPABILITIES).map_err(KvmError::Capabilities)?;
+        Self::check_capabilities(&kvm_fd, &Self::DEFAULT_CAPABILITIES)
+            .map_err(KvmError::Capabilities)?;
 
         Kvm::init_arch(kvm_fd).map_err(KvmError::ArchError)
     }

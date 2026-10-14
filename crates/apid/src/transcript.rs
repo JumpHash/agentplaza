@@ -38,7 +38,10 @@ pub struct Store {
 impl Store {
     /// Drops the in-memory log of `cid` (the stored rows are deleted separately).
     pub fn clear(&self, cid: u64) {
-        self.agents.lock().unwrap_or_else(PoisonError::into_inner).remove(&cid);
+        self.agents
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&cid);
     }
 
     /// Every entry recorded from now on is also handed to `sink`.
@@ -56,7 +59,14 @@ impl Store {
                 if log.len() == KEEP {
                     log.pop_front();
                 }
-                log.push_back(Entry { seq, at_ms, cid, work, kind, data });
+                log.push_back(Entry {
+                    seq,
+                    at_ms,
+                    cid,
+                    work,
+                    kind,
+                    data,
+                });
             }
         }
         if let Some(largest) = largest {
@@ -67,9 +77,21 @@ impl Store {
     /// Appends an entry and publishes it as a `transcript` event.
     pub fn record(&self, bus: &Bus, cid: u64, work: u64, kind: &'static str, data: Value) -> u64 {
         let seq = self.seq.fetch_add(1, Ordering::SeqCst) + 1;
-        let entry = Entry { seq, at_ms: apz_plaza::now_ms(), cid, work, kind: kind.to_string(), data };
+        let entry = Entry {
+            seq,
+            at_ms: apz_plaza::now_ms(),
+            cid,
+            work,
+            kind: kind.to_string(),
+            data,
+        };
         bus.publish("transcript", &entry);
-        if let Some(sink) = self.sink.lock().unwrap_or_else(PoisonError::into_inner).as_ref() {
+        if let Some(sink) = self
+            .sink
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+        {
             sink(cid, seq, work, kind, entry.at_ms, &entry.data);
         }
         let mut agents = self.agents.lock().unwrap_or_else(PoisonError::into_inner);
@@ -86,7 +108,13 @@ impl Store {
         let agents = self.agents.lock().unwrap_or_else(PoisonError::into_inner);
         agents
             .get(&cid)
-            .map(|log| log.iter().filter(|e| e.seq > after).take(limit).cloned().collect())
+            .map(|log| {
+                log.iter()
+                    .filter(|e| e.seq > after)
+                    .take(limit)
+                    .cloned()
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
@@ -95,7 +123,12 @@ impl Store {
         let agents = self.agents.lock().unwrap_or_else(PoisonError::into_inner);
         agents
             .get(&cid)
-            .map(|log| log.iter().skip(log.len().saturating_sub(n)).cloned().collect())
+            .map(|log| {
+                log.iter()
+                    .skip(log.len().saturating_sub(n))
+                    .cloned()
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
@@ -131,24 +164,44 @@ mod tests {
             7,
             vec![
                 (5, 1, "work_start".to_string(), 10, json!({})),
-                (6, 1, "model_request".to_string(), 11, json!({"prompt": "hi"})),
+                (
+                    6,
+                    1,
+                    "model_request".to_string(),
+                    11,
+                    json!({"prompt": "hi"}),
+                ),
             ],
         );
         let seen = Arc::new(Mutex::new(Vec::new()));
         let sink_seen = Arc::clone(&seen);
-        store.set_sink(Box::new(move |cid: u64, seq: u64, work: u64, kind: &str, _at: u64, _data: &Value| {
-            sink_seen.lock().unwrap().push((cid, seq, work, kind.to_string()));
-        }));
+        store.set_sink(Box::new(
+            move |cid: u64, seq: u64, work: u64, kind: &str, _at: u64, _data: &Value| {
+                sink_seen
+                    .lock()
+                    .unwrap()
+                    .push((cid, seq, work, kind.to_string()));
+            },
+        ));
         let seq = store.record(&bus, 7, 1, "work_end", json!({"status": "done"}));
         assert!(seq > 6, "new seq {seq} must exceed the preloaded max");
         assert_eq!(store.after(7, 0, 10).len(), 3);
-        assert_eq!(*seen.lock().unwrap(), vec![(7, seq, 1, "work_end".to_string())]);
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![(7, seq, 1, "work_end".to_string())]
+        );
     }
 
     #[test]
     fn entries_are_ordered_capped_and_searchable() {
         let (store, bus) = (Store::default(), Bus::default());
-        let first = store.record(&bus, 7, 1, "work_start", json!({"prompt": "Write the README"}));
+        let first = store.record(
+            &bus,
+            7,
+            1,
+            "work_start",
+            json!({"prompt": "Write the README"}),
+        );
         store.record(&bus, 7, 1, "work_end", json!({"status": "done"}));
         store.record(&bus, 8, 2, "work_start", json!({}));
         assert_eq!(store.after(7, 0, 10).len(), 2);
@@ -165,9 +218,19 @@ mod tests {
         }
         store.record(&bus, 8, 2, "work_start", json!({}));
         let newest = store.last(7, 2);
-        assert_eq!(newest.iter().map(|e| e.data["i"].as_i64()).collect::<Vec<_>>(), vec![Some(3), Some(4)]);
+        assert_eq!(
+            newest
+                .iter()
+                .map(|e| e.data["i"].as_i64())
+                .collect::<Vec<_>>(),
+            vec![Some(3), Some(4)]
+        );
         assert!(newest[0].seq < newest[1].seq);
-        assert_eq!(store.last(7, 99).len(), 5, "a window longer than the log returns all of it");
+        assert_eq!(
+            store.last(7, 99).len(),
+            5,
+            "a window longer than the log returns all of it"
+        );
         assert_eq!(store.last(7, 0).len(), 0);
         assert!(store.last(9, 3).is_empty());
     }

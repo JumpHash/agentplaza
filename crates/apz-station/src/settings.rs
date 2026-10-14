@@ -96,7 +96,8 @@ mod tests {
     #[test]
     fn a_station_without_a_rate_is_free_and_an_object_from_before_rates_decodes() {
         let old: StationSettings =
-            serde_json::from_str(r#"{"record":true,"snapshot_reset":false}"#).expect("an object from before rates");
+            serde_json::from_str(r#"{"record":true,"snapshot_reset":false}"#)
+                .expect("an object from before rates");
         assert_eq!(old.rate_per_hour, 0);
         assert_eq!(StationSettings::default().rate_per_hour, 0);
     }

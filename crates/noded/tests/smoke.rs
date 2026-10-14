@@ -134,8 +134,7 @@ fn a_churn_run_boots_heartbeats_and_finishes() {
         .as_u64()
         .expect("the second run's VM has an allocated CID");
     assert!(
-        second_cid >= noded::registry::RUN_CID_BASE
-            && second_cid <= noded::registry::RUN_CID_END,
+        second_cid >= noded::registry::RUN_CID_BASE && second_cid <= noded::registry::RUN_CID_END,
         "the second run's CID is inside the run range: {second}"
     );
     assert!(

@@ -7,7 +7,10 @@ use std::sync::Arc;
 
 use glam::{EulerRot, Mat4, Quat, Vec3};
 
-use super::super::geometry::{box_geo, circle, cone, cylinder_full, from_triangles, plane, ring, rounded_box, sphere_part, torus, transformed, weld_smooth};
+use super::super::geometry::{
+    box_geo, circle, cone, cylinder_full, from_triangles, plane, ring, rounded_box, sphere_part,
+    torus, transformed, weld_smooth,
+};
 use super::super::hardware::shape_geometry;
 use super::super::scene::{Geo as Mesh, Geometry};
 use super::types::{Eye, Geo, Part, Scale};
@@ -24,7 +27,11 @@ pub struct Piece {
 impl Piece {
     /// A piece with no colour change (white, slot 0).
     pub fn plain(geo: Mesh) -> Piece {
-        Piece { geo, colour: [1.0; 3], slot: 0 }
+        Piece {
+            geo,
+            colour: [1.0; 3],
+            slot: 0,
+        }
     }
 }
 
@@ -37,7 +44,12 @@ fn flat() -> Mat4 {
 /// has its required numbers, so the zeros are never read).
 fn make(g: &Geo) -> Mesh {
     let v = |k: Option<f32>| k.unwrap_or(0.0);
-    let seg = |i: usize, default: u32| g.seg.as_ref().and_then(|s| s.get(i).copied()).unwrap_or(default);
+    let seg = |i: usize, default: u32| {
+        g.seg
+            .as_ref()
+            .and_then(|s| s.get(i).copied())
+            .unwrap_or(default)
+    };
     let (w, h, d, r) = (v(g.w), v(g.h), v(g.d), v(g.r));
     match g.kind.as_str() {
         "box" => box_geo(w, h, d),
@@ -45,10 +57,20 @@ fn make(g: &Geo) -> Mesh {
         "cyl" => cylinder_full(v(g.rt), v(g.rb), h, seg(0, 24), 1, false, 0.0, TAU),
         "cone" => cone(r, h, seg(0, 24)),
         "sphere" => {
-            let theta = if g.half.as_deref() == Some("top") { FRAC_PI_2 } else { PI };
+            let theta = if g.half.as_deref() == Some("top") {
+                FRAC_PI_2
+            } else {
+                PI
+            };
             sphere_part(r, seg(0, 24), seg(1, 16), 0.0, TAU, 0.0, theta)
         }
-        "torus" => torus(r, v(g.tube), seg(0, 10), seg(1, 32), g.arc.unwrap_or(360.0).to_radians()),
+        "torus" => torus(
+            r,
+            v(g.tube),
+            seg(0, 10),
+            seg(1, 32),
+            g.arc.unwrap_or(360.0).to_radians(),
+        ),
         "plane" => transformed(&plane(w, d, 1, 1), flat()),
         "ring" => transformed(&ring(v(g.ri), v(g.ro), 48, 1, 0.0, TAU), flat()),
         "shape" => shape_geometry(g.points.as_deref().unwrap_or(&[]), h),
@@ -68,7 +90,12 @@ pub fn part_geometry(p: &Part) -> (Mesh, f32) {
         Some(Scale::Uniform(s)) => [*s; 3],
         Some(Scale::Xyz(v)) => *v,
     };
-    let rotation = Quat::from_euler(EulerRot::XYZ, rot[0].to_radians(), rot[1].to_radians(), rot[2].to_radians());
+    let rotation = Quat::from_euler(
+        EulerRot::XYZ,
+        rot[0].to_radians(),
+        rot[1].to_radians(),
+        rot[2].to_radians(),
+    );
     let m = Mat4::from_scale_rotation_translation(Vec3::from(scale), rotation, Vec3::from(at));
     (transformed(&src, m), radius)
 }
@@ -84,12 +111,31 @@ fn heart(k: f32, stretch: f32) -> Mesh {
             let t = i as f32 / 8.0;
             let u = 1.0 - t;
             let (a, b, c, d) = (u * u * u, 3.0 * u * u * t, 3.0 * u * t * t, t * t * t);
-            out.push([0, 1].map(|axis| a * p[0][axis] + b * p[1][axis] + c * p[2][axis] + d * p[3][axis]));
+            out.push(
+                [0, 1]
+                    .map(|axis| a * p[0][axis] + b * p[1][axis] + c * p[2][axis] + d * p[3][axis]),
+            );
         }
     };
     let mut outline: Vec<[f32; 2]> = vec![[0.0, -0.8 * k]];
-    curve([[0.0, -0.8 * k], [-1.2 * k, -0.1 * k], [-0.6 * k, 1.0 * k], [0.0, 0.5 * k]], &mut outline);
-    curve([[0.0, 0.5 * k], [0.6 * k, 1.0 * k], [1.2 * k, -0.1 * k], [0.0, -0.8 * k]], &mut outline);
+    curve(
+        [
+            [0.0, -0.8 * k],
+            [-1.2 * k, -0.1 * k],
+            [-0.6 * k, 1.0 * k],
+            [0.0, 0.5 * k],
+        ],
+        &mut outline,
+    );
+    curve(
+        [
+            [0.0, 0.5 * k],
+            [0.6 * k, 1.0 * k],
+            [1.2 * k, -0.1 * k],
+            [0.0, -0.8 * k],
+        ],
+        &mut outline,
+    );
     outline.pop(); // the last point is the first
     let n = outline.len();
     let mut tris: Vec<[f32; 3]> = Vec::with_capacity(n * 3);
@@ -98,7 +144,11 @@ fn heart(k: f32, stretch: f32) -> Mesh {
         // Counter-clockwise seen from +z (the eye faces +z), so the normals point at the viewer.
         let cross = b[0] * c[1] - b[1] * c[0];
         let (b, c) = if cross < 0.0 { (c, b) } else { (b, c) };
-        tris.extend_from_slice(&[[0.0, 0.0, 0.0], [b[0], b[1] * stretch, 0.0], [c[0], c[1] * stretch, 0.0]]);
+        tris.extend_from_slice(&[
+            [0.0, 0.0, 0.0],
+            [b[0], b[1] * stretch, 0.0],
+            [c[0], c[1] * stretch, 0.0],
+        ]);
     }
     from_triangles(tris)
 }
@@ -119,8 +169,18 @@ fn eye_shape(shape: &str, r: f32, stretch: f32) -> Mesh {
 /// An eye's pupil (at its own position, a hair in front of the socket) and its glass socket, if any.
 pub fn eye_geometries(e: &Eye) -> (Mesh, Option<Mesh>) {
     let at = Vec3::from(e.at);
-    let pupil = transformed(&eye_shape(&e.shape, e.pupil, e.stretch.unwrap_or(1.0)), Mat4::from_translation(at + Vec3::Z * 0.004));
-    let glass = if e.glass == Some(false) { None } else { Some(transformed(&circle(e.r.unwrap_or(0.1), 24, 0.0, TAU), Mat4::from_translation(at))) };
+    let pupil = transformed(
+        &eye_shape(&e.shape, e.pupil, e.stretch.unwrap_or(1.0)),
+        Mat4::from_translation(at + Vec3::Z * 0.004),
+    );
+    let glass = if e.glass == Some(false) {
+        None
+    } else {
+        Some(transformed(
+            &circle(e.r.unwrap_or(0.1), 24, 0.0, TAU),
+            Mat4::from_translation(at),
+        ))
+    };
     (pupil, glass)
 }
 

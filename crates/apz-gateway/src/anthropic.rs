@@ -47,7 +47,12 @@ fn traits(model: &str) -> Traits {
     // 4.7+ and every 5.x reject `temperature`; adaptive-thinking models
     // don't take one either (thinking pins it).
     const NO_TEMPERATURE: &[&str] = &["claude-opus-4-7", "claude-opus-4-8"];
-    const FALLBACKS: &[&str] = &["claude-opus-5-5", "claude-fable-5-1", "claude-opus-5", "claude-sonnet-5-5"];
+    const FALLBACKS: &[&str] = &[
+        "claude-opus-5-5",
+        "claude-fable-5-1",
+        "claude-opus-5",
+        "claude-sonnet-5-5",
+    ];
     let adaptive_thinking = ADAPTIVE.iter().any(|p| family(model, p));
     Traits {
         adaptive_thinking,
@@ -58,7 +63,9 @@ fn traits(model: &str) -> Traits {
 
 /// `model` is `prefix` or a variant of it (`prefix-…`, `prefix@…`).
 fn family(model: &str, prefix: &str) -> bool {
-    model.strip_prefix(prefix).is_some_and(|rest| rest.is_empty() || rest.starts_with(['-', '@', '[']))
+    model
+        .strip_prefix(prefix)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with(['-', '@', '[']))
 }
 
 /// `model` is `id` or a dated snapshot of it (`id-20260101`, `id@…`).
@@ -66,7 +73,9 @@ fn snapshot_of(model: &str, id: &str) -> bool {
     model.strip_prefix(id).is_some_and(|rest| {
         rest.is_empty()
             || rest.starts_with('@')
-            || rest.strip_prefix('-').is_some_and(|d| d.len() == 8 && d.bytes().all(|b| b.is_ascii_digit()))
+            || rest
+                .strip_prefix('-')
+                .is_some_and(|d| d.len() == 8 && d.bytes().all(|b| b.is_ascii_digit()))
     })
 }
 
@@ -85,17 +94,48 @@ struct Endpoint {
 fn endpoint(ctx: &Ctx, model: &str) -> Result<Endpoint, GatewayError> {
     if ctx.p.kind == ProviderKind::VertexAnthropic {
         let url = ctx.vertex_url("anthropic", model, "streamRawPredict")?;
-        return Ok(Endpoint { url, vertex: true, first_party: false, refusal_fallbacks: false });
+        return Ok(Endpoint {
+            url,
+            vertex: true,
+            first_party: false,
+            refusal_fallbacks: false,
+        });
     }
     let base = ctx.p.base().unwrap_or(DEFAULT_BASE);
-    let host = base.split("://").nth(1).unwrap_or(base).split(['/', ':']).next().unwrap_or("");
-    let first_party = ctx.p.options.get("first_party").and_then(Value::as_bool).unwrap_or(host == FIRST_PARTY_HOST);
-    let refusal_fallbacks = ctx.p.options.get("refusal_fallbacks").and_then(Value::as_bool).unwrap_or(false);
-    Ok(Endpoint { url: format!("{base}/v1/messages"), vertex: false, first_party, refusal_fallbacks })
+    let host = base
+        .split("://")
+        .nth(1)
+        .unwrap_or(base)
+        .split(['/', ':'])
+        .next()
+        .unwrap_or("");
+    let first_party = ctx
+        .p
+        .options
+        .get("first_party")
+        .and_then(Value::as_bool)
+        .unwrap_or(host == FIRST_PARTY_HOST);
+    let refusal_fallbacks = ctx
+        .p
+        .options
+        .get("refusal_fallbacks")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    Ok(Endpoint {
+        url: format!("{base}/v1/messages"),
+        vertex: false,
+        first_party,
+        refusal_fallbacks,
+    })
 }
 
 /// The request with its auth and beta headers.
-fn request(ctx: &Ctx, url: String, body: Option<&Value>, betas: &[&str]) -> Result<Req, GatewayError> {
+fn request(
+    ctx: &Ctx,
+    url: String,
+    body: Option<&Value>,
+    betas: &[&str],
+) -> Result<Req, GatewayError> {
     let mut req = match body {
         Some(body) => Req::post_json(url, body),
         None => Req::get(url),
@@ -108,7 +148,11 @@ fn request(ctx: &Ctx, url: String, body: Option<&Value>, betas: &[&str]) -> Resu
             let bearer = matches!(&ctx.p.auth, Auth::Command(_))
                 || matches!(&ctx.p.auth, Auth::Env(name) if name == "ANTHROPIC_AUTH_TOKEN")
                 || key.starts_with("sk-ant-oat");
-            req = if bearer { req.bearer(&key) } else { req.secret_header("x-api-key", &key, &key) };
+            req = if bearer {
+                req.bearer(&key)
+            } else {
+                req.secret_header("x-api-key", &key, &key)
+            };
             if bearer {
                 return finish(ctx, req, &[betas, &[OAUTH_BETA]].concat());
             }
@@ -120,7 +164,11 @@ fn request(ctx: &Ctx, url: String, body: Option<&Value>, betas: &[&str]) -> Resu
 /// Applies `extra_headers`, comma-joining any `anthropic-beta` with ours.
 fn finish(ctx: &Ctx, req: Req, betas: &[&str]) -> Result<Req, GatewayError> {
     let mut all: Vec<&str> = betas.to_vec();
-    let extra_beta = ctx.p.extra_headers.iter().find(|(k, _)| k.eq_ignore_ascii_case("anthropic-beta"));
+    let extra_beta = ctx
+        .p
+        .extra_headers
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("anthropic-beta"));
     if let Some((_, v)) = extra_beta {
         all.extend(v.split(',').map(str::trim).filter(|b| !b.is_empty()));
     }
@@ -134,7 +182,11 @@ fn finish(ctx: &Ctx, req: Req, betas: &[&str]) -> Result<Req, GatewayError> {
 /// The request body (before `extra_body`).
 fn body(req: &ChatRequest, model: &str, ep: &Endpoint) -> Value {
     let t = traits(model);
-    let max_tokens = if req.max_tokens == 0 { DEFAULT_MAX_TOKENS } else { req.max_tokens };
+    let max_tokens = if req.max_tokens == 0 {
+        DEFAULT_MAX_TOKENS
+    } else {
+        req.max_tokens
+    };
     let mut body = json!({
         "max_tokens": max_tokens,
         "messages": messages(&req.messages),
@@ -200,11 +252,16 @@ fn blocks<'b>(blocks: impl IntoIterator<Item = &'b Block>) -> Vec<Value> {
         .filter_map(|b| match b {
             Block::Text { text } if text.is_empty() => None,
             Block::Text { text } => Some(json!({"type": "text", "text": text})),
-            Block::ToolUse { id, name, input, .. } => {
-                Some(json!({"type": "tool_use", "id": id, "name": name, "input": input}))
-            }
-            Block::ToolResult { tool_use_id, content, is_error } => {
-                let mut v = json!({"type": "tool_result", "tool_use_id": tool_use_id, "content": content});
+            Block::ToolUse {
+                id, name, input, ..
+            } => Some(json!({"type": "tool_use", "id": id, "name": name, "input": input})),
+            Block::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+            } => {
+                let mut v =
+                    json!({"type": "tool_result", "tool_use_id": tool_use_id, "content": content});
                 if *is_error {
                     v["is_error"] = json!(true);
                 }
@@ -224,8 +281,17 @@ pub(crate) fn complete(
 ) -> Result<ChatResponse, GatewayError> {
     let ep = endpoint(ctx, model)?;
     let mut body = ctx.finish_body(body(req, model, &ep));
-    let betas: &[&str] = if body.get("fallbacks").is_some() { &[FALLBACK_BETA] } else { &[] };
-    let mut resp = ChatResponse { model: model.to_string(), content: Vec::new(), stop: StopReason::EndTurn, usage: Usage::default() };
+    let betas: &[&str] = if body.get("fallbacks").is_some() {
+        &[FALLBACK_BETA]
+    } else {
+        &[]
+    };
+    let mut resp = ChatResponse {
+        model: model.to_string(),
+        content: Vec::new(),
+        stop: StopReason::EndTurn,
+        usage: Usage::default(),
+    };
     let mut continued = false;
     for round in 0..=MAX_CONTINUATIONS {
         let http_req = request(ctx, ep.url.clone(), Some(&body), betas)?;
@@ -241,7 +307,9 @@ pub(crate) fn complete(
         }
         // The server paused a long turn: send it back and let it continue.
         let partial = json!({"role": "assistant", "content": blocks(&resp.content)});
-        let msgs = body["messages"].as_array_mut().expect("messages is an array");
+        let msgs = body["messages"]
+            .as_array_mut()
+            .expect("messages is an array");
         if continued {
             msgs.pop();
         }
@@ -273,8 +341,15 @@ struct Turn {
 /// A content block being streamed.
 enum Acc {
     Text(String),
-    Thinking { text: String, signature: String },
-    Tool { id: String, name: String, json: String },
+    Thinking {
+        text: String,
+        signature: String,
+    },
+    Tool {
+        id: String,
+        name: String,
+        json: String,
+    },
     /// Any other block, kept verbatim (`redacted_thinking`, `fallback`, server
     /// tools, …); streamed input JSON is collected beside it.
     Raw(Value, String),
@@ -297,10 +372,19 @@ fn read_stream(body: impl Read, sink: &mut dyn FnMut(Delta)) -> Result<Turn, Gat
                 let cb = &v["content_block"];
                 let acc = match cb["type"].as_str().unwrap_or("") {
                     "text" => Acc::Text(s(&cb["text"])),
-                    "thinking" => Acc::Thinking { text: s(&cb["thinking"]), signature: s(&cb["signature"]) },
+                    "thinking" => Acc::Thinking {
+                        text: s(&cb["thinking"]),
+                        signature: s(&cb["signature"]),
+                    },
                     "tool_use" => {
-                        sink(Delta::ToolUse { name: s(&cb["name"]) });
-                        Acc::Tool { id: s(&cb["id"]), name: s(&cb["name"]), json: String::new() }
+                        sink(Delta::ToolUse {
+                            name: s(&cb["name"]),
+                        });
+                        Acc::Tool {
+                            id: s(&cb["id"]),
+                            name: s(&cb["name"]),
+                            json: String::new(),
+                        }
                     }
                     _ => Acc::Raw(cb.clone(), String::new()),
                 };
@@ -312,13 +396,19 @@ fn read_stream(body: impl Read, sink: &mut dyn FnMut(Delta)) -> Result<Turn, Gat
                 match (blocks.get_mut(&index), d["type"].as_str().unwrap_or("")) {
                     (Some(Acc::Text(text)), "text_delta") => {
                         text.push_str(field("text"));
-                        sink(Delta::Text { text: field("text").to_string() });
+                        sink(Delta::Text {
+                            text: field("text").to_string(),
+                        });
                     }
                     (Some(Acc::Thinking { text, .. }), "thinking_delta") => {
                         text.push_str(field("thinking"));
-                        sink(Delta::Thinking { text: field("thinking").to_string() });
+                        sink(Delta::Thinking {
+                            text: field("thinking").to_string(),
+                        });
                     }
-                    (Some(Acc::Thinking { signature, .. }), "signature_delta") => signature.push_str(field("signature")),
+                    (Some(Acc::Thinking { signature, .. }), "signature_delta") => {
+                        signature.push_str(field("signature"))
+                    }
                     (Some(Acc::Tool { json, .. } | Acc::Raw(_, json)), "input_json_delta") => {
                         json.push_str(field("partial_json"))
                     }
@@ -338,15 +428,23 @@ fn read_stream(body: impl Read, sink: &mut dyn FnMut(Delta)) -> Result<Turn, Gat
             }
             "error" => {
                 let kind = s(&v["error"]["type"]);
-                let retryable = matches!(kind.as_str(), "overloaded_error" | "api_error" | "rate_limit_error" | "timeout_error");
-                return Err(GatewayError::Provider { message: format!("{kind}: {}", s(&v["error"]["message"])), retryable });
+                let retryable = matches!(
+                    kind.as_str(),
+                    "overloaded_error" | "api_error" | "rate_limit_error" | "timeout_error"
+                );
+                return Err(GatewayError::Provider {
+                    message: format!("{kind}: {}", s(&v["error"]["message"])),
+                    retryable,
+                });
             }
             _ => {}
         }
         Ok(true)
     })?;
     if !finished {
-        return Err(GatewayError::Transport("stream ended before message_stop".into()));
+        return Err(GatewayError::Transport(
+            "stream ended before message_stop".into(),
+        ));
     }
     for acc in blocks.into_values() {
         match acc {
@@ -357,17 +455,28 @@ fn read_stream(body: impl Read, sink: &mut dyn FnMut(Delta)) -> Result<Turn, Gat
                 if !text.is_empty() {
                     turn.content.push(Block::Thinking { text });
                 }
-                turn.content.push(Block::Opaque { kind: "anthropic".into(), raw });
+                turn.content.push(Block::Opaque {
+                    kind: "anthropic".into(),
+                    raw,
+                });
             }
             Acc::Tool { id, name, json } => {
                 let (input, meta) = parse_tool_input(&json);
-                turn.content.push(Block::ToolUse { id, name, input, meta });
+                turn.content.push(Block::ToolUse {
+                    id,
+                    name,
+                    input,
+                    meta,
+                });
             }
             Acc::Raw(mut raw, json) => {
                 if let Ok(input) = serde_json::from_str::<Value>(&json) {
                     raw["input"] = input;
                 }
-                turn.content.push(Block::Opaque { kind: "anthropic".into(), raw });
+                turn.content.push(Block::Opaque {
+                    kind: "anthropic".into(),
+                    raw,
+                });
             }
         }
     }
@@ -377,7 +486,9 @@ fn read_stream(body: impl Read, sink: &mut dyn FnMut(Delta)) -> Result<Turn, Gat
 /// Appends a delta's string fields to the same-named string fields of an
 /// unknown block, so its streamed text is not lost.
 fn append_strings(raw: &mut Value, delta: &Value) {
-    let Some(delta) = delta.as_object() else { return };
+    let Some(delta) = delta.as_object() else {
+        return;
+    };
     for (key, value) in delta.iter().filter(|(k, _)| *k != "type") {
         if let (Some(Value::String(dst)), Some(src)) = (raw.get_mut(key), value.as_str()) {
             dst.push_str(src);
@@ -418,7 +529,9 @@ pub(crate) fn list_models(ctx: &Ctx) -> Result<Vec<ModelInfo>, GatewayError> {
             });
         }
         match (page["has_more"].as_bool(), page["last_id"].as_str()) {
-            (Some(true), Some(last)) if after.as_deref() != Some(last) => after = Some(last.to_string()),
+            (Some(true), Some(last)) if after.as_deref() != Some(last) => {
+                after = Some(last.to_string())
+            }
             _ => return Ok(models),
         }
     }
@@ -431,54 +544,128 @@ mod tests {
     use apz_proto::chat::ToolSpec;
 
     fn tool() -> ToolSpec {
-        ToolSpec { name: "bash".into(), description: "run".into(), input_schema: json!({"type": "object"}) }
+        ToolSpec {
+            name: "bash".into(),
+            description: "run".into(),
+            input_schema: json!({"type": "object"}),
+        }
     }
 
     fn history() -> Vec<Message> {
         vec![
             Message::user_text("list files"),
             Message::assistant(vec![
-                Block::Thinking { text: "display only".into() },
-                Block::Opaque { kind: "anthropic".into(), raw: json!({"type": "thinking", "thinking": "t", "signature": "sig"}) },
-                Block::Opaque { kind: "gemini".into(), raw: json!({"thoughtSignature": "g"}) },
-                Block::ToolUse { id: "tu1".into(), name: "bash".into(), input: json!({"command": "ls"}), meta: None },
+                Block::Thinking {
+                    text: "display only".into(),
+                },
+                Block::Opaque {
+                    kind: "anthropic".into(),
+                    raw: json!({"type": "thinking", "thinking": "t", "signature": "sig"}),
+                },
+                Block::Opaque {
+                    kind: "gemini".into(),
+                    raw: json!({"thoughtSignature": "g"}),
+                },
+                Block::ToolUse {
+                    id: "tu1".into(),
+                    name: "bash".into(),
+                    input: json!({"command": "ls"}),
+                    meta: None,
+                },
             ]),
             Message {
                 role: Role::User,
                 content: vec![
-                    Block::Text { text: "and then?".into() },
-                    Block::ToolResult { tool_use_id: "tu1".into(), content: "a.txt".into(), is_error: true },
+                    Block::Text {
+                        text: "and then?".into(),
+                    },
+                    Block::ToolResult {
+                        tool_use_id: "tu1".into(),
+                        content: "a.txt".into(),
+                        is_error: true,
+                    },
                 ],
             },
         ]
     }
 
     const TEXT_STREAM: &[(&str, &str)] = &[
-        ("message_start", r#"{"type":"message_start","message":{"model":"claude-opus-5-5","usage":{"input_tokens":10,"cache_read_input_tokens":4,"cache_creation_input_tokens":2,"output_tokens":1}}}"#),
-        ("content_block_start", r#"{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}"#),
-        ("content_block_delta", r#"{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"hmm"}}"#),
-        ("content_block_delta", r#"{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"SIG"}}"#),
-        ("content_block_stop", r#"{"type":"content_block_stop","index":0}"#),
-        ("content_block_start", r#"{"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}"#),
+        (
+            "message_start",
+            r#"{"type":"message_start","message":{"model":"claude-opus-5-5","usage":{"input_tokens":10,"cache_read_input_tokens":4,"cache_creation_input_tokens":2,"output_tokens":1}}}"#,
+        ),
+        (
+            "content_block_start",
+            r#"{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}"#,
+        ),
+        (
+            "content_block_delta",
+            r#"{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"hmm"}}"#,
+        ),
+        (
+            "content_block_delta",
+            r#"{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"SIG"}}"#,
+        ),
+        (
+            "content_block_stop",
+            r#"{"type":"content_block_stop","index":0}"#,
+        ),
+        (
+            "content_block_start",
+            r#"{"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}"#,
+        ),
         ("ping", r#"{"type":"ping"}"#),
-        ("content_block_delta", r#"{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Hel"}}"#),
-        ("content_block_delta", r#"{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"lo"}}"#),
-        ("content_block_start", r#"{"type":"content_block_start","index":2,"content_block":{"type":"redacted_thinking","data":"xyz"}}"#),
-        ("content_block_start", r#"{"type":"content_block_start","index":3,"content_block":{"type":"tool_use","id":"tu9","name":"bash","input":{}}}"#),
-        ("content_block_delta", r#"{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"{\"command\":"}}"#),
-        ("content_block_delta", r#"{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" \"ls\"}"}}"#),
-        ("content_block_start", r#"{"type":"content_block_start","index":4,"content_block":{"type":"tool_use","id":"tu10","name":"bash","input":{}}}"#),
-        ("content_block_delta", r#"{"type":"content_block_delta","index":4,"delta":{"type":"input_json_delta","partial_json":"{\"command\": \"l"}}"#),
-        ("message_delta", r#"{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":42}}"#),
+        (
+            "content_block_delta",
+            r#"{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Hel"}}"#,
+        ),
+        (
+            "content_block_delta",
+            r#"{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"lo"}}"#,
+        ),
+        (
+            "content_block_start",
+            r#"{"type":"content_block_start","index":2,"content_block":{"type":"redacted_thinking","data":"xyz"}}"#,
+        ),
+        (
+            "content_block_start",
+            r#"{"type":"content_block_start","index":3,"content_block":{"type":"tool_use","id":"tu9","name":"bash","input":{}}}"#,
+        ),
+        (
+            "content_block_delta",
+            r#"{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"{\"command\":"}}"#,
+        ),
+        (
+            "content_block_delta",
+            r#"{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" \"ls\"}"}}"#,
+        ),
+        (
+            "content_block_start",
+            r#"{"type":"content_block_start","index":4,"content_block":{"type":"tool_use","id":"tu10","name":"bash","input":{}}}"#,
+        ),
+        (
+            "content_block_delta",
+            r#"{"type":"content_block_delta","index":4,"delta":{"type":"input_json_delta","partial_json":"{\"command\": \"l"}}"#,
+        ),
+        (
+            "message_delta",
+            r#"{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":42}}"#,
+        ),
         ("message_stop", r#"{"type":"message_stop"}"#),
     ];
 
     #[test]
     fn request_translation_for_an_adaptive_first_party_model() {
         let server = FakeServer::start(vec![Reply::sse(sse_body(TEXT_STREAM))]);
-        let mut p = provider("a", ProviderKind::Anthropic, &server, Auth::Env("ANTHROPIC_API_KEY".into()));
+        let mut p = provider(
+            "a",
+            ProviderKind::Anthropic,
+            &server,
+            Auth::Env("ANTHROPIC_API_KEY".into()),
+        );
         p.options = json!({"first_party": true, "refusal_fallbacks": true});
-        p.extra_headers.insert("anthropic-beta".into(), "extra-beta".into());
+        p.extra_headers
+            .insert("anthropic-beta".into(), "extra-beta".into());
         let gw = gateway(vec![p]);
         let req = ChatRequest {
             model: "a/claude-opus-5-5".into(),
@@ -494,7 +681,10 @@ mod tests {
         assert_eq!(sent.path, "/v1/messages");
         assert_eq!(sent.header("x-api-key"), Some("env-ANTHROPIC_API_KEY"));
         assert_eq!(sent.header("anthropic-version"), Some(API_VERSION));
-        assert_eq!(sent.header("anthropic-beta"), Some("server-side-fallback-2026-07-01,extra-beta"));
+        assert_eq!(
+            sent.header("anthropic-beta"),
+            Some("server-side-fallback-2026-07-01,extra-beta")
+        );
         let b = sent.json();
         assert_eq!(b["model"], "claude-opus-5-5");
         assert_eq!(b["max_tokens"], 32000);
@@ -506,23 +696,37 @@ mod tests {
         assert_eq!(b["fallbacks"], "default");
         assert!(b.get("temperature").is_none());
         assert_eq!(b["tool_choice"], json!({"type": "auto"}));
-        assert_eq!(b["tools"][0], json!({"name": "bash", "description": "run", "input_schema": {"type": "object"}, "eager_input_streaming": true}));
+        assert_eq!(
+            b["tools"][0],
+            json!({"name": "bash", "description": "run", "input_schema": {"type": "object"}, "eager_input_streaming": true})
+        );
         // Opaque anthropic state replayed verbatim; display thinking and gemini state dropped.
-        assert_eq!(b["messages"][1]["content"], json!([
-            {"type": "thinking", "thinking": "t", "signature": "sig"},
-            {"type": "tool_use", "id": "tu1", "name": "bash", "input": {"command": "ls"}},
-        ]));
+        assert_eq!(
+            b["messages"][1]["content"],
+            json!([
+                {"type": "thinking", "thinking": "t", "signature": "sig"},
+                {"type": "tool_use", "id": "tu1", "name": "bash", "input": {"command": "ls"}},
+            ])
+        );
         // Tool results come before text.
-        assert_eq!(b["messages"][2]["content"], json!([
-            {"type": "tool_result", "tool_use_id": "tu1", "content": "a.txt", "is_error": true},
-            {"type": "text", "text": "and then?"},
-        ]));
+        assert_eq!(
+            b["messages"][2]["content"],
+            json!([
+                {"type": "tool_result", "tool_use_id": "tu1", "content": "a.txt", "is_error": true},
+                {"type": "text", "text": "and then?"},
+            ])
+        );
     }
 
     #[test]
     fn haiku_and_bearer_tokens_get_neither_thinking_nor_fallbacks() {
         let server = FakeServer::start(vec![Reply::sse(sse_body(TEXT_STREAM))]);
-        let p = provider("a", ProviderKind::Anthropic, &server, Auth::Env("ANTHROPIC_AUTH_TOKEN".into()));
+        let p = provider(
+            "a",
+            ProviderKind::Anthropic,
+            &server,
+            Auth::Env("ANTHROPIC_AUTH_TOKEN".into()),
+        );
         let gw = gateway(vec![p]);
         let req = ChatRequest {
             model: "a/claude-haiku-4-5-20251001".into(),
@@ -535,13 +739,20 @@ mod tests {
         };
         gw.complete(&req, &mut |_| {}).unwrap();
         let sent = &server.requests()[0];
-        assert_eq!(sent.header("authorization"), Some("Bearer env-ANTHROPIC_AUTH_TOKEN"));
+        assert_eq!(
+            sent.header("authorization"),
+            Some("Bearer env-ANTHROPIC_AUTH_TOKEN")
+        );
         assert_eq!(sent.header("anthropic-beta"), Some(OAUTH_BETA));
         assert!(sent.header("x-api-key").is_none());
         let b = sent.json();
         assert_eq!(b["max_tokens"], 100);
         assert_eq!(b["temperature"], 0.25);
-        assert!(b.get("thinking").is_none() && b.get("output_config").is_none() && b.get("fallbacks").is_none());
+        assert!(
+            b.get("thinking").is_none()
+                && b.get("output_config").is_none()
+                && b.get("fallbacks").is_none()
+        );
         // Not first party (a local URL): no eager streaming flag.
         assert!(b["tools"][0].get("eager_input_streaming").is_none());
     }
@@ -553,20 +764,40 @@ mod tests {
         assert!(traits("claude-sonnet-4-5").temperature);
         assert!(!traits("claude-opus-4-7").temperature);
         assert!(traits("claude-opus-5").fallbacks && traits("claude-fable-5-1").fallbacks);
-        assert!(!traits("claude-opus-5-1").fallbacks && traits("claude-opus-5-1").adaptive_thinking);
-        assert!(!traits("claude-haiku-4-5").adaptive_thinking && !traits("claude-haiku-4-5").fallbacks);
-        assert!(traits("claude-haiku-5-5").adaptive_thinking && !traits("claude-haiku-5-5").temperature);
+        assert!(
+            !traits("claude-opus-5-1").fallbacks && traits("claude-opus-5-1").adaptive_thinking
+        );
+        assert!(
+            !traits("claude-haiku-4-5").adaptive_thinking && !traits("claude-haiku-4-5").fallbacks
+        );
+        assert!(
+            traits("claude-haiku-5-5").adaptive_thinking && !traits("claude-haiku-5-5").temperature
+        );
     }
 
     #[test]
     fn effort_pin_haiku_5_and_fallbacks_off_by_default() {
-        let server = FakeServer::start(vec![Reply::sse(sse_body(TEXT_STREAM)), Reply::sse(sse_body(TEXT_STREAM))]);
+        let server = FakeServer::start(vec![
+            Reply::sse(sse_body(TEXT_STREAM)),
+            Reply::sse(sse_body(TEXT_STREAM)),
+        ]);
         let mut p = provider("a", ProviderKind::Anthropic, &server, Auth::None);
         p.options = json!({"first_party": true});
         let gw = gateway(vec![p]);
-        let pinned = ChatRequest { model: "a/claude-haiku-5-5@low".into(), effort: Some("high".into()), ..crate::testutil::request("hi") };
+        let pinned = ChatRequest {
+            model: "a/claude-haiku-5-5@low".into(),
+            effort: Some("high".into()),
+            ..crate::testutil::request("hi")
+        };
         gw.complete(&pinned, &mut |_| {}).unwrap();
-        gw.complete(&ChatRequest { model: "a/claude-opus-5-5".into(), ..crate::testutil::request("hi") }, &mut |_| {}).unwrap();
+        gw.complete(
+            &ChatRequest {
+                model: "a/claude-opus-5-5".into(),
+                ..crate::testutil::request("hi")
+            },
+            &mut |_| {},
+        )
+        .unwrap();
         let sent = server.requests();
         let haiku = sent[0].json();
         assert_eq!(haiku["model"], "claude-haiku-5-5");
@@ -580,66 +811,156 @@ mod tests {
     #[test]
     fn stream_decoding() {
         let server = FakeServer::start(vec![Reply::sse(sse_body(TEXT_STREAM))]);
-        let gw = gateway(vec![provider("a", ProviderKind::Anthropic, &server, Auth::None)]);
-        let req = ChatRequest { model: "a/claude-opus-5-5".into(), ..crate::testutil::request("hi") };
+        let gw = gateway(vec![provider(
+            "a",
+            ProviderKind::Anthropic,
+            &server,
+            Auth::None,
+        )]);
+        let req = ChatRequest {
+            model: "a/claude-opus-5-5".into(),
+            ..crate::testutil::request("hi")
+        };
         let mut deltas = Vec::new();
         let resp = gw.complete(&req, &mut |d| deltas.push(d)).unwrap();
         assert_eq!(resp.model, "a/claude-opus-5-5");
         assert_eq!(resp.stop, StopReason::ToolUse);
-        assert_eq!(resp.usage, Usage { input_tokens: 10, output_tokens: 42, cache_read_tokens: 4, cache_write_tokens: 2 });
-        assert_eq!(&resp.content[..4], &[
-            Block::Thinking { text: "hmm".into() },
-            Block::Opaque { kind: "anthropic".into(), raw: json!({"type": "thinking", "thinking": "hmm", "signature": "SIG"}) },
-            Block::Text { text: "Hello".into() },
-            Block::Opaque { kind: "anthropic".into(), raw: json!({"type": "redacted_thinking", "data": "xyz"}) },
-        ]);
-        assert_eq!(resp.content[4], Block::ToolUse { id: "tu9".into(), name: "bash".into(), input: json!({"command": "ls"}), meta: None });
+        assert_eq!(
+            resp.usage,
+            Usage {
+                input_tokens: 10,
+                output_tokens: 42,
+                cache_read_tokens: 4,
+                cache_write_tokens: 2
+            }
+        );
+        assert_eq!(
+            &resp.content[..4],
+            &[
+                Block::Thinking { text: "hmm".into() },
+                Block::Opaque {
+                    kind: "anthropic".into(),
+                    raw: json!({"type": "thinking", "thinking": "hmm", "signature": "SIG"})
+                },
+                Block::Text {
+                    text: "Hello".into()
+                },
+                Block::Opaque {
+                    kind: "anthropic".into(),
+                    raw: json!({"type": "redacted_thinking", "data": "xyz"})
+                },
+            ]
+        );
+        assert_eq!(
+            resp.content[4],
+            Block::ToolUse {
+                id: "tu9".into(),
+                name: "bash".into(),
+                input: json!({"command": "ls"}),
+                meta: None
+            }
+        );
         // Eager streaming may cut the JSON short: no input, an INVALID_JSON note.
-        let Block::ToolUse { input, meta, .. } = &resp.content[5] else { panic!("{:?}", resp.content[5]) };
+        let Block::ToolUse { input, meta, .. } = &resp.content[5] else {
+            panic!("{:?}", resp.content[5])
+        };
         assert_eq!(input, &json!({}));
-        assert_eq!(crate::tool_input_error(meta.as_ref()), Some(crate::INVALID_JSON));
-        assert_eq!(deltas[..3], [
-            Delta::Thinking { text: "hmm".into() },
-            Delta::Text { text: "Hel".into() },
-            Delta::Text { text: "lo".into() },
-        ]);
-        assert!(deltas.contains(&Delta::ToolUse { name: "bash".into() }));
+        assert_eq!(
+            crate::tool_input_error(meta.as_ref()),
+            Some(crate::INVALID_JSON)
+        );
+        assert_eq!(
+            deltas[..3],
+            [
+                Delta::Thinking { text: "hmm".into() },
+                Delta::Text { text: "Hel".into() },
+                Delta::Text { text: "lo".into() },
+            ]
+        );
+        assert!(deltas.contains(&Delta::ToolUse {
+            name: "bash".into()
+        }));
     }
 
     #[test]
     fn pause_turn_continues_with_the_partial_content() {
         let paused = sse_body(&[
-            ("message_start", r#"{"type":"message_start","message":{"model":"m","usage":{"input_tokens":5}}}"#),
-            ("content_block_start", r#"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":"part one"}}"#),
-            ("message_delta", r#"{"type":"message_delta","delta":{"stop_reason":"pause_turn"},"usage":{"output_tokens":3}}"#),
+            (
+                "message_start",
+                r#"{"type":"message_start","message":{"model":"m","usage":{"input_tokens":5}}}"#,
+            ),
+            (
+                "content_block_start",
+                r#"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":"part one"}}"#,
+            ),
+            (
+                "message_delta",
+                r#"{"type":"message_delta","delta":{"stop_reason":"pause_turn"},"usage":{"output_tokens":3}}"#,
+            ),
             ("message_stop", r#"{"type":"message_stop"}"#),
         ]);
         let done = sse_body(&[
-            ("message_start", r#"{"type":"message_start","message":{"model":"m","usage":{"input_tokens":7}}}"#),
-            ("content_block_start", r#"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":"part two"}}"#),
-            ("message_delta", r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":4}}"#),
+            (
+                "message_start",
+                r#"{"type":"message_start","message":{"model":"m","usage":{"input_tokens":7}}}"#,
+            ),
+            (
+                "content_block_start",
+                r#"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":"part two"}}"#,
+            ),
+            (
+                "message_delta",
+                r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":4}}"#,
+            ),
             ("message_stop", r#"{"type":"message_stop"}"#),
         ]);
         let server = FakeServer::start(vec![Reply::sse(paused), Reply::sse(done)]);
-        let gw = gateway(vec![provider("a", ProviderKind::Anthropic, &server, Auth::None)]);
-        let resp = gw.complete(&ChatRequest { model: "a/m".into(), ..crate::testutil::request("go") }, &mut |_| {}).unwrap();
+        let gw = gateway(vec![provider(
+            "a",
+            ProviderKind::Anthropic,
+            &server,
+            Auth::None,
+        )]);
+        let resp = gw
+            .complete(
+                &ChatRequest {
+                    model: "a/m".into(),
+                    ..crate::testutil::request("go")
+                },
+                &mut |_| {},
+            )
+            .unwrap();
         assert_eq!(resp.text(), "part one\npart two");
         assert_eq!(resp.stop, StopReason::EndTurn);
         assert_eq!((resp.usage.input_tokens, resp.usage.output_tokens), (12, 7));
         let second = server.requests()[1].json();
-        assert_eq!(second["messages"][1], json!({"role": "assistant", "content": [{"type": "text", "text": "part one"}]}));
+        assert_eq!(
+            second["messages"][1],
+            json!({"role": "assistant", "content": [{"type": "text", "text": "part one"}]})
+        );
     }
 
     #[test]
     fn vertex_anthropic_body_and_command_token() {
         let server = FakeServer::start(vec![Reply::sse(sse_body(TEXT_STREAM))]);
-        let mut p = provider("v", ProviderKind::VertexAnthropic, &server, Auth::Command("printf 'ya29.tok\\n'".into()));
+        let mut p = provider(
+            "v",
+            ProviderKind::VertexAnthropic,
+            &server,
+            Auth::Command("printf 'ya29.tok\\n'".into()),
+        );
         p.options = json!({"project": "proj", "location": "us-east5"});
         let gw = gateway(vec![p]);
-        let req = ChatRequest { model: "v/claude-opus-5-5".into(), ..crate::testutil::request("hi") };
+        let req = ChatRequest {
+            model: "v/claude-opus-5-5".into(),
+            ..crate::testutil::request("hi")
+        };
         gw.complete(&req, &mut |_| {}).unwrap();
         let sent = &server.requests()[0];
-        assert_eq!(sent.path, "/v1/projects/proj/locations/us-east5/publishers/anthropic/models/claude-opus-5-5:streamRawPredict");
+        assert_eq!(
+            sent.path,
+            "/v1/projects/proj/locations/us-east5/publishers/anthropic/models/claude-opus-5-5:streamRawPredict"
+        );
         assert_eq!(sent.header("authorization"), Some("Bearer ya29.tok"));
         let b = sent.json();
         assert_eq!(b["anthropic_version"], VERTEX_VERSION);

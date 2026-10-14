@@ -51,8 +51,8 @@ pub mod unix;
 
 use crate::pal::AsRawFd;
 
-use vm_memory::GuestMemoryError;
 use crate::pal::epoll::EventSet;
+use vm_memory::GuestMemoryError;
 
 pub use self::defs::VSOCK_DEV_ID;
 pub use self::device::{ActivateError, Vsock};

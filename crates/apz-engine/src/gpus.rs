@@ -372,16 +372,26 @@ static CATALOG: OnceLock<Catalog> = OnceLock::new();
 /// The embedded card catalog. Panics if either embedded file fails to parse or validate.
 pub fn catalog() -> &'static Catalog {
     CATALOG.get_or_init(|| {
-        let specs: GpuSpecFile = serde_json::from_str(SPECS_SRC).expect("assets/hardware/gpus/specs.json parses");
-        let rules: MatchFile = serde_json::from_str(MATCH_SRC).expect("assets/hardware/gpus/match.json parses");
+        let specs: GpuSpecFile =
+            serde_json::from_str(SPECS_SRC).expect("assets/hardware/gpus/specs.json parses");
+        let rules: MatchFile =
+            serde_json::from_str(MATCH_SRC).expect("assets/hardware/gpus/match.json parses");
         let mut errs = validate_specs(&specs);
         errs.extend({
             let ids: Vec<&str> = specs.specs.iter().map(|s| s.id.as_str()).collect();
             validate_match(&rules, &ids)
         });
         assert!(errs.is_empty(), "invalid GPU assets:\n{}", errs.join("\n"));
-        let patterns = rules.rules.iter().map(|r| compile(&r.name_regex).expect("validated above")).collect();
-        Catalog { specs, rules, patterns }
+        let patterns = rules
+            .rules
+            .iter()
+            .map(|r| compile(&r.name_regex).expect("validated above"))
+            .collect();
+        Catalog {
+            specs,
+            rules,
+            patterns,
+        }
     })
 }
 
@@ -412,15 +422,29 @@ pub fn match_card(gpu: &GpuInput, machine_kind: Option<&str>) -> Option<Match> {
         if !matches!(re.is_match(&gpu.name), Ok(true)) {
             continue;
         }
-        let card = cat.specs.specs.iter().find(|s| s.id == r.card).expect("validated: a rule names a spec");
-        return Some(Match { card, fallback: r.fallback, rule });
+        let card = cat
+            .specs
+            .specs
+            .iter()
+            .find(|s| s.id == r.card)
+            .expect("validated: a rule names a spec");
+        return Some(Match {
+            card,
+            fallback: r.fallback,
+            rule,
+        });
     }
     None
 }
 
 fn is_id(id: &str) -> bool {
     !id.is_empty()
-        && id.split('-').all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit()))
+        && id.split('-').all(|part| {
+            !part.is_empty()
+                && part
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+        })
 }
 
 fn is_hex(v: &str) -> bool {
@@ -440,8 +464,9 @@ fn has_field(spec: &GpuSpec, key: &str) -> bool {
     match key {
         "die" => spec.die.is_some(),
         "layout" => spec.layout.is_some(),
-        "id" | "name" | "vendor" | "segment" | "form" | "reference" | "size_mm" | "slots" | "cooling" | "shroud"
-        | "backplate" | "power" | "bracket" | "lighting" | "sources" | "approx" | "notes" => true,
+        "id" | "name" | "vendor" | "segment" | "form" | "reference" | "size_mm" | "slots"
+        | "cooling" | "shroud" | "backplate" | "power" | "bracket" | "lighting" | "sources"
+        | "approx" | "notes" => true,
         _ => false,
     }
 }
@@ -524,7 +549,9 @@ pub fn validate_spec(spec: &GpuSpec) -> Vec<String> {
     }
     for f in &c.fans {
         if !f.d_mm.map_or(true, |d| (30.0..=200.0).contains(&d)) {
-            bad!("a fan needs d_mm (30 to 200, or null), x_mm (a number, or null) and side front or back");
+            bad!(
+                "a fan needs d_mm (30 to 200, or null), x_mm (a number, or null) and side front or back"
+            );
         } else if let (Some(x), Some(l)) = (f.x_mm, length) {
             if x < 0.0 || x > l {
                 bad!("fan x_mm {x} is outside the length");
@@ -553,7 +580,13 @@ pub fn validate_spec(spec: &GpuSpec) -> Vec<String> {
         bad!("power is a list of {{type, count 1 to 8, position}}");
     }
 
-    if !nullable_hex(&spec.bracket.color) || spec.bracket.ports.iter().any(|p| !(1..=8).contains(&p.count)) {
+    if !nullable_hex(&spec.bracket.color)
+        || spec
+            .bracket
+            .ports
+            .iter()
+            .any(|p| !(1..=8).contains(&p.count))
+    {
         bad!("bracket needs color (hex or null) and ports");
     }
     if spec.lighting.iter().any(|l| !is_hex(&l.color)) {
@@ -651,29 +684,75 @@ mod tests {
 
     #[test]
     fn unknown_fields_are_rejected() {
-        assert!(serde_json::from_str::<MatchRule>(r#"{"vendor":"*","name_regex":".","card":"x","bogus":1}"#).is_err());
-        assert!(serde_json::from_str::<Dims>(r#"{"length":1,"height":1,"thickness":1,"x":1}"#).is_err());
+        assert!(
+            serde_json::from_str::<MatchRule>(
+                r#"{"vendor":"*","name_regex":".","card":"x","bogus":1}"#
+            )
+            .is_err()
+        );
+        assert!(
+            serde_json::from_str::<Dims>(r#"{"length":1,"height":1,"thickness":1,"x":1}"#).is_err()
+        );
     }
 
     #[test]
     fn validator_flags_bad_specs() {
-        let mut s = catalog().specs.specs.iter().find(|s| s.form == Form::Pcie && s.size_mm.is_some()).expect("a pcie card").clone();
-        s.size_mm = Some(Dims { length: 400.0, height: 137.0, thickness: 40.0 });
+        let mut s = catalog()
+            .specs
+            .specs
+            .iter()
+            .find(|s| s.form == Form::Pcie && s.size_mm.is_some())
+            .expect("a pcie card")
+            .clone();
+        s.size_mm = Some(Dims {
+            length: 400.0,
+            height: 137.0,
+            thickness: 40.0,
+        });
         let errs = validate_spec(&s);
-        assert!(errs.iter().any(|e| e.ends_with("PCIe length 400 mm is over 340")), "{errs:?}");
+        assert!(
+            errs.iter()
+                .any(|e| e.ends_with("PCIe length 400 mm is over 340")),
+            "{errs:?}"
+        );
 
-        let dup = GpuSpecFile { schema: 1, specs: vec![s.clone(), s.clone()] };
-        assert!(validate_specs(&dup).iter().any(|e| e.ends_with("duplicate id")));
+        let dup = GpuSpecFile {
+            schema: 1,
+            specs: vec![s.clone(), s.clone()],
+        };
+        assert!(
+            validate_specs(&dup)
+                .iter()
+                .any(|e| e.ends_with("duplicate id"))
+        );
 
         let rules = MatchFile {
             schema: 1,
             rules: vec![
-                MatchRule { vendor: "*".into(), name_regex: ".".into(), machine_kind: None, memory_mib: None, card: s.id.clone(), fallback: true },
-                MatchRule { vendor: "nvidia".into(), name_regex: "RTX".into(), machine_kind: None, memory_mib: None, card: s.id.clone(), fallback: false },
+                MatchRule {
+                    vendor: "*".into(),
+                    name_regex: ".".into(),
+                    machine_kind: None,
+                    memory_mib: None,
+                    card: s.id.clone(),
+                    fallback: true,
+                },
+                MatchRule {
+                    vendor: "nvidia".into(),
+                    name_regex: "RTX".into(),
+                    machine_kind: None,
+                    memory_mib: None,
+                    card: s.id.clone(),
+                    fallback: false,
+                },
             ],
         };
         let ids = [s.id.as_str()];
-        assert!(validate_match(&rules, &ids).iter().any(|e| e.contains("comes after a fallback")));
+        assert!(
+            validate_match(&rules, &ids)
+                .iter()
+                .any(|e| e.contains("comes after a fallback"))
+        );
     }
 
     /// (vendor, name, memory MiB, machine kind, card, fallback, rule index): the expected results are from
@@ -681,36 +760,248 @@ mod tests {
     #[test]
     fn match_card_agrees_with_the_ts_matcher() {
         #[allow(clippy::type_complexity)]
-        let cases: &[(&str, &str, Option<f64>, Option<&str>, Option<&str>, bool, usize)] = &[
-            ("nvidia", "NVIDIA H100 80GB HBM3", Some(81920.0), Some("server"), Some("nvidia-sxm5-module"), false, 18),
-            ("nvidia", "NVIDIA GeForce RTX 3090", Some(24576.0), None, Some("nvidia-rtx3090-fe"), false, 8),
-            ("nvidia", "NVIDIA GeForce RTX 5090", Some(32768.0), None, Some("nvidia-rtx5090-fe"), false, 0),
-            ("nvidia", "NVIDIA GeForce RTX 4070 Ti", Some(12288.0), None, Some("nvidia-rtx4070ti-generic"), false, 6),
-            ("nvidia", "NVIDIA RTX 6000 Ada Generation", Some(49140.0), Some("workstation"), Some("nvidia-rtx6000ada"), false, 11),
-            ("nvidia", "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition", Some(98304.0), Some("workstation"), Some("nvidia-rtxpro6000-maxq"), false, 9),
-            ("nvidia", "NVIDIA RTX PRO 6000 Blackwell Workstation Edition", Some(98304.0), Some("workstation"), Some("nvidia-rtxpro6000-ws"), false, 10),
-            ("nvidia", "NVIDIA L40S", Some(49152.0), Some("server"), Some("nvidia-l40s"), false, 22),
-            ("nvidia", "NVIDIA L40", Some(46068.0), Some("server"), Some("nvidia-l40"), false, 23),
-            ("nvidia", "Jetson Orin", None, Some("edge"), Some("generic-edge-board"), true, 73),
-            ("nvidia", "NVIDIA Jetson AGX Orin Developer Kit", Some(65536.0), Some("edge"), Some("nvidia-jetson-agx-orin-devkit"), false, 30),
-            ("nvidia", "NVIDIA GeForce RTX 3080", Some(10240.0), None, Some("nvidia-rtx3090-fe"), true, 68),
-            ("nvidia", "NVIDIA Unknown Board X", None, None, Some("consumer-generic"), true, 89),
-            ("NVIDIA", "NVIDIA GeForce RTX 4090", Some(24564.0), Some("workstation"), Some("nvidia-rtx4090-fe"), false, 4),
-            ("amd", "AMD Instinct MI300X", Some(196608.0), Some("server"), Some("amd-mi300x-oam"), false, 47),
-            ("amd", "Radeon RX 7900 XTX", Some(24576.0), None, Some("amd-rx7900xtx-mba"), false, 37),
-            ("amd", "Radeon RX 7900 XT", Some(20480.0), None, Some("amd-rx7900xt-mba"), false, 38),
-            ("amd", "AMD Radeon 780M", Some(512.0), Some("laptop"), Some("amd-radeon-igpu"), false, 52),
-            ("intel", "Intel Arc A770", Some(16384.0), None, Some("intel-arc-a770-le"), false, 56),
-            ("intel", "Intel Data Center GPU Max 1100", Some(49152.0), Some("server"), Some("intel-max1100"), false, 60),
-            ("intel", "Intel Graphics", None, Some("laptop"), Some("laptop-generic"), true, 83),
-            ("apple", "Apple M3 Max", None, Some("laptop"), Some("apple-soc-gpu"), false, 65),
-            ("apple", "Apple M3 Max", None, None, Some("apple-soc-gpu"), false, 65),
-            ("nvidia", "NVIDIA H200 NVL", Some(143360.0), Some("server"), Some("nvidia-h200-nvl"), false, 17),
-            ("qualcomm", "Adreno 750", None, None, Some("consumer-generic"), true, 89),
+        let cases: &[(
+            &str,
+            &str,
+            Option<f64>,
+            Option<&str>,
+            Option<&str>,
+            bool,
+            usize,
+        )] = &[
+            (
+                "nvidia",
+                "NVIDIA H100 80GB HBM3",
+                Some(81920.0),
+                Some("server"),
+                Some("nvidia-sxm5-module"),
+                false,
+                18,
+            ),
+            (
+                "nvidia",
+                "NVIDIA GeForce RTX 3090",
+                Some(24576.0),
+                None,
+                Some("nvidia-rtx3090-fe"),
+                false,
+                8,
+            ),
+            (
+                "nvidia",
+                "NVIDIA GeForce RTX 5090",
+                Some(32768.0),
+                None,
+                Some("nvidia-rtx5090-fe"),
+                false,
+                0,
+            ),
+            (
+                "nvidia",
+                "NVIDIA GeForce RTX 4070 Ti",
+                Some(12288.0),
+                None,
+                Some("nvidia-rtx4070ti-generic"),
+                false,
+                6,
+            ),
+            (
+                "nvidia",
+                "NVIDIA RTX 6000 Ada Generation",
+                Some(49140.0),
+                Some("workstation"),
+                Some("nvidia-rtx6000ada"),
+                false,
+                11,
+            ),
+            (
+                "nvidia",
+                "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition",
+                Some(98304.0),
+                Some("workstation"),
+                Some("nvidia-rtxpro6000-maxq"),
+                false,
+                9,
+            ),
+            (
+                "nvidia",
+                "NVIDIA RTX PRO 6000 Blackwell Workstation Edition",
+                Some(98304.0),
+                Some("workstation"),
+                Some("nvidia-rtxpro6000-ws"),
+                false,
+                10,
+            ),
+            (
+                "nvidia",
+                "NVIDIA L40S",
+                Some(49152.0),
+                Some("server"),
+                Some("nvidia-l40s"),
+                false,
+                22,
+            ),
+            (
+                "nvidia",
+                "NVIDIA L40",
+                Some(46068.0),
+                Some("server"),
+                Some("nvidia-l40"),
+                false,
+                23,
+            ),
+            (
+                "nvidia",
+                "Jetson Orin",
+                None,
+                Some("edge"),
+                Some("generic-edge-board"),
+                true,
+                73,
+            ),
+            (
+                "nvidia",
+                "NVIDIA Jetson AGX Orin Developer Kit",
+                Some(65536.0),
+                Some("edge"),
+                Some("nvidia-jetson-agx-orin-devkit"),
+                false,
+                30,
+            ),
+            (
+                "nvidia",
+                "NVIDIA GeForce RTX 3080",
+                Some(10240.0),
+                None,
+                Some("nvidia-rtx3090-fe"),
+                true,
+                68,
+            ),
+            (
+                "nvidia",
+                "NVIDIA Unknown Board X",
+                None,
+                None,
+                Some("consumer-generic"),
+                true,
+                89,
+            ),
+            (
+                "NVIDIA",
+                "NVIDIA GeForce RTX 4090",
+                Some(24564.0),
+                Some("workstation"),
+                Some("nvidia-rtx4090-fe"),
+                false,
+                4,
+            ),
+            (
+                "amd",
+                "AMD Instinct MI300X",
+                Some(196608.0),
+                Some("server"),
+                Some("amd-mi300x-oam"),
+                false,
+                47,
+            ),
+            (
+                "amd",
+                "Radeon RX 7900 XTX",
+                Some(24576.0),
+                None,
+                Some("amd-rx7900xtx-mba"),
+                false,
+                37,
+            ),
+            (
+                "amd",
+                "Radeon RX 7900 XT",
+                Some(20480.0),
+                None,
+                Some("amd-rx7900xt-mba"),
+                false,
+                38,
+            ),
+            (
+                "amd",
+                "AMD Radeon 780M",
+                Some(512.0),
+                Some("laptop"),
+                Some("amd-radeon-igpu"),
+                false,
+                52,
+            ),
+            (
+                "intel",
+                "Intel Arc A770",
+                Some(16384.0),
+                None,
+                Some("intel-arc-a770-le"),
+                false,
+                56,
+            ),
+            (
+                "intel",
+                "Intel Data Center GPU Max 1100",
+                Some(49152.0),
+                Some("server"),
+                Some("intel-max1100"),
+                false,
+                60,
+            ),
+            (
+                "intel",
+                "Intel Graphics",
+                None,
+                Some("laptop"),
+                Some("laptop-generic"),
+                true,
+                83,
+            ),
+            (
+                "apple",
+                "Apple M3 Max",
+                None,
+                Some("laptop"),
+                Some("apple-soc-gpu"),
+                false,
+                65,
+            ),
+            (
+                "apple",
+                "Apple M3 Max",
+                None,
+                None,
+                Some("apple-soc-gpu"),
+                false,
+                65,
+            ),
+            (
+                "nvidia",
+                "NVIDIA H200 NVL",
+                Some(143360.0),
+                Some("server"),
+                Some("nvidia-h200-nvl"),
+                false,
+                17,
+            ),
+            (
+                "qualcomm",
+                "Adreno 750",
+                None,
+                None,
+                Some("consumer-generic"),
+                true,
+                89,
+            ),
         ];
         assert!(cases.len() >= 12);
         for &(vendor, name, mem, kind, card, fallback, rule) in cases {
-            let gpu = GpuInput { vendor: vendor.into(), name: name.into(), memory_mib: mem };
+            let gpu = GpuInput {
+                vendor: vendor.into(),
+                name: name.into(),
+                memory_mib: mem,
+            };
             let got = match_card(&gpu, kind).map(|m| (m.card.id.as_str(), m.fallback, m.rule));
             assert_eq!(got, card.map(|c| (c, fallback, rule)), "{vendor} / {name}");
         }

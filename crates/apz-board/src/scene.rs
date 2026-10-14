@@ -6,9 +6,12 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::geom::{self, mul, round_m4, trs, Geometry, IDENTITY, M4};
-use crate::hardware::{eval_when, parse_when, Count, Geo, Library, Material, Model, Part, Repeat, Scale, DEFAULT_MATERIAL_COLOR};
-use crate::support::{is_upward, Support, Tri};
+use crate::geom::{self, Geometry, IDENTITY, M4, mul, round_m4, trs};
+use crate::hardware::{
+    Count, DEFAULT_MATERIAL_COLOR, Geo, Library, Material, Model, Part, Repeat, Scale, eval_when,
+    parse_when,
+};
+use crate::support::{Support, Tri, is_upward};
 use crate::{Aabb, Item};
 
 const ZERO: [f64; 3] = [0.0, 0.0, 0.0];
@@ -26,9 +29,16 @@ fn is_gpu(id: &str) -> bool {
 enum Kind {
     Group,
     /// One mesh; its world matrix is the node's.
-    Mesh { geo: Geometry, solid: bool },
+    Mesh {
+        geo: Geometry,
+        solid: bool,
+    },
     /// One InstancedMesh with its copies' local matrices (already rounded to f32); its own matrix is the node's.
-    Instanced { geo: Geometry, locals: Vec<M4>, solid: bool },
+    Instanced {
+        geo: Geometry,
+        locals: Vec<M4>,
+        solid: bool,
+    },
 }
 
 struct Node {
@@ -65,14 +75,27 @@ pub(crate) struct Scene {
 pub(crate) fn build(lib: &Library, model: &Model, params: &BTreeMap<String, f64>) -> Scene {
     let mut merged = model.params.clone().unwrap_or_default();
     merged.extend(params.iter().map(|(k, v)| (k.clone(), *v)));
-    let mut b = Builder { lib, params: merged, nodes: Vec::new(), keys: BTreeSet::new() };
+    let mut b = Builder {
+        lib,
+        params: merged,
+        nodes: Vec::new(),
+        keys: BTreeSet::new(),
+    };
     let mut children = Vec::new();
     for p in &model.parts {
         if let Some(c) = b.build_part(p, "", &IDENTITY, false) {
             children.push(c);
         }
     }
-    let root = b.push(Node { name: String::new(), rest: false, excluded: false, decal: false, world: IDENTITY, kind: Kind::Group, children });
+    let root = b.push(Node {
+        name: String::new(),
+        rest: false,
+        excluded: false,
+        decal: false,
+        world: IDENTITY,
+        kind: Kind::Group,
+        children,
+    });
     b.finish(root)
 }
 
@@ -102,7 +125,8 @@ impl Builder<'_> {
         let Some(r) = &p.repeat else {
             return Some(self.build_one(p, scope, 0, ZERO, parent, anc));
         };
-        let plain = p.label.is_none() && p.children.is_none() && p.tag.is_none() && p.anim.is_none();
+        let plain =
+            p.label.is_none() && p.children.is_none() && p.tag.is_none() && p.anim.is_none();
         if let (Some(geo), true) = (&p.geo, plain) {
             return self.build_instanced(p, geo, r, scope, parent, anc);
         }
@@ -111,13 +135,35 @@ impl Builder<'_> {
         for (i, off) in offsets.iter().enumerate() {
             children.push(self.build_one(p, scope, i, *off, parent, anc));
         }
-        Some(self.push(Node { name: String::new(), rest: false, excluded: anc, decal: false, world: *parent, kind: Kind::Group, children }))
+        Some(self.push(Node {
+            name: String::new(),
+            rest: false,
+            excluded: anc,
+            decal: false,
+            world: *parent,
+            kind: Kind::Group,
+            children,
+        }))
     }
 
     /// buildOne: a group (a `use` or children only) or a mesh, with its children and its label.
-    fn build_one(&mut self, p: &Part, scope: &str, inst: usize, offset: [f64; 3], parent: &M4, anc: bool) -> usize {
+    fn build_one(
+        &mut self,
+        p: &Part,
+        scope: &str,
+        inst: usize,
+        offset: [f64; 3],
+        parent: &M4,
+        anc: bool,
+    ) -> usize {
         let id = p.id.as_deref().filter(|s| !s.is_empty());
-        let key = id.map(|id| if inst > 0 { format!("{scope}{id}#{inst}") } else { format!("{scope}{id}") });
+        let key = id.map(|id| {
+            if inst > 0 {
+                format!("{scope}{id}#{inst}")
+            } else {
+                format!("{scope}{id}")
+            }
+        });
         let child_scope = match &key {
             Some(k) => format!("{k}/"),
             None => scope.to_string(),
@@ -169,16 +215,35 @@ impl Builder<'_> {
                 excluded,
                 decal: true,
                 world: label_world,
-                kind: Kind::Mesh { geo: geom::label(size), solid: true },
+                kind: Kind::Mesh {
+                    geo: geom::label(size),
+                    solid: true,
+                },
                 children: Vec::new(),
             });
             children.push(li);
         }
-        self.push(Node { name: id.unwrap_or("").to_string(), rest, excluded, decal, world, kind, children })
+        self.push(Node {
+            name: id.unwrap_or("").to_string(),
+            rest,
+            excluded,
+            decal,
+            world,
+            kind,
+            children,
+        })
     }
 
     /// buildInstanced: one InstancedMesh whose copies are instance matrices (rounded to f32, as a Float32Array holds them).
-    fn build_instanced(&mut self, p: &Part, geo: &Geo, r: &Repeat, scope: &str, parent: &M4, anc: bool) -> Option<usize> {
+    fn build_instanced(
+        &mut self,
+        p: &Part,
+        geo: &Geo,
+        r: &Repeat,
+        scope: &str,
+        parent: &M4,
+        anc: bool,
+    ) -> Option<usize> {
         let offsets = repeat_offsets(r, &self.params);
         if offsets.is_empty() {
             return None;
@@ -193,7 +258,11 @@ impl Builder<'_> {
             let pos = [at[0] + off[0], at[1] + off[1], at[2] + off[2]];
             locals.push(round_m4(&trs(pos, rot, scale)));
             if let Some(id) = id {
-                let key = if i > 0 { format!("{scope}{id}#{i}") } else { format!("{scope}{id}") };
+                let key = if i > 0 {
+                    format!("{scope}{id}#{i}")
+                } else {
+                    format!("{scope}{id}")
+                };
                 self.keys.insert(key);
             }
         }
@@ -225,7 +294,10 @@ impl Builder<'_> {
             .map(|n| match &n.kind {
                 Kind::Group => Vec::new(),
                 Kind::Mesh { geo, solid } => vec![copy_of(geo, &n.world, *solid)],
-                Kind::Instanced { geo, locals, solid } => locals.iter().map(|l| copy_of(geo, &mul(&n.world, l), *solid)).collect(),
+                Kind::Instanced { geo, locals, solid } => locals
+                    .iter()
+                    .map(|l| copy_of(geo, &mul(&n.world, l), *solid))
+                    .collect(),
             })
             .collect();
         let mut support = Support::default();
@@ -240,7 +312,12 @@ impl Builder<'_> {
         visit(&nodes, &copies, root, &mut items);
         let mut boxes = Vec::new();
         visit_boxes(&nodes, &copies, root, &mut boxes);
-        Scene { items, boxes, support, part_count: keys.len() }
+        Scene {
+            items,
+            boxes,
+            support,
+            part_count: keys.len(),
+        }
     }
 }
 
@@ -251,7 +328,14 @@ fn is_decal(p: &Part) -> bool {
 /// The part's material: a palette name (the default when it is missing) or an inline material.
 fn material_of(lib: &Library, p: &Part) -> Material {
     use crate::hardware::MatRef;
-    let default = || Material { color: DEFAULT_MATERIAL_COLOR.to_string(), emissive: None, glow: None, opacity: None, additive: None, flat: None };
+    let default = || Material {
+        color: DEFAULT_MATERIAL_COLOR.to_string(),
+        emissive: None,
+        glow: None,
+        opacity: None,
+        additive: None,
+        flat: None,
+    };
     match &p.mat {
         None => default(),
         Some(MatRef::Name(n)) => lib.palette.get(n).cloned().unwrap_or_else(default),
@@ -272,7 +356,9 @@ fn repeat_count(count: &Count, params: &BTreeMap<String, f64>) -> f64 {
     match count {
         Count::N(n) => f64::from(*n),
         Count::Param(s) => match split_count_ref(s) {
-            Some((name, over)) => (js_round(params.get(name).copied().unwrap_or(0.0)) / over).ceil(),
+            Some((name, over)) => {
+                (js_round(params.get(name).copied().unwrap_or(0.0)) / over).ceil()
+            }
             None => js_round(params.get(s.as_str()).copied().unwrap_or(0.0)),
         },
     }
@@ -283,7 +369,9 @@ fn split_count_ref(s: &str) -> Option<(&str, f64)> {
     let (name, over) = s.split_once('/')?;
     let mut nc = name.chars();
     let first = nc.next()?;
-    if !(first.is_ascii_lowercase() || first == '_') || !nc.all(|c| c.is_ascii_alphanumeric() || c == '_') {
+    if !(first.is_ascii_lowercase() || first == '_')
+        || !nc.all(|c| c.is_ascii_alphanumeric() || c == '_')
+    {
         return None;
     }
     let mut oc = over.chars();
@@ -312,7 +400,11 @@ pub(crate) fn repeat_offsets(r: &Repeat, params: &BTreeMap<String, f64>) -> Vec<
             Some(w) => ((i % w) as f64, (i / w) as f64),
             None => (i as f64, 0.0),
         };
-        out.push([sx * col + rx * line, sy * col + ry * line, sz * col + rz * line]);
+        out.push([
+            sx * col + rx * line,
+            sy * col + ry * line,
+            sz * col + rz * line,
+        ]);
         i += 1;
     }
     out
@@ -327,7 +419,11 @@ fn copy_of(geo: &Geometry, world: &M4, solid: bool) -> Copy {
     let mut ups = Vec::new();
     if solid {
         for t in &geo.tris {
-            let tri = [geom::apply(world, geo.pos[t[0]]), geom::apply(world, geo.pos[t[1]]), geom::apply(world, geo.pos[t[2]])];
+            let tri = [
+                geom::apply(world, geo.pos[t[0]]),
+                geom::apply(world, geo.pos[t[1]]),
+                geom::apply(world, geo.pos[t[2]]),
+            ];
             if is_upward(&tri) {
                 ups.push(tri);
             }
@@ -337,11 +433,20 @@ fn copy_of(geo: &Geometry, world: &M4, solid: bool) -> Copy {
 }
 
 fn is_solid(kind: &Kind) -> bool {
-    matches!(kind, Kind::Mesh { solid: true, .. } | Kind::Instanced { solid: true, .. })
+    matches!(
+        kind,
+        Kind::Mesh { solid: true, .. } | Kind::Instanced { solid: true, .. }
+    )
 }
 
 /// The union of the boxes of the solids under a group (itself included), and the highest of their upward faces.
-fn group_of(nodes: &[Node], copies: &[Vec<Copy>], idx: usize, bounds: &mut Option<Aabb>, top: &mut Option<f64>) {
+fn group_of(
+    nodes: &[Node],
+    copies: &[Vec<Copy>],
+    idx: usize,
+    bounds: &mut Option<Aabb>,
+    top: &mut Option<f64>,
+) {
     if is_solid(&nodes[idx].kind) {
         for c in &copies[idx] {
             *bounds = Some(match *bounds {
@@ -368,18 +473,30 @@ fn visit(nodes: &[Node], copies: &[Vec<Copy>], idx: usize, out: &mut Vec<Item>) 
                 let (mut bounds, mut top) = (None, None);
                 group_of(nodes, copies, idx, &mut bounds, &mut top);
                 if let Some(b) = bounds {
-                    out.push(Item { name: n.name.clone(), bounds: b, top });
+                    out.push(Item {
+                        name: n.name.clone(),
+                        bounds: b,
+                        top,
+                    });
                 }
             }
             Kind::Mesh { .. } => {
                 let c = &copies[idx][0];
                 if !c.bounds.is_empty() {
-                    out.push(Item { name: n.name.clone(), bounds: c.bounds, top: top_of(&c.ups) });
+                    out.push(Item {
+                        name: n.name.clone(),
+                        bounds: c.bounds,
+                        top: top_of(&c.ups),
+                    });
                 }
             }
             Kind::Instanced { .. } => {
                 for (i, c) in copies[idx].iter().enumerate() {
-                    out.push(Item { name: format!("{}#{i}", n.name), bounds: c.bounds, top: top_of(&c.ups) });
+                    out.push(Item {
+                        name: format!("{}#{i}", n.name),
+                        bounds: c.bounds,
+                        top: top_of(&c.ups),
+                    });
                 }
             }
         }
@@ -398,13 +515,21 @@ fn visit_boxes(nodes: &[Node], copies: &[Vec<Copy>], idx: usize, out: &mut Vec<I
             Kind::Mesh { .. } => {
                 let c = &copies[idx][0];
                 if !c.bounds.is_empty() {
-                    out.push(Item { name: n.name.clone(), bounds: c.bounds, top: top_of(&c.ups) });
+                    out.push(Item {
+                        name: n.name.clone(),
+                        bounds: c.bounds,
+                        top: top_of(&c.ups),
+                    });
                 }
             }
             Kind::Instanced { .. } => {
                 for c in &copies[idx] {
                     if !c.bounds.is_empty() {
-                        out.push(Item { name: n.name.clone(), bounds: c.bounds, top: top_of(&c.ups) });
+                        out.push(Item {
+                            name: n.name.clone(),
+                            bounds: c.bounds,
+                            top: top_of(&c.ups),
+                        });
                     }
                 }
             }
@@ -416,7 +541,9 @@ fn visit_boxes(nodes: &[Node], copies: &[Vec<Copy>], idx: usize, out: &mut Vec<I
 }
 
 fn top_of(ups: &[Tri]) -> Option<f64> {
-    ups.iter().flat_map(|t| t.iter().map(|p| p[1])).fold(None, |m: Option<f64>, y| Some(m.map_or(y, |m| m.max(y))))
+    ups.iter()
+        .flat_map(|t| t.iter().map(|p| p[1]))
+        .fold(None, |m: Option<f64>, y| Some(m.map_or(y, |m| m.max(y))))
 }
 
 #[cfg(test)]
@@ -424,7 +551,12 @@ mod tests {
     use super::*;
 
     fn rep(count: Count, step: [f64; 3], wrap: Option<u32>, row: Option<[f64; 3]>) -> Repeat {
-        Repeat { count, step, wrap, row }
+        Repeat {
+            count,
+            step,
+            wrap,
+            row,
+        }
     }
 
     #[test]
@@ -432,8 +564,19 @@ mod tests {
         let mut params = BTreeMap::new();
         params.insert("p_cores".to_string(), 5.0);
         let plain = repeat_offsets(&rep(Count::N(3), [1.0, 0.0, 0.0], None, None), &params);
-        assert_eq!(plain, vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]]);
-        let wrapped = repeat_offsets(&rep(Count::N(5), [2.0, 0.0, 0.0], Some(2), Some([0.0, 0.0, -3.0])), &params);
+        assert_eq!(
+            plain,
+            vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]]
+        );
+        let wrapped = repeat_offsets(
+            &rep(
+                Count::N(5),
+                [2.0, 0.0, 0.0],
+                Some(2),
+                Some([0.0, 0.0, -3.0]),
+            ),
+            &params,
+        );
         assert_eq!(wrapped[2], [0.0, 0.0, -3.0]);
         assert_eq!(wrapped[3], [2.0, 0.0, -3.0]);
         assert_eq!(wrapped.len(), 5);
@@ -444,7 +587,10 @@ mod tests {
         let mut params = BTreeMap::new();
         params.insert("p_cores".to_string(), 5.0);
         assert_eq!(repeat_count(&Count::Param("p_cores".into()), &params), 5.0);
-        assert_eq!(repeat_count(&Count::Param("p_cores/4".into()), &params), 2.0);
+        assert_eq!(
+            repeat_count(&Count::Param("p_cores/4".into()), &params),
+            2.0
+        );
         assert_eq!(repeat_count(&Count::Param("missing".into()), &params), 0.0);
         assert_eq!(split_count_ref("p_cores/0"), None);
         assert_eq!(split_count_ref("Bad/2"), None);

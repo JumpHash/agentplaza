@@ -124,7 +124,11 @@ mod tests {
             r#"{"entries":[],"state":"missing"}"#,
         );
         let older: SyncManifest = serde_json::from_str(r#"{"entries":[]}"#).unwrap();
-        assert_eq!(older.state, FolderState::Present, "a daemon without the field reads as present");
+        assert_eq!(
+            older.state,
+            FolderState::Present,
+            "a daemon without the field reads as present"
+        );
     }
 
     #[test]

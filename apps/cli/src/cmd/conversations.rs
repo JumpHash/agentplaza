@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use clap::Subcommand;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::ctx::{self, Ctx};
 use crate::rich;
@@ -60,7 +60,9 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
         Cmd::List { limit, before, q } => list(ctx, limit, before, q),
         Cmd::Show { pair, all } => show(ctx, &pair, all),
         Cmd::Retention { action: None } => retention(ctx),
-        Cmd::Retention { action: Some(RetentionCmd::Set { keep, days }) } => retention_set(ctx, keep, days),
+        Cmd::Retention {
+            action: Some(RetentionCmd::Set { keep, days }),
+        } => retention_set(ctx, keep, days),
     }
 }
 
@@ -77,7 +79,11 @@ fn items<'a>(v: &'a Value, key: &str) -> &'a [Value] {
 fn pair_key(m: &Value) -> Option<String> {
     let a = m.get("from_cid")?.as_i64()?;
     let b = m.get("to_cid")?.as_i64()?;
-    Some(if a <= b { format!("{a}-{b}") } else { format!("{b}-{a}") })
+    Some(if a <= b {
+        format!("{a}-{b}")
+    } else {
+        format!("{b}-{a}")
+    })
 }
 
 fn at(m: &Value) -> f64 {
@@ -87,7 +93,10 @@ fn at(m: &Value) -> f64 {
 /// The two agent ids of a pair `3-7`, lower first.
 fn parse_pair(pair: &str) -> Result<(u64, u64), String> {
     let refused = || format!("`{pair}` is two agent ids, like 3-7");
-    let ids: Vec<u64> = pair.split('-').map(|id| id.trim().parse::<u64>().map_err(|_| refused())).collect::<Result<_, _>>()?;
+    let ids: Vec<u64> = pair
+        .split('-')
+        .map(|id| id.trim().parse::<u64>().map_err(|_| refused()))
+        .collect::<Result<_, _>>()?;
     match ids.as_slice() {
         [a, b] => Ok(if a <= b { (*a, *b) } else { (*b, *a) }),
         _ => Err(refused()),
@@ -161,18 +170,29 @@ fn more_hint(next: u64, limit: Option<u64>, q: Option<&str>) -> String {
 /// The retention in words: how many exchanges are kept, and when they go.
 fn retention_line(r: &Value) -> String {
     let keep = ctx::text(r, "conversations_max");
-    let days = r.get("conversations_days").and_then(Value::as_u64).unwrap_or(0);
-    let age = if days > 0 { format!("deleted after {days} days") } else { "kept forever".to_string() };
+    let days = r
+        .get("conversations_days")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let age = if days > 0 {
+        format!("deleted after {days} days")
+    } else {
+        "kept forever".to_string()
+    };
     format!("keeps the newest {keep} exchanges, {age}")
 }
 
 /// The settings document with the conversation retention changed and everything else kept. `dev_models` is the
 /// hub's own field, so it is dropped before a save (as the web does).
 fn set_retention(settings: &mut Value, keep: Option<u64>, days: Option<u64>) -> Result<(), String> {
-    let root = settings.as_object_mut().ok_or("the settings are not a JSON object")?;
+    let root = settings
+        .as_object_mut()
+        .ok_or("the settings are not a JSON object")?;
     root.remove("dev_models");
     let block = root.entry("retention").or_insert_with(|| json!({}));
-    let block = block.as_object_mut().ok_or("the retention settings are not a JSON object")?;
+    let block = block
+        .as_object_mut()
+        .ok_or("the retention settings are not a JSON object")?;
     if let Some(keep) = keep {
         block.insert("conversations_max".into(), json!(keep));
     }
@@ -182,9 +202,16 @@ fn set_retention(settings: &mut Value, keep: Option<u64>, days: Option<u64>) -> 
     Ok(())
 }
 
-fn list(ctx: &Ctx, limit: Option<u64>, before: Option<String>, q: Option<String>) -> Result<(), String> {
+fn list(
+    ctx: &Ctx,
+    limit: Option<u64>,
+    before: Option<String>,
+    q: Option<String>,
+) -> Result<(), String> {
     let before = before.as_deref().map(parse_exchange).transpose()?;
-    let q = q.map(|text| clamp_query(&text)).filter(|text| !text.is_empty());
+    let q = q
+        .map(|text| clamp_query(&text))
+        .filter(|text| !text.is_empty());
     let value = ctx.client.get(&listing_path(limit, before, q.as_deref()))?;
     ctx.out(&value, |v| {
         // Per pair: how many messages, and the newest one.
@@ -203,14 +230,21 @@ fn list(ctx: &Ctx, limit: Option<u64>, before: Option<String>, q: Option<String>
                 vec![
                     key.clone(),
                     count.to_string(),
-                    format!("{} {}", ctx::s(last, "from_role"), ctx::text(last, "from_cid")),
+                    format!(
+                        "{} {}",
+                        ctx::s(last, "from_role"),
+                        ctx::text(last, "from_cid")
+                    ),
                     format!("{} {}", ctx::s(last, "to_role"), ctx::text(last, "to_cid")),
                     ctx::when(&last["created_at"]),
                     ctx::text(last, "text"),
                 ]
             })
             .collect();
-        ctx::table(&["pair", "messages", "from", "to", "last at", "last message"], &rows);
+        ctx::table(
+            &["pair", "messages", "from", "to", "last at", "last message"],
+            &rows,
+        );
         if let Some(next) = v.get("next_before").and_then(Value::as_u64) {
             println!("\nolder: {}", more_hint(next, limit, q.as_deref()));
         }
@@ -224,8 +258,12 @@ fn thread(ctx: &Ctx, a: u64, b: u64, all: bool) -> Result<(Vec<Value>, bool), St
     let mut pages: Vec<Vec<Value>> = Vec::new();
     let mut asked: Option<u64> = None;
     loop {
-        let before = asked.map(|seq| format!("&before={seq}")).unwrap_or_default();
-        let page = ctx.client.get(&format!("/v1/conversations/{a}/{b}?limit={PAGE_MAX}{before}"))?;
+        let before = asked
+            .map(|seq| format!("&before={seq}"))
+            .unwrap_or_default();
+        let page = ctx.client.get(&format!(
+            "/v1/conversations/{a}/{b}?limit={PAGE_MAX}{before}"
+        ))?;
         pages.push(items(&page, "messages").to_vec());
         let next = older_cursor(page.get("next_before").and_then(Value::as_u64), asked);
         match next {
@@ -245,7 +283,11 @@ fn show(ctx: &Ctx, pair: &str, all: bool) -> Result<(), String> {
             println!("(no messages between {a}-{b})");
         }
         for m in array(v) {
-            let delivered = if m.get("delivered").and_then(Value::as_bool) == Some(false) { " (not delivered yet)" } else { "" };
+            let delivered = if m.get("delivered").and_then(Value::as_bool) == Some(false) {
+                " (not delivered yet)"
+            } else {
+                ""
+            };
             println!(
                 "[{}] {} {} -> {} {}{delivered}\n{}\n",
                 ctx::when(&m["created_at"]),
@@ -335,20 +377,38 @@ mod tests {
     #[test]
     fn a_listing_carries_only_the_paging_and_search_it_was_given() {
         assert_eq!(listing_path(None, None, None), "/v1/conversations");
-        assert_eq!(listing_path(Some(20), Some(55), None), "/v1/conversations?limit=20&before=55");
-        assert_eq!(listing_path(None, None, Some("a b")), "/v1/conversations?q=a%20b");
+        assert_eq!(
+            listing_path(Some(20), Some(55), None),
+            "/v1/conversations?limit=20&before=55"
+        );
+        assert_eq!(
+            listing_path(None, None, Some("a b")),
+            "/v1/conversations?q=a%20b"
+        );
     }
 
     #[test]
     fn the_next_page_hint_repeats_the_limit_and_the_search() {
-        assert_eq!(more_hint(12, None, None), "agentplaza conversations list --before c12");
-        assert_eq!(more_hint(12, Some(20), Some("hi")), "agentplaza conversations list --before c12 --limit 20 --q \"hi\"");
+        assert_eq!(
+            more_hint(12, None, None),
+            "agentplaza conversations list --before c12"
+        );
+        assert_eq!(
+            more_hint(12, Some(20), Some("hi")),
+            "agentplaza conversations list --before c12 --limit 20 --q \"hi\""
+        );
     }
 
     #[test]
     fn retention_is_read_in_words() {
-        assert_eq!(retention_line(&json!({ "conversations_max": 4096, "conversations_days": 30 })), "keeps the newest 4096 exchanges, deleted after 30 days");
-        assert_eq!(retention_line(&json!({ "conversations_max": 100, "conversations_days": 0 })), "keeps the newest 100 exchanges, kept forever");
+        assert_eq!(
+            retention_line(&json!({ "conversations_max": 4096, "conversations_days": 30 })),
+            "keeps the newest 4096 exchanges, deleted after 30 days"
+        );
+        assert_eq!(
+            retention_line(&json!({ "conversations_max": 100, "conversations_days": 0 })),
+            "keeps the newest 100 exchanges, kept forever"
+        );
     }
 
     #[test]
@@ -373,6 +433,9 @@ mod tests {
     fn a_settings_document_without_a_retention_block_gets_one() {
         let mut doc = json!({ "laws": {} });
         set_retention(&mut doc, Some(100), Some(7)).unwrap();
-        assert_eq!(doc["retention"], json!({ "conversations_max": 100, "conversations_days": 7 }));
+        assert_eq!(
+            doc["retention"],
+            json!({ "conversations_max": 100, "conversations_days": 7 })
+        );
     }
 }

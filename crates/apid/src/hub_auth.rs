@@ -56,8 +56,12 @@ impl Hub {
         std::fs::create_dir_all(state_dir).map_err(|e| format!("{}: {e}", state_dir.display()))?;
         let path = state_dir.join(HUB_FILE);
         let mut config = match std::fs::read_to_string(&path) {
-            Ok(text) => serde_json::from_str::<HubConfig>(&text).map_err(|e| format!("{}: {e}", path.display()))?,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => HubConfig { name: "AgentPlaza".into(), ..Default::default() },
+            Ok(text) => serde_json::from_str::<HubConfig>(&text)
+                .map_err(|e| format!("{}: {e}", path.display()))?,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => HubConfig {
+                name: "AgentPlaza".into(),
+                ..Default::default()
+            },
             Err(err) => return Err(format!("{}: {err}", path.display())),
         };
         config.public_url = public_url.to_string();
@@ -67,11 +71,22 @@ impl Hub {
             let path = owner_token_path(state_dir);
             write_private(&path, token.as_bytes())?;
             // The log names the file and a command that uses it. The token itself is never logged or printed.
-            eprintln!("apid: owner token created: {} (use it with `agentplaza hub login`)", path.display());
+            eprintln!(
+                "apid: owner token created: {} (use it with `agentplaza hub login`)",
+                path.display()
+            );
         }
         save(state_dir, &config)?;
-        let cert_sha256 = if tls { certificate(state_dir, public_url) } else { [0; 32] };
-        Ok(Hub { config: Mutex::new(config), cert_sha256, sessions: Mutex::default() })
+        let cert_sha256 = if tls {
+            certificate(state_dir, public_url)
+        } else {
+            [0; 32]
+        };
+        Ok(Hub {
+            config: Mutex::new(config),
+            cert_sha256,
+            sessions: Mutex::default(),
+        })
     }
 
     /// Whether `token` is the owner's.
@@ -89,7 +104,10 @@ impl Hub {
         save(state_dir, &next)?;
         *config = next;
         // A new owner token ends every console session made with the old one.
-        self.sessions.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clear();
+        self.sessions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
         write_private(&owner_token_path(state_dir), token.as_bytes())?;
         Ok(token)
     }
@@ -97,7 +115,10 @@ impl Hub {
     /// A new console session for the owner: returns the session id (only its hash is kept).
     pub fn open_session(&self, now_ms: u64) -> String {
         let id = apz_trust::b64(&apz_trust::random::<32>());
-        let mut sessions = self.sessions.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut sessions = self
+            .sessions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         sessions.retain(|_, expires| *expires > now_ms);
         sessions.insert(apz_trust::sha256(id.as_bytes()), now_ms + SESSION_MS);
         id
@@ -106,14 +127,20 @@ impl Hub {
     /// Whether `id` is a live session.
     pub fn session_ok(&self, id: &str, now_ms: u64) -> bool {
         let hash = apz_trust::sha256(id.as_bytes());
-        let sessions = self.sessions.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let sessions = self
+            .sessions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         sessions.get(&hash).is_some_and(|expires| *expires > now_ms)
     }
 
     /// Ends the session `id` (a no-op when unknown).
     pub fn close_session(&self, id: &str) {
         let hash = apz_trust::sha256(id.as_bytes());
-        self.sessions.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).remove(&hash);
+        self.sessions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&hash);
     }
 
     pub fn fingerprint_b64(&self) -> String {
@@ -121,7 +148,9 @@ impl Hub {
     }
 
     fn lock(&self) -> MutexGuard<'_, HubConfig> {
-        self.config.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        self.config
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 }
 
@@ -134,8 +163,10 @@ pub fn is_public(method: &str, path: &str) -> bool {
             | ("POST", "/v1/stations/join")
             | ("GET", "/v1/stations/link")
             | ("POST" | "DELETE", "/v1/auth/session")
-    )
-        || (path.starts_with("/v1/nodes/n") && (path.ends_with("/commands") || path.ends_with("/results") || path.ends_with("/heartbeat")))
+    ) || (path.starts_with("/v1/nodes/n")
+        && (path.ends_with("/commands")
+            || path.ends_with("/results")
+            || path.ends_with("/heartbeat")))
         || path.starts_with("/internal/")
         || !path.starts_with("/v1/")
 }
@@ -151,7 +182,9 @@ pub fn gate(app: &App, req: &Request) -> Option<Response> {
     }
     let presented = req.header("authorization").and_then(|value| {
         let (scheme, token) = value.split_once(' ')?;
-        scheme.eq_ignore_ascii_case("bearer").then_some(token.trim())
+        scheme
+            .eq_ignore_ascii_case("bearer")
+            .then_some(token.trim())
     });
     if presented.is_some_and(|token| app.hub_auth.owner_ok(token)) {
         return None;
@@ -159,14 +192,22 @@ pub fn gate(app: &App, req: &Request) -> Option<Response> {
     if session_of(req).is_some_and(|id| app.hub_auth.session_ok(id, apz_plaza::now_ms())) {
         return None;
     }
-    Some(Response::json(401, &serde_json::json!({ "error": "sign in with the owner token" })).with_header("www-authenticate", "Bearer"))
+    Some(
+        Response::json(
+            401,
+            &serde_json::json!({ "error": "sign in with the owner token" }),
+        )
+        .with_header("www-authenticate", "Bearer"),
+    )
 }
 
 pub fn routes(router: Router<App>) -> Router<App> {
     router
         .get("/v1/hub/identity", identity_route)
         .post("/v1/hub/owner-token/rotate", rotate_route)
-        .get("/v1/auth/check", |_, _, _| Response::json(200, &serde_json::json!({ "ok": true })))
+        .get("/v1/auth/check", |_, _, _| {
+            Response::json(200, &serde_json::json!({ "ok": true }))
+        })
         .post("/v1/auth/session", sign_in_route)
         .delete("/v1/auth/session", sign_out_route)
 }
@@ -195,7 +236,10 @@ fn sign_in_route(app: &App, req: &Request, _p: &Params<'_>) -> Response {
         return Response::error(401, "that is not the owner token");
     }
     let id = app.hub_auth.open_session(apz_plaza::now_ms());
-    let cookie = format!("{SESSION_COOKIE}={id}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age={}", SESSION_MS / 1000);
+    let cookie = format!(
+        "{SESSION_COOKIE}={id}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age={}",
+        SESSION_MS / 1000
+    );
     Response::json(200, &serde_json::json!({ "ok": true })).with_header("set-cookie", &cookie)
 }
 
@@ -249,7 +293,9 @@ fn certificate(state_dir: &Path, public_url: &str) -> [u8; 32] {
 fn certificate_fingerprint(state_dir: &Path, public_url: &str) -> Result<[u8; 32], String> {
     let dir = state_dir.join("tls");
     let (cert_path, key_path) = (dir.join("cert.pem"), dir.join("key.pem"));
-    let existing = std::fs::read_to_string(&cert_path).ok().zip(std::fs::read_to_string(&key_path).ok());
+    let existing = std::fs::read_to_string(&cert_path)
+        .ok()
+        .zip(std::fs::read_to_string(&key_path).ok());
     let cert_pem = match existing {
         Some((cert_pem, _key_pem)) => cert_pem,
         None => {
@@ -265,7 +311,11 @@ fn certificate_fingerprint(state_dir: &Path, public_url: &str) -> Result<[u8; 32
 
 /// The names the certificate is valid for: the public host, then loopback.
 fn names(public_url: &str) -> Vec<String> {
-    let mut names = vec![host_of(public_url), "localhost".to_string(), "127.0.0.1".to_string()];
+    let mut names = vec![
+        host_of(public_url),
+        "localhost".to_string(),
+        "127.0.0.1".to_string(),
+    ];
     names.retain(|name| !name.is_empty());
     names
 }
@@ -274,7 +324,9 @@ fn names(public_url: &str) -> Vec<String> {
 fn host_of(url: &str) -> String {
     let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
     let authority = rest.split(['/', '?']).next().unwrap_or_default();
-    let host = authority.rsplit_once('@').map_or(authority, |(_, host)| host);
+    let host = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host);
     match host.strip_prefix('[') {
         Some(v6) => v6.split(']').next().unwrap_or_default().to_string(),
         None => host.split(':').next().unwrap_or_default().to_string(),
@@ -359,7 +411,10 @@ mod tests {
             body: Vec::new(),
             peer: None,
         };
-        assert_eq!(session_of(&req("theme=dark; apz_session=abc ; x=1")), Some("abc"));
+        assert_eq!(
+            session_of(&req("theme=dark; apz_session=abc ; x=1")),
+            Some("abc")
+        );
         assert_eq!(session_of(&req("apz_session=")), None);
         assert_eq!(session_of(&req("apz_sessionx=abc")), None);
         assert!(is_public("POST", "/v1/auth/session"));
@@ -421,10 +476,22 @@ mod tests {
         assert!(is_public("GET", "/v1/hub/identity"));
         assert!(is_public("POST", "/v1/nodes/join"));
         assert!(is_public("POST", "/v1/nodes/n3/heartbeat"));
-        assert!(is_public("POST", "/v1/stations/join"), "a workstation joins with a code");
-        assert!(is_public("GET", "/v1/stations/link"), "a station's link checks its own token");
-        assert!(!is_public("GET", "/v1/stations"), "the registry is the owner's");
-        assert!(!is_public("POST", "/v1/stations/codes"), "a join code is the owner's");
+        assert!(
+            is_public("POST", "/v1/stations/join"),
+            "a workstation joins with a code"
+        );
+        assert!(
+            is_public("GET", "/v1/stations/link"),
+            "a station's link checks its own token"
+        );
+        assert!(
+            !is_public("GET", "/v1/stations"),
+            "the registry is the owner's"
+        );
+        assert!(
+            !is_public("POST", "/v1/stations/codes"),
+            "a join code is the owner's"
+        );
         assert!(is_public("GET", "/internal/anything"));
         assert!(is_public("GET", "/index.html"));
         assert!(!is_public("GET", "/v1/auth/check"));

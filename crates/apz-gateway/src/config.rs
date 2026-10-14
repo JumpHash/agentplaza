@@ -82,7 +82,9 @@ impl ProviderKind {
     /// questions, every other kind is `"chat"`. The two never mix.
     pub fn group(&self) -> &'static str {
         match self {
-            ProviderKind::OpenAiDecisions | ProviderKind::SystemOne | ProviderKind::AzureDecisions => "decisions",
+            ProviderKind::OpenAiDecisions
+            | ProviderKind::SystemOne
+            | ProviderKind::AzureDecisions => "decisions",
             _ => "chat",
         }
     }
@@ -152,12 +154,18 @@ impl ProviderConfig {
 
     /// A string option (`options.<name>`), if set and non-empty.
     pub(crate) fn option(&self, name: &str) -> Option<&str> {
-        self.options.get(name).and_then(Value::as_str).filter(|s| !s.is_empty())
+        self.options
+            .get(name)
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
     }
 
     /// The base URL without a trailing slash.
     pub(crate) fn base(&self) -> Option<&str> {
-        self.base_url.as_deref().map(|b| b.trim_end_matches('/')).filter(|b| !b.is_empty())
+        self.base_url
+            .as_deref()
+            .map(|b| b.trim_end_matches('/'))
+            .filter(|b| !b.is_empty())
     }
 }
 
@@ -189,7 +197,11 @@ impl Preset {
         ProviderConfig {
             base_url: self.base_url.map(str::to_string),
             auth: self.auth.clone(),
-            extra_headers: self.extra_headers.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+            extra_headers: self
+                .extra_headers
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
             models: self.models.iter().map(|m| m.to_string()).collect(),
             options: self.options.clone(),
             ..ProviderConfig::new(self.id, self.kind)
@@ -227,8 +239,16 @@ pub fn presets() -> Vec<Preset> {
     };
     const OPENAI_MODELS: &[&str] = &["gpt-6-astra", "gpt-6-luna", "gpt-5.6-terra"];
     const OPENCODE_MODELS: &[&str] = &[
-        "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",
-        "kimi-k3", "deepseek-v4-pro", "glm-5.3", "minimax-m3",
+        "claude-opus-5-5",
+        "claude-sonnet-5-5",
+        "claude-haiku-5-5",
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+        "kimi-k3",
+        "deepseek-v4-pro",
+        "glm-5.3",
+        "minimax-m3",
     ];
     vec![
         p("anthropic", Anthropic, "Anthropic", "anthropic", Some("https://api.anthropic.com"), env("ANTHROPIC_API_KEY"),
@@ -340,14 +360,24 @@ mod tests {
         assert_eq!(cfg.kind, ProviderKind::Bedrock);
         assert_eq!(cfg.auth, Auth::Env("AWS_BEARER_TOKEN_BEDROCK".into()));
         assert_eq!(cfg.option("region"), Some("eu-west-1"));
-        let none: ProviderConfig = serde_json::from_value(json!({"id": "o", "kind": "openai-compatible"})).unwrap();
+        let none: ProviderConfig =
+            serde_json::from_value(json!({"id": "o", "kind": "openai-compatible"})).unwrap();
         assert_eq!(none.auth, Auth::None);
-        assert_eq!(serde_json::to_value(&none).unwrap(), json!({"id": "o", "kind": "openai-compatible", "auth": "none"}));
+        assert_eq!(
+            serde_json::to_value(&none).unwrap(),
+            json!({"id": "o", "kind": "openai-compatible", "auth": "none"})
+        );
         for kind in ProviderKind::ALL {
             assert_eq!(serde_json::to_value(kind).unwrap(), json!(kind.as_str()));
         }
         let ids: Vec<_> = presets().iter().map(|p| p.id).collect();
-        assert!(ids.contains(&"ollama") && ids.contains(&"mock") && ids.contains(&"meta") && ids.len() == 30, "{ids:?}");
+        assert!(
+            ids.contains(&"ollama")
+                && ids.contains(&"mock")
+                && ids.contains(&"meta")
+                && ids.len() == 30,
+            "{ids:?}"
+        );
         assert_eq!(ProviderKind::SystemOne.group(), "decisions");
         assert_eq!(ProviderKind::Mock.group(), "chat");
     }
@@ -355,9 +385,32 @@ mod tests {
     #[test]
     fn presets_have_unique_ids_and_a_known_brand() {
         const BRANDS: &[&str] = &[
-            "anthropic", "openai", "google", "aws", "azure", "xai", "deepseek", "zai", "moonshot", "mistral", "groq",
-            "openrouter", "opencode", "together", "fireworks", "perplexity", "cerebras", "nvidia", "ollama", "lmstudio",
-            "vllm", "llamacpp", "mock", "microsoft", "typesafe", "meta",
+            "anthropic",
+            "openai",
+            "google",
+            "aws",
+            "azure",
+            "xai",
+            "deepseek",
+            "zai",
+            "moonshot",
+            "mistral",
+            "groq",
+            "openrouter",
+            "opencode",
+            "together",
+            "fireworks",
+            "perplexity",
+            "cerebras",
+            "nvidia",
+            "ollama",
+            "lmstudio",
+            "vllm",
+            "llamacpp",
+            "mock",
+            "microsoft",
+            "typesafe",
+            "meta",
         ];
         let presets = presets();
         let mut ids: Vec<_> = presets.iter().map(|p| p.id).collect();
@@ -365,7 +418,12 @@ mod tests {
         ids.dedup();
         assert_eq!(ids.len(), presets.len());
         for p in &presets {
-            assert!(BRANDS.contains(&p.brand), "{} has brand `{}`", p.id, p.brand);
+            assert!(
+                BRANDS.contains(&p.brand),
+                "{} has brand `{}`",
+                p.id,
+                p.brand
+            );
         }
     }
 
@@ -375,39 +433,90 @@ mod tests {
         let ds = by_id("deepseek");
         assert_eq!(ds.base_url, Some("https://api.deepseek.com"));
         assert_eq!(ds.models, vec!["deepseek-flash", "deepseek-v4-pro"]);
-        assert_eq!(ds.options, json!({"replay_reasoning": true, "reasoning_effort": true}));
+        assert_eq!(
+            ds.options,
+            json!({"replay_reasoning": true, "reasoning_effort": true})
+        );
         assert_eq!(by_id("zai").base_url, Some("https://api.z.ai/api/paas/v4"));
         let kimi = by_id("moonshot");
-        assert_eq!((kimi.base_url, kimi.auth), (Some("https://api.moonshot.ai/v1"), Auth::Env("MOONSHOT_API_KEY".into())));
+        assert_eq!(
+            (kimi.base_url, kimi.auth),
+            (
+                Some("https://api.moonshot.ai/v1"),
+                Auth::Env("MOONSHOT_API_KEY".into())
+            )
+        );
     }
 
     #[test]
     fn meta_preset_flags_its_contributor_models() {
         let meta = presets().into_iter().find(|p| p.id == "meta").unwrap();
-        assert_eq!((meta.kind, meta.base_url, meta.brand), (ProviderKind::OpenAiCompatible, Some("https://api.meta.ai/v1"), "meta"));
+        assert_eq!(
+            (meta.kind, meta.base_url, meta.brand),
+            (
+                ProviderKind::OpenAiCompatible,
+                Some("https://api.meta.ai/v1"),
+                "meta"
+            )
+        );
         assert_eq!(meta.auth, Auth::Env("MODEL_API_KEY".into()));
-        assert!(meta.models.contains(&"muse-wonder-1.0") && !meta.models.contains(&"muse-wonder-1.0-contributor"));
-        assert!(lists_training_model(&meta.options, "muse-spark-1.3-contributor"));
-        assert!(lists_training_model(&meta.options, "muse-spark-1.2-contributor"));
+        assert!(
+            meta.models.contains(&"muse-wonder-1.0")
+                && !meta.models.contains(&"muse-wonder-1.0-contributor")
+        );
+        assert!(lists_training_model(
+            &meta.options,
+            "muse-spark-1.3-contributor"
+        ));
+        assert!(lists_training_model(
+            &meta.options,
+            "muse-spark-1.2-contributor"
+        ));
         assert!(!lists_training_model(&meta.options, "muse-spark-1.3"));
         assert!(!lists_training_model(&meta.options, "muse-wonder-1.0"));
-        assert!(!lists_training_model(&Value::Null, "muse-spark-1.3-contributor"));
+        assert!(!lists_training_model(
+            &Value::Null,
+            "muse-spark-1.3-contributor"
+        ));
     }
 
     #[test]
     fn openrouter_and_opencode_presets() {
         let by_id = |id: &str| presets().into_iter().find(|p| p.id == id).unwrap();
         let or = by_id("openrouter");
-        assert_eq!((or.kind, or.base_url, or.brand), (ProviderKind::OpenAiCompatible, Some("https://openrouter.ai/api/v1"), "openrouter"));
+        assert_eq!(
+            (or.kind, or.base_url, or.brand),
+            (
+                ProviderKind::OpenAiCompatible,
+                Some("https://openrouter.ai/api/v1"),
+                "openrouter"
+            )
+        );
         assert_eq!(or.auth, Auth::Env("OPENROUTER_API_KEY".into()));
         assert!(or.models.is_empty());
         assert_eq!(or.options, json!({"models_cache_secs": 3600}));
         let or_cfg = or.config();
         assert_eq!(or_cfg.extra_headers.len(), 2);
-        assert_eq!(or_cfg.extra_headers.get("HTTP-Referer").map(String::as_str), Some("https://agentplaza.io"));
-        assert_eq!(or_cfg.extra_headers.get("X-OpenRouter-Title").map(String::as_str), Some("AgentPlaza"));
+        assert_eq!(
+            or_cfg.extra_headers.get("HTTP-Referer").map(String::as_str),
+            Some("https://agentplaza.io")
+        );
+        assert_eq!(
+            or_cfg
+                .extra_headers
+                .get("X-OpenRouter-Title")
+                .map(String::as_str),
+            Some("AgentPlaza")
+        );
         let oc = by_id("opencode");
-        assert_eq!((oc.kind, oc.base_url, oc.brand), (ProviderKind::OpenAiCompatible, Some("https://opencode.ai/inference/v1"), "opencode"));
+        assert_eq!(
+            (oc.kind, oc.base_url, oc.brand),
+            (
+                ProviderKind::OpenAiCompatible,
+                Some("https://opencode.ai/inference/v1"),
+                "opencode"
+            )
+        );
         assert_eq!(oc.auth, Auth::Env("OPENCODE_API_KEY".into()));
         assert_eq!(oc.models.len(), 10);
         assert!(oc.models.contains(&"claude-opus-5-5") && oc.models.contains(&"minimax-m3"));

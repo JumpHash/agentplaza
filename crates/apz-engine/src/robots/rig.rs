@@ -10,9 +10,9 @@ use glam::{Mat4, Vec3};
 
 use super::super::geometry::{from_triangles, transformed};
 use super::super::robot::RobotPalette;
-use super::super::scene::{Color, Geo as Mesh, Material, Mat, Obj, RobotHues, Shading};
+use super::super::scene::{Color, Geo as Mesh, Mat, Material, Obj, RobotHues, Shading};
 use super::super::toon::toon_mat;
-use super::geometry::{eye_geometries, hull_of, join, part_geometry, Piece};
+use super::geometry::{Piece, eye_geometries, hull_of, join, part_geometry};
 use super::types::{InlineMat, MatRef, Part, Species, Tool};
 
 /// A part smaller than this (its bounding radius) is not inked, as in `toon.ts`.
@@ -63,18 +63,41 @@ pub fn robot_mats(pal: &RobotPalette, hue: f32, body_hue: f32) -> RobotMats {
     RobotMats {
         matte: toon_mat(Material {
             color: Color::WHITE,
-            robot: Some(RobotHues { shell: hsl(body_hue, 0.62, 0.62), shell2: hsl(body_hue, 0.6, 0.46), panel: hsl(hue, 0.55, 0.78) }),
+            robot: Some(RobotHues {
+                shell: hsl(body_hue, 0.62, 0.62),
+                shell2: hsl(body_hue, 0.6, 0.46),
+                panel: hsl(hue, 0.55, 0.78),
+            }),
             ..Material::default()
         }),
-        eye: toon_mat(Material { color: pal.ok, emissive: pal.ok, emissive_intensity: 1.2, ..Material::default() }),
-        light: toon_mat(Material { color: pal.signal, emissive: pal.signal, emissive_intensity: 1.2, ..Material::default() }),
-        thruster: Mat::new(Material { shading: Shading::Basic, color: pal.info, ..Material::default() }),
+        eye: toon_mat(Material {
+            color: pal.ok,
+            emissive: pal.ok,
+            emissive_intensity: 1.2,
+            ..Material::default()
+        }),
+        light: toon_mat(Material {
+            color: pal.signal,
+            emissive: pal.signal,
+            emissive_intensity: 1.2,
+            ..Material::default()
+        }),
+        thruster: Mat::new(Material {
+            shading: Shading::Basic,
+            color: pal.info,
+            ..Material::default()
+        }),
     }
 }
 
 /// The clear material: translucent, not written to the depth buffer.
 fn clear_mat() -> Mat {
-    toon_mat(Material { transparent: true, opacity: 0.5, depth_write: false, ..Material::default() })
+    toon_mat(Material {
+        transparent: true,
+        opacity: 0.5,
+        depth_write: false,
+        ..Material::default()
+    })
 }
 
 /// An inline material, as the web's: a colour, an optional glow (1 with an emissive colour, else 0), an opacity.
@@ -138,7 +161,13 @@ struct Acc {
 }
 
 /// Bakes parts into the accumulators of their bones (`bone_of` names each part's bone).
-fn bake(parts: &[Part], pal: &RobotPalette, accent: Color, accs: &mut BTreeMap<String, Acc>, bone_of: impl Fn(&Part) -> String) {
+fn bake(
+    parts: &[Part],
+    pal: &RobotPalette,
+    accent: Color,
+    accs: &mut BTreeMap<String, Acc>,
+    bone_of: impl Fn(&Part) -> String,
+) {
     for p in parts {
         let (geo, radius) = part_geometry(p);
         let acc = accs.entry(bone_of(p)).or_default();
@@ -152,7 +181,10 @@ fn bake(parts: &[Part], pal: &RobotPalette, accent: Color, accs: &mut BTreeMap<S
                 continue;
             }
         }
-        let entry = acc.solo.entry(solo_key(&p.mat)).or_insert_with(|| (Vec::new(), solo_bind(&p.mat)));
+        let entry = acc
+            .solo
+            .entry(solo_key(&p.mat))
+            .or_insert_with(|| (Vec::new(), solo_bind(&p.mat)));
         entry.0.push(Piece::plain(geo));
     }
 }
@@ -164,10 +196,17 @@ fn bake_eyes(sp: &Species, pal: &RobotPalette, accs: &mut BTreeMap<String, Acc>)
         let (pupil, glass) = eye_geometries(e);
         let acc = accs.entry(e.bone.clone()).or_default();
         if let Some(glass) = glass {
-            acc.matte.push(Piece { geo: glass, colour: pal.ink.to_array(), slot: 4 });
+            acc.matte.push(Piece {
+                geo: glass,
+                colour: pal.ink.to_array(),
+                slot: 4,
+            });
         }
         let y = e.at[1];
-        let pupil = Piece::plain(transformed(&pupil, Mat4::from_translation(Vec3::new(0.0, -y, 0.0))));
+        let pupil = Piece::plain(transformed(
+            &pupil,
+            Mat4::from_translation(Vec3::new(0.0, -y, 0.0)),
+        ));
         match acc.pupils.iter_mut().find(|(row, _)| *row == y) {
             Some((_, list)) => list.push(pupil),
             None => acc.pupils.push((y, vec![pupil])),
@@ -179,8 +218,16 @@ fn finish(acc: Acc) -> BoneGeo {
     BoneGeo {
         matte: join(&acc.matte),
         hull: hull_of(&acc.hull),
-        solo: acc.solo.into_iter().filter_map(|(_, (pieces, bind))| join(&pieces).map(|geo| Solo { bind, geo })).collect(),
-        pupils: acc.pupils.into_iter().filter_map(|(y, list)| join(&list).map(|g| (y, g))).collect(),
+        solo: acc
+            .solo
+            .into_iter()
+            .filter_map(|(_, (pieces, bind))| join(&pieces).map(|geo| Solo { bind, geo }))
+            .collect(),
+        pupils: acc
+            .pupils
+            .into_iter()
+            .filter_map(|(y, list)| join(&list).map(|g| (y, g)))
+            .collect(),
     }
 }
 
@@ -189,20 +236,31 @@ fn finish(acc: Acc) -> BoneGeo {
 pub fn bake_species(sp: &Species, pal: &RobotPalette, orchestrator: bool) -> SpeciesGeo {
     let accent = Color::css(&sp.accent).unwrap_or(Color::WHITE);
     let mut accs = BTreeMap::new();
-    bake(&sp.parts, pal, accent, &mut accs, |p| p.bone.clone().unwrap_or_default());
+    bake(&sp.parts, pal, accent, &mut accs, |p| {
+        p.bone.clone().unwrap_or_default()
+    });
     if orchestrator {
         if let Some(extra) = &sp.orchestrator {
-            bake(&extra.parts, pal, accent, &mut accs, |p| p.bone.clone().unwrap_or_default());
+            bake(&extra.parts, pal, accent, &mut accs, |p| {
+                p.bone.clone().unwrap_or_default()
+            });
         }
     }
     bake_eyes(sp, pal, &mut accs);
-    SpeciesGeo { bones: accs.into_iter().map(|(name, acc)| (name, finish(acc))).collect() }
+    SpeciesGeo {
+        bones: accs
+            .into_iter()
+            .map(|(name, acc)| (name, finish(acc)))
+            .collect(),
+    }
 }
 
 /// Bakes a tool or a carried item: its parts at its origin, in the signal accent (as the web's).
 pub fn bake_tool(tool: &Tool, pal: &RobotPalette) -> BoneGeo {
     let mut accs = BTreeMap::new();
-    bake(&tool.parts, pal, pal.signal, &mut accs, |_| "root".to_string());
+    bake(&tool.parts, pal, pal.signal, &mut accs, |_| {
+        "root".to_string()
+    });
     accs.remove("root").map_or_else(BoneGeo::default, finish)
 }
 
@@ -210,7 +268,9 @@ pub fn bake_tool(tool: &Tool, pal: &RobotPalette) -> BoneGeo {
 /// `bakeSpecies` does for a prop built as a one-bone species (robots/props.ts `buildProp`).
 pub fn bake_prop(parts: &[Part], pal: &RobotPalette, accent: Color) -> BoneGeo {
     let mut accs = BTreeMap::new();
-    bake(parts, pal, accent, &mut accs, |p| p.bone.clone().unwrap_or_else(|| "root".to_string()));
+    bake(parts, pal, accent, &mut accs, |p| {
+        p.bone.clone().unwrap_or_else(|| "root".to_string())
+    });
     accs.remove("root").map_or_else(BoneGeo::default, finish)
 }
 
@@ -219,7 +279,10 @@ pub fn bake_prop(parts: &[Part], pal: &RobotPalette, accent: Color) -> BoneGeo {
 pub fn add_bone(parent: &Obj, bg: &BoneGeo, mats: &RobotMats, pupils: &mut Vec<Obj>) {
     if bg.matte.is_some() || bg.hull.is_some() {
         // A bone with only inked parts still gets its hull (on an empty mesh).
-        let geo = bg.matte.clone().unwrap_or_else(|| from_triangles(Vec::new()));
+        let geo = bg
+            .matte
+            .clone()
+            .unwrap_or_else(|| from_triangles(Vec::new()));
         let m = mesh(&geo, &mats.matte, true);
         m.get().hull = bg.hull.clone();
         parent.add(&m);
@@ -277,10 +340,15 @@ pub fn instantiate(sp: &Species, geo: &SpeciesGeo, mats: &RobotMats, root: &Obj)
                 continue;
             }
             let def = &sp.bones[name];
-            let parent = if def.parent == "root" { Some(root.clone()) } else { index(&def.parent).and_then(|p| made[p].clone()) };
+            let parent = if def.parent == "root" {
+                Some(root.clone())
+            } else {
+                index(&def.parent).and_then(|p| made[p].clone())
+            };
             if let Some(parent) = parent {
                 let g = Obj::group();
-                g.set_name(name).set_position(def.at[0], def.at[1], def.at[2]);
+                g.set_name(name)
+                    .set_position(def.at[0], def.at[1], def.at[2]);
                 parent.add(&g);
                 made[i] = Some(g);
                 progress = true;
@@ -308,5 +376,10 @@ pub fn instantiate(sp: &Species, geo: &SpeciesGeo, mats: &RobotMats, root: &Obj)
         }
     }
     let rest = sp.bones.values().map(|b| b.at).collect();
-    Rig { names, bones, rest, pupils }
+    Rig {
+        names,
+        bones,
+        rest,
+        pupils,
+    }
 }

@@ -58,7 +58,11 @@ fn dot(a: V3, b: V3) -> f64 {
 
 /// `Vector3.cross`.
 fn cross(a: V3, b: V3) -> V3 {
-    [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
 }
 
 /// `Vector3.normalize`: divides by the length, or by 1 for a zero vector.
@@ -101,7 +105,10 @@ fn build_plane(raw: &mut Raw, p: &Plane) {
             nrm[p.w] = normal_w;
             raw.positions.push(to_f32(pos));
             raw.normals.push(to_f32(nrm));
-            raw.uvs.push([(ix as f64 / p.gx as f64) as f32, (1.0 - iy as f64 / p.gy as f64) as f32]);
+            raw.uvs.push([
+                (ix as f64 / p.gx as f64) as f32,
+                (1.0 - iy as f64 / p.gy as f64) as f32,
+            ]);
         }
     }
     for iy in 0..p.gy {
@@ -118,12 +125,78 @@ fn build_plane(raw: &mut Raw, p: &Plane) {
 /// three's `BoxGeometry(w, h, d, ws, hs, ds)`: six faces in the order px, nx, py, ny, pz, nz.
 fn box_raw(w: f64, h: f64, d: f64, ws: u32, hs: u32, ds: u32) -> Raw {
     let faces = [
-        Plane { u: 2, v: 1, w: 0, udir: -1.0, vdir: -1.0, width: d, height: h, depth: w, gx: ds, gy: hs },
-        Plane { u: 2, v: 1, w: 0, udir: 1.0, vdir: -1.0, width: d, height: h, depth: -w, gx: ds, gy: hs },
-        Plane { u: 0, v: 2, w: 1, udir: 1.0, vdir: 1.0, width: w, height: d, depth: h, gx: ws, gy: ds },
-        Plane { u: 0, v: 2, w: 1, udir: 1.0, vdir: -1.0, width: w, height: d, depth: -h, gx: ws, gy: ds },
-        Plane { u: 0, v: 1, w: 2, udir: 1.0, vdir: -1.0, width: w, height: h, depth: d, gx: ws, gy: hs },
-        Plane { u: 0, v: 1, w: 2, udir: -1.0, vdir: -1.0, width: w, height: h, depth: -d, gx: ws, gy: hs },
+        Plane {
+            u: 2,
+            v: 1,
+            w: 0,
+            udir: -1.0,
+            vdir: -1.0,
+            width: d,
+            height: h,
+            depth: w,
+            gx: ds,
+            gy: hs,
+        },
+        Plane {
+            u: 2,
+            v: 1,
+            w: 0,
+            udir: 1.0,
+            vdir: -1.0,
+            width: d,
+            height: h,
+            depth: -w,
+            gx: ds,
+            gy: hs,
+        },
+        Plane {
+            u: 0,
+            v: 2,
+            w: 1,
+            udir: 1.0,
+            vdir: 1.0,
+            width: w,
+            height: d,
+            depth: h,
+            gx: ws,
+            gy: ds,
+        },
+        Plane {
+            u: 0,
+            v: 2,
+            w: 1,
+            udir: 1.0,
+            vdir: -1.0,
+            width: w,
+            height: d,
+            depth: -h,
+            gx: ws,
+            gy: ds,
+        },
+        Plane {
+            u: 0,
+            v: 1,
+            w: 2,
+            udir: 1.0,
+            vdir: -1.0,
+            width: w,
+            height: h,
+            depth: d,
+            gx: ws,
+            gy: hs,
+        },
+        Plane {
+            u: 0,
+            v: 1,
+            w: 2,
+            udir: -1.0,
+            vdir: -1.0,
+            width: w,
+            height: h,
+            depth: -d,
+            gx: ws,
+            gy: hs,
+        },
     ];
     let mut raw = Raw::default();
     for face in &faces {
@@ -196,27 +269,45 @@ pub fn rounded_box(w: f32, h: f32, d: f32, segments: u32, radius: f32) -> Geo {
         let uv = match v / per_side {
             0 => {
                 let dir = [1.0, 0.0, 0.0];
-                [round_uv(dir, nrm, 2, 1, radius, d), 1.0 - round_uv(dir, nrm, 1, 2, radius, h)]
+                [
+                    round_uv(dir, nrm, 2, 1, radius, d),
+                    1.0 - round_uv(dir, nrm, 1, 2, radius, h),
+                ]
             }
             1 => {
                 let dir = [-1.0, 0.0, 0.0];
-                [1.0 - round_uv(dir, nrm, 2, 1, radius, d), 1.0 - round_uv(dir, nrm, 1, 2, radius, h)]
+                [
+                    1.0 - round_uv(dir, nrm, 2, 1, radius, d),
+                    1.0 - round_uv(dir, nrm, 1, 2, radius, h),
+                ]
             }
             2 => {
                 let dir = [0.0, 1.0, 0.0];
-                [1.0 - round_uv(dir, nrm, 0, 2, radius, w), round_uv(dir, nrm, 2, 0, radius, d)]
+                [
+                    1.0 - round_uv(dir, nrm, 0, 2, radius, w),
+                    round_uv(dir, nrm, 2, 0, radius, d),
+                ]
             }
             3 => {
                 let dir = [0.0, -1.0, 0.0];
-                [1.0 - round_uv(dir, nrm, 0, 2, radius, w), 1.0 - round_uv(dir, nrm, 2, 0, radius, d)]
+                [
+                    1.0 - round_uv(dir, nrm, 0, 2, radius, w),
+                    1.0 - round_uv(dir, nrm, 2, 0, radius, d),
+                ]
             }
             4 => {
                 let dir = [0.0, 0.0, 1.0];
-                [1.0 - round_uv(dir, nrm, 0, 1, radius, w), 1.0 - round_uv(dir, nrm, 1, 0, radius, h)]
+                [
+                    1.0 - round_uv(dir, nrm, 0, 1, radius, w),
+                    1.0 - round_uv(dir, nrm, 1, 0, radius, h),
+                ]
             }
             _ => {
                 let dir = [0.0, 0.0, -1.0];
-                [round_uv(dir, nrm, 0, 1, radius, w), 1.0 - round_uv(dir, nrm, 1, 0, radius, h)]
+                [
+                    round_uv(dir, nrm, 0, 1, radius, w),
+                    1.0 - round_uv(dir, nrm, 1, 0, radius, h),
+                ]
             }
         };
         raw.uvs.push([uv[0] as f32, uv[1] as f32]);
@@ -237,7 +328,10 @@ pub fn plane(w: f32, h: f32, ws: u32, hs: u32) -> Geo {
             let x = ix as f64 * seg_w - half_w;
             raw.positions.push(to_f32([x, -y, 0.0]));
             raw.normals.push([0.0, 0.0, 1.0]);
-            raw.uvs.push([(ix as f64 / ws as f64) as f32, (1.0 - iy as f64 / hs as f64) as f32]);
+            raw.uvs.push([
+                (ix as f64 / ws as f64) as f32,
+                (1.0 - iy as f64 / hs as f64) as f32,
+            ]);
         }
     }
     for iy in 0..hs {
@@ -266,7 +360,8 @@ pub fn circle(r: f32, segments: u32, theta_start: f32, theta_length: f32) -> Geo
         let (x, y) = (r * theta.cos(), r * theta.sin());
         raw.positions.push(to_f32([x, y, 0.0]));
         raw.normals.push([0.0, 0.0, 1.0]);
-        raw.uvs.push([((x / r + 1.0) / 2.0) as f32, ((y / r + 1.0) / 2.0) as f32]);
+        raw.uvs
+            .push([((x / r + 1.0) / 2.0) as f32, ((y / r + 1.0) / 2.0) as f32]);
     }
     for i in 1..=segments {
         raw.indices.extend_from_slice(&[i, i + 1, 0]);
@@ -275,7 +370,14 @@ pub fn circle(r: f32, segments: u32, theta_start: f32, theta_length: f32) -> Geo
 }
 
 /// `RingGeometry(inner, outer, thetaSegments, phiSegments, thetaStart, thetaLength)`.
-pub fn ring(inner: f32, outer: f32, theta_segments: u32, phi_segments: u32, theta_start: f32, theta_length: f32) -> Geo {
+pub fn ring(
+    inner: f32,
+    outer: f32,
+    theta_segments: u32,
+    phi_segments: u32,
+    theta_start: f32,
+    theta_length: f32,
+) -> Geo {
     let (inner, outer) = (inner as f64, outer as f64);
     let theta_segments = theta_segments.max(3);
     let phi_segments = phi_segments.max(1);
@@ -289,7 +391,10 @@ pub fn ring(inner: f32, outer: f32, theta_segments: u32, phi_segments: u32, thet
             let (x, y) = (radius * theta.cos(), radius * theta.sin());
             raw.positions.push(to_f32([x, y, 0.0]));
             raw.normals.push([0.0, 0.0, 1.0]);
-            raw.uvs.push([((x / outer + 1.0) / 2.0) as f32, ((y / outer + 1.0) / 2.0) as f32]);
+            raw.uvs.push([
+                ((x / outer + 1.0) / 2.0) as f32,
+                ((y / outer + 1.0) / 2.0) as f32,
+            ]);
         }
         radius += step;
     }
@@ -297,7 +402,12 @@ pub fn ring(inner: f32, outer: f32, theta_segments: u32, phi_segments: u32, thet
         let level = j * (theta_segments + 1);
         for i in 0..theta_segments {
             let seg = i + level;
-            let (a, b, c, d) = (seg, seg + theta_segments + 1, seg + theta_segments + 2, seg + 1);
+            let (a, b, c, d) = (
+                seg,
+                seg + theta_segments + 1,
+                seg + theta_segments + 2,
+                seg + 1,
+            );
             raw.indices.extend_from_slice(&[a, b, d, b, c, d]);
         }
     }
@@ -334,7 +444,13 @@ pub fn weld_smooth(geo: &Geo, tolerance: f32) -> Geo {
     }
     let welded = weld(geo, tolerance);
     // The first hull stored for the geometry wins, so concurrent callers share one (and one geometry id).
-    Arc::clone(cache.lock().expect("weld cache").entry(geo.id).or_insert(welded))
+    Arc::clone(
+        cache
+            .lock()
+            .expect("weld cache")
+            .entry(geo.id)
+            .or_insert(welded),
+    )
 }
 
 /// `mergeVertices` on positions (quantised to round(v / tolerance)), then `computeVertexNormals`.
@@ -364,7 +480,11 @@ fn weld(geo: &Geometry, tolerance: f32) -> Geo {
     let mut sums: Vec<V3> = vec![[0.0; 3]; positions.len()];
     for tri in indices.chunks_exact(3) {
         let (a, b, c) = (tri[0] as usize, tri[1] as usize, tri[2] as usize);
-        let (pa, pb, pc) = (to_f64(positions[a]), to_f64(positions[b]), to_f64(positions[c]));
+        let (pa, pb, pc) = (
+            to_f64(positions[a]),
+            to_f64(positions[b]),
+            to_f64(positions[c]),
+        );
         let area = cross(sub(pc, pb), sub(pa, pb));
         for v in [a, b, c] {
             for k in 0..3 {
@@ -398,7 +518,10 @@ mod tests {
 
     #[test]
     fn geometry_circle_has_centre_and_rim() {
-        assert_eq!(circle(1.0, 8, 0.0, std::f32::consts::TAU).positions.len(), 10);
+        assert_eq!(
+            circle(1.0, 8, 0.0, std::f32::consts::TAU).positions.len(),
+            10
+        );
     }
 
     #[test]

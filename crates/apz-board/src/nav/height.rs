@@ -6,7 +6,8 @@
 
 use crate::grid::{NAV_DROP_DOWN, NAV_JUMP_UP, NAV_STEP};
 use crate::nav::{
-    NAV_CROUCH_TIME, NAV_GLIDE_SPEED, NAV_GRAVITY, NAV_JUMP_TIME, NAV_LAND_TIME, NAV_RESPAWN_IN, NAV_RESPAWN_OUT,
+    NAV_CROUCH_TIME, NAV_GLIDE_SPEED, NAV_GRAVITY, NAV_JUMP_TIME, NAV_LAND_TIME, NAV_RESPAWN_IN,
+    NAV_RESPAWN_OUT,
 };
 
 /// The body's mode (nav-height.ts BodyMode).
@@ -49,7 +50,13 @@ const JUMP_LIFT: f64 = 0.5 * NAV_GRAVITY * NAV_JUMP_TIME * NAV_JUMP_TIME;
 
 /// A body standing at height y, on the ground.
 pub fn new_body(y: f64) -> Body {
-    Body { mode: BodyMode::Ground, y, y0: y, v0: 0.0, t: 0.0 }
+    Body {
+        mode: BodyMode::Ground,
+        y,
+        y0: y,
+        v0: 0.0,
+        t: 0.0,
+    }
 }
 
 /// The height of an air body at its anchor's time t.
@@ -83,7 +90,11 @@ pub fn step_body(b: &mut Body, s: Surfaces, dt: f64, floats: bool) {
         BodyMode::Ground => {
             b.t += dt;
             let Some(walk) = s.walk_top else {
-                let mode = if floats && s.floor_top.is_some() { BodyMode::Glide } else { BodyMode::Fall };
+                let mode = if floats && s.floor_top.is_some() {
+                    BodyMode::Glide
+                } else {
+                    BodyMode::Fall
+                };
                 return enter(b, mode, 0.0);
             };
             let d = walk - b.y;
@@ -99,7 +110,11 @@ pub fn step_body(b: &mut Body, s: Surfaces, dt: f64, floats: bool) {
                 return enter(b, BodyMode::Crouch, 0.0);
             }
             if d < -NAV_STEP - EPS {
-                let mode = if floats { BodyMode::Glide } else { BodyMode::Fall };
+                let mode = if floats {
+                    BodyMode::Glide
+                } else {
+                    BodyMode::Fall
+                };
                 return enter(b, mode, 0.0);
             }
             // Exact contact: a grounded body's feet are on the surface every step (the audit counts any gap).
@@ -195,7 +210,10 @@ mod tests {
     use super::*;
 
     fn surf(walk: Option<f64>, floor: Option<f64>) -> Surfaces {
-        Surfaces { walk_top: walk, floor_top: floor }
+        Surfaces {
+            walk_top: walk,
+            floor_top: floor,
+        }
     }
 
     #[test]

@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::files::Workspace;
@@ -28,7 +28,14 @@ const CONTEXT: usize = 3;
 /// The largest line-by-line LCS table the diff builds; past it a changed block is shown whole.
 const LCS_CELLS: usize = 4_000_000;
 /// Directories never walked.
-const SKIP_DIRS: [&str; 6] = [".plaza", ".git", "node_modules", "target", ".npm-global", ".cache"];
+const SKIP_DIRS: [&str; 6] = [
+    ".plaza",
+    ".git",
+    "node_modules",
+    "target",
+    ".npm-global",
+    ".cache",
+];
 
 #[derive(Clone, Debug, PartialEq)]
 struct Entry {
@@ -87,7 +94,13 @@ fn snapshot_locked(workspace: &Workspace, label: &str) -> Result<String, String>
     let n = load_snaps(&base).last().map_or(1, |s| s.n + 1);
     let slug: String = label
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .take(40)
         .collect();
     let id = format!("{n}-{slug}");
@@ -99,7 +112,11 @@ fn snapshot_locked(workspace: &Workspace, label: &str) -> Result<String, String>
         files: tree.files,
         skipped: tree.skipped,
     };
-    fs::write(snaps_dir.join(format!("{id}.json")), to_json(&snap).to_string()).map_err(|e| e.to_string())?;
+    fs::write(
+        snaps_dir.join(format!("{id}.json")),
+        to_json(&snap).to_string(),
+    )
+    .map_err(|e| e.to_string())?;
     prune(&base)?;
     Ok(id)
 }
@@ -127,7 +144,11 @@ pub fn diff(workspace: &Workspace, input: &Value) -> Result<String, String> {
         body.push_str(&rendered.text);
     }
     if summary.is_empty() {
-        return Ok(format!("no changes since {} ({} ago)", since.id, age(since.at_ms)));
+        return Ok(format!(
+            "no changes since {} ({} ago)",
+            since.id,
+            age(since.at_ms)
+        ));
     }
     let mut out = format!("changes since {} ({} ago):\n", since.id, age(since.at_ms));
     out.push_str(&summary.join("\n"));
@@ -145,7 +166,12 @@ struct Changed {
 }
 
 /// The files under `scope` whose hash or mode differs between `since` and the workspace now, in path order.
-fn changed_files(workspace: &Workspace, base: &Path, since: &Snap, scope: Option<&str>) -> Result<Vec<Changed>, String> {
+fn changed_files(
+    workspace: &Workspace,
+    base: &Path,
+    since: &Snap,
+    scope: Option<&str>,
+) -> Result<Vec<Changed>, String> {
     let now = walk(workspace.dir(), None)?;
     let keys: BTreeSet<&String> = since
         .files
@@ -165,18 +191,29 @@ fn changed_files(workspace: &Workspace, base: &Path, since: &Snap, scope: Option
             Some(path) => Some(fs::read(path).map_err(|e| e.to_string())?),
             None => None,
         };
-        changed.push(Changed { key: key.clone(), old, new });
+        changed.push(Changed {
+            key: key.clone(),
+            old,
+            new,
+        });
     }
     Ok(changed)
 }
 
 /// Every change since checkpoint `n` as one git-style unified diff, with no cap: the owner's diff.
 /// Files for which `keep` is false are left out.
-pub fn unified_since(workspace: &Workspace, n: u64, keep: impl Fn(&str) -> bool) -> Result<String, String> {
+pub fn unified_since(
+    workspace: &Workspace,
+    n: u64,
+    keep: impl Fn(&str) -> bool,
+) -> Result<String, String> {
     let _store = store();
     let base = base_dir(workspace);
     let snaps = load_snaps(&base);
-    let since = snaps.iter().find(|s| s.n == n).ok_or_else(|| format!("no checkpoint {n}"))?;
+    let since = snaps
+        .iter()
+        .find(|s| s.n == n)
+        .ok_or_else(|| format!("no checkpoint {n}"))?;
     let changes = changed_files(workspace, &base, since, None)?;
     Ok(changes
         .iter()
@@ -244,7 +281,10 @@ pub fn summaries(workspace: &Workspace) -> Vec<Summary> {
 /// Rolls the workspace or a path back to a checkpoint. A `before-restore` checkpoint is taken first.
 pub fn restore(workspace: &Workspace, input: &Value) -> Result<String, String> {
     let _store = store();
-    let id = input.get("id").and_then(Value::as_str).ok_or("checkpoint_restore needs an id")?;
+    let id = input
+        .get("id")
+        .and_then(Value::as_str)
+        .ok_or("checkpoint_restore needs an id")?;
     let base = base_dir(workspace);
     let snap = find(&load_snaps(&base), id)?.clone();
     let scope = scope_of(input);
@@ -253,7 +293,11 @@ pub fn restore(workspace: &Workspace, input: &Value) -> Result<String, String> {
     let now = walk(&root, None)?;
     // Read everything needed before the new checkpoint can prune the one being restored.
     let mut plan = Vec::new();
-    for (key, want) in snap.files.iter().filter(|(key, _)| within(key.as_str(), scope)) {
+    for (key, want) in snap
+        .files
+        .iter()
+        .filter(|(key, _)| within(key.as_str(), scope))
+    {
         if now.files.get(key.as_str()) == Some(want) {
             continue;
         }
@@ -268,7 +312,10 @@ pub fn restore(workspace: &Workspace, input: &Value) -> Result<String, String> {
     let removing = scope.is_none() && !added.is_empty();
     let what = scope.unwrap_or("the whole workspace");
     if plan.is_empty() && !removing {
-        return Ok(format!("nothing to restore: {what} already matches {}", snap.id));
+        return Ok(format!(
+            "nothing to restore: {what} already matches {}",
+            snap.id
+        ));
     }
     let before = snapshot_locked(workspace, "before-restore")?;
     let mut lines = Vec::new();
@@ -287,7 +334,10 @@ pub fn restore(workspace: &Workspace, input: &Value) -> Result<String, String> {
             lines.push(format!("removed {key}"));
         }
     } else if !added.is_empty() {
-        lines.push(format!("kept {} files added since; only a whole-workspace restore removes them", added.len()));
+        lines.push(format!(
+            "kept {} files added since; only a whole-workspace restore removes them",
+            added.len()
+        ));
     }
     Ok(format!(
         "rolled {what} back to {}; the state before is checkpoint {before}\n{}",
@@ -307,8 +357,18 @@ pub fn list(workspace: &Workspace, _input: &Value) -> Result<String, String> {
         .iter()
         .rev()
         .map(|s| {
-            let skipped = if s.skipped.is_empty() { String::new() } else { format!(", {} skipped", s.skipped.len()) };
-            format!("{}  {}  {} ago  {} files{skipped}", s.id, s.label, age(s.at_ms), s.files.len())
+            let skipped = if s.skipped.is_empty() {
+                String::new()
+            } else {
+                format!(", {} skipped", s.skipped.len())
+            };
+            format!(
+                "{}  {}  {} ago  {} files{skipped}",
+                s.id,
+                s.label,
+                age(s.at_ms),
+                s.files.len()
+            )
         })
         .collect();
     Ok(lines.join("\n"))
@@ -335,14 +395,22 @@ fn age(at_ms: u64) -> String {
 }
 
 pub(crate) fn sha_hex(bytes: &[u8]) -> String {
-    Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 fn scope_of(input: &Value) -> Option<String> {
     input
         .get("path")
         .and_then(Value::as_str)
-        .map(|p| p.trim().trim_start_matches("./").trim_matches('/').to_string())
+        .map(|p| {
+            p.trim()
+                .trim_start_matches("./")
+                .trim_matches('/')
+                .to_string()
+        })
         .filter(|p| !p.is_empty())
 }
 
@@ -371,7 +439,12 @@ fn walk(root: &Path, objects: Option<&Path>) -> Result<Tree, String> {
     Ok(tree)
 }
 
-fn walk_dir(root: &Path, dir: &Path, objects: Option<&Path>, tree: &mut Tree) -> Result<(), String> {
+fn walk_dir(
+    root: &Path,
+    dir: &Path,
+    objects: Option<&Path>,
+    tree: &mut Tree,
+) -> Result<(), String> {
     let Ok(items) = fs::read_dir(dir) else {
         return Ok(());
     };
@@ -430,11 +503,15 @@ fn walk_dir(root: &Path, dir: &Path, objects: Option<&Path>, tree: &mut Tree) ->
 }
 
 fn read_object(base: &Path, hash: &str) -> Result<Vec<u8>, String> {
-    fs::read(base.join("objects").join(hash)).map_err(|e| format!("checkpoint object {hash} is missing: {e}"))
+    fs::read(base.join("objects").join(hash))
+        .map_err(|e| format!("checkpoint object {hash} is missing: {e}"))
 }
 
 fn abs_path(root: &Path, rel: &str) -> Result<PathBuf, String> {
-    if rel.split('/').any(|c| c.is_empty() || c == "." || c == "..") {
+    if rel
+        .split('/')
+        .any(|c| c.is_empty() || c == "." || c == "..")
+    {
         return Err(format!("bad path in checkpoint: {rel}"));
     }
     Ok(root.join(rel))
@@ -444,7 +521,12 @@ fn to_json(snap: &Snap) -> Value {
     let files: serde_json::Map<String, Value> = snap
         .files
         .iter()
-        .map(|(path, e)| (path.clone(), json!({"hash": e.hash, "mode": e.mode, "size": e.size})))
+        .map(|(path, e)| {
+            (
+                path.clone(),
+                json!({"hash": e.hash, "mode": e.mode, "size": e.size}),
+            )
+        })
         .collect();
     json!({"id": snap.id, "label": snap.label, "at_ms": snap.at_ms, "files": files, "skipped": snap.skipped})
 }
@@ -462,7 +544,12 @@ fn from_json(n: u64, v: &Value) -> Option<Snap> {
     let skipped = v
         .get("skipped")
         .and_then(Value::as_array)
-        .map_or_else(Vec::new, |items| items.iter().filter_map(|s| s.as_str().map(str::to_string)).collect());
+        .map_or_else(Vec::new, |items| {
+            items
+                .iter()
+                .filter_map(|s| s.as_str().map(str::to_string))
+                .collect()
+        });
     Some(Snap {
         n,
         id: v.get("id")?.as_str()?.to_string(),
@@ -499,9 +586,13 @@ fn prune(base: &Path) -> Result<(), String> {
     let mut snaps = load_snaps(base);
     let extra = snaps.len().saturating_sub(MAX_SNAPS);
     for old in snaps.drain(..extra) {
-        fs::remove_file(base.join("snaps").join(format!("{}.json", old.id))).map_err(|e| e.to_string())?;
+        fs::remove_file(base.join("snaps").join(format!("{}.json", old.id)))
+            .map_err(|e| e.to_string())?;
     }
-    let live: BTreeSet<String> = snaps.iter().flat_map(|s| s.files.values().map(|e| e.hash.clone())).collect();
+    let live: BTreeSet<String> = snaps
+        .iter()
+        .flat_map(|s| s.files.values().map(|e| e.hash.clone()))
+        .collect();
     let Ok(objects) = fs::read_dir(base.join("objects")) else {
         return Ok(());
     };
@@ -533,10 +624,21 @@ fn file_change(key: &str, old: Option<&[u8]>, new: Option<&[u8]>) -> Change {
         || b.contains(&0)
         || std::str::from_utf8(a).is_err()
         || std::str::from_utf8(b).is_err();
-    let header = format!("--- {}\n+++ {}\n", side('a', key, old.is_some()), side('b', key, new.is_some()));
+    let header = format!(
+        "--- {}\n+++ {}\n",
+        side('a', key, old.is_some()),
+        side('b', key, new.is_some())
+    );
     if binary {
-        let summary = if tag == 'M' { format!("M {key} (binary)") } else { format!("{tag} {key}") };
-        return Change { summary, text: format!("{header}binary differs\n") };
+        let summary = if tag == 'M' {
+            format!("M {key} (binary)")
+        } else {
+            format!("{tag} {key}")
+        };
+        return Change {
+            summary,
+            text: format!("{header}binary differs\n"),
+        };
     }
     let a_text = std::str::from_utf8(a).unwrap_or_default();
     let b_text = std::str::from_utf8(b).unwrap_or_default();
@@ -550,7 +652,11 @@ fn file_change(key: &str, old: Option<&[u8]>, new: Option<&[u8]>) -> Change {
     } else {
         format!("{tag} {key}")
     };
-    let text = if ops.is_empty() { String::new() } else { format!("{header}{}", hunks(&ops)) };
+    let text = if ops.is_empty() {
+        String::new()
+    } else {
+        format!("{header}{}", hunks(&ops))
+    };
     Change { summary, text }
 }
 
@@ -628,7 +734,9 @@ fn hunks(ops: &[(char, &str)]) -> String {
         let new_start = ops[..start].iter().filter(|op| op.0 != '-').count() + 1;
         let old_len = ops[start..end].iter().filter(|op| op.0 != '+').count();
         let new_len = ops[start..end].iter().filter(|op| op.0 != '-').count();
-        out.push_str(&format!("@@ -{old_start},{old_len} +{new_start},{new_len} @@\n"));
+        out.push_str(&format!(
+            "@@ -{old_start},{old_len} +{new_start},{new_len} @@\n"
+        ));
         for (c, line) in &ops[start..end] {
             out.push(*c);
             out.push_str(line);
@@ -669,13 +777,21 @@ mod tests {
     #[test]
     fn a_snapshot_diffs_and_restores_the_workspace() {
         let (dir, ws) = scratch("roundtrip");
-        fs::write(dir.join("keep.txt"), "one\ntwo\nthree\nfour\nfive\nsix\nseven\n").unwrap();
+        fs::write(
+            dir.join("keep.txt"),
+            "one\ntwo\nthree\nfour\nfive\nsix\nseven\n",
+        )
+        .unwrap();
         fs::write(dir.join("gone.txt"), "bye\n").unwrap();
         fs::create_dir_all(dir.join("node_modules/pkg")).unwrap();
         fs::write(dir.join("node_modules/pkg/index.js"), "x").unwrap();
         let id = snapshot(&ws, "work-1").expect("snapshot");
 
-        fs::write(dir.join("keep.txt"), "one\ntwo\nTHREE\nfour\nfive\nsix\nseven\n").unwrap();
+        fs::write(
+            dir.join("keep.txt"),
+            "one\ntwo\nTHREE\nfour\nfive\nsix\nseven\n",
+        )
+        .unwrap();
         fs::remove_file(dir.join("gone.txt")).unwrap();
         fs::write(dir.join("new.txt"), "fresh\n").unwrap();
 
@@ -684,11 +800,20 @@ mod tests {
         assert!(report.contains("M keep.txt (+1 −1)"), "{report}");
         assert!(report.contains("D gone.txt"), "{report}");
         assert!(report.contains("@@ -1,6 +1,6 @@"), "{report}");
-        assert!(report.contains("-three") && report.contains("+THREE"), "{report}");
+        assert!(
+            report.contains("-three") && report.contains("+THREE"),
+            "{report}"
+        );
 
         let restored = restore(&ws, &json!({"id": id})).expect("restore");
-        assert!(restored.contains("restored gone.txt") && restored.contains("removed new.txt"), "{restored}");
-        assert_eq!(fs::read_to_string(dir.join("keep.txt")).unwrap(), "one\ntwo\nthree\nfour\nfive\nsix\nseven\n");
+        assert!(
+            restored.contains("restored gone.txt") && restored.contains("removed new.txt"),
+            "{restored}"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.join("keep.txt")).unwrap(),
+            "one\ntwo\nthree\nfour\nfive\nsix\nseven\n"
+        );
         assert_eq!(fs::read_to_string(dir.join("gone.txt")).unwrap(), "bye\n");
         assert!(!dir.join("new.txt").exists());
         assert!(diff(&ws, &json!({})).unwrap().starts_with("no changes"));
@@ -718,19 +843,32 @@ mod tests {
             snapshot(&ws, "work-x").unwrap();
         }
         assert_eq!(list(&ws, &json!({})).unwrap().lines().count(), MAX_SNAPS);
-        assert_eq!(fs::read_dir(base_dir(&ws).join("objects")).unwrap().count(), MAX_SNAPS);
+        assert_eq!(
+            fs::read_dir(base_dir(&ws).join("objects")).unwrap().count(),
+            MAX_SNAPS
+        );
         assert_eq!(latest(&ws).files["f.txt"].size, "version 54\n".len() as u64);
     }
 
     #[test]
     fn dependency_build_and_vcs_directories_are_not_snapshotted() {
         let (dir, ws) = scratch("skips");
-        for d in [".git", "node_modules", "target", ".npm-global", ".cache", ".plaza"] {
+        for d in [
+            ".git",
+            "node_modules",
+            "target",
+            ".npm-global",
+            ".cache",
+            ".plaza",
+        ] {
             fs::create_dir_all(dir.join(d)).unwrap();
             fs::write(dir.join(d).join("x"), "x").unwrap();
         }
         fs::write(dir.join("ok.txt"), "ok").unwrap();
-        fs::File::create(dir.join("huge.bin")).unwrap().set_len(MAX_FILE + 1).unwrap();
+        fs::File::create(dir.join("huge.bin"))
+            .unwrap()
+            .set_len(MAX_FILE + 1)
+            .unwrap();
         snapshot(&ws, "work-1").unwrap();
         let snap = latest(&ws);
         let keys: Vec<String> = snap.files.keys().cloned().collect();

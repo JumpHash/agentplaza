@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::foundry::datasets::Dataset;
@@ -18,7 +18,10 @@ use crate::state::write_atomic;
 /// The recipe the in-repo trainer ships; seeded as a local dev recipe.
 pub const SEED_RECIPE: &str = "rung-predictor@1";
 /// The seed recipe's source, relative to this crate.
-const SEED_SOURCE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../trainer/recipes/rung_predictor");
+const SEED_SOURCE: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../trainer/recipes/rung_predictor"
+);
 /// Series points kept per job (the newest).
 pub const SERIES_CAP: usize = 5000;
 
@@ -117,7 +120,10 @@ impl Foundry {
             match serde_json::from_str::<State>(&text) {
                 Ok(loaded) => state = loaded,
                 Err(e) => {
-                    eprintln!("foundry: {} does not parse ({e}); kept aside", path.display());
+                    eprintln!(
+                        "foundry: {} does not parse ({e}); kept aside",
+                        path.display()
+                    );
                     let _ = std::fs::rename(&path, path.with_extension("json.rejected"));
                 }
             }
@@ -137,8 +143,12 @@ impl Foundry {
     /// directory, so the trainer reads this copy) and registers it, vetted as a local dev pin.
     fn seed(&self, now_ms: u64) {
         let source = Path::new(SEED_SOURCE);
-        let Ok(meta) = std::fs::read(source.join("recipe.json")) else { return };
-        let Ok(code) = std::fs::read(source.join("recipe.py")) else { return };
+        let Ok(meta) = std::fs::read(source.join("recipe.json")) else {
+            return;
+        };
+        let Ok(code) = std::fs::read(source.join("recipe.py")) else {
+            return;
+        };
         let dest = self.recipes_dir().join("rung_predictor");
         if std::fs::create_dir_all(&dest).is_err()
             || std::fs::write(dest.join("recipe.json"), &meta).is_err()
@@ -205,7 +215,8 @@ impl Foundry {
             return Ok(false);
         }
         let path = self.state_path();
-        write_atomic(&path, &self.snapshot()).map_err(|e| format!("writing {}: {e}", path.display()))?;
+        write_atomic(&path, &self.snapshot())
+            .map_err(|e| format!("writing {}: {e}", path.display()))?;
         *saved = Some(changes);
         Ok(true)
     }
@@ -269,17 +280,29 @@ mod tests {
         );
         foundry.write().jobs.insert(
             "job-1".into(),
-            Job { id: "job-1".into(), status: "queued".into(), recipe: SEED_RECIPE.into(), mode: "loose".into(), ..Job::default() },
+            Job {
+                id: "job-1".into(),
+                status: "queued".into(),
+                recipe: SEED_RECIPE.into(),
+                mode: "loose".into(),
+                ..Job::default()
+            },
         );
         assert_eq!(foundry.save(), Ok(true));
-        assert_eq!(foundry.save(), Ok(false), "an unchanged state is not written again");
+        assert_eq!(
+            foundry.save(),
+            Ok(false),
+            "an unchanged state is not written again"
+        );
         assert!(dir.join("state.json").exists());
         let before = foundry.snapshot();
         drop(foundry);
 
         let reopened = Foundry::open(dir.clone(), 99);
         assert_eq!(reopened.snapshot(), before);
-        assert!(reopened.read(|s| s.datasets.contains_key("ds-test") && s.jobs.contains_key("job-1")));
+        assert!(
+            reopened.read(|s| s.datasets.contains_key("ds-test") && s.jobs.contains_key("job-1"))
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -287,7 +310,9 @@ mod tests {
     fn seed_recipe_is_vetted_as_a_local_dev_pin() {
         let dir = std::env::temp_dir().join(format!("foundry-store-{}", std::process::id()));
         let foundry = Foundry::open(dir.clone(), 7);
-        let recipe = foundry.read(|s| s.recipes.get(SEED_RECIPE).cloned()).expect("seeded");
+        let recipe = foundry
+            .read(|s| s.recipes.get(SEED_RECIPE).cloned())
+            .expect("seeded");
         assert!(recipe.local_dev);
         assert!(recipe.commit.starts_with("dev-"));
         assert_eq!(recipe.vetted_ms, Some(7));

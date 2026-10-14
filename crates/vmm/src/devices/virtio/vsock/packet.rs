@@ -393,9 +393,9 @@ impl VsockPacketRx {
 mod tests {
     use std::io::Cursor;
 
-    use super::{VsockError, VsockPacketHeader, VsockPacketRx, VsockPacketTx, VSOCK_PKT_HDR_SIZE};
+    use super::{VSOCK_PKT_HDR_SIZE, VsockError, VsockPacketHeader, VsockPacketRx, VsockPacketTx};
     use crate::devices::virtio::queue::{VIRTQ_DESC_F_NEXT, VIRTQ_DESC_F_WRITE};
-    use crate::devices::virtio::test_utils::{default_mem, VirtQueue};
+    use crate::devices::virtio::test_utils::{VirtQueue, default_mem};
     use crate::devices::virtio::vsock::defs;
     use crate::vstate::memory::{ByteValued, Bytes, GuestAddress};
 
@@ -425,7 +425,8 @@ mod tests {
             .set_len(6)
             .set_type(defs::uapi::VSOCK_TYPE_STREAM)
             .set_op(defs::uapi::VSOCK_OP_RW);
-        mem.write_slice(hdr.as_slice(), GuestAddress(HDR_ADDR)).unwrap();
+        mem.write_slice(hdr.as_slice(), GuestAddress(HDR_ADDR))
+            .unwrap();
         mem.write_slice(b"hello!", GuestAddress(DATA_ADDR)).unwrap();
 
         // Header descriptor -> data descriptor, both read-only.
@@ -471,14 +472,18 @@ mod tests {
         let vq = VirtQueue::new(GuestAddress(0), &mem, 16);
         let mut hdr = VsockPacketHeader::default();
         hdr.set_len(defs::MAX_PKT_BUF_SIZE + 1);
-        mem.write_slice(hdr.as_slice(), GuestAddress(HDR_ADDR)).unwrap();
+        mem.write_slice(hdr.as_slice(), GuestAddress(HDR_ADDR))
+            .unwrap();
         vq.set_desc(0, HDR_ADDR, VSOCK_PKT_HDR_SIZE, 0, 0);
         let mut q = vq.create_queue();
         vq.publish(0);
         let head = q.pop().unwrap().unwrap();
 
         let mut pkt = VsockPacketTx::default();
-        assert!(matches!(pkt.parse(&mem, head), Err(VsockError::InvalidPktLen(_))));
+        assert!(matches!(
+            pkt.parse(&mem, head),
+            Err(VsockError::InvalidPktLen(_))
+        ));
     }
 
     #[test]
@@ -486,7 +491,13 @@ mod tests {
         let mem = default_mem();
         let vq = VirtQueue::new(GuestAddress(0), &mem, 16);
         // RX chain: write-only header descriptor -> write-only data descriptor.
-        vq.set_desc(0, HDR_ADDR, VSOCK_PKT_HDR_SIZE, VIRTQ_DESC_F_WRITE | VIRTQ_DESC_F_NEXT, 1);
+        vq.set_desc(
+            0,
+            HDR_ADDR,
+            VSOCK_PKT_HDR_SIZE,
+            VIRTQ_DESC_F_WRITE | VIRTQ_DESC_F_NEXT,
+            1,
+        );
         vq.set_desc(1, DATA_ADDR, 6, VIRTQ_DESC_F_WRITE, 0);
         let mut q = vq.create_queue();
         vq.publish(0);
@@ -513,7 +524,8 @@ mod tests {
         assert_eq!(read_back.src_cid(), defs::uapi::VSOCK_HOST_CID);
         assert_eq!(read_back.dst_cid(), 3);
         let mut payload = [0u8; 6];
-        mem.read_slice(&mut payload, GuestAddress(DATA_ADDR)).unwrap();
+        mem.read_slice(&mut payload, GuestAddress(DATA_ADDR))
+            .unwrap();
         assert_eq!(&payload, b"hello!");
     }
 
@@ -532,7 +544,8 @@ mod tests {
     ) -> crate::devices::virtio::queue::DescriptorChain {
         let mut hdr = VsockPacketHeader::default();
         hdr.set_len(pkt_len);
-        mem.write_slice(hdr.as_slice(), GuestAddress(HDR_ADDR)).unwrap();
+        mem.write_slice(hdr.as_slice(), GuestAddress(HDR_ADDR))
+            .unwrap();
 
         let vq = VirtQueue::new(queue_start, mem, 16);
         vq.set_desc(0, HDR_ADDR, hdr_len, hdr_flags, 1);
@@ -543,9 +556,7 @@ mod tests {
     }
 
     /// The standard RX/TX pair over the same buffers, for the offset tests.
-    fn packet_pair(
-        mem: &crate::vstate::memory::GuestMemoryMmap,
-    ) -> (VsockPacketRx, VsockPacketTx) {
+    fn packet_pair(mem: &crate::vstate::memory::GuestMemoryMmap) -> (VsockPacketRx, VsockPacketTx) {
         let rx = chain(
             mem,
             GuestAddress(0),

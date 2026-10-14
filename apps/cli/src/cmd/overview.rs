@@ -1,6 +1,6 @@
 //! `agentplaza overview`: the plaza at a glance: hub, plaza state, nodes, agents, work, spend.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::ctx::{self, Ctx};
 
@@ -13,7 +13,11 @@ pub fn run(ctx: &Ctx) -> Result<(), String> {
     let treasury = ctx.client.get("/v1/treasury")?;
     let queued: u64 = agents
         .as_array()
-        .map(|list| list.iter().filter_map(|a| a.get("queue").and_then(Value::as_u64)).sum())
+        .map(|list| {
+            list.iter()
+                .filter_map(|a| a.get("queue").and_then(Value::as_u64))
+                .sum()
+        })
         .unwrap_or(0);
     let report = json!({
         "hub": hub,
@@ -32,7 +36,15 @@ fn print(r: &Value) {
     let hub = &r["hub"];
     let o = &r["overview"];
     ctx::fields(&[
-        ("hub", format!("{} {} ({})", ctx::s(hub, "name"), ctx::s(hub, "version"), ctx::s(hub, "url"))),
+        (
+            "hub",
+            format!(
+                "{} {} ({})",
+                ctx::s(hub, "name"),
+                ctx::s(hub, "version"),
+                ctx::s(hub, "url")
+            ),
+        ),
         ("plaza", plaza_line(&r["plaza"])),
         (
             "agents",
@@ -46,15 +58,36 @@ fn print(r: &Value) {
             ),
         ),
         ("tasks", tasks_line(&o["tasks"])),
-        ("models", format!("worker {} · orchestrator {}", ctx::s(o, "default_model"), ctx::s(o, "orchestrator_model"))),
-        ("spent", format!("{} of a plaza budget of {}", ctx::text(r, "spent"), ctx::text(r, "plaza_budget"))),
+        (
+            "models",
+            format!(
+                "worker {} · orchestrator {}",
+                ctx::s(o, "default_model"),
+                ctx::s(o, "orchestrator_model")
+            ),
+        ),
+        (
+            "spent",
+            format!(
+                "{} of a plaza budget of {}",
+                ctx::text(r, "spent"),
+                ctx::text(r, "plaza_budget")
+            ),
+        ),
     ]);
     println!();
     let rows: Vec<Vec<String>> = r["nodes"]
         .as_array()
         .map(|list| {
             list.iter()
-                .map(|n| vec![ctx::s(n, "name").to_string(), ctx::s(n, "address").to_string(), node_state(n).to_string(), ctx::text(n, "agents")])
+                .map(|n| {
+                    vec![
+                        ctx::s(n, "name").to_string(),
+                        ctx::s(n, "address").to_string(),
+                        node_state(n).to_string(),
+                        ctx::text(n, "agents"),
+                    ]
+                })
                 .collect()
         })
         .unwrap_or_default();
@@ -64,15 +97,25 @@ fn print(r: &Value) {
 
 fn plaza_line(p: &Value) -> String {
     if p["paused"].as_bool().unwrap_or(false) {
-        format!("STOPPED by {}: {} ({} work item(s) cancelled)", ctx::s(p, "by"), ctx::s(p, "reason"), ctx::text(p, "cancelled"))
+        format!(
+            "STOPPED by {}: {} ({} work item(s) cancelled)",
+            ctx::s(p, "by"),
+            ctx::s(p, "reason"),
+            ctx::text(p, "cancelled")
+        )
     } else {
         "running".to_string()
     }
 }
 
 fn tasks_line(tasks: &Value) -> String {
-    let Some(map) = tasks.as_object() else { return "none".to_string() };
-    let mut parts: Vec<String> = map.iter().map(|(state, n)| format!("{n} {state}")).collect();
+    let Some(map) = tasks.as_object() else {
+        return "none".to_string();
+    };
+    let mut parts: Vec<String> = map
+        .iter()
+        .map(|(state, n)| format!("{n} {state}"))
+        .collect();
     if parts.is_empty() {
         return "none".to_string();
     }

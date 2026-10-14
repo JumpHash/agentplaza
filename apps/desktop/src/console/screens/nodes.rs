@@ -5,14 +5,14 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use iced::widget::text::Wrapping;
-use iced::widget::{checkbox, column, container, row, text_input, Space};
+use iced::widget::{Space, checkbox, column, container, row, text_input};
 use iced::{Alignment, Border, Element, Length, Task, Theme};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::Id;
 use crate::console::services::{self, Mode};
-use crate::console::{client, ui, Ctx};
+use crate::console::{Ctx, client, ui};
 
 /// The hub's own node: it is not drained or revoked from here.
 const HUB_NODE: &str = "n0";
@@ -176,8 +176,15 @@ fn settle<T>(result: Result<T, String>) -> Load<T> {
 #[derive(Debug, Clone)]
 pub enum Dialog {
     /// Add a node: the label and how long the code is valid, then the token once issued.
-    Add { label: String, minutes: u64, issued: Option<IssuedCode> },
-    ConfirmRevoke { id: String, name: String },
+    Add {
+        label: String,
+        minutes: u64,
+        issued: Option<IssuedCode>,
+    },
+    ConfirmRevoke {
+        id: String,
+        name: String,
+    },
     ConfirmRotate,
     /// The new owner token, shown once.
     Rotated(String),
@@ -216,9 +223,19 @@ pub enum Msg {
     CodesLoaded(Result<Vec<JoinCode>, String>),
     HubLoaded(Result<HubIdentity, String>),
     /// Drain (`on`) or resume a machine.
-    Drain { id: String, name: String, on: bool },
-    AskRevoke { id: String, name: String },
-    Revoke { id: String, name: String },
+    Drain {
+        id: String,
+        name: String,
+        on: bool,
+    },
+    AskRevoke {
+        id: String,
+        name: String,
+    },
+    Revoke {
+        id: String,
+        name: String,
+    },
     RevokeCode(String),
     /// An action finished: its result and the line to confirm it with.
     Acted(Result<Value, String>, String),
@@ -265,13 +282,34 @@ pub fn go(msg: &Msg) -> Option<Id> {
 
 /// Loads the screen's data (called when it opens and on every poll tick).
 pub fn load(_state: &mut State, ctx: &Ctx) -> Task<Msg> {
-    let (nodes, codes, hub, machines, link) = (ctx.client.clone(), ctx.client.clone(), ctx.client.clone(), ctx.client.clone(), ctx.client.clone());
+    let (nodes, codes, hub, machines, link) = (
+        ctx.client.clone(),
+        ctx.client.clone(),
+        ctx.client.clone(),
+        ctx.client.clone(),
+        ctx.client.clone(),
+    );
     Task::batch([
-        client::task(move || nodes.get::<Vec<NodeView>>("/v1/nodes"), Msg::NodesLoaded),
-        client::task(move || codes.get::<Vec<JoinCode>>("/v1/nodes/codes"), Msg::CodesLoaded),
-        client::task(move || hub.get::<HubIdentity>("/v1/hub/identity"), Msg::HubLoaded),
-        client::task(move || machines.get::<Vec<PlazaMachine>>("/v1/machines"), Msg::MachinesLoaded),
-        client::task(move || link.get::<NodeLink>("/v1/node-link"), Msg::NodeLinkLoaded),
+        client::task(
+            move || nodes.get::<Vec<NodeView>>("/v1/nodes"),
+            Msg::NodesLoaded,
+        ),
+        client::task(
+            move || codes.get::<Vec<JoinCode>>("/v1/nodes/codes"),
+            Msg::CodesLoaded,
+        ),
+        client::task(
+            move || hub.get::<HubIdentity>("/v1/hub/identity"),
+            Msg::HubLoaded,
+        ),
+        client::task(
+            move || machines.get::<Vec<PlazaMachine>>("/v1/machines"),
+            Msg::MachinesLoaded,
+        ),
+        client::task(
+            move || link.get::<NodeLink>("/v1/node-link"),
+            Msg::NodeLinkLoaded,
+        ),
     ])
 }
 
@@ -291,11 +329,18 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             Task::none()
         }
         Msg::Drain { id, name, on } => {
-            let notice = if on { format!("{name} is draining") } else { format!("{name} is back in service") };
+            let notice = if on {
+                format!("{name} is draining")
+            } else {
+                format!("{name} is back in service")
+            };
             let path = format!("/v1/nodes/{id}/drain");
             let body = json!({ "on": on });
             let client = ctx.client.clone();
-            client::task(move || client.call("POST", &path, Some(&body)), move |r| Msg::Acted(r, notice.clone()))
+            client::task(
+                move || client.call("POST", &path, Some(&body)),
+                move |r| Msg::Acted(r, notice.clone()),
+            )
         }
         Msg::AskRevoke { id, name } => {
             state.dialog = Some(Dialog::ConfirmRevoke { id, name });
@@ -307,12 +352,18 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             let path = format!("/v1/nodes/{id}/revoke");
             let notice = format!("{name} revoked");
             let client = ctx.client.clone();
-            client::task(move || client.call("POST", &path, None), move |r| Msg::Acted(r, notice.clone()))
+            client::task(
+                move || client.call("POST", &path, None),
+                move |r| Msg::Acted(r, notice.clone()),
+            )
         }
         Msg::RevokeCode(id) => {
             let path = format!("/v1/nodes/codes/{id}");
             let client = ctx.client.clone();
-            client::task(move || client.call("DELETE", &path, None), |r| Msg::Acted(r, "Join code revoked".to_string()))
+            client::task(
+                move || client.call("DELETE", &path, None),
+                |r| Msg::Acted(r, "Join code revoked".to_string()),
+            )
         }
         Msg::Acted(result, notice) => {
             match result {
@@ -338,7 +389,9 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                 move || {
                     client
                         .call("POST", "/v1/hub/owner-token/rotate", None)
-                        .and_then(|v| serde_json::from_value::<RotatedToken>(v).map_err(|e| e.to_string()))
+                        .and_then(|v| {
+                            serde_json::from_value::<RotatedToken>(v).map_err(|e| e.to_string())
+                        })
                 },
                 Msg::Rotated,
             )
@@ -353,7 +406,11 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             Task::none()
         }
         Msg::OpenAdd => {
-            state.dialog = Some(Dialog::Add { label: String::new(), minutes: 30, issued: None });
+            state.dialog = Some(Dialog::Add {
+                label: String::new(),
+                minutes: 30,
+                issued: None,
+            });
             state.error = None;
             Task::none()
         }
@@ -380,7 +437,10 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             }
             let body = json!({ "label": name, "ttl_minutes": minutes });
             let client = ctx.client.clone();
-            client::task(move || client.post::<IssuedCode>("/v1/nodes/codes", &body), Msg::Issued)
+            client::task(
+                move || client.post::<IssuedCode>("/v1/nodes/codes", &body),
+                Msg::Issued,
+            )
         }
         Msg::Issued(Ok(made)) => {
             state.error = None;
@@ -424,14 +484,20 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             state.progress = vec!["Joining the network…".to_string()];
             let client = ctx.client.clone();
             let body = json!({ "code": token });
-            client::task(move || client.post::<NodeLink>("/v1/node-link/join", &body), Msg::Joined)
+            client::task(
+                move || client.post::<NodeLink>("/v1/node-link/join", &body),
+                Msg::Joined,
+            )
         }
         Msg::Joined(result) => {
             state.node_busy = false;
             match result {
                 Ok(link) => {
                     state.code.clear();
-                    state.progress = vec![format!("joined as node {}", link.node_id.as_deref().unwrap_or("?"))];
+                    state.progress = vec![format!(
+                        "joined as node {}",
+                        link.node_id.as_deref().unwrap_or("?")
+                    )];
                     state.node = Load::Ready(link);
                 }
                 Err(error) => {
@@ -474,7 +540,10 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             state.node_error = None;
             let body = json!({ "forget": state.forget });
             let client = ctx.client.clone();
-            client::task(move || client.post::<NodeLink>("/v1/node-link/leave", &body), Msg::Left)
+            client::task(
+                move || client.post::<NodeLink>("/v1/node-link/leave", &body),
+                Msg::Left,
+            )
         }
         Msg::MachinesLoaded(result) => {
             state.machines = settle(result);
@@ -516,7 +585,14 @@ fn node_run(state: &mut State, start: bool) -> Task<Msg> {
     }
     state.node_busy = true;
     state.node_error = None;
-    state.progress = vec![if start { "Starting the node…" } else { "Stopping the node…" }.to_string()];
+    state.progress = vec![
+        if start {
+            "Starting the node…"
+        } else {
+            "Stopping the node…"
+        }
+        .to_string(),
+    ];
     Task::perform(
         async move {
             if start {
@@ -549,7 +625,15 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
     parts.push(ui::card("Join codes", codes_view(&state.codes)));
     parts.push(ui::card("This hub", hub_view(&state.hub)));
 
-    let head = ui::view_head("Nodes", vec![ui::btn("Add a node", None, ui::Kind::Primary, Some(Msg::OpenAdd))]);
+    let head = ui::view_head(
+        "Nodes",
+        vec![ui::btn(
+            "Add a node",
+            None,
+            ui::Kind::Primary,
+            Some(Msg::OpenAdd),
+        )],
+    );
     ui::sheet(head, column(parts).spacing(22).width(Length::Fill).into())
 }
 
@@ -558,9 +642,22 @@ fn nodes_view<'a>(nodes: &'a Load<Vec<NodeView>>) -> Element<'a, Msg> {
     match nodes {
         Load::Pending => ui::loading(),
         Load::Failed => ui::empty("alert", "Could not load the machines.", ""),
-        Load::Ready(list) if list.is_empty() => ui::empty("link", "No machines yet", "Add a node here to bring a machine into this network, or join this hub to another network below."),
+        Load::Ready(list) if list.is_empty() => ui::empty(
+            "link",
+            "No machines yet",
+            "Add a node here to bring a machine into this network, or join this hub to another network below.",
+        ),
         Load::Ready(list) => table(
-            &[(3, "Name"), (2, "State"), (2, "Address"), (1, "Agents"), (1, "CIDs"), (3, "Machine"), (2, "Last seen"), (3, "")],
+            &[
+                (3, "Name"),
+                (2, "State"),
+                (2, "Address"),
+                (1, "Agents"),
+                (1, "CIDs"),
+                (3, "Machine"),
+                (2, "Last seen"),
+                (3, ""),
+            ],
             list.iter().map(node_row).collect(),
         ),
     }
@@ -569,11 +666,37 @@ fn nodes_view<'a>(nodes: &'a Load<Vec<NodeView>>) -> Element<'a, Msg> {
 fn node_row<'a>(n: &'a NodeView) -> Element<'a, Msg> {
     let (state, tone) = node_state(n);
     cells(vec![
-        (3, column![ui::link(n.name.as_str(), Msg::Select(n.id.clone()), false), ui::faint(n.id.as_str())].spacing(2).into()),
+        (
+            3,
+            column![
+                ui::link(n.name.as_str(), Msg::Select(n.id.clone()), false),
+                ui::faint(n.id.as_str())
+            ]
+            .spacing(2)
+            .into(),
+        ),
         (2, ui::badge(state, tone)),
-        (2, ui::mono(if n.address.is_empty() { "—" } else { n.address.as_str() }, 12.0, crate::theme::palette().ink).into()),
-        (1, ui::sans(n.agents.to_string(), 12.0, crate::theme::palette().ink).into()),
-        (1, ui::mono(cids(n), 12.0, crate::theme::palette().ink).into()),
+        (
+            2,
+            ui::mono(
+                if n.address.is_empty() {
+                    "—"
+                } else {
+                    n.address.as_str()
+                },
+                12.0,
+                crate::theme::palette().ink,
+            )
+            .into(),
+        ),
+        (
+            1,
+            ui::sans(n.agents.to_string(), 12.0, crate::theme::palette().ink).into(),
+        ),
+        (
+            1,
+            ui::mono(cids(n), 12.0, crate::theme::palette().ink).into(),
+        ),
         (3, ui::faint(machine_text(&n.machine)).into()),
         (2, ui::faint(ago(n.last_seen_ms)).into()),
         (3, node_actions(n)),
@@ -592,9 +715,21 @@ fn node_actions<'a>(n: &'a NodeView) -> Element<'a, Msg> {
             if n.draining { "Resume" } else { "Drain" },
             None,
             ui::Kind::Secondary,
-            Some(Msg::Drain { id: n.id.clone(), name: n.name.clone(), on: !n.draining }),
+            Some(Msg::Drain {
+                id: n.id.clone(),
+                name: n.name.clone(),
+                on: !n.draining
+            }),
         ),
-        ui::btn("Revoke", None, ui::Kind::Danger, Some(Msg::AskRevoke { id: n.id.clone(), name: n.name.clone() })),
+        ui::btn(
+            "Revoke",
+            None,
+            ui::Kind::Danger,
+            Some(Msg::AskRevoke {
+                id: n.id.clone(),
+                name: n.name.clone()
+            })
+        ),
     ]
     .spacing(8)
     .into()
@@ -605,14 +740,23 @@ fn codes_view<'a>(codes: &'a Load<Vec<JoinCode>>) -> Element<'a, Msg> {
     match codes {
         Load::Pending => ui::loading(),
         Load::Failed => ui::empty("alert", "Could not load the join codes.", ""),
-        Load::Ready(list) if list.is_empty() => {
-            ui::empty("link", "No join codes yet", "Codes made with \"Add a node\" are listed here.")
-        }
+        Load::Ready(list) if list.is_empty() => ui::empty(
+            "link",
+            "No join codes yet",
+            "Codes made with \"Add a node\" are listed here.",
+        ),
         Load::Ready(list) => {
             let mut sorted: Vec<&JoinCode> = list.iter().collect();
             sorted.sort_by(|a, b| b.created_ms.total_cmp(&a.created_ms));
             table(
-                &[(3, "Label"), (2, "ID"), (2, "Created"), (2, "Expires"), (3, "State"), (1, "")],
+                &[
+                    (3, "Label"),
+                    (2, "ID"),
+                    (2, "Created"),
+                    (2, "Expires"),
+                    (3, "State"),
+                    (1, ""),
+                ],
                 sorted.into_iter().map(code_row).collect(),
             )
         }
@@ -629,17 +773,35 @@ fn code_row<'a>(c: &'a JoinCode) -> Element<'a, Msg> {
         None => ui::badge(&label, tone),
     };
     let active = c.state == "active";
-    let expires = if active { format!("in {}", countdown(c.expires_ms - now_ms())) } else { ago(c.expires_ms) };
+    let expires = if active {
+        format!("in {}", countdown(c.expires_ms - now_ms()))
+    } else {
+        ago(c.expires_ms)
+    };
     let action: Element<'a, Msg> = if active {
-        ui::btn("Revoke", None, ui::Kind::Danger, Some(Msg::RevokeCode(c.id.clone())))
+        ui::btn(
+            "Revoke",
+            None,
+            ui::Kind::Danger,
+            Some(Msg::RevokeCode(c.id.clone())),
+        )
     } else {
         Space::new().width(Length::Fill).into()
     };
     cells(vec![
-        (3, ui::sans(c.label.as_str(), 13.0, crate::theme::palette().ink).into()),
-        (2, ui::mono(c.id.as_str(), 11.0, crate::theme::palette().ink_3).into()),
+        (
+            3,
+            ui::sans(c.label.as_str(), 13.0, crate::theme::palette().ink).into(),
+        ),
+        (
+            2,
+            ui::mono(c.id.as_str(), 11.0, crate::theme::palette().ink_3).into(),
+        ),
         (2, ui::faint(ago(c.created_ms)).into()),
-        (2, ui::sans(expires, 12.0, crate::theme::palette().ink).into()),
+        (
+            2,
+            ui::sans(expires, 12.0, crate::theme::palette().ink).into(),
+        ),
         (3, state_cell),
         (1, action),
     ])
@@ -656,11 +818,25 @@ fn hub_view<'a>(hub: &'a Load<HubIdentity>) -> Element<'a, Msg> {
                 None => ui::faint("no TLS (loopback only)").into(),
             };
             column![
-                fact("Name", ui::mono(id.name.as_str(), 13.0, crate::theme::palette().ink).into()),
-                fact("URL", ui::mono(id.url.as_str(), 12.0, crate::theme::palette().ink).into()),
-                fact("Version", ui::mono(id.version.as_str(), 12.0, crate::theme::palette().ink).into()),
+                fact(
+                    "Name",
+                    ui::mono(id.name.as_str(), 13.0, crate::theme::palette().ink).into()
+                ),
+                fact(
+                    "URL",
+                    ui::mono(id.url.as_str(), 12.0, crate::theme::palette().ink).into()
+                ),
+                fact(
+                    "Version",
+                    ui::mono(id.version.as_str(), 12.0, crate::theme::palette().ink).into()
+                ),
                 fact("TLS fingerprint", fingerprint),
-                ui::btn("Rotate owner token", None, ui::Kind::Danger, Some(Msg::AskRotate)),
+                ui::btn(
+                    "Rotate owner token",
+                    None,
+                    ui::Kind::Danger,
+                    Some(Msg::AskRotate)
+                ),
             ]
             .spacing(12)
             .into()
@@ -671,15 +847,29 @@ fn hub_view<'a>(hub: &'a Load<HubIdentity>) -> Element<'a, Msg> {
 /// The open dialog, as a card.
 fn dialog_view<'a>(dialog: &'a Dialog) -> Element<'a, Msg> {
     match dialog {
-        Dialog::Add { label, minutes, issued: None } => ui::card("Add a node", add_form(label.as_str(), *minutes)),
-        Dialog::Add { issued: Some(made), .. } => ui::card("Add a node", issued_view(made)),
+        Dialog::Add {
+            label,
+            minutes,
+            issued: None,
+        } => ui::card("Add a node", add_form(label.as_str(), *minutes)),
+        Dialog::Add {
+            issued: Some(made), ..
+        } => ui::card("Add a node", issued_view(made)),
         Dialog::ConfirmRevoke { id, name } => ui::card(
             &format!("Revoke {name}?"),
             column![
                 ui::faint("Its signatures stop working at once and its agents go offline."),
                 row![
                     ui::btn("Cancel", None, ui::Kind::Secondary, Some(Msg::Close)),
-                    ui::btn("Revoke", None, ui::Kind::Danger, Some(Msg::Revoke { id: id.clone(), name: name.clone() })),
+                    ui::btn(
+                        "Revoke",
+                        None,
+                        ui::Kind::Danger,
+                        Some(Msg::Revoke {
+                            id: id.clone(),
+                            name: name.clone()
+                        })
+                    ),
                 ]
                 .spacing(8),
             ]
@@ -716,17 +906,34 @@ fn dialog_view<'a>(dialog: &'a Dialog) -> Element<'a, Msg> {
 /// The label and validity of a new join code.
 fn add_form<'a>(label: &'a str, minutes: u64) -> Element<'a, Msg> {
     let choice = |m: u64| {
-        let kind = if m == minutes { ui::Kind::Primary } else { ui::Kind::Secondary };
-        ui::btn(&format!("{m} minutes"), None, kind, Some(Msg::PickMinutes(m)))
+        let kind = if m == minutes {
+            ui::Kind::Primary
+        } else {
+            ui::Kind::Secondary
+        };
+        ui::btn(
+            &format!("{m} minutes"),
+            None,
+            kind,
+            Some(Msg::PickMinutes(m)),
+        )
     };
     column![
         ui::label("Label"),
-        text_input("studio-pc", label).on_input(Msg::LabelEdit).on_submit(Msg::CreateCode).padding(8.0),
+        text_input("studio-pc", label)
+            .on_input(Msg::LabelEdit)
+            .on_submit(Msg::CreateCode)
+            .padding(8.0),
         ui::faint("What the machine is called here."),
         ui::label("Valid for"),
         row![choice(15), choice(30), choice(60)].spacing(8),
         ui::faint("How long the code can be used to join."),
-        ui::btn("Create join code", None, ui::Kind::Primary, Some(Msg::CreateCode)),
+        ui::btn(
+            "Create join code",
+            None,
+            ui::Kind::Primary,
+            Some(Msg::CreateCode)
+        ),
     ]
     .spacing(10)
     .into()
@@ -735,11 +942,16 @@ fn add_form<'a>(label: &'a str, minutes: u64) -> Element<'a, Msg> {
 /// The token just issued, shown once, with the command to run on the new machine.
 fn issued_view<'a>(made: &'a IssuedCode) -> Element<'a, Msg> {
     column![
-        ui::faint("Shown once. Single use. Anyone with it can join until it expires.").color(crate::theme::palette().warn),
+        ui::faint("Shown once. Single use. Anyone with it can join until it expires.")
+            .color(crate::theme::palette().warn),
         copy_box(&made.token),
         row![
             ui::faint("Expires in "),
-            ui::sans(countdown(made.expires_ms - now_ms()), 12.0, crate::theme::palette().ink),
+            ui::sans(
+                countdown(made.expires_ms - now_ms()),
+                12.0,
+                crate::theme::palette().ink
+            ),
         ]
         .spacing(4)
         .align_y(Alignment::Center),
@@ -757,7 +969,12 @@ fn copy_box<'a>(value: &str) -> Element<'a, Msg> {
     container(
         row![
             ui::sans(value.to_string(), 12.0, crate::theme::palette().ink).width(Length::Fill),
-            ui::btn("Copy", None, ui::Kind::Ghost, Some(Msg::Copy(value.to_string()))),
+            ui::btn(
+                "Copy",
+                None,
+                ui::Kind::Ghost,
+                Some(Msg::Copy(value.to_string()))
+            ),
         ]
         .spacing(12)
         .align_y(Alignment::Center),
@@ -770,15 +987,21 @@ fn copy_box<'a>(value: &str) -> Element<'a, Msg> {
 
 /// A labelled line of the hub's identity.
 fn fact<'a>(name: &str, value: Element<'a, Msg>) -> Element<'a, Msg> {
-    row![container(ui::label(name)).width(Length::Fixed(150.0)), value]
-        .spacing(12)
-        .align_y(Alignment::Center)
-        .into()
+    row![
+        container(ui::label(name)).width(Length::Fixed(150.0)),
+        value
+    ]
+    .spacing(12)
+    .align_y(Alignment::Center)
+    .into()
 }
 
 /// A table: a mono header row, then the rows, each under a hairline. Columns are proportional.
 fn table<'a>(head: &[(u16, &str)], rows: Vec<Element<'a, Msg>>) -> Element<'a, Msg> {
-    let heads: Vec<(u16, Element<'a, Msg>)> = head.iter().map(|(p, l)| (*p, ui::label(*l).into())).collect();
+    let heads: Vec<(u16, Element<'a, Msg>)> = head
+        .iter()
+        .map(|(p, l)| (*p, ui::label(*l).into()))
+        .collect();
     let mut lines: Vec<Element<'a, Msg>> = vec![cells(heads), ui::hairline()];
     for r in rows {
         lines.push(r);
@@ -815,7 +1038,10 @@ fn network_view<'a>(state: &'a State, local: bool) -> Element<'a, Msg> {
     if let Some(error) = &state.node_error {
         parts.push(ui::error_line(error.as_str()));
     }
-    ui::card("This machine", column(parts).spacing(12).width(Length::Fill).into())
+    ui::card(
+        "This machine",
+        column(parts).spacing(12).width(Length::Fill).into(),
+    )
 }
 
 /// The join form: the code (monospace) and the Join button.
@@ -830,7 +1056,12 @@ fn join_form<'a>(state: &'a State) -> Element<'a, Msg> {
             .on_input(Msg::CodeEdit)
             .on_submit(Msg::Join),
         ui::faint("Get a code from the other network's Nodes screen (Add a node)."),
-        ui::btn(if busy { "Joining…" } else { "Join" }, None, ui::Kind::Primary, (!busy).then_some(Msg::Join)),
+        ui::btn(
+            if busy { "Joining…" } else { "Join" },
+            None,
+            ui::Kind::Primary,
+            (!busy).then_some(Msg::Join)
+        ),
     ]
     .spacing(10)
     .into()
@@ -840,13 +1071,27 @@ fn join_form<'a>(state: &'a State) -> Element<'a, Msg> {
 /// Leave (confirmed, with the choice to forget the network).
 fn joined_view<'a>(node: &'a NodeLink, state: &'a State, local: bool) -> Element<'a, Msg> {
     let busy = state.node_busy;
-    let (badge_text, tone) = if node.running { ("running", ui::Tone::Ok) } else { ("stopped", ui::Tone::Muted) };
+    let (badge_text, tone) = if node.running {
+        ("running", ui::Tone::Ok)
+    } else {
+        ("stopped", ui::Tone::Muted)
+    };
     let toggle: Element<'a, Msg> = if !local {
         ui::faint("Start and stop run on the node's own machine.").into()
     } else if node.running {
-        ui::btn("Stop", None, ui::Kind::Secondary, (!busy).then_some(Msg::NodeStop))
+        ui::btn(
+            "Stop",
+            None,
+            ui::Kind::Secondary,
+            (!busy).then_some(Msg::NodeStop),
+        )
     } else {
-        ui::btn("Start", None, ui::Kind::Secondary, (!busy).then_some(Msg::NodeStart))
+        ui::btn(
+            "Start",
+            None,
+            ui::Kind::Secondary,
+            (!busy).then_some(Msg::NodeStart),
+        )
     };
     let leave: Element<'a, Msg> = if state.leaving {
         column![
@@ -861,17 +1106,48 @@ fn joined_view<'a>(node: &'a NodeLink, state: &'a State, local: bool) -> Element
         .spacing(10)
         .into()
     } else {
-        ui::btn("Leave", None, ui::Kind::Danger, (!busy).then_some(Msg::AskLeave))
+        ui::btn(
+            "Leave",
+            None,
+            ui::Kind::Danger,
+            (!busy).then_some(Msg::AskLeave),
+        )
     };
-    let mut status = row![ui::badge(badge_text, tone)].spacing(10).align_y(Alignment::Center);
+    let mut status = row![ui::badge(badge_text, tone)]
+        .spacing(10)
+        .align_y(Alignment::Center);
     if let Some(pid) = node.pid {
         status = status.push(ui::faint(format!("pid {pid}")).wrapping(Wrapping::None));
     }
     let service: Element<'a, Msg> = status.push(toggle).into();
     column![
-        fact("Hub", ui::mono(or_dash(node.hub.as_deref().unwrap_or("")), 12.0, crate::theme::palette().ink).into()),
-        fact("This node", ui::mono(or_dash(node.node_id.as_deref().unwrap_or("")), 12.0, crate::theme::palette().ink).into()),
-        fact("CIDs", ui::mono(or_dash(node.cids.as_deref().unwrap_or("")), 12.0, crate::theme::palette().ink).into()),
+        fact(
+            "Hub",
+            ui::mono(
+                or_dash(node.hub.as_deref().unwrap_or("")),
+                12.0,
+                crate::theme::palette().ink
+            )
+            .into()
+        ),
+        fact(
+            "This node",
+            ui::mono(
+                or_dash(node.node_id.as_deref().unwrap_or("")),
+                12.0,
+                crate::theme::palette().ink
+            )
+            .into()
+        ),
+        fact(
+            "CIDs",
+            ui::mono(
+                or_dash(node.cids.as_deref().unwrap_or("")),
+                12.0,
+                crate::theme::palette().ink
+            )
+            .into()
+        ),
         fact("Status", service),
         leave,
     ]
@@ -890,30 +1166,79 @@ fn detail_view<'a>(state: &'a State) -> Option<Element<'a, Msg>> {
         Load::Pending => ui::loading(),
         Load::Failed => ui::empty("alert", "Could not load this machine.", ""),
         Load::Ready(list) => match list.iter().find(|m| &m.id == id) {
-            Some(machine) => column![machine_facts(node, machine), runs_table(&machine.runs)].spacing(16).width(Length::Fill).into(),
+            Some(machine) => column![machine_facts(node, machine), runs_table(&machine.runs)]
+                .spacing(16)
+                .width(Length::Fill)
+                .into(),
             None => ui::faint("This machine reports no facts.").into(),
         },
     };
     let close = ui::btn("Close", None, ui::Kind::Secondary, Some(Msg::Deselect));
-    Some(ui::card(&node.name, column![body, close].spacing(16).width(Length::Fill).into()))
+    Some(ui::card(
+        &node.name,
+        column![body, close].spacing(16).width(Length::Fill).into(),
+    ))
 }
 
 /// The machine's facts, laid out like the web's detail: CPU, memory, GPUs, arch and backend, then the rest.
 fn machine_facts<'a>(node: &'a NodeView, m: &'a PlazaMachine) -> Element<'a, Msg> {
-    let cpus = if m.cpus > 0 { format!("{} cores", m.cpus) } else { "?".to_string() };
-    let memory = if m.memory_mib > 0 { format!("{:.1} GiB", m.memory_mib as f64 / 1024.0) } else { "?".to_string() };
-    let gpus = if m.gpus.is_empty() { "None".to_string() } else { m.gpus.iter().map(gpu_text).collect::<Vec<_>>().join(", ") };
-    let host = node.machine.as_ref().and_then(|x| x.host.as_deref()).unwrap_or("?");
+    let cpus = if m.cpus > 0 {
+        format!("{} cores", m.cpus)
+    } else {
+        "?".to_string()
+    };
+    let memory = if m.memory_mib > 0 {
+        format!("{:.1} GiB", m.memory_mib as f64 / 1024.0)
+    } else {
+        "?".to_string()
+    };
+    let gpus = if m.gpus.is_empty() {
+        "None".to_string()
+    } else {
+        m.gpus.iter().map(gpu_text).collect::<Vec<_>>().join(", ")
+    };
+    let host = node
+        .machine
+        .as_ref()
+        .and_then(|x| x.host.as_deref())
+        .unwrap_or("?");
     column![
-        fact("CPU", ui::sans(cpus, 12.0, crate::theme::palette().ink).into()),
-        fact("Memory", ui::sans(memory, 12.0, crate::theme::palette().ink).into()),
-        fact("GPUs", ui::sans(gpus, 12.0, crate::theme::palette().ink).into()),
-        fact("Arch", ui::mono(or_dash(&m.arch), 12.0, crate::theme::palette().ink).into()),
-        fact("Backend", ui::mono(or_dash(&m.backend), 12.0, crate::theme::palette().ink).into()),
-        fact("Host", ui::mono(host, 12.0, crate::theme::palette().ink).into()),
-        fact("Class", ui::mono(or_dash(&m.class), 12.0, crate::theme::palette().ink).into()),
-        fact("Irqchip", ui::mono(or_dash(&m.irqchip), 12.0, crate::theme::palette().ink).into()),
-        fact("vsock", ui::mono(or_dash(&m.vsock_mode), 12.0, crate::theme::palette().ink).into()),
+        fact(
+            "CPU",
+            ui::sans(cpus, 12.0, crate::theme::palette().ink).into()
+        ),
+        fact(
+            "Memory",
+            ui::sans(memory, 12.0, crate::theme::palette().ink).into()
+        ),
+        fact(
+            "GPUs",
+            ui::sans(gpus, 12.0, crate::theme::palette().ink).into()
+        ),
+        fact(
+            "Arch",
+            ui::mono(or_dash(&m.arch), 12.0, crate::theme::palette().ink).into()
+        ),
+        fact(
+            "Backend",
+            ui::mono(or_dash(&m.backend), 12.0, crate::theme::palette().ink).into()
+        ),
+        fact(
+            "Host",
+            ui::mono(host, 12.0, crate::theme::palette().ink).into()
+        ),
+        fact(
+            "Class",
+            ui::mono(or_dash(&m.class), 12.0, crate::theme::palette().ink).into()
+        ),
+        fact(
+            "Irqchip",
+            ui::mono(or_dash(&m.irqchip), 12.0, crate::theme::palette().ink).into()
+        ),
+        fact(
+            "vsock",
+            ui::mono(or_dash(&m.vsock_mode), 12.0, crate::theme::palette().ink).into()
+        ),
     ]
     .spacing(12)
     .into()
@@ -934,14 +1259,26 @@ fn runs_table<'a>(runs: &'a [Run]) -> Element<'a, Msg> {
         return ui::faint("No runs.").into();
     }
     table(
-        &[(3, "ID"), (2, "Kind"), (2, "State"), (1, "VMs"), (3, "Started")],
+        &[
+            (3, "ID"),
+            (2, "Kind"),
+            (2, "State"),
+            (1, "VMs"),
+            (3, "Started"),
+        ],
         runs.iter()
             .map(|r| {
                 cells(vec![
-                    (3, ui::mono(r.id.as_str(), 12.0, crate::theme::palette().ink).into()),
+                    (
+                        3,
+                        ui::mono(r.id.as_str(), 12.0, crate::theme::palette().ink).into(),
+                    ),
                     (2, ui::faint(r.role.as_deref().unwrap_or("fleet")).into()),
                     (2, ui::badge(r.state.as_str(), run_tone(&r.state))),
-                    (1, ui::sans(r.vms.len().to_string(), 12.0, crate::theme::palette().ink).into()),
+                    (
+                        1,
+                        ui::sans(r.vms.len().to_string(), 12.0, crate::theme::palette().ink).into(),
+                    ),
                     (3, ui::faint(ago(r.created_at)).into()),
                 ])
             })
@@ -960,11 +1297,7 @@ fn run_tone(state: &str) -> ui::Tone {
 
 /// A value, or a dash when there is none.
 fn or_dash(value: &str) -> &str {
-    if value.is_empty() {
-        "—"
-    } else {
-        value
-    }
+    if value.is_empty() { "—" } else { value }
 }
 
 /// The state a node shows, most urgent first.
@@ -1011,7 +1344,10 @@ fn machine_text(machine: &Option<Machine>) -> String {
         Some(mib) if mib > 0 => format!("{:.1} GiB", mib as f64 / 1024.0),
         _ => "?".to_string(),
     };
-    format!("{cpus} cpus · {memory} · {}", m.host.as_deref().unwrap_or("?"))
+    format!(
+        "{cpus} cpus · {memory} · {}",
+        m.host.as_deref().unwrap_or("?")
+    )
 }
 
 /// mm:ss left, 00:00 once passed.
@@ -1037,13 +1373,20 @@ fn ago(ms: f64) -> String {
 
 /// Milliseconds since the Unix epoch.
 fn now_ms() -> f64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as f64).unwrap_or(0.0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as f64)
+        .unwrap_or(0.0)
 }
 
 /// A card's frame: a 1px rule border, square corners.
 fn boxed(_: &Theme) -> container::Style {
     container::Style {
-        border: Border { color: crate::theme::palette().rule, width: 1.0, radius: 0.0.into() },
+        border: Border {
+            color: crate::theme::palette().rule,
+            width: 1.0,
+            radius: 0.0.into(),
+        },
         ..Default::default()
     }
 }
@@ -1067,7 +1410,8 @@ mod tests {
 
     #[test]
     fn machine_json_tolerates_a_partial_reply() {
-        let m: PlazaMachine = serde_json::from_str(r#"{"id":"n0"}"#).expect("partial machine JSON parses");
+        let m: PlazaMachine =
+            serde_json::from_str(r#"{"id":"n0"}"#).expect("partial machine JSON parses");
         assert!(m.gpus.is_empty() && m.runs.is_empty());
         assert_eq!(m.cpus, 0);
     }

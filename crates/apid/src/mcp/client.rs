@@ -5,7 +5,7 @@
 //! and `prompts/list`, and `tools/call`.
 
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::fmt;
 use std::time::Duration;
 
@@ -78,7 +78,11 @@ pub struct Client {
 
 impl Client {
     pub fn new(transport: Box<dyn Transport>) -> Client {
-        Client { transport, next_id: 1, protocol: String::new() }
+        Client {
+            transport,
+            next_id: 1,
+            protocol: String::new(),
+        }
     }
 
     /// Whether the transport can still be used.
@@ -92,7 +96,12 @@ impl Client {
     }
 
     /// Sends a request and returns its `result`.
-    pub fn request(&mut self, method: &str, params: Value, timeout: Duration) -> Result<Value, Error> {
+    pub fn request(
+        &mut self,
+        method: &str,
+        params: Value,
+        timeout: Duration,
+    ) -> Result<Value, Error> {
         let id = self.next_id;
         self.next_id += 1;
         let message = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
@@ -104,7 +113,11 @@ impl Client {
             if let Some(error) = reply.get("error") {
                 return Err(Error::Rpc {
                     code: error.get("code").and_then(Value::as_i64).unwrap_or(0),
-                    message: error.get("message").and_then(Value::as_str).unwrap_or("").to_string(),
+                    message: error
+                        .get("message")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string(),
                 });
             }
             return Ok(reply.get("result").cloned().unwrap_or(Value::Null));
@@ -119,7 +132,12 @@ impl Client {
     }
 
     /// The handshake: `initialize`, then `notifications/initialized`.
-    pub fn initialize(&mut self, client_name: &str, client_version: &str, timeout: Duration) -> Result<ServerInfo, Error> {
+    pub fn initialize(
+        &mut self,
+        client_name: &str,
+        client_version: &str,
+        timeout: Duration,
+    ) -> Result<ServerInfo, Error> {
         let mut last = Error::Protocol("no protocol version agreed".into());
         for wanted in PROTOCOLS {
             let params = json!({
@@ -128,14 +146,26 @@ impl Client {
                 "clientInfo": {"name": client_name, "version": client_version},
             });
             let result = self.request("initialize", params, timeout)?;
-            let agreed = result.get("protocolVersion").and_then(Value::as_str).unwrap_or("").to_string();
+            let agreed = result
+                .get("protocolVersion")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
             if !PROTOCOLS.contains(&agreed.as_str()) {
                 last = Error::Protocol(format!("server offers protocol `{agreed}`"));
                 continue;
             }
             let info = ServerInfo {
-                name: result.pointer("/serverInfo/name").and_then(Value::as_str).unwrap_or("").to_string(),
-                version: result.pointer("/serverInfo/version").and_then(Value::as_str).unwrap_or("").to_string(),
+                name: result
+                    .pointer("/serverInfo/name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+                version: result
+                    .pointer("/serverInfo/version")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
                 protocol: agreed.clone(),
             };
             self.protocol = agreed;
@@ -146,7 +176,12 @@ impl Client {
     }
 
     /// Every item of a paged listing (`key` names the array in the result).
-    fn list_all(&mut self, method: &str, key: &str, timeout: Duration) -> Result<Vec<Value>, Error> {
+    fn list_all(
+        &mut self,
+        method: &str,
+        key: &str,
+        timeout: Duration,
+    ) -> Result<Vec<Value>, Error> {
         let mut items = Vec::new();
         let mut cursor: Option<String> = None;
         for _ in 0..MAX_PAGES {
@@ -163,7 +198,9 @@ impl Client {
                 _ => return Ok(items),
             }
         }
-        Err(Error::Protocol(format!("{method} went on past {MAX_PAGES} pages")))
+        Err(Error::Protocol(format!(
+            "{method} went on past {MAX_PAGES} pages"
+        )))
     }
 
     /// Every tool the server offers.
@@ -175,9 +212,19 @@ impl Client {
             };
             tools.push(ToolInfo {
                 name: name.to_string(),
-                description: item.get("description").and_then(Value::as_str).unwrap_or("").to_string(),
-                input_schema: item.get("inputSchema").cloned().unwrap_or_else(|| json!({"type": "object"})),
-                annotations: item.get("annotations").cloned().unwrap_or_else(|| json!({})),
+                description: item
+                    .get("description")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+                input_schema: item
+                    .get("inputSchema")
+                    .cloned()
+                    .unwrap_or_else(|| json!({"type": "object"})),
+                annotations: item
+                    .get("annotations")
+                    .cloned()
+                    .unwrap_or_else(|| json!({})),
             });
         }
         Ok(tools)
@@ -194,8 +241,17 @@ impl Client {
     }
 
     /// Calls a tool. The result is the server's `{content, isError}`, unread.
-    pub fn call_tool(&mut self, name: &str, arguments: Value, timeout: Duration) -> Result<Value, Error> {
-        self.request("tools/call", json!({"name": name, "arguments": arguments}), timeout)
+    pub fn call_tool(
+        &mut self,
+        name: &str,
+        arguments: Value,
+        timeout: Duration,
+    ) -> Result<Value, Error> {
+        self.request(
+            "tools/call",
+            json!({"name": name, "arguments": arguments}),
+            timeout,
+        )
     }
 }
 
@@ -212,9 +268,17 @@ pub(crate) mod tests {
     }
 
     impl Script {
-        pub fn new(replies: Vec<Box<dyn Fn(&Value) -> Vec<Value> + Send>>) -> (Script, Arc<Mutex<Vec<Value>>>) {
+        pub fn new(
+            replies: Vec<Box<dyn Fn(&Value) -> Vec<Value> + Send>>,
+        ) -> (Script, Arc<Mutex<Vec<Value>>>) {
             let sent = Arc::new(Mutex::new(Vec::new()));
-            (Script { sent: Arc::clone(&sent), replies: replies.into() }, sent)
+            (
+                Script {
+                    sent: Arc::clone(&sent),
+                    replies: replies.into(),
+                },
+                sent,
+            )
         }
     }
 
@@ -236,7 +300,9 @@ pub(crate) mod tests {
     }
 
     pub fn ok(result: Value) -> Box<dyn Fn(&Value) -> Vec<Value> + Send> {
-        Box::new(move |req: &Value| vec![json!({"jsonrpc": "2.0", "id": req["id"], "result": result})])
+        Box::new(move |req: &Value| {
+            vec![json!({"jsonrpc": "2.0", "id": req["id"], "result": result})]
+        })
     }
 
     fn timeout() -> Duration {
@@ -245,10 +311,15 @@ pub(crate) mod tests {
 
     #[test]
     fn initialize_agrees_a_protocol_and_sends_the_initialized_note() {
-        let (script, sent) = Script::new(vec![ok(json!({"protocolVersion": "2025-06-18", "serverInfo": {"name": "fx", "version": "1"}}))]);
+        let (script, sent) = Script::new(vec![ok(
+            json!({"protocolVersion": "2025-06-18", "serverInfo": {"name": "fx", "version": "1"}}),
+        )]);
         let mut client = Client::new(Box::new(script));
         let info = client.initialize("agentplaza", "0", timeout()).unwrap();
-        assert_eq!((info.name.as_str(), info.protocol.as_str()), ("fx", "2025-06-18"));
+        assert_eq!(
+            (info.name.as_str(), info.protocol.as_str()),
+            ("fx", "2025-06-18")
+        );
         let sent = sent.lock().unwrap();
         assert_eq!(sent[0]["method"], "initialize");
         assert_eq!(sent[1]["method"], "notifications/initialized");
@@ -264,12 +335,16 @@ pub(crate) mod tests {
         let mut client = Client::new(Box::new(script));
         let info = client.initialize("agentplaza", "0", timeout()).unwrap();
         assert_eq!(info.protocol, "2025-03-26");
-        assert_eq!(sent.lock().unwrap()[1]["params"]["protocolVersion"], "2025-03-26");
+        assert_eq!(
+            sent.lock().unwrap()[1]["params"]["protocolVersion"],
+            "2025-03-26"
+        );
     }
 
     #[test]
     fn tools_are_listed_across_pages() {
-        let page_one = ok(json!({"tools": [{"name": "a", "description": "first"}], "nextCursor": "1"}));
+        let page_one =
+            ok(json!({"tools": [{"name": "a", "description": "first"}], "nextCursor": "1"}));
         let page_two = ok(json!({"tools": [{"name": "b", "annotations": {"readOnlyHint": true}}]}));
         let (script, sent) = Script::new(vec![page_one, page_two]);
         let mut client = Client::new(Box::new(script));
@@ -282,12 +357,19 @@ pub(crate) mod tests {
 
     #[test]
     fn a_json_rpc_error_is_reported_with_its_code() {
-        let reply: Box<dyn Fn(&Value) -> Vec<Value> + Send> = Box::new(|req| vec![json!({"jsonrpc": "2.0", "id": req["id"], "error": {"code": -32602, "message": "no such tool"}})]);
+        let reply: Box<dyn Fn(&Value) -> Vec<Value> + Send> = Box::new(|req| {
+            vec![
+                json!({"jsonrpc": "2.0", "id": req["id"], "error": {"code": -32602, "message": "no such tool"}}),
+            ]
+        });
         let (script, _) = Script::new(vec![reply]);
         let mut client = Client::new(Box::new(script));
         assert_eq!(
             client.call_tool("nope", json!({}), timeout()),
-            Err(Error::Rpc { code: -32602, message: "no such tool".into() })
+            Err(Error::Rpc {
+                code: -32602,
+                message: "no such tool".into()
+            })
         );
     }
 
@@ -310,6 +392,9 @@ pub(crate) mod tests {
     fn a_silent_server_is_a_timeout() {
         let (script, _) = Script::new(vec![]);
         let mut client = Client::new(Box::new(script));
-        assert_eq!(client.call_tool("slow", json!({}), timeout()), Err(Error::Timeout));
+        assert_eq!(
+            client.call_tool("slow", json!({}), timeout()),
+            Err(Error::Timeout)
+        );
     }
 }

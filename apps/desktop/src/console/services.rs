@@ -8,7 +8,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
 
-use apz_setup::node::{self, cid_list, find_plan_pids, named_pids, repo_dir, resource, stop_pids, Layout, PlanProcess};
+use apz_setup::node::{
+    self, Layout, PlanProcess, cid_list, find_plan_pids, named_pids, repo_dir, resource, stop_pids,
+};
 
 /// The bind address of a hub other machines join, and the public URL it advertises (`https://<this machine>:7700`).
 /// `status` and `stop` rebuild the hub's plan with these, so they match the processes `start` made.
@@ -71,7 +73,11 @@ pub fn status(mode: Mode) -> Vec<Service> {
         .iter()
         .map(|svc| {
             let (state, detail) = svc_state(svc);
-            Service { name: svc.name.to_string(), state: state.to_string(), detail }
+            Service {
+                name: svc.name.to_string(),
+                state: state.to_string(),
+                detail,
+            }
         })
         .collect()
 }
@@ -98,7 +104,10 @@ pub fn stop(mode: Mode) -> Result<Vec<String>, String> {
 /// The services of `mode` as the console starts them: a hub's apid carries the public bind arguments.
 fn plan_of(mode: Mode) -> Vec<Svc> {
     let public = hub_public_url();
-    plan(mode, (mode == Mode::Hub).then_some((HUB_BIND, public.as_str())))
+    plan(
+        mode,
+        (mode == Mode::Hub).then_some((HUB_BIND, public.as_str())),
+    )
 }
 
 /// The owner token a local hub wrote for this machine (`<state>/owner-token`), if any.
@@ -110,7 +119,8 @@ pub fn local_owner_token() -> Option<String> {
 
 /// Joins a hub as a node with a join token (runs `apz-link join`); returns the node id.
 pub fn join(token: &str) -> Result<String, String> {
-    let bin = bin_path("apz-link").unwrap_or_else(|| PathBuf::from(apz_os::process::exe("apz-link")));
+    let bin =
+        bin_path("apz-link").unwrap_or_else(|| PathBuf::from(apz_os::process::exe("apz-link")));
     let out = Command::new(&bin)
         .arg("join")
         .arg(token)
@@ -119,7 +129,11 @@ pub fn join(token: &str) -> Result<String, String> {
         .map_err(|e| format!("apz-link: {e}"))?;
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        return Err(if err.is_empty() { "apz-link join failed".into() } else { err });
+        return Err(if err.is_empty() {
+            "apz-link join failed".into()
+        } else {
+            err
+        });
     }
     parse_join_output(&String::from_utf8_lossy(&out.stdout))
         .ok_or_else(|| "unexpected output from apz-link join".into())
@@ -147,8 +161,16 @@ pub fn node_status() -> NodeStatus {
         .ok()
         .and_then(|text| serde_json::from_str(&text).ok());
     let field = |key: &str| node.as_ref().and_then(|n| n.get(key));
-    let text = |key: &str| field(key).and_then(|v| v.as_str()).unwrap_or_default().to_string();
-    let cids = match (field("cid_base").and_then(|v| v.as_u64()), field("cid_count").and_then(|v| v.as_u64())) {
+    let text = |key: &str| {
+        field(key)
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string()
+    };
+    let cids = match (
+        field("cid_base").and_then(|v| v.as_u64()),
+        field("cid_count").and_then(|v| v.as_u64()),
+    ) {
         (Some(base), Some(count)) if count > 0 => node::cid_range(base, count),
         _ => String::new(),
     };
@@ -176,7 +198,10 @@ fn plan(mode: Mode, hub: Option<(&str, &str)>) -> Vec<Svc> {
         let (base, count) = node::identity().unwrap_or((0, 0));
         return node_plan(base, count);
     }
-    let roles = path_arg(&resource("roles/initial-roles.json", "docs/agents/initial-roles.json"));
+    let roles = path_arg(&resource(
+        "roles/initial-roles.json",
+        "docs/agents/initial-roles.json",
+    ));
     let prompts = path_arg(&resource("prompts", "docs/codex-draft/roles"));
     let console = path_arg(&resource("console", "apps/web/dist"));
     let cids = local_cids();
@@ -187,16 +212,36 @@ fn plan(mode: Mode, hub: Option<(&str, &str)>) -> Vec<Svc> {
     let garage_cfg = path_arg(&garage_cfg);
 
     let mut apid_args = argv(&[
-        "--port", "7700", "--noded-port", "8899", "--hub-port", "19080", "--roles", &roles,
-        "--prompts", &prompts, "--console", &console,
+        "--port",
+        "7700",
+        "--noded-port",
+        "8899",
+        "--hub-port",
+        "19080",
+        "--roles",
+        &roles,
+        "--prompts",
+        &prompts,
+        "--console",
+        &console,
     ]);
     if let Some((bind, public_url)) = hub {
         apid_args.extend(argv(&["--bind", bind, "--tls", "--public-url", public_url]));
     }
 
     vec![
-        Svc { name: "postgres", how: How::Container { docker: "agentplaza-postgres" } },
-        Svc { name: "forgejo", how: How::Container { docker: "agentplaza-forgejo" } },
+        Svc {
+            name: "postgres",
+            how: How::Container {
+                docker: "agentplaza-postgres",
+            },
+        },
+        Svc {
+            name: "forgejo",
+            how: How::Container {
+                docker: "agentplaza-forgejo",
+            },
+        },
         Svc {
             name: "garage",
             how: How::Process {
@@ -207,15 +252,29 @@ fn plan(mode: Mode, hub: Option<(&str, &str)>) -> Vec<Svc> {
         },
         Svc {
             name: "apid",
-            how: How::Process { bin: bin_path("apid"), args: apid_args, env: None },
+            how: How::Process {
+                bin: bin_path("apid"),
+                args: apid_args,
+                env: None,
+            },
         },
         Svc {
             name: "vsockd",
             how: How::Process {
                 bin: bin_path("vsockd"),
                 args: argv(&[
-                    "--uds-dir", &uds_dir(), "--cids", &cids, "--port", "5000", "--http-port",
-                    "19080", "--apid", "http://127.0.0.1:7700", "--internal-token-file", &internal,
+                    "--uds-dir",
+                    &uds_dir(),
+                    "--cids",
+                    &cids,
+                    "--port",
+                    "5000",
+                    "--http-port",
+                    "19080",
+                    "--apid",
+                    "http://127.0.0.1:7700",
+                    "--internal-token-file",
+                    &internal,
                 ]),
                 env: None,
             },
@@ -225,10 +284,19 @@ fn plan(mode: Mode, hub: Option<(&str, &str)>) -> Vec<Svc> {
             how: How::Process {
                 bin: bin_path("noded"),
                 args: argv(&[
-                    "--port", "8899", "--uds-dir", &uds_dir(), "--agents", &roles,
+                    "--port",
+                    "8899",
+                    "--uds-dir",
+                    &uds_dir(),
+                    "--agents",
+                    &roles,
                 ]),
                 // The per-VM process mode and its jailer are Linux-only.
-                env: if cfg!(target_os = "linux") { Some(("APZ_VMM_SPAWN", "process")) } else { None },
+                env: if cfg!(target_os = "linux") {
+                    Some(("APZ_VMM_SPAWN", "process"))
+                } else {
+                    None
+                },
             },
         },
     ]
@@ -241,7 +309,11 @@ fn node_plan(base: u64, count: u64) -> Vec<Svc> {
         .into_iter()
         .map(|process| Svc {
             name: process.name,
-            how: How::Process { bin: bin_path(process.name), args: process.args, env: process.env },
+            how: How::Process {
+                bin: bin_path(process.name),
+                args: process.args,
+                env: process.env,
+            },
         })
         .collect()
 }
@@ -261,14 +333,17 @@ fn svc_state(svc: &Svc) -> (&'static str, String) {
             state => (state, format!("container {docker}")),
         },
         How::Process { bin, .. } => {
-            if let Some(pid) = process_of(svc).and_then(|process| find_plan_pids(&process).first().copied()) {
+            if let Some(pid) =
+                process_of(svc).and_then(|process| find_plan_pids(&process).first().copied())
+            {
                 return ("running", format!("pid {pid}"));
             }
             match bin {
                 Some(_) => ("stopped", String::new()),
-                None if svc.name == OPTIONAL_SERVICE => {
-                    ("optional", "not set up: the Library keeps files on disk".into())
-                }
+                None if svc.name == OPTIONAL_SERVICE => (
+                    "optional",
+                    "not set up: the Library keeps files on disk".into(),
+                ),
                 None => ("missing", "not installed".into()),
             }
         }
@@ -280,7 +355,11 @@ fn start_one(svc: &Svc) -> String {
     match &svc.how {
         How::Container { docker } => match container_state(docker) {
             "running" => format!("{name}: already running"),
-            "stopped" => match Command::new("docker").args(["start", docker]).stdin(Stdio::null()).output() {
+            "stopped" => match Command::new("docker")
+                .args(["start", docker])
+                .stdin(Stdio::null())
+                .output()
+            {
                 Ok(out) if out.status.success() => format!("{name}: started"),
                 Ok(out) => format!("{name}: failed ({})", first_line(&out.stderr)),
                 Err(e) => format!("{name}: failed ({e})"),
@@ -288,7 +367,9 @@ fn start_one(svc: &Svc) -> String {
             _ => format!("{name}: not installed"),
         },
         How::Process { bin, args, env } => {
-            if let Some(pid) = process_of(svc).and_then(|process| find_plan_pids(&process).first().copied()) {
+            if let Some(pid) =
+                process_of(svc).and_then(|process| find_plan_pids(&process).first().copied())
+            {
                 return format!("{name}: already running (pid {pid})");
             }
             let Some(bin) = bin else {
@@ -299,7 +380,9 @@ fn start_one(svc: &Svc) -> String {
             };
             // Another process of this name that is not the plan's holds the ports this one needs.
             if let Some(pid) = named_pids(name).first() {
-                return format!("{name}: not started: another {name} runs (pid {pid}) that this app did not start");
+                return format!(
+                    "{name}: not started: another {name} runs (pid {pid}) that this app did not start"
+                );
             }
             match spawn(name, bin, args, *env) {
                 Ok(pid) => format!("{name}: started (pid {pid})"),
@@ -325,7 +408,11 @@ fn stop_one(svc: &Svc) -> String {
         };
     }
     let signalled: Vec<bool> = pids.iter().map(|pid| signal(*pid)).collect();
-    let list = pids.iter().map(u32::to_string).collect::<Vec<_>>().join(", ");
+    let list = pids
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
     if signalled.iter().all(|ok| *ok) {
         format!("{name}: stopped (pid {list})")
     } else {
@@ -337,7 +424,11 @@ fn stop_one(svc: &Svc) -> String {
 /// Docker container, which is not a process.
 fn process_of(svc: &Svc) -> Option<PlanProcess> {
     match &svc.how {
-        How::Process { args, env, .. } => Some(PlanProcess { name: svc.name, args: args.clone(), env: *env }),
+        How::Process { args, env, .. } => Some(PlanProcess {
+            name: svc.name,
+            args: args.clone(),
+            env: *env,
+        }),
         How::Container { .. } => None,
     }
 }
@@ -346,7 +437,13 @@ fn process_of(svc: &Svc) -> Option<PlanProcess> {
 fn recorded_pids(name: &str) -> Vec<u32> {
     STARTED
         .lock()
-        .map(|started| started.iter().filter(|(n, _)| n == name).map(|(_, pid)| *pid).collect())
+        .map(|started| {
+            started
+                .iter()
+                .filter(|(n, _)| n == name)
+                .map(|(_, pid)| *pid)
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -361,19 +458,34 @@ fn signal(pid: u32) -> bool {
         cmd.arg(pid.to_string());
         cmd
     };
-    cmd.stdin(Stdio::null()).status().map(|s| s.success()).unwrap_or(false)
+    cmd.stdin(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 /// Starts a detached process: stdin closed, output appended to its log, its own process group.
-fn spawn(name: &str, bin: &Path, args: &[String], env: Option<(&str, &str)>) -> Result<u32, String> {
+fn spawn(
+    name: &str,
+    bin: &Path,
+    args: &[String],
+    env: Option<(&str, &str)>,
+) -> Result<u32, String> {
     let log_path = node::log_file(name);
     if let Some(dir) = log_path.parent() {
         fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
-    let log = OpenOptions::new().create(true).append(true).open(&log_path).map_err(|e| e.to_string())?;
+    let log = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .map_err(|e| e.to_string())?;
     let errors = log.try_clone().map_err(|e| e.to_string())?;
     let mut cmd = Command::new(bin);
-    cmd.args(args).stdin(Stdio::null()).stdout(Stdio::from(log)).stderr(Stdio::from(errors));
+    cmd.args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(log))
+        .stderr(Stdio::from(errors));
     apz_os::process::detach(&mut cmd);
     if let Some((key, value)) = env {
         cmd.env(key, value);
@@ -427,7 +539,9 @@ fn data_dir() -> PathBuf {
 /// else `<repo>/target/debug/<name>` (development), else the first `<name>` on `$PATH`.
 fn bin_path(name: &str) -> Option<PathBuf> {
     let file = apz_os::process::exe(name);
-    let beside = env::current_exe().ok().and_then(|exe| exe.parent().map(|dir| dir.join(&file)));
+    let beside = env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join(&file)));
     if let Some(path) = beside.filter(|path| path.is_file()) {
         return Some(path);
     }
@@ -451,9 +565,16 @@ fn hostname() -> String {
         .ok()
         .or_else(|| env::var("COMPUTERNAME").ok())
         .or_else(|| {
-            Command::new("hostname").stdin(Stdio::null()).output().ok().map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            Command::new("hostname")
+                .stdin(Stdio::null())
+                .output()
+                .ok()
+                .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
         });
-    named.map(|h| h.trim().to_string()).filter(|h| !h.is_empty()).unwrap_or_else(|| "localhost".to_string())
+    named
+        .map(|h| h.trim().to_string())
+        .filter(|h| !h.is_empty())
+        .unwrap_or_else(|| "localhost".to_string())
 }
 
 fn path_arg(path: &Path) -> String {
@@ -475,22 +596,29 @@ fn first_line(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use apz_setup::node::{runs_plan, Layout};
+    use apz_setup::node::{Layout, runs_plan};
 
     use super::*;
 
     /// The command line a process of a plan runs: its program, then its arguments.
     fn command(process: &PlanProcess) -> Vec<String> {
-        std::iter::once(process.name.to_string()).chain(process.args.iter().cloned()).collect()
+        std::iter::once(process.name.to_string())
+            .chain(process.args.iter().cloned())
+            .collect()
     }
 
     /// The command line of a process started with these arguments (the owner's main plaza's, say).
     fn owner(name: &str, args: &[&str]) -> Vec<String> {
-        std::iter::once(name.to_string()).chain(args.iter().map(|a| a.to_string())).collect()
+        std::iter::once(name.to_string())
+            .chain(args.iter().map(|a| a.to_string()))
+            .collect()
     }
 
     fn svc_process(services: &[Svc], name: &str) -> PlanProcess {
-        let svc = services.iter().find(|svc| svc.name == name).expect("a service of the plan");
+        let svc = services
+            .iter()
+            .find(|svc| svc.name == name)
+            .expect("a service of the plan");
         process_of(svc).expect("a process")
     }
 
@@ -503,16 +631,29 @@ mod tests {
 
     #[test]
     fn a_name_that_runs_nowhere_matches_no_process() {
-        let nowhere = PlanProcess { name: "agentplaza-no-such-service-zz9", args: vec!["--x".into()], env: None };
+        let nowhere = PlanProcess {
+            name: "agentplaza-no-such-service-zz9",
+            args: vec!["--x".into()],
+            env: None,
+        };
         assert!(find_plan_pids(&nowhere).is_empty());
     }
 
     #[test]
     fn a_node_and_the_hub_on_one_machine_are_told_apart_by_their_arguments() {
         let hub = plan(Mode::Local, None);
-        let layout = Layout { roles: "/share/roles.json".into(), uds_dir: "/run/uds".into(), token: "/state/node/internal-token".into() };
+        let layout = Layout {
+            roles: "/share/roles.json".into(),
+            uds_dir: "/run/uds".into(),
+            token: "/state/node/internal-token".into(),
+        };
         let node = node::plan(20, 4, &layout);
-        let node_proc = |name: &str| node.iter().find(|p| p.name == name).expect("a node process").clone();
+        let node_proc = |name: &str| {
+            node.iter()
+                .find(|p| p.name == name)
+                .expect("a node process")
+                .clone()
+        };
         let hub_vsockd = svc_process(&hub, "vsockd");
         let hub_noded = svc_process(&hub, "noded");
         let hub_apid = svc_process(&hub, "apid");
@@ -524,23 +665,73 @@ mod tests {
         let hub_noded_cmd = command(&hub_noded);
         let hub_apid_cmd = command(&hub_apid);
         assert!(runs_plan(&node_vsockd_cmd, &node_proc("vsockd")));
-        assert!(!runs_plan(&node_vsockd_cmd, &hub_vsockd), "a node's vsockd is not the hub's");
+        assert!(
+            !runs_plan(&node_vsockd_cmd, &hub_vsockd),
+            "a node's vsockd is not the hub's"
+        );
         assert!(runs_plan(&hub_vsockd_cmd, &hub_vsockd));
-        assert!(!runs_plan(&hub_vsockd_cmd, &node_proc("vsockd")), "a hub's vsockd is not the node's");
+        assert!(
+            !runs_plan(&hub_vsockd_cmd, &node_proc("vsockd")),
+            "a hub's vsockd is not the node's"
+        );
         // The node's noded has every argument of the hub's noded and --run-cids besides.
         assert!(runs_plan(&node_noded_cmd, &node_proc("noded")));
-        assert!(!runs_plan(&node_noded_cmd, &hub_noded), "stopping the hub must not stop a node's noded");
+        assert!(
+            !runs_plan(&node_noded_cmd, &hub_noded),
+            "stopping the hub must not stop a node's noded"
+        );
         assert!(runs_plan(&hub_noded_cmd, &hub_noded));
-        assert!(!runs_plan(&hub_noded_cmd, &node_proc("noded")), "a hub's noded is not the node's");
+        assert!(
+            !runs_plan(&hub_noded_cmd, &node_proc("noded")),
+            "a hub's noded is not the node's"
+        );
         assert!(runs_plan(&hub_apid_cmd, &hub_apid));
 
         // The owner's main plaza, started with its own paths and CIDs, is neither's.
-        let owner_apid = owner("apid", &["--port", "7700", "--noded-port", "8899", "--hub-port", "19080"]);
-        let owner_vsockd = owner("vsockd", &["--uds-dir", "/home/u/.local/state/agentplaza/vsock", "--cids", "200,201,202"]);
-        let owner_noded = owner("noded", &["--port", "8899", "--uds-dir", "/home/u/.local/state/agentplaza/vsock", "--agents", "/srv/roles.json"]);
+        let owner_apid = owner(
+            "apid",
+            &[
+                "--port",
+                "7700",
+                "--noded-port",
+                "8899",
+                "--hub-port",
+                "19080",
+            ],
+        );
+        let owner_vsockd = owner(
+            "vsockd",
+            &[
+                "--uds-dir",
+                "/home/u/.local/state/agentplaza/vsock",
+                "--cids",
+                "200,201,202",
+            ],
+        );
+        let owner_noded = owner(
+            "noded",
+            &[
+                "--port",
+                "8899",
+                "--uds-dir",
+                "/home/u/.local/state/agentplaza/vsock",
+                "--agents",
+                "/srv/roles.json",
+            ],
+        );
         for cmd in [&owner_apid, &owner_vsockd, &owner_noded] {
-            for process in [&hub_vsockd, &hub_noded, &hub_apid, &node_proc("vsockd"), &node_proc("noded")] {
-                assert!(!runs_plan(cmd, process), "{cmd:?} must not be {}", process.name);
+            for process in [
+                &hub_vsockd,
+                &hub_noded,
+                &hub_apid,
+                &node_proc("vsockd"),
+                &node_proc("noded"),
+            ] {
+                assert!(
+                    !runs_plan(cmd, process),
+                    "{cmd:?} must not be {}",
+                    process.name
+                );
             }
         }
     }
@@ -549,12 +740,20 @@ mod tests {
     fn the_hub_plan_for_the_console_carries_its_bind_arguments_and_nothing_else_moves() {
         let hub = plan_of(Mode::Hub);
         let apid = svc_process(&hub, "apid");
-        let flag = |name: &str| apid.args.iter().position(|a| a == name).and_then(|i| apid.args.get(i + 1)).cloned();
+        let flag = |name: &str| {
+            apid.args
+                .iter()
+                .position(|a| a == name)
+                .and_then(|i| apid.args.get(i + 1))
+                .cloned()
+        };
         assert_eq!(flag("--bind").as_deref(), Some(HUB_BIND));
         assert_eq!(flag("--public-url"), Some(hub_public_url()));
         assert!(apid.args.iter().any(|a| a == "--tls"));
         // Local is the hub without those arguments.
-        assert!(!plan_of(Mode::Local).iter().any(|svc| matches!(&svc.how, How::Process { args, .. } if args.iter().any(|a| a == "--tls"))));
+        assert!(!plan_of(Mode::Local).iter().any(
+            |svc| matches!(&svc.how, How::Process { args, .. } if args.iter().any(|a| a == "--tls"))
+        ));
     }
 
     #[test]

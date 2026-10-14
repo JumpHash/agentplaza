@@ -47,7 +47,21 @@ impl Db {
         self.run(|c| {
             c.execute(
                 sql::STATION_RECORDING_PUT,
-                &[&r.id, &r.station, &r.lease, &agent, &r.task, &started, &ended, &frames, &actions, &bytes, &r.takeover, &width, &height],
+                &[
+                    &r.id,
+                    &r.station,
+                    &r.lease,
+                    &agent,
+                    &r.task,
+                    &started,
+                    &ended,
+                    &frames,
+                    &actions,
+                    &bytes,
+                    &r.takeover,
+                    &width,
+                    &height,
+                ],
             )
         })
         .map(|_| ())
@@ -68,7 +82,12 @@ impl Db {
 
     /// Recordings, newest first: one workstation's when `station` is given, only those started before `before` (ms)
     /// when it is given.
-    pub fn recordings(&self, station: Option<&str>, before: Option<u64>, limit: i64) -> Result<Vec<Recording>, String> {
+    pub fn recordings(
+        &self,
+        station: Option<&str>,
+        before: Option<u64>,
+        limit: i64,
+    ) -> Result<Vec<Recording>, String> {
         if let Some(files) = self.file_store() {
             return files.recordings(station, before, limit);
         }
@@ -104,7 +123,8 @@ impl Db {
         if !self.enabled() {
             return Err(NO_STORE.into());
         }
-        self.run(|c| c.execute(sql::STATION_RECORDING_DELETE, &[&id])).map(|_| ())
+        self.run(|c| c.execute(sql::STATION_RECORDING_DELETE, &[&id]))
+            .map(|_| ())
     }
 
     /// Appends one action to a recording (table `station_recording_events`, or the file fallback).
@@ -116,12 +136,22 @@ impl Db {
             return Err(NO_STORE.into());
         }
         let at_ms = event.at_ms as i64;
-        self.run(|c| c.execute(sql::STATION_RECORDING_EVENT_APPEND, &[&recording, &at_ms, &event.kind, &event.ok, &event.summary]))
-            .map(|_| ())
+        self.run(|c| {
+            c.execute(
+                sql::STATION_RECORDING_EVENT_APPEND,
+                &[&recording, &at_ms, &event.kind, &event.ok, &event.summary],
+            )
+        })
+        .map(|_| ())
     }
 
     /// Writes one frame's capture time (table `station_recording_frames`, or the file fallback).
-    pub fn put_recording_frame(&self, recording: &str, frame: FrameTime, bytes: u64) -> Result<(), String> {
+    pub fn put_recording_frame(
+        &self,
+        recording: &str,
+        frame: FrameTime,
+        bytes: u64,
+    ) -> Result<(), String> {
         if let Some(files) = self.file_store() {
             return files.put_recording_frame(recording, frame, bytes);
         }
@@ -129,11 +159,22 @@ impl Db {
             return Err(NO_STORE.into());
         }
         let (seq, ts_ms, bytes) = (frame.seq as i64, frame.ts_ms as i64, bytes as i64);
-        self.run(|c| c.execute(sql::STATION_RECORDING_FRAME_PUT, &[&recording, &seq, &ts_ms, &bytes])).map(|_| ())
+        self.run(|c| {
+            c.execute(
+                sql::STATION_RECORDING_FRAME_PUT,
+                &[&recording, &seq, &ts_ms, &bytes],
+            )
+        })
+        .map(|_| ())
     }
 
     /// The capture times of a recording's frames in seq order: those with a seq up to `upto`, at most `limit`.
-    pub fn recording_frame_times(&self, recording: &str, upto: u64, limit: i64) -> Result<Vec<FrameTime>, String> {
+    pub fn recording_frame_times(
+        &self,
+        recording: &str,
+        upto: u64,
+        limit: i64,
+    ) -> Result<Vec<FrameTime>, String> {
         if let Some(files) = self.file_store() {
             return files.recording_frame_times(recording, upto, limit);
         }
@@ -141,9 +182,21 @@ impl Db {
             return Err(NO_STORE.into());
         }
         let upto = upto as i64;
-        self.run(|c| c.query(sql::STATION_RECORDING_FRAMES_PAGE, &[&recording, &upto, &limit]))
-            .map(|rows| rows.iter().map(|r| FrameTime { seq: r.get::<_, i64>(0) as u64, ts_ms: r.get::<_, i64>(1) as u64 }).collect())
-            .inspect_err(|e| eprintln!("db: recording frames read failed: {e}"))
+        self.run(|c| {
+            c.query(
+                sql::STATION_RECORDING_FRAMES_PAGE,
+                &[&recording, &upto, &limit],
+            )
+        })
+        .map(|rows| {
+            rows.iter()
+                .map(|r| FrameTime {
+                    seq: r.get::<_, i64>(0) as u64,
+                    ts_ms: r.get::<_, i64>(1) as u64,
+                })
+                .collect()
+        })
+        .inspect_err(|e| eprintln!("db: recording frames read failed: {e}"))
     }
 
     /// The newest `limit` actions of a recording, oldest first.
@@ -156,7 +209,14 @@ impl Db {
         }
         self.run(|c| c.query(sql::STATION_RECORDING_EVENTS_PAGE, &[&recording, &limit]))
             .map(|rows| {
-                rows.iter().map(|r| Event { at_ms: r.get::<_, i64>(0) as u64, kind: r.get(1), ok: r.get(2), summary: r.get(3) }).collect()
+                rows.iter()
+                    .map(|r| Event {
+                        at_ms: r.get::<_, i64>(0) as u64,
+                        kind: r.get(1),
+                        ok: r.get(2),
+                        summary: r.get(3),
+                    })
+                    .collect()
             })
             .inspect_err(|e| eprintln!("db: recording events read failed: {e}"))
     }
@@ -187,21 +247,41 @@ mod tests {
     }
 
     fn event(at_ms: u64, kind: &str) -> Event {
-        Event { at_ms, kind: kind.into(), ok: true, summary: json!({ "kind": kind, "n": at_ms }) }
+        Event {
+            at_ms,
+            kind: kind.into(),
+            ok: true,
+            summary: json!({ "kind": kind, "n": at_ms }),
+        }
     }
 
     /// The same answers from both backends: the index's order and filters, the update of a row, the events' order
     /// and the cascade of a delete.
     fn check_recordings(db: &Db) {
-        let (r1, r2, r3) = (recording("r1", "w1", 100, None), recording("r2", "w1", 200, None), recording("r3", "w2", 150, Some(300)));
+        let (r1, r2, r3) = (
+            recording("r1", "w1", 100, None),
+            recording("r2", "w1", 200, None),
+            recording("r3", "w2", 150, Some(300)),
+        );
         for row in [&r1, &r2, &r3] {
             db.put_recording(row).unwrap();
         }
         assert_eq!(db.recording("r1").unwrap(), Some(r1.clone()));
         assert_eq!(db.recording("nope").unwrap(), None);
-        assert_eq!(db.recordings(None, None, 10).unwrap(), vec![r2.clone(), r3.clone(), r1.clone()], "newest start first");
-        assert_eq!(db.recordings(Some("w1"), None, 10).unwrap(), vec![r2.clone(), r1.clone()]);
-        assert_eq!(db.recordings(None, Some(200), 10).unwrap(), vec![r3.clone(), r1.clone()], "started before the cursor");
+        assert_eq!(
+            db.recordings(None, None, 10).unwrap(),
+            vec![r2.clone(), r3.clone(), r1.clone()],
+            "newest start first"
+        );
+        assert_eq!(
+            db.recordings(Some("w1"), None, 10).unwrap(),
+            vec![r2.clone(), r1.clone()]
+        );
+        assert_eq!(
+            db.recordings(None, Some(200), 10).unwrap(),
+            vec![r3.clone(), r1.clone()],
+            "started before the cursor"
+        );
         assert_eq!(db.recordings(None, None, 1).unwrap(), vec![r2.clone()]);
         assert!(db.recordings(Some("w9"), None, 10).unwrap().is_empty());
 
@@ -216,47 +296,111 @@ mod tests {
             ..r1.clone()
         };
         db.put_recording(&ended).unwrap();
-        assert_eq!(db.recording("r1").unwrap(), Some(ended.clone()), "the same id is updated, not added");
+        assert_eq!(
+            db.recording("r1").unwrap(),
+            Some(ended.clone()),
+            "the same id is updated, not added"
+        );
         assert_eq!(db.recordings(Some("w1"), None, 10).unwrap().len(), 2);
 
         for (at, kind) in [(10, "click"), (11, "type"), (12, "wait")] {
             db.append_recording_event("r1", &event(at, kind)).unwrap();
         }
-        db.append_recording_event("r2", &event(13, "other")).unwrap();
+        db.append_recording_event("r2", &event(13, "other"))
+            .unwrap();
         let kinds = |rows: Vec<Event>| rows.into_iter().map(|e| e.kind).collect::<Vec<_>>();
-        assert_eq!(kinds(db.recording_events("r1", 10).unwrap()), vec!["click", "type", "wait"], "oldest first");
-        assert_eq!(kinds(db.recording_events("r1", 2).unwrap()), vec!["type", "wait"], "the newest two");
+        assert_eq!(
+            kinds(db.recording_events("r1", 10).unwrap()),
+            vec!["click", "type", "wait"],
+            "oldest first"
+        );
+        assert_eq!(
+            kinds(db.recording_events("r1", 2).unwrap()),
+            vec!["type", "wait"],
+            "the newest two"
+        );
         assert!(db.recording_events("r1", 0).unwrap().is_empty());
-        assert_eq!(db.recording_events("r1", 10).unwrap()[0].summary, json!({ "kind": "click", "n": 10 }));
+        assert_eq!(
+            db.recording_events("r1", 10).unwrap()[0].summary,
+            json!({ "kind": "click", "n": 10 })
+        );
 
         // Expired: ended before the cutoff, or open and started before it. r2 is open since 200.
         let expired = |station: &str, cutoff: u64| db.recordings_expired(station, cutoff).unwrap();
-        assert!(expired("w1", 150).is_empty(), "r1 ended at 150, not before it");
+        assert!(
+            expired("w1", 150).is_empty(),
+            "r1 ended at 150, not before it"
+        );
         assert_eq!(expired("w1", 160), vec![ended.clone()]);
-        assert_eq!(expired("w1", 250), vec![ended.clone(), r2.clone()], "oldest start first");
-        assert!(expired("w2", 300).is_empty(), "r3 ended at 300, not before it");
+        assert_eq!(
+            expired("w1", 250),
+            vec![ended.clone(), r2.clone()],
+            "oldest start first"
+        );
+        assert!(
+            expired("w2", 300).is_empty(),
+            "r3 ended at 300, not before it"
+        );
 
         // Frame times: in seq order, the reads stop at the frames the index counts, a seq written again keeps its last
         // time, and a recording with no rows has none.
-        let stamps = |rows: Vec<FrameTime>| rows.into_iter().map(|f| (f.seq, f.ts_ms)).collect::<Vec<_>>();
-        assert!(stamps(db.recording_frame_times("r1", 9, 10).unwrap()).is_empty(), "r1 has no frame times yet");
+        let stamps = |rows: Vec<FrameTime>| {
+            rows.into_iter()
+                .map(|f| (f.seq, f.ts_ms))
+                .collect::<Vec<_>>()
+        };
+        assert!(
+            stamps(db.recording_frame_times("r1", 9, 10).unwrap()).is_empty(),
+            "r1 has no frame times yet"
+        );
         for (seq, ts_ms) in [(1, 120), (2, 260), (3, 900)] {
-            db.put_recording_frame("r2", FrameTime { seq, ts_ms }, 10).unwrap();
+            db.put_recording_frame("r2", FrameTime { seq, ts_ms }, 10)
+                .unwrap();
         }
-        db.put_recording_frame("r2", FrameTime { seq: 2, ts_ms: 270 }, 11).unwrap();
-        assert_eq!(stamps(db.recording_frame_times("r2", 9, 10).unwrap()), vec![(1, 120), (2, 270), (3, 900)], "seq order, the last write");
-        assert_eq!(stamps(db.recording_frame_times("r2", 2, 10).unwrap()), vec![(1, 120), (2, 270)], "only the frames the index counts");
-        assert_eq!(stamps(db.recording_frame_times("r2", 9, 2).unwrap()), vec![(1, 120), (2, 270)], "the first ones, up to the limit");
+        db.put_recording_frame("r2", FrameTime { seq: 2, ts_ms: 270 }, 11)
+            .unwrap();
+        assert_eq!(
+            stamps(db.recording_frame_times("r2", 9, 10).unwrap()),
+            vec![(1, 120), (2, 270), (3, 900)],
+            "seq order, the last write"
+        );
+        assert_eq!(
+            stamps(db.recording_frame_times("r2", 2, 10).unwrap()),
+            vec![(1, 120), (2, 270)],
+            "only the frames the index counts"
+        );
+        assert_eq!(
+            stamps(db.recording_frame_times("r2", 9, 2).unwrap()),
+            vec![(1, 120), (2, 270)],
+            "the first ones, up to the limit"
+        );
         assert!(db.recording_frame_times("nope", 9, 10).unwrap().is_empty());
-        db.put_recording_frame("r1", FrameTime { seq: 1, ts_ms: 130 }, 5).unwrap();
-        assert_eq!(stamps(db.recording_frame_times("r1", 9, 10).unwrap()), vec![(1, 130)]);
+        db.put_recording_frame("r1", FrameTime { seq: 1, ts_ms: 130 }, 5)
+            .unwrap();
+        assert_eq!(
+            stamps(db.recording_frame_times("r1", 9, 10).unwrap()),
+            vec![(1, 130)]
+        );
 
         db.delete_recording("r1").unwrap();
-        assert!(db.recording_frame_times("r1", 9, 10).unwrap().is_empty(), "a deleted recording's frame times go with it");
+        assert!(
+            db.recording_frame_times("r1", 9, 10).unwrap().is_empty(),
+            "a deleted recording's frame times go with it"
+        );
         assert_eq!(db.recording("r1").unwrap(), None);
-        assert_eq!(db.recordings(None, None, 10).unwrap(), vec![r2.clone(), r3.clone()]);
-        assert!(db.recording_events("r1", 10).unwrap().is_empty(), "a deleted recording's actions are gone");
-        assert_eq!(kinds(db.recording_events("r2", 10).unwrap()), vec!["other"], "another's are kept");
+        assert_eq!(
+            db.recordings(None, None, 10).unwrap(),
+            vec![r2.clone(), r3.clone()]
+        );
+        assert!(
+            db.recording_events("r1", 10).unwrap().is_empty(),
+            "a deleted recording's actions are gone"
+        );
+        assert_eq!(
+            kinds(db.recording_events("r2", 10).unwrap()),
+            vec!["other"],
+            "another's are kept"
+        );
     }
 
     /// Every recording query gives the same results on Postgres (a fresh test database, when the test server is set)
@@ -269,7 +413,8 @@ mod tests {
             assert!(db.enabled());
             check_recordings(&db);
         }
-        let dir = std::env::temp_dir().join(format!("apid-recordings-parity-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("apid-recordings-parity-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let db = Db::files_only(&dir);
         assert!(!db.enabled());

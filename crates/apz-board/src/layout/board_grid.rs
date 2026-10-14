@@ -6,7 +6,12 @@ use crate::navgrid::{self, NavBoard, NavBox, NavPlate};
 
 /// The board-only grid of a board of `size` (x, z) with its PCB at `pcb_top`, its part boxes `(lo, hi)` and the
 /// candidate plates `(rect [x, z, w, d], top)` (region ids 1, 2, ... in order).
-pub fn board_grid(size: [f64; 2], pcb_top: f64, boxes: &[([f64; 3], [f64; 3])], plates: &[([f64; 4], f64)]) -> Grid {
+pub fn board_grid(
+    size: [f64; 2],
+    pcb_top: f64,
+    boxes: &[([f64; 3], [f64; 3])],
+    plates: &[([f64; 4], f64)],
+) -> Grid {
     let board = NavBoard {
         size: [size[0], 0.0, size[1]],
         pcb_top,
@@ -15,7 +20,15 @@ pub fn board_grid(size: [f64; 2], pcb_top: f64, boxes: &[([f64; 3], [f64; 3])], 
         plates: plates
             .iter()
             .enumerate()
-            .map(|(k, &([x0, z0, w, d], y))| NavPlate { id: k as i32 + 1, x0, z0, w, d, y, landing: None })
+            .map(|(k, &([x0, z0, w, d], y))| NavPlate {
+                id: k as i32 + 1,
+                x0,
+                z0,
+                w,
+                d,
+                y,
+                landing: None,
+            })
             .collect(),
     };
     let g = navgrid::build(&board, &[]);

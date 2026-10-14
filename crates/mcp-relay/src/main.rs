@@ -11,7 +11,13 @@ use std::net::{Shutdown, SocketAddr, SocketAddrV4, TcpListener, TcpStream};
 
 /// The first two lines a relay connection starts with: the token, then the PROXY line.
 fn hello(source: SocketAddrV4, listen: SocketAddrV4, token: &str) -> String {
-    format!("APZ-RELAY-TOKEN {token}\r\nPROXY TCP4 {} {} {} {}\r\n", source.ip(), listen.ip(), source.port(), listen.port())
+    format!(
+        "APZ-RELAY-TOKEN {token}\r\nPROXY TCP4 {} {} {} {}\r\n",
+        source.ip(),
+        listen.ip(),
+        source.port(),
+        listen.port()
+    )
 }
 
 fn relay_one(client: TcpStream, upstream: &str, token: &str) -> io::Result<()> {
@@ -29,8 +35,12 @@ fn relay_one(client: TcpStream, upstream: &str, token: &str) -> io::Result<()> {
 
 /// Copies both ways until either side closes.
 fn pump(mut client: TcpStream, mut server: TcpStream) {
-    let Ok(mut server_write) = server.try_clone() else { return };
-    let Ok(mut client_read) = client.try_clone() else { return };
+    let Ok(mut server_write) = server.try_clone() else {
+        return;
+    };
+    let Ok(mut client_read) = client.try_clone() else {
+        return;
+    };
     let forward = std::thread::spawn(move || {
         let _ = io::copy(&mut client_read, &mut server_write);
         let _ = server_write.shutdown(Shutdown::Write);
@@ -101,7 +111,10 @@ mod tests {
     fn the_hello_is_the_token_then_the_proxy_line_with_the_source() {
         let source = SocketAddrV4::new(Ipv4Addr::new(172, 29, 250, 9), 5000);
         let listen = SocketAddrV4::new(Ipv4Addr::new(172, 29, 250, 2), 3128);
-        assert_eq!(hello(source, listen, "tok"), "APZ-RELAY-TOKEN tok\r\nPROXY TCP4 172.29.250.9 172.29.250.2 5000 3128\r\n");
+        assert_eq!(
+            hello(source, listen, "tok"),
+            "APZ-RELAY-TOKEN tok\r\nPROXY TCP4 172.29.250.9 172.29.250.2 5000 3128\r\n"
+        );
     }
 
     #[test]
@@ -127,12 +140,15 @@ mod tests {
         let upstream_text = upstream_addr.to_string();
         std::thread::spawn(move || serve(relay, upstream_text, "tok".into()));
         let mut client = TcpStream::connect(relay_addr).unwrap();
-        client.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
         client.write_all(b"ping\n").unwrap();
         let mut reply = String::new();
         BufReader::new(client).read_line(&mut reply).unwrap();
         assert_eq!(reply, "pong\n");
-        let (token_line, proxy_line, request) = seen_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let (token_line, proxy_line, request) =
+            seen_rx.recv_timeout(Duration::from_secs(5)).unwrap();
         assert_eq!(token_line, "APZ-RELAY-TOKEN tok\r\n");
         let fields: Vec<&str> = proxy_line.trim_end().split(' ').collect();
         assert_eq!(fields.len(), 6, "{proxy_line}");
@@ -141,5 +157,4 @@ mod tests {
         assert!(fields[4].parse::<u16>().is_ok(), "{proxy_line}");
         assert_eq!(request, "ping\n");
     }
-
 }

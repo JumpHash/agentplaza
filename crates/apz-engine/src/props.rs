@@ -58,12 +58,20 @@ const HULL: u32 = 0x56607e;
 /// A toon colour that also glows a little: the plaza's bioluminescence and crystals.
 pub fn glowing(color: u32, intensity: f32) -> Mat {
     let c = Color::hex(color);
-    toon_mat(Material { color: c, emissive: c, emissive_intensity: intensity, ..Material::default() })
+    toon_mat(Material {
+        color: c,
+        emissive: c,
+        emissive_intensity: intensity,
+        ..Material::default()
+    })
 }
 
 /// `toonMat({ color, roughness, metalness })`: toon.ts drops roughness and metalness.
 fn std_mat(color: Color) -> Mat {
-    toon_mat(Material { color, ..Material::default() })
+    toon_mat(Material {
+        color,
+        ..Material::default()
+    })
 }
 
 /// `part(parent, geo, mat, x, y, z)`: a mesh placed under `parent`.
@@ -107,7 +115,12 @@ pub fn footprint(o: &Obj, parent: Mat4) -> Box2 {
     let mut lo = Vec3::splat(f32::INFINITY);
     let mut hi = Vec3::splat(f32::NEG_INFINITY);
     expand_box(o, parent, &mut lo, &mut hi);
-    Box2 { x0: lo.x, x1: hi.x, z0: lo.z, z1: hi.z }
+    Box2 {
+        x0: lo.x,
+        x1: hi.x,
+        z0: lo.z,
+        z1: hi.z,
+    }
 }
 
 fn expand_box(o: &Obj, parent: Mat4, lo: &mut Vec3, hi: &mut Vec3) {
@@ -157,7 +170,14 @@ pub fn seg_dist(px: f32, pz: f32, bx: f32, bz: f32) -> f32 {
 fn bench(mat: &Mat) -> Obj {
     let b = Obj::group();
     part(&b, &geometry::box_geo(1.3, 0.08, 0.42), mat, 0.0, 0.42, 0.0);
-    part(&b, &geometry::box_geo(0.08, 0.4, 0.36), mat, -0.55, 0.2, 0.0);
+    part(
+        &b,
+        &geometry::box_geo(0.08, 0.4, 0.36),
+        mat,
+        -0.55,
+        0.2,
+        0.0,
+    );
     part(&b, &geometry::box_geo(0.08, 0.4, 0.36), mat, 0.55, 0.2, 0.0);
     part(&b, &geometry::box_geo(1.3, 0.4, 0.07), mat, 0.0, 0.66, -0.2);
     b
@@ -184,7 +204,10 @@ fn electron_instances(shells: &[Shell], t: f32, beat: f32) -> Vec<Instance> {
         for i in 0..sh.n {
             let a = t * sh.speed + (i as f32 / n) * TAU;
             let at = Mat4::from_translation(Vec3::new(a.cos() * sh.r, 0.0, a.sin() * sh.r));
-            out.push(Instance { matrix: tilt * at * scale, color: Color::WHITE });
+            out.push(Instance {
+                matrix: tilt * at * scale,
+                color: Color::WHITE,
+            });
         }
     }
     out
@@ -205,9 +228,23 @@ pub fn build_plaza(palette: &PropPalette) -> (Obj, Anim) {
         0.0,
     );
     pave.get().receive_shadow = true;
-    let ring = part(&g, &geometry::ring(3.7, 3.95, 72, 1, 0.0, TAU), &std_mat(stone.scale(0.72)), 0.0, 0.066, 0.0);
+    let ring = part(
+        &g,
+        &geometry::ring(3.7, 3.95, 72, 1, 0.0, TAU),
+        &std_mat(stone.scale(0.72)),
+        0.0,
+        0.066,
+        0.0,
+    );
     ring.set_rotation(-PI / 2.0, 0.0, 0.0);
-    let inlay = part(&g, &geometry::torus(3.3, 0.025, 6, 72, TAU), &std_mat(palette.rule), 0.0, 0.065, 0.0);
+    let inlay = part(
+        &g,
+        &geometry::torus(3.3, 0.025, 6, 72, TAU),
+        &std_mat(palette.rule),
+        0.0,
+        0.065,
+        0.0,
+    );
     inlay.set_rotation(PI / 2.0, 0.0, 0.0);
 
     let bench_metal = toon_mat(Material {
@@ -260,14 +297,21 @@ pub fn atom(palette: &PropPalette) -> (Obj, Anim) {
     // The rest positions: index 0 the neutrons (even i), index 1 the protons (odd i).
     let mut nucleons: [Vec<Vec3>; 2] = [Vec::new(), Vec::new()];
     for i in 0..24usize {
-        let v = Vec3::new(nr.next() - 0.5, nr.next() - 0.5, nr.next() - 0.5).normalize() * (nr.next().cbrt() * 0.24);
+        let v = Vec3::new(nr.next() - 0.5, nr.next() - 0.5, nr.next() - 0.5).normalize()
+            * (nr.next().cbrt() * 0.24);
         nucleons[usize::from(i % 2 == 1)].push(v);
     }
     let nucleus: Vec<Obj> = [&neutron, &proton]
         .into_iter()
         .zip(&nucleons)
         .map(|(mat, rest)| {
-            let instances = rest.iter().map(|v| Instance { matrix: Mat4::from_translation(*v), color: Color::WHITE }).collect();
+            let instances = rest
+                .iter()
+                .map(|v| Instance {
+                    matrix: Mat4::from_translation(*v),
+                    color: Color::WHITE,
+                })
+                .collect();
             let obj = Obj::instanced(&nucleon_geo, mat, instances);
             obj.set_shadows(false, true);
             globe.add(&obj);
@@ -323,9 +367,19 @@ pub fn atom(palette: &PropPalette) -> (Obj, Anim) {
         shell.add(&track);
         globe.add(&shell);
         let speed = 1.9 / (1.0 + k as f32 * 0.45) * if k % 2 == 1 { -1.0 } else { 1.0 };
-        shells.push(Shell { group: shell, rot, r, n, speed });
+        shells.push(Shell {
+            group: shell,
+            rot,
+            r,
+            n,
+            speed,
+        });
     }
-    let electrons = Obj::instanced(&electron_geo, &electron_mat, electron_instances(&shells, 0.0, 0.0));
+    let electrons = Obj::instanced(
+        &electron_geo,
+        &electron_mat,
+        electron_instances(&shells, 0.0, 0.0),
+    );
     electrons.set_shadows(false, true);
     globe.add(&electrons);
     shadows(&globe);
@@ -346,9 +400,17 @@ pub fn atom(palette: &PropPalette) -> (Obj, Anim) {
         globe_anim.set_position(0.0, 4.2 + (t * 0.9).sin() * 0.1, 0.0);
         // The nucleus beats, its halo and light breathing with it.
         let beat = (t * 2.4).sin().max(0.0).powf(6.0);
-        let spin = Mat4::from_rotation_y(t * 0.6) * Mat4::from_scale(Vec3::splat(1.0 + 0.12 * beat));
+        let spin =
+            Mat4::from_rotation_y(t * 0.6) * Mat4::from_scale(Vec3::splat(1.0 + 0.12 * beat));
         for (obj, rest) in nucleus.iter().zip(&nucleons) {
-            obj.set_instances(rest.iter().map(|v| Instance { matrix: spin * Mat4::from_translation(*v), color: Color::WHITE }).collect());
+            obj.set_instances(
+                rest.iter()
+                    .map(|v| Instance {
+                        matrix: spin * Mat4::from_translation(*v),
+                        color: Color::WHITE,
+                    })
+                    .collect(),
+            );
         }
         halo.set_scalar(1.0 + 0.35 * beat + 0.05 * (t * 7.0).sin());
         halo_mat.get().opacity = 0.3 + 0.35 * beat;
@@ -401,26 +463,39 @@ mod tests {
     fn atom_instances_match_the_scene_graph_they_replace() {
         let (t, beat) = (0.7f32, 0.5f32);
         let (rot, r, n) = (Vec3::new(0.3, 1.1, -0.4), 0.9f32, 3usize);
-        let shells = vec![Shell { group: Obj::group(), rot, r, n, speed: 1.3 }];
+        let shells = vec![Shell {
+            group: Obj::group(),
+            rot,
+            r,
+            n,
+            speed: 1.3,
+        }];
         let instances = electron_instances(&shells, t, beat);
         let shell = Obj::group();
         shell.set_rotation(rot.x, rot.y, rot.z);
         for (i, inst) in instances.iter().enumerate() {
             let a = t * 1.3 + (i as f32 / n as f32) * TAU;
             let e = Obj::group();
-            e.set_position(a.cos() * r, 0.0, a.sin() * r).set_scalar(1.0 + 0.25 * beat);
+            e.set_position(a.cos() * r, 0.0, a.sin() * r)
+                .set_scalar(1.0 + 0.25 * beat);
             shell.add(&e);
             let reference = shell.local_matrix() * e.local_matrix();
             shell.remove(&e);
             assert!(inst.matrix.abs_diff_eq(reference, 1e-5), "electron {i}");
         }
         let v = Vec3::new(0.1, -0.2, 0.05);
-        let spin = Mat4::from_rotation_y(t * 0.6) * Mat4::from_scale(Vec3::splat(1.0 + 0.12 * beat));
+        let spin =
+            Mat4::from_rotation_y(t * 0.6) * Mat4::from_scale(Vec3::splat(1.0 + 0.12 * beat));
         let nucleus = Obj::group();
-        nucleus.set_rotation(0.0, t * 0.6, 0.0).set_scalar(1.0 + 0.12 * beat);
+        nucleus
+            .set_rotation(0.0, t * 0.6, 0.0)
+            .set_scalar(1.0 + 0.12 * beat);
         let nucleon = Obj::group();
         nucleon.set_position(v.x, v.y, v.z);
         nucleus.add(&nucleon);
-        assert!((spin * Mat4::from_translation(v)).abs_diff_eq(nucleus.local_matrix() * nucleon.local_matrix(), 1e-5));
+        assert!(
+            (spin * Mat4::from_translation(v))
+                .abs_diff_eq(nucleus.local_matrix() * nucleon.local_matrix(), 1e-5)
+        );
     }
 }

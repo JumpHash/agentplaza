@@ -25,11 +25,14 @@ const LIMB: f64 = 0.03;
 const SYM: f64 = 0.02;
 const MEDIAN_TOL: f64 = 0.25;
 const PIERCE: f64 = 0.01;
-const MATTE: [&str; 9] = ["shell", "shell2", "panel", "paper", "trim", "ink", "signal", "glass", "accent"];
+const MATTE: [&str; 9] = [
+    "shell", "shell2", "panel", "paper", "trim", "ink", "signal", "glass", "accent",
+];
 const EPS: f64 = 1e-6;
 
 /// The portrait cameras of the contact sheets (robot-lab.ts CAM_POS). Keep in step.
-pub const PORTRAIT_CAMS: [(&str, [f64; 3]); 2] = [("front", [0.0, 1.1, 4.4]), ("q34", [-2.44, 1.84, 3.48])];
+pub const PORTRAIT_CAMS: [(&str, [f64; 3]); 2] =
+    [("front", [0.0, 1.1, 4.4]), ("q34", [-2.44, 1.84, 3.48])];
 pub const LAB_TARGET: [f64; 3] = [0.0, 0.7, 0.0];
 /// The pupil sits this far in front of its socket (geometry.ts eyeGeometries).
 pub const PUPIL_LIFT: f64 = 0.004;
@@ -61,7 +64,16 @@ const SPOTS: usize = 12;
 /// A socket this close to the centre line is central (x = 0).
 const CENTRE: f64 = 0.02;
 
-const METRIC_KEYS: [&str; 8] = ["height", "width", "headToBody", "headToHeight", "eyeRelHead", "eyeSpacing", "eyeHeight", "inkCoverage"];
+const METRIC_KEYS: [&str; 8] = [
+    "height",
+    "width",
+    "headToBody",
+    "headToHeight",
+    "eyeRelHead",
+    "eyeSpacing",
+    "eyeHeight",
+    "inkCoverage",
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pose {
@@ -268,7 +280,12 @@ fn ring9(x: f64, y: f64, r: f64) -> Vec<(f64, f64)> {
 fn label_of(p: &Part, i: usize) -> String {
     match p.name.as_deref().filter(|n| !n.is_empty()) {
         Some(n) => n.to_string(),
-        None => format!("{}:{}:{}#{i}", p.bone.as_deref().unwrap_or("tool"), p.geo.kind, mat_name(p)),
+        None => format!(
+            "{}:{}:{}#{i}",
+            p.bone.as_deref().unwrap_or("tool"),
+            p.geo.kind,
+            mat_name(p)
+        ),
     }
 }
 
@@ -283,7 +300,11 @@ fn mat_name(p: &Part) -> String {
 fn soup(positions: &[[f32; 3]], indices: &[u32], m: DMat4) -> Vec<DVec3> {
     let vert = |i: usize| {
         let p = positions[i];
-        m.transform_point3(DVec3::new(f64::from(p[0]), f64::from(p[1]), f64::from(p[2])))
+        m.transform_point3(DVec3::new(
+            f64::from(p[0]),
+            f64::from(p[1]),
+            f64::from(p[2]),
+        ))
     };
     if indices.is_empty() {
         (0..positions.len()).map(vert).collect()
@@ -294,7 +315,13 @@ fn soup(positions: &[[f32; 3]], indices: &[u32], m: DMat4) -> Vec<DVec3> {
 
 /// Whether the triangles form a closed surface (each edge used twice). Degenerate edges (a pole) are skipped.
 fn is_closed(verts: &[DVec3]) -> bool {
-    let key = |v: DVec3| [(v.x * 1e4).round() as i64, (v.y * 1e4).round() as i64, (v.z * 1e4).round() as i64];
+    let key = |v: DVec3| {
+        [
+            (v.x * 1e4).round() as i64,
+            (v.y * 1e4).round() as i64,
+            (v.z * 1e4).round() as i64,
+        ]
+    };
     let mut edges: HashMap<([i64; 3], [i64; 3]), u32> = HashMap::new();
     for t in verts.chunks_exact(3) {
         let k = [key(t[0]), key(t[1]), key(t[2])];
@@ -310,7 +337,14 @@ fn is_closed(verts: &[DVec3]) -> bool {
     !edges.is_empty() && edges.values().all(|&n| n == 2)
 }
 
-fn make_piece(path: String, label: String, bone: String, p: &Part, verts: Vec<DVec3>, radius: f64) -> Piece {
+fn make_piece(
+    path: String,
+    label: String,
+    bone: String,
+    p: &Part,
+    verts: Vec<DVec3>,
+    radius: f64,
+) -> Piece {
     let mut min = DVec3::splat(f64::INFINITY);
     let mut max = DVec3::splat(f64::NEG_INFINITY);
     for v in &verts {
@@ -326,7 +360,8 @@ fn make_piece(path: String, label: String, bone: String, p: &Part, verts: Vec<DV
     let mat = mat_name(p);
     let extent = max - min;
     let diag = extent.length();
-    let inked = MATTE.contains(&mat.as_str()) && p.outline.unwrap_or(mat != "ink") && radius >= 0.03;
+    let inked =
+        MATTE.contains(&mat.as_str()) && p.outline.unwrap_or(mat != "ink") && radius >= 0.03;
     Piece {
         path,
         label,
@@ -356,13 +391,22 @@ fn pieces_of(parts: &[Part], prefix: &str, mat_of: impl Fn(&Part) -> DMat4) -> V
             let (geo, radius) = part_geometry(p);
             let verts = soup(&geo.positions, &geo.indices, mat_of(p));
             let bone = p.bone.clone().unwrap_or_else(|| "root".to_string());
-            make_piece(format!("{prefix}[{i}]"), label_of(p, i), bone, p, verts, f64::from(radius))
+            make_piece(
+                format!("{prefix}[{i}]"),
+                label_of(p, i),
+                bone,
+                p,
+                verts,
+                f64::from(radius),
+            )
         })
         .collect()
 }
 
 fn species_pieces(s: &Species, bones: &HashMap<String, DMat4>) -> Vec<Piece> {
-    pieces_of(&s.parts, "parts", |p| bone_of(bones, p.bone.as_deref().unwrap_or("root")))
+    pieces_of(&s.parts, "parts", |p| {
+        bone_of(bones, p.bone.as_deref().unwrap_or("root"))
+    })
 }
 
 // ---- Bones: the rest pose and the posed bone matrices (rig: position = rest + pos, rotation XYZ, uniform scale) ----
@@ -375,11 +419,19 @@ fn bone_matrices(s: &Species, pose: Option<&HashMap<String, BonePose>>) -> HashM
     out
 }
 
-fn world(s: &Species, pose: Option<&HashMap<String, BonePose>>, name: &str, depth: u32, out: &mut HashMap<String, DMat4>) -> DMat4 {
+fn world(
+    s: &Species,
+    pose: Option<&HashMap<String, BonePose>>,
+    name: &str,
+    depth: u32,
+    out: &mut HashMap<String, DMat4>,
+) -> DMat4 {
     if let Some(m) = out.get(name) {
         return *m;
     }
-    let Some(b) = s.bones.get(name) else { return DMat4::IDENTITY };
+    let Some(b) = s.bones.get(name) else {
+        return DMat4::IDENTITY;
+    };
     if name == "root" || depth > 32 {
         return DMat4::IDENTITY;
     }
@@ -406,7 +458,10 @@ fn clip_for<'a>(s: &'a Species, id: &str, shared: &'a BTreeMap<String, Clip>) ->
 
 /// The pose of a clip at its mid-cycle (the first looping channel at half a period); one-shots at their peak.
 fn pose_of(clip: &Clip, gait: &Gait) -> HashMap<String, BonePose> {
-    let ch = clip.channels.iter().find(|c| c.rate.is_none() && resolve(c.freq.as_ref(), gait, 0.0) > 0.0);
+    let ch = clip
+        .channels
+        .iter()
+        .find(|c| c.rate.is_none() && resolve(c.freq.as_ref(), gait, 0.0) > 0.0);
     let f = ch.map_or(0.0, |c| resolve(c.freq.as_ref(), gait, 0.0));
     let t = if f > 0.0 { 0.5 / f } else { 0.0 };
     let elapsed = match clip.dur {
@@ -419,7 +474,11 @@ fn pose_of(clip: &Clip, gait: &Gait) -> HashMap<String, BonePose> {
         if bone.is_empty() || prop.is_empty() {
             return;
         }
-        let p = out.entry(bone.to_string()).or_insert(BonePose { pos: DVec3::ZERO, rot: DVec3::ZERO, scale: 1.0 });
+        let p = out.entry(bone.to_string()).or_insert(BonePose {
+            pos: DVec3::ZERO,
+            rot: DVec3::ZERO,
+            scale: 1.0,
+        });
         let axis = match prop.chars().last() {
             Some('y') => 1,
             Some('z') => 2,
@@ -444,11 +503,15 @@ fn scene_of(s: &Species, bones: HashMap<String, DMat4>) -> Scene {
 /// The rest scene, and the walk and wave scenes (the clips at mid-cycle, as the audit poses them).
 pub fn scenes_of(s: &Species, clips: &BTreeMap<String, Clip>) -> Vec<(Pose, Scene)> {
     let mut out = vec![(Pose::Rest, scene_of(s, bone_matrices(s, None)))];
-    let walk = clip_for(s, &format!("walk.{}", s.locomotion), clips).or_else(|| clip_for(s, "walk.treads", clips));
+    let walk = clip_for(s, &format!("walk.{}", s.locomotion), clips)
+        .or_else(|| clip_for(s, "walk.treads", clips));
     let wave = clip_for(s, "wave", clips);
     for (pose, clip) in [(Pose::Walk, walk), (Pose::Wave, wave)] {
         if let Some(c) = clip {
-            out.push((pose, scene_of(s, bone_matrices(s, Some(&pose_of(c, &s.gait))))));
+            out.push((
+                pose,
+                scene_of(s, bone_matrices(s, Some(&pose_of(c, &s.gait)))),
+            ));
         }
     }
     out
@@ -500,7 +563,11 @@ fn tri_dist_sq(t: &[DVec3], p: DVec3) -> f64 {
 
 /// The distance from p to the piece's surface.
 fn dist_to(pc: &Piece, p: DVec3) -> f64 {
-    pc.verts.chunks_exact(3).map(|t| tri_dist_sq(t, p)).fold(f64::INFINITY, f64::min).sqrt()
+    pc.verts
+        .chunks_exact(3)
+        .map(|t| tri_dist_sq(t, p))
+        .fold(f64::INFINITY, f64::min)
+        .sqrt()
 }
 
 /// Möller–Trumbore, both faces: the ray parameter of a hit, or None.
@@ -548,7 +615,11 @@ fn inside_of(pc: &Piece, p: DVec3) -> bool {
         return false;
     }
     let d = ray_dir();
-    let n = pc.verts.chunks_exact(3).filter(|t| ray_tri(t, p, d).is_some_and(|hit| hit > EPS)).count();
+    let n = pc
+        .verts
+        .chunks_exact(3)
+        .filter(|t| ray_tri(t, p, d).is_some_and(|hit| hit > EPS))
+        .count();
     n % 2 == 1
 }
 
@@ -621,7 +692,12 @@ fn hider_of<'a>(list: &[&'a Piece], from: DVec3, to: DVec3) -> Option<&'a Piece>
 // ---- Eyes: probes, views and visibility ----
 
 fn eye_geom(e: &Eye) -> EyeGeom {
-    EyeGeom { at: at_of(e), r: f64::from(e.r.unwrap_or(0.1)), pupil: f64::from(e.pupil), glass_off: e.glass == Some(false) }
+    EyeGeom {
+        at: at_of(e),
+        r: f64::from(e.r.unwrap_or(0.1)),
+        pupil: f64::from(e.pupil),
+        glass_off: e.glass == Some(false),
+    }
 }
 
 /// An eye's probes in world space: the pupil centre, then the rim (the socket radius, or the pupil's without a socket).
@@ -643,7 +719,10 @@ fn eye_views<'a>(g: EyeGeom, bone: DMat4, list: &[&'a Piece]) -> Vec<EyeView<'a>
         .iter()
         .map(|&(cam, pos)| EyeView {
             cam,
-            hiders: probes.iter().map(|&p| hider_of(list, DVec3::from(pos), p)).collect(),
+            hiders: probes
+                .iter()
+                .map(|&p| hider_of(list, DVec3::from(pos), p))
+                .collect(),
         })
         .collect()
 }
@@ -654,7 +733,9 @@ fn clear_of(v: &EyeView) -> usize {
 
 /// Whether an eye is seen: from each portrait camera its pupil is clear and at least EYE_CLEAR_MIN probes are.
 fn eye_seen(views: &[EyeView]) -> bool {
-    views.iter().all(|v| v.hiders[0].is_none() && clear_of(v) >= EYE_CLEAR_MIN)
+    views
+        .iter()
+        .all(|v| v.hiders[0].is_none() && clear_of(v) >= EYE_CLEAR_MIN)
 }
 
 fn eye_label(e: &Eye, k: usize) -> String {
@@ -662,8 +743,25 @@ fn eye_label(e: &Eye, k: usize) -> String {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn push(out: &mut Vec<Issue>, kind: IssueKind, severity: Severity, path: &str, label: &str, pose: Pose, value: Option<f64>, message: String) {
-    out.push(Issue { kind, severity, path: path.to_string(), label: label.to_string(), pose, message, value });
+fn push(
+    out: &mut Vec<Issue>,
+    kind: IssueKind,
+    severity: Severity,
+    path: &str,
+    label: &str,
+    pose: Pose,
+    value: Option<f64>,
+    message: String,
+) {
+    out.push(Issue {
+        kind,
+        severity,
+        path: path.to_string(),
+        label: label.to_string(),
+        pose,
+        message,
+        value,
+    });
 }
 
 struct Socket {
@@ -673,7 +771,12 @@ struct Socket {
 }
 
 /// The eyes: socket on the head surface, pupil inside the socket, socket inside the silhouette, eye vs eye.
-fn check_eyes(s: &Species, pieces: &[&Piece], bones: &HashMap<String, DMat4>, issues: &mut Vec<Issue>) {
+fn check_eyes(
+    s: &Species,
+    pieces: &[&Piece],
+    bones: &HashMap<String, DMat4>,
+    issues: &mut Vec<Issue>,
+) {
     let mut sockets: Vec<Socket> = Vec::new();
     for (k, e) in s.eyes.iter().enumerate() {
         let bone = bone_of(bones, &e.bone);
@@ -684,22 +787,59 @@ fn check_eyes(s: &Species, pieces: &[&Piece], bones: &HashMap<String, DMat4>, is
         let path = format!("eyes[{k}]");
         let label = eye_label(e, k);
         sockets.push(Socket { k, c, r });
-        let on_bone: Vec<&Piece> = pieces.iter().copied().filter(|p| p.bone == e.bone).collect();
+        let on_bone: Vec<&Piece> = pieces
+            .iter()
+            .copied()
+            .filter(|p| p.bone == e.bone)
+            .collect();
         let Some(primary) = largest_solid(&on_bone) else {
-            push(issues, IssueKind::EyeFit, Severity::Error, &path, &label, Pose::Rest, None, format!("no solid head on bone \"{}\" to seat the eye", e.bone));
+            push(
+                issues,
+                IssueKind::EyeFit,
+                Severity::Error,
+                &path,
+                &label,
+                Pose::Rest,
+                None,
+                format!("no solid head on bone \"{}\" to seat the eye", e.bone),
+            );
             continue;
         };
         // Fit: the head surface must lie behind the disc at its centre and at every rim point, and the centre may
         // float off the surface by at most 50% of r. The surface is the union of every solid on the eye's bone.
-        let solids: Vec<&Piece> = on_bone.iter().copied().filter(|p| !p.surface && p.mat != "clear" && p.mat != "glass").collect();
+        let solids: Vec<&Piece> = on_bone
+            .iter()
+            .copied()
+            .filter(|p| !p.surface && p.mat != "clear" && p.mat != "glass")
+            .collect();
         let surface_z = |x: f64, y: f64| -> Option<f64> {
-            ray_hits(&solids, DVec3::new(x, y, c.z + 10.0), DVec3::new(0.0, 0.0, -1.0)).first().map(|h| c.z + 10.0 - h)
+            ray_hits(
+                &solids,
+                DVec3::new(x, y, c.z + 10.0),
+                DVec3::new(0.0, 0.0, -1.0),
+            )
+            .first()
+            .map(|h| c.z + 10.0 - h)
         };
         let centre_z = surface_z(c.x, c.y);
         let samples = ring9(c.x, c.y, r);
-        let clips: Vec<f64> = samples.iter().filter_map(|&(x, y)| surface_z(x, y)).filter(|&z| z > c.z + SEAT_SLACK).collect();
+        let clips: Vec<f64> = samples
+            .iter()
+            .filter_map(|&(x, y)| surface_z(x, y))
+            .filter(|&z| z > c.z + SEAT_SLACK)
+            .collect();
         match centre_z {
-            None => push(issues, IssueKind::EyeFit, Severity::Error, &path, &label, Pose::Rest, None, "no head surface in front of the socket centre (the eye floats in the air)".to_string()),
+            None => push(
+                issues,
+                IssueKind::EyeFit,
+                Severity::Error,
+                &path,
+                &label,
+                Pose::Rest,
+                None,
+                "no head surface in front of the socket centre (the eye floats in the air)"
+                    .to_string(),
+            ),
             Some(_) if !clips.is_empty() => {
                 let worst = clips.iter().copied().fold(f64::NEG_INFINITY, f64::max) - c.z;
                 push(
@@ -725,7 +865,11 @@ fn check_eyes(s: &Species, pieces: &[&Piece], bones: &HashMap<String, DMat4>, is
                 &label,
                 Pose::Rest,
                 Some(c.z - cz),
-                format!("socket floats {:.3} off the head (limit {:.3} = 50% of r {r})", c.z - cz, EYE_FIT * r),
+                format!(
+                    "socket floats {:.3} off the head (limit {:.3} = 50% of r {r})",
+                    c.z - cz,
+                    EYE_FIT * r
+                ),
             ),
             Some(_) => {}
         }
@@ -740,10 +884,26 @@ fn check_eyes(s: &Species, pieces: &[&Piece], bones: &HashMap<String, DMat4>, is
         } * pupil
             * stretch;
         if e.glass != Some(false) && (hw > r * 1.02 || hh > r * 1.02) {
-            push(issues, IssueKind::EyePupil, Severity::Warn, &path, &label, Pose::Rest, Some(hw.max(hh) / r), format!("pupil {} ({}) spills out of the socket r {r}", e.pupil, e.shape));
+            push(
+                issues,
+                IssueKind::EyePupil,
+                Severity::Warn,
+                &path,
+                &label,
+                Pose::Rest,
+                Some(hw.max(hh) / r),
+                format!(
+                    "pupil {} ({}) spills out of the socket r {r}",
+                    e.pupil, e.shape
+                ),
+            );
         }
         // Silhouette: the socket's rim must be over the head, seen from the front.
-        let up = if dir.x.abs() < 0.9 { normal(dir.cross(DVec3::X)) } else { normal(dir.cross(DVec3::Y)) };
+        let up = if dir.x.abs() < 0.9 {
+            normal(dir.cross(DVec3::X))
+        } else {
+            normal(dir.cross(DVec3::Y))
+        };
         let side = dir.cross(up);
         let mut missing = 0usize;
         for i in 0..8 {
@@ -755,10 +915,23 @@ fn check_eyes(s: &Species, pieces: &[&Piece], bones: &HashMap<String, DMat4>, is
             }
         }
         if missing >= 2 {
-            push(issues, IssueKind::EyeSilhouette, Severity::Error, &path, &label, Pose::Rest, Some(missing as f64), format!("{missing} of 8 rim points of the socket are off the head's silhouette"));
+            push(
+                issues,
+                IssueKind::EyeSilhouette,
+                Severity::Error,
+                &path,
+                &label,
+                Pose::Rest,
+                Some(missing as f64),
+                format!("{missing} of 8 rim points of the socket are off the head's silhouette"),
+            );
         }
         // Overlap: a face feature (not a plate) lying under the socket's footprint.
-        let features: Vec<&Piece> = on_bone.iter().copied().filter(|p| p.mat != "clear" && !std::ptr::eq(*p, primary) && p.mat != "paper").collect();
+        let features: Vec<&Piece> = on_bone
+            .iter()
+            .copied()
+            .filter(|p| p.mat != "clear" && !std::ptr::eq(*p, primary) && p.mat != "paper")
+            .collect();
         for f in features {
             let mut hits = 0usize;
             for &p in &f.samples {
@@ -770,7 +943,19 @@ fn check_eyes(s: &Species, pieces: &[&Piece], bones: &HashMap<String, DMat4>, is
                 }
             }
             if hits > 0 {
-                push(issues, IssueKind::EyeOverlap, Severity::Error, &path, &label, Pose::Rest, Some(hits as f64), format!("overlaps {} ({hits} sample points inside its footprint)", f.label));
+                push(
+                    issues,
+                    IssueKind::EyeOverlap,
+                    Severity::Error,
+                    &path,
+                    &label,
+                    Pose::Rest,
+                    Some(hits as f64),
+                    format!(
+                        "overlaps {} ({hits} sample points inside its footprint)",
+                        f.label
+                    ),
+                );
             }
         }
     }
@@ -788,7 +973,10 @@ fn check_eyes(s: &Species, pieces: &[&Piece], bones: &HashMap<String, DMat4>, is
                     &format!("eye #{} / eye #{}", a.k, b.k),
                     Pose::Rest,
                     Some(d),
-                    format!("eye #{} and eye #{} overlap (centres {d:.3} apart, radii {} and {})", a.k, b.k, a.r, b.r),
+                    format!(
+                        "eye #{} and eye #{} overlap (centres {d:.3} apart, radii {} and {})",
+                        a.k, b.k, a.r, b.r
+                    ),
                 );
             }
         }
@@ -812,7 +1000,12 @@ fn check_eye_symmetry(s: &Species, bones: &HashMap<String, DMat4>, issues: &mut 
                 return false;
             }
             let d = socket(o);
-            (d.x + c.x).abs() <= SYM && (d.y - c.y).abs() <= SYM && (d.z - c.z).abs() <= SYM && o.r.unwrap_or(0.1) == r && o.shape == e.shape && o.pupil == e.pupil
+            (d.x + c.x).abs() <= SYM
+                && (d.y - c.y).abs() <= SYM
+                && (d.z - c.z).abs() <= SYM
+                && o.r.unwrap_or(0.1) == r
+                && o.shape == e.shape
+                && o.pupil == e.pupil
         });
         if !twin {
             push(
@@ -857,7 +1050,16 @@ fn check_eye_visibility(s: &Species, scene: &Scene, pose: Pose, issues: &mut Vec
             });
         }
         if !faults.is_empty() {
-            push(issues, IssueKind::EyeOccluded, Severity::Error, &format!("eyes[{k}]"), &eye_label(e, k), pose, Some(clear_min as f64), faults.join("; "));
+            push(
+                issues,
+                IssueKind::EyeOccluded,
+                Severity::Error,
+                &format!("eyes[{k}]"),
+                &eye_label(e, k),
+                pose,
+                Some(clear_min as f64),
+                faults.join("; "),
+            );
         }
     }
 }
@@ -866,7 +1068,9 @@ fn check_eye_visibility(s: &Species, scene: &Scene, pose: Pose, issues: &mut Vec
 fn check_features(pieces: &[&Piece], face_bones: &[String], issues: &mut Vec<Issue>) {
     for bone in face_bones {
         let on: Vec<&Piece> = pieces.iter().copied().filter(|p| p.bone == *bone).collect();
-        let Some(primary) = largest_solid(&on) else { continue };
+        let Some(primary) = largest_solid(&on) else {
+            continue;
+        };
         for &f in &on {
             if std::ptr::eq(f, primary) || f.mat == "clear" {
                 continue;
@@ -878,7 +1082,16 @@ fn check_features(pieces: &[&Piece], face_bones: &[String], issues: &mut Vec<Iss
                 }
             }
             if gap > CONTACT {
-                push(issues, IssueKind::FeatureFloat, Severity::Error, &f.path, &f.label, Pose::Rest, Some(gap), format!("floats {gap:.3} off the head (nothing on the bone touches it)"));
+                push(
+                    issues,
+                    IssueKind::FeatureFloat,
+                    Severity::Error,
+                    &f.path,
+                    &f.label,
+                    Pose::Rest,
+                    Some(gap),
+                    format!("floats {gap:.3} off the head (nothing on the bone touches it)"),
+                );
             }
             if !f.surface {
                 let mut depth = 0.0f64;
@@ -889,7 +1102,19 @@ fn check_features(pieces: &[&Piece], face_bones: &[String], issues: &mut Vec<Iss
                 }
                 let ratio = depth / f.size.max(1e-6);
                 if ratio > BURIED {
-                    push(issues, IssueKind::FeatureBuried, Severity::Warn, &f.path, &f.label, Pose::Rest, Some(ratio), format!("buried {:.0}% of its size in the head (limit 30%)", ratio * 100.0));
+                    push(
+                        issues,
+                        IssueKind::FeatureBuried,
+                        Severity::Warn,
+                        &f.path,
+                        &f.label,
+                        Pose::Rest,
+                        Some(ratio),
+                        format!(
+                            "buried {:.0}% of its size in the head (limit 30%)",
+                            ratio * 100.0
+                        ),
+                    );
                 }
             }
         }
@@ -932,8 +1157,21 @@ fn check_attach(s: &Species, pieces: &[&Piece], pose: Pose, issues: &mut Vec<Iss
             }
         }
         if gap > CONTACT {
-            let shown = if gap.is_finite() { format!("{gap:.3}") } else { "free".to_string() };
-            push(issues, IssueKind::Attach, Severity::Error, &pc.path, &pc.label, pose, Some(gap), format!("floats {shown} from every part on its bone, its parent and its children"));
+            let shown = if gap.is_finite() {
+                format!("{gap:.3}")
+            } else {
+                "free".to_string()
+            };
+            push(
+                issues,
+                IssueKind::Attach,
+                Severity::Error,
+                &pc.path,
+                &pc.label,
+                pose,
+                Some(gap),
+                format!("floats {shown} from every part on its bone, its parent and its children"),
+            );
         }
     }
 }
@@ -957,7 +1195,11 @@ fn descends(s: &Species, bone: &str) -> bool {
 
 /// Limbs (the body's descendants other than the body's head and carry bones) must not sink into the body.
 fn check_limbs(s: &Species, pieces: &[&Piece], pose: Pose, issues: &mut Vec<Issue>) {
-    let body: Vec<&Piece> = pieces.iter().copied().filter(|p| p.bone == "body").collect();
+    let body: Vec<&Piece> = pieces
+        .iter()
+        .copied()
+        .filter(|p| p.bone == "body")
+        .collect();
     for &pc in pieces {
         if pc.bone == "body" || pc.bone == "carry" || !descends(s, &pc.bone) {
             continue;
@@ -969,7 +1211,19 @@ fn check_limbs(s: &Species, pieces: &[&Piece], pose: Pose, issues: &mut Vec<Issu
             }
         }
         if deepest > LIMB {
-            push(issues, IssueKind::LimbThroughBody, Severity::Warn, &pc.path, &pc.label, pose, Some(deepest), format!("sinks {deepest:.3} into the body in the {} pose", pose.name()));
+            push(
+                issues,
+                IssueKind::LimbThroughBody,
+                Severity::Warn,
+                &pc.path,
+                &pc.label,
+                pose,
+                Some(deepest),
+                format!(
+                    "sinks {deepest:.3} into the body in the {} pose",
+                    pose.name()
+                ),
+            );
         }
     }
 }
@@ -990,7 +1244,19 @@ fn check_symmetry(pieces: &[&Piece], issues: &mut Vec<Issue>) {
                 && (o.size - pc.size).abs() <= SYM + 0.01
         });
         if !twin {
-            push(issues, IssueKind::Symmetry, Severity::Error, &pc.path, &pc.label, Pose::Rest, None, format!("no mirror partner at x {:.3} (set \"asym\": true if intended)", -pc.centre.x));
+            push(
+                issues,
+                IssueKind::Symmetry,
+                Severity::Error,
+                &pc.path,
+                &pc.label,
+                Pose::Rest,
+                None,
+                format!(
+                    "no mirror partner at x {:.3} (set \"asym\": true if intended)",
+                    -pc.centre.x
+                ),
+            );
         }
     }
 }
@@ -1000,9 +1266,27 @@ fn check_ground(s: &Species, pieces: &[&Piece], issues: &mut Vec<Issue>) {
     let low = pieces.iter().map(|p| p.min.y).fold(f64::INFINITY, f64::min);
     if !s.floats && low.abs() > GROUND {
         let feet = if low > 0.0 { "float" } else { "sink" };
-        push(issues, IssueKind::Ground, Severity::Error, "parts", "lowest point", Pose::Rest, Some(low), format!("lowest point at y {low:.3}, not 0 (feet {feet})"));
+        push(
+            issues,
+            IssueKind::Ground,
+            Severity::Error,
+            "parts",
+            "lowest point",
+            Pose::Rest,
+            Some(low),
+            format!("lowest point at y {low:.3}, not 0 (feet {feet})"),
+        );
     } else if s.floats && low < -GROUND {
-        push(issues, IssueKind::Ground, Severity::Error, "parts", "lowest point", Pose::Rest, Some(low), format!("floats but sinks to y {low:.3}"));
+        push(
+            issues,
+            IssueKind::Ground,
+            Severity::Error,
+            "parts",
+            "lowest point",
+            Pose::Rest,
+            Some(low),
+            format!("floats but sinks to y {low:.3}"),
+        );
     }
 }
 
@@ -1015,8 +1299,17 @@ struct GripHit {
 }
 
 /// A held tool (one hand, or two) must not pierce the head or body. The grip's frame is the rig's (holdTool).
-fn check_tools(bones: &HashMap<String, DMat4>, tools: &BTreeMap<String, Tool>, pieces: &[&Piece], issues: &mut Vec<Issue>) {
-    let body: Vec<&Piece> = pieces.iter().copied().filter(|p| (p.bone == "head" || p.bone == "body") && !p.surface).collect();
+fn check_tools(
+    bones: &HashMap<String, DMat4>,
+    tools: &BTreeMap<String, Tool>,
+    pieces: &[&Piece],
+    issues: &mut Vec<Issue>,
+) {
+    let body: Vec<&Piece> = pieces
+        .iter()
+        .copied()
+        .filter(|p| (p.bone == "head" || p.bone == "body") && !p.surface)
+        .collect();
     let origin_r = bone_of(bones, "gripR").transform_point3(DVec3::ZERO);
     let origin_l = bone_of(bones, "gripL").transform_point3(DVec3::ZERO);
     let mut by_grip: Vec<(String, GripHit)> = Vec::new();
@@ -1026,14 +1319,22 @@ fn check_tools(bones: &HashMap<String, DMat4>, tools: &BTreeMap<String, Tool>, p
         }
         let m = if tool.grip == "two" {
             let dir = normal(origin_l - origin_r);
-            DMat4::from_scale_rotation_translation(DVec3::ONE, DQuat::from_rotation_arc(DVec3::X, dir), origin_r)
+            DMat4::from_scale_rotation_translation(
+                DVec3::ONE,
+                DQuat::from_rotation_arc(DVec3::X, dir),
+                origin_r,
+            )
         } else {
             let rx = match tool.aim.as_deref().unwrap_or("forward") {
                 "forward" => -PI / 2.0,
                 "up" => PI,
                 _ => 0.0,
             };
-            DMat4::from_scale_rotation_translation(DVec3::ONE, DQuat::from_euler(EulerRot::XYZ, rx, 0.0, 0.0), origin_r)
+            DMat4::from_scale_rotation_translation(
+                DVec3::ONE,
+                DQuat::from_euler(EulerRot::XYZ, rx, 0.0, 0.0),
+                origin_r,
+            )
         };
         let parts = pieces_of(&tool.parts, &format!("tools/{id}.json parts"), |_| m);
         let mut worst: Option<(f64, String)> = None;
@@ -1087,7 +1388,11 @@ fn check_tools(bones: &HashMap<String, DMat4>, tools: &BTreeMap<String, Tool>, p
                 &format!("{grip}-hand grip"),
                 Pose::Rest,
                 Some(wdepth),
-                format!("{} {grip}-handed tool(s) pierce the head or body ({}); worst {wid} into {winto} by {wdepth:.3}", hit.n, hit.names.join(", ")),
+                format!(
+                    "{} {grip}-handed tool(s) pierce the head or body ({}); worst {wid} into {winto} by {wdepth:.3}",
+                    hit.n,
+                    hit.names.join(", ")
+                ),
             );
         }
     }
@@ -1124,18 +1429,47 @@ pub fn metrics(s: &Species) -> Metrics {
         if list.is_empty() {
             0.0
         } else {
-            list.iter().map(|p| p.max[k]).fold(f64::NEG_INFINITY, f64::max) - list.iter().map(|p| p.min[k]).fold(f64::INFINITY, f64::min)
+            list.iter()
+                .map(|p| p.max[k])
+                .fold(f64::NEG_INFINITY, f64::max)
+                - list.iter().map(|p| p.min[k]).fold(f64::INFINITY, f64::min)
         }
     };
-    let head: Vec<&Piece> = pieces.iter().copied().filter(|p| p.bone == "head").collect();
-    let body: Vec<&Piece> = pieces.iter().copied().filter(|p| p.bone == "body").collect();
+    let head: Vec<&Piece> = pieces
+        .iter()
+        .copied()
+        .filter(|p| p.bone == "head")
+        .collect();
+    let body: Vec<&Piece> = pieces
+        .iter()
+        .copied()
+        .filter(|p| p.bone == "body")
+        .collect();
     let height = span(&pieces, 1);
     let head_height = span(&head, 1);
     let head_width = span(&head, 0);
-    let head_min_y = if head.is_empty() { 0.0 } else { head.iter().map(|p| p.min.y).fold(f64::INFINITY, f64::min) };
-    let sockets: Vec<(f64, DVec3)> = s.eyes.iter().map(|e| (f64::from(e.r.unwrap_or(0.1)), bone_of(&bones, &e.bone).transform_point3(at_of(e)))).collect();
+    let head_min_y = if head.is_empty() {
+        0.0
+    } else {
+        head.iter().map(|p| p.min.y).fold(f64::INFINITY, f64::min)
+    };
+    let sockets: Vec<(f64, DVec3)> = s
+        .eyes
+        .iter()
+        .map(|e| {
+            (
+                f64::from(e.r.unwrap_or(0.1)),
+                bone_of(&bones, &e.bone).transform_point3(at_of(e)),
+            )
+        })
+        .collect();
     let nearest: Vec<f64> = (0..sockets.len())
-        .map(|i| (0..sockets.len()).filter(|&j| j != i).map(|j| (sockets[i].1 - sockets[j].1).length()).fold(f64::INFINITY, f64::min))
+        .map(|i| {
+            (0..sockets.len())
+                .filter(|&j| j != i)
+                .map(|j| (sockets[i].1 - sockets[j].1).length())
+                .fold(f64::INFINITY, f64::min)
+        })
         .collect();
     let mut total = 0.0;
     let mut inked = 0.0;
@@ -1145,7 +1479,11 @@ pub fn metrics(s: &Species) -> Metrics {
             inked += p.area;
         }
     }
-    let body_height = if body.is_empty() { None } else { Some(span(&body, 1)) };
+    let body_height = if body.is_empty() {
+        None
+    } else {
+        Some(span(&body, 1))
+    };
     Metrics {
         id: s.id.clone(),
         locomotion: s.locomotion.clone(),
@@ -1155,16 +1493,48 @@ pub fn metrics(s: &Species) -> Metrics {
         height,
         width: span(&pieces, 0),
         depth: span(&pieces, 2),
-        min_y: if pieces.is_empty() { 0.0 } else { pieces.iter().map(|p| p.min.y).fold(f64::INFINITY, f64::min) },
+        min_y: if pieces.is_empty() {
+            0.0
+        } else {
+            pieces.iter().map(|p| p.min.y).fold(f64::INFINITY, f64::min)
+        },
         head_height,
         head_width,
         body_height,
         head_to_body: body_height.filter(|b| *b > 0.0).map(|b| head_height / b),
-        head_to_height: if height > 0.0 { head_height / height } else { 0.0 },
-        eye_rel_head: if head_width > 0.0 { mean(&sockets.iter().map(|(r, _)| r / head_width).collect::<Vec<_>>()) } else { None },
-        eye_spacing: if head_width > 0.0 { mean(&nearest.iter().filter(|d| d.is_finite()).map(|d| d / head_width).collect::<Vec<_>>()) } else { None },
+        head_to_height: if height > 0.0 {
+            head_height / height
+        } else {
+            0.0
+        },
+        eye_rel_head: if head_width > 0.0 {
+            mean(
+                &sockets
+                    .iter()
+                    .map(|(r, _)| r / head_width)
+                    .collect::<Vec<_>>(),
+            )
+        } else {
+            None
+        },
+        eye_spacing: if head_width > 0.0 {
+            mean(
+                &nearest
+                    .iter()
+                    .filter(|d| d.is_finite())
+                    .map(|d| d / head_width)
+                    .collect::<Vec<_>>(),
+            )
+        } else {
+            None
+        },
         eye_height: if head_height > 0.0 {
-            mean(&sockets.iter().map(|(_, c)| (c.y - head_min_y) / head_height).collect::<Vec<_>>())
+            mean(
+                &sockets
+                    .iter()
+                    .map(|(_, c)| (c.y - head_min_y) / head_height)
+                    .collect::<Vec<_>>(),
+            )
         } else {
             None
         },
@@ -1210,7 +1580,19 @@ fn check_proportions(m: &Metrics, med: &Medians, issues: &mut Vec<Issue>) {
         }
         let rel = (v - x) / x.abs();
         if rel.abs() > MEDIAN_TOL {
-            push(issues, IssueKind::Proportion, Severity::Warn, "metrics", k, Pose::Rest, Some(v), format!("{k} {v:.3} is {:.0}% from the median {x:.3} of the species", rel * 100.0));
+            push(
+                issues,
+                IssueKind::Proportion,
+                Severity::Warn,
+                "metrics",
+                k,
+                Pose::Rest,
+                Some(v),
+                format!(
+                    "{k} {v:.3} is {:.0}% from the median {x:.3} of the species",
+                    rel * 100.0
+                ),
+            );
         }
     }
 }
@@ -1267,8 +1649,14 @@ pub fn audit_all(list: &[Species], opts: &AuditOptions) -> BTreeMap<String, Vec<
             &owned
         }
     };
-    let o = AuditOptions { tools: opts.tools, clips: opts.clips, medians: Some(med) };
-    list.iter().map(|s| (s.id.clone(), audit_species(s, &o))).collect()
+    let o = AuditOptions {
+        tools: opts.tools,
+        clips: opts.clips,
+        medians: Some(med),
+    };
+    list.iter()
+        .map(|s| (s.id.clone(), audit_species(s, &o)))
+        .collect()
 }
 
 // ---- The eye seat (seat.ts): where each socket goes, under the style rules. A socket is a flat disc facing +z.
@@ -1322,7 +1710,9 @@ fn seen_in(poses: &[(Pose, Scene)], g: EyeGeom, bone: &str) -> SeenRes {
     let mut all = true;
     let mut rest = false;
     for name in [Pose::Rest, Pose::Walk, Pose::Wave] {
-        let Some((_, sc)) = poses.iter().find(|(p, _)| *p == name) else { continue };
+        let Some((_, sc)) = poses.iter().find(|(p, _)| *p == name) else {
+            continue;
+        };
         let list: Vec<&Piece> = sc.pieces.iter().collect();
         let views = eye_views(g, bone_of(&sc.bones, bone), &list);
         let ok = eye_seen(&views);
@@ -1342,22 +1732,59 @@ fn seen_in(poses: &[(Pose, Scene)], g: EyeGeom, bone: &str) -> SeenRes {
             }
         }
     }
-    SeenRes { all, rest, blockers }
+    SeenRes {
+        all,
+        rest,
+        blockers,
+    }
 }
 
 /// Seats every eye of a species. Pure: the species is not changed.
 pub fn seat_eyes(s: &Species, clips: &BTreeMap<String, Clip>) -> Seat {
     let mut eyes = s.eyes.clone();
     let poses = scenes_of(s, clips);
-    let Some(rest) = poses.iter().find(|(p, _)| *p == Pose::Rest).map(|(_, sc)| sc) else {
-        return Seat { eyes, notes: vec![SeatNote { k: None, text: "no rest scene".to_string(), blocked: true }] };
+    let Some(rest) = poses
+        .iter()
+        .find(|(p, _)| *p == Pose::Rest)
+        .map(|(_, sc)| sc)
+    else {
+        return Seat {
+            eyes,
+            notes: vec![SeatNote {
+                k: None,
+                text: "no rest scene".to_string(),
+                blocked: true,
+            }],
+        };
     };
     let head: Vec<&Piece> = rest.pieces.iter().filter(|p| p.bone == "head").collect();
-    let width = if head.is_empty() { 0.0 } else { head.iter().map(|p| p.max.x).fold(f64::NEG_INFINITY, f64::max) - head.iter().map(|p| p.min.x).fold(f64::INFINITY, f64::min) };
-    let min_y = if head.is_empty() { 0.0 } else { head.iter().map(|p| p.min.y).fold(f64::INFINITY, f64::min) };
-    let height = if head.is_empty() { 0.0 } else { head.iter().map(|p| p.max.y).fold(f64::NEG_INFINITY, f64::max) - min_y };
+    let width = if head.is_empty() {
+        0.0
+    } else {
+        head.iter()
+            .map(|p| p.max.x)
+            .fold(f64::NEG_INFINITY, f64::max)
+            - head.iter().map(|p| p.min.x).fold(f64::INFINITY, f64::min)
+    };
+    let min_y = if head.is_empty() {
+        0.0
+    } else {
+        head.iter().map(|p| p.min.y).fold(f64::INFINITY, f64::min)
+    };
+    let height = if head.is_empty() {
+        0.0
+    } else {
+        head.iter()
+            .map(|p| p.max.y)
+            .fold(f64::NEG_INFINITY, f64::max)
+            - min_y
+    };
 
-    let orig: Vec<DVec3> = s.eyes.iter().map(|e| bone_of(&rest.bones, &e.bone).transform_point3(at_of(e))).collect();
+    let orig: Vec<DVec3> = s
+        .eyes
+        .iter()
+        .map(|e| bone_of(&rest.bones, &e.bone).transform_point3(at_of(e)))
+        .collect();
     let mut placed: Vec<DVec3> = Vec::new();
     let mut notes: Vec<SeatNote> = Vec::new();
 
@@ -1376,16 +1803,38 @@ pub fn seat_eyes(s: &Species, clips: &BTreeMap<String, Clip>) -> Seat {
                 return false;
             }
             let d = orig[j];
-            (d.x + c.x).abs() <= 0.02 && (d.y - c.y).abs() <= 0.02 && (d.z - c.z).abs() <= 0.02 && o.shape == e.shape && o.r.unwrap_or(0.1) == e.r.unwrap_or(0.1) && o.pupil == e.pupil
+            (d.x + c.x).abs() <= 0.02
+                && (d.y - c.y).abs() <= 0.02
+                && (d.z - c.z).abs() <= 0.02
+                && o.shape == e.shape
+                && o.r.unwrap_or(0.1) == e.r.unwrap_or(0.1)
+                && o.pupil == e.pupil
         });
 
         // The surface the socket sits on: the eye's own bone, and the head when the eye has its own bone.
-        let surface: Vec<&Piece> = rest.pieces.iter().filter(|p| p.mat != "clear" && (p.bone == e.bone || (e.bone != "head" && p.bone == "head"))).collect();
-        let front_z = |px: f64, py: f64| -> Option<f64> { ray_hits(&surface, DVec3::new(px, py, 50.0), DVec3::new(0.0, 0.0, -1.0)).first().map(|h| 50.0 - h) };
+        let surface: Vec<&Piece> = rest
+            .pieces
+            .iter()
+            .filter(|p| {
+                p.mat != "clear" && (p.bone == e.bone || (e.bone != "head" && p.bone == "head"))
+            })
+            .collect();
+        let front_z = |px: f64, py: f64| -> Option<f64> {
+            ray_hits(
+                &surface,
+                DVec3::new(px, py, 50.0),
+                DVec3::new(0.0, 0.0, -1.0),
+            )
+            .first()
+            .map(|h| 50.0 - h)
+        };
 
         // One spot: the lift over the rim's highest surface (or the float limit); the first lift seen in every pose wins.
         let spot = |x: f64, y: f64| -> Option<Spot> {
-            let zs: Vec<f64> = ring9(x, y, r).iter().filter_map(|&(px, py)| front_z(px, py)).collect();
+            let zs: Vec<f64> = ring9(x, y, r)
+                .iter()
+                .filter_map(|&(px, py)| front_z(px, py))
+                .collect();
             let centre_z = front_z(x, y)?;
             if zs.is_empty() {
                 return None;
@@ -1394,21 +1843,63 @@ pub fn seat_eyes(s: &Species, clips: &BTreeMap<String, Clip>) -> Seat {
             let base = hi + SEAT_EPS;
             let drop = hi - centre_z;
             if base - centre_z > FLOAT_SHARE * r {
-                return Some(Spot { x, y, z: base, seen: Seen::Hidden, blockers: vec![], drop });
+                return Some(Spot {
+                    x,
+                    y,
+                    z: base,
+                    seen: Seen::Hidden,
+                    blockers: vec![],
+                    drop,
+                });
             }
             let top = base.max(centre_z + FLOAT_SHARE * r);
             let mut fallback: Option<Spot> = None;
-            let mut last = Spot { x, y, z: top, seen: Seen::Hidden, blockers: vec![], drop };
+            let mut last = Spot {
+                x,
+                y,
+                z: top,
+                seen: Seen::Hidden,
+                blockers: vec![],
+                drop,
+            };
             let mut z = base;
             while z <= top + 1e-9 {
-                let res = seen_in(&poses, EyeGeom { at: inv.transform_point3(DVec3::new(x, y, z)), ..geom }, &e.bone);
+                let res = seen_in(
+                    &poses,
+                    EyeGeom {
+                        at: inv.transform_point3(DVec3::new(x, y, z)),
+                        ..geom
+                    },
+                    &e.bone,
+                );
                 if res.all {
-                    return Some(Spot { x, y, z, seen: Seen::All, blockers: vec![], drop });
+                    return Some(Spot {
+                        x,
+                        y,
+                        z,
+                        seen: Seen::All,
+                        blockers: vec![],
+                        drop,
+                    });
                 }
                 if res.rest && fallback.is_none() {
-                    fallback = Some(Spot { x, y, z, seen: Seen::Rest, blockers: res.blockers.clone(), drop });
+                    fallback = Some(Spot {
+                        x,
+                        y,
+                        z,
+                        seen: Seen::Rest,
+                        blockers: res.blockers.clone(),
+                        drop,
+                    });
                 }
-                last = Spot { x, y, z, seen: Seen::Hidden, blockers: res.blockers, drop };
+                last = Spot {
+                    x,
+                    y,
+                    z,
+                    seen: Seen::Hidden,
+                    blockers: res.blockers,
+                    drop,
+                };
                 z += STEP;
             }
             Some(fallback.unwrap_or(last))
@@ -1431,10 +1922,17 @@ pub fn seat_eyes(s: &Species, clips: &BTreeMap<String, Clip>) -> Seat {
                     let gx = sign * sh * width;
                     let gy = min_y + up * height;
                     let ring = ring9(gx, gy, r);
-                    let zs: Vec<f64> = ring.iter().filter_map(|&(px, py)| front_z(px, py)).collect();
+                    let zs: Vec<f64> = ring
+                        .iter()
+                        .filter_map(|&(px, py)| front_z(px, py))
+                        .collect();
                     if let Some(cz) = front_z(gx, gy) {
                         if zs.len() == ring.len() {
-                            grid.push((gx, gy, zs.iter().copied().fold(f64::NEG_INFINITY, f64::max) - cz));
+                            grid.push((
+                                gx,
+                                gy,
+                                zs.iter().copied().fold(f64::NEG_INFINITY, f64::max) - cz,
+                            ));
                         }
                     }
                     up += 0.01;
@@ -1471,14 +1969,32 @@ pub fn seat_eyes(s: &Species, clips: &BTreeMap<String, Clip>) -> Seat {
         }
         let Some(pick) = pick.or(tried) else {
             placed.push(c);
-            notes.push(SeatNote { k: Some(k), text: format!("{} {}: no head surface at ({x:.3}, {y:.3}); left as it is", e.bone, e.shape), blocked: true });
+            notes.push(SeatNote {
+                k: Some(k),
+                text: format!(
+                    "{} {}: no head surface at ({x:.3}, {y:.3}); left as it is",
+                    e.bone, e.shape
+                ),
+                blocked: true,
+            });
             continue;
         };
         if pick.seen == Seen::Hidden {
             // No spot is seen (or the rim sags past the float limit): the eye stays where it is, for a hand fix.
             placed.push(c);
-            let why = if pick.blockers.is_empty() { "the rim sags past the float limit".to_string() } else { pick.blockers.join(", ") };
-            notes.push(SeatNote { k: Some(k), text: format!("{} {}: no seat is clear ({why}); left as it is", e.bone, e.shape), blocked: true });
+            let why = if pick.blockers.is_empty() {
+                "the rim sags past the float limit".to_string()
+            } else {
+                pick.blockers.join(", ")
+            };
+            notes.push(SeatNote {
+                k: Some(k),
+                text: format!(
+                    "{} {}: no seat is clear ({why}); left as it is",
+                    e.bone, e.shape
+                ),
+                blocked: true,
+            });
             continue;
         }
         let p = DVec3::new(pick.x, pick.y, pick.z);
@@ -1501,10 +2017,18 @@ pub fn seat_eyes(s: &Species, clips: &BTreeMap<String, Clip>) -> Seat {
         }
         let blocked = pick.seen != Seen::All;
         if blocked {
-            let why = if pick.blockers.is_empty() { "float limit".to_string() } else { pick.blockers.join(", ") };
+            let why = if pick.blockers.is_empty() {
+                "float limit".to_string()
+            } else {
+                pick.blockers.join(", ")
+            };
             text.push_str(&format!("; still hidden: {why}"));
         }
-        notes.push(SeatNote { k: Some(k), text, blocked });
+        notes.push(SeatNote {
+            k: Some(k),
+            text,
+            blocked,
+        });
     }
     Seat { eyes, notes }
 }
@@ -1522,26 +2046,48 @@ mod tests {
     /// NaN (so `gap > CONTACT` was false and it never flagged them); the port measures them at 0.020 to 0.105.
     #[test]
     fn the_audit_finds_every_issue_the_three_js_audit_found() {
-        let fixture: serde_json::Value = serde_json::from_str(include_str!("../../testdata/robot-audit-ts.json")).expect("the fixture parses");
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../../testdata/robot-audit-ts.json"))
+                .expect("the fixture parses");
         let want: std::collections::BTreeSet<Vec<String>> = fixture["issues"]
             .as_array()
             .expect("issues")
             .iter()
-            .map(|r| r.as_array().expect("a row").iter().map(|v| v.as_str().unwrap_or_default().to_string()).collect())
-            .collect();
-        let list = all_species();
-        let got: std::collections::BTreeSet<Vec<String>> = audit_all(&list, &AuditOptions::default())
-            .into_iter()
-            .flat_map(|(id, issues)| {
-                issues.into_iter().map(move |i| {
-                    vec![id.clone(), format!("{:?}", i.severity).to_lowercase(), i.kind.as_str().to_string(), i.pose.name().to_string(), i.path, i.label]
-                })
+            .map(|r| {
+                r.as_array()
+                    .expect("a row")
+                    .iter()
+                    .map(|v| v.as_str().unwrap_or_default().to_string())
+                    .collect()
             })
             .collect();
+        let list = all_species();
+        let got: std::collections::BTreeSet<Vec<String>> =
+            audit_all(&list, &AuditOptions::default())
+                .into_iter()
+                .flat_map(|(id, issues)| {
+                    issues.into_iter().map(move |i| {
+                        vec![
+                            id.clone(),
+                            format!("{:?}", i.severity).to_lowercase(),
+                            i.kind.as_str().to_string(),
+                            i.pose.name().to_string(),
+                            i.path,
+                            i.label,
+                        ]
+                    })
+                })
+                .collect();
         let missing: Vec<_> = want.difference(&got).collect();
-        assert!(missing.is_empty(), "issues the three.js audit found and the port does not: {missing:?}");
+        assert!(
+            missing.is_empty(),
+            "issues the three.js audit found and the port does not: {missing:?}"
+        );
         let extra: Vec<_> = got.difference(&want).collect();
-        assert!(extra.iter().all(|r| r[2] == "attach"), "extra issues beyond the NaN attach gaps: {extra:?}");
+        assert!(
+            extra.iter().all(|r| r[2] == "attach"),
+            "extra issues beyond the NaN attach gaps: {extra:?}"
+        );
         assert_eq!(extra.len(), 7, "the port's extra attach errors: {extra:?}");
     }
 
@@ -1563,8 +2109,12 @@ mod tests {
             .flat_map(|s| {
                 results[&s.id]
                     .iter()
-                    .filter(|i| i.severity == Severity::Error && i.kind.as_str().starts_with("eye-"))
-                    .map(move |i| format!("{} {} {} {}", s.id, i.pose.name(), i.path, i.kind.as_str()))
+                    .filter(|i| {
+                        i.severity == Severity::Error && i.kind.as_str().starts_with("eye-")
+                    })
+                    .map(move |i| {
+                        format!("{} {} {} {}", s.id, i.pose.name(), i.path, i.kind.as_str())
+                    })
             })
             .collect();
         assert!(eye_errors.is_empty(), "eye errors: {eye_errors:#?}");

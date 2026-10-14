@@ -61,11 +61,19 @@ pub fn subkey(root: &[u8; 32], vault_id: &str, info: &str) -> Key {
 }
 
 /// Argon2id of a passphrase under `salt` with the given cost.
-pub fn argon2id(passphrase: &[u8], salt: &[u8], memory_kib: u32, passes: u32, lanes: u32) -> Result<Key, String> {
+pub fn argon2id(
+    passphrase: &[u8],
+    salt: &[u8],
+    memory_kib: u32,
+    passes: u32,
+    lanes: u32,
+) -> Result<Key, String> {
     let params = Params::new(memory_kib, passes, lanes, Some(32)).map_err(|e| e.to_string())?;
     let argon = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
     let mut out = Zeroizing::new([0u8; 32]);
-    argon.hash_password_into(passphrase, salt, out.as_mut()).map_err(|e| e.to_string())?;
+    argon
+        .hash_password_into(passphrase, salt, out.as_mut())
+        .map_err(|e| e.to_string())?;
     Ok(out)
 }
 
@@ -77,18 +85,32 @@ fn cipher(key: &[u8; 32]) -> Result<XChaCha20Poly1305, String> {
 pub fn seal(key: &[u8; 32], aad: &[u8], plaintext: &[u8]) -> Result<(Vec<u8>, Vec<u8>), String> {
     let nonce = random_vec(24)?;
     let ct = cipher(key)?
-        .encrypt(XNonce::from_slice(&nonce), Payload { msg: plaintext, aad })
+        .encrypt(
+            XNonce::from_slice(&nonce),
+            Payload {
+                msg: plaintext,
+                aad,
+            },
+        )
         .map_err(|_| "encryption failed".to_string())?;
     Ok((nonce, ct))
 }
 
 /// Decrypts and authenticates. Any change to the key, nonce, AAD or ciphertext fails.
-pub fn open(key: &[u8; 32], nonce: &[u8], aad: &[u8], ct: &[u8]) -> Result<Zeroizing<Vec<u8>>, Opaque> {
+pub fn open(
+    key: &[u8; 32],
+    nonce: &[u8],
+    aad: &[u8],
+    ct: &[u8],
+) -> Result<Zeroizing<Vec<u8>>, Opaque> {
     if nonce.len() != 24 {
         return Err(Opaque);
     }
     let cipher = cipher(key).map_err(|_| Opaque)?;
-    cipher.decrypt(XNonce::from_slice(nonce), Payload { msg: ct, aad }).map(Zeroizing::new).map_err(|_| Opaque)
+    cipher
+        .decrypt(XNonce::from_slice(nonce), Payload { msg: ct, aad })
+        .map(Zeroizing::new)
+        .map_err(|_| Opaque)
 }
 
 /// HMAC-SHA256 over the concatenation of `parts`.
@@ -108,7 +130,9 @@ pub fn mac_hex(key: &[u8], parts: &[&[u8]]) -> String {
 
 /// Whether `expected_hex` is the MAC of `parts` (compared in constant time).
 pub fn mac_matches(key: &[u8], parts: &[&[u8]], expected_hex: &str) -> bool {
-    let Some(expected) = unhex(expected_hex) else { return false };
+    let Some(expected) = unhex(expected_hex) else {
+        return false;
+    };
     let mut m = <Hmac<Sha256> as Mac>::new_from_slice(key).expect("HMAC takes a key of any length");
     for part in parts {
         m.update(part);
@@ -179,7 +203,10 @@ pub fn unhex(text: &str) -> Option<Vec<u8>> {
     if !text.len().is_multiple_of(2) {
         return None;
     }
-    (0..text.len()).step_by(2).map(|i| u8::from_str_radix(text.get(i..i + 2)?, 16).ok()).collect()
+    (0..text.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(text.get(i..i + 2)?, 16).ok())
+        .collect()
 }
 
 const ALPHABET: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
@@ -239,7 +266,10 @@ mod tests {
         for i in 0..ct.len() {
             let mut bad = ct.clone();
             bad[i] ^= 1;
-            assert!(open(&KEY, &nonce, &aad, &bad).is_err(), "ciphertext byte {i}");
+            assert!(
+                open(&KEY, &nonce, &aad, &bad).is_err(),
+                "ciphertext byte {i}"
+            );
         }
         for i in 0..nonce.len() {
             let mut bad = nonce.clone();
@@ -255,10 +285,22 @@ mod tests {
     #[test]
     fn swapped_ciphertexts_fail() {
         // A value sealed for entry A, version 1, cannot open as entry B or as version 2.
-        let a = aad("apz-vault/v1/value", &["sec_a", "1", "A_KEY", "{\"kind\":\"plaza\"}", "[\"hf\"]"]);
-        let b = aad("apz-vault/v1/value", &["sec_b", "1", "A_KEY", "{\"kind\":\"plaza\"}", "[\"hf\"]"]);
-        let v2 = aad("apz-vault/v1/value", &["sec_a", "2", "A_KEY", "{\"kind\":\"plaza\"}", "[\"hf\"]"]);
-        let scope = aad("apz-vault/v1/value", &["sec_a", "1", "A_KEY", "{\"kind\":\"nodes\"}", "[\"hf\"]"]);
+        let a = aad(
+            "apz-vault/v1/value",
+            &["sec_a", "1", "A_KEY", "{\"kind\":\"plaza\"}", "[\"hf\"]"],
+        );
+        let b = aad(
+            "apz-vault/v1/value",
+            &["sec_b", "1", "A_KEY", "{\"kind\":\"plaza\"}", "[\"hf\"]"],
+        );
+        let v2 = aad(
+            "apz-vault/v1/value",
+            &["sec_a", "2", "A_KEY", "{\"kind\":\"plaza\"}", "[\"hf\"]"],
+        );
+        let scope = aad(
+            "apz-vault/v1/value",
+            &["sec_a", "1", "A_KEY", "{\"kind\":\"nodes\"}", "[\"hf\"]"],
+        );
         let (nonce, ct) = seal(&KEY, &a, b"value").expect("sealed");
         assert!(open(&KEY, &nonce, &b, &ct).is_err());
         assert!(open(&KEY, &nonce, &v2, &ct).is_err());
@@ -268,8 +310,12 @@ mod tests {
 
     #[test]
     fn canonical_json_sorts_keys_at_every_level() {
-        let value: Value = serde_json::from_str(r#"{"b":[{"z":1,"a":2}],"a":{"y":true,"x":null}}"#).expect("json");
-        assert_eq!(canonical(&value), r#"{"a":{"x":null,"y":true},"b":[{"a":2,"z":1}]}"#);
+        let value: Value =
+            serde_json::from_str(r#"{"b":[{"z":1,"a":2}],"a":{"y":true,"x":null}}"#).expect("json");
+        assert_eq!(
+            canonical(&value),
+            r#"{"a":{"x":null,"y":true},"b":[{"a":2,"z":1}]}"#
+        );
     }
 
     #[test]

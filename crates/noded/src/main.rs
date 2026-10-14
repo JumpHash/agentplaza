@@ -170,7 +170,9 @@ fn boot_agents(node: &noded::Node, config: &Config) -> Result<(), String> {
 /// `initrd.gz` under the installed resources) where they exist, else the built-in defaults.
 fn defaults() -> Config {
     let mut config = Config::default();
-    if let Some(guest) = apz_os::dirs::resources().map(|share| share.join("guest").join(std::env::consts::ARCH)) {
+    if let Some(guest) =
+        apz_os::dirs::resources().map(|share| share.join("guest").join(std::env::consts::ARCH))
+    {
         let (kernel, initrd) = (guest.join("vmlinux"), guest.join("initrd.gz"));
         if kernel.is_file() {
             config.kernel = kernel;
@@ -187,7 +189,10 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
     let mut config = defaults();
     let mut args = args.into_iter();
     while let Some(argument) = args.next() {
-        let mut value = |flag: &str| args.next().ok_or_else(|| format!("missing value for {flag}"));
+        let mut value = |flag: &str| {
+            args.next()
+                .ok_or_else(|| format!("missing value for {flag}"))
+        };
         match argument.as_str() {
             "--port" => {
                 config.port = value("--port")?
@@ -221,10 +226,18 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
                     .map_err(|err| format!("--agents-balloon-mib: {err}"))?;
             }
             "--run-cids" => config.run_cids = parse_run_cids(&value("--run-cids")?)?,
-            "--workstation-dir" => config.workstation.dir = PathBuf::from(value("--workstation-dir")?),
-            "--workstation-kernel" => config.workstation.kernel = Some(PathBuf::from(value("--workstation-kernel")?)),
-            "--workstation-initrd" => config.workstation.initrd = Some(PathBuf::from(value("--workstation-initrd")?)),
-            "--workstation-image" => config.workstation.image = Some(PathBuf::from(value("--workstation-image")?)),
+            "--workstation-dir" => {
+                config.workstation.dir = PathBuf::from(value("--workstation-dir")?)
+            }
+            "--workstation-kernel" => {
+                config.workstation.kernel = Some(PathBuf::from(value("--workstation-kernel")?))
+            }
+            "--workstation-initrd" => {
+                config.workstation.initrd = Some(PathBuf::from(value("--workstation-initrd")?))
+            }
+            "--workstation-image" => {
+                config.workstation.image = Some(PathBuf::from(value("--workstation-image")?))
+            }
             other => return Err(format!("unknown argument: {other}")),
         }
     }
@@ -245,7 +258,9 @@ fn parse_run_cids(text: &str) -> Result<std::ops::RangeInclusive<u64>, String> {
         ));
     }
     if first > last {
-        return Err(format!("--run-cids: {first}-{last} is empty (A must not exceed B)"));
+        return Err(format!(
+            "--run-cids: {first}-{last} is empty (A must not exceed B)"
+        ));
     }
     Ok(first..=last)
 }
@@ -269,9 +284,18 @@ mod tests {
     #[test]
     fn flags_override_the_defaults() {
         let config = parse_args(
-            ["--port", "9000", "--kernel", "/k", "--initrd", "/i", "--run-cids", "1000-1099"]
-                .map(String::from)
-                .to_vec(),
+            [
+                "--port",
+                "9000",
+                "--kernel",
+                "/k",
+                "--initrd",
+                "/i",
+                "--run-cids",
+                "1000-1099",
+            ]
+            .map(String::from)
+            .to_vec(),
         )
         .expect("well-formed flags");
         assert_eq!(config.port, 9000);
@@ -343,5 +367,4 @@ mod tests {
             assert!(parse_args(args.clone()).is_err(), "{args:?}");
         }
     }
-
 }

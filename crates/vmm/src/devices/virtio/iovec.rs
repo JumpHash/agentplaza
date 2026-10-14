@@ -507,8 +507,8 @@ impl<const L: u16> IoVecBufferMut<L> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::devices::virtio::queue::{VIRTQ_DESC_F_WRITE, FIRECRACKER_MAX_QUEUE_SIZE};
-    use crate::devices::virtio::test_utils::{default_mem, VirtQueue};
+    use crate::devices::virtio::queue::{FIRECRACKER_MAX_QUEUE_SIZE, VIRTQ_DESC_F_WRITE};
+    use crate::devices::virtio::test_utils::{VirtQueue, default_mem};
     use crate::vstate::memory::{Bytes, GuestAddress};
 
     #[test]
@@ -554,9 +554,10 @@ mod tests {
         let head = q.pop().unwrap().unwrap();
 
         // SAFETY: exclusive ownership of the guest range.
-        let mut buffer =
-            unsafe { IoVecBufferMut::<FIRECRACKER_MAX_QUEUE_SIZE>::from_descriptor_chain(&mem, head) }
-                .unwrap();
+        let mut buffer = unsafe {
+            IoVecBufferMut::<FIRECRACKER_MAX_QUEUE_SIZE>::from_descriptor_chain(&mem, head)
+        }
+        .unwrap();
         assert_eq!(buffer.len(), 0x100);
         let src = [0xabu8; 16];
         buffer.write_all_volatile_at(&src, 0).unwrap();
@@ -565,4 +566,3 @@ mod tests {
         assert_eq!(out, src);
     }
 }
-

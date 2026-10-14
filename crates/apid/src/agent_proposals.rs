@@ -15,9 +15,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use apz_http::{Params, Request, Response, Router};
 use apz_proto::wire::WorkKind;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use crate::agents::{spawn_agents, Agent};
+use crate::agents::{Agent, spawn_agents};
 use crate::roles_custom::RoleDef;
 use crate::scheduler::WorkItem;
 use crate::settings::tier_of;
@@ -77,13 +77,22 @@ impl Store {
     /// Stores a new proposal under the next `ap<n>` id, newest first; returns it with the id.
     pub fn add(&self, mut p: AgentProposal) -> AgentProposal {
         let mut items = self.items.lock().unwrap_or_else(|e| e.into_inner());
-        let next = items.iter().filter_map(|i| i.id.strip_prefix("ap")?.parse::<u64>().ok()).max().unwrap_or(0) + 1;
+        let next = items
+            .iter()
+            .filter_map(|i| i.id.strip_prefix("ap")?.parse::<u64>().ok())
+            .max()
+            .unwrap_or(0)
+            + 1;
         p.id = format!("ap{next}");
         items.insert(0, p.clone());
         p
     }
     /// Changes the proposal `id` in place; returns it as changed.
-    pub fn update(&self, id: &str, change: impl FnOnce(&mut AgentProposal)) -> Option<AgentProposal> {
+    pub fn update(
+        &self,
+        id: &str,
+        change: impl FnOnce(&mut AgentProposal),
+    ) -> Option<AgentProposal> {
         let mut items = self.items.lock().unwrap_or_else(|e| e.into_inner());
         let item = items.iter_mut().find(|i| i.id == id)?;
         change(item);
@@ -107,20 +116,23 @@ pub fn spec(name: &str) -> Option<(&'static str, Value)> {
     Some(match name {
         "plaza_agent_propose" => (
             "Propose new agents for the owner to approve — only when the owner asked you for them in this chat. Define the role properly: id (a-z, 0-9, '-'), title, purpose, responsibilities, deliverables, how it works with the others, its boundaries, extra tools it needs, a default task budget; or give `existing_role` to add agents of a role the plaza has. Quote the owner's request in `instruction`. Nothing is spawned until the owner approves.",
-            obj(json!({
-                "existing_role": {"type": "string"},
-                "id": {"type": "string"}, "title": {"type": "string"}, "purpose": {"type": "string"},
-                "responsibilities": {"type": "array", "items": {"type": "string"}},
-                "deliverables": {"type": "array", "items": {"type": "string"}},
-                "collaboration": {"type": "string"},
-                "boundaries": {"type": "array", "items": {"type": "string"}},
-                "tools": {"type": "array", "items": {"type": "string"}},
-                "budget": {"type": "integer"},
-                "count": {"type": "integer", "minimum": 1, "maximum": 8},
-                "model": {"type": "string"},
-                "reason": {"type": "string"},
-                "instruction": {"type": "string"}
-            }), &["count", "reason", "instruction"]),
+            obj(
+                json!({
+                    "existing_role": {"type": "string"},
+                    "id": {"type": "string"}, "title": {"type": "string"}, "purpose": {"type": "string"},
+                    "responsibilities": {"type": "array", "items": {"type": "string"}},
+                    "deliverables": {"type": "array", "items": {"type": "string"}},
+                    "collaboration": {"type": "string"},
+                    "boundaries": {"type": "array", "items": {"type": "string"}},
+                    "tools": {"type": "array", "items": {"type": "string"}},
+                    "budget": {"type": "integer"},
+                    "count": {"type": "integer", "minimum": 1, "maximum": 8},
+                    "model": {"type": "string"},
+                    "reason": {"type": "string"},
+                    "instruction": {"type": "string"}
+                }),
+                &["count", "reason", "instruction"],
+            ),
         ),
         _ => return None,
     })
@@ -150,8 +162,19 @@ pub fn run(app: &App, agent: &Agent, input: &Value) -> Result<String, String> {
         if !crate::roles_custom::exists(app, &existing) {
             return Err(format!("unknown role {existing}"));
         }
-        let title = app.custom_roles.get(&existing).map(|d| d.title).unwrap_or_else(|| existing.clone());
-        (RoleDef { id: existing, title, ..RoleDef::default() }, false)
+        let title = app
+            .custom_roles
+            .get(&existing)
+            .map(|d| d.title)
+            .unwrap_or_else(|| existing.clone());
+        (
+            RoleDef {
+                id: existing,
+                title,
+                ..RoleDef::default()
+            },
+            false,
+        )
     } else {
         let def = RoleDef {
             id: text(input, "id"),
@@ -199,7 +222,13 @@ pub fn run(app: &App, agent: &Agent, input: &Value) -> Result<String, String> {
 
 /// Saves the role when new and spawns `count` agents of it. `edited` replaces the proposal's
 /// role (saved as a new or replaced custom role); `count` and `model` override the proposal's.
-pub fn approve(app: &App, id: &str, edited: Option<RoleDef>, count: Option<u32>, model: Option<String>) -> Result<AgentProposal, String> {
+pub fn approve(
+    app: &App,
+    id: &str,
+    edited: Option<RoleDef>,
+    count: Option<u32>,
+    model: Option<String>,
+) -> Result<AgentProposal, String> {
     let _decide = app.agent_proposals.deciding();
     let p = pending(app, id)?;
     let (role, new_role) = match edited {
@@ -219,9 +248,17 @@ pub fn approve(app: &App, id: &str, edited: Option<RoleDef>, count: Option<u32>,
     let model = model.unwrap_or_else(|| p.model.clone());
     check_model(app, &role.id, &model)?;
     if new_role {
-        app.custom_roles.save(role.clone()).map_err(|e| format!("could not save role {}: {e}", role.id))?;
+        app.custom_roles
+            .save(role.clone())
+            .map_err(|e| format!("could not save role {}: {e}", role.id))?;
     }
-    let spawned = spawn_agents(app, &role.id, count, (!model.is_empty()).then_some(model.as_str()), None)?;
+    let spawned = spawn_agents(
+        app,
+        &role.id,
+        count,
+        (!model.is_empty()).then_some(model.as_str()),
+        None,
+    )?;
     let cids: Vec<u64> = spawned
         .get("cids")
         .and_then(Value::as_array)
@@ -261,7 +298,9 @@ pub fn reject(app: &App, id: &str, reason: &str) -> Result<AgentProposal, String
 
 pub fn routes(router: Router<App>) -> Router<App> {
     router
-        .get("/v1/agent-proposals", |app, _, _| Response::json(200, &app.agent_proposals.list()))
+        .get("/v1/agent-proposals", |app, _, _| {
+            Response::json(200, &app.agent_proposals.list())
+        })
         .post("/v1/agent-proposals/{id}/approve", approve_route)
         .post("/v1/agent-proposals/{id}/reject", reject_route)
 }
@@ -275,7 +314,10 @@ fn approve_route(app: &App, req: &Request, params: &Params<'_>) -> Response {
         },
         None => None,
     };
-    let count = v.get("count").and_then(Value::as_u64).and_then(|n| u32::try_from(n).ok());
+    let count = v
+        .get("count")
+        .and_then(Value::as_u64)
+        .and_then(|n| u32::try_from(n).ok());
     let model = v.get("model").and_then(Value::as_str).map(str::to_string);
     match approve(app, params.get("id"), edited, count, model) {
         Ok(p) => Response::json(200, &p),
@@ -296,13 +338,19 @@ fn reject_route(app: &App, req: &Request, params: &Params<'_>) -> Response {
 fn owner_chat(current: Option<&WorkItem>) -> Result<(), String> {
     match current {
         Some(item) if item.kind == WorkKind::Chat && item.origin.owner => Ok(()),
-        _ => Err("you may propose agents only when the owner asked for them in your chat; ask the owner".into()),
+        _ => Err(
+            "you may propose agents only when the owner asked for them in your chat; ask the owner"
+                .into(),
+        ),
     }
 }
 
 /// The proposal `id`, if it is still pending.
 fn pending(app: &App, id: &str) -> Result<AgentProposal, String> {
-    let p = app.agent_proposals.get(id).ok_or_else(|| format!("no proposal {id}"))?;
+    let p = app
+        .agent_proposals
+        .get(id)
+        .ok_or_else(|| format!("no proposal {id}"))?;
     if p.state != PENDING {
         return Err("already decided".into());
     }
@@ -311,7 +359,11 @@ fn pending(app: &App, id: &str) -> Result<AgentProposal, String> {
 
 /// The role shape the custom role store requires (the id's uniqueness is checked by the caller).
 fn check_role_shape(def: &RoleDef) -> Result<(), String> {
-    let id_ok = (2..=32).contains(&def.id.len()) && def.id.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+    let id_ok = (2..=32).contains(&def.id.len())
+        && def
+            .id
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
     if !id_ok {
         return Err("role id must be 2-32 characters: a-z, 0-9, '-'".into());
     }
@@ -339,19 +391,35 @@ fn check_model(app: &App, role: &str, model: &str) -> Result<(), String> {
 }
 
 fn text(input: &Value, key: &str) -> String {
-    input.get(key).and_then(Value::as_str).unwrap_or("").trim().to_string()
+    input
+        .get(key)
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string()
 }
 
 fn list(input: &Value, key: &str) -> Vec<String> {
     input
         .get(key)
         .and_then(Value::as_array)
-        .map(|items| items.iter().filter_map(Value::as_str).map(str::trim).filter(|s| !s.is_empty()).map(str::to_string).collect())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
         .unwrap_or_default()
 }
 
 fn now_ms() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -366,7 +434,10 @@ mod tests {
             kind,
             thread: "op-42".into(),
             prompt: "hi".into(),
-            origin: Origin { owner, ..Origin::default() },
+            origin: Origin {
+                owner,
+                ..Origin::default()
+            },
             created_ms: 0,
             started_ms: None,
         }
@@ -386,7 +457,10 @@ mod tests {
     fn draft(role_id: &str) -> AgentProposal {
         AgentProposal {
             id: String::new(),
-            role: RoleDef { id: role_id.into(), ..RoleDef::default() },
+            role: RoleDef {
+                id: role_id.into(),
+                ..RoleDef::default()
+            },
             new_role: false,
             count: 1,
             model: String::new(),
@@ -413,9 +487,27 @@ mod tests {
     #[test]
     fn role_shape_follows_the_custom_role_rules() {
         assert!(check_role_shape(&role()).is_ok());
-        assert!(check_role_shape(&RoleDef { id: "A".into(), ..role() }).is_err());
-        assert!(check_role_shape(&RoleDef { responsibilities: vec![], ..role() }).is_err());
-        assert!(check_role_shape(&RoleDef { deliverables: vec![], ..role() }).is_err());
+        assert!(
+            check_role_shape(&RoleDef {
+                id: "A".into(),
+                ..role()
+            })
+            .is_err()
+        );
+        assert!(
+            check_role_shape(&RoleDef {
+                responsibilities: vec![],
+                ..role()
+            })
+            .is_err()
+        );
+        assert!(
+            check_role_shape(&RoleDef {
+                deliverables: vec![],
+                ..role()
+            })
+            .is_err()
+        );
     }
 
     #[test]

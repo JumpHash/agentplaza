@@ -26,7 +26,11 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<(), String> {
     let mut backoff = Duration::from_secs(1);
     loop {
         if let Err(e) = session(ctx, &args, &mut backoff) {
-            eprintln!("{} lost the hub: {e}; reconnecting in {}s", stamp(), backoff.as_secs());
+            eprintln!(
+                "{} lost the hub: {e}; reconnecting in {}s",
+                stamp(),
+                backoff.as_secs()
+            );
         }
         std::thread::sleep(backoff);
         backoff = (backoff * 2).min(Duration::from_secs(30));
@@ -35,12 +39,21 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<(), String> {
 
 /// One socket: reads frames until it fails. `backoff` resets once the socket is up.
 fn session(ctx: &Ctx, args: &Args, backoff: &mut Duration) -> Result<(), String> {
-    let mut socket = ws::connect(&ctx.client.target, "/v1/ws", Some("apz.events.v1"), Duration::from_secs(10), Limits::default())
-        .map_err(|e| format!("{}: {e}", ctx.client.base()))?;
+    let mut socket = ws::connect(
+        &ctx.client.target,
+        "/v1/ws",
+        Some("apz.events.v1"),
+        Duration::from_secs(10),
+        Limits::default(),
+    )
+    .map_err(|e| format!("{}: {e}", ctx.client.base()))?;
     *backoff = Duration::from_secs(1);
     eprintln!("{} connected to {}", stamp(), ctx.client.base());
     loop {
-        let Some(message) = socket.recv(Duration::from_secs(60)).map_err(|e| e.to_string())? else {
+        let Some(message) = socket
+            .recv(Duration::from_secs(60))
+            .map_err(|e| e.to_string())?
+        else {
             continue;
         };
         let Message::Text(text) = message else {
@@ -95,11 +108,19 @@ fn summary(data: &Value) -> String {
         None => data.to_string(),
     };
     let one_line = text.replace(['\n', '\r'], " ");
-    if one_line.chars().count() > 160 { one_line.chars().take(159).collect::<String>() + "…" } else { one_line }
+    if one_line.chars().count() > 160 {
+        one_line.chars().take(159).collect::<String>() + "…"
+    } else {
+        one_line
+    }
 }
 
 /// The current time as HH:MM:SS (UTC).
 fn stamp() -> String {
-    let secs = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0) % 86_400;
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+        % 86_400;
     format!("{:02}:{:02}:{:02}", secs / 3600, secs / 60 % 60, secs % 60)
 }

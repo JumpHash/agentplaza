@@ -404,7 +404,14 @@ mod tests {
 
     #[test]
     fn standard_e820_skips_region_entirely_below_himem() {
-        let map = standard_e820(&[(0, 0x8_0000)], MIB, 0x9_fc00, 0x4_0400, 0xe000_0000, 0x1000_0000);
+        let map = standard_e820(
+            &[(0, 0x8_0000)],
+            MIB,
+            0x9_fc00,
+            0x4_0400,
+            0xe000_0000,
+            0x1000_0000,
+        );
         assert_eq!(map.len(), 3);
         assert!(map.iter().all(|e| e.kind != E820_RAM || e.addr == 0));
     }

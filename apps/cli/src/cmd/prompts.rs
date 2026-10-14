@@ -9,10 +9,10 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 use clap::Subcommand;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::cmd::models::{items, joined};
-use crate::ctx::{self, confirm, Ctx};
+use crate::ctx::{self, Ctx, confirm};
 
 /// The three kinds a prompt can be (the hub's names).
 pub const KINDS: [&str; 3] = ["system", "agents_md", "fragment"];
@@ -155,33 +155,75 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
         Cmd::Show { id, version } => show(ctx, &id, version),
         Cmd::Raw { id, version } => {
             let bytes = get_bytes(ctx, &format!("{}/versions/{version}/raw", prompt_path(&id)))?;
-            std::io::stdout().write_all(&bytes).map_err(|e| e.to_string())
+            std::io::stdout()
+                .write_all(&bytes)
+                .map_err(|e| e.to_string())
         }
-        Cmd::Create { kind, title, id, binding, description, tags, file } => {
+        Cmd::Create {
+            kind,
+            title,
+            id,
+            binding,
+            description,
+            tags,
+            file,
+        } => {
             let body = read_text(&file)?;
-            let new = create_body(&kind, &title, id.as_deref(), binding.as_deref(), description.as_deref(), &tags, &body);
+            let new = create_body(
+                &kind,
+                &title,
+                id.as_deref(),
+                binding.as_deref(),
+                description.as_deref(),
+                &tags,
+                &body,
+            );
             let made = ctx.client.post("/v1/prompts", &new)?;
-            ctx.out(&made, |m| println!("created {} (v1, {kind})", ctx::s(&m["prompt"], "id")));
+            ctx.out(&made, |m| {
+                println!("created {} (v1, {kind})", ctx::s(&m["prompt"], "id"))
+            });
             Ok(())
         }
-        Cmd::Edit { id, title, description, tags, binding } => edit(ctx, &id, title, description, tags, binding),
-        Cmd::Save { id, file, note, base } => save(ctx, &id, &file, note.as_deref(), base),
+        Cmd::Edit {
+            id,
+            title,
+            description,
+            tags,
+            binding,
+        } => edit(ctx, &id, title, description, tags, binding),
+        Cmd::Save {
+            id,
+            file,
+            note,
+            base,
+        } => save(ctx, &id, &file, note.as_deref(), base),
         Cmd::Publish { id, version } => {
             let version = match version {
                 Some(v) => v,
                 None => latest_version(ctx, &id)?,
             };
-            let reply = ctx.client.post(&format!("{}/publish", prompt_path(&id)), &publish_body(version))?;
+            let reply = ctx.client.post(
+                &format!("{}/publish", prompt_path(&id)),
+                &publish_body(version),
+            )?;
             ctx.out(&reply, |_| println!("published v{version} of {id}"));
             Ok(())
         }
         Cmd::Unpublish { id } => {
-            let reply = call(ctx, "POST", &format!("{}/unpublish", prompt_path(&id)), None)?;
+            let reply = call(
+                ctx,
+                "POST",
+                &format!("{}/unpublish", prompt_path(&id)),
+                None,
+            )?;
             ctx.out(&reply, |_| println!("unpublished {id}"));
             Ok(())
         }
         Cmd::Archive { id, yes } => {
-            if !confirm(yes, &format!("Archive prompt {id}? It leaves the live set until it is restored."))? {
+            if !confirm(
+                yes,
+                &format!("Archive prompt {id}? It leaves the live set until it is restored."),
+            )? {
                 return Err("cancelled".into());
             }
             let reply = call(ctx, "POST", &format!("{}/archive", prompt_path(&id)), None)?;
@@ -201,7 +243,9 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
         }
         Cmd::Check { kind, file } => {
             let body = read_text(&file)?;
-            let report = ctx.client.post("/v1/prompts/check", &check_body(&kind, &body))?;
+            let report = ctx
+                .client
+                .post("/v1/prompts/check", &check_body(&kind, &body))?;
             ctx.out(&report, print_report);
             Ok(())
         }
@@ -217,46 +261,77 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
 
 /// A JSON call to the hub: its answer when 2xx; otherwise the status and the hub's `error` text. The status is 0
 /// when the hub did not answer at all.
-pub(crate) fn call_status(ctx: &Ctx, method: &str, path: &str, body: Option<&Value>) -> Result<Value, (u16, String)> {
-    let (status, value) = apz_http::client::request_json(&ctx.client.target, method, path, body, ctx.client.timeout)
-        .map_err(|e| (0, format!("{} {path}: {e}", ctx.client.base())))?;
+pub(crate) fn call_status(
+    ctx: &Ctx,
+    method: &str,
+    path: &str,
+    body: Option<&Value>,
+) -> Result<Value, (u16, String)> {
+    let (status, value) =
+        apz_http::client::request_json(&ctx.client.target, method, path, body, ctx.client.timeout)
+            .map_err(|e| (0, format!("{} {path}: {e}", ctx.client.base())))?;
     if (200..300).contains(&status) {
         Ok(value)
     } else {
-        Err((status, value.get("error").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| format!("{path}: HTTP {status}"))))
+        Err((
+            status,
+            value
+                .get("error")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("{path}: HTTP {status}")),
+        ))
     }
 }
 
 /// [`call_status`] without the status: the answer, or the refusal's text.
-pub(crate) fn call(ctx: &Ctx, method: &str, path: &str, body: Option<&Value>) -> Result<Value, String> {
+pub(crate) fn call(
+    ctx: &Ctx,
+    method: &str,
+    path: &str,
+    body: Option<&Value>,
+) -> Result<Value, String> {
     call_status(ctx, method, path, body).map_err(|(_, message)| message)
 }
 
 /// A reply's JSON when 2xx (Null when it is empty), else its `error` text.
 pub(crate) fn json_reply(path: &str, reply: &apz_http::client::Reply) -> Result<Value, String> {
-    let value = if reply.body.is_empty() { Value::Null } else { reply.json().unwrap_or(Value::Null) };
+    let value = if reply.body.is_empty() {
+        Value::Null
+    } else {
+        reply.json().unwrap_or(Value::Null)
+    };
     if (200..300).contains(&reply.status) {
         Ok(value)
     } else {
-        Err(value.get("error").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| format!("{path}: HTTP {}", reply.status)))
+        Err(value
+            .get("error")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("{path}: HTTP {}", reply.status)))
     }
 }
 
 /// The bytes of a GET (a raw body, a file, a zip), or the refusal's text.
 pub(crate) fn get_bytes(ctx: &Ctx, path: &str) -> Result<Vec<u8>, String> {
-    let reply = apz_http::client::request(&ctx.client.target, "GET", path, None, ctx.client.timeout)
-        .map_err(|e| format!("{} {path}: {e}", ctx.client.base()))?;
+    let reply =
+        apz_http::client::request(&ctx.client.target, "GET", path, None, ctx.client.timeout)
+            .map_err(|e| format!("{} {path}: {e}", ctx.client.base()))?;
     if (200..300).contains(&reply.status) {
         return Ok(reply.body);
     }
-    Err(json_reply(path, &reply).err().unwrap_or_else(|| format!("{path}: HTTP {}", reply.status)))
+    Err(json_reply(path, &reply)
+        .err()
+        .unwrap_or_else(|| format!("{path}: HTTP {}", reply.status)))
 }
 
 /// A body from a file, or from stdin for `-`. Kept as it is (only blank text is refused).
 pub(crate) fn read_text(file: &Path) -> Result<String, String> {
     let text = if file == Path::new("-") {
         let mut buf = String::new();
-        std::io::stdin().read_to_string(&mut buf).map_err(|e| format!("reading stdin: {e}"))?;
+        std::io::stdin()
+            .read_to_string(&mut buf)
+            .map_err(|e| format!("reading stdin: {e}"))?;
         buf
     } else {
         std::fs::read_to_string(file).map_err(|e| format!("{}: {e}", file.display()))?
@@ -283,7 +358,14 @@ pub(crate) fn print_report(report: &Value) {
         ctx::text(report, "infos")
     );
     let rows: Vec<Vec<String>> = items(&report["findings"])
-        .map(|f| vec![ctx::s(f, "severity").to_string(), location(f), ctx::s(f, "rule").to_string(), ctx::s(f, "message").to_string()])
+        .map(|f| {
+            vec![
+                ctx::s(f, "severity").to_string(),
+                location(f),
+                ctx::s(f, "rule").to_string(),
+                ctx::s(f, "message").to_string(),
+            ]
+        })
         .collect();
     if rows.is_empty() {
         println!("no findings");
@@ -323,7 +405,14 @@ pub(crate) fn count_op(lines: &Value, op: &str) -> usize {
 /// The history rows: when, what, the version, who.
 pub(crate) fn print_events(events: &Value) {
     let rows: Vec<Vec<String>> = items(events)
-        .map(|e| vec![ctx::when(&e["at_ms"]), ctx::s(e, "action").to_string(), version_text(&e["version"]), ctx::s(e, "actor").to_string()])
+        .map(|e| {
+            vec![
+                ctx::when(&e["at_ms"]),
+                ctx::s(e, "action").to_string(),
+                version_text(&e["version"]),
+                ctx::s(e, "actor").to_string(),
+            ]
+        })
         .collect();
     ctx::table(&["when", "action", "version", "by"], &rows);
 }
@@ -338,11 +427,7 @@ pub(crate) fn version_text(v: &Value) -> String {
 
 /// The text, or a dash when it is empty.
 pub(crate) fn dash(text: String) -> String {
-    if text.is_empty() {
-        "—".into()
-    } else {
-        text
-    }
+    if text.is_empty() { "—".into() } else { text }
 }
 
 // ---- Paths and bodies -------------------------------------------------------------------------
@@ -354,11 +439,22 @@ fn prompt_path(id: &str) -> String {
 
 /// The tags without blanks, each trimmed.
 fn clean_tags(tags: &[String]) -> Vec<String> {
-    tags.iter().map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect()
+    tags.iter()
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+        .collect()
 }
 
 /// The create body. `id` and `binding` are sent only when given (an absent id is the title's slug).
-fn create_body(kind: &str, title: &str, id: Option<&str>, binding: Option<&str>, description: Option<&str>, tags: &[String], body: &str) -> Value {
+fn create_body(
+    kind: &str,
+    title: &str,
+    id: Option<&str>,
+    binding: Option<&str>,
+    description: Option<&str>,
+    tags: &[String],
+    body: &str,
+) -> Value {
     let mut out = json!({
         "kind": kind,
         "title": title,
@@ -375,7 +471,13 @@ fn create_body(kind: &str, title: &str, id: Option<&str>, binding: Option<&str>,
 
 /// The edit body: the current title, description, tags and binding, with the given ones replacing them. An empty
 /// binding removes it.
-fn edit_body(current: &Value, title: Option<&str>, description: Option<&str>, tags: Option<&[String]>, binding: Option<&str>) -> Value {
+fn edit_body(
+    current: &Value,
+    title: Option<&str>,
+    description: Option<&str>,
+    tags: Option<&[String]>,
+    binding: Option<&str>,
+) -> Value {
     let binding = match binding {
         Some("") => Value::Null,
         Some(b) => json!(b),
@@ -405,7 +507,10 @@ fn check_body(kind: &str, body: &str) -> Value {
 /// The newest version number of a prompt, read from its detail.
 fn latest_version(ctx: &Ctx, id: &str) -> Result<u32, String> {
     let detail = ctx.client.get(&prompt_path(id))?;
-    detail["prompt"]["latest_version"].as_u64().map(|v| v as u32).ok_or_else(|| format!("{id}: no latest version"))
+    detail["prompt"]["latest_version"]
+        .as_u64()
+        .map(|v| v as u32)
+        .ok_or_else(|| format!("{id}: no latest version"))
 }
 
 // ---- Commands ---------------------------------------------------------------------------------
@@ -418,7 +523,11 @@ fn list(ctx: &Ctx, kind: Option<&str>, archived: bool) -> Result<(), String> {
     if archived {
         query.push("archived=true".to_string());
     }
-    let path = if query.is_empty() { "/v1/prompts".to_string() } else { format!("/v1/prompts?{}", query.join("&")) };
+    let path = if query.is_empty() {
+        "/v1/prompts".to_string()
+    } else {
+        format!("/v1/prompts?{}", query.join("&"))
+    };
     let list = ctx.client.get(&path)?;
     ctx.out(&list, |v| {
         let rows: Vec<Vec<String>> = items(&v["prompts"])
@@ -435,7 +544,12 @@ fn list(ctx: &Ctx, kind: Option<&str>, archived: bool) -> Result<(), String> {
                 ]
             })
             .collect();
-        ctx::table(&["id", "kind", "title", "live", "latest", "score", "binding", "updated"], &rows);
+        ctx::table(
+            &[
+                "id", "kind", "title", "live", "latest", "score", "binding", "updated",
+            ],
+            &rows,
+        );
     });
     Ok(())
 }
@@ -447,7 +561,9 @@ fn show(ctx: &Ctx, id: &str, version: Option<u32>) -> Result<(), String> {
             ctx.out(&detail, print_detail);
         }
         Some(v) => {
-            let view = ctx.client.get(&format!("{}/versions/{v}", prompt_path(id)))?;
+            let view = ctx
+                .client
+                .get(&format!("{}/versions/{v}", prompt_path(id)))?;
             ctx.out(&view, print_version);
         }
     }
@@ -456,7 +572,11 @@ fn show(ctx: &Ctx, id: &str, version: Option<u32>) -> Result<(), String> {
 
 fn print_detail(d: &Value) {
     let p = &d["prompt"];
-    let live = if p["active_version"].is_null() { "not published".to_string() } else { version_text(&p["active_version"]) };
+    let live = if p["active_version"].is_null() {
+        "not published".to_string()
+    } else {
+        version_text(&p["active_version"])
+    };
     let mut pairs = vec![
         ("id", ctx::s(p, "id").to_string()),
         ("kind", ctx::s(p, "kind").to_string()),
@@ -488,7 +608,12 @@ fn print_detail(d: &Value) {
             ]
         })
         .collect();
-    ctx::table(&["version", "score", "errors", "warnings", "author", "created", "note"], &rows);
+    ctx::table(
+        &[
+            "version", "score", "errors", "warnings", "author", "created", "note",
+        ],
+        &rows,
+    );
 }
 
 fn print_version(v: &Value) {
@@ -499,7 +624,10 @@ fn print_version(v: &Value) {
         ("note", dash(ctx::s(v, "note").to_string())),
     ]);
     if v["stale"].as_bool() == Some(true) {
-        println!("scored under older rules; today's score is {}", ctx::text(&v["recheck"], "score"));
+        println!(
+            "scored under older rules; today's score is {}",
+            ctx::text(&v["recheck"], "score")
+        );
     }
     println!();
     print_report(v);
@@ -517,13 +645,25 @@ fn edit(
         return Err("give --title, --description, --tags or --binding".into());
     }
     let detail = ctx.client.get(&prompt_path(id))?;
-    let body = edit_body(&detail["prompt"], title.as_deref(), description.as_deref(), tags.as_deref(), binding.as_deref());
+    let body = edit_body(
+        &detail["prompt"],
+        title.as_deref(),
+        description.as_deref(),
+        tags.as_deref(),
+        binding.as_deref(),
+    );
     let updated = ctx.client.put(&prompt_path(id), &body)?;
     ctx.out(&updated, |_| println!("updated {id}"));
     Ok(())
 }
 
-fn save(ctx: &Ctx, id: &str, file: &Path, note: Option<&str>, base: Option<u32>) -> Result<(), String> {
+fn save(
+    ctx: &Ctx,
+    id: &str,
+    file: &Path,
+    note: Option<&str>,
+    base: Option<u32>,
+) -> Result<(), String> {
     let body = read_text(file)?;
     let base = match base {
         Some(v) => v,
@@ -539,16 +679,25 @@ fn save(ctx: &Ctx, id: &str, file: &Path, note: Option<&str>, base: Option<u32>)
         if r["created"].as_bool() == Some(true) {
             println!("saved {} of {id}", version_text(&r["version"]["version"]));
         } else {
-            println!("no change: {} already has this body", version_text(&r["version"]["version"]));
+            println!(
+                "no change: {} already has this body",
+                version_text(&r["version"]["version"])
+            );
         }
     });
     Ok(())
 }
 
 fn diff(ctx: &Ctx, id: &str, from: u32, to: u32) -> Result<(), String> {
-    let d = ctx.client.get(&format!("{}/diff?from={from}&to={to}", prompt_path(id)))?;
+    let d = ctx
+        .client
+        .get(&format!("{}/diff?from={from}&to={to}", prompt_path(id)))?;
     ctx.out(&d, |d| {
-        println!("v{from} → v{to}: {} added, {} removed", count_op(&d["lines"], "add"), count_op(&d["lines"], "del"));
+        println!(
+            "v{from} → v{to}: {} added, {} removed",
+            count_op(&d["lines"], "add"),
+            count_op(&d["lines"], "del")
+        );
         print_diff_lines(&d["lines"]);
     });
     Ok(())
@@ -557,7 +706,14 @@ fn diff(ctx: &Ctx, id: &str, from: u32, to: u32) -> Result<(), String> {
 fn print_rules(r: &Value) {
     println!("rules version {}", ctx::text(r, "rules_version"));
     let rows: Vec<Vec<String>> = items(&r["rules"])
-        .map(|rule| vec![ctx::s(rule, "id").to_string(), ctx::s(rule, "severity").to_string(), str_list(&rule["kinds"]), ctx::s(rule, "title").to_string()])
+        .map(|rule| {
+            vec![
+                ctx::s(rule, "id").to_string(),
+                ctx::s(rule, "severity").to_string(),
+                str_list(&rule["kinds"]),
+                ctx::s(rule, "title").to_string(),
+            ]
+        })
         .collect();
     ctx::table(&["rule", "severity", "kinds", "title"], &rows);
     println!();
@@ -587,7 +743,20 @@ mod tests {
     fn the_commands_are_all_there() {
         let cmd = Probe::command();
         for name in [
-            "list", "show", "raw", "create", "edit", "save", "publish", "unpublish", "archive", "restore", "diff", "history", "check", "rules",
+            "list",
+            "show",
+            "raw",
+            "create",
+            "edit",
+            "save",
+            "publish",
+            "unpublish",
+            "archive",
+            "restore",
+            "diff",
+            "history",
+            "check",
+            "rules",
         ] {
             assert!(cmd.find_subcommand(name).is_some(), "{name} is missing");
         }
@@ -595,19 +764,37 @@ mod tests {
 
     #[test]
     fn the_kinds_and_the_required_flags_are_checked() {
-        assert!(parse(&["create", "--kind", "system", "--title", "T", "--file", "a.md"]).is_ok());
-        assert!(parse(&["create", "--kind", "bogus", "--title", "T", "--file", "a.md"]).is_err());
-        assert!(parse(&["create", "--title", "T", "--file", "a.md"]).is_err(), "a kind is required");
+        assert!(
+            parse(&[
+                "create", "--kind", "system", "--title", "T", "--file", "a.md"
+            ])
+            .is_ok()
+        );
+        assert!(
+            parse(&[
+                "create", "--kind", "bogus", "--title", "T", "--file", "a.md"
+            ])
+            .is_err()
+        );
+        assert!(
+            parse(&["create", "--title", "T", "--file", "a.md"]).is_err(),
+            "a kind is required"
+        );
         assert!(parse(&["list", "--kind", "nope"]).is_err());
         assert!(parse(&["check", "--kind", "fragment", "--file", "-"]).is_ok());
-        assert!(parse(&["diff", "x", "1"]).is_err(), "diff takes two versions");
+        assert!(
+            parse(&["diff", "x", "1"]).is_err(),
+            "diff takes two versions"
+        );
         assert!(parse(&["raw", "x", "two"]).is_err());
     }
 
     #[test]
     fn tags_are_split_on_commas() {
         match parse(&["edit", "x", "--tags", "a,b"]) {
-            Ok(Cmd::Edit { tags, .. }) => assert_eq!(tags, Some(vec!["a".to_string(), "b".to_string()])),
+            Ok(Cmd::Edit { tags, .. }) => {
+                assert_eq!(tags, Some(vec!["a".to_string(), "b".to_string()]))
+            }
             other => panic!("edit did not parse: {other:?}"),
         }
     }
@@ -620,22 +807,42 @@ mod tests {
 
     #[test]
     fn the_create_body_sends_only_what_was_given() {
-        let body = create_body("system", "Planner", None, Some("role:planner"), None, &[" a ".into(), "".into()], "# Hi\n");
+        let body = create_body(
+            "system",
+            "Planner",
+            None,
+            Some("role:planner"),
+            None,
+            &[" a ".into(), "".into()],
+            "# Hi\n",
+        );
         assert_eq!(body["kind"], "system");
         assert_eq!(body["binding"], "role:planner");
         assert_eq!(body["description"], "");
         assert_eq!(body["tags"], json!(["a"]));
         assert!(body.get("id").is_none(), "the title's slug is the default");
-        let with_id = create_body("fragment", "Tone", Some("tone"), None, Some("Short."), &[], "x");
+        let with_id = create_body(
+            "fragment",
+            "Tone",
+            Some("tone"),
+            None,
+            Some("Short."),
+            &[],
+            "x",
+        );
         assert_eq!(with_id["id"], "tone");
         assert!(with_id["binding"].is_null());
     }
 
     #[test]
     fn an_edit_changes_only_the_fields_given() {
-        let current = json!({ "title": "Old", "description": "d", "tags": ["x"], "binding": "plaza" });
+        let current =
+            json!({ "title": "Old", "description": "d", "tags": ["x"], "binding": "plaza" });
         let kept = edit_body(&current, Some("New"), None, None, None);
-        assert_eq!(kept, json!({ "title": "New", "description": "d", "tags": ["x"], "binding": "plaza" }));
+        assert_eq!(
+            kept,
+            json!({ "title": "New", "description": "d", "tags": ["x"], "binding": "plaza" })
+        );
         let unbound = edit_body(&current, None, None, Some(&["y".to_string()]), Some(""));
         assert_eq!(unbound["title"], "Old");
         assert_eq!(unbound["tags"], json!(["y"]));
@@ -644,18 +851,33 @@ mod tests {
 
     #[test]
     fn the_version_publish_and_check_bodies_have_the_hubs_fields() {
-        assert_eq!(version_body("b", None, 3), json!({ "body": "b", "note": "", "base_version": 3 }));
+        assert_eq!(
+            version_body("b", None, 3),
+            json!({ "body": "b", "note": "", "base_version": 3 })
+        );
         assert_eq!(version_body("b", Some("why"), 1)["note"], "why");
         assert_eq!(publish_body(2), json!({ "version": 2 }));
-        assert_eq!(check_body("agents_md", "x"), json!({ "kind": "agents_md", "body": "x" }));
+        assert_eq!(
+            check_body("agents_md", "x"),
+            json!({ "kind": "agents_md", "body": "x" })
+        );
     }
 
     #[test]
     fn a_finding_says_where_it_is() {
-        assert_eq!(location(&json!({ "path": "", "line": 0 })), "whole document");
+        assert_eq!(
+            location(&json!({ "path": "", "line": 0 })),
+            "whole document"
+        );
         assert_eq!(location(&json!({ "path": "", "line": 4 })), "line 4");
-        assert_eq!(location(&json!({ "path": "SKILL.md", "line": 0 })), "SKILL.md");
-        assert_eq!(location(&json!({ "path": "scripts/run.sh", "line": 12 })), "scripts/run.sh:12");
+        assert_eq!(
+            location(&json!({ "path": "SKILL.md", "line": 0 })),
+            "SKILL.md"
+        );
+        assert_eq!(
+            location(&json!({ "path": "scripts/run.sh", "line": 12 })),
+            "scripts/run.sh:12"
+        );
     }
 
     #[test]

@@ -18,21 +18,21 @@
 //!   screen and virtual displays), the Linux accessibility tree, the outgoing queue, the log file and the command
 //!   line.
 
-pub mod acl;
+#[cfg(target_os = "linux")]
+pub mod access;
 pub mod account;
+pub mod acl;
 pub mod backend;
 pub mod cli;
 pub mod daemon;
 pub mod desk;
 pub mod enrol;
 pub mod facts;
-#[cfg(target_os = "linux")]
-pub mod access;
 pub mod join;
 pub mod link;
 pub mod log;
-pub mod route;
 pub mod plan;
+pub mod route;
 pub mod script;
 pub mod service;
 pub mod state;

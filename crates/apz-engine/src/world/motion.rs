@@ -12,8 +12,8 @@ use super::super::props::Box2;
 use super::super::robot::RobotState;
 use super::super::scene::Obj;
 use super::super::textures::Rng;
-use super::board_layout::{board_height_at, path_on_traces, BoardLayout};
-use super::{display_name, Bot, District, Floor, Packet, Phase, Ride, Social};
+use super::board_layout::{BoardLayout, board_height_at, path_on_traces};
+use super::{Bot, District, Floor, Packet, Phase, Ride, Social, display_name};
 
 /// A working slot's glow plate at full strength (floor.ts GLOW_OPACITY).
 const GLOW_OPACITY: f32 = 0.4;
@@ -115,11 +115,7 @@ fn recipient_of(tool: &str, inp: &Value) -> Option<u64> {
     let to = field(inp, "to_cid").or_else(|| field(inp, "assignee"))?;
     let sends = tool == "plaza_send_message";
     let assigns = tool == "plaza_assign" || tool == "plaza_post_task";
-    if sends || assigns {
-        to.as_u64()
-    } else {
-        None
-    }
+    if sends || assigns { to.as_u64() } else { None }
 }
 
 impl Floor {
@@ -152,7 +148,9 @@ impl Floor {
         let l = *grid.lifts.get(index).ok_or(NO_LIFT)?;
         let (ox, oz, yaw) = (l.x, l.z, l.face);
         // The robots' level decides the way.
-        let on_plate = |b: &&Bot| (f64::from(b.py) - l.high).abs() < 0.05 && !self.rides.contains_key(&b.agent.cid);
+        let on_plate = |b: &&Bot| {
+            (f64::from(b.py) - l.high).abs() < 0.05 && !self.rides.contains_key(&b.agent.cid)
+        };
         let from_high = self.bots.iter().filter(|b| on_plate(b)).count() >= n.max(1);
         let sg = if from_high { 1.0 } else { -1.0 }; // +1: out toward the walkway (the board), -1: back toward the plate
         let level = if from_high { l.low } else { l.high };
@@ -164,7 +162,11 @@ impl Floor {
                 let x = ox + sg * s * d + c * lat;
                 let z = oz + sg * c * d - s * lat;
                 if let Some(cell) = nav.world.debug_cell(x, z) {
-                    let side = if from_high { cell.region == 0 } else { cell.region != 0 };
+                    let side = if from_high {
+                        cell.region == 0
+                    } else {
+                        cell.region != 0
+                    };
                     if cell.walk && side && (cell.y - level).abs() < 0.03 {
                         goal = Some((x, z));
                         break;
@@ -173,12 +175,15 @@ impl Floor {
             }
             d += 0.05;
         }
-        let goal = goal.ok_or_else(|| "no walk cell beyond the lift on the other level".to_string())?;
+        let goal =
+            goal.ok_or_else(|| "no walk cell beyond the lift on the other level".to_string())?;
         let plate = if from_high { l.high } else { l.low };
         let mut near: Vec<&Bot> = self
             .bots
             .iter()
-            .filter(|b| (f64::from(b.py) - plate).abs() < 0.05 && !self.rides.contains_key(&b.agent.cid))
+            .filter(|b| {
+                (f64::from(b.py) - plate).abs() < 0.05 && !self.rides.contains_key(&b.agent.cid)
+            })
             .collect();
         near.sort_by(|a, b| {
             let da = (f64::from(a.x) - ox).hypot(f64::from(a.y) - oz);
@@ -189,7 +194,13 @@ impl Floor {
         let robots: Vec<u64> = near.iter().map(|b| b.agent.cid).collect();
         let goal = (goal.0 as f32, goal.1 as f32);
         for &cid in &robots {
-            self.rides.insert(cid, Ride { goal: [goal.0, goal.1], left: RIDE_S });
+            self.rides.insert(
+                cid,
+                Ride {
+                    goal: [goal.0, goal.1],
+                    left: RIDE_S,
+                },
+            );
         }
         Ok(LiftRide { goal, robots })
     }
@@ -206,14 +217,18 @@ impl Floor {
 
     /// The height of the surface under (x, y): the board's, or the bare floor without a board.
     fn ground_at(&self, x: f32, y: f32) -> f32 {
-        self.board.as_ref().map_or(0.0, |b| board_height_at(x, y, &b.layout))
+        self.board
+            .as_ref()
+            .map_or(0.0, |b| board_height_at(x, y, &b.layout))
     }
 
     /// The point robot `i` walks to on the way to `goal`. A goal in another room is reached along the
     /// copper: the route is set once per goal (from the robot's place then), and its waypoints are
     /// taken in turn. Otherwise, or without a board, the goal itself.
     fn waypoint(&mut self, i: usize, goal: (f32, f32)) -> (f32, f32) {
-        let Some(board) = self.board.as_ref() else { return goal };
+        let Some(board) = self.board.as_ref() else {
+            return goal;
+        };
         let (x, y) = (self.bots[i].x, self.bots[i].y);
         let key = [goal.0, goal.1];
         if self.bots[i].route_goal != Some(key) {
@@ -243,7 +258,9 @@ impl Floor {
     /// more pulses, and the built parts and the atom animate. A machine without a board does nothing.
     fn step_board(&mut self, dt: f32, ambient: f32, ambient_dt: f32) {
         let time = ambient;
-        let Some(board) = self.board.as_mut() else { return };
+        let Some(board) = self.board.as_mut() else {
+            return;
+        };
         let mut busy: HashSet<String> = HashSet::new();
         let mut working = 0usize;
         for bot in &self.bots {
@@ -273,12 +290,25 @@ impl Floor {
             }
         }
         for tp in board.pulses.iter_mut() {
-            let end = |s: &Option<String>| s.as_ref().and_then(|s| board.level.get(s)).copied().unwrap_or(0.0);
+            let end = |s: &Option<String>| {
+                s.as_ref()
+                    .and_then(|s| board.level.get(s))
+                    .copied()
+                    .unwrap_or(0.0)
+            };
             let busy_end = end(&tp.from).max(end(&tp.to));
             tp.pulses.update(ambient_dt, 0.4 + 0.6 * busy_end);
         }
         let share = working as f32 / self.bots.len().max(1) as f32;
-        board.built.update(ambient_dt, ambient, &hardware::State { status: board.status, activity: share, open: 1.0 });
+        board.built.update(
+            ambient_dt,
+            ambient,
+            &hardware::State {
+                status: board.status,
+                activity: share,
+                open: 1.0,
+            },
+        );
         if let Some(anim) = board.atom.as_mut() {
             anim(time);
         }
@@ -303,7 +333,13 @@ impl Floor {
         halo.set_dynamic(true);
         self.root.add(&core);
         self.root.add(&halo);
-        self.packets.push(Packet { from, to, start: self.now_ms, core, halo });
+        self.packets.push(Packet {
+            from,
+            to,
+            start: self.now_ms,
+            core,
+            halo,
+        });
         while self.packets.len() > MAX_PACKETS {
             let p = self.packets.remove(0);
             self.drop_packet(&p);
@@ -318,7 +354,11 @@ impl Floor {
         match kind {
             "transcript" => self.on_transcript(data),
             "delta" => {
-                if let Some(i) = data.get("cid").and_then(Value::as_u64).and_then(|c| self.index_of(c)) {
+                if let Some(i) = data
+                    .get("cid")
+                    .and_then(Value::as_u64)
+                    .and_then(|c| self.index_of(c))
+                {
                     self.set_activity(i, "thinking…".to_string());
                 }
             }
@@ -355,7 +395,11 @@ impl Floor {
     /// `toolActivity`: the one line that says what a tool call is doing.
     fn tool_activity(&self, tool: &str, inp: &Value) -> String {
         if tool == "bash" {
-            let first = text(inp.get("command")).split('\n').next().unwrap_or("").to_string();
+            let first = text(inp.get("command"))
+                .split('\n')
+                .next()
+                .unwrap_or("")
+                .to_string();
             return format!("$ {}", clip(&first, 120));
         }
         if tool == "plaza_send_message" {
@@ -371,7 +415,11 @@ impl Floor {
             return format!("⇪ shared {}", text(inp.get("path")));
         }
         let path = text(inp.get("path"));
-        let target = if path.is_empty() { text(inp.get("url")) } else { path };
+        let target = if path.is_empty() {
+            text(inp.get("url"))
+        } else {
+            path
+        };
         if target.is_empty() {
             format!("→ {tool}")
         } else {
@@ -417,11 +465,18 @@ impl Floor {
                 }
             }
             "work_start" => {
-                let from = data.get("origin").and_then(|o| o.get("from_cid")).and_then(Value::as_u64);
+                let from = data
+                    .get("origin")
+                    .and_then(|o| o.get("from_cid"))
+                    .and_then(Value::as_u64);
                 if let Some(from) = from {
                     self.send_packet(from, cid, false);
                 } else if text(data.get("kind")) == "task" {
-                    let boss = self.bots.iter().find(|b| b.agent.tier == "orchestrator").map(|b| b.agent.cid);
+                    let boss = self
+                        .bots
+                        .iter()
+                        .find(|b| b.agent.tier == "orchestrator")
+                        .map(|b| b.agent.cid);
                     if let Some(boss) = boss {
                         self.send_packet(boss, cid, false);
                     }
@@ -461,14 +516,21 @@ impl Floor {
                 j != i
                     && self.bots[j].agent.status == "idle"
                     && self.bots[j].social.is_none()
-                    && nearby(&self.districts[self.bots[j].district], &self.districts[mine])
+                    && nearby(
+                        &self.districts[self.bots[j].district],
+                        &self.districts[mine],
+                    )
             })
             .collect();
         if pool.is_empty() {
             return;
         }
         let pick = pool[((random() * pool.len() as f32) as usize).min(pool.len() - 1)];
-        let (px, py, pcid) = (self.bots[pick].x, self.bots[pick].y, self.bots[pick].agent.cid);
+        let (px, py, pcid) = (
+            self.bots[pick].x,
+            self.bots[pick].y,
+            self.bots[pick].agent.cid,
+        );
         let my_cid = self.bots[i].agent.cid;
         self.bots[i].social = Some(Social {
             phase: Phase::Go,
@@ -524,7 +586,8 @@ impl Floor {
         // its pose and sends its goal below. Without it, the robots walk straight on the engine's own layout.
         let walked = match self.nav.as_mut() {
             Some(nav) => {
-                let list: Vec<(u64, f32, f32)> = self.bots.iter().map(|b| (b.agent.cid, b.x, b.y)).collect();
+                let list: Vec<(u64, f32, f32)> =
+                    self.bots.iter().map(|b| (b.agent.cid, b.x, b.y)).collect();
                 nav.sync(&list);
                 // A walk the nav gave up: the work puts its spot on the robot's avoid list and picks another.
                 for cid in nav.step(dt) {
@@ -680,9 +743,17 @@ impl Floor {
                 None => None,
             };
             // The work's station or partner sets the heading where it has one (robot-work.ts facing).
-            let want = if walked { self.work.facing(&work_bot(&self.bots[i])).or(want) } else { want };
+            let want = if walked {
+                self.work.facing(&work_bot(&self.bots[i])).or(want)
+            } else {
+                want
+            };
             // A waving robot turns to face the camera (its heading: local +Z is forward, as the walk's).
-            let want = if self.bots[i].robot.waving() { Some((eye.x - x).atan2(eye.z - y)) } else { want };
+            let want = if self.bots[i].robot.waving() {
+                Some((eye.x - x).atan2(eye.z - y))
+            } else {
+                want
+            };
             if let Some(want) = want {
                 let d = want - self.bots[i].heading;
                 let diff = d.sin().atan2(d.cos());
@@ -740,7 +811,8 @@ impl Floor {
             {
                 let b = &mut self.bots[i];
                 b.robot.group.set_position(b.x, b.py, b.y);
-                let target = Quat::from_rotation_arc(Vec3::Y, slope) * Quat::from_axis_angle(Vec3::Y, b.heading);
+                let target = Quat::from_rotation_arc(Vec3::Y, slope)
+                    * Quat::from_axis_angle(Vec3::Y, b.heading);
                 b.tilt = b.tilt.slerp(target, 1.0 - (-10.0 * dt).exp());
                 b.robot.group.set_quaternion(b.tilt);
                 b.robot.update(dt, t);
@@ -760,7 +832,11 @@ impl Floor {
                 }
                 let b = &mut self.bots[i];
                 let head = b.robot.label_anchor();
-                b.token.set_position(head.x, head.y + 0.6 + (t * 2.5 + cid as f32).sin() * 0.08, head.z);
+                b.token.set_position(
+                    head.x,
+                    head.y + 0.6 + (t * 2.5 + cid as f32).sin() * 0.08,
+                    head.z,
+                );
                 b.token.get().rotation.y += dt * 1.8;
             }
         }
@@ -800,7 +876,11 @@ impl Floor {
         let mut i = self.packets.len();
         while i > 0 {
             i -= 1;
-            let (from, to, start) = (self.packets[i].from, self.packets[i].to, self.packets[i].start);
+            let (from, to, start) = (
+                self.packets[i].from,
+                self.packets[i].to,
+                self.packets[i].start,
+            );
             let t = (now - start) / PACKET_MS;
             let ends = self.index_of(from).zip(self.index_of(to));
             let Some((a, b)) = ends.filter(|_| t < 1.0) else {
@@ -829,7 +909,14 @@ mod tests {
     use super::*;
 
     fn district() -> District {
-        District { role: "worker".to_string(), cx: 0.0, cy: 0.0, r: 4.0, hue: 0.0, round: false }
+        District {
+            role: "worker".to_string(),
+            cx: 0.0,
+            cy: 0.0,
+            r: 4.0,
+            hue: 0.0,
+            round: false,
+        }
     }
 
     fn bot_at(floor: &Floor, cid: u64, x: f32, y: f32, status: &str) -> Bot {
@@ -840,7 +927,8 @@ mod tests {
                 role: "worker".to_string(),
                 status: status.to_string(),
                 tier: "worker".to_string(),
-                model: "test".to_string(), species: None,
+                model: "test".to_string(),
+                species: None,
             },
             district: 0,
             home: (0.0, 0.0),
@@ -881,7 +969,11 @@ mod tests {
         floor.send_packet(1, 2, true);
         assert_eq!(floor.packets.len(), 1);
         floor.step(0.016, PACKET_MS - 1.0, 0.0, 0.0);
-        assert_eq!(floor.packets.len(), 1, "still in flight just before PACKET_MS");
+        assert_eq!(
+            floor.packets.len(),
+            1,
+            "still in flight just before PACKET_MS"
+        );
         floor.step(0.016, PACKET_MS + 1.0, 0.0, 0.0);
         assert!(floor.packets.is_empty(), "gone once PACKET_MS has passed");
     }
@@ -889,7 +981,12 @@ mod tests {
     fn board_floor(roles: &[&str], status: &str) -> Floor {
         let model = hardware::model("board/workstation").expect("the workstation board parses");
         let mut floor = Floor::new();
-        floor.show_board("test".into(), model, hardware::Params::default().with("gpus", 1.0), hardware::Status::Online);
+        floor.show_board(
+            "test".into(),
+            model,
+            hardware::Params::default().with("gpus", 1.0),
+            hardware::Status::Online,
+        );
         let list: Vec<AgentInfo> = roles
             .iter()
             .enumerate()
@@ -899,7 +996,8 @@ mod tests {
                 role: role.to_string(),
                 status: status.to_string(),
                 tier: "worker".to_string(),
-                model: "test".to_string(), species: None,
+                model: "test".to_string(),
+                species: None,
             })
             .collect();
         floor.sync(&list);
@@ -913,11 +1011,20 @@ mod tests {
         let lit = |status: &str| {
             let mut floor = board_floor(&["builder", "librarian", "reviewer"], status);
             for k in 0..240 {
-                floor.step(1.0 / 60.0, f64::from(k) * 1000.0 / 60.0 + 10_000.0, 0.0, 0.0);
+                floor.step(
+                    1.0 / 60.0,
+                    f64::from(k) * 1000.0 / 60.0 + 10_000.0,
+                    0.0,
+                    0.0,
+                );
             }
             let board = floor.board.as_ref().expect("a board");
             assert!(!board.glow_plates.is_empty(), "the board has glow plates");
-            board.glow_plates.values().filter(|(mesh, mat)| mesh.get().visible && mat.get().opacity > 0.3).count()
+            board
+                .glow_plates
+                .values()
+                .filter(|(mesh, mat)| mesh.get().visible && mat.get().opacity > 0.3)
+                .count()
         };
         assert!(lit("working") > 0, "no glow plate lit over a working slot");
         assert_eq!(lit("idle"), 0, "a glow plate lit on an idle board");
@@ -935,23 +1042,44 @@ mod tests {
             floor.step_rooms(std::time::Duration::from_millis(50));
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
-        assert!(floor.nav.is_some(), "the shared layout's navigation is built");
+        assert!(
+            floor.nav.is_some(),
+            "the shared layout's navigation is built"
+        );
         let start: Vec<(f32, f32)> = floor.bots.iter().map(|b| (b.x, b.y)).collect();
         for k in 0..900 {
-            floor.step(1.0 / 60.0, f64::from(k) * 1000.0 / 60.0 + 10_000.0, 0.0, 0.0);
+            floor.step(
+                1.0 / 60.0,
+                f64::from(k) * 1000.0 / 60.0 + 10_000.0,
+                0.0,
+                0.0,
+            );
             let nav = floor.nav.as_ref().expect("still there");
             for b in &floor.bots {
                 if let Some(c) = nav.world.grid().cell_at(f64::from(b.x), f64::from(b.y)) {
-                    assert_eq!(nav.world.grid().blocked[c], 0, "a robot stands on a blocked cell");
+                    assert_eq!(
+                        nav.world.grid().blocked[c],
+                        0,
+                        "a robot stands on a blocked cell"
+                    );
                 }
             }
         }
-        let moved = floor.bots.iter().zip(&start).filter(|(b, s)| (b.x - s.0).hypot(b.y - s.1) > 0.5).count();
+        let moved = floor
+            .bots
+            .iter()
+            .zip(&start)
+            .filter(|(b, s)| (b.x - s.0).hypot(b.y - s.1) > 0.5)
+            .count();
         assert!(moved > 0, "the idle robots wander on the grid");
         // The robots act on the work's decisions (robot-work.ts): each has an activity.
         for b in &floor.bots {
             let d = floor.work.debug_of(b.agent.cid as i64);
-            assert!(d.pointer("/dec/activity").is_some_and(|a| a.is_string()), "robot {} has no work decision: {d}", b.agent.cid);
+            assert!(
+                d.pointer("/dec/activity").is_some_and(|a| a.is_string()),
+                "robot {} has no work decision: {d}",
+                b.agent.cid
+            );
         }
     }
 
@@ -975,7 +1103,12 @@ mod tests {
         };
         frames(&mut floor, 120);
         let (low, high, lx, lz) = {
-            let grid = floor.nav.as_ref().expect("the board has a nav").world.grid();
+            let grid = floor
+                .nav
+                .as_ref()
+                .expect("the board has a nav")
+                .world
+                .grid();
             let l = *grid.lifts.first().expect("the board has a lift");
             (l.low, l.high, l.x, l.z)
         };
@@ -986,7 +1119,10 @@ mod tests {
         nav.world.shove(id, lx, lz);
         frames(&mut floor, 2);
         let on_plate = floor.bot(cid).expect("the robot").py;
-        assert!((f64::from(on_plate) - high).abs() < 0.05, "the robot stands on the plate at {on_plate}, not {high}");
+        assert!(
+            (f64::from(on_plate) - high).abs() < 0.05,
+            "the robot stands on the plate at {on_plate}, not {high}"
+        );
 
         let ride = floor.lift_ride(0, 1).expect("the robot on the plate rides");
         assert_eq!(ride.robots, vec![cid], "the robot nearest the lift is sent");
@@ -1001,14 +1137,20 @@ mod tests {
         }
         assert!(ended, "the ride ends within 120 s");
         let end = floor.bot(cid).expect("the robot").py;
-        assert!((f64::from(end) - low).abs() < 0.05, "the robot ends on the other level at {end}, not {low}");
+        assert!(
+            (f64::from(end) - low).abs() < 0.05,
+            "the robot ends on the other level at {end}, not {low}"
+        );
         // The work's goal takes over again once the ride ends.
         assert!(floor.work.debug_of(cid as i64).is_object());
     }
 
     #[test]
     fn the_nav_overlay_is_built_and_follows_the_walk_when_asked() {
-        crate::set_env_overrides(std::collections::BTreeMap::from([("APZ_NAV_OVERLAY".to_string(), "1".to_string())]));
+        crate::set_env_overrides(std::collections::BTreeMap::from([(
+            "APZ_NAV_OVERLAY".to_string(),
+            "1".to_string(),
+        )]));
         let mut floor = board_floor(&["builder", "librarian", "reviewer"], "idle");
         let list: Vec<AgentInfo> = floor.bots.iter().map(|b| b.agent.clone()).collect();
         floor.layout_cache = None;
@@ -1020,22 +1162,42 @@ mod tests {
         }
         crate::set_env_overrides(std::collections::BTreeMap::new());
         for k in 0..300 {
-            floor.step(1.0 / 60.0, f64::from(k) * 1000.0 / 60.0 + 10_000.0, 0.0, 0.0);
+            floor.step(
+                1.0 / 60.0,
+                f64::from(k) * 1000.0 / 60.0 + 10_000.0,
+                0.0,
+                0.0,
+            );
         }
         let nav = floor.nav.as_ref().expect("the board has a nav");
-        let overlay = nav.overlay.as_ref().expect("APZ_NAV_OVERLAY=1 builds the overlay with the nav");
+        let overlay = nav
+            .overlay
+            .as_ref()
+            .expect("APZ_NAV_OVERLAY=1 builds the overlay with the nav");
         assert!(overlay.cells > 0, "the overlay draws the walkable cells");
     }
 
     #[test]
     fn a_busy_room_lifts_its_slot_level() {
         let mut floor = board_floor(&["builder", "librarian"], "working");
-        let slot = floor.board.as_ref().expect("a board").layout.districts[0].slot.clone();
+        let slot = floor.board.as_ref().expect("a board").layout.districts[0]
+            .slot
+            .clone();
         for _ in 0..80 {
             floor.step(0.05, 0.0, 0.0, 0.0);
         }
-        let level = floor.board.as_ref().expect("a board").level.get(&slot).copied().unwrap_or(0.0);
-        assert!(level > 0.95, "a slot with a working room settles at full level, got {level}");
+        let level = floor
+            .board
+            .as_ref()
+            .expect("a board")
+            .level
+            .get(&slot)
+            .copied()
+            .unwrap_or(0.0);
+        assert!(
+            level > 0.95,
+            "a slot with a working room settles at full level, got {level}"
+        );
     }
 
     #[test]
@@ -1046,9 +1208,18 @@ mod tests {
             (bd.district.cx, bd.district.cy)
         };
         let wp = floor.waypoint(0, goal);
-        assert!(floor.bots[0].route_goal == Some([goal.0, goal.1]), "the route is set for the goal");
-        assert!(!floor.bots[0].route.is_empty(), "the walk to another room has a route");
-        assert!(wp != goal || floor.bots[0].route.len() == 1, "the first step is a waypoint of the copper");
+        assert!(
+            floor.bots[0].route_goal == Some([goal.0, goal.1]),
+            "the route is set for the goal"
+        );
+        assert!(
+            !floor.bots[0].route.is_empty(),
+            "the walk to another room has a route"
+        );
+        assert!(
+            wp != goal || floor.bots[0].route.len() == 1,
+            "the first step is a waypoint of the copper"
+        );
     }
 
     #[test]
@@ -1088,12 +1259,18 @@ mod tests {
         assert!(bot.robot.waving(), "a selected robot waves");
         let turn = (bot.heading - want).sin().atan2((bot.heading - want).cos());
         assert!(turn.abs() < 0.05, "heading {} wants {want}", bot.heading);
-        assert!((bot.x - 2.0).abs() < 1e-6 && bot.y.abs() < 1e-6, "the robot is not moved");
+        assert!(
+            (bot.x - 2.0).abs() < 1e-6 && bot.y.abs() < 1e-6,
+            "the robot is not moved"
+        );
 
         for _ in 0..20 {
             floor.step(0.05, 500.0, 0.0, 0.0); // 1.5 s in: the wave is over
         }
-        assert!(!floor.bots[0].robot.waving(), "the wave stops after WAVE_SECS");
+        assert!(
+            !floor.bots[0].robot.waving(),
+            "the wave stops after WAVE_SECS"
+        );
 
         // The same selection reacts once: it does not wave again until the selection changes.
         for _ in 0..5 {

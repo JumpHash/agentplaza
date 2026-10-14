@@ -4,12 +4,12 @@ use std::time::Instant;
 
 use apz_http::{Params, Request, Response, Router};
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::client::{ServerInfo, ToolInfo};
 use super::config::{self, McpServer, Setting, StoreError};
 use super::runtime::{Ctx, LogLine, Status};
-use super::{auto_risk, risk_for, stdio, wire_names, McpSecrets, OnBehalf, VaultSecrets};
+use super::{McpSecrets, OnBehalf, VaultSecrets, auto_risk, risk_for, stdio, wire_names};
 use crate::state::App;
 
 /// The node a test or an owner's start runs for when the request names none (as the vault does).
@@ -17,7 +17,9 @@ const DEFAULT_NODE: &str = "n0";
 
 pub fn routes(router: Router<App>) -> Router<App> {
     router
-        .get("/v1/mcp/catalog", |_, _, _| Response::json(200, &super::catalog::PRESETS))
+        .get("/v1/mcp/catalog", |_, _, _| {
+            Response::json(200, &super::catalog::PRESETS)
+        })
         .get("/v1/mcp/servers", list_route)
         .post("/v1/mcp/servers", create_route)
         .get("/v1/mcp/servers/{id}", get_route)
@@ -74,11 +76,20 @@ fn changed(app: &App, id: &str) {
 }
 
 fn server_or_404(app: &App, id: &str) -> Result<McpServer, Response> {
-    app.mcp.store.get(id).ok_or_else(|| error(404, &format!("no MCP server `{id}`"), None))
+    app.mcp
+        .store
+        .get(id)
+        .ok_or_else(|| error(404, &format!("no MCP server `{id}`"), None))
 }
 
 fn list_route(app: &App, _: &Request, _: &Params<'_>) -> Response {
-    let views: Vec<ServerView> = app.mcp.store.list().into_iter().map(|s| view(app, s)).collect();
+    let views: Vec<ServerView> = app
+        .mcp
+        .store
+        .list()
+        .into_iter()
+        .map(|s| view(app, s))
+        .collect();
     Response::json(200, &views)
 }
 
@@ -114,12 +125,18 @@ fn patch_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
         Err(response) => return response,
     };
     let Ok(Value::Object(patch)) = req.json::<Value>() else {
-        return error(400, "the body must be a JSON object of the fields to change", None);
+        return error(
+            400,
+            "the body must be a JSON object of the fields to change",
+            None,
+        );
     };
     let mut merged = serde_json::to_value(&current).unwrap_or(Value::Null);
     for (key, value) in patch {
         match key.as_str() {
-            "id" if value.as_str() != Some(id) => return error(400, "id: an id cannot change", Some("id")),
+            "id" if value.as_str() != Some(id) => {
+                return error(400, "id: an id cannot change", Some("id"));
+            }
             "created_ms" | "updated_ms" => {}
             _ => {
                 merged[key.as_str()] = value;
@@ -162,13 +179,23 @@ fn delete_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
     };
     app.mcp.runtime.stop(id);
     app.mcp.store.remove(id);
-    if let Err(why) = app.vault.remove_binding(&format!("mcp:{id}"), "owner", apz_plaza::now_ms()) {
-        eprintln!("apid: cannot remove the vault bindings of MCP server {id}: {}", why.message());
+    if let Err(why) = app
+        .vault
+        .remove_binding(&format!("mcp:{id}"), "owner", apz_plaza::now_ms())
+    {
+        eprintln!(
+            "apid: cannot remove the vault bindings of MCP server {id}: {}",
+            why.message()
+        );
     }
     changed(app, id);
     if req.query_param("purge") == Some("1") && server.storage.volume {
         if let Err(why) = stdio::purge_volume(id) {
-            return error(500, &format!("the server is deleted, but its volume was not purged: {why}"), None);
+            return error(
+                500,
+                &format!("the server is deleted, but its volume was not purged: {why}"),
+                None,
+            );
         }
     }
     Response::new(204, "application/json", Vec::new())
@@ -183,7 +210,14 @@ fn node_of(req: &Request) -> String {
 }
 
 fn owner_ctx<'a>(app: &App, secrets: &'a dyn McpSecrets, node: String) -> Ctx<'a> {
-    super::ctx(app, secrets, OnBehalf::Owner { node: Some(node.clone()) }, node)
+    super::ctx(
+        app,
+        secrets,
+        OnBehalf::Owner {
+            node: Some(node.clone()),
+        },
+        node,
+    )
 }
 
 fn test_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
@@ -196,7 +230,10 @@ fn test_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
     let was_running = app.mcp.runtime.summary(id).status == Status::Running;
     let started = Instant::now();
     let secrets = VaultSecrets::new(app);
-    let outcome = app.mcp.runtime.probe(&server, &owner_ctx(app, &secrets, node));
+    let outcome = app
+        .mcp
+        .runtime
+        .probe(&server, &owner_ctx(app, &secrets, node));
     let ms = started.elapsed().as_millis() as u64;
     if !was_running {
         app.mcp.runtime.stop(id);
@@ -218,7 +255,10 @@ fn test_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
                 }),
             )
         }
-        Err(why) => Response::json(200, &json!({"ok": false, "error": why, "ms": ms, "stderr": tail(app, id, 20)})),
+        Err(why) => Response::json(
+            200,
+            &json!({"ok": false, "error": why, "ms": ms, "stderr": tail(app, id, 20)}),
+        ),
     }
 }
 
@@ -230,12 +270,17 @@ fn start_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
     };
     app.mcp.runtime.reset(id);
     let secrets = VaultSecrets::new(app);
-    match app.mcp.runtime.probe(&server, &owner_ctx(app, &secrets, node_of(req))) {
+    match app
+        .mcp
+        .runtime
+        .probe(&server, &owner_ctx(app, &secrets, node_of(req)))
+    {
         Ok(probe) => app.mcp.store.set_tools(id, probe.tools),
         Err(why) => eprintln!("apid: MCP server {id} did not start: {why}"),
     }
     let view = view(app, server);
-    app.bus.publish("mcp.status", &json!({"id": id, "status": view.status}));
+    app.bus
+        .publish("mcp.status", &json!({"id": id, "status": view.status}));
     Response::json(200, &view)
 }
 
@@ -247,7 +292,8 @@ fn stop_route(app: &App, _: &Request, p: &Params<'_>) -> Response {
     };
     app.mcp.runtime.stop(id);
     let view = view(app, server);
-    app.bus.publish("mcp.status", &json!({"id": id, "status": view.status}));
+    app.bus
+        .publish("mcp.status", &json!({"id": id, "status": view.status}));
     Response::json(200, &view)
 }
 
@@ -265,7 +311,11 @@ fn logs_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
     if server_or_404(app, id).is_err() {
         return error(404, &format!("no MCP server `{id}`"), None);
     }
-    let limit = req.query_param("limit").and_then(|l| l.parse::<usize>().ok()).unwrap_or(100).min(500);
+    let limit = req
+        .query_param("limit")
+        .and_then(|l| l.parse::<usize>().ok())
+        .unwrap_or(100)
+        .min(500);
     Response::json(200, &app.mcp.runtime.logs(id, limit))
 }
 
@@ -300,8 +350,16 @@ fn tail(app: &App, id: &str, n: usize) -> Vec<LogLine> {
 fn store_error(err: StoreError) -> Response {
     match err {
         StoreError::Invalid(invalid) => error(400, &invalid.to_string(), Some(&invalid.field)),
-        StoreError::Duplicate(id) => error(409, &format!("an MCP server `{id}` already exists"), Some("id")),
+        StoreError::Duplicate(id) => error(
+            409,
+            &format!("an MCP server `{id}` already exists"),
+            Some("id"),
+        ),
         StoreError::Missing => error(404, "no such MCP server", None),
-        StoreError::Full => error(400, &format!("at most {} MCP servers", config::MAX_SERVERS), None),
+        StoreError::Full => error(
+            400,
+            &format!("at most {} MCP servers", config::MAX_SERVERS),
+            None,
+        ),
     }
 }

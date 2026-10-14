@@ -7,21 +7,29 @@ use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use iced::font::{self, Font};
-use iced::widget::{button, column, container, pick_list, row, text, text_editor, text_input, Space};
+use iced::widget::{
+    Space, button, column, container, pick_list, row, text, text_editor, text_input,
+};
 use iced::{Alignment, Border, Color, Element, Length, Padding, Subscription, Task, Theme};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use super::tools::encode;
 use super::Id;
-use crate::console::ui::{self, Kind, Tone, INK, INK_2, INK_3, RULE, RULE_FAINT, SHEET, SIGNAL};
-use crate::console::{client, events, Ctx};
-use crate::theme::{SANS};
+use super::tools::encode;
+use crate::console::ui::{self, INK, INK_2, INK_3, Kind, RULE, RULE_FAINT, SHEET, SIGNAL, Tone};
+use crate::console::{Ctx, client, events};
+use crate::theme::SANS;
 
 /// The tier of the constitution: switching one of its laws off needs its id typed in.
 const CONSTITUTION: &str = "constitution";
 
-const SANS_SEMIBOLD: Font = Font { weight: font::Weight::Semibold, ..SANS };
-const SANS_BOLD: Font = Font { weight: font::Weight::Bold, ..SANS };
+const SANS_SEMIBOLD: Font = Font {
+    weight: font::Weight::Semibold,
+    ..SANS
+};
+const SANS_BOLD: Font = Font {
+    weight: font::Weight::Bold,
+    ..SANS
+};
 
 const DAY_MS: i64 = 86_400_000;
 const INFRACTION_FETCH: usize = 200;
@@ -43,10 +51,22 @@ const JHRL_EXAMPLE: &str = r#"law "R-100" "No reading files with read_file" {
 
 /// The tiers in the order the web groups them: key, label, description.
 const TIERS: [(&str, &str, &str); 5] = [
-    ("constitution", "Constitution", "The plaza's fundamental rules; they override everything else."),
-    ("statutes", "Statutes", "Standing rules for roles and everyday work."),
+    (
+        "constitution",
+        "Constitution",
+        "The plaza's fundamental rules; they override everything else.",
+    ),
+    (
+        "statutes",
+        "Statutes",
+        "Standing rules for roles and everyday work.",
+    ),
     ("tools", "Tools", "Who may use which tool."),
-    ("operations", "Operations", "The kinds of actions the laws talk about."),
+    (
+        "operations",
+        "Operations",
+        "The kinds of actions the laws talk about.",
+    ),
     ("other", "Other", ""),
 ];
 const SEVERITIES: [&str; 4] = ["info", "minor", "major", "critical"];
@@ -297,11 +317,15 @@ pub fn load(state: &mut State, ctx: &Ctx) -> Task<Msg> {
         move || {
             let laws = client.get::<Value>("/v1/laws")?;
             let rules = client.get::<Value>("/v1/laws/rules")?;
-            let infractions = client.get::<Value>(&format!("/v1/infractions?limit={INFRACTION_FETCH}"))?;
+            let infractions =
+                client.get::<Value>(&format!("/v1/infractions?limit={INFRACTION_FETCH}"))?;
             Ok(Snapshot {
                 laws: parse_laws(&laws),
                 rules: parse_rules(&rules),
-                strict: rules.get("strict_permits").and_then(Value::as_bool).unwrap_or(false),
+                strict: rules
+                    .get("strict_permits")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
                 recent: parse_infractions(&infractions),
             })
         },
@@ -394,7 +418,12 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         Msg::Reason(id, text) => {
             state.reasons.insert(id, text);
         }
-        Msg::AskSwitchOff(id) => state.switch_off = Some(SwitchOff { id, typed: String::new() }),
+        Msg::AskSwitchOff(id) => {
+            state.switch_off = Some(SwitchOff {
+                id,
+                typed: String::new(),
+            })
+        }
         Msg::CancelSwitchOff => state.switch_off = None,
         Msg::TypeConfirm(typed) => {
             if let Some(dialog) = state.switch_off.as_mut() {
@@ -410,14 +439,26 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             if state.busy {
                 return Task::none();
             }
-            let reason = state.reasons.get(&id).map(|r| r.trim().to_string()).unwrap_or_default();
+            let reason = state
+                .reasons
+                .get(&id)
+                .map(|r| r.trim().to_string())
+                .unwrap_or_default();
             if disabled && reason.is_empty() {
                 state.action_error = Some(format!("Give a reason before switching off {id}."));
                 return Task::none();
             }
             // A constitutional law goes off only with its id typed in the dialog (the hub checks it too).
-            let constitutional = state.laws.iter().any(|l| l.id == id && l.tier == CONSTITUTION);
-            let typed = state.switch_off.as_ref().filter(|d| d.id == id).map(|d| d.typed.trim().to_string()).unwrap_or_default();
+            let constitutional = state
+                .laws
+                .iter()
+                .any(|l| l.id == id && l.tier == CONSTITUTION);
+            let typed = state
+                .switch_off
+                .as_ref()
+                .filter(|d| d.id == id)
+                .map(|d| d.typed.trim().to_string())
+                .unwrap_or_default();
             if disabled && constitutional && typed != id {
                 state.action_error = Some(format!("Type {id} to confirm before switching it off."));
                 return Task::none();
@@ -425,11 +466,22 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             state.busy = true;
             state.notice = None;
             state.action_error = None;
-            let line = if disabled { format!("Switched off {id}.") } else { format!("Switched on {id}.") };
+            let line = if disabled {
+                format!("Switched off {id}.")
+            } else {
+                format!("Switched on {id}.")
+            };
             let path = format!("/v1/laws/overrides/{}", encode(&id));
-            let body = if constitutional { json!({"disabled": disabled, "reason": reason, "confirm": typed}) } else { json!({"disabled": disabled, "reason": reason}) };
+            let body = if constitutional {
+                json!({"disabled": disabled, "reason": reason, "confirm": typed})
+            } else {
+                json!({"disabled": disabled, "reason": reason})
+            };
             let client = ctx.client.clone();
-            return client::task(move || client.call("PUT", &path, Some(&body)).map(|_| line), Msg::Done);
+            return client::task(
+                move || client.call("PUT", &path, Some(&body)).map(|_| line),
+                Msg::Done,
+            );
         }
         Msg::SelectLaw(id) => {
             if state.selected_law.as_deref() == Some(id.as_str()) {
@@ -488,7 +540,10 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             }
             let title = state.title.trim().to_string();
             if title.is_empty() {
-                state.save_failure = Some(SaveFailure { message: "Give the rule a title.".into(), diagnostics: Vec::new() });
+                state.save_failure = Some(SaveFailure {
+                    message: "Give the rule a title.".into(),
+                    diagnostics: Vec::new(),
+                });
                 return Task::none();
             }
             state.busy = true;
@@ -498,10 +553,15 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             let editing = state.editing.clone();
             let source = state.source.text();
             let client = ctx.client.clone();
-            return Task::perform(async move { save_rule(&client, editing.as_deref(), &title, &source) }, Msg::Saved);
+            return Task::perform(
+                async move { save_rule(&client, editing.as_deref(), &title, &source) },
+                Msg::Saved,
+            );
         }
         Msg::SetRuleEnabled(enable) => {
-            let Some(id) = state.editing.clone() else { return Task::none() };
+            let Some(id) = state.editing.clone() else {
+                return Task::none();
+            };
             if state.busy {
                 return Task::none();
             }
@@ -512,11 +572,16 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             let path = format!("/v1/laws/rules/{}/{verb}", encode(&id));
             let line = format!("{} {id}.", if enable { "Enabled" } else { "Disabled" });
             let client = ctx.client.clone();
-            return client::task(move || client.post::<Value>(&path, &json!({})).map(|_| line), Msg::Done);
+            return client::task(
+                move || client.post::<Value>(&path, &json!({})).map(|_| line),
+                Msg::Done,
+            );
         }
         Msg::ArmDelete(armed) => state.confirm_delete = armed,
         Msg::DeleteRule => {
-            let Some(id) = state.editing.clone() else { return Task::none() };
+            let Some(id) = state.editing.clone() else {
+                return Task::none();
+            };
             if state.busy {
                 return Task::none();
             }
@@ -544,10 +609,18 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
 
 /// An error line beside a "Try again" button that reloads the screen, as the web's failure rows do.
 fn with_retry<'a>(line: Element<'a, Msg>) -> Element<'a, Msg> {
-    row![line, ui::btn("Try again", Some("refresh"), Kind::Secondary, Some(Msg::Retry))]
-        .spacing(12)
-        .align_y(Alignment::Center)
-        .into()
+    row![
+        line,
+        ui::btn(
+            "Try again",
+            Some("refresh"),
+            Kind::Secondary,
+            Some(Msg::Retry)
+        )
+    ]
+    .spacing(12)
+    .align_y(Alignment::Center)
+    .into()
 }
 
 pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
@@ -555,12 +628,16 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
     let mut body: Vec<Element<'a, Msg>> = vec![container(ui::prose(INTRO)).max_width(620).into()];
     if !state.loaded {
         body.push(match &state.error {
-            Some(e) => with_retry(ui::error_line(&format!("The rules could not be loaded: {e}"))),
+            Some(e) => with_retry(ui::error_line(&format!(
+                "The rules could not be loaded: {e}"
+            ))),
             None => ui::loading(),
         });
     } else {
         if let Some(e) = &state.error {
-            body.push(with_retry(ui::error_line(&format!("The rules could not be refreshed: {e}"))));
+            body.push(with_retry(ui::error_line(&format!(
+                "The rules could not be refreshed: {e}"
+            ))));
         }
         if let Some(e) = &state.action_error {
             body.push(ui::error_line(e));
@@ -571,7 +648,11 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
         if let Some(banner) = constitution_banner(state) {
             body.insert(0, banner);
         }
-        if let Some(dialog) = state.switch_off.as_ref().and_then(|d| switch_off_dialog(state, d)) {
+        if let Some(dialog) = state
+            .switch_off
+            .as_ref()
+            .and_then(|d| switch_off_dialog(state, d))
+        {
             body.push(dialog);
         }
         body.push(stats(state, now));
@@ -580,28 +661,67 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
         body.push(ui::card("Violations by law", violations(state, now)));
         body.push(ui::card("Strict permits", strict_permits(state)));
     }
-    ui::sheet(ui::view_head("Rules", vec![]), ui::scroll(column(body).spacing(22)).height(Length::Fill).into())
+    ui::sheet(
+        ui::view_head("Rules", vec![]),
+        ui::scroll(column(body).spacing(22))
+            .height(Length::Fill)
+            .into(),
+    )
 }
 
 /// The banner while any constitutional law is switched off, with a link to each one.
 fn constitution_banner<'a>(state: &'a State) -> Option<Element<'a, Msg>> {
-    let off: Vec<&Law> = state.laws.iter().filter(|l| l.tier == CONSTITUTION && !l.enabled).collect();
+    let off: Vec<&Law> = state
+        .laws
+        .iter()
+        .filter(|l| l.tier == CONSTITUTION && !l.enabled)
+        .collect();
     if off.is_empty() {
         return None;
     }
     let n = off.len();
-    let headline = format!("{n} constitutional law{} {} switched off", if n == 1 { "" } else { "s" }, if n == 1 { "is" } else { "are" });
-    let links: Vec<Element<'a, Msg>> = off.iter().map(|l| ui::link(&l.id, Msg::SelectLaw(l.id.clone()), true)).collect();
+    let headline = format!(
+        "{n} constitutional law{} {} switched off",
+        if n == 1 { "" } else { "s" },
+        if n == 1 { "is" } else { "are" }
+    );
+    let links: Vec<Element<'a, Msg>> = off
+        .iter()
+        .map(|l| ui::link(&l.id, Msg::SelectLaw(l.id.clone()), true))
+        .collect();
     Some(
-        container(column![text(headline).size(14.0).color(crate::theme::palette().warn), row(links).spacing(14).align_y(Alignment::Center)].spacing(8))
-            .padding(Padding { top: 12.0, right: 16.0, bottom: 12.0, left: 16.0 })
-            .width(Length::Fill)
-            .style(|_: &Theme| container::Style {
-                background: Some(Color { a: 0.08, ..crate::theme::palette().warn }.into()),
-                border: Border { color: crate::theme::palette().warn, width: 1.0, radius: 0.0.into() },
-                ..Default::default()
-            })
-            .into(),
+        container(
+            column![
+                text(headline)
+                    .size(14.0)
+                    .color(crate::theme::palette().warn),
+                row(links).spacing(14).align_y(Alignment::Center)
+            ]
+            .spacing(8),
+        )
+        .padding(Padding {
+            top: 12.0,
+            right: 16.0,
+            bottom: 12.0,
+            left: 16.0,
+        })
+        .width(Length::Fill)
+        .style(|_: &Theme| container::Style {
+            background: Some(
+                Color {
+                    a: 0.08,
+                    ..crate::theme::palette().warn
+                }
+                .into(),
+            ),
+            border: Border {
+                color: crate::theme::palette().warn,
+                width: 1.0,
+                radius: 0.0.into(),
+            },
+            ..Default::default()
+        })
+        .into(),
     )
 }
 
@@ -652,13 +772,21 @@ fn switch_off_dialog<'a>(state: &'a State, dialog: &'a SwitchOff) -> Option<Elem
         row![
             Space::new().width(Length::Fill),
             ui::btn("Cancel", None, Kind::Ghost, Some(Msg::CancelSwitchOff)),
-            ui::btn("Switch off constitutional law", Some("ban"), Kind::Danger, ready.then(|| Msg::SetOverride(law.id.clone(), true))),
+            ui::btn(
+                "Switch off constitutional law",
+                Some("ban"),
+                Kind::Danger,
+                ready.then(|| Msg::SetOverride(law.id.clone(), true))
+            ),
         ]
         .spacing(8)
         .align_y(Alignment::Center)
         .into(),
     );
-    Some(ui::card(&format!("Switch off \"{}\"?", law.title), column(body).spacing(12).into()))
+    Some(ui::card(
+        &format!("Switch off \"{}\"?", law.title),
+        column(body).spacing(12).into(),
+    ))
 }
 
 /// The hub's events for this screen: a law, agent or violation change on the hub reloads it.
@@ -669,22 +797,43 @@ pub fn subscription(ctx: &Ctx) -> Subscription<Msg> {
 // ---- requests ----
 
 /// One call that keeps the hub's answer whatever its status: a refused save carries diagnostics.
-fn send(client: &client::Client, method: &str, path: &str, body: &Value) -> Result<(u16, Value), String> {
-    apz_http::client::request_json(&client.target, method, path, Some(body), client.timeout).map_err(|e| e.to_string())
+fn send(
+    client: &client::Client,
+    method: &str,
+    path: &str,
+    body: &Value,
+) -> Result<(u16, Value), String> {
+    apz_http::client::request_json(&client.target, method, path, Some(body), client.timeout)
+        .map_err(|e| e.to_string())
 }
 
-fn save_rule(client: &client::Client, editing: Option<&str>, title: &str, source: &str) -> Result<Rule, SaveFailure> {
+fn save_rule(
+    client: &client::Client,
+    editing: Option<&str>,
+    title: &str,
+    source: &str,
+) -> Result<Rule, SaveFailure> {
     let body = json!({"title": title, "source": source});
     let (method, path) = match editing {
         Some(id) => ("PUT", format!("/v1/laws/rules/{}", encode(id))),
         None => ("POST", "/v1/laws/rules".to_string()),
     };
-    let (status, value) = send(client, method, &path, &body).map_err(|message| SaveFailure { message, diagnostics: Vec::new() })?;
+    let (status, value) = send(client, method, &path, &body).map_err(|message| SaveFailure {
+        message,
+        diagnostics: Vec::new(),
+    })?;
     if (200..300).contains(&status) {
         return Ok(parse_rule(&value));
     }
-    let message = value.get("error").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| format!("The hub answered {status}."));
-    Err(SaveFailure { message, diagnostics: parse_diagnostics(&value) })
+    let message = value
+        .get("error")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("The hub answered {status}."));
+    Err(SaveFailure {
+        message,
+        diagnostics: parse_diagnostics(&value),
+    })
 }
 
 fn check_body(id: Option<String>, source: String) -> Value {
@@ -697,19 +846,31 @@ fn check_body(id: Option<String>, source: String) -> Value {
 
 fn set_strict(client: &client::Client, on: bool) -> Result<(), String> {
     let mut settings = client.get::<Value>("/v1/settings")?;
-    let root = settings.as_object_mut().ok_or("The settings did not load.")?;
+    let root = settings
+        .as_object_mut()
+        .ok_or("The settings did not load.")?;
     // The settings write takes the whole object, minus the key the hub only reports.
     root.remove("dev_models");
     let laws = root.entry("laws").or_insert_with(|| json!({}));
-    laws.as_object_mut().ok_or("The laws settings are not an object.")?.insert("strict_permits".into(), json!(on));
-    client.call("PUT", "/v1/settings", Some(&settings)).map(|_| ())
+    laws.as_object_mut()
+        .ok_or("The laws settings are not an object.")?
+        .insert("strict_permits".into(), json!(on));
+    client
+        .call("PUT", "/v1/settings", Some(&settings))
+        .map(|_| ())
 }
 
 fn fetch_violations(ctx: &Ctx, law: String) -> Task<Msg> {
     let client = ctx.client.clone();
-    let path = format!("/v1/laws/violations?law={}&limit={VIOLATION_LIMIT}", encode(&law));
+    let path = format!(
+        "/v1/laws/violations?law={}&limit={VIOLATION_LIMIT}",
+        encode(&law)
+    );
     let key = law.clone();
-    client::task(move || client.get::<Value>(&path).map(|v| parse_violations(&v)), move |r| Msg::ViolationsLoaded(key.clone(), r))
+    client::task(
+        move || client.get::<Value>(&path).map(|v| parse_violations(&v)),
+        move |r| Msg::ViolationsLoaded(key.clone(), r),
+    )
 }
 
 fn clear_editor(state: &mut State) {
@@ -739,12 +900,18 @@ fn int_of(v: &Value, key: &str) -> i64 {
 fn strings_of(v: &Value, key: &str) -> Vec<String> {
     v.get(key)
         .and_then(Value::as_array)
-        .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(str::to_string))
+                .collect()
+        })
         .unwrap_or_default()
 }
 
 fn parse_laws(v: &Value) -> Vec<Law> {
-    v.as_array().map(|a| a.iter().map(parse_law).collect()).unwrap_or_default()
+    v.as_array()
+        .map(|a| a.iter().map(parse_law).collect())
+        .unwrap_or_default()
 }
 
 fn parse_law(v: &Value) -> Law {
@@ -780,11 +947,14 @@ fn parse_law(v: &Value) -> Law {
         origin: text_of(v, "origin"),
         rule_id: text_of(v, "rule_id"),
         enabled: v.get("enabled").and_then(Value::as_bool).unwrap_or(true),
-        overridden: v.get("overridden").filter(|o| !o.is_null()).map(|o| Override {
-            disabled_by: text_of(o, "disabled_by"),
-            reason: text_of(o, "reason"),
-            at_ms: int_of(o, "at_ms"),
-        }),
+        overridden: v
+            .get("overridden")
+            .filter(|o| !o.is_null())
+            .map(|o| Override {
+                disabled_by: text_of(o, "disabled_by"),
+                reason: text_of(o, "reason"),
+                at_ms: int_of(o, "at_ms"),
+            }),
         refusals: int_of(v, "refusals"),
         agents,
         last_at_ms: v.get("last_at_ms").and_then(Value::as_i64),
@@ -792,7 +962,10 @@ fn parse_law(v: &Value) -> Law {
 }
 
 fn parse_rules(v: &Value) -> Vec<Rule> {
-    v.get("rules").and_then(Value::as_array).map(|a| a.iter().map(parse_rule).collect()).unwrap_or_default()
+    v.get("rules")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().map(parse_rule).collect())
+        .unwrap_or_default()
 }
 
 fn parse_rule(v: &Value) -> Rule {
@@ -810,7 +983,11 @@ fn parse_diagnostics(v: &Value) -> Vec<Diagnostic> {
         .and_then(Value::as_array)
         .map(|a| {
             a.iter()
-                .map(|x| Diagnostic { line: int_of(x, "line"), column: int_of(x, "column"), message: text_of(x, "message") })
+                .map(|x| Diagnostic {
+                    line: int_of(x, "line"),
+                    column: int_of(x, "column"),
+                    message: text_of(x, "message"),
+                })
                 .collect()
         })
         .unwrap_or_default()
@@ -912,7 +1089,8 @@ fn visible(state: &State, l: &Law) -> bool {
     }
     let q = state.query.trim().to_lowercase();
     if !q.is_empty() {
-        let hay = format!("{} {} {} {}", l.title, l.statement, l.id, l.ops.join(" ")).to_lowercase();
+        let hay =
+            format!("{} {} {} {}", l.title, l.statement, l.id, l.ops.join(" ")).to_lowercase();
         if !hay.contains(&q) {
             return false;
         }
@@ -921,7 +1099,10 @@ fn visible(state: &State, l: &Law) -> bool {
 }
 
 fn now_ms() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 /// "Just now", "12m ago", "3h ago"; an em dash for no time.
@@ -960,11 +1141,7 @@ fn or(s: &str, fallback: &str) -> String {
 }
 
 fn times(n: i64) -> &'static str {
-    if n == 1 {
-        "time"
-    } else {
-        "times"
-    }
+    if n == 1 { "time" } else { "times" }
 }
 
 fn enforcement_label(e: &str) -> String {
@@ -989,7 +1166,11 @@ fn severity_tone(s: &str) -> Tone {
 
 fn boxed(_: &Theme) -> container::Style {
     container::Style {
-        border: Border { color: RULE, width: 1.0, radius: 0.0.into() },
+        border: Border {
+            color: RULE,
+            width: 1.0,
+            radius: 0.0.into(),
+        },
         ..Default::default()
     }
 }
@@ -997,7 +1178,11 @@ fn boxed(_: &Theme) -> container::Style {
 fn sheet_box(_: &Theme) -> container::Style {
     container::Style {
         background: Some(SHEET.into()),
-        border: Border { color: RULE, width: 1.0, radius: 0.0.into() },
+        border: Border {
+            color: RULE,
+            width: 1.0,
+            radius: 0.0.into(),
+        },
         ..Default::default()
     }
 }
@@ -1007,16 +1192,25 @@ fn pick_style(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Styl
     move |_: &Theme, status: button::Status| {
         let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
         button::Style {
-            background: (selected || hovered).then_some(crate::theme::palette().hover).map(Into::into),
+            background: (selected || hovered)
+                .then_some(crate::theme::palette().hover)
+                .map(Into::into),
             text_color: INK,
-            border: Border { color: if selected { INK } else { RULE }, width: 1.0, radius: 0.0.into() },
+            border: Border {
+                color: if selected { INK } else { RULE },
+                width: 1.0,
+                radius: 0.0.into(),
+            },
             ..Default::default()
         }
     }
 }
 
 fn link_style(_: &Theme, _: button::Status) -> button::Style {
-    button::Style { text_color: INK, ..Default::default() }
+    button::Style {
+        text_color: INK,
+        ..Default::default()
+    }
 }
 
 /// A mono text link to an agent or a law's source toggle.
@@ -1030,10 +1224,18 @@ fn link<'a>(label: &str, msg: Msg) -> Element<'a, Msg> {
 
 /// A segmented control's segment (the web's `.rules-chip`): ink-filled when active.
 fn seg<'a>(label: &str, active: bool, msg: Msg) -> Element<'a, Msg> {
-    let (color, bg) = if active { (crate::theme::palette().paper, INK) } else { (INK_2, SHEET) };
+    let (color, bg) = if active {
+        (crate::theme::palette().paper, INK)
+    } else {
+        (INK_2, SHEET)
+    };
     button(text(label.to_string()).font(SANS).size(13.0).color(color))
         .padding([7, 14])
-        .style(move |_: &Theme, _| button::Style { background: Some(bg.into()), text_color: color, ..Default::default() })
+        .style(move |_: &Theme, _| button::Style {
+            background: Some(bg.into()),
+            text_color: color,
+            ..Default::default()
+        })
         .on_press(msg)
         .into()
 }
@@ -1042,28 +1244,49 @@ fn seg<'a>(label: &str, active: bool, msg: Msg) -> Element<'a, Msg> {
 fn tab<'a>(label: &str, active: bool, msg: Msg) -> Element<'a, Msg> {
     let color = if active { INK } else { INK_3 };
     let underline = if active { SIGNAL } else { Color::TRANSPARENT };
-    let face = button(text(label.to_string()).font(SANS_BOLD).size(12.0).color(color))
-        .padding([8, 12])
-        .style(move |_: &Theme, _| button::Style { text_color: color, ..Default::default() })
-        .on_press(msg);
+    let face = button(
+        text(label.to_string())
+            .font(SANS_BOLD)
+            .size(12.0)
+            .color(color),
+    )
+    .padding([8, 12])
+    .style(move |_: &Theme, _| button::Style {
+        text_color: color,
+        ..Default::default()
+    })
+    .on_press(msg);
     column![
         face,
         container(Space::new().height(2.0))
             .width(Length::Fill)
-            .style(move |_: &Theme| container::Style { background: Some(underline.into()), ..Default::default() }),
+            .style(move |_: &Theme| container::Style {
+                background: Some(underline.into()),
+                ..Default::default()
+            }),
     ]
     .into()
 }
 
 fn stat_cell<'a>(label: &'static str, value: String) -> Element<'a, Msg> {
-    container(column![
-        text(label.to_string()).font(SANS).size(12.0).color(INK_3),
-        text(value).font(SANS_SEMIBOLD).size(26.0).color(INK),
-    ]
-    .spacing(4))
-    .padding(Padding { top: 14.0, right: 18.0, bottom: 14.0, left: 18.0 })
+    container(
+        column![
+            text(label.to_string()).font(SANS).size(12.0).color(INK_3),
+            text(value).font(SANS_SEMIBOLD).size(26.0).color(INK),
+        ]
+        .spacing(4),
+    )
+    .padding(Padding {
+        top: 14.0,
+        right: 18.0,
+        bottom: 14.0,
+        left: 18.0,
+    })
     .width(Length::FillPortion(1))
-    .style(|_: &Theme| container::Style { background: Some(SHEET.into()), ..Default::default() })
+    .style(|_: &Theme| container::Style {
+        background: Some(SHEET.into()),
+        ..Default::default()
+    })
     .into()
 }
 
@@ -1073,7 +1296,11 @@ fn stats<'a>(state: &State, now: i64) -> Element<'a, Msg> {
     let forbids = state.laws.iter().filter(|l| l.effect == "forbid").count();
     let cut = now - 30 * DAY_MS;
     let n30 = state.recent.iter().filter(|i| i.at_ms >= cut).count();
-    let n30_text = if state.recent.len() >= INFRACTION_FETCH { format!("{n30}+") } else { n30.to_string() };
+    let n30_text = if state.recent.len() >= INFRACTION_FETCH {
+        format!("{n30}+")
+    } else {
+        n30.to_string()
+    };
     // The rule colour shows through the 1px gaps between the cells: the dividers.
     container(
         row![
@@ -1085,7 +1312,15 @@ fn stats<'a>(state: &State, now: i64) -> Element<'a, Msg> {
         .spacing(1),
     )
     .width(Length::Fill)
-    .style(|_: &Theme| container::Style { background: Some(RULE.into()), border: Border { color: RULE, width: 1.0, radius: 0.0.into() }, ..Default::default() })
+    .style(|_: &Theme| container::Style {
+        background: Some(RULE.into()),
+        border: Border {
+            color: RULE,
+            width: 1.0,
+            radius: 0.0.into(),
+        },
+        ..Default::default()
+    })
     .into()
 }
 
@@ -1097,9 +1332,18 @@ fn toolbar<'a>(state: &'a State) -> Element<'a, Msg> {
         .width(Length::Fill)
         .style(crate::theme::input);
 
-    let mut sev_options = vec![SevChoice { value: None, label: "Any severity".to_string() }];
-    sev_options.extend(SEVERITIES.iter().map(|s| SevChoice { value: Some(*s), label: cap(s) }));
-    let selected = sev_options.iter().find(|o| o.value == state.severity).cloned();
+    let mut sev_options = vec![SevChoice {
+        value: None,
+        label: "Any severity".to_string(),
+    }];
+    sev_options.extend(SEVERITIES.iter().map(|s| SevChoice {
+        value: Some(*s),
+        label: cap(s),
+    }));
+    let selected = sev_options
+        .iter()
+        .find(|o| o.value == state.severity)
+        .cloned();
     let severity = column![
         ui::label("Severity"),
         pick_list(sev_options, selected, |c: SevChoice| Msg::Severity(c.value)),
@@ -1107,13 +1351,24 @@ fn toolbar<'a>(state: &'a State) -> Element<'a, Msg> {
     .spacing(6);
     let search_row = row![search, severity].spacing(14).align_y(Alignment::End);
 
-    let effects: Vec<Element<'a, Msg>> = [(Effect::All, "All"), (Effect::Permit, "Allows"), (Effect::Forbid, "Forbids")]
-        .into_iter()
-        .map(|(e, label)| seg(label, state.effect == e, Msg::Effect(e)))
-        .collect();
+    let effects: Vec<Element<'a, Msg>> = [
+        (Effect::All, "All"),
+        (Effect::Permit, "Allows"),
+        (Effect::Forbid, "Forbids"),
+    ]
+    .into_iter()
+    .map(|(e, label)| seg(label, state.effect == e, Msg::Effect(e)))
+    .collect();
     // The ink shows through the 1px gaps between the segments: their dividers.
-    let segmented = container(row(effects).spacing(1))
-        .style(|_: &Theme| container::Style { background: Some(INK.into()), border: Border { color: INK, width: 1.0, radius: 0.0.into() }, ..Default::default() });
+    let segmented = container(row(effects).spacing(1)).style(|_: &Theme| container::Style {
+        background: Some(INK.into()),
+        border: Border {
+            color: INK,
+            width: 1.0,
+            radius: 0.0.into(),
+        },
+        ..Default::default()
+    });
 
     let mut tabs: Vec<Element<'a, Msg>> = vec![tab("All", state.tier.is_none(), Msg::Tier(None))];
     for &(key, label, _) in TIERS.iter().take(4) {
@@ -1124,11 +1379,18 @@ fn toolbar<'a>(state: &'a State) -> Element<'a, Msg> {
         column![
             ui::faint("The filters apply to the built-in statutes."),
             search_row,
-            row![segmented, row(tabs).spacing(4)].spacing(18).align_y(Alignment::Center),
+            row![segmented, row(tabs).spacing(4)]
+                .spacing(18)
+                .align_y(Alignment::Center),
         ]
         .spacing(14),
     )
-    .padding(Padding { top: 16.0, right: 18.0, bottom: 16.0, left: 18.0 })
+    .padding(Padding {
+        top: 16.0,
+        right: 18.0,
+        bottom: 16.0,
+        left: 18.0,
+    })
     .width(Length::Fill)
     .style(sheet_box)
     .into()
@@ -1136,10 +1398,21 @@ fn toolbar<'a>(state: &'a State) -> Element<'a, Msg> {
 
 /// The built-in statutes: the filters, then the statutes grouped by tier.
 fn statutes<'a>(state: &'a State, now: i64) -> Element<'a, Msg> {
-    let all: Vec<&Law> = state.laws.iter().filter(|l| l.origin == "built-in").collect();
+    let all: Vec<&Law> = state
+        .laws
+        .iter()
+        .filter(|l| l.origin == "built-in")
+        .collect();
     let shown: Vec<&Law> = all.iter().copied().filter(|l| visible(state, l)).collect();
-    let noun = if all.len() == 1 { "statute" } else { "statutes" };
-    let mut col: Vec<Element<'a, Msg>> = vec![toolbar(state), ui::faint(format!("Showing {} of {} {}", shown.len(), all.len(), noun)).into()];
+    let noun = if all.len() == 1 {
+        "statute"
+    } else {
+        "statutes"
+    };
+    let mut col: Vec<Element<'a, Msg>> = vec![
+        toolbar(state),
+        ui::faint(format!("Showing {} of {} {}", shown.len(), all.len(), noun)).into(),
+    ];
     if all.is_empty() {
         col.push(ui::faint("No built-in statutes.").into());
     } else if shown.is_empty() {
@@ -1153,7 +1426,11 @@ fn statutes<'a>(state: &'a State, now: i64) -> Element<'a, Msg> {
         );
     } else {
         for &(key, label, desc) in TIERS.iter() {
-            let items: Vec<&Law> = shown.iter().copied().filter(|l| tier_of(l) == key).collect();
+            let items: Vec<&Law> = shown
+                .iter()
+                .copied()
+                .filter(|l| tier_of(l) == key)
+                .collect();
             if items.is_empty() {
                 continue;
             }
@@ -1168,7 +1445,10 @@ fn statutes<'a>(state: &'a State, now: i64) -> Element<'a, Msg> {
 
 fn group_head<'a>(label: &'static str, desc: &'static str, n: usize) -> Element<'a, Msg> {
     let head = row![
-        text(label.to_string()).font(SANS_BOLD).size(20.0).color(INK),
+        text(label.to_string())
+            .font(SANS_BOLD)
+            .size(20.0)
+            .color(INK),
         text(n.to_string()).font(SANS).size(12.0).color(INK_3),
     ]
     .spacing(10)
@@ -1178,17 +1458,28 @@ fn group_head<'a>(label: &'static str, desc: &'static str, n: usize) -> Element<
         col = col.push(text(desc).font(SANS).size(14.0).color(INK_2));
     }
     col.push(Space::new().height(8.0))
-        .push(container(Space::new().height(1.0)).width(Length::Fill).style(|_: &Theme| container::Style {
-            background: Some(INK.into()),
-            ..Default::default()
-        }))
+        .push(
+            container(Space::new().height(1.0))
+                .width(Length::Fill)
+                .style(|_: &Theme| container::Style {
+                    background: Some(INK.into()),
+                    ..Default::default()
+                }),
+        )
         .into()
 }
 
 fn labelled<'a>(name: &str, value: &str) -> Element<'a, Msg> {
     row![
-        text(format!("{name}: ")).font(SANS_SEMIBOLD).size(15.0).color(INK),
-        text(value.to_string()).font(SANS).size(15.0).color(INK_2).width(Length::Fill),
+        text(format!("{name}: "))
+            .font(SANS_SEMIBOLD)
+            .size(15.0)
+            .color(INK),
+        text(value.to_string())
+            .font(SANS)
+            .size(15.0)
+            .color(INK_2)
+            .width(Length::Fill),
     ]
     .into()
 }
@@ -1201,14 +1492,22 @@ fn op_tag<'a>(op: &str) -> Element<'a, Msg> {
 }
 
 fn applies<'a>(l: &Law) -> Element<'a, Msg> {
-    let scope = format!("{} → {}", or(&l.principal, "any principal"), or(&l.resource, "any resource"));
+    let scope = format!(
+        "{} → {}",
+        or(&l.principal, "any principal"),
+        or(&l.resource, "any resource")
+    );
     let mut col: Vec<Element<'a, Msg>> = vec![ui::sans(scope, 12.0, INK).into()];
     if !l.ops.is_empty() {
         let tags: Vec<Element<'a, Msg>> = l.ops.iter().map(|o| op_tag(o)).collect();
         col.push(row(tags).spacing(6).into());
     }
     row![
-        text("Applies to").font(SANS).size(12.0).color(INK_3).width(Length::Fixed(96.0)),
+        text("Applies to")
+            .font(SANS)
+            .size(12.0)
+            .color(INK_3)
+            .width(Length::Fixed(96.0)),
         column(col).spacing(6).width(Length::Fill),
     ]
     .spacing(12)
@@ -1226,27 +1525,42 @@ fn usage<'a>(l: &Law, now: i64) -> Element<'a, Msg> {
     }
     let mut items: Vec<Element<'a, Msg>> = vec![ui::faint(line).into()];
     for a in &l.agents {
-        items.push(link(&format!("{} ({})", a.name, a.count), Msg::Go(Id::Agent(a.cid))));
+        items.push(link(
+            &format!("{} ({})", a.name, a.count),
+            Msg::Go(Id::Agent(a.cid)),
+        ));
     }
     row(items).spacing(6).align_y(Alignment::Center).into()
 }
 
 fn source_block<'a>(l: &Law, open: bool) -> Element<'a, Msg> {
-    let toggle = ui::btn("How it is written (JHRL)", None, Kind::Ghost, Some(Msg::ToggleSource(l.id.clone())));
+    let toggle = ui::btn(
+        "How it is written (JHRL)",
+        None,
+        Kind::Ghost,
+        Some(Msg::ToggleSource(l.id.clone())),
+    );
     if !open {
         return toggle;
     }
     let conds: Element<'a, Msg> = if l.conditions.is_empty() {
         ui::faint("No extra conditions.").into()
     } else {
-        let lines: Vec<Element<'a, Msg>> = l.conditions.iter().map(|c| ui::faint(format!("· {c}")).into()).collect();
+        let lines: Vec<Element<'a, Msg>> = l
+            .conditions
+            .iter()
+            .map(|c| ui::faint(format!("· {c}")).into())
+            .collect();
         column(lines).spacing(4).into()
     };
     column![
         toggle,
         ui::faint(format!("File: {}", or(&l.file, "—"))),
         conds,
-        container(ui::sans(or(&l.source, "—"), 12.0, INK)).padding(10).width(Length::Fill).style(sheet_box),
+        container(ui::sans(or(&l.source, "—"), 12.0, INK))
+            .padding(10)
+            .width(Length::Fill)
+            .style(sheet_box),
     ]
     .spacing(10)
     .into()
@@ -1256,11 +1570,21 @@ fn source_block<'a>(l: &Law, open: bool) -> Element<'a, Msg> {
 fn statute<'a>(state: &'a State, l: &'a Law, open: bool, now: i64) -> Element<'a, Msg> {
     let forbid = l.effect == "forbid";
     let mut tags: Vec<Element<'a, Msg>> = vec![
-        ui::badge(if forbid { "Forbids" } else { "Allows" }, if forbid { Tone::Danger } else { Tone::Ok }),
-        ui::badge(&format!("Severity: {}", cap(&l.severity)), severity_tone(&l.severity)),
+        ui::badge(
+            if forbid { "Forbids" } else { "Allows" },
+            if forbid { Tone::Danger } else { Tone::Ok },
+        ),
+        ui::badge(
+            &format!("Severity: {}", cap(&l.severity)),
+            severity_tone(&l.severity),
+        ),
         ui::badge(
             &enforcement_label(&l.enforcement),
-            if l.enforcement == "preventive" { Tone::Info } else { Tone::Muted },
+            if l.enforcement == "preventive" {
+                Tone::Info
+            } else {
+                Tone::Muted
+            },
         ),
     ];
     if !l.enabled {
@@ -1268,7 +1592,10 @@ fn statute<'a>(state: &'a State, l: &'a Law, open: bool, now: i64) -> Element<'a
     }
     let head = row![
         column![
-            text(l.title.clone()).font(SANS_SEMIBOLD).size(18.0).color(INK),
+            text(l.title.clone())
+                .font(SANS_SEMIBOLD)
+                .size(18.0)
+                .color(INK),
             ui::mono(l.id.clone(), 12.0, INK_3),
         ]
         .spacing(4)
@@ -1278,7 +1605,11 @@ fn statute<'a>(state: &'a State, l: &'a Law, open: bool, now: i64) -> Element<'a
     .spacing(12)
     .align_y(Alignment::Center);
 
-    let mut body: Vec<Element<'a, Msg>> = vec![head.into(), ui::prose(l.statement.clone()).into(), labelled("In short", &l.explanation)];
+    let mut body: Vec<Element<'a, Msg>> = vec![
+        head.into(),
+        ui::prose(l.statement.clone()).into(),
+        labelled("In short", &l.explanation),
+    ];
     if !l.rationale.is_empty() {
         body.push(labelled("Why", &l.rationale));
     }
@@ -1290,15 +1621,32 @@ fn statute<'a>(state: &'a State, l: &'a Law, open: bool, now: i64) -> Element<'a
     body.push(source_block(l, open));
 
     // The web's 4px left border: the accent shows in the strip left of the card.
-    let accent = if forbid { crate::theme::palette().crit } else { crate::theme::palette().ok };
+    let accent = if forbid {
+        crate::theme::palette().crit
+    } else {
+        crate::theme::palette().ok
+    };
     let card = container(column(body).spacing(12))
-        .padding(Padding { top: 20.0, right: 22.0, bottom: 18.0, left: 22.0 })
+        .padding(Padding {
+            top: 20.0,
+            right: 22.0,
+            bottom: 18.0,
+            left: 22.0,
+        })
         .width(Length::Fill)
         .style(sheet_box);
     container(card)
-        .padding(Padding { top: 0.0, right: 0.0, bottom: 0.0, left: 4.0 })
+        .padding(Padding {
+            top: 0.0,
+            right: 0.0,
+            bottom: 0.0,
+            left: 4.0,
+        })
         .width(Length::Fill)
-        .style(move |_: &Theme| container::Style { background: Some(accent.into()), ..Default::default() })
+        .style(move |_: &Theme| container::Style {
+            background: Some(accent.into()),
+            ..Default::default()
+        })
         .into()
 }
 
@@ -1307,16 +1655,35 @@ fn statute<'a>(state: &'a State, l: &'a Law, open: bool, now: i64) -> Element<'a
 fn override_control<'a>(state: &'a State, l: &'a Law, now: i64) -> Element<'a, Msg> {
     match &l.overridden {
         Some(o) => row![
-            ui::faint(format!("Switched off by {} {}: {}", or(&o.disabled_by, "the owner"), ago(o.at_ms, now), o.reason)).width(Length::Fill),
-            ui::btn("Switch on", None, Kind::Secondary, (!state.busy).then(|| Msg::SetOverride(l.id.clone(), false))),
+            ui::faint(format!(
+                "Switched off by {} {}: {}",
+                or(&o.disabled_by, "the owner"),
+                ago(o.at_ms, now),
+                o.reason
+            ))
+            .width(Length::Fill),
+            ui::btn(
+                "Switch on",
+                None,
+                Kind::Secondary,
+                (!state.busy).then(|| Msg::SetOverride(l.id.clone(), false))
+            ),
         ]
         .spacing(12)
         .align_y(Alignment::Center)
         .into(),
         // A constitutional law goes off through its dialog: the reason and the typed id are asked there.
         None if l.tier == CONSTITUTION => row![
-            ui::faint("Constitutional: switching it off asks for a reason and for its id to be typed.").width(Length::Fill),
-            ui::btn("Switch off", None, Kind::Secondary, (!state.busy).then(|| Msg::AskSwitchOff(l.id.clone()))),
+            ui::faint(
+                "Constitutional: switching it off asks for a reason and for its id to be typed."
+            )
+            .width(Length::Fill),
+            ui::btn(
+                "Switch off",
+                None,
+                Kind::Secondary,
+                (!state.busy).then(|| Msg::AskSwitchOff(l.id.clone()))
+            ),
         ]
         .spacing(12)
         .align_y(Alignment::Center)
@@ -1332,7 +1699,12 @@ fn override_control<'a>(state: &'a State, l: &'a Law, now: i64) -> Element<'a, M
                     .size(13.0)
                     .width(Length::Fill)
                     .style(crate::theme::input),
-                ui::btn("Switch off", None, Kind::Secondary, ready.then(|| Msg::SetOverride(l.id.clone(), true))),
+                ui::btn(
+                    "Switch off",
+                    None,
+                    Kind::Secondary,
+                    ready.then(|| Msg::SetOverride(l.id.clone(), true))
+                ),
             ]
             .spacing(12)
             .align_y(Alignment::Center)
@@ -1357,7 +1729,13 @@ fn owner_rules<'a>(state: &'a State, now: i64) -> Element<'a, Msg> {
     let list: Element<'a, Msg> = if state.rules.is_empty() {
         ui::faint("No rules of your own yet. Write one below, check it, then save it.").into()
     } else {
-        divided(state.rules.iter().map(|r| rule_row(state, r, now)).collect())
+        divided(
+            state
+                .rules
+                .iter()
+                .map(|r| rule_row(state, r, now))
+                .collect(),
+        )
     };
     column![
         row![
@@ -1376,11 +1754,32 @@ fn owner_rules<'a>(state: &'a State, now: i64) -> Element<'a, Msg> {
 }
 
 fn rule_row<'a>(state: &'a State, r: &'a Rule, now: i64) -> Element<'a, Msg> {
-    let declared: Vec<&str> = state.laws.iter().filter(|l| l.rule_id == r.id).map(|l| l.id.as_str()).collect();
-    let declares = if declared.is_empty() { "No laws declared".to_string() } else { format!("Declares {}", declared.join(", ")) };
-    let state_tag = if r.enabled { ui::badge("Enabled", Tone::Ok) } else { ui::badge("Disabled", Tone::Muted) };
+    let declared: Vec<&str> = state
+        .laws
+        .iter()
+        .filter(|l| l.rule_id == r.id)
+        .map(|l| l.id.as_str())
+        .collect();
+    let declares = if declared.is_empty() {
+        "No laws declared".to_string()
+    } else {
+        format!("Declares {}", declared.join(", "))
+    };
+    let state_tag = if r.enabled {
+        ui::badge("Enabled", Tone::Ok)
+    } else {
+        ui::badge("Disabled", Tone::Muted)
+    };
     let body = column![
-        row![text(r.title.clone()).font(SANS_SEMIBOLD).size(16.0).color(INK), state_tag].spacing(12).align_y(Alignment::Center),
+        row![
+            text(r.title.clone())
+                .font(SANS_SEMIBOLD)
+                .size(16.0)
+                .color(INK),
+            state_tag
+        ]
+        .spacing(12)
+        .align_y(Alignment::Center),
         row![
             ui::mono(r.id.clone(), 12.0, INK_3),
             ui::faint(declares),
@@ -1398,14 +1797,25 @@ fn rule_row<'a>(state: &'a State, r: &'a Rule, now: i64) -> Element<'a, Msg> {
         .style(pick_style(selected))
         .into();
     // Every row here is the owner's own rule (`state.rules`), so each one gets the web's explicit Edit button.
-    row![row_press, ui::btn_sm("Edit", Some("edit"), Kind::Ghost, Some(Msg::SelectRule(r.id.clone())))]
-        .spacing(8)
-        .align_y(Alignment::Center)
-        .into()
+    row![
+        row_press,
+        ui::btn_sm(
+            "Edit",
+            Some("edit"),
+            Kind::Ghost,
+            Some(Msg::SelectRule(r.id.clone()))
+        )
+    ]
+    .spacing(8)
+    .align_y(Alignment::Center)
+    .into()
 }
 
 fn editor<'a>(state: &'a State, now: i64) -> Element<'a, Msg> {
-    let current = state.editing.as_deref().and_then(|id| state.rules.iter().find(|r| r.id == id));
+    let current = state
+        .editing
+        .as_deref()
+        .and_then(|id| state.rules.iter().find(|r| r.id == id));
     let heading = match &state.editing {
         Some(id) => format!("Editing {id}"),
         None => "New rule".to_string(),
@@ -1443,24 +1853,62 @@ fn editor<'a>(state: &'a State, now: i64) -> Element<'a, Msg> {
     .style(sheet_box);
 
     let mut actions: Vec<Element<'a, Msg>> = vec![
-        ui::btn("Check", None, Kind::Secondary, (!state.busy).then_some(Msg::Check)),
-        ui::btn("Save", None, Kind::Primary, (!state.busy).then_some(Msg::Save)),
+        ui::btn(
+            "Check",
+            None,
+            Kind::Secondary,
+            (!state.busy).then_some(Msg::Check),
+        ),
+        ui::btn(
+            "Save",
+            None,
+            Kind::Primary,
+            (!state.busy).then_some(Msg::Save),
+        ),
     ];
     if let Some(rule) = current {
-        let (label, enable) = if rule.enabled { ("Disable rule", false) } else { ("Enable rule", true) };
-        actions.push(ui::btn(label, None, Kind::Secondary, (!state.busy).then_some(Msg::SetRuleEnabled(enable))));
+        let (label, enable) = if rule.enabled {
+            ("Disable rule", false)
+        } else {
+            ("Enable rule", true)
+        };
+        actions.push(ui::btn(
+            label,
+            None,
+            Kind::Secondary,
+            (!state.busy).then_some(Msg::SetRuleEnabled(enable)),
+        ));
     }
     if state.editing.is_some() {
         if state.confirm_delete {
-            actions.push(ui::btn("Cancel", None, Kind::Ghost, Some(Msg::ArmDelete(false))));
-            actions.push(ui::btn("Confirm delete", None, Kind::Danger, (!state.busy).then_some(Msg::DeleteRule)));
+            actions.push(ui::btn(
+                "Cancel",
+                None,
+                Kind::Ghost,
+                Some(Msg::ArmDelete(false)),
+            ));
+            actions.push(ui::btn(
+                "Confirm delete",
+                None,
+                Kind::Danger,
+                (!state.busy).then_some(Msg::DeleteRule),
+            ));
         } else {
-            actions.push(ui::btn("Delete", None, Kind::Ghost, Some(Msg::ArmDelete(true))));
+            actions.push(ui::btn(
+                "Delete",
+                None,
+                Kind::Ghost,
+                Some(Msg::ArmDelete(true)),
+            ));
         }
     }
 
     let mut items: Vec<Element<'a, Msg>> = vec![
-        text(heading).font(SANS_SEMIBOLD).size(15.0).color(INK).into(),
+        text(heading)
+            .font(SANS_SEMIBOLD)
+            .size(15.0)
+            .color(INK)
+            .into(),
         title.into(),
         source.into(),
         reference.into(),
@@ -1478,7 +1926,14 @@ fn editor<'a>(state: &'a State, now: i64) -> Element<'a, Msg> {
 
 fn diagnostics<'a>(list: &[Diagnostic]) -> Vec<Element<'a, Msg>> {
     list.iter()
-        .map(|d| ui::mono(format!("Line {}, column {}: {}", d.line, d.column, d.message), 12.0, crate::theme::palette().crit).into())
+        .map(|d| {
+            ui::mono(
+                format!("Line {}, column {}: {}", d.line, d.column, d.message),
+                12.0,
+                crate::theme::palette().crit,
+            )
+            .into()
+        })
         .collect()
 }
 
@@ -1488,8 +1943,13 @@ fn check_result<'a>(c: &Checked, now: i64) -> Element<'a, Msg> {
         items.extend(diagnostics(&c.diagnostics));
         return column(items).spacing(6).into();
     }
-    let declared = if c.laws.is_empty() { "No laws declared.".to_string() } else { format!("Declares {}.", c.laws.join(", ")) };
-    let mut items: Vec<Element<'a, Msg>> = vec![ui::badge("Valid", Tone::Ok), ui::faint(declared).into()];
+    let declared = if c.laws.is_empty() {
+        "No laws declared.".to_string()
+    } else {
+        format!("Declares {}.", c.laws.join(", "))
+    };
+    let mut items: Vec<Element<'a, Msg>> =
+        vec![ui::badge("Valid", Tone::Ok), ui::faint(declared).into()];
     if c.would_refuse.is_empty() {
         items.push(ui::faint("None of the recent actions would have been refused.").into());
     } else {
@@ -1500,10 +1960,19 @@ fn check_result<'a>(c: &Checked, now: i64) -> Element<'a, Msg> {
 }
 
 fn refusal_row<'a>(w: &Refusal, now: i64) -> Element<'a, Msg> {
-    let who = if w.role.is_empty() { format!("Agent {}", w.cid) } else { format!("Agent {} as {}", w.cid, w.role) };
+    let who = if w.role.is_empty() {
+        format!("Agent {}", w.cid)
+    } else {
+        format!("Agent {} as {}", w.cid, w.role)
+    };
     column![
         ui::sans(who, 12.0, INK_2),
-        ui::faint(format!("{} · {} · {}", or(&w.tool, "a tool"), ago(w.at_ms, now), w.laws.join(", "))),
+        ui::faint(format!(
+            "{} · {} · {}",
+            or(&w.tool, "a tool"),
+            ago(w.at_ms, now),
+            w.laws.join(", ")
+        )),
     ]
     .spacing(2)
     .into()
@@ -1533,7 +2002,10 @@ fn law_row<'a>(state: &'a State, l: &'a Law, now: i64) -> Element<'a, Msg> {
     let selected = state.selected_law.as_deref() == Some(l.id.as_str());
     let head = button(
         column![
-            text(l.title.clone()).font(SANS_SEMIBOLD).size(15.0).color(INK),
+            text(l.title.clone())
+                .font(SANS_SEMIBOLD)
+                .size(15.0)
+                .color(INK),
             row![
                 ui::mono(l.id.clone(), 12.0, INK_3),
                 ui::faint(format!("Refused {} {}", l.refusals, times(l.refusals))),
@@ -1548,9 +2020,17 @@ fn law_row<'a>(state: &'a State, l: &'a Law, now: i64) -> Element<'a, Msg> {
     .padding([10, 12])
     .style(pick_style(selected));
     if selected {
-        column![head, container(violation_list(state, now)).padding(Padding { top: 0.0, right: 0.0, bottom: 0.0, left: 16.0 })]
-            .spacing(8)
-            .into()
+        column![
+            head,
+            container(violation_list(state, now)).padding(Padding {
+                top: 0.0,
+                right: 0.0,
+                bottom: 0.0,
+                left: 16.0
+            })
+        ]
+        .spacing(8)
+        .into()
     } else {
         head.into()
     }
@@ -1560,13 +2040,19 @@ fn violation_list<'a>(state: &'a State, now: i64) -> Element<'a, Msg> {
     match &state.violations {
         None => ui::loading(),
         Some(Err(e)) => ui::error_line(&format!("The violations could not be loaded: {e}")),
-        Some(Ok(rows)) if rows.is_empty() => ui::faint("No violations recorded for this law.").into(),
+        Some(Ok(rows)) if rows.is_empty() => {
+            ui::faint("No violations recorded for this law.").into()
+        }
         Some(Ok(rows)) => divided(rows.iter().map(|v| violation_row(v, now)).collect()),
     }
 }
 
 fn violation_row<'a>(v: &Violation, now: i64) -> Element<'a, Msg> {
-    let agent = if v.agent_name.is_empty() { format!("agent {}", v.cid) } else { v.agent_name.clone() };
+    let agent = if v.agent_name.is_empty() {
+        format!("agent {}", v.cid)
+    } else {
+        v.agent_name.clone()
+    };
     let mut meta: Vec<Element<'a, Msg>> = Vec::new();
     if !v.tool.is_empty() {
         meta.push(ui::mono(v.tool.clone(), 12.0, INK_3).into());
@@ -1599,10 +2085,14 @@ fn infractions<'a>(state: &State, now: i64) -> Element<'a, Msg> {
             let mut rows = column![].width(Length::Fill);
             for (k, i) in latest.into_iter().enumerate() {
                 if k > 0 {
-                    rows = rows.push(container(Space::new().height(1.0)).width(Length::Fill).style(|_: &Theme| container::Style {
-                        background: Some(RULE_FAINT.into()),
-                        ..Default::default()
-                    }));
+                    rows = rows.push(
+                        container(Space::new().height(1.0))
+                            .width(Length::Fill)
+                            .style(|_: &Theme| container::Style {
+                                background: Some(RULE_FAINT.into()),
+                                ..Default::default()
+                            }),
+                    );
                 }
                 rows = rows.push(infraction_row(i, now));
             }
@@ -1610,27 +2100,55 @@ fn infractions<'a>(state: &State, now: i64) -> Element<'a, Msg> {
         }
     };
     container(column![
-        text("Latest infractions").font(SANS_BOLD).size(16.0).color(INK),
+        text("Latest infractions")
+            .font(SANS_BOLD)
+            .size(16.0)
+            .color(INK),
         Space::new().height(12.0),
         body,
     ])
-    .padding(Padding { top: 16.0, right: 18.0, bottom: 16.0, left: 18.0 })
+    .padding(Padding {
+        top: 16.0,
+        right: 18.0,
+        bottom: 16.0,
+        left: 18.0,
+    })
     .width(Length::Fill)
     .style(sheet_box)
     .into()
 }
 
 fn infraction_row<'a>(i: &Infraction, now: i64) -> Element<'a, Msg> {
-    let agent = if i.agent_name.is_empty() { format!("agent {}", i.cid) } else { i.agent_name.clone() };
-    let law = if i.law_title.is_empty() { i.law.clone() } else { i.law_title.clone() };
+    let agent = if i.agent_name.is_empty() {
+        format!("agent {}", i.cid)
+    } else {
+        i.agent_name.clone()
+    };
+    let law = if i.law_title.is_empty() {
+        i.law.clone()
+    } else {
+        i.law_title.clone()
+    };
     let mut meta: Vec<Element<'a, Msg>> = Vec::new();
     if !i.tool.is_empty() {
         meta.push(ui::mono(i.tool.clone(), 12.0, INK_3).into());
     }
     if !i.detail.is_empty() {
-        meta.push(text(i.detail.clone()).font(SANS).size(12.0).color(INK_3).into());
+        meta.push(
+            text(i.detail.clone())
+                .font(SANS)
+                .size(12.0)
+                .color(INK_3)
+                .into(),
+        );
     }
-    meta.push(text(ago(i.at_ms, now)).font(SANS).size(12.0).color(INK_3).into());
+    meta.push(
+        text(ago(i.at_ms, now))
+            .font(SANS)
+            .size(12.0)
+            .color(INK_3)
+            .into(),
+    );
     let line = row![
         button(text(agent).font(SANS).size(14.0).color(INK))
             .padding(0.0)
@@ -1643,7 +2161,12 @@ fn infraction_row<'a>(i: &Infraction, now: i64) -> Element<'a, Msg> {
     .align_y(Alignment::Center);
     column![line, row(meta).spacing(10).align_y(Alignment::Center)]
         .spacing(4)
-        .padding(Padding { top: 12.0, right: 0.0, bottom: 12.0, left: 0.0 })
+        .padding(Padding {
+            top: 12.0,
+            right: 0.0,
+            bottom: 12.0,
+            left: 0.0,
+        })
         .into()
 }
 
@@ -1655,5 +2178,3 @@ fn strict_permits<'a>(state: &'a State) -> Element<'a, Msg> {
     .spacing(12)
     .into()
 }
-
-

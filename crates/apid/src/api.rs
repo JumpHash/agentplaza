@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use std::path::{Component, Path};
 
 use apz_http::{Response, Router};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 use crate::agents::Status;
 use crate::state::App;
@@ -13,16 +13,36 @@ use crate::{agents, decisions, events, internal, memory, plaza, providers, setti
 
 pub fn router() -> Router<App> {
     let router = Router::<App>::new()
-        .get("/v1/overview", |app, _, _| Response::json(200, &overview_value(app)))
+        .get("/v1/overview", |app, _, _| {
+            Response::json(200, &overview_value(app))
+        })
         .get("/v1/machines", |app, _, _| machines(app))
-        .get("/v1/machine", |app, _, _| app.noded.proxy("GET", "/v1/machine", b""))
-        .get("/v1/hub", |app, _, _| app.hub.proxy("GET", "/v1/status", b""))
-        .get("/v1/runs", |app, _, _| app.noded.proxy("GET", "/v1/runs", b""))
-        .post("/v1/runs", |app, req, _| app.noded.proxy("POST", "/v1/runs", &req.body))
-        .get("/v1/runs/{id}", |app, _, p| app.noded.proxy("GET", &format!("/v1/runs/{}", p.get("id")), b""))
-        .delete("/v1/runs/{id}", |app, _, p| app.noded.proxy("DELETE", &format!("/v1/runs/{}", p.get("id")), b""))
+        .get("/v1/machine", |app, _, _| {
+            app.noded.proxy("GET", "/v1/machine", b"")
+        })
+        .get("/v1/hub", |app, _, _| {
+            app.hub.proxy("GET", "/v1/status", b"")
+        })
+        .get("/v1/runs", |app, _, _| {
+            app.noded.proxy("GET", "/v1/runs", b"")
+        })
+        .post("/v1/runs", |app, req, _| {
+            app.noded.proxy("POST", "/v1/runs", &req.body)
+        })
+        .get("/v1/runs/{id}", |app, _, p| {
+            app.noded
+                .proxy("GET", &format!("/v1/runs/{}", p.get("id")), b"")
+        })
+        .delete("/v1/runs/{id}", |app, _, p| {
+            app.noded
+                .proxy("DELETE", &format!("/v1/runs/{}", p.get("id")), b"")
+        })
         .post("/v1/runs/{id}/input", |app, req, p| {
-            app.noded.proxy("POST", &format!("/v1/runs/{}/input", p.get("id")), &req.body)
+            app.noded.proxy(
+                "POST",
+                &format!("/v1/runs/{}/input", p.get("id")),
+                &req.body,
+            )
         });
     let router = events::routes(router);
     let router = settings::routes(router);
@@ -71,13 +91,25 @@ pub fn router() -> Router<App> {
     let router = crate::foundry::registry::routes(router);
     // The species dealt to agents (`looks`): the list with counts, and the owner's choice of one.
     let router = router
-        .get("/v1/robots/species", |app, _, _| crate::looks::species_list(app))
-        .route("PUT", "/v1/agents/{cid}/species", |app, req, p| crate::looks::set_species(app, req, p));
+        .get("/v1/robots/species", |app, _, _| {
+            crate::looks::species_list(app)
+        })
+        .route("PUT", "/v1/agents/{cid}/species", |app, req, p| {
+            crate::looks::set_species(app, req, p)
+        });
     router
-        .get("/", |app, req, _| static_file(&app.config.console, "index.html", accepts(req)))
-        .get("/{file}", |app, req, p| static_file(&app.config.console, p.get("file"), accepts(req)))
+        .get("/", |app, req, _| {
+            static_file(&app.config.console, "index.html", accepts(req))
+        })
+        .get("/{file}", |app, req, p| {
+            static_file(&app.config.console, p.get("file"), accepts(req))
+        })
         .get("/assets/{file}", |app, req, p| {
-            static_file(&app.config.console, &format!("assets/{}", p.get("file")), accepts(req))
+            static_file(
+                &app.config.console,
+                &format!("assets/{}", p.get("file")),
+                accepts(req),
+            )
         })
 }
 
@@ -90,7 +122,10 @@ const HUB_MACHINE_ID: &str = "n0";
 fn machines(app: &App) -> Response {
     // Without noded the hub's kind is unknown (noded probes it), so it is null and a client labels it generically.
     let unreachable = || {
-        Response::json(200, &json!([{"id": HUB_MACHINE_ID, "name": "local", "kind": null, "reachable": false}]))
+        Response::json(
+            200,
+            &json!([{"id": HUB_MACHINE_ID, "name": "local", "kind": null, "reachable": false}]),
+        )
     };
     let Ok((200, machine)) = app.noded.get("/v1/machine") else {
         return unreachable();
@@ -100,8 +135,17 @@ fn machines(app: &App) -> Response {
         _ => json!([]),
     };
     let agents = {
-        let run_ids: HashSet<&str> = runs.as_array().into_iter().flatten().filter_map(|run| run["id"].as_str()).collect();
-        app.agents.list().iter().filter(|a| a.run.as_deref().is_some_and(|id| run_ids.contains(id))).count()
+        let run_ids: HashSet<&str> = runs
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|run| run["id"].as_str())
+            .collect();
+        app.agents
+            .list()
+            .iter()
+            .filter(|a| a.run.as_deref().is_some_and(|id| run_ids.contains(id)))
+            .count()
     };
     let mut entry: Map<String, Value> = machine.as_object().cloned().unwrap_or_default();
     entry.insert("id".into(), json!(HUB_MACHINE_ID));
@@ -127,21 +171,21 @@ pub(crate) fn overview_value(app: &App) -> Value {
     }
     let settings = app.settings.get();
     json!({
-            "agents": {
-                "total": agents.len(),
-                "idle": count(Status::Idle),
-                "working": count(Status::Working),
-                "offline": count(Status::Offline),
-            },
-            "tasks": tasks,
-            "default_model": settings.default_model,
-            "orchestrator_model": settings.orchestrator_model,
-            "dev_models": app.settings.dev_models(),
-            "noded": app.noded.get("/v1/machine").map(|(s, _)| s == 200).unwrap_or(false),
-            "hub": app.hub.get("/healthz").map(|(s, _)| s == 200).unwrap_or(false),
-            // The plaza's git host's web origin (FORGEJO_URL), for the console's rich links; null when unset.
-            "git_host": app.forge.base_url(),
-        })
+        "agents": {
+            "total": agents.len(),
+            "idle": count(Status::Idle),
+            "working": count(Status::Working),
+            "offline": count(Status::Offline),
+        },
+        "tasks": tasks,
+        "default_model": settings.default_model,
+        "orchestrator_model": settings.orchestrator_model,
+        "dev_models": app.settings.dev_models(),
+        "noded": app.noded.get("/v1/machine").map(|(s, _)| s == 200).unwrap_or(false),
+        "hub": app.hub.get("/healthz").map(|(s, _)| s == 200).unwrap_or(false),
+        // The plaza's git host's web origin (FORGEJO_URL), for the console's rich links; null when unset.
+        "git_host": app.forge.base_url(),
+    })
 }
 
 /// The encodings a request accepts, from its `Accept-Encoding` (q=0 means refused).
@@ -152,7 +196,8 @@ fn accepts(req: &apz_http::Request) -> Vec<String> {
         .filter_map(|part| {
             let mut bits = part.split(';').map(str::trim);
             let name = bits.next()?.to_ascii_lowercase();
-            let refused = bits.any(|b| b.strip_prefix("q=").and_then(|q| q.parse::<f32>().ok()) == Some(0.0));
+            let refused =
+                bits.any(|b| b.strip_prefix("q=").and_then(|q| q.parse::<f32>().ok()) == Some(0.0));
             (!name.is_empty() && !refused).then_some(name)
         })
         .collect()
@@ -168,7 +213,11 @@ fn static_file(root: &Path, name: &str, accepts: Vec<String>) -> Response {
         return Response::error(404, "not found");
     }
     let path = root.join(rel);
-    let cache = if is_fingerprinted(name) { "public, max-age=31536000, immutable" } else { "no-cache" };
+    let cache = if is_fingerprinted(name) {
+        "public, max-age=31536000, immutable"
+    } else {
+        "no-cache"
+    };
     for (encoding, suffix) in [("br", "br"), ("gzip", "gz")] {
         if !accepts.iter().any(|a| a == encoding) {
             continue;
@@ -197,12 +246,15 @@ fn is_fingerprinted(name: &str) -> bool {
     let file = name.rsplit('/').next().unwrap_or(name);
     let stem = file.split('.').next().unwrap_or("");
     let stem = stem.strip_suffix("_bg").unwrap_or(stem);
-    stem.rsplit_once('-')
-        .is_some_and(|(head, hash)| {
-            let base32 = hash.bytes().all(|b| b.is_ascii_uppercase() || (b'2'..=b'7').contains(&b));
-            let hex = hash.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
-            !head.is_empty() && hash.len() == 8 && (base32 || hex)
-        })
+    stem.rsplit_once('-').is_some_and(|(head, hash)| {
+        let base32 = hash
+            .bytes()
+            .all(|b| b.is_ascii_uppercase() || (b'2'..=b'7').contains(&b));
+        let hex = hash
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+        !head.is_empty() && hash.len() == 8 && (base32 || hex)
+    })
 }
 
 fn content_type(path: &Path) -> &'static str {
@@ -225,7 +277,10 @@ mod static_tests {
     use super::*;
 
     fn header<'a>(resp: &'a Response, name: &str) -> Option<&'a str> {
-        resp.headers.iter().find(|(k, _)| k.eq_ignore_ascii_case(name)).map(|(_, v)| v.as_str())
+        resp.headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(name))
+            .map(|(_, v)| v.as_str())
     }
 
     #[test]
@@ -257,7 +312,10 @@ mod static_tests {
     #[test]
     fn accept_encoding_parsing_drops_refused_encodings() {
         let req = apz_http::Request {
-            headers: vec![("accept-encoding".into(), "gzip, deflate, br;q=0, zstd".into())],
+            headers: vec![(
+                "accept-encoding".into(),
+                "gzip, deflate, br;q=0, zstd".into(),
+            )],
             ..Default::default()
         };
         assert_eq!(accepts(&req), vec!["gzip", "deflate", "zstd"]);

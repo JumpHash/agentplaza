@@ -38,7 +38,11 @@ impl Toast {
 
 /// Puts a toast up at `now`; the newest goes last.
 pub fn push(list: &mut Vec<Toast>, kind: Kind, text: impl Into<String>, now: Instant) {
-    list.push(Toast { kind, text: text.into(), shown: now });
+    list.push(Toast {
+        kind,
+        text: text.into(),
+        shown: now,
+    });
 }
 
 /// Takes down the toasts whose time is up at `now`. Returns true when any went.
@@ -57,7 +61,11 @@ pub fn view<'a, M: 'a>(list: &'a [Toast]) -> Element<'a, M> {
                 Kind::Success => Tone::Ok,
                 Kind::Error => Tone::Crit,
             };
-            container(text(t.text.as_str()).size(14.0)).padding(12).max_width(360.0).style(theme::notice(tone)).into()
+            container(text(t.text.as_str()).size(14.0))
+                .padding(12)
+                .max_width(360.0)
+                .style(theme::notice(tone))
+                .into()
         })
         .collect();
     container(column(cards).spacing(8).align_x(Horizontal::Right))
@@ -89,7 +97,12 @@ mod tests {
         let t0 = Instant::now();
         let mut list = Vec::new();
         push(&mut list, Kind::Success, "Saved", t0);
-        push(&mut list, Kind::Error, "Test failed", t0 + Duration::from_secs(2));
+        push(
+            &mut list,
+            Kind::Error,
+            "Test failed",
+            t0 + Duration::from_secs(2),
+        );
         assert!(expire(&mut list, t0 + Duration::from_millis(4_500)));
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].kind, Kind::Error);
@@ -100,7 +113,12 @@ mod tests {
     fn a_clock_behind_the_toast_keeps_it() {
         let t0 = Instant::now();
         let mut list = Vec::new();
-        push(&mut list, Kind::Error, "Removed", t0 + Duration::from_secs(10));
+        push(
+            &mut list,
+            Kind::Error,
+            "Removed",
+            t0 + Duration::from_secs(10),
+        );
         assert!(!expire(&mut list, t0));
         assert_eq!(list.len(), 1);
     }
@@ -110,8 +128,16 @@ mod tests {
         let t0 = Instant::now();
         let mut list = Vec::new();
         push(&mut list, Kind::Success, "first", t0);
-        push(&mut list, Kind::Success, "second", t0 + Duration::from_secs(1));
-        assert_eq!(list.iter().map(|t| t.text.as_str()).collect::<Vec<_>>(), ["first", "second"]);
+        push(
+            &mut list,
+            Kind::Success,
+            "second",
+            t0 + Duration::from_secs(1),
+        );
+        assert_eq!(
+            list.iter().map(|t| t.text.as_str()).collect::<Vec<_>>(),
+            ["first", "second"]
+        );
         assert!(expire(&mut list, t0 + Duration::from_secs(4)));
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].text, "second");

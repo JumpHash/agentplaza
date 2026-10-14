@@ -155,7 +155,9 @@ impl Stats {
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {
-        self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     fn push(&self, sample: Sample) {
@@ -173,7 +175,12 @@ impl Stats {
 
     /// The API body, with the VM counts and VM processes the caller read from
     /// the registry, or `None` before the first sample has been taken.
-    pub fn view(&self, vms_running: u64, guest_mem_mib: u64, vms: &[VmProcess]) -> Option<StatsView> {
+    pub fn view(
+        &self,
+        vms_running: u64,
+        guest_mem_mib: u64,
+        vms: &[VmProcess],
+    ) -> Option<StatsView> {
         let state = self.lock();
         let latest = state.latest?;
         Some(StatsView {
@@ -217,12 +224,18 @@ fn run(stats: &Stats) {
             (Some(before), Some(after)) => cpu_percent(before, after),
             _ => None,
         };
-        let total = match (prev_cpu.as_deref().and_then(total_jiffies), now_cpu.as_deref().and_then(total_jiffies)) {
+        let total = match (
+            prev_cpu.as_deref().and_then(total_jiffies),
+            now_cpu.as_deref().and_then(total_jiffies),
+        ) {
             (Some(before), Some(after)) => after.checked_sub(before),
             _ => None,
         };
         let procs = read_processes(&prev_ticks, total);
-        prev_ticks = procs.iter().map(|(pid, sample)| (*pid, sample.ticks)).collect();
+        prev_ticks = procs
+            .iter()
+            .map(|(pid, sample)| (*pid, sample.ticks))
+            .collect();
         prev_cpu = now_cpu;
         if let Some(sample) = cpu.and_then(read_host) {
             stats.push(sample);
@@ -246,13 +259,19 @@ fn parse_cpu_line(line: &str) -> Option<CpuTimes> {
     }
     // user nice system idle iowait irq softirq steal. The guest fields that
     // follow are already counted inside user, so they are left out.
-    let values: Vec<u64> = fields.take(8).map(|field| field.parse().ok()).collect::<Option<_>>()?;
+    let values: Vec<u64> = fields
+        .take(8)
+        .map(|field| field.parse().ok())
+        .collect::<Option<_>>()?;
     if values.len() < 5 {
         return None;
     }
     let total: u64 = values.iter().sum();
     let idle = values[3] + values[4];
-    Some(CpuTimes { total, busy: total - idle })
+    Some(CpuTimes {
+        total,
+        busy: total - idle,
+    })
 }
 
 /// The machine's total CPU ticks (every counted field, every CPU) on a `cpu`
@@ -344,7 +363,15 @@ fn read_processes(prev_ticks: &HashMap<u32, u64>, total: Option<u64>) -> HashMap
                 .zip(total)
                 .and_then(|(before, total)| process_cpu_percent(*before, ticks, total))
                 .unwrap_or(0.0);
-            Some((pid, ProcSample { comm, ticks, cpu_percent, rss_mib }))
+            Some((
+                pid,
+                ProcSample {
+                    comm,
+                    ticks,
+                    cpu_percent,
+                    rss_mib,
+                },
+            ))
         })
         .collect()
 }
@@ -406,21 +433,31 @@ fn read(path: &str) -> Option<String> {
 }
 
 fn cpu_line() -> Option<String> {
-    read("/proc/stat")?.lines().find(|line| line.starts_with("cpu ")).map(str::to_string)
+    read("/proc/stat")?
+        .lines()
+        .find(|line| line.starts_with("cpu "))
+        .map(str::to_string)
 }
 
 /// `(MemTotal, MemAvailable)` in MiB, from `/proc/meminfo` text.
 fn parse_meminfo(text: &str) -> Option<(u64, u64)> {
     let kib = |key: &str| {
         text.lines().find_map(|line| {
-            line.strip_prefix(key)?.trim().strip_suffix("kB")?.trim().parse::<u64>().ok()
+            line.strip_prefix(key)?
+                .trim()
+                .strip_suffix("kB")?
+                .trim()
+                .parse::<u64>()
+                .ok()
         })
     };
     Some((kib("MemTotal:")? / 1024, kib("MemAvailable:")? / 1024))
 }
 
 fn parse_loadavg(text: &str) -> Option<[f64; 3]> {
-    let mut fields = text.split_whitespace().map(|field| field.parse::<f64>().ok());
+    let mut fields = text
+        .split_whitespace()
+        .map(|field| field.parse::<f64>().ok());
     Some([fields.next()??, fields.next()??, fields.next()??])
 }
 
@@ -444,7 +481,9 @@ fn read_host(cpu_percent: f64) -> Option<Sample> {
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_or(0, |since| u64::try_from(since.as_millis()).unwrap_or(u64::MAX))
+        .map_or(0, |since| {
+            u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
+        })
 }
 
 #[cfg(test)]
@@ -468,14 +507,18 @@ mod tests {
 
     #[test]
     fn total_jiffies_is_every_counted_field_of_the_cpu_line() {
-        assert_eq!(total_jiffies("cpu  100 0 100 800 100 0 0 0 0 0"), Some(1100));
+        assert_eq!(
+            total_jiffies("cpu  100 0 100 800 100 0 0 0 0 0"),
+            Some(1100)
+        );
         assert_eq!(total_jiffies("cpu0 100 0 100 800"), None);
     }
 
     #[test]
     fn proc_stat_ticks_are_utime_plus_stime_counted_after_the_name() {
         // The name holds spaces and parentheses; utime is 30 and stime 12.
-        let line = "1234 (my vm (x)) S 1 1234 1234 0 -1 4194560 100 0 0 0 30 12 0 0 20 0 1 0 500 0 0";
+        let line =
+            "1234 (my vm (x)) S 1 1234 1234 0 -1 4194560 100 0 0 0 30 12 0 0 20 0 1 0 500 0 0";
         assert_eq!(parse_proc_stat(line), Some(("my vm (x)".to_string(), 42)));
         assert_eq!(parse_proc_stat("1234 (apid) S 1"), None);
     }

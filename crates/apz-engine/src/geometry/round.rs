@@ -23,17 +23,17 @@ fn lerp(a: V3, b: V3, t: f32) -> V3 {
 }
 
 fn cross(a: V3, b: V3) -> V3 {
-    [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
 }
 
 /// `Vector3.normalize()`: a zero vector stays zero.
 fn normalize(a: V3) -> V3 {
     let len = (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt();
-    if len > 0.0 {
-        scale(a, 1.0 / len)
-    } else {
-        a
-    }
+    if len > 0.0 { scale(a, 1.0 / len) } else { a }
 }
 
 /// Position, normal and uv buffers under construction (one entry per vertex).
@@ -64,7 +64,15 @@ pub fn sphere(r: f32, width_segments: u32, height_segments: u32) -> Geo {
 }
 
 /// `SphereGeometry(r, ws, hs, phiStart, phiLength, thetaStart, thetaLength)`.
-pub fn sphere_part(r: f32, ws: u32, hs: u32, phi_start: f32, phi_length: f32, theta_start: f32, theta_length: f32) -> Geo {
+pub fn sphere_part(
+    r: f32,
+    ws: u32,
+    hs: u32,
+    phi_start: f32,
+    phi_length: f32,
+    theta_start: f32,
+    theta_length: f32,
+) -> Geo {
     let (ws, hs) = (ws.max(3) as usize, hs.max(2) as usize);
     let theta_end = (theta_start + theta_length).min(PI);
     let mut m = Mesh::default();
@@ -83,7 +91,11 @@ pub fn sphere_part(r: f32, ws: u32, hs: u32, phi_start: f32, phi_length: f32, th
             .map(|ix| {
                 let u = ix as f32 / ws as f32;
                 let phi = phi_start + u * phi_length;
-                let p = [-r * phi.cos() * theta.sin(), r * theta.cos(), r * phi.sin() * theta.sin()];
+                let p = [
+                    -r * phi.cos() * theta.sin(),
+                    r * theta.cos(),
+                    r * phi.sin() * theta.sin(),
+                ];
                 m.push(p, normalize(p), [u + u_offset, 1.0 - v])
             })
             .collect();
@@ -114,7 +126,16 @@ pub fn cylinder(r_top: f32, r_bottom: f32, h: f32, radial: u32) -> Geo {
 
 /// `CylinderGeometry` with every parameter.
 #[allow(clippy::too_many_arguments)]
-pub fn cylinder_full(r_top: f32, r_bottom: f32, h: f32, radial: u32, height_segments: u32, open_ended: bool, theta_start: f32, theta_length: f32) -> Geo {
+pub fn cylinder_full(
+    r_top: f32,
+    r_bottom: f32,
+    h: f32,
+    radial: u32,
+    height_segments: u32,
+    open_ended: bool,
+    theta_start: f32,
+    theta_length: f32,
+) -> Geo {
     let radial = radial.max(1) as usize;
     let hs = height_segments.max(1) as usize;
     let half = h / 2.0;
@@ -131,7 +152,11 @@ pub fn cylinder_full(r_top: f32, r_bottom: f32, h: f32, radial: u32, height_segm
                 let u = x as f32 / radial as f32;
                 let theta = u * theta_length + theta_start;
                 let (s, c) = (theta.sin(), theta.cos());
-                m.push([radius * s, -v * h + half, radius * c], normalize([s, slope, c]), [u, 1.0 - v])
+                m.push(
+                    [radius * s, -v * h + half, radius * c],
+                    normalize([s, slope, c]),
+                    [u, 1.0 - v],
+                )
             })
             .collect();
         rows.push(row);
@@ -156,14 +181,30 @@ pub fn cylinder_full(r_top: f32, r_bottom: f32, h: f32, radial: u32, height_segm
             cap(&mut m, r_top, half, radial, theta_start, theta_length, true);
         }
         if r_bottom > 0.0 {
-            cap(&mut m, r_bottom, half, radial, theta_start, theta_length, false);
+            cap(
+                &mut m,
+                r_bottom,
+                half,
+                radial,
+                theta_start,
+                theta_length,
+                false,
+            );
         }
     }
     m.finish()
 }
 
 /// three's `generateCap`: one centre vertex per segment (uv 0.5, 0.5), then the rim ring.
-fn cap(m: &mut Mesh, radius: f32, half: f32, radial: usize, theta_start: f32, theta_length: f32, top: bool) {
+fn cap(
+    m: &mut Mesh,
+    radius: f32,
+    half: f32,
+    radial: usize,
+    theta_start: f32,
+    theta_length: f32,
+    top: bool,
+) {
     let sign = if top { 1.0 } else { -1.0 };
     let centre = m.p.len() as u32;
     for _ in 0..radial {
@@ -174,7 +215,11 @@ fn cap(m: &mut Mesh, radius: f32, half: f32, radial: usize, theta_start: f32, th
         let u = x as f32 / radial as f32;
         let theta = u * theta_length + theta_start;
         let (s, c) = (theta.sin(), theta.cos());
-        m.push([radius * s, half * sign, radius * c], [0.0, sign, 0.0], [c * 0.5 + 0.5, s * 0.5 * sign + 0.5]);
+        m.push(
+            [radius * s, half * sign, radius * c],
+            [0.0, sign, 0.0],
+            [c * 0.5 + 0.5, s * 0.5 * sign + 0.5],
+        );
     }
     for x in 0..radial as u32 {
         let (c, i) = (centre + x, ring + x);
@@ -204,7 +249,11 @@ pub fn torus(r: f32, tube: f32, radial: u32, tubular: u32, arc: f32) -> Geo {
             let (cv, sv) = (v.cos(), v.sin());
             let p = [(r + tube * cv) * cu, (r + tube * cv) * su, tube * sv];
             let centre = [r * cu, r * su, 0.0];
-            m.push(p, normalize(sub(p, centre)), [i as f32 / tubular as f32, j as f32 / radial as f32]);
+            m.push(
+                p,
+                normalize(sub(p, centre)),
+                [i as f32 / tubular as f32, j as f32 / radial as f32],
+            );
         }
     }
     let row = tubular + 1;
@@ -222,18 +271,10 @@ pub fn torus(r: f32, tube: f32, radial: u32, tubular: u32, arc: f32) -> Geo {
 
 /// The 36 faces (108 indices) of three's `DodecahedronGeometry`.
 const DODECA_FACES: [usize; 108] = [
-    3, 11, 7, 3, 7, 15, 3, 15, 13,
-    7, 19, 17, 7, 17, 6, 7, 6, 15,
-    17, 4, 8, 17, 8, 10, 17, 10, 6,
-    8, 0, 16, 8, 16, 2, 8, 2, 10,
-    0, 12, 1, 0, 1, 18, 0, 18, 16,
-    6, 10, 2, 6, 2, 13, 6, 13, 15,
-    2, 16, 18, 2, 18, 3, 2, 3, 13,
-    18, 1, 9, 18, 9, 11, 18, 11, 3,
-    4, 14, 12, 4, 12, 0, 4, 0, 8,
-    11, 9, 5, 11, 5, 19, 11, 19, 7,
-    19, 5, 14, 19, 14, 4, 19, 4, 17,
-    1, 12, 14, 1, 14, 5, 1, 5, 9,
+    3, 11, 7, 3, 7, 15, 3, 15, 13, 7, 19, 17, 7, 17, 6, 7, 6, 15, 17, 4, 8, 17, 8, 10, 17, 10, 6,
+    8, 0, 16, 8, 16, 2, 8, 2, 10, 0, 12, 1, 0, 1, 18, 0, 18, 16, 6, 10, 2, 6, 2, 13, 6, 13, 15, 2,
+    16, 18, 2, 18, 3, 2, 3, 13, 18, 1, 9, 18, 9, 11, 18, 11, 3, 4, 14, 12, 4, 12, 0, 4, 0, 8, 11,
+    9, 5, 11, 5, 19, 11, 19, 7, 19, 5, 14, 19, 14, 4, 19, 4, 17, 1, 12, 14, 1, 14, 5, 1, 5, 9,
 ];
 
 /// `DodecahedronGeometry(r, detail)`: a `PolyhedronGeometry` (non-indexed).
@@ -245,17 +286,38 @@ pub fn dodecahedron(r: f32, detail: u32) -> Geo {
     let t = (1.0 + 5f32.sqrt()) / 2.0;
     let q = 1.0 / t;
     let verts: [V3; 20] = [
-        [-1.0, -1.0, -1.0], [-1.0, -1.0, 1.0], [-1.0, 1.0, -1.0], [-1.0, 1.0, 1.0],
-        [1.0, -1.0, -1.0], [1.0, -1.0, 1.0], [1.0, 1.0, -1.0], [1.0, 1.0, 1.0],
-        [0.0, -q, -t], [0.0, -q, t], [0.0, q, -t], [0.0, q, t],
-        [-q, -t, 0.0], [-q, t, 0.0], [q, -t, 0.0], [q, t, 0.0],
-        [-t, 0.0, -q], [t, 0.0, -q], [-t, 0.0, q], [t, 0.0, q],
+        [-1.0, -1.0, -1.0],
+        [-1.0, -1.0, 1.0],
+        [-1.0, 1.0, -1.0],
+        [-1.0, 1.0, 1.0],
+        [1.0, -1.0, -1.0],
+        [1.0, -1.0, 1.0],
+        [1.0, 1.0, -1.0],
+        [1.0, 1.0, 1.0],
+        [0.0, -q, -t],
+        [0.0, -q, t],
+        [0.0, q, -t],
+        [0.0, q, t],
+        [-q, -t, 0.0],
+        [-q, t, 0.0],
+        [q, -t, 0.0],
+        [q, t, 0.0],
+        [-t, 0.0, -q],
+        [t, 0.0, -q],
+        [-t, 0.0, q],
+        [t, 0.0, q],
     ];
 
     // Subdivide each face, then project onto the sphere of radius r.
     let mut tris: Vec<V3> = Vec::new();
     for f in DODECA_FACES.chunks(3) {
-        subdivide_face(verts[f[0]], verts[f[1]], verts[f[2]], detail as usize, &mut tris);
+        subdivide_face(
+            verts[f[0]],
+            verts[f[1]],
+            verts[f[2]],
+            detail as usize,
+            &mut tris,
+        );
     }
     for p in tris.iter_mut() {
         *p = scale(normalize(*p), r);

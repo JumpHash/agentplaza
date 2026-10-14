@@ -47,8 +47,16 @@ pub fn build_gangway(
     _colors: &Colors,
     top_at: &dyn Fn(f32, f32) -> f32,
 ) -> Obj {
-    let deck = Mat::new(Material { color: Color::hex(0x7d8aa0), emissive: Color::hex(0x1e2636), ..Material::default() });
-    let steel = Mat::new(Material { color: Color::hex(0xdfe6f1), emissive: Color::hex(0x2a3446), ..Material::default() });
+    let deck = Mat::new(Material {
+        color: Color::hex(0x7d8aa0),
+        emissive: Color::hex(0x1e2636),
+        ..Material::default()
+    });
+    let steel = Mat::new(Material {
+        color: Color::hex(0xdfe6f1),
+        emissive: Color::hex(0x2a3446),
+        ..Material::default()
+    });
     let group = Obj::group();
     group.set_name("gangway");
 
@@ -57,12 +65,32 @@ pub fn build_gangway(
     let (nx, nz) = (spec.nx, spec.nz);
     let len = ((spec.bx - sx) * nx + (spec.bz - sz) * nz + CAB_BACK).max(0.01);
     let bridge = Obj::group();
-    bridge.set_position(sx, 0.0, sz).set_rotation(0.0, nx.atan2(nz), 0.0);
+    bridge
+        .set_position(sx, 0.0, sz)
+        .set_rotation(0.0, nx.atan2(nz), 0.0);
     group.add(&bridge);
 
-    part(&bridge, WIDTH, THICK, len, &deck, 0.0, plate_y - THICK / 2.0, len / 2.0);
+    part(
+        &bridge,
+        WIDTH,
+        THICK,
+        len,
+        &deck,
+        0.0,
+        plate_y - THICK / 2.0,
+        len / 2.0,
+    );
     for side in [-1.0_f32, 1.0] {
-        part(&bridge, RAIL, RAIL_H, len, &steel, side * (WIDTH / 2.0 - RAIL / 2.0), plate_y + RAIL_H / 2.0, len / 2.0);
+        part(
+            &bridge,
+            RAIL,
+            RAIL_H,
+            len,
+            &steel,
+            side * (WIDTH / 2.0 - RAIL / 2.0),
+            plate_y + RAIL_H / 2.0,
+            len / 2.0,
+        );
     }
 
     // A support every SPAN, from the deck's underside down to the solid it stands on (never below it).
@@ -71,7 +99,16 @@ pub fn build_gangway(
     while s < len {
         let base = top_at(sx + nx * s, sz + nz * s);
         if bottom - base > 0.01 {
-            part(&bridge, POST, bottom - base, POST, &steel, 0.0, (bottom + base) / 2.0, s);
+            part(
+                &bridge,
+                POST,
+                bottom - base,
+                POST,
+                &steel,
+                0.0,
+                (bottom + base) / 2.0,
+                s,
+            );
         }
         s += SPAN;
     }
@@ -101,16 +138,38 @@ pub fn build_ramp(spec: &RampSpec, colors: &Colors) -> Obj {
 
     let group = Obj::group();
     group.set_name("ramp");
-    group.set_position(spec.x, 0.0, spec.z).set_rotation(0.0, spec.face, 0.0);
+    group
+        .set_position(spec.x, 0.0, spec.z)
+        .set_rotation(0.0, spec.face, 0.0);
     // The slope frame: its origin on the terrace-level top line, tilted about x so +z drops to the PCB.
     let slope = Obj::group();
-    slope.set_position(0.0, spec.high, 0.0).set_rotation(rise.atan2(length), 0.0, 0.0);
+    slope
+        .set_position(0.0, spec.high, 0.0)
+        .set_rotation(rise.atan2(length), 0.0, 0.0);
     group.add(&slope);
 
-    part(&slope, spec.width, RAMP_THICK, slope_len, &deck, 0.0, -RAMP_THICK / 2.0, slope_len / 2.0);
+    part(
+        &slope,
+        spec.width,
+        RAMP_THICK,
+        slope_len,
+        &deck,
+        0.0,
+        -RAMP_THICK / 2.0,
+        slope_len / 2.0,
+    );
     let rail_x = spec.width / 2.0 - RAMP_RAIL_W / 2.0;
     for side in [-1.0_f32, 1.0] {
-        part(&slope, RAMP_RAIL_W, RAMP_RAIL_H, slope_len, &steel, side * rail_x, RAMP_RAIL_H / 2.0, slope_len / 2.0);
+        part(
+            &slope,
+            RAMP_RAIL_W,
+            RAMP_RAIL_H,
+            slope_len,
+            &steel,
+            side * rail_x,
+            RAMP_RAIL_H / 2.0,
+            slope_len / 2.0,
+        );
         part(
             &slope,
             RAMP_RAIL_W,
@@ -129,7 +188,15 @@ pub fn build_ramp(spec: &RampSpec, colors: &Colors) -> Obj {
 /// face points along a -> b, and the length is their horizontal distance. Width is the TS default, 0.6.
 pub fn ramp_between(a: [f32; 2], a_y: f32, b: [f32; 2], b_y: f32) -> RampSpec {
     let (dx, dz) = (b[0] - a[0], b[1] - a[1]);
-    RampSpec { x: a[0], z: a[1], face: dx.atan2(dz), low: b_y, high: a_y, width: 0.6, length: dx.hypot(dz) }
+    RampSpec {
+        x: a[0],
+        z: a[1],
+        face: dx.atan2(dz),
+        low: b_y,
+        high: a_y,
+        width: 0.6,
+        length: dx.hypot(dz),
+    }
 }
 
 /// A box mesh with its shadows on, at (x, y, z) under `parent`.

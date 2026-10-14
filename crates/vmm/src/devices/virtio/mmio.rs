@@ -31,8 +31,8 @@
 //! the guest without waking this process at all).
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Barrier;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::pal::eventfd::EventFd;
 

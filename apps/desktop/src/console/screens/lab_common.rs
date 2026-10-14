@@ -126,7 +126,10 @@ pub fn time(ms: u64) -> String {
         return "—".to_string();
     }
     match chrono::DateTime::from_timestamp_millis(ms as i64) {
-        Some(utc) => utc.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string(),
+        Some(utc) => utc
+            .with_timezone(&chrono::Local)
+            .format("%Y-%m-%d %H:%M")
+            .to_string(),
         None => "—".to_string(),
     }
 }
@@ -148,5 +151,7 @@ pub fn ago(ms: u64) -> String {
 
 /// The current time, unix milliseconds.
 pub fn now_ms() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
 }

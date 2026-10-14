@@ -11,9 +11,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use iced::widget::{checkbox, column, pick_list, row, text_input};
 use iced::{Alignment, Element, Length, Task};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use crate::console::{client, ui, Ctx};
+use crate::console::{Ctx, client, ui};
 
 const DAY_MS: u64 = 86_400_000;
 const CALLS_LIMIT: usize = 100;
@@ -53,8 +53,12 @@ impl Scope {
     pub fn plain(self) -> &'static str {
         match self {
             Scope::Observe => "read only",
-            Scope::Operate => "acts within the plaza's rules: tasks, messages, stopping or restarting an agent, proposing prompts and skills",
-            Scope::Govern => "records recommendations on approvals, and publishes prompts and skills",
+            Scope::Operate => {
+                "acts within the plaza's rules: tasks, messages, stopping or restarting an agent, proposing prompts and skills"
+            }
+            Scope::Govern => {
+                "records recommendations on approvals, and publishes prompts and skills"
+            }
         }
     }
 
@@ -72,7 +76,10 @@ impl Scope {
     }
 
     fn from_wire(word: &str) -> Scope {
-        Scope::ALL.into_iter().find(|scope| scope.wire() == word).unwrap_or_default()
+        Scope::ALL
+            .into_iter()
+            .find(|scope| scope.wire() == word)
+            .unwrap_or_default()
     }
 }
 
@@ -82,7 +89,11 @@ impl fmt::Display for Scope {
     }
 }
 
-const SCOPE_OPTIONS: [(Scope, &str); 3] = [(Scope::Observe, "Observe"), (Scope::Operate, "Operate"), (Scope::Govern, "Govern")];
+const SCOPE_OPTIONS: [(Scope, &str); 3] = [
+    (Scope::Observe, "Observe"),
+    (Scope::Operate, "Operate"),
+    (Scope::Govern, "Govern"),
+];
 
 /// Local only, or remote over TLS.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -109,7 +120,10 @@ impl Bind {
     }
 }
 
-const BIND_OPTIONS: [(Bind, &str); 2] = [(Bind::Local, "Local only"), (Bind::Remote, "Remote over TLS")];
+const BIND_OPTIONS: [(Bind, &str); 2] = [
+    (Bind::Local, "Local only"),
+    (Bind::Remote, "Remote over TLS"),
+];
 
 /// Secure needs a token; open lets anonymous callers in with the open scope.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -183,7 +197,9 @@ pub fn tools_of(scope: Scope) -> &'static [&'static str] {
 
 /// The scope a tool belongs to, or None for a tool the hub does not have.
 pub fn tool_scope(name: &str) -> Option<Scope> {
-    Scope::ALL.into_iter().find(|scope| tools_of(*scope).contains(&name))
+    Scope::ALL
+        .into_iter()
+        .find(|scope| tools_of(*scope).contains(&name))
 }
 
 /// Drops the ticked tools that a token of `scope` may no longer hold (the server would refuse the token).
@@ -209,7 +225,10 @@ pub struct Snippets {
 
 /// The hub's origin: the scheme and host of its MCP URL, with no path.
 pub fn hub_origin(url: &str) -> String {
-    let base = url.strip_suffix("/mcp/").or_else(|| url.strip_suffix("/mcp")).unwrap_or(url);
+    let base = url
+        .strip_suffix("/mcp/")
+        .or_else(|| url.strip_suffix("/mcp"))
+        .unwrap_or(url);
     match base.find("://") {
         Some(at) => {
             let rest = &base[at + 3..];
@@ -222,7 +241,9 @@ pub fn hub_origin(url: &str) -> String {
 
 pub fn setup_snippets(url: &str, token: Option<&str>) -> Snippets {
     let origin = hub_origin(url);
-    let header = token.map(|t| format!(" --header \"Authorization: Bearer {t}\"")).unwrap_or_default();
+    let header = token
+        .map(|t| format!(" --header \"Authorization: Bearer {t}\""))
+        .unwrap_or_default();
     let desktop_config = json!({
         "mcpServers": { "agentplaza": { "command": "agentplaza", "args": ["mcp", "serve", "--hub", origin.as_str()] } }
     });
@@ -240,7 +261,10 @@ pub fn setup_snippets(url: &str, token: Option<&str>) -> Snippets {
 // ---- Plain-words times and query values -------------------------------------------------------------------
 
 fn now_ms() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 /// How long ago `at_ms` was, in plain words.
@@ -283,7 +307,9 @@ fn encode(value: &str) -> String {
     value
         .bytes()
         .map(|b| match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (b as char).to_string()
+            }
             _ => format!("%{b:02X}"),
         })
         .collect()
@@ -365,20 +391,32 @@ impl fmt::Display for Choice {
 }
 
 fn token_choices(tokens: &[HubToken]) -> Vec<Choice> {
-    let all = Choice { value: String::new(), label: "All tokens".to_string() };
+    let all = Choice {
+        value: String::new(),
+        label: "All tokens".to_string(),
+    };
     let live = tokens
         .iter()
         .filter(|t| t.revoked_at_ms.is_none())
-        .map(|t| Choice { value: t.id.clone(), label: t.name.clone() });
+        .map(|t| Choice {
+            value: t.id.clone(),
+            label: t.name.clone(),
+        });
     std::iter::once(all).chain(live).collect()
 }
 
 fn tool_choices() -> Vec<Choice> {
-    let all = Choice { value: String::new(), label: "All tools".to_string() };
-    let tools = Scope::ALL.into_iter().flat_map(|scope| tools_of(scope).iter().copied()).map(|name| Choice {
-        value: name.to_string(),
-        label: name.to_string(),
-    });
+    let all = Choice {
+        value: String::new(),
+        label: "All tools".to_string(),
+    };
+    let tools = Scope::ALL
+        .into_iter()
+        .flat_map(|scope| tools_of(scope).iter().copied())
+        .map(|name| Choice {
+            value: name.to_string(),
+            label: name.to_string(),
+        });
     std::iter::once(all).chain(tools).collect()
 }
 
@@ -481,7 +519,13 @@ fn status_task(ctx: &Ctx) -> Task<Msg> {
 
 fn tokens_task(ctx: &Ctx) -> Task<Msg> {
     let c = ctx.client.clone();
-    client::task(move || c.get::<TokenList>("/v1/hub-mcp/tokens").map(|list| list.tokens), Msg::TokensLoaded)
+    client::task(
+        move || {
+            c.get::<TokenList>("/v1/hub-mcp/tokens")
+                .map(|list| list.tokens)
+        },
+        Msg::TokensLoaded,
+    )
 }
 
 fn calls_task(state: &State, ctx: &Ctx) -> Task<Msg> {
@@ -493,7 +537,10 @@ fn calls_task(state: &State, ctx: &Ctx) -> Task<Msg> {
         path.push_str(&format!("&tool={}", encode(&state.filter_tool)));
     }
     let c = ctx.client.clone();
-    client::task(move || c.get::<CallList>(&path).map(|list| list.calls), Msg::CallsLoaded)
+    client::task(
+        move || c.get::<CallList>(&path).map(|list| list.calls),
+        Msg::CallsLoaded,
+    )
 }
 
 /// Loads the hub's settings, tokens and calls (called when the tab opens and on every poll tick).
@@ -510,7 +557,12 @@ fn apply_draft(state: &mut State, status: &HubStatus) {
 }
 
 fn name_of(state: &State, id: &str) -> String {
-    state.tokens.as_ref().and_then(|list| list.iter().find(|t| t.id == id)).map(|t| t.name.clone()).unwrap_or_else(|| id.to_string())
+    state
+        .tokens
+        .as_ref()
+        .and_then(|list| list.iter().find(|t| t.id == id))
+        .map(|t| t.name.clone())
+        .unwrap_or_else(|| id.to_string())
 }
 
 fn save_task(state: &State, ctx: &Ctx) -> Task<Msg> {
@@ -525,7 +577,13 @@ fn save_task(state: &State, ctx: &Ctx) -> Task<Msg> {
         body["confirm_open_remote"] = json!(state.confirm_open_remote);
     }
     let c = ctx.client.clone();
-    client::task(move || c.call("PUT", "/v1/hub-mcp", Some(&body)).and_then(parse_status), Msg::Saved)
+    client::task(
+        move || {
+            c.call("PUT", "/v1/hub-mcp", Some(&body))
+                .and_then(parse_status)
+        },
+        Msg::Saved,
+    )
 }
 
 fn create_task(state: &mut State, ctx: &Ctx) -> Task<Msg> {
@@ -546,7 +604,10 @@ fn create_task(state: &mut State, ctx: &Ctx) -> Task<Msg> {
     state.busy = true;
     state.notice = None;
     let c = ctx.client.clone();
-    client::task(move || c.post::<CreatedToken>("/v1/hub-mcp/tokens", &body), Msg::Created)
+    client::task(
+        move || c.post::<CreatedToken>("/v1/hub-mcp/tokens", &body),
+        Msg::Created,
+    )
 }
 
 pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
@@ -667,10 +728,22 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         }
         Msg::Created(Ok(made)) => {
             state.busy = false;
-            let url = state.status.as_ref().map(|s| s.url.clone()).unwrap_or_default();
-            let for_clients = if state.auth == Auth::Open { None } else { Some(made.token.as_str()) };
+            let url = state
+                .status
+                .as_ref()
+                .map(|s| s.url.clone())
+                .unwrap_or_default();
+            let for_clients = if state.auth == Auth::Open {
+                None
+            } else {
+                Some(made.token.as_str())
+            };
             let snippets = setup_snippets(&url, for_clients);
-            state.reveal = Some(Reveal { token: made.token.clone(), name: made.record.name.clone(), snippets });
+            state.reveal = Some(Reveal {
+                token: made.token.clone(),
+                name: made.record.name.clone(),
+                snippets,
+            });
             state.name.clear();
             state.expires.clear();
             state.picked.clear();
@@ -730,17 +803,17 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
 // ---- The view ---------------------------------------------------------------------------------------------
 
 fn gate(busy: bool, msg: Msg) -> Option<Msg> {
-    if busy {
-        None
-    } else {
-        Some(msg)
-    }
+    if busy { None } else { Some(msg) }
 }
 
 pub fn view(state: &State) -> Element<'_, Msg> {
     let mut parts: Vec<Element<'_, Msg>> = vec![ui::faint("Serve this hub to outside MCP clients. Each token is one client's key, and the calls log shows what each one used.").into()];
     if let Some((text, is_error)) = &state.notice {
-        parts.push(if *is_error { ui::error_line(text) } else { ui::faint(text.clone()).into() });
+        parts.push(if *is_error {
+            ui::error_line(text)
+        } else {
+            ui::faint(text.clone()).into()
+        });
     }
     parts.push(enable_card(state));
     parts.push(token_form(state));
@@ -753,26 +826,40 @@ fn enable_card(state: &State) -> Element<'_, Msg> {
     let remote = state.bind == Bind::Remote;
     let open = state.auth == Auth::Open;
     let mut parts: Vec<Element<'_, Msg>> = vec![
-        checkbox(state.enabled).label("Serve this hub over MCP").on_toggle(Msg::SetEnabled).into(),
+        checkbox(state.enabled)
+            .label("Serve this hub over MCP")
+            .on_toggle(Msg::SetEnabled)
+            .into(),
         ui::label("Bind").into(),
         ui::seg(&BIND_OPTIONS, state.bind, Msg::SetBind),
         ui::label("Auth").into(),
         ui::seg(&AUTH_OPTIONS, state.auth, Msg::SetAuth),
-        ui::faint(if matches!(state.auth, Auth::Open) { "no token" } else { "token required" }).into(),
+        ui::faint(if matches!(state.auth, Auth::Open) {
+            "no token"
+        } else {
+            "token required"
+        })
+        .into(),
     ];
     // The TLS line sits right after the bind: a remote bind needs TLS.
     if let Some(line) = tls_line(state) {
         parts.insert(3, line);
     }
     if open {
-        parts.push(ui::error_line("Anyone who can reach this address can use these tools without a token."));
+        parts.push(ui::error_line(
+            "Anyone who can reach this address can use these tools without a token.",
+        ));
         if let Some(warning) = state.status.as_ref().and_then(|s| s.warning.as_deref()) {
             parts.push(ui::error_line(warning));
         }
         parts.push(
             row![
                 ui::faint("Open scope (anonymous callers)"),
-                pick_list(Scope::ALL.to_vec(), Some(state.open_scope), Msg::SetOpenScope),
+                pick_list(
+                    Scope::ALL.to_vec(),
+                    Some(state.open_scope),
+                    Msg::SetOpenScope
+                ),
             ]
             .spacing(12)
             .align_y(Alignment::Center)
@@ -780,7 +867,12 @@ fn enable_card(state: &State) -> Element<'_, Msg> {
         );
         parts.push(ui::faint(state.open_scope.plain()).into());
         if remote {
-            parts.push(checkbox(state.confirm_open_remote).label("I understand anyone on the network can use it").on_toggle(Msg::SetConfirm).into());
+            parts.push(
+                checkbox(state.confirm_open_remote)
+                    .label("I understand anyone on the network can use it")
+                    .on_toggle(Msg::SetConfirm)
+                    .into(),
+            );
         }
     }
     parts.push(ui::label("Allowed origins").into());
@@ -791,7 +883,12 @@ fn enable_card(state: &State) -> Element<'_, Msg> {
         parts.push(
             row![
                 ui::mono(origin.clone(), 12.0, crate::theme::palette().ink_2),
-                ui::btn_sm("Remove", None, ui::Kind::Ghost, Some(Msg::RemoveOrigin(origin.clone()))),
+                ui::btn_sm(
+                    "Remove",
+                    None,
+                    ui::Kind::Ghost,
+                    Some(Msg::RemoveOrigin(origin.clone()))
+                ),
             ]
             .spacing(10)
             .align_y(Alignment::Center)
@@ -821,19 +918,40 @@ fn enable_card(state: &State) -> Element<'_, Msg> {
         }
     }
     parts.push(status_line(state));
-    parts.push(ui::btn("Save", None, ui::Kind::Primary, gate(state.busy, Msg::Save)));
-    ui::card("Enable", column(parts).spacing(12).width(Length::Fill).into())
+    parts.push(ui::btn(
+        "Save",
+        None,
+        ui::Kind::Primary,
+        gate(state.busy, Msg::Save),
+    ));
+    ui::card(
+        "Enable",
+        column(parts).spacing(12).width(Length::Fill).into(),
+    )
 }
 
 /// Whether the endpoint serves TLS, next to the bind: a remote bind needs it, and the hub refuses it without.
 fn tls_line(state: &State) -> Option<Element<'_, Msg>> {
     let status = state.status.as_ref()?;
     let (label, tone, text) = if status.tls {
-        ("TLS on", ui::Tone::Ok, "This endpoint serves TLS, so remote bind is available.")
+        (
+            "TLS on",
+            ui::Tone::Ok,
+            "This endpoint serves TLS, so remote bind is available.",
+        )
     } else {
-        ("TLS off", ui::Tone::Warn, "Remote bind needs TLS. This endpoint has none, so the hub refuses remote bind until it serves TLS.")
+        (
+            "TLS off",
+            ui::Tone::Warn,
+            "Remote bind needs TLS. This endpoint has none, so the hub refuses remote bind until it serves TLS.",
+        )
     };
-    Some(row![ui::badge(label, tone), ui::faint(text)].spacing(10).align_y(Alignment::Center).into())
+    Some(
+        row![ui::badge(label, tone), ui::faint(text)]
+            .spacing(10)
+            .align_y(Alignment::Center)
+            .into(),
+    )
 }
 
 fn status_line(state: &State) -> Element<'_, Msg> {
@@ -855,17 +973,30 @@ fn status_line(state: &State) -> Element<'_, Msg> {
     } else {
         "On, local only".to_string()
     };
-    let tone = if status.enabled { ui::Tone::Ok } else { ui::Tone::Muted };
+    let tone = if status.enabled {
+        ui::Tone::Ok
+    } else {
+        ui::Tone::Muted
+    };
     let plural = if status.tokens == 1 { "" } else { "s" };
     let head: Vec<Element<'_, Msg>> = vec![
         ui::badge(&label, tone),
         ui::mono(status.url.clone(), 12.0, crate::theme::palette().ink).into(),
-        ui::btn_sm("Copy URL", None, ui::Kind::Ghost, Some(Msg::Copy(status.url.clone()))),
+        ui::btn_sm(
+            "Copy URL",
+            None,
+            ui::Kind::Ghost,
+            Some(Msg::Copy(status.url.clone())),
+        ),
         ui::faint(format!("{} live token{plural}", status.tokens)).into(),
     ];
-    let mut lines: Vec<Element<'_, Msg>> = vec![row(head).spacing(10).align_y(Alignment::Center).into()];
+    let mut lines: Vec<Element<'_, Msg>> =
+        vec![row(head).spacing(10).align_y(Alignment::Center).into()];
     if !status.stored {
-        lines.push(ui::faint("The database is off, so these settings last only until the hub restarts.").into());
+        lines.push(
+            ui::faint("The database is off, so these settings last only until the hub restarts.")
+                .into(),
+        );
     }
     column(lines).spacing(6).into()
 }
@@ -873,7 +1004,11 @@ fn status_line(state: &State) -> Element<'_, Msg> {
 fn token_form(state: &State) -> Element<'_, Msg> {
     let mut parts: Vec<Element<'_, Msg>> = vec![
         ui::label("Name").into(),
-        text_input("laptop", &state.name).on_input(Msg::SetName).padding(8).style(crate::theme::input).into(),
+        text_input("laptop", &state.name)
+            .on_input(Msg::SetName)
+            .padding(8)
+            .style(crate::theme::input)
+            .into(),
         ui::label("Scope").into(),
         ui::seg(&SCOPE_OPTIONS, state.scope, Msg::SetScope),
     ];
@@ -884,7 +1019,11 @@ fn token_form(state: &State) -> Element<'_, Msg> {
     parts.push(ui::faint("Leave them all unticked for every tool the scope allows.").into());
     for group in Scope::ALL {
         let allowed = state.scope.permits(group);
-        let heading = if allowed { group.label().to_string() } else { format!("{} (above this scope)", group.label()) };
+        let heading = if allowed {
+            group.label().to_string()
+        } else {
+            format!("{} (above this scope)", group.label())
+        };
         parts.push(ui::faint(heading).into());
         for name in tools_of(group) {
             let mut tool = checkbox(state.picked.contains(*name)).label(*name);
@@ -896,25 +1035,48 @@ fn token_form(state: &State) -> Element<'_, Msg> {
         }
     }
     parts.push(ui::label("Expires after (days)").into());
-    parts.push(text_input("Never", &state.expires).on_input(Msg::SetExpires).padding(8).style(crate::theme::input).into());
+    parts.push(
+        text_input("Never", &state.expires)
+            .on_input(Msg::SetExpires)
+            .padding(8)
+            .style(crate::theme::input)
+            .into(),
+    );
     parts.push(ui::faint("Blank means the token never expires.").into());
-    parts.push(ui::btn("Create token", None, ui::Kind::Primary, gate(state.busy, Msg::CreateToken)));
+    parts.push(ui::btn(
+        "Create token",
+        None,
+        ui::Kind::Primary,
+        gate(state.busy, Msg::CreateToken),
+    ));
     if let Some(reveal) = &state.reveal {
         parts.push(reveal_box(reveal));
     }
-    ui::card("New token", column(parts).spacing(12).width(Length::Fill).into())
+    ui::card(
+        "New token",
+        column(parts).spacing(12).width(Length::Fill).into(),
+    )
 }
 
 fn reveal_box(reveal: &Reveal) -> Element<'_, Msg> {
     let token_row: Vec<Element<'_, Msg>> = vec![
         ui::mono(reveal.token.clone(), 12.0, crate::theme::palette().ink).into(),
-        ui::btn_sm("Copy token", None, ui::Kind::Ghost, Some(Msg::Copy(reveal.token.clone()))),
+        ui::btn_sm(
+            "Copy token",
+            None,
+            ui::Kind::Ghost,
+            Some(Msg::Copy(reveal.token.clone())),
+        ),
     ];
     let mut parts: Vec<Element<'_, Msg>> = vec![
         ui::label(&format!("Token for {}", reveal.name)).into(),
         ui::error_line("Shown once. Copy it now, because it cannot be shown again."),
         row(token_row).spacing(10).align_y(Alignment::Center).into(),
-        snippet("Claude Code", &reveal.snippets.claude_code, "Run this in a terminal."),
+        snippet(
+            "Claude Code",
+            &reveal.snippets.claude_code,
+            "Run this in a terminal.",
+        ),
         snippet(
             "Claude Desktop",
             &reveal.snippets.desktop,
@@ -928,8 +1090,17 @@ fn reveal_box(reveal: &Reveal) -> Element<'_, Msg> {
             "Reads the token from stdin and saves it in cli.json. Paste the token, then end the input.",
         ));
     }
-    parts.push(snippet("Generic", &reveal.snippets.generic, "The URL and the header, for any other client."));
-    parts.push(ui::btn_sm("Hide", None, ui::Kind::Ghost, Some(Msg::HideReveal)));
+    parts.push(snippet(
+        "Generic",
+        &reveal.snippets.generic,
+        "The URL and the header, for any other client.",
+    ));
+    parts.push(ui::btn_sm(
+        "Hide",
+        None,
+        ui::Kind::Ghost,
+        Some(Msg::HideReveal),
+    ));
     column(parts).spacing(12).width(Length::Fill).into()
 }
 
@@ -937,7 +1108,12 @@ fn reveal_box(reveal: &Reveal) -> Element<'_, Msg> {
 fn snippet<'a>(title: &str, text: &str, note: &str) -> Element<'a, Msg> {
     let head: Vec<Element<'a, Msg>> = vec![
         ui::label(title).into(),
-        ui::btn_sm("Copy", None, ui::Kind::Ghost, Some(Msg::Copy(text.to_string()))),
+        ui::btn_sm(
+            "Copy",
+            None,
+            ui::Kind::Ghost,
+            Some(Msg::Copy(text.to_string())),
+        ),
     ];
     column![
         row(head).spacing(10).align_y(Alignment::Center),
@@ -955,11 +1131,23 @@ fn tokens_card(state: &State) -> Element<'_, Msg> {
         match &state.tokens {
             None => ui::loading(),
             Some(list) => {
-                let live: Vec<&HubToken> = list.iter().filter(|t| t.revoked_at_ms.is_none()).collect();
+                let live: Vec<&HubToken> =
+                    list.iter().filter(|t| t.revoked_at_ms.is_none()).collect();
                 if live.is_empty() {
-                    ui::empty("terminal", "No tokens", "Make one above to give an outside client access to this hub.")
+                    ui::empty(
+                        "terminal",
+                        "No tokens",
+                        "Make one above to give an outside client access to this hub.",
+                    )
                 } else {
-                    column(live.into_iter().map(|token| token_row(state, token)).collect::<Vec<_>>()).spacing(14).width(Length::Fill).into()
+                    column(
+                        live.into_iter()
+                            .map(|token| token_row(state, token))
+                            .collect::<Vec<_>>(),
+                    )
+                    .spacing(14)
+                    .width(Length::Fill)
+                    .into()
                 }
             }
         }
@@ -973,13 +1161,20 @@ fn token_row<'a>(state: &State, token: &HubToken) -> Element<'a, Msg> {
         Some(ms) => format!("last used {}", ago(now, ms)),
         None => "never used".to_string(),
     };
-    let facts = format!("{last} · {} calls · {}", token.calls, expiry_text(now, token.expires_ms));
+    let facts = format!(
+        "{last} · {} calls · {}",
+        token.calls,
+        expiry_text(now, token.expires_ms)
+    );
     let head: Vec<Element<'a, Msg>> = vec![
         ui::mono(token.name.clone(), 12.0, crate::theme::palette().ink).into(),
         ui::badge(&token.scope, ui::Tone::Info),
         ui::faint(token.id.clone()).into(),
     ];
-    let mut lines: Vec<Element<'a, Msg>> = vec![row(head).spacing(10).align_y(Alignment::Center).into(), ui::faint(facts).into()];
+    let mut lines: Vec<Element<'a, Msg>> = vec![
+        row(head).spacing(10).align_y(Alignment::Center).into(),
+        ui::faint(facts).into(),
+    ];
     if state.confirm_revoke.as_deref() == Some(token.id.as_str()) {
         let confirm: Vec<Element<'a, Msg>> = vec![
             ui::faint(format!("Revoke {}? Clients that use this token lose access at once. This cannot be undone.", token.name)).into(),
@@ -988,16 +1183,27 @@ fn token_row<'a>(state: &State, token: &HubToken) -> Element<'a, Msg> {
         ];
         lines.push(row(confirm).spacing(10).align_y(Alignment::Center).into());
     } else {
-        lines.push(ui::btn_sm("Revoke", None, ui::Kind::Danger, gate(state.busy, Msg::AskRevoke(token.id.clone()))));
+        lines.push(ui::btn_sm(
+            "Revoke",
+            None,
+            ui::Kind::Danger,
+            gate(state.busy, Msg::AskRevoke(token.id.clone())),
+        ));
     }
     column(lines).spacing(8).into()
 }
 
 fn calls_card(state: &State) -> Element<'_, Msg> {
     let token_options = token_choices(state.tokens.as_deref().unwrap_or(&[]));
-    let selected_token = token_options.iter().find(|c| c.value == state.filter_token).cloned();
+    let selected_token = token_options
+        .iter()
+        .find(|c| c.value == state.filter_token)
+        .cloned();
     let tool_options = tool_choices();
-    let selected_tool = tool_options.iter().find(|c| c.value == state.filter_tool).cloned();
+    let selected_tool = tool_options
+        .iter()
+        .find(|c| c.value == state.filter_tool)
+        .cloned();
     let filters: Element<'_, Msg> = row![
         ui::faint("Token"),
         pick_list(token_options, selected_token, Msg::FilterToken),
@@ -1012,15 +1218,36 @@ fn calls_card(state: &State) -> Element<'_, Msg> {
     } else {
         match &state.calls {
             None => ui::loading(),
-            Some(list) if list.is_empty() => ui::empty("terminal", "No calls", "Calls appear here once a client uses a token."),
-            Some(list) => column(list.iter().map(|call| call_row(state, call)).collect::<Vec<_>>()).spacing(8).width(Length::Fill).into(),
+            Some(list) if list.is_empty() => ui::empty(
+                "terminal",
+                "No calls",
+                "Calls appear here once a client uses a token.",
+            ),
+            Some(list) => column(
+                list.iter()
+                    .map(|call| call_row(state, call))
+                    .collect::<Vec<_>>(),
+            )
+            .spacing(8)
+            .width(Length::Fill)
+            .into(),
         }
     };
-    ui::card("Calls", column![filters, body].spacing(14).width(Length::Fill).into())
+    ui::card(
+        "Calls",
+        column![filters, body]
+            .spacing(14)
+            .width(Length::Fill)
+            .into(),
+    )
 }
 
 fn call_row<'a>(state: &State, call: &HubCall) -> Element<'a, Msg> {
-    let result = if call.ok { ui::Tone::Ok } else { ui::Tone::Danger };
+    let result = if call.ok {
+        ui::Tone::Ok
+    } else {
+        ui::Tone::Danger
+    };
     let head: Vec<Element<'a, Msg>> = vec![
         ui::mono(call.tool.clone(), 12.0, crate::theme::palette().ink).into(),
         ui::faint(name_of(state, &call.token_id)).into(),
@@ -1028,7 +1255,8 @@ fn call_row<'a>(state: &State, call: &HubCall) -> Element<'a, Msg> {
         ui::faint(format!("{} ms", call.duration_ms)).into(),
         ui::faint(ago(now_ms(), call.at_ms)).into(),
     ];
-    let mut lines: Vec<Element<'a, Msg>> = vec![row(head).spacing(10).align_y(Alignment::Center).into()];
+    let mut lines: Vec<Element<'a, Msg>> =
+        vec![row(head).spacing(10).align_y(Alignment::Center).into()];
     if let Some(error) = call.error.as_deref().filter(|e| !e.is_empty()) {
         lines.push(ui::error_line(&ui::ellipsize(error, 120)));
     }
@@ -1051,17 +1279,32 @@ mod tests {
             s.claude_code,
             "claude mcp add --transport http agentplaza https://hub.example.test/mcp --header \"Authorization: Bearer apz_mcp_test\""
         );
-        assert_eq!(s.desktop_login.as_deref(), Some("agentplaza mcp login --hub https://hub.example.test"));
-        assert_eq!(s.generic, "URL: https://hub.example.test/mcp\nAuthorization: Bearer apz_mcp_test");
+        assert_eq!(
+            s.desktop_login.as_deref(),
+            Some("agentplaza mcp login --hub https://hub.example.test")
+        );
+        assert_eq!(
+            s.generic,
+            "URL: https://hub.example.test/mcp\nAuthorization: Bearer apz_mcp_test"
+        );
         let desktop: Value = serde_json::from_str(&s.desktop).expect("the desktop block is JSON");
-        assert_eq!(desktop["mcpServers"]["agentplaza"]["args"], json!(["mcp", "serve", "--hub", "https://hub.example.test"]));
-        assert!(!s.desktop.contains(TOKEN), "the desktop block never carries the token");
+        assert_eq!(
+            desktop["mcpServers"]["agentplaza"]["args"],
+            json!(["mcp", "serve", "--hub", "https://hub.example.test"])
+        );
+        assert!(
+            !s.desktop.contains(TOKEN),
+            "the desktop block never carries the token"
+        );
     }
 
     #[test]
     fn mcp_hub_open_mode_setup_drops_the_token() {
         let s = setup_snippets(URL, None);
-        assert_eq!(s.claude_code, "claude mcp add --transport http agentplaza https://hub.example.test/mcp");
+        assert_eq!(
+            s.claude_code,
+            "claude mcp add --transport http agentplaza https://hub.example.test/mcp"
+        );
         assert_eq!(s.desktop_login, None);
         assert_eq!(s.generic, "URL: https://hub.example.test/mcp");
     }
@@ -1069,7 +1312,10 @@ mod tests {
     #[test]
     fn mcp_hub_origin_is_the_url_without_its_path() {
         assert_eq!(hub_origin(URL), "https://hub.example.test");
-        assert_eq!(hub_origin("https://hub.example.test/mcp/"), "https://hub.example.test");
+        assert_eq!(
+            hub_origin("https://hub.example.test/mcp/"),
+            "https://hub.example.test"
+        );
     }
 
     #[test]
@@ -1121,7 +1367,10 @@ mod tests {
             ("prompt_publish", Scope::Govern),
             ("skill_publish", Scope::Govern),
         ];
-        let mut listed: Vec<&str> = Scope::ALL.into_iter().flat_map(|scope| tools_of(scope).iter().copied()).collect();
+        let mut listed: Vec<&str> = Scope::ALL
+            .into_iter()
+            .flat_map(|scope| tools_of(scope).iter().copied())
+            .collect();
         let mut pinned: Vec<&str> = registry.iter().map(|(name, _)| *name).collect();
         listed.sort_unstable();
         pinned.sort_unstable();
@@ -1136,9 +1385,15 @@ mod tests {
 
     #[test]
     fn mcp_hub_changing_scope_drops_the_tools_above_it() {
-        let mut picked: BTreeSet<String> = ["plaza_status", "create_task", "request_decision"].iter().map(|s| s.to_string()).collect();
+        let mut picked: BTreeSet<String> = ["plaza_status", "create_task", "request_decision"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         keep_tools_within(&mut picked, Scope::Operate);
-        assert_eq!(picked.into_iter().collect::<Vec<_>>(), vec!["create_task".to_string(), "plaza_status".to_string()]);
+        assert_eq!(
+            picked.into_iter().collect::<Vec<_>>(),
+            vec!["create_task".to_string(), "plaza_status".to_string()]
+        );
     }
 
     #[test]
@@ -1152,8 +1407,14 @@ mod tests {
         assert!(status.enabled);
         assert_eq!(Auth::from_wire(&status.auth_mode), Auth::Open);
         assert_eq!(Bind::from_wire(&status.bind), Bind::Remote);
-        assert!(status.tls, "the status says whether the endpoint serves TLS");
-        assert_eq!(status.allowed_origins, vec!["https://console.test".to_string()]);
+        assert!(
+            status.tls,
+            "the status says whether the endpoint serves TLS"
+        );
+        assert_eq!(
+            status.allowed_origins,
+            vec!["https://console.test".to_string()]
+        );
         assert!(!status.stored);
         let list: TokenList = serde_json::from_str(
             r#"{"tokens":[{"id":"mcp_1","name":"laptop","scope":"operate","tools":[],"created_ms":1,"expires_ms":null,
@@ -1192,7 +1453,11 @@ mod tests {
     #[test]
     fn mcp_hub_leaving_the_tab_drops_the_token() {
         let mut state = State {
-            reveal: Some(Reveal { token: TOKEN.to_string(), name: "laptop".to_string(), snippets: setup_snippets(URL, Some(TOKEN)) }),
+            reveal: Some(Reveal {
+                token: TOKEN.to_string(),
+                name: "laptop".to_string(),
+                snippets: setup_snippets(URL, Some(TOKEN)),
+            }),
             ..Default::default()
         };
         leave(&mut state);

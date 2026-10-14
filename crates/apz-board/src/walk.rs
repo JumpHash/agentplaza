@@ -31,7 +31,11 @@ pub struct Plane {
 impl Plane {
     /// A flat surface at height `y`.
     pub fn flat(y: f64) -> Plane {
-        Plane { c: y, dx: 0.0, dz: 0.0 }
+        Plane {
+            c: y,
+            dx: 0.0,
+            dz: 0.0,
+        }
     }
 
     /// The height at (x, z).

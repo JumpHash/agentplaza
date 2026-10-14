@@ -85,8 +85,15 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 7] =
-        [Action::Create, Action::Version, Action::Publish, Action::Unpublish, Action::Edit, Action::Archive, Action::Restore];
+    pub const ALL: [Action; 7] = [
+        Action::Create,
+        Action::Version,
+        Action::Publish,
+        Action::Unpublish,
+        Action::Edit,
+        Action::Archive,
+        Action::Restore,
+    ];
 
     pub fn as_str(self) -> &'static str {
         match self {
@@ -150,7 +157,12 @@ impl NewVersion {
     pub fn new(kind: Kind, body: String, note: String) -> NewVersion {
         let sha256 = sha256_hex(&body);
         let report = apz_prompt::check(kind, &body);
-        NewVersion { body, note, sha256, report }
+        NewVersion {
+            body,
+            note,
+            sha256,
+            report,
+        }
     }
 }
 
@@ -182,17 +194,47 @@ pub trait PromptStore: Send + Sync {
     fn versions(&self, id: &str) -> Result<Vec<VersionMeta>, String>;
     fn version(&self, id: &str, version: u32) -> Result<Option<Version>, String>;
     /// Creates the prompt and its version 1 (`Create` event, then `Version` event). Unpublished.
-    fn create(&self, new: &NewPrompt, first: &NewVersion, actor: &str, now_ms: u64) -> Result<Prompt, StoreError>;
+    fn create(
+        &self,
+        new: &NewPrompt,
+        first: &NewVersion,
+        actor: &str,
+        now_ms: u64,
+    ) -> Result<Prompt, StoreError>;
     /// Appends version `base + 1`. `Conflict` unless `base` is the latest version.
-    fn add_version(&self, id: &str, base: u32, next: &NewVersion, actor: &str, now_ms: u64)
-        -> Result<VersionMeta, StoreError>;
+    fn add_version(
+        &self,
+        id: &str,
+        base: u32,
+        next: &NewVersion,
+        actor: &str,
+        now_ms: u64,
+    ) -> Result<VersionMeta, StoreError>;
     /// `Edit` event.
-    fn set_meta(&self, id: &str, meta: &Meta, actor: &str, now_ms: u64) -> Result<Prompt, StoreError>;
+    fn set_meta(
+        &self,
+        id: &str,
+        meta: &Meta,
+        actor: &str,
+        now_ms: u64,
+    ) -> Result<Prompt, StoreError>;
     /// `Some(v)` publishes version v (`Publish`), `None` unpublishes (`Unpublish`). The store checks that the version
     /// exists; `Prompts` checks it has no errors.
-    fn set_active(&self, id: &str, version: Option<u32>, actor: &str, now_ms: u64) -> Result<Prompt, StoreError>;
+    fn set_active(
+        &self,
+        id: &str,
+        version: Option<u32>,
+        actor: &str,
+        now_ms: u64,
+    ) -> Result<Prompt, StoreError>;
     /// `Archive` or `Restore`. Restoring a prompt whose binding another live prompt took meanwhile is a `Conflict`.
-    fn set_archived(&self, id: &str, archived: bool, actor: &str, now_ms: u64) -> Result<Prompt, StoreError>;
+    fn set_archived(
+        &self,
+        id: &str,
+        archived: bool,
+        actor: &str,
+        now_ms: u64,
+    ) -> Result<Prompt, StoreError>;
     /// The history of `id`, newest first, at most `limit` rows.
     fn events(&self, id: &str, limit: u32) -> Result<Vec<Event>, String>;
     /// The live prompt holding `binding` that has a published version, with that version's body.
@@ -208,7 +250,10 @@ pub struct Prompts {
 
 impl Prompts {
     pub fn new(store: Arc<dyn PromptStore>) -> Prompts {
-        Prompts { store, bound_cache: Mutex::new(HashMap::new()) }
+        Prompts {
+            store,
+            bound_cache: Mutex::new(HashMap::new()),
+        }
     }
 
     pub fn store(&self) -> &dyn PromptStore {
@@ -217,27 +262,47 @@ impl Prompts {
 
     /// Clears the bound-body cache; every write calls it.
     pub fn invalidate(&self) {
-        self.bound_cache.lock().unwrap_or_else(PoisonError::into_inner).clear();
+        self.bound_cache
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clear();
     }
 
     /// The published body bound to `binding` (`role:<role>` or `plaza`), cached. A store error is logged and reads
     /// as none, so an agent falls back to the built-in prompt rather than failing its turn.
     pub fn bound_body(&self, binding: &str) -> Option<String> {
-        if let Some(hit) = self.bound_cache.lock().unwrap_or_else(PoisonError::into_inner).get(binding) {
+        if let Some(hit) = self
+            .bound_cache
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(binding)
+        {
             return hit.clone();
         }
         let body = match self.store.bound(binding) {
             Ok(found) => found.map(|(_, body)| body),
             Err(err) => {
-                eprintln!("apid: prompt library: reading the prompt bound to {binding} failed: {err}");
+                eprintln!(
+                    "apid: prompt library: reading the prompt bound to {binding} failed: {err}"
+                );
                 return None;
             }
         };
-        self.bound_cache.lock().unwrap_or_else(PoisonError::into_inner).insert(binding.to_string(), body.clone());
+        self.bound_cache
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(binding.to_string(), body.clone());
         body
     }
 
-    pub fn create(&self, new: &NewPrompt, body: String, note: String, actor: &str, now_ms: u64) -> Result<Prompt, StoreError> {
+    pub fn create(
+        &self,
+        new: &NewPrompt,
+        body: String,
+        note: String,
+        actor: &str,
+        now_ms: u64,
+    ) -> Result<Prompt, StoreError> {
         validate_new(new)?;
         validate_body(&body, &note)?;
         let first = NewVersion::new(new.kind, body, note);
@@ -247,8 +312,15 @@ impl Prompts {
     }
 
     /// Adds a version, or returns the latest one unchanged (`false`) when the body equals it.
-    pub fn add_version(&self, id: &str, base: u32, body: String, note: String, actor: &str, now_ms: u64)
-        -> Result<(VersionMeta, bool), StoreError> {
+    pub fn add_version(
+        &self,
+        id: &str,
+        base: u32,
+        body: String,
+        note: String,
+        actor: &str,
+        now_ms: u64,
+    ) -> Result<(VersionMeta, bool), StoreError> {
         validate_body(&body, &note)?;
         let prompt = self.store.get(id)?.ok_or(StoreError::NotFound)?;
         let latest = self.store.versions(id)?.pop().ok_or(StoreError::NotFound)?;
@@ -256,23 +328,47 @@ impl Prompts {
         if next.sha256 == latest.sha256 {
             return Ok((latest, false));
         }
-        let out = self.store.add_version(id, base, &next, actor, now_ms).map(|v| (v, true));
+        let out = self
+            .store
+            .add_version(id, base, &next, actor, now_ms)
+            .map(|v| (v, true));
         self.invalidate();
         out
     }
 
-    pub fn set_meta(&self, id: &str, meta: &Meta, actor: &str, now_ms: u64) -> Result<Prompt, StoreError> {
+    pub fn set_meta(
+        &self,
+        id: &str,
+        meta: &Meta,
+        actor: &str,
+        now_ms: u64,
+    ) -> Result<Prompt, StoreError> {
         let prompt = self.store.get(id)?.ok_or(StoreError::NotFound)?;
-        validate_meta(prompt.kind, &meta.title, &meta.description, &meta.tags, meta.binding.as_deref())?;
+        validate_meta(
+            prompt.kind,
+            &meta.title,
+            &meta.description,
+            &meta.tags,
+            meta.binding.as_deref(),
+        )?;
         let out = self.store.set_meta(id, meta, actor, now_ms);
         self.invalidate();
         out
     }
 
     /// Publishes `version`; refused when it has error-level findings under the current rules.
-    pub fn publish(&self, id: &str, version: u32, actor: &str, now_ms: u64) -> Result<Prompt, StoreError> {
+    pub fn publish(
+        &self,
+        id: &str,
+        version: u32,
+        actor: &str,
+        now_ms: u64,
+    ) -> Result<Prompt, StoreError> {
         let prompt = self.store.get(id)?.ok_or(StoreError::NotFound)?;
-        let v = self.store.version(id, version)?.ok_or_else(|| StoreError::Invalid(format!("{id} has no version {version}")))?;
+        let v = self
+            .store
+            .version(id, version)?
+            .ok_or_else(|| StoreError::Invalid(format!("{id} has no version {version}")))?;
         let report = apz_prompt::check(prompt.kind, &v.body);
         if !report.publishable() {
             return Err(StoreError::Invalid(format!(
@@ -291,7 +387,13 @@ impl Prompts {
         out
     }
 
-    pub fn set_archived(&self, id: &str, archived: bool, actor: &str, now_ms: u64) -> Result<Prompt, StoreError> {
+    pub fn set_archived(
+        &self,
+        id: &str,
+        archived: bool,
+        actor: &str,
+        now_ms: u64,
+    ) -> Result<Prompt, StoreError> {
         let out = self.store.set_archived(id, archived, actor, now_ms);
         self.invalidate();
         out
@@ -299,7 +401,10 @@ impl Prompts {
 }
 
 pub fn sha256_hex(body: &str) -> String {
-    Sha256::digest(body.as_bytes()).iter().map(|b| format!("{b:02x}")).collect()
+    Sha256::digest(body.as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 pub fn valid_id(id: &str) -> bool {
@@ -307,14 +412,18 @@ pub fn valid_id(id: &str) -> bool {
     !b.is_empty()
         && b.len() <= 63
         && (b[0].is_ascii_lowercase() || b[0].is_ascii_digit())
-        && b.iter().all(|&c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
+        && b.iter()
+            .all(|&c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
 }
 
 /// A binding allowed for `kind`: `role:<role>` for system prompts, `plaza` for AGENTS.md, none for fragments.
 pub fn valid_binding(kind: Kind, binding: &str) -> bool {
     match kind {
         Kind::System => binding.strip_prefix("role:").is_some_and(|r| {
-            !r.is_empty() && r.len() <= 64 && r.bytes().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
+            !r.is_empty()
+                && r.len() <= 64
+                && r.bytes()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
         }),
         Kind::AgentsMd => binding == "plaza",
         Kind::Fragment => false,
@@ -327,25 +436,50 @@ fn invalid(msg: impl Into<String>) -> StoreError {
 
 pub fn validate_new(new: &NewPrompt) -> Result<(), StoreError> {
     if !valid_id(&new.id) {
-        return Err(invalid("id must be 1-63 lower-case letters, digits and dashes, starting with a letter or digit"));
+        return Err(invalid(
+            "id must be 1-63 lower-case letters, digits and dashes, starting with a letter or digit",
+        ));
     }
-    validate_meta(new.kind, &new.title, &new.description, &new.tags, new.binding.as_deref())
+    validate_meta(
+        new.kind,
+        &new.title,
+        &new.description,
+        &new.tags,
+        new.binding.as_deref(),
+    )
 }
 
-pub fn validate_meta(kind: Kind, title: &str, description: &str, tags: &[String], binding: Option<&str>) -> Result<(), StoreError> {
+pub fn validate_meta(
+    kind: Kind,
+    title: &str,
+    description: &str,
+    tags: &[String],
+    binding: Option<&str>,
+) -> Result<(), StoreError> {
     let title_len = title.trim().chars().count();
     if title_len == 0 || title_len > MAX_TITLE {
         return Err(invalid(format!("title must be 1-{MAX_TITLE} characters")));
     }
     if description.chars().count() > MAX_DESCRIPTION {
-        return Err(invalid(format!("description is longer than {MAX_DESCRIPTION} characters")));
+        return Err(invalid(format!(
+            "description is longer than {MAX_DESCRIPTION} characters"
+        )));
     }
-    if tags.len() > MAX_TAGS || tags.iter().any(|t| t.trim().is_empty() || t.chars().count() > MAX_TAG) {
-        return Err(invalid(format!("at most {MAX_TAGS} tags of 1-{MAX_TAG} characters")));
+    if tags.len() > MAX_TAGS
+        || tags
+            .iter()
+            .any(|t| t.trim().is_empty() || t.chars().count() > MAX_TAG)
+    {
+        return Err(invalid(format!(
+            "at most {MAX_TAGS} tags of 1-{MAX_TAG} characters"
+        )));
     }
     if let Some(b) = binding {
         if !valid_binding(kind, b) {
-            return Err(invalid(format!("{} prompts cannot bind to {b}", kind.as_str())));
+            return Err(invalid(format!(
+                "{} prompts cannot bind to {b}",
+                kind.as_str()
+            )));
         }
     }
     Ok(())
@@ -353,10 +487,14 @@ pub fn validate_meta(kind: Kind, title: &str, description: &str, tags: &[String]
 
 pub fn validate_body(body: &str, note: &str) -> Result<(), StoreError> {
     if body.chars().count() > MAX_BODY {
-        return Err(invalid(format!("the body is longer than {MAX_BODY} characters")));
+        return Err(invalid(format!(
+            "the body is longer than {MAX_BODY} characters"
+        )));
     }
     if note.chars().count() > MAX_NOTE {
-        return Err(invalid(format!("the note is longer than {MAX_NOTE} characters")));
+        return Err(invalid(format!(
+            "the note is longer than {MAX_NOTE} characters"
+        )));
     }
     Ok(())
 }

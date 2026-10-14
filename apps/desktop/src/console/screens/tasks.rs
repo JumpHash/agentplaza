@@ -7,24 +7,37 @@ use std::collections::HashMap;
 use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use iced::widget::text::Wrapping;
-use iced::widget::{button, column, container, mouse_area, pick_list, row, text, text_editor, text_input, Space};
-use iced::{font, Alignment, Border, Color, Element, Font, Length, Padding, Subscription, Task, Theme};
 use apz_plaza::tasks::{DEFAULT_TASK_BUDGET, MIN_TASK_BUDGET};
+use iced::widget::text::Wrapping;
+use iced::widget::{
+    Space, button, column, container, mouse_area, pick_list, row, text, text_editor, text_input,
+};
+use iced::{
+    Alignment, Border, Color, Element, Font, Length, Padding, Subscription, Task, Theme, font,
+};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use super::{ide, Id};
+use super::{Id, ide};
 use crate::console::ui::{self, Tone};
-use crate::console::{client, events, rich, Ctx};
+use crate::console::{Ctx, client, events, rich};
 use crate::theme::{self};
 
 /// A card's goal: serif semibold, as the web's task title.
-const TITLE_FONT: Font = Font { weight: font::Weight::Semibold, ..theme::SANS };
+const TITLE_FONT: Font = Font {
+    weight: font::Weight::Semibold,
+    ..theme::SANS
+};
 /// Bold mono, for lane counts and the elapsed time.
-const SANS_BOLD: Font = Font { weight: font::Weight::Bold, ..theme::SANS };
+const SANS_BOLD: Font = Font {
+    weight: font::Weight::Bold,
+    ..theme::SANS
+};
 /// Inter italic, for the line an empty lane shows.
-const ITALIC: Font = Font { style: font::Style::Italic, ..theme::SANS };
+const ITALIC: Font = Font {
+    style: font::Style::Italic,
+    ..theme::SANS
+};
 
 /// The four lanes: their label and the line an empty lane shows.
 const LANES: [(&str, &str); 4] = [
@@ -117,11 +130,17 @@ pub struct Pick {
 
 impl Pick {
     fn any_role() -> Pick {
-        Pick { key: String::new(), label: "Any".into() }
+        Pick {
+            key: String::new(),
+            label: "Any".into(),
+        }
     }
 
     fn scheduler() -> Pick {
-        Pick { key: String::new(), label: "Let the scheduler choose".into() }
+        Pick {
+            key: String::new(),
+            label: "Let the scheduler choose".into(),
+        }
     }
 }
 
@@ -232,7 +251,14 @@ fn on_rich(action: rich::RichAction) -> Msg {
 /// Asks the hub for the cards of the open task's references that it does not hold yet.
 fn prefetch(state: &mut State, ctx: &Ctx) -> Task<Msg> {
     let texts: Vec<&str> = match state.detail.as_ref().and_then(|d| d.task.as_ref()) {
-        Some(t) => [Some(t.goal.as_str()), t.acceptance.as_deref(), t.note.as_deref()].into_iter().flatten().collect(),
+        Some(t) => [
+            Some(t.goal.as_str()),
+            t.acceptance.as_deref(),
+            t.note.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .collect(),
         None => Vec::new(),
     };
     let rctx = rich::context(&state.cards, None, None, None);
@@ -242,7 +268,10 @@ fn prefetch(state: &mut State, ctx: &Ctx) -> Task<Msg> {
 /// The screen as it opens one task in full (the Projects screen's task links open it this way); the
 /// load that follows reads that task and its timeline.
 pub fn opened(id: String) -> State {
-    State { selected: Some(id), ..Default::default() }
+    State {
+        selected: Some(id),
+        ..Default::default()
+    }
 }
 
 /// Loads the screen's data (called when it opens and on every poll tick).
@@ -264,7 +293,9 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         Msg::EnterKey => {
             if state.selected.is_none() && state.draft.is_none() {
                 // The card the arrow keys picked, else the card under the pointer.
-                let picked = state.kbd.and_then(|i| board_order(&state.tasks).get(i).map(|t| t.id.clone()));
+                let picked = state
+                    .kbd
+                    .and_then(|i| board_order(&state.tasks).get(i).map(|t| t.id.clone()));
                 if let Some(id) = picked.or_else(|| state.hovered.clone()) {
                     return update(state, Msg::Open(id), ctx);
                 }
@@ -283,7 +314,11 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                 let cid = event.data.get("cid").and_then(Value::as_u64);
                 if state.selected.is_some() {
                     // On a task page the timeline is rebuilt from the assignee's transcript.
-                    let assignee = state.detail.as_ref().and_then(|d| d.task.as_ref()).and_then(|t| t.agent_cid);
+                    let assignee = state
+                        .detail
+                        .as_ref()
+                        .and_then(|d| d.task.as_ref())
+                        .and_then(|t| t.agent_cid);
                     if cid.is_some() && cid == assignee {
                         reload(state, ctx)
                     } else {
@@ -291,7 +326,9 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                     }
                 } else {
                     // On the board the frame's one activity line replaces the card's.
-                    let line = serde_json::from_value::<EntryRecord>(event.data.clone()).ok().and_then(|e| activity_of(&e));
+                    let line = serde_json::from_value::<EntryRecord>(event.data.clone())
+                        .ok()
+                        .and_then(|e| activity_of(&e));
                     if let (Some(cid), Some(line)) = (cid, line) {
                         state.activity.insert(cid, line);
                     }
@@ -309,7 +346,11 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                 state.kbd = clamp(state.kbd, state.tasks.len());
             }
             state.agents = snap.agents;
-            state.detail = if state.selected.is_some() { snap.detail } else { None };
+            state.detail = if state.selected.is_some() {
+                snap.detail
+            } else {
+                None
+            };
             let landed = landed(state, ctx);
             Task::batch([landed, prefetch(state, ctx)])
         }
@@ -391,7 +432,15 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                 return Task::none();
             };
             let hub = ctx.client.clone();
-            client::task(move || hub.post::<Value>(&format!("/v1/agents/{cid}/assign"), &json!({ "task_id": id })), Msg::Assigned)
+            client::task(
+                move || {
+                    hub.post::<Value>(
+                        &format!("/v1/agents/{cid}/assign"),
+                        &json!({ "task_id": id }),
+                    )
+                },
+                Msg::Assigned,
+            )
         }
         Msg::Assigned(done) => settled(state, ctx, done),
         Msg::Withdraw => {
@@ -399,7 +448,10 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                 return Task::none();
             };
             let hub = ctx.client.clone();
-            client::task(move || hub.delete(&format!("/v1/tasks/{id}")), Msg::Withdrawn)
+            client::task(
+                move || hub.delete(&format!("/v1/tasks/{id}")),
+                Msg::Withdrawn,
+            )
         }
         Msg::Withdrawn(done) => settled(state, ctx, done),
     }
@@ -422,7 +474,9 @@ fn submit(state: &mut State, ctx: &Ctx) -> Task<Msg> {
         match budget_text.parse::<i64>() {
             Ok(credits) if credits >= MIN_TASK_BUDGET => Some(credits),
             Ok(_) => {
-                state.error = Some(format!("Budget must be at least {MIN_TASK_BUDGET} credits."));
+                state.error = Some(format!(
+                    "Budget must be at least {MIN_TASK_BUDGET} credits."
+                ));
                 return Task::none();
             }
             Err(_) => {
@@ -434,7 +488,11 @@ fn submit(state: &mut State, ctx: &Ctx) -> Task<Msg> {
     let title = d.title.trim().to_string();
     let details = d.details.text().trim().to_string();
     let acceptance = d.acceptance.text().trim().to_string();
-    let goal = if details.is_empty() { title } else { format!("{title}\n\n{details}") };
+    let goal = if details.is_empty() {
+        title
+    } else {
+        format!("{title}\n\n{details}")
+    };
     let mut body = json!({ "goal": goal });
     if let Some(budget) = budget {
         body["budget"] = json!(budget);
@@ -452,7 +510,10 @@ fn submit(state: &mut State, ctx: &Ctx) -> Task<Msg> {
         d.posting = true;
     }
     let hub = ctx.client.clone();
-    client::task(move || hub.post::<TaskRecord>("/v1/tasks", &body), Msg::Created)
+    client::task(
+        move || hub.post::<TaskRecord>("/v1/tasks", &body),
+        Msg::Created,
+    )
 }
 
 /// After an assign or a withdraw: reload on success, show the error otherwise.
@@ -484,11 +545,20 @@ fn snapshot(hub: &client::Client, selected: Option<String>) -> Result<Snapshot, 
             Some(cid) => timeline_of(&id, &transcript(hub, cid)),
             None => Vec::new(),
         };
-        return Ok(Snapshot { tasks: Vec::new(), agents, activity: Vec::new(), detail: Some(Detail { task, timeline }) });
+        return Ok(Snapshot {
+            tasks: Vec::new(),
+            agents,
+            activity: Vec::new(),
+            detail: Some(Detail { task, timeline }),
+        });
     }
     let tasks = hub.get::<TasksReply>("/v1/tasks")?.tasks;
     let mut activity: Vec<(u64, String)> = Vec::new();
-    for cid in tasks.iter().filter(|t| lane_of(&t.state) == 1).filter_map(|t| t.agent_cid) {
+    for cid in tasks
+        .iter()
+        .filter(|t| lane_of(&t.state) == 1)
+        .filter_map(|t| t.agent_cid)
+    {
         if activity.iter().any(|(c, _)| *c == cid) {
             continue;
         }
@@ -496,12 +566,18 @@ fn snapshot(hub: &client::Client, selected: Option<String>) -> Result<Snapshot, 
             activity.push((cid, line));
         }
     }
-    Ok(Snapshot { tasks, agents, activity, detail: None })
+    Ok(Snapshot {
+        tasks,
+        agents,
+        activity,
+        detail: None,
+    })
 }
 
 /// The newest entries of an agent's transcript, oldest first (the hub's `last`).
 fn transcript(hub: &client::Client, cid: u64) -> Vec<EntryRecord> {
-    hub.get(&format!("/v1/agents/{cid}/transcript?last=1000")).unwrap_or_default()
+    hub.get(&format!("/v1/agents/{cid}/transcript?last=1000"))
+        .unwrap_or_default()
 }
 
 /// The lane for a state: open, in progress, done, or failed or withdrawn; unknown non-final
@@ -519,7 +595,14 @@ fn lane_of(state: &str) -> usize {
 fn board_order(tasks: &[TaskRecord]) -> Vec<&TaskRecord> {
     let mut sorted: Vec<&TaskRecord> = tasks.iter().collect();
     sorted.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
-    (0..LANES.len()).flat_map(|lane| sorted.iter().copied().filter(move |t| lane_of(&t.state) == lane)).collect()
+    (0..LANES.len())
+        .flat_map(|lane| {
+            sorted
+                .iter()
+                .copied()
+                .filter(move |t| lane_of(&t.state) == lane)
+        })
+        .collect()
 }
 
 /// The row an arrow key picks: the first row on a press with none picked, else one row down or
@@ -565,7 +648,11 @@ fn label_of(state: &str) -> String {
 }
 
 fn title_of(goal: &str) -> String {
-    goal.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("Untitled task").to_string()
+    goal.lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("Untitled task")
+        .to_string()
 }
 
 /// Text for a card, held to about `n` characters: whitespace is flattened, the cut falls at a
@@ -584,7 +671,10 @@ fn clip(s: &str, n: usize) -> String {
 }
 
 fn now_ms() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 /// "5m ago" style, relative to now.
@@ -627,7 +717,10 @@ fn fmt_num(v: f64) -> String {
 }
 
 fn tool_of(e: &EntryRecord) -> String {
-    str_field(&e.data, "tool").or_else(|| str_field(&e.data, "name")).unwrap_or("tool").to_string()
+    str_field(&e.data, "tool")
+        .or_else(|| str_field(&e.data, "name"))
+        .unwrap_or("tool")
+        .to_string()
 }
 
 fn str_field<'v>(v: &'v Value, key: &str) -> Option<&'v str> {
@@ -639,7 +732,10 @@ fn command_of(e: &EntryRecord) -> Option<String> {
     if tool_of(e).to_lowercase() != "bash" {
         return None;
     }
-    e.data.get("input").and_then(|i| str_field(i, "command")).map(str::to_string)
+    e.data
+        .get("input")
+        .and_then(|i| str_field(i, "command"))
+        .map(str::to_string)
 }
 
 /// What one transcript entry says the agent is doing now, or None when it says nothing new.
@@ -683,7 +779,11 @@ fn timeline_of(task_id: &str, entries: &[EntryRecord]) -> Vec<EntryRecord> {
         let origin = e.data.get("origin").and_then(|o| str_field(o, "task"));
         origin == Some(task_id) || str_field(&e.data, "task") == Some(task_id)
     };
-    let works: Vec<u64> = entries.iter().filter(|e| e.kind == "work_start" && is_task(e)).map(|e| e.work).collect();
+    let works: Vec<u64> = entries
+        .iter()
+        .filter(|e| e.kind == "work_start" && is_task(e))
+        .map(|e| e.work)
+        .collect();
     entries
         .iter()
         .filter(|e| works.contains(&e.work) && TIMELINE_KINDS.contains(&e.kind.as_str()))
@@ -722,16 +822,26 @@ fn status_color(status: &str) -> Color {
 }
 
 fn idle_workers(agents: &[AgentRecord]) -> Vec<&AgentRecord> {
-    agents.iter().filter(|a| a.status == "idle" && a.tier == "worker").collect()
+    agents
+        .iter()
+        .filter(|a| a.status == "idle" && a.tier == "worker")
+        .collect()
 }
 
 /// Every worker role on the hub, sorted, with "Any" first.
 fn role_options(agents: &[AgentRecord]) -> Vec<Pick> {
-    let mut roles: Vec<String> = agents.iter().filter(|a| a.tier == "worker" && !a.role.is_empty()).map(|a| a.role.clone()).collect();
+    let mut roles: Vec<String> = agents
+        .iter()
+        .filter(|a| a.tier == "worker" && !a.role.is_empty())
+        .map(|a| a.role.clone())
+        .collect();
     roles.sort();
     roles.dedup();
     let mut options = vec![Pick::any_role()];
-    options.extend(roles.into_iter().map(|r| Pick { label: role_label(agents, &r), key: r }));
+    options.extend(roles.into_iter().map(|r| Pick {
+        label: role_label(agents, &r),
+        key: r,
+    }));
     options
 }
 
@@ -744,7 +854,12 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
     if state.selected.is_some() {
         parts.push(detail_page(state));
     } else {
-        actions.push(ui::btn("New task", Some("plus"), ui::Kind::Primary, Some(Msg::NewTask)));
+        actions.push(ui::btn(
+            "New task",
+            Some("plus"),
+            ui::Kind::Primary,
+            Some(Msg::NewTask),
+        ));
         if let Some(d) = state.draft.as_ref() {
             parts.push(draft_form(state, d));
         }
@@ -753,14 +868,29 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
     }
     // The page scrolls under its head: the lanes are as tall as their cards, not the window.
     // The right padding keeps the scrollbar clear of the last lane.
-    let page = column(parts).spacing(22).padding(Padding { top: 0.0, right: 14.0, bottom: 0.0, left: 0.0 });
+    let page = column(parts).spacing(22).padding(Padding {
+        top: 0.0,
+        right: 14.0,
+        bottom: 0.0,
+        left: 0.0,
+    });
     ui::sheet(ui::view_head("Tasks", actions), ui::scroll(page).into())
 }
 
 /// The head strip: a figure for each lane, and how many agents are working now.
 fn summary<'a>(state: &'a State) -> Element<'a, Msg> {
-    let count = |lane: usize| state.tasks.iter().filter(|t| lane_of(&t.state) == lane).count();
-    let working = state.agents.iter().filter(|a| a.status == "working").count();
+    let count = |lane: usize| {
+        state
+            .tasks
+            .iter()
+            .filter(|t| lane_of(&t.state) == lane)
+            .count()
+    };
+    let working = state
+        .agents
+        .iter()
+        .filter(|a| a.status == "working")
+        .count();
     row![
         fig("Open", count(0)),
         fig("In progress", count(1)),
@@ -773,13 +903,21 @@ fn summary<'a>(state: &'a State) -> Element<'a, Msg> {
 }
 
 fn fig<'a>(label: &str, value: usize) -> Element<'a, Msg> {
-    column![ui::sans(value.to_string(), 22.0, crate::theme::palette().ink), ui::label(label)].spacing(2).into()
+    column![
+        ui::sans(value.to_string(), 22.0, crate::theme::palette().ink),
+        ui::label(label)
+    ]
+    .spacing(2)
+    .into()
 }
 
 /// The four lanes, each full height, with a line when empty.
 fn board<'a>(state: &'a State) -> Element<'a, Msg> {
     let order = board_order(&state.tasks);
-    let picked: Option<&'a str> = state.kbd.and_then(|i| order.get(i).copied()).map(|t| t.id.as_str());
+    let picked: Option<&'a str> = state
+        .kbd
+        .and_then(|i| order.get(i).copied())
+        .map(|t| t.id.as_str());
     let lanes: Vec<Element<'a, Msg>> = LANES
         .iter()
         .enumerate()
@@ -791,7 +929,11 @@ fn board<'a>(state: &'a State) -> Element<'a, Msg> {
                 .collect();
             let count = items.len();
             let body: Element<'a, Msg> = if items.is_empty() {
-                text(*idle).font(ITALIC).size(15.0).color(crate::theme::palette().ink_3).into()
+                text(*idle)
+                    .font(ITALIC)
+                    .size(15.0)
+                    .color(crate::theme::palette().ink_3)
+                    .into()
             } else {
                 column(items).spacing(10).into()
             };
@@ -802,12 +944,19 @@ fn board<'a>(state: &'a State) -> Element<'a, Msg> {
 }
 
 fn lane<'a>(i: usize, label: &str, count: usize, body: Element<'a, Msg>) -> Element<'a, Msg> {
-    let mark = container(Space::new().width(10.0).height(10.0)).style(theme::swatch(lane_tone(i).color()));
+    let mark =
+        container(Space::new().width(10.0).height(10.0)).style(theme::swatch(lane_tone(i).color()));
     let head = row![
         mark,
-        text(label.to_string()).font(SANS_BOLD).size(11.5).color(crate::theme::palette().ink),
+        text(label.to_string())
+            .font(SANS_BOLD)
+            .size(11.5)
+            .color(crate::theme::palette().ink),
         Space::new().width(Length::Fill),
-        text(count.to_string()).font(SANS_BOLD).size(12.0).color(crate::theme::palette().ink_2),
+        text(count.to_string())
+            .font(SANS_BOLD)
+            .size(12.0)
+            .color(crate::theme::palette().ink_2),
     ]
     .spacing(8)
     .align_y(Alignment::Center);
@@ -824,9 +973,17 @@ fn lane<'a>(i: usize, label: &str, count: usize, body: Element<'a, Msg>) -> Elem
 fn task_card<'a>(state: &'a State, t: &'a TaskRecord, picked: bool) -> Element<'a, Msg> {
     let now = now_ms();
     let status = status_of(&state.agents, t.agent_cid);
-    let dot = container(Space::new().width(8.0).height(8.0)).style(theme::swatch(status_color(&status)));
-    let who = row![dot, assignee_link(state, t.agent_cid)].spacing(8).align_y(Alignment::Center).width(Length::Fill);
-    let role = t.role.as_deref().map(|r| role_label(&state.agents, r)).unwrap_or_else(|| "Any role".to_string());
+    let dot =
+        container(Space::new().width(8.0).height(8.0)).style(theme::swatch(status_color(&status)));
+    let who = row![dot, assignee_link(state, t.agent_cid)]
+        .spacing(8)
+        .align_y(Alignment::Center)
+        .width(Length::Fill);
+    let role = t
+        .role
+        .as_deref()
+        .map(|r| role_label(&state.agents, r))
+        .unwrap_or_else(|| "Any role".to_string());
     let detail: Element<'a, Msg> = match lane_of(&t.state) {
         1 => {
             let line = t
@@ -835,8 +992,22 @@ fn task_card<'a>(state: &'a State, t: &'a TaskRecord, picked: bool) -> Element<'
                 .unwrap_or_else(|| "waiting for the first step…".to_string());
             column![
                 stripe(),
-                container(sans_text(clip(&line, 36), 11.5, crate::theme::palette().ink_2)).width(Length::Fill).clip(true),
-                meta_row(meta_text("elapsed".to_string()), ui::sans(fmt_elapsed(now - t.updated_at), 12.0, crate::theme::palette().ink).into()),
+                container(sans_text(
+                    clip(&line, 36),
+                    11.5,
+                    crate::theme::palette().ink_2
+                ))
+                .width(Length::Fill)
+                .clip(true),
+                meta_row(
+                    meta_text("elapsed".to_string()),
+                    ui::sans(
+                        fmt_elapsed(now - t.updated_at),
+                        12.0,
+                        crate::theme::palette().ink
+                    )
+                    .into()
+                ),
             ]
             .spacing(8)
             .width(Length::Fill)
@@ -845,7 +1016,11 @@ fn task_card<'a>(state: &'a State, t: &'a TaskRecord, picked: bool) -> Element<'
         2 => {
             let mut items: Vec<Element<'a, Msg>> = Vec::new();
             if let Some(note) = t.note.as_deref() {
-                items.push(serif_text(clip(note, 110), 13.5, crate::theme::palette().ink_2));
+                items.push(serif_text(
+                    clip(note, 110),
+                    13.5,
+                    crate::theme::palette().ink_2,
+                ));
             }
             items.push(meta_row(
                 meta_text(format!("took {}", fmt_span(t.updated_at - t.created_at))),
@@ -854,7 +1029,11 @@ fn task_card<'a>(state: &'a State, t: &'a TaskRecord, picked: bool) -> Element<'
             column(items).spacing(8).width(Length::Fill).into()
         }
         3 => {
-            let reason = t.outcome.clone().or_else(|| t.note.clone()).unwrap_or_else(|| label_of(&t.state));
+            let reason = t
+                .outcome
+                .clone()
+                .or_else(|| t.note.clone())
+                .unwrap_or_else(|| label_of(&t.state));
             column![
                 serif_text(clip(&reason, 160), 13.0, crate::theme::palette().crit),
                 meta_row(meta_text(label_of(&t.state)), meta_text(ago(t.updated_at))),
@@ -885,11 +1064,18 @@ fn task_card<'a>(state: &'a State, t: &'a TaskRecord, picked: bool) -> Element<'
     .width(Length::Fill)
     .height(Length::Fixed(41.0))
     .clip(true);
-    let body = column![top, title, who, container(detail).width(Length::Fill)].spacing(10).width(Length::Fill);
-    mouse_area(container(body).padding(12.0).width(Length::Fill).style(card_box(picked)))
-        .on_press(Msg::Open(t.id.clone()))
-        .on_enter(Msg::Hover(t.id.clone()))
-        .into()
+    let body = column![top, title, who, container(detail).width(Length::Fill)]
+        .spacing(10)
+        .width(Length::Fill);
+    mouse_area(
+        container(body)
+            .padding(12.0)
+            .width(Length::Fill)
+            .style(card_box(picked)),
+    )
+    .on_press(Msg::Open(t.id.clone()))
+    .on_enter(Msg::Hover(t.id.clone()))
+    .into()
 }
 
 /// The card's box: the paper colour under a rule, as the web's task card. A card the keyboard
@@ -897,22 +1083,40 @@ fn task_card<'a>(state: &'a State, t: &'a TaskRecord, picked: bool) -> Element<'
 fn card_box(picked: bool) -> impl Fn(&Theme) -> container::Style {
     move |_theme: &Theme| container::Style {
         text_color: Some(crate::theme::palette().ink),
-        background: Some(if picked { crate::theme::palette().taint } else { crate::theme::palette().paper }.into()),
-        border: Border { color: crate::theme::palette().rule, width: 1.0, radius: 0.0.into() },
+        background: Some(
+            if picked {
+                crate::theme::palette().taint
+            } else {
+                crate::theme::palette().paper
+            }
+            .into(),
+        ),
+        border: Border {
+            color: crate::theme::palette().rule,
+            width: 1.0,
+            radius: 0.0.into(),
+        },
         ..container::Style::default()
     }
 }
 
 /// A solid fill with no border, for the running stripe.
 fn solid(color: Color) -> impl Fn(&Theme) -> container::Style {
-    move |_theme: &Theme| container::Style { background: Some(color.into()), ..container::Style::default() }
+    move |_theme: &Theme| container::Style {
+        background: Some(color.into()),
+        ..container::Style::default()
+    }
 }
 
 /// The orange dashed rule under a running card; the web's stripe, drawn still and clipped.
 fn stripe<'a>() -> Element<'a, Msg> {
     let mut parts: Vec<Element<'a, Msg>> = Vec::new();
     for _ in 0..9 {
-        parts.push(container(Space::new().width(10.0).height(3.0)).style(solid(crate::theme::palette().signal)).into());
+        parts.push(
+            container(Space::new().width(10.0).height(3.0))
+                .style(solid(crate::theme::palette().signal))
+                .into(),
+        );
         parts.push(Space::new().width(10.0).height(3.0).into());
     }
     container(row(parts)).width(Length::Fill).clip(true).into()
@@ -920,9 +1124,13 @@ fn stripe<'a>() -> Element<'a, Msg> {
 
 /// Mono text, for the card's labels and figures.
 fn sans_text<'a>(s: String, size: f32, color: Color) -> Element<'a, Msg> {
-    text(s).font(theme::SANS).size(size).color(color).wrapping(Wrapping::None).into()
+    text(s)
+        .font(theme::SANS)
+        .size(size)
+        .color(color)
+        .wrapping(Wrapping::None)
+        .into()
 }
-
 
 /// The faint mono of a card's footer.
 fn meta_text<'a>(s: String) -> Element<'a, Msg> {
@@ -932,49 +1140,95 @@ fn meta_text<'a>(s: String) -> Element<'a, Msg> {
 /// Interface text that wraps at word boundaries and, failing that, at glyphs, so a long token cannot
 /// run past the card.
 fn serif_text<'a>(s: String, size: f32, color: Color) -> Element<'a, Msg> {
-    text(s).font(theme::SANS).size(size).color(color).wrapping(Wrapping::WordOrGlyph).into()
+    text(s)
+        .font(theme::SANS)
+        .size(size)
+        .color(color)
+        .wrapping(Wrapping::WordOrGlyph)
+        .into()
 }
 
 /// A footer line: the left item at the left edge, the right item at the right edge.
 fn meta_row<'a>(left: Element<'a, Msg>, right: Element<'a, Msg>) -> Element<'a, Msg> {
-    row![left, Space::new().width(Length::Fill), right].spacing(10).align_y(Alignment::Center).width(Length::Fill).into()
+    row![left, Space::new().width(Length::Fill), right]
+        .spacing(10)
+        .align_y(Alignment::Center)
+        .width(Length::Fill)
+        .into()
 }
 
 /// The assignee's name, which opens the agent; "Unassigned" when there is none.
 fn assignee_link<'a>(state: &'a State, cid: Option<u64>) -> Element<'a, Msg> {
     match cid {
         None => ui::faint("Unassigned").into(),
-        Some(cid) => button(ui::sans(agent_name(&state.agents, cid), 11.5, crate::theme::palette().ink))
-            .padding(0.0)
-            .style(button::text)
-            .on_press(Msg::Go(Id::Agent(cid)))
-            .into(),
+        Some(cid) => button(ui::sans(
+            agent_name(&state.agents, cid),
+            11.5,
+            crate::theme::palette().ink,
+        ))
+        .padding(0.0)
+        .style(button::text)
+        .on_press(Msg::Go(Id::Agent(cid)))
+        .into(),
     }
 }
 
 /// The new-task form, shown above the board.
 fn draft_form<'a>(state: &'a State, d: &'a Draft) -> Element<'a, Msg> {
-    let title = text_input("What should get done?", &d.title).on_input(Msg::FormTitle).style(theme::input).padding(8.0);
-    let details = text_editor(&d.details).placeholder("Details").on_action(Msg::FormDetails).height(120.0);
-    let acceptance = text_editor(&d.acceptance).placeholder("Acceptance").on_action(Msg::FormAcceptance).height(80.0);
-    let role = pick_list(role_options(&state.agents), Some(d.role.clone()), Msg::FormRole).width(Length::Fill);
+    let title = text_input("What should get done?", &d.title)
+        .on_input(Msg::FormTitle)
+        .style(theme::input)
+        .padding(8.0);
+    let details = text_editor(&d.details)
+        .placeholder("Details")
+        .on_action(Msg::FormDetails)
+        .height(120.0);
+    let acceptance = text_editor(&d.acceptance)
+        .placeholder("Acceptance")
+        .on_action(Msg::FormAcceptance)
+        .height(80.0);
+    let role = pick_list(
+        role_options(&state.agents),
+        Some(d.role.clone()),
+        Msg::FormRole,
+    )
+    .width(Length::Fill);
     let budget_hint = format!("{DEFAULT_TASK_BUDGET} (hub default)");
-    let budget = text_input(&budget_hint, &d.budget).on_input(Msg::FormBudget).style(theme::input).padding(8.0);
+    let budget = text_input(&budget_hint, &d.budget)
+        .on_input(Msg::FormBudget)
+        .style(theme::input)
+        .padding(8.0);
     let mut assignee_options = vec![Pick::scheduler()];
     assignee_options.extend(idle_workers(&state.agents).into_iter().map(|a| Pick {
         key: a.cid.to_string(),
         label: agent_name(&state.agents, a.cid),
     }));
-    let assignee = pick_list(assignee_options, Some(d.assignee.clone()), Msg::FormAssignee).width(Length::Fill);
+    let assignee = pick_list(
+        assignee_options,
+        Some(d.assignee.clone()),
+        Msg::FormAssignee,
+    )
+    .width(Length::Fill);
     let cancel = ui::btn("Cancel", None, ui::Kind::Secondary, Some(Msg::CloseForm));
-    let submit = ui::btn("Create task", Some("plus"), ui::Kind::Primary, (!d.posting).then_some(Msg::Submit));
+    let submit = ui::btn(
+        "Create task",
+        Some("plus"),
+        ui::Kind::Primary,
+        (!d.posting).then_some(Msg::Submit),
+    );
     let body = column![
         section("Title", title.into()),
         section("Details", details.into()),
         section("Acceptance", acceptance.into()),
-        row![section("Role", role.into()), section("Budget", budget.into())].spacing(14),
+        row![
+            section("Role", role.into()),
+            section("Budget", budget.into())
+        ]
+        .spacing(14),
         section("Assign to", assignee.into()),
-        row![Space::new().width(Length::Fill), cancel, submit].spacing(8).align_y(Alignment::Center),
+        row![Space::new().width(Length::Fill), cancel, submit]
+            .spacing(8)
+            .align_y(Alignment::Center),
     ]
     .spacing(14);
     ui::card("New task", body.into())
@@ -984,25 +1238,45 @@ fn draft_form<'a>(state: &'a State, d: &'a Draft) -> Element<'a, Msg> {
 /// it is open), and the timeline of its assignee's work.
 fn detail_page<'a>(state: &'a State) -> Element<'a, Msg> {
     let rctx = rich::context(&state.cards, None, None, None);
-    let back: Element<'a, Msg> = ui::btn("Tasks", Some("chevronRight"), ui::Kind::Ghost, Some(Msg::Back));
+    let back: Element<'a, Msg> = ui::btn(
+        "Tasks",
+        Some("chevronRight"),
+        ui::Kind::Ghost,
+        Some(Msg::Back),
+    );
     let Some(detail) = state.detail.as_ref() else {
         return column![back, ui::loading()].spacing(14).into();
     };
     let Some(t) = detail.task.as_ref() else {
-        return column![back, ui::faint("Task not found.")].spacing(14).into();
+        return column![back, ui::faint("Task not found.")]
+            .spacing(14)
+            .into();
     };
 
     let open = t.state == "open";
     let assign_options: Vec<Pick> = idle_workers(&state.agents)
         .into_iter()
-        .map(|a| Pick { key: a.cid.to_string(), label: agent_name(&state.agents, a.cid) })
+        .map(|a| Pick {
+            key: a.cid.to_string(),
+            label: agent_name(&state.agents, a.cid),
+        })
         .collect();
-    let role = t.role.as_deref().map(|r| role_label(&state.agents, r)).unwrap_or_else(|| "Any role".to_string());
+    let role = t
+        .role
+        .as_deref()
+        .map(|r| role_label(&state.agents, r))
+        .unwrap_or_else(|| "Any role".to_string());
     let facts = column![
-        kv("State", ui::badge(&label_of(&t.state), tone_of_state(&t.state))),
+        kv(
+            "State",
+            ui::badge(&label_of(&t.state), tone_of_state(&t.state))
+        ),
         kv("Role", ui::faint(role).into()),
         kv("Assignee", assignee_link(state, t.agent_cid)),
-        kv("Budget", ui::sans(fmt_num(t.budget), 12.0, crate::theme::palette().ink).into()),
+        kv(
+            "Budget",
+            ui::sans(fmt_num(t.budget), 12.0, crate::theme::palette().ink).into()
+        ),
         kv("Created", ui::faint(ago(t.created_at)).into()),
         kv("Updated", ui::faint(ago(t.updated_at)).into()),
     ]
@@ -1011,7 +1285,12 @@ fn detail_page<'a>(state: &'a State) -> Element<'a, Msg> {
     if let Some(cid) = t.agent_cid {
         // The work's changes since it began, in review mode (the IDE's default base).
         let review = ide::target(&format!("agent:{cid}"), true, None);
-        side_parts.push(ui::btn("Review changes", Some("square-code"), ui::Kind::Secondary, Some(Msg::OpenIde(review))));
+        side_parts.push(ui::btn(
+            "Review changes",
+            Some("square-code"),
+            ui::Kind::Secondary,
+            Some(Msg::OpenIde(review)),
+        ));
     }
     if open {
         side_parts.push(
@@ -1031,33 +1310,64 @@ fn detail_page<'a>(state: &'a State) -> Element<'a, Msg> {
     }
 
     let steps: Element<'a, Msg> = if detail.timeline.is_empty() {
-        let line = if t.agent_cid.is_none() { "Not yet assigned." } else { "No steps recorded yet." };
+        let line = if t.agent_cid.is_none() {
+            "Not yet assigned."
+        } else {
+            "No steps recorded yet."
+        };
         ui::faint(line).into()
     } else {
-        column(detail.timeline.iter().map(timeline_row).collect::<Vec<_>>()).spacing(6).into()
+        column(detail.timeline.iter().map(timeline_row).collect::<Vec<_>>())
+            .spacing(6)
+            .into()
     };
 
-    let mut main_parts: Vec<Element<'a, Msg>> = vec![section("Goal", rich::view(&t.goal, &rctx, &state.cards, &on_rich))];
+    let mut main_parts: Vec<Element<'a, Msg>> = vec![section(
+        "Goal",
+        rich::view(&t.goal, &rctx, &state.cards, &on_rich),
+    )];
     if let Some(a) = t.acceptance.as_deref().filter(|a| !a.is_empty()) {
-        main_parts.push(section("Acceptance", rich::view(a, &rctx, &state.cards, &on_rich)));
+        main_parts.push(section(
+            "Acceptance",
+            rich::view(a, &rctx, &state.cards, &on_rich),
+        ));
     }
     if let Some(n) = t.note.as_deref().filter(|n| !n.is_empty()) {
-        main_parts.push(section("Result", rich::view(n, &rctx, &state.cards, &on_rich)));
+        main_parts.push(section(
+            "Result",
+            rich::view(n, &rctx, &state.cards, &on_rich),
+        ));
     }
 
-    let head = column![ui::mono(t.id.clone(), 11.0, crate::theme::palette().ink_3), ui::sans(title_of(&t.goal), 22.0, crate::theme::palette().ink)].spacing(4);
+    let head = column![
+        ui::mono(t.id.clone(), 11.0, crate::theme::palette().ink_3),
+        ui::sans(title_of(&t.goal), 22.0, crate::theme::palette().ink)
+    ]
+    .spacing(4);
     let main = column(main_parts).spacing(22).width(Length::FillPortion(3));
-    let side = column![section("Facts", column(side_parts).spacing(10).into()), section("Timeline", steps)]
-        .spacing(22)
-        .width(Length::FillPortion(2));
-    column![back, head, row![main, side].spacing(28)].spacing(18).into()
+    let side = column![
+        section("Facts", column(side_parts).spacing(10).into()),
+        section("Timeline", steps)
+    ]
+    .spacing(22)
+    .width(Length::FillPortion(2));
+    column![back, head, row![main, side].spacing(28)]
+        .spacing(18)
+        .into()
 }
 
 fn timeline_row<'a>(e: &'a EntryRecord) -> Element<'a, Msg> {
-    let color = if e.kind == "error" { crate::theme::palette().crit } else { crate::theme::palette().ink };
-    row![ui::sans(clock(e.at_ms), 11.0, crate::theme::palette().ink_3), ui::sans(describe(e), 12.0, color)]
-        .spacing(12)
-        .into()
+    let color = if e.kind == "error" {
+        crate::theme::palette().crit
+    } else {
+        crate::theme::palette().ink
+    };
+    row![
+        ui::sans(clock(e.at_ms), 11.0, crate::theme::palette().ink_3),
+        ui::sans(describe(e), 12.0, color)
+    ]
+    .spacing(12)
+    .into()
 }
 
 /// A labelled section: a label over its body.
@@ -1104,14 +1414,20 @@ mod tests {
 
     #[test]
     fn clip_cuts_at_a_word_and_ends_with_an_ellipsis() {
-        assert_eq!(clip("RE-ISSUE of task t3 with a workable budget", 20), "RE-ISSUE of task t3…");
+        assert_eq!(
+            clip("RE-ISSUE of task t3 with a workable budget", 20),
+            "RE-ISSUE of task t3…"
+        );
         assert!(clip("a0b7ecad718094baff717f1c29be4b2a0b7ecad718094baff", 20).ends_with('…'));
     }
 }
 
 /// The hub events this screen follows live (the web refreshes on the same topics). None yet: see docs/design/parity.md.
 pub fn subscription(ctx: &Ctx) -> Subscription<Msg> {
-    Subscription::batch([events::subscription(&ctx.client).map(Msg::Event), iced::event::listen_with(keys)])
+    Subscription::batch([
+        events::subscription(&ctx.client).map(Msg::Event),
+        iced::event::listen_with(keys),
+    ])
 }
 
 /// Enter opens the card the arrow keys picked, else the card under the pointer (the web's focused
@@ -1119,18 +1435,18 @@ pub fn subscription(ctx: &Ctx) -> Subscription<Msg> {
 fn keys(event: iced::Event, status: iced::event::Status, _window: iced::window::Id) -> Option<Msg> {
     use iced::keyboard::key::Named;
     match event {
-        iced::Event::Keyboard(iced::keyboard::Event::KeyPressed { key: iced::keyboard::Key::Named(Named::Enter), .. }) => {
-            Some(Msg::EnterKey)
-        }
-        iced::Event::Keyboard(iced::keyboard::Event::KeyPressed { key: iced::keyboard::Key::Named(key), .. })
-            if status == iced::event::Status::Ignored =>
-        {
-            match key {
-                Named::ArrowDown => Some(Msg::Step(true)),
-                Named::ArrowUp => Some(Msg::Step(false)),
-                _ => None,
-            }
-        }
+        iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+            key: iced::keyboard::Key::Named(Named::Enter),
+            ..
+        }) => Some(Msg::EnterKey),
+        iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+            key: iced::keyboard::Key::Named(key),
+            ..
+        }) if status == iced::event::Status::Ignored => match key {
+            Named::ArrowDown => Some(Msg::Step(true)),
+            Named::ArrowUp => Some(Msg::Step(false)),
+            _ => None,
+        },
         _ => None,
     }
 }

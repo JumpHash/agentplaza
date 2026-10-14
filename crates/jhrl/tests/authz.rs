@@ -75,15 +75,24 @@ fn load(src: &str) -> Program {
 
 fn request(op: &str, pairs: Vec<(&str, Value)>) -> Request {
     Request {
-        principal: Entity { ty: "Agent".into(), id: "a1".into() },
+        principal: Entity {
+            ty: "Agent".into(),
+            id: "a1".into(),
+        },
         operation: op.into(),
-        resource: Entity { ty: "Tool".into(), id: "t1".into() },
+        resource: Entity {
+            ty: "Tool".into(),
+            id: "t1".into(),
+        },
         context: Value::record(pairs.into_iter().map(|(k, v)| (k.to_string(), v)).collect()),
     }
 }
 
 fn approval() -> Value {
-    entity_value(&Entity { ty: "Approval".into(), id: "ap1".into() })
+    entity_value(&Entity {
+        ty: "Approval".into(),
+        id: "ap1".into(),
+    })
 }
 
 #[test]
@@ -91,9 +100,24 @@ fn c004a_denies_irreversible_without_approval_and_not_with_one() {
     let p = load(SRC);
     let s = store_for(&p, "f1").expect("fixture f1");
     let no = authorize(&p, &s, &request("tool.call", vec![]));
-    assert_eq!(no.decision, Decision::Deny { by: vec!["C-004a".into()], missing: vec![] });
-    let yes = authorize(&p, &s, &request("tool.call", vec![("owner_approval", approval())]));
-    assert_eq!(yes.decision, Decision::Allow { by: vec!["P-001".into()] });
+    assert_eq!(
+        no.decision,
+        Decision::Deny {
+            by: vec!["C-004a".into()],
+            missing: vec![]
+        }
+    );
+    let yes = authorize(
+        &p,
+        &s,
+        &request("tool.call", vec![("owner_approval", approval())]),
+    );
+    assert_eq!(
+        yes.decision,
+        Decision::Allow {
+            by: vec!["P-001".into()]
+        }
+    );
     let rows = run_authz(&p);
     assert_eq!(rows.len(), 2);
     assert!(rows.iter().all(|(_, pass, _)| *pass), "{rows:?}");
@@ -105,8 +129,17 @@ fn forbid_beats_permit() {
     let s = store_for(&p, "f1").expect("fixture f1");
     // Both C-004a (forbid) and P-001 (permit) apply here; the forbid wins and P-001 is not cited.
     let o = authorize(&p, &s, &request("tool.call", vec![]));
-    assert_eq!(o.decision, Decision::Deny { by: vec!["C-004a".into()], missing: vec![] });
-    assert!(o.violations.is_empty(), "C-004a is preventive, not a violation record");
+    assert_eq!(
+        o.decision,
+        Decision::Deny {
+            by: vec!["C-004a".into()],
+            missing: vec![]
+        }
+    );
+    assert!(
+        o.violations.is_empty(),
+        "C-004a is preventive, not a violation record"
+    );
 }
 
 #[test]
@@ -114,7 +147,13 @@ fn default_deny_when_no_law_covers_the_operation() {
     let p = load(SRC);
     let s = store_for(&p, "f1").expect("fixture f1");
     let o = authorize(&p, &s, &request("tool.delete", vec![]));
-    assert_eq!(o.decision, Decision::Deny { by: vec![], missing: vec![] });
+    assert_eq!(
+        o.decision,
+        Decision::Deny {
+            by: vec![],
+            missing: vec![]
+        }
+    );
 }
 
 #[test]
@@ -126,6 +165,9 @@ fn forbid_on_missing_attribute_denies_and_unknown_permit_does_not_apply() {
     let o = authorize(&p, &s, &request("tool.call", vec![]));
     assert_eq!(
         o.decision,
-        Decision::Deny { by: vec!["F-001".into()], missing: vec!["resource.classification".into()] }
+        Decision::Deny {
+            by: vec!["F-001".into()],
+            missing: vec!["resource.classification".into()]
+        }
     );
 }

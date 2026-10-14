@@ -335,7 +335,11 @@ pub const POSTING_RULES: &[(EntryKind, AccountKind, Side)] = &[
     (EntryKind::Spend, AccountKind::TaskEscrow, Side::Debit),
     (EntryKind::Spend, AccountKind::ExternalSpend, Side::Credit),
     (EntryKind::Subcontract, AccountKind::TaskEscrow, Side::Debit),
-    (EntryKind::Subcontract, AccountKind::TaskEscrow, Side::Credit),
+    (
+        EntryKind::Subcontract,
+        AccountKind::TaskEscrow,
+        Side::Credit,
+    ),
     (EntryKind::Payment, AccountKind::TaskEscrow, Side::Debit),
     (EntryKind::Payment, AccountKind::AgentEarnings, Side::Credit),
     (EntryKind::Refund, AccountKind::TaskEscrow, Side::Debit),
@@ -352,7 +356,11 @@ pub const POSTING_RULES: &[(EntryKind, AccountKind, Side)] = &[
     (EntryKind::Fee, AccountKind::AgentEarnings, Side::Credit),
     (EntryKind::Spend, AccountKind::TownBudget, Side::Debit),
     (EntryKind::Transfer, AccountKind::AgentEarnings, Side::Debit),
-    (EntryKind::Transfer, AccountKind::AgentEarnings, Side::Credit),
+    (
+        EntryKind::Transfer,
+        AccountKind::AgentEarnings,
+        Side::Credit,
+    ),
     (EntryKind::Model, AccountKind::TaskEscrow, Side::Debit),
     (EntryKind::Model, AccountKind::AgentEarnings, Side::Debit),
     (EntryKind::Model, AccountKind::ExternalSpend, Side::Credit),
@@ -566,7 +574,12 @@ impl std::fmt::Display for PostError {
             PostError::NonPositive { amount } => {
                 write!(formatter, "an amount must be positive, got {amount}")
             }
-            PostError::TransferCap { cid, sent_today, amount, cap } => write!(
+            PostError::TransferCap {
+                cid,
+                sent_today,
+                amount,
+                cap,
+            } => write!(
                 formatter,
                 "agent cid:{cid} has sent {sent_today} today; {amount} more passes the {cap} daily cap"
             ),
@@ -700,7 +713,11 @@ struct Inner {
     next_account: u64,
     next_entry: u64,
     /// What each agent has transferred on each UTC day, keyed by (cid, day).
-    #[serde(default, serialize_with = "ser_transferred", deserialize_with = "de_transferred")]
+    #[serde(
+        default,
+        serialize_with = "ser_transferred",
+        deserialize_with = "de_transferred"
+    )]
     transferred: BTreeMap<(u64, u64), i64>,
 }
 
@@ -1316,7 +1333,11 @@ impl Treasury {
             .iter()
             .filter(|account| account.kind == AccountKind::AgentEarnings)
             .filter_map(|account| {
-                let cid = account.owner_ref.strip_prefix("cid:")?.parse::<u64>().ok()?;
+                let cid = account
+                    .owner_ref
+                    .strip_prefix("cid:")?
+                    .parse::<u64>()
+                    .ok()?;
                 Some((cid, inner.balance(account.id)))
             })
             .collect()
@@ -1368,17 +1389,29 @@ impl Treasury {
             paid: Vec::new(),
             refunded: 0,
         };
-        for entry in inner.entries.iter().filter(|entry| entry.task_id.as_deref() == Some(task_id)) {
+        for entry in inner
+            .entries
+            .iter()
+            .filter(|entry| entry.task_id.as_deref() == Some(task_id))
+        {
             for posting in &entry.postings {
-                let Some(account) = inner.accounts.iter().find(|account| account.id == posting.account_id) else {
+                let Some(account) = inner
+                    .accounts
+                    .iter()
+                    .find(|account| account.id == posting.account_id)
+                else {
                     continue;
                 };
                 let amount = i128::from(posting.amount);
                 match (entry.kind, account.kind, posting.amount > 0) {
                     // A task's budget arrives in its escrow by a fund entry (a subcontract from the plaza's budget).
-                    (EntryKind::Mint | EntryKind::Subcontract, AccountKind::TaskEscrow, true) => money.minted += amount,
+                    (EntryKind::Mint | EntryKind::Subcontract, AccountKind::TaskEscrow, true) => {
+                        money.minted += amount
+                    }
                     // A spend debits the escrow; a negative posting adds to the spend.
-                    (kind, AccountKind::TaskEscrow, false) if kind.is_real_cost() => money.spent -= amount,
+                    (kind, AccountKind::TaskEscrow, false) if kind.is_real_cost() => {
+                        money.spent -= amount
+                    }
                     (EntryKind::Refund, AccountKind::TownBudget, true) => money.refunded += amount,
                     (EntryKind::Payment, AccountKind::AgentEarnings, true) => {
                         let cid = account
@@ -1501,11 +1534,22 @@ impl Treasury {
             })
         });
         let matches = |entry: &Entry| {
-            query.kind.as_deref().is_none_or(|kind| entry.kind.as_str() == kind)
+            query
+                .kind
+                .as_deref()
+                .is_none_or(|kind| entry.kind.as_str() == kind)
                 && wallet.is_none_or(|account| {
-                    account.is_some_and(|id| entry.postings.iter().any(|posting| posting.account_id == id))
+                    account.is_some_and(|id| {
+                        entry
+                            .postings
+                            .iter()
+                            .any(|posting| posting.account_id == id)
+                    })
                 })
-                && query.task.as_deref().is_none_or(|task| entry.task_id.as_deref() == Some(task))
+                && query
+                    .task
+                    .as_deref()
+                    .is_none_or(|task| entry.task_id.as_deref() == Some(task))
         };
         let mut total = 0;
         let mut page: Vec<&Entry> = Vec::new();
@@ -1521,9 +1565,16 @@ impl Treasury {
                 more = true;
             }
         }
-        let next_before = if more { page.last().map(|entry| entry.id) } else { None };
+        let next_before = if more {
+            page.last().map(|entry| entry.id)
+        } else {
+            None
+        };
         JournalPage {
-            entries: page.into_iter().map(|entry| entry_view(&inner, entry)).collect(),
+            entries: page
+                .into_iter()
+                .map(|entry| entry_view(&inner, entry))
+                .collect(),
             total,
             next_before,
         }
@@ -1539,7 +1590,12 @@ impl Treasury {
     /// (nothing is stored): the opening balance is every entry before `from_ms`,
     /// so the figures are exact whatever the range. Refused for an empty range, a
     /// zero bucket, or more than [`SERIES_MAX_POINTS`] buckets.
-    pub fn series(&self, from_ms: u64, to_ms: u64, bucket_ms: u64) -> Result<TreasurySeries, String> {
+    pub fn series(
+        &self,
+        from_ms: u64,
+        to_ms: u64,
+        bucket_ms: u64,
+    ) -> Result<TreasurySeries, String> {
         if bucket_ms == 0 {
             return Err("the bucket must be a positive number of milliseconds".to_string());
         }
@@ -1572,7 +1628,10 @@ impl Treasury {
                     refunded: 0,
                     fined: 0,
                     spent: 0,
-                    by_kind: EntryKind::ALL.iter().map(|kind| (kind.as_str(), 0)).collect(),
+                    by_kind: EntryKind::ALL
+                        .iter()
+                        .map(|kind| (kind.as_str(), 0))
+                        .collect(),
                     plaza_budget_end: 0,
                     circulating_end: 0,
                     treasury_end: 0,
@@ -1592,8 +1651,12 @@ impl Treasury {
                     size += amount;
                 }
                 match accounts.get(&posting.account_id) {
-                    Some((AccountKind::TownBudget, owner)) if *owner == PLAZA_OWNER => moved[0] += amount,
-                    Some((AccountKind::TaskEscrow | AccountKind::AgentEarnings, _)) => moved[1] += amount,
+                    Some((AccountKind::TownBudget, owner)) if *owner == PLAZA_OWNER => {
+                        moved[0] += amount
+                    }
+                    Some((AccountKind::TaskEscrow | AccountKind::AgentEarnings, _)) => {
+                        moved[1] += amount
+                    }
                     Some((AccountKind::Treasury, _)) => moved[2] += amount,
                     _ => {}
                 }
@@ -1608,7 +1671,8 @@ impl Treasury {
                 continue;
             }
             // `created_at` is in `[from_ms, to_ms)`, so the index is below `count`.
-            let index = usize::try_from((entry.created_at - start) / bucket_ms).unwrap_or(usize::MAX);
+            let index =
+                usize::try_from((entry.created_at - start) / bucket_ms).unwrap_or(usize::MAX);
             let point = &mut points[index];
             point.entries += 1;
             *point.by_kind.entry(entry.kind.as_str()).or_insert(0) += size;
@@ -1634,7 +1698,12 @@ impl Treasury {
             point.circulating_end = balances[1];
             point.treasury_end = balances[2];
         }
-        Ok(TreasurySeries { from_ms, to_ms, bucket_ms, points })
+        Ok(TreasurySeries {
+            from_ms,
+            to_ms,
+            bucket_ms,
+            points,
+        })
     }
 
     /// The `n` agent wallets with the largest balances, richest first (ties by
@@ -1661,9 +1730,18 @@ impl Treasury {
             .iter()
             .filter(|account| account.kind == AccountKind::AgentEarnings)
             .filter_map(|account| {
-                let cid = account.owner_ref.strip_prefix("cid:")?.parse::<u64>().ok()?;
+                let cid = account
+                    .owner_ref
+                    .strip_prefix("cid:")?
+                    .parse::<u64>()
+                    .ok()?;
                 let (earned, spent) = flows.get(&account.id).copied().unwrap_or((0, 0));
-                Some(WalletRank { cid, balance: inner.balance(account.id), earned, spent })
+                Some(WalletRank {
+                    cid,
+                    balance: inner.balance(account.id),
+                    earned,
+                    spent,
+                })
             })
             .collect();
         ranks.sort_by(|a, b| b.balance.cmp(&a.balance).then(a.cid.cmp(&b.cid)));
@@ -1792,7 +1870,10 @@ impl Treasury {
         let now = now_ms();
         let mut postings = Vec::with_capacity(spec.postings.len());
         for posting in &spec.postings {
-            let account_id = match inner.find_account(posting.kind, &posting.owner).map(|a| a.id) {
+            let account_id = match inner
+                .find_account(posting.kind, &posting.owner)
+                .map(|a| a.id)
+            {
                 Some(id) => id,
                 None => {
                     inner.next_account += 1;
@@ -2131,15 +2212,17 @@ mod tests {
     /// ledger's own `mint_task_budget` is exercised separately).
     fn fund(treasury: &Treasury, task: &str, amount: i64) {
         treasury
-            .post(&spec(
-                EntryKind::Mint,
-                &[
-                    (AccountKind::Mint, MINT_OWNER, -amount),
-                    (AccountKind::TaskEscrow, task, amount),
-                ],
+            .post(
+                &spec(
+                    EntryKind::Mint,
+                    &[
+                        (AccountKind::Mint, MINT_OWNER, -amount),
+                        (AccountKind::TaskEscrow, task, amount),
+                    ],
+                )
+                .task(task)
+                .root(task),
             )
-            .task(task)
-            .root(task))
             .expect("a mint inside the rules");
     }
 
@@ -2158,7 +2241,11 @@ mod tests {
         (EntryKind::Spend, AccountKind::TaskEscrow, Side::Debit),
         (EntryKind::Spend, AccountKind::ExternalSpend, Side::Credit),
         (EntryKind::Subcontract, AccountKind::TaskEscrow, Side::Debit),
-        (EntryKind::Subcontract, AccountKind::TaskEscrow, Side::Credit),
+        (
+            EntryKind::Subcontract,
+            AccountKind::TaskEscrow,
+            Side::Credit,
+        ),
         (EntryKind::Payment, AccountKind::TaskEscrow, Side::Debit),
         (EntryKind::Payment, AccountKind::AgentEarnings, Side::Credit),
         (EntryKind::Refund, AccountKind::TaskEscrow, Side::Debit),
@@ -2175,7 +2262,11 @@ mod tests {
         (EntryKind::Fee, AccountKind::AgentEarnings, Side::Credit),
         (EntryKind::Spend, AccountKind::TownBudget, Side::Debit),
         (EntryKind::Transfer, AccountKind::AgentEarnings, Side::Debit),
-        (EntryKind::Transfer, AccountKind::AgentEarnings, Side::Credit),
+        (
+            EntryKind::Transfer,
+            AccountKind::AgentEarnings,
+            Side::Credit,
+        ),
         (EntryKind::Model, AccountKind::TaskEscrow, Side::Debit),
         (EntryKind::Model, AccountKind::AgentEarnings, Side::Debit),
         (EntryKind::Model, AccountKind::ExternalSpend, Side::Credit),
@@ -2368,7 +2459,10 @@ mod tests {
         let treasury = new_treasury();
         let mint = treasury.fund_task("t1", 500).expect("a funding");
         assert_eq!(treasury.escrow_balance("t1"), 500);
-        assert_eq!(treasury.plaza_budget_balance(), i128::from(PLAZA_BUDGET) - 500);
+        assert_eq!(
+            treasury.plaza_budget_balance(),
+            i128::from(PLAZA_BUDGET) - 500
+        );
         assert_eq!(treasury.view().totals.entries, 2);
 
         let refund = treasury
@@ -2445,10 +2539,7 @@ mod tests {
             ),
             "{refused:?}"
         );
-        assert!(
-            refused.to_string().contains("below its limit"),
-            "{refused}"
-        );
+        assert!(refused.to_string().contains("below its limit"), "{refused}");
         // The refusal changed nothing.
         assert_eq!(treasury.escrow_balance("t1"), 100);
         assert_eq!(treasury.view().totals.entries, 2);
@@ -2656,7 +2747,10 @@ mod tests {
             treasury.post(
                 &spec(
                     EntryKind::Mint,
-                    &[(AccountKind::Mint, MINT_OWNER, 0), (AccountKind::TaskEscrow, "t1", 0)]
+                    &[
+                        (AccountKind::Mint, MINT_OWNER, 0),
+                        (AccountKind::TaskEscrow, "t1", 0)
+                    ]
                 )
                 .root("t1")
             ),
@@ -2792,31 +2886,32 @@ mod tests {
         // the rules allow and which touches no limited account.
         for _ in 0..MAX_ENTRIES - 1 {
             treasury
-                .post(&spec(
+                .post(
+                    &spec(
+                        EntryKind::Mint,
+                        &[
+                            (AccountKind::Mint, MINT_OWNER, -1),
+                            (AccountKind::TownBudget, "shop", 1),
+                        ],
+                    )
+                    .root("shop-oct"),
+                )
+                .expect("a mint under the cap");
+        }
+        assert_eq!(treasury.view().totals.entries, MAX_ENTRIES);
+        let refused = treasury
+            .post(
+                &spec(
                     EntryKind::Mint,
                     &[
                         (AccountKind::Mint, MINT_OWNER, -1),
                         (AccountKind::TownBudget, "shop", 1),
                     ],
                 )
-                .root("shop-oct"))
-                .expect("a mint under the cap");
-        }
-        assert_eq!(treasury.view().totals.entries, MAX_ENTRIES);
-        let refused = treasury
-            .post(&spec(
-                EntryKind::Mint,
-                &[
-                    (AccountKind::Mint, MINT_OWNER, -1),
-                    (AccountKind::TownBudget, "shop", 1),
-                ],
+                .root("shop-oct"),
             )
-            .root("shop-oct"))
             .expect_err("the journal is full");
-        assert_eq!(
-            refused,
-            PostError::JournalFull { max: MAX_ENTRIES }
-        );
+        assert_eq!(refused, PostError::JournalFull { max: MAX_ENTRIES });
         assert_eq!(refused.status(), 409);
         assert_eq!(
             refused.to_string(),
@@ -2840,14 +2935,16 @@ mod tests {
         assert_eq!(refused, PostError::AccountsFull { max: MAX_ACCOUNTS });
         assert_eq!(refused.status(), 409);
         let refused = fresh
-            .post(&spec(
-                EntryKind::Mint,
-                &[
-                    (AccountKind::Mint, MINT_OWNER, -1),
-                    (AccountKind::TownBudget, "still-one-too-many", 1),
-                ],
+            .post(
+                &spec(
+                    EntryKind::Mint,
+                    &[
+                        (AccountKind::Mint, MINT_OWNER, -1),
+                        (AccountKind::TownBudget, "still-one-too-many", 1),
+                    ],
+                )
+                .root("shop-oct"),
             )
-            .root("shop-oct"))
             .expect_err("the accounts are full");
         assert_eq!(refused, PostError::AccountsFull { max: MAX_ACCOUNTS });
         assert_eq!(fresh.accounts().len(), MAX_ACCOUNTS);
@@ -2859,14 +2956,16 @@ mod tests {
         let treasury = new_treasury();
         for _ in 0..(JOURNAL_LIMIT + 10) {
             treasury
-                .post(&spec(
-                    EntryKind::Mint,
-                    &[
-                        (AccountKind::Mint, MINT_OWNER, -1),
-                        (AccountKind::TownBudget, "shop", 1),
-                    ],
+                .post(
+                    &spec(
+                        EntryKind::Mint,
+                        &[
+                            (AccountKind::Mint, MINT_OWNER, -1),
+                            (AccountKind::TownBudget, "shop", 1),
+                        ],
+                    )
+                    .root("shop-oct"),
                 )
-                .root("shop-oct"))
                 .expect("a mint");
         }
         let journal = treasury.journal(JOURNAL_LIMIT);
@@ -2877,7 +2976,10 @@ mod tests {
         // Chronological: the newest entry is last, and the response holds the
         // newest window of the journal.
         assert_eq!(journal.entries[0].id, 12);
-        assert_eq!(journal.entries[JOURNAL_LIMIT - 1].id, (JOURNAL_LIMIT + 11) as u64);
+        assert_eq!(
+            journal.entries[JOURNAL_LIMIT - 1].id,
+            (JOURNAL_LIMIT + 11) as u64
+        );
 
         // A short journal is not truncated, and is oldest-first.
         let small = new_treasury();
@@ -3001,24 +3103,28 @@ mod tests {
     fn a_budget_move_between_towns_is_balanced_and_bounded() {
         let treasury = new_treasury();
         treasury
-            .post(&spec(
-                EntryKind::Mint,
-                &[
-                    (AccountKind::Mint, MINT_OWNER, -100000),
-                    (AccountKind::TownBudget, "shop", 100000),
-                ],
+            .post(
+                &spec(
+                    EntryKind::Mint,
+                    &[
+                        (AccountKind::Mint, MINT_OWNER, -100000),
+                        (AccountKind::TownBudget, "shop", 100000),
+                    ],
+                )
+                .root("shop-oct"),
             )
-            .root("shop-oct"))
             .expect("fund the shop");
         treasury
-            .post(&spec(
-                EntryKind::Mint,
-                &[
-                    (AccountKind::Mint, MINT_OWNER, -50000),
-                    (AccountKind::TownBudget, "lab", 50000),
-                ],
+            .post(
+                &spec(
+                    EntryKind::Mint,
+                    &[
+                        (AccountKind::Mint, MINT_OWNER, -50000),
+                        (AccountKind::TownBudget, "lab", 50000),
+                    ],
+                )
+                .root("lab-oct"),
             )
-            .root("lab-oct"))
             .expect("fund the lab");
         treasury
             .post(
@@ -3045,7 +3151,10 @@ mod tests {
                 .root("move-2"),
             )
             .expect_err("the lab has only 30000 left");
-        assert!(matches!(refused, PostError::Overdrawn { .. }), "{refused:?}");
+        assert!(
+            matches!(refused, PostError::Overdrawn { .. }),
+            "{refused:?}"
+        );
         let balance = |owner: &str| {
             treasury
                 .accounts()
@@ -3071,17 +3180,24 @@ mod economy_tests {
     fn a_snapshot_restores_the_same_wallets_budget_and_journal() {
         let original = treasury();
         original.fund_task("t1", 300).expect("fund");
-        original.charge_spend(Some("t1"), 100, "real cost").expect("spend");
+        original
+            .charge_spend(Some("t1"), 100, "real cost")
+            .expect("spend");
         original.pay_agent("t1", 7, 20).expect("pay");
         original.fine(7, 5, "late").expect("fine");
         original.transfer(7, 8, 3, "share").expect("transfer");
         let json = original.snapshot();
 
         let restored = Treasury::empty(EventBus::new());
-        restored.restore(&json).expect("a snapshot of a ledger restores");
+        restored
+            .restore(&json)
+            .expect("a snapshot of a ledger restores");
         assert_eq!(restored.wallets(), original.wallets());
         assert_eq!(restored.wallets(), vec![(7, 12), (8, 3)]);
-        assert_eq!(restored.plaza_budget_balance(), original.plaza_budget_balance());
+        assert_eq!(
+            restored.plaza_budget_balance(),
+            original.plaza_budget_balance()
+        );
         assert_eq!(restored.journal(JOURNAL_LIMIT).total, 6);
         assert_eq!(
             restored.journal(JOURNAL_LIMIT).total,
@@ -3097,16 +3213,38 @@ mod economy_tests {
     fn a_task_and_a_wallet_read_back_their_money() {
         let ledger = treasury();
         ledger.fund_task("t1", 300).expect("fund");
-        ledger.charge_spend(Some("t1"), 100, "real cost").expect("spend");
+        ledger
+            .charge_spend(Some("t1"), 100, "real cost")
+            .expect("spend");
         ledger.pay_agent("t1", 7, 20).expect("pay");
         ledger.transfer(7, 8, 5, "share").expect("transfer");
         ledger.refund_task_to_budget("t1").expect("refund");
         assert_eq!(
             ledger.task_money("t1"),
-            TaskMoney { minted: 300, escrow: 0, spent: 100, paid: vec![(7, 20)], refunded: 180 }
+            TaskMoney {
+                minted: 300,
+                escrow: 0,
+                spent: 100,
+                paid: vec![(7, 20)],
+                refunded: 180
+            }
         );
-        assert_eq!(ledger.wallet_money(7), WalletMoney { balance: 15, sent_today: 5, earned: 20 });
-        assert_eq!(ledger.wallet_money(9), WalletMoney { balance: 0, sent_today: 0, earned: 0 });
+        assert_eq!(
+            ledger.wallet_money(7),
+            WalletMoney {
+                balance: 15,
+                sent_today: 5,
+                earned: 20
+            }
+        );
+        assert_eq!(
+            ledger.wallet_money(9),
+            WalletMoney {
+                balance: 0,
+                sent_today: 0,
+                earned: 0
+            }
+        );
     }
 
     #[test]
@@ -3131,15 +3269,31 @@ mod economy_tests {
         let treasury = treasury();
         assert_eq!(treasury.plaza_budget_balance(), i128::from(PLAZA_BUDGET));
         treasury.fund_task("t1", 300).expect("fund");
-        assert_eq!(treasury.plaza_budget_balance(), i128::from(PLAZA_BUDGET) - 300);
+        assert_eq!(
+            treasury.plaza_budget_balance(),
+            i128::from(PLAZA_BUDGET) - 300
+        );
         assert_eq!(treasury.escrow_balance("t1"), 300);
-        treasury.charge_spend(Some("t1"), 120, "model call").expect("spend");
+        treasury
+            .charge_spend(Some("t1"), 120, "model call")
+            .expect("spend");
         assert_eq!(treasury.escrow_balance("t1"), 180);
-        assert!(treasury.refund_task_to_budget("t1").expect("refund").is_some());
+        assert!(
+            treasury
+                .refund_task_to_budget("t1")
+                .expect("refund")
+                .is_some()
+        );
         assert_eq!(treasury.escrow_balance("t1"), 0);
         // The 120 credits spent are gone; the rest came home to the plaza.
-        assert_eq!(treasury.plaza_budget_balance(), i128::from(PLAZA_BUDGET) - 120);
-        assert_eq!(treasury.refund_task_to_budget("t1").expect("nothing left"), None);
+        assert_eq!(
+            treasury.plaza_budget_balance(),
+            i128::from(PLAZA_BUDGET) - 120
+        );
+        assert_eq!(
+            treasury.refund_task_to_budget("t1").expect("nothing left"),
+            None
+        );
         assert!(treasury.verify_journal().is_ok());
         assert_eq!(treasury.view().totals.balance, 0);
     }
@@ -3156,7 +3310,9 @@ mod economy_tests {
         assert_eq!(treasury.wallet(7), 0);
         // Without a task, the agent's wallet pays. Earn 15 first: a spend of
         // 100 makes the chain's real cost, and a payment of 15 is inside the cap.
-        treasury.charge_spend(Some("t1"), 100, "real cost").expect("spend");
+        treasury
+            .charge_spend(Some("t1"), 100, "real cost")
+            .expect("spend");
         treasury.pay_agent("t1", 7, 15).expect("pay");
         assert_eq!(treasury.wallet(7), 15);
         let without_task = treasury
@@ -3179,7 +3335,10 @@ mod economy_tests {
                     .find(|entry| entry.id == id)
                     .map(|entry| (entry.kind, entry.root_task.clone()))
             };
-            assert_eq!(kind_of(with_task), Some((EntryKind::Model, Some("t1".to_string()))));
+            assert_eq!(
+                kind_of(with_task),
+                Some((EntryKind::Model, Some("t1".to_string())))
+            );
             assert_eq!(kind_of(without_task), Some((EntryKind::Model, None)));
             // The provider is credited by the two model calls and the spend: 30 + 100 + 10.
             let external = inner
@@ -3198,19 +3357,31 @@ mod economy_tests {
         let refused = treasury
             .charge_spend(Some("t1"), 51, "too much")
             .expect_err("past the escrow");
-        assert!(matches!(refused, PostError::Overdrawn { .. }), "{refused:?}");
+        assert!(
+            matches!(refused, PostError::Overdrawn { .. }),
+            "{refused:?}"
+        );
         assert_eq!(treasury.escrow_balance("t1"), 50);
         // A spend from the plaza budget cannot overdraw it either, and funding
         // past the budget is refused the same way.
         let refused = treasury
             .charge_spend(None, PLAZA_BUDGET + 1, "plaza")
             .expect_err("past the budget");
-        assert!(matches!(refused, PostError::Overdrawn { .. }), "{refused:?}");
+        assert!(
+            matches!(refused, PostError::Overdrawn { .. }),
+            "{refused:?}"
+        );
         let refused = treasury
             .fund_task("t2", PLAZA_BUDGET)
             .expect_err("past the budget");
-        assert!(matches!(refused, PostError::Overdrawn { .. }), "{refused:?}");
-        assert_eq!(treasury.plaza_budget_balance(), i128::from(PLAZA_BUDGET) - 50);
+        assert!(
+            matches!(refused, PostError::Overdrawn { .. }),
+            "{refused:?}"
+        );
+        assert_eq!(
+            treasury.plaza_budget_balance(),
+            i128::from(PLAZA_BUDGET) - 50
+        );
         assert!(treasury.verify_journal().is_ok());
     }
 
@@ -3224,7 +3395,9 @@ mod economy_tests {
             treasury.pay_agent("t1", 7, 5),
             Err(PostError::MarginCap { .. })
         ));
-        treasury.charge_spend(Some("t1"), 100, "real cost").expect("spend");
+        treasury
+            .charge_spend(Some("t1"), 100, "real cost")
+            .expect("spend");
         treasury.pay_agent("t1", 7, 20).expect("pay");
         assert_eq!(treasury.wallet(7), 20);
         assert_eq!(treasury.wallet(8), 0);
@@ -3237,7 +3410,9 @@ mod economy_tests {
     fn a_transfer_is_capped_per_sender_per_day() {
         let treasury = treasury();
         treasury.fund_task("t1", 6000).expect("fund");
-        treasury.charge_spend(Some("t1"), 5000, "real cost").expect("spend");
+        treasury
+            .charge_spend(Some("t1"), 5000, "real cost")
+            .expect("spend");
         treasury.pay_agent("t1", 1, 1000).expect("pay");
         assert!(matches!(
             treasury.transfer(1, 1, 10, ""),
@@ -3248,19 +3423,30 @@ mod economy_tests {
             Err(PostError::NonPositive { amount: 0 })
         ));
         treasury.transfer(1, 2, 600, "first").expect("first leg");
-        let capped = treasury.transfer(1, 2, 500, "over").expect_err("over the cap");
+        let capped = treasury
+            .transfer(1, 2, 500, "over")
+            .expect_err("over the cap");
         assert!(
             matches!(
                 capped,
-                PostError::TransferCap { cid: 1, sent_today: 600, amount: 500, cap: 1000 }
+                PostError::TransferCap {
+                    cid: 1,
+                    sent_today: 600,
+                    amount: 500,
+                    cap: 1000
+                }
             ),
             "{capped:?}"
         );
-        treasury.transfer(1, 2, 400, "to the cap").expect("exactly the cap");
+        treasury
+            .transfer(1, 2, 400, "to the cap")
+            .expect("exactly the cap");
         assert_eq!(treasury.wallet(1), 0);
         assert_eq!(treasury.wallet(2), 1000);
         // The allowance is per sender: agent 2 has sent nothing today.
-        treasury.transfer(2, 1, 1000, "back").expect("a fresh sender");
+        treasury
+            .transfer(2, 1, 1000, "back")
+            .expect("a fresh sender");
         assert!(treasury.verify_journal().is_ok());
     }
 
@@ -3272,16 +3458,23 @@ mod economy_tests {
             Err(PostError::Overdrawn { .. })
         ));
         treasury.fund_task("t1", 200).expect("fund");
-        treasury.charge_spend(Some("t1"), 100, "real cost").expect("spend");
+        treasury
+            .charge_spend(Some("t1"), 100, "real cost")
+            .expect("spend");
         treasury.pay_agent("t1", 3, 20).expect("pay");
         assert!(matches!(
             treasury.fine(3, 21, "too much"),
             Err(PostError::Overdrawn { .. })
         ));
         assert_eq!(treasury.wallet(3), 20);
-        treasury.fine(3, 20, "all of it").expect("fine the whole wallet");
+        treasury
+            .fine(3, 20, "all of it")
+            .expect("fine the whole wallet");
         assert_eq!(treasury.wallet(3), 0);
-        assert_eq!(treasury.plaza_budget_balance(), i128::from(PLAZA_BUDGET) - 200);
+        assert_eq!(
+            treasury.plaza_budget_balance(),
+            i128::from(PLAZA_BUDGET) - 200
+        );
         assert!(treasury.verify_journal().is_ok());
     }
 }
@@ -3297,7 +3490,13 @@ mod paging_tests {
     }
 
     fn query(limit: usize) -> JournalQuery {
-        JournalQuery { before: None, limit, kind: None, wallet: None, task: None }
+        JournalQuery {
+            before: None,
+            limit,
+            kind: None,
+            wallet: None,
+            task: None,
+        }
     }
 
     fn ids(page: &JournalPage) -> Vec<u64> {
@@ -3310,10 +3509,14 @@ mod paging_tests {
         treasury.mint_plaza_budget(100).expect("mint");
         treasury.fund_task("t1", 5).expect("fund t1");
         treasury.fund_task("t2", 5).expect("fund t2");
-        treasury.charge_spend(Some("t1"), 1, "model").expect("spend t1");
+        treasury
+            .charge_spend(Some("t1"), 1, "model")
+            .expect("spend t1");
         treasury.fund_task("t3", 5).expect("fund t3");
         treasury.mint_plaza_budget(3).expect("mint");
-        treasury.charge_spend(Some("t2"), 2, "model").expect("spend t2");
+        treasury
+            .charge_spend(Some("t2"), 2, "model")
+            .expect("spend t2");
     }
 
     /// Wallets: the plaza's mint (1), t1 funded 200 and spent 100 (so up to 20 can
@@ -3322,7 +3525,9 @@ mod paging_tests {
     fn wallets(treasury: &Treasury) {
         treasury.mint_plaza_budget(200).expect("mint");
         treasury.fund_task("t1", 200).expect("fund");
-        treasury.charge_spend(Some("t1"), 100, "model").expect("spend");
+        treasury
+            .charge_spend(Some("t1"), 100, "model")
+            .expect("spend");
         treasury.pay_agent("t1", 1, 10).expect("pay cid 1");
         treasury.pay_agent("t1", 2, 5).expect("pay cid 2");
         treasury.transfer(1, 3, 4, "tip").expect("transfer");
@@ -3336,7 +3541,9 @@ mod paging_tests {
     fn dated(treasury: &Treasury) {
         treasury.mint_plaza_budget(100).expect("mint");
         treasury.fund_task("t1", 40).expect("fund");
-        treasury.charge_spend(Some("t1"), 10, "model").expect("spend");
+        treasury
+            .charge_spend(Some("t1"), 10, "model")
+            .expect("spend");
         treasury.pay_agent("t1", 2, 2).expect("pay");
         treasury.refund_task_to_budget("t1").expect("refund");
         treasury.fine(2, 1, "late").expect("fine");
@@ -3358,11 +3565,17 @@ mod paging_tests {
         assert_eq!(first.entries[0].kind, "spend");
         assert_eq!(first.entries[0].postings.len(), 2);
 
-        let second = treasury.journal_page(&JournalQuery { before: first.next_before, ..query(3) });
+        let second = treasury.journal_page(&JournalQuery {
+            before: first.next_before,
+            ..query(3)
+        });
         assert_eq!(ids(&second), vec![4, 3, 2]);
         assert_eq!(second.next_before, Some(2));
 
-        let last = treasury.journal_page(&JournalQuery { before: second.next_before, ..query(3) });
+        let last = treasury.journal_page(&JournalQuery {
+            before: second.next_before,
+            ..query(3)
+        });
         assert_eq!(ids(&last), vec![1]);
         assert_eq!(last.next_before, None);
         assert_eq!(last.total, 7);
@@ -3375,11 +3588,20 @@ mod paging_tests {
         assert_eq!(ids(&treasury.journal_page(&query(0))), vec![7]);
         assert_eq!(treasury.journal_page(&query(10_000)).entries.len(), 7);
         // Each entry reads exactly as the journal endpoint reads it, in reverse order.
-        let chronological = serde_json::to_value(treasury.journal(JOURNAL_LIMIT).entries).expect("json");
+        let chronological =
+            serde_json::to_value(treasury.journal(JOURNAL_LIMIT).entries).expect("json");
         let newest_first = serde_json::to_value(whole.entries).expect("json");
         assert_eq!(
             newest_first,
-            serde_json::Value::Array(chronological.as_array().expect("array").iter().rev().cloned().collect())
+            serde_json::Value::Array(
+                chronological
+                    .as_array()
+                    .expect("array")
+                    .iter()
+                    .rev()
+                    .cloned()
+                    .collect()
+            )
         );
     }
 
@@ -3387,7 +3609,10 @@ mod paging_tests {
     fn kind_and_task_filters_narrow_pages_and_total() {
         let treasury = treasury();
         seven(&treasury);
-        let subcontracts = treasury.journal_page(&JournalQuery { kind: Some("subcontract".into()), ..query(2) });
+        let subcontracts = treasury.journal_page(&JournalQuery {
+            kind: Some("subcontract".into()),
+            ..query(2)
+        });
         assert_eq!(ids(&subcontracts), vec![5, 3]);
         assert_eq!(subcontracts.total, 3);
         assert_eq!(subcontracts.next_before, Some(3));
@@ -3400,7 +3625,10 @@ mod paging_tests {
         assert_eq!(rest.total, 3);
         assert_eq!(rest.next_before, None);
 
-        let task = treasury.journal_page(&JournalQuery { task: Some("t1".into()), ..query(JOURNAL_LIMIT) });
+        let task = treasury.journal_page(&JournalQuery {
+            task: Some("t1".into()),
+            ..query(JOURNAL_LIMIT)
+        });
         assert_eq!(ids(&task), vec![4, 2]);
         assert_eq!(task.total, 2);
 
@@ -3412,9 +3640,18 @@ mod paging_tests {
         assert_eq!(ids(&both), vec![7]);
 
         // A kind no entry has, or a task with no entries, matches nothing.
-        let fees = treasury.journal_page(&JournalQuery { kind: Some("fee".into()), ..query(JOURNAL_LIMIT) });
-        assert_eq!((fees.total, fees.entries.len(), fees.next_before), (0, 0, None));
-        let nobody = treasury.journal_page(&JournalQuery { task: Some("nobody".into()), ..query(JOURNAL_LIMIT) });
+        let fees = treasury.journal_page(&JournalQuery {
+            kind: Some("fee".into()),
+            ..query(JOURNAL_LIMIT)
+        });
+        assert_eq!(
+            (fees.total, fees.entries.len(), fees.next_before),
+            (0, 0, None)
+        );
+        let nobody = treasury.journal_page(&JournalQuery {
+            task: Some("nobody".into()),
+            ..query(JOURNAL_LIMIT)
+        });
         assert_eq!(nobody.total, 0);
     }
 
@@ -3422,7 +3659,10 @@ mod paging_tests {
     fn the_wallet_filter_matches_postings_to_or_from_the_wallet() {
         let treasury = treasury();
         wallets(&treasury);
-        let with_wallet = |wallet: &str| JournalQuery { wallet: Some(wallet.into()), ..query(JOURNAL_LIMIT) };
+        let with_wallet = |wallet: &str| JournalQuery {
+            wallet: Some(wallet.into()),
+            ..query(JOURNAL_LIMIT)
+        };
         // Cid 1: its payment (4) and its transfer out (6).
         assert_eq!(ids(&treasury.journal_page(&with_wallet("1"))), vec![6, 4]);
         // Cid 2: its payment (5) and its fine (7).
@@ -3448,14 +3688,35 @@ mod paging_tests {
         assert_eq!(
             top,
             vec![
-                WalletRank { cid: 1, balance: 6, earned: 10, spent: 4 },
-                WalletRank { cid: 2, balance: 4, earned: 5, spent: 1 },
+                WalletRank {
+                    cid: 1,
+                    balance: 6,
+                    earned: 10,
+                    spent: 4
+                },
+                WalletRank {
+                    cid: 2,
+                    balance: 4,
+                    earned: 5,
+                    spent: 1
+                },
             ]
         );
         // Ties break by cid, and a wallet that has only received is ranked too.
         let all = treasury.top_wallets(10);
-        assert_eq!(all.iter().map(|rank| rank.cid).collect::<Vec<_>>(), vec![1, 2, 3]);
-        assert_eq!(all[2], WalletRank { cid: 3, balance: 4, earned: 0, spent: 0 });
+        assert_eq!(
+            all.iter().map(|rank| rank.cid).collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+        assert_eq!(
+            all[2],
+            WalletRank {
+                cid: 3,
+                balance: 4,
+                earned: 0,
+                spent: 0
+            }
+        );
     }
 
     #[test]
@@ -3463,20 +3724,42 @@ mod paging_tests {
         let treasury = treasury();
         dated(&treasury);
         let series = treasury.series(10_000, 14_000, 1_000).expect("a series");
-        let spans: Vec<(u64, u64)> = series.points.iter().map(|point| (point.at_ms, point.end_ms)).collect();
-        assert_eq!(spans, vec![(10_000, 11_000), (11_000, 12_000), (12_000, 13_000), (13_000, 14_000)]);
+        let spans: Vec<(u64, u64)> = series
+            .points
+            .iter()
+            .map(|point| (point.at_ms, point.end_ms))
+            .collect();
+        assert_eq!(
+            spans,
+            vec![
+                (10_000, 11_000),
+                (11_000, 12_000),
+                (12_000, 13_000),
+                (13_000, 14_000)
+            ]
+        );
 
         // The fund and the spend.
         let first = &series.points[0];
         assert_eq!((first.entries, first.escrowed, first.spent), (2, 40, 10));
-        assert_eq!((first.plaza_budget_end, first.circulating_end, first.treasury_end), (60, 30, 0));
+        assert_eq!(
+            (
+                first.plaza_budget_end,
+                first.circulating_end,
+                first.treasury_end
+            ),
+            (60, 30, 0)
+        );
         assert_eq!(first.by_kind["subcontract"], 40);
         assert_eq!(first.by_kind["fine"], 0);
         assert_eq!(first.by_kind.len(), EntryKind::ALL.len());
 
         // An empty bucket, its balances carried from the one before.
         let empty = &series.points[1];
-        assert_eq!((empty.entries, empty.spent, empty.escrowed, empty.paid), (0, 0, 0, 0));
+        assert_eq!(
+            (empty.entries, empty.spent, empty.escrowed, empty.paid),
+            (0, 0, 0, 0)
+        );
         assert_eq!((empty.plaza_budget_end, empty.circulating_end), (60, 30));
 
         // The payment.
@@ -3487,10 +3770,20 @@ mod paging_tests {
         // The refund and the fine.
         let last = &series.points[3];
         assert_eq!((last.entries, last.refunded, last.fined), (2, 28, 1));
-        assert_eq!((last.plaza_budget_end, last.circulating_end, last.treasury_end), (88, 1, 1));
+        assert_eq!(
+            (
+                last.plaza_budget_end,
+                last.circulating_end,
+                last.treasury_end
+            ),
+            (88, 1, 1)
+        );
         // The last bucket's balances are the live ones, since every entry is in the range.
         assert_eq!(last.plaza_budget_end, treasury.plaza_budget_balance());
-        assert_eq!(last.circulating_end, treasury.wallet(2) + treasury.escrow_balance("t1"));
+        assert_eq!(
+            last.circulating_end,
+            treasury.wallet(2) + treasury.escrow_balance("t1")
+        );
     }
 
     #[test]
@@ -3500,14 +3793,21 @@ mod paging_tests {
         // Buckets [10 500, 11 000) and [11 000, 12 000): the first starts at `from`,
         // so the fund at 10 500 counts, and the mint at 9 000 is in the opening balance.
         let series = treasury.series(10_500, 12_000, 1_000).expect("a series");
-        let spans: Vec<(u64, u64)> = series.points.iter().map(|point| (point.at_ms, point.end_ms)).collect();
+        let spans: Vec<(u64, u64)> = series
+            .points
+            .iter()
+            .map(|point| (point.at_ms, point.end_ms))
+            .collect();
         assert_eq!(spans, vec![(10_500, 11_000), (11_000, 12_000)]);
         assert_eq!(series.points[0].escrowed, 40);
         assert_eq!(series.points[0].spent, 10);
         assert_eq!(series.points[0].plaza_budget_end, 60);
         assert_eq!(series.points[1].circulating_end, 30);
         // The payment (12 100) is past `to`, so it is in no bucket.
-        assert_eq!(series.points.iter().map(|point| point.paid).sum::<i128>(), 0);
+        assert_eq!(
+            series.points.iter().map(|point| point.paid).sum::<i128>(),
+            0
+        );
     }
 
     #[test]
@@ -3521,6 +3821,11 @@ mod paging_tests {
         // An empty journal reads as zeros.
         let empty = treasury.series(0, 3, 1).expect("a series");
         assert_eq!(empty.points.len(), 3);
-        assert!(empty.points.iter().all(|point| point.entries == 0 && point.plaza_budget_end == 0));
+        assert!(
+            empty
+                .points
+                .iter()
+                .all(|point| point.entries == 0 && point.plaza_budget_end == 0)
+        );
     }
 }

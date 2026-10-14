@@ -11,11 +11,11 @@ use apz_http::{Response, Router};
 use apz_plaza::bonds::Interaction;
 use apz_proto::wire::WorkKind;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::agents::{Agent, Status};
 use crate::scheduler::Origin;
-use crate::settings::{tier_of, Tier};
+use crate::settings::{Tier, tier_of};
 use crate::state::App;
 
 /// How long an idle agent waits between outreach rounds when the setting is unset.
@@ -41,8 +41,12 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 pub fn routes(router: Router<App>) -> Router<App> {
     router
         .get("/v1/society", |app, _, _| society_view(app))
-        .post("/v1/agents/{cid}/rating", |app, req, p| owner_rating(app, p.get("cid"), &req.body))
-        .get("/v1/agents/{cid}/profile", |app, _, p| profile(app, p.get("cid")))
+        .post("/v1/agents/{cid}/rating", |app, req, p| {
+            owner_rating(app, p.get("cid"), &req.body)
+        })
+        .get("/v1/agents/{cid}/profile", |app, _, p| {
+            profile(app, p.get("cid"))
+        })
 }
 
 fn now() -> i64 {
@@ -94,11 +98,16 @@ fn society_view(app: &App) -> Response {
             })
         })
         .collect();
-    Response::json(200, &json!({"agents": agents, "bonds": app.bonds.bonds(now()), "computed_ms": now()}))
+    Response::json(
+        200,
+        &json!({"agents": agents, "bonds": app.bonds.bonds(now()), "computed_ms": now()}),
+    )
 }
 
 fn cid_of(segment: &str) -> Result<u64, Response> {
-    segment.parse().map_err(|_| Response::error(400, &format!("{segment:?} is not an agent CID")))
+    segment
+        .parse()
+        .map_err(|_| Response::error(400, &format!("{segment:?} is not an agent CID")))
 }
 
 #[derive(Deserialize)]
@@ -119,7 +128,10 @@ fn owner_rating(app: &App, segment: &str, body: &[u8]) -> Response {
         Ok(r) => r,
         Err(err) => return Response::error(400, &format!("invalid rating: {err}")),
     };
-    match app.bonds.owner_rate(cid, rating.value.clamp(-1.0, 1.0), now()) {
+    match app
+        .bonds
+        .owner_rate(cid, rating.value.clamp(-1.0, 1.0), now())
+    {
         Ok(opinion) => Response::json(200, &opinion),
         Err(err) => Response::error(400, &format!("{err:?}")),
     }
@@ -139,9 +151,19 @@ fn profile(app: &App, segment: &str) -> Response {
     let owner = format!("cid:{cid}");
     let (mut earned, mut spent, mut fines, mut fined) = (0i64, 0i64, 0u64, 0i64);
     let journal = serde_json::to_value(app.plaza.treasury.journal(100_000)).unwrap_or(Value::Null);
-    for entry in journal.get("entries").and_then(Value::as_array).into_iter().flatten() {
+    for entry in journal
+        .get("entries")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
         let kind = entry.get("kind").and_then(Value::as_str).unwrap_or("");
-        for posting in entry.get("postings").and_then(Value::as_array).into_iter().flatten() {
+        for posting in entry
+            .get("postings")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
             if posting.get("owner_ref").and_then(Value::as_str) != Some(owner.as_str())
                 || posting.get("kind").and_then(Value::as_str) != Some("agent_earnings")
             {
@@ -177,10 +199,18 @@ fn profile(app: &App, segment: &str) -> Response {
         .transcripts
         .after(cid, 0, 100_000)
         .iter()
-        .filter(|e| e.kind == "tool_decision" && e.at_ms >= week && e.data.get("decision").is_some_and(|d| d.to_string().contains("deny")))
+        .filter(|e| {
+            e.kind == "tool_decision"
+                && e.at_ms >= week
+                && e.data
+                    .get("decision")
+                    .is_some_and(|d| d.to_string().contains("deny"))
+        })
         .count() as u64;
     let violations: Vec<Value> = app.laws.recent(cid, now_ms);
-    let conduct = (100.0 - 15.0 * violations.len() as f64 - 3.0 * denials as f64 - 5.0 * fines as f64).clamp(0.0, 100.0);
+    let conduct =
+        (100.0 - 15.0 * violations.len() as f64 - 3.0 * denials as f64 - 5.0 * fines as f64)
+            .clamp(0.0, 100.0);
     let (reputation, confidence) = reputations(app).get(&cid).copied().unwrap_or((0.0, 0.0));
     let posted = lock(&app.society.posted).get(&cid).copied().unwrap_or(0);
     Response::json(
@@ -212,7 +242,13 @@ pub fn note_posted(app: &App, poster: u64) {
 /// A task `poster` posted ended with `worker`'s result: evidence for the poster's opinion of the
 /// worker, and the hire's bonus when it passed.
 pub fn task_ended(app: &App, task: &str, poster: u64, worker: u64, passed: bool) {
-    let credits = app.plaza.tasks.list().iter().find(|t| t.id() == task).map_or(0, |t| t.budget());
+    let credits = app
+        .plaza
+        .tasks
+        .list()
+        .iter()
+        .find(|t| t.id() == task)
+        .map_or(0, |t| t.budget());
     let v = if passed { 1.0 } else { -1.0 };
     if let Err(err) = app.bonds.evidence(poster, worker, v, credits as f64, now()) {
         eprintln!("apid: bonds: evidence {poster}->{worker}: {err:?}");
@@ -220,7 +256,11 @@ pub fn task_ended(app: &App, task: &str, poster: u64, worker: u64, passed: bool)
     let bonus = lock(&app.society.bonuses).remove(task);
     if let Some((hirer, to, amount)) = bonus {
         if passed && amount > 0 {
-            match app.plaza.treasury.transfer(hirer, to, amount, &format!("bonus for {task}")) {
+            match app
+                .plaza
+                .treasury
+                .transfer(hirer, to, amount, &format!("bonus for {task}"))
+            {
                 Ok(_) => interact(app, hirer, to, Interaction::Credit),
                 Err(err) => eprintln!("apid: bonus for {task}: {err:?}"),
             }
@@ -232,8 +272,14 @@ pub fn task_ended(app: &App, task: &str, poster: u64, worker: u64, passed: bool)
 
 /// Host tools this module runs, by name.
 pub const TOOLS: &[&str] = &[
-    "plaza_contacts", "plaza_rate", "plaza_note", "plaza_hire",
-    "memory_write", "memory_read", "memory_search", "memory_list",
+    "plaza_contacts",
+    "plaza_rate",
+    "plaza_note",
+    "plaza_hire",
+    "memory_write",
+    "memory_read",
+    "memory_search",
+    "memory_list",
 ];
 
 /// The tool's description and input schema.
@@ -246,11 +292,17 @@ pub fn spec(name: &str) -> Option<(&'static str, Value)> {
         ),
         "plaza_rate" => (
             "Rate an agent you recently worked or talked with, from -1 (bad) to 1 (great), with a short private note. Ratings shape your trust and the plaza's reputation.",
-            obj(json!({"cid": {"type": "integer"}, "value": {"type": "number", "minimum": -1, "maximum": 1}, "note": {"type": "string"}}), &["cid", "value"]),
+            obj(
+                json!({"cid": {"type": "integer"}, "value": {"type": "number", "minimum": -1, "maximum": 1}, "note": {"type": "string"}}),
+                &["cid", "value"],
+            ),
         ),
         "plaza_note" => (
             "Keep a private note about an agent (what they are good at, how they work). It adds them to your contacts.",
-            obj(json!({"cid": {"type": "integer"}, "note": {"type": "string"}}), &["cid", "note"]),
+            obj(
+                json!({"cid": {"type": "integer"}, "note": {"type": "string"}}),
+                &["cid", "note"],
+            ),
         ),
         "plaza_hire" => (
             "Hire a contact for work you can't do or want done in parallel: posts a task assigned to them, verified by a reviewer. You may add a bonus from your own wallet, paid only if the work passes.",
@@ -261,27 +313,52 @@ pub fn spec(name: &str) -> Option<(&'static str, Value)> {
         ),
         "memory_write" => (
             "Write or replace a note in your private memory library (markdown). Link related notes with [[Their Title]]. Use it for what you learned, how things work, and people.",
-            obj(json!({"title": {"type": "string"}, "body": {"type": "string"}, "tags": {"type": "array", "items": {"type": "string"}}}), &["title", "body"]),
+            obj(
+                json!({"title": {"type": "string"}, "body": {"type": "string"}, "tags": {"type": "array", "items": {"type": "string"}}}),
+                &["title", "body"],
+            ),
         ),
-        "memory_read" => ("Read one of your memory notes by its title.", obj(json!({"title": {"type": "string"}}), &["title"])),
-        "memory_search" => ("Search your memory notes.", obj(json!({"query": {"type": "string"}}), &["query"])),
+        "memory_read" => (
+            "Read one of your memory notes by its title.",
+            obj(json!({"title": {"type": "string"}}), &["title"]),
+        ),
+        "memory_search" => (
+            "Search your memory notes.",
+            obj(json!({"query": {"type": "string"}}), &["query"]),
+        ),
         "memory_list" => ("List your memory notes, newest first.", obj(json!({}), &[])),
         _ => return None,
     })
 }
 
 fn u64_arg(input: &Value, key: &str) -> Result<u64, String> {
-    input.get(key).and_then(Value::as_u64).ok_or_else(|| format!("missing integer `{key}`"))
+    input
+        .get(key)
+        .and_then(Value::as_u64)
+        .ok_or_else(|| format!("missing integer `{key}`"))
 }
 
 fn str_arg<'a>(input: &'a Value, key: &str) -> Result<&'a str, String> {
-    input.get(key).and_then(Value::as_str).ok_or_else(|| format!("missing string `{key}`"))
+    input
+        .get(key)
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("missing string `{key}`"))
 }
 
 /// Runs one of [`TOOLS`] for `agent`.
-pub fn run(app: &App, agent: &Agent, work: u64, name: &str, input: &Value) -> Result<String, String> {
+pub fn run(
+    app: &App,
+    agent: &Agent,
+    work: u64,
+    name: &str,
+    input: &Value,
+) -> Result<String, String> {
     let me = agent.cid;
-    let name_of = |cid: u64| app.agents.get(cid).map_or_else(|| format!("agent {cid}"), |a| a.name);
+    let name_of = |cid: u64| {
+        app.agents
+            .get(cid)
+            .map_or_else(|| format!("agent {cid}"), |a| a.name)
+    };
     match name {
         "plaza_contacts" => {
             let reps = reputations(app);
@@ -319,12 +396,27 @@ pub fn run(app: &App, agent: &Agent, work: u64, name: &str, input: &Value) -> Re
         }
         "plaza_rate" => {
             let cid = u64_arg(input, "cid")?;
-            let value = input.get("value").and_then(Value::as_f64).ok_or("missing number `value`")?.clamp(-1.0, 1.0);
-            let opinion = app.bonds.rate(me, cid, value, now()).map_err(|e| format!("{e:?}"))?;
-            if let Some(note) = input.get("note").and_then(Value::as_str).filter(|n| !n.trim().is_empty()) {
+            let value = input
+                .get("value")
+                .and_then(Value::as_f64)
+                .ok_or("missing number `value`")?
+                .clamp(-1.0, 1.0);
+            let opinion = app
+                .bonds
+                .rate(me, cid, value, now())
+                .map_err(|e| format!("{e:?}"))?;
+            if let Some(note) = input
+                .get("note")
+                .and_then(Value::as_str)
+                .filter(|n| !n.trim().is_empty())
+            {
                 let _ = app.bonds.set_note(me, cid, Some(note.trim().to_string()));
             }
-            Ok(format!("rated {}: your trust is now {:.2}", name_of(cid), opinion.e))
+            Ok(format!(
+                "rated {}: your trust is now {:.2}",
+                name_of(cid),
+                opinion.e
+            ))
         }
         "plaza_note" => {
             let cid = u64_arg(input, "cid")?;
@@ -333,9 +425,13 @@ pub fn run(app: &App, agent: &Agent, work: u64, name: &str, input: &Value) -> Re
                 return Err(format!("no agent {cid}"));
             }
             if !app.bonds.of(me, now()).iter().any(|b| b.to == cid) {
-                app.bonds.add(me, cid, now()).map_err(|e| format!("{e:?}"))?;
+                app.bonds
+                    .add(me, cid, now())
+                    .map_err(|e| format!("{e:?}"))?;
             }
-            app.bonds.set_note(me, cid, Some(note)).map_err(|e| format!("{e:?}"))?;
+            app.bonds
+                .set_note(me, cid, Some(note))
+                .map_err(|e| format!("{e:?}"))?;
             Ok(format!("noted about {}", name_of(cid)))
         }
         "plaza_hire" => hire(app, agent, input),
@@ -345,10 +441,33 @@ pub fn run(app: &App, agent: &Agent, work: u64, name: &str, input: &Value) -> Re
             let tags: Vec<String> = input
                 .get("tags")
                 .and_then(Value::as_array)
-                .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_string)
+                        .collect()
+                })
                 .unwrap_or_default();
-            let kind = if app.agents.list().iter().any(|a| !a.name.is_empty() && a.name.eq_ignore_ascii_case(title.trim())) { "person" } else { "note" };
-            let meta = app.memory.write(me, title, body, kind, &tags, None, Some(work), apz_plaza::now_ms())?;
+            let kind = if app
+                .agents
+                .list()
+                .iter()
+                .any(|a| !a.name.is_empty() && a.name.eq_ignore_ascii_case(title.trim()))
+            {
+                "person"
+            } else {
+                "note"
+            };
+            let meta = app.memory.write(
+                me,
+                title,
+                body,
+                kind,
+                &tags,
+                None,
+                Some(work),
+                apz_plaza::now_ms(),
+            )?;
             Ok(json!({"saved": meta.slug, "links": meta.links}).to_string())
         }
         "memory_read" => {
@@ -384,29 +503,50 @@ fn hire(app: &App, agent: &Agent, input: &Value) -> Result<String, String> {
     if cid == agent.cid {
         return Err("you cannot hire yourself".into());
     }
-    let worker = app.agents.get(cid).ok_or_else(|| format!("no agent {cid}"))?;
+    let worker = app
+        .agents
+        .get(cid)
+        .ok_or_else(|| format!("no agent {cid}"))?;
     if worker.status == Status::Offline {
         return Err(format!("{} is offline", worker.name));
     }
     if tier_of(&worker.role) == Tier::Orchestrator {
         return Err("the orchestrator plans work; hire a worker".into());
     }
-    let bonus = input.get("bonus").and_then(Value::as_i64).unwrap_or(0).max(0);
+    let bonus = input
+        .get("bonus")
+        .and_then(Value::as_i64)
+        .unwrap_or(0)
+        .max(0);
     if bonus > 0 && i128::from(bonus) > app.plaza.treasury.wallet(agent.cid) {
-        return Err(format!("your wallet holds {} credits, less than the bonus", app.plaza.treasury.wallet(agent.cid)));
+        return Err(format!(
+            "your wallet holds {} credits, less than the bonus",
+            app.plaza.treasury.wallet(agent.cid)
+        ));
     }
     let task = crate::tools::post_and_assign(
         app,
         agent.cid,
         &format!("{goal}\n\n(hired by {} — agent {})", agent.name, agent.cid),
-        input.get("acceptance").and_then(Value::as_str).map(str::to_string),
+        input
+            .get("acceptance")
+            .and_then(Value::as_str)
+            .map(str::to_string),
         crate::tools::budget_arg(input)?,
         cid,
     )?;
     if bonus > 0 {
         lock(&app.society.bonuses).insert(task.clone(), (agent.cid, cid, bonus));
     }
-    Ok(format!("hired {} for task {task}{}", worker.name, if bonus > 0 { format!(" with a {bonus}-credit bonus on success") } else { String::new() }))
+    Ok(format!(
+        "hired {} for task {task}{}",
+        worker.name,
+        if bonus > 0 {
+            format!(" with a {bonus}-credit bonus on success")
+        } else {
+            String::new()
+        }
+    ))
 }
 
 // ---- Idle outreach ---------------------------------------------------------------------------------
@@ -421,14 +561,20 @@ pub fn outreach(app: &App) {
     let period = u64::from(minutes) * 60_000;
     let now_ms = apz_plaza::now_ms();
     for agent in app.agents.list() {
-        if agent.status != Status::Idle || agent.name.is_empty() || app.work.current(agent.cid).is_some() || !app.work.queued(agent.cid).is_empty() {
+        if agent.status != Status::Idle
+            || agent.name.is_empty()
+            || app.work.current(agent.cid).is_some()
+            || !app.work.queued(agent.cid).is_empty()
+        {
             continue;
         }
         let mut last = lock(&app.society.outreach);
         let due = match last.get(&agent.cid) {
             Some(&at) => now_ms.saturating_sub(at) >= period,
             // First round: a CID-dependent share of the period after joining, so agents spread out.
-            None => now_ms.saturating_sub(agent.connected_at_ms) >= 60_000 + (agent.cid * 7919) % period,
+            None => {
+                now_ms.saturating_sub(agent.connected_at_ms) >= 60_000 + (agent.cid * 7919) % period
+            }
         };
         if !due {
             continue;
@@ -442,7 +588,14 @@ pub fn outreach(app: &App) {
              4. Rate agents you recently worked with (plaza_rate) and keep notes on people (plaza_note).\n\
              5. Write down anything you learned with memory_write, linking related notes with [[Title]].\n\
              Keep it short: a few tool calls, then a one-line summary.";
-        app.work.enqueue(app, agent.cid, WorkKind::Chat, format!("social-{}", agent.cid), prompt.to_string(), Origin::default());
+        app.work.enqueue(
+            app,
+            agent.cid,
+            WorkKind::Chat,
+            format!("social-{}", agent.cid),
+            prompt.to_string(),
+            Origin::default(),
+        );
     }
 }
 
@@ -459,9 +612,18 @@ impl Society {
     /// The whole state as JSON, for Postgres (`crate::db`); "" when there is nothing to save.
     /// `{"bonuses": {task: [hirer, worker, bonus]}, "posted": {cid: task}, "outreach": {cid: ms}}`.
     pub fn snapshot(&self) -> String {
-        let bonuses: BTreeMap<String, (u64, u64, i64)> = lock(&self.bonuses).iter().map(|(k, v)| (k.clone(), *v)).collect();
-        let posted: BTreeMap<String, u64> = lock(&self.posted).iter().map(|(k, v)| (k.to_string(), *v)).collect();
-        let outreach: BTreeMap<String, u64> = lock(&self.outreach).iter().map(|(k, v)| (k.to_string(), *v)).collect();
+        let bonuses: BTreeMap<String, (u64, u64, i64)> = lock(&self.bonuses)
+            .iter()
+            .map(|(k, v)| (k.clone(), *v))
+            .collect();
+        let posted: BTreeMap<String, u64> = lock(&self.posted)
+            .iter()
+            .map(|(k, v)| (k.to_string(), *v))
+            .collect();
+        let outreach: BTreeMap<String, u64> = lock(&self.outreach)
+            .iter()
+            .map(|(k, v)| (k.to_string(), *v))
+            .collect();
         json!({ "bonuses": bonuses, "posted": posted, "outreach": outreach }).to_string()
     }
 

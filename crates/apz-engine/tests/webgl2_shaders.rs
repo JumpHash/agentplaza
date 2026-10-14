@@ -84,7 +84,10 @@ fn check_limits(name: &str, module: &Module, limits: &Limits) {
             }
             match var.space {
                 AddressSpace::Storage { .. } => {
-                    panic!("{label}: storage buffer `{:?}` is not available on WebGL2", var.name)
+                    panic!(
+                        "{label}: storage buffer `{:?}` is not available on WebGL2",
+                        var.name
+                    )
                 }
                 AddressSpace::PushConstant => {
                     panic!("{label}: push constants are not available on WebGL2")
@@ -139,7 +142,11 @@ fn every_engine_shader_fits_webgl2() {
 
     let limits = Limits::downlevel_webgl2_defaults();
     for file in &files {
-        let name = file.strip_prefix(&src).unwrap_or(file).display().to_string();
+        let name = file
+            .strip_prefix(&src)
+            .unwrap_or(file)
+            .display()
+            .to_string();
         let source = std::fs::read_to_string(file).expect("read shader");
         let module = naga::front::wgsl::parse_str(&source).unwrap_or_else(|e| {
             panic!("{name}: WGSL parse failed:\n{}", e.emit_to_string(&source))
@@ -173,10 +180,14 @@ fn every_engine_shader_fits_webgl2() {
                 naga::proc::BoundsCheckPolicies::default(),
             )
             .unwrap_or_else(|e| panic!("{name}::{}: GLSL writer setup failed: {e:?}", ep.name));
-            writer
-                .write()
-                .unwrap_or_else(|e| panic!("{name}::{}: GLSL ES 3.00 write failed: {e:?}", ep.name));
-            assert!(out.contains("#version 300 es"), "{name}::{}: not GLSL ES 3.00", ep.name);
+            writer.write().unwrap_or_else(|e| {
+                panic!("{name}::{}: GLSL ES 3.00 write failed: {e:?}", ep.name)
+            });
+            assert!(
+                out.contains("#version 300 es"),
+                "{name}::{}: not GLSL ES 3.00",
+                ep.name
+            );
         }
     }
 }

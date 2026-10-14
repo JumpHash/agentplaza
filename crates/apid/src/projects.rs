@@ -18,7 +18,7 @@ use std::sync::Mutex;
 
 use apz_http::{Params, Request, Response, Router};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::agents::Agent;
 use crate::state::App;
@@ -34,7 +34,16 @@ pub const TOOLS: &[&str] = &[
 ];
 
 /// The stages, in order.
-pub const STAGES: &[&str] = &["brief", "research", "proposal", "critique", "approval", "implementation", "review", "delivered"];
+pub const STAGES: &[&str] = &[
+    "brief",
+    "research",
+    "proposal",
+    "critique",
+    "approval",
+    "implementation",
+    "review",
+    "delivered",
+];
 
 /// The kinds of document a project holds, and the stage that produces each.
 pub const DOC_KINDS: &[(&str, &str)] = &[
@@ -139,7 +148,11 @@ pub struct Actor {
 
 impl Actor {
     pub fn owner() -> Self {
-        Self { cid: 0, name: "owner".into(), role: "owner".into() }
+        Self {
+            cid: 0,
+            name: "owner".into(),
+            role: "owner".into(),
+        }
     }
 }
 
@@ -150,7 +163,10 @@ pub struct Store {
 }
 
 fn now_ms() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 /// The trimmed text, if it is between `min` and `max` characters long.
@@ -172,16 +188,29 @@ fn need(ok: bool, what: &str) -> Result<(), String> {
 }
 
 fn event(by: &Actor, what: &str, note: &str, at_ms: u64) -> Event {
-    Event { at_ms, by_cid: by.cid, by: by.name.clone(), what: what.into(), note: note.into() }
+    Event {
+        at_ms,
+        by_cid: by.cid,
+        by: by.name.clone(),
+        what: what.into(),
+        note: note.into(),
+    }
 }
 
 /// The actor for the plaza's own bookkeeping, when no agent or owner acted.
 fn system() -> Actor {
-    Actor { cid: 0, name: "plaza".into(), role: "plaza".into() }
+    Actor {
+        cid: 0,
+        name: "plaza".into(),
+        role: "plaza".into(),
+    }
 }
 
 fn find_mut<'a>(items: &'a mut [Project], id: &str) -> Result<&'a mut Project, String> {
-    items.iter_mut().find(|p| p.id == id).ok_or_else(|| format!("no such project: {id}"))
+    items
+        .iter_mut()
+        .find(|p| p.id == id)
+        .ok_or_else(|| format!("no such project: {id}"))
 }
 
 fn is_plan_doc(kind: &str) -> bool {
@@ -190,14 +219,25 @@ fn is_plan_doc(kind: &str) -> bool {
 
 /// The cid that wrote the newest plan document: the planner whose revision is up for critique.
 fn plan_author(project: &Project) -> Option<u64> {
-    project.docs.iter().rev().find(|d| is_plan_doc(&d.kind)).map(|d| d.by_cid)
+    project
+        .docs
+        .iter()
+        .rev()
+        .find(|d| is_plan_doc(&d.kind))
+        .map(|d| d.by_cid)
 }
 
 impl Store {
     pub fn load(state_dir: &Path) -> Self {
         let path = state_dir.join("projects.json");
-        let items: Vec<Project> = std::fs::read(&path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
-        Self { path, items: Mutex::new(items) }
+        let items: Vec<Project> = std::fs::read(&path)
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default();
+        Self {
+            path,
+            items: Mutex::new(items),
+        }
     }
 
     fn save(&self, items: &[Project]) -> Result<(), String> {
@@ -212,8 +252,14 @@ impl Store {
 
     /// Runs `change` on a copy of the projects and saves it; only then is the copy kept. A refusal
     /// or a failed save leaves the store as it was.
-    fn mutate<T>(&self, change: impl FnOnce(&mut Vec<Project>) -> Result<T, String>) -> Result<T, String> {
-        let mut items = self.items.lock().map_err(|_| "projects are unavailable".to_string())?;
+    fn mutate<T>(
+        &self,
+        change: impl FnOnce(&mut Vec<Project>) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let mut items = self
+            .items
+            .lock()
+            .map_err(|_| "projects are unavailable".to_string())?;
         let mut next: Vec<Project> = items.clone();
         let out = change(&mut next)?;
         self.save(&next)?;
@@ -232,7 +278,14 @@ impl Store {
     }
 
     /// Opens a project at stage "brief". `kind` is "code" or "other".
-    pub fn open(&self, by: &Actor, title: &str, goal: &str, kind: &str, owner_approval: bool) -> Result<Project, String> {
+    pub fn open(
+        &self,
+        by: &Actor,
+        title: &str,
+        goal: &str,
+        kind: &str,
+        owner_approval: bool,
+    ) -> Result<Project, String> {
         let title = bounded("title", title, 1, 120)?;
         let goal = bounded("goal", goal, 1, 8000)?;
         if kind != "code" && kind != "other" {
@@ -240,7 +293,12 @@ impl Store {
         }
         self.mutate(|items| {
             let now = now_ms();
-            let seq = items.iter().filter_map(|p| p.id.strip_prefix("pr")?.parse::<u64>().ok()).max().unwrap_or(0) + 1;
+            let seq = items
+                .iter()
+                .filter_map(|p| p.id.strip_prefix("pr")?.parse::<u64>().ok())
+                .max()
+                .unwrap_or(0)
+                + 1;
             let project = Project {
                 id: format!("pr{seq}"),
                 title: title.clone(),
@@ -275,7 +333,14 @@ impl Store {
         let title = bounded("title", &doc.title, 1, 160)?;
         let summary = bounded("summary", &doc.summary, 1, 2000)?;
         let now = now_ms();
-        let doc = Doc { title, summary, by_cid: by.cid, by: by.name.clone(), at_ms: now, ..doc };
+        let doc = Doc {
+            title,
+            summary,
+            by_cid: by.cid,
+            by: by.name.clone(),
+            at_ms: now,
+            ..doc
+        };
         self.mutate(|items| {
             let p = find_mut(items, id)?;
             if p.stage == "delivered" {
@@ -283,7 +348,9 @@ impl Store {
             }
             // One revision per set of plan documents: the first plan document after the current
             // revision was critiqued (or the very first one) opens the next revision.
-            if is_plan_doc(&doc.kind) && matches!(p.stage.as_str(), "proposal" | "critique" | "approval") {
+            if is_plan_doc(&doc.kind)
+                && matches!(p.stage.as_str(), "proposal" | "critique" | "approval")
+            {
                 let critiqued = p.critiques.iter().any(|c| c.revision == p.revision);
                 if p.revision == 0 || critiqued {
                     p.revision += 1;
@@ -302,7 +369,13 @@ impl Store {
 
     /// Records a critique of the current revision. The author of the latest proposal-stage doc
     /// may not critique their own revision.
-    pub fn critique(&self, id: &str, by: &Actor, verdict: &str, text: &str) -> Result<Project, String> {
+    pub fn critique(
+        &self,
+        id: &str,
+        by: &Actor,
+        verdict: &str,
+        text: &str,
+    ) -> Result<Project, String> {
         if !matches!(verdict, "approve" | "revise" | "comment") {
             return Err("verdict must be approve, revise or comment".into());
         }
@@ -310,7 +383,10 @@ impl Store {
         self.mutate(|items| {
             let p = find_mut(items, id)?;
             if !matches!(p.stage.as_str(), "proposal" | "critique" | "approval") {
-                return Err(format!("a plan is critiqued at proposal, critique or approval, not at {}", p.stage));
+                return Err(format!(
+                    "a plan is critiqued at proposal, critique or approval, not at {}",
+                    p.stage
+                ));
             }
             if plan_author(p) == Some(by.cid) {
                 return Err("you cannot critique your own revision".into());
@@ -325,7 +401,12 @@ impl Store {
                 revision,
                 at_ms: now,
             });
-            p.history.push(event(by, "critiqued", &format!("{verdict} on revision {revision}"), now));
+            p.history.push(event(
+                by,
+                "critiqued",
+                &format!("{verdict} on revision {revision}"),
+                now,
+            ));
             p.updated_ms = now;
             Ok(p.clone())
         })
@@ -340,8 +421,13 @@ impl Store {
                 "delivered" => return Err("the project is already delivered".into()),
                 _ => {}
             }
-            let idx = STAGES.iter().position(|s| *s == p.stage).ok_or_else(|| format!("unknown stage: {}", p.stage))?;
-            let next = *STAGES.get(idx + 1).ok_or_else(|| "the project is already delivered".to_string())?;
+            let idx = STAGES
+                .iter()
+                .position(|s| *s == p.stage)
+                .ok_or_else(|| format!("unknown stage: {}", p.stage))?;
+            let next = *STAGES
+                .get(idx + 1)
+                .ok_or_else(|| "the project is already delivered".to_string())?;
             gate(p, p.stage == "implementation")?;
             let now = now_ms();
             let from = std::mem::replace(&mut p.stage, next.into());
@@ -374,9 +460,17 @@ impl Store {
             if !owner && by.role != "mayor" && by.role != "mayor-office" {
                 return Err("only the mayor or the owner can approve a plan".into());
             }
-            let author = p.docs.iter().rev().find(|d| is_plan_doc(&d.kind)).map(|d| d.by_cid);
+            let author = p
+                .docs
+                .iter()
+                .rev()
+                .find(|d| is_plan_doc(&d.kind))
+                .map(|d| d.by_cid);
             if !owner && !p.critiques.iter().any(|c| Some(c.by_cid) != author) {
-                return Err("the plan needs at least one critique by an agent other than its author first".into());
+                return Err(
+                    "the plan needs at least one critique by an agent other than its author first"
+                        .into(),
+                );
             }
             let open: Vec<String> = p
                 .critiques
@@ -386,7 +480,10 @@ impl Store {
                 .collect();
             let mut record = note.trim().to_string();
             if !open.is_empty() {
-                record.push_str(&format!("\nOpen items carried into the tasks' acceptance:\n- {}", open.join("\n- ")));
+                record.push_str(&format!(
+                    "\nOpen items carried into the tasks' acceptance:\n- {}",
+                    open.join("\n- ")
+                ));
             }
             let now = now_ms();
             p.stage = "implementation".into();
@@ -399,20 +496,34 @@ impl Store {
 
     /// The owner sends a project back to `stage` (any earlier stage) with a reason.
     pub fn veto(&self, id: &str, stage: &str, reason: &str) -> Result<Project, String> {
-        let target = STAGES.iter().position(|s| *s == stage).ok_or_else(|| format!("unknown stage: {stage}"))?;
+        let target = STAGES
+            .iter()
+            .position(|s| *s == stage)
+            .ok_or_else(|| format!("unknown stage: {stage}"))?;
         self.mutate(|items| {
             let p = find_mut(items, id)?;
             let current = STAGES.iter().position(|s| *s == p.stage).unwrap_or(0);
             if target >= current {
-                return Err(format!("a veto sends a project to an earlier stage than {}", p.stage));
+                return Err(format!(
+                    "a veto sends a project to an earlier stage than {}",
+                    p.stage
+                ));
             }
-            let implementation = STAGES.iter().position(|s| *s == "implementation").unwrap_or(usize::MAX);
+            let implementation = STAGES
+                .iter()
+                .position(|s| *s == "implementation")
+                .unwrap_or(usize::MAX);
             if target < implementation {
                 p.approved_by = None;
             }
             let now = now_ms();
             p.stage = stage.into();
-            p.history.push(event(&Actor::owner(), "vetoed", &format!("back to {stage}: {}", reason.trim()), now));
+            p.history.push(event(
+                &Actor::owner(),
+                "vetoed",
+                &format!("back to {stage}: {}", reason.trim()),
+                now,
+            ));
             p.updated_ms = now;
             Ok(p.clone())
         })
@@ -422,13 +533,17 @@ impl Store {
     pub fn link_task(&self, id: &str, task: &str) -> Result<(), String> {
         self.mutate(|items| {
             let p = find_mut(items, id)?;
-            need(matches!(p.stage.as_str(), "implementation" | "review" | "delivered"), "an approved plan before tasks are linked")?;
+            need(
+                matches!(p.stage.as_str(), "implementation" | "review" | "delivered"),
+                "an approved plan before tasks are linked",
+            )?;
             if p.tasks.iter().any(|t| t == task) {
                 return Ok(());
             }
             let now = now_ms();
             p.tasks.push(task.to_string());
-            p.history.push(event(&system(), "attached", &format!("task {task}"), now));
+            p.history
+                .push(event(&system(), "attached", &format!("task {task}"), now));
             p.updated_ms = now;
             Ok(())
         })
@@ -439,7 +554,8 @@ impl Store {
         self.mutate(|items| {
             let p = find_mut(items, id)?;
             let now = now_ms();
-            p.history.push(event(&system(), "attached", &format!("repo {repo}"), now));
+            p.history
+                .push(event(&system(), "attached", &format!("repo {repo}"), now));
             p.repo = Some(repo.clone());
             p.updated_ms = now;
             Ok(())
@@ -464,15 +580,27 @@ pub fn gate(project: &Project, tasks_done: bool) -> Result<(), String> {
         "proposal" => {
             need(has("proposal"), "a proposal document")?;
             need(has("tasks"), "a tasks document")?;
-            need(project.kind != "code" || has("spec"), "a spec document (the OpenSpec change)")
+            need(
+                project.kind != "code" || has("spec"),
+                "a spec document (the OpenSpec change)",
+            )
         }
         "critique" => {
             let author = plan_author(project);
-            let current: Vec<&Critique> = project.critiques.iter().filter(|c| c.revision == project.revision).collect();
+            let current: Vec<&Critique> = project
+                .critiques
+                .iter()
+                .filter(|c| c.revision == project.revision)
+                .collect();
             if current.iter().any(|c| c.verdict == "revise") {
-                return Err("needs a revised plan: a critic asked for changes to this revision".into());
+                return Err(
+                    "needs a revised plan: a critic asked for changes to this revision".into(),
+                );
             }
-            need(current.iter().any(|c| Some(c.by_cid) != author), "a critique of this revision by another agent")
+            need(
+                current.iter().any(|c| Some(c.by_cid) != author),
+                "a critique of this revision by another agent",
+            )
         }
         "approval" => Err("the plan needs approval: plaza_project_approve".into()),
         "implementation" => need(tasks_done, "every linked task done"),
@@ -488,7 +616,10 @@ pub fn spec(name: &str) -> Option<(&'static str, Value)> {
     Some(match name {
         "plaza_project_open" => (
             "Open a project for an operator goal (orchestrator). Every goal goes brief → research → proposal → critique → approval → implementation → review → delivered; no implementation task is posted before approval. kind: code (the plan is an OpenSpec change) or other. Write and attach the brief next: the goal restated, who it is for, what a professional result includes, constraints the operator actually stated, open questions only the operator can answer.",
-            obj(json!({"title": {"type": "string"}, "goal": {"type": "string"}, "kind": {"type": "string", "enum": ["code", "other"]}}), &["title", "goal", "kind"]),
+            obj(
+                json!({"title": {"type": "string"}, "goal": {"type": "string"}, "kind": {"type": "string", "enum": ["code", "other"]}}),
+                &["title", "goal", "kind"],
+            ),
         ),
         "plaza_projects" => (
             "List projects, or show one in full (stage, documents with summaries, critiques, approval, tasks, history) when `id` is given.",
@@ -496,19 +627,31 @@ pub fn spec(name: &str) -> Option<(&'static str, Value)> {
         ),
         "plaza_project_attach" => (
             "Attach a document to a project: brief, research, proposal, design, spec (OpenSpec change, code projects), tasks, revision or deliverable. Give a shared file id (share_file) or a repo path, and a one-paragraph summary.",
-            obj(json!({"id": {"type": "string"}, "kind": {"type": "string", "enum": ["brief", "research", "proposal", "design", "spec", "tasks", "revision", "deliverable"]}, "title": {"type": "string"}, "file": {"type": "string"}, "repo_path": {"type": "string"}, "commit": {"type": "string"}, "summary": {"type": "string"}}), &["id", "kind", "title", "summary"]),
+            obj(
+                json!({"id": {"type": "string"}, "kind": {"type": "string", "enum": ["brief", "research", "proposal", "design", "spec", "tasks", "revision", "deliverable"]}, "title": {"type": "string"}, "file": {"type": "string"}, "repo_path": {"type": "string"}, "commit": {"type": "string"}, "summary": {"type": "string"}}),
+                &["id", "kind", "title", "summary"],
+            ),
         ),
         "plaza_project_critique" => (
             "Critique a project's current plan: approve (good to go), revise (must change first: say exactly what and why) or comment. Judge it against what a professional result would include. You cannot critique your own revision.",
-            obj(json!({"id": {"type": "string"}, "verdict": {"type": "string", "enum": ["approve", "revise", "comment"]}, "text": {"type": "string"}}), &["id", "verdict", "text"]),
+            obj(
+                json!({"id": {"type": "string"}, "verdict": {"type": "string", "enum": ["approve", "revise", "comment"]}, "text": {"type": "string"}}),
+                &["id", "verdict", "text"],
+            ),
         ),
         "plaza_project_advance" => (
             "Move a project to its next stage. Refused, with what is missing, until the stage's gate holds.",
-            obj(json!({"id": {"type": "string"}, "note": {"type": "string"}}), &["id"]),
+            obj(
+                json!({"id": {"type": "string"}, "note": {"type": "string"}}),
+                &["id"],
+            ),
         ),
         "plaza_project_approve" => (
             "Approve a project's plan so implementation can start (the mayor; the owner can too).",
-            obj(json!({"id": {"type": "string"}, "note": {"type": "string"}}), &["id"]),
+            obj(
+                json!({"id": {"type": "string"}, "note": {"type": "string"}}),
+                &["id"],
+            ),
         ),
         _ => return None,
     })
@@ -541,12 +684,19 @@ fn repo_for(app: &App, project: &Project) -> Option<String> {
 pub fn run(app: &App, agent: &Agent, name: &str, input: &Value) -> Result<String, String> {
     let actor = Actor {
         cid: agent.cid,
-        name: if agent.name.is_empty() { agent.role.clone() } else { agent.name.clone() },
+        name: if agent.name.is_empty() {
+            agent.role.clone()
+        } else {
+            agent.name.clone()
+        },
         role: agent.role.clone(),
     };
     match name {
         "plaza_project_open" => {
-            if !matches!(crate::settings::tier_of(&agent.role), crate::settings::Tier::Orchestrator) {
+            if !matches!(
+                crate::settings::tier_of(&agent.role),
+                crate::settings::Tier::Orchestrator
+            ) {
                 return Err("only the orchestrator opens projects".into());
             }
             let project = app.projects.open(
@@ -558,14 +708,25 @@ pub fn run(app: &App, agent: &Agent, name: &str, input: &Value) -> Result<String
             )?;
             // Every project gets a repo on the plaza's git host, for its plan and its code.
             let project = match repo_for(app, &project) {
-                Some(repo) => app.projects.get(&project.id).filter(|p| p.repo.as_deref() == Some(repo.as_str())).unwrap_or(project),
+                Some(repo) => app
+                    .projects
+                    .get(&project.id)
+                    .filter(|p| p.repo.as_deref() == Some(repo.as_str()))
+                    .unwrap_or(project),
                 None => project,
             };
-            answer(app, &project, "write the brief (the goal restated, who it is for, what a professional result includes, constraints the operator stated, questions only the operator can answer), share it with share_file and attach it with plaza_project_attach kind=brief, then plaza_project_advance")
+            answer(
+                app,
+                &project,
+                "write the brief (the goal restated, who it is for, what a professional result includes, constraints the operator stated, questions only the operator can answer), share it with share_file and attach it with plaza_project_attach kind=brief, then plaza_project_advance",
+            )
         }
         "plaza_projects" => match opt_str(input, "id") {
             Some(id) => {
-                let project = app.projects.get(&id).ok_or_else(|| format!("no project {id}"))?;
+                let project = app
+                    .projects
+                    .get(&id)
+                    .ok_or_else(|| format!("no project {id}"))?;
                 serde_json::to_string_pretty(&project).map_err(|e| e.to_string())
             }
             None => {
@@ -573,7 +734,11 @@ pub fn run(app: &App, agent: &Agent, name: &str, input: &Value) -> Result<String
                 if projects.is_empty() {
                     return Ok("no projects".into());
                 }
-                Ok(projects.iter().map(project_line).collect::<Vec<_>>().join("\n"))
+                Ok(projects
+                    .iter()
+                    .map(project_line)
+                    .collect::<Vec<_>>()
+                    .join("\n"))
             }
         },
         "plaza_project_attach" => {
@@ -613,7 +778,10 @@ pub fn run(app: &App, agent: &Agent, name: &str, input: &Value) -> Result<String
         }
         "plaza_project_advance" => {
             let id = str_arg(input, "id")?;
-            let before = app.projects.get(id).ok_or_else(|| format!("no project {id}"))?;
+            let before = app
+                .projects
+                .get(id)
+                .ok_or_else(|| format!("no project {id}"))?;
             if before.stage == "implementation" {
                 let unfinished = unfinished_tasks(app, &before);
                 if !unfinished.is_empty() {
@@ -645,19 +813,36 @@ fn str_arg<'a>(input: &'a Value, key: &str) -> Result<&'a str, String> {
 
 /// An optional, non-blank string argument.
 fn opt_str(input: &Value, key: &str) -> Option<String> {
-    input.get(key).and_then(Value::as_str).filter(|s| !s.trim().is_empty()).map(str::to_string)
+    input
+        .get(key)
+        .and_then(Value::as_str)
+        .filter(|s| !s.trim().is_empty())
+        .map(str::to_string)
 }
 
 /// One line of the project listing.
 fn project_line(p: &Project) -> String {
-    format!("{} [{}] {} — lead {}, rev {}, {} docs, {} critiques", p.id, p.stage, p.title, p.lead_cid, p.revision, p.docs.len(), p.critiques.len())
+    format!(
+        "{} [{}] {} — lead {}, rev {}, {} docs, {} critiques",
+        p.id,
+        p.stage,
+        p.title,
+        p.lead_cid,
+        p.revision,
+        p.docs.len(),
+        p.critiques.len()
+    )
 }
 
 /// Publishes the changed project and returns it as compact JSON, with the next step.
 fn answer(app: &App, project: &Project, hint: &str) -> Result<String, String> {
     app.bus.publish("project", project);
     let json = serde_json::to_string(project).map_err(|e| e.to_string())?;
-    Ok(if hint.is_empty() { json } else { format!("{json}\nNext: {hint}") })
+    Ok(if hint.is_empty() {
+        json
+    } else {
+        format!("{json}\nNext: {hint}")
+    })
 }
 
 /// What the agents of a stage do next.
@@ -665,10 +850,14 @@ fn stage_hint(stage: &str) -> &'static str {
     match stage {
         "brief" => "plaza_project_advance moves it to research",
         "research" => "researchers attach findings",
-        "proposal" => "the planner writes proposal, design, tasks (and for code an OpenSpec change: openspec/changes/<id>/ with proposal.md, design.md, tasks.md, specs/; validate it with the openspec CLI in your VM)",
+        "proposal" => {
+            "the planner writes proposal, design, tasks (and for code an OpenSpec change: openspec/changes/<id>/ with proposal.md, design.md, tasks.md, specs/; validate it with the openspec CLI in your VM)"
+        }
         "critique" => "agents other than the author critique with plaza_project_critique",
         "approval" => "the mayor approves with plaza_project_approve",
-        "implementation" => "the orchestrator posts tasks from the tasks document, each with its acceptance, and links them",
+        "implementation" => {
+            "the orchestrator posts tasks from the tasks document, each with its acceptance, and links them"
+        }
         "review" => "QA and reviewers check the deliverables; attach a deliverable doc",
         "delivered" => "report to the operator",
         _ => "",
@@ -682,7 +871,10 @@ fn unfinished_tasks(app: &App, project: &Project) -> Vec<String> {
         .tasks
         .iter()
         .filter_map(|id| {
-            let state = tasks.iter().find(|t| t.id() == id.as_str()).map_or("missing", |t| t.state());
+            let state = tasks
+                .iter()
+                .find(|t| t.id() == id.as_str())
+                .map_or("missing", |t| t.state());
             (state != "done").then(|| format!("{id} ({state})"))
         })
         .collect()
@@ -690,7 +882,9 @@ fn unfinished_tasks(app: &App, project: &Project) -> Vec<String> {
 
 pub fn routes(router: Router<App>) -> Router<App> {
     router
-        .get("/v1/projects", |app, _, _| Response::json(200, &app.projects.list()))
+        .get("/v1/projects", |app, _, _| {
+            Response::json(200, &app.projects.list())
+        })
         .get("/v1/projects/{id}", get_route)
         .post("/v1/projects/{id}/approve", approve_route)
         .post("/v1/projects/{id}/veto", veto_route)
@@ -707,13 +901,19 @@ fn get_route(app: &App, _: &Request, p: &Params<'_>) -> Response {
 fn approve_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
     let body: Value = serde_json::from_slice(&req.body).unwrap_or(Value::Null);
     let note = body.get("note").and_then(Value::as_str).unwrap_or("");
-    reply(app, app.projects.approve(p.get("id"), &Actor::owner(), note))
+    reply(
+        app,
+        app.projects.approve(p.get("id"), &Actor::owner(), note),
+    )
 }
 
 /// Body: `{stage, reason}`.
 fn veto_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
     let body: Value = serde_json::from_slice(&req.body).unwrap_or(Value::Null);
-    let stage = body.get("stage").and_then(Value::as_str).unwrap_or("proposal");
+    let stage = body
+        .get("stage")
+        .and_then(Value::as_str)
+        .unwrap_or("proposal");
     let reason = body.get("reason").and_then(Value::as_str).unwrap_or("");
     reply(app, app.projects.veto(p.get("id"), stage, reason))
 }
@@ -728,18 +928,22 @@ fn reply(app: &App, result: Result<Project, String>) -> Response {
     }
 }
 
-
 impl Store {
     /// The whole state as JSON, for Postgres (`crate::db`); "" when there is nothing to save.
     pub fn snapshot(&self) -> String {
-        let Ok(items) = self.items.lock() else { return String::new() };
+        let Ok(items) = self.items.lock() else {
+            return String::new();
+        };
         serde_json::to_string_pretty(&*items).unwrap_or_default()
     }
 
     /// Replaces the state with a [`Store::snapshot`]; a refusal changes nothing.
     pub fn restore(&self, json: &str) -> Result<(), String> {
         let next: Vec<Project> = serde_json::from_str(json).map_err(|e| e.to_string())?;
-        let mut items = self.items.lock().map_err(|_| "projects are unavailable".to_string())?;
+        let mut items = self
+            .items
+            .lock()
+            .map_err(|_| "projects are unavailable".to_string())?;
         self.save(&next)?;
         *items = next;
         Ok(())
@@ -753,7 +957,14 @@ mod tests {
     #[test]
     fn snapshot_restores_into_a_fresh_store() {
         let (_dir, a) = fresh("snapshot");
-        a.open(&lead(), "Ship the thing", "Make the thing work", "other", false).unwrap();
+        a.open(
+            &lead(),
+            "Ship the thing",
+            "Make the thing work",
+            "other",
+            false,
+        )
+        .unwrap();
         let (_dir2, b) = fresh("snapshot-restored");
         b.restore(&a.snapshot()).unwrap();
         assert_eq!(b.list(), a.list());
@@ -762,14 +973,22 @@ mod tests {
     }
 
     fn fresh(tag: &str) -> (PathBuf, Store) {
-        let dir = std::env::temp_dir().join(format!("apid-projects-{tag}-{}-{}", std::process::id(), now_ms()));
+        let dir = std::env::temp_dir().join(format!(
+            "apid-projects-{tag}-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         let store = Store::load(&dir);
         (dir, store)
     }
 
     fn who(cid: u64, name: &str, role: &str) -> Actor {
-        Actor { cid, name: name.into(), role: role.into() }
+        Actor {
+            cid,
+            name: name.into(),
+            role: role.into(),
+        }
     }
 
     fn lead() -> Actor {
@@ -808,15 +1027,31 @@ mod tests {
 
     /// Walks a project from brief to critique, with no critique yet.
     fn to_critique(store: &Store, kind: &str, owner_approval: bool) -> String {
-        let p = store.open(&lead(), "Ship the thing", "Make the thing work", kind, owner_approval).unwrap();
+        let p = store
+            .open(
+                &lead(),
+                "Ship the thing",
+                "Make the thing work",
+                kind,
+                owner_approval,
+            )
+            .unwrap();
         store.attach(&p.id, &lead(), doc("brief", "Brief")).unwrap();
         store.advance(&p.id, &lead(), "").unwrap();
-        store.attach(&p.id, &researcher(), doc("research", "Research")).unwrap();
+        store
+            .attach(&p.id, &researcher(), doc("research", "Research"))
+            .unwrap();
         store.advance(&p.id, &lead(), "").unwrap();
-        store.attach(&p.id, &planner(), doc("proposal", "Proposal")).unwrap();
-        store.attach(&p.id, &planner(), doc("tasks", "Tasks")).unwrap();
+        store
+            .attach(&p.id, &planner(), doc("proposal", "Proposal"))
+            .unwrap();
+        store
+            .attach(&p.id, &planner(), doc("tasks", "Tasks"))
+            .unwrap();
         if kind == "code" {
-            store.attach(&p.id, &planner(), doc("spec", "Spec")).unwrap();
+            store
+                .attach(&p.id, &planner(), doc("spec", "Spec"))
+                .unwrap();
         }
         store.advance(&p.id, &lead(), "").unwrap();
         p.id
@@ -825,7 +1060,15 @@ mod tests {
     #[test]
     fn open_attach_and_advance_to_research() {
         let (_dir, store) = fresh("open");
-        let p = store.open(&lead(), "Ship the thing", "Make the thing work", "other", false).unwrap();
+        let p = store
+            .open(
+                &lead(),
+                "Ship the thing",
+                "Make the thing work",
+                "other",
+                false,
+            )
+            .unwrap();
         assert_eq!(p.id, "pr1");
         assert_eq!(p.stage, "brief");
         assert_eq!(p.lead_cid, 1);
@@ -851,7 +1094,9 @@ mod tests {
     fn other_project_runs_to_implementation() {
         let (_dir, store) = fresh("full");
         let id = to_critique(&store, "other", false);
-        store.critique(&id, &critic(), "approve", "Good to go.").unwrap();
+        store
+            .critique(&id, &critic(), "approve", "Good to go.")
+            .unwrap();
         assert_eq!(store.advance(&id, &lead(), "").unwrap().stage, "approval");
         let err = store.advance(&id, &lead(), "").unwrap_err();
         assert!(err.contains("plaza_project_approve"), "{err}");
@@ -864,7 +1109,9 @@ mod tests {
     fn author_cannot_critique_own_revision() {
         let (_dir, store) = fresh("author");
         let id = to_critique(&store, "other", false);
-        let err = store.critique(&id, &planner(), "approve", "I like it").unwrap_err();
+        let err = store
+            .critique(&id, &planner(), "approve", "I like it")
+            .unwrap_err();
         assert!(err.contains("own revision"), "{err}");
     }
 
@@ -872,14 +1119,20 @@ mod tests {
     fn revise_blocks_until_revision_is_approved() {
         let (_dir, store) = fresh("revise");
         let id = to_critique(&store, "other", false);
-        store.critique(&id, &critic(), "revise", "The tasks miss the tests.").unwrap();
+        store
+            .critique(&id, &critic(), "revise", "The tasks miss the tests.")
+            .unwrap();
         assert!(store.advance(&id, &lead(), "").is_err());
-        store.attach(&id, &planner(), doc("revision", "Revision")).unwrap();
+        store
+            .attach(&id, &planner(), doc("revision", "Revision"))
+            .unwrap();
         assert!(store.advance(&id, &lead(), "").is_err());
         store.critique(&id, &critic(), "approve", "Fixed.").unwrap();
         assert_eq!(store.advance(&id, &lead(), "").unwrap().stage, "approval");
         // A revision attached at approval sends the plan back to critique.
-        let p = store.attach(&id, &planner(), doc("revision", "Second revision")).unwrap();
+        let p = store
+            .attach(&id, &planner(), doc("revision", "Second revision"))
+            .unwrap();
         assert_eq!(p.stage, "critique");
     }
 
@@ -891,29 +1144,44 @@ mod tests {
         store.advance(&id, &lead(), "").unwrap();
         let err = store.approve(&id, &mayor(), "").unwrap_err();
         assert!(err.contains("owner's approval"), "{err}");
-        assert_eq!(store.approve(&id, &Actor::owner(), "").unwrap().stage, "implementation");
+        assert_eq!(
+            store.approve(&id, &Actor::owner(), "").unwrap().stage,
+            "implementation"
+        );
     }
 
     #[test]
     fn code_needs_a_spec_to_leave_proposal() {
         let (_dir, store) = fresh("code");
-        let p = store.open(&lead(), "Code thing", "Goal", "code", false).unwrap();
+        let p = store
+            .open(&lead(), "Code thing", "Goal", "code", false)
+            .unwrap();
         store.attach(&p.id, &lead(), doc("brief", "Brief")).unwrap();
         store.advance(&p.id, &lead(), "").unwrap();
-        store.attach(&p.id, &researcher(), doc("research", "Research")).unwrap();
+        store
+            .attach(&p.id, &researcher(), doc("research", "Research"))
+            .unwrap();
         store.advance(&p.id, &lead(), "").unwrap();
-        store.attach(&p.id, &planner(), doc("proposal", "Proposal")).unwrap();
-        store.attach(&p.id, &planner(), doc("tasks", "Tasks")).unwrap();
+        store
+            .attach(&p.id, &planner(), doc("proposal", "Proposal"))
+            .unwrap();
+        store
+            .attach(&p.id, &planner(), doc("tasks", "Tasks"))
+            .unwrap();
         let err = store.advance(&p.id, &lead(), "").unwrap_err();
         assert!(err.contains("spec"), "{err}");
-        store.attach(&p.id, &planner(), doc("spec", "Spec")).unwrap();
+        store
+            .attach(&p.id, &planner(), doc("spec", "Spec"))
+            .unwrap();
         assert_eq!(store.advance(&p.id, &lead(), "").unwrap().stage, "critique");
     }
 
     #[test]
     fn projects_persist_across_load() {
         let (dir, store) = fresh("persist");
-        let p = store.open(&lead(), "Keep me", "Goal", "other", false).unwrap();
+        let p = store
+            .open(&lead(), "Keep me", "Goal", "other", false)
+            .unwrap();
         store.attach(&p.id, &lead(), doc("brief", "Brief")).unwrap();
         drop(store);
         let reloaded = Store::load(&dir);
@@ -921,6 +1189,12 @@ mod tests {
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].title, "Keep me");
         assert_eq!(all[0].docs.len(), 1);
-        assert_eq!(reloaded.open(&lead(), "Second", "Goal", "other", false).unwrap().id, "pr2");
+        assert_eq!(
+            reloaded
+                .open(&lead(), "Second", "Goal", "other", false)
+                .unwrap()
+                .id,
+            "pr2"
+        );
     }
 }

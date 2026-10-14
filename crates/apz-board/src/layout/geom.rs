@@ -14,7 +14,12 @@ pub struct Rect {
 impl Rect {
     /// From the slot form [x, z, w, d].
     pub fn from_xywh(r: [f64; 4]) -> Rect {
-        Rect { x0: r[0], z0: r[1], x1: r[0] + r[2], z1: r[1] + r[3] }
+        Rect {
+            x0: r[0],
+            z0: r[1],
+            x1: r[0] + r[2],
+            z1: r[1] + r[3],
+        }
     }
 
     /// The slot form [x, z, w, d]. (Used by the tests; the second pass reads rects in this form.)
@@ -25,7 +30,12 @@ impl Rect {
 
     /// The polygon in (x, z), counter-clockwise seen from above (see [`shoelace`]).
     pub fn poly(&self) -> Vec<[f64; 2]> {
-        vec![[self.x0, self.z0], [self.x0, self.z1], [self.x1, self.z1], [self.x1, self.z0]]
+        vec![
+            [self.x0, self.z0],
+            [self.x0, self.z1],
+            [self.x1, self.z1],
+            [self.x1, self.z0],
+        ]
     }
 }
 
@@ -46,12 +56,35 @@ pub fn subtract(outer: Rect, holes: &[Rect]) -> Vec<Rect> {
                 continue;
             }
             let cut = [
-                Rect { x0: p.x0, z0: p.z0, x1: p.x1, z1: iz0 },
-                Rect { x0: p.x0, z0: iz1, x1: p.x1, z1: p.z1 },
-                Rect { x0: p.x0, z0: iz0, x1: ix0, z1: iz1 },
-                Rect { x0: ix1, z0: iz0, x1: p.x1, z1: iz1 },
+                Rect {
+                    x0: p.x0,
+                    z0: p.z0,
+                    x1: p.x1,
+                    z1: iz0,
+                },
+                Rect {
+                    x0: p.x0,
+                    z0: iz1,
+                    x1: p.x1,
+                    z1: p.z1,
+                },
+                Rect {
+                    x0: p.x0,
+                    z0: iz0,
+                    x1: ix0,
+                    z1: iz1,
+                },
+                Rect {
+                    x0: ix1,
+                    z0: iz0,
+                    x1: p.x1,
+                    z1: iz1,
+                },
             ];
-            next.extend(cut.into_iter().filter(|r| r.x1 - r.x0 > 1e-9 && r.z1 - r.z0 > 1e-9));
+            next.extend(
+                cut.into_iter()
+                    .filter(|r| r.x1 - r.x0 > 1e-9 && r.z1 - r.z0 > 1e-9),
+            );
         }
         pieces = next;
     }
@@ -88,7 +121,13 @@ impl Frame {
     pub fn of(rect: [f64; 4]) -> Frame {
         let [x0, z0, w, d] = rect;
         let along_x = w >= d;
-        Frame { x0, z0, along_x, l: if along_x { w } else { d }, s: if along_x { d } else { w } }
+        Frame {
+            x0,
+            z0,
+            along_x,
+            l: if along_x { w } else { d },
+            s: if along_x { d } else { w },
+        }
     }
 
     /// The world rect [x, z, w, d] of the frame box [u0, u1] x [v0, v1].
@@ -112,11 +151,7 @@ impl Frame {
 
     /// The world (x, z) of a frame direction.
     pub fn vec(&self, du: f64, dv: f64) -> [f64; 2] {
-        if self.along_x {
-            [du, dv]
-        } else {
-            [dv, du]
-        }
+        if self.along_x { [du, dv] } else { [dv, du] }
     }
 }
 
@@ -155,5 +190,7 @@ pub fn segment_blocked(from: [f64; 3], to: [f64; 3], lo: [f64; 3], hi: [f64; 3])
 /// Does a part name belong to a slot's part? Its id, or a copy ("id#i"), or a path under it ("id/x", "id.x").
 pub fn belongs(name: &str, part: &str) -> bool {
     name == part
-        || name.strip_prefix(part).is_some_and(|rest| rest.starts_with('#') || rest.starts_with('/') || rest.starts_with('.'))
+        || name.strip_prefix(part).is_some_and(|rest| {
+            rest.starts_with('#') || rest.starts_with('/') || rest.starts_with('.')
+        })
 }

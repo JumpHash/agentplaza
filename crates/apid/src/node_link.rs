@@ -18,9 +18,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use apz_http::{Response, Router};
-use serde::de::DeserializeOwned;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde::de::DeserializeOwned;
+use serde_json::{Value, json};
 
 use crate::state::App;
 
@@ -98,7 +98,9 @@ pub fn valid_code(code: &str) -> Result<(), String> {
         return Err("the join code is empty".into());
     }
     if code.chars().count() > MAX_CODE {
-        return Err(format!("the join code is longer than {MAX_CODE} characters"));
+        return Err(format!(
+            "the join code is longer than {MAX_CODE} characters"
+        ));
     }
     if code.chars().any(|c| c.is_whitespace() || c.is_control()) {
         return Err("the join code contains whitespace or control characters".into());
@@ -144,7 +146,9 @@ fn alive(pid: u32) -> bool {
 
 /// The link as the node directory and the pid file say it is.
 fn status_in(identity_dir: &Path, pid_path: &Path) -> Status {
-    let node: Option<Value> = fs::read(identity_dir.join("node.json")).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok());
+    let node: Option<Value> = fs::read(identity_dir.join("node.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok());
     let field = |key: &str| node.as_ref().and_then(|n| n.get(key));
     let hub = field("hub_url").and_then(Value::as_str).map(str::to_string);
     let node_id = field("node_id").and_then(Value::as_str).map(str::to_string);
@@ -155,8 +159,18 @@ fn status_in(identity_dir: &Path, pid_path: &Path) -> Status {
         (Some(base), Some(count)) if count > 0 => Some(format!("{}-{}", base, base + count - 1)),
         _ => None,
     };
-    let pid = fs::read_to_string(pid_path).ok().and_then(|text| parse_pid(&text)).filter(|pid| alive(*pid));
-    Status { joined, hub, node_id, cids, running: pid.is_some(), pid }
+    let pid = fs::read_to_string(pid_path)
+        .ok()
+        .and_then(|text| parse_pid(&text))
+        .filter(|pid| alive(*pid));
+    Status {
+        joined,
+        hub,
+        node_id,
+        cids,
+        running: pid.is_some(),
+        pid,
+    }
 }
 
 /// The link as this machine has it now.
@@ -188,7 +202,10 @@ fn join_route(body: &[u8]) -> Response {
     if status().joined {
         return error(409, "this machine is already a node; leave the hub first");
     }
-    if JOINING.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+    if JOINING
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
         return error(409, "a join is already running");
     }
     let result = join_and_run(&code);
@@ -234,9 +251,15 @@ fn join_and_run(code: &str) -> Result<(), String> {
         }
     };
     if !succeeded {
-        let err = stderr.and_then(|handle| handle.join().ok()).unwrap_or_default();
+        let err = stderr
+            .and_then(|handle| handle.join().ok())
+            .unwrap_or_default();
         let text = String::from_utf8_lossy(&err).trim().replace(code, "<code>");
-        return Err(if text.is_empty() { "apz-link join failed".into() } else { text });
+        return Err(if text.is_empty() {
+            "apz-link join failed".into()
+        } else {
+            text
+        });
     }
     let now = status();
     if !now.joined {
@@ -253,10 +276,14 @@ fn start_run() -> Result<(), String> {
     let logs = apz_os::dirs::state().join("logs");
     apz_os::private::create_dir(&logs).map_err(|e| format!("{}: {e}", logs.display()))?;
     let log_path = logs.join("apz-link.log");
-    let log = apz_os::private::append(&log_path).map_err(|e| format!("{}: {e}", log_path.display()))?;
+    let log =
+        apz_os::private::append(&log_path).map_err(|e| format!("{}: {e}", log_path.display()))?;
     let errors = log.try_clone().map_err(|e| e.to_string())?;
     let mut cmd = Command::new(link_binary());
-    cmd.arg("run").stdin(Stdio::null()).stdout(Stdio::from(log)).stderr(Stdio::from(errors));
+    cmd.arg("run")
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(log))
+        .stderr(Stdio::from(errors));
     apz_os::process::detach(&mut cmd);
     let mut child = cmd.spawn().map_err(|e| format!("apz-link run: {e}"))?;
     let pid = child.id();
@@ -265,7 +292,8 @@ fn start_run() -> Result<(), String> {
         let _ = child.wait();
     });
     let path = pid_file();
-    apz_os::private::write(&path, pid.to_string().as_bytes()).map_err(|e| format!("{}: {e}", path.display()))
+    apz_os::private::write(&path, pid.to_string().as_bytes())
+        .map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// Asks process `pid` to stop: `kill` (SIGTERM) on Unix, `taskkill` on Windows.
@@ -279,13 +307,19 @@ fn signal(pid: u32) {
         cmd.arg(pid.to_string());
         cmd
     };
-    let _ = cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status();
+    let _ = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
 }
 
 /// Stops the recorded `apz-link run` (waiting at most [`STOP_WAIT`] for it to exit) and forgets its pid.
 fn stop_run() -> Result<(), String> {
     let path = pid_file();
-    let pid = fs::read_to_string(&path).ok().and_then(|text| parse_pid(&text));
+    let pid = fs::read_to_string(&path)
+        .ok()
+        .and_then(|text| parse_pid(&text));
     if let Some(pid) = pid.filter(|pid| alive(*pid)) {
         signal(pid);
         let deadline = Instant::now() + STOP_WAIT;
@@ -326,7 +360,9 @@ fn leave_route(body: &[u8]) -> Response {
 /// `GET /v1/node-link`, `POST /v1/node-link/join` and `POST /v1/node-link/leave`.
 pub fn routes(router: Router<App>) -> Router<App> {
     router
-        .get("/v1/node-link", |_, _, _| Response::json(200, &status().json()))
+        .get("/v1/node-link", |_, _, _| {
+            Response::json(200, &status().json())
+        })
         .post("/v1/node-link/join", |_, req, _| join_route(&req.body))
         .post("/v1/node-link/leave", |_, req, _| leave_route(&req.body))
 }
@@ -336,7 +372,8 @@ mod tests {
     use super::*;
 
     fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("apid-node-link-{}-{name}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("apid-node-link-{}-{name}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
@@ -381,7 +418,11 @@ mod tests {
             "cid_count": 2,
             "hub_name": "hub",
         });
-        fs::write(identity.join("node.json"), serde_json::to_vec_pretty(&stored).unwrap()).unwrap();
+        fs::write(
+            identity.join("node.json"),
+            serde_json::to_vec_pretty(&stored).unwrap(),
+        )
+        .unwrap();
         fs::write(identity.join("node.key"), [9u8; 32]).unwrap();
         let joined = status_in(&identity, &pid_path);
         assert!(joined.joined);
@@ -404,7 +445,11 @@ mod tests {
     #[test]
     fn a_malformed_identity_is_not_joined() {
         let root = scratch("malformed");
-        fs::write(root.join("node.json"), b"{\"hub_url\": \"https://hub.example\"}").unwrap();
+        fs::write(
+            root.join("node.json"),
+            b"{\"hub_url\": \"https://hub.example\"}",
+        )
+        .unwrap();
         let status = status_in(&root, &root.join("missing.pid"));
         assert!(!status.joined);
         assert!(status.hub.as_deref() == Some("https://hub.example"));

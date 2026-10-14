@@ -2,7 +2,7 @@
 //! the treasury over time, minting and fines.
 
 use clap::Subcommand;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::ctx::{self, Ctx};
 
@@ -78,7 +78,12 @@ fn postings(e: &Value) -> String {
 fn query(params: &[(&str, Option<String>)]) -> String {
     let parts: Vec<String> = params
         .iter()
-        .filter_map(|(key, value)| value.as_ref().filter(|v| !v.is_empty()).map(|v| format!("{key}={}", ctx::seg(v))))
+        .filter_map(|(key, value)| {
+            value
+                .as_ref()
+                .filter(|v| !v.is_empty())
+                .map(|v| format!("{key}={}", ctx::seg(v)))
+        })
         .collect();
     if parts.is_empty() {
         String::new()
@@ -88,7 +93,13 @@ fn query(params: &[(&str, Option<String>)]) -> String {
 }
 
 /// The journal's path with its paging and filters.
-fn journal_path(limit: Option<u32>, before: Option<u64>, kind: Option<&str>, wallet: Option<u64>, task: Option<&str>) -> String {
+fn journal_path(
+    limit: Option<u32>,
+    before: Option<u64>,
+    kind: Option<&str>,
+    wallet: Option<u64>,
+    task: Option<&str>,
+) -> String {
     format!(
         "/v1/treasury/journal{}",
         query(&[
@@ -127,7 +138,10 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
         Cmd::Balances => {
             let v = ctx.client.get("/v1/treasury")?;
             ctx.out(&v, |v| {
-                let balance = v.get("totals").map(|t| ctx::text(t, "balance")).unwrap_or_default();
+                let balance = v
+                    .get("totals")
+                    .map(|t| ctx::text(t, "balance"))
+                    .unwrap_or_default();
                 ctx::fields(&[
                     ("plaza budget", ctx::text(v, "plaza_budget")),
                     ("spent", ctx::text(v, "spent")),
@@ -154,13 +168,31 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             ctx.out(&v, |v| {
                 let rows: Vec<Vec<String>> = array(v)
                     .iter()
-                    .map(|w| vec![ctx::text(w, "cid"), ctx::s(w, "name").to_string(), ctx::text(w, "balance")])
+                    .map(|w| {
+                        vec![
+                            ctx::text(w, "cid"),
+                            ctx::s(w, "name").to_string(),
+                            ctx::text(w, "balance"),
+                        ]
+                    })
                     .collect();
                 ctx::table(&["cid", "name", "balance"], &rows);
             });
         }
-        Cmd::Journal { limit, before, kind, wallet, task } => {
-            let v = ctx.client.get(&journal_path(limit, before, kind.as_deref(), wallet, task.as_deref()))?;
+        Cmd::Journal {
+            limit,
+            before,
+            kind,
+            wallet,
+            task,
+        } => {
+            let v = ctx.client.get(&journal_path(
+                limit,
+                before,
+                kind.as_deref(),
+                wallet,
+                task.as_deref(),
+            ))?;
             ctx.out(&v, |v| {
                 // The hub answers with the entries in a page: {entries, total, next_before, ...}.
                 let entries = v.get("entries").unwrap_or(v);
@@ -204,16 +236,34 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                         ]
                     })
                     .collect();
-                ctx::table(&["at", "entries", "minted", "escrowed", "paid", "refunded", "fined", "spent", "treasury end"], &rows);
+                ctx::table(
+                    &[
+                        "at",
+                        "entries",
+                        "minted",
+                        "escrowed",
+                        "paid",
+                        "refunded",
+                        "fined",
+                        "spent",
+                        "treasury end",
+                    ],
+                    &rows,
+                );
             });
         }
         Cmd::Mint { amount } => {
-            let v = ctx.client.post("/v1/treasury/mint", &json!({ "amount": amount }))?;
+            let v = ctx
+                .client
+                .post("/v1/treasury/mint", &json!({ "amount": amount }))?;
             ctx.out(&v, |_| println!("minted {amount} into the plaza budget"));
         }
         Cmd::Fine { cid, amount, memo } => {
             let memo = fine_memo(&memo)?;
-            let v = ctx.client.post("/v1/treasury/fine", &json!({ "cid": cid, "amount": amount, "memo": memo }))?;
+            let v = ctx.client.post(
+                "/v1/treasury/fine",
+                &json!({ "cid": cid, "amount": amount, "memo": memo }),
+            )?;
             ctx.out(&v, |_| println!("fined agent {cid} {amount}"));
         }
     }
@@ -228,13 +278,22 @@ mod tests {
     fn a_blank_fine_memo_is_refused_and_a_memo_is_trimmed() {
         assert_eq!(fine_memo(""), Err("A fine needs a memo.".to_string()));
         assert_eq!(fine_memo("  \t "), Err("A fine needs a memo.".to_string()));
-        assert_eq!(fine_memo("  late delivery  "), Ok("late delivery".to_string()));
+        assert_eq!(
+            fine_memo("  late delivery  "),
+            Ok("late delivery".to_string())
+        );
     }
 
     #[test]
     fn the_journal_path_carries_only_the_filters_it_is_given() {
-        assert_eq!(journal_path(None, None, None, None, None), "/v1/treasury/journal");
-        assert_eq!(journal_path(Some(10), None, Some(""), None, Some("")), "/v1/treasury/journal?limit=10");
+        assert_eq!(
+            journal_path(None, None, None, None, None),
+            "/v1/treasury/journal"
+        );
+        assert_eq!(
+            journal_path(Some(10), None, Some(""), None, Some("")),
+            "/v1/treasury/journal?limit=10"
+        );
         assert_eq!(
             journal_path(Some(25), Some(42), Some("fine"), Some(7), Some("t/1 x")),
             "/v1/treasury/journal?limit=25&before=42&kind=fine&wallet=7&task=t%2F1%20x"
@@ -244,7 +303,10 @@ mod tests {
     #[test]
     fn the_series_path_names_the_range_and_bucket_given() {
         assert_eq!(series_path(None, None, None), "/v1/treasury/series");
-        assert_eq!(series_path(Some(1000), Some(5000), Some("hour")), "/v1/treasury/series?from=1000&to=5000&bucket=hour");
+        assert_eq!(
+            series_path(Some(1000), Some(5000), Some("hour")),
+            "/v1/treasury/series?from=1000&to=5000&bucket=hour"
+        );
     }
 
     #[test]
@@ -258,6 +320,10 @@ mod tests {
     fn the_journal_entry_fields_are_the_hub_s() {
         let entry = json!({ "id": 4, "kind": "fine", "created_at": 1_791_811_353_718u64, "task_id": "t-1", "memo": "late" });
         assert_eq!(ctx::text(&entry, "task_id"), "t-1");
-        assert_ne!(ctx::when(&entry["created_at"]), "—", "created_at is the time the hub sends");
+        assert_ne!(
+            ctx::when(&entry["created_at"]),
+            "—",
+            "created_at is the time the hub sends"
+        );
     }
 }

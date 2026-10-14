@@ -7,9 +7,9 @@ use std::fs;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use clap::Subcommand;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
-use crate::ctx::{self, confirm, Client, Config, SavedHub};
+use crate::ctx::{self, Client, Config, SavedHub, confirm};
 
 #[derive(Subcommand, Debug)]
 pub enum Cmd {
@@ -69,12 +69,31 @@ pub enum Cmd {
 
 /// `hub` runs with the global `--hub`, `--token` and `--pin` (the hub the owner-token and pin
 /// commands act on), as the other commands that talk to a hub do.
-pub fn run(cmd: Cmd, json_out: bool, hub: Option<String>, token: Option<String>, pin: Option<String>) -> Result<(), String> {
+pub fn run(
+    cmd: Cmd,
+    json_out: bool,
+    hub: Option<String>,
+    token: Option<String>,
+    pin: Option<String>,
+) -> Result<(), String> {
     let mut config = Config::load();
     match cmd {
-        Cmd::Login { url, token, pin, name, yes } => {
-            let url = url.unwrap_or_else(|| ctx::LOCAL_HUB.to_string()).trim_end_matches('/').to_string();
-            let token = token.or_else(|| (url == ctx::LOCAL_HUB).then(ctx::local_owner_token).flatten());
+        Cmd::Login {
+            url,
+            token,
+            pin,
+            name,
+            yes,
+        } => {
+            let url = url
+                .unwrap_or_else(|| ctx::LOCAL_HUB.to_string())
+                .trim_end_matches('/')
+                .to_string();
+            let token = token.or_else(|| {
+                (url == ctx::LOCAL_HUB)
+                    .then(ctx::local_owner_token)
+                    .flatten()
+            });
             let name = name.unwrap_or_else(|| host_of(&url));
             // The saved entry this sign-in writes, by name: its hex pin and pinned identity apply as
             // `ctx::resolve` applies them, and a flag overrides the saved pin.
@@ -83,21 +102,44 @@ pub fn run(cmd: Cmd, json_out: bool, hub: Option<String>, token: Option<String>,
             let pin_bytes = pin.as_deref().map(ctx::parse_pin).transpose()?;
             let pinned = ctx::pinned_identity(&Config::path(), &name);
             // Checked before the owner token goes out.
-            let trust = check_identity(&name, pin_bytes.is_some(), pinned.as_deref(), || Client::new(&url, None, None).get("/v1/hub/identity"))?;
-            if let Trust::FirstUse { fingerprint, identity } = &trust {
+            let trust = check_identity(&name, pin_bytes.is_some(), pinned.as_deref(), || {
+                Client::new(&url, None, None).get("/v1/hub/identity")
+            })?;
+            if let Trust::FirstUse {
+                fingerprint,
+                identity,
+            } = &trust
+            {
                 if !json_out {
                     let who = ctx::s(identity, "name");
-                    println!("{} {} at {url}", if who.is_empty() { "unnamed hub" } else { who }, ctx::s(identity, "version"));
+                    println!(
+                        "{} {} at {url}",
+                        if who.is_empty() { "unnamed hub" } else { who },
+                        ctx::s(identity, "version")
+                    );
                     println!("certificate {fingerprint}");
                 }
-                if !confirm(yes, "Trust this identity? Later sign-ins refuse any other identity until the pin is forgotten.")? {
+                if !confirm(
+                    yes,
+                    "Trust this identity? Later sign-ins refuse any other identity until the pin is forgotten.",
+                )? {
                     println!("not signed in");
                     return Ok(());
                 }
             }
             let client = Client::new(&url, pin_bytes, token.clone());
-            client.get("/v1/auth/check").map_err(|e| format!("{url} did not accept the sign-in: {e}"))?;
-            config.hubs.insert(name.clone(), SavedHub { url: url.clone(), token, pin, mcp_token: None });
+            client
+                .get("/v1/auth/check")
+                .map_err(|e| format!("{url} did not accept the sign-in: {e}"))?;
+            config.hubs.insert(
+                name.clone(),
+                SavedHub {
+                    url: url.clone(),
+                    token,
+                    pin,
+                    mcp_token: None,
+                },
+            );
             if config.default.is_none() {
                 config.default = Some(name.clone());
             }
@@ -106,11 +148,21 @@ pub fn run(cmd: Cmd, json_out: bool, hub: Option<String>, token: Option<String>,
                 // The entry `hub trust` writes: the saved hub's `pinned` fingerprint and the day.
                 let mut doc = load_doc();
                 if let Some(saved) = saved_hub(&mut doc, &name) {
-                    saved.insert("pinned".into(), json!({ "fingerprint": fingerprint, "since": utc_day(now_ms()) }));
+                    saved.insert(
+                        "pinned".into(),
+                        json!({ "fingerprint": fingerprint, "since": utc_day(now_ms()) }),
+                    );
                 }
                 save_doc(&doc)?;
             }
-            println!("signed in to {url} as `{name}`{}", if config.default.as_deref() == Some(&name) { " (default)" } else { "" });
+            println!(
+                "signed in to {url} as `{name}`{}",
+                if config.default.as_deref() == Some(&name) {
+                    " (default)"
+                } else {
+                    ""
+                }
+            );
         }
         Cmd::Logout { name } => {
             if config.hubs.remove(&name).is_none() {
@@ -129,7 +181,13 @@ pub fn run(cmd: Cmd, json_out: bool, hub: Option<String>, token: Option<String>,
                     .iter()
                     .map(|(n, h)| (n.clone(), json!({ "url": h.url, "pinned": h.pin.is_some(), "token": h.token.is_some() })))
                     .collect();
-                println!("{}", serde_json::to_string_pretty(&json!({ "default": config.default, "hubs": hubs })).unwrap_or_default());
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(
+                        &json!({ "default": config.default, "hubs": hubs })
+                    )
+                    .unwrap_or_default()
+                );
                 return Ok(());
             }
             let rows: Vec<Vec<String>> = config
@@ -137,9 +195,17 @@ pub fn run(cmd: Cmd, json_out: bool, hub: Option<String>, token: Option<String>,
                 .iter()
                 .map(|(n, h)| {
                     vec![
-                        if config.default.as_deref() == Some(n) { format!("* {n}") } else { format!("  {n}") },
+                        if config.default.as_deref() == Some(n) {
+                            format!("* {n}")
+                        } else {
+                            format!("  {n}")
+                        },
                         h.url.clone(),
-                        if h.pin.is_some() { "pinned".into() } else { String::new() },
+                        if h.pin.is_some() {
+                            "pinned".into()
+                        } else {
+                            String::new()
+                        },
                     ]
                 })
                 .collect();
@@ -162,7 +228,10 @@ pub fn run(cmd: Cmd, json_out: bool, hub: Option<String>, token: Option<String>,
             // The saved entry the new token goes into: the one this command reaches by name, flag or default.
             let saved = saved_name(&config, None, hub.clone()).ok();
             let ctx = ctx::resolve(hub, token, pin, json_out)?;
-            if !confirm(yes, "Rotate the owner token? The current one stops working at once, and every signed-in browser and app must sign in again.")? {
+            if !confirm(
+                yes,
+                "Rotate the owner token? The current one stops working at once, and every signed-in browser and app must sign in again.",
+            )? {
                 println!("not rotated");
                 return Ok(());
             }
@@ -172,7 +241,9 @@ pub fn run(cmd: Cmd, json_out: bool, hub: Option<String>, token: Option<String>,
                 return Err("the hub answered without a token".into());
             }
             // Shown first: a save that fails must not take the only copy of the token with it.
-            ctx.out(&made, |_| println!("new owner token, shown once:\n  {new_token}"));
+            ctx.out(&made, |_| {
+                println!("new owner token, shown once:\n  {new_token}")
+            });
             match saved {
                 Some(name) => {
                     if let Some(hub) = config.hubs.get_mut(&name) {
@@ -183,7 +254,9 @@ pub fn run(cmd: Cmd, json_out: bool, hub: Option<String>, token: Option<String>,
                         println!("saved in `{name}`");
                     }
                 }
-                None if !json_out => println!("this hub has no saved entry, so nothing was saved: sign in with `agentplaza hub login <url> --token <new token>`"),
+                None if !json_out => println!(
+                    "this hub has no saved entry, so nothing was saved: sign in with `agentplaza hub login <url> --token <new token>`"
+                ),
                 None => {}
             }
         }
@@ -210,30 +283,55 @@ pub fn run(cmd: Cmd, json_out: bool, hub: Option<String>, token: Option<String>,
             let pin_bytes = hub.pin.as_deref().map(ctx::parse_pin).transpose()?;
             let identity = Client::new(&hub.url, pin_bytes, None).get("/v1/hub/identity")?;
             let url = hub.url.clone();
-            let Some(fingerprint) = identity.get("fingerprint").and_then(Value::as_str).map(str::to_string) else {
-                return Err(format!("{url} has no TLS certificate to pin: it answers over plain HTTP"));
+            let Some(fingerprint) = identity
+                .get("fingerprint")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+            else {
+                return Err(format!(
+                    "{url} has no TLS certificate to pin: it answers over plain HTTP"
+                ));
             };
             let mut doc = load_doc();
-            let previous = doc.pointer(&format!("/hubs/{}/pinned/fingerprint", name.replace('~', "~0").replace('/', "~1"))).and_then(Value::as_str).map(str::to_string);
+            let previous = doc
+                .pointer(&format!(
+                    "/hubs/{}/pinned/fingerprint",
+                    name.replace('~', "~0").replace('/', "~1")
+                ))
+                .and_then(Value::as_str)
+                .map(str::to_string);
             let who = ctx::s(&identity, "name");
             if !json_out {
-                println!("{} {} at {url}", if who.is_empty() { "unnamed hub" } else { who }, ctx::s(&identity, "version"));
+                println!(
+                    "{} {} at {url}",
+                    if who.is_empty() { "unnamed hub" } else { who },
+                    ctx::s(&identity, "version")
+                );
                 println!("certificate {fingerprint}");
                 if let Some(old) = &previous {
                     println!("this replaces the pinned certificate {old}");
                 }
             }
-            if !confirm(yes, "Trust this identity? Later sign-ins refuse any other identity until the pin is forgotten.")? {
+            if !confirm(
+                yes,
+                "Trust this identity? Later sign-ins refuse any other identity until the pin is forgotten.",
+            )? {
                 println!("not trusted");
                 return Ok(());
             }
             let since = utc_day(now_ms());
             if let Some(saved) = saved_hub(&mut doc, &name) {
-                saved.insert("pinned".into(), json!({ "fingerprint": fingerprint, "since": since }));
+                saved.insert(
+                    "pinned".into(),
+                    json!({ "fingerprint": fingerprint, "since": since }),
+                );
             }
             save_doc(&doc)?;
             if json_out {
-                println!("{}", json!({ "hub": name, "fingerprint": fingerprint, "since": since }));
+                println!(
+                    "{}",
+                    json!({ "hub": name, "fingerprint": fingerprint, "since": since })
+                );
             } else {
                 println!("trusting the identity of `{name}` from {since}");
             }
@@ -250,7 +348,10 @@ enum Trust {
     /// The hub presents the identity pinned for the saved hub.
     Pinned,
     /// Nothing is pinned yet: the identity is shown and asked about, then pinned.
-    FirstUse { fingerprint: String, identity: Value },
+    FirstUse {
+        fingerprint: String,
+        identity: Value,
+    },
     /// Nothing is pinned and the hub has no certificate to pin (it answers over plain HTTP).
     Plain,
 }
@@ -259,7 +360,12 @@ enum Trust {
 /// skips the identity call. A pinned identity must be the one the hub presents. With no pin, the
 /// presented identity is the one the user is asked to trust. `ask` fetches the identity (`GET
 /// /v1/hub/identity`, unauthenticated); its failure refuses the sign-in.
-fn check_identity(name: &str, hex_pin: bool, pinned: Option<&str>, ask: impl FnOnce() -> Result<Value, String>) -> Result<Trust, String> {
+fn check_identity(
+    name: &str,
+    hex_pin: bool,
+    pinned: Option<&str>,
+    ask: impl FnOnce() -> Result<Value, String>,
+) -> Result<Trust, String> {
     if hex_pin {
         return Ok(Trust::Pin);
     }
@@ -271,7 +377,10 @@ fn check_identity(name: &str, hex_pin: bool, pinned: Option<&str>, ask: impl FnO
             Ok(Trust::Pinned)
         }
         None => Ok(match presented {
-            Some(fingerprint) => Trust::FirstUse { fingerprint, identity },
+            Some(fingerprint) => Trust::FirstUse {
+                fingerprint,
+                identity,
+            },
             None => Trust::Plain,
         }),
     }
@@ -279,12 +388,20 @@ fn check_identity(name: &str, hex_pin: bool, pinned: Option<&str>, ask: impl FnO
 
 /// The certificate fingerprint in a hub identity, when it has one.
 fn fingerprint_of(identity: &Value) -> Option<String> {
-    identity.get("fingerprint").and_then(Value::as_str).filter(|f| !f.is_empty()).map(str::to_string)
+    identity
+        .get("fingerprint")
+        .and_then(Value::as_str)
+        .filter(|f| !f.is_empty())
+        .map(str::to_string)
 }
 
 /// The saved hub a command means: the name it was given, else the global `--hub` (a saved name),
 /// else the default hub. An unsaved URL or no hub at all is an error.
-fn saved_name(config: &Config, named: Option<String>, flag: Option<String>) -> Result<String, String> {
+fn saved_name(
+    config: &Config,
+    named: Option<String>,
+    flag: Option<String>,
+) -> Result<String, String> {
     let name = named
         .or(flag)
         .or_else(|| config.default.clone())
@@ -299,7 +416,10 @@ fn saved_name(config: &Config, named: Option<String>, flag: Option<String>) -> R
 /// `cli.json` as JSON. The CLI's own config type does not model the `pinned` entry the desktop app
 /// writes, so the pins are edited in the file itself and every other key is kept as it is.
 fn load_doc() -> Value {
-    fs::read_to_string(Config::path()).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_else(|| json!({}))
+    fs::read_to_string(Config::path())
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_else(|| json!({}))
 }
 
 fn save_doc(doc: &Value) -> Result<(), String> {
@@ -331,7 +451,10 @@ fn utc_day(ms: i64) -> String {
 }
 
 fn now_ms() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 /// `https://plaza.example:7700` → `plaza.example`.
@@ -347,9 +470,20 @@ mod tests {
     use super::*;
 
     fn config_with(names: &[&str], default: Option<&str>) -> Config {
-        let mut config = Config { default: default.map(str::to_string), ..Config::default() };
+        let mut config = Config {
+            default: default.map(str::to_string),
+            ..Config::default()
+        };
         for name in names {
-            config.hubs.insert(name.to_string(), SavedHub { url: format!("https://{name}.example:7700"), token: None, pin: None, mcp_token: None });
+            config.hubs.insert(
+                name.to_string(),
+                SavedHub {
+                    url: format!("https://{name}.example:7700"),
+                    token: None,
+                    pin: None,
+                    mcp_token: None,
+                },
+            );
         }
         config
     }
@@ -357,16 +491,30 @@ mod tests {
     #[test]
     fn the_named_hub_wins_then_the_flag_then_the_default() {
         let config = config_with(&["home", "work"], Some("home"));
-        assert_eq!(saved_name(&config, Some("work".into()), Some("home".into())).unwrap(), "work");
-        assert_eq!(saved_name(&config, None, Some("work".into())).unwrap(), "work");
+        assert_eq!(
+            saved_name(&config, Some("work".into()), Some("home".into())).unwrap(),
+            "work"
+        );
+        assert_eq!(
+            saved_name(&config, None, Some("work".into())).unwrap(),
+            "work"
+        );
         assert_eq!(saved_name(&config, None, None).unwrap(), "home");
     }
 
     #[test]
     fn an_unsaved_hub_or_no_hub_at_all_is_refused() {
         let config = config_with(&["home"], None);
-        assert!(saved_name(&config, None, None).unwrap_err().contains("hub login"));
-        assert!(saved_name(&config, None, Some("https://elsewhere.example:7700".into())).unwrap_err().contains("no saved hub"));
+        assert!(
+            saved_name(&config, None, None)
+                .unwrap_err()
+                .contains("hub login")
+        );
+        assert!(
+            saved_name(&config, None, Some("https://elsewhere.example:7700".into()))
+                .unwrap_err()
+                .contains("no saved hub")
+        );
     }
 
     #[test]
@@ -378,19 +526,32 @@ mod tests {
 
     #[test]
     fn a_hex_pin_skips_the_identity_call() {
-        let trust = check_identity("home", true, Some("fp-a"), || -> Result<Value, String> { panic!("the identity is not asked for") });
+        let trust = check_identity("home", true, Some("fp-a"), || -> Result<Value, String> {
+            panic!("the identity is not asked for")
+        });
         assert_eq!(trust, Ok(Trust::Pin));
     }
 
     #[test]
     fn a_pinned_identity_must_be_the_one_presented() {
-        assert_eq!(check_identity("home", false, Some("fp-a"), || Ok(json!({ "fingerprint": "fp-a" }))), Ok(Trust::Pinned));
-        let other = check_identity("home", false, Some("fp-a"), || Ok(json!({ "fingerprint": "fp-b" }))).unwrap_err();
+        assert_eq!(
+            check_identity("home", false, Some("fp-a"), || Ok(
+                json!({ "fingerprint": "fp-a" })
+            )),
+            Ok(Trust::Pinned)
+        );
+        let other = check_identity("home", false, Some("fp-a"), || {
+            Ok(json!({ "fingerprint": "fp-b" }))
+        })
+        .unwrap_err();
         assert_eq!(
             other,
             "the hub's identity changed: pinned fp-a, presented fp-b; run `agentplaza hub forget-pin home` if you expect this"
         );
-        let none = check_identity("home", false, Some("fp-a"), || Ok(json!({ "name": "home" }))).unwrap_err();
+        let none = check_identity("home", false, Some("fp-a"), || {
+            Ok(json!({ "name": "home" }))
+        })
+        .unwrap_err();
         assert!(none.contains("presented no certificate"), "{none}");
     }
 
@@ -398,18 +559,35 @@ mod tests {
     fn a_first_sign_in_asks_about_the_presented_identity() {
         let identity = json!({ "fingerprint": "fp-a", "name": "home", "version": "0.0.8" });
         let trust = check_identity("home", false, None, || Ok(identity.clone())).unwrap();
-        assert_eq!(trust, Trust::FirstUse { fingerprint: "fp-a".into(), identity });
+        assert_eq!(
+            trust,
+            Trust::FirstUse {
+                fingerprint: "fp-a".into(),
+                identity
+            }
+        );
     }
 
     #[test]
     fn a_hub_without_a_certificate_has_nothing_to_pin() {
-        assert_eq!(check_identity("local", false, None, || Ok(json!({ "name": "local" }))), Ok(Trust::Plain));
+        assert_eq!(
+            check_identity("local", false, None, || Ok(json!({ "name": "local" }))),
+            Ok(Trust::Plain)
+        );
     }
 
     #[test]
     fn an_identity_that_cannot_be_read_refuses_the_sign_in() {
-        assert_eq!(check_identity("home", false, Some("fp-a"), || Err("connection refused".into())), Err("connection refused".to_string()));
-        assert_eq!(check_identity("home", false, None, || Err("connection refused".into())), Err("connection refused".to_string()));
+        assert_eq!(
+            check_identity("home", false, Some("fp-a"), || Err(
+                "connection refused".into()
+            )),
+            Err("connection refused".to_string())
+        );
+        assert_eq!(
+            check_identity("home", false, None, || Err("connection refused".into())),
+            Err("connection refused".to_string())
+        );
     }
 
     #[test]

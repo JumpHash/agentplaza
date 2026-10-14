@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use apz_engine::fleet::FleetResponse;
 use apz_engine::input::{Button, Event};
 use apz_engine::render::MESH_UPLOAD_BYTES;
-use apz_engine::{agent_list, Cmd, Engine, Feed};
+use apz_engine::{Cmd, Engine, Feed, agent_list};
 
 const W: u32 = 1280;
 const H: u32 = 800;
@@ -24,7 +24,8 @@ fn block_on<F: std::future::Future>(future: F) -> F::Output {
 }
 
 fn fleet(n: usize) -> FleetResponse {
-    let base: FleetResponse = serde_json::from_str(include_str!("../testdata/floor-15.json")).expect("the fixture parses");
+    let base: FleetResponse = serde_json::from_str(include_str!("../testdata/floor-15.json"))
+        .expect("the fixture parses");
     let mut out = base.clone();
     out.machines.clear();
     for i in 0..n {
@@ -45,15 +46,28 @@ fn median(mut v: Vec<f64>) -> f64 {
 }
 
 fn main() {
-    let sizes: Vec<usize> = std::env::args().skip(1).filter_map(|a| a.parse().ok()).collect();
-    let sizes = if sizes.is_empty() { vec![1, 15, 30, 60] } else { sizes };
+    let sizes: Vec<usize> = std::env::args()
+        .skip(1)
+        .filter_map(|a| a.parse().ok())
+        .collect();
+    let sizes = if sizes.is_empty() {
+        vec![1, 15, 30, 60]
+    } else {
+        sizes
+    };
     let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
-    let adapter = block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).expect("an adapter");
+    let adapter = block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+        .expect("an adapter");
     println!("adapter: {:?}", adapter.get_info().name);
-    let (device, queue) = block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).expect("a device");
+    let (device, queue) =
+        block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).expect("a device");
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("bench target"),
-        size: wgpu::Extent3d { width: W, height: H, depth_or_array_layers: 1 },
+        size: wgpu::Extent3d {
+            width: W,
+            height: H,
+            depth_or_array_layers: 1,
+        },
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
@@ -64,14 +78,20 @@ fn main() {
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
     // APZ_BENCH_AGENTS=path: the hub's agent list (or a fixture holding one under "agents") seats robots on the boards.
     let agents = std::env::var("APZ_BENCH_AGENTS").ok().map(|p| {
-        let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(p).expect("the agents file reads")).expect("the agents file parses");
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(p).expect("the agents file reads"))
+                .expect("the agents file parses");
         agent_list(&v)
     });
     println!("agents: {}", agents.as_ref().map_or(0, Vec::len));
     for n in sizes {
         let mut engine = Engine::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
         let t_build = Instant::now();
-        engine.set_data(Feed { fleet: Some(fleet(n)), agents: agents.clone(), ..Feed::default() });
+        engine.set_data(Feed {
+            fleet: Some(fleet(n)),
+            agents: agents.clone(),
+            ..Feed::default()
+        });
         engine.command(Cmd::ShowMachines);
         let build = t_build.elapsed().as_secs_f64() * 1e3;
         let t0 = Instant::now();
@@ -81,10 +101,16 @@ fn main() {
         for i in 0..120u64 {
             let now = t0 + Duration::from_millis(16 * i);
             if drag && i == 20 {
-                engine.input(Event::Pressed { button: Button::Left, at: Some((600.0, 400.0)) });
+                engine.input(Event::Pressed {
+                    button: Button::Left,
+                    at: Some((600.0, 400.0)),
+                });
             }
             if drag && i > 20 {
-                let p = (600.0 + (i as f32 * 3.0) % 200.0, 400.0 + (i as f32 / 10.0).sin() * 40.0);
+                let p = (
+                    600.0 + (i as f32 * 3.0) % 200.0,
+                    400.0 + (i as f32 / 10.0).sin() * 40.0,
+                );
                 engine.input(Event::Moved { at: Some(p), to: p });
             }
             let a = Instant::now();
@@ -92,14 +118,18 @@ fn main() {
             let s = a.elapsed().as_secs_f64() * 1e3;
             let b = Instant::now();
             let _ = engine.frame(now + Duration::from_millis(8), &view, (W, H), 1.0);
-            device.poll(wgpu::PollType::wait_indefinitely()).expect("the device polls");
+            device
+                .poll(wgpu::PollType::wait_indefinitely())
+                .expect("the device polls");
             let f = b.elapsed().as_secs_f64() * 1e3;
             if i >= 20 {
                 step.push(s);
                 whole.push(f);
             }
         }
-        let up = (MESH_UPLOAD_BYTES.load(std::sync::atomic::Ordering::Relaxed) - up0) as f64 / 120.0 / 1e6;
+        let up = (MESH_UPLOAD_BYTES.load(std::sync::atomic::Ordering::Relaxed) - up0) as f64
+            / 120.0
+            / 1e6;
         println!(
             "{n:3} machines: set_data {build:7.1} ms | step {:6.2} ms | frame {:6.2} ms | uploads {up:6.2} MB/frame | draws {} {:?}",
             median(step.clone()),
@@ -107,6 +137,10 @@ fn main() {
             engine.draw_calls(),
             engine.draw_breakdown()
         );
-        println!("      worst step {:6.2} ms | worst frame {:6.2} ms", step.iter().copied().fold(0.0, f64::max), whole.iter().copied().fold(0.0, f64::max));
+        println!(
+            "      worst step {:6.2} ms | worst frame {:6.2} ms",
+            step.iter().copied().fold(0.0, f64::max),
+            whole.iter().copied().fold(0.0, f64::max)
+        );
     }
 }

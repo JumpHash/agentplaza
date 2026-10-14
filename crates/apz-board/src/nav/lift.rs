@@ -172,11 +172,7 @@ impl LiftController {
 
     /// The stop height of stop s. Ports `yOf`.
     fn y_of(&self, s: usize) -> f32 {
-        if s == 0 {
-            self.low
-        } else {
-            self.high
-        }
+        if s == 0 { self.low } else { self.high }
     }
 
     /// The stop nearest to height y. Ports `stopOf`.
@@ -200,7 +196,13 @@ impl LiftController {
             return false;
         }
         let seq = self.next_seq();
-        self.reqs.push(Req { id, from, to, seq, state: ReqState::Queued });
+        self.reqs.push(Req {
+            id,
+            from,
+            to,
+            seq,
+            state: ReqState::Queued,
+        });
         true
     }
 
@@ -252,7 +254,10 @@ impl LiftController {
         if r.state != ReqState::Queued && r.state != ReqState::Boarding {
             return -1;
         }
-        self.line(r.from).iter().position(|x| x.id == id).map_or(-1, |i| i as i32)
+        self.line(r.from)
+            .iter()
+            .position(|x| x.id == id)
+            .map_or(-1, |i| i as i32)
     }
 
     /// The robots aboard (riding or arrived), in boarding order. Ports `riders`.
@@ -268,7 +273,11 @@ impl LiftController {
             boarding: self.riders(),
             door_t: self.door,
             phase: self.phase,
-            stop: if self.phase == LiftPhase::Travel { self.travel_to } else { self.stop },
+            stop: if self.phase == LiftPhase::Travel {
+                self.travel_to
+            } else {
+                self.stop
+            },
             calls: [self.waiting(0), self.waiting(1)],
         }
     }
@@ -280,7 +289,11 @@ impl LiftController {
 
     /// Advances the cab by dt seconds (clamped to [0, MAX_DT]; NaN, infinite and negative give 0). Ports `update`.
     pub fn update(&mut self, dt: f32) {
-        let h = if dt.is_finite() { dt.clamp(0.0, MAX_DT) } else { 0.0 };
+        let h = if dt.is_finite() {
+            dt.clamp(0.0, MAX_DT)
+        } else {
+            0.0
+        };
         let n = (h / STEP).ceil() as u32;
         for _ in 0..n {
             self.tick(h / n as f32);
@@ -303,7 +316,9 @@ impl LiftController {
     fn waiting(&self, s: usize) -> usize {
         self.reqs
             .iter()
-            .filter(|r| r.from == s && (r.state == ReqState::Queued || r.state == ReqState::Boarding))
+            .filter(|r| {
+                r.from == s && (r.state == ReqState::Queued || r.state == ReqState::Boarding)
+            })
             .count()
     }
 
@@ -312,7 +327,9 @@ impl LiftController {
         let mut v: Vec<Req> = self
             .reqs
             .iter()
-            .filter(|r| r.from == s && (r.state == ReqState::Queued || r.state == ReqState::Boarding))
+            .filter(|r| {
+                r.from == s && (r.state == ReqState::Queued || r.state == ReqState::Boarding)
+            })
             .copied()
             .collect();
         v.sort_by_key(|r| r.seq);
@@ -321,7 +338,12 @@ impl LiftController {
 
     /// The waiting robots over all stops, in arrival order. Ports `queued`.
     fn queued(&self) -> Vec<Req> {
-        let mut v: Vec<Req> = self.reqs.iter().filter(|r| r.state == ReqState::Queued).copied().collect();
+        let mut v: Vec<Req> = self
+            .reqs
+            .iter()
+            .filter(|r| r.state == ReqState::Queued)
+            .copied()
+            .collect();
         v.sort_by_key(|r| r.seq);
         v
     }
@@ -351,7 +373,12 @@ impl LiftController {
             LiftPhase::Unloading => {
                 self.t += h;
                 let s = self.stop;
-                let leaving: Vec<u32> = self.aboard().iter().filter(|r| r.to == s).map(|r| r.id).collect();
+                let leaving: Vec<u32> = self
+                    .aboard()
+                    .iter()
+                    .filter(|r| r.to == s)
+                    .map(|r| r.id)
+                    .collect();
                 if self.t >= self.unload_max {
                     // a robot that never stepped out is dropped (the view steps it off)
                     self.reqs.retain(|r| !leaving.contains(&r.id));
@@ -362,9 +389,15 @@ impl LiftController {
             }
             LiftPhase::Boarding => {
                 self.t += h;
-                let pending: Vec<u32> =
-                    self.reqs.iter().filter(|r| r.state == ReqState::Boarding).map(|r| r.id).collect();
-                if (self.t >= self.dwell && pending.is_empty()) || self.t >= self.dwell + self.hold_max {
+                let pending: Vec<u32> = self
+                    .reqs
+                    .iter()
+                    .filter(|r| r.state == ReqState::Boarding)
+                    .map(|r| r.id)
+                    .collect();
+                if (self.t >= self.dwell && pending.is_empty())
+                    || self.t >= self.dwell + self.hold_max
+                {
                     for id in pending {
                         // missed the door: the back of the line
                         let seq = self.next_seq();
@@ -390,7 +423,11 @@ impl LiftController {
                 let u = (self.t / self.travel_dur).min(1.0);
                 let y0 = self.y_of(self.travel_from);
                 let y1 = self.y_of(self.travel_to);
-                self.cab_y = if u >= 1.0 { y1 } else { y0 + (y1 - y0) * smoothstep(u) };
+                self.cab_y = if u >= 1.0 {
+                    y1
+                } else {
+                    y0 + (y1 - y0) * smoothstep(u)
+                };
                 if u >= 1.0 {
                     self.arrive();
                 }
@@ -419,7 +456,9 @@ impl LiftController {
             return;
         }
         let queued = self.queued();
-        let Some(head) = queued.first().copied() else { return };
+        let Some(head) = queued.first().copied() else {
+            return;
+        };
         if head.from == s {
             self.skipped = 0;
             self.open();
@@ -440,7 +479,12 @@ impl LiftController {
         self.door = 1.0;
         self.t = 0.0;
         let s = self.stop;
-        let leaving: Vec<u32> = self.aboard().iter().filter(|r| r.to == s).map(|r| r.id).collect();
+        let leaving: Vec<u32> = self
+            .aboard()
+            .iter()
+            .filter(|r| r.to == s)
+            .map(|r| r.id)
+            .collect();
         if leaving.is_empty() {
             self.begin_boarding();
             return;
@@ -497,7 +541,12 @@ impl LiftController {
         let s = self.travel_to;
         self.stop = s;
         self.cab_y = self.y_of(s);
-        let bound: Vec<u32> = self.aboard().iter().filter(|r| r.to == s).map(|r| r.id).collect();
+        let bound: Vec<u32> = self
+            .aboard()
+            .iter()
+            .filter(|r| r.to == s)
+            .map(|r| r.id)
+            .collect();
         for id in bound {
             if let Some(r) = self.find_mut(id) {
                 r.state = ReqState::Arrived;
@@ -520,7 +569,11 @@ mod tests {
     }
 
     /// Steps the lift until `done` holds, for at most `secs` seconds. Returns whether it did.
-    fn run_until(l: &mut LiftController, secs: f32, done: impl Fn(&LiftController) -> bool) -> bool {
+    fn run_until(
+        l: &mut LiftController,
+        secs: f32,
+        done: impl Fn(&LiftController) -> bool,
+    ) -> bool {
         let steps = (secs / DT) as usize;
         for _ in 0..steps {
             if done(l) {

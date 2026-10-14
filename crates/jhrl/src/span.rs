@@ -12,10 +12,18 @@ pub struct Span {
 
 impl Span {
     pub fn new(file: u32, lo: usize, hi: usize) -> Span {
-        Span { file, lo: lo as u32, hi: hi as u32 }
+        Span {
+            file,
+            lo: lo as u32,
+            hi: hi as u32,
+        }
     }
     pub fn to(self, other: Span) -> Span {
-        Span { file: self.file, lo: self.lo.min(other.lo), hi: self.hi.max(other.hi) }
+        Span {
+            file: self.file,
+            lo: self.lo.min(other.lo),
+            hi: self.hi.max(other.hi),
+        }
     }
 }
 
@@ -32,7 +40,11 @@ impl Source {
         let text = text.into();
         let mut line_starts = vec![0];
         line_starts.extend(text.match_indices('\n').map(|(i, _)| i + 1));
-        Source { path: path.into(), text, line_starts }
+        Source {
+            path: path.into(),
+            text,
+            line_starts,
+        }
     }
 
     /// 1-based line and column (in characters) of a byte offset.
@@ -42,7 +54,10 @@ impl Source {
             Err(i) => i - 1,
         };
         let start = self.line_starts[line];
-        let col = self.text[start..offset.min(self.text.len())].chars().count() + 1;
+        let col = self.text[start..offset.min(self.text.len())]
+            .chars()
+            .count()
+            + 1;
         (line + 1, col)
     }
 }
@@ -71,7 +86,10 @@ impl SourceMap {
 
     pub fn snippet(&self, span: Span) -> &str {
         match self.files.get(span.file as usize) {
-            Some(src) => src.text.get(span.lo as usize..span.hi as usize).unwrap_or(""),
+            Some(src) => src
+                .text
+                .get(span.lo as usize..span.hi as usize)
+                .unwrap_or(""),
             None => "",
         }
     }
@@ -87,13 +105,25 @@ pub struct Diag {
 
 impl Diag {
     pub fn error(span: Span, msg: impl Into<String>) -> Diag {
-        Diag { span: Some(span), msg: msg.into(), warning: false }
+        Diag {
+            span: Some(span),
+            msg: msg.into(),
+            warning: false,
+        }
     }
     pub fn bare(msg: impl Into<String>) -> Diag {
-        Diag { span: None, msg: msg.into(), warning: false }
+        Diag {
+            span: None,
+            msg: msg.into(),
+            warning: false,
+        }
     }
     pub fn warn(span: Span, msg: impl Into<String>) -> Diag {
-        Diag { span: Some(span), msg: msg.into(), warning: true }
+        Diag {
+            span: Some(span),
+            msg: msg.into(),
+            warning: true,
+        }
     }
     pub fn render(&self, sm: &SourceMap) -> String {
         let kind = if self.warning { "warning" } else { "error" };

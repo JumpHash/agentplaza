@@ -21,7 +21,10 @@ mod rooms;
 
 pub use rooms::furniture;
 
-use crate::grid::{DIRS8, NAV_CELL, NAV_COST_OPEN, NAV_DROP_DOWN, NAV_JUMP_UP, NAV_LIFT_COST, NAV_NEAR_COST, NAV_STEP};
+use crate::grid::{
+    DIRS8, NAV_CELL, NAV_COST_OPEN, NAV_DROP_DOWN, NAV_JUMP_UP, NAV_LIFT_COST, NAV_NEAR_COST,
+    NAV_STEP,
+};
 
 /// A plate this far above the PCB (or less) is reached by a ramp; higher, by a lift (nav-types.ts NAV_LIFT_RISE).
 pub const NAV_LIFT_RISE: f64 = 1.5;
@@ -236,7 +239,10 @@ pub struct NavGrid {
 impl NavGrid {
     /// The centre of column i (x) and row j (z).
     pub fn centre(&self, c: usize) -> [f64; 2] {
-        [self.x0 + ((c % self.cols) as f64 + 0.5) * self.cell, self.z0 + ((c / self.cols) as f64 + 0.5) * self.cell]
+        [
+            self.x0 + ((c % self.cols) as f64 + 0.5) * self.cell,
+            self.z0 + ((c / self.cols) as f64 + 0.5) * self.cell,
+        ]
     }
 
     /// The cell containing (x, z), or None outside the grid (nav-grid.ts cellAt).
@@ -251,7 +257,8 @@ impl NavGrid {
 
     /// The cell at column i, row j, or None off the grid.
     pub fn at(&self, i: i64, j: i64) -> Option<usize> {
-        (i >= 0 && j >= 0 && (i as usize) < self.cols && (j as usize) < self.rows).then(|| j as usize * self.cols + i as usize)
+        (i >= 0 && j >= 0 && (i as usize) < self.cols && (j as usize) < self.rows)
+            .then(|| j as usize * self.cols + i as usize)
     }
 }
 
@@ -278,7 +285,12 @@ pub struct Slab {
 
 impl Slab {
     pub fn of(t: &NavTerrace) -> Slab {
-        Slab { cx: t.cx, cz: t.cz, half: t.half, round: t.round }
+        Slab {
+            cx: t.cx,
+            cz: t.cz,
+            half: t.half,
+            round: t.round,
+        }
     }
 
     /// Is (x, z) inside the slab (nav-grid.ts inSlabAt).
@@ -293,14 +305,18 @@ impl Slab {
 
     /// The distance from (x, z) to the slab (nav-grid.ts slabGapAt).
     pub fn gap(&self, x: f64, z: f64) -> f64 {
-        ((x - self.cx).abs() - self.half).max(0.0).hypot(((z - self.cz).abs() - self.half).max(0.0))
+        ((x - self.cx).abs() - self.half)
+            .max(0.0)
+            .hypot(((z - self.cz).abs() - self.half).max(0.0))
     }
 }
 
 /// Is (x, z) landing-clear (nav-grid.ts landingClearAt): outside every slab and, off every plate, at least
 /// NAV_RAMP_DEPTH from every slab.
 pub fn landing_clear_at(slabs: &[Slab], x: f64, z: f64, on_plate: bool) -> bool {
-    slabs.iter().all(|t| !t.contains(x, z) && (on_plate || t.gap(x, z) >= NAV_RAMP_DEPTH))
+    slabs
+        .iter()
+        .all(|t| !t.contains(x, z) && (on_plate || t.gap(x, z) >= NAV_RAMP_DEPTH))
 }
 
 /// A plate's landing (rule 6): the plate cell p, the path p .. q, the board cell q, the lift queue, the step p to q.
@@ -387,7 +403,12 @@ pub fn build(board: &NavBoard, terraces: &[NavTerrace]) -> NavGrid {
                 let (ax0, ax1) = (x0 + i as f64 * cell, x0 + (i + 1) as f64 * cell);
                 let (az0, az1) = (z0 + j as f64 * cell, z0 + (j + 1) as f64 * cell);
                 let c = j * cols + i;
-                if ax0 < b.hi[0] && ax1 > b.lo[0] && az0 < b.hi[2] && az1 > b.lo[2] && b.hi[1] - g.y[c] > NAV_STEP {
+                if ax0 < b.hi[0]
+                    && ax1 > b.lo[0]
+                    && az0 < b.hi[2]
+                    && az1 > b.lo[2]
+                    && b.hi[1] - g.y[c] > NAV_STEP
+                {
                     g.blocked[c] = 1;
                 }
             }
@@ -403,7 +424,10 @@ pub fn build(board: &NavBoard, terraces: &[NavTerrace]) -> NavGrid {
             for j in span(az.min(bz) - r, az.max(bz) + r, z0, rows) {
                 for i in span(ax.min(bx) - r, ax.max(bx) + r, x0, cols) {
                     let c = j * cols + i;
-                    if g.blocked[c] == 0 && plate_of[c] == 0 && dist_sq(cx(i), cz(j), ax, az, bx, bz) <= r2 {
+                    if g.blocked[c] == 0
+                        && plate_of[c] == 0
+                        && dist_sq(cx(i), cz(j), ax, az, bx, bz) <= r2
+                    {
                         g.cost[c] = NAV_COST_TRACE;
                     }
                 }
@@ -424,16 +448,30 @@ pub fn build(board: &NavBoard, terraces: &[NavTerrace]) -> NavGrid {
     let b_comp = components(cols, rows, &b_walk, &g.y, &[]);
     let main_board = largest_at_board(&b_comp, &g.y, pcb);
     let slabs: Vec<Slab> = terraces.iter().map(Slab::of).collect();
-    let clear_cell = |c: usize, on_plate: bool| landing_clear_at(&slabs, cx(c % cols), cz(c / cols), on_plate);
+    let clear_cell =
+        |c: usize, on_plate: bool| landing_clear_at(&slabs, cx(c % cols), cz(c / cols), on_plate);
     let landed: Vec<Option<Landing>> = board
         .plates
         .iter()
         .map(|pl| {
             let gang = match &pl.landing {
-                Some(l) if l.kind == LandingKind::Gangway && !l.bridge.is_empty() => gangway_landing(&g, l, &b_walk, &b_comp, main_board),
+                Some(l) if l.kind == LandingKind::Gangway && !l.bridge.is_empty() => {
+                    gangway_landing(&g, l, &b_walk, &b_comp, main_board)
+                }
                 _ => None,
             };
-            gang.or_else(|| landing_of(&g, pl, pcb, &plate_of, &b_walk, &b_comp, main_board, &clear_cell))
+            gang.or_else(|| {
+                landing_of(
+                    &g,
+                    pl,
+                    pcb,
+                    &plate_of,
+                    &b_walk,
+                    &b_comp,
+                    main_board,
+                    &clear_cell,
+                )
+            })
         })
         .collect();
 
@@ -541,10 +579,22 @@ pub fn build(board: &NavBoard, terraces: &[NavTerrace]) -> NavGrid {
                 continue;
             }
             let dist = (qx - px).hypot(qz - pz);
-            add_portal(&mut g, NavPortal { a: l.p, b: l.q, kind: PortalKind::Ramp, cost: dist + 2.0 * rise, lift: None });
+            add_portal(
+                &mut g,
+                NavPortal {
+                    a: l.p,
+                    b: l.q,
+                    kind: PortalKind::Ramp,
+                    cost: dist + 2.0 * rise,
+                    lift: None,
+                },
+            );
             continue;
         }
-        let Some(queue) = l.queue.filter(|&q| g.walk[l.p] == 1 && g.walk[l.q] == 1 && g.walk[q] == 1) else {
+        let Some(queue) = l
+            .queue
+            .filter(|&q| g.walk[l.p] == 1 && g.walk[l.q] == 1 && g.walk[q] == 1)
+        else {
             g.unreached.push(pl.id);
             continue;
         };
@@ -561,7 +611,16 @@ pub fn build(board: &NavBoard, terraces: &[NavTerrace]) -> NavGrid {
             queue,
             door: l.p,
         });
-        add_portal(&mut g, NavPortal { a: l.p, b: l.q, kind: PortalKind::Lift, cost: NAV_LIFT_COST + rise, lift: Some(id) });
+        add_portal(
+            &mut g,
+            NavPortal {
+                a: l.p,
+                b: l.q,
+                kind: PortalKind::Lift,
+                cost: NAV_LIFT_COST + rise,
+                lift: Some(id),
+            },
+        );
     }
 
     // Rule 12: components of the finished walk (portals included); islands are cut.
@@ -582,7 +641,12 @@ pub fn build(board: &NavBoard, terraces: &[NavTerrace]) -> NavGrid {
 /// component and its outside cell is a walk plate cell.
 pub fn connectivity(g: &NavGrid) -> Connectivity {
     let main = main_component(g);
-    let components = g.component.iter().copied().max().map_or(0, |m| (m + 1).max(0) as usize);
+    let components = g
+        .component
+        .iter()
+        .copied()
+        .max()
+        .map_or(0, |m| (m + 1).max(0) as usize);
     let mut unconnected = Vec::new();
     let mut doors_ok = 0;
     for (k, &id) in g.terrace_ids.iter().enumerate() {
@@ -596,13 +660,27 @@ pub fn connectivity(g: &NavGrid) -> Connectivity {
             unconnected.push(id);
         }
     }
-    Connectivity { main, components, one_way: g.drops.len(), doors_ok, doors: g.terrace_ids.len(), unconnected, unreached: g.unreached.clone() }
+    Connectivity {
+        main,
+        components,
+        one_way: g.drops.len(),
+        doors_ok,
+        doors: g.terrace_ids.len(),
+        unconnected,
+        unreached: g.unreached.clone(),
+    }
 }
 
 /// The main component's id: the largest at board level (see [`largest_at_board`], the board level being the lowest
 /// walk), ties to the lowest id; -1 when no cell walks.
 pub fn main_component(g: &NavGrid) -> i32 {
-    let level = g.component.iter().zip(&g.y).filter(|(k, _)| **k >= 0).map(|(_, y)| *y).fold(f64::INFINITY, f64::min);
+    let level = g
+        .component
+        .iter()
+        .zip(&g.y)
+        .filter(|(k, _)| **k >= 0)
+        .map(|(_, y)| *y)
+        .fold(f64::INFINITY, f64::min);
     largest_at_board(&g.component, &g.y, level)
 }
 
@@ -611,7 +689,11 @@ pub fn main_component(g: &NavGrid) -> i32 {
 /// board their parts divide, and taking that as the main one cut the whole board as an island (a 2-GPU workstation had
 /// no walk on its PCB, so no landing and no lift).
 fn largest_at_board(comp: &[i32], y: &[f64], pcb: f64) -> i32 {
-    let low: Vec<i32> = comp.iter().zip(y).map(|(&k, &h)| if h <= pcb + NAV_LIFT_RISE { k } else { -1 }).collect();
+    let low: Vec<i32> = comp
+        .iter()
+        .zip(y)
+        .map(|(&k, &h)| if h <= pcb + NAV_LIFT_RISE { k } else { -1 })
+        .collect();
     match largest(&low) {
         -1 => largest(comp),
         k => k,
@@ -644,29 +726,51 @@ fn span(lo: f64, hi: f64, origin: f64, len: usize) -> std::ops::RangeInclusive<u
 fn dist_sq(px: f64, pz: f64, ax: f64, az: f64, bx: f64, bz: f64) -> f64 {
     let (vx, vz) = (bx - ax, bz - az);
     let len2 = vx * vx + vz * vz;
-    let t = if len2 > 0.0 { (((px - ax) * vx + (pz - az) * vz) / len2).clamp(0.0, 1.0) } else { 0.0 };
+    let t = if len2 > 0.0 {
+        (((px - ax) * vx + (pz - az) * vz) / len2).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
     let (qx, qz) = (ax + t * vx - px, az + t * vz - pz);
     qx * qx + qz * qz
 }
 
 /// True when any of the 8 neighbours of (i, j) is off the grid or blocked.
 fn neighbour_blocked(g: &NavGrid, i: usize, j: usize, blocked: &[u8]) -> bool {
-    DIRS8.iter().any(|&(di, dj)| g.at(i as i64 + di, j as i64 + dj).is_none_or(|v| blocked[v] == 1))
+    DIRS8.iter().any(|&(di, dj)| {
+        g.at(i as i64 + di, j as i64 + dj)
+            .is_none_or(|v| blocked[v] == 1)
+    })
 }
 
 /// Rule 6: the plate's landing, a multi-source search from its edge cells over the board walk to the main board
 /// component. A lift also needs its queue: the cell two beyond q, with the cell between, both board walk.
 #[allow(clippy::too_many_arguments)]
-fn landing_of(g: &NavGrid, pl: &NavPlate, pcb: f64, plate_of: &[i32], b_walk: &[u8], b_comp: &[i32], main_board: i32, clear_cell: &dyn Fn(usize, bool) -> bool) -> Option<Landing> {
+fn landing_of(
+    g: &NavGrid,
+    pl: &NavPlate,
+    pcb: f64,
+    plate_of: &[i32],
+    b_walk: &[u8],
+    b_comp: &[i32],
+    main_board: i32,
+    clear_cell: &dyn Fn(usize, bool) -> bool,
+) -> Option<Landing> {
     let (cols, n) = (g.cols, g.cols * g.rows);
     let ramp = pl.y - pcb <= NAV_LIFT_RISE;
     let mut parent = vec![usize::MAX; n];
     let mut root = vec![usize::MAX; n];
     let mut seen = vec![false; n];
     let mut queue = Vec::new();
-    let has_open_neighbour = |c: usize| DIRS8.iter().any(|&(di, dj)| g.at((c % cols) as i64 + di, (c / cols) as i64 + dj).is_some_and(|v| plate_of[v] == 0));
+    let has_open_neighbour = |c: usize| {
+        DIRS8.iter().any(|&(di, dj)| {
+            g.at((c % cols) as i64 + di, (c / cols) as i64 + dj)
+                .is_some_and(|v| plate_of[v] == 0)
+        })
+    };
     for c in 0..n {
-        if plate_of[c] != pl.id || b_walk[c] != 1 || !has_open_neighbour(c) || !clear_cell(c, true) {
+        if plate_of[c] != pl.id || b_walk[c] != 1 || !has_open_neighbour(c) || !clear_cell(c, true)
+        {
             continue;
         }
         seen[c] = true;
@@ -680,7 +784,9 @@ fn landing_of(g: &NavGrid, pl: &NavPlate, pcb: f64, plate_of: &[i32], b_walk: &[
         h += 1;
         let (i, j) = ((c % cols) as i64, (c / cols) as i64);
         for &(di, dj) in &DIRS8 {
-            let Some(v) = g.at(i + di, j + dj) else { continue };
+            let Some(v) = g.at(i + di, j + dj) else {
+                continue;
+            };
             if di != 0 && dj != 0 && (!walk_at(i + di, j) || !walk_at(i, j + dj)) {
                 continue;
             }
@@ -691,9 +797,15 @@ fn landing_of(g: &NavGrid, pl: &NavPlate, pcb: f64, plate_of: &[i32], b_walk: &[
                 let p = root[c];
                 let (ni, nj) = (i + di, j + dj);
                 let (ex, ez) = (ni - (p % cols) as i64, nj - (p / cols) as i64);
-                let (sx, sz) = if ex.abs() >= ez.abs() { (ex.signum(), 0) } else { (0, ez.signum()) };
+                let (sx, sz) = if ex.abs() >= ez.abs() {
+                    (ex.signum(), 0)
+                } else {
+                    (0, ez.signum())
+                };
                 let mid_ok = walk_at(ni + sx, nj + sz);
-                let qc = g.at(ni + 2 * sx, nj + 2 * sz).filter(|&q| mid_ok && b_walk[q] == 1 && clear_cell(q, plate_of[q] != 0));
+                let qc = g
+                    .at(ni + 2 * sx, nj + 2 * sz)
+                    .filter(|&q| mid_ok && b_walk[q] == 1 && clear_cell(q, plate_of[q] != 0));
                 if !ramp && qc.is_none() {
                     continue;
                 }
@@ -704,7 +816,15 @@ fn landing_of(g: &NavGrid, pl: &NavPlate, pcb: f64, plate_of: &[i32], b_walk: &[
                     u = parent[u];
                 }
                 path.reverse();
-                return Some(Landing { p, path, q: v, queue: qc, sx, sz, gang: false });
+                return Some(Landing {
+                    p,
+                    path,
+                    q: v,
+                    queue: qc,
+                    sx,
+                    sz,
+                    gang: false,
+                });
             }
             if seen[v] {
                 continue;
@@ -720,26 +840,59 @@ fn landing_of(g: &NavGrid, pl: &NavPlate, pcb: f64, plate_of: &[i32], b_walk: &[
 
 /// Rule 6a: a gangway's landing: its bridge cells (the last is p), the board cell q (walk, main board component) and a
 /// walk queue two cells beyond q with the cell between walk too. None when any of that fails.
-fn gangway_landing(g: &NavGrid, l: &PlateLanding, b_walk: &[u8], b_comp: &[i32], main_board: i32) -> Option<Landing> {
+fn gangway_landing(
+    g: &NavGrid,
+    l: &PlateLanding,
+    b_walk: &[u8],
+    b_comp: &[i32],
+    main_board: i32,
+) -> Option<Landing> {
     let cols = g.cols;
-    let path: Vec<usize> = l.bridge.iter().map(|&[x, z]| g.cell_at(x, z)).collect::<Option<_>>()?;
+    let path: Vec<usize> = l
+        .bridge
+        .iter()
+        .map(|&[x, z]| g.cell_at(x, z))
+        .collect::<Option<_>>()?;
     let p = *path.last()?;
     let q = g.cell_at(l.bx, l.bz)?;
     if b_walk[q] != 1 || b_comp[q] != main_board {
         return None;
     }
-    let (pi, pj, qi, qj) = ((p % cols) as i64, (p / cols) as i64, (q % cols) as i64, (q / cols) as i64);
+    let (pi, pj, qi, qj) = (
+        (p % cols) as i64,
+        (p / cols) as i64,
+        (q % cols) as i64,
+        (q / cols) as i64,
+    );
     let (ex, ez) = (qi - pi, qj - pj);
-    let (sx, sz) = if ex.abs() >= ez.abs() { (ex.signum(), 0) } else { (0, ez.signum()) };
+    let (sx, sz) = if ex.abs() >= ez.abs() {
+        (ex.signum(), 0)
+    } else {
+        (0, ez.signum())
+    };
     g.at(qi + sx, qj + sz).filter(|&m| b_walk[m] == 1)?;
     let qc = g.at(qi + 2 * sx, qj + 2 * sz).filter(|&k| b_walk[k] == 1)?;
-    Some(Landing { p, path, q, queue: Some(qc), sx, sz, gang: true })
+    Some(Landing {
+        p,
+        path,
+        q,
+        queue: Some(qc),
+        sx,
+        sz,
+        gang: true,
+    })
 }
 
 /// Rule 12: the components of the walk cells (nav-grid.ts walkComponents): 8-adjacent cells with a two-way step join (a
 /// diagonal only when both orthogonal cells walk), and so does each pair in `joins`. Ids run 0, 1, ... in order of each
 /// component's lowest cell; -1 for a cell that does not walk.
-pub fn components(cols: usize, rows: usize, walk: &[u8], y: &[f64], joins: &[(usize, usize)]) -> Vec<i32> {
+pub fn components(
+    cols: usize,
+    rows: usize,
+    walk: &[u8],
+    y: &[f64],
+    joins: &[(usize, usize)],
+) -> Vec<i32> {
     let n = cols * rows;
     let mut parent: Vec<usize> = (0..n).collect();
     fn find(parent: &mut [usize], mut x: usize) -> usize {
@@ -810,7 +963,11 @@ fn drop_edges(cols: usize, rows: usize, walk: &[u8], y: &[f64]) -> Vec<NavDrop> 
         if dy.abs() <= NAV_JUMP_UP || dy.abs() > NAV_DROP_DOWN {
             return;
         }
-        out.push(if dy < 0.0 { NavDrop { from: a, to: b } } else { NavDrop { from: b, to: a } });
+        out.push(if dy < 0.0 {
+            NavDrop { from: a, to: b }
+        } else {
+            NavDrop { from: b, to: a }
+        });
     };
     for j in 0..rows {
         for i in 0..cols {

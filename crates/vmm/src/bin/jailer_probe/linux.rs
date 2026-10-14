@@ -134,7 +134,10 @@ fn prove_inside(
     let mirrored: Vec<(String, String)> = [bind_file, bind_dir]
         .iter()
         .filter_map(|path| {
-            let mut parts = path.components().skip(1).map(|c| c.as_os_str().to_string_lossy().into_owned());
+            let mut parts = path
+                .components()
+                .skip(1)
+                .map(|c| c.as_os_str().to_string_lossy().into_owned());
             Some((parts.next()?, parts.next().unwrap_or_default()))
         })
         .collect();
@@ -142,7 +145,11 @@ fn prove_inside(
         if !entries.iter().any(|entry| entry == forbidden) {
             continue;
         }
-        let expected: Vec<&String> = mirrored.iter().filter(|(top, _)| top == forbidden).map(|(_, next)| next).collect();
+        let expected: Vec<&String> = mirrored
+            .iter()
+            .filter(|(top, _)| top == forbidden)
+            .map(|(_, next)| next)
+            .collect();
         if expected.is_empty() {
             println!("{VERDICT} root-has-{forbidden} {entries:?}");
             return Err(4);

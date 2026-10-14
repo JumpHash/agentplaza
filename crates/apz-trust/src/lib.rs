@@ -44,7 +44,9 @@ pub fn b64(bytes: &[u8]) -> String {
 /// Decodes URL-safe base64 without padding.
 pub fn unb64(text: &str) -> Result<Vec<u8>, String> {
     use base64::Engine;
-    base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(text).map_err(|e| e.to_string())
+    base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(text)
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

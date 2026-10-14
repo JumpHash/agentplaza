@@ -191,7 +191,9 @@ impl CreateRun {
         if let Some(role) = &self.role {
             checked_role(role)?;
             if self.keepalive == Some(false) {
-                return Err("a run with a role is a keepalive agent: keepalive cannot be false".to_string());
+                return Err(
+                    "a run with a role is a keepalive agent: keepalive cannot be false".to_string(),
+                );
             }
         }
         let named = match self.vsock_cid {
@@ -328,13 +330,18 @@ impl Default for CidBook {
 impl CidBook {
     /// An empty book that allocates from `range`.
     fn new(range: std::ops::RangeInclusive<u64>) -> Self {
-        Self { range, held: Mutex::new(Vec::new()) }
+        Self {
+            range,
+            held: Mutex::new(Vec::new()),
+        }
     }
 
     /// The book, poison-proof: a panicking run must not take the node's other
     /// runs with it.
     fn held(&self) -> MutexGuard<'_, Vec<(String, Vec<u64>)>> {
-        self.held.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.held
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Holds `cids` for `run`.
@@ -375,7 +382,10 @@ impl CidBook {
             None => Err(format!(
                 "the run range {first}..={last} has no free span of {count} \
                  guest CIDs (in use: {})",
-                busy.iter().map(u64::to_string).collect::<Vec<_>>().join(", ")
+                busy.iter()
+                    .map(u64::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
             )),
         }
     }
@@ -596,7 +606,10 @@ impl std::fmt::Display for InputError {
                 state.as_str()
             ),
             InputError::Console { vm, reason } => {
-                write!(formatter, "VM {vm} could not take the console input: {reason}")
+                write!(
+                    formatter,
+                    "VM {vm} could not take the console input: {reason}"
+                )
             }
         }
     }
@@ -725,7 +738,10 @@ impl std::fmt::Display for MemoryError {
             MemoryError::UnknownRun => write!(formatter, "no run with that id"),
             MemoryError::UnknownVm(vm) => write!(formatter, "the run has no VM {vm}"),
             MemoryError::NoBalloon(vm) => {
-                write!(formatter, "VM {vm} has no balloon, so its memory cannot be resized")
+                write!(
+                    formatter,
+                    "VM {vm} has no balloon, so its memory cannot be resized"
+                )
             }
             MemoryError::Stopped(vm) => write!(formatter, "VM {vm} is not running"),
             MemoryError::Refused(reason) => {
@@ -773,7 +789,9 @@ fn prepare_persistent_workspace(
 /// The persistent workspace image of the keepalive VM with guest CID `cid`
 /// under `persist_dir`: `persist_dir/workspaces/cid-{cid}.ext4`.
 fn persistent_workspace_path(persist_dir: &std::path::Path, cid: u64) -> PathBuf {
-    persist_dir.join("workspaces").join(format!("cid-{cid}.ext4"))
+    persist_dir
+        .join("workspaces")
+        .join(format!("cid-{cid}.ext4"))
 }
 
 /// Replaces the workspace image `image` with a fresh copy of the base image
@@ -982,7 +1000,8 @@ impl Registry {
         // The shape is checked here, at the one place every path passes, as
         // well as at the edge where the request is read.
         let vcpus = spawner_vcpus(meta.vcpus).map_err(|err| self.give_back(&id, err))?;
-        let memory_mib = spawner_memory_mib(meta.memory_mib).map_err(|err| self.give_back(&id, err))?;
+        let memory_mib =
+            spawner_memory_mib(meta.memory_mib).map_err(|err| self.give_back(&id, err))?;
         let vms = plans.len();
         // A run's workspace volume is writable, so every VM of the run gets its
         // own copy of the base image: one copy per VM, in the run's own
@@ -1046,7 +1065,10 @@ impl Registry {
                     }),
                     // One image per VM, in the order `materialize_workspaces`
                     // produced them: the run has exactly `vms` copies.
-                    workspace: workspaces.as_ref().and_then(|images| images.get(i)).cloned(),
+                    workspace: workspaces
+                        .as_ref()
+                        .and_then(|images| images.get(i))
+                        .cloned(),
                     balloon,
                 }
             })
@@ -1063,10 +1085,17 @@ impl Registry {
                     // run is already over, so the VMs that just came up must
                     // not be left behind.
                     drop(inner);
-                    eprintln!("noded: run {}: {refused}; killing the VMs it just booted", run.id);
+                    eprintln!(
+                        "noded: run {}: {refused}; killing the VMs it just booted",
+                        run.id
+                    );
                     for mut handle in handles {
                         if let Err(err) = handle.kill() {
-                            eprintln!("noded: run {}: VM {} did not stop: {err}", run.id, handle.id());
+                            eprintln!(
+                                "noded: run {}: VM {} did not stop: {err}",
+                                run.id,
+                                handle.id()
+                            );
                         }
                     }
                     return Ok(run);
@@ -1110,7 +1139,10 @@ impl Registry {
                 eprintln!("noded: run {} failed to boot: {err}", run.id);
                 let mut inner = run.lock();
                 if let Err(refused) = inner.transition(RunState::Failed) {
-                    eprintln!("noded: run {}: {refused} (a kill raced the failed boot)", run.id);
+                    eprintln!(
+                        "noded: run {}: {refused} (a kill raced the failed boot)",
+                        run.id
+                    );
                 } else {
                     // The run ended here, so its CIDs go back to the book: the
                     // next run may draw them, and none of this run's VMs ever
@@ -1180,7 +1212,9 @@ impl Registry {
         if let Some(base) = &base {
             if let Err(err) = self.reset_workspace(base, run, &spec) {
                 run.set_vm_killed(vm, killed);
-                return Err(VmOpError::Failed(format!("cannot reset VM {vm}'s workspace: {err}")));
+                return Err(VmOpError::Failed(format!(
+                    "cannot reset VM {vm}'s workspace: {err}"
+                )));
             }
         }
         match spawner::spawn(spec) {
@@ -1190,7 +1224,9 @@ impl Registry {
             }
             Err(err) => {
                 run.set_vm_killed(vm, killed);
-                Err(VmOpError::Failed(format!("VM {vm} did not boot again: {err}")))
+                Err(VmOpError::Failed(format!(
+                    "VM {vm} did not boot again: {err}"
+                )))
             }
         }
     }
@@ -1198,7 +1234,12 @@ impl Registry {
     /// Gives a VM's workspace a fresh copy of `base`. A keepalive run's
     /// persistent image is deleted and copied again; any other image is copied
     /// over in place.
-    fn reset_workspace(&self, base: &std::path::Path, run: &Run, spec: &VmSpec) -> std::io::Result<()> {
+    fn reset_workspace(
+        &self,
+        base: &std::path::Path,
+        run: &Run,
+        spec: &VmSpec,
+    ) -> std::io::Result<()> {
         match (run.keepalive, &self.persist_dir, &spec.vsock) {
             (true, Some(persist), Some(vsock)) => {
                 let image = persistent_workspace_path(persist, vsock.guest_cid);
@@ -1221,9 +1262,13 @@ impl Registry {
         &self.events
     }
 
-
     /// Resizes VM `vm` of run `run` to `usable_mib` (see [`Run::set_memory`]).
-    pub fn set_vm_memory(&self, run: &str, vm: u32, usable_mib: u32) -> Result<MemoryView, MemoryError> {
+    pub fn set_vm_memory(
+        &self,
+        run: &str,
+        vm: u32,
+        usable_mib: u32,
+    ) -> Result<MemoryView, MemoryError> {
         let run = self.find(run).ok_or(MemoryError::UnknownRun)?;
         run.set_memory(vm, usable_mib)
     }
@@ -1330,11 +1375,21 @@ impl std::fmt::Display for VmOpError {
             VmOpError::UnknownRun => write!(formatter, "no run with that id"),
             VmOpError::UnknownVm(vm) => write!(formatter, "the run has no VM {vm}"),
             VmOpError::RunEnded(state) => {
-                write!(formatter, "the run is {}, so its VMs cannot be operated on", state.as_str())
+                write!(
+                    formatter,
+                    "the run is {}, so its VMs cannot be operated on",
+                    state.as_str()
+                )
             }
-            VmOpError::Busy(vm) => write!(formatter, "VM {vm} is already being restarted, wiped or stopped"),
+            VmOpError::Busy(vm) => write!(
+                formatter,
+                "VM {vm} is already being restarted, wiped or stopped"
+            ),
             VmOpError::NoBaseImage => {
-                write!(formatter, "this node has no base workspace image to wipe a VM back to")
+                write!(
+                    formatter,
+                    "this node has no base workspace image to wipe a VM back to"
+                )
             }
             VmOpError::Refused(reason) => write!(formatter, "VM did not stop: {reason}"),
             VmOpError::Failed(reason) => write!(formatter, "{reason}"),
@@ -1466,7 +1521,11 @@ impl Run {
                     guest_cid: slot.guest_cid,
                     role: slot.role.clone(),
                     state: slot.state.as_str(),
-                    memory: slot.handle.as_ref().and_then(VmHandle::memory_stats).map(MemoryView::from),
+                    memory: slot
+                        .handle
+                        .as_ref()
+                        .and_then(VmHandle::memory_stats)
+                        .map(MemoryView::from),
                     serial: match detail {
                         Detail::Summary => None,
                         Detail::Full => Some(serial_of(&slot.runtime)),
@@ -1619,10 +1678,9 @@ impl Run {
             .iter_mut()
             .find(|slot| slot.id == vm)
             .ok_or(VmOpError::UnknownVm(vm))?;
-        let spec = slot
-            .spec
-            .clone()
-            .ok_or_else(|| VmOpError::Failed(format!("VM {vm} has no saved spec to boot again from")))?;
+        let spec = slot.spec.clone().ok_or_else(|| {
+            VmOpError::Failed(format!("VM {vm} has no saved spec to boot again from"))
+        })?;
         let handle = slot.handle.take().ok_or(VmOpError::Busy(vm))?;
         Ok((handle, spec))
     }
@@ -1835,7 +1893,9 @@ fn publish_serial_delta(events: &EventBus, run: &str, slot: &mut VmSlot) {
 pub(crate) fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_or(0, |since| u64::try_from(since.as_millis()).unwrap_or(u64::MAX))
+        .map_or(0, |since| {
+            u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
+        })
 }
 
 #[cfg(test)]
@@ -1892,7 +1952,10 @@ mod tests {
         std::fs::write(&base, b"fresh base image").expect("the base image");
         std::fs::write(&image, b"the agent's own files").expect("the workspace image");
         replace_workspace(&base, &image).expect("the workspace is replaced");
-        assert_eq!(std::fs::read(&image).expect("the image"), b"fresh base image");
+        assert_eq!(
+            std::fs::read(&image).expect("the image"),
+            b"fresh base image"
+        );
         assert!(!dir.join("cid-7.ext4.partial").exists());
     }
 
@@ -1945,7 +2008,9 @@ mod tests {
             );
         }
         assert_eq!(
-            std::fs::read_dir(&run_dir).expect("the run's directory").count(),
+            std::fs::read_dir(&run_dir)
+                .expect("the run's directory")
+                .count(),
             2,
             "one image per VM, and nothing else"
         );
@@ -1987,7 +2052,10 @@ mod tests {
                 to: RunState::Running
             }
         );
-        assert_eq!(refused.to_string(), "a run may not go from killed to running");
+        assert_eq!(
+            refused.to_string(),
+            "a run may not go from killed to running"
+        );
         assert_eq!(run.state, RunState::Killed);
         assert_eq!(run.ended_at, Some(7));
     }
@@ -1995,7 +2063,8 @@ mod tests {
     #[test]
     fn an_ending_transition_stamps_ended_at_and_a_start_does_not() {
         let mut run = inner(RunState::Starting);
-        run.transition(RunState::Running).expect("starting -> running");
+        run.transition(RunState::Running)
+            .expect("starting -> running");
         assert_eq!(run.state, RunState::Running);
         assert_eq!(run.ended_at, None);
 
@@ -2004,11 +2073,15 @@ mod tests {
         assert!(run.state.is_finished());
 
         let mut failed = inner(RunState::Running);
-        failed.transition(RunState::Failed).expect("running -> failed");
+        failed
+            .transition(RunState::Failed)
+            .expect("running -> failed");
         assert!(failed.ended_at.is_some());
 
         let mut killed = inner(RunState::Starting);
-        killed.transition(RunState::Killed).expect("starting -> killed");
+        killed
+            .transition(RunState::Killed)
+            .expect("starting -> killed");
         assert!(killed.ended_at.is_some());
     }
 
@@ -2100,13 +2173,19 @@ mod tests {
             keepalive: None,
             balloon_usable_mib: None,
         };
-        assert_eq!(request(None, None).vm_cmdline(0, false), "console=ttyS0 plaza.harness=1 plaza.vm=0");
+        assert_eq!(
+            request(None, None).vm_cmdline(0, false),
+            "console=ttyS0 plaza.harness=1 plaza.vm=0"
+        );
         assert_eq!(
             request(Some(2), None).vm_cmdline(1, true),
             "console=ttyS0 plaza.beats=2 plaza.harness=1 plaza.keepalive=1 plaza.vm=1"
         );
         let roled = request(None, Some("builder")).vm_cmdline(0, true);
-        assert!(roled.contains("plaza.role=builder") && roled.contains("plaza.keepalive=1"), "{roled}");
+        assert!(
+            roled.contains("plaza.role=builder") && roled.contains("plaza.keepalive=1"),
+            "{roled}"
+        );
         assert!(request(None, Some("Bad Role")).checked().is_err());
     }
 
@@ -2181,10 +2260,7 @@ mod tests {
         };
 
         // A CID inside the valid range is accepted, base + n - 1 included.
-        assert_eq!(
-            request(Some(3)).checked().expect("a valid CID").1,
-            Some(3)
-        );
+        assert_eq!(request(Some(3)).checked().expect("a valid CID").1, Some(3));
         assert_eq!(
             request(Some(MAX_GUEST_CID - 1))
                 .checked()
@@ -2212,7 +2288,10 @@ mod tests {
     #[test]
     fn an_allocation_takes_the_first_free_span_and_gives_it_back() {
         let book = CidBook::default();
-        assert_eq!(book.allocate("r1", 1).expect("the range is empty"), RUN_CID_BASE);
+        assert_eq!(
+            book.allocate("r1", 1).expect("the range is empty"),
+            RUN_CID_BASE
+        );
         assert_eq!(
             book.allocate("r2", 1).expect("the next span is free"),
             RUN_CID_BASE + 1
@@ -2224,16 +2303,26 @@ mod tests {
         // Releasing gives exactly that run's span back: the next allocation
         // reuses the hole, not the tail.
         assert!(book.release("r1"));
-        assert_eq!(book.allocate("r4", 1).expect("the hole is free"), RUN_CID_BASE);
+        assert_eq!(
+            book.allocate("r4", 1).expect("the hole is free"),
+            RUN_CID_BASE
+        );
         assert!(!book.release("r1"), "release is idempotent");
 
         // Every live run's span is its own: no two allocations overlap.
         let held = book.held();
-        let mut all: Vec<u64> = held.iter().flat_map(|(_, cids)| cids.iter().copied()).collect();
+        let mut all: Vec<u64> = held
+            .iter()
+            .flat_map(|(_, cids)| cids.iter().copied())
+            .collect();
         let count = all.len();
         all.sort_unstable();
         all.dedup();
-        assert_eq!(all.len(), count, "two runs were given the same CID: {held:?}");
+        assert_eq!(
+            all.len(),
+            count,
+            "two runs were given the same CID: {held:?}"
+        );
     }
 
     /// A span the caller pinned is never allocated to another run: the
@@ -2269,14 +2358,20 @@ mod tests {
             refused.contains(&format!("{RUN_CID_BASE}..={RUN_CID_END}")),
             "{refused}"
         );
-        assert!(refused.contains(&format!("in use: {RUN_CID_BASE}, ")), "{refused}");
+        assert!(
+            refused.contains(&format!("in use: {RUN_CID_BASE}, ")),
+            "{refused}"
+        );
         assert!(refused.contains(&format!(", {RUN_CID_END}")), "{refused}");
 
         // A span wider than the whole range is refused the same way, and a
         // released CID makes room for it again.
         assert!(book.allocate("wide", width + 1).is_err());
         assert!(book.release("r0"));
-        assert_eq!(book.allocate("late", 1).expect("the hole is free"), RUN_CID_BASE);
+        assert_eq!(
+            book.allocate("late", 1).expect("the hole is free"),
+            RUN_CID_BASE
+        );
     }
 
     /// A create that cannot prepare its workspace copies is refused with no
@@ -2311,7 +2406,10 @@ mod tests {
             refused.contains("cannot prepare the run's workspace images"),
             "{refused}"
         );
-        assert!(registry.list().is_empty(), "a refused create left a run behind");
+        assert!(
+            registry.list().is_empty(),
+            "a refused create left a run behind"
+        );
         assert!(
             busy(&registry.cids.held()).is_empty(),
             "a create that never became a run kept its CIDs: {:?}",
@@ -2355,11 +2453,17 @@ mod tests {
             })
             .err()
             .expect("the run range is full");
-        assert!(refused.contains(&format!("{RUN_CID_BASE}..={RUN_CID_END}")), "{refused}");
+        assert!(
+            refused.contains(&format!("{RUN_CID_BASE}..={RUN_CID_END}")),
+            "{refused}"
+        );
         assert!(refused.contains("in use: "), "{refused}");
         // Nothing was created and nothing was laid out: the refusal came
         // before a run id became a run directory.
-        assert!(registry.list().is_empty(), "a refused create left a run behind");
+        assert!(
+            registry.list().is_empty(),
+            "a refused create left a run behind"
+        );
         let laid_out = std::fs::read_dir(&uds_dir)
             .map(|entries| {
                 entries

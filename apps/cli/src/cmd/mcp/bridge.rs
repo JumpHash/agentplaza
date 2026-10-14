@@ -7,7 +7,7 @@ use std::io::{self, BufRead, Write};
 use std::time::Duration;
 
 use apz_http::client::{self, Target};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// What the hub answered to one POST.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,19 +40,34 @@ impl Transport for HubTransport {
         let mut target = self.target.clone();
         target.headers = vec![
             ("Content-Type".to_string(), "application/json".to_string()),
-            ("Accept".to_string(), "application/json, text/event-stream".to_string()),
+            (
+                "Accept".to_string(),
+                "application/json, text/event-stream".to_string(),
+            ),
         ];
         if let Some(id) = session {
-            target.headers.push(("Mcp-Session-Id".to_string(), id.to_string()));
+            target
+                .headers
+                .push(("Mcp-Session-Id".to_string(), id.to_string()));
         }
-        let reply = client::request(&target, "POST", "/mcp", Some(message.as_bytes()), self.timeout)
-            .map_err(|e| format!("{}: {e}", self.target.base))?;
+        let reply = client::request(
+            &target,
+            "POST",
+            "/mcp",
+            Some(message.as_bytes()),
+            self.timeout,
+        )
+        .map_err(|e| format!("{}: {e}", self.target.base))?;
         let session = reply
             .headers
             .iter()
             .find(|(name, _)| name.eq_ignore_ascii_case("mcp-session-id"))
             .map(|(_, value)| value.clone());
-        Ok(Answer { status: reply.status, session, body: reply.body })
+        Ok(Answer {
+            status: reply.status,
+            session,
+            body: reply.body,
+        })
     }
 }
 
@@ -67,7 +82,12 @@ pub struct Bridge<T: Transport> {
 
 impl<T: Transport> Bridge<T> {
     pub fn new(transport: T) -> Bridge<T> {
-        Bridge { transport, session: None, initialize: None, initialized: None }
+        Bridge {
+            transport,
+            session: None,
+            initialize: None,
+            initialized: None,
+        }
     }
 
     /// One message in, at most one line out. None means nothing goes to stdout (a notification the
@@ -79,7 +99,11 @@ impl<T: Transport> Bridge<T> {
         };
         let expects_answer = expects_answer(&message);
         let id = request_id(&message);
-        let method = message.get("method").and_then(Value::as_str).unwrap_or("").to_string();
+        let method = message
+            .get("method")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
         let is_initialize = method == "initialize";
         if is_initialize {
             self.initialize = Some(line.to_string());
@@ -105,7 +129,11 @@ impl<T: Transport> Bridge<T> {
 
     /// POSTs one message, with the session when `with_session`, and keeps any session the answer names.
     fn send(&mut self, line: &str, with_session: bool) -> Result<Answer, String> {
-        let session = if with_session { self.session.clone() } else { None };
+        let session = if with_session {
+            self.session.clone()
+        } else {
+            None
+        };
         let answer = self.transport.post(line, session.as_deref())?;
         if let Some(id) = &answer.session {
             self.session = Some(id.clone());
@@ -120,7 +148,10 @@ impl<T: Transport> Bridge<T> {
         let init = self.initialize.clone().unwrap_or_default();
         let answer = self.send(&init, false)?;
         if !(200..300).contains(&answer.status) {
-            return Err(format!("the hub would not initialize again: HTTP {}", answer.status));
+            return Err(format!(
+                "the hub would not initialize again: HTTP {}",
+                answer.status
+            ));
         }
         if let Some(note) = self.initialized.clone() {
             self.send(&note, true)?;
@@ -130,7 +161,11 @@ impl<T: Transport> Bridge<T> {
 }
 
 /// Relays every line from `input` through a bridge over `transport`, writing one line per answer.
-pub fn serve<T: Transport>(transport: T, input: impl BufRead, mut output: impl Write) -> io::Result<()> {
+pub fn serve<T: Transport>(
+    transport: T,
+    input: impl BufRead,
+    mut output: impl Write,
+) -> io::Result<()> {
     let mut bridge = Bridge::new(transport);
     for line in input.lines() {
         let line = line?;
@@ -172,7 +207,11 @@ fn reply_line(answer: &Answer, id: &Value, expects_answer: bool) -> Option<Strin
     }
     let text = String::from_utf8_lossy(&answer.body).replace(['\n', '\r'], " ");
     let text = text.trim();
-    let detail = if text.is_empty() { String::new() } else { format!(": {}", text.chars().take(200).collect::<String>()) };
+    let detail = if text.is_empty() {
+        String::new()
+    } else {
+        format!(": {}", text.chars().take(200).collect::<String>())
+    };
     let message = format!("the hub answered HTTP {}{detail}", answer.status);
     if expects_answer {
         Some(error_line(id, -32000, &message))
@@ -221,19 +260,29 @@ mod tests {
 
     impl Fake {
         fn scripted(replies: Vec<Result<Answer, String>>) -> Fake {
-            Fake { posts: Vec::new(), replies: replies.into() }
+            Fake {
+                posts: Vec::new(),
+                replies: replies.into(),
+            }
         }
     }
 
     impl Transport for Fake {
         fn post(&mut self, message: &str, session: Option<&str>) -> Result<Answer, String> {
-            self.posts.push((message.to_string(), session.map(str::to_string)));
-            self.replies.pop_front().unwrap_or_else(|| Err("no scripted reply".to_string()))
+            self.posts
+                .push((message.to_string(), session.map(str::to_string)));
+            self.replies
+                .pop_front()
+                .unwrap_or_else(|| Err("no scripted reply".to_string()))
         }
     }
 
     fn answer(status: u16, session: Option<&str>, body: &str) -> Result<Answer, String> {
-        Ok(Answer { status, session: session.map(str::to_string), body: body.as_bytes().to_vec() })
+        Ok(Answer {
+            status,
+            session: session.map(str::to_string),
+            body: body.as_bytes().to_vec(),
+        })
     }
 
     fn ok(body: &str) -> Result<Answer, String> {
@@ -242,18 +291,36 @@ mod tests {
 
     #[test]
     fn the_session_is_captured_and_sent_on_later_requests() {
-        let mut bridge = Bridge::new(Fake::scripted(vec![answer(200, Some("s1"), r#"{"jsonrpc":"2.0","id":1,"result":{}}"#), ok(ANSWER)]));
+        let mut bridge = Bridge::new(Fake::scripted(vec![
+            answer(200, Some("s1"), r#"{"jsonrpc":"2.0","id":1,"result":{}}"#),
+            ok(ANSWER),
+        ]));
         assert!(bridge.relay(INIT).is_some());
         assert!(bridge.relay(LIST).is_some());
-        assert_eq!(bridge.transport.posts[0], (INIT.to_string(), None), "initialize carries no session");
-        assert_eq!(bridge.transport.posts[1], (LIST.to_string(), Some("s1".to_string())));
+        assert_eq!(
+            bridge.transport.posts[0],
+            (INIT.to_string(), None),
+            "initialize carries no session"
+        );
+        assert_eq!(
+            bridge.transport.posts[1],
+            (LIST.to_string(), Some("s1".to_string()))
+        );
     }
 
     #[test]
     fn a_notification_gets_no_output_line() {
         let mut out = Vec::new();
-        serve(Fake::scripted(vec![answer(202, None, "")]), Cursor::new(format!("{NOTE}\n")), &mut out).unwrap();
-        assert!(out.is_empty(), "a 202 to a notification writes nothing: {out:?}");
+        serve(
+            Fake::scripted(vec![answer(202, None, "")]),
+            Cursor::new(format!("{NOTE}\n")),
+            &mut out,
+        )
+        .unwrap();
+        assert!(
+            out.is_empty(),
+            "a 202 to a notification writes nothing: {out:?}"
+        );
 
         let mut bridge = Bridge::new(Fake::scripted(vec![answer(202, None, "")]));
         assert_eq!(bridge.relay(NOTE), None);
@@ -272,13 +339,29 @@ mod tests {
         assert!(bridge.relay(INIT).is_some());
         assert_eq!(bridge.relay(NOTE), None);
         let written = bridge.relay(LIST).expect("the retry is answered");
-        assert_eq!(serde_json::from_str::<Value>(&written).unwrap(), serde_json::from_str::<Value>(ANSWER).unwrap(), "the retry's answer is the one written");
+        assert_eq!(
+            serde_json::from_str::<Value>(&written).unwrap(),
+            serde_json::from_str::<Value>(ANSWER).unwrap(),
+            "the retry's answer is the one written"
+        );
 
         let posts = &bridge.transport.posts;
-        assert_eq!(posts.len(), 6, "initialize, notification, failed list, initialize again, notification, retry");
+        assert_eq!(
+            posts.len(),
+            6,
+            "initialize, notification, failed list, initialize again, notification, retry"
+        );
         assert_eq!(posts[2], (LIST.to_string(), Some("s1".to_string())));
-        assert_eq!(posts[3], (INIT.to_string(), None), "the initialize is sent again with no session");
-        assert_eq!(posts[4], (NOTE.to_string(), Some("s2".to_string())), "initialized is replayed on the new session");
+        assert_eq!(
+            posts[3],
+            (INIT.to_string(), None),
+            "the initialize is sent again with no session"
+        );
+        assert_eq!(
+            posts[4],
+            (NOTE.to_string(), Some("s2".to_string())),
+            "initialized is replayed on the new session"
+        );
         assert_eq!(posts[5], (LIST.to_string(), Some("s2".to_string())));
     }
 
@@ -303,8 +386,13 @@ mod tests {
         let batch = r#"[{"jsonrpc":"2.0","id":1,"method":"ping"},{"jsonrpc":"2.0","id":2,"method":"tools/list"}]"#;
         let pretty = "[\n  {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}},\n  {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[]}}\n]";
         let mut bridge = Bridge::new(Fake::scripted(vec![ok(pretty)]));
-        let line = bridge.relay(batch).expect("a batch with requests is answered");
-        assert_eq!(bridge.transport.posts[0].0, batch, "the batch is forwarded as it came");
+        let line = bridge
+            .relay(batch)
+            .expect("a batch with requests is answered");
+        assert_eq!(
+            bridge.transport.posts[0].0, batch,
+            "the batch is forwarded as it came"
+        );
         assert!(!line.contains('\n'), "one line: {line}");
         let value: Value = serde_json::from_str(&line).unwrap();
         assert_eq!(value.as_array().map(Vec::len), Some(2));
@@ -313,14 +401,19 @@ mod tests {
     #[test]
     fn unparseable_input_is_a_parse_error_and_never_posted() {
         let mut bridge = Bridge::new(Fake::scripted(Vec::new()));
-        let line = bridge.relay("{not json").expect("a parse error is answered");
+        let line = bridge
+            .relay("{not json")
+            .expect("a parse error is answered");
         assert!(line.contains("-32700"));
         assert!(bridge.transport.posts.is_empty());
     }
 
     #[test]
     fn a_transport_failure_answers_the_request_and_only_logs_a_notification() {
-        let mut bridge = Bridge::new(Fake::scripted(vec![Err("connection refused".into()), Err("connection refused".into())]));
+        let mut bridge = Bridge::new(Fake::scripted(vec![
+            Err("connection refused".into()),
+            Err("connection refused".into()),
+        ]));
         let line = bridge.relay(LIST).expect("a request is answered");
         let value: Value = serde_json::from_str(&line).unwrap();
         assert_eq!(value["id"], 2);
@@ -330,10 +423,18 @@ mod tests {
     #[test]
     fn serve_writes_one_line_per_answer_and_stops_when_stdin_closes() {
         let input = format!("{INIT}\n\n{NOTE}\n{LIST}\n");
-        let transport = Fake::scripted(vec![answer(200, Some("s1"), r#"{"jsonrpc":"2.0","id":1,"result":{}}"#), answer(202, None, ""), ok(ANSWER)]);
+        let transport = Fake::scripted(vec![
+            answer(200, Some("s1"), r#"{"jsonrpc":"2.0","id":1,"result":{}}"#),
+            answer(202, None, ""),
+            ok(ANSWER),
+        ]);
         let mut out = Vec::new();
         serve(transport, Cursor::new(input), &mut out).unwrap();
         let text = String::from_utf8(out).unwrap();
-        assert_eq!(text.lines().count(), 2, "initialize and tools/list answer; the notification does not");
+        assert_eq!(
+            text.lines().count(),
+            2,
+            "initialize and tools/list answer; the notification does not"
+        );
     }
 }

@@ -3,8 +3,8 @@
 
 use std::collections::BTreeMap;
 
-use apz_board::zfight::{describe, zfight_report};
 use apz_board::Board;
+use apz_board::zfight::{describe, zfight_report};
 use serde_json::Value;
 
 const FIXTURE: &str = include_str!("fixtures/boards.json");
@@ -38,9 +38,15 @@ fn zfight_ratchet() {
     }
     for v in fx["variants"].as_array().expect("variants") {
         let kind = v["kind"].as_str().expect("kind");
-        let params: BTreeMap<String, f64> =
-            v["params"].as_object().expect("params").iter().map(|(k, x)| (k.clone(), x.as_f64().expect("number"))).collect();
-        let label = params.iter().fold(kind.to_string(), |acc, (k, v)| format!("{acc} {k}={v}"));
+        let params: BTreeMap<String, f64> = v["params"]
+            .as_object()
+            .expect("params")
+            .iter()
+            .map(|(k, x)| (k.clone(), x.as_f64().expect("number")))
+            .collect();
+        let label = params
+            .iter()
+            .fold(kind.to_string(), |acc, (k, v)| format!("{acc} {k}={v}"));
         cases.push((label, Board::from_kind(kind, &params)));
     }
 
@@ -48,17 +54,32 @@ fn zfight_ratchet() {
     let mut total = 0;
     for (label, board) in &cases {
         let report = zfight_report(board);
-        println!("{label}: {} faces, {} findings, {} skipped", report.faces, report.findings.len(), report.skipped.len());
+        println!(
+            "{label}: {} faces, {} findings, {} skipped",
+            report.faces,
+            report.findings.len(),
+            report.skipped.len()
+        );
         for f in &report.findings {
             println!("  {}", describe(f));
         }
         total += report.findings.len();
         match baseline(label) {
             Some(b) if report.findings.len() <= b => {}
-            Some(b) => failures.push(format!("{label}: {} findings, baseline {b}", report.findings.len())),
-            None => failures.push(format!("{label}: {} findings, no baseline", report.findings.len())),
+            Some(b) => failures.push(format!(
+                "{label}: {} findings, baseline {b}",
+                report.findings.len()
+            )),
+            None => failures.push(format!(
+                "{label}: {} findings, no baseline",
+                report.findings.len()
+            )),
         }
     }
     println!("total findings {total} over {} cases", cases.len());
-    assert!(failures.is_empty(), "z-fight ratchet:\n{}", failures.join("\n"));
+    assert!(
+        failures.is_empty(),
+        "z-fight ratchet:\n{}",
+        failures.join("\n")
+    );
 }

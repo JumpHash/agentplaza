@@ -11,13 +11,34 @@ use super::super::canvas::Canvas;
 use super::super::geometry;
 use super::super::props::{Anim, Box2};
 use super::super::scene::{Color, Geo, Kind, Mat, Material, Obj, Tex};
-use super::super::textures::{canvas_texture, Rng};
+use super::super::textures::{Rng, canvas_texture};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FloorKind { Planks, Parquet, Checker, Hazard, Slate, Carpet, Blueprint, Stars, Marble, Gravel, Tiles, Lawn }
+pub enum FloorKind {
+    Planks,
+    Parquet,
+    Checker,
+    Hazard,
+    Slate,
+    Carpet,
+    Blueprint,
+    Stars,
+    Marble,
+    Gravel,
+    Tiles,
+    Lawn,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WallKind { Panel, Brick, Hedge, Glass, Fence, Stone, None }
+pub enum WallKind {
+    Panel,
+    Brick,
+    Hedge,
+    Glass,
+    Fence,
+    Stone,
+    None,
+}
 
 /// The colours the kit tints from.
 #[derive(Debug, Clone, Copy)]
@@ -36,16 +57,34 @@ type Cache = Arc<Mutex<HashMap<String, Mat>>>;
 /// Cartoon materials, some tinted with the room's hue (`Kit` in kit.ts).
 #[derive(Clone)]
 pub struct Kit {
-    pub wood: Mat, pub dark_wood: Mat, pub metal: Mat, pub dark: Mat,
-    pub white: Mat, pub paper: Mat, pub clay: Mat, pub leaf: Mat,
-    pub leaf2: Mat, pub crate_: Mat, pub gold: Mat, pub red: Mat,
-    pub blue: Mat, pub yellow: Mat, pub green: Mat, pub purple: Mat,
-    pub accent: Mat, pub accent_soft: Mat,
-    pub signal: Mat, pub ok: Mat, pub info: Mat,
+    pub wood: Mat,
+    pub dark_wood: Mat,
+    pub metal: Mat,
+    pub dark: Mat,
+    pub white: Mat,
+    pub paper: Mat,
+    pub clay: Mat,
+    pub leaf: Mat,
+    pub leaf2: Mat,
+    pub crate_: Mat,
+    pub gold: Mat,
+    pub red: Mat,
+    pub blue: Mat,
+    pub yellow: Mat,
+    pub green: Mat,
+    pub purple: Mat,
+    pub accent: Mat,
+    pub accent_soft: Mat,
+    pub signal: Mat,
+    pub ok: Mat,
+    pub info: Mat,
     /// Monitor faces: lit while an agent of the room works.
     pub screen: Mat,
     /// Unlit glowing bits (basic materials).
-    pub glow_ok: Mat, pub glow_info: Mat, pub glow_warm: Mat, pub glow_red: Mat,
+    pub glow_ok: Mat,
+    pub glow_info: Mat,
+    pub glow_warm: Mat,
+    pub glow_red: Mat,
     /// The kit's own `mat()` cache.
     cache: Cache,
 }
@@ -53,7 +92,9 @@ pub struct Kit {
 impl Kit {
     /// `k.mat(color)`: any other toon colour, cached per kit.
     pub fn mat(&self, color: Color) -> Mat {
-        cached(&self.cache, format!("toon:{}", hex_of(color)), || Mat::toon(color))
+        cached(&self.cache, format!("toon:{}", hex_of(color)), || {
+            Mat::toon(color)
+        })
     }
 }
 
@@ -83,7 +124,12 @@ pub fn make_kit(hue: f32, p: &KitPalette) -> Kit {
         signal: mat(p.signal),
         ok: mat(p.ok),
         info: mat(p.info),
-        screen: Mat::new(Material { color: Color::hex(0x3a4658), emissive: p.info, emissive_intensity: 0.05, ..Material::default() }),
+        screen: Mat::new(Material {
+            color: Color::hex(0x3a4658),
+            emissive: p.info,
+            emissive_intensity: 0.05,
+            ..Material::default()
+        }),
         glow_ok: Mat::basic(p.ok),
         glow_info: Mat::basic(p.info),
         glow_warm: Mat::basic(Color::hex(0xffd79a)),
@@ -99,13 +145,17 @@ fn global_cache() -> &'static Cache {
 }
 
 fn cached(cache: &Cache, key: String, make: impl FnOnce() -> Mat) -> Mat {
-    let mut map = cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut map = cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     map.entry(key).or_insert_with(make).clone()
 }
 
 /// `toonMat({ color })`, shared by sRGB hex.
 fn shared_toon(color: Color) -> Mat {
-    cached(global_cache(), format!("toon:{}", hex_of(color)), || Mat::toon(color))
+    cached(global_cache(), format!("toon:{}", hex_of(color)), || {
+        Mat::toon(color)
+    })
 }
 
 fn hex_of(c: Color) -> String {
@@ -144,11 +194,19 @@ pub fn floor_texture(kind: FloorKind, hue: f32, size: f32) -> Tex {
             for i in 0..n {
                 for j in 0..cols {
                     let pw = w / cols as f32;
-                    let off = if planks { (i % 2) as f32 * pw * 0.5 } else { 0.0 };
+                    let off = if planks {
+                        (i % 2) as f32 * pw * 0.5
+                    } else {
+                        0.0
+                    };
                     let shift = if off != 0.0 { pw } else { 0.0 };
                     let hue_v = 28.0 + r.next() * 8.0;
                     let sat = 50.0 + r.next() * 12.0;
-                    let light = if planks { 56.0 + r.next() * 8.0 } else { 44.0 + r.next() * 10.0 };
+                    let light = if planks {
+                        56.0 + r.next() * 8.0
+                    } else {
+                        44.0 + r.next() * 10.0
+                    };
                     let x0 = j as f32 * pw + off;
                     let y0 = i as f32 * ph;
                     g.set_fill(&format!("hsl({hue_v}, {sat}%, {light}%)"));
@@ -168,7 +226,11 @@ pub fn floor_texture(kind: FloorKind, hue: f32, size: f32) -> Tex {
             let t = w / n as f32;
             for i in 0..n {
                 for j in 0..n {
-                    let fill = if (i + j) % 2 == 1 { "#f6f3ec".to_string() } else { c(0.45, 0.62) };
+                    let fill = if (i + j) % 2 == 1 {
+                        "#f6f3ec".to_string()
+                    } else {
+                        c(0.45, 0.62)
+                    };
                     g.set_fill(&fill);
                     g.fill_rect(i as f32 * t, j as f32 * t, t, t);
                 }
@@ -181,7 +243,14 @@ pub fn floor_texture(kind: FloorKind, hue: f32, size: f32) -> Tex {
                 for j in 0..6 {
                     g.set_fill("rgba(60,66,76,0.35)");
                     g.begin_path();
-                    g.arc(i as f32 * 44.0 + 20.0, j as f32 * 44.0 + 20.0, 4.0, 0.0, TAU, false);
+                    g.arc(
+                        i as f32 * 44.0 + 20.0,
+                        j as f32 * 44.0 + 20.0,
+                        4.0,
+                        0.0,
+                        TAU,
+                        false,
+                    );
                     g.fill();
                 }
             }
@@ -216,11 +285,19 @@ pub fn floor_texture(kind: FloorKind, hue: f32, size: f32) -> Tex {
                     };
                     g.set_fill(&fill);
                     g.fill();
-                    g.set_stroke(if slate { "rgba(20,24,30,0.6)" } else { "rgba(150,130,100,0.5)" });
+                    g.set_stroke(if slate {
+                        "rgba(20,24,30,0.6)"
+                    } else {
+                        "rgba(150,130,100,0.5)"
+                    });
                     g.set_line_width(2.0);
                     g.stroke();
                     for _ in 0..3 {
-                        let stroke = if slate { "rgba(255,255,255,0.08)".to_string() } else { c(0.25, 0.75) };
+                        let stroke = if slate {
+                            "rgba(255,255,255,0.08)".to_string()
+                        } else {
+                            c(0.25, 0.75)
+                        };
                         g.set_stroke(&stroke);
                         g.set_line_width(1.5);
                         g.begin_path();
@@ -244,7 +321,14 @@ pub fn floor_texture(kind: FloorKind, hue: f32, size: f32) -> Tex {
             for i in 0..4 {
                 for j in 0..4 {
                     g.begin_path();
-                    g.arc(i as f32 * 64.0 + 32.0, j as f32 * 64.0 + 32.0, 16.0, 0.0, TAU, false);
+                    g.arc(
+                        i as f32 * 64.0 + 32.0,
+                        j as f32 * 64.0 + 32.0,
+                        16.0,
+                        0.0,
+                        TAU,
+                        false,
+                    );
                     g.stroke();
                 }
             }
@@ -282,7 +366,11 @@ pub fn floor_texture(kind: FloorKind, hue: f32, size: f32) -> Tex {
             g.set_fill("#26305e");
             g.fill_rect(0.0, 0.0, w, h);
             for _ in 0..70 {
-                let fill = if r.next() < 0.2 { "#ffe9a8" } else { "rgba(255,255,255,0.85)" };
+                let fill = if r.next() < 0.2 {
+                    "#ffe9a8"
+                } else {
+                    "rgba(255,255,255,0.85)"
+                };
                 g.set_fill(fill);
                 let x = r.next() * w;
                 let y = r.next() * h;
@@ -326,7 +414,14 @@ pub fn floor_texture(kind: FloorKind, hue: f32, size: f32) -> Tex {
             let t = w / n as f32;
             for i in 0..n {
                 for j in 0..n {
-                    rrect(g, i as f32 * t + 3.0, j as f32 * t + 3.0, t - 6.0, t - 6.0, 6.0);
+                    rrect(
+                        g,
+                        i as f32 * t + 3.0,
+                        j as f32 * t + 3.0,
+                        t - 6.0,
+                        t - 6.0,
+                        6.0,
+                    );
                     g.set_fill(&c(0.5, if (i + j) % 2 == 1 { 0.84 } else { 0.8 }));
                     g.fill();
                 }
@@ -341,18 +436,53 @@ pub fn wall_look(kind: WallKind, hue: f32) -> Option<(Mat, f32, f32)> {
     let hsl = |s: f32, l: f32| Color::hsl(hue / 360.0, s, l);
     let cache = global_cache();
     let look = match kind {
-        WallKind::Panel => (cached(cache, format!("wall:panel:{hue}"), || Mat::toon(hsl(0.4, 0.8))), 1.1, 0.14),
-        WallKind::Brick => (cached(cache, "wall:brick".to_string(), || Mat::toon(Color::hex(0xc8684a))), 1.0, 0.2),
-        WallKind::Stone => (cached(cache, "wall:stone".to_string(), || Mat::toon(Color::hex(0xd9d1c2))), 0.9, 0.22),
-        WallKind::Hedge => (cached(cache, "wall:hedge".to_string(), || Mat::toon(Color::hex(0x4f9a45))), 0.8, 0.35),
+        WallKind::Panel => (
+            cached(cache, format!("wall:panel:{hue}"), || {
+                Mat::toon(hsl(0.4, 0.8))
+            }),
+            1.1,
+            0.14,
+        ),
+        WallKind::Brick => (
+            cached(cache, "wall:brick".to_string(), || {
+                Mat::toon(Color::hex(0xc8684a))
+            }),
+            1.0,
+            0.2,
+        ),
+        WallKind::Stone => (
+            cached(cache, "wall:stone".to_string(), || {
+                Mat::toon(Color::hex(0xd9d1c2))
+            }),
+            0.9,
+            0.22,
+        ),
+        WallKind::Hedge => (
+            cached(cache, "wall:hedge".to_string(), || {
+                Mat::toon(Color::hex(0x4f9a45))
+            }),
+            0.8,
+            0.35,
+        ),
         WallKind::Glass => (
             cached(cache, "wall:glass".to_string(), || {
-                Mat::new(Material { color: Color::hex(0xbfe6f2), transparent: true, opacity: 0.55, ..Material::default() })
+                Mat::new(Material {
+                    color: Color::hex(0xbfe6f2),
+                    transparent: true,
+                    opacity: 0.55,
+                    ..Material::default()
+                })
             }),
             1.2,
             0.06,
         ),
-        WallKind::Fence => (cached(cache, "wall:fence".to_string(), || Mat::toon(Color::hex(0xf2e6cf))), 0.6, 0.08),
+        WallKind::Fence => (
+            cached(cache, "wall:fence".to_string(), || {
+                Mat::toon(Color::hex(0xf2e6cf))
+            }),
+            0.6,
+            0.08,
+        ),
         WallKind::None => return None,
     };
     Some(look)
@@ -383,7 +513,15 @@ fn put(parent: &Obj, geo: &Geo, mat: &Mat, x: f32, y: f32, z: f32, thin: bool) -
 
 impl Room {
     pub fn new(g: Obj, s: f32, hue: f32, k: Kit, rand: Rng) -> Room {
-        Room { g, s, hue, k, rand, anim: Vec::new(), boxes: Vec::new() }
+        Room {
+            g,
+            s,
+            hue,
+            k,
+            rand,
+            anim: Vec::new(),
+            boxes: Vec::new(),
+        }
     }
 
     /// Records an item's footprint: a `hw` × `hd` rectangle centred on (x, z), turned by `rot_y`.
@@ -391,7 +529,12 @@ impl Room {
         let (s, c) = rot_y.sin_cos();
         let ax = c.abs() * hw + s.abs() * hd;
         let az = s.abs() * hw + c.abs() * hd;
-        self.boxes.push(Box2 { x0: x - ax, x1: x + ax, z0: z - az, z1: z + az });
+        self.boxes.push(Box2 {
+            x0: x - ax,
+            x1: x + ax,
+            z0: z - az,
+            z1: z + az,
+        });
     }
 
     /// `item(x, z, rotY)`: a furniture group at (x, z), with its own footprint.
@@ -405,18 +548,55 @@ impl Room {
 
     /// `box(parent, w, h, d, mat, x, y, z)`: a box standing on y (its base at y).
     #[allow(clippy::too_many_arguments)]
-    pub fn box_(&mut self, parent: &Obj, w: f32, h: f32, d: f32, mat: &Mat, x: f32, y: f32, z: f32) -> Obj {
+    pub fn box_(
+        &mut self,
+        parent: &Obj,
+        w: f32,
+        h: f32,
+        d: f32,
+        mat: &Mat,
+        x: f32,
+        y: f32,
+        z: f32,
+    ) -> Obj {
         // thinPart: a box thinner than 0.02 in any side never casts.
         let thin = w.min(h).min(d) < 0.02;
-        put(parent, &geometry::box_geo(w, h, d), mat, x, y + h / 2.0, z, thin)
+        put(
+            parent,
+            &geometry::box_geo(w, h, d),
+            mat,
+            x,
+            y + h / 2.0,
+            z,
+            thin,
+        )
     }
 
     /// `cyl(parent, rTop, rBottom, h, mat, x, y, z, seg)`: a cylinder standing on y.
     #[allow(clippy::too_many_arguments)]
-    pub fn cyl(&mut self, parent: &Obj, r_top: f32, r_bottom: f32, h: f32, mat: &Mat, x: f32, y: f32, z: f32, seg: u32) -> Obj {
+    pub fn cyl(
+        &mut self,
+        parent: &Obj,
+        r_top: f32,
+        r_bottom: f32,
+        h: f32,
+        mat: &Mat,
+        x: f32,
+        y: f32,
+        z: f32,
+        seg: u32,
+    ) -> Obj {
         // thinPart: a cylinder of radius under 0.05 never casts (the rods and the posts).
         let thin = r_top.max(r_bottom) < 0.05;
-        put(parent, &geometry::cylinder(r_top, r_bottom, h, seg), mat, x, y + h / 2.0, z, thin)
+        put(
+            parent,
+            &geometry::cylinder(r_top, r_bottom, h, seg),
+            mat,
+            x,
+            y + h / 2.0,
+            z,
+            thin,
+        )
     }
 
     /// `ball(parent, r, mat, x, y, z)`: a sphere centred at (x, y, z).
@@ -429,13 +609,35 @@ impl Room {
     /// `cone(parent, r, h, mat, x, y, z, seg)`: a cone standing on y. Never thin: three's ConeGeometry has no
     /// radiusTop, so kit.ts's cylinder rule never marks it (its `thinPart` is false).
     #[allow(clippy::too_many_arguments)]
-    pub fn cone(&mut self, parent: &Obj, r: f32, h: f32, mat: &Mat, x: f32, y: f32, z: f32, seg: u32) -> Obj {
-        put(parent, &geometry::cone(r, h, seg), mat, x, y + h / 2.0, z, false)
+    pub fn cone(
+        &mut self,
+        parent: &Obj,
+        r: f32,
+        h: f32,
+        mat: &Mat,
+        x: f32,
+        y: f32,
+        z: f32,
+        seg: u32,
+    ) -> Obj {
+        put(
+            parent,
+            &geometry::cone(r, h, seg),
+            mat,
+            x,
+            y + h / 2.0,
+            z,
+            false,
+        )
     }
 
     /// `rug(w, d, mat, x, z, round)`: a flat rug or floor marking; walkable, no footprint.
     pub fn rug(&mut self, w: f32, d: f32, mat: &Mat, x: f32, z: f32, round: bool) -> Obj {
-        let geo = if round { geometry::circle(w / 2.0, 40, 0.0, TAU) } else { geometry::plane(w, d, 1, 1) };
+        let geo = if round {
+            geometry::circle(w / 2.0, 40, 0.0, TAU)
+        } else {
+            geometry::plane(w, d, 1, 1)
+        };
         let m = Obj::mesh(&geo, mat);
         m.set_rotation(-FRAC_PI_2, 0.0, 0.0);
         m.set_position(x, 0.012, z);
@@ -457,7 +659,8 @@ impl Room {
         self.box_(&it, 0.3, 0.02, 0.18, &k.metal, 0.0, 0.56, -0.12);
         self.box_(&it, 0.07, 0.18, 0.05, &k.metal, 0.0, 0.58, -0.12);
         // The monitor lights up while agents work (its emissive is animated).
-        self.box_(&it, 0.62, 0.38, 0.04, &k.screen, 0.0, 0.74, -0.14).set_dynamic(true);
+        self.box_(&it, 0.62, 0.38, 0.04, &k.screen, 0.0, 0.74, -0.14)
+            .set_dynamic(true);
         self.chair(0.0, 0.55, PI, Some(&it));
         self.footprint(x, z, rot_y, 0.5, 0.275);
         it
@@ -492,7 +695,13 @@ impl Room {
     pub fn shelf(&mut self, x: f32, z: f32, rot_y: f32, w: f32, h: f32) -> Obj {
         let it = self.item(x, z, rot_y);
         let k = self.k.clone();
-        let spines = [k.red.clone(), k.blue.clone(), k.yellow.clone(), k.green.clone(), k.purple.clone()];
+        let spines = [
+            k.red.clone(),
+            k.blue.clone(),
+            k.yellow.clone(),
+            k.green.clone(),
+            k.purple.clone(),
+        ];
         self.box_(&it, w, h, 0.4, &k.dark_wood, 0.0, 0.0, 0.0);
         let rows = (h / 0.42).round().max(2.0) as u32;
         for row in 0..rows {
@@ -514,9 +723,28 @@ impl Room {
     pub fn plant(&mut self, x: f32, z: f32, scale: f32) -> Obj {
         let it = self.item(x, z, 0.0);
         let k = self.k.clone();
-        self.cyl(&it, 0.22 * scale, 0.16 * scale, 0.3 * scale, &k.clay, 0.0, 0.0, 0.0, 14);
+        self.cyl(
+            &it,
+            0.22 * scale,
+            0.16 * scale,
+            0.3 * scale,
+            &k.clay,
+            0.0,
+            0.0,
+            0.0,
+            14,
+        );
         self.ball(&it, 0.34 * scale, &k.leaf, 0.0, 0.5 * scale, 0.0);
-        self.cone(&it, 0.22 * scale, 0.45 * scale, &k.leaf2, 0.0, 0.62 * scale, 0.0, 10);
+        self.cone(
+            &it,
+            0.22 * scale,
+            0.45 * scale,
+            &k.leaf2,
+            0.0,
+            0.62 * scale,
+            0.0,
+            10,
+        );
         self.footprint(x, z, 0.0, 0.22 * scale, 0.22 * scale);
         it
     }
@@ -526,7 +754,16 @@ impl Room {
         let it = self.item(x, z, rot_y);
         let k = self.k.clone();
         self.box_(&it, size, size, size, &k.crate_, 0.0, 0.0, 0.0);
-        self.box_(&it, size * 1.02, size * 0.12, size * 1.02, &k.dark_wood, 0.0, size * 0.44, 0.0);
+        self.box_(
+            &it,
+            size * 1.02,
+            size * 0.12,
+            size * 1.02,
+            &k.dark_wood,
+            0.0,
+            size * 0.44,
+            0.0,
+        );
         self.footprint(x, z, rot_y, size / 2.0, size / 2.0);
         it
     }
@@ -573,7 +810,8 @@ impl Room {
         let k = self.k.clone();
         self.box_(&it, 0.3, 0.02, 0.18, &k.metal, 0.0, 0.0, 0.0);
         self.box_(&it, 0.07, 0.18, 0.05, &k.metal, 0.0, 0.02, 0.0);
-        self.box_(&it, 0.62, 0.38, 0.04, &k.screen, 0.0, 0.18, -0.02).set_dynamic(true);
+        self.box_(&it, 0.62, 0.38, 0.04, &k.screen, 0.0, 0.18, -0.02)
+            .set_dynamic(true);
         it
     }
 
@@ -588,7 +826,8 @@ impl Room {
         self.box_(&it, 0.42, 0.52, 0.02, &k.paper, 0.0, 0.04, 0.0);
         self.box_(&it, 0.2, 0.24, 0.01, &k.accent, -0.07, 0.2, 0.015);
         let sun = self.cyl(&it, 0.07, 0.07, 0.01, &k.signal, 0.0, 0.0, 0.0, 16);
-        sun.set_rotation(FRAC_PI_2, 0.0, 0.0).set_position(0.1, 0.38, 0.015);
+        sun.set_rotation(FRAC_PI_2, 0.0, 0.0)
+            .set_position(0.1, 0.38, 0.015);
         self.box_(&it, 0.3, 0.03, 0.01, &k.dark, 0.0, 0.14, 0.015);
         self.box_(&it, 0.2, 0.03, 0.01, &k.dark, -0.05, 0.08, 0.015);
         it
@@ -599,9 +838,11 @@ impl Room {
         let it = self.item(x, z, rot_y);
         let k = self.k.clone();
         let rim = self.cyl(&it, 0.18, 0.18, 0.08, &k.wood, 0.0, 0.0, 0.0, 24);
-        rim.set_rotation(FRAC_PI_2, 0.0, 0.0).set_position(0.0, 0.18, 0.0);
+        rim.set_rotation(FRAC_PI_2, 0.0, 0.0)
+            .set_position(0.0, 0.18, 0.0);
         let face = self.cyl(&it, 0.14, 0.14, 0.012, &k.white, 0.0, 0.0, 0.0, 24);
-        face.set_rotation(FRAC_PI_2, 0.0, 0.0).set_position(0.0, 0.18, 0.035);
+        face.set_rotation(FRAC_PI_2, 0.0, 0.0)
+            .set_position(0.0, 0.18, 0.035);
         self.box_(&it, 0.012, 0.13, 0.003, &k.dark, 0.0, 0.18, 0.0425);
         self.box_(&it, 0.09, 0.012, 0.003, &k.dark, 0.045, 0.174, 0.0425);
         it
@@ -641,7 +882,8 @@ impl Room {
         for i in 0..3 {
             let a = i as f32 * TAU / 3.0;
             let hook = self.box_(&it, 0.18, 0.03, 0.03, &k.dark_wood, 0.0, 0.0, 0.0);
-            hook.set_position(a.sin() * 0.09, 1.5, a.cos() * 0.09).set_rotation(0.0, a - FRAC_PI_2, 0.0);
+            hook.set_position(a.sin() * 0.09, 1.5, a.cos() * 0.09)
+                .set_rotation(0.0, a - FRAC_PI_2, 0.0);
         }
         it
     }
@@ -652,7 +894,8 @@ impl Room {
         let k = self.k.clone();
         self.box_(&it, 0.7, 0.9, 0.58, &k.dark, 0.0, 0.0, 0.0);
         let dial = self.cyl(&it, 0.1, 0.1, 0.02, &k.gold, 0.0, 0.0, 0.0, 20);
-        dial.set_rotation(FRAC_PI_2, 0.0, 0.0).set_position(0.0, 0.5, 0.3);
+        dial.set_rotation(FRAC_PI_2, 0.0, 0.0)
+            .set_position(0.0, 0.5, 0.3);
         self.box_(&it, 0.04, 0.12, 0.03, &k.metal, 0.22, 0.4, 0.29);
         it
     }
@@ -665,7 +908,16 @@ impl Room {
     /// `propPlaceholder(x, z, rotY, w, h, d, label)`: stands in for a station prop with no file (or an unknown
     /// model): a plain box of its footprint and height, in a neutral colour.
     #[allow(clippy::too_many_arguments)]
-    pub fn prop_placeholder(&mut self, x: f32, z: f32, rot_y: f32, w: f32, h: f32, d: f32, label: &str) -> Obj {
+    pub fn prop_placeholder(
+        &mut self,
+        x: f32,
+        z: f32,
+        rot_y: f32,
+        w: f32,
+        h: f32,
+        d: f32,
+        label: &str,
+    ) -> Obj {
         let it = self.item(x, z, rot_y);
         it.set_name(&format!("prop:{label}"));
         let neutral = self.k.mat(Color::hex(0xb9bfc9));

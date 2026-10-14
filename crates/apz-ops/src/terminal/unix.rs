@@ -28,9 +28,7 @@ use super::table::{
     Idle, MAX_TERMS, Ring, Table, decode_write, encode_read, locked, now_ms, remove_term, size,
     spawn_janitor, sweep, term_name, with_term,
 };
-use super::{
-    TermClosed, TermInfo, TermList, TermOpened, TermRead, TermResized, TermWritten,
-};
+use super::{TermClosed, TermInfo, TermList, TermOpened, TermRead, TermResized, TermWritten};
 use crate::env::Env;
 use crate::error::OpError;
 use crate::root::{Root, locate};
@@ -541,8 +539,7 @@ mod tests {
     const PATH: &str = "/usr/local/bin:/usr/bin:/bin";
 
     fn scratch(name: &str) -> (Root, Env) {
-        let dir =
-            std::env::temp_dir().join(format!("apz-ops-term-{name}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("apz-ops-term-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).expect("a scratch root");
         (Root::new(&dir), Env::new(&dir, PATH))
@@ -646,7 +643,11 @@ mod tests {
         let (root, env) = scratch("winch");
         let terms = Terminals::new();
         let term = open_at(&terms, &root, &env, "");
-        type_text(&terms, &term, "trap 'echo got-winch' WINCH; echo arm$((1+1))\n");
+        type_text(
+            &terms,
+            &term,
+            "trap 'echo got-winch' WINCH; echo arm$((1+1))\n",
+        );
         read_until(&terms, &term, "arm2\r\n");
         terms.resize(&term, 100, 30).expect("the resize");
         // The shell is the foreground group, and its trap runs on SIGWINCH.

@@ -19,7 +19,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use apz_http::{Params, Request, Response, Router};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::agents::Agent;
 use crate::internal::authorized;
@@ -58,7 +58,8 @@ pub(crate) fn json_body(bytes: &[u8]) -> Value {
     if bytes.is_empty() {
         Value::Null
     } else {
-        serde_json::from_slice(bytes).unwrap_or_else(|_| Value::String(String::from_utf8_lossy(bytes).into_owned()))
+        serde_json::from_slice(bytes)
+            .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(bytes).into_owned()))
     }
 }
 
@@ -74,7 +75,12 @@ impl Forge {
             base: env.get("FORGEJO_URL").cloned(),
             admin_token: env.get("FORGEJO_TOKEN").cloned(),
             path,
-            users: Mutex::new(known.into_iter().map(|identity| (identity.cid, identity)).collect()),
+            users: Mutex::new(
+                known
+                    .into_iter()
+                    .map(|identity| (identity.cid, identity))
+                    .collect(),
+            ),
             team: Mutex::new(None),
         }
     }
@@ -93,7 +99,13 @@ impl Forge {
 
     /// One Forgejo API call as the admin, or as `sudo` (a Forgejo user name). `path` starts with
     /// `/api/v1/`. Returns the status and the JSON body (Null when empty).
-    pub fn api(&self, method: &str, path: &str, body: Option<&Value>, sudo: Option<&str>) -> Result<(u16, Value), String> {
+    pub fn api(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<&Value>,
+        sudo: Option<&str>,
+    ) -> Result<(u16, Value), String> {
         let (base, token) = self.creds()?;
         let mut headers = vec![
             ("Authorization", format!("token {token}")),
@@ -112,7 +124,8 @@ impl Forge {
         let value = if bytes.is_empty() {
             Value::Null
         } else {
-            serde_json::from_slice(&bytes).unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).into_owned()))
+            serde_json::from_slice(&bytes)
+                .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).into_owned()))
         };
         Ok((status, value))
     }
@@ -157,11 +170,16 @@ impl Forge {
         }
         let (status, teams) = self.api("GET", &format!("/api/v1/orgs/{ORG}/teams"), None, None)?;
         if !(200..300).contains(&status) {
-            return Err(format!("listing the teams of {ORG} failed ({status}): {teams}"));
+            return Err(format!(
+                "listing the teams of {ORG} failed ({status}): {teams}"
+            ));
         }
         let existing = teams
             .as_array()
-            .and_then(|list| list.iter().find(|team| team["name"].as_str() == Some("agents")))
+            .and_then(|list| {
+                list.iter()
+                    .find(|team| team["name"].as_str() == Some("agents"))
+            })
             .and_then(|team| team["id"].as_u64());
         let id = match existing {
             Some(id) => id,
@@ -172,11 +190,20 @@ impl Forge {
                     "includes_all_repositories": true,
                     "units": ["repo.code", "repo.issues", "repo.pulls", "repo.releases", "repo.wiki"]
                 });
-                let (status, created) = self.api("POST", &format!("/api/v1/orgs/{ORG}/teams"), Some(&team), None)?;
+                let (status, created) = self.api(
+                    "POST",
+                    &format!("/api/v1/orgs/{ORG}/teams"),
+                    Some(&team),
+                    None,
+                )?;
                 if !(200..300).contains(&status) {
-                    return Err(format!("creating the agents team failed ({status}): {created}"));
+                    return Err(format!(
+                        "creating the agents team failed ({status}): {created}"
+                    ));
                 }
-                created["id"].as_u64().ok_or_else(|| "the new agents team has no id".to_string())?
+                created["id"]
+                    .as_u64()
+                    .ok_or_else(|| "the new agents team has no id".to_string())?
             }
         };
         *self.team.lock().unwrap_or_else(|e| e.into_inner()) = Some(id);
@@ -205,13 +232,19 @@ impl Forge {
             "full_name": name
         });
         let (status, body) = self.api("POST", "/api/v1/admin/users", Some(&account), None)?;
-        let exists = status == 409 || (status == 422 && body.to_string().contains("already exists"));
+        let exists =
+            status == 409 || (status == 422 && body.to_string().contains("already exists"));
         if !(200..300).contains(&status) && !exists {
             return Err(format!("creating {user} failed ({status}): {body}"));
         }
         if exists {
             let reset = json!({ "login_name": user, "source_id": 0, "password": password, "must_change_password": false });
-            let (status, body) = self.api("PATCH", &format!("/api/v1/admin/users/{user}"), Some(&reset), None)?;
+            let (status, body) = self.api(
+                "PATCH",
+                &format!("/api/v1/admin/users/{user}"),
+                Some(&reset),
+                None,
+            )?;
             if !(200..300).contains(&status) {
                 return Err(format!("resetting {user} failed ({status}): {body}"));
             }
@@ -220,21 +253,41 @@ impl Forge {
             "name": format!("apid-relay-{}", now_ms()),
             "scopes": ["write:repository", "write:user", "read:organization"]
         });
-        let base = self.base.as_deref().ok_or("the git host is not configured")?;
+        let base = self
+            .base
+            .as_deref()
+            .ok_or("the git host is not configured")?;
         let headers = [
             ("Authorization", basic(&user, &password)),
             ("Content-Type", "application/json".to_string()),
             ("Accept", "application/json".to_string()),
         ];
-        let (status, _, bytes) = send("POST", &format!("{base}/api/v1/users/{user}/tokens"), &headers, token.to_string().into_bytes())?;
+        let (status, _, bytes) = send(
+            "POST",
+            &format!("{base}/api/v1/users/{user}/tokens"),
+            &headers,
+            token.to_string().into_bytes(),
+        )?;
         let reply: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
         if !(200..300).contains(&status) {
-            return Err(format!("creating {user}'s token failed ({status}): {reply}"));
+            return Err(format!(
+                "creating {user}'s token failed ({status}): {reply}"
+            ));
         }
-        let token = reply["sha1"].as_str().ok_or_else(|| "the token reply has no sha1".to_string())?.to_string();
-        let (status, body) = self.api("PUT", &format!("/api/v1/teams/{team}/members/{user}"), None, None)?;
+        let token = reply["sha1"]
+            .as_str()
+            .ok_or_else(|| "the token reply has no sha1".to_string())?
+            .to_string();
+        let (status, body) = self.api(
+            "PUT",
+            &format!("/api/v1/teams/{team}/members/{user}"),
+            None,
+            None,
+        )?;
         if !(200..300).contains(&status) {
-            return Err(format!("adding {user} to the agents team failed ({status}): {body}"));
+            return Err(format!(
+                "adding {user} to the agents team failed ({status}): {body}"
+            ));
         }
         let identity = Identity { cid, user, token };
         users.insert(cid, identity.clone());
@@ -246,7 +299,8 @@ impl Forge {
     fn save(&self, users: &BTreeMap<u64, Identity>) -> Result<(), String> {
         let list: Vec<&Identity> = users.values().collect();
         let bytes = serde_json::to_vec_pretty(&list).map_err(|e| e.to_string())?;
-        apz_os::private::write(&self.path, &bytes).map_err(|e| format!("writing {}: {e}", self.path.display()))
+        apz_os::private::write(&self.path, &bytes)
+            .map_err(|e| format!("writing {}: {e}", self.path.display()))
     }
 
     /// Creates `ORG/<name>` (private, default branch main, auto-init with a README holding
@@ -261,7 +315,12 @@ impl Forge {
             "default_branch": "main",
             "readme": "Default"
         });
-        let (status, body) = self.api("POST", &format!("/api/v1/orgs/{ORG}/repos"), Some(&repo), None)?;
+        let (status, body) = self.api(
+            "POST",
+            &format!("/api/v1/orgs/{ORG}/repos"),
+            Some(&repo),
+            None,
+        )?;
         if !(200..300).contains(&status) && status != 409 {
             return Err(format!("creating {ORG}/{name} failed ({status}): {body}"));
         }
@@ -275,7 +334,13 @@ pub trait ForgeApi {
     /// Whether FORGEJO_URL and FORGEJO_TOKEN are set.
     fn is_configured(&self) -> bool;
     /// One call: the status and the body (JSON; a text body comes back as a JSON string; Null when empty).
-    fn call(&self, method: &str, path: &str, body: Option<&Value>, sudo: Option<&str>) -> Result<(u16, Value), String>;
+    fn call(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<&Value>,
+        sudo: Option<&str>,
+    ) -> Result<(u16, Value), String>;
 }
 
 impl ForgeApi for Forge {
@@ -283,7 +348,13 @@ impl ForgeApi for Forge {
         self.configured()
     }
 
-    fn call(&self, method: &str, path: &str, body: Option<&Value>, sudo: Option<&str>) -> Result<(u16, Value), String> {
+    fn call(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<&Value>,
+        sudo: Option<&str>,
+    ) -> Result<(u16, Value), String> {
         self.api(method, path, body, sudo)
     }
 }
@@ -299,7 +370,10 @@ fn relay(app: &App, req: &Request, cid: u64, owner: &str, repo: &str, tail: &str
     }
     // A push without a length cannot be replayed to Forgejo, so git must send one (a small pack does).
     if req.method == "POST" && (req.body.is_empty() || req.header("content-length").is_none()) {
-        return Response::error(411, "set `git config --global http.postBuffer 524288000` and retry");
+        return Response::error(
+            411,
+            "set `git config --global http.postBuffer 524288000` and retry",
+        );
     }
     let name = match app.agents.get(cid) {
         Some(agent) if !agent.name.is_empty() => agent.name,
@@ -332,23 +406,38 @@ fn relay(app: &App, req: &Request, cid: u64, owner: &str, repo: &str, tail: &str
 }
 
 /// One HTTP request: the status, the content type and the body bytes of the reply.
-fn send(method: &str, url: &str, headers: &[(&str, String)], body: Vec<u8>) -> Result<(u16, String, Vec<u8>), String> {
+fn send(
+    method: &str,
+    url: &str,
+    headers: &[(&str, String)],
+    body: Vec<u8>,
+) -> Result<(u16, String, Vec<u8>), String> {
     send_within(method, url, headers, body, TIMEOUT)
 }
 
 /// `send` with its own time limit (the unfurl's reads are short; a clone or a push is not).
-pub(crate) fn send_within(method: &str, url: &str, headers: &[(&str, String)], body: Vec<u8>, timeout: Duration) -> Result<(u16, String, Vec<u8>), String> {
+pub(crate) fn send_within(
+    method: &str,
+    url: &str,
+    headers: &[(&str, String)],
+    body: Vec<u8>,
+    timeout: Duration,
+) -> Result<(u16, String, Vec<u8>), String> {
     let mut builder = ureq::http::Request::builder().method(method).uri(url);
     for (key, value) in headers {
         builder = builder.header(*key, value.as_str());
     }
-    let request = builder.body(body).map_err(|e| format!("bad request: {e}"))?;
+    let request = builder
+        .body(body)
+        .map_err(|e| format!("bad request: {e}"))?;
     let config = ureq::Agent::config_builder()
         .timeout_global(Some(timeout))
         .http_status_as_error(false)
         .build();
     let agent = ureq::Agent::new_with_config(config);
-    let response = agent.run(request).map_err(|e| format!("the git host did not answer: {e}"))?;
+    let response = agent
+        .run(request)
+        .map_err(|e| format!("the git host did not answer: {e}"))?;
     let status = response.status().as_u16();
     let content_type = response
         .headers()
@@ -375,7 +464,11 @@ pub(crate) fn base64(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
-        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        let b = [
+            chunk[0],
+            *chunk.get(1).unwrap_or(&0),
+            *chunk.get(2).unwrap_or(&0),
+        ];
         let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
         for i in 0..4 {
             if i <= chunk.len() {
@@ -394,23 +487,34 @@ fn random_password() -> Result<String, String> {
 }
 
 fn now_ms() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 pub fn routes(router: Router<App>) -> Router<App> {
     router
         // The agents' git relay (through the hub's plaza.gateway route).
-        .get("/internal/v1/agents/{cid}/gateway/git/{owner}/{repo}/info/refs", |app, req, p| {
-            internal(app, req, p, "info/refs")
-        })
-        .post("/internal/v1/agents/{cid}/gateway/git/{owner}/{repo}/git-upload-pack", |app, req, p| {
-            internal(app, req, p, "git-upload-pack")
-        })
-        .post("/internal/v1/agents/{cid}/gateway/git/{owner}/{repo}/git-receive-pack", |app, req, p| {
-            internal(app, req, p, "git-receive-pack")
-        })
+        .get(
+            "/internal/v1/agents/{cid}/gateway/git/{owner}/{repo}/info/refs",
+            |app, req, p| internal(app, req, p, "info/refs"),
+        )
+        .post(
+            "/internal/v1/agents/{cid}/gateway/git/{owner}/{repo}/git-upload-pack",
+            |app, req, p| internal(app, req, p, "git-upload-pack"),
+        )
+        .post(
+            "/internal/v1/agents/{cid}/gateway/git/{owner}/{repo}/git-receive-pack",
+            |app, req, p| internal(app, req, p, "git-receive-pack"),
+        )
         // The console's git pages.
-        .get("/v1/git", |app, _, _| Response::json(200, &json!({ "configured": app.forge.configured(), "org": ORG })))
+        .get("/v1/git", |app, _, _| {
+            Response::json(
+                200,
+                &json!({ "configured": app.forge.configured(), "org": ORG }),
+            )
+        })
         .get("/v1/git/repos", repos_route)
         .post("/v1/git/repos", create_repo_route)
         .get("/v1/git/repos/{repo}", repo_route)
@@ -434,10 +538,20 @@ fn internal(app: &App, req: &Request, p: &Params<'_>, tail: &str) -> Response {
         // researchers never write to repositories). The agent's VM reaches this route directly, so
         // the plaza's tool check does not see it.
         if tail == "git-receive-pack" {
-            let role = app.agents.get(cid).map(|agent| agent.role).unwrap_or_default();
-            let host = jhrl::authz::Entity { ty: "Host".into(), id: "hub-git".into() };
+            let role = app
+                .agents
+                .get(cid)
+                .map(|agent| agent.role)
+                .unwrap_or_default();
+            let host = jhrl::authz::Entity {
+                ty: "Host".into(),
+                id: "hub-git".into(),
+            };
             let attrs = BTreeMap::from([("group".to_string(), jhrl::value::Value::str("hub-git"))]);
-            if let Some(why) = app.laws.refuse_op(cid, &role, "egress.connect", host, attrs, &Value::Null) {
+            if let Some(why) =
+                app.laws
+                    .refuse_op(cid, &role, "egress.connect", host, attrs, &Value::Null)
+            {
                 return Ok(Response::error(403, &why));
             }
         }
@@ -468,7 +582,10 @@ pub(crate) struct Failure {
 
 impl Failure {
     fn new(status: u16, message: &str) -> Self {
-        Self { status, message: message.to_string() }
+        Self {
+            status,
+            message: message.to_string(),
+        }
     }
 }
 
@@ -489,21 +606,42 @@ fn q(req: &Request, key: &str) -> Option<String> {
 }
 
 /// One Forgejo call, as `sudo` when given, else as the admin. Non-2xx answers carry Forgejo's message.
-fn forge(app: &App, method: &str, path: &str, body: Option<&Value>, sudo: Option<&str>) -> Result<Value, Failure> {
+fn forge(
+    app: &App,
+    method: &str,
+    path: &str,
+    body: Option<&Value>,
+    sudo: Option<&str>,
+) -> Result<Value, Failure> {
     forge_on(&app.forge, method, path, body, sudo)
 }
 
 /// `forge` through any `ForgeApi`: the JSON answer, or the status and message of a failure.
-pub(crate) fn forge_on(api: &dyn ForgeApi, method: &str, path: &str, body: Option<&Value>, sudo: Option<&str>) -> Result<Value, Failure> {
+pub(crate) fn forge_on(
+    api: &dyn ForgeApi,
+    method: &str,
+    path: &str,
+    body: Option<&Value>,
+    sudo: Option<&str>,
+) -> Result<Value, Failure> {
     if !api.is_configured() {
         return Err(Failure::new(503, "the git host is not configured"));
     }
-    let (status, value) = api.call(method, path, body, sudo).map_err(|e| Failure::new(503, &e))?;
+    let (status, value) = api
+        .call(method, path, body, sudo)
+        .map_err(|e| Failure::new(503, &e))?;
     if (200..300).contains(&status) {
         return Ok(value);
     }
     let message = at(&value, "message");
-    Err(Failure::new(status, if message.is_empty() { "git host error" } else { message }))
+    Err(Failure::new(
+        status,
+        if message.is_empty() {
+            "git host error"
+        } else {
+            message
+        },
+    ))
 }
 
 fn at<'a>(v: &'a Value, key: &str) -> &'a str {
@@ -526,18 +664,27 @@ fn need<'a>(input: &'a Value, key: &str) -> Result<&'a str, Failure> {
 }
 
 fn number(raw: &str) -> Result<u64, Failure> {
-    raw.parse::<u64>().ok().filter(|n| *n > 0).ok_or_else(|| Failure::new(400, "n must be a pull request number"))
+    raw.parse::<u64>()
+        .ok()
+        .filter(|n| *n > 0)
+        .ok_or_else(|| Failure::new(400, "n must be a pull request number"))
 }
 
 fn number_arg(input: &Value) -> Result<u64, Failure> {
-    input["number"].as_u64().filter(|n| *n > 0).ok_or_else(|| Failure::new(400, "number is required"))
+    input["number"]
+        .as_u64()
+        .filter(|n| *n > 0)
+        .ok_or_else(|| Failure::new(400, "number is required"))
 }
 
 /// Percent-encodes for a URL; `/` stays when `slash` is set.
 pub(crate) fn pct(raw: &str, slash: bool) -> String {
     let mut out = String::with_capacity(raw.len());
     for b in raw.bytes() {
-        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') || (slash && b == b'/') {
+        if b.is_ascii_alphanumeric()
+            || matches!(b, b'-' | b'_' | b'.' | b'~')
+            || (slash && b == b'/')
+        {
             out.push(b as char);
         } else {
             out.push_str(&format!("%{b:02X}"));
@@ -564,7 +711,11 @@ pub(crate) fn unescape(raw: &str) -> String {
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;
     while i < b.len() {
-        match (b[i], b.get(i + 1).and_then(|c| hex(*c)), b.get(i + 2).and_then(|c| hex(*c))) {
+        match (
+            b[i],
+            b.get(i + 1).and_then(|c| hex(*c)),
+            b.get(i + 2).and_then(|c| hex(*c)),
+        ) {
             (b'%', Some(hi), Some(lo)) => {
                 out.push(hi * 16 + lo);
                 i += 3;
@@ -689,13 +840,22 @@ fn pr_row(p: &Value, review: &str) -> Value {
 }
 
 fn list_repos(app: &App, sudo: Option<&str>) -> Result<Value, Failure> {
-    let raw = forge(app, "GET", &format!("/api/v1/orgs/{ORG}/repos?limit=100"), None, sudo)?;
+    let raw = forge(
+        app,
+        "GET",
+        &format!("/api/v1/orgs/{ORG}/repos?limit=100"),
+        None,
+        sudo,
+    )?;
     let projects = app.projects.list();
     let rows = arr(&raw)
         .iter()
         .map(|r| {
             let full = format!("{ORG}/{}", at(r, "name"));
-            let project = projects.iter().find(|p| p.repo.as_deref() == Some(full.as_str())).map(|p| p.id.clone());
+            let project = projects
+                .iter()
+                .find(|p| p.repo.as_deref() == Some(full.as_str()))
+                .map(|p| p.id.clone());
             json!({
                 "name": at(r, "name"),
                 "description": at(r, "description"),
@@ -711,22 +871,46 @@ fn list_repos(app: &App, sudo: Option<&str>) -> Result<Value, Failure> {
 }
 
 fn get_repo(app: &App, sudo: Option<&str>, repo: &str) -> Result<Value, Failure> {
-    let r = forge(app, "GET", &format!("/api/v1/repos/{ORG}/{}", seg(repo)), None, sudo)?;
+    let r = forge(
+        app,
+        "GET",
+        &format!("/api/v1/repos/{ORG}/{}", seg(repo)),
+        None,
+        sudo,
+    )?;
     Ok(repo_shape(&r))
 }
 
 fn create(app: &App, name: &str, description: &str) -> Result<Value, Failure> {
     let name = name.trim();
     if name.is_empty() || name.contains('/') {
-        return Err(Failure::new(400, "name is required (a plain repository name)"));
+        return Err(Failure::new(
+            400,
+            "name is required (a plain repository name)",
+        ));
     }
-    let full = app.forge.create_repo(name, description).map_err(|e| Failure::new(502, &e))?;
-    let r = forge(app, "GET", &format!("/api/v1/repos/{}", pct(&full, true)), None, None)?;
+    let full = app
+        .forge
+        .create_repo(name, description)
+        .map_err(|e| Failure::new(502, &e))?;
+    let r = forge(
+        app,
+        "GET",
+        &format!("/api/v1/repos/{}", pct(&full, true)),
+        None,
+        None,
+    )?;
     Ok(repo_shape(&r))
 }
 
 fn branches(app: &App, sudo: Option<&str>, repo: &str) -> Result<Value, Failure> {
-    let raw = forge(app, "GET", &format!("/api/v1/repos/{ORG}/{}/branches", seg(repo)), None, sudo)?;
+    let raw = forge(
+        app,
+        "GET",
+        &format!("/api/v1/repos/{ORG}/{}/branches", seg(repo)),
+        None,
+        sudo,
+    )?;
     let rows = arr(&raw)
         .iter()
         .map(|b| {
@@ -745,9 +929,20 @@ fn branches(app: &App, sudo: Option<&str>, repo: &str) -> Result<Value, Failure>
     Ok(Value::Array(rows))
 }
 
-fn commits(app: &App, sudo: Option<&str>, repo: &str, reference: Option<String>, limit: usize) -> Result<Value, Failure> {
-    let sha = reference.map(|r| format!("&sha={}", seg(&r))).unwrap_or_default();
-    let path = format!("/api/v1/repos/{ORG}/{}/commits?limit={limit}&stat=true{sha}", seg(repo));
+fn commits(
+    app: &App,
+    sudo: Option<&str>,
+    repo: &str,
+    reference: Option<String>,
+    limit: usize,
+) -> Result<Value, Failure> {
+    let sha = reference
+        .map(|r| format!("&sha={}", seg(&r)))
+        .unwrap_or_default();
+    let path = format!(
+        "/api/v1/repos/{ORG}/{}/commits?limit={limit}&stat=true{sha}",
+        seg(repo)
+    );
     let raw = forge(app, "GET", &path, None, sudo)?;
     let rows = arr(&raw)
         .iter()
@@ -768,8 +963,20 @@ fn commits(app: &App, sudo: Option<&str>, repo: &str, reference: Option<String>,
     Ok(Value::Array(rows))
 }
 
-fn tree(app: &App, sudo: Option<&str>, repo: &str, path: &str, reference: Option<String>) -> Result<Value, Failure> {
-    let raw = forge(app, "GET", &contents_path(repo, path, reference.as_deref()), None, sudo)?;
+fn tree(
+    app: &App,
+    sudo: Option<&str>,
+    repo: &str,
+    path: &str,
+    reference: Option<String>,
+) -> Result<Value, Failure> {
+    let raw = forge(
+        app,
+        "GET",
+        &contents_path(repo, path, reference.as_deref()),
+        None,
+        sudo,
+    )?;
     let mut rows: Vec<Value> = arr(&raw)
         .iter()
         .map(|e| {
@@ -778,22 +985,40 @@ fn tree(app: &App, sudo: Option<&str>, repo: &str, path: &str, reference: Option
         })
         .collect();
     rows.sort_by(|a, b| {
-        (at(b, "kind") == "dir").cmp(&(at(a, "kind") == "dir")).then_with(|| at(a, "name").cmp(at(b, "name")))
+        (at(b, "kind") == "dir")
+            .cmp(&(at(a, "kind") == "dir"))
+            .then_with(|| at(a, "name").cmp(at(b, "name")))
     });
     Ok(Value::Array(rows))
 }
 
-fn file(app: &App, sudo: Option<&str>, repo: &str, path: &str, reference: Option<String>) -> Result<Value, Failure> {
+fn file(
+    app: &App,
+    sudo: Option<&str>,
+    repo: &str,
+    path: &str,
+    reference: Option<String>,
+) -> Result<Value, Failure> {
     let path = path.trim_matches('/');
     if path.is_empty() {
         return Err(Failure::new(400, "path is required"));
     }
-    let raw = forge(app, "GET", &contents_path(repo, path, reference.as_deref()), None, sudo)?;
+    let raw = forge(
+        app,
+        "GET",
+        &contents_path(repo, path, reference.as_deref()),
+        None,
+        sudo,
+    )?;
     if raw.is_array() {
         return Err(Failure::new(400, "that path is a directory"));
     }
     let bytes = base64_decode(at(&raw, "content")).map_err(|e| Failure::new(502, &e))?;
-    let text = if bytes.len() <= TEXT_LIMIT { String::from_utf8(bytes).ok() } else { None };
+    let text = if bytes.len() <= TEXT_LIMIT {
+        String::from_utf8(bytes).ok()
+    } else {
+        None
+    };
     let binary = text.is_none();
     Ok(json!({
         "path": path,
@@ -805,22 +1030,51 @@ fn file(app: &App, sudo: Option<&str>, repo: &str, path: &str, reference: Option
 }
 
 /// A pull request's row with its review state, which costs one Forgejo call for its reviews.
-fn pull_row(api: &dyn ForgeApi, sudo: Option<&str>, repo: &str, p: &Value) -> Result<Value, Failure> {
-    let path = format!("/api/v1/repos/{ORG}/{}/pulls/{}/reviews", seg(repo), num(p, "number"));
-    Ok(pr_row(p, review_state(&forge_on(api, "GET", &path, None, sudo)?)))
+fn pull_row(
+    api: &dyn ForgeApi,
+    sudo: Option<&str>,
+    repo: &str,
+    p: &Value,
+) -> Result<Value, Failure> {
+    let path = format!(
+        "/api/v1/repos/{ORG}/{}/pulls/{}/reviews",
+        seg(repo),
+        num(p, "number")
+    );
+    Ok(pr_row(
+        p,
+        review_state(&forge_on(api, "GET", &path, None, sudo)?),
+    ))
 }
 
 /// The page and page size of a pull request list: the page from 1, the limit from 1 to 50 (default 50).
 fn page_args(page: Option<&str>, limit: Option<&str>) -> (u64, u64) {
     let page = page.and_then(|v| v.parse::<u64>().ok()).unwrap_or(1).max(1);
-    let limit = limit.and_then(|v| v.parse::<u64>().ok()).unwrap_or(50).clamp(1, 50);
+    let limit = limit
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(50)
+        .clamp(1, 50);
     (page, limit)
 }
 
-fn pulls(app: &App, sudo: Option<&str>, repo: &str, state: &str, page: u64, limit: u64) -> Result<Value, Failure> {
-    let path = format!("/api/v1/repos/{ORG}/{}/pulls?state={}&page={page}&limit={limit}", seg(repo), seg(state));
+fn pulls(
+    app: &App,
+    sudo: Option<&str>,
+    repo: &str,
+    state: &str,
+    page: u64,
+    limit: u64,
+) -> Result<Value, Failure> {
+    let path = format!(
+        "/api/v1/repos/{ORG}/{}/pulls?state={}&page={page}&limit={limit}",
+        seg(repo),
+        seg(state)
+    );
     let raw = forge(app, "GET", &path, None, sudo)?;
-    let rows = arr(&raw).iter().map(|p| pull_row(&app.forge, sudo, repo, p)).collect::<Result<Vec<Value>, Failure>>()?;
+    let rows = arr(&raw)
+        .iter()
+        .map(|p| pull_row(&app.forge, sudo, repo, p))
+        .collect::<Result<Vec<Value>, Failure>>()?;
     Ok(Value::Array(rows))
 }
 
@@ -861,7 +1115,13 @@ fn pull(app: &App, sudo: Option<&str>, repo: &str, n: u64) -> Result<Value, Fail
     let base = format!("/api/v1/repos/{ORG}/{}/pulls/{n}", seg(repo));
     let p = forge(app, "GET", &base, None, sudo)?;
     let reviews = forge(app, "GET", &format!("{base}/reviews"), None, sudo)?;
-    let comments = forge(app, "GET", &format!("/api/v1/repos/{ORG}/{}/issues/{n}/comments", seg(repo)), None, sudo)?;
+    let comments = forge(
+        app,
+        "GET",
+        &format!("/api/v1/repos/{ORG}/{}/issues/{n}/comments", seg(repo)),
+        None,
+        sudo,
+    )?;
     let files = forge(app, "GET", &format!("{base}/files"), None, sudo)?;
     Ok(pull_detail(&p, &reviews, &comments, &files))
 }
@@ -873,14 +1133,30 @@ fn review_event(event: &str) -> Result<&'static str, Failure> {
         "APPROVE" | "APPROVED" => Ok("APPROVED"),
         "REQUEST_CHANGES" => Ok("REQUEST_CHANGES"),
         "COMMENT" => Ok("COMMENT"),
-        _ => Err(Failure::new(400, "event must be APPROVE, REQUEST_CHANGES or COMMENT")),
+        _ => Err(Failure::new(
+            400,
+            "event must be APPROVE, REQUEST_CHANGES or COMMENT",
+        )),
     }
 }
 
-fn review(app: &App, sudo: Option<&str>, repo: &str, n: u64, event: &str, body: &str) -> Result<Value, Failure> {
+fn review(
+    app: &App,
+    sudo: Option<&str>,
+    repo: &str,
+    n: u64,
+    event: &str,
+    body: &str,
+) -> Result<Value, Failure> {
     let event = review_event(event)?;
     let path = format!("/api/v1/repos/{ORG}/{}/pulls/{n}/reviews", seg(repo));
-    forge(app, "POST", &path, Some(&json!({"event": event, "body": body})), sudo)?;
+    forge(
+        app,
+        "POST",
+        &path,
+        Some(&json!({"event": event, "body": body})),
+        sudo,
+    )?;
     Ok(json!({"number": n, "event": event}))
 }
 
@@ -889,7 +1165,13 @@ fn comment_input(input: &Value) -> Result<&str, Failure> {
     need(input, "body")
 }
 
-fn comment(app: &App, sudo: Option<&str>, repo: &str, n: u64, body: &str) -> Result<Value, Failure> {
+fn comment(
+    app: &App,
+    sudo: Option<&str>,
+    repo: &str,
+    n: u64,
+    body: &str,
+) -> Result<Value, Failure> {
     let path = format!("/api/v1/repos/{ORG}/{}/issues/{n}/comments", seg(repo));
     let c = forge(app, "POST", &path, Some(&json!({"body": body})), sudo)?;
     Ok(comment_shape(&c))
@@ -897,14 +1179,33 @@ fn comment(app: &App, sudo: Option<&str>, repo: &str, n: u64, body: &str) -> Res
 
 /// The body of a new pull request: a non-empty title, head and base; the body is optional.
 fn new_pull_input(input: &Value) -> Result<(&str, &str, &str, &str), Failure> {
-    Ok((need(input, "title")?, need(input, "head")?, need(input, "base")?, at(input, "body")))
+    Ok((
+        need(input, "title")?,
+        need(input, "head")?,
+        need(input, "base")?,
+        at(input, "body"),
+    ))
 }
 
 /// Opens a pull request from `head` into `base` (`main` when empty) and answers its row.
-pub(crate) fn open_pr(api: &dyn ForgeApi, sudo: Option<&str>, repo: &str, head: &str, base: &str, title: &str, body: &str) -> Result<Value, Failure> {
+pub(crate) fn open_pr(
+    api: &dyn ForgeApi,
+    sudo: Option<&str>,
+    repo: &str,
+    head: &str,
+    base: &str,
+    title: &str,
+    body: &str,
+) -> Result<Value, Failure> {
     let base = if base.is_empty() { "main" } else { base };
     let path = format!("/api/v1/repos/{ORG}/{}/pulls", seg(repo));
-    let v = forge_on(api, "POST", &path, Some(&json!({"head": head, "base": base, "title": title, "body": body})), sudo)?;
+    let v = forge_on(
+        api,
+        "POST",
+        &path,
+        Some(&json!({"head": head, "base": base, "title": title, "body": body})),
+        sudo,
+    )?;
     pull_row(api, sudo, repo, &v)
 }
 
@@ -918,13 +1219,25 @@ fn state_input(input: &Value) -> Result<&'static str, Failure> {
 }
 
 /// Closes or reopens a pull request; answers its row.
-fn set_state(app: &App, sudo: Option<&str>, repo: &str, n: u64, state: &str) -> Result<Value, Failure> {
+fn set_state(
+    app: &App,
+    sudo: Option<&str>,
+    repo: &str,
+    n: u64,
+    state: &str,
+) -> Result<Value, Failure> {
     let path = format!("/api/v1/repos/{ORG}/{}/pulls/{n}", seg(repo));
     let v = forge(app, "PATCH", &path, Some(&json!({"state": state})), sudo)?;
     pull_row(&app.forge, sudo, repo, &v)
 }
 
-fn merge_pr(app: &App, sudo: Option<&str>, repo: &str, n: u64, style: &str) -> Result<Value, Failure> {
+fn merge_pr(
+    app: &App,
+    sudo: Option<&str>,
+    repo: &str,
+    n: u64,
+    style: &str,
+) -> Result<Value, Failure> {
     let path = format!("/api/v1/repos/{ORG}/{}/pulls/{n}/merge", seg(repo));
     forge(app, "POST", &path, Some(&json!({"Do": style})), sudo)?;
     Ok(json!({"number": n, "merged": true}))
@@ -937,7 +1250,9 @@ fn approved_by_other(app: &App, sudo: Option<&str>, repo: &str, n: u64) -> Resul
     let reviews = forge(app, "GET", &format!("{base}/reviews"), None, sudo)?;
     let author = at(&p["user"], "login");
     Ok(arr(&reviews).iter().any(|r| {
-        at(r, "state") == "APPROVED" && r["dismissed"].as_bool() != Some(true) && at(&r["user"], "login") != author
+        at(r, "state") == "APPROVED"
+            && r["dismissed"].as_bool() != Some(true)
+            && at(&r["user"], "login") != author
     }))
 }
 
@@ -955,7 +1270,10 @@ fn create_repo_route(app: &App, req: &Request, _p: &Params<'_>) -> Response {
     let Ok(body) = req.json::<Value>() else {
         return Response::error(400, "the body must be JSON: {name, description}");
     };
-    reply(create(app, at(&body, "name"), at(&body, "description")), 201)
+    reply(
+        create(app, at(&body, "name"), at(&body, "description")),
+        201,
+    )
 }
 
 fn repo_route(app: &App, _req: &Request, p: &Params<'_>) -> Response {
@@ -967,16 +1285,37 @@ fn branches_route(app: &App, _req: &Request, p: &Params<'_>) -> Response {
 }
 
 fn commits_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
-    let limit = q(req, "limit").and_then(|v| v.parse::<usize>().ok()).unwrap_or(30).clamp(1, 100);
+    let limit = q(req, "limit")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(30)
+        .clamp(1, 100);
     reply(commits(app, None, p.get("repo"), q(req, "ref"), limit), 200)
 }
 
 fn tree_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
-    reply(tree(app, None, p.get("repo"), &q(req, "path").unwrap_or_default(), q(req, "ref")), 200)
+    reply(
+        tree(
+            app,
+            None,
+            p.get("repo"),
+            &q(req, "path").unwrap_or_default(),
+            q(req, "ref"),
+        ),
+        200,
+    )
 }
 
 fn file_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
-    reply(file(app, None, p.get("repo"), &q(req, "path").unwrap_or_default(), q(req, "ref")), 200)
+    reply(
+        file(
+            app,
+            None,
+            p.get("repo"),
+            &q(req, "path").unwrap_or_default(),
+            q(req, "ref"),
+        ),
+        200,
+    )
 }
 
 fn pulls_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
@@ -990,45 +1329,83 @@ fn open_pr_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
         return Response::error(400, "the body must be JSON: {title, head, base, body?}");
     };
     reply(
-        new_pull_input(&body).and_then(|(title, head, base, text)| open_pr(&app.forge, None, p.get("repo"), head, base, title, text)),
+        new_pull_input(&body).and_then(|(title, head, base, text)| {
+            open_pr(&app.forge, None, p.get("repo"), head, base, title, text)
+        }),
         201,
     )
 }
 
 fn pull_route(app: &App, _req: &Request, p: &Params<'_>) -> Response {
-    reply(number(p.get("n")).and_then(|n| pull(app, None, p.get("repo"), n)), 200)
+    reply(
+        number(p.get("n")).and_then(|n| pull(app, None, p.get("repo"), n)),
+        200,
+    )
 }
 
 fn comment_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
     let Ok(body) = req.json::<Value>() else {
         return Response::error(400, "the body must be JSON: {body}");
     };
-    reply(comment_input(&body).and_then(|text| number(p.get("n")).and_then(|n| comment(app, None, p.get("repo"), n, text))), 201)
+    reply(
+        comment_input(&body).and_then(|text| {
+            number(p.get("n")).and_then(|n| comment(app, None, p.get("repo"), n, text))
+        }),
+        201,
+    )
 }
 
 fn state_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
     let Ok(body) = req.json::<Value>() else {
         return Response::error(400, "the body must be JSON: {state: open|closed}");
     };
-    reply(state_input(&body).and_then(|state| number(p.get("n")).and_then(|n| set_state(app, None, p.get("repo"), n, state))), 200)
+    reply(
+        state_input(&body).and_then(|state| {
+            number(p.get("n")).and_then(|n| set_state(app, None, p.get("repo"), n, state))
+        }),
+        200,
+    )
 }
 
 fn review_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
     let Ok(body) = req.json::<Value>() else {
         return Response::error(400, "the body must be JSON: {event, body}");
     };
-    reply(number(p.get("n")).and_then(|n| review(app, None, p.get("repo"), n, at(&body, "event"), at(&body, "body"))), 200)
+    reply(
+        number(p.get("n")).and_then(|n| {
+            review(
+                app,
+                None,
+                p.get("repo"),
+                n,
+                at(&body, "event"),
+                at(&body, "body"),
+            )
+        }),
+        200,
+    )
 }
 
 /// `POST .../merge`. The owner may merge without an approval; the clients gate the button. (The agents'
 /// `plaza_git` merge still needs an approving review by another agent: see `act`.)
 fn merge_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
-    let style = req.json::<Value>().ok().map(|b| at(&b, "style").to_string()).unwrap_or_default();
-    let style = if style.is_empty() { "merge".to_string() } else { style };
+    let style = req
+        .json::<Value>()
+        .ok()
+        .map(|b| at(&b, "style").to_string())
+        .unwrap_or_default();
+    let style = if style.is_empty() {
+        "merge".to_string()
+    } else {
+        style
+    };
     if !matches!(style.as_str(), "merge" | "squash" | "rebase") {
         return Response::error(400, "style must be merge, squash or rebase");
     }
-    reply(number(p.get("n")).and_then(|n| merge_pr(app, None, p.get("repo"), n, &style)), 200)
+    reply(
+        number(p.get("n")).and_then(|n| merge_pr(app, None, p.get("repo"), n, &style)),
+        200,
+    )
 }
 
 /// The text of a pull request for the agent: header, files, reviews, and the diff clipped to 20 KB.
@@ -1049,7 +1426,12 @@ fn pull_text(v: &Value) -> String {
     }
     out.push_str("\nfiles:\n");
     for f in arr(&v["files"]) {
-        out.push_str(&format!("  {} +{} -{}\n", at(f, "path"), num(f, "additions"), num(f, "deletions")));
+        out.push_str(&format!(
+            "  {} +{} -{}\n",
+            at(f, "path"),
+            num(f, "additions"),
+            num(f, "deletions")
+        ));
     }
     out.push_str("\nreviews:\n");
     for r in arr(&v["reviews"]) {
@@ -1076,13 +1458,20 @@ fn act(app: &App, sudo: Option<&str>, input: &Value) -> Result<String, Failure> 
         "repos" => {
             let repos = list_repos(app, sudo)?;
             Ok(lines(
-                arr(&repos).iter().map(|r| format!("{}: {}", at(r, "name"), at(r, "description"))).collect(),
+                arr(&repos)
+                    .iter()
+                    .map(|r| format!("{}: {}", at(r, "name"), at(r, "description")))
+                    .collect(),
                 "no repositories yet",
             ))
         }
         "create_repo" => {
             let r = create(app, need(input, "name")?, at(input, "description"))?;
-            Ok(format!("created {}\nclone: {}", at(&r, "name"), at(&r, "clone_url_for_agents")))
+            Ok(format!(
+                "created {}\nclone: {}",
+                at(&r, "name"),
+                at(&r, "clone_url_for_agents")
+            ))
         }
         "prs" => {
             let state = input["state"].as_str().unwrap_or("open");
@@ -1106,7 +1495,12 @@ fn act(app: &App, sudo: Option<&str>, input: &Value) -> Result<String, Failure> 
                 "no pull requests",
             ))
         }
-        "pr" => Ok(pull_text(&pull(app, sudo, need(input, "repo")?, number_arg(input)?)?)),
+        "pr" => Ok(pull_text(&pull(
+            app,
+            sudo,
+            need(input, "repo")?,
+            number_arg(input)?,
+        )?)),
         "open_pr" => {
             let v = open_pr(
                 &app.forge,
@@ -1121,7 +1515,14 @@ fn act(app: &App, sudo: Option<&str>, input: &Value) -> Result<String, Failure> 
         }
         "review" => {
             let n = number_arg(input)?;
-            let v = review(app, sudo, need(input, "repo")?, n, need(input, "event")?, at(input, "body"))?;
+            let v = review(
+                app,
+                sudo,
+                need(input, "repo")?,
+                n,
+                need(input, "event")?,
+                at(input, "body"),
+            )?;
             Ok(format!("review {} posted on #{n}", at(&v, "event")))
         }
         "comment" => {
@@ -1133,7 +1534,10 @@ fn act(app: &App, sudo: Option<&str>, input: &Value) -> Result<String, Failure> 
             let repo = need(input, "repo")?;
             let n = number_arg(input)?;
             if !approved_by_other(app, sudo, repo, n)? {
-                return Err(Failure::new(409, "a pull request needs an approving review by another agent before it is merged"));
+                return Err(Failure::new(
+                    409,
+                    "a pull request needs an approving review by another agent before it is merged",
+                ));
             }
             merge_pr(app, sudo, repo, n, "merge")?;
             Ok(format!("merged #{n}"))
@@ -1147,19 +1551,22 @@ pub fn spec(name: &str) -> Option<(&'static str, Value)> {
     Some(match name {
         "plaza_git" => (
             "The plaza's git forge. In your VM, clone and push with plain git: `git clone http://plaza.gateway/git/agentplaza/<repo>.git` (no credentials needed; you push as yourself). Here: repos (list), create_repo (name, description), prs (repo, state), pr (repo, number: details, diff, reviews), open_pr (repo, head, base, title, body), review (repo, number, event APPROVE|REQUEST_CHANGES|COMMENT, body), comment (repo, number, body), merge (repo, number).",
-            obj(json!({
-                "action": {"type": "string", "enum": ["repos", "create_repo", "prs", "pr", "open_pr", "review", "comment", "merge"]},
-                "repo": {"type": "string"},
-                "name": {"type": "string"},
-                "description": {"type": "string"},
-                "state": {"type": "string", "enum": ["open", "closed", "all"]},
-                "number": {"type": "integer"},
-                "head": {"type": "string"},
-                "base": {"type": "string"},
-                "title": {"type": "string"},
-                "body": {"type": "string"},
-                "event": {"type": "string", "enum": ["APPROVE", "REQUEST_CHANGES", "COMMENT"]}
-            }), &["action"]),
+            obj(
+                json!({
+                    "action": {"type": "string", "enum": ["repos", "create_repo", "prs", "pr", "open_pr", "review", "comment", "merge"]},
+                    "repo": {"type": "string"},
+                    "name": {"type": "string"},
+                    "description": {"type": "string"},
+                    "state": {"type": "string", "enum": ["open", "closed", "all"]},
+                    "number": {"type": "integer"},
+                    "head": {"type": "string"},
+                    "base": {"type": "string"},
+                    "title": {"type": "string"},
+                    "body": {"type": "string"},
+                    "event": {"type": "string", "enum": ["APPROVE", "REQUEST_CHANGES", "COMMENT"]}
+                }),
+                &["action"],
+            ),
         ),
         _ => return None,
     })
@@ -1205,14 +1612,28 @@ mod tests {
     fn review_event_maps_the_client_events_to_forgejo_states() {
         assert_eq!(review_event("APPROVE").ok(), Some("APPROVED"));
         assert_eq!(review_event("APPROVED").ok(), Some("APPROVED"));
-        assert_eq!(review_event("REQUEST_CHANGES").ok(), Some("REQUEST_CHANGES"));
+        assert_eq!(
+            review_event("REQUEST_CHANGES").ok(),
+            Some("REQUEST_CHANGES")
+        );
         assert_eq!(review_event("COMMENT").ok(), Some("COMMENT"));
     }
 
     #[test]
     fn review_event_refuses_anything_else_with_400() {
-        for bad in ["", "approve", "PENDING", "DISMISS", "LGTM", "REQUEST_CHANGE"] {
-            assert_eq!(status(review_event(bad)), Some(400), "event {bad:?} must be refused");
+        for bad in [
+            "",
+            "approve",
+            "PENDING",
+            "DISMISS",
+            "LGTM",
+            "REQUEST_CHANGE",
+        ] {
+            assert_eq!(
+                status(review_event(bad)),
+                Some(400),
+                "event {bad:?} must be refused"
+            );
         }
     }
 
@@ -1228,11 +1649,20 @@ mod tests {
 
         assert_eq!(row["comments"], json!(2), "comments stays the count");
         assert_eq!(row["discussion"].as_array().map(Vec::len), Some(2));
-        assert_eq!(row["discussion"][0], json!({"author": "agent-5", "body": "first", "at": "2026-10-02T09:00:00Z"}));
-        assert_eq!(row["discussion"][1], json!({"author": "agent-3", "body": "second", "at": "2026-10-02T09:30:00Z"}));
+        assert_eq!(
+            row["discussion"][0],
+            json!({"author": "agent-5", "body": "first", "at": "2026-10-02T09:00:00Z"})
+        );
+        assert_eq!(
+            row["discussion"][1],
+            json!({"author": "agent-3", "body": "second", "at": "2026-10-02T09:30:00Z"})
+        );
         assert_eq!(row["review"], json!("approved"));
         assert_eq!(row["reviews"][0]["author"], json!("agent-5"));
-        assert_eq!(row["files"][0], json!({"path": "src/a.rs", "additions": 3, "deletions": 1}));
+        assert_eq!(
+            row["files"][0],
+            json!({"path": "src/a.rs", "additions": 3, "deletions": 1})
+        );
         assert_eq!(row["diff"], json!("@@ -1 +1 @@\n-a\n+b\n"));
         assert_eq!(row["body"], json!("Details"));
         assert_eq!(row["number"], json!(7));
@@ -1251,13 +1681,37 @@ mod tests {
         let ok = json!({"title": "T", "head": "feature", "base": "main"});
         assert_eq!(new_pull_input(&ok).ok(), Some(("T", "feature", "main", "")));
         let with_body = json!({"title": "T", "head": "feature", "base": "main", "body": "text"});
-        assert_eq!(new_pull_input(&with_body).ok().map(|(_, _, _, body)| body), Some("text"));
+        assert_eq!(
+            new_pull_input(&with_body).ok().map(|(_, _, _, body)| body),
+            Some("text")
+        );
 
-        assert_eq!(status(new_pull_input(&json!({"head": "feature", "base": "main"}))), Some(400));
-        assert_eq!(status(new_pull_input(&json!({"title": "  ", "head": "feature", "base": "main"}))), Some(400));
-        assert_eq!(status(new_pull_input(&json!({"title": "T", "head": "", "base": "main"}))), Some(400));
-        assert_eq!(status(new_pull_input(&json!({"title": "T", "head": "feature"}))), Some(400));
-        assert_eq!(status(new_pull_input(&json!({"title": "T", "head": "feature", "base": " "}))), Some(400));
+        assert_eq!(
+            status(new_pull_input(&json!({"head": "feature", "base": "main"}))),
+            Some(400)
+        );
+        assert_eq!(
+            status(new_pull_input(
+                &json!({"title": "  ", "head": "feature", "base": "main"})
+            )),
+            Some(400)
+        );
+        assert_eq!(
+            status(new_pull_input(
+                &json!({"title": "T", "head": "", "base": "main"})
+            )),
+            Some(400)
+        );
+        assert_eq!(
+            status(new_pull_input(&json!({"title": "T", "head": "feature"}))),
+            Some(400)
+        );
+        assert_eq!(
+            status(new_pull_input(
+                &json!({"title": "T", "head": "feature", "base": " "})
+            )),
+            Some(400)
+        );
     }
 
     #[test]
@@ -1271,9 +1725,21 @@ mod tests {
     #[test]
     fn state_input_accepts_open_and_closed_only() {
         assert_eq!(state_input(&json!({"state": "open"})).ok(), Some("open"));
-        assert_eq!(state_input(&json!({"state": "closed"})).ok(), Some("closed"));
-        for bad in [json!({"state": "merged"}), json!({"state": "Closed"}), json!({"state": ""}), json!({})] {
-            assert_eq!(status(state_input(&bad)), Some(400), "{bad} must be refused");
+        assert_eq!(
+            state_input(&json!({"state": "closed"})).ok(),
+            Some("closed")
+        );
+        for bad in [
+            json!({"state": "merged"}),
+            json!({"state": "Closed"}),
+            json!({"state": ""}),
+            json!({}),
+        ] {
+            assert_eq!(
+                status(state_input(&bad)),
+                Some(400),
+                "{bad} must be refused"
+            );
         }
     }
 

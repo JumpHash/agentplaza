@@ -17,11 +17,11 @@ use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 
 use apz_http::{Params, Request, Response};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::agents::Agent;
 use crate::settings::ORCHESTRATOR_ROLE;
-use crate::state::{write_atomic, App};
+use crate::state::{App, write_atomic};
 
 /// The species index, as the species authors maintain it.
 const INDEX: &str = include_str!("../../../assets/robots/index.json");
@@ -59,20 +59,30 @@ impl Catalog {
     /// A listed id with no body (no file yet) is named by its id.
     pub fn parse(index: &str, files: &[(&str, &str)]) -> Result<Catalog, String> {
         let doc: Value = serde_json::from_str(index).map_err(|e| format!("index.json: {e}"))?;
-        let ids = doc["species"].as_array().ok_or("index.json: no species array")?;
+        let ids = doc["species"]
+            .as_array()
+            .ok_or("index.json: no species array")?;
         let mut species: Vec<Species> = Vec::new();
         for id in ids {
-            let id = id.as_str().ok_or("index.json: a species id is not a string")?;
+            let id = id
+                .as_str()
+                .ok_or("index.json: a species id is not a string")?;
             if species.iter().any(|s| s.id == id) {
                 return Err(format!("index.json lists {id} twice"));
             }
-            let body = files.iter().find(|(file_id, _)| *file_id == id).map_or("", |(_, body)| *body);
+            let body = files
+                .iter()
+                .find(|(file_id, _)| *file_id == id)
+                .map_or("", |(_, body)| *body);
             let name = serde_json::from_str::<Value>(body)
                 .ok()
                 .and_then(|file| file["name"].as_str().map(str::to_owned))
                 .filter(|name| !name.is_empty())
                 .unwrap_or_else(|| id.to_owned());
-            species.push(Species { id: id.to_owned(), name });
+            species.push(Species {
+                id: id.to_owned(),
+                name,
+            });
         }
         Ok(Catalog { species })
     }
@@ -83,7 +93,11 @@ impl Catalog {
 
     /// The species the plaza deals: all but `oracle`.
     pub fn dealable(&self) -> Vec<&str> {
-        self.species.iter().map(|s| s.id.as_str()).filter(|id| *id != ORACLE).collect()
+        self.species
+            .iter()
+            .map(|s| s.id.as_str())
+            .filter(|id| *id != ORACLE)
+            .collect()
     }
 }
 
@@ -91,21 +105,38 @@ static CATALOG: OnceLock<Catalog> = OnceLock::new();
 
 /// The catalog, parsed once. Called at start so a broken index stops the hub there.
 pub fn catalog() -> &'static Catalog {
-    CATALOG.get_or_init(|| Catalog::parse(INDEX, SPECIES_FILES).unwrap_or_else(|e| panic!("species: {e}")))
+    CATALOG.get_or_init(|| {
+        Catalog::parse(INDEX, SPECIES_FILES).unwrap_or_else(|e| panic!("species: {e}"))
+    })
 }
 
 /// The species to deal next: the dealable ones with the fewest of `roster`'s agents (the
 /// orchestrator is outside the count), one of them picked by `pick`, which is given how many
 /// candidates there are and returns an index below that.
-pub fn deal(looks: &BTreeMap<u64, Look>, roster: &[Agent], dealable: &[&str], pick: &mut dyn FnMut(usize) -> usize) -> String {
+pub fn deal(
+    looks: &BTreeMap<u64, Look>,
+    roster: &[Agent],
+    dealable: &[&str],
+    pick: &mut dyn FnMut(usize) -> usize,
+) -> String {
     let mut counts: BTreeMap<&str, usize> = dealable.iter().map(|id| (*id, 0)).collect();
-    for agent in roster.iter().filter(|agent| agent.role != ORCHESTRATOR_ROLE) {
-        if let Some(count) = looks.get(&agent.cid).and_then(|look| counts.get_mut(look.species.as_str())) {
+    for agent in roster
+        .iter()
+        .filter(|agent| agent.role != ORCHESTRATOR_ROLE)
+    {
+        if let Some(count) = looks
+            .get(&agent.cid)
+            .and_then(|look| counts.get_mut(look.species.as_str()))
+        {
             *count += 1;
         }
     }
     let least = counts.values().copied().min().unwrap_or(0);
-    let candidates: Vec<&str> = counts.iter().filter(|(_, n)| **n == least).map(|(id, _)| *id).collect();
+    let candidates: Vec<&str> = counts
+        .iter()
+        .filter(|(_, n)| **n == least)
+        .map(|(id, _)| *id)
+        .collect();
     if candidates.is_empty() {
         return ROVER.to_owned();
     }
@@ -152,7 +183,11 @@ struct Rng(u64);
 
 impl Rng {
     fn seeded(seed: u64) -> Rng {
-        Rng(if seed == 0 { 0x9E37_79B9_7F4A_7C15 } else { seed })
+        Rng(if seed == 0 {
+            0x9E37_79B9_7F4A_7C15
+        } else {
+            seed
+        })
     }
 
     /// A number below `n` (`n` of at least 1).
@@ -199,7 +234,10 @@ impl Looks {
     /// The looks kept in `path`, loaded now. A file that does not parse is kept aside as
     /// `looks.json.rejected`, and the looks start empty.
     pub fn open(path: PathBuf) -> Looks {
-        let looks = Looks { path: Some(path.clone()), ..Looks::default() };
+        let looks = Looks {
+            path: Some(path.clone()),
+            ..Looks::default()
+        };
         if let Ok(text) = std::fs::read_to_string(&path) {
             if let Err(e) = looks.restore(&text) {
                 eprintln!("looks: {} refused ({e}); kept aside", path.display());
@@ -212,13 +250,16 @@ impl Looks {
     /// Writes the looks to their file (through a temporary file) when they changed since the last
     /// write; returns whether it wrote. A looks with no file writes nothing.
     pub fn save(&self) -> Result<bool, String> {
-        let Some(path) = &self.path else { return Ok(false) };
+        let Some(path) = &self.path else {
+            return Ok(false);
+        };
         let changes = self.changes.load(Ordering::SeqCst);
         let mut saved = self.saved.lock().unwrap_or_else(PoisonError::into_inner);
         if *saved == Some(changes) {
             return Ok(false);
         }
-        write_atomic(path, &self.snapshot()).map_err(|e| format!("writing {}: {e}", path.display()))?;
+        write_atomic(path, &self.snapshot())
+            .map_err(|e| format!("writing {}: {e}", path.display()))?;
         *saved = Some(changes);
         Ok(true)
     }
@@ -235,7 +276,13 @@ impl Looks {
     /// The agent's look, dealt now if it has none. The orchestrator (`role`) is `rover` and
     /// is not dealt. `roster` is read while the looks are locked, so two hellos never deal from
     /// the same counts.
-    pub fn ensure(&self, cid: u64, role: &str, now_ms: u64, roster: impl FnOnce() -> Vec<Agent>) -> String {
+    pub fn ensure(
+        &self,
+        cid: u64,
+        role: &str,
+        now_ms: u64,
+        roster: impl FnOnce() -> Vec<Agent>,
+    ) -> String {
         let mut looks = self.guard();
         if let Some(look) = looks.get(&cid) {
             return look.species.clone();
@@ -245,9 +292,17 @@ impl Looks {
         } else {
             let roster = roster();
             let mut rng = self.rng.lock().unwrap_or_else(PoisonError::into_inner);
-            deal(&*looks, &roster, &catalog().dealable(), &mut |n| rng.below(n))
+            deal(&*looks, &roster, &catalog().dealable(), &mut |n| {
+                rng.below(n)
+            })
         };
-        looks.insert(cid, Look { species: species.clone(), dealt_ms: now_ms });
+        looks.insert(
+            cid,
+            Look {
+                species: species.clone(),
+                dealt_ms: now_ms,
+            },
+        );
         self.changes.fetch_add(1, Ordering::SeqCst);
         species
     }
@@ -255,7 +310,13 @@ impl Looks {
     /// The owner's choice (already checked with `check_choice`).
     pub fn set(&self, cid: u64, species: &str, now_ms: u64) {
         let mut looks = self.guard();
-        looks.insert(cid, Look { species: species.to_owned(), dealt_ms: now_ms });
+        looks.insert(
+            cid,
+            Look {
+                species: species.to_owned(),
+                dealt_ms: now_ms,
+            },
+        );
         self.changes.fetch_add(1, Ordering::SeqCst);
     }
 
@@ -273,7 +334,8 @@ impl Looks {
 
     /// Replaces the state from a snapshot.
     pub fn restore(&self, json: &str) -> Result<(), String> {
-        let looks: BTreeMap<u64, Look> = serde_json::from_str(json).map_err(|e| format!("bad looks snapshot: {e}"))?;
+        let looks: BTreeMap<u64, Look> =
+            serde_json::from_str(json).map_err(|e| format!("bad looks snapshot: {e}"))?;
         let mut guard = self.guard();
         *guard = looks;
         self.changes.fetch_add(1, Ordering::SeqCst);
@@ -307,7 +369,8 @@ pub fn set_species(app: &App, req: &Request, params: &Params<'_>) -> Response {
         return Response::error(400, &e);
     }
     app.looks.set(agent.cid, &body.species, apz_plaza::now_ms());
-    app.agents.update(agent.cid, |a| a.species = body.species.clone());
+    app.agents
+        .update(agent.cid, |a| a.species = body.species.clone());
     let Some(updated) = app.agents.get(agent.cid) else {
         return Response::error(404, "no such agent");
     };
@@ -349,7 +412,13 @@ mod tests {
         let mut roster = Vec::new();
         for cid in 1..=n {
             let species = deal(&looks, &roster, dealable, &mut |k| rng.below(k));
-            looks.insert(cid, Look { species, dealt_ms: cid });
+            looks.insert(
+                cid,
+                Look {
+                    species,
+                    dealt_ms: cid,
+                },
+            );
             roster.push(agent(cid, "builder"));
         }
         (looks, roster)
@@ -363,7 +432,10 @@ mod tests {
             let (looks, _) = deal_many(40, &dealable, &mut Rng::seeded(seed));
             for id in &dealable {
                 let count = looks.values().filter(|look| look.species == *id).count();
-                assert!((1..=2).contains(&count), "{id} dealt {count} times (seed {seed})");
+                assert!(
+                    (1..=2).contains(&count),
+                    "{id} dealt {count} times (seed {seed})"
+                );
             }
             assert_eq!(looks.len(), 40);
         }
@@ -373,11 +445,17 @@ mod tests {
     fn freeing_a_species_makes_it_next_in_line() {
         let dealable = ["a", "b", "c"];
         let (looks, mut roster) = deal_many(3, &dealable, &mut Rng::seeded(3));
-        let freed = looks.iter().find(|(_, look)| look.species == "b").map(|(cid, _)| *cid).unwrap();
+        let freed = looks
+            .iter()
+            .find(|(_, look)| look.species == "b")
+            .map(|(cid, _)| *cid)
+            .unwrap();
         roster.retain(|agent| agent.cid != freed);
         // The look of the removed agent is still stored; it no longer counts.
         for seed in 1..=20 {
-            let next = deal(&looks, &roster, &dealable, &mut |k| Rng::seeded(seed).below(k));
+            let next = deal(&looks, &roster, &dealable, &mut |k| {
+                Rng::seeded(seed).below(k)
+            });
             assert_eq!(next, "b", "seed {seed}");
         }
     }
@@ -385,12 +463,20 @@ mod tests {
     #[test]
     fn the_orchestrator_is_rover_and_outside_the_count() {
         let looks = Looks::default();
-        let species = looks.ensure(1, ORCHESTRATOR_ROLE, 5, || panic!("the orchestrator is not dealt from the roster"));
+        let species = looks.ensure(1, ORCHESTRATOR_ROLE, 5, || {
+            panic!("the orchestrator is not dealt from the roster")
+        });
         assert_eq!(species, ROVER);
         assert_eq!(looks.all()[&1].species, ROVER);
 
         // A rover orchestrator does not count against rover for the workers.
-        let orchestrator = BTreeMap::from([(1, Look { species: ROVER.into(), dealt_ms: 5 })]);
+        let orchestrator = BTreeMap::from([(
+            1,
+            Look {
+                species: ROVER.into(),
+                dealt_ms: 5,
+            },
+        )]);
         let roster = [agent(1, ORCHESTRATOR_ROLE)];
         let mut offered = 0;
         let next = deal(&orchestrator, &roster, &["rover", "tv"], &mut |n| {
@@ -400,7 +486,13 @@ mod tests {
         assert_eq!((offered, next.as_str()), (2, "rover"));
 
         // A rover worker does count.
-        let workers = BTreeMap::from([(2, Look { species: ROVER.into(), dealt_ms: 5 })]);
+        let workers = BTreeMap::from([(
+            2,
+            Look {
+                species: ROVER.into(),
+                dealt_ms: 5,
+            },
+        )]);
         let roster = [agent(2, "builder")];
         let next = deal(&workers, &roster, &["rover", "tv"], &mut |_| 0);
         assert_eq!(next, "tv");
@@ -432,7 +524,13 @@ mod tests {
         let reopened = Looks::open(path);
         assert_eq!(reopened.all(), before);
         assert_eq!(reopened.all()[&7].species, dealt);
-        assert_eq!(reopened.all()[&8], Look { species: "tv".into(), dealt_ms: 200 });
+        assert_eq!(
+            reopened.all()[&8],
+            Look {
+                species: "tv".into(),
+                dealt_ms: 200
+            }
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -446,22 +544,66 @@ mod tests {
         let restored = Looks::default();
         restored.restore(&json).unwrap();
         assert_eq!(restored.all()[&7].species, dealt);
-        assert_eq!(restored.all()[&8], Look { species: "tv".into(), dealt_ms: 200 });
+        assert_eq!(
+            restored.all()[&8],
+            Look {
+                species: "tv".into(),
+                dealt_ms: 200
+            }
+        );
         assert!(restored.restore("[1,2]").is_err());
-        assert!(crate::db::COMPONENTS.contains(&"looks"), "the looks component is persisted");
+        assert!(
+            crate::db::COMPONENTS.contains(&"looks"),
+            "the looks component is persisted"
+        );
     }
 
     #[test]
     fn species_route_counts_each_listed_species_on_the_roster() {
         let catalog = Catalog::parse(r#"{"species":["rover","a","b","c"]}"#, &[]).unwrap();
         let looks = BTreeMap::from([
-            (1, Look { species: "a".into(), dealt_ms: 0 }),
-            (2, Look { species: "a".into(), dealt_ms: 0 }),
-            (3, Look { species: "c".into(), dealt_ms: 0 }),
-            (4, Look { species: "b".into(), dealt_ms: 0 }), // not on the roster: not counted
-            (9, Look { species: "rover".into(), dealt_ms: 0 }),
+            (
+                1,
+                Look {
+                    species: "a".into(),
+                    dealt_ms: 0,
+                },
+            ),
+            (
+                2,
+                Look {
+                    species: "a".into(),
+                    dealt_ms: 0,
+                },
+            ),
+            (
+                3,
+                Look {
+                    species: "c".into(),
+                    dealt_ms: 0,
+                },
+            ),
+            (
+                4,
+                Look {
+                    species: "b".into(),
+                    dealt_ms: 0,
+                },
+            ), // not on the roster: not counted
+            (
+                9,
+                Look {
+                    species: "rover".into(),
+                    dealt_ms: 0,
+                },
+            ),
         ]);
-        let roster = [agent(1, "builder"), agent(2, "builder"), agent(3, "qa"), agent(9, ORCHESTRATOR_ROLE)];
+        let roster = [
+            agent(1, "builder"),
+            agent(2, "builder"),
+            agent(3, "qa"),
+            agent(9, ORCHESTRATOR_ROLE),
+        ];
         let rows = species_rows(&catalog, &looks, &roster);
         assert_eq!(
             rows,
@@ -478,36 +620,67 @@ mod tests {
     fn the_owner_choice_is_validated() {
         let catalog = Catalog::parse(r#"{"species":["oracle","rover","tv"]}"#, &[]).unwrap();
         assert!(check_choice(&catalog, "builder", "tv").is_ok());
-        assert!(check_choice(&catalog, "builder", "rover").is_ok(), "rover is a worker's species too");
+        assert!(
+            check_choice(&catalog, "builder", "rover").is_ok(),
+            "rover is a worker's species too"
+        );
         assert!(check_choice(&catalog, ORCHESTRATOR_ROLE, "rover").is_ok());
-        assert!(check_choice(&catalog, ORCHESTRATOR_ROLE, "tv").is_err(), "the orchestrator is always rover");
+        assert!(
+            check_choice(&catalog, ORCHESTRATOR_ROLE, "tv").is_err(),
+            "the orchestrator is always rover"
+        );
         assert!(check_choice(&catalog, "builder", "oracle").is_err());
-        assert!(check_choice(&catalog, "builder", "nope").is_err(), "an unknown id");
+        assert!(
+            check_choice(&catalog, "builder", "nope").is_err(),
+            "an unknown id"
+        );
     }
 
     #[test]
     fn index_agrees_with_the_embedded_list() {
         let ids = |text: &str| -> Vec<String> {
             let index: Value = serde_json::from_str(text).unwrap();
-            index["species"].as_array().unwrap().iter().map(|v| v.as_str().unwrap().to_owned()).collect()
+            index["species"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_str().unwrap().to_owned())
+                .collect()
         };
         // The index on disk, the copy the build embedded, and the parsed catalog must list the same ids.
-        let on_disk_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/robots/index.json");
+        let on_disk_path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/robots/index.json");
         let on_disk = ids(&std::fs::read_to_string(&on_disk_path).unwrap());
         let listed = ids(INDEX);
-        let embedded: Vec<String> = SPECIES_FILES.iter().map(|(id, _)| (*id).to_owned()).collect();
+        let embedded: Vec<String> = SPECIES_FILES
+            .iter()
+            .map(|(id, _)| (*id).to_owned())
+            .collect();
         let parsed: Vec<String> = catalog().species.iter().map(|s| s.id.clone()).collect();
-        assert_eq!(listed, on_disk, "assets/robots/index.json changed since the build: rebuild apid");
-        assert_eq!(embedded, listed, "build.rs embeds the index: rebuild after editing it");
+        assert_eq!(
+            listed, on_disk,
+            "assets/robots/index.json changed since the build: rebuild apid"
+        );
+        assert_eq!(
+            embedded, listed,
+            "build.rs embeds the index: rebuild after editing it"
+        );
         assert_eq!(parsed, listed);
     }
 
     #[test]
     fn every_listed_species_has_a_file_with_its_own_id_and_a_name() {
         for (id, body) in SPECIES_FILES {
-            let file: Value = serde_json::from_str(body).unwrap_or_else(|e| panic!("species {id} has no readable file: {e}"));
-            assert_eq!(file["id"], *id, "species file {id}.json names itself differently");
-            assert!(file["name"].as_str().is_some_and(|name| !name.is_empty()), "species {id} has no name");
+            let file: Value = serde_json::from_str(body)
+                .unwrap_or_else(|e| panic!("species {id} has no readable file: {e}"));
+            assert_eq!(
+                file["id"], *id,
+                "species file {id}.json names itself differently"
+            );
+            assert!(
+                file["name"].as_str().is_some_and(|name| !name.is_empty()),
+                "species {id} has no name"
+            );
         }
     }
 

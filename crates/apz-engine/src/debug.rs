@@ -4,7 +4,7 @@
 //! `__apzBots` and `__apzLifts` return the shapes the retired three.js build returned, so the scripts that read them
 //! keep working; every field is filled from the engine's own state.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::stage::Stage;
 
@@ -26,7 +26,9 @@ impl Stage {
     pub fn bots_json(&self) -> String {
         let nav = self.floor.nav.as_ref();
         let frames = (self.floor.time * 60.0) as u64;
-        let held = self.floor.bots.first().is_some_and(|b| self.floor.work.debug_of(b.agent.cid as i64)["held"].as_bool() == Some(true));
+        let held = self.floor.bots.first().is_some_and(|b| {
+            self.floor.work.debug_of(b.agent.cid as i64)["held"].as_bool() == Some(true)
+        });
         let bots: Vec<Value> = self
             .floor
             .bots
@@ -80,7 +82,12 @@ impl Stage {
 
     /// The nav cell at (x, z) as the debug JSON writes it, or `Value::Null` off the grid or without a board.
     fn nav_cell_value(&self, x: f64, z: f64) -> Value {
-        match self.floor.nav.as_ref().and_then(|n| n.world.debug_cell(x, z)) {
+        match self
+            .floor
+            .nav
+            .as_ref()
+            .and_then(|n| n.world.debug_cell(x, z))
+        {
             Some(c) => json!({
                 "cell": c.cell,
                 "walk": c.walk,
@@ -100,7 +107,9 @@ impl Stage {
         match self.floor.board.as_ref() {
             Some(board) => {
                 let roots = [board.model_obj.clone(), self.floor.district_group.clone()];
-                crate::world::ground_audit::ground_audit(&roots).to_json().to_string()
+                crate::world::ground_audit::ground_audit(&roots)
+                    .to_json()
+                    .to_string()
             }
             None => "null".to_string(),
         }
@@ -130,7 +139,9 @@ impl Stage {
     /// The board's lifts as `__apzLifts` reads them: one `{ id, low, high, x, z, yLow, yHigh, at, face, meshes, ctrl }`
     /// per lift of the nav grid that has a controller (`ctrl` is the cab's state); "[]" without a board.
     pub fn lifts_json(&mut self) -> String {
-        let Some(nav) = self.floor.nav.as_mut() else { return "[]".to_string() };
+        let Some(nav) = self.floor.nav.as_mut() else {
+            return "[]".to_string();
+        };
         let places = nav.world.grid().lifts.clone();
         let lifts: Vec<Value> = places
             .into_iter()
@@ -182,8 +193,12 @@ impl Stage {
 
     /// Moves an agent's robot to (x, z) on the board (`__apzShove`). False without a board or a robot for the agent.
     pub fn shove(&mut self, cid: u64, x: f64, z: f64) -> bool {
-        let Some(nav) = self.floor.nav.as_mut() else { return false };
-        let Some(id) = nav.robot_of(cid) else { return false };
+        let Some(nav) = self.floor.nav.as_mut() else {
+            return false;
+        };
+        let Some(id) = nav.robot_of(cid) else {
+            return false;
+        };
         nav.world.shove(id, x, z);
         true
     }
@@ -191,7 +206,7 @@ impl Stage {
 
 #[cfg(test)]
 mod tests {
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
 
     use crate::stage::Stage;
 
@@ -207,7 +222,10 @@ mod tests {
         assert_eq!(stage.nav_audit_json(), "null");
         assert_eq!(stage.lifts_json(), "[]");
         assert!(!stage.shove(1, 0.0, 0.0));
-        assert_eq!(stage.lift_ride_json(0, 1), r#"{"ok":false,"reason":"no nav or no such lift"}"#);
+        assert_eq!(
+            stage.lift_ride_json(0, 1),
+            r#"{"ok":false,"reason":"no nav or no such lift"}"#
+        );
     }
 }
 
@@ -247,7 +265,10 @@ fn node_json(o: &crate::scene::Obj) -> Value {
         let (ty, extra) = match &n.kind {
             Kind::Group => ("Group", json!({})),
             Kind::Mesh { geo, .. } => ("Mesh", json!({ "vertices": geo.positions.len() })),
-            Kind::Instanced { geo, count, .. } => ("Mesh", json!({ "vertices": geo.positions.len(), "isInstancedMesh": true, "count": count })),
+            Kind::Instanced { geo, count, .. } => (
+                "Mesh",
+                json!({ "vertices": geo.positions.len(), "isInstancedMesh": true, "count": count }),
+            ),
             Kind::Points { positions, .. } => ("Points", json!({ "vertices": positions.len() })),
             Kind::PointLight { .. } => ("PointLight", json!({})),
         };

@@ -4,13 +4,13 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use iced::widget::{column, container, row, text_input, Space};
+use iced::widget::{Space, column, container, row, text_input};
 use iced::{Alignment, Element, Length, Padding, Task, Theme};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::Id;
-use crate::console::{client, ui, Ctx};
+use crate::console::{Ctx, client, ui};
 use crate::theme::{self};
 
 /// A motion as the hub reports it (`GET /v1/motions`).
@@ -105,7 +105,16 @@ fn decide_body(verdict: Verdict, reason: &str) -> Value {
 }
 
 /// The states the hub reports (`State::as_str`), in the order a motion moves through them.
-const STATES: [&str; 8] = ["open", "no_quorum", "carried", "rejected", "tie_to_owner", "awaiting_owner", "ratified", "vetoed"];
+const STATES: [&str; 8] = [
+    "open",
+    "no_quorum",
+    "carried",
+    "rejected",
+    "tie_to_owner",
+    "awaiting_owner",
+    "ratified",
+    "vetoed",
+];
 
 /// The decision form that is open: which motion, and which verdict.
 #[derive(Debug, Clone)]
@@ -254,17 +263,37 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
     let body: Element<'a, Msg> = match (&state.error, &state.motions) {
         (Some(error), _) => ui::empty("alert", "Council unreachable", error),
         (None, None) => ui::loading(),
-        (None, Some(motions)) if motions.is_empty() => {
-            ui::empty("council", "No motions", "Council seats propose and vote on changes to how the plaza runs.")
-        }
+        (None, Some(motions)) if motions.is_empty() => ui::empty(
+            "council",
+            "No motions",
+            "Council seats propose and vote on changes to how the plaza runs.",
+        ),
         (None, Some(motions)) => {
-            let shown: Vec<&Motion> = motions.iter().filter(|m| state.filter.as_deref().is_none_or(|f| m.state == f)).collect();
+            let shown: Vec<&Motion> = motions
+                .iter()
+                .filter(|m| state.filter.as_deref().is_none_or(|f| m.state == f))
+                .collect();
             let list: Element<'a, Msg> = if shown.is_empty() {
-                ui::empty("council", "No motions in this state", "Pick another state to see the rest.")
+                ui::empty(
+                    "council",
+                    "No motions in this state",
+                    "Pick another state to see the rest.",
+                )
             } else {
-                column(shown.into_iter().map(|m| motion_card(m, state)).collect::<Vec<_>>()).spacing(14).width(Length::Fill).into()
+                column(
+                    shown
+                        .into_iter()
+                        .map(|m| motion_card(m, state))
+                        .collect::<Vec<_>>(),
+                )
+                .spacing(14)
+                .width(Length::Fill)
+                .into()
             };
-            column![filter_row(state.filter.as_deref()), list].spacing(14).width(Length::Fill).into()
+            column![filter_row(state.filter.as_deref()), list]
+                .spacing(14)
+                .width(Length::Fill)
+                .into()
         }
     };
     ui::sheet(ui::view_head("Council", vec![]), body)
@@ -273,13 +302,25 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
 /// The state filter: an "All" chip, then one chip per state; the chosen one is filled.
 fn filter_row<'a>(active: Option<&str>) -> Element<'a, Msg> {
     let all = filter_chip("All", None, active);
-    let states = STATES.iter().copied().map(|s| filter_chip(&s.replace('_', " "), Some(s), active));
+    let states = STATES
+        .iter()
+        .copied()
+        .map(|s| filter_chip(&s.replace('_', " "), Some(s), active));
     ui::chip_row(std::iter::once(all).chain(states).collect())
 }
 
 fn filter_chip<'a>(label: &str, value: Option<&str>, active: Option<&str>) -> Element<'a, Msg> {
-    let kind = if value == active { ui::Kind::Primary } else { ui::Kind::Secondary };
-    ui::btn_sm(label, None, kind, Some(Msg::Filter(value.map(str::to_string))))
+    let kind = if value == active {
+        ui::Kind::Primary
+    } else {
+        ui::Kind::Secondary
+    };
+    ui::btn_sm(
+        label,
+        None,
+        kind,
+        Some(Msg::Filter(value.map(str::to_string))),
+    )
 }
 
 /// Whether a motion waits for the owner's decision (the web's `needsOwner`).
@@ -341,7 +382,10 @@ fn ago(ms: f64) -> String {
     if ms <= 0.0 {
         return "—".to_string();
     }
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as f64).unwrap_or(0.0);
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as f64)
+        .unwrap_or(0.0);
     let s = ((now - ms) / 1000.0).round().max(0.0) as u64;
     match s {
         0..=4 => "just now".to_string(),
@@ -356,17 +400,31 @@ fn ago(ms: f64) -> String {
 fn tally_bar<'a>(t: &Tally) -> Element<'a, Msg> {
     let rest = t.seats.saturating_sub(t.yes + t.no + t.abstain);
     let mut bar = row![].width(Length::Fill).height(Length::Fixed(8.0));
-    for (n, colour) in [(t.yes, crate::theme::palette().ok), (t.no, crate::theme::palette().crit), (t.abstain, crate::theme::palette().ink_3), (rest, crate::theme::palette().rule_faint)] {
+    for (n, colour) in [
+        (t.yes, crate::theme::palette().ok),
+        (t.no, crate::theme::palette().crit),
+        (t.abstain, crate::theme::palette().ink_3),
+        (rest, crate::theme::palette().rule_faint),
+    ] {
         if n > 0 {
             bar = bar.push(
                 container(Space::new())
                     .width(Length::FillPortion(n as u16))
                     .height(Length::Fill)
-                    .style(move |_: &Theme| container::Style { background: Some(colour.into()), ..Default::default() }),
+                    .style(move |_: &Theme| container::Style {
+                        background: Some(colour.into()),
+                        ..Default::default()
+                    }),
             );
         }
     }
-    container(bar).width(Length::Fill).style(|_: &Theme| container::Style { background: Some(crate::theme::palette().rule_faint.into()), ..Default::default() }).into()
+    container(bar)
+        .width(Length::Fill)
+        .style(|_: &Theme| container::Style {
+            background: Some(crate::theme::palette().rule_faint.into()),
+            ..Default::default()
+        })
+        .into()
 }
 
 fn vote_row<'a>(v: &Vote) -> Element<'a, Msg> {
@@ -395,22 +453,39 @@ fn motion_card<'a>(m: &Motion, state: &'a State) -> Element<'a, Msg> {
     let mut stack = column![
         container(ui::prose(m.text.clone())).max_width(620),
         tally_bar(t),
-        ui::faint(format!("{} yes · {} no · {} abstain · {}/{}", t.yes, t.no, t.abstain, t.voted, t.seats)),
+        ui::faint(format!(
+            "{} yes · {} no · {} abstain · {}/{}",
+            t.yes, t.no, t.abstain, t.voted, t.seats
+        )),
         ui::faint(format!("Quorum: {}", m.quorum.rule)),
     ]
     .spacing(12)
     .width(Length::Fill);
 
     if !m.votes.is_empty() {
-        stack = stack.push(column(m.votes.iter().map(vote_row).collect::<Vec<_>>()).spacing(6).width(Length::Fill));
+        stack = stack.push(
+            column(m.votes.iter().map(vote_row).collect::<Vec<_>>())
+                .spacing(6)
+                .width(Length::Fill),
+        );
     }
 
     if needs_owner(&m.state) {
         stack = stack.push(
             row![
                 Space::new().width(Length::Fill),
-                ui::btn("Reject", Some("x"), ui::Kind::Danger, Some(Msg::Open(m.id.clone(), Verdict::Reject))),
-                ui::btn("Approve", Some("check"), ui::Kind::Primary, Some(Msg::Open(m.id.clone(), Verdict::Approve))),
+                ui::btn(
+                    "Reject",
+                    Some("x"),
+                    ui::Kind::Danger,
+                    Some(Msg::Open(m.id.clone(), Verdict::Reject))
+                ),
+                ui::btn(
+                    "Approve",
+                    Some("check"),
+                    ui::Kind::Primary,
+                    Some(Msg::Open(m.id.clone(), Verdict::Approve))
+                ),
             ]
             .spacing(8)
             .align_y(Alignment::Center),
@@ -420,13 +495,22 @@ fn motion_card<'a>(m: &Motion, state: &'a State) -> Element<'a, Msg> {
                 .on_input(Msg::Reason)
                 .on_submit(Msg::Submit)
                 .style(theme::input);
-            let submit = ui::btn(pending.verdict.verb(), None, pending.verdict.kind(), (!state.busy).then_some(Msg::Submit));
+            let submit = ui::btn(
+                pending.verdict.verb(),
+                None,
+                pending.verdict.kind(),
+                (!state.busy).then_some(Msg::Submit),
+            );
             let mut form = column![
                 ui::label(&format!("{} motion", pending.verdict.verb())),
                 input,
-                row![Space::new().width(Length::Fill), ui::btn("Cancel", None, ui::Kind::Ghost, Some(Msg::Cancel)), submit]
-                    .spacing(8)
-                    .align_y(Alignment::Center),
+                row![
+                    Space::new().width(Length::Fill),
+                    ui::btn("Cancel", None, ui::Kind::Ghost, Some(Msg::Cancel)),
+                    submit
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center),
             ]
             .spacing(10)
             .width(Length::Fill);
@@ -438,7 +522,14 @@ fn motion_card<'a>(m: &Motion, state: &'a State) -> Element<'a, Msg> {
     }
 
     container(column![
-        container(head).padding(Padding { top: 12.0, right: 16.0, bottom: 10.0, left: 16.0 }).width(Length::Fill),
+        container(head)
+            .padding(Padding {
+                top: 12.0,
+                right: 16.0,
+                bottom: 10.0,
+                left: 16.0
+            })
+            .width(Length::Fill),
         ui::hairline(),
         container(stack).padding(16).width(Length::Fill),
     ])
@@ -457,9 +548,18 @@ mod tests {
 
     #[test]
     fn decide_body_serialises_approve_and_note_as_the_hub_reads_them() {
-        assert_eq!(decide_body(Verdict::Approve, "fine").to_string(), r#"{"approve":true,"note":"fine"}"#);
-        assert_eq!(decide_body(Verdict::Reject, "  no  ").to_string(), r#"{"approve":false,"note":"no"}"#);
-        assert_eq!(decide_body(Verdict::Reject, "   ").to_string(), r#"{"approve":false,"note":null}"#);
+        assert_eq!(
+            decide_body(Verdict::Approve, "fine").to_string(),
+            r#"{"approve":true,"note":"fine"}"#
+        );
+        assert_eq!(
+            decide_body(Verdict::Reject, "  no  ").to_string(),
+            r#"{"approve":false,"note":"no"}"#
+        );
+        assert_eq!(
+            decide_body(Verdict::Reject, "   ").to_string(),
+            r#"{"approve":false,"note":null}"#
+        );
     }
 
     #[test]

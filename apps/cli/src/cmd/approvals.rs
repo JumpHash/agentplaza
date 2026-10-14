@@ -1,7 +1,7 @@
 //! `agentplaza approvals`: Approvals waiting for the owner.
 
 use clap::Subcommand;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::ctx::{self, Ctx};
 use crate::rich;
@@ -86,12 +86,24 @@ fn array(v: &Value) -> &[Value] {
 
 fn list(ctx: &Ctx, pending: bool) -> Result<(), String> {
     let value = ctx.client.get("/v1/approvals")?;
-    let shown: Vec<Value> = array(&value).iter().filter(|a| !pending || ctx::s(a, "state") == "pending").cloned().collect();
+    let shown: Vec<Value> = array(&value)
+        .iter()
+        .filter(|a| !pending || ctx::s(a, "state") == "pending")
+        .cloned()
+        .collect();
     let shown = Value::Array(shown);
     ctx.out(&shown, |shown| {
         let rows: Vec<Vec<String>> = array(shown)
             .iter()
-            .map(|a| vec![ctx::text(a, "id"), ctx::text(a, "cid"), ctx::text(a, "tool"), ctx::text(a, "state"), ctx::text(a, "reason")])
+            .map(|a| {
+                vec![
+                    ctx::text(a, "id"),
+                    ctx::text(a, "cid"),
+                    ctx::text(a, "tool"),
+                    ctx::text(a, "state"),
+                    ctx::text(a, "reason"),
+                ]
+            })
             .collect();
         ctx::table(&["id", "agent", "tool", "state", "reason"], &rows);
     });
@@ -100,7 +112,10 @@ fn list(ctx: &Ctx, pending: bool) -> Result<(), String> {
 
 fn show(ctx: &Ctx, id: &str) -> Result<(), String> {
     let value = ctx.client.get("/v1/approvals")?;
-    let approval = array(&value).iter().find(|a| ctx::s(a, "id") == id).ok_or_else(|| format!("no approval {id}"))?;
+    let approval = array(&value)
+        .iter()
+        .find(|a| ctx::s(a, "id") == id)
+        .ok_or_else(|| format!("no approval {id}"))?;
     let rich_ctx = rich::context_for(ctx);
     ctx.out(approval, |a| {
         ctx::fields(&[
@@ -109,23 +124,46 @@ fn show(ctx: &Ctx, id: &str) -> Result<(), String> {
             ("tool", ctx::text(a, "tool")),
             ("state", ctx::text(a, "state")),
             ("created", ctx::when(&a["created_ms"])),
-            ("reason", rich::render(&ctx::text(a, "reason"), &rich_ctx, &ctx.rich)),
-            ("input", serde_json::to_string_pretty(a.get("input").unwrap_or(&Value::Null)).unwrap_or_default()),
+            (
+                "reason",
+                rich::render(&ctx::text(a, "reason"), &rich_ctx, &ctx.rich),
+            ),
+            (
+                "input",
+                serde_json::to_string_pretty(a.get("input").unwrap_or(&Value::Null))
+                    .unwrap_or_default(),
+            ),
         ]);
     });
     Ok(())
 }
 
-fn decide(ctx: &Ctx, id: &str, approve: bool, reason: Option<String>, action: Option<String>) -> Result<(), String> {
+fn decide(
+    ctx: &Ctx,
+    id: &str,
+    approve: bool,
+    reason: Option<String>,
+    action: Option<String>,
+) -> Result<(), String> {
     let mut body = json!({ "approve": approve });
-    if let Some(reason) = reason.map(|r| r.trim().to_string()).filter(|r| !r.is_empty()) {
+    if let Some(reason) = reason
+        .map(|r| r.trim().to_string())
+        .filter(|r| !r.is_empty())
+    {
         body["reason"] = json!(reason);
     }
     if let Some(action) = action {
         body["action"] = json!(action);
     }
-    let value = ctx.client.post(&format!("/v1/approvals/{}", ctx::seg(id)), &body)?;
-    ctx.out(&value, |_| println!("{} approval {id}", if approve { "approved" } else { "denied" }));
+    let value = ctx
+        .client
+        .post(&format!("/v1/approvals/{}", ctx::seg(id)), &body)?;
+    ctx.out(&value, |_| {
+        println!(
+            "{} approval {id}",
+            if approve { "approved" } else { "denied" }
+        )
+    });
     // A bare deny lifts an active suspension and does nothing to any other sanction.
     if !approve && body.get("action").is_none() && is_sanction(ctx, id) {
         eprintln!(
@@ -139,7 +177,9 @@ fn decide(ctx: &Ctx, id: &str, approve: bool, reason: Option<String>, action: Op
 /// Whether the approval `id` is a sanction escalation (best effort: false when the queue cannot be read).
 fn is_sanction(ctx: &Ctx, id: &str) -> bool {
     ctx.client.get("/v1/approvals").ok().is_some_and(|value| {
-        array(&value).iter().any(|a| ctx::s(a, "id") == id && ctx::s(a, "kind") == "sanction")
+        array(&value)
+            .iter()
+            .any(|a| ctx::s(a, "id") == id && ctx::s(a, "kind") == "sanction")
     })
 }
 
@@ -147,7 +187,11 @@ fn is_sanction(ctx: &Ctx, id: &str) -> bool {
 fn role_name(p: &Value) -> String {
     let role = p.get("role").unwrap_or(&Value::Null);
     let title = ctx::s(role, "title");
-    if title.is_empty() { ctx::s(role, "id").to_string() } else { title.to_string() }
+    if title.is_empty() {
+        ctx::s(role, "id").to_string()
+    } else {
+        title.to_string()
+    }
 }
 
 fn proposals(ctx: &Ctx) -> Result<(), String> {
@@ -155,14 +199,28 @@ fn proposals(ctx: &Ctx) -> Result<(), String> {
     ctx.out(&value, |v| {
         let rows: Vec<Vec<String>> = array(v)
             .iter()
-            .map(|p| vec![ctx::text(p, "id"), role_name(p), ctx::text(p, "count"), ctx::text(p, "model"), ctx::text(p, "state"), ctx::text(p, "by")])
+            .map(|p| {
+                vec![
+                    ctx::text(p, "id"),
+                    role_name(p),
+                    ctx::text(p, "count"),
+                    ctx::text(p, "model"),
+                    ctx::text(p, "state"),
+                    ctx::text(p, "by"),
+                ]
+            })
             .collect();
         ctx::table(&["id", "role", "count", "model", "state", "by"], &rows);
     });
     Ok(())
 }
 
-fn approve_proposal(ctx: &Ctx, id: &str, count: Option<u32>, model: Option<String>) -> Result<(), String> {
+fn approve_proposal(
+    ctx: &Ctx,
+    id: &str,
+    count: Option<u32>,
+    model: Option<String>,
+) -> Result<(), String> {
     let mut body = json!({});
     if let Some(count) = count {
         body["count"] = json!(count);
@@ -170,7 +228,10 @@ fn approve_proposal(ctx: &Ctx, id: &str, count: Option<u32>, model: Option<Strin
     if let Some(model) = model.filter(|m| !m.trim().is_empty()) {
         body["model"] = json!(model.trim());
     }
-    let value = ctx.client.post(&format!("/v1/agent-proposals/{}/approve", ctx::seg(id)), &body)?;
+    let value = ctx.client.post(
+        &format!("/v1/agent-proposals/{}/approve", ctx::seg(id)),
+        &body,
+    )?;
     ctx.out(&value, |_| println!("approved proposal {id}"));
     Ok(())
 }
@@ -180,7 +241,10 @@ fn reject_proposal(ctx: &Ctx, id: &str, reason: String) -> Result<(), String> {
     if reason.is_empty() {
         return Err("a rejection needs a reason".into());
     }
-    let value = ctx.client.post(&format!("/v1/agent-proposals/{}/reject", ctx::seg(id)), &json!({ "reason": reason }))?;
+    let value = ctx.client.post(
+        &format!("/v1/agent-proposals/{}/reject", ctx::seg(id)),
+        &json!({ "reason": reason }),
+    )?;
     ctx.out(&value, |_| println!("rejected proposal {id}"));
     Ok(())
 }
@@ -201,7 +265,10 @@ mod tests {
     fn a_sanction_action_is_one_of_the_three_decisions() {
         for action in SANCTION_ACTIONS {
             for verb in ["approve", "deny"] {
-                assert!(Probe::try_parse_from(["approvals", verb, "4", "--action", action]).is_ok(), "{verb} {action}");
+                assert!(
+                    Probe::try_parse_from(["approvals", verb, "4", "--action", action]).is_ok(),
+                    "{verb} {action}"
+                );
             }
         }
         assert!(Probe::try_parse_from(["approvals", "deny", "4", "--action", "fire"]).is_err());

@@ -51,17 +51,38 @@ pub fn serve(port: u16, hub: Arc<Hub>, facts: NodeFacts) -> io::Result<Handle> {
     let surface = Surface { hub, facts };
     let router = router();
     Server::bind(port)?
-        .limits(Limits { max_body: MAX_LINE_BYTES, ..Limits::default() })
+        .limits(Limits {
+            max_body: MAX_LINE_BYTES,
+            ..Limits::default()
+        })
         .spawn(move |request| router.handle(&surface, request))
 }
 
 fn router() -> Router<Surface> {
     Router::<Surface>::new()
-        .get("/v1/status", |surface, _, _| Response::new(200, apz_http::JSON, status_json(surface, surface.facts.started.elapsed().as_secs())))
+        .get("/v1/status", |surface, _, _| {
+            Response::new(
+                200,
+                apz_http::JSON,
+                status_json(surface, surface.facts.started.elapsed().as_secs()),
+            )
+        })
         .get("/healthz", |_, _, _| Response::text(200, "ok"))
-        .post("/v1/agents/{cid}/send", |surface, request, params| with_cid(surface, params.get("cid"), |cid| send(surface, cid, request)))
-        .post("/v1/agents/{cid}/tell", |surface, request, params| with_cid(surface, params.get("cid"), |cid| tell(surface, cid, request)))
-        .post("/v1/agents/{cid}/stop", |surface, request, params| with_cid(surface, params.get("cid"), |cid| stop(surface, cid, request)))
+        .post("/v1/agents/{cid}/send", |surface, request, params| {
+            with_cid(surface, params.get("cid"), |cid| {
+                send(surface, cid, request)
+            })
+        })
+        .post("/v1/agents/{cid}/tell", |surface, request, params| {
+            with_cid(surface, params.get("cid"), |cid| {
+                tell(surface, cid, request)
+            })
+        })
+        .post("/v1/agents/{cid}/stop", |surface, request, params| {
+            with_cid(surface, params.get("cid"), |cid| {
+                stop(surface, cid, request)
+            })
+        })
 }
 
 #[derive(Serialize)]
@@ -94,7 +115,8 @@ fn status_json(surface: &Surface, uptime_s: u64) -> String {
         agents: snapshot.rows,
         sessions_active: snapshot.sessions_active,
     };
-    serde_json::to_string(&body).unwrap_or_else(|err| serde_json::json!({ "error": err.to_string() }).to_string())
+    serde_json::to_string(&body)
+        .unwrap_or_else(|err| serde_json::json!({ "error": err.to_string() }).to_string())
 }
 
 /// Resolves the path's CID: a number the daemon serves, or a 404.
@@ -120,8 +142,12 @@ fn send(surface: &Surface, cid: u32, request: &Request) -> Response {
         Err(err) => return Response::error(400, &format!("invalid send request: {err}")),
     };
     match message {
-        HostMessage::ToolCall { .. } => return Response::error(400, "drive a tool with /tell, which numbers and gates it"),
-        HostMessage::Welcome { .. } => return Response::error(400, "the session's handshake is the hub's"),
+        HostMessage::ToolCall { .. } => {
+            return Response::error(400, "drive a tool with /tell, which numbers and gates it");
+        }
+        HostMessage::Welcome { .. } => {
+            return Response::error(400, "the session's handshake is the hub's");
+        }
         _ => {}
     }
     match surface.hub.send(cid, message, SESSION_WAIT) {
@@ -149,20 +175,33 @@ fn tell(surface: &Surface, cid: u32, request: &Request) -> Response {
         Err(err) => return Response::error(400, &format!("invalid tell request: {err}")),
     };
     if tell.name.is_empty() || tell.name.len() > MAX_TOOL_NAME {
-        return Response::error(400, &format!("a tell needs a tool name of 1..={MAX_TOOL_NAME} bytes"));
+        return Response::error(
+            400,
+            &format!("a tell needs a tool name of 1..={MAX_TOOL_NAME} bytes"),
+        );
     }
     if !tell.args.is_object() {
         return Response::error(400, "args must be a JSON object");
     }
     let timeout_ms = tell.timeout_ms.unwrap_or(MAX_TELL_TIMEOUT_MS);
     if !(1..=MAX_TELL_TIMEOUT_MS).contains(&timeout_ms) {
-        return Response::error(400, &format!("timeout_ms must be 1..={MAX_TELL_TIMEOUT_MS}"));
+        return Response::error(
+            400,
+            &format!("timeout_ms must be 1..={MAX_TELL_TIMEOUT_MS}"),
+        );
     }
     let answer = |ok: bool, output: &str| serde_json::json!({ "ok": ok, "output": output });
-    match surface.hub.tell(cid, &tell.name, tell.args, Duration::from_millis(timeout_ms)) {
+    match surface.hub.tell(
+        cid,
+        &tell.name,
+        tell.args,
+        Duration::from_millis(timeout_ms),
+    ) {
         TellOutcome::Answered { ok, output } => Response::json(200, &answer(ok, &output)),
         TellOutcome::NotConnected => not_connected(cid),
-        TellOutcome::TimedOut => Response::error(504, &format!("agent did not answer within {timeout_ms} ms")),
+        TellOutcome::TimedOut => {
+            Response::error(504, &format!("agent did not answer within {timeout_ms} ms"))
+        }
     }
 }
 
@@ -183,12 +222,18 @@ fn stop(surface: &Surface, cid: u32, request: &Request) -> Response {
     let reason = match reason.as_deref() {
         None | Some("") => DEFAULT_STOP_REASON,
         Some(reason) if reason.len() > MAX_STOP_REASON => {
-            return Response::error(400, &format!("the reason is longer than {MAX_STOP_REASON} bytes"));
+            return Response::error(
+                400,
+                &format!("the reason is longer than {MAX_STOP_REASON} bytes"),
+            );
         }
         Some(reason) => reason,
     };
     match surface.hub.stop(cid, reason, SESSION_WAIT) {
-        StopOutcome::Ended { calls } => Response::json(200, &serde_json::json!({ "cid": cid, "stopped": true, "calls": calls })),
+        StopOutcome::Ended { calls } => Response::json(
+            200,
+            &serde_json::json!({ "cid": cid, "stopped": true, "calls": calls }),
+        ),
         StopOutcome::StillUp => Response::json(
             200,
             &serde_json::json!({
@@ -210,14 +255,31 @@ mod tests {
     use std::thread;
 
     fn surface(hub: Hub) -> Surface {
-        let facts = NodeFacts { cids: vec![10, 11], port: 5000, started: Instant::now(), max_sessions: 64, keepalive_idle_s: 300 };
-        Surface { hub: Arc::new(hub), facts }
+        let facts = NodeFacts {
+            cids: vec![10, 11],
+            port: 5000,
+            started: Instant::now(),
+            max_sessions: 64,
+            keepalive_idle_s: 300,
+        };
+        Surface {
+            hub: Arc::new(hub),
+            facts,
+        }
     }
 
     fn post(surface: &Surface, path: &str, body: &str) -> (u16, serde_json::Value) {
-        let request = Request { method: "POST".into(), path: path.into(), body: body.into(), ..Request::default() };
+        let request = Request {
+            method: "POST".into(),
+            path: path.into(),
+            body: body.into(),
+            ..Request::default()
+        };
         let response = router().handle(surface, &request);
-        (response.status, serde_json::from_slice(response.bytes()).unwrap_or_default())
+        (
+            response.status,
+            serde_json::from_slice(response.bytes()).unwrap_or_default(),
+        )
     }
 
     #[test]
@@ -225,7 +287,9 @@ mod tests {
         let anchor = Instant::now();
         let log = Arc::new(crate::hub::tests::Recording::default());
         let surface = surface(Hub::started_at(log, Apid::off(), anchor, 1_700_000_000_000));
-        surface.hub.connect(10, "builder", anchor + Duration::from_millis(250));
+        surface
+            .hub
+            .connect(10, "builder", anchor + Duration::from_millis(250));
         surface.hub.note_calls(10, 2);
         assert_eq!(
             status_json(&surface, 42),
@@ -247,11 +311,27 @@ mod tests {
             ("/v1/agents/10/stop", "", 409),
             ("/v1/agents/10/tell", r#"{"name":""}"#, 400),
             ("/v1/agents/10/tell", r#"{"name":"echo","args":[1]}"#, 400),
-            ("/v1/agents/10/tell", r#"{"name":"echo","timeout_ms":5001}"#, 400),
+            (
+                "/v1/agents/10/tell",
+                r#"{"name":"echo","timeout_ms":5001}"#,
+                400,
+            ),
             ("/v1/agents/10/tell", "not json", 400),
-            ("/v1/agents/10/send", r#"{"message":{"type":"tool_call","call":1,"name":"x","args":{}}}"#, 400),
-            ("/v1/agents/10/send", r#"{"message":{"type":"cancel","work":1,"reason":"x"}}"#, 409),
-            ("/v1/agents/10/stop", &format!(r#"{{"reason":"{}"}}"#, "x".repeat(MAX_STOP_REASON + 1)), 400),
+            (
+                "/v1/agents/10/send",
+                r#"{"message":{"type":"tool_call","call":1,"name":"x","args":{}}}"#,
+                400,
+            ),
+            (
+                "/v1/agents/10/send",
+                r#"{"message":{"type":"cancel","work":1,"reason":"x"}}"#,
+                409,
+            ),
+            (
+                "/v1/agents/10/stop",
+                &format!(r#"{{"reason":"{}"}}"#, "x".repeat(MAX_STOP_REASON + 1)),
+                400,
+            ),
         ] {
             assert_eq!(post(&surface, path, body).0, status, "{path} {body:.60}");
         }
@@ -263,9 +343,14 @@ mod tests {
         let (_token, steering) = surface.hub.connect(10, "librarian", Instant::now());
         let agent = thread::spawn(move || {
             let mut dispatched = Vec::new();
-            while let Ok(Command::Call { name, reply, .. }) = steering.recv_timeout(Duration::from_millis(500)) {
+            while let Ok(Command::Call { name, reply, .. }) =
+                steering.recv_timeout(Duration::from_millis(500))
+            {
                 if let Some(reply) = reply {
-                    let _ = reply.send(ToolReply { ok: true, output: format!("ran {name}") });
+                    let _ = reply.send(ToolReply {
+                        ok: true,
+                        output: format!("ran {name}"),
+                    });
                 }
                 dispatched.push(name);
             }
@@ -273,7 +358,10 @@ mod tests {
         });
         assert_eq!(
             post(&surface, "/v1/agents/10/tell", r#"{"name":"write_file"}"#),
-            (200, serde_json::json!({ "ok": true, "output": "ran write_file" }))
+            (
+                200,
+                serde_json::json!({ "ok": true, "output": "ran write_file" })
+            )
         );
         assert_eq!(agent.join().unwrap(), ["write_file"]);
     }
@@ -285,28 +373,62 @@ mod tests {
         let (_token, steering) = surface.hub.connect(10, "librarian", Instant::now());
         let agent = thread::spawn(move || {
             let mut dispatched = Vec::new();
-            while let Ok(Command::Call { name, args, reply }) = steering.recv_timeout(Duration::from_millis(500)) {
+            while let Ok(Command::Call { name, args, reply }) =
+                steering.recv_timeout(Duration::from_millis(500))
+            {
                 if let Some(reply) = reply {
-                    let _ = reply.send(ToolReply { ok: true, output: format!("ran {name} {args}") });
+                    let _ = reply.send(ToolReply {
+                        ok: true,
+                        output: format!("ran {name} {args}"),
+                    });
                 }
                 dispatched.push(name);
             }
             dispatched
         });
         assert_eq!(
-            post(&surface, "/v1/agents/10/tell", r#"{"name":"ide_list","args":{"path":"src"}}"#),
-            (200, serde_json::json!({ "ok": true, "output": r#"ran ide_list {"path":"src"}"# }))
+            post(
+                &surface,
+                "/v1/agents/10/tell",
+                r#"{"name":"ide_list","args":{"path":"src"}}"#
+            ),
+            (
+                200,
+                serde_json::json!({ "ok": true, "output": r#"ran ide_list {"path":"src"}"# })
+            )
         );
-        assert_eq!(post(&surface, "/v1/agents/10/tell", r#"{"name":"ide_run_poll","args":{"run":"run-1"}}"#).0, 200);
+        assert_eq!(
+            post(
+                &surface,
+                "/v1/agents/10/tell",
+                r#"{"name":"ide_run_poll","args":{"run":"run-1"}}"#
+            )
+            .0,
+            200
+        );
         assert_eq!(agent.join().unwrap(), ["ide_list", "ide_run_poll"]);
     }
 
     #[test]
     fn the_surface_serves_over_loopback() {
-        let handle = serve(0, Arc::new(hub_with(None).1), surface(hub_with(None).1).facts).expect("binds");
-        let reply = apz_http::client::send(handle.port(), "GET", "/healthz", None, Duration::from_secs(5)).unwrap();
+        let handle = serve(
+            0,
+            Arc::new(hub_with(None).1),
+            surface(hub_with(None).1).facts,
+        )
+        .expect("binds");
+        let reply = apz_http::client::send(
+            handle.port(),
+            "GET",
+            "/healthz",
+            None,
+            Duration::from_secs(5),
+        )
+        .unwrap();
         assert_eq!((reply.status, reply.body.as_slice()), (200, &b"ok"[..]));
-        let (status, body) = apz_http::client::get_json(handle.port(), "/v1/status", Duration::from_secs(5)).unwrap();
+        let (status, body) =
+            apz_http::client::get_json(handle.port(), "/v1/status", Duration::from_secs(5))
+                .unwrap();
         assert_eq!((status, body["sessions_active"].as_u64()), (200, Some(0)));
     }
 }

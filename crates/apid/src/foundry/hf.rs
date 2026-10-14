@@ -5,7 +5,7 @@
 use std::io::Read;
 use std::time::Duration;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::internal::on_fetch_blocklist;
 
@@ -21,8 +21,18 @@ pub const DEFAULT_LIMIT: usize = 30;
 const MAX_LIMIT: usize = 100;
 const SUMMARY_CHARS: usize = 400;
 /// The fields the search asks the API to expand (the item shape needs each).
-const EXPAND: [&str; 10] =
-    ["author", "downloads", "gated", "lastModified", "library_name", "likes", "pipeline_tag", "private", "tags", "sha"];
+const EXPAND: [&str; 10] = [
+    "author",
+    "downloads",
+    "gated",
+    "lastModified",
+    "library_name",
+    "likes",
+    "pipeline_tag",
+    "private",
+    "tags",
+    "sha",
+];
 
 /// A failed call: the HTTP status to answer with, a message, and the model page when the owner should look there.
 #[derive(Debug, Clone, PartialEq)]
@@ -34,7 +44,11 @@ pub struct Fail {
 
 impl Fail {
     pub fn new(status: u16, message: impl Into<String>) -> Fail {
-        Fail { status, message: message.into(), url: None }
+        Fail {
+            status,
+            message: message.into(),
+            url: None,
+        }
     }
 
     /// Adds the model page to a refusal for `id` (a gated or private model the owner must open).
@@ -68,7 +82,9 @@ pub fn sort_key(sort: &str) -> Result<&'static str, String> {
         "likes" => Ok("likes"),
         "lastModified" => Ok("lastModified"),
         "trending" => Ok("trendingScore"),
-        other => Err(format!("sort must be downloads, likes, lastModified or trending, got {other:?}")),
+        other => Err(format!(
+            "sort must be downloads, likes, lastModified or trending, got {other:?}"
+        )),
     }
 }
 
@@ -105,7 +121,10 @@ pub fn search_url(q: &Search) -> Result<String, String> {
     for field in EXPAND {
         pairs.push(("expand[]", field.to_string()));
     }
-    let query: Vec<String> = pairs.iter().map(|(key, value)| format!("{}={}", encode(key), encode(value))).collect();
+    let query: Vec<String> = pairs
+        .iter()
+        .map(|(key, value)| format!("{}={}", encode(key), encode(value)))
+        .collect();
     Ok(format!("{ORIGIN}/api/models?{}", query.join("&")))
 }
 
@@ -165,7 +184,14 @@ pub fn next_cursor(link: Option<&str>) -> Option<String> {
 pub fn next_url(link: Option<&str>) -> Option<String> {
     let link = link?;
     let next = link.split(',').find(|part| part.contains("rel=\"next\""))?;
-    Some(next.split(';').next()?.trim().trim_start_matches('<').trim_end_matches('>').to_string())
+    Some(
+        next.split(';')
+            .next()?
+            .trim()
+            .trim_start_matches('<')
+            .trim_end_matches('>')
+            .to_string(),
+    )
 }
 
 /// A query value as the client sent it: `+` and `%XX` are spaces and bytes.
@@ -174,8 +200,17 @@ pub fn query_text(raw: &str) -> String {
 }
 
 /// The commit a revision (branch, tag or sha) names on Hugging Face, and the repo's task (`pipeline_tag`).
-pub fn resolve_revision(id: &str, revision: &str, token: Option<&str>, block: &[String]) -> Result<(String, Option<String>), Fail> {
-    let url = format!("{ORIGIN}/api/models/{}/revision/{}", encode_path(id), encode(revision));
+pub fn resolve_revision(
+    id: &str,
+    revision: &str,
+    token: Option<&str>,
+    block: &[String],
+) -> Result<(String, Option<String>), Fail> {
+    let url = format!(
+        "{ORIGIN}/api/models/{}/revision/{}",
+        encode_path(id),
+        encode(revision)
+    );
     let (value, _) = get_json(&url, token, block, "revision").map_err(|f| f.for_model(id))?;
     let sha = value
         .get("sha")
@@ -183,17 +218,32 @@ pub fn resolve_revision(id: &str, revision: &str, token: Option<&str>, block: &[
         .filter(|sha| sha.len() == 40 && sha.bytes().all(|b| b.is_ascii_hexdigit()))
         .map(str::to_string)
         .ok_or_else(|| Fail::new(502, "Hugging Face gave no commit for the revision"))?;
-    Ok((sha, value.get("pipeline_tag").and_then(Value::as_str).map(str::to_string)))
+    Ok((
+        sha,
+        value
+            .get("pipeline_tag")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+    ))
 }
 
 const MAX_TREE_PAGES: usize = 50;
 
 /// Every file of a repo at a commit: the recursive tree, all its pages.
-pub fn tree(id: &str, sha: &str, token: Option<&str>, block: &[String]) -> Result<Vec<TreeFile>, Fail> {
-    let mut url = format!("{ORIGIN}/api/models/{}/tree/{sha}?recursive=true", encode_path(id));
+pub fn tree(
+    id: &str,
+    sha: &str,
+    token: Option<&str>,
+    block: &[String],
+) -> Result<Vec<TreeFile>, Fail> {
+    let mut url = format!(
+        "{ORIGIN}/api/models/{}/tree/{sha}?recursive=true",
+        encode_path(id)
+    );
     let mut files = Vec::new();
     for _ in 0..MAX_TREE_PAGES {
-        let (value, link) = get_json(&url, token, block, "the file tree").map_err(|f| f.for_model(id))?;
+        let (value, link) =
+            get_json(&url, token, block, "the file tree").map_err(|f| f.for_model(id))?;
         files.extend(parse_tree(&value).map_err(|e| Fail::new(502, e))?);
         match next_url(link.as_deref()) {
             Some(next) => url = next,
@@ -220,7 +270,11 @@ pub fn search_page(query: &Search, block: &[String]) -> Result<Value, Fail> {
 
 /// One model in the compact shape: the search item and the start of the detail.
 pub fn model_summary(v: &Value) -> Value {
-    let id = v.get("id").and_then(Value::as_str).unwrap_or("").to_string();
+    let id = v
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
     let author = v
         .get("author")
         .and_then(Value::as_str)
@@ -254,7 +308,9 @@ pub fn model_card(v: &Value) -> Value {
 }
 
 fn opt_str(v: &Value, key: &str) -> Value {
-    v.get(key).and_then(Value::as_str).map_or(Value::Null, |s| json!(s))
+    v.get(key)
+        .and_then(Value::as_str)
+        .map_or(Value::Null, |s| json!(s))
 }
 
 /// Gated models say so with `"auto"` or `"manual"`; `false` (or absence) is open.
@@ -267,12 +323,18 @@ fn gated_of(v: &Value) -> bool {
 }
 
 fn license_of(v: &Value) -> Value {
-    let from_tags = v
-        .get("tags")
-        .and_then(Value::as_array)
-        .and_then(|tags| tags.iter().filter_map(Value::as_str).find_map(|t| t.strip_prefix("license:")));
-    let from_card = v.get("cardData").and_then(|c| c.get("license")).and_then(Value::as_str);
-    from_tags.or(from_card).map_or(Value::Null, |license| json!(license))
+    let from_tags = v.get("tags").and_then(Value::as_array).and_then(|tags| {
+        tags.iter()
+            .filter_map(Value::as_str)
+            .find_map(|t| t.strip_prefix("license:"))
+    });
+    let from_card = v
+        .get("cardData")
+        .and_then(|c| c.get("license"))
+        .and_then(Value::as_str);
+    from_tags
+        .or(from_card)
+        .map_or(Value::Null, |license| json!(license))
 }
 
 /// One file of the repo's tree. `sha256` is the LFS oid (SHA-256 of the bytes); git-stored files have none.
@@ -292,7 +354,10 @@ pub fn parse_tree(value: &Value) -> Result<Vec<TreeFile>, String> {
         .filter_map(|e| {
             let path = e.get("path")?.as_str()?.to_string();
             let size = e.get("size").and_then(Value::as_u64).unwrap_or(0);
-            let sha256 = e.pointer("/lfs/oid").and_then(Value::as_str).map(str::to_string);
+            let sha256 = e
+                .pointer("/lfs/oid")
+                .and_then(Value::as_str)
+                .map(str::to_string);
             Some(TreeFile { path, size, sha256 })
         })
         .collect())
@@ -304,7 +369,9 @@ pub fn file_json(file: &TreeFile) -> Value {
 
 /// The ONNX graph's path: `model.onnx` at the top, or `onnx/model.onnx` (the Hugging Face layout).
 pub fn graph_path(files: &[TreeFile]) -> Option<&'static str> {
-    ["model.onnx", "onnx/model.onnx"].into_iter().find(|p| files.iter().any(|f| f.path == *p))
+    ["model.onnx", "onnx/model.onnx"]
+        .into_iter()
+        .find(|p| files.iter().any(|f| f.path == *p))
 }
 
 /// What the repo can be imported as. `servable` needs an ONNX graph and either a feature contract
@@ -314,21 +381,37 @@ pub fn importable(files: &[TreeFile], task: Option<&str>) -> Value {
     let has = |name: &str| files.iter().any(|f| f.path == name);
     let text_task = task.is_some_and(super::text::supported);
     let (servable, servable_reason) = if graph_path(files).is_none() {
-        (false, Some("no ONNX graph (model.onnx or onnx/model.onnx) in the repo"))
+        (
+            false,
+            Some("no ONNX graph (model.onnx or onnx/model.onnx) in the repo"),
+        )
     } else if has("model_card.json") {
         (true, None)
     } else if has("tokenizer.json") && text_task {
         (true, None)
     } else if has("tokenizer.json") {
-        (false, Some("an ONNX text model is served for text-classification and feature-extraction; this task is not"))
+        (
+            false,
+            Some(
+                "an ONNX text model is served for text-classification and feature-extraction; this task is not",
+            ),
+        )
     } else {
-        (false, Some("no feature contract (model_card.json) in the repo"))
+        (
+            false,
+            Some("no feature contract (model_card.json) in the repo"),
+        )
     };
-    let weights = files.iter().any(|f| f.path.ends_with(".safetensors") || f.path == "pytorch_model.bin");
+    let weights = files
+        .iter()
+        .any(|f| f.path.ends_with(".safetensors") || f.path == "pytorch_model.bin");
     let (base, base_reason) = if !has("config.json") {
         (false, Some("no config.json in the repo"))
     } else if !weights {
-        (false, Some("no safetensors or pytorch_model.bin weights in the repo"))
+        (
+            false,
+            Some("no safetensors or pytorch_model.bin weights in the repo"),
+        )
     } else {
         (true, None)
     };
@@ -339,9 +422,14 @@ pub fn importable(files: &[TreeFile], task: Option<&str>) -> Value {
 /// or a servable model's graph, config, feature contract and tokenizer.
 pub fn default_files(kind: &str, files: &[TreeFile]) -> Result<Vec<String>, String> {
     let picked: Vec<String> = match kind {
-        "base" => files.iter().filter(|f| is_base_file(&f.path)).map(|f| f.path.clone()).collect(),
+        "base" => files
+            .iter()
+            .filter(|f| is_base_file(&f.path))
+            .map(|f| f.path.clone())
+            .collect(),
         "servable" => {
-            let graph = graph_path(files).ok_or("no ONNX graph (model.onnx or onnx/model.onnx) in the repo")?;
+            let graph = graph_path(files)
+                .ok_or("no ONNX graph (model.onnx or onnx/model.onnx) in the repo")?;
             let mut picked = vec![graph.to_string()];
             for name in ["config.json", "model_card.json", "tokenizer.json"] {
                 if files.iter().any(|f| f.path == name) {
@@ -408,7 +496,9 @@ pub fn safe_path(path: &str) -> bool {
         && !path.contains('\\')
         && !path.contains('\0')
         && !path.starts_with('/')
-        && path.split('/').all(|part| !part.is_empty() && part != "." && part != "..")
+        && path
+            .split('/')
+            .all(|part| !part.is_empty() && part != "." && part != "..")
 }
 
 /// A repo id: `name` or `org/name`, each part letters, digits, `-`, `_` or `.`.
@@ -420,7 +510,9 @@ pub fn valid_repo_id(id: &str) -> bool {
                 && part.len() <= 96
                 && *part != "."
                 && *part != ".."
-                && part.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
+                && part
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
         })
 }
 
@@ -430,7 +522,9 @@ pub fn valid_revision(revision: &str) -> bool {
         && revision.len() <= 200
         && !revision.contains("..")
         && !revision.starts_with('/')
-        && revision.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_./".contains(&b))
+        && revision
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"-_./".contains(&b))
 }
 
 /// The directory a repo's files at one commit live in: `<org or _>/<name>/<sha>`.
@@ -444,19 +538,30 @@ pub fn repo_dir(id: &str, sha: &str) -> String {
 /// The egress rule for the hub's own Hugging Face requests: https on the default port, a Hugging Face
 /// domain, and not on the owner's `fetch_block`.
 pub fn check_url(url: &str, block: &[String]) -> Result<(), Fail> {
-    let uri: ureq::http::Uri = url.parse().map_err(|_| Fail::new(502, "a Hugging Face URL did not parse"))?;
+    let uri: ureq::http::Uri = url
+        .parse()
+        .map_err(|_| Fail::new(502, "a Hugging Face URL did not parse"))?;
     if uri.scheme_str() != Some("https") {
         return Err(Fail::new(502, "a Hugging Face URL must be https"));
     }
     if uri.port_u16().is_some_and(|port| port != 443) {
-        return Err(Fail::new(502, "a Hugging Face URL must use the default https port"));
+        return Err(Fail::new(
+            502,
+            "a Hugging Face URL must use the default https port",
+        ));
     }
     let host = uri.host().unwrap_or("").to_ascii_lowercase();
-    if !DOMAINS.iter().any(|domain| host == *domain || host.ends_with(&format!(".{domain}"))) {
+    if !DOMAINS
+        .iter()
+        .any(|domain| host == *domain || host.ends_with(&format!(".{domain}")))
+    {
         return Err(Fail::new(502, format!("{host} is not a Hugging Face host")));
     }
     if on_fetch_blocklist(block, &host) {
-        return Err(Fail::new(403, format!("{host} is on the owner's fetch_block list")));
+        return Err(Fail::new(
+            403,
+            format!("{host} is on the owner's fetch_block list"),
+        ));
     }
     Ok(())
 }
@@ -490,13 +595,22 @@ fn agent() -> ureq::Agent {
 
 /// One GET, redirects followed by hand: every hop passes `check_url`, and the bearer token goes only to
 /// `huggingface.co` (never to a CDN host). `offset > 0` asks for the bytes from there on.
-fn send(url: &str, token: Option<&str>, offset: u64, block: &[String]) -> Result<ureq::http::Response<ureq::Body>, Fail> {
+fn send(
+    url: &str,
+    token: Option<&str>,
+    offset: u64,
+    block: &[String],
+) -> Result<ureq::http::Response<ureq::Body>, Fail> {
     let agent = agent();
     let mut current = url.to_string();
     for _ in 0..=MAX_REDIRECTS {
         check_url(&current, block)?;
-        let uri: ureq::http::Uri = current.parse().map_err(|_| Fail::new(502, "a Hugging Face URL did not parse"))?;
-        let mut builder = ureq::http::Request::builder().method("GET").uri(current.as_str());
+        let uri: ureq::http::Uri = current
+            .parse()
+            .map_err(|_| Fail::new(502, "a Hugging Face URL did not parse"))?;
+        let mut builder = ureq::http::Request::builder()
+            .method("GET")
+            .uri(current.as_str());
         if uri.host() == Some("huggingface.co") {
             if let Some(token) = token {
                 builder = builder.header("Authorization", format!("Bearer {token}"));
@@ -505,8 +619,12 @@ fn send(url: &str, token: Option<&str>, offset: u64, block: &[String]) -> Result
         if offset > 0 {
             builder = builder.header("Range", format!("bytes={offset}-"));
         }
-        let request = builder.body(()).map_err(|e| Fail::new(502, format!("bad request: {e}")))?;
-        let response = agent.run(request).map_err(|e| Fail::new(502, format!("Hugging Face did not answer: {e}")))?;
+        let request = builder
+            .body(())
+            .map_err(|e| Fail::new(502, format!("bad request: {e}")))?;
+        let response = agent
+            .run(request)
+            .map_err(|e| Fail::new(502, format!("Hugging Face did not answer: {e}")))?;
         let status = response.status().as_u16();
         if matches!(status, 301 | 302 | 303 | 307 | 308) {
             let location = response
@@ -535,10 +653,19 @@ fn refusal(status: u16, what: &str) -> Fail {
 }
 
 /// GET of a JSON document: the parsed body and the Link header.
-pub fn get_json(url: &str, token: Option<&str>, block: &[String], what: &str) -> Result<(Value, Option<String>), Fail> {
+pub fn get_json(
+    url: &str,
+    token: Option<&str>,
+    block: &[String],
+    what: &str,
+) -> Result<(Value, Option<String>), Fail> {
     let response = send(url, token, 0, block)?;
     let status = response.status().as_u16();
-    let link = response.headers().get("link").and_then(|v| v.to_str().ok()).map(str::to_string);
+    let link = response
+        .headers()
+        .get("link")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
     if !(200..300).contains(&status) {
         return Err(refusal(status, what));
     }
@@ -549,12 +676,17 @@ pub fn get_json(url: &str, token: Option<&str>, block: &[String], what: &str) ->
         .take(MAX_JSON_BYTES)
         .read_to_string(&mut text)
         .map_err(|e| Fail::new(502, format!("reading Hugging Face's reply: {e}")))?;
-    let value = serde_json::from_str(&text).map_err(|e| Fail::new(502, format!("Hugging Face sent no JSON: {e}")))?;
+    let value = serde_json::from_str(&text)
+        .map_err(|e| Fail::new(502, format!("Hugging Face sent no JSON: {e}")))?;
     Ok((value, link))
 }
 
 /// GET of a text file (a README): `None` when the repo has none.
-pub fn get_text_optional(url: &str, token: Option<&str>, block: &[String]) -> Result<Option<String>, Fail> {
+pub fn get_text_optional(
+    url: &str,
+    token: Option<&str>,
+    block: &[String],
+) -> Result<Option<String>, Fail> {
     let response = send(url, token, 0, block)?;
     let status = response.status().as_u16();
     if status == 404 {
@@ -580,32 +712,61 @@ pub struct Stream {
 }
 
 /// Opens one file of `id` at `sha`. A 416 means the offset is past the end; the caller starts over.
-pub fn open_file(id: &str, sha: &str, path: &str, offset: u64, token: Option<&str>, block: &[String]) -> Result<Stream, Fail> {
-    let url = format!("{ORIGIN}/{}/resolve/{sha}/{}", encode_path(id), encode_path(path));
+pub fn open_file(
+    id: &str,
+    sha: &str,
+    path: &str,
+    offset: u64,
+    token: Option<&str>,
+    block: &[String],
+) -> Result<Stream, Fail> {
+    let url = format!(
+        "{ORIGIN}/{}/resolve/{sha}/{}",
+        encode_path(id),
+        encode_path(path)
+    );
     let response = send(&url, token, offset, block).map_err(|f| f.for_model(id))?;
     let status = response.status().as_u16();
     match status {
-        200 | 206 => Ok(Stream { status, reader: Box::new(response.into_body().into_reader()) }),
+        200 | 206 => Ok(Stream {
+            status,
+            reader: Box::new(response.into_body().into_reader()),
+        }),
         416 => Err(Fail::new(416, format!("{path} has no bytes past {offset}"))),
         other => Err(refusal(other, path).for_model(id)),
     }
 }
 
 /// The detail of a model at a revision: the card, the file list, the README summary and the importable hints.
-pub fn detail(id: &str, revision: &str, token: Option<&str>, block: &[String]) -> Result<Value, Fail> {
-    let url = format!("{ORIGIN}/api/models/{}/revision/{}", encode_path(id), encode(revision));
+pub fn detail(
+    id: &str,
+    revision: &str,
+    token: Option<&str>,
+    block: &[String],
+) -> Result<Value, Fail> {
+    let url = format!(
+        "{ORIGIN}/api/models/{}/revision/{}",
+        encode_path(id),
+        encode(revision)
+    );
     let (value, _) = get_json(&url, token, block, "revision").map_err(|f| f.for_model(id))?;
     let mut card = model_card(&value);
     let sha = card["sha"].as_str().unwrap_or("").to_string();
     if sha.is_empty() {
-        return Err(Fail::new(502, "Hugging Face gave no commit for the revision"));
+        return Err(Fail::new(
+            502,
+            "Hugging Face gave no commit for the revision",
+        ));
     }
     let files = tree(id, &sha, token, block)?;
     let summary = readme_summary(id, &sha, token, block)?;
     let task = card["task"].as_str().map(str::to_string);
     if let Value::Object(map) = &mut card {
         map.insert("summary".into(), json!(summary));
-        map.insert("files".into(), Value::Array(files.iter().map(file_json).collect()));
+        map.insert(
+            "files".into(),
+            Value::Array(files.iter().map(file_json).collect()),
+        );
         map.insert("importable".into(), importable(&files, task.as_deref()));
         map.insert("import_files".into(), import_files(&files));
     }
@@ -613,9 +774,16 @@ pub fn detail(id: &str, revision: &str, token: Option<&str>, block: &[String]) -
 }
 
 /// The detail's README summary, fetched at the commit (`""` when the repo has none).
-pub fn readme_summary(id: &str, sha: &str, token: Option<&str>, block: &[String]) -> Result<String, Fail> {
+pub fn readme_summary(
+    id: &str,
+    sha: &str,
+    token: Option<&str>,
+    block: &[String],
+) -> Result<String, Fail> {
     let url = format!("{ORIGIN}/{}/raw/{sha}/README.md", encode_path(id));
-    Ok(get_text_optional(&url, token, block)?.map(|text| summary(&text)).unwrap_or_default())
+    Ok(get_text_optional(&url, token, block)?
+        .map(|text| summary(&text))
+        .unwrap_or_default())
 }
 
 #[cfg(test)]
@@ -636,19 +804,45 @@ mod tests {
     }
 
     fn search(query: &str) -> Search {
-        Search { search: query.into(), limit: DEFAULT_LIMIT, sort: "downloads".into(), ..Search::default() }
+        Search {
+            search: query.into(),
+            limit: DEFAULT_LIMIT,
+            sort: "downloads".into(),
+            ..Search::default()
+        }
     }
 
     #[test]
     fn search_urls_encode_the_query_and_map_the_sort() {
-        let url = search_url(&Search { search: "sst2 onnx".into(), task: "text-classification".into(), ..search("") }).unwrap();
-        assert!(url.starts_with("https://huggingface.co/api/models?"), "{url}");
+        let url = search_url(&Search {
+            search: "sst2 onnx".into(),
+            task: "text-classification".into(),
+            ..search("")
+        })
+        .unwrap();
+        assert!(
+            url.starts_with("https://huggingface.co/api/models?"),
+            "{url}"
+        );
         assert!(url.contains("search=sst2%20onnx"), "{url}");
         assert!(url.contains("pipeline_tag=text-classification"), "{url}");
-        assert!(url.contains("sort=downloads&direction=-1&limit=30"), "{url}");
-        let trending = search_url(&Search { sort: "trending".into(), ..search("") }).unwrap();
+        assert!(
+            url.contains("sort=downloads&direction=-1&limit=30"),
+            "{url}"
+        );
+        let trending = search_url(&Search {
+            sort: "trending".into(),
+            ..search("")
+        })
+        .unwrap();
         assert!(trending.contains("sort=trendingScore"), "{trending}");
-        assert!(search_url(&Search { sort: "stars".into(), ..search("") }).is_err());
+        assert!(
+            search_url(&Search {
+                sort: "stars".into(),
+                ..search("")
+            })
+            .is_err()
+        );
     }
 
     #[test]
@@ -665,8 +859,17 @@ mod tests {
         let link = "<https://huggingface.co/api/models?search=sst2+onnx&limit=2&cursor=ab%3Dc%2Bd>; rel=\"next\"";
         assert_eq!(next_cursor(Some(link)).as_deref(), Some("ab=c+d"));
         assert_eq!(next_cursor(None), None);
-        assert_eq!(next_cursor(Some("<https://huggingface.co/api/models?limit=2>; rel=\"prev\"")), None);
-        let url = search_url(&Search { cursor: Some("ab=c+d".into()), ..search("") }).unwrap();
+        assert_eq!(
+            next_cursor(Some(
+                "<https://huggingface.co/api/models?limit=2>; rel=\"prev\""
+            )),
+            None
+        );
+        let url = search_url(&Search {
+            cursor: Some("ab=c+d".into()),
+            ..search("")
+        })
+        .unwrap();
         assert!(url.contains("cursor=ab%3Dc%2Bd"), "{url}");
     }
 
@@ -675,7 +878,10 @@ mod tests {
         let items = search_items(&json(SEARCH)).unwrap();
         assert_eq!(items.len(), 2);
         let first = &items[0];
-        assert_eq!(first["id"], "fxmarty/distilbert-base-uncased-sst2-onnx-int8-for-tensorrt");
+        assert_eq!(
+            first["id"],
+            "fxmarty/distilbert-base-uncased-sst2-onnx-int8-for-tensorrt"
+        );
         assert_eq!(first["author"], "fxmarty");
         assert_eq!(first["task"], "text-classification");
         assert_eq!(first["library"], "transformers");
@@ -683,7 +889,13 @@ mod tests {
         assert_eq!(first["downloads"], 8);
         assert_eq!(first["gated"], false);
         assert_eq!(first["private"], false);
-        assert!(first["tags"].as_array().unwrap().iter().any(|t| t == "onnx"));
+        assert!(
+            first["tags"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|t| t == "onnx")
+        );
         assert!(search_items(&json("{}")).is_err());
     }
 
@@ -698,11 +910,21 @@ mod tests {
     #[test]
     fn the_model_card_carries_the_commit_and_the_page() {
         let card = model_card(&json(MODEL));
-        assert_eq!(card["id"], "Xenova/distilbert-base-uncased-finetuned-sst-2-english");
+        assert_eq!(
+            card["id"],
+            "Xenova/distilbert-base-uncased-finetuned-sst-2-english"
+        );
         assert_eq!(card["sha"], "0b6928efcb76139cae2c6881d49cda67fe119f42");
-        assert_eq!(card["url"], "https://huggingface.co/Xenova/distilbert-base-uncased-finetuned-sst-2-english");
+        assert_eq!(
+            card["url"],
+            "https://huggingface.co/Xenova/distilbert-base-uncased-finetuned-sst-2-english"
+        );
         assert_eq!(card["task"], "text-classification");
-        assert_eq!(card["license"], Value::Null, "the detail's tags carry no license here");
+        assert_eq!(
+            card["license"],
+            Value::Null,
+            "the detail's tags carry no license here"
+        );
         assert_eq!(card["downloads"], 26244);
     }
 
@@ -710,10 +932,16 @@ mod tests {
     fn the_tree_lists_files_with_their_lfs_sha256_and_skips_directories() {
         let files = files();
         assert!(files.iter().all(|f| !f.path.is_empty()));
-        assert!(!files.iter().any(|f| f.path == "onnx"), "directories are skipped");
+        assert!(
+            !files.iter().any(|f| f.path == "onnx"),
+            "directories are skipped"
+        );
         let graph = files.iter().find(|f| f.path == "onnx/model.onnx").unwrap();
         assert_eq!(graph.size, 267_955_711);
-        assert_eq!(graph.sha256.as_deref(), Some("252cf7048af94a1599019fef35961b2bd3d6db13df0b0a4b032b92baeae31939"));
+        assert_eq!(
+            graph.sha256.as_deref(),
+            Some("252cf7048af94a1599019fef35961b2bd3d6db13df0b0a4b032b92baeae31939")
+        );
         let config = files.iter().find(|f| f.path == "config.json").unwrap();
         assert_eq!(config.sha256, None);
         assert_eq!(file_json(graph)["lfs"], true);
@@ -737,11 +965,18 @@ mod tests {
 
     #[test]
     fn importable_is_true_for_a_contract_with_a_graph_and_for_weights_with_a_config() {
-        let file = |path: &str| TreeFile { path: path.into(), size: 1, sha256: None };
+        let file = |path: &str| TreeFile {
+            path: path.into(),
+            size: 1,
+            sha256: None,
+        };
         let servable = importable(&[file("onnx/model.onnx"), file("model_card.json")], None);
         assert_eq!(servable["servable"], true);
         assert_eq!(servable["servable_reason"], Value::Null);
-        let base = importable(&[file("config.json"), file("model-00001.safetensors")], None);
+        let base = importable(
+            &[file("config.json"), file("model-00001.safetensors")],
+            None,
+        );
         assert_eq!(base["base"], true);
         assert_eq!(base["base_reason"], Value::Null);
         assert_eq!(importable(&[file("model.onnx")], None)["servable"], false);
@@ -752,10 +987,17 @@ mod tests {
         let files = files();
         assert_eq!(
             default_files("servable", &files).unwrap(),
-            vec!["onnx/model.onnx".to_string(), "config.json".to_string(), "tokenizer.json".to_string()]
+            vec![
+                "onnx/model.onnx".to_string(),
+                "config.json".to_string(),
+                "tokenizer.json".to_string()
+            ]
         );
         let base = default_files("base", &files).unwrap();
-        assert!(base.contains(&"config.json".to_string()) && base.contains(&"tokenizer.json".to_string()));
+        assert!(
+            base.contains(&"config.json".to_string())
+                && base.contains(&"tokenizer.json".to_string())
+        );
         assert!(!base.iter().any(|p| p.starts_with("onnx/")), "{base:?}");
         assert!(default_files("tensors", &files).is_err());
         assert!(default_files("servable", &[]).is_err());
@@ -765,33 +1007,60 @@ mod tests {
     fn import_files_are_the_two_default_sets_and_empty_where_an_import_is_refused() {
         let files = files();
         let sets = import_files(&files);
-        assert_eq!(sets["servable"], json!(default_files("servable", &files).unwrap()));
+        assert_eq!(
+            sets["servable"],
+            json!(default_files("servable", &files).unwrap())
+        );
         assert_eq!(sets["base"], json!(default_files("base", &files).unwrap()));
         assert_eq!(import_files(&[]), json!({ "base": [], "servable": [] }));
     }
 
     #[test]
     fn the_readme_summary_skips_front_matter_and_headings_and_is_trimmed() {
-        assert!(summary(README).starts_with("https://huggingface.co/distilbert-base-uncased-finetuned-sst-2-english"));
-        assert_eq!(summary("---\na: b\n---\n\n# Title\n\nFirst line\nsecond line.\n\nLater."), "First line second line.");
+        assert!(
+            summary(README).starts_with(
+                "https://huggingface.co/distilbert-base-uncased-finetuned-sst-2-english"
+            )
+        );
+        assert_eq!(
+            summary("---\na: b\n---\n\n# Title\n\nFirst line\nsecond line.\n\nLater."),
+            "First line second line."
+        );
         assert_eq!(summary(""), "");
         let long = "x".repeat(SUMMARY_CHARS + 50);
         let cut = summary(&long);
-        assert_eq!(cut.chars().count(), SUMMARY_CHARS + 1, "400 characters and an ellipsis");
+        assert_eq!(
+            cut.chars().count(),
+            SUMMARY_CHARS + 1,
+            "400 characters and an ellipsis"
+        );
     }
 
     #[test]
     fn paths_repo_ids_and_revisions_are_checked() {
         assert!(safe_path("onnx/model.onnx"));
-        for bad in ["", "/etc/passwd", "../x", "a/../b", "a//b", "a\\b", "a/./b", "a\0b"] {
+        for bad in [
+            "",
+            "/etc/passwd",
+            "../x",
+            "a/../b",
+            "a//b",
+            "a\\b",
+            "a/./b",
+            "a\0b",
+        ] {
             assert!(!safe_path(bad), "{bad:?} must be refused");
         }
         assert!(valid_repo_id("gpt2"));
-        assert!(valid_repo_id("Xenova/distilbert-base-uncased-finetuned-sst-2-english"));
+        assert!(valid_repo_id(
+            "Xenova/distilbert-base-uncased-finetuned-sst-2-english"
+        ));
         for bad in ["", "a/b/c", "../x", "a/", "a b", "a?x=1"] {
             assert!(!valid_repo_id(bad), "{bad:?}");
         }
-        assert!(valid_revision("main") && valid_revision("0b6928efcb76139cae2c6881d49cda67fe119f42"));
+        assert!(
+            valid_revision("main") && valid_revision("0b6928efcb76139cae2c6881d49cda67fe119f42")
+        );
         assert!(!valid_revision("main..x") && !valid_revision("a b"));
         assert_eq!(repo_dir("Xenova/x", "abc"), "Xenova/x/abc");
         assert_eq!(repo_dir("gpt2", "abc"), "_/gpt2/abc");
@@ -817,14 +1086,25 @@ mod tests {
             assert!(check_url(bad, &none).is_err(), "{bad}");
         }
         let blocked = vec!["hf.co".to_string()];
-        assert_eq!(check_url("https://cdn-lfs.hf.co/x", &blocked).unwrap_err().status, 403);
+        assert_eq!(
+            check_url("https://cdn-lfs.hf.co/x", &blocked)
+                .unwrap_err()
+                .status,
+            403
+        );
         assert!(check_url("https://huggingface.co/x", &blocked).is_ok());
     }
 
     #[test]
     fn redirects_resolve_against_their_origin() {
-        assert_eq!(resolve("https://huggingface.co/a/b", "/x/y"), "https://huggingface.co/x/y");
-        assert_eq!(resolve("https://huggingface.co/a", "https://cdn-lfs.hf.co/z"), "https://cdn-lfs.hf.co/z");
+        assert_eq!(
+            resolve("https://huggingface.co/a/b", "/x/y"),
+            "https://huggingface.co/x/y"
+        );
+        assert_eq!(
+            resolve("https://huggingface.co/a", "https://cdn-lfs.hf.co/z"),
+            "https://cdn-lfs.hf.co/z"
+        );
     }
 
     #[test]

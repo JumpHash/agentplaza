@@ -93,7 +93,10 @@ impl Store {
     }
     pub fn remove(&self, id: &str) -> Result<(), String> {
         let mut roles = self.roles.lock().map_err(|e| e.to_string())?;
-        let i = roles.iter().position(|r| r.id == id).ok_or_else(|| format!("no role {id}"))?;
+        let i = roles
+            .iter()
+            .position(|r| r.id == id)
+            .ok_or_else(|| format!("no role {id}"))?;
         roles.remove(i);
         Ok(())
     }
@@ -111,7 +114,9 @@ impl Store {
 /// since only the route has the app).
 fn validate(def: &RoleDef) -> Result<(), String> {
     if !valid_id(&def.id) {
-        return Err("role id: 2..=32 characters of a-z, 0-9 and '-', starting with a letter".into());
+        return Err(
+            "role id: 2..=32 characters of a-z, 0-9 and '-', starting with a letter".into(),
+        );
     }
     check_text("title", &def.title, 60)?;
     check_text("purpose", &def.purpose, 600)?;
@@ -137,7 +142,9 @@ fn validate(def: &RoleDef) -> Result<(), String> {
 fn valid_id(id: &str) -> bool {
     (2..=32).contains(&id.len())
         && id.starts_with(|c: char| c.is_ascii_lowercase())
-        && id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        && id
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
 fn check_text(what: &str, value: &str, max: usize) -> Result<(), String> {
@@ -155,7 +162,11 @@ fn check_text(what: &str, value: &str, max: usize) -> Result<(), String> {
 /// built-in role prompts use: Purpose, Responsibilities, Deliverables, Working with others,
 /// Boundaries).
 pub fn prompt_of(def: &RoleDef) -> String {
-    let mut out = format!("# {}\n\n## Purpose\n{}\n\n", def.title.trim(), def.purpose.trim());
+    let mut out = format!(
+        "# {}\n\n## Purpose\n{}\n\n",
+        def.title.trim(),
+        def.purpose.trim()
+    );
     out.push_str("## Responsibilities\n");
     for item in &def.responsibilities {
         out.push_str(&format!("- {}\n", item.trim()));
@@ -165,7 +176,10 @@ pub fn prompt_of(def: &RoleDef) -> String {
         out.push_str(&format!("- {}\n", item.trim()));
     }
     if !def.collaboration.trim().is_empty() {
-        out.push_str(&format!("\n## Working with others\n{}\n", def.collaboration.trim()));
+        out.push_str(&format!(
+            "\n## Working with others\n{}\n",
+            def.collaboration.trim()
+        ));
     }
     if !def.boundaries.is_empty() {
         out.push_str("\n## Boundaries\n");
@@ -174,7 +188,10 @@ pub fn prompt_of(def: &RoleDef) -> String {
         }
     }
     if def.budget > 0 {
-        out.push_str(&format!("\n## Budget\nDefault task budget: {} credits.\n", def.budget));
+        out.push_str(&format!(
+            "\n## Budget\nDefault task budget: {} credits.\n",
+            def.budget
+        ));
     }
     out
 }
@@ -188,7 +205,11 @@ pub fn exists(app: &App, role: &str) -> bool {
 pub fn tools_of(app: &App, role: &str) -> Vec<String> {
     match app.roles.tools.get(role) {
         Some(tools) => tools.clone(),
-        None => app.custom_roles.get(role).map(|r| r.tools).unwrap_or_default(),
+        None => app
+            .custom_roles
+            .get(role)
+            .map(|r| r.tools)
+            .unwrap_or_default(),
     }
 }
 
@@ -236,7 +257,11 @@ fn purpose_of(prompt: &str) -> String {
 
 /// Connected (not offline) agents of a role.
 fn agent_count(app: &App, role: &str) -> u32 {
-    app.agents.list().iter().filter(|a| a.role == role && a.status != Status::Offline).count() as u32
+    app.agents
+        .list()
+        .iter()
+        .filter(|a| a.role == role && a.status != Status::Offline)
+        .count() as u32
 }
 
 fn list_route(app: &App, _req: &Request, _: &Params<'_>) -> Response {
@@ -255,7 +280,13 @@ fn list_route(app: &App, _req: &Request, _: &Params<'_>) -> Response {
                 prompt,
                 ..Default::default()
             };
-            RoleView { id: id.clone(), title, source: "builtin".into(), agents: agent_count(app, id), def }
+            RoleView {
+                id: id.clone(),
+                title,
+                source: "builtin".into(),
+                agents: agent_count(app, id),
+                def,
+            }
         })
         .collect();
     builtin.sort_by(|a, b| a.title.cmp(&b.title));

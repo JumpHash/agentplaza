@@ -26,7 +26,10 @@ pub struct Head {
 
 impl Head {
     pub fn genesis() -> Head {
-        Head { seq: 0, mac: GENESIS.to_string() }
+        Head {
+            seq: 0,
+            mac: GENESIS.to_string(),
+        }
     }
 }
 
@@ -51,7 +54,11 @@ pub struct Record {
 
 impl Record {
     pub fn new(event: &str, actor: &str) -> Record {
-        Record { event: event.to_string(), actor: actor.to_string(), ..Record::default() }
+        Record {
+            event: event.to_string(),
+            actor: actor.to_string(),
+            ..Record::default()
+        }
     }
 
     pub fn entry(mut self, id: &str, name: &str) -> Record {
@@ -94,10 +101,22 @@ fn body(record: &Record, seq: u64, ts_ms: u64, prev: &str) -> Map<String, Value>
 }
 
 /// Appends `record` to the log at `path`, chained onto `head`, and advances `head`.
-pub fn append(path: &Path, head: &mut Head, key: &[u8; 32], record: &Record, ts_ms: u64) -> Result<(), String> {
+pub fn append(
+    path: &Path,
+    head: &mut Head,
+    key: &[u8; 32],
+    record: &Record,
+    ts_ms: u64,
+) -> Result<(), String> {
     let seq = head.seq + 1;
     let mut map = body(record, seq, ts_ms, &head.mac);
-    let mac = crypto::mac_hex(key, &[head.mac.as_bytes(), crypto::canonical(&Value::Object(map.clone())).as_bytes()]);
+    let mac = crypto::mac_hex(
+        key,
+        &[
+            head.mac.as_bytes(),
+            crypto::canonical(&Value::Object(map.clone())).as_bytes(),
+        ],
+    );
     map.insert("mac".into(), Value::from(mac.clone()));
     let mut line = serde_json::to_string(&Value::Object(map)).map_err(|e| e.to_string())?;
     line.push('\n');
@@ -142,14 +161,32 @@ pub fn verify(text: &str, key: &[u8; 32]) -> Verdict {
             _ => return broken(i, None, "", "", Head::genesis(), None),
         }
     }
-    let keyed_from = lines.iter().rposition(|l| l["event"] == "rekey").unwrap_or(0);
-    let last_rekey_ms = lines.iter().rev().find(|l| l["event"] == "rekey").and_then(|l| l["ts_ms"].as_u64());
+    let keyed_from = lines
+        .iter()
+        .rposition(|l| l["event"] == "rekey")
+        .unwrap_or(0);
+    let last_rekey_ms = lines
+        .iter()
+        .rev()
+        .find(|l| l["event"] == "rekey")
+        .and_then(|l| l["ts_ms"].as_u64());
     let mut prev = GENESIS.to_string();
     let mut head = Head::genesis();
     for (i, line) in lines.iter().enumerate() {
         let number = i as u64 + 1;
-        let (Some(seq), Some(line_prev), Some(mac)) = (line["seq"].as_u64(), line["prev"].as_str(), line["mac"].as_str()) else {
-            return broken(i, line["seq"].as_u64(), &prev, line["prev"].as_str().unwrap_or(""), head, last_rekey_ms);
+        let (Some(seq), Some(line_prev), Some(mac)) = (
+            line["seq"].as_u64(),
+            line["prev"].as_str(),
+            line["mac"].as_str(),
+        ) else {
+            return broken(
+                i,
+                line["seq"].as_u64(),
+                &prev,
+                line["prev"].as_str().unwrap_or(""),
+                head,
+                last_rekey_ms,
+            );
         };
         if seq != number || line_prev != prev {
             return broken(i, Some(seq), &prev, line_prev, head, last_rekey_ms);
@@ -157,15 +194,31 @@ pub fn verify(text: &str, key: &[u8; 32]) -> Verdict {
         if i >= keyed_from {
             let mut unsigned = line.as_object().cloned().unwrap_or_default();
             unsigned.remove("mac");
-            let expected = crypto::mac_hex(key, &[prev.as_bytes(), crypto::canonical(&Value::Object(unsigned)).as_bytes()]);
+            let expected = crypto::mac_hex(
+                key,
+                &[
+                    prev.as_bytes(),
+                    crypto::canonical(&Value::Object(unsigned)).as_bytes(),
+                ],
+            );
             if expected != mac {
                 return broken(i, Some(seq), &expected, mac, head, last_rekey_ms);
             }
         }
         prev = mac.to_string();
-        head = Head { seq, mac: mac.to_string() };
+        head = Head {
+            seq,
+            mac: mac.to_string(),
+        };
     }
-    Verdict { ok: true, broken_at: None, head, last_rekey_ms, verified: lines.len() as u64, first_broken: None }
+    Verdict {
+        ok: true,
+        broken_at: None,
+        head,
+        last_rekey_ms,
+        verified: lines.len() as u64,
+        first_broken: None,
+    }
 }
 
 /// The first 12 characters of a hash: enough to compare by eye, never the whole chain.
@@ -174,7 +227,14 @@ fn prefix(hash: &str) -> String {
 }
 
 /// The verdict for a chain that breaks at the line with 0-based position `index`: the entries before it verified.
-fn broken(index: usize, seq: Option<u64>, expected: &str, found: &str, head: Head, last_rekey_ms: Option<u64>) -> Verdict {
+fn broken(
+    index: usize,
+    seq: Option<u64>,
+    expected: &str,
+    found: &str,
+    head: Head,
+    last_rekey_ms: Option<u64>,
+) -> Verdict {
     let index = index as u64;
     Verdict {
         ok: false,
@@ -182,7 +242,12 @@ fn broken(index: usize, seq: Option<u64>, expected: &str, found: &str, head: Hea
         head,
         last_rekey_ms,
         verified: index,
-        first_broken: Some(Broken { index, seq, expected: prefix(expected), found: prefix(found) }),
+        first_broken: Some(Broken {
+            index,
+            seq,
+            expected: prefix(expected),
+            found: prefix(found),
+        }),
     }
 }
 
@@ -202,7 +267,8 @@ mod tests {
     const KEY: [u8; 32] = [3; 32];
 
     fn scratch(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("apid-vault-audit-{}-{name}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("apid-vault-audit-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("scratch dir");
         dir
@@ -213,8 +279,13 @@ mod tests {
         let dir = scratch("chain");
         let path = dir.join("vault-audit.jsonl");
         let mut head = Head::genesis();
-        for (i, event) in ["init", "unseal", "create", "use", "seal"].iter().enumerate() {
-            let record = Record::new(event, "owner").entry("sec_1", "KEY").detail(format!("step {i}"));
+        for (i, event) in ["init", "unseal", "create", "use", "seal"]
+            .iter()
+            .enumerate()
+        {
+            let record = Record::new(event, "owner")
+                .entry("sec_1", "KEY")
+                .detail(format!("step {i}"));
             append(&path, &mut head, &KEY, &record, 1000 + i as u64).expect("appended");
         }
         let text = std::fs::read_to_string(&path).expect("read");
@@ -235,7 +306,10 @@ mod tests {
         let dir = scratch("first-broken");
         let path = dir.join("vault-audit.jsonl");
         let mut head = Head::genesis();
-        for (i, event) in ["init", "unseal", "create", "use", "seal"].iter().enumerate() {
+        for (i, event) in ["init", "unseal", "create", "use", "seal"]
+            .iter()
+            .enumerate()
+        {
             let record = Record::new(event, "owner").detail(format!("step {i}"));
             append(&path, &mut head, &KEY, &record, 1000 + i as u64).expect("appended");
         }
@@ -256,9 +330,14 @@ mod tests {
         assert_eq!(broken.expected.len(), 12);
         assert_eq!(broken.found.len(), 12);
         assert_ne!(broken.expected, broken.found);
-        let stored: Value = serde_json::from_str(text.lines().nth(2).expect("line 3")).expect("json");
+        let stored: Value =
+            serde_json::from_str(text.lines().nth(2).expect("line 3")).expect("json");
         let mac = stored["mac"].as_str().expect("mac");
-        assert_eq!(broken.found, &mac[..12], "the found hash is the stored mac's prefix");
+        assert_eq!(
+            broken.found,
+            &mac[..12],
+            "the found hash is the stored mac's prefix"
+        );
     }
 
     #[test]
@@ -268,7 +347,14 @@ mod tests {
         let mut head = Head::genesis();
         append(&path, &mut head, &KEY, &Record::new("init", "owner"), 1).expect("appended");
         let new_key = [9u8; 32];
-        append(&path, &mut head, &new_key, &Record::new("rekey", "owner"), 2).expect("appended");
+        append(
+            &path,
+            &mut head,
+            &new_key,
+            &Record::new("rekey", "owner"),
+            2,
+        )
+        .expect("appended");
         append(&path, &mut head, &new_key, &Record::new("seal", "owner"), 3).expect("appended");
         let text = std::fs::read_to_string(&path).expect("read");
         let verdict = verify(&text, &new_key);

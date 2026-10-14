@@ -9,10 +9,10 @@
 use std::collections::HashMap;
 use std::f32::consts::PI;
 
-use super::behaviour::SpotIn;
-use super::board_layout::{board_height_at, BoardDistrict, BoardLayout, TraceGraph};
 use super::District;
-use crate::hardware::{part_boxes, Model, Params, PartBox};
+use super::behaviour::SpotIn;
+use super::board_layout::{BoardDistrict, BoardLayout, TraceGraph, board_height_at};
+use crate::hardware::{Model, Params, PartBox, part_boxes};
 use crate::rooms::generate::{LayoutItem, LayoutSpot};
 
 /// A robot's footprint radius (the floor's ROBOT_R): how far a station stands off a part.
@@ -42,7 +42,8 @@ pub fn district_key(d: &District) -> String {
 
 /// Whether (x, z) lies in a district's cell, grown by `margin` (the cell test the floor's roomAt uses).
 fn in_cell(d: &BoardDistrict, x: f32, z: f32, margin: f32) -> bool {
-    (x - d.district.cx).abs() <= d.w / 2.0 + margin && (z - d.district.cy).abs() <= d.d / 2.0 + margin
+    (x - d.district.cx).abs() <= d.w / 2.0 + margin
+        && (z - d.district.cy).abs() <= d.d / 2.0 + margin
 }
 
 /// A heading from (dx, dz): atan2's first argument is dx, the second dz (the TS `Math.atan2(dx, dz)`).
@@ -62,7 +63,13 @@ pub fn region_of<'a>(rooms: impl IntoIterator<Item = &'a RoomFrame>, x: f32, z: 
 
 /// A room's stations in the world frame: `turn` is the room group's yaw (rotation.y), the room's origin is its
 /// district's centre.
-pub fn room_spots(region: i64, d: &BoardDistrict, turn: f32, spots: &[RoomSpot], items: &[RoomItem]) -> Vec<SpotIn> {
+pub fn room_spots(
+    region: i64,
+    d: &BoardDistrict,
+    turn: f32,
+    spots: &[RoomSpot],
+    items: &[RoomItem],
+) -> Vec<SpotIn> {
     let idx: HashMap<usize, &str> = items.iter().map(|it| (it.n, it.id.as_str())).collect();
     let turn = turn as f64;
     let (c, s) = (turn.cos(), turn.sin());
@@ -121,7 +128,8 @@ fn standable(layout: &BoardLayout, boxes: &[PartBox], x: f32, z: f32) -> bool {
         if b.hi[1] <= layout.pcb_top + STEP_HEIGHT {
             continue; // decals and flat parts: walkable
         }
-        if x > b.lo[0] - CLEAR && x < b.hi[0] + CLEAR && z > b.lo[2] - CLEAR && z < b.hi[2] + CLEAR {
+        if x > b.lo[0] - CLEAR && x < b.hi[0] + CLEAR && z > b.lo[2] - CLEAR && z < b.hi[2] + CLEAR
+        {
             return false;
         }
     }
@@ -144,13 +152,26 @@ fn first_neighbour(graph: &TraceGraph, i: usize) -> Option<usize> {
 
 /// A board spot on region 0 with no clip.
 fn board_spot(key: String, kind: &str, x: f32, z: f32, face: f64) -> SpotIn {
-    SpotIn { key, kind: kind.into(), region: 0, x: x as f64, z: z as f64, face, clip: None }
+    SpotIn {
+        key,
+        kind: kind.into(),
+        region: 0,
+        x: x as f64,
+        z: z as f64,
+        face,
+        clip: None,
+    }
 }
 
 /// The board's own spots: components (on the edges of each slot, facing it; a slot under a room has none, since the
 /// room stands there), commons (a ring round the atom), docks (one per room, at its rim), traces (the walkway points) and
 /// anywhere (a grid of free points). All on region 0.
-pub fn board_spots(model: &Model, params: &Params, graph: &TraceGraph, layout: &BoardLayout) -> Vec<SpotIn> {
+pub fn board_spots(
+    model: &Model,
+    params: &Params,
+    graph: &TraceGraph,
+    layout: &BoardLayout,
+) -> Vec<SpotIn> {
     let mut out = Vec::new();
     let boxes = part_boxes(model, params);
     // Components: four stations per slot, one off each edge, facing the slot's centre.
@@ -168,7 +189,13 @@ pub fn board_spots(model: &Model, params: &Params, graph: &TraceGraph, layout: &
             if layout.districts.iter().any(|r| in_cell(r, x, z, 0.0)) {
                 continue;
             }
-            out.push(board_spot(format!("slot:{}:{k}", slot.id), &format!("component:{}", slot.kind), x, z, face(cx - x, cz - z)));
+            out.push(board_spot(
+                format!("slot:{}:{k}", slot.id),
+                &format!("component:{}", slot.kind),
+                x,
+                z,
+                face(cx - x, cz - z),
+            ));
         }
     }
     // Commons: two rings round the atom (its benches and the meeting table stand on them).
@@ -181,7 +208,13 @@ pub fn board_spots(model: &Model, params: &Params, graph: &TraceGraph, layout: &
             if !standable(layout, &boxes, x, z) {
                 continue;
             }
-            out.push(board_spot(format!("commons:{i}:{r}"), "commons", x, z, face(ax - x, az - z)));
+            out.push(board_spot(
+                format!("commons:{i}:{r}"),
+                "commons",
+                x,
+                z,
+                face(ax - x, az - z),
+            ));
         }
     }
     // Docks: the first free point round each room's rim (the charging pad).
@@ -193,7 +226,13 @@ pub fn board_spots(model: &Model, params: &Params, graph: &TraceGraph, layout: &
             if !standable(layout, &boxes, x, z) {
                 continue;
             }
-            out.push(board_spot(format!("dock:{i}"), "dock", x, z, face(d.district.cx - x, d.district.cy - z)));
+            out.push(board_spot(
+                format!("dock:{i}"),
+                "dock",
+                x,
+                z,
+                face(d.district.cx - x, d.district.cy - z),
+            ));
             break;
         }
     }
@@ -237,13 +276,20 @@ mod tests {
     use super::*;
     use crate::hardware::model;
     use crate::rooms::generate::LayoutItem;
-    use crate::world::board_layout::{layout_on_board, trace_graph, BoardParams};
+    use crate::world::board_layout::{BoardParams, layout_on_board, trace_graph};
 
     fn district(cx: f32, cy: f32, w: f32, d: f32) -> BoardDistrict {
         BoardDistrict {
             plan: None,
             key: "test".into(),
-            district: District { role: "test".into(), cx, cy, r: 2.0, hue: 0.0, round: false },
+            district: District {
+                role: "test".into(),
+                cx,
+                cy,
+                r: 2.0,
+                hue: 0.0,
+                round: false,
+            },
             y: 0.0,
             slot: "s".into(),
             w,
@@ -259,7 +305,10 @@ mod tests {
         let spots = board_spots(board, &Params::default(), &graph, &layout);
         assert!(!spots.is_empty());
         assert!(spots.iter().all(|s| s.region == 0));
-        let comps: Vec<&SpotIn> = spots.iter().filter(|s| s.kind.starts_with("component:")).collect();
+        let comps: Vec<&SpotIn> = spots
+            .iter()
+            .filter(|s| s.kind.starts_with("component:"))
+            .collect();
         assert!(!comps.is_empty());
         const EPS: f64 = 1e-4;
         for s in comps {
@@ -267,8 +316,12 @@ mod tests {
             let near = board.slots.iter().any(|sl| {
                 let [x0, z0, w, d] = sl.rect.map(|v| v as f64);
                 let c = CLEAR as f64;
-                let inside_grown = s.x >= x0 - c - EPS && s.x <= x0 + w + c + EPS && s.z >= z0 - c - EPS && s.z <= z0 + d + c + EPS;
-                let inside = s.x > x0 + EPS && s.x < x0 + w - EPS && s.z > z0 + EPS && s.z < z0 + d - EPS;
+                let inside_grown = s.x >= x0 - c - EPS
+                    && s.x <= x0 + w + c + EPS
+                    && s.z >= z0 - c - EPS
+                    && s.z <= z0 + d + c + EPS;
+                let inside =
+                    s.x > x0 + EPS && s.x < x0 + w - EPS && s.z > z0 + EPS && s.z < z0 + d - EPS;
                 inside_grown && !inside
             });
             assert!(near, "component spot {} is not beside a slot", s.key);
@@ -277,7 +330,11 @@ mod tests {
 
     #[test]
     fn region_of_finds_the_room_cell_and_defaults_to_the_board() {
-        let frame = RoomFrame { region: 3, d: district(10.0, 10.0, 4.0, 4.0), spots: Vec::new() };
+        let frame = RoomFrame {
+            region: 3,
+            d: district(10.0, 10.0, 4.0, 4.0),
+            spots: Vec::new(),
+        };
         assert_eq!(region_of([&frame], 11.0, 9.0), 3);
         assert_eq!(region_of([&frame], 15.0, 10.0), 0);
         assert_eq!(region_of([&frame], 20.0, 20.0), 0);
@@ -288,10 +345,31 @@ mod tests {
         // Yaw 90 degrees: the room's local +x points to world -z, local +z to world +x.
         let d = district(10.0, 20.0, 4.0, 4.0);
         let spots = vec![
-            LayoutSpot { item: 1, x: 1.0, z: 0.0, face: 0.0, clip: None },
-            LayoutSpot { item: 1, x: 0.0, z: 2.0, face: 90.0, clip: Some("sit".into()) },
+            LayoutSpot {
+                item: 1,
+                x: 1.0,
+                z: 0.0,
+                face: 0.0,
+                clip: None,
+            },
+            LayoutSpot {
+                item: 1,
+                x: 0.0,
+                z: 2.0,
+                face: 90.0,
+                clip: Some("sit".into()),
+            },
         ];
-        let items = vec![LayoutItem { n: 1, id: "desk".into(), x: 0.0, y: 0.0, z: 0.0, rot: 0.0, host: None, g: 0 }];
+        let items = vec![LayoutItem {
+            n: 1,
+            id: "desk".into(),
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+            rot: 0.0,
+            host: None,
+            g: 0,
+        }];
         let out = room_spots(3, &d, std::f32::consts::FRAC_PI_2, &spots, &items);
         assert_eq!(out.len(), 2);
         assert_eq!(out[0].key, "room3:0");

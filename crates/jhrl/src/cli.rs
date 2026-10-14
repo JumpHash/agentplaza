@@ -75,7 +75,12 @@ pub fn main(args: &[String], out: &mut dyn Write) -> i32 {
         let _ = writeln!(out, "{USAGE}");
         return 2;
     }
-    let mut c = Ctx { out, failures: 0, skips: 0, verbose };
+    let mut c = Ctx {
+        out,
+        failures: 0,
+        skips: 0,
+        verbose,
+    };
     let mut sources = Vec::new();
     for f in &files {
         match std::fs::read_to_string(f) {
@@ -97,9 +102,21 @@ pub fn main(args: &[String], out: &mut dyn Write) -> i32 {
         run_scenarios(&mut c, &prog);
         run_authz_cases(&mut c, &prog);
     }
-    let summary = if c.failures == 0 { "all ok".to_string() } else { format!("{} FAILURE(S)", c.failures) };
-    let skips = if c.skips > 0 { format!(", {} skipped", c.skips) } else { String::new() };
-    let _ = writeln!(c.out, "jhrl {cmd}: {} file(s), {summary}{skips}", files.len());
+    let summary = if c.failures == 0 {
+        "all ok".to_string()
+    } else {
+        format!("{} FAILURE(S)", c.failures)
+    };
+    let skips = if c.skips > 0 {
+        format!(", {} skipped", c.skips)
+    } else {
+        String::new()
+    };
+    let _ = writeln!(
+        c.out,
+        "jhrl {cmd}: {} file(s), {summary}{skips}",
+        files.len()
+    );
     if c.failures > 0 {
         1
     } else {
@@ -116,10 +133,17 @@ fn report_files(c: &mut Ctx, prog: &Program, load: &[Diag], stat: &[Diag], print
         let n = prog.modules[i].items.len();
         if errs.is_empty() {
             if print_ok {
-                c.ok(&format!("{}: {n} declarations parse; names and dimensions check", src.path));
+                c.ok(&format!(
+                    "{}: {n} declarations parse; names and dimensions check",
+                    src.path
+                ));
             }
         } else {
-            let what = if ld.iter().any(|d| !d.warning) { "parse" } else { "names and dimensions" };
+            let what = if ld.iter().any(|d| !d.warning) {
+                "parse"
+            } else {
+                "names and dimensions"
+            };
             c.fail(&format!("{}: {} error(s) ({what})", src.path, errs.len()));
             for d in errs {
                 c.detail(&d.render(&prog.sources));
@@ -147,7 +171,11 @@ fn check_models(c: &mut Ctx, prog: &Program) {
                     if !rep.transitions.is_empty() {
                         holds.push_str(&format!(" and {} transition(s)", rep.transitions.len()));
                     }
-                    let dl = if rep.deadlock_checked { ", no deadlock" } else { "" };
+                    let dl = if rep.deadlock_checked {
+                        ", no deadlock"
+                    } else {
+                        ""
+                    };
                     c.ok(&format!(
                         "{head}: {} distinct states, depth {}, {holds} hold{dl} ({} generated)",
                         rep.states.len(),
@@ -156,11 +184,17 @@ fn check_models(c: &mut Ctx, prog: &Program) {
                     ));
                 } else {
                     let v = &rep.violations[0];
-                    c.fail(&format!("{head}: {} ({} distinct states so far)", v.what.describe(), rep.states.len()));
+                    c.fail(&format!(
+                        "{head}: {} ({} distinct states so far)",
+                        v.what.describe(),
+                        rep.states.len()
+                    ));
                     c.detail(&rep.render_trace(v, "  "));
                 }
                 for p in &rep.properties {
-                    c.skip(&format!("{head}: property \"{p}\" (liveness checking is not in v0)"));
+                    c.skip(&format!(
+                        "{head}: property \"{p}\" (liveness checking is not in v0)"
+                    ));
                 }
                 for n in &rep.notes {
                     c.detail(n);
@@ -191,15 +225,26 @@ fn check_models(c: &mut Ctx, prog: &Program) {
             c.fail(&format!("{head}: unknown machine"));
             continue;
         };
-        let models: Vec<DeclRef> =
-            mc::models_of(prog, mref).into_iter().filter(|(_, _, md)| w.model.as_ref().is_none_or(|n| *n == md.name)).map(|x| x.1).collect();
+        let models: Vec<DeclRef> = mc::models_of(prog, mref)
+            .into_iter()
+            .filter(|(_, _, md)| w.model.as_ref().is_none_or(|n| *n == md.name))
+            .map(|x| x.1)
+            .collect();
         if models.is_empty() {
-            c.fail(&format!("{head}: no model{}", w.model.as_ref().map(|n| format!(" \"{n}\"")).unwrap_or_default()));
+            c.fail(&format!(
+                "{head}: no model{}",
+                w.model
+                    .as_ref()
+                    .map(|n| format!(" \"{n}\""))
+                    .unwrap_or_default()
+            ));
             continue;
         }
         let mut hit = None;
         for mr in models {
-            let Some(rep) = reports.get(&mr) else { continue };
+            let Some(rep) = reports.get(&mr) else {
+                continue;
+            };
             match rep.find(prog, pack, &w.expr) {
                 Ok(Some(i)) => {
                     hit = Some((rep, i));
@@ -215,14 +260,23 @@ fn check_models(c: &mut Ctx, prog: &Program) {
         }
         match hit {
             Some((rep, i)) => {
-                c.ok(&format!("{head} reachable in \"{}\" at depth {}", rep.model, rep.states[i].depth));
+                c.ok(&format!(
+                    "{head} reachable in \"{}\" at depth {}",
+                    rep.model, rep.states[i].depth
+                ));
                 if c.verbose {
-                    let v = mc::Violation { what: mc::Found::Deadlock, state: i, step: None };
+                    let v = mc::Violation {
+                        what: mc::Found::Deadlock,
+                        state: i,
+                        step: None,
+                    };
                     let t = rep.render_trace(&v, "  ");
                     c.detail(&t);
                 }
             }
-            None => c.fail(&format!("{head} is unreachable (its invariants may pass vacuously)")),
+            None => c.fail(&format!(
+                "{head} is unreachable (its invariants may pass vacuously)"
+            )),
         }
     }
 }

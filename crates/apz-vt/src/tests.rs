@@ -11,13 +11,23 @@ fn emu(cols: usize, rows: usize, bytes: &str) -> Emulator {
 fn line(e: &Emulator, y: usize) -> String {
     let screen = e.screen();
     let row = screen.view_row(y).expect("a row on the view");
-    row.cells.iter().filter(|c| c.width != 0).map(|c| c.ch).collect::<String>().trim_end().to_string()
+    row.cells
+        .iter()
+        .filter(|c| c.width != 0)
+        .map(|c| c.ch)
+        .collect::<String>()
+        .trim_end()
+        .to_string()
 }
 
 #[test]
 fn ls_color_output_puts_each_name_in_its_colour_and_resets() {
     // `ls --color` style: directories blue and bold, scripts green, each followed by a reset.
-    let e = emu(40, 5, "\x1b[0m\x1b[01;34mdir\x1b[0m  \x1b[01;32mrun.sh\x1b[0m\r\n");
+    let e = emu(
+        40,
+        5,
+        "\x1b[0m\x1b[01;34mdir\x1b[0m  \x1b[01;32mrun.sh\x1b[0m\r\n",
+    );
     let s = e.screen();
     assert_eq!(line(&e, 0), "dir  run.sh");
     assert_eq!(s.cursor(), (1, 0));
@@ -35,7 +45,10 @@ fn ls_color_output_puts_each_name_in_its_colour_and_resets() {
 #[test]
 fn clear_homes_the_cursor_and_erases_the_screen_and_the_scrollback() {
     let mut e = emu(10, 3, "one\r\ntwo\r\nthree\r\nfour\r\nfive\r\n");
-    assert!(e.screen().history_len() > 0, "lines scrolled off into the history");
+    assert!(
+        e.screen().history_len() > 0,
+        "lines scrolled off into the history"
+    );
     e.feed(b"\x1b[H\x1b[2J\x1b[3J");
     let s = e.screen();
     assert_eq!(s.cursor(), (0, 0));
@@ -55,7 +68,11 @@ fn alternate_screen_hides_the_main_one_and_restores_it_with_the_cursor() {
     e.feed(b"\x1b[1;1Hvim buffer\x1b[2;1H~");
     assert_eq!(line(&e, 0), "vim buffer");
     assert_eq!(line(&e, 1), "~");
-    assert_eq!(e.screen().history_len(), 0, "the alternate screen keeps no history");
+    assert_eq!(
+        e.screen().history_len(),
+        0,
+        "the alternate screen keeps no history"
+    );
     e.feed(b"\x1b[?1049l");
     let s = e.screen();
     assert!(!s.alt_screen());
@@ -74,7 +91,11 @@ fn scroll_region_scrolls_only_its_rows() {
     assert_eq!(line(&e, 2), "r3");
     assert_eq!(line(&e, 3), "", "the region's new bottom row is blank");
     assert_eq!(line(&e, 5), "BBBB", "below the region is untouched");
-    assert_eq!(e.screen().history_len(), 0, "a region below the top does not feed the scrollback");
+    assert_eq!(
+        e.screen().history_len(),
+        0,
+        "a region below the top does not feed the scrollback"
+    );
 }
 
 #[test]
@@ -115,7 +136,10 @@ fn text_wrapped_at_the_edge_copies_without_a_newline() {
     assert_eq!(e.screen().text_between((abs0, 0), (abs1, 2)), "abcdefgh");
     e.feed(b"\r\nxy");
     let s = e.screen();
-    assert_eq!(s.text_between((abs0, 0), (s.abs_of_index(2), 1)), "abcdefgh\nxy");
+    assert_eq!(
+        s.text_between((abs0, 0), (s.abs_of_index(2), 1)),
+        "abcdefgh\nxy"
+    );
 }
 
 #[test]
@@ -129,8 +153,15 @@ fn scrollback_keeps_history_that_scrolls_back_and_copies() {
     assert_eq!(e.screen().line_text(0), "line 0");
     assert_eq!(e.screen().line_text(25), "line 25");
     e.screen_mut().scroll_view(10);
-    assert_eq!(line(&e, 0), "line 16", "ten lines back from the bottom of the history");
-    assert!(e.screen().cursor_on_view().is_none(), "the cursor is out of view when scrolled back");
+    assert_eq!(
+        line(&e, 0),
+        "line 16",
+        "ten lines back from the bottom of the history"
+    );
+    assert!(
+        e.screen().cursor_on_view().is_none(),
+        "the cursor is out of view when scrolled back"
+    );
     e.screen_mut().reset_view();
     assert!(e.screen().cursor_on_view().is_some());
 
@@ -149,7 +180,11 @@ fn scrollback_is_capped_and_counts_what_it_dropped() {
     // The first two line feeds only move the cursor down the three rows; the rest each push a row.
     assert_eq!(s.dropped(), 10_048 - SCROLLBACK as u64);
     assert_eq!(s.index_of_abs(s.dropped()), Some(0));
-    assert_eq!(s.index_of_abs(0), None, "an id that fell off the scrollback is gone");
+    assert_eq!(
+        s.index_of_abs(0),
+        None,
+        "an id that fell off the scrollback is gone"
+    );
 }
 
 #[test]
@@ -157,7 +192,11 @@ fn resize_cuts_or_pads_the_columns_and_keeps_the_cursor_on_screen() {
     let mut e = emu(10, 3, "abcdef");
     e.resize(4, 3);
     assert_eq!(line(&e, 0), "abcd");
-    assert_eq!(e.screen().cursor().1, 3, "the cursor is clamped to the new width");
+    assert_eq!(
+        e.screen().cursor().1,
+        3,
+        "the cursor is clamped to the new width"
+    );
     e.resize(8, 3);
     assert_eq!(line(&e, 0), "abcd", "text cut away is not brought back");
 }
@@ -176,7 +215,11 @@ fn shrinking_the_rows_pushes_the_top_lines_into_the_history() {
 
 #[test]
 fn extended_colours_read_in_both_the_semicolon_and_colon_forms() {
-    let e = emu(12, 2, "\x1b[38;5;196mA\x1b[48;2;1;2;3mB\x1b[38:2::10:20:30mC\x1b[38;2;9;8;7mD\x1b[0mE");
+    let e = emu(
+        12,
+        2,
+        "\x1b[38;5;196mA\x1b[48;2;1;2;3mB\x1b[38:2::10:20:30mC\x1b[38;2;9;8;7mD\x1b[0mE",
+    );
     let cells = &e.screen().line(0).unwrap().cells;
     assert_eq!(cells[0].style.fg, Color::Indexed(196));
     assert_eq!(cells[1].style.bg, Color::Rgb(1, 2, 3));
@@ -187,13 +230,20 @@ fn extended_colours_read_in_both_the_semicolon_and_colon_forms() {
 
 #[test]
 fn sixteen_colours_attributes_and_their_resets() {
-    let e = emu(12, 2, "\x1b[91;42mA\x1b[7;3;4mB\x1b[22;23;24;27mC\x1b[4:3mD");
+    let e = emu(
+        12,
+        2,
+        "\x1b[91;42mA\x1b[7;3;4mB\x1b[22;23;24;27mC\x1b[4:3mD",
+    );
     let cells = &e.screen().line(0).unwrap().cells;
     assert_eq!(cells[0].style.fg, Color::Indexed(9), "bright red");
     assert_eq!(cells[0].style.bg, Color::Indexed(2), "green background");
     assert!(cells[1].style.inverse && cells[1].style.italic && cells[1].style.underline);
     assert!(!cells[2].style.inverse && !cells[2].style.italic && !cells[2].style.underline);
-    assert!(cells[3].style.underline, "4:3 is a curly underline, which still underlines");
+    assert!(
+        cells[3].style.underline,
+        "4:3 is a curly underline, which still underlines"
+    );
 }
 
 #[test]
@@ -225,7 +275,11 @@ fn erase_in_line_and_erase_with_a_background_colour() {
     let e = emu(10, 2, "abcdef\x1b[1;4H\x1b[K");
     assert_eq!(line(&e, 0), "abc");
     let e = emu(4, 2, "\x1b[41m\x1b[K");
-    assert_eq!(e.screen().line(0).unwrap().cells[2].style.bg, Color::Indexed(1), "erased cells keep the background");
+    assert_eq!(
+        e.screen().line(0).unwrap().cells[2].style.bg,
+        Color::Indexed(1),
+        "erased cells keep the background"
+    );
 }
 
 #[test]
@@ -237,15 +291,24 @@ fn insert_and_delete_characters_and_lines() {
 
     let mut e = emu(4, 4, "A\r\nB\r\nC");
     e.feed(b"\x1b[2;1H\x1b[1L");
-    assert_eq!((line(&e, 0), line(&e, 1), line(&e, 2)), ("A".into(), "".into(), "B".into()));
+    assert_eq!(
+        (line(&e, 0), line(&e, 1), line(&e, 2)),
+        ("A".into(), "".into(), "B".into())
+    );
     e.feed(b"\x1b[2;1H\x1b[1M");
-    assert_eq!((line(&e, 0), line(&e, 1), line(&e, 2), line(&e, 3)), ("A".into(), "B".into(), "C".into(), "".into()));
+    assert_eq!(
+        (line(&e, 0), line(&e, 1), line(&e, 2), line(&e, 3)),
+        ("A".into(), "B".into(), "C".into(), "".into())
+    );
 }
 
 #[test]
 fn cursor_reports_and_device_attributes_are_owed_back() {
     let mut e = emu(10, 5, "\x1b[3;5H\x1b[6n\x1b[5n\x1b[c");
-    assert_eq!(e.screen_mut().take_replies(), b"\x1b[3;5R\x1b[0n\x1b[?62;22c".to_vec());
+    assert_eq!(
+        e.screen_mut().take_replies(),
+        b"\x1b[3;5R\x1b[0n\x1b[?62;22c".to_vec()
+    );
     assert!(e.screen_mut().take_replies().is_empty());
 }
 

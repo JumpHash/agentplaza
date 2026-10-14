@@ -17,7 +17,7 @@ use std::io::{BufRead, BufReader};
 use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
 use std::process::Child;
-use std::sync::{mpsc, Arc};
+use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
 use super::stdio::{Docker, NETWORK, NO_DAEMON, NO_DOCKER};
@@ -51,15 +51,23 @@ fn musl_triple(arch: &str) -> &'static str {
 /// The architecture of the Docker engine the relay runs on: `x86_64` or `aarch64`. Docker Desktop's VM decides it
 /// on macOS and Windows, so it is asked, not assumed.
 pub fn docker_arch(docker: &dyn Docker) -> Result<&'static str, String> {
-    let args: Vec<String> = ["info", "--format", "{{.Architecture}}"].iter().map(|s| s.to_string()).collect();
+    let args: Vec<String> = ["info", "--format", "{{.Architecture}}"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
     let ran = docker.run(&args, &[]).map_err(|_| NO_DOCKER.to_string())?;
     if !ran.ok {
-        return Err(format!("docker info failed ({}); remote (http) servers still work", first_line(&ran.stderr)));
+        return Err(format!(
+            "docker info failed ({}); remote (http) servers still work",
+            first_line(&ran.stderr)
+        ));
     }
     match ran.stdout.trim() {
         "x86_64" | "amd64" => Ok("x86_64"),
         "aarch64" | "arm64" => Ok("aarch64"),
-        other => Err(format!("docker runs {other} containers, which the relay does not support; remote (http) servers still work")),
+        other => Err(format!(
+            "docker runs {other} containers, which the relay does not support; remote (http) servers still work"
+        )),
     }
 }
 
@@ -68,8 +76,15 @@ pub fn docker_arch(docker: &dyn Docker) -> Result<&'static str, String> {
 /// `mcp_relay`).
 pub fn find_source(arch: &str) -> PathBuf {
     let exe = std::env::current_exe().ok();
-    if let Some(target) = exe.as_ref().and_then(|e| e.parent()).and_then(|p| p.parent()) {
-        let dev = target.join(musl_triple(arch)).join("release").join("mcp_relay");
+    if let Some(target) = exe
+        .as_ref()
+        .and_then(|e| e.parent())
+        .and_then(|p| p.parent())
+    {
+        let dev = target
+            .join(musl_triple(arch))
+            .join("release")
+            .join("mcp_relay");
         if dev.is_file() {
             return dev;
         }
@@ -80,7 +95,11 @@ pub fn find_source(arch: &str) -> PathBuf {
     match exe.and_then(|e| e.parent().map(Path::to_path_buf)) {
         Some(dir) => {
             let named = dir.join(format!("mcp_relay-{arch}"));
-            if named.is_file() { named } else { dir.join("mcp_relay") }
+            if named.is_file() {
+                named
+            } else {
+                dir.join("mcp_relay")
+            }
         }
         None => PathBuf::from("mcp_relay"),
     }
@@ -108,7 +127,8 @@ pub fn install(source: &Path, state_dir: &Path) -> Result<PathBuf, String> {
 #[cfg(unix)]
 fn set_executable(path: &Path) -> Result<(), String> {
     use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).map_err(|e| format!("cannot make the relay binary executable: {e}"))
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
+        .map_err(|e| format!("cannot make the relay binary executable: {e}"))
 }
 
 #[cfg(not(unix))]
@@ -125,12 +145,26 @@ fn strings(parts: &[&str]) -> Vec<String> {
 }
 
 pub fn uplink_inspect_args() -> Vec<String> {
-    strings(&["network", "inspect", "-f", "{{.Internal}} {{range .IPAM.Config}}{{.Subnet}} {{.Gateway}}{{end}}", UPLINK])
+    strings(&[
+        "network",
+        "inspect",
+        "-f",
+        "{{.Internal}} {{range .IPAM.Config}}{{.Subnet}} {{.Gateway}}{{end}}",
+        UPLINK,
+    ])
 }
 
 pub fn uplink_create_args() -> Vec<String> {
     let gateway = UPLINK_GATEWAY.to_string();
-    let mut args = strings(&["network", "create", "--driver", "bridge", "--subnet", UPLINK_SUBNET, "--gateway"]);
+    let mut args = strings(&[
+        "network",
+        "create",
+        "--driver",
+        "bridge",
+        "--subnet",
+        UPLINK_SUBNET,
+        "--gateway",
+    ]);
     args.push(gateway);
     args.push(UPLINK.into());
     args
@@ -138,26 +172,39 @@ pub fn uplink_create_args() -> Vec<String> {
 
 /// Makes the uplink bridge if it is missing, and checks it is a normal bridge with its fixed subnet.
 pub fn ensure_uplink(docker: &dyn Docker) -> Result<(), String> {
-    let inspect = |docker: &dyn Docker| docker.run(&uplink_inspect_args(), &[]).map_err(|_| NO_DOCKER.to_string());
+    let inspect = |docker: &dyn Docker| {
+        docker
+            .run(&uplink_inspect_args(), &[])
+            .map_err(|_| NO_DOCKER.to_string())
+    };
     let mut ran = inspect(docker)?;
     if !ran.ok {
         if ran.stderr.contains("Cannot connect to the Docker daemon") {
             return Err(NO_DAEMON.to_string());
         }
-        let created = docker.run(&uplink_create_args(), &[]).map_err(|_| NO_DOCKER.to_string())?;
+        let created = docker
+            .run(&uplink_create_args(), &[])
+            .map_err(|_| NO_DOCKER.to_string())?;
         if !created.ok {
-            return Err(format!("the {UPLINK} network could not be created ({}); remote (http) servers still work", first_line(&created.stderr)));
+            return Err(format!(
+                "the {UPLINK} network could not be created ({}); remote (http) servers still work",
+                first_line(&created.stderr)
+            ));
         }
         ran = inspect(docker)?;
         if !ran.ok {
-            return Err(format!("the {UPLINK} network was created but cannot be found; remote (http) servers still work"));
+            return Err(format!(
+                "the {UPLINK} network was created but cannot be found; remote (http) servers still work"
+            ));
         }
     }
     let mut fields = ran.stdout.split_whitespace();
     let internal = fields.next() == Some("true");
     let subnet = fields.next();
     if internal {
-        return Err(format!("the {UPLINK} network is --internal, so the relay cannot reach the host; run `docker network rm {UPLINK}` and try again; remote (http) servers still work"));
+        return Err(format!(
+            "the {UPLINK} network is --internal, so the relay cannot reach the host; run `docker network rm {UPLINK}` and try again; remote (http) servers still work"
+        ));
     }
     if subnet != Some(UPLINK_SUBNET) {
         return Err(format!(
@@ -172,7 +219,16 @@ pub fn ensure_uplink(docker: &dyn Docker) -> Result<(), String> {
 /// read-only binary, the hardened flags of a stdio server, and the token by name only. `--pull never`: apid never
 /// pulls an image.
 pub fn create_args(binary: &Path, port: u16) -> Vec<String> {
-    let mut args = strings(&["create", "--name", RELAY, "--pull", "never", "--network", NETWORK, "--ip"]);
+    let mut args = strings(&[
+        "create",
+        "--name",
+        RELAY,
+        "--pull",
+        "never",
+        "--network",
+        NETWORK,
+        "--ip",
+    ]);
     args.push(RELAY_LAN_IP.to_string());
     args.push(format!("--add-host={HOST_NAME}:{HOST_GATEWAY}"));
     args.extend(strings(&[
@@ -238,30 +294,54 @@ impl Drop for RelayProcess {
 /// Starts the relay from the installed binary `binary`, with `token` in its environment, relaying to the host at
 /// `port`. Its networks must exist already. The relay is up when it has reported `ready`; a relay that does not
 /// report in time is removed and the start fails.
-pub fn start(docker: Arc<dyn Docker>, binary: &Path, token: &str, port: u16) -> Result<RelayProcess, String> {
+pub fn start(
+    docker: Arc<dyn Docker>,
+    binary: &Path,
+    token: &str,
+    port: u16,
+) -> Result<RelayProcess, String> {
     if !binary.is_file() {
-        return Err(format!("the relay binary {} is missing; remote (http) servers still work", binary.display()));
+        return Err(format!(
+            "the relay binary {} is missing; remote (http) servers still work",
+            binary.display()
+        ));
     }
     // A stale relay (stopped, or left by an apid that was killed) is removed before the new one is created.
     let _ = docker.run(&remove_args(), &[]);
-    let created = docker.run(&create_args(binary, port), &[(TOKEN_ENV, token)]).map_err(|_| NO_DOCKER.to_string())?;
+    let created = docker
+        .run(&create_args(binary, port), &[(TOKEN_ENV, token)])
+        .map_err(|_| NO_DOCKER.to_string())?;
     if !created.ok {
         if created.stderr.contains("No such image") {
             return Err(format!(
                 "the relay image {RELAY_IMAGE} is not on this machine; pull it yourself with `docker pull {RELAY_IMAGE}` (apid never pulls); remote (http) servers still work"
             ));
         }
-        return Err(format!("the relay container could not be created ({}); remote (http) servers still work", first_line(&created.stderr)));
+        return Err(format!(
+            "the relay container could not be created ({}); remote (http) servers still work",
+            first_line(&created.stderr)
+        ));
     }
-    let joined = docker.run(&connect_args(), &[]).map_err(|_| NO_DOCKER.to_string())?;
+    let joined = docker
+        .run(&connect_args(), &[])
+        .map_err(|_| NO_DOCKER.to_string())?;
     if !joined.ok {
         let _ = docker.run(&remove_args(), &[]);
-        return Err(format!("the relay could not join the {UPLINK} network ({}); remote (http) servers still work", first_line(&joined.stderr)));
+        return Err(format!(
+            "the relay could not join the {UPLINK} network ({}); remote (http) servers still work",
+            first_line(&joined.stderr)
+        ));
     }
-    let child = docker.start_attached(RELAY).map_err(|_| NO_DOCKER.to_string())?;
+    let child = docker
+        .start_attached(RELAY)
+        .map_err(|_| NO_DOCKER.to_string())?;
     // From here the handle owns the container: if the relay does not come up, dropping it removes the container.
     let mut process = RelayProcess { docker, child };
-    let mut stdout = process.child.stdout.take().ok_or("the relay has no output")?;
+    let mut stdout = process
+        .child
+        .stdout
+        .take()
+        .ok_or("the relay has no output")?;
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         let mut line = String::new();
@@ -285,7 +365,10 @@ mod tests {
 
     #[test]
     fn the_uplink_is_a_normal_bridge_with_its_fixed_subnet_and_gateway() {
-        assert_eq!(uplink_create_args().join(" "), "network create --driver bridge --subnet 172.29.251.0/24 --gateway 172.29.251.1 apz-mcp-uplink");
+        assert_eq!(
+            uplink_create_args().join(" "),
+            "network create --driver bridge --subnet 172.29.251.0/24 --gateway 172.29.251.1 apz-mcp-uplink"
+        );
         assert!(!uplink_create_args().iter().any(|a| a == "--internal"));
     }
 
@@ -294,20 +377,35 @@ mod tests {
         let args = create_args(Path::new("/state/mcp/mcp_relay"), 19128);
         let at = args.iter().position(|a| a == "--ip").unwrap();
         assert_eq!(args[at + 1], "172.29.250.2");
-        assert_eq!(connect_args().join(" "), "network connect apz-mcp-uplink apz-mcp-relay");
+        assert_eq!(
+            connect_args().join(" "),
+            "network connect apz-mcp-uplink apz-mcp-relay"
+        );
     }
 
     #[test]
     fn the_relay_can_reach_the_host_by_name_on_every_engine() {
         let args = create_args(Path::new("/state/mcp/mcp_relay"), 19128);
-        assert!(args.iter().any(|a| a == "--add-host=host.docker.internal:host-gateway"));
-        assert!(args.iter().any(|a| a == "APZ_RELAY_UPSTREAM=host.docker.internal:19128"));
+        assert!(
+            args.iter()
+                .any(|a| a == "--add-host=host.docker.internal:host-gateway")
+        );
+        assert!(
+            args.iter()
+                .any(|a| a == "APZ_RELAY_UPSTREAM=host.docker.internal:19128")
+        );
     }
 
     #[test]
     fn the_relay_runs_hardened_with_a_read_only_binary_and_never_pulls() {
         let joined = create_args(Path::new("/state/mcp/mcp_relay"), 19128).join(" ");
-        for flag in ["--read-only", "--cap-drop ALL", "--security-opt no-new-privileges", "--user 65534:65534", "--pull never"] {
+        for flag in [
+            "--read-only",
+            "--cap-drop ALL",
+            "--security-opt no-new-privileges",
+            "--user 65534:65534",
+            "--pull never",
+        ] {
             assert!(joined.contains(flag), "{flag} missing from {joined}");
         }
         assert!(joined.contains("-v /state/mcp/mcp_relay:/usr/local/bin/mcp_relay:ro"));
@@ -318,7 +416,11 @@ mod tests {
     fn the_token_is_named_in_argv_and_never_valued() {
         let args = create_args(Path::new("/state/mcp/mcp_relay"), 19128);
         assert!(args.windows(2).any(|w| w[0] == "-e" && w[1] == TOKEN_ENV));
-        assert!(!args.iter().any(|a| a.contains("secret") || a.contains("token=")));
+        assert!(
+            !args
+                .iter()
+                .any(|a| a.contains("secret") || a.contains("token="))
+        );
     }
 
     #[test]
@@ -340,21 +442,38 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            assert_eq!(std::fs::metadata(&installed).unwrap().permissions().mode() & 0o777, 0o755);
+            assert_eq!(
+                std::fs::metadata(&installed).unwrap().permissions().mode() & 0o777,
+                0o755
+            );
         }
-        assert!(install(&root.join("missing"), &root.join("state")).unwrap_err().contains("cargo build -p mcp-relay"));
+        assert!(
+            install(&root.join("missing"), &root.join("state"))
+                .unwrap_err()
+                .contains("cargo build -p mcp-relay")
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
     fn the_relay_follows_the_docker_architecture() {
-        use crate::mcp::stdio::tests::MockDocker;
         use crate::mcp::stdio::Ran;
+        use crate::mcp::stdio::tests::MockDocker;
         let answer = |out: &'static str| {
-            MockDocker::new(Default::default(), move |_: &[String]| Ok(Ran { ok: true, stdout: out.into(), stderr: String::new() }))
+            MockDocker::new(Default::default(), move |_: &[String]| {
+                Ok(Ran {
+                    ok: true,
+                    stdout: out.into(),
+                    stderr: String::new(),
+                })
+            })
         };
         assert_eq!(docker_arch(&answer("aarch64")).unwrap(), "aarch64");
         assert_eq!(docker_arch(&answer("x86_64")).unwrap(), "x86_64");
-        assert!(docker_arch(&answer("riscv64")).unwrap_err().contains("does not support"));
+        assert!(
+            docker_arch(&answer("riscv64"))
+                .unwrap_err()
+                .contains("does not support")
+        );
     }
 }

@@ -48,13 +48,19 @@ pub(crate) fn complete(
     {
         return result;
     }
-    let answer = ctx.http().json(&authorize(ctx, Req::post_json(url, &body))?)?;
+    let answer = ctx
+        .http()
+        .json(&authorize(ctx, Req::post_json(url, &body))?)?;
     decode(&answer, sink)
 }
 
 /// Whether this provider's calls use the WebSocket mode.
 fn websocket(ctx: &Ctx) -> bool {
-    ctx.p.options.get("websocket").and_then(Value::as_bool).unwrap_or(true)
+    ctx.p
+        .options
+        .get("websocket")
+        .and_then(Value::as_bool)
+        .unwrap_or(true)
 }
 
 /// Where a socket to this provider opens: the origin, the path of `/responses`
@@ -79,15 +85,24 @@ fn socket_route(ctx: &Ctx, root: &str) -> Result<Option<Route>, GatewayError> {
         None => (root, ""),
     };
     let bearer = ctx.credential()?;
-    let headers: Vec<(String, String)> =
-        ctx.p.extra_headers.iter().map(|(name, value)| (name.clone(), value.clone())).collect();
+    let headers: Vec<(String, String)> = ctx
+        .p
+        .extra_headers
+        .iter()
+        .map(|(name, value)| (name.clone(), value.clone()))
+        .collect();
     let mut identity = Sha256::new();
     identity.update(bearer.as_deref().unwrap_or_default());
     for (name, value) in &headers {
         identity.update(format!("\n{name}: {value}"));
     }
     Ok(Some(Route {
-        target: Target { base: origin.to_string(), bearer, headers, ..Target::default() },
+        target: Target {
+            base: origin.to_string(),
+            bearer,
+            headers,
+            ..Target::default()
+        },
         path: format!("{}/responses", path.trim_end_matches('/')),
         key: (origin.to_string(), identity.finalize().into()),
     }))
@@ -107,7 +122,9 @@ struct Slot {
 static POOL: OnceLock<Mutex<HashMap<PoolKey, Slot>>> = OnceLock::new();
 
 fn pool() -> MutexGuard<'static, HashMap<PoolKey, Slot>> {
-    POOL.get_or_init(|| Mutex::new(HashMap::new())).lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    POOL.get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 enum Lease {
@@ -147,17 +164,23 @@ fn give_back(key: &PoolKey, lent: Option<(Socket, Instant)>) {
 }
 
 /// One call over a pooled socket. `None`: this call goes over HTTP.
-fn over_socket(route: &Route, body: &Value, sink: &mut dyn FnMut(Delta)) -> Option<Result<ChatResponse, GatewayError>> {
+fn over_socket(
+    route: &Route,
+    body: &Value,
+    sink: &mut dyn FnMut(Delta),
+) -> Option<Result<ChatResponse, GatewayError>> {
     let (mut socket, opened) = match lease(&route.key) {
         Lease::Idle(socket, opened) => (socket, opened),
         Lease::Full => return None,
-        Lease::Fresh => match ws::connect(&route.target, &route.path, None, CONNECT_TIMEOUT, limits()) {
-            Ok(socket) => (socket, Instant::now()),
-            Err(_) => {
-                give_back(&route.key, None);
-                return None;
+        Lease::Fresh => {
+            match ws::connect(&route.target, &route.path, None, CONNECT_TIMEOUT, limits()) {
+                Ok(socket) => (socket, Instant::now()),
+                Err(_) => {
+                    give_back(&route.key, None);
+                    return None;
+                }
             }
-        },
+        }
     };
     match exchange(&mut socket, body, sink) {
         Exchange::Fallback => {
@@ -174,7 +197,11 @@ fn over_socket(route: &Route, body: &Value, sink: &mut dyn FnMut(Delta)) -> Opti
 }
 
 fn limits() -> Limits {
-    Limits { max_frame: 8 << 20, max_message: 8 << 20, ..Limits::default() }
+    Limits {
+        max_frame: 8 << 20,
+        max_message: 8 << 20,
+        ..Limits::default()
+    }
 }
 
 enum Exchange {
@@ -228,7 +255,10 @@ fn exchange(socket: &mut Socket, body: &Value, sink: &mut dyn FnMut(Delta)) -> E
         let Ok(event) = serde_json::from_str::<Value>(&raw) else {
             return broken(seen);
         };
-        if event.get("stream_id").is_some_and(|id| id.as_str() != Some(stream_id.as_str())) {
+        if event
+            .get("stream_id")
+            .is_some_and(|id| id.as_str() != Some(stream_id.as_str()))
+        {
             continue;
         }
         seen = true;
@@ -236,13 +266,17 @@ fn exchange(socket: &mut Socket, body: &Value, sink: &mut dyn FnMut(Delta)) -> E
             "response.output_text.delta" => {
                 if let Some(delta) = event["delta"].as_str() {
                     streamed_text = true;
-                    sink(Delta::Text { text: delta.to_string() });
+                    sink(Delta::Text {
+                        text: delta.to_string(),
+                    });
                 }
             }
             "response.reasoning_summary_text.delta" => {
                 if let Some(delta) = event["delta"].as_str() {
                     streamed_thinking = true;
-                    sink(Delta::Thinking { text: delta.to_string() });
+                    sink(Delta::Thinking {
+                        text: delta.to_string(),
+                    });
                 }
             }
             "response.completed" | "response.incomplete" => {
@@ -256,15 +290,23 @@ fn exchange(socket: &mut Socket, body: &Value, sink: &mut dyn FnMut(Delta)) -> E
                 return Exchange::Finished(decode(&event["response"], &mut rest));
             }
             "response.failed" => {
-                let message = event["response"]["error"]["message"].as_str().unwrap_or("the response failed");
-                return Exchange::Finished(Err(GatewayError::Provider { message: message.to_string(), retryable: false }));
+                let message = event["response"]["error"]["message"]
+                    .as_str()
+                    .unwrap_or("the response failed");
+                return Exchange::Finished(Err(GatewayError::Provider {
+                    message: message.to_string(),
+                    retryable: false,
+                }));
             }
             "error" => {
                 let message = event["error"]["message"]
                     .as_str()
                     .or_else(|| event["message"].as_str())
                     .unwrap_or("the stream reported an error");
-                return Exchange::Finished(Err(GatewayError::Provider { message: message.to_string(), retryable: false }));
+                return Exchange::Finished(Err(GatewayError::Provider {
+                    message: message.to_string(),
+                    retryable: false,
+                }));
             }
             _ => {}
         }
@@ -308,8 +350,17 @@ fn input(messages: &[Message]) -> Vec<Value> {
         match m.role {
             Role::User => {
                 for b in &m.content {
-                    if let Block::ToolResult { tool_use_id, content, is_error } = b {
-                        let output = if *is_error { format!("Error: {content}") } else { content.clone() };
+                    if let Block::ToolResult {
+                        tool_use_id,
+                        content,
+                        is_error,
+                    } = b
+                    {
+                        let output = if *is_error {
+                            format!("Error: {content}")
+                        } else {
+                            content.clone()
+                        };
                         items.push(json!({"type": "function_call_output", "call_id": tool_use_id, "output": output}));
                     }
                 }
@@ -317,7 +368,9 @@ fn input(messages: &[Message]) -> Vec<Value> {
                     .content
                     .iter()
                     .filter_map(|b| match b {
-                        Block::Text { text } if !text.is_empty() => Some(json!({"type": "input_text", "text": text})),
+                        Block::Text { text } if !text.is_empty() => {
+                            Some(json!({"type": "input_text", "text": text}))
+                        }
                         _ => None,
                     })
                     .collect();
@@ -332,7 +385,12 @@ fn input(messages: &[Message]) -> Vec<Value> {
                             "type": "message", "role": "assistant",
                             "content": [{"type": "output_text", "text": text}],
                         })),
-                        Block::ToolUse { id, name, input, meta } => {
+                        Block::ToolUse {
+                            id,
+                            name,
+                            input,
+                            meta,
+                        } => {
                             let mut call = json!({"type": "function_call", "call_id": id, "name": name, "arguments": input.to_string()});
                             if let Some(item_id) = own_meta(meta, TAG).and_then(|m| m.get("id")) {
                                 call["id"] = item_id.clone();
@@ -350,8 +408,14 @@ fn input(messages: &[Message]) -> Vec<Value> {
 
 fn decode(v: &Value, sink: &mut dyn FnMut(Delta)) -> Result<ChatResponse, GatewayError> {
     if v["status"] == "failed" {
-        let message = v["error"]["message"].as_str().unwrap_or("the response failed").to_string();
-        return Err(GatewayError::Provider { message, retryable: false });
+        let message = v["error"]["message"]
+            .as_str()
+            .unwrap_or("the response failed")
+            .to_string();
+        return Err(GatewayError::Provider {
+            message,
+            retryable: false,
+        });
     }
     let mut content = Vec::new();
     let mut refused = false;
@@ -368,8 +432,12 @@ fn decode(v: &Value, sink: &mut dyn FnMut(Delta)) -> Result<ChatResponse, Gatewa
                         _ => None,
                     };
                     if let Some(text) = text.filter(|t| !t.is_empty()) {
-                        sink(Delta::Text { text: text.to_string() });
-                        content.push(Block::Text { text: text.to_string() });
+                        sink(Delta::Text {
+                            text: text.to_string(),
+                        });
+                        content.push(Block::Text {
+                            text: text.to_string(),
+                        });
                     }
                 }
             }
@@ -377,42 +445,70 @@ fn decode(v: &Value, sink: &mut dyn FnMut(Delta)) -> Result<ChatResponse, Gatewa
                 let name = item["name"].as_str().unwrap_or("").to_string();
                 sink(Delta::ToolUse { name: name.clone() });
                 let (input, invalid) = parse_tool_input(item["arguments"].as_str().unwrap_or(""));
-                let meta = invalid.or_else(|| item.get("id").map(|id| json!({"kind": TAG, "id": id})));
+                let meta =
+                    invalid.or_else(|| item.get("id").map(|id| json!({"kind": TAG, "id": id})));
                 let id = item["call_id"].as_str().unwrap_or("").to_string();
-                content.push(Block::ToolUse { id, name, input, meta });
+                content.push(Block::ToolUse {
+                    id,
+                    name,
+                    input,
+                    meta,
+                });
             }
             kind => {
                 if kind == "reasoning" {
-                    let summary: Vec<&str> =
-                        item["summary"].as_array().into_iter().flatten().filter_map(|s| s["text"].as_str()).collect();
+                    let summary: Vec<&str> = item["summary"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|s| s["text"].as_str())
+                        .collect();
                     if !summary.is_empty() {
                         let text = summary.join("\n\n");
                         sink(Delta::Thinking { text: text.clone() });
                         content.push(Block::Thinking { text });
                     }
                 }
-                content.push(Block::Opaque { kind: TAG.into(), raw: item.clone() });
+                content.push(Block::Opaque {
+                    kind: TAG.into(),
+                    raw: item.clone(),
+                });
             }
         }
     }
     let u = &v["usage"];
-    let cached = u["input_tokens_details"]["cached_tokens"].as_u64().unwrap_or(0);
+    let cached = u["input_tokens_details"]["cached_tokens"]
+        .as_u64()
+        .unwrap_or(0);
     let usage = Usage {
-        input_tokens: u["input_tokens"].as_u64().unwrap_or(0).saturating_sub(cached),
+        input_tokens: u["input_tokens"]
+            .as_u64()
+            .unwrap_or(0)
+            .saturating_sub(cached),
         output_tokens: u["output_tokens"].as_u64().unwrap_or(0),
         cache_read_tokens: cached,
         cache_write_tokens: 0,
     };
     let has_calls = content.iter().any(|b| matches!(b, Block::ToolUse { .. }));
-    let stop = match (v["status"].as_str(), v["incomplete_details"]["reason"].as_str()) {
+    let stop = match (
+        v["status"].as_str(),
+        v["incomplete_details"]["reason"].as_str(),
+    ) {
         _ if refused => StopReason::Refusal,
         (Some("incomplete"), Some("max_output_tokens")) => StopReason::MaxTokens,
         (Some("incomplete"), Some("content_filter")) => StopReason::Refusal,
-        (Some("incomplete"), reason) => StopReason::Other(reason.unwrap_or("incomplete").to_string()),
+        (Some("incomplete"), reason) => {
+            StopReason::Other(reason.unwrap_or("incomplete").to_string())
+        }
         _ if has_calls => StopReason::ToolUse,
         _ => StopReason::EndTurn,
     };
-    Ok(ChatResponse { model: v["model"].as_str().unwrap_or("").to_string(), content, stop, usage })
+    Ok(ChatResponse {
+        model: v["model"].as_str().unwrap_or("").to_string(),
+        content,
+        stop,
+        usage,
+    })
 }
 
 #[cfg(test)]
@@ -438,45 +534,89 @@ mod tests {
             ],
             "usage": {"input_tokens": 50, "output_tokens": 9, "input_tokens_details": {"cached_tokens": 10}},
         });
-        let server = FakeServer::start(vec![Reply::json(200, &answer), Reply::json(200, &json!({"status": "completed", "output": []}))]);
-        let mut p = provider("r", ProviderKind::OpenAiResponses, &server, Auth::Env("OPENAI_API_KEY".into()));
+        let server = FakeServer::start(vec![
+            Reply::json(200, &answer),
+            Reply::json(200, &json!({"status": "completed", "output": []})),
+        ]);
+        let mut p = provider(
+            "r",
+            ProviderKind::OpenAiResponses,
+            &server,
+            Auth::Env("OPENAI_API_KEY".into()),
+        );
         p.options = json!({"websocket": false});
         let gw = gateway(vec![p]);
         let mut req = ChatRequest {
             model: "r/gpt-5.6-terra@max".into(),
             system: Some("sys".into()),
-            tools: vec![ToolSpec { name: "bash".into(), description: "d".into(), input_schema: json!({"type": "object"}) }],
+            tools: vec![ToolSpec {
+                name: "bash".into(),
+                description: "d".into(),
+                input_schema: json!({"type": "object"}),
+            }],
             effort: Some("low".into()),
             ..request("hi")
         };
         let mut deltas = Vec::new();
         let resp = gw.complete(&req, &mut |d| deltas.push(d)).unwrap();
         assert_eq!(resp.stop, StopReason::ToolUse);
-        assert_eq!(resp.usage, Usage { input_tokens: 40, output_tokens: 9, cache_read_tokens: 10, cache_write_tokens: 0 });
-        assert_eq!(deltas[0], Delta::Thinking { text: "plan".into() });
-        assert!(deltas.contains(&Delta::Text { text: "Listing.".into() }));
+        assert_eq!(
+            resp.usage,
+            Usage {
+                input_tokens: 40,
+                output_tokens: 9,
+                cache_read_tokens: 10,
+                cache_write_tokens: 0
+            }
+        );
+        assert_eq!(
+            deltas[0],
+            Delta::Thinking {
+                text: "plan".into()
+            }
+        );
+        assert!(deltas.contains(&Delta::Text {
+            text: "Listing.".into()
+        }));
 
         let b = server.requests()[0].json();
-        assert_eq!((b["instructions"].clone(), b["store"].clone()), (json!("sys"), json!(false)));
+        assert_eq!(
+            (b["instructions"].clone(), b["store"].clone()),
+            (json!("sys"), json!(false))
+        );
         assert_eq!(b["include"], json!(["reasoning.encrypted_content"]));
         assert_eq!(b["model"], "gpt-5.6-terra");
-        assert_eq!(b["reasoning"], json!({"effort": "max"}), "the pinned effort wins");
-        assert_eq!(b["tools"][0], json!({"type": "function", "name": "bash", "description": "d", "parameters": {"type": "object"}}));
+        assert_eq!(
+            b["reasoning"],
+            json!({"effort": "max"}),
+            "the pinned effort wins"
+        );
+        assert_eq!(
+            b["tools"][0],
+            json!({"type": "function", "name": "bash", "description": "d", "parameters": {"type": "object"}})
+        );
 
         // Second turn: the reasoning item is replayed verbatim, the call keeps its ids.
         req.messages.push(Message::assistant(resp.content));
         req.messages.push(Message {
             role: Role::User,
-            content: vec![Block::ToolResult { tool_use_id: "call_1".into(), content: "a.txt".into(), is_error: false }],
+            content: vec![Block::ToolResult {
+                tool_use_id: "call_1".into(),
+                content: "a.txt".into(),
+                is_error: false,
+            }],
         });
         gw.complete(&req, &mut |_| {}).unwrap();
-        assert_eq!(server.requests()[1].json()["input"], json!([
-            {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]},
-            {"type": "reasoning", "id": "rs_1", "summary": [{"type": "summary_text", "text": "plan"}], "encrypted_content": "ENC"},
-            {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Listing."}]},
-            {"type": "function_call", "call_id": "call_1", "name": "bash", "arguments": "{\"command\":\"ls\"}", "id": "fc_1"},
-            {"type": "function_call_output", "call_id": "call_1", "output": "a.txt"},
-        ]));
+        assert_eq!(
+            server.requests()[1].json()["input"],
+            json!([
+                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]},
+                {"type": "reasoning", "id": "rs_1", "summary": [{"type": "summary_text", "text": "plan"}], "encrypted_content": "ENC"},
+                {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Listing."}]},
+                {"type": "function_call", "call_id": "call_1", "name": "bash", "arguments": "{\"command\":\"ls\"}", "id": "fc_1"},
+                {"type": "function_call_output", "call_id": "call_1", "output": "a.txt"},
+            ])
+        );
     }
 
     /// The events of one call, echoing its `stream_id`: a reasoning summary, two
@@ -502,36 +642,52 @@ mod tests {
     /// Port 0, `/v1/responses`: a WebSocket that answers every `response.create`
     /// with [`events`] (or closes at once, when `close_at_once`), and a POST
     /// answered with `answer`. Counts the sockets opened and the POSTs.
-    fn server(answer: Value, close_at_once: bool, accepts: Arc<AtomicUsize>, posts: Arc<AtomicUsize>) -> Handle {
-        Server::bind(0).expect("bind").spawn(move |request: &Request| {
-            if request.path != "/v1/responses" {
-                return Response::error(404, "no such path");
-            }
-            if request.method == "GET" {
-                accepts.fetch_add(1, Ordering::SeqCst);
-                return ws::accept(request, Origins::None, None, ws::Limits::default(), move |mut socket: Socket| {
-                    if close_at_once {
-                        socket.close(1001, "going away");
-                        return;
-                    }
-                    loop {
-                        match socket.recv(Duration::from_secs(5)) {
-                            Ok(Some(ws::Message::Text(raw))) => {
-                                let create: Value = serde_json::from_str(&raw).expect("JSON");
-                                for event in events(&create["stream_id"]) {
-                                    socket.send(&ws::Message::Text(event.to_string())).expect("send");
+    fn server(
+        answer: Value,
+        close_at_once: bool,
+        accepts: Arc<AtomicUsize>,
+        posts: Arc<AtomicUsize>,
+    ) -> Handle {
+        Server::bind(0)
+            .expect("bind")
+            .spawn(move |request: &Request| {
+                if request.path != "/v1/responses" {
+                    return Response::error(404, "no such path");
+                }
+                if request.method == "GET" {
+                    accepts.fetch_add(1, Ordering::SeqCst);
+                    return ws::accept(
+                        request,
+                        Origins::None,
+                        None,
+                        ws::Limits::default(),
+                        move |mut socket: Socket| {
+                            if close_at_once {
+                                socket.close(1001, "going away");
+                                return;
+                            }
+                            loop {
+                                match socket.recv(Duration::from_secs(5)) {
+                                    Ok(Some(ws::Message::Text(raw))) => {
+                                        let create: Value =
+                                            serde_json::from_str(&raw).expect("JSON");
+                                        for event in events(&create["stream_id"]) {
+                                            socket
+                                                .send(&ws::Message::Text(event.to_string()))
+                                                .expect("send");
+                                        }
+                                    }
+                                    Ok(_) => {}
+                                    Err(_) => return,
                                 }
                             }
-                            Ok(_) => {}
-                            Err(_) => return,
-                        }
-                    }
-                });
-            }
-            posts.fetch_add(1, Ordering::SeqCst);
-            Response::json(200, &answer)
-        })
-        .expect("spawn")
+                        },
+                    );
+                }
+                posts.fetch_add(1, Ordering::SeqCst);
+                Response::json(200, &answer)
+            })
+            .expect("spawn")
     }
 
     fn at(port: u16) -> ProviderConfig {
@@ -543,7 +699,10 @@ mod tests {
     }
 
     fn call(gw: &crate::Gateway, deltas: &mut Vec<Delta>) -> ChatResponse {
-        let req = ChatRequest { model: "r/gpt-5.6-terra".into(), ..request("hi") };
+        let req = ChatRequest {
+            model: "r/gpt-5.6-terra".into(),
+            ..request("hi")
+        };
         gw.complete(&req, &mut |d| deltas.push(d)).unwrap()
     }
 
@@ -554,14 +713,32 @@ mod tests {
         let gw = gateway(vec![at(server.port())]);
         let mut deltas = Vec::new();
         let resp = call(&gw, &mut deltas);
-        assert_eq!(deltas, vec![
-            Delta::Thinking { text: "plan".into() },
-            Delta::Text { text: "Hel".into() },
-            Delta::Text { text: "lo".into() },
-        ], "streamed in order, the completed object adds nothing already sent");
-        assert!(resp.content.contains(&Block::Text { text: "Hello".into() }));
-        assert_eq!((resp.model.as_str(), resp.stop.clone(), resp.usage.output_tokens), ("r/gpt-5-2025", StopReason::EndTurn, 2));
-        assert_eq!((accepts.load(Ordering::SeqCst), posts.load(Ordering::SeqCst)), (1, 0));
+        assert_eq!(
+            deltas,
+            vec![
+                Delta::Thinking {
+                    text: "plan".into()
+                },
+                Delta::Text { text: "Hel".into() },
+                Delta::Text { text: "lo".into() },
+            ],
+            "streamed in order, the completed object adds nothing already sent"
+        );
+        assert!(resp.content.contains(&Block::Text {
+            text: "Hello".into()
+        }));
+        assert_eq!(
+            (
+                resp.model.as_str(),
+                resp.stop.clone(),
+                resp.usage.output_tokens
+            ),
+            ("r/gpt-5-2025", StopReason::EndTurn, 2)
+        );
+        assert_eq!(
+            (accepts.load(Ordering::SeqCst), posts.load(Ordering::SeqCst)),
+            (1, 0)
+        );
     }
 
     #[test]
@@ -571,9 +748,15 @@ mod tests {
         let gw = gateway(vec![at(server.port())]);
         for _ in 0..2 {
             let mut deltas = Vec::new();
-            assert!(call(&gw, &mut deltas).content.contains(&Block::Text { text: "Hello".into() }));
+            assert!(call(&gw, &mut deltas).content.contains(&Block::Text {
+                text: "Hello".into()
+            }));
         }
-        assert_eq!(accepts.load(Ordering::SeqCst), 1, "both calls rode one socket");
+        assert_eq!(
+            accepts.load(Ordering::SeqCst),
+            1,
+            "both calls rode one socket"
+        );
         assert_eq!(posts.load(Ordering::SeqCst), 0);
     }
 
@@ -589,8 +772,18 @@ mod tests {
         let gw = gateway(vec![at(server.port())]);
         let mut deltas = Vec::new();
         let resp = call(&gw, &mut deltas);
-        assert_eq!(deltas, vec![Delta::Text { text: "over http".into() }]);
-        assert!(resp.content.contains(&Block::Text { text: "over http".into() }));
-        assert_eq!((accepts.load(Ordering::SeqCst), posts.load(Ordering::SeqCst)), (1, 1));
+        assert_eq!(
+            deltas,
+            vec![Delta::Text {
+                text: "over http".into()
+            }]
+        );
+        assert!(resp.content.contains(&Block::Text {
+            text: "over http".into()
+        }));
+        assert_eq!(
+            (accepts.load(Ordering::SeqCst), posts.load(Ordering::SeqCst)),
+            (1, 1)
+        );
     }
 }

@@ -177,7 +177,11 @@ impl PartialEq for Value {
 }
 impl Eq for Value {}
 
-fn join<T>(f: &mut fmt::Formatter<'_>, it: impl Iterator<Item = T>, each: impl Fn(&mut fmt::Formatter<'_>, T) -> fmt::Result) -> fmt::Result {
+fn join<T>(
+    f: &mut fmt::Formatter<'_>,
+    it: impl Iterator<Item = T>,
+    each: impl Fn(&mut fmt::Formatter<'_>, T) -> fmt::Result,
+) -> fmt::Result {
     for (i, x) in it.enumerate() {
         if i > 0 {
             write!(f, ", ")?;
@@ -245,6 +249,9 @@ mod tests {
     #[test]
     fn display_carries_units() {
         assert_eq!(Value::Num(Num::int(3), Dim::CREDITS).to_string(), "3 cr");
-        assert_eq!(Value::list(vec![Value::str("owner")]).to_string(), "[\"owner\"]");
+        assert_eq!(
+            Value::list(vec![Value::str("owner")]).to_string(),
+            "[\"owner\"]"
+        );
     }
 }

@@ -202,4 +202,3 @@ impl Sdt for Fadt {
         Ok(())
     }
 }
-

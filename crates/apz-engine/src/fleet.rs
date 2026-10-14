@@ -202,7 +202,9 @@ pub fn ring_layout(radii: &[f32], hub_radius: f32) -> (f32, Vec<f32>) {
     let spans: Vec<f32> = radii.iter().map(|r| 2.0 * r + RING_GAP).collect();
     let total: f32 = spans.iter().sum();
     let biggest = radii.iter().copied().fold(0.0_f32, f32::max);
-    let mut radius = RING_MIN_RADIUS.max(total / TAU).max(hub_radius + biggest + RING_GAP);
+    let mut radius = RING_MIN_RADIUS
+        .max(total / TAU)
+        .max(hub_radius + biggest + RING_GAP);
     for i in 0..spans.len() {
         let j = (i + 1) % spans.len();
         if j == i {
@@ -232,7 +234,11 @@ pub fn ring_point(radius: f32, angle: f32) -> [f32; 3] {
 /// hub at the origin, for a machine at (x, z).
 pub fn facing_angle(x: f32, z: f32, port: [f32; 3]) -> f32 {
     let to_hub = (-x).atan2(-z);
-    let local = if port[0].hypot(port[2]) < 1e-6 { 0.0 } else { port[0].atan2(port[2]) };
+    let local = if port[0].hypot(port[2]) < 1e-6 {
+        0.0
+    } else {
+        port[0].atan2(port[2])
+    };
     to_hub - local
 }
 
@@ -467,7 +473,10 @@ fn layout_of(fleet: &FleetResponse) -> Layout {
                 model: m.model.clone(),
                 apple: m.apple.clone(),
                 gpus: m.gpus.len(),
-                station: m.station.as_ref().map(|s| (s.os.clone(), s.form.clone(), screen_state(m))),
+                station: m
+                    .station
+                    .as_ref()
+                    .map(|s| (s.os.clone(), s.form.clone(), screen_state(m))),
             })
             .collect(),
         pairs: fleet
@@ -645,7 +654,11 @@ fn build_link(group: &Obj, a: &str, b: &str, points: Vec<[f32; 3]>) -> LinkScene
             continue;
         }
         let mid = (p0 + p1) * 0.5;
-        let m = Mat4::from_scale_rotation_translation(Vec3::new(1.0, len, 1.0), Quat::from_rotation_arc(Vec3::Y, d / len), mid);
+        let m = Mat4::from_scale_rotation_translation(
+            Vec3::new(1.0, len, 1.0),
+            Quat::from_rotation_arc(Vec3::Y, d / len),
+            mid,
+        );
         parts.push((Arc::clone(&segment), m));
     }
     if !parts.is_empty() {
@@ -653,7 +666,12 @@ fn build_link(group: &Obj, a: &str, b: &str, points: Vec<[f32; 3]>) -> LinkScene
         seg.set_dynamic(true); // its cable's colour follows the link every frame
         group.add(&seg);
     }
-    LinkScene { a: a.to_string(), b: b.to_string(), cable, points }
+    LinkScene {
+        a: a.to_string(),
+        b: b.to_string(),
+        cable,
+        points,
+    }
 }
 
 /// One cable packet slot's instance data (`PacketIn` in fleet_anim.wgsl): the cable's ends, then
@@ -701,7 +719,13 @@ pub fn live_slots(rate: f32) -> usize {
 }
 
 /// One direction of a cable: `PACKET_SLOTS` slots, the first `live` alive, their phases spread evenly.
-fn direction_slots(from: [f32; 3], to: [f32; 3], live: usize, reversed: bool, color: [f32; 4]) -> Vec<PacketInstance> {
+fn direction_slots(
+    from: [f32; 3],
+    to: [f32; 3],
+    live: usize,
+    reversed: bool,
+    color: [f32; 4],
+) -> Vec<PacketInstance> {
     (0..PACKET_SLOTS)
         .map(|j| {
             let alive = j < live;
@@ -728,8 +752,18 @@ pub(crate) fn rgba(c: Color) -> [f32; 4] {
 
 /// Whether the cable between `a` and `b` is up, and its packet rate each way (packets a second).
 fn link_state(fleet: &FleetResponse, a: &str, b: &str) -> (bool, f32) {
-    let online = fleet.links.iter().find(|l| l.a == a && l.b == b).is_some_and(|l| l.online);
-    let working = |id: &str| fleet.machines.iter().find(|m| m.id == id).map_or(0, |m| m.working);
+    let online = fleet
+        .links
+        .iter()
+        .find(|l| l.a == a && l.b == b)
+        .is_some_and(|l| l.online);
+    let working = |id: &str| {
+        fleet
+            .machines
+            .iter()
+            .find(|m| m.id == id)
+            .map_or(0, |m| m.working)
+    };
     (online, packet_rate(online, working(a), working(b)))
 }
 
@@ -761,7 +795,10 @@ pub fn packet_at_shader(from: [f32; 3], to: [f32; 3], params: [f32; 4], time: f3
     let f = at.clamp(0.0, 1.0) * segments;
     let i = f.floor().min(segments - 1.0);
     let w = f - i;
-    let (a, b) = (cable_sample_shader(from, to, i), cable_sample_shader(from, to, i + 1.0));
+    let (a, b) = (
+        cable_sample_shader(from, to, i),
+        cable_sample_shader(from, to, i + 1.0),
+    );
     [0, 1, 2].map(|k| a[k] + (b[k] - a[k]) * w)
 }
 
@@ -786,8 +823,16 @@ impl FleetScene {
         // fleet.ts: the machines by id (numeric runs by value); the hub is the first with the hub role, else the first.
         let mut ordered: Vec<&Machine> = fleet.machines.iter().collect();
         ordered.sort_by(|a, b| by_id(&a.id, &b.id));
-        let hub = ordered.iter().find(|m| m.role == "hub").or_else(|| ordered.first()).copied();
-        let nodes: Vec<&Machine> = ordered.iter().filter(|m| hub.is_none_or(|h| h.id != m.id)).copied().collect();
+        let hub = ordered
+            .iter()
+            .find(|m| m.role == "hub")
+            .or_else(|| ordered.first())
+            .copied();
+        let nodes: Vec<&Machine> = ordered
+            .iter()
+            .filter(|m| hub.is_none_or(|h| h.id != m.id))
+            .copied()
+            .collect();
 
         let hub_prepared = hub.and_then(|h| prepare(h).map(|p| (h, p)));
         let node_prepared: Vec<(&Machine, (&'static hardware::Model, Built))> = nodes
@@ -798,7 +843,9 @@ impl FleetScene {
             .iter()
             .map(|(_, (model, _))| bounding_radius(model.size))
             .collect();
-        let hub_radius = hub_prepared.as_ref().map_or(0.0, |(_, (model, _))| bounding_radius(model.size));
+        let hub_radius = hub_prepared
+            .as_ref()
+            .map_or(0.0, |(_, (model, _))| bounding_radius(model.size));
         let (radius, angles) = ring_layout(&radii, hub_radius);
 
         if let Some((h, (model, mut built))) = hub_prepared {
@@ -819,7 +866,10 @@ impl FleetScene {
         for ((m, (model, mut built)), angle) in node_prepared.into_iter().zip(angles) {
             let base = ring_point(radius, angle);
             // fleet.ts portOf: the model's port anchor, else its centre at half its height.
-            let port = model.anchors.port.unwrap_or([0.0, model.size[1] / 2.0, 0.0]);
+            let port = model
+                .anchors
+                .port
+                .unwrap_or([0.0, model.size[1] / 2.0, 0.0]);
             let turn = facing_angle(base[0], base[2], port);
             if self.machines.len() < MACHINE_SLOTS {
                 built.set_machine(self.machines.len());
@@ -906,7 +956,11 @@ impl FleetScene {
                 node.lift = 0.0;
             }
             node.root.set_lift_y(node.lift);
-            let y = if walked { node.base[1] + node.lift } else { node.base[1] };
+            let y = if walked {
+                node.base[1] + node.lift
+            } else {
+                node.base[1]
+            };
             node.root.set_position(node.base[0], y, node.base[2]);
             if let Some(atom) = &node.atom {
                 atom.set_visible(online);
@@ -926,7 +980,12 @@ impl FleetScene {
     /// The animated draws' instance data for the scene as `fleet` describes it: each cable's slots both
     /// ways (`live_slots` of them alive), then each machine's status ring. Rebuilt when this changes.
     pub fn instances(&self, fleet: &FleetResponse) -> FleetInstances {
-        let mut out = FleetInstances { machine_angles: vec![0.0; MACHINE_SLOTS], machine_states: vec![[0.0; 4]; MACHINE_SLOTS], machine_statuses: vec![[0.0; 4]; MACHINE_SLOTS], ..Default::default() };
+        let mut out = FleetInstances {
+            machine_angles: vec![0.0; MACHINE_SLOTS],
+            machine_states: vec![[0.0; 4]; MACHINE_SLOTS],
+            machine_statuses: vec![[0.0; 4]; MACHINE_SLOTS],
+            ..Default::default()
+        };
         for link in &self.links {
             let (online, rate) = link_state(fleet, &link.a, &link.b);
             let live = if online { live_slots(rate) } else { 0 };
@@ -934,8 +993,20 @@ impl FleetScene {
                 continue;
             };
             // The forward flow runs from the node's port to the hub's; the backward one runs back.
-            out.packets.extend(direction_slots(from, to, live, false, rgba(named("copper-live"))));
-            out.packets.extend(direction_slots(from, to, live, true, rgba(named("led-info"))));
+            out.packets.extend(direction_slots(
+                from,
+                to,
+                live,
+                false,
+                rgba(named("copper-live")),
+            ));
+            out.packets.extend(direction_slots(
+                from,
+                to,
+                live,
+                true,
+                rgba(named("led-info")),
+            ));
         }
         for (id, m) in &self.machines {
             if let Some(i) = m.built.machine().filter(|&i| i < MACHINE_SLOTS) {
@@ -961,7 +1032,11 @@ impl FleetScene {
     /// (its ring pulses, fans, LEDs and atom run on the clock), Rest for an empty fleet.
     pub fn motion(&self) -> crate::stage::Motion {
         let lifting = self.machines.iter().any(|(id, m)| {
-            let target = if self.hovered.as_deref() == Some(id.as_str()) { HOVER_LIFT } else { 0.0 };
+            let target = if self.hovered.as_deref() == Some(id.as_str()) {
+                HOVER_LIFT
+            } else {
+                0.0
+            };
             (m.lift - target).abs() > 1e-4
         });
         if lifting {
@@ -1010,7 +1085,11 @@ impl FleetScene {
     /// Per frame: each machine's detail parts show by the camera's eye (see `Built::frame_detail`). `top` is the scene the
     /// fleet sits under: the machines' roots are measured there. True when a part switched.
     pub fn frame_detail(&mut self, eye: Vec3, top: &Obj) -> bool {
-        let roots: Vec<Obj> = self.machines.values().map(|m| m.built.root.clone()).collect();
+        let roots: Vec<Obj> = self
+            .machines
+            .values()
+            .map(|m| m.built.root.clone())
+            .collect();
         let worlds = top.world_matrices_of(&roots);
         let mut changed = false;
         for (m, world) in self.machines.values_mut().zip(worlds) {
@@ -1086,15 +1165,29 @@ mod tests {
     const FLEET_DRAW_ITEMS: usize = 222;
 
     fn fleet_draw_items() -> (usize, usize) {
-        let fleet: FleetResponse = serde_json::from_str(include_str!("../testdata/floor-15.json")).expect("the fixture parses");
+        let fleet: FleetResponse = serde_json::from_str(include_str!("../testdata/floor-15.json"))
+            .expect("the fixture parses");
         let scene = build_fleet(&fleet, &plaza_palette());
         let statics = crate::scene::bake(&scene.group).len();
         let rigs = crate::scene::rigs(&scene.group, glam::Mat4::IDENTITY);
         let dynamic = crate::scene::flatten_rigs_instanced(&rigs).0.len();
-        let animated: usize = scene.machines.values().map(|m| m.built.animated_parts()).sum();
-        eprintln!("fleet breakdown: {} cables, {} machines, {} animated hardware nodes", scene.links.len(), scene.machines.len(), animated);
+        let animated: usize = scene
+            .machines
+            .values()
+            .map(|m| m.built.animated_parts())
+            .sum();
+        eprintln!(
+            "fleet breakdown: {} cables, {} machines, {} animated hardware nodes",
+            scene.links.len(),
+            scene.machines.len(),
+            animated
+        );
         let gpu = crate::scene::bake_split(&scene.group, true);
-        eprintln!("fleet with GPU_HW_ANIM: {} static draws + {} animation batches (the animated nodes leave the per-frame draws)", gpu.statics.len(), gpu.animated.len());
+        eprintln!(
+            "fleet with GPU_HW_ANIM: {} static draws + {} animation batches (the animated nodes leave the per-frame draws)",
+            gpu.statics.len(),
+            gpu.animated.len()
+        );
         (statics, dynamic)
     }
 
@@ -1102,14 +1195,20 @@ mod tests {
     /// baked vertices that carry the slot, and its rigs follow the root's `lift_y`.
     #[test]
     fn a_hover_lift_is_a_uniform_not_a_rebake() {
-        let fleet: FleetResponse = serde_json::from_str(include_str!("../testdata/floor-15.json")).expect("the fixture parses");
+        let fleet: FleetResponse = serde_json::from_str(include_str!("../testdata/floor-15.json"))
+            .expect("the fixture parses");
         let mut scene = build_fleet(&fleet, &plaza_palette());
         let id = fleet.machines[0].id.clone();
-        let slot = scene.machines[&id].built.machine().expect("the machine has a slot");
+        let slot = scene.machines[&id]
+            .built
+            .machine()
+            .expect("the machine has a slot");
         let rest = scene.machines[&id].root.position();
         let baked = crate::scene::bake(&scene.group);
         assert!(
-            baked.iter().any(|d| d.geo.lifts.contains(&(slot as u8 + 1))),
+            baked
+                .iter()
+                .any(|d| d.geo.lifts.contains(&(slot as u8 + 1))),
             "no baked vertex carries the machine's lift slot"
         );
         scene.hover(Some(id.as_str()));
@@ -1117,10 +1216,21 @@ mod tests {
             scene.update(1.0 / 60.0, 0.0, 0.0, &fleet);
         }
         let lift = scene.instances(&fleet).machine_states[slot][2];
-        assert!(lift > 0.5 * HOVER_LIFT, "the lift {lift} did not reach the machine's row");
+        assert!(
+            lift > 0.5 * HOVER_LIFT,
+            "the lift {lift} did not reach the machine's row"
+        );
         let node = &scene.machines[&id];
-        assert_eq!(node.root.position(), rest, "the baked root moved (a re-bake would be needed)");
-        assert_eq!(node.root.get().lift_y, lift, "the rigs do not follow the lift");
+        assert_eq!(
+            node.root.position(),
+            rest,
+            "the baked root moved (a re-bake would be needed)"
+        );
+        assert_eq!(
+            node.root.get().lift_y,
+            lift,
+            "the rigs do not follow the lift"
+        );
     }
 
     /// A workstation takes its model from its OS family and form, and its screen from its state; a node keeps its
@@ -1134,40 +1244,86 @@ mod tests {
             kind: "workstation".into(),
             status: status.into(),
             os: os.into(),
-            station: Some(Station { os: os.into(), form: form.into(), leases: active, active }),
+            station: Some(Station {
+                os: os.into(),
+                form: form.into(),
+                leases: active,
+                active,
+            }),
             ..Machine::default()
         };
-        let (mini, params) = model_and_params(&station("macos", "mini", "online", 0)).expect("a model");
-        assert!(std::ptr::eq(mini, hardware::model("workstation/mac-mini").unwrap()));
+        let (mini, params) =
+            model_and_params(&station("macos", "mini", "online", 0)).expect("a model");
+        assert!(std::ptr::eq(
+            mini,
+            hardware::model("workstation/mac-mini").unwrap()
+        ));
         assert_eq!(params.values.get("screen_state"), Some(&1.0));
-        let (tower, params) = model_and_params(&station("linux", "desktop", "online", 2)).expect("a model");
-        assert!(std::ptr::eq(tower, hardware::model("workstation/linux-tower").unwrap()));
+        let (tower, params) =
+            model_and_params(&station("linux", "desktop", "online", 2)).expect("a model");
+        assert!(std::ptr::eq(
+            tower,
+            hardware::model("workstation/linux-tower").unwrap()
+        ));
         assert_eq!(params.values.get("screen_state"), Some(&2.0));
-        let (_, params) = model_and_params(&station("windows", "vm", "offline", 0)).expect("a model");
+        let (_, params) =
+            model_and_params(&station("windows", "vm", "offline", 0)).expect("a model");
         assert_eq!(params.values.get("screen_state"), Some(&0.0));
         assert_eq!(screen_state(&station("linux", "vm", "draining", 0)), 1);
 
-        let node = Machine { id: "n1".into(), kind: "server".into(), status: "online".into(), ..Machine::default() };
+        let node = Machine {
+            id: "n1".into(),
+            kind: "server".into(),
+            status: "online".into(),
+            ..Machine::default()
+        };
         let (server, params) = model_and_params(&node).expect("a model");
-        assert!(std::ptr::eq(server, hardware::model("exterior/server").unwrap()));
+        assert!(std::ptr::eq(
+            server,
+            hardware::model("exterior/server").unwrap()
+        ));
         assert!(!params.values.contains_key("screen_state"));
 
-        let layout = |active: u32| layout_of(&FleetResponse { machines: vec![station("macos", "mini", "online", active)], links: vec![] });
-        assert_ne!(layout(0), layout(1), "an idle screen lights up: the scene is rebuilt");
-        assert_eq!(layout(1), layout(2), "a second active lease keeps the lit screen");
+        let layout = |active: u32| {
+            layout_of(&FleetResponse {
+                machines: vec![station("macos", "mini", "online", active)],
+                links: vec![],
+            })
+        };
+        assert_ne!(
+            layout(0),
+            layout(1),
+            "an idle screen lights up: the scene is rebuilt"
+        );
+        assert_eq!(
+            layout(1),
+            layout(2),
+            "a second active lease keeps the lit screen"
+        );
     }
 
     #[test]
     fn the_fifteen_machine_fleet_draws_do_not_grow() {
         let (statics, dynamic) = fleet_draw_items();
-        eprintln!("fleet draws: {statics} static + {dynamic} dynamic = {}", statics + dynamic);
-        assert!(statics + dynamic <= FLEET_DRAW_ITEMS, "the fleet draws {} items, over the measured {FLEET_DRAW_ITEMS}", statics + dynamic);
+        eprintln!(
+            "fleet draws: {statics} static + {dynamic} dynamic = {}",
+            statics + dynamic
+        );
+        assert!(
+            statics + dynamic <= FLEET_DRAW_ITEMS,
+            "the fleet draws {} items, over the measured {FLEET_DRAW_ITEMS}",
+            statics + dynamic
+        );
     }
 
     #[test]
     fn the_fifteen_machine_fleet_draws_within_budget() {
         let (statics, dynamic) = fleet_draw_items();
-        assert!(statics + dynamic <= 300, "the Machines view draws {} items, over the 300 budget", statics + dynamic);
+        assert!(
+            statics + dynamic <= 300,
+            "the Machines view draws {} items, over the 300 budget",
+            statics + dynamic
+        );
     }
 
     #[test]
@@ -1181,7 +1337,10 @@ mod tests {
             assert!(close(*got, want), "{got} != {want}");
         }
         // fleet.ts places a slot at x = r cos, z = r sin.
-        assert!(close3(ring_point(radius, angles[0]), [11.32624, 0.0, 8.22899]));
+        assert!(close3(
+            ring_point(radius, angles[0]),
+            [11.32624, 0.0, 8.22899]
+        ));
         assert!(close3(ring_point(radius, angles[2]), [-14.0, 0.0, 0.0]));
         let (p0, p1) = (ring_point(radius, angles[0]), ring_point(radius, angles[1]));
         assert!(Vec3::from(p0).distance(Vec3::from(p1)) >= 10.0);
@@ -1209,7 +1368,10 @@ mod tests {
         // A port on the model's +z side, at +x of the hub: turned so +z points at -x.
         let turn = facing_angle(10.0, 0.0, [0.0, 1.0, 1.0]);
         let (s, c) = turn.sin_cos();
-        assert!(close(s * 0.0 + c * 0.0, 0.0) && close(s, -1.0), "turn {turn}");
+        assert!(
+            close(s * 0.0 + c * 0.0, 0.0) && close(s, -1.0),
+            "turn {turn}"
+        );
         let mut ids = vec!["n10", "n2", "n1", "N3", "hub"];
         ids.sort_by(|a, b| by_id(a, b));
         assert_eq!(ids, ["hub", "n1", "n2", "N3", "n10"]);
@@ -1254,14 +1416,20 @@ mod tests {
         // A cable that sags into the ground, so the clamp takes part; one slot each way.
         let (from, to) = ([10.0, 0.5, 0.0], [0.0, 0.5, 0.0]);
         let points = cable_points(from, to);
-        for (params, reversed) in [([0.2, 1.0, 1.0, PACKET_RADIUS], false), ([0.6, -1.0, 1.0, PACKET_RADIUS], true)] {
+        for (params, reversed) in [
+            ([0.2, 1.0, 1.0, PACKET_RADIUS], false),
+            ([0.6, -1.0, 1.0, PACKET_RADIUS], true),
+        ] {
             for t in [0.0f32, 0.7, 1.3, 2.2, 3.9] {
                 let x = params[0] + t * PACKET_SPEED;
                 let p = x - x.floor();
                 let at = if reversed { 1.0 - p } else { p };
                 let cpu = point_on(&points, at);
                 let gpu = packet_at_shader(from, to, params, t);
-                assert!(close3(cpu, gpu), "t = {t}, reversed = {reversed}: the CPU packet is at {cpu:?}, the shader's at {gpu:?}");
+                assert!(
+                    close3(cpu, gpu),
+                    "t = {t}, reversed = {reversed}: the CPU packet is at {cpu:?}, the shader's at {gpu:?}"
+                );
             }
         }
     }
@@ -1274,13 +1442,22 @@ mod tests {
         assert_eq!(live_slots(1.5), 4);
         // The CPU pulse at 0.7 s, 1 + 0.5 sin(TAU t / PULSE_PERIOD), is the shader's wave at that time.
         let cpu = 1.0 + 0.5 * (TAU * 0.7 / PULSE_PERIOD).sin();
-        assert!(close(ring_intensity_shader([1.0 / PULSE_PERIOD, 0.0, 1.0, 0.2], 0.7), cpu));
-        assert!(close(ring_intensity_shader([1.0 / PULSE_PERIOD, 0.0, 0.0, 0.2], 0.7), 0.2));
+        assert!(close(
+            ring_intensity_shader([1.0 / PULSE_PERIOD, 0.0, 1.0, 0.2], 0.7),
+            cpu
+        ));
+        assert!(close(
+            ring_intensity_shader([1.0 / PULSE_PERIOD, 0.0, 0.0, 0.2], 0.7),
+            0.2
+        ));
         let fleet: FleetResponse = serde_json::from_str(FIXTURE).unwrap();
         let scene = build_fleet(&fleet, &plaza_palette());
         let instances = scene.instances(&fleet);
         assert_eq!(instances.rings.len(), 3);
-        assert_eq!(instances.packets.len(), 2 * PACKET_SLOTS * scene.links.len());
+        assert_eq!(
+            instances.packets.len(),
+            2 * PACKET_SLOTS * scene.links.len()
+        );
     }
 
     #[test]

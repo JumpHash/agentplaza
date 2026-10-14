@@ -74,7 +74,11 @@ impl<'a, 'b> RequestDescriptorChain<'a, 'b> {
         Self {
             driver_queue,
             header: Desc::new(HEADER_ADDR, VIRTQ_DESC_F_NEXT, DATA_DESC),
-            data: Desc::new(DATA_ADDR, VIRTQ_DESC_F_NEXT | VIRTQ_DESC_F_WRITE, STATUS_DESC),
+            data: Desc::new(
+                DATA_ADDR,
+                VIRTQ_DESC_F_NEXT | VIRTQ_DESC_F_WRITE,
+                STATUS_DESC,
+            ),
             status: Desc::new(STATUS_ADDR, VIRTQ_DESC_F_WRITE, 0),
         }
     }

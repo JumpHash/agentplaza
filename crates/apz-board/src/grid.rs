@@ -55,7 +55,16 @@ pub const NAV_FINE: f64 = 0.05;
 const EPS: f64 = 1e-9;
 
 /// The eight neighbour steps (di, dj), in the order the planner uses them (nav-plan.ts rule 4).
-pub const DIRS8: [(i64, i64); 8] = [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (-1, 1), (1, -1), (-1, -1)];
+pub const DIRS8: [(i64, i64); 8] = [
+    (1, 0),
+    (-1, 0),
+    (0, 1),
+    (0, -1),
+    (1, 1),
+    (-1, 1),
+    (1, -1),
+    (-1, -1),
+];
 /// The index in DIRS8 of the opposite step.
 const OPP: [usize; 8] = [1, 0, 3, 2, 7, 6, 5, 4];
 
@@ -222,7 +231,11 @@ pub fn build(set: &WalkSet) -> Grid {
 fn build_with(set: &WalkSet, indexed: bool) -> Grid {
     let surfaces = &set.surfaces;
     let shapes: Vec<Shape> = surfaces.iter().map(|s| Shape::new(&s.poly)).collect();
-    let by_id: BTreeMap<u32, usize> = surfaces.iter().enumerate().map(|(k, s)| (s.id, k)).collect();
+    let by_id: BTreeMap<u32, usize> = surfaces
+        .iter()
+        .enumerate()
+        .map(|(k, s)| (s.id, k))
+        .collect();
     let (x0, z0, cols, rows) = bounds(&shapes);
     let n = cols * rows;
     let index = ShapeIndex::new(&shapes, x0, z0, cols, rows);
@@ -257,15 +270,27 @@ fn build_with(set: &WalkSet, indexed: bool) -> Grid {
     let support: Vec<Option<(usize, f64)>> = (0..n)
         .map(|c| {
             let [cx, cz] = centre_of(x0, z0, cols, c);
-            let cands = if indexed { index.candidates(c, cols) } else { &every[..] };
+            let cands = if indexed {
+                index.candidates(c, cols)
+            } else {
+                &every[..]
+            };
             let top = highest(&shapes, surfaces, cands, cx, cz)?;
             let ys = surfaces[top].height.at(cx, cz);
             let h = 0.5 * NAV_CELL;
-            let corners = [[cx - h, cz - h], [cx + h, cz - h], [cx - h, cz + h], [cx + h, cz + h]];
+            let corners = [
+                [cx - h, cz - h],
+                [cx + h, cz - h],
+                [cx - h, cz + h],
+                [cx + h, cz + h],
+            ];
             supports(top, &corners, ys, &shapes, surfaces, &joins).then_some((top, ys))
         })
         .collect();
-    let sup: Vec<i32> = support.iter().map(|s| s.map_or(-1, |(t, _)| t as i32)).collect();
+    let sup: Vec<i32> = support
+        .iter()
+        .map(|s| s.map_or(-1, |(t, _)| t as i32))
+        .collect();
 
     // Blocked: the cells whose closed square touches a Walled side.
     let mut blocked = vec![0u8; n];
@@ -288,8 +313,10 @@ fn build_with(set: &WalkSet, indexed: bool) -> Grid {
             dist2(centre_of(x0, z0, cols, p), at).total_cmp(&dist2(centre_of(x0, z0, cols, q), at))
         })
     };
-    let lift_ends: Vec<Option<(usize, usize)>> =
-        lifts.iter().map(|&(_, a, b, at)| Some((nearest(a, at)?, nearest(b, at)?))).collect();
+    let lift_ends: Vec<Option<(usize, usize)>> = lifts
+        .iter()
+        .map(|&(_, a, b, at)| Some((nearest(a, at)?, nearest(b, at)?)))
+        .collect();
 
     // Exempt: the cell at each link's join point and its 8-neighbours, and the lift landing cells and their neighbours.
     let mut exempt = vec![false; n];
@@ -306,17 +333,29 @@ fn build_with(set: &WalkSet, indexed: bool) -> Grid {
     // Inflation (nav-grid.ts rule 9) and the walk flag.
     let touches_blocked = |c: usize| -> bool {
         let (i, j) = ((c % cols) as i64, (c / cols) as i64);
-        DIRS8.iter().any(|&(di, dj)| match index_at(i + di, j + dj, cols, rows) {
-            Some(d) => blocked[d] == 1,
-            None => true,
-        })
+        DIRS8
+            .iter()
+            .any(|&(di, dj)| match index_at(i + di, j + dj, cols, rows) {
+                Some(d) => blocked[d] == 1,
+                None => true,
+            })
     };
     let inflated: Vec<u8> = (0..n)
         .map(|c| u8::from(sup[c] >= 0 && blocked[c] == 0 && !exempt[c] && touches_blocked(c)))
         .collect();
-    let walk: Vec<u8> = (0..n).map(|c| u8::from(sup[c] >= 0 && blocked[c] == 0 && inflated[c] == 0)).collect();
-    let surface: Vec<i32> = (0..n).map(|c| if walk[c] == 1 { sup[c] } else { -1 }).collect();
-    let y: Vec<f64> = (0..n).map(|c| support[c].filter(|_| walk[c] == 1).map_or(0.0, |(_, ys)| ys)).collect();
+    let walk: Vec<u8> = (0..n)
+        .map(|c| u8::from(sup[c] >= 0 && blocked[c] == 0 && inflated[c] == 0))
+        .collect();
+    let surface: Vec<i32> = (0..n)
+        .map(|c| if walk[c] == 1 { sup[c] } else { -1 })
+        .collect();
+    let y: Vec<f64> = (0..n)
+        .map(|c| {
+            support[c]
+                .filter(|_| walk[c] == 1)
+                .map_or(0.0, |(_, ys)| ys)
+        })
+        .collect();
 
     // Costs (nav-grid.ts rule 10): the distance to the nearest blocked cell, from the 3x3 and 5x5 marks.
     let mut near1 = vec![false; n];
@@ -326,7 +365,13 @@ fn build_with(set: &WalkSet, indexed: bool) -> Grid {
         mark_block(&mut near2, cols, rows, c, 2);
     }
     let cost: Vec<f64> = (0..n)
-        .map(|c| if near2[c] && !near1[c] { NAV_COST_OPEN + NAV_NEAR_COST } else { NAV_COST_OPEN })
+        .map(|c| {
+            if near2[c] && !near1[c] {
+                NAV_COST_OPEN + NAV_NEAR_COST
+            } else {
+                NAV_COST_OPEN
+            }
+        })
         .collect();
 
     // Portals (rule 11): one per lift whose two landings are both walk cells (a supported, unblocked, walk landing cell
@@ -338,7 +383,13 @@ fn build_with(set: &WalkSet, indexed: bool) -> Grid {
         .filter_map(|(&(li, _, _, _), ends)| {
             let (a, b) = (*ends)?;
             let landed = walk[a] == 1 && walk[b] == 1;
-            landed.then(|| Portal { a, b, kind: LinkKind::Lift, cost: NAV_LIFT_COST + (y[b] - y[a]).abs(), link: li })
+            landed.then(|| Portal {
+                a,
+                b,
+                kind: LinkKind::Lift,
+                cost: NAV_LIFT_COST + (y[b] - y[a]).abs(),
+                link: li,
+            })
         })
         .collect();
     let mut portal = vec![-1i32; n];
@@ -366,8 +417,10 @@ fn build_with(set: &WalkSet, indexed: bool) -> Grid {
                     continue;
                 }
                 if di != 0 && dj != 0 {
-                    let (Some(h), Some(v)) = (index_at(i + di, j, cols, rows), index_at(i, j + dj, cols, rows))
-                    else {
+                    let (Some(h), Some(v)) = (
+                        index_at(i + di, j, cols, rows),
+                        index_at(i, j + dj, cols, rows),
+                    ) else {
                         continue;
                     };
                     if walk[h] != 1 || walk[v] != 1 {
@@ -403,7 +456,9 @@ fn build_with(set: &WalkSet, indexed: bool) -> Grid {
                 let Some(d) = step(c, k, cols, rows) else {
                     continue;
                 };
-                if walk[d] == 1 && surface[c] != surface[d] && seams.contains(&(surface[c] as usize, surface[d] as usize))
+                if walk[d] == 1
+                    && surface[c] != surface[d]
+                    && seams.contains(&(surface[c] as usize, surface[d] as usize))
                 {
                     mask |= 1 << k;
                 }
@@ -464,7 +519,9 @@ fn build_with(set: &WalkSet, indexed: bool) -> Grid {
             if m & (1 << k) == 0 {
                 continue;
             }
-            if let Some(d) = step(c, k, cols, rows).filter(|&d| moves[d] & (1 << opp) == 0 && component[d] == main) {
+            if let Some(d) = step(c, k, cols, rows)
+                .filter(|&d| moves[d] & (1 << opp) == 0 && component[d] == main)
+            {
                 drops.push(Drop { from: c, to: d });
             }
         }
@@ -520,7 +577,13 @@ impl<'a> Shape<'a> {
                 (a, ex, ez, (ex * ex + ez * ez).sqrt())
             })
             .collect();
-        Shape { poly, sign: if area < 0.0 { -1.0 } else { 1.0 }, min, max, seg }
+        Shape {
+            poly,
+            sign: if area < 0.0 { -1.0 } else { 1.0 },
+            min,
+            max,
+            seg,
+        }
     }
 
     fn contains(&self, x: f64, z: f64) -> bool {
@@ -532,13 +595,17 @@ impl<'a> Shape<'a> {
         {
             return false;
         }
-        self.seg.iter().all(|&(a, ex, ez, len)| len == 0.0 || self.sign * (ex * (z - a[1]) - ez * (x - a[0])) / len >= -EPS)
+        self.seg.iter().all(|&(a, ex, ez, len)| {
+            len == 0.0 || self.sign * (ex * (z - a[1]) - ez * (x - a[0])) / len >= -EPS
+        })
     }
 }
 
 /// The edges (a, b) of a polygon, in order: side i runs from poly[i] to poly[(i + 1) % n].
 fn edges(poly: &[[f64; 2]]) -> impl Iterator<Item = ([f64; 2], [f64; 2])> + '_ {
-    poly.iter().copied().zip(poly.iter().copied().cycle().skip(1))
+    poly.iter()
+        .copied()
+        .zip(poly.iter().copied().cycle().skip(1))
 }
 
 /// The grid bounds: the surfaces' box, padded by one cell on the low side. Returns (x0, z0, cols, rows); empty for no
@@ -572,7 +639,10 @@ struct ShapeIndex {
 impl ShapeIndex {
     fn new(shapes: &[Shape], x0: f64, z0: f64, cols: usize, rows: usize) -> ShapeIndex {
         if cols == 0 || rows == 0 {
-            return ShapeIndex { bcols: 0, buckets: Vec::new() };
+            return ShapeIndex {
+                bcols: 0,
+                buckets: Vec::new(),
+            };
         }
         let bcols = cols.div_ceil(BUCKET);
         let brows = rows.div_ceil(BUCKET);
@@ -584,7 +654,11 @@ impl ShapeIndex {
             let last = count as i64 - 1;
             (a.clamp(0, last) as usize, b.clamp(0, last) as usize)
         };
-        for (s, sh) in shapes.iter().enumerate().filter(|(_, sh)| sh.poly.len() >= 3) {
+        for (s, sh) in shapes
+            .iter()
+            .enumerate()
+            .filter(|(_, sh)| sh.poly.len() >= 3)
+        {
             let (i0, i1) = span(sh.min[0] - EPS, sh.max[0] + EPS, x0, cols);
             let (j0, j1) = span(sh.min[1] - EPS, sh.max[1] + EPS, z0, rows);
             for bj in j0 / BUCKET..=j1 / BUCKET {
@@ -604,7 +678,13 @@ impl ShapeIndex {
 }
 
 /// The highest surface whose polygon contains (x, z) among `cands` (ascending shape indices; ties go to the lowest index).
-fn highest(shapes: &[Shape], surfaces: &[WalkSurface], cands: &[usize], x: f64, z: f64) -> Option<usize> {
+fn highest(
+    shapes: &[Shape],
+    surfaces: &[WalkSurface],
+    cands: &[usize],
+    x: f64,
+    z: f64,
+) -> Option<usize> {
     let mut best: Option<(usize, f64)> = None;
     for &s in cands {
         let sh = &shapes[s];
@@ -633,7 +713,8 @@ fn supports(
     corners.iter().all(|p| {
         shapes[top].contains(p[0], p[1])
             || joins.range((top, 0)..=(top, usize::MAX)).any(|&(_, t)| {
-                shapes[t].contains(p[0], p[1]) && (surfaces[t].height.at(p[0], p[1]) - ys).abs() <= NAV_STEP
+                shapes[t].contains(p[0], p[1])
+                    && (surfaces[t].height.at(p[0], p[1]) - ys).abs() <= NAV_STEP
             })
     })
 }
@@ -673,7 +754,15 @@ fn segment_touches(a: [f64; 2], b: [f64; 2], lo: [f64; 2], hi: [f64; 2]) -> bool
 }
 
 /// Marks the blocked cells whose closed square touches the segment a-b.
-fn mark_touched(blocked: &mut [u8], x0: f64, z0: f64, cols: usize, rows: usize, a: [f64; 2], b: [f64; 2]) {
+fn mark_touched(
+    blocked: &mut [u8],
+    x0: f64,
+    z0: f64,
+    cols: usize,
+    rows: usize,
+    a: [f64; 2],
+    b: [f64; 2],
+) {
     let i0 = (((a[0].min(b[0]) - x0) / NAV_CELL).floor() as i64 - 1).max(0);
     let i1 = (((a[0].max(b[0]) - x0) / NAV_CELL).floor() as i64 + 1).min(cols as i64 - 1);
     let j0 = (((a[1].min(b[1]) - z0) / NAV_CELL).floor() as i64 - 1).max(0);
@@ -752,7 +841,14 @@ fn fine_field(shapes: &[Shape], x0: f64, z0: f64, cols: usize, rows: usize) -> F
             }
         }
     }
-    FineField { cols: fcols, rows: frows, x0, z0, start, items }
+    FineField {
+        cols: fcols,
+        rows: frows,
+        x0,
+        z0,
+        start,
+        items,
+    }
 }
 
 /// The cell containing (x, z) on a grid with these bounds, or None outside it.
@@ -777,7 +873,10 @@ fn index_at(i: i64, j: i64, cols: usize, rows: usize) -> Option<usize> {
 /// The centre of cell `c`.
 fn centre_of(x0: f64, z0: f64, cols: usize, c: usize) -> [f64; 2] {
     let (i, j) = (c % cols, c / cols);
-    [x0 + (i as f64 + 0.5) * NAV_CELL, z0 + (j as f64 + 0.5) * NAV_CELL]
+    [
+        x0 + (i as f64 + 0.5) * NAV_CELL,
+        z0 + (j as f64 + 0.5) * NAV_CELL,
+    ]
 }
 
 /// The neighbour of cell `c` in direction k (DIRS8), or None off the grid.
@@ -817,7 +916,14 @@ mod tests {
     }
 
     fn surf(id: u32, poly: Vec<[f64; 2]>, height: Plane, sides: Vec<Side>) -> WalkSurface {
-        WalkSurface { id, kind: SurfaceKind::Plate, poly, height, owner: format!("s{id}"), sides }
+        WalkSurface {
+            id,
+            kind: SurfaceKind::Plate,
+            poly,
+            height,
+            owner: format!("s{id}"),
+            sides,
+        }
     }
 
     /// The reference build: every cell tested against every shape (test only).
@@ -847,7 +953,12 @@ mod tests {
     #[test]
     fn flat_square_is_walkable_and_connected() {
         let set = WalkSet {
-            surfaces: vec![surf(0, rect(0.0, 0.0, 2.0, 2.0), Plane::flat(0.0), vec![Side::Open; 4])],
+            surfaces: vec![surf(
+                0,
+                rect(0.0, 0.0, 2.0, 2.0),
+                Plane::flat(0.0),
+                vec![Side::Open; 4],
+            )],
             links: vec![],
         };
         let g = build(&set);
@@ -862,8 +973,18 @@ mod tests {
     fn island_without_link_is_its_own_component() {
         let set = WalkSet {
             surfaces: vec![
-                surf(0, rect(0.0, 0.0, 2.0, 2.0), Plane::flat(0.0), vec![Side::Open; 4]),
-                surf(1, rect(5.0, 0.0, 7.0, 2.0), Plane::flat(0.0), vec![Side::Open; 4]),
+                surf(
+                    0,
+                    rect(0.0, 0.0, 2.0, 2.0),
+                    Plane::flat(0.0),
+                    vec![Side::Open; 4],
+                ),
+                surf(
+                    1,
+                    rect(5.0, 0.0, 7.0, 2.0),
+                    Plane::flat(0.0),
+                    vec![Side::Open; 4],
+                ),
             ],
             links: vec![],
         };
@@ -881,7 +1002,10 @@ mod tests {
         // is two cells from a blocked cell (the near cost).
         let mut sides = vec![Side::Open; 4];
         sides[0] = Side::Walled;
-        let set = WalkSet { surfaces: vec![surf(0, rect(0.0, 0.0, 2.0, 2.0), Plane::flat(0.0), sides)], links: vec![] };
+        let set = WalkSet {
+            surfaces: vec![surf(0, rect(0.0, 0.0, 2.0, 2.0), Plane::flat(0.0), sides)],
+            links: vec![],
+        };
         let g = build(&set);
         let wall = g.cell_at(1.0, 0.1).unwrap();
         assert_eq!(g.blocked[wall], 1);
@@ -896,10 +1020,30 @@ mod tests {
     fn build_twice_is_equal() {
         let set = WalkSet {
             surfaces: vec![
-                surf(0, rect(0.0, 0.0, 2.0, 2.0), Plane::flat(0.3), vec![Side::Open; 4]),
-                surf(1, rect(2.0, 0.0, 4.0, 2.0), Plane { c: 0.2, dx: 0.1, dz: 0.0 }, vec![Side::Open; 4]),
+                surf(
+                    0,
+                    rect(0.0, 0.0, 2.0, 2.0),
+                    Plane::flat(0.3),
+                    vec![Side::Open; 4],
+                ),
+                surf(
+                    1,
+                    rect(2.0, 0.0, 4.0, 2.0),
+                    Plane {
+                        c: 0.2,
+                        dx: 0.1,
+                        dz: 0.0,
+                    },
+                    vec![Side::Open; 4],
+                ),
             ],
-            links: vec![WalkLink { from: 0, to: 1, kind: LinkKind::Step, via: None, at: [2.0, 1.0] }],
+            links: vec![WalkLink {
+                from: 0,
+                to: 1,
+                kind: LinkKind::Step,
+                via: None,
+                at: [2.0, 1.0],
+            }],
         };
         assert_eq!(build(&set), build(&set));
     }
@@ -916,7 +1060,13 @@ mod tests {
                 surf(0, rect(0.0, 0.0, 2.0, 2.0), Plane::flat(0.0), open()),
                 surf(1, top, Plane::flat(2.0), top_sides),
             ],
-            links: vec![WalkLink { from: 0, to: 1, kind: LinkKind::Lift, via: None, at: [2.0, 1.0] }],
+            links: vec![WalkLink {
+                from: 0,
+                to: 1,
+                kind: LinkKind::Lift,
+                via: None,
+                at: [2.0, 1.0],
+            }],
         }
     }
 
@@ -955,15 +1105,37 @@ mod tests {
     fn fine_height_matches_plane() {
         let set = WalkSet {
             surfaces: vec![
-                surf(0, rect(0.0, 0.0, 2.0, 2.0), Plane::flat(0.3), vec![Side::Open; 4]),
-                surf(1, rect(2.0, 0.0, 4.0, 2.0), Plane { c: 0.2, dx: 0.1, dz: 0.0 }, vec![Side::Open; 4]),
+                surf(
+                    0,
+                    rect(0.0, 0.0, 2.0, 2.0),
+                    Plane::flat(0.3),
+                    vec![Side::Open; 4],
+                ),
+                surf(
+                    1,
+                    rect(2.0, 0.0, 4.0, 2.0),
+                    Plane {
+                        c: 0.2,
+                        dx: 0.1,
+                        dz: 0.0,
+                    },
+                    vec![Side::Open; 4],
+                ),
             ],
             links: vec![],
         };
         let g = build(&set);
-        for [x, z] in [[0.37, 1.23], [1.0, 1.0], [2.5, 0.7], [3.99, 1.99], [0.0, 0.0]] {
+        for [x, z] in [
+            [0.37, 1.23],
+            [1.0, 1.0],
+            [2.5, 0.7],
+            [3.99, 1.99],
+            [0.0, 0.0],
+        ] {
             let want = if x < 2.0 { 0.3 } else { 0.2 + 0.1 * x };
-            let got = g.height_at(x, z).expect("a walk surface lies under the point");
+            let got = g
+                .height_at(x, z)
+                .expect("a walk surface lies under the point");
             assert!((got - want).abs() < 1e-9, "at ({x}, {z}): {got} vs {want}");
         }
         assert_eq!(g.height_at(-1.0, 0.0), None);

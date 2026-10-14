@@ -111,7 +111,11 @@ pub fn backend_for(request: &CreateVm, node_has_qemu: bool) -> Result<&'static s
         "auto" => needs_qemu,
         "plaza" => return Ok("plaza"),
         "qemu" => true,
-        other => return Err(format!("backend must be auto, plaza or qemu, not {other:?}")),
+        other => {
+            return Err(format!(
+                "backend must be auto, plaza or qemu, not {other:?}"
+            ));
+        }
     };
     if !want_qemu {
         return Ok("plaza");
@@ -867,7 +871,10 @@ mod tests {
         assert_eq!(backend_for(&request("windows"), true), Ok("qemu"));
         // A Windows guest on a node with no QEMU is refused with the install hint, not sent to plaza to fail there.
         let err = backend_for(&request("windows"), false).unwrap_err();
-        assert_eq!(err, "this node has no QEMU/OVMF; install qemu and edk2-ovmf");
+        assert_eq!(
+            err,
+            "this node has no QEMU/OVMF; install qemu and edk2-ovmf"
+        );
         assert!(backend_for(&vfio, false).unwrap_err().contains("no QEMU"));
     }
 
@@ -875,7 +882,11 @@ mod tests {
     fn an_explicit_backend_is_honored_and_checked() {
         let mut plaza = request("windows");
         plaza.backend = Some("plaza".into());
-        assert_eq!(backend_for(&plaza, true), Ok("plaza"), "noded refuses it with the cause");
+        assert_eq!(
+            backend_for(&plaza, true),
+            Ok("plaza"),
+            "noded refuses it with the cause"
+        );
 
         let mut qemu = request("linux");
         qemu.backend = Some("qemu".into());
@@ -884,7 +895,11 @@ mod tests {
 
         let mut bogus = request("linux");
         bogus.backend = Some("hyperv".into());
-        assert!(backend_for(&bogus, true).unwrap_err().contains("backend must be"));
+        assert!(
+            backend_for(&bogus, true)
+                .unwrap_err()
+                .contains("backend must be")
+        );
 
         let mut mac = request("macos");
         mac.backend = Some("qemu".into());

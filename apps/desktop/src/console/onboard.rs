@@ -8,20 +8,22 @@ use std::sync::OnceLock;
 
 use iced::futures::channel::mpsc;
 use iced::futures::{SinkExt, StreamExt};
-use iced::widget::{column, container, row, Space};
+use iced::widget::{Space, column, container, row};
 use iced::{Alignment, Border, Color, Element, Length, Task, Theme};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::screens::{Id, NAV};
 use super::setup::{self, Check, Need};
 use super::ui::{self, Kind, Tone};
-use super::{boot, client, Ctx};
+use super::{Ctx, boot, client};
 
 const COPY_JSON: &str = include_str!("../../../shared/onboarding.json");
 
 fn copy() -> &'static Value {
     static COPY: OnceLock<Value> = OnceLock::new();
-    COPY.get_or_init(|| serde_json::from_str(COPY_JSON).expect("apps/shared/onboarding.json is valid JSON"))
+    COPY.get_or_init(|| {
+        serde_json::from_str(COPY_JSON).expect("apps/shared/onboarding.json is valid JSON")
+    })
 }
 
 /// A copy string by its dotted path (`wizard.next`, `wizard.steps.3.title`); empty when the path is missing.
@@ -50,26 +52,41 @@ fn field<'v>(value: &'v Value, key: &str) -> &'v str {
 }
 
 fn wizard_steps() -> &'static [Value] {
-    copy()["wizard"]["steps"].as_array().map(Vec::as_slice).unwrap_or(&[])
+    copy()["wizard"]["steps"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
 }
 
 /// The index of a wizard step by its id (`checks`, `deps`, …); 0 when there is no such step.
 pub fn step_index(id: &str) -> usize {
-    wizard_steps().iter().position(|step| field(step, "id") == id).unwrap_or(0)
+    wizard_steps()
+        .iter()
+        .position(|step| field(step, "id") == id)
+        .unwrap_or(0)
 }
 
 fn tour_steps() -> &'static [Value] {
-    copy()["tour"]["steps"].as_array().map(Vec::as_slice).unwrap_or(&[])
+    copy()["tour"]["steps"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
 }
 
 /// Fills `{name}` placeholders of a copy string.
 pub fn fill(template: &str, values: &[(&str, String)]) -> String {
-    values.iter().fold(template.to_string(), |text, (name, value)| text.replace(&format!("{{{name}}}"), value))
+    values
+        .iter()
+        .fold(template.to_string(), |text, (name, value)| {
+            text.replace(&format!("{{{name}}}"), value)
+        })
 }
 
 /// The screen a tour step points at (its key is the screen's label in lower case).
 fn screen_id(key: &str) -> Option<Id> {
-    NAV.iter().find(|(_, label, ..)| label.eq_ignore_ascii_case(key)).map(|(id, ..)| id.clone())
+    NAV.iter()
+        .find(|(_, label, ..)| label.eq_ignore_ascii_case(key))
+        .map(|(id, ..)| id.clone())
 }
 
 // The sidebar's geometry (shell.rs): the brand block, a section heading, a screen's entry, and the
@@ -99,10 +116,15 @@ pub fn anchor_y(target: &Id, open: bool) -> f32 {
 /// Scrolls the sidebar so the tour's entry sits near its top: a long sidebar (the Setup entry is below a
 /// 900 px window's fold) scrolls, and the callout and the mark must still reach the eye.
 pub fn reveal<T: Send + 'static>(state: &State, open: bool) -> Task<T> {
-    let Some(id) = highlighted(state) else { return Task::none() };
+    let Some(id) = highlighted(state) else {
+        return Task::none();
+    };
     // The list starts under the brand block; the entry sits 300 px down from the list's top.
     let y = (anchor_y(&id, open) - BRAND_H - 300.0).max(0.0);
-    let scroll: Task<()> = iced::widget::operation::scroll_to(super::shell::SIDEBAR_SCROLL.clone(), iced::widget::scrollable::AbsoluteOffset { x: 0.0, y });
+    let scroll: Task<()> = iced::widget::operation::scroll_to(
+        super::shell::SIDEBAR_SCROLL.clone(),
+        iced::widget::scrollable::AbsoluteOffset { x: 0.0, y },
+    );
     scroll.discard()
 }
 
@@ -119,11 +141,20 @@ pub struct Status {
 fn status_of(overview: Option<Value>, providers: Option<Value>) -> Status {
     Status {
         reachable: overview.is_some(),
-        hub: overview.as_ref().and_then(|o| o["hub"].as_bool()).unwrap_or(false),
-        node: overview.as_ref().and_then(|o| o["noded"].as_bool()).unwrap_or(false),
+        hub: overview
+            .as_ref()
+            .and_then(|o| o["hub"].as_bool())
+            .unwrap_or(false),
+        node: overview
+            .as_ref()
+            .and_then(|o| o["noded"].as_bool())
+            .unwrap_or(false),
         keys: providers.and_then(|list| {
             let list = list.as_array()?;
-            let set = list.iter().filter(|p| p["credential"].as_str() != Some("missing")).count();
+            let set = list
+                .iter()
+                .filter(|p| p["credential"].as_str() != Some("missing"))
+                .count();
             Some((set, list.len()))
         }),
     }
@@ -144,7 +175,9 @@ pub fn status_task(ctx: &Ctx) -> Task<Status> {
 
 /// The plaza's local requirements (Docker, Postgres, …), checked off the UI thread.
 pub fn local_task() -> Task<Vec<Check>> {
-    Task::perform(async { setup::check_all(setup::Mode::Local) }, |checks| checks)
+    Task::perform(async { setup::check_all(setup::Mode::Local) }, |checks| {
+        checks
+    })
 }
 
 /// One row of the checks: a label, a tone and the words beside it.
@@ -158,36 +191,78 @@ pub struct Row {
 /// The checks as the wizard's last step and the Setup screen show them (the same rows, the same words
 /// as the web console, plus this machine's requirements).
 pub fn rows(status: Option<&Status>, local: Option<&[Check]>) -> Vec<Row> {
-    let label = |key: &str| -> String { copy()["wizard"]["checks_labels"][key].as_str().unwrap_or("").to_string() };
+    let label = |key: &str| -> String {
+        copy()["wizard"]["checks_labels"][key]
+            .as_str()
+            .unwrap_or("")
+            .to_string()
+    };
     let Some(s) = status else {
-        return vec![Row { label: label("hub"), tone: Tone::Muted, detail: t("wizard.checking").into() }];
+        return vec![Row {
+            label: label("hub"),
+            tone: Tone::Muted,
+            detail: t("wizard.checking").into(),
+        }];
     };
     let mut out = vec![
         if s.reachable && s.hub {
-            Row { label: label("hub"), tone: Tone::Ok, detail: t("wizard.reachable").into() }
+            Row {
+                label: label("hub"),
+                tone: Tone::Ok,
+                detail: t("wizard.reachable").into(),
+            }
         } else {
-            Row { label: label("hub"), tone: Tone::Danger, detail: t("wizard.unreachable").into() }
+            Row {
+                label: label("hub"),
+                tone: Tone::Danger,
+                detail: t("wizard.unreachable").into(),
+            }
         },
         if s.node {
-            Row { label: label("node"), tone: Tone::Ok, detail: "Running".into() }
+            Row {
+                label: label("node"),
+                tone: Tone::Ok,
+                detail: "Running".into(),
+            }
         } else {
-            Row { label: label("node"), tone: Tone::Warn, detail: "Not running".into() }
+            Row {
+                label: label("node"),
+                tone: Tone::Warn,
+                detail: "Not running".into(),
+            }
         },
     ];
     out.push(match s.keys {
         Some((n, m)) => Row {
             label: label("keys"),
             tone: if n > 0 { Tone::Ok } else { Tone::Warn },
-            detail: fill(t("wizard.keys_count"), &[("n", n.to_string()), ("m", m.to_string())]),
+            detail: fill(
+                t("wizard.keys_count"),
+                &[("n", n.to_string()), ("m", m.to_string())],
+            ),
         },
-        None => Row { label: label("keys"), tone: Tone::Muted, detail: "Unknown".into() },
+        None => Row {
+            label: label("keys"),
+            tone: Tone::Muted,
+            detail: "Unknown".into(),
+        },
     });
     if let Some(checks) = local {
-        let ready = checks.iter().filter(|c| c.state == setup::State::Ok).count();
+        let ready = checks
+            .iter()
+            .filter(|c| c.state == setup::State::Ok)
+            .count();
         out.push(Row {
             label: label("local"),
-            tone: if setup::ready(checks) { Tone::Ok } else { Tone::Warn },
-            detail: fill(t("wizard.checks_ready"), &[("n", ready.to_string()), ("m", checks.len().to_string())]),
+            tone: if setup::ready(checks) {
+                Tone::Ok
+            } else {
+                Tone::Warn
+            },
+            detail: fill(
+                t("wizard.checks_ready"),
+                &[("n", ready.to_string()), ("m", checks.len().to_string())],
+            ),
         });
     }
     out
@@ -292,7 +367,10 @@ pub fn highlighted(state: &State) -> Option<Id> {
 }
 
 fn wizard_step_id(index: usize) -> &'static str {
-    wizard_steps().get(index).map(|s| field(s, "id")).unwrap_or("")
+    wizard_steps()
+        .get(index)
+        .map(|s| field(s, "id"))
+        .unwrap_or("")
 }
 
 /// Whether the wizard may go on from its current step: a dependencies step waits for every required
@@ -301,7 +379,9 @@ pub fn can_go_on(state: &State) -> bool {
     if state.fixing.is_some() {
         return false;
     }
-    let deps = state.wizard.is_some_and(|index| wizard_step_id(index) == "deps");
+    let deps = state
+        .wizard
+        .is_some_and(|index| wizard_step_id(index) == "deps");
     !deps || state.deps_skipped || state.local.as_deref().is_some_and(setup::ready)
 }
 
@@ -311,41 +391,54 @@ fn run_fix(need: Need) -> Task<Msg> {
         Line(String),
         Done(Result<(), String>),
     }
-    Task::stream(iced::stream::channel(64, move |mut out: mpsc::Sender<Msg>| async move {
-        let (tx, mut rx) = mpsc::unbounded::<Step>();
-        std::thread::spawn(move || {
-            let result = {
-                let mut log = |line: String| {
-                    let _ = tx.unbounded_send(Step::Line(line));
+    Task::stream(iced::stream::channel(
+        64,
+        move |mut out: mpsc::Sender<Msg>| async move {
+            let (tx, mut rx) = mpsc::unbounded::<Step>();
+            std::thread::spawn(move || {
+                let result = {
+                    let mut log = |line: String| {
+                        let _ = tx.unbounded_send(Step::Line(line));
+                    };
+                    setup::fix(need, &mut log)
                 };
-                setup::fix(need, &mut log)
-            };
-            let _ = tx.unbounded_send(Step::Done(result));
-        });
-        while let Some(step) = rx.next().await {
-            let (msg, last) = match step {
-                Step::Line(line) => (Msg::FixLog(line), false),
-                Step::Done(result) => (Msg::FixDone(result), true),
-            };
-            if out.send(msg).await.is_err() || last {
-                break;
+                let _ = tx.unbounded_send(Step::Done(result));
+            });
+            while let Some(step) = rx.next().await {
+                let (msg, last) = match step {
+                    Step::Line(line) => (Msg::FixLog(line), false),
+                    Step::Done(result) => (Msg::FixDone(result), true),
+                };
+                if out.send(msg).await.is_err() || last {
+                    break;
+                }
             }
-        }
-    }))
+        },
+    ))
 }
 
 pub fn update(state: &mut State, msg: Msg) -> (Task<Msg>, Effect) {
     let count = wizard_steps().len();
     match msg {
         Msg::Next | Msg::Back => {
-            let Some(index) = state.wizard else { return (Task::none(), Effect::None) };
+            let Some(index) = state.wizard else {
+                return (Task::none(), Effect::None);
+            };
             if matches!(msg, Msg::Next) && !can_go_on(state) {
                 return (Task::none(), Effect::None);
             }
-            let next = if matches!(msg, Msg::Next) { (index + 1).min(count - 1) } else { index.saturating_sub(1) };
+            let next = if matches!(msg, Msg::Next) {
+                (index + 1).min(count - 1)
+            } else {
+                index.saturating_sub(1)
+            };
             state.wizard = Some(next);
             state.confirm = None;
-            let task = if matches!(wizard_step_id(next), "deps" | "checks") { local_task().map(Msg::Local) } else { Task::none() };
+            let task = if matches!(wizard_step_id(next), "deps" | "checks") {
+                local_task().map(Msg::Local)
+            } else {
+                Task::none()
+            };
             (task, Effect::None)
         }
         Msg::SkipDeps => {
@@ -417,7 +510,11 @@ pub fn update(state: &mut State, msg: Msg) -> (Task<Msg>, Effect) {
         Msg::TourNext | Msg::TourBack => {
             if let Some(index) = state.tour {
                 let last = tour_steps().len() - 1;
-                state.tour = Some(if matches!(msg, Msg::TourNext) { (index + 1).min(last) } else { index.saturating_sub(1) });
+                state.tour = Some(if matches!(msg, Msg::TourNext) {
+                    (index + 1).min(last)
+                } else {
+                    index.saturating_sub(1)
+                });
             }
             (Task::none(), Effect::None)
         }
@@ -431,24 +528,42 @@ pub fn update(state: &mut State, msg: Msg) -> (Task<Msg>, Effect) {
 }
 
 fn badge_row<'a>(r: &Row) -> Element<'a, Msg> {
-    row![ui::sans(r.label.clone(), 12.0, ui::INK_2), ui::badge(&r.detail, r.tone)].spacing(10).align_y(Alignment::Center).into()
+    row![
+        ui::sans(r.label.clone(), 12.0, ui::INK_2),
+        ui::badge(&r.detail, r.tone)
+    ]
+    .spacing(10)
+    .align_y(Alignment::Center)
+    .into()
 }
 
 fn step_dot<'a>(on: bool) -> Element<'a, Msg> {
-    container(Space::new().width(Length::Fixed(9.0)).height(Length::Fixed(9.0)))
-        .style(move |_: &Theme| container::Style {
-            background: on.then_some(ui::SIGNAL).map(Into::into),
-            border: Border { color: ui::INK, width: 1.0, radius: 0.0.into() },
-            ..Default::default()
-        })
-        .into()
+    container(
+        Space::new()
+            .width(Length::Fixed(9.0))
+            .height(Length::Fixed(9.0)),
+    )
+    .style(move |_: &Theme| container::Style {
+        background: on.then_some(ui::SIGNAL).map(Into::into),
+        border: Border {
+            color: ui::INK,
+            width: 1.0,
+            radius: 0.0.into(),
+        },
+        ..Default::default()
+    })
+    .into()
 }
 
 /// A box on the paper: the sheet colour, the ink rule.
 fn boxed(_: &Theme) -> container::Style {
     container::Style {
         background: Some(ui::SHEET.into()),
-        border: Border { color: ui::INK, width: 1.0, radius: 0.0.into() },
+        border: Border {
+            color: ui::INK,
+            width: 1.0,
+            radius: 0.0.into(),
+        },
         ..Default::default()
     }
 }
@@ -472,16 +587,30 @@ fn deps_content<'a>(state: &State) -> Vec<Element<'a, Msg>> {
         let action: Element<'a, Msg> = if state.fixing == Some(check.need) {
             ui::faint(t("wizard.deps.running")).into()
         } else if check.state == setup::State::Missing && check.fix.is_some() {
-            let label = if check.need == Need::Docker { t("wizard.deps.install") } else { t("wizard.deps.setup") };
-            ui::btn(label, None, Kind::Secondary, (!busy).then_some(Msg::AskFix(check.need)))
+            let label = if check.need == Need::Docker {
+                t("wizard.deps.install")
+            } else {
+                t("wizard.deps.setup")
+            };
+            ui::btn(
+                label,
+                None,
+                Kind::Secondary,
+                (!busy).then_some(Msg::AskFix(check.need)),
+            )
         } else {
             Space::new().width(Length::Shrink).into()
         };
         out.push(
             column![
-                row![ui::sans(check.label.to_string(), 12.0, ui::INK_2), ui::badge(word, tone), Space::new().width(Length::Fill), action]
-                    .spacing(10)
-                    .align_y(Alignment::Center),
+                row![
+                    ui::sans(check.label.to_string(), 12.0, ui::INK_2),
+                    ui::badge(word, tone),
+                    Space::new().width(Length::Fill),
+                    action
+                ]
+                .spacing(10)
+                .align_y(Alignment::Center),
                 ui::faint(check.detail.clone()),
             ]
             .spacing(4)
@@ -494,9 +623,19 @@ fn deps_content<'a>(state: &State) -> Vec<Element<'a, Msg>> {
                         ui::prose(t("wizard.deps.confirm")),
                         ui::prose(fix.clone()),
                         row![
-                            ui::btn(t("wizard.deps.run"), None, Kind::Primary, Some(Msg::RunFix(check.need))),
+                            ui::btn(
+                                t("wizard.deps.run"),
+                                None,
+                                Kind::Primary,
+                                Some(Msg::RunFix(check.need))
+                            ),
                             Space::new().width(Length::Fill),
-                            ui::btn(t("wizard.deps.cancel"), None, Kind::Ghost, Some(Msg::CancelFix)),
+                            ui::btn(
+                                t("wizard.deps.cancel"),
+                                None,
+                                Kind::Ghost,
+                                Some(Msg::CancelFix)
+                            ),
                         ]
                         .align_y(Alignment::Center),
                     ])
@@ -508,14 +647,38 @@ fn deps_content<'a>(state: &State) -> Vec<Element<'a, Msg>> {
         }
     }
     if !state.log.is_empty() {
-        let tail: Vec<Element<'a, Msg>> = state.log.iter().rev().take(8).rev().map(|line| ui::mono(line.clone(), 11.0, ui::INK_3).into()).collect();
-        out.push(container(column(tail).spacing(2)).padding(8).style(boxed).into());
+        let tail: Vec<Element<'a, Msg>> = state
+            .log
+            .iter()
+            .rev()
+            .take(8)
+            .rev()
+            .map(|line| ui::mono(line.clone(), 11.0, ui::INK_3).into())
+            .collect();
+        out.push(
+            container(column(tail).spacing(2))
+                .padding(8)
+                .style(boxed)
+                .into(),
+        );
     }
     if let Some(error) = &state.fix_error {
         out.push(ui::error_line(error));
     }
-    out.push(ui::faint(t(if setup::ready(checks) { "wizard.deps.ready" } else { "wizard.deps.not_ready" })).into());
-    out.push(ui::btn(t("wizard.deps.skip"), None, Kind::Ghost, (!busy).then_some(Msg::SkipDeps)));
+    out.push(
+        ui::faint(t(if setup::ready(checks) {
+            "wizard.deps.ready"
+        } else {
+            "wizard.deps.not_ready"
+        }))
+        .into(),
+    );
+    out.push(ui::btn(
+        t("wizard.deps.skip"),
+        None,
+        Kind::Ghost,
+        (!busy).then_some(Msg::SkipDeps),
+    ));
     out
 }
 
@@ -525,18 +688,30 @@ pub fn wizard_view<'a>(state: &'a State, hub: &str) -> Element<'a, Msg> {
     let index = state.wizard.unwrap_or(0).min(steps.len() - 1);
     let step = &steps[index];
     let checks = rows(state.status.as_ref(), state.local.as_deref());
-    let mut content: Vec<Element<'a, Msg>> =
-        vec![ui::sans(field(step, "title").to_string(), 16.0, ui::INK).into(), ui::prose(field(step, "body")).into()];
+    let mut content: Vec<Element<'a, Msg>> = vec![
+        ui::sans(field(step, "title").to_string(), 16.0, ui::INK).into(),
+        ui::prose(field(step, "body")).into(),
+    ];
     match field(step, "id") {
         "hub" => {
             content.push(ui::prose(format!("{} {}", t("wizard.connected_to"), hub)).into());
             content.push(badge_row(&checks[0]));
-            content.push(ui::btn(t("wizard.change_hub"), None, Kind::Secondary, Some(Msg::Change)));
+            content.push(ui::btn(
+                t("wizard.change_hub"),
+                None,
+                Kind::Secondary,
+                Some(Msg::Change),
+            ));
         }
         "deps" => content.extend(deps_content(state)),
         "keys" => {
             content.push(badge_row(&checks[2]));
-            content.push(ui::btn(t("wizard.open_models"), None, Kind::Secondary, Some(Msg::OpenScreen(Id::Models))));
+            content.push(ui::btn(
+                t("wizard.open_models"),
+                None,
+                Kind::Secondary,
+                Some(Msg::OpenScreen(Id::Models)),
+            ));
         }
         "checks" => content.extend(checks.iter().map(badge_row)),
         _ => {}
@@ -550,17 +725,30 @@ pub fn wizard_view<'a>(state: &'a State, hub: &str) -> Element<'a, Msg> {
     ]
     .align_y(Alignment::Center);
     let foot = row![
-        ui::btn(t("wizard.back"), None, Kind::Ghost, (index > 0).then_some(Msg::Back)),
+        ui::btn(
+            t("wizard.back"),
+            None,
+            Kind::Ghost,
+            (index > 0).then_some(Msg::Back)
+        ),
         Space::new().width(Length::Fill),
         if last {
             ui::btn(t("wizard.finish"), None, Kind::Primary, Some(Msg::Finish))
         } else {
-            ui::btn(t("wizard.next"), None, Kind::Primary, can_go_on(state).then_some(Msg::Next))
+            ui::btn(
+                t("wizard.next"),
+                None,
+                Kind::Primary,
+                can_go_on(state).then_some(Msg::Next),
+            )
         },
     ]
     .align_y(Alignment::Center);
     let card =
-        container(column![head, iced::widget::column(content).spacing(12), foot].spacing(22)).padding(28).max_width(560.0).style(boxed);
+        container(column![head, iced::widget::column(content).spacing(12), foot].spacing(22))
+            .padding(28)
+            .max_width(560.0)
+            .style(boxed);
     container(card)
         .padding(24)
         .width(Length::Fill)
@@ -584,8 +772,16 @@ fn tour_layer<'a>(index: usize, shell_width: f32, open: bool) -> Element<'a, Msg
     let index = index.min(steps.len() - 1);
     let step = &steps[index];
     let last = index + 1 == steps.len();
-    let top = screen_id(field(step, "screen")).map(|id| anchor_y(&id, open)).unwrap_or(BRAND_H);
-    let count = fill(t("tour.count"), &[("n", (index + 1).to_string()), ("m", steps.len().to_string())]);
+    let top = screen_id(field(step, "screen"))
+        .map(|id| anchor_y(&id, open))
+        .unwrap_or(BRAND_H);
+    let count = fill(
+        t("tour.count"),
+        &[
+            ("n", (index + 1).to_string()),
+            ("m", steps.len().to_string()),
+        ],
+    );
     let card = container(
         column![
             ui::sans(count, 10.5, ui::INK_3),
@@ -594,7 +790,12 @@ fn tour_layer<'a>(index: usize, shell_width: f32, open: bool) -> Element<'a, Msg
             row![
                 ui::btn(t("tour.skip"), None, Kind::Ghost, Some(Msg::EndTour)),
                 Space::new().width(Length::Fill),
-                ui::btn(t("tour.back"), None, Kind::Ghost, (index > 0).then_some(Msg::TourBack)),
+                ui::btn(
+                    t("tour.back"),
+                    None,
+                    Kind::Ghost,
+                    (index > 0).then_some(Msg::TourBack)
+                ),
                 if last {
                     ui::btn(t("tour.done"), None, Kind::Primary, Some(Msg::EndTour))
                 } else {
@@ -609,10 +810,13 @@ fn tour_layer<'a>(index: usize, shell_width: f32, open: bool) -> Element<'a, Msg
     .padding(14)
     .width(Length::Fixed(320.0))
     .style(boxed);
-    column![Space::new().height(Length::Fixed((top - 30.0).max(8.0))), row![Space::new().width(Length::Fixed(shell_width + 12.0)), card],]
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .into()
+    column![
+        Space::new().height(Length::Fixed((top - 30.0).max(8.0))),
+        row![Space::new().width(Length::Fixed(shell_width + 12.0)), card],
+    ]
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .into()
 }
 
 fn offer_layer<'a>() -> Element<'a, Msg> {
@@ -636,7 +840,10 @@ fn offer_layer<'a>() -> Element<'a, Msg> {
         .height(Length::Fill)
         .align_x(Alignment::Center)
         .align_y(Alignment::Center)
-        .style(|_: &Theme| container::Style { background: Some(Color { a: 0.35, ..ui::INK }.into()), ..Default::default() })
+        .style(|_: &Theme| container::Style {
+            background: Some(Color { a: 0.35, ..ui::INK }.into()),
+            ..Default::default()
+        })
         .into()
 }
 
@@ -646,8 +853,15 @@ mod tests {
 
     #[test]
     fn the_wizard_has_five_steps_and_the_tour_six_to_eight() {
-        assert!(wizard_steps().len() <= 5, "the wizard has at most five steps");
-        assert_eq!(field(&wizard_steps()[2], "id"), "deps", "the dependencies step is third, after the hub");
+        assert!(
+            wizard_steps().len() <= 5,
+            "the wizard has at most five steps"
+        );
+        assert_eq!(
+            field(&wizard_steps()[2], "id"),
+            "deps",
+            "the dependencies step is third, after the hub"
+        );
         assert_eq!(step_index("deps"), 2);
         assert!((6..=8).contains(&tour_steps().len()));
     }
@@ -655,13 +869,23 @@ mod tests {
     #[test]
     fn every_tour_step_points_at_a_sidebar_screen() {
         for step in tour_steps() {
-            assert!(screen_id(field(step, "screen")).is_some(), "no screen for {}", field(step, "screen"));
+            assert!(
+                screen_id(field(step, "screen")).is_some(),
+                "no screen for {}",
+                field(step, "screen")
+            );
         }
     }
 
     #[test]
     fn copy_fills_its_placeholders() {
-        assert_eq!(fill(t("wizard.keys_count"), &[("n", "1".into()), ("m", "3".into())]), "1 of 3 providers have a key");
+        assert_eq!(
+            fill(
+                t("wizard.keys_count"),
+                &[("n", "1".into()), ("m", "3".into())]
+            ),
+            "1 of 3 providers have a key"
+        );
         assert_eq!(t("wizard.next"), "Next");
         assert_eq!(t("no.such.key"), "");
     }
@@ -683,7 +907,15 @@ mod tests {
         let providers = json!([{ "credential": "missing" }, { "credential": "env" }, { "credential": "secret" }]);
         let overview = json!({ "hub": true, "noded": false });
         let status = status_of(Some(overview), Some(providers));
-        assert_eq!(status, Status { reachable: true, hub: true, node: false, keys: Some((2, 3)) });
+        assert_eq!(
+            status,
+            Status {
+                reachable: true,
+                hub: true,
+                node: false,
+                keys: Some((2, 3))
+            }
+        );
         let rows = rows(Some(&status), None);
         assert_eq!(rows.len(), 3);
         assert_eq!(rows[0].detail, "Reachable");
@@ -700,11 +932,27 @@ mod tests {
 
     #[test]
     fn the_dependencies_step_waits_for_the_required_checks() {
-        let check = |need, state, required| Check { need, label: "row", state, detail: String::new(), fix: None, required };
-        let mut state = State { wizard: Some(2), ..Default::default() };
+        let check = |need, state, required| Check {
+            need,
+            label: "row",
+            state,
+            detail: String::new(),
+            fix: None,
+            required,
+        };
+        let mut state = State {
+            wizard: Some(2),
+            ..Default::default()
+        };
         assert!(!can_go_on(&state), "not read yet");
-        state.local = Some(vec![check(Need::Docker, setup::State::Ok, true), check(Need::Garage, setup::State::Missing, false)]);
-        assert!(can_go_on(&state), "an optional requirement missing does not hold the wizard");
+        state.local = Some(vec![
+            check(Need::Docker, setup::State::Ok, true),
+            check(Need::Garage, setup::State::Missing, false),
+        ]);
+        assert!(
+            can_go_on(&state),
+            "an optional requirement missing does not hold the wizard"
+        );
         state.local = Some(vec![check(Need::Docker, setup::State::Missing, true)]);
         assert!(!can_go_on(&state), "a required one missing does");
         state.deps_skipped = true;
@@ -716,7 +964,11 @@ mod tests {
     #[test]
     fn step_moves_stay_inside_the_steps() {
         // Skipped dependencies: the wizard goes on past its step without the checks read.
-        let mut state = State { wizard: Some(0), deps_skipped: true, ..Default::default() };
+        let mut state = State {
+            wizard: Some(0),
+            deps_skipped: true,
+            ..Default::default()
+        };
         let _ = update(&mut state, Msg::Back);
         assert_eq!(state.wizard, Some(0));
         for _ in 0..10 {

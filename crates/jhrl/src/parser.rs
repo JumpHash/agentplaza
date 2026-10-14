@@ -186,15 +186,28 @@ impl Parser {
         if self.is_kw("pack") {
             let lo = self.bump().span;
             let name = self.dotted()?;
-            let version = if self.eat_kw("version") { Some(self.string()?) } else { None };
+            let version = if self.eat_kw("version") {
+                Some(self.string()?)
+            } else {
+                None
+            };
             let locked = self.eat_kw("locked");
-            pack = Some(PackDecl { name, version, locked, span: lo.to(self.prev_span()) });
+            pack = Some(PackDecl {
+                name,
+                version,
+                locked,
+                span: lo.to(self.prev_span()),
+            });
         }
         let mut items = Vec::new();
         while !matches!(self.peek(), Tok::Eof) {
             items.push(self.item()?);
         }
-        Ok(Module { file: self.file, pack, items })
+        Ok(Module {
+            file: self.file,
+            pack,
+            items,
+        })
     }
 
     fn item(&mut self) -> PResult<Item> {
@@ -214,9 +227,21 @@ impl Parser {
                 let name = self.ident()?;
                 self.expect_sym(":")?;
                 let ty = self.ty()?;
-                let default = if self.eat_sym("=") { Some(self.expr()?) } else { None };
+                let default = if self.eat_sym("=") {
+                    Some(self.expr()?)
+                } else {
+                    None
+                };
                 let doc = self.opt_string();
-                Item::Param(ParamDef { name, ty, default, span: lo.to(self.prev_span()) }, doc)
+                Item::Param(
+                    ParamDef {
+                        name,
+                        ty,
+                        default,
+                        span: lo.to(self.prev_span()),
+                    },
+                    doc,
+                )
             }
             "let" => {
                 self.bump();
@@ -234,7 +259,14 @@ impl Parser {
                 let doc = self.opt_string();
                 self.expect_sym("=")?;
                 let body = self.expr()?;
-                Item::Fn(FnDecl { name, params, ret, doc, body, span: lo.to(self.prev_span()) })
+                Item::Fn(FnDecl {
+                    name,
+                    params,
+                    ret,
+                    doc,
+                    body,
+                    span: lo.to(self.prev_span()),
+                })
             }
             "table" => self.table()?,
             "rel" => self.rel()?,
@@ -248,7 +280,13 @@ impl Parser {
                 self.expect_sym("->")?;
                 let ret = self.ty()?;
                 let doc = self.opt_string();
-                Item::Measure(MeasureDecl { name, params, ret, doc, span: lo.to(self.prev_span()) })
+                Item::Measure(MeasureDecl {
+                    name,
+                    params,
+                    ret,
+                    doc,
+                    span: lo.to(self.prev_span()),
+                })
             }
             "kind" => {
                 self.bump();
@@ -264,9 +302,21 @@ impl Parser {
                     _ => return Err(self.expected("a direction: min, max, exact or prefer")),
                 };
                 self.bump();
-                let default = if self.eat_kw("default") { Some(self.expr()?) } else { None };
+                let default = if self.eat_kw("default") {
+                    Some(self.expr()?)
+                } else {
+                    None
+                };
                 let doc = self.opt_string();
-                Item::Kind(KindDecl { name, params, ret, direction, default, doc, span: lo.to(self.prev_span()) })
+                Item::Kind(KindDecl {
+                    name,
+                    params,
+                    ret,
+                    direction,
+                    default,
+                    doc,
+                    span: lo.to(self.prev_span()),
+                })
             }
             "constraint" => self.constraint()?,
             "check" => {
@@ -275,7 +325,11 @@ impl Parser {
                 self.expect_sym("{")?;
                 let clauses = self.clauses()?;
                 self.expect_sym("}")?;
-                Item::Check(CheckDecl { title, clauses, span: lo.to(self.prev_span()) })
+                Item::Check(CheckDecl {
+                    title,
+                    clauses,
+                    span: lo.to(self.prev_span()),
+                })
             }
             "machine" => self.machine()?,
             "model" => self.model()?,
@@ -285,12 +339,22 @@ impl Parser {
                 let name = self.string()?;
                 self.expect_kw("of")?;
                 let machine = self.ident()?;
-                let model = if self.eat_kw("in") { Some(self.string()?) } else { None };
+                let model = if self.eat_kw("in") {
+                    Some(self.string()?)
+                } else {
+                    None
+                };
                 self.expect_sym("{")?;
                 self.expect_kw("reachable")?;
                 let expr = self.expr()?;
                 self.expect_sym("}")?;
-                Item::Witness(WitnessDecl { name, machine, model, expr, span: lo.to(self.prev_span()) })
+                Item::Witness(WitnessDecl {
+                    name,
+                    machine,
+                    model,
+                    expr,
+                    span: lo.to(self.prev_span()),
+                })
             }
             "scenario" => self.scenario()?,
             "operation" => self.operation()?,
@@ -311,8 +375,17 @@ impl Parser {
                 let name = self.ident()?;
                 self.expect_sym(":")?;
                 let ty = self.ty()?;
-                let default = if self.eat_sym("=") { Some(self.expr()?) } else { None };
-                v.push(ParamDef { name, ty, default, span: lo.to(self.prev_span()) });
+                let default = if self.eat_sym("=") {
+                    Some(self.expr()?)
+                } else {
+                    None
+                };
+                v.push(ParamDef {
+                    name,
+                    ty,
+                    default,
+                    span: lo.to(self.prev_span()),
+                });
                 if !self.eat_sym(",") {
                     break;
                 }
@@ -388,7 +461,10 @@ impl Parser {
                     self.expect_sym(":")?;
                     let k = self.ident()?;
                     if !["linear", "log", "floor", "ceil", "exact"].contains(&k.as_str()) {
-                        return Err(Diag::error(self.prev_span(), "an axis is linear, log, floor, ceil or exact"));
+                        return Err(Diag::error(
+                            self.prev_span(),
+                            "an axis is linear, log, floor, ceil or exact",
+                        ));
                     }
                     t.axes.push((a, k, s));
                     if !self.eat_sym(",") {
@@ -398,7 +474,10 @@ impl Parser {
             } else if self.eat_kw("out_of_range") {
                 let k = self.ident()?;
                 if !["error", "clamp", "extrapolate"].contains(&k.as_str()) {
-                    return Err(Diag::error(self.prev_span(), "out_of_range is error, clamp or extrapolate"));
+                    return Err(Diag::error(
+                        self.prev_span(),
+                        "out_of_range is error, clamp or extrapolate",
+                    ));
                 }
                 t.out_of_range = Some(k);
             } else if self.eat_kw("cite") {
@@ -430,16 +509,29 @@ impl Parser {
         loop {
             self.expect_kw("for")?;
             let gens = self.gens()?;
-            let filter = if self.eat_kw("where") { Some(self.expr()?) } else { None };
+            let filter = if self.eat_kw("where") {
+                Some(self.expr()?)
+            } else {
+                None
+            };
             self.expect_kw("yield")?;
             let yields = self.expr()?;
-            bodies.push(RelBody { gens, filter, yields });
+            bodies.push(RelBody {
+                gens,
+                filter,
+                yields,
+            });
             if !self.eat_sym("|") {
                 break;
             }
         }
         self.expect_sym("}")?;
-        Ok(Item::Rel(RelDecl { name, params, bodies, span: lo.to(self.prev_span()) }))
+        Ok(Item::Rel(RelDecl {
+            name,
+            params,
+            bodies,
+            span: lo.to(self.prev_span()),
+        }))
     }
 
     fn enum_decl(&mut self) -> PResult<Item> {
@@ -451,12 +543,21 @@ impl Parser {
         while !self.is_sym("}") {
             let s = self.span();
             let m = self.string()?;
-            let d = if matches!(self.peek(), Tok::Str(_)) && !self.on_new_line() { self.opt_string() } else { None };
+            let d = if matches!(self.peek(), Tok::Str(_)) && !self.on_new_line() {
+                self.opt_string()
+            } else {
+                None
+            };
             members.push((m, d, s));
             self.eat_sym(",");
         }
         self.expect_sym("}")?;
-        Ok(Item::Enum(EnumDecl { name, doc, members, span: lo.to(self.prev_span()) }))
+        Ok(Item::Enum(EnumDecl {
+            name,
+            doc,
+            members,
+            span: lo.to(self.prev_span()),
+        }))
     }
 
     fn field(&mut self) -> PResult<FieldDecl> {
@@ -474,18 +575,42 @@ impl Parser {
                 break;
             }
         }
-        let default = if self.eat_sym("=") { Some(self.expr()?) } else { None };
+        let default = if self.eat_sym("=") {
+            Some(self.expr()?)
+        } else {
+            None
+        };
         let doc = self.opt_string();
-        Ok(FieldDecl { name, ty, optional, computed, default, doc, span: lo.to(self.prev_span()) })
+        Ok(FieldDecl {
+            name,
+            ty,
+            optional,
+            computed,
+            default,
+            doc,
+            span: lo.to(self.prev_span()),
+        })
     }
 
     fn entity(&mut self) -> PResult<Item> {
         let lo = self.bump().span;
         let name = self.ident()?;
-        let parent = if self.eat_sym(":") { Some(self.ident()?) } else { None };
+        let parent = if self.eat_sym(":") {
+            Some(self.ident()?)
+        } else {
+            None
+        };
         let doc = self.opt_string();
         self.expect_sym("{")?;
-        let mut e = EntityDecl { name, parent, doc, fields: vec![], store: None, collection: None, span: lo };
+        let mut e = EntityDecl {
+            name,
+            parent,
+            doc,
+            fields: vec![],
+            store: None,
+            collection: None,
+            span: lo,
+        };
         while !self.is_sym("}") {
             if self.is_kw("field") {
                 e.fields.push(self.field()?);
@@ -517,8 +642,17 @@ impl Parser {
         self.expect_sym(")")?;
         let doc = self.opt_string();
         self.expect_sym("{")?;
-        let mut e =
-            EdgeDecl { name, from, to, doc, fields: vec![], store: None, temporal: false, collection: None, span: lo };
+        let mut e = EdgeDecl {
+            name,
+            from,
+            to,
+            doc,
+            fields: vec![],
+            store: None,
+            temporal: false,
+            collection: None,
+            span: lo,
+        };
         while !self.is_sym("}") {
             if self.is_kw("field") {
                 e.fields.push(self.field()?);
@@ -571,7 +705,10 @@ impl Parser {
                 c.wheres.push(self.expr()?);
             } else if self.eat_kw("value") {
                 if c.value.is_some() {
-                    return Err(Diag::error(self.prev_span(), "a constraint rule has one value"));
+                    return Err(Diag::error(
+                        self.prev_span(),
+                        "a constraint rule has one value",
+                    ));
                 }
                 c.value = Some(self.expr()?);
             } else if self.eat_kw("priority") {
@@ -638,7 +775,10 @@ impl Parser {
                     j += 1;
                 }
                 if j >= bytes.len() {
-                    return Err(Diag::error(span, "unclosed `{` in an interpolated string (use `{{` for a brace)"));
+                    return Err(Diag::error(
+                        span,
+                        "unclosed `{` in an interpolated string (use `{{` for a brace)",
+                    ));
                 }
                 if !text.is_empty() {
                     parts.push(InterpPart::Text(std::mem::take(&mut text)));
@@ -673,12 +813,19 @@ impl Parser {
                 Clause::Let(n, self.expr()?)
             } else if self.eat_kw("require") {
                 let e = self.expr()?;
-                let m = if self.eat_kw("margin") { Some(self.expr()?) } else { None };
+                let m = if self.eat_kw("margin") {
+                    Some(self.expr()?)
+                } else {
+                    None
+                };
                 Clause::Require(e, m)
             } else if self.eat_kw("severity") {
                 let s = self.ident()?;
                 if !["error", "warning", "info"].contains(&s.as_str()) {
-                    return Err(Diag::error(self.prev_span(), "severity is error, warning or info"));
+                    return Err(Diag::error(
+                        self.prev_span(),
+                        "severity is error, warning or info",
+                    ));
                 }
                 Clause::Severity(s)
             } else if self.eat_kw("message") {
@@ -713,7 +860,9 @@ impl Parser {
                 }
                 Clause::OnChange(paths)
             } else {
-                return Err(self.expected("a check clause (for, where, let, require, severity, message …)"));
+                return Err(
+                    self.expected("a check clause (for, where, let, require, severity, message …)")
+                );
             };
             v.push(c);
         }
@@ -753,7 +902,13 @@ impl Parser {
             items.push(self.mitem()?);
         }
         self.expect_sym("}")?;
-        Ok(Item::Machine(MachineDecl { name, doc, items, compose: None, span: lo.to(self.prev_span()) }))
+        Ok(Item::Machine(MachineDecl {
+            name,
+            doc,
+            items,
+            compose: None,
+            span: lo.to(self.prev_span()),
+        }))
     }
 
     fn mitem(&mut self) -> PResult<MItem> {
@@ -762,8 +917,17 @@ impl Parser {
             let name = self.ident()?;
             self.expect_sym(":")?;
             let ty = self.ty()?;
-            let default = if self.eat_sym("=") { Some(self.expr()?) } else { None };
-            return Ok(MItem::Const { name, ty, default, span: lo.to(self.prev_span()) });
+            let default = if self.eat_sym("=") {
+                Some(self.expr()?)
+            } else {
+                None
+            };
+            return Ok(MItem::Const {
+                name,
+                ty,
+                default,
+                span: lo.to(self.prev_span()),
+            });
         }
         if self.eat_kw("var") {
             let name = self.ident()?;
@@ -777,7 +941,13 @@ impl Parser {
             } else {
                 VarInit::None
             };
-            return Ok(MItem::Var { name, ty, optional, init, span: lo.to(self.prev_span()) });
+            return Ok(MItem::Var {
+                name,
+                ty,
+                optional,
+                init,
+                span: lo.to(self.prev_span()),
+            });
         }
         if self.eat_kw("init") {
             let b = self.block(true)?;
@@ -797,7 +967,12 @@ impl Parser {
             }
             self.expect_sym("=")?;
             let body = self.expr()?;
-            return Ok(MItem::Def { name, params, body, span: lo.to(self.prev_span()) });
+            return Ok(MItem::Def {
+                name,
+                params,
+                body,
+                span: lo.to(self.prev_span()),
+            });
         }
         if self.eat_kw("action") {
             let name = self.ident()?;
@@ -813,7 +988,11 @@ impl Parser {
                     } else {
                         return Err(self.expected("`: Type` or `in Set`"));
                     };
-                    params.push(AParam { name: n, dom, span: ps.to(self.prev_span()) });
+                    params.push(AParam {
+                        name: n,
+                        dom,
+                        span: ps.to(self.prev_span()),
+                    });
                     if !self.eat_sym(",") {
                         break;
                     }
@@ -822,7 +1001,13 @@ impl Parser {
             }
             let doc = self.opt_string();
             let body = self.block(false)?;
-            return Ok(MItem::Action(ActionDecl { name, params, doc, body, span: lo.to(self.prev_span()) }));
+            return Ok(MItem::Action(ActionDecl {
+                name,
+                params,
+                doc,
+                body,
+                span: lo.to(self.prev_span()),
+            }));
         }
         if self.eat_kw("invariant") {
             let name = self.string()?;
@@ -836,20 +1021,47 @@ impl Parser {
             } else {
                 InvBody::Expr(self.expr()?)
             };
-            let implements = if self.eat_kw("implements") { self.reqids()? } else { vec![] };
-            return Ok(MItem::Invariant { name, body, implements, span: lo.to(self.prev_span()) });
+            let implements = if self.eat_kw("implements") {
+                self.reqids()?
+            } else {
+                vec![]
+            };
+            return Ok(MItem::Invariant {
+                name,
+                body,
+                implements,
+                span: lo.to(self.prev_span()),
+            });
         }
         if self.eat_kw("transition") {
             let name = self.string()?;
             let expr = self.expr()?;
-            let implements = if self.eat_kw("implements") { self.reqids()? } else { vec![] };
-            return Ok(MItem::Transition { name, expr, implements, span: lo.to(self.prev_span()) });
+            let implements = if self.eat_kw("implements") {
+                self.reqids()?
+            } else {
+                vec![]
+            };
+            return Ok(MItem::Transition {
+                name,
+                expr,
+                implements,
+                span: lo.to(self.prev_span()),
+            });
         }
         if self.eat_kw("property") {
             let name = self.string()?;
             let expr = self.expr()?;
-            let implements = if self.eat_kw("implements") { self.reqids()? } else { vec![] };
-            return Ok(MItem::Property { name, expr, implements, span: lo.to(self.prev_span()) });
+            let implements = if self.eat_kw("implements") {
+                self.reqids()?
+            } else {
+                vec![]
+            };
+            return Ok(MItem::Property {
+                name,
+                expr,
+                implements,
+                span: lo.to(self.prev_span()),
+            });
         }
         if self.eat_kw("fairness") {
             let strong = if self.eat_kw("strong") {
@@ -862,12 +1074,18 @@ impl Parser {
             while self.eat_sym(",") {
                 actions.push(self.ident()?);
             }
-            return Ok(MItem::Fairness { strong, actions, span: lo.to(self.prev_span()) });
+            return Ok(MItem::Fairness {
+                strong,
+                actions,
+                span: lo.to(self.prev_span()),
+            });
         }
         if self.eat_kw("terminal") {
             return Ok(MItem::Terminal(self.expr()?));
         }
-        Err(self.expected("const, var, init, action, invariant, transition, property, fairness or terminal"))
+        Err(self.expected(
+            "const, var, init, action, invariant, transition, property, fairness or terminal",
+        ))
     }
 
     fn block(&mut self, init: bool) -> PResult<Vec<Stmt>> {
@@ -927,7 +1145,10 @@ impl Parser {
             self.expect_sym("=")?;
             StmtKind::Assign(n, self.expr()?)
         };
-        Ok(Stmt { kind, span: lo.to(self.prev_span()) })
+        Ok(Stmt {
+            kind,
+            span: lo.to(self.prev_span()),
+        })
     }
 
     fn model(&mut self) -> PResult<Item> {
@@ -970,12 +1191,19 @@ impl Parser {
                 self.expect_kw("allowed")?;
                 MOpt::DeadlockAllowed
             } else {
-                return Err(self.expected("const, values, domain, symmetry, constraint, terminal, check or deadlock"));
+                return Err(self.expected(
+                    "const, values, domain, symmetry, constraint, terminal, check or deadlock",
+                ));
             };
             opts.push(o);
         }
         self.expect_sym("}")?;
-        Ok(Item::Model(ModelDecl { name, machine, opts, span: lo.to(self.prev_span()) }))
+        Ok(Item::Model(ModelDecl {
+            name,
+            machine,
+            opts,
+            span: lo.to(self.prev_span()),
+        }))
     }
 
     fn mutant(&mut self) -> PResult<Item> {
@@ -994,7 +1222,12 @@ impl Parser {
                 let action = self.ident()?;
                 self.expect_kw("with")?;
                 let with = self.string()?;
-                ops.push(MutOp::Replace { text, action, with, span: s.to(self.prev_span()) });
+                ops.push(MutOp::Replace {
+                    text,
+                    action,
+                    with,
+                    span: s.to(self.prev_span()),
+                });
             } else if self.eat_kw("drop") {
                 self.expect_kw("when")?;
                 let n = match self.peek().clone() {
@@ -1006,11 +1239,18 @@ impl Parser {
                 };
                 self.expect_kw("in")?;
                 let action = self.ident()?;
-                ops.push(MutOp::DropWhen { n, action, span: s.to(self.prev_span()) });
+                ops.push(MutOp::DropWhen {
+                    n,
+                    action,
+                    span: s.to(self.prev_span()),
+                });
             } else if self.eat_kw("remove") {
                 self.expect_kw("action")?;
                 let action = self.ident()?;
-                ops.push(MutOp::RemoveAction { action, span: s.to(self.prev_span()) });
+                ops.push(MutOp::RemoveAction {
+                    action,
+                    span: s.to(self.prev_span()),
+                });
             } else if self.eat_kw("expect") {
                 expect = if self.eat_kw("violation") {
                     Expect::Violation(self.string()?)
@@ -1030,14 +1270,24 @@ impl Parser {
         if ops.is_empty() {
             return Err(Diag::error(lo, "a mutant needs at least one change"));
         }
-        Ok(Item::Mutant(MutantDecl { name, machine, ops, expect, span: lo.to(self.prev_span()) }))
+        Ok(Item::Mutant(MutantDecl {
+            name,
+            machine,
+            ops,
+            expect,
+            span: lo.to(self.prev_span()),
+        }))
     }
 
     fn scenario(&mut self) -> PResult<Item> {
         let lo = self.bump().span;
         let req = self.reqid()?;
         let name = self.string()?;
-        let machine = if self.eat_kw("of") { Some(self.ident()?) } else { None };
+        let machine = if self.eat_kw("of") {
+            Some(self.ident()?)
+        } else {
+            None
+        };
         self.expect_sym("{")?;
         let mut steps = Vec::new();
         while !self.is_sym("}") {
@@ -1061,17 +1311,30 @@ impl Parser {
                 SStepKind::When(self.expr()?)
             } else if self.eat_kw("then") {
                 if self.eat_kw("rejected") {
-                    SStepKind::Rejected(if self.eat_kw("with") { Some(self.string()?) } else { None })
+                    SStepKind::Rejected(if self.eat_kw("with") {
+                        Some(self.string()?)
+                    } else {
+                        None
+                    })
                 } else {
                     SStepKind::Then(self.expr()?)
                 }
             } else {
                 return Err(self.expected("given, when or then"));
             };
-            steps.push(SStep { kind, span: s.to(self.prev_span()) });
+            steps.push(SStep {
+                kind,
+                span: s.to(self.prev_span()),
+            });
         }
         self.expect_sym("}")?;
-        Ok(Item::Scenario(ScenarioDecl { req, name, machine, steps, span: lo.to(self.prev_span()) }))
+        Ok(Item::Scenario(ScenarioDecl {
+            req,
+            name,
+            machine,
+            steps,
+            span: lo.to(self.prev_span()),
+        }))
     }
 
     // ------------------------------------------------------------------ generators
@@ -1105,7 +1368,13 @@ impl Parser {
         }
         self.expect_sym("}")?;
         self.expect_sym(")")?;
-        Ok(Item::Operation(Operation { name, principal, resource, context, span: lo.to(self.prev_span()) }))
+        Ok(Item::Operation(Operation {
+            name,
+            principal,
+            resource,
+            context,
+            span: lo.to(self.prev_span()),
+        }))
     }
 
     fn law(&mut self) -> PResult<Item> {
@@ -1161,7 +1430,11 @@ impl Parser {
                 }
                 "permit" | "forbid" => {
                     self.bump();
-                    effect = Some(if kw == "permit" { Effect::Permit } else { Effect::Forbid });
+                    effect = Some(if kw == "permit" {
+                        Effect::Permit
+                    } else {
+                        Effect::Forbid
+                    });
                     if self.eat_kw("any") {
                         l.ops.push("any".to_string());
                     } else {
@@ -1217,7 +1490,12 @@ impl Parser {
             Some(e) if !l.ops.is_empty() => {
                 l.effect = e;
             }
-            _ => return Err(Diag::error(span, "a law needs `permit` or `forbid` with its operations")),
+            _ => {
+                return Err(Diag::error(
+                    span,
+                    "a law needs `permit` or `forbid` with its operations",
+                ))
+            }
         }
         l.span = span;
         Ok(Item::Law(l))
@@ -1240,7 +1518,12 @@ impl Parser {
             }
             self.expect_sym("}")?;
         }
-        Ok(EntityLit { ty, id, fields, span: lo.to(self.prev_span()) })
+        Ok(EntityLit {
+            ty,
+            id,
+            fields,
+            span: lo.to(self.prev_span()),
+        })
     }
 
     fn fixture(&mut self) -> PResult<Item> {
@@ -1253,7 +1536,12 @@ impl Parser {
             entities.push(self.entity_lit(true)?);
         }
         self.expect_sym("}")?;
-        Ok(Item::Fixture(Fixture { name, title, entities, span: lo.to(self.prev_span()) }))
+        Ok(Item::Fixture(Fixture {
+            name,
+            title,
+            entities,
+            span: lo.to(self.prev_span()),
+        }))
     }
 
     fn authz(&mut self) -> PResult<Item> {
@@ -1277,11 +1565,29 @@ impl Parser {
             let op = self.dotted()?;
             let object = self.entity_lit(false)?;
             let record = self.expr()?;
-            let law = if self.eat_kw("by") { Some(self.string()?) } else { None };
-            cases.push(AuthzCase { allow, label, subject, op, object, record, law, span: clo.to(self.prev_span()) });
+            let law = if self.eat_kw("by") {
+                Some(self.string()?)
+            } else {
+                None
+            };
+            cases.push(AuthzCase {
+                allow,
+                label,
+                subject,
+                op,
+                object,
+                record,
+                law,
+                span: clo.to(self.prev_span()),
+            });
         }
         self.expect_sym("}")?;
-        Ok(Item::Authz(Authz { name, fixture, cases, span: lo.to(self.prev_span()) }))
+        Ok(Item::Authz(Authz {
+            name,
+            fixture,
+            cases,
+            span: lo.to(self.prev_span()),
+        }))
     }
 
     fn gens(&mut self) -> PResult<Vec<Gen>> {
@@ -1302,7 +1608,9 @@ impl Parser {
                 while matches!(self.peek_at(k), Tok::Ident(_)) && self.is_sym_at(k + 1, ",") {
                     k += 2;
                 }
-                matches!(self.peek_at(k), Tok::Ident(_)) && self.is_sym_at(k + 1, ")") && self.is_kw_at(k + 2, "in")
+                matches!(self.peek_at(k), Tok::Ident(_))
+                    && self.is_sym_at(k + 1, ")")
+                    && self.is_kw_at(k + 2, "in")
             }
             _ => false,
         }
@@ -1322,7 +1630,12 @@ impl Parser {
         };
         self.expect_kw("in")?;
         let src = self.expr_tol()?;
-        Ok(Gen { names, tuple, src, span: lo.to(self.prev_span()) })
+        Ok(Gen {
+            names,
+            tuple,
+            src,
+            span: lo.to(self.prev_span()),
+        })
     }
 
     // ------------------------------------------------------------------ expressions
@@ -1346,7 +1659,10 @@ impl Parser {
             self.expect_sym("=")?;
             let v = self.temporal()?;
             let span = e.span.to(v.span);
-            e = Expr { kind: ExprKind::With(Box::new(e), target, Box::new(v)), span };
+            e = Expr {
+                kind: ExprKind::With(Box::new(e), target, Box::new(v)),
+                span,
+            };
         }
         Ok(e)
     }
@@ -1357,18 +1673,27 @@ impl Parser {
 
     fn bin(op: BinOp, a: Expr, b: Expr) -> Expr {
         let span = a.span.to(b.span);
-        Expr { kind: ExprKind::Binary(op, Box::new(a), Box::new(b)), span }
+        Expr {
+            kind: ExprKind::Binary(op, Box::new(a), Box::new(b)),
+            span,
+        }
     }
 
     fn temporal(&mut self) -> PResult<Expr> {
         let lo = self.span();
         if self.eat_kw("always") {
             let e = self.temporal()?;
-            return Ok(Self::mk(ExprKind::Unary(UnOp::Always, Box::new(e.clone())), lo.to(e.span)));
+            return Ok(Self::mk(
+                ExprKind::Unary(UnOp::Always, Box::new(e.clone())),
+                lo.to(e.span),
+            ));
         }
         if self.eat_kw("eventually") {
             let e = self.temporal()?;
-            return Ok(Self::mk(ExprKind::Unary(UnOp::Eventually, Box::new(e.clone())), lo.to(e.span)));
+            return Ok(Self::mk(
+                ExprKind::Unary(UnOp::Eventually, Box::new(e.clone())),
+                lo.to(e.span),
+            ));
         }
         let a = self.coalesce()?;
         if self.eat_kw("leads_to") {
@@ -1408,7 +1733,10 @@ impl Parser {
             let at = self.bump().span;
             let (b, b_and) = self.and()?;
             if (first && first_and) || b_and {
-                return Err(Diag::error(at, "`and` and `or` can't be mixed without parentheses"));
+                return Err(Diag::error(
+                    at,
+                    "`and` and `or` can't be mixed without parentheses",
+                ));
             }
             first = false;
             a = Self::bin(BinOp::Or, a, b);
@@ -1554,7 +1882,8 @@ impl Parser {
                 let mut args = Vec::new();
                 if !self.is_sym(")") {
                     loop {
-                        let name = if matches!(self.peek(), Tok::Ident(_)) && self.is_sym_at(1, ":") {
+                        let name = if matches!(self.peek(), Tok::Ident(_)) && self.is_sym_at(1, ":")
+                        {
                             let n = self.ident()?;
                             self.bump();
                             Some(n)
@@ -1619,7 +1948,10 @@ impl Parser {
                     self.expect_kw("else")?;
                     let b = self.expr()?;
                     let span = lo.to(b.span);
-                    Ok(Self::mk(ExprKind::If(Box::new(c), Box::new(a), Box::new(b)), span))
+                    Ok(Self::mk(
+                        ExprKind::If(Box::new(c), Box::new(a), Box::new(b)),
+                        span,
+                    ))
                 }
                 "all" | "any" | "one" if self.gen_follows(1) => {
                     self.bump();
@@ -1648,7 +1980,10 @@ impl Parser {
                 let first = self.expr()?;
                 if self.eat_sym(")") {
                     // Parentheses only group; keep the inner node but widen the span.
-                    return Ok(Expr { kind: first.kind, span: lo.to(self.prev_span()) });
+                    return Ok(Expr {
+                        kind: first.kind,
+                        span: lo.to(self.prev_span()),
+                    });
                 }
                 let mut v = vec![first];
                 while self.eat_sym(",") {
@@ -1721,10 +2056,18 @@ impl Parser {
     fn comprehension(&mut self, lo: Span, close: &str) -> PResult<Expr> {
         self.expect_kw("for")?;
         let gens = self.gens()?;
-        let filter = if self.eat_kw("where") { Some(Box::new(self.expr()?)) } else { None };
+        let filter = if self.eat_kw("where") {
+            Some(Box::new(self.expr()?))
+        } else {
+            None
+        };
         self.expect_kw("yield")?;
         let key = self.expr()?;
-        let mut kind = if close == "]" { CompKind::List } else { CompKind::Set };
+        let mut kind = if close == "]" {
+            CompKind::List
+        } else {
+            CompKind::Set
+        };
         let val = if close == "}" && self.eat_sym(":") {
             kind = CompKind::Map;
             Some(Box::new(self.expr()?))
@@ -1732,7 +2075,16 @@ impl Parser {
             None
         };
         self.expect_sym(close)?;
-        Ok(Self::mk(ExprKind::Comp { kind, gens, filter, key: Box::new(key), val }, lo.to(self.prev_span())))
+        Ok(Self::mk(
+            ExprKind::Comp {
+                kind,
+                gens,
+                filter,
+                key: Box::new(key),
+                val,
+            },
+            lo.to(self.prev_span()),
+        ))
     }
 }
 
@@ -1769,7 +2121,10 @@ mod tests {
         assert_eq!(shape(&e("x ?? y or z")), "(x ?? (y or z))");
         assert_eq!(shape(&e("not open'")), "(Not open')");
         assert_eq!(shape(&e("chain[pos] == a")), "(chain[pos] == a)");
-        assert_eq!(shape(&e("always (p leads_to q)")), "(Always (p leads_to q))");
+        assert_eq!(
+            shape(&e("always (p leads_to q)")),
+            "(Always (p leads_to q))"
+        );
     }
 
     #[test]
@@ -1787,12 +2142,31 @@ mod tests {
         assert!(matches!(e("{a, b}").kind, ExprKind::Set(_)));
         assert!(matches!(e("{}").kind, ExprKind::Set(_)));
         assert!(matches!(e("(a, b)").kind, ExprKind::Tuple(_)));
-        assert!(matches!(e("[for x in xs where x > 0 yield x]").kind, ExprKind::Comp { kind: CompKind::List, .. }));
-        assert!(matches!(e("{for x in xs yield x: 1}").kind, ExprKind::Comp { kind: CompKind::Map, .. }));
-        assert!(matches!(e("all x in S, y in T: x == y").kind, ExprKind::Quant(Quant::All, ref g, _) if g.len() == 2));
+        assert!(matches!(
+            e("[for x in xs where x > 0 yield x]").kind,
+            ExprKind::Comp {
+                kind: CompKind::List,
+                ..
+            }
+        ));
+        assert!(matches!(
+            e("{for x in xs yield x: 1}").kind,
+            ExprKind::Comp {
+                kind: CompKind::Map,
+                ..
+            }
+        ));
+        assert!(
+            matches!(e("all x in S, y in T: x == y").kind, ExprKind::Quant(Quant::All, ref g, _) if g.len() == 2)
+        );
         assert!(matches!(e("any(xs)").kind, ExprKind::Call(..)));
-        assert!(matches!(e("m with [k] = v with .f = 2").kind, ExprKind::With(..)));
-        assert!(matches!(e("f(x, restart: 15 %)").kind, ExprKind::Call(_, ref a) if a[1].name.as_deref() == Some("restart")));
+        assert!(matches!(
+            e("m with [k] = v with .f = 2").kind,
+            ExprKind::With(..)
+        ));
+        assert!(
+            matches!(e("f(x, restart: 15 %)").kind, ExprKind::Call(_, ref a) if a[1].name.as_deref() == Some("restart"))
+        );
         assert!(matches!(e("x is Agent").kind, ExprKind::Is(..)));
         assert!(matches!(e("if a then 1 else 2").kind, ExprKind::If(..)));
     }
@@ -1812,7 +2186,9 @@ mod tests {
             "machine M {\n var x: Int = 0\n var y: Int = 0\n action A {\n  when x < 1\n  x' = x + 1\n  y' = -1\n }\n}",
         )
         .unwrap();
-        let Item::Machine(mm) = &m.items[0] else { panic!() };
+        let Item::Machine(mm) = &m.items[0] else {
+            panic!()
+        };
         assert_eq!(mm.actions().next().unwrap().body.len(), 3);
     }
 }

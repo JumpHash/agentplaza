@@ -11,10 +11,10 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use zeroize::Zeroizing;
 
+use super::VaultError;
 use super::crypto::{self, Key, Opaque};
 use super::disk;
 use super::model::{self, Kdf, Slot, Wrap};
-use super::VaultError;
 
 pub const KEYFILE_TAG: &str = "apz-vault-keyfile/v1";
 pub const MIN_PASSPHRASE_CHARS: usize = 12;
@@ -30,28 +30,50 @@ pub fn keyfile_read(path: &Path) -> Result<Key, VaultError> {
             VaultError::KeyFile(format!("{}: {err}", path.display()))
         }
     })?;
-    let meta = file.metadata().map_err(|err| VaultError::KeyFile(format!("{}: {err}", path.display())))?;
+    let meta = file
+        .metadata()
+        .map_err(|err| VaultError::KeyFile(format!("{}: {err}", path.display())))?;
     if !meta.is_file() {
-        return Err(VaultError::KeyFile(format!("{} is not a regular file", path.display())));
+        return Err(VaultError::KeyFile(format!(
+            "{} is not a regular file",
+            path.display()
+        )));
     }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         let mode = meta.permissions().mode() & 0o777;
         if mode & 0o077 != 0 {
-            return Err(VaultError::KeyFile(format!("{} is readable by other users (mode {mode:o}); it must be 0600", path.display())));
+            return Err(VaultError::KeyFile(format!(
+                "{} is readable by other users (mode {mode:o}); it must be 0600",
+                path.display()
+            )));
         }
     }
-    let text = Zeroizing::new(fs::read_to_string(path).map_err(|err| VaultError::KeyFile(format!("{}: {err}", path.display())))?);
+    let text = Zeroizing::new(
+        fs::read_to_string(path)
+            .map_err(|err| VaultError::KeyFile(format!("{}: {err}", path.display())))?,
+    );
     let mut parts = text.split_whitespace();
     let (Some(tag), Some(encoded), None) = (parts.next(), parts.next(), parts.next()) else {
-        return Err(VaultError::KeyFile(format!("{} is not a vault key file", path.display())));
+        return Err(VaultError::KeyFile(format!(
+            "{} is not a vault key file",
+            path.display()
+        )));
     };
     if tag != KEYFILE_TAG {
-        return Err(VaultError::KeyFile(format!("{} is not a vault key file", path.display())));
+        return Err(VaultError::KeyFile(format!(
+            "{} is not a vault key file",
+            path.display()
+        )));
     }
-    let bytes = Zeroizing::new(STANDARD.decode(encoded).map_err(|_| VaultError::KeyFile(format!("{} holds no key", path.display())))?);
-    crypto::key_from(&bytes).ok_or_else(|| VaultError::KeyFile(format!("{} holds no 32-byte key", path.display())))
+    let bytes = Zeroizing::new(
+        STANDARD
+            .decode(encoded)
+            .map_err(|_| VaultError::KeyFile(format!("{} holds no key", path.display())))?,
+    );
+    crypto::key_from(&bytes)
+        .ok_or_else(|| VaultError::KeyFile(format!("{} holds no 32-byte key", path.display())))
 }
 
 fn keyfile_line(kek: &[u8; 32]) -> String {
@@ -61,19 +83,28 @@ fn keyfile_line(kek: &[u8; 32]) -> String {
 /// Creates a new key file with a fresh KEK: `O_EXCL`, mode 0600, synced. Fails when it exists.
 pub fn keyfile_create(path: &Path) -> Result<Key, VaultError> {
     // A missing config directory is made private; an existing one keeps its mode (others use it).
-    if let Some(dir) = path.parent().filter(|dir| !dir.as_os_str().is_empty() && !dir.exists()) {
-        apz_os::private::create_dir(dir).map_err(|err| VaultError::KeyFile(format!("{}: {err}", dir.display())))?;
+    if let Some(dir) = path
+        .parent()
+        .filter(|dir| !dir.as_os_str().is_empty() && !dir.exists())
+    {
+        apz_os::private::create_dir(dir)
+            .map_err(|err| VaultError::KeyFile(format!("{}: {err}", dir.display())))?;
     }
     let kek = crypto::random_key().map_err(VaultError::Storage)?;
     let line = Zeroizing::new(keyfile_line(&kek));
     let mut file = match disk::create_private(path) {
         Ok(file) => file,
         Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
-            return Err(VaultError::Conflict(format!("{} already exists; move it aside first", path.display())));
+            return Err(VaultError::Conflict(format!(
+                "{} already exists; move it aside first",
+                path.display()
+            )));
         }
         Err(err) => return Err(VaultError::KeyFile(format!("{}: {err}", path.display()))),
     };
-    let written = file.write_all(line.as_bytes()).and_then(|()| file.sync_all());
+    let written = file
+        .write_all(line.as_bytes())
+        .and_then(|()| file.sync_all());
     drop(file);
     if let Err(err) = written {
         let _ = fs::remove_file(path);
@@ -88,7 +119,8 @@ pub fn keyfile_create(path: &Path) -> Result<Key, VaultError> {
 /// Replaces the key file's contents with `kek`, atomically.
 pub fn keyfile_replace(path: &Path, kek: &[u8; 32]) -> Result<(), VaultError> {
     let line = Zeroizing::new(keyfile_line(kek));
-    disk::write_atomic(path, line.as_bytes()).map_err(|err| VaultError::KeyFile(format!("{}: {err}", path.display())))
+    disk::write_atomic(path, line.as_bytes())
+        .map_err(|err| VaultError::KeyFile(format!("{}: {err}", path.display())))
 }
 
 /// Overwrites and removes a key file whose slot was deleted: its key must not survive.
@@ -103,10 +135,18 @@ pub fn keyfile_shred(path: &Path) {
 }
 
 /// Wraps the root key under `kek` for slot `slot_id`.
-pub fn wrap_root(kek: &[u8; 32], vault_id: &str, slot_id: &str, root: &[u8; 32]) -> Result<Wrap, VaultError> {
+pub fn wrap_root(
+    kek: &[u8; 32],
+    vault_id: &str,
+    slot_id: &str,
+    root: &[u8; 32],
+) -> Result<Wrap, VaultError> {
     let aad = crypto::aad(SLOT_LABEL, &[vault_id, slot_id]);
     let (nonce, ct) = crypto::seal(kek, &aad, root).map_err(VaultError::Storage)?;
-    Ok(Wrap { nonce: model::enc(&nonce), ct: model::enc(&ct) })
+    Ok(Wrap {
+        nonce: model::enc(&nonce),
+        ct: model::enc(&ct),
+    })
 }
 
 /// Unwraps a slot's root key with `kek`. Fails when the KEK is wrong or the slot was changed.
@@ -136,14 +176,27 @@ pub fn check_kdf(kdf: &Kdf) -> Result<(), VaultError> {
         && (8 * 1024..=1024 * 1024).contains(&kdf.memory_kib)
         && (1..=10).contains(&kdf.passes)
         && (1..=8).contains(&kdf.lanes);
-    if ok { Ok(()) } else { Err(VaultError::Corrupt("a passphrase slot has an unsupported cost".into())) }
+    if ok {
+        Ok(())
+    } else {
+        Err(VaultError::Corrupt(
+            "a passphrase slot has an unsupported cost".into(),
+        ))
+    }
 }
 
 /// The KEK of a passphrase under a slot's KDF.
 pub fn kek_from_passphrase(passphrase: &str, kdf: &Kdf) -> Result<Key, VaultError> {
     check_kdf(kdf)?;
     let salt = model::dec(&kdf.salt).map_err(VaultError::Corrupt)?;
-    crypto::argon2id(passphrase.as_bytes(), &salt, kdf.memory_kib, kdf.passes, kdf.lanes).map_err(VaultError::Storage)
+    crypto::argon2id(
+        passphrase.as_bytes(),
+        &salt,
+        kdf.memory_kib,
+        kdf.passes,
+        kdf.lanes,
+    )
+    .map_err(VaultError::Storage)
 }
 
 /// The KEK of a recovery code.
@@ -155,7 +208,9 @@ pub fn kek_from_recovery(code: &[u8; 32], vault_id: &str) -> Key {
 pub fn check_passphrase(passphrase: &str) -> Result<(), VaultError> {
     let chars = passphrase.chars().count();
     if chars < MIN_PASSPHRASE_CHARS {
-        return Err(VaultError::Invalid(format!("the passphrase must be at least {MIN_PASSPHRASE_CHARS} characters")));
+        return Err(VaultError::Invalid(format!(
+            "the passphrase must be at least {MIN_PASSPHRASE_CHARS} characters"
+        )));
     }
     if chars > MAX_PASSPHRASE_CHARS {
         return Err(VaultError::Invalid("the passphrase is too long".into()));
@@ -167,13 +222,20 @@ pub fn check_passphrase(passphrase: &str) -> Result<(), VaultError> {
 pub fn new_recovery_code() -> Result<(Key, Zeroizing<String>), VaultError> {
     let code = crypto::random_key().map_err(VaultError::Storage)?;
     let text = crypto::base32(code.as_ref());
-    let groups: Vec<&str> = text.as_bytes().chunks(4).map(|c| std::str::from_utf8(c).unwrap_or("")).collect();
+    let groups: Vec<&str> = text
+        .as_bytes()
+        .chunks(4)
+        .map(|c| std::str::from_utf8(c).unwrap_or(""))
+        .collect();
     Ok((code, Zeroizing::new(groups.join("-"))))
 }
 
 /// The bytes of a recovery code as typed: dashes and spaces ignored, case ignored.
 pub fn parse_recovery_code(text: &str) -> Option<Key> {
-    let cleaned: String = text.chars().filter(|c| !c.is_whitespace() && *c != '-').collect();
+    let cleaned: String = text
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != '-')
+        .collect();
     if cleaned.len() != 52 {
         return None;
     }

@@ -46,7 +46,13 @@ pub fn run(workspace: &Workspace, input: &Value) -> Result<String, String> {
     ensure_installed(workspace, job.engine)?;
     let argv = command_args(job.engine, &job.prompt, workspace.dir(), &job.route);
     let refs: Vec<&str> = argv.iter().map(String::as_str).collect();
-    let outcome = bash::execute(&job.dir, ENV_PROGRAM, &refs, job.timeout_s, Privilege::Agent);
+    let outcome = bash::execute(
+        &job.dir,
+        ENV_PROGRAM,
+        &refs,
+        job.timeout_s,
+        Privilege::Agent,
+    );
     match (job.engine, outcome) {
         (Engine::Claude, Ok(text)) => claude_report(strip_exit_line(&text)),
         (_, Ok(text)) => Ok(tail(&text)),
@@ -67,7 +73,9 @@ impl Engine {
             "claude" => Ok(Self::Claude),
             "codex" => Ok(Self::Codex),
             "opencode" => Ok(Self::OpenCode),
-            _ => Err(format!("invalid input: \"engine\" must be claude, codex or opencode, not {name:?}")),
+            _ => Err(format!(
+                "invalid input: \"engine\" must be claude, codex or opencode, not {name:?}"
+            )),
         }
     }
 
@@ -105,7 +113,11 @@ impl Engine {
                 "--permission-mode",
                 "bypassPermissions",
             ],
-            Self::Codex => vec!["exec", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox"],
+            Self::Codex => vec![
+                "exec",
+                "--skip-git-repo-check",
+                "--dangerously-bypass-approvals-and-sandbox",
+            ],
             Self::OpenCode => vec!["run", prompt],
         };
         if let (Self::Codex, Some(model)) = (self, model) {
@@ -133,7 +145,12 @@ struct Job {
 
 impl Job {
     fn parse(workspace: &Workspace, input: &Value) -> Result<Self, String> {
-        let engine = Engine::parse(input.get("engine").and_then(Value::as_str).unwrap_or_default())?;
+        let engine = Engine::parse(
+            input
+                .get("engine")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+        )?;
         let prompt = match input.get("prompt").and_then(Value::as_str) {
             Some(prompt) if !prompt.trim().is_empty() => prompt.to_string(),
             _ => return Err("invalid input: \"prompt\" must be a non-empty string".to_string()),
@@ -153,12 +170,20 @@ impl Job {
                 value
                     .as_str()
                     .filter(|model| !model.trim().is_empty())
-                    .ok_or_else(|| "invalid input: \"model\" must be a non-empty string".to_string())?,
+                    .ok_or_else(|| {
+                        "invalid input: \"model\" must be a non-empty string".to_string()
+                    })?,
             ),
         };
         let route = model_route(engine, model)?;
         let dir = job_dir(workspace, input.get("path"))?;
-        Ok(Self { engine, prompt, dir, timeout_s, route })
+        Ok(Self {
+            engine,
+            prompt,
+            dir,
+            timeout_s,
+            route,
+        })
     }
 }
 
@@ -169,16 +194,21 @@ fn job_dir(workspace: &Workspace, path: Option<&Value>) -> Result<PathBuf, Strin
     let root = workspace.dir();
     let raw = match path {
         None | Some(Value::Null) => return Ok(root.to_path_buf()),
-        Some(value) => value.as_str().ok_or_else(|| "invalid input: \"path\" must be a string".to_string())?,
+        Some(value) => value
+            .as_str()
+            .ok_or_else(|| "invalid input: \"path\" must be a string".to_string())?,
     };
-    let refused = || format!("invalid input: \"path\" must be a folder inside the workspace, not {raw:?}");
+    let refused =
+        || format!("invalid input: \"path\" must be a folder inside the workspace, not {raw:?}");
     let plain = Path::new(raw)
         .components()
         .all(|part| matches!(part, Component::Normal(_) | Component::CurDir));
     if !plain {
         return Err(refused());
     }
-    let canonical_root = root.canonicalize().map_err(|err| format!("unavailable: cannot open the workspace: {err}"))?;
+    let canonical_root = root
+        .canonicalize()
+        .map_err(|err| format!("unavailable: cannot open the workspace: {err}"))?;
     let canonical = root.join(raw).canonicalize().map_err(|_| refused())?;
     if !canonical.starts_with(&canonical_root) || !canonical.is_dir() {
         return Err(refused());
@@ -193,8 +223,14 @@ fn ensure_installed(workspace: &Workspace, engine: Engine) -> Result<(), String>
     if binary.exists() {
         return Ok(());
     }
-    bash::install_packages(workspace, &json!({ "packages": ["nodejs", "npm"] }))
-        .map_err(|err| format!("cannot install nodejs and npm for {}: {err}", engine.binary()))?;
+    bash::install_packages(workspace, &json!({ "packages": ["nodejs", "npm"] })).map_err(
+        |err| {
+            format!(
+                "cannot install nodejs and npm for {}: {err}",
+                engine.binary()
+            )
+        },
+    )?;
     bash::execute(
         workspace.dir(),
         "npm",
@@ -206,7 +242,11 @@ fn ensure_installed(workspace: &Workspace, engine: Engine) -> Result<(), String>
     if binary.exists() {
         Ok(())
     } else {
-        Err(format!("npm installed {} but {} is missing", engine.package(), binary.display()))
+        Err(format!(
+            "npm installed {} but {} is missing",
+            engine.package(),
+            binary.display()
+        ))
     }
 }
 
@@ -216,8 +256,17 @@ fn ensure_installed(workspace: &Workspace, engine: Engine) -> Result<(), String>
 /// then the binary and its arguments.
 fn command_args(engine: Engine, prompt: &str, home: &Path, route: &Route) -> Vec<String> {
     let mut argv = vec![format!("HOME={}", home.display())];
-    argv.extend(ENGINE_ENV.iter().map(|(key, value)| format!("{key}={value}")));
-    argv.extend(route.env.iter().map(|(key, value)| format!("{key}={value}")));
+    argv.extend(
+        ENGINE_ENV
+            .iter()
+            .map(|(key, value)| format!("{key}={value}")),
+    );
+    argv.extend(
+        route
+            .env
+            .iter()
+            .map(|(key, value)| format!("{key}={value}")),
+    );
     argv.push(engine.binary().to_string());
     argv.extend(engine.args(prompt, route.model.as_deref()));
     argv
@@ -235,7 +284,9 @@ struct Route {
 fn split_model(model: &str) -> Result<(&str, &str), String> {
     match model.split_once('/') {
         Some((provider, rest)) if !provider.is_empty() && !rest.is_empty() => Ok((provider, rest)),
-        _ => Err(format!("invalid input: \"model\" must be <provider>/<model>, not {model:?}")),
+        _ => Err(format!(
+            "invalid input: \"model\" must be <provider>/<model>, not {model:?}"
+        )),
     }
 }
 
@@ -248,16 +299,39 @@ fn opencode_provider_for(provider: &str, model: &str) -> (String, &'static str, 
     if provider == "opencode" {
         let base_url = format!("{GATEWAY}/opencode/v1");
         if model.starts_with("claude-") {
-            return ("plaza-opencode-anthropic".to_string(), "@ai-sdk/anthropic", base_url);
+            return (
+                "plaza-opencode-anthropic".to_string(),
+                "@ai-sdk/anthropic",
+                base_url,
+            );
         }
-        if RESPONSES_PREFIXES.iter().any(|prefix| model.starts_with(prefix)) {
-            return ("plaza-opencode-responses".to_string(), "@ai-sdk/openai", base_url);
+        if RESPONSES_PREFIXES
+            .iter()
+            .any(|prefix| model.starts_with(prefix))
+        {
+            return (
+                "plaza-opencode-responses".to_string(),
+                "@ai-sdk/openai",
+                base_url,
+            );
         }
-        return ("plaza-opencode".to_string(), "@ai-sdk/openai-compatible", base_url);
+        return (
+            "plaza-opencode".to_string(),
+            "@ai-sdk/openai-compatible",
+            base_url,
+        );
     }
     match provider {
-        "openai" => ("plaza-openai".to_string(), "@ai-sdk/openai", format!("{GATEWAY}/openai/v1")),
-        _ => (format!("plaza-{provider}"), "@ai-sdk/openai-compatible", format!("{GATEWAY}/{provider}/v1")),
+        "openai" => (
+            "plaza-openai".to_string(),
+            "@ai-sdk/openai",
+            format!("{GATEWAY}/openai/v1"),
+        ),
+        _ => (
+            format!("plaza-{provider}"),
+            "@ai-sdk/openai-compatible",
+            format!("{GATEWAY}/{provider}/v1"),
+        ),
     }
 }
 
@@ -288,14 +362,26 @@ fn model_route(engine: Engine, model: Option<&str>) -> Result<Route, String> {
                     ));
                 }
             };
-            Ok(Route { env: gateway_env("ANTHROPIC_BASE_URL", path), model: Some(rest.to_string()) })
+            Ok(Route {
+                env: gateway_env("ANTHROPIC_BASE_URL", path),
+                model: Some(rest.to_string()),
+            })
         }
         Engine::Codex => match provider {
-            "openai" => Ok(Route { env: Vec::new(), model: Some(rest.to_string()) }),
-            "opencode" if RESPONSES_PREFIXES.iter().any(|prefix| rest.starts_with(prefix)) => Ok(Route {
-                env: gateway_env("OPENAI_BASE_URL", "opencode/v1"),
+            "openai" => Ok(Route {
+                env: Vec::new(),
                 model: Some(rest.to_string()),
             }),
+            "opencode"
+                if RESPONSES_PREFIXES
+                    .iter()
+                    .any(|prefix| rest.starts_with(prefix)) =>
+            {
+                Ok(Route {
+                    env: gateway_env("OPENAI_BASE_URL", "opencode/v1"),
+                    model: Some(rest.to_string()),
+                })
+            }
             "opencode" => Err(format!(
                 "invalid input: \"model\" is {model:?}. Codex needs a Responses model on OpenCode (gpt-, grok- or muse-spark-); use OpenCode or Claude Code for this one"
             )),
@@ -307,7 +393,10 @@ fn model_route(engine: Engine, model: Option<&str>) -> Result<Route, String> {
             )),
         },
         Engine::OpenCode => {
-            if !provider.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+            if !provider
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-')
+            {
                 return Err(format!(
                     "invalid input: \"model\" provider must be letters, digits and dashes, not {provider:?}"
                 ));
@@ -340,9 +429,16 @@ fn claude_report(body: &str) -> Result<String, String> {
     let Ok(report) = serde_json::from_str::<Value>(body.trim()) else {
         return Ok(tail(body));
     };
-    let result = report.get("result").and_then(Value::as_str).unwrap_or_default();
+    let result = report
+        .get("result")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
     if report.get("is_error").and_then(Value::as_bool) == Some(true) {
-        return Err(if result.is_empty() { tail(body) } else { tail(result) });
+        return Err(if result.is_empty() {
+            tail(body)
+        } else {
+            tail(result)
+        });
     }
     let mut text = tail(result);
     let mut footer = Vec::new();
@@ -385,7 +481,8 @@ mod tests {
     use super::*;
 
     fn scratch(name: &str) -> Workspace {
-        let dir = std::env::temp_dir().join(format!("apz-harness-engines-{name}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("apz-harness-engines-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("a scratch workspace");
         Workspace::at(dir)
@@ -401,24 +498,57 @@ mod tests {
         assert_eq!(Engine::OpenCode.binary(), "opencode");
         assert_eq!(
             Engine::Claude.args("fix the bug", None),
-            ["-p", "fix the bug", "--output-format", "json", "--permission-mode", "bypassPermissions"]
+            [
+                "-p",
+                "fix the bug",
+                "--output-format",
+                "json",
+                "--permission-mode",
+                "bypassPermissions"
+            ]
         );
         assert_eq!(
             Engine::Codex.args("fix the bug", None),
-            ["exec", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox", "fix the bug"]
+            [
+                "exec",
+                "--skip-git-repo-check",
+                "--dangerously-bypass-approvals-and-sandbox",
+                "fix the bug"
+            ]
         );
-        assert_eq!(Engine::OpenCode.args("fix the bug", None), ["run", "fix the bug"]);
-        assert_eq!(Engine::Claude.args("fix", Some("claude-x"))[6..], ["--model", "claude-x"]);
+        assert_eq!(
+            Engine::OpenCode.args("fix the bug", None),
+            ["run", "fix the bug"]
+        );
+        assert_eq!(
+            Engine::Claude.args("fix", Some("claude-x"))[6..],
+            ["--model", "claude-x"]
+        );
         assert_eq!(
             Engine::Codex.args("fix", Some("gpt-5")),
-            ["exec", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox", "-m", "gpt-5", "fix"]
+            [
+                "exec",
+                "--skip-git-repo-check",
+                "--dangerously-bypass-approvals-and-sandbox",
+                "-m",
+                "gpt-5",
+                "fix"
+            ]
         );
-        assert_eq!(Engine::OpenCode.args("fix", Some("claude-x")), ["run", "fix"]);
+        assert_eq!(
+            Engine::OpenCode.args("fix", Some("claude-x")),
+            ["run", "fix"]
+        );
     }
 
     #[test]
     fn the_command_sets_the_gateway_environment_and_runs_the_binary_last() {
-        let argv = command_args(Engine::Claude, "hi", Path::new("/workspace"), &Route::default());
+        let argv = command_args(
+            Engine::Claude,
+            "hi",
+            Path::new("/workspace"),
+            &Route::default(),
+        );
         for pair in [
             "HOME=/workspace",
             "ANTHROPIC_BASE_URL=http://plaza.gateway/anthropic",
@@ -431,22 +561,47 @@ mod tests {
         ] {
             assert!(argv.iter().any(|arg| arg == pair), "{pair}");
         }
-        let at = argv.iter().position(|arg| arg == "claude").expect("the binary");
-        assert_eq!(argv[at + 1..], ["-p", "hi", "--output-format", "json", "--permission-mode", "bypassPermissions"]);
+        let at = argv
+            .iter()
+            .position(|arg| arg == "claude")
+            .expect("the binary");
+        assert_eq!(
+            argv[at + 1..],
+            [
+                "-p",
+                "hi",
+                "--output-format",
+                "json",
+                "--permission-mode",
+                "bypassPermissions"
+            ]
+        );
     }
 
     #[test]
     fn a_claude_report_returns_its_result_with_the_turns_and_cost() {
         let body = r#"{"type":"result","subtype":"success","is_error":false,"result":"Fixed it.","num_turns":4,"total_cost_usd":0.0123}"#;
-        assert_eq!(claude_report(body).expect("a report"), "Fixed it.\n\n[num_turns: 4, total_cost_usd: 0.0123]");
-        assert_eq!(claude_report(r#"{"result":"Done."}"#).expect("a report"), "Done.");
+        assert_eq!(
+            claude_report(body).expect("a report"),
+            "Fixed it.\n\n[num_turns: 4, total_cost_usd: 0.0123]"
+        );
+        assert_eq!(
+            claude_report(r#"{"result":"Done."}"#).expect("a report"),
+            "Done."
+        );
     }
 
     #[test]
     fn a_claude_error_report_is_an_error_and_plain_output_is_kept() {
         let body = r#"{"is_error":true,"result":"Context is full."}"#;
-        assert_eq!(claude_report(body).expect_err("an error report"), "Context is full.");
-        assert_eq!(claude_report("not json\n").expect("kept as it is"), "not json\n");
+        assert_eq!(
+            claude_report(body).expect_err("an error report"),
+            "Context is full."
+        );
+        assert_eq!(
+            claude_report("not json\n").expect("kept as it is"),
+            "not json\n"
+        );
     }
 
     #[test]
@@ -460,7 +615,11 @@ mod tests {
     fn a_long_output_keeps_its_end_on_a_character_boundary() {
         let text = format!("{}end", "é".repeat(TAIL_BYTES));
         let kept = tail(&text);
-        assert!(kept.ends_with("end") && kept.len() <= TAIL_BYTES + 32, "{}", kept.len());
+        assert!(
+            kept.ends_with("end") && kept.len() <= TAIL_BYTES + 32,
+            "{}",
+            kept.len()
+        );
         assert_eq!(tail("short"), "short");
     }
 
@@ -471,11 +630,26 @@ mod tests {
             (json!({ "engine": "vim", "prompt": "x" }), "engine"),
             (json!({ "prompt": "x" }), "engine"),
             (json!({ "engine": "codex", "prompt": "  " }), "prompt"),
-            (json!({ "engine": "codex", "prompt": "x", "timeout_s": 5 }), "timeout_s"),
-            (json!({ "engine": "codex", "prompt": "x", "timeout_s": 3601 }), "timeout_s"),
-            (json!({ "engine": "codex", "prompt": "x", "path": "../up" }), "path"),
-            (json!({ "engine": "codex", "prompt": "x", "model": "opencode/claude-x" }), "model"),
-            (json!({ "engine": "claude", "prompt": "x", "model": "opencode/deepseek-v4-pro" }), "Claude Code"),
+            (
+                json!({ "engine": "codex", "prompt": "x", "timeout_s": 5 }),
+                "timeout_s",
+            ),
+            (
+                json!({ "engine": "codex", "prompt": "x", "timeout_s": 3601 }),
+                "timeout_s",
+            ),
+            (
+                json!({ "engine": "codex", "prompt": "x", "path": "../up" }),
+                "path",
+            ),
+            (
+                json!({ "engine": "codex", "prompt": "x", "model": "opencode/claude-x" }),
+                "model",
+            ),
+            (
+                json!({ "engine": "claude", "prompt": "x", "model": "opencode/deepseek-v4-pro" }),
+                "Claude Code",
+            ),
         ] {
             let err = run(&workspace, &input).expect_err("refused");
             assert!(err.contains(reason), "{input}: {err}");
@@ -489,16 +663,32 @@ mod tests {
         let outside = scratch("outside");
         std::os::unix::fs::symlink(outside.dir(), workspace.dir().join("escape")).expect("a link");
         assert!(job_dir(&workspace, None).is_ok());
-        assert!(job_dir(&workspace, Some(&json!("project"))).expect("a folder").ends_with("project"));
-        for path in ["/etc", "../outside", "project/../../outside", "escape", "missing"] {
+        assert!(
+            job_dir(&workspace, Some(&json!("project")))
+                .expect("a folder")
+                .ends_with("project")
+        );
+        for path in [
+            "/etc",
+            "../outside",
+            "project/../../outside",
+            "escape",
+            "missing",
+        ] {
             assert!(job_dir(&workspace, Some(&json!(path))).is_err(), "{path}");
         }
     }
 
     #[test]
     fn a_model_id_splits_on_its_first_slash() {
-        assert_eq!(split_model("openrouter/anthropic/claude-x").expect("a split"), ("openrouter", "anthropic/claude-x"));
-        assert_eq!(split_model("opencode/claude-sonnet-5-5").expect("a split"), ("opencode", "claude-sonnet-5-5"));
+        assert_eq!(
+            split_model("openrouter/anthropic/claude-x").expect("a split"),
+            ("openrouter", "anthropic/claude-x")
+        );
+        assert_eq!(
+            split_model("opencode/claude-sonnet-5-5").expect("a split"),
+            ("opencode", "claude-sonnet-5-5")
+        );
         for bad in ["claude-sonnet-5-5", "/claude", "openrouter/"] {
             assert!(split_model(bad).is_err(), "{bad}");
         }
@@ -506,45 +696,90 @@ mod tests {
 
     #[test]
     fn claude_code_points_at_the_anthropic_shaped_gateway_routes() {
-        let route = model_route(Engine::Claude, Some("openrouter/anthropic/claude-x")).expect("a route");
-        assert_eq!(route.env, [("ANTHROPIC_BASE_URL".to_string(), "http://plaza.gateway/openrouter".to_string())]);
+        let route =
+            model_route(Engine::Claude, Some("openrouter/anthropic/claude-x")).expect("a route");
+        assert_eq!(
+            route.env,
+            [(
+                "ANTHROPIC_BASE_URL".to_string(),
+                "http://plaza.gateway/openrouter".to_string()
+            )]
+        );
         assert_eq!(route.model.as_deref(), Some("anthropic/claude-x"));
-        let route = model_route(Engine::Claude, Some("opencode/claude-sonnet-5-5")).expect("a route");
-        assert_eq!(route.env, [("ANTHROPIC_BASE_URL".to_string(), "http://plaza.gateway/opencode".to_string())]);
+        let route =
+            model_route(Engine::Claude, Some("opencode/claude-sonnet-5-5")).expect("a route");
+        assert_eq!(
+            route.env,
+            [(
+                "ANTHROPIC_BASE_URL".to_string(),
+                "http://plaza.gateway/opencode".to_string()
+            )]
+        );
         assert_eq!(route.model.as_deref(), Some("claude-sonnet-5-5"));
-        assert_eq!(model_route(Engine::Claude, None).expect("the default"), Route::default());
+        assert_eq!(
+            model_route(Engine::Claude, None).expect("the default"),
+            Route::default()
+        );
     }
 
     #[test]
     fn claude_code_refuses_an_opencode_model_its_route_does_not_serve() {
-        let err = model_route(Engine::Claude, Some("opencode/deepseek-v4-pro")).expect_err("refused");
-        assert!(err.contains("Claude Code needs an Anthropic-shaped model"), "{err}");
+        let err =
+            model_route(Engine::Claude, Some("opencode/deepseek-v4-pro")).expect_err("refused");
+        assert!(
+            err.contains("Claude Code needs an Anthropic-shaped model"),
+            "{err}"
+        );
     }
 
     #[test]
     fn codex_takes_only_the_models_its_wire_protocol_serves() {
         let route = model_route(Engine::Codex, Some("opencode/gpt-5")).expect("a route");
-        assert_eq!(route.env, [("OPENAI_BASE_URL".to_string(), "http://plaza.gateway/opencode/v1".to_string())]);
+        assert_eq!(
+            route.env,
+            [(
+                "OPENAI_BASE_URL".to_string(),
+                "http://plaza.gateway/opencode/v1".to_string()
+            )]
+        );
         assert_eq!(route.model.as_deref(), Some("gpt-5"));
         let openai = model_route(Engine::Codex, Some("openai/gpt-5")).expect("a route");
         assert!(openai.env.is_empty());
         assert_eq!(openai.model.as_deref(), Some("gpt-5"));
-        for refused in ["openrouter/anthropic/claude-x", "opencode/deepseek-v4-pro", "google/gemini-x"] {
-            assert!(model_route(Engine::Codex, Some(refused)).is_err(), "{refused}");
+        for refused in [
+            "openrouter/anthropic/claude-x",
+            "opencode/deepseek-v4-pro",
+            "google/gemini-x",
+        ] {
+            assert!(
+                model_route(Engine::Codex, Some(refused)).is_err(),
+                "{refused}"
+            );
         }
     }
 
     #[test]
     fn opencode_config_names_a_plaza_provider_at_the_gateway() {
-        let route = model_route(Engine::OpenCode, Some("openrouter/anthropic/claude-x")).expect("a route");
+        let route =
+            model_route(Engine::OpenCode, Some("openrouter/anthropic/claude-x")).expect("a route");
         assert_eq!(route.model, None);
         assert_eq!(route.env[0].0, "OPENCODE_CONFIG_CONTENT");
         let config: Value = serde_json::from_str(&route.env[0].1).expect("JSON");
         assert_eq!(config["model"], "plaza-openrouter/anthropic/claude-x");
-        assert_eq!(config["provider"]["plaza-openrouter"]["options"]["baseURL"], "http://plaza.gateway/openrouter/v1");
-        assert!(config["provider"]["plaza-openrouter"]["models"].get("anthropic/claude-x").is_some());
+        assert_eq!(
+            config["provider"]["plaza-openrouter"]["options"]["baseURL"],
+            "http://plaza.gateway/openrouter/v1"
+        );
+        assert!(
+            config["provider"]["plaza-openrouter"]["models"]
+                .get("anthropic/claude-x")
+                .is_some()
+        );
         let argv = command_args(Engine::OpenCode, "hi", Path::new("/workspace"), &route);
-        assert!(argv.contains(&format!("OPENCODE_CONFIG_CONTENT={}", route.env[0].1)), "{argv:?}");
+        assert!(
+            argv.contains(&format!("OPENCODE_CONFIG_CONTENT={}", route.env[0].1)),
+            "{argv:?}"
+        );
         assert!(model_route(Engine::OpenCode, Some("bad_name/x")).is_err());
     }
 
@@ -552,29 +787,62 @@ mod tests {
     fn opencode_gives_each_model_the_block_whose_api_shape_serves_it() {
         let opencode_base = "http://plaza.gateway/opencode/v1";
         let (id, npm, base) = opencode_provider_for("opencode", "gpt-5.6-terra");
-        assert_eq!((id.as_str(), npm, base.as_str()), ("plaza-opencode-responses", "@ai-sdk/openai", opencode_base));
+        assert_eq!(
+            (id.as_str(), npm, base.as_str()),
+            ("plaza-opencode-responses", "@ai-sdk/openai", opencode_base)
+        );
         let (id, npm, base) = opencode_provider_for("opencode", "claude-sonnet-5-5");
-        assert_eq!((id.as_str(), npm, base.as_str()), ("plaza-opencode-anthropic", "@ai-sdk/anthropic", opencode_base));
+        assert_eq!(
+            (id.as_str(), npm, base.as_str()),
+            (
+                "plaza-opencode-anthropic",
+                "@ai-sdk/anthropic",
+                opencode_base
+            )
+        );
         let (id, npm, base) = opencode_provider_for("opencode", "deepseek-v4-pro");
-        assert_eq!((id.as_str(), npm, base.as_str()), ("plaza-opencode", "@ai-sdk/openai-compatible", opencode_base));
+        assert_eq!(
+            (id.as_str(), npm, base.as_str()),
+            ("plaza-opencode", "@ai-sdk/openai-compatible", opencode_base)
+        );
         let (id, npm, base) = opencode_provider_for("openai", "gpt-5.6-terra");
         assert_eq!(
             (id.as_str(), npm, base.as_str()),
-            ("plaza-openai", "@ai-sdk/openai", "http://plaza.gateway/openai/v1")
+            (
+                "plaza-openai",
+                "@ai-sdk/openai",
+                "http://plaza.gateway/openai/v1"
+            )
         );
         let (id, npm, base) = opencode_provider_for("openrouter", "anthropic/claude-x");
         assert_eq!(
             (id.as_str(), npm, base.as_str()),
-            ("plaza-openrouter", "@ai-sdk/openai-compatible", "http://plaza.gateway/openrouter/v1")
+            (
+                "plaza-openrouter",
+                "@ai-sdk/openai-compatible",
+                "http://plaza.gateway/openrouter/v1"
+            )
         );
     }
 
     #[test]
     fn opencode_config_parses_and_its_model_names_the_block_that_serves_it() {
         for (model, block, npm) in [
-            ("opencode/gpt-5.6-terra", "plaza-opencode-responses", "@ai-sdk/openai"),
-            ("opencode/claude-sonnet-5-5", "plaza-opencode-anthropic", "@ai-sdk/anthropic"),
-            ("opencode/deepseek-v4-pro", "plaza-opencode", "@ai-sdk/openai-compatible"),
+            (
+                "opencode/gpt-5.6-terra",
+                "plaza-opencode-responses",
+                "@ai-sdk/openai",
+            ),
+            (
+                "opencode/claude-sonnet-5-5",
+                "plaza-opencode-anthropic",
+                "@ai-sdk/anthropic",
+            ),
+            (
+                "opencode/deepseek-v4-pro",
+                "plaza-opencode",
+                "@ai-sdk/openai-compatible",
+            ),
             ("openai/gpt-5.6-terra", "plaza-openai", "@ai-sdk/openai"),
         ] {
             let route = model_route(Engine::OpenCode, Some(model)).expect("a route");
@@ -583,8 +851,15 @@ mod tests {
             let (selected_block, served) = selected.split_once('/').expect("<block>/<model>");
             assert_eq!(selected_block, block, "{model}: {config}");
             assert_eq!(config["provider"][block]["npm"], npm, "{model}: {config}");
-            assert!(config["provider"][block]["models"].get(served).is_some(), "{model}: {config}");
-            assert_eq!(config["provider"].as_object().map(|blocks| blocks.len()), Some(1), "{model}: {config}");
+            assert!(
+                config["provider"][block]["models"].get(served).is_some(),
+                "{model}: {config}"
+            );
+            assert_eq!(
+                config["provider"].as_object().map(|blocks| blocks.len()),
+                Some(1),
+                "{model}: {config}"
+            );
         }
     }
 }

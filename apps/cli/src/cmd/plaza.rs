@@ -1,9 +1,9 @@
 //! `agentplaza plaza`: STOP ALL and resume.
 
 use clap::Subcommand;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use crate::ctx::{self, confirm, Ctx};
+use crate::ctx::{self, Ctx, confirm};
 
 #[derive(Subcommand, Debug)]
 pub enum Cmd {
@@ -31,12 +31,22 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             Ok(())
         }
         Cmd::Stop { reason, yes } => {
-            if !confirm(yes, "STOP ALL: every agent's work is cancelled and nothing new starts.")? {
+            if !confirm(
+                yes,
+                "STOP ALL: every agent's work is cancelled and nothing new starts.",
+            )? {
                 println!("cancelled");
                 return Ok(());
             }
-            let state = ctx.client.post("/v1/plaza/stop", &json!({ "reason": reason }))?;
-            ctx.out(&state, |s| println!("plaza stopped; {} work item(s) cancelled", ctx::text(s, "cancelled")));
+            let state = ctx
+                .client
+                .post("/v1/plaza/stop", &json!({ "reason": reason }))?;
+            ctx.out(&state, |s| {
+                println!(
+                    "plaza stopped; {} work item(s) cancelled",
+                    ctx::text(s, "cancelled")
+                )
+            });
             Ok(())
         }
         Cmd::Resume => {
@@ -50,7 +60,10 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
 fn print_state(s: &Value) {
     let stopped = s["paused"].as_bool().unwrap_or(false);
     ctx::fields(&[
-        ("state", if stopped { "STOPPED" } else { "running" }.to_string()),
+        (
+            "state",
+            if stopped { "STOPPED" } else { "running" }.to_string(),
+        ),
         ("since", ctx::when(&s["since_ms"])),
         ("by", ctx::s(s, "by").to_string()),
         ("reason", ctx::s(s, "reason").to_string()),

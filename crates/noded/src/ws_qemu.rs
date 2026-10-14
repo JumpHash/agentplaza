@@ -598,7 +598,11 @@ pub fn running_pid(dir: &Path) -> Option<u32> {
 /// The pid a QEMU VM left running by a previous noded can be taken back by, from what the node reads: its pidfile's text, its
 /// `/proc` command line (`None` when there is no such process), and whether its QMP socket answers. A VM is taken back only
 /// when all three say it is a running QEMU that this node can still reach.
-pub fn reattach_pid(pidfile: Option<&str>, cmdline: Option<&[u8]>, qmp_answers: bool) -> Option<u32> {
+pub fn reattach_pid(
+    pidfile: Option<&str>,
+    cmdline: Option<&[u8]>,
+    qmp_answers: bool,
+) -> Option<u32> {
     let pid = parse_pid(pidfile?)?;
     (is_qemu_cmdline(cmdline?) && qmp_answers).then_some(pid)
 }
@@ -1250,7 +1254,11 @@ mod tests {
             None,
             "a pid reused by another process is not a VM"
         );
-        assert_eq!(reattach_pid(Some("4242"), None, true), None, "no such process");
+        assert_eq!(
+            reattach_pid(Some("4242"), None, true),
+            None,
+            "no such process"
+        );
         assert_eq!(reattach_pid(None, Some(qemu), true), None, "no pidfile");
         assert_eq!(reattach_pid(Some("not a pid"), Some(qemu), true), None);
         assert_eq!(reattach_pid(Some(""), Some(qemu), true), None);

@@ -178,8 +178,7 @@ fn build_fadt(
     fadt.set_reset_reg(GenericAddressStructure::new(
         1, // SystemIO
         8, // bit width
-        0,
-        1, // byte access
+        0, 1, // byte access
         RESET_PORT,
     ));
     fadt.set_reset_value(RESET_VALUE);
@@ -289,9 +288,7 @@ mod tests {
     #[test]
     fn dsdt_contains_s5_object() {
         let data = build_dsdt_data().unwrap();
-        let s5 = [
-            0x08, 0x5F, 0x53, 0x35, 0x5F, 0x12, 0x04, 0x01, 0x0A, 0x05,
-        ];
+        let s5 = [0x08, 0x5F, 0x53, 0x35, 0x5F, 0x12, 0x04, 0x01, 0x0A, 0x05];
         assert!(
             data.windows(s5.len()).any(|w| w == s5),
             "DSDT AML does not contain the _S5 object"
@@ -363,9 +360,7 @@ mod tests {
         let dsdt_header = read_bytes(&mem, dsdt_addr, 36);
         assert_eq!(&dsdt_header[0..4], b"DSDT");
         let dsdt = read_bytes(&mem, dsdt_addr, u32_at(&dsdt_header, 4) as usize);
-        let s5 = [
-            0x08, 0x5F, 0x53, 0x35, 0x5F, 0x12, 0x04, 0x01, 0x0A, 0x05,
-        ];
+        let s5 = [0x08, 0x5F, 0x53, 0x35, 0x5F, 0x12, 0x04, 0x01, 0x0A, 0x05];
         assert!(
             dsdt.windows(s5.len()).any(|w| w == s5),
             "DSDT does not contain the _S5 object"

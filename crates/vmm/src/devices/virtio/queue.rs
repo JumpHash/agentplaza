@@ -22,7 +22,7 @@ use std::sync::atomic::{Ordering, fence};
 use vm_memory::bitmap::Bitmap;
 use vm_memory::{GuestMemoryBackend, GuestMemoryError};
 
-use crate::vstate::memory::{u64_to_usize, ByteValued, GuestAddress};
+use crate::vstate::memory::{ByteValued, GuestAddress, u64_to_usize};
 
 /// A resolved guest-memory range with volatile accesses bounded by its original length.
 ///
@@ -769,7 +769,7 @@ impl Queue {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::devices::virtio::test_utils::{default_mem, VirtQueue};
+    use crate::devices::virtio::test_utils::{VirtQueue, default_mem};
     use crate::vstate::memory::GuestAddress;
 
     #[test]
@@ -842,7 +842,10 @@ mod tests {
         let mut q = vq.create_queue();
 
         q.size = 11;
-        assert!(matches!(q.initialize(&mem).unwrap_err(), QueueError::InvalidSize(_)));
+        assert!(matches!(
+            q.initialize(&mem).unwrap_err(),
+            QueueError::InvalidSize(_)
+        ));
         q.size = 16;
 
         q.desc_table_address = GuestAddress(0x1001);

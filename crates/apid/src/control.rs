@@ -59,10 +59,18 @@ struct StopBody {
 /// Cancels every agent's running work and holds the plaza.
 pub fn stop_all(app: &App, by: &str, reason: &str) -> PlazaState {
     // Hold first, so work that the cancels finish cannot dispatch the next item.
-    let mut state = PlazaState { paused: true, since_ms: apz_plaza::now_ms(), by: by.into(), reason: reason.into(), cancelled: 0 };
+    let mut state = PlazaState {
+        paused: true,
+        since_ms: apz_plaza::now_ms(),
+        by: by.into(),
+        reason: reason.into(),
+        cancelled: 0,
+    };
     app.control.set(state.clone());
     for agent in app.agents.list() {
-        if app.work.current(agent.cid).is_some() && app.work.cancel(app, agent.cid, "STOP ALL by the owner") {
+        if app.work.current(agent.cid).is_some()
+            && app.work.cancel(app, agent.cid, "STOP ALL by the owner")
+        {
             state.cancelled += 1;
         }
     }
@@ -76,7 +84,13 @@ pub fn stop_all(app: &App, by: &str, reason: &str) -> PlazaState {
 /// Releases the hold; queued work dispatches again, and the workstations thaw and grant their queues.
 pub fn resume(app: &App, by: &str) -> PlazaState {
     let previous = app.control.state();
-    let state = PlazaState { paused: false, since_ms: apz_plaza::now_ms(), by: by.into(), reason: String::new(), cancelled: previous.cancelled };
+    let state = PlazaState {
+        paused: false,
+        since_ms: apz_plaza::now_ms(),
+        by: by.into(),
+        reason: String::new(),
+        cancelled: previous.cancelled,
+    };
     app.control.set(state.clone());
     crate::stations::freeze_all(app, false, by);
     app.bus.publish("plaza", &state);
@@ -86,7 +100,9 @@ pub fn resume(app: &App, by: &str) -> PlazaState {
 
 pub fn routes(router: Router<App>) -> Router<App> {
     router
-        .get("/v1/plaza/state", |app, _, _| Response::json(200, &app.control.state()))
+        .get("/v1/plaza/state", |app, _, _| {
+            Response::json(200, &app.control.state())
+        })
         .post("/v1/plaza/stop", stop_route)
         .post("/v1/plaza/resume", resume_route)
 }
@@ -116,7 +132,13 @@ mod tests {
     fn hold_survives_snapshot_and_restore() {
         let control = Control::default();
         assert!(!control.paused());
-        control.set(PlazaState { paused: true, since_ms: 5, by: "owner".into(), reason: "bad loop".into(), cancelled: 2 });
+        control.set(PlazaState {
+            paused: true,
+            since_ms: 5,
+            by: "owner".into(),
+            reason: "bad loop".into(),
+            cancelled: 2,
+        });
         let json = control.snapshot();
 
         let restored = Control::default();

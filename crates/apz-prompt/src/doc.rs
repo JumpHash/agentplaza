@@ -7,13 +7,22 @@
 pub enum Block {
     Blank,
     /// `#`..`######` and the heading text, trimmed (closing `#`s removed).
-    Heading { level: u8, text: String },
+    Heading {
+        level: u8,
+        text: String,
+    },
     /// A fence line (opening or closing). `lang` is the info string on an opening fence, empty if none.
-    Fence { opening: bool, lang: String },
+    Fence {
+        opening: bool,
+        lang: String,
+    },
     /// A line inside a fenced block.
     Code,
     /// A list item: its indent (spaces) and its text after the marker.
-    Item { indent: u32, text: String },
+    Item {
+        indent: u32,
+        text: String,
+    },
     /// Any other line.
     Text,
 }
@@ -57,7 +66,14 @@ impl<'a> Doc<'a> {
             let trimmed = raw.trim_start();
             let block = if let Some(rest) = trimmed.strip_prefix("```") {
                 in_fence = !in_fence;
-                Block::Fence { opening: in_fence, lang: if in_fence { rest.trim().to_string() } else { String::new() } }
+                Block::Fence {
+                    opening: in_fence,
+                    lang: if in_fence {
+                        rest.trim().to_string()
+                    } else {
+                        String::new()
+                    },
+                }
             } else if in_fence {
                 Block::Code
             } else if raw.trim().is_empty() {
@@ -71,7 +87,10 @@ impl<'a> Doc<'a> {
             };
             lines.push(Line { number, raw, block });
         }
-        Doc { lines, open_fence: in_fence }
+        Doc {
+            lines,
+            open_fence: in_fence,
+        }
     }
 
     pub fn line(&self, number: u32) -> Option<&Line<'a>> {
@@ -88,22 +107,39 @@ impl<'a> Doc<'a> {
 
     /// Lines outside code fences that are prose (text, list items, headings), with their numbers.
     pub fn prose(&self) -> impl Iterator<Item = &Line<'a>> {
-        self.lines.iter().filter(|l| matches!(l.block, Block::Text | Block::Item { .. } | Block::Heading { .. }))
+        self.lines.iter().filter(|l| {
+            matches!(
+                l.block,
+                Block::Text | Block::Item { .. } | Block::Heading { .. }
+            )
+        })
     }
 
     /// The sections, in order, the preamble first when there are lines before the first heading.
     pub fn sections(&self) -> Vec<Section> {
-        let heads: Vec<(u32, u8, String)> = self.headings().map(|(n, l, t)| (n, l, t.to_string())).collect();
+        let heads: Vec<(u32, u8, String)> = self
+            .headings()
+            .map(|(n, l, t)| (n, l, t.to_string()))
+            .collect();
         let last = self.lines.len() as u32;
         let mut out = Vec::new();
         let first = heads.first().map_or(last + 1, |h| h.0);
         if first > 1 {
             let body: Vec<u32> = (1..first).collect();
-            out.push(Section { level: 0, title: String::new(), line: 0, body: body.clone(), span: body });
+            out.push(Section {
+                level: 0,
+                title: String::new(),
+                line: 0,
+                body: body.clone(),
+                span: body,
+            });
         }
         for (i, (line, level, title)) in heads.iter().enumerate() {
             let next_any = heads.get(i + 1).map_or(last + 1, |h| h.0);
-            let next_same = heads[i + 1..].iter().find(|h| h.1 <= *level).map_or(last + 1, |h| h.0);
+            let next_same = heads[i + 1..]
+                .iter()
+                .find(|h| h.1 <= *level)
+                .map_or(last + 1, |h| h.0);
             out.push(Section {
                 level: *level,
                 title: title.clone(),
@@ -158,16 +194,47 @@ mod tests {
 
     #[test]
     fn classifies_lines() {
-        let doc = Doc::parse("# Title\n\nText\n- item\n  2. sub\n```rust\nlet x = 1;\n```\n#nospace\n");
+        let doc =
+            Doc::parse("# Title\n\nText\n- item\n  2. sub\n```rust\nlet x = 1;\n```\n#nospace\n");
         let kinds: Vec<_> = doc.lines.iter().map(|l| &l.block).collect();
-        assert_eq!(kinds[0], &Block::Heading { level: 1, text: "Title".into() });
+        assert_eq!(
+            kinds[0],
+            &Block::Heading {
+                level: 1,
+                text: "Title".into()
+            }
+        );
         assert_eq!(kinds[1], &Block::Blank);
         assert_eq!(kinds[2], &Block::Text);
-        assert_eq!(kinds[3], &Block::Item { indent: 0, text: "item".into() });
-        assert_eq!(kinds[4], &Block::Item { indent: 2, text: "sub".into() });
-        assert_eq!(kinds[5], &Block::Fence { opening: true, lang: "rust".into() });
+        assert_eq!(
+            kinds[3],
+            &Block::Item {
+                indent: 0,
+                text: "item".into()
+            }
+        );
+        assert_eq!(
+            kinds[4],
+            &Block::Item {
+                indent: 2,
+                text: "sub".into()
+            }
+        );
+        assert_eq!(
+            kinds[5],
+            &Block::Fence {
+                opening: true,
+                lang: "rust".into()
+            }
+        );
         assert_eq!(kinds[6], &Block::Code);
-        assert_eq!(kinds[7], &Block::Fence { opening: false, lang: String::new() });
+        assert_eq!(
+            kinds[7],
+            &Block::Fence {
+                opening: false,
+                lang: String::new()
+            }
+        );
         assert_eq!(kinds[8], &Block::Text);
         assert!(!doc.open_fence);
     }
@@ -185,7 +252,10 @@ mod tests {
         let s = doc.sections();
         assert_eq!(s.len(), 4);
         assert_eq!((s[0].level, s[0].body.clone()), (0, vec![1]));
-        assert_eq!((s[1].title.as_str(), s[1].body.clone(), s[1].span.clone()), ("A", vec![3], vec![3, 4, 5]));
+        assert_eq!(
+            (s[1].title.as_str(), s[1].body.clone(), s[1].span.clone()),
+            ("A", vec![3], vec![3, 4, 5])
+        );
         assert_eq!((s[2].title.as_str(), s[2].body.clone()), ("B", vec![5]));
         assert!(s[3].body.is_empty());
     }

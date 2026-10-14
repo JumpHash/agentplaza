@@ -33,10 +33,10 @@ use vmm_sys_util::signal::{Killable, SIGRTMIN};
 
 // Upstream re-exports the arch-specific `KvmVcpu` through `crate::arch`;
 // select the current arch's module here.
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-pub use crate::arch::x86_64::vcpu::{KvmVcpu, KvmVcpuConfigureError, KvmVcpuError, Peripherals};
 #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
 pub use crate::arch::aarch64::vcpu::{KvmVcpu, KvmVcpuConfigureError, KvmVcpuError, Peripherals};
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+pub use crate::arch::x86_64::vcpu::{KvmVcpu, KvmVcpuConfigureError, KvmVcpuError, Peripherals};
 use crate::vstate::vm::KvmVm;
 
 /// Signal number (SIGRTMIN) used to kick Vcpus.
@@ -509,8 +509,7 @@ fn handle_kvm_exit(
         Err(err) => match err.errno() {
             libc::EAGAIN => Ok(VcpuEmulation::Handled),
             libc::ENOSYS => Err(VcpuError::FaultyKvmExit(
-                "Received ENOSYS error because KVM failed to emulate an instruction."
-                    .to_string(),
+                "Received ENOSYS error because KVM failed to emulate an instruction.".to_string(),
             )),
             _ => Err(VcpuError::FaultyKvmExit(format!("{err}"))),
         },

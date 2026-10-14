@@ -11,18 +11,18 @@ pub mod brands;
 pub mod cli_link;
 // The 3D engine (`crates/apz-engine`), shared with the web's wasm build.
 pub use apz_engine as engine;
-pub mod floor_engine;
 pub mod chart;
 pub mod client;
 pub mod events;
+pub mod floor_engine;
 pub mod hubs;
 pub mod icons;
 pub mod lab_api;
 pub mod onboard;
 pub mod picker;
 // The rich content of agent text: chips, hover cards, inline images (docs/design/workspace.md, section 3).
-pub mod rich;
 pub(crate) mod render_card;
+pub mod rich;
 pub mod screens;
 pub mod services;
 pub mod setup;
@@ -67,13 +67,26 @@ pub enum Msg {
 }
 
 fn boot() -> (Console, Task<Msg>) {
-    crate::theme::choose_saved(boot::saved_setting("theme").as_ref().and_then(|value| value.as_str()));
+    crate::theme::choose_saved(
+        boot::saved_setting("theme")
+            .as_ref()
+            .and_then(|value| value.as_str()),
+    );
     let (boot, task) = boot::init();
     if let Some(point) = snapshot_hover() {
         chart::set_snapshot_hover(point);
     }
-    let pick = std::env::var("APZ_PICK").ok().filter(|id| !id.trim().is_empty());
-    let mut console = Console { ctx: None, boot, shell: shell::State::default(), screens: screens::Screens::default(), pick, onboard: onboard::State::default() };
+    let pick = std::env::var("APZ_PICK")
+        .ok()
+        .filter(|id| !id.trim().is_empty());
+    let mut console = Console {
+        ctx: None,
+        boot,
+        shell: shell::State::default(),
+        screens: screens::Screens::default(),
+        pick,
+        onboard: onboard::State::default(),
+    };
     // For development and captures: `APZ_CONNECT=<hub url>` (and `APZ_TOKEN`) skips the chooser,
     // `APZ_SCREEN=<screen label>` opens that screen.
     let info = Task::batch([
@@ -83,26 +96,42 @@ fn boot() -> (Console, Task<Msg>) {
     let Ok(url) = std::env::var("APZ_CONNECT") else {
         return (console, Task::batch([task.map(Msg::Boot), info]));
     };
-    let ctx = Ctx { client: client::Client::new(&url, None, std::env::var("APZ_TOKEN").ok()) };
+    let ctx = Ctx {
+        client: client::Client::new(&url, None, std::env::var("APZ_TOKEN").ok()),
+    };
     if let Ok(name) = std::env::var("APZ_SCREEN") {
-        if let Some((id, ..)) = screens::NAV.iter().find(|(_, label, ..)| label.eq_ignore_ascii_case(&name)) {
+        if let Some((id, ..)) = screens::NAV
+            .iter()
+            .find(|(_, label, ..)| label.eq_ignore_ascii_case(&name))
+        {
             console.shell.current = id.clone();
         } else if name.eq_ignore_ascii_case("LabJobs") {
             // A Lab section has no nav entry; this opens the Jobs tab for the snapshot harness.
             console.shell.current = screens::Id::LabJobs;
-        } else if let Some(id) = [("RobotLab", screens::Id::RobotLab), ("RoomLab", screens::Id::RoomLab), ("HardwareLab", screens::Id::HardwareLab)]
-            .into_iter()
-            .find_map(|(n, id)| name.eq_ignore_ascii_case(n).then_some(id))
+        } else if let Some(id) = [
+            ("RobotLab", screens::Id::RobotLab),
+            ("RoomLab", screens::Id::RoomLab),
+            ("HardwareLab", screens::Id::HardwareLab),
+        ]
+        .into_iter()
+        .find_map(|(n, id)| name.eq_ignore_ascii_case(n).then_some(id))
         {
             // The engine's labs are hidden from the sidebar, as the web's lab routes are.
             console.shell.current = id;
         } else if name.eq_ignore_ascii_case("Ide") {
             // The IDE is not in the sidebar; `APZ_IDE_WS=<workspace id>` opens that workspace on it.
-            console.shell.current = screens::Id::Ide(std::env::var("APZ_IDE_WS").ok().filter(|ws| !ws.trim().is_empty()));
+            console.shell.current = screens::Id::Ide(
+                std::env::var("APZ_IDE_WS")
+                    .ok()
+                    .filter(|ws| !ws.trim().is_empty()),
+            );
         }
     }
     // `APZ_AGENT=<cid>` opens that agent's page: its `Id::Agent` is the current screen, which `screens::open` loads below.
-    if let Some(cid) = std::env::var("APZ_AGENT").ok().and_then(|v| v.trim().parse::<u64>().ok()) {
+    if let Some(cid) = std::env::var("APZ_AGENT")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+    {
         console.shell.current = screens::Id::Agent(cid);
     }
     // `APZ_JOB=<id>` opens that Lab job's page: its `Id::LabJobDetail` is the current screen, as `APZ_AGENT` does for an agent.
@@ -130,12 +159,20 @@ fn boot() -> (Console, Task<Msg>) {
         }
         Some("export") => {
             console.shell.current = screens::Id::LabDatasets;
-            screens::lab_datasets::capture(&mut console.screens.lab_datasets, screens::lab_datasets::Capture::Export);
+            screens::lab_datasets::capture(
+                &mut console.screens.lab_datasets,
+                screens::lab_datasets::Capture::Export,
+            );
         }
         Some("upload") => {
             console.shell.current = screens::Id::LabDatasets;
-            let file = std::env::var("APZ_DIALOG_FILE").ok().map(std::path::PathBuf::from);
-            screens::lab_datasets::capture(&mut console.screens.lab_datasets, screens::lab_datasets::Capture::Upload(file));
+            let file = std::env::var("APZ_DIALOG_FILE")
+                .ok()
+                .map(std::path::PathBuf::from);
+            screens::lab_datasets::capture(
+                &mut console.screens.lab_datasets,
+                screens::lab_datasets::Capture::Upload(file),
+            );
         }
         Some("plan") => {
             console.shell.current = screens::Id::LabJobs;
@@ -186,11 +223,14 @@ fn update(console: &mut Console, msg: Msg) -> Task<Msg> {
     if console.shell.current != before
         && let Some(ctx) = console.ctx.clone()
     {
-        let hook = screens::changed(&mut console.screens, &before, &console.shell.current, &ctx).map(Msg::Screen);
+        let hook = screens::changed(&mut console.screens, &before, &console.shell.current, &ctx)
+            .map(Msg::Screen);
         task = Task::batch([task, hook]);
     }
     // The IDE remembers the screen it was opened from: its Escape goes back there.
-    if matches!(console.shell.current, screens::Id::Ide(_)) && !matches!(before, screens::Id::Ide(_)) {
+    if matches!(console.shell.current, screens::Id::Ide(_))
+        && !matches!(before, screens::Id::Ide(_))
+    {
         console.screens.ide.origin = Some(before);
     }
     task
@@ -203,7 +243,10 @@ fn update_app(console: &mut Console, msg: Msg) -> Task<Msg> {
             let mut tasks = vec![task.map(Msg::Boot)];
             if let Some(client) = connected {
                 let ctx = Ctx { client };
-                tasks.push(screens::open(&mut console.screens, console.shell.current.clone(), &ctx).map(Msg::Screen));
+                tasks.push(
+                    screens::open(&mut console.screens, console.shell.current.clone(), &ctx)
+                        .map(Msg::Screen),
+                );
                 tasks.push(shell::load(&ctx).map(Msg::Shell));
                 tasks.push(onboard::first_start(&mut console.onboard, &ctx).map(Msg::Onboard));
                 console.ctx = Some(ctx);
@@ -211,7 +254,9 @@ fn update_app(console: &mut Console, msg: Msg) -> Task<Msg> {
             Task::batch(tasks)
         }
         Msg::Shell(msg) => {
-            let Some(ctx) = console.ctx.clone() else { return Task::none() };
+            let Some(ctx) = console.ctx.clone() else {
+                return Task::none();
+            };
             let (task, go) = shell::update(&mut console.shell, msg, &ctx);
             let mut tasks = vec![task.map(Msg::Shell)];
             if let Some(id) = go {
@@ -220,10 +265,15 @@ fn update_app(console: &mut Console, msg: Msg) -> Task<Msg> {
             Task::batch(tasks)
         }
         Msg::Onboard(msg) => {
-            let Some(ctx) = console.ctx.clone() else { return Task::none() };
+            let Some(ctx) = console.ctx.clone() else {
+                return Task::none();
+            };
             let (task, effect) = onboard::update(&mut console.onboard, msg);
             console.shell.highlight = onboard::highlighted(&console.onboard);
-            let mut tasks = vec![task.map(Msg::Onboard), onboard::reveal::<Msg>(&console.onboard, console.shell.mode == shell::Mode::Open)];
+            let mut tasks = vec![
+                task.map(Msg::Onboard),
+                onboard::reveal::<Msg>(&console.onboard, console.shell.mode == shell::Mode::Open),
+            ];
             match effect {
                 onboard::Effect::None => {}
                 onboard::Effect::Navigate(id) => {
@@ -240,16 +290,22 @@ fn update_app(console: &mut Console, msg: Msg) -> Task<Msg> {
         }
         // The IDE's Escape and Console button: back to the screen it was opened from (the console owns navigation).
         Msg::Screen(screens::Msg::Ide(screens::ide::Msg::Back)) => {
-            let Some(ctx) = console.ctx.clone() else { return Task::none() };
+            let Some(ctx) = console.ctx.clone() else {
+                return Task::none();
+            };
             let target = screens::ide::back_target(console.screens.ide.origin.clone());
             console.shell.current = target.clone();
             screens::open(&mut console.screens, target, &ctx).map(Msg::Screen)
         }
         // The IDE's chrome offers the theme switch and the held strip's Resume: the shell owns both.
-        Msg::Screen(screens::Msg::Ide(screens::ide::Msg::Shell(msg))) => update_app(console, Msg::Shell(msg)),
+        Msg::Screen(screens::Msg::Ide(screens::ide::Msg::Shell(msg))) => {
+            update_app(console, Msg::Shell(msg))
+        }
         // The Setup screen replays the wizard or the tour (the console owns both).
         Msg::Screen(screens::Msg::Setup(screens::setup::Msg::Wizard)) => {
-            let Some(ctx) = console.ctx.clone() else { return Task::none() };
+            let Some(ctx) = console.ctx.clone() else {
+                return Task::none();
+            };
             onboard::start_wizard(&mut console.onboard, &ctx).map(Msg::Onboard)
         }
         Msg::Screen(screens::Msg::Setup(screens::setup::Msg::Tour)) => {
@@ -258,13 +314,18 @@ fn update_app(console: &mut Console, msg: Msg) -> Task<Msg> {
             onboard::reveal::<Msg>(&console.onboard, console.shell.mode == shell::Mode::Open)
         }
         Msg::Screen(msg) => {
-            let Some(ctx) = console.ctx.clone() else { return Task::none() };
+            let Some(ctx) = console.ctx.clone() else {
+                return Task::none();
+            };
             if let Some(id) = screens::navigation(&msg) {
                 console.shell.current = id.clone();
                 return screens::open(&mut console.screens, id, &ctx).map(Msg::Screen);
             }
             // `APZ_PICK`: the first load of the Machines screen picks that machine, as a topology click does.
-            let loaded = matches!(msg, screens::Msg::Machines(screens::machines::Msg::Loaded(Ok(_))));
+            let loaded = matches!(
+                msg,
+                screens::Msg::Machines(screens::machines::Msg::Loaded(Ok(_)))
+            );
             let pick = if loaded { console.pick.take() } else { None };
             let task = screens::update(&mut console.screens, msg, &ctx).map(Msg::Screen);
             match pick {
@@ -273,14 +334,22 @@ fn update_app(console: &mut Console, msg: Msg) -> Task<Msg> {
             }
         }
         Msg::System(info) => {
-            eprintln!("agentplaza-desktop: graphics {} on {}", info.graphics_backend, info.graphics_adapter);
-            console.shell.software_gpu = is_software(&info.graphics_adapter).then(|| info.graphics_adapter.clone());
+            eprintln!(
+                "agentplaza-desktop: graphics {} on {}",
+                info.graphics_backend, info.graphics_adapter
+            );
+            console.shell.software_gpu =
+                is_software(&info.graphics_adapter).then(|| info.graphics_adapter.clone());
             Task::none()
         }
         Msg::Snapshot => {
-            let capture = iced::window::oldest().and_then(iced::window::screenshot).map(Msg::Shot);
+            let capture = iced::window::oldest()
+                .and_then(iced::window::screenshot)
+                .map(Msg::Shot);
             match snapshot_scroll() {
-                Some(dy) => iced::advanced::widget::operate(ScrollBy(dy)).discard().chain(capture),
+                Some(dy) => iced::advanced::widget::operate(ScrollBy(dy))
+                    .discard()
+                    .chain(capture),
                 None => capture,
             }
         }
@@ -294,9 +363,12 @@ fn update_app(console: &mut Console, msg: Msg) -> Task<Msg> {
             iced::exit()
         }
         Msg::Tick => {
-            let Some(ctx) = console.ctx.clone() else { return Task::none() };
+            let Some(ctx) = console.ctx.clone() else {
+                return Task::none();
+            };
             Task::batch([
-                screens::refresh(&mut console.screens, &console.shell.current, &ctx).map(Msg::Screen),
+                screens::refresh(&mut console.screens, &console.shell.current, &ctx)
+                    .map(Msg::Screen),
                 shell::load(&ctx).map(Msg::Shell),
             ])
         }
@@ -329,7 +401,8 @@ fn view(console: &Console) -> Element<'_, Msg> {
             };
             let base = shell::view(
                 &console.shell,
-                screens::view(&console.screens, &console.shell.current, ctx, plaza).map(Msg::Screen),
+                screens::view(&console.screens, &console.shell.current, ctx, plaza)
+                    .map(Msg::Screen),
                 Msg::Shell,
             );
             let open = console.shell.mode == shell::Mode::Open;
@@ -343,9 +416,16 @@ fn view(console: &Console) -> Element<'_, Msg> {
 }
 
 fn subscription(console: &Console) -> Subscription<Msg> {
-    let snapshot = match std::env::var("APZ_SNAPSHOT_AFTER").ok().and_then(|s| s.parse::<u64>().ok()) {
-        Some(secs) if std::env::var_os("APZ_SNAPSHOT").is_some() => iced::time::every(std::time::Duration::from_secs(secs)).map(|_| Msg::Snapshot),
-        None if std::env::var_os("APZ_SNAPSHOT").is_some() => iced::time::every(std::time::Duration::from_secs(8)).map(|_| Msg::Snapshot),
+    let snapshot = match std::env::var("APZ_SNAPSHOT_AFTER")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+    {
+        Some(secs) if std::env::var_os("APZ_SNAPSHOT").is_some() => {
+            iced::time::every(std::time::Duration::from_secs(secs)).map(|_| Msg::Snapshot)
+        }
+        None if std::env::var_os("APZ_SNAPSHOT").is_some() => {
+            iced::time::every(std::time::Duration::from_secs(8)).map(|_| Msg::Snapshot)
+        }
         _ => Subscription::none(),
     };
     let Some(ctx) = console.ctx.as_ref() else {
@@ -433,7 +513,10 @@ fn snapshot_hover() -> Option<iced::Point> {
     std::env::var_os("APZ_SNAPSHOT")?;
     let value = std::env::var("APZ_HOVER").ok()?;
     let (x, y) = value.split_once(',')?;
-    Some(iced::Point::new(x.trim().parse::<f32>().ok()?, y.trim().parse::<f32>().ok()?))
+    Some(iced::Point::new(
+        x.trim().parse::<f32>().ok()?,
+        y.trim().parse::<f32>().ok()?,
+    ))
 }
 
 /// Scrolls the overflowing scrollables by `.0` pixels (the snapshot path only).
@@ -453,14 +536,19 @@ impl iced::advanced::widget::Operation for ScrollBy {
         state: &mut dyn iced::advanced::widget::operation::Scrollable,
     ) {
         if content_bounds.height > bounds.height {
-            state.scroll_by(iced::widget::scrollable::AbsoluteOffset { x: 0.0, y: self.0 }, bounds, content_bounds);
+            state.scroll_by(
+                iced::widget::scrollable::AbsoluteOffset { x: 0.0, y: self.0 },
+                bounds,
+                content_bounds,
+            );
         }
     }
 }
 
 /// Writes a window screenshot as a PNG (`APZ_SNAPSHOT`).
 fn save_png(shot: &iced::window::Screenshot, path: &str) -> Result<(), String> {
-    let size = tiny_skia::IntSize::from_wh(shot.size.width, shot.size.height).ok_or("empty frame")?;
+    let size =
+        tiny_skia::IntSize::from_wh(shot.size.width, shot.size.height).ok_or("empty frame")?;
     // The frame is straight RGBA; tiny-skia stores premultiplied, so premultiply (opaque anyway).
     let mut data = shot.rgba.to_vec();
     for px in data.chunks_exact_mut(4) {
@@ -476,5 +564,14 @@ fn save_png(shot: &iced::window::Screenshot, path: &str) -> Result<(), String> {
 /// Whether a graphics adapter name is a CPU (software) renderer.
 fn is_software(adapter: &str) -> bool {
     let a = adapter.to_ascii_lowercase();
-    ["llvmpipe", "lavapipe", "swiftshader", "softpipe", "software", "swrast"].iter().any(|s| a.contains(s))
+    [
+        "llvmpipe",
+        "lavapipe",
+        "swiftshader",
+        "softpipe",
+        "software",
+        "swrast",
+    ]
+    .iter()
+    .any(|s| a.contains(s))
 }

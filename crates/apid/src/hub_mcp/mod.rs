@@ -15,23 +15,25 @@ pub mod audit;
 pub mod auth;
 pub mod owner;
 pub mod rpc;
-pub mod store_db;
 pub mod session;
-pub mod tools;
+pub mod store_db;
 #[cfg(test)]
 mod tests;
+pub mod tools;
 
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use apz_http::{Request, Response, Router};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
+use crate::db::Db;
 use crate::state::App;
 use audit::{Audit, CallRecord, MemoryAudit};
-use auth::{bearer, sha256_hex, AuthError, MemoryTokens, RateLimiter, Scope, TokenRecord, TokenStore};
-use crate::db::Db;
+use auth::{
+    AuthError, MemoryTokens, RateLimiter, Scope, TokenRecord, TokenStore, bearer, sha256_hex,
+};
 use session::Sessions;
 use tools::{Ctx, Plaza, Tool};
 
@@ -69,7 +71,13 @@ struct Caller {
 }
 
 impl HubMcp {
-    pub fn new(enabled: bool, origins: Vec<String>, tokens: Box<dyn TokenStore>, audit: Box<dyn Audit>, clock: Clock) -> Self {
+    pub fn new(
+        enabled: bool,
+        origins: Vec<String>,
+        tokens: Box<dyn TokenStore>,
+        audit: Box<dyn Audit>,
+        clock: Clock,
+    ) -> Self {
         Self {
             enabled: AtomicBool::new(enabled),
             origins: RwLock::new(origins),
@@ -118,7 +126,8 @@ impl HubMcp {
 
     /// Whether a request carrying this Origin may call the server: the hub's own origins, or the owner's.
     fn origin_allowed(&self, origin: &str) -> bool {
-        self.defaults.iter().any(|allowed| allowed == origin) || read(&self.origins).iter().any(|allowed| allowed == origin)
+        self.defaults.iter().any(|allowed| allowed == origin)
+            || read(&self.origins).iter().any(|allowed| allowed == origin)
     }
 
     /// The origins the server allows now: the hub's own, then the owner's that are not among them.
@@ -160,12 +169,20 @@ impl HubMcp {
     /// token, `secure` refuses and `open` gives an anonymous caller the open scope, counted per client IP.
     fn caller(&self, req: &Request, now: u64) -> Result<Caller, AuthError> {
         match bearer(req) {
-            Some(token) => Ok(Caller { record: self.tokens.verify(token, now)?, anonymous: false, ip: None }),
+            Some(token) => Ok(Caller {
+                record: self.tokens.verify(token, now)?,
+                anonymous: false,
+                ip: None,
+            }),
             None if *read(&self.mode) == AuthMode::Secure => Err(AuthError::Missing),
             None => {
                 let ip = req.peer.map(|ip| ip.to_string()).unwrap_or_default();
                 let record = anonymous_record(format!("anon:{ip}"), *read(&self.open_scope), now);
-                Ok(Caller { record, anonymous: true, ip: Some(ip) })
+                Ok(Caller {
+                    record,
+                    anonymous: true,
+                    ip: Some(ip),
+                })
             }
         }
     }
@@ -248,7 +265,13 @@ pub struct Settings {
 impl Settings {
     /// The server switched off, secure, local, with no origins of the owner's.
     fn off() -> Settings {
-        Settings { enabled: false, bind: Bind::Local, allowed_origins: Vec::new(), auth_mode: AuthMode::Secure, open_scope: Scope::Observe }
+        Settings {
+            enabled: false,
+            bind: Bind::Local,
+            allowed_origins: Vec::new(),
+            auth_mode: AuthMode::Secure,
+            open_scope: Scope::Observe,
+        }
     }
 }
 
@@ -296,9 +319,17 @@ impl HubMcp {
                     eprintln!("hub-mcp: settings not read, the server stays off: {err}");
                     Settings::off()
                 });
-                (settings, Box::new(store_db::DbTokens::new(Arc::clone(&db))), Box::new(store_db::DbAudit::new(db)))
+                (
+                    settings,
+                    Box::new(store_db::DbTokens::new(Arc::clone(&db))),
+                    Box::new(store_db::DbAudit::new(db)),
+                )
             }
-            None => (Settings::off(), Box::new(MemoryTokens::default()), Box::new(MemoryAudit::default())),
+            None => (
+                Settings::off(),
+                Box::new(MemoryTokens::default()),
+                Box::new(MemoryAudit::default()),
+            ),
         };
         let hub = HubMcp::new(false, Vec::new(), tokens, audit, clock).listening(tls, defaults);
         hub.apply(&settings);
@@ -325,7 +356,9 @@ impl Host for App {
 /// `POST /mcp` and `GET /mcp`.
 pub fn routes<S: Host>(router: Router<S>) -> Router<S> {
     router
-        .post("/mcp", |state, req, _| handle_post(state.hub_mcp(), state.plaza(), req))
+        .post("/mcp", |state, req, _| {
+            handle_post(state.hub_mcp(), state.plaza(), req)
+        })
         .get("/mcp", |state, req, _| {
             if state.hub_mcp().enabled() && state.hub_mcp().reachable(req.peer) {
                 Response::error(405, "this endpoint accepts POST").with_header("Allow", "POST")
@@ -353,7 +386,12 @@ pub fn handle_post(hub: &HubMcp, plaza: &dyn Plaza, req: &Request) -> Response {
     let token = &caller.record;
     let body: Value = match serde_json::from_slice(&req.body) {
         Ok(body) => body,
-        Err(_) => return Response::json(200, &rpc::failure(&Value::Null, rpc::PARSE_ERROR, "parse error", None)),
+        Err(_) => {
+            return Response::json(
+                200,
+                &rpc::failure(&Value::Null, rpc::PARSE_ERROR, "parse error", None),
+            );
+        }
     };
     let batch = body.is_array();
     let messages: Vec<Value> = match body {
@@ -361,12 +399,19 @@ pub fn handle_post(hub: &HubMcp, plaza: &dyn Plaza, req: &Request) -> Response {
         single => vec![single],
     };
     if batch && messages.is_empty() {
-        return Response::json(200, &rpc::failure(&Value::Null, rpc::INVALID_REQUEST, "empty batch", None));
+        return Response::json(
+            200,
+            &rpc::failure(&Value::Null, rpc::INVALID_REQUEST, "empty batch", None),
+        );
     }
-    let initializing = messages.len() == 1 && messages[0].get("method").and_then(Value::as_str) == Some("initialize");
+    let initializing = messages.len() == 1
+        && messages[0].get("method").and_then(Value::as_str) == Some("initialize");
     if !initializing {
         let Some(session) = req.header("mcp-session-id") else {
-            return Response::error(400, "send initialize first: the Mcp-Session-Id header is missing");
+            return Response::error(
+                400,
+                "send initialize first: the Mcp-Session-Id header is missing",
+            );
         };
         if hub.sessions.touch(session, &token.id, now).is_err() {
             return Response::error(404, "unknown or expired session: initialize again");
@@ -376,20 +421,30 @@ pub fn handle_post(hub: &HubMcp, plaza: &dyn Plaza, req: &Request) -> Response {
     let mut opened: Option<String> = None;
     for message in &messages {
         match rpc::classify(message) {
-            rpc::Message::Invalid => {
-                answers.push(rpc::failure(&Value::Null, rpc::INVALID_REQUEST, "not a JSON-RPC 2.0 request", None))
-            }
+            rpc::Message::Invalid => answers.push(rpc::failure(
+                &Value::Null,
+                rpc::INVALID_REQUEST,
+                "not a JSON-RPC 2.0 request",
+                None,
+            )),
             rpc::Message::Notification => {}
             rpc::Message::Request { id, method, params } if method == "initialize" => {
                 if batch {
-                    answers.push(rpc::failure(&id, rpc::INVALID_REQUEST, "initialize cannot be batched", None));
+                    answers.push(rpc::failure(
+                        &id,
+                        rpc::INVALID_REQUEST,
+                        "initialize cannot be batched",
+                        None,
+                    ));
                 } else {
                     match hub.sessions.open(&token.id, now) {
                         Ok(session) => {
                             opened = Some(session);
                             answers.push(rpc::result(&id, initialize_result(&params)));
                         }
-                        Err(why) => answers.push(rpc::failure(&id, rpc::INTERNAL_ERROR, &why, None)),
+                        Err(why) => {
+                            answers.push(rpc::failure(&id, rpc::INTERNAL_ERROR, &why, None))
+                        }
                     }
                 }
             }
@@ -401,7 +456,11 @@ pub fn handle_post(hub: &HubMcp, plaza: &dyn Plaza, req: &Request) -> Response {
     if answers.is_empty() {
         return Response::new(202, "text/plain; charset=utf-8", Vec::<u8>::new());
     }
-    let reply = if batch { Response::json(200, &answers) } else { Response::json(200, &answers[0]) };
+    let reply = if batch {
+        Response::json(200, &answers)
+    } else {
+        Response::json(200, &answers[0])
+    };
     match opened {
         Some(session) => reply.with_header(SESSION_HEADER, &session),
         None => reply,
@@ -409,12 +468,16 @@ pub fn handle_post(hub: &HubMcp, plaza: &dyn Plaza, req: &Request) -> Response {
 }
 
 fn unauthorized(err: AuthError) -> Response {
-    Response::json(401, &json!({ "error": err.message() })).with_header("WWW-Authenticate", "Bearer")
+    Response::json(401, &json!({ "error": err.message() }))
+        .with_header("WWW-Authenticate", "Bearer")
 }
 
 /// The answer to `initialize`: the negotiated version, and what this server offers (tools only).
 fn initialize_result(params: &Value) -> Value {
-    let requested = params.get("protocolVersion").and_then(Value::as_str).unwrap_or("");
+    let requested = params
+        .get("protocolVersion")
+        .and_then(Value::as_str)
+        .unwrap_or("");
     json!({
         "protocolVersion": rpc::negotiate(requested),
         "capabilities": { "tools": { "listChanged": false } },
@@ -423,15 +486,31 @@ fn initialize_result(params: &Value) -> Value {
     })
 }
 
-fn dispatch(hub: &HubMcp, plaza: &dyn Plaza, caller: &Caller, id: &Value, method: &str, params: &Value, now: u64) -> Value {
+fn dispatch(
+    hub: &HubMcp,
+    plaza: &dyn Plaza,
+    caller: &Caller,
+    id: &Value,
+    method: &str,
+    params: &Value,
+    now: u64,
+) -> Value {
     match method {
         "ping" => rpc::result(id, json!({})),
         "tools/list" => {
-            let tools: Vec<Value> = tools::visible(tools::REGISTRY, &caller.record).into_iter().map(|tool| descriptor(tool)).collect();
+            let tools: Vec<Value> = tools::visible(tools::REGISTRY, &caller.record)
+                .into_iter()
+                .map(|tool| descriptor(tool))
+                .collect();
             rpc::result(id, json!({ "tools": tools }))
         }
         "tools/call" => call_tool(hub, plaza, caller, id, params, now),
-        _ => rpc::failure(id, rpc::METHOD_NOT_FOUND, &format!("method not found: {method}"), None),
+        _ => rpc::failure(
+            id,
+            rpc::METHOD_NOT_FOUND,
+            &format!("method not found: {method}"),
+            None,
+        ),
     }
 }
 
@@ -446,48 +525,82 @@ fn descriptor(tool: &dyn Tool) -> Value {
 }
 
 /// `tools/call`: checks the tool and the rate limit, runs it, and audits the call either way.
-fn call_tool(hub: &HubMcp, plaza: &dyn Plaza, caller: &Caller, id: &Value, params: &Value, now: u64) -> Value {
+fn call_tool(
+    hub: &HubMcp,
+    plaza: &dyn Plaza,
+    caller: &Caller,
+    id: &Value,
+    params: &Value,
+    now: u64,
+) -> Value {
     let token = &caller.record;
     let Some(name) = params.get("name").and_then(Value::as_str) else {
-        return rpc::failure(id, rpc::INVALID_PARAMS, "tools/call needs a tool name", None);
+        return rpc::failure(
+            id,
+            rpc::INVALID_PARAMS,
+            "tools/call needs a tool name",
+            None,
+        );
     };
-    let args = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
+    let args = params
+        .get("arguments")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
     let digest = sha256_hex(args.to_string().as_bytes());
-    let (ok, error, reply): (bool, Option<&'static str>, Value) =
-        match tools::find(name).filter(|tool| tools::allowed(token, *tool)) {
-            None => (false, Some("unknown_tool"), rpc::failure(id, rpc::INVALID_PARAMS, &format!("unknown tool: {name}"), None)),
-            Some(tool) => match hub.limiter.take(&token.id, token.scope, now) {
-                Err(retry_after) => (
-                    false,
-                    Some("rate_limited"),
-                    rpc::failure(id, rpc::RATE_LIMITED, "rate limit exceeded", Some(json!({ "retryAfter": retry_after }))),
+    let (ok, error, reply): (bool, Option<&'static str>, Value) = match tools::find(name)
+        .filter(|tool| tools::allowed(token, *tool))
+    {
+        None => (
+            false,
+            Some("unknown_tool"),
+            rpc::failure(
+                id,
+                rpc::INVALID_PARAMS,
+                &format!("unknown tool: {name}"),
+                None,
+            ),
+        ),
+        Some(tool) => match hub.limiter.take(&token.id, token.scope, now) {
+            Err(retry_after) => (
+                false,
+                Some("rate_limited"),
+                rpc::failure(
+                    id,
+                    rpc::RATE_LIMITED,
+                    "rate limit exceeded",
+                    Some(json!({ "retryAfter": retry_after })),
                 ),
-                Ok(()) => {
-                    if !caller.anonymous {
-                        hub.tokens.record_use(&token.id, now);
+            ),
+            Ok(()) => {
+                if !caller.anonymous {
+                    hub.tokens.record_use(&token.id, now);
+                }
+                match tool.call(&Ctx { plaza }, &args) {
+                    Ok(out) => {
+                        let text = tool.summary(&out);
+                        let result = json!({
+                            "content": [{ "type": "text", "text": text }],
+                            "structuredContent": out,
+                            "isError": false,
+                        });
+                        (true, None, rpc::result(id, result))
                     }
-                    match tool.call(&Ctx { plaza }, &args) {
-                        Ok(out) => {
-                            let text = tool.summary(&out);
-                            let result = json!({
-                                "content": [{ "type": "text", "text": text }],
-                                "structuredContent": out,
-                                "isError": false,
-                            });
-                            (true, None, rpc::result(id, result))
-                        }
-                        Err(message) => {
-                            let result = json!({ "content": [{ "type": "text", "text": message }], "isError": true });
-                            (false, Some("tool_error"), rpc::result(id, result))
-                        }
+                    Err(message) => {
+                        let result = json!({ "content": [{ "type": "text", "text": message }], "isError": true });
+                        (false, Some("tool_error"), rpc::result(id, result))
                     }
                 }
-            },
-        };
+            }
+        },
+    };
     hub.audit.record(CallRecord {
         at_ms: now,
         token_id: (!caller.anonymous).then(|| token.id.clone()),
-        client_ip: if caller.anonymous { caller.ip.clone() } else { None },
+        client_ip: if caller.anonymous {
+            caller.ip.clone()
+        } else {
+            None
+        },
         tool: name.chars().take(64).collect(),
         args_sha256: digest,
         ok,
@@ -504,9 +617,19 @@ mod settings_tests {
     #[test]
     fn the_hubs_own_origins_come_first_and_the_public_url_adds_one() {
         let local = default_origins(19080, "http://127.0.0.1:19080", false);
-        assert_eq!(local, vec!["http://127.0.0.1:19080", "http://localhost:19080", "http://[::1]:19080"]);
+        assert_eq!(
+            local,
+            vec![
+                "http://127.0.0.1:19080",
+                "http://localhost:19080",
+                "http://[::1]:19080"
+            ]
+        );
         let public = default_origins(19080, "https://hub.example/", true);
         assert_eq!(public[3], "https://hub.example");
-        assert_eq!(public[0], "https://127.0.0.1:19080", "the listener's scheme, over TLS");
+        assert_eq!(
+            public[0], "https://127.0.0.1:19080",
+            "the listener's scheme, over TLS"
+        );
     }
 }

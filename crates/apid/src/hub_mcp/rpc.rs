@@ -1,6 +1,6 @@
 //! JSON-RPC 2.0 for the hub's MCP server: the envelope, the error codes and version negotiation.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::mcp::client::PROTOCOLS;
 
@@ -14,7 +14,11 @@ pub const RATE_LIMITED: i64 = -32029;
 
 /// The version to answer with: the client's, when this server speaks it, else the newest this server speaks.
 pub fn negotiate(requested: &str) -> &'static str {
-    PROTOCOLS.iter().copied().find(|offered| *offered == requested).unwrap_or(PROTOCOLS[0])
+    PROTOCOLS
+        .iter()
+        .copied()
+        .find(|offered| *offered == requested)
+        .unwrap_or(PROTOCOLS[0])
 }
 
 pub fn result(id: &Value, value: Value) -> Value {
@@ -32,7 +36,11 @@ pub fn failure(id: &Value, code: i64, message: &str, data: Option<Value>) -> Val
 /// One message of a body, by what it asks for.
 pub enum Message<'a> {
     /// A request: it has an id and gets an answer.
-    Request { id: Value, method: &'a str, params: Value },
+    Request {
+        id: Value,
+        method: &'a str,
+        params: Value,
+    },
     /// A notification: no id, no answer.
     Notification,
     /// Not a JSON-RPC 2.0 request.

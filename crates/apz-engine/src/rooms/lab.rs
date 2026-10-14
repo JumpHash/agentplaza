@@ -15,10 +15,10 @@
 use super::super::props::Anim;
 use super::super::world::Floor;
 use super::generate::{self, Door, Input};
-use super::overlay::{overlay, Overlay};
+use super::overlay::{Overlay, overlay};
 use super::verify::verify;
-use super::{build_room, default_agents, kit_palette, BuiltRoom, RoomOptions};
-use serde_json::{json, Value};
+use super::{BuiltRoom, RoomOptions, build_room, default_agents, kit_palette};
+use serde_json::{Value, json};
 
 /// The rooms of `all` per row, and the seeds' columns (web: ALL_COLS, SEED_COLS).
 const ALL_COLS: usize = 6;
@@ -89,22 +89,36 @@ fn placements(role: &str, w: f32, d: f32, seed: u32, grid: bool) -> Vec<Placemen
             })
             .collect();
     }
-    vec![Placement { role: role.to_string(), seed, x: 0.0, z: 0.0 }]
+    vec![Placement {
+        role: role.to_string(),
+        seed,
+        x: 0.0,
+        z: 0.0,
+    }]
 }
 
 /// The rooms, when `APZ_ROOM_LAB` asks for them: they join the floor's root, and the camera frames them. None
 /// otherwise (the floor is then the machines' own view).
 pub fn build(floor: &mut Floor) -> Option<Lab> {
     let want = var("APZ_ROOM_LAB")?;
-    let (w, d) = var("APZ_ROOM_SIZE").and_then(|s| parse_size(&s)).unwrap_or((4.0, 3.5));
-    let seed = var("APZ_ROOM_SEED").and_then(|s| s.parse::<u32>().ok()).unwrap_or(7);
-    let door = var("APZ_ROOM_DOOR").and_then(|s| Door::parse(&s)).unwrap_or(Door::S);
+    let (w, d) = var("APZ_ROOM_SIZE")
+        .and_then(|s| parse_size(&s))
+        .unwrap_or((4.0, 3.5));
+    let seed = var("APZ_ROOM_SEED")
+        .and_then(|s| s.parse::<u32>().ok())
+        .unwrap_or(7);
+    let door = var("APZ_ROOM_DOOR")
+        .and_then(|s| Door::parse(&s))
+        .unwrap_or(Door::S);
     let grid = var("APZ_ROOM_GRID").is_some_and(|g| g == "1");
     let top = var("APZ_ROOM_CAM").as_deref() == Some("top");
     let debug = var("APZ_ROOM_DEBUG").is_some_and(|g| g == "1");
 
     // The web room lab's stage: the pale blue, its lights, no plaza scenery.
-    crate::robots::lab::pale_stage(floor, crate::scene::Color::hex(crate::robots::lab::DEFAULT_BACKGROUND));
+    crate::robots::lab::pale_stage(
+        floor,
+        crate::scene::Color::hex(crate::robots::lab::DEFAULT_BACKGROUND),
+    );
     let palette = kit_palette(&floor.colors);
     // The slot's half-size: the inner size plus the wall margin (web room-lab).
     let half = (w.max(d) / 2.0 + 0.075) as f32;
@@ -119,9 +133,22 @@ pub fn build(floor: &mut Floor) -> Option<Lab> {
     let placed = placements(&want, w as f32, d as f32, seed, grid);
     let count = placed.len();
     for p in &placed {
-        let opts = RoomOptions { seed: p.seed, door, w, d, agents: None };
+        let opts = RoomOptions {
+            seed: p.seed,
+            door,
+            w,
+            d,
+            agents: None,
+        };
         let built: BuiltRoom = build_room(&p.role, half, HUE, &palette, &opts);
-        let input = Input { role: p.role.clone(), w: built.w, d: built.d, door, seed: p.seed, agents: Some(default_agents(w, d)) };
+        let input = Input {
+            role: p.role.clone(),
+            w: built.w,
+            d: built.d,
+            door,
+            seed: p.seed,
+            agents: Some(default_agents(w, d)),
+        };
         let violations = verify(&built.layout, &input, data);
         eprintln!(
             "agentplaza-desktop: room lab: {} seed {}: {} items, {} spots, dropped [{}], skipped [{}], {} violations{}",
@@ -132,25 +159,53 @@ pub fn build(floor: &mut Floor) -> Option<Lab> {
             built.layout.dropped.join(", "),
             built.layout.skipped.join(", "),
             violations.len(),
-            if built.warned { " (below its minimum)" } else { "" }
+            if built.warned {
+                " (below its minimum)"
+            } else {
+                ""
+            }
         );
         for v in &violations {
             eprintln!("agentplaza-desktop: room lab:   {v}");
         }
         total += violations.len();
         warnings += usize::from(built.warned);
-        lines.push(room_line(&label_of(&want, p), &built.layout, violations.len()));
-        let key = if grid && want != "all" { format!("seed:{}", p.seed) } else { p.role.clone() };
-        layouts.insert(key, serde_json::to_value(&built.layout).unwrap_or(Value::Null));
+        lines.push(room_line(
+            &label_of(&want, p),
+            &built.layout,
+            violations.len(),
+        ));
+        let key = if grid && want != "all" {
+            format!("seed:{}", p.seed)
+        } else {
+            p.role.clone()
+        };
+        layouts.insert(
+            key,
+            serde_json::to_value(&built.layout).unwrap_or(Value::Null),
+        );
         if !roles.contains(&p.role) {
             roles.push(p.role.clone());
         }
         lines.extend(violations.iter().map(|v| format!("    {v}")));
         built.group.set_position(p.x, 0.0, p.z);
         floor.root.add(&built.group);
-        floor.root.add(&caption(&label_of(&want, p), built.w as f32, built.d as f32, p.x, p.z));
+        floor.root.add(&caption(
+            &label_of(&want, p),
+            built.w as f32,
+            built.d as f32,
+            p.x,
+            p.z,
+        ));
         if debug {
-            let o = Overlay { layout: &built.layout, violations: &violations, catalog: &data.catalog, w: built.w, d: built.d, door };
+            let o = Overlay {
+                layout: &built.layout,
+                violations: &violations,
+                catalog: &data.catalog,
+                w: built.w,
+                d: built.d,
+                door,
+            };
             let g = overlay(&o);
             g.set_position(p.x, 0.0, p.z);
             floor.root.add(&g);
@@ -161,7 +216,10 @@ pub fn build(floor: &mut Floor) -> Option<Lab> {
     }
     // room-lab.ts's ground and its key light's shadow camera: a shadow-only plane 6 wider and deeper than the rooms, and
     // a shadow square 2 past them (the engine's is square, so the larger half).
-    crate::robots::lab::shadow_ground(floor, &crate::geometry::plane(2.0 * reach_x + 6.0, 2.0 * reach_z + 6.0, 1, 1));
+    crate::robots::lab::shadow_ground(
+        floor,
+        &crate::geometry::plane(2.0 * reach_x + 6.0, 2.0 * reach_z + 6.0, 1, 1),
+    );
     floor.world.shadow_extent = reach_x.max(reach_z) + 2.0;
     floor.world.shadow_near = 1.0;
     floor.world.shadow_far = 80.0;
@@ -172,16 +230,35 @@ pub fn build(floor: &mut Floor) -> Option<Lab> {
     let span = (2.0 * reach_x).max(2.0 * reach_z);
     let field = 15f32.to_radians().tan() / (crate::controls::FOV_DEG / 2.0).to_radians().tan();
     let dist = (span * 1.45 + 4.0) * field;
-    let eye = if top { glam::Vec3::new(0.0, dist, 0.001) } else { glam::Vec3::new(0.55, 0.85, 0.9).normalize() * dist };
+    let eye = if top {
+        glam::Vec3::new(0.0, dist, 0.001)
+    } else {
+        glam::Vec3::new(0.55, 0.85, 0.9).normalize() * dist
+    };
     floor.orbit.look(eye, glam::Vec3::ZERO);
     // room-lab.ts's OrbitControls kept three's defaults: no polar or distance limits (the top view looks straight down).
     floor.orbit.unlimited(0.0, f32::INFINITY);
-    let counts = if count == 1 { String::new() } else { format!("{count} rooms · ") };
-    let small = if warnings > 0 { format!(" · {warnings} below minimum") } else { String::new() };
+    let counts = if count == 1 {
+        String::new()
+    } else {
+        format!("{count} rooms · ")
+    };
+    let small = if warnings > 0 {
+        format!(" · {warnings} below minimum")
+    } else {
+        String::new()
+    };
     let debug_tag = if debug { " · debug" } else { "" };
-    let summary = format!("{counts}violations {total}{small} · {w} × {d} · door {}{debug_tag}", door.as_str());
+    let summary = format!(
+        "{counts}violations {total}{small} · {w} × {d} · door {}{debug_tag}",
+        door.as_str()
+    );
     let info = json!({ "kind": "rooms", "summary": summary, "violations": total, "rooms": count, "below_minimum": warnings, "lines": lines, "roles": roles, "layouts": layouts });
-    Some(Lab { anims, t: 0.0, info })
+    Some(Lab {
+        anims,
+        t: 0.0,
+        info,
+    })
 }
 
 /// A room's name in the readout: its role for the `all` lab, else its role and seed.
@@ -198,23 +275,45 @@ fn label_of(want: &str, p: &Placement) -> String {
 /// room-lab.ts caption: the room's label in dark text on the ground in front of it (+z, the side the oblique camera
 /// looks from), as wide as the room (at least 2.4 units).
 fn caption(text: &str, w: f32, d: f32, x: f32, z: f32) -> crate::scene::Obj {
-    use crate::scene::{Material, Mat, Obj};
+    use crate::scene::{Mat, Material, Obj};
     let mut cv = crate::canvas::Canvas::new(768, 80);
     cv.set_fill("#1f2937");
     cv.set_font("600 40px system-ui, sans-serif");
     cv.set_text_baseline("middle");
     cv.fill_text(text, 8.0, 42.0);
     let width = w.max(2.4);
-    let mat = Mat::new(Material { map: Some(cv.to_texture()), transparent: true, depth_write: false, shading: crate::scene::Shading::Basic, ..Material::default() });
-    let mesh = Obj::mesh(&crate::geometry::plane(width, width * 80.0 / 768.0, 1, 1), &mat);
-    mesh.set_rotation(-std::f32::consts::FRAC_PI_2, 0.0, 0.0).set_position(x, 0.02, z + d / 2.0 + 0.55);
+    let mat = Mat::new(Material {
+        map: Some(cv.to_texture()),
+        transparent: true,
+        depth_write: false,
+        shading: crate::scene::Shading::Basic,
+        ..Material::default()
+    });
+    let mesh = Obj::mesh(
+        &crate::geometry::plane(width, width * 80.0 / 768.0, 1, 1),
+        &mat,
+    );
+    mesh.set_rotation(-std::f32::consts::FRAC_PI_2, 0.0, 0.0)
+        .set_position(x, 0.02, z + d / 2.0 + 0.55);
     mesh
 }
 
 fn room_line(label: &str, layout: &generate::Layout, violations: usize) -> String {
-    let dropped = if layout.dropped.is_empty() { String::new() } else { format!(" dropped {}", layout.dropped.join(", ")) };
-    let skipped = if layout.skipped.is_empty() { String::new() } else { format!(" skipped {}", layout.skipped.join(", ")) };
-    format!("{label}: items {}, spots {}{skipped}{dropped}, violations {violations}", layout.items.len(), layout.spots.len())
+    let dropped = if layout.dropped.is_empty() {
+        String::new()
+    } else {
+        format!(" dropped {}", layout.dropped.join(", "))
+    };
+    let skipped = if layout.skipped.is_empty() {
+        String::new()
+    } else {
+        format!(" skipped {}", layout.skipped.join(", "))
+    };
+    format!(
+        "{label}: items {}, spots {}{skipped}{dropped}, violations {violations}",
+        layout.items.len(),
+        layout.spots.len()
+    )
 }
 
 impl Lab {
@@ -249,14 +348,23 @@ mod tests {
     #[test]
     fn the_grid_is_twelve_seeds_of_one_role() {
         let grid = placements("architect", 4.0, 3.5, 7, true);
-        assert_eq!(grid.iter().map(|p| p.seed).collect::<Vec<_>>(), (7..19).collect::<Vec<u32>>());
+        assert_eq!(
+            grid.iter().map(|p| p.seed).collect::<Vec<_>>(),
+            (7..19).collect::<Vec<u32>>()
+        );
         assert_eq!(placements("architect", 4.0, 3.5, 7, false).len(), 1);
     }
 
     #[test]
     fn every_role_builds_a_lab_room_with_a_fixed_seed() {
         let palette = kit_palette(&Colors::default());
-        let opts = RoomOptions { seed: 7, door: Door::S, w: 4.0, d: 3.5, agents: None };
+        let opts = RoomOptions {
+            seed: 7,
+            door: Door::S,
+            w: 4.0,
+            d: 3.5,
+            agents: None,
+        };
         for role in data().roles.roles.keys() {
             let built = build_room(role, 2.1, HUE, &palette, &opts);
             assert!(!built.layout.items.is_empty(), "{role} has items");
@@ -266,7 +374,12 @@ mod tests {
 
     /// Builds the lab with the given options, on the test thread's own overrides; its readout.
     fn info_with(options: &[(&str, &str)]) -> Value {
-        crate::set_env_overrides(options.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect());
+        crate::set_env_overrides(
+            options
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+        );
         let mut floor = Floor::new();
         let lab = build(&mut floor);
         crate::set_env_overrides(Default::default());
@@ -276,19 +389,40 @@ mod tests {
     #[test]
     fn the_debug_overlay_and_the_top_camera_are_options() {
         let plain = info_with(&[("APZ_ROOM_LAB", "architect"), ("APZ_ROOM_CAM", "top")]);
-        assert!(plain["summary"].as_str().unwrap().ends_with("· 4 × 3.5 · door s"), "{plain}");
+        assert!(
+            plain["summary"]
+                .as_str()
+                .unwrap()
+                .ends_with("· 4 × 3.5 · door s"),
+            "{plain}"
+        );
         let debug = info_with(&[("APZ_ROOM_LAB", "architect"), ("APZ_ROOM_DEBUG", "1")]);
-        assert!(debug["summary"].as_str().unwrap().ends_with("· 4 × 3.5 · door s · debug"), "{debug}");
+        assert!(
+            debug["summary"]
+                .as_str()
+                .unwrap()
+                .ends_with("· 4 × 3.5 · door s · debug"),
+            "{debug}"
+        );
     }
 
     #[test]
     fn the_readout_counts_the_grid_and_each_room() {
-        let info = info_with(&[("APZ_ROOM_LAB", "architect"), ("APZ_ROOM_GRID", "1"), ("APZ_ROOM_SIZE", "5x4"), ("APZ_ROOM_DOOR", "e")]);
+        let info = info_with(&[
+            ("APZ_ROOM_LAB", "architect"),
+            ("APZ_ROOM_GRID", "1"),
+            ("APZ_ROOM_SIZE", "5x4"),
+            ("APZ_ROOM_DOOR", "e"),
+        ]);
         assert_eq!(info["rooms"], 12);
         let summary = info["summary"].as_str().unwrap();
         assert!(summary.starts_with("12 rooms · violations "), "{summary}");
         assert!(summary.ends_with("· 5 × 4 · door e"), "{summary}");
         let lines = info["lines"].as_array().unwrap();
-        assert!(lines.iter().any(|l| l.as_str().unwrap().starts_with("architect seed 7: items ")));
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.as_str().unwrap().starts_with("architect seed 7: items "))
+        );
     }
 }

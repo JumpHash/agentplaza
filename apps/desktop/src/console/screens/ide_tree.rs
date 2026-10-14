@@ -54,7 +54,11 @@ pub fn parent(path: &str) -> &str {
 
 /// Whether `path` lies strictly under `dir` (every path is under the root).
 fn under(path: &str, dir: &str) -> bool {
-    path != dir && (dir.is_empty() || path.strip_prefix(dir).is_some_and(|rest| rest.starts_with('/')))
+    path != dir
+        && (dir.is_empty()
+            || path
+                .strip_prefix(dir)
+                .is_some_and(|rest| rest.starts_with('/')))
 }
 
 /// Takes one page of `dir`'s listing. The first page replaces what was listed under `dir` (so a
@@ -67,7 +71,11 @@ pub fn apply_page(tree: &mut Tree, dir: &str, page: TreePage, first: bool) {
         tree.more.retain(|d, _| !under(d, dir));
     }
     let known: BTreeSet<String> = tree.entries.iter().map(|e| e.path.clone()).collect();
-    tree.entries.extend(page.entries.into_iter().filter(|e| !known.contains(&e.path)));
+    tree.entries.extend(
+        page.entries
+            .into_iter()
+            .filter(|e| !known.contains(&e.path)),
+    );
     match page.next {
         Some(cursor) => tree.more.insert(dir.to_string(), cursor),
         None => tree.more.remove(dir),
@@ -112,7 +120,11 @@ pub fn missing(tree: &Tree) -> Vec<String> {
 /// The changed-only view: the entries the change set touches and their folders, every folder open.
 pub fn changed(tree: &Tree, changes: &ChangeSet) -> Tree {
     let entries = changed_filter(&tree.entries, changes);
-    let mut loaded: BTreeSet<String> = entries.iter().filter(|e| e.kind == EntryKind::Dir).map(|e| e.path.clone()).collect();
+    let mut loaded: BTreeSet<String> = entries
+        .iter()
+        .filter(|e| e.kind == EntryKind::Dir)
+        .map(|e| e.path.clone())
+        .collect();
     loaded.insert(String::new());
     Tree {
         entries,
@@ -157,7 +169,10 @@ fn walk(tree: &Tree, open_all: bool, dir: &str, depth: usize, out: &mut Vec<Row>
         }
     }
     if tree.more.contains_key(dir) {
-        out.push(Row::More { dir: dir.to_string(), depth });
+        out.push(Row::More {
+            dir: dir.to_string(),
+            depth,
+        });
     }
 }
 
@@ -206,8 +221,11 @@ pub fn view(rows: Vec<Row>, selected: Option<String>) -> Element<'static, Msg> {
                 } else {
                     theme::palette().ink
                 };
-                let label = row![Space::new().width(Length::Fixed(depth as f32 * INDENT + 18.0)), ui::mono(name, 12.0, ink),]
-                    .align_y(iced::Alignment::Center);
+                let label = row![
+                    Space::new().width(Length::Fixed(depth as f32 * INDENT + 18.0)),
+                    ui::mono(name, 12.0, ink),
+                ]
+                .align_y(iced::Alignment::Center);
                 button(label)
                     .on_press(Msg::OpenPath(path))
                     .padding([3, 6])
@@ -263,17 +281,32 @@ mod tests {
         apply_page(
             &mut t,
             "",
-            page(vec![entry("README.md", EntryKind::File), entry("src", EntryKind::Dir)], None),
+            page(
+                vec![
+                    entry("README.md", EntryKind::File),
+                    entry("src", EntryKind::Dir),
+                ],
+                None,
+            ),
             true,
         );
-        apply_page(&mut t, "src", page(vec![entry("src/main.rs", EntryKind::File)], None), true);
+        apply_page(
+            &mut t,
+            "src",
+            page(vec![entry("src/main.rs", EntryKind::File)], None),
+            true,
+        );
         t
     }
 
     #[test]
     fn a_closed_folder_hides_its_children_until_it_opens() {
         let mut t = root_tree();
-        assert_eq!(names(&rows(&t, false)), ["src", "README.md"], "folders first, then files");
+        assert_eq!(
+            names(&rows(&t, false)),
+            ["src", "README.md"],
+            "folders first, then files"
+        );
         assert!(toggle(&mut t, "src"), "opening reports the open state");
         assert_eq!(names(&rows(&t, false)), ["src", "main.rs", "README.md"]);
         assert!(!toggle(&mut t, "src"), "a second press closes it");
@@ -283,7 +316,12 @@ mod tests {
     #[test]
     fn an_open_folder_without_its_listing_shows_as_loading_and_is_asked_for() {
         let mut t = Tree::default();
-        apply_page(&mut t, "", page(vec![entry("docs", EntryKind::Dir)], None), true);
+        apply_page(
+            &mut t,
+            "",
+            page(vec![entry("docs", EntryKind::Dir)], None),
+            true,
+        );
         toggle(&mut t, "docs");
         let shown = rows(&t, false);
         assert!(matches!(
@@ -296,8 +334,16 @@ mod tests {
         ));
         assert_eq!(missing(&t), ["docs"]);
         t.inflight.insert("docs".into());
-        assert!(missing(&t).is_empty(), "a listing on its way is not asked for twice");
-        apply_page(&mut t, "docs", page(vec![entry("docs/a.md", EntryKind::File)], None), true);
+        assert!(
+            missing(&t).is_empty(),
+            "a listing on its way is not asked for twice"
+        );
+        apply_page(
+            &mut t,
+            "docs",
+            page(vec![entry("docs/a.md", EntryKind::File)], None),
+            true,
+        );
         assert_eq!(names(&rows(&t, false)), ["docs", "a.md"]);
         assert!(missing(&t).is_empty());
     }
@@ -306,41 +352,79 @@ mod tests {
     fn a_folder_under_a_closed_one_is_not_fetched() {
         let mut t = root_tree();
         t.expanded.insert("a/b".into());
-        assert!(missing(&t).is_empty(), "a/b sits under a folder that is not open");
+        assert!(
+            missing(&t).is_empty(),
+            "a/b sits under a folder that is not open"
+        );
         t.expanded.insert("src".into());
-        assert!(missing(&t).is_empty(), "src is listed already, so opening it asks for nothing");
-        apply_page(&mut t, "src", page(vec![entry("src/x", EntryKind::Dir)], None), false);
+        assert!(
+            missing(&t).is_empty(),
+            "src is listed already, so opening it asks for nothing"
+        );
+        apply_page(
+            &mut t,
+            "src",
+            page(vec![entry("src/x", EntryKind::Dir)], None),
+            false,
+        );
         t.expanded.insert("src/x".into());
-        assert_eq!(missing(&t), ["src/x"], "the next folder down is fetched once its parent lists it");
+        assert_eq!(
+            missing(&t),
+            ["src/x"],
+            "the next folder down is fetched once its parent lists it"
+        );
     }
 
     #[test]
     fn a_first_page_replaces_a_folders_listing_and_a_later_page_adds_to_it() {
         let mut t = root_tree();
-        apply_page(&mut t, "src", page(vec![entry("src/a.rs", EntryKind::File)], Some("c1")), true);
+        apply_page(
+            &mut t,
+            "src",
+            page(vec![entry("src/a.rs", EntryKind::File)], Some("c1")),
+            true,
+        );
         assert!(names(&rows(&t, true)).contains(&"a.rs".to_string()));
         assert!(
             !names(&rows(&t, true)).contains(&"main.rs".to_string()),
             "a first page drops the old listing"
         );
         assert_eq!(t.more.get("src").map(String::as_str), Some("c1"));
-        apply_page(&mut t, "src", page(vec![entry("src/b.rs", EntryKind::File)], None), false);
+        apply_page(
+            &mut t,
+            "src",
+            page(vec![entry("src/b.rs", EntryKind::File)], None),
+            false,
+        );
         let got = names(&rows(&t, true));
         assert!(got.contains(&"a.rs".to_string()) && got.contains(&"b.rs".to_string()));
-        assert!(!t.more.contains_key("src"), "the last page clears the cursor");
+        assert!(
+            !t.more.contains_key("src"),
+            "the last page clears the cursor"
+        );
     }
 
     #[test]
     fn a_root_with_more_pages_ends_with_a_load_more_row() {
         let mut t = Tree::default();
-        apply_page(&mut t, "", page(vec![entry("a.txt", EntryKind::File)], Some("next")), true);
+        apply_page(
+            &mut t,
+            "",
+            page(vec![entry("a.txt", EntryKind::File)], Some("next")),
+            true,
+        );
         assert_eq!(names(&rows(&t, false)), ["a.txt", "more:"]);
     }
 
     #[test]
     fn the_changed_view_shows_touched_paths_with_their_folders_open() {
         let mut t = root_tree();
-        apply_page(&mut t, "src", page(vec![entry("src/lib.rs", EntryKind::File)], None), true);
+        apply_page(
+            &mut t,
+            "src",
+            page(vec![entry("src/lib.rs", EntryKind::File)], None),
+            true,
+        );
         let cs = ChangeSet {
             files: vec![FileChange {
                 path: "src/main.rs".into(),
@@ -351,7 +435,11 @@ mod tests {
             }],
         };
         let view = changed(&t, &cs);
-        assert_eq!(names(&rows(&view, true)), ["src", "main.rs"], "only the changed file and its folder");
+        assert_eq!(
+            names(&rows(&view, true)),
+            ["src", "main.rs"],
+            "only the changed file and its folder"
+        );
     }
 
     #[test]
@@ -359,7 +447,10 @@ mod tests {
         assert_eq!(parent("a/b/c.txt"), "a/b");
         assert_eq!(parent("top.txt"), "");
         assert!(under("a/b", "a"));
-        assert!(!under("ab", "a"), "a sibling with the same prefix is not under it");
+        assert!(
+            !under("ab", "a"),
+            "a sibling with the same prefix is not under it"
+        );
         assert!(!under("a", "a"));
     }
 }

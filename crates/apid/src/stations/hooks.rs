@@ -28,7 +28,13 @@ const HOUR_MS: u64 = 3_600_000;
 
 /// Called after every operation an agent or the owner sends to a station, with its station, its lease (if any), the
 /// operation and its outcome, whether it ran or was refused.
-pub fn after_agent_op(app: &App, station: &str, lease: Option<&str>, op: &Op, result: &Result<Value, Failure>) {
+pub fn after_agent_op(
+    app: &App,
+    station: &str,
+    lease: Option<&str>,
+    op: &Op,
+    result: &Result<Value, Failure>,
+) {
     recordings::on_action(app, station, lease, &action_summary(op), result.is_ok());
 }
 
@@ -47,7 +53,11 @@ pub(super) fn action_summary(op: &Op) -> Value {
 pub fn lease_ended(app: &App, station: &str, lease: &Lease, now: u64) {
     // A workstation VM with snapshot_reset is reverted once its last active lease has ended (vms.rs).
     super::vms::after_lease(app, station);
-    let Some(rate) = app.stations.station(station).map(|s| s.settings.rate_per_hour) else {
+    let Some(rate) = app
+        .stations
+        .station(station)
+        .map(|s| s.settings.rate_per_hour)
+    else {
         return;
     };
     let (Some(task), Some(active_from)) = (lease.task.as_deref(), lease.active_ms) else {
@@ -60,12 +70,23 @@ pub fn lease_ended(app: &App, station: &str, lease: &Lease, now: u64) {
     let memo = format!("workstation {station} lease {}", lease.id);
     let charge = charge_task(&app.plaza.treasury, task, wanted, &memo);
     if let Some(error) = &charge.error {
-        eprintln!("apid: workstation {station}: the lease {} was not charged to task {task}: {error}", lease.id);
+        eprintln!(
+            "apid: workstation {station}: the lease {} was not charged to task {task}: {error}",
+            lease.id
+        );
     }
     if charge.charged > 0 {
         app.work.add_spend(task, charge.charged);
         let cost = charge.charged as f64 * USD_PER_CREDIT;
-        usage::meter(app, lease.agent, &format!("workstation/{station}"), Tokens::default(), Some(cost), Some(task.to_string()), "station");
+        usage::meter(
+            app,
+            lease.agent,
+            &format!("workstation/{station}"),
+            Tokens::default(),
+            Some(cost),
+            Some(task.to_string()),
+            "station",
+        );
     }
     let row = json!({
         "lease": lease.id,
@@ -76,8 +97,18 @@ pub fn lease_ended(app: &App, station: &str, lease: &Lease, now: u64) {
         "charged": charge.charged,
         "error": charge.error,
     });
-    if let Err(reason) = ops::audit(app, Some(station), Some(lease.agent), "lease_charge", "station", row) {
-        eprintln!("apid: workstation {station}: the charge of lease {} is not in the audit: {reason}", lease.id);
+    if let Err(reason) = ops::audit(
+        app,
+        Some(station),
+        Some(lease.agent),
+        "lease_charge",
+        "station",
+        row,
+    ) {
+        eprintln!(
+            "apid: workstation {station}: the charge of lease {} is not in the audit: {reason}",
+            lease.id
+        );
     }
 }
 
@@ -103,11 +134,23 @@ pub fn charge_task(treasury: &Treasury, task: &str, wanted: i64, memo: &str) -> 
     let escrow = treasury.escrow_balance(task).max(0);
     let charged = i64::try_from(escrow).unwrap_or(i64::MAX).min(wanted);
     if charged <= 0 {
-        return Charge { wanted, charged: 0, error: None };
+        return Charge {
+            wanted,
+            charged: 0,
+            error: None,
+        };
     }
     match treasury.charge_spend(Some(task), charged, memo) {
-        Ok(_) => Charge { wanted, charged, error: None },
-        Err(error) => Charge { wanted, charged: 0, error: Some(error.to_string()) },
+        Ok(_) => Charge {
+            wanted,
+            charged,
+            error: None,
+        },
+        Err(error) => Charge {
+            wanted,
+            charged: 0,
+            error: Some(error.to_string()),
+        },
     }
 }
 
@@ -129,45 +172,92 @@ mod tests {
         assert_eq!(credits_for(0, 0, HOUR_MS), 0, "a free station");
         assert_eq!(credits_for(120, 0, HOUR_MS), 120, "an hour at 120 credits");
         assert_eq!(credits_for(120, 1_000, 1_000), 0, "no time, no charge");
-        assert_eq!(credits_for(120, 0, 90_000), 3, "90 seconds at 120 an hour is 3 credits");
-        assert_eq!(credits_for(1, 0, 1), 1, "any time at all rounds up to a credit");
-        assert_eq!(credits_for(u64::MAX, 0, u64::MAX), i64::MAX, "a huge rate saturates");
+        assert_eq!(
+            credits_for(120, 0, 90_000),
+            3,
+            "90 seconds at 120 an hour is 3 credits"
+        );
+        assert_eq!(
+            credits_for(1, 0, 1),
+            1,
+            "any time at all rounds up to a credit"
+        );
+        assert_eq!(
+            credits_for(u64::MAX, 0, u64::MAX),
+            i64::MAX,
+            "a huge rate saturates"
+        );
     }
 
     #[test]
     fn a_charge_comes_off_the_task_escrow_and_is_capped_at_what_it_holds() {
         let treasury = Treasury::new(EventBus::new());
-        treasury.mint_plaza_budget(10_000).expect("the plaza budget");
+        treasury
+            .mint_plaza_budget(10_000)
+            .expect("the plaza budget");
         treasury.fund_task("t1", 300).expect("the task is funded");
 
         let paid = charge_task(&treasury, "t1", 100, "lease");
-        assert_eq!(paid, Charge { wanted: 100, charged: 100, error: None });
+        assert_eq!(
+            paid,
+            Charge {
+                wanted: 100,
+                charged: 100,
+                error: None
+            }
+        );
         assert_eq!(treasury.escrow_balance("t1"), 200);
 
         let short = charge_task(&treasury, "t1", 500, "lease");
-        assert_eq!((short.wanted, short.charged), (500, 200), "capped at the escrow");
+        assert_eq!(
+            (short.wanted, short.charged),
+            (500, 200),
+            "capped at the escrow"
+        );
         assert_eq!(treasury.escrow_balance("t1"), 0, "never below zero");
 
         let none = charge_task(&treasury, "t1", 50, "lease");
-        assert_eq!((none.wanted, none.charged, none.error), (50, 0, None), "an empty escrow charges nothing and refuses nothing");
+        assert_eq!(
+            (none.wanted, none.charged, none.error),
+            (50, 0, None),
+            "an empty escrow charges nothing and refuses nothing"
+        );
     }
 
     #[test]
     fn an_action_is_recorded_under_its_tool_name() {
         let click = Op::Input {
             session: 9,
-            action: InputAction::Click { x: 1, y: 2, button: Button::Left, count: 1 },
+            action: InputAction::Click {
+                x: 1,
+                y: 2,
+                button: Button::Left,
+                count: 1,
+            },
         };
         assert_eq!(action_summary(&click)["kind"], "click");
-        let shot = Op::Screenshot { session: 9, scale: 0.5, grid: false, format: ImageFormat::Png };
+        let shot = Op::Screenshot {
+            session: 9,
+            scale: 0.5,
+            grid: false,
+            format: ImageFormat::Png,
+        };
         assert_eq!(action_summary(&shot)["kind"], "screenshot");
-        assert_eq!(action_summary(&Op::Facts)["kind"], "action", "an operation no tool names");
+        assert_eq!(
+            action_summary(&Op::Facts)["kind"],
+            "action",
+            "an operation no tool names"
+        );
     }
 
     #[test]
     fn an_action_lands_in_its_leases_recording_with_its_outcome() {
         static NEXT: AtomicUsize = AtomicUsize::new(0);
-        let dir: PathBuf = std::env::temp_dir().join(format!("apid-hooks-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+        let dir: PathBuf = std::env::temp_dir().join(format!(
+            "apid-hooks-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         let db = Db::files_only(&dir);
         let recordings = Recordings::default();
@@ -186,12 +276,31 @@ mod tests {
             },
             position: None,
         };
-        let id = recordings.begin(&db, &StationSettings::default(), "w1", &lease, 1000).unwrap().expect("the station records");
-        let op = Op::Input { session: 9, action: InputAction::Click { x: 1, y: 2, button: Button::Left, count: 1 } };
-        assert!(recordings.action(&db, "w1", "l1", &action_summary(&op), false, 1100).unwrap());
+        let id = recordings
+            .begin(&db, &StationSettings::default(), "w1", &lease, 1000)
+            .unwrap()
+            .expect("the station records");
+        let op = Op::Input {
+            session: 9,
+            action: InputAction::Click {
+                x: 1,
+                y: 2,
+                button: Button::Left,
+                count: 1,
+            },
+        };
+        assert!(
+            recordings
+                .action(&db, "w1", "l1", &action_summary(&op), false, 1100)
+                .unwrap()
+        );
         let events = db.recording_events(&id, 10).unwrap();
         assert_eq!(events.len(), 1);
-        assert_eq!((events[0].kind.as_str(), events[0].ok), ("click", false), "a refused click is kept as refused");
+        assert_eq!(
+            (events[0].kind.as_str(), events[0].ok),
+            ("click", false),
+            "a refused click is kept as refused"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

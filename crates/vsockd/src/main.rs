@@ -90,7 +90,10 @@ struct SessionLimiter {
 #[cfg(any(target_os = "linux", windows))]
 impl SessionLimiter {
     fn new(max: usize) -> Self {
-        Self { active: AtomicUsize::new(0), max }
+        Self {
+            active: AtomicUsize::new(0),
+            max,
+        }
     }
 
     fn try_acquire(self: &Arc<Self>) -> Option<SessionGuard> {
@@ -141,7 +144,10 @@ stops the daemon.";
 
 #[cfg(all(unix, not(target_os = "linux")))]
 fn main() -> ExitCode {
-    if std::env::args().skip(1).any(|arg| arg == "--version" || arg == "-V") {
+    if std::env::args()
+        .skip(1)
+        .any(|arg| arg == "--version" || arg == "-V")
+    {
         println!("vsockd {}", apz_os::version());
         return ExitCode::SUCCESS;
     }
@@ -203,7 +209,9 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
     let mut config = Config::default();
     let mut args = args.into_iter();
     while let Some(flag) = args.next() {
-        let value = args.next().ok_or_else(|| format!("missing value for {flag}"));
+        let value = args
+            .next()
+            .ok_or_else(|| format!("missing value for {flag}"));
         match flag.as_str() {
             "--uds-dir" => config.uds_dir = PathBuf::from(value?),
             "--apid" => config.apid = value?,
@@ -212,7 +220,10 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
                 config.cids = value?
                     .split(',')
                     .filter(|part| !part.is_empty())
-                    .map(|part| part.parse::<u32>().map_err(|err| format!("--cids: invalid CID {part}: {err}")))
+                    .map(|part| {
+                        part.parse::<u32>()
+                            .map_err(|err| format!("--cids: invalid CID {part}: {err}"))
+                    })
                     .collect::<Result<_, _>>()?;
                 if config.cids.is_empty() {
                     return Err("--cids: at least one CID is required".to_string());
@@ -229,11 +240,18 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
                 config.egress_ports = value?
                     .split(',')
                     .filter(|part| !part.is_empty())
-                    .map(|part| part.parse::<u16>().map_err(|err| format!("--egress-ports: invalid port {part}: {err}")))
+                    .map(|part| {
+                        part.parse::<u16>()
+                            .map_err(|err| format!("--egress-ports: invalid port {part}: {err}"))
+                    })
                     .collect::<Result<_, _>>()?;
             }
             "--port" => config.port = value?.parse().map_err(|err| format!("--port: {err}"))?,
-            "--http-port" => config.http_port = value?.parse().map_err(|err| format!("--http-port: {err}"))?,
+            "--http-port" => {
+                config.http_port = value?
+                    .parse()
+                    .map_err(|err| format!("--http-port: {err}"))?
+            }
             other => return Err(format!("unknown argument: {other}")),
         }
     }
@@ -246,7 +264,10 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
 #[cfg(target_os = "linux")]
 fn create_uds_dir(path: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
-    std::fs::DirBuilder::new().recursive(true).mode(0o700).create(path)?;
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(path)?;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
 }
 
@@ -261,13 +282,18 @@ fn create_uds_dir(path: &Path) -> std::io::Result<()> {
 #[cfg(any(target_os = "linux", windows))]
 fn run(config: Config) -> Result<(), String> {
     // Checked before anything is bound: a daemon with an unusable apid address does not serve.
-    let apid = apid::Apid::new(&config.apid, config.internal_token_file.clone()).map_err(|err| format!("--apid: {err}"))?;
+    let apid = apid::Apid::new(&config.apid, config.internal_token_file.clone())
+        .map_err(|err| format!("--apid: {err}"))?;
     if apid.enabled() {
         println!("vsockd: v3 agent loop forwarded to {}", config.apid);
     }
     sys::install_signal_handlers();
-    create_uds_dir(&config.uds_dir)
-        .map_err(|err| format!("cannot create the socket directory {}: {err}", config.uds_dir.display()))?;
+    create_uds_dir(&config.uds_dir).map_err(|err| {
+        format!(
+            "cannot create the socket directory {}: {err}",
+            config.uds_dir.display()
+        )
+    })?;
     let egress_apid = apid.clone();
     let hub = Arc::new(Hub::new(Arc::new(StdoutLog), apid));
     let facts = http::NodeFacts {
@@ -277,8 +303,12 @@ fn run(config: Config) -> Result<(), String> {
         max_sessions: MAX_SESSIONS,
         keepalive_idle_s: KEEPALIVE_IDLE_SECS,
     };
-    let http = http::serve(config.http_port, Arc::clone(&hub), facts)
-        .map_err(|err| format!("cannot listen on 127.0.0.1:{} for HTTP: {err}", config.http_port))?;
+    let http = http::serve(config.http_port, Arc::clone(&hub), facts).map_err(|err| {
+        format!(
+            "cannot listen on 127.0.0.1:{} for HTTP: {err}",
+            config.http_port
+        )
+    })?;
     println!("vsockd: http on http://127.0.0.1:{}", http.port());
 
     // Every listener is bound before any is served: a taken path fails the
@@ -291,15 +321,23 @@ fn run(config: Config) -> Result<(), String> {
         listener
             .set_nonblocking(true)
             .map_err(|err| format!("cannot make {} non-blocking: {err}", path.display()))?;
-        println!("vsockd: listening on {} for guest CID {cid}", path.display());
+        println!(
+            "vsockd: listening on {} for guest CID {cid}",
+            path.display()
+        );
         listeners.push((cid, path, listener));
         if config.egress {
-            let path = config.uds_dir.join(format!("vm{cid}_{}", egress::EGRESS_PORT));
+            let path = config
+                .uds_dir
+                .join(format!("vm{cid}_{}", egress::EGRESS_PORT));
             let listener = bind_listener(&path, cid)?;
             listener
                 .set_nonblocking(true)
                 .map_err(|err| format!("cannot make {} non-blocking: {err}", path.display()))?;
-            println!("vsockd: egress proxy listening on {} for guest CID {cid}", path.display());
+            println!(
+                "vsockd: egress proxy listening on {} for guest CID {cid}",
+                path.display()
+            );
             egress_listeners.push((cid, path, listener));
         }
     }
@@ -309,13 +347,17 @@ fn run(config: Config) -> Result<(), String> {
     for (cid, path, listener) in listeners {
         paths.push(path);
         let (limiter, hub) = (Arc::clone(&limiter), Arc::clone(&hub));
-        loops.push(thread::spawn(move || accept_loop(cid, listener, limiter, hub)));
+        loops.push(thread::spawn(move || {
+            accept_loop(cid, listener, limiter, hub)
+        }));
     }
     let policy = Arc::new(egress::Policy::new(config.egress_ports.clone()));
     for (cid, path, listener) in egress_listeners {
         paths.push(path);
         let (policy, egress_apid) = (Arc::clone(&policy), egress_apid.clone());
-        loops.push(thread::spawn(move || egress::accept_loop(cid, listener, policy, egress_apid)));
+        loops.push(thread::spawn(move || {
+            egress::accept_loop(cid, listener, policy, egress_apid)
+        }));
     }
     for accept in loops {
         let _ = accept.join();
@@ -339,7 +381,10 @@ fn run(config: Config) -> Result<(), String> {
 /// full backlog (`EAGAIN`), a permission problem — is treated as live.
 #[cfg(any(target_os = "linux", windows))]
 fn probe_is_stale(err: &std::io::Error) -> bool {
-    matches!(err.kind(), std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound)
+    matches!(
+        err.kind(),
+        std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound
+    )
 }
 
 /// Binds `path`, clearing a stale socket file but never taking over a live
@@ -368,13 +413,21 @@ fn bind_listener(path: &Path, cid: u32) -> Result<UnixListener, String> {
             if let Err(err) = std::fs::remove_file(path)
                 && err.kind() != std::io::ErrorKind::NotFound
             {
-                return Err(format!("cannot remove the stale socket {}: {err}", path.display()));
+                return Err(format!(
+                    "cannot remove the stale socket {}: {err}",
+                    path.display()
+                ));
             }
         }
         match UnixListener::bind(path) {
             Ok(listener) => return Ok(listener),
             Err(err) if err.kind() == std::io::ErrorKind::AddrInUse => continue,
-            Err(err) => return Err(format!("cannot listen on {} for guest CID {cid}: {err}", path.display())),
+            Err(err) => {
+                return Err(format!(
+                    "cannot listen on {} for guest CID {cid}: {err}",
+                    path.display()
+                ));
+            }
         }
     }
     Err(format!(
@@ -413,7 +466,10 @@ fn accept_loop(cid: u32, listener: UnixListener, limiter: Arc<SessionLimiter>, h
 /// Serves one guest session and logs how it ended.
 #[cfg(any(target_os = "linux", windows))]
 fn serve_guest(stream: UnixStream, cid: u32, hub: &Hub) {
-    if let Err(err) = stream.set_nonblocking(false).and_then(|()| stream.set_read_timeout(Some(RECV_TIMEOUT))) {
+    if let Err(err) = stream
+        .set_nonblocking(false)
+        .and_then(|()| stream.set_read_timeout(Some(RECV_TIMEOUT)))
+    {
         println!("vsockd: session with cid {cid} dropped: cannot set a read timeout ({err})");
         return;
     }
@@ -423,7 +479,14 @@ fn serve_guest(stream: UnixStream, cid: u32, hub: &Hub) {
         keepalive_idle: Some(Duration::from_secs(KEEPALIVE_IDLE_SECS)),
         keepalive_read_slice: KEEPALIVE_READ_SLICE,
     };
-    match handle_session(&mut Lines::new(stream), cid, limits, &StdoutLog, hub, &SystemClock) {
+    match handle_session(
+        &mut Lines::new(stream),
+        cid,
+        limits,
+        &StdoutLog,
+        hub,
+        &SystemClock,
+    ) {
         // A keepalive session and a reap log their own ends.
         Ok(summary) if summary.keepalive => {}
         Err(HostError::Reaped) => {}
@@ -441,7 +504,9 @@ fn serve_guest(stream: UnixStream, cid: u32, hub: &Hub) {
 #[cfg(all(any(target_os = "linux", windows), test))]
 pub(crate) fn read_until_closed(stream: &UnixStream, deadline: Duration) -> Vec<u8> {
     use std::io::{ErrorKind, Read};
-    stream.set_read_timeout(Some(Duration::from_millis(200))).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_millis(200)))
+        .unwrap();
     let end = Instant::now() + deadline;
     let mut reader = stream;
     let mut bytes = Vec::new();
@@ -450,7 +515,11 @@ pub(crate) fn read_until_closed(stream: &UnixStream, deadline: Duration) -> Vec<
         match reader.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => bytes.extend_from_slice(&buf[..n]),
-            Err(err) if matches!(err.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut | ErrorKind::Interrupted) => {}
+            Err(err)
+                if matches!(
+                    err.kind(),
+                    ErrorKind::WouldBlock | ErrorKind::TimedOut | ErrorKind::Interrupted
+                ) => {}
             // A reset after the peer closed counts as the close.
             Err(_) => break,
         }
@@ -477,9 +546,22 @@ mod tests {
         assert_eq!(args(&[]).unwrap(), Config::default());
         assert_eq!(Config::default().http_port, 19080);
         let config = args(&[
-            "--uds-dir", "/tmp/x", "--cids", "3,4,5", "--port", "6000", "--http-port", "0",
-            "--apid", "http://127.0.0.1:9", "--internal-token-file", "t.token",
-            "--egress", "off", "--egress-ports", "8080,8443",
+            "--uds-dir",
+            "/tmp/x",
+            "--cids",
+            "3,4,5",
+            "--port",
+            "6000",
+            "--http-port",
+            "0",
+            "--apid",
+            "http://127.0.0.1:9",
+            "--internal-token-file",
+            "t.token",
+            "--egress",
+            "off",
+            "--egress-ports",
+            "8080,8443",
         ])
         .unwrap();
         let expected = Config {
@@ -493,7 +575,10 @@ mod tests {
             egress_ports: vec![8080, 8443],
         };
         assert_eq!(config, expected);
-        assert!(Config::default().egress, "the egress proxy is on by default");
+        assert!(
+            Config::default().egress,
+            "the egress proxy is on by default"
+        );
         for bad in [
             &["--port"][..],
             &["--port", "x"],
@@ -510,9 +595,17 @@ mod tests {
     #[test]
     fn an_apid_address_that_is_not_loopback_stops_the_daemon_before_it_binds() {
         let never = scratch("apid").join("never-created");
-        let config = Config { uds_dir: never.clone(), apid: "http://10.0.0.5:7700".into(), http_port: 0, ..Config::default() };
+        let config = Config {
+            uds_dir: never.clone(),
+            apid: "http://10.0.0.5:7700".into(),
+            http_port: 0,
+            ..Config::default()
+        };
         let err = run(config).expect_err("a routable apid stops the daemon");
-        assert!(err.starts_with("--apid:") && err.contains("loopback"), "{err}");
+        assert!(
+            err.starts_with("--apid:") && err.contains("loopback"),
+            "{err}"
+        );
         assert!(!never.exists(), "nothing was created: {err}");
     }
 
@@ -541,11 +634,18 @@ mod tests {
         let live = dir.join("vm32_5000");
         let _listener = UnixListener::bind(&live).unwrap();
         let refusal = bind_listener(&live, 32).expect_err("a live listener is never taken over");
-        assert!(refusal.contains("refusing to take it over") && live.exists(), "{refusal}");
+        assert!(
+            refusal.contains("refusing to take it over") && live.exists(),
+            "{refusal}"
+        );
 
         let stale = |kind: std::io::ErrorKind| probe_is_stale(&kind.into());
-        assert!(stale(std::io::ErrorKind::ConnectionRefused) && stale(std::io::ErrorKind::NotFound));
-        assert!(!stale(std::io::ErrorKind::WouldBlock) && !stale(std::io::ErrorKind::PermissionDenied));
+        assert!(
+            stale(std::io::ErrorKind::ConnectionRefused) && stale(std::io::ErrorKind::NotFound)
+        );
+        assert!(
+            !stale(std::io::ErrorKind::WouldBlock) && !stale(std::io::ErrorKind::PermissionDenied)
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

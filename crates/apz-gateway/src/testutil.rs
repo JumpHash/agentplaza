@@ -21,7 +21,11 @@ pub struct Reply {
 
 impl Reply {
     pub fn new(status: u16, content_type: &str, body: impl Into<String>) -> Self {
-        Reply { status, headers: vec![("content-type".into(), content_type.into())], body: body.into() }
+        Reply {
+            status,
+            headers: vec![("content-type".into(), content_type.into())],
+            body: body.into(),
+        }
     }
 
     pub fn sse(body: impl Into<String>) -> Self {
@@ -50,7 +54,10 @@ pub struct Captured {
 
 impl Captured {
     pub fn header(&self, name: &str) -> Option<&str> {
-        self.headers.iter().find(|(n, _)| n.eq_ignore_ascii_case(name)).map(|(_, v)| v.as_str())
+        self.headers
+            .iter()
+            .find(|(n, _)| n.eq_ignore_ascii_case(name))
+            .map(|(_, v)| v.as_str())
     }
 
     pub fn json(&self) -> Value {
@@ -72,8 +79,12 @@ impl FakeServer {
         let log = requests.clone();
         thread::spawn(move || {
             for reply in replies {
-                let Ok((stream, _)) = listener.accept() else { return };
-                stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+                let Ok((stream, _)) = listener.accept() else {
+                    return;
+                };
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(10)))
+                    .unwrap();
                 let mut reader = BufReader::new(stream);
                 let mut head = String::new();
                 loop {
@@ -85,16 +96,31 @@ impl FakeServer {
                 }
                 let mut lines = head.lines();
                 let mut start = lines.next().unwrap_or("").split(' ');
-                let (method, path) = (start.next().unwrap_or("").to_string(), start.next().unwrap_or("").to_string());
+                let (method, path) = (
+                    start.next().unwrap_or("").to_string(),
+                    start.next().unwrap_or("").to_string(),
+                );
                 let headers: Vec<(String, String)> = lines
                     .filter_map(|l| l.split_once(':'))
                     .map(|(n, v)| (n.trim().to_ascii_lowercase(), v.trim().to_string()))
                     .collect();
-                let len = headers.iter().find(|(n, _)| n == "content-length").and_then(|(_, v)| v.parse().ok());
+                let len = headers
+                    .iter()
+                    .find(|(n, _)| n == "content-length")
+                    .and_then(|(_, v)| v.parse().ok());
                 let mut body = vec![0; len.unwrap_or(0)];
                 reader.read_exact(&mut body).unwrap();
-                log.lock().unwrap().push(Captured { method, path, headers, body });
-                let mut out = format!("HTTP/1.1 {} X\r\nconnection: close\r\ncontent-length: {}\r\n", reply.status, reply.body.len());
+                log.lock().unwrap().push(Captured {
+                    method,
+                    path,
+                    headers,
+                    body,
+                });
+                let mut out = format!(
+                    "HTTP/1.1 {} X\r\nconnection: close\r\ncontent-length: {}\r\n",
+                    reply.status,
+                    reply.body.len()
+                );
                 for (n, v) in &reply.headers {
                     out.push_str(&format!("{n}: {v}\r\n"));
                 }
@@ -118,7 +144,11 @@ impl FakeServer {
 
 /// A provider pointed at `server`.
 pub fn provider(id: &str, kind: ProviderKind, server: &FakeServer, auth: Auth) -> ProviderConfig {
-    ProviderConfig { base_url: Some(server.url()), auth, ..ProviderConfig::new(id, kind) }
+    ProviderConfig {
+        base_url: Some(server.url()),
+        auth,
+        ..ProviderConfig::new(id, kind)
+    }
 }
 
 /// A gateway whose environment has `env-<NAME>` for every non-AWS `*_KEY` /
@@ -129,15 +159,21 @@ pub fn gateway(providers: Vec<ProviderConfig>) -> Gateway {
 
 /// [`gateway`] plus extra environment variables.
 pub fn gateway_with_env(providers: Vec<ProviderConfig>, env: &[(&str, &str)]) -> Gateway {
-    let env: Vec<(String, String)> = env.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+    let env: Vec<(String, String)> = env
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
     Gateway::builder()
         .providers(providers)
-        .secrets(|name: &str, _: &crate::SecretRead<'_>| (name == "s").then(|| "sk-secret-value".to_string()))
+        .secrets(|name: &str, _: &crate::SecretRead<'_>| {
+            (name == "s").then(|| "sk-secret-value".to_string())
+        })
         .env(move |name: &str| {
             if let Some((_, v)) = env.iter().find(|(k, _)| k == name) {
                 return Some(v.clone());
             }
-            let generic = !name.starts_with("AWS_") && (name.ends_with("_KEY") || name.ends_with("_TOKEN"));
+            let generic =
+                !name.starts_with("AWS_") && (name.ends_with("_KEY") || name.ends_with("_TOKEN"));
             generic.then(|| format!("env-{name}"))
         })
         .retry(2, Duration::from_millis(5))
@@ -159,10 +195,16 @@ pub fn request(text: &str) -> ChatRequest {
 
 /// An SSE body of named events.
 pub fn sse_body(events: &[(&str, &str)]) -> String {
-    events.iter().map(|(e, d)| format!("event: {e}\ndata: {d}\n\n")).collect()
+    events
+        .iter()
+        .map(|(e, d)| format!("event: {e}\ndata: {d}\n\n"))
+        .collect()
 }
 
 /// An SSE body of unnamed `data:` events.
 pub fn sse_data(events: &[&str]) -> String {
-    events.iter().map(|d| format!("data: {d}\r\n\r\n")).collect()
+    events
+        .iter()
+        .map(|d| format!("data: {d}\r\n\r\n"))
+        .collect()
 }

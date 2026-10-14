@@ -1,10 +1,10 @@
 //! `agentplaza tools`: Tools and connectors.
 
 use clap::Subcommand;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::cmd::models::{expect_stdin_marker, items, joined, read_secret_from_stdin, split_list};
-use crate::ctx::{self, confirm, Ctx};
+use crate::ctx::{self, Ctx, confirm};
 
 #[derive(Subcommand, Debug)]
 pub enum Cmd {
@@ -74,7 +74,12 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                         ]
                     })
                     .collect();
-                ctx::table(&["id", "label", "kind", "category", "set up", "enabled", "roles"], &rows);
+                ctx::table(
+                    &[
+                        "id", "label", "kind", "category", "set up", "enabled", "roles",
+                    ],
+                    &rows,
+                );
             });
             Ok(())
         }
@@ -87,14 +92,27 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
         Cmd::Disable { id } => set_enabled(ctx, &id, false),
         Cmd::Roles { id, roles } => {
             let roles = split_list(&roles);
-            let shown = if roles.is_empty() { "every role".to_string() } else { roles.join(", ") };
-            ctx.client.put(&format!("/v1/connectors/{}", ctx::seg(&id)), &json!({ "roles": roles }))?;
+            let shown = if roles.is_empty() {
+                "every role".to_string()
+            } else {
+                roles.join(", ")
+            };
+            ctx.client.put(
+                &format!("/v1/connectors/{}", ctx::seg(&id)),
+                &json!({ "roles": roles }),
+            )?;
             ctx.out(&json!({ "id": id, "roles": shown }), |v| {
                 println!("{}: roles set to {}", ctx::s(v, "id"), ctx::s(v, "roles"));
             });
             Ok(())
         }
-        Cmd::Key { id, field, value, clear, yes } => {
+        Cmd::Key {
+            id,
+            field,
+            value,
+            clear,
+            yes,
+        } => {
             let path = format!("/v1/connectors/{}/secret", ctx::seg(&id));
             let done = if clear {
                 if value.is_some() {
@@ -103,7 +121,10 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                 if !confirm(yes, &format!("Clear the stored key of {id}."))? {
                     return Err("cancelled".into());
                 }
-                let query = field.as_deref().map(|f| format!("?field={}", ctx::seg(f))).unwrap_or_default();
+                let query = field
+                    .as_deref()
+                    .map(|f| format!("?field={}", ctx::seg(f)))
+                    .unwrap_or_default();
                 ctx.client.delete(&format!("{path}{query}"))?;
                 format!("cleared the stored key of {id}")
             } else {
@@ -117,16 +138,25 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                 ctx.client.put(&path, &body)?;
                 format!("stored the key of {id}")
             };
-            ctx.out(&json!({ "id": id, "done": done }), |v| println!("{}", ctx::s(v, "done")));
+            ctx.out(&json!({ "id": id, "done": done }), |v| {
+                println!("{}", ctx::s(v, "done"))
+            });
             Ok(())
         }
         Cmd::Test { id } => {
-            let report = ctx.client.post(&format!("/v1/connectors/{}/test", ctx::seg(&id)), &json!({}))?;
+            let report = ctx.client.post(
+                &format!("/v1/connectors/{}/test", ctx::seg(&id)),
+                &json!({}),
+            )?;
             let ok = report.get("ok").and_then(Value::as_bool).unwrap_or(false);
             let detail = ctx::s(&report, "detail").to_string();
             ctx.out(&report, |r| {
                 let word = if ok { "ok" } else { "failed" };
-                println!("{word}  {} ms  {}", ctx::text(r, "latency_ms"), ctx::s(r, "detail"));
+                println!(
+                    "{word}  {} ms  {}",
+                    ctx::text(r, "latency_ms"),
+                    ctx::s(r, "detail")
+                );
             });
             if ok {
                 Ok(())
@@ -147,9 +177,14 @@ fn find(ctx: &Ctx, id: &str) -> Result<Value, String> {
 }
 
 fn set_enabled(ctx: &Ctx, id: &str, on: bool) -> Result<(), String> {
-    ctx.client.put(&format!("/v1/connectors/{}", ctx::seg(id)), &json!({ "enabled": on }))?;
+    ctx.client.put(
+        &format!("/v1/connectors/{}", ctx::seg(id)),
+        &json!({ "enabled": on }),
+    )?;
     let word = if on { "enabled" } else { "disabled" };
-    ctx.out(&json!({ "id": id, "enabled": on }), |_| println!("{id} {word}"));
+    ctx.out(&json!({ "id": id, "enabled": on }), |_| {
+        println!("{id} {word}")
+    });
     Ok(())
 }
 
@@ -198,7 +233,11 @@ fn print_connector(c: &Value) {
             vec![
                 ctx::s(f, "name").to_string(),
                 ctx::s(f, "label").to_string(),
-                if yes_no(f, "required") == "yes" { "required".into() } else { "optional".into() },
+                if yes_no(f, "required") == "yes" {
+                    "required".into()
+                } else {
+                    "optional".into()
+                },
                 status,
                 ctx::s(f, "env").to_string(),
             ]
@@ -211,7 +250,13 @@ fn print_connector(c: &Value) {
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .map(|a| vec![ctx::s(a, "name").to_string(), ctx::s(a, "risk").to_string(), ctx::s(a, "description").to_string()])
+        .map(|a| {
+            vec![
+                ctx::s(a, "name").to_string(),
+                ctx::s(a, "risk").to_string(),
+                ctx::s(a, "description").to_string(),
+            ]
+        })
         .collect();
     ctx::table(&["action", "risk", "description"], &actions);
 }

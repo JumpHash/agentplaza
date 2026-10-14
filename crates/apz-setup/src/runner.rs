@@ -18,12 +18,22 @@ pub struct Output {
 impl Output {
     /// A successful run that printed `stdout`.
     pub fn ok(stdout: &str) -> Output {
-        Output { success: true, code: Some(0), stdout: stdout.as_bytes().to_vec(), stderr: Vec::new() }
+        Output {
+            success: true,
+            code: Some(0),
+            stdout: stdout.as_bytes().to_vec(),
+            stderr: Vec::new(),
+        }
     }
 
     /// A failed run that printed `stderr`.
     pub fn failed(stderr: &str) -> Output {
-        Output { success: false, code: Some(1), stdout: Vec::new(), stderr: stderr.as_bytes().to_vec() }
+        Output {
+            success: false,
+            code: Some(1),
+            stdout: Vec::new(),
+            stderr: stderr.as_bytes().to_vec(),
+        }
     }
 }
 
@@ -33,7 +43,12 @@ pub trait Runner {
     fn output(&self, program: &str, args: &[&str]) -> io::Result<Output>;
 
     /// Like [`Runner::output`], but each line of its stdout and stderr goes to `log` as it arrives.
-    fn stream(&self, program: &str, args: &[&str], log: &mut dyn FnMut(String)) -> io::Result<Output>;
+    fn stream(
+        &self,
+        program: &str,
+        args: &[&str],
+        log: &mut dyn FnMut(String),
+    ) -> io::Result<Output>;
 
     /// Whether `program` is on PATH (nothing is run).
     fn on_path(&self, program: &str) -> bool;
@@ -57,7 +72,12 @@ impl Runner for SystemRunner {
         })
     }
 
-    fn stream(&self, program: &str, args: &[&str], log: &mut dyn FnMut(String)) -> io::Result<Output> {
+    fn stream(
+        &self,
+        program: &str,
+        args: &[&str],
+        log: &mut dyn FnMut(String),
+    ) -> io::Result<Output> {
         let mut child = command(program)
             .args(args)
             .stdin(Stdio::null())
@@ -113,7 +133,10 @@ fn command(program: impl AsRef<std::ffi::OsStr>) -> Command {
 
 /// Reads `reader` line by line, sending each line to `tx` as it comes; the thread returns all
 /// the lines when the stream ends.
-fn pump<R: Read + Send + 'static>(reader: Option<R>, tx: mpsc::Sender<String>) -> thread::JoinHandle<Vec<String>> {
+fn pump<R: Read + Send + 'static>(
+    reader: Option<R>,
+    tx: mpsc::Sender<String>,
+) -> thread::JoinHandle<Vec<String>> {
     thread::spawn(move || {
         let mut lines = Vec::new();
         if let Some(reader) = reader {
@@ -146,7 +169,12 @@ pub(crate) mod mock {
 
     impl Mock {
         pub(crate) fn new(respond: impl Fn(&str, &[&str]) -> Output + 'static) -> Mock {
-            Mock { respond: Box::new(respond), paths: Vec::new(), files: Vec::new(), calls: RefCell::new(Vec::new()) }
+            Mock {
+                respond: Box::new(respond),
+                paths: Vec::new(),
+                files: Vec::new(),
+                calls: RefCell::new(Vec::new()),
+            }
         }
 
         /// Every command run so far, as `program arg arg`.
@@ -155,7 +183,10 @@ pub(crate) mod mock {
         }
 
         fn record(&self, program: &str, args: &[&str]) -> Output {
-            let line = std::iter::once(program).chain(args.iter().copied()).collect::<Vec<_>>().join(" ");
+            let line = std::iter::once(program)
+                .chain(args.iter().copied())
+                .collect::<Vec<_>>()
+                .join(" ");
             self.calls.borrow_mut().push(line);
             (self.respond)(program, args)
         }
@@ -166,9 +197,18 @@ pub(crate) mod mock {
             Ok(self.record(program, args))
         }
 
-        fn stream(&self, program: &str, args: &[&str], log: &mut dyn FnMut(String)) -> io::Result<Output> {
+        fn stream(
+            &self,
+            program: &str,
+            args: &[&str],
+            log: &mut dyn FnMut(String),
+        ) -> io::Result<Output> {
             let out = self.record(program, args);
-            let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+            let text = format!(
+                "{}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
             for line in text.lines() {
                 log(line.to_string());
             }
@@ -180,7 +220,10 @@ pub(crate) mod mock {
         }
 
         fn read_file(&self, path: &str) -> Option<String> {
-            self.files.iter().find(|(name, _)| *name == path).map(|(_, text)| text.clone())
+            self.files
+                .iter()
+                .find(|(name, _)| *name == path)
+                .map(|(_, text)| text.clone())
         }
     }
 

@@ -60,9 +60,14 @@ pub use event::{Event, Level};
 pub use facts::{AccountMode, Display, Facts, Form, Gpu, Os};
 pub use input::{Button, InputAction, Selector, UiAction};
 pub use link::{HubFrame, Notice, StationFrame};
-pub use op::{AppsOp, Bridge, FilesOp, ImageFormat, Keep, OWNER_VIEW, Op, RunOp, SessionKind, SyncOp, TermOp};
+pub use op::{
+    AppsOp, Bridge, FilesOp, ImageFormat, Keep, OWNER_VIEW, Op, RunOp, SessionKind, SyncOp, TermOp,
+};
 pub use settings::{StationSettings, Takeover};
-pub use sync::{CHUNK as SYNC_CHUNK, FILE_CAP as SYNC_FILE_CAP, FolderState, PART_PREFIX as SYNC_PART_PREFIX, SyncEntry, SyncManifest, SyncPull, SyncPushed, SyncStatus, ignored_name, valid_path};
+pub use sync::{
+    CHUNK as SYNC_CHUNK, FILE_CAP as SYNC_FILE_CAP, FolderState, PART_PREFIX as SYNC_PART_PREFIX,
+    SyncEntry, SyncManifest, SyncPull, SyncPushed, SyncStatus, ignored_name, valid_path,
+};
 
 /// The WebSocket subprotocol the link is opened with.
 pub const SUBPROTOCOL: &str = "apz.station.v1";

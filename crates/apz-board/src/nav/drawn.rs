@@ -50,7 +50,10 @@ pub fn top_below(sup: Option<&Support>, x: f64, z: f64, y: f64) -> f64 {
     let xm = x / s;
     let zm = z / s;
     let ym = y / s + GROUND_TOL / s;
-    let Some(bucket) = f.cells.get(&key_of((xm / f.cell).floor() as i64, (zm / f.cell).floor() as i64)) else {
+    let Some(bucket) = f.cells.get(&key_of(
+        (xm / f.cell).floor() as i64,
+        (zm / f.cell).floor() as i64,
+    )) else {
         return 0.0;
     };
     let mut best = 0.0;
@@ -135,9 +138,13 @@ pub fn bake_drawn_tops(grid: &NavGrid, sups: &[Support], step: f64) -> DrawnTops
                 continue;
             }
             let i0 = (((ax.min(bx).min(cx) - grid.x0) / step).ceil().max(0.0)) as i64;
-            let i1 = (((ax.max(bx).max(cx) - grid.x0) / step).floor().min(nx as f64 - 1.0)) as i64;
+            let i1 = (((ax.max(bx).max(cx) - grid.x0) / step)
+                .floor()
+                .min(nx as f64 - 1.0)) as i64;
             let j0 = (((az.min(bz).min(cz) - grid.z0) / step).ceil().max(0.0)) as i64;
-            let j1 = (((az.max(bz).max(cz) - grid.z0) / step).floor().min(nz as f64 - 1.0)) as i64;
+            let j1 = (((az.max(bz).max(cz) - grid.z0) / step)
+                .floor()
+                .min(nz as f64 - 1.0)) as i64;
             // The barycentric weights are linear in x: each row starts at its first sample and steps by dw1 and dw2.
             let dw1 = ((bz - cz) * step) / den;
             let dw2 = ((cz - az) * step) / den;
@@ -167,8 +174,18 @@ pub fn bake_drawn_tops(grid: &NavGrid, sups: &[Support], step: f64) -> DrawnTops
             }
         }
     }
-    let h = best.iter().map(|&b| if b == f64::NEG_INFINITY { f64::NAN } else { b }).collect();
-    DrawnTops { x0: grid.x0, z0: grid.z0, step, nx, nz, h }
+    let h = best
+        .iter()
+        .map(|&b| if b == f64::NEG_INFINITY { f64::NAN } else { b })
+        .collect();
+    DrawnTops {
+        x0: grid.x0,
+        z0: grid.z0,
+        step,
+        nx,
+        nz,
+        h,
+    }
 }
 
 /// The walk height under (x, z): bilinear over the four samples around the point. NaN when one of them has no drawn top

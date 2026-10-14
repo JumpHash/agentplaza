@@ -9,15 +9,18 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::{Duration, Instant};
 
-use iced::widget::{canvas, column, container, mouse_area, row, Space};
-use iced::{border, mouse, Alignment, Background, Color, Element, Length, Point, Rectangle, Renderer, Size, Task, Theme};
+use iced::widget::{Space, canvas, column, container, mouse_area, row};
+use iced::{
+    Alignment, Background, Color, Element, Length, Point, Rectangle, Renderer, Size, Task, Theme,
+    border, mouse,
+};
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::{sanctions, Id};
+use super::{Id, sanctions};
 use crate::console::engine::world::layout::agent_hue;
 use crate::console::ui::{self, Kind, Tone};
-use crate::console::{client, Ctx};
+use crate::console::{Ctx, client};
 
 /// The layout's world box. The first layout spreads the agents over all of it, and the view maps
 /// the box onto the graph area, so the graph grows and shrinks with the panel.
@@ -215,7 +218,11 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         Msg::Loaded(Ok(data)) => {
             state.error = None;
             state.loaded = true;
-            if state.selected.as_ref().is_some_and(|key| !data.agents.iter().any(|a| in_group(a, key))) {
+            if state
+                .selected
+                .as_ref()
+                .is_some_and(|key| !data.agents.iter().any(|a| in_group(a, key)))
+            {
                 state.selected = None;
             }
             state.data = Some(data);
@@ -247,7 +254,12 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                 .data
                 .as_ref()
                 .and_then(|d| d.agents.iter().find(|a| a.cid == cid))
-                .map(|a| vec![Key::Family(family_of(a)), Key::Role(family_of(a), a.role.clone())]);
+                .map(|a| {
+                    vec![
+                        Key::Family(family_of(a)),
+                        Key::Role(family_of(a), a.role.clone()),
+                    ]
+                });
             if let (Some(path), true) = (path, is_grouped(state)) {
                 state.nav = path;
             }
@@ -291,7 +303,10 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         Msg::Rate(cid, value) => {
             let client = ctx.client.clone();
             let body = serde_json::json!({ "value": value });
-            client::task(move || client.post::<Value>(&format!("/v1/agents/{cid}/rating"), &body), Msg::Rated)
+            client::task(
+                move || client.post::<Value>(&format!("/v1/agents/{cid}/rating"), &body),
+                Msg::Rated,
+            )
         }
         Msg::Rated(result) => {
             if let Err(e) = result {
@@ -302,7 +317,12 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         Msg::Sanctions(result) => {
             // Keep the last marks when the register cannot be read; the next refresh tries again.
             if let Ok(register) = result {
-                state.suspended = register.suspensions.iter().filter(|s| s.active).map(|s| s.cid).collect();
+                state.suspended = register
+                    .suspensions
+                    .iter()
+                    .filter(|s| s.active)
+                    .map(|s| s.cid)
+                    .collect();
             }
             Task::none()
         }
@@ -311,7 +331,10 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
 
 /// Whether the graph is grouped by family now.
 fn is_grouped(state: &State) -> bool {
-    state.data.as_ref().is_some_and(|d| state.group.unwrap_or(d.agents.len() > GROUP_AT))
+    state
+        .data
+        .as_ref()
+        .is_some_and(|d| state.group.unwrap_or(d.agents.len() > GROUP_AT))
 }
 
 /// Rebuilds the scene for the current level and lays it out. The nodes that come into view grow
@@ -321,7 +344,9 @@ fn refresh(state: &mut State) -> Task<Msg> {
     if !grouped {
         state.nav.clear();
     }
-    let Some(data) = state.data.as_ref() else { return Task::none() };
+    let Some(data) = state.data.as_ref() else {
+        return Task::none();
+    };
     let live: HashSet<u64> = data.agents.iter().map(|a| a.cid).collect();
     state.pos.retain(|key, _| match key {
         Key::Agent(cid) => live.contains(cid),
@@ -330,7 +355,10 @@ fn refresh(state: &mut State) -> Task<Msg> {
     let scene = build_scene(data, grouped, &state.nav);
     let old: HashSet<Key> = state.scene.nodes.iter().map(|n| n.key.clone()).collect();
     let next: HashSet<Key> = scene.nodes.iter().map(|n| n.key.clone()).collect();
-    let gone: Vec<Pt> = old.difference(&next).filter_map(|k| state.pos.get(k).copied()).collect();
+    let gone: Vec<Pt> = old
+        .difference(&next)
+        .filter_map(|k| state.pos.get(k).copied())
+        .collect();
     let fresh: HashSet<Key> = next.difference(&old).cloned().collect();
     layout(&scene.nodes, &scene.links, &mut state.pos);
     state.scene = scene;
@@ -338,12 +366,22 @@ fn refresh(state: &mut State) -> Task<Msg> {
         return Task::none();
     }
     let origin = if gone.is_empty() {
-        Pt { x: LW / 2.0, y: LH / 2.0 }
+        Pt {
+            x: LW / 2.0,
+            y: LH / 2.0,
+        }
     } else {
         let n = gone.len() as f32;
-        Pt { x: gone.iter().map(|p| p.x).sum::<f32>() / n, y: gone.iter().map(|p| p.y).sum::<f32>() / n }
+        Pt {
+            x: gone.iter().map(|p| p.x).sum::<f32>() / n,
+            y: gone.iter().map(|p| p.y).sum::<f32>() / n,
+        }
     };
-    state.anim = Some(Anim { at: Instant::now(), origin, keys: fresh });
+    state.anim = Some(Anim {
+        at: Instant::now(),
+        origin,
+        keys: fresh,
+    });
     tick()
 }
 
@@ -369,14 +407,31 @@ fn ease(elapsed: Duration) -> f32 {
 pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
     let body: Element<'a, Msg> = match &state.data {
         _ if !state.loaded => ui::loading(),
-        None => ui::error_line(state.error.as_deref().unwrap_or("Could not load the society.")),
-        Some(d) if d.agents.is_empty() => {
-            ui::empty("society", "No agents yet", "Spawn agents and they show up here, with what they think of one another.")
-        }
+        None => ui::error_line(
+            state
+                .error
+                .as_deref()
+                .unwrap_or("Could not load the society."),
+        ),
+        Some(d) if d.agents.is_empty() => ui::empty(
+            "society",
+            "No agents yet",
+            "Spawn agents and they show up here, with what they think of one another.",
+        ),
         Some(d) => {
             let grouped = is_grouped(state);
-            let grow = state.anim.as_ref().map(|a| Grow { origin: a.origin, t: ease(a.at.elapsed()), keys: &a.keys });
-            let graph = Graph { scene: &state.scene, pos: &state.pos, selected: state.selected.as_ref(), grow, suspended: &state.suspended };
+            let grow = state.anim.as_ref().map(|a| Grow {
+                origin: a.origin,
+                t: ease(a.at.elapsed()),
+                keys: &a.keys,
+            });
+            let graph = Graph {
+                scene: &state.scene,
+                pos: &state.pos,
+                selected: state.selected.as_ref(),
+                grow,
+                suspended: &state.suspended,
+            };
             let panel = match &state.selected {
                 Some(Key::Agent(cid)) => match d.agents.iter().find(|a| a.cid == *cid) {
                     Some(me) => detail(state, d, me),
@@ -391,10 +446,16 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
             }
             left = left.push(canvas(graph).width(Length::Fill).height(Length::Fill));
             row![
-                container(left).width(Length::FillPortion(3)).height(Length::Fill),
-                container(ui::scroll(column![panel]).width(Length::Fill).height(Length::Fill))
-                    .width(Length::FillPortion(2))
+                container(left)
+                    .width(Length::FillPortion(3))
                     .height(Length::Fill),
+                container(
+                    ui::scroll(column![panel])
+                        .width(Length::Fill)
+                        .height(Length::Fill)
+                )
+                .width(Length::FillPortion(2))
+                .height(Length::Fill),
             ]
             .spacing(16)
             .height(Length::Fill)
@@ -444,10 +505,24 @@ struct Link {
 fn build_scene(d: &Society, grouped: bool, nav: &[Key]) -> Scene {
     let mut count: HashMap<Key, usize> = HashMap::new();
     for a in &d.agents {
-        *count.entry(Key::Role(family_of(a), a.role.clone())).or_insert(0) += 1;
+        *count
+            .entry(Key::Role(family_of(a), a.role.clone()))
+            .or_insert(0) += 1;
     }
-    let key_of: HashMap<u64, Key> =
-        d.agents.iter().map(|a| (a.cid, if grouped { visible(a, nav, &count) } else { Key::Agent(a.cid) })).collect();
+    let key_of: HashMap<u64, Key> = d
+        .agents
+        .iter()
+        .map(|a| {
+            (
+                a.cid,
+                if grouped {
+                    visible(a, nav, &count)
+                } else {
+                    Key::Agent(a.cid)
+                },
+            )
+        })
+        .collect();
     let mut order: Vec<Key> = Vec::new();
     let mut groups: HashMap<Key, Vec<&Agent>> = HashMap::new();
     for a in &d.agents {
@@ -468,8 +543,11 @@ fn visible(a: &Agent, nav: &[Key], count: &HashMap<Key, usize>) -> Key {
     let fam = family_of(a);
     match nav.first() {
         Some(Key::Family(open)) if *open == fam => {
-            let role_open = matches!(nav.get(1), Some(Key::Role(f, r)) if *f == fam && *r == a.role);
-            let many = count.get(&Key::Role(fam, a.role.clone())).is_some_and(|n| *n >= 2);
+            let role_open =
+                matches!(nav.get(1), Some(Key::Role(f, r)) if *f == fam && *r == a.role);
+            let many = count
+                .get(&Key::Role(fam, a.role.clone()))
+                .is_some_and(|n| *n >= 2);
             if many && !role_open {
                 Key::Role(fam, a.role.clone())
             } else {
@@ -484,7 +562,14 @@ fn visible(a: &Agent, nav: &[Key], count: &HashMap<Key, usize>) -> Key {
 fn node_of(key: &Key, members: &[&Agent]) -> Node {
     if let (Key::Agent(_), [a]) = (key, members) {
         let s = side(a.reputation);
-        return Node { key: key.clone(), label: label_of(a), members: vec![a.cid], w: s, h: s, fp: foot(a) };
+        return Node {
+            key: key.clone(),
+            label: label_of(a),
+            members: vec![a.cid],
+            w: s,
+            h: s,
+            fp: foot(a),
+        };
     }
     let mut cids: Vec<u64> = members.iter().map(|a| a.cid).collect();
     cids.sort_unstable();
@@ -498,7 +583,18 @@ fn node_of(key: &Key, members: &[&Agent]) -> Node {
     let size = 52.0 + 10.0 * (cids.len() as f32).sqrt();
     let w = size.max(label_width(&label));
     let h = size.max(60.0);
-    Node { key: key.clone(), label, members: cids, w, h, fp: Foot { half: w / 2.0, up: h / 2.0 + 8.0, down: h / 2.0 + 8.0 } }
+    Node {
+        key: key.clone(),
+        label,
+        members: cids,
+        w,
+        h,
+        fp: Foot {
+            half: w / 2.0,
+            up: h / 2.0 + 8.0,
+            down: h / 2.0 + 8.0,
+        },
+    }
 }
 
 /// The links among the nodes in view. At the agent level each bond is kept with its direction. Once
@@ -524,7 +620,9 @@ fn links(bonds: &[Bond], key_of: impl Fn(u64) -> Option<Key>, grouped: bool) -> 
     }
     let mut agg: BTreeMap<(Key, Key), (f32, f32, usize)> = BTreeMap::new();
     for b in bonds {
-        let (Some(a), Some(z)) = (key_of(b.from), key_of(b.to)) else { continue };
+        let (Some(a), Some(z)) = (key_of(b.from), key_of(b.to)) else {
+            continue;
+        };
         if a == z {
             continue;
         }
@@ -535,7 +633,14 @@ fn links(bonds: &[Bond], key_of: impl Fn(u64) -> Option<Key>, grouped: bool) -> 
         entry.2 += 1;
     }
     agg.into_iter()
-        .map(|((from, to), (strength, esum, n))| Link { from, to, strength, e: esum / n as f32, directed: false, mutual: false })
+        .map(|((from, to), (strength, esum, n))| Link {
+            from,
+            to,
+            strength,
+            e: esum / n as f32,
+            directed: false,
+            mutual: false,
+        })
         .collect()
 }
 
@@ -555,7 +660,11 @@ struct Foot {
 fn foot(a: &Agent) -> Foot {
     let half = side(a.reputation) / 2.0;
     let tag = tag_width(&label_of(a));
-    Foot { half: half.max(tag / (2.0 * TAG_SCALE)), up: half + 18.0, down: half + 8.0 + 22.0 / TAG_SCALE }
+    Foot {
+        half: half.max(tag / (2.0 * TAG_SCALE)),
+        up: half + 18.0,
+        down: half + 8.0 + 22.0 / TAG_SCALE,
+    }
 }
 
 /// How far two footprints overlap on each axis, with their centres at `p` and `q`. They clash
@@ -563,7 +672,11 @@ fn foot(a: &Agent) -> Foot {
 fn overlap(p: Pt, fp: Foot, q: Pt, fq: Foot) -> (f32, f32) {
     let (dx, dy) = (q.x - p.x, q.y - p.y);
     // Stacked vertically, the lower node's name tag must clear the upper node's antenna.
-    let stack = if dy >= 0.0 { fp.down + fq.up } else { fq.down + fp.up };
+    let stack = if dy >= 0.0 {
+        fp.down + fq.up
+    } else {
+        fq.down + fp.up
+    };
     (fp.half + fq.half + GAP - dx.abs(), stack + GAP - dy.abs())
 }
 
@@ -583,7 +696,9 @@ fn clamp(v: f32, lo: f32, hi: f32) -> f32 {
 /// Places the nodes. Nodes already placed stay where they are; only new ones move, under the
 /// springs and repulsion of the whole graph, and then clear of everyone's footprint.
 fn layout(nodes: &[Node], links: &[Link], pos: &mut HashMap<Key, Pt>) {
-    let fresh: Vec<usize> = (0..nodes.len()).filter(|&i| !pos.contains_key(&nodes[i].key)).collect();
+    let fresh: Vec<usize> = (0..nodes.len())
+        .filter(|&i| !pos.contains_key(&nodes[i].key))
+        .collect();
     if fresh.is_empty() {
         return;
     }
@@ -598,7 +713,13 @@ fn layout(nodes: &[Node], links: &[Link], pos: &mut HashMap<Key, Pt>) {
         for (n, &i) in fresh.iter().enumerate() {
             let angle = n as f32 * 2.39996; // golden angle, so a crowd fans out evenly
             let r = 70.0 + 26.0 * (n as f32).sqrt();
-            pos.insert(nodes[i].key.clone(), Pt { x: LW / 2.0 + angle.cos() * r, y: LH / 2.0 + angle.sin() * r });
+            pos.insert(
+                nodes[i].key.clone(),
+                Pt {
+                    x: LW / 2.0 + angle.cos() * r,
+                    y: LH / 2.0 + angle.sin() * r,
+                },
+            );
         }
     }
 
@@ -607,8 +728,18 @@ fn layout(nodes: &[Node], links: &[Link], pos: &mut HashMap<Key, Pt>) {
         .iter()
         .enumerate()
         .map(|(i, n)| {
-            let p = pos.get(&n.key).copied().unwrap_or(Pt { x: LW / 2.0, y: LH / 2.0 });
-            Body { x: p.x, y: p.y, vx: 0.0, vy: 0.0, fixed: !is_fresh.contains(&i), fp: n.fp }
+            let p = pos.get(&n.key).copied().unwrap_or(Pt {
+                x: LW / 2.0,
+                y: LH / 2.0,
+            });
+            Body {
+                x: p.x,
+                y: p.y,
+                vx: 0.0,
+                vy: 0.0,
+                fixed: !is_fresh.contains(&i),
+                fp: n.fp,
+            }
         })
         .collect();
     let index: HashMap<&Key, usize> = nodes.iter().enumerate().map(|(i, n)| (&n.key, i)).collect();
@@ -616,7 +747,9 @@ fn layout(nodes: &[Node], links: &[Link], pos: &mut HashMap<Key, Pt>) {
     // One spring per unordered pair; stronger contacts pull harder.
     let mut springs: Vec<(usize, usize, f32)> = Vec::new();
     for link in links {
-        let (Some(&a), Some(&z)) = (index.get(&link.from), index.get(&link.to)) else { continue };
+        let (Some(&a), Some(&z)) = (index.get(&link.from), index.get(&link.to)) else {
+            continue;
+        };
         if a == z {
             continue;
         }
@@ -628,7 +761,11 @@ fn layout(nodes: &[Node], links: &[Link], pos: &mut HashMap<Key, Pt>) {
         }
     }
 
-    let steps = if fresh.len() == nodes.len() { FIRST_STEPS } else { LATER_STEPS };
+    let steps = if fresh.len() == nodes.len() {
+        FIRST_STEPS
+    } else {
+        LATER_STEPS
+    };
     for _ in 0..steps {
         for i in 0..bodies.len() {
             for j in (i + 1)..bodies.len() {
@@ -697,10 +834,16 @@ fn clearest(nodes: &[Node], i: usize, links: &[Link], pos: &HashMap<Key, Pt>) ->
         })
         .collect();
     let target = if peers.is_empty() {
-        Pt { x: LW / 2.0, y: LH / 2.0 }
+        Pt {
+            x: LW / 2.0,
+            y: LH / 2.0,
+        }
     } else {
         let n = peers.len() as f32;
-        Pt { x: peers.iter().map(|p| p.x).sum::<f32>() / n, y: peers.iter().map(|p| p.y).sum::<f32>() / n }
+        Pt {
+            x: peers.iter().map(|p| p.x).sum::<f32>() / n,
+            y: peers.iter().map(|p| p.y).sum::<f32>() / n,
+        }
     };
     let mut best = target;
     let mut best_score = f32::MIN;
@@ -755,8 +898,14 @@ fn separate(bodies: &mut [Body]) {
         let mut clashed = false;
         for i in 0..bodies.len() {
             for j in (i + 1)..bodies.len() {
-                let p = Pt { x: bodies[i].x, y: bodies[i].y };
-                let q = Pt { x: bodies[j].x, y: bodies[j].y };
+                let p = Pt {
+                    x: bodies[i].x,
+                    y: bodies[i].y,
+                };
+                let q = Pt {
+                    x: bodies[j].x,
+                    y: bodies[j].y,
+                };
                 let (ox, oy) = overlap(p, bodies[i].fp, q, bodies[j].fp);
                 if ox <= 0.0 || oy <= 0.0 {
                     continue;
@@ -827,7 +976,11 @@ struct Xf {
 impl Xf {
     fn fit(size: Size) -> Self {
         let s = (size.width / LW).min(size.height / LH).max(0.01);
-        Self { s, dx: (size.width - LW * s) / 2.0, dy: (size.height - LH * s) / 2.0 }
+        Self {
+            s,
+            dx: (size.width - LW * s) / 2.0,
+            dy: (size.height - LH * s) / 2.0,
+        }
     }
 
     fn map(&self, p: Pt) -> Point {
@@ -864,9 +1017,18 @@ fn edge_curve(a: Pt, z: Pt, ra: f32, rz: f32) -> (Pt, Pt, Pt) {
     let (dx, dy) = (z.x - a.x, z.y - a.y);
     let len = (dx * dx + dy * dy).sqrt().max(1.0);
     let (ux, uy) = (dx / len, dy / len);
-    let p0 = Pt { x: a.x + ux * ra, y: a.y + uy * ra };
-    let p1 = Pt { x: z.x - ux * rz, y: z.y - uy * rz };
-    let c = Pt { x: (p0.x + p1.x) / 2.0 - uy * len * 0.16, y: (p0.y + p1.y) / 2.0 + ux * len * 0.16 };
+    let p0 = Pt {
+        x: a.x + ux * ra,
+        y: a.y + uy * ra,
+    };
+    let p1 = Pt {
+        x: z.x - ux * rz,
+        y: z.y - uy * rz,
+    };
+    let c = Pt {
+        x: (p0.x + p1.x) / 2.0 - uy * len * 0.16,
+        y: (p0.y + p1.y) / 2.0 + ux * len * 0.16,
+    };
     (p0, c, p1)
 }
 
@@ -896,9 +1058,10 @@ impl Graph<'_> {
     fn at(&self, key: &Key) -> Option<Pt> {
         let p = *self.pos.get(key)?;
         Some(match self.grow {
-            Some(g) if g.t < 1.0 && g.keys.contains(key) => {
-                Pt { x: g.origin.x + (p.x - g.origin.x) * g.t, y: g.origin.y + (p.y - g.origin.y) * g.t }
-            }
+            Some(g) if g.t < 1.0 && g.keys.contains(key) => Pt {
+                x: g.origin.x + (p.x - g.origin.x) * g.t,
+                y: g.origin.y + (p.y - g.origin.y) * g.t,
+            },
             _ => p,
         })
     }
@@ -909,7 +1072,11 @@ impl Graph<'_> {
         for n in self.scene.nodes.iter().rev() {
             let Some(p) = self.at(&n.key) else { continue };
             let c = xf.map(p);
-            let (up, down) = if matches!(n.key, Key::Agent(_)) { (16.0, 30.0) } else { (0.0, 0.0) };
+            let (up, down) = if matches!(n.key, Key::Agent(_)) {
+                (16.0, 30.0)
+            } else {
+                (0.0, 0.0)
+            };
             let (w, h) = match n.key {
                 Key::Agent(_) => (n.w * xf.s, n.h * xf.s),
                 _ => cluster_box(n, xf.s),
@@ -926,8 +1093,16 @@ impl Graph<'_> {
 impl canvas::Program<Msg> for Graph<'_> {
     type State = ();
 
-    fn update(&self, _state: &mut (), event: &canvas::Event, bounds: Rectangle, cursor: mouse::Cursor) -> Option<canvas::Action<Msg>> {
-        let canvas::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) = event else { return None };
+    fn update(
+        &self,
+        _state: &mut (),
+        event: &canvas::Event,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
+    ) -> Option<canvas::Action<Msg>> {
+        let canvas::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) = event else {
+            return None;
+        };
         let at = cursor.position_in(bounds)?;
         // A click on an agent selects it, on a cluster pops it open, and on the background clears the selection.
         let msg = match self.hit(at, bounds.size()) {
@@ -937,7 +1112,14 @@ impl canvas::Program<Msg> for Graph<'_> {
         Some(canvas::Action::publish(msg).and_capture())
     }
 
-    fn draw(&self, _state: &(), renderer: &Renderer, _theme: &Theme, bounds: Rectangle, _cursor: mouse::Cursor) -> Vec<canvas::Geometry> {
+    fn draw(
+        &self,
+        _state: &(),
+        renderer: &Renderer,
+        _theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<canvas::Geometry> {
         let mut frame = canvas::Frame::new(renderer, bounds.size());
         let xf = Xf::fit(bounds.size());
         let k = xf.s;
@@ -948,14 +1130,27 @@ impl canvas::Program<Msg> for Graph<'_> {
                 .scene
                 .links
                 .iter()
-                .filter_map(|l| if &l.from == sel { Some(&l.to) } else if &l.to == sel { Some(&l.from) } else { None })
+                .filter_map(|l| {
+                    if &l.from == sel {
+                        Some(&l.to)
+                    } else if &l.to == sel {
+                        Some(&l.from)
+                    } else {
+                        None
+                    }
+                })
                 .collect(),
             None => HashSet::new(),
         };
 
         // Links first, so the nodes sit on top of them.
         for l in &self.scene.links {
-            let (Some(from), Some(to), Some(a), Some(z)) = (self.at(&l.from), self.at(&l.to), nodes.get(&l.from), nodes.get(&l.to)) else {
+            let (Some(from), Some(to), Some(a), Some(z)) = (
+                self.at(&l.from),
+                self.at(&l.to),
+                nodes.get(&l.from),
+                nodes.get(&l.to),
+            ) else {
                 continue;
             };
             let (p0, c, p1) = edge_curve(from, to, radius(a), radius(z));
@@ -966,22 +1161,60 @@ impl canvas::Program<Msg> for Graph<'_> {
             });
             let (colour, width, dashed, arrow) = if l.directed {
                 match self.selected {
-                    None => (if l.mutual { crate::theme::palette().ink_2 } else { crate::theme::palette().ink_3 }, if l.mutual { 1.5 } else { 1.2 }, false, false),
+                    None => (
+                        if l.mutual {
+                            crate::theme::palette().ink_2
+                        } else {
+                            crate::theme::palette().ink_3
+                        },
+                        if l.mutual { 1.5 } else { 1.2 },
+                        false,
+                        false,
+                    ),
                     Some(sel) if l.from == *sel || l.to == *sel => {
                         let out = l.from == *sel;
-                        (band(l.e), 1.5 + 4.0 * clamp(l.strength / 10.0, 0.0, 1.0), !out, out)
+                        (
+                            band(l.e),
+                            1.5 + 4.0 * clamp(l.strength / 10.0, 0.0, 1.0),
+                            !out,
+                            out,
+                        )
                     }
-                    Some(_) => (crate::theme::palette().ink_3.scale_alpha(0.25), 1.0, false, false),
+                    Some(_) => (
+                        crate::theme::palette().ink_3.scale_alpha(0.25),
+                        1.0,
+                        false,
+                        false,
+                    ),
                 }
             } else {
                 // Aggregated: thicker with the summed strength, coloured by the mean trust.
-                let touches = self.selected.is_some_and(|sel| l.from == *sel || l.to == *sel);
-                let colour = if self.selected.is_some() && !touches { band(l.e).scale_alpha(0.2) } else { band(l.e) };
-                (colour, 1.0 + 4.0 * clamp(l.strength / 40.0, 0.0, 1.0), false, false)
+                let touches = self
+                    .selected
+                    .is_some_and(|sel| l.from == *sel || l.to == *sel);
+                let colour = if self.selected.is_some() && !touches {
+                    band(l.e).scale_alpha(0.2)
+                } else {
+                    band(l.e)
+                };
+                (
+                    colour,
+                    1.0 + 4.0 * clamp(l.strength / 40.0, 0.0, 1.0),
+                    false,
+                    false,
+                )
             };
-            let mut stroke = canvas::Stroke::default().with_color(colour).with_width(width * k.max(0.5));
+            let mut stroke = canvas::Stroke::default()
+                .with_color(colour)
+                .with_width(width * k.max(0.5));
             if dashed {
-                stroke = canvas::Stroke { line_dash: canvas::stroke::LineDash { segments: &[6.0, 4.0], offset: 0 }, ..stroke };
+                stroke = canvas::Stroke {
+                    line_dash: canvas::stroke::LineDash {
+                        segments: &[6.0, 4.0],
+                        offset: 0,
+                    },
+                    ..stroke
+                };
             }
             frame.stroke(&path, stroke);
             if arrow {
@@ -1006,10 +1239,20 @@ impl canvas::Program<Msg> for Graph<'_> {
             let Some(p) = self.at(&n.key) else { continue };
             let c = xf.map(p);
             let selected = self.selected == Some(&n.key);
-            let dim = self.selected.is_some_and(|sel| sel != &n.key && !touching.contains(&n.key));
+            let dim = self
+                .selected
+                .is_some_and(|sel| sel != &n.key && !touching.contains(&n.key));
             let alpha = if dim { 0.35 } else { 1.0 };
             match &n.key {
-                Key::Agent(_) => draw_agent(&mut frame, n, c, k, alpha, selected, self.suspended.contains(&n.members[0])),
+                Key::Agent(_) => draw_agent(
+                    &mut frame,
+                    n,
+                    c,
+                    k,
+                    alpha,
+                    selected,
+                    self.suspended.contains(&n.members[0]),
+                ),
                 _ => draw_cluster(&mut frame, n, c, k, alpha, selected),
             }
         }
@@ -1019,7 +1262,15 @@ impl canvas::Program<Msg> for Graph<'_> {
 
 /// An agent: a square body with a head, two eyes, a mouth and a name tag. A suspended agent carries a
 /// danger-coloured ring segment at the top-right corner of its body.
-fn draw_agent(frame: &mut canvas::Frame, n: &Node, c: Point, k: f32, alpha: f32, selected: bool, suspended: bool) {
+fn draw_agent(
+    frame: &mut canvas::Frame,
+    n: &Node,
+    c: Point,
+    k: f32,
+    alpha: f32,
+    selected: bool,
+    suspended: bool,
+) {
     let cid = n.members[0];
     let sz = n.w * k;
     let half = sz / 2.0;
@@ -1027,28 +1278,69 @@ fn draw_agent(frame: &mut canvas::Frame, n: &Node, c: Point, k: f32, alpha: f32,
     let ink = crate::theme::palette().ink.scale_alpha(alpha);
 
     // The print shadow, the antenna and its tip.
-    frame.fill_rectangle(Point::new(c.x - half + 3.0, c.y - half + 3.0), Size::new(sz, sz), crate::theme::palette().ink.scale_alpha(0.85 * alpha));
-    let antenna = canvas::Path::line(Point::new(c.x, c.y - half), Point::new(c.x, c.y - half - 12.0 * k));
-    frame.stroke(&antenna, canvas::Stroke::default().with_color(ink).with_width(3.0 * k));
+    frame.fill_rectangle(
+        Point::new(c.x - half + 3.0, c.y - half + 3.0),
+        Size::new(sz, sz),
+        crate::theme::palette().ink.scale_alpha(0.85 * alpha),
+    );
+    let antenna = canvas::Path::line(
+        Point::new(c.x, c.y - half),
+        Point::new(c.x, c.y - half - 12.0 * k),
+    );
+    frame.stroke(
+        &antenna,
+        canvas::Stroke::default()
+            .with_color(ink)
+            .with_width(3.0 * k),
+    );
     let tip = canvas::Path::circle(Point::new(c.x, c.y - half - 13.0 * k), 4.5 * k);
     frame.fill(&tip, ui::hsl(hue, 0.7, 0.55).scale_alpha(alpha));
-    frame.stroke(&tip, canvas::Stroke::default().with_color(ink).with_width(2.5 * k));
+    frame.stroke(
+        &tip,
+        canvas::Stroke::default()
+            .with_color(ink)
+            .with_width(2.5 * k),
+    );
 
     // The body, and the ring round the selected agent.
     let body = canvas::Path::rectangle(Point::new(c.x - half, c.y - half), Size::new(sz, sz));
     frame.fill(&body, ui::hsl(hue, 0.6, 0.64).scale_alpha(alpha));
-    frame.stroke(&body, canvas::Stroke::default().with_color(ink).with_width(3.0 * k));
+    frame.stroke(
+        &body,
+        canvas::Stroke::default()
+            .with_color(ink)
+            .with_width(3.0 * k),
+    );
     if selected {
-        let ring = canvas::Path::rectangle(Point::new(c.x - half - 5.0, c.y - half - 5.0), Size::new(sz + 10.0, sz + 10.0));
-        frame.stroke(&ring, canvas::Stroke::default().with_color(crate::theme::palette().signal).with_width(2.0));
+        let ring = canvas::Path::rectangle(
+            Point::new(c.x - half - 5.0, c.y - half - 5.0),
+            Size::new(sz + 10.0, sz + 10.0),
+        );
+        frame.stroke(
+            &ring,
+            canvas::Stroke::default()
+                .with_color(crate::theme::palette().signal)
+                .with_width(2.0),
+        );
     }
     if suspended {
         // A quarter ring centred on the body's top-right corner, outside the body: from straight up to straight right.
         let corner = Point::new(c.x + half, c.y - half);
         let arc = canvas::Path::new(|pb| {
-            pb.arc(canvas::path::Arc { center: corner, radius: 9.0 * k, start_angle: (-std::f32::consts::FRAC_PI_2).into(), end_angle: 0.0_f32.into() });
+            pb.arc(canvas::path::Arc {
+                center: corner,
+                radius: 9.0 * k,
+                start_angle: (-std::f32::consts::FRAC_PI_2).into(),
+                end_angle: 0.0_f32.into(),
+            });
         });
-        frame.stroke(&arc, canvas::Stroke::default().with_color(Tone::Danger.color().scale_alpha(alpha)).with_width(3.0 * k).with_line_cap(canvas::LineCap::Round));
+        frame.stroke(
+            &arc,
+            canvas::Stroke::default()
+                .with_color(Tone::Danger.color().scale_alpha(alpha))
+                .with_width(3.0 * k)
+                .with_line_cap(canvas::LineCap::Round),
+        );
     }
 
     // Two eyes: a white sclera with an ink pupil each.
@@ -1057,7 +1349,12 @@ fn draw_agent(frame: &mut canvas::Frame, n: &Node, c: Point, k: f32, alpha: f32,
         let ey = c.y - sz * 0.08;
         let sclera = canvas::Path::circle(Point::new(ex, ey), sz * 0.14);
         frame.fill(&sclera, Color::WHITE.scale_alpha(alpha));
-        frame.stroke(&sclera, canvas::Stroke::default().with_color(ink).with_width(2.0 * k));
+        frame.stroke(
+            &sclera,
+            canvas::Stroke::default()
+                .with_color(ink)
+                .with_width(2.0 * k),
+        );
         let pupil = canvas::Path::circle(Point::new(ex + 1.5 * k, ey + 1.5 * k), sz * 0.06);
         frame.fill(&pupil, ink);
     }
@@ -1065,16 +1362,31 @@ fn draw_agent(frame: &mut canvas::Frame, n: &Node, c: Point, k: f32, alpha: f32,
     // The mouth.
     let mouth = canvas::Path::new(|pb| {
         pb.move_to(Point::new(c.x - sz * 0.16, c.y + sz * 0.22));
-        pb.quadratic_curve_to(Point::new(c.x, c.y + sz * 0.34), Point::new(c.x + sz * 0.16, c.y + sz * 0.22));
+        pb.quadratic_curve_to(
+            Point::new(c.x, c.y + sz * 0.34),
+            Point::new(c.x + sz * 0.16, c.y + sz * 0.22),
+        );
     });
-    frame.stroke(&mouth, canvas::Stroke::default().with_color(ink).with_width(2.5 * k).with_line_cap(canvas::LineCap::Round));
+    frame.stroke(
+        &mouth,
+        canvas::Stroke::default()
+            .with_color(ink)
+            .with_width(2.5 * k)
+            .with_line_cap(canvas::LineCap::Round),
+    );
 
     // The name tag, under the body.
     let tag_w = tag_width(&n.label);
     let tag_top = c.y + half + 8.0 * k;
-    let tag = canvas::Path::rectangle(Point::new(c.x - tag_w / 2.0, tag_top), Size::new(tag_w, 22.0));
+    let tag = canvas::Path::rectangle(
+        Point::new(c.x - tag_w / 2.0, tag_top),
+        Size::new(tag_w, 22.0),
+    );
     frame.fill(&tag, crate::theme::palette().paper.scale_alpha(alpha));
-    frame.stroke(&tag, canvas::Stroke::default().with_color(ink).with_width(1.0));
+    frame.stroke(
+        &tag,
+        canvas::Stroke::default().with_color(ink).with_width(1.0),
+    );
     frame.fill_text(canvas::Text {
         content: n.label.clone(),
         position: Point::new(c.x - tag_w / 2.0 + LABEL_PAD, tag_top + 4.0),
@@ -1089,7 +1401,10 @@ fn draw_agent(frame: &mut canvas::Frame, n: &Node, c: Point, k: f32, alpha: f32,
 /// count, which are drawn at a fixed size.
 fn cluster_box(n: &Node, k: f32) -> (f32, f32) {
     let count = label_width(&format!("{} agents", n.members.len()));
-    ((n.w * k).max(label_width(&n.label)).max(count), (n.h * k).max(56.0))
+    (
+        (n.w * k).max(label_width(&n.label)).max(count),
+        (n.h * k).max(56.0),
+    )
 }
 
 /// A cluster: a labelled box with its member count, and up to three of its members as dots.
@@ -1105,10 +1420,24 @@ fn draw_cluster(frame: &mut canvas::Frame, n: &Node, c: Point, k: f32, alpha: f3
     );
     let body = canvas::Path::rounded_rectangle(Point::new(x0, y0), Size::new(w, h), radius);
     frame.fill(&body, crate::theme::palette().paper.scale_alpha(alpha));
-    frame.stroke(&body, canvas::Stroke::default().with_color(ink).with_width(2.5 * k));
+    frame.stroke(
+        &body,
+        canvas::Stroke::default()
+            .with_color(ink)
+            .with_width(2.5 * k),
+    );
     if selected {
-        let ring = canvas::Path::rounded_rectangle(Point::new(x0 - 5.0, y0 - 5.0), Size::new(w + 10.0, h + 10.0), radius);
-        frame.stroke(&ring, canvas::Stroke::default().with_color(crate::theme::palette().signal).with_width(2.0));
+        let ring = canvas::Path::rounded_rectangle(
+            Point::new(x0 - 5.0, y0 - 5.0),
+            Size::new(w + 10.0, h + 10.0),
+            radius,
+        );
+        frame.stroke(
+            &ring,
+            canvas::Stroke::default()
+                .with_color(crate::theme::palette().signal)
+                .with_width(2.0),
+        );
     }
 
     frame.fill_text(canvas::Text {
@@ -1130,7 +1459,10 @@ fn draw_cluster(frame: &mut canvas::Frame, n: &Node, c: Point, k: f32, alpha: f3
     for (i, cid) in n.members.iter().take(3).enumerate() {
         let dot = canvas::Path::circle(Point::new(x0 + 14.0 + i as f32 * 12.0, y0 + h - 12.0), 4.5);
         frame.fill(&dot, ui::hsl(agent_hue(*cid), 0.6, 0.64).scale_alpha(alpha));
-        frame.stroke(&dot, canvas::Stroke::default().with_color(ink).with_width(1.2));
+        frame.stroke(
+            &dot,
+            canvas::Stroke::default().with_color(ink).with_width(1.2),
+        );
     }
 }
 
@@ -1140,11 +1472,25 @@ fn draw_cluster(frame: &mut canvas::Frame, n: &Node, c: Point, k: f32, alpha: f3
 fn toolbar<'a>(grouped: bool, depth: usize) -> Element<'a, Msg> {
     let rule = ui::frame(None, crate::theme::palette().ink);
     let style = move |t: &Theme| if grouped { on_box(t) } else { rule(t) };
-    let colour = if grouped { crate::theme::palette().paper } else { crate::theme::palette().ink };
-    let toggle = mouse_area(container(ui::sans("GROUP BY FAMILY", 11.0, colour)).padding([4.0, 8.0]).style(style)).on_press(Msg::Group);
+    let colour = if grouped {
+        crate::theme::palette().paper
+    } else {
+        crate::theme::palette().ink
+    };
+    let toggle = mouse_area(
+        container(ui::sans("GROUP BY FAMILY", 11.0, colour))
+            .padding([4.0, 8.0])
+            .style(style),
+    )
+    .on_press(Msg::Group);
     let mut bar = row![toggle].spacing(8);
     if grouped && depth > 0 {
-        bar = bar.push(ui::btn("Back", None, Kind::Secondary, Some(Msg::Level(depth - 1))));
+        bar = bar.push(ui::btn(
+            "Back",
+            None,
+            Kind::Secondary,
+            Some(Msg::Level(depth - 1)),
+        ));
     }
     bar.push(Space::new().width(Length::Fill)).into()
 }
@@ -1169,7 +1515,15 @@ fn crumbs<'a>(nav: &[Key]) -> Element<'a, Msg> {
 }
 
 fn crumb<'a>(label: &str, level: usize, current: bool) -> Element<'a, Msg> {
-    let text = ui::sans(label.to_string(), 12.0, if current { crate::theme::palette().ink } else { crate::theme::palette().ink_2 });
+    let text = ui::sans(
+        label.to_string(),
+        12.0,
+        if current {
+            crate::theme::palette().ink
+        } else {
+            crate::theme::palette().ink_2
+        },
+    );
     if current {
         text.into()
     } else {
@@ -1199,28 +1553,58 @@ fn detail<'a>(state: &'a State, d: &'a Society, me: &'a Agent) -> Element<'a, Ms
         }
     };
     let peer_row = |peer: u64, bond: &'a Bond| -> Element<'a, Msg> {
-        let peer_name = names.get(&peer).map(|a| name_of(a)).unwrap_or_else(|| format!("agent {peer}"));
+        let peer_name = names
+            .get(&peer)
+            .map(|a| name_of(a))
+            .unwrap_or_else(|| format!("agent {peer}"));
         let (kind_tone, kind) = match bond.kind.as_str() {
             "hired" => (Tone::Signal, "hired"),
             "was-hired" => (Tone::Info, "was-hired"),
             "added" => (Tone::Ok, "added"),
             _ => (Tone::Muted, "met"),
         };
-        let mut top = row![ui::btn(&peer_name, None, Kind::Ghost, Some(Msg::Pick(Some(Key::Agent(peer))))), ui::badge(kind, kind_tone)].spacing(8);
+        let mut top = row![
+            ui::btn(
+                &peer_name,
+                None,
+                Kind::Ghost,
+                Some(Msg::Pick(Some(Key::Agent(peer))))
+            ),
+            ui::badge(kind, kind_tone)
+        ]
+        .spacing(8);
         if gap(peer) {
             top = top.push(ui::badge("they disagree", Tone::Warn));
         }
         let mut item = column![top, bar(&bond.opinion)].spacing(6);
-        if let Some(note) = bond.note.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
+        if let Some(note) = bond
+            .note
+            .as_deref()
+            .map(str::trim)
+            .filter(|n| !n.is_empty())
+        {
             let open = state.open_notes.contains(&peer);
             let long = note.chars().count() > NOTE_PREVIEW;
-            let shown = if long && !open { format!("{}…", note.chars().take(NOTE_PREVIEW).collect::<String>()) } else { note.to_string() };
+            let shown = if long && !open {
+                format!("{}…", note.chars().take(NOTE_PREVIEW).collect::<String>())
+            } else {
+                note.to_string()
+            };
             item = item.push(ui::markdown(&shown));
             if long {
-                item = item.push(ui::btn(if open { "Show less" } else { "Show all" }, None, Kind::Ghost, Some(Msg::Note(peer))));
+                item = item.push(ui::btn(
+                    if open { "Show less" } else { "Show all" },
+                    None,
+                    Kind::Ghost,
+                    Some(Msg::Note(peer)),
+                ));
             }
         }
-        container(item).padding([10.0, 0.0]).width(Length::Fill).style(ui::frame(None, crate::theme::palette().rule)).into()
+        container(item)
+            .padding([10.0, 0.0])
+            .width(Length::Fill)
+            .style(ui::frame(None, crate::theme::palette().rule))
+            .into()
     };
 
     let outgoing: Vec<Element<'a, Msg>> = d
@@ -1236,26 +1620,56 @@ fn detail<'a>(state: &'a State, d: &'a Society, me: &'a Agent) -> Element<'a, Ms
         .map(|b| peer_row(b.from, b))
         .collect();
 
-    let mut title = row![ui::sans(name.clone(), 18.0, crate::theme::palette().ink)].spacing(8).align_y(Alignment::Center);
+    let mut title = row![ui::sans(name.clone(), 18.0, crate::theme::palette().ink)]
+        .spacing(8)
+        .align_y(Alignment::Center);
     if state.suspended.contains(&me.cid) {
         title = title.push(ui::badge("suspended", Tone::Danger));
     }
     let mut panel = column![
         column![title, ui::faint(me.role.clone())].spacing(4),
-        stat("Reputation", if rated { format!("{} / 100", rep.round()) } else { "Unrated".to_string() }),
+        stat(
+            "Reputation",
+            if rated {
+                format!("{} / 100", rep.round())
+            } else {
+                "Unrated".to_string()
+            }
+        ),
         meter(if rated { rep / 100.0 } else { 0.0 }),
-        stat("Confidence", format!("{}%", (clamp(me.confidence, 0.0, 1.0) * 100.0).round())),
+        stat(
+            "Confidence",
+            format!("{}%", (clamp(me.confidence, 0.0, 1.0) * 100.0).round())
+        ),
         stat("Wallet", compact(me.wallet)),
         row![
-            ui::btn("Trust more", None, Kind::Primary, Some(Msg::Rate(me.cid, 1.0))),
-            ui::btn("Trust less", None, Kind::Secondary, Some(Msg::Rate(me.cid, -1.0))),
+            ui::btn(
+                "Trust more",
+                None,
+                Kind::Primary,
+                Some(Msg::Rate(me.cid, 1.0))
+            ),
+            ui::btn(
+                "Trust less",
+                None,
+                Kind::Secondary,
+                Some(Msg::Rate(me.cid, -1.0))
+            ),
         ]
         .spacing(8),
         ui::label(&format!("How {name} sees others")),
     ]
     .spacing(14);
-    let outgoing_list: Element<'a, Msg> = if outgoing.is_empty() { ui::faint("No contacts yet.").into() } else { column(outgoing).spacing(4).into() };
-    let incoming_list: Element<'a, Msg> = if incoming.is_empty() { ui::faint("Nobody has met them yet.").into() } else { column(incoming).spacing(4).into() };
+    let outgoing_list: Element<'a, Msg> = if outgoing.is_empty() {
+        ui::faint("No contacts yet.").into()
+    } else {
+        column(outgoing).spacing(4).into()
+    };
+    let incoming_list: Element<'a, Msg> = if incoming.is_empty() {
+        ui::faint("Nobody has met them yet.").into()
+    } else {
+        column(incoming).spacing(4).into()
+    };
     panel = panel.push(outgoing_list);
     panel = panel.push(ui::label(&format!("How others see {name}")));
     panel = panel.push(incoming_list);
@@ -1274,11 +1688,32 @@ fn group_panel<'a>(d: &'a Society, key: &Key) -> Element<'a, Msg> {
     let members: Vec<&Agent> = d.agents.iter().filter(|a| in_group(a, key)).collect();
     let inside: HashSet<u64> = members.iter().map(|a| a.cid).collect();
     let names: HashMap<u64, &Agent> = d.agents.iter().map(|a| (a.cid, a)).collect();
-    let outside: Vec<&Bond> = d.bonds.iter().filter(|b| inside.contains(&b.from) != inside.contains(&b.to)).collect();
-    let mean = |list: Vec<f32>| -> Option<f32> { (!list.is_empty()).then(|| list.iter().sum::<f32>() / list.len() as f32) };
-    let trust_in = mean(outside.iter().filter(|b| inside.contains(&b.to)).map(|b| b.opinion.e).collect());
-    let trust_out = mean(outside.iter().filter(|b| inside.contains(&b.from)).map(|b| b.opinion.e).collect());
-    let shown = |v: Option<f32>| v.map(|e| format!("{e:.2}")).unwrap_or_else(|| "none yet".to_string());
+    let outside: Vec<&Bond> = d
+        .bonds
+        .iter()
+        .filter(|b| inside.contains(&b.from) != inside.contains(&b.to))
+        .collect();
+    let mean = |list: Vec<f32>| -> Option<f32> {
+        (!list.is_empty()).then(|| list.iter().sum::<f32>() / list.len() as f32)
+    };
+    let trust_in = mean(
+        outside
+            .iter()
+            .filter(|b| inside.contains(&b.to))
+            .map(|b| b.opinion.e)
+            .collect(),
+    );
+    let trust_out = mean(
+        outside
+            .iter()
+            .filter(|b| inside.contains(&b.from))
+            .map(|b| b.opinion.e)
+            .collect(),
+    );
+    let shown = |v: Option<f32>| {
+        v.map(|e| format!("{e:.2}"))
+            .unwrap_or_else(|| "none yet".to_string())
+    };
     let mut ties = outside.clone();
     ties.sort_by(|a, b| b.strength.total_cmp(&a.strength));
 
@@ -1290,17 +1725,32 @@ fn group_panel<'a>(d: &'a Society, key: &Key) -> Element<'a, Msg> {
     let member_list: Element<'a, Msg> = if members.is_empty() {
         ui::faint("No agents here.").into()
     } else {
-        column(members.iter().map(|a| ui::btn(&name_of(a), None, Kind::Ghost, Some(Msg::Member(a.cid)))).collect::<Vec<Element<'a, Msg>>>())
-            .spacing(4)
-            .into()
+        column(
+            members
+                .iter()
+                .map(|a| ui::btn(&name_of(a), None, Kind::Ghost, Some(Msg::Member(a.cid))))
+                .collect::<Vec<Element<'a, Msg>>>(),
+        )
+        .spacing(4)
+        .into()
     };
     let tie_list: Vec<Element<'a, Msg>> = ties
         .iter()
         .take(6)
         .map(|b| -> Element<'a, Msg> {
-            let (mine, other) = if inside.contains(&b.from) { (b.from, b.to) } else { (b.to, b.from) };
-            let mine_name = names.get(&mine).map(|a| name_of(a)).unwrap_or_else(|| format!("agent {mine}"));
-            let other_name = names.get(&other).map(|a| name_of(a)).unwrap_or_else(|| format!("agent {other}"));
+            let (mine, other) = if inside.contains(&b.from) {
+                (b.from, b.to)
+            } else {
+                (b.to, b.from)
+            };
+            let mine_name = names
+                .get(&mine)
+                .map(|a| name_of(a))
+                .unwrap_or_else(|| format!("agent {mine}"));
+            let other_name = names
+                .get(&other)
+                .map(|a| name_of(a))
+                .unwrap_or_else(|| format!("agent {other}"));
             column![
                 ui::btn(&other_name, None, Kind::Ghost, Some(Msg::Member(other))),
                 ui::faint(format!("{mine_name} · strength {:.1}", b.strength)),
@@ -1317,7 +1767,11 @@ fn group_panel<'a>(d: &'a Society, key: &Key) -> Element<'a, Msg> {
     };
 
     let panel = column![
-        column![ui::sans(title, 18.0, crate::theme::palette().ink), ui::faint(format!("{} agents", members.len()))].spacing(4),
+        column![
+            ui::sans(title, 18.0, crate::theme::palette().ink),
+            ui::faint(format!("{} agents", members.len()))
+        ]
+        .spacing(4),
         stat("Mean trust in", shown(trust_in)),
         stat("Mean trust out", shown(trust_out)),
         ui::label("Members"),
@@ -1330,7 +1784,12 @@ fn group_panel<'a>(d: &'a Society, key: &Key) -> Element<'a, Msg> {
 }
 
 fn stat<'a>(key: &'static str, value: String) -> Element<'a, Msg> {
-    row![ui::faint(key), Space::new().width(Length::Fill), ui::sans(value, 13.0, crate::theme::palette().ink)].into()
+    row![
+        ui::faint(key),
+        Space::new().width(Length::Fill),
+        ui::sans(value, 13.0, crate::theme::palette().ink)
+    ]
+    .into()
 }
 
 /// Reputation as a bar, filled to `frac`.
@@ -1338,12 +1797,24 @@ fn meter<'a>(frac: f32) -> Element<'a, Msg> {
     let filled = permille(frac);
     let mut parts: Vec<Element<'a, Msg>> = Vec::new();
     if filled > 0 {
-        parts.push(tint(Length::FillPortion(filled), crate::theme::palette().ink));
+        parts.push(tint(
+            Length::FillPortion(filled),
+            crate::theme::palette().ink,
+        ));
     }
     if filled < 1000 {
-        parts.push(Space::new().width(Length::FillPortion(1000 - filled)).height(Length::Fill).into());
+        parts.push(
+            Space::new()
+                .width(Length::FillPortion(1000 - filled))
+                .height(Length::Fill)
+                .into(),
+        );
     }
-    container(row(parts).height(Length::Fill)).width(Length::Fill).height(6.0).style(ui::frame(None, crate::theme::palette().ink)).into()
+    container(row(parts).height(Length::Fill))
+        .width(Length::Fill)
+        .height(6.0)
+        .style(ui::frame(None, crate::theme::palette().ink))
+        .into()
 }
 
 /// An opinion: the filled part is the expected trust e; the lighter tail runs on by the uncertainty u.
@@ -1357,34 +1828,75 @@ fn bar<'a>(o: &Opinion) -> Element<'a, Msg> {
         parts.push(tint(Length::FillPortion(fill), band(e)));
     }
     if tail_w > 0 {
-        parts.push(tint(Length::FillPortion(tail_w), crate::theme::palette().ink_3.scale_alpha(0.3)));
+        parts.push(tint(
+            Length::FillPortion(tail_w),
+            crate::theme::palette().ink_3.scale_alpha(0.3),
+        ));
     }
     if fill + tail_w < 1000 {
-        parts.push(Space::new().width(Length::FillPortion(1000 - fill - tail_w)).height(Length::Fill).into());
+        parts.push(
+            Space::new()
+                .width(Length::FillPortion(1000 - fill - tail_w))
+                .height(Length::Fill)
+                .into(),
+        );
     }
-    let track = container(row(parts).height(Length::Fill)).width(Length::Fill).height(8.0).style(ui::frame(None, crate::theme::palette().ink));
-    row![track, ui::sans(format!("{e:.2}"), 12.0, crate::theme::palette().ink)].spacing(8).into()
+    let track = container(row(parts).height(Length::Fill))
+        .width(Length::Fill)
+        .height(8.0)
+        .style(ui::frame(None, crate::theme::palette().ink));
+    row![
+        track,
+        ui::sans(format!("{e:.2}"), 12.0, crate::theme::palette().ink)
+    ]
+    .spacing(8)
+    .into()
 }
 
 /// The page with nothing selected: how to read the graph.
 fn legend<'a>() -> Element<'a, Msg> {
-    let line = |colour: Color, height: f32| -> Element<'a, Msg> { tint_sized(18.0, height, colour) };
+    let line =
+        |colour: Color, height: f32| -> Element<'a, Msg> { tint_sized(18.0, height, colour) };
     let dashed = || -> Element<'a, Msg> {
-        row![tint_sized(5.0, 2.0, crate::theme::palette().ink_3), tint_sized(5.0, 2.0, crate::theme::palette().ink_3), tint_sized(5.0, 2.0, crate::theme::palette().ink_3)].spacing(2).into()
+        row![
+            tint_sized(5.0, 2.0, crate::theme::palette().ink_3),
+            tint_sized(5.0, 2.0, crate::theme::palette().ink_3),
+            tint_sized(5.0, 2.0, crate::theme::palette().ink_3)
+        ]
+        .spacing(2)
+        .into()
     };
     let entry = |swatch: Element<'a, Msg>, text: &'static str| -> Element<'a, Msg> {
-        row![container(swatch).width(24.0).center_y(Length::Shrink), ui::prose(text)].spacing(10).into()
+        row![
+            container(swatch).width(24.0).center_y(Length::Shrink),
+            ui::prose(text)
+        ]
+        .spacing(10)
+        .into()
     };
     column![
-        column![ui::sans("Nothing selected", 18.0, crate::theme::palette().ink), ui::faint("Pick an agent to see how it sees the others, and how they see it.")].spacing(4),
+        column![
+            ui::sans("Nothing selected", 18.0, crate::theme::palette().ink),
+            ui::faint("Pick an agent to see how it sees the others, and how they see it.")
+        ]
+        .spacing(4),
         ui::label("Reading the graph"),
         entry(tint_sized(18.0, 10.0, RED), "trust below 0.4"),
         entry(tint_sized(18.0, 10.0, AMBER), "trust from 0.4 to 0.6"),
         entry(tint_sized(18.0, 10.0, GREEN), "trust above 0.6"),
-        entry(line(crate::theme::palette().ink_3, 2.0), "solid, with an arrowhead: its own opinions"),
+        entry(
+            line(crate::theme::palette().ink_3, 2.0),
+            "solid, with an arrowhead: its own opinions"
+        ),
         entry(dashed(), "dashed: the opinions held of it"),
-        entry(line(crate::theme::palette().ink_3, 4.0), "thicker line: a stronger contact"),
-        entry(line(crate::theme::palette().ink_2, 3.0), "darker grey: a mutual pair"),
+        entry(
+            line(crate::theme::palette().ink_3, 4.0),
+            "thicker line: a stronger contact"
+        ),
+        entry(
+            line(crate::theme::palette().ink_2, 3.0),
+            "darker grey: a mutual pair"
+        ),
         ui::faint("Trusting an agent more or less moves the opinions held of it."),
     ]
     .spacing(10)
@@ -1400,15 +1912,22 @@ fn permille(frac: f32) -> u16 {
 
 /// A solid strip filling its portion of a row.
 fn tint<'a>(width: Length, colour: Color) -> Element<'a, Msg> {
-    container(Space::new().width(width).height(Length::Fill)).style(move |_: &Theme| filled(colour)).into()
+    container(Space::new().width(width).height(Length::Fill))
+        .style(move |_: &Theme| filled(colour))
+        .into()
 }
 
 fn tint_sized<'a>(width: f32, height: f32, colour: Color) -> Element<'a, Msg> {
-    container(Space::new().width(width).height(height)).style(move |_: &Theme| filled(colour)).into()
+    container(Space::new().width(width).height(height))
+        .style(move |_: &Theme| filled(colour))
+        .into()
 }
 
 fn filled(colour: Color) -> container::Style {
-    container::Style { background: Some(Background::Color(colour)), ..container::Style::default() }
+    container::Style {
+        background: Some(Background::Color(colour)),
+        ..container::Style::default()
+    }
 }
 
 /// A wallet figure, shortened: 1.2k, 3.4M.
@@ -1429,27 +1948,69 @@ mod tests {
     use super::*;
 
     fn agent(cid: u64, reputation: f32, name: &str) -> Agent {
-        Agent { cid, name: name.to_string(), role: String::new(), tier: String::new(), reputation, confidence: 0.0, wallet: 0.0 }
+        Agent {
+            cid,
+            name: name.to_string(),
+            role: String::new(),
+            tier: String::new(),
+            reputation,
+            confidence: 0.0,
+            wallet: 0.0,
+        }
     }
 
     /// An agent with a role, named after its cid.
     fn member(cid: u64, role: &str) -> Agent {
-        Agent { role: role.to_string(), ..agent(cid, 50.0, &format!("agent {cid}")) }
+        Agent {
+            role: role.to_string(),
+            ..agent(cid, 50.0, &format!("agent {cid}"))
+        }
     }
 
     fn bond(from: u64, to: u64, strength: f32) -> Bond {
-        Bond { from, to, kind: "met".into(), strength, note: None, opinion: Opinion { e: 0.5, u: 0.0 } }
+        Bond {
+            from,
+            to,
+            kind: "met".into(),
+            strength,
+            note: None,
+            opinion: Opinion { e: 0.5, u: 0.0 },
+        }
     }
 
     fn bond_e(from: u64, to: u64, strength: f32, e: f32) -> Bond {
-        Bond { opinion: Opinion { e, u: 0.0 }, ..bond(from, to, strength) }
+        Bond {
+            opinion: Opinion { e, u: 0.0 },
+            ..bond(from, to, strength)
+        }
     }
 
     /// Sixteen agents, ring and cross bonds, names of mixed length.
     fn crowd() -> (Vec<Agent>, Vec<Bond>) {
-        let names = ["Ada", "Marlowe", "Alexandria Quillbottom", "Vance", "Nadia", "Ingrid", "Mira", "Vera", "Rowan", "Marisol", "Alden", "Tally", "Della", "Quill", "Marco", "Alder"];
-        let agents = (0..16).map(|i| agent(i, (i * 37 % 100) as f32, names[i as usize])).collect();
-        let bonds = (0..16).flat_map(|i| [bond(i, (i + 1) % 16, 8.0), bond(i, (i + 5) % 16, 3.0)]).collect();
+        let names = [
+            "Ada",
+            "Marlowe",
+            "Alexandria Quillbottom",
+            "Vance",
+            "Nadia",
+            "Ingrid",
+            "Mira",
+            "Vera",
+            "Rowan",
+            "Marisol",
+            "Alden",
+            "Tally",
+            "Della",
+            "Quill",
+            "Marco",
+            "Alder",
+        ];
+        let agents = (0..16)
+            .map(|i| agent(i, (i * 37 % 100) as f32, names[i as usize]))
+            .collect();
+        let bonds = (0..16)
+            .flat_map(|i| [bond(i, (i + 1) % 16, 8.0), bond(i, (i + 5) % 16, 3.0)])
+            .collect();
         (agents, bonds)
     }
 
@@ -1457,13 +2018,26 @@ mod tests {
     fn assert_clear(nodes: &[Node], pos: &HashMap<Key, Pt>) {
         for n in nodes {
             let (p, f) = (pos[&n.key], n.fp);
-            assert!(p.x - f.half >= 0.0 && p.x + f.half <= LW, "{:?} leaves the box sideways", n.key);
-            assert!(p.y - f.up >= 0.0 && p.y + f.down <= LH, "{:?} leaves the box vertically", n.key);
+            assert!(
+                p.x - f.half >= 0.0 && p.x + f.half <= LW,
+                "{:?} leaves the box sideways",
+                n.key
+            );
+            assert!(
+                p.y - f.up >= 0.0 && p.y + f.down <= LH,
+                "{:?} leaves the box vertically",
+                n.key
+            );
         }
         for (i, a) in nodes.iter().enumerate() {
             for b in &nodes[i + 1..] {
                 let (ox, oy) = overlap(pos[&a.key], a.fp, pos[&b.key], b.fp);
-                assert!(ox <= 0.0 || oy <= 0.0, "{:?} and {:?} clash: {ox:.1} by {oy:.1}", a.key, b.key);
+                assert!(
+                    ox <= 0.0 || oy <= 0.0,
+                    "{:?} and {:?} clash: {ox:.1} by {oy:.1}",
+                    a.key,
+                    b.key
+                );
             }
         }
     }
@@ -1477,9 +2051,17 @@ mod tests {
         assert_clear(&s.nodes, &pos);
         let xs: Vec<f32> = s.nodes.iter().map(|n| pos[&n.key].x).collect();
         let ys: Vec<f32> = s.nodes.iter().map(|n| pos[&n.key].y).collect();
-        let span = |v: &[f32]| v.iter().copied().fold(f32::MIN, f32::max) - v.iter().copied().fold(f32::MAX, f32::min);
-        assert!(span(&xs) > 0.6 * LW, "the graph is not spread across the width");
-        assert!(span(&ys) > 0.6 * LH, "the graph is not spread across the height");
+        let span = |v: &[f32]| {
+            v.iter().copied().fold(f32::MIN, f32::max) - v.iter().copied().fold(f32::MAX, f32::min)
+        };
+        assert!(
+            span(&xs) > 0.6 * LW,
+            "the graph is not spread across the width"
+        );
+        assert!(
+            span(&ys) > 0.6 * LH,
+            "the graph is not spread across the height"
+        );
     }
 
     #[test]
@@ -1506,8 +2088,16 @@ mod tests {
         assert_eq!(role_family("librarian", ""), "knowledge");
         assert_eq!(role_family("auditor", ""), "money");
         assert_eq!(role_family("mayor", ""), "command");
-        assert_eq!(role_family("builder", "orchestrator"), "command", "the orchestrator tier is the command family");
-        assert_eq!(role_family("tinker", ""), "other", "an unknown role is other");
+        assert_eq!(
+            role_family("builder", "orchestrator"),
+            "command",
+            "the orchestrator tier is the command family"
+        );
+        assert_eq!(
+            role_family("tinker", ""),
+            "other",
+            "an unknown role is other"
+        );
         assert_eq!(family_label("money"), "Money");
         assert_eq!(family_label("unknown"), "Other");
     }
@@ -1515,35 +2105,85 @@ mod tests {
     #[test]
     fn cross_contacts_between_two_clusters_make_one_edge() {
         let d = Society {
-            agents: vec![member(1, "builder"), member(2, "architect"), member(3, "finance"), member(4, "auditor")],
-            bonds: vec![bond_e(1, 3, 2.0, 0.2), bond_e(2, 4, 3.0, 0.8), bond_e(3, 1, 1.0, 0.5), bond_e(1, 2, 4.0, 0.9)],
+            agents: vec![
+                member(1, "builder"),
+                member(2, "architect"),
+                member(3, "finance"),
+                member(4, "auditor"),
+            ],
+            bonds: vec![
+                bond_e(1, 3, 2.0, 0.2),
+                bond_e(2, 4, 3.0, 0.8),
+                bond_e(3, 1, 1.0, 0.5),
+                bond_e(1, 2, 4.0, 0.9),
+            ],
         };
-        let key_of = |cid: u64| d.agents.iter().find(|a| a.cid == cid).map(|a| Key::Family(family_of(a)));
+        let key_of = |cid: u64| {
+            d.agents
+                .iter()
+                .find(|a| a.cid == cid)
+                .map(|a| Key::Family(family_of(a)))
+        };
         let edges = links(&d.bonds, key_of, true);
-        assert_eq!(edges.len(), 1, "the bond inside Build is left out, the cross bonds make one edge");
+        assert_eq!(
+            edges.len(),
+            1,
+            "the bond inside Build is left out, the cross bonds make one edge"
+        );
         assert!((edges[0].strength - 6.0).abs() < 1e-4, "summed strength");
-        assert!((edges[0].e - 0.5).abs() < 1e-4, "mean trust of 0.2, 0.8 and 0.5");
+        assert!(
+            (edges[0].e - 0.5).abs() < 1e-4,
+            "mean trust of 0.2, 0.8 and 0.5"
+        );
     }
 
     #[test]
     fn families_open_into_roles_and_a_single_role_collapses() {
         let d = Society {
-            agents: vec![member(1, "builder"), member(2, "builder"), member(3, "builder"), member(4, "architect"), member(5, "finance")],
+            agents: vec![
+                member(1, "builder"),
+                member(2, "builder"),
+                member(3, "builder"),
+                member(4, "architect"),
+                member(5, "finance"),
+            ],
             bonds: vec![],
         };
-        let keys = |nav: &[Key]| -> Vec<Key> { build_scene(&d, true, nav).nodes.into_iter().map(|n| n.key).collect() };
+        let keys = |nav: &[Key]| -> Vec<Key> {
+            build_scene(&d, true, nav)
+                .nodes
+                .into_iter()
+                .map(|n| n.key)
+                .collect()
+        };
         let top = keys(&[]);
         assert!(top.contains(&Key::Family("build")) && top.contains(&Key::Family("money")));
 
         let build = keys(&[Key::Family("build")]);
-        assert!(build.contains(&Key::Role("build", "builder".into())), "a role with several agents is a cluster");
-        assert!(build.contains(&Key::Agent(4)), "a role with one agent shows that agent directly");
-        assert!(!build.contains(&Key::Family("build")), "the open family is replaced by its roles");
-        assert!(build.contains(&Key::Family("money")), "the other families stay as clusters");
+        assert!(
+            build.contains(&Key::Role("build", "builder".into())),
+            "a role with several agents is a cluster"
+        );
+        assert!(
+            build.contains(&Key::Agent(4)),
+            "a role with one agent shows that agent directly"
+        );
+        assert!(
+            !build.contains(&Key::Family("build")),
+            "the open family is replaced by its roles"
+        );
+        assert!(
+            build.contains(&Key::Family("money")),
+            "the other families stay as clusters"
+        );
 
         let mut nav = vec![Key::Family("build"), Key::Role("build", "builder".into())];
         let role = keys(&nav);
-        assert!(role.contains(&Key::Agent(1)) && role.contains(&Key::Agent(2)) && role.contains(&Key::Agent(3)));
+        assert!(
+            role.contains(&Key::Agent(1))
+                && role.contains(&Key::Agent(2))
+                && role.contains(&Key::Agent(3))
+        );
         assert!(!role.contains(&Key::Role("build", "builder".into())));
 
         // The breadcrumb's "Build" climbs back to the family's roles.

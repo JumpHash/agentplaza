@@ -65,42 +65,106 @@ pub(super) const OWNER: &str = "owner";
 
 pub fn routes(router: Router<App>) -> Router<App> {
     let router = super::vms::routes(router)
-        .post("/v1/stations/codes", |app, req, _| issue_code_route(app, req))
-        .get("/v1/stations/codes", |app, _, _| Response::json(200, &app.stations.codes(apz_plaza::now_ms())))
-        .delete("/v1/stations/codes/{id}", |app, _, p| code_revoke_route(app, p.get("id")))
+        .post("/v1/stations/codes", |app, req, _| {
+            issue_code_route(app, req)
+        })
+        .get("/v1/stations/codes", |app, _, _| {
+            Response::json(200, &app.stations.codes(apz_plaza::now_ms()))
+        })
+        .delete("/v1/stations/codes/{id}", |app, _, p| {
+            code_revoke_route(app, p.get("id"))
+        })
         .post("/v1/stations/join", |app, req, _| join_route(app, req))
         .get("/v1/stations/link", |app, req, _| link_route(app, req))
         .get("/v1/stations/audit", |app, req, _| audit_route(app, req))
-        .get("/v1/stations/recordings", |app, req, _| recordings_list_route(app, req))
-        .get("/v1/stations/recordings/{id}", |app, _, p| recording_show_route(app, p.get("id")))
-        .get("/v1/stations/recordings/{id}/frames/{seq}", |app, _, p| recording_frame_route(app, p.get("id"), p.get("seq")))
-        .delete("/v1/stations/recordings/{id}", |app, _, p| recording_delete_route(app, p.get("id")))
-        .get("/v1/stations/recording-defaults", |app, _, _| Response::json(200, &app.settings.get().workstation_recordings))
-        .route("PUT", "/v1/stations/recording-defaults", |app, req, _| recording_defaults_route(app, req))
-        .get("/v1/stations", |app, _, _| Response::json(200, &app.stations.views(apz_plaza::now_ms())))
-        .get("/v1/stations/{id}", |app, _, p| show_route(app, p.get("id")))
-        .post("/v1/stations/{id}/drain", |app, _, p| drain_route(app, p.get("id"), true))
-        .post("/v1/stations/{id}/undrain", |app, _, p| drain_route(app, p.get("id"), false))
-        .post("/v1/stations/{id}/revoke", |app, _, p| revoke_route(app, p.get("id")))
-        .route("PATCH", "/v1/stations/{id}", |app, req, p| rename_route(app, req, p.get("id")))
-        .get("/v1/stations/{id}/settings", |app, _, p| settings_route(app, p.get("id")))
-        .route("PUT", "/v1/stations/{id}/settings", |app, req, p| put_settings_route(app, req, p.get("id")))
-        .post("/v1/stations/{id}/leases", |app, req, p| open_lease_route(app, req, p.get("id"), None, OWNER))
-        .get("/v1/stations/{id}/leases", |app, _, p| leases_route(app, p.get("id")))
-        .delete("/v1/stations/{id}/leases/{lease}", |app, _, p| release_route(app, p.get("id"), p.get("lease"), None, OWNER))
-        .get("/v1/stations/{id}/sync", |app, _, p| sync_state_route(app, p.get("id")))
-        .post("/v1/stations/{id}/sync/resume", |app, req, p| sync_resume_route(app, req, p.get("id")))
-        .get("/v1/stations/{id}/files", |app, req, p| sync_files_route(app, req, p.get("id")))
-        .get("/v1/stations/{id}/files/{path..}", |app, _, p| sync_read_route(app, p.get("id"), p.get("path")))
-        .route("PUT", "/v1/stations/{id}/files/{path..}", |app, req, p| sync_put_route(app, req, p.get("id"), p.get("path")))
-        .delete("/v1/stations/{id}/files/{path..}", |app, _, p| sync_delete_route(app, p.get("id"), p.get("path")))
-        .post("/v1/stations/{id}/files/{path..}", |app, req, p| sync_post_route(app, req, p.get("id"), p.get("path")))
-        .post("/internal/v1/agents/{cid}/stations/{id}/leases", |app, req, p| {
-            crate::internal::authorized(app, req, p.get("cid"), |cid| Ok(agent_open_lease_route(app, req, p.get("id"), cid)))
+        .get("/v1/stations/recordings", |app, req, _| {
+            recordings_list_route(app, req)
         })
-        .delete("/internal/v1/agents/{cid}/stations/{id}/leases/{lease}", |app, req, p| {
-            crate::internal::authorized(app, req, p.get("cid"), |cid| Ok(agent_release_route(app, p.get("id"), p.get("lease"), cid)))
-        });
+        .get("/v1/stations/recordings/{id}", |app, _, p| {
+            recording_show_route(app, p.get("id"))
+        })
+        .get("/v1/stations/recordings/{id}/frames/{seq}", |app, _, p| {
+            recording_frame_route(app, p.get("id"), p.get("seq"))
+        })
+        .delete("/v1/stations/recordings/{id}", |app, _, p| {
+            recording_delete_route(app, p.get("id"))
+        })
+        .get("/v1/stations/recording-defaults", |app, _, _| {
+            Response::json(200, &app.settings.get().workstation_recordings)
+        })
+        .route("PUT", "/v1/stations/recording-defaults", |app, req, _| {
+            recording_defaults_route(app, req)
+        })
+        .get("/v1/stations", |app, _, _| {
+            Response::json(200, &app.stations.views(apz_plaza::now_ms()))
+        })
+        .get("/v1/stations/{id}", |app, _, p| {
+            show_route(app, p.get("id"))
+        })
+        .post("/v1/stations/{id}/drain", |app, _, p| {
+            drain_route(app, p.get("id"), true)
+        })
+        .post("/v1/stations/{id}/undrain", |app, _, p| {
+            drain_route(app, p.get("id"), false)
+        })
+        .post("/v1/stations/{id}/revoke", |app, _, p| {
+            revoke_route(app, p.get("id"))
+        })
+        .route("PATCH", "/v1/stations/{id}", |app, req, p| {
+            rename_route(app, req, p.get("id"))
+        })
+        .get("/v1/stations/{id}/settings", |app, _, p| {
+            settings_route(app, p.get("id"))
+        })
+        .route("PUT", "/v1/stations/{id}/settings", |app, req, p| {
+            put_settings_route(app, req, p.get("id"))
+        })
+        .post("/v1/stations/{id}/leases", |app, req, p| {
+            open_lease_route(app, req, p.get("id"), None, OWNER)
+        })
+        .get("/v1/stations/{id}/leases", |app, _, p| {
+            leases_route(app, p.get("id"))
+        })
+        .delete("/v1/stations/{id}/leases/{lease}", |app, _, p| {
+            release_route(app, p.get("id"), p.get("lease"), None, OWNER)
+        })
+        .get("/v1/stations/{id}/sync", |app, _, p| {
+            sync_state_route(app, p.get("id"))
+        })
+        .post("/v1/stations/{id}/sync/resume", |app, req, p| {
+            sync_resume_route(app, req, p.get("id"))
+        })
+        .get("/v1/stations/{id}/files", |app, req, p| {
+            sync_files_route(app, req, p.get("id"))
+        })
+        .get("/v1/stations/{id}/files/{path..}", |app, _, p| {
+            sync_read_route(app, p.get("id"), p.get("path"))
+        })
+        .route("PUT", "/v1/stations/{id}/files/{path..}", |app, req, p| {
+            sync_put_route(app, req, p.get("id"), p.get("path"))
+        })
+        .delete("/v1/stations/{id}/files/{path..}", |app, _, p| {
+            sync_delete_route(app, p.get("id"), p.get("path"))
+        })
+        .post("/v1/stations/{id}/files/{path..}", |app, req, p| {
+            sync_post_route(app, req, p.get("id"), p.get("path"))
+        })
+        .post(
+            "/internal/v1/agents/{cid}/stations/{id}/leases",
+            |app, req, p| {
+                crate::internal::authorized(app, req, p.get("cid"), |cid| {
+                    Ok(agent_open_lease_route(app, req, p.get("id"), cid))
+                })
+            },
+        )
+        .delete(
+            "/internal/v1/agents/{cid}/stations/{id}/leases/{lease}",
+            |app, req, p| {
+                crate::internal::authorized(app, req, p.get("cid"), |cid| {
+                    Ok(agent_release_route(app, p.get("id"), p.get("lease"), cid))
+                })
+            },
+        );
     // The live views and the takeover socket (screen.rs, control.rs).
     super::control::routes(super::screen::routes(router))
 }
@@ -147,7 +211,8 @@ fn sync_files_route(app: &App, req: &Request, id: &str) -> Response {
 
 fn sync_read_route(app: &App, id: &str, path: &str) -> Response {
     match sync::read(app, id, path) {
-        Ok((bytes, _)) => Response::new(200, guess_type(path), bytes).with_header("x-content-type-options", "nosniff"),
+        Ok((bytes, _)) => Response::new(200, guess_type(path), bytes)
+            .with_header("x-content-type-options", "nosniff"),
         Err(failure) => fail(failure),
     }
 }
@@ -169,14 +234,28 @@ fn sync_delete_route(app: &App, id: &str, path: &str) -> Response {
 /// `POST .../files/{path}/deliver` (the router's wildcard takes the path, so the suffix is checked here).
 fn sync_post_route(app: &App, req: &Request, id: &str, path: &str) -> Response {
     let Some(file) = path.strip_suffix("/deliver") else {
-        return Response::error(404, "POST a file's path ending in /deliver to put it in the Library");
+        return Response::error(
+            404,
+            "POST a file's path ending in /deliver to put it in the Library",
+        );
     };
     let body: DeliverBody = match parse_or_default(req) {
         Ok(body) => body,
         Err(refusal) => return refusal,
     };
-    match sync::deliver(app, id, file, body.title, body.description, body.task, (0, OWNER)) {
-        Ok(item) => Response::json(201, &json!({"id": item.id, "name": item.name, "size": item.size, "kind": item.kind, "audience": item.audience})),
+    match sync::deliver(
+        app,
+        id,
+        file,
+        body.title,
+        body.description,
+        body.task,
+        (0, OWNER),
+    ) {
+        Ok(item) => Response::json(
+            201,
+            &json!({"id": item.id, "name": item.name, "size": item.size, "kind": item.kind, "audience": item.audience}),
+        ),
         Err(failure) => fail(failure),
     }
 }
@@ -209,11 +288,16 @@ fn fail((status, message): Failure) -> Response {
 }
 
 fn parse<T: DeserializeOwned>(req: &Request) -> Result<T, Response> {
-    req.json::<T>().map_err(|e| Response::error(400, &format!("bad body: {e}")))
+    req.json::<T>()
+        .map_err(|e| Response::error(400, &format!("bad body: {e}")))
 }
 
 fn parse_or_default<T: DeserializeOwned + Default>(req: &Request) -> Result<T, Response> {
-    if req.body.is_empty() { Ok(T::default()) } else { parse(req) }
+    if req.body.is_empty() {
+        Ok(T::default())
+    } else {
+        parse(req)
+    }
 }
 
 /// The view of a station as it stands now, or a 404.
@@ -235,8 +319,16 @@ fn issue_code_route(app: &App, req: &Request) -> Response {
         Ok(body) => body,
         Err(refusal) => return refusal,
     };
-    match ops::issue_code(app, &body.label.unwrap_or_default(), body.ttl_minutes.unwrap_or(0), OWNER) {
-        Ok((id, token, expires_ms)) => Response::json(201, &json!({"id": id, "token": token, "expires_ms": expires_ms})),
+    match ops::issue_code(
+        app,
+        &body.label.unwrap_or_default(),
+        body.ttl_minutes.unwrap_or(0),
+        OWNER,
+    ) {
+        Ok((id, token, expires_ms)) => Response::json(
+            201,
+            &json!({"id": id, "token": token, "expires_ms": expires_ms}),
+        ),
         Err(failure) => fail(failure),
     }
 }
@@ -264,7 +356,10 @@ fn join_route(app: &App, req: &Request) -> Response {
     // A workstation is another machine. A request from this host (loopback, or a peer nobody can name) is refused
     // before the code is looked at, so a join from the hub's own machine never spends one.
     if req.peer.is_none_or(|peer| peer.is_loopback()) {
-        return Response::error(403, "a workstation joins from another machine; this request came from the hub's own host");
+        return Response::error(
+            403,
+            "a workstation joins from another machine; this request came from the hub's own host",
+        );
     }
     let source = crate::nodes::source_of(req);
     match ops::join(app, &source, &body.code, body.facts, body.name.as_deref()) {
@@ -277,10 +372,13 @@ fn join_route(app: &App, req: &Request) -> Response {
 fn link_route(app: &App, req: &Request) -> Response {
     let bearer = req.header("authorization").and_then(|value| {
         let (scheme, token) = value.split_once(' ')?;
-        scheme.eq_ignore_ascii_case("bearer").then_some(token.trim())
+        scheme
+            .eq_ignore_ascii_case("bearer")
+            .then_some(token.trim())
     });
     let Some(bearer) = bearer else {
-        return Response::error(401, "the workstation's token is sent as a Bearer token").with_header("www-authenticate", "Bearer");
+        return Response::error(401, "the workstation's token is sent as a Bearer token")
+            .with_header("www-authenticate", "Bearer");
     };
     let station = match ops::accept_link(app, bearer) {
         Ok(station) => station,
@@ -296,7 +394,13 @@ fn link_route(app: &App, req: &Request) -> Response {
         ping_every: Duration::from_secs(10),
         dead_after: Duration::from_secs(45),
     };
-    ws::accept(req, Origins::None, Some(apz_station::SUBPROTOCOL), limits, move |socket| ops::run_link(weak, id, socket))
+    ws::accept(
+        req,
+        Origins::None,
+        Some(apz_station::SUBPROTOCOL),
+        limits,
+        move |socket| ops::run_link(weak, id, socket),
+    )
 }
 
 fn show_route(app: &App, id: &str) -> Response {
@@ -306,7 +410,11 @@ fn show_route(app: &App, id: &str) -> Response {
 /// `GET /v1/stations/audit?station=<id>&limit=<n>`: the station audit, newest first; every station's when `station`
 /// is absent. `limit` is 100 by default and at most 1000.
 fn audit_route(app: &App, req: &Request) -> Response {
-    let limit = req.query_param("limit").and_then(|l| l.parse::<i64>().ok()).unwrap_or(100).clamp(0, 1000);
+    let limit = req
+        .query_param("limit")
+        .and_then(|l| l.parse::<i64>().ok())
+        .unwrap_or(100)
+        .clamp(0, 1000);
     let station = req.query_param("station").filter(|s| !s.is_empty());
     match app.db.station_audit(station, limit) {
         Ok(rows) => Response::json(200, &rows),
@@ -316,7 +424,11 @@ fn audit_route(app: &App, req: &Request) -> Response {
 
 /// The recordings' list: `station`, `limit` (50 by default, at most 200) and `before` (a start in ms) are optional.
 fn recordings_list_route(app: &App, req: &Request) -> Response {
-    let limit = req.query_param("limit").and_then(|l| l.parse::<i64>().ok()).unwrap_or(50).clamp(1, 200);
+    let limit = req
+        .query_param("limit")
+        .and_then(|l| l.parse::<i64>().ok())
+        .unwrap_or(50)
+        .clamp(1, 200);
     let station = req.query_param("station").filter(|s| !s.is_empty());
     let before = match req.query_param("before") {
         Some(text) => match text.parse::<u64>() {
@@ -344,7 +456,9 @@ fn recording_frame_route(app: &App, id: &str, seq: &str) -> Response {
         return Response::error(400, "a frame's seq is a number, counted from 1");
     };
     match recordings::frame(app, id, seq) {
-        Ok(Some(jpeg)) => Response::new(200, "image/jpeg", jpeg).with_header("x-content-type-options", "nosniff"),
+        Ok(Some(jpeg)) => {
+            Response::new(200, "image/jpeg", jpeg).with_header("x-content-type-options", "nosniff")
+        }
         Ok(None) => Response::error(404, "no such frame"),
         Err(reason) => Response::error(500, &reason),
     }
@@ -436,7 +550,12 @@ fn open_lease_route(app: &App, req: &Request, id: &str, cid: Option<u64>, actor:
         }
         (Some(cid), _) => cid,
         (None, Some(agent)) => agent,
-        (None, None) => return Response::error(400, "name the agent: {\"agent\": <cid>, \"kind\": \"pixel\" | \"shared\"}"),
+        (None, None) => {
+            return Response::error(
+                400,
+                "name the agent: {\"agent\": <cid>, \"kind\": \"pixel\" | \"shared\"}",
+            );
+        }
     };
     match ops::open_lease(app, id, agent, body.task, body.kind, actor) {
         Ok(view) => Response::json(201, &view),

@@ -49,12 +49,17 @@ fn as_bool(v: &Value, span: Span, what: &str) -> Result<Option<bool>, Diag> {
     match v {
         Value::Bool(b) => Ok(Some(*b)),
         Value::Unknown(_) => Ok(None),
-        _ => err(span, format!("{what} must be a Bool, found {} {v}", v.type_name())),
+        _ => err(
+            span,
+            format!("{what} must be a Bool, found {} {v}", v.type_name()),
+        ),
     }
 }
 
 fn first_unknown(vs: &[&Value]) -> Option<Value> {
-    vs.iter().find(|v| matches!(v, Value::Unknown(_))).map(|v| (*v).clone())
+    vs.iter()
+        .find(|v| matches!(v, Value::Unknown(_)))
+        .map(|v| (*v).clone())
 }
 
 fn num_op(span: Span, r: Result<Num, String>) -> Result<Num, Diag> {
@@ -66,7 +71,10 @@ fn elements(v: &Value, tuple: bool, span: Span) -> Result<Vec<Value>, Diag> {
     Ok(match v {
         Value::List(xs) | Value::Tuple(xs) => xs.to_vec(),
         Value::Set(xs) => xs.iter().cloned().collect(),
-        Value::Map(m) if tuple => m.iter().map(|(k, v)| Value::tuple(vec![k.clone(), v.clone()])).collect(),
+        Value::Map(m) if tuple => m
+            .iter()
+            .map(|(k, v)| Value::tuple(vec![k.clone(), v.clone()]))
+            .collect(),
         Value::Map(m) => m.keys().cloned().collect(),
         _ => return err(span, format!("can't range over {} {v}", v.type_name())),
     })
@@ -84,11 +92,27 @@ fn glob(p: &[char], s: &[char]) -> bool {
 
 impl<'a> Env<'a> {
     pub fn new(prog: &'a Program, pack: usize) -> Env<'a> {
-        Env { prog, pack, locals: vec![], m: None, cur: None, next: None, depth: 0 }
+        Env {
+            prog,
+            pack,
+            locals: vec![],
+            m: None,
+            cur: None,
+            next: None,
+            depth: 0,
+        }
     }
 
     pub fn machine(prog: &'a Program, m: &'a MachineCtx, cur: Option<&'a [Value]>) -> Env<'a> {
-        Env { prog, pack: m.pack, locals: vec![], m: Some(m), cur, next: None, depth: 0 }
+        Env {
+            prog,
+            pack: m.pack,
+            locals: vec![],
+            m: Some(m),
+            cur,
+            next: None,
+            depth: 0,
+        }
     }
 
     fn snippet(&self, span: Span) -> String {
@@ -120,9 +144,10 @@ impl<'a> Env<'a> {
                 })
             }
             ExprKind::Unary(UnOp::Always | UnOp::Eventually, _)
-            | ExprKind::Binary(BinOp::LeadsTo | BinOp::Until, _, _) => {
-                err(span, "temporal operators belong in a `property` (liveness checking is not in v0)")
-            }
+            | ExprKind::Binary(BinOp::LeadsTo | BinOp::Until, _, _) => err(
+                span,
+                "temporal operators belong in a `property` (liveness checking is not in v0)",
+            ),
             ExprKind::Binary(op, a, b) => self.binary(*op, a, b, span),
             ExprKind::If(c, a, b) => {
                 let cv = self.eval(c)?;
@@ -142,9 +167,17 @@ impl<'a> Env<'a> {
                 let k = self.eval(i)?;
                 self.index(v, k, span)
             }
-            ExprKind::List(xs) => Ok(Value::list(xs.iter().map(|x| self.eval(x)).collect::<Result<_, _>>()?)),
-            ExprKind::Tuple(xs) => Ok(Value::tuple(xs.iter().map(|x| self.eval(x)).collect::<Result<_, _>>()?)),
-            ExprKind::Set(xs) => Ok(Value::set(xs.iter().map(|x| self.eval(x)).collect::<Result<Vec<_>, _>>()?)),
+            ExprKind::List(xs) => Ok(Value::list(
+                xs.iter().map(|x| self.eval(x)).collect::<Result<_, _>>()?,
+            )),
+            ExprKind::Tuple(xs) => Ok(Value::tuple(
+                xs.iter().map(|x| self.eval(x)).collect::<Result<_, _>>()?,
+            )),
+            ExprKind::Set(xs) => Ok(Value::set(
+                xs.iter()
+                    .map(|x| self.eval(x))
+                    .collect::<Result<Vec<_>, _>>()?,
+            )),
             ExprKind::Map(kv) => {
                 let mut m = BTreeMap::new();
                 for (k, v) in kv {
@@ -162,7 +195,13 @@ impl<'a> Env<'a> {
                 }
                 Ok(Value::record(m))
             }
-            ExprKind::Comp { kind, gens, filter, key, val } => self.comprehension(*kind, gens, filter.as_deref(), key, val.as_deref(), span),
+            ExprKind::Comp {
+                kind,
+                gens,
+                filter,
+                key,
+                val,
+            } => self.comprehension(*kind, gens, filter.as_deref(), key, val.as_deref(), span),
             ExprKind::Quant(q, gens, body) => self.quantifier(*q, gens, body),
             ExprKind::With(x, path, v) => {
                 let base = self.eval(x)?;
@@ -183,9 +222,14 @@ impl<'a> Env<'a> {
                     (Value::Bool(_), "Bool") => Value::Bool(true),
                     (Value::Str(_), "String") => Value::Bool(true),
                     (Value::Num(n, d), "Int") => Value::Bool(d.is_none() && n.as_int().is_some()),
-                    (Value::Num(_, d), t) if Dim::of_type_name(t).is_some() => Value::Bool(Dim::of_type_name(t) == Some(*d)),
+                    (Value::Num(_, d), t) if Dim::of_type_name(t).is_some() => {
+                        Value::Bool(Dim::of_type_name(t) == Some(*d))
+                    }
                     (_, "Bool" | "String" | "Int" | "Number") => Value::Bool(false),
-                    _ => Value::Unknown(format!("{} is {t} (entity types need a graph snapshot)", self.snippet(x.span))),
+                    _ => Value::Unknown(format!(
+                        "{} is {t} (entity types need a graph snapshot)",
+                        self.snippet(x.span)
+                    )),
                 })
             }
         }
@@ -194,7 +238,9 @@ impl<'a> Env<'a> {
     /// A check body (`for … where … let … require …`): true when every instance's `require`
     /// holds, false when one certainly fails, unknown otherwise. Other clauses are metadata.
     pub fn eval_clauses(&mut self, clauses: &[Clause]) -> Result<Value, Diag> {
-        let Some((c, rest)) = clauses.split_first() else { return Ok(Value::Bool(true)) };
+        let Some((c, rest)) = clauses.split_first() else {
+            return Ok(Value::Bool(true));
+        };
         match c {
             Clause::For(gens) => {
                 let (mut any_false, mut unk) = (false, None);
@@ -241,8 +287,17 @@ impl<'a> Env<'a> {
     }
 
     /// `base with [k].f = v`: replaces the value at the path, copying only what changes.
-    fn update(&self, base: Value, path: &[PathSeg], keys: &[Option<Value>], nv: Value, span: Span) -> R {
-        let Some((seg, rest)) = path.split_first() else { return Ok(nv) };
+    fn update(
+        &self,
+        base: Value,
+        path: &[PathSeg],
+        keys: &[Option<Value>],
+        nv: Value,
+        span: Span,
+    ) -> R {
+        let Some((seg, rest)) = path.split_first() else {
+            return Ok(nv);
+        };
         let inner = |this: &Self, old: Option<Value>| -> R {
             if rest.is_empty() {
                 return Ok(nv.clone());
@@ -310,7 +365,9 @@ impl<'a> Env<'a> {
         match self.prog.lookup(self.pack, n) {
             Err(e) => return err(span, e),
             Ok(Some((NameKind::Collection, _))) => {
-                return Ok(Value::Unknown(format!("collection `{n}` (needs a graph snapshot)")));
+                return Ok(Value::Unknown(format!(
+                    "collection `{n}` (needs a graph snapshot)"
+                )));
             }
             Ok(Some((NameKind::Decl, r))) => return self.decl_value(r, n, span),
             Ok(None) => {}
@@ -338,7 +395,9 @@ impl<'a> Env<'a> {
             Item::Fn(_) | Item::Table(_) | Item::Kind(_) | Item::Measure(_) => {
                 err(span, format!("`{n}` is a function; call it with arguments"))
             }
-            Item::Rel(_) => Ok(Value::Unknown(format!("relation `{n}` (relations need a graph snapshot)"))),
+            Item::Rel(_) => Ok(Value::Unknown(format!(
+                "relation `{n}` (relations need a graph snapshot)"
+            ))),
             _ => err(span, format!("`{n}` is not a value")),
         }
     }
@@ -346,26 +405,52 @@ impl<'a> Env<'a> {
     /// Evaluates a machine-level definition in the current state (its own locals only).
     fn def(&self, m: &'a MachineCtx, body: &Expr, locals: Vec<(String, Value)>, span: Span) -> R {
         if self.depth > MAX_DEPTH {
-            return err(span, "definition depth exceeded (definitions may not recurse)");
+            return err(
+                span,
+                "definition depth exceeded (definitions may not recurse)",
+            );
         }
-        let mut env = Env { prog: self.prog, pack: m.pack, locals, m: Some(m), cur: self.cur, next: self.next, depth: self.depth + 1 };
+        let mut env = Env {
+            prog: self.prog,
+            pack: m.pack,
+            locals,
+            m: Some(m),
+            cur: self.cur,
+            next: self.next,
+            depth: self.depth + 1,
+        };
         env.eval(body)
     }
 
     /// A fresh environment for evaluating a declaration from another pack.
     fn sub(&self, pack: usize) -> Env<'a> {
-        Env { prog: self.prog, pack, locals: vec![], m: None, cur: None, next: None, depth: self.depth + 1 }
+        Env {
+            prog: self.prog,
+            pack,
+            locals: vec![],
+            m: None,
+            cur: None,
+            next: None,
+            depth: self.depth + 1,
+        }
     }
 
     fn primed(&mut self, n: &str, span: Span) -> R {
-        let Some(m) = self.m else { return err(span, format!("`{n}'` outside a machine")) };
-        let Some(&i) = m.var_index.get(n) else { return err(span, format!("`{n}` is not a state variable")) };
+        let Some(m) = self.m else {
+            return err(span, format!("`{n}'` outside a machine"));
+        };
+        let Some(&i) = m.var_index.get(n) else {
+            return err(span, format!("`{n}` is not a state variable"));
+        };
         match self.next {
             Some(nx) => match &nx[i] {
                 Some(v) => Ok(v.clone()),
                 None => err(span, format!("`{n}'` is read before it is assigned")),
             },
-            None => err(span, format!("`{n}'` can only be used in actions and transition invariants")),
+            None => err(
+                span,
+                format!("`{n}'` can only be used in actions and transition invariants"),
+            ),
         }
     }
 
@@ -413,7 +498,12 @@ impl<'a> Env<'a> {
         match k {
             Value::Num(n, d) if d.is_none() => match n.as_int() {
                 Some(i) if i >= 0 && (i as usize) < len => Ok(i as usize),
-                Some(i) => err(span, format!("index {i} is out of range for a list of length {len} (indexes start at 0)")),
+                Some(i) => err(
+                    span,
+                    format!(
+                        "index {i} is out of range for a list of length {len} (indexes start at 0)"
+                    ),
+                ),
                 None => err(span, format!("index {n} is not an integer")),
             },
             _ => err(span, format!("a list index must be an Int, found {k}")),
@@ -429,14 +519,20 @@ impl<'a> Env<'a> {
                 let i = self.list_index(&k, xs.len(), span)?;
                 Ok(xs[i].clone())
             }
-            Value::Map(m) => Ok(m.get(&k).cloned().unwrap_or_else(|| Value::Unknown(format!("{}[{k}]", self.snippet(span))))),
+            Value::Map(m) => Ok(m
+                .get(&k)
+                .cloned()
+                .unwrap_or_else(|| Value::Unknown(format!("{}[{k}]", self.snippet(span))))),
             _ => err(span, format!("can't index {} {v}", v.type_name())),
         }
     }
 
     fn field(&mut self, v: Value, f: &str, span: Span) -> R {
         match v {
-            Value::Record(m) => Ok(m.get(f).cloned().unwrap_or_else(|| Value::Unknown(self.snippet(span)))),
+            Value::Record(m) => Ok(m
+                .get(f)
+                .cloned()
+                .unwrap_or_else(|| Value::Unknown(self.snippet(span)))),
             Value::Unknown(_) => Ok(v),
             Value::None => Ok(Value::Unknown(format!("{} (on none)", self.snippet(span)))),
             _ => err(span, format!("{} {v} has no field `{f}`", v.type_name())),
@@ -446,7 +542,11 @@ impl<'a> Env<'a> {
     /// Runs `body` once per binding of the generators. Returns the reason if a source was unknown.
     /// Runs `body` once per binding of the generators, until it returns `false`. Returns the
     /// reason if a source was unknown.
-    fn each(&mut self, gens: &[Gen], body: &mut dyn FnMut(&mut Env<'a>) -> Result<bool, Diag>) -> Result<Option<String>, Diag> {
+    fn each(
+        &mut self,
+        gens: &[Gen],
+        body: &mut dyn FnMut(&mut Env<'a>) -> Result<bool, Diag>,
+    ) -> Result<Option<String>, Diag> {
         let mut stop = false;
         self.each_inner(gens, body, &mut stop)
     }
@@ -473,7 +573,12 @@ impl<'a> Env<'a> {
             if g.tuple {
                 let parts = match &x {
                     Value::Tuple(p) | Value::List(p) if p.len() == g.names.len() => p.to_vec(),
-                    _ => return err(g.span, format!("can't destructure {x} into {} names", g.names.len())),
+                    _ => {
+                        return err(
+                            g.span,
+                            format!("can't destructure {x} into {} names", g.names.len()),
+                        )
+                    }
                 };
                 for (n, p) in g.names.iter().zip(parts) {
                     self.locals.push((n.clone(), p));
@@ -493,7 +598,15 @@ impl<'a> Env<'a> {
         Ok(unknown)
     }
 
-    fn comprehension(&mut self, kind: CompKind, gens: &[Gen], filter: Option<&Expr>, key: &Expr, val: Option<&Expr>, _span: Span) -> R {
+    fn comprehension(
+        &mut self,
+        kind: CompKind,
+        gens: &[Gen],
+        filter: Option<&Expr>,
+        key: &Expr,
+        val: Option<&Expr>,
+        _span: Span,
+    ) -> R {
         let mut list = Vec::new();
         let mut map = BTreeMap::new();
         let unknown = self.each(gens, &mut |env| {
@@ -532,7 +645,10 @@ impl<'a> Env<'a> {
                 None => u = Some(v),
             }
             // Stop as soon as the answer is certain.
-            Ok(!matches!((q, t, f), (Quant::All, _, 1..) | (Quant::Any, 1.., _) | (Quant::One, 2.., _)))
+            Ok(!matches!(
+                (q, t, f),
+                (Quant::All, _, 1..) | (Quant::Any, 1.., _) | (Quant::One, 2.., _)
+            ))
         })?;
         if let Some(r) = unknown {
             return Ok(Value::Unknown(r));
@@ -556,19 +672,32 @@ impl<'a> Env<'a> {
                 let o = self.eval(obj)?;
                 return match (&o, method.as_str()) {
                     (Value::Unknown(_), _) => Ok(o),
-                    (_, "out" | "in") => Ok(Value::Unknown(format!("{} (graph navigation needs a snapshot)", self.snippet(span)))),
+                    (_, "out" | "in") => Ok(Value::Unknown(format!(
+                        "{} (graph navigation needs a snapshot)",
+                        self.snippet(span)
+                    ))),
                     _ => err(span, format!("{} has no method `{method}`", o.type_name())),
                 };
             }
             _ => return err(callee.span, "only named functions can be called"),
         };
         if self.locals.iter().any(|(k, _)| *k == name) {
-            return err(callee.span, format!("`{name}` is a local value, not a function"));
+            return err(
+                callee.span,
+                format!("`{name}` is a local value, not a function"),
+            );
         }
         if let Some(m) = self.m {
             if let Some((params, body)) = m.defs.get(&name) {
                 if params.len() != args.len() {
-                    return err(span, format!("`{name}` takes {} argument(s), got {}", params.len(), args.len()));
+                    return err(
+                        span,
+                        format!(
+                            "`{name}` takes {} argument(s), got {}",
+                            params.len(),
+                            args.len()
+                        ),
+                    );
                 }
                 let mut locals = Vec::with_capacity(params.len());
                 for (p, a) in params.iter().zip(args) {
@@ -596,12 +725,19 @@ impl<'a> Env<'a> {
                         for a in args {
                             self.eval(&a.value)?;
                         }
-                        Ok(Value::Unknown(format!("measure `{name}` (computed by the engine from a graph snapshot)")))
+                        Ok(Value::Unknown(format!(
+                            "measure `{name}` (computed by the engine from a graph snapshot)"
+                        )))
                     }
                     _ => err(callee.span, format!("`{name}` is not callable")),
                 };
             }
-            Ok(Some((NameKind::Collection, _))) => return err(callee.span, format!("`{name}` is a collection, not a function")),
+            Ok(Some((NameKind::Collection, _))) => {
+                return err(
+                    callee.span,
+                    format!("`{name}` is a collection, not a function"),
+                )
+            }
             Ok(None) => {}
         }
         let vals = self.positional(args, &name)?;
@@ -620,7 +756,14 @@ impl<'a> Env<'a> {
     }
 
     /// Binds call arguments (positional, then named, then defaults) to parameters.
-    fn bind_params(&mut self, params: &[ParamDef], pack: usize, args: &[Arg], fname: &str, span: Span) -> Result<Vec<(String, Value)>, Diag> {
+    fn bind_params(
+        &mut self,
+        params: &[ParamDef],
+        pack: usize,
+        args: &[Arg],
+        fname: &str,
+        span: Span,
+    ) -> Result<Vec<(String, Value)>, Diag> {
         let mut slots: Vec<Option<Value>> = vec![None; params.len()];
         let mut pos = 0;
         for a in args {
@@ -635,7 +778,14 @@ impl<'a> Env<'a> {
                 },
             };
             if i >= params.len() {
-                return err(span, format!("`{fname}` takes {} argument(s), got {}", params.len(), args.len()));
+                return err(
+                    span,
+                    format!(
+                        "`{fname}` takes {} argument(s), got {}",
+                        params.len(),
+                        args.len()
+                    ),
+                );
             }
             slots[i] = Some(self.eval(&a.value)?);
         }
@@ -645,14 +795,21 @@ impl<'a> Env<'a> {
                 Some(v) => v,
                 None => match &p.default {
                     Some(d) => self.sub(pack).eval(d)?,
-                    None => return err(span, format!("`{fname}` is missing argument `{}`", p.name)),
+                    None => {
+                        return err(span, format!("`{fname}` is missing argument `{}`", p.name))
+                    }
                 },
             };
             if let (Some(d), Value::Num(_, vd)) = (type_dim(&p.ty), &v) {
                 if d != *vd {
                     return err(
                         span,
-                        format!("argument `{}` of `{fname}` is {}, got {v} ({})", p.name, d.describe(), vd.describe()),
+                        format!(
+                            "argument `{}` of `{fname}` is {}, got {v} ({})",
+                            p.name,
+                            d.describe(),
+                            vd.describe()
+                        ),
                     );
                 }
             }
@@ -668,14 +825,26 @@ impl<'a> Env<'a> {
         let v = env.eval(&d.body)?;
         if let (Some(rd), Value::Num(_, vd)) = (type_dim(&d.ret), &v) {
             if rd != *vd {
-                return err(d.body.span, format!("`{}` returns {}, but its body gives {v} ({})", d.name, rd.describe(), vd.describe()));
+                return err(
+                    d.body.span,
+                    format!(
+                        "`{}` returns {}, but its body gives {v} ({})",
+                        d.name,
+                        rd.describe(),
+                        vd.describe()
+                    ),
+                );
             }
         }
         Ok(v)
     }
 
     fn call_table(&mut self, d: &TableDecl, pack: usize, args: &[Arg], span: Span) -> R {
-        let vals: Vec<Value> = self.bind_params(&d.params, pack, args, &d.name, span)?.into_iter().map(|x| x.1).collect();
+        let vals: Vec<Value> = self
+            .bind_params(&d.params, pack, args, &d.name, span)?
+            .into_iter()
+            .map(|x| x.1)
+            .collect();
         if let Some(u) = first_unknown(&vals.iter().collect::<Vec<_>>()) {
             return Ok(u);
         }
@@ -694,8 +863,17 @@ impl<'a> Env<'a> {
         }
         let shown: Vec<String> = vals.iter().map(|v| v.to_string()).collect();
         match d.out_of_range.as_deref() {
-            None | Some("error") => err(span, format!("table `{}` has no row for ({})", d.name, shown.join(", "))),
-            Some(k) => err(span, format!("table `{}`: out_of_range {k} and non-exact axes are not in v0", d.name)),
+            None | Some("error") => err(
+                span,
+                format!("table `{}` has no row for ({})", d.name, shown.join(", ")),
+            ),
+            Some(k) => err(
+                span,
+                format!(
+                    "table `{}`: out_of_range {k} and non-exact axes are not in v0",
+                    d.name
+                ),
+            ),
         }
     }
 }
@@ -706,29 +884,60 @@ pub fn kind_value(ex: &Explanation, d: &KindDecl) -> Value {
     match ex.value {
         Some(b) => match b.point() {
             Some(q) => Value::Num(q.0, q.1),
-            None => Value::Unknown(format!("{} is the window {b} (intervals are not in v0)", d.name)),
+            None => Value::Unknown(format!(
+                "{} is the window {b} (intervals are not in v0)",
+                d.name
+            )),
         },
         None => {
-            let inf = if d.direction == Direction::Min { f64::NEG_INFINITY } else { f64::INFINITY };
+            let inf = if d.direction == Direction::Min {
+                f64::NEG_INFINITY
+            } else {
+                f64::INFINITY
+            };
             Value::Num(Num::Real(inf), dim)
         }
     }
 }
 
 /// Resolves a kind for the given objects across every loaded constraint rule (section 10).
-pub fn resolve_kind(prog: &Program, d: &KindDecl, kind_pack: usize, args: Vec<Value>, span: Span) -> Result<Explanation, Diag> {
+pub fn resolve_kind(
+    prog: &Program,
+    d: &KindDecl,
+    kind_pack: usize,
+    args: Vec<Value>,
+    span: Span,
+) -> Result<Explanation, Diag> {
     if args.len() != d.params.len() {
-        return err(span, format!("kind `{}` takes {} argument(s), got {}", d.name, d.params.len(), args.len()));
+        return err(
+            span,
+            format!(
+                "kind `{}` takes {} argument(s), got {}",
+                d.name,
+                d.params.len(),
+                args.len()
+            ),
+        );
     }
     let dim = type_dim(&d.ret).unwrap_or(Dim::NONE);
     let to_bound = |v: Value, at: Span, what: &str| -> Result<Bound, Diag> {
         match v {
             Value::Num(n, vd) => Ok(Bound::Point(Q(n, vd))),
-            other => err(at, format!("{what} of kind `{}` must be a number, found {other}", d.name)),
+            other => err(
+                at,
+                format!(
+                    "{what} of kind `{}` must be a number, found {other}",
+                    d.name
+                ),
+            ),
         }
     };
     let default = match &d.default {
-        Some(e) => Some(to_bound(Env::new(prog, kind_pack).eval(e)?, e.span, "the default")?),
+        Some(e) => Some(to_bound(
+            Env::new(prog, kind_pack).eval(e)?,
+            e.span,
+            "the default",
+        )?),
         None => None,
     };
     let me = prog.lookup_decl(kind_pack, &d.name);
@@ -739,7 +948,15 @@ pub fn resolve_kind(prog: &Program, d: &KindDecl, kind_pack: usize, args: Vec<Va
             continue;
         }
         if c.args.len() != args.len() {
-            return err(c.span, format!("rule for `{}` binds {} name(s); the kind has {}", d.name, c.args.len(), args.len()));
+            return err(
+                c.span,
+                format!(
+                    "rule for `{}` binds {} name(s); the kind has {}",
+                    d.name,
+                    c.args.len(),
+                    args.len()
+                ),
+            );
         }
         let mut env = Env::new(prog, pack);
         env.locals = c.args.iter().cloned().zip(args.iter().cloned()).collect();
@@ -758,7 +975,10 @@ pub fn resolve_kind(prog: &Program, d: &KindDecl, kind_pack: usize, args: Vec<Va
         };
         let value = to_bound(env.eval(ve)?, ve.span, "the value")?;
         cands.push(Candidate {
-            rule: c.title.clone().unwrap_or_else(|| format!("{} rule at {}", c.kind, prog.locate(c.span))),
+            rule: c
+                .title
+                .clone()
+                .unwrap_or_else(|| format!("{} rule at {}", c.kind, prog.locate(c.span))),
             pack: prog.packs[pack].name.clone(),
             tier: prog.packs[pack].tier,
             priority: c.priority,
@@ -766,12 +986,21 @@ pub fn resolve_kind(prog: &Program, d: &KindDecl, kind_pack: usize, args: Vec<Va
             value,
         });
     }
-    resolve::resolve(&d.name, d.direction, dim, default, cands).map_err(|e| Diag::error(span, e.to_string()))
+    resolve::resolve(&d.name, d.direction, dim, default, cands)
+        .map_err(|e| Diag::error(span, e.to_string()))
 }
 
 fn same_dim(op: BinOp, a: Dim, b: Dim, span: Span) -> Result<(), Diag> {
     if a != b {
-        return err(span, format!("dimension mismatch: {} {} {}", a.describe(), op.text(), b.describe()));
+        return err(
+            span,
+            format!(
+                "dimension mismatch: {} {} {}",
+                a.describe(),
+                op.text(),
+                b.describe()
+            ),
+        );
     }
     Ok(())
 }
@@ -796,7 +1025,17 @@ pub fn binop(op: BinOp, a: Value, b: Value, span: Span) -> R {
                     x.cmp_num(*y)
                 }
                 (Value::Str(x), Value::Str(y)) => x.cmp(y),
-                _ => return err(span, format!("can't compare {} {a} {} {} {b}", a.type_name(), op.text(), b.type_name())),
+                _ => {
+                    return err(
+                        span,
+                        format!(
+                            "can't compare {} {a} {} {} {b}",
+                            a.type_name(),
+                            op.text(),
+                            b.type_name()
+                        ),
+                    )
+                }
             };
             use std::cmp::Ordering::*;
             Ok(Value::Bool(match op {
@@ -814,14 +1053,25 @@ pub fn binop(op: BinOp, a: Value, b: Value, span: Span) -> R {
                 Value::Str(x) => s.contains(&**x),
                 _ => return err(span, "`in` a string needs a string"),
             },
-            _ => return err(span, format!("`in` needs a collection on the right, found {} {b}", b.type_name())),
+            _ => {
+                return err(
+                    span,
+                    format!(
+                        "`in` needs a collection on the right, found {} {b}",
+                        b.type_name()
+                    ),
+                )
+            }
         })),
         Tol => err(span, "tolerances (`±`) are not in v0"),
         Range => match (&a, &b) {
             (Value::Num(x, da), Value::Num(y, db)) => {
                 same_dim(op, *da, *db, span)?;
                 let (Some(lo), Some(hi)) = (x.as_int(), y.as_int()) else {
-                    return err(span, format!("a range needs whole base units, found {a} .. {b}"));
+                    return err(
+                        span,
+                        format!("a range needs whole base units, found {a} .. {b}"),
+                    );
                 };
                 if hi - lo > 1_000_000 {
                     return err(span, "a range of more than a million values");
@@ -833,7 +1083,10 @@ pub fn binop(op: BinOp, a: Value, b: Value, span: Span) -> R {
         Add | Sub => match (a, b) {
             (Value::Num(x, da), Value::Num(y, db)) => {
                 same_dim(op, da, db, span)?;
-                Ok(Value::Num(num_op(span, if op == Add { x.add(y) } else { x.sub(y) })?, da))
+                Ok(Value::Num(
+                    num_op(span, if op == Add { x.add(y) } else { x.sub(y) })?,
+                    da,
+                ))
             }
             (Value::Set(mut x), Value::Set(y)) => {
                 let xm = Arc::make_mut(&mut x);
@@ -849,7 +1102,15 @@ pub fn binop(op: BinOp, a: Value, b: Value, span: Span) -> R {
                 Ok(Value::List(x))
             }
             (Value::Str(x), Value::Str(y)) if op == Add => Ok(Value::str(&format!("{x}{y}"))),
-            (a, b) => err(span, format!("can't {} {} {a} and {} {b}", if op == Add { "add" } else { "subtract" }, a.type_name(), b.type_name())),
+            (a, b) => err(
+                span,
+                format!(
+                    "can't {} {} {a} and {} {b}",
+                    if op == Add { "add" } else { "subtract" },
+                    a.type_name(),
+                    b.type_name()
+                ),
+            ),
         },
         Union | Minus | Inter => match (a, b) {
             (Value::Set(x), Value::Set(y)) => Ok(Value::Set(match op {
@@ -857,7 +1118,10 @@ pub fn binop(op: BinOp, a: Value, b: Value, span: Span) -> R {
                 Minus => Arc::new(x.difference(&y).cloned().collect()),
                 _ => Arc::new(x.intersection(&y).cloned().collect()),
             })),
-            (a, b) => err(span, format!("`{}` needs two sets, found {a} and {b}", op.text())),
+            (a, b) => err(
+                span,
+                format!("`{}` needs two sets, found {a} and {b}", op.text()),
+            ),
         },
         Mul | Div => match (a, b) {
             (Value::Num(x, da), Value::Num(y, db)) => {
@@ -867,17 +1131,29 @@ pub fn binop(op: BinOp, a: Value, b: Value, span: Span) -> R {
                     Ok(Value::Num(num_op(span, x.div(y))?, da.div(db)))
                 }
             }
-            (a, b) => err(span, format!("can't {} {a} and {b}", if op == Mul { "multiply" } else { "divide" })),
+            (a, b) => err(
+                span,
+                format!(
+                    "can't {} {a} and {b}",
+                    if op == Mul { "multiply" } else { "divide" }
+                ),
+            ),
         },
         Pow => match (a, b) {
             (Value::Num(x, da), Value::Num(y, db)) => {
                 if !db.is_none() {
-                    return err(span, format!("an exponent must be dimensionless, found {}", db.describe()));
+                    return err(
+                        span,
+                        format!("an exponent must be dimensionless, found {}", db.describe()),
+                    );
                 }
                 match y.as_int() {
                     Some(k) => Ok(Value::Num(num_op(span, x.pow(y))?, da.pow(k))),
                     None if da.is_none() => Ok(Value::Num(num_op(span, x.pow(y))?, Dim::NONE)),
-                    None => err(span, format!("a {} can only be raised to an integer power", da.describe())),
+                    None => err(
+                        span,
+                        format!("a {} can only be raised to an integer power", da.describe()),
+                    ),
                 }
             }
             (a, b) => err(span, format!("can't raise {a} to {b}")),
@@ -889,21 +1165,53 @@ pub fn binop(op: BinOp, a: Value, b: Value, span: Span) -> R {
 fn want_num(v: &Value, f: &str, span: Span) -> Result<(Num, Dim), Diag> {
     match v {
         Value::Num(n, d) => Ok((*n, *d)),
-        _ => err(span, format!("`{f}` needs a number, found {} {v}", v.type_name())),
+        _ => err(
+            span,
+            format!("`{f}` needs a number, found {} {v}", v.type_name()),
+        ),
     }
 }
 
 fn arity(f: &str, vals: &[Value], n: usize, span: Span) -> Result<(), Diag> {
     if vals.len() != n {
-        return err(span, format!("`{f}` takes {n} argument(s), got {}", vals.len()));
+        return err(
+            span,
+            format!("`{f}` takes {n} argument(s), got {}", vals.len()),
+        );
     }
     Ok(())
 }
 
 pub const BUILTINS: &[&str] = &[
-    "len", "count", "sum", "min", "max", "abs", "ln", "floor", "ceil", "round_to", "clamp", "certainly", "possibly",
-    "matches", "starts_with", "ends_with", "lower", "first", "last", "keys", "values", "any", "all", "to_credits",
-    "to_money", "range", "tol", "sort_by", "take",
+    "len",
+    "count",
+    "sum",
+    "min",
+    "max",
+    "abs",
+    "ln",
+    "floor",
+    "ceil",
+    "round_to",
+    "clamp",
+    "certainly",
+    "possibly",
+    "matches",
+    "starts_with",
+    "ends_with",
+    "lower",
+    "first",
+    "last",
+    "keys",
+    "values",
+    "any",
+    "all",
+    "to_credits",
+    "to_money",
+    "range",
+    "tol",
+    "sort_by",
+    "take",
 ];
 
 fn builtin(f: &str, vals: Vec<Value>, span: Span, _env: &mut Env) -> R {
@@ -955,7 +1263,11 @@ fn builtin(f: &str, vals: Vec<Value>, span: Span, _env: &mut Env) -> R {
             Ok(Value::Num(n, d))
         }
         "min" | "max" => {
-            let items = if vals.len() == 1 { coll(&vals[0])? } else { vals };
+            let items = if vals.len() == 1 {
+                coll(&vals[0])?
+            } else {
+                vals
+            };
             if items.is_empty() {
                 return err(span, format!("`{f}` of nothing"));
             }
@@ -990,7 +1302,10 @@ fn builtin(f: &str, vals: Vec<Value>, span: Span, _env: &mut Env) -> R {
             arity(f, &vals, 1, span)?;
             let (n, d) = want_num(&vals[0], f, span)?;
             if !d.is_none() {
-                return err(span, format!("`ln` needs a dimensionless number, found {}", d.describe()));
+                return err(
+                    span,
+                    format!("`ln` needs a dimensionless number, found {}", d.describe()),
+                );
             }
             if n.to_f64() <= 0.0 {
                 return err(span, format!("ln({n}) is undefined"));
@@ -1016,7 +1331,11 @@ fn builtin(f: &str, vals: Vec<Value>, span: Span, _env: &mut Env) -> R {
                 return Ok(vals[1].clone());
             }
             let hi_ok = binop(BinOp::Gt, vals[0].clone(), vals[2].clone(), span)?;
-            Ok(if hi_ok == Value::Bool(true) { vals[2].clone() } else { vals[0].clone() })
+            Ok(if hi_ok == Value::Bool(true) {
+                vals[2].clone()
+            } else {
+                vals[0].clone()
+            })
         }
         "matches" | "starts_with" | "ends_with" => {
             arity(f, &vals, 2, span)?;
@@ -1024,7 +1343,10 @@ fn builtin(f: &str, vals: Vec<Value>, span: Span, _env: &mut Env) -> R {
                 return err(span, format!("`{f}` needs two strings"));
             };
             Ok(Value::Bool(match f {
-                "matches" => glob(&p.chars().collect::<Vec<_>>(), &s.chars().collect::<Vec<_>>()),
+                "matches" => glob(
+                    &p.chars().collect::<Vec<_>>(),
+                    &s.chars().collect::<Vec<_>>(),
+                ),
                 "starts_with" => s.starts_with(&**p),
                 _ => s.ends_with(&**p),
             }))
@@ -1040,7 +1362,8 @@ fn builtin(f: &str, vals: Vec<Value>, span: Span, _env: &mut Env) -> R {
             arity(f, &vals, 1, span)?;
             let xs = coll(&vals[0])?;
             let x = if f == "first" { xs.first() } else { xs.last() };
-            Ok(x.cloned().unwrap_or_else(|| Value::Unknown(format!("{f} of an empty collection"))))
+            Ok(x.cloned()
+                .unwrap_or_else(|| Value::Unknown(format!("{f} of an empty collection"))))
         }
         "keys" | "values" => {
             arity(f, &vals, 1, span)?;
@@ -1079,7 +1402,9 @@ fn builtin(f: &str, vals: Vec<Value>, span: Span, _env: &mut Env) -> R {
         "take" => {
             arity(f, &vals, 2, span)?;
             let n = match &vals[1] {
-                Value::Num(n, d) if d.is_none() && n.as_int().is_some_and(|i| i >= 0) => n.as_int().unwrap() as usize,
+                Value::Num(n, d) if d.is_none() && n.as_int().is_some_and(|i| i >= 0) => {
+                    n.as_int().unwrap() as usize
+                }
                 v => return err(span, format!("`take(xs, n)` needs a count, found {v}")),
             };
             match &vals[0] {
@@ -1087,7 +1412,10 @@ fn builtin(f: &str, vals: Vec<Value>, span: Span, _env: &mut Env) -> R {
                 v => err(span, format!("`take` needs a list, found {v}")),
             }
         }
-        "range" | "tol" | "sort_by" => err(span, format!("`{f}` is not in v0 (intervals and sorting are deferred)")),
+        "range" | "tol" | "sort_by" => err(
+            span,
+            format!("`{f}` is not in v0 (intervals and sorting are deferred)"),
+        ),
         _ => err(span, format!("unknown function `{f}`")),
     }
 }
@@ -1121,18 +1449,39 @@ mod tests {
         assert_eq!(ok(&p, "1000 cr/d * 1 d == 1000 cr"), Value::Bool(true));
         assert_eq!(ok(&p, "16 KiB == 16384 B"), Value::Bool(true));
         assert_eq!(ok(&p, "30 /min * 2 min"), Value::int(60));
-        assert_eq!(ok(&p, "2 ^ -2"), Value::Num(Num::rat(1, 4).unwrap(), Dim::NONE));
-        assert_eq!(ok(&p, "(3 s) ^ 2"), Value::Num(Num::int(9), Dim::TIME.pow(2)));
-        assert!(ev(&p, "1 cr + 1 s").unwrap_err().msg.contains("dimension mismatch: Credits + Duration"));
-        assert!(ev(&p, "1 cr <= 1000").unwrap_err().msg.contains("dimension mismatch"));
+        assert_eq!(
+            ok(&p, "2 ^ -2"),
+            Value::Num(Num::rat(1, 4).unwrap(), Dim::NONE)
+        );
+        assert_eq!(
+            ok(&p, "(3 s) ^ 2"),
+            Value::Num(Num::int(9), Dim::TIME.pow(2))
+        );
+        assert!(ev(&p, "1 cr + 1 s")
+            .unwrap_err()
+            .msg
+            .contains("dimension mismatch: Credits + Duration"));
+        assert!(ev(&p, "1 cr <= 1000")
+            .unwrap_err()
+            .msg
+            .contains("dimension mismatch"));
         assert!(ev(&p, "ln(2 cr)").is_err());
         assert!(ev(&p, "1 / 0").is_err());
-        assert_eq!(ok(&p, "round_to(2 / 3, 0.01)"), Value::Num(Num::rat(67, 100).unwrap(), Dim::NONE));
+        assert_eq!(
+            ok(&p, "round_to(2 / 3, 0.01)"),
+            Value::Num(Num::rat(67, 100).unwrap(), Dim::NONE)
+        );
         assert_eq!(ok(&p, "floor(7 / 2)"), Value::int(3));
-        assert_eq!(ok(&p, "max(1 cr, 3 cr, 2 cr)"), Value::Num(Num::int(3), Dim::CREDITS));
+        assert_eq!(
+            ok(&p, "max(1 cr, 3 cr, 2 cr)"),
+            Value::Num(Num::int(3), Dim::CREDITS)
+        );
         assert_eq!(ok(&p, "min([4, 2, 9])"), Value::int(2));
         assert_eq!(ok(&p, "abs(-3 s)"), Value::Num(Num::int(3), Dim::TIME));
-        assert_eq!(ok(&p, "sum([1 cr, 2 cr])"), Value::Num(Num::int(3), Dim::CREDITS));
+        assert_eq!(
+            ok(&p, "sum([1 cr, 2 cr])"),
+            Value::Num(Num::int(3), Dim::CREDITS)
+        );
         assert_eq!(ok(&p, "clamp(12, 0, 10)"), Value::int(10));
     }
 
@@ -1141,21 +1490,39 @@ mod tests {
         let p = prog("");
         assert_eq!(ok(&p, "len([1, 2, 3])"), Value::int(3));
         assert_eq!(ok(&p, "count({1, 1, 2})"), Value::int(2));
-        assert_eq!(ok(&p, "[for x in [1, 2, 3] where x > 1 yield x * 10]").to_string(), "[20, 30]");
-        assert_eq!(ok(&p, "{for x in [1, 2] yield x: x * x}").to_string(), "{1: 1, 2: 4}");
+        assert_eq!(
+            ok(&p, "[for x in [1, 2, 3] where x > 1 yield x * 10]").to_string(),
+            "[20, 30]"
+        );
+        assert_eq!(
+            ok(&p, "{for x in [1, 2] yield x: x * x}").to_string(),
+            "{1: 1, 2: 4}"
+        );
         assert_eq!(ok(&p, "all x in {1, 2}: x > 0"), Value::Bool(true));
         assert_eq!(ok(&p, "any x in {1, 2}: x > 1"), Value::Bool(true));
         assert_eq!(ok(&p, "one x in {1, 2}: x > 0"), Value::Bool(false));
         assert_eq!(ok(&p, "2 in {1, 2}"), Value::Bool(true));
         assert_eq!(ok(&p, "({1, 2} + {3}) - {1}").to_string(), "{2, 3}");
         assert_eq!(ok(&p, "{1, 2} inter {2, 3}").to_string(), "{2}");
-        assert_eq!(ok(&p, "({\"a\": 1} with [\"b\"] = 2)[\"b\"]"), Value::int(2));
-        assert_eq!(ok(&p, "({used: 1 cr} with .used = 2 cr).used"), Value::Num(Num::int(2), Dim::CREDITS));
+        assert_eq!(
+            ok(&p, "({\"a\": 1} with [\"b\"] = 2)[\"b\"]"),
+            Value::int(2)
+        );
+        assert_eq!(
+            ok(&p, "({used: 1 cr} with .used = 2 cr).used"),
+            Value::Num(Num::int(2), Dim::CREDITS)
+        );
         assert_eq!(ok(&p, "[\"mayor\", \"owner\"][1]"), Value::str("owner"));
         assert!(ev(&p, "[1][1]").unwrap_err().msg.contains("out of range"));
-        assert_eq!(ok(&p, "[for (a, b) in [(1, 2), (3, 4)] yield a + b]").to_string(), "[3, 7]");
+        assert_eq!(
+            ok(&p, "[for (a, b) in [(1, 2), (3, 4)] yield a + b]").to_string(),
+            "[3, 7]"
+        );
         assert_eq!(ok(&p, "if 1 < 2 then \"y\" else \"n\""), Value::str("y"));
-        assert_eq!(ok(&p, "matches(\"agent-7\", \"agent-*\")"), Value::Bool(true));
+        assert_eq!(
+            ok(&p, "matches(\"agent-7\", \"agent-*\")"),
+            Value::Bool(true)
+        );
     }
 
     #[test]
@@ -1174,7 +1541,10 @@ mod tests {
         assert_eq!(ok(&p, "possibly({a: 1}.b > 0)"), Value::Bool(true));
         assert_eq!(ok(&p, "{a: 1}.b ?? 7"), Value::int(7));
         assert_eq!(ok(&p, "false => {a: 1}.b > 0"), Value::Bool(true));
-        assert_eq!(ok(&p, "[for x in [1, 2] where {a: 1}.b > x yield x]").to_string(), "[]");
+        assert_eq!(
+            ok(&p, "[for x in [1, 2] where {a: 1}.b > x yield x]").to_string(),
+            "[]"
+        );
         assert!(matches!(ok(&p, "now - 1 s"), Value::Unknown(_)));
     }
 
@@ -1186,11 +1556,26 @@ mod tests {
              fn d(x: Number, dt: Duration, h: Duration) -> Number = x * 2 ^ (-(dt / h))\n\
              table t(k: String) -> Number {\n axes k: exact\n out_of_range error\n \"a\" => 1\n \"b\" => -0.5\n}",
         );
-        assert_eq!(ok(&p, "round_to(w(400 cr), 0.01) == 2.61"), Value::Bool(true));
-        assert!(ev(&p, "w(4 s)").unwrap_err().msg.contains("argument `x` of `w` is Credits"));
-        assert!(ev(&p, "bad(1 cr)").unwrap_err().msg.contains("returns Credits"));
-        assert_eq!(ok(&p, "d(1, 180 d, 90 d)"), Value::Num(Num::rat(1, 4).unwrap(), Dim::NONE));
-        assert_eq!(ok(&p, "t(\"b\")"), Value::Num(Num::rat(-1, 2).unwrap(), Dim::NONE));
+        assert_eq!(
+            ok(&p, "round_to(w(400 cr), 0.01) == 2.61"),
+            Value::Bool(true)
+        );
+        assert!(ev(&p, "w(4 s)")
+            .unwrap_err()
+            .msg
+            .contains("argument `x` of `w` is Credits"));
+        assert!(ev(&p, "bad(1 cr)")
+            .unwrap_err()
+            .msg
+            .contains("returns Credits"));
+        assert_eq!(
+            ok(&p, "d(1, 180 d, 90 d)"),
+            Value::Num(Num::rat(1, 4).unwrap(), Dim::NONE)
+        );
+        assert_eq!(
+            ok(&p, "t(\"b\")"),
+            Value::Num(Num::rat(-1, 2).unwrap(), Dim::NONE)
+        );
         assert!(ev(&p, "t(\"zzz\")").unwrap_err().msg.contains("no row"));
     }
 
@@ -1208,16 +1593,24 @@ mod tests {
                     .into(),
             ),
         ]);
-        assert!(d.iter().all(|x| !x.msg.contains("unknown pack `k`")), "{d:?}");
+        assert!(
+            d.iter().all(|x| !x.msg.contains("unknown pack `k`")),
+            "{d:?}"
+        );
         assert!(p.set_tier("town", crate::resolve::Tier::Town));
         let kp = p.pack_by_name("k").unwrap();
         let tp = p.pack_by_name("town").unwrap();
         let research = ok_in(&p, tp, "{town: {template: \"research\"}}");
         let open = ok_in(&p, tp, "{town: {template: \"open\"}}");
-        let Item::Kind(kd) = p.item(p.lookup_decl(kp, "contacts_max").unwrap()).clone() else { panic!() };
+        let Item::Kind(kd) = p.item(p.lookup_decl(kp, "contacts_max").unwrap()).clone() else {
+            panic!()
+        };
         let ex = resolve_kind(&p, &kd, kp, vec![research], Span::default()).unwrap();
         assert_eq!(kind_value(&ex, &kd), Value::int(60));
-        assert_eq!(ex.decided_by, vec!["Research towns keep fewer contacts".to_string()]);
+        assert_eq!(
+            ex.decided_by,
+            vec!["Research towns keep fewer contacts".to_string()]
+        );
         let ex = resolve_kind(&p, &kd, kp, vec![open], Span::default()).unwrap();
         assert_eq!(kind_value(&ex, &kd), Value::int(150));
         assert_eq!(ex.no_effect, vec!["Loose".to_string()]);

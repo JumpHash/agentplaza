@@ -9,9 +9,12 @@ use apz_skill::{Finding, Severity};
 use postgres::types::{FromSql, Type};
 use postgres::{Client, Row, Transaction};
 
-use super::{Action, Event, NewSkill, NewVersion, Skill, SkillFile, SkillStore, Source, StoreError, Version, VersionMeta};
-use crate::db::sql;
+use super::{
+    Action, Event, NewSkill, NewVersion, Skill, SkillFile, SkillStore, Source, StoreError, Version,
+    VersionMeta,
+};
 use crate::db::Db;
+use crate::db::sql;
 
 pub struct DbSkills {
     db: Arc<Db>,
@@ -23,7 +26,10 @@ impl DbSkills {
     }
 
     /// Runs one write. Only `Done` commits; the other outcomes become the store's errors.
-    fn write<T>(&self, op: impl FnMut(&mut Client) -> Result<Outcome<T>, postgres::Error>) -> Result<T, StoreError> {
+    fn write<T>(
+        &self,
+        op: impl FnMut(&mut Client) -> Result<Outcome<T>, postgres::Error>,
+    ) -> Result<T, StoreError> {
         match self.db.run(op)? {
             Outcome::Done(value) => Ok(value),
             Outcome::NotFound => Err(StoreError::NotFound),
@@ -82,7 +88,9 @@ impl Named for SourceKind {
 impl<'a, T: Named> FromSql<'a> for Parsed<T> {
     fn from_sql(_: &Type, raw: &'a [u8]) -> Result<Self, Box<dyn Error + Sync + Send>> {
         let text = std::str::from_utf8(raw)?;
-        T::named(text).map(Parsed).ok_or_else(|| format!("unknown value {text:?}").into())
+        T::named(text)
+            .map(Parsed)
+            .ok_or_else(|| format!("unknown value {text:?}").into())
     }
 
     fn accepts(ty: &Type) -> bool {
@@ -99,13 +107,19 @@ impl SkillStore for DbSkills {
     }
 
     fn get(&self, id: &str) -> Result<Option<Skill>, String> {
-        self.db.run(|c| c.query_opt(sql::SKILL_GET, &[&id])?.map(|row| skill_of(&row)).transpose())
+        self.db.run(|c| {
+            c.query_opt(sql::SKILL_GET, &[&id])?
+                .map(|row| skill_of(&row))
+                .transpose()
+        })
     }
 
     fn versions(&self, id: &str) -> Result<Vec<VersionMeta>, String> {
         self.db.run(|c| {
             let rows = c.query(sql::SKILL_VERSIONS, &[&id])?;
-            rows.iter().map(|row| meta_of(row, 0)).collect::<Result<Vec<_>, _>>()
+            rows.iter()
+                .map(|row| meta_of(row, 0))
+                .collect::<Result<Vec<_>, _>>()
         })
     }
 
@@ -117,29 +131,63 @@ impl SkillStore for DbSkills {
             let meta = meta_of(&row, 0)?;
             let skill_md: String = row.try_get(13)?;
             let file_rows = c.query(sql::SKILL_FILES, &[&id, &(version as i32)])?;
-            let files = file_rows.iter().map(file_of).collect::<Result<Vec<_>, _>>()?;
+            let files = file_rows
+                .iter()
+                .map(file_of)
+                .collect::<Result<Vec<_>, _>>()?;
             let finding_rows = c.query(sql::SKILL_FINDINGS, &[&id, &(version as i32)])?;
-            let findings = finding_rows.iter().map(finding_of).collect::<Result<Vec<_>, _>>()?;
-            Ok(Some(Version { meta, skill_md, files, findings }))
+            let findings = finding_rows
+                .iter()
+                .map(finding_of)
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(Some(Version {
+                meta,
+                skill_md,
+                files,
+                findings,
+            }))
         })
     }
 
-    fn create(&self, new: &NewSkill, first: &NewVersion, actor: &str, now_ms: u64) -> Result<Skill, StoreError> {
+    fn create(
+        &self,
+        new: &NewSkill,
+        first: &NewVersion,
+        actor: &str,
+        now_ms: u64,
+    ) -> Result<Skill, StoreError> {
         self.write(|c| {
             let mut tx = c.transaction()?;
             if lock_skill(&mut tx, &new.id)?.is_some() {
-                return Ok(Outcome::Conflict(format!("a skill with id {} already exists", new.id)));
+                return Ok(Outcome::Conflict(format!(
+                    "a skill with id {} already exists",
+                    new.id
+                )));
             }
             let name = name_of(first, &new.id);
             if let Some(holder) = name_holder(&mut tx, &name, &new.id)? {
-                return Ok(Outcome::Conflict(format!("name {name} is held by {holder}")));
+                return Ok(Outcome::Conflict(format!(
+                    "name {name} is held by {holder}"
+                )));
             }
             let now = now_ms as i64;
             let description = first.report.description.clone().unwrap_or_default();
             let (kind, repo, git_ref, path, commit) = source_columns(&new.source);
             tx.execute(
                 sql::SKILL_INSERT,
-                &[&new.id, &name, &new.title, &description, &new.tags, &kind, &repo, &git_ref, &path, &commit, &now],
+                &[
+                    &new.id,
+                    &name,
+                    &new.title,
+                    &description,
+                    &new.tags,
+                    &kind,
+                    &repo,
+                    &git_ref,
+                    &path,
+                    &commit,
+                    &now,
+                ],
             )?;
             insert_version(&mut tx, &new.id, 1, first, actor, now)?;
             insert_event(&mut tx, &new.id, Action::Create, None, actor, now)?;
@@ -153,18 +201,30 @@ impl SkillStore for DbSkills {
         })
     }
 
-    fn add_version(&self, id: &str, base: u32, next: &NewVersion, actor: &str, now_ms: u64) -> Result<VersionMeta, StoreError> {
+    fn add_version(
+        &self,
+        id: &str,
+        base: u32,
+        next: &NewVersion,
+        actor: &str,
+        now_ms: u64,
+    ) -> Result<VersionMeta, StoreError> {
         self.write(|c| {
             let mut tx = c.transaction()?;
             let Some(skill) = lock_skill(&mut tx, id)? else {
                 return Ok(Outcome::NotFound);
             };
             if skill.latest_version != base {
-                return Ok(Outcome::Conflict(format!("{id} is at version {}, not {base}", skill.latest_version)));
+                return Ok(Outcome::Conflict(format!(
+                    "{id} is at version {}, not {base}",
+                    skill.latest_version
+                )));
             }
             let name = name_of(next, id);
             if let Some(holder) = name_holder(&mut tx, &name, id)? {
-                return Ok(Outcome::Conflict(format!("name {name} is held by {holder}")));
+                return Ok(Outcome::Conflict(format!(
+                    "name {name} is held by {holder}"
+                )));
             }
             let version = base + 1;
             let now = now_ms as i64;
@@ -172,9 +232,23 @@ impl SkillStore for DbSkills {
             insert_version(&mut tx, id, version as i32, next, actor, now)?;
             tx.execute(
                 sql::SKILL_SET_LATEST,
-                &[&id, &(version as i32), &name, &description, &next.source_commit, &now],
+                &[
+                    &id,
+                    &(version as i32),
+                    &name,
+                    &description,
+                    &next.source_commit,
+                    &now,
+                ],
             )?;
-            insert_event(&mut tx, id, Action::Version, Some(version as i32), actor, now)?;
+            insert_event(
+                &mut tx,
+                id,
+                Action::Version,
+                Some(version as i32),
+                actor,
+                now,
+            )?;
             tx.commit()?;
             let report = &next.report;
             Ok(Outcome::Done(VersionMeta {
@@ -195,7 +269,14 @@ impl SkillStore for DbSkills {
         })
     }
 
-    fn set_meta(&self, id: &str, title: &str, tags: &[String], actor: &str, now_ms: u64) -> Result<Skill, StoreError> {
+    fn set_meta(
+        &self,
+        id: &str,
+        title: &str,
+        tags: &[String],
+        actor: &str,
+        now_ms: u64,
+    ) -> Result<Skill, StoreError> {
         self.write(|c| {
             let mut tx = c.transaction()?;
             if lock_skill(&mut tx, id)?.is_none() {
@@ -210,7 +291,13 @@ impl SkillStore for DbSkills {
         })
     }
 
-    fn set_bindings(&self, id: &str, bindings: &[String], actor: &str, now_ms: u64) -> Result<Skill, StoreError> {
+    fn set_bindings(
+        &self,
+        id: &str,
+        bindings: &[String],
+        actor: &str,
+        now_ms: u64,
+    ) -> Result<Skill, StoreError> {
         self.write(|c| {
             let mut tx = c.transaction()?;
             if lock_skill(&mut tx, id)?.is_none() {
@@ -229,7 +316,13 @@ impl SkillStore for DbSkills {
         })
     }
 
-    fn set_active(&self, id: &str, version: Option<u32>, actor: &str, now_ms: u64) -> Result<Skill, StoreError> {
+    fn set_active(
+        &self,
+        id: &str,
+        version: Option<u32>,
+        actor: &str,
+        now_ms: u64,
+    ) -> Result<Skill, StoreError> {
         self.write(|c| {
             let mut tx = c.transaction()?;
             if lock_skill(&mut tx, id)?.is_none() {
@@ -254,7 +347,13 @@ impl SkillStore for DbSkills {
         })
     }
 
-    fn set_archived(&self, id: &str, archived: bool, actor: &str, now_ms: u64) -> Result<Skill, StoreError> {
+    fn set_archived(
+        &self,
+        id: &str,
+        archived: bool,
+        actor: &str,
+        now_ms: u64,
+    ) -> Result<Skill, StoreError> {
         self.write(|c| {
             let mut tx = c.transaction()?;
             let Some(skill) = lock_skill(&mut tx, id)? else {
@@ -262,12 +361,19 @@ impl SkillStore for DbSkills {
             };
             if !archived {
                 if let Some(holder) = name_holder(&mut tx, &skill.name, id)? {
-                    return Ok(Outcome::Conflict(format!("name {} is held by {holder}", skill.name)));
+                    return Ok(Outcome::Conflict(format!(
+                        "name {} is held by {holder}",
+                        skill.name
+                    )));
                 }
             }
             let now = now_ms as i64;
             tx.execute(sql::SKILL_SET_ARCHIVED, &[&id, &archived, &now])?;
-            let action = if archived { Action::Archive } else { Action::Restore };
+            let action = if archived {
+                Action::Archive
+            } else {
+                Action::Restore
+            };
             insert_event(&mut tx, id, action, None, actor, now)?;
             let skill = reread(&mut tx, id)?;
             tx.commit()?;
@@ -285,14 +391,18 @@ impl SkillStore for DbSkills {
     fn bound(&self, binding: &str) -> Result<Vec<(Skill, VersionMeta)>, String> {
         self.db.run(|c| {
             let rows = c.query(sql::SKILL_BOUND, &[&binding])?;
-            rows.iter().map(|row| Ok((skill_of(row)?, meta_of(row, 16)?))).collect::<Result<Vec<_>, postgres::Error>>()
+            rows.iter()
+                .map(|row| Ok((skill_of(row)?, meta_of(row, 16)?)))
+                .collect::<Result<Vec<_>, postgres::Error>>()
         })
     }
 }
 
 /// Locks the skill row until the transaction ends; `None` when there is no such skill.
 fn lock_skill(tx: &mut Transaction<'_>, id: &str) -> Result<Option<Skill>, postgres::Error> {
-    tx.query_opt(sql::SKILL_LOCK, &[&id])?.map(|row| skill_of(&row)).transpose()
+    tx.query_opt(sql::SKILL_LOCK, &[&id])?
+        .map(|row| skill_of(&row))
+        .transpose()
 }
 
 /// The skill row as `skill_get.sql` reads it, inside the transaction.
@@ -302,8 +412,14 @@ fn reread(tx: &mut Transaction<'_>, id: &str) -> Result<Skill, postgres::Error> 
 }
 
 /// The id of another live skill holding `name`, if any.
-fn name_holder(tx: &mut Transaction<'_>, name: &str, id: &str) -> Result<Option<String>, postgres::Error> {
-    tx.query_opt(sql::SKILL_NAME_HOLDER, &[&name, &id])?.map(|row| row.try_get::<_, String>(0)).transpose()
+fn name_holder(
+    tx: &mut Transaction<'_>,
+    name: &str,
+    id: &str,
+) -> Result<Option<String>, postgres::Error> {
+    tx.query_opt(sql::SKILL_NAME_HOLDER, &[&name, &id])?
+        .map(|row| row.try_get::<_, String>(0))
+        .transpose()
 }
 
 /// A version's name is its frontmatter name, or the skill id when it has none.
@@ -316,18 +432,36 @@ fn total_bytes(next: &NewVersion) -> u64 {
 }
 
 /// The source columns: kind, repo (`owner/repo`), ref, path and commit (the last four null unless GitHub).
-fn source_columns(source: &Source) -> (&str, Option<&str>, Option<&str>, Option<&str>, Option<&str>) {
+fn source_columns(
+    source: &Source,
+) -> (&str, Option<&str>, Option<&str>, Option<&str>, Option<&str>) {
     match source {
         Source::Built => ("built", None, None, None, None),
         Source::Upload => ("upload", None, None, None, None),
-        Source::Github { repo, git_ref, path, commit } => {
-            ("github", Some(repo.as_str()), git_ref.as_deref(), Some(path.as_str()), Some(commit.as_str()))
-        }
+        Source::Github {
+            repo,
+            git_ref,
+            path,
+            commit,
+        } => (
+            "github",
+            Some(repo.as_str()),
+            git_ref.as_deref(),
+            Some(path.as_str()),
+            Some(commit.as_str()),
+        ),
     }
 }
 
 /// Writes a version, its files and its check findings (seq from 0).
-fn insert_version(tx: &mut Transaction<'_>, id: &str, version: i32, next: &NewVersion, actor: &str, now: i64) -> Result<(), postgres::Error> {
+fn insert_version(
+    tx: &mut Transaction<'_>,
+    id: &str,
+    version: i32,
+    next: &NewVersion,
+    actor: &str,
+    now: i64,
+) -> Result<(), postgres::Error> {
     let report = &next.report;
     tx.execute(
         sql::SKILL_VERSION_INSERT,
@@ -350,7 +484,17 @@ fn insert_version(tx: &mut Transaction<'_>, id: &str, version: i32, next: &NewVe
         ],
     )?;
     for f in &next.files {
-        tx.execute(sql::SKILL_FILE_INSERT, &[&id, &version, &f.path, &f.sha256, &(f.size as i64), &f.executable])?;
+        tx.execute(
+            sql::SKILL_FILE_INSERT,
+            &[
+                &id,
+                &version,
+                &f.path,
+                &f.sha256,
+                &(f.size as i64),
+                &f.executable,
+            ],
+        )?;
     }
     for (seq, finding) in report.findings.iter().enumerate() {
         tx.execute(
@@ -370,8 +514,18 @@ fn insert_version(tx: &mut Transaction<'_>, id: &str, version: i32, next: &NewVe
     Ok(())
 }
 
-fn insert_event(tx: &mut Transaction<'_>, id: &str, action: Action, version: Option<i32>, actor: &str, now: i64) -> Result<(), postgres::Error> {
-    tx.execute(sql::SKILL_EVENT_INSERT, &[&id, &action.as_str(), &version, &actor, &now])?;
+fn insert_event(
+    tx: &mut Transaction<'_>,
+    id: &str,
+    action: Action,
+    version: Option<i32>,
+    actor: &str,
+    now: i64,
+) -> Result<(), postgres::Error> {
+    tx.execute(
+        sql::SKILL_EVENT_INSERT,
+        &[&id, &action.as_str(), &version, &actor, &now],
+    )?;
     Ok(())
 }
 

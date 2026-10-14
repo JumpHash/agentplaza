@@ -8,7 +8,7 @@ use iced::mouse;
 use iced::widget::canvas::{self, Path, Stroke};
 use iced::{Color, Element, Event, Length, Point, Rectangle, Renderer, Size, Theme};
 
-use crate::theme::{SANS};
+use crate::theme::SANS;
 
 /// One named series: `values[i]` is the value at bucket (or point) `i`.
 #[derive(Debug, Clone, PartialEq)]
@@ -74,12 +74,20 @@ pub fn blend(from: &[Series], to: &[Series], t: f64) -> Vec<Series> {
                     a + (b - a) * t
                 })
                 .collect();
-            Series { key: s.key.clone(), color: s.color, values }
+            Series {
+                key: s.key.clone(),
+                color: s.color,
+                values,
+            }
         })
         .collect();
     for f in from.iter().filter(|f| !to.iter().any(|s| s.key == f.key)) {
         let values = f.values.iter().map(|a| a * (1.0 - t)).collect();
-        out.push(Series { key: f.key.clone(), color: f.color, values });
+        out.push(Series {
+            key: f.key.clone(),
+            color: f.color,
+            values,
+        });
     }
     out
 }
@@ -131,14 +139,25 @@ fn plot(bounds: Rectangle, pad_left: f32, pad_bottom: f32) -> (f32, f32, f32, f3
     (pad_left, top, width, height)
 }
 
-fn label(frame: &mut canvas::Frame, content: String, at: Point, color: Color, size: f32, right: bool) {
+fn label(
+    frame: &mut canvas::Frame,
+    content: String,
+    at: Point,
+    color: Color,
+    size: f32,
+    right: bool,
+) {
     frame.fill_text(canvas::Text {
         content,
         position: at,
         color,
         size: iced::Pixels(size),
         font: SANS,
-        align_x: if right { alignment::Horizontal::Right.into() } else { alignment::Horizontal::Left.into() },
+        align_x: if right {
+            alignment::Horizontal::Right.into()
+        } else {
+            alignment::Horizontal::Left.into()
+        },
         ..canvas::Text::default()
     });
 }
@@ -161,12 +180,20 @@ impl<M> canvas::Program<M> for StackedArea {
     /// The hovered point.
     type State = Option<usize>;
 
-    fn update(&self, hover: &mut Option<usize>, event: &Event, bounds: Rectangle, cursor: mouse::Cursor) -> Option<canvas::Action<M>> {
+    fn update(
+        &self,
+        hover: &mut Option<usize>,
+        event: &Event,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
+    ) -> Option<canvas::Action<M>> {
         if !matches!(event, Event::Mouse(_)) {
             return None;
         }
         let (left, _, width, _) = plot(bounds, PAD_LEFT, PAD_BOTTOM);
-        let next = cursor.position_in(bounds).and_then(|p| point_at(p.x, self.labels.len(), left, width));
+        let next = cursor
+            .position_in(bounds)
+            .and_then(|p| point_at(p.x, self.labels.len(), left, width));
         if next != *hover {
             *hover = next;
             return Some(canvas::Action::request_redraw());
@@ -174,7 +201,14 @@ impl<M> canvas::Program<M> for StackedArea {
         None
     }
 
-    fn draw(&self, hover: &Option<usize>, renderer: &Renderer, _theme: &Theme, bounds: Rectangle, _cursor: mouse::Cursor) -> Vec<canvas::Geometry> {
+    fn draw(
+        &self,
+        hover: &Option<usize>,
+        renderer: &Renderer,
+        _theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<canvas::Geometry> {
         let mut frame = canvas::Frame::new(renderer, bounds.size());
         let (left, top, width, height) = plot(bounds, PAD_LEFT, PAD_BOTTOM);
         let tops = stacked_tops(&self.series);
@@ -182,7 +216,9 @@ impl<M> canvas::Program<M> for StackedArea {
         // A snapshot hovers the chart at its window point (`APZ_HOVER`), as a real cursor would.
         let hover = (*hover).or_else(|| snapshot_hover_index(bounds, n, left, width));
         let hover = &hover;
-        let peak = tops.last().map_or(0.0, |t| t.iter().copied().fold(0.0, f64::max));
+        let peak = tops
+            .last()
+            .map_or(0.0, |t| t.iter().copied().fold(0.0, f64::max));
         let ceiling = nice_ceiling(peak);
         let y = |v: f64| top + height - (v / ceiling) as f32 * height;
         let x = |i: usize| point_x(i, n, left, width);
@@ -191,18 +227,43 @@ impl<M> canvas::Program<M> for StackedArea {
         for k in 0..=4 {
             let v = ceiling * k as f64 / 4.0;
             let yy = y(v);
-            let rule = if k == 0 { crate::theme::palette().rule } else { crate::theme::palette().rule_faint };
-            frame.stroke(&Path::line(Point::new(left, yy), Point::new(left + width, yy)), Stroke::default().with_color(rule).with_width(1.0));
-            label(&mut frame, (self.format)(v), Point::new(left - 8.0, yy - 6.0), crate::theme::palette().ink_3, 10.5, true);
+            let rule = if k == 0 {
+                crate::theme::palette().rule
+            } else {
+                crate::theme::palette().rule_faint
+            };
+            frame.stroke(
+                &Path::line(Point::new(left, yy), Point::new(left + width, yy)),
+                Stroke::default().with_color(rule).with_width(1.0),
+            );
+            label(
+                &mut frame,
+                (self.format)(v),
+                Point::new(left - 8.0, yy - 6.0),
+                crate::theme::palette().ink_3,
+                10.5,
+                true,
+            );
         }
         if n == 0 || peak <= 0.0 {
-            label(&mut frame, self.empty.to_string(), Point::new(left + width / 2.0, top + height / 2.0 - 7.0), crate::theme::palette().ink_3, 13.0, false);
+            label(
+                &mut frame,
+                self.empty.to_string(),
+                Point::new(left + width / 2.0, top + height / 2.0 - 7.0),
+                crate::theme::palette().ink_3,
+                13.0,
+                false,
+            );
             return vec![frame.into_geometry()];
         }
 
         for (s, series) in self.series.iter().enumerate() {
             let upper = &tops[s];
-            let lower: Vec<f64> = if s == 0 { vec![0.0; n] } else { tops[s - 1].clone() };
+            let lower: Vec<f64> = if s == 0 {
+                vec![0.0; n]
+            } else {
+                tops[s - 1].clone()
+            };
             let area = Path::new(|b| {
                 for i in 0..n {
                     let p = Point::new(x(i), y(at(upper, i)));
@@ -217,7 +278,13 @@ impl<M> canvas::Program<M> for StackedArea {
                 }
                 b.close();
             });
-            frame.fill(&area, Color { a: 0.55, ..series.color });
+            frame.fill(
+                &area,
+                Color {
+                    a: 0.55,
+                    ..series.color
+                },
+            );
             let edge = Path::new(|b| {
                 for i in 0..n {
                     let p = Point::new(x(i), y(at(upper, i)));
@@ -228,13 +295,20 @@ impl<M> canvas::Program<M> for StackedArea {
                     }
                 }
             });
-            frame.stroke(&edge, Stroke::default().with_color(series.color).with_width(1.5));
+            frame.stroke(
+                &edge,
+                Stroke::default().with_color(series.color).with_width(1.5),
+            );
         }
 
         // The x-axis: up to six labels, evenly spaced over the points.
         let ticks = n.min(6);
         for k in 0..ticks {
-            let i = if ticks <= 1 { 0 } else { k * (n - 1) / (ticks - 1) };
+            let i = if ticks <= 1 {
+                0
+            } else {
+                k * (n - 1) / (ticks - 1)
+            };
             let text = self.labels.get(i).cloned().unwrap_or_default();
             let anchor = if k == 0 {
                 Point::new(x(i) + 2.0, top + height + 6.0)
@@ -243,33 +317,86 @@ impl<M> canvas::Program<M> for StackedArea {
             } else {
                 Point::new(x(i), top + height + 6.0)
             };
-            label(&mut frame, text, anchor, crate::theme::palette().ink_3, 10.5, k + 1 == ticks && ticks > 1);
+            label(
+                &mut frame,
+                text,
+                anchor,
+                crate::theme::palette().ink_3,
+                10.5,
+                k + 1 == ticks && ticks > 1,
+            );
         }
 
         if let Some(i) = hover.filter(|i| *i < n) {
             let hx = x(i);
-            frame.stroke(&Path::line(Point::new(hx, top), Point::new(hx, top + height)), Stroke::default().with_color(crate::theme::palette().ink_3).with_width(1.0));
+            frame.stroke(
+                &Path::line(Point::new(hx, top), Point::new(hx, top + height)),
+                Stroke::default()
+                    .with_color(crate::theme::palette().ink_3)
+                    .with_width(1.0),
+            );
             let rows: Vec<(Color, String)> = self
                 .series
                 .iter()
                 .enumerate()
                 .filter_map(|(s, series)| {
                     let v = at(&tops[s], i) - if s == 0 { 0.0 } else { at(&tops[s - 1], i) };
-                    (v > 0.0).then(|| (series.color, format!("{}  {}", series.key, (self.format)(v))))
+                    (v > 0.0).then(|| {
+                        (
+                            series.color,
+                            format!("{}  {}", series.key, (self.format)(v)),
+                        )
+                    })
                 })
                 .collect();
-            let heading = self.heads.as_ref().and_then(|h| h.get(i)).or_else(|| self.labels.get(i)).cloned().unwrap_or_default();
+            let heading = self
+                .heads
+                .as_ref()
+                .and_then(|h| h.get(i))
+                .or_else(|| self.labels.get(i))
+                .cloned()
+                .unwrap_or_default();
             let box_w = 200.0;
             let box_h = 14.0 + 16.0 * (rows.len() as f32 + 1.0) + 6.0;
-            let bx = if hx > left + width / 2.0 { hx - 12.0 - box_w } else { hx + 12.0 };
+            let bx = if hx > left + width / 2.0 {
+                hx - 12.0 - box_w
+            } else {
+                hx + 12.0
+            };
             let by = top + 4.0;
-            frame.fill_rectangle(Point::new(bx, by), Size::new(box_w, box_h), crate::theme::palette().sheet);
-            frame.stroke(&Path::rectangle(Point::new(bx, by), Size::new(box_w, box_h)), Stroke::default().with_color(crate::theme::palette().rule).with_width(1.0));
-            label(&mut frame, heading, Point::new(bx + 10.0, by + 8.0), crate::theme::palette().ink, 11.0, false);
+            frame.fill_rectangle(
+                Point::new(bx, by),
+                Size::new(box_w, box_h),
+                crate::theme::palette().sheet,
+            );
+            frame.stroke(
+                &Path::rectangle(Point::new(bx, by), Size::new(box_w, box_h)),
+                Stroke::default()
+                    .with_color(crate::theme::palette().rule)
+                    .with_width(1.0),
+            );
+            label(
+                &mut frame,
+                heading,
+                Point::new(bx + 10.0, by + 8.0),
+                crate::theme::palette().ink,
+                11.0,
+                false,
+            );
             for (k, (color, text)) in rows.into_iter().enumerate() {
                 let row_y = by + 8.0 + 16.0 * (k as f32 + 1.0);
-                frame.fill(&Path::circle(Point::new(bx + 14.0, row_y + 6.0), 3.5), color);
-                label(&mut frame, text, Point::new(bx + 24.0, row_y), crate::theme::palette().ink_2, 11.0, false);
+                frame.fill(
+                    &Path::circle(Point::new(bx + 14.0, row_y + 6.0), 3.5),
+                    color,
+                );
+                label(
+                    &mut frame,
+                    text,
+                    Point::new(bx + 24.0, row_y),
+                    crate::theme::palette().ink_2,
+                    11.0,
+                    false,
+                );
             }
         }
         vec![frame.into_geometry()]
@@ -288,10 +415,22 @@ pub struct Bars {
 impl<M> canvas::Program<M> for Bars {
     type State = ();
 
-    fn draw(&self, _state: &(), renderer: &Renderer, _theme: &Theme, bounds: Rectangle, _cursor: mouse::Cursor) -> Vec<canvas::Geometry> {
+    fn draw(
+        &self,
+        _state: &(),
+        renderer: &Renderer,
+        _theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<canvas::Geometry> {
         let mut frame = canvas::Frame::new(renderer, bounds.size());
         let (w, h) = (bounds.width, bounds.height);
-        frame.stroke(&Path::line(Point::new(0.0, h - 0.5), Point::new(w, h - 0.5)), Stroke::default().with_color(crate::theme::palette().rule).with_width(1.0));
+        frame.stroke(
+            &Path::line(Point::new(0.0, h - 0.5), Point::new(w, h - 0.5)),
+            Stroke::default()
+                .with_color(crate::theme::palette().rule)
+                .with_width(1.0),
+        );
         let n = self.values.len();
         let peak = self.values.iter().copied().fold(0.0, f64::max);
         if n > 0 && peak > 0.0 {
@@ -301,7 +440,11 @@ impl<M> canvas::Program<M> for Bars {
                 let bh = (*v / peak) as f32 * (h - 2.0);
                 if bh > 0.0 {
                     let bx = slot * i as f32 + (slot - bar) / 2.0;
-                    frame.fill_rectangle(Point::new(bx, h - bh - 1.0), Size::new(bar, bh), self.color);
+                    frame.fill_rectangle(
+                        Point::new(bx, h - bh - 1.0),
+                        Size::new(bar, bh),
+                        self.color,
+                    );
                 }
             }
         }
@@ -318,7 +461,14 @@ pub struct Sparkline {
 impl<M> canvas::Program<M> for Sparkline {
     type State = ();
 
-    fn draw(&self, _state: &(), renderer: &Renderer, _theme: &Theme, bounds: Rectangle, _cursor: mouse::Cursor) -> Vec<canvas::Geometry> {
+    fn draw(
+        &self,
+        _state: &(),
+        renderer: &Renderer,
+        _theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<canvas::Geometry> {
         let mut frame = canvas::Frame::new(renderer, bounds.size());
         let (w, h) = (bounds.width, bounds.height);
         let n = self.values.len();
@@ -326,7 +476,13 @@ impl<M> canvas::Program<M> for Sparkline {
         if n == 0 {
             return vec![frame.into_geometry()];
         }
-        let y = |v: f64| if peak > 0.0 { h - 2.0 - (v / peak) as f32 * (h - 4.0) } else { h - 2.0 };
+        let y = |v: f64| {
+            if peak > 0.0 {
+                h - 2.0 - (v / peak) as f32 * (h - 4.0)
+            } else {
+                h - 2.0
+            }
+        };
         let line = Path::new(|b| {
             for (i, v) in self.values.iter().enumerate() {
                 let p = Point::new(point_x(i, n, 0.0, w), y(*v));
@@ -345,30 +501,74 @@ impl<M> canvas::Program<M> for Sparkline {
             b.line_to(Point::new(point_x(n - 1, n, 0.0, w), h));
             b.close();
         });
-        frame.fill(&area, Color { a: 0.18, ..self.color });
-        frame.stroke(&line, Stroke::default().with_color(self.color).with_width(1.5));
+        frame.fill(
+            &area,
+            Color {
+                a: 0.18,
+                ..self.color
+            },
+        );
+        frame.stroke(
+            &line,
+            Stroke::default().with_color(self.color).with_width(1.5),
+        );
         vec![frame.into_geometry()]
     }
 }
 
 /// A stacked area of `series` over `labels`, `height` pixels tall, filling the width.
-pub fn stacked_area<'a, M: 'a>(series: Vec<Series>, labels: Vec<String>, format: fn(f64) -> String, empty: &'static str) -> Element<'a, M> {
-    iced::widget::canvas(StackedArea { series, labels, format, empty, heads: None }).width(Length::Fill).height(Length::Fixed(260.0)).into()
+pub fn stacked_area<'a, M: 'a>(
+    series: Vec<Series>,
+    labels: Vec<String>,
+    format: fn(f64) -> String,
+    empty: &'static str,
+) -> Element<'a, M> {
+    iced::widget::canvas(StackedArea {
+        series,
+        labels,
+        format,
+        empty,
+        heads: None,
+    })
+    .width(Length::Fill)
+    .height(Length::Fixed(260.0))
+    .into()
 }
 
 /// A stacked area whose tooltip heads read `heads[i]` (the x-axis keeps `labels`).
-pub fn stacked_area_with_heads<'a, M: 'a>(series: Vec<Series>, labels: Vec<String>, heads: Vec<String>, format: fn(f64) -> String, empty: &'static str) -> Element<'a, M> {
-    iced::widget::canvas(StackedArea { series, labels, format, empty, heads: Some(heads) }).width(Length::Fill).height(Length::Fixed(260.0)).into()
+pub fn stacked_area_with_heads<'a, M: 'a>(
+    series: Vec<Series>,
+    labels: Vec<String>,
+    heads: Vec<String>,
+    format: fn(f64) -> String,
+    empty: &'static str,
+) -> Element<'a, M> {
+    iced::widget::canvas(StackedArea {
+        series,
+        labels,
+        format,
+        empty,
+        heads: Some(heads),
+    })
+    .width(Length::Fill)
+    .height(Length::Fixed(260.0))
+    .into()
 }
 
 /// Bars of `values` in `color`, 56 pixels tall, filling the width.
 pub fn bars<'a, M: 'a>(values: Vec<f64>, color: Color) -> Element<'a, M> {
-    iced::widget::canvas(Bars { values, color }).width(Length::Fill).height(Length::Fixed(56.0)).into()
+    iced::widget::canvas(Bars { values, color })
+        .width(Length::Fill)
+        .height(Length::Fixed(56.0))
+        .into()
 }
 
 /// A sparkline of `values` in `color`, 36 pixels tall, filling the width.
 pub fn sparkline<'a, M: 'a>(values: Vec<f64>, color: Color) -> Element<'a, M> {
-    iced::widget::canvas(Sparkline { values, color }).width(Length::Fill).height(Length::Fixed(36.0)).into()
+    iced::widget::canvas(Sparkline { values, color })
+        .width(Length::Fill)
+        .height(Length::Fixed(36.0))
+        .into()
 }
 
 #[cfg(test)]
@@ -376,7 +576,11 @@ mod tests {
     use super::*;
 
     fn series(key: &str, values: &[f64]) -> Series {
-        Series { key: key.to_string(), color: crate::theme::palette().ink, values: values.to_vec() }
+        Series {
+            key: key.to_string(),
+            color: crate::theme::palette().ink,
+            values: values.to_vec(),
+        }
     }
 
     #[test]
@@ -403,14 +607,32 @@ mod tests {
         let from = [series("a", &[0.0, 4.0]), series("gone", &[8.0, 8.0])];
         let to = [series("a", &[10.0, 0.0]), series("new", &[2.0, 2.0])];
         let start = blend(&from, &to, 0.0);
-        assert_eq!(start.iter().find(|s| s.key == "a").unwrap().values, vec![0.0, 4.0]);
-        assert_eq!(start.iter().find(|s| s.key == "new").unwrap().values, vec![0.0, 0.0]);
+        assert_eq!(
+            start.iter().find(|s| s.key == "a").unwrap().values,
+            vec![0.0, 4.0]
+        );
+        assert_eq!(
+            start.iter().find(|s| s.key == "new").unwrap().values,
+            vec![0.0, 0.0]
+        );
         let end = blend(&from, &to, 1.0);
-        assert_eq!(end.iter().find(|s| s.key == "a").unwrap().values, vec![10.0, 0.0]);
-        assert_eq!(end.iter().find(|s| s.key == "new").unwrap().values, vec![2.0, 2.0]);
-        assert_eq!(end.iter().find(|s| s.key == "gone").unwrap().values, vec![0.0, 0.0]);
+        assert_eq!(
+            end.iter().find(|s| s.key == "a").unwrap().values,
+            vec![10.0, 0.0]
+        );
+        assert_eq!(
+            end.iter().find(|s| s.key == "new").unwrap().values,
+            vec![2.0, 2.0]
+        );
+        assert_eq!(
+            end.iter().find(|s| s.key == "gone").unwrap().values,
+            vec![0.0, 0.0]
+        );
         let mid = blend(&from, &to, 0.5);
-        assert_eq!(mid.iter().find(|s| s.key == "a").unwrap().values, vec![5.0, 2.0]);
+        assert_eq!(
+            mid.iter().find(|s| s.key == "a").unwrap().values,
+            vec![5.0, 2.0]
+        );
     }
 
     #[test]

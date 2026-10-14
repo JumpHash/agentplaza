@@ -29,20 +29,36 @@ impl Identity {
     /// The pin as bytes; Err when it is not 32 bytes of base64url.
     pub fn pin_bytes(&self) -> Result<[u8; 32], String> {
         let raw = apz_trust::unb64(&self.pin).map_err(|e| format!("pin: {e}"))?;
-        raw.try_into().map_err(|v: Vec<u8>| format!("pin: {} bytes, want 32", v.len()))
+        raw.try_into()
+            .map_err(|v: Vec<u8>| format!("pin: {} bytes, want 32", v.len()))
     }
 
     /// The hub as an apz-http target (pinned, no bearer, no extra headers).
     pub fn target(&self) -> Result<Target, String> {
-        Ok(Target { base: self.hub_url.clone(), pin: Some(self.pin_bytes()?), bearer: None, headers: Vec::new() })
+        Ok(Target {
+            base: self.hub_url.clone(),
+            pin: Some(self.pin_bytes()?),
+            bearer: None,
+            headers: Vec::new(),
+        })
     }
 
     /// [`Identity::target`] with this node's signature headers for `method path` (path with its
     /// query) and `body`.
-    pub fn signed(&self, key: &NodeKey, method: &str, path: &str, body: &[u8]) -> Result<Target, String> {
+    pub fn signed(
+        &self,
+        key: &NodeKey,
+        method: &str,
+        path: &str,
+        body: &[u8],
+    ) -> Result<Target, String> {
         let mut target = self.target()?;
         let ts = now_secs()?;
-        target.headers.extend(key.sign(&self.node_id, method, path, ts, body).into_iter().map(|(name, value)| (name.to_string(), value)));
+        target.headers.extend(
+            key.sign(&self.node_id, method, path, ts, body)
+                .into_iter()
+                .map(|(name, value)| (name.to_string(), value)),
+        );
         Ok(target)
     }
 
@@ -53,7 +69,10 @@ impl Identity {
 
     /// The same CIDs as `vsockd --cids` takes them: `A,A+1,…,B`.
     pub fn cid_list(&self) -> String {
-        (self.cid_base..self.cid_base + self.cid_count).map(|cid| cid.to_string()).collect::<Vec<_>>().join(",")
+        (self.cid_base..self.cid_base + self.cid_count)
+            .map(|cid| cid.to_string())
+            .collect::<Vec<_>>()
+            .join(",")
     }
 }
 
@@ -69,7 +88,8 @@ pub fn save(dir: &Path, identity: &Identity, key: &NodeKey) -> Result<(), String
 pub fn load(dir: &Path) -> Result<(Identity, NodeKey), String> {
     let json_path = dir.join("node.json");
     let json = fs::read(&json_path).map_err(|e| format!("{}: {e}", json_path.display()))?;
-    let identity: Identity = serde_json::from_slice(&json).map_err(|e| format!("{}: {e}", json_path.display()))?;
+    let identity: Identity =
+        serde_json::from_slice(&json).map_err(|e| format!("{}: {e}", json_path.display()))?;
     let key_path = dir.join("node.key");
     let seed = fs::read(&key_path).map_err(|e| format!("{}: {e}", key_path.display()))?;
     let key = NodeKey::from_bytes(&seed).map_err(|e| format!("{}: {e}", key_path.display()))?;
@@ -110,7 +130,10 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
 }
 
 fn now_secs() -> Result<u64, String> {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).map_err(|e| e.to_string())
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -125,7 +148,8 @@ mod tests {
     use super::*;
 
     fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("apz-link-identity-{}-{name}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("apz-link-identity-{}-{name}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         dir
     }
@@ -182,13 +206,23 @@ mod tests {
     fn signed_carries_headers_and_pin_must_be_32_bytes() {
         let identity = sample();
         let key = NodeKey::generate();
-        let target = identity.signed(&key, "POST", "/v1/ping?x=1", b"{}").unwrap();
+        let target = identity
+            .signed(&key, "POST", "/v1/ping?x=1", b"{}")
+            .unwrap();
         assert_eq!(target.base, identity.hub_url);
         assert_eq!(target.pin, Some([7u8; 32]));
         assert!(target.bearer.is_none());
         assert_eq!(target.headers.len(), 4);
-        assert!(target.headers.iter().all(|(name, _)| name.to_ascii_lowercase().starts_with("x-apz-")));
-        let short = Identity { pin: apz_trust::b64(&[7u8; 16]), ..sample() };
+        assert!(
+            target
+                .headers
+                .iter()
+                .all(|(name, _)| name.to_ascii_lowercase().starts_with("x-apz-"))
+        );
+        let short = Identity {
+            pin: apz_trust::b64(&[7u8; 16]),
+            ..sample()
+        };
         assert!(short.pin_bytes().is_err());
         assert!(short.target().is_err());
     }

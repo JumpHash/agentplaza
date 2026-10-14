@@ -149,7 +149,11 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
 
-        let closed = reply(tools::serve(&ws, "ide_term_close", &json!({ "term": term })));
+        let closed = reply(tools::serve(
+            &ws,
+            "ide_term_close",
+            &json!({ "term": term }),
+        ));
         assert_eq!(closed, json!({ "term": term, "closed": true }));
         assert!(tools::serve(&ws, "ide_term_close", &json!({ "term": term })).is_err());
     }

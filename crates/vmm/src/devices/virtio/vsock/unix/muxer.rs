@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 
+use crate::pal::{AsRawFd, RawFd};
+use apz_uds::{UnixListener, UnixStream};
 /// `VsockMuxer` is the device-facing component of the Unix domain sockets vsock backend. I.e.
 /// by implementing the `VsockBackend` trait, it abstracts away the gory details of translating
 /// between AF_VSOCK and AF_UNIX, and presents a clean interface to the rest of the vsock
@@ -33,8 +35,6 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 use std::io::Read;
-use crate::pal::{AsRawFd, RawFd};
-use apz_uds::{UnixListener, UnixStream};
 use std::path::Path;
 
 use crate::pal::epoll::{ControlOperation, Epoll, EpollEvent, EventSet};
@@ -45,9 +45,9 @@ use super::super::{VsockBackend, VsockChannel, VsockEpollListener, VsockError};
 use super::muxer_killq::MuxerKillQ;
 use super::muxer_rxq::MuxerRxQ;
 use super::{MuxerConnection, VsockUnixBackendError, defs};
+use crate::devices::virtio::vsock::metrics::IncMetric;
 use crate::devices::virtio::vsock::metrics::METRICS;
 use crate::devices::virtio::vsock::packet::{VsockPacketRx, VsockPacketTx};
-use crate::devices::virtio::vsock::metrics::IncMetric;
 
 /// A unique identifier of a `MuxerConnection` object. Connections are stored in a hash map,
 /// keyed by a `ConnMapKey` object.
@@ -181,7 +181,6 @@ impl VsockChannel for VsockMuxer {
                     });
                 }
 
-
                 return Ok(());
             }
         }
@@ -202,8 +201,6 @@ impl VsockChannel for VsockMuxer {
             peer_port: pkt.hdr.src_port(),
         };
 
-
-
         // If this packet has an unsupported type (!=stream), we must send back an RST.
         //
         if pkt.hdr.type_() != uapi::VSOCK_TYPE_STREAM {
@@ -214,7 +211,6 @@ impl VsockChannel for VsockMuxer {
         // We don't know how to handle packets addressed to other CIDs. We only handle the host
         // part of the guest - host communication here.
         if pkt.hdr.dst_cid() != uapi::VSOCK_HOST_CID {
-
             return;
         }
 
@@ -387,8 +383,6 @@ impl VsockMuxer {
 
     /// Handle/dispatch an epoll event to its listener.
     fn handle_event(&mut self, fd: RawFd, event_set: EventSet) {
-
-
         match self.listener_map.get_mut(&fd) {
             // This event needs to be forwarded to a `MuxerConnection` that is listening for
             // it.
@@ -461,7 +455,6 @@ impl VsockMuxer {
             }
 
             _ => {
-
                 METRICS.muxer_event_fails.inc();
             }
         }
@@ -530,7 +523,6 @@ impl VsockMuxer {
         self.sweep_killq();
 
         if self.conn_map.len() >= defs::MAX_CONNECTIONS {
-
             return Err(VsockUnixBackendError::TooManyConnections);
         }
 
@@ -765,7 +757,6 @@ impl VsockMuxer {
                     // If the set of events that the connection is interested in has changed,
                     // we need to update its epoll listener.
 
-
                     *evset = new_evset;
                     self.epoll
                         .ctl(
@@ -924,7 +915,10 @@ mod tests {
             "the refusal says why: {refusal}"
         );
         answer.join().expect("the probe connection is answered");
-        assert!(Path::new(&path).exists(), "the live listener's path is kept");
+        assert!(
+            Path::new(&path).exists(),
+            "the live listener's path is kept"
+        );
         let _ = std::fs::remove_file(&path);
     }
 
@@ -1035,7 +1029,9 @@ mod tests {
         muxer.send_pkt(&peer_request(LOCAL_PORT, PEER_PORT));
         assert!(muxer.conn_map.is_empty());
         let mut rx = VsockPacketRx::new().expect("an RX packet buffer");
-        muxer.recv_pkt(&mut rx).expect("the RST is pending for the guest");
+        muxer
+            .recv_pkt(&mut rx)
+            .expect("the RST is pending for the guest");
         assert_eq!(rx.hdr.op(), uapi::VSOCK_OP_RST);
         assert_eq!(rx.hdr.src_port(), LOCAL_PORT);
         assert_eq!(rx.hdr.dst_port(), PEER_PORT);
@@ -1049,7 +1045,9 @@ mod tests {
         muxer.send_pkt(&peer_request(LOCAL_PORT, PEER_PORT));
         assert_eq!(muxer.conn_map.len(), 1);
         let mut rx = VsockPacketRx::new().expect("an RX packet buffer");
-        muxer.recv_pkt(&mut rx).expect("the RESPONSE is pending for the guest");
+        muxer
+            .recv_pkt(&mut rx)
+            .expect("the RESPONSE is pending for the guest");
         assert_eq!(rx.hdr.op(), uapi::VSOCK_OP_RESPONSE);
         assert_eq!(rx.hdr.src_port(), LOCAL_PORT);
         assert_eq!(rx.hdr.dst_port(), PEER_PORT);

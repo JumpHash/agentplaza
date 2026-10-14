@@ -164,9 +164,9 @@ impl BusDevice for Pm1CntDevice {
 #[cfg(test)]
 mod tests {
     use crate::pal::eventfd::EFD_NONBLOCK;
-    use std::sync::atomic::AtomicBool;
-    use std::sync::Arc;
     use crate::pal::eventfd::EventFd;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
 
     use super::*;
 

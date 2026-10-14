@@ -149,9 +149,9 @@
 //! beyond the jailer's namespace (or a root caller's explicit target), no
 //! `Landlock`, no PID namespace — see [`jailer`] for why each is absent.
 
-mod sys;
 pub mod jailer;
 mod jailer_sys;
+mod sys;
 
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 

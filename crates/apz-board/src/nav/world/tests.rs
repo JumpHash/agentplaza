@@ -2,15 +2,27 @@
 //! and arrive, never standing on a blocked cell.
 
 use super::*;
-use crate::layout::{layout, nav_scene, AgentSpec, LayoutInput};
+use crate::layout::{AgentSpec, LayoutInput, layout, nav_scene};
 use crate::nav::NavRobotSpec;
 
 fn input(n: usize) -> LayoutInput {
     let roles = ["builder", "reviewer", "researcher", "ops"];
     let agents = (0..n)
-        .map(|i| AgentSpec { id: format!("a{i}"), role: if i == 0 { "orchestrator".into() } else { roles[i % roles.len()].into() }, seat_hint: None })
+        .map(|i| AgentSpec {
+            id: format!("a{i}"),
+            role: if i == 0 {
+                "orchestrator".into()
+            } else {
+                roles[i % roles.len()].into()
+            },
+            seat_hint: None,
+        })
         .collect();
-    LayoutInput { agents, gpus: 0, scale_cap: 3.0 }
+    LayoutInput {
+        agents,
+        gpus: 0,
+        scale_cap: 3.0,
+    }
 }
 
 /// Each robot walks from its home to the next robot's home; returns (arrived, total, unreachable events).
@@ -25,11 +37,26 @@ fn walk_rides(kind: &str, n: usize, seconds: f64) -> ((usize, usize, usize), usi
     let mut world = NavWorld::new(scene.grid);
     let homes: Vec<[f64; 2]> = lay.homes.iter().map(|h| h.at).collect();
     for (i, h) in homes.iter().enumerate() {
-        world.add(NavRobotSpec { id: i as u32, x: h[0], z: h[1], speed: 1.6, turn_rate: 6.0, priority: 1, floats: false });
+        world.add(NavRobotSpec {
+            id: i as u32,
+            x: h[0],
+            z: h[1],
+            speed: 1.6,
+            turn_rate: 6.0,
+            priority: 1,
+            floats: false,
+        });
     }
     for i in 0..homes.len() {
         let g = homes[(i + 1) % homes.len()];
-        world.set_goal(i as u32, NavGoal { x: g[0], z: g[1], face: None });
+        world.set_goal(
+            i as u32,
+            NavGoal {
+                x: g[0],
+                z: g[1],
+                face: None,
+            },
+        );
     }
     let mut unreachable = 0;
     let mut rides = 0;
@@ -45,7 +72,13 @@ fn walk_rides(kind: &str, n: usize, seconds: f64) -> ((usize, usize, usize), usi
             let p = world.pose(id);
             rides += usize::from(p.on_lift);
             if let Some(c) = world.grid().cell_at(p.x, p.z) {
-                assert_eq!(world.grid().blocked[c], 0, "{kind}: robot {id} stands on a blocked cell at ({:.2}, {:.2})", p.x, p.z);
+                assert_eq!(
+                    world.grid().blocked[c],
+                    0,
+                    "{kind}: robot {id} stands on a blocked cell at ({:.2}, {:.2})",
+                    p.x,
+                    p.z
+                );
             }
         }
     }
@@ -54,7 +87,8 @@ fn walk_rides(kind: &str, n: usize, seconds: f64) -> ((usize, usize, usize), usi
             // A goal on a desk snaps to the nearest walk cell: arrived is the path walked to its end, near the goal.
             let p = world.pose(i as u32);
             let g = homes[(i + 1) % homes.len()];
-            world.path(i as u32).is_none_or(|left| left.is_empty()) && (p.x - g[0]).hypot(p.z - g[1]) < 1.0
+            world.path(i as u32).is_none_or(|left| left.is_empty())
+                && (p.x - g[0]).hypot(p.z - g[1]) < 1.0
         })
         .count();
     ((arrived, homes.len(), unreachable), rides)
@@ -62,20 +96,42 @@ fn walk_rides(kind: &str, n: usize, seconds: f64) -> ((usize, usize, usize), usi
 
 #[test]
 fn robots_walk_between_homes_on_every_board() {
-    for kind in ["edge", "laptop", "phone", "workstation", "server", "apple-soc"] {
+    for kind in [
+        "edge",
+        "laptop",
+        "phone",
+        "workstation",
+        "server",
+        "apple-soc",
+    ] {
         let (arrived, total, unreachable) = walk(kind, 4, 120.0);
-        assert_eq!((arrived, unreachable), (total, 0), "{kind}: {arrived} of {total} arrived, {unreachable} unreachable");
+        assert_eq!(
+            (arrived, unreachable),
+            (total, 0),
+            "{kind}: {arrived} of {total} arrived, {unreachable} unreachable"
+        );
     }
 }
 
 #[test]
 fn a_crowd_of_eight_arrives_and_rides_the_lifts() {
     let mut rides = 0;
-    for kind in ["edge", "laptop", "phone", "workstation", "server", "apple-soc"] {
+    for kind in [
+        "edge",
+        "laptop",
+        "phone",
+        "workstation",
+        "server",
+        "apple-soc",
+    ] {
         let ((arrived, total, unreachable), r) = walk_rides(kind, 8, 180.0);
         eprintln!("{kind}: {arrived}/{total} arrived, {unreachable} unreachable, {r} lift steps");
         // A parked robot in a walker's way steps aside and comes back (crowd.rs step_aside): the whole crowd arrives.
-        assert_eq!((arrived, unreachable), (total, 0), "{kind}: {arrived} of {total} arrived, {unreachable} unreachable");
+        assert_eq!(
+            (arrived, unreachable),
+            (total, 0),
+            "{kind}: {arrived} of {total} arrived, {unreachable} unreachable"
+        );
         rides += r;
     }
     assert!(rides > 0, "no robot rode a lift");
@@ -85,25 +141,64 @@ fn a_crowd_of_eight_arrives_and_rides_the_lifts() {
 #[ignore = "debug"]
 fn debug_walk() {
     let kind = std::env::var("APZ_KIND").unwrap_or_else(|_| "phone".into());
-    let n: usize = std::env::var("APZ_N").ok().and_then(|v| v.parse().ok()).unwrap_or(8);
+    let n: usize = std::env::var("APZ_N")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(8);
     let lay = layout(&kind, &input(n));
     let scene = nav_scene(&lay, 0, None);
     let mut world = NavWorld::new(scene.grid);
     let homes: Vec<[f64; 2]> = lay.homes.iter().map(|h| h.at).collect();
     for (i, h) in homes.iter().enumerate() {
-        world.add(NavRobotSpec { id: i as u32, x: h[0], z: h[1], speed: 1.6, turn_rate: 6.0, priority: 1, floats: false });
+        world.add(NavRobotSpec {
+            id: i as u32,
+            x: h[0],
+            z: h[1],
+            speed: 1.6,
+            turn_rate: 6.0,
+            priority: 1,
+            floats: false,
+        });
     }
     for i in 0..homes.len() {
         let g = homes[(i + 1) % homes.len()];
-        world.set_goal(i as u32, NavGoal { x: g[0], z: g[1], face: None });
+        world.set_goal(
+            i as u32,
+            NavGoal {
+                x: g[0],
+                z: g[1],
+                face: None,
+            },
+        );
     }
-    let mut trail: std::collections::BTreeMap<u32, std::collections::VecDeque<String>> = Default::default();
+    let mut trail: std::collections::BTreeMap<u32, std::collections::VecDeque<String>> =
+        Default::default();
     for k in 0..(180 * 60) {
         world.step(1.0 / 60.0);
         if k % 20 == 0 {
             for (id, r) in &world.robots {
-                let tgt = r.path.as_ref().and_then(|p| p.get(r.next)).map(|p| format!("({:.2},{:.2},{:.2},p{},{:?})", p.x, p.z, p.y, p.portal, p.edge));
-                let line = format!("t={k} ({:.2},{:.2},{:.2}) {:?} next={} tgt={:?} stuck={:.2} v={:.2} bs={:.2} wait={} ride={} lift={} yield={}", r.x, r.z, r.body.y, r.body.mode, r.next, tgt, r.stuck_t, r.v, r.blocked_since, r.waiting, r.riding, r.lift_id, world.avoidance.get(id).is_some_and(|a| a.yielding));
+                let tgt = r.path.as_ref().and_then(|p| p.get(r.next)).map(|p| {
+                    format!(
+                        "({:.2},{:.2},{:.2},p{},{:?})",
+                        p.x, p.z, p.y, p.portal, p.edge
+                    )
+                });
+                let line = format!(
+                    "t={k} ({:.2},{:.2},{:.2}) {:?} next={} tgt={:?} stuck={:.2} v={:.2} bs={:.2} wait={} ride={} lift={} yield={}",
+                    r.x,
+                    r.z,
+                    r.body.y,
+                    r.body.mode,
+                    r.next,
+                    tgt,
+                    r.stuck_t,
+                    r.v,
+                    r.blocked_since,
+                    r.waiting,
+                    r.riding,
+                    r.lift_id,
+                    world.avoidance.get(id).is_some_and(|a| a.yielding)
+                );
                 let q = trail.entry(*id).or_default();
                 q.push_back(line);
                 if q.len() > 12 {
@@ -117,7 +212,11 @@ fn debug_walk() {
                 for l in trail.get(&id).into_iter().flatten() {
                     eprintln!("  {l}");
                 }
-                let me = world.robots.get(&id).map(|r| (r.x, r.z)).unwrap_or_default();
+                let me = world
+                    .robots
+                    .get(&id)
+                    .map(|r| (r.x, r.z))
+                    .unwrap_or_default();
                 for (oid, o) in &world.robots {
                     if *oid != id && (o.x - me.0).hypot(o.z - me.1) < 1.5 {
                         eprintln!(" NEAR r{oid}:");
@@ -127,11 +226,25 @@ fn debug_walk() {
                     }
                 }
                 for (oid, o) in &world.robots {
-                    eprintln!("  other r{oid} ({:.2},{:.2},{:.2}) {:?} goal={:?} ride={} wait={} v={:.2} path_left={:?}", o.x, o.z, o.body.y, o.body.mode, o.goal.map(|g| (g.x, g.z)), o.riding, o.waiting, o.v, o.path.as_ref().map(|p| p.len().saturating_sub(o.next)));
+                    eprintln!(
+                        "  other r{oid} ({:.2},{:.2},{:.2}) {:?} goal={:?} ride={} wait={} v={:.2} path_left={:?}",
+                        o.x,
+                        o.z,
+                        o.body.y,
+                        o.body.mode,
+                        o.goal.map(|g| (g.x, g.z)),
+                        o.riding,
+                        o.waiting,
+                        o.v,
+                        o.path.as_ref().map(|p| p.len().saturating_sub(o.next))
+                    );
                 }
                 for (lk, l) in &world.lifts {
                     let st = l.ctrl.state();
-                    eprintln!("  lift{lk} ({:.2},{:.2}) phase={:?} cab_y={:.2} calls={:?} boarding={:?} door_t={:.2}", l.def.x, l.def.z, st.phase, st.cab_y, st.calls, st.boarding, st.door_t);
+                    eprintln!(
+                        "  lift{lk} ({:.2},{:.2}) phase={:?} cab_y={:.2} calls={:?} boarding={:?} door_t={:.2}",
+                        l.def.x, l.def.z, st.phase, st.cab_y, st.calls, st.boarding, st.door_t
+                    );
                 }
             }
         }
@@ -139,7 +252,20 @@ fn debug_walk() {
             for (id, r) in &world.robots {
                 let g = homes[(*id as usize + 1) % homes.len()];
                 let st = world.avoidance.get(id);
-                eprintln!("END r{id} at ({:.2},{:.2}) goal_home ({:.2},{:.2}) d={:.2} goal={:?} path_left={:?} v={:.2} yielding={:?} saved={:?} blocker={:?}", r.x, r.z, g[0], g[1], (r.x - g[0]).hypot(r.z - g[1]), r.goal.map(|g| (g.x, g.z)), r.path.as_ref().map(|p| p.len().saturating_sub(r.next)), r.v, st.map(|a| a.yielding), st.and_then(|a| a.saved.map(|g| (g.x, g.z))), st.map(|a| a.blocker));
+                eprintln!(
+                    "END r{id} at ({:.2},{:.2}) goal_home ({:.2},{:.2}) d={:.2} goal={:?} path_left={:?} v={:.2} yielding={:?} saved={:?} blocker={:?}",
+                    r.x,
+                    r.z,
+                    g[0],
+                    g[1],
+                    (r.x - g[0]).hypot(r.z - g[1]),
+                    r.goal.map(|g| (g.x, g.z)),
+                    r.path.as_ref().map(|p| p.len().saturating_sub(r.next)),
+                    r.v,
+                    st.map(|a| a.yielding),
+                    st.and_then(|a| a.saved.map(|g| (g.x, g.z))),
+                    st.map(|a| a.blocker)
+                );
             }
         }
     }
@@ -151,27 +277,70 @@ fn debug_walk() {
 #[test]
 fn a_two_gpu_workstation_keeps_its_board_walk_and_its_lifts() {
     let roles = ["builder", "reviewer", "researcher", "ops", "qa", "planner"];
-    let agents: Vec<AgentSpec> =
-        (0..13).map(|i| AgentSpec { id: format!("a{i}"), role: if i == 0 { "orchestrator".into() } else { roles[i % roles.len()].into() }, seat_hint: None }).collect();
-    let lay = layout("workstation", &LayoutInput { agents, gpus: 2, scale_cap: 3.0 });
+    let agents: Vec<AgentSpec> = (0..13)
+        .map(|i| AgentSpec {
+            id: format!("a{i}"),
+            role: if i == 0 {
+                "orchestrator".into()
+            } else {
+                roles[i % roles.len()].into()
+            },
+            seat_hint: None,
+        })
+        .collect();
+    let lay = layout(
+        "workstation",
+        &LayoutInput {
+            agents,
+            gpus: 2,
+            scale_cap: 3.0,
+        },
+    );
     let scene = nav_scene(&lay, 2, None);
     let g = &scene.grid;
     let main = crate::navgrid::main_component(g);
-    let board_cells = (0..g.walk.len()).filter(|&c| g.walk[c] == 1 && g.component[c] == main && g.y[c] < lay.pcb_top + 0.5).count();
-    assert!(board_cells > 1000, "the PCB walk is the main component ({board_cells} board cells in it)");
-    assert!(!lay.lifts.is_empty(), "the GPU plates have lifts down to the board");
+    let board_cells = (0..g.walk.len())
+        .filter(|&c| g.walk[c] == 1 && g.component[c] == main && g.y[c] < lay.pcb_top + 0.5)
+        .count();
+    assert!(
+        board_cells > 1000,
+        "the PCB walk is the main component ({board_cells} board cells in it)"
+    );
+    assert!(
+        !lay.lifts.is_empty(),
+        "the GPU plates have lifts down to the board"
+    );
     let mut world = NavWorld::new(scene.grid.clone());
     let homes: Vec<[f64; 2]> = lay.homes.iter().map(|h| h.at).collect();
     for (i, h) in homes.iter().enumerate() {
-        world.add(NavRobotSpec { id: i as u32, x: h[0], z: h[1], speed: 1.6, turn_rate: 6.0, priority: 1, floats: false });
+        world.add(NavRobotSpec {
+            id: i as u32,
+            x: h[0],
+            z: h[1],
+            speed: 1.6,
+            turn_rate: 6.0,
+            priority: 1,
+            floats: false,
+        });
         let g = homes[(i + 5) % homes.len()];
-        world.set_goal(i as u32, NavGoal { x: g[0], z: g[1], face: None });
+        world.set_goal(
+            i as u32,
+            NavGoal {
+                x: g[0],
+                z: g[1],
+                face: None,
+            },
+        );
     }
     let mut rides = 0;
     for _ in 0..(240.0 * 60.0) as usize {
         world.step(1.0 / 60.0);
         let _ = world.take_events();
-        rides += world.robot_ids().iter().filter(|&&id| world.pose(id).on_lift).count();
+        rides += world
+            .robot_ids()
+            .iter()
+            .filter(|&&id| world.pose(id).on_lift)
+            .count();
     }
     assert!(rides > 0, "no robot rode a lift on the 2-GPU workstation");
 }

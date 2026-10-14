@@ -12,15 +12,18 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use apz_skill::{find_skills, write_zip, Entry};
-use base64::engine::general_purpose::STANDARD;
+use apz_skill::{Entry, find_skills, write_zip};
 use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use clap::Subcommand;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::cmd::models::items;
-use crate::cmd::prompts::{call, call_status, dash, get_bytes, json_reply, print_diff_lines, print_events, print_report, read_text, str_list, version_text, count_op};
-use crate::ctx::{self, confirm, Ctx};
+use crate::cmd::prompts::{
+    call, call_status, count_op, dash, get_bytes, json_reply, print_diff_lines, print_events,
+    print_report, read_text, str_list, version_text,
+};
+use crate::ctx::{self, Ctx, confirm};
 
 /// The largest file a version may hold, and the most files and bytes in all (the hub's limits).
 const MAX_FILE_BYTES: u64 = 5 * 1024 * 1024;
@@ -235,14 +238,35 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
         Cmd::List { archived } => list(ctx, archived),
         Cmd::Show { id, version } => show(ctx, &id, version),
         Cmd::File { id, version, path } => {
-            let bytes = get_bytes(ctx, &format!("{}/versions/{version}/files/{}", skill_path(&id), encode_path(&path)))?;
-            std::io::stdout().write_all(&bytes).map_err(|e| e.to_string())
+            let bytes = get_bytes(
+                ctx,
+                &format!(
+                    "{}/versions/{version}/files/{}",
+                    skill_path(&id),
+                    encode_path(&path)
+                ),
+            )?;
+            std::io::stdout()
+                .write_all(&bytes)
+                .map_err(|e| e.to_string())
         }
-        Cmd::Create { title, id, tags, bind, every, file } => {
+        Cmd::Create {
+            title,
+            id,
+            tags,
+            bind,
+            every,
+            file,
+        } => {
             let md = read_text(&file)?;
             let bindings = bindings_list(bind, every)?;
-            let made = ctx.client.post("/v1/skills", &create_body(&title, id.as_deref(), &clean_tags(&tags), &bindings, &md))?;
-            ctx.out(&made, |m| println!("created {} (v1)", ctx::s(&m["skill"], "id")));
+            let made = ctx.client.post(
+                "/v1/skills",
+                &create_body(&title, id.as_deref(), &clean_tags(&tags), &bindings, &md),
+            )?;
+            ctx.out(&made, |m| {
+                println!("created {} (v1)", ctx::s(&m["skill"], "id"))
+            });
             Ok(())
         }
         Cmd::Edit { id, title, tags } => {
@@ -255,14 +279,36 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             ctx.out(&updated, |_| println!("updated {id}"));
             Ok(())
         }
-        Cmd::Save { id, dir, note, base } => save(ctx, &id, &dir, note.as_deref(), base),
-        Cmd::Bindings { id, bind, every, clear } => {
+        Cmd::Save {
+            id,
+            dir,
+            note,
+            base,
+        } => save(ctx, &id, &dir, note.as_deref(), base),
+        Cmd::Bindings {
+            id,
+            bind,
+            every,
+            clear,
+        } => {
             if !clear && bind.is_empty() && !every {
                 return Err("give --bind, --every or --clear: the list is replaced".into());
             }
-            let list = if clear { Vec::new() } else { bindings_list(bind, every)? };
-            let updated = ctx.client.put(&format!("{}/bindings", skill_path(&id)), &bindings_body(&list))?;
-            ctx.out(&updated, |u| println!("{id} is bound to {}", bindings_text(&u["skill"]["bindings"])));
+            let list = if clear {
+                Vec::new()
+            } else {
+                bindings_list(bind, every)?
+            };
+            let updated = ctx.client.put(
+                &format!("{}/bindings", skill_path(&id)),
+                &bindings_body(&list),
+            )?;
+            ctx.out(&updated, |u| {
+                println!(
+                    "{id} is bound to {}",
+                    bindings_text(&u["skill"]["bindings"])
+                )
+            });
             Ok(())
         }
         Cmd::Publish { id, version } => {
@@ -270,7 +316,10 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                 Some(v) => v,
                 None => latest_version(ctx, &id)?,
             };
-            let reply = ctx.client.post(&format!("{}/publish", skill_path(&id)), &publish_body(version))?;
+            let reply = ctx.client.post(
+                &format!("{}/publish", skill_path(&id)),
+                &publish_body(version),
+            )?;
             ctx.out(&reply, |_| println!("published v{version} of {id}"));
             Ok(())
         }
@@ -280,7 +329,10 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             Ok(())
         }
         Cmd::Archive { id, yes } => {
-            if !confirm(yes, &format!("Archive skill {id}? It leaves the live set until it is restored."))? {
+            if !confirm(
+                yes,
+                &format!("Archive skill {id}? It leaves the live set until it is restored."),
+            )? {
                 return Err("cancelled".into());
             }
             let reply = call(ctx, "POST", &format!("{}/archive", skill_path(&id)), None)?;
@@ -302,7 +354,10 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             let folder = read_folder(&dir)?;
             note_skipped(&folder.notes);
             let files: Vec<Value> = folder.files.iter().map(check_file_json).collect();
-            let report = ctx.client.post("/v1/skills/check", &json!({ "skill_md": folder.skill_md, "files": files }))?;
+            let report = ctx.client.post(
+                "/v1/skills/check",
+                &json!({ "skill_md": folder.skill_md, "files": files }),
+            )?;
             ctx.out(&report, print_check);
             Ok(())
         }
@@ -311,7 +366,13 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             ctx.out(&rules, print_rules);
             Ok(())
         }
-        Cmd::Import { path, pick, bind, every, yes } => {
+        Cmd::Import {
+            path,
+            pick,
+            bind,
+            every,
+            yes,
+        } => {
             let (bytes, notes) = if path.is_dir() {
                 dir_zip(&path)?
             } else {
@@ -322,23 +383,46 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             let preview = post_zip(ctx, "/v1/skills/import/preview", &bytes)?;
             import_picked(ctx, &preview, &pick, bind, every, yes)
         }
-        Cmd::GithubPreview { url, pick, bind, every, yes } => {
-            let preview = ctx.client.post("/v1/skills/github/preview", &json!({ "url": url }))?;
+        Cmd::GithubPreview {
+            url,
+            pick,
+            bind,
+            every,
+            yes,
+        } => {
+            let preview = ctx
+                .client
+                .post("/v1/skills/github/preview", &json!({ "url": url }))?;
             import_picked(ctx, &preview, &pick, bind, every, yes)
         }
         Cmd::GithubCheck { id } => {
-            let r = ctx.client.post(&format!("{}/github/check", skill_path(&id)), &json!({}))?;
+            let r = ctx
+                .client
+                .post(&format!("{}/github/check", skill_path(&id)), &json!({}))?;
             ctx.out(&r, |r| {
-                let state = if r["update_available"].as_bool() == Some(true) { "a newer commit is out" } else { "up to date" };
-                println!("current {} · latest {} · {state}", short(ctx::s(r, "current")), short(ctx::s(r, "latest")));
+                let state = if r["update_available"].as_bool() == Some(true) {
+                    "a newer commit is out"
+                } else {
+                    "up to date"
+                };
+                println!(
+                    "current {} · latest {} · {state}",
+                    short(ctx::s(r, "current")),
+                    short(ctx::s(r, "latest"))
+                );
             });
             Ok(())
         }
         Cmd::GithubUpdate { id, yes } => {
-            if !confirm(yes, &format!("Import the newest commit of {id} as a new version, if its ref moved."))? {
+            if !confirm(
+                yes,
+                &format!("Import the newest commit of {id} as a new version, if its ref moved."),
+            )? {
                 return Err("cancelled".into());
             }
-            let r = ctx.client.post(&format!("{}/github/update", skill_path(&id)), &json!({}))?;
+            let r = ctx
+                .client
+                .post(&format!("{}/github/update", skill_path(&id)), &json!({}))?;
             ctx.out(&r, |r| {
                 if r["created"].as_bool() == Some(true) {
                     println!("updated {id} to {}", version_text(&r["version"]["version"]));
@@ -348,7 +432,13 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             });
             Ok(())
         }
-        Cmd::Export { id, ids, version, out, force } => export(ctx, id.as_deref(), ids.as_deref(), version, &out, force),
+        Cmd::Export {
+            id,
+            ids,
+            version,
+            out,
+            force,
+        } => export(ctx, id.as_deref(), ids.as_deref(), version, &out, force),
     }
 }
 
@@ -368,14 +458,27 @@ fn encode_path(path: &str) -> String {
 fn export_path(id: Option<&str>, ids: Option<&str>, version: u32) -> String {
     match (id, ids) {
         (Some(id), _) => format!("{}/versions/{version}/export", skill_path(id)),
-        (None, Some(ids)) => format!("/v1/skills/export?ids={}", ids.split(',').filter(|s| !s.is_empty()).map(ctx::seg).collect::<Vec<_>>().join(",")),
+        (None, Some(ids)) => format!(
+            "/v1/skills/export?ids={}",
+            ids.split(',')
+                .filter(|s| !s.is_empty())
+                .map(ctx::seg)
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
         (None, None) => String::new(),
     }
 }
 
 /// A binding the hub takes: `plaza`, or `role:<role>` with a lower-case role id.
 fn valid_binding(b: &str) -> bool {
-    b == "plaza" || b.strip_prefix("role:").is_some_and(|r| !r.is_empty() && r.len() <= 64 && r.bytes().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-'))
+    b == "plaza"
+        || b.strip_prefix("role:").is_some_and(|r| {
+            !r.is_empty()
+                && r.len() <= 64
+                && r.bytes()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
+        })
 }
 
 /// The bindings asked for: each given one, plus `plaza` for --every, checked, sorted and without repeats.
@@ -404,7 +507,10 @@ fn bindings_text(v: &Value) -> String {
 
 /// Tags without blanks, each trimmed.
 fn clean_tags(tags: &[String]) -> Vec<String> {
-    tags.iter().map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect()
+    tags.iter()
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+        .collect()
 }
 
 /// The first twelve characters of a commit id.
@@ -416,7 +522,12 @@ fn short(sha: &str) -> String {
 fn source_text(source: &Value) -> String {
     match ctx::s(source, "kind") {
         "" => "—".into(),
-        "github" => format!("github {} {} @{}", ctx::s(source, "repo"), dash(ctx::s(source, "path").to_string()), short(ctx::s(source, "commit"))),
+        "github" => format!(
+            "github {} {} @{}",
+            ctx::s(source, "repo"),
+            dash(ctx::s(source, "path").to_string()),
+            short(ctx::s(source, "commit"))
+        ),
         other => other.to_string(),
     }
 }
@@ -424,14 +535,21 @@ fn source_text(source: &Value) -> String {
 /// The newest version number of a skill, read from its detail.
 fn latest_version(ctx: &Ctx, id: &str) -> Result<u32, String> {
     let detail = ctx.client.get(&skill_path(id))?;
-    detail["skill"]["latest_version"].as_u64().map(|v| v as u32).ok_or_else(|| format!("{id}: no latest version"))
+    detail["skill"]["latest_version"]
+        .as_u64()
+        .map(|v| v as u32)
+        .ok_or_else(|| format!("{id}: no latest version"))
 }
 
 /// The version an export takes when none is given: the live one, else the latest.
 fn live_or_latest(ctx: &Ctx, id: &str) -> Result<u32, String> {
     let detail = ctx.client.get(&skill_path(id))?;
     let s = &detail["skill"];
-    s["active_version"].as_u64().or(s["latest_version"].as_u64()).map(|v| v as u32).ok_or_else(|| format!("{id}: no version"))
+    s["active_version"]
+        .as_u64()
+        .or(s["latest_version"].as_u64())
+        .map(|v| v as u32)
+        .ok_or_else(|| format!("{id}: no version"))
 }
 
 fn note_skipped(notes: &[String]) {
@@ -442,7 +560,13 @@ fn note_skipped(notes: &[String]) {
 
 // ---- Bodies -----------------------------------------------------------------------------------
 
-fn create_body(title: &str, id: Option<&str>, tags: &[String], bindings: &[String], skill_md: &str) -> Value {
+fn create_body(
+    title: &str,
+    id: Option<&str>,
+    tags: &[String],
+    bindings: &[String],
+    skill_md: &str,
+) -> Value {
     let mut out = json!({ "title": title, "tags": tags, "bindings": bindings, "skill_md": skill_md, "files": [], "note": "" });
     if let Some(id) = id {
         out["id"] = json!(id);
@@ -478,7 +602,9 @@ fn version_body(skill_md: &str, files: &[Entry], note: &str, base: u32) -> Value
 
 /// One file as the check takes it: its path, size, executable bit, and its text when it is text of a checkable size.
 fn check_file_json(f: &Entry) -> Value {
-    let text = (f.bytes.len() as u64 <= MAX_TEXT_BYTES).then(|| String::from_utf8(f.bytes.clone()).ok()).flatten();
+    let text = (f.bytes.len() as u64 <= MAX_TEXT_BYTES)
+        .then(|| String::from_utf8(f.bytes.clone()).ok())
+        .flatten();
     json!({ "path": f.path, "size": f.bytes.len(), "executable": f.executable, "text": text })
 }
 
@@ -534,10 +660,16 @@ fn skip_reason(rel: &str, size: u64) -> Option<Skip> {
 
 /// A path under `root` as `/`-separated segments. A name that is not UTF-8 is refused.
 fn relative(root: &Path, full: &Path) -> Result<String, String> {
-    let rel = full.strip_prefix(root).map_err(|_| format!("{}: outside the folder", full.display()))?;
+    let rel = full
+        .strip_prefix(root)
+        .map_err(|_| format!("{}: outside the folder", full.display()))?;
     let mut parts = Vec::new();
     for part in rel.components() {
-        parts.push(part.as_os_str().to_str().ok_or_else(|| format!("{}: a name that is not UTF-8", full.display()))?);
+        parts.push(
+            part.as_os_str()
+                .to_str()
+                .ok_or_else(|| format!("{}: a name that is not UTF-8", full.display()))?,
+        );
     }
     Ok(parts.join("/"))
 }
@@ -556,7 +688,10 @@ fn is_executable(_meta: &Metadata) -> bool {
 /// Every file under `root`, sorted by path. Hidden folders are not entered, and symbolic links are not followed
 /// (each is noted); the caller decides about the files it found.
 fn walk(root: &Path) -> Result<Walk, String> {
-    let mut out = Walk { files: Vec::new(), notes: Vec::new() };
+    let mut out = Walk {
+        files: Vec::new(),
+        notes: Vec::new(),
+    };
     let mut dirs = vec![root.to_path_buf()];
     while let Some(dir) = dirs.pop() {
         let mut entries: Vec<std::fs::DirEntry> = std::fs::read_dir(&dir)
@@ -566,7 +701,9 @@ fn walk(root: &Path) -> Result<Walk, String> {
         for entry in entries {
             let full = entry.path();
             let rel = relative(root, &full)?;
-            let kind = entry.file_type().map_err(|e| format!("{}: {e}", full.display()))?;
+            let kind = entry
+                .file_type()
+                .map_err(|e| format!("{}: {e}", full.display()))?;
             if kind.is_symlink() {
                 out.notes.push(format!("{rel}: a symbolic link"));
             } else if kind.is_dir() {
@@ -574,8 +711,15 @@ fn walk(root: &Path) -> Result<Walk, String> {
                     dirs.push(full);
                 }
             } else if kind.is_file() {
-                let meta = entry.metadata().map_err(|e| format!("{}: {e}", full.display()))?;
-                out.files.push(Found { path: rel, full, size: meta.len(), executable: is_executable(&meta) });
+                let meta = entry
+                    .metadata()
+                    .map_err(|e| format!("{}: {e}", full.display()))?;
+                out.files.push(Found {
+                    path: rel,
+                    full,
+                    size: meta.len(),
+                    executable: is_executable(&meta),
+                });
             }
         }
     }
@@ -587,7 +731,8 @@ fn walk(root: &Path) -> Result<Walk, String> {
 /// folder holds more than the hub's file count or total size.
 fn read_folder(root: &Path) -> Result<Folder, String> {
     let md_path = root.join("SKILL.md");
-    let skill_md = std::fs::read_to_string(&md_path).map_err(|e| format!("{}: {e}", md_path.display()))?;
+    let skill_md =
+        std::fs::read_to_string(&md_path).map_err(|e| format!("{}: {e}", md_path.display()))?;
     let Walk { files, mut notes } = walk(root)?;
     let mut kept = Vec::new();
     for f in files {
@@ -601,19 +746,38 @@ fn read_folder(root: &Path) -> Result<Folder, String> {
         }
     }
     if kept.len() > MAX_FILES {
-        return Err(format!("{}: a skill holds at most {MAX_FILES} files, and this folder has {}", root.display(), kept.len()));
+        return Err(format!(
+            "{}: a skill holds at most {MAX_FILES} files, and this folder has {}",
+            root.display(),
+            kept.len()
+        ));
     }
     let total: u64 = kept.iter().map(|f| f.size).sum();
     if total > MAX_TOTAL_BYTES {
-        return Err(format!("{}: a skill is at most 20 MB, and this folder is {} MB", root.display(), total / (1024 * 1024)));
+        return Err(format!(
+            "{}: a skill is at most 20 MB, and this folder is {} MB",
+            root.display(),
+            total / (1024 * 1024)
+        ));
     }
-    let files = kept.into_iter().map(|f| read_entry(&f)).collect::<Result<Vec<_>, _>>()?;
-    Ok(Folder { skill_md, files, notes })
+    let files = kept
+        .into_iter()
+        .map(|f| read_entry(&f))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(Folder {
+        skill_md,
+        files,
+        notes,
+    })
 }
 
 fn read_entry(f: &Found) -> Result<Entry, String> {
     let bytes = std::fs::read(&f.full).map_err(|e| format!("{}: {e}", f.full.display()))?;
-    Ok(Entry { path: f.path.clone(), executable: f.executable, bytes })
+    Ok(Entry {
+        path: f.path.clone(),
+        executable: f.executable,
+        bytes,
+    })
 }
 
 /// A whole folder as a zip for an import, built the way the hub reads it: the skills apz-skill finds in the folder
@@ -634,9 +798,15 @@ fn dir_zip(root: &Path) -> Result<(Vec<u8>, Vec<String>), String> {
         }
     }
     if total > MAX_UPLOAD {
-        return Err(format!("{}: the folder is larger than 100 MB", root.display()));
+        return Err(format!(
+            "{}: the folder is larger than 100 MB",
+            root.display()
+        ));
     }
-    let entries = kept.iter().map(read_entry).collect::<Result<Vec<Entry>, _>>()?;
+    let entries = kept
+        .iter()
+        .map(read_entry)
+        .collect::<Result<Vec<Entry>, _>>()?;
     let skills = find_skills(&entries, "");
     if skills.is_empty() {
         return Err(format!("no SKILL.md found under {}", root.display()));
@@ -647,7 +817,11 @@ fn dir_zip(root: &Path) -> Result<(Vec<u8>, Vec<String>), String> {
 // ---- Commands ---------------------------------------------------------------------------------
 
 fn list(ctx: &Ctx, archived: bool) -> Result<(), String> {
-    let path = if archived { "/v1/skills?archived=true" } else { "/v1/skills" };
+    let path = if archived {
+        "/v1/skills?archived=true"
+    } else {
+        "/v1/skills"
+    };
     let list = ctx.client.get(path)?;
     ctx.out(&list, |v| {
         let rows: Vec<Vec<String>> = items(&v["skills"])
@@ -663,7 +837,12 @@ fn list(ctx: &Ctx, archived: bool) -> Result<(), String> {
                 ]
             })
             .collect();
-        ctx::table(&["id", "title", "live", "latest", "score", "bindings", "source"], &rows);
+        ctx::table(
+            &[
+                "id", "title", "live", "latest", "score", "bindings", "source",
+            ],
+            &rows,
+        );
     });
     Ok(())
 }
@@ -675,7 +854,9 @@ fn show(ctx: &Ctx, id: &str, version: Option<u32>) -> Result<(), String> {
             ctx.out(&detail, print_detail);
         }
         Some(v) => {
-            let view = ctx.client.get(&format!("{}/versions/{v}", skill_path(id)))?;
+            let view = ctx
+                .client
+                .get(&format!("{}/versions/{v}", skill_path(id)))?;
             ctx.out(&view, print_version);
         }
     }
@@ -684,7 +865,11 @@ fn show(ctx: &Ctx, id: &str, version: Option<u32>) -> Result<(), String> {
 
 fn print_detail(d: &Value) {
     let s = &d["skill"];
-    let live = if s["active_version"].is_null() { "not published".to_string() } else { version_text(&s["active_version"]) };
+    let live = if s["active_version"].is_null() {
+        "not published".to_string()
+    } else {
+        version_text(&s["active_version"])
+    };
     let mut pairs = vec![
         ("id", ctx::s(s, "id").to_string()),
         ("name", dash(ctx::s(s, "name").to_string())),
@@ -718,7 +903,12 @@ fn print_detail(d: &Value) {
             ]
         })
         .collect();
-    ctx::table(&["version", "score", "errors", "warnings", "files", "author", "created", "note"], &rows);
+    ctx::table(
+        &[
+            "version", "score", "errors", "warnings", "files", "author", "created", "note",
+        ],
+        &rows,
+    );
 }
 
 fn print_version(v: &Value) {
@@ -730,7 +920,10 @@ fn print_version(v: &Value) {
         ("files", items(&v["files"]).count().to_string()),
     ]);
     if v["stale"].as_bool() == Some(true) {
-        println!("scored under older rules; today's score is {}", ctx::text(&v["recheck"], "score"));
+        println!(
+            "scored under older rules; today's score is {}",
+            ctx::text(&v["recheck"], "score")
+        );
     }
     println!();
     print_report(v);
@@ -751,12 +944,24 @@ fn print_check(r: &Value) {
 fn print_rules(r: &Value) {
     println!("rules version {}", ctx::text(r, "rules_version"));
     let rows: Vec<Vec<String>> = items(&r["rules"])
-        .map(|rule| vec![ctx::s(rule, "id").to_string(), ctx::s(rule, "severity").to_string(), ctx::s(rule, "title").to_string()])
+        .map(|rule| {
+            vec![
+                ctx::s(rule, "id").to_string(),
+                ctx::s(rule, "severity").to_string(),
+                ctx::s(rule, "title").to_string(),
+            ]
+        })
         .collect();
     ctx::table(&["rule", "severity", "title"], &rows);
 }
 
-fn save(ctx: &Ctx, id: &str, dir: &Path, note: Option<&str>, base: Option<u32>) -> Result<(), String> {
+fn save(
+    ctx: &Ctx,
+    id: &str,
+    dir: &Path,
+    note: Option<&str>,
+    base: Option<u32>,
+) -> Result<(), String> {
     let folder = read_folder(dir)?;
     note_skipped(&folder.notes);
     let base = match base {
@@ -773,25 +978,45 @@ fn save(ctx: &Ctx, id: &str, dir: &Path, note: Option<&str>, base: Option<u32>) 
     let files = folder.files.len();
     ctx.out(&reply, |r| {
         if r["created"].as_bool() == Some(true) {
-            println!("saved {} of {id} ({files} files)", version_text(&r["version"]["version"]));
+            println!(
+                "saved {} of {id} ({files} files)",
+                version_text(&r["version"]["version"])
+            );
         } else {
-            println!("no change: {} already has these files", version_text(&r["version"]["version"]));
+            println!(
+                "no change: {} already has these files",
+                version_text(&r["version"]["version"])
+            );
         }
     });
     Ok(())
 }
 
 fn diff(ctx: &Ctx, id: &str, from: u32, to: u32) -> Result<(), String> {
-    let d = ctx.client.get(&format!("{}/diff?from={from}&to={to}", skill_path(id)))?;
+    let d = ctx
+        .client
+        .get(&format!("{}/diff?from={from}&to={to}", skill_path(id)))?;
     ctx.out(&d, |d| {
-        println!("v{from} → v{to}: {} added, {} removed", count_op(&d["skill_md"], "add"), count_op(&d["skill_md"], "del"));
+        println!(
+            "v{from} → v{to}: {} added, {} removed",
+            count_op(&d["skill_md"], "add"),
+            count_op(&d["skill_md"], "del")
+        );
         print_diff_lines(&d["skill_md"]);
         println!();
         let files = &d["files"];
-        if [&files["added"], &files["removed"], &files["changed"]].iter().all(|l| items(l).next().is_none()) {
+        if [&files["added"], &files["removed"], &files["changed"]]
+            .iter()
+            .all(|l| items(l).next().is_none())
+        {
             println!("files: no change");
         } else {
-            println!("files: added {} · removed {} · changed {}", dash(str_list(&files["added"])), dash(str_list(&files["removed"])), dash(str_list(&files["changed"])));
+            println!(
+                "files: added {} · removed {} · changed {}",
+                dash(str_list(&files["added"])),
+                dash(str_list(&files["removed"])),
+                dash(str_list(&files["changed"]))
+            );
         }
     });
     Ok(())
@@ -816,7 +1041,12 @@ fn print_preview(p: &Value) {
             ]
         })
         .collect();
-    ctx::table(&["path", "name", "title", "score", "errors", "warnings", "files", "exists", "import"], &rows);
+    ctx::table(
+        &[
+            "path", "name", "title", "score", "errors", "warnings", "files", "exists", "import",
+        ],
+        &rows,
+    );
 }
 
 /// A skill in a preview is picked by default when it has no errors and no live skill of its name.
@@ -828,7 +1058,11 @@ fn importable(s: &Value) -> bool {
 fn picks_for(preview: &Value, pick: &[String]) -> Result<Vec<String>, String> {
     let found: Vec<&Value> = items(&preview["skills"]).collect();
     if pick.is_empty() {
-        let picks: Vec<String> = found.iter().filter(|s| importable(s)).map(|s| ctx::s(s, "path").to_string()).collect();
+        let picks: Vec<String> = found
+            .iter()
+            .filter(|s| importable(s))
+            .map(|s| ctx::s(s, "path").to_string())
+            .collect();
         if picks.is_empty() {
             return Err("nothing to import: every skill has an error or already exists; name the skills with --pick".into());
         }
@@ -847,16 +1081,30 @@ fn picks_for(preview: &Value, pick: &[String]) -> Result<Vec<String>, String> {
 }
 
 /// Previews are shown, the picks are confirmed, and then they are imported (all or none, as the hub commits them).
-fn import_picked(ctx: &Ctx, preview: &Value, pick: &[String], bind: Vec<String>, every: bool, yes: bool) -> Result<(), String> {
+fn import_picked(
+    ctx: &Ctx,
+    preview: &Value,
+    pick: &[String],
+    bind: Vec<String>,
+    every: bool,
+    yes: bool,
+) -> Result<(), String> {
     ctx.out(preview, print_preview);
     let picks = picks_for(preview, pick)?;
     let bindings = bindings_list(bind, every)?;
-    let bound = if bindings.is_empty() { "unbound".to_string() } else { format!("bound to {}", bindings.join(", ")) };
+    let bound = if bindings.is_empty() {
+        "unbound".to_string()
+    } else {
+        format!("bound to {}", bindings.join(", "))
+    };
     if !confirm(yes, &format!("Import {} ({bound}).", picks.join(", ")))? {
         return Err("cancelled".into());
     }
     let preview_id = ctx::s(preview, "preview_id");
-    let made = ctx.client.post("/v1/skills/import/commit", &commit_body(preview_id, &picks, &bindings))?;
+    let made = ctx.client.post(
+        "/v1/skills/import/commit",
+        &commit_body(preview_id, &picks, &bindings),
+    )?;
     ctx.out(&made, |m| {
         for s in items(&m["skills"]) {
             println!("imported {} as {}", ctx::s(s, "title"), ctx::s(s, "id"));
@@ -867,12 +1115,25 @@ fn import_picked(ctx: &Ctx, preview: &Value, pick: &[String], bind: Vec<String>,
 
 /// A zip POSTed as it is (the hub reads the bytes, not JSON), with the answer read as JSON.
 fn post_zip(ctx: &Ctx, path: &str, bytes: &[u8]) -> Result<Value, String> {
-    let reply = apz_http::client::request(&ctx.client.target, "POST", path, Some(bytes), UPLOAD_TIMEOUT)
-        .map_err(|e| format!("{} {path}: {e}", ctx.client.base()))?;
+    let reply = apz_http::client::request(
+        &ctx.client.target,
+        "POST",
+        path,
+        Some(bytes),
+        UPLOAD_TIMEOUT,
+    )
+    .map_err(|e| format!("{} {path}: {e}", ctx.client.base()))?;
     json_reply(path, &reply)
 }
 
-fn export(ctx: &Ctx, id: Option<&str>, ids: Option<&str>, version: Option<u32>, out: &Path, force: bool) -> Result<(), String> {
+fn export(
+    ctx: &Ctx,
+    id: Option<&str>,
+    ids: Option<&str>,
+    version: Option<u32>,
+    out: &Path,
+    force: bool,
+) -> Result<(), String> {
     let path = match (id, ids) {
         (Some(id), _) => {
             let v = match version {
@@ -885,13 +1146,19 @@ fn export(ctx: &Ctx, id: Option<&str>, ids: Option<&str>, version: Option<u32>, 
         (None, None) => return Err("give a skill ID, or --ids a,b".into()),
     };
     if !force && out.exists() {
-        return Err(format!("{} exists: pass --force to overwrite it", out.display()));
+        return Err(format!(
+            "{} exists: pass --force to overwrite it",
+            out.display()
+        ));
     }
     let bytes = get_bytes(ctx, &path)?;
     write_out(out, &bytes, force)?;
-    ctx.out(&json!({ "file": out.display().to_string(), "bytes": bytes.len() }), |_| {
-        println!("exported {} bytes to {}", bytes.len(), out.display());
-    });
+    ctx.out(
+        &json!({ "file": out.display().to_string(), "bytes": bytes.len() }),
+        |_| {
+            println!("exported {} bytes to {}", bytes.len(), out.display());
+        },
+    );
     Ok(())
 }
 
@@ -900,10 +1167,14 @@ pub(crate) fn write_out(out: &Path, bytes: &[u8], force: bool) -> Result<(), Str
     let opened = if force {
         std::fs::File::create(out)
     } else {
-        std::fs::OpenOptions::new().write(true).create_new(true).open(out)
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(out)
     };
     let mut file = opened.map_err(|e| format!("{}: {e}", out.display()))?;
-    file.write_all(bytes).map_err(|e| format!("{}: {e}", out.display()))
+    file.write_all(bytes)
+        .map_err(|e| format!("{}: {e}", out.display()))
 }
 
 #[cfg(test)]
@@ -926,15 +1197,37 @@ mod tests {
     }
 
     fn entry(path: &str, bytes: &[u8], executable: bool) -> Entry {
-        Entry { path: path.into(), executable, bytes: bytes.to_vec() }
+        Entry {
+            path: path.into(),
+            executable,
+            bytes: bytes.to_vec(),
+        }
     }
 
     #[test]
     fn the_commands_are_all_there() {
         let cmd = Probe::command();
         for name in [
-            "list", "show", "file", "create", "edit", "save", "bindings", "publish", "unpublish", "archive", "restore", "diff", "history",
-            "check", "rules", "import", "github-preview", "github-check", "github-update", "export",
+            "list",
+            "show",
+            "file",
+            "create",
+            "edit",
+            "save",
+            "bindings",
+            "publish",
+            "unpublish",
+            "archive",
+            "restore",
+            "diff",
+            "history",
+            "check",
+            "rules",
+            "import",
+            "github-preview",
+            "github-check",
+            "github-update",
+            "export",
         ] {
             assert!(cmd.find_subcommand(name).is_some(), "{name} is missing");
         }
@@ -944,8 +1237,23 @@ mod tests {
     fn the_required_arguments_are_checked() {
         assert!(parse(&["save", "x", "dir"]).is_ok());
         assert!(parse(&["save", "x"]).is_err(), "save takes the folder");
-        assert!(parse(&["create", "--title", "T", "--file", "SKILL.md", "--every", "--bind", "role:builder"]).is_ok());
-        assert!(parse(&["create", "--title", "T"]).is_err(), "create takes a SKILL.md");
+        assert!(
+            parse(&[
+                "create",
+                "--title",
+                "T",
+                "--file",
+                "SKILL.md",
+                "--every",
+                "--bind",
+                "role:builder"
+            ])
+            .is_ok()
+        );
+        assert!(
+            parse(&["create", "--title", "T"]).is_err(),
+            "create takes a SKILL.md"
+        );
         assert!(parse(&["file", "x", "1", "scripts/run.sh"]).is_ok());
         assert!(parse(&["diff", "x", "1"]).is_err());
     }
@@ -954,9 +1262,18 @@ mod tests {
     fn export_takes_one_skill_or_several_and_an_output() {
         assert!(parse(&["export", "x", "-o", "x.zip"]).is_ok());
         assert!(parse(&["export", "--ids", "a,b", "-o", "all.zip"]).is_ok());
-        assert!(parse(&["export", "x", "--ids", "a", "-o", "f.zip"]).is_err(), "one or the other");
-        assert!(parse(&["export", "x"]).is_err(), "an output file is required");
-        assert!(parse(&["export", "--ids", "a", "-o", "f.zip", "--version", "2"]).is_err(), "a version is for one skill");
+        assert!(
+            parse(&["export", "x", "--ids", "a", "-o", "f.zip"]).is_err(),
+            "one or the other"
+        );
+        assert!(
+            parse(&["export", "x"]).is_err(),
+            "an output file is required"
+        );
+        assert!(
+            parse(&["export", "--ids", "a", "-o", "f.zip", "--version", "2"]).is_err(),
+            "a version is for one skill"
+        );
         assert!(parse(&["export", "x", "-o", "f.zip", "--force"]).is_ok());
     }
 
@@ -969,9 +1286,18 @@ mod tests {
 
     #[test]
     fn export_paths_keep_the_commas_between_ids() {
-        assert_eq!(export_path(Some("pdf"), None, 3), "/v1/skills/pdf/versions/3/export");
-        assert_eq!(export_path(None, Some("a,b"), 0), "/v1/skills/export?ids=a,b");
-        assert_eq!(export_path(None, Some("a b,c"), 0), "/v1/skills/export?ids=a%20b,c");
+        assert_eq!(
+            export_path(Some("pdf"), None, 3),
+            "/v1/skills/pdf/versions/3/export"
+        );
+        assert_eq!(
+            export_path(None, Some("a,b"), 0),
+            "/v1/skills/export?ids=a,b"
+        );
+        assert_eq!(
+            export_path(None, Some("a b,c"), 0),
+            "/v1/skills/export?ids=a%20b,c"
+        );
     }
 
     #[test]
@@ -983,29 +1309,57 @@ mod tests {
 
     #[test]
     fn the_bindings_are_checked_and_sorted() {
-        assert_eq!(bindings_list(vec!["role:builder".into(), "plaza".into(), "role:builder".into()], false).unwrap(), ["plaza", "role:builder"]);
-        assert_eq!(bindings_list(vec!["role:builder".into()], true).unwrap(), ["plaza", "role:builder"]);
+        assert_eq!(
+            bindings_list(
+                vec!["role:builder".into(), "plaza".into(), "role:builder".into()],
+                false
+            )
+            .unwrap(),
+            ["plaza", "role:builder"]
+        );
+        assert_eq!(
+            bindings_list(vec!["role:builder".into()], true).unwrap(),
+            ["plaza", "role:builder"]
+        );
         assert!(bindings_list(vec!["everyone".into()], false).is_err());
         assert!(bindings_list(vec!["role:".into()], false).is_err());
-        assert!(bindings_list(vec!["role:Builder".into()], false).is_err(), "role ids are lower-case");
+        assert!(
+            bindings_list(vec!["role:Builder".into()], false).is_err(),
+            "role ids are lower-case"
+        );
         assert!(bindings_list(Vec::new(), false).unwrap().is_empty());
     }
 
     #[test]
     fn an_edit_changes_only_the_title_or_the_tags_given() {
         let current = json!({ "title": "Old", "tags": ["x"] });
-        assert_eq!(edit_body(&current, Some("New"), None), json!({ "title": "New", "tags": ["x"] }));
-        assert_eq!(edit_body(&current, None, Some(&["a".to_string(), " ".to_string()])), json!({ "title": "Old", "tags": ["a"] }));
+        assert_eq!(
+            edit_body(&current, Some("New"), None),
+            json!({ "title": "New", "tags": ["x"] })
+        );
+        assert_eq!(
+            edit_body(&current, None, Some(&["a".to_string(), " ".to_string()])),
+            json!({ "title": "Old", "tags": ["a"] })
+        );
     }
 
     #[test]
     fn the_create_commit_and_bindings_bodies_have_the_hubs_fields() {
-        let created = create_body("PDF forms", None, &["pdf".into()], &["plaza".into()], "# SKILL\n");
+        let created = create_body(
+            "PDF forms",
+            None,
+            &["pdf".into()],
+            &["plaza".into()],
+            "# SKILL\n",
+        );
         assert_eq!(created["title"], "PDF forms");
         assert_eq!(created["files"], json!([]));
         assert!(created.get("id").is_none());
         assert_eq!(create_body("T", Some("t"), &[], &[], "x")["id"], "t");
-        assert_eq!(commit_body("p1", &["a".into()], &["plaza".into()]), json!({ "preview_id": "p1", "picks": ["a"], "bindings": ["plaza"] }));
+        assert_eq!(
+            commit_body("p1", &["a".into()], &["plaza".into()]),
+            json!({ "preview_id": "p1", "picks": ["a"], "bindings": ["plaza"] })
+        );
         assert_eq!(bindings_body(&[]), json!({ "bindings": [] }));
         assert_eq!(publish_body(4), json!({ "version": 4 }));
     }
@@ -1036,8 +1390,15 @@ mod tests {
         assert!(is_hidden("scripts/.cache/x"));
         assert!(!is_hidden("scripts/run.sh"));
         assert_eq!(skip_reason(".env", 3), Some(Skip::Hidden));
-        assert_eq!(skip_reason("data/big.bin", MAX_FILE_BYTES + 1), Some(Skip::TooLarge));
-        assert_eq!(skip_reason("data/ok.bin", MAX_FILE_BYTES), None, "a file of exactly 5 MB is taken");
+        assert_eq!(
+            skip_reason("data/big.bin", MAX_FILE_BYTES + 1),
+            Some(Skip::TooLarge)
+        );
+        assert_eq!(
+            skip_reason("data/ok.bin", MAX_FILE_BYTES),
+            None,
+            "a file of exactly 5 MB is taken"
+        );
         assert_eq!(skip_reason("a/b.md", 10), None);
     }
 
@@ -1058,13 +1419,17 @@ mod tests {
         assert!(folder.notes.is_empty());
         let (zip, _) = dir_zip(&root).unwrap();
         assert!(zip.windows(b"sub/a.txt".len()).any(|w| w == b"sub/a.txt"));
-        assert!(!zip.windows(b".env".len()).any(|w| w == b".env"), "a hidden file is not zipped");
+        assert!(
+            !zip.windows(b".env".len()).any(|w| w == b".env"),
+            "a hidden file is not zipped"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
     fn a_folder_zipped_for_an_import_reads_back_as_its_skills() {
-        let root = std::env::temp_dir().join(format!("apz-cli-skills-roundtrip-{}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("apz-cli-skills-roundtrip-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("sub")).unwrap();
         std::fs::create_dir_all(root.join("nested")).unwrap();
@@ -1078,19 +1443,43 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(root.join("run.sh"), std::fs::Permissions::from_mode(0o755)).unwrap();
+            std::fs::set_permissions(root.join("run.sh"), std::fs::Permissions::from_mode(0o755))
+                .unwrap();
         }
         let (zip, _) = dir_zip(&root).unwrap();
         let entries = apz_skill::read_zip(&zip, apz_skill::Limits::ARCHIVE).unwrap();
         let found = find_skills(&entries, "");
-        assert_eq!(found.iter().map(|s| s.dir.as_str()).collect::<Vec<_>>(), ["", "nested"]);
+        assert_eq!(
+            found.iter().map(|s| s.dir.as_str()).collect::<Vec<_>>(),
+            ["", "nested"]
+        );
         assert_eq!(found[0].skill_md, "# root\n");
-        let mut names: Vec<(&str, &[u8], bool)> = found[0].files.iter().map(|f| (f.path.as_str(), f.bytes.as_slice(), f.executable)).collect();
+        let mut names: Vec<(&str, &[u8], bool)> = found[0]
+            .files
+            .iter()
+            .map(|f| (f.path.as_str(), f.bytes.as_slice(), f.executable))
+            .collect();
         names.sort();
-        assert_eq!(names, vec![("run.sh", b"echo hi".as_slice(), cfg!(unix)), ("sub/a.txt", b"a".as_slice(), false)]);
+        assert_eq!(
+            names,
+            vec![
+                ("run.sh", b"echo hi".as_slice(), cfg!(unix)),
+                ("sub/a.txt", b"a".as_slice(), false)
+            ]
+        );
         assert_eq!(found[1].skill_md, "# nested\n");
-        assert_eq!(found[1].files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(), ["b.txt"]);
-        assert!(!entries.iter().any(|e| e.path.starts_with(".hidden")), "a hidden folder is not zipped");
+        assert_eq!(
+            found[1]
+                .files
+                .iter()
+                .map(|f| f.path.as_str())
+                .collect::<Vec<_>>(),
+            ["b.txt"]
+        );
+        assert!(
+            !entries.iter().any(|e| e.path.starts_with(".hidden")),
+            "a hidden folder is not zipped"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -1106,7 +1495,8 @@ mod tests {
 
     #[test]
     fn an_import_of_a_folder_with_no_skill_file_is_refused_before_the_hub() {
-        let root = std::env::temp_dir().join(format!("apz-cli-skills-import-nomd-{}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("apz-cli-skills-import-nomd-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("sub")).unwrap();
         std::fs::write(root.join("notes.txt"), "x").unwrap();
@@ -1126,7 +1516,11 @@ mod tests {
         assert!(!importable(&twin));
         let preview = json!({ "skills": [fine, broken, twin] });
         assert_eq!(picks_for(&preview, &[]).unwrap(), ["a"]);
-        assert_eq!(picks_for(&preview, &["b".into()]).unwrap(), ["b"], "a named pick is taken as asked");
+        assert_eq!(
+            picks_for(&preview, &["b".into()]).unwrap(),
+            ["b"],
+            "a named pick is taken as asked"
+        );
         assert!(picks_for(&preview, &["zzz".into()]).is_err());
         assert!(picks_for(&json!({ "skills": [json!({ "path": "b", "report": { "errors": 1 }, "exists": null })] }), &[]).is_err());
     }
@@ -1134,7 +1528,12 @@ mod tests {
     #[test]
     fn the_source_of_a_skill_reads_as_its_origin() {
         assert_eq!(source_text(&json!({ "kind": "built" })), "built");
-        assert_eq!(source_text(&json!({ "kind": "github", "repo": "o/r", "path": "skills/pdf", "commit": "0123456789abcdef" })), "github o/r skills/pdf @0123456789ab");
+        assert_eq!(
+            source_text(
+                &json!({ "kind": "github", "repo": "o/r", "path": "skills/pdf", "commit": "0123456789abcdef" })
+            ),
+            "github o/r skills/pdf @0123456789ab"
+        );
         assert_eq!(source_text(&Value::Null), "—");
     }
 }

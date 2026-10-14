@@ -38,7 +38,7 @@ use std::f32::consts::PI;
 use glam::{Quat, Vec3};
 
 use super::controls::Orbit;
-use super::entry::{self, Stage, KEY, ROOM_DROP, SINK, WAVE};
+use super::entry::{self, KEY, ROOM_DROP, SINK, Stage, WAVE};
 use super::fleet::{FleetResponse, FleetScene};
 use super::hardware::{self, Model};
 use super::scene::{Camera, Color, Kind, Mat, Obj};
@@ -54,7 +54,11 @@ pub fn board_key(machine: &str, model: &str, params: &hardware::Params) -> Strin
 }
 
 /// The machine's built board: the cached one when its key is held (taken out of the cache for use), else `build`.
-pub fn take_board(cache: &mut BoardCache, key: &str, build: impl FnOnce() -> hardware::Built) -> hardware::Built {
+pub fn take_board(
+    cache: &mut BoardCache,
+    key: &str,
+    build: impl FnOnce() -> hardware::Built,
+) -> hardware::Built {
     cache.take(key).unwrap_or_else(build)
 }
 
@@ -71,7 +75,8 @@ mod board_cache_tests {
 
     #[test]
     fn entering_the_same_machine_again_reuses_its_board() {
-        let model = hardware::model("exterior/workstation").expect("the fallback exterior is embedded");
+        let model =
+            hardware::model("exterior/workstation").expect("the fallback exterior is embedded");
         let params = hardware::Params::default().with("gpus", 1.0);
         let key = board_key("m-1", "exterior/workstation", &params);
         let builds = Cell::new(0);
@@ -83,7 +88,11 @@ mod board_cache_tests {
         let first = take_board(&mut cache, &key, &build);
         release_board(&mut cache, &key, first);
         let again = take_board(&mut cache, &key, &build);
-        assert_eq!(builds.get(), 1, "the second entry takes the board from the cache");
+        assert_eq!(
+            builds.get(),
+            1,
+            "the second entry takes the board from the cache"
+        );
         release_board(&mut cache, &key, again);
     }
 }
@@ -161,7 +170,10 @@ impl Fade {
                 meshes.push((node.clone(), orig, copy));
             }
         });
-        Fade { root: root.clone(), meshes }
+        Fade {
+            root: root.clone(),
+            meshes,
+        }
     }
 
     /// Sets every owned mesh to its original at opacity `k` (0..1). Below 1 the copies draw transparent, without depth.
@@ -255,7 +267,12 @@ impl Entry {
 
     /// Seconds since the sequence began on its timeline: a handoff starts at 0, a direct load at the wave's start.
     pub fn elapsed(&self) -> f64 {
-        self.t - if self.direct { entry::DIRECT_START } else { 0.0 }
+        self.t
+            - if self.direct {
+                entry::DIRECT_START
+            } else {
+                0.0
+            }
     }
 
     /// Whether the sequence drives the camera (the orbit ignores input meanwhile).
@@ -407,14 +424,24 @@ impl Entry {
             }
         }
         if let Some(b) = p.floor.board.as_ref() {
-            b.obj.set_position(0.0, 0.0, 0.0).set_rotation(0.0, 0.0, 0.0).set_scalar(1.0).set_visible(true);
+            b.obj
+                .set_position(0.0, 0.0, 0.0)
+                .set_rotation(0.0, 0.0, 0.0)
+                .set_scalar(1.0)
+                .set_visible(true);
             if let (Some(atom), Some(s)) = (b.atom_node.as_ref(), self.atom_rest) {
                 atom.set_scale(s.x, s.y, s.z).set_visible(true);
             }
         }
-        p.floor.district_group.set_position(0.0, 0.0, 0.0).set_rotation(0.0, 0.0, 0.0).set_scalar(1.0);
+        p.floor
+            .district_group
+            .set_position(0.0, 0.0, 0.0)
+            .set_rotation(0.0, 0.0, 0.0)
+            .set_scalar(1.0);
         for (room, pos, scale) in &self.rest {
-            room.set_visible(true).set_position(pos.x, pos.y, pos.z).set_scale(scale.x, scale.y, scale.z);
+            room.set_visible(true)
+                .set_position(pos.x, pos.y, pos.z)
+                .set_scale(scale.x, scale.y, scale.z);
         }
         for bot in &p.floor.bots {
             bot.robot.group.set_visible(true).set_scalar(1.0);
@@ -432,7 +459,11 @@ impl Entry {
     fn apply(&mut self, st: &Stage, t: f64, dt: f64, rooms: usize, robots: usize, p: &mut Parts) {
         let dive = st.dive as f32;
         let from = self.handoff.as_ref().map(|h| (h.machine.clone(), h.from));
-        let board = p.floor.board.as_ref().map(|b| (b.obj.clone(), b.model, b.atom_node.clone()));
+        let board = p
+            .floor
+            .board
+            .as_ref()
+            .map(|b| (b.obj.clone(), b.model, b.atom_node.clone()));
 
         // The exterior: the fleet's update, the open part, the other machines folding and fading, the cables.
         let mut ext: Option<Exterior> = None;
@@ -505,12 +536,22 @@ impl Entry {
             let (pos, rot_y, scale) = match (ext.as_ref(), *model) {
                 (Some(e), bm) => {
                     let (pos, scale) = match_of(e, bm);
-                    (pos.lerp(Vec3::ZERO, dive), e.rot_y * (1.0 - dive), scale + (1.0 - scale) * dive)
+                    (
+                        pos.lerp(Vec3::ZERO, dive),
+                        e.rot_y * (1.0 - dive),
+                        scale + (1.0 - scale) * dive,
+                    )
                 }
                 (None, _) => (Vec3::ZERO, 0.0, 1.0),
             };
-            obj.set_position(pos.x, pos.y, pos.z).set_rotation(0.0, rot_y, 0.0).set_scalar(scale);
-            p.floor.district_group.set_position(pos.x, pos.y, pos.z).set_rotation(0.0, rot_y, 0.0).set_scalar(scale);
+            obj.set_position(pos.x, pos.y, pos.z)
+                .set_rotation(0.0, rot_y, 0.0)
+                .set_scalar(scale);
+            p.floor
+                .district_group
+                .set_position(pos.x, pos.y, pos.z)
+                .set_rotation(0.0, rot_y, 0.0)
+                .set_scalar(scale);
             obj.set_visible(st.board > 0.002);
             let skip = atom.as_ref();
             self.fade(obj, st.board as f32, skip);
@@ -524,7 +565,8 @@ impl Entry {
                     }
                 };
                 let g = (0.2 + 0.8 * st.atom) as f32;
-                atom.set_scale(base.x * g, base.y * g, base.z * g).set_visible(st.atom > 0.002);
+                atom.set_scale(base.x * g, base.y * g, base.z * g)
+                    .set_visible(st.atom > 0.002);
                 self.fade(atom, st.atom as f32, None);
             }
         }
@@ -620,12 +662,18 @@ fn attach(root: &Obj, node: &Obj, on: bool) {
 
 /// The plaza's default view: the view the Floor's reset frames, read without moving the orbit.
 fn default_pose(floor: &mut Floor, aspect: f32) -> Pose {
-    let (saved, fog) = (floor.orbit.clone(), (floor.world.fog_near, floor.world.fog_far));
+    let (saved, fog) = (
+        floor.orbit.clone(),
+        (floor.world.fog_near, floor.world.fog_far),
+    );
     floor.reset_view(aspect);
     let cam: Camera = floor.orbit.camera(aspect);
     floor.orbit = saved;
     (floor.world.fog_near, floor.world.fog_far) = fog;
-    Pose { eye: cam.eye, target: cam.target }
+    Pose {
+        eye: cam.eye,
+        target: cam.target,
+    }
 }
 
 /// The exterior model of a machine: its kind's exterior, else the workstation's (as the web falls back).
@@ -639,7 +687,10 @@ fn exterior_model(data: Option<&FleetResponse>, machine: &str) -> Option<&'stati
 fn exterior_of(fleet: &FleetScene, machine: &str, model: &Model) -> Option<Exterior> {
     let m = fleet.machines.get(machine)?;
     let world = fleet.group.local_matrix() * m.root.local_matrix();
-    let cam = model.anchors.camera.unwrap_or(hardware::Camera { at: [0.0; 3], look: [0.0; 3] });
+    let cam = model.anchors.camera.unwrap_or(hardware::Camera {
+        at: [0.0; 3],
+        look: [0.0; 3],
+    });
     let atom = model.anchors.atom.unwrap_or([0.0; 3]);
     let rot_y = m.root.get().rotation.y;
     Some(Exterior {
@@ -661,7 +712,9 @@ fn match_of(e: &Exterior, board: &Model) -> (Vec3, f32) {
 
 /// `APZ_ENTRY_T`: the timeline's pinned time, seconds.
 fn pinned_from_env() -> Option<f64> {
-    crate::env_var("APZ_ENTRY_T").and_then(|s| s.trim().parse::<f64>().ok()).filter(|t| *t >= 0.0)
+    crate::env_var("APZ_ENTRY_T")
+        .and_then(|s| s.trim().parse::<f64>().ok())
+        .filter(|t| *t >= 0.0)
 }
 
 #[cfg(test)]
@@ -674,7 +727,18 @@ mod tests {
     fn play(e: &mut Entry, floor: &mut Floor, machines: &mut Floor, until: Phase) -> Phase {
         let mut phase = Phase::Playing;
         for _ in 0..5000 {
-            phase = e.step(1.0 / 60.0, &mut Parts { floor: &mut *floor, machines: &mut *machines, fleet: None, data: None, aspect: 1.0, ambient: 0.0, ambient_dt: 0.0 });
+            phase = e.step(
+                1.0 / 60.0,
+                &mut Parts {
+                    floor: &mut *floor,
+                    machines: &mut *machines,
+                    fleet: None,
+                    data: None,
+                    aspect: 1.0,
+                    ambient: 0.0,
+                    ambient_dt: 0.0,
+                },
+            );
             if phase == until || phase == Phase::Done {
                 break;
             }
@@ -702,19 +766,43 @@ mod tests {
         let mut machines = Floor::machines();
         let mut e = Entry::direct((700.0, 3000.0));
 
-        assert_eq!(play(&mut e, &mut floor, &mut machines, Phase::Finished), Phase::Finished);
+        assert_eq!(
+            play(&mut e, &mut floor, &mut machines, Phase::Finished),
+            Phase::Finished
+        );
         assert!(floor.board.as_ref().is_some_and(|b| b.obj.get().visible));
-        assert!(floor.district_group.get().children.iter().all(|r| r.get().visible));
+        assert!(
+            floor
+                .district_group
+                .get()
+                .children
+                .iter()
+                .all(|r| r.get().visible)
+        );
         assert!(on_board(&floor) && !floor.backdrop.get().visible);
-        assert!(!floor.district_group.get().dynamic, "the finished scene is baked again");
+        assert!(
+            !floor.district_group.get().dynamic,
+            "the finished scene is baked again"
+        );
 
         e.back();
-        assert_eq!(play(&mut e, &mut floor, &mut machines, Phase::Left), Phase::Left);
-        let obj = floor.board.as_ref().expect("the board stays prebuilt").obj.clone();
+        assert_eq!(
+            play(&mut e, &mut floor, &mut machines, Phase::Left),
+            Phase::Left
+        );
+        let obj = floor
+            .board
+            .as_ref()
+            .expect("the board stays prebuilt")
+            .obj
+            .clone();
         assert_eq!(obj.get().position, Vec3::ZERO);
         assert_eq!(obj.get().scale, Vec3::ONE);
         assert!(on_board(&floor));
-        assert!(e.into_return().is_none(), "a direct load returns no camera: the Machines view refits");
+        assert!(
+            e.into_return().is_none(),
+            "a direct load returns no camera: the Machines view refits"
+        );
     }
 
     #[test]
@@ -723,20 +811,55 @@ mod tests {
         let mut machines = Floor::machines();
         let mut e = Entry::direct((700.0, 3000.0));
         for _ in 0..20 {
-            e.step(1.0 / 60.0, &mut Parts { floor: &mut floor, machines: &mut machines, fleet: None, data: None, aspect: 1.0, ambient: 0.0, ambient_dt: 0.0 });
+            e.step(
+                1.0 / 60.0,
+                &mut Parts {
+                    floor: &mut floor,
+                    machines: &mut machines,
+                    fleet: None,
+                    data: None,
+                    aspect: 1.0,
+                    ambient: 0.0,
+                    ambient_dt: 0.0,
+                },
+            );
         }
         let at = e.t;
         e.back();
-        assert_eq!(play(&mut e, &mut floor, &mut machines, Phase::Left), Phase::Left);
-        assert!(at > entry::DIRECT_START, "the back came after the wave had started");
+        assert_eq!(
+            play(&mut e, &mut floor, &mut machines, Phase::Left),
+            Phase::Left
+        );
+        assert!(
+            at > entry::DIRECT_START,
+            "the back came after the wave had started"
+        );
         assert!(on_board(&floor));
     }
 
     /// Steps a handoff with its fleet until `until`.
-    fn play_fleet(e: &mut Entry, floor: &mut Floor, machines: &mut Floor, fleet: &mut Option<FleetScene>, data: &FleetResponse, until: Phase) -> Phase {
+    fn play_fleet(
+        e: &mut Entry,
+        floor: &mut Floor,
+        machines: &mut Floor,
+        fleet: &mut Option<FleetScene>,
+        data: &FleetResponse,
+        until: Phase,
+    ) -> Phase {
         let mut phase = Phase::Playing;
         for _ in 0..5000 {
-            phase = e.step(1.0 / 60.0, &mut Parts { floor: &mut *floor, machines: &mut *machines, fleet: fleet.as_mut(), data: Some(data), aspect: 1.0, ambient: 0.0, ambient_dt: 0.0 });
+            phase = e.step(
+                1.0 / 60.0,
+                &mut Parts {
+                    floor: &mut *floor,
+                    machines: &mut *machines,
+                    fleet: fleet.as_mut(),
+                    data: Some(data),
+                    aspect: 1.0,
+                    ambient: 0.0,
+                    ambient_dt: 0.0,
+                },
+            );
             if phase == until || phase == Phase::Done {
                 break;
             }
@@ -761,26 +884,78 @@ mod tests {
 
         let handoff = Handoff {
             machine: "n0".to_string(),
-            from: Pose { eye: Vec3::new(0.0, 40.0, 60.0), target: Vec3::ZERO },
+            from: Pose {
+                eye: Vec3::new(0.0, 40.0, 60.0),
+                target: Vec3::ZERO,
+            },
             fog: (100.0, 300.0),
             back: machines.orbit.clone(),
         };
         let mut e = Entry::handoff(handoff, (700.0, 3000.0));
-        assert_eq!(play_fleet(&mut e, &mut floor, &mut machines, &mut fleet, &data, Phase::Finished), Phase::Finished);
+        assert_eq!(
+            play_fleet(
+                &mut e,
+                &mut floor,
+                &mut machines,
+                &mut fleet,
+                &data,
+                Phase::Finished
+            ),
+            Phase::Finished
+        );
         // The fleet is the plaza's now; the entered machine is gone from view (its board is there instead).
         assert!(floor.root.get().children.iter().any(|c| c == &group));
         assert!(!machines.root.get().children.iter().any(|c| c == &group));
         let hub = &fleet.as_ref().expect("the fleet").machines["n0"];
         assert!(!hub.root.get().visible);
         // Inside the machine the other machines are out of view too (the owner's report, 2026-10-14).
-        assert!(fleet.as_ref().expect("the fleet").machines.values().all(|m| !m.root.get().visible), "another machine shows inside");
-        assert!(fleet.as_ref().expect("the fleet").group.get().children.iter().all(|c| !c.get().visible), "a cable shows inside");
+        assert!(
+            fleet
+                .as_ref()
+                .expect("the fleet")
+                .machines
+                .values()
+                .all(|m| !m.root.get().visible),
+            "another machine shows inside"
+        );
+        assert!(
+            fleet
+                .as_ref()
+                .expect("the fleet")
+                .group
+                .get()
+                .children
+                .iter()
+                .all(|c| !c.get().visible),
+            "a cable shows inside"
+        );
 
         e.back();
-        assert_eq!(play_fleet(&mut e, &mut floor, &mut machines, &mut fleet, &data, Phase::Left), Phase::Left);
+        assert_eq!(
+            play_fleet(
+                &mut e,
+                &mut floor,
+                &mut machines,
+                &mut fleet,
+                &data,
+                Phase::Left
+            ),
+            Phase::Left
+        );
         assert!(machines.root.get().children.iter().any(|c| c == &group));
         assert!(!floor.root.get().children.iter().any(|c| c == &group));
-        assert!(fleet.as_ref().expect("the fleet").machines.values().all(|m| m.root.get().visible), "the machines are back");
-        assert!(e.into_return().is_some(), "a handoff returns the Machines' orbit");
+        assert!(
+            fleet
+                .as_ref()
+                .expect("the fleet")
+                .machines
+                .values()
+                .all(|m| m.root.get().visible),
+            "the machines are back"
+        );
+        assert!(
+            e.into_return().is_some(),
+            "a handoff returns the Machines' orbit"
+        );
     }
 }

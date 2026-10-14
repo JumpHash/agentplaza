@@ -28,7 +28,10 @@ pub enum Row {
 
 /// The hunk header as the diff writes it.
 pub fn hunk_header(h: &Hunk) -> String {
-    let mut s = format!("@@ -{},{} +{},{} @@", h.old_start, h.old_lines, h.new_start, h.new_lines);
+    let mut s = format!(
+        "@@ -{},{} +{},{} @@",
+        h.old_start, h.old_lines, h.new_start, h.new_lines
+    );
     if !h.header.is_empty() {
         s.push(' ');
         s.push_str(&h.header);
@@ -98,7 +101,10 @@ pub fn status_letter(status: Status) -> &'static str {
 /// The summary line of a change set: files, added and removed lines.
 pub fn summary(set: &ChangeSet) -> String {
     let stats = set.stats();
-    format!("{} files  +{}  -{}", stats.files, stats.additions, stats.deletions)
+    format!(
+        "{} files  +{}  -{}",
+        stats.files, stats.additions, stats.deletions
+    )
 }
 
 /// The Changes panel's file list: a press shows that file's diff below it.
@@ -151,16 +157,22 @@ pub fn file_block(file: &FileChange) -> Element<'static, Msg> {
     ]
     .spacing(10)
     .align_y(iced::Alignment::Center);
-    let mut block = column![container(head).padding([6, 8]).width(Length::Fill).style(|_: &Theme| container::Style {
-        background: Some(theme::palette().hover.into()),
-        border: Border {
-            color: theme::palette().rule,
-            width: 1.0,
-            radius: 0.0.into()
-        },
-        ..Default::default()
-    })]
-    .spacing(0);
+    let mut block =
+        column![
+            container(head)
+                .padding([6, 8])
+                .width(Length::Fill)
+                .style(|_: &Theme| container::Style {
+                    background: Some(theme::palette().hover.into()),
+                    border: Border {
+                        color: theme::palette().rule,
+                        width: 1.0,
+                        radius: 0.0.into()
+                    },
+                    ..Default::default()
+                })
+        ]
+        .spacing(0);
     for r in layout(file) {
         block = block.push(view_row(r));
     }
@@ -170,22 +182,42 @@ pub fn file_block(file: &FileChange) -> Element<'static, Msg> {
 fn view_row(r: Row) -> Element<'static, Msg> {
     let p = theme::palette();
     match r {
-        Row::Header(text) => container(ui::mono(text, 11.0, p.ink_2)).padding([3, 8]).width(Length::Fill).into(),
-        Row::Note(text) => container(ui::faint(text)).padding([3, 8]).width(Length::Fill).into(),
-        Row::Line { kind, old, new, text } => {
+        Row::Header(text) => container(ui::mono(text, 11.0, p.ink_2))
+            .padding([3, 8])
+            .width(Length::Fill)
+            .into(),
+        Row::Note(text) => container(ui::faint(text))
+            .padding([3, 8])
+            .width(Length::Fill)
+            .into(),
+        Row::Line {
+            kind,
+            old,
+            new,
+            text,
+        } => {
             let (tint, ink) = match kind {
                 LineKind::Add => (Some(Color { a: 0.14, ..p.ok }), p.ok),
                 LineKind::Remove => (Some(Color { a: 0.14, ..p.crit }), p.crit),
                 LineKind::Context | LineKind::NoNewline => (None, p.ink),
             };
             let number = |n: Option<u32>| {
-                container(ui::mono(n.map_or_else(String::new, |n| n.to_string()), 11.0, p.ink_3))
-                    .width(Length::Fixed(44.0))
-                    .align_x(iced::alignment::Horizontal::Right)
+                container(ui::mono(
+                    n.map_or_else(String::new, |n| n.to_string()),
+                    11.0,
+                    p.ink_3,
+                ))
+                .width(Length::Fixed(44.0))
+                .align_x(iced::alignment::Horizontal::Right)
             };
-            let content = row![number(old), number(new), ui::mono(sign(kind), 12.0, ink), ui::mono(text, 12.0, p.ink)]
-                .spacing(8)
-                .align_y(iced::Alignment::Center);
+            let content = row![
+                number(old),
+                number(new),
+                ui::mono(sign(kind), 12.0, ink),
+                ui::mono(text, 12.0, p.ink)
+            ]
+            .spacing(8)
+            .align_y(iced::Alignment::Center);
             container(content)
                 .padding([1, 8])
                 .width(Length::Fill)
@@ -289,8 +321,17 @@ index 1111111..2222222 100644
         let text = "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n\\ No newline at end of file\n+b\n";
         let set = parse_unified(text).expect("parses");
         let rows = layout(&set.files[0]);
-        let note_at = rows.iter().position(|r| matches!(r, Row::Note(_))).expect("a note");
-        assert!(matches!(rows[note_at - 1], Row::Line { kind: LineKind::Remove, .. }));
+        let note_at = rows
+            .iter()
+            .position(|r| matches!(r, Row::Note(_)))
+            .expect("a note");
+        assert!(matches!(
+            rows[note_at - 1],
+            Row::Line {
+                kind: LineKind::Remove,
+                ..
+            }
+        ));
     }
 
     #[test]

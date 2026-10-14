@@ -872,7 +872,8 @@ impl<'c> Behaviour<'c> {
             let mut best: Option<usize> = None;
             let mut best_d = f64::INFINITY;
             for (i, s) in self.spots.iter().enumerate() {
-                if !matches(&s.kind, &want) || !self.free(&s.key, b.cid) || b.avoid.contains(&s.key) {
+                if !matches(&s.kind, &want) || !self.free(&s.key, b.cid) || b.avoid.contains(&s.key)
+                {
                     continue;
                 }
                 let d = self.distance(&b.at, &spot_pos(s));
@@ -1043,7 +1044,11 @@ impl<'c> Behaviour<'c> {
                 Loc::Partner { cid, .. } => Some(*cid),
                 _ => None,
             },
-            until: if pending { f64::INFINITY } else { self.now + dur },
+            until: if pending {
+                f64::INFINITY
+            } else {
+                self.now + dur
+            },
             kind,
             category: o.category.unwrap_or_else(|| "idle".to_string()),
             min_until: self.now + act.min_s,
@@ -1084,7 +1089,10 @@ impl<'c> Behaviour<'c> {
         self.release(pid);
         // Read after the release: releasing the host can end the mover's own until (the TS does the same).
         let (until, dur) = {
-            let md = self.mems[&mover].dec.as_ref().expect("a mover has a decision");
+            let md = self.mems[&mover]
+                .dec
+                .as_ref()
+                .expect("a mover has a decision");
             (md.until, md.dur)
         };
         let cfg = self.cfg;
@@ -1761,8 +1769,7 @@ mod tests {
     use super::*;
 
     const CONFIG_JSON: &str = include_str!("../../../../assets/robots/behaviour.json");
-    const FIXTURES_JSON: &str =
-        include_str!("../../../../assets/robots/behaviour-fixtures.json");
+    const FIXTURES_JSON: &str = include_str!("../../../../assets/robots/behaviour-fixtures.json");
     const INDEX_JSON: &str = include_str!("../../../../assets/robots/index.json");
     const CLIPS_JSON: &str = include_str!("../../../../assets/robots/clips.json");
 
@@ -2568,9 +2575,15 @@ mod tests {
         let mut e = Behaviour::new(&cfg);
         let first = step(&mut e, 0.0, std::slice::from_ref(&walker)).remove(0);
         let dur = cfg.activities[first.activity.as_str()].dur.clone();
-        assert!(first.until.is_infinite(), "a walking decision holds its until");
+        assert!(
+            first.until.is_infinite(),
+            "a walking decision holds its until"
+        );
         let walking = step(&mut e, 5.0, std::slice::from_ref(&walker)).remove(0);
-        assert!(walking.until.is_infinite(), "no arrival yet, so no duration");
+        assert!(
+            walking.until.is_infinite(),
+            "no arrival yet, so no duration"
+        );
         let arrived = BotIn {
             arrived: Some(true),
             ..walker.clone()
@@ -2579,7 +2592,10 @@ mod tests {
         assert_eq!(done.activity, first.activity, "the same decision stays");
         assert!(!done.changed, "arrival does not decide again");
         let span = done.until - 6.0;
-        assert!(span >= dur[0] - 1e-9 && span <= dur[1] + 1e-9, "duration starts at arrival: {span}");
+        assert!(
+            span >= dur[0] - 1e-9 && span <= dur[1] + 1e-9,
+            "duration starts at arrival: {span}"
+        );
     }
 
     #[test]
@@ -2593,10 +2609,16 @@ mod tests {
         let first = step(&mut e, 0.0, std::slice::from_ref(&walker)).remove(0);
         let dur = cfg.activities[first.activity.as_str()].dur.clone();
         let early = step(&mut e, 11.5, std::slice::from_ref(&walker)).remove(0);
-        assert!(early.until.is_infinite(), "before the cap the until is held");
+        assert!(
+            early.until.is_infinite(),
+            "before the cap the until is held"
+        );
         let capped = step(&mut e, 12.0, std::slice::from_ref(&walker)).remove(0);
         let span = capped.until - 12.0;
-        assert!(capped.until.is_finite() && span >= dur[0] - 1e-9 && span <= dur[1] + 1e-9, "the cap starts it: {span}");
+        assert!(
+            capped.until.is_finite() && span >= dur[0] - 1e-9 && span <= dur[1] + 1e-9,
+            "the cap starts it: {span}"
+        );
     }
 
     #[test]
@@ -2620,7 +2642,10 @@ mod tests {
                 let dz = -9.0 - g.z;
                 if (dx * dx + dz * dz).sqrt() > 0.6 {
                     far += 1;
-                    assert!(d.until.is_infinite(), "cid {cid}: a new far goal waits for arrival");
+                    assert!(
+                        d.until.is_infinite(),
+                        "cid {cid}: a new far goal waits for arrival"
+                    );
                 }
             }
         }
@@ -2645,7 +2670,11 @@ mod tests {
             };
             let d1 = step(&mut e, 0.5, std::slice::from_ref(&b1)).remove(0);
             assert!(d1.changed, "cid {cid}: the held spot is decided again");
-            assert_ne!(d1.spot.as_deref(), Some(key.as_str()), "cid {cid}: the spot is not picked again");
+            assert_ne!(
+                d1.spot.as_deref(),
+                Some(key.as_str()),
+                "cid {cid}: the spot is not picked again"
+            );
         }
         assert!(checked > 0, "some decisions hold a spot");
     }

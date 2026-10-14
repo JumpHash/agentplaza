@@ -27,11 +27,11 @@ use vmm_sys_util::eventfd::EventFd;
 
 // Upstream re-exports the arch-specific `KvmVm` through `crate::arch`; select
 // the current arch's module here.
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-pub use crate::arch::x86_64::vm::{KvmVm, KvmVmError};
 #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
 pub use crate::arch::aarch64::vm::{KvmVm, KvmVmError};
-use crate::vstate::bus::{lock, Bus};
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+pub use crate::arch::x86_64::vm::{KvmVm, KvmVmError};
+use crate::vstate::bus::{Bus, lock};
 use crate::vstate::kvm::Kvm;
 use crate::vstate::memory::{GuestMemoryMmap, GuestRegionMmap, GuestRegionMmapExt, MemoryError};
 use crate::vstate::resources::ResourceAllocator;
@@ -382,4 +382,3 @@ impl KvmVm {
         Ok(())
     }
 }
-

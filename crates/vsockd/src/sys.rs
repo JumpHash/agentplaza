@@ -154,7 +154,10 @@ pub fn host_uptime() -> io::Result<String> {
 
     // SAFETY: no arguments; reads the system tick count.
     let up_ms = unsafe { GetTickCount64() };
-    let mut idle = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
+    let mut idle = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
     let mut kernel = idle;
     let mut user = idle;
     // SAFETY: the three out-parameters are valid, writable FILETIMEs.

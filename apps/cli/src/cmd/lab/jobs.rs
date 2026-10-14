@@ -8,7 +8,7 @@ use serde_json::Value;
 
 use super::{amount, job_path, refusal};
 use crate::cmd::models::{items, joined, none_if_empty};
-use crate::ctx::{self, confirm, Ctx};
+use crate::ctx::{self, Ctx, confirm};
 
 const STATUSES: [&str; 5] = ["queued", "running", "done", "failed", "cancelled"];
 const MODES: [&str; 3] = ["single", "tight", "loose"];
@@ -67,7 +67,11 @@ pub enum Cmd {
 
 pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
     match cmd {
-        Cmd::List { status, recipe, mode } => list(ctx, status.as_deref(), recipe.as_deref(), mode.as_deref()),
+        Cmd::List {
+            status,
+            recipe,
+            mode,
+        } => list(ctx, status.as_deref(), recipe.as_deref(), mode.as_deref()),
         Cmd::Show { id } => {
             let job = ctx.client.get(&job_path(&id))?;
             ctx.out(&job, print_job);
@@ -91,13 +95,25 @@ pub fn keep(job: &Value, status: Option<&str>, recipe: Option<&str>, mode: Optio
         let got = ctx::s(job, "recipe");
         got == want || got.split_once('@').map_or(got, |(name, _)| name) == want
     });
-    status.is_none_or(|s| ctx::s(job, "status") == s) && mode.is_none_or(|m| ctx::s(job, "mode") == m) && recipe_ok
+    status.is_none_or(|s| ctx::s(job, "status") == s)
+        && mode.is_none_or(|m| ctx::s(job, "mode") == m)
+        && recipe_ok
 }
 
 /// The job list, filtered here: the hub's list takes no filters.
-fn list(ctx: &Ctx, status: Option<&str>, recipe: Option<&str>, mode: Option<&str>) -> Result<(), String> {
+fn list(
+    ctx: &Ctx,
+    status: Option<&str>,
+    recipe: Option<&str>,
+    mode: Option<&str>,
+) -> Result<(), String> {
     let all = ctx.client.get("/v1/foundry/jobs")?;
-    let kept = Value::Array(items(&all).filter(|j| keep(j, status, recipe, mode)).cloned().collect());
+    let kept = Value::Array(
+        items(&all)
+            .filter(|j| keep(j, status, recipe, mode))
+            .cloned()
+            .collect(),
+    );
     ctx.out(&kept, |v| {
         let rows: Vec<Vec<String>> = items(v)
             .map(|j| {
@@ -113,7 +129,12 @@ fn list(ctx: &Ctx, status: Option<&str>, recipe: Option<&str>, mode: Option<&str
                 ]
             })
             .collect();
-        ctx::table(&["job", "status", "mode", "recipe", "gpu-h", "budget", "runs", "created"], &rows);
+        ctx::table(
+            &[
+                "job", "status", "mode", "recipe", "gpu-h", "budget", "runs", "created",
+            ],
+            &rows,
+        );
     });
     Ok(())
 }
@@ -130,7 +151,9 @@ fn events(ctx: &Ctx, id: &str, after: u64, follow: bool) -> Result<(), String> {
     let path = job_path(id);
     if !follow {
         let page = ctx.client.get(&format!("{path}/events?after={after}"))?;
-        ctx.out(&page, |p| items(&p["events"]).for_each(|e| println!("{}", event_line(e))));
+        ctx.out(&page, |p| {
+            items(&p["events"]).for_each(|e| println!("{}", event_line(e)))
+        });
         return Ok(());
     }
     let mut cursor = after;
@@ -179,7 +202,14 @@ pub fn event_line(e: &Value) -> String {
         }
         other => other.to_string(),
     };
-    format!("{:>6}  {:<20} {:<10} {:<12} {}", ctx::text(e, "seq"), name, ctx::s(e, "island"), ctx::s(e, "node"), details)
+    format!(
+        "{:>6}  {:<20} {:<10} {:<12} {}",
+        ctx::text(e, "seq"),
+        name,
+        ctx::s(e, "island"),
+        ctx::s(e, "node"),
+        details
+    )
 }
 
 /// Submits the job. A 2xx answer is the job; a refusal is its `error`. A 422 that carries the job means
@@ -187,16 +217,27 @@ pub fn event_line(e: &Value) -> String {
 fn submit(ctx: &Ctx, file: &str) -> Result<(), String> {
     let doc = read_job(file)?;
     let path = "/v1/foundry/jobs";
-    let (status, body) = apz_http::client::request_json(&ctx.client.target, "POST", path, Some(&doc), ctx.client.timeout)
-        .map_err(|e| format!("{} {path}: {e}", ctx.client.base()))?;
+    let (status, body) = apz_http::client::request_json(
+        &ctx.client.target,
+        "POST",
+        path,
+        Some(&doc),
+        ctx.client.timeout,
+    )
+    .map_err(|e| format!("{} {path}: {e}", ctx.client.base()))?;
     if (200..300).contains(&status) {
-        ctx.out(&body, |j| println!("job {} is {}", ctx::s(j, "id"), ctx::s(j, "status")));
+        ctx.out(&body, |j| {
+            println!("job {} is {}", ctx::s(j, "id"), ctx::s(j, "status"))
+        });
         return Ok(());
     }
     ctx.out(&body, |_| {});
     let reason = refusal(&body, path, status);
     match body.get("job") {
-        Some(job) => Err(format!("job {} was recorded but did not dispatch: {reason}", ctx::s(job, "id"))),
+        Some(job) => Err(format!(
+            "job {} was recorded but did not dispatch: {reason}",
+            ctx::s(job, "id")
+        )),
         None => Err(reason),
     }
 }
@@ -205,8 +246,12 @@ fn cancel(ctx: &Ctx, id: &str, yes: bool) -> Result<(), String> {
     if !confirm(yes, &format!("Cancel job {id}."))? {
         return Err("cancelled".into());
     }
-    let job = ctx.client.call("POST", &format!("{}/cancel", job_path(id)), None)?;
-    ctx.out(&job, |j| println!("job {} is {}", ctx::s(j, "id"), ctx::s(j, "status")));
+    let job = ctx
+        .client
+        .call("POST", &format!("{}/cancel", job_path(id)), None)?;
+    ctx.out(&job, |j| {
+        println!("job {} is {}", ctx::s(j, "id"), ctx::s(j, "status"))
+    });
     Ok(())
 }
 
@@ -225,7 +270,12 @@ fn print_plan(p: &Value) {
     let rows: Vec<Vec<String>> = items(&p["islands"])
         .map(|i| {
             let machines: Vec<&str> = items(&i["machines"]).map(|m| ctx::s(m, "id")).collect();
-            vec![ctx::s(i, "id").to_string(), ctx::s(i, "backend").to_string(), ctx::s(i, "leader").to_string(), machines.join(", ")]
+            vec![
+                ctx::s(i, "id").to_string(),
+                ctx::s(i, "backend").to_string(),
+                ctx::s(i, "leader").to_string(),
+                machines.join(", "),
+            ]
         })
         .collect();
     ctx::table(&["island", "backend", "leader", "machines"], &rows);
@@ -239,7 +289,14 @@ fn print_job(j: &Value) {
         ("mode", ctx::s(j, "mode").to_string()),
         ("recipe", ctx::s(j, "recipe").to_string()),
         ("datasets", none_if_empty(joined(j.get("datasets")))),
-        ("gpu-h", format!("{} of {} budget", amount(&j["gpu_hours"]), amount(&j["budget_gpu_hours"]))),
+        (
+            "gpu-h",
+            format!(
+                "{} of {} budget",
+                amount(&j["gpu_hours"]),
+                amount(&j["budget_gpu_hours"])
+            ),
+        ),
         ("created", ctx::when(&j["created_ms"])),
         ("updated", ctx::when(&j["updated_ms"])),
         ("error", none_if_empty(ctx::text(j, "error"))),
@@ -250,7 +307,10 @@ fn print_job(j: &Value) {
             vec![
                 ctx::s(r, "node").to_string(),
                 ctx::s(r, "island").to_string(),
-                items(&r["devices"]).map(|d| d.to_string()).collect::<Vec<_>>().join(","),
+                items(&r["devices"])
+                    .map(|d| d.to_string())
+                    .collect::<Vec<_>>()
+                    .join(","),
                 ctx::s(r, "state").to_string(),
                 ctx::text(r, "exit_code"),
                 amount(&r["gpu_hours"]),
@@ -259,7 +319,12 @@ fn print_job(j: &Value) {
         })
         .collect();
     println!();
-    ctx::table(&["node", "island", "devices", "state", "exit", "gpu-h", "started"], &rows);
+    ctx::table(
+        &[
+            "node", "island", "devices", "state", "exit", "gpu-h", "started",
+        ],
+        &rows,
+    );
 }
 
 #[cfg(test)]
@@ -280,9 +345,15 @@ mod tests {
         assert!(keep(&j, None, None, Some("tight")));
         assert!(!keep(&j, None, None, Some("loose")));
         assert!(keep(&j, None, Some("cls@1.2"), None), "an exact recipe");
-        assert!(keep(&j, None, Some("cls"), None), "the name alone matches any version");
+        assert!(
+            keep(&j, None, Some("cls"), None),
+            "the name alone matches any version"
+        );
         assert!(!keep(&j, None, Some("cls@1.3"), None));
-        assert!(!keep(&j, None, Some("c"), None), "a name prefix is not the name");
+        assert!(
+            !keep(&j, None, Some("c"), None),
+            "a name prefix is not the name"
+        );
     }
 
     #[test]

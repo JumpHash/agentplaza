@@ -50,7 +50,6 @@ pub const DEFAULT_KERNEL: &str = "/boot/vmlinuz-linux";
 /// directory.
 pub const DEFAULT_INITRD: &str = "target/guest/initrd.x86_64.gz";
 
-
 /// The Unix socket directory of the per-VM vsock sockets (VM `i`'s muxer binds `{dir}/vm{cid}`). The
 /// config default is `apz_os::dirs::vsock_sockets()`, which is this on Linux and macOS and differs on Windows.
 pub const DEFAULT_UDS_DIR: &str = "/tmp/plaza-vsock";
@@ -176,7 +175,11 @@ impl Node {
         }
         // A workstation VM's vsock sockets live with the agents' (`--uds-dir`), under its own CID range.
         guest.vsock_dir = config.uds_dir.clone();
-        let images = VmImages { kernel: config.kernel, initrd: config.initrd, workspace: config.workspace };
+        let images = VmImages {
+            kernel: config.kernel,
+            initrd: config.initrd,
+            workspace: config.workspace,
+        };
         Self {
             registry: Registry::new(images, config.uds_dir, events::EventBus::new())
                 .with_persist_dir(config.persist_dir)
@@ -204,7 +207,10 @@ impl Node {
             apple: self.probed.apple.clone(),
             cpu: self.probed.cpu.clone(),
             gpus: host_gpus(),
-            accelerators: accelerators_now(&self.probed.facts.accelerators, &train::busy_devices(self.probed.facts.docker_host.as_deref())),
+            accelerators: accelerators_now(
+                &self.probed.facts.accelerators,
+                &train::busy_devices(self.probed.facts.docker_host.as_deref()),
+            ),
             trainer: self.probed.facts.trainer.clone(),
             fabric: cached_fabric(&self.fabric, Instant::now(), probe_fabric),
             cpus: host_cpus(),
@@ -228,7 +234,9 @@ impl Node {
 fn epoch_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |since| u64::try_from(since.as_millis()).unwrap_or(u64::MAX))
+        .map_or(0, |since| {
+            u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
+        })
 }
 
 /// The host's hostname (`/proc/sys/kernel/hostname`; `unknown` off Linux or
@@ -289,7 +297,9 @@ fn host_cpus() -> u32 {
 /// The host's total memory, in MiB (`MemTotal` from `/proc/meminfo`; `hw.memsize` on macOS).
 fn host_memory_mib() -> u64 {
     if cfg!(target_os = "macos") {
-        return sysctl("hw.memsize").and_then(|n| parse_bytes(&n)).map_or(0, |bytes| bytes / MIB);
+        return sysctl("hw.memsize")
+            .and_then(|n| parse_bytes(&n))
+            .map_or(0, |bytes| bytes / MIB);
     }
     let Ok(info) = std::fs::read_to_string("/proc/meminfo") else {
         return 0;
@@ -307,7 +317,6 @@ fn host_memory_mib() -> u64 {
     }
     0
 }
-
 
 /// A GPU the host has, read from sysfs and the NVIDIA driver's proc files
 /// (no driver process needed).
@@ -333,7 +342,10 @@ fn gpu_vendor(id: &str) -> Option<&'static str> {
 /// The host's GPUs: `/sys/class/drm` cards and the NVIDIA driver's GPU
 /// directories.
 pub fn host_gpus() -> Vec<Gpu> {
-    gpus_in(Path::new("/sys/class/drm"), Path::new("/proc/driver/nvidia/gpus"))
+    gpus_in(
+        Path::new("/sys/class/drm"),
+        Path::new("/proc/driver/nvidia/gpus"),
+    )
 }
 
 /// The GPUs under a DRM class directory. Connector entries (`card0-HDMI-A-1`)
@@ -347,7 +359,9 @@ fn gpus_in(drm: &Path, nvidia: &Path) -> Vec<Gpu> {
         .map(|entry| entry.path())
         .filter(|path| {
             path.file_name().and_then(|n| n.to_str()).is_some_and(|n| {
-                n.strip_prefix("card").is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()))
+                n.strip_prefix("card").is_some_and(|rest| {
+                    !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit())
+                })
             })
         })
         .collect();
@@ -365,13 +379,21 @@ fn gpus_in(drm: &Path, nvidia: &Path) -> Vec<Gpu> {
         };
         let Some(pci_id) = std::fs::read_to_string(device.join("uevent"))
             .ok()
-            .and_then(|uevent| uevent.lines().find_map(|line| line.strip_prefix("PCI_ID=")).map(str::to_string))
+            .and_then(|uevent| {
+                uevent
+                    .lines()
+                    .find_map(|line| line.strip_prefix("PCI_ID="))
+                    .map(str::to_string)
+            })
         else {
             continue;
         };
         let name = if vendor == "NVIDIA" {
             nvidia_seen += 1;
-            models.get(nvidia_seen - 1).cloned().unwrap_or_else(|| format!("{vendor} GPU {pci_id}"))
+            models
+                .get(nvidia_seen - 1)
+                .cloned()
+                .unwrap_or_else(|| format!("{vendor} GPU {pci_id}"))
         } else {
             format!("{vendor} GPU {pci_id}")
         };
@@ -380,19 +402,30 @@ fn gpus_in(drm: &Path, nvidia: &Path) -> Vec<Gpu> {
             .flatten()
             .and_then(|bytes| bytes.trim().parse::<u64>().ok())
             .map(|bytes| bytes / (1024 * 1024));
-        gpus.push(Gpu { vendor: vendor.to_string(), name, memory_mib });
+        gpus.push(Gpu {
+            vendor: vendor.to_string(),
+            name,
+            memory_mib,
+        });
     }
     gpus
 }
 
 /// The `Model:` line of each NVIDIA driver GPU directory, in directory order.
 fn nvidia_models(dir: &Path) -> Vec<String> {
-    let mut dirs: Vec<PathBuf> = std::fs::read_dir(dir).into_iter().flatten().flatten().map(|entry| entry.path()).collect();
+    let mut dirs: Vec<PathBuf> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .collect();
     dirs.sort();
     dirs.iter()
         .filter_map(|gpu| {
             let info = std::fs::read_to_string(gpu.join("information")).ok()?;
-            info.lines().find_map(|line| line.strip_prefix("Model:")).map(|model| model.trim().to_string())
+            info.lines()
+                .find_map(|line| line.strip_prefix("Model:"))
+                .map(|model| model.trim().to_string())
         })
         .collect()
 }
@@ -477,13 +510,18 @@ fn probe_host(state_dir: &Path) -> Probed {
         };
     }
     // Windows reads its system, enclosure and battery facts in one PowerShell call.
-    let windows = cfg!(target_os = "windows").then(|| parse_windows_system(&powershell(WINDOWS_SYSTEM).unwrap_or_default()));
-    let sbc = matches!(machine_class(), "pi4" | "pi5") || tree.as_deref().is_some_and(|model| model.contains("Raspberry Pi"));
+    let windows = cfg!(target_os = "windows")
+        .then(|| parse_windows_system(&powershell(WINDOWS_SYSTEM).unwrap_or_default()));
+    let sbc = matches!(machine_class(), "pi4" | "pi5")
+        || tree
+            .as_deref()
+            .is_some_and(|model| model.contains("Raspberry Pi"));
     let chassis = match &windows {
         Some(system) => system.chassis,
         None => chassis_type(),
     };
-    let battery = windows.as_ref().is_some_and(|system| system.battery) || has_battery(Path::new(POWER_SUPPLY_DIR));
+    let battery = windows.as_ref().is_some_and(|system| system.battery)
+        || has_battery(Path::new(POWER_SUPPLY_DIR));
     let kind = kind_of(cfg!(target_os = "android"), sbc, chassis, battery);
     let (vendor, model, memory_mib) = match windows {
         Some(system) => (system.vendor, system.model, system.memory_mib),
@@ -519,9 +557,12 @@ fn probe_mac() -> (&'static str, Option<String>, Option<String>, Option<Apple>) 
     let apple = chip.map(|chip| Apple {
         p_cores: sysctl("hw.perflevel0.physicalcpu").and_then(|n| parse_count(&n)),
         e_cores: sysctl("hw.perflevel1.physicalcpu").and_then(|n| parse_count(&n)),
-        gpu_cores: command_stdout("system_profiler", &["SPDisplaysDataType"]).and_then(|text| parse_gpu_cores(&text)),
+        gpu_cores: command_stdout("system_profiler", &["SPDisplaysDataType"])
+            .and_then(|text| parse_gpu_cores(&text)),
         neural_cores: neural_cores(&chip),
-        unified_memory_gib: sysctl("hw.memsize").and_then(|n| parse_bytes(&n)).map(|bytes| bytes / GIB),
+        unified_memory_gib: sysctl("hw.memsize")
+            .and_then(|n| parse_bytes(&n))
+            .map(|bytes| bytes / GIB),
         chip,
     });
     (kind, Some("apple".to_string()), model, apple)
@@ -531,16 +572,22 @@ fn probe_mac() -> (&'static str, Option<String>, Option<String>, Option<Apple>) 
 /// device's properties, an arm board's device-tree model, or a PC's DMI strings.
 fn host_maker(tree: Option<&str>) -> (Option<String>, Option<String>) {
     if cfg!(target_os = "android") {
-        let manufacturer = command_stdout("getprop", &["ro.product.manufacturer"]).unwrap_or_default();
+        let manufacturer =
+            command_stdout("getprop", &["ro.product.manufacturer"]).unwrap_or_default();
         let model = command_stdout("getprop", &["ro.product.model"]).unwrap_or_default();
         return maker_pair(&manufacturer, &model);
     }
     if let Some(model) = tree {
         return (normalize_vendor(model), clean_model(model));
     }
-    let read = |file: &str| std::fs::read_to_string(format!("{DMI_DIR}/{file}")).unwrap_or_default();
+    let read =
+        |file: &str| std::fs::read_to_string(format!("{DMI_DIR}/{file}")).unwrap_or_default();
     let vendor = normalize_vendor(&read("sys_vendor"));
-    let model = dmi_model(vendor.as_deref(), &read("product_name"), &read("product_version"));
+    let model = dmi_model(
+        vendor.as_deref(),
+        &read("product_name"),
+        &read("product_version"),
+    );
     (vendor, model)
 }
 
@@ -568,7 +615,13 @@ fn parse_windows_system(text: &str) -> WindowsSystem {
     let chassis = parse_chassis(next());
     let battery = parse_count(next()).is_some_and(|batteries| batteries > 0);
     let (vendor, model) = maker_pair(next(), next());
-    WindowsSystem { vendor, model, memory_mib: memory, chassis, battery }
+    WindowsSystem {
+        vendor,
+        model,
+        memory_mib: memory,
+        chassis,
+        battery,
+    }
 }
 
 /// The model of a PC from its DMI strings. Lenovo's `product_name` is a machine code and its
@@ -612,7 +665,11 @@ fn normalize_vendor(raw: &str) -> Option<String> {
         return None;
     }
     let first = raw.split_whitespace().next()?;
-    let key: String = first.chars().filter(char::is_ascii_alphanumeric).collect::<String>().to_ascii_lowercase();
+    let key: String = first
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .collect::<String>()
+        .to_ascii_lowercase();
     let name = match key.as_str() {
         "asustek" => "asus",
         "microstar" => "msi",
@@ -631,7 +688,8 @@ fn clean_model(raw: &str) -> Option<String> {
 
 /// The model name of a Mac from `system_profiler SPHardwareDataType` (`Model Name: MacBook Pro`).
 fn parse_model_name(text: &str) -> Option<String> {
-    text.lines().find_map(|line| clean_model(line.trim().strip_prefix("Model Name:")?))
+    text.lines()
+        .find_map(|line| clean_model(line.trim().strip_prefix("Model Name:")?))
 }
 
 /// A Mac's marketing model with its chip: `MacBook Pro (M3 Max)`, `Mac Studio (M2 Ultra)`.
@@ -645,16 +703,13 @@ fn apple_model(name: &str, chip: Option<&str>) -> String {
 /// The Neural Engine's core count of an Apple Silicon chip: 16 on every chip so far, 32 on the
 /// "Ultra" chips, which fuse two dies (an assumption about the chips, not a probed value).
 fn neural_cores(chip: &str) -> u32 {
-    if chip.contains("Ultra") {
-        32
-    } else {
-        16
-    }
+    if chip.contains("Ultra") { 32 } else { 16 }
 }
 
 /// The GPU core count from `system_profiler SPDisplaysDataType` (`Total Number of Cores: 40`).
 fn parse_gpu_cores(text: &str) -> Option<u32> {
-    text.lines().find_map(|line| parse_count(line.trim().strip_prefix("Total Number of Cores:")?))
+    text.lines()
+        .find_map(|line| parse_count(line.trim().strip_prefix("Total Number of Cores:")?))
 }
 
 /// A count from a command's output or a sysctl value (`12`).
@@ -736,7 +791,10 @@ fn device_tree_model() -> Option<String> {
 
 /// The device-tree `model` property: text ending in a NUL byte.
 fn parse_device_tree_model(bytes: &[u8]) -> Option<String> {
-    let text = String::from_utf8_lossy(bytes).trim_end_matches('\0').trim().to_string();
+    let text = String::from_utf8_lossy(bytes)
+        .trim_end_matches('\0')
+        .trim()
+        .to_string();
     (!text.is_empty()).then_some(text)
 }
 
@@ -748,17 +806,34 @@ fn probe_cpu(tree: Option<&str>) -> Cpu {
     if cfg!(target_os = "macos") {
         return Cpu {
             model: sysctl("machdep.cpu.brand_string").unwrap_or_else(|| "unknown".to_string()),
-            cores: sysctl("hw.physicalcpu").and_then(|n| parse_count(&n)).unwrap_or(logical),
-            threads: sysctl("hw.logicalcpu").and_then(|n| parse_count(&n)).unwrap_or(logical),
+            cores: sysctl("hw.physicalcpu")
+                .and_then(|n| parse_count(&n))
+                .unwrap_or(logical),
+            threads: sysctl("hw.logicalcpu")
+                .and_then(|n| parse_count(&n))
+                .unwrap_or(logical),
         };
     }
     if cfg!(target_os = "windows") {
-        let model = command_stdout("reg", &["query", WINDOWS_CPU_KEY, "/v", "ProcessorNameString"])
-            .and_then(|out| parse_reg_string(&out, "ProcessorNameString"));
-        let (cores, threads) = powershell(WINDOWS_CORES).and_then(|out| parse_core_pair(&out)).unwrap_or((logical, logical));
-        return Cpu { model: model.unwrap_or_else(|| "unknown".to_string()), cores, threads };
+        let model = command_stdout(
+            "reg",
+            &["query", WINDOWS_CPU_KEY, "/v", "ProcessorNameString"],
+        )
+        .and_then(|out| parse_reg_string(&out, "ProcessorNameString"));
+        let (cores, threads) = powershell(WINDOWS_CORES)
+            .and_then(|out| parse_core_pair(&out))
+            .unwrap_or((logical, logical));
+        return Cpu {
+            model: model.unwrap_or_else(|| "unknown".to_string()),
+            cores,
+            threads,
+        };
     }
-    parse_cpuinfo(&std::fs::read_to_string("/proc/cpuinfo").unwrap_or_default(), tree, logical)
+    parse_cpuinfo(
+        &std::fs::read_to_string("/proc/cpuinfo").unwrap_or_default(),
+        tree,
+        logical,
+    )
 }
 
 /// `/proc/cpuinfo` as a CPU. The model is the first "model name", else the device-tree model
@@ -795,7 +870,10 @@ fn parse_cpuinfo(text: &str, tree: Option<&str>, logical: u32) -> Cpu {
         .iter()
         .enumerate()
         .map(|(index, &(physical, core))| {
-            (physical.unwrap_or("0").to_string(), core.map_or_else(|| index.to_string(), str::to_string))
+            (
+                physical.unwrap_or("0").to_string(),
+                core.map_or_else(|| index.to_string(), str::to_string),
+            )
         })
         .collect();
     let (threads, cores) = match u32::try_from(blocks.len()) {
@@ -806,7 +884,11 @@ fn parse_cpuinfo(text: &str, tree: Option<&str>, logical: u32) -> Cpu {
         .or(tree)
         .or(hardware)
         .map_or_else(|| "unknown".to_string(), str::to_string);
-    Cpu { model, cores, threads }
+    Cpu {
+        model,
+        cores,
+        threads,
+    }
 }
 
 /// The data of value `name` in `reg query` output (`    ProcessorNameString    REG_SZ    Intel ...`).
@@ -830,7 +912,13 @@ fn storage_gib(dir: &Path) -> Option<u64> {
 
 /// The total of a `df -Pk` table: the second column (1024-byte blocks) of its first data line.
 fn parse_df_gib(output: &str) -> Option<u64> {
-    let kib: u64 = output.lines().nth(1)?.split_whitespace().nth(1)?.parse().ok()?;
+    let kib: u64 = output
+        .lines()
+        .nth(1)?
+        .split_whitespace()
+        .nth(1)?
+        .parse()
+        .ok()?;
     Some(kib / (1024 * 1024))
 }
 
@@ -842,7 +930,10 @@ fn sysctl(name: &str) -> Option<String> {
 /// console window.
 fn command_stdout(program: &str, args: &[&str]) -> Option<String> {
     let output = hidden_command(program, args).output().ok()?;
-    output.status.success().then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 /// A command with no console window on Windows.
@@ -870,7 +961,10 @@ pub struct Output {
 /// `timeout`. None when it cannot start or is killed.
 fn command_within(program: &str, args: &[&str], timeout: Duration) -> Option<Output> {
     let mut command = hidden_command(program, args);
-    command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     let mut child = command.spawn().ok()?;
     let stdout = drain(child.stdout.take());
     let stderr = drain(child.stderr.take());
@@ -886,7 +980,11 @@ fn command_within(program: &str, args: &[&str], timeout: Duration) -> Option<Out
             }
         }
     };
-    Some(Output { ok: status.success(), stdout: stdout.join().unwrap_or_default(), stderr: stderr.join().unwrap_or_default() })
+    Some(Output {
+        ok: status.success(),
+        stdout: stdout.join().unwrap_or_default(),
+        stderr: stderr.join().unwrap_or_default(),
+    })
 }
 
 /// Reads a pipe to its end on a thread, so a command that writes a lot cannot block on a full pipe.
@@ -945,8 +1043,14 @@ const FABRIC_TTL: Duration = Duration::from_secs(30);
 
 /// The fabric addresses: the cached read while it is younger than `FABRIC_TTL`, else `probe` again.
 /// The lock is held while probing, so concurrent calls read once.
-fn cached_fabric(cache: &Mutex<Option<(Instant, Vec<String>)>>, now: Instant, probe: impl FnOnce() -> Vec<String>) -> Vec<String> {
-    let mut cache = cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+fn cached_fabric(
+    cache: &Mutex<Option<(Instant, Vec<String>)>>,
+    now: Instant,
+    probe: impl FnOnce() -> Vec<String>,
+) -> Vec<String> {
+    let mut cache = cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some((read_at, fabric)) = cache.as_ref() {
         if now.saturating_duration_since(*read_at) < FABRIC_TTL {
             return fabric.clone();
@@ -957,7 +1061,8 @@ fn cached_fabric(cache: &Mutex<Option<(Instant, Vec<String>)>>, now: Instant, pr
     fabric
 }
 
-const NVIDIA_QUERY: &str = "--query-gpu=index,name,memory.total,memory.used,utilization.gpu,compute_cap";
+const NVIDIA_QUERY: &str =
+    "--query-gpu=index,name,memory.total,memory.used,utilization.gpu,compute_cap";
 const NVIDIA_CSV: &str = "--format=csv,noheader,nounits";
 const ROCM_QUERY: [&str; 4] = ["--showproductname", "--showmeminfo", "vram", "--json"];
 const NVIDIA_REFRESH: Duration = Duration::from_secs(2);
@@ -969,7 +1074,11 @@ fn probe_machine_facts(apple: Option<&Apple>) -> MachineFacts {
     let vendors: Vec<&str> = accelerators.iter().map(|device| device.vendor).collect();
     let docker_host = train::docker_host();
     let trainer = train::probe_trainer(&vendors, docker_host.as_deref());
-    MachineFacts { accelerators, trainer, docker_host }
+    MachineFacts {
+        accelerators,
+        trainer,
+        docker_host,
+    }
 }
 
 fn probe_accelerators(apple: Option<&Apple>) -> Vec<Accelerator> {
@@ -991,7 +1100,11 @@ fn nvidia_probe() -> Vec<Accelerator> {
 /// The NVIDIA devices from `nvidia-smi --query-gpu` (`0, NVIDIA GeForce RTX 3090, 24576, 5803,
 /// 36, 8.6`) and the topology matrix: NVLink when the matrix has an `NV<n>` link.
 fn nvidia_accelerators(query: &str, topo: &str) -> Vec<Accelerator> {
-    let link = if topo_has_nvlink(topo) { "nvlink" } else { "pcie" };
+    let link = if topo_has_nvlink(topo) {
+        "nvlink"
+    } else {
+        "pcie"
+    };
     query
         .lines()
         .filter_map(|line| {
@@ -1008,7 +1121,8 @@ fn nvidia_accelerators(query: &str, topo: &str) -> Vec<Accelerator> {
                 name: fields[1..n - 4].join(", "),
                 memory_mib: number(fields[n - 4]),
                 backend: "cuda",
-                capability: Some(fields[n - 1].to_string()).filter(|cc| cc != "[N/A]" && !cc.is_empty()),
+                capability: Some(fields[n - 1].to_string())
+                    .filter(|cc| cc != "[N/A]" && !cc.is_empty()),
                 link,
                 busy: false,
                 util_pct: number(fields[n - 2]).map(|pct| pct as u32),
@@ -1021,11 +1135,14 @@ fn nvidia_accelerators(query: &str, topo: &str) -> Vec<Accelerator> {
 /// Whether `nvidia-smi topo -m` shows an NVLink between GPUs (`NV4`, `NV12`). The legend's `NV#` is
 /// not one, and escape codes around a link do not hide it.
 fn topo_has_nvlink(topo: &str) -> bool {
-    topo.match_indices("NV").any(|(at, _)| topo[at + 2..].starts_with(|c: char| c.is_ascii_digit()))
+    topo.match_indices("NV")
+        .any(|(at, _)| topo[at + 2..].starts_with(|c: char| c.is_ascii_digit()))
 }
 
 fn amd_probe() -> Vec<Accelerator> {
-    command_stdout("rocm-smi", &ROCM_QUERY).map(|text| amd_accelerators(&text)).unwrap_or_default()
+    command_stdout("rocm-smi", &ROCM_QUERY)
+        .map(|text| amd_accelerators(&text))
+        .unwrap_or_default()
 }
 
 /// The AMD devices from `rocm-smi --showproductname --showmeminfo vram --json`: one object per
@@ -1040,11 +1157,17 @@ fn amd_accelerators(text: &str) -> Vec<Accelerator> {
             let index = key.strip_prefix("card")?.parse::<u32>().ok()?;
             let card = card.as_object()?;
             let text_of = |field: &str| card.get(field).and_then(Value::as_str).map(str::to_string);
-            let name = text_of("Card series").or_else(|| text_of("Card model")).unwrap_or_else(|| format!("AMD GPU {index}"));
+            let name = text_of("Card series")
+                .or_else(|| text_of("Card model"))
+                .unwrap_or_else(|| format!("AMD GPU {index}"));
             let memory_mib = card
                 .iter()
                 .find(|(field, _)| field.starts_with("VRAM Total Memory"))
-                .and_then(|(_, value)| value.as_u64().or_else(|| value.as_str()?.trim().parse().ok()))
+                .and_then(|(_, value)| {
+                    value
+                        .as_u64()
+                        .or_else(|| value.as_str()?.trim().parse().ok())
+                })
                 .map(|bytes| bytes / MIB);
             Some(Accelerator {
                 index,
@@ -1082,9 +1205,15 @@ fn intel_probe(drm: &Path) -> Vec<Accelerator> {
             if !intel_discrete(&device_id) {
                 return None;
             }
-            let slot = std::fs::read_link(&device).ok()?.file_name()?.to_string_lossy().into_owned();
+            let slot = std::fs::read_link(&device)
+                .ok()?
+                .file_name()?
+                .to_string_lossy()
+                .into_owned();
             let name = lspci_name(&slot).unwrap_or_else(|| format!("Intel GPU {device_id}"));
-            let memory_mib = read_trim(&device.join("lmem_total_bytes")).and_then(|text| text.parse::<u64>().ok()).map(|bytes| bytes / MIB);
+            let memory_mib = read_trim(&device.join("lmem_total_bytes"))
+                .and_then(|text| text.parse::<u64>().ok())
+                .map(|bytes| bytes / MIB);
             Some(Accelerator {
                 index,
                 vendor: "intel",
@@ -1116,7 +1245,10 @@ fn card_index(name: &str) -> Option<u32> {
 /// Alchemist (`0x5690`-`0x56cf`) and Battlemage (`0xe200`-`0xe2ff`). Integrated graphics are not
 /// listed; a new discrete part needs a line here.
 fn intel_discrete(device_id: &str) -> bool {
-    let Some(id) = device_id.strip_prefix("0x").and_then(|hex| u32::from_str_radix(hex, 16).ok()) else {
+    let Some(id) = device_id
+        .strip_prefix("0x")
+        .and_then(|hex| u32::from_str_radix(hex, 16).ok())
+    else {
         return false;
     };
     matches!(id, 0x0bd0..=0x0bdb | 0x5690..=0x56cf | 0xe200..=0xe2ff)
@@ -1136,7 +1268,9 @@ fn name_from_lspci(line: &str) -> Option<String> {
 }
 
 fn read_trim(path: &Path) -> Option<String> {
-    std::fs::read_to_string(path).ok().map(|text| text.trim().to_string())
+    std::fs::read_to_string(path)
+        .ok()
+        .map(|text| text.trim().to_string())
 }
 
 /// Apple Silicon's GPU: one `mps` device named by the chip, with the unified memory.
@@ -1171,7 +1305,10 @@ fn accelerators_now(cached: &[Accelerator], busy: &[(&'static str, u32)]) -> Vec
         .iter()
         .map(|device| {
             let mut device = device.clone();
-            if let Some(now) = fresh.iter().find(|now| device.vendor == "nvidia" && now.index == device.index) {
+            if let Some(now) = fresh
+                .iter()
+                .find(|now| device.vendor == "nvidia" && now.index == device.index)
+            {
                 device.util_pct = now.util_pct;
                 device.mem_used_mib = now.mem_used_mib;
             }
@@ -1185,11 +1322,17 @@ fn accelerators_now(cached: &[Accelerator], busy: &[(&'static str, u32)]) -> Vec
 /// `ifconfig`, Linux' `ip -j addr`.
 fn probe_fabric() -> Vec<String> {
     let addresses = if cfg!(windows) {
-        powershell(WINDOWS_ADDRESSES).map(|text| text.lines().map(str::to_string).collect()).unwrap_or_default()
+        powershell(WINDOWS_ADDRESSES)
+            .map(|text| text.lines().map(str::to_string).collect())
+            .unwrap_or_default()
     } else if cfg!(target_os = "macos") {
-        command_stdout("ifconfig", &[]).map(|text| parse_ifconfig(&text)).unwrap_or_default()
+        command_stdout("ifconfig", &[])
+            .map(|text| parse_ifconfig(&text))
+            .unwrap_or_default()
     } else {
-        command_stdout("ip", &["-j", "addr"]).map(|text| parse_ip_json(&text)).unwrap_or_default()
+        command_stdout("ip", &["-j", "addr"])
+            .map(|text| parse_ip_json(&text))
+            .unwrap_or_default()
     };
     fabric_order(addresses)
 }
@@ -1233,9 +1376,14 @@ fn parse_ifconfig(text: &str) -> Vec<String> {
 /// Bridges, container and VM networks, and peer-to-peer links: their addresses are local to the
 /// machine (`docker0` is `172.17.0.1` on every host), so they are not a fabric.
 fn virtual_interface(name: &str) -> bool {
-    const PREFIXES: [&str; 8] = ["docker", "br-", "veth", "virbr", "cni", "flannel", "lxcbr", "bridge"];
+    const PREFIXES: [&str; 8] = [
+        "docker", "br-", "veth", "virbr", "cni", "flannel", "lxcbr", "bridge",
+    ];
     const MAC_PEER: [&str; 2] = ["awdl", "llw"];
-    PREFIXES.iter().chain(MAC_PEER.iter()).any(|prefix| name.starts_with(prefix))
+    PREFIXES
+        .iter()
+        .chain(MAC_PEER.iter())
+        .any(|prefix| name.starts_with(prefix))
 }
 
 /// The usable addresses, each once: private IPv4 and unique-local IPv6 first, then other IPv4,
@@ -1256,7 +1404,12 @@ fn fabric_order(addresses: Vec<String>) -> Vec<String> {
 fn fabric_rank(address: IpAddr) -> Option<u8> {
     match address {
         IpAddr::V4(v4) => {
-            if v4.is_loopback() || v4.is_unspecified() || v4.is_link_local() || v4.is_multicast() || v4.is_broadcast() {
+            if v4.is_loopback()
+                || v4.is_unspecified()
+                || v4.is_link_local()
+                || v4.is_multicast()
+                || v4.is_broadcast()
+            {
                 None
             } else if v4.is_private() {
                 Some(0)
@@ -1266,7 +1419,11 @@ fn fabric_rank(address: IpAddr) -> Option<u8> {
         }
         IpAddr::V6(v6) => {
             let first = v6.segments()[0];
-            if v6.is_loopback() || v6.is_unspecified() || v6.is_multicast() || first & 0xffc0 == 0xfe80 {
+            if v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.is_multicast()
+                || first & 0xffc0 == 0xfe80
+            {
                 None
             } else if first & 0xfe00 == 0xfc00 {
                 Some(1)
@@ -1279,8 +1436,11 @@ fn fabric_rank(address: IpAddr) -> Option<u8> {
 
 #[cfg(test)]
 mod tests {
-    use super::{apple_kind, kind_of, parse_chassis, parse_cpuinfo, parse_df_gib, parse_device_tree_model, parse_reg_string};
-    use super::{gpu_vendor, has_battery, Cpu};
+    use super::{Cpu, gpu_vendor, has_battery};
+    use super::{
+        apple_kind, kind_of, parse_chassis, parse_cpuinfo, parse_device_tree_model, parse_df_gib,
+        parse_reg_string,
+    };
 
     #[test]
     fn pci_vendor_ids_map_to_gpu_vendors() {
@@ -1300,7 +1460,14 @@ mod tests {
     #[test]
     fn cpuinfo_counts_threads_and_distinct_cores() {
         let cpu = parse_cpuinfo(X86_CPUINFO, None, 1);
-        assert_eq!(cpu, Cpu { model: "AMD Ryzen 9 5900X 12-Core Processor".into(), cores: 2, threads: 4 });
+        assert_eq!(
+            cpu,
+            Cpu {
+                model: "AMD Ryzen 9 5900X 12-Core Processor".into(),
+                cores: 2,
+                threads: 4
+            }
+        );
     }
 
     #[test]
@@ -1308,7 +1475,14 @@ mod tests {
         let arm = "processor\t: 0\nBogoMIPS\t: 108.00\nCPU implementer\t: 0x41\n\nprocessor\t: 1\nBogoMIPS\t: 108.00\n\
             Hardware\t: BCM2835\nModel\t\t: Raspberry Pi 4 Model B\n";
         let tree = parse_cpuinfo(arm, Some("Raspberry Pi 4 Model B Rev 1.4"), 4);
-        assert_eq!(tree, Cpu { model: "Raspberry Pi 4 Model B Rev 1.4".into(), cores: 2, threads: 2 });
+        assert_eq!(
+            tree,
+            Cpu {
+                model: "Raspberry Pi 4 Model B Rev 1.4".into(),
+                cores: 2,
+                threads: 2
+            }
+        );
         let hardware = parse_cpuinfo(arm, None, 4);
         assert_eq!(hardware.model, "BCM2835");
     }
@@ -1316,12 +1490,22 @@ mod tests {
     #[test]
     fn cpuinfo_without_processors_reports_the_logical_count() {
         let cpu = parse_cpuinfo("", None, 6);
-        assert_eq!(cpu, Cpu { model: "unknown".into(), cores: 6, threads: 6 });
+        assert_eq!(
+            cpu,
+            Cpu {
+                model: "unknown".into(),
+                cores: 6,
+                threads: 6
+            }
+        );
     }
 
     #[test]
     fn device_tree_model_drops_the_nul_terminator() {
-        assert_eq!(parse_device_tree_model(b"Raspberry Pi 5 Model B Rev 1.0\0").as_deref(), Some("Raspberry Pi 5 Model B Rev 1.0"));
+        assert_eq!(
+            parse_device_tree_model(b"Raspberry Pi 5 Model B Rev 1.0\0").as_deref(),
+            Some("Raspberry Pi 5 Model B Rev 1.0")
+        );
         assert_eq!(parse_device_tree_model(b"\0"), None);
     }
 
@@ -1334,19 +1518,47 @@ mod tests {
     #[test]
     fn kind_follows_the_chassis_table() {
         for chassis in [8, 9, 10, 14, 31, 32] {
-            assert_eq!(kind_of(false, false, Some(chassis), false), "laptop", "chassis {chassis}");
+            assert_eq!(
+                kind_of(false, false, Some(chassis), false),
+                "laptop",
+                "chassis {chassis}"
+            );
         }
         for chassis in [17, 23, 25, 28] {
-            assert_eq!(kind_of(false, false, Some(chassis), false), "server", "chassis {chassis}");
+            assert_eq!(
+                kind_of(false, false, Some(chassis), false),
+                "server",
+                "chassis {chassis}"
+            );
         }
         for chassis in [3, 4, 6, 7] {
-            assert_eq!(kind_of(false, false, Some(chassis), false), "workstation", "chassis {chassis}");
+            assert_eq!(
+                kind_of(false, false, Some(chassis), false),
+                "workstation",
+                "chassis {chassis}"
+            );
         }
         assert_eq!(kind_of(false, false, None, false), "workstation");
-        assert_eq!(kind_of(false, false, Some(17), true), "server", "the chassis wins over a battery (a UPS)");
-        assert_eq!(kind_of(false, false, Some(3), true), "workstation", "a desktop on a UPS");
-        assert_eq!(kind_of(false, false, None, true), "laptop", "a battery when the chassis says nothing");
-        assert_eq!(kind_of(false, false, Some(2), true), "laptop", "chassis 2 is Unknown");
+        assert_eq!(
+            kind_of(false, false, Some(17), true),
+            "server",
+            "the chassis wins over a battery (a UPS)"
+        );
+        assert_eq!(
+            kind_of(false, false, Some(3), true),
+            "workstation",
+            "a desktop on a UPS"
+        );
+        assert_eq!(
+            kind_of(false, false, None, true),
+            "laptop",
+            "a battery when the chassis says nothing"
+        );
+        assert_eq!(
+            kind_of(false, false, Some(2), true),
+            "laptop",
+            "chassis 2 is Unknown"
+        );
     }
 
     #[test]
@@ -1375,7 +1587,10 @@ mod tests {
     #[test]
     fn reg_query_output_yields_the_named_string() {
         let out = "\nHKEY_LOCAL_MACHINE\\HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0\n    ProcessorNameString    REG_SZ    Intel(R) Core(TM) i7-8700 CPU @ 3.20GHz\n";
-        assert_eq!(parse_reg_string(out, "ProcessorNameString").as_deref(), Some("Intel(R) Core(TM) i7-8700 CPU @ 3.20GHz"));
+        assert_eq!(
+            parse_reg_string(out, "ProcessorNameString").as_deref(),
+            Some("Intel(R) Core(TM) i7-8700 CPU @ 3.20GHz")
+        );
         assert_eq!(parse_reg_string(out, "Identifier"), None);
     }
 
@@ -1442,7 +1657,9 @@ struct InputRequest {
 /// The API under `/v1`. Everything that changes state is a POST or DELETE.
 fn router() -> Router<Node> {
     Router::<Node>::new()
-        .get("/v1/machine", |node, _, _| Response::json(200, &node.machine()))
+        .get("/v1/machine", |node, _, _| {
+            Response::json(200, &node.machine())
+        })
         .get("/v1/ws", |node, request, _| {
             // Subscribed before the handshake answers, so no event between the
             // 101 and the socket's first read is lost.
@@ -1459,35 +1676,77 @@ fn router() -> Router<Node> {
         })
         .get("/v1/machine/stats", |node, _, _| machine_stats(node))
         .get("/v1/runs", |node, _, _| list_runs(node))
-        .post("/v1/runs", |node, request, _| create_run(node, &request.body))
-        .get("/v1/workstations", |node, _, _| Response::json(200, &node.workstations.list()))
-        .post("/v1/workstations", |node, request, _| workstation_create(node, &request.body))
-        .get("/v1/workstations/{id}", |node, _, params| workstation_answer(node.workstations.view(params.get("id"))))
-        .delete("/v1/workstations/{id}", |node, _, params| workstation_answer(node.workstations.delete(params.get("id"))))
-        .post("/v1/workstations/{id}/start", |node, _, params| workstation_answer(node.workstations.start(params.get("id"))))
-        .post("/v1/workstations/{id}/stop", |node, _, params| workstation_answer(node.workstations.stop(params.get("id"))))
-        .post("/v1/workstations/{id}/snapshot", |node, _, params| workstation_answer(node.workstations.snapshot(params.get("id"))))
-        .post("/v1/workstations/{id}/revert", |node, _, params| workstation_answer(node.workstations.revert(params.get("id"))))
-        .get("/v1/runs/{id}", |node, _, params| get_run(node, params.get("id")))
-        .delete("/v1/runs/{id}", |node, _, params| delete_run(node, params.get("id")))
-        .post("/v1/runs/{id}/input", |node, request, params| send_input(node, params.get("id"), &request.body))
-        .post("/v1/runs/{id}/vms/{index}/memory", |node, request, params| {
-            set_vm_memory(node, params.get("id"), params.get("index"), &request.body)
+        .post("/v1/runs", |node, request, _| {
+            create_run(node, &request.body)
         })
+        .get("/v1/workstations", |node, _, _| {
+            Response::json(200, &node.workstations.list())
+        })
+        .post("/v1/workstations", |node, request, _| {
+            workstation_create(node, &request.body)
+        })
+        .get("/v1/workstations/{id}", |node, _, params| {
+            workstation_answer(node.workstations.view(params.get("id")))
+        })
+        .delete("/v1/workstations/{id}", |node, _, params| {
+            workstation_answer(node.workstations.delete(params.get("id")))
+        })
+        .post("/v1/workstations/{id}/start", |node, _, params| {
+            workstation_answer(node.workstations.start(params.get("id")))
+        })
+        .post("/v1/workstations/{id}/stop", |node, _, params| {
+            workstation_answer(node.workstations.stop(params.get("id")))
+        })
+        .post("/v1/workstations/{id}/snapshot", |node, _, params| {
+            workstation_answer(node.workstations.snapshot(params.get("id")))
+        })
+        .post("/v1/workstations/{id}/revert", |node, _, params| {
+            workstation_answer(node.workstations.revert(params.get("id")))
+        })
+        .get("/v1/runs/{id}", |node, _, params| {
+            get_run(node, params.get("id"))
+        })
+        .delete("/v1/runs/{id}", |node, _, params| {
+            delete_run(node, params.get("id"))
+        })
+        .post("/v1/runs/{id}/input", |node, request, params| {
+            send_input(node, params.get("id"), &request.body)
+        })
+        .post(
+            "/v1/runs/{id}/vms/{index}/memory",
+            |node, request, params| {
+                set_vm_memory(node, params.get("id"), params.get("index"), &request.body)
+            },
+        )
         // One VM of a run: restart it as it was booted (same CID, same workspace image), reset
         // its workspace to the base image and restart it, or stop it for good.
-        .post("/v1/runs/{id}/vms/{index}/restart", |node, _, params| restart_vm(node, params.get("id"), params.get("index")))
-        .post("/v1/runs/{id}/vms/{index}/wipe", |node, _, params| wipe_vm(node, params.get("id"), params.get("index")))
-        .post("/v1/runs/{id}/vms/{index}/stop", |node, _, params| stop_vm(node, params.get("id"), params.get("index")))
+        .post("/v1/runs/{id}/vms/{index}/restart", |node, _, params| {
+            restart_vm(node, params.get("id"), params.get("index"))
+        })
+        .post("/v1/runs/{id}/vms/{index}/wipe", |node, _, params| {
+            wipe_vm(node, params.get("id"), params.get("index"))
+        })
+        .post("/v1/runs/{id}/vms/{index}/stop", |node, _, params| {
+            stop_vm(node, params.get("id"), params.get("index"))
+        })
         // Trainer jobs: a container per job (or the native runner on macOS); see `train`.
         .get("/v1/train", |node, _, _| train::list(node))
-        .post("/v1/train", |node, request, _| train::start(node, &request.body))
+        .post("/v1/train", |node, request, _| {
+            train::start(node, &request.body)
+        })
         .get("/v1/train/{job_id}/events", |node, request, params| {
-            let after = request.query_param("after").and_then(|text| text.parse().ok()).unwrap_or(0);
+            let after = request
+                .query_param("after")
+                .and_then(|text| text.parse().ok())
+                .unwrap_or(0);
             train::events(node, params.get("job_id"), after)
         })
-        .post("/v1/train/{job_id}/stop", |node, _, params| train::stop(node, params.get("job_id")))
-        .delete("/v1/train/{job_id}", |node, _, params| train::delete(node, params.get("job_id")))
+        .post("/v1/train/{job_id}/stop", |node, _, params| {
+            train::stop(node, params.get("job_id"))
+        })
+        .delete("/v1/train/{job_id}", |node, _, params| {
+            train::delete(node, params.get("job_id"))
+        })
 }
 
 /// `POST /v1/runs/{id}/vms/{index}/restart` → 200 with the run's summary view.
@@ -1669,7 +1928,6 @@ fn delete_run(node: &Node, id: &str) -> Response {
     }
 }
 
-
 #[cfg(test)]
 mod identity_tests {
     use super::*;
@@ -1678,30 +1936,64 @@ mod identity_tests {
     fn vendors_are_lower_case_short_names() {
         assert_eq!(normalize_vendor("Dell Inc.").as_deref(), Some("dell"));
         assert_eq!(normalize_vendor("LENOVO").as_deref(), Some("lenovo"));
-        assert_eq!(normalize_vendor("ASUSTeK COMPUTER INC.").as_deref(), Some("asus"));
-        assert_eq!(normalize_vendor("Micro-Star International Co., Ltd.").as_deref(), Some("msi"));
-        assert_eq!(normalize_vendor("Gigabyte Technology Co., Ltd.").as_deref(), Some("gigabyte"));
+        assert_eq!(
+            normalize_vendor("ASUSTeK COMPUTER INC.").as_deref(),
+            Some("asus")
+        );
+        assert_eq!(
+            normalize_vendor("Micro-Star International Co., Ltd.").as_deref(),
+            Some("msi")
+        );
+        assert_eq!(
+            normalize_vendor("Gigabyte Technology Co., Ltd.").as_deref(),
+            Some("gigabyte")
+        );
         assert_eq!(normalize_vendor("HP").as_deref(), Some("hp"));
         assert_eq!(normalize_vendor("Hewlett-Packard").as_deref(), Some("hp"));
         assert_eq!(normalize_vendor("Apple Inc.").as_deref(), Some("apple"));
-        assert_eq!(normalize_vendor("Raspberry Pi").as_deref(), Some("raspberrypi"));
-        assert_eq!(normalize_vendor("Raspberry Pi 5 Model B Rev 1.0").as_deref(), Some("raspberrypi"));
+        assert_eq!(
+            normalize_vendor("Raspberry Pi").as_deref(),
+            Some("raspberrypi")
+        );
+        assert_eq!(
+            normalize_vendor("Raspberry Pi 5 Model B Rev 1.0").as_deref(),
+            Some("raspberrypi")
+        );
         assert_eq!(normalize_vendor("samsung").as_deref(), Some("samsung"));
     }
 
     #[test]
     fn placeholder_vendors_are_unknown() {
-        for raw in ["System manufacturer", "To Be Filled By O.E.M.", "Default string", "  ", "Unknown", ""] {
+        for raw in [
+            "System manufacturer",
+            "To Be Filled By O.E.M.",
+            "Default string",
+            "  ",
+            "Unknown",
+            "",
+        ] {
             assert_eq!(normalize_vendor(raw), None, "{raw:?}");
         }
     }
 
     #[test]
     fn dmi_model_prefers_the_version_on_lenovo() {
-        assert_eq!(dmi_model(Some("lenovo"), "20XW0000US\n", "ThinkPad X1 Carbon Gen 9\n").as_deref(), Some("ThinkPad X1 Carbon Gen 9"));
-        assert_eq!(dmi_model(Some("lenovo"), "20XW0000US", "Not Defined").as_deref(), Some("20XW0000US"));
-        assert_eq!(dmi_model(Some("dell"), "XPS 13 9310", "1.0").as_deref(), Some("XPS 13 9310"));
-        assert_eq!(dmi_model(Some("asus"), "System Product Name", "System Version"), None);
+        assert_eq!(
+            dmi_model(Some("lenovo"), "20XW0000US\n", "ThinkPad X1 Carbon Gen 9\n").as_deref(),
+            Some("ThinkPad X1 Carbon Gen 9")
+        );
+        assert_eq!(
+            dmi_model(Some("lenovo"), "20XW0000US", "Not Defined").as_deref(),
+            Some("20XW0000US")
+        );
+        assert_eq!(
+            dmi_model(Some("dell"), "XPS 13 9310", "1.0").as_deref(),
+            Some("XPS 13 9310")
+        );
+        assert_eq!(
+            dmi_model(Some("asus"), "System Product Name", "System Version"),
+            None
+        );
     }
 
     #[test]
@@ -1710,9 +2002,18 @@ mod identity_tests {
         let desktop = parse_windows_system("17179869184|3|0|Dell Inc.|XPS 8950\r\n");
         assert_eq!(
             desktop,
-            WindowsSystem { vendor: Some("dell".into()), model: Some("XPS 8950".into()), memory_mib: 16384, chassis: Some(3), battery: false }
+            WindowsSystem {
+                vendor: Some("dell".into()),
+                model: Some("XPS 8950".into()),
+                memory_mib: 16384,
+                chassis: Some(3),
+                battery: false
+            }
         );
-        assert_eq!(kind_of(false, false, desktop.chassis, desktop.battery), "workstation");
+        assert_eq!(
+            kind_of(false, false, desktop.chassis, desktop.battery),
+            "workstation"
+        );
     }
 
     #[test]
@@ -1721,12 +2022,24 @@ mod identity_tests {
         let laptop = parse_windows_system("34359738368|10|1|Dell Inc.|XPS 13 9310\r\n");
         assert_eq!(
             laptop,
-            WindowsSystem { vendor: Some("dell".into()), model: Some("XPS 13 9310".into()), memory_mib: 32768, chassis: Some(10), battery: true }
+            WindowsSystem {
+                vendor: Some("dell".into()),
+                model: Some("XPS 13 9310".into()),
+                memory_mib: 32768,
+                chassis: Some(10),
+                battery: true
+            }
         );
-        assert_eq!(kind_of(false, false, laptop.chassis, laptop.battery), "laptop");
+        assert_eq!(
+            kind_of(false, false, laptop.chassis, laptop.battery),
+            "laptop"
+        );
         // A convertible (31) is a laptop too.
         let convertible = parse_windows_system("34359738368|31|1|LENOVO|21HM001QUS");
-        assert_eq!(kind_of(false, false, convertible.chassis, convertible.battery), "laptop");
+        assert_eq!(
+            kind_of(false, false, convertible.chassis, convertible.battery),
+            "laptop"
+        );
     }
 
     #[test]
@@ -1735,19 +2048,44 @@ mod identity_tests {
         let server = parse_windows_system("137438953472|23|0|Dell Inc.|PowerEdge R740\r\n");
         assert_eq!(server.memory_mib, 131072);
         assert_eq!(server.chassis, Some(23));
-        assert_eq!(kind_of(false, false, server.chassis, server.battery), "server");
+        assert_eq!(
+            kind_of(false, false, server.chassis, server.battery),
+            "server"
+        );
     }
 
     #[test]
     fn windows_placeholders_and_missing_fields_read_as_absent() {
-        let placeholders = parse_windows_system("17179869184|3|0|System manufacturer|System Product Name");
-        assert_eq!(placeholders, WindowsSystem { vendor: None, model: None, memory_mib: 16384, chassis: Some(3), battery: false });
+        let placeholders =
+            parse_windows_system("17179869184|3|0|System manufacturer|System Product Name");
+        assert_eq!(
+            placeholders,
+            WindowsSystem {
+                vendor: None,
+                model: None,
+                memory_mib: 16384,
+                chassis: Some(3),
+                battery: false
+            }
+        );
         // An enclosure that reports no chassis, no memory figure and no probe output at all.
-        assert_eq!(parse_windows_system("||0|Dell Inc.|XPS 13 9310").chassis, None);
-        assert_eq!(parse_windows_system("|||Dell Inc.|XPS 13 9310").memory_mib, 0);
+        assert_eq!(
+            parse_windows_system("||0|Dell Inc.|XPS 13 9310").chassis,
+            None
+        );
+        assert_eq!(
+            parse_windows_system("|||Dell Inc.|XPS 13 9310").memory_mib,
+            0
+        );
         assert_eq!(
             parse_windows_system(""),
-            WindowsSystem { vendor: None, model: None, memory_mib: 0, chassis: None, battery: false }
+            WindowsSystem {
+                vendor: None,
+                model: None,
+                memory_mib: 0,
+                chassis: None,
+                battery: false
+            }
         );
     }
 
@@ -1760,14 +2098,26 @@ mod identity_tests {
     #[test]
     fn android_properties_give_maker_and_model() {
         // getprop prints the value and a newline; the manufacturer is lower-case on most devices.
-        assert_eq!(maker_pair("samsung\n", "SM-S918B\n"), (Some("samsung".into()), Some("SM-S918B".into())));
-        assert_eq!(maker_pair("Google\n", "Pixel 8\n"), (Some("google".into()), Some("Pixel 8".into())));
+        assert_eq!(
+            maker_pair("samsung\n", "SM-S918B\n"),
+            (Some("samsung".into()), Some("SM-S918B".into()))
+        );
+        assert_eq!(
+            maker_pair("Google\n", "Pixel 8\n"),
+            (Some("google".into()), Some("Pixel 8".into()))
+        );
     }
 
     #[test]
     fn a_device_tree_model_is_the_board_and_its_maker() {
         let tree = parse_device_tree_model(b"Raspberry Pi 5 Model B Rev 1.0\0").unwrap();
-        assert_eq!(maker_pair(&tree, &tree), (Some("raspberrypi".into()), Some("Raspberry Pi 5 Model B Rev 1.0".into())));
+        assert_eq!(
+            maker_pair(&tree, &tree),
+            (
+                Some("raspberrypi".into()),
+                Some("Raspberry Pi 5 Model B Rev 1.0".into())
+            )
+        );
     }
 
     #[test]
@@ -1781,8 +2131,14 @@ mod identity_tests {
 
     #[test]
     fn a_mac_model_carries_its_chip() {
-        assert_eq!(apple_model("MacBook Pro", Some("Apple M3 Max")), "MacBook Pro (M3 Max)");
-        assert_eq!(apple_model("Mac Studio", Some("Apple M2 Ultra")), "Mac Studio (M2 Ultra)");
+        assert_eq!(
+            apple_model("MacBook Pro", Some("Apple M3 Max")),
+            "MacBook Pro (M3 Max)"
+        );
+        assert_eq!(
+            apple_model("Mac Studio", Some("Apple M2 Ultra")),
+            "Mac Studio (M2 Ultra)"
+        );
         assert_eq!(apple_model("Mac mini", None), "Mac mini");
     }
 
@@ -1805,7 +2161,10 @@ mod identity_tests {
         assert_eq!(parse_count("n/a"), None);
         assert_eq!(parse_bytes("137438953472\n"), Some(128 * GIB));
         assert_eq!(parse_bytes(""), None);
-        assert_eq!(parse_bytes("137438953472").map(|bytes| bytes / MIB), Some(131072));
+        assert_eq!(
+            parse_bytes("137438953472").map(|bytes| bytes / MIB),
+            Some(131072)
+        );
     }
 
     #[test]
@@ -1832,18 +2191,29 @@ mod accelerator_tests {
         assert_eq!(devices.len(), 1);
         let gpu = &devices[0];
         assert_eq!(gpu.name, "NVIDIA GeForce RTX 3090");
-        assert_eq!((gpu.index, gpu.memory_mib, gpu.mem_used_mib, gpu.util_pct), (0, Some(24576), Some(5803), Some(36)));
+        assert_eq!(
+            (gpu.index, gpu.memory_mib, gpu.mem_used_mib, gpu.util_pct),
+            (0, Some(24576), Some(5803), Some(36))
+        );
         assert_eq!(gpu.capability.as_deref(), Some("8.6"));
-        assert_eq!((gpu.vendor, gpu.backend, gpu.link, gpu.busy), ("nvidia", "cuda", "pcie", false));
+        assert_eq!(
+            (gpu.vendor, gpu.backend, gpu.link, gpu.busy),
+            ("nvidia", "cuda", "pcie", false)
+        );
     }
 
     #[test]
     fn nvlink_is_an_nv_number_in_the_matrix_not_the_legend() {
-        let links: Vec<&str> = nvidia_accelerators(TWO_QUERY, NV_TOPO).iter().map(|device| device.link).collect();
+        let links: Vec<&str> = nvidia_accelerators(TWO_QUERY, NV_TOPO)
+            .iter()
+            .map(|device| device.link)
+            .collect();
         assert_eq!(links, ["nvlink", "nvlink"]);
         assert_eq!(nvidia_accelerators(TWO_QUERY, PCIE_TOPO)[0].link, "pcie");
         assert!(topo_has_nvlink("GPU0 X \u{1b}[32mNV4\u{1b}[0m"));
-        assert!(!topo_has_nvlink("NV#  = Connection traversing bonded NVLinks"));
+        assert!(!topo_has_nvlink(
+            "NV#  = Connection traversing bonded NVLinks"
+        ));
     }
 
     #[test]
@@ -1859,8 +2229,17 @@ mod accelerator_tests {
     fn amd_json_is_read_by_card_and_skips_other_keys() {
         const ROCM: &str = r#"{"card0": {"Card series": "Instinct MI250X", "Card model": "0x0c34", "VRAM Total Memory (B)": "137438953472", "VRAM Total Used Memory (B)": "1024"}, "card1": {"Card model": "0x7480", "VRAM Total Memory (B)": 25753026560}, "system": {"Driver version": "6.1"}}"#;
         let devices = amd_accelerators(ROCM);
-        let seen: Vec<(u32, &str, Option<u64>)> = devices.iter().map(|d| (d.index, d.name.as_str(), d.memory_mib)).collect();
-        assert_eq!(seen, [(0, "Instinct MI250X", Some(131072)), (1, "0x7480", Some(24560))]);
+        let seen: Vec<(u32, &str, Option<u64>)> = devices
+            .iter()
+            .map(|d| (d.index, d.name.as_str(), d.memory_mib))
+            .collect();
+        assert_eq!(
+            seen,
+            [
+                (0, "Instinct MI250X", Some(131072)),
+                (1, "0x7480", Some(24560))
+            ]
+        );
         assert_eq!((devices[0].vendor, devices[0].backend), ("amd", "rocm"));
         assert!(amd_accelerators("not json").is_empty());
         assert!(amd_accelerators("{}").is_empty());
@@ -1877,7 +2256,9 @@ mod accelerator_tests {
 
     #[test]
     fn lspci_names_drop_the_revision_and_drm_cards_are_numbered() {
-        let named = name_from_lspci("03:00.0 VGA compatible controller: Intel Corporation DG2 [Arc A770] (rev 08)");
+        let named = name_from_lspci(
+            "03:00.0 VGA compatible controller: Intel Corporation DG2 [Arc A770] (rev 08)",
+        );
         assert_eq!(named.as_deref(), Some("Intel Corporation DG2 [Arc A770]"));
         assert_eq!(name_from_lspci("no colon here"), None);
         assert_eq!(card_index("card1"), Some(1));
@@ -1888,38 +2269,74 @@ mod accelerator_tests {
 
     #[test]
     fn apple_gpu_is_one_mps_device_named_by_its_chip() {
-        let apple = Apple { chip: "Apple M3 Max".into(), p_cores: Some(12), e_cores: Some(4), gpu_cores: Some(40), neural_cores: 16, unified_memory_gib: Some(64) };
+        let apple = Apple {
+            chip: "Apple M3 Max".into(),
+            p_cores: Some(12),
+            e_cores: Some(4),
+            gpu_cores: Some(40),
+            neural_cores: 16,
+            unified_memory_gib: Some(64),
+        };
         let gpu = apple_accelerator(&apple);
-        assert_eq!((gpu.index, gpu.vendor, gpu.backend, gpu.link), (0, "apple", "mps", "soc"));
-        assert_eq!((gpu.name.as_str(), gpu.memory_mib), ("Apple M3 Max", Some(65536)));
+        assert_eq!(
+            (gpu.index, gpu.vendor, gpu.backend, gpu.link),
+            (0, "apple", "mps", "soc")
+        );
+        assert_eq!(
+            (gpu.name.as_str(), gpu.memory_mib),
+            ("Apple M3 Max", Some(65536))
+        );
     }
 
     #[test]
     fn busy_devices_are_marked_by_vendor_and_index() {
         let cached = nvidia_accelerators(TWO_QUERY, NV_TOPO);
         let busy = [("nvidia", 1)];
-        let marked: Vec<bool> = cached.iter().map(|device| busy.contains(&(device.vendor, device.index))).collect();
+        let marked: Vec<bool> = cached
+            .iter()
+            .map(|device| busy.contains(&(device.vendor, device.index)))
+            .collect();
         assert_eq!(marked, [false, true]);
     }
 
     #[test]
     fn ip_json_addresses_drop_loopback_and_link_local_and_put_private_first() {
         let text = r#"[{"ifname":"lo","addr_info":[{"family":"inet","local":"127.0.0.1"},{"family":"inet6","local":"::1"}]},{"ifname":"docker0","addr_info":[{"family":"inet","local":"172.17.0.1"}]},{"ifname":"br-3f1e","addr_info":[{"family":"inet","local":"172.18.0.1"}]},{"ifname":"enp6s0","addr_info":[{"family":"inet","local":"8.8.8.8"},{"family":"inet","local":"192.168.1.20"},{"family":"inet6","local":"fe80::1"},{"family":"inet6","local":"2001:db8::5"},{"family":"inet6","local":"fd00::7"}]},{"ifname":"wg0","addr_info":[{"family":"inet","local":"10.8.0.3"},{"family":"inet","local":"169.254.9.9"}]}]"#;
-        assert_eq!(fabric_order(parse_ip_json(text)), ["10.8.0.3", "192.168.1.20", "fd00::7", "8.8.8.8", "2001:db8::5"]);
+        assert_eq!(
+            fabric_order(parse_ip_json(text)),
+            [
+                "10.8.0.3",
+                "192.168.1.20",
+                "fd00::7",
+                "8.8.8.8",
+                "2001:db8::5"
+            ]
+        );
     }
 
     #[test]
     fn ifconfig_addresses_lose_their_zone_and_loopback() {
         let text = "lo0: flags=8049<UP,LOOPBACK,RUNNING,MULTICAST> mtu 16384\n\tinet 127.0.0.1 netmask 0xff000000\n\tinet6 ::1 prefixlen 128\nen0: flags=8863<UP>\n\tinet6 fe80::1%en0 prefixlen 64 scopeid 0x4\n\tinet 192.168.0.12 netmask 0xffffff00 broadcast 192.168.0.255\n";
         let shared = "bridge100: flags=8863<UP>\n\tinet 192.168.2.1 netmask 0xffffff00\n";
-        assert_eq!(fabric_order(parse_ifconfig(&format!("{text}{shared}"))), ["192.168.0.12"]);
+        assert_eq!(
+            fabric_order(parse_ifconfig(&format!("{text}{shared}"))),
+            ["192.168.0.12"]
+        );
     }
 
     #[test]
     fn command_within_returns_the_output_and_kills_a_command_that_runs_too_long() {
-        let done = command_within("sh", &["-c", "printf hello; printf err >&2"], Duration::from_secs(5)).expect("sh runs");
+        let done = command_within(
+            "sh",
+            &["-c", "printf hello; printf err >&2"],
+            Duration::from_secs(5),
+        )
+        .expect("sh runs");
         assert!(done.ok);
-        assert_eq!((done.stdout.as_str(), done.stderr.as_str()), ("hello", "err"));
+        assert_eq!(
+            (done.stdout.as_str(), done.stderr.as_str()),
+            ("hello", "err")
+        );
         assert!(command_within("sh", &["-c", "sleep 5"], Duration::from_millis(100)).is_none());
     }
 
@@ -1932,9 +2349,18 @@ mod accelerator_tests {
             reads += 1;
             vec![text.to_string()]
         };
-        assert_eq!(cached_fabric(&cache, start, || read("10.0.0.1")), ["10.0.0.1"]);
-        assert_eq!(cached_fabric(&cache, start + Duration::from_secs(29), || read("10.0.0.2")), ["10.0.0.1"]);
-        assert_eq!(cached_fabric(&cache, start + Duration::from_secs(31), || read("10.0.0.3")), ["10.0.0.3"]);
+        assert_eq!(
+            cached_fabric(&cache, start, || read("10.0.0.1")),
+            ["10.0.0.1"]
+        );
+        assert_eq!(
+            cached_fabric(&cache, start + Duration::from_secs(29), || read("10.0.0.2")),
+            ["10.0.0.1"]
+        );
+        assert_eq!(
+            cached_fabric(&cache, start + Duration::from_secs(31), || read("10.0.0.3")),
+            ["10.0.0.3"]
+        );
         assert_eq!(reads, 2);
     }
 

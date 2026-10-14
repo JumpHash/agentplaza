@@ -242,12 +242,13 @@ pub fn search(workspace: &Workspace, args: &Value) -> Result<String, ToolError> 
 /// Output: `{"run": id}`. The run is the agent's, in its own process group, with the agent's environment.
 pub fn run_start(workspace: &Workspace, args: &Value) -> Result<String, ToolError> {
     let command = args.get("command").and_then(Value::as_str).unwrap_or("");
-    let timeout_s = match args.get("timeout_s") {
-        None | Some(Value::Null) => None,
-        Some(value) => Some(value.as_u64().ok_or_else(|| {
-            files::invalid("\"timeout_s\" must be a whole number of seconds")
-        })?),
-    };
+    let timeout_s =
+        match args.get("timeout_s") {
+            None | Some(Value::Null) => None,
+            Some(value) => Some(value.as_u64().ok_or_else(|| {
+                files::invalid("\"timeout_s\" must be a whole number of seconds")
+            })?),
+        };
     let env = bash::agent_env(workspace.dir()).map_err(internal)?;
     reply_json(&RUNS.start(&root(workspace), &env, command, timeout_s)?)
 }
@@ -398,7 +399,10 @@ mod tests {
     fn a_write_must_say_what_hash_it_replaces() {
         let (_dir, ws) = scratch("write-args");
         let missing = write(&ws, &json!({ "path": "y.txt", "text": "y" })).unwrap_err();
-        assert!(matches!(missing, ToolError::InvalidInput { .. }), "{missing:?}");
+        assert!(
+            matches!(missing, ToolError::InvalidInput { .. }),
+            "{missing:?}"
+        );
         let wrong = write(
             &ws,
             &json!({ "path": "y.txt", "text": "y", "expected_hash": 3 }),

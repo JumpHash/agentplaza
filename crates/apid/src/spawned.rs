@@ -51,7 +51,12 @@ impl Store {
             .ok()
             .and_then(|text| serde_json::from_str(&text).ok())
             .unwrap_or_default();
-        Self { path, registry: Mutex::new(registry), pending: Mutex::new(VecDeque::new()), fleet: Mutex::new(BTreeMap::new()) }
+        Self {
+            path,
+            registry: Mutex::new(registry),
+            pending: Mutex::new(VecDeque::new()),
+            fleet: Mutex::new(BTreeMap::new()),
+        }
     }
 
     /// Every spawned agent, in the order they were spawned.
@@ -67,8 +72,18 @@ impl Store {
     /// The role the plaza spawned agent `cid` with, if the plaza spawned it: an operator spawn's role, else the
     /// role its node booted it with (`note_fleet_role`). Never the role a guest claims.
     pub fn role_of(&self, cid: u64) -> Option<String> {
-        let spawned = self.entries().into_iter().find(|entry| entry.cid == cid).map(|entry| entry.role);
-        spawned.or_else(|| self.fleet.lock().unwrap_or_else(PoisonError::into_inner).get(&cid).cloned())
+        let spawned = self
+            .entries()
+            .into_iter()
+            .find(|entry| entry.cid == cid)
+            .map(|entry| entry.role);
+        spawned.or_else(|| {
+            self.fleet
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .get(&cid)
+                .cloned()
+        })
     }
 
     /// Noded reports guest `cid` running with `role` (its fleet manifest's role). Returns whether that is new.
@@ -80,7 +95,10 @@ impl Store {
     /// The operator asked noded for one more run of `role`; its first hello of that role is it.
 
     pub fn expect(&self, role: &str, model: Option<String>) {
-        self.pending.lock().unwrap_or_else(PoisonError::into_inner).push_back((role.to_owned(), model));
+        self.pending
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push_back((role.to_owned(), model));
     }
 
     /// A session said hello. A first hello of a pending spawn is recorded; returns the
@@ -90,11 +108,18 @@ impl Store {
         if !known {
             let claimed = {
                 let mut pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
-                let index = pending.iter().position(|(wanted, _)| wanted.as_str() == role);
+                let index = pending
+                    .iter()
+                    .position(|(wanted, _)| wanted.as_str() == role);
                 index.and_then(|i| pending.remove(i))
             };
             if let Some((_, model)) = claimed {
-                let entry = Entry { cid, role: role.to_owned(), model: model.clone(), name: String::new() };
+                let entry = Entry {
+                    cid,
+                    role: role.to_owned(),
+                    model: model.clone(),
+                    name: String::new(),
+                };
                 let saved = self.mutate(|registry| {
                     registry.spawned.push(entry);
                     if let Some(model) = &model {
@@ -170,7 +195,11 @@ pub fn spawn_respawn(app: Arc<App>) {
         }
         std::thread::sleep(Duration::from_secs(15));
         for entry in app.spawned.entries() {
-            if app.agents.get(entry.cid).is_some_and(|agent| agent.status != Status::Offline) {
+            if app
+                .agents
+                .get(entry.cid)
+                .is_some_and(|agent| agent.status != Status::Offline)
+            {
                 continue;
             }
             let payload = json!({"n": 1, "role": entry.role, "vsock_cid": entry.cid, "vcpus": 1, "memory_mib": 1024});
@@ -180,13 +209,14 @@ pub fn spawn_respawn(app: Arc<App>) {
                     "apid: respawned {} as cid {} (model {model}, HTTP {status})",
                     entry.role, entry.cid
                 ),
-                Ok((status, _)) => eprintln!("apid: respawn of cid {} refused: HTTP {status}", entry.cid),
+                Ok((status, _)) => {
+                    eprintln!("apid: respawn of cid {} refused: HTTP {status}", entry.cid)
+                }
                 Err(e) => eprintln!("apid: respawn of cid {} failed: {e}", entry.cid),
             }
         }
     });
 }
-
 
 impl Store {
     /// The whole state as JSON, for Postgres (`crate::db`); "" when there is nothing to save.
@@ -197,7 +227,8 @@ impl Store {
     /// Replaces the state with a [`Store::snapshot`]; a refusal changes nothing.
     pub fn restore(&self, json: &str) -> Result<(), String> {
         let registry: Registry = serde_json::from_str(json).map_err(|e| e.to_string())?;
-        self.mutate(|current| *current = registry).map_err(|e| e.to_string())
+        self.mutate(|current| *current = registry)
+            .map_err(|e| e.to_string())
     }
 }
 
@@ -263,7 +294,12 @@ mod tests {
         let reloaded = Store::load(path.clone());
         assert_eq!(
             reloaded.entries(),
-            vec![Entry { cid: 42, role: "worker".into(), model: Some("model-a".into()), name: "Ada".into() }]
+            vec![Entry {
+                cid: 42,
+                role: "worker".into(),
+                model: Some("model-a".into()),
+                name: "Ada".into()
+            }]
         );
         assert_eq!(reloaded.model_for(7).as_deref(), Some("model-b"));
 

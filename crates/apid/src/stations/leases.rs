@@ -81,16 +81,33 @@ pub struct Leases {
 
 impl Leases {
     fn guard(&self) -> std::sync::MutexGuard<'_, Vec<Lease>> {
-        self.list.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.list
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Opens a lease. A shared one is active at once; a pixel one is queued until a session is free.
-    pub fn open(&self, station: &str, agent: u64, task: Option<String>, kind: Kind, now: u64) -> Result<Lease, String> {
+    pub fn open(
+        &self,
+        station: &str,
+        agent: u64,
+        task: Option<String>,
+        kind: Kind,
+        now: u64,
+    ) -> Result<Lease, String> {
         let mut list = self.guard();
-        if kind == Kind::Pixel && list.iter().any(|l| l.station == station && l.agent == agent && l.kind == Kind::Pixel) {
+        if kind == Kind::Pixel
+            && list
+                .iter()
+                .any(|l| l.station == station && l.agent == agent && l.kind == Kind::Pixel)
+        {
             return Err("this agent already holds a pixel lease on this workstation".into());
         }
-        let state = if kind == Kind::Pixel { State::Queued } else { State::Active };
+        let state = if kind == Kind::Pixel {
+            State::Queued
+        } else {
+            State::Active
+        };
         let lease = Lease {
             id: format!("l{}", self.seq.fetch_add(1, Ordering::Relaxed) + 1),
             station: station.to_string(),
@@ -111,11 +128,16 @@ impl Leases {
     /// it `Opening`. `None` when nothing is queued or the sessions are full.
     pub fn grant_next(&self, station: &str, capacity: Option<usize>) -> Option<Lease> {
         let mut list = self.guard();
-        let busy = list.iter().filter(|l| l.station == station && l.kind == Kind::Pixel && l.state != State::Queued).count();
+        let busy = list
+            .iter()
+            .filter(|l| l.station == station && l.kind == Kind::Pixel && l.state != State::Queued)
+            .count();
         if capacity.is_some_and(|cap| busy >= cap) {
             return None;
         }
-        let next = list.iter_mut().find(|l| l.station == station && l.kind == Kind::Pixel && l.state == State::Queued)?;
+        let next = list
+            .iter_mut()
+            .find(|l| l.station == station && l.kind == Kind::Pixel && l.state == State::Queued)?;
         next.state = State::Opening;
         Some(next.clone())
     }
@@ -137,7 +159,11 @@ impl Leases {
 
     /// Puts an opening lease back in the queue (its link went away before the session opened).
     pub fn requeue(&self, id: &str) {
-        if let Some(lease) = self.guard().iter_mut().find(|l| l.id == id && l.state == State::Opening) {
+        if let Some(lease) = self
+            .guard()
+            .iter_mut()
+            .find(|l| l.id == id && l.state == State::Opening)
+        {
             lease.state = State::Queued;
         }
     }
@@ -155,12 +181,19 @@ impl Leases {
 
     /// The lease whose pixel session is `session` on `station`.
     pub fn by_session(&self, station: &str, session: u64) -> Option<Lease> {
-        self.guard().iter().find(|l| l.station == station && l.session == Some(session)).cloned()
+        self.guard()
+            .iter()
+            .find(|l| l.station == station && l.session == Some(session))
+            .cloned()
     }
 
     /// Marks the lease of `session` on `station` paused (or not). False when no lease holds that session.
     pub fn set_paused(&self, station: &str, session: u64, paused: bool) -> bool {
-        match self.guard().iter_mut().find(|l| l.station == station && l.session == Some(session)) {
+        match self
+            .guard()
+            .iter_mut()
+            .find(|l| l.station == station && l.session == Some(session))
+        {
             Some(lease) => {
                 lease.paused = paused;
                 true
@@ -180,7 +213,10 @@ impl Leases {
                     queued += 1;
                     queued
                 });
-                LeaseView { lease: lease.clone(), position }
+                LeaseView {
+                    lease: lease.clone(),
+                    position,
+                }
             })
             .collect()
     }
@@ -188,7 +224,8 @@ impl Leases {
     /// Removes every lease of a station (a revoked station's), and returns them.
     pub fn drop_station(&self, station: &str) -> Vec<Lease> {
         let mut list = self.guard();
-        let (gone, kept): (Vec<Lease>, Vec<Lease>) = list.drain(..).partition(|l| l.station == station);
+        let (gone, kept): (Vec<Lease>, Vec<Lease>) =
+            list.drain(..).partition(|l| l.station == station);
         *list = kept;
         gone
     }
@@ -210,7 +247,9 @@ mod tests {
             ram_mb: 8192,
             gpus: vec![],
             displays: vec![],
-            account: AccountMode::AgentUser { name: "agentws".into() },
+            account: AccountMode::AgentUser {
+                name: "agentws".into(),
+            },
             apps: 0,
             virtual_displays,
             ui_tree: true,
@@ -220,12 +259,31 @@ mod tests {
 
     #[test]
     fn capacity_follows_what_the_machine_supports() {
-        assert_eq!(pixel_capacity(&facts(Os::Linux, Form::Desktop, true)), None, "virtual displays: one per agent");
+        assert_eq!(
+            pixel_capacity(&facts(Os::Linux, Form::Desktop, true)),
+            None,
+            "virtual displays: one per agent"
+        );
         assert_eq!(pixel_capacity(&facts(Os::Macos, Form::Mini, true)), None);
-        assert_eq!(pixel_capacity(&facts(Os::Windows, Form::Laptop, false)), Some(1), "a Windows client shares one session");
-        assert_eq!(pixel_capacity(&facts(Os::Windows, Form::Server, false)), None, "a Windows server gives one per agent");
-        assert_eq!(pixel_capacity(&facts(Os::Linux, Form::Vm, false)), None, "a VM gives one per agent");
-        assert_eq!(pixel_capacity(&facts(Os::Macos, Form::Laptop, false)), Some(1));
+        assert_eq!(
+            pixel_capacity(&facts(Os::Windows, Form::Laptop, false)),
+            Some(1),
+            "a Windows client shares one session"
+        );
+        assert_eq!(
+            pixel_capacity(&facts(Os::Windows, Form::Server, false)),
+            None,
+            "a Windows server gives one per agent"
+        );
+        assert_eq!(
+            pixel_capacity(&facts(Os::Linux, Form::Vm, false)),
+            None,
+            "a VM gives one per agent"
+        );
+        assert_eq!(
+            pixel_capacity(&facts(Os::Macos, Form::Laptop, false)),
+            Some(1)
+        );
     }
 
     #[test]
@@ -243,25 +301,50 @@ mod tests {
     #[test]
     fn a_pixel_lease_queues_when_the_machine_has_no_room_and_leaves_in_order() {
         let leases = Leases::default();
-        let first = leases.open("w1", 1, Some("render".into()), Kind::Pixel, 10).unwrap();
+        let first = leases
+            .open("w1", 1, Some("render".into()), Kind::Pixel, 10)
+            .unwrap();
         let second = leases.open("w1", 2, None, Kind::Pixel, 11).unwrap();
         let third = leases.open("w1", 3, None, Kind::Pixel, 12).unwrap();
         assert_eq!(first.state, State::Queued);
 
-        let granted = leases.grant_next("w1", Some(1)).expect("the first one fits");
+        let granted = leases
+            .grant_next("w1", Some(1))
+            .expect("the first one fits");
         assert_eq!(granted.id, first.id, "FIFO");
         assert_eq!(granted.state, State::Opening);
-        assert!(leases.grant_next("w1", Some(1)).is_none(), "one session is open and the second waits");
+        assert!(
+            leases.grant_next("w1", Some(1)).is_none(),
+            "one session is open and the second waits"
+        );
         assert!(leases.granted(&first.id, 9, 20));
-        assert_eq!(leases.by_session("w1", 9).map(|l| l.id), Some(first.id.clone()));
-        assert_eq!(leases.get(&first.id).and_then(|l| l.active_ms), Some(20), "active from its grant, not its queueing");
-        assert_eq!(leases.get(&second.id).and_then(|l| l.active_ms), None, "a waiting lease is not active");
+        assert_eq!(
+            leases.by_session("w1", 9).map(|l| l.id),
+            Some(first.id.clone())
+        );
+        assert_eq!(
+            leases.get(&first.id).and_then(|l| l.active_ms),
+            Some(20),
+            "active from its grant, not its queueing"
+        );
+        assert_eq!(
+            leases.get(&second.id).and_then(|l| l.active_ms),
+            None,
+            "a waiting lease is not active"
+        );
 
         let positions: Vec<Option<usize>> = leases.views("w1").iter().map(|v| v.position).collect();
         assert_eq!(positions, vec![None, Some(1), Some(2)]);
         assert_eq!(leases.remove(&first.id).map(|l| l.id), Some(first.id));
-        assert_eq!(leases.grant_next("w1", Some(1)).map(|l| l.id), Some(second.id.clone()));
-        assert_eq!(leases.grant_next("w1", Some(1)), None, "the session is full again");
+        assert_eq!(
+            leases.grant_next("w1", Some(1)).map(|l| l.id),
+            Some(second.id.clone())
+        );
+        assert_eq!(
+            leases.grant_next("w1", Some(1)),
+            None,
+            "the session is full again"
+        );
         assert_ne!(third.id, second.id);
     }
 
@@ -284,8 +367,14 @@ mod tests {
         let leases = Leases::default();
         leases.open("w1", 7, None, Kind::Pixel, 1).unwrap();
         assert!(leases.open("w1", 7, None, Kind::Pixel, 2).is_err());
-        assert!(leases.open("w2", 7, None, Kind::Pixel, 2).is_ok(), "another station is another place");
-        assert!(leases.open("w1", 7, None, Kind::Shared, 2).is_ok(), "a shared lease is not a pixel one");
+        assert!(
+            leases.open("w2", 7, None, Kind::Pixel, 2).is_ok(),
+            "another station is another place"
+        );
+        assert!(
+            leases.open("w1", 7, None, Kind::Shared, 2).is_ok(),
+            "a shared lease is not a pixel one"
+        );
     }
 
     #[test]
@@ -294,7 +383,10 @@ mod tests {
         let lease = leases.open("w1", 1, None, Kind::Pixel, 1).unwrap();
         leases.grant_next("w1", None).unwrap();
         leases.remove(&lease.id);
-        assert!(!leases.granted(&lease.id, 5, 20), "the grant learns the lease is gone");
+        assert!(
+            !leases.granted(&lease.id, 5, 20),
+            "the grant learns the lease is gone"
+        );
 
         let again = leases.open("w1", 2, None, Kind::Pixel, 2).unwrap();
         leases.grant_next("w1", Some(1)).unwrap();

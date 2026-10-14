@@ -12,13 +12,13 @@ use std::io::Cursor;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokenizers::{PaddingParams, PaddingStrategy, Tokenizer, TruncationParams};
 use tract_onnx::prelude::{
     Framework, InferenceModelExt, IntoRunnable, TValue, Tensor, TypedRunnableModel, tvec,
 };
 
-use crate::inference::{Property, PropType, Schema};
+use crate::inference::{PropType, Property, Schema};
 
 pub const CLASSIFICATION: &str = "text-classification";
 pub const EMBEDDING: &str = "feature-extraction";
@@ -67,14 +67,18 @@ pub fn graph_in(dir: &Path) -> Result<String, String> {
     match found.len() {
         1 => Ok(found.remove(0)),
         0 => Err("no ONNX graph in the download".into()),
-        n => Err(format!("{n} ONNX graphs in the download: import the one you want by its file name")),
+        n => Err(format!(
+            "{n} ONNX graphs in the download: import the one you want by its file name"
+        )),
     }
 }
 
 /// Derives the contract from the download's `config.json` (labels, length) and the repo's task.
 pub fn derive(dir: &Path, graph: &str, task: &str) -> Result<TextContract, String> {
     if !supported(task) {
-        return Err(format!("the task {task:?} is not served yet (text-classification and feature-extraction are)"));
+        return Err(format!(
+            "the task {task:?} is not served yet (text-classification and feature-extraction are)"
+        ));
     }
     if !dir.join("tokenizer.json").exists() {
         return Err("the download has no tokenizer.json".into());
@@ -86,7 +90,11 @@ pub fn derive(dir: &Path, graph: &str, task: &str) -> Result<TextContract, Strin
         .get("max_position_embeddings")
         .and_then(Value::as_u64)
         .map_or(FALLBACK_MAX_POSITIONS, |n| n as usize);
-    let labels = if task == CLASSIFICATION { Some(labels_of(&config)?) } else { None };
+    let labels = if task == CLASSIFICATION {
+        Some(labels_of(&config)?)
+    } else {
+        None
+    };
     Ok(TextContract {
         kind: "text".into(),
         task: task.to_string(),
@@ -98,7 +106,10 @@ pub fn derive(dir: &Path, graph: &str, task: &str) -> Result<TextContract, Strin
 
 /// Class names from config.json's `id2label`, by index.
 fn labels_of(config: &Value) -> Result<Vec<String>, String> {
-    let map = config.get("id2label").and_then(Value::as_object).ok_or("config.json has no id2label")?;
+    let map = config
+        .get("id2label")
+        .and_then(Value::as_object)
+        .ok_or("config.json has no id2label")?;
     let mut labels = Vec::with_capacity(map.len());
     for index in 0..map.len() {
         let name = map
@@ -112,10 +123,15 @@ fn labels_of(config: &Value) -> Result<Vec<String>, String> {
 
 /// The input and output schemas a text task answers with, for the card.
 pub fn schemas(task: &str) -> (Schema, Schema) {
-    let prop = |kind| Property { kind, allowed: None };
+    let prop = |kind| Property {
+        kind,
+        allowed: None,
+    };
     let input = Schema {
         kind: "object".into(),
-        properties: [("text".to_string(), prop(PropType::String))].into_iter().collect(),
+        properties: [("text".to_string(), prop(PropType::String))]
+            .into_iter()
+            .collect(),
         required: vec!["text".into()],
     };
     let output_props: Vec<(&str, PropType)> = if task == CLASSIFICATION {
@@ -125,7 +141,10 @@ pub fn schemas(task: &str) -> (Schema, Schema) {
     };
     let output = Schema {
         kind: "object".into(),
-        properties: output_props.into_iter().map(|(name, kind)| (name.to_string(), prop(kind))).collect(),
+        properties: output_props
+            .into_iter()
+            .map(|(name, kind)| (name.to_string(), prop(kind)))
+            .collect(),
         required: Vec::new(),
     };
     (input, output)
@@ -160,11 +179,14 @@ impl TextModel {
     /// Loads the graph and `tokenizer.json` from `dir`. Offline: nothing is fetched.
     pub fn load(dir: &Path, contract: &TextContract) -> Result<TextModel, String> {
         let max_len = contract.max_len;
-        let mut tokenizer =
-            Tokenizer::from_file(dir.join("tokenizer.json")).map_err(|e| format!("reading tokenizer.json: {e}"))?;
+        let mut tokenizer = Tokenizer::from_file(dir.join("tokenizer.json"))
+            .map_err(|e| format!("reading tokenizer.json: {e}"))?;
         let pad_id = tokenizer.token_to_id("[PAD]").unwrap_or(0);
         tokenizer
-            .with_truncation(Some(TruncationParams { max_length: max_len, ..Default::default() }))
+            .with_truncation(Some(TruncationParams {
+                max_length: max_len,
+                ..Default::default()
+            }))
             .map_err(|e| format!("the tokenizer's truncation: {e}"))?;
         tokenizer.with_padding(Some(PaddingParams {
             strategy: PaddingStrategy::Fixed(max_len),
@@ -173,38 +195,71 @@ impl TextModel {
             ..Default::default()
         }));
 
-        let bytes = fs::read(dir.join(&contract.graph)).map_err(|e| format!("reading {}: {e}", contract.graph))?;
+        let bytes = fs::read(dir.join(&contract.graph))
+            .map_err(|e| format!("reading {}: {e}", contract.graph))?;
         let model = tract_onnx::onnx()
             .model_for_read(&mut Cursor::new(bytes))
             .map_err(|e| format!("reading the ONNX graph: {e:#}"))?;
         // The graph keeps its symbolic batch and sequence dims: pinning them to [1, max_len] makes tract's
         // shape inference fail on the attention masks. The run feeds [1, max_len] tensors instead.
-        let outlets = model.input_outlets().map_err(|e| format!("the graph's inputs: {e:#}"))?.to_vec();
-        let inputs: Vec<String> = outlets.iter().map(|outlet| model.node(outlet.node).name.clone()).collect();
+        let outlets = model
+            .input_outlets()
+            .map_err(|e| format!("the graph's inputs: {e:#}"))?
+            .to_vec();
+        let inputs: Vec<String> = outlets
+            .iter()
+            .map(|outlet| model.node(outlet.node).name.clone())
+            .collect();
         for name in &inputs {
-            if !matches!(name.as_str(), "input_ids" | "attention_mask" | "token_type_ids") {
-                return Err(format!("the graph takes {name:?}, which the text runtime does not feed"));
+            if !matches!(
+                name.as_str(),
+                "input_ids" | "attention_mask" | "token_type_ids"
+            ) {
+                return Err(format!(
+                    "the graph takes {name:?}, which the text runtime does not feed"
+                ));
             }
         }
         let plan = model
             .into_optimized()
             .and_then(|m| m.into_runnable())
             .map_err(|e| format!("the ONNX graph does not run at length {max_len}: {e:#}"))?;
-        Ok(TextModel { contract: contract.clone(), tokenizer, plan, inputs })
+        Ok(TextModel {
+            contract: contract.clone(),
+            tokenizer,
+            plan,
+            inputs,
+        })
     }
 
     /// Runs the model on `{text}` and shapes the answer for the task.
     pub fn invoke(&self, input: &Value) -> Result<Value, String> {
-        let object = input.as_object().ok_or("the input must be an object: {text: string}")?;
-        let text = object.get("text").and_then(Value::as_str).ok_or("the input needs a text string")?;
+        let object = input
+            .as_object()
+            .ok_or("the input must be an object: {text: string}")?;
+        let text = object
+            .get("text")
+            .and_then(Value::as_str)
+            .ok_or("the input needs a text string")?;
         if object.len() != 1 {
             return Err("the input takes only text".into());
         }
-        let encoding = self.tokenizer.encode(text, true).map_err(|e| format!("tokenizing: {e}"))?;
+        let encoding = self
+            .tokenizer
+            .encode(text, true)
+            .map_err(|e| format!("tokenizing: {e}"))?;
         let max_len = self.contract.max_len;
         let ids: Vec<i64> = encoding.get_ids().iter().map(|&x| i64::from(x)).collect();
-        let mask: Vec<i64> = encoding.get_attention_mask().iter().map(|&x| i64::from(x)).collect();
-        let types: Vec<i64> = encoding.get_type_ids().iter().map(|&x| i64::from(x)).collect();
+        let mask: Vec<i64> = encoding
+            .get_attention_mask()
+            .iter()
+            .map(|&x| i64::from(x))
+            .collect();
+        let types: Vec<i64> = encoding
+            .get_type_ids()
+            .iter()
+            .map(|&x| i64::from(x))
+            .collect();
         let mut feeds = tvec!();
         for name in &self.inputs {
             let values = match name.as_str() {
@@ -212,10 +267,14 @@ impl TextModel {
                 "attention_mask" => &mask,
                 _ => &types,
             };
-            let tensor = Tensor::from_shape(&[1, max_len], values).map_err(|e| format!("input tensor: {e:#}"))?;
+            let tensor = Tensor::from_shape(&[1, max_len], values)
+                .map_err(|e| format!("input tensor: {e:#}"))?;
             feeds.push(TValue::from(tensor));
         }
-        let outputs = self.plan.run(feeds).map_err(|e| format!("running the model: {e:#}"))?;
+        let outputs = self
+            .plan
+            .run(feeds)
+            .map_err(|e| format!("running the model: {e:#}"))?;
         let first = outputs.first().ok_or("the model has no outputs")?;
         let shape = first.shape().to_vec();
         let data: Vec<f32> = first
@@ -233,7 +292,10 @@ impl TextModel {
     fn classify(&self, shape: &[usize], logits: &[f32]) -> Result<Value, String> {
         let labels = self.contract.labels.as_deref().unwrap_or_default();
         if shape.len() != 2 || shape[0] != 1 || shape[1] != labels.len() {
-            return Err(format!("the output has shape {shape:?}, not [1, {}] logits", labels.len()));
+            return Err(format!(
+                "the output has shape {shape:?}, not [1, {}] logits",
+                labels.len()
+            ));
         }
         let scores = softmax(logits);
         let mut ranked: Vec<(usize, f32)> = scores.iter().copied().enumerate().collect();
@@ -248,7 +310,9 @@ impl TextModel {
     fn embed(&self, shape: &[usize], hidden: &[f32], mask: &[i64]) -> Result<Value, String> {
         let max_len = self.contract.max_len;
         if shape.len() != 3 || shape[0] != 1 || shape[1] != max_len {
-            return Err(format!("the output has shape {shape:?}, not [1, {max_len}, hidden]"));
+            return Err(format!(
+                "the output has shape {shape:?}, not [1, {max_len}, hidden]"
+            ));
         }
         let width = shape[2];
         let mut pooled = vec![0f32; width];
@@ -309,16 +373,24 @@ mod tests {
     fn the_contract_takes_its_labels_and_length_from_the_config() {
         let contract = classifier_contract();
         assert_eq!(contract.kind, "text");
-        assert_eq!(contract.labels, Some(vec!["NEGATIVE".to_string(), "POSITIVE".to_string()]));
+        assert_eq!(
+            contract.labels,
+            Some(vec!["NEGATIVE".to_string(), "POSITIVE".to_string()])
+        );
         assert_eq!(embedder_contract().labels, None);
-        assert!(derive(fixture(), "classifier.onnx", "translation").is_err(), "an unserved task is refused");
+        assert!(
+            derive(fixture(), "classifier.onnx", "translation").is_err(),
+            "an unserved task is refused"
+        );
     }
 
     #[test]
     fn a_classifier_answers_its_label_and_softmax_scores_deterministically() {
         let model = TextModel::load(fixture(), &classifier_contract()).expect("loads offline");
         // "good great movie" -> [CLS] good great movie [SEP]: the id mean is 5.0, so the logits are [-1, 1].
-        let positive = model.invoke(&json!({ "text": "Good GREAT movie" })).unwrap();
+        let positive = model
+            .invoke(&json!({ "text": "Good GREAT movie" }))
+            .unwrap();
         assert_eq!(positive["label"], "POSITIVE");
         let top = positive["scores"][0]["score"].as_f64().unwrap();
         assert!((top - 0.880_797).abs() < 1e-4, "{positive}");
@@ -326,20 +398,39 @@ mod tests {
         // "awful awful": the id mean is 5.25, so the logits are [1.5, -1.5].
         let negative = model.invoke(&json!({ "text": "awful awful" })).unwrap();
         assert_eq!(negative["label"], "NEGATIVE");
-        assert!((negative["scores"][0]["score"].as_f64().unwrap() - 0.952_574).abs() < 1e-4, "{negative}");
+        assert!(
+            (negative["scores"][0]["score"].as_f64().unwrap() - 0.952_574).abs() < 1e-4,
+            "{negative}"
+        );
         // The same input twice gives the same answer.
-        assert_eq!(model.invoke(&json!({ "text": "awful awful" })).unwrap(), negative);
+        assert_eq!(
+            model.invoke(&json!({ "text": "awful awful" })).unwrap(),
+            negative
+        );
     }
 
     #[test]
     fn an_embedding_is_the_mean_of_the_unmasked_tokens_normalised() {
         let model = TextModel::load(fixture(), &embedder_contract()).expect("loads offline");
         // Tokens [2,5,6,9,3]: channel 0 is the id (mean 5.0), channel 1 is 1; normalised: [5, 1] / sqrt(26).
-        let out = model.invoke(&json!({ "text": "good great movie" })).unwrap();
-        let embedding: Vec<f64> = out["embedding"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).collect();
+        let out = model
+            .invoke(&json!({ "text": "good great movie" }))
+            .unwrap();
+        let embedding: Vec<f64> = out["embedding"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x.as_f64().unwrap())
+            .collect();
         assert_eq!(embedding.len(), 2);
-        assert!((embedding[0] - 5.0 / 26f64.sqrt()).abs() < 1e-4, "{embedding:?}");
-        assert!((embedding[1] - 1.0 / 26f64.sqrt()).abs() < 1e-4, "{embedding:?}");
+        assert!(
+            (embedding[0] - 5.0 / 26f64.sqrt()).abs() < 1e-4,
+            "{embedding:?}"
+        );
+        assert!(
+            (embedding[1] - 1.0 / 26f64.sqrt()).abs() < 1e-4,
+            "{embedding:?}"
+        );
         let norm: f64 = embedding.iter().map(|x| x * x).sum::<f64>().sqrt();
         assert!((norm - 1.0).abs() < 1e-5);
     }
@@ -365,7 +456,9 @@ mod tests {
         }
         let contract = classifier_contract();
         write_contract(&dir, &contract).unwrap();
-        let card: Value = serde_json::from_str(&fs::read_to_string(dir.join("model_card.json")).unwrap()).unwrap();
+        let card: Value =
+            serde_json::from_str(&fs::read_to_string(dir.join("model_card.json")).unwrap())
+                .unwrap();
         assert_eq!(card["serving"]["kind"], "text");
         assert_eq!(card["serving"]["task"], CLASSIFICATION);
         assert_eq!(card["serving"]["max_len"], 8);

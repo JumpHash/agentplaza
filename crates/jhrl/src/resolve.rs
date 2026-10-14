@@ -27,7 +27,14 @@ pub enum Tier {
 }
 
 impl Tier {
-    pub const ALL: [Tier; 6] = [Tier::Constitution, Tier::Statute, Tier::System, Tier::Town, Tier::Contract, Tier::Agent];
+    pub const ALL: [Tier; 6] = [
+        Tier::Constitution,
+        Tier::Statute,
+        Tier::System,
+        Tier::Town,
+        Tier::Contract,
+        Tier::Agent,
+    ];
     pub fn name(self) -> &'static str {
         match self {
             Tier::Constitution => "constitution",
@@ -134,21 +141,47 @@ pub struct Explanation {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum ResolveError {
-    EmptyMeet { kind: String, a: String, b: String, detail: String },
-    SamePackTie { kind: String, a: String, b: String, pack: String },
-    Dimension { kind: String, rule: String, expected: Dim, found: Dim },
+    EmptyMeet {
+        kind: String,
+        a: String,
+        b: String,
+        detail: String,
+    },
+    SamePackTie {
+        kind: String,
+        a: String,
+        b: String,
+        pack: String,
+    },
+    Dimension {
+        kind: String,
+        rule: String,
+        expected: Dim,
+        found: Dim,
+    },
 }
 
 impl fmt::Display for ResolveError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ResolveError::EmptyMeet { kind, a, b, detail } => {
-                write!(f, "{kind}: empty meet between \"{a}\" and \"{b}\" ({detail})")
+                write!(
+                    f,
+                    "{kind}: empty meet between \"{a}\" and \"{b}\" ({detail})"
+                )
             }
             ResolveError::SamePackTie { kind, a, b, pack } => {
-                write!(f, "{kind}: rules \"{a}\" and \"{b}\" in pack {pack} tie on priority")
+                write!(
+                    f,
+                    "{kind}: rules \"{a}\" and \"{b}\" in pack {pack} tie on priority"
+                )
             }
-            ResolveError::Dimension { kind, rule, expected, found } => write!(
+            ResolveError::Dimension {
+                kind,
+                rule,
+                expected,
+                found,
+            } => write!(
                 f,
                 "{kind}: rule \"{rule}\" gives a {} where the kind is {}",
                 found.describe(),
@@ -180,8 +213,16 @@ fn meet(dir: Direction, a: Bound, b: Bound) -> Result<Bound, String> {
             }
         }
         Direction::Exact => {
-            let lo = if cmpq(a.lo(), b.lo()) == Ordering::Less { b.lo() } else { a.lo() };
-            let hi = if cmpq(a.hi(), b.hi()) == Ordering::Greater { b.hi() } else { a.hi() };
+            let lo = if cmpq(a.lo(), b.lo()) == Ordering::Less {
+                b.lo()
+            } else {
+                a.lo()
+            };
+            let hi = if cmpq(a.hi(), b.hi()) == Ordering::Greater {
+                b.hi()
+            } else {
+                a.hi()
+            };
             if cmpq(lo, hi) == Ordering::Greater {
                 return Err(format!("{a} and {b} don't overlap"));
             }
@@ -200,7 +241,9 @@ pub fn at_least_as_tight(dir: Direction, a: Bound, b: Bound) -> bool {
     match dir {
         Direction::Max => cmpq(a.lo(), b.lo()) != Ordering::Greater,
         Direction::Min => cmpq(a.lo(), b.lo()) != Ordering::Less,
-        Direction::Exact => cmpq(a.lo(), b.lo()) != Ordering::Less && cmpq(a.hi(), b.hi()) != Ordering::Greater,
+        Direction::Exact => {
+            cmpq(a.lo(), b.lo()) != Ordering::Less && cmpq(a.hi(), b.hi()) != Ordering::Greater
+        }
         Direction::Prefer => true,
     }
 }
@@ -247,18 +290,32 @@ pub fn resolve(
     };
     for c in &cands {
         if c.value.dim() != dim {
-            return Err(ResolveError::Dimension { kind: kind.into(), rule: c.rule.clone(), expected: dim, found: c.value.dim() });
+            return Err(ResolveError::Dimension {
+                kind: kind.into(),
+                rule: c.rule.clone(),
+                expected: dim,
+                found: c.value.dim(),
+            });
         }
     }
     if cands.is_empty() {
         ex.value = default;
-        ex.source = if default.is_some() { Source::Default } else { Source::Open };
-        ex.decided_by = vec![if default.is_some() { "default".into() } else { "open (no rule, no default)".into() }];
+        ex.source = if default.is_some() {
+            Source::Default
+        } else {
+            Source::Open
+        };
+        ex.decided_by = vec![if default.is_some() {
+            "default".into()
+        } else {
+            "open (no rule, no default)".into()
+        }];
         return Ok(ex);
     }
     // Resolve within each tier.
     for tier in Tier::ALL {
-        let mut in_tier: Vec<Candidate> = cands.iter().filter(|c| c.tier == tier).cloned().collect();
+        let mut in_tier: Vec<Candidate> =
+            cands.iter().filter(|c| c.tier == tier).cloned().collect();
         if in_tier.is_empty() {
             continue;
         }
@@ -267,7 +324,11 @@ pub fn resolve(
         let floors: Vec<&Candidate> = in_tier.iter().filter(|c| c.floor).collect();
         let mut winners: Vec<&Candidate> = Vec::new();
         if let Some(top) = regular.first() {
-            let tied: Vec<&Candidate> = regular.iter().copied().filter(|c| c.priority == top.priority).collect();
+            let tied: Vec<&Candidate> = regular
+                .iter()
+                .copied()
+                .filter(|c| c.priority == top.priority)
+                .collect();
             for (i, a) in tied.iter().enumerate() {
                 for b in &tied[i + 1..] {
                     if a.pack == b.pack {
@@ -308,8 +369,17 @@ pub fn resolve(
                 detail,
             })?;
         }
-        let names = if dir == Direction::Prefer { vec![winners[0].rule.clone()] } else { winners.iter().map(|w| w.rule.clone()).collect() };
-        ex.tiers.push(TierResult { tier, candidates: in_tier.clone(), winners: names, value });
+        let names = if dir == Direction::Prefer {
+            vec![winners[0].rule.clone()]
+        } else {
+            winners.iter().map(|w| w.rule.clone()).collect()
+        };
+        ex.tiers.push(TierResult {
+            tier,
+            candidates: in_tier.clone(),
+            winners: names,
+            value,
+        });
     }
     // Combine across tiers.
     if dir == Direction::Prefer {
@@ -322,7 +392,11 @@ pub fn resolve(
         return Ok(ex);
     }
     let mut acc = ex.tiers[0].value;
-    let mut seen: Vec<(String, Bound)> = ex.tiers[0].winners.iter().map(|w| (w.clone(), ex.tiers[0].value)).collect();
+    let mut seen: Vec<(String, Bound)> = ex.tiers[0]
+        .winners
+        .iter()
+        .map(|w| (w.clone(), ex.tiers[0].value))
+        .collect();
     for t in &ex.tiers[1..] {
         let before = acc;
         for w in &t.winners {
@@ -362,12 +436,30 @@ impl Explanation {
     pub fn render(&self) -> String {
         let mut s = format!("{} ({:?})\n", self.kind, self.direction);
         for t in &self.tiers {
-            let cands: Vec<String> =
-                t.candidates.iter().map(|c| format!("\"{}\" → {}{}", c.rule, c.value, if c.floor { " (floor)" } else { "" })).collect();
-            s.push_str(&format!("  {:<12} {:<50} {}\n", t.tier.name(), cands.join("; "), t.value));
+            let cands: Vec<String> = t
+                .candidates
+                .iter()
+                .map(|c| {
+                    format!(
+                        "\"{}\" → {}{}",
+                        c.rule,
+                        c.value,
+                        if c.floor { " (floor)" } else { "" }
+                    )
+                })
+                .collect();
+            s.push_str(&format!(
+                "  {:<12} {:<50} {}\n",
+                t.tier.name(),
+                cands.join("; "),
+                t.value
+            ));
         }
         match &self.value {
-            Some(v) => s.push_str(&format!("  effective    {v}, decided by {}\n", self.decided_by.join(" and "))),
+            Some(v) => s.push_str(&format!(
+                "  effective    {v}, decided by {}\n",
+                self.decided_by.join(" and ")
+            )),
             None => s.push_str("  effective    open\n"),
         }
         for n in &self.no_effect {
@@ -391,7 +483,14 @@ mod tests {
         Bound::Window(Q(Num::int(a), Dim::NONE), Q(Num::int(b), Dim::NONE))
     }
     fn cand(rule: &str, pack: &str, tier: Tier, priority: i64, value: Bound) -> Candidate {
-        Candidate { rule: rule.into(), pack: pack.into(), tier, priority, floor: false, value }
+        Candidate {
+            rule: rule.into(),
+            pack: pack.into(),
+            tier,
+            priority,
+            floor: false,
+            value,
+        }
     }
 
     #[test]
@@ -402,17 +501,37 @@ mod tests {
             Dim::NONE,
             Some(int(150)),
             vec![
-                cand("Fleet contact limit", "agentplaza.system", Tier::System, 0, int(150)),
-                cand("Research towns keep fewer contacts", "town.research", Tier::Town, 10, int(60)),
+                cand(
+                    "Fleet contact limit",
+                    "agentplaza.system",
+                    Tier::System,
+                    0,
+                    int(150),
+                ),
+                cand(
+                    "Research towns keep fewer contacts",
+                    "town.research",
+                    Tier::Town,
+                    10,
+                    int(60),
+                ),
             ],
         )
         .unwrap();
         assert_eq!(ex.value, Some(int(60)));
-        assert_eq!(ex.decided_by, vec!["Research towns keep fewer contacts".to_string()]);
+        assert_eq!(
+            ex.decided_by,
+            vec!["Research towns keep fewer contacts".to_string()]
+        );
         assert_eq!(ex.tiers.len(), 2);
-        assert_eq!((ex.tiers[0].tier, ex.tiers[0].value), (Tier::System, int(150)));
+        assert_eq!(
+            (ex.tiers[0].tier, ex.tiers[0].value),
+            (Tier::System, int(150))
+        );
         assert_eq!((ex.tiers[1].tier, ex.tiers[1].value), (Tier::Town, int(60)));
-        assert!(ex.render().contains("decided by Research towns keep fewer contacts"));
+        assert!(ex
+            .render()
+            .contains("decided by Research towns keep fewer contacts"));
     }
 
     #[test]
@@ -436,7 +555,10 @@ mod tests {
     #[test]
     fn default_only_without_rules_and_open_without_default() {
         let ex = resolve("k", Direction::Max, Dim::NONE, Some(int(3)), vec![]).unwrap();
-        assert_eq!((ex.value, ex.source.clone()), (Some(int(3)), Source::Default));
+        assert_eq!(
+            (ex.value, ex.source.clone()),
+            (Some(int(3)), Source::Default)
+        );
         let ex = resolve("k", Direction::Max, Dim::NONE, None, vec![]).unwrap();
         assert_eq!((ex.value, ex.source), (None, Source::Open));
     }
@@ -450,7 +572,11 @@ mod tests {
             Direction::Max,
             Dim::NONE,
             None,
-            vec![cand("low", "p", Tier::System, 0, int(10)), cand("high", "p", Tier::System, 9, int(80)), f],
+            vec![
+                cand("low", "p", Tier::System, 0, int(10)),
+                cand("high", "p", Tier::System, 9, int(80)),
+                f,
+            ],
         )
         .unwrap();
         // high (80) wins on priority, the floor (40) meets it: min(80, 40) = 40.
@@ -465,7 +591,10 @@ mod tests {
             Direction::Max,
             Dim::NONE,
             None,
-            vec![cand("a", "p", Tier::System, 0, int(1)), cand("b", "p", Tier::System, 0, int(2))],
+            vec![
+                cand("a", "p", Tier::System, 0, int(1)),
+                cand("b", "p", Tier::System, 0, int(2)),
+            ],
         );
         assert!(matches!(e, Err(ResolveError::SamePackTie { .. })));
         let ex = resolve(
@@ -473,7 +602,10 @@ mod tests {
             Direction::Max,
             Dim::NONE,
             None,
-            vec![cand("a", "p", Tier::System, 0, int(1)), cand("b", "q", Tier::System, 0, int(2))],
+            vec![
+                cand("a", "p", Tier::System, 0, int(1)),
+                cand("b", "q", Tier::System, 0, int(2)),
+            ],
         )
         .unwrap();
         assert_eq!(ex.value, Some(int(1)));
@@ -487,7 +619,10 @@ mod tests {
             Direction::Exact,
             Dim::NONE,
             None,
-            vec![cand("wide", "s", Tier::System, 0, win(10, 20)), cand("narrow", "t", Tier::Town, 0, win(12, 30))],
+            vec![
+                cand("wide", "s", Tier::System, 0, win(10, 20)),
+                cand("narrow", "t", Tier::Town, 0, win(12, 30)),
+            ],
         )
         .unwrap();
         assert_eq!(ex.value, Some(win(12, 20)));
@@ -496,7 +631,10 @@ mod tests {
             Direction::Exact,
             Dim::NONE,
             None,
-            vec![cand("low", "s", Tier::System, 0, win(1, 2)), cand("high", "t", Tier::Town, 0, win(5, 6))],
+            vec![
+                cand("low", "s", Tier::System, 0, win(1, 2)),
+                cand("high", "t", Tier::Town, 0, win(5, 6)),
+            ],
         )
         .unwrap_err();
         match e {
@@ -514,7 +652,10 @@ mod tests {
             Direction::Min,
             Dim::NONE,
             Some(int(5)),
-            vec![cand("sys", "s", Tier::System, 0, int(5)), cand("town", "t", Tier::Town, 0, int(9))],
+            vec![
+                cand("sys", "s", Tier::System, 0, int(5)),
+                cand("town", "t", Tier::Town, 0, int(9)),
+            ],
         )
         .unwrap();
         assert_eq!(ex.value, Some(int(9)));
@@ -527,7 +668,10 @@ mod tests {
             Direction::Prefer,
             Dim::NONE,
             None,
-            vec![cand("agent", "a", Tier::Agent, 99, int(1)), cand("sys", "s", Tier::System, 0, int(2))],
+            vec![
+                cand("agent", "a", Tier::Agent, 99, int(1)),
+                cand("sys", "s", Tier::System, 0, int(2)),
+            ],
         )
         .unwrap();
         assert_eq!(ex.value, Some(int(2)));
@@ -550,7 +694,10 @@ mod tests {
     struct Lcg(u64);
     impl Lcg {
         fn next(&mut self) -> u64 {
-            self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            self.0 = self
+                .0
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             self.0 >> 33
         }
         fn below(&mut self, n: u64) -> u64 {
@@ -579,17 +726,32 @@ mod tests {
             for i in 0..n {
                 let tier = Tier::ALL[g.below(6) as usize];
                 // distinct packs per rule, so ties are meets rather than errors
-                let mut c = cand(&format!("r{i}"), &format!("p{i}"), tier, g.below(3) as i64, random_bound(&mut g, dir));
+                let mut c = cand(
+                    &format!("r{i}"),
+                    &format!("p{i}"),
+                    tier,
+                    g.below(3) as i64,
+                    random_bound(&mut g, dir),
+                );
                 c.floor = g.below(5) == 0;
                 rules.push(c);
             }
-            let Ok(before) = resolve("k", dir, Dim::NONE, Some(int(100)), rules.clone()) else { continue };
+            let Ok(before) = resolve("k", dir, Dim::NONE, Some(int(100)), rules.clone()) else {
+                continue;
+            };
             let lowest = rules.iter().map(|r| r.tier).max().unwrap();
             // (1) A rule at a tier strictly below every existing rule never loosens the result.
             if lowest != Tier::Agent {
-                let tier = Tier::ALL[lowest as usize + 1 + g.below((Tier::Agent as u64) - lowest as u64) as usize];
+                let tier = Tier::ALL
+                    [lowest as usize + 1 + g.below((Tier::Agent as u64) - lowest as u64) as usize];
                 let mut more = rules.clone();
-                more.push(cand("new", "pnew", tier, g.below(3) as i64, random_bound(&mut g, dir)));
+                more.push(cand(
+                    "new",
+                    "pnew",
+                    tier,
+                    g.below(3) as i64,
+                    random_bound(&mut g, dir),
+                ));
                 if let Ok(after) = resolve("k", dir, Dim::NONE, Some(int(100)), more) {
                     assert!(
                         at_least_as_tight(dir, after.value.unwrap(), before.value.unwrap()),
@@ -603,7 +765,10 @@ mod tests {
             }
             // (2) The result is always at least as tight as every tier's own result.
             for t in &before.tiers {
-                assert!(at_least_as_tight(dir, before.value.unwrap(), t.value), "round {round}");
+                assert!(
+                    at_least_as_tight(dir, before.value.unwrap(), t.value),
+                    "round {round}"
+                );
             }
         }
         assert!(checked > 1000, "only {checked} cases checked");

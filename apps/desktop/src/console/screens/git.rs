@@ -6,21 +6,29 @@
 use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use iced::widget::{button, column, container, pick_list, row, stack, text, text_editor, text_input, Space};
-use iced::{font, keyboard, Alignment, Border, Color, Element, Font, Length, Padding, Task, Theme};
+use iced::widget::{
+    Space, button, column, container, pick_list, row, stack, text, text_editor, text_input,
+};
+use iced::{Alignment, Border, Color, Element, Font, Length, Padding, Task, Theme, font, keyboard};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use super::{ide, Id};
+use super::{Id, ide};
 use crate::console::client::{self, Client};
-use crate::console::ui::{self, Kind, Tone, INK, INK_2, INK_3};
-use crate::console::{rich, Ctx};
+use crate::console::ui::{self, INK, INK_2, INK_3, Kind, Tone};
+use crate::console::{Ctx, rich};
 use crate::theme::{self};
 
 /// Serif semibold: a pull request's title.
-const SANS_SEMIBOLD: Font = Font { weight: font::Weight::Semibold, ..theme::SANS };
+const SANS_SEMIBOLD: Font = Font {
+    weight: font::Weight::Semibold,
+    ..theme::SANS
+};
 /// Serif bold: a review's author.
-const SANS_BOLD: Font = Font { weight: font::Weight::Bold, ..theme::SANS };
+const SANS_BOLD: Font = Font {
+    weight: font::Weight::Bold,
+    ..theme::SANS
+};
 
 // ---- Data (the shapes of `apps/web/src/api.ts`) ----------------------------------------------
 
@@ -368,13 +376,20 @@ fn on_rich(action: rich::RichAction) -> Msg {
 /// The rich context of the open repository: its name is "owner/repo" for a plaza repository, which makes `PR #N` a
 /// pull of it.
 fn rich_ctx(state: &State) -> rich::RichCtx {
-    rich::context(&state.cards, None, state.repo.contains('/').then_some(state.repo.as_str()), None)
+    rich::context(
+        &state.cards,
+        None,
+        state.repo.contains('/').then_some(state.repo.as_str()),
+        None,
+    )
 }
 
 /// Asks the hub for the cards of the open pull request's description and discussion that it does not hold yet.
 fn prefetch(state: &mut State, ctx: &Ctx) -> Task<Msg> {
     let texts: Vec<&str> = match state.data.pull.as_ref() {
-        Some(d) => std::iter::once(d.body.as_str()).chain(d.discussion.iter().map(|c| c.body.as_str())).collect(),
+        Some(d) => std::iter::once(d.body.as_str())
+            .chain(d.discussion.iter().map(|c| c.body.as_str()))
+            .collect(),
         None => Vec::new(),
     };
     let rctx = rich_ctx(state);
@@ -403,13 +418,20 @@ fn refresh(state: &State, ctx: &Ctx) -> Task<Msg> {
     let q = query(state);
     let tag = q.clone();
     let client = ctx.client.clone();
-    client::task(move || fetch(&client, &q), move |res| Msg::Loaded(tag.clone(), res))
+    client::task(
+        move || fetch(&client, &q),
+        move |res| Msg::Loaded(tag.clone(), res),
+    )
 }
 
 /// Fetches what the open view shows: the host, the repositories, and the open repository's tab.
 fn fetch(client: &Client, q: &Query) -> Result<Data, String> {
     let git: GitInfo = client.get("/v1/git")?;
-    let mut d = Data { configured: Some(git.configured), org: git.org, ..Data::default() };
+    let mut d = Data {
+        configured: Some(git.configured),
+        org: git.org,
+        ..Data::default()
+    };
     if !git.configured {
         return Ok(d);
     }
@@ -421,21 +443,42 @@ fn fetch(client: &Client, q: &Query) -> Result<Data, String> {
     d.branches = client.get(&format!("{base}/branches"))?;
     match q.tab {
         Tab::Code if !q.git_ref.is_empty() => {
-            d.tree = client.get(&format!("{base}/tree?ref={}&path={}", enc(&q.git_ref), enc(&q.path)))?;
+            d.tree = client.get(&format!(
+                "{base}/tree?ref={}&path={}",
+                enc(&q.git_ref),
+                enc(&q.path)
+            ))?;
             if !q.file.is_empty() {
-                d.file = Some(client.get(&format!("{base}/file?ref={}&path={}", enc(&q.git_ref), enc(&q.file)))?);
-            } else if let Some(readme) = d.tree.iter().find(|e| e.kind == "file" && e.name == "README.md") {
-                let f: FileView = client.get(&format!("{base}/file?ref={}&path={}", enc(&q.git_ref), enc(&readme.path)))?;
+                d.file = Some(client.get(&format!(
+                    "{base}/file?ref={}&path={}",
+                    enc(&q.git_ref),
+                    enc(&q.file)
+                ))?);
+            } else if let Some(readme) = d
+                .tree
+                .iter()
+                .find(|e| e.kind == "file" && e.name == "README.md")
+            {
+                let f: FileView = client.get(&format!(
+                    "{base}/file?ref={}&path={}",
+                    enc(&q.git_ref),
+                    enc(&readme.path)
+                ))?;
                 d.readme = Some(f);
             }
         }
-        Tab::Commits => d.commits = client.get(&format!("{base}/commits?ref={}&limit=30", enc(&q.git_ref)))?,
+        Tab::Commits => {
+            d.commits = client.get(&format!("{base}/commits?ref={}&limit=30", enc(&q.git_ref)))?
+        }
         Tab::Pulls => match q.pr {
             Some(n) => d.pull = Some(client.get(&format!("{base}/pulls/{n}"))?),
             None => {
                 // Every page loaded so far, in order: a poll keeps the list as the reader paged it.
                 for page in 1..=q.pages {
-                    let rows: Vec<Pull> = client.get(&format!("{base}/pulls?state={}&page={page}&limit={PULL_PAGE}", q.pulls.key()))?;
+                    let rows: Vec<Pull> = client.get(&format!(
+                        "{base}/pulls?state={}&page={page}&limit={PULL_PAGE}",
+                        q.pulls.key()
+                    ))?;
                     let full = rows.len() as u64 == PULL_PAGE;
                     d.pulls.extend(rows);
                     d.pulls_more = full;
@@ -452,11 +495,21 @@ fn fetch(client: &Client, q: &Query) -> Result<Data, String> {
 
 /// The branch the code tab should show when the chosen one is gone: the default, else the first.
 fn fix_ref(state: &State) -> Option<String> {
-    let names: Vec<&str> = state.data.branches.iter().map(|b| b.name.as_str()).collect();
+    let names: Vec<&str> = state
+        .data
+        .branches
+        .iter()
+        .map(|b| b.name.as_str())
+        .collect();
     if names.is_empty() || names.contains(&state.git_ref.as_str()) {
         return None;
     }
-    let default = state.data.repos.iter().find(|r| r.name == state.repo).map(|r| r.default_branch.as_str());
+    let default = state
+        .data
+        .repos
+        .iter()
+        .find(|r| r.name == state.repo)
+        .map(|r| r.default_branch.as_str());
     let pick = match default {
         Some(d) if names.contains(&d) => d,
         _ => names[0],
@@ -575,7 +628,12 @@ fn apply(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                 // The base starts on the repository's default branch; the head is the reader's pick.
                 state.pr_title.clear();
                 state.pr_head = None;
-                state.pr_base = state.data.repos.iter().find(|r| r.name == state.repo).map(|r| r.default_branch.clone());
+                state.pr_base = state
+                    .data
+                    .repos
+                    .iter()
+                    .find(|r| r.name == state.repo)
+                    .map(|r| r.default_branch.clone());
             }
             if modal == Modal::Merge {
                 state.merge_style = MergeStyle::Merge;
@@ -601,7 +659,8 @@ fn apply(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                 return Task::none();
             }
             let (Some(head), Some(base)) = (state.pr_head.clone(), state.pr_base.clone()) else {
-                state.error = Some("Pick the branch to merge from and the branch to merge into".into());
+                state.error =
+                    Some("Pick the branch to merge from and the branch to merge into".into());
                 return Task::none();
             };
             if head == base {
@@ -611,7 +670,10 @@ fn apply(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             let payload = json!({ "title": title, "head": head, "base": base, "body": state.body.text().trim() });
             let path = format!("/v1/git/repos/{}/pulls", state.repo);
             let client = ctx.client.clone();
-            client::task(move || client.post::<Pull>(&path, &payload), Msg::PullCreated)
+            client::task(
+                move || client.post::<Pull>(&path, &payload),
+                Msg::PullCreated,
+            )
         }
         Msg::PullCreated(res) => match res {
             Ok(pull) => {
@@ -642,7 +704,14 @@ fn apply(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             let path = format!("/v1/git/repos/{}/pulls/{n}/comments", state.repo);
             let payload = json!({ "body": body });
             let client = ctx.client.clone();
-            client::task(move || client.post::<Value>(&path, &payload).map(|_| "Comment posted".to_string()), Msg::Commented)
+            client::task(
+                move || {
+                    client
+                        .post::<Value>(&path, &payload)
+                        .map(|_| "Comment posted".to_string())
+                },
+                Msg::Commented,
+            )
         }
         Msg::Commented(res) => match res {
             Ok(notice) => {
@@ -663,7 +732,14 @@ fn apply(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             let payload = json!({ "state": to });
             let client = ctx.client.clone();
             let done = if to == "closed" { "closed" } else { "reopened" };
-            client::task(move || client.post::<Value>(&path, &payload).map(|_| format!("#{n} {done}")), Msg::Acted)
+            client::task(
+                move || {
+                    client
+                        .post::<Value>(&path, &payload)
+                        .map(|_| format!("#{n} {done}"))
+                },
+                Msg::Acted,
+            )
         }
         Msg::NewName(name) => {
             state.new_name = name;
@@ -685,7 +761,14 @@ fn apply(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             }
             let payload = json!({ "name": name.clone(), "description": state.body.text().trim() });
             let client = ctx.client.clone();
-            client::task(move || client.post::<Value>("/v1/git/repos", &payload).map(|_| name), Msg::Created)
+            client::task(
+                move || {
+                    client
+                        .post::<Value>("/v1/git/repos", &payload)
+                        .map(|_| name)
+                },
+                Msg::Created,
+            )
         }
         Msg::Created(res) => match res {
             Ok(name) => {
@@ -719,7 +802,14 @@ fn apply(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             let payload = json!({ "event": event.event(), "body": body });
             let client = ctx.client.clone();
             let label = event.label();
-            client::task(move || client.call("POST", &path, Some(&payload)).map(|_| format!("{label} sent")), Msg::Acted)
+            client::task(
+                move || {
+                    client
+                        .call("POST", &path, Some(&payload))
+                        .map(|_| format!("{label} sent"))
+                },
+                Msg::Acted,
+            )
         }
         Msg::Merge => {
             let Some(n) = state.pr else {
@@ -728,7 +818,14 @@ fn apply(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             let path = format!("/v1/git/repos/{}/pulls/{n}/merge", state.repo);
             let payload = json!({ "style": state.merge_style.key() });
             let client = ctx.client.clone();
-            client::task(move || client.call("POST", &path, Some(&payload)).map(|_| format!("#{n} merged")), Msg::Acted)
+            client::task(
+                move || {
+                    client
+                        .call("POST", &path, Some(&payload))
+                        .map(|_| format!("#{n} merged"))
+                },
+                Msg::Acted,
+            )
         }
         Msg::Acted(res) => match res {
             Ok(notice) => {
@@ -753,14 +850,21 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
             Some(e) => ui::sheet(
                 ui::view_head("Git", vec![]),
                 column![
-                    ui::empty("git", "The git host is offline", "Start the Forgejo container to browse repositories."),
+                    ui::empty(
+                        "git",
+                        "The git host is offline",
+                        "Start the Forgejo container to browse repositories."
+                    ),
                     ui::error_line(e),
                 ]
                 .into(),
             ),
             None => ui::sheet(ui::view_head("Git", vec![]), ui::loading()),
         },
-        Some(false) => ui::sheet(ui::view_head("Git", vec![]), ui::empty("git", "The git host is not configured.", "")),
+        Some(false) => ui::sheet(
+            ui::view_head("Git", vec![]),
+            ui::empty("git", "The git host is not configured.", ""),
+        ),
         Some(true) if state.repo.is_empty() => repos_page(state),
         Some(true) if state.pr.is_some() => pull_page(state),
         Some(true) => repo_page(state),
@@ -785,9 +889,18 @@ fn sheet<'a>(state: &'a State, head: Element<'a, Msg>, body: Element<'a, Msg>) -
 }
 
 fn repos_page<'a>(state: &'a State) -> Element<'a, Msg> {
-    let create = ui::btn("New repository", None, Kind::Primary, Some(Msg::Modal(Modal::NewRepo)));
+    let create = ui::btn(
+        "New repository",
+        None,
+        Kind::Primary,
+        Some(Msg::Modal(Modal::NewRepo)),
+    );
     let body: Element<'a, Msg> = if state.data.repos.is_empty() {
-        ui::empty("git", "No repositories yet", "Create one for the agents to clone and push to.")
+        ui::empty(
+            "git",
+            "No repositories yet",
+            "Create one for the agents to clone and push to.",
+        )
     } else {
         let mut rows: Vec<Element<'a, Msg>> = Vec::new();
         for r in &state.data.repos {
@@ -800,10 +913,21 @@ fn repos_page<'a>(state: &'a State) -> Element<'a, Msg> {
 }
 
 fn repo_row<'a>(r: &Repo) -> Element<'a, Msg> {
-    let description = if r.description.is_empty() { "No description".to_string() } else { r.description.clone() };
-    let name = text(r.name.clone()).font(ui::SANS_SEMIBOLD).size(14.0).color(INK);
+    let description = if r.description.is_empty() {
+        "No description".to_string()
+    } else {
+        r.description.clone()
+    };
+    let name = text(r.name.clone())
+        .font(ui::SANS_SEMIBOLD)
+        .size(14.0)
+        .color(INK);
     let info = column![name, ui::prose(description).size(13.0).color(INK_2)].spacing(2);
-    let pulls = if r.open_prs == 1 { "pull request" } else { "pull requests" };
+    let pulls = if r.open_prs == 1 {
+        "pull request"
+    } else {
+        "pull requests"
+    };
     let meta = column![
         ui::sans(r.default_branch.clone(), 11.0, INK_3),
         ui::faint(format!("{} open {pulls}", r.open_prs)),
@@ -828,13 +952,23 @@ fn repo_row<'a>(r: &Repo) -> Element<'a, Msg> {
 fn repo_page<'a>(state: &'a State) -> Element<'a, Msg> {
     let back = ui::btn("Repositories", None, Kind::Ghost, Some(Msg::Home));
     if !state.data.repos.iter().any(|r| r.name == state.repo) {
-        return sheet(state, ui::view_head(&state.repo, vec![back]), ui::empty("git", "No such repository", "It may have been removed."));
+        return sheet(
+            state,
+            ui::view_head(&state.repo, vec![back]),
+            ui::empty("git", "No such repository", "It may have been removed."),
+        );
     }
-    let url = container(ui::mono(clone_url(state), 13.0, INK)).padding([4, 8]).style(|_: &Theme| container::Style {
-        background: Some(crate::theme::palette().sheet.into()),
-        border: Border { color: crate::theme::palette().rule, width: 1.0, radius: 0.0.into() },
-        ..Default::default()
-    });
+    let url = container(ui::mono(clone_url(state), 13.0, INK))
+        .padding([4, 8])
+        .style(|_: &Theme| container::Style {
+            background: Some(crate::theme::palette().sheet.into()),
+            border: Border {
+                color: crate::theme::palette().rule,
+                width: 1.0,
+                radius: 0.0.into(),
+            },
+            ..Default::default()
+        });
     let clone = row![
         ui::label("Clone"),
         url,
@@ -842,13 +976,22 @@ fn repo_page<'a>(state: &'a State) -> Element<'a, Msg> {
     ]
     .spacing(12)
     .align_y(Alignment::Center);
-    let tabs: Vec<Element<'a, Msg>> = [(Tab::Code, "Code"), (Tab::Commits, "Commits"), (Tab::Branches, "Branches"), (Tab::Pulls, "Pull requests")]
-        .into_iter()
-        .map(|(tab, label)| {
-            let kind = if tab == state.tab { Kind::Secondary } else { Kind::Ghost };
-            ui::btn(label, None, kind, Some(Msg::Tab(tab)))
-        })
-        .collect();
+    let tabs: Vec<Element<'a, Msg>> = [
+        (Tab::Code, "Code"),
+        (Tab::Commits, "Commits"),
+        (Tab::Branches, "Branches"),
+        (Tab::Pulls, "Pull requests"),
+    ]
+    .into_iter()
+    .map(|(tab, label)| {
+        let kind = if tab == state.tab {
+            Kind::Secondary
+        } else {
+            Kind::Ghost
+        };
+        ui::btn(label, None, kind, Some(Msg::Tab(tab)))
+    })
+    .collect();
     let body = match state.tab {
         Tab::Code => code_view(state),
         Tab::Commits => commits_view(state),
@@ -856,27 +999,60 @@ fn repo_page<'a>(state: &'a State) -> Element<'a, Msg> {
         Tab::Pulls => pulls_view(state),
     };
     let content = column![clone, row(tabs).spacing(6), body].spacing(16);
-    sheet(state, ui::view_head(&state.repo, vec![back]), content.into())
+    sheet(
+        state,
+        ui::view_head(&state.repo, vec![back]),
+        content.into(),
+    )
 }
 
 fn code_view<'a>(state: &'a State) -> Element<'a, Msg> {
     if state.data.branches.is_empty() {
-        return ui::empty("git", "Nothing pushed yet", "This repository has no branches.");
+        return ui::empty(
+            "git",
+            "Nothing pushed yet",
+            "This repository has no branches.",
+        );
     }
-    let mut items: Vec<Element<'a, Msg>> = vec![branch_picker(state), crumbs(state), dir_table(&state.data.tree)];
+    let mut items: Vec<Element<'a, Msg>> = vec![
+        branch_picker(state),
+        crumbs(state),
+        dir_table(&state.data.tree),
+    ];
     if let Some(file) = &state.data.file {
         // The file's branch: the one browsed, else the repository's default. No branch, no link.
-        let branch = if state.git_ref.is_empty() { state.data.repos.iter().find(|r| r.name == state.repo).map(|r| r.default_branch.clone()) } else { Some(state.git_ref.clone()) };
+        let branch = if state.git_ref.is_empty() {
+            state
+                .data
+                .repos
+                .iter()
+                .find(|r| r.name == state.repo)
+                .map(|r| r.default_branch.clone())
+        } else {
+            Some(state.git_ref.clone())
+        };
         if let Some(branch) = branch.filter(|b| !b.is_empty()) {
-            let target = ide::target(&format!("repo:{}@{branch}", state.repo), false, Some(state.file_path.as_str()));
-            items.push(ui::btn_sm("Open in IDE", Some("square-code"), Kind::Ghost, Some(Msg::OpenIde(target))));
+            let target = ide::target(
+                &format!("repo:{}@{branch}", state.repo),
+                false,
+                Some(state.file_path.as_str()),
+            );
+            items.push(ui::btn_sm(
+                "Open in IDE",
+                Some("square-code"),
+                Kind::Ghost,
+                Some(Msg::OpenIde(target)),
+            ));
         }
         items.push(file_block(&state.file_path, file));
     } else if let Some(readme) = &state.data.readme {
         if let Some(source) = &readme.text {
             // The web shows the README as plain text in a file box, not rendered.
             let body = container(ui::prose(source.clone()).size(14.0)).padding([12, 14]);
-            items.push(filebox(ui::sans("README.md", 13.0, INK).into(), body.into()));
+            items.push(filebox(
+                ui::sans("README.md", 13.0, INK).into(),
+                body.into(),
+            ));
         }
     }
     column(items).spacing(14).into()
@@ -886,12 +1062,18 @@ fn code_view<'a>(state: &'a State) -> Element<'a, Msg> {
 fn branch_picker<'a>(state: &'a State) -> Element<'a, Msg> {
     let names: Vec<String> = state.data.branches.iter().map(|b| b.name.clone()).collect();
     let picker = pick_list(names, Some(state.git_ref.clone()), Msg::Branch);
-    row![ui::label("Branch"), picker].spacing(10).align_y(Alignment::Center).into()
+    row![ui::label("Branch"), picker]
+        .spacing(10)
+        .align_y(Alignment::Center)
+        .into()
 }
 
 fn crumbs<'a>(state: &'a State) -> Element<'a, Msg> {
     let mut items: Vec<Element<'a, Msg>> = Vec::new();
-    for (i, (label_text, to)) in crumb_trail(&state.repo, &state.path).into_iter().enumerate() {
+    for (i, (label_text, to)) in crumb_trail(&state.repo, &state.path)
+        .into_iter()
+        .enumerate()
+    {
         if i > 0 {
             items.push(ui::sans("/", 13.0, INK_3).into());
         }
@@ -905,19 +1087,45 @@ fn dir_table<'a>(tree: &[Entry]) -> Element<'a, Msg> {
         return ui::empty("git", "Empty directory", "");
     }
     let mut sorted: Vec<&Entry> = tree.iter().collect();
-    sorted.sort_by(|a, b| (a.kind != "dir").cmp(&(b.kind != "dir")).then_with(|| a.name.cmp(&b.name)));
+    sorted.sort_by(|a, b| {
+        (a.kind != "dir")
+            .cmp(&(b.kind != "dir"))
+            .then_with(|| a.name.cmp(&b.name))
+    });
     let mut rows: Vec<Element<'a, Msg>> = vec![
-        row![cell(Length::Fill, ui::label("Name")), cell(Length::Fixed(120.0), ui::label("Size"))].padding([8, 0]).into(),
+        row![
+            cell(Length::Fill, ui::label("Name")),
+            cell(Length::Fixed(120.0), ui::label("Size"))
+        ]
+        .padding([8, 0])
+        .into(),
     ];
     for e in sorted {
         let dir = e.kind == "dir";
-        let label = if dir { format!("{}/", e.name) } else { e.name.clone() };
-        let on_press = if dir { Msg::Dir(e.path.clone()) } else { Msg::File(e.path.clone()) };
-        let size = if dir { "—".to_string() } else { fmt_size(e.size) };
+        let label = if dir {
+            format!("{}/", e.name)
+        } else {
+            e.name.clone()
+        };
+        let on_press = if dir {
+            Msg::Dir(e.path.clone())
+        } else {
+            Msg::File(e.path.clone())
+        };
+        let size = if dir {
+            "—".to_string()
+        } else {
+            fmt_size(e.size)
+        };
         rows.push(
             row![
                 cell(Length::Fill, link(&label, on_press)),
-                cell(Length::Fixed(120.0), container(ui::sans(size, 13.0, INK_2)).width(Length::Fill).align_x(Alignment::End)),
+                cell(
+                    Length::Fixed(120.0),
+                    container(ui::sans(size, 13.0, INK_2))
+                        .width(Length::Fill)
+                        .align_x(Alignment::End)
+                ),
             ]
             .spacing(12)
             .align_y(Alignment::Center)
@@ -944,7 +1152,10 @@ fn file_block<'a>(path: &str, file: &'a FileView) -> Element<'a, Msg> {
                     .enumerate()
                     .map(|(i, line)| {
                         row![
-                            container(ui::sans((i + 1).to_string(), 13.0, INK_3)).width(Length::Fixed(44.0)).padding([0, 8]).align_x(Alignment::End),
+                            container(ui::sans((i + 1).to_string(), 13.0, INK_3))
+                                .width(Length::Fixed(44.0))
+                                .padding([0, 8])
+                                .align_x(Alignment::End),
                             rule_col(),
                             ui::mono(line.to_string(), 13.0, INK),
                         ]
@@ -952,12 +1163,18 @@ fn file_block<'a>(path: &str, file: &'a FileView) -> Element<'a, Msg> {
                         .into()
                     })
                     .collect();
-                ui::scroll(column(rows).padding([8, 0])).width(Length::Fill).into()
+                ui::scroll(column(rows).padding([8, 0]))
+                    .width(Length::Fill)
+                    .into()
             }
         }
     };
-    let head = row![ui::mono(path.to_string(), 13.0, INK), Space::new().width(Length::Fill), ui::faint(fmt_size(file.size))]
-        .align_y(Alignment::Center);
+    let head = row![
+        ui::mono(path.to_string(), 13.0, INK),
+        Space::new().width(Length::Fill),
+        ui::faint(fmt_size(file.size))
+    ]
+    .align_y(Alignment::Center);
     filebox(head.into(), body)
 }
 
@@ -969,7 +1186,11 @@ fn filebox<'a>(head: Element<'a, Msg>, body: Element<'a, Msg>) -> Element<'a, Ms
         .width(Length::Fill)
         .style(|_: &Theme| container::Style {
             background: Some(crate::theme::palette().sheet.into()),
-            border: Border { color: crate::theme::palette().rule, width: 1.0, radius: 0.0.into() },
+            border: Border {
+                color: crate::theme::palette().rule,
+                width: 1.0,
+                radius: 0.0.into(),
+            },
             ..Default::default()
         })
         .into()
@@ -977,51 +1198,75 @@ fn filebox<'a>(head: Element<'a, Msg>, body: Element<'a, Msg>) -> Element<'a, Ms
 
 /// A hairline rule in the web's `--rule` colour.
 fn rule_line<'a>() -> Element<'a, Msg> {
-    container(Space::new().height(1.0)).width(Length::Fill).style(|_: &Theme| container::Style {
-        background: Some(crate::theme::palette().rule.into()),
-        ..Default::default()
-    })
-    .into()
+    container(Space::new().height(1.0))
+        .width(Length::Fill)
+        .style(|_: &Theme| container::Style {
+            background: Some(crate::theme::palette().rule.into()),
+            ..Default::default()
+        })
+        .into()
 }
 
 /// A vertical rule, as tall as its row.
 fn rule_col<'a>() -> Element<'a, Msg> {
-    container(Space::new().width(1.0).height(Length::Fill)).style(|_: &Theme| container::Style {
-        background: Some(crate::theme::palette().rule.into()),
-        ..Default::default()
-    })
-    .into()
+    container(Space::new().width(1.0).height(Length::Fill))
+        .style(|_: &Theme| container::Style {
+            background: Some(crate::theme::palette().rule.into()),
+            ..Default::default()
+        })
+        .into()
 }
 
 /// A bare link in mono (the web's `.git-link`): crumbs, folder and file names, the trail.
 fn link<'a>(label_text: &str, msg: Msg) -> Element<'a, Msg> {
     button(ui::sans(label_text.to_string(), 13.0, INK))
         .padding(0)
-        .style(|_: &Theme, _| button::Style { background: None, text_color: INK, ..Default::default() })
+        .style(|_: &Theme, _| button::Style {
+            background: None,
+            text_color: INK,
+            ..Default::default()
+        })
         .on_press(msg)
         .into()
 }
 
 /// A repository's project chip: a ruled box in serif 12 (the web's `.git-chip`).
 fn chip<'a>(label_text: &str, msg: Msg) -> Element<'a, Msg> {
-    button(text(label_text.to_string()).font(theme::SANS).size(12.0).color(INK_2))
-        .padding([1, 8])
-        .style(|_: &Theme, status: button::Status| {
-            let edge = if matches!(status, button::Status::Hovered) { INK_2 } else { crate::theme::palette().rule };
-            button::Style {
-                background: None,
-                text_color: INK_2,
-                border: Border { color: edge, width: 1.0, radius: 0.0.into() },
-                ..Default::default()
-            }
-        })
-        .on_press(msg)
-        .into()
+    button(
+        text(label_text.to_string())
+            .font(theme::SANS)
+            .size(12.0)
+            .color(INK_2),
+    )
+    .padding([1, 8])
+    .style(|_: &Theme, status: button::Status| {
+        let edge = if matches!(status, button::Status::Hovered) {
+            INK_2
+        } else {
+            crate::theme::palette().rule
+        };
+        button::Style {
+            background: None,
+            text_color: INK_2,
+            border: Border {
+                color: edge,
+                width: 1.0,
+                radius: 0.0.into(),
+            },
+            ..Default::default()
+        }
+    })
+    .on_press(msg)
+    .into()
 }
 
 fn commits_view<'a>(state: &'a State) -> Element<'a, Msg> {
     if state.data.branches.is_empty() {
-        return ui::empty("git", "Nothing pushed yet", "This repository has no branches.");
+        return ui::empty(
+            "git",
+            "Nothing pushed yet",
+            "This repository has no branches.",
+        );
     }
     let log: Element<'a, Msg> = if state.data.commits.is_empty() {
         ui::empty("git", "No commits yet", "")
@@ -1034,11 +1279,28 @@ fn commits_view<'a>(state: &'a State) -> Element<'a, Msg> {
 fn commit_row<'a>(k: &Commit) -> Element<'a, Msg> {
     row![
         cell(Length::Fixed(80.0), ui::sans(k.short.clone(), 13.0, INK_2)),
-        cell(Length::Fill, ui::prose(first_line(&k.message).to_string()).size(14.0)),
+        cell(
+            Length::Fill,
+            ui::prose(first_line(&k.message).to_string()).size(14.0)
+        ),
         cell(Length::Fixed(140.0), ui::faint(k.author.clone())),
         cell(Length::Fixed(90.0), ui::faint(ago(&k.at))),
-        cell(Length::Fixed(60.0), ui::mono(format!("+{}", k.additions), 13.0, crate::theme::palette().ok)),
-        cell(Length::Fixed(60.0), ui::sans(format!("−{}", k.deletions), 13.0, crate::theme::palette().crit)),
+        cell(
+            Length::Fixed(60.0),
+            ui::mono(
+                format!("+{}", k.additions),
+                13.0,
+                crate::theme::palette().ok
+            )
+        ),
+        cell(
+            Length::Fixed(60.0),
+            ui::sans(
+                format!("−{}", k.deletions),
+                13.0,
+                crate::theme::palette().crit
+            )
+        ),
     ]
     .spacing(12)
     .align_y(Alignment::Center)
@@ -1065,7 +1327,10 @@ fn branches_view<'a>(state: &'a State) -> Element<'a, Msg> {
         rows.push(
             row![
                 cell(Length::Fixed(200.0), ui::sans(b.name.clone(), 13.0, INK)),
-                cell(Length::Fill, ui::prose(first_line(&b.commit.message).to_string()).size(14.0)),
+                cell(
+                    Length::Fill,
+                    ui::prose(first_line(&b.commit.message).to_string()).size(14.0)
+                ),
                 cell(Length::Fixed(140.0), ui::faint(b.commit.author.clone())),
                 cell(Length::Fixed(90.0), ui::faint(ago(&b.commit.at))),
             ]
@@ -1079,23 +1344,46 @@ fn branches_view<'a>(state: &'a State) -> Element<'a, Msg> {
 }
 
 fn pulls_view<'a>(state: &'a State) -> Element<'a, Msg> {
-    let filters: Vec<Element<'a, Msg>> = [(PullState::Open, "Open"), (PullState::Closed, "Closed"), (PullState::All, "All")]
-        .into_iter()
-        .map(|(filter, label)| {
-            let kind = if filter == state.pulls { Kind::Secondary } else { Kind::Ghost };
-            ui::btn(label, None, kind, Some(Msg::Pulls(filter)))
-        })
-        .collect();
+    let filters: Vec<Element<'a, Msg>> = [
+        (PullState::Open, "Open"),
+        (PullState::Closed, "Closed"),
+        (PullState::All, "All"),
+    ]
+    .into_iter()
+    .map(|(filter, label)| {
+        let kind = if filter == state.pulls {
+            Kind::Secondary
+        } else {
+            Kind::Ghost
+        };
+        ui::btn(label, None, kind, Some(Msg::Pulls(filter)))
+    })
+    .collect();
     let body = if state.data.pulls.is_empty() {
         ui::empty("git", "No pull requests here", "")
     } else {
         list(state.data.pulls.iter().map(pull_row).collect())
     };
-    let new_pr = ui::btn("New pull request", None, Kind::Primary, Some(Msg::Modal(Modal::NewPull)));
-    let head = row![row(filters).spacing(6), Space::new().width(Length::Fill), new_pr].align_y(Alignment::Center);
+    let new_pr = ui::btn(
+        "New pull request",
+        None,
+        Kind::Primary,
+        Some(Msg::Modal(Modal::NewPull)),
+    );
+    let head = row![
+        row(filters).spacing(6),
+        Space::new().width(Length::Fill),
+        new_pr
+    ]
+    .align_y(Alignment::Center);
     let mut items: Vec<Element<'a, Msg>> = vec![head.into(), body];
     if state.data.pulls_more {
-        items.push(ui::btn("Load more", None, Kind::Ghost, Some(Msg::MorePulls)));
+        items.push(ui::btn(
+            "Load more",
+            None,
+            Kind::Ghost,
+            Some(Msg::MorePulls),
+        ));
     }
     column(items).spacing(12).into()
 }
@@ -1103,10 +1391,22 @@ fn pulls_view<'a>(state: &'a State) -> Element<'a, Msg> {
 fn pull_row<'a>(p: &Pull) -> Element<'a, Msg> {
     button(
         row![
-            cell(Length::Fixed(60.0), ui::sans(format!("#{}", p.number), 13.0, INK_2)),
-            cell(Length::Fill, text(p.title.clone()).font(SANS_SEMIBOLD).size(15.0).color(INK)),
+            cell(
+                Length::Fixed(60.0),
+                ui::sans(format!("#{}", p.number), 13.0, INK_2)
+            ),
+            cell(
+                Length::Fill,
+                text(p.title.clone())
+                    .font(SANS_SEMIBOLD)
+                    .size(15.0)
+                    .color(INK)
+            ),
             cell(Length::Fixed(80.0), state_badge(p)),
-            cell(Length::Fixed(220.0), ui::sans(format!("{} → {}", p.head, p.base), 12.0, INK_2)),
+            cell(
+                Length::Fixed(220.0),
+                ui::sans(format!("{} → {}", p.head, p.base), 12.0, INK_2)
+            ),
             cell(Length::Fixed(120.0), ui::faint(p.author.clone())),
             review_badge(&p.review),
             ui::faint(format!("{} comments", p.comments)),
@@ -1156,10 +1456,30 @@ fn pull_page<'a>(state: &'a State) -> Element<'a, Msg> {
     }
     let review_in_ide = ide::target(&format!("repo:{}@{}", state.repo, p.head), true, None);
     let mut buttons = row![
-        ui::btn("Approve", None, Kind::Primary, Some(Msg::Modal(Modal::Review(ReviewEvent::Approve)))),
-        ui::btn("Request changes", None, Kind::Danger, Some(Msg::Modal(Modal::Review(ReviewEvent::RequestChanges)))),
-        ui::btn("Comment", None, Kind::Ghost, Some(Msg::Modal(Modal::Review(ReviewEvent::Comment)))),
-        ui::btn("Open in IDE", Some("square-code"), Kind::Ghost, Some(Msg::OpenIde(review_in_ide))),
+        ui::btn(
+            "Approve",
+            None,
+            Kind::Primary,
+            Some(Msg::Modal(Modal::Review(ReviewEvent::Approve)))
+        ),
+        ui::btn(
+            "Request changes",
+            None,
+            Kind::Danger,
+            Some(Msg::Modal(Modal::Review(ReviewEvent::RequestChanges)))
+        ),
+        ui::btn(
+            "Comment",
+            None,
+            Kind::Ghost,
+            Some(Msg::Modal(Modal::Review(ReviewEvent::Comment)))
+        ),
+        ui::btn(
+            "Open in IDE",
+            Some("square-code"),
+            Kind::Ghost,
+            Some(Msg::OpenIde(review_in_ide))
+        ),
     ]
     .spacing(8);
     // A merged pull request is closed in Forgejo: it has no Merge, Close or Reopen.
@@ -1169,18 +1489,32 @@ fn pull_page<'a>(state: &'a State) -> Element<'a, Msg> {
         } else {
             ui::btn("Reopen", None, Kind::Ghost, Some(Msg::SetState("open")))
         };
-        buttons = buttons.push(ui::btn("Merge", None, Kind::Primary, mergeable.then_some(Msg::Modal(Modal::Merge)))).push(toggle);
+        buttons = buttons
+            .push(ui::btn(
+                "Merge",
+                None,
+                Kind::Primary,
+                mergeable.then_some(Msg::Modal(Modal::Merge)),
+            ))
+            .push(toggle);
     }
     // The web explains a disabled Merge in its tooltip; the desktop says it under the buttons.
     let actions: Element<'a, Msg> = if mergeable || merged {
         buttons.into()
     } else {
-        column![buttons, ui::faint("Needs an approving review and no conflicts")].spacing(6).into()
+        column![
+            buttons,
+            ui::faint("Needs an approving review and no conflicts")
+        ]
+        .spacing(6)
+        .into()
     };
     let description: Element<'a, Msg> = if d.body.is_empty() {
         ui::faint("No description provided.").into()
     } else {
-        container(rich::view(&d.body, &rctx, &state.cards, &on_rich)).max_width(620).into()
+        container(rich::view(&d.body, &rctx, &state.cards, &on_rich))
+            .max_width(620)
+            .into()
     };
     let files: Element<'a, Msg> = if d.files.is_empty() {
         ui::faint("No files.").into()
@@ -1190,7 +1524,14 @@ fn pull_page<'a>(state: &'a State) -> Element<'a, Msg> {
     let reviews: Element<'a, Msg> = if d.reviews.is_empty() {
         ui::faint("No reviews yet.").into()
     } else {
-        column(d.reviews.iter().map(review_row).collect::<Vec<Element<'a, Msg>>>()).spacing(12).into()
+        column(
+            d.reviews
+                .iter()
+                .map(review_row)
+                .collect::<Vec<Element<'a, Msg>>>(),
+        )
+        .spacing(12)
+        .into()
     };
     let body = column![
         meta,
@@ -1199,49 +1540,102 @@ fn pull_page<'a>(state: &'a State) -> Element<'a, Msg> {
         ui::card(&format!("Files changed ({})", d.files.len()), files),
         ui::card("Diff", diff_view(&d.diff)),
         ui::card(&format!("Reviews ({})", d.reviews.len()), reviews),
-        ui::card(&format!("Discussion ({})", d.discussion.len()), discussion_view(state, d, &rctx)),
+        ui::card(
+            &format!("Discussion ({})", d.discussion.len()),
+            discussion_view(state, d, &rctx)
+        ),
     ]
     .spacing(16);
-    let head = column![container(trail).padding(Padding { top: 24.0, right: 0.0, bottom: 0.0, left: 0.0 }), ui::view_head(&p.title, vec![])];
+    let head = column![
+        container(trail).padding(Padding {
+            top: 24.0,
+            right: 0.0,
+            bottom: 0.0,
+            left: 0.0
+        }),
+        ui::view_head(&p.title, vec![])
+    ];
     sheet(state, head.into(), body.into())
 }
 
 /// The discussion: its comments in order, then the comment box. Ctrl/Cmd+Enter posts the comment.
-fn discussion_view<'a>(state: &'a State, d: &'a PullDetail, rctx: &rich::RichCtx) -> Element<'a, Msg> {
+fn discussion_view<'a>(
+    state: &'a State,
+    d: &'a PullDetail,
+    rctx: &rich::RichCtx,
+) -> Element<'a, Msg> {
     let comments: Element<'a, Msg> = if d.discussion.is_empty() {
         ui::faint("No comments yet.").into()
     } else {
-        column(d.discussion.iter().map(|c| comment_row(c, rctx, &state.cards)).collect::<Vec<Element<'a, Msg>>>()).spacing(12).into()
+        column(
+            d.discussion
+                .iter()
+                .map(|c| comment_row(c, rctx, &state.cards))
+                .collect::<Vec<Element<'a, Msg>>>(),
+        )
+        .spacing(12)
+        .into()
     };
     let editor = text_editor(&state.comment)
         .placeholder("Write a comment (Ctrl+Enter posts)")
         .height(Length::Fixed(96.0))
         .on_action(Msg::Comment)
         .key_binding(|kp| {
-            if kp.key == keyboard::Key::Named(keyboard::key::Named::Enter) && kp.modifiers.command() {
+            if kp.key == keyboard::Key::Named(keyboard::key::Named::Enter) && kp.modifiers.command()
+            {
                 Some(text_editor::Binding::Custom(Msg::SendComment))
             } else {
                 text_editor::Binding::from_key_press(kp)
             }
         });
     let can_send = state.pr.is_some() && !state.comment.text().trim().is_empty();
-    let send = ui::btn("Post comment", None, Kind::Primary, can_send.then_some(Msg::SendComment));
-    column![comments, editor, row![Space::new().width(Length::Fill), send]].spacing(12).into()
+    let send = ui::btn(
+        "Post comment",
+        None,
+        Kind::Primary,
+        can_send.then_some(Msg::SendComment),
+    );
+    column![
+        comments,
+        editor,
+        row![Space::new().width(Length::Fill), send]
+    ]
+    .spacing(12)
+    .into()
 }
 
 /// One comment: its author and age, then its text.
 fn comment_row<'a>(c: &Comment, rctx: &rich::RichCtx, cards: &rich::Cards) -> Element<'a, Msg> {
-    let head = row![text(c.author.clone()).font(SANS_BOLD).size(14.0).color(INK), ui::faint(ago(&c.at))]
-        .spacing(10)
-        .align_y(Alignment::Center);
-    column![head, rich::view(&c.body, rctx, cards, &on_rich)].spacing(6).into()
+    let head = row![
+        text(c.author.clone()).font(SANS_BOLD).size(14.0).color(INK),
+        ui::faint(ago(&c.at))
+    ]
+    .spacing(10)
+    .align_y(Alignment::Center);
+    column![head, rich::view(&c.body, rctx, cards, &on_rich)]
+        .spacing(6)
+        .into()
 }
 
 fn file_row<'a>(f: &PullFile) -> Element<'a, Msg> {
     row![
         cell(Length::Fill, ui::mono(f.path.clone(), 13.0, INK)),
-        cell(Length::Fixed(60.0), ui::mono(format!("+{}", f.additions), 13.0, crate::theme::palette().ok)),
-        cell(Length::Fixed(60.0), ui::sans(format!("−{}", f.deletions), 13.0, crate::theme::palette().crit)),
+        cell(
+            Length::Fixed(60.0),
+            ui::mono(
+                format!("+{}", f.additions),
+                13.0,
+                crate::theme::palette().ok
+            )
+        ),
+        cell(
+            Length::Fixed(60.0),
+            ui::sans(
+                format!("−{}", f.deletions),
+                13.0,
+                crate::theme::palette().crit
+            )
+        ),
     ]
     .spacing(12)
     .padding([6, 0])
@@ -1258,7 +1652,10 @@ fn review_row<'a>(rv: &Review) -> Element<'a, Msg> {
         Tone::Muted
     };
     let head = row![
-        text(rv.author.clone()).font(SANS_BOLD).size(14.0).color(INK),
+        text(rv.author.clone())
+            .font(SANS_BOLD)
+            .size(14.0)
+            .color(INK),
         ui::badge(&s.replace('_', " "), tone),
         ui::faint(ago(&rv.at)),
     ]
@@ -1281,23 +1678,49 @@ fn diff_view<'a>(diff: &str) -> Element<'a, Msg> {
             container(text(line.to_string()).font(font).size(12.5).color(color))
                 .padding([0, 14])
                 .width(Length::Fill)
-                .style(move |_: &Theme| container::Style { background: tint.map(Into::into), ..Default::default() })
+                .style(move |_: &Theme| container::Style {
+                    background: tint.map(Into::into),
+                    ..Default::default()
+                })
                 .into()
         })
         .collect();
-    ui::scroll(column(lines).padding([8, 0])).width(Length::Fill).into()
+    ui::scroll(column(lines).padding([8, 0]))
+        .width(Length::Fill)
+        .into()
 }
 
 /// A diff line's text colour, tint and font, by its marker.
 fn diff_style(line: &str) -> (Color, Option<Color>, Font) {
     if line.starts_with("@@") {
-        (INK_3, Some(Color { a: 0.06, ..crate::theme::palette().ink }), theme::SANS)
+        (
+            INK_3,
+            Some(Color {
+                a: 0.06,
+                ..crate::theme::palette().ink
+            }),
+            theme::SANS,
+        )
     } else if line.starts_with("+++") || line.starts_with("---") {
         (INK_2, None, ui::SANS_SEMIBOLD)
     } else if line.starts_with('+') {
-        (INK, Some(Color { a: 0.12, ..crate::theme::palette().ok }), theme::SANS)
+        (
+            INK,
+            Some(Color {
+                a: 0.12,
+                ..crate::theme::palette().ok
+            }),
+            theme::SANS,
+        )
     } else if line.starts_with('-') {
-        (INK, Some(Color { a: 0.12, ..crate::theme::palette().crit }), theme::SANS)
+        (
+            INK,
+            Some(Color {
+                a: 0.12,
+                ..crate::theme::palette().crit
+            }),
+            theme::SANS,
+        )
     } else {
         (INK, None, theme::SANS)
     }
@@ -1308,7 +1731,11 @@ fn state_badge<'a>(p: &Pull) -> Element<'a, Msg> {
     if p.merged {
         return ui::badge("merged", Tone::Ok);
     }
-    let tone = if p.state == "open" { Tone::Ok } else { Tone::Muted };
+    let tone = if p.state == "open" {
+        Tone::Ok
+    } else {
+        Tone::Muted
+    };
     ui::badge(&p.state, tone)
 }
 
@@ -1327,10 +1754,15 @@ fn modal_layer<'a>(state: &'a State, modal: Modal) -> Element<'a, Msg> {
         Modal::None => (String::new(), column![].into()),
         Modal::NewRepo => ("New repository".to_string(), new_repo_form(state)),
         Modal::NewPull => ("New pull request".to_string(), new_pull_form(state)),
-        Modal::Review(event) => (format!("{} on #{n}", event.label()), review_form(state, event)),
+        Modal::Review(event) => (
+            format!("{} on #{n}", event.label()),
+            review_form(state, event),
+        ),
         Modal::Merge => (format!("Merge #{n}"), merge_form(state)),
     };
-    let boxed = container(ui::card(&title, body)).width(Length::Fixed(520.0)).style(theme::boxed);
+    let boxed = container(ui::card(&title, body))
+        .width(Length::Fixed(520.0))
+        .style(theme::boxed);
     container(boxed)
         .width(Length::Fill)
         .height(Length::Fill)
@@ -1344,7 +1776,10 @@ fn new_repo_form<'a>(state: &'a State) -> Element<'a, Msg> {
     column![
         field(
             "Name",
-            text_input("repo-name", &state.new_name).on_input(Msg::NewName).style(theme::input).into(),
+            text_input("repo-name", &state.new_name)
+                .on_input(Msg::NewName)
+                .style(theme::input)
+                .into(),
         ),
         field(
             "Description",
@@ -1392,8 +1827,16 @@ fn new_pull_form<'a>(state: &'a State) -> Element<'a, Msg> {
 }
 
 fn review_form<'a>(state: &'a State, event: ReviewEvent) -> Element<'a, Msg> {
-    let placeholder = if event == ReviewEvent::Approve { "Optional note" } else { "Write the review" };
-    let kind = if event == ReviewEvent::RequestChanges { Kind::Danger } else { Kind::Primary };
+    let placeholder = if event == ReviewEvent::Approve {
+        "Optional note"
+    } else {
+        "Write the review"
+    };
+    let kind = if event == ReviewEvent::RequestChanges {
+        Kind::Danger
+    } else {
+        Kind::Primary
+    };
     column![
         field(
             "Review",
@@ -1419,9 +1862,13 @@ fn merge_form<'a>(state: &'a State) -> Element<'a, Msg> {
         Some(state.merge_style),
         Msg::MergeStyle,
     );
-    column![ui::prose(text), field("Style", style.into()), form_actions(Msg::Merge, "Merge", Kind::Primary)]
-        .spacing(14)
-        .into()
+    column![
+        ui::prose(text),
+        field("Style", style.into()),
+        form_actions(Msg::Merge, "Merge", Kind::Primary)
+    ]
+    .spacing(14)
+    .into()
 }
 
 fn field<'a>(title: &str, body: Element<'a, Msg>) -> Element<'a, Msg> {
@@ -1457,7 +1904,10 @@ fn list<'a>(rows: Vec<Element<'a, Msg>>) -> Element<'a, Msg> {
 }
 
 fn clone_url(state: &State) -> String {
-    format!("http://plaza.gateway/git/{}/{}.git", state.data.org, state.repo)
+    format!(
+        "http://plaza.gateway/git/{}/{}.git",
+        state.data.org, state.repo
+    )
 }
 
 /// Percent-encodes a query value.
@@ -1465,7 +1915,9 @@ fn enc(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
         match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
             _ => out.push_str(&format!("%{b:02X}")),
         }
     }
@@ -1499,7 +1951,10 @@ fn ago(at: &str) -> String {
     let Some(t) = parse_time(at) else {
         return at.to_string();
     };
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(t);
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(t);
     let secs = (now - t).max(0);
     match secs {
         0..=59 => "just now".to_string(),
@@ -1514,7 +1969,9 @@ fn parse_time(s: &str) -> Option<i64> {
     let num = |a: usize, b: usize| -> Option<i64> { s.get(a..b)?.parse::<i64>().ok() };
     let (y, mo, d) = (num(0, 4)?, num(5, 7)?, num(8, 10)?);
     let (h, mi, se) = (num(11, 13)?, num(14, 16)?, num(17, 19)?);
-    let rest = s.get(19..)?.trim_start_matches(|c: char| c == '.' || c.is_ascii_digit());
+    let rest = s
+        .get(19..)?
+        .trim_start_matches(|c: char| c == '.' || c.is_ascii_digit());
     let offset = match rest.as_bytes().first() {
         Some(b'+') | Some(b'-') => {
             let sign = if rest.starts_with('-') { -1 } else { 1 };
@@ -1554,10 +2011,16 @@ mod tests {
 
     #[test]
     fn git_file_response_parses_text_and_binary() {
-        let text: FileView = serde_json::from_str(r#"{"path":"a.rs","ref":"main","size":5,"text":"fn a","binary":false}"#).expect("text parses");
+        let text: FileView = serde_json::from_str(
+            r#"{"path":"a.rs","ref":"main","size":5,"text":"fn a","binary":false}"#,
+        )
+        .expect("text parses");
         assert_eq!(text.text.as_deref(), Some("fn a"));
         assert!(!text.binary);
-        let bin: FileView = serde_json::from_str(r#"{"path":"a.png","ref":"main","size":2048,"text":null,"binary":true}"#).expect("binary parses");
+        let bin: FileView = serde_json::from_str(
+            r#"{"path":"a.png","ref":"main","size":2048,"text":null,"binary":true}"#,
+        )
+        .expect("binary parses");
         assert!(bin.binary);
         assert!(bin.text.is_none());
         assert_eq!(fmt_size(bin.size), "2.0 KB");
@@ -1635,7 +2098,10 @@ mod tests {
 
     #[test]
     fn git_crumbs_walk_the_folder_path() {
-        assert_eq!(crumb_trail("plaza", ""), vec![("plaza".to_string(), String::new())]);
+        assert_eq!(
+            crumb_trail("plaza", ""),
+            vec![("plaza".to_string(), String::new())]
+        );
         let trail = crumb_trail("plaza", "src/console/screens");
         let expect: Vec<(String, String)> = vec![
             ("plaza".to_string(), String::new()),

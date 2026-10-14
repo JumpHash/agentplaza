@@ -30,15 +30,18 @@ pub struct S3 {
 impl S3 {
     /// Stores `body` at `key` with `content_type`.
     pub fn put(&self, key: &str, body: &[u8], content_type: &str) -> Result<(), String> {
-        self.call("PUT", key, body.to_vec(), Some(content_type)).map(|_| ()).map_err(fail)
+        self.call("PUT", key, body.to_vec(), Some(content_type))
+            .map(|_| ())
+            .map_err(fail)
     }
 
     /// The object at `key`.
     pub fn get(&self, key: &str) -> Result<Vec<u8>, String> {
-        self.call("GET", key, Vec::new(), None).map_err(|e| match e {
-            GatewayError::Http { status: 404, .. } => "not found".to_string(),
-            other => fail(other),
-        })
+        self.call("GET", key, Vec::new(), None)
+            .map_err(|e| match e {
+                GatewayError::Http { status: 404, .. } => "not found".to_string(),
+                other => fail(other),
+            })
     }
 
     /// Removes the object at `key` (absent is not an error).
@@ -52,11 +55,22 @@ impl S3 {
     /// `{endpoint}/{bucket}/{key}`, each key segment URI-encoded.
     fn url(&self, key: &str) -> String {
         let segments: Vec<String> = key.split('/').map(uri_encode).collect();
-        format!("{}/{}/{}", self.endpoint.trim_end_matches('/'), uri_encode(&self.bucket), segments.join("/"))
+        format!(
+            "{}/{}/{}",
+            self.endpoint.trim_end_matches('/'),
+            uri_encode(&self.bucket),
+            segments.join("/")
+        )
     }
 
     /// The request for `verb` on `key`, signed with the bucket's credentials.
-    fn signed(&self, verb: &'static str, key: &str, body: Vec<u8>, content_type: Option<&str>) -> Req {
+    fn signed(
+        &self,
+        verb: &'static str,
+        key: &str,
+        body: Vec<u8>,
+        content_type: Option<&str>,
+    ) -> Req {
         let mut req = Req::raw(verb, self.url(key), body);
         if let Some(content_type) = content_type {
             req.set_header("content-type", content_type);
@@ -73,7 +87,13 @@ impl S3 {
     }
 
     /// Sends one request and returns the response body.
-    fn call(&self, verb: &'static str, key: &str, body: Vec<u8>, content_type: Option<&str>) -> Result<Vec<u8>, GatewayError> {
+    fn call(
+        &self,
+        verb: &'static str,
+        key: &str,
+        body: Vec<u8>,
+        content_type: Option<&str>,
+    ) -> Result<Vec<u8>, GatewayError> {
         let req = self.signed(verb, key, body, content_type);
         let resp = Http::with_timeout(RETRIES, RETRY_BACKOFF, TIMEOUT).send(&req)?;
         let mut out = Vec::new();
@@ -85,7 +105,10 @@ impl S3 {
 }
 
 fn payload_hash(body: &[u8]) -> String {
-    Sha256::digest(body).iter().map(|b| format!("{b:02x}")).collect()
+    Sha256::digest(body)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 /// A failed request as the message the caller sees.
@@ -120,19 +143,29 @@ mod tests {
     #[test]
     fn s3_url_encodes_each_key_segment() {
         let s3 = client("http://127.0.0.1:3900/");
-        assert_eq!(s3.url("models/a b+c.json"), "http://127.0.0.1:3900/plaza/models/a%20b%2Bc.json");
+        assert_eq!(
+            s3.url("models/a b+c.json"),
+            "http://127.0.0.1:3900/plaza/models/a%20b%2Bc.json"
+        );
         assert_eq!(s3.url("x"), "http://127.0.0.1:3900/plaza/x");
     }
 
     #[test]
     fn s3_signed_put_carries_sigv4_headers() {
-        let req = client("http://127.0.0.1:3900").signed("PUT", "k", b"hi".to_vec(), Some("text/plain"));
+        let req =
+            client("http://127.0.0.1:3900").signed("PUT", "k", b"hi".to_vec(), Some("text/plain"));
         assert_eq!(req.method(), "PUT");
         let amz = req.header_value("x-amz-date").unwrap().to_string();
         assert_eq!(amz.len(), 16);
-        assert_eq!(req.header_value("x-amz-content-sha256"), Some(payload_hash(b"hi").as_str()));
+        assert_eq!(
+            req.header_value("x-amz-content-sha256"),
+            Some(payload_hash(b"hi").as_str())
+        );
         let auth = req.header_value("authorization").unwrap();
-        let prefix = format!("AWS4-HMAC-SHA256 Credential=GKTEST/{}/garage/s3/aws4_request, ", &amz[..8]);
+        let prefix = format!(
+            "AWS4-HMAC-SHA256 Credential=GKTEST/{}/garage/s3/aws4_request, ",
+            &amz[..8]
+        );
         assert!(auth.starts_with(&prefix), "{auth}");
     }
 
@@ -165,7 +198,8 @@ mod tests {
                     .lines()
                     .find_map(|l| {
                         let l = l.to_ascii_lowercase();
-                        l.strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap())
+                        l.strip_prefix("content-length:")
+                            .map(|v| v.trim().parse::<usize>().unwrap())
                     })
                     .unwrap_or(0);
                 while buf.len() < head_end + length {
@@ -194,9 +228,25 @@ mod tests {
         s3.delete("gone").unwrap();
 
         let heads = server.join().unwrap();
-        assert!(heads[0].starts_with("PUT /plaza/a%20b HTTP/1.1\r\n"), "{}", heads[0]);
-        assert!(heads[1].starts_with("GET /plaza/a%20b HTTP/1.1\r\n"), "{}", heads[1]);
-        assert!(heads[3].starts_with("DELETE /plaza/gone HTTP/1.1\r\n"), "{}", heads[3]);
-        assert!(heads[0].to_ascii_lowercase().contains("authorization: aws4-hmac-sha256 credential=gktest/"));
+        assert!(
+            heads[0].starts_with("PUT /plaza/a%20b HTTP/1.1\r\n"),
+            "{}",
+            heads[0]
+        );
+        assert!(
+            heads[1].starts_with("GET /plaza/a%20b HTTP/1.1\r\n"),
+            "{}",
+            heads[1]
+        );
+        assert!(
+            heads[3].starts_with("DELETE /plaza/gone HTTP/1.1\r\n"),
+            "{}",
+            heads[3]
+        );
+        assert!(
+            heads[0]
+                .to_ascii_lowercase()
+                .contains("authorization: aws4-hmac-sha256 credential=gktest/")
+        );
     }
 }

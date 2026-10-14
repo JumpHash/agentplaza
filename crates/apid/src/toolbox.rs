@@ -12,7 +12,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use apz_http::{Params, Request, Response, Router};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::agents::Agent;
 use crate::state::App;
@@ -80,12 +80,19 @@ impl Store {
             .ok()
             .and_then(|bytes| serde_json::from_slice::<Vec<Discovery>>(&bytes).ok())
             .unwrap_or_default();
-        Self { path, items: Mutex::new(items) }
+        Self {
+            path,
+            items: Mutex::new(items),
+        }
     }
 
     /// All discoveries, newest first.
     pub fn list(&self) -> Vec<Discovery> {
-        let mut items = self.items.lock().map(|items| items.clone()).unwrap_or_default();
+        let mut items = self
+            .items
+            .lock()
+            .map(|items| items.clone())
+            .unwrap_or_default();
         items.sort_by(|a, b| b.at_ms.cmp(&a.at_ms));
         items
     }
@@ -93,7 +100,9 @@ impl Store {
     /// Writes the whole list to a temp file next to `path`, then renames it over `path`.
     /// Errors are ignored: the in-memory list stays the truth for this process.
     fn save(&self, items: &[Discovery]) {
-        let Ok(json) = serde_json::to_string_pretty(items) else { return };
+        let Ok(json) = serde_json::to_string_pretty(items) else {
+            return;
+        };
         let tmp = self.path.with_extension("json.tmp");
         if std::fs::write(&tmp, json).is_ok() {
             let _ = std::fs::rename(&tmp, &self.path);
@@ -115,7 +124,12 @@ impl Store {
             Ok(s.to_string())
         };
         let name = text("name", NAME_MAX)?;
-        let kind = input.get("kind").and_then(Value::as_str).unwrap_or("").trim().to_lowercase();
+        let kind = input
+            .get("kind")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_lowercase();
         if !KINDS.contains(&kind.as_str()) {
             return Err(format!("kind must be one of {}", KINDS.join(", ")));
         }
@@ -133,7 +147,11 @@ impl Store {
             if raw.len() > TAGS_MAX {
                 return Err(format!("tags takes at most {TAGS_MAX} entries"));
             }
-            for tag in raw.iter().filter_map(Value::as_str).map(|t| t.trim().to_lowercase()) {
+            for tag in raw
+                .iter()
+                .filter_map(Value::as_str)
+                .map(|t| t.trim().to_lowercase())
+            {
                 if !tag.is_empty() && !tags.contains(&tag) {
                     tags.push(tag);
                 }
@@ -142,8 +160,14 @@ impl Store {
 
         let key = name.to_lowercase();
         let now = now_ms();
-        let mut items = self.items.lock().map_err(|_| "the toolbox is locked".to_string())?;
-        let result = if let Some(i) = items.iter().position(|d| d.by_cid == by_cid && d.name.to_lowercase() == key) {
+        let mut items = self
+            .items
+            .lock()
+            .map_err(|_| "the toolbox is locked".to_string())?;
+        let result = if let Some(i) = items
+            .iter()
+            .position(|d| d.by_cid == by_cid && d.name.to_lowercase() == key)
+        {
             let d = &mut items[i];
             d.name = name;
             d.kind = kind;
@@ -190,8 +214,13 @@ impl Store {
                     .filter(|(_, d)| d.endorsed_by.is_empty())
                     .min_by_key(|(_, d)| d.at_ms)
                     .map(|(i, _)| i);
-                let oldest = unendorsed
-                    .or_else(|| items.iter().enumerate().min_by_key(|(_, d)| d.at_ms).map(|(i, _)| i));
+                let oldest = unendorsed.or_else(|| {
+                    items
+                        .iter()
+                        .enumerate()
+                        .min_by_key(|(_, d)| d.at_ms)
+                        .map(|(i, _)| i)
+                });
                 if let Some(i) = oldest {
                     items.remove(i);
                 }
@@ -222,7 +251,11 @@ impl Store {
     /// how, verdict and tags), best first: more endorsements, then newer.
     pub fn search(&self, query: &str) -> Vec<Discovery> {
         let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
-        let items = self.items.lock().map(|items| items.clone()).unwrap_or_default();
+        let items = self
+            .items
+            .lock()
+            .map(|items| items.clone())
+            .unwrap_or_default();
         let mut hits: Vec<Discovery> = items
             .into_iter()
             .filter(|d| {
@@ -231,16 +264,29 @@ impl Store {
                     .map(|f| f.to_lowercase())
                     .collect();
                 fields.extend(d.tags.iter().map(|t| t.to_lowercase()));
-                words.iter().all(|w| fields.iter().any(|f| f.contains(w.as_str())))
+                words
+                    .iter()
+                    .all(|w| fields.iter().any(|f| f.contains(w.as_str())))
             })
             .collect();
-        hits.sort_by(|a, b| b.endorsed_by.len().cmp(&a.endorsed_by.len()).then(b.at_ms.cmp(&a.at_ms)));
+        hits.sort_by(|a, b| {
+            b.endorsed_by
+                .len()
+                .cmp(&a.endorsed_by.len())
+                .then(b.at_ms.cmp(&a.at_ms))
+        });
         hits
     }
 }
 
 fn now_ms() -> u64 {
-    u64::try_from(SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis()).unwrap_or(u64::MAX)
+    u64::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis(),
+    )
+    .unwrap_or(u64::MAX)
 }
 
 /// The tools' specs, in the same shape as `society::spec`.
@@ -274,12 +320,20 @@ pub fn spec(name: &str) -> Option<(&'static str, Value)> {
 pub fn run(app: &App, agent: &Agent, name: &str, input: &Value) -> Result<String, String> {
     match name {
         "plaza_toolbox_share" => {
-            let who = if agent.name.is_empty() { agent.role.clone() } else { agent.name.clone() };
+            let who = if agent.name.is_empty() {
+                agent.role.clone()
+            } else {
+                agent.name.clone()
+            };
             let item = app.toolbox.share(agent.cid, &who, input)?;
             serde_json::to_string(&item).map_err(|e| e.to_string())
         }
         _ => {
-            let query = input.get("query").and_then(Value::as_str).unwrap_or("").trim();
+            let query = input
+                .get("query")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim();
             Ok(crate::toolbox_survey::survey(app, agent, query))
         }
     }
@@ -288,8 +342,14 @@ pub fn run(app: &App, agent: &Agent, name: &str, input: &Value) -> Result<String
 impl Store {
     /// Removes a discovery (the owner). Err when there is none.
     pub fn remove(&self, id: &str) -> Result<Discovery, String> {
-        let mut items = self.items.lock().map_err(|_| "the toolbox is locked".to_string())?;
-        let i = items.iter().position(|d| d.id == id).ok_or_else(|| format!("no discovery {id}"))?;
+        let mut items = self
+            .items
+            .lock()
+            .map_err(|_| "the toolbox is locked".to_string())?;
+        let i = items
+            .iter()
+            .position(|d| d.id == id)
+            .ok_or_else(|| format!("no discovery {id}"))?;
         let removed = items.remove(i);
         self.save(&items);
         Ok(removed)
@@ -298,12 +358,23 @@ impl Store {
     /// Flags a discovery with the owner's reason (trimmed), or clears the flag with None or a
     /// blank reason. Err when there is no such discovery or the reason is over `REASON_MAX`.
     pub fn flag(&self, id: &str, reason: Option<String>) -> Result<Discovery, String> {
-        let reason = reason.map(|r| r.trim().to_string()).filter(|r| !r.is_empty());
-        if reason.as_deref().is_some_and(|r| r.chars().count() > REASON_MAX) {
+        let reason = reason
+            .map(|r| r.trim().to_string())
+            .filter(|r| !r.is_empty());
+        if reason
+            .as_deref()
+            .is_some_and(|r| r.chars().count() > REASON_MAX)
+        {
             return Err(format!("reason is over {REASON_MAX} characters"));
         }
-        let mut items = self.items.lock().map_err(|_| "the toolbox is locked".to_string())?;
-        let d = items.iter_mut().find(|d| d.id == id).ok_or_else(|| format!("no discovery {id}"))?;
+        let mut items = self
+            .items
+            .lock()
+            .map_err(|_| "the toolbox is locked".to_string())?;
+        let d = items
+            .iter_mut()
+            .find(|d| d.id == id)
+            .ok_or_else(|| format!("no discovery {id}"))?;
         d.flagged = reason;
         let flagged = d.clone();
         self.save(&items);
@@ -356,18 +427,22 @@ fn list_route(app: &App, _: &Request, _: &Params<'_>) -> Response {
     Response::json(200, &app.toolbox.list())
 }
 
-
 impl Store {
     /// The whole state as JSON, for Postgres (`crate::db`); "" when there is nothing to save.
     pub fn snapshot(&self) -> String {
-        let Ok(items) = self.items.lock() else { return String::new() };
+        let Ok(items) = self.items.lock() else {
+            return String::new();
+        };
         serde_json::to_string_pretty(&*items).unwrap_or_default()
     }
 
     /// Replaces the state with a [`Store::snapshot`]; a refusal changes nothing.
     pub fn restore(&self, json: &str) -> Result<(), String> {
         let next: Vec<Discovery> = serde_json::from_str(json).map_err(|e| e.to_string())?;
-        let mut items = self.items.lock().map_err(|_| "toolbox is unavailable".to_string())?;
+        let mut items = self
+            .items
+            .lock()
+            .map_err(|_| "toolbox is unavailable".to_string())?;
         self.save(&next);
         *items = next;
         Ok(())
@@ -390,8 +465,12 @@ mod tests {
     }
 
     fn temp_dir(tag: &str) -> PathBuf {
-        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
-        let dir = std::env::temp_dir().join(format!("apid-toolbox-{tag}-{}-{nanos}", std::process::id()));
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let dir =
+            std::env::temp_dir().join(format!("apid-toolbox-{tag}-{}-{nanos}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
@@ -412,10 +491,21 @@ mod tests {
         let store = Store::load(&temp_dir("new"));
         let d = store.share(1, "alpha", &input("FFmpeg", "cli")).unwrap();
         assert_eq!(d.id, "d1");
-        assert_eq!(d.tags, vec!["ffmpeg-tools".to_string(), "media".to_string()]);
+        assert_eq!(
+            d.tags,
+            vec!["ffmpeg-tools".to_string(), "media".to_string()]
+        );
         assert_eq!(store.search("media").len(), 1, "found by tag");
-        assert_eq!(store.search("extract").len(), 1, "found by a word of what_for");
-        assert_eq!(store.search("extract zzz").len(), 0, "every word must match");
+        assert_eq!(
+            store.search("extract").len(),
+            1,
+            "found by a word of what_for"
+        );
+        assert_eq!(
+            store.search("extract zzz").len(),
+            0,
+            "every word must match"
+        );
         assert_eq!(store.search("").len(), 1, "empty query lists all");
     }
 
@@ -428,7 +518,10 @@ mod tests {
         let d = store.share(1, "alpha", &again).unwrap();
         assert_eq!(d.id, "d1");
         assert_eq!(store.list().len(), 1);
-        assert_eq!(store.search("slow")[0].verdict, "works, slow on large files");
+        assert_eq!(
+            store.search("slow")[0].verdict,
+            "works, slow on large files"
+        );
     }
 
     #[test]
@@ -442,13 +535,19 @@ mod tests {
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].endorsed_by, vec![2]);
         assert!(items[0].verdict.contains("works on a 4 GB VM"));
-        assert!(items[0].verdict.contains("\n— beta: also works, used it for podcasts"));
+        assert!(
+            items[0]
+                .verdict
+                .contains("\n— beta: also works, used it for podcasts")
+        );
     }
 
     #[test]
     fn bad_kind_is_refused() {
         let store = Store::load(&temp_dir("kind"));
-        let err = store.share(1, "alpha", &input("Dance", "dance")).unwrap_err();
+        let err = store
+            .share(1, "alpha", &input("Dance", "dance"))
+            .unwrap_err();
         assert!(err.contains("kind"), "error names the field: {err}");
         assert!(store.list().is_empty());
     }
@@ -459,12 +558,27 @@ mod tests {
         let store = Store::load(&dir);
         store.share(1, "alpha", &input("FFmpeg", "cli")).unwrap();
         let d = store.flag("d1", Some("  leaks keys  ".into())).unwrap();
-        assert_eq!(d.flagged.as_deref(), Some("leaks keys"), "reason is trimmed");
-        assert_eq!(Store::load(&dir).list()[0].flagged.as_deref(), Some("leaks keys"), "flag persists");
-        assert_eq!(store.flag("d1", Some("   ".into())).unwrap().flagged, None, "a blank reason clears");
+        assert_eq!(
+            d.flagged.as_deref(),
+            Some("leaks keys"),
+            "reason is trimmed"
+        );
+        assert_eq!(
+            Store::load(&dir).list()[0].flagged.as_deref(),
+            Some("leaks keys"),
+            "flag persists"
+        );
+        assert_eq!(
+            store.flag("d1", Some("   ".into())).unwrap().flagged,
+            None,
+            "a blank reason clears"
+        );
         store.flag("d1", Some("again".into())).unwrap();
         assert_eq!(store.flag("d1", None).unwrap().flagged, None, "null clears");
-        assert!(store.flag("d1", Some("x".repeat(REASON_MAX + 1))).is_err(), "over 500 is refused");
+        assert!(
+            store.flag("d1", Some("x".repeat(REASON_MAX + 1))).is_err(),
+            "over 500 is refused"
+        );
         assert_eq!(store.flag("d9", None).unwrap_err(), "no discovery d9");
         assert_eq!(store.remove("d1").unwrap().name, "FFmpeg");
         assert!(store.list().is_empty(), "removed from the list");
@@ -475,7 +589,9 @@ mod tests {
     #[test]
     fn share_persists_across_loads() {
         let dir = temp_dir("persist");
-        Store::load(&dir).share(1, "alpha", &input("FFmpeg", "cli")).unwrap();
+        Store::load(&dir)
+            .share(1, "alpha", &input("FFmpeg", "cli"))
+            .unwrap();
         let reloaded = Store::load(&dir);
         let items = reloaded.list();
         assert_eq!(items.len(), 1);

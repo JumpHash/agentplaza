@@ -6,21 +6,52 @@ use std::collections::BTreeSet;
 
 use serde_json::{Map, Value};
 
-use super::types::{EYE_SHAPES, FX_KINDS, GEO_TYPES, GRIPS, LOCOMOTIONS, MATS, PERSONALITY, REQUIRED_BONES, WAVES};
+use super::types::{
+    EYE_SHAPES, FX_KINDS, GEO_TYPES, GRIPS, LOCOMOTIONS, MATS, PERSONALITY, REQUIRED_BONES, WAVES,
+};
 
 type Errs = Vec<String>;
 
 /// The value of a key, or JSON null when it is missing (the web's `undefined`).
 static NULL: Value = Value::Null;
 
-const SPECIES_KEYS: &[&str] = &["schema", "id", "name", "blurb", "accent", "height", "label_top", "locomotion", "gait", "bones", "parts", "eyes", "spin", "feet", "floats", "personality", "quirks", "clips", "overrides", "orchestrator"];
+const SPECIES_KEYS: &[&str] = &[
+    "schema",
+    "id",
+    "name",
+    "blurb",
+    "accent",
+    "height",
+    "label_top",
+    "locomotion",
+    "gait",
+    "bones",
+    "parts",
+    "eyes",
+    "spin",
+    "feet",
+    "floats",
+    "personality",
+    "quirks",
+    "clips",
+    "overrides",
+    "orchestrator",
+];
 const GAIT_KEYS: &[&str] = &["speed", "freq", "bob", "sway", "lean"];
-const EYE_KEYS: &[&str] = &["bone", "at", "r", "pupil", "shape", "glass", "stretch", "asym"];
-const PART_KEYS: &[&str] = &["bone", "geo", "mat", "at", "rot", "scale", "outline", "name", "asym"];
-const GEO_KEYS: &[&str] = &["type", "w", "h", "d", "r", "rt", "rb", "ri", "ro", "tube", "arc", "seg", "half", "points"];
+const EYE_KEYS: &[&str] = &[
+    "bone", "at", "r", "pupil", "shape", "glass", "stretch", "asym",
+];
+const PART_KEYS: &[&str] = &[
+    "bone", "geo", "mat", "at", "rot", "scale", "outline", "name", "asym",
+];
+const GEO_KEYS: &[&str] = &[
+    "type", "w", "h", "d", "r", "rt", "rb", "ri", "ro", "tube", "arc", "seg", "half", "points",
+];
 const INLINE_KEYS: &[&str] = &["color", "emissive", "glow", "opacity", "flat"];
 const CLIP_KEYS: &[&str] = &["loop", "dur", "channels", "fx"];
-const CHANNEL_KEYS: &[&str] = &["bone", "prop", "base", "amp", "freq", "phase", "wave", "duty", "env", "snap", "rate"];
+const CHANNEL_KEYS: &[&str] = &[
+    "bone", "prop", "base", "amp", "freq", "phase", "wave", "duty", "env", "snap", "rate",
+];
 const TOOL_KEYS: &[&str] = &["schema", "id", "name", "grip", "aim", "parts", "tip"];
 
 fn field<'a>(o: &'a Map<String, Value>, key: &str) -> &'a Value {
@@ -36,11 +67,14 @@ fn is_num(v: &Value) -> bool {
 }
 
 fn is_vec3(v: &Value) -> bool {
-    v.as_array().is_some_and(|a| a.len() == 3 && a.iter().all(is_num))
+    v.as_array()
+        .is_some_and(|a| a.len() == 3 && a.iter().all(is_num))
 }
 
 fn is_hex(v: &Value) -> bool {
-    let Some(s) = v.as_str().and_then(|s| s.strip_prefix('#')) else { return false };
+    let Some(s) = v.as_str().and_then(|s| s.strip_prefix('#')) else {
+        return false;
+    };
     (s.len() == 3 || s.len() == 6) && s.chars().all(|c| c.is_ascii_hexdigit())
 }
 
@@ -50,7 +84,10 @@ fn is_str(v: &Value) -> bool {
 
 /// An id: `[a-z][a-z0-9-]*` with dot-separated parts (`walk.treads`).
 fn is_id(s: &str) -> bool {
-    let ok_chars = |p: &str| p.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+    let ok_chars = |p: &str| {
+        p.chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+    };
     let mut parts = s.split('.');
     let first = parts.next().unwrap_or("");
     let first_ok = first.starts_with(|c: char| c.is_ascii_lowercase()) && ok_chars(first);
@@ -63,7 +100,8 @@ fn in_list(list: &[&str], v: &Value) -> bool {
 
 /// An integer from `lo` to `hi` (a JSON number with no fraction).
 fn is_int_in(v: &Value, lo: f64, hi: f64) -> bool {
-    v.as_f64().is_some_and(|x| x.fract() == 0.0 && x >= lo && x <= hi)
+    v.as_f64()
+        .is_some_and(|x| x.fract() == 0.0 && x >= lo && x <= hi)
 }
 
 /// A value as the message names it: a string plain, a missing value as "undefined".
@@ -123,7 +161,9 @@ fn check_geo(g: &Value, path: &str, errs: &mut Errs) {
     }
     let seg = field(o, "seg");
     if defined(seg) {
-        let ok = seg.as_array().is_some_and(|a| (1..=2).contains(&a.len()) && a.iter().all(|n| is_int_in(n, 1.0, 64.0)));
+        let ok = seg.as_array().is_some_and(|a| {
+            (1..=2).contains(&a.len()) && a.iter().all(|n| is_int_in(n, 1.0, 64.0))
+        });
         if !ok {
             errs.push(format!("{path}.seg: 1 or 2 whole numbers from 1 to 64"));
         }
@@ -137,12 +177,17 @@ fn check_geo(g: &Value, path: &str, errs: &mut Errs) {
 fn check_mat(m: &Value, path: &str, errs: &mut Errs) {
     if let Some(s) = m.as_str() {
         if !MATS.contains(&s) {
-            errs.push(format!("{path}: unknown material \"{s}\" (one of {})", MATS.join(", ")));
+            errs.push(format!(
+                "{path}: unknown material \"{s}\" (one of {})",
+                MATS.join(", ")
+            ));
         }
         return;
     }
     let Some(o) = m.as_object().filter(|o| is_hex(field(o, "color"))) else {
-        errs.push(format!("{path}: a material name, or an inline material with a hex color"));
+        errs.push(format!(
+            "{path}: a material name, or an inline material with a hex color"
+        ));
         return;
     };
     unknown_keys(o, INLINE_KEYS, path, errs);
@@ -168,7 +213,10 @@ fn check_part(p: &Value, path: &str, bones: Option<&BTreeSet<String>>, errs: &mu
         }
         Some(set) => {
             if !bone.as_str().is_some_and(|b| set.contains(b)) {
-                errs.push(format!("{path}.bone: \"{}\" is not a bone of this species", show(bone)));
+                errs.push(format!(
+                    "{path}.bone: \"{}\" is not a bone of this species",
+                    show(bone)
+                ));
             }
         }
     }
@@ -193,12 +241,19 @@ fn check_part(p: &Value, path: &str, bones: Option<&BTreeSet<String>>, errs: &mu
 }
 
 fn is_prop(s: &str) -> bool {
-    matches!(s, "rot.x" | "rot.y" | "rot.z" | "pos.x" | "pos.y" | "pos.z" | "scale" | "lid")
+    matches!(
+        s,
+        "rot.x" | "rot.y" | "rot.z" | "pos.x" | "pos.y" | "pos.z" | "scale" | "lid"
+    )
 }
 
 /// A number, or a gait reference: "gait.bob".
 fn is_param(v: &Value) -> bool {
-    is_num(v) || v.as_str().is_some_and(|s| s.strip_prefix("gait.").is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_lowercase())))
+    is_num(v)
+        || v.as_str().is_some_and(|s| {
+            s.strip_prefix("gait.")
+                .is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_lowercase()))
+        })
 }
 
 /// A clip's channels. `bones` is the set they may name: a species' bones, or the required ones for a shared clip.
@@ -213,7 +268,9 @@ pub fn validate_clip(c: &Value, path: &str, bones: &BTreeSet<String>) -> Errs {
         errs.push(format!("{path}.loop: true or false"));
     }
     if looped.as_bool() == Some(false) && !is_num(field(o, "dur")) {
-        errs.push(format!("{path}.dur: a one-shot needs its length in seconds"));
+        errs.push(format!(
+            "{path}.dur: a one-shot needs its length in seconds"
+        ));
     }
     let Some(channels) = field(o, "channels").as_array() else {
         errs.push(format!("{path}.channels: a list"));
@@ -275,12 +332,17 @@ pub fn validate_clip(c: &Value, path: &str, bones: &BTreeSet<String>) -> Errs {
             Some(list) => {
                 for (i, f) in list.iter().enumerate() {
                     let fp = format!("{path}.fx[{i}]");
-                    let Some(fo) = f.as_object().filter(|fo| in_list(FX_KINDS, field(fo, "kind"))) else {
+                    let Some(fo) = f
+                        .as_object()
+                        .filter(|fo| in_list(FX_KINDS, field(fo, "kind")))
+                    else {
                         errs.push(format!("{fp}.kind: one of {}", FX_KINDS.join(", ")));
                         continue;
                     };
                     if !is_str(field(fo, "at")) {
-                        errs.push(format!("{fp}.at: an anchor (head, gripR, gripL, body, carry, or a bone)"));
+                        errs.push(format!(
+                            "{fp}.at: an anchor (head, gripR, gripL, body, carry, or a bone)"
+                        ));
                     }
                     let every = field(fo, "every");
                     if defined(every) && !every.as_f64().is_some_and(|e| e > 0.0) {
@@ -299,7 +361,10 @@ fn is_schema_1(o: &Map<String, Value>) -> bool {
 
 /// The shared clip file (`clips.json`): its clips name the required bones only.
 pub fn validate_clips(file: &Value) -> Errs {
-    let clips = file.as_object().filter(|o| is_schema_1(o)).and_then(|o| field(o, "clips").as_object());
+    let clips = file
+        .as_object()
+        .filter(|o| is_schema_1(o))
+        .and_then(|o| field(o, "clips").as_object());
     let Some(clips) = clips else {
         return vec!["clips: { schema: 1, clips: {...} }".to_string()];
     };
@@ -328,7 +393,10 @@ pub fn validate_species(file: &Value, name: &str, shared: &BTreeSet<String>) -> 
     }
     let id = field(o, "id");
     if id.as_str() != Some(name) {
-        errs.push(format!("{name}.id: \"{}\" must match the file name \"{name}\"", show(id)));
+        errs.push(format!(
+            "{name}.id: \"{}\" must match the file name \"{name}\"",
+            show(id)
+        ));
     }
     if !is_str(field(o, "name")) {
         errs.push(format!("{name}.name: a nickname"));
@@ -346,7 +414,10 @@ pub fn validate_species(file: &Value, name: &str, shared: &BTreeSet<String>) -> 
         errs.push(format!("{name}.label_top: a height"));
     }
     if !in_list(LOCOMOTIONS, field(o, "locomotion")) {
-        errs.push(format!("{name}.locomotion: one of {}", LOCOMOTIONS.join(", ")));
+        errs.push(format!(
+            "{name}.locomotion: one of {}",
+            LOCOMOTIONS.join(", ")
+        ));
     }
     if !field(o, "floats").is_boolean() {
         errs.push(format!("{name}.floats: true or false"));
@@ -380,7 +451,9 @@ pub fn validate_species(file: &Value, name: &str, shared: &BTreeSet<String>) -> 
             }
             for req in REQUIRED_BONES {
                 if !bones.contains(*req) {
-                    errs.push(format!("{name}.bones: the required bone \"{req}\" is missing"));
+                    errs.push(format!(
+                        "{name}.bones: the required bone \"{req}\" is missing"
+                    ));
                 }
             }
             for (b, def) in bo {
@@ -388,12 +461,18 @@ pub fn validate_species(file: &Value, name: &str, shared: &BTreeSet<String>) -> 
                 let mut p: &Value = field(d, "parent");
                 let mut depth = 0usize;
                 while p.as_str() != Some("root") {
-                    let known = p.as_str().filter(|s| bones.contains(*s)).filter(|_| depth <= bo.len());
+                    let known = p
+                        .as_str()
+                        .filter(|s| bones.contains(*s))
+                        .filter(|_| depth <= bo.len());
                     let Some(pname) = known else {
                         errs.push(format!("{name}.bones.{b}.parent: \"{}\" is not a bone (or \"root\"), or a cycle", show(p)));
                         break;
                     };
-                    p = bo.get(pname).and_then(|d| d.as_object()).map_or(&NULL, |d| field(d, "parent"));
+                    p = bo
+                        .get(pname)
+                        .and_then(|d| d.as_object())
+                        .map_or(&NULL, |d| field(d, "parent"));
                     depth += 1;
                 }
             }
@@ -419,7 +498,10 @@ pub fn validate_species(file: &Value, name: &str, shared: &BTreeSet<String>) -> 
                     continue;
                 };
                 unknown_keys(eo, EYE_KEYS, &ep, &mut errs);
-                if !field(eo, "bone").as_str().is_some_and(|b| bones.contains(b)) {
+                if !field(eo, "bone")
+                    .as_str()
+                    .is_some_and(|b| bones.contains(b))
+                {
                     errs.push(format!("{ep}.bone: not a bone of this species"));
                 }
                 if !is_vec3(field(eo, "at")) {
@@ -432,7 +514,10 @@ pub fn validate_species(file: &Value, name: &str, shared: &BTreeSet<String>) -> 
                     errs.push(format!("{ep}.shape: one of {}", EYE_SHAPES.join(", ")));
                 }
                 let glass = field(eo, "glass");
-                if defined(glass) && (!glass.is_boolean() || (glass.as_bool() == Some(true) && !is_num(field(eo, "r")))) {
+                if defined(glass)
+                    && (!glass.is_boolean()
+                        || (glass.as_bool() == Some(true) && !is_num(field(eo, "r"))))
+                {
                     errs.push(format!("{ep}.glass: true or false (true needs r)"));
                 }
                 let r = field(eo, "r");
@@ -452,7 +537,11 @@ pub fn validate_species(file: &Value, name: &str, shared: &BTreeSet<String>) -> 
         Some(spins) => {
             for (i, s) in spins.iter().enumerate() {
                 let sp = format!("{name}.spin[{i}]");
-                let Some(so) = s.as_object().filter(|so| field(so, "bone").as_str().is_some_and(|b| bones.contains(b))) else {
+                let Some(so) = s.as_object().filter(|so| {
+                    field(so, "bone")
+                        .as_str()
+                        .is_some_and(|b| bones.contains(b))
+                }) else {
                     errs.push(format!("{sp}.bone: not a bone of this species"));
                     continue;
                 };
@@ -470,7 +559,10 @@ pub fn validate_species(file: &Value, name: &str, shared: &BTreeSet<String>) -> 
         }
     }
 
-    let feet_ok = field(o, "feet").as_array().is_some_and(|f| f.iter().all(|b| b.as_str().is_some_and(|b| bones.contains(b))));
+    let feet_ok = field(o, "feet").as_array().is_some_and(|f| {
+        f.iter()
+            .all(|b| b.as_str().is_some_and(|b| bones.contains(b)))
+    });
     if !feet_ok {
         errs.push(format!("{name}.feet: a list of bones"));
     }
@@ -505,7 +597,10 @@ pub fn validate_species(file: &Value, name: &str, shared: &BTreeSet<String>) -> 
         Some(quirks) => {
             for (i, q) in quirks.iter().enumerate() {
                 let qp = format!("{name}.quirks[{i}]");
-                let Some(qo) = q.as_object().filter(|qo| field(qo, "clip").is_string() && is_num(field(qo, "weight"))) else {
+                let Some(qo) = q
+                    .as_object()
+                    .filter(|qo| field(qo, "clip").is_string() && is_num(field(qo, "weight")))
+                else {
                     errs.push(format!("{qp}: {{ clip, weight }}"));
                     continue;
                 };
@@ -525,7 +620,10 @@ pub fn validate_species(file: &Value, name: &str, shared: &BTreeSet<String>) -> 
                     errs.push(format!("{name}.overrides.{key}: not a shared clip"));
                 }
                 if !target.as_str().is_some_and(&own) {
-                    errs.push(format!("{name}.overrides.{key}: \"{}\" is not a clip of this species", show(target)));
+                    errs.push(format!(
+                        "{name}.overrides.{key}: \"{}\" is not a clip of this species",
+                        show(target)
+                    ));
                 }
             }
         }
@@ -533,11 +631,19 @@ pub fn validate_species(file: &Value, name: &str, shared: &BTreeSet<String>) -> 
 
     let orchestrator = field(o, "orchestrator");
     if defined(orchestrator) {
-        match orchestrator.as_object().and_then(|oo| field(oo, "parts").as_array()) {
+        match orchestrator
+            .as_object()
+            .and_then(|oo| field(oo, "parts").as_array())
+        {
             None => errs.push(format!("{name}.orchestrator: {{ parts: [...] }}")),
             Some(parts) => {
                 for (i, p) in parts.iter().enumerate() {
-                    check_part(p, &format!("{name}.orchestrator.parts[{i}]"), Some(&bones), &mut errs);
+                    check_part(
+                        p,
+                        &format!("{name}.orchestrator.parts[{i}]"),
+                        Some(&bones),
+                        &mut errs,
+                    );
                 }
             }
         }
@@ -607,7 +713,13 @@ pub fn validate_palette(file: &Value) -> Errs {
     let Some(o) = file.as_object() else {
         return vec!["palette: a JSON object".to_string()];
     };
-    ["ink", "sheet", "paper", "rule", "signal", "ok", "info", "inkMuted"].into_iter().filter(|k| !is_hex(field(o, k))).map(|k| format!("palette.{k}: a hex color")).collect()
+    [
+        "ink", "sheet", "paper", "rule", "signal", "ok", "info", "inkMuted",
+    ]
+    .into_iter()
+    .filter(|k| !is_hex(field(o, k)))
+    .map(|k| format!("palette.{k}: a hex color"))
+    .collect()
 }
 
 #[cfg(test)]

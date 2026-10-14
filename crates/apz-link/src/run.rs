@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use apz_http::client;
 use apz_trust::node::NodeKey;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::identity::{self, Identity};
 use crate::{forward, join};
@@ -35,7 +35,11 @@ pub struct Local {
 
 impl Default for Local {
     fn default() -> Self {
-        Self { noded: 8899, vsockd: 9180, forward: 7701 }
+        Self {
+            noded: 8899,
+            vsockd: 9180,
+            forward: 7701,
+        }
     }
 }
 
@@ -54,9 +58,14 @@ pub fn execute(local: &Local, command: &Value) -> Value {
     let port = match command.get("target").and_then(Value::as_str) {
         Some("noded") => local.noded,
         Some("hub") => local.vsockd,
-        _ => return json!({"command": id, "ok": false, "status": 0, "body": {"error": "unknown target"}}),
+        _ => {
+            return json!({"command": id, "ok": false, "status": 0, "body": {"error": "unknown target"}});
+        }
     };
-    let method = command.get("method").and_then(Value::as_str).unwrap_or("GET");
+    let method = command
+        .get("method")
+        .and_then(Value::as_str)
+        .unwrap_or("GET");
     let path = command.get("path").and_then(Value::as_str).unwrap_or("/");
     let body = command
         .get("body")
@@ -66,7 +75,9 @@ pub fn execute(local: &Local, command: &Value) -> Value {
         Ok(reply) => {
             json!({"command": id, "ok": reply.status < 400, "status": reply.status, "body": reply_body(&reply.body)})
         }
-        Err(err) => json!({"command": id, "ok": false, "status": 502, "body": {"error": err.to_string()}}),
+        Err(err) => {
+            json!({"command": id, "ok": false, "status": 502, "body": {"error": err.to_string()}})
+        }
     }
 }
 
@@ -75,7 +86,8 @@ fn reply_body(bytes: &[u8]) -> Value {
     if bytes.is_empty() {
         return Value::Null;
     }
-    serde_json::from_slice(bytes).unwrap_or_else(|_| json!({"text": String::from_utf8_lossy(bytes).into_owned()}))
+    serde_json::from_slice(bytes)
+        .unwrap_or_else(|_| json!({"text": String::from_utf8_lossy(bytes).into_owned()}))
 }
 
 /// Runs the node until revoked or a fatal error: starts the forwarder, the heartbeat thread and
@@ -85,8 +97,13 @@ pub fn run(dir: &Path, local: Local) -> Result<(), String> {
     let token = identity::internal_token(dir)?;
     let identity = Arc::new(identity);
     let key = Arc::new(key);
-    let _forwarder = forward::serve(identity.clone(), key.clone(), token, local.forward)
-        .map_err(|err| format!("the forwarder did not start on port {}: {err}", local.forward))?;
+    let _forwarder =
+        forward::serve(identity.clone(), key.clone(), token, local.forward).map_err(|err| {
+            format!(
+                "the forwarder did not start on port {}: {err}",
+                local.forward
+            )
+        })?;
     let _heartbeat = {
         let (identity, key) = (identity.clone(), key.clone());
         thread::spawn(move || beat_forever(identity, key, local))
@@ -109,8 +126,11 @@ fn hub_request(
     body: Option<&[u8]>,
     timeout: Duration,
 ) -> Result<Vec<u8>, Failure> {
-    let target = identity.signed(key, method, path, body.unwrap_or_default()).map_err(Failure::Retry)?;
-    let reply = client::request(&target, method, path, body, timeout).map_err(|err| Failure::Retry(err.to_string()))?;
+    let target = identity
+        .signed(key, method, path, body.unwrap_or_default())
+        .map_err(Failure::Retry)?;
+    let reply = client::request(&target, method, path, body, timeout)
+        .map_err(|err| Failure::Retry(err.to_string()))?;
     match reply.status {
         200..=299 => Ok(reply.body),
         403 => Err(Failure::Revoked),
@@ -158,7 +178,9 @@ fn stats_report(stats: &Value) -> Value {
 /// live `stats`, so the hub holds the same description a local view shows.
 fn machine_report(noded: u16) -> Value {
     let mut machine = join::machine_summary();
-    if let (Value::Object(report), Value::Object(facts)) = (&mut machine, local_json(noded, "/v1/machine")) {
+    if let (Value::Object(report), Value::Object(facts)) =
+        (&mut machine, local_json(noded, "/v1/machine"))
+    {
         for key in NODED_MACHINE_FIELDS {
             if let Some(value) = facts.get(key) {
                 report.insert(key.to_string(), value.clone());
@@ -166,7 +188,10 @@ fn machine_report(noded: u16) -> Value {
         }
     }
     if let Value::Object(report) = &mut machine {
-        report.insert("stats".to_string(), stats_report(&local_json(noded, "/v1/machine/stats")));
+        report.insert(
+            "stats".to_string(),
+            stats_report(&local_json(noded, "/v1/machine/stats")),
+        );
     }
     machine
 }
@@ -178,20 +203,29 @@ mod machine_tests {
     #[test]
     fn live_stats_are_the_cpu_percent_and_memory_used() {
         let sample = json!({ "cpu_percent": 7.5, "mem_used_mib": 18000, "load": [0.1, 0.2, 0.3], "history": [] });
-        assert_eq!(stats_report(&sample), json!({ "cpu_pct": 7.5, "mem_used_mib": 18000 }));
+        assert_eq!(
+            stats_report(&sample),
+            json!({ "cpu_pct": 7.5, "mem_used_mib": 18000 })
+        );
     }
 
     #[test]
     fn the_foundry_machine_facts_ride_the_heartbeat() {
         for field in ["accelerators", "trainer", "fabric", "gpus"] {
-            assert!(NODED_MACHINE_FIELDS.contains(&field), "{field} is in the heartbeat");
+            assert!(
+                NODED_MACHINE_FIELDS.contains(&field),
+                "{field} is in the heartbeat"
+            );
         }
     }
 
     #[test]
     fn stats_are_null_without_a_sample() {
         assert_eq!(stats_report(&Value::Null), Value::Null);
-        assert_eq!(stats_report(&json!({"error": "no host sample yet"})), json!({ "cpu_pct": null, "mem_used_mib": null }));
+        assert_eq!(
+            stats_report(&json!({"error": "no host sample yet"})),
+            json!({ "cpu_pct": null, "mem_used_mib": null })
+        );
     }
 }
 
@@ -204,7 +238,14 @@ fn heartbeat_once(identity: &Identity, key: &NodeKey, local: Local) {
     });
     let bytes = serde_json::to_vec(&body).unwrap_or_default();
     // A failed beat is not reported here: the command loop reports the hub's state.
-    let _ = hub_request(identity, key, "POST", &path, Some(bytes.as_slice()), HUB_TIMEOUT);
+    let _ = hub_request(
+        identity,
+        key,
+        "POST",
+        &path,
+        Some(bytes.as_slice()),
+        HUB_TIMEOUT,
+    );
 }
 
 fn beat_forever(identity: Arc<Identity>, key: Arc<NodeKey>, local: Local) {
@@ -216,7 +257,8 @@ fn beat_forever(identity: Arc<Identity>, key: Arc<NodeKey>, local: Local) {
 
 fn poll_commands(identity: &Identity, key: &NodeKey, path: &str) -> Result<Vec<Value>, Failure> {
     let body = hub_request(identity, key, "GET", path, None, POLL_TIMEOUT)?;
-    serde_json::from_slice(&body).map_err(|err| Failure::Retry(format!("the command list is not JSON: {err}")))
+    serde_json::from_slice(&body)
+        .map_err(|err| Failure::Retry(format!("the command list is not JSON: {err}")))
 }
 
 fn revoked() -> String {
@@ -229,7 +271,14 @@ fn deliver(identity: &Identity, key: &NodeKey, path: &str, result: &Value) -> Re
     let bytes = serde_json::to_vec(result).unwrap_or_default();
     let mut backoff = BACKOFF_MIN;
     loop {
-        match hub_request(identity, key, "POST", path, Some(bytes.as_slice()), HUB_TIMEOUT) {
+        match hub_request(
+            identity,
+            key,
+            "POST",
+            path,
+            Some(bytes.as_slice()),
+            HUB_TIMEOUT,
+        ) {
             Ok(_) => return Ok(()),
             Err(Failure::Revoked) => return Err(revoked()),
             Err(Failure::Retry(message)) => {
@@ -277,20 +326,31 @@ mod tests {
     use apz_http::{Response, Router, Server};
 
     fn daemon() -> apz_http::Handle {
-        let router: Router<()> = Router::new()
-            .get("/v1/runs", |_, _, _| Response::json(200, &json!({"runs": []})));
-        Server::bind(0).expect("an ephemeral port").spawn(move |request| router.handle(&(), request)).expect("serves")
+        let router: Router<()> = Router::new().get("/v1/runs", |_, _, _| {
+            Response::json(200, &json!({"runs": []}))
+        });
+        Server::bind(0)
+            .expect("an ephemeral port")
+            .spawn(move |request| router.handle(&(), request))
+            .expect("serves")
     }
 
     #[test]
     fn a_noded_command_is_answered_with_the_daemons_reply() {
         let daemon = daemon();
-        let local = Local { noded: daemon.port(), vsockd: 0, forward: 0 };
+        let local = Local {
+            noded: daemon.port(),
+            vsockd: 0,
+            forward: 0,
+        };
         let result = execute(
             &local,
             &json!({"id": 7, "target": "noded", "method": "GET", "path": "/v1/runs", "body": null}),
         );
-        assert_eq!(result, json!({"command": 7, "ok": true, "status": 200, "body": {"runs": []}}));
+        assert_eq!(
+            result,
+            json!({"command": 7, "ok": true, "status": 200, "body": {"runs": []}})
+        );
     }
 
     #[test]

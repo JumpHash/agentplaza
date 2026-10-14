@@ -18,10 +18,7 @@ const UNBOOTABLE: &str = r#"{"n":1,"vcpus":1,"memory_mib":128}"#;
 fn failed_run(port: u16) -> String {
     let reply = request(port, "POST", "/v1/runs", Some(UNBOOTABLE));
     assert_eq!(reply.status, 201, "{}", reply.body);
-    reply.json()["id"]
-        .as_str()
-        .expect("an id")
-        .to_string()
+    reply.json()["id"].as_str().expect("an id").to_string()
 }
 
 #[test]
@@ -101,7 +98,6 @@ fn the_event_socket_is_a_websocket_only() {
     );
     assert_eq!(request(port, "GET", "/v1/events", None).status, 404);
 }
-
 
 #[test]
 fn a_run_whose_vms_cannot_boot_is_failed_and_readable() {
@@ -199,9 +195,8 @@ fn a_kill_racing_a_boot_leaves_a_consistent_run() {
         // The run ids are the registry's, in creation order, so the round's
         // run is known before the create has answered.
         let id = format!("r{}", round + 1);
-        let creating = std::thread::spawn(move || {
-            request(port, "POST", "/v1/runs", Some(UNBOOTABLE))
-        });
+        let creating =
+            std::thread::spawn(move || request(port, "POST", "/v1/runs", Some(UNBOOTABLE)));
         let killing = std::thread::spawn({
             let id = id.clone();
             move || request(port, "DELETE", &format!("/v1/runs/{id}"), None)

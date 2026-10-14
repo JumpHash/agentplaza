@@ -8,15 +8,17 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use iced::keyboard;
 use iced::widget::operation::snap_to;
-use iced::widget::{button, checkbox, column, container, row, scrollable, text, text_editor, text_input, Space};
+use iced::widget::{
+    Space, button, checkbox, column, container, row, scrollable, text, text_editor, text_input,
+};
 use iced::{Alignment, Border, Color, Element, Length, Task, Theme};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use super::{agent_side, ide, sanctions, Id};
+use super::{Id, agent_side, ide, sanctions};
 use crate::console::engine::world::layout::{agent_hue, role_hue};
 use crate::console::rich;
-use crate::console::{client, events, ui, Ctx};
-use crate::theme::{SANS};
+use crate::console::{Ctx, client, events, ui};
+use crate::theme::SANS;
 
 /// The profile and infractions refresh at most this often; the transcript on every poll.
 const EXTRAS_EVERY: Duration = Duration::from_secs(15);
@@ -39,7 +41,11 @@ pub enum Tab {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Dialog {
     Restart,
-    Wipe { memory: bool, transcript: bool, identity: bool },
+    Wipe {
+        memory: bool,
+        transcript: bool,
+        identity: bool,
+    },
     Retire,
     /// Lift the suspension with this sanction id; the reason is typed in the card.
     Lift(u64),
@@ -126,7 +132,11 @@ pub enum Msg {
     Toggle(Wipe),
     Dismiss,
     Proceed,
-    Done { retired: bool, note: &'static str, result: Result<(), String> },
+    Done {
+        retired: bool,
+        note: &'static str,
+        result: Result<(), String>,
+    },
     Expand((u64, usize)),
     ShowAll,
     Side(agent_side::SideMsg),
@@ -164,7 +174,12 @@ fn transcript_texts(entries: &[Value]) -> Vec<&str> {
         match s(e, "kind") {
             "work_start" => texts.push(s(d, "prompt")),
             "model_response" => {
-                for b in d.get("content").and_then(Value::as_array).into_iter().flatten() {
+                for b in d
+                    .get("content")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                {
                     if s(b, "type") == "text" {
                         texts.push(s(b, "text"));
                     }
@@ -205,7 +220,9 @@ pub fn apply_delta(live: &mut Vec<LiveTurn>, cid: u64, data: &Value) -> bool {
     if u(data, "cid") != cid {
         return false;
     }
-    let Some(part) = data.get("delta") else { return false };
+    let Some(part) = data.get("delta") else {
+        return false;
+    };
     let piece = match s(part, "type") {
         "text" => Piece::Text(s(part, "text").to_string()),
         "tool_use" => Piece::Tool(s(part, "name").to_string()),
@@ -215,7 +232,11 @@ pub fn apply_delta(live: &mut Vec<LiveTurn>, cid: u64, data: &Value) -> bool {
     let at = match live.iter().position(|t| t.work == work && t.req == req) {
         Some(at) => at,
         None => {
-            live.push(LiveTurn { work, req, pieces: Vec::new() });
+            live.push(LiveTurn {
+                work,
+                req,
+                pieces: Vec::new(),
+            });
             live.len() - 1
         }
     };
@@ -236,12 +257,20 @@ pub fn settle(live: &mut Vec<LiveTurn>, work: u64) {
 }
 
 /// The streamed pieces of one reply: its text, and a chip for each tool it is calling.
-fn live_views<'a>(turn: &'a LiveTurn, rctx: &rich::RichCtx, cards: &rich::Cards) -> Vec<Element<'a, Msg>> {
+fn live_views<'a>(
+    turn: &'a LiveTurn,
+    rctx: &rich::RichCtx,
+    cards: &rich::Cards,
+) -> Vec<Element<'a, Msg>> {
     turn.pieces
         .iter()
         .map(|piece| match piece {
             Piece::Text(body) => rich::view(body.as_str(), rctx, cards, &on_rich),
-            Piece::Tool(name) => text(format!("→ {name}")).font(ui::SANS_SEMIBOLD).size(12.0).color(crate::theme::palette().ink).into(),
+            Piece::Tool(name) => text(format!("→ {name}"))
+                .font(ui::SANS_SEMIBOLD)
+                .size(12.0)
+                .color(crate::theme::palette().ink)
+                .into(),
         })
         .collect()
 }
@@ -255,14 +284,22 @@ pub fn stream(ctx: &Ctx) -> iced::Subscription<Msg> {
     // The graph's keys. A key a focused text field captures (the find box, the composer) has status Captured and never
     // reaches here, as the web ignores keys while typing.
     let keys = iced::event::listen_with(|event, status, _| match event {
-        iced::Event::Keyboard(iced::keyboard::Event::KeyPressed { key, modifiers, .. }) if status == iced::event::Status::Ignored => {
-            super::memory_graph::key(&key, modifiers.shift()).map(|k| Msg::Side(agent_side::SideMsg::Key(k)))
+        iced::Event::Keyboard(iced::keyboard::Event::KeyPressed { key, modifiers, .. })
+            if status == iced::event::Status::Ignored =>
+        {
+            super::memory_graph::key(&key, modifiers.shift())
+                .map(|k| Msg::Side(agent_side::SideMsg::Key(k)))
         }
         _ => None,
     });
     // The web re-reads the notes every 30 seconds as a fallback to the live events; the Memory tab ignores it when hidden.
-    let refresh = iced::time::every(Duration::from_secs(30)).map(|_| Msg::Side(agent_side::SideMsg::Refresh));
-    iced::Subscription::batch([events::subscription(&ctx.client).map(Msg::Event), keys, refresh])
+    let refresh =
+        iced::time::every(Duration::from_secs(30)).map(|_| Msg::Side(agent_side::SideMsg::Refresh));
+    iced::Subscription::batch([
+        events::subscription(&ctx.client).map(Msg::Event),
+        keys,
+        refresh,
+    ])
 }
 
 pub fn load(state: &mut State, ctx: &Ctx) -> Task<Msg> {
@@ -284,7 +321,10 @@ pub fn load(state: &mut State, ctx: &Ctx) -> Task<Msg> {
     let poll = client::task(move || fetch(&client, cid, after, extras), Msg::Polled);
     let conduct = if extras {
         let client = ctx.client.clone();
-        client::task(move || sanctions::list(&client, Some(cid), None, None), Msg::Conduct)
+        client::task(
+            move || sanctions::list(&client, Some(cid), None, None),
+            Msg::Conduct,
+        )
     } else {
         Task::none()
     };
@@ -293,14 +333,26 @@ pub fn load(state: &mut State, ctx: &Ctx) -> Task<Msg> {
 
 fn fetch(client: &client::Client, cid: u64, after: u64, extras: bool) -> Result<Snapshot, String> {
     let agent: Value = client.get(&format!("/v1/agents/{cid}"))?;
-    let mut entries: Vec<Value> = client.get(&format!("/v1/agents/{cid}/transcript?after={after}&limit=1000"))?;
+    let mut entries: Vec<Value> = client.get(&format!(
+        "/v1/agents/{cid}/transcript?after={after}&limit=1000"
+    ))?;
     entries.sort_by_key(|e| u(e, "seq"));
     let extras = extras.then(|| {
-        let profile = client.get::<Value>(&format!("/v1/agents/{cid}/profile")).ok();
+        let profile = client
+            .get::<Value>(&format!("/v1/agents/{cid}/profile"))
+            .ok();
         let infractions = client.get::<Vec<Value>>(&format!("/v1/agents/{cid}/infractions"));
-        Extras { profile, infractions }
+        Extras {
+            profile,
+            infractions,
+        }
     });
-    Ok(Snapshot { cid, agent, entries, extras })
+    Ok(Snapshot {
+        cid,
+        agent,
+        entries,
+        extras,
+    })
 }
 
 pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
@@ -332,7 +384,11 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                             grew = true;
                         }
                     }
-                    if let Some(Extras { profile, infractions }) = snap.extras {
+                    if let Some(Extras {
+                        profile,
+                        infractions,
+                    }) = snap.extras
+                    {
                         state.profile = profile;
                         match infractions {
                             Ok(list) => {
@@ -350,7 +406,11 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                 Ok(_) => {}
                 Err(e) => state.error = Some(e),
             }
-            let scroll = if grew && !state.scrolled_up { snap_to(transcript_id(), scrollable::RelativeOffset::END) } else { Task::none() };
+            let scroll = if grew && !state.scrolled_up {
+                snap_to(transcript_id(), scrollable::RelativeOffset::END)
+            } else {
+                Task::none()
+            };
             Task::batch([scroll, prefetch(state, ctx)])
         }
         Msg::Event(e) if e.kind == "memory" => {
@@ -363,13 +423,17 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             }
         }
         Msg::Event(e) => {
-            if e.kind != "delta" || !apply_delta(&mut state.live, state.cid, &e.data) || state.scrolled_up {
+            if e.kind != "delta"
+                || !apply_delta(&mut state.live, state.cid, &e.data)
+                || state.scrolled_up
+            {
                 return Task::none();
             }
             snap_to(transcript_id(), scrollable::RelativeOffset::END)
         }
         Msg::Scrolled(view) => {
-            let gap = view.content_bounds().height - view.bounds().height - view.absolute_offset().y;
+            let gap =
+                view.content_bounds().height - view.bounds().height - view.absolute_offset().y;
             state.scrolled_up = gap >= NEAR_BOTTOM_PX;
             Task::none()
         }
@@ -385,7 +449,10 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             state.sending = true;
             let client = ctx.client.clone();
             let path = format!("/v1/agents/{}/chat", state.cid);
-            client::task(move || client.post::<Value>(&path, &json!({ "text": text })), Msg::Sent)
+            client::task(
+                move || client.post::<Value>(&path, &json!({ "text": text })),
+                Msg::Sent,
+            )
         }
         Msg::Sent(result) => {
             state.sending = false;
@@ -412,7 +479,12 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             Task::none()
         }
         Msg::Toggle(which) => {
-            if let Some(Dialog::Wipe { memory, transcript, identity }) = state.dialog.as_mut() {
+            if let Some(Dialog::Wipe {
+                memory,
+                transcript,
+                identity,
+            }) = state.dialog.as_mut()
+            {
                 let flag = match which {
                     Wipe::Memory => memory,
                     Wipe::Transcript => transcript,
@@ -440,12 +512,38 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                 return client::task(move || sanctions::lift(&client, id, &reason), Msg::Lifted);
             }
             match state.dialog.take() {
-                Some(Dialog::Restart) => dispatch(state, ctx, format!("/v1/agents/{cid}/restart"), json!({}), false, "Restarting"),
-                Some(Dialog::Wipe { memory, transcript, identity }) => {
-                    let body = json!({ "memory": memory, "transcript": transcript, "identity": identity });
-                    dispatch(state, ctx, format!("/v1/agents/{cid}/wipe"), body, false, "Wiped")
+                Some(Dialog::Restart) => dispatch(
+                    state,
+                    ctx,
+                    format!("/v1/agents/{cid}/restart"),
+                    json!({}),
+                    false,
+                    "Restarting",
+                ),
+                Some(Dialog::Wipe {
+                    memory,
+                    transcript,
+                    identity,
+                }) => {
+                    let body =
+                        json!({ "memory": memory, "transcript": transcript, "identity": identity });
+                    dispatch(
+                        state,
+                        ctx,
+                        format!("/v1/agents/{cid}/wipe"),
+                        body,
+                        false,
+                        "Wiped",
+                    )
                 }
-                Some(Dialog::Retire) => dispatch(state, ctx, format!("/v1/agents/{cid}/retire"), json!({}), true, "Retired"),
+                Some(Dialog::Retire) => dispatch(
+                    state,
+                    ctx,
+                    format!("/v1/agents/{cid}/retire"),
+                    json!({}),
+                    true,
+                    "Retired",
+                ),
                 None | Some(Dialog::Lift(_)) => Task::none(),
             }
         }
@@ -476,7 +574,11 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             }
             Task::none()
         }
-        Msg::Done { retired, note, result } => {
+        Msg::Done {
+            retired,
+            note,
+            result,
+        } => {
             state.busy = false;
             match result {
                 Ok(()) => {
@@ -500,35 +602,94 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             state.infractions_all = !state.infractions_all;
             Task::none()
         }
-        Msg::Side(agent_side::SideMsg::Key(_) | agent_side::SideMsg::Refresh) if !matches!(state.tab, Tab::Memory) => Task::none(),
+        Msg::Side(agent_side::SideMsg::Key(_) | agent_side::SideMsg::Refresh)
+            if !matches!(state.tab, Tab::Memory) =>
+        {
+            Task::none()
+        }
         Msg::Side(m) => agent_side::update(&mut state.side, m, ctx).map(Msg::Side),
     }
 }
 
 /// Posts one head action; the head buttons stay disabled until it answers.
-fn dispatch(state: &mut State, ctx: &Ctx, path: String, body: Value, retired: bool, note: &'static str) -> Task<Msg> {
+fn dispatch(
+    state: &mut State,
+    ctx: &Ctx,
+    path: String,
+    body: Value,
+    retired: bool,
+    note: &'static str,
+) -> Task<Msg> {
     state.busy = true;
     state.notice = None;
     let client = ctx.client.clone();
-    client::task(move || client.post::<Value>(&path, &body), move |r| Msg::Done { retired, note, result: r.map(|_| ()) })
+    client::task(
+        move || client.post::<Value>(&path, &body),
+        move |r| Msg::Done {
+            retired,
+            note,
+            result: r.map(|_| ()),
+        },
+    )
 }
 
 pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
-    let name = state.agent.as_ref().map(agent_name).unwrap_or_else(|| format!("Agent {}", state.cid));
+    let name = state
+        .agent
+        .as_ref()
+        .map(agent_name)
+        .unwrap_or_else(|| format!("Agent {}", state.cid));
     let busy = state.busy;
     let pick = |m: Msg| if busy { None } else { Some(m) };
-    let working = state.agent.as_ref().is_some_and(|a| s(a, "status") == "working");
+    let working = state
+        .agent
+        .as_ref()
+        .is_some_and(|a| s(a, "status") == "working");
     let mut actions: Vec<Element<'a, Msg>> = Vec::new();
     if state.agent.is_some() {
         let workspace = ide::target(&format!("agent:{}", state.cid), false, None);
-        actions.push(ui::btn("Open workspace", Some("square-code"), ui::Kind::Ghost, pick(Msg::OpenIde(workspace))));
+        actions.push(ui::btn(
+            "Open workspace",
+            Some("square-code"),
+            ui::Kind::Ghost,
+            pick(Msg::OpenIde(workspace)),
+        ));
         if working {
-            actions.push(ui::btn("Cancel work", Some("ban"), ui::Kind::Secondary, pick(Msg::Run(Act::Cancel))));
+            actions.push(ui::btn(
+                "Cancel work",
+                Some("ban"),
+                ui::Kind::Secondary,
+                pick(Msg::Run(Act::Cancel)),
+            ));
         }
-        actions.push(ui::btn("Restart", None, ui::Kind::Secondary, pick(Msg::Ask(Dialog::Restart))));
-        actions.push(ui::btn("Stop", Some("stop"), ui::Kind::Danger, pick(Msg::Run(Act::Stop))));
-        actions.push(ui::btn("Wipe…", None, ui::Kind::Secondary, pick(Msg::Ask(Dialog::Wipe { memory: false, transcript: false, identity: false }))));
-        actions.push(ui::btn("Retire", None, ui::Kind::Danger, pick(Msg::Ask(Dialog::Retire))));
+        actions.push(ui::btn(
+            "Restart",
+            None,
+            ui::Kind::Secondary,
+            pick(Msg::Ask(Dialog::Restart)),
+        ));
+        actions.push(ui::btn(
+            "Stop",
+            Some("stop"),
+            ui::Kind::Danger,
+            pick(Msg::Run(Act::Stop)),
+        ));
+        actions.push(ui::btn(
+            "Wipe…",
+            None,
+            ui::Kind::Secondary,
+            pick(Msg::Ask(Dialog::Wipe {
+                memory: false,
+                transcript: false,
+                identity: false,
+            })),
+        ));
+        actions.push(ui::btn(
+            "Retire",
+            None,
+            ui::Kind::Danger,
+            pick(Msg::Ask(Dialog::Retire)),
+        ));
     }
 
     let mut body: Vec<Element<'a, Msg>> = Vec::new();
@@ -552,9 +713,16 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
         },
     }
 
-    let tabs = ui::tabs(&[(Tab::Transcript, "Transcript"), (Tab::Memory, "Memory")], state.tab, Msg::Tab);
+    let tabs = ui::tabs(
+        &[(Tab::Transcript, "Transcript"), (Tab::Memory, "Memory")],
+        state.tab,
+        Msg::Tab,
+    );
     let content: Element<'a, Msg> = match state.tab {
-        Tab::Transcript => column![transcript_card(state), composer_view(state)].spacing(16).width(Length::Fill).into(),
+        Tab::Transcript => column![transcript_card(state), composer_view(state)]
+            .spacing(16)
+            .width(Length::Fill)
+            .into(),
         Tab::Memory => agent_side::memory_view(&state.side).map(Msg::Side),
     };
     let main = column![tabs, content].spacing(16).width(Length::Fill);
@@ -567,20 +735,38 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
     let side = container(column(side).spacing(16)).width(Length::Fixed(SIDE_WIDTH));
     body.push(row![main, side].spacing(24).into());
 
-    ui::sheet(head(actions), ui::scroll(column(body).spacing(16).width(Length::Fill)).into())
+    ui::sheet(
+        head(actions),
+        ui::scroll(column(body).spacing(16).width(Length::Fill)).into(),
+    )
 }
 
 /// The web's head: the back link on its own line, the actions right-aligned under it.
 fn head<'a>(actions: Vec<Element<'a, Msg>>) -> Element<'a, Msg> {
-    let back = button(text("Agents").font(SANS).size(13.0).color(crate::theme::palette().ink_3))
-        .padding(0)
-        .style(|_: &Theme, _: button::Status| button::Style { background: None, text_color: crate::theme::palette().ink_3, border: Border::default(), ..Default::default() })
-        .on_press(Msg::Go(Id::Agents));
-    let mut line = row![Space::new().width(Length::Fill)].spacing(8).align_y(Alignment::Center);
+    let back = button(
+        text("Agents")
+            .font(SANS)
+            .size(13.0)
+            .color(crate::theme::palette().ink_3),
+    )
+    .padding(0)
+    .style(|_: &Theme, _: button::Status| button::Style {
+        background: None,
+        text_color: crate::theme::palette().ink_3,
+        border: Border::default(),
+        ..Default::default()
+    })
+    .on_press(Msg::Go(Id::Agents));
+    let mut line = row![Space::new().width(Length::Fill)]
+        .spacing(8)
+        .align_y(Alignment::Center);
     for action in actions {
         line = line.push(action);
     }
-    container(column![back, line].spacing(8)).padding([24, 0]).width(Length::Fill).into()
+    container(column![back, line].spacing(8))
+        .padding([24, 0])
+        .width(Length::Fill)
+        .into()
 }
 
 fn dialog_card<'a>(state: &'a State, d: &Dialog, name: &str) -> Element<'a, Msg> {
@@ -592,32 +778,64 @@ fn dialog_card<'a>(state: &'a State, d: &Dialog, name: &str) -> Element<'a, Msg>
                 .on_input(Msg::LiftReason)
                 .size(13.0)
                 .style(crate::theme::input);
-            let lift = if busy || state.lift_reason.trim().is_empty() { None } else { Some(Msg::Proceed) };
-            let mut body = column![ui::faint("The suspension ends now. The reason goes on the record."), reason].spacing(10);
+            let lift = if busy || state.lift_reason.trim().is_empty() {
+                None
+            } else {
+                Some(Msg::Proceed)
+            };
+            let mut body = column![
+                ui::faint("The suspension ends now. The reason goes on the record."),
+                reason
+            ]
+            .spacing(10);
             if let Some(e) = &state.lift_error {
                 body = body.push(ui::error_line(e));
             }
-            body = body.push(row![ui::btn("Cancel", None, ui::Kind::Ghost, Some(Msg::Dismiss)), ui::btn("Lift", None, ui::Kind::Primary, lift)].spacing(8));
+            body = body.push(
+                row![
+                    ui::btn("Cancel", None, ui::Kind::Ghost, Some(Msg::Dismiss)),
+                    ui::btn("Lift", None, ui::Kind::Primary, lift)
+                ]
+                .spacing(8),
+            );
             ui::card(&format!("Lift {name}'s suspension?"), body.into())
         }
         Dialog::Restart => ui::card(
             &format!("Restart {name}?"),
             column![
                 ui::faint("Its VM restarts."),
-                row![ui::btn("Cancel", None, ui::Kind::Ghost, Some(Msg::Dismiss)), ui::btn("Restart", None, ui::Kind::Primary, proceed)].spacing(8),
+                row![
+                    ui::btn("Cancel", None, ui::Kind::Ghost, Some(Msg::Dismiss)),
+                    ui::btn("Restart", None, ui::Kind::Primary, proceed)
+                ]
+                .spacing(8),
             ]
             .spacing(10)
             .into(),
         ),
-        Dialog::Wipe { memory, transcript, identity } => ui::card(
+        Dialog::Wipe {
+            memory,
+            transcript,
+            identity,
+        } => ui::card(
             &format!("Wipe {name}"),
             column![
                 ui::faint("The agent's VM restarts with a fresh workspace. This cannot be undone."),
                 checkbox(true).label("Workspace (always)"),
-                checkbox(*memory).label("Memory notes").on_toggle(|_| Msg::Toggle(Wipe::Memory)),
-                checkbox(*transcript).label("Conversation transcript").on_toggle(|_| Msg::Toggle(Wipe::Transcript)),
-                checkbox(*identity).label("Name and reputation").on_toggle(|_| Msg::Toggle(Wipe::Identity)),
-                row![ui::btn("Cancel", None, ui::Kind::Ghost, Some(Msg::Dismiss)), ui::btn("Wipe", None, ui::Kind::Danger, proceed)].spacing(8),
+                checkbox(*memory)
+                    .label("Memory notes")
+                    .on_toggle(|_| Msg::Toggle(Wipe::Memory)),
+                checkbox(*transcript)
+                    .label("Conversation transcript")
+                    .on_toggle(|_| Msg::Toggle(Wipe::Transcript)),
+                checkbox(*identity)
+                    .label("Name and reputation")
+                    .on_toggle(|_| Msg::Toggle(Wipe::Identity)),
+                row![
+                    ui::btn("Cancel", None, ui::Kind::Ghost, Some(Msg::Dismiss)),
+                    ui::btn("Wipe", None, ui::Kind::Danger, proceed)
+                ]
+                .spacing(8),
             ]
             .spacing(10)
             .into(),
@@ -626,7 +844,11 @@ fn dialog_card<'a>(state: &'a State, d: &Dialog, name: &str) -> Element<'a, Msg>
             &format!("Retire {name}?"),
             column![
                 ui::faint("Its VM stops for good and it leaves the roster."),
-                row![ui::btn("Cancel", None, ui::Kind::Ghost, Some(Msg::Dismiss)), ui::btn("Retire", None, ui::Kind::Danger, proceed)].spacing(8),
+                row![
+                    ui::btn("Cancel", None, ui::Kind::Ghost, Some(Msg::Dismiss)),
+                    ui::btn("Retire", None, ui::Kind::Danger, proceed)
+                ]
+                .spacing(8),
             ]
             .spacing(10)
             .into(),
@@ -641,7 +863,11 @@ fn profile_card<'a>(state: &'a State, a: &'a Value) -> Element<'a, Msg> {
     let p = state.profile.as_ref();
     let pv = |k: &str| f(p, k);
     let orchestrator = s(a, "tier") == "orchestrator";
-    let hue = if orchestrator { 25.0 } else { role_hue(s(a, "role")) };
+    let hue = if orchestrator {
+        25.0
+    } else {
+        role_hue(s(a, "role"))
+    };
     let (status_text, status_tone) = match s(a, "status") {
         "working" => ("Working", ui::Tone::Info),
         "idle" => ("Idle", ui::Tone::Ok),
@@ -649,10 +875,26 @@ fn profile_card<'a>(state: &'a State, a: &'a Value) -> Element<'a, Msg> {
     };
 
     let name = agent_name(a);
-    let initial = name.chars().next().map(String::from).unwrap_or_else(|| "A".to_string());
-    let stamp = container(text(if orchestrator { "ORCHESTRATOR" } else { "CITIZEN" }).font(ui::SANS_BOLD).size(11.0).color(crate::theme::palette().signal))
-        .padding([4, 8])
-        .style(ui::frame(Some(crate::theme::palette().sheet), crate::theme::palette().signal));
+    let initial = name
+        .chars()
+        .next()
+        .map(String::from)
+        .unwrap_or_else(|| "A".to_string());
+    let stamp = container(
+        text(if orchestrator {
+            "ORCHESTRATOR"
+        } else {
+            "CITIZEN"
+        })
+        .font(ui::SANS_BOLD)
+        .size(11.0)
+        .color(crate::theme::palette().signal),
+    )
+    .padding([4, 8])
+    .style(ui::frame(
+        Some(crate::theme::palette().sheet),
+        crate::theme::palette().signal,
+    ));
     // The web's portrait: the agent's own robot (the shared offscreen render), with the letter tile under it as the fallback.
     let cid = u(a, "cid");
     let body_hue = agent_hue(cid);
@@ -661,7 +903,14 @@ fn profile_card<'a>(state: &'a State, a: &'a Value) -> Element<'a, Msg> {
         .height(Length::Fixed(PORTRAIT))
         .center_x(Length::Fixed(PORTRAIT))
         .center_y(Length::Fixed(PORTRAIT))
-        .style(ui::frame(Some(mix(ui::hsl(body_hue, 0.6, 0.75), crate::theme::palette().sheet, 0.45)), crate::theme::palette().ink));
+        .style(ui::frame(
+            Some(mix(
+                ui::hsl(body_hue, 0.6, 0.75),
+                crate::theme::palette().sheet,
+                0.45,
+            )),
+            crate::theme::palette().ink,
+        ));
     let spec = crate::console::render_card::PortraitSpec {
         cid,
         orchestrator,
@@ -670,34 +919,71 @@ fn profile_card<'a>(state: &'a State, a: &'a Value) -> Element<'a, Msg> {
         offline: !matches!(s(a, "status"), "working" | "idle"),
         species: crate::console::engine::robot::species_of(Some(s(a, "species")), cid),
     };
-    let layers: Vec<Element<'a, Msg>> = match crate::console::render_card::robot_portrait(7, spec, PORTRAIT) {
-        Some(robot) => vec![letter.into(), robot],
-        None => vec![letter.into()],
-    };
-    let picture = iced::widget::stack(layers).width(Length::Fixed(PORTRAIT)).height(Length::Fixed(PORTRAIT));
-    let portrait = column![picture, stamp].spacing(10).align_x(Alignment::Center);
+    let layers: Vec<Element<'a, Msg>> =
+        match crate::console::render_card::robot_portrait(7, spec, PORTRAIT) {
+            Some(robot) => vec![letter.into(), robot],
+            None => vec![letter.into()],
+        };
+    let picture = iced::widget::stack(layers)
+        .width(Length::Fixed(PORTRAIT))
+        .height(Length::Fixed(PORTRAIT));
+    let portrait = column![picture, stamp]
+        .spacing(10)
+        .align_x(Alignment::Center);
 
     let stripe = ui::hsl(hue, 0.55, 0.4);
     let role_chip = row![
-        container(Space::new().width(Length::Fixed(4.0)).height(Length::Fill)).style(move |_: &Theme| container::Style {
-            background: Some(stripe.into()),
-            ..Default::default()
-        }),
-        container(text(s(a, "role_label").to_string()).font(ui::SANS_SEMIBOLD).size(11.5).color(crate::theme::palette().ink)).padding([6, 10]).style(ui::frame(Some(crate::theme::palette().sheet), crate::theme::palette().ink)),
+        container(Space::new().width(Length::Fixed(4.0)).height(Length::Fill)).style(
+            move |_: &Theme| container::Style {
+                background: Some(stripe.into()),
+                ..Default::default()
+            }
+        ),
+        container(
+            text(s(a, "role_label").to_string())
+                .font(ui::SANS_SEMIBOLD)
+                .size(11.5)
+                .color(crate::theme::palette().ink)
+        )
+        .padding([6, 10])
+        .style(ui::frame(
+            Some(crate::theme::palette().sheet),
+            crate::theme::palette().ink
+        )),
     ]
     .height(Length::Shrink);
-    let tags = row![role_chip, ui::sans(s(a, "model"), 12.0, crate::theme::palette().ink_2), ui::faint(format!("agent #{}", u(a, "cid")))]
+    let tags = row![
+        role_chip,
+        ui::sans(s(a, "model"), 12.0, crate::theme::palette().ink_2),
+        ui::faint(format!("agent #{}", u(a, "cid")))
+    ]
+    .spacing(12)
+    .align_y(Alignment::Center);
+    let ident = column![
+        row![
+            text(name)
+                .font(ui::SANS_BOLD)
+                .size(34.0)
+                .color(crate::theme::palette().ink),
+            ui::badge(status_text, status_tone)
+        ]
         .spacing(12)
-        .align_y(Alignment::Center);
-    let ident = column![row![text(name).font(ui::SANS_BOLD).size(34.0).color(crate::theme::palette().ink), ui::badge(status_text, status_tone)].spacing(12).align_y(Alignment::Center), tags]
-        .spacing(12)
-        .width(Length::Fill);
+        .align_y(Alignment::Center),
+        tags
+    ]
+    .spacing(12)
+    .width(Length::Fill);
 
     let usage = a.get("usage");
     let tokens = f(usage, "input_tokens") + f(usage, "output_tokens");
     let conf = pv("confidence");
     let rep: Element<'a, Msg> = match p {
-        Some(_) if conf >= 0.05 => meter(pv("reputation"), 100.0, crate::theme::palette().ok, format!("{} / 100", pv("reputation").round())),
+        Some(_) if conf >= 0.05 => meter(
+            pv("reputation"),
+            100.0,
+            crate::theme::palette().ok,
+            format!("{} / 100", pv("reputation").round()),
+        ),
         Some(_) => figure_faint("Unrated"),
         None => figure("—".into()),
     };
@@ -707,36 +993,77 @@ fn profile_card<'a>(state: &'a State, a: &'a Value) -> Element<'a, Msg> {
         None => String::new(),
     };
     let conduct: Element<'a, Msg> = match p {
-        Some(_) => meter(pv("conduct"), 100.0, conduct_tone(pv("conduct")), conduct_text(pv("conduct")).to_string()),
+        Some(_) => meter(
+            pv("conduct"),
+            100.0,
+            conduct_tone(pv("conduct")),
+            conduct_text(pv("conduct")).to_string(),
+        ),
         None => figure("—".into()),
     };
     let tk = |k: &str| f(p.and_then(|p| p.get("tasks")), k);
     let fines = p.and_then(|p| p.get("fines"));
     let tiles_a = row![
-        tile("Balance", p.map(|_| figure(format!("{} cr", compact(pv("wallet"))))).unwrap_or_else(|| figure("—".into())), match p {
-            Some(_) => format!("earned {} · spent {}", compact(pv("earned")), compact(pv("spent"))),
-            None => String::new(),
-        }),
+        tile(
+            "Balance",
+            p.map(|_| figure(format!("{} cr", compact(pv("wallet")))))
+                .unwrap_or_else(|| figure("—".into())),
+            match p {
+                Some(_) => format!(
+                    "earned {} · spent {}",
+                    compact(pv("earned")),
+                    compact(pv("spent"))
+                ),
+                None => String::new(),
+            }
+        ),
         tile("Reputation", rep, rep_sub),
-        tile("Conduct", conduct, match p {
-            Some(_) => format!("{} violations · {} refusals", violations(p).len(), pv("denials").round()),
-            None => String::new(),
-        }),
+        tile(
+            "Conduct",
+            conduct,
+            match p {
+                Some(_) => format!(
+                    "{} violations · {} refusals",
+                    violations(p).len(),
+                    pv("denials").round()
+                ),
+                None => String::new(),
+            }
+        ),
     ]
     .spacing(12);
     let tiles_b = row![
-        tile("Tasks", p.map(|_| figure(format!("{} verified", tk("verified")))).unwrap_or_else(|| figure("—".into())), match p {
-            Some(_) => format!("{} done · {} failed · {} posted", tk("done"), tk("failed"), tk("posted")),
-            None => String::new(),
-        }),
-        tile("Network", p.map(|_| figure(format!("{} contacts", pv("contacts")))).unwrap_or_else(|| figure("—".into())), match p {
-            Some(_) => format!("{} memories", pv("memory_notes")),
-            None => String::new(),
-        }),
-        tile("Tokens", figure(compact(tokens)), match p {
-            Some(p) => format!("joined {}", ago(u(p, "joined_ms"))),
-            None => String::new(),
-        }),
+        tile(
+            "Tasks",
+            p.map(|_| figure(format!("{} verified", tk("verified"))))
+                .unwrap_or_else(|| figure("—".into())),
+            match p {
+                Some(_) => format!(
+                    "{} done · {} failed · {} posted",
+                    tk("done"),
+                    tk("failed"),
+                    tk("posted")
+                ),
+                None => String::new(),
+            }
+        ),
+        tile(
+            "Network",
+            p.map(|_| figure(format!("{} contacts", pv("contacts"))))
+                .unwrap_or_else(|| figure("—".into())),
+            match p {
+                Some(_) => format!("{} memories", pv("memory_notes")),
+                None => String::new(),
+            }
+        ),
+        tile(
+            "Tokens",
+            figure(compact(tokens)),
+            match p {
+                Some(p) => format!("joined {}", ago(u(p, "joined_ms"))),
+                None => String::new(),
+            }
+        ),
     ]
     .spacing(12);
 
@@ -745,10 +1072,25 @@ fn profile_card<'a>(state: &'a State, a: &'a Value) -> Element<'a, Msg> {
     if p.is_some() && (!viol.is_empty() || f(fines, "count") > 0.0) {
         record.push(ui::label("Record").into());
         for v in viol.iter().take(5) {
-            record.push(row![ui::badge(s(v, "law"), ui::Tone::Danger), ui::prose(s(v, "detail")), ui::faint(ago(u(v, "at_ms")))].spacing(8).into());
+            record.push(
+                row![
+                    ui::badge(s(v, "law"), ui::Tone::Danger),
+                    ui::prose(s(v, "detail")),
+                    ui::faint(ago(u(v, "at_ms")))
+                ]
+                .spacing(8)
+                .into(),
+            );
         }
         if f(fines, "count") > 0.0 {
-            record.push(ui::faint(format!("{} fines, {} cr in total", f(fines, "count"), compact(f(fines, "total")))).into());
+            record.push(
+                ui::faint(format!(
+                    "{} fines, {} cr in total",
+                    f(fines, "count"),
+                    compact(f(fines, "total"))
+                ))
+                .into(),
+            );
         }
     } else if p.is_some() {
         record.push(ui::faint("A clean record: no violations, no fines.").into());
@@ -762,14 +1104,25 @@ fn profile_card<'a>(state: &'a State, a: &'a Value) -> Element<'a, Msg> {
     } else if n == 0 {
         ui::badge("No infractions", ui::Tone::Ok)
     } else {
-        ui::badge(&format!("{} infraction{}", n, if n == 1 { "" } else { "s" }), ui::Tone::Danger)
+        ui::badge(
+            &format!("{} infraction{}", n, if n == 1 { "" } else { "s" }),
+            ui::Tone::Danger,
+        )
     };
     let mut inf: Vec<Element<'a, Msg>> = vec![ui::label("Infractions").into(), headline];
-    let shown = if state.infractions_all { n } else { INFRACTIONS_SHOWN };
+    let shown = if state.infractions_all {
+        n
+    } else {
+        INFRACTIONS_SHOWN
+    };
     for r in state.infractions.iter().take(shown) {
         inf.push(
             row![
-                ui::link(pick_str(s(r, "law_title"), s(r, "law")), Msg::Go(Id::Rules), false),
+                ui::link(
+                    pick_str(s(r, "law_title"), s(r, "law")),
+                    Msg::Go(Id::Rules),
+                    false
+                ),
                 ui::mono(s(r, "tool"), 12.0, crate::theme::palette().ink_2),
                 ui::faint(s(r, "detail")),
                 ui::faint(ago(u(r, "at_ms"))),
@@ -780,14 +1133,33 @@ fn profile_card<'a>(state: &'a State, a: &'a Value) -> Element<'a, Msg> {
         );
     }
     if n > INFRACTIONS_SHOWN {
-        inf.push(ui::link(if state.infractions_all { "Show fewer" } else { "Show all" }, Msg::ShowAll, false));
+        inf.push(ui::link(
+            if state.infractions_all {
+                "Show fewer"
+            } else {
+                "Show all"
+            },
+            Msg::ShowAll,
+            false,
+        ));
     }
 
-    let info = column![ident, tiles_a, tiles_b, column(record).spacing(6), column(inf).spacing(6)].spacing(14).width(Length::Fill);
+    let info = column![
+        ident,
+        tiles_a,
+        tiles_b,
+        column(record).spacing(6),
+        column(inf).spacing(6)
+    ]
+    .spacing(14)
+    .width(Length::Fill);
     container(row![portrait, info].spacing(24))
         .padding(20)
         .width(Length::Fill)
-        .style(ui::frame(Some(crate::theme::palette().sheet), crate::theme::palette().ink))
+        .style(ui::frame(
+            Some(crate::theme::palette().sheet),
+            crate::theme::palette().ink,
+        ))
         .into()
 }
 
@@ -797,7 +1169,8 @@ fn conduct_card<'a>(state: &'a State) -> Element<'a, Msg> {
         return ui::card("Conduct", ui::faint("Loading…").into());
     };
     let mut rows: Vec<Element<'a, Msg>> = Vec::new();
-    let suspended: Vec<&sanctions::Suspension> = register.suspensions.iter().filter(|s| s.active).collect();
+    let suspended: Vec<&sanctions::Suspension> =
+        register.suspensions.iter().filter(|s| s.active).collect();
     if suspended.is_empty() {
         rows.push(ui::faint("No active suspensions.").into());
     } else {
@@ -809,7 +1182,12 @@ fn conduct_card<'a>(state: &'a State) -> Element<'a, Msg> {
                     ui::mono(s.tool.clone(), 12.0, crate::theme::palette().ink_2),
                     ui::faint(left(s.until_ms)),
                     Space::new().width(Length::Fill),
-                    ui::btn("Lift", None, ui::Kind::Primary, (!state.busy).then(|| Msg::Ask(Dialog::Lift(s.id)))),
+                    ui::btn(
+                        "Lift",
+                        None,
+                        ui::Kind::Primary,
+                        (!state.busy).then(|| Msg::Ask(Dialog::Lift(s.id)))
+                    ),
                 ]
                 .spacing(10)
                 .align_y(Alignment::Center)
@@ -831,7 +1209,11 @@ fn conduct_card<'a>(state: &'a State) -> Element<'a, Msg> {
 /// One sanction: what, under which law, how severe, how many offences, the outcome, the fine, when,
 /// and the owner's lift with its reason.
 fn sanction_row<'a>(s: &'a sanctions::Sanction) -> Element<'a, Msg> {
-    let tone = if s.lifted.is_some() { ui::Tone::Muted } else { ui::Tone::Danger };
+    let tone = if s.lifted.is_some() {
+        ui::Tone::Muted
+    } else {
+        ui::Tone::Danger
+    };
     let offences = format!("{} offence{}", s.count, if s.count == 1 { "" } else { "s" });
     let mut line = column![
         row![
@@ -856,15 +1238,25 @@ fn sanction_row<'a>(s: &'a sanctions::Sanction) -> Element<'a, Msg> {
         line = line.push(ui::faint(format!("lifted by owner: {}", lifted.why)));
     }
     if let Some(action) = &s.owner_action {
-        let word = if action.action == "retire" { "Retired" } else { "Acknowledged" };
-        line = line.push(ui::faint(format!("{word} by the owner, {}", ago(action.at_ms))));
+        let word = if action.action == "retire" {
+            "Retired"
+        } else {
+            "Acknowledged"
+        };
+        line = line.push(ui::faint(format!(
+            "{word} by the owner, {}",
+            ago(action.at_ms)
+        )));
     }
     line.into()
 }
 
 /// The time left on a suspension, in the web's short words.
 fn left(until_ms: u64) -> String {
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
     let secs = until_ms.saturating_sub(now) / 1000;
     match secs {
         0..=59 => format!("{secs}s left"),
@@ -876,15 +1268,32 @@ fn left(until_ms: u64) -> String {
 
 /// A profile tile: its label, its figure (text or a meter) and its caption, on paper.
 fn tile<'a>(label: &'static str, value: Element<'a, Msg>, sub: String) -> Element<'a, Msg> {
-    container(column![text(label.to_string()).font(ui::SANS_SEMIBOLD).size(11.0).color(crate::theme::palette().ink_2), value, ui::sans(sub, 11.0, crate::theme::palette().ink_3)].spacing(6))
-        .padding([12, 14])
-        .width(Length::Fill)
-        .style(ui::frame(Some(crate::theme::palette().paper), crate::theme::palette().rule))
-        .into()
+    container(
+        column![
+            text(label.to_string())
+                .font(ui::SANS_SEMIBOLD)
+                .size(11.0)
+                .color(crate::theme::palette().ink_2),
+            value,
+            ui::sans(sub, 11.0, crate::theme::palette().ink_3)
+        ]
+        .spacing(6),
+    )
+    .padding([12, 14])
+    .width(Length::Fill)
+    .style(ui::frame(
+        Some(crate::theme::palette().paper),
+        crate::theme::palette().rule,
+    ))
+    .into()
 }
 
 fn figure<'a>(value: String) -> Element<'a, Msg> {
-    text(value).font(ui::SANS_BOLD).size(22.0).color(crate::theme::palette().ink).into()
+    text(value)
+        .font(ui::SANS_BOLD)
+        .size(22.0)
+        .color(crate::theme::palette().ink)
+        .into()
 }
 
 fn figure_faint<'a>(value: &'static str) -> Element<'a, Msg> {
@@ -900,14 +1309,36 @@ fn meter<'a>(value: f64, max: f64, fill: Color, caption: String) -> Element<'a, 
             container(Space::new().width(Length::Fill).height(Length::Fill))
                 .width(Length::FillPortion(pct))
                 .height(Length::Fill)
-                .style(move |_: &Theme| container::Style { background: Some(fill.into()), ..Default::default() }),
+                .style(move |_: &Theme| container::Style {
+                    background: Some(fill.into()),
+                    ..Default::default()
+                }),
         );
     }
     if pct < 100 {
-        bar = bar.push(Space::new().width(Length::FillPortion(100 - pct)).height(Length::Fill));
+        bar = bar.push(
+            Space::new()
+                .width(Length::FillPortion(100 - pct))
+                .height(Length::Fill),
+        );
     }
-    let track = container(bar).width(Length::Fill).height(Length::Fixed(14.0)).style(ui::frame(Some(crate::theme::palette().sheet), crate::theme::palette().ink));
-    column![track, text(caption).font(ui::SANS_SEMIBOLD).size(12.0).color(crate::theme::palette().ink)].spacing(4).width(Length::Fill).into()
+    let track = container(bar)
+        .width(Length::Fill)
+        .height(Length::Fixed(14.0))
+        .style(ui::frame(
+            Some(crate::theme::palette().sheet),
+            crate::theme::palette().ink,
+        ));
+    column![
+        track,
+        text(caption)
+            .font(ui::SANS_SEMIBOLD)
+            .size(12.0)
+            .color(crate::theme::palette().ink)
+    ]
+    .spacing(4)
+    .width(Length::Fill)
+    .into()
 }
 
 fn transcript_card<'a>(state: &'a State) -> Element<'a, Msg> {
@@ -917,7 +1348,13 @@ fn transcript_card<'a>(state: &'a State) -> Element<'a, Msg> {
     let mut groups: Vec<Vec<&'a Value>> = Vec::new();
     for e in &state.entries {
         match groups.last_mut() {
-            Some(group) if group.first().is_some_and(|first| u(first, "work") == u(e, "work")) => group.push(e),
+            Some(group)
+                if group
+                    .first()
+                    .is_some_and(|first| u(first, "work") == u(e, "work")) =>
+            {
+                group.push(e)
+            }
             _ => groups.push(vec![e]),
         }
     }
@@ -940,7 +1377,12 @@ fn transcript_card<'a>(state: &'a State) -> Element<'a, Msg> {
         }
     }
     // A reply whose work has no entry yet (its first deltas came before the next poll) goes last.
-    let rest: Vec<Element<'a, Msg>> = state.live.iter().filter(|t| !shown.contains(&t.work)).flat_map(|t| live_views(t, rctx, cards)).collect();
+    let rest: Vec<Element<'a, Msg>> = state
+        .live
+        .iter()
+        .filter(|t| !shown.contains(&t.work))
+        .flat_map(|t| live_views(t, rctx, cards))
+        .collect();
     if !rest.is_empty() {
         if count > 0 {
             sections.push(ui::hairline());
@@ -948,11 +1390,16 @@ fn transcript_card<'a>(state: &'a State) -> Element<'a, Msg> {
         sections.push(column(rest).spacing(12).width(Length::Fill).into());
     }
     let lines: Element<'a, Msg> = column(sections).spacing(16).width(Length::Fill).into();
-    container(ui::scroll(lines).id(transcript_id()).on_scroll(Msg::Scrolled).height(Length::Fixed(TRANSCRIPT_HEIGHT)))
-        .padding(16)
-        .width(Length::Fill)
-        .style(ui::frame(None, crate::theme::palette().rule))
-        .into()
+    container(
+        ui::scroll(lines)
+            .id(transcript_id())
+            .on_scroll(Msg::Scrolled)
+            .height(Length::Fixed(TRANSCRIPT_HEIGHT)),
+    )
+    .padding(16)
+    .width(Length::Fill)
+    .style(ui::frame(None, crate::theme::palette().rule))
+    .into()
 }
 
 fn composer_view<'a>(state: &'a State) -> Element<'a, Msg> {
@@ -961,7 +1408,8 @@ fn composer_view<'a>(state: &'a State) -> Element<'a, Msg> {
         .placeholder("Message this agent…")
         .height(Length::Fixed(96.0))
         .key_binding(|kp| {
-            if kp.key == keyboard::Key::Named(keyboard::key::Named::Enter) && kp.modifiers.control() {
+            if kp.key == keyboard::Key::Named(keyboard::key::Named::Enter) && kp.modifiers.control()
+            {
                 Some(text_editor::Binding::Custom(Msg::Send))
             } else {
                 text_editor::Binding::from_key_press(kp)
@@ -971,17 +1419,32 @@ fn composer_view<'a>(state: &'a State) -> Element<'a, Msg> {
         editor = editor.on_action(Msg::Edit);
     }
     let can_send = !offline && !state.sending && !state.composer.text().trim().is_empty();
-    let send = ui::btn("Send", Some("send"), ui::Kind::Primary, if can_send { Some(Msg::Send) } else { None });
-    column![editor, row![Space::new().width(Length::Fill), send]].spacing(8).into()
+    let send = ui::btn(
+        "Send",
+        Some("send"),
+        ui::Kind::Primary,
+        if can_send { Some(Msg::Send) } else { None },
+    );
+    column![editor, row![Space::new().width(Length::Fill), send]]
+        .spacing(8)
+        .into()
 }
 
 /// One transcript entry as the web renders it: turns, tool calls and results (collapsed until
 /// opened), decisions, errors. Blocks key their open state by the entry's seq and block index.
-fn entry_view<'a>(open: &HashSet<(u64, usize)>, e: &'a Value, rctx: &rich::RichCtx, cards: &rich::Cards) -> Vec<Element<'a, Msg>> {
+fn entry_view<'a>(
+    open: &HashSet<(u64, usize)>,
+    e: &'a Value,
+    rctx: &rich::RichCtx,
+    cards: &rich::Cards,
+) -> Vec<Element<'a, Msg>> {
     let d = e.get("data").unwrap_or(&Value::Null);
     let seq = u(e, "seq");
     match s(e, "kind") {
-        "work_start" => vec![ui::badge(s(d, "kind"), ui::Tone::Info), rich::view(s(d, "prompt"), rctx, cards, &on_rich)],
+        "work_start" => vec![
+            ui::badge(s(d, "kind"), ui::Tone::Info),
+            rich::view(s(d, "prompt"), rctx, cards, &on_rich),
+        ],
         "work_end" => {
             let st = s(d, "status");
             let tone = if st.contains("fail") || st.contains("error") {
@@ -1005,7 +1468,10 @@ fn entry_view<'a>(open: &HashSet<(u64, usize)>, e: &'a Value, rctx: &rich::RichC
         "tool_decision" => match s(d, "decision") {
             "allow" => vec![ui::badge("ran in VM", ui::Tone::Info)],
             "done" => vec![ui::badge("ran on host", ui::Tone::Muted)],
-            "deny" => vec![ui::badge(&format!("denied: {}", s(d, "reason")), ui::Tone::Danger)],
+            "deny" => vec![ui::badge(
+                &format!("denied: {}", s(d, "reason")),
+                ui::Tone::Danger,
+            )],
             _ => Vec::new(),
         },
         "tool_result" => {
@@ -1013,8 +1479,17 @@ fn entry_view<'a>(open: &HashSet<(u64, usize)>, e: &'a Value, rctx: &rich::RichC
             let body = pick_str(s(d, "content"), s(d, "output"));
             let key = (seq, 0);
             let opened = open.contains(&key);
-            let (label, tone) = if failed { ("Error", crate::theme::palette().crit) } else { ("Output", crate::theme::palette().ok) };
-            let mut out = vec![ui::disclosure(label.to_string(), tone, opened, Msg::Expand(key))];
+            let (label, tone) = if failed {
+                ("Error", crate::theme::palette().crit)
+            } else {
+                ("Output", crate::theme::palette().ok)
+            };
+            let mut out = vec![ui::disclosure(
+                label.to_string(),
+                tone,
+                opened,
+                Msg::Expand(key),
+            )];
             if opened {
                 out.push(pre(body.to_string()));
             }
@@ -1025,15 +1500,27 @@ fn entry_view<'a>(open: &HashSet<(u64, usize)>, e: &'a Value, rctx: &rich::RichC
     }
 }
 
-fn block_view<'a>(open: &HashSet<(u64, usize)>, seq: u64, idx: usize, b: &'a Value, rctx: &rich::RichCtx, cards: &rich::Cards) -> Vec<Element<'a, Msg>> {
+fn block_view<'a>(
+    open: &HashSet<(u64, usize)>,
+    seq: u64,
+    idx: usize,
+    b: &'a Value,
+    rctx: &rich::RichCtx,
+    cards: &rich::Cards,
+) -> Vec<Element<'a, Msg>> {
     match s(b, "type") {
         "text" => vec![rich::view(s(b, "text"), rctx, cards, &on_rich)],
         "tool_use" => {
             let key = (seq, idx);
             let opened = open.contains(&key);
-            let mut out = vec![ui::chip(format!("→ {}", s(b, "name")), opened, Msg::Expand(key))];
+            let mut out = vec![ui::chip(
+                format!("→ {}", s(b, "name")),
+                opened,
+                Msg::Expand(key),
+            )];
             if opened {
-                let input = serde_json::to_string_pretty(b.get("input").unwrap_or(&Value::Null)).unwrap_or_default();
+                let input = serde_json::to_string_pretty(b.get("input").unwrap_or(&Value::Null))
+                    .unwrap_or_default();
                 out.push(pre(input));
             }
             out
@@ -1044,7 +1531,11 @@ fn block_view<'a>(open: &HashSet<(u64, usize)>, seq: u64, idx: usize, b: &'a Val
 
 /// An opened body in mono, on a ruled panel.
 fn pre<'a>(body: String) -> Element<'a, Msg> {
-    container(ui::mono(body, 12.0, crate::theme::palette().ink_2)).padding(8).width(Length::Fill).style(ui::frame(None, crate::theme::palette().rule)).into()
+    container(ui::mono(body, 12.0, crate::theme::palette().ink_2))
+        .padding(8)
+        .width(Length::Fill)
+        .style(ui::frame(None, crate::theme::palette().rule))
+        .into()
 }
 
 /// The details card: the agent's ids, its VM, when it connected and was seen, its tokens.
@@ -1054,39 +1545,86 @@ fn details_card<'a>(a: &'a Value) -> Element<'a, Msg> {
         "" => "—",
         run => run,
     };
-    let vm = a.get("vm").and_then(Value::as_u64).map(|n| n.to_string()).unwrap_or_else(|| "—".to_string());
+    let vm = a
+        .get("vm")
+        .and_then(Value::as_u64)
+        .map(|n| n.to_string())
+        .unwrap_or_else(|| "—".to_string());
     let rows: Vec<Element<'a, Msg>> = vec![
-        kv("CID", ui::mono(u(a, "cid").to_string(), 13.0, crate::theme::palette().ink).into()),
-        kv("Run", ui::sans(run, 13.0, crate::theme::palette().ink).into()),
+        kv(
+            "CID",
+            ui::mono(u(a, "cid").to_string(), 13.0, crate::theme::palette().ink).into(),
+        ),
+        kv(
+            "Run",
+            ui::sans(run, 13.0, crate::theme::palette().ink).into(),
+        ),
         kv("VM", ui::sans(vm, 13.0, crate::theme::palette().ink).into()),
         kv("Connected", ui::prose(when(a, "connected_at_ms")).into()),
         kv("Last seen", ui::prose(when(a, "last_seen_ms")).into()),
-        kv("Tokens in", ui::sans(compact(f(usage, "input_tokens")), 13.0, crate::theme::palette().ink).into()),
-        kv("Tokens out", ui::sans(compact(f(usage, "output_tokens")), 13.0, crate::theme::palette().ink).into()),
+        kv(
+            "Tokens in",
+            ui::sans(
+                compact(f(usage, "input_tokens")),
+                13.0,
+                crate::theme::palette().ink,
+            )
+            .into(),
+        ),
+        kv(
+            "Tokens out",
+            ui::sans(
+                compact(f(usage, "output_tokens")),
+                13.0,
+                crate::theme::palette().ink,
+            )
+            .into(),
+        ),
     ];
     ui::card("Details", column(rows).spacing(8).into())
 }
 
 fn kv<'a>(key: &'static str, value: Element<'a, Msg>) -> Element<'a, Msg> {
-    row![container(ui::label(key)).width(Length::Fixed(96.0)), value].spacing(12).align_y(Alignment::Center).into()
+    row![container(ui::label(key)).width(Length::Fixed(96.0)), value]
+        .spacing(12)
+        .align_y(Alignment::Center)
+        .into()
 }
 
 /// The queue card: the work running now, and how many items wait behind it.
 fn queue_card<'a>(a: &'a Value) -> Element<'a, Msg> {
     let work: Element<'a, Msg> = match a.get("work").filter(|w| !w.is_null()) {
-        Some(w) => column![ui::badge(s(w, "kind"), ui::Tone::Info), ui::prose(preview(s(w, "prompt"), 160))].spacing(6).into(),
+        Some(w) => column![
+            ui::badge(s(w, "kind"), ui::Tone::Info),
+            ui::prose(preview(s(w, "prompt"), 160))
+        ]
+        .spacing(6)
+        .into(),
         None => ui::faint("Nothing running").into(),
     };
-    ui::card("Queue", column![work, ui::faint(format!("{} queued", u(a, "queue")))].spacing(8).into())
+    ui::card(
+        "Queue",
+        column![work, ui::faint(format!("{} queued", u(a, "queue")))]
+            .spacing(8)
+            .into(),
+    )
 }
 
 /// Mixes `over` into `base` by `amount` (0 keeps `base`, 1 is `over`).
 fn mix(base: Color, over: Color, amount: f32) -> Color {
-    Color { r: base.r * amount + over.r * (1.0 - amount), g: base.g * amount + over.g * (1.0 - amount), b: base.b * amount + over.b * (1.0 - amount), a: 1.0 }
+    Color {
+        r: base.r * amount + over.r * (1.0 - amount),
+        g: base.g * amount + over.g * (1.0 - amount),
+        b: base.b * amount + over.b * (1.0 - amount),
+        a: 1.0,
+    }
 }
 
 fn offline(state: &State) -> bool {
-    state.agent.as_ref().is_some_and(|a| s(a, "status") == "offline")
+    state
+        .agent
+        .as_ref()
+        .is_some_and(|a| s(a, "status") == "offline")
 }
 
 fn agent_name(a: &Value) -> String {
@@ -1123,7 +1661,10 @@ fn conduct_tone(score: f64) -> Color {
 }
 
 fn violations(p: Option<&Value>) -> &[Value] {
-    p.and_then(|p| p.get("violations")).and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[])
+    p.and_then(|p| p.get("violations"))
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
 }
 
 fn s<'a>(v: &'a Value, key: &str) -> &'a str {
@@ -1135,15 +1676,13 @@ fn u(v: &Value, key: &str) -> u64 {
 }
 
 fn f(v: Option<&Value>, key: &str) -> f64 {
-    v.and_then(|v| v.get(key)).and_then(Value::as_f64).unwrap_or(0.0)
+    v.and_then(|v| v.get(key))
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0)
 }
 
 fn pick_str<'a>(first: &'a str, fallback: &'a str) -> &'a str {
-    if first.is_empty() {
-        fallback
-    } else {
-        first
-    }
+    if first.is_empty() { fallback } else { first }
 }
 
 fn preview(text: &str, max: usize) -> String {
@@ -1167,7 +1706,10 @@ fn compact(n: f64) -> String {
 
 /// How long ago an epoch-millisecond instant was, in the web's short words.
 pub(super) fn ago(ms: u64) -> String {
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(ms);
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(ms);
     let secs = now.saturating_sub(ms) / 1000;
     match secs {
         0..=59 => format!("{secs}s ago"),
@@ -1179,7 +1721,10 @@ pub(super) fn ago(ms: u64) -> String {
 
 /// The `ago` of a record's field, or a dash when the record does not carry it.
 fn when(a: &Value, key: &str) -> String {
-    a.get(key).and_then(Value::as_u64).map(ago).unwrap_or_else(|| "—".to_string())
+    a.get(key)
+        .and_then(Value::as_u64)
+        .map(ago)
+        .unwrap_or_else(|| "—".to_string())
 }
 
 #[cfg(test)]
@@ -1204,7 +1749,8 @@ mod tests {
     #[test]
     fn delta_text_joins_into_the_live_reply() {
         let mut live = Vec::new();
-        let text = |t: &str| json!({"cid": 7, "work": 3, "req": 1, "delta": {"type": "text", "text": t}});
+        let text =
+            |t: &str| json!({"cid": 7, "work": 3, "req": 1, "delta": {"type": "text", "text": t}});
         assert!(apply_delta(&mut live, 7, &text("Hel")));
         assert!(apply_delta(&mut live, 7, &text("lo")));
         assert_eq!(live.len(), 1);
@@ -1215,7 +1761,8 @@ mod tests {
     fn deltas_for_other_agents_and_thinking_are_ignored() {
         let mut live = Vec::new();
         let other = json!({"cid": 8, "work": 3, "req": 1, "delta": {"type": "text", "text": "x"}});
-        let thinking = json!({"cid": 7, "work": 3, "req": 1, "delta": {"type": "thinking", "text": "x"}});
+        let thinking =
+            json!({"cid": 7, "work": 3, "req": 1, "delta": {"type": "thinking", "text": "x"}});
         assert!(!apply_delta(&mut live, 7, &other));
         assert!(!apply_delta(&mut live, 7, &thinking));
         assert!(live.is_empty());
@@ -1224,12 +1771,28 @@ mod tests {
     #[test]
     fn tool_calls_keep_their_place_and_a_response_settles_the_turn() {
         let mut live = Vec::new();
-        apply_delta(&mut live, 7, &json!({"cid": 7, "work": 3, "req": 1, "delta": {"type": "text", "text": "Let me look. "}}));
-        apply_delta(&mut live, 7, &json!({"cid": 7, "work": 3, "req": 1, "delta": {"type": "tool_use", "name": "read_file"}}));
-        apply_delta(&mut live, 7, &json!({"cid": 7, "work": 3, "req": 1, "delta": {"type": "text", "text": "Done."}}));
+        apply_delta(
+            &mut live,
+            7,
+            &json!({"cid": 7, "work": 3, "req": 1, "delta": {"type": "text", "text": "Let me look. "}}),
+        );
+        apply_delta(
+            &mut live,
+            7,
+            &json!({"cid": 7, "work": 3, "req": 1, "delta": {"type": "tool_use", "name": "read_file"}}),
+        );
+        apply_delta(
+            &mut live,
+            7,
+            &json!({"cid": 7, "work": 3, "req": 1, "delta": {"type": "text", "text": "Done."}}),
+        );
         assert_eq!(
             live[0].pieces,
-            vec![Piece::Text("Let me look. ".into()), Piece::Tool("read_file".into()), Piece::Text("Done.".into())]
+            vec![
+                Piece::Text("Let me look. ".into()),
+                Piece::Tool("read_file".into()),
+                Piece::Text("Done.".into())
+            ]
         );
         settle(&mut live, 3);
         assert!(live.is_empty());

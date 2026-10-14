@@ -50,10 +50,11 @@ impl JoinToken {
             .strip_prefix(PREFIX)
             .ok_or_else(|| format!("not a join token (expected the {PREFIX} prefix)"))?;
         let json = crate::unb64(body).map_err(|e| format!("join token is not base64url: {e}"))?;
-        let wire: Wire =
-            serde_json::from_slice(&json).map_err(|e| format!("join token JSON is malformed: {e}"))?;
+        let wire: Wire = serde_json::from_slice(&json)
+            .map_err(|e| format!("join token JSON is malformed: {e}"))?;
         check_hub_url(&wire.u)?;
-        let cert = crate::unb64(&wire.f).map_err(|e| format!("certificate pin is not base64url: {e}"))?;
+        let cert =
+            crate::unb64(&wire.f).map_err(|e| format!("certificate pin is not base64url: {e}"))?;
         let cert_sha256: [u8; 32] = cert
             .try_into()
             .map_err(|_| "certificate pin must be 32 bytes (SHA-256)".to_string())?;
@@ -61,7 +62,12 @@ impl JoinToken {
         let secret: [u8; 16] = secret
             .try_into()
             .map_err(|_| "secret must be 16 bytes".to_string())?;
-        Ok(JoinToken { hub_url: wire.u, cert_sha256, secret, expires: wire.x })
+        Ok(JoinToken {
+            hub_url: wire.u,
+            cert_sha256,
+            secret,
+            expires: wire.x,
+        })
     }
     /// What the hub stores: SHA-256 of the secret.
     pub fn secret_hash(&self) -> [u8; 32] {
@@ -78,7 +84,10 @@ fn check_hub_url(url: &str) -> Result<(), String> {
         let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
         let host_port = authority.rsplit('@').next().unwrap_or("");
         let host = if host_port.starts_with('[') {
-            host_port.split_once(']').map(|(h, _)| format!("{h}]")).unwrap_or_default()
+            host_port
+                .split_once(']')
+                .map(|(h, _)| format!("{h}]"))
+                .unwrap_or_default()
         } else {
             host_port.split(':').next().unwrap_or("").to_string()
         };
@@ -132,7 +141,10 @@ mod tests {
             s: crate::b64(&[1u8; 8]),
             x: 1,
         };
-        let text = format!("{PREFIX}{}", crate::b64(&serde_json::to_vec(&wire).unwrap()));
+        let text = format!(
+            "{PREFIX}{}",
+            crate::b64(&serde_json::to_vec(&wire).unwrap())
+        );
         assert!(JoinToken::decode(&text).unwrap_err().contains("16 bytes"));
     }
 }

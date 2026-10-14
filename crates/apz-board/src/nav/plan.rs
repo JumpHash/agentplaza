@@ -5,7 +5,7 @@ use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 
 use super::{Edge, NavPath, NavPoint};
-use crate::grid::{move_kind, DIRS8, NAV_STEP};
+use crate::grid::{DIRS8, NAV_STEP, move_kind};
 use crate::navgrid::{NavGrid, PortalKind};
 
 /// Rule 2: rings searched by snapWalk.
@@ -46,7 +46,9 @@ fn visible(grid: &NavGrid, p: [f64; 2], q: [f64; 2], r: i32) -> bool {
             let t = k as f64 / n as f64;
             (p[0] + dx * t, p[1] + dz * t)
         };
-        let Some(c) = grid.cell_at(x, z) else { return false };
+        let Some(c) = grid.cell_at(x, z) else {
+            return false;
+        };
         if grid.walk[c] != 1 || grid.region[c] != r {
             return false;
         }
@@ -70,7 +72,11 @@ struct Open {
 
 impl Ord for Open {
     fn cmp(&self, other: &Self) -> Ordering {
-        other.f.partial_cmp(&self.f).unwrap_or(Ordering::Equal).then_with(|| other.idx.cmp(&self.idx))
+        other
+            .f
+            .partial_cmp(&self.f)
+            .unwrap_or(Ordering::Equal)
+            .then_with(|| other.idx.cmp(&self.idx))
     }
 }
 
@@ -142,16 +148,38 @@ pub fn snap_walk(grid: &NavGrid, x: f64, z: f64) -> Option<usize> {
 
 /// Rules 3 to 9: the path from `from` to `to` (nav-plan.ts findPath), or None when either end cannot be snapped or no
 /// path exists. `penalty` adds per cell to the move cost; `no_lifts` leaves the lift portals out.
-pub fn find_path(grid: &NavGrid, from: [f64; 2], to: [f64; 2], penalty: Option<&[f64]>, no_lifts: bool) -> Option<NavPath> {
+pub fn find_path(
+    grid: &NavGrid,
+    from: [f64; 2],
+    to: [f64; 2],
+    penalty: Option<&[f64]>,
+    no_lifts: bool,
+) -> Option<NavPath> {
     let start = snap_walk(grid, from[0], from[1])?;
     let goal = snap_walk(grid, to[0], to[1])?;
     if start == goal {
         let points = vec![
-            NavPoint { x: from[0], z: from[1], y: grid.y[start], portal: -1, edge: None },
-            NavPoint { x: to[0], z: to[1], y: grid.y[goal], portal: -1, edge: None },
+            NavPoint {
+                x: from[0],
+                z: from[1],
+                y: grid.y[start],
+                portal: -1,
+                edge: None,
+            },
+            NavPoint {
+                x: to[0],
+                z: to[1],
+                y: grid.y[goal],
+                portal: -1,
+                edge: None,
+            },
         ];
         let hash = path_hash(&points);
-        return Some(NavPath { points, cost: 0.0, hash });
+        return Some(NavPath {
+            points,
+            cost: 0.0,
+            hash,
+        });
     }
 
     // Rule 4: A* over the plannable cells.
@@ -176,7 +204,10 @@ pub fn find_path(grid: &NavGrid, from: [f64; 2], to: [f64; 2], penalty: Option<&
     let mut open = BinaryHeap::new();
 
     g[start] = 0.0;
-    open.push(Open { f: h(start), idx: start });
+    open.push(Open {
+        f: h(start),
+        idx: start,
+    });
     let mut found = false;
     while let Some(Open { idx: c, .. }) = open.pop() {
         if closed[c] {
@@ -203,10 +234,15 @@ pub fn find_path(grid: &NavGrid, from: [f64; 2], to: [f64; 2], penalty: Option<&
             }
             let diag = dx != 0 && dz != 0;
             // A diagonal passes both orthogonal cells: both must be plannable.
-            if diag && (grid.walk[(cj as usize) * cols + ni] != 1 || grid.walk[nj * cols + ci as usize] != 1) {
+            if diag
+                && (grid.walk[(cj as usize) * cols + ni] != 1
+                    || grid.walk[nj * cols + ci as usize] != 1)
+            {
                 continue;
             }
-            let Some(kind) = move_kind(grid.y[n] - grid.y[c]) else { continue };
+            let Some(kind) = move_kind(grid.y[n] - grid.y[c]) else {
+                continue;
+            };
             // A jump or a drop is taken square to a cell edge, never across a corner: a diagonal one would cross an
             // orthogonal cell at another height, which the follower's sweep (nav-agents.ts invariant 1) refuses, so the
             // web's robots stall there. Diagonal moves are level.
@@ -226,7 +262,10 @@ pub fn find_path(grid: &NavGrid, from: [f64; 2], to: [f64; 2], penalty: Option<&
                 parent[n] = Some(c);
                 via[n] = -1;
                 edge_kind[n] = kind;
-                open.push(Open { f: gn + h(n), idx: n });
+                open.push(Open {
+                    f: gn + h(n),
+                    idx: n,
+                });
             }
         }
         // Portal edges are extra to the 8 moves.
@@ -249,7 +288,10 @@ pub fn find_path(grid: &NavGrid, from: [f64; 2], to: [f64; 2], penalty: Option<&
                                 parent[o] = Some(c);
                                 via[o] = p;
                                 edge_kind[o] = 0;
-                                open.push(Open { f: gn + h(o), idx: o });
+                                open.push(Open {
+                                    f: gn + h(o),
+                                    idx: o,
+                                });
                             }
                         }
                     }
@@ -270,12 +312,33 @@ pub fn find_path(grid: &NavGrid, from: [f64; 2], to: [f64; 2], penalty: Option<&
     cells.reverse();
 
     // Rule 5: waypoints.
-    let mut wps = vec![Wp { x: from[0], z: from[1], y: grid.y[start], portal: -1, cell: start, edge: None }];
+    let mut wps = vec![Wp {
+        x: from[0],
+        z: from[1],
+        y: grid.y[start],
+        portal: -1,
+        cell: start,
+        edge: None,
+    }];
     for &c in &cells[1..] {
         let [x, z] = grid.centre(c);
-        wps.push(Wp { x, z, y: grid.y[c], portal: via[c], cell: c, edge: edge_of(edge_kind[c]) });
+        wps.push(Wp {
+            x,
+            z,
+            y: grid.y[c],
+            portal: via[c],
+            cell: c,
+            edge: edge_of(edge_kind[c]),
+        });
     }
-    wps.push(Wp { x: to[0], z: to[1], y: grid.y[goal], portal: -1, cell: goal, edge: None });
+    wps.push(Wp {
+        x: to[0],
+        z: to[1],
+        y: grid.y[goal],
+        portal: -1,
+        cell: goal,
+        edge: None,
+    });
 
     // Rule 7: string pulling. next_fixed[a] is the smallest fixed waypoint index > a, or the last index.
     let last = wps.len() - 1;
@@ -339,18 +402,42 @@ pub fn find_path(grid: &NavGrid, from: [f64; 2], to: [f64; 2], penalty: Option<&
             out.push(p);
             continue;
         }
-        out.push(Wp { x: c1[0], z: c1[1], y: grid.y[cell1], portal: -1, cell: cell1, edge: None });
-        out.push(Wp { x: c2[0], z: c2[1], y: grid.y[cell2], portal: -1, cell: cell2, edge: None });
+        out.push(Wp {
+            x: c1[0],
+            z: c1[1],
+            y: grid.y[cell1],
+            portal: -1,
+            cell: cell1,
+            edge: None,
+        });
+        out.push(Wp {
+            x: c2[0],
+            z: c2[1],
+            y: grid.y[cell2],
+            portal: -1,
+            cell: cell2,
+            edge: None,
+        });
     }
     out.push(kk[m - 1]);
 
     // Rule 9: output.
     let points: Vec<NavPoint> = out
         .iter()
-        .map(|w| NavPoint { x: w.x, z: w.z, y: w.y, portal: w.portal, edge: w.edge })
+        .map(|w| NavPoint {
+            x: w.x,
+            z: w.z,
+            y: w.y,
+            portal: w.portal,
+            edge: w.edge,
+        })
         .collect();
     let hash = path_hash(&points);
-    Some(NavPath { points, cost: g[goal], hash })
+    Some(NavPath {
+        points,
+        cost: g[goal],
+        hash,
+    })
 }
 
 /// Rule 10: the fixture hash of quantised points (FNV-1a, 32-bit, 8 hex digits).
@@ -372,7 +459,7 @@ pub fn path_hash(points: &[NavPoint]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::navgrid::{build, NavBox, NavBoard};
+    use crate::navgrid::{NavBoard, NavBox, build};
 
     /// A 10 x 10 board with one tall box across the middle (x in [-1, 1], z in [-3, 3]).
     fn boxed_grid() -> NavGrid {
@@ -380,7 +467,10 @@ mod tests {
             &NavBoard {
                 size: [10.0, 1.0, 10.0],
                 pcb_top: 0.4,
-                boxes: vec![NavBox { lo: [-1.0, 0.0, -3.0], hi: [1.0, 2.0, 3.0] }],
+                boxes: vec![NavBox {
+                    lo: [-1.0, 0.0, -3.0],
+                    hi: [1.0, 2.0, 3.0],
+                }],
                 traces: vec![],
                 plates: vec![],
             },
@@ -396,7 +486,11 @@ mod tests {
         let last = path.points.last().expect("points");
         assert_eq!((first.x, first.z), (-3.0, 0.0));
         assert_eq!((last.x, last.z), (3.0, 0.0));
-        assert!(path.points.iter().any(|p| p.z.abs() > 3.0), "the path should go round the box: {:?}", path.points);
+        assert!(
+            path.points.iter().any(|p| p.z.abs() > 3.0),
+            "the path should go round the box: {:?}",
+            path.points
+        );
         assert_eq!(path.hash, path_hash(&path.points));
     }
 

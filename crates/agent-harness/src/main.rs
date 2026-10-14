@@ -43,9 +43,13 @@
 #[cfg(target_os = "linux")]
 mod agent;
 mod bash;
+#[cfg(target_os = "linux")]
+mod checkpoints;
 mod cmdline;
 #[cfg(target_os = "linux")]
 mod egress;
+#[cfg(target_os = "linux")]
+mod engines;
 #[cfg(target_os = "linux")]
 mod files;
 #[cfg(target_os = "linux")]
@@ -55,19 +59,15 @@ mod keepalive;
 #[cfg(target_os = "linux")]
 mod lane;
 #[cfg(target_os = "linux")]
-mod checkpoints;
-#[cfg(target_os = "linux")]
-mod engines;
-#[cfg(target_os = "linux")]
 mod library;
 #[cfg(target_os = "linux")]
 mod plan;
 #[cfg(target_os = "linux")]
 mod search_tools;
 #[cfg(target_os = "linux")]
-mod shells;
-#[cfg(target_os = "linux")]
 mod session;
+#[cfg(target_os = "linux")]
+mod shells;
 #[cfg(target_os = "linux")]
 mod term;
 #[cfg(target_os = "linux")]
@@ -91,11 +91,11 @@ use std::thread::sleep;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[cfg(target_os = "linux")]
+use apz_proto::line::Lines;
+#[cfg(target_os = "linux")]
 use cmdline::{Config, ConfigError};
 #[cfg(target_os = "linux")]
 use files::Workspace;
-#[cfg(target_os = "linux")]
-use apz_proto::line::Lines;
 #[cfg(target_os = "linux")]
 use session::{Identity, SessionError};
 #[cfg(target_os = "linux")]

@@ -97,11 +97,24 @@ pub fn run(daemon: &Daemon, record: &Record, stop: &AtomicBool) -> Result<(), St
 /// hub's pinned TLS running inside the stream.
 fn connect_link(record: &Record, target: &Target) -> io::Result<Socket> {
     match vsock::parse_vsock(&record.hub) {
-        None => ws::connect(target, LINK_PATH, Some(SUBPROTOCOL), CONNECT_TIMEOUT, limits()),
+        None => ws::connect(
+            target,
+            LINK_PATH,
+            Some(SUBPROTOCOL),
+            CONNECT_TIMEOUT,
+            limits(),
+        ),
         Some((cid, port)) => {
             let stream = VsockStream::connect(cid, port)?;
             stream.set_read_timeout(Some(CONNECT_TIMEOUT))?;
-            ws::connect_over(stream, Some(TLS_NAME), target, LINK_PATH, Some(SUBPROTOCOL), limits())
+            ws::connect_over(
+                stream,
+                Some(TLS_NAME),
+                target,
+                LINK_PATH,
+                Some(SUBPROTOCOL),
+                limits(),
+            )
         }
     }
 }

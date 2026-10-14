@@ -98,7 +98,11 @@ mod tests {
         // full boot configuration effective.
         let mut seen = std::collections::HashSet::new();
         for entry in create_boot_msr_entries() {
-            assert!(seen.insert(entry.index), "duplicate boot MSR {:#x}", entry.index);
+            assert!(
+                seen.insert(entry.index),
+                "duplicate boot MSR {:#x}",
+                entry.index
+            );
         }
     }
 }

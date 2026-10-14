@@ -120,7 +120,11 @@ fn link_os(_target: &Path, _link: &Path) -> Result<(), String> {
 /// shell, and the shell command is escaped for AppleScript's double-quoted string.
 #[cfg(any(target_os = "macos", test))]
 fn applescript_command(target: &Path, link: &Path) -> String {
-    let shell = format!("mkdir -p /usr/local/bin && ln -sf {} {}", shell_quote(target), shell_quote(link));
+    let shell = format!(
+        "mkdir -p /usr/local/bin && ln -sf {} {}",
+        shell_quote(target),
+        shell_quote(link)
+    );
     let escaped = shell.replace('\\', "\\\\").replace('"', "\\\"");
     format!("do shell script \"{escaped}\" with administrator privileges")
 }
@@ -137,7 +141,10 @@ mod tests {
 
     #[test]
     fn applescript_quotes_a_path_with_a_space_and_a_quote() {
-        let command = applescript_command(Path::new("/Applications/Agent Plaza/it's/agentplaza"), Path::new("/usr/local/bin/agentplaza"));
+        let command = applescript_command(
+            Path::new("/Applications/Agent Plaza/it's/agentplaza"),
+            Path::new("/usr/local/bin/agentplaza"),
+        );
         assert_eq!(
             command,
             r#"do shell script "mkdir -p /usr/local/bin && ln -sf '/Applications/Agent Plaza/it'\\''s/agentplaza' '/usr/local/bin/agentplaza'" with administrator privileges"#
@@ -146,7 +153,10 @@ mod tests {
 
     #[test]
     fn applescript_escapes_double_quotes_and_backslashes() {
-        let command = applescript_command(Path::new(r#"/x/"a"\b"#), Path::new("/usr/local/bin/agentplaza"));
+        let command = applescript_command(
+            Path::new(r#"/x/"a"\b"#),
+            Path::new("/usr/local/bin/agentplaza"),
+        );
         assert!(command.contains(r#"'/x/\"a\"\\b'"#), "{command}");
     }
 }

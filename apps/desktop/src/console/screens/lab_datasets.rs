@@ -7,18 +7,18 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use iced::widget::{button, column, container, pick_list, row, stack, text_input, Space};
 use iced::widget::text::Wrapping;
+use iced::widget::{Space, button, column, container, pick_list, row, stack, text_input};
 use iced::{Alignment, Border, Color, Element, Length, Padding, Task, Theme};
 use serde_json::Value;
 
+use super::Id;
 use super::lab::{self, Section};
 use super::lab_common;
-use super::Id;
+use crate::console::Ctx;
 use crate::console::client;
 use crate::console::lab_api::{self, Dataset, DatasetSpec};
 use crate::console::ui::{self, Kind, Tone};
-use crate::console::Ctx;
 use crate::theme::{self};
 
 /// Cards per row in the dataset grid, as the web's `minmax(300px, 1fr)` at the console's width.
@@ -152,7 +152,11 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             state.busy = false;
             match result {
                 Ok(list) => {
-                    if state.selected.as_ref().is_some_and(|id| !list.iter().any(|d| &d.id == id)) {
+                    if state
+                        .selected
+                        .as_ref()
+                        .is_some_and(|id| !list.iter().any(|d| &d.id == id))
+                    {
                         state.selected = None;
                     }
                     state.datasets = Some(list);
@@ -168,7 +172,11 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                             });
                         }
                         Some(Capture::Upload(file)) => {
-                            state.dialog = Dialog::Upload(Upload { name: "capture-upload".to_string(), picked: file, ..Upload::default() });
+                            state.dialog = Dialog::Upload(Upload {
+                                name: "capture-upload".to_string(),
+                                picked: file,
+                                ..Upload::default()
+                            });
                         }
                         None => {}
                     }
@@ -182,7 +190,11 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             Task::none()
         }
         Msg::Select(id) => {
-            state.selected = if state.selected.as_deref() == Some(id.as_str()) { None } else { Some(id) };
+            state.selected = if state.selected.as_deref() == Some(id.as_str()) {
+                None
+            } else {
+                Some(id)
+            };
             state.provenance = false;
             Task::none()
         }
@@ -195,7 +207,10 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             Task::none()
         }
         Msg::OpenExport => {
-            state.dialog = Dialog::Export(Export { kind: KINDS[0].to_string(), ..Export::default() });
+            state.dialog = Dialog::Export(Export {
+                kind: KINDS[0].to_string(),
+                ..Export::default()
+            });
             Task::none()
         }
         Msg::OpenUpload => {
@@ -254,7 +269,9 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             Task::none()
         }
         Msg::ExportConfirm => {
-            let Dialog::Export(e) = &mut state.dialog else { return Task::none() };
+            let Dialog::Export(e) = &mut state.dialog else {
+                return Task::none();
+            };
             if e.busy {
                 return Task::none();
             }
@@ -272,7 +289,11 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         }
         Msg::Exported(Ok(made)) => {
             state.dialog = Dialog::Closed;
-            state.notice = Some(format!("Dataset {} made: {} rows", made.name, lab_common::count(made.rows)));
+            state.notice = Some(format!(
+                "Dataset {} made: {} rows",
+                made.name,
+                lab_common::count(made.rows)
+            ));
             state.selected = Some(made.id.clone());
             state.provenance = false;
             insert(state, made);
@@ -311,7 +332,9 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             Task::none()
         }
         Msg::UploadSubmit => {
-            let Dialog::Upload(u) = &mut state.dialog else { return Task::none() };
+            let Dialog::Upload(u) = &mut state.dialog else {
+                return Task::none();
+            };
             if u.busy {
                 return Task::none();
             }
@@ -329,7 +352,8 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             let c = ctx.client.clone();
             client::task(
                 move || {
-                    let text = std::fs::read_to_string(&path).map_err(|e| format!("Could not read {}: {e}", path.display()))?;
+                    let text = std::fs::read_to_string(&path)
+                        .map_err(|e| format!("Could not read {}: {e}", path.display()))?;
                     if let Some(problem) = jsonl_problem(&text) {
                         return Err(problem);
                     }
@@ -381,7 +405,12 @@ fn export_spec(e: &Export) -> Result<DatasetSpec, String> {
             return Err("The start must be before the end.".to_string());
         }
     }
-    Ok(DatasetSpec { kind: e.kind.clone(), name: name.to_string(), since_ms: since, until_ms: until })
+    Ok(DatasetSpec {
+        kind: e.kind.clone(),
+        name: name.to_string(),
+        since_ms: since,
+        until_ms: until,
+    })
 }
 
 /// A local date and time (`2026-10-13 14:05`, or with a `T`) as unix milliseconds; None when empty.
@@ -398,7 +427,9 @@ fn parse_local(value: &str, which: &str) -> Result<Option<u64>, String> {
             };
         }
     }
-    Err(format!("The {which} is not a valid date and time ({TIME_HINT})."))
+    Err(format!(
+        "The {which} is not a valid date and time ({TIME_HINT})."
+    ))
 }
 
 /// Why the file is not a JSONL of objects, or None when it is; a file of no rows is a problem too.
@@ -429,14 +460,31 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
         shown
     });
     let count = match &sorted {
-        Some(list) => format!("{} {}", list.len(), if list.len() == 1 { "dataset" } else { "datasets" }),
+        Some(list) => format!(
+            "{} {}",
+            list.len(),
+            if list.len() == 1 {
+                "dataset"
+            } else {
+                "datasets"
+            }
+        ),
         None => String::new(),
     };
-    let seg = ui::seg(&[(View::Table, "Table"), (View::Cards, "Cards")], state.view, Msg::SetView);
+    let seg = ui::seg(
+        &[(View::Table, "Table"), (View::Cards, "Cards")],
+        state.view,
+        Msg::SetView,
+    );
     let actions: Vec<Element<'a, Msg>> = vec![
         ui::faint(count).into(),
         seg,
-        ui::btn("Upload", Some("file"), Kind::Secondary, Some(Msg::OpenUpload)),
+        ui::btn(
+            "Upload",
+            Some("file"),
+            Kind::Secondary,
+            Some(Msg::OpenUpload),
+        ),
         ui::btn("Export", None, Kind::Primary, Some(Msg::OpenExport)),
     ];
     let mut parts: Vec<Element<'a, Msg>> = vec![ui::view_head("Datasets", actions)];
@@ -447,7 +495,10 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
         parts.push(ui::error_line(e));
     }
     if let Some(list) = &sorted {
-        let open = state.selected.as_deref().and_then(|id| list.iter().copied().find(|d| d.id == id));
+        let open = state
+            .selected
+            .as_deref()
+            .and_then(|id| list.iter().copied().find(|d| d.id == id));
         if let Some(d) = open {
             parts.push(detail(d, state.provenance));
         }
@@ -460,22 +511,40 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
         } else {
             match state.view {
                 View::Table => parts.push(table(list, state.selected.as_deref())),
-                View::Cards => parts.push(grid(list.iter().copied().map(|d| dataset_card(d, state.selected.as_deref() == Some(d.id.as_str()))).collect(), GRID_COLS)),
+                View::Cards => parts.push(grid(
+                    list.iter()
+                        .copied()
+                        .map(|d| dataset_card(d, state.selected.as_deref() == Some(d.id.as_str())))
+                        .collect(),
+                    GRID_COLS,
+                )),
             }
         }
     }
-    let page: Element<'a, Msg> = ui::scroll(column(parts).spacing(22).width(Length::Fill)).height(Length::Fill).into();
+    let page: Element<'a, Msg> = ui::scroll(column(parts).spacing(22).width(Length::Fill))
+        .height(Length::Fill)
+        .into();
     let framed = lab::frame(Section::Datasets, page, Msg::Go);
     match &state.dialog {
         Dialog::Closed => framed,
-        Dialog::Export(e) => stack(vec![framed, dialog_layer("Export from the records", export_body(e))]).into(),
-        Dialog::Upload(u) => stack(vec![framed, dialog_layer("Upload a JSONL dataset", upload_body(u))]).into(),
+        Dialog::Export(e) => stack(vec![
+            framed,
+            dialog_layer("Export from the records", export_body(e)),
+        ])
+        .into(),
+        Dialog::Upload(u) => stack(vec![
+            framed,
+            dialog_layer("Upload a JSONL dataset", upload_body(u)),
+        ])
+        .into(),
     }
 }
 
 /// The dialog as a card over a scrim, as the git and models screens draw their sheets.
 fn dialog_layer<'a>(title: &str, body: Element<'a, Msg>) -> Element<'a, Msg> {
-    let boxed = container(ui::card(title, body)).width(Length::Fixed(520.0)).style(theme::boxed);
+    let boxed = container(ui::card(title, body))
+        .width(Length::Fixed(520.0))
+        .style(theme::boxed);
     container(boxed)
         .width(Length::Fill)
         .height(Length::Fill)
@@ -489,7 +558,9 @@ fn dialog_layer<'a>(title: &str, body: Element<'a, Msg>) -> Element<'a, Msg> {
 fn export_body<'a>(e: &'a Export) -> Element<'a, Msg> {
     let mut items: Vec<Element<'a, Msg>> = Vec::new();
     if e.confirming {
-        let (from, to) = export_spec(e).map(|s| (s.since_ms, s.until_ms)).unwrap_or((None, None));
+        let (from, to) = export_spec(e)
+            .map(|s| (s.since_ms, s.until_ms))
+            .unwrap_or((None, None));
         let range = if from.is_none() && to.is_none() {
             " over all of the records".to_string()
         } else {
@@ -499,15 +570,33 @@ fn export_body<'a>(e: &'a Export) -> Element<'a, Msg> {
                 to.map_or("now".to_string(), lab_common::time),
             )
         };
-        items.push(ui::prose(format!("Export {} records{} as {}? This writes a new dataset from the plaza.", e.kind, range, e.name.trim())).into());
+        items.push(
+            ui::prose(format!(
+                "Export {} records{} as {}? This writes a new dataset from the plaza.",
+                e.kind,
+                range,
+                e.name.trim()
+            ))
+            .into(),
+        );
         if let Some(problem) = &e.error {
             items.push(ui::error_line(problem));
         }
         items.push(
             row![
                 Space::new().width(Length::Fill),
-                ui::btn("Back", None, Kind::Ghost, (!e.busy).then_some(Msg::ExportBack)),
-                ui::btn("Export", None, Kind::Primary, (!e.busy).then_some(Msg::ExportConfirm)),
+                ui::btn(
+                    "Back",
+                    None,
+                    Kind::Ghost,
+                    (!e.busy).then_some(Msg::ExportBack)
+                ),
+                ui::btn(
+                    "Export",
+                    None,
+                    Kind::Primary,
+                    (!e.busy).then_some(Msg::ExportConfirm)
+                ),
             ]
             .spacing(8)
             .align_y(Alignment::Center)
@@ -516,18 +605,33 @@ fn export_body<'a>(e: &'a Export) -> Element<'a, Msg> {
         return column(items).spacing(14).into();
     }
     let kinds: Vec<String> = KINDS.iter().map(|k| k.to_string()).collect();
-    items.push(field("Kind", pick_list(kinds, Some(e.kind.clone()), Msg::ExportKind).into()));
+    items.push(field(
+        "Kind",
+        pick_list(kinds, Some(e.kind.clone()), Msg::ExportKind).into(),
+    ));
     items.push(field(
         "Name",
-        text_input("e.g. cascade-october", &e.name).on_input(Msg::ExportName).padding(8).style(theme::input).into(),
+        text_input("e.g. cascade-october", &e.name)
+            .on_input(Msg::ExportName)
+            .padding(8)
+            .style(theme::input)
+            .into(),
     ));
     items.push(field(
         "From (optional)",
-        text_input(TIME_HINT, &e.since).on_input(Msg::ExportSince).padding(8).style(theme::input).into(),
+        text_input(TIME_HINT, &e.since)
+            .on_input(Msg::ExportSince)
+            .padding(8)
+            .style(theme::input)
+            .into(),
     ));
     items.push(field(
         "To (optional)",
-        text_input(TIME_HINT, &e.until).on_input(Msg::ExportUntil).padding(8).style(theme::input).into(),
+        text_input(TIME_HINT, &e.until)
+            .on_input(Msg::ExportUntil)
+            .padding(8)
+            .style(theme::input)
+            .into(),
     ));
     if let Some(problem) = &e.error {
         items.push(ui::error_line(problem));
@@ -552,9 +656,26 @@ fn upload_body<'a>(u: &'a Upload) -> Element<'a, Msg> {
         items.push(ui::prose(format!("Uploaded as {}.", made.id)).into());
         items.push(
             column![
-                fact("Name", ui::sans(made.name.clone(), 12.0, crate::theme::palette().ink)),
-                fact("Rows", ui::sans(lab_common::count(made.rows), 12.0, crate::theme::palette().ink)),
-                fact("Frozen rows", ui::sans(lab_common::count(made.frozen_rows), 12.0, crate::theme::palette().ink)),
+                fact(
+                    "Name",
+                    ui::sans(made.name.clone(), 12.0, crate::theme::palette().ink)
+                ),
+                fact(
+                    "Rows",
+                    ui::sans(
+                        lab_common::count(made.rows),
+                        12.0,
+                        crate::theme::palette().ink
+                    )
+                ),
+                fact(
+                    "Frozen rows",
+                    ui::sans(
+                        lab_common::count(made.frozen_rows),
+                        12.0,
+                        crate::theme::palette().ink
+                    )
+                ),
                 fact("Balance", balance_cell(made)),
                 fact("Taint", taints_cell(made)),
             ]
@@ -565,33 +686,69 @@ fn upload_body<'a>(u: &'a Upload) -> Element<'a, Msg> {
             items.push(ui::error_line(problem));
         }
         items.push(
-            row![Space::new().width(Length::Fill), ui::btn("Done", None, Kind::Primary, Some(Msg::CloseDialog))]
-                .align_y(Alignment::Center)
-                .into(),
+            row![
+                Space::new().width(Length::Fill),
+                ui::btn("Done", None, Kind::Primary, Some(Msg::CloseDialog))
+            ]
+            .align_y(Alignment::Center)
+            .into(),
         );
         return column(items).spacing(14).into();
     }
-    items.push(field("Name", text_input("e.g. rung-labels-october", &u.name).on_input(Msg::UploadName).padding(8).style(theme::input).into()));
+    items.push(field(
+        "Name",
+        text_input("e.g. rung-labels-october", &u.name)
+            .on_input(Msg::UploadName)
+            .padding(8)
+            .style(theme::input)
+            .into(),
+    ));
     let picked_name = match &u.picked {
-        Some(path) => path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned()),
+        Some(path) => path.file_name().map_or_else(
+            || path.display().to_string(),
+            |n| n.to_string_lossy().into_owned(),
+        ),
         None => "No file chosen.".to_string(),
     };
     items.push(field(
         "File",
-        row![ui::btn("Choose file", Some("file"), Kind::Secondary, Some(Msg::UploadChoose)), ui::faint(picked_name)]
-            .spacing(12)
-            .align_y(Alignment::Center)
-            .into(),
+        row![
+            ui::btn(
+                "Choose file",
+                Some("file"),
+                Kind::Secondary,
+                Some(Msg::UploadChoose)
+            ),
+            ui::faint(picked_name)
+        ]
+        .spacing(12)
+        .align_y(Alignment::Center)
+        .into(),
     ));
-    items.push(ui::faint("One JSON object per line. Each row needs ts (unix ms), label and the recipe features.").into());
+    items.push(
+        ui::faint(
+            "One JSON object per line. Each row needs ts (unix ms), label and the recipe features.",
+        )
+        .into(),
+    );
     if let Some(problem) = &u.error {
         items.push(ui::error_line(problem));
     }
     items.push(
         row![
             Space::new().width(Length::Fill),
-            ui::btn("Cancel", None, Kind::Ghost, (!u.busy).then_some(Msg::CloseDialog)),
-            ui::btn(if u.busy { "Uploading" } else { "Upload" }, None, Kind::Primary, (!u.busy).then_some(Msg::UploadSubmit)),
+            ui::btn(
+                "Cancel",
+                None,
+                Kind::Ghost,
+                (!u.busy).then_some(Msg::CloseDialog)
+            ),
+            ui::btn(
+                if u.busy { "Uploading" } else { "Upload" },
+                None,
+                Kind::Primary,
+                (!u.busy).then_some(Msg::UploadSubmit)
+            ),
         ]
         .spacing(8)
         .align_y(Alignment::Center)
@@ -607,20 +764,28 @@ fn field<'a>(title: &str, control: Element<'a, Msg>) -> Element<'a, Msg> {
 
 /// A label in a fixed left column over its value, as the web's definition list.
 fn fact<'a>(label: &str, value: impl Into<Element<'a, Msg>>) -> Element<'a, Msg> {
-    row![container(ui::label(label)).width(Length::Fixed(110.0)), container(value.into()).width(Length::Fill)]
-        .spacing(10)
-        .align_y(Alignment::Start)
-        .into()
+    row![
+        container(ui::label(label)).width(Length::Fixed(110.0)),
+        container(value.into()).width(Length::Fill)
+    ]
+    .spacing(10)
+    .align_y(Alignment::Start)
+    .into()
 }
 
 /// The cells of a table, by their portions of the row.
 fn cell<'a>(portion: u16, content: impl Into<Element<'a, Msg>>) -> Element<'a, Msg> {
-    container(content.into()).width(Length::FillPortion(portion)).into()
+    container(content.into())
+        .width(Length::FillPortion(portion))
+        .into()
 }
 
 /// The right-aligned cell of the row count.
 fn cell_right<'a>(portion: u16, content: impl Into<Element<'a, Msg>>) -> Element<'a, Msg> {
-    container(content.into()).width(Length::FillPortion(portion)).align_x(Alignment::End).into()
+    container(content.into())
+        .width(Length::FillPortion(portion))
+        .align_x(Alignment::End)
+        .into()
 }
 
 /// The table's head: mono caps, the rows' own widths.
@@ -637,11 +802,22 @@ fn table<'a>(rows: &[&'a Dataset], selected: Option<&str>) -> Element<'a, Msg> {
     let head_cells: Vec<Element<'a, Msg>> = heads
         .iter()
         .map(|(label, portion, right)| {
-            let content: Element<'a, Msg> = ui::sans(label.to_string(), 11.0, crate::theme::palette().ink_3).into();
-            if *right { cell_right(*portion, content) } else { cell(*portion, content) }
+            let content: Element<'a, Msg> =
+                ui::sans(label.to_string(), 11.0, crate::theme::palette().ink_3).into();
+            if *right {
+                cell_right(*portion, content)
+            } else {
+                cell(*portion, content)
+            }
         })
         .collect();
-    let mut lines: Vec<Element<'a, Msg>> = vec![row(head_cells).spacing(12).padding(Padding::from([8.0, 12.0])).into(), rule()];
+    let mut lines: Vec<Element<'a, Msg>> = vec![
+        row(head_cells)
+            .spacing(12)
+            .padding(Padding::from([8.0, 12.0]))
+            .into(),
+        rule(),
+    ];
     for &d in rows {
         lines.push(table_row(d, selected == Some(d.id.as_str())));
     }
@@ -653,7 +829,10 @@ fn table_row<'a>(d: &'a Dataset, selected: bool) -> Element<'a, Msg> {
     let content = row![
         cell(3, name_cell(d)),
         cell(2, ui::badge(&d.kind, kind_tone(&d.kind))),
-        cell(2, ui::sans(source_of(d), 12.0, crate::theme::palette().ink_2)),
+        cell(
+            2,
+            ui::sans(source_of(d), 12.0, crate::theme::palette().ink_2)
+        ),
         cell(3, range_cell(d)),
         cell_right(2, rows_cell(d)),
         cell(3, balance_cell(d)),
@@ -673,7 +852,10 @@ fn table_row<'a>(d: &'a Dataset, selected: bool) -> Element<'a, Msg> {
 fn dataset_card<'a>(d: &'a Dataset, selected: bool) -> Element<'a, Msg> {
     let body = column![
         ui::mono(d.id.clone(), 11.5, crate::theme::palette().ink_3).wrapping(Wrapping::None),
-        fact("Source", ui::sans(source_of(d), 12.0, crate::theme::palette().ink_2)),
+        fact(
+            "Source",
+            ui::sans(source_of(d), 12.0, crate::theme::palette().ink_2)
+        ),
         fact("Time range", range_cell(d)),
         fact("Rows", rows_cell(d)),
         fact("Balance", balance_cell(d)),
@@ -692,27 +874,76 @@ fn dataset_card<'a>(d: &'a Dataset, selected: bool) -> Element<'a, Msg> {
 /// The detail panel of one dataset: its facts, then the provenance (folded until it is asked for).
 fn detail<'a>(d: &'a Dataset, provenance_open: bool) -> Element<'a, Msg> {
     let facts = column![
-        fact("Id", ui::mono(d.id.clone(), 12.0, crate::theme::palette().ink).wrapping(Wrapping::None)),
-        fact("Source", ui::sans(source_of(d), 12.0, crate::theme::palette().ink_2)),
-        fact("Created", ui::sans(lab_common::time(d.created_ms), 12.0, crate::theme::palette().ink_2)),
+        fact(
+            "Id",
+            ui::mono(d.id.clone(), 12.0, crate::theme::palette().ink).wrapping(Wrapping::None)
+        ),
+        fact(
+            "Source",
+            ui::sans(source_of(d), 12.0, crate::theme::palette().ink_2)
+        ),
+        fact(
+            "Created",
+            ui::sans(
+                lab_common::time(d.created_ms),
+                12.0,
+                crate::theme::palette().ink_2
+            )
+        ),
         fact("Time range", range_cell(d)),
-        fact("Rows", ui::sans(lab_common::count(d.rows), 12.0, crate::theme::palette().ink)),
-        fact("Frozen rows", ui::sans(lab_common::count(d.frozen_rows), 12.0, crate::theme::palette().ink)),
+        fact(
+            "Rows",
+            ui::sans(lab_common::count(d.rows), 12.0, crate::theme::palette().ink)
+        ),
+        fact(
+            "Frozen rows",
+            ui::sans(
+                lab_common::count(d.frozen_rows),
+                12.0,
+                crate::theme::palette().ink
+            )
+        ),
         fact("Balance", balance_cell(d)),
         fact("Taint", taints_cell(d)),
-        fact("SHA-256", ui::mono(or_none(&d.sha256), 11.0, crate::theme::palette().ink_2)),
-        fact("File", ui::mono(or_none(&d.file), 11.0, crate::theme::palette().ink_2)),
-        fact("Frozen file", ui::mono(or_none(&d.frozen_file), 11.0, crate::theme::palette().ink_2)),
+        fact(
+            "SHA-256",
+            ui::mono(or_none(&d.sha256), 11.0, crate::theme::palette().ink_2)
+        ),
+        fact(
+            "File",
+            ui::mono(or_none(&d.file), 11.0, crate::theme::palette().ink_2)
+        ),
+        fact(
+            "Frozen file",
+            ui::mono(or_none(&d.frozen_file), 11.0, crate::theme::palette().ink_2)
+        ),
     ]
     .spacing(8);
-    let toggle = ui::btn(if provenance_open { "Hide provenance" } else { "Show provenance" }, None, Kind::Ghost, Some(Msg::ToggleProvenance));
-    let actions = row![toggle, Space::new().width(Length::Fill), ui::btn("Close", None, Kind::Ghost, Some(Msg::CloseDetail))]
-        .spacing(8)
-        .align_y(Alignment::Center);
+    let toggle = ui::btn(
+        if provenance_open {
+            "Hide provenance"
+        } else {
+            "Show provenance"
+        },
+        None,
+        Kind::Ghost,
+        Some(Msg::ToggleProvenance),
+    );
+    let actions = row![
+        toggle,
+        Space::new().width(Length::Fill),
+        ui::btn("Close", None, Kind::Ghost, Some(Msg::CloseDetail))
+    ]
+    .spacing(8)
+    .align_y(Alignment::Center);
     let mut body: Vec<Element<'a, Msg>> = vec![facts.into(), actions.into()];
     if provenance_open {
         let pretty = serde_json::to_string_pretty(&d.provenance).unwrap_or_default();
-        body.push(ui::scroll(ui::mono(pretty, 11.0, crate::theme::palette().ink_2)).height(Length::Fixed(260.0)).into());
+        body.push(
+            ui::scroll(ui::mono(pretty, 11.0, crate::theme::palette().ink_2))
+                .height(Length::Fixed(260.0))
+                .into(),
+        );
     }
     ui::card(&d.name, column(body).spacing(14).into())
 }
@@ -738,7 +969,10 @@ fn grid<'a>(cards: Vec<Element<'a, Msg>>, cols: usize) -> Element<'a, Msg> {
 fn rule<'a>() -> Element<'a, Msg> {
     container(Space::new().height(Length::Fixed(1.0)))
         .width(Length::Fill)
-        .style(|_: &Theme| container::Style { background: Some(crate::theme::palette().rule.into()), ..Default::default() })
+        .style(|_: &Theme| container::Style {
+            background: Some(crate::theme::palette().rule.into()),
+            ..Default::default()
+        })
         .into()
 }
 
@@ -755,8 +989,18 @@ fn name_cell<'a>(d: &'a Dataset) -> Element<'a, Msg> {
 /// The time span: from, then `to` and the end, in local time.
 fn range_cell<'a>(d: &'a Dataset) -> Element<'a, Msg> {
     column![
-        ui::sans(lab_common::time(d.from_ms), 11.5, crate::theme::palette().ink_2).wrapping(Wrapping::None),
-        ui::sans(format!("to {}", lab_common::time(d.to_ms)), 11.5, crate::theme::palette().ink_3).wrapping(Wrapping::None),
+        ui::sans(
+            lab_common::time(d.from_ms),
+            11.5,
+            crate::theme::palette().ink_2
+        )
+        .wrapping(Wrapping::None),
+        ui::sans(
+            format!("to {}", lab_common::time(d.to_ms)),
+            11.5,
+            crate::theme::palette().ink_3
+        )
+        .wrapping(Wrapping::None),
     ]
     .spacing(2)
     .into()
@@ -764,13 +1008,21 @@ fn range_cell<'a>(d: &'a Dataset) -> Element<'a, Msg> {
 
 /// The row count, with the frozen set under it (a padlock and its count) when there is one.
 fn rows_cell<'a>(d: &'a Dataset) -> Element<'a, Msg> {
-    let mut lines: Vec<Element<'a, Msg>> = vec![ui::sans(lab_common::count(d.rows), 12.0, crate::theme::palette().ink).into()];
+    let mut lines: Vec<Element<'a, Msg>> =
+        vec![ui::sans(lab_common::count(d.rows), 12.0, crate::theme::palette().ink).into()];
     if d.frozen_rows > 0 {
         lines.push(
-            row![lock_mark(crate::theme::palette().signal_ink), ui::sans(format!("{} frozen", lab_common::count(d.frozen_rows)), 11.0, crate::theme::palette().signal_ink)]
-                .spacing(6)
-                .align_y(Alignment::Center)
-                .into(),
+            row![
+                lock_mark(crate::theme::palette().signal_ink),
+                ui::sans(
+                    format!("{} frozen", lab_common::count(d.frozen_rows)),
+                    11.0,
+                    crate::theme::palette().signal_ink
+                )
+            ]
+            .spacing(6)
+            .align_y(Alignment::Center)
+            .into(),
         );
     }
     column(lines).align_x(Alignment::End).spacing(4).into()
@@ -778,9 +1030,22 @@ fn rows_cell<'a>(d: &'a Dataset) -> Element<'a, Msg> {
 
 /// A padlock drawn in two hollow rectangles: the shackle over the body.
 fn lock_mark<'a>(color: Color) -> Element<'a, Msg> {
-    let stroke = move |_: &Theme| container::Style { border: Border { color, width: 1.0, radius: 0.0.into() }, ..Default::default() };
-    let shackle = container(Space::new()).width(Length::Fixed(5.0)).height(Length::Fixed(4.0)).style(stroke);
-    let body = container(Space::new()).width(Length::Fixed(9.0)).height(Length::Fixed(6.0)).style(stroke);
+    let stroke = move |_: &Theme| container::Style {
+        border: Border {
+            color,
+            width: 1.0,
+            radius: 0.0.into(),
+        },
+        ..Default::default()
+    };
+    let shackle = container(Space::new())
+        .width(Length::Fixed(5.0))
+        .height(Length::Fixed(4.0))
+        .style(stroke);
+    let body = container(Space::new())
+        .width(Length::Fixed(9.0))
+        .height(Length::Fixed(6.0))
+        .style(stroke);
     column![shackle, body].spacing(0).into()
 }
 
@@ -799,24 +1064,44 @@ fn balance_cell<'a>(d: &'a Dataset) -> Element<'a, Msg> {
             container(Space::new())
                 .width(Length::FillPortion(portion(*n, total)))
                 .height(Length::Fixed(6.0))
-                .style(move |_: &Theme| container::Style { background: Some(color.into()), ..Default::default() })
+                .style(move |_: &Theme| container::Style {
+                    background: Some(color.into()),
+                    ..Default::default()
+                })
                 .into()
         })
         .collect();
     let bar = container(row(segments).width(Length::Fill))
         .width(Length::Fill)
         .height(Length::Fixed(8.0))
-        .style(|_: &Theme| container::Style { border: Border { color: crate::theme::palette().rule, width: 1.0, radius: 0.0.into() }, ..Default::default() });
+        .style(|_: &Theme| container::Style {
+            border: Border {
+                color: crate::theme::palette().rule,
+                width: 1.0,
+                radius: 0.0.into(),
+            },
+            ..Default::default()
+        });
     let legend: Vec<Element<'a, Msg>> = entries
         .iter()
         .map(|(class, n)| {
-            row![swatch(class_color(class)), ui::sans(format!("{class} {}", lab_common::count(*n)), 11.0, crate::theme::palette().ink_2)]
-                .spacing(6)
-                .align_y(Alignment::Center)
-                .into()
+            row![
+                swatch(class_color(class)),
+                ui::sans(
+                    format!("{class} {}", lab_common::count(*n)),
+                    11.0,
+                    crate::theme::palette().ink_2
+                )
+            ]
+            .spacing(6)
+            .align_y(Alignment::Center)
+            .into()
         })
         .collect();
-    column![bar, column(legend).spacing(2)].spacing(6).width(Length::Fill).into()
+    column![bar, column(legend).spacing(2)]
+        .spacing(6)
+        .width(Length::Fill)
+        .into()
 }
 
 /// An 8-pixel square in a colour, for the legend.
@@ -824,7 +1109,10 @@ fn swatch<'a>(color: Color) -> Element<'a, Msg> {
     container(Space::new())
         .width(Length::Fixed(8.0))
         .height(Length::Fixed(8.0))
-        .style(move |_: &Theme| container::Style { background: Some(color.into()), ..Default::default() })
+        .style(move |_: &Theme| container::Style {
+            background: Some(color.into()),
+            ..Default::default()
+        })
         .into()
 }
 
@@ -833,13 +1121,28 @@ fn taints_cell<'a>(d: &'a Dataset) -> Element<'a, Msg> {
     if d.taint.is_empty() {
         return ui::faint("none").into();
     }
-    column(d.taint.iter().map(|t| ui::badge::<Msg>(t, Tone::Warn)).collect::<Vec<_>>()).spacing(4).into()
+    column(
+        d.taint
+            .iter()
+            .map(|t| ui::badge::<Msg>(t, Tone::Warn))
+            .collect::<Vec<_>>(),
+    )
+    .spacing(4)
+    .into()
 }
 
 /// The balance as (class, count) pairs: the known classes first, then any others by name.
 fn balance_entries(balance: &BTreeMap<String, u64>) -> Vec<(String, u64)> {
-    let mut out: Vec<(String, u64)> = CLASS_ORDER.iter().filter_map(|k| balance.get(*k).map(|n| (k.to_string(), *n))).collect();
-    out.extend(balance.iter().filter(|(k, _)| !CLASS_ORDER.contains(&k.as_str())).map(|(k, n)| (k.clone(), *n)));
+    let mut out: Vec<(String, u64)> = CLASS_ORDER
+        .iter()
+        .filter_map(|k| balance.get(*k).map(|n| (k.to_string(), *n)))
+        .collect();
+    out.extend(
+        balance
+            .iter()
+            .filter(|(k, _)| !CLASS_ORDER.contains(&k.as_str()))
+            .map(|(k, n)| (k.clone(), *n)),
+    );
     out
 }
 
@@ -855,7 +1158,9 @@ fn class_color(class: &str) -> Color {
 
 /// A class's share of the bar, as a flex portion (at least one, so a small class still shows).
 fn portion(n: u64, total: u64) -> u16 {
-    ((n as f64 / total as f64) * 100.0).round().clamp(1.0, 100.0) as u16
+    ((n as f64 / total as f64) * 100.0)
+        .round()
+        .clamp(1.0, 100.0) as u16
 }
 
 /// Where a dataset came from: its provenance's `source` when it names one, else what its kind says.

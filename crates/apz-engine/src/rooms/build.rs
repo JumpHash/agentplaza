@@ -15,10 +15,12 @@ use super::super::props::Anim;
 use super::super::robot::robot_palette;
 use super::super::robots::props::{build_prop, prop_registry};
 use super::super::scene::{Color, Kind, Mat, Material, Obj};
-use super::super::textures::{canvas_texture, Rng};
+use super::super::textures::{Rng, canvas_texture};
 use super::super::toon;
-use super::generate::{layout_hash, CatItem, Catalog, Door, Layout, LayoutDoor, LayoutItem, LayoutSpot, Place};
-use super::kit::{floor_texture, make_kit, wall_look, FloorKind, KitPalette, Room, WallKind};
+use super::generate::{
+    CatItem, Catalog, Door, Layout, LayoutDoor, LayoutItem, LayoutSpot, Place, layout_hash,
+};
+use super::kit::{FloorKind, KitPalette, Room, WallKind, floor_texture, make_kit, wall_look};
 
 /// An item casts only from a bounding radius of CAST_RADIUS; a dynamic item (a lit screen) needs DYNAMIC_CAST_RADIUS.
 const CAST_RADIUS: f32 = 0.3;
@@ -50,11 +52,27 @@ pub struct BuiltLayout {
 /// inner size (x by z); `s` is the half-size the floor texture is drawn for; `name` is the room's name on its board
 /// (the role's label). Every number comes from `layout`, so the same layout always builds the same room.
 #[allow(clippy::too_many_arguments)]
-pub fn build_layout(layout: &Layout, catalog: &Catalog, hue: f32, palette: &KitPalette, w: f64, d: f64, s: f32, name: &str) -> BuiltLayout {
+pub fn build_layout(
+    layout: &Layout,
+    catalog: &Catalog,
+    hue: f32,
+    palette: &KitPalette,
+    w: f64,
+    d: f64,
+    s: f32,
+    name: &str,
+) -> BuiltLayout {
     let g = Obj::group();
     let kit = make_kit(hue, palette);
     let mut room = Room::new(g.clone(), s, hue, kit, Rng::new(layout_hash(layout)));
-    build_walls(&mut room, &layout.shell.walls, wall_kind(&layout.shell.wall), w as f32, d as f32, &layout.shell.door);
+    build_walls(
+        &mut room,
+        &layout.shell.walls,
+        wall_kind(&layout.shell.wall),
+        w as f32,
+        d as f32,
+        &layout.shell.door,
+    );
     for item in &layout.items {
         place_item(&mut room, item, catalog);
     }
@@ -75,7 +93,15 @@ pub fn build_layout(layout: &Layout, catalog: &Catalog, hue: f32, palette: &KitP
             a(t);
         }
     });
-    BuiltLayout { group: g, floor, screens: vec![screen], animate, spots: layout.spots.clone(), w, d }
+    BuiltLayout {
+        group: g,
+        floor,
+        screens: vec![screen],
+        animate,
+        spots: layout.spots.clone(),
+        w,
+        d,
+    }
 }
 
 /// A floor kind by its layout name; an unknown name is the web's default, tiles.
@@ -112,9 +138,18 @@ fn wall_kind(name: &str) -> Option<WallKind> {
 /// The walls on the sides the layout names. A wall sits outside the inner size: its inner face is at the edge.
 /// The door side has two stubs with the opening (`door.width`, centred at 0) between them, and a thin lintel over the
 /// opening (not on hedges and glass), so no wall runs across the door (build.ts `buildWalls`).
-fn build_walls(room: &mut Room, sides: &[Door], kind: Option<WallKind>, w: f32, d: f32, door: &LayoutDoor) {
+fn build_walls(
+    room: &mut Room,
+    sides: &[Door],
+    kind: Option<WallKind>,
+    w: f32,
+    d: f32,
+    door: &LayoutDoor,
+) {
     let Some(kind) = kind else { return };
-    let Some((mat, h, t)) = wall_look(kind, room.hue) else { return };
+    let Some((mat, h, t)) = wall_look(kind, room.hue) else {
+        return;
+    };
     if sides.is_empty() {
         return;
     }
@@ -172,7 +207,8 @@ fn name_board(room: &mut Room, name: &str, d: f32) {
         g.set_fill("#2b2420");
         g.set_text_align("center");
         g.set_text_baseline("middle");
-        let font = |px: f32| format!("700 {px}px ui-rounded, \"Comic Sans MS\", system-ui, sans-serif");
+        let font =
+            |px: f32| format!("700 {px}px ui-rounded, \"Comic Sans MS\", system-ui, sans-serif");
         g.set_font(&font(64.0));
         let measured = g.measure_text(name);
         if measured > w - SIGN_MARGIN {
@@ -193,7 +229,9 @@ fn name_board(room: &mut Room, name: &str, d: f32) {
     let face = Mat::toon(Color::WHITE);
     face.get().map = Some(tex);
     let plane = Obj::mesh(&geometry::plane(1.9, 0.48, 1, 1), &face);
-    plane.set_position(0.0, 1.42, 0.052).set_shadows(false, false);
+    plane
+        .set_position(0.0, 1.42, 0.052)
+        .set_shadows(false, false);
     it.add(&plane);
 }
 
@@ -204,14 +242,27 @@ fn place_item(room: &mut Room, item: &LayoutItem, catalog: &Catalog) {
     if cat.and_then(|c| c.layer.as_deref()) == Some("floor") {
         // Floor layer (rugs): a flat rug lifted a hair above the floor and polygon-offset (a decal), never cast.
         let mat = rug_mat(&room.k.accent_soft);
-        room.rug(size[0] as f32, size[2] as f32, &mat, item.x as f32, item.z as f32, false);
+        room.rug(
+            size[0] as f32,
+            size[2] as f32,
+            &mat,
+            item.x as f32,
+            item.z as f32,
+            false,
+        );
         return;
     }
     let rot = item.rot as f32 * PI / 180.0;
     let model = cat.map_or("", |c| c.model.as_str());
     let obj = match model.strip_prefix("prop:") {
         Some(id) => prop_object(room, id, item, rot, size),
-        None => kit_object(room, model.strip_prefix("kit:").unwrap_or(model), item, cat, rot),
+        None => kit_object(
+            room,
+            model.strip_prefix("kit:").unwrap_or(model),
+            item,
+            cat,
+            rot,
+        ),
     };
     let p = obj.position();
     obj.set_position(p.x, item.y as f32, p.z);
@@ -224,7 +275,13 @@ fn place_item(room: &mut Room, item: &LayoutItem, catalog: &Catalog) {
 }
 
 /// A kit model by its builder's name. An unknown name stands in as a placeholder box of the catalogue size.
-fn kit_object(room: &mut Room, name: &str, item: &LayoutItem, cat: Option<&CatItem>, rot: f32) -> Obj {
+fn kit_object(
+    room: &mut Room,
+    name: &str,
+    item: &LayoutItem,
+    cat: Option<&CatItem>,
+    rot: f32,
+) -> Obj {
     let (x, z) = (item.x as f32, item.z as f32);
     let [w, h, depth] = cat.map_or([0.5, 0.5, 0.5], |c| c.size).map(|v| v as f32);
     match name {
@@ -253,7 +310,10 @@ fn prop_object(room: &mut Room, id: &str, item: &LayoutItem, rot: f32, size: [f6
         return room.prop_placeholder(x, z, rot, w, h, d, &format!("prop:{id}"));
     };
     let built = build_prop(prop, &robot_palette(), room.hue);
-    built.group.set_position(x, item.y as f32, z).set_rotation(0.0, rot, 0.0);
+    built
+        .group
+        .set_position(x, item.y as f32, z)
+        .set_rotation(0.0, rot, 0.0);
     room.g.add(&built.group);
     prop_thin_pass(&built.group);
     built.group
@@ -264,7 +324,9 @@ fn prop_object(room: &mut Room, id: &str, item: &LayoutItem, rot: f32, size: [f6
 fn prop_thin_pass(group: &Obj) {
     group.traverse(&mut |o: &Obj| {
         let thin = match &o.get().kind {
-            Kind::Mesh { geo, .. } => bounds(&geo.positions).is_some_and(|(lo, hi)| (hi - lo).min_element() < 0.02),
+            Kind::Mesh { geo, .. } => {
+                bounds(&geo.positions).is_some_and(|(lo, hi)| (hi - lo).min_element() < 0.02)
+            }
             _ => return,
         };
         o.get().cast_shadow = !thin;
@@ -296,7 +358,9 @@ fn cast_policy(obj: &Obj, wallmount: bool) {
 fn mesh_box(obj: &Obj, meshes: &[Obj]) -> Option<(Vec3, Vec3)> {
     let mut all: Option<(Vec3, Vec3)> = None;
     for m in meshes {
-        let Some(world) = obj.world_matrix_of(m) else { continue };
+        let Some(world) = obj.world_matrix_of(m) else {
+            continue;
+        };
         let local = match &m.get().kind {
             Kind::Mesh { geo, .. } => bounds(&geo.positions),
             _ => None,
@@ -337,12 +401,19 @@ fn rug_mat(source: &Mat) -> Mat {
     static CACHE: OnceLock<Mutex<HashMap<u64, Mat>>> = OnceLock::new();
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     let mut map = cache.lock().unwrap_or_else(|e| e.into_inner());
-    map.entry(source.id()).or_insert_with(|| Mat::new(Material { decal: true, ..source.snapshot() })).clone()
+    map.entry(source.id())
+        .or_insert_with(|| {
+            Mat::new(Material {
+                decal: true,
+                ..source.snapshot()
+            })
+        })
+        .clone()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::super::generate::{data, generate, Input};
+    use super::super::generate::{Input, data, generate};
     use super::*;
 
     fn palette() -> KitPalette {
@@ -359,27 +430,83 @@ mod tests {
     #[test]
     fn a_layout_builds_one_node_per_item_plus_walls_and_the_sign() {
         let data = data();
-        let role = data.roles.roles.keys().next().expect("roles.json has a role").clone();
-        let input = Input { role, w: 4.0, d: 3.5, door: Door::S, seed: 7, agents: Some(2) };
+        let role = data
+            .roles
+            .roles
+            .keys()
+            .next()
+            .expect("roles.json has a role")
+            .clone();
+        let input = Input {
+            role,
+            w: 4.0,
+            d: 3.5,
+            door: Door::S,
+            seed: 7,
+            agents: Some(2),
+        };
         let layout = generate(&input, data);
-        let built = build_layout(&layout, &data.catalog, 200.0, &palette(), 4.0, 3.5, 2.0, "Test");
+        let built = build_layout(
+            &layout,
+            &data.catalog,
+            200.0,
+            &palette(),
+            4.0,
+            3.5,
+            2.0,
+            "Test",
+        );
         // Each wall side is one node; the door side is two stubs and a lintel (no lintel on hedges and glass).
         let kind = wall_kind(&layout.shell.wall);
-        let lintel = usize::from(kind.is_some_and(|k| k != WallKind::Hedge && k != WallKind::Glass) && layout.shell.door.width > 0.0);
+        let lintel = usize::from(
+            kind.is_some_and(|k| k != WallKind::Hedge && k != WallKind::Glass)
+                && layout.shell.door.width > 0.0,
+        );
         let walls: usize = if kind.is_some() {
-            layout.shell.walls.iter().map(|s| if *s == layout.shell.door.side { 2 + lintel } else { 1 }).sum()
+            layout
+                .shell
+                .walls
+                .iter()
+                .map(|s| {
+                    if *s == layout.shell.door.side {
+                        2 + lintel
+                    } else {
+                        1
+                    }
+                })
+                .sum()
         } else {
             0
         };
-        assert_eq!(built.group.get().children.len(), layout.items.len() + walls + 1);
+        assert_eq!(
+            built.group.get().children.len(),
+            layout.items.len() + walls + 1
+        );
         assert_eq!(built.spots.len(), layout.spots.len());
     }
 
     #[test]
     fn the_door_side_is_two_stubs_around_the_opening_with_a_lintel_over_it() {
-        let mut room = Room::new(Obj::group(), 2.0, 200.0, make_kit(200.0, &palette()), Rng::new(1));
-        let door = LayoutDoor { side: Door::S, at: 0.0, width: 1.0 };
-        build_walls(&mut room, &[Door::S], Some(WallKind::Panel), 4.0, 3.5, &door);
+        let mut room = Room::new(
+            Obj::group(),
+            2.0,
+            200.0,
+            make_kit(200.0, &palette()),
+            Rng::new(1),
+        );
+        let door = LayoutDoor {
+            side: Door::S,
+            at: 0.0,
+            width: 1.0,
+        };
+        build_walls(
+            &mut room,
+            &[Door::S],
+            Some(WallKind::Panel),
+            4.0,
+            3.5,
+            &door,
+        );
         let (_, _, t) = wall_look(WallKind::Panel, 200.0).expect("a panel wall");
         let outer = 2.0 + t;
         // The pieces' x spans: the stub on each side of the opening (its body), then the lintel.
@@ -401,7 +528,10 @@ mod tests {
         let expected = [(-outer, -0.5), (0.5, outer), (-0.5, 0.5)];
         assert_eq!(spans.len(), expected.len());
         for (got, want) in spans.iter().zip(expected) {
-            assert!((got.0 - want.0).abs() < 1e-3 && (got.1 - want.1).abs() < 1e-3, "span {got:?} != {want:?}");
+            assert!(
+                (got.0 - want.0).abs() < 1e-3 && (got.1 - want.1).abs() < 1e-3,
+                "span {got:?} != {want:?}"
+            );
         }
     }
 }

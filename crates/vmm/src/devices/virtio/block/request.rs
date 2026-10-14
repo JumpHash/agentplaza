@@ -184,7 +184,10 @@ impl PendingRequest {
                 num_bytes_to_mem,
                 err,
             } => {
-                eprintln!("warning: virtio-block: a {} request failed: {err}", self.kind());
+                eprintln!(
+                    "warning: virtio-block: a {} request failed: {err}",
+                    self.kind()
+                );
                 (*num_bytes_to_mem, VIRTIO_BLK_S_IOERR)
             }
             Status::Unsupported { op } => {
@@ -598,7 +601,10 @@ mod tests {
     fn test_request_type_from() {
         assert_eq!(RequestType::from(VIRTIO_BLK_T_IN), RequestType::In);
         assert_eq!(RequestType::from(VIRTIO_BLK_T_OUT), RequestType::Out);
-        assert_eq!(RequestType::from(VIRTIO_BLK_T_DISCARD), RequestType::Discard);
+        assert_eq!(
+            RequestType::from(VIRTIO_BLK_T_DISCARD),
+            RequestType::Discard
+        );
         assert_eq!(RequestType::from(VIRTIO_BLK_T_FLUSH), RequestType::Flush);
         assert_eq!(
             RequestType::from(VIRTIO_BLK_T_GET_ID),
@@ -631,7 +637,9 @@ mod tests {
             );
             if request.r#type == RequestType::Discard {
                 let mut bytes = [0u8; DISCARD_RANGE_SIZE as usize];
-                memory.read_slice(&mut bytes, self.data_desc_addr()).unwrap();
+                memory
+                    .read_slice(&mut bytes, self.data_desc_addr())
+                    .unwrap();
                 let range: DiscardWriteZeroes =
                     DiscardWriteZeroes::read_from_bytes(&bytes).unwrap();
                 assert_eq!(request.sector, range.sector.get() * u64::from(SECTOR_SIZE));

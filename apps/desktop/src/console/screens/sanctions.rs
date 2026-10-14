@@ -92,7 +92,12 @@ fn list_path(cid: Option<u64>, law: Option<&str>, limit: Option<u64>) -> String 
 }
 
 /// The sanctions and suspensions, narrowed by agent, law and count when given.
-pub fn list(client: &client::Client, cid: Option<u64>, law: Option<&str>, limit: Option<u64>) -> Result<Register, String> {
+pub fn list(
+    client: &client::Client,
+    cid: Option<u64>,
+    law: Option<&str>,
+    limit: Option<u64>,
+) -> Result<Register, String> {
     client.get(&list_path(cid, law, limit))
 }
 
@@ -103,7 +108,10 @@ pub fn active(client: &client::Client) -> Result<Register, String> {
 
 /// Lifts an active suspension with the owner's reason; answers with the updated sanction.
 pub fn lift(client: &client::Client, id: u64, reason: &str) -> Result<Sanction, String> {
-    client.post(&format!("/v1/sanctions/{id}/lift"), &json!({ "reason": reason }))
+    client.post(
+        &format!("/v1/sanctions/{id}/lift"),
+        &json!({ "reason": reason }),
+    )
 }
 
 #[cfg(test)]
@@ -113,8 +121,14 @@ mod tests {
     #[test]
     fn list_path_takes_the_filters_that_are_given() {
         assert_eq!(list_path(None, None, None), "/v1/sanctions");
-        assert_eq!(list_path(Some(7), None, Some(50)), "/v1/sanctions?cid=7&limit=50");
-        assert_eq!(list_path(None, Some("a b"), None), "/v1/sanctions?law=a%20b");
+        assert_eq!(
+            list_path(Some(7), None, Some(50)),
+            "/v1/sanctions?cid=7&limit=50"
+        );
+        assert_eq!(
+            list_path(None, Some("a b"), None),
+            "/v1/sanctions?law=a%20b"
+        );
     }
 
     #[test]
@@ -125,11 +139,18 @@ mod tests {
         }))
         .unwrap();
         let action = with.owner_action.expect("the owner's action");
-        assert_eq!((action.action.as_str(), action.at_ms), ("retire", 1_800_000_000_000));
-        let without: Sanction = serde_json::from_value(json!({ "id": 5, "owner_action": null })).unwrap();
+        assert_eq!(
+            (action.action.as_str(), action.at_ms),
+            ("retire", 1_800_000_000_000)
+        );
+        let without: Sanction =
+            serde_json::from_value(json!({ "id": 5, "owner_action": null })).unwrap();
         assert!(without.owner_action.is_none());
         let old: Sanction = serde_json::from_value(json!({ "id": 6 })).unwrap();
-        assert!(old.owner_action.is_none(), "a record from before the field still parses");
+        assert!(
+            old.owner_action.is_none(),
+            "a record from before the field still parses"
+        );
     }
 
     #[test]

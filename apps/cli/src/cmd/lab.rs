@@ -8,10 +8,10 @@ mod jobs;
 mod models;
 
 use clap::Subcommand;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::cmd::models::items;
-use crate::ctx::{self, confirm, Ctx};
+use crate::ctx::{self, Ctx, confirm};
 
 /// The law that caps a breeder's job in GPU-hours, and the condition its number is read from.
 const CAP_LAW: &str = "S-006c";
@@ -94,7 +94,11 @@ fn repo_path(id: &str) -> String {
 
 /// Why a call was refused: the hub's `error` text, else the path and the status.
 fn refusal(value: &Value, path: &str, status: u16) -> String {
-    value.get("error").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| format!("{path}: HTTP {status}"))
+    value
+        .get("error")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("{path}: HTTP {status}"))
 }
 
 /// A number for a table: a fraction (GPU-hours and the like) with two decimals, a whole number as it is, null as a dash.
@@ -143,7 +147,20 @@ fn devices(ctx: &Ctx) -> Result<(), String> {
     let view = ctx.client.get("/v1/foundry/devices")?;
     ctx.out(&view, |v| {
         let rows: Vec<Vec<String>> = items(&v["machines"]).flat_map(device_rows).collect();
-        ctx::table(&["machine", "online", "trainer", "index", "device", "backend", "memory", "load", "allocated"], &rows);
+        ctx::table(
+            &[
+                "machine",
+                "online",
+                "trainer",
+                "index",
+                "device",
+                "backend",
+                "memory",
+                "load",
+                "allocated",
+            ],
+            &rows,
+        );
     });
     Ok(())
 }
@@ -156,7 +173,17 @@ fn device_rows(m: &Value) -> Vec<Vec<String>> {
     let devices: Vec<&Value> = items(&m["devices"]).collect();
     if devices.is_empty() {
         let dash = || "—".to_string();
-        return vec![vec![machine, online, trainer, dash(), "no devices".to_string(), dash(), dash(), dash(), dash()]];
+        return vec![vec![
+            machine,
+            online,
+            trainer,
+            dash(),
+            "no devices".to_string(),
+            dash(),
+            dash(),
+            dash(),
+            dash(),
+        ]];
     }
     devices
         .into_iter()
@@ -166,10 +193,24 @@ fn device_rows(m: &Value) -> Vec<Vec<String>> {
                 online.clone(),
                 trainer.clone(),
                 ctx::text(d, "index"),
-                format!("{} {}", ctx::s(d, "vendor"), ctx::s(d, "name")).trim().to_string(),
+                format!("{} {}", ctx::s(d, "vendor"), ctx::s(d, "name"))
+                    .trim()
+                    .to_string(),
                 ctx::s(d, "backend").to_string(),
-                format!("{} of {} MiB", ctx::text(d, "mem_used_mib"), ctx::text(d, "memory_mib")),
-                format!("{}% {}", ctx::text(d, "util_pct"), if d["busy"].as_bool() == Some(true) { "busy" } else { "idle" }),
+                format!(
+                    "{} of {} MiB",
+                    ctx::text(d, "mem_used_mib"),
+                    ctx::text(d, "memory_mib")
+                ),
+                format!(
+                    "{}% {}",
+                    ctx::text(d, "util_pct"),
+                    if d["busy"].as_bool() == Some(true) {
+                        "busy"
+                    } else {
+                        "idle"
+                    }
+                ),
                 d["allocated_to"].as_str().unwrap_or("—").to_string(),
             ]
         })
@@ -200,8 +241,17 @@ fn recipes(ctx: &Ctx, cmd: RecipesCmd) -> Result<(), String> {
             if !confirm(yes, &format!("Vet recipe {id} at commit {commit}."))? {
                 return Err("cancelled".into());
             }
-            let recipe = ctx.client.post(&format!("{}/vet", recipe_path(&id)), &json!({ "commit": commit }))?;
-            ctx.out(&recipe, |r| println!("vetted {} at {}", ctx::s(r, "id"), short(ctx::s(r, "commit"))));
+            let recipe = ctx.client.post(
+                &format!("{}/vet", recipe_path(&id)),
+                &json!({ "commit": commit }),
+            )?;
+            ctx.out(&recipe, |r| {
+                println!(
+                    "vetted {} at {}",
+                    ctx::s(r, "id"),
+                    short(ctx::s(r, "commit"))
+                )
+            });
             Ok(())
         }
     }
@@ -221,7 +271,11 @@ fn breeders(ctx: &Ctx) -> Result<(), String> {
     let agents = ctx.client.get("/v1/agents")?;
     let jobs = ctx.client.get("/v1/foundry/jobs")?;
     // The laws are read for the cap only. When they cannot be read, the fallback cap is shown and marked as one.
-    let cap = ctx.client.get("/v1/laws").ok().and_then(|laws| job_cap(&laws));
+    let cap = ctx
+        .client
+        .get("/v1/laws")
+        .ok()
+        .and_then(|laws| job_cap(&laws));
     let summary = breeder_summary(&agents, &jobs, cap);
     ctx.out(&summary, print_breeders);
     Ok(())
@@ -230,7 +284,9 @@ fn breeders(ctx: &Ctx) -> Result<(), String> {
 /// S-006c's per-job cap in GPU-hours; None when the law or its number is not there.
 fn job_cap(laws: &Value) -> Option<f64> {
     let law = items(laws).find(|l| ctx::s(l, "id") == CAP_LAW)?;
-    let text: Vec<&str> = items(&law["conditions"]).filter_map(Value::as_str).collect();
+    let text: Vec<&str> = items(&law["conditions"])
+        .filter_map(Value::as_str)
+        .collect();
     parse_cap(&text.join(" "))
 }
 
@@ -238,14 +294,19 @@ fn job_cap(laws: &Value) -> Option<f64> {
 fn parse_cap(text: &str) -> Option<f64> {
     let rest = text.split("context.gpu_hours").nth(1)?;
     let rest = rest.trim_start().strip_prefix("<=")?.trim_start();
-    let number: String = rest.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+    let number: String = rest
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '.')
+        .collect();
     number.parse().ok()
 }
 
 /// The breeders (the agents with the breeder role), each with its own jobs and the GPU-hours they used.
 /// A job belongs to a breeder when the hub says it was submitted with the breeder's CID.
 fn breeder_summary(agents: &Value, jobs: &Value, cap: Option<f64>) -> Value {
-    let mut mine: Vec<&Value> = items(agents).filter(|a| ctx::s(a, "role") == "breeder").collect();
+    let mut mine: Vec<&Value> = items(agents)
+        .filter(|a| ctx::s(a, "role") == "breeder")
+        .collect();
     mine.sort_by_key(|a| a["cid"].as_u64().unwrap_or(0));
     let breeders: Vec<Value> = mine
         .into_iter()
@@ -262,8 +323,15 @@ fn breeder_summary(agents: &Value, jobs: &Value, cap: Option<f64>) -> Value {
 fn print_breeders(s: &Value) {
     let list: Vec<&Value> = items(&s["breeders"]).collect();
     let jobs: usize = list.iter().map(|b| items(&b["jobs"]).count()).sum();
-    let used: f64 = list.iter().map(|b| b["gpu_hours"].as_f64().unwrap_or(0.0)).sum();
-    let source = if s["cap_read"].as_bool() == Some(true) { CAP_LAW } else { "fallback: the laws could not be read" };
+    let used: f64 = list
+        .iter()
+        .map(|b| b["gpu_hours"].as_f64().unwrap_or(0.0))
+        .sum();
+    let source = if s["cap_read"].as_bool() == Some(true) {
+        CAP_LAW
+    } else {
+        "fallback: the laws could not be read"
+    };
     println!(
         "{} breeders · {jobs} jobs · {used:.2} GPU-h used · per-job cap {} GPU-h ({source})",
         list.len(),
@@ -272,7 +340,9 @@ fn print_breeders(s: &Value) {
     let rows: Vec<Vec<String>> = list
         .iter()
         .map(|b| {
-            let own: f64 = items(&b["jobs"]).map(|j| j["gpu_hours"].as_f64().unwrap_or(0.0)).sum();
+            let own: f64 = items(&b["jobs"])
+                .map(|j| j["gpu_hours"].as_f64().unwrap_or(0.0))
+                .sum();
             vec![
                 ctx::text(b, "cid"),
                 breeder_name(b),
@@ -299,7 +369,10 @@ fn print_breeders(s: &Value) {
         })
         .collect();
     println!();
-    ctx::table(&["breeder", "job", "status", "recipe", "gpu-h", "created"], &job_rows);
+    ctx::table(
+        &["breeder", "job", "status", "recipe", "gpu-h", "created"],
+        &job_rows,
+    );
 }
 
 /// A breeder's name, or `agent <cid>` when it has none.
@@ -334,7 +407,9 @@ mod tests {
     #[test]
     fn the_groups_are_all_there() {
         let cmd = Probe::command();
-        for group in ["devices", "jobs", "recipes", "datasets", "models", "hf", "breeders"] {
+        for group in [
+            "devices", "jobs", "recipes", "datasets", "models", "hf", "breeders",
+        ] {
             assert!(cmd.find_subcommand(group).is_some(), "{group} is missing");
         }
     }
@@ -344,7 +419,10 @@ mod tests {
         assert_eq!(recipe_path("cls@1.2"), "/v1/foundry/recipes/cls@1.2");
         assert_eq!(recipe_path("a b@1"), "/v1/foundry/recipes/a%20b@1");
         assert_eq!(job_path("job-1"), "/v1/foundry/jobs/job-1");
-        assert_eq!(model_path("hf-org-x-1a2b"), "/v1/foundry/models/hf-org-x-1a2b");
+        assert_eq!(
+            model_path("hf-org-x-1a2b"),
+            "/v1/foundry/models/hf-org-x-1a2b"
+        );
         assert_eq!(model_path("a/b"), "/v1/foundry/models/a%2Fb");
     }
 
@@ -364,7 +442,10 @@ mod tests {
 
     #[test]
     fn the_per_job_cap_is_read_from_the_law_condition() {
-        assert_eq!(parse_cap("context.gpu_hours <= 8 and context.kind == 'job'"), Some(8.0));
+        assert_eq!(
+            parse_cap("context.gpu_hours <= 8 and context.kind == 'job'"),
+            Some(8.0)
+        );
         assert_eq!(parse_cap("context.gpu_hours<=2.5"), Some(2.5));
         assert_eq!(parse_cap("no cap here"), None);
         let laws = json!([
@@ -394,7 +475,11 @@ mod tests {
         assert_eq!(rows[1]["cid"], 3);
         assert_eq!(rows[1]["jobs"].as_array().map(Vec::len), Some(1));
         assert_eq!(rows[1]["gpu_hours"], 1.5);
-        assert_eq!(rows[0]["jobs"].as_array().map(Vec::len), Some(0), "no job carries cid 2");
+        assert_eq!(
+            rows[0]["jobs"].as_array().map(Vec::len),
+            Some(0),
+            "no job carries cid 2"
+        );
         assert_eq!(summary["cap"], 8.0);
         assert_eq!(summary["cap_read"], false);
         assert_eq!(breeder_name(&rows[1]), "agent 3");
@@ -403,7 +488,10 @@ mod tests {
 
     #[test]
     fn the_token_is_never_an_argument_and_the_limits_hold() {
-        assert!(parse(&["hf", "token", "set", "hf_secret"]).is_err(), "a token is read, never passed");
+        assert!(
+            parse(&["hf", "token", "set", "hf_secret"]).is_err(),
+            "a token is read, never passed"
+        );
         assert!(parse(&["hf", "token", "set"]).is_ok());
         assert!(parse(&["hf", "search", "--limit", "101"]).is_err());
         assert!(parse(&["hf", "search", "--limit", "100"]).is_ok());

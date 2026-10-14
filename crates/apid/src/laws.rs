@@ -17,24 +17,36 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, RwLock};
 
 use apz_plaza::council;
+use jhrl::Program;
 use jhrl::ast::{Effect, Item, Law, Scope, TypeExpr};
-use jhrl::authz::{authorize_except, check_authz, Decision, Entity, EntityStore, Request};
+use jhrl::authz::{Decision, Entity, EntityStore, Request, authorize_except, check_authz};
 use jhrl::span::{Diag, SourceMap};
 use jhrl::value::Value;
-use jhrl::Program;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value as Json};
+use serde_json::{Value as Json, json};
 
-use crate::settings::{tier_of, Tier};
-use crate::tools::{runs, Runs};
+use crate::settings::{Tier, tier_of};
+use crate::tools::{Runs, runs};
 
 /// The law files, compiled into the binary. `cases.jhrl` is the test fixture set, not law.
 pub(crate) const LAW_FILES: [(&str, &str); 4] = [
-    ("operations.jhrl", include_str!("../../jhrl/specs/laws/operations.jhrl")),
-    ("constitution.jhrl", include_str!("../../jhrl/specs/laws/constitution.jhrl")),
-    ("statutes.jhrl", include_str!("../../jhrl/specs/laws/statutes.jhrl")),
-    ("tools.jhrl", include_str!("../../jhrl/specs/laws/tools.jhrl")),
+    (
+        "operations.jhrl",
+        include_str!("../../jhrl/specs/laws/operations.jhrl"),
+    ),
+    (
+        "constitution.jhrl",
+        include_str!("../../jhrl/specs/laws/constitution.jhrl"),
+    ),
+    (
+        "statutes.jhrl",
+        include_str!("../../jhrl/specs/laws/statutes.jhrl"),
+    ),
+    (
+        "tools.jhrl",
+        include_str!("../../jhrl/specs/laws/tools.jhrl"),
+    ),
 ];
 /// Violations kept per agent; the oldest go first.
 const KEEP: usize = 200;
@@ -196,7 +208,11 @@ impl Failure {
     /// The failure as one line of text.
     pub fn message(&self) -> String {
         match self {
-            Failure::Diagnostics(list) => list.iter().map(|d| format!("{}:{}: {}", d.line, d.column, d.message)).collect::<Vec<_>>().join("; "),
+            Failure::Diagnostics(list) => list
+                .iter()
+                .map(|d| format!("{}:{}: {}", d.line, d.column, d.message))
+                .collect::<Vec<_>>()
+                .join("; "),
             Failure::NotFound(what) => format!("not found: {what}"),
             Failure::Invalid(why) | Failure::Unconfirmed(why) => why.clone(),
         }
@@ -266,7 +282,10 @@ impl Laws {
     /// Compiles the built-in laws and loads the violations and the owner's rules from `state_dir`.
     /// Panics at startup if the built-in laws do not compile: an unenforced law is worse than no start.
     pub fn load(state_dir: &Path) -> Laws {
-        let files: Vec<(String, String)> = LAW_FILES.iter().map(|(name, text)| (name.to_string(), text.to_string())).collect();
+        let files: Vec<(String, String)> = LAW_FILES
+            .iter()
+            .map(|(name, text)| (name.to_string(), text.to_string()))
+            .collect();
         Laws::from_files(state_dir, files)
     }
 
@@ -318,11 +337,27 @@ impl Laws {
         self.check_with(&self.live(), agent_cid, role, tool, input)
     }
 
-    fn check_with(&self, live: &Compiled, agent_cid: &str, role: &str, tool: &str, input: &Json) -> Verdict {
+    fn check_with(
+        &self,
+        live: &Compiled,
+        agent_cid: &str,
+        role: &str,
+        tool: &str,
+        input: &Json,
+    ) -> Verdict {
         let flags = detect_flags(tool, input);
-        let agent = Entity { ty: "Agent".into(), id: agent_cid.into() };
-        let tool_entity = Entity { ty: "Tool".into(), id: tool.into() };
-        let sandbox = Entity { ty: "Sandbox".into(), id: format!("vm-{agent_cid}") };
+        let agent = Entity {
+            ty: "Agent".into(),
+            id: agent_cid.into(),
+        };
+        let tool_entity = Entity {
+            ty: "Tool".into(),
+            id: tool.into(),
+        };
+        let sandbox = Entity {
+            ty: "Sandbox".into(),
+            id: format!("vm-{agent_cid}"),
+        };
         let mut store = EntityStore::default();
         store.insert(&agent, member_attrs_of(agent_cid, role));
         store.insert(
@@ -333,25 +368,42 @@ impl Laws {
                 ("risk_class".to_string(), Value::str(risk_class(tool))),
             ]),
         );
-        store.insert(&sandbox, BTreeMap::from([("agent".to_string(), jhrl::authz::entity_value(&agent))]));
+        store.insert(
+            &sandbox,
+            BTreeMap::from([("agent".to_string(), jhrl::authz::entity_value(&agent))]),
+        );
         let flag_set = Value::set(flags.iter().map(|flag| Value::str(flag)));
         let base: Context = BTreeMap::from([("flags".to_string(), flag_set)]);
-        let mut requests: Vec<(&str, Entity, Context)> = vec![("tool.call", tool_entity, Context::new())];
+        let mut requests: Vec<(&str, Entity, Context)> =
+            vec![("tool.call", tool_entity, Context::new())];
         if GUEST_EXEC.contains(&tool) || tool.starts_with(crate::library::PREFIX) {
             requests.push(("tool.exec", sandbox, Context::new()));
         }
         // A message is a message.send to its recipient, and a board post one to the whole board
         // (no recipient). The recipient is checked even when its CID is missing or malformed: the
         // message laws then see an empty recipient instead of being skipped.
-        if matches!(tool, "plaza_send_message" | "plaza_board_post" | "plaza_board_comment") {
-            let to = input.get("to_cid").and_then(Json::as_u64).map(|n| n.to_string()).unwrap_or_default();
-            let peer = Entity { ty: "Agent".into(), id: to };
+        if matches!(
+            tool,
+            "plaza_send_message" | "plaza_board_post" | "plaza_board_comment"
+        ) {
+            let to = input
+                .get("to_cid")
+                .and_then(Json::as_u64)
+                .map(|n| n.to_string())
+                .unwrap_or_default();
+            let peer = Entity {
+                ty: "Agent".into(),
+                id: to,
+            };
             store.insert(&peer, member_attrs_of(&peer.id, ""));
             requests.push(("message.send", peer, Context::new()));
         }
         // A file shared or delivered to the plaza is an artifact published.
         if matches!(tool, "share_file" | "deliver_file") {
-            let artifact = Entity { ty: "Artifact".into(), id: tool.into() };
+            let artifact = Entity {
+                ty: "Artifact".into(),
+                id: tool.into(),
+            };
             store.insert(&artifact, BTreeMap::new());
             requests.push(("artifact.publish", artifact, Context::new()));
         }
@@ -377,7 +429,9 @@ impl Laws {
                     }
                 }
                 Decision::Deny { .. } if i == 0 => verdict.unpermitted = true,
-                Decision::Deny { .. } if strict && live.has_permit(operation) => verdict.denied_ops.push(operation.to_string()),
+                Decision::Deny { .. } if strict && live.has_permit(operation) => {
+                    verdict.denied_ops.push(operation.to_string())
+                }
                 Decision::Allow { by } => {
                     for id in by {
                         if !verdict.permit.contains(&id) {
@@ -400,7 +454,8 @@ impl Laws {
         }
         let live = self.live();
         let verdict = self.check_with(&live, "0", role, tool, &Json::Object(Default::default()));
-        let answer = verdict.forbid.is_empty() && !verdict.unpermitted && verdict.denied_ops.is_empty();
+        let answer =
+            verdict.forbid.is_empty() && !verdict.unpermitted && verdict.denied_ops.is_empty();
         let mut memo = lock(&self.permitted);
         // Remembered only while the laws it was decided under are still the live ones.
         if Arc::ptr_eq(&live, &self.live()) {
@@ -416,7 +471,9 @@ impl Laws {
         let verdict = self.check(&cid.to_string(), role, tool, input);
         if verdict.forbid.is_empty() {
             if verdict.unpermitted {
-                return Some(format!("refused: no law permits {tool} for the {role} role"));
+                return Some(format!(
+                    "refused: no law permits {tool} for the {role} role"
+                ));
             }
             if let Some(op) = verdict.denied_ops.first() {
                 return Some(format!("refused: no law permits {op} for the {role} role"));
@@ -425,23 +482,60 @@ impl Laws {
         }
         self.record(cid, &verdict.forbid, tool, apz_plaza::now_ms());
         let live = self.live();
-        let titles: Vec<&str> = verdict.forbid.iter().filter_map(|id| live.titles.get(id)).map(String::as_str).collect();
-        Some(format!("refused by law {}: {}", verdict.forbid.join(", "), titles.join("; ")))
+        let titles: Vec<&str> = verdict
+            .forbid
+            .iter()
+            .filter_map(|id| live.titles.get(id))
+            .map(String::as_str)
+            .collect();
+        Some(format!(
+            "refused by law {}: {}",
+            verdict.forbid.join(", "),
+            titles.join("; ")
+        ))
     }
 
     /// The refusal reason when a law forbids an operation an agent's VM performs straight at a hub
     /// route, outside any tool call (a git push, a file publish), `None` when no law forbids it. Only
     /// forbids are decided here (and, with strict permits, an operation no permit allows), since these
     /// routes have no tool to be offered; a forbid is recorded.
-    pub fn refuse_op(&self, cid: u64, role: &str, operation: &str, resource: Entity, attrs: BTreeMap<String, Value>, input: &Json) -> Option<String> {
-        self.refuse_op_with(cid, role, operation, resource, attrs, input, BTreeMap::new())
+    pub fn refuse_op(
+        &self,
+        cid: u64,
+        role: &str,
+        operation: &str,
+        resource: Entity,
+        attrs: BTreeMap<String, Value>,
+        input: &Json,
+    ) -> Option<String> {
+        self.refuse_op_with(
+            cid,
+            role,
+            operation,
+            resource,
+            attrs,
+            input,
+            BTreeMap::new(),
+        )
     }
 
     /// As `refuse_op`, with extra request context fields (`training.submit` reads `gpu_hours`, S-006c/d).
     #[allow(clippy::too_many_arguments)]
-    pub fn refuse_op_with(&self, cid: u64, role: &str, operation: &str, resource: Entity, attrs: BTreeMap<String, Value>, input: &Json, extra: BTreeMap<String, Value>) -> Option<String> {
+    pub fn refuse_op_with(
+        &self,
+        cid: u64,
+        role: &str,
+        operation: &str,
+        resource: Entity,
+        attrs: BTreeMap<String, Value>,
+        input: &Json,
+        extra: BTreeMap<String, Value>,
+    ) -> Option<String> {
         let flags = detect_flags("", input);
-        let agent = Entity { ty: "Agent".into(), id: cid.to_string() };
+        let agent = Entity {
+            ty: "Agent".into(),
+            id: cid.to_string(),
+        };
         let mut store = EntityStore::default();
         store.insert(&agent, member_attrs_of(&cid.to_string(), role));
         store.insert(&resource, attrs);
@@ -451,7 +545,12 @@ impl Laws {
         )]);
         fields.extend(extra);
         let context = Value::record(fields);
-        let request = Request { principal: agent, operation: operation.into(), resource, context };
+        let request = Request {
+            principal: agent,
+            operation: operation.into(),
+            resource,
+            context,
+        };
         let live = self.live();
         let decision = authorize_except(&live.program, &store, &request, &live.off).decision;
         let by = match &decision {
@@ -461,13 +560,23 @@ impl Laws {
         if by.is_empty() {
             let strict = self.strict.load(Ordering::Relaxed);
             if matches!(decision, Decision::Deny { .. }) && strict && live.has_permit(operation) {
-                return Some(format!("refused: no law permits {operation} for the {role} role"));
+                return Some(format!(
+                    "refused: no law permits {operation} for the {role} role"
+                ));
             }
             return None;
         }
         self.record(cid, &by, operation, apz_plaza::now_ms());
-        let titles: Vec<&str> = by.iter().filter_map(|id| live.titles.get(id)).map(String::as_str).collect();
-        Some(format!("refused by law {}: {}", by.join(", "), titles.join("; ")))
+        let titles: Vec<&str> = by
+            .iter()
+            .filter_map(|id| live.titles.get(id))
+            .map(String::as_str)
+            .collect();
+        Some(format!(
+            "refused by law {}: {}",
+            by.join(", "),
+            titles.join("; ")
+        ))
     }
 
     /// Every law, in file then source order, built-in and owner, enabled or not, for the Rules view.
@@ -494,10 +603,18 @@ impl Laws {
     /// The agent's violations within the last 30 days, newest first, as profile JSON.
     pub fn recent(&self, cid: u64, now_ms: u64) -> Vec<Json> {
         let all = lock(&self.violations);
-        let Some(list) = all.get(&cid.to_string()) else { return Vec::new() };
-        let mut found: Vec<&Violation> = list.iter().filter(|v| v.at_ms + WINDOW_MS >= now_ms).collect();
+        let Some(list) = all.get(&cid.to_string()) else {
+            return Vec::new();
+        };
+        let mut found: Vec<&Violation> = list
+            .iter()
+            .filter(|v| v.at_ms + WINDOW_MS >= now_ms)
+            .collect();
         found.sort_by(|a, b| b.at_ms.cmp(&a.at_ms));
-        found.into_iter().map(|v| serde_json::to_value(v).unwrap_or(Json::Null)).collect()
+        found
+            .into_iter()
+            .map(|v| serde_json::to_value(v).unwrap_or(Json::Null))
+            .collect()
     }
 
     /// Whether strict permits are on: an operation with permit laws is refused unless one allows it.
@@ -518,7 +635,13 @@ impl Laws {
     }
 
     /// Adds a rule set and applies it when its source compiles (and it is enabled).
-    pub fn add_rule(&self, title: &str, source: &str, enabled: bool, now_ms: u64) -> Result<OwnerRule, Failure> {
+    pub fn add_rule(
+        &self,
+        title: &str,
+        source: &str,
+        enabled: bool,
+        now_ms: u64,
+    ) -> Result<OwnerRule, Failure> {
         let mut slot = lock(&self.rules);
         let mut next = slot.clone();
         let rule = OwnerRule {
@@ -537,7 +660,13 @@ impl Laws {
     }
 
     /// Changes a rule's title (when `title` is not blank) and/or its source, and applies the result.
-    pub fn update_rule(&self, id: &str, title: &str, source: Option<&str>, now_ms: u64) -> Result<OwnerRule, Failure> {
+    pub fn update_rule(
+        &self,
+        id: &str,
+        title: &str,
+        source: Option<&str>,
+        now_ms: u64,
+    ) -> Result<OwnerRule, Failure> {
         self.edit_rule(id, now_ms, |rule| {
             if !title.trim().is_empty() {
                 rule.title = title.trim().to_string();
@@ -549,7 +678,12 @@ impl Laws {
     }
 
     /// Enables or disables a rule set: its laws apply, or stop applying, from now on.
-    pub fn set_rule_enabled(&self, id: &str, enabled: bool, now_ms: u64) -> Result<OwnerRule, Failure> {
+    pub fn set_rule_enabled(
+        &self,
+        id: &str,
+        enabled: bool,
+        now_ms: u64,
+    ) -> Result<OwnerRule, Failure> {
         self.edit_rule(id, now_ms, |rule| rule.enabled = enabled)
     }
 
@@ -571,19 +705,33 @@ impl Laws {
     /// A constitutional law is switched off only when `confirm` is its exact id; otherwise the
     /// change is refused with [`Failure::Unconfirmed`]. Switching it on needs no confirmation. Every
     /// change of state of a constitutional law is kept in the history, with who made it and when.
-    pub fn set_override(&self, law: &str, disabled: bool, reason: &str, confirm: &str, now_ms: u64) -> Result<Option<Override>, Failure> {
+    pub fn set_override(
+        &self,
+        law: &str,
+        disabled: bool,
+        reason: &str,
+        confirm: &str,
+        now_ms: u64,
+    ) -> Result<Option<Override>, Failure> {
         let mut slot = lock(&self.rules);
         let info = match self.live().catalog.iter().find(|info| info.id == law) {
             None => return Err(Failure::NotFound(format!("law {law}"))),
             Some(info) if info.origin != "built-in" => {
-                return Err(Failure::Invalid(format!("{law} is an owner rule; disable its rule instead")));
+                return Err(Failure::Invalid(format!(
+                    "{law} is an owner rule; disable its rule instead"
+                )));
             }
             Some(info) => info.clone(),
         };
         let constitutional = info.tier == CONSTITUTION;
         if disabled && constitutional && confirm != law {
-            let asked = format!("{law} is a constitutional law; to switch it off, send confirm: \"{law}\"");
-            let why = if confirm.is_empty() { asked } else { format!("confirm \"{confirm}\" does not match. {asked}") };
+            let asked =
+                format!("{law} is a constitutional law; to switch it off, send confirm: \"{law}\"");
+            let why = if confirm.is_empty() {
+                asked
+            } else {
+                format!("confirm \"{confirm}\" does not match. {asked}")
+            };
             return Err(Failure::Unconfirmed(why));
         }
         if disabled && reason.trim().is_empty() {
@@ -591,7 +739,12 @@ impl Laws {
         }
         let mut next = slot.clone();
         next.overrides.retain(|o| o.law != law);
-        let made = disabled.then(|| Override { law: law.to_string(), disabled_by: OWNER.to_string(), reason: reason.trim().to_string(), at_ms: now_ms });
+        let made = disabled.then(|| Override {
+            law: law.to_string(),
+            disabled_by: OWNER.to_string(),
+            reason: reason.trim().to_string(),
+            at_ms: now_ms,
+        });
         next.overrides.extend(made.clone());
         let compiled = compile(&self.base, &next)?;
         // A change of state: enabled and now disabled, or disabled and now enabled.
@@ -623,7 +776,11 @@ impl Laws {
     /// source is what is compiled in its place, so its own laws are not declared twice.
     pub fn dry_run(&self, source: &str, replaces: Option<&str>) -> Result<DryRun, Failure> {
         let mut next = lock(&self.rules).clone();
-        let id = match next.rules.iter_mut().find(|rule| Some(rule.id.as_str()) == replaces) {
+        let id = match next
+            .rules
+            .iter_mut()
+            .find(|rule| Some(rule.id.as_str()) == replaces)
+        {
             Some(rule) => {
                 rule.source = source.to_string();
                 rule.enabled = true;
@@ -644,13 +801,28 @@ impl Laws {
             }
         };
         let compiled = compile(&self.base, &next)?;
-        let mut laws: Vec<String> = compiled.catalog.iter().filter(|info| info.rule_id == id).map(|info| info.id.clone()).collect();
+        let mut laws: Vec<String> = compiled
+            .catalog
+            .iter()
+            .filter(|info| info.rule_id == id)
+            .map(|info| info.id.clone())
+            .collect();
         laws.sort();
         let calls: Vec<Seen> = lock(&self.seen).iter().cloned().collect();
         let mut would_refuse = Vec::new();
         for call in calls.iter().rev() {
-            let verdict = self.check_with(&compiled, &call.cid.to_string(), &call.role, &call.tool, &call.input);
-            let by: Vec<&String> = verdict.forbid.iter().filter(|id| laws.contains(*id)).collect();
+            let verdict = self.check_with(
+                &compiled,
+                &call.cid.to_string(),
+                &call.role,
+                &call.tool,
+                &call.input,
+            );
+            let by: Vec<&String> = verdict
+                .forbid
+                .iter()
+                .filter(|id| laws.contains(*id))
+                .collect();
             if !by.is_empty() {
                 would_refuse.push(json!({ "cid": call.cid, "role": call.role, "tool": call.tool, "at_ms": call.at_ms, "laws": by }));
                 if would_refuse.len() == SAMPLES {
@@ -676,10 +848,19 @@ impl Laws {
     }
 
     /// Applies a change to one rule: the change is compiled first, and nothing is applied unless it compiles.
-    fn edit_rule(&self, id: &str, now_ms: u64, change: impl FnOnce(&mut OwnerRule)) -> Result<OwnerRule, Failure> {
+    fn edit_rule(
+        &self,
+        id: &str,
+        now_ms: u64,
+        change: impl FnOnce(&mut OwnerRule),
+    ) -> Result<OwnerRule, Failure> {
         let mut slot = lock(&self.rules);
         let mut next = slot.clone();
-        let rule = next.rules.iter_mut().find(|rule| rule.id == id).ok_or_else(|| Failure::NotFound(format!("rule {id}")))?;
+        let rule = next
+            .rules
+            .iter_mut()
+            .find(|rule| rule.id == id)
+            .ok_or_else(|| Failure::NotFound(format!("rule {id}")))?;
         change(rule);
         rule.updated_ms = now_ms;
         let edited = rule.clone();
@@ -707,7 +888,10 @@ impl Laws {
     }
 
     fn live(&self) -> Arc<Compiled> {
-        self.live.read().unwrap_or_else(PoisonError::into_inner).clone()
+        self.live
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     fn violations_path(&self) -> PathBuf {
@@ -723,13 +907,23 @@ impl Laws {
         if seen.len() == CALLS_KEPT {
             seen.pop_front();
         }
-        seen.push_back(Seen { cid, role: role.to_string(), tool: tool.to_string(), input: input.clone(), at_ms: apz_plaza::now_ms() });
+        seen.push_back(Seen {
+            cid,
+            role: role.to_string(),
+            tool: tool.to_string(),
+            input: input.clone(),
+            at_ms: apz_plaza::now_ms(),
+        });
     }
 
     fn record(&self, cid: u64, laws: &[String], tool: &str, at_ms: u64) {
         let recorded: Vec<Violation> = laws
             .iter()
-            .map(|law| Violation { law: law.clone(), at_ms, detail: format!("tool {tool} refused") })
+            .map(|law| Violation {
+                law: law.clone(),
+                at_ms,
+                detail: format!("tool {tool} refused"),
+            })
             .collect();
         {
             let mut all = lock(&self.violations);
@@ -763,7 +957,12 @@ fn rule_file(id: &str) -> String {
 
 /// The next free id of an owner rule (`R-001`, `R-002`, …).
 fn next_number(set: &RuleSet) -> u32 {
-    set.rules.iter().filter_map(|rule| rule.id.strip_prefix("R-")?.parse::<u32>().ok()).max().unwrap_or(0) + 1
+    set.rules
+        .iter()
+        .filter_map(|rule| rule.id.strip_prefix("R-")?.parse::<u32>().ok())
+        .max()
+        .unwrap_or(0)
+        + 1
 }
 
 /// A rule's title when none was given: the first law's title in its source.
@@ -774,17 +973,34 @@ fn title_of(title: &str, source: &str) -> String {
     }
     let mut titles = BTreeMap::new();
     titles_of(source, &mut titles);
-    titles.into_values().next().unwrap_or_else(|| "Untitled rule".to_string())
+    titles
+        .into_values()
+        .next()
+        .unwrap_or_else(|| "Untitled rule".to_string())
 }
 
 /// Compiles the built-in sources with the owner's rules as one program. Every error is returned with
 /// its place; a rule set with any error is refused whole.
 fn compile(base: &[(String, String)], state: &RuleSet) -> Result<Compiled, Failure> {
     let mut files = base.to_vec();
-    files.extend(state.rules.iter().map(|rule| (rule_file(&rule.id), rule.source.clone())));
+    files.extend(
+        state
+            .rules
+            .iter()
+            .map(|rule| (rule_file(&rule.id), rule.source.clone())),
+    );
     let (program, diags) = Program::load(files.clone());
-    let mut errors: Vec<Diagnostic> = diags.iter().filter(|d| !d.warning).map(|d| diagnostic(&program.sources, d)).collect();
-    errors.extend(check_authz(&program).iter().filter(|d| !d.warning).map(|d| diagnostic(&program.sources, d)));
+    let mut errors: Vec<Diagnostic> = diags
+        .iter()
+        .filter(|d| !d.warning)
+        .map(|d| diagnostic(&program.sources, d))
+        .collect();
+    errors.extend(
+        check_authz(&program)
+            .iter()
+            .filter(|d| !d.warning)
+            .map(|d| diagnostic(&program.sources, d)),
+    );
     for rule in &state.rules {
         let file = rule_file(&rule.id);
         let declares = program
@@ -793,7 +1009,12 @@ fn compile(base: &[(String, String)], state: &RuleSet) -> Result<Compiled, Failu
             .filter(|module| program.sources.files[module.file as usize].path == file)
             .any(|module| module.items.iter().any(|item| matches!(item, Item::Law(_))));
         if !declares && !errors.iter().any(|error| error.file == file) {
-            errors.push(Diagnostic { file, line: 1, column: 1, message: "the source declares no law".to_string() });
+            errors.push(Diagnostic {
+                file,
+                line: 1,
+                column: 1,
+                message: "the source declares no law".to_string(),
+            });
         }
     }
     if !errors.is_empty() {
@@ -823,8 +1044,18 @@ fn compile(base: &[(String, String)], state: &RuleSet) -> Result<Compiled, Failu
             catalog.push(info);
         }
     }
-    let permit_ops = catalog.iter().filter(|info| info.enabled && info.effect == "permit").flat_map(|info| info.ops.iter().cloned()).collect();
-    Ok(Compiled { program, titles, off, catalog, permit_ops })
+    let permit_ops = catalog
+        .iter()
+        .filter(|info| info.enabled && info.effect == "permit")
+        .flat_map(|info| info.ops.iter().cloned())
+        .collect();
+    Ok(Compiled {
+        program,
+        titles,
+        off,
+        catalog,
+        permit_ops,
+    })
 }
 
 /// A diagnostic with the place it is in, when it has one.
@@ -833,25 +1064,37 @@ fn diagnostic(sources: &SourceMap, diag: &Diag) -> Diagnostic {
         Some(span) => {
             let source = &sources.files[span.file as usize];
             let (line, column) = source.line_col(span.lo as usize);
-            Diagnostic { file: source.path.clone(), line, column, message: diag.msg.clone() }
+            Diagnostic {
+                file: source.path.clone(),
+                line,
+                column,
+                message: diag.msg.clone(),
+            }
         }
-        None => Diagnostic { file: String::new(), line: 0, column: 0, message: diag.msg.clone() },
+        None => Diagnostic {
+            file: String::new(),
+            line: 0,
+            column: 0,
+            message: diag.msg.clone(),
+        },
     }
 }
 
 /// Reads a JSON file; `None` when it is missing or does not parse.
 fn read_json<T: DeserializeOwned>(path: &Path) -> Option<T> {
-    std::fs::read_to_string(path).ok().and_then(|text| serde_json::from_str(&text).ok())
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
 }
 
 /// Writes a value as JSON atomically: a temporary file, then a rename over the old one.
 fn write_json<T: Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
-    let text = serde_json::to_string_pretty(value).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    let text = serde_json::to_string_pretty(value)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
     let tmp = path.with_extension("json.tmp");
     std::fs::write(&tmp, text)?;
     std::fs::rename(&tmp, path)
 }
-
 
 /// The compiled-in laws for questions asked outside an `App` (tool offers), compiled once.
 /// Only [`Laws::permits`] is answered from it, which records nothing, so its violations path is never written.
@@ -864,8 +1107,13 @@ pub fn global() -> &'static Laws {
 /// CID in the model range (`foundry::registry`) and `llm` for every other agent.
 fn member_attrs_of(cid: &str, role: &str) -> BTreeMap<String, Value> {
     let mut attrs = member_attrs(role);
-    let model = cid.parse::<u64>().is_ok_and(crate::foundry::registry::is_model_cid);
-    attrs.insert("kind".to_string(), Value::str(if model { "model" } else { "llm" }));
+    let model = cid
+        .parse::<u64>()
+        .is_ok_and(crate::foundry::registry::is_model_cid);
+    attrs.insert(
+        "kind".to_string(),
+        Value::str(if model { "model" } else { "llm" }),
+    );
     attrs
 }
 
@@ -895,7 +1143,8 @@ fn member_attrs(role: &str) -> BTreeMap<String, Value> {
 
 /// Writes the violations atomically: a temporary file, then a rename over the old one.
 fn save(path: &Path, all: &BTreeMap<String, Vec<Violation>>) -> std::io::Result<()> {
-    let text = serde_json::to_string_pretty(all).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    let text = serde_json::to_string_pretty(all)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
     let tmp = path.with_extension("json.tmp");
     std::fs::write(&tmp, text)?;
     std::fs::rename(&tmp, path)
@@ -922,7 +1171,10 @@ pub fn detect_flags(tool: &str, input: &Json) -> BTreeSet<&'static str> {
     if has_secret(&text) || reads_credential_store(&lower) {
         flags.insert("credential_seeking");
     }
-    if lower.contains("impersonat") || lower.contains("pretend to be the owner") || lower.contains("pretend to be the operator") {
+    if lower.contains("impersonat")
+        || lower.contains("pretend to be the owner")
+        || lower.contains("pretend to be the operator")
+    {
         flags.insert("impersonation");
     }
     if matches!(tool, "bash" | "bash_start") && longest_base64_run(&text) > 400 {
@@ -939,8 +1191,15 @@ fn has_secret(text: &str) -> bool {
     }
     // (prefix, minimum length of the token-character run after it)
     const SHAPES: [(&str, usize); 9] = [
-        ("sk-ant-", 20), ("sk-proj-", 20), ("sk-", 32), ("ghp_", 30), ("github_pat_", 30),
-        ("xoxb-", 20), ("xoxp-", 20), ("AIza", 35), ("AKIA", 16),
+        ("sk-ant-", 20),
+        ("sk-proj-", 20),
+        ("sk-", 32),
+        ("ghp_", 30),
+        ("github_pat_", 30),
+        ("xoxb-", 20),
+        ("xoxp-", 20),
+        ("AIza", 35),
+        ("AKIA", 16),
     ];
     let token_char = |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_';
     for (prefix, min) in SHAPES {
@@ -948,8 +1207,14 @@ fn has_secret(text: &str) -> bool {
         while let Some(at) = text[from..].find(prefix) {
             let start = from + at;
             // The prefix must start a token, not sit inside a longer word.
-            let boundary = text[..start].chars().next_back().is_none_or(|c| !token_char(c));
-            let run = text[start + prefix.len()..].chars().take_while(|c| token_char(*c)).count();
+            let boundary = text[..start]
+                .chars()
+                .next_back()
+                .is_none_or(|c| !token_char(c));
+            let run = text[start + prefix.len()..]
+                .chars()
+                .take_while(|c| token_char(*c))
+                .count();
             if boundary && run >= min {
                 return true;
             }
@@ -961,9 +1226,18 @@ fn has_secret(text: &str) -> bool {
 
 /// Whether a command reaches for a credential store.
 fn reads_credential_store(lower: &str) -> bool {
-    ["/.ssh/", "id_rsa", "id_ed25519", "/etc/shadow", ".aws/credentials", ".netrc", ".git-credentials", ".docker/config.json"]
-        .iter()
-        .any(|p| lower.contains(p))
+    [
+        "/.ssh/",
+        "id_rsa",
+        "id_ed25519",
+        "/etc/shadow",
+        ".aws/credentials",
+        ".netrc",
+        ".git-credentials",
+        ".docker/config.json",
+    ]
+    .iter()
+    .any(|p| lower.contains(p))
 }
 
 /// The longest run of base64 alphabet characters in `text`.
@@ -982,7 +1256,17 @@ fn longest_base64_run(text: &str) -> usize {
 
 /// Guest tools that act in the agent's own VM: `tool.exec` on its sandbox as well.
 const GUEST_EXEC: &[&str] = &[
-    "bash", "bash_start", "write_file", "edit_file", "multi_edit", "download", "fetch_url", "install_packages", "code_engine", "tool_package", "deliver_file",
+    "bash",
+    "bash_start",
+    "write_file",
+    "edit_file",
+    "multi_edit",
+    "download",
+    "fetch_url",
+    "install_packages",
+    "code_engine",
+    "tool_package",
+    "deliver_file",
     "checkpoint_restore",
 ];
 
@@ -993,26 +1277,64 @@ const TOWN: &str = "plaza";
 /// context its laws read. A forbid whose condition reads a missing attribute applies (fail closed),
 /// so every attribute a forbid reads is supplied here. A tool performing several operations
 /// requests all of them.
-fn plaza_operations(tool: &str, input: &Json, agent_cid: &str, role: &str, store: &mut EntityStore) -> Vec<(&'static str, Entity, Context)> {
-    let text = |key: &str| input.get(key).and_then(Json::as_str).unwrap_or_default().to_string();
+fn plaza_operations(
+    tool: &str,
+    input: &Json,
+    agent_cid: &str,
+    role: &str,
+    store: &mut EntityStore,
+) -> Vec<(&'static str, Entity, Context)> {
+    let text = |key: &str| {
+        input
+            .get(key)
+            .and_then(Json::as_str)
+            .unwrap_or_default()
+            .to_string()
+    };
     match tool {
         // The town is named by its `name` attribute (a bare resource is its `$type`/`$id` record).
         "plaza_post_task" => {
-            let town = Entity { ty: "Town".into(), id: TOWN.into() };
-            store.insert(&town, BTreeMap::from([("name".to_string(), Value::str(TOWN))]));
+            let town = Entity {
+                ty: "Town".into(),
+                id: TOWN.into(),
+            };
+            store.insert(
+                &town,
+                BTreeMap::from([("name".to_string(), Value::str(TOWN))]),
+            );
             vec![("task.create", town, Context::new())]
         }
         "plaza_assign" => {
-            let cid = input.get("agent").and_then(Json::as_u64).map(|n| n.to_string()).unwrap_or_default();
-            let assignee = Entity { ty: "Agent".into(), id: cid };
+            let cid = input
+                .get("agent")
+                .and_then(Json::as_u64)
+                .map(|n| n.to_string())
+                .unwrap_or_default();
+            let assignee = Entity {
+                ty: "Agent".into(),
+                id: cid,
+            };
             store.insert(&assignee, member_attrs_of(&assignee.id, ""));
-            let context = Context::from([("assignee".to_string(), jhrl::authz::entity_value(&assignee))]);
+            let context =
+                Context::from([("assignee".to_string(), jhrl::authz::entity_value(&assignee))]);
             vec![("task.assign", task_resource(store, text("task")), context)]
         }
-        "plaza_verdict" => vec![("review.submit", task_resource(store, text("task")), Context::new())],
-        "submit_claim" => vec![("claim.submit", task_resource(store, text("task")), Context::new())],
+        "plaza_verdict" => vec![(
+            "review.submit",
+            task_resource(store, text("task")),
+            Context::new(),
+        )],
+        "submit_claim" => vec![(
+            "claim.submit",
+            task_resource(store, text("task")),
+            Context::new(),
+        )],
         // The plan of a project is approved as the task it stands for; its budget is not in the call.
-        "plaza_project_approve" => vec![("plan.approve", task_resource(store, text("id")), Context::new())],
+        "plaza_project_approve" => vec![(
+            "plan.approve",
+            task_resource(store, text("id")),
+            Context::new(),
+        )],
         // Memory is each agent's private library: a write is a change to its own store, with no
         // verification evidence in the call (so a librarian's verified-evidence permit does not apply).
         "memory_write" => {
@@ -1032,46 +1354,89 @@ fn plaza_operations(tool: &str, input: &Json, agent_cid: &str, role: &str, store
         // refuses those too). No lookalike check exists yet, so name_confusable is false.
         "plaza_set_name" => {
             let name = text("name").trim().to_lowercase().replace(' ', "-");
-            let registry = Entity { ty: "Registry".into(), id: "names".into() };
+            let registry = Entity {
+                ty: "Registry".into(),
+                id: "names".into(),
+            };
             store.insert(&registry, BTreeMap::new());
             let context = Context::from([
-                ("name_reserved".to_string(), Value::Bool(crate::role::Role::parse(&name).is_some())),
+                (
+                    "name_reserved".to_string(),
+                    Value::Bool(crate::role::Role::parse(&name).is_some()),
+                ),
                 ("name_confusable".to_string(), Value::Bool(false)),
             ]);
             vec![("registry.set_name", registry, context)]
         }
         // No artifact is marked hidden from a role yet: the hidden set is empty, so S-010d does not apply.
         "plaza_get_file" => {
-            let artifact = Entity { ty: "Artifact".into(), id: text("id") };
-            store.insert(&artifact, BTreeMap::from([("hidden_from".to_string(), Value::set(std::iter::empty::<Value>()))]));
+            let artifact = Entity {
+                ty: "Artifact".into(),
+                id: text("id"),
+            };
+            store.insert(
+                &artifact,
+                BTreeMap::from([(
+                    "hidden_from".to_string(),
+                    Value::set(std::iter::empty::<Value>()),
+                )]),
+            );
             vec![("artifact.read", artifact, Context::new())]
         }
         // A training job is checked for its GPU-hours: a breeder's over 8 is forbidden (S-006d).
         "foundry_submit_job" => vec![(
             "training.submit",
-            Entity { ty: "Town".into(), id: TOWN.into() },
-            Context::from([("gpu_hours".to_string(), Value::int(crate::foundry::breeder::budget_hours(input)))]),
+            Entity {
+                ty: "Town".into(),
+                id: TOWN.into(),
+            },
+            Context::from([(
+                "gpu_hours".to_string(),
+                Value::int(crate::foundry::breeder::budget_hours(input)),
+            )]),
         )],
         // A model runs only where its card allows the caller's role (S-006e).
         "invoke_model" => {
             let id = text("model");
-            let model = Entity { ty: "Model".into(), id: id.clone() };
+            let model = Entity {
+                ty: "Model".into(),
+                id: id.clone(),
+            };
             store.insert(&model, BTreeMap::new());
-            let allowed = crate::foundry::registry::allowed_roles(&id).iter().any(|allowed| allowed == role);
-            vec![("model.invoke", model, Context::from([("role_allowed".to_string(), Value::Bool(allowed))]))]
+            let allowed = crate::foundry::registry::allowed_roles(&id)
+                .iter()
+                .any(|allowed| allowed == role);
+            vec![(
+                "model.invoke",
+                model,
+                Context::from([("role_allowed".to_string(), Value::Bool(allowed))]),
+            )]
         }
         // A payment is a send of credits from the town. The owner's threshold is not known here: plaza_pay
         // holds a large payment for approval, so the law never forbids it (S-007a).
         "plaza_pay" => {
-            let town = Entity { ty: "Town".into(), id: TOWN.into() };
-            store.insert(&town, BTreeMap::from([("name".to_string(), Value::str(TOWN))]));
+            let town = Entity {
+                ty: "Town".into(),
+                id: TOWN.into(),
+            };
+            store.insert(
+                &town,
+                BTreeMap::from([("name".to_string(), Value::str(TOWN))]),
+            );
             let amount = input.get("amount").and_then(Json::as_i64).unwrap_or(0);
-            vec![("payment.send", town, Context::from([("amount".to_string(), Value::int(amount.into()))]))]
+            vec![(
+                "payment.send",
+                town,
+                Context::from([("amount".to_string(), Value::int(amount.into()))]),
+            )]
         }
         // An MCP call is `mcp.call` on its server, with the tool and the risk class the owner's rules may limit.
         t if t.starts_with(crate::mcp::PREFIX) => match crate::mcp::law_operation(t) {
             Some((server, tool, risk)) => {
-                let resource = Entity { ty: "McpServer".into(), id: server.clone() };
+                let resource = Entity {
+                    ty: "McpServer".into(),
+                    id: server.clone(),
+                };
                 store.insert(&resource, BTreeMap::new());
                 let context = Context::from([
                     ("server".to_string(), Value::str(&server)),
@@ -1088,14 +1453,20 @@ fn plaza_operations(tool: &str, input: &Json, agent_cid: &str, role: &str, store
 
 /// The task a call names, as an entity of this town.
 fn task_resource(store: &mut EntityStore, id: String) -> Entity {
-    let task = Entity { ty: "Task".into(), id };
+    let task = Entity {
+        ty: "Task".into(),
+        id,
+    };
     store.insert(&task, BTreeMap::from([("town".to_string(), town_record())]));
     task
 }
 
 /// The memory store an agent writes its private notes to.
 fn memory_resource(agent_cid: &str, store: &mut EntityStore) -> Entity {
-    let memory = Entity { ty: "MemoryStore".into(), id: agent_cid.into() };
+    let memory = Entity {
+        ty: "MemoryStore".into(),
+        id: agent_cid.into(),
+    };
     store.insert(&memory, BTreeMap::new());
     memory
 }
@@ -1122,28 +1493,38 @@ fn tool_kind(tool: &str) -> &'static str {
 /// tool calls yet. Payments stay `write`: they are capped transfers and verdicts are reviewable.
 pub(crate) fn risk_class(tool: &str) -> &'static str {
     match tool {
-        "read" | "read_file" | "list" | "list_files" | "search" | "plaza_tasks" | "plaza_agents" | "memory_read"
-        | "memory_search" | "memory_list" | "transcript_search" | "plaza_contacts" | "glob" | "grep" | "bash_output"
-        | "todo_write" | "checkpoint_diff" | "checkpoint_list" | "foundry_hf_search" | "station_list" | "station_app_list" => "read",
+        "read" | "read_file" | "list" | "list_files" | "search" | "plaza_tasks"
+        | "plaza_agents" | "memory_read" | "memory_search" | "memory_list"
+        | "transcript_search" | "plaza_contacts" | "glob" | "grep" | "bash_output"
+        | "todo_write" | "checkpoint_diff" | "checkpoint_list" | "foundry_hf_search"
+        | "station_list" | "station_app_list" => "read",
         t if t.starts_with("plaza_") && t.ends_with("_read") => "read",
-        t if crate::connectors::risk_of(t).is_some() => crate::connectors::risk_of(t).unwrap_or("write"),
+        t if crate::connectors::risk_of(t).is_some() => {
+            crate::connectors::risk_of(t).unwrap_or("write")
+        }
         t if crate::mcp::risk_of(t).is_some() => crate::mcp::risk_of(t).unwrap_or("write"),
         _ => "write",
     }
 }
 
-
 impl Laws {
     /// The whole state as JSON, for Postgres (`crate::db`); "" when there is nothing to save.
     pub fn snapshot(&self) -> String {
-        let all = self.violations.lock().unwrap_or_else(PoisonError::into_inner);
+        let all = self
+            .violations
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         serde_json::to_string_pretty(&*all).unwrap_or_default()
     }
 
     /// Replaces the state with a [`Laws::snapshot`]; a refusal changes nothing.
     pub fn restore(&self, json: &str) -> Result<(), String> {
-        let violations: BTreeMap<String, Vec<Violation>> = serde_json::from_str(json).map_err(|e| e.to_string())?;
-        let mut all = self.violations.lock().unwrap_or_else(PoisonError::into_inner);
+        let violations: BTreeMap<String, Vec<Violation>> =
+            serde_json::from_str(json).map_err(|e| e.to_string())?;
+        let mut all = self
+            .violations
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         save(&self.violations_path(), &violations).map_err(|e| e.to_string())?;
         *all = violations;
         Ok(())
@@ -1152,10 +1533,25 @@ impl Laws {
 
 /// One law as the Rules view shows it: its fields, its source text and a generated sentence.
 fn law_info(law: &Law, file: &str, sources: &SourceMap) -> LawInfo {
-    let principal = law.principal.as_ref().map(|s| scope_text("principal", s, sources)).unwrap_or_default();
-    let resource = law.resource.as_ref().map(|s| scope_text("resource", s, sources)).unwrap_or_default();
-    let conditions: Vec<String> = law.when.iter().map(|e| sources.snippet(e.span).trim().to_string()).collect();
-    let tier = law.tier.clone().unwrap_or_else(|| file_tier(file).to_string());
+    let principal = law
+        .principal
+        .as_ref()
+        .map(|s| scope_text("principal", s, sources))
+        .unwrap_or_default();
+    let resource = law
+        .resource
+        .as_ref()
+        .map(|s| scope_text("resource", s, sources))
+        .unwrap_or_default();
+    let conditions: Vec<String> = law
+        .when
+        .iter()
+        .map(|e| sources.snippet(e.span).trim().to_string())
+        .collect();
+    let tier = law
+        .tier
+        .clone()
+        .unwrap_or_else(|| file_tier(file).to_string());
     let explanation = explain(law, &principal, &conditions);
     LawInfo {
         id: law.id.clone(),
@@ -1186,7 +1582,11 @@ fn law_info(law: &Law, file: &str, sources: &SourceMap) -> LawInfo {
 
 /// The ids of the constitutional laws that are switched off, in catalog order.
 pub fn constitutional_off(catalog: &[LawInfo]) -> Vec<String> {
-    catalog.iter().filter(|info| info.tier == CONSTITUTION && !info.enabled).map(|info| info.id.clone()).collect()
+    catalog
+        .iter()
+        .filter(|info| info.tier == CONSTITUTION && !info.enabled)
+        .map(|info| info.id.clone())
+        .collect()
 }
 
 /// The tier a law gets from its file when it names none.
@@ -1221,9 +1621,15 @@ fn explain(law: &Law, principal: &str, conditions: &[String]) -> String {
     let verb = if law.ops.is_empty() {
         "act".to_string()
     } else {
-        law.ops.iter().map(|op| verb_of(op)).collect::<Vec<_>>().join(" or ")
+        law.ops
+            .iter()
+            .map(|op| verb_of(op))
+            .collect::<Vec<_>>()
+            .join(" or ")
     };
-    let own = conditions.iter().any(|c| c.contains("resource.agent == principal"));
+    let own = conditions
+        .iter()
+        .any(|c| c.contains("resource.agent == principal"));
     let object = match &law.resource {
         Some(Scope::Is(t)) => {
             let name = type_name(t).to_lowercase();
@@ -1236,7 +1642,11 @@ fn explain(law: &Law, principal: &str, conditions: &[String]) -> String {
         _ => String::new(),
     };
     let who = who_of(law, principal, conditions);
-    let tail = if conditions.is_empty() { "" } else { " under the conditions below" };
+    let tail = if conditions.is_empty() {
+        ""
+    } else {
+        " under the conditions below"
+    };
     match law.effect {
         Effect::Permit => format!("{} may {verb}{object}{tail}.", capitalized(&who)),
         Effect::Forbid if who == "any agent" => format!("No agent may {verb}{object}{tail}."),
@@ -1246,7 +1656,9 @@ fn explain(law: &Law, principal: &str, conditions: &[String]) -> String {
 
 /// Who the law applies to, as a noun phrase: a role when one is named, else the principal's type.
 fn who_of(law: &Law, principal: &str, conditions: &[String]) -> String {
-    let role = std::iter::once(principal).chain(conditions.iter().map(String::as_str)).find_map(role_named);
+    let role = std::iter::once(principal)
+        .chain(conditions.iter().map(String::as_str))
+        .find_map(role_named);
     if let Some(role) = role {
         return with_article(&role.to_lowercase());
     }
@@ -1263,7 +1675,9 @@ fn who_of(law: &Law, principal: &str, conditions: &[String]) -> String {
 
 /// The role a scope or condition names: `principal.role == "builder"` or `Role::"builder"`.
 fn role_named(text: &str) -> Option<String> {
-    let start = ["principal.role == \"", "Role::\""].iter().find_map(|marker| text.find(marker).map(|i| i + marker.len()))?;
+    let start = ["principal.role == \"", "Role::\""]
+        .iter()
+        .find_map(|marker| text.find(marker).map(|i| i + marker.len()))?;
     let rest = &text[start..];
     Some(rest[..rest.find('"')?].to_string())
 }
@@ -1312,14 +1726,20 @@ fn verb_of(op: &str) -> String {
         "any" => "act on".to_string(),
         other => match other.split_once('.') {
             // `thing.verb` reads as "verb the thing".
-            Some((thing, verb)) => format!("{} the {}", verb.replace('_', " "), thing.replace('_', " ")),
+            Some((thing, verb)) => {
+                format!("{} the {}", verb.replace('_', " "), thing.replace('_', " "))
+            }
             None => other.replace('_', " "),
         },
     }
 }
 
 fn with_article(noun: &str) -> String {
-    let article = if noun.starts_with(['a', 'e', 'i', 'o', 'u']) { "an" } else { "a" };
+    let article = if noun.starts_with(['a', 'e', 'i', 'o', 'u']) {
+        "an"
+    } else {
+        "a"
+    };
     format!("{article} {noun}")
 }
 
@@ -1347,19 +1767,39 @@ mod tests {
         let laws = Laws::load(&scratch("catalog"));
         let catalog = laws.catalog();
         assert!(!catalog.is_empty());
-        assert!(catalog.iter().all(|l| !l.id.is_empty() && !l.title.is_empty() && !l.effect.is_empty()));
+        assert!(
+            catalog
+                .iter()
+                .all(|l| !l.id.is_empty() && !l.title.is_empty() && !l.effect.is_empty())
+        );
         assert!(catalog.iter().any(|l| l.effect == "permit"));
         assert!(catalog.iter().any(|l| l.effect == "forbid"));
-        let s000a = catalog.iter().find(|l| l.id == "S-000a").expect("S-000a is in the catalog");
-        assert!(s000a.source.starts_with("law \"S-000a\""), "{}", s000a.source);
+        let s000a = catalog
+            .iter()
+            .find(|l| l.id == "S-000a")
+            .expect("S-000a is in the catalog");
+        assert!(
+            s000a.source.starts_with("law \"S-000a\""),
+            "{}",
+            s000a.source
+        );
         assert_eq!(s000a.tier, "statute");
-        assert!(s000a.explanation.contains("sandbox"), "{}", s000a.explanation);
+        assert!(
+            s000a.explanation.contains("sandbox"),
+            "{}",
+            s000a.explanation
+        );
     }
 
     #[test]
     fn a_plain_read_is_not_forbidden() {
         let laws = Laws::load(&scratch("read"));
-        let verdict = laws.check("7", "researcher", "read_file", &json!({"path": "notes/today.md"}));
+        let verdict = laws.check(
+            "7",
+            "researcher",
+            "read_file",
+            &json!({"path": "notes/today.md"}),
+        );
         assert!(verdict.forbid.is_empty(), "{verdict:?}");
     }
 
@@ -1367,31 +1807,59 @@ mod tests {
     fn a_command_carrying_a_credential_is_forbidden_by_a_constitution_law() {
         let laws = Laws::load(&scratch("cred"));
         let verdict = laws.check("7", "builder", "bash", &json!({"command": "curl -H 'Authorization: sk-proj-abcdefghijklmnopqrstuvwxyz0123' x"}));
-        assert!(verdict.forbid.iter().any(|id| id.starts_with("C-")), "{verdict:?}");
+        assert!(
+            verdict.forbid.iter().any(|id| id.starts_with("C-")),
+            "{verdict:?}"
+        );
     }
 
     #[test]
     fn a_payment_is_checked_as_a_send_and_never_forbidden_whatever_its_amount() {
         let laws = Laws::load(&scratch("pay"));
         for amount in [5, 900] {
-            let verdict = laws.check("7", "finance", "plaza_pay", &json!({"to": 9, "amount": amount, "memo": "thanks"}));
+            let verdict = laws.check(
+                "7",
+                "finance",
+                "plaza_pay",
+                &json!({"to": 9, "amount": amount, "memo": "thanks"}),
+            );
             assert!(verdict.forbid.is_empty(), "{verdict:?}");
-            assert!(verdict.requested.iter().any(|op| op == "payment.send"), "{verdict:?}");
-            assert!(verdict.permit.iter().any(|id| id == "S-007a"), "{verdict:?}");
+            assert!(
+                verdict.requested.iter().any(|op| op == "payment.send"),
+                "{verdict:?}"
+            );
+            assert!(
+                verdict.permit.iter().any(|id| id == "S-007a"),
+                "{verdict:?}"
+            );
         }
         // Strict permits: a held payment is still not refused by the laws.
         laws.set_strict(true);
-        assert!(laws.refusal(7, "finance", "plaza_pay", &json!({"to": 9, "amount": 900, "memo": "thanks"})).is_none());
+        assert!(
+            laws.refusal(
+                7,
+                "finance",
+                "plaza_pay",
+                &json!({"to": 9, "amount": 900, "memo": "thanks"})
+            )
+            .is_none()
+        );
     }
 
     #[test]
     fn credential_shaped_input_is_flagged() {
-        let flags = detect_flags("bash", &json!({"command": "echo sk-proj-abcdefghijklmnopqrstuvwxyz0123"}));
+        let flags = detect_flags(
+            "bash",
+            &json!({"command": "echo sk-proj-abcdefghijklmnopqrstuvwxyz0123"}),
+        );
         assert!(flags.contains("credential_seeking"), "{flags:?}");
         // Code that only talks about tokens and passwords is not seeking credentials.
         let code = json!({"path": "auth.py", "content": "token = request.headers['Authorization']\npassword_hash = bcrypt(password)"});
         assert!(detect_flags("write_file", &code).is_empty());
-        assert!(detect_flags("bash", &json!({"command": "cat ~/.ssh/id_rsa"})).contains("credential_seeking"));
+        assert!(
+            detect_flags("bash", &json!({"command": "cat ~/.ssh/id_rsa"}))
+                .contains("credential_seeking")
+        );
     }
 
     #[test]
@@ -1399,12 +1867,22 @@ mod tests {
         let dir = scratch("persist");
         let _ = std::fs::remove_file(dir.join("violations.json"));
         let laws = Laws::load(&dir);
-        let refusal = laws.refusal(7, "builder", "bash", &json!({"command": "echo sk-proj-abcdefghijklmnopqrstuvwxyz0123"}));
+        let refusal = laws.refusal(
+            7,
+            "builder",
+            "bash",
+            &json!({"command": "echo sk-proj-abcdefghijklmnopqrstuvwxyz0123"}),
+        );
         assert!(refusal.unwrap_or_default().starts_with("refused by law C-"));
         let again = Laws::load(&dir);
         let found = again.recent(7, apz_plaza::now_ms());
         assert!(!found.is_empty());
-        assert!(found[0]["law"].as_str().unwrap_or_default().starts_with("C-"));
+        assert!(
+            found[0]["law"]
+                .as_str()
+                .unwrap_or_default()
+                .starts_with("C-")
+        );
     }
 
     #[test]
@@ -1415,8 +1893,14 @@ mod tests {
         for role in roles {
             for tool in crate::tools::offered_names(role) {
                 let verdict = laws.check("7", role, &tool, &json!({}));
-                assert!(!verdict.unpermitted, "{role} is offered {tool}, but no law permits it");
-                assert!(verdict.forbid.is_empty(), "{role} calling {tool}: {verdict:?}");
+                assert!(
+                    !verdict.unpermitted,
+                    "{role} is offered {tool}, but no law permits it"
+                );
+                assert!(
+                    verdict.forbid.is_empty(),
+                    "{role} calling {tool}: {verdict:?}"
+                );
             }
         }
     }
@@ -1434,7 +1918,10 @@ mod tests {
         let _ = std::fs::remove_file(dir.join("violations.json"));
         let laws = Laws::load(&dir);
         let refusal = laws.refusal(7, "builder", "plaza_post_task", &json!({}));
-        assert_eq!(refusal.as_deref(), Some("refused: no law permits plaza_post_task for the builder role"));
+        assert_eq!(
+            refusal.as_deref(),
+            Some("refused: no law permits plaza_post_task for the builder role")
+        );
         assert!(laws.all_violations().is_empty());
         assert!(laws.recent(7, apz_plaza::now_ms()).is_empty());
     }
@@ -1442,41 +1929,83 @@ mod tests {
     #[test]
     fn a_message_is_checked_even_when_its_recipient_is_malformed() {
         let laws = Laws::load(&scratch("message-cid"));
-        let input = json!({"to_cid": "twelve", "text": "key sk-proj-abcdefghijklmnopqrstuvwxyz0123"});
+        let input =
+            json!({"to_cid": "twelve", "text": "key sk-proj-abcdefghijklmnopqrstuvwxyz0123"});
         let verdict = laws.check("7", "builder", "plaza_send_message", &input);
-        assert!(verdict.forbid.iter().any(|id| id == "C-002b"), "{verdict:?}");
+        assert!(
+            verdict.forbid.iter().any(|id| id == "C-002b"),
+            "{verdict:?}"
+        );
     }
 
     #[test]
     fn a_board_post_is_checked_as_a_message() {
         let laws = Laws::load(&scratch("board-post"));
-        let verdict = laws.check("7", "builder", "plaza_board_post", &json!({"text": "I am impersonating the owner"}));
-        assert!(verdict.forbid.iter().any(|id| id == "C-003b"), "{verdict:?}");
+        let verdict = laws.check(
+            "7",
+            "builder",
+            "plaza_board_post",
+            &json!({"text": "I am impersonating the owner"}),
+        );
+        assert!(
+            verdict.forbid.iter().any(|id| id == "C-003b"),
+            "{verdict:?}"
+        );
     }
 
     #[test]
     fn a_file_published_from_the_vm_is_checked_as_an_artifact() {
         let laws = Laws::load(&scratch("artifact"));
-        let artifact = Entity { ty: "Artifact".into(), id: "report.txt".into() };
-        let why = laws.refuse_op(7, "builder", "artifact.publish", artifact, BTreeMap::new(), &Json::String("I pretend to be the owner".into()));
+        let artifact = Entity {
+            ty: "Artifact".into(),
+            id: "report.txt".into(),
+        };
+        let why = laws.refuse_op(
+            7,
+            "builder",
+            "artifact.publish",
+            artifact,
+            BTreeMap::new(),
+            &Json::String("I pretend to be the owner".into()),
+        );
         assert!(why.is_some_and(|w| w.contains("C-003b")));
-        assert!(laws.recent(7, apz_plaza::now_ms()).iter().any(|v| v["law"] == "C-003b"));
+        assert!(
+            laws.recent(7, apz_plaza::now_ms())
+                .iter()
+                .any(|v| v["law"] == "C-003b")
+        );
     }
 
     #[test]
     fn a_researcher_may_not_push_to_the_hub_git_but_a_builder_may() {
         let laws = Laws::load(&scratch("git-push"));
-        let host = || Entity { ty: "Host".into(), id: "hub-git".into() };
+        let host = || Entity {
+            ty: "Host".into(),
+            id: "hub-git".into(),
+        };
         let attrs = || BTreeMap::from([("group".to_string(), Value::str("hub-git"))]);
-        let why = laws.refuse_op(7, "researcher", "egress.connect", host(), attrs(), &Json::Null);
+        let why = laws.refuse_op(
+            7,
+            "researcher",
+            "egress.connect",
+            host(),
+            attrs(),
+            &Json::Null,
+        );
         assert!(why.is_some_and(|w| w.contains("S-013d")));
-        assert!(laws.refuse_op(8, "builder", "egress.connect", host(), attrs(), &Json::Null).is_none());
+        assert!(
+            laws.refuse_op(8, "builder", "egress.connect", host(), attrs(), &Json::Null)
+                .is_none()
+        );
     }
 
     #[test]
     fn an_irreversible_connector_action_is_withheld_from_every_role() {
         let laws = Laws::load(&scratch("irreversible"));
-        assert_eq!(crate::connectors::risk_of("cloudflare_dns_create"), Some("irreversible"));
+        assert_eq!(
+            crate::connectors::risk_of("cloudflare_dns_create"),
+            Some("irreversible")
+        );
         // C-004a: refused without an owner approval, so no role is offered it (tools.rs specs_for).
         for role in ["builder", "orchestrator"] {
             assert!(!laws.permits(role, "cloudflare_dns_create"), "{role}");
@@ -1499,17 +2028,39 @@ mod tests {
     #[test]
     fn a_task_post_is_checked_as_task_create() {
         let laws = Laws::load(&scratch("task-create"));
-        let verdict = laws.check("7", crate::settings::ORCHESTRATOR_ROLE, "plaza_post_task", &json!({"title": "t", "body": "b"}));
-        assert!(verdict.requested.iter().any(|op| op == "task.create"), "{verdict:?}");
-        assert!(verdict.forbid.is_empty() && !verdict.unpermitted, "{verdict:?}");
+        let verdict = laws.check(
+            "7",
+            crate::settings::ORCHESTRATOR_ROLE,
+            "plaza_post_task",
+            &json!({"title": "t", "body": "b"}),
+        );
+        assert!(
+            verdict.requested.iter().any(|op| op == "task.create"),
+            "{verdict:?}"
+        );
+        assert!(
+            verdict.forbid.is_empty() && !verdict.unpermitted,
+            "{verdict:?}"
+        );
     }
 
     #[test]
     fn a_verdict_is_checked_as_review_submit_under_the_reviewers_permit() {
         let laws = Laws::load(&scratch("review-submit"));
-        let verdict = laws.check("7", "reviewer", "plaza_verdict", &json!({"task": "t-1", "pass": true, "notes": "ok"}));
-        assert!(verdict.requested.iter().any(|op| op == "review.submit"), "{verdict:?}");
-        assert!(verdict.permit.iter().any(|id| id == "S-002c"), "{verdict:?}");
+        let verdict = laws.check(
+            "7",
+            "reviewer",
+            "plaza_verdict",
+            &json!({"task": "t-1", "pass": true, "notes": "ok"}),
+        );
+        assert!(
+            verdict.requested.iter().any(|op| op == "review.submit"),
+            "{verdict:?}"
+        );
+        assert!(
+            verdict.permit.iter().any(|id| id == "S-002c"),
+            "{verdict:?}"
+        );
         assert!(verdict.forbid.is_empty(), "{verdict:?}");
     }
 
@@ -1517,54 +2068,113 @@ mod tests {
     fn a_project_approval_is_checked_as_plan_approve() {
         let laws = Laws::load(&scratch("plan-approve"));
         let verdict = laws.check("7", "mayor", "plaza_project_approve", &json!({"id": "p-1"}));
-        assert!(verdict.requested.iter().any(|op| op == "plan.approve"), "{verdict:?}");
-        assert!(verdict.forbid.is_empty() && !verdict.unpermitted, "{verdict:?}");
+        assert!(
+            verdict.requested.iter().any(|op| op == "plan.approve"),
+            "{verdict:?}"
+        );
+        assert!(
+            verdict.forbid.is_empty() && !verdict.unpermitted,
+            "{verdict:?}"
+        );
     }
 
     #[test]
     fn a_memory_write_is_checked_as_memory_change() {
         let laws = Laws::load(&scratch("memory-change"));
-        let verdict = laws.check("7", "librarian", "memory_write", &json!({"title": "t", "body": "b"}));
-        assert!(verdict.requested.iter().any(|op| op == "memory.change"), "{verdict:?}");
+        let verdict = laws.check(
+            "7",
+            "librarian",
+            "memory_write",
+            &json!({"title": "t", "body": "b"}),
+        );
+        assert!(
+            verdict.requested.iter().any(|op| op == "memory.change"),
+            "{verdict:?}"
+        );
         assert!(verdict.forbid.is_empty(), "{verdict:?}");
     }
 
     #[test]
     fn a_claim_is_checked_as_claim_submit_under_the_builders_permit() {
         let laws = Laws::load(&scratch("claim-submit"));
-        let verdict = laws.check("7", "builder", "submit_claim", &json!({"task": "t-1", "summary": "done"}));
-        assert!(verdict.requested.iter().any(|op| op == "claim.submit"), "{verdict:?}");
-        assert!(verdict.permit.iter().any(|id| id == "S-001e"), "{verdict:?}");
+        let verdict = laws.check(
+            "7",
+            "builder",
+            "submit_claim",
+            &json!({"task": "t-1", "summary": "done"}),
+        );
+        assert!(
+            verdict.requested.iter().any(|op| op == "claim.submit"),
+            "{verdict:?}"
+        );
+        assert!(
+            verdict.permit.iter().any(|id| id == "S-001e"),
+            "{verdict:?}"
+        );
         assert!(verdict.forbid.is_empty(), "{verdict:?}");
     }
 
     #[test]
     fn a_task_assignment_is_checked_as_task_assign_under_the_mayors_permit() {
         let laws = Laws::load(&scratch("task-assign"));
-        let verdict = laws.check("7", "mayor", "plaza_assign", &json!({"task": "t-1", "agent": 9}));
-        assert!(verdict.requested.iter().any(|op| op == "task.assign"), "{verdict:?}");
-        assert!(verdict.permit.iter().any(|id| id == "S-004a"), "{verdict:?}");
+        let verdict = laws.check(
+            "7",
+            "mayor",
+            "plaza_assign",
+            &json!({"task": "t-1", "agent": 9}),
+        );
+        assert!(
+            verdict.requested.iter().any(|op| op == "task.assign"),
+            "{verdict:?}"
+        );
+        assert!(
+            verdict.permit.iter().any(|id| id == "S-004a"),
+            "{verdict:?}"
+        );
     }
 
     #[test]
     fn a_name_of_a_role_is_refused_as_impersonation_and_a_personal_name_is_not() {
         let laws = Laws::load(&scratch("set-name"));
         let verdict = laws.check("7", "builder", "plaza_set_name", &json!({"name": "Mayor"}));
-        assert!(verdict.forbid.iter().any(|id| id == "C-003a"), "{verdict:?}");
+        assert!(
+            verdict.forbid.iter().any(|id| id == "C-003a"),
+            "{verdict:?}"
+        );
         let personal = laws.check("7", "builder", "plaza_set_name", &json!({"name": "Ada"}));
-        assert!(personal.requested.iter().any(|op| op == "registry.set_name"), "{personal:?}");
+        assert!(
+            personal
+                .requested
+                .iter()
+                .any(|op| op == "registry.set_name"),
+            "{personal:?}"
+        );
         assert!(personal.forbid.is_empty(), "{personal:?}");
     }
 
     #[test]
     fn a_hidden_artifact_is_refused_to_the_role_it_is_hidden_from() {
         let laws = Laws::load(&scratch("hidden-artifact"));
-        let hidden = Entity { ty: "Artifact".into(), id: "acceptance.txt".into() };
-        let attrs = BTreeMap::from([("hidden_from".to_string(), Value::set([Value::str("builder")]))]);
+        let hidden = Entity {
+            ty: "Artifact".into(),
+            id: "acceptance.txt".into(),
+        };
+        let attrs = BTreeMap::from([(
+            "hidden_from".to_string(),
+            Value::set([Value::str("builder")]),
+        )]);
         let why = laws.refuse_op(7, "builder", "artifact.read", hidden, attrs, &Json::Null);
         assert!(why.is_some_and(|w| w.contains("S-010d")));
-        let read = laws.check("7", "builder", "plaza_get_file", &json!({"id": "report.txt"}));
-        assert!(read.requested.iter().any(|op| op == "artifact.read"), "{read:?}");
+        let read = laws.check(
+            "7",
+            "builder",
+            "plaza_get_file",
+            &json!({"id": "report.txt"}),
+        );
+        assert!(
+            read.requested.iter().any(|op| op == "artifact.read"),
+            "{read:?}"
+        );
         assert!(read.forbid.is_empty(), "{read:?}");
     }
 }
@@ -1600,7 +2210,8 @@ mod owner_rules_tests {
 ";
 
     fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("apid-owner-rules-{}-{name}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("apid-owner-rules-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -1621,13 +2232,19 @@ mod owner_rules_tests {
         let laws = Laws::load(&scratch("compile"));
         let broken = "law \"O-900\" \"Broken\" {\n  tier statute\n  frobnicate everything\n}\n";
         match laws.add_rule("", broken, true, now()) {
-            Err(Failure::Diagnostics(list)) => assert!(list.iter().any(|d| d.line >= 1 && d.column >= 1), "{list:?}"),
+            Err(Failure::Diagnostics(list)) => assert!(
+                list.iter().any(|d| d.line >= 1 && d.column >= 1),
+                "{list:?}"
+            ),
             other => panic!("expected diagnostics, got {other:?}"),
         }
         assert!(laws.rules().rules.is_empty());
         assert!(!laws.catalog().iter().any(|info| info.id == "O-900"));
         // A source that declares no law is refused too.
-        assert!(matches!(laws.add_rule("", "// nothing here\n", true, now()), Err(Failure::Diagnostics(_))));
+        assert!(matches!(
+            laws.add_rule("", "// nothing here\n", true, now()),
+            Err(Failure::Diagnostics(_))
+        ));
     }
 
     #[test]
@@ -1635,56 +2252,109 @@ mod owner_rules_tests {
         let laws = Laws::load(&scratch("forbid"));
         let input = json!({"path": "a.md"});
         assert_eq!(gate(&laws, "read_file", &input), Ok(Runs::Guest));
-        let rule = laws.add_rule("No reading files", NO_READS, true, now()).expect("compiles");
+        let rule = laws
+            .add_rule("No reading files", NO_READS, true, now())
+            .expect("compiles");
         assert_eq!(rule.id, "R-001");
         let reason = gate(&laws, "read_file", &input).unwrap_err();
         assert!(reason.contains("O-001"), "{reason}");
-        assert!(laws.catalog().iter().any(|info| info.id == "O-001" && info.origin == "owner" && info.rule_id == "R-001"));
+        assert!(
+            laws.catalog().iter().any(|info| info.id == "O-001"
+                && info.origin == "owner"
+                && info.rule_id == "R-001")
+        );
         laws.set_rule_enabled(&rule.id, false, now()).unwrap();
         assert_eq!(gate(&laws, "read_file", &input), Ok(Runs::Guest));
         laws.set_rule_enabled(&rule.id, true, now()).unwrap();
         assert!(gate(&laws, "read_file", &input).is_err());
         laws.delete_rule(&rule.id).unwrap();
         assert_eq!(gate(&laws, "read_file", &input), Ok(Runs::Guest));
-        assert!(matches!(laws.delete_rule("R-001"), Err(Failure::NotFound(_))));
+        assert!(matches!(
+            laws.delete_rule("R-001"),
+            Err(Failure::NotFound(_))
+        ));
     }
 
     #[test]
     fn an_owner_disables_one_builtin_statute_with_a_reason_on_record() {
         let laws = Laws::load(&scratch("override"));
         let input = json!({"to_cid": 9, "text": "key sk-proj-abcdefghijklmnopqrstuvwxyz0123"});
-        let forbids = |laws: &Laws| laws.check("7", "builder", "plaza_send_message", &input).forbid;
+        let forbids = |laws: &Laws| {
+            laws.check("7", "builder", "plaza_send_message", &input)
+                .forbid
+        };
         assert!(forbids(&laws).iter().any(|id| id == "C-002b"));
-        assert!(matches!(laws.set_override("C-002b", true, "  ", "C-002b", now()), Err(Failure::Invalid(_))), "a reason is required");
-        let made = laws.set_override("C-002b", true, "testing the override", "C-002b", now()).unwrap().expect("disabled");
+        assert!(
+            matches!(
+                laws.set_override("C-002b", true, "  ", "C-002b", now()),
+                Err(Failure::Invalid(_))
+            ),
+            "a reason is required"
+        );
+        let made = laws
+            .set_override("C-002b", true, "testing the override", "C-002b", now())
+            .unwrap()
+            .expect("disabled");
         assert_eq!(made.disabled_by, OWNER);
         assert_eq!(made.reason, "testing the override");
         assert!(!forbids(&laws).iter().any(|id| id == "C-002b"));
-        let info = laws.catalog().into_iter().find(|info| info.id == "C-002b").unwrap();
+        let info = laws
+            .catalog()
+            .into_iter()
+            .find(|info| info.id == "C-002b")
+            .unwrap();
         assert!(!info.enabled && info.overridden.is_some());
         assert_eq!(laws.rules().overrides.len(), 1);
         laws.set_override("C-002b", false, "", "", now()).unwrap();
         assert!(forbids(&laws).iter().any(|id| id == "C-002b"));
         // Only built-in statutes take an override; an owner rule is disabled as a rule.
-        laws.add_rule("No reading files", NO_READS, true, now()).unwrap();
-        assert!(matches!(laws.set_override("O-001", true, "why", "", now()), Err(Failure::Invalid(_))));
-        assert!(matches!(laws.set_override("Z-999", true, "why", "", now()), Err(Failure::NotFound(_))));
+        laws.add_rule("No reading files", NO_READS, true, now())
+            .unwrap();
+        assert!(matches!(
+            laws.set_override("O-001", true, "why", "", now()),
+            Err(Failure::Invalid(_))
+        ));
+        assert!(matches!(
+            laws.set_override("Z-999", true, "why", "", now()),
+            Err(Failure::NotFound(_))
+        ));
     }
 
     #[test]
     fn strict_permits_refuse_an_operation_no_permit_allows_only_when_on() {
         let laws = Laws::load(&scratch("strict"));
-        laws.add_rule("Only sensors read devices", SENSORS_ONLY, true, now()).expect("compiles");
-        let device = || Entity { ty: "Device".into(), id: "d1".into() };
-        let read = |laws: &Laws, role: &str| laws.refuse_op(7, role, "device.read", device(), BTreeMap::new(), &Json::Null);
+        laws.add_rule("Only sensors read devices", SENSORS_ONLY, true, now())
+            .expect("compiles");
+        let device = || Entity {
+            ty: "Device".into(),
+            id: "d1".into(),
+        };
+        let read = |laws: &Laws, role: &str| {
+            laws.refuse_op(
+                7,
+                role,
+                "device.read",
+                device(),
+                BTreeMap::new(),
+                &Json::Null,
+            )
+        };
         assert!(!laws.strict());
         assert!(read(&laws, "builder").is_none(), "strict permits are off");
         laws.set_strict(true);
         assert!(read(&laws, "builder").is_some_and(|why| why.contains("device.read")));
         assert!(read(&laws, "sensor").is_none());
         // The orchestrator still posts tasks under strict permits: S-003c grants it task.create.
-        let verdict = laws.check("7", crate::settings::ORCHESTRATOR_ROLE, "plaza_post_task", &json!({"title": "t", "body": "b"}));
-        assert!(verdict.forbid.is_empty() && !verdict.unpermitted && verdict.denied_ops.is_empty(), "{verdict:?}");
+        let verdict = laws.check(
+            "7",
+            crate::settings::ORCHESTRATOR_ROLE,
+            "plaza_post_task",
+            &json!({"title": "t", "body": "b"}),
+        );
+        assert!(
+            verdict.forbid.is_empty() && !verdict.unpermitted && verdict.denied_ops.is_empty(),
+            "{verdict:?}"
+        );
         laws.set_strict(false);
         assert!(read(&laws, "builder").is_none());
     }
@@ -1693,8 +2363,10 @@ mod owner_rules_tests {
     fn owner_rules_and_overrides_survive_a_restart_and_a_snapshot() {
         let dir = scratch("persist");
         let laws = Laws::load(&dir);
-        laws.add_rule("No reading files", NO_READS, true, now()).unwrap();
-        laws.set_override("C-002b", true, "testing", "C-002b", now()).unwrap();
+        laws.add_rule("No reading files", NO_READS, true, now())
+            .unwrap();
+        laws.set_override("C-002b", true, "testing", "C-002b", now())
+            .unwrap();
         let before = laws.rules();
         let again = Laws::load(&dir);
         assert_eq!(again.rules(), before);
@@ -1703,24 +2375,39 @@ mod owner_rules_tests {
         let other = Laws::load(&scratch("persist-db"));
         other.rules_restore(&again.rules_snapshot()).unwrap();
         assert_eq!(other.rules(), before);
-        assert!(other.catalog().iter().any(|info| info.id == "O-001" && info.enabled));
+        assert!(
+            other
+                .catalog()
+                .iter()
+                .any(|info| info.id == "O-001" && info.enabled)
+        );
         // A snapshot whose source does not compile changes nothing.
         let mut bad = before.clone();
         bad.rules[0].source = "law \"O-901\" \"Bad\" {".into();
-        assert!(other.rules_restore(&serde_json::to_string(&bad).unwrap()).is_err());
+        assert!(
+            other
+                .rules_restore(&serde_json::to_string(&bad).unwrap())
+                .is_err()
+        );
         assert_eq!(other.rules(), before);
     }
 
     #[test]
     fn a_dry_run_lists_the_recent_calls_a_rule_would_refuse_and_applies_nothing() {
         let laws = Laws::load(&scratch("dry"));
-        assert!(laws.refusal(7, "builder", "read_file", &json!({"path": "a.md"})).is_none());
+        assert!(
+            laws.refusal(7, "builder", "read_file", &json!({"path": "a.md"}))
+                .is_none()
+        );
         let run = laws.dry_run(NO_READS, None).expect("compiles");
         assert_eq!(run.laws, vec!["O-001".to_string()]);
         assert_eq!(run.would_refuse.len(), 1, "{:?}", run.would_refuse);
         assert_eq!(run.would_refuse[0]["tool"], "read_file");
         assert!(laws.rules().rules.is_empty());
-        assert!(matches!(laws.dry_run("law \"O-902\" \"x\" {", None), Err(Failure::Diagnostics(_))));
+        assert!(matches!(
+            laws.dry_run("law \"O-902\" \"x\" {", None),
+            Err(Failure::Diagnostics(_))
+        ));
     }
 
     #[test]
@@ -1729,26 +2416,40 @@ mod owner_rules_tests {
         let laws = Laws::load(&dir);
         let law = "C-002b";
         let input = json!({"to_cid": 9, "text": "key sk-proj-abcdefghijklmnopqrstuvwxyz0123"});
-        let forbids = |laws: &Laws| laws.check("7", "builder", "plaza_send_message", &input).forbid;
-        let asked = format!("{law} is a constitutional law; to switch it off, send confirm: \"{law}\"");
+        let forbids = |laws: &Laws| {
+            laws.check("7", "builder", "plaza_send_message", &input)
+                .forbid
+        };
+        let asked =
+            format!("{law} is a constitutional law; to switch it off, send confirm: \"{law}\"");
         // Without the typed id, or with another one, the switch-off is refused and nothing is recorded.
         match laws.set_override(law, true, "testing", "", now()) {
             Err(Failure::Unconfirmed(why)) => assert_eq!(why, asked),
             other => panic!("expected Unconfirmed, got {other:?}"),
         }
         match laws.set_override(law, true, "testing", "C-002", now()) {
-            Err(Failure::Unconfirmed(why)) => assert_eq!(why, format!("confirm \"C-002\" does not match. {asked}")),
+            Err(Failure::Unconfirmed(why)) => {
+                assert_eq!(why, format!("confirm \"C-002\" does not match. {asked}"))
+            }
             other => panic!("expected Unconfirmed, got {other:?}"),
         }
         assert!(forbids(&laws).iter().any(|id| id == law));
         assert!(laws.constitutional_off().is_empty());
         assert!(laws.rules().history.is_empty());
         // With the id, the law is off, listed as off, and the change is on record.
-        let made = laws.set_override(law, true, "testing", law, 1_000).unwrap().expect("disabled");
+        let made = laws
+            .set_override(law, true, "testing", law, 1_000)
+            .unwrap()
+            .expect("disabled");
         assert_eq!(made.disabled_by, OWNER);
         assert!(!forbids(&laws).iter().any(|id| id == law));
         assert_eq!(laws.constitutional_off(), vec![law.to_string()]);
-        let title = laws.catalog().into_iter().find(|info| info.id == law).unwrap().title;
+        let title = laws
+            .catalog()
+            .into_iter()
+            .find(|info| info.id == law)
+            .unwrap()
+            .title;
         let history = laws.rules().history;
         assert_eq!(
             history,
@@ -1769,11 +2470,17 @@ mod owner_rules_tests {
         assert!(laws.constitutional_off().is_empty());
         let history = laws.rules().history;
         assert_eq!(history.len(), 2);
-        assert!(!history[1].disabled && !history[1].confirmed && history[1].at_ms == 2_000 && history[1].title == title);
+        assert!(
+            !history[1].disabled
+                && !history[1].confirmed
+                && history[1].at_ms == 2_000
+                && history[1].title == title
+        );
         // The history is part of the rules: it survives a restart.
         assert_eq!(Laws::load(&dir).rules().history, history);
         // A statute of another tier is switched off with no confirmation and no entry in the history.
-        laws.set_override("S-013d", true, "researchers may commit", "", 3_000).unwrap();
+        laws.set_override("S-013d", true, "researchers may commit", "", 3_000)
+            .unwrap();
         assert!(laws.rules().overrides.iter().any(|o| o.law == "S-013d"));
         assert!(laws.constitutional_off().is_empty());
         assert_eq!(laws.rules().history.len(), 2);

@@ -27,8 +27,14 @@ struct WebCrate {
     lib: &'static str,
 }
 
-const ENGINE: WebCrate = WebCrate { package: "apz-engine-web", lib: "apz_engine_web" };
-const IDE: WebCrate = WebCrate { package: "apz-ide-web", lib: "apz_ide_web" };
+const ENGINE: WebCrate = WebCrate {
+    package: "apz-engine-web",
+    lib: "apz_engine_web",
+};
+const IDE: WebCrate = WebCrate {
+    package: "apz-ide-web",
+    lib: "apz_ide_web",
+};
 
 /// Extensions that get precompressed siblings. Fonts and images are already compressed.
 const COMPRESSIBLE: [&str; 5] = ["js", "css", "wasm", "html", "svg"];
@@ -46,10 +52,14 @@ fn main() {
 
 fn run(args: &[String]) -> Result<String, String> {
     match args {
-        [cmd, flag, out] if cmd == "web-engine" && flag == "--out" => web_crate(Path::new(out), &ENGINE),
+        [cmd, flag, out] if cmd == "web-engine" && flag == "--out" => {
+            web_crate(Path::new(out), &ENGINE)
+        }
         [cmd, flag, out] if cmd == "web-ide" && flag == "--out" => web_crate(Path::new(out), &IDE),
         [cmd, dir] if cmd == "compress" => compress_dir(Path::new(dir)),
-        _ => Err("usage: apz-pack web-engine|web-ide --out <dir> | apz-pack compress <dir>".to_string()),
+        _ => Err(
+            "usage: apz-pack web-engine|web-ide --out <dir> | apz-pack compress <dir>".to_string(),
+        ),
     }
 }
 
@@ -70,8 +80,11 @@ fn web_crate(out: &Path, krate: &WebCrate) -> Result<String, String> {
     let root = repo_root();
     build_wasm(&root, krate.package)?;
 
-    let target = std::env::var_os("CARGO_TARGET_DIR").map_or_else(|| root.join("target"), |t| root.join(t));
-    let wasm_in = target.join("wasm32-unknown-unknown/wasm-release").join(format!("{lib}.wasm"));
+    let target =
+        std::env::var_os("CARGO_TARGET_DIR").map_or_else(|| root.join("target"), |t| root.join(t));
+    let wasm_in = target
+        .join("wasm32-unknown-unknown/wasm-release")
+        .join(format!("{lib}.wasm"));
     let scratch = target.join("apz-pack").join(lib);
     let _ = fs::remove_dir_all(&scratch);
     fs::create_dir_all(&scratch).map_err(|e| format!("scratch dir: {e}"))?;
@@ -79,17 +92,30 @@ fn web_crate(out: &Path, krate: &WebCrate) -> Result<String, String> {
     // wasm-bindgen as a library, with the options of `wasm-bindgen --target web` (which keeps the
     // default module path: the glue fetches its wasm by file name next to itself).
     let mut bindgen = Bindgen::new();
-    bindgen.input_path(&wasm_in).out_name(lib).typescript(false).omit_default_module_path(false);
-    bindgen.web(true).map_err(|e| format!("wasm-bindgen: {e:#}"))?;
-    bindgen.generate(&scratch).map_err(|e| format!("wasm-bindgen: {e:#}"))?;
+    bindgen
+        .input_path(&wasm_in)
+        .out_name(lib)
+        .typescript(false)
+        .omit_default_module_path(false);
+    bindgen
+        .web(true)
+        .map_err(|e| format!("wasm-bindgen: {e:#}"))?;
+    bindgen
+        .generate(&scratch)
+        .map_err(|e| format!("wasm-bindgen: {e:#}"))?;
 
     let bindgen_wasm = scratch.join(format!("{lib}_bg.wasm"));
-    let plain = fs::read(&bindgen_wasm).map_err(|e| format!("read {}: {e}", bindgen_wasm.display()))?;
+    let plain =
+        fs::read(&bindgen_wasm).map_err(|e| format!("read {}: {e}", bindgen_wasm.display()))?;
     let plain_br = brotli_bytes(&plain)?;
     let (wasm, wasm_br, wasm_opt) = match optimise(&scratch, lib, &bindgen_wasm)? {
         Some(opt) => {
             let opt_br = brotli_bytes(&opt)?;
-            if opt_br.len() < plain_br.len() { (opt, opt_br, "kept") } else { (plain, plain_br, "larger") }
+            if opt_br.len() < plain_br.len() {
+                (opt, opt_br, "kept")
+            } else {
+                (plain, plain_br, "larger")
+            }
         }
         None => (plain, plain_br, "off"),
     };
@@ -98,8 +124,13 @@ fn web_crate(out: &Path, krate: &WebCrate) -> Result<String, String> {
     let hash = fingerprint(&wasm);
     let (js_name, wasm_name) = names(lib, &hash);
     let glue_path = scratch.join(format!("{lib}.js"));
-    let glue_raw = fs::read_to_string(&glue_path).map_err(|e| format!("read {}: {e}", glue_path.display()))?;
-    let glue = rewrite_glue(&glue_raw, &format!("'{lib}_bg.wasm'"), &format!("'{wasm_name}'"))?;
+    let glue_raw =
+        fs::read_to_string(&glue_path).map_err(|e| format!("read {}: {e}", glue_path.display()))?;
+    let glue = rewrite_glue(
+        &glue_raw,
+        &format!("'{lib}_bg.wasm'"),
+        &format!("'{wasm_name}'"),
+    )?;
 
     fs::create_dir_all(out).map_err(|e| format!("out dir: {e}"))?;
     let wasm_gz = gzip_bytes(&wasm)?;
@@ -126,8 +157,11 @@ fn optimise(scratch: &Path, lib: &str, bindgen_wasm: &Path) -> Result<Option<Vec
     let opt_wasm = scratch.join(format!("{lib}_opt.wasm"));
     let mut opts = wasm_opt::OptimizationOptions::new_optimize_for_size_aggressively();
     opts.all_features().debug_info(false);
-    opts.run(bindgen_wasm, &opt_wasm).map_err(|e| format!("wasm-opt: {e}"))?;
-    fs::read(&opt_wasm).map(Some).map_err(|e| format!("read {}: {e}", opt_wasm.display()))
+    opts.run(bindgen_wasm, &opt_wasm)
+        .map_err(|e| format!("wasm-opt: {e}"))?;
+    fs::read(&opt_wasm)
+        .map(Some)
+        .map_err(|e| format!("read {}: {e}", opt_wasm.display()))
 }
 
 #[cfg(not(feature = "wasm-opt"))]
@@ -139,19 +173,34 @@ fn optimise(_scratch: &Path, _lib: &str, _bindgen_wasm: &Path) -> Result<Option<
 fn build_wasm(root: &Path, package: &str) -> Result<(), String> {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let status = Command::new(cargo)
-        .args(["build", "-p", package, "--target", "wasm32-unknown-unknown", "--profile", "wasm-release"])
+        .args([
+            "build",
+            "-p",
+            package,
+            "--target",
+            "wasm32-unknown-unknown",
+            "--profile",
+            "wasm-release",
+        ])
         .current_dir(root)
         .stdout(Stdio::from(std::io::stderr()))
         .status()
         .map_err(|e| format!("cargo: {e}"))?;
-    if status.success() { Ok(()) } else { Err(format!("cargo build of {package} failed: {status}")) }
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("cargo build of {package} failed: {status}"))
+    }
 }
 
 // Writes `.br` and `.gz` next to each compressible file in `dir` (not recursive), dropping stale
 // siblings whose source is gone. A sibling that would not be smaller than its source is not written.
 fn compress_dir(dir: &Path) -> Result<String, String> {
     let entries = fs::read_dir(dir).map_err(|e| format!("read {}: {e}", dir.display()))?;
-    let mut names: Vec<PathBuf> = entries.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.is_file()).collect();
+    let mut names: Vec<PathBuf> = entries
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.is_file())
+        .collect();
     names.sort();
     let (mut files, mut raw, mut br_total) = (0usize, 0usize, 0usize);
     for path in &names {
@@ -196,7 +245,11 @@ fn write(path: &Path, bytes: &[u8]) -> Result<(), String> {
 
 // The first 4 bytes of the sha256, as 8 hex digits.
 fn fingerprint(bytes: &[u8]) -> String {
-    Sha256::digest(bytes).iter().take(4).map(|b| format!("{b:02x}")).collect()
+    Sha256::digest(bytes)
+        .iter()
+        .take(4)
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 /// The glue and wasm file names for a library and its content hash.
@@ -208,7 +261,9 @@ fn names(lib: &str, hash: &str) -> (String, String) {
 fn rewrite_glue(glue: &str, from: &str, to: &str) -> Result<String, String> {
     let count = glue.matches(from).count();
     if count != 1 {
-        return Err(format!("expected {from} exactly once in the wasm-bindgen glue, found {count}"));
+        return Err(format!(
+            "expected {from} exactly once in the wasm-bindgen glue, found {count}"
+        ));
     }
     Ok(glue.replacen(from, to, 1))
 }
@@ -240,15 +295,30 @@ mod tests {
     #[test]
     fn glue_rewrite_replaces_the_one_reference() {
         let glue = "new URL('apz_engine_web_bg.wasm', import.meta.url)";
-        let out = rewrite_glue(glue, "'apz_engine_web_bg.wasm'", "'apz_engine_web-1234abcd_bg.wasm'").unwrap();
-        assert_eq!(out, "new URL('apz_engine_web-1234abcd_bg.wasm', import.meta.url)");
+        let out = rewrite_glue(
+            glue,
+            "'apz_engine_web_bg.wasm'",
+            "'apz_engine_web-1234abcd_bg.wasm'",
+        )
+        .unwrap();
+        assert_eq!(
+            out,
+            "new URL('apz_engine_web-1234abcd_bg.wasm', import.meta.url)"
+        );
     }
 
     #[test]
     fn glue_rewrite_refuses_zero_or_two_references() {
         let from = "'apz_engine_web_bg.wasm'";
         assert!(rewrite_glue("no reference here", from, "'x'").is_err());
-        assert!(rewrite_glue("'apz_engine_web_bg.wasm' and 'apz_engine_web_bg.wasm'", from, "'x'").is_err());
+        assert!(
+            rewrite_glue(
+                "'apz_engine_web_bg.wasm' and 'apz_engine_web_bg.wasm'",
+                from,
+                "'x'"
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -265,11 +335,15 @@ mod tests {
         let text = "the plaza seats every agent ".repeat(500);
         let br = brotli_bytes(text.as_bytes()).unwrap();
         let mut back = String::new();
-        brotli::Decompressor::new(&br[..], 4096).read_to_string(&mut back).unwrap();
+        brotli::Decompressor::new(&br[..], 4096)
+            .read_to_string(&mut back)
+            .unwrap();
         assert_eq!(back, text);
         let gz = gzip_bytes(text.as_bytes()).unwrap();
         let mut back = String::new();
-        flate2::read::GzDecoder::new(&gz[..]).read_to_string(&mut back).unwrap();
+        flate2::read::GzDecoder::new(&gz[..])
+            .read_to_string(&mut back)
+            .unwrap();
         assert_eq!(back, text);
         assert!(br.len() < text.len() / 10 && gz.len() < text.len() / 10);
     }

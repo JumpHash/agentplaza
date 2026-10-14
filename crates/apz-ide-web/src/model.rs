@@ -2,8 +2,8 @@
 //! and reports a refusal as its message. Nothing here is wasm-specific, so the tests run natively.
 
 use apz_ide::{Action, ChangeSet, Entry, IdeState, WorkspaceId};
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 
 /// Reads a JSON argument; the message names which argument did not parse.
 fn read<T: DeserializeOwned>(what: &str, json: &str) -> Result<T, String> {
@@ -111,7 +111,11 @@ index 0000000..3333333
 
     fn paths(json: &str) -> Vec<String> {
         let v: serde_json::Value = serde_json::from_str(json).unwrap();
-        v.as_array().unwrap().iter().map(|e| e["path"].as_str().unwrap().to_string()).collect()
+        v.as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["path"].as_str().unwrap().to_string())
+            .collect()
     }
 
     #[test]
@@ -122,7 +126,10 @@ index 0000000..3333333
         assert_eq!(back, apz_ide::parse_unified(DIFF).unwrap());
         assert_eq!(back.files.len(), 2);
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
-        assert_eq!(v["stats"], serde_json::json!({"files": 2, "additions": 2, "deletions": 1}));
+        assert_eq!(
+            v["stats"],
+            serde_json::json!({"files": 2, "additions": 2, "deletions": 1})
+        );
         assert_eq!(v["files"][1]["status"], "added");
         assert_eq!(v["files"][0]["hunks"][0]["lines"][0]["kind"], "context");
     }
@@ -137,7 +144,10 @@ index 0000000..3333333
     fn path_checks_clean_or_refuse() {
         assert_eq!(check_path("a/./b//c/").unwrap(), "a/b/c");
         assert_eq!(check_path("../x").unwrap_err(), "path may not contain ..");
-        assert_eq!(check_path("/etc/passwd").unwrap_err(), "path must be relative");
+        assert_eq!(
+            check_path("/etc/passwd").unwrap_err(),
+            "path must be relative"
+        );
         assert_eq!(check_dir("").unwrap(), "");
         assert_eq!(check_dir("src/").unwrap(), "src");
         assert!(check_dir(".ssh").is_err());
@@ -173,14 +183,25 @@ index 0000000..3333333
 
         let s = reduce(&s, r#"{"set_workspace":"repo:web@main"}"#).unwrap();
         let st: IdeState = serde_json::from_str(&s).unwrap();
-        assert_eq!(st.workspace.map(|w| w.to_string()).as_deref(), Some("repo:web@main"));
+        assert_eq!(
+            st.workspace.map(|w| w.to_string()).as_deref(),
+            Some("repo:web@main")
+        );
         assert!(st.open.is_empty() && st.active.is_none());
     }
 
     #[test]
     fn reduce_refuses_bad_json_and_names_the_argument() {
-        assert!(reduce(&initial_state(), "{nope").unwrap_err().starts_with("bad action JSON:"));
-        assert!(reduce("[]", r#""toggle_review""#).unwrap_err().starts_with("bad state JSON:"));
+        assert!(
+            reduce(&initial_state(), "{nope")
+                .unwrap_err()
+                .starts_with("bad action JSON:")
+        );
+        assert!(
+            reduce("[]", r#""toggle_review""#)
+                .unwrap_err()
+                .starts_with("bad state JSON:")
+        );
         assert!(reduce(&initial_state(), r#"{"open":7}"#).is_err());
     }
 
@@ -188,7 +209,11 @@ index 0000000..3333333
     fn children_lists_one_level_dirs_first() {
         assert_eq!(paths(&children(ENTRIES, "").unwrap()), ["src", "README.md"]);
         assert_eq!(paths(&children(ENTRIES, "src/").unwrap()), ["src/a.txt"]);
-        assert!(children("nope", "").unwrap_err().starts_with("bad entries JSON:"));
+        assert!(
+            children("nope", "")
+                .unwrap_err()
+                .starts_with("bad entries JSON:")
+        );
     }
 
     #[test]

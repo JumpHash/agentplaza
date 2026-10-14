@@ -27,7 +27,9 @@ pub fn next_id() -> u64 {
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 // ---- Colour ------------------------------------------------------------------------------------
@@ -42,11 +44,19 @@ pub struct Color {
 }
 
 fn srgb_to_linear(c: f32) -> f32 {
-    if c < 0.04045 { c * 0.077_399_38 } else { ((c * 0.947_867_3) + 0.052_132_7).powf(2.4) }
+    if c < 0.04045 {
+        c * 0.077_399_38
+    } else {
+        ((c * 0.947_867_3) + 0.052_132_7).powf(2.4)
+    }
 }
 
 fn linear_to_srgb(c: f32) -> f32 {
-    if c < 0.003_130_8 { c * 12.92 } else { 1.055 * c.powf(0.416_666_66) - 0.055 }
+    if c < 0.003_130_8 {
+        c * 12.92
+    } else {
+        1.055 * c.powf(0.416_666_66) - 0.055
+    }
 }
 
 fn hue2rgb(p: f32, q: f32, mut t: f32) -> f32 {
@@ -68,8 +78,16 @@ fn hue2rgb(p: f32, q: f32, mut t: f32) -> f32 {
 }
 
 impl Color {
-    pub const WHITE: Color = Color { r: 1.0, g: 1.0, b: 1.0 };
-    pub const BLACK: Color = Color { r: 0.0, g: 0.0, b: 0.0 };
+    pub const WHITE: Color = Color {
+        r: 1.0,
+        g: 1.0,
+        b: 1.0,
+    };
+    pub const BLACK: Color = Color {
+        r: 0.0,
+        g: 0.0,
+        b: 0.0,
+    };
 
     /// Linear components as given.
     pub const fn linear(r: f32, g: f32, b: f32) -> Color {
@@ -78,7 +96,11 @@ impl Color {
 
     /// sRGB components 0–1 (three's `setRGB` with the sRGB colour space).
     pub fn srgb(r: f32, g: f32, b: f32) -> Color {
-        Color { r: srgb_to_linear(r), g: srgb_to_linear(g), b: srgb_to_linear(b) }
+        Color {
+            r: srgb_to_linear(r),
+            g: srgb_to_linear(g),
+            b: srgb_to_linear(b),
+        }
     }
 
     /// `0xrrggbb`, sRGB (three's `new Color(0x…)`).
@@ -95,9 +117,17 @@ impl Color {
         if s == 0.0 {
             return Color::srgb(l, l, l);
         }
-        let q = if l <= 0.5 { l * (1.0 + s) } else { l + s - l * s };
+        let q = if l <= 0.5 {
+            l * (1.0 + s)
+        } else {
+            l + s - l * s
+        };
         let p = 2.0 * l - q;
-        Color::srgb(hue2rgb(p, q, h + 1.0 / 3.0), hue2rgb(p, q, h), hue2rgb(p, q, h - 1.0 / 3.0))
+        Color::srgb(
+            hue2rgb(p, q, h + 1.0 / 3.0),
+            hue2rgb(p, q, h),
+            hue2rgb(p, q, h - 1.0 / 3.0),
+        )
     }
 
     /// HSL in sRGB (three's `getHSL`): (h, s, l), each 0–1.
@@ -110,7 +140,11 @@ impl Color {
             return (0.0, 0.0, l);
         }
         let delta = max - min;
-        let s = if l <= 0.5 { delta / (max + min) } else { delta / (2.0 - max - min) };
+        let s = if l <= 0.5 {
+            delta / (max + min)
+        } else {
+            delta / (2.0 - max - min)
+        };
         let h = if max == r {
             (g - b) / delta + if g < b { 6.0 } else { 0.0 }
         } else if max == g {
@@ -139,8 +173,16 @@ impl Color {
             return u32::from_str_radix(&full, 16).ok().map(Color::hex);
         }
         let args = |prefix: &str| -> Option<Vec<f32>> {
-            let inner = t.strip_prefix(prefix)?.trim_start_matches('a').strip_prefix('(')?.strip_suffix(')')?;
-            inner.split([',', ' ', '/']).filter(|p| !p.is_empty()).map(|p| p.trim_end_matches(['%', 'g', 'd', 'e']).parse().ok()).collect()
+            let inner = t
+                .strip_prefix(prefix)?
+                .trim_start_matches('a')
+                .strip_prefix('(')?
+                .strip_suffix(')')?;
+            inner
+                .split([',', ' ', '/'])
+                .filter(|p| !p.is_empty())
+                .map(|p| p.trim_end_matches(['%', 'g', 'd', 'e']).parse().ok())
+                .collect()
         };
         if let Some(v) = args("rgb") {
             return (v.len() >= 3).then(|| Color::srgb(v[0] / 255.0, v[1] / 255.0, v[2] / 255.0));
@@ -153,28 +195,48 @@ impl Color {
 
     /// sRGB components 0–1.
     pub fn to_srgb(self) -> [f32; 3] {
-        [linear_to_srgb(self.r.clamp(0.0, 1.0)), linear_to_srgb(self.g.clamp(0.0, 1.0)), linear_to_srgb(self.b.clamp(0.0, 1.0))]
+        [
+            linear_to_srgb(self.r.clamp(0.0, 1.0)),
+            linear_to_srgb(self.g.clamp(0.0, 1.0)),
+            linear_to_srgb(self.b.clamp(0.0, 1.0)),
+        ]
     }
 
     /// sRGB bytes, for painting textures.
     pub fn to_srgb_u8(self) -> [u8; 3] {
         let [r, g, b] = self.to_srgb();
-        [(r * 255.0).round() as u8, (g * 255.0).round() as u8, (b * 255.0).round() as u8]
+        [
+            (r * 255.0).round() as u8,
+            (g * 255.0).round() as u8,
+            (b * 255.0).round() as u8,
+        ]
     }
 
     /// three's `lerp` (in linear space, as three does).
     pub fn lerp(self, to: Color, t: f32) -> Color {
-        Color { r: self.r + (to.r - self.r) * t, g: self.g + (to.g - self.g) * t, b: self.b + (to.b - self.b) * t }
+        Color {
+            r: self.r + (to.r - self.r) * t,
+            g: self.g + (to.g - self.g) * t,
+            b: self.b + (to.b - self.b) * t,
+        }
     }
 
     /// three's `multiplyScalar`.
     pub fn scale(self, k: f32) -> Color {
-        Color { r: self.r * k, g: self.g * k, b: self.b * k }
+        Color {
+            r: self.r * k,
+            g: self.g * k,
+            b: self.b * k,
+        }
     }
 
     /// Component-wise product (three's `multiply`).
     pub fn mul(self, other: Color) -> Color {
-        Color { r: self.r * other.r, g: self.g * other.g, b: self.b * other.b }
+        Color {
+            r: self.r * other.r,
+            g: self.g * other.g,
+            b: self.b * other.b,
+        }
     }
 
     pub fn to_array(self) -> [f32; 3] {
@@ -211,7 +273,12 @@ impl Geometry {
     /// A geometry from its parts: assigns an id and computes the bounding sphere (three's
     /// `computeBoundingSphere`: the box centre, the farthest vertex). Missing normals or uvs
     /// are filled with zeros.
-    pub fn new(positions: Vec<[f32; 3]>, mut normals: Vec<[f32; 3]>, mut uvs: Vec<[f32; 2]>, indices: Vec<u32>) -> Geo {
+    pub fn new(
+        positions: Vec<[f32; 3]>,
+        mut normals: Vec<[f32; 3]>,
+        mut uvs: Vec<[f32; 2]>,
+        indices: Vec<u32>,
+    ) -> Geo {
         normals.resize(positions.len(), [0.0; 3]);
         uvs.resize(positions.len(), [0.0; 2]);
         let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
@@ -219,9 +286,27 @@ impl Geometry {
             lo = lo.min(Vec3::from(*p));
             hi = hi.max(Vec3::from(*p));
         }
-        let center = if positions.is_empty() { Vec3::ZERO } else { (lo + hi) * 0.5 };
-        let radius = positions.iter().map(|p| Vec3::from(*p).distance(center)).fold(0.0, f32::max);
-        Arc::new(Geometry { id: next_id(), positions, normals, uvs, indices, center: center.to_array(), radius, colors: Vec::new(), slots: Vec::new(), lifts: Vec::new() })
+        let center = if positions.is_empty() {
+            Vec3::ZERO
+        } else {
+            (lo + hi) * 0.5
+        };
+        let radius = positions
+            .iter()
+            .map(|p| Vec3::from(*p).distance(center))
+            .fold(0.0, f32::max);
+        Arc::new(Geometry {
+            id: next_id(),
+            positions,
+            normals,
+            uvs,
+            indices,
+            center: center.to_array(),
+            radius,
+            colors: Vec::new(),
+            slots: Vec::new(),
+            lifts: Vec::new(),
+        })
     }
 }
 
@@ -252,12 +337,27 @@ pub type Tex = Arc<Texture>;
 impl Texture {
     /// A clamped, linearly filtered sRGB texture.
     pub fn new(width: u32, height: u32, rgba: Vec<u8>) -> Texture {
-        Texture { id: next_id(), width, height, rgba: Arc::new(rgba), repeat: [1.0, 1.0], offset: [0.0, 0.0], wrap: false, nearest: false, srgb: true, flip_y: false }
+        Texture {
+            id: next_id(),
+            width,
+            height,
+            rgba: Arc::new(rgba),
+            repeat: [1.0, 1.0],
+            offset: [0.0, 0.0],
+            wrap: false,
+            nearest: false,
+            srgb: true,
+            flip_y: false,
+        }
     }
 
     /// The same pixels with another repeat (a new id: three would clone the texture).
     pub fn with_repeat(&self, x: f32, y: f32) -> Tex {
-        Arc::new(Texture { id: next_id(), repeat: [x, y], ..self.clone() })
+        Arc::new(Texture {
+            id: next_id(),
+            repeat: [x, y],
+            ..self.clone()
+        })
     }
 }
 
@@ -274,7 +374,11 @@ pub enum Shading {
     /// three's `ShadowMaterial`: transparent except where shadowed (`color` × `opacity`).
     Shadow,
     /// The painted sky dome (`toon.ts` `sky`): bands from `top` down to `horizon`, `ground` below.
-    Sky { top: Color, horizon: Color, ground: Color },
+    Sky {
+        top: Color,
+        horizon: Color,
+        ground: Color,
+    },
     /// Grass tufts (`toon.ts` `grassTufts`): toon, swayed by the wind, paler at the tips.
     Grass,
     /// three's `PointsMaterial`: round-less square points `size` world units wide, attenuated.
@@ -358,12 +462,19 @@ impl Mat {
 
     /// `toonMat({ color })`.
     pub fn toon(color: Color) -> Mat {
-        Mat::new(Material { color, ..Material::default() })
+        Mat::new(Material {
+            color,
+            ..Material::default()
+        })
     }
 
     /// `new MeshBasicMaterial({ color })`.
     pub fn basic(color: Color) -> Mat {
-        Mat::new(Material { shading: Shading::Basic, color, ..Material::default() })
+        Mat::new(Material {
+            shading: Shading::Basic,
+            color,
+            ..Material::default()
+        })
     }
 
     pub fn id(&self) -> u64 {
@@ -394,13 +505,29 @@ pub struct Instance {
 #[derive(Debug, Clone)]
 pub enum Kind {
     Group,
-    Mesh { geo: Geo, mat: Mat },
+    Mesh {
+        geo: Geo,
+        mat: Mat,
+    },
     /// three's `InstancedMesh` (`count` ≤ `instances.len()` are drawn).
-    Instanced { geo: Geo, mat: Mat, instances: Arc<Vec<Instance>>, count: usize },
+    Instanced {
+        geo: Geo,
+        mat: Mat,
+        instances: Arc<Vec<Instance>>,
+        count: usize,
+    },
     /// three's `Points`: one point per position, drawn with a `Shading::Points` material.
-    Points { positions: Arc<Vec<[f32; 3]>>, mat: Mat },
+    Points {
+        positions: Arc<Vec<[f32; 3]>>,
+        mat: Mat,
+    },
     /// three's `PointLight` at the node's position.
-    PointLight { color: Color, intensity: f32, distance: f32, decay: f32 },
+    PointLight {
+        color: Color,
+        intensity: f32,
+        distance: f32,
+        decay: f32,
+    },
 }
 
 /// A node's GPU animation (`hw_anim.wgsl`): its own mesh turns or blinks as a vertex function of the
@@ -410,15 +537,31 @@ pub enum NodeAnim {
     /// Turns about `axis` through `pivot` at `rps` revolutions per second, from `phase` radians at time 0.
     /// With `machine` set (a fan of fleet machine `machine`), its angle is that machine's entry in the fleet's
     /// fan-angle table instead, and `rps` and `phase` are unused.
-    Spin { pivot: Vec3, axis: Vec3, rps: f32, phase: f32, machine: Option<usize> },
+    Spin {
+        pivot: Vec3,
+        axis: Vec3,
+        rps: f32,
+        phase: f32,
+        machine: Option<usize>,
+    },
     /// Blinks `rate` times a second (period 1 / rate): `hi` for the first half of each period, shifted by
     /// `phase` seconds, and `lo` for the second half.
-    Blink { rate: f32, phase: f32, lo: f32, hi: f32 },
+    Blink {
+        rate: f32,
+        phase: f32,
+        lo: f32,
+        hi: f32,
+    },
     /// A machine's status LED, activity LED or screen (`vs_machine`): its colour and emissive come from the
     /// machine's row of the fleet's table (`FleetInstances::machine_states` / `machine_statuses`), and `glow` is the
     /// part's own glow. `emissive` is the part's own emissive colour, which an activity LED or screen keeps (a status
     /// LED lights in its status colour). With `machine` None the row is the table's zero row (idle, the baked colour).
-    Machine { led: MachineLed, glow: f32, emissive: Color, machine: Option<usize> },
+    Machine {
+        led: MachineLed,
+        glow: f32,
+        emissive: Color,
+        machine: Option<usize>,
+    },
 }
 
 /// Which of a machine's parts a [`NodeAnim::Machine`] is.
@@ -523,23 +666,39 @@ impl Obj {
 
     /// `new THREE.Mesh(geo, mat)`.
     pub fn mesh(geo: &Geo, mat: &Mat) -> Obj {
-        Obj::of(Kind::Mesh { geo: Arc::clone(geo), mat: mat.clone() })
+        Obj::of(Kind::Mesh {
+            geo: Arc::clone(geo),
+            mat: mat.clone(),
+        })
     }
 
     /// `new THREE.InstancedMesh(geo, mat, n)` with its instances.
     pub fn instanced(geo: &Geo, mat: &Mat, instances: Vec<Instance>) -> Obj {
         let count = instances.len();
-        Obj::of(Kind::Instanced { geo: Arc::clone(geo), mat: mat.clone(), instances: Arc::new(instances), count })
+        Obj::of(Kind::Instanced {
+            geo: Arc::clone(geo),
+            mat: mat.clone(),
+            instances: Arc::new(instances),
+            count,
+        })
     }
 
     /// `new THREE.Points(geo, mat)`.
     pub fn points(positions: Vec<[f32; 3]>, mat: &Mat) -> Obj {
-        Obj::of(Kind::Points { positions: Arc::new(positions), mat: mat.clone() })
+        Obj::of(Kind::Points {
+            positions: Arc::new(positions),
+            mat: mat.clone(),
+        })
     }
 
     /// `new THREE.PointLight(color, intensity, distance, decay)`.
     pub fn point_light(color: Color, intensity: f32, distance: f32, decay: f32) -> Obj {
-        Obj::of(Kind::PointLight { color, intensity, distance, decay })
+        Obj::of(Kind::PointLight {
+            color,
+            intensity,
+            distance,
+            decay,
+        })
     }
 
     /// The node's state, locked. Keep the guard short; never hold two at once.
@@ -648,14 +807,18 @@ impl Obj {
     /// The material of a mesh, instanced mesh or points node.
     pub fn material(&self) -> Option<Mat> {
         match &self.get().kind {
-            Kind::Mesh { mat, .. } | Kind::Instanced { mat, .. } | Kind::Points { mat, .. } => Some(mat.clone()),
+            Kind::Mesh { mat, .. } | Kind::Instanced { mat, .. } | Kind::Points { mat, .. } => {
+                Some(mat.clone())
+            }
             _ => None,
         }
     }
 
     /// Replaces a mesh's material (three's `mesh.material = …`).
     pub fn set_material(&self, new: &Mat) {
-        if let Kind::Mesh { mat, .. } | Kind::Instanced { mat, .. } | Kind::Points { mat, .. } = &mut self.get().kind {
+        if let Kind::Mesh { mat, .. } | Kind::Instanced { mat, .. } | Kind::Points { mat, .. } =
+            &mut self.get().kind
+        {
             *mat = new.clone();
         }
     }
@@ -669,7 +832,12 @@ impl Obj {
 
     /// Replaces an instanced mesh's instances; its draw count follows the list.
     pub fn set_instances(&self, instances: Vec<Instance>) {
-        if let Kind::Instanced { instances: list, count, .. } = &mut self.get().kind {
+        if let Kind::Instanced {
+            instances: list,
+            count,
+            ..
+        } = &mut self.get().kind
+        {
             *count = instances.len();
             *list = Arc::new(instances);
         }
@@ -691,7 +859,13 @@ impl Obj {
 
     /// The world matrices of the distinct `targets` within this tree, in their order (None for one not in it): one walk.
     pub fn world_matrices_of(&self, targets: &[Obj]) -> Vec<Option<Mat4>> {
-        fn walk(node: &Obj, parent: Mat4, index: &HashMap<*const Mutex<Node>, usize>, out: &mut [Option<Mat4>], left: &mut usize) {
+        fn walk(
+            node: &Obj,
+            parent: Mat4,
+            index: &HashMap<*const Mutex<Node>, usize>,
+            out: &mut [Option<Mat4>],
+            left: &mut usize,
+        ) {
             if *left == 0 {
                 return;
             }
@@ -699,7 +873,10 @@ impl Obj {
                 let n = node.get();
                 (parent * local_of(&n), n.children.clone())
             };
-            if let Some(&i) = index.get(&Arc::as_ptr(&node.0)).filter(|&&i| out[i].is_none()) {
+            if let Some(&i) = index
+                .get(&Arc::as_ptr(&node.0))
+                .filter(|&&i| out[i].is_none())
+            {
                 out[i] = Some(world);
                 *left -= 1;
             }
@@ -707,7 +884,11 @@ impl Obj {
                 walk(child, world, index, out, left);
             }
         }
-        let index: HashMap<*const Mutex<Node>, usize> = targets.iter().enumerate().map(|(i, t)| (Arc::as_ptr(&t.0), i)).collect();
+        let index: HashMap<*const Mutex<Node>, usize> = targets
+            .iter()
+            .enumerate()
+            .map(|(i, t)| (Arc::as_ptr(&t.0), i))
+            .collect();
         let mut out = vec![None; targets.len()];
         let mut left = index.len();
         walk(self, Mat4::IDENTITY, &index, &mut out, &mut left);
@@ -731,7 +912,14 @@ impl Obj {
 }
 
 fn local_of(node: &Node) -> Mat4 {
-    let rotation = node.quaternion.unwrap_or_else(|| Quat::from_euler(EulerRot::XYZ, node.rotation.x, node.rotation.y, node.rotation.z));
+    let rotation = node.quaternion.unwrap_or_else(|| {
+        Quat::from_euler(
+            EulerRot::XYZ,
+            node.rotation.x,
+            node.rotation.y,
+            node.rotation.z,
+        )
+    });
     Mat4::from_scale_rotation_translation(node.scale, rotation, node.position)
 }
 
@@ -756,15 +944,25 @@ impl Frustum {
 
     /// Whether the sphere (`center`, `radius`) touches the volume.
     pub fn sphere_visible(&self, center: Vec3, radius: f32) -> bool {
-        self.planes.iter().all(|p| p.truncate().dot(center) + p.w >= -radius)
+        self.planes
+            .iter()
+            .all(|p| p.truncate().dot(center) + p.w >= -radius)
     }
 }
 
 /// The world-space bounding sphere of a geometry under `m`: its centre transformed, and its radius
 /// scaled by the longest of the matrix's axes (exact for uniform scale, conservative otherwise).
 pub fn world_sphere(geo: &Geometry, m: Mat4) -> (Vec3, f32) {
-    let scale = m.x_axis.truncate().length().max(m.y_axis.truncate().length()).max(m.z_axis.truncate().length());
-    (m.transform_point3(Vec3::from(geo.center)), geo.radius * scale)
+    let scale = m
+        .x_axis
+        .truncate()
+        .length()
+        .max(m.y_axis.truncate().length())
+        .max(m.z_axis.truncate().length());
+    (
+        m.transform_point3(Vec3::from(geo.center)),
+        geo.radius * scale,
+    )
 }
 
 /// A perspective camera looking at `target` (three's `PerspectiveCamera` + `lookAt`).
@@ -787,7 +985,12 @@ impl Camera {
 
     /// Projection with wgpu's 0..1 depth.
     pub fn projection(&self) -> Mat4 {
-        Mat4::perspective_rh(self.fov.to_radians(), self.aspect.max(1e-3), self.near, self.far)
+        Mat4::perspective_rh(
+            self.fov.to_radians(),
+            self.aspect.max(1e-3),
+            self.near,
+            self.far,
+        )
     }
 
     /// A world point in pixels from the top-left of a `width` × `height` view; None behind the
@@ -1025,7 +1228,17 @@ pub struct Overlay {
 pub fn flatten(root: &Obj, filter: Filter) -> (Vec<Draw>, Vec<PointLightDraw>) {
     let mut draws = Vec::new();
     let mut lights = Vec::new();
-    walk(root, Mat4::IDENTITY, false, 0, 0, filter, &mut draws, &mut lights, None);
+    walk(
+        root,
+        Mat4::IDENTITY,
+        false,
+        0,
+        0,
+        filter,
+        &mut draws,
+        &mut lights,
+        None,
+    );
     (draws, lights)
 }
 
@@ -1064,7 +1277,14 @@ fn walk(
         }
         let world = parent * local_of(&n);
         let owner = if n.tally != 0 { n.tally } else { owner_above };
-        (world, dynamic_above || n.dynamic, n.children.clone(), n.anim, if n.lift != 0 { n.lift } else { lift_above }, owner)
+        (
+            world,
+            dynamic_above || n.dynamic,
+            n.children.clone(),
+            n.anim,
+            if n.lift != 0 { n.lift } else { lift_above },
+            owner,
+        )
     };
     let first = draws.len();
     let wanted = match filter {
@@ -1097,7 +1317,17 @@ fn walk(
         }
     }
     for child in &children {
-        walk(child, world, dynamic, lift, owner, filter, draws, lights, split.as_deref_mut());
+        walk(
+            child,
+            world,
+            dynamic,
+            lift,
+            owner,
+            filter,
+            draws,
+            lights,
+            split.as_deref_mut(),
+        );
     }
 }
 
@@ -1113,7 +1343,13 @@ struct Place {
 
 impl Place {
     fn of(n: &Node) -> Place {
-        Place { cast: n.cast_shadow, receive: n.receive_shadow, order: n.render_order, lod: n.lod, fade: n.fade }
+        Place {
+            cast: n.cast_shadow,
+            receive: n.receive_shadow,
+            order: n.render_order,
+            lod: n.lod,
+            fade: n.fade,
+        }
     }
 }
 
@@ -1138,8 +1374,17 @@ fn draw_of(kind: DrawKind, geo: &Geo, mat: &Mat, world: Mat4, at: Place) -> Opti
 
 /// A mesh's draws at `world`: the mesh, then its ink hull (`hull` as geometry, without shadows).
 fn mesh_draws(geo: &Geo, mat: &Mat, hull: Option<&Geo>, world: Mat4, at: Place) -> Vec<Draw> {
-    let Some(d) = draw_of(DrawKind::Mesh, geo, mat, world, at) else { return Vec::new() };
-    let outline = hull.map(|hull| Draw { kind: DrawKind::Outline, geo: Arc::clone(hull), mat_id: 0, cast_shadow: false, receive_shadow: false, ..d.clone() });
+    let Some(d) = draw_of(DrawKind::Mesh, geo, mat, world, at) else {
+        return Vec::new();
+    };
+    let outline = hull.map(|hull| Draw {
+        kind: DrawKind::Outline,
+        geo: Arc::clone(hull),
+        mat_id: 0,
+        cast_shadow: false,
+        receive_shadow: false,
+        ..d.clone()
+    });
     std::iter::once(d).chain(outline).collect()
 }
 
@@ -1153,8 +1398,19 @@ fn emit(node: &Obj, world: Mat4, draws: &mut Vec<Draw>, lights: &mut Vec<PointLi
     match &kind {
         Kind::Group => {}
         Kind::Mesh { geo, mat } => draws.extend(mesh_draws(geo, mat, hull.as_ref(), world, at)),
-        Kind::Instanced { geo, mat, instances, count } => {
-            if let Some(d) = draw_of(DrawKind::Instanced(Arc::clone(instances), *count), geo, mat, world, at) {
+        Kind::Instanced {
+            geo,
+            mat,
+            instances,
+            count,
+        } => {
+            if let Some(d) = draw_of(
+                DrawKind::Instanced(Arc::clone(instances), *count),
+                geo,
+                mat,
+                world,
+                at,
+            ) {
                 let outline = hull.as_ref().map(|hull| Draw {
                     kind: DrawKind::OutlineInstanced(Arc::clone(instances), *count),
                     geo: Arc::clone(hull),
@@ -1167,8 +1423,19 @@ fn emit(node: &Obj, world: Mat4, draws: &mut Vec<Draw>, lights: &mut Vec<PointLi
                 draws.extend(outline);
             }
         }
-        Kind::Points { positions, mat } => draws.extend(draw_of(DrawKind::Points(Arc::clone(positions)), &empty_geo(), mat, world, at)),
-        Kind::PointLight { color, intensity, distance, decay } => lights.push(PointLightDraw {
+        Kind::Points { positions, mat } => draws.extend(draw_of(
+            DrawKind::Points(Arc::clone(positions)),
+            &empty_geo(),
+            mat,
+            world,
+            at,
+        )),
+        Kind::PointLight {
+            color,
+            intensity,
+            distance,
+            decay,
+        } => lights.push(PointLightDraw {
             position: world.w_axis.truncate(),
             color: *color,
             intensity: *intensity,
@@ -1185,7 +1452,12 @@ pub fn dynamic_roots(node: &Obj, parent: Mat4) -> Vec<(Obj, Mat4)> {
     fn visit(node: &Obj, parent: Mat4, found: &mut Vec<(Obj, Mat4)>) {
         let (dynamic, visible, world, children) = {
             let n = node.get();
-            (n.dynamic, n.visible, parent * local_of(&n), n.children.clone())
+            (
+                n.dynamic,
+                n.visible,
+                parent * local_of(&n),
+                n.children.clone(),
+            )
         };
         if dynamic {
             found.push((node.clone(), parent));
@@ -1231,7 +1503,16 @@ pub struct Rig {
 
 /// The rig of dynamic `node`, whose parent sits at `chain` and whose tally is `owner` (see [`Rig`]).
 fn rig_of(node: &Obj, chain: Mat4, owner: u32) -> Rig {
-    let mut rig = Rig { node: node.clone(), chain, loose: Vec::new(), merged: Vec::new(), sig: 0, children: Vec::new(), lift: None, owner };
+    let mut rig = Rig {
+        node: node.clone(),
+        chain,
+        loose: Vec::new(),
+        merged: Vec::new(),
+        sig: 0,
+        children: Vec::new(),
+        lift: None,
+        owner,
+    };
     let mut meshes = Vec::new();
     gather(node, Mat4::IDENTITY, true, &mut rig, &mut meshes);
     for d in &mut meshes {
@@ -1250,13 +1531,39 @@ fn rig_signature(merged: &[Draw]) -> u64 {
     merged.len().hash(&mut h);
     for d in merged {
         std::mem::discriminant(&d.kind).hash(&mut h);
-        (d.cast_shadow, d.receive_shadow, d.render_order, d.lod, d.fade).hash(&mut h);
-        format!("{}|{:?}|{:?}|{:?}", class_of(&d.material), d.material.color.to_array().map(f32::to_bits), d.material.shading, d.material.robot).hash(&mut h);
+        (
+            d.cast_shadow,
+            d.receive_shadow,
+            d.render_order,
+            d.lod,
+            d.fade,
+        )
+            .hash(&mut h);
+        format!(
+            "{}|{:?}|{:?}|{:?}",
+            class_of(&d.material),
+            d.material.color.to_array().map(f32::to_bits),
+            d.material.shading,
+            d.material.robot
+        )
+        .hash(&mut h);
         let g = &d.geo;
-        g.positions.iter().flatten().for_each(|v| v.to_bits().hash(&mut h));
-        g.normals.iter().flatten().for_each(|v| v.to_bits().hash(&mut h));
-        g.uvs.iter().flatten().for_each(|v| v.to_bits().hash(&mut h));
-        g.colors.iter().flatten().for_each(|v| v.to_bits().hash(&mut h));
+        g.positions
+            .iter()
+            .flatten()
+            .for_each(|v| v.to_bits().hash(&mut h));
+        g.normals
+            .iter()
+            .flatten()
+            .for_each(|v| v.to_bits().hash(&mut h));
+        g.uvs
+            .iter()
+            .flatten()
+            .for_each(|v| v.to_bits().hash(&mut h));
+        g.colors
+            .iter()
+            .flatten()
+            .for_each(|v| v.to_bits().hash(&mut h));
         g.indices.hash(&mut h);
         g.slots.hash(&mut h);
     }
@@ -1270,12 +1577,28 @@ fn rig_signature(merged: &[Draw]) -> u64 {
 fn gather(node: &Obj, parent: Mat4, root: bool, rig: &mut Rig, meshes: &mut Vec<Draw>) {
     let (dynamic, visible, rel, kind, hull, at, children) = {
         let n = node.get();
-        let rel = if root { Mat4::IDENTITY } else { parent * local_of(&n) };
-        (n.dynamic, n.visible, rel, n.kind.clone(), n.hull.clone(), Place::of(&n), n.children.clone())
+        let rel = if root {
+            Mat4::IDENTITY
+        } else {
+            parent * local_of(&n)
+        };
+        (
+            n.dynamic,
+            n.visible,
+            rel,
+            n.kind.clone(),
+            n.hull.clone(),
+            Place::of(&n),
+            n.children.clone(),
+        )
     };
     if !root && dynamic {
         let tally = node.get().tally;
-        rig.children.push(rig_of(node, parent, if tally != 0 { tally } else { rig.owner }));
+        rig.children.push(rig_of(
+            node,
+            parent,
+            if tally != 0 { tally } else { rig.owner },
+        ));
         return;
     }
     if !root && !visible {
@@ -1286,7 +1609,9 @@ fn gather(node: &Obj, parent: Mat4, root: bool, rig: &mut Rig, meshes: &mut Vec<
     } else {
         match kind {
             Kind::Group => {}
-            Kind::Mesh { geo, mat } => meshes.extend(mesh_draws(&geo, &mat, hull.as_ref(), rel, at)),
+            Kind::Mesh { geo, mat } => {
+                meshes.extend(mesh_draws(&geo, &mat, hull.as_ref(), rel, at))
+            }
             _ => rig.loose.push((node.clone(), rel)),
         }
     }
@@ -1300,7 +1625,10 @@ fn gather(node: &Obj, parent: Mat4, root: bool, rig: &mut Rig, meshes: &mut Vec<
 pub fn rigs(node: &Obj, parent: Mat4) -> Vec<Rig> {
     lifted_roots(node, parent)
         .into_iter()
-        .map(|(root, chain, lift, owner)| Rig { lift, ..rig_of(&root, chain, owner) })
+        .map(|(root, chain, lift, owner)| Rig {
+            lift,
+            ..rig_of(&root, chain, owner)
+        })
         .collect()
 }
 
@@ -1308,10 +1636,23 @@ pub fn rigs(node: &Obj, parent: Mat4) -> Vec<Rig> {
 /// draws count toward (see [`Node::tally`]).
 fn lifted_roots(node: &Obj, parent: Mat4) -> Vec<(Obj, Mat4, Option<Obj>, u32)> {
     let mut found = Vec::new();
-    fn visit(node: &Obj, parent: Mat4, lift: Option<&Obj>, owner: u32, found: &mut Vec<(Obj, Mat4, Option<Obj>, u32)>) {
+    fn visit(
+        node: &Obj,
+        parent: Mat4,
+        lift: Option<&Obj>,
+        owner: u32,
+        found: &mut Vec<(Obj, Mat4, Option<Obj>, u32)>,
+    ) {
         let (dynamic, visible, world, children, lifts, tally) = {
             let n = node.get();
-            (n.dynamic, n.visible, parent * local_of(&n), n.children.clone(), n.lift != 0, n.tally)
+            (
+                n.dynamic,
+                n.visible,
+                parent * local_of(&n),
+                n.children.clone(),
+                n.lift != 0,
+                n.tally,
+            )
         };
         let owner = if tally != 0 { tally } else { owner };
         if dynamic {
@@ -1332,7 +1673,9 @@ fn lifted_roots(node: &Obj, parent: Mat4) -> Vec<(Obj, Mat4, Option<Obj>, u32)> 
 
 /// The lift a top rig rises by this frame (identity without a lifting node).
 fn lift_of(rig: &Rig) -> Mat4 {
-    rig.lift.as_ref().map_or(Mat4::IDENTITY, |n| Mat4::from_translation(Vec3::new(0.0, n.get().lift_y, 0.0)))
+    rig.lift.as_ref().map_or(Mat4::IDENTITY, |n| {
+        Mat4::from_translation(Vec3::new(0.0, n.get().lift_y, 0.0))
+    })
 }
 
 /// Draws one rig this frame: `parent` is the frame its chain hangs from (identity at the top).
@@ -1344,7 +1687,10 @@ fn frame_rig(rig: &Rig, parent: Mat4, draws: &mut Vec<Draw>, lights: &mut Vec<Po
         }
         lift_of(rig) * parent * rig.chain * local_of(&n)
     };
-    draws.extend(rig.merged.iter().map(|d| Draw { model: frame * d.model, ..d.clone() }));
+    draws.extend(rig.merged.iter().map(|d| Draw {
+        model: frame * d.model,
+        ..d.clone()
+    }));
     for (node, rel) in &rig.loose {
         let first = draws.len();
         emit(node, frame * *rel, draws, lights);
@@ -1369,7 +1715,13 @@ pub fn flatten_rigs(list: &[Rig]) -> (Vec<Draw>, Vec<PointLightDraw>) {
 
 /// Walks one rig this frame like [`frame_rig`], but leaves its merged draws to the caller: `shown` gets
 /// each visible rig with its frame.
-fn frame_rig_into<'a>(rig: &'a Rig, parent: Mat4, shown: &mut Vec<(&'a Rig, Mat4)>, draws: &mut Vec<Draw>, lights: &mut Vec<PointLightDraw>) {
+fn frame_rig_into<'a>(
+    rig: &'a Rig,
+    parent: Mat4,
+    shown: &mut Vec<(&'a Rig, Mat4)>,
+    draws: &mut Vec<Draw>,
+    lights: &mut Vec<PointLightDraw>,
+) {
     let frame = {
         let n = rig.node.get();
         if !n.visible {
@@ -1414,19 +1766,38 @@ pub fn flatten_rigs_instanced(list: &[Rig]) -> (Vec<Draw>, Vec<PointLightDraw>) 
         }
     }
     for (rig, frames) in &groups {
-        let owner = if frames.iter().all(|(_, o)| *o == frames[0].1) { frames[0].1 } else { 0 };
+        let owner = if frames.iter().all(|(_, o)| *o == frames[0].1) {
+            frames[0].1
+        } else {
+            0
+        };
         for d in &rig.merged {
             if frames.len() == 1 || !matches!(d.kind, DrawKind::Mesh | DrawKind::Outline) {
-                draws.extend(frames.iter().map(|(f, o)| Draw { model: *f * d.model, owner: *o, ..d.clone() }));
+                draws.extend(frames.iter().map(|(f, o)| Draw {
+                    model: *f * d.model,
+                    owner: *o,
+                    ..d.clone()
+                }));
                 continue;
             }
-            let instances: Vec<Instance> = frames.iter().map(|(f, _)| Instance { matrix: *f * d.model, color: Color::WHITE }).collect();
+            let instances: Vec<Instance> = frames
+                .iter()
+                .map(|(f, _)| Instance {
+                    matrix: *f * d.model,
+                    color: Color::WHITE,
+                })
+                .collect();
             let count = instances.len();
             let kind = match d.kind {
                 DrawKind::Outline => DrawKind::OutlineInstanced(Arc::new(instances), count),
                 _ => DrawKind::Instanced(Arc::new(instances), count),
             };
-            draws.push(Draw { kind, model: Mat4::IDENTITY, owner, ..d.clone() });
+            draws.push(Draw {
+                kind,
+                model: Mat4::IDENTITY,
+                owner,
+                ..d.clone()
+            });
         }
     }
     (draws, lights)
@@ -1438,7 +1809,17 @@ pub fn flatten_roots(roots: &[(Obj, Mat4)]) -> (Vec<Draw>, Vec<PointLightDraw>) 
     let mut draws = Vec::new();
     let mut lights = Vec::new();
     for (node, parent) in roots {
-        walk(node, *parent, true, 0, 0, Filter::Dynamic, &mut draws, &mut lights, None);
+        walk(
+            node,
+            *parent,
+            true,
+            0,
+            0,
+            Filter::Dynamic,
+            &mut draws,
+            &mut lights,
+            None,
+        );
     }
     (draws, lights)
 }
@@ -1459,27 +1840,69 @@ pub fn bake(root: &Obj) -> Vec<Draw> {
 pub fn bake_split(root: &Obj, gpu_anim: bool) -> Baked {
     let (mut draws, mut lights, mut anim) = (Vec::new(), Vec::new(), Vec::new());
     let split = if gpu_anim { Some(&mut anim) } else { None };
-    walk(root, Mat4::IDENTITY, false, 0, 0, Filter::Static, &mut draws, &mut lights, split);
-    Baked { statics: merge_draws(draws, false), animated: merge_anim(anim) }
+    walk(
+        root,
+        Mat4::IDENTITY,
+        false,
+        0,
+        0,
+        Filter::Static,
+        &mut draws,
+        &mut lights,
+        split,
+    );
+    Baked {
+        statics: merge_draws(draws, false),
+        animated: merge_anim(anim),
+    }
 }
 
 /// The shader parameters of an animation for a part whose world matrix is `model`: the kind, then
 /// `params` and `axis` (see [`AnimVertex`]). A spin's pivot and axis move into the batch frame.
 fn anim_params(anim: &NodeAnim, model: Mat4) -> (AnimKind, [f32; 4], [f32; 4], f32) {
     match *anim {
-        NodeAnim::Spin { pivot, axis, rps, phase, machine } => {
-            let (p, k) = (model.transform_point3(pivot), model.transform_vector3(axis).normalize_or_zero());
-            (AnimKind::Spin, [p.x, p.y, p.z, phase], [k.x, k.y, k.z, rps], machine.map_or(-1.0, |m| m as f32))
+        NodeAnim::Spin {
+            pivot,
+            axis,
+            rps,
+            phase,
+            machine,
+        } => {
+            let (p, k) = (
+                model.transform_point3(pivot),
+                model.transform_vector3(axis).normalize_or_zero(),
+            );
+            (
+                AnimKind::Spin,
+                [p.x, p.y, p.z, phase],
+                [k.x, k.y, k.z, rps],
+                machine.map_or(-1.0, |m| m as f32),
+            )
         }
-        NodeAnim::Machine { led, glow, emissive, machine } => {
+        NodeAnim::Machine {
+            led,
+            glow,
+            emissive,
+            machine,
+        } => {
             let mode = match led {
                 MachineLed::Status => 0.0,
                 MachineLed::Activity => 1.0,
                 MachineLed::Screen => 2.0,
             };
-            (AnimKind::Machine, [mode, glow, 0.0, 0.0], [emissive.r, emissive.g, emissive.b, 0.0], machine.map_or(-1.0, |m| m as f32))
+            (
+                AnimKind::Machine,
+                [mode, glow, 0.0, 0.0],
+                [emissive.r, emissive.g, emissive.b, 0.0],
+                machine.map_or(-1.0, |m| m as f32),
+            )
         }
-        NodeAnim::Blink { rate, phase, lo, hi } => {
+        NodeAnim::Blink {
+            rate,
+            phase,
+            lo,
+            hi,
+        } => {
             let period = if rate > 0.0 { 1.0 / rate } else { 1.0 };
             let off = if hi != 0.0 { lo / hi } else { 0.0 };
             (AnimKind::Blink, [period, phase, hi, off], [0.0; 4], -1.0)
@@ -1502,7 +1925,10 @@ fn merge_anim(items: Vec<AnimDraw>) -> Vec<AnimBatch> {
             AnimKind::Machine => "m",
         };
         let (key, tint) = match d.kind {
-            DrawKind::Outline => (format!("o|{tag}|{}|{}|{}", d.render_order, d.lod, d.fade), None),
+            DrawKind::Outline => (
+                format!("o|{tag}|{}|{}|{}", d.render_order, d.lod, d.fade),
+                None,
+            ),
             _ if d.geo.slots.is_empty() => (
                 format!(
                     "c|{tag}|{}|{}|{}|{}|{}|{}",
@@ -1515,9 +1941,23 @@ fn merge_anim(items: Vec<AnimDraw>) -> Vec<AnimBatch> {
                 ),
                 Some(d.material.color.to_array()),
             ),
-            _ => (format!("m|{tag}|{}|{}|{}|{}|{}|{}", d.mat_id, d.cast_shadow, d.receive_shadow, d.render_order, d.lod, d.fade), None),
+            _ => (
+                format!(
+                    "m|{tag}|{}|{}|{}|{}|{}|{}",
+                    d.mat_id, d.cast_shadow, d.receive_shadow, d.render_order, d.lod, d.fade
+                ),
+                None,
+            ),
         };
-        let part = (Arc::clone(&d.geo), d.model, tint, params, axis, machine, d.lift);
+        let part = (
+            Arc::clone(&d.geo),
+            d.model,
+            tint,
+            params,
+            axis,
+            machine,
+            d.lift,
+        );
         match index.get(&key) {
             Some(&at) => groups[at].2.push(part),
             None => {
@@ -1532,7 +1972,8 @@ fn merge_anim(items: Vec<AnimDraw>) -> Vec<AnimBatch> {
             if parts.iter().any(|p| p.2.is_some()) {
                 first.material.color = Color::WHITE;
             }
-            let tris: Vec<(Geo, Mat4, Option<[f32; 3]>)> = parts.iter().map(|p| (Arc::clone(&p.0), p.1, p.2)).collect();
+            let tris: Vec<(Geo, Mat4, Option<[f32; 3]>)> =
+                parts.iter().map(|p| (Arc::clone(&p.0), p.1, p.2)).collect();
             let geo = merge_tinted(&tris);
             let mut vertices = Vec::with_capacity(geo.positions.len());
             for p in &parts {
@@ -1541,7 +1982,10 @@ fn merge_anim(items: Vec<AnimDraw>) -> Vec<AnimBatch> {
                     vertices.push(AnimVertex {
                         pos: geo.positions[i],
                         normal: geo.normals.get(i).copied().unwrap_or([0.0; 3]),
-                        color: geo.colors.get(i).map_or([1.0; 4], |c| [c[0], c[1], c[2], 1.0]),
+                        color: geo
+                            .colors
+                            .get(i)
+                            .map_or([1.0; 4], |c| [c[0], c[1], c[2], 1.0]),
                         params: p.3,
                         axis: p.4,
                         machine: p.5,
@@ -1549,7 +1993,15 @@ fn merge_anim(items: Vec<AnimDraw>) -> Vec<AnimBatch> {
                     });
                 }
             }
-            AnimBatch { draw: Draw { geo, model: Mat4::IDENTITY, ..first }, kind, vertices }
+            AnimBatch {
+                draw: Draw {
+                    geo,
+                    model: Mat4::IDENTITY,
+                    ..first
+                },
+                kind,
+                vertices,
+            }
         })
         .collect()
 }
@@ -1569,7 +2021,15 @@ fn merge_draws(draws: Vec<Draw>, by_fade: bool) -> Vec<Draw> {
         let fade = if by_fade { d.fade } else { 0 };
         let (key, tint) = match d.kind {
             DrawKind::Mesh if d.material.shading == Shading::Toon && d.geo.slots.is_empty() => (
-                format!("c|{}|{}|{}|{}|{}|{}", class_of(&d.material), d.cast_shadow, d.receive_shadow, d.render_order, d.lod, fade),
+                format!(
+                    "c|{}|{}|{}|{}|{}|{}",
+                    class_of(&d.material),
+                    d.cast_shadow,
+                    d.receive_shadow,
+                    d.render_order,
+                    d.lod,
+                    fade
+                ),
                 Some(d.material.color.to_array()),
             ),
             DrawKind::Mesh if d.material.shading == Shading::Basic && d.geo.slots.is_empty() => (
@@ -1586,7 +2046,13 @@ fn merge_draws(draws: Vec<Draw>, by_fade: bool) -> Vec<Draw> {
                 ),
                 Some(d.material.color.to_array()),
             ),
-            DrawKind::Mesh => (format!("m|{}|{}|{}|{}|{}|{}", d.mat_id, d.cast_shadow, d.receive_shadow, d.render_order, d.lod, fade), None),
+            DrawKind::Mesh => (
+                format!(
+                    "m|{}|{}|{}|{}|{}|{}",
+                    d.mat_id, d.cast_shadow, d.receive_shadow, d.render_order, d.lod, fade
+                ),
+                None,
+            ),
             // Outlines share one ink: key them by their state alone.
             DrawKind::Outline => (format!("o|{}|{}|{}", d.render_order, d.lod, fade), None),
             _ => {
@@ -1595,7 +2061,9 @@ fn merge_draws(draws: Vec<Draw>, by_fade: bool) -> Vec<Draw> {
             }
         };
         match index.get(&key) {
-            Some(&at) => groups[at].1.push((Arc::clone(&d.geo), d.model, tint, d.lift)),
+            Some(&at) => groups[at]
+                .1
+                .push((Arc::clone(&d.geo), d.model, tint, d.lift)),
             None => {
                 index.insert(key, groups.len());
                 let parts = vec![(Arc::clone(&d.geo), d.model, tint, d.lift)];
@@ -1609,13 +2077,24 @@ fn merge_draws(draws: Vec<Draw>, by_fade: bool) -> Vec<Draw> {
             if parts.iter().any(|p| p.2.is_some()) {
                 first.material.color = Color::WHITE;
             }
-            let tinted: Vec<(Geo, Mat4, Option<[f32; 3]>)> = parts.iter().map(|p| (Arc::clone(&p.0), p.1, p.2)).collect();
+            let tinted: Vec<(Geo, Mat4, Option<[f32; 3]>)> =
+                parts.iter().map(|p| (Arc::clone(&p.0), p.1, p.2)).collect();
             let mut geo = merge_tinted(&tinted);
             if parts.iter().any(|p| p.3 != 0) {
-                let lifts = parts.iter().flat_map(|p| std::iter::repeat_n(p.3, p.0.positions.len())).collect();
-                Arc::get_mut(&mut geo).expect("a fresh geometry has one owner").lifts = lifts;
+                let lifts = parts
+                    .iter()
+                    .flat_map(|p| std::iter::repeat_n(p.3, p.0.positions.len()))
+                    .collect();
+                Arc::get_mut(&mut geo)
+                    .expect("a fresh geometry has one owner")
+                    .lifts = lifts;
             }
-            Draw { geo, model: Mat4::IDENTITY, lift: 0, ..first }
+            Draw {
+                geo,
+                model: Mat4::IDENTITY,
+                lift: 0,
+                ..first
+            }
         })
         .collect();
     out.extend(rest);
@@ -1628,7 +2107,9 @@ fn merge_draws(draws: Vec<Draw>, by_fade: bool) -> Vec<Draw> {
 fn unfold(d: Draw) -> Vec<Draw> {
     let (instances, count, kind) = match &d.kind {
         DrawKind::Instanced(instances, count) => (Arc::clone(instances), *count, DrawKind::Mesh),
-        DrawKind::OutlineInstanced(instances, count) => (Arc::clone(instances), *count, DrawKind::Outline),
+        DrawKind::OutlineInstanced(instances, count) => {
+            (Arc::clone(instances), *count, DrawKind::Outline)
+        }
         _ => return vec![d],
     };
     let outline = matches!(kind, DrawKind::Outline);
@@ -1636,8 +2117,20 @@ fn unfold(d: Draw) -> Vec<Draw> {
         .iter()
         .take(count)
         .map(|inst| {
-            let color = if outline { d.material.color } else { d.material.color.mul(inst.color) };
-            Draw { kind: kind.clone(), model: inst.matrix * d.model, material: Material { color, ..d.material.clone() }, ..d.clone() }
+            let color = if outline {
+                d.material.color
+            } else {
+                d.material.color.mul(inst.color)
+            };
+            Draw {
+                kind: kind.clone(),
+                model: inst.matrix * d.model,
+                material: Material {
+                    color,
+                    ..d.material.clone()
+                },
+                ..d.clone()
+            }
         })
         .collect()
 }
@@ -1663,16 +2156,25 @@ fn class_of(m: &Material) -> String {
 
 /// Geometries moved by their matrices into one (normals by the normal matrix).
 pub fn merge(parts: &[(Geo, Mat4)]) -> Geo {
-    let tinted: Vec<(Geo, Mat4, Option<[f32; 3]>)> = parts.iter().map(|(g, m)| (Arc::clone(g), *m, None)).collect();
+    let tinted: Vec<(Geo, Mat4, Option<[f32; 3]>)> = parts
+        .iter()
+        .map(|(g, m)| (Arc::clone(g), *m, None))
+        .collect();
     merge_tinted(&tinted)
 }
 
 /// [`merge`], with each part's vertex colour (None: white). A merge with no colours at all has none.
 pub fn merge_tinted(parts: &[(Geo, Mat4, Option<[f32; 3]>)]) -> Geo {
     let total: usize = parts.iter().map(|(g, _, _)| g.positions.len()).sum();
-    let tinted = parts.iter().any(|p| p.2.is_some() || !p.0.colors.is_empty());
-    let (mut positions, mut normals, mut uvs, mut indices) =
-        (Vec::with_capacity(total), Vec::with_capacity(total), Vec::with_capacity(total), Vec::new());
+    let tinted = parts
+        .iter()
+        .any(|p| p.2.is_some() || !p.0.colors.is_empty());
+    let (mut positions, mut normals, mut uvs, mut indices) = (
+        Vec::with_capacity(total),
+        Vec::with_capacity(total),
+        Vec::with_capacity(total),
+        Vec::new(),
+    );
     let mut colors: Vec<[f32; 3]> = Vec::with_capacity(if tinted { total } else { 0 });
     for (geo, m, tint) in parts {
         if tinted {
@@ -1681,13 +2183,25 @@ pub fn merge_tinted(parts: &[(Geo, Mat4, Option<[f32; 3]>)]) -> Geo {
             if geo.colors.is_empty() {
                 colors.extend(std::iter::repeat(t).take(geo.positions.len()));
             } else {
-                colors.extend(geo.colors.iter().map(|c| [c[0] * t[0], c[1] * t[1], c[2] * t[2]]));
+                colors.extend(
+                    geo.colors
+                        .iter()
+                        .map(|c| [c[0] * t[0], c[1] * t[1], c[2] * t[2]]),
+                );
             }
         }
         let base = positions.len() as u32;
         let normal_matrix = Mat3::from_mat4(*m).inverse().transpose();
-        positions.extend(geo.positions.iter().map(|p| m.transform_point3(Vec3::from(*p)).to_array()));
-        normals.extend(geo.normals.iter().map(|n| (normal_matrix * Vec3::from(*n)).normalize_or_zero().to_array()));
+        positions.extend(
+            geo.positions
+                .iter()
+                .map(|p| m.transform_point3(Vec3::from(*p)).to_array()),
+        );
+        normals.extend(geo.normals.iter().map(|n| {
+            (normal_matrix * Vec3::from(*n))
+                .normalize_or_zero()
+                .to_array()
+        }));
         uvs.extend_from_slice(&geo.uvs);
         if geo.indices.is_empty() {
             indices.extend((0..geo.positions.len() as u32).map(|i| base + i));
@@ -1697,7 +2211,9 @@ pub fn merge_tinted(parts: &[(Geo, Mat4, Option<[f32; 3]>)]) -> Geo {
     }
     let mut merged = Geometry::new(positions, normals, uvs, indices);
     if tinted {
-        Arc::get_mut(&mut merged).expect("a fresh geometry has one owner").colors = colors;
+        Arc::get_mut(&mut merged)
+            .expect("a fresh geometry has one owner")
+            .colors = colors;
     }
     merged
 }
@@ -1736,10 +2252,17 @@ mod tests {
         root.add(&mover);
         let (all, _) = flatten(&root, Filter::All);
         assert_eq!(all.len(), 2);
-        assert_eq!(all[0].model.transform_point3(Vec3::ZERO), Vec3::new(3.0, 0.0, 0.0));
+        assert_eq!(
+            all[0].model.transform_point3(Vec3::ZERO),
+            Vec3::new(3.0, 0.0, 0.0)
+        );
         assert_eq!(flatten(&root, Filter::Static).0.len(), 1);
         assert_eq!(flatten(&root, Filter::Dynamic).0.len(), 1);
-        assert_eq!(root.world_matrix_of(&child).map(|m| m.transform_point3(Vec3::ZERO)), Some(Vec3::new(3.0, 0.0, 0.0)));
+        assert_eq!(
+            root.world_matrix_of(&child)
+                .map(|m| m.transform_point3(Vec3::ZERO)),
+            Some(Vec3::new(3.0, 0.0, 0.0))
+        );
     }
 
     #[test]
@@ -1755,10 +2278,16 @@ mod tests {
         root.add(&room);
         let roots = dynamic_roots(&root, Mat4::IDENTITY);
         assert_eq!(roots.len(), 1);
-        assert_eq!(roots[0].1.transform_point3(Vec3::ZERO), Vec3::new(5.0, 0.0, 0.0));
+        assert_eq!(
+            roots[0].1.transform_point3(Vec3::ZERO),
+            Vec3::new(5.0, 0.0, 0.0)
+        );
         let (draws, _) = flatten_roots(&roots);
         assert_eq!(draws.len(), 1);
-        assert_eq!(draws[0].model.transform_point3(Vec3::ZERO), Vec3::new(5.0, 0.0, 0.0));
+        assert_eq!(
+            draws[0].model.transform_point3(Vec3::ZERO),
+            Vec3::new(5.0, 0.0, 0.0)
+        );
     }
 
     #[test]
@@ -1768,9 +2297,14 @@ mod tests {
         let root = Obj::group();
         // Two dynamic roots (robots 1 and 2): robot 1 has a second mesh under it, robot 2 has one; a static mesh is no robot's.
         let one = Obj::group();
-        one.set_dynamic(true).set_tally(1).add(&Obj::mesh(&geo, &mat)).add(&Obj::mesh(&geo, &mat));
+        one.set_dynamic(true)
+            .set_tally(1)
+            .add(&Obj::mesh(&geo, &mat))
+            .add(&Obj::mesh(&geo, &mat));
         let two = Obj::group();
-        two.set_dynamic(true).set_tally(2).add(&Obj::mesh(&geo, &mat));
+        two.set_dynamic(true)
+            .set_tally(2)
+            .add(&Obj::mesh(&geo, &mat));
         root.add(&one).add(&two).add(&Obj::mesh(&geo, &mat));
         let (draws, _) = flatten_roots(&dynamic_roots(&root, Mat4::IDENTITY));
         let owners: Vec<u32> = draws.iter().map(|d| d.owner).collect();
@@ -1784,7 +2318,9 @@ mod tests {
         // Two dynamic roots of the same content: their rigs share one instanced draw.
         let part = |tally: u32, x: f32| {
             let g = Obj::group();
-            g.set_dynamic(true).set_tally(tally).set_position(x, 0.0, 0.0);
+            g.set_dynamic(true)
+                .set_tally(tally)
+                .set_position(x, 0.0, 0.0);
             g.add(&Obj::mesh(&geo, &mat)).add(&Obj::mesh(&geo, &mat));
             g
         };
@@ -1792,15 +2328,28 @@ mod tests {
             let root = Obj::group();
             root.add(&part(a, 0.0)).add(&part(b, 2.0));
             let (draws, _) = flatten_rigs_instanced(&rigs(&root, Mat4::IDENTITY));
-            draws.iter().filter(|d| matches!(d.kind, DrawKind::Instanced(..))).map(|d| d.owner).collect::<Vec<_>>()
+            draws
+                .iter()
+                .filter(|d| matches!(d.kind, DrawKind::Instanced(..)))
+                .map(|d| d.owner)
+                .collect::<Vec<_>>()
         };
-        assert_eq!(instanced(1, 1), vec![1], "one robot's instances keep its tally");
+        assert_eq!(
+            instanced(1, 1),
+            vec![1],
+            "one robot's instances keep its tally"
+        );
         assert_eq!(instanced(1, 2), vec![0], "two robots' instances keep none");
     }
 
     #[test]
     fn bake_merges_meshes_sharing_a_material() {
-        let geo = Geometry::new(vec![[0.0; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], vec![], vec![], vec![0, 1, 2]);
+        let geo = Geometry::new(
+            vec![[0.0; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            vec![],
+            vec![],
+            vec![0, 1, 2],
+        );
         let (a, b) = (Mat::toon(Color::WHITE), Mat::basic(Color::BLACK));
         let root = Obj::group();
         for x in 0..3 {
@@ -1818,7 +2367,12 @@ mod tests {
 
     #[test]
     fn gpu_animated_parts_bake_into_animated_batches_and_leave_the_dynamic_draws() {
-        let geo = Geometry::new(vec![[0.0; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], vec![], vec![], vec![0, 1, 2]);
+        let geo = Geometry::new(
+            vec![[0.0; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            vec![],
+            vec![],
+            vec![0, 1, 2],
+        );
         let (toon, basic) = (Mat::toon(Color::WHITE), Mat::basic(Color::BLACK));
         // A body, a fan and an LED; the fan and LED are dynamic exactly when the GPU does not animate them.
         let machine = |gpu: bool| {
@@ -1827,15 +2381,32 @@ mod tests {
             let fan = Obj::mesh(&geo, &toon);
             fan.set_position(2.0, 0.0, 0.0)
                 .set_dynamic(!gpu)
-                .set_anim(NodeAnim::Spin { pivot: Vec3::ZERO, axis: Vec3::Y, rps: 2.0, phase: 0.0, machine: None });
+                .set_anim(NodeAnim::Spin {
+                    pivot: Vec3::ZERO,
+                    axis: Vec3::Y,
+                    rps: 2.0,
+                    phase: 0.0,
+                    machine: None,
+                });
             root.add(&fan);
             let led = Obj::mesh(&geo, &basic);
-            led.set_dynamic(!gpu).set_anim(NodeAnim::Blink { rate: 1.0, phase: 0.0, lo: 0.1, hi: 1.0 });
+            led.set_dynamic(!gpu).set_anim(NodeAnim::Blink {
+                rate: 1.0,
+                phase: 0.0,
+                lo: 0.1,
+                hi: 1.0,
+            });
             root.add(&led);
             root
         };
-        let (off, on) = (bake_split(&machine(false), false), bake_split(&machine(true), true));
-        let (dyn_off, dyn_on) = (flatten(&machine(false), Filter::Dynamic).0.len(), flatten(&machine(true), Filter::Dynamic).0.len());
+        let (off, on) = (
+            bake_split(&machine(false), false),
+            bake_split(&machine(true), true),
+        );
+        let (dyn_off, dyn_on) = (
+            flatten(&machine(false), Filter::Dynamic).0.len(),
+            flatten(&machine(true), Filter::Dynamic).0.len(),
+        );
         println!(
             "static/animated/dynamic: off {}/{}/{}, on {}/{}/{}",
             off.statics.len(),
@@ -1847,19 +2418,34 @@ mod tests {
         );
         assert_eq!((off.statics.len(), off.animated.len(), dyn_off), (1, 0, 2));
         assert_eq!((on.statics.len(), on.animated.len(), dyn_on), (1, 2, 0));
-        let spin = on.animated.iter().find(|b| b.kind == AnimKind::Spin).unwrap();
+        let spin = on
+            .animated
+            .iter()
+            .find(|b| b.kind == AnimKind::Spin)
+            .unwrap();
         assert_eq!(spin.vertices.len(), 3);
         assert_eq!(spin.vertices[0].pos, [2.0, 0.0, 0.0]);
         assert_eq!(spin.vertices[0].params, [2.0, 0.0, 0.0, 0.0]);
         assert_eq!(spin.vertices[0].axis, [0.0, 1.0, 0.0, 2.0]);
-        let blink = on.animated.iter().find(|b| b.kind == AnimKind::Blink).unwrap();
+        let blink = on
+            .animated
+            .iter()
+            .find(|b| b.kind == AnimKind::Blink)
+            .unwrap();
         assert_eq!(blink.vertices[0].params, [1.0, 0.0, 1.0, 0.1]);
         assert_eq!(bake(&machine(false)).len(), 1);
     }
 
     #[test]
     fn the_camera_projects_its_target_to_the_centre_and_its_ray_points_at_it() {
-        let cam = Camera { eye: Vec3::new(0.0, 10.0, 10.0), target: Vec3::ZERO, fov: 40.0, near: 0.5, far: 1000.0, aspect: 2.0 };
+        let cam = Camera {
+            eye: Vec3::new(0.0, 10.0, 10.0),
+            target: Vec3::ZERO,
+            fov: 40.0,
+            near: 0.5,
+            far: 1000.0,
+            aspect: 2.0,
+        };
         let (x, y) = cam.to_screen(Vec3::ZERO, 200.0, 100.0).unwrap();
         assert!((x - 100.0).abs() < 1e-3 && (y - 50.0).abs() < 1e-3);
         let (origin, dir) = cam.ray(100.0, 50.0, 200.0, 100.0);

@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 
-use super::generate::{template_for, Anchor, CatGroup, CatItem, Data, Door, Input, Layout, Place};
+use super::generate::{Anchor, CatGroup, CatItem, Data, Door, Input, Layout, Place, template_for};
 
 const TOL: f64 = 1e-3;
 const WALLMOUNT_DEPTH: f64 = 0.1;
@@ -21,7 +21,12 @@ const SPOT_FACE_TOL: f64 = 30.0;
 const SEAT_IDS: [&str; 3] = ["chair", "armchair", "stool"];
 const SEAT_GROUPS: [&str; 4] = ["desk-set", "meeting", "station", "reading-nook"];
 /// The rotation that turns a wall item's front to the room centre, per wall (as gen.ts).
-const SIDE_ROT: [(Door, f64); 4] = [(Door::N, 0.0), (Door::E, 270.0), (Door::S, 180.0), (Door::W, 90.0)];
+const SIDE_ROT: [(Door, f64); 4] = [
+    (Door::N, 0.0),
+    (Door::E, 270.0),
+    (Door::S, 180.0),
+    (Door::W, 90.0),
+];
 const SIDES: [Door; 4] = [Door::N, Door::E, Door::S, Door::W];
 
 /// A number as JavaScript prints it (`String(v)`): `-0` reads as `0`, exponent form outside [1e-6, 1e21).
@@ -161,22 +166,40 @@ pub fn verify(layout: &Layout, input: &Input, data: &Data) -> Vec<String> {
     // Shell.
     let sh = &layout.shell;
     if sh.door.side != door {
-        out.push(format!("shell: door side {}, expected {}", side_name(sh.door.side), side_name(door)));
+        out.push(format!(
+            "shell: door side {}, expected {}",
+            side_name(sh.door.side),
+            side_name(door)
+        ));
     }
-    let side_len = if door == Door::N || door == Door::S { w } else { d };
+    let side_len = if door == Door::N || door == Door::S {
+        w
+    } else {
+        d
+    };
     let exp_width = 1.0_f64.min(side_len - 0.5);
     if (sh.door.width - exp_width).abs() > TOL {
-        out.push(format!("shell: door width {}, expected {}", js(sh.door.width), js(exp_width)));
+        out.push(format!(
+            "shell: door width {}, expected {}",
+            js(sh.door.width),
+            js(exp_width)
+        ));
     }
     if sh.door.at.abs() > TOL {
         out.push(format!("shell: door at {}, expected 0", js(sh.door.at)));
     }
     if !sh.walls.is_empty() && sh.walls != SIDES {
         let list: Vec<&str> = sh.walls.iter().map(|s| side_name(*s)).collect();
-        out.push(format!("shell: walls [{}] are not all four sides (the door side has stubs)", list.join(",")));
+        out.push(format!(
+            "shell: walls [{}] are not all four sides (the door side has stubs)",
+            list.join(",")
+        ));
     }
     if !layout.dropped.is_empty() {
-        out.push(format!("dropped required groups: {}", layout.dropped.join(", ")));
+        out.push(format!(
+            "dropped required groups: {}",
+            layout.dropped.join(", ")
+        ));
     }
 
     // v2 groups: each entry of layout.groups is a catalogue group.
@@ -239,8 +262,14 @@ pub fn verify(layout: &Layout, input: &Input, data: &Data) -> Vec<String> {
         let u = (x + w / 2.0) / cell;
         let v = (z + d / 2.0) / cell;
         let t = TOL / cell;
-        let is: Vec<i64> = [(u - t).floor() as i64, (u + t).floor() as i64].iter().map(|&i| i.clamp(0, cols - 1)).collect();
-        let js: Vec<i64> = [(v - t).floor() as i64, (v + t).floor() as i64].iter().map(|&j| j.clamp(0, rows - 1)).collect();
+        let is: Vec<i64> = [(u - t).floor() as i64, (u + t).floor() as i64]
+            .iter()
+            .map(|&i| i.clamp(0, cols - 1))
+            .collect();
+        let js: Vec<i64> = [(v - t).floor() as i64, (v + t).floor() as i64]
+            .iter()
+            .map(|&j| j.clamp(0, rows - 1))
+            .collect();
         let mut res: Vec<usize> = Vec::new();
         for &j in &js {
             for &i in &is {
@@ -260,9 +289,16 @@ pub fn verify(layout: &Layout, input: &Input, data: &Data) -> Vec<String> {
         if it.n != k {
             out.push(format!("item {k}: n is {}", it.n));
         }
-        let g = if it.g < groups.len() { Some(it.g) } else { None };
+        let g = if it.g < groups.len() {
+            Some(it.g)
+        } else {
+            None
+        };
         if g.is_none() {
-            out.push(format!("item {k} ({}): group {} is not an index of layout.groups", it.id, it.g));
+            out.push(format!(
+                "item {k} ({}): group {} is not an index of layout.groups",
+                it.id, it.g
+            ));
         }
         let Some(cat) = catalog.items.get(&it.id) else {
             out.push(format!("item {k}: unknown id \"{}\"", it.id));
@@ -281,7 +317,11 @@ pub fn verify(layout: &Layout, input: &Input, data: &Data) -> Vec<String> {
             }
         }
         let fw = cat.size[0];
-        let fd = if kind == Kind::Wall { WALLMOUNT_DEPTH } else { cat.size[2] };
+        let fd = if kind == Kind::Wall {
+            WALLMOUNT_DEPTH
+        } else {
+            cat.size[2]
+        };
         let along = ((it.rot % 180.0) + 180.0) % 180.0 == 0.0;
         let sx = if along { fw } else { fd };
         let sz = if along { fd } else { fw };
@@ -303,7 +343,10 @@ pub fn verify(layout: &Layout, input: &Input, data: &Data) -> Vec<String> {
             z1: it.z + sz / 2.0,
             top: it.y + cat.size[1],
         };
-        let host_top_group = it.host.and_then(|h| vs.get(h).and_then(|o| o.as_ref())).map(|h| (h.k, h.top, h.g, h.x0, h.x1, h.z0, h.z1));
+        let host_top_group = it
+            .host
+            .and_then(|h| vs.get(h).and_then(|o| o.as_ref()))
+            .map(|h| (h.k, h.top, h.g, h.x0, h.x1, h.z0, h.z1));
         if kind == Kind::Surface {
             match host_top_group {
                 None => out.push(format!("{label}: surface item without a host")),
@@ -318,7 +361,8 @@ pub fn verify(layout: &Layout, input: &Input, data: &Data) -> Vec<String> {
                     if (it.y - htop).abs() > TOL {
                         out.push(format!("{label}: y {}, host top {}", js(it.y), js(htop)));
                     }
-                    if v.x0 < hx0 - TOL || v.x1 > hx1 + TOL || v.z0 < hz0 - TOL || v.z1 > hz1 + TOL {
+                    if v.x0 < hx0 - TOL || v.x1 > hx1 + TOL || v.z0 < hz0 - TOL || v.z1 > hz1 + TOL
+                    {
                         out.push(format!("{label}: footprint not inside its host footprint"));
                     }
                 }
@@ -327,11 +371,19 @@ pub fn verify(layout: &Layout, input: &Input, data: &Data) -> Vec<String> {
             cov.push(None);
             continue;
         }
-        let exp_y = if kind == Kind::Wall { cat.mount.unwrap_or(0.0) } else { 0.0 };
+        let exp_y = if kind == Kind::Wall {
+            cat.mount.unwrap_or(0.0)
+        } else {
+            0.0
+        };
         if (it.y - exp_y).abs() > TOL {
             out.push(format!("{label}: y {}, expected {}", js(it.y), js(exp_y)));
         }
-        if v.x0 < -w / 2.0 - TOL || v.x1 > w / 2.0 + TOL || v.z0 < -d / 2.0 - TOL || v.z1 > d / 2.0 + TOL {
+        if v.x0 < -w / 2.0 - TOL
+            || v.x1 > w / 2.0 + TOL
+            || v.z0 < -d / 2.0 - TOL
+            || v.z1 > d / 2.0 + TOL
+        {
             out.push(format!("{label}: footprint outside the room"));
         }
         cov.push(Some(covered(v.x0, v.x1, v.z0, v.z1)));
@@ -360,7 +412,10 @@ pub fn verify(layout: &Layout, input: &Input, data: &Data) -> Vec<String> {
             continue;
         }
         if cov_slice(&cov, v.k).iter().any(|&c| ds[c]) {
-            out.push(format!("item {} ({}): covers the door zone or spine", v.k, v.id));
+            out.push(format!(
+                "item {} ({}): covers the door zone or spine",
+                v.k, v.id
+            ));
         }
     }
 
@@ -370,7 +425,10 @@ pub fn verify(layout: &Layout, input: &Input, data: &Data) -> Vec<String> {
             let p = vs[sa].as_ref().expect("a solid is placed");
             let q = vs[sb].as_ref().expect("a solid is placed");
             if p.x1.min(q.x1) - p.x0.max(q.x0) > TOL && p.z1.min(q.z1) - p.z0.max(q.z0) > TOL {
-                out.push(format!("items {} ({}) and {} ({}) overlap", p.k, p.id, q.k, q.id));
+                out.push(format!(
+                    "items {} ({}) and {} ({}) overlap",
+                    p.k, p.id, q.k, q.id
+                ));
             }
         }
     }
@@ -410,21 +468,31 @@ pub fn verify(layout: &Layout, input: &Input, data: &Data) -> Vec<String> {
                 continue;
             }
             if cov_slice(&cov, s).iter().any(|&c| in_clear[c]) {
-                out.push(format!("item {} ({}): clear zone blocked by item {} ({})", v.k, v.id, o.k, o.id));
+                out.push(format!(
+                    "item {} ({}): clear zone blocked by item {} ({})",
+                    v.k, v.id, o.k, o.id
+                ));
                 break;
             }
         }
     }
 
     // Z-fighting: two non-floor items with coplanar top faces that overlap.
-    let placed: Vec<&VItem> = vs.iter().flatten().filter(|v| v.kind != Kind::Floor).collect();
+    let placed: Vec<&VItem> = vs
+        .iter()
+        .flatten()
+        .filter(|v| v.kind != Kind::Floor)
+        .collect();
     for (a, p) in placed.iter().enumerate() {
         for q in &placed[a + 1..] {
             if (p.top - q.top).abs() > TOL {
                 continue;
             }
             if p.x1.min(q.x1) - p.x0.max(q.x0) > TOL && p.z1.min(q.z1) - p.z0.max(q.z0) > TOL {
-                out.push(format!("items {} ({}) and {} ({}): coplanar tops overlap", p.k, p.id, q.k, q.id));
+                out.push(format!(
+                    "items {} ({}) and {} ({}): coplanar tops overlap",
+                    p.k, p.id, q.k, q.id
+                ));
             }
         }
     }
@@ -472,14 +540,20 @@ pub fn verify(layout: &Layout, input: &Input, data: &Data) -> Vec<String> {
         }
         if v.cat.walk {
             if !reach(v.x, v.z) {
-                out.push(format!("item {} ({}): centre (walk) unreachable from the door", v.k, v.id));
+                out.push(format!(
+                    "item {} ({}): centre (walk) unreachable from the door",
+                    v.k, v.id
+                ));
             }
             continue;
         }
         let front = v.cat.clear.map_or(0.0, |c| c.front);
         let (dx, dz) = rotated(0.0, v.fd / 2.0 + front.max(MIN_ACCESS) / 2.0, v.rot);
         if !reach(v.x + dx, v.z + dz) {
-            out.push(format!("item {} ({}): front access unreachable from the door", v.k, v.id));
+            out.push(format!(
+                "item {} ({}): front access unreachable from the door",
+                v.k, v.id
+            ));
         }
     }
 
@@ -497,11 +571,19 @@ pub fn verify(layout: &Layout, input: &Input, data: &Data) -> Vec<String> {
         }
     }
     if expected.len() != layout.spots.len() {
-        out.push(format!("spots: {} listed, catalogue gives {}", layout.spots.len(), expected.len()));
+        out.push(format!(
+            "spots: {} listed, catalogue gives {}",
+            layout.spots.len(),
+            expected.len()
+        ));
     }
     for (q, e) in expected.iter().enumerate().take(layout.spots.len()) {
         let s = &layout.spots[q];
-        if s.item != e.item || (s.x - e.x).abs() > SPOT_TOL || (s.z - e.z).abs() > SPOT_TOL || s.face != e.face {
+        if s.item != e.item
+            || (s.x - e.x).abs() > SPOT_TOL
+            || (s.z - e.z).abs() > SPOT_TOL
+            || s.face != e.face
+        {
             out.push(format!(
                 "spot {q}: item {} at ({}, {}) face {}, catalogue gives item {} at ({:.3}, {:.3}) face {}",
                 s.item,
@@ -518,29 +600,57 @@ pub fn verify(layout: &Layout, input: &Input, data: &Data) -> Vec<String> {
     // A robot spot stays 0.15 off each wall that exists (the room edge where there is none), lies inside the grid,
     // and never sits on a blocking cell (walk items may be stood on).
     let in_walls = |side: Door| sh.walls.contains(&side);
-    let spot_x0 = (if in_walls(Door::W) { -w / 2.0 + 0.15 } else { -w / 2.0 }) - TOL;
-    let spot_x1 = (if in_walls(Door::E) { w / 2.0 - 0.15 } else { w / 2.0 }) + TOL;
-    let spot_z0 = (if in_walls(Door::N) { -d / 2.0 + 0.15 } else { -d / 2.0 }) - TOL;
-    let spot_z1 = (if in_walls(Door::S) { d / 2.0 - 0.15 } else { d / 2.0 }) + TOL;
+    let spot_x0 = (if in_walls(Door::W) {
+        -w / 2.0 + 0.15
+    } else {
+        -w / 2.0
+    }) - TOL;
+    let spot_x1 = (if in_walls(Door::E) {
+        w / 2.0 - 0.15
+    } else {
+        w / 2.0
+    }) + TOL;
+    let spot_z0 = (if in_walls(Door::N) {
+        -d / 2.0 + 0.15
+    } else {
+        -d / 2.0
+    }) - TOL;
+    let spot_z1 = (if in_walls(Door::S) {
+        d / 2.0 - 0.15
+    } else {
+        d / 2.0
+    }) + TOL;
     for s in &layout.spots {
         let owner = vs.get(s.item).and_then(|o| o.as_ref());
         let label = match owner {
-            Some(o) => format!("spot of item {} ({}) at ({}, {})", s.item, o.id, js(s.x), js(s.z)),
+            Some(o) => format!(
+                "spot of item {} ({}) at ({}, {})",
+                s.item,
+                o.id,
+                js(s.x),
+                js(s.z)
+            ),
             None => format!("spot of item {} at ({}, {})", s.item, js(s.x), js(s.z)),
         };
         if !(s.x >= spot_x0 && s.x <= spot_x1 && s.z >= spot_z0 && s.z <= spot_z1) {
-            out.push(format!("{label}: outside the room (robot spots keep 0.15 from each wall)"));
+            out.push(format!(
+                "{label}: outside the room (robot spots keep 0.15 from each wall)"
+            ));
             continue;
         }
         let gi = ((s.x + w / 2.0) / cell).floor() as i64;
         let gj = ((s.z + d / 2.0) / cell).floor() as i64;
         if gi < 0 || gi >= cols || gj < 0 || gj >= rows {
-            out.push(format!("{label}: outside the grid (in the strip beyond the last whole cell)"));
+            out.push(format!(
+                "{label}: outside the grid (in the strip beyond the last whole cell)"
+            ));
             continue;
         }
         let cells = window_cells(s.x, s.z);
         if cells.iter().all(|&c| blk[c] == 1) {
-            out.push(format!("{label}: lies on a blocking cell (inside a solid footprint)"));
+            out.push(format!(
+                "{label}: lies on a blocking cell (inside a solid footprint)"
+            ));
             continue;
         }
         let Some(o) = owner else { continue };
@@ -562,7 +672,8 @@ pub fn verify(layout: &Layout, input: &Input, data: &Data) -> Vec<String> {
         }
     }
     let group_of = |v: &VItem| -> Option<&str> { v.g.map(|g| groups[g].as_str()) };
-    let def_of = |v: &VItem| -> Option<&CatGroup> { v.g.and_then(|g| cat_groups.get(groups[g].as_str())) };
+    let def_of =
+        |v: &VItem| -> Option<&CatGroup> { v.g.and_then(|g| cat_groups.get(groups[g].as_str())) };
     let gap_of = |v: &VItem, side: Door| -> f64 {
         match side {
             Door::N => v.z0 + d / 2.0,
@@ -594,13 +705,23 @@ pub fn verify(layout: &Layout, input: &Input, data: &Data) -> Vec<String> {
                     js(v.rot)
                 ));
             } else if def.anchor == Anchor::Corner {
-                let ns = edges.iter().any(|&s| (s == Door::N || s == Door::S) && touches(v, s));
-                let ew = edges.iter().any(|&s| (s == Door::E || s == Door::W) && touches(v, s));
+                let ns = edges
+                    .iter()
+                    .any(|&s| (s == Door::N || s == Door::S) && touches(v, s));
+                let ew = edges
+                    .iter()
+                    .any(|&s| (s == Door::E || s == Door::W) && touches(v, s));
                 if !(ns && ew) {
-                    out.push(format!("{label}: corner anchor is not within {} of two room edges", js(ANCHOR_TOUCH)));
+                    out.push(format!(
+                        "{label}: corner anchor is not within {} of two room edges",
+                        js(ANCHOR_TOUCH)
+                    ));
                 }
             } else if def.anchor == Anchor::Door && !touches(v, door) {
-                out.push(format!("{label}: door anchor is not within {} of the door edge", js(ANCHOR_TOUCH)));
+                out.push(format!(
+                    "{label}: door anchor is not within {} of the door edge",
+                    js(ANCHOR_TOUCH)
+                ));
             }
         }
         if v.kind == Kind::Wall && !against_own_wall(v) {
@@ -620,14 +741,20 @@ pub fn verify(layout: &Layout, input: &Input, data: &Data) -> Vec<String> {
         let label = format!("item {} ({})", v.k, v.id);
         let in_purpose = group_of(v).is_some_and(|id| SEAT_GROUPS.contains(&id));
         if !in_purpose {
-            out.push(format!("{label}: seat is not in a desk-set, meeting, station or reading-nook group"));
+            out.push(format!(
+                "{label}: seat is not in a desk-set, meeting, station or reading-nook group"
+            ));
             continue;
         }
-        let Some(a) = v.g.and_then(|g| anchor_of[g]) else { continue };
+        let Some(a) = v.g.and_then(|g| anchor_of[g]) else {
+            continue;
+        };
         if a == v.k {
             continue;
         }
-        let Some(anchor) = vs[a].as_ref() else { continue };
+        let Some(anchor) = vs[a].as_ref() else {
+            continue;
+        };
         let ang = angle_deg(front_of(v.rot), (anchor.x - v.x, anchor.z - v.z));
         if ang > SEAT_FACE_TOL + TOL {
             out.push(format!(
@@ -650,9 +777,16 @@ pub fn verify(layout: &Layout, input: &Input, data: &Data) -> Vec<String> {
             continue;
         }
         let Some(def) = def_of(v) else { continue };
-        let Some(anchor) = anchor_of[g].and_then(|a| vs[a].as_ref()) else { continue };
+        let Some(anchor) = anchor_of[g].and_then(|a| vs[a].as_ref()) else {
+            continue;
+        };
         let Some(entry) = def.items.iter().find(|e| {
-            e.id == v.id && e.rel.is_some() && !matches!(e.rel.as_deref(), Some("around") | Some("mirror") | Some("on"))
+            e.id == v.id
+                && e.rel.is_some()
+                && !matches!(
+                    e.rel.as_deref(),
+                    Some("around") | Some("mirror") | Some("on")
+                )
         }) else {
             continue;
         };
@@ -681,7 +815,10 @@ pub fn verify(layout: &Layout, input: &Input, data: &Data) -> Vec<String> {
             continue;
         }
         if def_of(v).map(|def| def.anchor) != Some(Anchor::Center) {
-            out.push(format!("item {} ({}): in the middle of the room but its group is not a centre group", v.k, v.id));
+            out.push(format!(
+                "item {} ({}): in the middle of the room but its group is not a centre group",
+                v.k, v.id
+            ));
         }
     }
 
@@ -727,7 +864,9 @@ pub fn verify(layout: &Layout, input: &Input, data: &Data) -> Vec<String> {
 
     // Spots face their item within SPOT_FACE_TOL (a spot on the item's own centre has no direction to test).
     for s in &layout.spots {
-        let Some(owner) = vs.get(s.item).and_then(|o| o.as_ref()) else { continue };
+        let Some(owner) = vs.get(s.item).and_then(|o| o.as_ref()) else {
+            continue;
+        };
         let dx = owner.x - s.x;
         let dz = owner.z - s.z;
         if dx.hypot(dz) <= 0.01 {
@@ -749,11 +888,17 @@ pub fn verify(layout: &Layout, input: &Input, data: &Data) -> Vec<String> {
 
     // Required groups present, with the counts the template asks for (per "agent" entries scale with the desk
     // count). The asked-for counts are listed in the template's order, as the web's Map does.
-    let agents = input.agents.unwrap_or_else(|| ((w * d / 6.0).floor() as i64).clamp(1, 4) as usize);
+    let agents = input
+        .agents
+        .unwrap_or_else(|| ((w * d / 6.0).floor() as i64).clamp(1, 4) as usize);
     {
         let mut need: Vec<(String, usize)> = Vec::new();
         for e in &tpl.required {
-            let add = if e.per.as_deref() == Some("agent") { agents } else { 1 };
+            let add = if e.per.as_deref() == Some("agent") {
+                agents
+            } else {
+                1
+            };
             match need.iter_mut().find(|(g, _)| *g == e.group) {
                 Some(slot) => slot.1 += add,
                 None => need.push((e.group.clone(), add)),
@@ -762,7 +907,9 @@ pub fn verify(layout: &Layout, input: &Input, data: &Data) -> Vec<String> {
         for (gid, asked) in need {
             let actual = groups.iter().filter(|x| **x == gid).count();
             if actual < asked {
-                out.push(format!("required group \"{gid}\": {actual} placed, {asked} asked for"));
+                out.push(format!(
+                    "required group \"{gid}\": {actual} placed, {asked} asked for"
+                ));
             }
         }
     }
@@ -772,7 +919,7 @@ pub fn verify(layout: &Layout, input: &Input, data: &Data) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::generate::{data, fixture_cases, generate, Door as D, Input};
+    use super::super::generate::{Door as D, Input, data, fixture_cases, generate};
     use super::*;
 
     /// Every generated layout of the golden cases is checked by the verifier (the golden set predates v2, so this
@@ -789,17 +936,28 @@ mod tests {
             }
             let v = verify(&layout, &c.input, d);
             if !v.is_empty() {
-                failures.push(format!("{} {}x{} seed {}: {v:?}", c.input.role, c.input.w, c.input.d, c.input.seed));
+                failures.push(format!(
+                    "{} {}x{} seed {}: {v:?}",
+                    c.input.role, c.input.w, c.input.d, c.input.seed
+                ));
             }
         }
-        assert!(failures.is_empty(), "{} layouts violate:\n{}", failures.len(), failures[..failures.len().min(5)].join("\n"));
+        assert!(
+            failures.is_empty(),
+            "{} layouts violate:\n{}",
+            failures.len(),
+            failures[..failures.len().min(5)].join("\n")
+        );
     }
 
     /// A moved robot spot is caught: the verifier reports its position against the catalogue.
     #[test]
     fn a_moved_spot_is_a_violation() {
         let d = data();
-        let case = fixture_cases().into_iter().find(|c| c.dropped == 0).expect("a fixture with no drop");
+        let case = fixture_cases()
+            .into_iter()
+            .find(|c| c.dropped == 0)
+            .expect("a fixture with no drop");
         let layout = generate(&case.input, d);
         assert!(!layout.spots.is_empty(), "the case has robot spots");
         let mut moved = layout.clone();
@@ -812,11 +970,21 @@ mod tests {
     #[test]
     fn a_wrong_door_side_is_reported() {
         let d = data();
-        let input = Input { role: "librarian".to_string(), w: 4.0, d: 3.5, door: D::S, seed: 7, agents: None };
+        let input = Input {
+            role: "librarian".to_string(),
+            w: 4.0,
+            d: 3.5,
+            door: D::S,
+            seed: 7,
+            agents: None,
+        };
         let mut layout = generate(&input, d);
         layout.shell.door.side = D::N;
         let v = verify(&layout, &input, d);
-        assert!(v.iter().any(|m| m == "shell: door side n, expected s"), "{v:?}");
+        assert!(
+            v.iter().any(|m| m == "shell: door side n, expected s"),
+            "{v:?}"
+        );
     }
 
     #[test]
@@ -851,12 +1019,29 @@ mod tests {
             };
             let layout = generate(&input, dd);
             let got = verify(&layout, &input, dd);
-            let want: Vec<String> = r["violations"].as_array().unwrap().iter().map(|v| v.as_str().unwrap().to_string()).collect();
+            let want: Vec<String> = r["violations"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_str().unwrap().to_string())
+                .collect();
             if got != want {
-                bad.push(format!("{} {}x{} {} seed {}:\n  rust {got:?}\n  web  {want:?}", input.role, input.w, input.d, input.door.as_str(), input.seed));
+                bad.push(format!(
+                    "{} {}x{} {} seed {}:\n  rust {got:?}\n  web  {want:?}",
+                    input.role,
+                    input.w,
+                    input.d,
+                    input.door.as_str(),
+                    input.seed
+                ));
             }
         }
-        assert!(bad.is_empty(), "{} of {total} cases differ in violations, first: {:?}", bad.len(), &bad[..bad.len().min(4)]);
+        assert!(
+            bad.is_empty(),
+            "{} of {total} cases differ in violations, first: {:?}",
+            bad.len(),
+            &bad[..bad.len().min(4)]
+        );
         eprintln!("violations_match_the_web_dump: {total} cases match");
     }
 }

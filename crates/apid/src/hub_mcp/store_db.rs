@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use super::audit::{Audit, CallRecord};
-use super::auth::{digest, mint, random_hex, AuthError, NewToken, TokenRecord, TokenStore};
+use super::auth::{AuthError, NewToken, TokenRecord, TokenStore, digest, mint, random_hex};
 use crate::db::Db;
 
 /// Tokens in the `hub_mcp_tokens` table.
@@ -99,9 +99,11 @@ impl Audit for DbAudit {
     }
 
     fn query(&self, token: Option<&str>, tool: Option<&str>, limit: usize) -> Vec<CallRecord> {
-        self.db.hub_mcp_calls(token, tool, limit).unwrap_or_else(|err| {
-            eprintln!("hub-mcp: reading the call log failed: {err}");
-            Vec::new()
-        })
+        self.db
+            .hub_mcp_calls(token, tool, limit)
+            .unwrap_or_else(|err| {
+                eprintln!("hub-mcp: reading the call log failed: {err}");
+                Vec::new()
+            })
     }
 }

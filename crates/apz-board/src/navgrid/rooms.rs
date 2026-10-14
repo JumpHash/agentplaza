@@ -1,7 +1,7 @@
 //! Rule 7 of the nav grid (nav-grid.ts, "Rule 7: rooms, in order"): each terrace's interior, slab margin and cliff band
 //! (7a), door cells (7b), room solids (7c), the door choice (7d) and the spots (7e).
 
-use super::{NavDoor, NavGrid, NavLocalSpot, NavSolid, NavSpot, NavTerrace, Side, NAV_RAMP_DEPTH};
+use super::{NAV_RAMP_DEPTH, NavDoor, NavGrid, NavLocalSpot, NavSolid, NavSpot, NavTerrace, Side};
 use crate::grid::NAV_COST_OPEN;
 use crate::rooms::generate::{Catalog, Door, Layout, Place};
 
@@ -39,14 +39,25 @@ fn probe(f: &Frame, px: f64, pz: f64) -> Probe {
     let t = f.t;
     let (dx, dz) = (px - t.cx, pz - t.cz);
     let (ax, az) = (dx.abs(), dz.abs());
-    let slab = if t.round { dx * dx + dz * dz < t.half * t.half } else { ax < t.half && az < t.half };
+    let slab = if t.round {
+        dx * dx + dz * dz < t.half * t.half
+    } else {
+        ax < t.half && az < t.half
+    };
     let gap = (ax - t.half).max(0.0).hypot((az - t.half).max(0.0));
     let lx = dx * f.cos_t - dz * f.sin_t;
     let lz = dx * f.sin_t + dz * f.cos_t;
     let interior = slab && lx.abs() < t.w / 2.0 && lz.abs() < t.d / 2.0;
     let out = lx * f.nx + lz * f.nz;
     let lat = lx * f.tx + lz * f.tz;
-    Probe { slab, interior, gap, out, lat, in_span: (lat - f.at).abs() <= f.hw + EPS }
+    Probe {
+        slab,
+        interior,
+        gap,
+        out,
+        lat,
+        in_span: (lat - f.at).abs() <= f.hw + EPS,
+    }
 }
 
 /// The cell k steps outward of cell c along the outward world normal (nav-grid.ts outwardIdx).
@@ -117,7 +128,11 @@ pub(super) fn apply(g: &mut NavGrid, terraces: &[NavTerrace], plate_of: &[i32]) 
             if !p.in_span {
                 continue;
             }
-            let is_door = if p.interior { p.out >= f.h - cell } else { p.out >= f.h };
+            let is_door = if p.interior {
+                p.out >= f.h - cell
+            } else {
+                p.out >= f.h
+            };
             if !is_door {
                 continue;
             }
@@ -129,12 +144,22 @@ pub(super) fn apply(g: &mut NavGrid, terraces: &[NavTerrace], plate_of: &[i32]) 
 
         // 7c: room solids block the slab cells their footprints overlap (the local bbox of the cell's four corners).
         for s in &t.solids {
-            let (fx0, fx1, fz0, fz1) = (s.x - s.sx / 2.0, s.x + s.sx / 2.0, s.z - s.sz / 2.0, s.z + s.sz / 2.0);
+            let (fx0, fx1, fz0, fz1) = (
+                s.x - s.sx / 2.0,
+                s.x + s.sx / 2.0,
+                s.z - s.sz / 2.0,
+                s.z + s.sz / 2.0,
+            );
             for &c in &slab {
                 let (i, j) = (c % cols, c / cols);
                 let (xa, xb) = (x0 + i as f64 * cell, x0 + (i + 1) as f64 * cell);
                 let (za, zb) = (z0 + j as f64 * cell, z0 + (j + 1) as f64 * cell);
-                let (mut mnx, mut mxx, mut mnz, mut mxz) = (f64::INFINITY, f64::NEG_INFINITY, f64::INFINITY, f64::NEG_INFINITY);
+                let (mut mnx, mut mxx, mut mnz, mut mxz) = (
+                    f64::INFINITY,
+                    f64::NEG_INFINITY,
+                    f64::INFINITY,
+                    f64::NEG_INFINITY,
+                );
                 for x in [xa, xb] {
                     for z in [za, zb] {
                         let (dx, dz) = (x - t.cx, z - t.cz);
@@ -194,7 +219,14 @@ pub(super) fn apply(g: &mut NavGrid, terraces: &[NavTerrace], plate_of: &[i32]) 
             let wx = t.cx + sp.x * cos_t + sp.z * sin_t;
             let wz = t.cz - sp.x * sin_t + sp.z * cos_t;
             let cell_at = g.cell_at(wx, wz);
-            g.spots.push(NavSpot { terrace: t.id, index: k, x: wx, z: wz, face: (sp.face * std::f64::consts::PI) / 180.0 + t.turn, cell: cell_at });
+            g.spots.push(NavSpot {
+                terrace: t.id,
+                index: k,
+                x: wx,
+                z: wz,
+                face: (sp.face * std::f64::consts::PI) / 180.0 + t.turn,
+                cell: cell_at,
+            });
         }
         all_doors.push(doors);
     }
@@ -204,7 +236,10 @@ pub(super) fn apply(g: &mut NavGrid, terraces: &[NavTerrace], plate_of: &[i32]) 
 /// A room layout's nav inputs: its door (layout.shell.door), its solids (rule 7c's catalogue filter: placed neither on
 /// a surface nor on a wall, not on the floor layer, not walkable; the size swapped when the item is turned a quarter) and
 /// its spots.
-pub fn furniture(layout: &Layout, catalog: &Catalog) -> (NavDoor, Vec<NavSolid>, Vec<NavLocalSpot>) {
+pub fn furniture(
+    layout: &Layout,
+    catalog: &Catalog,
+) -> (NavDoor, Vec<NavSolid>, Vec<NavLocalSpot>) {
     let d = &layout.shell.door;
     let side = match d.side {
         Door::N => Side::N,
@@ -212,27 +247,51 @@ pub fn furniture(layout: &Layout, catalog: &Catalog) -> (NavDoor, Vec<NavSolid>,
         Door::S => Side::S,
         Door::W => Side::W,
     };
-    let door = NavDoor { side, at: d.at, width: d.width };
+    let door = NavDoor {
+        side,
+        at: d.at,
+        width: d.width,
+    };
     let solids = layout
         .items
         .iter()
         .filter_map(|it| {
             let cat = catalog.items.get(&it.id)?;
-            if matches!(cat.place, Place::Surface | Place::Wallmount) || cat.layer.as_deref() == Some("floor") || cat.walk {
+            if matches!(cat.place, Place::Surface | Place::Wallmount)
+                || cat.layer.as_deref() == Some("floor")
+                || cat.walk
+            {
                 return None;
             }
             let along = it.rot % 180.0 == 0.0;
-            let (sx, sz) = if along { (cat.size[0], cat.size[2]) } else { (cat.size[2], cat.size[0]) };
-            Some(NavSolid { x: it.x, z: it.z, sx, sz })
+            let (sx, sz) = if along {
+                (cat.size[0], cat.size[2])
+            } else {
+                (cat.size[2], cat.size[0])
+            };
+            Some(NavSolid {
+                x: it.x,
+                z: it.z,
+                sx,
+                sz,
+            })
         })
         .collect();
-    let spots = layout.spots.iter().map(|s| NavLocalSpot { x: s.x, z: s.z, face: s.face }).collect();
+    let spots = layout
+        .spots
+        .iter()
+        .map(|s| NavLocalSpot {
+            x: s.x,
+            z: s.z,
+            face: s.face,
+        })
+        .collect();
     (door, solids, spots)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::super::{build, NavBoard, NavTerrace};
+    use super::super::{NavBoard, NavTerrace, build};
     use super::*;
 
     fn terrace(solids: Vec<NavSolid>) -> NavTerrace {
@@ -248,14 +307,24 @@ mod tests {
             turn: 0.0,
             w: 4.0,
             d: 4.0,
-            door: NavDoor { side: Side::S, at: 0.0, width: 1.0 },
+            door: NavDoor {
+                side: Side::S,
+                at: 0.0,
+                width: 1.0,
+            },
             solids,
             spots: Vec::new(),
         }
     }
 
     fn board() -> NavBoard {
-        NavBoard { size: [40.0, 1.0, 40.0], pcb_top: 0.4, boxes: Vec::new(), traces: Vec::new(), plates: Vec::new() }
+        NavBoard {
+            size: [40.0, 1.0, 40.0],
+            pcb_top: 0.4,
+            boxes: Vec::new(),
+            traces: Vec::new(),
+            plates: Vec::new(),
+        }
     }
 
     #[test]
@@ -263,13 +332,25 @@ mod tests {
         let g = build(&board(), &[terrace(Vec::new())]);
         let centre = g.cell_at(0.1, 0.1).unwrap();
         assert_eq!((g.region[centre], g.y[centre]), (1, 1.0));
-        assert_eq!(g.blocked[g.cell_at(3.6, 0.1).unwrap()], 1, "the cliff band is blocked");
+        assert_eq!(
+            g.blocked[g.cell_at(3.6, 0.1).unwrap()],
+            1,
+            "the cliff band is blocked"
+        );
         assert!(g.door_cells[0].0.is_some());
     }
 
     #[test]
     fn a_solid_blocks_its_cells() {
-        let g = build(&board(), &[terrace(vec![NavSolid { x: 0.0, z: 0.0, sx: 1.0, sz: 1.0 }])]);
+        let g = build(
+            &board(),
+            &[terrace(vec![NavSolid {
+                x: 0.0,
+                z: 0.0,
+                sx: 1.0,
+                sz: 1.0,
+            }])],
+        );
         assert_eq!(g.blocked[g.cell_at(0.1, 0.1).unwrap()], 1);
     }
 }

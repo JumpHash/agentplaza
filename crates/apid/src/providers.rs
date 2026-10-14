@@ -10,14 +10,17 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use apz_gateway::{presets, Auth, Caller, Gateway, ModelInfo, ProviderConfig, ProviderKind, SecretReason, SecretRead, SecretSource};
+use apz_gateway::{
+    Auth, Caller, Gateway, ModelInfo, ProviderConfig, ProviderKind, SecretRead, SecretReason,
+    SecretSource, presets,
+};
 use apz_http::{Params, Request, Response, Router};
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::state::App;
-use crate::vault::{name_for, Consumer, OnBehalf, VaultError};
+use crate::vault::{Consumer, OnBehalf, VaultError, name_for};
 
 /// The actor of the vault's events for a provider key the owner set.
 const OWNER: &str = "owner";
@@ -28,8 +31,22 @@ pub(crate) const REDACTED: &str = "•••";
 
 /// The providers a fresh state directory starts with.
 const SEED_IDS: [&str; 16] = [
-    "anthropic", "openai", "xai", "deepseek", "gemini", "zai", "moonshot", "ollama", "llamacpp", "mock",
-    "mistral", "openai-decisions", "typesafe", "meta", "openrouter", "opencode",
+    "anthropic",
+    "openai",
+    "xai",
+    "deepseek",
+    "gemini",
+    "zai",
+    "moonshot",
+    "ollama",
+    "llamacpp",
+    "mock",
+    "mistral",
+    "openai-decisions",
+    "typesafe",
+    "meta",
+    "openrouter",
+    "opencode",
 ];
 /// How long `GET /v1/models` answers from its cache.
 const MODEL_CACHE: Duration = Duration::from_secs(60);
@@ -50,7 +67,11 @@ impl SecretSource for VaultSecrets {
         match resolve_for(&self.0, name, read) {
             Ok(secret) => {
                 let value = secret.expose_secret();
-                if value.is_empty() { Err(SecretReason::Missing) } else { Ok(value.to_string()) }
+                if value.is_empty() {
+                    Err(SecretReason::Missing)
+                } else {
+                    Ok(value.to_string())
+                }
             }
             Err(VaultError::Sealed | VaultError::Uninitialized) => Err(SecretReason::Sealed),
             Err(VaultError::Tampered(reason)) => Err(SecretReason::Tampered(reason)),
@@ -63,22 +84,41 @@ impl SecretSource for VaultSecrets {
 /// The vault's value of `name` for the provider `read` names, read for `read`'s caller. `Ok(None)` when
 /// the vault has no such entry for that caller. `Err` when the vault refuses: sealed, uninitialised,
 /// tampered, or the entry is held only by other nodes. No key may then come from anywhere else.
-fn vault_secret(vault: &crate::vault::Store, name: &str, read: &SecretRead<'_>) -> Result<Option<String>, VaultError> {
+fn vault_secret(
+    vault: &crate::vault::Store,
+    name: &str,
+    read: &SecretRead<'_>,
+) -> Result<Option<String>, VaultError> {
     match resolve_for(vault, name, read) {
         Ok(secret) => Ok(Some(secret.expose_secret().to_string())),
-        Err(err @ (VaultError::Sealed | VaultError::Uninitialized | VaultError::Tampered(_) | VaultError::OutOfScope)) => Err(err),
+        Err(
+            err @ (VaultError::Sealed
+            | VaultError::Uninitialized
+            | VaultError::Tampered(_)
+            | VaultError::OutOfScope),
+        ) => Err(err),
         Err(_) => Ok(None),
     }
 }
 
 /// The vault's resolve of `name` for the provider `read` names, as `read`'s caller: the value, or the refusal.
-fn resolve_for(vault: &crate::vault::Store, name: &str, read: &SecretRead<'_>) -> Result<SecretString, VaultError> {
+fn resolve_for(
+    vault: &crate::vault::Store,
+    name: &str,
+    read: &SecretRead<'_>,
+) -> Result<SecretString, VaultError> {
     let on_behalf = match read.caller {
-        Caller::Agent { cid, node } => OnBehalf::Agent { cid: *cid, node: node.clone() },
+        Caller::Agent { cid, node } => OnBehalf::Agent {
+            cid: *cid,
+            node: node.clone(),
+        },
         Caller::Owner { node } => OnBehalf::Owner { node: node.clone() },
         Caller::Hub => OnBehalf::Hub,
     };
-    let consumer = Consumer { binding: provider_binding(read.provider), on_behalf };
+    let consumer = Consumer {
+        binding: provider_binding(read.provider),
+        on_behalf,
+    };
     vault.resolve(&name_for(name), &consumer, apz_plaza::now_ms())
 }
 
@@ -89,11 +129,21 @@ fn provider_binding(id: &str) -> String {
 
 /// Non-secret settings the gateway reads from the process environment (regions, cloud projects).
 /// Credentials never come from it: they are the vault's, and the env file's are imported there.
-const CONFIG_ENV: [&str; 5] = ["AWS_REGION", "AWS_DEFAULT_REGION", "GOOGLE_CLOUD_PROJECT", "ANTHROPIC_VERTEX_PROJECT_ID", "CLOUD_ML_REGION"];
+const CONFIG_ENV: [&str; 5] = [
+    "AWS_REGION",
+    "AWS_DEFAULT_REGION",
+    "GOOGLE_CLOUD_PROJECT",
+    "ANTHROPIC_VERTEX_PROJECT_ID",
+    "CLOUD_ML_REGION",
+];
 
 /// The AWS key pair and session token a Bedrock-kind provider signs with. Each such provider reads its own
 /// pair: the vault entries bound to `provider:<its id>` (see [`bedrock_bindings`]). The first two are required.
-pub(crate) const BEDROCK_KEYS: [&str; 3] = ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"];
+pub(crate) const BEDROCK_KEYS: [&str; 3] = [
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+];
 /// The pair names a Bedrock provider cannot sign without (the session token is optional).
 const BEDROCK_REQUIRED: [&str; 2] = ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"];
 /// The binding the pair falls back to when no Bedrock-kind provider exists (the migration binds to it then).
@@ -101,7 +151,11 @@ pub(crate) const BEDROCK_BINDING: &str = "provider:bedrock";
 
 /// The vault bindings of the AWS pairs: `provider:<id>` for each Bedrock-kind provider, in list order.
 pub(crate) fn bedrock_bindings(providers: &[ProviderConfig]) -> Vec<String> {
-    providers.iter().filter(|p| p.kind == ProviderKind::Bedrock).map(|p| provider_binding(&p.id)).collect()
+    providers
+        .iter()
+        .filter(|p| p.kind == ProviderKind::Bedrock)
+        .map(|p| provider_binding(&p.id))
+        .collect()
 }
 
 /// The gateway's environment: only [`CONFIG_ENV`] names resolve, so no key is read from the process.
@@ -148,13 +202,15 @@ impl Store {
         let offered_path = state_dir.join(OFFERED_FILE);
         let providers: Vec<ProviderConfig> = match std::fs::read(&providers_path) {
             Ok(bytes) => {
-                let mut providers: Vec<ProviderConfig> = serde_json::from_slice(&bytes).map_err(invalid)?;
+                let mut providers: Vec<ProviderConfig> =
+                    serde_json::from_slice(&bytes).map_err(invalid)?;
                 let stored = read_offered(&offered_path)?;
                 let initialise = stored.is_none();
                 let mut offered = stored.unwrap_or_else(|| {
                     // An install from before the list: it has every preset it holds and every older seed.
                     let held = providers.iter().map(|p| p.id.clone());
-                    held.chain(LEGACY_SEED_IDS.iter().map(|id| id.to_string())).collect()
+                    held.chain(LEGACY_SEED_IDS.iter().map(|id| id.to_string()))
+                        .collect()
                 });
                 let introduced = offer_presets(&mut providers, &mut offered);
                 for id in &introduced {
@@ -202,7 +258,11 @@ impl Store {
 
     /// Every provider's view, by id. Never carries a secret value.
     fn views(&self) -> Vec<Value> {
-        self.gateway.providers().iter().map(|p| self.view(p)).collect()
+        self.gateway
+            .providers()
+            .iter()
+            .map(|p| self.view(p))
+            .collect()
     }
 
     /// A provider's credential state, from the vault (nothing is decrypted): `none`, `command`,
@@ -216,14 +276,18 @@ impl Store {
             Auth::Command(_) => return "command",
             Auth::Env(name) | Auth::Secret(name) => name,
         };
-        self.vault.presence(&name_for(name), &provider_binding(&p.id))
+        self.vault
+            .presence(&name_for(name), &provider_binding(&p.id))
     }
 
     /// The AWS pair's state for provider `id`: `secret` when both required keys resolve on this machine;
     /// otherwise the vault's refusal (sealed first, then out of scope), else `missing`.
     fn aws_pair(&self, id: &str) -> &'static str {
         let binding = provider_binding(id);
-        let states: Vec<&str> = BEDROCK_REQUIRED.iter().map(|name| self.vault.presence(&name_for(name), &binding)).collect();
+        let states: Vec<&str> = BEDROCK_REQUIRED
+            .iter()
+            .map(|name| self.vault.presence(&name_for(name), &binding))
+            .collect();
         if states.iter().all(|state| *state == "secret") {
             "secret"
         } else if states.contains(&"sealed") {
@@ -242,7 +306,11 @@ impl Store {
             Auth::Command(_) => json!({ "command": REDACTED }),
             other => serde_json::to_value(other).unwrap_or(Value::Null),
         };
-        let headers: BTreeMap<&str, &str> = p.extra_headers.keys().map(|k| (k.as_str(), REDACTED)).collect();
+        let headers: BTreeMap<&str, &str> = p
+            .extra_headers
+            .keys()
+            .map(|k| (k.as_str(), REDACTED))
+            .collect();
         json!({
             "id": p.id,
             "kind": p.kind.as_str(),
@@ -262,8 +330,14 @@ impl Store {
     /// configured base URL (or the kind's default for anthropic/openai) and the key `caller` may
     /// read. `Ok(None)` for an unknown provider. `Err` when the vault is sealed, uninitialised or
     /// tampered: no key is served then, from the vault or anywhere else.
-    pub fn upstream(&self, id: &str, caller: &Caller) -> Result<Option<(String, Option<String>)>, VaultError> {
-        let Ok(p) = self.find(id) else { return Ok(None) };
+    pub fn upstream(
+        &self,
+        id: &str,
+        caller: &Caller,
+    ) -> Result<Option<(String, Option<String>)>, VaultError> {
+        let Ok(p) = self.find(id) else {
+            return Ok(None);
+        };
         let base = p.base_url.clone().unwrap_or_else(|| match id {
             "openai" => "https://api.openai.com/v1".to_string(),
             _ => "https://api.anthropic.com".to_string(),
@@ -275,7 +349,10 @@ impl Store {
     /// were imported at start). `None` for a provider with no named key, or none this caller may read.
     /// `Err` when the vault cannot answer at all (see [`vault_secret`]).
     fn key_for(&self, p: &ProviderConfig, caller: &Caller) -> Result<Option<String>, VaultError> {
-        let read = SecretRead { provider: &p.id, caller };
+        let read = SecretRead {
+            provider: &p.id,
+            caller,
+        };
         match &p.auth {
             Auth::Env(name) | Auth::Secret(name) => vault_secret(&self.vault, name, &read),
             _ => Ok(None),
@@ -290,12 +367,19 @@ impl Store {
         // The key is read once, here: a refusal is audited once and ends the check, and the key read
         // here redacts the answer, so no second lookup happens.
         let provider = self.find(id).map_err(|(_, message)| message)?;
-        let key = self.key_for(&provider, &caller).map_err(|refusal| refusal.message())?;
-        let report = self.gateway.test_for(id, None, &caller).map_err(|e| e.to_string())?;
+        let key = self
+            .key_for(&provider, &caller)
+            .map_err(|refusal| refusal.message())?;
+        let report = self
+            .gateway
+            .test_for(id, None, &caller)
+            .map_err(|e| e.to_string())?;
         if report.ok {
             return Ok(format!("model {} answered", report.model));
         }
-        let error = report.error.unwrap_or_else(|| "the call failed".to_string());
+        let error = report
+            .error
+            .unwrap_or_else(|| "the call failed".to_string());
         Err(redact(error, key.as_deref()))
     }
 
@@ -317,7 +401,8 @@ impl Store {
 
     /// Saves `providers` and makes them the gateway's providers.
     fn commit(&self, providers: Vec<ProviderConfig>) -> Result<(), Failure> {
-        let saved = to_json(&providers).and_then(|b| write_atomic(&self.dir.join("providers.json"), &b, 0o600));
+        let saved = to_json(&providers)
+            .and_then(|b| write_atomic(&self.dir.join("providers.json"), &b, 0o600));
         saved.map_err(io_failure)?;
         self.unregister_changed(&self.gateway.providers(), &providers);
         self.register(&providers);
@@ -338,7 +423,10 @@ impl Store {
             (secret, p.kind == ProviderKind::Bedrock)
         };
         for p in old {
-            let unchanged = new.iter().find(|q| q.id == p.id).is_some_and(|q| reads(q) == reads(p));
+            let unchanged = new
+                .iter()
+                .find(|q| q.id == p.id)
+                .is_some_and(|q| reads(q) == reads(p));
             if !unchanged {
                 // Every registration under the provider's binding goes; `register` adds back what the new list reads.
                 self.vault.unregister_consumer(&provider_binding(&p.id));
@@ -352,11 +440,19 @@ impl Store {
     fn register(&self, providers: &[ProviderConfig]) {
         for p in providers {
             if let Auth::Env(name) | Auth::Secret(name) = &p.auth {
-                self.vault.register_consumer(&provider_binding(&p.id), &label_of(p), &name_for(name));
+                self.vault.register_consumer(
+                    &provider_binding(&p.id),
+                    &label_of(p),
+                    &name_for(name),
+                );
             }
             if p.kind == ProviderKind::Bedrock {
                 for name in BEDROCK_KEYS {
-                    self.vault.register_consumer(&provider_binding(&p.id), &label_of(p), &name_for(name));
+                    self.vault.register_consumer(
+                        &provider_binding(&p.id),
+                        &label_of(p),
+                        &name_for(name),
+                    );
                 }
             }
         }
@@ -423,7 +519,14 @@ impl Store {
         let secret = SecretString::from(value.to_string());
         let now = apz_plaza::now_ms();
         self.vault
-            .put_plaza(&name, &provider_binding(id), "provider key", &secret, OWNER, now)
+            .put_plaza(
+                &name,
+                &provider_binding(id),
+                "provider key",
+                &secret,
+                OWNER,
+                now,
+            )
             .map_err(vault_failure)?;
         if !matches!(slot.auth, Auth::Env(_) | Auth::Secret(_)) {
             slot.auth = Auth::Secret(name);
@@ -445,10 +548,11 @@ impl Store {
         let mut models = Vec::new();
         let mut errors = Vec::new();
         for p in self.gateway.providers() {
-            match self.gateway.list_models_for(&p.id, &Caller::Owner { node: None }) {
-                Ok(list) => models.extend(
-                    list.into_iter().map(|m| model_entry(&p, m)),
-                ),
+            match self
+                .gateway
+                .list_models_for(&p.id, &Caller::Owner { node: None })
+            {
+                Ok(list) => models.extend(list.into_iter().map(|m| model_entry(&p, m))),
                 Err(e) => errors.push(json!({ "provider": p.id, "error": e.to_string() })),
             }
         }
@@ -547,7 +651,11 @@ fn test_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
         return failure(f);
     }
     let model = req.json::<TestBody>().ok().and_then(|b| b.model);
-    match app.providers.gateway().test_for(id, model.as_deref(), &Caller::Owner { node: None }) {
+    match app
+        .providers
+        .gateway()
+        .test_for(id, model.as_deref(), &Caller::Owner { node: None })
+    {
         Ok(report) => Response::json(200, &report),
         Err(e) => Response::json(502, &json!({ "error": e.to_string() })),
     }
@@ -558,7 +666,11 @@ fn provider_models_route(app: &App, _: &Request, p: &Params<'_>) -> Response {
     if let Err(f) = app.providers.find(id) {
         return failure(f);
     }
-    match app.providers.gateway().list_models_for(id, &Caller::Owner { node: None }) {
+    match app
+        .providers
+        .gateway()
+        .list_models_for(id, &Caller::Owner { node: None })
+    {
         Ok(models) => Response::json(200, &models),
         Err(e) => Response::json(502, &json!({ "error": e.to_string() })),
     }
@@ -587,14 +699,18 @@ fn redact(text: String, key: Option<&str>) -> String {
 /// is [`REDACTED`] keeps the stored value, a command equal to it keeps the stored command, and an
 /// `extra_body` the body omits (null) keeps the stored one. A redacted value with nothing stored to
 /// keep is refused, so the marker never becomes a live header or command.
-fn restore_redacted(stored: &ProviderConfig, mut body: ProviderConfig) -> Result<ProviderConfig, Failure> {
+fn restore_redacted(
+    stored: &ProviderConfig,
+    mut body: ProviderConfig,
+) -> Result<ProviderConfig, Failure> {
     for (name, value) in body.extra_headers.iter_mut() {
         if value.as_str() == REDACTED {
-            *value = stored
-                .extra_headers
-                .get(name)
-                .cloned()
-                .ok_or_else(|| (400, format!("header `{name}` has no stored value to keep: send its value")))?;
+            *value = stored.extra_headers.get(name).cloned().ok_or_else(|| {
+                (
+                    400,
+                    format!("header `{name}` has no stored value to keep: send its value"),
+                )
+            })?;
         }
     }
     match (&mut body.auth, &stored.auth) {
@@ -602,7 +718,10 @@ fn restore_redacted(stored: &ProviderConfig, mut body: ProviderConfig) -> Result
             command.clone_from(stored_command);
         }
         (Auth::Command(command), _) if command.as_str() == REDACTED => {
-            return Err((400, "the command is redacted but the provider has none stored: send the command".into()));
+            return Err((
+                400,
+                "the command is redacted but the provider has none stored: send the command".into(),
+            ));
         }
         _ => {}
     }
@@ -639,8 +758,20 @@ fn seed() -> Vec<ProviderConfig> {
 /// The seed list before the offered list existed. An install that predates `OFFERED_FILE` was
 /// given these, so a deleted one stays deleted when the list is first written.
 const LEGACY_SEED_IDS: [&str; 14] = [
-    "anthropic", "openai", "xai", "deepseek", "gemini", "zai", "moonshot", "ollama", "llamacpp", "mock",
-    "mistral", "openai-decisions", "typesafe", "meta",
+    "anthropic",
+    "openai",
+    "xai",
+    "deepseek",
+    "gemini",
+    "zai",
+    "moonshot",
+    "ollama",
+    "llamacpp",
+    "mock",
+    "mistral",
+    "openai-decisions",
+    "typesafe",
+    "meta",
 ];
 
 /// The preset ids offered to this install, beside `providers.json`: each `SEED_IDS` preset is
@@ -681,7 +812,9 @@ fn offer_presets(providers: &mut Vec<ProviderConfig>, offered: &mut Vec<String>)
 fn valid_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 40
-        && id.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 
 fn to_json<T: Serialize>(value: &T) -> io::Result<Vec<u8>> {
@@ -716,7 +849,6 @@ pub(crate) fn write_atomic(path: &Path, bytes: &[u8], mode: u32) -> io::Result<(
     std::fs::rename(&tmp, path)
 }
 
-
 impl Store {
     /// The whole state as JSON, for Postgres (`crate::db`); "" when there is nothing to save.
     /// A command credential and extra-header values may hold literal tokens, so they are blanked.
@@ -730,18 +862,24 @@ impl Store {
                 value.clear();
             }
         }
-        to_json(&providers).map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default()
+        to_json(&providers)
+            .map(|b| String::from_utf8_lossy(&b).into_owned())
+            .unwrap_or_default()
     }
 
     /// Replaces the state with a [`Store::snapshot`]; a refusal changes nothing. Blanked
     /// credentials keep their live values.
     pub fn restore(&self, json: &str) -> Result<(), String> {
         let _guard = lock(&self.write);
-        let mut providers: Vec<ProviderConfig> = serde_json::from_str(json).map_err(|e| e.to_string())?;
+        let mut providers: Vec<ProviderConfig> =
+            serde_json::from_str(json).map_err(|e| e.to_string())?;
         let live = self.gateway.providers();
         for p in &mut providers {
-            let Some(old) = live.iter().find(|o| o.id == p.id) else { continue };
-            if let (Auth::Command(command), Auth::Command(live_command)) = (&mut p.auth, &old.auth) {
+            let Some(old) = live.iter().find(|o| o.id == p.id) else {
+                continue;
+            };
+            if let (Auth::Command(command), Auth::Command(live_command)) = (&mut p.auth, &old.auth)
+            {
                 if command.is_empty() {
                     command.clone_from(live_command);
                 }
@@ -768,7 +906,8 @@ mod tests {
     const SENTINEL: &str = "SENTINEL-PROVIDER-4417";
 
     fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("apid-providers-{}-{name}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("apid-providers-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         dir
     }
@@ -809,9 +948,19 @@ mod tests {
     }
 
     /// What an agent on `node` (`None`: a revoked node) reads as `name` for the provider anthropic.
-    fn agent_reads(vault: &Arc<crate::vault::Store>, name: &str, node: Option<&str>) -> Option<String> {
-        let caller = Caller::Agent { cid: 7, node: node.map(String::from) };
-        let read = SecretRead { provider: "anthropic", caller: &caller };
+    fn agent_reads(
+        vault: &Arc<crate::vault::Store>,
+        name: &str,
+        node: Option<&str>,
+    ) -> Option<String> {
+        let caller = Caller::Agent {
+            cid: 7,
+            node: node.map(String::from),
+        };
+        let read = SecretRead {
+            provider: "anthropic",
+            caller: &caller,
+        };
         VaultSecrets(Arc::clone(vault)).get(name, &read)
     }
 
@@ -834,7 +983,12 @@ mod tests {
     fn first_load_seeds_the_presets() {
         let dir = scratch("seed");
         let store = Store::load(&dir, vault_in(&dir)).unwrap();
-        let mut ids: Vec<String> = store.gateway().providers().into_iter().map(|p| p.id).collect();
+        let mut ids: Vec<String> = store
+            .gateway()
+            .providers()
+            .into_iter()
+            .map(|p| p.id)
+            .collect();
         ids.sort();
         let mut want: Vec<String> = SEED_IDS.iter().map(|s| s.to_string()).collect();
         want.sort();
@@ -847,10 +1001,17 @@ mod tests {
 
     /// An install from before the offered list: `providers.json` holds the legacy seed, no `OFFERED_FILE`.
     fn legacy_install(dir: &Path) {
-        let legacy: Vec<ProviderConfig> =
-            seed().into_iter().filter(|p| LEGACY_SEED_IDS.contains(&p.id.as_str())).collect();
+        let legacy: Vec<ProviderConfig> = seed()
+            .into_iter()
+            .filter(|p| LEGACY_SEED_IDS.contains(&p.id.as_str()))
+            .collect();
         std::fs::create_dir_all(dir).unwrap();
-        write_atomic(&dir.join("providers.json"), &to_json(&legacy).unwrap(), 0o600).unwrap();
+        write_atomic(
+            &dir.join("providers.json"),
+            &to_json(&legacy).unwrap(),
+            0o600,
+        )
+        .unwrap();
     }
 
     fn providers_on_disk(dir: &Path) -> Vec<ProviderConfig> {
@@ -880,7 +1041,11 @@ mod tests {
         drop(Store::load(&dir, Arc::clone(&vault)).unwrap());
         let after = providers_on_disk(&dir);
         assert_eq!(after.len(), before.len() + 2);
-        assert_eq!(&after[..before.len()], &before[..], "existing entries are untouched");
+        assert_eq!(
+            &after[..before.len()],
+            &before[..],
+            "existing entries are untouched"
+        );
         for id in ["openrouter", "opencode"] {
             assert_eq!(after.iter().filter(|p| p.id == id).count(), 1, "{id} once");
         }
@@ -899,9 +1064,17 @@ mod tests {
         store.remove("meta").unwrap();
         drop(store);
         let store = Store::load(&dir, Arc::clone(&vault)).unwrap();
-        let ids: Vec<String> = store.gateway().providers().into_iter().map(|p| p.id).collect();
+        let ids: Vec<String> = store
+            .gateway()
+            .providers()
+            .into_iter()
+            .map(|p| p.id)
+            .collect();
         assert!(ids.contains(&"openrouter".to_string()), "{ids:?}");
-        assert!(!ids.contains(&"opencode".to_string()) && !ids.contains(&"meta".to_string()), "{ids:?}");
+        assert!(
+            !ids.contains(&"opencode".to_string()) && !ids.contains(&"meta".to_string()),
+            "{ids:?}"
+        );
         drop(store);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -919,7 +1092,11 @@ mod tests {
         let reloaded = Store::load(&dir, Arc::clone(&vault)).unwrap();
         let openai = reloaded.find("openai").unwrap();
         assert_eq!(openai.auth, Auth::Env("OPENAI_API_KEY".to_string()));
-        let key = reloaded.upstream("openai", &Caller::Owner { node: None }).ok().flatten().and_then(|(_, key)| key);
+        let key = reloaded
+            .upstream("openai", &Caller::Owner { node: None })
+            .ok()
+            .flatten()
+            .and_then(|(_, key)| key);
         assert_eq!(key.as_deref(), Some(SENTINEL));
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -931,14 +1108,29 @@ mod tests {
         let store = Store::load(&dir, Arc::clone(&vault)).unwrap();
         store.set_secret("mock", "value-for-the-mode-test").unwrap();
         // The mock provider had no named key: it now names one, and the vault holds it.
-        assert_eq!(store.find("mock").unwrap().auth, Auth::Secret("MOCK_API_KEY".to_string()));
-        let entry = vault.list().unwrap().into_iter().find(|e| e["name"] == "MOCK_API_KEY").unwrap();
+        assert_eq!(
+            store.find("mock").unwrap().auth,
+            Auth::Secret("MOCK_API_KEY".to_string())
+        );
+        let entry = vault
+            .list()
+            .unwrap()
+            .into_iter()
+            .find(|e| e["name"] == "MOCK_API_KEY")
+            .unwrap();
         assert_eq!(entry["bindings"], json!(["provider:mock"]));
         assert_eq!(entry["scope"]["kind"], "plaza");
         assert!(!dir.join("secrets.json").exists());
         // The vault's file is private (0600), as the secrets file was.
         #[cfg(unix)]
-        assert_eq!(std::fs::metadata(dir.join("vault.json")).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(
+            std::fs::metadata(dir.join("vault.json"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -946,10 +1138,23 @@ mod tests {
     fn a_key_only_on_another_node_shows_out_of_scope() {
         let dir = scratch("scope");
         let vault = vault_in(&dir);
-        put(&vault, "OPENAI_API_KEY", "provider:openai", "N3-ONLY-4417", Scope::Nodes { nodes: vec!["n3".into()] });
+        put(
+            &vault,
+            "OPENAI_API_KEY",
+            "provider:openai",
+            "N3-ONLY-4417",
+            Scope::Nodes {
+                nodes: vec!["n3".into()],
+            },
+        );
         let store = Store::load(&dir, Arc::clone(&vault)).unwrap();
         let views = store.views();
-        let credential = |id: &str| views.iter().find(|v| v["id"] == id).map(|v| v["credential"].clone());
+        let credential = |id: &str| {
+            views
+                .iter()
+                .find(|v| v["id"] == id)
+                .map(|v| v["credential"].clone())
+        };
         assert_eq!(credential("openai"), Some(json!("out_of_scope")));
         assert_eq!(credential("mock"), Some(json!("none")));
         let _ = std::fs::remove_dir_all(&dir);
@@ -959,13 +1164,42 @@ mod tests {
     fn an_agent_reads_its_nodes_entry_before_the_plaza_entry() {
         let dir = scratch("nodes");
         let vault = vault_in(&dir);
-        let n3 = || Scope::Nodes { nodes: vec!["n3".into()] };
-        put(&vault, "ANTHROPIC_API_KEY", "provider:anthropic", "PLAZA-VALUE-4417", Scope::Plaza);
-        put(&vault, "ANTHROPIC_API_KEY", "provider:anthropic", "N3-VALUE-4417", n3());
-        put(&vault, "N3_ONLY_KEY", "provider:anthropic", "N3-ONLY-4417", n3());
-        assert_eq!(agent_reads(&vault, "ANTHROPIC_API_KEY", Some("n3")).as_deref(), Some("N3-VALUE-4417"));
-        assert_eq!(agent_reads(&vault, "ANTHROPIC_API_KEY", Some("n4")).as_deref(), Some("PLAZA-VALUE-4417"));
-        assert_eq!(agent_reads(&vault, "N3_ONLY_KEY", Some("n3")).as_deref(), Some("N3-ONLY-4417"));
+        let n3 = || Scope::Nodes {
+            nodes: vec!["n3".into()],
+        };
+        put(
+            &vault,
+            "ANTHROPIC_API_KEY",
+            "provider:anthropic",
+            "PLAZA-VALUE-4417",
+            Scope::Plaza,
+        );
+        put(
+            &vault,
+            "ANTHROPIC_API_KEY",
+            "provider:anthropic",
+            "N3-VALUE-4417",
+            n3(),
+        );
+        put(
+            &vault,
+            "N3_ONLY_KEY",
+            "provider:anthropic",
+            "N3-ONLY-4417",
+            n3(),
+        );
+        assert_eq!(
+            agent_reads(&vault, "ANTHROPIC_API_KEY", Some("n3")).as_deref(),
+            Some("N3-VALUE-4417")
+        );
+        assert_eq!(
+            agent_reads(&vault, "ANTHROPIC_API_KEY", Some("n4")).as_deref(),
+            Some("PLAZA-VALUE-4417")
+        );
+        assert_eq!(
+            agent_reads(&vault, "N3_ONLY_KEY", Some("n3")).as_deref(),
+            Some("N3-ONLY-4417")
+        );
         assert_eq!(agent_reads(&vault, "N3_ONLY_KEY", Some("n4")), None);
         // An agent whose node is revoked reads nothing, not even the plaza entry.
         assert_eq!(agent_reads(&vault, "ANTHROPIC_API_KEY", None), None);
@@ -989,12 +1223,21 @@ mod tests {
         assert!(checked.is_err());
         assert!(!format!("{checked:?}").contains(SENTINEL));
         // An upstream error that echoes the key comes back redacted.
-        assert_eq!(redact(format!("bad key {SENTINEL}"), Some(SENTINEL)), "bad key •••");
+        assert_eq!(
+            redact(format!("bad key {SENTINEL}"), Some(SENTINEL)),
+            "bad key •••"
+        );
         // Nothing on disk carries the value: the vault stores ciphertext only.
         assert!(!dir.join("secrets.json").exists());
         for file in files_under(&dir) {
             let bytes = std::fs::read(&file).unwrap();
-            assert!(!bytes.windows(SENTINEL.len()).any(|w| w == SENTINEL.as_bytes()), "{} holds the value", file.display());
+            assert!(
+                !bytes
+                    .windows(SENTINEL.len())
+                    .any(|w| w == SENTINEL.as_bytes()),
+                "{} holds the value",
+                file.display()
+            );
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1004,18 +1247,56 @@ mod tests {
         let dir = scratch("openrouter");
         let vault = vault_in(&dir);
         let store = Store::load(&dir, Arc::clone(&vault)).unwrap();
-        assert_eq!(store.find("openrouter").unwrap().auth, Auth::Env("OPENROUTER_API_KEY".to_string()));
-        assert_eq!(store.find("opencode").unwrap().auth, Auth::Env("OPENCODE_API_KEY".to_string()));
+        assert_eq!(
+            store.find("openrouter").unwrap().auth,
+            Auth::Env("OPENROUTER_API_KEY".to_string())
+        );
+        assert_eq!(
+            store.find("opencode").unwrap().auth,
+            Auth::Env("OPENCODE_API_KEY".to_string())
+        );
         // The env import binds each key to its provider's binding (vault startup reads these pairs).
         let refs = crate::vault::credential_refs(&store.gateway().providers());
-        assert!(refs.contains(&("provider:openrouter".to_string(), name_for("OPENROUTER_API_KEY"))));
-        assert!(refs.contains(&("provider:opencode".to_string(), name_for("OPENCODE_API_KEY"))));
+        assert!(refs.contains(&(
+            "provider:openrouter".to_string(),
+            name_for("OPENROUTER_API_KEY")
+        )));
+        assert!(refs.contains(&(
+            "provider:opencode".to_string(),
+            name_for("OPENCODE_API_KEY")
+        )));
         // Both bindings are valid, and the owner's key resolves through each provider's binding.
-        put(&vault, "OPENROUTER_API_KEY", "provider:openrouter", SENTINEL, Scope::Plaza);
-        put(&vault, "OPENCODE_API_KEY", "provider:opencode", SENTINEL, Scope::Plaza);
+        put(
+            &vault,
+            "OPENROUTER_API_KEY",
+            "provider:openrouter",
+            SENTINEL,
+            Scope::Plaza,
+        );
+        put(
+            &vault,
+            "OPENCODE_API_KEY",
+            "provider:opencode",
+            SENTINEL,
+            Scope::Plaza,
+        );
         let owner = Caller::Owner { node: None };
-        assert_eq!(store.upstream("openrouter", &owner).unwrap().and_then(|(_, key)| key).as_deref(), Some(SENTINEL));
-        assert_eq!(store.upstream("opencode", &owner).unwrap().and_then(|(_, key)| key).as_deref(), Some(SENTINEL));
+        assert_eq!(
+            store
+                .upstream("openrouter", &owner)
+                .unwrap()
+                .and_then(|(_, key)| key)
+                .as_deref(),
+            Some(SENTINEL)
+        );
+        assert_eq!(
+            store
+                .upstream("opencode", &owner)
+                .unwrap()
+                .and_then(|(_, key)| key)
+                .as_deref(),
+            Some(SENTINEL)
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1025,10 +1306,17 @@ mod tests {
         let store = Store::load(&dir, vault_in(&dir)).unwrap();
         let mut providers = store.gateway().providers();
         let openrouter = providers.iter_mut().find(|p| p.id == "openrouter").unwrap();
-        openrouter.extra_headers.insert("HTTP-Referer".to_string(), "https://plaza.example".to_string());
-        let expected: Vec<(String, String)> = openrouter.extra_headers.clone().into_iter().collect();
+        openrouter.extra_headers.insert(
+            "HTTP-Referer".to_string(),
+            "https://plaza.example".to_string(),
+        );
+        let expected: Vec<(String, String)> =
+            openrouter.extra_headers.clone().into_iter().collect();
         store.commit(providers).unwrap();
-        assert!(expected.contains(&("HTTP-Referer".to_string(), "https://plaza.example".to_string())));
+        assert!(expected.contains(&(
+            "HTTP-Referer".to_string(),
+            "https://plaza.example".to_string()
+        )));
         assert_eq!(store.extra_headers("openrouter"), expected);
         assert!(store.extra_headers("no-such-provider").is_empty());
         let _ = std::fs::remove_dir_all(&dir);
@@ -1039,13 +1327,21 @@ mod tests {
         let dir = scratch("group");
         let store = Store::load(&dir, vault_in(&dir)).unwrap();
         let views = store.views();
-        let group_of = |id: &str| views.iter().find(|v| v["id"] == id).map(|v| v["group"].clone());
+        let group_of = |id: &str| {
+            views
+                .iter()
+                .find(|v| v["id"] == id)
+                .map(|v| v["group"].clone())
+        };
         assert_eq!(group_of("openai-decisions"), Some(json!("decisions")));
         assert_eq!(group_of("typesafe"), Some(json!("decisions")));
         assert_eq!(group_of("openai"), Some(json!("chat")));
         assert_eq!(group_of("mistral"), Some(json!("chat")));
         let typesafe = ProviderConfig::new("typesafe", ProviderKind::SystemOne);
-        assert_eq!(model_entry(&typesafe, ModelInfo::new("jev-latest"))["group"], "decisions");
+        assert_eq!(
+            model_entry(&typesafe, ModelInfo::new("jev-latest"))["group"],
+            "decisions"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1097,15 +1393,36 @@ mod tests {
         local.auth = Auth::Env("SERVED_KEY_4417".to_string());
         store.insert(local).unwrap();
         let key = |node: Option<&str>| {
-            let caller = Caller::Agent { cid: 7, node: node.map(String::from) };
-            store.upstream("local-env", &caller).ok().flatten().and_then(|(_, key)| key)
+            let caller = Caller::Agent {
+                cid: 7,
+                node: node.map(String::from),
+            };
+            store
+                .upstream("local-env", &caller)
+                .ok()
+                .flatten()
+                .and_then(|(_, key)| key)
         };
         // The process holds a value, but the vault holds no entry of that name: nothing is served.
         unsafe { std::env::set_var("SERVED_KEY_4417", "PROCESS-VALUE-4417") };
         assert_eq!(key(Some("n3")), None);
         // Once the value is in the vault (the import's plaza entry, and a node's own entry), each node gets its own.
-        put(&vault, "SERVED_KEY_4417", "provider:local-env", "PLAZA-VALUE-4417", Scope::Plaza);
-        put(&vault, "SERVED_KEY_4417", "provider:local-env", "N3-VALUE-4417", Scope::Nodes { nodes: vec!["n3".into()] });
+        put(
+            &vault,
+            "SERVED_KEY_4417",
+            "provider:local-env",
+            "PLAZA-VALUE-4417",
+            Scope::Plaza,
+        );
+        put(
+            &vault,
+            "SERVED_KEY_4417",
+            "provider:local-env",
+            "N3-VALUE-4417",
+            Scope::Nodes {
+                nodes: vec!["n3".into()],
+            },
+        );
         assert_eq!(key(Some("n3")).as_deref(), Some("N3-VALUE-4417"));
         assert_eq!(key(Some("n4")).as_deref(), Some("PLAZA-VALUE-4417"));
         unsafe { std::env::remove_var("SERVED_KEY_4417") };
@@ -1119,24 +1436,58 @@ mod tests {
         // Fake values: the plaza pair both providers share, and the pair node n3 holds for `aws-a` only.
         let plaza = ["AKIAFAKESENTINEL0001", "SENTINEL-AWS-SECRET-7"];
         let n3 = ["AKIAFAKESENTINEL0003", "SENTINEL-AWS-SECRET-3"];
-        for (i, name) in ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"].into_iter().enumerate() {
+        for (i, name) in ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"]
+            .into_iter()
+            .enumerate()
+        {
             for binding in ["provider:aws-a", "provider:aws-b"] {
                 let value = SecretString::from(plaza[i].to_string());
-                vault.put_plaza(name, binding, "test", &value, OWNER, apz_plaza::now_ms()).unwrap();
+                vault
+                    .put_plaza(name, binding, "test", &value, OWNER, apz_plaza::now_ms())
+                    .unwrap();
             }
-            put(&vault, name, "provider:aws-a", n3[i], Scope::Nodes { nodes: vec!["n3".into()] });
+            put(
+                &vault,
+                name,
+                "provider:aws-a",
+                n3[i],
+                Scope::Nodes {
+                    nodes: vec!["n3".into()],
+                },
+            );
         }
         let read = |provider: &str, name: &str, node: &str| {
-            let caller = Caller::Agent { cid: 7, node: Some(node.to_string()) };
-            let read = SecretRead { provider, caller: &caller };
+            let caller = Caller::Agent {
+                cid: 7,
+                node: Some(node.to_string()),
+            };
+            let read = SecretRead {
+                provider,
+                caller: &caller,
+            };
             VaultSecrets(Arc::clone(&vault)).get(name, &read)
         };
-        assert_eq!(read("aws-a", "AWS_ACCESS_KEY_ID", "n3").as_deref(), Some(n3[0]));
-        assert_eq!(read("aws-a", "AWS_SECRET_ACCESS_KEY", "n3").as_deref(), Some(n3[1]));
-        assert_eq!(read("aws-a", "AWS_ACCESS_KEY_ID", "n4").as_deref(), Some(plaza[0]));
+        assert_eq!(
+            read("aws-a", "AWS_ACCESS_KEY_ID", "n3").as_deref(),
+            Some(n3[0])
+        );
+        assert_eq!(
+            read("aws-a", "AWS_SECRET_ACCESS_KEY", "n3").as_deref(),
+            Some(n3[1])
+        );
+        assert_eq!(
+            read("aws-a", "AWS_ACCESS_KEY_ID", "n4").as_deref(),
+            Some(plaza[0])
+        );
         // aws-b holds no node entry: node n3 gets the plaza pair, not aws-a's.
-        assert_eq!(read("aws-b", "AWS_ACCESS_KEY_ID", "n3").as_deref(), Some(plaza[0]));
-        assert_eq!(read("aws-b", "AWS_SECRET_ACCESS_KEY", "n3").as_deref(), Some(plaza[1]));
+        assert_eq!(
+            read("aws-b", "AWS_ACCESS_KEY_ID", "n3").as_deref(),
+            Some(plaza[0])
+        );
+        assert_eq!(
+            read("aws-b", "AWS_SECRET_ACCESS_KEY", "n3").as_deref(),
+            Some(plaza[1])
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1155,13 +1506,19 @@ mod tests {
                 .collect()
         };
         let all = BEDROCK_KEYS.map(String::from);
-        store.insert(ProviderConfig::new("aws-a", ProviderKind::Bedrock)).unwrap();
-        store.insert(ProviderConfig::new("aws-b", ProviderKind::Bedrock)).unwrap();
+        store
+            .insert(ProviderConfig::new("aws-a", ProviderKind::Bedrock))
+            .unwrap();
+        store
+            .insert(ProviderConfig::new("aws-b", ProviderKind::Bedrock))
+            .unwrap();
         assert_eq!(wants(&vault, "aws-a"), all);
         assert_eq!(wants(&vault, "aws-b"), all);
         // Renamed: aws-a leaves its binding, the new id registers the pair, aws-b keeps its own.
         store.remove("aws-a").unwrap();
-        store.insert(ProviderConfig::new("aws-c", ProviderKind::Bedrock)).unwrap();
+        store
+            .insert(ProviderConfig::new("aws-c", ProviderKind::Bedrock))
+            .unwrap();
         assert!(wants(&vault, "aws-a").is_empty());
         assert_eq!(wants(&vault, "aws-c"), all);
         assert_eq!(wants(&vault, "aws-b"), all);
@@ -1170,7 +1527,12 @@ mod tests {
         edited.base_url = Some("https://bedrock.example".to_string());
         store.replace("aws-c", edited).unwrap();
         assert_eq!(wants(&vault, "aws-c"), all);
-        store.replace("aws-b", ProviderConfig::new("aws-b", ProviderKind::OpenAiCompatible)).unwrap();
+        store
+            .replace(
+                "aws-b",
+                ProviderConfig::new("aws-b", ProviderKind::OpenAiCompatible),
+            )
+            .unwrap();
         assert!(wants(&vault, "aws-b").is_empty());
         assert_eq!(wants(&vault, "aws-c"), all);
         store.remove("aws-c").unwrap();
@@ -1183,20 +1545,47 @@ mod tests {
         let dir = scratch("bedrock-view");
         let vault = vault_in(&dir);
         let store = Store::load(&dir, Arc::clone(&vault)).unwrap();
-        let credential = |store: &Store, id: &str| store.view(&store.find(id).unwrap())["credential"].as_str().unwrap().to_string();
+        let credential = |store: &Store, id: &str| {
+            store.view(&store.find(id).unwrap())["credential"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
         for id in ["aws-v", "aws-w", "aws-x"] {
-            store.insert(ProviderConfig::new(id, ProviderKind::Bedrock)).unwrap();
+            store
+                .insert(ProviderConfig::new(id, ProviderKind::Bedrock))
+                .unwrap();
         }
         // No pair yet: missing, never none.
         assert_eq!(credential(&store, "aws-v"), "missing");
         // The access key alone is not a pair.
-        put(&vault, "AWS_ACCESS_KEY_ID", "provider:aws-v", SENTINEL, Scope::Plaza);
+        put(
+            &vault,
+            "AWS_ACCESS_KEY_ID",
+            "provider:aws-v",
+            SENTINEL,
+            Scope::Plaza,
+        );
         assert_eq!(credential(&store, "aws-v"), "missing");
-        put(&vault, "AWS_SECRET_ACCESS_KEY", "provider:aws-v", SENTINEL, Scope::Plaza);
+        put(
+            &vault,
+            "AWS_SECRET_ACCESS_KEY",
+            "provider:aws-v",
+            SENTINEL,
+            Scope::Plaza,
+        );
         assert_eq!(credential(&store, "aws-v"), "secret");
         // A pair held only by node n3 is out of scope on this machine.
         for name in ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"] {
-            put(&vault, name, "provider:aws-x", SENTINEL, Scope::Nodes { nodes: vec!["n3".into()] });
+            put(
+                &vault,
+                name,
+                "provider:aws-x",
+                SENTINEL,
+                Scope::Nodes {
+                    nodes: vec!["n3".into()],
+                },
+            );
         }
         assert_eq!(credential(&store, "aws-x"), "out_of_scope");
         assert_eq!(credential(&store, "aws-w"), "missing");
@@ -1217,16 +1606,37 @@ mod tests {
         let mut local = ProviderConfig::new("sealed-env", ProviderKind::OpenAiCompatible);
         local.auth = Auth::Env("SEALED_KEY_4417".to_string());
         store.insert(local).unwrap();
-        put(&vault, "SEALED_KEY_4417", "provider:sealed-env", "PLAZA-VALUE-4417", Scope::Plaza);
+        put(
+            &vault,
+            "SEALED_KEY_4417",
+            "provider:sealed-env",
+            "PLAZA-VALUE-4417",
+            Scope::Plaza,
+        );
         unsafe { std::env::set_var("SEALED_KEY_4417", "PROCESS-VALUE-4417") };
-        let caller = Caller::Agent { cid: 7, node: Some("n3".to_string()) };
-        let served = store.upstream("sealed-env", &caller).unwrap().and_then(|(_, key)| key);
+        let caller = Caller::Agent {
+            cid: 7,
+            node: Some("n3".to_string()),
+        };
+        let served = store
+            .upstream("sealed-env", &caller)
+            .unwrap()
+            .and_then(|(_, key)| key);
         assert_eq!(served.as_deref(), Some("PLAZA-VALUE-4417"));
         vault.seal("owner", apz_plaza::now_ms()).unwrap();
-        assert_eq!(store.upstream("sealed-env", &caller).unwrap_err(), VaultError::Sealed);
+        assert_eq!(
+            store.upstream("sealed-env", &caller).unwrap_err(),
+            VaultError::Sealed
+        );
         // The gateway's read is refused too, and falls back to nothing.
-        let read = SecretRead { provider: "sealed-env", caller: &caller };
-        assert_eq!(VaultSecrets(Arc::clone(&vault)).get("SEALED_KEY_4417", &read), None);
+        let read = SecretRead {
+            provider: "sealed-env",
+            caller: &caller,
+        };
+        assert_eq!(
+            VaultSecrets(Arc::clone(&vault)).get("SEALED_KEY_4417", &read),
+            None
+        );
         unsafe { std::env::remove_var("SEALED_KEY_4417") };
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1239,20 +1649,35 @@ mod tests {
         let mut local = ProviderConfig::new("tamp-env", ProviderKind::OpenAiCompatible);
         local.auth = Auth::Env("TAMPERED_KEY_4417".to_string());
         store.insert(local).unwrap();
-        put(&vault, "TAMPERED_KEY_4417", "provider:tamp-env", "PLAZA-VALUE-4417", Scope::Plaza);
+        put(
+            &vault,
+            "TAMPERED_KEY_4417",
+            "provider:tamp-env",
+            "PLAZA-VALUE-4417",
+            Scope::Plaza,
+        );
         drop(store);
         drop(vault);
         tamper_with_the_vault_file(&dir, "provider:tamp-env", "provider:tamp-xxx");
         let vault = reopen(&dir);
         let store = Store::load(&dir, Arc::clone(&vault)).unwrap();
-        let caller = Caller::Agent { cid: 7, node: Some("n3".to_string()) };
+        let caller = Caller::Agent {
+            cid: 7,
+            node: Some("n3".to_string()),
+        };
         match store.upstream("tamp-env", &caller) {
             Err(VaultError::Tampered(reason)) => assert!(reason.contains("index MAC"), "{reason}"),
             _ => panic!("expected the tamper refusal"),
         }
-        let read = SecretRead { provider: "tamp-env", caller: &caller };
+        let read = SecretRead {
+            provider: "tamp-env",
+            caller: &caller,
+        };
         let source = VaultSecrets(Arc::clone(&vault));
-        assert!(matches!(source.fetch("TAMPERED_KEY_4417", &read), Err(SecretReason::Tampered(_))));
+        assert!(matches!(
+            source.fetch("TAMPERED_KEY_4417", &read),
+            Err(SecretReason::Tampered(_))
+        ));
         assert_eq!(source.get("TAMPERED_KEY_4417", &read), None);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1265,21 +1690,46 @@ mod tests {
         let mut local = ProviderConfig::new("scoped-env", ProviderKind::OpenAiCompatible);
         local.auth = Auth::Env("SCOPED_KEY_4417".to_string());
         store.insert(local).unwrap();
-        put(&vault, "SCOPED_KEY_4417", "provider:scoped-env", "N3-ONLY-4417", Scope::Nodes { nodes: vec!["n3".into()] });
-        let on = |node: &str| Caller::Agent { cid: 7, node: Some(node.to_string()) };
-        let on_n3 = store.upstream("scoped-env", &on("n3")).unwrap().and_then(|(_, key)| key);
+        put(
+            &vault,
+            "SCOPED_KEY_4417",
+            "provider:scoped-env",
+            "N3-ONLY-4417",
+            Scope::Nodes {
+                nodes: vec!["n3".into()],
+            },
+        );
+        let on = |node: &str| Caller::Agent {
+            cid: 7,
+            node: Some(node.to_string()),
+        };
+        let on_n3 = store
+            .upstream("scoped-env", &on("n3"))
+            .unwrap()
+            .and_then(|(_, key)| key);
         assert_eq!(on_n3.as_deref(), Some("N3-ONLY-4417"));
-        assert_eq!(store.upstream("scoped-env", &on("n4")).unwrap_err(), VaultError::OutOfScope);
+        assert_eq!(
+            store.upstream("scoped-env", &on("n4")).unwrap_err(),
+            VaultError::OutOfScope
+        );
         let caller = on("n4");
-        let read = SecretRead { provider: "scoped-env", caller: &caller };
-        assert_eq!(VaultSecrets(Arc::clone(&vault)).fetch("SCOPED_KEY_4417", &read), Err(SecretReason::OutOfScope));
+        let read = SecretRead {
+            provider: "scoped-env",
+            caller: &caller,
+        };
+        assert_eq!(
+            VaultSecrets(Arc::clone(&vault)).fetch("SCOPED_KEY_4417", &read),
+            Err(SecretReason::OutOfScope)
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The deny lines in the vault's audit log.
     fn deny_lines(dir: &Path) -> usize {
         let text = std::fs::read_to_string(dir.join("vault-audit.jsonl")).unwrap_or_default();
-        text.lines().filter(|line| serde_json::from_str::<Value>(line).is_ok_and(|v| v["event"] == "deny")).count()
+        text.lines()
+            .filter(|line| serde_json::from_str::<Value>(line).is_ok_and(|v| v["event"] == "deny"))
+            .count()
     }
 
     #[test]
@@ -1291,16 +1741,36 @@ mod tests {
         local.auth = Auth::Env("N3_KEY_4417".to_string());
         local.base_url = Some("http://127.0.0.1:9/v1".to_string());
         store.insert(local).unwrap();
-        put(&vault, "N3_KEY_4417", "provider:n3-env", "N3-ONLY-4417", Scope::Nodes { nodes: vec!["n3".into()] });
-        let on_n4 = Caller::Agent { cid: 7, node: Some("n4".to_string()) };
+        put(
+            &vault,
+            "N3_KEY_4417",
+            "provider:n3-env",
+            "N3-ONLY-4417",
+            Scope::Nodes {
+                nodes: vec!["n3".into()],
+            },
+        );
+        let on_n4 = Caller::Agent {
+            cid: 7,
+            node: Some("n4".to_string()),
+        };
         // The upstream path: one lookup, one deny line.
         let before = deny_lines(&dir);
-        assert_eq!(store.upstream("n3-env", &on_n4).unwrap_err(), VaultError::OutOfScope);
+        assert_eq!(
+            store.upstream("n3-env", &on_n4).unwrap_err(),
+            VaultError::OutOfScope
+        );
         assert_eq!(deny_lines(&dir) - before, 1);
         // The gateway path: one refused call, one lookup, one deny line.
         let before = deny_lines(&dir);
-        let err = store.gateway().list_models_for("n3-env", &on_n4).unwrap_err();
-        assert!(matches!(err, apz_gateway::GatewayError::Vault { status: 403, .. }), "{err:?}");
+        let err = store
+            .gateway()
+            .list_models_for("n3-env", &on_n4)
+            .unwrap_err();
+        assert!(
+            matches!(err, apz_gateway::GatewayError::Vault { status: 403, .. }),
+            "{err:?}"
+        );
         assert_eq!(deny_lines(&dir) - before, 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1309,8 +1779,20 @@ mod tests {
     fn duplicate_and_malformed_ids_are_refused() {
         let dir = scratch("ids");
         let store = Store::load(&dir, vault_in(&dir)).unwrap();
-        assert_eq!(store.insert(ProviderConfig::new("openai", ProviderKind::OpenAi)).unwrap_err().0, 409);
-        assert_eq!(store.insert(ProviderConfig::new("Bad_ID", ProviderKind::Mock)).unwrap_err().0, 400);
+        assert_eq!(
+            store
+                .insert(ProviderConfig::new("openai", ProviderKind::OpenAi))
+                .unwrap_err()
+                .0,
+            409
+        );
+        assert_eq!(
+            store
+                .insert(ProviderConfig::new("Bad_ID", ProviderKind::Mock))
+                .unwrap_err()
+                .0,
+            400
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1319,8 +1801,12 @@ mod tests {
         let mut gw = ProviderConfig::new("gw", ProviderKind::OpenAiCompatible);
         gw.base_url = Some("http://127.0.0.1:9/v1".to_string());
         gw.auth = Auth::Command(format!("echo {SENTINEL}"));
-        gw.extra_headers.insert("HTTP-Referer".to_string(), format!("https://{SENTINEL}.test"));
-        gw.extra_headers.insert("X-Title".to_string(), "AgentPlaza".to_string());
+        gw.extra_headers.insert(
+            "HTTP-Referer".to_string(),
+            format!("https://{SENTINEL}.test"),
+        );
+        gw.extra_headers
+            .insert("X-Title".to_string(), "AgentPlaza".to_string());
         gw.extra_body = json!({ "reasoning": { "effort": "low" } });
         gw
     }
@@ -1335,29 +1821,47 @@ mod tests {
         // The view shows the markers and the extra body, never the command or the header values.
         let view = store.views().into_iter().find(|v| v["id"] == "gw").unwrap();
         assert_eq!(view["auth"], json!({ "command": REDACTED }));
-        assert_eq!(view["extra_headers"], json!({ "HTTP-Referer": REDACTED, "X-Title": REDACTED }));
+        assert_eq!(
+            view["extra_headers"],
+            json!({ "HTTP-Referer": REDACTED, "X-Title": REDACTED })
+        );
         assert_eq!(view["extra_body"], stored.extra_body);
         assert!(!view.to_string().contains(SENTINEL));
 
         // An Edit that sends the view back as it is changes nothing it redacted.
         let mut body = stored.clone();
         body.auth = Auth::Command(REDACTED.to_string());
-        body.extra_headers = stored.extra_headers.keys().map(|k| (k.clone(), REDACTED.to_string())).collect();
+        body.extra_headers = stored
+            .extra_headers
+            .keys()
+            .map(|k| (k.clone(), REDACTED.to_string()))
+            .collect();
         body.extra_body = Value::Null;
         store.replace("gw", body).unwrap();
         assert_eq!(store.find("gw").unwrap(), stored);
 
         // A real value replaces the stored one; the other redacted header and the command keep theirs.
         let mut edited = stored.clone();
-        edited.extra_headers.insert("X-Title".to_string(), "Renamed".to_string());
+        edited
+            .extra_headers
+            .insert("X-Title".to_string(), "Renamed".to_string());
         edited.auth = Auth::Command(REDACTED.to_string());
         edited.extra_body = json!({ "reasoning": { "effort": "high" } });
         store.replace("gw", edited).unwrap();
         let after = store.find("gw").unwrap();
         assert_eq!(after.auth, stored.auth);
-        assert_eq!(after.extra_headers.get("HTTP-Referer"), stored.extra_headers.get("HTTP-Referer"));
-        assert_eq!(after.extra_headers.get("X-Title").map(String::as_str), Some("Renamed"));
-        assert_eq!(after.extra_body, json!({ "reasoning": { "effort": "high" } }));
+        assert_eq!(
+            after.extra_headers.get("HTTP-Referer"),
+            stored.extra_headers.get("HTTP-Referer")
+        );
+        assert_eq!(
+            after.extra_headers.get("X-Title").map(String::as_str),
+            Some("Renamed")
+        );
+        assert_eq!(
+            after.extra_body,
+            json!({ "reasoning": { "effort": "high" } })
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1365,7 +1869,9 @@ mod tests {
     fn a_redacted_value_with_nothing_stored_is_refused() {
         let stored = stored_gateway();
         let mut header = stored.clone();
-        header.extra_headers.insert("X-New".to_string(), REDACTED.to_string());
+        header
+            .extra_headers
+            .insert("X-New".to_string(), REDACTED.to_string());
         assert_eq!(restore_redacted(&stored, header).unwrap_err().0, 400);
 
         let mut plain = stored.clone();

@@ -17,17 +17,17 @@
 //! then raises the device interrupt through the irq eventfd the mmio transport
 //! owns (the same one registered as the layout's KVM `irqfd`).
 
-use std::fmt::Debug;
 use crate::pal::AsRawFd;
+use std::fmt::Debug;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::pal::epoll::{ControlOperation, Epoll, EpollEvent, EventSet};
 use crate::pal::eventfd::EventFd;
 
+use super::VsockBackend;
 use super::device::{EVQ_INDEX, RXQ_INDEX, TXQ_INDEX, Vsock};
 use super::metrics::{IncMetric, METRICS};
-use super::VsockBackend;
 
 /// Poll-set ids. The queue ids are `RXQ`/`TXQ`/`EVQ`; the backend fd is
 /// registered with [`BACKEND`], the device's activation event with [`ACTIVATE`]
@@ -90,9 +90,7 @@ where
 }
 
 fn lock<B>(device: &Arc<Mutex<Vsock<B>>>) -> std::sync::MutexGuard<'_, Vsock<B>> {
-    device
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
+    device.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 fn register(epoll: &Epoll, fd: crate::pal::RawFd, data: u64, evset: EventSet) {
@@ -342,7 +340,8 @@ mod tests {
     impl Default for IdleBackend {
         fn default() -> Self {
             Self {
-                poll: EventFd::new(crate::pal::eventfd::EFD_NONBLOCK).expect("an idle backend event fd"),
+                poll: EventFd::new(crate::pal::eventfd::EFD_NONBLOCK)
+                    .expect("an idle backend event fd"),
             }
         }
     }

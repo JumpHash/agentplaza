@@ -1,7 +1,9 @@
 //! A `.env` file's keys, as the hub reads them, and the removal of such a file. Shredding never
 //! follows a link: a symbolic link is refused, and the file is opened with `O_NOFOLLOW`.
 
+#[cfg(unix)]
 use std::fs::OpenOptions;
+#[cfg(unix)]
 use std::io::Write;
 use std::path::Path;
 
@@ -10,7 +12,10 @@ use std::path::Path;
 /// quoted values that run over several lines. No value is kept. An error names a line number only.
 pub fn dotenv_names(text: &str) -> Result<Vec<String>, String> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
-    let lines: Vec<&str> = text.split('\n').map(|l| l.strip_suffix('\r').unwrap_or(l)).collect();
+    let lines: Vec<&str> = text
+        .split('\n')
+        .map(|l| l.strip_suffix('\r').unwrap_or(l))
+        .collect();
     let mut names = Vec::new();
     let mut i = 0;
     while i < lines.len() {
@@ -38,7 +43,13 @@ pub fn dotenv_names(text: &str) -> Result<Vec<String>, String> {
 
 /// Skips a quoted value that starts in `first` and may continue on the lines from `next` on.
 /// Returns the index of the next unread line. Only the layout is read; the value is dropped.
-fn skip_quoted(lines: &[&str], next: usize, first: &str, double: bool, number: usize) -> Result<usize, String> {
+fn skip_quoted(
+    lines: &[&str],
+    next: usize,
+    first: &str,
+    double: bool,
+    number: usize,
+) -> Result<usize, String> {
     let mut next = next;
     let mut current = first.to_string();
     loop {
@@ -72,7 +83,10 @@ fn skip_quoted(lines: &[&str], next: usize, first: &str, double: bool, number: u
 pub fn check_shreddable(path: &Path) -> Result<(), String> {
     let meta = std::fs::symlink_metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
     if meta.file_type().is_symlink() {
-        return Err(format!("{} is a symbolic link; refusing to shred it", path.display()));
+        return Err(format!(
+            "{} is a symbolic link; refusing to shred it",
+            path.display()
+        ));
     }
     if !meta.is_file() {
         return Err(format!("{} is not a regular file", path.display()));
@@ -82,7 +96,10 @@ pub fn check_shreddable(path: &Path) -> Result<(), String> {
 
 #[cfg(not(unix))]
 pub fn check_shreddable(path: &Path) -> Result<(), String> {
-    Err(format!("--shred needs Unix (the file is opened without following links); {} was left alone", path.display()))
+    Err(format!(
+        "--shred needs Unix (the file is opened without following links); {} was left alone",
+        path.display()
+    ))
 }
 
 /// Overwrites the file with zero bytes of its own length, syncs it to disk, and removes it.
@@ -98,7 +115,11 @@ pub fn shred(path: &Path) -> Result<(), String> {
 fn overwrite_with_zeros(path: &Path) -> Result<(), String> {
     use std::os::unix::fs::OpenOptionsExt;
     let fail = |e: std::io::Error| format!("{}: {e}", path.display());
-    let mut file = OpenOptions::new().write(true).custom_flags(libc::O_NOFOLLOW).open(path).map_err(fail)?;
+    let mut file = OpenOptions::new()
+        .write(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+        .map_err(fail)?;
     let meta = file.metadata().map_err(fail)?;
     if !meta.is_file() {
         return Err(format!("{} is not a regular file", path.display()));
@@ -130,8 +151,15 @@ mod tests {
     impl Scratch {
         fn new(name: &str) -> Scratch {
             static COUNT: AtomicU64 = AtomicU64::new(0);
-            let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
-            let dir = std::env::temp_dir().join(format!("apz-vault-{name}-{}-{nanos}-{}", std::process::id(), COUNT.fetch_add(1, Ordering::Relaxed)));
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            let dir = std::env::temp_dir().join(format!(
+                "apz-vault-{name}-{}-{nanos}-{}",
+                std::process::id(),
+                COUNT.fetch_add(1, Ordering::Relaxed)
+            ));
             std::fs::create_dir_all(&dir).expect("create the scratch directory");
             Scratch(dir)
         }
@@ -157,7 +185,17 @@ mod tests {
         let path = scratch.file("keys.env", ENV_FILE.as_bytes());
         let text = std::fs::read_to_string(&path).expect("read the scratch file");
         let names = dotenv_names(&text).expect("a valid file");
-        assert_eq!(names, ["ANTHROPIC_API_KEY", "HF_TOKEN", "TITLE", "SINGLE", "EMPTY", "HASH"]);
+        assert_eq!(
+            names,
+            [
+                "ANTHROPIC_API_KEY",
+                "HF_TOKEN",
+                "TITLE",
+                "SINGLE",
+                "EMPTY",
+                "HASH"
+            ]
+        );
         assert_eq!(names.len(), 6);
     }
 
@@ -181,8 +219,16 @@ mod tests {
 
     #[test]
     fn an_unclosed_quote_and_text_after_a_quote_are_errors() {
-        assert!(dotenv_names("A=\"open\nstill open").unwrap_err().contains("never closed"));
-        assert!(dotenv_names("A=\"x\" trailing\n").unwrap_err().contains("after the closing quote"));
+        assert!(
+            dotenv_names("A=\"open\nstill open")
+                .unwrap_err()
+                .contains("never closed")
+        );
+        assert!(
+            dotenv_names("A=\"x\" trailing\n")
+                .unwrap_err()
+                .contains("after the closing quote")
+        );
     }
 
     #[test]
@@ -220,7 +266,15 @@ mod tests {
         std::os::unix::fs::symlink(&target, &link).expect("make the link");
         let err = shred(&link).unwrap_err();
         assert!(err.contains("symbolic link"), "{err}");
-        assert_eq!(std::fs::read(&target).expect("target still there"), b"KEEP=me\n");
-        assert!(std::fs::symlink_metadata(&link).expect("link still there").file_type().is_symlink());
+        assert_eq!(
+            std::fs::read(&target).expect("target still there"),
+            b"KEEP=me\n"
+        );
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .expect("link still there")
+                .file_type()
+                .is_symlink()
+        );
     }
 }

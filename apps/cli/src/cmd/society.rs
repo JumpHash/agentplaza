@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use clap::Subcommand;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 use crate::ctx::{self, Ctx};
 
@@ -91,7 +91,9 @@ fn suspended_now(ctx: &Ctx) -> BTreeSet<u64> {
     match ctx.client.get("/v1/sanctions?active=1") {
         Ok(register) => suspended_cids(&register),
         Err(e) => {
-            eprintln!("warning: the sanctions register could not be read ({e}), so no agent is marked suspended");
+            eprintln!(
+                "warning: the sanctions register could not be read ({e}), so no agent is marked suspended"
+            );
             BTreeSet::new()
         }
     }
@@ -102,7 +104,11 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
         Cmd::List => {
             let v = ctx.client.get("/v1/society")?;
             // The mark is for people reading the table; the JSON is the hub's view as it is.
-            let suspended = if ctx.json { BTreeSet::new() } else { suspended_now(ctx) };
+            let suspended = if ctx.json {
+                BTreeSet::new()
+            } else {
+                suspended_now(ctx)
+            };
             ctx.out(&v, |v| {
                 let mut agents: Vec<&Value> = items(v, "agents").iter().collect();
                 agents.sort_by(|a, b| num(b, "reputation").total_cmp(&num(a, "reputation")));
@@ -117,11 +123,26 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                             format!("{:.2}", num(a, "reputation")),
                             format!("{:.2}", num(a, "confidence")),
                             ctx::text(a, "wallet"),
-                            if cid.is_some_and(|c| suspended.contains(&c)) { "suspended".to_string() } else { String::new() },
+                            if cid.is_some_and(|c| suspended.contains(&c)) {
+                                "suspended".to_string()
+                            } else {
+                                String::new()
+                            },
                         ]
                     })
                     .collect();
-                ctx::table(&["cid", "name", "role", "reputation", "confidence", "wallet", "status"], &rows);
+                ctx::table(
+                    &[
+                        "cid",
+                        "name",
+                        "role",
+                        "reputation",
+                        "confidence",
+                        "wallet",
+                        "status",
+                    ],
+                    &rows,
+                );
             });
         }
         Cmd::Bonds => {
@@ -137,20 +158,45 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                             ctx::s(b, "kind").to_string(),
                             ctx::text(b, "strength"),
                             ctx::text(b, "interactions"),
-                            if blocked { "yes".to_string() } else { String::new() },
-                            b.get("opinion").map(|o| format!("{:.2}", num(o, "e"))).unwrap_or_default(),
+                            if blocked {
+                                "yes".to_string()
+                            } else {
+                                String::new()
+                            },
+                            b.get("opinion")
+                                .map(|o| format!("{:.2}", num(o, "e")))
+                                .unwrap_or_default(),
                         ]
                     })
                     .collect();
-                ctx::table(&["from", "to", "kind", "strength", "interactions", "blocked", "trust"], &rows);
+                ctx::table(
+                    &[
+                        "from",
+                        "to",
+                        "kind",
+                        "strength",
+                        "interactions",
+                        "blocked",
+                        "trust",
+                    ],
+                    &rows,
+                );
             });
         }
         Cmd::Rate { cid, value } => {
             if !(-1.0..=1.0).contains(&value) {
                 return Err("a rating is a value from -1 to 1".into());
             }
-            let v = ctx.client.post(&format!("/v1/agents/{cid}/rating"), &json!({ "value": value }))?;
-            ctx.out(&v, |v| println!("rated agent {cid} {value:+.2}; trust now {:.2}", num(v, "e")));
+            let v = ctx.client.post(
+                &format!("/v1/agents/{cid}/rating"),
+                &json!({ "value": value }),
+            )?;
+            ctx.out(&v, |v| {
+                println!(
+                    "rated agent {cid} {value:+.2}; trust now {:.2}",
+                    num(v, "e")
+                )
+            });
         }
         Cmd::Roles => {
             let v = ctx.client.get("/v1/roles")?;
@@ -163,12 +209,19 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                             ctx::s(r, "title").to_string(),
                             ctx::s(r, "source").to_string(),
                             ctx::text(r, "agents"),
-                            r.get("def").map(|d| ctx::text(d, "model")).unwrap_or_default(),
-                            r.get("def").map(|d| ctx::text(d, "budget")).unwrap_or_default(),
+                            r.get("def")
+                                .map(|d| ctx::text(d, "model"))
+                                .unwrap_or_default(),
+                            r.get("def")
+                                .map(|d| ctx::text(d, "budget"))
+                                .unwrap_or_default(),
                         ]
                     })
                     .collect();
-                ctx::table(&["id", "title", "source", "agents", "model", "budget"], &rows);
+                ctx::table(
+                    &["id", "title", "source", "agents", "model", "budget"],
+                    &rows,
+                );
             });
         }
         Cmd::RoleSave { file } => {
@@ -177,7 +230,8 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             } else {
                 std::fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display()))?
             };
-            let def: Value = serde_json::from_str(&text).map_err(|e| format!("the role is not JSON: {e}"))?;
+            let def: Value =
+                serde_json::from_str(&text).map_err(|e| format!("the role is not JSON: {e}"))?;
             let v = ctx.client.post("/v1/roles", &def)?;
             ctx.out(&v, |v| println!("saved role {}", ctx::s(v, "id")));
         }
@@ -197,7 +251,9 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                         vec![
                             ctx::s(p, "id").to_string(),
                             ctx::s(p, "state").to_string(),
-                            p.get("role").map(|r| ctx::s(r, "title").to_string()).unwrap_or_default(),
+                            p.get("role")
+                                .map(|r| ctx::s(r, "title").to_string())
+                                .unwrap_or_default(),
                             ctx::text(p, "count"),
                             ctx::s(p, "model").to_string(),
                             ctx::s(p, "by").to_string(),
@@ -205,7 +261,10 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                         ]
                     })
                     .collect();
-                ctx::table(&["id", "state", "role", "count", "model", "by", "reason"], &rows);
+                ctx::table(
+                    &["id", "state", "role", "count", "model", "by", "reason"],
+                    &rows,
+                );
             });
         }
         Cmd::Approve { id, count, model } => {
@@ -216,11 +275,22 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             if let Some(model) = model {
                 edits.insert("model".into(), json!(model));
             }
-            let v = ctx.client.post(&format!("/v1/agent-proposals/{}/approve", ctx::seg(&id)), &Value::Object(edits))?;
-            ctx.out(&v, |v| println!("approved proposal {id}; spawned {}", ctx::text(v, "spawned")));
+            let v = ctx.client.post(
+                &format!("/v1/agent-proposals/{}/approve", ctx::seg(&id)),
+                &Value::Object(edits),
+            )?;
+            ctx.out(&v, |v| {
+                println!(
+                    "approved proposal {id}; spawned {}",
+                    ctx::text(v, "spawned")
+                )
+            });
         }
         Cmd::Reject { id, reason } => {
-            let v = ctx.client.post(&format!("/v1/agent-proposals/{}/reject", ctx::seg(&id)), &json!({ "reason": reason }))?;
+            let v = ctx.client.post(
+                &format!("/v1/agent-proposals/{}/reject", ctx::seg(&id)),
+                &json!({ "reason": reason }),
+            )?;
             ctx.out(&v, |_| println!("rejected proposal {id}"));
         }
     }

@@ -188,7 +188,9 @@ impl Sessions {
     ) {
         let key = (station.to_string(), session);
         let mut taken = self.guard();
-        if let Some(current) = taken.get_mut(&key) && current.stands(now) {
+        if let Some(current) = taken.get_mut(&key)
+            && current.stands(now)
+        {
             current.last_input = now;
             return;
         }
@@ -356,14 +358,17 @@ impl Effects for Hub<'_> {
         let Some(lease) = self.0.stations.leases.by_session(station, session) else {
             return Ok(());
         };
-        let released = ops::release_for_takeover(self.0, station, &lease.id).map_err(|(_, message)| message)?;
+        let released = ops::release_for_takeover(self.0, station, &lease.id)
+            .map_err(|(_, message)| message)?;
         // The task goes back to the queue on its own thread: it may wait on the worker's link, and this runs under
         // the takeover table's lock.
         if let Some(task) = released.task {
             let weak = self.0.handle();
             std::thread::spawn(move || {
                 let Some(app) = weak.upgrade() else { return };
-                if let Err(reason) = crate::scheduler::requeue_task(&app, &task, "owner took the workstation") {
+                if let Err(reason) =
+                    crate::scheduler::requeue_task(&app, &task, "owner took the workstation")
+                {
                     eprintln!("apid: the owner's takeover did not requeue task {task}: {reason}");
                 }
             });
@@ -789,12 +794,21 @@ mod tests {
             .take(&fx, T0, "w1", 9, 1, Takeover::AgentWaits)
             .unwrap();
         assert_eq!(sessions.standing_on(T0, "w1"), vec![9]);
-        assert!(holds_pixel(&sessions.standing_on(T0, "w1"), Some(4)), "session 9 is not the live view 4");
-        assert!(!holds_pixel(&sessions.standing_on(T0, "w1"), Some(9)), "the live view itself is not a pixel session");
+        assert!(
+            holds_pixel(&sessions.standing_on(T0, "w1"), Some(4)),
+            "session 9 is not the live view 4"
+        );
+        assert!(
+            !holds_pixel(&sessions.standing_on(T0, "w1"), Some(9)),
+            "the live view itself is not a pixel session"
+        );
         assert!(!holds_pixel(&[], None), "nothing taken, nothing held");
 
         sessions.give_back(&fx, T0 + 1, "w1", 9, 1).unwrap();
-        assert!(sessions.standing_on(T0 + 1, "w1").is_empty(), "given back: the queue may be granted");
+        assert!(
+            sessions.standing_on(T0 + 1, "w1").is_empty(),
+            "given back: the queue may be granted"
+        );
     }
 
     #[test]
@@ -807,7 +821,11 @@ mod tests {
             .take(&fx, T0, "w2", 5, 1, Takeover::AgentWaits)
             .unwrap();
         let ended = sessions.sweep(&fx, T0 + QUIET);
-        assert_eq!(ended, vec!["w1".to_string()], "only the input take went quiet; a control take holds");
+        assert_eq!(
+            ended,
+            vec!["w1".to_string()],
+            "only the input take went quiet; a control take holds"
+        );
         assert!(sessions.standing_on(T0 + QUIET, "w1").is_empty());
     }
 }

@@ -30,7 +30,10 @@ pub struct Emulator {
 impl Emulator {
     /// A blank emulator of `cols` by `rows` (each clamped to 1 to [`MAX_SIZE`]).
     pub fn new(cols: usize, rows: usize) -> Emulator {
-        Emulator { parser: vte::Parser::new(), screen: Screen::new(cols, rows) }
+        Emulator {
+            parser: vte::Parser::new(),
+            screen: Screen::new(cols, rows),
+        }
     }
 
     /// Parses `bytes` and applies them to the screen. A sequence split across calls is kept until

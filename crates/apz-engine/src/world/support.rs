@@ -1,7 +1,7 @@
 //! The drawn tops' support field of a scene (`ground.ts` `supportField`): the upward faces of a root's solids, in the
 //! root's own frame, bucketed by `FIELD_CELL` so `top_below` can find what stands under a point.
 
-use apz_board::nav::drawn::{key_of, SupportField, FIELD_CELL};
+use apz_board::nav::drawn::{FIELD_CELL, SupportField, key_of};
 use glam::{Mat4, Vec3};
 
 use crate::scene::{Geometry, Kind, Mat, Obj};
@@ -17,13 +17,21 @@ fn sub(a: V, b: V) -> V {
 }
 
 fn cross(a: V, b: V) -> V {
-    [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
 }
 
 /// ground.ts supportField: the upward faces of `root`'s solids (meshes and each instance of an instanced mesh, not decals,
 /// not additive glows), in root's frame (root's own local matrix included), bucketed by FIELD_CELL.
 pub fn support_field(root: &Obj) -> SupportField {
-    let mut field = SupportField { cell: FIELD_CELL, tris: Vec::new(), cells: Default::default() };
+    let mut field = SupportField {
+        cell: FIELD_CELL,
+        tris: Vec::new(),
+        cells: Default::default(),
+    };
     collect(root, Mat4::IDENTITY, &mut field);
     field
 }
@@ -37,7 +45,12 @@ fn collect(node: &Obj, parent: Mat4, field: &mut SupportField) {
     };
     match &kind {
         Kind::Mesh { geo, mat } if is_solid(mat) => add_geometry(geo, world, field),
-        Kind::Instanced { geo, mat, instances, count } if is_solid(mat) => {
+        Kind::Instanced {
+            geo,
+            mat,
+            instances,
+            count,
+        } if is_solid(mat) => {
             for inst in instances.iter().take(*count) {
                 add_geometry(geo, world * inst.matrix, field);
             }
@@ -57,7 +70,11 @@ fn is_solid(mat: &Mat) -> bool {
 /// The upward triangles of `geo` under `m`, appended to `field`.
 fn add_geometry(geo: &Geometry, m: Mat4, field: &mut SupportField) {
     let indexed = !geo.indices.is_empty();
-    let count = (if indexed { geo.indices.len() } else { geo.positions.len() }) / 3;
+    let count = (if indexed {
+        geo.indices.len()
+    } else {
+        geo.positions.len()
+    }) / 3;
     let corner = |t: usize, k: usize| -> usize {
         if indexed {
             geo.indices[t * 3 + k] as usize
@@ -96,12 +113,15 @@ fn add_geometry(geo: &Geometry, m: Mat4, field: &mut SupportField) {
 mod tests {
     use super::support_field;
     use crate::scene::{Mat, Material, Obj};
-    use apz_board::nav::drawn::{top_below, Support};
+    use apz_board::nav::drawn::{Support, top_below};
 
     /// A 2 x 1 x 2 box standing on the floor, under a group root.
     fn box_on_floor(decal: bool) -> Obj {
         let root = Obj::group();
-        let mat = Mat::new(Material { decal, ..Material::default() });
+        let mat = Mat::new(Material {
+            decal,
+            ..Material::default()
+        });
         let mesh = Obj::mesh(&crate::geometry::box_geo(2.0, 1.0, 2.0), &mat);
         mesh.set_position(0.0, 0.5, 0.0);
         root.add(&mesh);
@@ -110,7 +130,10 @@ mod tests {
 
     #[test]
     fn the_top_of_a_box_holds_up_what_is_over_it() {
-        let sup = Support { field: support_field(&box_on_floor(false)), scale: 1.0 };
+        let sup = Support {
+            field: support_field(&box_on_floor(false)),
+            scale: 1.0,
+        };
         assert!((top_below(Some(&sup), 0.0, 0.0, f64::INFINITY) - 1.0).abs() < 1e-6);
         assert!(top_below(Some(&sup), 5.0, 5.0, f64::INFINITY).abs() < 1e-6);
     }

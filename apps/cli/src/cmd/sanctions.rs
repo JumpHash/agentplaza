@@ -2,7 +2,7 @@
 //! and the steps the owner decides), and lifting an active tool suspension.
 
 use clap::Subcommand;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::ctx::{self, Ctx};
 
@@ -37,7 +37,11 @@ fn array(v: &Value) -> &[Value] {
 
 /// What the owner did on a sanction: its decision, else "lifted" when it was lifted, else "".
 fn owner_of(s: &Value) -> String {
-    match s.get("owner_action").and_then(|o| o.get("action")).and_then(Value::as_str) {
+    match s
+        .get("owner_action")
+        .and_then(|o| o.get("action"))
+        .and_then(Value::as_str)
+    {
         Some(action) => action.to_string(),
         None if s.get("lifted").is_some_and(|l| !l.is_null()) => "lifted".to_string(),
         None => String::new(),
@@ -63,7 +67,12 @@ fn register(v: &Value) {
         })
         .collect();
     println!("sanctions");
-    ctx::table(&["id", "at", "cid", "law", "severity", "sanction", "outcome", "fine", "owner"], &rows);
+    ctx::table(
+        &[
+            "id", "at", "cid", "law", "severity", "sanction", "outcome", "fine", "owner",
+        ],
+        &rows,
+    );
     println!();
     let rows: Vec<Vec<String>> = array(&v["suspensions"])
         .iter()
@@ -74,7 +83,11 @@ fn register(v: &Value) {
                 ctx::s(s, "tool").to_string(),
                 ctx::s(s, "law").to_string(),
                 ctx::when(&s["until_ms"]),
-                if s["active"].as_bool().unwrap_or(false) { "yes".to_string() } else { "no".to_string() },
+                if s["active"].as_bool().unwrap_or(false) {
+                    "yes".to_string()
+                } else {
+                    "no".to_string()
+                },
             ]
         })
         .collect();
@@ -100,8 +113,17 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             if why.is_empty() {
                 return Err(format!("say why suspension {id} is lifted: pass --reason"));
             }
-            let record = ctx.client.post(&format!("/v1/sanctions/{id}/lift"), &json!({ "reason": why }))?;
-            ctx.out(&record, |r| println!("sanction {id} lifted: agent {} may use {} again", ctx::text(r, "cid"), ctx::s(r, "tool")));
+            let record = ctx.client.post(
+                &format!("/v1/sanctions/{id}/lift"),
+                &json!({ "reason": why }),
+            )?;
+            ctx.out(&record, |r| {
+                println!(
+                    "sanction {id} lifted: agent {} may use {} again",
+                    ctx::text(r, "cid"),
+                    ctx::s(r, "tool")
+                )
+            });
         }
     }
     Ok(())
@@ -113,8 +135,10 @@ mod tests {
 
     #[test]
     fn the_owner_column_shows_the_decision_or_the_lift() {
-        let decided = json!({ "owner_action": { "action": "acknowledge", "at_ms": 1 }, "lifted": null });
-        let lifted = json!({ "owner_action": null, "lifted": { "at_ms": 2, "by": "owner", "why": "x" } });
+        let decided =
+            json!({ "owner_action": { "action": "acknowledge", "at_ms": 1 }, "lifted": null });
+        let lifted =
+            json!({ "owner_action": null, "lifted": { "at_ms": 2, "by": "owner", "why": "x" } });
         let untouched = json!({ "owner_action": null, "lifted": null });
         assert_eq!(owner_of(&decided), "acknowledge");
         assert_eq!(owner_of(&lifted), "lifted");

@@ -30,13 +30,13 @@ use std::sync::{Mutex, MutexGuard, Once, OnceLock, PoisonError};
 use apz_http::{Params, Request, Response, Router};
 use apz_plaza::treasury::Treasury;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::approvals::Approval;
 use crate::events::Bus;
 use crate::laws::Violation;
 use crate::memory::Memory;
-use crate::settings::{Sanctions, FINES_PER_WEEK_MAX};
+use crate::settings::{FINES_PER_WEEK_MAX, Sanctions};
 use crate::state::App;
 
 /// The most one agent may be fined in seven days (sanctions.yaml, `caps.max_fine_per_week`).
@@ -58,9 +58,30 @@ const WEEK_MS: u64 = 7 * DAY_MS;
 const SCHEDULE: [(&str, [&str; 3]); 5] = [
     ("info", ["warning", "warning", "fine:50"]),
     ("low", ["warning", "fine:100", "fine:200; probation:3d"]),
-    ("medium", ["warning; fine:100", "fine:300; probation:7d", "lockout:3d; demotion"]),
-    ("high", ["fine:300; probation:7d", "lockout:7d; demotion", "retirement; owner-review"]),
-    ("critical", ["lockout:14d; owner-review", "retirement; owner-review", "retirement; owner-review"]),
+    (
+        "medium",
+        [
+            "warning; fine:100",
+            "fine:300; probation:7d",
+            "lockout:3d; demotion",
+        ],
+    ),
+    (
+        "high",
+        [
+            "fine:300; probation:7d",
+            "lockout:7d; demotion",
+            "retirement; owner-review",
+        ],
+    ),
+    (
+        "critical",
+        [
+            "lockout:14d; owner-review",
+            "retirement; owner-review",
+            "retirement; owner-review",
+        ],
+    ),
 ];
 
 /// A law's severity on the schedule.
@@ -103,7 +124,10 @@ pub enum Step {
     /// Credits to take from the agent's earnings, before the caps.
     Fine(u64),
     /// The offending tool is refused for `ms` (probation and lockout).
-    Suspend { ms: u64, label: String },
+    Suspend {
+        ms: u64,
+        label: String,
+    },
     /// Named by the schedule but not carried out here: the owner is asked.
     Escalate(String),
 }
@@ -114,7 +138,9 @@ pub fn steps(severity: Severity, count: usize) -> Vec<Step> {
     SCHEDULE
         .iter()
         .find(|(key, _)| *key == severity.key())
-        .map_or_else(Vec::new, |(_, row)| row[column].split("; ").flat_map(parse_step).collect())
+        .map_or_else(Vec::new, |(_, row)| {
+            row[column].split("; ").flat_map(parse_step).collect()
+        })
 }
 
 fn parse_step(text: &str) -> Vec<Step> {
@@ -126,7 +152,13 @@ fn parse_step(text: &str) -> Vec<Step> {
             Err(_) => vec![Step::Escalate(text.to_string())],
         },
         "probation" | "lockout" => match duration_ms(arg) {
-            Some(ms) => vec![Step::Suspend { ms, label: arg.to_string() }, Step::Escalate(text.to_string())],
+            Some(ms) => vec![
+                Step::Suspend {
+                    ms,
+                    label: arg.to_string(),
+                },
+                Step::Escalate(text.to_string()),
+            ],
             None => vec![Step::Escalate(text.to_string())],
         },
         _ => vec![Step::Escalate(text.to_string())],
@@ -273,7 +305,13 @@ impl State {
             self.next_id += 1;
             record.id = self.next_id;
         }
-        self.next_id = self.applied.iter().map(|a| a.id).max().unwrap_or(0).max(self.next_id);
+        self.next_id = self
+            .applied
+            .iter()
+            .map(|a| a.id)
+            .max()
+            .unwrap_or(0)
+            .max(self.next_id);
         let (applied, next_id) = (&self.applied, &mut self.next_id);
         for suspension in self.suspensions.iter_mut().filter(|s| s.id == 0) {
             let from = applied.iter().find(|a| {
@@ -323,7 +361,11 @@ pub struct Ledger {
 
 impl Ledger {
     fn new(path: Option<PathBuf>) -> Ledger {
-        Ledger { path, state: Mutex::new(State::default()), deciding: Mutex::new(()) }
+        Ledger {
+            path,
+            state: Mutex::new(State::default()),
+            deciding: Mutex::new(()),
+        }
     }
 
     /// Applies the schedule's steps for `case`. Nothing happens when sanctions are disabled.
@@ -356,7 +398,9 @@ impl Ledger {
             state.applied.extend(applied.iter().cloned());
             let excess = state.applied.len().saturating_sub(KEEP);
             state.applied.drain(..excess);
-            state.suspensions.retain(|suspension| suspension.until_ms > case.at_ms);
+            state
+                .suspensions
+                .retain(|suspension| suspension.until_ms > case.at_ms);
             self.save(&state);
         }
         for record in &applied {
@@ -399,15 +443,27 @@ impl Ledger {
         }
         let sanction = format!("fine:{credits}");
         let week_start = case.at_ms.saturating_sub(WEEK_MS);
-        let fined_this_week: u64 =
-            self.lock().applied.iter().filter(|a| a.cid == case.cid && a.at_ms >= week_start).map(|a| a.fine).sum();
+        let fined_this_week: u64 = self
+            .lock()
+            .applied
+            .iter()
+            .filter(|a| a.cid == case.cid && a.at_ms >= week_start)
+            .map(|a| a.fine)
+            .sum();
         let room = WEEKLY_FINE_CAP.saturating_sub(fined_this_week);
         let amount = credits.min(settings.max_fine).min(room);
         if amount == 0 {
-            let why = if room == 0 { "weekly fine cap reached" } else { "max_fine is 0" };
+            let why = if room == 0 {
+                "weekly fine cap reached"
+            } else {
+                "max_fine is 0"
+            };
             return Some(self.new_record(case, &sanction, &format!("not collected: {why}")));
         }
-        let memo = format!("sanction {} for {} (offence {})", case.law, case.tool, case.count);
+        let memo = format!(
+            "sanction {} for {} (offence {})",
+            case.law, case.tool, case.count
+        );
         Some(match env.treasury.fine(case.cid, amount as i64, &memo) {
             Ok(entry) => {
                 let mut record = self.new_record(case, &sanction, "applied");
@@ -439,11 +495,22 @@ impl Ledger {
     }
 
     /// A step the owner decides. Its record names the approval that asks, when one is queued.
-    fn escalate(&self, env: &Env, case: &Case, name: &str, suspended_until: Option<u64>) -> Applied {
+    fn escalate(
+        &self,
+        env: &Env,
+        case: &Case,
+        name: &str,
+        suspended_until: Option<u64>,
+    ) -> Applied {
         let mut record = self.new_record(case, name, "escalated");
-        let for_owner = matches!(name, "owner-review" | "retirement" | "demotion") || name.starts_with("lockout");
+        let for_owner = matches!(name, "owner-review" | "retirement" | "demotion")
+            || name.starts_with("lockout");
         if let (true, Some(ask)) = (for_owner, env.approvals) {
-            let until = if name.starts_with("lockout") { suspended_until } else { None };
+            let until = if name.starts_with("lockout") {
+                suspended_until
+            } else {
+                None
+            };
             let detail = json!({
                 "cid": case.cid,
                 "sanction_id": record.id,
@@ -459,7 +526,13 @@ impl Ledger {
 
     /// The refusal for a call to `tool` while a suspension of it is in force, `None` when it may run.
     /// A suspension stops applying when sanctions or suspensions are switched off.
-    pub fn suspended(&self, settings: &Sanctions, cid: u64, tool: &str, now_ms: u64) -> Option<String> {
+    pub fn suspended(
+        &self,
+        settings: &Sanctions,
+        cid: u64,
+        tool: &str,
+        now_ms: u64,
+    ) -> Option<String> {
         if !settings.enabled || !settings.suspensions {
             return None;
         }
@@ -477,7 +550,13 @@ impl Ledger {
     }
 
     /// The records and suspensions for a query, newest first, at most `limit` of each.
-    pub fn list(&self, cid: Option<u64>, law: Option<&str>, limit: usize, now_ms: u64) -> (Vec<Applied>, Vec<SuspensionView>) {
+    pub fn list(
+        &self,
+        cid: Option<u64>,
+        law: Option<&str>,
+        limit: usize,
+        now_ms: u64,
+    ) -> (Vec<Applied>, Vec<SuspensionView>) {
         let state = self.lock();
         let sanctions = state
             .applied
@@ -515,7 +594,11 @@ impl Ledger {
     /// Lifts the tool suspension recorded as `id`, while it is in force.
     pub fn lift(&self, id: u64, why: &str, now_ms: u64) -> Result<Applied, LiftError> {
         let mut state = self.lock();
-        let at = state.applied.iter().position(|a| a.id == id).ok_or(LiftError::NotFound)?;
+        let at = state
+            .applied
+            .iter()
+            .position(|a| a.id == id)
+            .ok_or(LiftError::NotFound)?;
         if !state.applied[at].sanction.starts_with(SUSPENSION) {
             return Err(LiftError::NotSuspension);
         }
@@ -525,7 +608,11 @@ impl Ledger {
             .position(|s| s.id == id && !s.lifted && s.until_ms > now_ms)
             .ok_or(LiftError::NotActive)?;
         state.suspensions[held].lifted = true;
-        state.applied[at].lifted = Some(Lifted { at_ms: now_ms, by: "owner".to_string(), why: why.to_string() });
+        state.applied[at].lifted = Some(Lifted {
+            at_ms: now_ms,
+            by: "owner".to_string(),
+            why: why.to_string(),
+        });
         let record = state.applied[at].clone();
         self.save(&state);
         Ok(record)
@@ -534,8 +621,15 @@ impl Ledger {
     /// Records the owner's decision `action` on the record `id`.
     pub fn decide_record(&self, id: u64, action: &str, now_ms: u64) -> Result<Applied, LiftError> {
         let mut state = self.lock();
-        let at = state.applied.iter().position(|a| a.id == id).ok_or(LiftError::NotFound)?;
-        state.applied[at].owner_action = Some(OwnerAction { action: action.to_string(), at_ms: now_ms });
+        let at = state
+            .applied
+            .iter()
+            .position(|a| a.id == id)
+            .ok_or(LiftError::NotFound)?;
+        state.applied[at].owner_action = Some(OwnerAction {
+            action: action.to_string(),
+            at_ms: now_ms,
+        });
         let record = state.applied[at].clone();
         self.save(&state);
         Ok(record)
@@ -543,7 +637,10 @@ impl Ledger {
 
     /// Whether the record `id` is a tool suspension.
     pub fn is_suspension(&self, id: u64) -> bool {
-        self.lock().applied.iter().any(|a| a.id == id && a.sanction.starts_with(SUSPENSION))
+        self.lock()
+            .applied
+            .iter()
+            .any(|a| a.id == id && a.sanction.starts_with(SUSPENSION))
     }
 
     /// The record as JSON: the database's `sanctions` component.
@@ -562,14 +659,23 @@ impl Ledger {
     /// The migration: reads `sanctions.json` into the record, when there is one to read.
     fn migrate_file(&self) {
         let Some(path) = &self.path else { return };
-        let Ok(text) = std::fs::read_to_string(path) else { return };
+        let Ok(text) = std::fs::read_to_string(path) else {
+            return;
+        };
         match serde_json::from_str::<State>(&text) {
             Ok(mut state) => {
                 state.number();
-                eprintln!("sanctions: migrated {} record(s) from {}", state.applied.len(), path.display());
+                eprintln!(
+                    "sanctions: migrated {} record(s) from {}",
+                    state.applied.len(),
+                    path.display()
+                );
                 *self.lock() = state;
             }
-            Err(e) => eprintln!("sanctions: {} is not readable, starting empty: {e}", path.display()),
+            Err(e) => eprintln!(
+                "sanctions: {} is not readable, starting empty: {e}",
+                path.display()
+            ),
         }
     }
 
@@ -583,7 +689,9 @@ impl Ledger {
             .map_err(|e| e.to_string())
             .and_then(|bytes| {
                 let tmp = path.with_extension("json.tmp");
-                std::fs::write(&tmp, &bytes).and_then(|()| std::fs::rename(&tmp, path)).map_err(|e| e.to_string())
+                std::fs::write(&tmp, &bytes)
+                    .and_then(|()| std::fs::rename(&tmp, path))
+                    .map_err(|e| e.to_string())
             });
         if let Err(e) = saved {
             eprintln!("sanctions: could not save: {e}");
@@ -631,19 +739,39 @@ pub fn on_violation(app: &App, cid: u64, violation: &Violation, tool: &str) {
     if !settings.enabled {
         return;
     }
-    let (title, severity) = match app.laws.catalog().into_iter().find(|law| law.id == violation.law) {
+    let (title, severity) = match app
+        .laws
+        .catalog()
+        .into_iter()
+        .find(|law| law.id == violation.law)
+    {
         Some(law) => (law.title, Severity::of(&law.severity)),
         None => (violation.law.clone(), Severity::Info),
     };
-    let count = app.laws.recent(cid, violation.at_ms).iter().filter(|v| v["law"] == violation.law.as_str()).count();
-    let ask = |kind: &str, subject: &str, detail: Value| crate::approvals::submit(app, kind, subject, detail).id;
+    let count = app
+        .laws
+        .recent(cid, violation.at_ms)
+        .iter()
+        .filter(|v| v["law"] == violation.law.as_str())
+        .count();
+    let ask = |kind: &str, subject: &str, detail: Value| {
+        crate::approvals::submit(app, kind, subject, detail).id
+    };
     let env = Env {
         treasury: &app.plaza.treasury,
         bus: &app.bus,
         memory: Some(&app.memory),
         approvals: Some(&ask),
     };
-    let case = Case { cid, law: &violation.law, title: &title, severity, count, tool, at_ms: violation.at_ms };
+    let case = Case {
+        cid,
+        law: &violation.law,
+        title: &title,
+        severity,
+        count,
+        tool,
+        at_ms: violation.at_ms,
+    };
     ledger(app).apply(&env, &settings, &case);
 }
 
@@ -654,7 +782,13 @@ pub fn suspended(app: &App, cid: u64, tool: &str) -> Option<String> {
 }
 
 /// Lifts a suspension and publishes its record as a `sanction` event.
-fn lift_on(ledger: &Ledger, bus: &Bus, id: u64, why: &str, now_ms: u64) -> Result<Applied, LiftError> {
+fn lift_on(
+    ledger: &Ledger,
+    bus: &Bus,
+    id: u64,
+    why: &str,
+    now_ms: u64,
+) -> Result<Applied, LiftError> {
     let record = ledger.lift(id, why, now_ms)?;
     bus.publish("sanction", &record);
     Ok(record)
@@ -663,16 +797,30 @@ fn lift_on(ledger: &Ledger, bus: &Bus, id: u64, why: &str, now_ms: u64) -> Resul
 /// The owner's decision on the sanction `id`. Approve with no action or `acknowledge` acknowledges it.
 /// Deny with `lift`, or with no action on a suspension, lifts it (refused unless it is active). The
 /// action `retire` is recorded only: apid does not retire agents. Any other combination is refused.
-fn settle(ledger: &Ledger, bus: &Bus, id: u64, approve: bool, action: Option<&str>, why: &str, now_ms: u64) -> Result<(), String> {
+fn settle(
+    ledger: &Ledger,
+    bus: &Bus,
+    id: u64,
+    approve: bool,
+    action: Option<&str>,
+    why: &str,
+    now_ms: u64,
+) -> Result<(), String> {
     let fail = |e: LiftError| e.message(id);
     match (approve, action) {
         (true, None | Some("acknowledge")) => {
-            let record = ledger.decide_record(id, "acknowledge", now_ms).map_err(fail)?;
+            let record = ledger
+                .decide_record(id, "acknowledge", now_ms)
+                .map_err(fail)?;
             bus.publish("sanction", &record);
             Ok(())
         }
-        (false, Some("lift")) => lift_on(ledger, bus, id, why, now_ms).map(|_| ()).map_err(fail),
-        (false, None) if ledger.is_suspension(id) => lift_on(ledger, bus, id, why, now_ms).map(|_| ()).map_err(fail),
+        (false, Some("lift")) => lift_on(ledger, bus, id, why, now_ms)
+            .map(|_| ())
+            .map_err(fail),
+        (false, None) if ledger.is_suspension(id) => lift_on(ledger, bus, id, why, now_ms)
+            .map(|_| ())
+            .map_err(fail),
         (false, None) => Ok(()),
         (false, Some("retire")) => {
             let record = ledger.decide_record(id, "retire", now_ms).map_err(fail)?;
@@ -683,17 +831,32 @@ fn settle(ledger: &Ledger, bus: &Bus, id: u64, approve: bool, action: Option<&st
             bus.publish("sanction", &record);
             Ok(())
         }
-        (_, Some(other)) => Err(format!("`{other}` is not a decision for a sanction when approve is {approve}")),
+        (_, Some(other)) => Err(format!(
+            "`{other}` is not a decision for a sanction when approve is {approve}"
+        )),
     }
 }
 
 /// The owner's decision on a `sanction` approval (`approvals::decide`). The item's detail names the record.
-pub fn decided(app: &App, item: &Approval, approve: bool, action: Option<&str>) -> Result<(), String> {
+pub fn decided(
+    app: &App,
+    item: &Approval,
+    approve: bool,
+    action: Option<&str>,
+) -> Result<(), String> {
     let Some(id) = item.detail.get("sanction_id").and_then(Value::as_u64) else {
         return Err("this sanction approval names no sanction".to_string());
     };
     let why = item.reason.as_deref().unwrap_or("");
-    settle(ledger(app), &app.bus, id, approve, action, why, apz_plaza::now_ms())
+    settle(
+        ledger(app),
+        &app.bus,
+        id,
+        approve,
+        action,
+        why,
+        apz_plaza::now_ms(),
+    )
 }
 
 /// The sanctions routes. Owner-only like the rest of `/v1/`: `hub_auth::gate` asks for the owner token
@@ -720,9 +883,16 @@ fn list_route(app: &App, req: &Request, _: &Params<'_>) -> Response {
         let suspensions = ledger(app).active(cid, law, now_ms);
         return Response::json(200, &json!({ "sanctions": [], "suspensions": suspensions }));
     }
-    let limit = req.query_param("limit").and_then(|v| v.parse::<usize>().ok()).unwrap_or(DEFAULT_LIMIT).min(MAX_LIMIT);
+    let limit = req
+        .query_param("limit")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(DEFAULT_LIMIT)
+        .min(MAX_LIMIT);
     let (sanctions, suspensions) = ledger(app).list(cid, law, limit, now_ms);
-    Response::json(200, &json!({ "sanctions": sanctions, "suspensions": suspensions }))
+    Response::json(
+        200,
+        &json!({ "sanctions": sanctions, "suspensions": suspensions }),
+    )
 }
 
 /// `POST /v1/sanctions/{id}/lift` with `{"reason": str}`: the owner lifts an active suspension.
@@ -732,9 +902,16 @@ fn lift_route(app: &App, req: &Request, params: &Params<'_>) -> Response {
     };
     let body: Value = match req.json() {
         Ok(body) => body,
-        Err(e) => return Response::error(400, &format!("body must be {{\"reason\": string}}: {e}")),
+        Err(e) => {
+            return Response::error(400, &format!("body must be {{\"reason\": string}}: {e}"));
+        }
     };
-    let why = body.get("reason").and_then(Value::as_str).unwrap_or("").trim().to_string();
+    let why = body
+        .get("reason")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
     match lift_on(ledger(app), &app.bus, id, &why, apz_plaza::now_ms()) {
         Ok(record) => Response::json(200, &record),
         Err(LiftError::NotFound) => Response::error(404, &LiftError::NotFound.message(id)),
@@ -760,7 +937,8 @@ mod tests {
     }
 
     fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("apid-sanctions-{}-{name}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("apid-sanctions-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -770,9 +948,15 @@ mod tests {
         let treasury = Treasury::new(EventBus::new());
         if wallet > 0 {
             // The treasury's margin rule: pay at most a fifth of the task's real cost.
-            treasury.fund_task("job", 6 * wallet + 1000).expect("the task is funded");
-            treasury.charge_spend(Some("job"), 5 * wallet, "real cost").expect("the cost is spent");
-            treasury.pay_agent("job", CID, wallet).expect("the agent is paid");
+            treasury
+                .fund_task("job", 6 * wallet + 1000)
+                .expect("the task is funded");
+            treasury
+                .charge_spend(Some("job"), 5 * wallet, "real cost")
+                .expect("the cost is spent");
+            treasury
+                .pay_agent("job", CID, wallet)
+                .expect("the agent is paid");
         }
         World {
             treasury,
@@ -783,18 +967,40 @@ mod tests {
         }
     }
 
-    fn case(law: &'static str, severity: Severity, count: usize, tool: &'static str) -> Case<'static> {
-        Case { cid: CID, law, title: "a law", severity, count, tool, at_ms: NOW }
+    fn case(
+        law: &'static str,
+        severity: Severity,
+        count: usize,
+        tool: &'static str,
+    ) -> Case<'static> {
+        Case {
+            cid: CID,
+            law,
+            title: "a law",
+            severity,
+            count,
+            tool,
+            at_ms: NOW,
+        }
     }
 
     /// The id of the first tool-suspension record in `applied`.
     fn suspension_id(applied: &[Applied]) -> u64 {
-        applied.iter().find(|a| a.sanction.starts_with(SUSPENSION)).expect("a suspension").id
+        applied
+            .iter()
+            .find(|a| a.sanction.starts_with(SUSPENSION))
+            .expect("a suspension")
+            .id
     }
 
     impl World {
         fn env(&self) -> Env<'_> {
-            Env { treasury: &self.treasury, bus: &self.bus, memory: Some(&self.memory), approvals: None }
+            Env {
+                treasury: &self.treasury,
+                bus: &self.bus,
+                memory: Some(&self.memory),
+                approvals: None,
+            }
         }
 
         fn apply(&self, case: &Case) -> Vec<Applied> {
@@ -810,7 +1016,13 @@ mod tests {
         }
 
         fn fines_in_journal(&self) -> Vec<String> {
-            self.treasury.journal(100).entries.into_iter().filter(|e| e.kind == "fine").map(|e| e.memo).collect()
+            self.treasury
+                .journal(100)
+                .entries
+                .into_iter()
+                .filter(|e| e.kind == "fine")
+                .map(|e| e.memo)
+                .collect()
         }
     }
 
@@ -821,11 +1033,25 @@ mod tests {
         assert_eq!(steps(Severity::Info, 7), steps(Severity::Info, 3));
         assert_eq!(
             steps(Severity::High, 2),
-            [Step::Suspend { ms: 7 * DAY_MS, label: "7d".into() }, Step::Escalate("lockout:7d".into()), Step::Escalate("demotion".into())]
+            [
+                Step::Suspend {
+                    ms: 7 * DAY_MS,
+                    label: "7d".into()
+                },
+                Step::Escalate("lockout:7d".into()),
+                Step::Escalate("demotion".into())
+            ]
         );
         assert_eq!(
             steps(Severity::Critical, 1),
-            [Step::Suspend { ms: 14 * DAY_MS, label: "14d".into() }, Step::Escalate("lockout:14d".into()), Step::Escalate("owner-review".into())]
+            [
+                Step::Suspend {
+                    ms: 14 * DAY_MS,
+                    label: "14d".into()
+                },
+                Step::Escalate("lockout:14d".into()),
+                Step::Escalate("owner-review".into())
+            ]
         );
         assert_eq!(Severity::of("critical"), Severity::Critical);
         assert_eq!(Severity::of("high"), Severity::High);
@@ -838,32 +1064,57 @@ mod tests {
     #[test]
     fn a_minor_violation_is_a_warning_only() {
         let w = world("minor", 300);
-        assert_eq!(w.sanctions(&case("T-001", Severity::Info, 1, "bash")), ["warning"]);
+        assert_eq!(
+            w.sanctions(&case("T-001", Severity::Info, 1, "bash")),
+            ["warning"]
+        );
         assert_eq!(w.wallet(), 300);
         assert!(w.fines_in_journal().is_empty());
         assert!(w.ledger.suspended(&w.settings, CID, "bash", NOW).is_none());
-        assert_eq!(w.memory.list(CID).len(), 1, "the warning is noted in memory");
+        assert_eq!(
+            w.memory.list(CID).len(),
+            1,
+            "the warning is noted in memory"
+        );
     }
 
     #[test]
     fn a_fineable_violation_debits_the_wallet_by_the_schedule() {
         let w = world("fine", 300);
         let applied = w.apply(&case("T-004", Severity::Medium, 1, "bash"));
-        assert_eq!(applied.iter().map(|a| a.sanction.as_str()).collect::<Vec<_>>(), ["warning", "fine:100"]);
+        assert_eq!(
+            applied
+                .iter()
+                .map(|a| a.sanction.as_str())
+                .collect::<Vec<_>>(),
+            ["warning", "fine:100"]
+        );
         assert_eq!(applied[1].fine, 100);
         assert!(applied[1].entry.is_some());
         assert_eq!(w.wallet(), 200);
         let fines = w.fines_in_journal();
         assert_eq!(fines.len(), 1);
-        assert!(fines[0].contains("T-004"), "the fine's memo names the law: {fines:?}");
+        assert!(
+            fines[0].contains("T-004"),
+            "the fine's memo names the law: {fines:?}"
+        );
     }
 
     #[test]
     fn repeated_violations_escalate_with_the_offence_count() {
         let w = world("repeat", 300);
-        assert_eq!(w.sanctions(&case("T-001", Severity::Info, 1, "bash")), ["warning"]);
-        assert_eq!(w.sanctions(&case("T-001", Severity::Info, 2, "bash")), ["warning"]);
-        assert_eq!(w.sanctions(&case("T-001", Severity::Info, 3, "bash")), ["fine:50"]);
+        assert_eq!(
+            w.sanctions(&case("T-001", Severity::Info, 1, "bash")),
+            ["warning"]
+        );
+        assert_eq!(
+            w.sanctions(&case("T-001", Severity::Info, 2, "bash")),
+            ["warning"]
+        );
+        assert_eq!(
+            w.sanctions(&case("T-001", Severity::Info, 3, "bash")),
+            ["fine:50"]
+        );
         assert_eq!(w.wallet(), 250);
     }
 
@@ -873,7 +1124,11 @@ mod tests {
         let applied = w.apply(&case("T-004", Severity::Medium, 1, "bash"));
         assert_eq!(applied[1].sanction, "fine:100");
         assert_eq!(applied[1].fine, 0);
-        assert!(applied[1].outcome.starts_with("not collected"), "{}", applied[1].outcome);
+        assert!(
+            applied[1].outcome.starts_with("not collected"),
+            "{}",
+            applied[1].outcome
+        );
         assert!(w.fines_in_journal().is_empty());
     }
 
@@ -881,14 +1136,38 @@ mod tests {
     fn a_suspended_tool_is_refused_until_the_suspension_ends() {
         let w = world("suspend", 300);
         let sanctions = w.sanctions(&case("T-010", Severity::Low, 3, "bash"));
-        assert_eq!(sanctions, ["fine:200", "tool-suspension:3d", "probation:3d"]);
+        assert_eq!(
+            sanctions,
+            ["fine:200", "tool-suspension:3d", "probation:3d"]
+        );
         assert_eq!(w.wallet(), 100);
         let settings = &w.settings;
-        assert!(w.ledger.suspended(settings, CID, "bash", NOW + 1).is_some_and(|why| why.contains("T-010")));
-        assert!(w.ledger.suspended(settings, CID, "read_file", NOW + 1).is_none(), "only the offending tool");
-        assert!(w.ledger.suspended(settings, 8, "bash", NOW + 1).is_none(), "only the offending agent");
-        assert!(w.ledger.suspended(settings, CID, "bash", NOW + 3 * DAY_MS - 1).is_some());
-        assert!(w.ledger.suspended(settings, CID, "bash", NOW + 3 * DAY_MS).is_none(), "it ends at its time");
+        assert!(
+            w.ledger
+                .suspended(settings, CID, "bash", NOW + 1)
+                .is_some_and(|why| why.contains("T-010"))
+        );
+        assert!(
+            w.ledger
+                .suspended(settings, CID, "read_file", NOW + 1)
+                .is_none(),
+            "only the offending tool"
+        );
+        assert!(
+            w.ledger.suspended(settings, 8, "bash", NOW + 1).is_none(),
+            "only the offending agent"
+        );
+        assert!(
+            w.ledger
+                .suspended(settings, CID, "bash", NOW + 3 * DAY_MS - 1)
+                .is_some()
+        );
+        assert!(
+            w.ledger
+                .suspended(settings, CID, "bash", NOW + 3 * DAY_MS)
+                .is_none(),
+            "it ends at its time"
+        );
     }
 
     #[test]
@@ -906,10 +1185,18 @@ mod tests {
         let mut w = world("disabled", 300);
         w.apply(&case("C-001a", Severity::Critical, 1, "bash"));
         w.settings.enabled = false;
-        assert!(w.apply(&case("T-004", Severity::Medium, 1, "read_file")).is_empty());
+        assert!(
+            w.apply(&case("T-004", Severity::Medium, 1, "read_file"))
+                .is_empty()
+        );
         assert_eq!(w.wallet(), 300);
         assert!(w.fines_in_journal().is_empty());
-        assert!(w.ledger.suspended(&w.settings, CID, "bash", NOW + 1).is_none(), "a suspension stops with sanctions off");
+        assert!(
+            w.ledger
+                .suspended(&w.settings, CID, "bash", NOW + 1)
+                .is_none(),
+            "a suspension stops with sanctions off"
+        );
     }
 
     #[test]
@@ -917,9 +1204,16 @@ mod tests {
         let mut w = world("switches", 300);
         w.settings.fines = false;
         w.settings.suspensions = false;
-        assert_eq!(w.sanctions(&case("T-010", Severity::Low, 3, "bash")), ["probation:3d"]);
+        assert_eq!(
+            w.sanctions(&case("T-010", Severity::Low, 3, "bash")),
+            ["probation:3d"]
+        );
         assert_eq!(w.wallet(), 300);
-        assert!(w.ledger.suspended(&w.settings, CID, "bash", NOW + 1).is_none());
+        assert!(
+            w.ledger
+                .suspended(&w.settings, CID, "bash", NOW + 1)
+                .is_none()
+        );
     }
 
     #[test]
@@ -937,7 +1231,11 @@ mod tests {
         // 100 (capped above) + 300 + 300 + 300 = 1000; the next fine gets only what the week has left.
         let mut last = case("T-004", Severity::High, 1, "bash");
         last.at_ms = NOW + 10;
-        let fine = w.apply(&last).iter().find(|a| a.sanction.starts_with("fine")).map(|a| a.fine);
+        let fine = w
+            .apply(&last)
+            .iter()
+            .find(|a| a.sanction.starts_with("fine"))
+            .map(|a| a.fine);
         assert_eq!(fine, Some(0), "the week's 1000 is spent");
     }
 
@@ -948,46 +1246,76 @@ mod tests {
         w.apply(&case("T-001", Severity::Info, 1, "bash"));
         let frame = rx.try_recv().expect("a sanction event");
         assert_eq!(frame.kind, "sanction");
-        assert!(frame.data.contains("\"sanction\":\"warning\""), "{}", frame.data);
+        assert!(
+            frame.data.contains("\"sanction\":\"warning\""),
+            "{}",
+            frame.data
+        );
     }
 
     #[test]
     fn a_suspension_survives_a_restart() {
         let path = scratch("restart").join("sanctions.json");
         let w = world("restart-env", 300);
-        Ledger::new(Some(path.clone())).apply(&w.env(), &w.settings, &case("T-010", Severity::Low, 3, "bash"));
+        Ledger::new(Some(path.clone())).apply(
+            &w.env(),
+            &w.settings,
+            &case("T-010", Severity::Low, 3, "bash"),
+        );
         let reloaded = Ledger::new(Some(path));
         reloaded.migrate_file();
-        assert!(reloaded.suspended(&w.settings, CID, "bash", NOW + 1).is_some());
+        assert!(
+            reloaded
+                .suspended(&w.settings, CID, "bash", NOW + 1)
+                .is_some()
+        );
     }
 
     #[test]
     fn the_fine_cap_is_checked_when_settings_are_saved() {
-        let store = crate::settings::Store::load(&scratch("settings-cap"), false).expect("the settings load");
+        let store = crate::settings::Store::load(&scratch("settings-cap"), false)
+            .expect("the settings load");
         let mut over = store.get();
         over.sanctions.max_fine = FINES_PER_WEEK_MAX + 1;
         assert!(store.put(over).is_err());
         let mut at_cap = store.get();
         at_cap.sanctions.max_fine = FINES_PER_WEEK_MAX;
-        assert_eq!(store.put(at_cap).expect("the cap is allowed").sanctions.max_fine, FINES_PER_WEEK_MAX);
+        assert_eq!(
+            store
+                .put(at_cap)
+                .expect("the cap is allowed")
+                .sanctions
+                .max_fine,
+            FINES_PER_WEEK_MAX
+        );
     }
 
     #[test]
     fn old_settings_load_with_the_sanctions_defaults() {
         let old: crate::settings::Settings = serde_json::from_str("{\"max_turns\": 24}").unwrap();
         assert_eq!(old.sanctions, Sanctions::default());
-        assert!(Sanctions::default().enabled && Sanctions::default().fines && Sanctions::default().suspensions);
+        assert!(
+            Sanctions::default().enabled
+                && Sanctions::default().fines
+                && Sanctions::default().suspensions
+        );
     }
 
     #[test]
     fn the_list_filters_by_agent_and_law_newest_first() {
         let w = world("list", 0);
         w.apply(&case("T-001", Severity::Info, 1, "bash"));
-        w.apply(&Case { cid: 8, ..case("T-004", Severity::Info, 1, "bash") });
+        w.apply(&Case {
+            cid: 8,
+            ..case("T-004", Severity::Info, 1, "bash")
+        });
         w.apply(&case("T-004", Severity::Info, 1, "read_file"));
         let (all, _) = w.ledger.list(None, None, 100, NOW);
         assert_eq!(all.len(), 3);
-        assert!(all.windows(2).all(|pair| pair[0].id > pair[1].id), "newest first");
+        assert!(
+            all.windows(2).all(|pair| pair[0].id > pair[1].id),
+            "newest first"
+        );
         assert_eq!(w.ledger.list(Some(CID), None, 100, NOW).0.len(), 2);
         let (by_law, _) = w.ledger.list(None, Some("T-004"), 100, NOW);
         assert_eq!(by_law.iter().map(|a| a.cid).collect::<Vec<_>>(), [CID, 8]);
@@ -1009,21 +1337,43 @@ mod tests {
     #[test]
     fn the_active_list_keeps_an_old_suspension_past_the_limit() {
         // Oldest first in the file: one old suspension in force, 120 more in force, 150 lifted, one run out.
-        let mut suspensions = vec![json!({ "cid": 1, "tool": "bash", "law": "T-010", "until_ms": NOW + DAY_MS })];
-        suspensions.extend((0..120).map(|_| json!({ "cid": 4, "tool": "bash", "law": "T-010", "until_ms": NOW + DAY_MS })));
+        let mut suspensions =
+            vec![json!({ "cid": 1, "tool": "bash", "law": "T-010", "until_ms": NOW + DAY_MS })];
+        suspensions.extend((0..120).map(
+            |_| json!({ "cid": 4, "tool": "bash", "law": "T-010", "until_ms": NOW + DAY_MS }),
+        ));
         suspensions.extend((0..150).map(|_| json!({ "cid": 2, "tool": "bash", "law": "T-010", "until_ms": NOW + DAY_MS, "lifted": true })));
         suspensions.push(json!({ "cid": 3, "tool": "bash", "law": "T-010", "until_ms": NOW - 1 }));
         let ledger = Ledger::new(None);
-        ledger.restore(&json!({ "applied": [], "suspensions": suspensions }).to_string()).expect("the snapshot restores");
+        ledger
+            .restore(&json!({ "applied": [], "suspensions": suspensions }).to_string())
+            .expect("the snapshot restores");
         let (_, newest) = ledger.list(None, None, DEFAULT_LIMIT, NOW);
-        assert!(newest.iter().all(|s| s.cid != 1), "the newest 100 miss the old suspension");
+        assert!(
+            newest.iter().all(|s| s.cid != 1),
+            "the newest 100 miss the old suspension"
+        );
         let active = ledger.active(None, None, NOW);
-        assert_eq!(active.len(), 121, "every suspension in force, with no limit");
-        assert_eq!(active.last().map(|s| s.cid), Some(1), "newest first: the old one comes last");
+        assert_eq!(
+            active.len(),
+            121,
+            "every suspension in force, with no limit"
+        );
+        assert_eq!(
+            active.last().map(|s| s.cid),
+            Some(1),
+            "newest first: the old one comes last"
+        );
         assert!(active.iter().all(|s| s.active));
         assert_eq!(ledger.active(Some(1), Some("T-010"), NOW).len(), 1);
-        assert!(ledger.active(Some(2), None, NOW).is_empty(), "lifted is not in force");
-        assert!(ledger.active(Some(3), None, NOW).is_empty(), "run out is not in force");
+        assert!(
+            ledger.active(Some(2), None, NOW).is_empty(),
+            "lifted is not in force"
+        );
+        assert!(
+            ledger.active(Some(3), None, NOW).is_empty(),
+            "run out is not in force"
+        );
         assert!(ledger.active(None, Some("T-999"), NOW).is_empty());
     }
 
@@ -1032,58 +1382,164 @@ mod tests {
         let w = world("lift", 300);
         let applied = w.apply(&case("T-010", Severity::Low, 3, "bash"));
         let id = suspension_id(&applied);
-        let lifted = lift_on(&w.ledger, &w.bus, id, "appeal accepted", NOW + 1).expect("the first lift");
+        let lifted =
+            lift_on(&w.ledger, &w.bus, id, "appeal accepted", NOW + 1).expect("the first lift");
         let lift = lifted.lifted.expect("the record shows the lift");
-        assert_eq!((lift.by.as_str(), lift.why.as_str(), lift.at_ms), ("owner", "appeal accepted", NOW + 1));
-        assert!(w.ledger.suspended(&w.settings, CID, "bash", NOW + 2).is_none(), "the tool runs again");
-        assert_eq!(lift_on(&w.ledger, &w.bus, id, "again", NOW + 2), Err(LiftError::NotActive), "a second lift is 409");
-        assert_eq!(lift_on(&w.ledger, &w.bus, 9_999, "", NOW + 2), Err(LiftError::NotFound), "an unknown id is 404");
+        assert_eq!(
+            (lift.by.as_str(), lift.why.as_str(), lift.at_ms),
+            ("owner", "appeal accepted", NOW + 1)
+        );
+        assert!(
+            w.ledger
+                .suspended(&w.settings, CID, "bash", NOW + 2)
+                .is_none(),
+            "the tool runs again"
+        );
+        assert_eq!(
+            lift_on(&w.ledger, &w.bus, id, "again", NOW + 2),
+            Err(LiftError::NotActive),
+            "a second lift is 409"
+        );
+        assert_eq!(
+            lift_on(&w.ledger, &w.bus, 9_999, "", NOW + 2),
+            Err(LiftError::NotFound),
+            "an unknown id is 404"
+        );
         let warning = applied[0].id;
-        assert_eq!(lift_on(&w.ledger, &w.bus, warning, "", NOW + 2), Err(LiftError::NotSuspension));
+        assert_eq!(
+            lift_on(&w.ledger, &w.bus, warning, "", NOW + 2),
+            Err(LiftError::NotSuspension)
+        );
     }
 
     #[test]
     fn a_decided_lift_marks_the_suspension_lifted() {
         let w = world("decided", 300);
         let id = suspension_id(&w.apply(&case("T-010", Severity::Low, 3, "bash")));
-        assert_eq!(settle(&w.ledger, &w.bus, id, false, Some("lift"), "", NOW + 1), Ok(()));
-        assert!(w.ledger.suspended(&w.settings, CID, "bash", NOW + 2).is_none());
-        assert!(settle(&w.ledger, &w.bus, id, false, Some("lift"), "", NOW + 2).is_err(), "not active any more");
-        assert!(settle(&w.ledger, &w.bus, id, true, Some("lift"), "", NOW + 2).is_err(), "approve cannot lift");
-        assert!(settle(&w.ledger, &w.bus, id, false, Some("acknowledge"), "", NOW + 2).is_err());
+        assert_eq!(
+            settle(&w.ledger, &w.bus, id, false, Some("lift"), "", NOW + 1),
+            Ok(())
+        );
+        assert!(
+            w.ledger
+                .suspended(&w.settings, CID, "bash", NOW + 2)
+                .is_none()
+        );
+        assert!(
+            settle(&w.ledger, &w.bus, id, false, Some("lift"), "", NOW + 2).is_err(),
+            "not active any more"
+        );
+        assert!(
+            settle(&w.ledger, &w.bus, id, true, Some("lift"), "", NOW + 2).is_err(),
+            "approve cannot lift"
+        );
+        assert!(
+            settle(
+                &w.ledger,
+                &w.bus,
+                id,
+                false,
+                Some("acknowledge"),
+                "",
+                NOW + 2
+            )
+            .is_err()
+        );
     }
 
     #[test]
     fn acknowledge_and_retire_are_recorded_on_the_sanction() {
         let w = world("acknowledge", 300);
         let applied = w.apply(&case("C-001a", Severity::Critical, 1, "bash"));
-        let owner_review = applied.iter().find(|a| a.sanction == "owner-review").expect("the escalation").id;
-        assert_eq!(settle(&w.ledger, &w.bus, owner_review, true, None, "", NOW + 1), Ok(()));
-        assert_eq!(settle(&w.ledger, &w.bus, owner_review, false, Some("retire"), "", NOW + 2), Ok(()));
+        let owner_review = applied
+            .iter()
+            .find(|a| a.sanction == "owner-review")
+            .expect("the escalation")
+            .id;
+        assert_eq!(
+            settle(&w.ledger, &w.bus, owner_review, true, None, "", NOW + 1),
+            Ok(())
+        );
+        assert_eq!(
+            settle(
+                &w.ledger,
+                &w.bus,
+                owner_review,
+                false,
+                Some("retire"),
+                "",
+                NOW + 2
+            ),
+            Ok(())
+        );
         let (records, _) = w.ledger.list(None, None, 100, NOW);
-        let decided = records.iter().find(|a| a.id == owner_review).expect("the record");
-        assert_eq!(decided.owner_action.as_ref().map(|o| o.action.as_str()), Some("retire"), "the last decision");
-        assert!(settle(&w.ledger, &w.bus, owner_review, true, Some("retire"), "", NOW).is_err());
-        assert!(settle(&w.ledger, &w.bus, 9_999, true, None, "", NOW).is_err(), "an unknown sanction");
+        let decided = records
+            .iter()
+            .find(|a| a.id == owner_review)
+            .expect("the record");
+        assert_eq!(
+            decided.owner_action.as_ref().map(|o| o.action.as_str()),
+            Some("retire"),
+            "the last decision"
+        );
+        assert!(
+            settle(
+                &w.ledger,
+                &w.bus,
+                owner_review,
+                true,
+                Some("retire"),
+                "",
+                NOW
+            )
+            .is_err()
+        );
+        assert!(
+            settle(&w.ledger, &w.bus, 9_999, true, None, "", NOW).is_err(),
+            "an unknown sanction"
+        );
     }
 
     #[test]
     fn an_escalation_asks_the_owner_through_an_approval() {
         let w = world("escalate", 300);
         let queue = crate::approvals::Store::load(&scratch("escalate-queue"));
-        let ask = |kind: &str, subject: &str, detail: Value| queue.submit(CID, kind, subject, detail).id;
-        let env = Env { treasury: &w.treasury, bus: &w.bus, memory: Some(&w.memory), approvals: Some(&ask) };
-        let applied = w.ledger.apply(&env, &w.settings, &case("C-001a", Severity::Critical, 1, "bash"));
-        let owner = applied.iter().find(|a| a.sanction == "owner-review").expect("an owner-review step");
+        let ask =
+            |kind: &str, subject: &str, detail: Value| queue.submit(CID, kind, subject, detail).id;
+        let env = Env {
+            treasury: &w.treasury,
+            bus: &w.bus,
+            memory: Some(&w.memory),
+            approvals: Some(&ask),
+        };
+        let applied = w.ledger.apply(
+            &env,
+            &w.settings,
+            &case("C-001a", Severity::Critical, 1, "bash"),
+        );
+        let owner = applied
+            .iter()
+            .find(|a| a.sanction == "owner-review")
+            .expect("an owner-review step");
         let approval = owner.approval.clone().expect("the step names its approval");
         let pending = queue.list();
-        let item = pending.iter().find(|a| a.id == approval).expect("the approval is queued");
+        let item = pending
+            .iter()
+            .find(|a| a.id == approval)
+            .expect("the approval is queued");
         assert_eq!(item.kind, "sanction");
         assert_eq!(item.state, crate::approvals::State::Pending);
         assert_eq!(item.detail["sanction_id"].as_u64(), Some(owner.id));
         assert_eq!(item.subject, "C-001a owner-review for agent 7");
-        assert_eq!(pending.len(), 2, "the lockout and the owner-review ask; the suspension does not");
-        let suspension = applied.iter().find(|a| a.sanction == "tool-suspension:14d").expect("the suspension");
+        assert_eq!(
+            pending.len(),
+            2,
+            "the lockout and the owner-review ask; the suspension does not"
+        );
+        let suspension = applied
+            .iter()
+            .find(|a| a.sanction == "tool-suspension:14d")
+            .expect("the suspension");
         assert!(suspension.approval.is_none());
     }
 
@@ -1094,10 +1550,22 @@ mod tests {
         let json = w.ledger.snapshot();
         let restored = Ledger::new(None);
         restored.restore(&json).expect("the snapshot restores");
-        assert_eq!(restored.snapshot(), json, "the round trip keeps every field");
-        let next = restored.new_record(&case("T-001", Severity::Info, 1, "bash"), "warning", "applied");
+        assert_eq!(
+            restored.snapshot(),
+            json,
+            "the round trip keeps every field"
+        );
+        let next = restored.new_record(
+            &case("T-001", Severity::Info, 1, "bash"),
+            "warning",
+            "applied",
+        );
         assert_eq!(next.id, 4, "ids 1 to 3 are taken; the counter survives");
-        assert!(restored.suspended(&w.settings, CID, "bash", NOW + 1).is_some());
+        assert!(
+            restored
+                .suspended(&w.settings, CID, "bash", NOW + 1)
+                .is_some()
+        );
         assert!(restored.restore("not json").is_err());
     }
 
@@ -1113,7 +1581,14 @@ mod tests {
         assert_eq!(sanctions.iter().map(|a| a.id).collect::<Vec<_>>(), [2, 1]);
         assert_eq!(suspensions[0].id, 2, "the suspension takes its record's id");
         assert!(suspensions[0].active);
-        assert!(ledger.suspended(&Sanctions::default(), CID, "bash", NOW + 1).is_some());
-        assert_eq!(lift_on(&ledger, &Bus::default(), 2, "migrated", NOW + 1).map(|a| a.id), Ok(2));
+        assert!(
+            ledger
+                .suspended(&Sanctions::default(), CID, "bash", NOW + 1)
+                .is_some()
+        );
+        assert_eq!(
+            lift_on(&ledger, &Bus::default(), 2, "migrated", NOW + 1).map(|a| a.id),
+            Ok(2)
+        );
     }
 }

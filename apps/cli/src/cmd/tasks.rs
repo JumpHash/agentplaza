@@ -1,9 +1,9 @@
 //! `agentplaza tasks`: Tasks: the work queue.
 
 use clap::Subcommand;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use crate::ctx::{self, confirm, Ctx};
+use crate::ctx::{self, Ctx, confirm};
 use crate::rich;
 
 /// The board's lanes (the Tasks screen): open, in progress, done, failed or withdrawn.
@@ -89,7 +89,10 @@ fn lane_of(state: &str) -> &'static str {
 
 /// The first line of a goal, the task's title.
 pub(super) fn title_of(goal: &str) -> &str {
-    goal.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("Untitled task")
+    goal.lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("Untitled task")
 }
 
 /// One task's timeline: the work_start entries that name the task (in their `origin`, or at the
@@ -98,7 +101,10 @@ pub(super) fn title_of(goal: &str) -> &str {
 fn timeline_of(task_id: &str, entries: &[Value]) -> Vec<Value> {
     let names_task = |e: &Value| {
         let data = e.get("data");
-        let origin_task = data.and_then(|d| d.get("origin")).and_then(|o| o.get("task")).and_then(Value::as_str);
+        let origin_task = data
+            .and_then(|d| d.get("origin"))
+            .and_then(|o| o.get("task"))
+            .and_then(Value::as_str);
         let top_task = data.and_then(|d| d.get("task")).and_then(Value::as_str);
         origin_task == Some(task_id) || top_task == Some(task_id)
     };
@@ -110,7 +116,9 @@ fn timeline_of(task_id: &str, entries: &[Value]) -> Vec<Value> {
     entries
         .iter()
         .filter(|e| {
-            e.get("work").and_then(Value::as_u64).is_some_and(|w| works.contains(&w))
+            e.get("work")
+                .and_then(Value::as_u64)
+                .is_some_and(|w| works.contains(&w))
                 && TIMELINE_KINDS.iter().any(|k| *k == ctx::s(e, "kind"))
         })
         .cloned()
@@ -119,7 +127,13 @@ fn timeline_of(task_id: &str, entries: &[Value]) -> Vec<Value> {
 
 /// The `POST /v1/tasks` body with only the fields the user gave. An omitted budget
 /// is left out, so the hub applies its default (the CLI holds no copy of it).
-fn create_body(goal: String, acceptance: Option<String>, role: Option<String>, budget: Option<u64>, assign: Option<i64>) -> Value {
+fn create_body(
+    goal: String,
+    acceptance: Option<String>,
+    role: Option<String>,
+    budget: Option<u64>,
+    assign: Option<i64>,
+) -> Value {
     let mut body = json!({ "goal": goal });
     if let Some(budget) = budget {
         body["budget"] = json!(budget);
@@ -142,7 +156,10 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             let hub = ctx.client.get("/v1/tasks")?;
             let tasks: Vec<Value> = array_at(&hub, "tasks")
                 .iter()
-                .filter(|t| lane.as_deref().map_or(true, |l| lane_of(ctx::s(t, "state")) == l))
+                .filter(|t| {
+                    lane.as_deref()
+                        .map_or(true, |l| lane_of(ctx::s(t, "state")) == l)
+                })
                 .cloned()
                 .collect();
             ctx.out(&json!({ "tasks": tasks }), |_| {
@@ -177,8 +194,15 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                     ("created", ctx::when(&t["created_at"])),
                     ("updated", ctx::when(&t["updated_at"])),
                 ]);
-                println!("\n{}", rich::render(ctx::s(t, "goal"), &rich_ctx, &ctx.rich));
-                for (heading, key) in [("Acceptance", "acceptance"), ("Note", "note"), ("Outcome", "outcome")] {
+                println!(
+                    "\n{}",
+                    rich::render(ctx::s(t, "goal"), &rich_ctx, &ctx.rich)
+                );
+                for (heading, key) in [
+                    ("Acceptance", "acceptance"),
+                    ("Note", "note"),
+                    ("Outcome", "outcome"),
+                ] {
                     let text = ctx::s(t, key);
                     if !text.is_empty() {
                         println!("\n{heading}\n{}", rich::render(text, &rich_ctx, &ctx.rich));
@@ -194,37 +218,73 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                 .and_then(Value::as_i64)
                 .ok_or("this task has no agent yet, so it has no timeline")?;
             // The newest 1000 entries (the hub's `last`), not the oldest.
-            let entries = ctx.client.get(&format!("/v1/agents/{cid}/transcript?last=1000"))?;
+            let entries = ctx
+                .client
+                .get(&format!("/v1/agents/{cid}/transcript?last=1000"))?;
             let kept = timeline_of(&id, array(&entries));
             let rich_ctx = rich::context_for(ctx);
             ctx.out(&json!(kept), |_| {
                 for e in &kept {
-                    let data: String = e.get("data").map(|d| d.to_string()).unwrap_or_default().chars().take(120).collect();
+                    let data: String = e
+                        .get("data")
+                        .map(|d| d.to_string())
+                        .unwrap_or_default()
+                        .chars()
+                        .take(120)
+                        .collect();
                     let data = rich::render(&data, &rich_ctx, &ctx.rich);
-                    println!("{:>5}  {:<14}  {}", ctx::text(e, "seq"), ctx::s(e, "kind"), data);
+                    println!(
+                        "{:>5}  {:<14}  {}",
+                        ctx::text(e, "seq"),
+                        ctx::s(e, "kind"),
+                        data
+                    );
                 }
             });
             Ok(())
         }
-        Cmd::Create { title, details, acceptance, role, budget, assign } => {
+        Cmd::Create {
+            title,
+            details,
+            acceptance,
+            role,
+            budget,
+            assign,
+        } => {
             let title = title.trim().to_string();
             if title.is_empty() {
                 return Err("a task needs a title".into());
             }
-            let details = details.filter(|d| !d.trim().is_empty()).map(|d| ctx::text_arg(&d)).transpose()?;
+            let details = details
+                .filter(|d| !d.trim().is_empty())
+                .map(|d| ctx::text_arg(&d))
+                .transpose()?;
             let goal = match details {
                 Some(d) => format!("{title}\n\n{d}"),
                 None => title,
             };
-            let acceptance = acceptance.filter(|a| !a.trim().is_empty()).map(|a| ctx::text_arg(&a)).transpose()?;
+            let acceptance = acceptance
+                .filter(|a| !a.trim().is_empty())
+                .map(|a| ctx::text_arg(&a))
+                .transpose()?;
             let body = create_body(goal, acceptance, role, budget, assign);
             let t = ctx.client.post("/v1/tasks", &body)?;
-            ctx.out(&t, |t| println!("created task {} ({})", ctx::s(t, "id"), ctx::s(t, "state")));
+            ctx.out(&t, |t| {
+                println!("created task {} ({})", ctx::s(t, "id"), ctx::s(t, "state"))
+            });
             Ok(())
         }
         Cmd::Assign { id, cid } => {
-            let w = ctx.client.post(&format!("/v1/agents/{cid}/assign"), &json!({ "task_id": id }))?;
-            ctx.out(&w, |w| println!("assigned task {id} to agent {cid} (work {})", ctx::text(w, "work")));
+            let w = ctx.client.post(
+                &format!("/v1/agents/{cid}/assign"),
+                &json!({ "task_id": id }),
+            )?;
+            ctx.out(&w, |w| {
+                println!(
+                    "assigned task {id} to agent {cid} (work {})",
+                    ctx::text(w, "work")
+                )
+            });
             Ok(())
         }
         Cmd::Withdraw { id, yes } => {
@@ -266,7 +326,10 @@ mod tests {
             { "seq": 8, "work": 4, "kind": "work_start", "data": { "task": "t1" } },
             { "seq": 9, "work": 4, "kind": "message", "data": {} }
         ]);
-        let kept: Vec<u64> = timeline_of("t1", array(&entries)).iter().map(|e| e["seq"].as_u64().unwrap_or(0)).collect();
+        let kept: Vec<u64> = timeline_of("t1", array(&entries))
+            .iter()
+            .map(|e| e["seq"].as_u64().unwrap_or(0))
+            .collect();
         assert_eq!(kept, vec![1, 2, 7, 8]);
         assert!(timeline_of("t9", array(&entries)).is_empty());
     }

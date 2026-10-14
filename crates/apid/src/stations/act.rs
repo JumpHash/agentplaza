@@ -45,7 +45,14 @@ pub(crate) trait Hub {
     /// The laws' refusal of a call (`Laws::refusal`), `None` when it may run.
     fn refusal(&self, cid: u64, role: &str, tool: &str, input: &Value) -> Option<String>;
     /// Writes one row to the station audit.
-    fn audit(&self, station: &str, cid: u64, kind: &str, actor: &str, data: Value) -> Result<(), String>;
+    fn audit(
+        &self,
+        station: &str,
+        cid: u64,
+        kind: &str,
+        actor: &str,
+        data: Value,
+    ) -> Result<(), String>;
 }
 
 struct AppHub<'a>(&'a App);
@@ -79,7 +86,14 @@ impl Hub for AppHub<'_> {
         self.0.laws.refusal(cid, role, tool, input)
     }
 
-    fn audit(&self, station: &str, cid: u64, kind: &str, actor: &str, data: Value) -> Result<(), String> {
+    fn audit(
+        &self,
+        station: &str,
+        cid: u64,
+        kind: &str,
+        actor: &str,
+        data: Value,
+    ) -> Result<(), String> {
         ops::audit(self.0, Some(station), Some(cid), kind, actor, data)
     }
 }
@@ -89,17 +103,31 @@ pub(crate) fn role_of(app: &App, cid: u64) -> Result<String, Failure> {
     if cid == 0 {
         return Ok(OWNER.to_string());
     }
-    app.agents.get(cid).map(|agent| agent.role).ok_or_else(|| (404, format!("no agent {cid}")))
+    app.agents
+        .get(cid)
+        .map(|agent| agent.role)
+        .ok_or_else(|| (404, format!("no agent {cid}")))
 }
 
 /// Who an action is recorded as acting: the agent, or the owner.
 fn actor_of(cid: u64) -> String {
-    if cid == 0 { OWNER.to_string() } else { format!("agent:{cid}") }
+    if cid == 0 {
+        OWNER.to_string()
+    } else {
+        format!("agent:{cid}")
+    }
 }
 
 /// Sends `op` to `station` for `cid` acting under `role`, under `lease` when it names one. Every attempt is audited,
 /// refused or not; an audit that cannot be written is a 500, and says whether the operation ran first.
-pub(crate) fn run_op(hub: &dyn Hub, cid: u64, role: &str, station: &str, lease: Option<&str>, op: Op) -> Result<Value, Failure> {
+pub(crate) fn run_op(
+    hub: &dyn Hub,
+    cid: u64,
+    role: &str,
+    station: &str,
+    lease: Option<&str>,
+    op: Op,
+) -> Result<Value, Failure> {
     let summary = summary(&op);
     let outcome = send(hub, cid, role, station, lease, op);
     let row = json!({
@@ -110,28 +138,49 @@ pub(crate) fn run_op(hub: &dyn Hub, cid: u64, role: &str, station: &str, lease: 
     });
     match hub.audit(station, cid, "agent_op", &actor_of(cid), row) {
         Ok(()) => outcome,
-        Err(e) if outcome.is_ok() => Err((500, format!("the action ran, but the station audit could not be written: {e}"))),
+        Err(e) if outcome.is_ok() => Err((
+            500,
+            format!("the action ran, but the station audit could not be written: {e}"),
+        )),
         Err(e) => Err((500, format!("the station audit could not be written: {e}"))),
     }
 }
 
 /// The checks and the send, without the audit.
-fn send(hub: &dyn Hub, cid: u64, role: &str, station: &str, lease: Option<&str>, op: Op) -> Result<Value, Failure> {
+fn send(
+    hub: &dyn Hub,
+    cid: u64,
+    role: &str,
+    station: &str,
+    lease: Option<&str>,
+    op: Op,
+) -> Result<Value, Failure> {
     let Some(tool) = law_name(&op) else {
-        return Err((403, format!("no agent may send {} to a workstation", tag(&op))));
+        return Err((
+            403,
+            format!("no agent may send {} to a workstation", tag(&op)),
+        ));
     };
-    let target = hub.station(station).ok_or((404, "no such workstation".to_string()))?;
+    let target = hub
+        .station(station)
+        .ok_or((404, "no such workstation".to_string()))?;
     if target.revoked {
         return Err((409, "this workstation was revoked".into()));
     }
     if target.draining {
         return Err((409, "this workstation is draining".into()));
     }
-    let link = hub.link(station).ok_or((409, "this workstation is offline".to_string()))?;
+    let link = hub
+        .link(station)
+        .ok_or((409, "this workstation is offline".to_string()))?;
     if let Some(session) = pixel_session(&op) {
         let held = lease.and_then(|id| hub.lease(id));
         let ours = held.is_some_and(|held| {
-            held.station == station && held.agent == cid && held.kind == Kind::Pixel && held.state == State::Active && held.session == Some(session)
+            held.station == station
+                && held.agent == cid
+                && held.kind == Kind::Pixel
+                && held.state == State::Active
+                && held.session == Some(session)
         });
         if !ours {
             return Err((
@@ -143,7 +192,9 @@ fn send(hub: &dyn Hub, cid: u64, role: &str, station: &str, lease: Option<&str>,
         // operation (the UI tree, a UI action) is not a pixel one, so it goes on under every policy.
         let blocked = match &op {
             Op::Screenshot { .. } => hub.pixel_paused(station, session),
-            Op::Input { .. } => hub.pixel_paused(station, session) || hub.pointer_paused(station, session),
+            Op::Input { .. } => {
+                hub.pixel_paused(station, session) || hub.pointer_paused(station, session)
+            }
             _ => false,
         };
         if blocked {
@@ -166,7 +217,10 @@ pub(super) fn law_name(op: &Op) -> Option<&'static str> {
     Some(match op {
         Op::Screenshot { .. } => "station_screenshot",
         Op::Input { action, .. } => match action {
-            InputAction::Move { .. } | InputAction::Click { .. } | InputAction::Down { .. } | InputAction::Up { .. } => "station_click",
+            InputAction::Move { .. }
+            | InputAction::Click { .. }
+            | InputAction::Down { .. }
+            | InputAction::Up { .. } => "station_click",
             InputAction::Type { .. } => "station_type",
             InputAction::Key { .. } => "station_key",
             InputAction::Scroll { .. } => "station_scroll",
@@ -194,7 +248,10 @@ pub(super) fn law_name(op: &Op) -> Option<&'static str> {
 /// The session a screen operation names; `None` for the operations that need no lease.
 fn pixel_session(op: &Op) -> Option<u64> {
     match op {
-        Op::Screenshot { session, .. } | Op::Input { session, .. } | Op::UiTree { session, .. } | Op::UiAct { session, .. } => Some(*session),
+        Op::Screenshot { session, .. }
+        | Op::Input { session, .. }
+        | Op::UiTree { session, .. }
+        | Op::UiAct { session, .. } => Some(*session),
         _ => None,
     }
 }
@@ -228,7 +285,9 @@ fn redact(value: &mut Value) {
         Value::Object(map) => {
             for (key, inner) in map.iter_mut() {
                 let shrunk = match (key.as_str(), inner.as_str()) {
-                    ("text" | "value" | "data_b64", Some(text)) => Some(json!({"bytes": text.len()})),
+                    ("text" | "value" | "data_b64", Some(text)) => {
+                        Some(json!({"bytes": text.len()}))
+                    }
                     ("code" | "command", Some(text)) if text.chars().count() > AUDIT_TEXT_CHARS => {
                         Some(Value::String(text.chars().take(AUDIT_TEXT_CHARS).collect()))
                     }
@@ -246,7 +305,13 @@ fn redact(value: &mut Value) {
 }
 
 /// The one way an operation reaches a station: an agent's (its cid), or the owner's (cid 0, the owner's MCP client).
-pub fn agent_op(app: &App, cid: u64, station: &str, lease: Option<&str>, op: Op) -> Result<Value, Failure> {
+pub fn agent_op(
+    app: &App,
+    cid: u64,
+    station: &str,
+    lease: Option<&str>,
+    op: Op,
+) -> Result<Value, Failure> {
     let role = role_of(app, cid)?;
     let result = run_op(&AppHub(app), cid, &role, station, lease, op.clone());
     hooks::after_agent_op(app, station, lease, &op, &result);
@@ -259,12 +324,33 @@ pub fn agent_deliver(app: &App, cid: u64, station: &str, path: &str) -> Result<V
     let role = role_of(app, cid)?;
     let name = match cid {
         0 => OWNER.to_string(),
-        _ => app.agents.get(cid).map(|agent| agent.name).filter(|name| !name.is_empty()).unwrap_or_else(|| format!("agent {cid}")),
+        _ => app
+            .agents
+            .get(cid)
+            .map(|agent| agent.name)
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| format!("agent {cid}")),
     };
-    let task = app.stations.leases.views(station).into_iter().find(|view| view.lease.agent == cid).and_then(|view| view.lease.task);
+    let task = app
+        .stations
+        .leases
+        .views(station)
+        .into_iter()
+        .find(|view| view.lease.agent == cid)
+        .and_then(|view| view.lease.task);
     run_deliver(&AppHub(app), cid, &role, station, path, || {
-        let item = sync::deliver(app, station, path, None, None, task.clone(), (cid, name.as_str()))?;
-        Ok(json!({"id": item.id, "name": item.name, "size": item.size, "kind": item.kind, "audience": item.audience, "task": item.task}))
+        let item = sync::deliver(
+            app,
+            station,
+            path,
+            None,
+            None,
+            task.clone(),
+            (cid, name.as_str()),
+        )?;
+        Ok(
+            json!({"id": item.id, "name": item.name, "size": item.size, "kind": item.kind, "audience": item.audience, "task": item.task}),
+        )
     })
 }
 
@@ -285,15 +371,26 @@ pub(crate) fn run_deliver(
     });
     match hub.audit(station, cid, "agent_op", &actor_of(cid), row) {
         Ok(()) => outcome,
-        Err(e) if outcome.is_ok() => Err((500, format!("the action ran, but the station audit could not be written: {e}"))),
+        Err(e) if outcome.is_ok() => Err((
+            500,
+            format!("the action ran, but the station audit could not be written: {e}"),
+        )),
         Err(e) => Err((500, format!("the station audit could not be written: {e}"))),
     }
 }
 
 /// The station is known and not revoked, and the laws allow the file tool's call with `deliver` (the laws name it
 /// `station_files`, as they do the file operations).
-fn deliver_checks(hub: &dyn Hub, cid: u64, role: &str, station: &str, path: &str) -> Result<(), Failure> {
-    let target = hub.station(station).ok_or((404, "no such workstation".to_string()))?;
+fn deliver_checks(
+    hub: &dyn Hub,
+    cid: u64,
+    role: &str,
+    station: &str,
+    path: &str,
+) -> Result<(), Failure> {
+    let target = hub
+        .station(station)
+        .ok_or((404, "no such workstation".to_string()))?;
     if target.revoked {
         return Err((409, "this workstation was revoked".into()));
     }
@@ -306,11 +403,23 @@ fn deliver_checks(hub: &dyn Hub, cid: u64, role: &str, station: &str, path: &str
 
 /// Opens a lease of `kind` on `station` for `cid`: the laws decide, then the station's rules (`ops::open_lease`).
 /// A pixel lease that is queued waits up to `GRANT_WAIT` for its session; the answer is the lease as it stands then.
-pub fn lease_open(app: &App, cid: u64, station: &str, kind: Kind, task: Option<String>) -> Result<LeaseView, Failure> {
+pub fn lease_open(
+    app: &App,
+    cid: u64,
+    station: &str,
+    kind: Kind,
+    task: Option<String>,
+) -> Result<LeaseView, Failure> {
     let role = role_of(app, cid)?;
     let input = json!({"station": station, "kind": kind, "task": task});
     if let Some(why) = app.laws.refusal(cid, &role, "station_lease", &input) {
-        return Err(refused(app, station, cid, json!({"op": "lease", "kind": kind}), why));
+        return Err(refused(
+            app,
+            station,
+            cid,
+            json!({"op": "lease", "kind": kind}),
+            why,
+        ));
     }
     let view = ops::open_lease(app, station, cid, task, kind, &actor_of(cid))?;
     Ok(wait_for_grant(app, station, view))
@@ -322,15 +431,34 @@ pub fn lease_release(app: &App, cid: u64, station: &str, lease: &str) -> Result<
     let role = role_of(app, cid)?;
     let input = json!({"station": station, "lease": lease});
     if let Some(why) = app.laws.refusal(cid, &role, "station_release", &input) {
-        return Err(refused(app, station, cid, json!({"op": "release", "lease": lease}), why));
+        return Err(refused(
+            app,
+            station,
+            cid,
+            json!({"op": "release", "lease": lease}),
+            why,
+        ));
     }
-    ops::release_lease(app, station, lease, (cid != 0).then_some(cid), &actor_of(cid))
+    ops::release_lease(
+        app,
+        station,
+        lease,
+        (cid != 0).then_some(cid),
+        &actor_of(cid),
+    )
 }
 
 /// A lease the laws refused: audited as a refused operation, and answered with the law's reason.
 fn refused(app: &App, station: &str, cid: u64, op: Value, why: String) -> Failure {
     let row = json!({"op": op, "ok": false, "error": why});
-    match ops::audit(app, Some(station), Some(cid), "agent_op", &actor_of(cid), row) {
+    match ops::audit(
+        app,
+        Some(station),
+        Some(cid),
+        "agent_op",
+        &actor_of(cid),
+        row,
+    ) {
         Ok(()) => (403, why),
         Err(e) => (500, e),
     }
@@ -342,7 +470,13 @@ fn wait_for_grant(app: &App, station: &str, view: LeaseView) -> LeaseView {
     let mut current = view;
     while current.lease.state != State::Active && started.elapsed() < GRANT_WAIT {
         thread::sleep(GRANT_POLL);
-        match app.stations.leases.views(station).into_iter().find(|seen| seen.lease.id == id) {
+        match app
+            .stations
+            .leases
+            .views(station)
+            .into_iter()
+            .find(|seen| seen.lease.id == id)
+        {
             Some(next) => current = next,
             // The lease ended while it waited: released, or its session failed to open.
             None => break,
@@ -413,7 +547,11 @@ mod tests {
         }
 
         fn link(&self, id: &str) -> Option<Arc<StationLink>> {
-            if id == self.station.id { self.link.clone() } else { None }
+            if id == self.station.id {
+                self.link.clone()
+            } else {
+                None
+            }
         }
 
         fn lease(&self, id: &str) -> Option<Lease> {
@@ -432,7 +570,14 @@ mod tests {
             self.laws.refusal(cid, role, tool, input)
         }
 
-        fn audit(&self, station: &str, cid: u64, kind: &str, actor: &str, data: Value) -> Result<(), String> {
+        fn audit(
+            &self,
+            station: &str,
+            cid: u64,
+            kind: &str,
+            actor: &str,
+            data: Value,
+        ) -> Result<(), String> {
             if self.audit_broken {
                 return Err("disk full".into());
             }
@@ -447,7 +592,11 @@ mod tests {
     /// A fresh state directory for a set of laws (the tests run in parallel).
     fn laws() -> Laws {
         static NEXT: AtomicUsize = AtomicUsize::new(0);
-        let dir: PathBuf = std::env::temp_dir().join(format!("apid-act-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+        let dir: PathBuf = std::env::temp_dir().join(format!(
+            "apid-act-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         Laws::load(&dir)
@@ -495,7 +644,9 @@ mod tests {
     /// daemon back.
     fn answer(daemon: Daemon, result: Value) -> JoinHandle<(Op, Daemon)> {
         thread::spawn(move || {
-            let HubFrame::Request { id, op } = daemon.hears() else { panic!("a request") };
+            let HubFrame::Request { id, op } = daemon.hears() else {
+                panic!("a request")
+            };
             daemon.say(&StationFrame::Response {
                 id,
                 ok: true,
@@ -509,7 +660,13 @@ mod tests {
     /// Opens a pixel lease for `cid` on `w1` and grants it `session`; returns its id.
     fn pixel_lease(hub: &FakeHub, cid: u64, session: u64) -> String {
         let lease = hub.leases.open("w1", cid, None, Kind::Pixel, 0).unwrap();
-        assert_eq!(hub.leases.grant_next("w1", None).expect("a session is free").id, lease.id);
+        assert_eq!(
+            hub.leases
+                .grant_next("w1", None)
+                .expect("a session is free")
+                .id,
+            lease.id
+        );
         assert!(hub.leases.granted(&lease.id, session, 0));
         lease.id
     }
@@ -536,7 +693,12 @@ mod tests {
     }
 
     fn last_audit(hub: &FakeHub) -> Value {
-        hub.audit.lock().unwrap().last().cloned().expect("an audit row")
+        hub.audit
+            .lock()
+            .unwrap()
+            .last()
+            .cloned()
+            .expect("an audit row")
     }
 
     #[test]
@@ -546,7 +708,10 @@ mod tests {
         let (status, message) = run_op(&hub, 7, "builder", "w1", None, screenshot(9)).unwrap_err();
         assert_eq!(status, 403);
         assert!(message.contains("pixel lease"), "{message}");
-        assert!(daemon.hears.try_recv().is_err(), "nothing was sent to the station");
+        assert!(
+            daemon.hears.try_recv().is_err(),
+            "nothing was sent to the station"
+        );
         assert_eq!(last_audit(&hub)["data"]["ok"], false);
     }
 
@@ -556,13 +721,21 @@ mod tests {
         let hub = hub(Some(link));
         let theirs = pixel_lease(&hub, 8, 9);
         let mine = pixel_lease(&hub, 7, 10);
-        let (status, _) = run_op(&hub, 7, "builder", "w1", Some(&theirs), screenshot(9)).unwrap_err();
+        let (status, _) =
+            run_op(&hub, 7, "builder", "w1", Some(&theirs), screenshot(9)).unwrap_err();
         assert_eq!(status, 403);
-        let (status, message) = run_op(&hub, 7, "builder", "w1", Some(&mine), screenshot(9)).unwrap_err();
+        let (status, message) =
+            run_op(&hub, 7, "builder", "w1", Some(&mine), screenshot(9)).unwrap_err();
         assert_eq!(status, 403);
         assert!(message.contains("pixel lease"), "{message}");
-        assert!(daemon.hears.try_recv().is_err(), "nothing was sent for either refusal");
-        let asked = answer(daemon, json!({"w": 1, "h": 1, "format": "png", "data_b64": "AA=="}));
+        assert!(
+            daemon.hears.try_recv().is_err(),
+            "nothing was sent for either refusal"
+        );
+        let asked = answer(
+            daemon,
+            json!({"w": 1, "h": 1, "format": "png", "data_b64": "AA=="}),
+        );
         assert!(run_op(&hub, 7, "builder", "w1", Some(&mine), screenshot(10)).is_ok());
         let (op, _) = asked.join().unwrap();
         assert!(matches!(op, Op::Screenshot { session: 10, .. }));
@@ -573,7 +746,10 @@ mod tests {
         let (link, daemon) = online();
         let hub = hub(Some(link));
         let lease = pixel_lease(&hub, 7, 9);
-        let asked = answer(daemon, json!({"w": 2, "h": 2, "format": "png", "data_b64": "iVBO"}));
+        let asked = answer(
+            daemon,
+            json!({"w": 2, "h": 2, "format": "png", "data_b64": "iVBO"}),
+        );
         let shot = run_op(&hub, 7, "builder", "w1", Some(&lease), screenshot(9)).unwrap();
         assert_eq!(shot["w"], 2);
         let (op, _) = asked.join().unwrap();
@@ -582,22 +758,49 @@ mod tests {
     }
 
     #[test]
-    fn while_the_owner_has_the_screen_the_agents_screenshots_and_pointer_wait_and_the_refusal_is_audited() {
+    fn while_the_owner_has_the_screen_the_agents_screenshots_and_pointer_wait_and_the_refusal_is_audited()
+     {
         let (link, daemon) = online();
         let mut hub = hub(Some(link));
         let lease = pixel_lease(&hub, 7, 9);
         hub.screen_taken = true;
-        let (status, message) = run_op(&hub, 7, "builder", "w1", Some(&lease), screenshot(9)).unwrap_err();
-        assert_eq!((status, message.as_str()), (409, "the owner has the screen; wait"));
-        let (status, message) = run_op(&hub, 7, "builder", "w1", Some(&lease), click(9)).unwrap_err();
-        assert_eq!((status, message.as_str()), (409, "the owner has the screen; wait"));
-        assert!(daemon.hears.try_recv().is_err(), "nothing reached the station");
-        assert_eq!(last_audit(&hub)["data"]["ok"], false, "the refused click is audited");
-        assert!(last_audit(&hub)["data"]["error"].as_str().unwrap().contains("the owner has the screen"));
+        let (status, message) =
+            run_op(&hub, 7, "builder", "w1", Some(&lease), screenshot(9)).unwrap_err();
+        assert_eq!(
+            (status, message.as_str()),
+            (409, "the owner has the screen; wait")
+        );
+        let (status, message) =
+            run_op(&hub, 7, "builder", "w1", Some(&lease), click(9)).unwrap_err();
+        assert_eq!(
+            (status, message.as_str()),
+            (409, "the owner has the screen; wait")
+        );
+        assert!(
+            daemon.hears.try_recv().is_err(),
+            "nothing reached the station"
+        );
+        assert_eq!(
+            last_audit(&hub)["data"]["ok"],
+            false,
+            "the refused click is audited"
+        );
+        assert!(
+            last_audit(&hub)["data"]["error"]
+                .as_str()
+                .unwrap()
+                .contains("the owner has the screen")
+        );
 
         hub.screen_taken = false;
-        let asked = answer(daemon, json!({"w": 1, "h": 1, "format": "png", "data_b64": "AA=="}));
-        assert!(run_op(&hub, 7, "builder", "w1", Some(&lease), screenshot(9)).is_ok(), "back when the owner gives it back");
+        let asked = answer(
+            daemon,
+            json!({"w": 1, "h": 1, "format": "png", "data_b64": "AA=="}),
+        );
+        assert!(
+            run_op(&hub, 7, "builder", "w1", Some(&lease), screenshot(9)).is_ok(),
+            "back when the owner gives it back"
+        );
         asked.join().unwrap();
     }
 
@@ -607,11 +810,22 @@ mod tests {
         let mut hub = hub(Some(link));
         let lease = pixel_lease(&hub, 7, 9);
         hub.pointer_taken = true;
-        let asked = answer(daemon, json!({"w": 1, "h": 1, "format": "png", "data_b64": "AA=="}));
-        assert!(run_op(&hub, 7, "builder", "w1", Some(&lease), screenshot(9)).is_ok(), "screenshots continue");
+        let asked = answer(
+            daemon,
+            json!({"w": 1, "h": 1, "format": "png", "data_b64": "AA=="}),
+        );
+        assert!(
+            run_op(&hub, 7, "builder", "w1", Some(&lease), screenshot(9)).is_ok(),
+            "screenshots continue"
+        );
         asked.join().unwrap();
-        let (status, message) = run_op(&hub, 7, "builder", "w1", Some(&lease), click(9)).unwrap_err();
-        assert_eq!((status, message.as_str()), (409, "the owner has the screen; wait"), "the pointer waits");
+        let (status, message) =
+            run_op(&hub, 7, "builder", "w1", Some(&lease), click(9)).unwrap_err();
+        assert_eq!(
+            (status, message.as_str()),
+            (409, "the owner has the screen; wait"),
+            "the pointer waits"
+        );
     }
 
     #[test]
@@ -619,39 +833,70 @@ mod tests {
         let (link, daemon) = online();
         let hub = hub(Some(link));
         let lease = pixel_lease(&hub, 7, 9);
-        hub.laws.add_rule("No clicks", NO_CLICKS, true, 0).expect("the rule compiles");
-        let (status, message) = run_op(&hub, 7, "builder", "w1", Some(&lease), click(9)).unwrap_err();
+        hub.laws
+            .add_rule("No clicks", NO_CLICKS, true, 0)
+            .expect("the rule compiles");
+        let (status, message) =
+            run_op(&hub, 7, "builder", "w1", Some(&lease), click(9)).unwrap_err();
         assert_eq!(status, 403);
         assert!(message.starts_with("refused by law O-001"), "{message}");
         assert!(daemon.hears.try_recv().is_err(), "nothing was sent");
         assert_eq!(last_audit(&hub)["data"]["ok"], false);
-        assert!(last_audit(&hub)["data"]["error"].as_str().unwrap().contains("O-001"));
+        assert!(
+            last_audit(&hub)["data"]["error"]
+                .as_str()
+                .unwrap()
+                .contains("O-001")
+        );
     }
 
     #[test]
     fn an_unknown_offline_revoked_or_draining_station_is_refused() {
         let (link, daemon) = online();
         let offline = hub(None);
-        let (status, message) = run_op(&offline, 7, "builder", "w1", None, Op::Apps(AppsOp::List)).unwrap_err();
-        assert_eq!((status, message.as_str()), (409, "this workstation is offline"));
+        let (status, message) =
+            run_op(&offline, 7, "builder", "w1", None, Op::Apps(AppsOp::List)).unwrap_err();
+        assert_eq!(
+            (status, message.as_str()),
+            (409, "this workstation is offline")
+        );
         let mut revoked = hub(Some(Arc::clone(&link)));
         revoked.station = station(false, true);
-        assert_eq!(run_op(&revoked, 7, "builder", "w1", None, Op::Apps(AppsOp::List)).unwrap_err().0, 409);
+        assert_eq!(
+            run_op(&revoked, 7, "builder", "w1", None, Op::Apps(AppsOp::List))
+                .unwrap_err()
+                .0,
+            409
+        );
         let mut draining = hub(Some(Arc::clone(&link)));
         draining.station = station(true, false);
-        assert_eq!(run_op(&draining, 7, "builder", "w1", None, Op::Apps(AppsOp::List)).unwrap_err().0, 409);
+        assert_eq!(
+            run_op(&draining, 7, "builder", "w1", None, Op::Apps(AppsOp::List))
+                .unwrap_err()
+                .0,
+            409
+        );
         let known = hub(Some(link));
-        let (status, _) = run_op(&known, 7, "builder", "w9", None, Op::Apps(AppsOp::List)).unwrap_err();
+        let (status, _) =
+            run_op(&known, 7, "builder", "w9", None, Op::Apps(AppsOp::List)).unwrap_err();
         assert_eq!(status, 404);
-        assert_eq!(offline.audit.lock().unwrap().len(), 1, "a refused attempt is audited");
-        assert!(daemon.hears.try_recv().is_err(), "nothing was sent to a station that is not online");
+        assert_eq!(
+            offline.audit.lock().unwrap().len(),
+            1,
+            "a refused attempt is audited"
+        );
+        assert!(
+            daemon.hears.try_recv().is_err(),
+            "nothing was sent to a station that is not online"
+        );
     }
 
     #[test]
     fn an_operation_no_agent_sends_is_refused() {
         let (link, daemon) = online();
         let hub = hub(Some(link));
-        let (status, message) = run_op(&hub, 7, "builder", "w1", None, Op::Freeze { on: false }).unwrap_err();
+        let (status, message) =
+            run_op(&hub, 7, "builder", "w1", None, Op::Freeze { on: false }).unwrap_err();
         assert_eq!(status, 403);
         assert!(message.contains("freeze"), "{message}");
         assert!(daemon.hears.try_recv().is_err());
@@ -695,7 +940,10 @@ mod tests {
         let row = last_audit(&hub);
         assert_eq!(row["kind"], "agent_op");
         assert_eq!(row["actor"], "agent:7");
-        assert_eq!(row["data"]["op"], json!({"op": "deliver", "path": "out/render.png"}));
+        assert_eq!(
+            row["data"]["op"],
+            json!({"op": "deliver", "path": "out/render.png"})
+        );
         assert_eq!(row["data"]["ok"], true);
     }
 
@@ -707,28 +955,50 @@ mod tests {
             *copies.lock().unwrap() += 1;
             Ok(json!({}))
         };
-        assert!(run_deliver(&hub, 7, "builder", "w1", "a.txt", copy).is_ok(), "allowed without a rule");
-        hub.laws.add_rule("No files", NO_FILES, true, 0).expect("the rule compiles");
+        assert!(
+            run_deliver(&hub, 7, "builder", "w1", "a.txt", copy).is_ok(),
+            "allowed without a rule"
+        );
+        hub.laws
+            .add_rule("No files", NO_FILES, true, 0)
+            .expect("the rule compiles");
         let (status, message) = run_deliver(&hub, 7, "builder", "w1", "a.txt", copy).unwrap_err();
         assert_eq!(status, 403);
         assert!(message.starts_with("refused by law O-002"), "{message}");
-        assert_eq!(*copies.lock().unwrap(), 1, "the refused delivery copied nothing");
+        assert_eq!(
+            *copies.lock().unwrap(),
+            1,
+            "the refused delivery copied nothing"
+        );
         assert_eq!(last_audit(&hub)["data"]["ok"], false);
-        assert!(last_audit(&hub)["data"]["error"].as_str().unwrap().contains("O-002"));
+        assert!(
+            last_audit(&hub)["data"]["error"]
+                .as_str()
+                .unwrap()
+                .contains("O-002")
+        );
     }
 
     #[test]
     fn a_delivery_that_fails_is_audited_and_a_revoked_station_is_refused() {
         let known = hub(None);
-        let (status, message) = run_deliver(&known, 7, "builder", "w1", "gone.txt", || Err((404, "no file gone.txt in the work folder".into()))).unwrap_err();
-        assert_eq!((status, message.as_str()), (404, "no file gone.txt in the work folder"));
+        let (status, message) = run_deliver(&known, 7, "builder", "w1", "gone.txt", || {
+            Err((404, "no file gone.txt in the work folder".into()))
+        })
+        .unwrap_err();
+        assert_eq!(
+            (status, message.as_str()),
+            (404, "no file gone.txt in the work folder")
+        );
         assert_eq!(last_audit(&known)["data"]["ok"], false);
 
         let mut revoked = hub(None);
         revoked.station = station(false, true);
-        let (status, _) = run_deliver(&revoked, 7, "builder", "w1", "a.txt", || Ok(json!({}))).unwrap_err();
+        let (status, _) =
+            run_deliver(&revoked, 7, "builder", "w1", "a.txt", || Ok(json!({}))).unwrap_err();
         assert_eq!(status, 409);
-        let (status, _) = run_deliver(&known, 7, "builder", "w9", "a.txt", || Ok(json!({}))).unwrap_err();
+        let (status, _) =
+            run_deliver(&known, 7, "builder", "w9", "a.txt", || Ok(json!({}))).unwrap_err();
         assert_eq!(status, 404);
     }
 
@@ -736,7 +1006,8 @@ mod tests {
     fn a_failed_audit_of_a_delivery_is_a_500_that_says_the_copy_ran() {
         let mut hub = hub(None);
         hub.audit_broken = true;
-        let (status, message) = run_deliver(&hub, 7, "builder", "w1", "a.txt", || Ok(json!({}))).unwrap_err();
+        let (status, message) =
+            run_deliver(&hub, 7, "builder", "w1", "a.txt", || Ok(json!({}))).unwrap_err();
         assert_eq!(status, 500);
         assert!(message.starts_with("the action ran"), "{message}");
     }
@@ -747,7 +1018,8 @@ mod tests {
         let mut hub = hub(Some(link));
         hub.audit_broken = true;
         let asked = answer(daemon, json!({"entries": []}));
-        let (status, message) = run_op(&hub, 7, "builder", "w1", None, Op::Apps(AppsOp::List)).unwrap_err();
+        let (status, message) =
+            run_op(&hub, 7, "builder", "w1", None, Op::Apps(AppsOp::List)).unwrap_err();
         asked.join().unwrap();
         assert_eq!(status, 500);
         assert!(message.contains("the action ran"), "{message}");
@@ -757,10 +1029,17 @@ mod tests {
     fn station_files_happy_path_lists_a_directory() {
         let (link, daemon) = online();
         let hub = hub(Some(link));
-        let Call::Op { station, lease, op } = parse("station_files", &json!({"station": "w1", "cmd": "list", "path": "."})).unwrap() else {
+        let Call::Op { station, lease, op } = parse(
+            "station_files",
+            &json!({"station": "w1", "cmd": "list", "path": "."}),
+        )
+        .unwrap() else {
             panic!("an operation");
         };
-        let asked = answer(daemon, json!({"entries": [{"name": "a.txt", "kind": "file"}]}));
+        let asked = answer(
+            daemon,
+            json!({"entries": [{"name": "a.txt", "kind": "file"}]}),
+        );
         let listed = run_op(&hub, 7, "builder", &station, lease.as_deref(), op).unwrap();
         assert_eq!(listed["entries"][0]["name"], "a.txt");
         let (op, _) = asked.join().unwrap();
@@ -784,7 +1063,10 @@ mod tests {
         .unwrap() else {
             panic!("an operation");
         };
-        let asked = answer(daemon, json!({"exit_code": 0, "output": "ffmpeg version 7", "timed_out": false}));
+        let asked = answer(
+            daemon,
+            json!({"exit_code": 0, "output": "ffmpeg version 7", "timed_out": false}),
+        );
         let ran = run_op(&hub, 7, "builder", &station, lease.as_deref(), op).unwrap();
         assert_eq!(ran["exit_code"], 0);
         let (op, _) = asked.join().unwrap();

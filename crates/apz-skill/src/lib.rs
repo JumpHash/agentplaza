@@ -11,7 +11,9 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 pub use apz_prompt::Severity;
-pub use archive::{find_skills, parse_github_url, read_zip, write_zip, Entry, FoundSkill, GithubRef, Limits};
+pub use archive::{
+    Entry, FoundSkill, GithubRef, Limits, find_skills, parse_github_url, read_zip, write_zip,
+};
 
 /// Bumped whenever a rule is added, removed or changes what it reports.
 pub const RULES_VERSION: u32 = 1;

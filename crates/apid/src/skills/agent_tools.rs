@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 
 use base64::Engine as _;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::{Skill, Skills, VersionMeta};
 use crate::agents::Agent;
@@ -96,7 +96,10 @@ fn list(skills: &Skills, role: &str) -> Result<String, String> {
     if found.is_empty() {
         return Ok("No skills are available to you.".to_string());
     }
-    let lines: Vec<String> = found.iter().map(|(skill, _)| format!("{} — {}", skill.name, skill.description)).collect();
+    let lines: Vec<String> = found
+        .iter()
+        .map(|(skill, _)| format!("{} — {}", skill.name, skill.description))
+        .collect();
     Ok(cap(lines.join("\n")))
 }
 
@@ -133,7 +136,10 @@ fn read(skills: &Skills, role: &str, input: &Value) -> Result<String, String> {
         Err(err) => {
             let bytes = err.into_bytes();
             let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
-            cap(format!("{path}: binary, {} bytes, as base64:\n{encoded}", bytes.len()))
+            cap(format!(
+                "{path}: binary, {} bytes, as base64:\n{encoded}",
+                bytes.len()
+            ))
         }
     })
 }
@@ -169,7 +175,10 @@ mod tests {
     const T0: u64 = 1_800_000_000_000;
 
     fn library() -> Skills {
-        Skills::new(Arc::new(MemorySkills::in_memory()), Arc::new(MemBlobs::default()))
+        Skills::new(
+            Arc::new(MemorySkills::in_memory()),
+            Arc::new(MemBlobs::default()),
+        )
     }
 
     /// Creates skill `name` (id = name) bound to `bindings`, with one file, and publishes it when `live`.
@@ -177,8 +186,14 @@ mod tests {
         let skill_md = format!(
             "---\nname: {name}\ndescription: Does {name} work. Use when the task involves {name}.\n---\n# {name}\n\nRead [the reference](reference.md) first.\n"
         );
-        let files = vec![FileIn { path: "reference.md".into(), body: FileBody::Bytes(b"# Reference\n".to_vec()), executable: false }];
-        let first = skills.prepare(skill_md, files, String::new(), None).expect("prepares");
+        let files = vec![FileIn {
+            path: "reference.md".into(),
+            body: FileBody::Bytes(b"# Reference\n".to_vec()),
+            executable: false,
+        }];
+        let first = skills
+            .prepare(skill_md, files, String::new(), None)
+            .expect("prepares");
         let new = NewSkill {
             id: name.into(),
             title: name.into(),
@@ -186,7 +201,10 @@ mod tests {
             bindings: bindings.iter().map(|b| b.to_string()).collect(),
             source: Source::Built,
         };
-        skills.store().create(&new, &first, "owner", T0).expect("created");
+        skills
+            .store()
+            .create(&new, &first, "owner", T0)
+            .expect("created");
         if live {
             skills.publish(name, 1, "owner", T0).expect("published");
         }
@@ -200,19 +218,52 @@ mod tests {
         add(&skills, "review-notes", &["role:reviewer"], true);
         add(&skills, "draft-only", &["plaza"], false);
         let names = |role: &str| -> Vec<String> {
-            available(&skills, role).expect("lists").into_iter().map(|(skill, _)| skill.name).collect()
+            available(&skills, role)
+                .expect("lists")
+                .into_iter()
+                .map(|(skill, _)| skill.name)
+                .collect()
         };
         assert_eq!(names("builder"), ["house-style", "pdf-forms"]);
         assert_eq!(names("reviewer"), ["house-style", "review-notes"]);
-        assert!(list(&skills, "builder").expect("lists").contains("pdf-forms — "));
+        assert!(
+            list(&skills, "builder")
+                .expect("lists")
+                .contains("pdf-forms — ")
+        );
         let fetch = |role: &str, input: Value| read(&skills, role, &input);
-        assert!(fetch("builder", json!({"name": "pdf-forms"})).expect("reads").contains("# pdf-forms"));
-        assert!(fetch("builder", json!({"name": "pdf-forms", "path": "reference.md"})).expect("reads").contains("# Reference"));
-        assert!(fetch("reviewer", json!({"name": "pdf-forms"})).is_err(), "another role's skill is not offered");
-        assert!(fetch("builder", json!({"name": "draft-only"})).is_err(), "an unpublished skill is not offered");
-        assert!(fetch("builder", json!({"name": "pdf-forms", "path": "missing.md"})).is_err());
+        assert!(
+            fetch("builder", json!({"name": "pdf-forms"}))
+                .expect("reads")
+                .contains("# pdf-forms")
+        );
+        assert!(
+            fetch(
+                "builder",
+                json!({"name": "pdf-forms", "path": "reference.md"})
+            )
+            .expect("reads")
+            .contains("# Reference")
+        );
+        assert!(
+            fetch("reviewer", json!({"name": "pdf-forms"})).is_err(),
+            "another role's skill is not offered"
+        );
+        assert!(
+            fetch("builder", json!({"name": "draft-only"})).is_err(),
+            "an unpublished skill is not offered"
+        );
+        assert!(
+            fetch(
+                "builder",
+                json!({"name": "pdf-forms", "path": "missing.md"})
+            )
+            .is_err()
+        );
         let text = section(&skills, "reviewer").expect("a section");
-        assert!(text.starts_with("## Skills") && text.contains("review-notes: Does review-notes work."));
+        assert!(
+            text.starts_with("## Skills") && text.contains("review-notes: Does review-notes work.")
+        );
         assert!(!text.contains("pdf-forms"));
     }
 

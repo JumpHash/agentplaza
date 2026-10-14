@@ -7,19 +7,19 @@
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
-use iced::widget::{column, container, row, text, Space};
+use iced::widget::{Space, column, container, row, text};
 use iced::{Element, Length, Task};
 use serde::Deserialize;
 use serde_json::Value;
 
+use super::Id;
 use super::lab::{self, Section};
 use super::lab_common;
 use super::lab_models;
-use super::Id;
+use crate::console::Ctx;
 use crate::console::client::{self, Client};
 use crate::console::ui::{self, Tone};
-use crate::console::Ctx;
-use crate::theme::{SANS};
+use crate::theme::SANS;
 
 /// The per-job GPU-hour cap when the laws cannot be read: S-006c permits a breeder's job up to
 /// 8 GPU-hours (S-006d refuses more).
@@ -137,7 +137,10 @@ pub fn update(state: &mut State, msg: Msg, _ctx: &Ctx) -> Task<Msg> {
     }
 }
 
-fn fetch(c: &Client, mut cursors: BTreeMap<u64, Cursor>) -> Result<(Vec<Breeder>, BTreeMap<u64, Cursor>), String> {
+fn fetch(
+    c: &Client,
+    mut cursors: BTreeMap<u64, Cursor>,
+) -> Result<(Vec<Breeder>, BTreeMap<u64, Cursor>), String> {
     let agents: Vec<AgentRow> = c.get("/v1/agents")?;
     let jobs: Vec<JobRow> = c.get("/v1/foundry/jobs")?;
     let mut mine: Vec<AgentRow> = agents.into_iter().filter(|a| a.role == "breeder").collect();
@@ -150,12 +153,23 @@ fn fetch(c: &Client, mut cursors: BTreeMap<u64, Cursor>) -> Result<(Vec<Breeder>
             Err(err) => format!("Transcript unreachable: {err}"),
         };
         // A breeder's jobs are the jobs the hub says were submitted with its CID.
-        let own: Vec<JobRow> = jobs.iter().filter(|j| j.agent == Some(agent.cid)).cloned().collect();
+        let own: Vec<JobRow> = jobs
+            .iter()
+            .filter(|j| j.agent == Some(agent.cid))
+            .cloned()
+            .collect();
         let used = own.iter().map(|j| j.gpu_hours).sum();
         let cap = per_job_cap(c);
         let calls = cur.calls.iter().rev().take(RECENT).cloned().collect();
         cursors.insert(agent.cid, cur);
-        out.push(Breeder { agent, jobs: own, calls, used, cap, note });
+        out.push(Breeder {
+            agent,
+            jobs: own,
+            calls,
+            used,
+            cap,
+            note,
+        });
     }
     Ok((out, cursors))
 }
@@ -175,18 +189,35 @@ fn per_job_cap(c: &Client) -> f64 {
 /// The number in S-006c's condition `context.gpu_hours <= N`.
 fn read_cap(c: &Client) -> Option<f64> {
     let laws: Vec<Value> = c.get("/v1/laws").ok()?;
-    let law = laws.iter().find(|l| l.get("id").and_then(Value::as_str) == Some("S-006c"))?;
-    let conditions = law.get("conditions")?.as_array()?.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" ");
+    let law = laws
+        .iter()
+        .find(|l| l.get("id").and_then(Value::as_str) == Some("S-006c"))?;
+    let conditions = law
+        .get("conditions")?
+        .as_array()?
+        .iter()
+        .filter_map(Value::as_str)
+        .collect::<Vec<_>>()
+        .join(" ");
     let at = conditions.find("context.gpu_hours")?;
-    let rest = conditions[at + "context.gpu_hours".len()..].trim_start().strip_prefix("<=")?.trim_start();
-    let number: String = rest.chars().take_while(|ch| ch.is_ascii_digit() || *ch == '.').collect();
+    let rest = conditions[at + "context.gpu_hours".len()..]
+        .trim_start()
+        .strip_prefix("<=")?
+        .trim_start();
+    let number: String = rest
+        .chars()
+        .take_while(|ch| ch.is_ascii_digit() || *ch == '.')
+        .collect();
     number.parse().ok()
 }
 
 /// Reads the transcript from the cursor on, a page at a time, until the newest entry.
 fn read(c: &Client, cid: u64, cur: &mut Cursor) -> Result<(), String> {
     loop {
-        let mut page: Vec<Entry> = c.get(&format!("/v1/agents/{cid}/transcript?after={}&limit={PAGE}", cur.after))?;
+        let mut page: Vec<Entry> = c.get(&format!(
+            "/v1/agents/{cid}/transcript?after={}&limit={PAGE}",
+            cur.after
+        ))?;
         page.sort_by_key(|e| e.seq);
         for e in &page {
             absorb(cur, e);
@@ -209,19 +240,45 @@ fn is_foundry(name: &str) -> bool {
 /// Folds one transcript entry into a breeder's cursor: the Foundry requests, then their decisions and results.
 fn absorb(cur: &mut Cursor, e: &Entry) {
     cur.after = cur.after.max(e.seq);
-    let call = e.data.get("call").and_then(Value::as_str).unwrap_or("").to_string();
+    let call = e
+        .data
+        .get("call")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
     if e.kind == "tool_request" {
-        let name = e.data.get("name").and_then(Value::as_str).unwrap_or("").to_string();
+        let name = e
+            .data
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
         if !is_foundry(&name) {
             return;
         }
         cur.names.insert(call.clone(), name.clone());
-        cur.calls.push(ToolCall { call, at_ms: e.at_ms, name, detail: detail_of(e.data.get("input")), result: String::new(), refused: false });
+        cur.calls.push(ToolCall {
+            call,
+            at_ms: e.at_ms,
+            name,
+            detail: detail_of(e.data.get("input")),
+            result: String::new(),
+            refused: false,
+        });
         return;
     }
-    let Some(name) = cur.names.get(&call).cloned() else { return };
-    let Some(row) = cur.calls.iter_mut().rev().find(|c| c.call == call) else { return };
-    let output = e.data.get("output").and_then(Value::as_str).unwrap_or("").to_string();
+    let Some(name) = cur.names.get(&call).cloned() else {
+        return;
+    };
+    let Some(row) = cur.calls.iter_mut().rev().find(|c| c.call == call) else {
+        return;
+    };
+    let output = e
+        .data
+        .get("output")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
     if e.kind == "tool_decision" {
         row.refused = e.data.get("decision").and_then(Value::as_str) == Some("deny");
         if !output.is_empty() {
@@ -252,7 +309,8 @@ fn job_of(output: &str) -> Option<(String, bool)> {
     }
     let rest = output.strip_prefix("job ")?;
     let (id, tail) = rest.split_once(' ')?;
-    tail.starts_with("did not dispatch").then(|| (id.to_string(), true))
+    tail.starts_with("did not dispatch")
+        .then(|| (id.to_string(), true))
 }
 
 fn status_of(output: &str) -> Option<String> {
@@ -264,11 +322,21 @@ fn status_of(output: &str) -> Option<String> {
 /// The one input a call names: its model, its job's recipe, its job, or its name.
 fn detail_of(input: Option<&Value>) -> String {
     let Some(i) = input else { return String::new() };
-    let recipe = i.get("job").and_then(|j| j.get("recipe")).and_then(Value::as_str);
+    let recipe = i
+        .get("job")
+        .and_then(|j| j.get("recipe"))
+        .and_then(Value::as_str);
     let job = i.get("job").and_then(Value::as_str);
     let name = i.get("name").and_then(Value::as_str);
     let kind = i.get("kind").and_then(Value::as_str);
-    i.get("model").and_then(Value::as_str).or(recipe).or(job).or(name).or(kind).unwrap_or("").to_string()
+    i.get("model")
+        .and_then(Value::as_str)
+        .or(recipe)
+        .or(job)
+        .or(name)
+        .or(kind)
+        .unwrap_or("")
+        .to_string()
 }
 
 fn clip(text: &str, max: usize) -> String {
@@ -286,19 +354,27 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
             Some(err) => ui::empty("alert", "Breeders unreachable", err),
             None => ui::loading(),
         },
-        Some(list) if list.is_empty() => lab_common::empty("No breeders yet.", "A breeder is an agent with the breeder role; create one from Agents."),
+        Some(list) if list.is_empty() => lab_common::empty(
+            "No breeders yet.",
+            "A breeder is an agent with the breeder role; create one from Agents.",
+        ),
         Some(list) => {
             let jobs: usize = list.iter().map(|b| b.jobs.len()).sum();
             let used: f64 = list.iter().map(|b| b.used).sum();
             let summary = format!(
                 "{} {} · {} {} · {} used",
                 lab_common::count(list.len() as u64),
-                if list.len() == 1 { "breeder" } else { "breeders" },
+                if list.len() == 1 {
+                    "breeder"
+                } else {
+                    "breeders"
+                },
                 lab_common::count(jobs as u64),
                 if jobs == 1 { "job" } else { "jobs" },
                 lab_common::gpu_hours(used),
             );
-            let mut parts: Vec<Element<'a, Msg>> = vec![ui::view_head("Breeders", vec![ui::faint(summary).into()])];
+            let mut parts: Vec<Element<'a, Msg>> =
+                vec![ui::view_head("Breeders", vec![ui::faint(summary).into()])];
             if let Some(err) = state.error.as_deref() {
                 parts.push(ui::error_line(err));
             }
@@ -316,15 +392,28 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
 /// One breeder: its name (linked) and status, the budget use, its jobs and its recent Foundry calls.
 fn breeder_card<'a>(b: &'a Breeder) -> Element<'a, Msg> {
     let a = &b.agent;
-    let name = if a.name.trim().is_empty() { format!("agent {}", a.cid) } else { a.name.clone() };
+    let name = if a.name.trim().is_empty() {
+        format!("agent {}", a.cid)
+    } else {
+        a.name.clone()
+    };
     let budget = column![
         row![
-            text("GPU-HOURS USED".to_string()).font(SANS).size(11.0).color(crate::theme::palette().ink_3),
+            text("GPU-HOURS USED".to_string())
+                .font(SANS)
+                .size(11.0)
+                .color(crate::theme::palette().ink_3),
             Space::new().width(Length::Fill),
-            text(lab_common::gpu_hours(b.used)).font(SANS).size(12.0).color(crate::theme::palette().ink_2),
+            text(lab_common::gpu_hours(b.used))
+                .font(SANS)
+                .size(12.0)
+                .color(crate::theme::palette().ink_2),
         ]
         .align_y(iced::Alignment::Center),
-        ui::faint(format!("per-job cap {} GPU-h (S-006c)", lab_common::number(b.cap, 0))),
+        ui::faint(format!(
+            "per-job cap {} GPU-h (S-006c)",
+            lab_common::number(b.cap, 0)
+        )),
     ]
     .spacing(8);
     let job_rows: Vec<Vec<Element<'a, Msg>>> = b
@@ -332,7 +421,11 @@ fn breeder_card<'a>(b: &'a Breeder) -> Element<'a, Msg> {
         .iter()
         .map(|j| {
             vec![
-                cell(ui::link(&j.id, Msg::Go(Id::LabJobDetail(j.id.clone())), true)),
+                cell(ui::link(
+                    &j.id,
+                    Msg::Go(Id::LabJobDetail(j.id.clone())),
+                    true,
+                )),
                 cell(ui::badge(&j.status, job_tone(&j.status))),
                 cell(lab_models::value(j.recipe.clone())),
                 cell(lab_models::value(lab_common::gpu_hours(j.gpu_hours))),
@@ -345,46 +438,92 @@ fn breeder_card<'a>(b: &'a Breeder) -> Element<'a, Msg> {
         .iter()
         .map(|c| {
             let result = if c.result.is_empty() {
-                if c.refused { "refused".to_string() } else { "—".to_string() }
+                if c.refused {
+                    "refused".to_string()
+                } else {
+                    "—".to_string()
+                }
             } else {
                 clip(&c.result, 140)
             };
             vec![
                 cell(lab_models::value(lab_common::time(c.at_ms))),
                 cell(lab_models::value(c.name.clone())),
-                cell(lab_models::value(if c.detail.is_empty() { "—".to_string() } else { clip(&c.detail, 48) })),
-                cell(text(result).font(SANS).size(12.0).width(Length::Fill).color(if c.refused { crate::theme::palette().crit } else { crate::theme::palette().ink_2 })),
+                cell(lab_models::value(if c.detail.is_empty() {
+                    "—".to_string()
+                } else {
+                    clip(&c.detail, 48)
+                })),
+                cell(
+                    text(result)
+                        .font(SANS)
+                        .size(12.0)
+                        .width(Length::Fill)
+                        .color(if c.refused {
+                            crate::theme::palette().crit
+                        } else {
+                            crate::theme::palette().ink_2
+                        }),
+                ),
             ]
         })
         .collect();
     let mut body: Vec<Element<'a, Msg>> = vec![
-        row![ui::link(&name, Msg::Go(Id::Agent(a.cid)), true), ui::badge(&a.status, status_tone(&a.status))]
-            .spacing(14)
-            .align_y(iced::Alignment::Center)
-            .into(),
+        row![
+            ui::link(&name, Msg::Go(Id::Agent(a.cid)), true),
+            ui::badge(&a.status, status_tone(&a.status))
+        ]
+        .spacing(14)
+        .align_y(iced::Alignment::Center)
+        .into(),
         budget.into(),
     ];
     if !b.note.is_empty() {
         body.push(ui::error_line(&b.note));
     }
-    body.push(section_title(&format!("Jobs ({})", lab_common::count(b.jobs.len() as u64))));
-    body.push(table(&["Job", "Status", "Recipe", "GPU-h", "Created"], job_rows, "No jobs yet."));
+    body.push(section_title(&format!(
+        "Jobs ({})",
+        lab_common::count(b.jobs.len() as u64)
+    )));
+    body.push(table(
+        &["Job", "Status", "Recipe", "GPU-h", "Created"],
+        job_rows,
+        "No jobs yet.",
+    ));
     body.push(section_title("Recent Foundry calls"));
-    body.push(table(&["Time", "Tool", "Input", "Result"], call_rows, "No Foundry tool calls yet."));
+    body.push(table(
+        &["Time", "Tool", "Input", "Result"],
+        call_rows,
+        "No Foundry tool calls yet.",
+    ));
     ui::card("Breeder", column(body).spacing(14).into())
 }
 
 fn section_title<'a>(label: &str) -> Element<'a, Msg> {
-    text(label.to_string()).font(SANS).size(11.0).color(crate::theme::palette().ink_3).into()
+    text(label.to_string())
+        .font(SANS)
+        .size(11.0)
+        .color(crate::theme::palette().ink_3)
+        .into()
 }
-
 
 /// A table of cells with an equal share per column; `none` stands in for no rows.
 fn table<'a>(heads: &[&str], rows: Vec<Vec<Element<'a, Msg>>>, none: &str) -> Element<'a, Msg> {
     if rows.is_empty() {
         return ui::faint(none.to_string()).into();
     }
-    let head = row(heads.iter().map(|h| cell(text(h.to_string()).font(SANS).size(11.0).color(crate::theme::palette().ink_3))).collect::<Vec<_>>()).spacing(10);
+    let head = row(heads
+        .iter()
+        .map(|h| {
+            cell(
+                text(h.to_string())
+                    .font(SANS)
+                    .size(11.0)
+                    .color(crate::theme::palette().ink_3),
+            )
+        })
+        .collect::<Vec<_>>())
+    .spacing(10);
     let mut lines = column![head].spacing(8);
     for cells in rows {
         lines = lines.push(row(cells).spacing(10));

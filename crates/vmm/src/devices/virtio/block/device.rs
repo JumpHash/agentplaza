@@ -764,7 +764,9 @@ mod tests {
         assert!(!block.is_activated());
         assert_eq!(block.acked_features(), 0);
         assert_eq!(block.queue, Queue::new(BLOCK_QUEUE_SIZE));
-        block.process_queue().expect("an inactive device ignores the queue");
+        block
+            .process_queue()
+            .expect("an inactive device ignores the queue");
     }
 
     /// What the device writes is in the image file itself — which is what the

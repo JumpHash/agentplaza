@@ -119,8 +119,8 @@ pub fn uname_release() -> Option<String> {
 pub fn connect_unix_nonblocking(path: &str) -> io::Result<UnixStream> {
     /// Bytes of `sockaddr_un::sun_path`. A pathname must be shorter: one byte
     /// is reserved for its terminating NUL.
-    const SUN_PATH_LEN: usize =
-        std::mem::size_of::<libc::sockaddr_un>() - std::mem::offset_of!(libc::sockaddr_un, sun_path);
+    const SUN_PATH_LEN: usize = std::mem::size_of::<libc::sockaddr_un>()
+        - std::mem::offset_of!(libc::sockaddr_un, sun_path);
 
     let bytes = path.as_bytes();
     if bytes.contains(&0) {
@@ -155,7 +155,10 @@ pub fn connect_unix_nonblocking(path: &str) -> io::Result<UnixStream> {
     // NUL fits `socklen_t`; the conversions are still checked rather than
     // asserted, so a pathological path fails closed with an error.
     let family = libc::sa_family_t::try_from(libc::AF_UNIX).map_err(|_| {
-        io::Error::new(io::ErrorKind::InvalidInput, "AF_UNIX does not fit sa_family_t")
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "AF_UNIX does not fit sa_family_t",
+        )
     })?;
     let mut addr = libc::sockaddr_un {
         sun_family: family,
@@ -165,9 +168,8 @@ pub fn connect_unix_nonblocking(path: &str) -> io::Result<UnixStream> {
         *dst = libc::c_char::from_ne_bytes([*src]);
     }
     let addr_len = std::mem::offset_of!(libc::sockaddr_un, sun_path) + bytes.len() + 1;
-    let addr_len = libc::socklen_t::try_from(addr_len).map_err(|_| {
-        io::Error::new(io::ErrorKind::InvalidInput, "path does not fit socklen_t")
-    })?;
+    let addr_len = libc::socklen_t::try_from(addr_len)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "path does not fit socklen_t"))?;
 
     // SAFETY: `stream` owns a valid AF_UNIX descriptor, and `addr` is a fully
     // initialised `sockaddr_un` (family, NUL-terminated path) that stays alive

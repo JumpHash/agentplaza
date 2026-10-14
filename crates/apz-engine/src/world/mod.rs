@@ -16,8 +16,8 @@ pub mod nav_overlay;
 pub mod slab;
 pub mod spots;
 pub mod support;
-pub mod walkway_mesh;
 pub mod view;
+pub mod walkway_mesh;
 pub mod work;
 
 use std::collections::HashMap;
@@ -25,14 +25,14 @@ use std::sync::Arc;
 
 use glam::{Quat, Vec3};
 
-use super::controls::{Orbit, FOV_DEG};
+use super::controls::{FOV_DEG, Orbit};
 use super::entry_scene::BoardCache;
 use super::hardware::{Built, Model, Params, Pulses, Status};
 use super::props::{Anim, Box2, PropPalette};
+use super::robot::{Robot, RobotPalette, RobotState, robot_palette};
+use super::scene::{self, Color, Draw, Filter, Frame, Geo, Mat, Obj, PointLightDraw, World};
 use board_layout::{BoardLayout, TraceGraph};
 use layout::{AZIMUTH, POLAR};
-use super::robot::{robot_palette, Robot, RobotPalette, RobotState};
-use super::scene::{self, Color, Draw, Filter, Frame, Geo, Mat, Obj, PointLightDraw, World};
 
 /// The name the floor shows (`floorName` in roles.ts): the agent's own name, or "agent <cid>" while
 /// it has not chosen one (the hub returns an empty name until then).
@@ -284,7 +284,11 @@ pub struct Floor {
     /// The scripted lift rides by agent cid: a ride's goal replaces the robot's work goal until it ends.
     pub rides: HashMap<u64, Ride>,
     /// The last room built: its turn, spots and items, for the work's stations (step_rooms hands them on).
-    last_room: Option<(f32, Vec<crate::rooms::generate::LayoutSpot>, Vec<crate::rooms::generate::LayoutItem>)>,
+    last_room: Option<(
+        f32,
+        Vec<crate::rooms::generate::LayoutSpot>,
+        Vec<crate::rooms::generate::LayoutItem>,
+    )>,
     statics: Arc<Vec<Draw>>,
     statics_version: u64,
     /// The GPU-animated batches of the statics (`bake_split`), versioned with them.
@@ -377,8 +381,14 @@ impl Floor {
         // Only the moving parts are walked: the root's dynamic children (robots and packets come
         // and go) and the dynamic subtrees found inside the baked ones.
         let root_world = self.root.local_matrix();
-        let roots: Vec<(Obj, glam::Mat4)> =
-            self.root.get().children.iter().filter(|c| c.get().dynamic).map(|c| (c.clone(), root_world)).collect();
+        let roots: Vec<(Obj, glam::Mat4)> = self
+            .root
+            .get()
+            .children
+            .iter()
+            .filter(|c| c.get().dynamic)
+            .map(|c| (c.clone(), root_world))
+            .collect();
         let (mut draws, mut lights) = scene::flatten_roots(&roots);
         let (rig_draws, rig_lights) = scene::flatten_rigs_instanced(&self.deep_dynamic);
         draws.extend(rig_draws);
@@ -400,13 +410,24 @@ impl Floor {
                     .as_ref()
                     .map(|b| {
                         let s = b.layout.scale;
-                        b.built.fades.iter().map(|f| scene::Fade { id: f.id, min: f.min * s, max: f.max * s }).collect()
+                        b.built
+                            .fades
+                            .iter()
+                            .map(|f| scene::Fade {
+                                id: f.id,
+                                min: f.min * s,
+                                max: f.max * s,
+                            })
+                            .collect()
                     })
                     .unwrap_or_default(),
             ),
             plaza: self.plaza_area(),
             anim_batches: Arc::clone(&self.anim_batches),
-            focus: self.board.as_ref().and_then(|b| b.model.anchors.atom.map(|a| Vec3::from(a) * b.layout.scale)),
+            focus: self
+                .board
+                .as_ref()
+                .and_then(|b| b.model.anchors.atom.map(|a| Vec3::from(a) * b.layout.scale)),
         }
     }
 
@@ -447,13 +468,24 @@ impl Floor {
     /// The palette the fleet scene is built with: the floor's colours.
     pub fn fleet_palette(&self) -> PropPalette {
         let c = &self.colors;
-        PropPalette { sheet: c.sheet, rule: c.rule, ink3: c.ink3, signal: c.signal, ok: c.ok, info: c.info }
+        PropPalette {
+            sheet: c.sheet,
+            rule: c.rule,
+            ink3: c.ink3,
+            signal: c.signal,
+            ok: c.ok,
+            info: c.info,
+        }
     }
 
     /// Frames a sphere (`centre`, `radius`) in an `aspect` stage with the floor's view angles, at
     /// the distance from [`fit_distance`].
     pub fn fit_sphere(&mut self, centre: [f32; 3], radius: f32, aspect: f32) {
-        let dir = Vec3::new(POLAR.sin() * AZIMUTH.sin(), POLAR.cos(), POLAR.sin() * AZIMUTH.cos());
+        let dir = Vec3::new(
+            POLAR.sin() * AZIMUTH.sin(),
+            POLAR.cos(),
+            POLAR.sin() * AZIMUTH.cos(),
+        );
         let target = Vec3::from(centre);
         let dist = fit_distance(radius, aspect).max(self.orbit.min_distance);
         self.orbit.look(target + dir * dist, target);
@@ -482,7 +514,7 @@ impl Default for Floor {
 
 #[cfg(test)]
 mod tests {
-    use super::{display_name, fit_distance, FOV_DEG};
+    use super::{FOV_DEG, display_name, fit_distance};
 
     #[test]
     fn fit_distance_holds_the_sphere_in_the_tighter_axis() {
@@ -517,7 +549,12 @@ mod tests {
 /// mesh's local box, its corners carried by its matrix under `obj`. The group's own transform is left out. Read on a room
 /// as it is built, before the build wave hides or lowers it. None without meshes.
 pub(crate) fn max_y(obj: &Obj) -> Option<f32> {
-    let roots: Vec<(Obj, glam::Mat4)> = obj.get().children.iter().map(|c| (c.clone(), glam::Mat4::IDENTITY)).collect();
+    let roots: Vec<(Obj, glam::Mat4)> = obj
+        .get()
+        .children
+        .iter()
+        .map(|c| (c.clone(), glam::Mat4::IDENTITY))
+        .collect();
     let (draws, _) = scene::flatten_roots(&roots);
     let mut top: Option<f32> = None;
     for d in &draws {

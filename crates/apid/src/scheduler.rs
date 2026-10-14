@@ -13,14 +13,14 @@ use std::time::Duration;
 
 use apz_plaza::council::is_seated;
 use apz_plaza::tasks::{FinishOutcome, TaskState};
-use apz_plaza::treasury::{PostError, MARGIN_CAP_PCT};
+use apz_plaza::treasury::{MARGIN_CAP_PCT, PostError};
 use apz_proto::wire::{HostMessage, WorkKind, WorkStatus};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use crate::agents::{connected_agent, Agent, Status};
+use crate::agents::{Agent, Status, connected_agent};
 use crate::approvals::{Approval, State as ApprovalState, Store as ApprovalStore};
-use crate::settings::{tier_of, Tier};
+use crate::settings::{Tier, tier_of};
 use crate::state::App;
 
 /// How many council motions the scheduler looks at per tick.
@@ -71,7 +71,11 @@ struct Lanes {
 
 impl Lanes {
     fn push(&mut self, item: WorkItem) {
-        self.lanes.entry(item.cid).or_default().queue.push_back(item);
+        self.lanes
+            .entry(item.cid)
+            .or_default()
+            .queue
+            .push_back(item);
     }
 
     /// Moves the next waiting item in flight, unless one already is.
@@ -110,7 +114,10 @@ impl Lanes {
     }
 
     fn queued(&self, cid: u64) -> Vec<WorkItem> {
-        self.lanes.get(&cid).map(|l| l.queue.iter().cloned().collect()).unwrap_or_default()
+        self.lanes
+            .get(&cid)
+            .map(|l| l.queue.iter().cloned().collect())
+            .unwrap_or_default()
     }
 
     /// Removes everything for `cid`: the item in flight first, then the queue.
@@ -137,8 +144,11 @@ impl Lanes {
         let Some(lane) = self.lanes.get_mut(&cid) else {
             return false;
         };
-        lane.queue.retain(|item| item.origin.task.as_deref() != Some(task));
-        lane.current.as_ref().is_some_and(|item| item.origin.task.as_deref() == Some(task))
+        lane.queue
+            .retain(|item| item.origin.task.as_deref() != Some(task));
+        lane.current
+            .as_ref()
+            .is_some_and(|item| item.origin.task.as_deref() == Some(task))
     }
 }
 
@@ -181,11 +191,21 @@ impl Default for Queues {
 impl Queues {
     /// The lock, recovered if a previous holder panicked.
     fn locked(&self) -> MutexGuard<'_, Lanes> {
-        self.lanes.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        self.lanes
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// Queues work for `cid` and sends it if the agent is idle; the work id.
-    pub fn enqueue(&self, app: &App, cid: u64, kind: WorkKind, thread: String, prompt: String, origin: Origin) -> u64 {
+    pub fn enqueue(
+        &self,
+        app: &App,
+        cid: u64,
+        kind: WorkKind,
+        thread: String,
+        prompt: String,
+        origin: Origin,
+    ) -> u64 {
         // contract
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let item = WorkItem {
@@ -223,8 +243,17 @@ impl Queues {
             return;
         };
         let state = status_str(status);
-        app.transcripts.record(&app.bus, cid, work, "work_end", json!({ "status": state, "summary": summary }));
-        app.bus.publish("work", &json!({ "cid": cid, "work": work, "state": "ended", "status": state }));
+        app.transcripts.record(
+            &app.bus,
+            cid,
+            work,
+            "work_end",
+            json!({ "status": state, "summary": summary }),
+        );
+        app.bus.publish(
+            "work",
+            &json!({ "cid": cid, "work": work, "state": "ended", "status": state }),
+        );
         if let Some(task) = item.origin.task.as_deref() {
             // A worker's done is a claim: the task waits for a reviewer's verdict, and its
             // escrow stays held until then (see `assign_reviews`).
@@ -234,7 +263,12 @@ impl Queues {
             if !waiting {
                 settle_task(app, task, status, summary);
                 // A task the owner's takeover requeued is open again, so its end is not news for the poster yet.
-                if app.plaza.tasks.find(task).is_none_or(|record| record.state() != "open") {
+                if app
+                    .plaza
+                    .tasks
+                    .find(task)
+                    .is_none_or(|record| record.state() != "open")
+                {
                     self.tell_poster(app, task, cid, state, summary);
                 }
             }
@@ -248,21 +282,40 @@ impl Queues {
 
     /// Records that `cid` posted `task`, so it hears when the task ends.
     pub fn note_poster(&self, task: &str, cid: u64) {
-        self.posters.lock().unwrap_or_else(|p| p.into_inner()).insert(task.to_string(), cid);
+        self.posters
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(task.to_string(), cid);
     }
 
     /// Tells a task's poster (the orchestrator) that it ended, continuing the
     /// poster's conversation with the operator so it keeps its plan.
     fn tell_poster(&self, app: &App, task: &str, worker: u64, state: &str, summary: &str) {
-        let poster = self.posters.lock().unwrap_or_else(|p| p.into_inner()).remove(task);
-        let Some(poster) = poster.filter(|&p| p != worker) else { return };
+        let poster = self
+            .posters
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(task);
+        let Some(poster) = poster.filter(|&p| p != worker) else {
+            return;
+        };
         crate::society::task_ended(app, task, poster, worker, state == "done");
-        let worker_name = app.agents.get(worker).map_or_else(|| format!("agent {worker}"), |a| a.name);
+        let worker_name = app
+            .agents
+            .get(worker)
+            .map_or_else(|| format!("agent {worker}"), |a| a.name);
         let prompt = format!(
             "[plaza] Task {task}, worked by {worker_name}, ended: {state}.\nSummary: {summary}\n\n\
              Review it (plaza_task_result), continue your plan, and tell the operator when the goal is complete."
         );
-        self.enqueue(app, poster, WorkKind::Chat, format!("op-{poster}"), prompt, Origin::default());
+        self.enqueue(
+            app,
+            poster,
+            WorkKind::Chat,
+            format!("op-{poster}"),
+            prompt,
+            Origin::default(),
+        );
     }
 
     /// The operator cancels the current item (sends `cancel`).
@@ -271,7 +324,10 @@ impl Queues {
         let Some(item) = self.locked().current(cid) else {
             return false;
         };
-        let message = HostMessage::Cancel { work: item.id, reason: reason.to_string() };
+        let message = HostMessage::Cancel {
+            work: item.id,
+            reason: reason.to_string(),
+        };
         matches!(
             crate::fleet::send(app, cid, &json!({ "message": message })),
             Ok((code, _)) if (200..300).contains(&code)
@@ -310,7 +366,10 @@ impl Queues {
                 "work_end",
                 json!({ "status": "failed", "summary": "agent went offline" }),
             );
-            app.bus.publish("work", &json!({ "cid": cid, "work": item.id, "state": "ended", "status": "failed" }));
+            app.bus.publish(
+                "work",
+                &json!({ "cid": cid, "work": item.id, "state": "ended", "status": "failed" }),
+            );
             if let Some(task) = item.origin.task.as_deref() {
                 settle_task(app, task, WorkStatus::Failed, "agent went offline");
             }
@@ -328,7 +387,12 @@ impl Queues {
 
     /// The credits metered against `task` so far.
     fn spent(&self, task: &str) -> i64 {
-        self.spend.lock().unwrap_or_else(|p| p.into_inner()).get(task).copied().unwrap_or(0)
+        self.spend
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(task)
+            .copied()
+            .unwrap_or(0)
     }
 
     /// The worker reported `task` done: it waits for a reviewer's verdict, and its escrow stays
@@ -355,15 +419,29 @@ impl Queues {
             };
             let id = view.id.to_string();
             let summary = view.note.clone().unwrap_or_default();
-            let reviewed = self.reviews.lock().unwrap_or_else(|p| p.into_inner()).contains_key(&id);
+            let reviewed = self
+                .reviews
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .contains_key(&id);
             if reviewed || self.start_review(app, &id, worker, &summary) {
                 continue;
             }
             let waited = now.saturating_sub(view.updated_at);
             if review_overdue(waited, timeout_ms) {
-                let worker_name = app.agents.get(worker).map_or_else(|| format!("agent {worker}"), |a| a.name);
-                let escalation =
-                    escalate_review(&app.approvals, &id, worker, &worker_name, view.goal, &summary, waited);
+                let worker_name = app
+                    .agents
+                    .get(worker)
+                    .map_or_else(|| format!("agent {worker}"), |a| a.name);
+                let escalation = escalate_review(
+                    &app.approvals,
+                    &id,
+                    worker,
+                    &worker_name,
+                    view.goal,
+                    &summary,
+                    waited,
+                );
                 if let Some(item) = escalation {
                     app.bus.publish("approval", &item);
                 }
@@ -385,70 +463,152 @@ impl Queues {
         let Some(reviewer) = next_reviewer(&app.agents.list(), worker) else {
             return false;
         };
-        let worker_name = app.agents.get(worker).map_or_else(|| format!("agent {worker}"), |a| a.name);
-        let acceptance = record.acceptance().map_or_else(|| "none stated".to_string(), |a| a.to_string());
+        let worker_name = app
+            .agents
+            .get(worker)
+            .map_or_else(|| format!("agent {worker}"), |a| a.name);
+        let acceptance = record
+            .acceptance()
+            .map_or_else(|| "none stated".to_string(), |a| a.to_string());
         let prompt = format!(
             "Verify task {task}: {goal}\nAcceptance: {acceptance}\nThe worker ({worker_name}) reported: {summary}\n\
              Check it (use plaza_get_file for shared files) and call plaza_verdict with pass true/false and short notes.",
             goal = record.goal(),
         );
-        let work = self.enqueue(app, reviewer, WorkKind::Task, format!("review-{task}"), prompt, Origin::default());
-        self.reviews.lock().unwrap_or_else(|p| p.into_inner()).insert(task.to_string(), Review { worker, work });
+        let work = self.enqueue(
+            app,
+            reviewer,
+            WorkKind::Task,
+            format!("review-{task}"),
+            prompt,
+            Origin::default(),
+        );
+        self.reviews
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(task.to_string(), Review { worker, work });
         true
     }
 
     /// The reviewer's verdict on `task`, from review work `work`. Pass pays the
     /// worker its margin-capped share and completes the task; fail fails it (the
     /// escrow goes back to the plaza's budget).
-    pub fn verdict(&self, app: &App, task: &str, work: u64, pass: bool, notes: &str) -> Result<String, String> {
+    pub fn verdict(
+        &self,
+        app: &App,
+        task: &str,
+        work: u64,
+        pass: bool,
+        notes: &str,
+    ) -> Result<String, String> {
         // contract
         let rulings = self.rulings.lock().unwrap_or_else(|p| p.into_inner());
         let mut reviews = self.reviews.lock().unwrap_or_else(|p| p.into_inner());
         if !reviews.get(task).is_some_and(|r| r.work == work) {
-            return Err(format!("no verdict is pending on task {task} from this review"));
+            return Err(format!(
+                "no verdict is pending on task {task} from this review"
+            ));
         }
-        let review = reviews.remove(task).ok_or_else(|| format!("no verdict is pending on task {task}"))?;
+        let review = reviews
+            .remove(task)
+            .ok_or_else(|| format!("no verdict is pending on task {task}"))?;
         drop(reviews);
         let summary = self.settle_ruling(app, task, review.worker, work, pass, notes);
         // The owner's card for this task, if one was raised, is no longer needed.
-        publish_withdrawn(app, &withdraw_pending_review(&app.approvals, task, RULED_FIRST));
+        publish_withdrawn(
+            app,
+            &withdraw_pending_review(&app.approvals, task, RULED_FIRST),
+        );
         drop(rulings);
-        self.tell_poster(app, task, review.worker, if pass { "done" } else { "failed" }, notes);
+        self.tell_poster(
+            app,
+            task,
+            review.worker,
+            if pass { "done" } else { "failed" },
+            notes,
+        );
         Ok(summary)
     }
 
     /// The owner's ruling on `task`, which is awaiting review: a pass pays the worker and completes the
     /// task, a fail fails it. A reviewer still working on it is no longer awaited.
-    pub fn owner_verdict(&self, app: &App, task: &str, pass: bool, notes: &str) -> Result<String, String> {
+    pub fn owner_verdict(
+        &self,
+        app: &App,
+        task: &str,
+        pass: bool,
+        notes: &str,
+    ) -> Result<String, String> {
         let rulings = self.rulings.lock().unwrap_or_else(|p| p.into_inner());
-        let record = app.plaza.tasks.find(task).ok_or_else(|| format!("no task {task}"))?;
+        let record = app
+            .plaza
+            .tasks
+            .find(task)
+            .ok_or_else(|| format!("no task {task}"))?;
         let view = record.view();
         if view.state != TaskState::AwaitingReview.as_str() {
-            return Err(format!("task {task} is {}; it is not awaiting review", view.state));
+            return Err(format!(
+                "task {task} is {}; it is not awaiting review",
+                view.state
+            ));
         }
-        let worker = view.agent_cid.ok_or_else(|| format!("task {task} names no worker"))?;
-        let reviewer = self.reviews.lock().unwrap_or_else(|p| p.into_inner()).remove(task);
+        let worker = view
+            .agent_cid
+            .ok_or_else(|| format!("task {task} names no worker"))?;
+        let reviewer = self
+            .reviews
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(task);
         let work = reviewer.map_or(0, |r| r.work);
         let summary = self.settle_ruling(app, task, worker, work, pass, notes);
         drop(rulings);
-        self.tell_poster(app, task, worker, if pass { "done" } else { "failed" }, notes);
+        self.tell_poster(
+            app,
+            task,
+            worker,
+            if pass { "done" } else { "failed" },
+            notes,
+        );
         Ok(summary)
     }
 
     /// Pays the worker for a pass and ends the task, which releases the rest of its escrow. The caller
     /// holds `rulings`, so the task is paid at most once.
-    fn settle_ruling(&self, app: &App, task: &str, worker: u64, work: u64, pass: bool, notes: &str) -> String {
-        let paid = if pass { self.pay_worker(app, task, worker, work) } else { 0 };
-        let status = if pass { WorkStatus::Done } else { WorkStatus::Failed };
+    fn settle_ruling(
+        &self,
+        app: &App,
+        task: &str,
+        worker: u64,
+        work: u64,
+        pass: bool,
+        notes: &str,
+    ) -> String {
+        let paid = if pass {
+            self.pay_worker(app, task, worker, work)
+        } else {
+            0
+        };
+        let status = if pass {
+            WorkStatus::Done
+        } else {
+            WorkStatus::Failed
+        };
         settle_task(app, task, status, notes);
-        format!("verdict {}: paid {paid}", if pass { "pass" } else { "fail" })
+        format!(
+            "verdict {}: paid {paid}",
+            if pass { "pass" } else { "fail" }
+        )
     }
 
     /// Ends a review whose reviewer ended, or went offline, without a verdict: the task fails.
     fn review_lost(&self, app: &App, work: u64, reason: &str) {
         let rulings = self.rulings.lock().unwrap_or_else(|p| p.into_inner());
         let mut reviews = self.reviews.lock().unwrap_or_else(|p| p.into_inner());
-        let found = reviews.iter().find(|(_, r)| r.work == work).map(|(task, _)| task.clone());
+        let found = reviews
+            .iter()
+            .find(|(_, r)| r.work == work)
+            .map(|(task, _)| task.clone());
         let Some(task) = found else {
             return;
         };
@@ -473,10 +633,17 @@ impl Queues {
             match treasury.pay_agent(task, worker, cap) {
                 Ok(_) => cap,
                 // The margin cap refused: pay what it still allows, or nothing.
-                Err(PostError::MarginCap { paid_to_agents, real_cost, .. }) => {
+                Err(PostError::MarginCap {
+                    paid_to_agents,
+                    real_cost,
+                    ..
+                }) => {
                     let allowance = real_cost * i128::from(MARGIN_CAP_PCT) / 100 - paid_to_agents;
                     match i64::try_from(allowance) {
-                        Ok(allowance) if allowance > 0 && treasury.pay_agent(task, worker, allowance).is_ok() => {
+                        Ok(allowance)
+                            if allowance > 0
+                                && treasury.pay_agent(task, worker, allowance).is_ok() =>
+                        {
                             allowance
                         }
                         _ => 0,
@@ -499,7 +666,10 @@ impl Queues {
     /// in flight — after a restart (restored queues) or anything else that left work waiting.
     pub fn dispatch_idle(&self, app: &App) {
         for agent in app.agents.list() {
-            if agent.status == Status::Idle && self.current(agent.cid).is_none() && !self.queued(agent.cid).is_empty() {
+            if agent.status == Status::Idle
+                && self.current(agent.cid).is_none()
+                && !self.queued(agent.cid).is_empty()
+            {
                 self.dispatch(app, agent.cid);
             }
         }
@@ -508,7 +678,12 @@ impl Queues {
     /// Sends the next waiting item to `cid` if it is reachable and idle.
     fn dispatch(&self, app: &App, cid: u64) {
         // Held by STOP ALL: queued work waits until the owner resumes.
-        if app.control.paused() || app.agents.get(cid).is_none_or(|a| a.status == Status::Offline) {
+        if app.control.paused()
+            || app
+                .agents
+                .get(cid)
+                .is_none_or(|a| a.status == Status::Offline)
+        {
             return;
         }
         let Some(item) = self.locked().start_next(cid, apz_plaza::now_ms()) else {
@@ -539,7 +714,10 @@ impl Queues {
                 "origin": item.origin,
             }),
         );
-        app.bus.publish("work", &json!({ "cid": cid, "work": item.id, "state": "started" }));
+        app.bus.publish(
+            "work",
+            &json!({ "cid": cid, "work": item.id, "state": "started" }),
+        );
     }
 }
 
@@ -570,7 +748,11 @@ fn settle_task(app: &App, task: &str, status: WorkStatus, summary: &str) {
 /// on it is cancelled, and `assign_tasks` gives it to an idle worker of its role. A task that is not claimed (it
 /// ended, or it waits for a review) is left alone, and the error says so.
 pub fn requeue_task(app: &App, task: &str, reason: &str) -> Result<(), String> {
-    let record = app.plaza.tasks.find(task).ok_or_else(|| format!("no task {task}"))?;
+    let record = app
+        .plaza
+        .tasks
+        .find(task)
+        .ok_or_else(|| format!("no task {task}"))?;
     let view = record.view();
     if view.state != "claimed" {
         return Err(format!("task {task} is {}, not claimed", view.state));
@@ -617,10 +799,9 @@ fn escalate_review(
     waited_ms: u64,
 ) -> Option<Approval> {
     let subject = review_subject(task);
-    let pending = approvals
-        .list()
-        .iter()
-        .any(|a| a.kind == REVIEW_KIND && a.subject == subject && a.state == ApprovalState::Pending);
+    let pending = approvals.list().iter().any(|a| {
+        a.kind == REVIEW_KIND && a.subject == subject && a.state == ApprovalState::Pending
+    });
     if pending {
         return None;
     }
@@ -647,14 +828,19 @@ fn withdraw_pending_review(approvals: &ApprovalStore, task: &str, reason: &str) 
     approvals
         .list()
         .into_iter()
-        .filter(|a| a.kind == REVIEW_KIND && a.subject == subject && a.state == ApprovalState::Pending)
+        .filter(|a| {
+            a.kind == REVIEW_KIND && a.subject == subject && a.state == ApprovalState::Pending
+        })
         .filter_map(|a| approvals.withdraw(&a.id, reason))
         .collect()
 }
 
 /// Withdraws every pending review approval whose task `awaiting` says is no longer awaiting review, so
 /// the owner is never left with a card that would be refused. Returns what it withdrew.
-fn withdraw_orphaned_reviews(approvals: &ApprovalStore, awaiting: &dyn Fn(&str) -> bool) -> Vec<Approval> {
+fn withdraw_orphaned_reviews(
+    approvals: &ApprovalStore,
+    awaiting: &dyn Fn(&str) -> bool,
+) -> Vec<Approval> {
     let orphaned: Vec<(String, String)> = approvals
         .list()
         .into_iter()
@@ -697,31 +883,38 @@ pub fn review_decided(app: &App, item: &Approval, approve: bool) -> Result<(), S
         .get("task")
         .and_then(Value::as_str)
         .ok_or("this review approval names no task")?;
-    let notes = item.reason.clone().unwrap_or_else(|| "the owner ruled on the review".to_string());
-    app.work.owner_verdict(app, task, approve, &notes).map(|_| ())
+    let notes = item
+        .reason
+        .clone()
+        .unwrap_or_else(|| "the owner ruled on the review".to_string());
+    app.work
+        .owner_verdict(app, task, approve, &notes)
+        .map(|_| ())
 }
 
 /// The scheduler thread (every 2 s).
 pub fn spawn(app: Arc<App>) {
     // contract
-    let spawned = thread::Builder::new().name("apid-scheduler".into()).spawn(move || {
-        let mut motions_seen: HashSet<(String, u64)> = HashSet::new();
-        loop {
-            // While STOP ALL holds the plaza, nothing new starts; usage still drains.
-            if !app.control.paused() {
-                ask_names(&app);
-                crate::society::outreach(&app);
-                assign_tasks(&app);
-                app.work.assign_reviews(&app);
-                withdraw_stale_reviews(&app);
-                offer_motions(&app, &mut motions_seen);
+    let spawned = thread::Builder::new()
+        .name("apid-scheduler".into())
+        .spawn(move || {
+            let mut motions_seen: HashSet<(String, u64)> = HashSet::new();
+            loop {
+                // While STOP ALL holds the plaza, nothing new starts; usage still drains.
+                if !app.control.paused() {
+                    ask_names(&app);
+                    crate::society::outreach(&app);
+                    assign_tasks(&app);
+                    app.work.assign_reviews(&app);
+                    withdraw_stale_reviews(&app);
+                    offer_motions(&app, &mut motions_seen);
+                }
+                crate::llm_proxy::drain_usage(&app);
+                crate::plaza::retain(&app);
+                crate::usage::retain(&app);
+                thread::sleep(Duration::from_secs(2));
             }
-            crate::llm_proxy::drain_usage(&app);
-            crate::plaza::retain(&app);
-            crate::usage::retain(&app);
-            thread::sleep(Duration::from_secs(2));
-        }
-    });
+        });
     if let Err(err) = spawned {
         eprintln!("scheduler: cannot start: {err}");
     }
@@ -732,9 +925,20 @@ fn ask_names(app: &App) {
     let now = apz_plaza::now_ms();
     for agent in app.agents.list() {
         let settled = now.saturating_sub(agent.connected_at_ms) > 2_000;
-        if agent.name.is_empty() && agent.status == crate::agents::Status::Idle && settled && app.names.first_ask(agent.cid) {
+        if agent.name.is_empty()
+            && agent.status == crate::agents::Status::Idle
+            && settled
+            && app.names.first_ask(agent.cid)
+        {
             let prompt = "Choose a short first name for yourself (one word, letters only, 2–16 characters, not a job title) and set it with plaza_set_name. Then reply with just your name.";
-            app.work.enqueue(app, agent.cid, WorkKind::Chat, format!("op-{}", agent.cid), prompt.to_owned(), Origin::default());
+            app.work.enqueue(
+                app,
+                agent.cid,
+                WorkKind::Chat,
+                format!("op-{}", agent.cid),
+                prompt.to_owned(),
+                Origin::default(),
+            );
         }
     }
 }
@@ -765,8 +969,18 @@ fn assign_tasks(app: &App) {
             Some(acceptance) => format!("{}\n\nAcceptance: {acceptance}", task.goal()),
             None => task.goal().to_string(),
         };
-        let origin = Origin { task: Some(task.id().to_string()), ..Origin::default() };
-        app.work.enqueue(app, worker.cid, WorkKind::Task, format!("task-{}", task.id()), prompt, origin);
+        let origin = Origin {
+            task: Some(task.id().to_string()),
+            ..Origin::default()
+        };
+        app.work.enqueue(
+            app,
+            worker.cid,
+            WorkKind::Task,
+            format!("task-{}", task.id()),
+            prompt,
+            origin,
+        );
     }
 }
 
@@ -785,13 +999,25 @@ fn offer_motions(app: &App, seen: &mut HashSet<(String, u64)>) {
             if !seen.insert((motion.id.clone(), agent.cid)) {
                 continue;
             }
-            let prompt = format!("Council motion {} ({}): {}", motion.id, motion.kind, motion.text);
-            let origin = Origin { motion: Some(motion.id.clone()), ..Origin::default() };
-            app.work.enqueue(app, agent.cid, WorkKind::Motion, format!("motion-{}", motion.id), prompt, origin);
+            let prompt = format!(
+                "Council motion {} ({}): {}",
+                motion.id, motion.kind, motion.text
+            );
+            let origin = Origin {
+                motion: Some(motion.id.clone()),
+                ..Origin::default()
+            };
+            app.work.enqueue(
+                app,
+                agent.cid,
+                WorkKind::Motion,
+                format!("motion-{}", motion.id),
+                prompt,
+                origin,
+            );
         }
     }
 }
-
 
 /// The saved form of the queues: the id counter and every lane (queue and item in flight).
 #[derive(Serialize, Deserialize)]
@@ -808,10 +1034,19 @@ impl Queues {
     pub fn snapshot(&self) -> String {
         let lanes = self.locked().clone();
         let next_id = self.next_id.load(Ordering::Relaxed);
-        if next_id == 1 && lanes.lanes.values().all(|l| l.current.is_none() && l.queue.is_empty()) {
+        if next_id == 1
+            && lanes
+                .lanes
+                .values()
+                .all(|l| l.current.is_none() && l.queue.is_empty())
+        {
             return String::new();
         }
-        serde_json::to_string(&Saved { next_id, lanes: lanes.lanes }).expect("work queues serialize")
+        serde_json::to_string(&Saved {
+            next_id,
+            lanes: lanes.lanes,
+        })
+        .expect("work queues serialize")
     }
 
     /// Replaces the state with a [`Queues::snapshot`]; a refusal changes nothing.
@@ -821,7 +1056,8 @@ impl Queues {
         let (next_id, mut lanes) = if json.is_empty() {
             (1, Lanes::default())
         } else {
-            let saved: Saved = serde_json::from_str(json).map_err(|e| format!("work queues: {e}"))?;
+            let saved: Saved =
+                serde_json::from_str(json).map_err(|e| format!("work queues: {e}"))?;
             (saved.next_id, Lanes { lanes: saved.lanes })
         };
         for lane in lanes.lanes.values_mut() {
@@ -833,7 +1069,13 @@ impl Queues {
                 lane.queue.push_front(item);
             }
         }
-        let highest = lanes.lanes.values().flat_map(|l| l.queue.iter()).map(|i| i.id).max().unwrap_or(0);
+        let highest = lanes
+            .lanes
+            .values()
+            .flat_map(|l| l.queue.iter())
+            .map(|i| i.id)
+            .max()
+            .unwrap_or(0);
         let next_id = next_id.max(highest.saturating_add(1));
         *self.locked() = lanes;
         self.next_id.store(next_id, Ordering::Relaxed);
@@ -852,7 +1094,10 @@ mod tests {
             kind: WorkKind::Task,
             thread: format!("task-{id}"),
             prompt: String::new(),
-            origin: Origin { task: task.map(str::to_string), ..Origin::default() },
+            origin: Origin {
+                task: task.map(str::to_string),
+                ..Origin::default()
+            },
             created_ms: 0,
             started_ms: None,
         }
@@ -889,13 +1134,17 @@ mod tests {
         let own = vec![agent(5, REVIEWER_ROLE, Status::Idle)];
         assert_eq!(next_reviewer(&own, 5), None);
         // With no free reviewer the task keeps waiting.
-        let busy = vec![agent(2, REVIEWER_ROLE, Status::Working), agent(6, "builder", Status::Idle)];
+        let busy = vec![
+            agent(2, REVIEWER_ROLE, Status::Working),
+            agent(6, "builder", Status::Idle),
+        ];
         assert_eq!(next_reviewer(&busy, 1), None);
     }
 
     #[test]
     fn a_task_no_reviewer_takes_in_time_asks_the_owner_once() {
-        let dir = std::env::temp_dir().join(format!("apid-review-escalation-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("apid-review-escalation-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let store = ApprovalStore::load(&dir);
@@ -915,10 +1164,19 @@ mod tests {
         assert_eq!(asked.detail["waited_ms"], 30 * 60_000);
 
         // While it is pending, later ticks do not ask again for the same task.
-        assert!(escalate_review(&store, "t7", 4, "agent4", "ship it", "done", 40 * 60_000).is_none());
+        assert!(
+            escalate_review(&store, "t7", 4, "agent4", "ship it", "done", 40 * 60_000).is_none()
+        );
         // Another task gets its own approval.
         assert!(escalate_review(&store, "t8", 4, "agent4", "other", "done", 30 * 60_000).is_some());
-        assert_eq!(store.list().iter().filter(|a| a.kind == REVIEW_KIND).count(), 2);
+        assert_eq!(
+            store
+                .list()
+                .iter()
+                .filter(|a| a.kind == REVIEW_KIND)
+                .count(),
+            2
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -928,13 +1186,19 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let store = ApprovalStore::load(&dir);
-        let asked = escalate_review(&store, "t7", 4, "agent4", "ship it", "done", 30 * 60_000).expect("asked");
-        let other = escalate_review(&store, "t8", 4, "agent4", "other", "done", 30 * 60_000).expect("asked");
+        let asked = escalate_review(&store, "t7", 4, "agent4", "ship it", "done", 30 * 60_000)
+            .expect("asked");
+        let other = escalate_review(&store, "t8", 4, "agent4", "other", "done", 30 * 60_000)
+            .expect("asked");
 
         // A reviewer rules on t7 after the escalation: its card is withdrawn with the reason.
         let withdrawn = withdraw_pending_review(&store, "t7", RULED_FIRST);
         assert_eq!(withdrawn.len(), 1);
-        let card = store.list().into_iter().find(|a| a.id == asked.id).expect("the card is kept");
+        let card = store
+            .list()
+            .into_iter()
+            .find(|a| a.id == asked.id)
+            .expect("the card is kept");
         assert_eq!(card.state, ApprovalState::Withdrawn);
         assert_eq!(card.reason.as_deref(), Some("a reviewer ruled first"));
 
@@ -946,7 +1210,11 @@ mod tests {
         assert!(withdraw_pending_review(&store, "t7", RULED_FIRST).is_empty());
 
         // t8's card is untouched and still pending.
-        let still = store.list().into_iter().find(|a| a.id == other.id).expect("kept");
+        let still = store
+            .list()
+            .into_iter()
+            .find(|a| a.id == other.id)
+            .expect("kept");
         assert_eq!(still.state, ApprovalState::Pending);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -958,15 +1226,23 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let store = ApprovalStore::load(&dir);
         escalate_review(&store, "t7", 4, "agent4", "a", "done", 30 * 60_000).expect("asked");
-        let live = escalate_review(&store, "t8", 4, "agent4", "b", "done", 30 * 60_000).expect("asked");
+        let live =
+            escalate_review(&store, "t8", 4, "agent4", "b", "done", 30 * 60_000).expect("asked");
 
         // Only t8 still awaits review (say t7 failed when its reviewer went offline).
         let awaiting = |task: &str| task == "t8";
         let withdrawn = withdraw_orphaned_reviews(&store, &awaiting);
         assert_eq!(withdrawn.len(), 1);
         assert_eq!(withdrawn[0].detail["task"], "t7");
-        assert_eq!(withdrawn[0].reason.as_deref(), Some("the task ended before the owner ruled"));
-        let kept = store.list().into_iter().find(|a| a.id == live.id).expect("kept");
+        assert_eq!(
+            withdrawn[0].reason.as_deref(),
+            Some("the task ended before the owner ruled")
+        );
+        let kept = store
+            .list()
+            .into_iter()
+            .find(|a| a.id == live.id)
+            .expect("kept");
         assert_eq!(kept.state, ApprovalState::Pending);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -978,7 +1254,10 @@ mod tests {
             lanes.push(item(id, 7, None));
         }
         assert_eq!(lanes.start_next(7, 10).map(|i| i.id), Some(1));
-        assert!(lanes.start_next(7, 11).is_none(), "one item in flight per agent");
+        assert!(
+            lanes.start_next(7, 11).is_none(),
+            "one item in flight per agent"
+        );
         assert_eq!(lanes.queued(7).len(), 2);
         assert_eq!(lanes.finish(7, 1).map(|i| i.id), Some(1));
         assert_eq!(lanes.start_next(7, 12).map(|i| i.id), Some(2));
@@ -990,7 +1269,10 @@ mod tests {
         lanes.push(item(1, 7, None));
         assert!(lanes.current(7).is_none());
         lanes.start_next(7, 0);
-        assert!(lanes.finish(7, 99).is_none(), "a stray work id closes nothing");
+        assert!(
+            lanes.finish(7, 99).is_none(),
+            "a stray work id closes nothing"
+        );
         assert_eq!(lanes.current(7).map(|i| i.id), Some(1));
     }
 
@@ -1033,12 +1315,29 @@ mod tests {
         lanes.push(item(2, 7, Some("t2")));
         lanes.push(item(3, 7, Some("t1")));
         lanes.start_next(7, 0); // item 1 (t1) is in flight
-        assert!(lanes.drop_task(7, "t1"), "t1's item is in flight: the caller cancels it");
-        assert_eq!(lanes.queued(7).iter().map(|i| i.id).collect::<Vec<_>>(), vec![2], "t1's waiting item 3 is gone, t2's stays");
-        assert_eq!(lanes.current(7).map(|i| i.id), Some(1), "the in-flight item is left for its end");
-        assert!(!lanes.drop_task(7, "t2"), "t2 has nothing in flight; its waiting item goes");
+        assert!(
+            lanes.drop_task(7, "t1"),
+            "t1's item is in flight: the caller cancels it"
+        );
+        assert_eq!(
+            lanes.queued(7).iter().map(|i| i.id).collect::<Vec<_>>(),
+            vec![2],
+            "t1's waiting item 3 is gone, t2's stays"
+        );
+        assert_eq!(
+            lanes.current(7).map(|i| i.id),
+            Some(1),
+            "the in-flight item is left for its end"
+        );
+        assert!(
+            !lanes.drop_task(7, "t2"),
+            "t2 has nothing in flight; its waiting item goes"
+        );
         assert!(lanes.queued(7).is_empty());
-        assert!(!lanes.drop_task(9, "t1"), "an agent with no lane has nothing to drop");
+        assert!(
+            !lanes.drop_task(9, "t1"),
+            "an agent with no lane has nothing to drop"
+        );
     }
 
     #[test]
@@ -1059,8 +1358,15 @@ mod tests {
 
         let fresh = Queues::default();
         fresh.restore(&json).expect("restores");
-        assert_eq!(fresh.queued(7).len(), 2, "in-flight item goes back to the queue");
-        assert!(fresh.current(7).is_none(), "nothing is in flight after restore");
+        assert_eq!(
+            fresh.queued(7).len(),
+            2,
+            "in-flight item goes back to the queue"
+        );
+        assert!(
+            fresh.current(7).is_none(),
+            "nothing is in flight after restore"
+        );
         assert_eq!(fresh.queued(8).len(), 1);
         let first = &fresh.queued(7)[0];
         assert_eq!(first.id, 1);

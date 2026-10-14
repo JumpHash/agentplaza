@@ -11,7 +11,7 @@
 
 use std::time::Duration;
 
-use iced::widget::{button, column, container, row, text_input, Space};
+use iced::widget::{Space, button, column, container, row, text_input};
 use iced::{Alignment, Border, Color, Element, Length, Subscription, Task, Theme};
 
 use apz_trust::token::JoinToken;
@@ -51,8 +51,12 @@ impl Choice {
         match self {
             Choice::Local => "The hub and one node on this machine. Nothing leaves it.",
             Choice::Host => "Other machines join this one as nodes with one-time codes.",
-            Choice::Join => "This machine becomes a node of a hub elsewhere, with a one-time code from that hub.",
-            Choice::Workstation => "The agents work this machine's screen, shell, files and programs through a hub, with a join code from it.",
+            Choice::Join => {
+                "This machine becomes a node of a hub elsewhere, with a one-time code from that hub."
+            }
+            Choice::Workstation => {
+                "The agents work this machine's screen, shell, files and programs through a hub, with a join code from it."
+            }
             Choice::Connect => "Open the console of a hub elsewhere.",
         }
     }
@@ -229,7 +233,10 @@ pub fn update(state: &mut State, msg: Msg) -> (Task<Msg>, Option<Client>) {
             state.cli = cli_link::status();
             (Task::none(), None)
         }
-        Msg::Workstation(msg) => (workstation_setup::update(&mut state.ws, msg).map(Msg::Workstation), None),
+        Msg::Workstation(msg) => (
+            workstation_setup::update(&mut state.ws, msg).map(Msg::Workstation),
+            None,
+        ),
         Msg::Started(result) => started(state, result),
         Msg::Connected(result) => match result {
             Ok(client) => {
@@ -329,9 +336,18 @@ fn fix_requirement(state: &mut State, need: setup::Need) -> (Task<Msg>, Option<C
 }
 
 /// A fix finished: its lines and the outcome go to the log, then the requirements are checked again.
-fn fix_done(state: &mut State, need: setup::Need, result: Result<(), String>, lines: Vec<String>) -> (Task<Msg>, Option<Client>) {
+fn fix_done(
+    state: &mut State,
+    need: setup::Need,
+    result: Result<(), String>,
+    lines: Vec<String>,
+) -> (Task<Msg>, Option<Client>) {
     state.fixing = None;
-    let label = state.checks.iter().find(|check| check.need == need).map_or("requirement", |check| check.label);
+    let label = state
+        .checks
+        .iter()
+        .find(|check| check.need == need)
+        .map_or("requirement", |check| check.label);
     state.setup_log.extend(lines);
     state.setup_log.push(match result {
         Ok(()) => format!("{label}: ✓ done"),
@@ -352,7 +368,13 @@ fn link_cli(state: &mut State) -> (Task<Msg>, Option<Client>) {
         return (Task::none(), None);
     };
     state.cli_note = None;
-    (Task::perform(async move { cli_link::link(&target, &link) }, Msg::CliLinked), None)
+    (
+        Task::perform(
+            async move { cli_link::link(&target, &link) },
+            Msg::CliLinked,
+        ),
+        None,
+    )
 }
 
 /// Services came up (or not). Local and Host wait for their hub to answer; Join stops here.
@@ -362,7 +384,9 @@ fn started(state: &mut State, result: Result<Vec<String>, String>) -> (Task<Msg>
             state.log.extend(lines);
             match state.choice {
                 Some(Choice::Local) | Some(Choice::Host) => {
-                    state.log.push(format!("waiting for the hub on {LOCAL_HUB}"));
+                    state
+                        .log
+                        .push(format!("waiting for the hub on {LOCAL_HUB}"));
                     (client::task(await_local_hub, Msg::Connected), None)
                 }
                 _ => {
@@ -389,7 +413,8 @@ fn join_node(token: &str) -> Result<Vec<String>, String> {
 
 /// Decodes a join code and refuses one that has expired. The message is what the form shows.
 fn join_code(text: &str) -> Result<JoinToken, String> {
-    let token = JoinToken::decode(text).map_err(|_| "Not a join code: it starts with apzj1.".to_string())?;
+    let token = JoinToken::decode(text)
+        .map_err(|_| "Not a join code: it starts with apzj1.".to_string())?;
     if token.expires <= now_secs() {
         return Err("this code has expired: ask the hub for a new one".into());
     }
@@ -398,7 +423,9 @@ fn join_code(text: &str) -> Result<JoinToken, String> {
 
 /// Unix seconds now (zero if the clock is before the epoch).
 fn now_secs() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs())
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs())
 }
 
 /// The live reading under the join code field: where it joins and how long it lasts, or why it cannot be used.
@@ -410,7 +437,11 @@ fn join_code_note<'a>(text: &str) -> Option<Element<'a, Msg>> {
     Some(match join_code(text) {
         Ok(token) => {
             let minutes = token.expires.saturating_sub(now_secs()).div_ceil(60);
-            ui::faint(format!("Joins {} · expires in {minutes} min", token.hub_url)).into()
+            ui::faint(format!(
+                "Joins {} · expires in {minutes} min",
+                token.hub_url
+            ))
+            .into()
         }
         Err(error) => ui::error_line(&error),
     })
@@ -451,23 +482,48 @@ fn chooser(state: &State) -> Element<'_, Msg> {
     let busy = state.busy;
     let mut page: Vec<Element<'_, Msg>> = vec![
         ui::sans("AgentPlaza", 13.0, crate::theme::palette().ink).into(),
-        ui::sans("How do you want to run it?", 30.0, crate::theme::palette().ink).into(),
+        ui::sans(
+            "How do you want to run it?",
+            30.0,
+            crate::theme::palette().ink,
+        )
+        .into(),
     ];
     if let Some(choice) = state.remembered {
         let label = format!("Continue: {}", choice.title());
-        page.push(ui::btn(&label, Some(choice.icon()), Kind::Primary, (!busy).then_some(Msg::Pick(choice))));
+        page.push(ui::btn(
+            &label,
+            Some(choice.icon()),
+            Kind::Primary,
+            (!busy).then_some(Msg::Pick(choice)),
+        ));
     }
     page.push(
         column![
-            row![option_card(Choice::Local, busy), option_card(Choice::Host, busy)].spacing(12),
-            row![option_card(Choice::Join, busy), option_card(Choice::Workstation, busy)].spacing(12),
-            row![option_card(Choice::Connect, busy), Space::new().width(Length::Fill)].spacing(12),
+            row![
+                option_card(Choice::Local, busy),
+                option_card(Choice::Host, busy)
+            ]
+            .spacing(12),
+            row![
+                option_card(Choice::Join, busy),
+                option_card(Choice::Workstation, busy)
+            ]
+            .spacing(12),
+            row![
+                option_card(Choice::Connect, busy),
+                Space::new().width(Length::Fill)
+            ]
+            .spacing(12),
         ]
         .spacing(12)
         .into(),
     );
     if let CliLink::Linkable { link, .. } = &state.cli {
-        let line = format!("Command line: add the `agentplaza` command ({})", link.display());
+        let line = format!(
+            "Command line: add the `agentplaza` command ({})",
+            link.display()
+        );
         page.push(
             row![
                 ui::faint(line),
@@ -488,18 +544,31 @@ fn chooser(state: &State) -> Element<'_, Msg> {
 /// One square option card: icon, title, one serif sentence. Clicking it picks the option.
 fn option_card(choice: Choice, busy: bool) -> Element<'static, Msg> {
     let icon: Element<'static, Msg> = ui::icon(choice.icon(), 22.0, crate::theme::palette().ink);
-    let body = column![icon, ui::sans(choice.title(), 14.0, crate::theme::palette().ink), ui::prose(choice.sentence())].spacing(12);
+    let body = column![
+        icon,
+        ui::sans(choice.title(), 14.0, crate::theme::palette().ink),
+        ui::prose(choice.sentence())
+    ]
+    .spacing(12);
     let card = button(body)
         .width(Length::Fill)
         .height(Length::Fixed(180.0))
         .padding(18)
         .style(|_: &Theme, status: button::Status| {
             let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
-            let background: Color = if hovered { crate::theme::palette().hover } else { crate::theme::palette().sheet };
+            let background: Color = if hovered {
+                crate::theme::palette().hover
+            } else {
+                crate::theme::palette().sheet
+            };
             button::Style {
                 background: Some(background.into()),
                 text_color: crate::theme::palette().ink,
-                border: Border { color: crate::theme::palette().rule, width: 1.0, radius: 0.0.into() },
+                border: Border {
+                    color: crate::theme::palette().rule,
+                    width: 1.0,
+                    radius: 0.0.into(),
+                },
                 ..Default::default()
             }
         });
@@ -514,9 +583,18 @@ fn form(state: &State, choice: Choice) -> Element<'_, Msg> {
     let busy = state.busy;
     let ws_busy = choice == Choice::Workstation && state.ws.busy;
     let head = row![
-        column![ui::sans(choice.title(), 26.0, crate::theme::palette().ink), ui::faint(choice.sentence())].spacing(4),
+        column![
+            ui::sans(choice.title(), 26.0, crate::theme::palette().ink),
+            ui::faint(choice.sentence())
+        ]
+        .spacing(4),
         Space::new().width(Length::Fill),
-        ui::btn("Back", None, Kind::Ghost, (!busy && !ws_busy && state.fixing.is_none()).then_some(Msg::Back)),
+        ui::btn(
+            "Back",
+            None,
+            Kind::Ghost,
+            (!busy && !ws_busy && state.fixing.is_none()).then_some(Msg::Back)
+        ),
     ]
     .align_y(Alignment::Center);
     let mut page: Vec<Element<'_, Msg>> = vec![head.into()];
@@ -524,14 +602,24 @@ fn form(state: &State, choice: Choice) -> Element<'_, Msg> {
         Choice::Local => page.push(requirements(state)),
         Choice::Host => {
             page.push(ui::label("Bind address").into());
-            page.push(text_input("0.0.0.0", &state.bind).on_input(Msg::Bind).on_submit(Msg::Go).into());
+            page.push(
+                text_input("0.0.0.0", &state.bind)
+                    .on_input(Msg::Bind)
+                    .on_submit(Msg::Go)
+                    .into(),
+            );
             page.push(ui::faint("Other machines reach this hub at this machine's public address, on the port it shows once started.").into());
             page.push(requirements(state));
         }
         Choice::Join => {
             page.push(ui::label("Join code").into());
             page.push(ui::prose("On the hub, open Nodes and press “Add a node”: it shows a one-time join code (apzj1.…), valid for an hour. Paste it here. The code names the hub, so this machine connects to that hub and trusts only its certificate.").into());
-            page.push(text_input("apzj1.…", &state.join_token).on_input(Msg::JoinToken).on_submit(Msg::Go).into());
+            page.push(
+                text_input("apzj1.…", &state.join_token)
+                    .on_input(Msg::JoinToken)
+                    .on_submit(Msg::Go)
+                    .into(),
+            );
             if let Some(note) = join_code_note(&state.join_token) {
                 page.push(note);
             }
@@ -552,7 +640,12 @@ fn form(state: &State, choice: Choice) -> Element<'_, Msg> {
     let gated = setup_mode(Some(choice)).is_some();
     let ready = !gated || can_start(state);
     if !matches!(choice, Choice::Connect | Choice::Workstation) {
-        page.push(ui::btn(action, Some(choice.icon()), Kind::Primary, (!busy && ready).then_some(Msg::Go)));
+        page.push(ui::btn(
+            action,
+            Some(choice.icon()),
+            Kind::Primary,
+            (!busy && ready).then_some(Msg::Go),
+        ));
     }
     if gated && !ready && !state.checking {
         page.push(ui::faint("Install or set up what is missing first.").into());
@@ -590,7 +683,12 @@ fn requirements(state: &State) -> Element<'_, Msg> {
                     setup::Need::DockerRunning => "Start",
                     _ => "Set up",
                 };
-                ui::btn(text, None, Kind::Ghost, (state.fixing.is_none()).then_some(Msg::Ask(check.need)))
+                ui::btn(
+                    text,
+                    None,
+                    Kind::Ghost,
+                    (state.fixing.is_none()).then_some(Msg::Ask(check.need)),
+                )
             }
             _ => Space::new().into(),
         };
@@ -622,10 +720,19 @@ fn requirements(state: &State) -> Element<'_, Msg> {
         page.push(column(block).spacing(8).into());
     }
     if let Some(need) = state.fixing {
-        let label = state.checks.iter().find(|check| check.need == need).map_or("requirement", |check| check.label);
+        let label = state
+            .checks
+            .iter()
+            .find(|check| check.need == need)
+            .map_or("requirement", |check| check.label);
         page.push(ui::faint(format!("Working on {label}...")).into());
     }
-    page.push(ui::btn("Check again", None, Kind::Ghost, (!state.checking && state.fixing.is_none()).then_some(Msg::Check)));
+    page.push(ui::btn(
+        "Check again",
+        None,
+        Kind::Ghost,
+        (!state.checking && state.fixing.is_none()).then_some(Msg::Check),
+    ));
     if !state.setup_log.is_empty() {
         let start = state.setup_log.len().saturating_sub(12);
         page.push(log_lines(&state.setup_log[start..]));
@@ -637,14 +744,21 @@ fn requirements(state: &State) -> Element<'_, Msg> {
 fn confirm_box(_: &Theme) -> container::Style {
     container::Style {
         background: Some(crate::theme::palette().sheet.into()),
-        border: Border { color: crate::theme::palette().rule, width: 1.0, radius: 0.0.into() },
+        border: Border {
+            color: crate::theme::palette().rule,
+            width: 1.0,
+            radius: 0.0.into(),
+        },
         ..Default::default()
     }
 }
 
 /// The progress lines, mono and faint.
 fn log_lines(lines: &[String]) -> Element<'static, Msg> {
-    let rows: Vec<Element<'static, Msg>> = lines.iter().map(|line| ui::mono(line.clone(), 11.5, crate::theme::palette().ink_3).into()).collect();
+    let rows: Vec<Element<'static, Msg>> = lines
+        .iter()
+        .map(|line| ui::mono(line.clone(), 11.5, crate::theme::palette().ink_3).into())
+        .collect();
     column(rows).spacing(2).into()
 }
 
@@ -662,7 +776,9 @@ fn encode_remembered(choice: Choice) -> String {
 }
 
 fn decode_remembered(text: &str) -> Option<Choice> {
-    serde_json::from_str::<Remembered>(text).ok().map(|remembered| remembered.choice)
+    serde_json::from_str::<Remembered>(text)
+        .ok()
+        .map(|remembered| remembered.choice)
 }
 
 fn load_remembered() -> Option<Choice> {
@@ -671,7 +787,8 @@ fn load_remembered() -> Option<Choice> {
 }
 
 fn save_remembered(choice: Choice) -> std::io::Result<()> {
-    let remembered: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&encode_remembered(choice)).unwrap_or_default();
+    let remembered: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_str(&encode_remembered(choice)).unwrap_or_default();
     for (key, value) in remembered {
         save_setting(&key, value)?;
     }
@@ -695,7 +812,10 @@ pub fn saved_setting(key: &str) -> Option<serde_json::Value> {
 }
 
 fn read_settings(path: &std::path::Path) -> serde_json::Map<String, serde_json::Value> {
-    std::fs::read_to_string(path).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default()
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -704,7 +824,13 @@ mod tests {
 
     #[test]
     fn remembered_choice_round_trips() {
-        for choice in [Choice::Local, Choice::Host, Choice::Join, Choice::Workstation, Choice::Connect] {
+        for choice in [
+            Choice::Local,
+            Choice::Host,
+            Choice::Join,
+            Choice::Workstation,
+            Choice::Connect,
+        ] {
             assert_eq!(decode_remembered(&encode_remembered(choice)), Some(choice));
         }
         assert_eq!(decode_remembered("not json"), None);

@@ -90,8 +90,11 @@ pub fn start(workspace: &Workspace, input: &Value) -> Result<String, String> {
         }
     }
 
-    let (reader, writer) = io::pipe().map_err(|err| format!("internal: cannot open the output pipe: {err}"))?;
-    let stderr = writer.try_clone().map_err(|err| format!("internal: cannot open the output pipe: {err}"))?;
+    let (reader, writer) =
+        io::pipe().map_err(|err| format!("internal: cannot open the output pipe: {err}"))?;
+    let stderr = writer
+        .try_clone()
+        .map_err(|err| format!("internal: cannot open the output pipe: {err}"))?;
     let mut command = bash::command(SHELL, &["-c", script], workspace.dir(), Privilege::Agent)?;
     command.stdout(writer).stderr(stderr);
     let child = command
@@ -124,7 +127,9 @@ pub fn output(_workspace: &Workspace, input: &Value) -> Result<String, String> {
         Some(value) => value
             .as_u64()
             .filter(|secs| *secs <= MAX_WAIT_S)
-            .ok_or_else(|| format!("invalid input: \"wait_s\" must be a whole number from 0 to {MAX_WAIT_S}"))?,
+            .ok_or_else(|| {
+                format!("invalid input: \"wait_s\" must be a whole number from 0 to {MAX_WAIT_S}")
+            })?,
     };
     let job = find(&id)?;
     let deadline = Instant::now() + Duration::from_secs(wait_s);
@@ -182,7 +187,9 @@ fn jobs() -> &'static Mutex<HashMap<String, Arc<Job>>> {
 
 /// A lock whose holder panicked stays usable: the data it guards is still consistent here.
 fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 fn job_id(input: &Value) -> Result<String, String> {
@@ -195,11 +202,17 @@ fn job_id(input: &Value) -> Result<String, String> {
 
 fn find(id: &str) -> Result<Arc<Job>, String> {
     let registry = locked(jobs());
-    registry.get(id).cloned().ok_or_else(|| unknown(id, &registry))
+    registry
+        .get(id)
+        .cloned()
+        .ok_or_else(|| unknown(id, &registry))
 }
 
 fn unknown(id: &str, registry: &HashMap<String, Arc<Job>>) -> String {
-    let live = registry.iter().map(|(name, job)| (job.seq, name.clone())).collect();
+    let live = registry
+        .iter()
+        .map(|(name, job)| (job.seq, name.clone()))
+        .collect();
     format!("unknown job {id:?}; live jobs: {}", describe_ids(live))
 }
 
@@ -209,7 +222,10 @@ fn describe_ids(mut ids: Vec<(u64, String)>) -> String {
     if ids.is_empty() {
         "none".to_string()
     } else {
-        ids.into_iter().map(|(_, id)| id).collect::<Vec<_>>().join(", ")
+        ids.into_iter()
+            .map(|(_, id)| id)
+            .collect::<Vec<_>>()
+            .join(", ")
     }
 }
 
@@ -289,7 +305,8 @@ mod tests {
     }
 
     fn workspace(name: &str) -> Workspace {
-        let dir = std::env::temp_dir().join(format!("apz-harness-shells-{name}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("apz-harness-shells-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("a scratch workspace");
         Workspace::at(dir)
@@ -298,7 +315,10 @@ mod tests {
     /// Starts `command` and returns its job id.
     fn spawn(workspace: &Workspace, command: &str) -> String {
         let reply = start(workspace, &json!({ "command": command })).expect("a started job");
-        reply.strip_prefix("started job ").expect("the reply names the job").to_string()
+        reply
+            .strip_prefix("started job ")
+            .expect("the reply names the job")
+            .to_string()
     }
 
     #[test]
@@ -318,7 +338,10 @@ mod tests {
         assert!(replies[0].contains("hi"), "{replies:?}");
         let all = replies.concat();
         assert_eq!(all.matches("hi").count(), 1, "{all:?}");
-        assert!(all.contains("bye") && all.ends_with("[exited 0]"), "{all:?}");
+        assert!(
+            all.contains("bye") && all.ends_with("[exited 0]"),
+            "{all:?}"
+        );
         kill(&ws, &json!({ "id": id })).expect("the job is dropped");
     }
 
@@ -330,7 +353,11 @@ mod tests {
         let started = Instant::now();
         let reply = kill(&ws, &json!({ "id": id })).expect("the job is killed");
         assert_eq!(reply, format!("killed job {id}"));
-        assert!(started.elapsed() < Duration::from_secs(10), "{:?}", started.elapsed());
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "{:?}",
+            started.elapsed()
+        );
         let err = output(&ws, &json!({ "id": id })).expect_err("the job is gone");
         assert!(err.starts_with("unknown job"), "{err}");
     }

@@ -58,7 +58,10 @@ pub fn sync_dir(dir: &Path) -> io::Result<()> {
 }
 
 fn temp_beside(path: &Path) -> PathBuf {
-    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
     path.with_file_name(format!(".{name}.tmp.{}", std::process::id()))
 }
 
@@ -67,7 +70,8 @@ mod tests {
     use super::*;
 
     fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("apid-vault-disk-{}-{name}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("apid-vault-disk-{}-{name}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).expect("scratch dir");
         dir
@@ -78,9 +82,15 @@ mod tests {
         let dir = scratch("leftover");
         let path = dir.join("vault.json");
         fs::write(dir.join(".vault.json.tmp.4242"), b"{ half written").expect("temp");
-        assert!(read(&path).expect("read").is_none(), "only vault.json is read");
+        assert!(
+            read(&path).expect("read").is_none(),
+            "only vault.json is read"
+        );
         write_atomic(&path, b"{\"good\":true}").expect("written");
-        assert_eq!(read(&path).expect("read").as_deref(), Some("{\"good\":true}"));
+        assert_eq!(
+            read(&path).expect("read").as_deref(),
+            Some("{\"good\":true}")
+        );
     }
 
     #[test]

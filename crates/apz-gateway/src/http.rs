@@ -33,11 +33,21 @@ impl Req {
 
     /// A request with any verb (`GET`, `POST`, `PUT`, `DELETE`) and body.
     pub fn raw(verb: &'static str, url: impl Into<String>, body: Vec<u8>) -> Self {
-        Req { verb, url: url.into(), headers: Vec::new(), body, secret: None }
+        Req {
+            verb,
+            url: url.into(),
+            headers: Vec::new(),
+            body,
+            secret: None,
+        }
     }
 
     pub fn post_json(url: impl Into<String>, body: &Value) -> Self {
-        let mut req = Req { verb: "POST", body: body.to_string().into_bytes(), ..Req::get(url) };
+        let mut req = Req {
+            verb: "POST",
+            body: body.to_string().into_bytes(),
+            ..Req::get(url)
+        };
         req.set_header("content-type", "application/json");
         req
     }
@@ -71,7 +81,10 @@ impl Req {
     }
 
     /// Applies a provider's `extra_headers`.
-    pub fn extra_headers<'a>(mut self, extra: impl IntoIterator<Item = (&'a String, &'a String)>) -> Self {
+    pub fn extra_headers<'a>(
+        mut self,
+        extra: impl IntoIterator<Item = (&'a String, &'a String)>,
+    ) -> Self {
         for (name, value) in extra {
             self.set_header(name, value);
         }
@@ -84,7 +97,10 @@ impl Req {
 
     #[cfg(test)]
     pub fn header_value(&self, name: &str) -> Option<&str> {
-        self.headers.iter().find(|(n, _)| n.eq_ignore_ascii_case(name)).map(|(_, v)| v.as_str())
+        self.headers
+            .iter()
+            .find(|(n, _)| n.eq_ignore_ascii_case(name))
+            .map(|(_, v)| v.as_str())
     }
 }
 
@@ -110,7 +126,11 @@ impl Http {
             .timeout_global(Some(global))
             .user_agent("agentplaza-gateway/0.1")
             .build();
-        Http { agent: ureq::Agent::new_with_config(config), retries, base_delay }
+        Http {
+            agent: ureq::Agent::new_with_config(config),
+            retries,
+            base_delay,
+        }
     }
 
     /// Sends `req`, retrying connection errors and 408/409/429/5xx up to the
@@ -131,19 +151,28 @@ impl Http {
                         thread::sleep(wait);
                         continue;
                     }
-                    return Err(GatewayError::Http { status, body, retryable });
+                    return Err(GatewayError::Http {
+                        status,
+                        body,
+                        retryable,
+                    });
                 }
                 Err(e) => {
                     let retryable = matches!(
                         e,
-                        ureq::Error::Io(_) | ureq::Error::ConnectionFailed | ureq::Error::Timeout(_)
+                        ureq::Error::Io(_)
+                            | ureq::Error::ConnectionFailed
+                            | ureq::Error::Timeout(_)
                     );
                     if retryable && attempt < self.retries {
                         attempt += 1;
                         thread::sleep(delay);
                         continue;
                     }
-                    return Err(GatewayError::Transport(redact(&e.to_string(), req.secret.as_deref())));
+                    return Err(GatewayError::Transport(redact(
+                        &e.to_string(),
+                        req.secret.as_deref(),
+                    )));
                 }
             }
         }
@@ -157,13 +186,18 @@ impl Http {
             .into_reader()
             .read_to_string(&mut text)
             .map_err(|e| GatewayError::Transport(e.to_string()))?;
-        serde_json::from_str(&text).map_err(|e| GatewayError::decode(format!("{e}: {}", truncate(&text, 200))))
+        serde_json::from_str(&text)
+            .map_err(|e| GatewayError::decode(format!("{e}: {}", truncate(&text, 200))))
     }
 
     fn send_once(&self, req: &Req) -> Result<Response<Body>, ureq::Error> {
         match req.verb {
             "POST" | "PUT" => {
-                let mut rb = if req.verb == "PUT" { self.agent.put(&req.url) } else { self.agent.post(&req.url) };
+                let mut rb = if req.verb == "PUT" {
+                    self.agent.put(&req.url)
+                } else {
+                    self.agent.post(&req.url)
+                };
                 for (name, value) in &req.headers {
                     rb = rb.header(name, value);
                 }
@@ -188,15 +222,29 @@ impl Http {
 }
 
 fn retry_after(resp: &Response<Body>) -> Option<Duration> {
-    let header = |name| resp.headers().get(name).and_then(|v| v.to_str().ok()).and_then(|v| v.trim().parse::<f64>().ok());
-    let wait = header("retry-after-ms").map(|ms| ms / 1000.0).or_else(|| header("retry-after"))?;
+    let header = |name| {
+        resp.headers()
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.trim().parse::<f64>().ok())
+    };
+    let wait = header("retry-after-ms")
+        .map(|ms| ms / 1000.0)
+        .or_else(|| header("retry-after"))?;
     (wait.is_finite() && wait >= 0.0).then(|| Duration::from_secs_f64(wait).min(MAX_RETRY_AFTER))
 }
 
 fn read_error_body(resp: Response<Body>, secret: Option<&str>) -> String {
     let mut bytes = Vec::new();
-    let _ = resp.into_body().into_reader().take(64 * 1024).read_to_end(&mut bytes);
-    truncate(redact(String::from_utf8_lossy(&bytes).trim(), secret).as_str(), MAX_ERROR_BODY)
+    let _ = resp
+        .into_body()
+        .into_reader()
+        .take(64 * 1024)
+        .read_to_end(&mut bytes);
+    truncate(
+        redact(String::from_utf8_lossy(&bytes).trim(), secret).as_str(),
+        MAX_ERROR_BODY,
+    )
 }
 
 /// The response body as a reader.
@@ -217,7 +265,9 @@ pub(crate) fn sse(
     let mut has_data = false;
     loop {
         line.clear();
-        let n = reader.read_until(b'\n', &mut line).map_err(|e| GatewayError::Transport(format!("stream: {e}")))?;
+        let n = reader
+            .read_until(b'\n', &mut line)
+            .map_err(|e| GatewayError::Transport(format!("stream: {e}")))?;
         let text = String::from_utf8_lossy(&line);
         let text = text.trim_end_matches(['\n', '\r']);
         if n == 0 || text.is_empty() {

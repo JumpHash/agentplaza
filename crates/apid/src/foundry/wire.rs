@@ -7,7 +7,7 @@
 
 use std::collections::BTreeMap;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 const MAGIC: &[u8] = b"APZW1";
 const PREFIX: usize = MAGIC.len() + 4;
@@ -77,7 +77,10 @@ pub fn unpack(bytes: &[u8]) -> Result<(Value, Tensors), String> {
             .get("name")
             .and_then(Value::as_str)
             .ok_or("tensor without a name")?;
-        let dtype = entry.get("dtype").and_then(Value::as_str).unwrap_or_default();
+        let dtype = entry
+            .get("dtype")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
         if dtype != "float32" {
             return Err(format!("unsupported dtype {dtype:?} for tensor {name}"));
         }
@@ -99,7 +102,9 @@ pub fn unpack(bytes: &[u8]) -> Result<(Value, Tensors), String> {
         let nbytes = field_u64(entry, "nbytes", name)?;
         let offset = field_u64(entry, "offset", name)?;
         if elems.checked_mul(4) != Some(nbytes) {
-            return Err(format!("tensor {name}: {nbytes} bytes do not match shape {shape:?}"));
+            return Err(format!(
+                "tensor {name}: {nbytes} bytes do not match shape {shape:?}"
+            ));
         }
         let end = offset
             .checked_add(nbytes)
@@ -135,9 +140,18 @@ mod tests {
         let mut t = Tensors::new();
         t.insert(
             "w".into(),
-            Tensor { shape: vec![2, 3], data: vec![0.5, -1.0, 0.25, 2.0, -0.125, 0.75] },
+            Tensor {
+                shape: vec![2, 3],
+                data: vec![0.5, -1.0, 0.25, 2.0, -0.125, 0.75],
+            },
         );
-        t.insert("b".into(), Tensor { shape: vec![4], data: vec![1.0, -2.0, 0.5, 4.0] });
+        t.insert(
+            "b".into(),
+            Tensor {
+                shape: vec![4],
+                data: vec![1.0, -2.0, 0.5, 4.0],
+            },
+        );
         t
     }
 

@@ -7,9 +7,20 @@
 #[allow(unsafe_code)]
 pub fn harden() {
     // SAFETY: prctl(PR_SET_DUMPABLE, 0) takes plain integers and touches no memory of ours.
-    let rc = unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0 as libc::c_ulong, 0 as libc::c_ulong, 0 as libc::c_ulong, 0 as libc::c_ulong) };
+    let rc = unsafe {
+        libc::prctl(
+            libc::PR_SET_DUMPABLE,
+            0 as libc::c_ulong,
+            0 as libc::c_ulong,
+            0 as libc::c_ulong,
+            0 as libc::c_ulong,
+        )
+    };
     if rc != 0 {
-        eprintln!("apid: cannot clear the dumpable flag: {}", std::io::Error::last_os_error());
+        eprintln!(
+            "apid: cannot clear the dumpable flag: {}",
+            std::io::Error::last_os_error()
+        );
     }
 }
 

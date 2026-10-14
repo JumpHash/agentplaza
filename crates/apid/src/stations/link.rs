@@ -167,7 +167,11 @@ impl StationLink {
             lock(&self.pending).remove(&id);
             return Err(LINK_CLOSED.into());
         }
-        if self.outgoing.send(Outgoing::Frame(HubFrame::Request { id, op })).is_err() {
+        if self
+            .outgoing
+            .send(Outgoing::Frame(HubFrame::Request { id, op }))
+            .is_err()
+        {
             lock(&self.pending).remove(&id);
             return Err(LINK_CLOSED.into());
         }
@@ -183,12 +187,17 @@ impl StationLink {
 
     /// Tells the daemon something the hub decided.
     pub fn notify(&self, notice: Notice) {
-        let _ = self.outgoing.send(Outgoing::Frame(HubFrame::Notify { notice }));
+        let _ = self
+            .outgoing
+            .send(Outgoing::Frame(HubFrame::Notify { notice }));
     }
 
     /// Ends the link: the socket closes with `code` and `reason`.
     pub fn kill(&self, code: u16, reason: &str) {
-        let _ = self.outgoing.send(Outgoing::Close { code, reason: reason.to_string() });
+        let _ = self.outgoing.send(Outgoing::Close {
+            code,
+            reason: reason.to_string(),
+        });
     }
 
     /// Answers one awaited request (an answer nobody waits for is dropped).
@@ -208,7 +217,9 @@ impl StationLink {
         let id = self.next.fetch_add(1, Ordering::SeqCst) + 1;
         let (tx, _unread) = mpsc::sync_channel(1);
         lock(&self.pending).insert(id, tx);
-        let _ = self.outgoing.send(Outgoing::Frame(HubFrame::Request { id, op: Op::Facts }));
+        let _ = self
+            .outgoing
+            .send(Outgoing::Frame(HubFrame::Request { id, op: Op::Facts }));
     }
 
     fn pending_len(&self) -> usize {
@@ -233,7 +244,12 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 /// Runs one link until it ends: writes what the hub queued, reads what the daemon sends, and heartbeats. Returns
 /// `Ok` when the link ended by the hub's choice (a kill, a drain, a replacement) and `Err` when the daemon or the
 /// socket broke. The caller finishes the link afterwards.
-pub fn serve(wire: &mut dyn Wire, link: &Arc<StationLink>, outgoing: &Receiver<Outgoing>, hooks: &dyn Hooks) -> Result<(), String> {
+pub fn serve(
+    wire: &mut dyn Wire,
+    link: &Arc<StationLink>,
+    outgoing: &Receiver<Outgoing>,
+    hooks: &dyn Hooks,
+) -> Result<(), String> {
     let started = Instant::now();
     let mut last_beat = Instant::now();
     let mut greeted = false;
@@ -290,7 +306,12 @@ pub fn serve(wire: &mut dyn Wire, link: &Arc<StationLink>, outgoing: &Receiver<O
                         wire.end(1002, "hello first");
                         return Err("a frame before hello".into());
                     }
-                    StationFrame::Response { id, ok, result, error } => link.answer(id, ok, result, error),
+                    StationFrame::Response {
+                        id,
+                        ok,
+                        result,
+                        error,
+                    } => link.answer(id, ok, result, error),
                     StationFrame::Event { event } => {
                         link.publish(&event);
                         hooks.event(link, event);
@@ -318,14 +339,18 @@ pub(crate) mod tests {
 
     impl Wire for Scripted {
         fn put(&mut self, text: &str) -> io::Result<()> {
-            self.written.send(text.to_string()).map_err(|_| io::Error::from(io::ErrorKind::BrokenPipe))
+            self.written
+                .send(text.to_string())
+                .map_err(|_| io::Error::from(io::ErrorKind::BrokenPipe))
         }
 
         fn get(&mut self, wait: Duration) -> io::Result<Option<String>> {
             match self.inbound.recv_timeout(wait) {
                 Ok(text) => Ok(Some(text)),
                 Err(RecvTimeoutError::Timeout) => Ok(None),
-                Err(RecvTimeoutError::Disconnected) => Err(io::Error::from(io::ErrorKind::UnexpectedEof)),
+                Err(RecvTimeoutError::Disconnected) => {
+                    Err(io::Error::from(io::ErrorKind::UnexpectedEof))
+                }
             }
         }
 
@@ -343,23 +368,39 @@ pub(crate) mod tests {
 
     impl Daemon {
         pub(crate) fn say(&self, frame: &StationFrame) {
-            self.say.send(serde_json::to_string(frame).unwrap()).unwrap();
+            self.say
+                .send(serde_json::to_string(frame).unwrap())
+                .unwrap();
         }
 
         /// The next frame the hub wrote, parsed.
         pub(crate) fn hears(&self) -> HubFrame {
-            let text = self.hears.recv_timeout(Duration::from_secs(5)).expect("the hub wrote a frame");
+            let text = self
+                .hears
+                .recv_timeout(Duration::from_secs(5))
+                .expect("the hub wrote a frame");
             serde_json::from_str(&text).expect("a hub frame")
         }
     }
 
     /// Serves one link on a thread with a `Scripted` wire, and gives the test its daemon.
-    pub(crate) fn start(station: &str, hooks: Arc<dyn Hooks + Send + Sync>) -> (Arc<StationLink>, Daemon, thread::JoinHandle<Result<(), String>>) {
+    pub(crate) fn start(
+        station: &str,
+        hooks: Arc<dyn Hooks + Send + Sync>,
+    ) -> (
+        Arc<StationLink>,
+        Daemon,
+        thread::JoinHandle<Result<(), String>>,
+    ) {
         let (link, outgoing) = StationLink::new(station, 1, apz_plaza::now_ms());
         let (say, inbound) = mpsc::channel();
         let (written, hears) = mpsc::channel();
         let (ended_tx, ended) = mpsc::channel();
-        let mut wire = Scripted { inbound, written, ended: ended_tx };
+        let mut wire = Scripted {
+            inbound,
+            written,
+            ended: ended_tx,
+        };
         let served = Arc::clone(&link);
         let handle = thread::spawn(move || {
             let result = serve(&mut wire, &served, &outgoing, hooks.as_ref());
@@ -373,7 +414,12 @@ pub(crate) mod tests {
     pub(crate) struct Accept;
 
     impl Hooks for Accept {
-        fn hello(&self, _link: &Arc<StationLink>, _version: &str, _facts: Facts) -> Result<(), String> {
+        fn hello(
+            &self,
+            _link: &Arc<StationLink>,
+            _version: &str,
+            _facts: Facts,
+        ) -> Result<(), String> {
             Ok(())
         }
 
@@ -391,7 +437,9 @@ pub(crate) mod tests {
             ram_mb: 16384,
             gpus: vec![],
             displays: vec![],
-            account: AccountMode::AgentUser { name: "agentws".into() },
+            account: AccountMode::AgentUser {
+                name: "agentws".into(),
+            },
             apps: 3,
             virtual_displays: true,
             ui_tree: true,
@@ -400,7 +448,11 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn hello() -> StationFrame {
-        StationFrame::Hello { station: "ws-7".into(), version: "0.0.8".into(), facts: facts() }
+        StationFrame::Hello {
+            station: "ws-7".into(),
+            version: "0.0.8".into(),
+            facts: facts(),
+        }
     }
 
     /// Greets the link with a hello and answers the first facts request the test sends with it.
@@ -408,9 +460,16 @@ pub(crate) mod tests {
         daemon.say(&hello());
         let asker = Arc::clone(link);
         let ask = thread::spawn(move || asker.request(Op::Facts, Duration::from_secs(5)));
-        let HubFrame::Request { id, op } = daemon.hears() else { panic!("a request") };
+        let HubFrame::Request { id, op } = daemon.hears() else {
+            panic!("a request")
+        };
         assert_eq!(op, Op::Facts);
-        daemon.say(&StationFrame::Response { id, ok: true, result: Some(serde_json::to_value(facts()).unwrap()), error: None });
+        daemon.say(&StationFrame::Response {
+            id,
+            ok: true,
+            result: Some(serde_json::to_value(facts()).unwrap()),
+            error: None,
+        });
         assert!(ask.join().unwrap().is_ok());
     }
 
@@ -419,10 +478,31 @@ pub(crate) mod tests {
         let (link, daemon, handle) = start("w1", Arc::new(Accept));
         greet(&link, &daemon);
         let asker = Arc::clone(&link);
-        let ask = thread::spawn(move || asker.request(Op::SessionOpen { agent: 3, kind: SessionKind::Pixel }, Duration::from_secs(5)));
-        let HubFrame::Request { id, op } = daemon.hears() else { panic!("a request") };
-        assert_eq!(op, Op::SessionOpen { agent: 3, kind: SessionKind::Pixel });
-        daemon.say(&StationFrame::Response { id, ok: true, result: Some(serde_json::json!({"session": 9})), error: None });
+        let ask = thread::spawn(move || {
+            asker.request(
+                Op::SessionOpen {
+                    agent: 3,
+                    kind: SessionKind::Pixel,
+                },
+                Duration::from_secs(5),
+            )
+        });
+        let HubFrame::Request { id, op } = daemon.hears() else {
+            panic!("a request")
+        };
+        assert_eq!(
+            op,
+            Op::SessionOpen {
+                agent: 3,
+                kind: SessionKind::Pixel
+            }
+        );
+        daemon.say(&StationFrame::Response {
+            id,
+            ok: true,
+            result: Some(serde_json::json!({"session": 9})),
+            error: None,
+        });
         assert_eq!(ask.join().unwrap(), Ok(serde_json::json!({"session": 9})));
         link.kill(1000, "done");
         assert_eq!(daemon.ended.recv().unwrap().0, 1000);
@@ -434,8 +514,14 @@ pub(crate) mod tests {
         let (link, daemon, handle) = start("w1", Arc::new(Accept));
         greet(&link, &daemon);
         let (a, b) = (Arc::clone(&link), Arc::clone(&link));
-        let first = thread::spawn(move || a.request(Op::Freeze { on: false }, Duration::from_secs(5)));
-        let second = thread::spawn(move || b.request(Op::Sync(apz_station::SyncOp::Status), Duration::from_secs(5)));
+        let first =
+            thread::spawn(move || a.request(Op::Freeze { on: false }, Duration::from_secs(5)));
+        let second = thread::spawn(move || {
+            b.request(
+                Op::Sync(apz_station::SyncOp::Status),
+                Duration::from_secs(5),
+            )
+        });
         let mut ids = Vec::new();
         for _ in 0..2 {
             if let HubFrame::Request { id, op } = daemon.hears() {
@@ -443,8 +529,17 @@ pub(crate) mod tests {
             }
         }
         for (id, op) in ids.iter().rev() {
-            let result = if *op == (Op::Freeze { on: false }) { Value::Null } else { serde_json::json!({"files": 2}) };
-            daemon.say(&StationFrame::Response { id: *id, ok: true, result: Some(result), error: None });
+            let result = if *op == (Op::Freeze { on: false }) {
+                Value::Null
+            } else {
+                serde_json::json!({"files": 2})
+            };
+            daemon.say(&StationFrame::Response {
+                id: *id,
+                ok: true,
+                result: Some(result),
+                error: None,
+            });
         }
         assert_eq!(first.join().unwrap(), Ok(Value::Null));
         assert_eq!(second.join().unwrap(), Ok(serde_json::json!({"files": 2})));
@@ -457,9 +552,24 @@ pub(crate) mod tests {
         let (link, daemon, handle) = start("w1", Arc::new(Accept));
         greet(&link, &daemon);
         let asker = Arc::clone(&link);
-        let ask = thread::spawn(move || asker.request(Op::Input { session: 9, action: apz_station::InputAction::Type { text: "x".into() } }, Duration::from_secs(5)));
-        let HubFrame::Request { id, .. } = daemon.hears() else { panic!("a request") };
-        daemon.say(&StationFrame::Response { id, ok: false, result: None, error: Some("frozen by STOP ALL".into()) });
+        let ask = thread::spawn(move || {
+            asker.request(
+                Op::Input {
+                    session: 9,
+                    action: apz_station::InputAction::Type { text: "x".into() },
+                },
+                Duration::from_secs(5),
+            )
+        });
+        let HubFrame::Request { id, .. } = daemon.hears() else {
+            panic!("a request")
+        };
+        daemon.say(&StationFrame::Response {
+            id,
+            ok: false,
+            result: None,
+            error: Some("frozen by STOP ALL".into()),
+        });
         assert_eq!(ask.join().unwrap(), Err("frozen by STOP ALL".to_string()));
         link.kill(1000, "done");
         let _ = handle.join();
@@ -471,15 +581,36 @@ pub(crate) mod tests {
         greet(&link, &daemon);
         let asker = Arc::clone(&link);
         let ask = thread::spawn(move || asker.request(Op::Facts, Duration::from_millis(100)));
-        let HubFrame::Request { id, .. } = daemon.hears() else { panic!("a request") };
-        assert_eq!(ask.join().unwrap(), Err("the workstation did not answer in time".to_string()));
-        daemon.say(&StationFrame::Response { id, ok: true, result: None, error: None });
+        let HubFrame::Request { id, .. } = daemon.hears() else {
+            panic!("a request")
+        };
+        assert_eq!(
+            ask.join().unwrap(),
+            Err("the workstation did not answer in time".to_string())
+        );
+        daemon.say(&StationFrame::Response {
+            id,
+            ok: true,
+            result: None,
+            error: None,
+        });
         let asker = Arc::clone(&link);
         let again = thread::spawn(move || asker.request(Op::Facts, Duration::from_secs(5)));
-        let HubFrame::Request { id: next, .. } = daemon.hears() else { panic!("a request") };
+        let HubFrame::Request { id: next, .. } = daemon.hears() else {
+            panic!("a request")
+        };
         assert!(next != id, "the next request has its own id");
-        daemon.say(&StationFrame::Response { id: next, ok: true, result: Some(serde_json::json!(1)), error: None });
-        assert_eq!(again.join().unwrap(), Ok(serde_json::json!(1)), "the link still answers after a late answer");
+        daemon.say(&StationFrame::Response {
+            id: next,
+            ok: true,
+            result: Some(serde_json::json!(1)),
+            error: None,
+        });
+        assert_eq!(
+            again.join().unwrap(),
+            Ok(serde_json::json!(1)),
+            "the link still answers after a late answer"
+        );
         link.kill(1000, "done");
         let _ = handle.join();
     }
@@ -493,15 +624,26 @@ pub(crate) mod tests {
         let _ = daemon.hears();
         drop(daemon);
         assert_eq!(ask.join().unwrap(), Err(LINK_CLOSED.to_string()));
-        assert!(handle.join().unwrap().is_err(), "the broken link ends with an error");
+        assert!(
+            handle.join().unwrap().is_err(),
+            "the broken link ends with an error"
+        );
         assert!(link.is_closed());
-        assert_eq!(link.request(Op::Facts, Duration::from_millis(10)), Err("the workstation is not linked".to_string()));
+        assert_eq!(
+            link.request(Op::Facts, Duration::from_millis(10)),
+            Err("the workstation is not linked".to_string())
+        );
     }
 
     #[test]
     fn a_frame_before_hello_closes_the_link() {
         let (_link, daemon, handle) = start("w1", Arc::new(Accept));
-        daemon.say(&StationFrame::Response { id: 1, ok: true, result: None, error: None });
+        daemon.say(&StationFrame::Response {
+            id: 1,
+            ok: true,
+            result: None,
+            error: None,
+        });
         assert_eq!(daemon.ended.recv().unwrap().0, 1002);
         assert!(handle.join().unwrap().is_err());
     }
@@ -517,7 +659,10 @@ pub(crate) mod tests {
         }
         let (_link, daemon, handle) = start("w1", Arc::new(Refuse));
         daemon.say(&hello());
-        assert_eq!(daemon.ended.recv().unwrap(), (1008, "this machine is the hub's own host".to_string()));
+        assert_eq!(
+            daemon.ended.recv().unwrap(),
+            (1008, "this machine is the hub's own host".to_string())
+        );
         assert!(handle.join().unwrap().is_err());
     }
 
@@ -536,13 +681,24 @@ pub(crate) mod tests {
         let (link, daemon, handle) = start("w1", Arc::new(Record(seen_tx)));
         let subscriber = link.subscribe();
         greet(&link, &daemon);
-        daemon.say(&StationFrame::Event { event: Event::OwnerInput { session: 9 } });
-        let got = subscriber.recv_timeout(Duration::from_secs(5)).expect("the subscriber gets the event");
+        daemon.say(&StationFrame::Event {
+            event: Event::OwnerInput { session: 9 },
+        });
+        let got = subscriber
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the subscriber gets the event");
         assert_eq!(got, Event::OwnerInput { session: 9 });
-        assert!(seen.recv_timeout(Duration::from_secs(5)).unwrap().contains("OwnerInput"));
+        assert!(
+            seen.recv_timeout(Duration::from_secs(5))
+                .unwrap()
+                .contains("OwnerInput")
+        );
         link.kill(1000, "done");
         let _ = handle.join();
-        assert!(subscriber.recv_timeout(Duration::from_secs(1)).is_err(), "a subscriber ends with its link");
+        assert!(
+            subscriber.recv_timeout(Duration::from_secs(1)).is_err(),
+            "a subscriber ends with its link"
+        );
     }
 
     #[test]
@@ -551,10 +707,26 @@ pub(crate) mod tests {
         greet(&link, &daemon);
         let asker = Arc::clone(&link);
         let ask = thread::spawn(move || asker.request(Op::Facts, Duration::from_secs(5)));
-        let HubFrame::Request { id, .. } = daemon.hears() else { panic!("a request") };
+        let HubFrame::Request { id, .. } = daemon.hears() else {
+            panic!("a request")
+        };
         link.set_draining(true);
-        assert!(link.request(Op::Run(apz_station::RunOp::Stop { run: "run-1".into() }), Duration::from_millis(50)).is_err(), "no new work while draining");
-        daemon.say(&StationFrame::Response { id, ok: true, result: Some(Value::Null), error: None });
+        assert!(
+            link.request(
+                Op::Run(apz_station::RunOp::Stop {
+                    run: "run-1".into()
+                }),
+                Duration::from_millis(50)
+            )
+            .is_err(),
+            "no new work while draining"
+        );
+        daemon.say(&StationFrame::Response {
+            id,
+            ok: true,
+            result: Some(Value::Null),
+            error: None,
+        });
         assert!(ask.join().unwrap().is_ok());
         assert_eq!(daemon.ended.recv().unwrap(), (1000, "drained".to_string()));
         assert!(handle.join().unwrap().is_ok());
@@ -564,19 +736,39 @@ pub(crate) mod tests {
     fn the_settings_go_out_as_one_request_and_a_freeze_on_a_draining_link_still_goes() {
         let (link, daemon, handle) = start("w1", Arc::new(Accept));
         greet(&link, &daemon);
-        let settings = StationSettings { record: false, ..StationSettings::default() };
+        let settings = StationSettings {
+            record: false,
+            ..StationSettings::default()
+        };
         let pusher = Arc::clone(&link);
-        let push = thread::spawn(move || pusher.request(Op::Settings(settings.clone()), Duration::from_secs(5)));
-        let HubFrame::Request { id, op } = daemon.hears() else { panic!("a request") };
+        let push = thread::spawn(move || {
+            pusher.request(Op::Settings(settings.clone()), Duration::from_secs(5))
+        });
+        let HubFrame::Request { id, op } = daemon.hears() else {
+            panic!("a request")
+        };
         assert!(matches!(op, Op::Settings(s) if !s.record));
-        daemon.say(&StationFrame::Response { id, ok: true, result: None, error: None });
+        daemon.say(&StationFrame::Response {
+            id,
+            ok: true,
+            result: None,
+            error: None,
+        });
         assert!(push.join().unwrap().is_ok());
         link.set_draining(true);
         let freezer = Arc::clone(&link);
-        let freeze = thread::spawn(move || freezer.request(Op::Freeze { on: true }, Duration::from_secs(5)));
-        let HubFrame::Request { id, op } = daemon.hears() else { panic!("a request") };
+        let freeze =
+            thread::spawn(move || freezer.request(Op::Freeze { on: true }, Duration::from_secs(5)));
+        let HubFrame::Request { id, op } = daemon.hears() else {
+            panic!("a request")
+        };
         assert_eq!(op, Op::Freeze { on: true });
-        daemon.say(&StationFrame::Response { id, ok: true, result: None, error: None });
+        daemon.say(&StationFrame::Response {
+            id,
+            ok: true,
+            result: None,
+            error: None,
+        });
         assert!(freeze.join().unwrap().is_ok());
         let _ = handle.join();
     }

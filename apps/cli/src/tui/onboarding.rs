@@ -5,13 +5,13 @@
 
 use std::path::Path;
 
+use apz_setup::{Check, Need, State};
 use crossterm::event::KeyCode;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
-use apz_setup::{Check, Need, State};
 use serde_json::Value;
 
 use super::app::{Palette, Tab};
@@ -259,7 +259,9 @@ pub fn gather(client: &Client) -> Facts {
             Err(_) => String::new(),
         }),
     };
-    let keys = client.get("/v1/providers").map(|list| Keys::from_providers(&list));
+    let keys = client
+        .get("/v1/providers")
+        .map(|list| Keys::from_providers(&list));
     Facts { hub, keys }
 }
 
@@ -298,7 +300,10 @@ pub enum DepsKey {
 
 /// The requirements a fix run would change, in the checklist's order.
 pub fn fixable_needs(checks: &[Check]) -> Vec<Need> {
-    apz_setup::fixable(checks).into_iter().map(|check| check.need).collect()
+    apz_setup::fixable(checks)
+        .into_iter()
+        .map(|check| check.need)
+        .collect()
 }
 
 impl Onboarding {
@@ -325,7 +330,11 @@ impl Onboarding {
             if input != Input::Yes {
                 return DepsKey::Handled;
             }
-            let needs = deps.checks.as_deref().map(fixable_needs).unwrap_or_default();
+            let needs = deps
+                .checks
+                .as_deref()
+                .map(fixable_needs)
+                .unwrap_or_default();
             if needs.is_empty() {
                 return DepsKey::Handled;
             }
@@ -358,10 +367,18 @@ impl Onboarding {
     /// The footer's hint for the stage.
     pub fn hint(&self) -> &'static str {
         match self.stage {
-            Stage::Setup(DEPS_SCREEN) if self.deps.running => " the fixes are running · Ctrl-C quits",
-            Stage::Setup(DEPS_SCREEN) if self.deps.confirming => " y runs the fixes · any other key cancels · Ctrl-C quits",
-            Stage::Setup(DEPS_SCREEN) => " f fixes missing · Enter/→ next · ← back · Esc skips setup · Ctrl-C quits",
-            Stage::Setup(i) if i + 1 == SETUP_SCREENS => " Enter finishes setup · ← back · Esc skips it · Ctrl-C quits",
+            Stage::Setup(DEPS_SCREEN) if self.deps.running => {
+                " the fixes are running · Ctrl-C quits"
+            }
+            Stage::Setup(DEPS_SCREEN) if self.deps.confirming => {
+                " y runs the fixes · any other key cancels · Ctrl-C quits"
+            }
+            Stage::Setup(DEPS_SCREEN) => {
+                " f fixes missing · Enter/→ next · ← back · Esc skips setup · Ctrl-C quits"
+            }
+            Stage::Setup(i) if i + 1 == SETUP_SCREENS => {
+                " Enter finishes setup · ← back · Esc skips it · Ctrl-C quits"
+            }
             Stage::Setup(_) => " Enter/→ next · ← back · Esc skips setup · Ctrl-C quits",
             Stage::Ask => " y starts the tour · n or Enter skips it · Ctrl-C quits",
             Stage::Tour(i) if i + 1 == TOUR.len() => {
@@ -402,7 +419,11 @@ impl Onboarding {
                     palette.accent,
                     true,
                 )];
-                lines.extend(step.lines.iter().map(|text| line(text, palette.paper, false)));
+                lines.extend(
+                    step.lines
+                        .iter()
+                        .map(|text| line(text, palette.paper, false)),
+                );
                 lines.push(Line::from(""));
                 lines.push(line(self.hint().trim_start(), palette.muted, false));
                 let height = (lines.len() as u16 + 2).min(body.height);
@@ -420,7 +441,11 @@ impl Onboarding {
 
     fn setup_lines(&self, i: usize, palette: Palette, base: &str) -> Vec<Line<'static>> {
         let mut lines = vec![
-            line(&format!("Step {} of {SETUP_SCREENS}", i + 1), palette.accent, true),
+            line(
+                &format!("Step {} of {SETUP_SCREENS}", i + 1),
+                palette.accent,
+                true,
+            ),
             Line::from(""),
         ];
         match i {
@@ -479,7 +504,11 @@ impl Onboarding {
                     palette.muted,
                     false,
                 ));
-                lines.push(line("it on stdin. The key is never shown.", palette.muted, false));
+                lines.push(line(
+                    "it on stdin. The key is never shown.",
+                    palette.muted,
+                    false,
+                ));
             }
             _ => {
                 lines.push(line(&self.hub_summary(), self.hub_color(palette), true));
@@ -527,8 +556,16 @@ impl Onboarding {
     /// ask for one, and the last messages and output.
     fn deps_lines(&self, palette: Palette) -> Vec<Line<'static>> {
         let deps = &self.deps;
-        let mut lines = vec![line("This machine: what a local plaza needs.", palette.paper, true)];
-        let fixable: Vec<Check> = deps.checks.as_deref().map(apz_setup::fixable).unwrap_or_default();
+        let mut lines = vec![line(
+            "This machine: what a local plaza needs.",
+            palette.paper,
+            true,
+        )];
+        let fixable: Vec<Check> = deps
+            .checks
+            .as_deref()
+            .map(apz_setup::fixable)
+            .unwrap_or_default();
         match &deps.checks {
             None => lines.push(line("Checking this machine...", palette.muted, false)),
             Some(checks) => {
@@ -541,7 +578,12 @@ impl Onboarding {
                     };
                     let optional = if check.required { "" } else { " (optional)" };
                     lines.push(line(
-                        &format!("{:<11} {:<8} {}{optional}", check.label, word, clip(&check.detail, 36)),
+                        &format!(
+                            "{:<11} {:<8} {}{optional}",
+                            check.label,
+                            word,
+                            clip(&check.detail, 36)
+                        ),
                         color,
                         false,
                     ));
@@ -551,12 +593,24 @@ impl Onboarding {
         lines.push(Line::from(""));
         if deps.confirming {
             let labels: Vec<&str> = fixable.iter().map(|check| check.label).collect();
-            lines.push(line(&format!("Run the fixes for {}? [y/N]", labels.join(", ")), palette.accent, true));
-            lines.push(line("The steps are the ones `agentplaza setup --fix` shows.", palette.muted, false));
+            lines.push(line(
+                &format!("Run the fixes for {}? [y/N]", labels.join(", ")),
+                palette.accent,
+                true,
+            ));
+            lines.push(line(
+                "The steps are the ones `agentplaza setup --fix` shows.",
+                palette.muted,
+                false,
+            ));
         } else if deps.running {
             lines.push(line("Fixing: this takes a while.", palette.accent, true));
         } else if !fixable.is_empty() {
-            lines.push(line("Press f to fix the missing ones: you confirm first.", palette.muted, false));
+            lines.push(line(
+                "Press f to fix the missing ones: you confirm first.",
+                palette.muted,
+                false,
+            ));
         }
         let start = deps.log.len().saturating_sub(3);
         for text in &deps.log[start..] {
@@ -569,7 +623,10 @@ impl Onboarding {
         match self.deps.checks.as_deref() {
             None => "Dependencies: checking...".to_string(),
             Some(checks) => {
-                let open = checks.iter().filter(|c| matches!(c.state, State::Missing | State::Blocked)).count();
+                let open = checks
+                    .iter()
+                    .filter(|c| matches!(c.state, State::Missing | State::Blocked))
+                    .count();
                 if open == 0 {
                     "Dependencies: all set.".to_string()
                 } else {
@@ -582,7 +639,13 @@ impl Onboarding {
     fn deps_color(&self, palette: Palette) -> ratatui::style::Color {
         match self.deps.checks.as_deref() {
             None => palette.muted,
-            Some(checks) if checks.iter().any(|c| matches!(c.state, State::Missing | State::Blocked)) => palette.accent,
+            Some(checks)
+                if checks
+                    .iter()
+                    .any(|c| matches!(c.state, State::Missing | State::Blocked)) =>
+            {
+                palette.accent
+            }
             Some(_) => palette.ok,
         }
     }
@@ -650,7 +713,10 @@ fn panel(frame: &mut Frame, area: Rect, palette: Palette, title: &str, lines: Ve
     let block = Block::bordered()
         .title(title.to_string())
         .border_style(Style::new().fg(palette.accent));
-    frame.render_widget(Paragraph::new(lines).block(block).wrap(Wrap { trim: true }), area);
+    frame.render_widget(
+        Paragraph::new(lines).block(block).wrap(Wrap { trim: true }),
+        area,
+    );
 }
 
 #[cfg(test)]
@@ -663,7 +729,10 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
-        let dir = std::env::temp_dir().join(format!("apz-cli-onboarding-{tag}-{}-{nanos}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "apz-cli-onboarding-{tag}-{}-{nanos}",
+            std::process::id()
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         dir.join("cli.json")
     }
@@ -672,7 +741,13 @@ mod tests {
     fn wizard_walks_forward_and_back_and_finishes_with_the_tour_question() {
         let mut stage = Stage::Setup(0);
         let mut marks = Vec::new();
-        for expected in [Stage::Setup(1), Stage::Setup(2), Stage::Setup(3), Stage::Setup(4), Stage::Ask] {
+        for expected in [
+            Stage::Setup(1),
+            Stage::Setup(2),
+            Stage::Setup(3),
+            Stage::Setup(4),
+            Stage::Ask,
+        ] {
             let step = advance(stage, Input::Next);
             assert_eq!(step.next, Some(expected));
             marks.push(step.mark);
@@ -689,8 +764,14 @@ mod tests {
             Some(Stage::Setup(0)),
             "back on the first screen stays"
         );
-        assert_eq!(advance(Stage::Setup(2), Input::Back).next, Some(Stage::Setup(1)));
-        assert_eq!(advance(Stage::Ask, Input::Back).next, Some(Stage::Setup(SETUP_SCREENS - 1)));
+        assert_eq!(
+            advance(Stage::Setup(2), Input::Back).next,
+            Some(Stage::Setup(1))
+        );
+        assert_eq!(
+            advance(Stage::Ask, Input::Back).next,
+            Some(Stage::Setup(SETUP_SCREENS - 1))
+        );
     }
 
     #[test]
@@ -759,8 +840,14 @@ mod tests {
                 }
             );
         }
-        assert_eq!(advance(Stage::Tour(0), Input::Back).next, Some(Stage::Tour(0)));
-        assert_eq!(advance(Stage::Tour(3), Input::Back).next, Some(Stage::Tour(2)));
+        assert_eq!(
+            advance(Stage::Tour(0), Input::Back).next,
+            Some(Stage::Tour(0))
+        );
+        assert_eq!(
+            advance(Stage::Tour(3), Input::Back).next,
+            Some(Stage::Tour(2))
+        );
         assert_eq!(
             advance(Stage::Tour(0), Input::Yes).next,
             Some(Stage::Tour(0)),
@@ -801,7 +888,11 @@ mod tests {
 
     #[test]
     fn f_asks_for_a_confirmation_and_no_cancels_it_without_running_anything() {
-        let mut ob = on_deps(vec![check(Need::Postgres, State::Missing, Some("Create it"))]);
+        let mut ob = on_deps(vec![check(
+            Need::Postgres,
+            State::Missing,
+            Some("Create it"),
+        )]);
         assert_eq!(ob.deps_key(Input::Fix), DepsKey::Handled);
         assert!(ob.deps.confirming);
         assert!(!ob.deps.running);
@@ -819,19 +910,36 @@ mod tests {
         ]);
         ob.deps.log.push("left over".into());
         assert_eq!(ob.deps_key(Input::Fix), DepsKey::Handled);
-        assert_eq!(ob.deps_key(Input::Yes), DepsKey::Run(vec![Need::Postgres, Need::Garage]));
+        assert_eq!(
+            ob.deps_key(Input::Yes),
+            DepsKey::Run(vec![Need::Postgres, Need::Garage])
+        );
         assert!(ob.deps.running && !ob.deps.confirming);
         assert!(ob.deps.log.is_empty(), "the log starts clean for the run");
     }
 
     #[test]
     fn a_running_fix_takes_no_keys_until_it_ends() {
-        let mut ob = on_deps(vec![check(Need::Postgres, State::Missing, Some("Create it"))]);
+        let mut ob = on_deps(vec![check(
+            Need::Postgres,
+            State::Missing,
+            Some("Create it"),
+        )]);
         ob.deps.running = true;
-        for input in [Input::Next, Input::Skip, Input::Back, Input::Fix, Input::Yes] {
+        for input in [
+            Input::Next,
+            Input::Skip,
+            Input::Back,
+            Input::Fix,
+            Input::Yes,
+        ] {
             assert_eq!(ob.deps_key(input), DepsKey::Handled, "{input:?}");
         }
-        assert_eq!(ob.stage, Stage::Setup(DEPS_SCREEN), "Esc does not leave it either");
+        assert_eq!(
+            ob.stage,
+            Stage::Setup(DEPS_SCREEN),
+            "Esc does not leave it either"
+        );
     }
 
     #[test]
@@ -883,18 +991,44 @@ mod tests {
             check(Need::Postgres, State::Missing, Some("Create it")),
         ]);
         let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
-        term.draw(|frame| ob.draw(frame, frame.area(), Palette::detect(), "http://127.0.0.1:7791"))
-            .unwrap();
-        let text: String = term.backend().buffer().content().iter().map(|cell| cell.symbol()).collect();
+        term.draw(|frame| {
+            ob.draw(
+                frame,
+                frame.area(),
+                Palette::detect(),
+                "http://127.0.0.1:7791",
+            )
+        })
+        .unwrap();
+        let text: String = term
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
         assert!(text.contains("Step 3 of 5"), "{text}");
         assert!(text.contains("MISSING"), "{text}");
         assert!(text.contains("postgres"), "{text}");
         assert!(text.contains("Press f"), "{text}");
 
         ob.deps.confirming = true;
-        term.draw(|frame| ob.draw(frame, frame.area(), Palette::detect(), "http://127.0.0.1:7791"))
-            .unwrap();
-        let text: String = term.backend().buffer().content().iter().map(|cell| cell.symbol()).collect();
+        term.draw(|frame| {
+            ob.draw(
+                frame,
+                frame.area(),
+                Palette::detect(),
+                "http://127.0.0.1:7791",
+            )
+        })
+        .unwrap();
+        let text: String = term
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
         assert!(text.contains("Run the fixes for postgres? [y/N]"), "{text}");
     }
 
@@ -1017,7 +1151,13 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect();
         assert!(text.contains("Step 4 of 5"), "{text}");
-        assert!(text.contains("anthropic"), "the missing key's provider id is named");
-        assert!(text.contains("agentplaza models key"), "the way to add a key is shown");
+        assert!(
+            text.contains("anthropic"),
+            "the missing key's provider id is named"
+        );
+        assert!(
+            text.contains("agentplaza models key"),
+            "the way to add a key is shown"
+        );
     }
 }

@@ -6,26 +6,43 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use iced::widget::{button, column, container, row, text, text_input, Space};
-use iced::{font, Alignment, Border, Color, Element, Font, Length, Subscription, Task, Theme};
+use iced::widget::{Space, button, column, container, row, text, text_input};
+use iced::{Alignment, Border, Color, Element, Font, Length, Subscription, Task, Theme, font};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use super::{ide, Id};
-use crate::console::{client, events, ui, Ctx};
+use super::{Id, ide};
+use crate::console::{Ctx, client, events, ui};
 
 /// The document types a system viewer shows as plain content; any other file is not opened.
-const OPENABLE: [&str; 9] = ["pdf", "md", "txt", "png", "jpg", "jpeg", "gif", "webp", "json"];
+const OPENABLE: [&str; 9] = [
+    "pdf", "md", "txt", "png", "jpg", "jpeg", "gif", "webp", "json",
+];
 use crate::theme;
 
 /// The eight stages, in order (`PROJECT_STAGES` on the web).
-const STAGES: [&str; 8] = ["brief", "research", "proposal", "critique", "approval", "implementation", "review", "delivered"];
+const STAGES: [&str; 8] = [
+    "brief",
+    "research",
+    "proposal",
+    "critique",
+    "approval",
+    "implementation",
+    "review",
+    "delivered",
+];
 /// The stages in which the owner can approve the plan.
 const APPROVABLE: [&str; 2] = ["critique", "approval"];
 /// Serif semibold: titles, document names, the current stage (the web's `font-weight: 600`).
-const SEMIBOLD: Font = Font { weight: font::Weight::Semibold, ..theme::SANS };
+const SEMIBOLD: Font = Font {
+    weight: font::Weight::Semibold,
+    ..theme::SANS
+};
 /// Serif bold: the actor of a history entry (the web's `<strong>`).
-const BOLD: Font = Font { weight: font::Weight::Bold, ..theme::SANS };
+const BOLD: Font = Font {
+    weight: font::Weight::Bold,
+    ..theme::SANS
+};
 
 /// One project, as the hub serves it (`GET /v1/projects/{id}`).
 #[derive(Debug, Clone, Deserialize)]
@@ -159,12 +176,23 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         Msg::OpenRepo(repo) => {
             let c = ctx.client.clone();
             let path = format!("/v1/git/repos/{repo}");
-            client::task(move || c.get::<Value>(&path), move |res| Msg::RepoBranch(repo.clone(), res))
+            client::task(
+                move || c.get::<Value>(&path),
+                move |res| Msg::RepoBranch(repo.clone(), res),
+            )
         }
         Msg::RepoBranch(repo, res) => match res {
-            Ok(info) => match info.get("default_branch").and_then(Value::as_str).filter(|b| !b.is_empty()) {
+            Ok(info) => match info
+                .get("default_branch")
+                .and_then(Value::as_str)
+                .filter(|b| !b.is_empty())
+            {
                 // The screen navigates through `Msg::Go`, the same as its other links.
-                Some(branch) => Task::done(Msg::Go(Id::Ide(Some(ide::target(&format!("repo:{repo}@{branch}"), false, None))))),
+                Some(branch) => Task::done(Msg::Go(Id::Ide(Some(ide::target(
+                    &format!("repo:{repo}@{branch}"),
+                    false,
+                    None,
+                ))))),
                 None => {
                     state.error = Some(format!("{repo} has no default branch to open."));
                     Task::none()
@@ -263,13 +291,18 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             Task::none()
         }
         Msg::OpenSendBack => {
-            let Some(p) = state.detail.as_ref() else { return Task::none() };
+            let Some(p) = state.detail.as_ref() else {
+                return Task::none();
+            };
             let idx = stage_index(&p.stage);
             if idx == 0 {
                 return Task::none();
             }
             state.approve = None;
-            state.send_back = Some(SendBack { stage: STAGES[idx - 1].to_string(), reason: String::new() });
+            state.send_back = Some(SendBack {
+                stage: STAGES[idx - 1].to_string(),
+                reason: String::new(),
+            });
             Task::none()
         }
         Msg::PickStage(stage) => {
@@ -290,16 +323,27 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             Task::none()
         }
         Msg::SubmitApprove => {
-            let Some(p) = state.detail.as_ref() else { return Task::none() };
-            let Some(note) = state.approve.as_ref() else { return Task::none() };
+            let Some(p) = state.detail.as_ref() else {
+                return Task::none();
+            };
+            let Some(note) = state.approve.as_ref() else {
+                return Task::none();
+            };
             let client = ctx.client.clone();
             let path = format!("/v1/projects/{}/approve", p.id);
             let body = json!({ "note": note.trim() });
-            client::task(move || client.post::<Project>(&path, &body), |r| Msg::Acted(r, "Plan approved"))
+            client::task(
+                move || client.post::<Project>(&path, &body),
+                |r| Msg::Acted(r, "Plan approved"),
+            )
         }
         Msg::SubmitSendBack => {
-            let Some(p) = state.detail.as_ref() else { return Task::none() };
-            let Some(sb) = state.send_back.as_ref() else { return Task::none() };
+            let Some(p) = state.detail.as_ref() else {
+                return Task::none();
+            };
+            let Some(sb) = state.send_back.as_ref() else {
+                return Task::none();
+            };
             let why = sb.reason.trim().to_string();
             if why.is_empty() {
                 state.error = Some("Give a reason so the team knows what to change".into());
@@ -308,7 +352,10 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             let client = ctx.client.clone();
             let path = format!("/v1/projects/{}/veto", p.id);
             let body = json!({ "stage": sb.stage, "reason": why });
-            client::task(move || client.post::<Project>(&path, &body), |r| Msg::Acted(r, "Sent back"))
+            client::task(
+                move || client.post::<Project>(&path, &body),
+                |r| Msg::Acted(r, "Sent back"),
+            )
         }
     }
 }
@@ -323,20 +370,31 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
                 Some(_) => ui::empty("projects", "Project not found", "It may have been removed."),
                 None => ui::loading(),
             };
-            ui::sheet(ui::view_head("Project", vec![]), column![link("← All projects", Msg::Back), body].spacing(18).into())
+            ui::sheet(
+                ui::view_head("Project", vec![]),
+                column![link("← All projects", Msg::Back), body]
+                    .spacing(18)
+                    .into(),
+            )
         }
     }
 }
 
 fn fetch_list(ctx: &Ctx) -> Task<Msg> {
     let client = ctx.client.clone();
-    client::task(move || client.get::<Vec<Project>>("/v1/projects"), Msg::List)
+    client::task(
+        move || client.get::<Vec<Project>>("/v1/projects"),
+        Msg::List,
+    )
 }
 
 fn fetch_detail(ctx: &Ctx, id: String) -> Task<Msg> {
     let client = ctx.client.clone();
     let path = format!("/v1/projects/{id}");
-    client::task(move || client.get::<Project>(&path), move |r| Msg::Detail(id.clone(), r))
+    client::task(
+        move || client.get::<Project>(&path),
+        move |r| Msg::Detail(id.clone(), r),
+    )
 }
 
 // ---- helpers -------------------------------------------------------------------------
@@ -347,7 +405,10 @@ fn stage_index(stage: &str) -> usize {
 
 /// Sort rank of a document kind: its stage's place, unknown kinds last.
 fn rank(kind: &str) -> usize {
-    STAGES.iter().position(|s| *s == kind).unwrap_or(STAGES.len())
+    STAGES
+        .iter()
+        .position(|s| *s == kind)
+        .unwrap_or(STAGES.len())
 }
 
 /// "brief" becomes "Brief".
@@ -361,7 +422,9 @@ fn label(s: &str) -> String {
 
 /// A relative time, as the web's `ago`.
 fn ago(ms: i64) -> String {
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as i64);
     let s = (now - ms).max(0) / 1000;
     match s {
         0..=59 => "just now".into(),
@@ -373,16 +436,27 @@ fn ago(ms: i64) -> String {
 
 /// A serif semibold line in ink.
 fn semibold<'a>(content: impl text::IntoFragment<'a>, size: f32) -> text::Text<'a> {
-    text(content).font(SEMIBOLD).size(size).color(crate::theme::palette().ink)
+    text(content)
+        .font(SEMIBOLD)
+        .size(size)
+        .color(crate::theme::palette().ink)
 }
 
 /// A text link in the signal colour, mono 12 (the web's `.pj-link`).
 fn link<'a>(label_text: &str, msg: Msg) -> Element<'a, Msg> {
-    button(ui::sans(label_text.to_string(), 12.0, crate::theme::palette().signal))
-        .padding(0)
-        .style(|_: &Theme, _| button::Style { background: None, text_color: crate::theme::palette().signal, ..Default::default() })
-        .on_press(msg)
-        .into()
+    button(ui::sans(
+        label_text.to_string(),
+        12.0,
+        crate::theme::palette().signal,
+    ))
+    .padding(0)
+    .style(|_: &Theme, _| button::Style {
+        background: None,
+        text_color: crate::theme::palette().signal,
+        ..Default::default()
+    })
+    .on_press(msg)
+    .into()
 }
 
 /// The eight stage boxes (10px squares, 1px rule edges): earlier stages filled in ink-3, the current
@@ -391,7 +465,10 @@ fn track<'a>(stage: &str) -> Element<'a, Msg> {
     let idx = stage_index(stage);
     let segs = row(STAGES.iter().enumerate().map(|(i, _)| {
         let (fill, edge) = if i == idx {
-            (crate::theme::palette().signal, crate::theme::palette().signal)
+            (
+                crate::theme::palette().signal,
+                crate::theme::palette().signal,
+            )
         } else if i < idx {
             (crate::theme::palette().ink_3, crate::theme::palette().ink_3)
         } else {
@@ -400,13 +477,26 @@ fn track<'a>(stage: &str) -> Element<'a, Msg> {
         container(Space::new().width(8.0).height(8.0))
             .style(move |_: &Theme| container::Style {
                 background: Some(fill.into()),
-                border: Border { color: edge, width: 1.0, radius: 0.0.into() },
+                border: Border {
+                    color: edge,
+                    width: 1.0,
+                    radius: 0.0.into(),
+                },
                 ..Default::default()
             })
             .into()
     }))
     .spacing(3);
-    row![segs, text(label(stage)).font(theme::SANS).size(12.0).color(crate::theme::palette().ink_2)].spacing(10).align_y(Alignment::Center).into()
+    row![
+        segs,
+        text(label(stage))
+            .font(theme::SANS)
+            .size(12.0)
+            .color(crate::theme::palette().ink_2)
+    ]
+    .spacing(10)
+    .align_y(Alignment::Center)
+    .into()
 }
 
 /// The pipeline on the detail page: a ruled strip of eight cells. Done steps are ticked, the current
@@ -416,45 +506,88 @@ fn pipeline<'a>(stage: &str) -> Element<'a, Msg> {
     let mut items: Vec<Element<'a, Msg>> = Vec::new();
     for (i, s) in STAGES.iter().enumerate() {
         if i > 0 {
-            items.push(container(Space::new().width(1.0).height(Length::Fill)).style(|_: &Theme| container::Style {
-                background: Some(crate::theme::palette().rule.into()),
-                ..Default::default()
-            }).into());
+            items.push(
+                container(Space::new().width(1.0).height(Length::Fill))
+                    .style(|_: &Theme| container::Style {
+                        background: Some(crate::theme::palette().rule.into()),
+                        ..Default::default()
+                    })
+                    .into(),
+            );
         }
         let current = i == idx;
         let (mark, filled, fg) = if i < idx {
-            ("✓".to_string(), Some(crate::theme::palette().ink), crate::theme::palette().ink)
+            (
+                "✓".to_string(),
+                Some(crate::theme::palette().ink),
+                crate::theme::palette().ink,
+            )
         } else if current {
-            ((i + 1).to_string(), Some(crate::theme::palette().signal), crate::theme::palette().ink)
+            (
+                (i + 1).to_string(),
+                Some(crate::theme::palette().signal),
+                crate::theme::palette().ink,
+            )
         } else {
             ((i + 1).to_string(), None, crate::theme::palette().ink_3)
         };
-        let edge = if i < idx { crate::theme::palette().ink } else if current { crate::theme::palette().signal } else { fg };
-        let mark_box = container(ui::sans(mark, 11.0, if filled.is_some() { crate::theme::palette().paper } else { fg }))
-            .width(20.0)
-            .height(20.0)
-            .align_x(Alignment::Center)
-            .align_y(Alignment::Center)
-            .style(move |_: &Theme| container::Style {
-                background: filled.map(Into::into),
-                border: Border { color: edge, width: 1.0, radius: 0.0.into() },
-                ..Default::default()
-            });
-        let name = text(label(s)).font(if current { SEMIBOLD } else { theme::SANS }).size(12.0).color(fg);
-        let underline = if current { crate::theme::palette().signal } else { Color::TRANSPARENT };
+        let edge = if i < idx {
+            crate::theme::palette().ink
+        } else if current {
+            crate::theme::palette().signal
+        } else {
+            fg
+        };
+        let mark_box = container(ui::sans(
+            mark,
+            11.0,
+            if filled.is_some() {
+                crate::theme::palette().paper
+            } else {
+                fg
+            },
+        ))
+        .width(20.0)
+        .height(20.0)
+        .align_x(Alignment::Center)
+        .align_y(Alignment::Center)
+        .style(move |_: &Theme| container::Style {
+            background: filled.map(Into::into),
+            border: Border {
+                color: edge,
+                width: 1.0,
+                radius: 0.0.into(),
+            },
+            ..Default::default()
+        });
+        let name = text(label(s))
+            .font(if current { SEMIBOLD } else { theme::SANS })
+            .size(12.0)
+            .color(fg);
+        let underline = if current {
+            crate::theme::palette().signal
+        } else {
+            Color::TRANSPARENT
+        };
         let cell = column![
             column![mark_box, name].spacing(6).padding([10, 8]),
-            container(Space::new().height(3.0)).width(Length::Fill).style(move |_: &Theme| container::Style {
-                background: Some(underline.into()),
-                ..Default::default()
-            }),
+            container(Space::new().height(3.0))
+                .width(Length::Fill)
+                .style(move |_: &Theme| container::Style {
+                    background: Some(underline.into()),
+                    ..Default::default()
+                }),
         ]
         .width(Length::Fill);
         items.push(
             container(cell)
                 .width(Length::Fill)
                 .style(move |_: &Theme| container::Style {
-                    background: if current { Some(crate::theme::palette().sheet.into()) } else { None },
+                    background: if current {
+                        Some(crate::theme::palette().sheet.into())
+                    } else {
+                        None
+                    },
                     ..Default::default()
                 })
                 .into(),
@@ -463,7 +596,11 @@ fn pipeline<'a>(stage: &str) -> Element<'a, Msg> {
     container(row(items))
         .width(Length::Fill)
         .style(|_: &Theme| container::Style {
-            border: Border { color: crate::theme::palette().rule, width: 1.0, radius: 0.0.into() },
+            border: Border {
+                color: crate::theme::palette().rule,
+                width: 1.0,
+                radius: 0.0.into(),
+            },
             ..Default::default()
         })
         .into()
@@ -473,23 +610,48 @@ fn pipeline<'a>(stage: &str) -> Element<'a, Msg> {
 
 fn row_item<'a>(p: &'a Project) -> Element<'a, Msg> {
     let main = column![
-        row![semibold(p.title.as_str(), 15.0), ui::badge(&p.kind, ui::Tone::Muted)].spacing(10).align_y(Alignment::Center),
+        row![
+            semibold(p.title.as_str(), 15.0),
+            ui::badge(&p.kind, ui::Tone::Muted)
+        ]
+        .spacing(10)
+        .align_y(Alignment::Center),
         track(&p.stage),
-        ui::sans(format!("rev {} · {} docs · {} critiques · {} tasks", p.revision, p.docs.len(), p.critiques.len(), p.tasks.len()), 12.0, crate::theme::palette().ink_3),
+        ui::sans(
+            format!(
+                "rev {} · {} docs · {} critiques · {} tasks",
+                p.revision,
+                p.docs.len(),
+                p.critiques.len(),
+                p.tasks.len()
+            ),
+            12.0,
+            crate::theme::palette().ink_3
+        ),
     ]
     .spacing(6)
     .width(Length::Fill);
-    let side = column![ui::sans(format!("updated {}", ago(p.updated_ms)), 12.0, crate::theme::palette().ink_3)].align_x(Alignment::End);
+    let side = column![ui::sans(
+        format!("updated {}", ago(p.updated_ms)),
+        12.0,
+        crate::theme::palette().ink_3
+    )]
+    .align_x(Alignment::End);
     let entry = button(row![main, side].spacing(16).align_y(Alignment::Center))
         .on_press(Msg::Open(p.id.clone()))
         .padding([14, 4])
         .width(Length::Fill)
         .style(theme::register_row(false));
     // Each row is closed by a rule (the web's `.pj-row` border-bottom).
-    column![entry, container(Space::new().height(1.0)).width(Length::Fill).style(|_: &Theme| container::Style {
-        background: Some(crate::theme::palette().rule.into()),
-        ..Default::default()
-    })]
+    column![
+        entry,
+        container(Space::new().height(1.0))
+            .width(Length::Fill)
+            .style(|_: &Theme| container::Style {
+                background: Some(crate::theme::palette().rule.into()),
+                ..Default::default()
+            })
+    ]
     .into()
 }
 
@@ -504,19 +666,29 @@ fn list_view<'a>(state: &'a State) -> Element<'a, Msg> {
     }
     match &state.list {
         None => body.push(ui::loading()),
-        Some(list) if list.is_empty() => {
-            body.push(ui::empty("projects", "No projects yet.", "The orchestrator opens one for each goal you give it."))
-        }
+        Some(list) if list.is_empty() => body.push(ui::empty(
+            "projects",
+            "No projects yet.",
+            "The orchestrator opens one for each goal you give it.",
+        )),
         Some(list) => {
             // The web's `.pj-list` ruled register: a rule above the rows, one under each.
-            body.push(container(Space::new().height(1.0)).width(Length::Fill).style(|_: &Theme| container::Style {
-                background: Some(crate::theme::palette().rule.into()),
-                ..Default::default()
-            }).into());
+            body.push(
+                container(Space::new().height(1.0))
+                    .width(Length::Fill)
+                    .style(|_: &Theme| container::Style {
+                        background: Some(crate::theme::palette().rule.into()),
+                        ..Default::default()
+                    })
+                    .into(),
+            );
             body.push(column(list.iter().map(row_item)).spacing(0).into());
         }
     }
-    ui::sheet(ui::view_head("Projects", vec![]), column(body).spacing(18).into())
+    ui::sheet(
+        ui::view_head("Projects", vec![]),
+        column(body).spacing(18).into(),
+    )
 }
 
 // ---- a project's page ----------------------------------------------------------------
@@ -524,7 +696,10 @@ fn list_view<'a>(state: &'a State) -> Element<'a, Msg> {
 fn detail<'a>(state: &'a State, p: &'a Project) -> Element<'a, Msg> {
     let idx = stage_index(&p.stage);
 
-    let mut badges: Vec<Element<'a, Msg>> = vec![ui::badge(&p.kind, ui::Tone::Muted), ui::badge(&label(&p.stage), ui::Tone::Signal)];
+    let mut badges: Vec<Element<'a, Msg>> = vec![
+        ui::badge(&p.kind, ui::Tone::Muted),
+        ui::badge(&label(&p.stage), ui::Tone::Signal),
+    ];
     if let Some(by) = &p.approved_by {
         badges.push(ui::faint(format!("approved by {by}")).into());
     }
@@ -537,10 +712,20 @@ fn detail<'a>(state: &'a State, p: &'a Project) -> Element<'a, Msg> {
 
     let mut actions: Vec<Element<'a, Msg>> = Vec::new();
     if APPROVABLE.contains(&p.stage.as_str()) {
-        actions.push(ui::btn("Approve plan", None, ui::Kind::Primary, Some(Msg::OpenApprove)));
+        actions.push(ui::btn(
+            "Approve plan",
+            None,
+            ui::Kind::Primary,
+            Some(Msg::OpenApprove),
+        ));
     }
     if idx > 0 {
-        actions.push(ui::btn("Send back…", None, ui::Kind::Secondary, Some(Msg::OpenSendBack)));
+        actions.push(ui::btn(
+            "Send back…",
+            None,
+            ui::Kind::Secondary,
+            Some(Msg::OpenSendBack),
+        ));
     }
     if !actions.is_empty() {
         body.push(row(actions).spacing(8).into());
@@ -555,7 +740,12 @@ fn detail<'a>(state: &'a State, p: &'a Project) -> Element<'a, Msg> {
             ui::label("Note"),
             field,
             row![
-                ui::btn("Approve plan", None, ui::Kind::Primary, Some(Msg::SubmitApprove)),
+                ui::btn(
+                    "Approve plan",
+                    None,
+                    ui::Kind::Primary,
+                    Some(Msg::SubmitApprove)
+                ),
                 ui::btn("Cancel", None, ui::Kind::Ghost, Some(Msg::CancelForm)),
             ]
             .spacing(8),
@@ -566,7 +756,11 @@ fn detail<'a>(state: &'a State, p: &'a Project) -> Element<'a, Msg> {
 
     if let Some(sb) = &state.send_back {
         let picks = row(STAGES[..idx].iter().map(|s| {
-            let kind = if *s == sb.stage { ui::Kind::Primary } else { ui::Kind::Secondary };
+            let kind = if *s == sb.stage {
+                ui::Kind::Primary
+            } else {
+                ui::Kind::Secondary
+            };
             ui::btn(&label(s), None, kind, Some(Msg::PickStage(s.to_string())))
         }))
         .spacing(6);
@@ -580,7 +774,12 @@ fn detail<'a>(state: &'a State, p: &'a Project) -> Element<'a, Msg> {
             picks,
             ui::label("Reason"),
             reason,
-            ui::btn("Send back", None, ui::Kind::Danger, Some(Msg::SubmitSendBack)),
+            ui::btn(
+                "Send back",
+                None,
+                ui::Kind::Danger,
+                Some(Msg::SubmitSendBack)
+            ),
         ]
         .spacing(10);
         body.push(ui::card("Send back", form.into()));
@@ -601,7 +800,12 @@ fn detail<'a>(state: &'a State, p: &'a Project) -> Element<'a, Msg> {
     if let Some(repo) = &p.repo {
         let repo_card: Element<'a, Msg> = column![
             link(repo, Msg::Go(Id::Repo(repo.clone()))),
-            ui::btn_sm("Open repo", Some("square-code"), ui::Kind::Ghost, Some(Msg::OpenRepo(repo.clone()))),
+            ui::btn_sm(
+                "Open repo",
+                Some("square-code"),
+                ui::Kind::Ghost,
+                Some(Msg::OpenRepo(repo.clone()))
+            ),
         ]
         .spacing(8)
         .into();
@@ -610,7 +814,10 @@ fn detail<'a>(state: &'a State, p: &'a Project) -> Element<'a, Msg> {
     sections.push(ui::card("History", history_body(p)));
     body.push(column(sections).spacing(16).into());
 
-    ui::sheet(ui::view_head(&p.title, badges), column(body).spacing(18).into())
+    ui::sheet(
+        ui::view_head(&p.title, badges),
+        column(body).spacing(18).into(),
+    )
 }
 
 fn docs_body<'a>(p: &'a Project) -> Element<'a, Msg> {
@@ -636,8 +843,17 @@ fn docs_body<'a>(p: &'a Project) -> Element<'a, Msg> {
 
 fn doc_item<'a>(d: &'a Doc) -> Element<'a, Msg> {
     let mut col = column![
-        row![semibold(d.title.as_str(), 15.0), ui::badge(&d.kind, ui::Tone::Muted)].spacing(10).align_y(Alignment::Center),
-        ui::sans(format!("by {} · {}", d.by, ago(d.at_ms)), 12.0, crate::theme::palette().ink_3),
+        row![
+            semibold(d.title.as_str(), 15.0),
+            ui::badge(&d.kind, ui::Tone::Muted)
+        ]
+        .spacing(10)
+        .align_y(Alignment::Center),
+        ui::sans(
+            format!("by {} · {}", d.by, ago(d.at_ms)),
+            12.0,
+            crate::theme::palette().ink_3
+        ),
     ]
     .spacing(6);
     if !d.summary.is_empty() {
@@ -647,8 +863,16 @@ fn doc_item<'a>(d: &'a Doc) -> Element<'a, Msg> {
         col = col.push(link("Open", Msg::OpenFile(id.clone())));
     }
     if let Some(path) = &d.repo_path {
-        let commit = d.commit.as_deref().map(|c| format!(" @ {}", c.get(..7).unwrap_or(c))).unwrap_or_default();
-        col = col.push(ui::mono(format!("{path}{commit}"), 12.0, crate::theme::palette().ink_2));
+        let commit = d
+            .commit
+            .as_deref()
+            .map(|c| format!(" @ {}", c.get(..7).unwrap_or(c)))
+            .unwrap_or_default();
+        col = col.push(ui::mono(
+            format!("{path}{commit}"),
+            12.0,
+            crate::theme::palette().ink_2,
+        ));
     }
     col.into()
 }
@@ -657,7 +881,9 @@ fn critiques_body<'a>(p: &'a Project) -> Element<'a, Msg> {
     if p.critiques.is_empty() {
         return ui::faint("No critiques yet.").into();
     }
-    column(p.critiques.iter().map(critique_item)).spacing(16).into()
+    column(p.critiques.iter().map(critique_item))
+        .spacing(16)
+        .into()
 }
 
 fn critique_item<'a>(c: &'a Critique) -> Element<'a, Msg> {
@@ -669,7 +895,11 @@ fn critique_item<'a>(c: &'a Critique) -> Element<'a, Msg> {
     let head = row![
         ui::badge(&c.verdict, tone),
         ui::prose(format!("by {}", c.by)),
-        ui::sans(format!("revision {}", c.revision), 12.0, crate::theme::palette().ink_3),
+        ui::sans(
+            format!("revision {}", c.revision),
+            12.0,
+            crate::theme::palette().ink_3
+        ),
         ui::sans(ago(c.at_ms), 12.0, crate::theme::palette().ink_3),
     ]
     .spacing(10)
@@ -685,7 +915,13 @@ fn tasks_body<'a>(p: &'a Project) -> Element<'a, Msg> {
     if p.tasks.is_empty() {
         return ui::faint("No tasks yet.").into();
     }
-    column(p.tasks.iter().map(|t| link(t, Msg::Go(Id::Task(t.clone()))))).spacing(8).into()
+    column(
+        p.tasks
+            .iter()
+            .map(|t| link(t, Msg::Go(Id::Task(t.clone())))),
+    )
+    .spacing(8)
+    .into()
 }
 
 fn history_body<'a>(p: &'a Project) -> Element<'a, Msg> {
@@ -700,13 +936,20 @@ fn history_body<'a>(p: &'a Project) -> Element<'a, Msg> {
 fn event_row<'a>(e: &'a Event) -> Element<'a, Msg> {
     let mut line = row![
         ui::sans(ago(e.at_ms), 12.0, crate::theme::palette().ink_3),
-        text(e.by.as_str()).font(BOLD).size(13.0).color(crate::theme::palette().ink),
+        text(e.by.as_str())
+            .font(BOLD)
+            .size(13.0)
+            .color(crate::theme::palette().ink),
         ui::prose(e.what.as_str()).size(13.0),
     ]
     .spacing(8)
     .align_y(Alignment::Center);
     if !e.note.is_empty() {
-        line = line.push(ui::sans(format!("— {}", e.note), 12.0, crate::theme::palette().ink_3));
+        line = line.push(ui::sans(
+            format!("— {}", e.note),
+            12.0,
+            crate::theme::palette().ink_3,
+        ));
     }
     line.into()
 }
@@ -743,12 +986,17 @@ fn open_file(client: &client::Client, id: &str) -> Result<(), String> {
         .and_then(|n| n.to_str())
         .filter(|n| !n.is_empty())
         .ok_or_else(|| "the document has no file name".to_string())?;
-    let ext = std::path::Path::new(file).extension().and_then(|e| e.to_str()).unwrap_or_default().to_ascii_lowercase();
+    let ext = std::path::Path::new(file)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
     if !OPENABLE.contains(&ext.as_str()) {
         return Err(format!("this file cannot be opened here: {file}"));
     }
     let path = format!("/v1/files/{id}/content");
-    let reply = apz_http::client::request(&client.target, "GET", &path, None, client.timeout).map_err(|e| e.to_string())?;
+    let reply = apz_http::client::request(&client.target, "GET", &path, None, client.timeout)
+        .map_err(|e| e.to_string())?;
     if !(200..300).contains(&reply.status) {
         return Err(format!("HTTP {}", reply.status));
     }

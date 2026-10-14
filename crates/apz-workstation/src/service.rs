@@ -93,7 +93,10 @@ pub fn plan_remove(spec: &ServiceSpec) -> Plan {
     };
     // The agents' copy of the record must go too, or the agents' daemon keeps the old token.
     if spec.is_agent_account() && spec.os != Os::Windows {
-        let record = service_state_dir(spec).join(RECORD_FILE).display().to_string();
+        let record = service_state_dir(spec)
+            .join(RECORD_FILE)
+            .display()
+            .to_string();
         plan.run("rm", &["-f", record.as_str()]);
     }
     match spec.os {
@@ -552,9 +555,16 @@ mod tests {
 
     #[test]
     fn removing_the_agents_service_also_removes_its_copy_of_the_record() {
-        let linux = plan_remove(&spec(Os::Linux, "agentplaza")).render().join("\n");
-        assert!(linux.contains("$ rm -f /var/lib/agentplaza-workstation/station.json"), "{linux}");
-        let owners = plan_remove(&spec(Os::Linux, "zarathos")).render().join("\n");
+        let linux = plan_remove(&spec(Os::Linux, "agentplaza"))
+            .render()
+            .join("\n");
+        assert!(
+            linux.contains("$ rm -f /var/lib/agentplaza-workstation/station.json"),
+            "{linux}"
+        );
+        let owners = plan_remove(&spec(Os::Linux, "zarathos"))
+            .render()
+            .join("\n");
         assert!(!owners.contains("station.json"), "{owners}");
     }
 

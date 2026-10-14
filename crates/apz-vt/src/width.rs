@@ -82,7 +82,9 @@ const WIDE: &[(u32, u32)] = &[
 ];
 
 fn within(table: &[(u32, u32)], code: u32) -> bool {
-    table.iter().any(|&(low, high)| (low..=high).contains(&code))
+    table
+        .iter()
+        .any(|&(low, high)| (low..=high).contains(&code))
 }
 
 /// The columns `c` takes on screen: 0, 1 or 2.

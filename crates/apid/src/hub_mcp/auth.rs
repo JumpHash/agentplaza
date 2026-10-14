@@ -133,14 +133,20 @@ impl TokenStore for MemoryTokens {
             calls: 0,
             revoked_at_ms: None,
         };
-        lock(&self.rows).push(Row { digest: digest(&token), record: record.clone() });
+        lock(&self.rows).push(Row {
+            digest: digest(&token),
+            record: record.clone(),
+        });
         Ok((token, record))
     }
 
     fn verify(&self, token: &str, now: u64) -> Result<TokenRecord, AuthError> {
         let wanted = digest(token);
         let rows = lock(&self.rows);
-        let row = rows.iter().find(|row| row.digest == wanted).ok_or(AuthError::Invalid)?;
+        let row = rows
+            .iter()
+            .find(|row| row.digest == wanted)
+            .ok_or(AuthError::Invalid)?;
         if row.record.revoked_at_ms.is_some() {
             return Err(AuthError::Revoked);
         }
@@ -168,7 +174,10 @@ impl TokenStore for MemoryTokens {
     }
 
     fn list(&self) -> Vec<TokenRecord> {
-        lock(&self.rows).iter().map(|row| row.record.clone()).collect()
+        lock(&self.rows)
+            .iter()
+            .map(|row| row.record.clone())
+            .collect()
     }
 }
 
@@ -176,7 +185,10 @@ impl TokenStore for MemoryTokens {
 pub fn bearer(req: &Request) -> Option<&str> {
     let value = req.header("authorization")?;
     let (scheme, token) = value.split_once(' ')?;
-    scheme.eq_ignore_ascii_case("bearer").then(|| token.trim()).filter(|token| !token.is_empty())
+    scheme
+        .eq_ignore_ascii_case("bearer")
+        .then(|| token.trim())
+        .filter(|token| !token.is_empty())
 }
 
 /// A new token: the prefix and 32 random bytes in base32.
@@ -192,7 +204,10 @@ pub fn digest(token: &str) -> String {
 }
 
 pub fn sha256_hex(bytes: &[u8]) -> String {
-    Sha256::digest(bytes).iter().map(|byte| format!("{byte:02x}")).collect()
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 /// `bytes` random bytes as hex.
@@ -222,7 +237,9 @@ fn base32(bytes: &[u8]) -> String {
 
 /// Locks a mutex, reading through a poisoned one (the data is still consistent: every edit is one push or one field).
 pub fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// Calls per token over the last minute: observe 60, operate and govern 20.
@@ -236,7 +253,10 @@ impl RateLimiter {
     pub fn take(&self, token_id: &str, scope: Scope, now: u64) -> Result<(), u64> {
         let mut calls = lock(&self.calls);
         let window = calls.entry(token_id.to_string()).or_default();
-        while window.front().is_some_and(|&at| now.saturating_sub(at) >= WINDOW_MS) {
+        while window
+            .front()
+            .is_some_and(|&at| now.saturating_sub(at) >= WINDOW_MS)
+        {
             window.pop_front();
         }
         if window.len() >= scope.per_minute() as usize {

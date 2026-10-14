@@ -93,7 +93,13 @@ pub struct Checker<'a> {
 
 /// Checks every item of every loaded file. Returns errors (and warnings) in source order.
 pub fn check_program(prog: &Program) -> Vec<Diag> {
-    let mut c = Checker { prog, pack: 0, scopes: vec![], m: None, diags: vec![] };
+    let mut c = Checker {
+        prog,
+        pack: 0,
+        scopes: vec![],
+        m: None,
+        diags: vec![],
+    };
     for (pack, r, it) in prog.items() {
         c.pack = pack;
         c.scopes.clear();
@@ -122,9 +128,12 @@ impl<'a> Checker<'a> {
                     Ty::Any
                 }
             },
-            TypeExpr::Record(fs) => Ty::Record(fs.iter().map(|(n, t)| (n.clone(), self.ty_of(t))).collect()),
+            TypeExpr::Record(fs) => {
+                Ty::Record(fs.iter().map(|(n, t)| (n.clone(), self.ty_of(t))).collect())
+            }
             TypeExpr::Named(n, args, span) => {
-                let arg = |c: &mut Checker, i: usize| args.get(i).map(|a| c.ty_of(a)).unwrap_or(Ty::Any);
+                let arg =
+                    |c: &mut Checker, i: usize| args.get(i).map(|a| c.ty_of(a)).unwrap_or(Ty::Any);
                 if let Some(d) = Dim::of_type_name(n) {
                     return Ty::Num(d);
                 }
@@ -182,7 +191,9 @@ impl<'a> Checker<'a> {
     fn mismatch(&self, want: &Ty, got: &Ty, e: &Expr) -> Option<String> {
         match (want, got) {
             (Ty::Any, _) | (_, Ty::Any) | (_, Ty::None) => None,
-            (Ty::Num(a), Ty::Num(b)) if a != b => Some(format!("expected {}, found {}", a.describe(), b.describe())),
+            (Ty::Num(a), Ty::Num(b)) if a != b => {
+                Some(format!("expected {}, found {}", a.describe(), b.describe()))
+            }
             (Ty::Num(_), Ty::Num(_)) => None,
             (Ty::Enum(r, n), _) => self.enum_literal(*r, n, e).or_else(|| {
                 (!got.is_textual()).then(|| format!("expected {n}, found {}", got.show()))
@@ -198,7 +209,9 @@ impl<'a> Checker<'a> {
                     _ => self.mismatch(a, b, e),
                 }
             }
-            (Ty::Map(..), Ty::Map(..)) | (Ty::Record(_), Ty::Record(_)) | (Ty::Tuple(_), Ty::Tuple(_)) => None,
+            (Ty::Map(..), Ty::Map(..))
+            | (Ty::Record(_), Ty::Record(_))
+            | (Ty::Tuple(_), Ty::Tuple(_)) => None,
             (Ty::Node(_, a), Ty::Node(_, b)) if a == b => None,
             (Ty::Id | Ty::ModelValue | Ty::Graph | Ty::Cycle, _) => None,
             (Ty::Node(..), Ty::Record(_)) => None,
@@ -221,14 +234,24 @@ impl<'a> Checker<'a> {
 
     /// A string literal (or each branch of an `if` of them) compared with an enum must be a member.
     fn enum_literal(&self, r: DeclRef, n: &str, e: &Expr) -> Option<String> {
-        let Item::Enum(d) = self.prog.item(r) else { return None };
+        let Item::Enum(d) = self.prog.item(r) else {
+            return None;
+        };
         match &e.kind {
             ExprKind::Str(s) if !d.members.iter().any(|m| *m.0 == **s) => Some(format!(
                 "\"{s}\" is not a value of enum {n} ({})",
-                d.members.iter().map(|m| format!("\"{}\"", m.0)).collect::<Vec<_>>().join(", ")
+                d.members
+                    .iter()
+                    .map(|m| format!("\"{}\"", m.0))
+                    .collect::<Vec<_>>()
+                    .join(", ")
             )),
-            ExprKind::If(_, a, b) => self.enum_literal(r, n, a).or_else(|| self.enum_literal(r, n, b)),
-            ExprKind::Set(xs) | ExprKind::List(xs) => xs.iter().find_map(|x| self.enum_literal(r, n, x)),
+            ExprKind::If(_, a, b) => self
+                .enum_literal(r, n, a)
+                .or_else(|| self.enum_literal(r, n, b)),
+            ExprKind::Set(xs) | ExprKind::List(xs) => {
+                xs.iter().find_map(|x| self.enum_literal(r, n, x))
+            }
             _ => None,
         }
     }
@@ -317,18 +340,28 @@ impl<'a> Checker<'a> {
             ExprKind::Bool(_) => Ty::Bool,
             ExprKind::NoneLit => Ty::None,
             ExprKind::Name(n) => self.name(n, span),
-            ExprKind::Primed(n) => match self.m.as_ref().map(|m| (m.vars.get(n).cloned(), m.primes)) {
-                Some((Some(t), primes)) => {
-                    if !primes {
-                        self.err(span, format!("`{n}'` is only allowed in actions and transition invariants"));
+            ExprKind::Primed(n) => {
+                match self.m.as_ref().map(|m| (m.vars.get(n).cloned(), m.primes)) {
+                    Some((Some(t), primes)) => {
+                        if !primes {
+                            self.err(
+                                span,
+                                format!(
+                                    "`{n}'` is only allowed in actions and transition invariants"
+                                ),
+                            );
+                        }
+                        t
                     }
-                    t
+                    _ => {
+                        self.err(
+                            span,
+                            format!("`{n}` is not a state variable, so it can't be primed"),
+                        );
+                        Ty::Any
+                    }
                 }
-                _ => {
-                    self.err(span, format!("`{n}` is not a state variable, so it can't be primed"));
-                    Ty::Any
-                }
-            },
+            }
             ExprKind::Unary(UnOp::Neg, x) => match self.ty(x) {
                 t @ (Ty::Num(_) | Ty::Any) => t,
                 t => {
@@ -353,7 +386,14 @@ impl<'a> Checker<'a> {
                 let (ta, tb) = (self.ty(a), self.ty(b));
                 if let (Ty::Num(x), Ty::Num(y)) = (&ta, &tb) {
                     if x != y {
-                        self.err(span, format!("`if` branches differ in dimension: {} and {}", x.describe(), y.describe()));
+                        self.err(
+                            span,
+                            format!(
+                                "`if` branches differ in dimension: {} and {}",
+                                x.describe(),
+                                y.describe()
+                            ),
+                        );
                     }
                 }
                 if matches!(ta, Ty::Any | Ty::None) {
@@ -373,7 +413,10 @@ impl<'a> Checker<'a> {
                 match t {
                     Ty::List(el) => {
                         if !matches!(it, Ty::Num(d) if d.is_none()) && it != Ty::Any {
-                            self.err(i.span, format!("a list index is an Int, found {}", it.show()));
+                            self.err(
+                                i.span,
+                                format!("a list index is an Int, found {}", it.show()),
+                            );
                         }
                         *el
                     }
@@ -397,8 +440,16 @@ impl<'a> Checker<'a> {
                 }
                 Ty::Map(Box::new(kt), Box::new(vt))
             }
-            ExprKind::Record(fs) => Ty::Record(fs.iter().map(|(n, x)| (n.clone(), self.ty(x))).collect()),
-            ExprKind::Comp { kind, gens, filter, key, val } => {
+            ExprKind::Record(fs) => {
+                Ty::Record(fs.iter().map(|(n, x)| (n.clone(), self.ty(x))).collect())
+            }
+            ExprKind::Comp {
+                kind,
+                gens,
+                filter,
+                key,
+                val,
+            } => {
                 let n0 = self.scopes.len();
                 self.gens(gens);
                 if let Some(f) = filter {
@@ -434,7 +485,8 @@ impl<'a> Checker<'a> {
             }
             ExprKind::Is(x, tname) => {
                 self.ty(x);
-                let builtin = ["Bool", "String", "Int", "Number"].contains(&tname.as_str()) || Dim::of_type_name(tname).is_some();
+                let builtin = ["Bool", "String", "Int", "Number"].contains(&tname.as_str())
+                    || Dim::of_type_name(tname).is_some();
                 if !builtin && self.prog.lookup_decl(self.pack, tname).is_none() {
                     self.err(span, format!("unknown type `{tname}`"));
                 }
@@ -493,7 +545,15 @@ impl<'a> Checker<'a> {
         let tb = self.ty(b);
         let dims = |c: &mut Checker, x: Dim, y: Dim| {
             if x != y {
-                c.err(span, format!("dimension mismatch: {} {} {}", x.describe(), op.text(), y.describe()));
+                c.err(
+                    span,
+                    format!(
+                        "dimension mismatch: {} {} {}",
+                        x.describe(),
+                        op.text(),
+                        y.describe()
+                    ),
+                );
             }
         };
         match op {
@@ -546,7 +606,10 @@ impl<'a> Checker<'a> {
                         }
                     }
                     Ty::Str | Ty::Any => {}
-                    other => self.err(b.span, format!("`in` needs a collection, found {}", other.show())),
+                    other => self.err(
+                        b.span,
+                        format!("`in` needs a collection, found {}", other.show()),
+                    ),
                 }
                 Ty::Bool
             }
@@ -559,7 +622,10 @@ impl<'a> Checker<'a> {
                 (Ty::Instant, Ty::Instant) if op == Sub => Ty::Num(Dim::TIME),
                 (Ty::Instant, Ty::Num(d)) | (Ty::Num(d), Ty::Instant) => {
                     if *d != Dim::TIME {
-                        self.err(span, format!("an Instant moves by a Duration, not {}", d.describe()));
+                        self.err(
+                            span,
+                            format!("an Instant moves by a Duration, not {}", d.describe()),
+                        );
                     }
                     if op == Sub && tb == Ty::Instant {
                         self.err(span, "Duration − Instant is meaningless");
@@ -567,14 +633,25 @@ impl<'a> Checker<'a> {
                     Ty::Instant
                 }
                 (Ty::Instant, Ty::Instant) => {
-                    self.err(span, "Instant + Instant is meaningless (an Instant − Instant is a Duration)");
+                    self.err(
+                        span,
+                        "Instant + Instant is meaningless (an Instant − Instant is a Duration)",
+                    );
                     Ty::Any
                 }
                 (Ty::Any, _) => tb,
                 (_, Ty::Any) => ta,
                 (Ty::Set(_), Ty::Set(_)) | (Ty::List(_), Ty::List(_)) | (Ty::Str, Ty::Str) => ta,
                 (x, y) => {
-                    self.err(span, format!("can't {} {} and {}", if op == Add { "add" } else { "subtract" }, x.show(), y.show()));
+                    self.err(
+                        span,
+                        format!(
+                            "can't {} {} and {}",
+                            if op == Add { "add" } else { "subtract" },
+                            x.show(),
+                            y.show()
+                        ),
+                    );
                     Ty::Any
                 }
             },
@@ -583,14 +660,25 @@ impl<'a> Checker<'a> {
                 (Ty::Num(x), Ty::Num(y)) => Ty::Num(if op == Mul { x.mul(*y) } else { x.div(*y) }),
                 (Ty::Any, _) | (_, Ty::Any) => Ty::Any,
                 (x, y) => {
-                    self.err(span, format!("can't {} {} and {}", if op == Mul { "multiply" } else { "divide" }, x.show(), y.show()));
+                    self.err(
+                        span,
+                        format!(
+                            "can't {} {} and {}",
+                            if op == Mul { "multiply" } else { "divide" },
+                            x.show(),
+                            y.show()
+                        ),
+                    );
                     Ty::Any
                 }
             },
             Pow => match (&ta, &tb) {
                 (Ty::Num(x), Ty::Num(y)) => {
                     if !y.is_none() {
-                        self.err(b.span, format!("an exponent must be dimensionless, found {}", y.describe()));
+                        self.err(
+                            b.span,
+                            format!("an exponent must be dimensionless, found {}", y.describe()),
+                        );
                     }
                     let k = match &b.kind {
                         ExprKind::Num(n, _) => n.as_int(),
@@ -604,7 +692,13 @@ impl<'a> Checker<'a> {
                         Some(k) => Ty::Num(x.pow(k)),
                         None if x.is_none() => Ty::Num(Dim::NONE),
                         None => {
-                            self.err(span, format!("a {} can only be raised to a literal integer power", x.describe()));
+                            self.err(
+                                span,
+                                format!(
+                                    "a {} can only be raised to a literal integer power",
+                                    x.describe()
+                                ),
+                            );
                             Ty::Any
                         }
                     }
@@ -629,7 +723,10 @@ impl<'a> Checker<'a> {
                 "transfers" | "edges" => Ty::List(Box::new(Ty::Any)),
                 "returned" => Ty::Num(Dim::NONE),
                 _ => {
-                    self.err(span, format!("Cycle has no field `{f}` (agents, transfers, returned)"));
+                    self.err(
+                        span,
+                        format!("Cycle has no field `{f}` (agents, transfers, returned)"),
+                    );
                     Ty::Any
                 }
             },
@@ -685,7 +782,14 @@ impl<'a> Checker<'a> {
         out
     }
 
-    fn args_against(&mut self, fname: &str, params: &[ParamDef], decl_pack: usize, args: &[Arg], span: Span) {
+    fn args_against(
+        &mut self,
+        fname: &str,
+        params: &[ParamDef],
+        decl_pack: usize,
+        args: &[Arg],
+        span: Span,
+    ) {
         let saved = self.pack;
         self.pack = decl_pack;
         let ptys: Vec<Ty> = params.iter().map(|p| self.ty_of(&p.ty.clone())).collect();
@@ -708,7 +812,14 @@ impl<'a> Checker<'a> {
                 },
             };
             if i >= params.len() {
-                self.err(span, format!("`{fname}` takes {} argument(s), got {}", params.len(), args.len()));
+                self.err(
+                    span,
+                    format!(
+                        "`{fname}` takes {} argument(s), got {}",
+                        params.len(),
+                        args.len()
+                    ),
+                );
                 return;
             }
             filled[i] = true;
@@ -726,7 +837,10 @@ impl<'a> Checker<'a> {
         if let ExprKind::Name(n) = &f.kind {
             if let Some(&k) = self.m.as_ref().and_then(|m| m.defs.get(n)) {
                 if k != args.len() {
-                    self.err(span, format!("`{n}` takes {k} argument(s), got {}", args.len()));
+                    self.err(
+                        span,
+                        format!("`{n}` takes {k} argument(s), got {}", args.len()),
+                    );
                 }
                 for a in args {
                     self.ty(&a.value);
@@ -740,18 +854,38 @@ impl<'a> Checker<'a> {
                 let ot = self.ty(obj);
                 if method == "out" || method == "in" {
                     if !matches!(ot, Ty::Node(..) | Ty::Any) {
-                        self.err(f.span, format!("`.{method}(EDGE)` needs a node, found {}", ot.show()));
+                        self.err(
+                            f.span,
+                            format!("`.{method}(EDGE)` needs a node, found {}", ot.show()),
+                        );
                     }
-                    if let [Arg { value: Expr { kind: ExprKind::Name(edge), span: es }, .. }] = args {
-                        return match self.prog.lookup_decl(self.pack, edge).map(|r| (r, self.prog.item(r))) {
-                            Some((r, Item::Edge(e))) => Ty::List(Box::new(Ty::Node(r, e.name.clone()))),
+                    if let [Arg {
+                        value:
+                            Expr {
+                                kind: ExprKind::Name(edge),
+                                span: es,
+                            },
+                        ..
+                    }] = args
+                    {
+                        return match self
+                            .prog
+                            .lookup_decl(self.pack, edge)
+                            .map(|r| (r, self.prog.item(r)))
+                        {
+                            Some((r, Item::Edge(e))) => {
+                                Ty::List(Box::new(Ty::Node(r, e.name.clone())))
+                            }
                             _ => {
                                 self.err(*es, format!("`{edge}` is not an edge type"));
                                 Ty::Any
                             }
                         };
                     }
-                    self.err(span, format!("`.{method}` takes one edge type, like `.{method}(CONTACT)`"));
+                    self.err(
+                        span,
+                        format!("`.{method}` takes one edge type, like `.{method}(CONTACT)`"),
+                    );
                     return Ty::Any;
                 }
                 self.err(f.span, format!("unknown method `{method}`"));
@@ -826,7 +960,10 @@ impl<'a> Checker<'a> {
                     for (t, a) in ts.iter().zip(args).skip(1) {
                         if let (Some(x), Some(y)) = (num(&first), num(t)) {
                             if x != y {
-                                self.err(a.value.span, format!("`{name}` of {} and {}", x.describe(), y.describe()));
+                                self.err(
+                                    a.value.span,
+                                    format!("`{name}` of {} and {}", x.describe(), y.describe()),
+                                );
                             }
                         }
                     }
@@ -837,7 +974,14 @@ impl<'a> Checker<'a> {
             "round_to" => {
                 if let (Some(x), Some(Some(y))) = (num(&first), ts.get(1).map(num)) {
                     if x != y {
-                        self.err(span, format!("round_to: the step is {}, the value {}", y.describe(), x.describe()));
+                        self.err(
+                            span,
+                            format!(
+                                "round_to: the step is {}, the value {}",
+                                y.describe(),
+                                x.describe()
+                            ),
+                        );
                     }
                 }
                 first
@@ -845,12 +989,17 @@ impl<'a> Checker<'a> {
             "ln" => {
                 if let Some(d) = num(&first) {
                     if !d.is_none() {
-                        self.err(args[0].value.span, format!("`ln` needs a dimensionless number, found {}", d.describe()));
+                        self.err(
+                            args[0].value.span,
+                            format!("`ln` needs a dimensionless number, found {}", d.describe()),
+                        );
                     }
                 }
                 Ty::Num(Dim::NONE)
             }
-            "certainly" | "possibly" | "matches" | "starts_with" | "ends_with" | "any" | "all" => Ty::Bool,
+            "certainly" | "possibly" | "matches" | "starts_with" | "ends_with" | "any" | "all" => {
+                Ty::Bool
+            }
             "lower" => Ty::Str,
             "keys" => Ty::Set(Box::new(first.elem())),
             "values" => match first {
@@ -907,7 +1056,10 @@ impl<'a> Checker<'a> {
                     self.interp(s);
                     let t = self.ty(on);
                     if !matches!(t, Ty::List(_) | Ty::Set(_) | Ty::Any) {
-                        self.err(on.span, format!("`flag … on` takes a list of agents, found {}", t.show()));
+                        self.err(
+                            on.span,
+                            format!("`flag … on` takes a list of agents, found {}", t.show()),
+                        );
                     }
                 }
                 Clause::Fix(s, set) => {
@@ -922,7 +1074,10 @@ impl<'a> Checker<'a> {
                         self.ty(p);
                     }
                 }
-                Clause::Severity(_) | Clause::Violation(_) | Clause::Cite(_) | Clause::Implements(_) => {}
+                Clause::Severity(_)
+                | Clause::Violation(_)
+                | Clause::Cite(_)
+                | Clause::Implements(_) => {}
             }
         }
     }
@@ -938,20 +1093,36 @@ impl<'a> Checker<'a> {
                 self.params(&d.params);
                 let rt = self.ty_of(&d.ret);
                 let bt = self.ty(&d.body);
-                self.expect(&rt, &bt, &d.body, &format!("`{}` returns {}", d.name, d.ret));
+                self.expect(
+                    &rt,
+                    &bt,
+                    &d.body,
+                    &format!("`{}` returns {}", d.name, d.ret),
+                );
             }
             Item::Table(d) => {
                 let pts: Vec<Ty> = d.params.iter().map(|p| self.ty_of(&p.ty)).collect();
                 let rt = self.ty_of(&d.ret);
                 for (a, _, s) in &d.axes {
                     if !d.params.iter().any(|p| p.name == *a) {
-                        self.err(*s, format!("axis `{a}` is not a parameter of table {}", d.name));
+                        self.err(
+                            *s,
+                            format!("axis `{a}` is not a parameter of table {}", d.name),
+                        );
                     }
                 }
                 let mut seen: Vec<String> = Vec::new();
                 for (keys, v) in &d.rows {
                     if keys.len() != d.params.len() {
-                        self.err(keys[0].span, format!("a row of {} has {} key(s), the table has {} axis(es)", d.name, keys.len(), d.params.len()));
+                        self.err(
+                            keys[0].span,
+                            format!(
+                                "a row of {} has {} key(s), the table has {} axis(es)",
+                                d.name,
+                                keys.len(),
+                                d.params.len()
+                            ),
+                        );
                     }
                     for (k, pt) in keys.iter().zip(&pts) {
                         let kt = self.ty(k);
@@ -959,9 +1130,16 @@ impl<'a> Checker<'a> {
                     }
                     let vt = self.ty(v);
                     self.expect(&rt, &vt, v, &format!("row value of {}", d.name));
-                    let text: String = keys.iter().map(|k| self.prog.sources.snippet(k.span).to_string()).collect::<Vec<_>>().join(", ");
+                    let text: String = keys
+                        .iter()
+                        .map(|k| self.prog.sources.snippet(k.span).to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ");
                     if seen.contains(&text) {
-                        self.err(keys[0].span, format!("duplicate row ({text}) in table {}", d.name));
+                        self.err(
+                            keys[0].span,
+                            format!("duplicate row ({text}) in table {}", d.name),
+                        );
                     }
                     seen.push(text);
                 }
@@ -991,9 +1169,16 @@ impl<'a> Checker<'a> {
             }
             Item::Entity(e) => {
                 if let Some(p) = &e.parent {
-                    match self.prog.lookup_decl(self.pack, p).map(|r| self.prog.item(r)) {
+                    match self
+                        .prog
+                        .lookup_decl(self.pack, p)
+                        .map(|r| self.prog.item(r))
+                    {
                         Some(Item::Entity(_)) => {}
-                        _ => self.err(e.span, format!("parent `{p}` of {} is not an entity", e.name)),
+                        _ => self.err(
+                            e.span,
+                            format!("parent `{p}` of {} is not an entity", e.name),
+                        ),
                     }
                 }
                 self.fields(&e.fields);
@@ -1001,7 +1186,10 @@ impl<'a> Checker<'a> {
             Item::Edge(e) => {
                 for t in [&e.from, &e.to] {
                     if !matches!(self.ty_of(t), Ty::Node(..) | Ty::Any) {
-                        self.err(t.span(), format!("edge {} must connect entity types, found {t}", e.name));
+                        self.err(
+                            t.span(),
+                            format!("edge {} must connect entity types, found {t}", e.name),
+                        );
                     }
                 }
                 self.fields(&e.fields);
@@ -1014,7 +1202,10 @@ impl<'a> Checker<'a> {
                 self.params(&d.params);
                 let rt = self.ty_of(&d.ret);
                 if !matches!(rt, Ty::Num(_) | Ty::Any) {
-                    self.err(d.ret.span(), format!("kind {} must be numeric in v0, found {}", d.name, d.ret));
+                    self.err(
+                        d.ret.span(),
+                        format!("kind {} must be numeric in v0, found {}", d.name, d.ret),
+                    );
                 }
                 if let Some(e) = &d.default {
                     let t = self.ty(e);
@@ -1022,7 +1213,10 @@ impl<'a> Checker<'a> {
                     if d.ret.name() == Some("Int") {
                         if let ExprKind::Num(n, _) = &e.kind {
                             if n.as_int().is_none() {
-                                self.err(e.span, format!("kind {} is an Int; its default {n} is not", d.name));
+                                self.err(
+                                    e.span,
+                                    format!("kind {} is an Int; its default {n} is not", d.name),
+                                );
                             }
                         }
                     }
@@ -1055,7 +1249,10 @@ impl<'a> Checker<'a> {
 
     fn constraint(&mut self, c: &ConstraintDecl) {
         let Some(r) = self.prog.lookup_decl(self.pack, &c.kind) else {
-            self.err(c.span, format!("unknown kind `{}` (kinds live in specs/kinds.jhrl)", c.kind));
+            self.err(
+                c.span,
+                format!("unknown kind `{}` (kinds live in specs/kinds.jhrl)", c.kind),
+            );
             return;
         };
         let Item::Kind(k) = self.prog.item(r).clone() else {
@@ -1063,7 +1260,15 @@ impl<'a> Checker<'a> {
             return;
         };
         if k.params.len() != c.args.len() {
-            self.err(c.span, format!("kind {} takes {} object(s); the rule names {}", k.name, k.params.len(), c.args.len()));
+            self.err(
+                c.span,
+                format!(
+                    "kind {} takes {} object(s); the rule names {}",
+                    k.name,
+                    k.params.len(),
+                    c.args.len()
+                ),
+            );
         }
         let saved = self.pack;
         self.pack = self.prog.pack_of(r.file);
@@ -1133,7 +1338,12 @@ impl<'a> Checker<'a> {
     fn machine(&mut self, r: DeclRef, m: &MachineDecl) {
         if let Some((parts, _)) = &m.compose {
             for p in parts {
-                if !matches!(self.prog.lookup_decl(self.pack, p).map(|r| self.prog.item(r)), Some(Item::Machine(_))) {
+                if !matches!(
+                    self.prog
+                        .lookup_decl(self.pack, p)
+                        .map(|r| self.prog.item(r)),
+                    Some(Item::Machine(_))
+                ) {
                     self.err(m.span, format!("`{p}` is not a machine"));
                 }
             }
@@ -1143,7 +1353,9 @@ impl<'a> Checker<'a> {
         self.m = Some(scope);
         for it in &m.items {
             match it {
-                MItem::Const { name, ty, default, .. } => {
+                MItem::Const {
+                    name, ty, default, ..
+                } => {
                     if let Some(d) = default {
                         let t = self.ty_of(ty);
                         let dt = self.ty(d);
@@ -1160,9 +1372,17 @@ impl<'a> Checker<'a> {
                         VarInit::In(e) => {
                             let et = self.ty(e);
                             match et {
-                                Ty::Set(el) | Ty::List(el) => self.expect(&t, &el, e, &format!("initial set of `{name}`")),
+                                Ty::Set(el) | Ty::List(el) => {
+                                    self.expect(&t, &el, e, &format!("initial set of `{name}`"))
+                                }
                                 Ty::Any => {}
-                                other => self.err(e.span, format!("`var {name}: … in S` needs a set, found {}", other.show())),
+                                other => self.err(
+                                    e.span,
+                                    format!(
+                                        "`var {name}: … in S` needs a set, found {}",
+                                        other.show()
+                                    ),
+                                ),
                             }
                         }
                         VarInit::None => {}
@@ -1178,7 +1398,14 @@ impl<'a> Checker<'a> {
                                 Ty::Set(el) | Ty::List(el) => *el,
                                 Ty::Any => Ty::Any,
                                 other => {
-                                    self.err(e.span, format!("parameter `{}` ranges over a set, found {}", p.name, other.show()));
+                                    self.err(
+                                        e.span,
+                                        format!(
+                                            "parameter `{}` ranges over a set, found {}",
+                                            p.name,
+                                            other.show()
+                                        ),
+                                    );
                                     Ty::Any
                                 }
                             },
@@ -1212,7 +1439,13 @@ impl<'a> Checker<'a> {
                 MItem::Fairness { actions, span, .. } => {
                     for a in actions {
                         if !self.m.as_ref().unwrap().actions.contains(a) {
-                            self.err(*span, format!("fairness names `{a}`, which is not an action of {}", m.name));
+                            self.err(
+                                *span,
+                                format!(
+                                    "fairness names `{a}`, which is not an action of {}",
+                                    m.name
+                                ),
+                            );
                         }
                     }
                 }
@@ -1250,7 +1483,10 @@ impl<'a> Checker<'a> {
             self.scopes.truncate(n0);
             common = Some(match common {
                 None => added,
-                Some(c) => c.into_iter().filter(|(n, _)| added.iter().any(|(m, _)| m == n)).collect(),
+                Some(c) => c
+                    .into_iter()
+                    .filter(|(n, _)| added.iter().any(|(m, _)| m == n))
+                    .collect(),
             });
         }
         self.scopes.extend(common.unwrap_or_default());
@@ -1324,7 +1560,9 @@ impl<'a> Checker<'a> {
     }
 
     fn model(&mut self, md: &ModelDecl) {
-        let Some((r, m)) = self.machine_for(&md.machine, md.span) else { return };
+        let Some((r, m)) = self.machine_for(&md.machine, md.span) else {
+            return;
+        };
         self.enter(r, &m);
         for o in &md.opts {
             match o {
@@ -1351,7 +1589,10 @@ impl<'a> Checker<'a> {
                 MOpt::Check(ws) => {
                     for w in ws {
                         if !["invariants", "properties", "deadlock"].contains(&w.as_str()) {
-                            self.err(md.span, format!("`check {w}`: expected invariants, properties or deadlock"));
+                            self.err(
+                                md.span,
+                                format!("`check {w}`: expected invariants, properties or deadlock"),
+                            );
                         }
                     }
                 }
@@ -1362,10 +1603,14 @@ impl<'a> Checker<'a> {
     }
 
     fn mutant(&mut self, mu: &MutantDecl) {
-        let Some((_, m)) = self.machine_for(&mu.machine, mu.span) else { return };
+        let Some((_, m)) = self.machine_for(&mu.machine, mu.span) else {
+            return;
+        };
         for op in &mu.ops {
             let (a, span) = match op {
-                MutOp::Replace { action, span, .. } | MutOp::DropWhen { action, span, .. } | MutOp::RemoveAction { action, span } => (action, span),
+                MutOp::Replace { action, span, .. }
+                | MutOp::DropWhen { action, span, .. }
+                | MutOp::RemoveAction { action, span } => (action, span),
             };
             if !m.actions().any(|x| x.name == *a) {
                 self.err(*span, format!("machine {} has no action `{a}`", m.name));
@@ -1374,20 +1619,34 @@ impl<'a> Checker<'a> {
         if let Expect::Violation(n) = &mu.expect {
             let known = m.items.iter().any(|i| matches!(i, MItem::Invariant { name, .. } | MItem::Transition { name, .. } if name == n));
             if !known {
-                self.err(mu.span, format!("machine {} has no invariant or transition \"{n}\"", m.name));
+                self.err(
+                    mu.span,
+                    format!("machine {} has no invariant or transition \"{n}\"", m.name),
+                );
             }
         }
         if let Expect::Property(n) = &mu.expect {
-            if !m.items.iter().any(|i| matches!(i, MItem::Property { name, .. } if name == n)) {
-                self.err(mu.span, format!("machine {} has no property \"{n}\"", m.name));
+            if !m
+                .items
+                .iter()
+                .any(|i| matches!(i, MItem::Property { name, .. } if name == n))
+            {
+                self.err(
+                    mu.span,
+                    format!("machine {} has no property \"{n}\"", m.name),
+                );
             }
         }
     }
 
     fn witness(&mut self, w: &WitnessDecl) {
-        let Some((r, m)) = self.machine_for(&w.machine, w.span) else { return };
+        let Some((r, m)) = self.machine_for(&w.machine, w.span) else {
+            return;
+        };
         if let Some(mn) = &w.model {
-            let found = crate::mc::models_of(self.prog, r).iter().any(|(_, _, md)| md.name == *mn);
+            let found = crate::mc::models_of(self.prog, r)
+                .iter()
+                .any(|(_, _, md)| md.name == *mn);
             if !found {
                 self.err(w.span, format!("machine {} has no model \"{mn}\"", m.name));
             }
@@ -1414,10 +1673,16 @@ impl<'a> Checker<'a> {
                 SStepKind::Given(asg) => {
                     for (n, e) in asg {
                         let et = self.ty(e);
-                        let want = self.m.as_ref().and_then(|m| m.vars.get(n).or_else(|| m.consts.get(n)).cloned());
+                        let want = self
+                            .m
+                            .as_ref()
+                            .and_then(|m| m.vars.get(n).or_else(|| m.consts.get(n)).cloned());
                         match (&machine, want) {
                             (Some(_), Some(t)) => self.expect(&t, &et, e, &format!("given `{n}`")),
-                            (Some((_, m)), None) => self.err(e.span, format!("machine {} has no const or var `{n}`", m.name)),
+                            (Some((_, m)), None) => self.err(
+                                e.span,
+                                format!("machine {} has no const or var `{n}`", m.name),
+                            ),
                             (None, _) => {}
                         }
                     }
@@ -1435,7 +1700,14 @@ impl<'a> Checker<'a> {
                         match m.actions().find(|a| a.name == an) {
                             Some(a) => {
                                 if a.params.len() != args.len() {
-                                    self.err(e.span, format!("{an} takes {} argument(s), got {}", a.params.len(), args.len()));
+                                    self.err(
+                                        e.span,
+                                        format!(
+                                            "{an} takes {} argument(s), got {}",
+                                            a.params.len(),
+                                            args.len()
+                                        ),
+                                    );
                                 }
                                 for (p, arg) in a.params.iter().zip(&args) {
                                     let at = self.ty(&arg.value);
@@ -1443,10 +1715,17 @@ impl<'a> Checker<'a> {
                                         ADom::Type(t) => self.ty_of(t),
                                         ADom::In(d) => self.ty(d).elem(),
                                     };
-                                    self.expect(&pt, &at, &arg.value, &format!("argument `{}` of {an}", p.name));
+                                    self.expect(
+                                        &pt,
+                                        &at,
+                                        &arg.value,
+                                        &format!("argument `{}` of {an}", p.name),
+                                    );
                                 }
                             }
-                            None => self.err(e.span, format!("machine {} has no action `{an}`", m.name)),
+                            None => {
+                                self.err(e.span, format!("machine {} has no action `{an}`", m.name))
+                            }
                         }
                     }
                 }
@@ -1468,7 +1747,11 @@ impl<'a> Checker<'a> {
             if let Item::Fn(d) = it {
                 let mut calls = Vec::new();
                 collect_calls(&d.body, &mut calls);
-                let targets = calls.iter().filter_map(|n| self.prog.lookup_decl(pack, n)).filter(|t| matches!(self.prog.item(*t), Item::Fn(_))).collect();
+                let targets = calls
+                    .iter()
+                    .filter_map(|n| self.prog.lookup_decl(pack, n))
+                    .filter(|t| matches!(self.prog.item(*t), Item::Fn(_)))
+                    .collect();
                 graph.insert(r, targets);
                 spans.insert(r, (d.span, d.name.clone()));
             }
@@ -1484,7 +1767,12 @@ impl<'a> Checker<'a> {
                 if n == start {
                     if reported.insert(start) {
                         let (s, name) = spans[&start].clone();
-                        self.err(s, format!("fn {name} is recursive; functions may not recurse (section 9.2)"));
+                        self.err(
+                            s,
+                            format!(
+                                "fn {name} is recursive; functions may not recurse (section 9.2)"
+                            ),
+                        );
                     }
                     break;
                 }
@@ -1527,7 +1815,13 @@ fn collect_calls(e: &Expr, out: &mut Vec<String>) {
             }
         }
         ExprKind::Record(fs) => fs.iter().for_each(|(_, x)| collect_calls(x, out)),
-        ExprKind::Comp { gens, filter, key, val, .. } => {
+        ExprKind::Comp {
+            gens,
+            filter,
+            key,
+            val,
+            ..
+        } => {
             for g in gens {
                 collect_calls(&g.src, out);
             }
@@ -1574,7 +1868,10 @@ mod tests {
         assert_eq!(d.len(), 1, "{d:?}");
         assert!(d[0].contains("expected Credits, found [cr·s]"), "{d:?}");
         let d = diags("fn g(x: Credits) -> Bool = x <= 1000");
-        assert!(d[0].contains("dimension mismatch: Credits <= Number"), "{d:?}");
+        assert!(
+            d[0].contains("dimension mismatch: Credits <= Number"),
+            "{d:?}"
+        );
         assert!(diags("fn h(x: Credits) -> Bool = x <= 1000 cr").is_empty());
         let d = diags("fn k(x: Duration) -> Number = ln(x)");
         assert!(d[0].contains("`ln` needs a dimensionless number"), "{d:?}");
@@ -1585,11 +1882,21 @@ mod tests {
     fn names_and_calls_are_checked() {
         let d = diags("fn f(x: Number) -> Number = y + nope(x)");
         assert!(d.iter().any(|m| m.contains("unknown name `y`")), "{d:?}");
-        assert!(d.iter().any(|m| m.contains("unknown function `nope`")), "{d:?}");
+        assert!(
+            d.iter().any(|m| m.contains("unknown function `nope`")),
+            "{d:?}"
+        );
         let d = diags("fn f(x: Credits) -> Credits = x\nfn g() -> Credits = f(3 s)");
-        assert!(d[0].contains("argument `x` of `f`: expected Credits, found Duration"), "{d:?}");
+        assert!(
+            d[0].contains("argument `x` of `f`: expected Credits, found Duration"),
+            "{d:?}"
+        );
         let d = diags("fn f(x: Number) -> Number = g(x)\nfn g(x: Number) -> Number = f(x)");
-        assert_eq!(d.iter().filter(|m| m.contains("recursive")).count(), 2, "{d:?}");
+        assert_eq!(
+            d.iter().filter(|m| m.contains("recursive")).count(),
+            2,
+            "{d:?}"
+        );
         let d = diags("kind k(a: Nobody) -> Int max default 1");
         assert!(d[0].contains("unknown type `Nobody`"), "{d:?}");
         let d = diags("kind k(a: Int) -> Credits max default 5 s");
@@ -1601,20 +1908,44 @@ mod tests {
         let src = "enum S { \"a\"\n \"b\" }\nentity A { field s: S\n field n: Credits }\n\
                    check \"c\" { for a in as\n require a.s == \"zz\" and a.n >= 0 and a.m == 1 }";
         let d = diags(src);
-        assert!(d.iter().any(|m| m.contains("\"zz\" is not a value of enum S")), "{d:?}");
-        assert!(d.iter().any(|m| m.contains("dimension mismatch: Credits >= Number")), "{d:?}");
+        assert!(
+            d.iter()
+                .any(|m| m.contains("\"zz\" is not a value of enum S")),
+            "{d:?}"
+        );
+        assert!(
+            d.iter()
+                .any(|m| m.contains("dimension mismatch: Credits >= Number")),
+            "{d:?}"
+        );
         assert!(d.iter().any(|m| m.contains("A has no field `m`")), "{d:?}");
     }
 
     #[test]
     fn machine_names_primes_and_assignments() {
-        let src = "enum S { \"p\"\n \"q\" }\nmachine M {\n var s: S = \"p\"\n var n: Credits = 0 cr\n\
+        let src =
+            "enum S { \"p\"\n \"q\" }\nmachine M {\n var s: S = \"p\"\n var n: Credits = 0 cr\n\
                    action A { when s == \"p\"\n s' = \"r\"\n n' = n + 1 }\n\
                    invariant \"i\" n' >= 0 cr\n fairness weak B\n}\n";
         let d = diags(src);
-        assert!(d.iter().any(|m| m.contains("\"r\" is not a value of enum S")), "{d:?}");
-        assert!(d.iter().any(|m| m.contains("dimension mismatch: Credits + Number")), "{d:?}");
-        assert!(d.iter().any(|m| m.contains("only allowed in actions and transition")), "{d:?}");
-        assert!(d.iter().any(|m| m.contains("`B`, which is not an action")), "{d:?}");
+        assert!(
+            d.iter()
+                .any(|m| m.contains("\"r\" is not a value of enum S")),
+            "{d:?}"
+        );
+        assert!(
+            d.iter()
+                .any(|m| m.contains("dimension mismatch: Credits + Number")),
+            "{d:?}"
+        );
+        assert!(
+            d.iter()
+                .any(|m| m.contains("only allowed in actions and transition")),
+            "{d:?}"
+        );
+        assert!(
+            d.iter().any(|m| m.contains("`B`, which is not an action")),
+            "{d:?}"
+        );
     }
 }

@@ -13,7 +13,9 @@ fn placeholders(body: &str) -> Vec<(u32, &str, std::ops::Range<usize>)> {
         let mut from = 0;
         while let Some(start) = line[from..].find("{{") {
             let open = from + start;
-            let Some(len) = line[open + 2..].find("}}") else { break };
+            let Some(len) = line[open + 2..].find("}}") else {
+                break;
+            };
             let name = line[open + 2..open + 2 + len].trim();
             let close = open + 2 + len + 2;
             if !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
@@ -28,7 +30,11 @@ fn placeholders(body: &str) -> Vec<(u32, &str, std::ops::Range<usize>)> {
 
 /// The placeholders whose names are not in `VARIABLES`: (1-based line, name).
 pub fn unknown_vars(body: &str) -> Vec<(u32, String)> {
-    placeholders(body).into_iter().filter(|(_, n, _)| !VARIABLES.contains(n)).map(|(l, n, _)| (l, n.to_string())).collect()
+    placeholders(body)
+        .into_iter()
+        .filter(|(_, n, _)| !VARIABLES.contains(n))
+        .map(|(l, n, _)| (l, n.to_string()))
+        .collect()
 }
 
 /// `body` with each `{{name}}` found in `vars` replaced by its value. Unknown names are left as written.
@@ -61,7 +67,11 @@ pub fn slug(title: &str) -> String {
     while out.ends_with('-') {
         out.pop();
     }
-    if out.is_empty() { "prompt".to_string() } else { out }
+    if out.is_empty() {
+        "prompt".to_string()
+    } else {
+        out
+    }
 }
 
 #[cfg(test)]
@@ -71,18 +81,27 @@ mod tests {
     #[test]
     fn render_replaces_known_and_keeps_unknown() {
         let vars = BTreeMap::from([("name", "Ada".to_string()), ("cid", "7".to_string())]);
-        assert_eq!(render("Hi {{name}} ({{ cid }}), {{other}}.", &vars), "Hi Ada (7), {{other}}.");
+        assert_eq!(
+            render("Hi {{name}} ({{ cid }}), {{other}}.", &vars),
+            "Hi Ada (7), {{other}}."
+        );
     }
 
     #[test]
     fn unknown_vars_reports_lines() {
-        assert_eq!(unknown_vars("ok {{role}}\n{{nope}} and {{ x_y }}"), vec![(2, "nope".into()), (2, "x_y".into())]);
+        assert_eq!(
+            unknown_vars("ok {{role}}\n{{nope}} and {{ x_y }}"),
+            vec![(2, "nope".into()), (2, "x_y".into())]
+        );
         assert!(unknown_vars("{{ }} {{a b}} {not}").is_empty());
     }
 
     #[test]
     fn slugs() {
-        assert_eq!(slug("  The Builder's Prompt! v2 "), "the-builder-s-prompt-v2");
+        assert_eq!(
+            slug("  The Builder's Prompt! v2 "),
+            "the-builder-s-prompt-v2"
+        );
         assert_eq!(slug("¿¿"), "prompt");
         assert_eq!(slug(&"a".repeat(80)).len(), 63);
     }

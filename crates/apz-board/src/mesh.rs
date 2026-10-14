@@ -36,12 +36,23 @@ pub fn slab(surface: &WalkSurface, thickness: f64) -> Mesh {
     let poly = &surface.poly;
     let n = poly.len();
     if n < 3 {
-        return Mesh { positions: Vec::new(), indices: Vec::new() };
+        return Mesh {
+            positions: Vec::new(),
+            indices: Vec::new(),
+        };
     }
     let tops: Vec<f64> = poly.iter().map(|p| surface.height.at(p[0], p[1])).collect();
     let mut positions = Vec::with_capacity(2 * n);
-    positions.extend(poly.iter().zip(&tops).map(|(p, &y)| [p[0] as f32, y as f32, p[1] as f32]));
-    positions.extend(poly.iter().zip(&tops).map(|(p, &y)| [p[0] as f32, (y - thickness) as f32, p[1] as f32]));
+    positions.extend(
+        poly.iter()
+            .zip(&tops)
+            .map(|(p, &y)| [p[0] as f32, y as f32, p[1] as f32]),
+    );
+    positions.extend(
+        poly.iter()
+            .zip(&tops)
+            .map(|(p, &y)| [p[0] as f32, (y - thickness) as f32, p[1] as f32]),
+    );
 
     let bottom = |i: usize| (n + i) as u32;
     let mut indices = Vec::with_capacity(12 * n);
@@ -71,7 +82,9 @@ pub fn slab(surface: &WalkSurface, thickness: f64) -> Mesh {
 pub fn ray_down(mesh: &Mesh, x: f64, z: f64, above: f64) -> Option<f64> {
     let mut best: Option<f64> = None;
     for t in mesh.indices.chunks_exact(3) {
-        let Some([a, b, c]) = corners(mesh, t) else { continue };
+        let Some([a, b, c]) = corners(mesh, t) else {
+            continue;
+        };
         if !is_upward(&[a, b, c]) {
             continue;
         }
@@ -129,7 +142,13 @@ pub fn surface_mesh_check(surface: &WalkSurface) -> Result<(), String> {
     }
     let h = surface.height;
     if !(h.c.is_finite() && h.dx.is_finite() && h.dz.is_finite()) {
-        return Err(format!("{}: height is not finite (c {}, dx {}, dz {})", who(), h.c, h.dx, h.dz));
+        return Err(format!(
+            "{}: height is not finite (c {}, dx {}, dz {})",
+            who(),
+            h.c,
+            h.dx,
+            h.dz
+        ));
     }
     Ok(())
 }
@@ -150,11 +169,15 @@ fn polygon_fault(poly: &[[f64; 2]]) -> Option<String> {
         }
     }
     // Cross product of (a - o) and (b - o): positive when b is left of the ray o to a.
-    let cross = |o: [f64; 2], a: [f64; 2], b: [f64; 2]| (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+    let cross = |o: [f64; 2], a: [f64; 2], b: [f64; 2]| {
+        (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+    };
     for (i, &a) in poly.iter().enumerate() {
         let b = poly[(i + 1) % n];
         if let Some(k) = poly.iter().position(|&p| cross(a, b, p) < 0.0) {
-            return Some(format!("is not convex and counter-clockwise: point {k} is right of edge {i}"));
+            return Some(format!(
+                "is not convex and counter-clockwise: point {k} is right of edge {i}"
+            ));
         }
     }
     let area2: f64 = poly
@@ -178,7 +201,14 @@ mod tests {
 
     fn surface(poly: Vec<[f64; 2]>, height: Plane) -> WalkSurface {
         let sides = vec![Side::Walled; poly.len()];
-        WalkSurface { id: 7, kind: SurfaceKind::Plate, poly, height, owner: "test".to_string(), sides }
+        WalkSurface {
+            id: 7,
+            kind: SurfaceKind::Plate,
+            poly,
+            height,
+            owner: "test".to_string(),
+            sides,
+        }
     }
 
     fn unit_square() -> Vec<[f64; 2]> {
@@ -194,7 +224,11 @@ mod tests {
         let [a, b, c] = corners(m, t).expect("valid index");
         let e1 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
         let e2 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
-        [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]]
+        [
+            e1[1] * e2[2] - e1[2] * e2[1],
+            e1[2] * e2[0] - e1[0] * e2[2],
+            e1[0] * e2[1] - e1[1] * e2[0],
+        ]
     }
 
     #[test]
@@ -213,7 +247,11 @@ mod tests {
 
     #[test]
     fn ramp_slab_top_vertices_sit_on_the_plane() {
-        let plane = Plane { c: 0.5, dx: 0.25, dz: -0.5 };
+        let plane = Plane {
+            c: 0.5,
+            dx: 0.25,
+            dz: -0.5,
+        };
         let s = surface(unit_square(), plane);
         let m = slab(&s, 0.1);
         for (p, q) in m.positions[..4].iter().zip(unit_square()) {
@@ -223,7 +261,14 @@ mod tests {
 
     #[test]
     fn normals_face_up_on_top_down_on_bottom_and_out_on_sides() {
-        let s = surface(unit_square(), Plane { c: 0.5, dx: 0.25, dz: -0.5 });
+        let s = surface(
+            unit_square(),
+            Plane {
+                c: 0.5,
+                dx: 0.25,
+                dz: -0.5,
+            },
+        );
         let m = slab(&s, 0.1);
         for t in m.indices.chunks_exact(3) {
             let n = normal(&m, t);
@@ -232,14 +277,19 @@ mod tests {
             } else if t.iter().all(|&i| (4..8).contains(&i)) {
                 assert!(n[1] < 0.0, "bottom triangle {t:?} normal {n:?}");
             } else {
-                assert!(n[1].abs() < 1e-12, "side triangle {t:?} is not vertical: {n:?}");
+                assert!(
+                    n[1].abs() < 1e-12,
+                    "side triangle {t:?} is not vertical: {n:?}"
+                );
                 let c = t
                     .iter()
                     .map(|&i| {
                         let p = m.positions[i as usize];
                         [f64::from(p[0]), f64::from(p[2])]
                     })
-                    .fold([0.0, 0.0], |acc, p| [acc[0] + p[0] / 3.0, acc[1] + p[1] / 3.0]);
+                    .fold([0.0, 0.0], |acc, p| {
+                        [acc[0] + p[0] / 3.0, acc[1] + p[1] / 3.0]
+                    });
                 let out = (c[0] - 0.5) * n[0] + (c[1] - 0.5) * n[2];
                 assert!(out > 0.0, "side triangle {t:?} faces inward: {n:?}");
             }
@@ -248,12 +298,20 @@ mod tests {
 
     #[test]
     fn ray_down_matches_the_plane_on_a_ramp() {
-        let plane = Plane { c: 0.5, dx: 0.25, dz: -0.5 };
+        let plane = Plane {
+            c: 0.5,
+            dx: 0.25,
+            dz: -0.5,
+        };
         let m = slab(&surface(unit_square(), plane), 0.1);
         for &x in &[0.1, 0.3, 0.5, 0.7, 0.9] {
             for &z in &[0.1, 0.4, 0.6, 0.9] {
                 let h = ray_down(&m, x, z, 10.0).expect("inside the square");
-                assert!((h - plane.at(x, z)).abs() < 1e-6, "at ({x}, {z}): {h} vs {}", plane.at(x, z));
+                assert!(
+                    (h - plane.at(x, z)).abs() < 1e-6,
+                    "at ({x}, {z}): {h} vs {}",
+                    plane.at(x, z)
+                );
             }
         }
     }
@@ -311,7 +369,12 @@ mod tests {
             })
             .collect();
         assert!(!is_convex_ccw(&star));
-        assert!(!is_convex_ccw(&[[0.0, 0.0], [1.0, 0.0], [1.0, 0.0], [0.0, 1.0]]));
+        assert!(!is_convex_ccw(&[
+            [0.0, 0.0],
+            [1.0, 0.0],
+            [1.0, 0.0],
+            [0.0, 1.0]
+        ]));
         assert!(!is_convex_ccw(&[[0.0, 0.0], [1.0, 0.0]]));
         assert!(!is_convex_ccw(&[[0.0, 0.0], [1.0, 0.0], [2.0, 0.0]]));
     }
@@ -328,7 +391,14 @@ mod tests {
 
     #[test]
     fn surface_check_rejects_a_non_finite_height() {
-        let s = surface(unit_square(), Plane { c: f64::NAN, dx: 0.0, dz: 0.0 });
+        let s = surface(
+            unit_square(),
+            Plane {
+                c: f64::NAN,
+                dx: 0.0,
+                dz: 0.0,
+            },
+        );
         let err = surface_mesh_check(&s).unwrap_err();
         assert!(err.contains("height is not finite"), "{err}");
     }

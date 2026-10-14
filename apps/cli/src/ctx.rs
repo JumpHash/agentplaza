@@ -27,7 +27,10 @@ impl Ctx {
     /// Prints `value` as JSON (pretty) when `--json`, else calls `human`.
     pub fn out(&self, value: &Value, human: impl FnOnce(&Value)) {
         if self.json {
-            println!("{}", serde_json::to_string_pretty(value).unwrap_or_default());
+            println!(
+                "{}",
+                serde_json::to_string_pretty(value).unwrap_or_default()
+            );
         } else {
             human(value);
         }
@@ -45,7 +48,12 @@ pub struct Client {
 impl Client {
     pub fn new(base: &str, pin: Option<[u8; 32]>, bearer: Option<String>) -> Client {
         Client {
-            target: apz_http::client::Target { base: base.trim_end_matches('/').to_string(), pin, bearer, headers: Vec::new() },
+            target: apz_http::client::Target {
+                base: base.trim_end_matches('/').to_string(),
+                pin,
+                bearer,
+                headers: Vec::new(),
+            },
             timeout: Duration::from_secs(30),
         }
     }
@@ -56,12 +64,17 @@ impl Client {
 
     /// One call; a non-2xx answer becomes `Err` with the hub's `error` text.
     pub fn call(&self, method: &str, path: &str, body: Option<&Value>) -> Result<Value, String> {
-        let (status, value) = apz_http::client::request_json(&self.target, method, path, body, self.timeout)
-            .map_err(|e| format!("{} {}: {e}", self.base(), path))?;
+        let (status, value) =
+            apz_http::client::request_json(&self.target, method, path, body, self.timeout)
+                .map_err(|e| format!("{} {}: {e}", self.base(), path))?;
         if (200..300).contains(&status) {
             Ok(value)
         } else {
-            Err(value.get("error").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| format!("{method} {path}: HTTP {status}")))
+            Err(value
+                .get("error")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("{method} {path}: HTTP {status}")))
         }
     }
 
@@ -122,7 +135,10 @@ impl Config {
 
     /// The config at `path`; a missing or unreadable file reads as the empty config.
     pub fn load_from(path: &std::path::Path) -> Config {
-        std::fs::read_to_string(path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+        std::fs::read_to_string(path)
+            .ok()
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or_default()
     }
 
     pub fn save(&self) -> Result<(), String> {
@@ -137,15 +153,27 @@ impl Config {
             .ok()
             .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
             .and_then(|doc| {
-                doc.get("hubs").and_then(serde_json::Value::as_object).map(|hubs| {
-                    hubs.iter().filter_map(|(name, hub)| Some((name.clone(), hub.get("pinned")?.clone()))).collect()
-                })
+                doc.get("hubs")
+                    .and_then(serde_json::Value::as_object)
+                    .map(|hubs| {
+                        hubs.iter()
+                            .filter_map(|(name, hub)| {
+                                Some((name.clone(), hub.get("pinned")?.clone()))
+                            })
+                            .collect()
+                    })
             })
             .unwrap_or_default();
         let mut doc = serde_json::to_value(self).map_err(|e| e.to_string())?;
-        if let Some(hubs) = doc.get_mut("hubs").and_then(serde_json::Value::as_object_mut) {
+        if let Some(hubs) = doc
+            .get_mut("hubs")
+            .and_then(serde_json::Value::as_object_mut)
+        {
             for (name, pinned) in pins {
-                if let Some(hub) = hubs.get_mut(&name).and_then(serde_json::Value::as_object_mut) {
+                if let Some(hub) = hubs
+                    .get_mut(&name)
+                    .and_then(serde_json::Value::as_object_mut)
+                {
                     hub.insert("pinned".into(), pinned);
                 }
             }
@@ -154,7 +182,8 @@ impl Config {
             apz_os::private::create_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         }
         let text = serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?;
-        apz_os::private::write(path, text.as_bytes()).map_err(|e| format!("{}: {e}", path.display()))
+        apz_os::private::write(path, text.as_bytes())
+            .map_err(|e| format!("{}: {e}", path.display()))
     }
 }
 
@@ -166,7 +195,8 @@ pub fn parse_pin(hex: &str) -> Result<[u8; 32], String> {
     }
     let mut pin = [0u8; 32];
     for (i, byte) in pin.iter_mut().enumerate() {
-        *byte = u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).map_err(|_| "a pin is hex digits".to_string())?;
+        *byte = u8::from_str_radix(&hex[2 * i..2 * i + 2], 16)
+            .map_err(|_| "a pin is hex digits".to_string())?;
     }
     Ok(pin)
 }
@@ -182,22 +212,36 @@ pub fn local_owner_token() -> Option<String> {
 /// default, then the local hub. A saved hub with a pinned identity (`hub trust`, or the desktop's
 /// trust on first use) is refused when the hub presents another one, before the owner token is
 /// sent; a hex pin (`--pin`, or the saved one) is checked by TLS instead.
-pub fn resolve(hub: Option<String>, token: Option<String>, pin: Option<String>, json: bool) -> Result<Ctx, String> {
+pub fn resolve(
+    hub: Option<String>,
+    token: Option<String>,
+    pin: Option<String>,
+    json: bool,
+) -> Result<Ctx, String> {
     let config = Config::load();
     // The saved hub's name: the one `--hub` names, else the default.
     let name = match &hub {
-        Some(name_or_url) => config.hubs.contains_key(name_or_url).then(|| name_or_url.clone()),
-        None => config.default.clone().filter(|name| config.hubs.contains_key(name)),
+        Some(name_or_url) => config
+            .hubs
+            .contains_key(name_or_url)
+            .then(|| name_or_url.clone()),
+        None => config
+            .default
+            .clone()
+            .filter(|name| config.hubs.contains_key(name)),
     };
-    let saved = name.as_ref().and_then(|name| config.hubs.get(name)).cloned();
+    let saved = name
+        .as_ref()
+        .and_then(|name| config.hubs.get(name))
+        .cloned();
     let url = match (&hub, &saved) {
         (_, Some(saved)) => saved.url.clone(),
         (Some(url), None) => url.clone(),
         (None, None) => LOCAL_HUB.to_string(),
     };
-    let token = token.or_else(|| saved.as_ref().and_then(|s| s.token.clone())).or_else(|| {
-        (url == LOCAL_HUB).then(local_owner_token).flatten()
-    });
+    let token = token
+        .or_else(|| saved.as_ref().and_then(|s| s.token.clone()))
+        .or_else(|| (url == LOCAL_HUB).then(local_owner_token).flatten());
     let pin = match pin.or_else(|| saved.as_ref().and_then(|s| s.pin.clone())) {
         Some(hex) => Some(parse_pin(&hex)?),
         None => None,
@@ -209,14 +253,24 @@ pub fn resolve(hub: Option<String>, token: Option<String>, pin: Option<String>, 
     if let Some((name, pinned)) = pinned {
         check_pinned_identity(name, &url, &pinned)?;
     }
-    Ok(Ctx { client: Client::new(&url, pin, token), json, rich: crate::rich::Mode::default() })
+    Ok(Ctx {
+        client: Client::new(&url, pin, token),
+        json,
+        rich: crate::rich::Mode::default(),
+    })
 }
 
 /// The fingerprint pinned for the saved hub `name` in the config file at `path` (`pinned.fingerprint`,
 /// written by `hub trust` and by the desktop app). None when the hub has no pinned identity.
 pub fn pinned_identity(path: &Path, name: &str) -> Option<String> {
     let doc: Value = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
-    doc.get("hubs")?.get(name)?.get("pinned")?.get("fingerprint")?.as_str().filter(|f| !f.is_empty()).map(str::to_string)
+    doc.get("hubs")?
+        .get(name)?
+        .get("pinned")?
+        .get("fingerprint")?
+        .as_str()
+        .filter(|f| !f.is_empty())
+        .map(str::to_string)
 }
 
 /// Asks the hub at `url` which identity it presents (`GET /v1/hub/identity`, unauthenticated and
@@ -224,7 +278,10 @@ pub fn pinned_identity(path: &Path, name: &str) -> Option<String> {
 /// `pinned`. The owner token is not sent by this call.
 fn check_pinned_identity(name: &str, url: &str, pinned: &str) -> Result<(), String> {
     let identity = Client::new(url, None, None).get("/v1/hub/identity")?;
-    let presented = identity.get("fingerprint").and_then(Value::as_str).filter(|f| !f.is_empty());
+    let presented = identity
+        .get("fingerprint")
+        .and_then(Value::as_str)
+        .filter(|f| !f.is_empty());
     compare_identity(name, pinned, presented)
 }
 
@@ -264,9 +321,16 @@ pub fn table(header: &[&str], rows: &[Vec<String>]) {
     }
     let cut = |c: &str| -> String {
         let one_line = c.replace('\n', " ");
-        if one_line.chars().count() > 60 { one_line.chars().take(59).collect::<String>() + "…" } else { one_line }
+        if one_line.chars().count() > 60 {
+            one_line.chars().take(59).collect::<String>() + "…"
+        } else {
+            one_line
+        }
     };
-    let rows: Vec<Vec<String>> = rows.iter().map(|r| r.iter().map(|c| cut(c)).collect()).collect();
+    let rows: Vec<Vec<String>> = rows
+        .iter()
+        .map(|r| r.iter().map(|c| cut(c)).collect())
+        .collect();
     let mut widths: Vec<usize> = header.iter().map(|h| h.chars().count()).collect();
     for row in &rows {
         for (i, cell) in row.iter().enumerate() {
@@ -278,7 +342,11 @@ pub fn table(header: &[&str], rows: &[Vec<String>]) {
     let line = |cells: Vec<&str>| {
         let mut out = String::new();
         for (i, cell) in cells.iter().enumerate() {
-            let pad = widths.get(i).copied().unwrap_or(0).saturating_sub(cell.chars().count());
+            let pad = widths
+                .get(i)
+                .copied()
+                .unwrap_or(0)
+                .saturating_sub(cell.chars().count());
             out.push_str(cell);
             if i + 1 < cells.len() {
                 out.push_str(&" ".repeat(pad + 2));
@@ -286,7 +354,15 @@ pub fn table(header: &[&str], rows: &[Vec<String>]) {
         }
         println!("{}", out.trim_end());
     };
-    line(header.iter().map(|h| h.to_uppercase()).collect::<Vec<_>>().iter().map(String::as_str).collect());
+    line(
+        header
+            .iter()
+            .map(|h| h.to_uppercase())
+            .collect::<Vec<_>>()
+            .iter()
+            .map(String::as_str)
+            .collect(),
+    );
     for row in &rows {
         line(row.iter().map(String::as_str).collect());
     }
@@ -322,20 +398,29 @@ pub fn confirm(yes: bool, question: &str) -> Result<bool, String> {
         return Ok(true);
     }
     if !std::io::stdin().is_terminal() {
-        return Err(format!("{question} Not on a terminal: pass --yes to go ahead"));
+        return Err(format!(
+            "{question} Not on a terminal: pass --yes to go ahead"
+        ));
     }
     print!("{question} [y/N] ");
     std::io::stdout().flush().map_err(|e| e.to_string())?;
     let mut answer = String::new();
-    std::io::stdin().read_line(&mut answer).map_err(|e| e.to_string())?;
-    Ok(matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes"))
+    std::io::stdin()
+        .read_line(&mut answer)
+        .map_err(|e| e.to_string())?;
+    Ok(matches!(
+        answer.trim().to_ascii_lowercase().as_str(),
+        "y" | "yes"
+    ))
 }
 
 /// A text flag's value, or stdin for "-". Blank text is refused.
 pub fn text_arg(value: &str) -> Result<String, String> {
     let body = if value == "-" {
         let mut buf = String::new();
-        std::io::stdin().read_to_string(&mut buf).map_err(|e| format!("reading stdin: {e}"))?;
+        std::io::stdin()
+            .read_to_string(&mut buf)
+            .map_err(|e| format!("reading stdin: {e}"))?;
         buf
     } else {
         value.to_string()
@@ -360,7 +445,10 @@ fn local_offset() -> Option<i64> {
 
 #[cfg(unix)]
 fn read_offset() -> Option<i64> {
-    let out = std::process::Command::new("date").arg("+%z").output().ok()?;
+    let out = std::process::Command::new("date")
+        .arg("+%z")
+        .output()
+        .ok()?;
     let text = String::from_utf8(out.stdout).ok()?;
     let text = text.trim();
     let sign = match text.as_bytes().first().copied()? {
@@ -399,7 +487,11 @@ fn format_when(ms: i64, offset: Option<i64>) -> String {
     let (year, month, day) = civil(local.div_euclid(86_400));
     let minutes = local.rem_euclid(86_400) / 60;
     let zone = if offset.is_none() { "Z" } else { "" };
-    format!("{year:04}-{month:02}-{day:02} {:02}:{:02}{zone}", minutes / 60, minutes % 60)
+    format!(
+        "{year:04}-{month:02}-{day:02} {:02}:{:02}{zone}",
+        minutes / 60,
+        minutes % 60
+    )
 }
 
 /// Local time as `YYYY-MM-DD HH:MM` for a hub time in epoch milliseconds. Text passes through as
@@ -434,7 +526,10 @@ pub fn ago(ms: &Value) -> String {
 }
 
 fn now_ms() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -449,9 +544,18 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(&path, before).unwrap();
         let mut config: Config = serde_json::from_str(before).unwrap();
-        config.hubs.insert("work".into(), SavedHub { url: "https://work.example:7700".into(), token: None, pin: None, mcp_token: None });
+        config.hubs.insert(
+            "work".into(),
+            SavedHub {
+                url: "https://work.example:7700".into(),
+                token: None,
+                pin: None,
+                mcp_token: None,
+            },
+        );
         config.save_to(&path).unwrap();
-        let after: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let after: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(after["hubs"]["home"]["pinned"]["fingerprint"], "ab");
         assert_eq!(after["hubs"]["work"]["url"], "https://work.example:7700");
         let _ = std::fs::remove_dir_all(&dir);

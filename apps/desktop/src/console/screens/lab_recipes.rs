@@ -3,22 +3,23 @@
 //! apid checks it), confirms, then records the vet; a refusal stays on the dialog. The list reloads
 //! on every poll tick (the console's 4 s `Tick` calls `load`).
 
-use iced::widget::{column, container, row, stack, text_input, Space};
+use iced::widget::{Space, column, container, row, stack, text_input};
 use iced::{Alignment, Element, Length, Task};
 use serde_json::Value;
 
+use super::Id;
 use super::lab::{self, Section};
 use super::lab_common;
-use super::Id;
+use crate::console::Ctx;
 use crate::console::client;
 use crate::console::lab_api::{self, Recipe};
 use crate::console::ui::{self, Kind, Tone};
-use crate::console::Ctx;
 use crate::theme::{self};
 
 /// Cards per row in the recipe grid, as the web's `minmax(340px, 1fr)` at the console's width.
 const GRID_COLS: usize = 2;
-const COMMIT_HINT: &str = "Seven to 64 hex characters of the commit, or dev-... for a local-dev pin.";
+const COMMIT_HINT: &str =
+    "Seven to 64 hex characters of the commit, or dev-... for a local-dev pin.";
 
 #[derive(Debug, Default)]
 pub struct State {
@@ -136,7 +137,9 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             Task::none()
         }
         Msg::VetConfirm => {
-            let Some(v) = state.vet.as_mut() else { return Task::none() };
+            let Some(v) = state.vet.as_mut() else {
+                return Task::none();
+            };
             if v.busy {
                 return Task::none();
             }
@@ -149,7 +152,11 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         }
         Msg::Vetted(Ok(done)) => {
             state.vet = None;
-            state.notice = Some(format!("Vetted {} at {}", done.id, short_commit(&done.commit)));
+            state.notice = Some(format!(
+                "Vetted {} at {}",
+                done.id,
+                short_commit(&done.commit)
+            ));
             if let Some(list) = state.recipes.as_mut() {
                 if let Some(slot) = list.iter_mut().find(|r| r.id == done.id) {
                     *slot = done;
@@ -192,7 +199,9 @@ fn commit_problem(commit: &str) -> Option<&'static str> {
         return Some("Enter the commit to vet.");
     }
     let hex = (7..=64).contains(&c.len()) && c.bytes().all(|b| b.is_ascii_hexdigit());
-    let dev = c.strip_prefix("dev-").is_some_and(|rest| !rest.is_empty() && !rest.chars().any(char::is_whitespace));
+    let dev = c
+        .strip_prefix("dev-")
+        .is_some_and(|rest| !rest.is_empty() && !rest.chars().any(char::is_whitespace));
     if hex || dev {
         None
     } else {
@@ -227,7 +236,9 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
         Some(list) => parts.push(grid(list.iter().map(recipe_card).collect(), GRID_COLS)),
         None => {}
     }
-    let page: Element<'a, Msg> = ui::scroll(column(parts).spacing(22).width(Length::Fill)).height(Length::Fill).into();
+    let page: Element<'a, Msg> = ui::scroll(column(parts).spacing(22).width(Length::Fill))
+        .height(Length::Fill)
+        .into();
     let framed = lab::frame(Section::Recipes, page, Msg::Go);
     match state.vet.as_ref() {
         Some(v) => stack(vec![framed, vet_layer(v)]).into(),
@@ -255,9 +266,18 @@ fn grid<'a>(cards: Vec<Element<'a, Msg>>, cols: usize) -> Element<'a, Msg> {
 /// One recipe: its name, its local-dev badge, its facts, its schema, and the Vet action.
 fn recipe_card<'a>(r: &'a Recipe) -> Element<'a, Msg> {
     let facts: Vec<Element<'a, Msg>> = vec![
-        fact("Id", ui::mono(r.id.clone(), 12.0, crate::theme::palette().ink)),
-        fact("Repo", ui::mono(r.repo.clone(), 12.0, crate::theme::palette().ink_2)),
-        fact("Commit", ui::mono(short_commit(&r.commit), 12.0, crate::theme::palette().ink)),
+        fact(
+            "Id",
+            ui::mono(r.id.clone(), 12.0, crate::theme::palette().ink),
+        ),
+        fact(
+            "Repo",
+            ui::mono(r.repo.clone(), 12.0, crate::theme::palette().ink_2),
+        ),
+        fact(
+            "Commit",
+            ui::mono(short_commit(&r.commit), 12.0, crate::theme::palette().ink),
+        ),
         fact("Vetted", vetted(r)),
     ];
     let mut body: Vec<Element<'a, Msg>> = Vec::new();
@@ -269,7 +289,12 @@ fn recipe_card<'a>(r: &'a Recipe) -> Element<'a, Msg> {
     body.push(
         row![
             Space::new().width(Length::Fill),
-            ui::btn("Vet", Some("check"), Kind::Secondary, Some(Msg::OpenVet(r.clone()))),
+            ui::btn(
+                "Vet",
+                Some("check"),
+                Kind::Secondary,
+                Some(Msg::OpenVet(r.clone()))
+            ),
         ]
         .align_y(Alignment::Center)
         .into(),
@@ -279,10 +304,13 @@ fn recipe_card<'a>(r: &'a Recipe) -> Element<'a, Msg> {
 
 /// A label in a fixed left column over its value, as the web's definition list.
 fn fact<'a>(label: &str, value: impl Into<Element<'a, Msg>>) -> Element<'a, Msg> {
-    row![container(ui::label(label)).width(Length::Fixed(84.0)), container(value.into()).width(Length::Fill)]
-        .spacing(10)
-        .align_y(Alignment::Start)
-        .into()
+    row![
+        container(ui::label(label)).width(Length::Fixed(84.0)),
+        container(value.into()).width(Length::Fill)
+    ]
+    .spacing(10)
+    .align_y(Alignment::Start)
+    .into()
 }
 
 /// The vet state: a badge, then who vetted it and when.
@@ -291,10 +319,13 @@ fn vetted<'a>(r: &Recipe) -> Element<'a, Msg> {
         None | Some(0) => ui::badge("not vetted", Tone::Warn),
         Some(ms) => {
             let by = r.vetted_by.as_deref().unwrap_or("unknown");
-            row![ui::badge("vetted", Tone::Ok), ui::faint(format!("by {by} {}", lab_common::ago(ms)))]
-                .spacing(8)
-                .align_y(Alignment::Center)
-                .into()
+            row![
+                ui::badge("vetted", Tone::Ok),
+                ui::faint(format!("by {by} {}", lab_common::ago(ms)))
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center)
+            .into()
         }
     }
 }
@@ -314,7 +345,12 @@ fn schema_block<'a>(schema: &Value) -> Vec<Element<'a, Msg>> {
     let list = |obj: Option<&serde_json::Map<String, Value>>, key: &str| -> Vec<String> {
         obj.and_then(|o| o.get(key))
             .and_then(Value::as_array)
-            .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
             .unwrap_or_default()
     };
     let numeric = list(input, "numeric");
@@ -326,21 +362,41 @@ fn schema_block<'a>(schema: &Value) -> Vec<Element<'a, Msg>> {
     if !categorical.is_empty() {
         notes.push(format!("{} categorical", categorical.len()));
     }
-    if let Some(d) = input.and_then(|o| o.get("embedding_dim")).and_then(Value::as_u64) {
+    if let Some(d) = input
+        .and_then(|o| o.get("embedding_dim"))
+        .and_then(Value::as_u64)
+    {
         notes.push(format!("embedding {d}"));
     }
-    if let Some(b) = input.and_then(|o| o.get("hash_buckets")).and_then(Value::as_u64) {
+    if let Some(b) = input
+        .and_then(|o| o.get("hash_buckets"))
+        .and_then(Value::as_u64)
+    {
         notes.push(format!("{} hash buckets", lab_common::count(b)));
     }
     let classes = list(output, "classes");
-    let mut out = vec![section("Inputs", if notes.is_empty() { "none".to_string() } else { notes.join(", ") })];
+    let mut out = vec![section(
+        "Inputs",
+        if notes.is_empty() {
+            "none".to_string()
+        } else {
+            notes.join(", ")
+        },
+    )];
     if !numeric.is_empty() {
         out.push(section("Numeric", numeric.join(", ")));
     }
     if !categorical.is_empty() {
         out.push(section("Categorical", categorical.join(", ")));
     }
-    out.push(section("Outputs", if classes.is_empty() { "none".to_string() } else { format!("{} classes", classes.len()) }));
+    out.push(section(
+        "Outputs",
+        if classes.is_empty() {
+            "none".to_string()
+        } else {
+            format!("{} classes", classes.len())
+        },
+    ));
     if !classes.is_empty() {
         out.push(section("Classes", classes.join(" · ")));
     }
@@ -349,7 +405,12 @@ fn schema_block<'a>(schema: &Value) -> Vec<Element<'a, Msg>> {
 
 /// A schema line: its label in the small caps, its value in mono under it.
 fn section<'a>(label: &str, value: String) -> Element<'a, Msg> {
-    column![ui::label(label), ui::sans(value, 11.5, crate::theme::palette().ink_2)].spacing(4).into()
+    column![
+        ui::label(label),
+        ui::sans(value, 11.5, crate::theme::palette().ink_2)
+    ]
+    .spacing(4)
+    .into()
 }
 
 /// `text` cut to `max` characters, with an ellipsis when it had to be cut.
@@ -363,8 +424,14 @@ fn clip(text: &str, max: usize) -> String {
 
 /// The vet dialog as a card over a scrim, the way the git and models screens draw their sheets.
 fn vet_layer<'a>(v: &'a Vet) -> Element<'a, Msg> {
-    let body: Element<'a, Msg> = if v.confirming { vet_confirm(v) } else { vet_edit(v) };
-    let boxed = container(ui::card(&format!("Vet {}", v.id), body)).width(Length::Fixed(520.0)).style(theme::boxed);
+    let body: Element<'a, Msg> = if v.confirming {
+        vet_confirm(v)
+    } else {
+        vet_edit(v)
+    };
+    let boxed = container(ui::card(&format!("Vet {}", v.id), body))
+        .width(Length::Fixed(520.0))
+        .style(theme::boxed);
     container(boxed)
         .width(Length::Fill)
         .height(Length::Fill)
@@ -376,13 +443,21 @@ fn vet_layer<'a>(v: &'a Vet) -> Element<'a, Msg> {
 
 /// The commit step: the field, its hint, the problem if any, then Cancel and Review.
 fn vet_edit<'a>(v: &'a Vet) -> Element<'a, Msg> {
-    let hint = if v.local_dev { format!("A local-dev recipe vets only at its own pin, {}.", v.pin) } else { COMMIT_HINT.to_string() };
+    let hint = if v.local_dev {
+        format!("A local-dev recipe vets only at its own pin, {}.", v.pin)
+    } else {
+        COMMIT_HINT.to_string()
+    };
     let input = text_input("7 to 64 hex characters, or dev-...", &v.commit)
         .on_input(Msg::VetCommit)
         .on_submit(Msg::VetReview)
         .padding(8)
         .style(theme::input);
-    let mut items: Vec<Element<'a, Msg>> = vec![ui::label("Commit").into(), input.into(), ui::faint(hint).into()];
+    let mut items: Vec<Element<'a, Msg>> = vec![
+        ui::label("Commit").into(),
+        input.into(),
+        ui::faint(hint).into(),
+    ];
     if let Some(e) = &v.error {
         items.push(ui::error_line(e));
     }
@@ -401,7 +476,11 @@ fn vet_edit<'a>(v: &'a Vet) -> Element<'a, Msg> {
 
 /// The confirm step: the sentence, the server's refusal if it gave one, then Back and Confirm vet.
 fn vet_confirm<'a>(v: &'a Vet) -> Element<'a, Msg> {
-    let sentence = format!("Vet {} at commit {}? The vet records you as the vetter at this commit, so a job can use the recipe.", v.id, v.commit.trim());
+    let sentence = format!(
+        "Vet {} at commit {}? The vet records you as the vetter at this commit, so a job can use the recipe.",
+        v.id,
+        v.commit.trim()
+    );
     let mut items: Vec<Element<'a, Msg>> = vec![ui::prose(sentence).into()];
     if let Some(e) = &v.error {
         items.push(ui::error_line(e));
@@ -410,7 +489,12 @@ fn vet_confirm<'a>(v: &'a Vet) -> Element<'a, Msg> {
         row![
             Space::new().width(Length::Fill),
             ui::btn("Back", None, Kind::Ghost, (!v.busy).then_some(Msg::VetBack)),
-            ui::btn("Confirm vet", None, Kind::Primary, (!v.busy).then_some(Msg::VetConfirm)),
+            ui::btn(
+                "Confirm vet",
+                None,
+                Kind::Primary,
+                (!v.busy).then_some(Msg::VetConfirm)
+            ),
         ]
         .spacing(8)
         .align_y(Alignment::Center)

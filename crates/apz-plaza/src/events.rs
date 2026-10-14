@@ -174,7 +174,11 @@ impl Event {
                 offset,
                 quote(text)
             ),
-            Event::Task { id, state, assignee } => format!(
+            Event::Task {
+                id,
+                state,
+                assignee,
+            } => format!(
                 "{{\"id\":{},\"state\":{},\"assignee\":{}}}",
                 quote(id),
                 quote(state),
@@ -302,7 +306,6 @@ fn quote(value: &str) -> String {
 /// comment, so a dead connection is noticed (the write fails) instead of
 /// sitting in the channel's wait forever.
 
-
 /// The bus the registry publishes to and the events endpoint subscribes to.
 ///
 /// Publishing to a subscriber that went away fails silently and drops it, so
@@ -337,9 +340,6 @@ impl EventBus {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .retain(|sender| sender.send(event.clone()).is_ok());
     }
-
-
-
 }
 
 #[cfg(test)]
@@ -586,5 +586,4 @@ mod tests {
             1
         );
     }
-
 }

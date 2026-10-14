@@ -8,21 +8,24 @@ use std::collections::{BTreeMap, HashSet};
 
 use iced::font::Weight;
 use iced::widget::text::Wrapping;
-use iced::widget::{column, container, pick_list, row, text, text_input, Space, Stack};
+use iced::widget::{Space, Stack, column, container, pick_list, row, text, text_input};
 use iced::{Alignment, Border, Color, Element, Font, Length, Task, Theme};
-use serde::de::DeserializeOwned;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde::de::DeserializeOwned;
+use serde_json::{Value, json};
 
 use super::Id;
-use crate::console::{client, ui, Ctx};
+use crate::console::{Ctx, client, ui};
 use crate::theme;
 
 const DISC_PAGE: usize = 10;
 const DISC_KINDS: [&str; 5] = ["cli", "library", "service", "api", "technique"];
 const SECTIONS: [&str; 4] = ["Enabled", "Configured", "Needs a key", "Coming soon"];
 
-const SANS_SEMIBOLD: Font = Font { weight: Weight::Semibold, ..theme::SANS };
+const SANS_SEMIBOLD: Font = Font {
+    weight: Weight::Semibold,
+    ..theme::SANS
+};
 
 // ---- The hub's shapes (as apps/web/src/api.ts types them) -----------------------------------
 
@@ -179,17 +182,34 @@ pub struct Discovery {
 #[derive(Debug, Clone)]
 pub enum Modal {
     /// One connector's credentials (write-only), roles and enabled flag.
-    Configure { id: String, values: BTreeMap<String, String>, roles: String, enabled: bool },
+    Configure {
+        id: String,
+        values: BTreeMap<String, String>,
+        roles: String,
+        enabled: bool,
+    },
     /// A connector proposal's full spec, with approve or reject.
     Review { id: String, note: String },
     /// A library tool's files; `shown` is the file open in the viewer (path, content).
-    Files { name: String, version: u64, shown: Option<(String, String)> },
+    Files {
+        name: String,
+        version: u64,
+        shown: Option<(String, String)>,
+    },
     /// Reject a library tool, with an optional note for its author.
-    RejectTool { name: String, version: u64, note: String },
+    RejectTool {
+        name: String,
+        version: u64,
+        note: String,
+    },
     /// Remove a library tool version.
     RemoveTool { name: String, version: u64 },
     /// Flag a found tool with a reason.
-    FlagFound { id: String, name: String, reason: String },
+    FlagFound {
+        id: String,
+        name: String,
+        reason: String,
+    },
     /// Remove a found tool (the web's confirm).
     RemoveFound { id: String, name: String },
 }
@@ -296,7 +316,11 @@ where
 }
 
 /// One write to the hub; on success the screen reloads and the dialog closes, showing `done`.
-fn act(ctx: &Ctx, done: String, run: impl FnOnce(&client::Client) -> Result<(), String> + Send + 'static) -> Task<Msg> {
+fn act(
+    ctx: &Ctx,
+    done: String,
+    run: impl FnOnce(&client::Client) -> Result<(), String> + Send + 'static,
+) -> Task<Msg> {
     let client = ctx.client.clone();
     client::task(move || run(&client).map(|()| done), Msg::Done)
 }
@@ -324,7 +348,10 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             state.error = None;
             Task::none()
         }
-        Msg::ConnectorsLoaded(Err(e)) | Msg::ProposalsLoaded(Err(e)) | Msg::LibraryLoaded(Err(e)) | Msg::ToolboxLoaded(Err(e)) => {
+        Msg::ConnectorsLoaded(Err(e))
+        | Msg::ProposalsLoaded(Err(e))
+        | Msg::LibraryLoaded(Err(e))
+        | Msg::ToolboxLoaded(Err(e)) => {
             state.error = Some(e);
             Task::none()
         }
@@ -345,18 +372,31 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             Task::none()
         }
         Msg::SetEnabled(id, on) => {
-            let label = format!("{} {}", connector_label(state, &id), if on { "enabled" } else { "disabled" });
+            let label = format!(
+                "{} {}",
+                connector_label(state, &id),
+                if on { "enabled" } else { "disabled" }
+            );
             let path = format!("/v1/connectors/{id}");
-            act(ctx, label, move |c| c.call("PUT", &path, Some(&json!({ "enabled": on }))).map(|_| ()))
+            act(ctx, label, move |c| {
+                c.call("PUT", &path, Some(&json!({ "enabled": on })))
+                    .map(|_| ())
+            })
         }
         Msg::Test(id) => {
             let path = format!("/v1/connectors/{id}/test");
             let client = ctx.client.clone();
-            client::task(move || client.post::<ConnTest>(&path, &json!({})), Msg::Tested)
+            client::task(
+                move || client.post::<ConnTest>(&path, &json!({})),
+                Msg::Tested,
+            )
         }
         Msg::Tested(Ok(report)) => {
             state.notice = Some(if report.ok {
-                (format!("OK · {} ms · {}", report.latency_ms, report.detail), false)
+                (
+                    format!("OK · {} ms · {}", report.latency_ms, report.detail),
+                    false,
+                )
             } else if report.detail.is_empty() {
                 ("Test failed".to_string(), true)
             } else {
@@ -369,9 +409,20 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             Task::none()
         }
         Msg::Configure(id) => {
-            let Some(c) = connector(state, &id) else { return Task::none() };
-            let values: BTreeMap<String, String> = c.fields.iter().map(|f| (f.name.clone(), String::new())).collect();
-            let modal = Modal::Configure { id: id.clone(), values, roles: c.roles.join(", "), enabled: c.enabled };
+            let Some(c) = connector(state, &id) else {
+                return Task::none();
+            };
+            let values: BTreeMap<String, String> = c
+                .fields
+                .iter()
+                .map(|f| (f.name.clone(), String::new()))
+                .collect();
+            let modal = Modal::Configure {
+                id: id.clone(),
+                values,
+                roles: c.roles.join(", "),
+                enabled: c.enabled,
+            };
             state.modal = Some(modal);
             state.modal_error = None;
             Task::none()
@@ -398,21 +449,35 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             if state.busy {
                 return Task::none();
             }
-            let Some(Modal::Configure { id, .. }) = state.modal.clone() else { return Task::none() };
+            let Some(Modal::Configure { id, .. }) = state.modal.clone() else {
+                return Task::none();
+            };
             let label = connector(state, &id)
                 .and_then(|c| c.fields.iter().find(|f| f.name == name))
                 .map_or_else(|| name.clone(), |f| f.label.clone());
             state.busy = true;
             state.modal_error = None;
             let path = format!("/v1/connectors/{id}/secret?field={}", encode(&name));
-            act(ctx, format!("{label} removed"), move |c| c.delete(&path).map(|_| ()))
+            act(ctx, format!("{label} removed"), move |c| {
+                c.delete(&path).map(|_| ())
+            })
         }
         Msg::CfgSave => {
             if state.busy {
                 return Task::none();
             }
-            let Some(Modal::Configure { id, values, roles, enabled }) = state.modal.clone() else { return Task::none() };
-            let Some(c) = connector(state, &id) else { return Task::none() };
+            let Some(Modal::Configure {
+                id,
+                values,
+                roles,
+                enabled,
+            }) = state.modal.clone()
+            else {
+                return Task::none();
+            };
+            let Some(c) = connector(state, &id) else {
+                return Task::none();
+            };
             // Each field typed into is written; an empty field keeps what is stored.
             let secrets: Vec<(String, String)> = c
                 .fields
@@ -422,16 +487,33 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                     (!v.is_empty()).then(|| (f.name.clone(), v.to_string()))
                 })
                 .collect();
-            let roles: Vec<String> = roles.split(',').map(str::trim).filter(|s| !s.is_empty()).map(str::to_string).collect();
+            let roles: Vec<String> = roles
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .collect();
             state.busy = true;
             state.modal_error = None;
             let secret_path = format!("/v1/connectors/{id}/secret");
             let path = format!("/v1/connectors/{id}");
             act(ctx, "Saved".to_string(), move |client| {
                 for (field, value) in secrets {
-                    client.call("PUT", &secret_path, Some(&json!({ "field": field, "value": value }))).map(|_| ())?;
+                    client
+                        .call(
+                            "PUT",
+                            &secret_path,
+                            Some(&json!({ "field": field, "value": value })),
+                        )
+                        .map(|_| ())?;
                 }
-                client.call("PUT", &path, Some(&json!({ "enabled": enabled, "roles": roles }))).map(|_| ())
+                client
+                    .call(
+                        "PUT",
+                        &path,
+                        Some(&json!({ "enabled": enabled, "roles": roles })),
+                    )
+                    .map(|_| ())
             })
         }
         Msg::ToggleDecided => {
@@ -439,7 +521,10 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             Task::none()
         }
         Msg::Review(id) => {
-            state.modal = Some(Modal::Review { id, note: String::new() });
+            state.modal = Some(Modal::Review {
+                id,
+                note: String::new(),
+            });
             state.modal_error = None;
             Task::none()
         }
@@ -453,8 +538,14 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             if state.busy {
                 return Task::none();
             }
-            let Some(Modal::Review { id, note }) = state.modal.clone() else { return Task::none() };
-            let blocked = state.proposals.iter().find(|p| p.id == id).is_some_and(|p| !p.checks.is_empty());
+            let Some(Modal::Review { id, note }) = state.modal.clone() else {
+                return Task::none();
+            };
+            let blocked = state
+                .proposals
+                .iter()
+                .find(|p| p.id == id)
+                .is_some_and(|p| !p.checks.is_empty());
             if approve && blocked {
                 return Task::none();
             }
@@ -468,20 +559,36 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             state.modal_error = None;
             let path = format!("/v1/connectors/proposals/{id}/review");
             let outcome = format!("{label} {}", if approve { "approved" } else { "rejected" });
-            act(ctx, outcome, move |client| client.call("POST", &path, Some(&body)).map(|_| ()))
+            act(ctx, outcome, move |client| {
+                client.call("POST", &path, Some(&body)).map(|_| ())
+            })
         }
         Msg::OpenFiles(name, version) => {
-            state.modal = Some(Modal::Files { name, version, shown: None });
+            state.modal = Some(Modal::Files {
+                name,
+                version,
+                shown: None,
+            });
             state.modal_error = None;
             Task::none()
         }
         Msg::ShowFile(path) => {
-            let Some(Modal::Files { name, version, shown }) = &mut state.modal else { return Task::none() };
+            let Some(Modal::Files {
+                name,
+                version,
+                shown,
+            }) = &mut state.modal
+            else {
+                return Task::none();
+            };
             *shown = Some((path.clone(), "Loading…".to_string()));
             let url = format!("/v1/library/{name}/{version}/files?path={}", encode(&path));
             let client = ctx.client.clone();
             let p = path.clone();
-            client::task(move || client.get::<FileContent>(&url).map(|f| f.content), move |r| Msg::FileLoaded(p.clone(), r))
+            client::task(
+                move || client.get::<FileContent>(&url).map(|f| f.content),
+                move |r| Msg::FileLoaded(p.clone(), r),
+            )
         }
         Msg::FileLoaded(path, result) => {
             let content = match result {
@@ -496,10 +603,18 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         Msg::Publish(name, version) => {
             let outcome = format!("x_{name} published");
             let path = format!("/v1/library/{name}/{version}/review");
-            act(ctx, outcome, move |client| client.call("POST", &path, Some(&json!({ "approve": true }))).map(|_| ()))
+            act(ctx, outcome, move |client| {
+                client
+                    .call("POST", &path, Some(&json!({ "approve": true })))
+                    .map(|_| ())
+            })
         }
         Msg::OpenReject(name, version) => {
-            state.modal = Some(Modal::RejectTool { name, version, note: String::new() });
+            state.modal = Some(Modal::RejectTool {
+                name,
+                version,
+                note: String::new(),
+            });
             state.modal_error = None;
             Task::none()
         }
@@ -513,7 +628,14 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             if state.busy {
                 return Task::none();
             }
-            let Some(Modal::RejectTool { name, version, note }) = state.modal.clone() else { return Task::none() };
+            let Some(Modal::RejectTool {
+                name,
+                version,
+                note,
+            }) = state.modal.clone()
+            else {
+                return Task::none();
+            };
             let note = note.trim().to_string();
             let mut body = json!({ "approve": false });
             if !note.is_empty() {
@@ -523,7 +645,9 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             state.modal_error = None;
             let outcome = format!("x_{name} rejected");
             let path = format!("/v1/library/{name}/{version}/review");
-            act(ctx, outcome, move |client| client.call("POST", &path, Some(&body)).map(|_| ()))
+            act(ctx, outcome, move |client| {
+                client.call("POST", &path, Some(&body)).map(|_| ())
+            })
         }
         Msg::OpenRemove(name, version) => {
             state.modal = Some(Modal::RemoveTool { name, version });
@@ -534,7 +658,9 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             if state.busy {
                 return Task::none();
             }
-            let Some(Modal::RemoveTool { name, version }) = state.modal.clone() else { return Task::none() };
+            let Some(Modal::RemoveTool { name, version }) = state.modal.clone() else {
+                return Task::none();
+            };
             state.busy = true;
             state.modal_error = None;
             let outcome = format!("x_{name} removed");
@@ -563,7 +689,11 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         }
         Msg::OpenFlag(id) => {
             let name = found_name(state, &id);
-            state.modal = Some(Modal::FlagFound { id, name, reason: String::new() });
+            state.modal = Some(Modal::FlagFound {
+                id,
+                name,
+                reason: String::new(),
+            });
             state.modal_error = None;
             Task::none()
         }
@@ -577,7 +707,9 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             if state.busy {
                 return Task::none();
             }
-            let Some(Modal::FlagFound { id, name, reason }) = state.modal.clone() else { return Task::none() };
+            let Some(Modal::FlagFound { id, name, reason }) = state.modal.clone() else {
+                return Task::none();
+            };
             let reason = reason.trim().to_string();
             if reason.is_empty() {
                 state.modal_error = Some("Write a reason first".to_string());
@@ -587,12 +719,20 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             state.modal_error = None;
             let outcome = format!("{name} flagged");
             let path = format!("/v1/toolbox/{id}/flag");
-            act(ctx, outcome, move |client| client.post::<Value>(&path, &json!({ "reason": reason })).map(|_| ()))
+            act(ctx, outcome, move |client| {
+                client
+                    .post::<Value>(&path, &json!({ "reason": reason }))
+                    .map(|_| ())
+            })
         }
         Msg::Unflag(id) => {
             let outcome = format!("{} unflagged", found_name(state, &id));
             let path = format!("/v1/toolbox/{id}/flag");
-            act(ctx, outcome, move |client| client.post::<Value>(&path, &json!({ "reason": null })).map(|_| ()))
+            act(ctx, outcome, move |client| {
+                client
+                    .post::<Value>(&path, &json!({ "reason": null }))
+                    .map(|_| ())
+            })
         }
         Msg::OpenRemoveFound(id, name) => {
             state.modal = Some(Modal::RemoveFound { id, name });
@@ -603,7 +743,9 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             if state.busy {
                 return Task::none();
             }
-            let Some(Modal::RemoveFound { id, name }) = state.modal.clone() else { return Task::none() };
+            let Some(Modal::RemoveFound { id, name }) = state.modal.clone() else {
+                return Task::none();
+            };
             state.busy = true;
             state.modal_error = None;
             state.expanded.remove(&id);
@@ -636,26 +778,32 @@ fn connector_label(state: &State, id: &str) -> String {
 }
 
 fn proposal_label(state: &State, id: &str) -> String {
-    state.proposals.iter().find(|p| p.id == id).map_or_else(|| id.to_string(), |p| p.spec.label.clone())
+    state
+        .proposals
+        .iter()
+        .find(|p| p.id == id)
+        .map_or_else(|| id.to_string(), |p| p.spec.label.clone())
 }
 
 fn found_name(state: &State, id: &str) -> String {
-    state.toolbox.iter().find(|d| d.id == id).map_or_else(|| id.to_string(), |d| d.name.clone())
+    state
+        .toolbox
+        .iter()
+        .find(|d| d.id == id)
+        .map_or_else(|| id.to_string(), |d| d.name.clone())
 }
 
 fn gate(busy: bool, msg: Msg) -> Option<Msg> {
-    if busy {
-        None
-    } else {
-        Some(msg)
-    }
+    if busy { None } else { Some(msg) }
 }
 
 /// Percent-encodes a query value: every byte outside the unreserved set.
 pub(super) fn encode(text: &str) -> String {
     text.bytes()
         .map(|b| match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (b as char).to_string()
+            }
             _ => format!("%{b:02X}"),
         })
         .collect()
@@ -669,11 +817,7 @@ fn section_of(c: &Connector) -> &'static str {
     if !c.configured || c.fields.iter().any(|f| f.required && !f.set) {
         return "Needs a key";
     }
-    if c.enabled {
-        "Enabled"
-    } else {
-        "Configured"
-    }
+    if c.enabled { "Enabled" } else { "Configured" }
 }
 
 fn section_status(section: &str) -> (&'static str, ui::Tone) {
@@ -719,20 +863,35 @@ fn auth_label(auth: &ProposalAuth) -> String {
 
 fn matches(d: &Discovery, q: &str) -> bool {
     q.is_empty()
-        || [d.name.as_str(), d.what_for.as_str(), d.by.as_str()].iter().any(|s| s.to_lowercase().contains(q))
+        || [d.name.as_str(), d.what_for.as_str(), d.by.as_str()]
+            .iter()
+            .any(|s| s.to_lowercase().contains(q))
         || d.tags.iter().any(|t| t.to_lowercase().contains(q))
 }
 
 fn boxed(_: &Theme) -> container::Style {
     container::Style {
-        border: Border { color: crate::theme::palette().rule, width: 1.0, radius: 0.0.into() },
+        border: Border {
+            color: crate::theme::palette().rule,
+            width: 1.0,
+            radius: 0.0.into(),
+        },
         ..Default::default()
     }
 }
 
 /// A card (the web's `.prov-card`): a boxed frame, 16px sides, 12px below.
 fn frame<'a>(content: impl Into<Element<'a, Msg>>) -> Element<'a, Msg> {
-    container(content).padding(iced::Padding { top: 16.0, right: 16.0, bottom: 12.0, left: 16.0 }).width(Length::Fill).style(boxed).into()
+    container(content)
+        .padding(iced::Padding {
+            top: 16.0,
+            right: 16.0,
+            bottom: 12.0,
+            left: 16.0,
+        })
+        .width(Length::Fill)
+        .style(boxed)
+        .into()
 }
 
 /// A small boxed tag (the web's tool-chip).
@@ -744,14 +903,20 @@ fn chip<'a>(content: impl Into<Element<'a, Msg>>) -> Element<'a, Msg> {
 fn rule_line<'a>(color: Color) -> Element<'a, Msg> {
     container(Space::new().height(1.0))
         .width(Length::Fill)
-        .style(move |_: &Theme| container::Style { background: Some(color.into()), ..Default::default() })
+        .style(move |_: &Theme| container::Style {
+            background: Some(color.into()),
+            ..Default::default()
+        })
         .into()
 }
 
 /// Items spread across the line with equal gaps (the web's `justify-content: space-between`).
 fn between<'a>(items: Vec<Element<'a, Msg>>) -> Element<'a, Msg> {
     let last = items.len().saturating_sub(1);
-    let mut line = row(Vec::new()).spacing(8).align_y(Alignment::Center).width(Length::Fill);
+    let mut line = row(Vec::new())
+        .spacing(8)
+        .align_y(Alignment::Center)
+        .width(Length::Fill);
     for (i, item) in items.into_iter().enumerate() {
         line = line.push(item);
         if i < last {
@@ -763,15 +928,30 @@ fn between<'a>(items: Vec<Element<'a, Msg>>) -> Element<'a, Msg> {
 
 /// A card's actions (the web's `.prov-actions`): a faint rule, then the buttons from the left.
 fn card_footer<'a>(items: Vec<Element<'a, Msg>>) -> Element<'a, Msg> {
-    column![ui::hairline(), row(items).spacing(8).align_y(Alignment::Center)].spacing(10).into()
+    column![
+        ui::hairline(),
+        row(items).spacing(8).align_y(Alignment::Center)
+    ]
+    .spacing(10)
+    .into()
 }
 
 /// A card's head: the logo (or none), then a serif title over a one-line faint line, cut at the edge.
-fn card_head<'a>(logo: Option<Element<'a, Msg>>, title: Element<'a, Msg>, sub: String) -> Element<'a, Msg> {
-    let sub = container(ui::faint(sub).wrapping(Wrapping::None)).width(Length::Fill).height(Length::Fixed(18.0)).clip(true);
+fn card_head<'a>(
+    logo: Option<Element<'a, Msg>>,
+    title: Element<'a, Msg>,
+    sub: String,
+) -> Element<'a, Msg> {
+    let sub = container(ui::faint(sub).wrapping(Wrapping::None))
+        .width(Length::Fill)
+        .height(Length::Fixed(18.0))
+        .clip(true);
     let block = column![title, sub].spacing(2).width(Length::Fill);
     match logo {
-        Some(logo) => row![logo, block].spacing(12).align_y(Alignment::Center).into(),
+        Some(logo) => row![logo, block]
+            .spacing(12)
+            .align_y(Alignment::Center)
+            .into(),
         None => block.into(),
     }
 }
@@ -779,14 +959,27 @@ fn card_head<'a>(logo: Option<Element<'a, Msg>>, title: Element<'a, Msg>, sub: S
 /// A small square dot in a tone (the web's risk dot).
 fn dot<'a>(tone: ui::Tone) -> Element<'a, Msg> {
     let color = tone.color();
-    container(Space::new().width(Length::Fixed(7.0)).height(Length::Fixed(7.0)))
-        .style(move |_: &Theme| container::Style { background: Some(color.into()), ..Default::default() })
-        .into()
+    container(
+        Space::new()
+            .width(Length::Fixed(7.0))
+            .height(Length::Fixed(7.0)),
+    )
+    .style(move |_: &Theme| container::Style {
+        background: Some(color.into()),
+        ..Default::default()
+    })
+    .into()
 }
 
 /// A section title (the web's `.prov-group-title`): small mono caps over a rule.
 fn group_title<'a>(title: &str) -> Element<'a, Msg> {
-    column![ui::sans(title.to_string(), 11.0, crate::theme::palette().ink), rule_line(crate::theme::palette().rule)].spacing(6).width(Length::Fill).into()
+    column![
+        ui::sans(title.to_string(), 11.0, crate::theme::palette().ink),
+        rule_line(crate::theme::palette().rule)
+    ]
+    .spacing(6)
+    .width(Length::Fill)
+    .into()
 }
 
 /// A connector's logo box (the web's 48px `.logo.lg`): its brand mark, else its initials.
@@ -794,8 +987,18 @@ fn logo<'a>(c: &Connector) -> Element<'a, Msg> {
     let inner: Element<'a, Msg> = if !c.brand.is_empty() {
         ui::brand_logo(&c.brand, 26.0)
     } else {
-        let letters: String = c.label.split_whitespace().filter_map(|w| w.chars().next()).take(2).collect::<String>().to_uppercase();
-        text(letters).font(ui::SANS_BOLD).size(13.0).color(crate::theme::palette().ink).into()
+        let letters: String = c
+            .label
+            .split_whitespace()
+            .filter_map(|w| w.chars().next())
+            .take(2)
+            .collect::<String>()
+            .to_uppercase();
+        text(letters)
+            .font(ui::SANS_BOLD)
+            .size(13.0)
+            .color(crate::theme::palette().ink)
+            .into()
     };
     container(inner)
         .width(Length::Fixed(48.0))
@@ -808,7 +1011,12 @@ fn logo<'a>(c: &Connector) -> Element<'a, Msg> {
 
 /// A card's title in the web's serif semibold, one line.
 fn card_title<'a>(label: &str) -> Element<'a, Msg> {
-    text(label.to_string()).font(SANS_SEMIBOLD).size(16.5).color(crate::theme::palette().ink).wrapping(Wrapping::None).into()
+    text(label.to_string())
+        .font(SANS_SEMIBOLD)
+        .size(16.5)
+        .color(crate::theme::palette().ink)
+        .wrapping(Wrapping::None)
+        .into()
 }
 
 fn checks_box<'a>(checks: &[String]) -> Element<'a, Msg> {
@@ -820,7 +1028,9 @@ fn checks_box<'a>(checks: &[String]) -> Element<'a, Msg> {
 }
 
 fn gated_row<'a>(items: Vec<Element<'a, Msg>>) -> Element<'a, Msg> {
-    let mut line = row![Space::new().width(Length::Fill)].spacing(8).align_y(Alignment::Center);
+    let mut line = row![Space::new().width(Length::Fill)]
+        .spacing(8)
+        .align_y(Alignment::Center);
     for item in items {
         line = line.push(item);
     }
@@ -835,19 +1045,39 @@ fn connector_card<'a>(c: &Connector) -> Element<'a, Msg> {
     let needs_key = section == "Needs a key";
     let cli = c.kind == "cli";
 
-    let mut meta = vec![ui::badge(if cli { "CLI" } else { "API" }, if cli { ui::Tone::Signal } else { ui::Tone::Muted })];
+    let mut meta = vec![ui::badge(
+        if cli { "CLI" } else { "API" },
+        if cli {
+            ui::Tone::Signal
+        } else {
+            ui::Tone::Muted
+        },
+    )];
     if section != "Coming soon" && from_env_only(c) {
         meta.push(ui::badge("Key from env", ui::Tone::Info));
     }
     meta.push(ui::badge(text, tone));
 
-    let mut body = column![card_head(Some(logo(c)), card_title(&c.label), c.description.clone()), between(meta)].spacing(12);
+    let mut body = column![
+        card_head(Some(logo(c)), card_title(&c.label), c.description.clone()),
+        between(meta)
+    ]
+    .spacing(12);
 
     if !c.actions.is_empty() {
         let chips: Vec<Element<'a, Msg>> = c
             .actions
             .iter()
-            .map(|a| chip(row![dot(risk_tone(&a.risk)), ui::mono(a.name.clone(), 11.0, crate::theme::palette().ink_2)].spacing(6).align_y(Alignment::Center)))
+            .map(|a| {
+                chip(
+                    row![
+                        dot(risk_tone(&a.risk)),
+                        ui::mono(a.name.clone(), 11.0, crate::theme::palette().ink_2)
+                    ]
+                    .spacing(6)
+                    .align_y(Alignment::Center),
+                )
+            })
             .collect();
         body = body.push(row(chips).spacing(8));
     }
@@ -856,11 +1086,20 @@ fn connector_card<'a>(c: &Connector) -> Element<'a, Msg> {
         let mut footer = vec![ui::btn(
             "Configure",
             None,
-            if needs_key { ui::Kind::Primary } else { ui::Kind::Secondary },
+            if needs_key {
+                ui::Kind::Primary
+            } else {
+                ui::Kind::Secondary
+            },
             Some(Msg::Configure(c.id.clone())),
         )];
         if c.configured {
-            footer.push(ui::btn("Test", None, ui::Kind::Secondary, Some(Msg::Test(c.id.clone()))));
+            footer.push(ui::btn(
+                "Test",
+                None,
+                ui::Kind::Secondary,
+                Some(Msg::Test(c.id.clone())),
+            ));
             footer.push(ui::btn(
                 if c.enabled { "Disable" } else { "Enable" },
                 None,
@@ -880,7 +1119,11 @@ fn connectors_section<'a>(state: &State) -> Element<'a, Msg> {
         Some(list) if list.is_empty() => return ui::empty("models", "No tools yet", ""),
         Some(list) => {
             for section in SECTIONS {
-                let cards: Vec<Element<'a, Msg>> = list.iter().filter(|c| section_of(c) == section).map(|c| connector_card(c)).collect();
+                let cards: Vec<Element<'a, Msg>> = list
+                    .iter()
+                    .filter(|c| section_of(c) == section)
+                    .map(|c| connector_card(c))
+                    .collect();
                 if !cards.is_empty() {
                     col = col.push(column![group_title(section), ui::card_grid(cards)].spacing(12));
                 }
@@ -890,8 +1133,16 @@ fn connectors_section<'a>(state: &State) -> Element<'a, Msg> {
     col.into()
 }
 
-fn configure_body<'a>(state: &State, id: &str, values: &BTreeMap<String, String>, roles: &str, enabled: bool) -> Element<'a, Msg> {
-    let Some(c) = connector(state, id) else { return ui::faint("This tool is gone.").into() };
+fn configure_body<'a>(
+    state: &State,
+    id: &str,
+    values: &BTreeMap<String, String>,
+    roles: &str,
+    enabled: bool,
+) -> Element<'a, Msg> {
+    let Some(c) = connector(state, id) else {
+        return ui::faint("This tool is gone.").into();
+    };
     let mut col = column![].spacing(12).width(Length::Fill);
     if let Some(cli) = &c.cli {
         col = col.push(ui::faint(format!(
@@ -899,11 +1150,17 @@ fn configure_body<'a>(state: &State, id: &str, values: &BTreeMap<String, String>
             cli.binary
         )));
     }
-    col = col.push(ui::faint("Write-only: a stored value is never shown again. Empty fields keep what is stored."));
+    col = col.push(ui::faint(
+        "Write-only: a stored value is never shown again. Empty fields keep what is stored.",
+    ));
     for f in &c.fields {
         let value = values.get(&f.name).map_or("", String::as_str);
         let name = f.name.clone();
-        let placeholder = if f.hint.is_empty() { f.label.clone() } else { f.hint.clone() };
+        let placeholder = if f.hint.is_empty() {
+            f.label.clone()
+        } else {
+            f.hint.clone()
+        };
         let input = text_input(&placeholder, value)
             .on_input(move |v| Msg::CfgField(name.clone(), v))
             .on_submit(Msg::CfgSave)
@@ -911,13 +1168,22 @@ fn configure_body<'a>(state: &State, id: &str, values: &BTreeMap<String, String>
             .padding(8)
             .style(theme::input);
         let mut field = column![
-            ui::label(&format!("{} · {}", f.label, if f.required { "required" } else { "optional" })),
+            ui::label(&format!(
+                "{} · {}",
+                f.label,
+                if f.required { "required" } else { "optional" }
+            )),
             input,
             ui::faint(source_line(f)),
         ]
         .spacing(6);
         if f.source.as_deref() == Some("vault") {
-            field = field.push(gated_row(vec![ui::btn("Remove", None, ui::Kind::Ghost, gate(state.busy, Msg::CfgClear(f.name.clone())))]));
+            field = field.push(gated_row(vec![ui::btn(
+                "Remove",
+                None,
+                ui::Kind::Ghost,
+                gate(state.busy, Msg::CfgClear(f.name.clone())),
+            )]));
         }
         col = col.push(field);
     }
@@ -926,9 +1192,20 @@ fn configure_body<'a>(state: &State, id: &str, values: &BTreeMap<String, String>
         .on_submit(Msg::CfgSave)
         .padding(8)
         .style(theme::input);
-    col = col.push(column![ui::label("Roles"), roles_input, ui::faint("Comma-separated; empty = all roles")].spacing(6));
+    col = col.push(
+        column![
+            ui::label("Roles"),
+            roles_input,
+            ui::faint("Comma-separated; empty = all roles")
+        ]
+        .spacing(6),
+    );
     col = col.push(ui::btn(
-        if enabled { "Enabled: on" } else { "Enabled: off" },
+        if enabled {
+            "Enabled: on"
+        } else {
+            "Enabled: off"
+        },
         None,
         ui::Kind::Secondary,
         Some(Msg::CfgToggle),
@@ -938,7 +1215,12 @@ fn configure_body<'a>(state: &State, id: &str, values: &BTreeMap<String, String>
     }
     col = col.push(gated_row(vec![
         ui::btn("Close", None, ui::Kind::Ghost, Some(Msg::Close)),
-        ui::btn("Save", None, ui::Kind::Primary, gate(state.busy, Msg::CfgSave)),
+        ui::btn(
+            "Save",
+            None,
+            ui::Kind::Primary,
+            gate(state.busy, Msg::CfgSave),
+        ),
     ]));
     col.into()
 }
@@ -969,7 +1251,13 @@ fn proposal_card<'a>(p: &Proposal) -> Element<'a, Msg> {
         let chips: Vec<Element<'a, Msg>> = s
             .fields
             .iter()
-            .map(|f| chip(ui::sans(format!("{}{}", f.label, if f.required { " *" } else { "" }), 11.0, crate::theme::palette().ink_2)))
+            .map(|f| {
+                chip(ui::sans(
+                    format!("{}{}", f.label, if f.required { " *" } else { "" }),
+                    11.0,
+                    crate::theme::palette().ink_2,
+                ))
+            })
             .collect();
         body = body.push(row(chips).spacing(6));
     }
@@ -978,13 +1266,19 @@ fn proposal_card<'a>(p: &Proposal) -> Element<'a, Msg> {
             .actions
             .iter()
             .map(|a| {
-                chip(row![
-                    dot(risk_tone(&a.risk)),
-                    ui::mono(a.name.clone(), 11.0, crate::theme::palette().ink_2),
-                    ui::mono(format!(" {} {}", a.method, a.path), 11.0, crate::theme::palette().ink_3),
-                ]
-                .spacing(6)
-                .align_y(Alignment::Center))
+                chip(
+                    row![
+                        dot(risk_tone(&a.risk)),
+                        ui::mono(a.name.clone(), 11.0, crate::theme::palette().ink_2),
+                        ui::mono(
+                            format!(" {} {}", a.method, a.path),
+                            11.0,
+                            crate::theme::palette().ink_3
+                        ),
+                    ]
+                    .spacing(6)
+                    .align_y(Alignment::Center),
+                )
             })
             .collect();
         body = body.push(row(chips).spacing(6));
@@ -992,7 +1286,12 @@ fn proposal_card<'a>(p: &Proposal) -> Element<'a, Msg> {
     if !p.checks.is_empty() {
         body = body.push(checks_box(&p.checks));
     }
-    body = body.push(card_footer(vec![ui::btn("Review", None, ui::Kind::Primary, Some(Msg::Review(p.id.clone())))]));
+    body = body.push(card_footer(vec![ui::btn(
+        "Review",
+        None,
+        ui::Kind::Primary,
+        Some(Msg::Review(p.id.clone())),
+    )]));
     frame(body)
 }
 
@@ -1016,12 +1315,22 @@ fn decided_row<'a>(p: &Proposal) -> Element<'a, Msg> {
 }
 
 fn proposals_section<'a>(state: &State) -> Element<'a, Msg> {
-    let pending: Vec<&Proposal> = state.proposals.iter().filter(|p| p.state == "pending").collect();
-    let decided: Vec<&Proposal> = state.proposals.iter().filter(|p| p.state != "pending").collect();
+    let pending: Vec<&Proposal> = state
+        .proposals
+        .iter()
+        .filter(|p| p.state == "pending")
+        .collect();
+    let decided: Vec<&Proposal> = state
+        .proposals
+        .iter()
+        .filter(|p| p.state != "pending")
+        .collect();
     if pending.is_empty() && decided.is_empty() {
         return Space::new().into();
     }
-    let mut col = column![group_title("Proposed connectors")].spacing(12).width(Length::Fill);
+    let mut col = column![group_title("Proposed connectors")]
+        .spacing(12)
+        .width(Length::Fill);
     if pending.is_empty() {
         col = col.push(ui::faint("Nothing waiting for your review."));
     } else {
@@ -1029,8 +1338,17 @@ fn proposals_section<'a>(state: &State) -> Element<'a, Msg> {
         col = col.push(ui::card_grid(cards));
     }
     if !decided.is_empty() {
-        let label = if state.show_decided { "Hide decided".to_string() } else { format!("Decided ({})", decided.len()) };
-        col = col.push(ui::btn(&label, None, ui::Kind::Ghost, Some(Msg::ToggleDecided)));
+        let label = if state.show_decided {
+            "Hide decided".to_string()
+        } else {
+            format!("Decided ({})", decided.len())
+        };
+        col = col.push(ui::btn(
+            &label,
+            None,
+            ui::Kind::Ghost,
+            Some(Msg::ToggleDecided),
+        ));
         if state.show_decided {
             let rows: Vec<Element<'a, Msg>> = decided.iter().map(|p| decided_row(p)).collect();
             col = col.push(column(rows).spacing(6));
@@ -1040,12 +1358,22 @@ fn proposals_section<'a>(state: &State) -> Element<'a, Msg> {
 }
 
 fn review_body<'a>(state: &State, id: &str, note: &str) -> Element<'a, Msg> {
-    let Some(p) = state.proposals.iter().find(|p| p.id == id) else { return ui::faint("This proposal is gone.").into() };
+    let Some(p) = state.proposals.iter().find(|p| p.id == id) else {
+        return ui::faint("This proposal is gone.").into();
+    };
     let s = &p.spec;
     let blocked = !p.checks.is_empty();
     let mut col = column![
-        ui::mono(format!("{} · {}", s.id, s.category), 12.0, crate::theme::palette().ink),
-        ui::faint(format!("Proposed by {} · auth {}", p.proposer, auth_label(&s.auth))),
+        ui::mono(
+            format!("{} · {}", s.id, s.category),
+            12.0,
+            crate::theme::palette().ink
+        ),
+        ui::faint(format!(
+            "Proposed by {} · auth {}",
+            p.proposer,
+            auth_label(&s.auth)
+        )),
         ui::faint(s.description.clone()),
         ui::mono(s.base_url.clone(), 11.0, crate::theme::palette().ink_2),
     ]
@@ -1079,12 +1407,23 @@ fn review_body<'a>(state: &State, id: &str, note: &str) -> Element<'a, Msg> {
         let schema = serde_json::to_string_pretty(&a.input_schema).unwrap_or_default();
         col = col.push(
             column![
-                row![dot(risk_tone(&a.risk)), ui::mono(a.name.clone(), 12.0, crate::theme::palette().ink), ui::faint(a.risk.clone())]
-                    .spacing(8)
-                    .align_y(Alignment::Center),
-                ui::mono(format!("{} {}", a.method, url), 11.0, crate::theme::palette().ink_2),
+                row![
+                    dot(risk_tone(&a.risk)),
+                    ui::mono(a.name.clone(), 12.0, crate::theme::palette().ink),
+                    ui::faint(a.risk.clone())
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center),
+                ui::mono(
+                    format!("{} {}", a.method, url),
+                    11.0,
+                    crate::theme::palette().ink_2
+                ),
                 ui::faint(a.description.clone()),
-                container(ui::mono(schema, 11.0, crate::theme::palette().ink_2)).padding(10).width(Length::Fill).style(boxed),
+                container(ui::mono(schema, 11.0, crate::theme::palette().ink_2))
+                    .padding(10)
+                    .width(Length::Fill)
+                    .style(boxed),
             ]
             .spacing(6),
         );
@@ -1094,15 +1433,29 @@ fn review_body<'a>(state: &State, id: &str, note: &str) -> Element<'a, Msg> {
         .padding(8)
         .style(theme::input);
     col = col.push(
-        column![ui::label("Note for the proposer"), note_input, ui::faint("Optional. Only sent when rejecting.")].spacing(6),
+        column![
+            ui::label("Note for the proposer"),
+            note_input,
+            ui::faint("Optional. Only sent when rejecting.")
+        ]
+        .spacing(6),
     );
     col = col.push(gated_row(vec![
-        ui::btn("Reject", None, ui::Kind::Ghost, gate(state.busy, Msg::Decide(false))),
+        ui::btn(
+            "Reject",
+            None,
+            ui::Kind::Ghost,
+            gate(state.busy, Msg::Decide(false)),
+        ),
         ui::btn(
             "Approve",
             None,
             ui::Kind::Primary,
-            if blocked { None } else { gate(state.busy, Msg::Decide(true)) },
+            if blocked {
+                None
+            } else {
+                gate(state.busy, Msg::Decide(true))
+            },
         ),
     ]));
     col.into()
@@ -1117,26 +1470,59 @@ fn library_card<'a>(t: &LibraryTool) -> Element<'a, Msg> {
         "rejected" => ("Rejected", ui::Tone::Danger),
         _ => ("Private", ui::Tone::Muted),
     };
-    let mut actions = vec![ui::btn("Files", None, ui::Kind::Secondary, Some(Msg::OpenFiles(t.name.clone(), t.version)))];
+    let mut actions = vec![ui::btn(
+        "Files",
+        None,
+        ui::Kind::Secondary,
+        Some(Msg::OpenFiles(t.name.clone(), t.version)),
+    )];
     if t.state == "pending" {
-        actions.push(ui::btn("Publish", None, ui::Kind::Primary, Some(Msg::Publish(t.name.clone(), t.version))));
-        actions.push(ui::btn("Reject", None, ui::Kind::Ghost, Some(Msg::OpenReject(t.name.clone(), t.version))));
+        actions.push(ui::btn(
+            "Publish",
+            None,
+            ui::Kind::Primary,
+            Some(Msg::Publish(t.name.clone(), t.version)),
+        ));
+        actions.push(ui::btn(
+            "Reject",
+            None,
+            ui::Kind::Ghost,
+            Some(Msg::OpenReject(t.name.clone(), t.version)),
+        ));
     }
-    actions.push(ui::btn("Remove", None, ui::Kind::Ghost, Some(Msg::OpenRemove(t.name.clone(), t.version))));
+    actions.push(ui::btn(
+        "Remove",
+        None,
+        ui::Kind::Ghost,
+        Some(Msg::OpenRemove(t.name.clone(), t.version)),
+    ));
 
-    let title = iced::widget::text(format!("x_{}", t.name)).font(ui::SANS_SEMIBOLD).size(16.5).color(crate::theme::palette().ink).wrapping(Wrapping::None);
+    let title = iced::widget::text(format!("x_{}", t.name))
+        .font(ui::SANS_SEMIBOLD)
+        .size(16.5)
+        .color(crate::theme::palette().ink)
+        .wrapping(Wrapping::None);
     let mut body = column![
         card_head(None, title.into(), t.description.clone()),
         between(vec![
             ui::faint(format!("by {} · v{}", t.author, t.version)).into(),
             ui::badge(text, tone),
-            ui::faint(format!("{} {}", t.calls, if t.calls == 1 { "call" } else { "calls" })).into(),
+            ui::faint(format!(
+                "{} {}",
+                t.calls,
+                if t.calls == 1 { "call" } else { "calls" }
+            ))
+            .into(),
         ]),
         ui::mono(t.command.join(" "), 11.0, crate::theme::palette().ink_2),
     ]
     .spacing(12);
     if !t.requires.is_empty() {
-        let reqs: Vec<Element<'a, Msg>> = t.requires.iter().map(|r| chip(ui::sans(r.clone(), 11.0, crate::theme::palette().ink_2))).collect();
+        let reqs: Vec<Element<'a, Msg>> = t
+            .requires
+            .iter()
+            .map(|r| chip(ui::sans(r.clone(), 11.0, crate::theme::palette().ink_2)))
+            .collect();
         body = body.push(row(reqs).spacing(8));
     }
     if let Some(note) = &t.review_note {
@@ -1147,7 +1533,9 @@ fn library_card<'a>(t: &LibraryTool) -> Element<'a, Msg> {
 }
 
 fn library_section<'a>(state: &State) -> Element<'a, Msg> {
-    let mut col = column![group_title("Made by agents")].spacing(14).width(Length::Fill);
+    let mut col = column![group_title("Made by agents")]
+        .spacing(14)
+        .width(Length::Fill);
     if state.library.is_empty() {
         col = col.push(ui::empty(
             "models",
@@ -1156,10 +1544,26 @@ fn library_section<'a>(state: &State) -> Element<'a, Msg> {
         ));
         return col.into();
     }
-    let pending: Vec<Element<'a, Msg>> = state.library.iter().filter(|t| t.state == "pending").map(|t| library_card(t)).collect();
-    let rest: Vec<Element<'a, Msg>> = state.library.iter().filter(|t| t.state != "pending").map(|t| library_card(t)).collect();
+    let pending: Vec<Element<'a, Msg>> = state
+        .library
+        .iter()
+        .filter(|t| t.state == "pending")
+        .map(|t| library_card(t))
+        .collect();
+    let rest: Vec<Element<'a, Msg>> = state
+        .library
+        .iter()
+        .filter(|t| t.state != "pending")
+        .map(|t| library_card(t))
+        .collect();
     if !pending.is_empty() {
-        col = col.push(column![group_title("Waiting for your review"), ui::card_grid(pending)].spacing(10));
+        col = col.push(
+            column![
+                group_title("Waiting for your review"),
+                ui::card_grid(pending)
+            ]
+            .spacing(10),
+        );
     }
     if !rest.is_empty() {
         col = col.push(column![group_title("Library"), ui::card_grid(rest)].spacing(10));
@@ -1167,7 +1571,12 @@ fn library_section<'a>(state: &State) -> Element<'a, Msg> {
     col.into()
 }
 
-fn files_body<'a>(state: &State, name: &str, version: u64, shown: &Option<(String, String)>) -> Element<'a, Msg> {
+fn files_body<'a>(
+    state: &State,
+    name: &str,
+    version: u64,
+    shown: &Option<(String, String)>,
+) -> Element<'a, Msg> {
     let files = state
         .library
         .iter()
@@ -1179,7 +1588,14 @@ fn files_body<'a>(state: &State, name: &str, version: u64, shown: &Option<(Strin
     } else {
         let buttons: Vec<Element<'a, Msg>> = files
             .iter()
-            .map(|f| ui::btn(&format!("{} · {} B", f.path, f.size), None, ui::Kind::Ghost, Some(Msg::ShowFile(f.path.clone()))))
+            .map(|f| {
+                ui::btn(
+                    &format!("{} · {} B", f.path, f.size),
+                    None,
+                    ui::Kind::Ghost,
+                    Some(Msg::ShowFile(f.path.clone())),
+                )
+            })
             .collect();
         column(buttons).spacing(6).into()
     };
@@ -1187,7 +1603,10 @@ fn files_body<'a>(state: &State, name: &str, version: u64, shown: &Option<(Strin
         Some((_, text)) => text.clone(),
         None => "Pick a file to see its content.".to_string(),
     };
-    let viewer = container(ui::sans(content, 12.0, crate::theme::palette().ink_2)).padding(12).width(Length::Fill).style(boxed);
+    let viewer = container(ui::sans(content, 12.0, crate::theme::palette().ink_2))
+        .padding(12)
+        .width(Length::Fill)
+        .style(boxed);
     column![list, viewer].spacing(12).into()
 }
 
@@ -1197,8 +1616,18 @@ fn reject_body<'a>(state: &State, note: &str) -> Element<'a, Msg> {
         .padding(8)
         .style(theme::input);
     column![
-        column![ui::label("Note for the author"), note_input, ui::faint("Optional. The author sees it.")].spacing(6),
-        gated_row(vec![ui::btn("Reject", None, ui::Kind::Primary, gate(state.busy, Msg::RejectTool))]),
+        column![
+            ui::label("Note for the author"),
+            note_input,
+            ui::faint("Optional. The author sees it.")
+        ]
+        .spacing(6),
+        gated_row(vec![ui::btn(
+            "Reject",
+            None,
+            ui::Kind::Primary,
+            gate(state.busy, Msg::RejectTool)
+        )]),
     ]
     .spacing(14)
     .into()
@@ -1206,10 +1635,17 @@ fn reject_body<'a>(state: &State, note: &str) -> Element<'a, Msg> {
 
 fn remove_tool_body<'a>(state: &State, version: u64) -> Element<'a, Msg> {
     column![
-        ui::faint(format!("Removes v{version} and its files from the library. This cannot be undone.")),
+        ui::faint(format!(
+            "Removes v{version} and its files from the library. This cannot be undone."
+        )),
         gated_row(vec![
             ui::btn("Cancel", None, ui::Kind::Ghost, Some(Msg::Close)),
-            ui::btn("Remove", None, ui::Kind::Primary, gate(state.busy, Msg::RemoveTool)),
+            ui::btn(
+                "Remove",
+                None,
+                ui::Kind::Primary,
+                gate(state.busy, Msg::RemoveTool)
+            ),
         ]),
     ]
     .spacing(14)
@@ -1234,8 +1670,16 @@ impl std::fmt::Display for KindChoice {
 /// One found tool, as a row over a rule (the web's `.disc-row`).
 fn found_row<'a>(d: &Discovery, expanded: bool) -> Element<'a, Msg> {
     let mut name = row![
-        text(d.name.clone()).font(SANS_SEMIBOLD).size(15.0).color(crate::theme::palette().ink).wrapping(Wrapping::None),
-        chip(ui::sans(d.kind.clone(), 11.0, crate::theme::palette().ink_2)),
+        text(d.name.clone())
+            .font(SANS_SEMIBOLD)
+            .size(15.0)
+            .color(crate::theme::palette().ink)
+            .wrapping(Wrapping::None),
+        chip(ui::sans(
+            d.kind.clone(),
+            11.0,
+            crate::theme::palette().ink_2
+        )),
     ]
     .spacing(8)
     .align_y(Alignment::Center);
@@ -1243,50 +1687,120 @@ fn found_row<'a>(d: &Discovery, expanded: bool) -> Element<'a, Msg> {
         name = name.push(ui::badge("flagged", ui::Tone::Danger));
     }
     let flag = if d.flagged.is_some() {
-        ui::btn("Unflag", None, ui::Kind::Ghost, Some(Msg::Unflag(d.id.clone())))
+        ui::btn(
+            "Unflag",
+            None,
+            ui::Kind::Ghost,
+            Some(Msg::Unflag(d.id.clone())),
+        )
     } else {
-        ui::btn("Flag", None, ui::Kind::Ghost, Some(Msg::OpenFlag(d.id.clone())))
+        ui::btn(
+            "Flag",
+            None,
+            ui::Kind::Ghost,
+            Some(Msg::OpenFlag(d.id.clone())),
+        )
     };
     let actions = row![
-        ui::btn("Details", None, ui::Kind::Ghost, Some(Msg::Expand(d.id.clone()))),
+        ui::btn(
+            "Details",
+            None,
+            ui::Kind::Ghost,
+            Some(Msg::Expand(d.id.clone()))
+        ),
         flag,
-        ui::btn("Remove", None, ui::Kind::Danger, Some(Msg::OpenRemoveFound(d.id.clone(), d.name.clone()))),
+        ui::btn(
+            "Remove",
+            None,
+            ui::Kind::Danger,
+            Some(Msg::OpenRemoveFound(d.id.clone(), d.name.clone()))
+        ),
     ]
     .spacing(8);
-    let what = container(text(d.what_for.clone()).font(theme::SANS).size(14.0).color(crate::theme::palette().ink_2).wrapping(Wrapping::None))
-        .width(Length::Fill)
-        .height(Length::Fixed(18.0))
-        .clip(true);
-    let by = ui::sans(format!("by {} · {} endorsements", d.by, d.endorsed_by.len()), 11.0, crate::theme::palette().ink_3).wrapping(Wrapping::None);
-    let summary = column![name, row![what, by].spacing(8).align_y(Alignment::Center)].spacing(4).width(Length::Fill);
-    let mut body = column![row![summary, actions].spacing(12).align_y(Alignment::Center)].spacing(10);
+    let what = container(
+        text(d.what_for.clone())
+            .font(theme::SANS)
+            .size(14.0)
+            .color(crate::theme::palette().ink_2)
+            .wrapping(Wrapping::None),
+    )
+    .width(Length::Fill)
+    .height(Length::Fixed(18.0))
+    .clip(true);
+    let by = ui::sans(
+        format!("by {} · {} endorsements", d.by, d.endorsed_by.len()),
+        11.0,
+        crate::theme::palette().ink_3,
+    )
+    .wrapping(Wrapping::None);
+    let summary = column![name, row![what, by].spacing(8).align_y(Alignment::Center)]
+        .spacing(4)
+        .width(Length::Fill);
+    let mut body = column![
+        row![summary, actions]
+            .spacing(12)
+            .align_y(Alignment::Center)
+    ]
+    .spacing(10);
 
     if expanded {
         let mut details = column![
-            container(ui::sans(d.how.clone(), 12.0, crate::theme::palette().ink_2)).padding(10).width(Length::Fill).style(boxed),
+            container(ui::sans(d.how.clone(), 12.0, crate::theme::palette().ink_2))
+                .padding(10)
+                .width(Length::Fill)
+                .style(boxed),
             ui::prose(d.verdict.clone()),
         ]
         .spacing(8);
         if !d.tags.is_empty() {
-            let tags: Vec<Element<'a, Msg>> = d.tags.iter().map(|t| chip(ui::sans(t.clone(), 11.0, crate::theme::palette().ink_2))).collect();
+            let tags: Vec<Element<'a, Msg>> = d
+                .tags
+                .iter()
+                .map(|t| chip(ui::sans(t.clone(), 11.0, crate::theme::palette().ink_2)))
+                .collect();
             details = details.push(row(tags).spacing(8));
         }
         // Agents write these URLs, so only web links are shown (as the proposal review does).
-        if let Some(url) = d.url.as_ref().filter(|u| u.starts_with("http://") || u.starts_with("https://")) {
+        if let Some(url) = d
+            .url
+            .as_ref()
+            .filter(|u| u.starts_with("http://") || u.starts_with("https://"))
+        {
             details = details.push(ui::mono(url.clone(), 11.0, crate::theme::palette().ink_2));
         }
         body = body.push(details);
     }
-    column![container(body).padding(iced::Padding::from([10.0, 0.0])).width(Length::Fill), rule_line(crate::theme::palette().rule)].width(Length::Fill).into()
+    column![
+        container(body)
+            .padding(iced::Padding::from([10.0, 0.0]))
+            .width(Length::Fill),
+        rule_line(crate::theme::palette().rule)
+    ]
+    .width(Length::Fill)
+    .into()
 }
 
 /// The pager, right-aligned (the web's `.disc-pager`).
 fn pager<'a>(page: usize, pages: usize) -> Element<'a, Msg> {
     row![
         Space::new().width(Length::Fill),
-        ui::btn("Previous", None, ui::Kind::Ghost, (page > 1).then_some(Msg::Page(-1))),
-        ui::sans(format!("page {page} of {pages}"), 11.0, crate::theme::palette().ink_3),
-        ui::btn("Next", None, ui::Kind::Ghost, (page < pages).then_some(Msg::Page(1))),
+        ui::btn(
+            "Previous",
+            None,
+            ui::Kind::Ghost,
+            (page > 1).then_some(Msg::Page(-1))
+        ),
+        ui::sans(
+            format!("page {page} of {pages}"),
+            11.0,
+            crate::theme::palette().ink_3
+        ),
+        ui::btn(
+            "Next",
+            None,
+            ui::Kind::Ghost,
+            (page < pages).then_some(Msg::Page(1))
+        ),
     ]
     .spacing(10)
     .align_y(Alignment::Center)
@@ -1310,20 +1824,35 @@ fn found_section<'a>(state: &State) -> Element<'a, Msg> {
         .size(13.0)
         .padding([6, 8])
         .style(theme::input);
-    let mut choices = vec![KindChoice { value: String::new(), label: "All kinds".to_string() }];
-    choices.extend(DISC_KINDS.iter().map(|k| KindChoice { value: k.to_string(), label: k.to_string() }));
+    let mut choices = vec![KindChoice {
+        value: String::new(),
+        label: "All kinds".to_string(),
+    }];
+    choices.extend(DISC_KINDS.iter().map(|k| KindChoice {
+        value: k.to_string(),
+        label: k.to_string(),
+    }));
     let selected = choices.iter().find(|c| c.value == state.kind).cloned();
     let kind = pick_list(choices, selected, |c: KindChoice| Msg::FilterKind(c.value));
     let toolbar = row![
         container(search).width(Length::Fill),
         kind,
-        ui::sans(format!("{} found", state.toolbox.len()), 11.0, crate::theme::palette().ink_3).wrapping(Wrapping::None),
+        ui::sans(
+            format!("{} found", state.toolbox.len()),
+            11.0,
+            crate::theme::palette().ink_3
+        )
+        .wrapping(Wrapping::None),
     ]
     .spacing(10)
     .align_y(Alignment::Center);
 
     let list: Element<'a, Msg> = if state.toolbox.is_empty() {
-        ui::empty("models", "Nothing yet", "Agents record what they find with plaza_toolbox_share.")
+        ui::empty(
+            "models",
+            "Nothing yet",
+            "Agents record what they find with plaza_toolbox_share.",
+        )
     } else if rows.is_empty() {
         ui::faint("Nothing matches that search.").into()
     } else {
@@ -1334,7 +1863,10 @@ fn found_section<'a>(state: &State) -> Element<'a, Msg> {
             .take(DISC_PAGE)
             .map(|d| found_row(d, state.expanded.contains(&d.id)))
             .collect();
-        column![column(items).width(Length::Fill), pager(page, pages)].spacing(10).width(Length::Fill).into()
+        column![column(items).width(Length::Fill), pager(page, pages)]
+            .spacing(10)
+            .width(Length::Fill)
+            .into()
     };
 
     column![group_title("Found by agents"), ui::faint("Software, services and techniques agents found on the internet, tried in their VMs and recommend to each other."), toolbar, list]
@@ -1347,14 +1879,34 @@ fn found_section<'a>(state: &State) -> Element<'a, Msg> {
 /// The open dialog over the screen, as a scrim with a sheet centred on it.
 fn modal_layer<'a>(state: &State) -> Option<Element<'a, Msg>> {
     let (title, body) = match state.modal.as_ref()? {
-        Modal::Configure { id, values, roles, enabled } => (
+        Modal::Configure {
+            id,
+            values,
+            roles,
+            enabled,
+        } => (
             format!("Configure {}", connector_label(state, id)),
             configure_body(state, id, values, roles, *enabled),
         ),
-        Modal::Review { id, note } => (format!("Review {}", proposal_label(state, id)), review_body(state, id, note)),
-        Modal::Files { name, version, shown } => (format!("x_{name} · v{version}"), files_body(state, name, *version, shown)),
-        Modal::RejectTool { name, note, .. } => (format!("Reject x_{name}"), reject_body(state, note)),
-        Modal::RemoveTool { name, version } => (format!("Remove x_{name}?"), remove_tool_body(state, *version)),
+        Modal::Review { id, note } => (
+            format!("Review {}", proposal_label(state, id)),
+            review_body(state, id, note),
+        ),
+        Modal::Files {
+            name,
+            version,
+            shown,
+        } => (
+            format!("x_{name} · v{version}"),
+            files_body(state, name, *version, shown),
+        ),
+        Modal::RejectTool { name, note, .. } => {
+            (format!("Reject x_{name}"), reject_body(state, note))
+        }
+        Modal::RemoveTool { name, version } => (
+            format!("Remove x_{name}?"),
+            remove_tool_body(state, *version),
+        ),
         Modal::FlagFound { name, reason, .. } => (
             format!("Flag {name}"),
             column![
@@ -1370,7 +1922,12 @@ fn modal_layer<'a>(state: &State) -> Option<Element<'a, Msg>> {
                 .spacing(6),
                 gated_row(vec![
                     ui::btn("Cancel", None, ui::Kind::Ghost, Some(Msg::Close)),
-                    ui::btn("Save", None, ui::Kind::Primary, gate(state.busy, Msg::FlagSubmit)),
+                    ui::btn(
+                        "Save",
+                        None,
+                        ui::Kind::Primary,
+                        gate(state.busy, Msg::FlagSubmit)
+                    ),
                 ]),
             ]
             .spacing(14)
@@ -1382,7 +1939,12 @@ fn modal_layer<'a>(state: &State) -> Option<Element<'a, Msg>> {
                 ui::faint(format!("Remove {name} from the found tools?")),
                 gated_row(vec![
                     ui::btn("Cancel", None, ui::Kind::Ghost, Some(Msg::Close)),
-                    ui::btn("Remove", None, ui::Kind::Danger, gate(state.busy, Msg::RemoveFound)),
+                    ui::btn(
+                        "Remove",
+                        None,
+                        ui::Kind::Danger,
+                        gate(state.busy, Msg::RemoveFound)
+                    ),
                 ]),
             ]
             .spacing(14)
@@ -1393,16 +1955,33 @@ fn modal_layer<'a>(state: &State) -> Option<Element<'a, Msg>> {
     if let Some(error) = &state.modal_error {
         col = col.push(ui::error_line(error));
     }
-    let card = container(col).padding(20).max_width(620.0).style(theme::sheet);
-    Some(container(card).width(Length::Fill).height(Length::Fill).center(Length::Fill).style(theme::scrim).into())
+    let card = container(col)
+        .padding(20)
+        .max_width(620.0)
+        .style(theme::sheet);
+    Some(
+        container(card)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center(Length::Fill)
+            .style(theme::scrim)
+            .into(),
+    )
 }
 
 // ---- The screen -----------------------------------------------------------------------------
 
 pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
-    let mut parts: Vec<Element<'a, Msg>> = vec![ui::faint("Keys stay in the plaza's vault; agents reach a tool only through the plaza.").into()];
+    let mut parts: Vec<Element<'a, Msg>> = vec![
+        ui::faint("Keys stay in the plaza's vault; agents reach a tool only through the plaza.")
+            .into(),
+    ];
     if let Some((text, is_error)) = &state.notice {
-        parts.push(if *is_error { ui::error_line(text) } else { ui::faint(text.clone()).into() });
+        parts.push(if *is_error {
+            ui::error_line(text)
+        } else {
+            ui::faint(text.clone()).into()
+        });
     }
     if let Some(error) = &state.error {
         parts.push(ui::error_line(error));
@@ -1417,7 +1996,9 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
         None => body,
     };
     // The page scrolls as the web does: a tall list is not squeezed into the window.
-    ui::scroll(ui::sheet(ui::view_head("Tools", vec![]), body)).height(Length::Fill).into()
+    ui::scroll(ui::sheet(ui::view_head("Tools", vec![]), body))
+        .height(Length::Fill)
+        .into()
 }
 
 #[cfg(test)]
@@ -1425,20 +2006,33 @@ mod tests {
     use super::*;
 
     fn field(source: Option<&str>) -> ConnField {
-        ConnField { env: "EXAMPLE_KEY".into(), source: source.map(String::from), ..Default::default() }
+        ConnField {
+            env: "EXAMPLE_KEY".into(),
+            source: source.map(String::from),
+            ..Default::default()
+        }
     }
 
     #[test]
     fn a_sealed_vault_and_an_out_of_scope_connector_say_so() {
         assert_eq!(source_line(&field(Some("sealed"))), "Vault sealed");
-        assert_eq!(source_line(&field(Some("out_of_scope"))), "Not available on this node");
+        assert_eq!(
+            source_line(&field(Some("out_of_scope"))),
+            "Not available on this node"
+        );
     }
 
     #[test]
     fn the_other_sources_keep_their_lines() {
         assert_eq!(source_line(&field(Some("vault"))), "Set in the vault");
         assert_eq!(source_line(&field(Some("env"))), "Read from $EXAMPLE_KEY");
-        assert_eq!(source_line(&field(Some("missing"))), "Not set — or set $EXAMPLE_KEY in apid's keys file");
-        assert_eq!(source_line(&field(None)), "Not set — or set $EXAMPLE_KEY in apid's keys file");
+        assert_eq!(
+            source_line(&field(Some("missing"))),
+            "Not set — or set $EXAMPLE_KEY in apid's keys file"
+        );
+        assert_eq!(
+            source_line(&field(None)),
+            "Not set — or set $EXAMPLE_KEY in apid's keys file"
+        );
     }
 }

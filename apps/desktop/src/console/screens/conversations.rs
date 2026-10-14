@@ -9,13 +9,13 @@ use std::collections::HashMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use iced::widget::operation::snap_to;
-use iced::widget::{button, column, container, row, text_input, Id as WidgetId, Space};
+use iced::widget::{Id as WidgetId, Space, button, column, container, row, text_input};
 use iced::{Alignment, Border, Element, Length, Task, Theme};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::Id;
-use crate::console::{client, rich, ui, Ctx};
-use crate::theme::{SANS};
+use crate::console::{Ctx, client, rich, ui};
+use crate::theme::SANS;
 
 /// The thread's scrollable, so a newly opened thread can start at its newest message.
 const THREAD: &str = "conversations-thread";
@@ -97,15 +97,26 @@ pub enum Msg {
     Debounced(u64),
     /// The first page of the list for `q`, the agents, and the settings (`Null` when not fetched),
     /// or the failure.
-    Loaded { q: String, result: Result<(Value, Value, Value), String> },
+    Loaded {
+        q: String,
+        result: Result<(Value, Value, Value), String>,
+    },
     /// The selected thread's first page for `q` (or, with `earlier`, the page before it).
-    ThreadLoaded { key: String, q: String, earlier: bool, result: Result<Value, String> },
+    ThreadLoaded {
+        key: String,
+        q: String,
+        earlier: bool,
+        result: Result<Value, String>,
+    },
     /// A rich-content click (a chip, a link, an Open button) or a load of its cards and images.
     Rich(rich::Ev),
     /// Load the next older page of the list.
     LoadOlder,
     /// The next older page of the list, for `q`, or the failure.
-    OlderLoaded { q: String, result: Result<Value, String> },
+    OlderLoaded {
+        q: String,
+        result: Result<Value, String>,
+    },
     /// Load the selected thread's earlier messages.
     LoadEarlier,
     /// The retention fields were edited.
@@ -154,7 +165,11 @@ fn on_rich(action: rich::RichAction) -> Msg {
 
 /// Asks the hub for the cards of the open thread's references that it does not hold yet.
 fn prefetch(state: &mut State, ctx: &Ctx) -> Task<Msg> {
-    let texts: Vec<&str> = state.thread.as_ref().map(|t| t.messages.iter().map(|m| m.text.as_str()).collect()).unwrap_or_default();
+    let texts: Vec<&str> = state
+        .thread
+        .as_ref()
+        .map(|t| t.messages.iter().map(|m| m.text.as_str()).collect())
+        .unwrap_or_default();
     let rctx = rich::context(&state.cards, None, None, None);
     rich::prefetch(&mut state.cards, &ctx.client, &rctx, &texts).map(Msg::Rich)
 }
@@ -173,10 +188,17 @@ pub fn load(state: &mut State, ctx: &Ctx) -> Task<Msg> {
             let conversations = client.get::<Value>(&path)?;
             // The agents only name the threads: without them the list still shows, with ids.
             let agents = client.get::<Value>("/v1/agents").unwrap_or(Value::Null);
-            let settings = if want_settings { client.get::<Value>("/v1/settings").unwrap_or(Value::Null) } else { Value::Null };
+            let settings = if want_settings {
+                client.get::<Value>("/v1/settings").unwrap_or(Value::Null)
+            } else {
+                Value::Null
+            };
             Ok((conversations, agents, settings))
         },
-        move |result| Msg::Loaded { q: q.clone(), result },
+        move |result| Msg::Loaded {
+            q: q.clone(),
+            result,
+        },
     );
     Task::batch(thread.into_iter().chain(std::iter::once(head)))
 }
@@ -189,7 +211,11 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
     let landed = matches!(msg, Msg::Loaded { .. });
     let thread_landed = matches!(msg, Msg::Loaded { .. } | Msg::ThreadLoaded { .. });
     let task = apply(state, msg, ctx);
-    let task = if thread_landed { Task::batch([task, prefetch(state, ctx)]) } else { task };
+    let task = if thread_landed {
+        Task::batch([task, prefetch(state, ctx)])
+    } else {
+        task
+    };
     if !landed {
         return task;
     }
@@ -290,11 +316,18 @@ fn apply(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                 None => Task::none(),
             }
         }
-        Msg::ThreadLoaded { key, q, earlier, result } => {
+        Msg::ThreadLoaded {
+            key,
+            q,
+            earlier,
+            result,
+        } => {
             if q != state.query || current_key(state).as_deref() != Some(key.as_str()) {
                 return Task::none();
             }
-            let Some((a, b)) = parse_key(&key) else { return Task::none() };
+            let Some((a, b)) = parse_key(&key) else {
+                return Task::none();
+            };
             match result {
                 Ok(v) => {
                     state.thread_error = None;
@@ -313,11 +346,21 @@ fn apply(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                             _ => (Vec::new(), None),
                         };
                         let (messages, older) = merge_head(page, next, old, cursor);
-                        state.thread = Some(Thread { key: key.clone(), a, b, messages, older, busy: false });
+                        state.thread = Some(Thread {
+                            key: key.clone(),
+                            a,
+                            b,
+                            messages,
+                            older,
+                            busy: false,
+                        });
                         // A newly opened thread starts at its newest message; a redraw keeps the reader's place.
                         if state.shown.as_deref() != Some(key.as_str()) {
                             state.shown = Some(key);
-                            snap_to(WidgetId::new(THREAD), iced::widget::scrollable::RelativeOffset::END)
+                            snap_to(
+                                WidgetId::new(THREAD),
+                                iced::widget::scrollable::RelativeOffset::END,
+                            )
                         } else {
                             Task::none()
                         }
@@ -380,13 +423,14 @@ fn apply(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             Task::none()
         }
         Msg::SaveRetention => {
-            let (keep, days) = match validate_retention(&state.retention.keep, &state.retention.days) {
-                Ok(v) => v,
-                Err(err) => {
-                    state.retention.note = Some(Err(err));
-                    return Task::none();
-                }
-            };
+            let (keep, days) =
+                match validate_retention(&state.retention.keep, &state.retention.days) {
+                    Ok(v) => v,
+                    Err(err) => {
+                        state.retention.note = Some(Err(err));
+                        return Task::none();
+                    }
+                };
             state.retention.busy = true;
             state.retention.note = None;
             // Read the settings fresh, change only the two conversation fields, and write them back.
@@ -395,7 +439,9 @@ fn apply(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                 move || {
                     let settings = client.get::<Value>("/v1/settings")?;
                     let body = with_retention(settings, keep, days)?;
-                    client.call("PUT", "/v1/settings", Some(&body)).map(|_| (keep, days))
+                    client
+                        .call("PUT", "/v1/settings", Some(&body))
+                        .map(|_| (keep, days))
                 },
                 Msg::RetentionSaved,
             )
@@ -427,20 +473,41 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
         .size(12.0)
         .padding(8)
         .style(crate::theme::input);
-    let clear = ui::btn("Clear", None, ui::Kind::Ghost, (!state.draft.is_empty()).then(|| Msg::Search(String::new())));
-    let search: Element<'a, Msg> = row![search, clear].spacing(6).align_y(Alignment::Center).into();
+    let clear = ui::btn(
+        "Clear",
+        None,
+        ui::Kind::Ghost,
+        (!state.draft.is_empty()).then(|| Msg::Search(String::new())),
+    );
+    let search: Element<'a, Msg> = row![search, clear]
+        .spacing(6)
+        .align_y(Alignment::Center)
+        .into();
 
     let list: Element<'a, Msg> = if !state.loaded {
         ui::loading()
     } else if let Some(err) = &state.error {
-        column![ui::empty("alert", "Could not load conversations.", ""), ui::error_line(err)].into()
+        column![
+            ui::empty("alert", "Could not load conversations.", ""),
+            ui::error_line(err)
+        ]
+        .into()
     } else if pairs.is_empty() {
-        let title = if state.query.is_empty() { "No conversations yet." } else { "No conversations match." };
+        let title = if state.query.is_empty() {
+            "No conversations yet."
+        } else {
+            "No conversations match."
+        };
         ui::empty("conversations", title, "")
     } else {
-        column(pairs.iter().enumerate().map(|(i, p)| pair_item(p, exchange_count(state, p), i == current, &state.agents)))
-            .width(Length::Fill)
-            .into()
+        column(
+            pairs
+                .iter()
+                .enumerate()
+                .map(|(i, p)| pair_item(p, exchange_count(state, p), i == current, &state.agents)),
+        )
+        .width(Length::Fill)
+        .into()
     };
     let mut rows: Vec<Element<'a, Msg>> = vec![list];
     if let Some(err) = &state.list_error {
@@ -450,30 +517,51 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
         rows.push(page_button("Load older", state.busy_older, Msg::LoadOlder));
     }
     let list_col = container(
-        column![search, ui::scroll(column(rows).width(Length::Fill)).height(Length::Fill)]
-            .spacing(10)
-            .height(Length::Fill),
+        column![
+            search,
+            ui::scroll(column(rows).width(Length::Fill)).height(Length::Fill)
+        ]
+        .spacing(10)
+        .height(Length::Fill),
     )
     .width(Length::Fixed(340.0))
     .height(Length::Fill);
 
-    let shown = pairs.get(current).and_then(|p| state.thread.as_ref().filter(|t| t.key == p.key));
+    let shown = pairs
+        .get(current)
+        .and_then(|p| state.thread.as_ref().filter(|t| t.key == p.key));
     let thread: Element<'a, Msg> = match (pairs.get(current), shown) {
         (None, _) => Space::new().width(Length::Fill).into(),
-        (Some(_), Some(t)) => thread_view(t, &state.agents, state.thread_error.as_deref(), &rctx, &state.cards),
+        (Some(_), Some(t)) => thread_view(
+            t,
+            &state.agents,
+            state.thread_error.as_deref(),
+            &rctx,
+            &state.cards,
+        ),
         (Some(_), None) => match &state.thread_error {
             Some(err) => ui::error_line(err),
             None => ui::loading(),
         },
     };
 
-    let divider = container(Space::new()).width(Length::Fixed(1.0)).height(Length::Fill).style(|_: &Theme| container::Style {
-        background: Some(crate::theme::palette().rule.into()),
-        ..Default::default()
-    });
+    let divider = container(Space::new())
+        .width(Length::Fixed(1.0))
+        .height(Length::Fill)
+        .style(|_: &Theme| container::Style {
+            background: Some(crate::theme::palette().rule.into()),
+            ..Default::default()
+        });
 
-    let body: Element<'a, Msg> = row![list_col, divider, thread].height(Length::Fixed(640.0)).into();
-    let head: Element<'a, Msg> = column![ui::view_head("Conversations", vec![]), retention_row(&state.retention)].spacing(12).into();
+    let body: Element<'a, Msg> = row![list_col, divider, thread]
+        .height(Length::Fixed(640.0))
+        .into();
+    let head: Element<'a, Msg> = column![
+        ui::view_head("Conversations", vec![]),
+        retention_row(&state.retention)
+    ]
+    .spacing(12)
+    .into();
     ui::sheet(head, body)
 }
 
@@ -490,7 +578,12 @@ fn retention_row<'a>(r: &'a Retention) -> Element<'a, Msg> {
         ui::faint("exchanges · delete after"),
         retention_field(&r.days, "0", 64.0, Msg::DaysIn),
         ui::faint("days (0 = never)"),
-        ui::btn(if r.busy { "Saving…" } else { "Save" }, None, ui::Kind::Secondary, (!r.busy).then_some(Msg::SaveRetention)),
+        ui::btn(
+            if r.busy { "Saving…" } else { "Save" },
+            None,
+            ui::Kind::Secondary,
+            (!r.busy).then_some(Msg::SaveRetention)
+        ),
         note,
     ]
     .spacing(8)
@@ -498,7 +591,12 @@ fn retention_row<'a>(r: &'a Retention) -> Element<'a, Msg> {
     .into()
 }
 
-fn retention_field<'a>(value: &'a str, placeholder: &'a str, width: f32, on_input: fn(String) -> Msg) -> Element<'a, Msg> {
+fn retention_field<'a>(
+    value: &'a str,
+    placeholder: &'a str,
+    width: f32,
+    on_input: fn(String) -> Msg,
+) -> Element<'a, Msg> {
     text_input(placeholder, value)
         .on_input(on_input)
         .font(SANS)
@@ -511,18 +609,24 @@ fn retention_field<'a>(value: &'a str, placeholder: &'a str, width: f32, on_inpu
 
 /// The index of the selected pair, or the newest (0) when none is selected or it is gone.
 fn current_index(pairs: &[Pair], selected: Option<&str>) -> usize {
-    pairs.iter().position(|p| Some(p.key.as_str()) == selected).unwrap_or(0)
+    pairs
+        .iter()
+        .position(|p| Some(p.key.as_str()) == selected)
+        .unwrap_or(0)
 }
 
 /// The key of the pair on screen: the selected one, else the newest.
 fn current_key(state: &State) -> Option<String> {
     let pairs = group_pairs(&state.conversations);
-    pairs.get(current_index(&pairs, state.selected.as_deref())).map(|p| p.key.clone())
+    pairs
+        .get(current_index(&pairs, state.selected.as_deref()))
+        .map(|p| p.key.clone())
 }
 
 /// The key of the pair on screen when its thread is not loaded yet.
 fn missing_thread(state: &State) -> Option<String> {
-    current_key(state).filter(|key| state.thread.as_ref().map(|t| t.key.as_str()) != Some(key.as_str()))
+    current_key(state)
+        .filter(|key| state.thread.as_ref().map(|t| t.key.as_str()) != Some(key.as_str()))
 }
 
 /// Groups the messages by the unordered pair of agents; pairs newest first.
@@ -534,7 +638,13 @@ fn group_pairs(list: &[Conversation]) -> Vec<Pair> {
     for c in oldest_first {
         let (a, b) = (c.from_cid.min(c.to_cid), c.from_cid.max(c.to_cid));
         let i = *index.entry((a, b)).or_insert_with(|| {
-            pairs.push(Pair { key: format!("{a}-{b}"), a, b, messages: Vec::new(), last: c.clone() });
+            pairs.push(Pair {
+                key: format!("{a}-{b}"),
+                a,
+                b,
+                messages: Vec::new(),
+                last: c.clone(),
+            });
             pairs.len() - 1
         });
         pairs[i].messages.push(c.clone());
@@ -545,11 +655,20 @@ fn group_pairs(list: &[Conversation]) -> Vec<Pair> {
 }
 
 fn label(agents: &[(u64, String)], cid: u64) -> String {
-    agents.iter().find(|(id, _)| *id == cid).map(|(_, name)| name.clone()).unwrap_or_else(|| format!("agent {cid}"))
+    agents
+        .iter()
+        .find(|(id, _)| *id == cid)
+        .map(|(_, name)| name.clone())
+        .unwrap_or_else(|| format!("agent {cid}"))
 }
 
 fn name_link<'a>(cid: u64, agents: &[(u64, String)]) -> Element<'a, Msg> {
-    ui::btn(&label(agents, cid), None, ui::Kind::Ghost, Some(Msg::Go(Id::Agent(cid))))
+    ui::btn(
+        &label(agents, cid),
+        None,
+        ui::Kind::Ghost,
+        Some(Msg::Go(Id::Agent(cid))),
+    )
 }
 
 /// The exchanges a pair shows, as the web does: the hub's whole-record count, unless a search is on
@@ -561,51 +680,120 @@ fn exchange_count(state: &State, p: &Pair) -> usize {
     }
 }
 
-fn pair_item<'a>(p: &Pair, exchanges: usize, active: bool, agents: &[(u64, String)]) -> Element<'a, Msg> {
+fn pair_item<'a>(
+    p: &Pair,
+    exchanges: usize,
+    active: bool,
+    agents: &[(u64, String)],
+) -> Element<'a, Msg> {
     let names = format!("{} · {}", label(agents, p.a), label(agents, p.b));
-    let meta = format!("{} · {} exchanges", ago(p.last.created_at, now_ms()), exchanges);
-    let (background, edge) = if active { (crate::theme::palette().paper, crate::theme::palette().signal) } else { (crate::theme::palette().sheet, crate::theme::palette().rule) };
-    button(column![ui::sans(names, 12.0, crate::theme::palette().ink), ui::prose(clip(&p.last.text, 90)), ui::faint(meta)].spacing(4))
-        .width(Length::Fill)
-        .padding(12)
-        .on_press(Msg::Select(p.key.clone()))
-        .style(move |_: &Theme, _: button::Status| button::Style {
-            background: Some(background.into()),
-            text_color: crate::theme::palette().ink,
-            border: Border { color: edge, width: 1.0, radius: 0.0.into() },
-            ..Default::default()
-        })
-        .into()
+    let meta = format!(
+        "{} · {} exchanges",
+        ago(p.last.created_at, now_ms()),
+        exchanges
+    );
+    let (background, edge) = if active {
+        (
+            crate::theme::palette().paper,
+            crate::theme::palette().signal,
+        )
+    } else {
+        (crate::theme::palette().sheet, crate::theme::palette().rule)
+    };
+    button(
+        column![
+            ui::sans(names, 12.0, crate::theme::palette().ink),
+            ui::prose(clip(&p.last.text, 90)),
+            ui::faint(meta)
+        ]
+        .spacing(4),
+    )
+    .width(Length::Fill)
+    .padding(12)
+    .on_press(Msg::Select(p.key.clone()))
+    .style(move |_: &Theme, _: button::Status| button::Style {
+        background: Some(background.into()),
+        text_color: crate::theme::palette().ink,
+        border: Border {
+            color: edge,
+            width: 1.0,
+            radius: 0.0.into(),
+        },
+        ..Default::default()
+    })
+    .into()
 }
 
 /// The open thread: its pair as the head, the earlier-messages button, then every message as one
 /// readable column (speaker and time in mono, the text in serif).
-fn thread_view<'a>(t: &Thread, agents: &[(u64, String)], error: Option<&str>, rctx: &rich::RichCtx, cards: &rich::Cards) -> Element<'a, Msg> {
-    let head = row![name_link(t.a, agents), ui::faint(" · "), name_link(t.b, agents)].spacing(6).align_y(Alignment::Center);
+fn thread_view<'a>(
+    t: &Thread,
+    agents: &[(u64, String)],
+    error: Option<&str>,
+    rctx: &rich::RichCtx,
+    cards: &rich::Cards,
+) -> Element<'a, Msg> {
+    let head = row![
+        name_link(t.a, agents),
+        ui::faint(" · "),
+        name_link(t.b, agents)
+    ]
+    .spacing(6)
+    .align_y(Alignment::Center);
     let mut items: Vec<Element<'a, Msg>> = vec![head.into(), ui::hairline()];
     if let Some(err) = error {
         items.push(ui::error_line(err));
     }
     if t.older.is_some() {
-        items.push(page_button("Load earlier messages", t.busy, Msg::LoadEarlier));
+        items.push(page_button(
+            "Load earlier messages",
+            t.busy,
+            Msg::LoadEarlier,
+        ));
     }
     // The messages are held newest first; the thread reads oldest first.
-    items.extend(t.messages.iter().rev().map(|m| message(m, agents, rctx, cards)));
-    ui::scroll(column(items).spacing(18).padding(16).max_width(720.0).width(Length::Fill))
-        .id(WidgetId::new(THREAD))
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .into()
+    items.extend(
+        t.messages
+            .iter()
+            .rev()
+            .map(|m| message(m, agents, rctx, cards)),
+    );
+    ui::scroll(
+        column(items)
+            .spacing(18)
+            .padding(16)
+            .max_width(720.0)
+            .width(Length::Fill),
+    )
+    .id(WidgetId::new(THREAD))
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .into()
 }
 
-fn message<'a>(m: &Conversation, agents: &[(u64, String)], rctx: &rich::RichCtx, cards: &rich::Cards) -> Element<'a, Msg> {
-    let mut meta = row![name_link(m.from_cid, agents), ui::sans(ago(m.created_at, now_ms()), 11.0, crate::theme::palette().ink_3)]
-        .spacing(10)
-        .align_y(Alignment::Center);
+fn message<'a>(
+    m: &Conversation,
+    agents: &[(u64, String)],
+    rctx: &rich::RichCtx,
+    cards: &rich::Cards,
+) -> Element<'a, Msg> {
+    let mut meta = row![
+        name_link(m.from_cid, agents),
+        ui::sans(
+            ago(m.created_at, now_ms()),
+            11.0,
+            crate::theme::palette().ink_3
+        )
+    ]
+    .spacing(10)
+    .align_y(Alignment::Center);
     if !m.delivered {
         meta = meta.push(ui::badge("undelivered", ui::Tone::Warn));
     }
-    column![meta, rich::view(&m.text, rctx, cards, &on_rich)].spacing(6).width(Length::Fill).into()
+    column![meta, rich::view(&m.text, rctx, cards, &on_rich)]
+        .spacing(6)
+        .width(Length::Fill)
+        .into()
 }
 
 /// A mono button for paging; it reads "Loading…" and is inert while its page is in flight.
@@ -615,19 +803,32 @@ fn page_button<'a>(label: &str, busy: bool, msg: Msg) -> Element<'a, Msg> {
 }
 
 fn thread_page(ctx: &Ctx, key: String, q: String, before: Option<u64>, earlier: bool) -> Task<Msg> {
-    let Some((a, b)) = parse_key(&key) else { return Task::none() };
+    let Some((a, b)) = parse_key(&key) else {
+        return Task::none();
+    };
     let client = ctx.client.clone();
     let path = thread_path(a, b, before, &q);
     client::task(
         move || client.get::<Value>(&path),
-        move |result| Msg::ThreadLoaded { key: key.clone(), q: q.clone(), earlier, result },
+        move |result| Msg::ThreadLoaded {
+            key: key.clone(),
+            q: q.clone(),
+            earlier,
+            result,
+        },
     )
 }
 
 fn list_page(ctx: &Ctx, before: u64, q: String) -> Task<Msg> {
     let client = ctx.client.clone();
     let path = list_path(Some(before), &q);
-    client::task(move || client.get::<Value>(&path), move |result| Msg::OlderLoaded { q: q.clone(), result })
+    client::task(
+        move || client.get::<Value>(&path),
+        move |result| Msg::OlderLoaded {
+            q: q.clone(),
+            result,
+        },
+    )
 }
 
 /// The query string for one page: the page size, the `before` cursor when paging back, and the search.
@@ -654,7 +855,9 @@ fn thread_path(a: u64, b: u64, before: Option<u64>, q: &str) -> String {
 fn encode(s: &str) -> String {
     s.bytes()
         .map(|b| match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => char::from(b).to_string(),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                char::from(b).to_string()
+            }
             _ => format!("%{b:02X}"),
         })
         .collect()
@@ -668,11 +871,17 @@ fn parse_key(key: &str) -> Option<(u64, u64)> {
 
 /// Checks the retention fields: keep 100..=100000 exchanges, delete after 0..=3650 days (0 = never).
 fn validate_retention(keep: &str, days: &str) -> Result<(u64, u64), String> {
-    let keep: u64 = keep.trim().parse().map_err(|_| "Keep a whole number of exchanges.".to_string())?;
+    let keep: u64 = keep
+        .trim()
+        .parse()
+        .map_err(|_| "Keep a whole number of exchanges.".to_string())?;
     if !(KEEP_MIN..=KEEP_MAX).contains(&keep) {
         return Err(format!("Keep between {KEEP_MIN} and {KEEP_MAX} exchanges."));
     }
-    let days: u64 = days.trim().parse().map_err(|_| "Delete after a whole number of days (0 = never).".to_string())?;
+    let days: u64 = days
+        .trim()
+        .parse()
+        .map_err(|_| "Delete after a whole number of days (0 = never).".to_string())?;
     if days > DAYS_MAX {
         return Err(format!("Delete after at most {DAYS_MAX} days (0 = never)."));
     }
@@ -683,7 +892,9 @@ fn validate_retention(keep: &str, days: &str) -> Result<(u64, u64), String> {
 fn with_retention(mut settings: Value, keep: u64, days: u64) -> Result<Value, String> {
     let root = settings.as_object_mut().ok_or("Settings did not load.")?;
     let retention = root.entry("retention").or_insert_with(|| json!({}));
-    let fields = retention.as_object_mut().ok_or("Retention is not a settings object.")?;
+    let fields = retention
+        .as_object_mut()
+        .ok_or("Retention is not a settings object.")?;
     fields.insert("conversations_max".to_string(), json!(keep));
     fields.insert("conversations_days".to_string(), json!(days));
     Ok(settings)
@@ -705,12 +916,20 @@ fn next_of(v: &Value) -> Option<u64> {
 /// Merges a freshly loaded newest page into what is already loaded (both newest first). Loaded
 /// messages older than the page are kept, so paging back survives a poll; the cursor is the one
 /// for the oldest loaded message when older pages were kept, else the page's own.
-fn merge_head(page: Vec<Conversation>, next: Option<u64>, loaded: Vec<Conversation>, loaded_cursor: Option<u64>) -> (Vec<Conversation>, Option<u64>) {
+fn merge_head(
+    page: Vec<Conversation>,
+    next: Option<u64>,
+    loaded: Vec<Conversation>,
+    loaded_cursor: Option<u64>,
+) -> (Vec<Conversation>, Option<u64>) {
     if next.is_none() {
         return (page, None);
     }
     let floor = page.iter().map(|c| c.created_at).min().unwrap_or(i64::MAX);
-    let kept: Vec<Conversation> = loaded.into_iter().filter(|c| c.created_at < floor).collect();
+    let kept: Vec<Conversation> = loaded
+        .into_iter()
+        .filter(|c| c.created_at < floor)
+        .collect();
     let cursor = if kept.is_empty() { next } else { loaded_cursor };
     let mut all = page;
     all.extend(kept);
@@ -724,7 +943,11 @@ fn parse_conversations(v: &Value) -> Vec<Conversation> {
 
 /// The hub's `pairs` on `GET /v1/conversations`: each pair's exchange count, keyed `a-b`.
 fn parse_pair_counts(v: &Value) -> HashMap<String, usize> {
-    let pairs = v.get("pairs").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]);
+    let pairs = v
+        .get("pairs")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
     pairs
         .iter()
         .filter_map(|p| {
@@ -762,7 +985,11 @@ fn parse_messages(list: &[Value]) -> Vec<Conversation> {
             Some(Conversation {
                 from_cid,
                 to_cid,
-                text: c.get("text").and_then(Value::as_str).unwrap_or("").to_string(),
+                text: c
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
                 created_at: c.get("created_at").and_then(Value::as_f64).unwrap_or(0.0) as i64,
                 delivered: c.get("delivered").and_then(Value::as_bool).unwrap_or(false),
             })
@@ -777,7 +1004,11 @@ fn parse_agents(v: &Value) -> Vec<(u64, String)> {
         .filter_map(|a| {
             let cid = a.get("cid").and_then(Value::as_u64)?;
             let raw = a.get("name").and_then(Value::as_str).unwrap_or("");
-            let name = if raw.trim().is_empty() { "Unnamed".to_string() } else { raw.to_string() };
+            let name = if raw.trim().is_empty() {
+                "Unnamed".to_string()
+            } else {
+                raw.to_string()
+            };
             Some((cid, name))
         })
         .collect()
@@ -785,7 +1016,10 @@ fn parse_agents(v: &Value) -> Vec<(u64, String)> {
 
 /// The array under `key`, or the value itself when it is a bare array.
 fn items<'v>(v: &'v Value, key: &str) -> &'v [Value] {
-    v.as_array().or_else(|| v.get(key).and_then(Value::as_array)).map(Vec::as_slice).unwrap_or(&[])
+    v.as_array()
+        .or_else(|| v.get(key).and_then(Value::as_array))
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
 }
 
 /// The web's `ago`: the age of a millisecond timestamp, as "just now", "5m ago", "3d ago".
@@ -806,14 +1040,20 @@ fn ago(ms: i64, now: i64) -> String {
 /// Clips to `max` characters, ending with an ellipsis, as the web's `clip`.
 fn clip(text: &str, max: usize) -> String {
     if text.chars().count() > max {
-        format!("{}\u{2026}", text.chars().take(max.saturating_sub(1)).collect::<String>())
+        format!(
+            "{}\u{2026}",
+            text.chars().take(max.saturating_sub(1)).collect::<String>()
+        )
     } else {
         text.to_string()
     }
 }
 
 fn now_ms() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -821,7 +1061,13 @@ mod tests {
     use super::*;
 
     fn msg(created_at: i64) -> Conversation {
-        Conversation { from_cid: 1, to_cid: 2, text: String::new(), created_at, delivered: true }
+        Conversation {
+            from_cid: 1,
+            to_cid: 2,
+            text: String::new(),
+            created_at,
+            delivered: true,
+        }
     }
 
     fn times(list: &[Conversation]) -> Vec<i64> {
@@ -831,9 +1077,18 @@ mod tests {
     #[test]
     fn conversations_query_strings_page_and_search() {
         assert_eq!(list_path(None, ""), "/v1/conversations?limit=50");
-        assert_eq!(list_path(Some(42), "a b&c"), "/v1/conversations?limit=50&before=42&q=a%20b%26c");
-        assert_eq!(thread_path(207, 208, None, ""), "/v1/conversations/207/208?limit=50");
-        assert_eq!(thread_path(207, 208, Some(7), "é"), "/v1/conversations/207/208?limit=50&before=7&q=%C3%A9");
+        assert_eq!(
+            list_path(Some(42), "a b&c"),
+            "/v1/conversations?limit=50&before=42&q=a%20b%26c"
+        );
+        assert_eq!(
+            thread_path(207, 208, None, ""),
+            "/v1/conversations/207/208?limit=50"
+        );
+        assert_eq!(
+            thread_path(207, 208, Some(7), "é"),
+            "/v1/conversations/207/208?limit=50&before=7&q=%C3%A9"
+        );
     }
 
     #[test]
@@ -862,22 +1117,36 @@ mod tests {
         });
         let out = with_retention(settings, 200, 30).unwrap();
         assert_eq!(out["default_model"], "x");
-        assert_eq!(out["retention"], json!({"posts_max": 5, "posts_days": 9, "conversations_max": 200, "conversations_days": 30}));
-        assert_eq!(with_retention(json!({}), 100, 0).unwrap()["retention"]["conversations_max"], 100);
+        assert_eq!(
+            out["retention"],
+            json!({"posts_max": 5, "posts_days": 9, "conversations_max": 200, "conversations_days": 30})
+        );
+        assert_eq!(
+            with_retention(json!({}), 100, 0).unwrap()["retention"]["conversations_max"],
+            100
+        );
         assert!(with_retention(json!([]), 100, 0).is_err());
     }
 
     #[test]
     fn conversations_retention_reads_back_as_text() {
         let settings = json!({"retention": {"conversations_max": 1000, "conversations_days": 0}});
-        assert_eq!(retention_fields(&settings), Some(("1000".to_string(), "0".to_string())));
+        assert_eq!(
+            retention_fields(&settings),
+            Some(("1000".to_string(), "0".to_string()))
+        );
         assert_eq!(retention_fields(&json!({})), None);
     }
 
     #[test]
     fn conversations_head_merge_keeps_paged_back_messages() {
         // The page is newer than what is loaded: the loaded messages below it stay, with their cursor.
-        let (all, cursor) = merge_head(vec![msg(12), msg(11)], Some(7), vec![msg(10), msg(9), msg(8)], Some(3));
+        let (all, cursor) = merge_head(
+            vec![msg(12), msg(11)],
+            Some(7),
+            vec![msg(10), msg(9), msg(8)],
+            Some(3),
+        );
         assert_eq!(times(&all), vec![12, 11, 10, 9, 8]);
         assert_eq!(cursor, Some(3));
 

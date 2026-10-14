@@ -3,7 +3,7 @@
 //! and the spine blue), the spots (dots coloured by their clip) and a red marker over each item or spot a violation names.
 //! Drawn in the room's local frame, at the floor's height.
 
-use apz_board::rooms::generate::{fnv1a32, Catalog, Door, Layout, Place};
+use apz_board::rooms::generate::{Catalog, Door, Layout, Place, fnv1a32};
 
 use crate::geometry;
 use crate::scene::{Color, Mat, Material, Obj, Shading};
@@ -50,7 +50,12 @@ fn turn(x: f64, z: f64, rot: f64) -> (f64, f64) {
 
 /// The axis-aligned box of a rot-0 rectangle turned by `rot` and moved to (cx, cz).
 fn box_of(x0: f64, x1: f64, z0: f64, z1: f64, cx: f64, cz: f64, rot: f64) -> Rect {
-    let pts = [turn(x0, z0, rot), turn(x1, z0, rot), turn(x0, z1, rot), turn(x1, z1, rot)];
+    let pts = [
+        turn(x0, z0, rot),
+        turn(x1, z0, rot),
+        turn(x0, z1, rot),
+        turn(x1, z1, rot),
+    ];
     let xs = pts.iter().map(|p| p.0 + cx);
     let zs = pts.iter().map(|p| p.1 + cz);
     Rect {
@@ -82,7 +87,10 @@ fn numbers_after(text: &str, pre: &str, tail: &str) -> Vec<usize> {
                 .chars()
                 .next_back()
                 .map_or(true, |c| !(c.is_alphanumeric() || c == '_'));
-        let digits: String = text[digits_at..].chars().take_while(|c| c.is_ascii_digit()).collect();
+        let digits: String = text[digits_at..]
+            .chars()
+            .take_while(|c| c.is_ascii_digit())
+            .collect();
         if word_start && !digits.is_empty() && text[digits_at + digits.len()..].starts_with(tail) {
             if let Ok(n) = digits.parse() {
                 out.push(n);
@@ -190,14 +198,18 @@ pub fn overlay(o: &Overlay) -> Obj {
         z0: gz + j as f64 * cell,
         z1: gz + (j + 1) as f64 * cell,
     };
-    let cells: Vec<(usize, usize)> = (0..rows).flat_map(|j| (0..cols).map(move |i| (i, j))).collect();
+    let cells: Vec<(usize, usize)> = (0..rows)
+        .flat_map(|j| (0..cols).map(move |i| (i, j)))
+        .collect();
     let rects: Vec<Rect> = cells.iter().map(|&(i, j)| cell_box(i, j)).collect();
 
     // Occupancy: 2 = a blocking solid, 1 = a walk item. Reservations: 1 = a clear zone, 2 = the door or the spine.
     let mut occ = vec![0u8; rects.len()];
     let mut res = vec![0u8; rects.len()];
     for it in &o.layout.items {
-        let Some(cat) = o.catalog.items.get(&it.id) else { continue };
+        let Some(cat) = o.catalog.items.get(&it.id) else {
+            continue;
+        };
         let [cw, _, cd] = cat.size;
         let (hw, hd) = (cw / 2.0, cd / 2.0);
         let floor_layer = cat.layer.as_deref() == Some("floor");
@@ -220,7 +232,12 @@ pub fn overlay(o: &Overlay) -> Obj {
             }
         }
     }
-    let width = ((if matches!(o.door, Door::N | Door::S) { w } else { d }) - 0.5).min(1.0);
+    let width = ((if matches!(o.door, Door::N | Door::S) {
+        w
+    } else {
+        d
+    }) - 0.5)
+        .min(1.0);
     let door_box = match o.door {
         Door::N => Rect {
             x0: -width / 2.0,
@@ -321,7 +338,8 @@ pub fn overlay(o: &Overlay) -> Obj {
     let dot = geometry::sphere(0.04, 8, 6);
     for sp in &o.layout.spots {
         let m = Obj::mesh(&dot, &kit.spot(sp.clip.as_deref()));
-        m.set_position(sp.x as f32, 0.05, sp.z as f32).set_shadows(false, false);
+        m.set_position(sp.x as f32, 0.05, sp.z as f32)
+            .set_shadows(false, false);
         group.add(&m);
     }
 
@@ -334,12 +352,20 @@ pub fn overlay(o: &Overlay) -> Obj {
         b.set_position(x, top, z).set_shadows(false, false);
         group.add(&b);
         let stick = Obj::mesh(&pin_geo(top - y), &kit.marker);
-        stick.set_position(x, (top + y) / 2.0, z).set_shadows(false, false);
+        stick
+            .set_position(x, (top + y) / 2.0, z)
+            .set_shadows(false, false);
         group.add(&stick);
     };
     for n in item_marks {
         if let Some(it) = o.layout.items.get(n) {
-            pin(&group, it.x as f32, it.y as f32, it.z as f32, it.y as f32 + 1.1);
+            pin(
+                &group,
+                it.x as f32,
+                it.y as f32,
+                it.z as f32,
+                it.y as f32 + 1.1,
+            );
         }
     }
     for n in spot_marks {

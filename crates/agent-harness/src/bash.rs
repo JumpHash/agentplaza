@@ -32,8 +32,7 @@ const USER_PATH: &str = "/usr/local/bin:/usr/bin:/bin:/workspace/.local/bin:/wor
 /// from each other; inside it, the agent may do anything.
 pub(crate) const AGENT_RUNS_AS_ROOT: bool = true;
 /// The agent's PATH as root: the system and admin bins, then what it installs for itself.
-const AGENT_PATH: &str =
-    "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/workspace/.local/bin:/workspace/go/bin:/workspace/.npm-global/bin";
+const AGENT_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/workspace/.local/bin:/workspace/go/bin:/workspace/.npm-global/bin";
 /// PATH for package installs, which run as root inside the VM.
 const ADMIN_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 /// A package install may take a while (toolchains are large).
@@ -66,11 +65,19 @@ pub fn run(workspace: &Workspace, input: &Value) -> Result<String, String> {
         Some(value) => value
             .as_u64()
             .filter(|secs| *secs >= 1)
-            .ok_or_else(|| "invalid input: \"timeout_s\" must be a whole number of seconds".to_string())?
+            .ok_or_else(|| {
+                "invalid input: \"timeout_s\" must be a whole number of seconds".to_string()
+            })?
             .min(MAX_TIMEOUT_S),
     };
 
-    execute(workspace.dir(), SHELL, &["-c", script], timeout_s, Privilege::Agent)
+    execute(
+        workspace.dir(),
+        SHELL,
+        &["-c", script],
+        timeout_s,
+        Privilege::Agent,
+    )
 }
 
 /// `install_packages`: installs system packages in this VM with Alpine's apk,
@@ -80,12 +87,18 @@ pub fn install_packages(_workspace: &Workspace, input: &Value) -> Result<String,
     let names: Vec<&str> = match input.get("packages").and_then(Value::as_array) {
         Some(list) => list
             .iter()
-            .map(|v| v.as_str().ok_or_else(|| "invalid input: \"packages\" must be a list of names".to_string()))
+            .map(|v| {
+                v.as_str().ok_or_else(|| {
+                    "invalid input: \"packages\" must be a list of names".to_string()
+                })
+            })
             .collect::<Result<_, _>>()?,
         None => return Err("invalid input: \"packages\" must be a list of names".to_string()),
     };
     if names.is_empty() || names.len() > MAX_PACKAGES {
-        return Err(format!("invalid input: give 1 to {MAX_PACKAGES} package names"));
+        return Err(format!(
+            "invalid input: give 1 to {MAX_PACKAGES} package names"
+        ));
     }
     if let Some(bad) = names.iter().find(|name| !package_name_ok(name)) {
         return Err(format!("invalid input: {bad:?} is not a package name"));
@@ -96,7 +109,13 @@ pub fn install_packages(_workspace: &Workspace, input: &Value) -> Result<String,
         .ok_or_else(|| "this VM has no package manager yet".to_string())?;
     let mut args = vec!["add", "--no-cache"];
     args.extend(names.iter().copied());
-    execute(std::path::Path::new("/"), apk, &args, INSTALL_TIMEOUT_S, Privilege::Root)
+    execute(
+        std::path::Path::new("/"),
+        apk,
+        &args,
+        INSTALL_TIMEOUT_S,
+        Privilege::Root,
+    )
 }
 
 /// apk's package-name shape: lowercase letters, digits and `._+-`, 1–64 characters.
@@ -104,7 +123,9 @@ fn package_name_ok(name: &str) -> bool {
     let mut chars = name.chars();
     matches!(chars.next(), Some(c) if c.is_ascii_lowercase() || c.is_ascii_digit())
         && name.len() <= 64
-        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | '+' | '-'))
+        && chars.all(|c| {
+            c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | '+' | '-')
+        })
 }
 
 /// Who a command runs as: the agent (uid 1000 in a root guest), or root for package installs.
@@ -117,7 +138,12 @@ pub(crate) enum Privilege {
 /// The command `program args` in `dir` as `privilege`: a cleared environment (the proxy
 /// set), stdin closed, its own process group, and the agent's uid drop in a root guest.
 /// The caller sets stdout and stderr.
-pub(crate) fn command(program: &str, args: &[&str], dir: &std::path::Path, privilege: Privilege) -> Result<Command, String> {
+pub(crate) fn command(
+    program: &str,
+    args: &[&str],
+    dir: &std::path::Path,
+    privilege: Privilege,
+) -> Result<Command, String> {
     let mut builder = Command::new(program);
     builder.args(args).stdin(Stdio::null()).process_group(0);
     environment(&mut builder, dir, privilege)?;
@@ -127,7 +153,11 @@ pub(crate) fn command(program: &str, args: &[&str], dir: &std::path::Path, privi
 /// The environment and working directory every guest command runs in (see [`command`]), set on
 /// a builder the caller has already made. The shared operations ([`apz_ops`]) build the same
 /// environment for the IDE's runs and terminals through [`agent_env`].
-pub(crate) fn environment(builder: &mut Command, dir: &std::path::Path, privilege: Privilege) -> Result<(), String> {
+pub(crate) fn environment(
+    builder: &mut Command,
+    dir: &std::path::Path,
+    privilege: Privilege,
+) -> Result<(), String> {
     builder.current_dir(dir);
     match privilege {
         Privilege::Root => with_proxy(apz_ops::Env::new("/root", ADMIN_PATH)).apply(builder),
@@ -140,8 +170,16 @@ pub(crate) fn environment(builder: &mut Command, dir: &std::path::Path, privileg
 /// proxy. The agent is root in its own VM (the owner's choice): the VM is the boundary, so nothing is
 /// dropped. Set `AGENT_RUNS_AS_ROOT` to false to run commands as uid 1000.
 pub(crate) fn agent_env(home: &std::path::Path) -> Result<apz_ops::Env, String> {
-    let uid = if !AGENT_RUNS_AS_ROOT && runs_as_root()? { Some(UNPRIVILEGED) } else { None };
-    let path = if AGENT_RUNS_AS_ROOT { AGENT_PATH } else { USER_PATH };
+    let uid = if !AGENT_RUNS_AS_ROOT && runs_as_root()? {
+        Some(UNPRIVILEGED)
+    } else {
+        None
+    };
+    let path = if AGENT_RUNS_AS_ROOT {
+        AGENT_PATH
+    } else {
+        USER_PATH
+    };
     Ok(with_proxy(apz_ops::Env::new(home, path)).with_uid(uid))
 }
 
@@ -155,13 +193,24 @@ fn with_proxy(env: apz_ops::Env) -> apz_ops::Env {
 
 /// Runs `program args` in `dir` with a cleared environment (the proxy set), output captured
 /// and capped, killed after `timeout_s`. `Ok` on exit 0, else `Err` with the output and status.
-pub(crate) fn execute(dir: &std::path::Path, program: &str, args: &[&str], timeout_s: u64, privilege: Privilege) -> Result<String, String> {
+pub(crate) fn execute(
+    dir: &std::path::Path,
+    program: &str,
+    args: &[&str],
+    timeout_s: u64,
+    privilege: Privilege,
+) -> Result<String, String> {
     let root = dir;
-    let (reader, writer) = io::pipe().map_err(|err| format!("internal: cannot open the output pipe: {err}"))?;
-    let stderr = writer.try_clone().map_err(|err| format!("internal: cannot open the output pipe: {err}"))?;
+    let (reader, writer) =
+        io::pipe().map_err(|err| format!("internal: cannot open the output pipe: {err}"))?;
+    let stderr = writer
+        .try_clone()
+        .map_err(|err| format!("internal: cannot open the output pipe: {err}"))?;
     let mut builder = command(program, args, root, privilege)?;
     builder.stdout(writer).stderr(stderr);
-    let mut child = builder.spawn().map_err(|err| format!("internal: cannot start the shell: {err}"))?;
+    let mut child = builder
+        .spawn()
+        .map_err(|err| format!("internal: cannot start the shell: {err}"))?;
     // The builder holds the pipe's write ends; dropping it lets the reader see EOF.
     drop(builder);
 
@@ -202,16 +251,26 @@ pub(crate) fn execute(dir: &std::path::Path, program: &str, args: &[&str], timeo
 
     let _ = drained.recv_timeout(DRAIN);
     let bytes = captured.lock().map(|kept| kept.clone()).unwrap_or_default();
-    let mut output = cap_output(&String::from_utf8_lossy(&bytes), MAX_TOOL_OUTPUT - EXIT_RESERVE);
+    let mut output = cap_output(
+        &String::from_utf8_lossy(&bytes),
+        MAX_TOOL_OUTPUT - EXIT_RESERVE,
+    );
     if !output.is_empty() && !output.ends_with('\n') {
         output.push('\n');
     }
     if timed_out {
-        return Err(format!("{output}[timed out after {timeout_s} s; the shell was killed]"));
+        return Err(format!(
+            "{output}[timed out after {timeout_s} s; the shell was killed]"
+        ));
     }
-    let status = status.ok_or_else(|| format!("{output}internal: the shell's exit status is unknown"))?;
+    let status =
+        status.ok_or_else(|| format!("{output}internal: the shell's exit status is unknown"))?;
     let exit = describe_exit(status);
-    if status.success() { Ok(format!("{output}{exit}")) } else { Err(format!("{output}{exit}")) }
+    if status.success() {
+        Ok(format!("{output}{exit}"))
+    } else {
+        Err(format!("{output}{exit}"))
+    }
 }
 
 /// `exit <code>`, or the signal that ended the shell.
@@ -244,7 +303,8 @@ mod tests {
     use serde_json::json;
 
     fn scratch(name: &str) -> Workspace {
-        let dir = std::env::temp_dir().join(format!("apz-harness-bash-{name}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("apz-harness-bash-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("a scratch workspace");
         Workspace::at(dir)
@@ -255,7 +315,10 @@ mod tests {
         let workspace = scratch("env");
         let script = "echo \"$HOME\"; echo \"$PATH\"; cat; echo hi";
         let output = run(&workspace, &json!({ "command": script })).expect("exit 0");
-        assert_eq!(output, format!("{}\n{AGENT_PATH}\nhi\nexit 0", workspace.dir().display()));
+        assert_eq!(
+            output,
+            format!("{}\n{AGENT_PATH}\nhi\nexit 0", workspace.dir().display())
+        );
     }
 
     #[test]
@@ -269,29 +332,64 @@ mod tests {
     fn a_command_past_its_timeout_is_killed() {
         let workspace = scratch("timeout");
         let started = Instant::now();
-        let err = run(&workspace, &json!({ "command": "sleep 30", "timeout_s": 1 })).expect_err("timed out");
-        assert!(err.ends_with("[timed out after 1 s; the shell was killed]"), "{err}");
-        assert!(started.elapsed() < Duration::from_secs(10), "{:?}", started.elapsed());
+        let err = run(
+            &workspace,
+            &json!({ "command": "sleep 30", "timeout_s": 1 }),
+        )
+        .expect_err("timed out");
+        assert!(
+            err.ends_with("[timed out after 1 s; the shell was killed]"),
+            "{err}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "{:?}",
+            started.elapsed()
+        );
     }
 
     #[test]
     fn the_output_is_capped_to_the_tool_limit() {
         let workspace = scratch("cap");
-        let output = run(&workspace, &json!({ "command": "head -c 300000 /dev/zero | tr '\\0' a" })).expect("exit 0");
+        let output = run(
+            &workspace,
+            &json!({ "command": "head -c 300000 /dev/zero | tr '\\0' a" }),
+        )
+        .expect("exit 0");
         assert!(output.len() <= MAX_TOOL_OUTPUT, "{}", output.len());
-        assert!(output.contains("bytes cut") && output.ends_with("exit 0"), "{}", output.len());
+        assert!(
+            output.contains("bytes cut") && output.ends_with("exit 0"),
+            "{}",
+            output.len()
+        );
     }
 
     #[test]
     fn package_names_follow_apks_shape() {
-        for good in ["python3", "py3-pip", "go", "nodejs", "build-base", "g++", "libstdc++", "font-noto.ttf"] {
+        for good in [
+            "python3",
+            "py3-pip",
+            "go",
+            "nodejs",
+            "build-base",
+            "g++",
+            "libstdc++",
+            "font-noto.ttf",
+        ] {
             assert!(package_name_ok(good), "{good}");
         }
-        for bad in ["", "-rf", "Python3", "a b", "x;rm", "../etc", &"a".repeat(65)] {
+        for bad in [
+            "",
+            "-rf",
+            "Python3",
+            "a b",
+            "x;rm",
+            "../etc",
+            &"a".repeat(65),
+        ] {
             assert!(!package_name_ok(bad), "{bad}");
         }
     }
-
 }
 
 /// Kills a command started in its own process group (`process_group(0)`, so the group id is

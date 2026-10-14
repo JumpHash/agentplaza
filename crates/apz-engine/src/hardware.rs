@@ -32,7 +32,11 @@ include!(concat!(env!("OUT_DIR"), "/hardware_models.rs"));
 /// its laptops and desktops share one SoC board. Unknown kinds fall back to `workstation`.
 pub fn models_for(kind: &str, vendor: Option<&str>) -> (&'static str, &'static str) {
     if vendor == Some("apple") {
-        let exterior = if kind == "laptop" { "exterior/apple-laptop" } else { "exterior/apple-desktop" };
+        let exterior = if kind == "laptop" {
+            "exterior/apple-laptop"
+        } else {
+            "exterior/apple-desktop"
+        };
         return (exterior, "board/apple-soc");
     }
     match kind {
@@ -179,8 +183,17 @@ pub struct Part {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum Geo {
-    Box { w: f32, h: f32, d: f32 },
-    Rbox { w: f32, h: f32, d: f32, r: f32 },
+    Box {
+        w: f32,
+        h: f32,
+        d: f32,
+    },
+    Rbox {
+        w: f32,
+        h: f32,
+        d: f32,
+        r: f32,
+    },
     Cyl {
         rt: f32,
         rb: f32,
@@ -188,8 +201,13 @@ pub enum Geo {
         #[serde(default = "seg_default")]
         seg: u32,
     },
-    Cone { r: f32, h: f32 },
-    Sphere { r: f32 },
+    Cone {
+        r: f32,
+        h: f32,
+    },
+    Sphere {
+        r: f32,
+    },
     Torus {
         r: f32,
         tube: f32,
@@ -198,12 +216,21 @@ pub enum Geo {
         arc: f32,
     },
     /// Horizontal, facing up.
-    Plane { w: f32, d: f32 },
+    Plane {
+        w: f32,
+        d: f32,
+    },
     /// Flat, horizontal.
-    Ring { ri: f32, ro: f32 },
+    Ring {
+        ri: f32,
+        ro: f32,
+    },
     /// A flat outline (points `[x, z]`, counter-clockwise seen from above) extruded up by `h`:
     /// logos and cut shapes. Lies on y = 0..h, like the web's `shape`.
-    Shape { points: Vec<[f32; 2]>, h: f32 },
+    Shape {
+        points: Vec<[f32; 2]>,
+        h: f32,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -261,7 +288,9 @@ pub enum Count {
 /// None when it is neither a param name nor a param name over a whole number 1 or more.
 fn split_count(s: &str) -> Option<(&str, u32)> {
     let (name, div) = match s.split_once('/') {
-        Some((name, div)) if !div.starts_with('0') && div.bytes().all(|b| b.is_ascii_digit()) => (name, div.parse::<u32>().ok()?),
+        Some((name, div)) if !div.starts_with('0') && div.bytes().all(|b| b.is_ascii_digit()) => {
+            (name, div.parse::<u32>().ok()?)
+        }
         Some(_) => return None,
         None => (s, 1),
     };
@@ -409,13 +438,22 @@ fn parse(src: &str) -> Result<Model, String> {
 /// Every embedded file, parsed once.
 fn parsed() -> &'static [(&'static str, Result<Model, String>)] {
     static CACHE: OnceLock<Vec<(&'static str, Result<Model, String>)>> = OnceLock::new();
-    CACHE.get_or_init(|| MODELS.iter().chain(PARTS.iter()).map(|&(name, src)| (name, parse(src))).collect())
+    CACHE.get_or_init(|| {
+        MODELS
+            .iter()
+            .chain(PARTS.iter())
+            .map(|&(name, src)| (name, parse(src)))
+            .collect()
+    })
 }
 
 /// A model by its name (`"exterior/workstation"`, `"board/laptop"`, `"parts/gpu-pcie"`). `None`
 /// when unknown or when its file does not parse (the unit test catches that).
 pub fn model(name: &str) -> Option<&'static Model> {
-    parsed().iter().find(|(n, _)| *n == name).and_then(|(_, m)| m.as_ref().ok())
+    parsed()
+        .iter()
+        .find(|(n, _)| *n == name)
+        .and_then(|(_, m)| m.as_ref().ok())
 }
 
 #[derive(Deserialize)]
@@ -428,7 +466,9 @@ fn palette() -> &'static BTreeMap<String, InlineMat> {
     static PAL: OnceLock<BTreeMap<String, InlineMat>> = OnceLock::new();
     PAL.get_or_init(|| {
         // An unparsable palette is reported by the palette test, not here.
-        serde_json::from_str::<PaletteFile>(PALETTE_SRC).map(|f| f.colors).unwrap_or_default()
+        serde_json::from_str::<PaletteFile>(PALETTE_SRC)
+            .map(|f| f.colors)
+            .unwrap_or_default()
     })
 }
 
@@ -483,7 +523,9 @@ fn parse_when(expr: &str) -> Result<When, String> {
         }
         None => false,
     };
-    let end = s.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).unwrap_or(s.len());
+    let end = s
+        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .unwrap_or(s.len());
     let name = &s[..end];
     if name.is_empty() || name.starts_with(|c: char| c.is_ascii_digit()) {
         return Err(format!("'{expr}': expected a param name"));
@@ -492,16 +534,29 @@ fn parse_when(expr: &str) -> Result<When, String> {
     let cmp = if rest.is_empty() {
         None
     } else {
-        const OPS: [(&str, Cmp); 6] =
-            [(">=", Cmp::Ge), ("<=", Cmp::Le), ("==", Cmp::Eq), ("!=", Cmp::Ne), (">", Cmp::Gt), ("<", Cmp::Lt)];
+        const OPS: [(&str, Cmp); 6] = [
+            (">=", Cmp::Ge),
+            ("<=", Cmp::Le),
+            ("==", Cmp::Eq),
+            ("!=", Cmp::Ne),
+            (">", Cmp::Gt),
+            ("<", Cmp::Lt),
+        ];
         let (op, tail) = OPS
             .iter()
             .find_map(|&(sym, op)| rest.strip_prefix(sym).map(|t| (op, t)))
             .ok_or_else(|| format!("'{expr}': unknown operator"))?;
-        let n: f64 = tail.trim().parse().map_err(|_| format!("'{expr}': bad number"))?;
+        let n: f64 = tail
+            .trim()
+            .parse()
+            .map_err(|_| format!("'{expr}': bad number"))?;
         Some((op, n))
     };
-    Ok(When { negate, name: name.to_string(), cmp })
+    Ok(When {
+        negate,
+        name: name.to_string(),
+        cmp,
+    })
 }
 
 /// A missing param reads as 0.
@@ -523,7 +578,9 @@ fn eval_when(w: &When, vals: &BTreeMap<String, f64>) -> bool {
 
 // ---- Validation -----------------------------------------------------------------------------
 
-const SLOT_TYPES: [&str; 11] = ["cpu", "gpu", "memory", "storage", "network", "power", "io", "soc", "modem", "bmc", "npu"];
+const SLOT_TYPES: [&str; 11] = [
+    "cpu", "gpu", "memory", "storage", "network", "power", "io", "soc", "modem", "bmc", "npu",
+];
 const TAGS: [&str; 4] = ["status", "activity", "fan", "screen"];
 
 struct Check<'a> {
@@ -580,7 +637,9 @@ impl Check<'_> {
                 match &r.count {
                     Count::Num(0) => self.err("repeat count must be at least 1".to_string()),
                     Count::Param(s) => match split_count(s) {
-                        None => self.err(format!("repeat count '{s}' is not a param name or 'param/n'")),
+                        None => self.err(format!(
+                            "repeat count '{s}' is not a param name or 'param/n'"
+                        )),
                         Some((name, _)) if !self.params.contains_key(name) => {
                             self.err(format!("repeat count '{name}' is not a param of the model"))
                         }
@@ -616,7 +675,13 @@ impl Check<'_> {
 /// duplicate ids, `use` of an unknown part, slots on missing parts, a bad `when`, unknown tags.
 /// An empty list means the model is valid.
 pub fn validate(model: &Model, name: &str) -> Vec<String> {
-    let mut c = Check { name, params: &model.params, errs: Vec::new(), ids: HashSet::new(), pal: palette() };
+    let mut c = Check {
+        name,
+        params: &model.params,
+        errs: Vec::new(),
+        ids: HashSet::new(),
+        pal: palette(),
+    };
     if model.schema != 1 {
         c.err(format!("schema {} (expected 1)", model.schema));
     }
@@ -661,7 +726,9 @@ fn geometry_of(g: &Geo) -> scene::Geo {
         Geo::Sphere { r } => geometry::sphere(r, 24, 16),
         Geo::Torus { r, tube, arc } => geometry::torus(r, tube, 8, 64, arc.to_radians()),
         Geo::Plane { w, d } => geometry::transformed(&geometry::plane(w, d, 1, 1), flat()),
-        Geo::Ring { ri, ro } => geometry::transformed(&geometry::ring(ri, ro, 48, 1, 0.0, TAU), flat()),
+        Geo::Ring { ri, ro } => {
+            geometry::transformed(&geometry::ring(ri, ro, 48, 1, 0.0, TAU), flat())
+        }
         Geo::Shape { .. } => unreachable!("handled above"),
     }
 }
@@ -673,10 +740,12 @@ pub(super) fn shape_geometry(points: &[[f32; 2]], h: f32) -> scene::Geo {
     if pts.len() > 1 && pts.first() == pts.last() {
         pts.pop();
     }
-    let area: f32 = (0..pts.len()).map(|i| {
-        let (a, b) = (pts[i], pts[(i + 1) % pts.len()]);
-        a[0] * -b[1] - b[0] * -a[1]
-    }).sum();
+    let area: f32 = (0..pts.len())
+        .map(|i| {
+            let (a, b) = (pts[i], pts[(i + 1) % pts.len()]);
+            a[0] * -b[1] - b[0] * -a[1]
+        })
+        .sum();
     if area < 0.0 {
         pts.reverse();
     }
@@ -684,8 +753,15 @@ pub(super) fn shape_geometry(points: &[[f32; 2]], h: f32) -> scene::Geo {
     let v = |p: [f32; 2], y: f32| [p[0], y, p[1]];
     // Emits a triangle facing `want` (flips the winding if it doesn't), as from_triangles takes them.
     let mut push = |a: [f32; 3], b: [f32; 3], c: [f32; 3], want: [f32; 3]| {
-        let (u, w) = ([b[0] - a[0], b[1] - a[1], b[2] - a[2]], [c[0] - a[0], c[1] - a[1], c[2] - a[2]]);
-        let n = [u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0]];
+        let (u, w) = (
+            [b[0] - a[0], b[1] - a[1], b[2] - a[2]],
+            [c[0] - a[0], c[1] - a[1], c[2] - a[2]],
+        );
+        let n = [
+            u[1] * w[2] - u[2] * w[1],
+            u[2] * w[0] - u[0] * w[2],
+            u[0] * w[1] - u[1] * w[0],
+        ];
         let facing = n[0] * want[0] + n[1] * want[1] + n[2] * want[2];
         if facing >= 0.0 {
             tris.extend_from_slice(&[a, b, c]);
@@ -695,7 +771,12 @@ pub(super) fn shape_geometry(points: &[[f32; 2]], h: f32) -> scene::Geo {
     };
     for [i, j, k] in ear_clip(&pts) {
         push(v(pts[i], h), v(pts[j], h), v(pts[k], h), [0.0, 1.0, 0.0]);
-        push(v(pts[i], 0.0), v(pts[j], 0.0), v(pts[k], 0.0), [0.0, -1.0, 0.0]);
+        push(
+            v(pts[i], 0.0),
+            v(pts[j], 0.0),
+            v(pts[k], 0.0),
+            [0.0, -1.0, 0.0],
+        );
     }
     for i in 0..pts.len() {
         let (a, b) = (pts[i], pts[(i + 1) % pts.len()]);
@@ -730,7 +811,9 @@ fn ear_clip(pts: &[[f32; 2]]) -> Vec<[usize; 3]> {
             if cross(a, b, c) <= 0.0 {
                 continue; // reflex or flat corner: not an ear
             }
-            let blocked = idx.iter().any(|&m| m != i && m != j && m != l && inside(pts[m], a, b, c));
+            let blocked = idx
+                .iter()
+                .any(|&m| m != i && m != j && m != l && inside(pts[m], a, b, c));
             if blocked {
                 continue;
             }
@@ -756,7 +839,9 @@ fn ear_clip(pts: &[[f32; 2]]) -> Vec<[usize; 3]> {
 /// The height of a part's top above its origin, where a label sits.
 fn top_of(g: Option<&Geo>) -> f32 {
     match g {
-        Some(Geo::Box { h, .. } | Geo::Rbox { h, .. } | Geo::Cyl { h, .. } | Geo::Cone { h, .. }) => h / 2.0,
+        Some(
+            Geo::Box { h, .. } | Geo::Rbox { h, .. } | Geo::Cyl { h, .. } | Geo::Cone { h, .. },
+        ) => h / 2.0,
         Some(Geo::Sphere { r }) => *r,
         _ => 0.0,
     }
@@ -773,7 +858,14 @@ fn resolve(spec: Option<&MatSpec>) -> Option<&InlineMat> {
 
 /// The web's `DEFAULT_MAT` (hardware.ts): what a part with no material, or an unknown palette name, is drawn with.
 fn default_mat() -> InlineMat {
-    InlineMat { color: Some("#9aa3b8".into()), emissive: None, glow: None, opacity: 1.0, additive: false, flat: false }
+    InlineMat {
+        color: Some("#9aa3b8".into()),
+        emissive: None,
+        glow: None,
+        opacity: 1.0,
+        additive: false,
+        flat: false,
+    }
 }
 
 /// The material a part draws with: its spec resolved (a copy), or the default.
@@ -785,7 +877,10 @@ fn resolved(spec: Option<&MatSpec>) -> InlineMat {
 /// own, else its colour for an animated or tagged part (`own`), else none; the glow is the material's own, else 1 with an
 /// emissive of its own, 0.5 with the colour's, and 0 without an emissive.
 fn lit_of(i: &InlineMat, own: bool) -> (Option<String>, f32) {
-    let emissive = i.emissive.clone().or_else(|| own.then(|| i.color.clone()).flatten());
+    let emissive = i
+        .emissive
+        .clone()
+        .or_else(|| own.then(|| i.color.clone()).flatten());
     let glow = i.glow.unwrap_or(match (&emissive, &i.emissive) {
         (None, _) => 0.0,
         (Some(_), Some(_)) => 1.0,
@@ -799,9 +894,20 @@ fn material(spec: Option<&MatSpec>, decal: bool, own: bool) -> Mat {
     let (emissive, glow) = lit_of(&i, own);
     let opacity = i.opacity.clamp(0.0, 1.0);
     let m = Material {
-        shading: if i.flat { Shading::Basic } else { Shading::Toon },
-        color: i.color.as_deref().and_then(Color::css).unwrap_or(Color::hex(0x9aa3b8)),
-        emissive: emissive.as_deref().and_then(Color::css).unwrap_or(Color::BLACK),
+        shading: if i.flat {
+            Shading::Basic
+        } else {
+            Shading::Toon
+        },
+        color: i
+            .color
+            .as_deref()
+            .and_then(Color::css)
+            .unwrap_or(Color::hex(0x9aa3b8)),
+        emissive: emissive
+            .as_deref()
+            .and_then(Color::css)
+            .unwrap_or(Color::BLACK),
         emissive_intensity: glow,
         opacity,
         transparent: opacity < 1.0 || i.additive,
@@ -819,12 +925,19 @@ fn glow_of(spec: Option<&MatSpec>, own: bool) -> f32 {
 
 /// A part's emissive colour, as `material` draws it (black without one).
 fn emissive_of(spec: Option<&MatSpec>, own: bool) -> Color {
-    lit_of(&resolved(spec), own).0.as_deref().and_then(Color::css).unwrap_or(Color::BLACK)
+    lit_of(&resolved(spec), own)
+        .0
+        .as_deref()
+        .and_then(Color::css)
+        .unwrap_or(Color::BLACK)
 }
 
 /// Whether a part is tagged or pulses or blinks, so it gets its own material (the web's `own` in `materialFor`).
 fn own_of(p: &Part) -> bool {
-    p.tag.is_some() || p.anim.as_ref().is_some_and(|a| a.pulse.is_some() || a.blink.is_some())
+    p.tag.is_some()
+        || p.anim
+            .as_ref()
+            .is_some_and(|a| a.pulse.is_some() || a.blink.is_some())
 }
 
 /// Silkscreen text: a flat plane on the part's top, its texture drawn on the canvas.
@@ -851,7 +964,10 @@ fn label_node(l: &Label, top: f32) -> Obj {
         decal: true,
         ..Material::default()
     });
-    let node = Obj::mesh(&geometry::transformed(&geometry::plane(width, l.size, 1, 1), flat()), &mat);
+    let node = Obj::mesh(
+        &geometry::transformed(&geometry::plane(width, l.size, 1, 1), flat()),
+        &mat,
+    );
     node.set_position(0.0, top + 0.02, 0.0).no_outline();
     node
 }
@@ -900,7 +1016,14 @@ fn blink_level(period: f32, phase: f32, glow: f32, t: f32) -> f32 {
 
 /// `vs_spin` (hw_anim.wgsl) at `time` seconds, in Rust: the batch-frame rest point `p` turned about `pivot`
 /// on the unit `axis`, `rps` revolutions per second from `phase` radians at time 0.
-pub fn spin_point_shader(pivot: Vec3, axis: Vec3, rps: f32, phase: f32, p: Vec3, time: f32) -> Vec3 {
+pub fn spin_point_shader(
+    pivot: Vec3,
+    axis: Vec3,
+    rps: f32,
+    phase: f32,
+    p: Vec3,
+    time: f32,
+) -> Vec3 {
     let angle = phase + TAU * rps * time;
     pivot + Quat::from_axis_angle(axis, angle) * (p - pivot)
 }
@@ -918,19 +1041,52 @@ const HW_WRAP_PERIOD: f32 = 3600.0;
 /// stays on the CPU. A fan spins at its online idle rate (`Built::update` runs it at 2 rps and faster
 /// as activity rises, and stops it offline; a GPU batch cannot follow either). Other spins and blinks
 /// keep their own rates. A part with a pulse, slide or swing stays on the CPU; a machine's LEDs and screens take their machine's row.
-fn gpu_anim_of(tag: Option<Tag>, spin: Option<(Vec3, f32)>, blink: Option<(f32, f32)>, glow: f32, emissive: Color, moves: bool) -> Option<scene::NodeAnim> {
+fn gpu_anim_of(
+    tag: Option<Tag>,
+    spin: Option<(Vec3, f32)>,
+    blink: Option<(f32, f32)>,
+    glow: f32,
+    emissive: Color,
+    moves: bool,
+) -> Option<scene::NodeAnim> {
     if moves {
         return None;
     }
     let quantise = |rps: f32| (rps * HW_WRAP_PERIOD).round() / HW_WRAP_PERIOD;
-    let spin_of = |axis: Vec3, rps: f32| scene::NodeAnim::Spin { pivot: Vec3::ZERO, axis, rps: quantise(rps), phase: 0.0, machine: None };
+    let spin_of = |axis: Vec3, rps: f32| scene::NodeAnim::Spin {
+        pivot: Vec3::ZERO,
+        axis,
+        rps: quantise(rps),
+        phase: 0.0,
+        machine: None,
+    };
     match (tag, spin, blink) {
-        (Some(Tag::Status), _, _) => Some(scene::NodeAnim::Machine { led: scene::MachineLed::Status, glow, emissive, machine: None }),
-        (Some(Tag::Activity), _, _) => Some(scene::NodeAnim::Machine { led: scene::MachineLed::Activity, glow, emissive, machine: None }),
-        (Some(Tag::Screen), _, _) => Some(scene::NodeAnim::Machine { led: scene::MachineLed::Screen, glow, emissive, machine: None }),
+        (Some(Tag::Status), _, _) => Some(scene::NodeAnim::Machine {
+            led: scene::MachineLed::Status,
+            glow,
+            emissive,
+            machine: None,
+        }),
+        (Some(Tag::Activity), _, _) => Some(scene::NodeAnim::Machine {
+            led: scene::MachineLed::Activity,
+            glow,
+            emissive,
+            machine: None,
+        }),
+        (Some(Tag::Screen), _, _) => Some(scene::NodeAnim::Machine {
+            led: scene::MachineLed::Screen,
+            glow,
+            emissive,
+            machine: None,
+        }),
         (Some(Tag::Fan), spin, _) => Some(spin_of(spin.map_or(Vec3::Y, |s| s.0), 2.0)),
         (_, Some((axis, rps)), _) if rps != 0.0 => Some(spin_of(axis, rps)),
-        (_, _, Some((period, phase))) => Some(scene::NodeAnim::Blink { rate: 1.0 / period, phase, lo: glow * 0.1, hi: glow }),
+        (_, _, Some((period, phase))) => Some(scene::NodeAnim::Blink {
+            rate: 1.0 / period,
+            phase,
+            lo: glow * 0.1,
+            hi: glow,
+        }),
         _ => None,
     }
 }
@@ -1008,7 +1164,10 @@ pub struct State {
 
 /// The activity LEDs' on and off colours as the GPU's `leds` row (`hw_anim.wgsl` `vs_machine`).
 pub fn led_colours() -> [[f32; 4]; 2] {
-    [crate::fleet::rgba(named("led-ok", 0x4fa36a)), crate::fleet::rgba(named("led-off", 0x4a4f5c))]
+    [
+        crate::fleet::rgba(named("led-ok", 0x4fa36a)),
+        crate::fleet::rgba(named("led-off", 0x4a4f5c)),
+    ]
 }
 
 fn status_color(s: Status) -> Color {
@@ -1103,7 +1262,9 @@ impl Builder {
             done[i] = true;
             if let Some(expr) = &p.when {
                 // Validated models only: an unparsable `when` hides the part.
-                let shown = parse_when(expr).map(|w| eval_when(&w, &self.vals)).unwrap_or(false);
+                let shown = parse_when(expr)
+                    .map(|w| eval_when(&w, &self.vals))
+                    .unwrap_or(false);
                 if !shown {
                     continue;
                 }
@@ -1140,16 +1301,26 @@ impl Builder {
             && p.anim.is_none()
             && !p.cutaway
             && p.when.is_none();
-        let state = matches!(p.tag.as_deref(), None | Some("status" | "activity" | "screen"));
+        let state = matches!(
+            p.tag.as_deref(),
+            None | Some("status" | "activity" | "screen")
+        );
         let moves = self.dynamic || p.tag.is_some();
-        (plain && state && moves).then(|| format!("{:?}|{:?}|{:?}|{:?}|{:?}|{}", p.geo, p.mat, p.tag, p.detail, p.outline, p.attached))
+        (plain && state && moves).then(|| {
+            format!(
+                "{:?}|{:?}|{:?}|{:?}|{:?}|{}",
+                p.geo, p.mat, p.tag, p.detail, p.outline, p.attached
+            )
+        })
     }
 
     /// One instanced draw for a run of parts with one key (see `merge_key`): each part's rest pose is its
     /// instance. A state-tagged run is one live node, so its colour or blink drives all its copies.
     fn merged(&mut self, run: &[&Part]) -> Obj {
         let first = run[0];
-        let Some(g) = &first.geo else { return Obj::group() };
+        let Some(g) = &first.geo else {
+            return Obj::group();
+        };
         let geo = geometry_of(g);
         let mat = self.material_for(first);
         let instances: Vec<Instance> = run
@@ -1157,13 +1328,21 @@ impl Builder {
             .map(|p| {
                 let at = Vec3::from(p.at.unwrap_or([0.0; 3]));
                 let rot = p.rot.unwrap_or([0.0; 3]);
-                let rest_q = Quat::from_euler(EulerRot::XYZ, rot[0].to_radians(), rot[1].to_radians(), rot[2].to_radians());
+                let rest_q = Quat::from_euler(
+                    EulerRot::XYZ,
+                    rot[0].to_radians(),
+                    rot[1].to_radians(),
+                    rot[2].to_radians(),
+                );
                 let scale = match p.scale {
                     Some(Scale::Uniform(s)) => Vec3::splat(s),
                     Some(Scale::Xyz([x, y, z])) => Vec3::new(x, y, z),
                     None => Vec3::ONE,
                 };
-                Instance { matrix: Mat4::from_scale_rotation_translation(scale, rest_q, at), color: Color::WHITE }
+                Instance {
+                    matrix: Mat4::from_scale_rotation_translation(scale, rest_q, at),
+                    color: Color::WHITE,
+                }
             })
             .collect();
         let obj = Obj::instanced(&geo, &mat, instances);
@@ -1171,7 +1350,10 @@ impl Builder {
         mark_rest(&obj, first);
         obj.get().lod = self.lod_of(first);
         obj.get().fade = self.fade;
-        if !first.outline.unwrap_or(!matches!(first.geo, Some(Geo::Plane { .. } | Geo::Ring { .. }))) {
+        if !first.outline.unwrap_or(!matches!(
+            first.geo,
+            Some(Geo::Plane { .. } | Geo::Ring { .. })
+        )) {
             obj.no_outline();
         }
         for p in run {
@@ -1207,7 +1389,11 @@ impl Builder {
         match &p.repeat {
             Some(rep) => {
                 let n = repeat_count(&rep.count, &self.vals);
-                let node = if plain_repeat(p) { self.instanced(p, rep, at, n) } else { self.copies(p, rep, at, n) };
+                let node = if plain_repeat(p) {
+                    self.instanced(p, rep, at, n)
+                } else {
+                    self.copies(p, rep, at, n)
+                };
                 if let Some(id) = &p.id {
                     self.parts.insert(id.clone(), node.clone());
                 }
@@ -1236,24 +1422,41 @@ impl Builder {
     /// A repeat of a plain geometry as one instanced mesh: one draw for every copy (300 SMD
     /// resistors are one call). Each copy carries the part's own rest pose and scale.
     fn instanced(&mut self, p: &Part, rep: &Repeat, at: Vec3, n: u32) -> Obj {
-        let (Some(g), mat) = (&p.geo, self.material_for(p)) else { return Obj::group() };
+        let (Some(g), mat) = (&p.geo, self.material_for(p)) else {
+            return Obj::group();
+        };
         let geo = geometry_of(g);
         let rot = p.rot.unwrap_or([0.0; 3]);
-        let rest_q = Quat::from_euler(EulerRot::XYZ, rot[0].to_radians(), rot[1].to_radians(), rot[2].to_radians());
+        let rest_q = Quat::from_euler(
+            EulerRot::XYZ,
+            rot[0].to_radians(),
+            rot[1].to_radians(),
+            rot[2].to_radians(),
+        );
         let scale = match p.scale {
             Some(Scale::Uniform(s)) => Vec3::splat(s),
             Some(Scale::Xyz([x, y, z])) => Vec3::new(x, y, z),
             None => Vec3::ONE,
         };
         let instances: Vec<Instance> = (0..n)
-            .map(|i| Instance { matrix: Mat4::from_scale_rotation_translation(scale, rest_q, at + repeat_offset(rep, i)), color: Color::WHITE })
+            .map(|i| Instance {
+                matrix: Mat4::from_scale_rotation_translation(
+                    scale,
+                    rest_q,
+                    at + repeat_offset(rep, i),
+                ),
+                color: Color::WHITE,
+            })
             .collect();
         let obj = Obj::instanced(&geo, &mat, instances);
         shadows_for(&obj, g, &geo, p.scale.as_ref());
         mark_rest(&obj, p);
         obj.get().lod = self.lod_of(p);
         obj.get().fade = self.fade;
-        if !p.outline.unwrap_or(!matches!(p.geo, Some(Geo::Plane { .. } | Geo::Ring { .. }))) {
+        if !p
+            .outline
+            .unwrap_or(!matches!(p.geo, Some(Geo::Plane { .. } | Geo::Ring { .. })))
+        {
             obj.no_outline();
         }
         obj
@@ -1268,13 +1471,18 @@ impl Builder {
     /// and metal are a handful of materials and their draws batch. A lit or animated part keeps its
     /// own: its colour changes, and no other part must change with it.
     fn material_for(&mut self, p: &Part) -> Mat {
-        let lit = p.tag.is_some() || p.anim.is_some() || matches!(resolve(p.mat.as_ref()), Some(i) if i.emissive.is_some());
+        let lit = p.tag.is_some()
+            || p.anim.is_some()
+            || matches!(resolve(p.mat.as_ref()), Some(i) if i.emissive.is_some());
         let decal = matches!(p.geo, Some(Geo::Plane { .. } | Geo::Ring { .. }));
         if lit {
             return material(p.mat.as_ref(), decal, own_of(p));
         }
         let key = format!("{:?}|{decal}", p.mat);
-        self.mats.entry(key).or_insert_with(|| material(p.mat.as_ref(), decal, false)).clone()
+        self.mats
+            .entry(key)
+            .or_insert_with(|| material(p.mat.as_ref(), decal, false))
+            .clone()
     }
 
     /// One copy of a part at `at`: its geometry, transform, outline, children, label, and its
@@ -1293,7 +1501,12 @@ impl Builder {
         };
         mark_rest(&obj, p);
         let rot = p.rot.unwrap_or([0.0; 3]);
-        let rest_q = Quat::from_euler(EulerRot::XYZ, rot[0].to_radians(), rot[1].to_radians(), rot[2].to_radians());
+        let rest_q = Quat::from_euler(
+            EulerRot::XYZ,
+            rot[0].to_radians(),
+            rot[1].to_radians(),
+            rot[2].to_radians(),
+        );
         obj.set_position(at.x, at.y, at.z).set_quaternion(rest_q);
         match p.scale {
             Some(Scale::Uniform(s)) => {
@@ -1339,7 +1552,9 @@ impl Builder {
         if tag.is_some() || p.anim.is_some() {
             let anim = p.anim.as_ref();
             let spin = anim.and_then(|a| a.spin.as_ref());
-            let blink = anim.and_then(|a| a.blink).map(|b| (b.period.max(0.01), b.phase));
+            let blink = anim
+                .and_then(|a| a.blink)
+                .map(|b| (b.period.max(0.01), b.phase));
             let gpu = gpu_anim_of(
                 tag,
                 spin.map(|s| (axis_of(&s.axis), s.rps)),
@@ -1366,7 +1581,9 @@ impl Builder {
                 spin_rps: spin.map(|s| s.rps).unwrap_or(0.0),
                 pulse: anim.and_then(|a| a.pulse).map(|pu| pu.period.max(0.01)),
                 blink,
-                slide: anim.and_then(|a| a.slide.as_ref()).map(|s| (Vec3::from(s.to), s.on == "enter")),
+                slide: anim
+                    .and_then(|a| a.slide.as_ref())
+                    .map(|s| (Vec3::from(s.to), s.on == "enter")),
                 swing: anim
                     .and_then(|a| a.swing.as_ref())
                     .map(|s| (axis_of(&s.axis), s.to.to_radians(), s.on == "enter")),
@@ -1382,7 +1599,12 @@ impl Builder {
 /// A repeat that can be one instanced mesh: a plain geometry, with nothing per copy (no children,
 /// part file, label, animation or tag).
 fn plain_repeat(p: &Part) -> bool {
-    p.geo.is_some() && p.children.is_empty() && p.use_.is_none() && p.label.is_none() && p.anim.is_none() && p.tag.is_none()
+    p.geo.is_some()
+        && p.children.is_empty()
+        && p.use_.is_none()
+        && p.label.is_none()
+        && p.anim.is_none()
+        && p.tag.is_none()
 }
 
 /// The box of a cutaway's meshes in the root's frame: `world` is the node's own world matrix.
@@ -1420,7 +1642,13 @@ fn detail_parts(root: &Obj) -> Vec<DetailPart> {
             let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
             bounds_of(node, world, &mut lo, &mut hi);
             if lo.x <= hi.x {
-                out.push(DetailPart { node: node.clone(), level, lo, hi, on: true });
+                out.push(DetailPart {
+                    node: node.clone(),
+                    level,
+                    lo,
+                    hi,
+                    on: true,
+                });
             }
         }
         for child in &children {
@@ -1439,9 +1667,16 @@ fn bounds_of(node: &Obj, world: Mat4, lo: &mut Vec3, hi: &mut Vec3) {
         let n = node.get();
         let meshes: Vec<(scene::Geo, Mat4)> = match &n.kind {
             Kind::Mesh { geo, .. } => vec![(Arc::clone(geo), world)],
-            Kind::Instanced { geo, instances, count, .. } => {
-                instances.iter().take(*count).map(|inst| (Arc::clone(geo), world * inst.matrix)).collect()
-            }
+            Kind::Instanced {
+                geo,
+                instances,
+                count,
+                ..
+            } => instances
+                .iter()
+                .take(*count)
+                .map(|inst| (Arc::clone(geo), world * inst.matrix))
+                .collect(),
             _ => Vec::new(),
         };
         (meshes, n.children.clone())
@@ -1483,7 +1718,17 @@ pub fn build_tinted(model: &Model, params: &Params, tints: &[Option<u32>]) -> Bu
     };
     let mut vals = model.params.clone();
     vals.extend(params.values.iter().map(|(k, v)| (k.clone(), *v)));
-    let mut b = Builder { vals, parts: HashMap::new(), live: Vec::new(), depth: 0, mats: HashMap::new(), fades: Vec::new(), lod: 0, fade: 0, dynamic: false };
+    let mut b = Builder {
+        vals,
+        parts: HashMap::new(),
+        live: Vec::new(),
+        depth: 0,
+        mats: HashMap::new(),
+        fades: Vec::new(),
+        lod: 0,
+        fade: 0,
+        dynamic: false,
+    };
     let root = Obj::group();
     b.add_parts(&root, &model.parts);
     outline(&root, OUTLINE_MIN);
@@ -1498,22 +1743,51 @@ pub fn build_tinted(model: &Model, params: &Params, tints: &[Option<u32>]) -> Bu
                 lo = Vec3::ZERO;
                 hi = Vec3::ZERO;
             }
-            scene::Fade { id: *id, min: lo, max: hi }
+            scene::Fade {
+                id: *id,
+                min: lo,
+                max: hi,
+            }
         })
         .collect();
     let fade_nodes = b.fades.iter().map(|(_, node)| node.clone()).collect();
     let details = detail_parts(&root);
-    Built { root, parts: b.parts, fades, fade_nodes, details, live: b.live, t: 0.0, machine: None, fan_angle: 0.0, led: [0.0; 4], led_status: status_color(Status::Online) }
+    Built {
+        root,
+        parts: b.parts,
+        fades,
+        fade_nodes,
+        details,
+        live: b.live,
+        t: 0.0,
+        machine: None,
+        fan_angle: 0.0,
+        led: [0.0; 4],
+        led_status: status_color(Status::Online),
+    }
 }
 
 /// The model with its GPU cards retinted: card i (the i-th top-level card part, in model order) takes an inline material of
 /// `tints[i]` when it has one.
 fn tint_cards(model: &Model, tints: &[Option<u32>]) -> Model {
     let mut out = model.clone();
-    let cards: Vec<usize> = out.parts.iter().enumerate().filter(|(_, p)| is_card(p)).map(|(i, _)| i).collect();
+    let cards: Vec<usize> = out
+        .parts
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| is_card(p))
+        .map(|(i, _)| i)
+        .collect();
     for (&card, tint) in cards.iter().zip(tints) {
         if let Some(t) = tint {
-            let spec = MatSpec::Inline(InlineMat { color: Some(format!("#{t:06x}")), emissive: None, glow: None, opacity: 1.0, additive: false, flat: false });
+            let spec = MatSpec::Inline(InlineMat {
+                color: Some(format!("#{t:06x}")),
+                emissive: None,
+                glow: None,
+                opacity: 1.0,
+                additive: false,
+                flat: false,
+            });
             retint(&mut out.parts[card], &spec, true);
         }
     }
@@ -1529,7 +1803,8 @@ fn is_card(p: &Part) -> bool {
 fn mentions_gpus(when: &str) -> bool {
     let word = |c: char| c.is_ascii_alphanumeric() || c == '_';
     when.match_indices("gpus").any(|(i, _)| {
-        !when[..i].chars().next_back().is_some_and(word) && !when[i + 4..].chars().next().is_some_and(word)
+        !when[..i].chars().next_back().is_some_and(word)
+            && !when[i + 4..].chars().next().is_some_and(word)
     })
 }
 
@@ -1557,7 +1832,10 @@ fn repeat_count(count: &Count, vals: &BTreeMap<String, f64>) -> u32 {
     match count {
         Count::Num(n) => *n,
         Count::Param(s) => split_count(s)
-            .and_then(|(name, div)| vals.get(name).map(|v| (v.round().max(0.0) as u32).div_ceil(div)))
+            .and_then(|(name, div)| {
+                vals.get(name)
+                    .map(|v| (v.round().max(0.0) as u32).div_ceil(div))
+            })
             .unwrap_or(0),
     }
     .min(256)
@@ -1584,22 +1862,35 @@ pub fn part_boxes(model: &Model, params: &Params) -> Vec<PartBox> {
     out
 }
 
-fn box_walk(out: &mut Vec<PartBox>, vals: &BTreeMap<String, f64>, parts: &[Part], parent: Mat4, prefix: &str, depth: u32) {
+fn box_walk(
+    out: &mut Vec<PartBox>,
+    vals: &BTreeMap<String, f64>,
+    parts: &[Part],
+    parent: Mat4,
+    prefix: &str,
+    depth: u32,
+) {
     for (i, p) in parts.iter().enumerate() {
         // A `when` that fails, or does not parse, hides the part and its children (as the web's walk does).
-        if p.when.as_deref().is_some_and(|expr| !parse_when(expr).is_ok_and(|w| eval_when(&w, vals))) {
+        if p.when
+            .as_deref()
+            .is_some_and(|expr| !parse_when(expr).is_ok_and(|w| eval_when(&w, vals)))
+        {
             continue;
         }
         let path = format!("{prefix}[{i}]");
         let id = p.id.clone().unwrap_or_else(|| path.clone());
         let at = Vec3::from(p.at.unwrap_or([0.0; 3]));
         let offsets: Vec<Vec3> = match &p.repeat {
-            Some(rep) => (0..repeat_count(&rep.count, vals)).map(|k| repeat_offset(rep, k)).collect(),
+            Some(rep) => (0..repeat_count(&rep.count, vals))
+                .map(|k| repeat_offset(rep, k))
+                .collect(),
             None => vec![Vec3::ZERO],
         };
         // The part's own transform, as the web's localXf: Euler XYZ in degrees, then scale, then `at`.
         let [rx, ry, rz] = p.rot.unwrap_or([0.0; 3]).map(f32::to_radians);
-        let turn = Mat4::from_rotation_x(rx) * Mat4::from_rotation_y(ry) * Mat4::from_rotation_z(rz);
+        let turn =
+            Mat4::from_rotation_x(rx) * Mat4::from_rotation_y(ry) * Mat4::from_rotation_z(rz);
         let scale = match p.scale {
             Some(Scale::Uniform(s)) => Vec3::splat(s),
             Some(Scale::Xyz(s)) => Vec3::from(s),
@@ -1609,14 +1900,26 @@ fn box_walk(out: &mut Vec<PartBox>, vals: &BTreeMap<String, f64>, parts: &[Part]
             let m = parent * Mat4::from_translation(at + o) * turn * Mat4::from_scale(scale);
             if let Some((lo, hi)) = p.geo.as_ref().and_then(geo_bounds) {
                 let (lo, hi) = world_box(m, lo, hi);
-                out.push(PartBox { id: id.clone(), path: path.clone(), lo: lo.to_array(), hi: hi.to_array() });
+                out.push(PartBox {
+                    id: id.clone(),
+                    path: path.clone(),
+                    lo: lo.to_array(),
+                    hi: hi.to_array(),
+                });
             }
             if let Some(name) = &p.use_ {
                 if let Some(used) = model(name).filter(|_| depth < MAX_USE_DEPTH) {
                     box_walk(out, vals, &used.parts, m, "parts", depth + 1);
                 }
             }
-            box_walk(out, vals, &p.children, m, &format!("{path}.children"), depth);
+            box_walk(
+                out,
+                vals,
+                &p.children,
+                m,
+                &format!("{path}.children"),
+                depth,
+            );
         }
     }
 }
@@ -1641,9 +1944,15 @@ fn geo_bounds(g: &Geo) -> Option<(Vec3, Vec3)> {
                 return None;
             }
             let lo_x = points.iter().map(|p| p[0]).fold(f32::INFINITY, f32::min);
-            let hi_x = points.iter().map(|p| p[0]).fold(f32::NEG_INFINITY, f32::max);
+            let hi_x = points
+                .iter()
+                .map(|p| p[0])
+                .fold(f32::NEG_INFINITY, f32::max);
             let lo_z = points.iter().map(|p| p[1]).fold(f32::INFINITY, f32::min);
-            let hi_z = points.iter().map(|p| p[1]).fold(f32::NEG_INFINITY, f32::max);
+            let hi_z = points
+                .iter()
+                .map(|p| p[1])
+                .fold(f32::NEG_INFINITY, f32::max);
             Some((Vec3::new(lo_x, 0.0, lo_z), Vec3::new(hi_x, *h, hi_z)))
         }
         Geo::Plane { .. } | Geo::Ring { .. } => None,
@@ -1655,9 +1964,16 @@ fn world_box(m: Mat4, lo: Vec3, hi: Vec3) -> (Vec3, Vec3) {
     (0usize..8)
         .map(|k| {
             let pick = |bit: usize, a: f32, b: f32| if k & bit == 0 { a } else { b };
-            m.transform_point3(Vec3::new(pick(1, lo.x, hi.x), pick(2, lo.y, hi.y), pick(4, lo.z, hi.z)))
+            m.transform_point3(Vec3::new(
+                pick(1, lo.x, hi.x),
+                pick(2, lo.y, hi.y),
+                pick(4, lo.z, hi.z),
+            ))
         })
-        .fold((Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY)), |(a, b), p| (a.min(p), b.max(p)))
+        .fold(
+            (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY)),
+            |(a, b), p| (a.min(p), b.max(p)),
+        )
 }
 
 impl Built {
@@ -1679,7 +1995,11 @@ impl Built {
         for part in &mut self.details {
             let range = DETAIL_RANGE[usize::from(part.level - 1)];
             let dist = distance_to_box(at, part.lo, part.hi);
-            let on = if part.on { dist < range * (1.0 + DETAIL_BAND) } else { dist < range * (1.0 - DETAIL_BAND) };
+            let on = if part.on {
+                dist < range * (1.0 + DETAIL_BAND)
+            } else {
+                dist < range * (1.0 - DETAIL_BAND)
+            };
             if on != part.on {
                 part.on = on;
                 part.node.set_visible(on);
@@ -1712,8 +2032,18 @@ impl Built {
     /// entry from now on, not by their own rate.
     pub fn set_machine(&mut self, index: usize) {
         self.machine = Some(index);
-        for l in self.live.iter().filter(|l| l.tag == Some(Tag::Fan) && l.gpu_anim) {
-            l.obj.set_anim(scene::NodeAnim::Spin { pivot: Vec3::ZERO, axis: l.spin_axis, rps: 0.0, phase: 0.0, machine: Some(index) });
+        for l in self
+            .live
+            .iter()
+            .filter(|l| l.tag == Some(Tag::Fan) && l.gpu_anim)
+        {
+            l.obj.set_anim(scene::NodeAnim::Spin {
+                pivot: Vec3::ZERO,
+                axis: l.spin_axis,
+                rps: 0.0,
+                phase: 0.0,
+                machine: Some(index),
+            });
         }
         for l in self.live.iter().filter(|l| l.gpu_anim) {
             let led = match l.tag {
@@ -1722,7 +2052,12 @@ impl Built {
                 Some(Tag::Screen) => scene::MachineLed::Screen,
                 _ => continue,
             };
-            l.obj.set_anim(scene::NodeAnim::Machine { led, glow: l.glow, emissive: l.emissive, machine: Some(index) });
+            l.obj.set_anim(scene::NodeAnim::Machine {
+                led,
+                glow: l.glow,
+                emissive: l.emissive,
+                machine: Some(index),
+            });
         }
     }
 
@@ -1757,7 +2092,11 @@ impl Built {
         self.led_status = status_color(state.status);
 
         // The fans turn together at one rate (the `rps` of each fan below), so one angle serves them all.
-        let fan_rps = if online { 2.0 * (1.0 + 2.0 * activity) } else { 0.0 };
+        let fan_rps = if online {
+            2.0 * (1.0 + 2.0 * activity)
+        } else {
+            0.0
+        };
         if fan_rps != 0.0 {
             self.fan_angle = spin_step(self.fan_angle, fan_rps, dt);
         }
@@ -1836,7 +2175,11 @@ pub fn traces(model: &Model) -> Obj {
         return group;
     }
     // hardware.ts traceStrips: printed copper, flat on the board: a decal (not a solid, nothing rests on it), uninked.
-    let copper = Mat::new(Material { color: named("copper", 0xb87333), decal: true, ..Material::default() });
+    let copper = Mat::new(Material {
+        color: named("copper", 0xb87333),
+        decal: true,
+        ..Material::default()
+    });
     let mesh = Obj::mesh(&scene::merge(&pieces), &copper);
     mesh.no_outline();
     group.add(&mesh);
@@ -1844,7 +2187,9 @@ pub fn traces(model: &Model) -> Obj {
 }
 
 fn path_len(path: &[[f32; 2]]) -> f32 {
-    path.windows(2).map(|w| ((w[1][0] - w[0][0]).powi(2) + (w[1][1] - w[0][1]).powi(2)).sqrt()).sum()
+    path.windows(2)
+        .map(|w| ((w[1][0] - w[0][0]).powi(2) + (w[1][1] - w[0][1]).powi(2)).sqrt())
+        .sum()
 }
 
 /// The point `d` units along a polyline (clamped to its end).
@@ -1951,7 +2296,8 @@ pub fn place_atom(model: &Model, root: &Obj, palette: &PropPalette) -> Option<pr
     };
     let (globe, anim) = props::atom(palette);
     let wrap = Obj::group();
-    wrap.set_scalar(scale).set_position(at[0], at[1] - ATOM_REST_Y * scale, at[2]);
+    wrap.set_scalar(scale)
+        .set_position(at[0], at[1] - ATOM_REST_Y * scale, at[2]);
     wrap.set_dynamic(true); // the atom turns every frame
     wrap.add(&globe);
     // The same outline rule as the models: no ink on the specks of the atom.
@@ -1992,7 +2338,10 @@ mod tests {
             let t = step as f32 * dt;
             let cpu = at + (rest_q * Quat::from_axis_angle(axis, angle)) * v;
             let shader = super::spin_point_shader(at, axis_b, rps, 0.0, rest, t);
-            assert!(cpu.abs_diff_eq(shader, 1e-3), "t = {t}: cpu {cpu} shader {shader}");
+            assert!(
+                cpu.abs_diff_eq(shader, 1e-3),
+                "t = {t}: cpu {cpu} shader {shader}"
+            );
         }
     }
 
@@ -2005,34 +2354,64 @@ mod tests {
         let mut built = build(&m, &Params::default());
         built.set_machine(3);
         assert_eq!(built.machine(), Some(3));
-        let fan = built.live.iter().position(|l| l.tag == Some(Tag::Fan)).expect("the sample has a fan");
-        let (at, rest_q, axis) = (built.live[fan].rest, built.live[fan].rest_q, built.live[fan].spin_axis);
+        let fan = built
+            .live
+            .iter()
+            .position(|l| l.tag == Some(Tag::Fan))
+            .expect("the sample has a fan");
+        let (at, rest_q, axis) = (
+            built.live[fan].rest,
+            built.live[fan].rest_q,
+            built.live[fan].spin_axis,
+        );
         let v = Vec3::new(0.3, 0.1, -0.4);
         let rest = at + rest_q * v;
         let axis_b = rest_q * axis;
         let dt = 1.0 / 60.0;
         let mut clock = 0.0;
         let mut held = None;
-        for (status, activity, steps) in [(Status::Online, 0.0, 60), (Status::Online, 0.8, 300), (Status::Offline, 0.8, 120)] {
+        for (status, activity, steps) in [
+            (Status::Online, 0.0, 60),
+            (Status::Online, 0.8, 300),
+            (Status::Offline, 0.8, 120),
+        ] {
             if status == Status::Offline {
                 held = Some(built.fan_angle());
             }
-            let state = State { status, activity, open: 0.0 };
+            let state = State {
+                status,
+                activity,
+                open: 0.0,
+            };
             for step in 0..steps {
                 built.update(dt, clock, &state);
                 clock += dt;
                 let cpu = at + (rest_q * Quat::from_axis_angle(axis, built.live[fan].angle)) * v;
                 let shader = super::fan_point_shader(at, axis_b, built.fan_angle(), rest);
-                assert!(cpu.abs_diff_eq(shader, 1e-3), "step {step}: cpu {cpu} shader {shader}");
+                assert!(
+                    cpu.abs_diff_eq(shader, 1e-3),
+                    "step {step}: cpu {cpu} shader {shader}"
+                );
             }
         }
-        assert!((built.fan_angle() - held.unwrap()).abs() < 1e-6, "an offline fan held still");
+        assert!(
+            (built.fan_angle() - held.unwrap()).abs() < 1e-6,
+            "an offline fan held still"
+        );
     }
 
     /// `vs_machine` for one machine LED or screen: its colour, and its emissive term (its emissive colour times its
     /// factor), from its row of the machine table, its baked colour, its own emissive colour and glow, the status colour
     /// and the clock (the mirror of hw_anim.wgsl).
-    fn machine_led_shader(led: scene::MachineLed, glow: f32, baked: [f32; 4], emit: [f32; 4], row: [f32; 4], status: [f32; 4], clock: f32) -> ([f32; 3], [f32; 3]) {
+    fn machine_led_shader(
+        led: scene::MachineLed,
+        glow: f32,
+        baked: [f32; 4],
+        emit: [f32; 4],
+        row: [f32; 4],
+        status: [f32; 4],
+        clock: f32,
+    ) -> ([f32; 3], [f32; 3]) {
         let rgb = |c: [f32; 4]| [c[0], c[1], c[2]];
         let scaled = |c: [f32; 3], k: f32| c.map(|x| x * k);
         match led {
@@ -2045,7 +2424,9 @@ mod tests {
                 let factor = if on { 1.0 } else { 0.1 };
                 (rgb(baked), scaled(rgb(emit), glow * factor))
             }
-            scene::MachineLed::Screen => (rgb(baked), scaled(rgb(emit), glow * (0.5 + 0.5 * row[1]))),
+            scene::MachineLed::Screen => {
+                (rgb(baked), scaled(rgb(emit), glow * (0.5 + 0.5 * row[1])))
+            }
         }
     }
 
@@ -2056,17 +2437,39 @@ mod tests {
         let m: Model = parse(SAMPLE).unwrap();
         let mut built = build(&m, &Params::default());
         built.set_machine(2);
-        let parts: Vec<usize> = (0..built.live.len()).filter(|&i| matches!(built.live[i].tag, Some(Tag::Status | Tag::Activity | Tag::Screen))).collect();
+        let parts: Vec<usize> = (0..built.live.len())
+            .filter(|&i| {
+                matches!(
+                    built.live[i].tag,
+                    Some(Tag::Status | Tag::Activity | Tag::Screen)
+                )
+            })
+            .collect();
         assert!(!parts.is_empty(), "the sample has tagged LEDs and screens");
-        let baked: Vec<[f32; 4]> = parts.iter().map(|&i| crate::fleet::rgba(built.live[i].mat.as_ref().unwrap().get().color)).collect();
+        let baked: Vec<[f32; 4]> = parts
+            .iter()
+            .map(|&i| crate::fleet::rgba(built.live[i].mat.as_ref().unwrap().get().color))
+            .collect();
         let (dt, mut clock) = (1.0 / 60.0_f32, 0.0_f32);
-        for (status, activity, steps) in [(Status::Online, 0.0, 60), (Status::Online, 0.8, 120), (Status::Draining, 0.8, 60), (Status::Offline, 0.0, 60)] {
-            let state = State { status, activity, open: 0.0 };
+        for (status, activity, steps) in [
+            (Status::Online, 0.0, 60),
+            (Status::Online, 0.8, 120),
+            (Status::Draining, 0.8, 60),
+            (Status::Offline, 0.0, 60),
+        ] {
+            let state = State {
+                status,
+                activity,
+                open: 0.0,
+            };
             for step in 0..steps {
                 let at = clock;
                 built.update(dt, at, &state);
                 clock += dt;
-                let (row, status_rgb) = (built.machine_state(), crate::fleet::rgba(built.led_status()));
+                let (row, status_rgb) = (
+                    built.machine_state(),
+                    crate::fleet::rgba(built.led_status()),
+                );
                 for (k, &i) in parts.iter().enumerate() {
                     let l = &built.live[i];
                     let led = match l.tag {
@@ -2074,13 +2477,31 @@ mod tests {
                         Some(Tag::Activity) => scene::MachineLed::Activity,
                         _ => scene::MachineLed::Screen,
                     };
-                    let (color, term) = machine_led_shader(led, l.glow, baked[k], crate::fleet::rgba(l.emissive), row, status_rgb, at);
+                    let (color, term) = machine_led_shader(
+                        led,
+                        l.glow,
+                        baked[k],
+                        crate::fleet::rgba(l.emissive),
+                        row,
+                        status_rgb,
+                        at,
+                    );
                     let cpu = l.mat.as_ref().unwrap().get();
-                    let (cc, ce) = (crate::fleet::rgba(cpu.color), crate::fleet::rgba(cpu.emissive));
+                    let (cc, ce) = (
+                        crate::fleet::rgba(cpu.color),
+                        crate::fleet::rgba(cpu.emissive),
+                    );
                     for c in 0..3 {
-                        assert!((cc[c] - color[c]).abs() < 1e-5, "{status:?} step {step}: colour {cc:?} vs shader {color:?}");
+                        assert!(
+                            (cc[c] - color[c]).abs() < 1e-5,
+                            "{status:?} step {step}: colour {cc:?} vs shader {color:?}"
+                        );
                         let cpu_term = ce[c] * cpu.emissive_intensity;
-                        assert!((cpu_term - term[c]).abs() < 1e-5, "{status:?} step {step}: emissive {cpu_term} vs shader {}", term[c]);
+                        assert!(
+                            (cpu_term - term[c]).abs() < 1e-5,
+                            "{status:?} step {step}: emissive {cpu_term} vs shader {}",
+                            term[c]
+                        );
                     }
                 }
             }
@@ -2112,22 +2533,60 @@ mod tests {
         for activity in [0.0_f32, 1.0] {
             for _ in 0..120 {
                 let at = clock;
-                built.update(dt, at, &State { status: Status::Online, activity, open: 0.0 });
+                built.update(
+                    dt,
+                    at,
+                    &State {
+                        status: Status::Online,
+                        activity,
+                        open: 0.0,
+                    },
+                );
                 clock += dt;
                 let (c, e, glow) = material(&bar);
-                assert_eq!(c, Color::hex(0x76b900), "the GPU bar's colour is not #76b900 at activity {activity}, t {at}");
-                assert_eq!(e, Color::hex(0x3d6000), "the GPU bar's emissive is not #3d6000");
+                assert_eq!(
+                    c,
+                    Color::hex(0x76b900),
+                    "the GPU bar's colour is not #76b900 at activity {activity}, t {at}"
+                );
+                assert_eq!(
+                    e,
+                    Color::hex(0x3d6000),
+                    "the GPU bar's emissive is not #3d6000"
+                );
                 let lit = activity > 0.0 && (at % 0.8) < 0.4;
                 let want = if lit { 0.5 } else { 0.05 };
-                assert!((glow - want).abs() < 1e-6, "the GPU bar's glow {glow} is not {want} at t {at}");
-                assert_eq!(material(&dimm).0, Color::hex(0x16351f), "the DIMM is not #16351f");
+                assert!(
+                    (glow - want).abs() < 1e-6,
+                    "the GPU bar's glow {glow} is not {want} at t {at}"
+                );
+                assert_eq!(
+                    material(&dimm).0,
+                    Color::hex(0x16351f),
+                    "the DIMM is not #16351f"
+                );
 
                 // The GPU path: the bar's colour is kept and its emissive term is #3d6000 x its factor.
                 let row = [if activity > 0.0 { 1.0 } else { 0.0 }, activity, 0.0, 0.0];
-                let (color, term) = machine_led_shader(scene::MachineLed::Activity, 0.5, bar_rgb, emit_rgb, row, bar_rgb, at);
-                assert_eq!(color, [bar_rgb[0], bar_rgb[1], bar_rgb[2]], "the GPU bar's colour moved");
+                let (color, term) = machine_led_shader(
+                    scene::MachineLed::Activity,
+                    0.5,
+                    bar_rgb,
+                    emit_rgb,
+                    row,
+                    bar_rgb,
+                    at,
+                );
+                assert_eq!(
+                    color,
+                    [bar_rgb[0], bar_rgb[1], bar_rgb[2]],
+                    "the GPU bar's colour moved"
+                );
                 for ch in 0..3 {
-                    assert!((term[ch] - emit_rgb[ch] * want).abs() < 1e-5, "the GPU bar's emissive term {term:?} at t {at}");
+                    assert!(
+                        (term[ch] - emit_rgb[ch] * want).abs() < 1e-5,
+                        "the GPU bar's emissive term {term:?} at t {at}"
+                    );
                 }
             }
         }
@@ -2142,7 +2601,10 @@ mod tests {
             let on = ((t + phase) % period) < period * 0.5;
             let shader = if on { glow } else { glow * 0.1 };
             let cpu = super::blink_level(period, phase, glow, t);
-            assert!((cpu - shader).abs() < 1e-6, "t = {t}: cpu {cpu} shader {shader}");
+            assert!(
+                (cpu - shader).abs() < 1e-6,
+                "t = {t}: cpu {cpu} shader {shader}"
+            );
         }
     }
 
@@ -2231,7 +2693,10 @@ mod tests {
 
     #[test]
     fn when_accepts_any_numeric_param() {
-        let vals = BTreeMap::from([("gpu_cores".to_string(), 32.0), ("memory_gib".to_string(), 16.0)]);
+        let vals = BTreeMap::from([
+            ("gpu_cores".to_string(), 32.0),
+            ("memory_gib".to_string(), 16.0),
+        ]);
         let eval = |s: &str| eval_when(&parse_when(s).unwrap(), &vals);
         assert!(eval("gpu_cores >= 30"));
         assert!(!eval("memory_gib >= 32"));
@@ -2239,11 +2704,26 @@ mod tests {
 
     #[test]
     fn models_for_picks_the_family() {
-        assert_eq!(models_for("laptop", Some("apple")), ("exterior/apple-laptop", "board/apple-soc"));
-        assert_eq!(models_for("workstation", Some("apple")), ("exterior/apple-desktop", "board/apple-soc"));
-        assert_eq!(models_for("server", None), ("exterior/server", "board/server"));
-        assert_eq!(models_for("laptop", Some("intel")), ("exterior/laptop", "board/laptop"));
-        assert_eq!(models_for("toaster", None), ("exterior/workstation", "board/workstation"));
+        assert_eq!(
+            models_for("laptop", Some("apple")),
+            ("exterior/apple-laptop", "board/apple-soc")
+        );
+        assert_eq!(
+            models_for("workstation", Some("apple")),
+            ("exterior/apple-desktop", "board/apple-soc")
+        );
+        assert_eq!(
+            models_for("server", None),
+            ("exterior/server", "board/server")
+        );
+        assert_eq!(
+            models_for("laptop", Some("intel")),
+            ("exterior/laptop", "board/laptop")
+        );
+        assert_eq!(
+            models_for("toaster", None),
+            ("exterior/workstation", "board/workstation")
+        );
         for kind in ["workstation", "laptop", "edge", "phone", "server"] {
             let (e, b) = models_for(kind, None);
             assert!(model(e).is_some() && model(b).is_some(), "{kind}");
@@ -2259,31 +2739,54 @@ mod tests {
         assert_eq!(station_model("macos", "mini"), "workstation/mac-mini");
         assert_eq!(station_model("macos", "desktop"), "workstation/mac-mini");
         assert_eq!(station_model("macos", "laptop"), "exterior/apple-laptop");
-        assert_eq!(station_model("windows", "laptop"), "workstation/windows-laptop");
-        assert_eq!(station_model("linux", "laptop"), "workstation/windows-laptop");
+        assert_eq!(
+            station_model("windows", "laptop"),
+            "workstation/windows-laptop"
+        );
+        assert_eq!(
+            station_model("linux", "laptop"),
+            "workstation/windows-laptop"
+        );
         assert_eq!(station_model("linux", "desktop"), "workstation/linux-tower");
-        assert_eq!(station_model("windows", "desktop"), "workstation/linux-tower");
+        assert_eq!(
+            station_model("windows", "desktop"),
+            "workstation/linux-tower"
+        );
         assert_eq!(station_model("linux", "vm"), "workstation/vm-rack");
         assert_eq!(station_model("macos", "vm"), "workstation/vm-rack");
         assert_eq!(station_model("plan9", "server"), "workstation/linux-tower");
         for os in ["macos", "windows", "linux"] {
             for form in ["laptop", "desktop", "mini", "server", "vm"] {
                 let name = station_model(os, form);
-                assert!(model(name).is_some(), "{os}/{form} -> {name} is not embedded");
+                assert!(
+                    model(name).is_some(),
+                    "{os}/{form} -> {name} is not embedded"
+                );
             }
         }
     }
 
     #[test]
     fn station_screens_show_one_state_at_a_time() {
-        const STATION_MODELS: [&str; 4] =
-            ["workstation/mac-mini", "workstation/windows-laptop", "workstation/linux-tower", "workstation/vm-rack"];
+        const STATION_MODELS: [&str; 4] = [
+            "workstation/mac-mini",
+            "workstation/windows-laptop",
+            "workstation/linux-tower",
+            "workstation/vm-rack",
+        ];
         for name in STATION_MODELS {
             let m = model(name).unwrap_or_else(|| panic!("{name} is embedded"));
-            for (state, id) in [(0.0, "screen-off"), (1.0, "screen-idle"), (2.0, "screen-active")] {
+            for (state, id) in [
+                (0.0, "screen-off"),
+                (1.0, "screen-idle"),
+                (2.0, "screen-active"),
+            ] {
                 let params = Params::default().with("screen_state", state);
-                let ids: Vec<String> =
-                    part_boxes(m, &params).into_iter().map(|b| b.id).filter(|i| i.starts_with("screen-")).collect();
+                let ids: Vec<String> = part_boxes(m, &params)
+                    .into_iter()
+                    .map(|b| b.id)
+                    .filter(|i| i.starts_with("screen-"))
+                    .collect();
                 assert!(
                     !ids.is_empty() && ids.iter().all(|i| i.starts_with(id)),
                     "{name} at screen_state {state}: {ids:?}"
@@ -2306,25 +2809,57 @@ mod tests {
         }"##;
         let m: Model = parse(bad).unwrap();
         let errs = validate(&m, "bad");
-        for needle in ["duplicate id", "unknown part", "bad when", "unknown tag", "missing part", "two points"] {
-            assert!(errs.iter().any(|e| e.contains(needle)), "no '{needle}' in {errs:?}");
+        for needle in [
+            "duplicate id",
+            "unknown part",
+            "bad when",
+            "unknown tag",
+            "missing part",
+            "two points",
+        ] {
+            assert!(
+                errs.iter().any(|e| e.contains(needle)),
+                "no '{needle}' in {errs:?}"
+            );
         }
     }
 
     #[test]
     fn repeat_wrap_lays_copies_in_rows() {
         // The same numbers as the browser loader's test: count 10, wrap 4, step [1, 0, 0], row [0, 0, 1].
-        let r = Repeat { count: Count::Num(10), step: [1.0, 0.0, 0.0], wrap: Some(4), row: Some([0.0, 0.0, 1.0]) };
+        let r = Repeat {
+            count: Count::Num(10),
+            step: [1.0, 0.0, 0.0],
+            wrap: Some(4),
+            row: Some([0.0, 0.0, 1.0]),
+        };
         let offsets: Vec<[f32; 3]> = (0..10).map(|i| repeat_offset(&r, i).to_array()).collect();
         let expected = [
-            [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0], [3.0, 0.0, 0.0], [0.0, 0.0, 1.0],
-            [1.0, 0.0, 1.0], [2.0, 0.0, 1.0], [3.0, 0.0, 1.0], [0.0, 0.0, 2.0], [1.0, 0.0, 2.0],
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [3.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [1.0, 0.0, 1.0],
+            [2.0, 0.0, 1.0],
+            [3.0, 0.0, 1.0],
+            [0.0, 0.0, 2.0],
+            [1.0, 0.0, 2.0],
         ];
         assert_eq!(offsets, expected);
         // Without a wrap the copies stay in one line.
-        let line = Repeat { count: Count::Num(3), step: [2.0, 0.0, 0.0], wrap: None, row: None };
-        let line_offsets: Vec<[f32; 3]> = (0..3).map(|i| repeat_offset(&line, i).to_array()).collect();
-        assert_eq!(line_offsets, [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [4.0, 0.0, 0.0]]);
+        let line = Repeat {
+            count: Count::Num(3),
+            step: [2.0, 0.0, 0.0],
+            wrap: None,
+            row: None,
+        };
+        let line_offsets: Vec<[f32; 3]> =
+            (0..3).map(|i| repeat_offset(&line, i).to_array()).collect();
+        assert_eq!(
+            line_offsets,
+            [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [4.0, 0.0, 0.0]]
+        );
     }
 
     #[test]
@@ -2348,8 +2883,16 @@ mod tests {
         }"##;
         let m: Model = parse(src).unwrap();
         let errs = validate(&m, "repeats");
-        for needle in ["needs a row", "row needs a wrap", "param name or 'param/n'", "wrap must be at least 1"] {
-            assert!(errs.iter().any(|e| e.contains(needle)), "no '{needle}' in {errs:?}");
+        for needle in [
+            "needs a row",
+            "row needs a wrap",
+            "param name or 'param/n'",
+            "wrap must be at least 1",
+        ] {
+            assert!(
+                errs.iter().any(|e| e.contains(needle)),
+                "no '{needle}' in {errs:?}"
+            );
         }
         // n = 4 over 2 is two copies of "a"; a bad count builds nothing and a bad wrap does not panic.
         let built = build(&m, &Params::default());
@@ -2361,7 +2904,13 @@ mod tests {
     fn a_card_tint_recolours_its_shroud_and_nothing_else() {
         let m = model("exterior/workstation").unwrap();
         let params = Params::default().with("gpus", 2.0);
-        let colours = |b: &Built| crate::scene::flatten(&b.root, crate::scene::Filter::Static).0.iter().map(|d| d.material.color).collect::<Vec<_>>();
+        let colours = |b: &Built| {
+            crate::scene::flatten(&b.root, crate::scene::Filter::Static)
+                .0
+                .iter()
+                .map(|d| d.material.color)
+                .collect::<Vec<_>>()
+        };
 
         let plain = colours(&build(m, &params));
         // No override, and an all-None one, build the palette's shroud everywhere.
@@ -2374,7 +2923,11 @@ mod tests {
         let changed: Vec<usize> = (0..on.len()).filter(|&i| on[i] != plain[i]).collect();
         assert!(!changed.is_empty(), "the tint reached no shroud");
         for i in changed {
-            assert_eq!(plain[i], Color::hex(0x2a2d31), "a tinted draw was not the palette's shroud");
+            assert_eq!(
+                plain[i],
+                Color::hex(0x2a2d31),
+                "a tinted draw was not the palette's shroud"
+            );
             assert_eq!(on[i], Color::hex(0x76b900));
         }
     }
@@ -2390,22 +2943,47 @@ mod tests {
             crate::scene::flatten(&b.root, crate::scene::Filter::Static)
                 .0
                 .iter()
-                .map(|d| (d.material.color, d.material.emissive, d.material.emissive_intensity))
+                .map(|d| {
+                    (
+                        d.material.color,
+                        d.material.emissive,
+                        d.material.emissive_intensity,
+                    )
+                })
                 .collect::<Vec<_>>()
         };
         let fleet = draws(&build(m, &params));
-        assert!(fleet.contains(&(Color::hex(0x2a2d31), Color::BLACK, 0.0)), "the fleet's shroud is not the palette's");
+        assert!(
+            fleet.contains(&(Color::hex(0x2a2d31), Color::BLACK, 0.0)),
+            "the fleet's shroud is not the palette's"
+        );
         for t in [0x76b900u32, 0xc8102e, 0x0068b5] {
             let stage = draws(&build_tinted(m, &params, &[Some(t)]));
-            assert!(stage.contains(&(Color::hex(t), Color::BLACK, 0.0)), "tint {t:06x} is not the shroud's colour, unlit");
+            assert!(
+                stage.contains(&(Color::hex(t), Color::BLACK, 0.0)),
+                "tint {t:06x} is not the shroud's colour, unlit"
+            );
         }
 
-        let fan = InlineMat { color: Some("#3c4249".into()), emissive: None, glow: None, opacity: 1.0, additive: false, flat: false };
+        let fan = InlineMat {
+            color: Some("#3c4249".into()),
+            emissive: None,
+            glow: None,
+            opacity: 1.0,
+            additive: false,
+            flat: false,
+        };
         assert_eq!(lit_of(&fan, true), (Some(String::from("#3c4249")), 0.5));
         assert_eq!(lit_of(&fan, false), (None, 0.0));
-        let led = InlineMat { emissive: Some("#ff0000".into()), ..fan.clone() };
+        let led = InlineMat {
+            emissive: Some("#ff0000".into()),
+            ..fan.clone()
+        };
         assert_eq!(lit_of(&led, false), (Some(String::from("#ff0000")), 1.0));
-        let set = InlineMat { glow: Some(2.0), ..fan.clone() };
+        let set = InlineMat {
+            glow: Some(2.0),
+            ..fan.clone()
+        };
         assert_eq!(lit_of(&set, false), (None, 2.0));
     }
 
@@ -2423,7 +3001,10 @@ mod tests {
         for (name, _) in MODELS {
             let m = model(name).unwrap();
             let mut built = build(m, &Params::default());
-            assert!(!built.root.get().children.is_empty() || m.parts.is_empty(), "{name} built empty");
+            assert!(
+                !built.root.get().children.is_empty() || m.parts.is_empty(),
+                "{name} built empty"
+            );
             let _ = place_atom(m, &built.root, &pal);
             built.update(0.016, 0.016, &State::default());
             let _ = traces(m);
@@ -2452,16 +3033,45 @@ mod tests {
         assert!(!two.live.is_empty());
         // The swing turns the door by its `to` angle (110 degrees) as the opening runs.
         let door = two.parts.get("door").unwrap().clone();
-        two.update(0.0, 0.0, &State { open: 0.0, ..State::default() });
+        two.update(
+            0.0,
+            0.0,
+            &State {
+                open: 0.0,
+                ..State::default()
+            },
+        );
         let closed = door.get().quaternion.unwrap_or(Quat::IDENTITY);
-        two.update(0.0, 0.0, &State { open: 1.0, ..State::default() });
+        two.update(
+            0.0,
+            0.0,
+            &State {
+                open: 1.0,
+                ..State::default()
+            },
+        );
         let open_q = door.get().quaternion.unwrap_or(Quat::IDENTITY);
-        assert!(closed.angle_between(open_q) > 1.5, "the swing did not turn the door");
+        assert!(
+            closed.angle_between(open_q) > 1.5,
+            "the swing did not turn the door"
+        );
 
         for state in [
-            State { status: Status::Online, activity: 0.5, open: 1.0 },
-            State { status: Status::Revoked, activity: 0.0, open: 0.3 },
-            State { status: Status::Offline, activity: 1.0, open: 0.0 },
+            State {
+                status: Status::Online,
+                activity: 0.5,
+                open: 1.0,
+            },
+            State {
+                status: Status::Revoked,
+                activity: 0.0,
+                open: 0.3,
+            },
+            State {
+                status: Status::Offline,
+                activity: 1.0,
+                open: 0.0,
+            },
         ] {
             two.update(0.5, 0.5, &state);
         }
@@ -2482,7 +3092,14 @@ mod tests {
     #[test]
     fn a_shape_is_capped_and_walled() {
         // An L (concave), counter-clockwise seen from above.
-        let pts = [[0.0, 0.0], [2.0, 0.0], [2.0, -1.0], [1.0, -1.0], [1.0, -2.0], [0.0, -2.0]];
+        let pts = [
+            [0.0, 0.0],
+            [2.0, 0.0],
+            [2.0, -1.0],
+            [1.0, -1.0],
+            [1.0, -2.0],
+            [0.0, -2.0],
+        ];
         let tris = ear_clip(&pts);
         assert_eq!(tris.len(), 4);
         let geo = shape_geometry(&pts, 0.1);
@@ -2500,7 +3117,13 @@ mod rig_tests {
         draws
             .iter()
             .filter(|d| matches!(d.kind, scene::DrawKind::Mesh | scene::DrawKind::Outline))
-            .flat_map(|d| d.geo.positions.iter().map(|p| d.model.transform_point3(Vec3::from(*p))).collect::<Vec<_>>())
+            .flat_map(|d| {
+                d.geo
+                    .positions
+                    .iter()
+                    .map(|p| d.model.transform_point3(Vec3::from(*p)))
+                    .collect::<Vec<_>>()
+            })
             .collect()
     }
 
@@ -2510,7 +3133,10 @@ mod rig_tests {
         by_x.sort_by(|p, q| p.x.total_cmp(&q.x));
         a.iter().all(|p| {
             let from = by_x.partition_point(|q| q.x < p.x - tol);
-            by_x[from..].iter().take_while(|q| q.x <= p.x + tol).any(|q| (q.y - p.y).abs() <= tol && (q.z - p.z).abs() <= tol)
+            by_x[from..]
+                .iter()
+                .take_while(|q| q.x <= p.x + tol)
+                .any(|q| (q.y - p.y).abs() <= tol && (q.z - p.z).abs() <= tol)
         })
     }
 
@@ -2525,14 +3151,32 @@ mod rig_tests {
         let mut built = build(model, &params);
         let roots = scene::rigs(&built.root, Mat4::IDENTITY);
         assert!(!roots.is_empty(), "{name} has no dynamic roots");
-        built.update(0.1, 1.3, &State { status: Status::Online, activity: 0.5, open: 0.5 });
+        built.update(
+            0.1,
+            1.3,
+            &State {
+                status: Status::Online,
+                activity: 0.5,
+                open: 0.5,
+            },
+        );
         let unmerged = scene::flatten(&built.root, scene::Filter::Dynamic).0;
         let merged = scene::flatten_rigs(&roots).0;
         let (a, b) = (world_vertices(&unmerged), world_vertices(&merged));
         assert!(!a.is_empty(), "{name}: no dynamic mesh to compare");
-        assert_eq!(a.len(), b.len(), "{name}: the merged roots hold every vertex");
-        assert!(all_matched(&a, &b, 1e-5) && all_matched(&b, &a, 1e-5), "{name}: the merged roots move the vertices");
-        assert!(merged.len() <= unmerged.len(), "{name}: the merge never draws more than the meshes");
+        assert_eq!(
+            a.len(),
+            b.len(),
+            "{name}: the merged roots hold every vertex"
+        );
+        assert!(
+            all_matched(&a, &b, 1e-5) && all_matched(&b, &a, 1e-5),
+            "{name}: the merged roots move the vertices"
+        );
+        assert!(
+            merged.len() <= unmerged.len(),
+            "{name}: the merge never draws more than the meshes"
+        );
     }
 }
 
@@ -2544,16 +3188,46 @@ mod over_area_tests {
     fn over_area_takes_inside_crossing_outside_and_below_the_floor() {
         let (lo, hi) = (Vec3::new(-10.0, 0.0, -10.0), Vec3::new(10.0, 5.0, 10.0));
         // Inside.
-        assert!(over_area(Vec3::new(-1.0, 1.0, -1.0), Vec3::new(1.0, 2.0, 1.0), lo, hi));
+        assert!(over_area(
+            Vec3::new(-1.0, 1.0, -1.0),
+            Vec3::new(1.0, 2.0, 1.0),
+            lo,
+            hi
+        ));
         // Crossing the x edge.
-        assert!(over_area(Vec3::new(8.0, 1.0, -1.0), Vec3::new(14.0, 2.0, 1.0), lo, hi));
+        assert!(over_area(
+            Vec3::new(8.0, 1.0, -1.0),
+            Vec3::new(14.0, 2.0, 1.0),
+            lo,
+            hi
+        ));
         // Outside in x and z.
-        assert!(!over_area(Vec3::new(20.0, 1.0, 20.0), Vec3::new(22.0, 2.0, 22.0), lo, hi));
+        assert!(!over_area(
+            Vec3::new(20.0, 1.0, 20.0),
+            Vec3::new(22.0, 2.0, 22.0),
+            lo,
+            hi
+        ));
         // Touching the x edge only: the part's min x (10) is not below the area's max x (10).
-        assert!(!over_area(Vec3::new(10.0, 1.0, 0.0), Vec3::new(12.0, 2.0, 1.0), lo, hi));
+        assert!(!over_area(
+            Vec3::new(10.0, 1.0, 0.0),
+            Vec3::new(12.0, 2.0, 1.0),
+            lo,
+            hi
+        ));
         // Below the floor: its top (-1) is under the area's floor (0).
-        assert!(!over_area(Vec3::new(0.0, -3.0, 0.0), Vec3::new(1.0, -1.0, 1.0), lo, hi));
+        assert!(!over_area(
+            Vec3::new(0.0, -3.0, 0.0),
+            Vec3::new(1.0, -1.0, 1.0),
+            lo,
+            hi
+        ));
         // Its top exactly at the floor is not above it.
-        assert!(!over_area(Vec3::new(0.0, -3.0, 0.0), Vec3::new(1.0, 0.0, 1.0), lo, hi));
+        assert!(!over_area(
+            Vec3::new(0.0, -3.0, 0.0),
+            Vec3::new(1.0, 0.0, 1.0),
+            lo,
+            hi
+        ));
     }
 }

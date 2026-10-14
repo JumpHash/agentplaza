@@ -28,7 +28,10 @@ pub enum Json {
 impl Json {
     pub fn get(&self, key: &str) -> Option<&Json> {
         match self {
-            Json::Obj(fields) => fields.iter().find(|(k, _)| k.as_str() == key).map(|(_, v)| v),
+            Json::Obj(fields) => fields
+                .iter()
+                .find(|(k, _)| k.as_str() == key)
+                .map(|(_, v)| v),
             _ => None,
         }
     }
@@ -50,7 +53,10 @@ impl Json {
 
 /// Parses one JSON document. Trailing non-whitespace is an error.
 pub fn parse(text: &str) -> Result<Json, String> {
-    let mut p = Parser { s: text.as_bytes(), i: 0 };
+    let mut p = Parser {
+        s: text.as_bytes(),
+        i: 0,
+    };
     let v = p.value()?;
     p.ws();
     if p.i != p.s.len() {
@@ -164,7 +170,9 @@ impl Parser<'_> {
             }
         }
         let text = std::str::from_utf8(&self.s[start..self.i]).map_err(|e| e.to_string())?;
-        text.parse::<f64>().map(Json::Num).map_err(|_| format!("bad number {text}"))
+        text.parse::<f64>()
+            .map(Json::Num)
+            .map_err(|_| format!("bad number {text}"))
     }
 
     fn hex4(&mut self) -> Result<u32, String> {
@@ -294,7 +302,12 @@ fn write_str(s: &str, out: &mut String) {
 }
 
 fn obj(fields: Vec<(&str, Json)>) -> Json {
-    Json::Obj(fields.into_iter().map(|(k, v)| (k.to_string(), v)).collect())
+    Json::Obj(
+        fields
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v))
+            .collect(),
+    )
 }
 
 fn s(text: &str) -> Json {
@@ -312,7 +325,10 @@ fn ty(name: &str) -> Json {
 fn schema(props: Vec<(&str, Json)>, required: &[&str]) -> Json {
     let mut fields = vec![("type", s("object")), ("properties", obj(props))];
     if !required.is_empty() {
-        fields.push(("required", Json::Arr(required.iter().map(|r| s(r)).collect())));
+        fields.push((
+            "required",
+            Json::Arr(required.iter().map(|r| s(r)).collect()),
+        ));
     }
     obj(fields)
 }
@@ -323,20 +339,33 @@ fn read_only() -> Json {
 
 fn text_result(text: impl Into<String>, is_error: bool) -> Json {
     obj(vec![
-        ("content", Json::Arr(vec![obj(vec![("type", s("text")), ("text", Json::Str(text.into()))])])),
+        (
+            "content",
+            Json::Arr(vec![obj(vec![
+                ("type", s("text")),
+                ("text", Json::Str(text.into())),
+            ])]),
+        ),
         ("isError", Json::Bool(is_error)),
     ])
 }
 
 fn reply(id: &Json, result: Json) -> Json {
-    obj(vec![("jsonrpc", s("2.0")), ("id", id.clone()), ("result", result)])
+    obj(vec![
+        ("jsonrpc", s("2.0")),
+        ("id", id.clone()),
+        ("result", result),
+    ])
 }
 
 fn error(id: &Json, code: i64, message: &str) -> Json {
     obj(vec![
         ("jsonrpc", s("2.0")),
         ("id", id.clone()),
-        ("error", obj(vec![("code", num(code)), ("message", s(message))])),
+        (
+            "error",
+            obj(vec![("code", num(code)), ("message", s(message))]),
+        ),
     ])
 }
 
@@ -353,7 +382,10 @@ impl Ctx<'_> {
 
 fn find_header<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
     let name = name.to_ascii_lowercase();
-    headers.iter().find(|(k, _)| *k == name).map(|(_, v)| v.as_str())
+    headers
+        .iter()
+        .find(|(k, _)| *k == name)
+        .map(|(_, v)| v.as_str())
 }
 
 fn tool(name: &str, description: &str, input_schema: Json, annotations: Json) -> Json {
@@ -374,10 +406,25 @@ fn tool_defs() -> Vec<Json> {
     let no_args = || schema(vec![], &[]);
     let destructive = || obj(vec![("destructiveHint", Json::Bool(true))]);
     vec![
-        tool("echo", "Echoes its text argument.", one_arg("text", "string"), read_only()),
+        tool(
+            "echo",
+            "Echoes its text argument.",
+            one_arg("text", "string"),
+            read_only(),
+        ),
         tool("fail", "Always fails.", no_args(), obj(vec![])),
-        tool("slow", "Sleeps ms milliseconds, then returns.", one_arg("ms", "integer"), read_only()),
-        tool("big", "Returns bytes characters of text.", one_arg("bytes", "integer"), read_only()),
+        tool(
+            "slow",
+            "Sleeps ms milliseconds, then returns.",
+            one_arg("ms", "integer"),
+            read_only(),
+        ),
+        tool(
+            "big",
+            "Returns bytes characters of text.",
+            one_arg("bytes", "integer"),
+            read_only(),
+        ),
         tool(
             "leak_env",
             "Returns the value of the environment variable name.",
@@ -401,7 +448,10 @@ fn tool_defs() -> Vec<Json> {
             "delete_all",
             "Pretends to delete everything. Irreversible.",
             no_args(),
-            obj(vec![("destructiveHint", Json::Bool(true)), ("readOnlyHint", Json::Bool(false))]),
+            obj(vec![
+                ("destructiveHint", Json::Bool(true)),
+                ("readOnlyHint", Json::Bool(false)),
+            ]),
         ),
     ]
 }
@@ -423,7 +473,10 @@ fn tools_list(params: &Json) -> Json {
 }
 
 fn initialize(params: &Json) -> Json {
-    let requested = params.get("protocolVersion").and_then(Json::as_str).unwrap_or("");
+    let requested = params
+        .get("protocolVersion")
+        .and_then(Json::as_str)
+        .unwrap_or("");
     let version = if requested == "2025-06-18" || requested == "2025-03-26" {
         requested
     } else {
@@ -433,9 +486,16 @@ fn initialize(params: &Json) -> Json {
         ("protocolVersion", s(version)),
         (
             "capabilities",
-            obj(vec![("tools", obj(vec![])), ("resources", obj(vec![])), ("prompts", obj(vec![]))]),
+            obj(vec![
+                ("tools", obj(vec![])),
+                ("resources", obj(vec![])),
+                ("prompts", obj(vec![])),
+            ]),
         ),
-        ("serverInfo", obj(vec![("name", s("fixture")), ("version", s("1.0.0"))])),
+        (
+            "serverInfo",
+            obj(vec![("name", s("fixture")), ("version", s("1.0.0"))]),
+        ),
     ])
 }
 
@@ -568,7 +628,10 @@ pub fn handle(msg: &Json, ctx: &Ctx<'_>) -> Option<Json> {
         )]),
         "prompts/list" => obj(vec![(
             "prompts",
-            Json::Arr(vec![obj(vec![("name", s("greet")), ("description", s("says hello"))])]),
+            Json::Arr(vec![obj(vec![
+                ("name", s("greet")),
+                ("description", s("says hello")),
+            ])]),
         )]),
         _ => return Some(error(id, -32601, "method not found")),
     };
@@ -618,19 +681,25 @@ struct Resp {
 
 impl Resp {
     fn status(status: u16) -> Resp {
-        Resp { status, headers: Vec::new(), body: String::new() }
+        Resp {
+            status,
+            headers: Vec::new(),
+            body: String::new(),
+        }
     }
 
     fn json(status: u16, v: &Json) -> Resp {
         let mut r = Resp::status(status);
-        r.headers.push(("Content-Type".to_string(), "application/json".to_string()));
+        r.headers
+            .push(("Content-Type".to_string(), "application/json".to_string()));
         r.body = dump(v);
         r
     }
 
     fn event(v: &Json) -> Resp {
         let mut r = Resp::status(200);
-        r.headers.push(("Content-Type".to_string(), "text/event-stream".to_string()));
+        r.headers
+            .push(("Content-Type".to_string(), "text/event-stream".to_string()));
         r.body = format!("event: message\ndata: {}\n\n", dump(v));
         r
     }
@@ -648,9 +717,16 @@ fn route(method: &str, path: &str, headers: &[(String, String)], body: &[u8]) ->
     let text = String::from_utf8_lossy(body);
     let msg = match parse(&text) {
         Ok(m) => m,
-        Err(e) => return Resp::json(400, &error(&Json::Null, -32700, &format!("parse error: {e}"))),
+        Err(e) => {
+            return Resp::json(
+                400,
+                &error(&Json::Null, -32700, &format!("parse error: {e}")),
+            );
+        }
     };
-    let ctx = Ctx { headers: Some(headers) };
+    let ctx = Ctx {
+        headers: Some(headers),
+    };
     let is_init = msg.get("method").and_then(Json::as_str) == Some("initialize");
     if msg.get("id").is_some() && !is_init && ctx.header("mcp-session-id") != Some(SESSION) {
         return Resp::status(404);
@@ -658,9 +734,14 @@ fn route(method: &str, path: &str, headers: &[(String, String)], body: &[u8]) ->
     let Some(reply) = handle(&msg, &ctx) else {
         return Resp::status(202);
     };
-    let mut resp = if sse { Resp::event(&reply) } else { Resp::json(200, &reply) };
+    let mut resp = if sse {
+        Resp::event(&reply)
+    } else {
+        Resp::json(200, &reply)
+    };
     if is_init {
-        resp.headers.push(("Mcp-Session-Id".to_string(), SESSION.to_string()));
+        resp.headers
+            .push(("Mcp-Session-Id".to_string(), SESSION.to_string()));
     }
     resp
 }
@@ -679,7 +760,10 @@ fn write_response(stream: &mut TcpStream, r: &Resp) -> std::io::Result<()> {
     for (k, v) in &r.headers {
         head.push_str(&format!("{k}: {v}\r\n"));
     }
-    head.push_str(&format!("Content-Length: {}\r\nConnection: close\r\n\r\n", r.body.len()));
+    head.push_str(&format!(
+        "Content-Length: {}\r\nConnection: close\r\n\r\n",
+        r.body.len()
+    ));
     stream.write_all(head.as_bytes())?;
     stream.write_all(r.body.as_bytes())?;
     stream.flush()

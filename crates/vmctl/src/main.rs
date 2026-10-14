@@ -443,8 +443,10 @@ fn run(config: Config) -> ExitCode {
         if !matches!(exit, VmExit::GuestExited { .. }) {
             failure.get_or_insert_with(|| {
                 if stopped_after_deadline.contains(&(id as u32)) {
-                    format!("VM {id} was stopped by the {}s timeout, not by its guest",
-                        config.timeout.map_or(0, |timeout| timeout.as_secs()))
+                    format!(
+                        "VM {id} was stopped by the {}s timeout, not by its guest",
+                        config.timeout.map_or(0, |timeout| timeout.as_secs())
+                    )
                 } else {
                     format!("VM {id} was killed instead of exiting")
                 }
@@ -525,11 +527,19 @@ fn forward_console_input(runtime: Arc<VmRuntime>) {
 /// guest's power-on register reads.
 fn wait_for_console(runtime: &VmRuntime) {
     let started = Instant::now();
-    let mut last_len = runtime.serial.lock().unwrap_or_else(PoisonError::into_inner).len();
+    let mut last_len = runtime
+        .serial
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .len();
     let mut quiet_since = None;
     loop {
         thread::sleep(Duration::from_millis(20));
-        let len = runtime.serial.lock().unwrap_or_else(PoisonError::into_inner).len();
+        let len = runtime
+            .serial
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len();
         if len != last_len {
             last_len = len;
             quiet_since = None;

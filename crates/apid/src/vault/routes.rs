@@ -7,10 +7,10 @@ use std::collections::BTreeMap;
 use apz_http::{Request, Response, Router};
 use secrecy::SecretString;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::model::Scope;
-use super::{NewSecret, OnBehalf, Store, Unlock, VaultError, LOCAL_NODE};
+use super::{LOCAL_NODE, NewSecret, OnBehalf, Store, Unlock, VaultError};
 use crate::events::Bus;
 use crate::nodes::{self, Node};
 use crate::state::App;
@@ -23,7 +23,11 @@ pub struct Ctx<'a> {
 }
 
 fn ctx(app: &App) -> Ctx<'_> {
-    Ctx { store: &app.vault, bus: &app.bus, nodes: &app.nodes }
+    Ctx {
+        store: &app.vault,
+        bus: &app.bus,
+        nodes: &app.nodes,
+    }
 }
 
 pub fn routes(router: Router<App>) -> Router<App> {
@@ -32,16 +36,30 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .post("/v1/vault/unseal", |app, req, _| unseal(&ctx(app), req))
         .post("/v1/vault/seal", |app, _, _| seal(&ctx(app)))
         .post("/v1/vault/slots", |app, req, _| add_slot(&ctx(app), req))
-        .delete("/v1/vault/slots/{id}", |app, _, p| remove_slot(&ctx(app), p.get("id")))
+        .delete("/v1/vault/slots/{id}", |app, _, p| {
+            remove_slot(&ctx(app), p.get("id"))
+        })
         .post("/v1/vault/recovery", |app, _, _| recovery(&ctx(app)))
         .post("/v1/vault/rekey", |app, req, _| rekey(&ctx(app), req))
         .get("/v1/vault/secrets", |app, _, _| list(&ctx(app)))
         .post("/v1/vault/secrets", |app, req, _| create(&ctx(app), req))
-        .route("PUT", "/v1/vault/secrets/{id}/value", |app, req, p| rotate(&ctx(app), p.get("id"), req))
-        .route("PATCH", "/v1/vault/secrets/{id}", |app, req, p| patch(&ctx(app), p.get("id"), req))
-        .post("/v1/vault/secrets/{id}/rollback", |app, req, p| rollback(&ctx(app), p.get("id"), req))
-        .delete("/v1/vault/secrets/{id}", |app, _, p| delete(&ctx(app), p.get("id")))
-        .post("/v1/vault/secrets/{id}/test", |app, req, p| test(&ctx(app), p.get("id"), req, |binding, node| scrubbed(app, binding, node)))
+        .route("PUT", "/v1/vault/secrets/{id}/value", |app, req, p| {
+            rotate(&ctx(app), p.get("id"), req)
+        })
+        .route("PATCH", "/v1/vault/secrets/{id}", |app, req, p| {
+            patch(&ctx(app), p.get("id"), req)
+        })
+        .post("/v1/vault/secrets/{id}/rollback", |app, req, p| {
+            rollback(&ctx(app), p.get("id"), req)
+        })
+        .delete("/v1/vault/secrets/{id}", |app, _, p| {
+            delete(&ctx(app), p.get("id"))
+        })
+        .post("/v1/vault/secrets/{id}/test", |app, req, p| {
+            test(&ctx(app), p.get("id"), req, |binding, node| {
+                scrubbed(app, binding, node)
+            })
+        })
         .post("/v1/vault/import", |app, req, _| import(&ctx(app), req))
         .get("/v1/vault/consumers", |app, _, _| consumers(&ctx(app)))
         .get("/v1/vault/audit", |app, req, _| audit(&ctx(app), req))
@@ -67,7 +85,8 @@ fn fail(err: VaultError) -> Response {
 }
 
 fn parse<T: for<'de> Deserialize<'de>>(req: &Request) -> Result<T, Response> {
-    req.json::<T>().map_err(|_| Response::error(400, "the body is not the JSON this route takes"))
+    req.json::<T>()
+        .map_err(|_| Response::error(400, "the body is not the JSON this route takes"))
 }
 
 /// The body of a route whose body is optional: an empty body is the default.
@@ -132,7 +151,10 @@ pub(super) fn unseal(ctx: &Ctx, req: &Request) -> Response {
 
 fn parse_or_default_unseal(req: &Request) -> Result<UnsealBody, Response> {
     if req.body.iter().all(u8::is_ascii_whitespace) {
-        return Ok(UnsealBody { passphrase: None, recovery_code: None });
+        return Ok(UnsealBody {
+            passphrase: None,
+            recovery_code: None,
+        });
     }
     parse(req)
 }
@@ -162,11 +184,18 @@ pub(super) fn add_slot(ctx: &Ctx, req: &Request) -> Response {
     };
     let result = match body.kind.as_str() {
         "passphrase" => match body.passphrase {
-            Some(passphrase) => ctx.store.add_passphrase(&SecretString::from(passphrase), "owner", now()),
-            None => Err(VaultError::Invalid("a passphrase slot needs a passphrase".into())),
+            Some(passphrase) => {
+                ctx.store
+                    .add_passphrase(&SecretString::from(passphrase), "owner", now())
+            }
+            None => Err(VaultError::Invalid(
+                "a passphrase slot needs a passphrase".into(),
+            )),
         },
         "keyfile" => ctx.store.add_keyfile("owner", now()),
-        _ => Err(VaultError::Invalid("a slot is kind passphrase or keyfile".into())),
+        _ => Err(VaultError::Invalid(
+            "a slot is kind passphrase or keyfile".into(),
+        )),
     };
     match result {
         Ok(_) => {
@@ -212,7 +241,11 @@ pub(super) fn rekey(ctx: &Ctx, req: &Request) -> Response {
         Ok(body) => body,
         Err(response) => return response,
     };
-    let supplied: Vec<(String, SecretString)> = body.secrets.into_iter().map(|(id, secret)| (id, SecretString::from(secret))).collect();
+    let supplied: Vec<(String, SecretString)> = body
+        .secrets
+        .into_iter()
+        .map(|(id, secret)| (id, SecretString::from(secret)))
+        .collect();
     match ctx.store.rekey(&supplied, "owner", now()) {
         Ok(()) => {
             changed(ctx, &[]);
@@ -279,7 +312,10 @@ pub(super) fn rotate(ctx: &Ctx, id: &str, req: &Request) -> Response {
         Ok(body) => body,
         Err(response) => return response,
     };
-    match ctx.store.rotate(id, &SecretString::from(body.value), "owner", now()) {
+    match ctx
+        .store
+        .rotate(id, &SecretString::from(body.value), "owner", now())
+    {
         Ok(()) => {
             changed(ctx, &[id.to_string()]);
             view_response(ctx, id)
@@ -306,7 +342,10 @@ pub(super) fn patch(ctx: &Ctx, id: &str, req: &Request) -> Response {
     {
         return response;
     }
-    match ctx.store.patch(id, body.label, body.scope, body.bindings, "owner", now()) {
+    match ctx
+        .store
+        .patch(id, body.label, body.scope, body.bindings, "owner", now())
+    {
         Ok(()) => {
             changed(ctx, &[id.to_string()]);
             view_response(ctx, id)
@@ -355,7 +394,12 @@ pub(super) struct TestBody {
 /// resolution comes first: it proves the consumer reads the secret on that node. Then the consumer's harmless call:
 /// the provider's key check, the connector's first read, or the Hugging Face account. An MCP server or a host tool
 /// has no check of its own here.
-pub(super) fn test(c: &Ctx, id: &str, req: &Request, probe: impl FnOnce(&str, &str) -> (bool, String)) -> Response {
+pub(super) fn test(
+    c: &Ctx,
+    id: &str,
+    req: &Request,
+    probe: impl FnOnce(&str, &str) -> (bool, String),
+) -> Response {
     let body: TestBody = match parse_or_default(req) {
         Ok(body) => body,
         Err(response) => return response,
@@ -378,13 +422,19 @@ pub(super) fn test(c: &Ctx, id: &str, req: &Request, probe: impl FnOnce(&str, &s
 /// leaves the route.
 fn scrubbed(app: &App, binding: &str, node: &str) -> (bool, String) {
     let (ok, mut detail) = probe(app, binding, node);
-    let owner = OnBehalf::Owner { node: Some(node.to_string()) };
+    let owner = OnBehalf::Owner {
+        node: Some(node.to_string()),
+    };
     let names: Vec<String> = app
         .vault
         .list()
         .unwrap_or_default()
         .iter()
-        .filter(|v| v["bindings"].as_array().is_some_and(|b| b.iter().any(|x| x == binding)))
+        .filter(|v| {
+            v["bindings"]
+                .as_array()
+                .is_some_and(|b| b.iter().any(|x| x == binding))
+        })
         .filter_map(|v| v["name"].as_str().map(str::to_string))
         .collect();
     for name in names {
@@ -404,7 +454,10 @@ fn probe(app: &App, binding: &str, node: &str) -> (bool, String) {
             Err(message) => (false, message),
         },
         "connector" => match app.connectors.check(id, Some(node.to_string())) {
-            Ok(report) => (report["ok"] == true, report["detail"].as_str().unwrap_or_default().to_string()),
+            Ok(report) => (
+                report["ok"] == true,
+                report["detail"].as_str().unwrap_or_default().to_string(),
+            ),
             Err((_, message)) => (false, message),
         },
         "hf" => {
@@ -414,7 +467,10 @@ fn probe(app: &App, binding: &str, node: &str) -> (bool, String) {
                 Err(message) => (false, message),
             }
         }
-        "mcp" | "tool" => (false, "nothing to call here: start the server or use the tool to check it".into()),
+        "mcp" | "tool" => (
+            false,
+            "nothing to call here: start the server or use the tool to check it".into(),
+        ),
         _ => (false, "no check for this binding".into()),
     }
 }
@@ -440,7 +496,10 @@ pub(super) fn import(ctx: &Ctx, req: &Request) -> Response {
     if let Err(response) = check_nodes(ctx, &body.scope) {
         return response;
     }
-    match ctx.store.import_dotenv(&body.text, body.scope, &body.bindings, "owner", now()) {
+    match ctx
+        .store
+        .import_dotenv(&body.text, body.scope, &body.bindings, "owner", now())
+    {
         Ok(report) => {
             let ids: Vec<String> = report.imported.iter().map(|(_, id)| id.clone()).collect();
             changed(ctx, &ids);
@@ -479,26 +538,37 @@ pub(super) fn audit(ctx: &Ctx, req: &Request) -> Response {
         Err(err) => return fail(err),
     };
     // `first_broken` and `verified` are null unless this request verified the chain.
-    let (chain_ok, first_broken, verified): (Value, Value, Value) = if req.query_param("verify") == Some("1") {
-        match ctx.store.check_audit() {
-            Ok(verdict) => {
-                if let Some(line) = verdict.broken_at {
-                    ctx.bus.publish("vault.audit_broken", &json!({ "line": line }));
+    let (chain_ok, first_broken, verified): (Value, Value, Value) =
+        if req.query_param("verify") == Some("1") {
+            match ctx.store.check_audit() {
+                Ok(verdict) => {
+                    if let Some(line) = verdict.broken_at {
+                        ctx.bus
+                            .publish("vault.audit_broken", &json!({ "line": line }));
+                    }
+                    (
+                        Value::from(verdict.ok),
+                        json!(verdict.first_broken),
+                        Value::from(verdict.verified),
+                    )
                 }
-                (Value::from(verdict.ok), json!(verdict.first_broken), Value::from(verdict.verified))
+                Err(err) => return fail(err),
             }
-            Err(err) => return fail(err),
-        }
-    } else {
-        (json!(ctx.store.audit_ok()), Value::Null, Value::Null)
-    };
-    Response::json(200, &json!({ "entries": entries, "chain_ok": chain_ok, "first_broken": first_broken, "verified": verified }))
+        } else {
+            (json!(ctx.store.audit_ok()), Value::Null, Value::Null)
+        };
+    Response::json(
+        200,
+        &json!({ "entries": entries, "chain_ok": chain_ok, "first_broken": first_broken, "verified": verified }),
+    )
 }
 
 fn query_number(req: &Request, name: &str, default: u64) -> Result<u64, Response> {
     match req.query_param(name).filter(|v| !v.is_empty()) {
         None => Ok(default),
-        Some(value) => value.parse::<u64>().map_err(|_| Response::error(400, &format!("{name} must be a number"))),
+        Some(value) => value
+            .parse::<u64>()
+            .map_err(|_| Response::error(400, &format!("{name} must be a number"))),
     }
 }
 
@@ -507,7 +577,10 @@ fn check_node(ctx: &Ctx, node: &str) -> Result<(), Response> {
     if node == LOCAL_NODE || nodes_of(ctx).iter().any(|n| !n.revoked && n.id == node) {
         Ok(())
     } else {
-        Err(Response::error(400, &format!("{node} is not a node of this plaza")))
+        Err(Response::error(
+            400,
+            &format!("{node} is not a node of this plaza"),
+        ))
     }
 }
 

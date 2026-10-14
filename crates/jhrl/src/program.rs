@@ -56,9 +56,17 @@ pub fn collection_name(type_name: &str) -> String {
             snake.push(*c);
         }
     }
-    if snake.ends_with('s') || snake.ends_with('x') || snake.ends_with("sh") || snake.ends_with("ch") {
+    if snake.ends_with('s')
+        || snake.ends_with('x')
+        || snake.ends_with("sh")
+        || snake.ends_with("ch")
+    {
         snake.push_str("es");
-    } else if snake.ends_with('y') && !snake.ends_with("ay") && !snake.ends_with("ey") && !snake.ends_with("oy") {
+    } else if snake.ends_with('y')
+        && !snake.ends_with("ay")
+        && !snake.ends_with("ey")
+        && !snake.ends_with("oy")
+    {
         snake.pop();
         snake.push_str("ies");
     } else {
@@ -80,11 +88,20 @@ impl Program {
                 Ok(m) => modules.push(m),
                 Err(d) => {
                     diags.push(d);
-                    modules.push(Module { file: id, pack: None, items: vec![] });
+                    modules.push(Module {
+                        file: id,
+                        pack: None,
+                        items: vec![],
+                    });
                 }
             }
         }
-        let mut p = Program { sources, modules, packs: vec![], file_pack: vec![] };
+        let mut p = Program {
+            sources,
+            modules,
+            packs: vec![],
+            file_pack: vec![],
+        };
         diags.extend(p.link());
         (p, diags)
     }
@@ -96,7 +113,11 @@ impl Program {
         p.sources.files[file as usize] = crate::span::Source::new(path, text);
         let m = parse_module(file, &p.sources.files[file as usize].text)?;
         p.modules[file as usize] = m;
-        let tiers: HashMap<String, Tier> = self.packs.iter().map(|k| (k.name.clone(), k.tier)).collect();
+        let tiers: HashMap<String, Tier> = self
+            .packs
+            .iter()
+            .map(|k| (k.name.clone(), k.tier))
+            .collect();
         // Link problems (an import of a pack that isn't loaded …) were already reported for the
         // original program; only a parse error of the new text is an error here.
         let _ = p.link();
@@ -132,7 +153,10 @@ impl Program {
             self.packs[idx].files.push(m.file);
             self.file_pack.push(idx);
             for (i, it) in m.items.iter().enumerate() {
-                let r = DeclRef { file: m.file, item: i };
+                let r = DeclRef {
+                    file: m.file,
+                    item: i,
+                };
                 if let Item::Import(n, s) = it {
                     self.packs[idx].imports.push((n.clone(), *s));
                     continue;
@@ -143,12 +167,16 @@ impl Program {
                 }
                 match it {
                     Item::Entity(e) => entries.push((
-                        e.collection.clone().unwrap_or_else(|| collection_name(&e.name)),
+                        e.collection
+                            .clone()
+                            .unwrap_or_else(|| collection_name(&e.name)),
                         NameKind::Collection,
                         e.span,
                     )),
                     Item::Edge(e) => entries.push((
-                        e.collection.clone().unwrap_or_else(|| collection_name(&e.name)),
+                        e.collection
+                            .clone()
+                            .unwrap_or_else(|| collection_name(&e.name)),
                         NameKind::Collection,
                         e.span,
                     )),
@@ -158,7 +186,10 @@ impl Program {
                     if let Some(prev) = self.packs[idx].names.get(&n) {
                         let ps = self.modules[prev.1.file as usize].items[prev.1.item].span();
                         let at = self.sources.locate(ps);
-                        diags.push(Diag::error(span, format!("`{n}` is already declared in this pack (at {at})")));
+                        diags.push(Diag::error(
+                            span,
+                            format!("`{n}` is already declared in this pack (at {at})"),
+                        ));
                     } else {
                         self.packs[idx].names.insert(n, (k, r));
                     }
@@ -171,7 +202,10 @@ impl Program {
                 match by_name.get(&n) {
                     Some(&j) if j != i => self.packs[i].imported.push(j),
                     Some(_) => diags.push(Diag::error(s, "a pack can't import itself")),
-                    None => diags.push(Diag::error(s, format!("unknown pack `{n}` (no loaded file declares it)"))),
+                    None => diags.push(Diag::error(
+                        s,
+                        format!("unknown pack `{n}` (no loaded file declares it)"),
+                    )),
                 }
             }
         }
@@ -216,7 +250,11 @@ impl Program {
             1 => Ok(Some(found[0].1)),
             _ => Err(format!(
                 "`{name}` is exported by several imported packs: {}",
-                found.iter().map(|(j, _)| self.packs[*j].name.as_str()).collect::<Vec<_>>().join(", ")
+                found
+                    .iter()
+                    .map(|(j, _)| self.packs[*j].name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             )),
         }
     }
@@ -232,7 +270,16 @@ impl Program {
     /// All items with the pack they belong to.
     pub fn items(&self) -> impl Iterator<Item = (usize, DeclRef, &Item)> {
         self.modules.iter().flat_map(move |m| {
-            m.items.iter().enumerate().map(move |(i, it)| (self.pack_of(m.file), DeclRef { file: m.file, item: i }, it))
+            m.items.iter().enumerate().map(move |(i, it)| {
+                (
+                    self.pack_of(m.file),
+                    DeclRef {
+                        file: m.file,
+                        item: i,
+                    },
+                    it,
+                )
+            })
         })
     }
 
@@ -275,7 +322,10 @@ mod tests {
         let (p, d) = Program::load(vec![
             ("a.jhrl".into(), "pack a\nfn f(x: Int) -> Int = x".into()),
             ("b.jhrl".into(), "pack b\nfn f(x: Int) -> Int = x".into()),
-            ("c.jhrl".into(), "pack c\nimport a\nimport b\nfn g(x: Int) -> Int = x".into()),
+            (
+                "c.jhrl".into(),
+                "pack c\nimport a\nimport b\nfn g(x: Int) -> Int = x".into(),
+            ),
             ("d.jhrl".into(), "pack d\nimport nowhere".into()),
         ]);
         assert_eq!(d.len(), 1, "{d:?}");

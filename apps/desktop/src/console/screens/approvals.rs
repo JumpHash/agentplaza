@@ -7,20 +7,27 @@ use std::collections::{HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use iced::font::{self, Font};
-use iced::widget::{column, container, row, text, text_input, Space, Stack};
+use iced::widget::{Space, Stack, column, container, row, text, text_input};
 use iced::{Alignment, Border, Color, Element, Length, Padding, Task, Theme};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::wizard::{self, ProposalView, WizardMsg};
-use super::{sanctions, Id};
-use crate::console::{client, rich, ui, Ctx};
-use crate::theme::{SANS};
+use super::{Id, sanctions};
+use crate::console::{Ctx, client, rich, ui};
+use crate::theme::SANS;
 
-const STRONG: Font = Font { weight: font::Weight::Semibold, ..SANS };
+const STRONG: Font = Font {
+    weight: font::Weight::Semibold,
+    ..SANS
+};
 
 /// A section heading (the web's `.approvals-subhead`: mono semibold caps).
 fn subhead<'a>(title: &str) -> Element<'a, Msg> {
-    text(title.to_string()).font(ui::SANS_BOLD).size(16.0).color(crate::theme::palette().ink).into()
+    text(title.to_string())
+        .font(ui::SANS_BOLD)
+        .size(16.0)
+        .color(crate::theme::palette().ink)
+        .into()
 }
 
 #[derive(Debug, Default)]
@@ -104,8 +111,12 @@ impl Approval {
         Some(Self {
             id: v.get("id")?.as_str()?.to_string(),
             cid: v.get("cid")?.as_u64()?,
-            kind: Some(field(v, "kind")).filter(|k| !k.is_empty()).unwrap_or_else(|| "tool".to_string()),
-            subject: Some(field(v, "subject")).filter(|s| !s.is_empty()).unwrap_or_else(|| tool.clone()),
+            kind: Some(field(v, "kind"))
+                .filter(|k| !k.is_empty())
+                .unwrap_or_else(|| "tool".to_string()),
+            subject: Some(field(v, "subject"))
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| tool.clone()),
             input: v.get("input").cloned().unwrap_or(Value::Null),
             detail: v.get("detail").cloned().unwrap_or(Value::Null),
             tool,
@@ -137,7 +148,9 @@ struct Proposal {
 impl Proposal {
     fn from_value(v: &Value) -> Option<Self> {
         let role = v.get("role").cloned().unwrap_or(Value::Null);
-        let title = Some(field(&role, "title")).filter(|t| !t.is_empty()).unwrap_or_else(|| field(&role, "id"));
+        let title = Some(field(&role, "title"))
+            .filter(|t| !t.is_empty())
+            .unwrap_or_else(|| field(&role, "id"));
         Some(Self {
             id: v.get("id")?.as_str()?.to_string(),
             review: serde_json::from_value(v.clone()).ok(),
@@ -156,11 +169,16 @@ impl Proposal {
 }
 
 fn field(v: &Value, key: &str) -> String {
-    v.get(key).and_then(Value::as_str).unwrap_or_default().to_string()
+    v.get(key)
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
 }
 
 fn list<T>(v: &Value, parse: fn(&Value) -> Option<T>) -> Vec<T> {
-    v.as_array().map(|items| items.iter().filter_map(parse).collect()).unwrap_or_default()
+    v.as_array()
+        .map(|items| items.iter().filter_map(parse).collect())
+        .unwrap_or_default()
 }
 
 fn agent_entry(v: &Value) -> Option<(u64, String)> {
@@ -181,7 +199,10 @@ fn ago(ms: i64) -> String {
     if ms == 0 {
         return "—".to_string();
     }
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0);
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
     let s = ((now - ms) as f64 / 1000.0).round().max(0.0) as i64;
     match s {
         0..=4 => "just now".to_string(),
@@ -208,12 +229,21 @@ fn on_rich(action: rich::RichAction) -> Msg {
 
 /// Asks the hub for the cards of the subjects, reasons and instructions on the screen that it does not hold yet.
 fn prefetch(state: &mut State, ctx: &Ctx) -> Task<Msg> {
-    let mut texts: Vec<String> = state.approvals.iter().filter(|a| a.kind == "sanction" || a.kind == "payment").map(|a| a.subject.clone()).collect();
+    let mut texts: Vec<String> = state
+        .approvals
+        .iter()
+        .filter(|a| a.kind == "sanction" || a.kind == "payment")
+        .map(|a| a.subject.clone())
+        .collect();
     for p in &state.proposals {
         texts.push(p.reason.clone());
         texts.push(p.instruction.clone());
     }
-    let refs: Vec<&str> = texts.iter().filter(|t| !t.is_empty()).map(String::as_str).collect();
+    let refs: Vec<&str> = texts
+        .iter()
+        .filter(|t| !t.is_empty())
+        .map(String::as_str)
+        .collect();
     let rctx = rich::context(&state.cards, None, None, None);
     rich::prefetch(&mut state.cards, &ctx.client, &rctx, &refs).map(Msg::Rich)
 }
@@ -226,19 +256,34 @@ pub fn load(state: &mut State, ctx: &Ctx) -> Task<Msg> {
         return Task::none();
     }
     state.pending = 4;
-    let (c1, c2, c3, c4) = (ctx.client.clone(), ctx.client.clone(), ctx.client.clone(), ctx.client.clone());
+    let (c1, c2, c3, c4) = (
+        ctx.client.clone(),
+        ctx.client.clone(),
+        ctx.client.clone(),
+        ctx.client.clone(),
+    );
     Task::batch([
         client::task(move || c1.get::<Value>("/v1/approvals"), Msg::Approvals),
-        client::task(move || c2.get::<Value>("/v1/agent-proposals"), Msg::Proposals),
+        client::task(
+            move || c2.get::<Value>("/v1/agent-proposals"),
+            Msg::Proposals,
+        ),
         client::task(move || c3.get::<Value>("/v1/agents"), Msg::Agents),
-        client::task(move || sanctions::list(&c4, None, None, None), Msg::Sanctions),
+        client::task(
+            move || sanctions::list(&c4, None, None, None),
+            Msg::Sanctions,
+        ),
     ])
 }
 
 /// One of the four load answers arrived; the last one starts a reload that was asked for meanwhile.
 fn settled(state: &mut State, ctx: &Ctx) -> Task<Msg> {
     state.pending = state.pending.saturating_sub(1);
-    let next = if state.pending == 0 && std::mem::take(&mut state.again) { load(state, ctx) } else { Task::none() };
+    let next = if state.pending == 0 && std::mem::take(&mut state.again) {
+        load(state, ctx)
+    } else {
+        Task::none()
+    };
     Task::batch([next, prefetch(state, ctx)])
 }
 
@@ -261,7 +306,9 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             settled(state, ctx)
         }
         Msg::Proposals(res) => {
-            state.proposals = res.map(|v| list(&v, Proposal::from_value)).unwrap_or_default();
+            state.proposals = res
+                .map(|v| list(&v, Proposal::from_value))
+                .unwrap_or_default();
             settled(state, ctx)
         }
         Msg::Agents(res) => {
@@ -272,7 +319,12 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         }
         Msg::Sanctions(res) => {
             if let Ok(register) = res {
-                state.suspensions = register.suspensions.iter().filter(|s| s.active).map(|s| s.id).collect();
+                state.suspensions = register
+                    .suspensions
+                    .iter()
+                    .filter(|s| s.active)
+                    .map(|s| s.id)
+                    .collect();
             }
             settled(state, ctx)
         }
@@ -290,13 +342,20 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             if let Some(action) = action {
                 body["action"] = json!(action);
             }
-            let reason = state.drafts.get(&format!("ap-{id}")).map(|r| r.trim().to_string()).unwrap_or_default();
+            let reason = state
+                .drafts
+                .get(&format!("ap-{id}"))
+                .map(|r| r.trim().to_string())
+                .unwrap_or_default();
             if !reason.is_empty() {
                 body["reason"] = json!(reason);
             }
             let client = ctx.client.clone();
             let path = format!("/v1/approvals/{id}");
-            client::task(move || client.post::<Value>(&path, &body), move |r| Msg::Decided(id.clone(), r.map(|_| ())))
+            client::task(
+                move || client.post::<Value>(&path, &body),
+                move |r| Msg::Decided(id.clone(), r.map(|_| ())),
+            )
         }
         Msg::Decided(id, res) => {
             state.busy.remove(&id);
@@ -318,7 +377,11 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             Task::none()
         }
         Msg::RejectConfirm(id) => {
-            let reason = state.drafts.get(&format!("pp-{id}")).map(|r| r.trim().to_string()).unwrap_or_default();
+            let reason = state
+                .drafts
+                .get(&format!("pp-{id}"))
+                .map(|r| r.trim().to_string())
+                .unwrap_or_default();
             // A proposal's rejection needs a reason (the wizard's rule): with none, nothing is sent and the box stays open.
             if reason.is_empty() {
                 return Task::none();
@@ -327,7 +390,10 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             let client = ctx.client.clone();
             let path = format!("/v1/agent-proposals/{id}/reject");
             let body = json!({ "reason": reason });
-            client::task(move || client.post::<Value>(&path, &body), move |r| Msg::Rejected(id.clone(), r.map(|_| ())))
+            client::task(
+                move || client.post::<Value>(&path, &body),
+                move |r| Msg::Rejected(id.clone(), r.map(|_| ())),
+            )
         }
         Msg::Rejected(id, res) => {
             match res {
@@ -360,7 +426,10 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
     let rctx = rich::context(&state.cards, None, None, None);
     let page = page(state, &rctx);
     if state.wizard.open {
-        Stack::new().push(page).push(wizard::view(&state.wizard, ctx).map(Msg::Wizard)).into()
+        Stack::new()
+            .push(page)
+            .push(wizard::view(&state.wizard, ctx).map(Msg::Wizard))
+            .into()
     } else {
         page
     }
@@ -377,7 +446,10 @@ fn page<'a>(state: &'a State, rctx: &rich::RichCtx) -> Element<'a, Msg> {
     parts.push(pending_view(state, rctx));
     parts.push(subhead("Decided"));
     parts.push(history_view(state));
-    ui::sheet(ui::view_head("Approvals", vec![]), column(parts).spacing(22).width(Length::Fill).into())
+    ui::sheet(
+        ui::view_head("Approvals", vec![]),
+        column(parts).spacing(22).width(Length::Fill).into(),
+    )
 }
 
 /// The waiting approvals, longest wait first, each a card with the owner's call.
@@ -388,7 +460,11 @@ fn pending_view<'a>(state: &'a State, rctx: &rich::RichCtx) -> Element<'a, Msg> 
     if state.failed {
         return ui::empty("alert", "Could not load approvals.", "");
     }
-    let mut waiting: Vec<&Approval> = state.approvals.iter().filter(|a| a.state == "pending").collect();
+    let mut waiting: Vec<&Approval> = state
+        .approvals
+        .iter()
+        .filter(|a| a.state == "pending")
+        .collect();
     waiting.sort_by_key(|a| a.created_ms);
     if waiting.is_empty() {
         return ui::empty(
@@ -397,49 +473,101 @@ fn pending_view<'a>(state: &'a State, rctx: &rich::RichCtx) -> Element<'a, Msg> 
             "Agents ask here before acts that need your approval, and the orchestrator proposes new agents here.",
         );
     }
-    column(waiting.into_iter().map(|a| entry(state, a, rctx))).spacing(12).into()
+    column(waiting.into_iter().map(|a| entry(state, a, rctx)))
+        .spacing(12)
+        .into()
 }
 
 /// One waiting approval: who, what, the input, and the owner's reason and call.
 fn entry<'a>(state: &'a State, a: &'a Approval, rctx: &rich::RichCtx) -> Element<'a, Msg> {
     let busy = state.busy.contains(&a.id);
     let key = format!("ap-{}", a.id);
-    let draft = state.drafts.get(&key).map(String::as_str).unwrap_or("").to_string();
+    let draft = state
+        .drafts
+        .get(&key)
+        .map(String::as_str)
+        .unwrap_or("")
+        .to_string();
     let reason = text_input("Reason (optional)", &draft)
         .on_input(move |s| Msg::Draft(key.clone(), s))
         .size(13.0)
         .width(Length::Fill);
     // The owner's calls: a sanction offers acknowledge, lift (only while its suspension holds) and
     // retire; a payment and a tool keep approve and deny.
-    let decide = |approve: bool, action: Option<&'static str>| (!busy).then(|| Msg::Decide(a.id.clone(), approve, action));
+    let decide = |approve: bool, action: Option<&'static str>| {
+        (!busy).then(|| Msg::Decide(a.id.clone(), approve, action))
+    };
     let calls: Vec<Element<'a, Msg>> = match a.kind.as_str() {
         "sanction" => {
-            let lift = a.detail.get("sanction_id").and_then(Value::as_u64).filter(|id| state.suspensions.contains(id));
-            let mut calls = vec![ui::btn("Retire", None, ui::Kind::Danger, decide(false, Some("retire")))];
+            let lift = a
+                .detail
+                .get("sanction_id")
+                .and_then(Value::as_u64)
+                .filter(|id| state.suspensions.contains(id));
+            let mut calls = vec![ui::btn(
+                "Retire",
+                None,
+                ui::Kind::Danger,
+                decide(false, Some("retire")),
+            )];
             if lift.is_some() {
-                calls.push(ui::btn("Lift", None, ui::Kind::Secondary, decide(false, Some("lift"))));
+                calls.push(ui::btn(
+                    "Lift",
+                    None,
+                    ui::Kind::Secondary,
+                    decide(false, Some("lift")),
+                ));
             }
-            calls.push(ui::btn("Acknowledge", None, ui::Kind::Primary, decide(true, Some("acknowledge"))));
+            calls.push(ui::btn(
+                "Acknowledge",
+                None,
+                ui::Kind::Primary,
+                decide(true, Some("acknowledge")),
+            ));
             calls
         }
-        _ => vec![ui::btn("Deny", None, ui::Kind::Danger, decide(false, None)), ui::btn("Approve", None, ui::Kind::Primary, decide(true, None))],
+        _ => vec![
+            ui::btn("Deny", None, ui::Kind::Danger, decide(false, None)),
+            ui::btn("Approve", None, ui::Kind::Primary, decide(true, None)),
+        ],
     };
     let title: Element<'a, Msg> = match a.kind.as_str() {
-        "sanction" => rich::view(&format!("Escalation: {}", a.subject), rctx, &state.cards, &on_rich),
-        "payment" => rich::view(&format!("Payment awaiting approval: {}", a.subject), rctx, &state.cards, &on_rich),
+        "sanction" => rich::view(
+            &format!("Escalation: {}", a.subject),
+            rctx,
+            &state.cards,
+            &on_rich,
+        ),
+        "payment" => rich::view(
+            &format!("Payment awaiting approval: {}", a.subject),
+            rctx,
+            &state.cards,
+            &on_rich,
+        ),
         _ => ui::mono(a.tool.clone(), 12.0, crate::theme::palette().ink).into(),
     };
     let head = row![
-        ui::btn(&name_of(&state.agents, a.cid), None, ui::Kind::Ghost, Some(Msg::Go(Id::Agent(a.cid)))),
+        ui::btn(
+            &name_of(&state.agents, a.cid),
+            None,
+            ui::Kind::Ghost,
+            Some(Msg::Go(Id::Agent(a.cid)))
+        ),
         title,
         Space::new().width(Length::Fill),
         ui::faint(ago(a.created_ms)),
     ]
     .spacing(10)
     .align_y(Alignment::Center);
-    let shown = if a.kind == "tool" { &a.input } else { &a.detail };
+    let shown = if a.kind == "tool" {
+        &a.input
+    } else {
+        &a.detail
+    };
     let input = serde_json::to_string_pretty(shown).unwrap_or_else(|_| "null".to_string());
-    let mut actions = row![Space::new().width(Length::Fill)].spacing(8).align_y(Alignment::Center);
+    let mut actions = row![Space::new().width(Length::Fill)]
+        .spacing(8)
+        .align_y(Alignment::Center);
     for call in calls {
         actions = actions.push(call);
     }
@@ -450,7 +578,9 @@ fn entry<'a>(state: &'a State, a: &'a Approval, rctx: &rich::RichCtx) -> Element
     }
     stack = stack.push(column![reason, actions].spacing(8));
     if a.kind == "sanction" {
-        stack = stack.push(ui::faint("Retire only records your decision. apid does not retire the agent."));
+        stack = stack.push(ui::faint(
+            "Retire only records your decision. apid does not retire the agent.",
+        ));
     }
     frame(stack.spacing(10).into())
 }
@@ -466,7 +596,15 @@ fn history_row<'a>(state: &'a State, a: &'a Approval) -> Element<'a, Msg> {
     };
     let line = row![
         ui::badge(label, tone),
-        ui::mono(if a.subject.is_empty() { a.tool.clone() } else { a.subject.clone() }, 12.0, crate::theme::palette().ink),
+        ui::mono(
+            if a.subject.is_empty() {
+                a.tool.clone()
+            } else {
+                a.subject.clone()
+            },
+            12.0,
+            crate::theme::palette().ink
+        ),
         ui::prose(name_of(&state.agents, a.cid)),
         reason_or_gap(&a.reason),
         ui::faint(ago(a.created_ms)),
@@ -477,19 +615,33 @@ fn history_row<'a>(state: &'a State, a: &'a Approval) -> Element<'a, Msg> {
 }
 
 fn history_view<'a>(state: &'a State) -> Element<'a, Msg> {
-    let mut past: Vec<&Approval> = state.approvals.iter().filter(|a| a.state != "pending").collect();
+    let mut past: Vec<&Approval> = state
+        .approvals
+        .iter()
+        .filter(|a| a.state != "pending")
+        .collect();
     past.sort_by_key(|a| std::cmp::Reverse(a.created_ms));
     if past.is_empty() {
         return ui::faint("No decisions yet.").into();
     }
-    column(past.into_iter().map(|a| history_row(state, a))).spacing(6).into()
+    column(past.into_iter().map(|a| history_row(state, a)))
+        .spacing(6)
+        .into()
 }
 
 /// The agents the orchestrator proposes to spawn: waiting ones as cards, decided ones collapsed.
 fn proposals_view<'a>(state: &'a State, rctx: &rich::RichCtx) -> Element<'a, Msg> {
-    let mut waiting: Vec<&Proposal> = state.proposals.iter().filter(|p| p.state == "pending").collect();
+    let mut waiting: Vec<&Proposal> = state
+        .proposals
+        .iter()
+        .filter(|p| p.state == "pending")
+        .collect();
     waiting.sort_by_key(|p| p.created_ms);
-    let mut past: Vec<&Proposal> = state.proposals.iter().filter(|p| p.state != "pending").collect();
+    let mut past: Vec<&Proposal> = state
+        .proposals
+        .iter()
+        .filter(|p| p.state != "pending")
+        .collect();
     past.sort_by_key(|p| std::cmp::Reverse(p.created_ms));
 
     let mut items: Vec<Element<'a, Msg>> = vec![subhead("New agents proposed by the orchestrator")];
@@ -499,7 +651,12 @@ fn proposals_view<'a>(state: &'a State, rctx: &rich::RichCtx) -> Element<'a, Msg
         items.extend(waiting.into_iter().map(|p| proposal_card(state, p, rctx)));
     }
     if !past.is_empty() {
-        items.push(ui::disclosure(format!("Decided ({})", past.len()), crate::theme::palette().ink_2, state.proposals_open, Msg::ToggleDecided));
+        items.push(ui::disclosure(
+            format!("Decided ({})", past.len()),
+            crate::theme::palette().ink_2,
+            state.proposals_open,
+            Msg::ToggleDecided,
+        ));
         if state.proposals_open {
             items.extend(past.into_iter().map(proposal_row));
         }
@@ -509,27 +666,67 @@ fn proposals_view<'a>(state: &'a State, rctx: &rich::RichCtx) -> Element<'a, Msg
 
 /// One proposed agent, waiting: what it is for, why the orchestrator wants it, and the owner's call.
 fn proposal_card<'a>(state: &'a State, p: &'a Proposal, rctx: &rich::RichCtx) -> Element<'a, Msg> {
-    let mut head = row![text(p.title.clone()).font(STRONG).size(15.0).color(crate::theme::palette().ink)].spacing(10).align_y(Alignment::Center);
+    let mut head = row![
+        text(p.title.clone())
+            .font(STRONG)
+            .size(15.0)
+            .color(crate::theme::palette().ink)
+    ]
+    .spacing(10)
+    .align_y(Alignment::Center);
     if p.new_role {
         head = head.push(ui::badge("new role", ui::Tone::Signal));
     }
-    head = head.push(ui::badge(&format!("{} {}", p.count, if p.count == 1 { "agent" } else { "agents" }), ui::Tone::Info));
+    head = head.push(ui::badge(
+        &format!(
+            "{} {}",
+            p.count,
+            if p.count == 1 { "agent" } else { "agents" }
+        ),
+        ui::Tone::Info,
+    ));
     head = head.push(Space::new().width(Length::Fill));
     head = head.push(ui::faint(ago(p.created_ms)));
 
     let mut body = column![head, rich::view(&p.reason, rctx, &state.cards, &on_rich)].spacing(8);
     if !p.instruction.is_empty() {
-        body = body.push(rich::view(&format!("“{}”", p.instruction), rctx, &state.cards, &on_rich));
+        body = body.push(rich::view(
+            &format!("“{}”", p.instruction),
+            rctx,
+            &state.cards,
+            &on_rich,
+        ));
     }
     body = body.push(ui::faint(format!("Proposed by {}", p.by)));
     // The review opens the new-agent wizard on this proposal (approve or reject there).
-    let review = ui::btn("Review…", None, ui::Kind::Primary, p.review.clone().map(|v| Msg::Wizard(WizardMsg::OpenProposal(v))));
-    let reject = ui::btn("Reject", None, ui::Kind::Danger, Some(Msg::RejectOpen(p.id.clone())));
-    body = body.push(row![Space::new().width(Length::Fill), reject, review].spacing(8).align_y(Alignment::Center));
+    let review = ui::btn(
+        "Review…",
+        None,
+        ui::Kind::Primary,
+        p.review
+            .clone()
+            .map(|v| Msg::Wizard(WizardMsg::OpenProposal(v))),
+    );
+    let reject = ui::btn(
+        "Reject",
+        None,
+        ui::Kind::Danger,
+        Some(Msg::RejectOpen(p.id.clone())),
+    );
+    body = body.push(
+        row![Space::new().width(Length::Fill), reject, review]
+            .spacing(8)
+            .align_y(Alignment::Center),
+    );
 
     if state.rejecting.as_deref() == Some(p.id.as_str()) {
         let key = format!("pp-{}", p.id);
-        let draft = state.drafts.get(&key).map(String::as_str).unwrap_or("").to_string();
+        let draft = state
+            .drafts
+            .get(&key)
+            .map(String::as_str)
+            .unwrap_or("")
+            .to_string();
         // The reject button stays off until a reason is typed, as in the wizard.
         let ready = !draft.trim().is_empty();
         let reason = text_input("Why reject?", &draft)
@@ -543,7 +740,12 @@ fn proposal_card<'a>(state: &'a State, p: &'a Proposal, rctx: &rich::RichCtx) ->
                 row![
                     Space::new().width(Length::Fill),
                     ui::btn("Cancel", None, ui::Kind::Ghost, Some(Msg::RejectCancel)),
-                    ui::btn("Confirm reject", None, ui::Kind::Danger, ready.then(|| Msg::RejectConfirm(p.id.clone()))),
+                    ui::btn(
+                        "Confirm reject",
+                        None,
+                        ui::Kind::Danger,
+                        ready.then(|| Msg::RejectConfirm(p.id.clone()))
+                    ),
                 ]
                 .spacing(8)
                 .align_y(Alignment::Center),
@@ -563,9 +765,16 @@ fn proposal_row<'a>(p: &'a Proposal) -> Element<'a, Msg> {
     };
     let line = row![
         ui::badge(label, tone),
-        text(p.title.clone()).font(STRONG).size(14.0).color(crate::theme::palette().ink),
+        text(p.title.clone())
+            .font(STRONG)
+            .size(14.0)
+            .color(crate::theme::palette().ink),
         reason_or_gap(&p.note),
-        ui::faint(ago(if p.decided_ms != 0 { p.decided_ms } else { p.created_ms })),
+        ui::faint(ago(if p.decided_ms != 0 {
+            p.decided_ms
+        } else {
+            p.created_ms
+        })),
     ]
     .spacing(12)
     .align_y(Alignment::Center);
@@ -577,7 +786,9 @@ fn reason_or_gap<'a>(reason: &str) -> Element<'a, Msg> {
     if reason.is_empty() {
         Space::new().width(Length::Fill).into()
     } else {
-        container(ui::faint(reason.to_string())).width(Length::Fill).into()
+        container(ui::faint(reason.to_string()))
+            .width(Length::Fill)
+            .into()
     }
 }
 
@@ -587,7 +798,11 @@ fn frame<'a>(body: Element<'a, Msg>) -> Element<'a, Msg> {
         .padding(12)
         .width(Length::Fill)
         .style(|_: &Theme| container::Style {
-            border: Border { color: crate::theme::palette().rule, width: 1.0, radius: 0.0.into() },
+            border: Border {
+                color: crate::theme::palette().rule,
+                width: 1.0,
+                radius: 0.0.into(),
+            },
             ..Default::default()
         })
         .into()
@@ -596,11 +811,20 @@ fn frame<'a>(body: Element<'a, Msg>) -> Element<'a, Msg> {
 /// The tool input, as pretty JSON on paper.
 fn code_box<'a>(source: String) -> Element<'a, Msg> {
     container(ui::sans(source, 13.0, crate::theme::palette().ink_2))
-        .padding(Padding { top: 10.0, right: 12.0, bottom: 10.0, left: 12.0 })
+        .padding(Padding {
+            top: 10.0,
+            right: 12.0,
+            bottom: 10.0,
+            left: 12.0,
+        })
         .width(Length::Fill)
         .style(|_: &Theme| container::Style {
             background: Some(Color::from_rgb8(0x1e, 0x23, 0x32).into()),
-            border: Border { color: crate::theme::palette().rule, width: 1.0, radius: 0.0.into() },
+            border: Border {
+                color: crate::theme::palette().rule,
+                width: 1.0,
+                radius: 0.0.into(),
+            },
             ..Default::default()
         })
         .into()

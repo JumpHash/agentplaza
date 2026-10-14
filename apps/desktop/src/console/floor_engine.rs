@@ -5,12 +5,12 @@
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
+use apz_engine::Renderer;
 use apz_engine::input::{Action, Button, Event, Pointer};
 use apz_engine::render;
 use apz_engine::scene::Frame;
-use apz_engine::Renderer;
 use iced::widget::shader::{self, Viewport};
-use iced::{mouse, wgpu, Rectangle};
+use iced::{Rectangle, mouse, wgpu};
 
 /// The main pass's draw calls of the frame the floor's pipeline prepared last (the robot lab's readout).
 pub static LAST_MAIN_CALLS: AtomicU32 = AtomicU32::new(0);
@@ -45,20 +45,29 @@ impl<M> shader::Program<M> for EngineProgram<M> {
     ) -> Option<shader::Action<M>> {
         let at = cursor.position_in(bounds).map(|p| (p.x, p.y));
         let ev = match event {
-            iced::Event::Mouse(mouse::Event::ButtonPressed(b)) => Event::Pressed { button: button(*b), at },
+            iced::Event::Mouse(mouse::Event::ButtonPressed(b)) => Event::Pressed {
+                button: button(*b),
+                at,
+            },
             // The window-relative position, moved into the widget's space: the drag math only uses
             // differences, but the press and the moves must share one origin.
-            iced::Event::Mouse(mouse::Event::CursorMoved { position }) => {
-                Event::Moved { at, to: (position.x - bounds.x, position.y - bounds.y) }
-            }
-            iced::Event::Mouse(mouse::Event::ButtonReleased(b)) => Event::Released { button: button(*b), at },
-            // Wheel down (negative y) zooms out; the engine maps the lines to a zoom.
-            iced::Event::Mouse(mouse::Event::WheelScrolled { delta }) if at.is_some() => Event::Wheel {
-                lines: match delta {
-                    mouse::ScrollDelta::Lines { y, .. } => *y,
-                    mouse::ScrollDelta::Pixels { y, .. } => *y / 40.0,
-                },
+            iced::Event::Mouse(mouse::Event::CursorMoved { position }) => Event::Moved {
+                at,
+                to: (position.x - bounds.x, position.y - bounds.y),
             },
+            iced::Event::Mouse(mouse::Event::ButtonReleased(b)) => Event::Released {
+                button: button(*b),
+                at,
+            },
+            // Wheel down (negative y) zooms out; the engine maps the lines to a zoom.
+            iced::Event::Mouse(mouse::Event::WheelScrolled { delta }) if at.is_some() => {
+                Event::Wheel {
+                    lines: match delta {
+                        mouse::ScrollDelta::Lines { y, .. } => *y,
+                        mouse::ScrollDelta::Pixels { y, .. } => *y / 40.0,
+                    },
+                }
+            }
             iced::Event::Mouse(mouse::Event::CursorLeft) => Event::Left,
             // Any other event, or a wheel outside the widget: a zero wheel is a no-op for the engine,
             // but it still reports a size change first, as every event does.
@@ -66,14 +75,23 @@ impl<M> shader::Program<M> for EngineProgram<M> {
         };
         let (action, captured) = st.update((bounds.width, bounds.height), ev)?;
         let published = shader::Action::publish((self.wrap)(action));
-        Some(if captured { published.and_capture() } else { published })
+        Some(if captured {
+            published.and_capture()
+        } else {
+            published
+        })
     }
 
     fn draw(&self, _state: &Pointer, _cursor: mouse::Cursor, _bounds: Rectangle) -> FloorPrimitive {
         FloorPrimitive(Arc::clone(&self.primitive))
     }
 
-    fn mouse_interaction(&self, state: &Pointer, _bounds: Rectangle, _cursor: mouse::Cursor) -> mouse::Interaction {
+    fn mouse_interaction(
+        &self,
+        state: &Pointer,
+        _bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> mouse::Interaction {
         if state.dragging() {
             mouse::Interaction::Grabbing
         } else {
@@ -106,8 +124,15 @@ impl shader::Primitive for FloorPrimitive {
         bounds: &Rectangle,
         viewport: &Viewport,
     ) {
-        let rect = render::Rect { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height };
-        pipeline.0.prepare(Arc::clone(&self.0), rect, viewport.scale_factor());
+        let rect = render::Rect {
+            x: bounds.x,
+            y: bounds.y,
+            width: bounds.width,
+            height: bounds.height,
+        };
+        pipeline
+            .0
+            .prepare(Arc::clone(&self.0), rect, viewport.scale_factor());
         LAST_MAIN_CALLS.store(pipeline.0.main_pass_calls(), Ordering::Relaxed);
         if render::tallying() {
             *LAST_OWNED_CALLS.lock().unwrap_or_else(|e| e.into_inner()) = pipeline.0.owned_draws();

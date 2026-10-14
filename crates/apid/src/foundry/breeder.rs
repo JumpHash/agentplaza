@@ -8,7 +8,7 @@
 use std::time::Instant;
 
 use apz_proto::chat::ToolSpec;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::agents::Agent;
 use crate::foundry::datasets::ExportSpec;
@@ -89,7 +89,11 @@ pub fn spec(name: &str) -> Option<ToolSpec> {
         ),
         _ => return None,
     };
-    Some(ToolSpec { name: name.to_string(), description: description.to_string(), input_schema })
+    Some(ToolSpec {
+        name: name.to_string(),
+        description: description.to_string(),
+        input_schema,
+    })
 }
 
 /// Runs one of [`TOOLS`] for `agent`. The caller has checked the laws already.
@@ -105,7 +109,15 @@ pub fn run(app: &App, agent: &Agent, name: &str, input: &Value) -> Result<String
             let id = str_arg(input, "model")?;
             let payload = input.get("input").cloned().unwrap_or(Value::Null);
             let (output, latency_ms) = invoke(app, &id, &payload)?;
-            crate::usage::meter(app, agent.cid, &model_usage_name(&id), Tokens::default(), Some(0.0), None, "invoke_model");
+            crate::usage::meter(
+                app,
+                agent.cid,
+                &model_usage_name(&id),
+                Tokens::default(),
+                Some(0.0),
+                None,
+                "invoke_model",
+            );
             app.bus.publish(
                 "model.invoke",
                 &json!({ "model": id, "cid": agent.cid, "latency_ms": latency_ms }),
@@ -113,7 +125,9 @@ pub fn run(app: &App, agent: &Agent, name: &str, input: &Value) -> Result<String
             Ok(json!({ "model": id, "output": output, "latency_ms": latency_ms }).to_string())
         }
         "foundry_datasets" => {
-            let list = app.foundry.read(|s| s.datasets.values().cloned().collect::<Vec<_>>());
+            let list = app
+                .foundry
+                .read(|s| s.datasets.values().cloned().collect::<Vec<_>>());
             serde_json::to_string(&list).map_err(|err| err.to_string())
         }
         "foundry_export" => {
@@ -131,7 +145,10 @@ pub fn run(app: &App, agent: &Agent, name: &str, input: &Value) -> Result<String
         }
         "foundry_job_status" => {
             let id = str_arg(input, "job")?;
-            let job = app.foundry.read(|s| s.jobs.get(&id).cloned()).ok_or_else(|| format!("no job {id}"))?;
+            let job = app
+                .foundry
+                .read(|s| s.jobs.get(&id).cloned())
+                .ok_or_else(|| format!("no job {id}"))?;
             Ok(routes::job_view(&job).to_string())
         }
         other => Err(format!("{other} is not a Foundry breeder tool")),
@@ -141,14 +158,23 @@ pub fn run(app: &App, agent: &Agent, name: &str, input: &Value) -> Result<String
 /// Runs a shadow or promoted model on `input` and returns its output and latency in ms.
 pub(crate) fn invoke(app: &App, id: &str, input: &Value) -> Result<(Value, u128), String> {
     let record = app.models.get(id).ok_or_else(|| format!("no model {id}"))?;
-    if !matches!(record.state, crate::foundry::registry::State::Shadow | crate::foundry::registry::State::Promoted) {
-        return Err(format!("model {id} is {}: only shadow and promoted models run", record.state.name()));
+    if !matches!(
+        record.state,
+        crate::foundry::registry::State::Shadow | crate::foundry::registry::State::Promoted
+    ) {
+        return Err(format!(
+            "model {id} is {}: only shadow and promoted models run",
+            record.state.name()
+        ));
     }
     let started = Instant::now();
     if let Some(text) = app.models.text(id) {
         return Ok((text.invoke(input)?, started.elapsed().as_millis()));
     }
-    let model = app.models.loaded(id).ok_or_else(|| format!("model {id} is not loaded"))?;
+    let model = app
+        .models
+        .loaded(id)
+        .ok_or_else(|| format!("model {id} is not loaded"))?;
     let output = model.invoke(input)?;
     Ok((output, started.elapsed().as_millis()))
 }
@@ -157,10 +183,19 @@ pub(crate) fn invoke(app: &App, id: &str, input: &Value) -> Result<(Value, u128)
 /// decision it made with its cost. The model runs and its decision is compared with the real one
 /// (same `label` when both have one, else the same whole output); the real decision is what
 /// happens. Returns whether they agreed.
-pub fn shadow_run(app: &App, id: &str, input: &Value, real: &Value, real_cost_usd: f64) -> Result<bool, String> {
+pub fn shadow_run(
+    app: &App,
+    id: &str,
+    input: &Value,
+    real: &Value,
+    real_cost_usd: f64,
+) -> Result<bool, String> {
     let record = app.models.get(id).ok_or_else(|| format!("no model {id}"))?;
     if record.state != crate::foundry::registry::State::Shadow {
-        return Err(format!("model {id} is {}: shadow runs are for shadow models", record.state.name()));
+        return Err(format!(
+            "model {id} is {}: shadow runs are for shadow models",
+            record.state.name()
+        ));
     }
     let (output, _) = invoke(app, id, input)?;
     let agreed = decision(&output) == decision(real);
@@ -222,7 +257,12 @@ mod tests {
 
     #[test]
     fn the_job_and_dataset_tools_have_specs() {
-        for name in ["foundry_datasets", "foundry_export", "foundry_submit_job", "foundry_job_status"] {
+        for name in [
+            "foundry_datasets",
+            "foundry_export",
+            "foundry_submit_job",
+            "foundry_job_status",
+        ] {
             assert!(spec(name).is_some(), "{name} has no spec");
         }
     }
@@ -231,7 +271,9 @@ mod tests {
     fn an_export_needs_its_kind_and_name() {
         let err = export_spec(&json!({ "source": "cascade" })).err().unwrap();
         assert!(err.starts_with("kind is required"), "{err}");
-        let ok = export_spec(&json!({ "kind": "cascade", "name": "c1" })).ok().unwrap();
+        let ok = export_spec(&json!({ "kind": "cascade", "name": "c1" }))
+            .ok()
+            .unwrap();
         assert_eq!(ok.kind, "cascade");
     }
 
@@ -245,11 +287,15 @@ mod tests {
 
     #[test]
     fn a_job_over_the_gpu_hour_cap_is_refused() {
-        let over = parsed(json!({ "recipe": "r@1", "datasets": ["ds-1"], "budget_gpu_hours": 8.5 })).unwrap();
+        let over =
+            parsed(json!({ "recipe": "r@1", "datasets": ["ds-1"], "budget_gpu_hours": 8.5 }))
+                .unwrap();
         let (status, msg) = jobs::budget_check(&over).unwrap_err();
         assert_eq!(status, 403);
         assert!(msg.contains("GPU-hour cap"), "{msg}");
-        let at_cap = parsed(json!({ "recipe": "r@1", "datasets": ["ds-1"], "budget_gpu_hours": 8.0 })).unwrap();
+        let at_cap =
+            parsed(json!({ "recipe": "r@1", "datasets": ["ds-1"], "budget_gpu_hours": 8.0 }))
+                .unwrap();
         assert!(jobs::budget_check(&at_cap).is_ok());
     }
 }
@@ -259,12 +305,20 @@ mod tests {
 fn hf_search(app: &App, input: &Value) -> Result<String, String> {
     let query = search_query(input)?;
     let block = app.settings.get().fetch_block;
-    hf::search_page(&query, &block).map(|page| page.to_string()).map_err(|fail| fail.message)
+    hf::search_page(&query, &block)
+        .map(|page| page.to_string())
+        .map_err(|fail| fail.message)
 }
 
 /// The search the input asks for, with the same fields and limit rules as the route.
 fn search_query(input: &Value) -> Result<hf::Search, String> {
-    let text = |key: &str| input.get(key).and_then(Value::as_str).unwrap_or("").to_string();
+    let text = |key: &str| {
+        input
+            .get(key)
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string()
+    };
     let limit = match input.get("limit") {
         None | Some(Value::Null) => hf::DEFAULT_LIMIT,
         Some(value) => value
@@ -290,21 +344,32 @@ mod hf_search_tests {
     fn the_breeder_has_a_read_only_hub_search_and_no_import() {
         assert!(TOOLS.contains(&"foundry_hf_search"));
         assert!(spec("foundry_hf_search").is_some());
-        assert!(!TOOLS.iter().any(|tool| tool.contains("import")), "imports stay owner-only");
+        assert!(
+            !TOOLS.iter().any(|tool| tool.contains("import")),
+            "imports stay owner-only"
+        );
         assert_eq!(crate::laws::risk_class("foundry_hf_search"), "read");
-        assert!(matches!(crate::tools::runs("foundry_hf_search"), Some(crate::tools::Runs::Host)));
+        assert!(matches!(
+            crate::tools::runs("foundry_hf_search"),
+            Some(crate::tools::Runs::Host)
+        ));
     }
 
     #[test]
     fn the_roles_manifest_gives_the_breeder_the_search() {
-        let manifest: Value = serde_json::from_str(include_str!("../../../../docs/agents/initial-roles.json")).unwrap();
-        let tools = manifest["roles"]["breeder"]["tools"].as_array().expect("the breeder's tools");
+        let manifest: Value =
+            serde_json::from_str(include_str!("../../../../docs/agents/initial-roles.json"))
+                .unwrap();
+        let tools = manifest["roles"]["breeder"]["tools"]
+            .as_array()
+            .expect("the breeder's tools");
         assert!(tools.iter().any(|tool| tool == "foundry_hf_search"));
     }
 
     #[test]
     fn the_search_input_is_checked_like_the_route() {
-        let query = search_query(&json!({ "search": "sst2 onnx", "task": "text-classification" })).unwrap();
+        let query =
+            search_query(&json!({ "search": "sst2 onnx", "task": "text-classification" })).unwrap();
         assert_eq!(query.limit, hf::DEFAULT_LIMIT);
         assert_eq!(query.search, "sst2 onnx");
         assert_eq!(query.task, "text-classification");

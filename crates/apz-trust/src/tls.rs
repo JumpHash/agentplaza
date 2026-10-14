@@ -4,8 +4,8 @@
 use std::sync::Arc;
 
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
-use rustls::crypto::ring::default_provider;
 use rustls::crypto::WebPkiSupportedAlgorithms;
+use rustls::crypto::ring::default_provider;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
 use rustls::{ClientConfig, DigitallySignedStruct, Error, ServerConfig, SignatureScheme};
 
@@ -18,7 +18,10 @@ pub struct CertPair {
 /// A self-signed certificate for `names` (DNS names or IP addresses as text).
 pub fn self_signed(names: &[String]) -> Result<CertPair, String> {
     let key = rcgen::generate_simple_self_signed(names.to_vec()).map_err(|e| e.to_string())?;
-    Ok(CertPair { cert_pem: key.cert.pem(), key_pem: key.key_pair.serialize_pem() })
+    Ok(CertPair {
+        cert_pem: key.cert.pem(),
+        key_pem: key.key_pair.serialize_pem(),
+    })
 }
 
 /// The first certificate in `cert_pem`, as DER.
@@ -139,7 +142,8 @@ mod tests {
 
         let server = std::thread::spawn(move || -> Result<(), String> {
             let mut conn = rustls::ServerConnection::new(server_cfg).map_err(|e| e.to_string())?;
-            conn.complete_io(&mut server_sock).map_err(|e| e.to_string())?;
+            conn.complete_io(&mut server_sock)
+                .map_err(|e| e.to_string())?;
             Ok(())
         });
 
@@ -148,17 +152,24 @@ mod tests {
             ServerName::try_from("localhost").map_err(|e| e.to_string())?,
         )
         .map_err(|e| e.to_string())?;
-        let client_result = client.complete_io(&mut client_sock).map(|_| ()).map_err(|e| e.to_string());
+        let client_result = client
+            .complete_io(&mut client_sock)
+            .map(|_| ())
+            .map_err(|e| e.to_string());
         if client_result.is_ok() {
             // Flush the client's final flight (its Finished message) before the server reads it.
             while client.wants_write() {
-                client.write_tls(&mut client_sock).map_err(|e| e.to_string())?;
+                client
+                    .write_tls(&mut client_sock)
+                    .map_err(|e| e.to_string())?;
             }
         } else {
             // Closing the socket ends the server's side of a failed handshake.
             drop(client_sock);
         }
-        let server_result = server.join().map_err(|_| "server thread panicked".to_string())?;
+        let server_result = server
+            .join()
+            .map_err(|_| "server thread panicked".to_string())?;
 
         client_result?;
         server_result
@@ -168,8 +179,14 @@ mod tests {
     fn fingerprint_is_stable_and_differs_per_certificate() {
         let first = self_signed(&["localhost".to_string()]).unwrap();
         let second = self_signed(&["localhost".to_string()]).unwrap();
-        assert_eq!(fingerprint(&first.cert_pem).unwrap(), fingerprint(&first.cert_pem).unwrap());
-        assert_ne!(fingerprint(&first.cert_pem).unwrap(), fingerprint(&second.cert_pem).unwrap());
+        assert_eq!(
+            fingerprint(&first.cert_pem).unwrap(),
+            fingerprint(&first.cert_pem).unwrap()
+        );
+        assert_ne!(
+            fingerprint(&first.cert_pem).unwrap(),
+            fingerprint(&second.cert_pem).unwrap()
+        );
     }
 
     #[test]

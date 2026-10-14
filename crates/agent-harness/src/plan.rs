@@ -190,10 +190,16 @@ mod tests {
     #[test]
     fn the_list_is_saved_and_replaced_whole() {
         let workspace = scratch("persist");
-        todo_write(&workspace, &list(json!([{"content": "first", "status": "pending"}])))
-            .expect("the first list is saved");
-        todo_write(&workspace, &list(json!([{"content": "second", "status": "completed"}])))
-            .expect("the second list is saved");
+        todo_write(
+            &workspace,
+            &list(json!([{"content": "first", "status": "pending"}])),
+        )
+        .expect("the first list is saved");
+        todo_write(
+            &workspace,
+            &list(json!([{"content": "second", "status": "completed"}])),
+        )
+        .expect("the second list is saved");
         let saved = fs::read_to_string(workspace.dir().join(".plaza").join("todos.json"))
             .expect("the saved file");
         let parsed: Value = serde_json::from_str(&saved).expect("the file is JSON");
@@ -208,8 +214,20 @@ mod tests {
         let workspace = scratch("refuse");
         assert!(todo_write(&workspace, &list(json!([]))).is_err());
         let long = "x".repeat(MAX_CONTENT + 1);
-        assert!(todo_write(&workspace, &list(json!([{"content": long, "status": "pending"}]))).is_err());
-        assert!(todo_write(&workspace, &list(json!([{"content": "ok", "status": "later"}]))).is_err());
+        assert!(
+            todo_write(
+                &workspace,
+                &list(json!([{"content": long, "status": "pending"}]))
+            )
+            .is_err()
+        );
+        assert!(
+            todo_write(
+                &workspace,
+                &list(json!([{"content": "ok", "status": "later"}]))
+            )
+            .is_err()
+        );
         let many: Vec<Value> = (0..=MAX_TODOS)
             .map(|i| json!({"content": format!("t{i}"), "status": "pending"}))
             .collect();

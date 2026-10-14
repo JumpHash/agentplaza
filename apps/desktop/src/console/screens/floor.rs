@@ -24,21 +24,21 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use glam::Vec3;
-use iced::widget::{column, container, opaque, pin, row, shader, stack, Space};
+use iced::widget::{Space, column, container, opaque, pin, row, shader, stack};
 use iced::{Alignment, Border, Color, Element, Length, Point, Shadow, Subscription, Task, Theme};
 use serde_json::Value;
 
 use super::Id;
-use apz_engine::stage::{ms_since, perf_line, perf_log_on, perf_t, Stage, View};
-use apz_engine::input::Action;
-use apz_engine::{Engine, Motion};
 use crate::console::engine::fleet::{self, FleetResponse, Machine};
 use crate::console::engine::hardware::Status;
 use crate::console::engine::scene::Color as SceneColor;
+use crate::console::engine::world::display_name;
 use crate::console::engine::world::view::Label;
 use crate::console::floor_engine::EngineProgram;
-use crate::console::engine::world::display_name;
-use crate::console::{client, events, ui, Ctx};
+use crate::console::{Ctx, client, events, ui};
+use apz_engine::input::Action;
+use apz_engine::stage::{Stage, View, ms_since, perf_line, perf_log_on, perf_t};
+use apz_engine::{Engine, Motion};
 
 /// The card's width, and the machine popup's.
 const CARD_W: f32 = 284.0;
@@ -100,9 +100,17 @@ pub enum Msg {
     /// The stage changed size.
     Resized(f32, f32),
     /// Left drag: orbit, by pixels, in a view `height` tall.
-    Rotate { dx: f32, dy: f32, height: f32 },
+    Rotate {
+        dx: f32,
+        dy: f32,
+        height: f32,
+    },
     /// Right or middle drag: pan.
-    Pan { dx: f32, dy: f32, height: f32 },
+    Pan {
+        dx: f32,
+        dy: f32,
+        height: f32,
+    },
     /// Wheel: zoom by `steps` (positive zooms out).
     Dolly(f32),
     /// The pointer moved over the stage (`None` when it left).
@@ -152,7 +160,10 @@ pub fn subscription(state: &State) -> Subscription<Msg> {
         }) => Some(Msg::Escape),
         _ => None,
     });
-    let auto = if ["APZ_AUTO_ENTER", "APZ_AUTO_BACK", "APZ_AUTO_SELECT"].iter().any(|v| std::env::var_os(v).is_some()) {
+    let auto = if ["APZ_AUTO_ENTER", "APZ_AUTO_BACK", "APZ_AUTO_SELECT"]
+        .iter()
+        .any(|v| std::env::var_os(v).is_some())
+    {
         iced::time::every(Duration::from_millis(100)).map(|_| Msg::AutoTick)
     } else {
         Subscription::none()
@@ -186,9 +197,19 @@ fn fleet_request(state: &mut State, ctx: &Ctx) -> Task<Msg> {
 
 pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
     let mut task = Task::none();
-    let perf_msg = perf_log_on().then(|| (format!("{msg:?}").chars().take(32).collect::<String>(), Instant::now()));
+    let perf_msg = perf_log_on().then(|| {
+        (
+            format!("{msg:?}").chars().take(32).collect::<String>(),
+            Instant::now(),
+        )
+    });
     // The ENTER sequence drives the camera: the orbit and the reset take no input meanwhile.
-    if state.driving() && matches!(msg, Msg::Rotate { .. } | Msg::Pan { .. } | Msg::Dolly(_) | Msg::ResetView) {
+    if state.driving()
+        && matches!(
+            msg,
+            Msg::Rotate { .. } | Msg::Pan { .. } | Msg::Dolly(_) | Msg::ResetView
+        )
+    {
         return task;
     }
     // Any message but a frame changes the screen: the engine marks it, and the next frame draws at full rate.
@@ -209,12 +230,17 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         Msg::Agents(Err(e)) => state.error = Some(e),
         Msg::Fleet(res) => {
             state.fleet_asking = false;
-            match res.and_then(|v| serde_json::from_value::<FleetResponse>(v).map_err(|e| e.to_string())) {
+            match res
+                .and_then(|v| serde_json::from_value::<FleetResponse>(v).map_err(|e| e.to_string()))
+            {
                 Ok(data) => {
                     state.apply_fleet(data);
                     // `APZ_ENTER=<machine id>` (a capture hook, as `APZ_PICK`): the first fleet enters that machine's board.
                     static ENTERED: std::sync::Once = std::sync::Once::new();
-                    if let Some(id) = std::env::var("APZ_ENTER").ok().filter(|id| !id.trim().is_empty()) {
+                    if let Some(id) = std::env::var("APZ_ENTER")
+                        .ok()
+                        .filter(|id| !id.trim().is_empty())
+                    {
                         ENTERED.call_once(|| state.enter(id));
                     }
                 }
@@ -248,7 +274,11 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
     }
     if let Some((name, t0)) = perf_msg {
         if ms_since(t0) > 16.0 {
-            perf_line(&format!("update {name} took {:.1} ms at {:.3} s", ms_since(t0), perf_t(t0)));
+            perf_line(&format!(
+                "update {name} took {:.1} ms at {:.3} s",
+                ms_since(t0),
+                perf_t(t0)
+            ));
         }
     }
     task
@@ -257,7 +287,13 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
 /// The engine's picture alone (the shader the Floor draws in, with its pointer input): the labs draw it under their
 /// own controls.
 pub fn stage<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
-    shader(EngineProgram { primitive: Arc::clone(&state.frame), wrap: floor_msg }).width(Length::Fill).height(Length::Fill).into()
+    shader(EngineProgram {
+        primitive: Arc::clone(&state.frame),
+        wrap: floor_msg,
+    })
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .into()
 }
 
 /// The floor's engine actions as its messages.
@@ -277,15 +313,31 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
         View::Machines => ("Machines".to_string(), Vec::new()),
         View::Machine(id) => (
             format!("Machines › {}", machine_name(state, id)),
-            vec![ui::btn("Back to machines", None, ui::Kind::Secondary, Some(Msg::Back))],
+            vec![ui::btn(
+                "Back to machines",
+                None,
+                ui::Kind::Secondary,
+                Some(Msg::Back),
+            )],
         ),
         View::Plaza => ("Floor".to_string(), Vec::new()),
     };
-    actions.push(ui::btn("Reset view", Some("refresh"), ui::Kind::Secondary, Some(Msg::ResetView)));
+    actions.push(ui::btn(
+        "Reset view",
+        Some("refresh"),
+        ui::Kind::Secondary,
+        Some(Msg::ResetView),
+    ));
     let head = ui::view_head(&title, actions);
 
     let mut layers: Vec<Element<'a, Msg>> = vec![
-        shader(EngineProgram { primitive: Arc::clone(&state.frame), wrap: floor_msg }).width(Length::Fill).height(Length::Fill).into(),
+        shader(EngineProgram {
+            primitive: Arc::clone(&state.frame),
+            wrap: floor_msg,
+        })
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into(),
     ];
     let (w, h) = state.size;
     if w > 0.0 && h > 0.0 {
@@ -297,7 +349,11 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
             }
             _ => {
                 let labels = state.floor.labels(w, h);
-                if let Some(label) = state.floor.selected.and_then(|sel| labels.iter().find(|l| l.cid == sel)) {
+                if let Some(label) = state
+                    .floor
+                    .selected
+                    .and_then(|sel| labels.iter().find(|l| l.cid == sel))
+                {
                     layers.push(card(state, label, w, h));
                 }
             }
@@ -317,7 +373,11 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
         .width(Length::Fill)
         .height(Length::Fill)
         .style(|_: &Theme| container::Style {
-            border: Border { color: crate::theme::palette().rule, width: 1.0, radius: 0.0.into() },
+            border: Border {
+                color: crate::theme::palette().rule,
+                width: 1.0,
+                radius: 0.0.into(),
+            },
             ..Default::default()
         });
 
@@ -345,13 +405,29 @@ fn card<'a>(state: &'a State, l: &Label, w: f32, h: f32) -> Element<'a, Msg> {
         _ => ui::Tone::Ok,
     };
     let body = column![
-        row![ui::sans(l.name.clone(), 13.0, crate::theme::palette().ink), Space::new().width(Length::Fill), role_tag(&l.role, l.hue)]
-            .spacing(8)
-            .align_y(Alignment::Center),
+        row![
+            ui::sans(l.name.clone(), 13.0, crate::theme::palette().ink),
+            Space::new().width(Length::Fill),
+            role_tag(&l.role, l.hue)
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center),
         ui::mono(l.line.clone(), 11.0, crate::theme::palette().ink_3),
-        row![ui::label("Status"), ui::badge(&status, tone)].spacing(10).align_y(Alignment::Center),
-        row![ui::label("Model"), ui::sans(model, 11.0, crate::theme::palette().ink)].spacing(10).align_y(Alignment::Center),
-        ui::btn("Open", None, ui::Kind::Primary, Some(Msg::Go(Id::Agent(l.cid)))),
+        row![ui::label("Status"), ui::badge(&status, tone)]
+            .spacing(10)
+            .align_y(Alignment::Center),
+        row![
+            ui::label("Model"),
+            ui::sans(model, 11.0, crate::theme::palette().ink)
+        ]
+        .spacing(10)
+        .align_y(Alignment::Center),
+        ui::btn(
+            "Open",
+            None,
+            ui::Kind::Primary,
+            Some(Msg::Go(Id::Agent(l.cid)))
+        ),
     ]
     .spacing(10);
     let card = container(body)
@@ -367,9 +443,18 @@ fn card<'a>(state: &'a State, l: &Label, w: f32, h: f32) -> Element<'a, Msg> {
 fn popup_layer<'a>(state: &'a State, w: f32, h: f32) -> Option<Element<'a, Msg>> {
     let id = state.popup.as_ref()?;
     let fleet = state.fleet.as_ref()?;
-    let machine = state.fleet_data.as_ref()?.machines.iter().find(|m| m.id == *id)?;
+    let machine = state
+        .fleet_data
+        .as_ref()?
+        .machines
+        .iter()
+        .find(|m| m.id == *id)?;
     let tag = fleet.tags().into_iter().find(|t| t.id == *id)?;
-    let (x, y) = state.machines.orbit.camera(w / h).to_screen(Vec3::from(tag.pos), w, h)?;
+    let (x, y) = state
+        .machines
+        .orbit
+        .camera(w / h)
+        .to_screen(Vec3::from(tag.pos), w, h)?;
     Some(popup(state, machine, x, y, w, h))
 }
 
@@ -379,9 +464,12 @@ fn popup<'a>(state: &'a State, m: &'a Machine, x: f32, y: f32, w: f32, h: f32) -
     let mut facts_col = column![].spacing(5);
     for (label_text, value) in facts(m, now_millis()) {
         facts_col = facts_col.push(
-            row![container(ui::label(label_text)).width(Length::Fixed(76.0)), ui::sans(value, 10.5, crate::theme::palette().ink)]
-                .spacing(8)
-                .align_y(Alignment::Start),
+            row![
+                container(ui::label(label_text)).width(Length::Fixed(76.0)),
+                ui::sans(value, 10.5, crate::theme::palette().ink)
+            ]
+            .spacing(8)
+            .align_y(Alignment::Start),
         );
     }
 
@@ -392,26 +480,62 @@ fn popup<'a>(state: &'a State, m: &'a Machine, x: f32, y: f32, w: f32, h: f32) -
         names = names.push(ui::faint("No agents run here."));
     }
     for cid in m.agents.iter().take(POPUP_NAMES) {
-        let name = state.floor.bot(*cid).map_or_else(|| format!("agent {cid}"), |b| display_name(*cid, &b.agent.name));
-        names = names.push(ui::btn(&name, None, ui::Kind::Ghost, Some(Msg::Go(Id::Agent(*cid)))));
+        let name = state.floor.bot(*cid).map_or_else(
+            || format!("agent {cid}"),
+            |b| display_name(*cid, &b.agent.name),
+        );
+        names = names.push(ui::btn(
+            &name,
+            None,
+            ui::Kind::Ghost,
+            Some(Msg::Go(Id::Agent(*cid))),
+        ));
     }
     if m.agents.len() > POPUP_NAMES {
-        names = names.push(ui::faint(format!("and {} more", m.agents.len() - POPUP_NAMES)));
+        names = names.push(ui::faint(format!(
+            "and {} more",
+            m.agents.len() - POPUP_NAMES
+        )));
     }
 
-    let model = format!("{} · {}", m.kind, m.model.as_deref().unwrap_or("model unknown"));
+    let model = format!(
+        "{} · {}",
+        m.kind,
+        m.model.as_deref().unwrap_or("model unknown")
+    );
     let body = column![
-        row![ui::sans(m.name.clone(), 13.0, crate::theme::palette().ink), Space::new().width(Length::Fill), role_tag(&m.kind, KIND_HUE)]
-            .spacing(8)
-            .align_y(Alignment::Center),
+        row![
+            ui::sans(m.name.clone(), 13.0, crate::theme::palette().ink),
+            Space::new().width(Length::Fill),
+            role_tag(&m.kind, KIND_HUE)
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center),
         ui::sans(model, 11.0, crate::theme::palette().ink_3),
-        row![ui::label("Status"), ui::badge(&m.status, status_tone(&m.status))].spacing(10).align_y(Alignment::Center),
+        row![
+            ui::label("Status"),
+            ui::badge(&m.status, status_tone(&m.status))
+        ]
+        .spacing(10)
+        .align_y(Alignment::Center),
         facts_col,
-        row![ui::label("Agents"), ui::sans(format!("{working} working, {idle} idle"), 11.0, crate::theme::palette().ink)]
-            .spacing(10)
-            .align_y(Alignment::Center),
+        row![
+            ui::label("Agents"),
+            ui::sans(
+                format!("{working} working, {idle} idle"),
+                11.0,
+                crate::theme::palette().ink
+            )
+        ]
+        .spacing(10)
+        .align_y(Alignment::Center),
         names,
-        ui::btn("Enter", None, ui::Kind::Primary, Some(Msg::Enter(m.id.clone()))),
+        ui::btn(
+            "Enter",
+            None,
+            ui::Kind::Primary,
+            Some(Msg::Enter(m.id.clone()))
+        ),
     ]
     .spacing(10);
     let card = container(body)
@@ -433,7 +557,11 @@ fn legend<'a>(machines: bool) -> Element<'a, Msg> {
             key(status_colour(Status::Revoked), "Revoked"),
         ]
     } else {
-        row![key(crate::theme::palette().signal, "Working"), key(crate::theme::palette().ok, "Idle"), key(crate::theme::palette().ink_3, "Offline")]
+        row![
+            key(crate::theme::palette().signal, "Working"),
+            key(crate::theme::palette().ok, "Idle"),
+            key(crate::theme::palette().ink_3, "Offline")
+        ]
     }
     .spacing(14)
     .align_y(Alignment::Center);
@@ -441,36 +569,60 @@ fn legend<'a>(machines: bool) -> Element<'a, Msg> {
         .padding([6, 10])
         .style(|_: &Theme| container::Style {
             background: Some(crate::theme::palette().sheet.into()),
-            border: Border { color: crate::theme::palette().ink, width: 1.0, radius: 0.0.into() },
+            border: Border {
+                color: crate::theme::palette().ink,
+                width: 1.0,
+                radius: 0.0.into(),
+            },
             ..Default::default()
         })
         .into()
 }
 
 fn key<'a>(colour: Color, name: &str) -> Element<'a, Msg> {
-    let swatch = container(Space::new().width(10.0).height(10.0)).style(move |_: &Theme| container::Style {
-        background: Some(colour.into()),
-        border: Border { color: crate::theme::palette().ink, width: 1.0, radius: 0.0.into() },
-        ..Default::default()
-    });
-    row![swatch, ui::sans(name.to_string(), 10.5, crate::theme::palette().ink)].spacing(6).align_y(Alignment::Center).into()
+    let swatch =
+        container(Space::new().width(10.0).height(10.0)).style(move |_: &Theme| container::Style {
+            background: Some(colour.into()),
+            border: Border {
+                color: crate::theme::palette().ink,
+                width: 1.0,
+                radius: 0.0.into(),
+            },
+            ..Default::default()
+        });
+    row![
+        swatch,
+        ui::sans(name.to_string(), 10.5, crate::theme::palette().ink)
+    ]
+    .spacing(6)
+    .align_y(Alignment::Center)
+    .into()
 }
 
 /// The role as a square tag with a 3 px stripe in the district's colour.
 fn role_tag<'a>(role: &str, hue: f32) -> Element<'a, Msg> {
     let rgb = SceneColor::hsl(hue, 0.55, 0.34).to_srgb();
-    let stripe = container(Space::new().width(3.0).height(16.0)).style(move |_: &Theme| container::Style {
-        background: Some(Color::from_rgb(rgb[0], rgb[1], rgb[2]).into()),
-        ..Default::default()
-    });
-    let text = role.replace('_', " ");
-    container(row![stripe, ui::sans(text, 9.5, crate::theme::palette().ink)].spacing(4).align_y(Alignment::Center))
-        .padding([1, 5])
-        .style(|_: &Theme| container::Style {
-            border: Border { color: crate::theme::palette().ink, width: 1.0, radius: 0.0.into() },
+    let stripe =
+        container(Space::new().width(3.0).height(16.0)).style(move |_: &Theme| container::Style {
+            background: Some(Color::from_rgb(rgb[0], rgb[1], rgb[2]).into()),
             ..Default::default()
-        })
-        .into()
+        });
+    let text = role.replace('_', " ");
+    container(
+        row![stripe, ui::sans(text, 9.5, crate::theme::palette().ink)]
+            .spacing(4)
+            .align_y(Alignment::Center),
+    )
+    .padding([1, 5])
+    .style(|_: &Theme| container::Style {
+        border: Border {
+            color: crate::theme::palette().ink,
+            width: 1.0,
+            radius: 0.0.into(),
+        },
+        ..Default::default()
+    })
+    .into()
 }
 
 /// A machine status's LED colour, as the iced colour.
@@ -493,10 +645,22 @@ fn status_tone(status: &str) -> ui::Tone {
 fn boxed_style(highlighted: bool) -> container::Style {
     container::Style {
         background: Some(crate::theme::palette().sheet.into()),
-        border: Border { color: if highlighted { crate::theme::palette().signal } else { crate::theme::palette().ink }, width: 1.0, radius: 0.0.into() },
+        border: Border {
+            color: if highlighted {
+                crate::theme::palette().signal
+            } else {
+                crate::theme::palette().ink
+            },
+            width: 1.0,
+            radius: 0.0.into(),
+        },
         // The print shadow (2px 2px 0 ink). iced drops the text of a box whose shadow has exactly
         // zero blur, so a hair of blur keeps it crisp and the text drawn.
-        shadow: Shadow { color: crate::theme::palette().ink, offset: iced::Vector::new(2.0, 2.0), blur_radius: 0.6 },
+        shadow: Shadow {
+            color: crate::theme::palette().ink,
+            offset: iced::Vector::new(2.0, 2.0),
+            blur_radius: 0.6,
+        },
         ..Default::default()
     }
 }
@@ -521,7 +685,9 @@ fn facts(m: &Machine, now: u64) -> Vec<(&'static str, String)> {
         _ => m.cpu.model.clone(),
     };
     let cores = match &m.apple {
-        Some(a) if m.cpu.cores == 0 => format!("{} performance, {} efficiency", a.p_cores, a.e_cores),
+        Some(a) if m.cpu.cores == 0 => {
+            format!("{} performance, {} efficiency", a.p_cores, a.e_cores)
+        }
         _ => format!("{} cores, {} threads", m.cpu.cores, m.cpu.threads),
     };
     let gpus = if m.gpus.is_empty() {
@@ -571,7 +737,9 @@ fn ago(ms: u64, now: u64) -> String {
 
 /// The wall clock in epoch ms (0 before the epoch).
 fn now_millis() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
 }
 
 /// `APZ_PERF`: frames per second and the floor's CPU time per frame, every two seconds.
@@ -595,10 +763,6 @@ fn perf(cpu: std::time::Duration, now: Instant) {
         *stats = None;
     }
 }
-
-
-
-
 
 /// `APZ_PERF`: a frame whose wall gap from the previous frame is over 16 ms, with the time its work took.
 fn frame_log(now: Instant, work: std::time::Duration) {
@@ -653,7 +817,13 @@ mod tests {
         }))
         .expect("a machine");
         let facts = facts(&m, 0);
-        let get = |k: &str| facts.iter().find(|(label, _)| *label == k).map(|(_, v)| v.clone()).unwrap_or_default();
+        let get = |k: &str| {
+            facts
+                .iter()
+                .find(|(label, _)| *label == k)
+                .map(|(_, v)| v.clone())
+                .unwrap_or_default()
+        };
         assert_eq!(get("CPU"), "AMD Ryzen 9 5900X");
         assert_eq!(get("Cores"), "12 cores, 24 threads");
         assert_eq!(get("Memory"), "128 GiB");

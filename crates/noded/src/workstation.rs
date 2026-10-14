@@ -67,7 +67,8 @@ const GIB: u64 = 1 << 30;
 const NO_KERNEL: &str = "no workstation kernel is configured: build the desktop guest with scripts/mk-workstation-guest.sh and start noded with --workstation-kernel and --workstation-initrd";
 const NO_IMAGE: &str = "no workstation disk image is configured: build it with scripts/mk-workstation-guest.sh and start noded with --workstation-image";
 const NO_QEMU: &str = "this node has no QEMU/OVMF; install qemu and edk2-ovmf";
-const NO_UEFI: &str = "this node has no UEFI firmware (OVMF) for a Windows guest; install edk2-ovmf";
+const NO_UEFI: &str =
+    "this node has no UEFI firmware (OVMF) for a Windows guest; install edk2-ovmf";
 /// The plaza VM's disk, and its snapshot.
 const PLAZA_DISK: &str = "disk.img";
 const PLAZA_SNAPSHOT: &str = "snapshot.img";
@@ -105,7 +106,9 @@ impl Choice {
             None | Some("auto") => Ok(Self::Auto),
             Some("plaza") => Ok(Self::Plaza),
             Some("qemu") => Ok(Self::Qemu),
-            Some(other) => Err(format!("backend must be auto, plaza or qemu, not {other:?}")),
+            Some(other) => Err(format!(
+                "backend must be auto, plaza or qemu, not {other:?}"
+            )),
         }
     }
 }
@@ -330,7 +333,9 @@ fn checked_hub(url: &str) -> Result<String, String> {
 /// A certificate pin: base64url text of 1 to 64 characters. The daemon decodes it and checks it is 32 bytes.
 fn checked_pin(pin: &str) -> Result<String, String> {
     let valid = (1..=64).contains(&pin.len())
-        && pin.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
+        && pin
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
     if valid {
         Ok(pin.to_string())
     } else {
@@ -566,8 +571,14 @@ fn qemu_argv(
             vars: &vars,
         }
     } else {
-        let kernel = guest.kernel.as_deref().ok_or_else(|| NO_KERNEL.to_string())?;
-        let initrd = guest.initrd.as_deref().ok_or_else(|| NO_KERNEL.to_string())?;
+        let kernel = guest
+            .kernel
+            .as_deref()
+            .ok_or_else(|| NO_KERNEL.to_string())?;
+        let initrd = guest
+            .initrd
+            .as_deref()
+            .ok_or_else(|| NO_KERNEL.to_string())?;
         ws_qemu::Boot::Direct {
             kernel,
             initrd,
@@ -635,7 +646,9 @@ impl Handle {
     /// Whether the VMM has exited.
     fn exited(&mut self) -> bool {
         match self {
-            Self::Plaza(handle) => !matches!(handle.wait_timeout(Duration::from_millis(1)), Ok(None)),
+            Self::Plaza(handle) => {
+                !matches!(handle.wait_timeout(Duration::from_millis(1)), Ok(None))
+            }
             Self::Qemu(process) => process.exited(),
             Self::Attached(attached) => attached.exited(),
         }
@@ -789,7 +802,12 @@ impl Store {
         if let Gpu::Vfio(pci) = &shape.gpu {
             check_vfio(&self.guest.sysfs, pci).map_err(bad)?;
         }
-        let backend = choose(shape.backend, shape.os, &shape.gpu, self.guest.qemu.as_ref())?;
+        let backend = choose(
+            shape.backend,
+            shape.os,
+            &shape.gpu,
+            self.guest.qemu.as_ref(),
+        )?;
         if backend == Backend::Plaza
             && let Some(refusal) = boot_refusal(shape.os, &shape.gpu)
         {
@@ -881,8 +899,8 @@ impl Store {
                 }
                 let link = open_link(&self.host, &self.guest.vsock_dir, &slot.record, None)
                     .map_err(|e| (500, e))?;
-                let argv = qemu_argv(&slot.record, &self.guest, available, &dir)
-                    .map_err(|e| (503, e))?;
+                let argv =
+                    qemu_argv(&slot.record, &self.guest, available, &dir).map_err(|e| (503, e))?;
                 let mut process = start_qemu(available, &argv, &dir)?;
                 if !process.wait_ready(ws_qemu::READY_WAIT) {
                     let _ = process.shut_down(Duration::ZERO);
@@ -1059,11 +1077,15 @@ impl Store {
                 if !base.is_file() {
                     return Err((
                         503,
-                        format!("the disk image {} is not a file on this node", base.display()),
+                        format!(
+                            "the disk image {} is not a file on this node",
+                            base.display()
+                        ),
                     ));
                 }
                 let format = ws_qemu::base_format(base).map_err(|e| (400, e))?;
-                private_dir(dir).map_err(|e| (500, format!("cannot make {}: {e}", dir.display())))?;
+                private_dir(dir)
+                    .map_err(|e| (500, format!("cannot make {}: {e}", dir.display())))?;
                 let overlay_args =
                     ws_qemu::overlay_args(&dir.join(QEMU_DISK), base, format, Some(record.disk_gb));
                 ws_qemu::run_qemu_img(&available.img, &overlay_args).map_err(|e| (500, e))?;
@@ -1463,12 +1485,15 @@ mod tests {
             spec.cmdline
         );
         assert!(
-            spec.cmdline.ends_with("plaza.workstation_node=vsock://2:5101"),
+            spec.cmdline
+                .ends_with("plaza.workstation_node=vsock://2:5101"),
             "{}",
             spec.cmdline
         );
         assert!(
-            !spec.cmdline.contains("join") && !spec.cmdline.contains("hub.example") && !spec.cmdline.contains("CODE"),
+            !spec.cmdline.contains("join")
+                && !spec.cmdline.contains("hub.example")
+                && !spec.cmdline.contains("CODE"),
             "{}",
             spec.cmdline
         );
@@ -1492,7 +1517,9 @@ mod tests {
     #[test]
     fn the_join_config_carries_the_link_address_the_pin_and_the_code() {
         let shape = request(Os::Linux).checked().expect("a shape");
-        let bytes = join_config(&shape).expect("a config").expect("a hub has one");
+        let bytes = join_config(&shape)
+            .expect("a config")
+            .expect("a hub has one");
         let config: NodeConfig = serde_json::from_slice(&bytes).expect("the config");
         assert_eq!(config.hub, "vsock://2:5100");
         assert_eq!(config.pin, "cGlu");
@@ -1525,7 +1552,9 @@ mod tests {
     #[test]
     fn both_backends_hand_the_same_join_config_by_the_same_node_address() {
         let shape = request(Os::Linux).checked().expect("a shape");
-        let config = join_config(&shape).expect("a config").expect("a hub has one");
+        let config = join_config(&shape)
+            .expect("a config")
+            .expect("a hub has one");
         let config: NodeConfig = serde_json::from_slice(&config).expect("the config");
         assert_eq!(config.code, shape.join_code);
 
@@ -1535,7 +1564,8 @@ mod tests {
             vsock_dir: PathBuf::from("/run/vsock"),
             ..Guest::default()
         };
-        let plaza = boot_spec(&record("wv1"), &guest, Path::new("/d/disk.img")).expect("a plaza spec");
+        let plaza =
+            boot_spec(&record("wv1"), &guest, Path::new("/d/disk.img")).expect("a plaza spec");
         let mut qemu_record = record("wv1");
         qemu_record.backend = Backend::Qemu;
         let qemu_available = Available {
@@ -1544,7 +1574,13 @@ mod tests {
             arch: ws_qemu::Arch::X86_64,
             firmware: None,
         };
-        let qemu = qemu_argv(&qemu_record, &guest, &qemu_available, Path::new("/d/vms/wv1")).expect("a QEMU argv");
+        let qemu = qemu_argv(
+            &qemu_record,
+            &guest,
+            &qemu_available,
+            Path::new("/d/vms/wv1"),
+        )
+        .expect("a QEMU argv");
         let append = qemu
             .windows(2)
             .find(|w| w[0] == "-append")
@@ -1552,13 +1588,25 @@ mod tests {
             .expect("a Linux guest is booted with its command line");
 
         for cmdline in [plaza.cmdline.as_str(), append.as_str()] {
-            assert!(cmdline.ends_with("plaza.workstation_node=vsock://2:5101"), "{cmdline}");
-            assert!(!cmdline.contains(&config.code), "the join code is never on the command line");
-            assert!(!cmdline.contains("hub.example"), "the hub's address is never on the command line");
+            assert!(
+                cmdline.ends_with("plaza.workstation_node=vsock://2:5101"),
+                "{cmdline}"
+            );
+            assert!(
+                !cmdline.contains(&config.code),
+                "the join code is never on the command line"
+            );
+            assert!(
+                !cmdline.contains("hub.example"),
+                "the hub's address is never on the command line"
+            );
         }
         assert_eq!(plaza.cmdline, append, "one command line on either backend");
         assert!(plaza.vsock.is_some(), "the plaza VM has its vsock device");
-        assert!(qemu.windows(2).any(|w| w == ["-device", "vhost-vsock-pci,guest-cid=4097"]));
+        assert!(
+            qemu.windows(2)
+                .any(|w| w == ["-device", "vhost-vsock-pci,guest-cid=4097"])
+        );
     }
 
     #[test]
@@ -1718,13 +1766,28 @@ mod tests {
         let vfio = Gpu::Vfio("0000:01:00.0".into());
         let with = Some(&qemu);
         // auto: QEMU only for what plaza cannot run.
-        assert_eq!(choose(Choice::Auto, Os::Linux, &Gpu::None, with), Ok(Backend::Plaza));
-        assert_eq!(choose(Choice::Auto, Os::Windows, &Gpu::None, with), Ok(Backend::Qemu));
-        assert_eq!(choose(Choice::Auto, Os::Linux, &vfio, with), Ok(Backend::Qemu));
+        assert_eq!(
+            choose(Choice::Auto, Os::Linux, &Gpu::None, with),
+            Ok(Backend::Plaza)
+        );
+        assert_eq!(
+            choose(Choice::Auto, Os::Windows, &Gpu::None, with),
+            Ok(Backend::Qemu)
+        );
+        assert_eq!(
+            choose(Choice::Auto, Os::Linux, &vfio, with),
+            Ok(Backend::Qemu)
+        );
         // plaza: never QEMU, even when asked for a Windows guest (boot_refusal names why).
-        assert_eq!(choose(Choice::Plaza, Os::Windows, &Gpu::None, with), Ok(Backend::Plaza));
+        assert_eq!(
+            choose(Choice::Plaza, Os::Windows, &Gpu::None, with),
+            Ok(Backend::Plaza)
+        );
         // qemu: a Linux guest may be asked for too.
-        assert_eq!(choose(Choice::Qemu, Os::Linux, &Gpu::None, with), Ok(Backend::Qemu));
+        assert_eq!(
+            choose(Choice::Qemu, Os::Linux, &Gpu::None, with),
+            Ok(Backend::Qemu)
+        );
         // No QEMU: auto needing it, and an explicit qemu, are refused with the install hint.
         for (choice, os, gpu) in [
             (Choice::Auto, Os::Windows, Gpu::None),
@@ -1735,14 +1798,22 @@ mod tests {
             assert_eq!(status, 503);
             assert_eq!(message, NO_QEMU);
         }
-        assert_eq!(choose(Choice::Auto, Os::Linux, &Gpu::None, None), Ok(Backend::Plaza));
+        assert_eq!(
+            choose(Choice::Auto, Os::Linux, &Gpu::None, None),
+            Ok(Backend::Plaza)
+        );
         // An x86 firmware-less node cannot take a Windows guest under QEMU.
         let arm = Available {
             firmware: None,
             arch: ws_qemu::Arch::Aarch64,
             ..qemu.clone()
         };
-        assert_eq!(choose(Choice::Auto, Os::Windows, &Gpu::None, Some(&arm)).unwrap_err().0, 501);
+        assert_eq!(
+            choose(Choice::Auto, Os::Windows, &Gpu::None, Some(&arm))
+                .unwrap_err()
+                .0,
+            501
+        );
     }
 
     #[test]
@@ -1815,16 +1886,40 @@ mod tests {
         };
         let args = qemu_argv(&record, &guest, &linux_qemu, &vm).expect("a Linux VM");
         assert!(args.windows(2).any(|w| w == ["-kernel", "/g/vmlinux"]));
-        assert!(args.windows(2).any(|w| w == ["-device", "vfio-pci,host=0000:01:00.0"]));
-        assert!(args.windows(2).any(|w| w[0] == "-append" && w[1].ends_with("plaza.workstation_node=vsock://2:5101")));
-        assert!(args.windows(2).any(|w| w == ["-device", "vhost-vsock-pci,guest-cid=4097"]));
-        assert!(!args.iter().any(|a| a.contains("if=pflash")), "a Linux guest boots directly");
+        assert!(
+            args.windows(2)
+                .any(|w| w == ["-device", "vfio-pci,host=0000:01:00.0"])
+        );
+        assert!(
+            args.windows(2)
+                .any(|w| w[0] == "-append"
+                    && w[1].ends_with("plaza.workstation_node=vsock://2:5101"))
+        );
+        assert!(
+            args.windows(2)
+                .any(|w| w == ["-device", "vhost-vsock-pci,guest-cid=4097"])
+        );
+        assert!(
+            !args.iter().any(|a| a.contains("if=pflash")),
+            "a Linux guest boots directly"
+        );
 
         record.os = Os::Windows;
         let windows = qemu_argv(&record, &guest, &linux_qemu, &vm).expect("a Windows VM");
-        assert!(windows.iter().any(|a| a.contains("if=pflash,format=raw,unit=0,readonly=on,file=/fw/code.fd")));
-        assert!(!windows.iter().any(|a| a == "-fw_cfg"), "the join config comes over vsock, never fw_cfg");
-        assert!(windows.windows(2).any(|w| w == ["-device", "vhost-vsock-pci,guest-cid=4097"]));
+        assert!(
+            windows
+                .iter()
+                .any(|a| a.contains("if=pflash,format=raw,unit=0,readonly=on,file=/fw/code.fd"))
+        );
+        assert!(
+            !windows.iter().any(|a| a == "-fw_cfg"),
+            "the join config comes over vsock, never fw_cfg"
+        );
+        assert!(
+            windows
+                .windows(2)
+                .any(|w| w == ["-device", "vhost-vsock-pci,guest-cid=4097"])
+        );
         assert!(!windows.iter().any(|a| a == "-kernel"));
         assert!(windows.windows(2).any(|w| w == ["-nic", "none"]));
         let _ = fs::remove_dir_all(&dir);
@@ -1859,9 +1954,16 @@ mod tests {
             dir: vms,
             ..Guest::default()
         });
-        assert_eq!(store.inner.lock().unwrap().slots["wv3"].record.cid, cid_for("wv3"));
+        assert_eq!(
+            store.inner.lock().unwrap().slots["wv3"].record.cid,
+            cid_for("wv3")
+        );
         let saved: Record = serde_json::from_slice(&fs::read(vm.join("vm.json")).unwrap()).unwrap();
-        assert_eq!(saved.cid, cid_for("wv3"), "the CID is kept, so the next load keeps it");
+        assert_eq!(
+            saved.cid,
+            cid_for("wv3"),
+            "the CID is kept, so the next load keeps it"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 

@@ -35,11 +35,17 @@ pub struct Message {
 
 impl Message {
     pub fn user_text(text: impl Into<String>) -> Self {
-        Message { role: Role::User, content: vec![Block::Text { text: text.into() }] }
+        Message {
+            role: Role::User,
+            content: vec![Block::Text { text: text.into() }],
+        }
     }
 
     pub fn assistant(content: Vec<Block>) -> Self {
-        Message { role: Role::Assistant, content }
+        Message {
+            role: Role::Assistant,
+            content,
+        }
     }
 
     /// The concatenated text blocks.
@@ -176,7 +182,9 @@ impl ChatResponse {
     /// The tool calls in this answer, in order.
     pub fn tool_uses(&self) -> impl Iterator<Item = (&str, &str, &Value)> {
         self.content.iter().filter_map(|b| match b {
-            Block::ToolUse { id, name, input, .. } => Some((id.as_str(), name.as_str(), input)),
+            Block::ToolUse {
+                id, name, input, ..
+            } => Some((id.as_str(), name.as_str(), input)),
             _ => None,
         })
     }
@@ -201,9 +209,21 @@ mod tests {
     fn blocks_round_trip_with_their_tags() {
         let blocks = vec![
             Block::Text { text: "hi".into() },
-            Block::ToolUse { id: "t1".into(), name: "bash".into(), input: json!({"command": "ls"}), meta: None },
-            Block::ToolResult { tool_use_id: "t1".into(), content: "a\nb".into(), is_error: false },
-            Block::Opaque { kind: "anthropic".into(), raw: json!({"type": "thinking", "signature": "s"}) },
+            Block::ToolUse {
+                id: "t1".into(),
+                name: "bash".into(),
+                input: json!({"command": "ls"}),
+                meta: None,
+            },
+            Block::ToolResult {
+                tool_use_id: "t1".into(),
+                content: "a\nb".into(),
+                is_error: false,
+            },
+            Block::Opaque {
+                kind: "anthropic".into(),
+                raw: json!({"type": "thinking", "signature": "s"}),
+            },
         ];
         let line = serde_json::to_string(&blocks).unwrap();
         assert!(line.contains(r#""type":"tool_use""#));

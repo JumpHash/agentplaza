@@ -4,7 +4,7 @@
 
 use std::collections::BTreeMap;
 
-use apz_board::{embedded_files, Board};
+use apz_board::{Board, embedded_files};
 use serde_json::Value;
 
 const FIXTURE: &str = include_str!("fixtures/boards.json");
@@ -15,7 +15,11 @@ fn fixture() -> Value {
 }
 
 fn nums(v: &Value) -> Vec<f64> {
-    v.as_array().expect("array").iter().map(|x| x.as_f64().expect("number")).collect()
+    v.as_array()
+        .expect("array")
+        .iter()
+        .map(|x| x.as_f64().expect("number"))
+        .collect()
 }
 
 #[test]
@@ -42,13 +46,19 @@ fn every_embedded_file_parses() {
 
 #[test]
 fn every_board_builds_from_its_kind() {
-    let kinds: Vec<&str> = embedded_files().iter().filter_map(|(n, _)| n.strip_prefix("board/")).collect();
+    let kinds: Vec<&str> = embedded_files()
+        .iter()
+        .filter_map(|(n, _)| n.strip_prefix("board/"))
+        .collect();
     assert_eq!(kinds.len(), 6);
     for kind in kinds {
         let b = Board::from_kind(kind, &BTreeMap::new());
         assert!(!b.parts().is_empty(), "{kind} has items");
         let bb = b.bounds();
-        assert!(bb.min.iter().chain(bb.max.iter()).all(|v| v.is_finite()), "{kind} bounds are finite");
+        assert!(
+            bb.min.iter().chain(bb.max.iter()).all(|v| v.is_finite()),
+            "{kind} bounds are finite"
+        );
     }
 }
 
@@ -83,20 +93,41 @@ fn board_variants_match_the_web_build() {
 /// Compares one board (built with `params`) with its fixture entry: parts, items (names, boxes, tops), bounds, support.
 fn check(kind: &str, params: &BTreeMap<String, f64>, want: &Value) {
     let b = Board::from_kind(want["kind"].as_str().unwrap_or(kind), params);
-    assert_eq!(b.part_count(), want["parts"].as_u64().unwrap() as usize, "{kind}: part count");
+    assert_eq!(
+        b.part_count(),
+        want["parts"].as_u64().unwrap() as usize,
+        "{kind}: part count"
+    );
 
     let items = want["items"].as_array().unwrap();
     assert_eq!(b.parts().len(), items.len(), "{kind}: item count");
     let mut worst_box = 0.0_f64;
     let mut tops_checked = 0;
     for (i, (got, exp)) in b.parts().iter().zip(items).enumerate() {
-        assert_eq!(got.name, exp["name"].as_str().unwrap(), "{kind}: item {i} name");
+        assert_eq!(
+            got.name,
+            exp["name"].as_str().unwrap(),
+            "{kind}: item {i} name"
+        );
         let bx = nums(&exp["box"]);
-        let have = [got.bounds.min[0], got.bounds.min[1], got.bounds.min[2], got.bounds.max[0], got.bounds.max[1], got.bounds.max[2]];
+        let have = [
+            got.bounds.min[0],
+            got.bounds.min[1],
+            got.bounds.min[2],
+            got.bounds.max[0],
+            got.bounds.max[1],
+            got.bounds.max[2],
+        ];
         for k in 0..6 {
             let d = (have[k] - bx[k]).abs();
             worst_box = worst_box.max(d);
-            assert!(d <= TOL, "{kind}: item {i} ({}) box[{k}] {} vs {} (off {d})", got.name, have[k], bx[k]);
+            assert!(
+                d <= TOL,
+                "{kind}: item {i} ({}) box[{k}] {} vs {} (off {d})",
+                got.name,
+                have[k],
+                bx[k]
+            );
         }
         match (got.top, exp["top"].as_f64()) {
             (Some(t), Some(e)) => {
@@ -110,9 +141,16 @@ fn check(kind: &str, params: &BTreeMap<String, f64>, want: &Value) {
 
     let bounds = nums(&want["bounds"]);
     let bb = b.bounds();
-    let have = [bb.min[0], bb.min[1], bb.min[2], bb.max[0], bb.max[1], bb.max[2]];
+    let have = [
+        bb.min[0], bb.min[1], bb.min[2], bb.max[0], bb.max[1], bb.max[2],
+    ];
     for k in 0..6 {
-        assert!((have[k] - bounds[k]).abs() <= TOL, "{kind}: bounds[{k}] {} vs {}", have[k], bounds[k]);
+        assert!(
+            (have[k] - bounds[k]).abs() <= TOL,
+            "{kind}: bounds[{k}] {} vs {}",
+            have[k],
+            bounds[k]
+        );
     }
 
     let mut worst_support = 0.0_f64;
@@ -126,7 +164,17 @@ fn check(kind: &str, params: &BTreeMap<String, f64>, want: &Value) {
         }
         let d = (got - v[2]).abs();
         worst_support = worst_support.max(d);
-        assert!(d <= TOL, "{kind}: support at ({}, {}) {got} vs {}", v[0], v[1], v[2]);
+        assert!(
+            d <= TOL,
+            "{kind}: support at ({}, {}) {got} vs {}",
+            v[0],
+            v[1],
+            v[2]
+        );
     }
-    println!("{kind} {params:?}: items {} (tops compared {tops_checked}) worst box deviation {worst_box:e}; support samples {} hits {hits} worst deviation {worst_support:e}", items.len(), samples.len());
+    println!(
+        "{kind} {params:?}: items {} (tops compared {tops_checked}) worst box deviation {worst_box:e}; support samples {} hits {hits} worst deviation {worst_support:e}",
+        items.len(),
+        samples.len()
+    );
 }

@@ -10,15 +10,30 @@ use serde::Deserialize;
 pub type Vec3 = [f32; 3];
 
 /// The enumerated names the format allows.
-pub const LOCOMOTIONS: &[&str] = &["treads", "wheels", "ball", "unicycle", "hover", "fly", "float", "hop", "bounce", "waddle", "walk2", "walk4", "walk6", "scuttle", "slither", "tumble"];
-pub const GEO_TYPES: &[&str] = &["box", "rbox", "cyl", "cone", "sphere", "torus", "plane", "ring", "shape"];
+pub const LOCOMOTIONS: &[&str] = &[
+    "treads", "wheels", "ball", "unicycle", "hover", "fly", "float", "hop", "bounce", "waddle",
+    "walk2", "walk4", "walk6", "scuttle", "slither", "tumble",
+];
+pub const GEO_TYPES: &[&str] = &[
+    "box", "rbox", "cyl", "cone", "sphere", "torus", "plane", "ring", "shape",
+];
 /// The materials a part may name: palette colours, the per-robot hues, and the glowing or clear ones.
-pub const MATS: &[&str] = &["shell", "shell2", "panel", "paper", "trim", "ink", "signal", "glass", "eye", "light", "thruster", "accent", "clear"];
+pub const MATS: &[&str] = &[
+    "shell", "shell2", "panel", "paper", "trim", "ink", "signal", "glass", "eye", "light",
+    "thruster", "accent", "clear",
+];
 pub const EYE_SHAPES: &[&str] = &["round", "bar", "visor", "ring", "heart", "arc"];
-pub const WAVES: &[&str] = &["sin", "abs", "tri", "saw", "square", "pulse", "hold", "halfsin"];
-pub const FX_KINDS: &[&str] = &["sparks", "steam", "bubbles", "zzz", "notes", "hearts", "dots", "keys", "ink", "glow", "trail", "confetti"];
+pub const WAVES: &[&str] = &[
+    "sin", "abs", "tri", "saw", "square", "pulse", "hold", "halfsin",
+];
+pub const FX_KINDS: &[&str] = &[
+    "sparks", "steam", "bubbles", "zzz", "notes", "hearts", "dots", "keys", "ink", "glow", "trail",
+    "confetti",
+];
 /// The bones every species has: a species without arms still has the arm bones (tentacles, stalks).
-pub const REQUIRED_BONES: &[&str] = &["base", "body", "head", "armL", "armR", "gripL", "gripR", "carry"];
+pub const REQUIRED_BONES: &[&str] = &[
+    "base", "body", "head", "armL", "armR", "gripL", "gripR", "carry",
+];
 pub const PERSONALITY: &[&str] = &["social", "energy", "focus", "curiosity", "play", "tidy"];
 pub const GRIPS: &[&str] = &["one", "two", "carry"];
 

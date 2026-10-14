@@ -50,7 +50,9 @@ pub(crate) const INVALID_CODE: &str = "this join code is not valid";
 pub(crate) const RATE_LIMITED: &str = "too many attempts; wait a minute";
 /// The rate-limit key of a request: its peer address (every caller without one shares a bucket).
 pub(crate) fn source_of(req: &Request) -> String {
-    req.peer.map(|ip| ip.to_string()).unwrap_or_else(|| "unknown".into())
+    req.peer
+        .map(|ip| ip.to_string())
+        .unwrap_or_else(|| "unknown".into())
 }
 pub(crate) const JOIN_WINDOW_MS: u64 = 60_000;
 pub(crate) const DEFAULT_TTL_MINUTES: u64 = 15;
@@ -167,7 +169,11 @@ pub struct Store {
 
 impl Store {
     pub fn snapshot(&self) -> String {
-        self.inner.lock().ok().and_then(|p| serde_json::to_string(&*p).ok()).unwrap_or_default()
+        self.inner
+            .lock()
+            .ok()
+            .and_then(|p| serde_json::to_string(&*p).ok())
+            .unwrap_or_default()
     }
     pub fn restore(&self, json: &str) -> Result<(), String> {
         let p: Persisted = serde_json::from_str(json).map_err(|e| e.to_string())?;
@@ -175,25 +181,46 @@ impl Store {
         Ok(())
     }
     pub fn list(&self) -> Vec<Node> {
-        self.inner.lock().map(|p| p.nodes.clone()).unwrap_or_default()
+        self.inner
+            .lock()
+            .map(|p| p.nodes.clone())
+            .unwrap_or_default()
     }
     pub fn get(&self, id: &str) -> Option<Node> {
         self.list().into_iter().find(|n| n.id == id)
     }
     /// The node whose CID range holds `cid`; None for the local node's CIDs (and unknown ones).
     pub fn owner_of_cid(&self, cid: u64) -> Option<Node> {
-        self.list().into_iter().find(|n| !n.revoked && cid >= n.cid_base && cid < n.cid_base + n.cid_count)
+        self.list()
+            .into_iter()
+            .find(|n| !n.revoked && cid >= n.cid_base && cid < n.cid_base + n.cid_count)
     }
 
     /// Issues a code: returns its id, the token text (shown once) and its expiry.
-    pub fn issue_code(&self, app: &App, label: &str, ttl_minutes: u64) -> Result<(String, String, u64), String> {
+    pub fn issue_code(
+        &self,
+        app: &App,
+        label: &str,
+        ttl_minutes: u64,
+    ) -> Result<(String, String, u64), String> {
         let ttl = match ttl_minutes {
             0 => DEFAULT_TTL_MINUTES,
             m => m.min(MAX_CODE_MINUTES),
         };
         let now = apz_plaza::now_ms();
-        let public_url = app.hub_auth.config.lock().map_err(|_| "hub config unavailable".to_string())?.public_url.clone();
-        let token = apz_trust::token::JoinToken::issue(&public_url, app.hub_auth.cert_sha256, now / 1000, ttl * 60);
+        let public_url = app
+            .hub_auth
+            .config
+            .lock()
+            .map_err(|_| "hub config unavailable".to_string())?
+            .public_url
+            .clone();
+        let token = apz_trust::token::JoinToken::issue(
+            &public_url,
+            app.hub_auth.cert_sha256,
+            now / 1000,
+            ttl * 60,
+        );
         let text = token.encode();
         let expires_ms = now + ttl * 60_000;
         let mut p = self.inner.lock().map_err(|e| e.to_string())?;
@@ -230,7 +257,11 @@ impl Store {
     }
     pub fn revoke_code(&self, id: &str) -> Result<(), String> {
         let mut p = self.inner.lock().map_err(|e| e.to_string())?;
-        let code = p.codes.iter_mut().find(|c| c.id == id).ok_or("no such code")?;
+        let code = p
+            .codes
+            .iter_mut()
+            .find(|c| c.id == id)
+            .ok_or("no such code")?;
         if code.used_by.is_some() {
             return Err("that code was already used".into());
         }
@@ -238,9 +269,20 @@ impl Store {
         Ok(())
     }
     /// Redeems a secret for a new node (rate limits, expiry, single use, constant-time compare).
-    pub fn join(&self, source: &str, secret_b64: &str, public_key: &str, name: &str, machine: Value, now_ms: u64) -> Result<Node, String> {
+    pub fn join(
+        &self,
+        source: &str,
+        secret_b64: &str,
+        public_key: &str,
+        name: &str,
+        machine: Value,
+        now_ms: u64,
+    ) -> Result<Node, String> {
         self.admit(source, now_ms)?;
-        let secret = apz_trust::unb64(secret_b64).ok().filter(|s| s.len() == 16).ok_or(INVALID_CODE)?;
+        let secret = apz_trust::unb64(secret_b64)
+            .ok()
+            .filter(|s| s.len() == 16)
+            .ok_or(INVALID_CODE)?;
         let hash = hex(&apz_trust::sha256(&secret));
 
         let mut p = self.inner.lock().map_err(|e| e.to_string())?;
@@ -255,14 +297,19 @@ impl Store {
             return Err(INVALID_CODE.to_string());
         };
         let code = &mut codes[i];
-        let usable = code.used_by.is_none() && !code.revoked && now_ms < code.expires_ms && code.failures < JOIN_TRIES_PER_CODE;
+        let usable = code.used_by.is_none()
+            && !code.revoked
+            && now_ms < code.expires_ms
+            && code.failures < JOIN_TRIES_PER_CODE;
         if !usable {
             code.failures = code.failures.saturating_add(1);
             return Err(INVALID_CODE.to_string());
         }
 
         // The secret matched, so these failures are the caller's own tries against this code.
-        let key_ok = apz_trust::unb64(public_key).map(|k| k.len() == 32).unwrap_or(false);
+        let key_ok = apz_trust::unb64(public_key)
+            .map(|k| k.len() == 32)
+            .unwrap_or(false);
         if !key_ok {
             code.failures = code.failures.saturating_add(1);
             return Err("the public key must be an Ed25519 key (32 bytes, base64url)".into());
@@ -293,13 +340,21 @@ impl Store {
     }
     pub fn revoke(&self, id: &str) -> Result<Node, String> {
         let mut p = self.inner.lock().map_err(|e| e.to_string())?;
-        let node = p.nodes.iter_mut().find(|n| n.id == id).ok_or("no such node")?;
+        let node = p
+            .nodes
+            .iter_mut()
+            .find(|n| n.id == id)
+            .ok_or("no such node")?;
         node.revoked = true;
         Ok(node.clone())
     }
     pub fn drain(&self, id: &str, on: bool) -> Result<Node, String> {
         let mut p = self.inner.lock().map_err(|e| e.to_string())?;
-        let node = p.nodes.iter_mut().find(|n| n.id == id).ok_or("no such node")?;
+        let node = p
+            .nodes
+            .iter_mut()
+            .find(|n| n.id == id)
+            .ok_or("no such node")?;
         node.draining = on;
         Ok(node.clone())
     }
@@ -307,13 +362,34 @@ impl Store {
     /// signature. Records `last_seen_ms` and `address`. Returns the node.
     pub fn authenticate(&self, req: &Request, now_ms: u64) -> Result<Node, String> {
         let id = req.header(H_NODE).ok_or("missing node identity")?;
-        let node = self.get(id).filter(|n| !n.revoked).ok_or("unknown or revoked node")?;
-        let ts: u64 = req.header(H_TS).and_then(|t| t.parse().ok()).ok_or("missing or bad timestamp")?;
-        let nonce = req.header(H_NONCE).filter(|n| !n.is_empty()).ok_or("missing nonce")?;
+        let node = self
+            .get(id)
+            .filter(|n| !n.revoked)
+            .ok_or("unknown or revoked node")?;
+        let ts: u64 = req
+            .header(H_TS)
+            .and_then(|t| t.parse().ok())
+            .ok_or("missing or bad timestamp")?;
+        let nonce = req
+            .header(H_NONCE)
+            .filter(|n| !n.is_empty())
+            .ok_or("missing nonce")?;
         let sig = req.header(H_SIG).ok_or("missing signature")?;
         check_freshness(ts, now_ms)?;
-        let path = if req.query.is_empty() { req.path.clone() } else { format!("{}?{}", req.path, req.query) };
-        if !apz_trust::node::verify(&node.public_key, &req.method, &path, ts, nonce, &req.body, sig) {
+        let path = if req.query.is_empty() {
+            req.path.clone()
+        } else {
+            format!("{}?{}", req.path, req.query)
+        };
+        if !apz_trust::node::verify(
+            &node.public_key,
+            &req.method,
+            &path,
+            ts,
+            nonce,
+            &req.body,
+            sig,
+        ) {
             return Err("bad signature".into());
         }
         {
@@ -322,7 +398,11 @@ impl Store {
             record_nonce(&mut nonces, (node.id.clone(), nonce.to_string()), now_ms)?;
         }
         let mut p = self.inner.lock().map_err(|e| e.to_string())?;
-        let stored = p.nodes.iter_mut().find(|n| n.id == node.id).ok_or("unknown node")?;
+        let stored = p
+            .nodes
+            .iter_mut()
+            .find(|n| n.id == node.id)
+            .ok_or("unknown node")?;
         stored.last_seen_ms = now_ms;
         if let Some(ip) = req.peer {
             stored.address = ip.to_string();
@@ -335,7 +415,14 @@ impl Store {
         admit_join(&self.join_attempts, source, now_ms)
     }
 
-    pub fn enqueue(&self, node: &str, target: &str, method: &str, path: &str, body: Value) -> String {
+    pub fn enqueue(
+        &self,
+        node: &str,
+        target: &str,
+        method: &str,
+        path: &str,
+        body: Value,
+    ) -> String {
         let id = format!("k{}", self.seq.fetch_add(1, Ordering::Relaxed) + 1);
         let command = Command {
             id: id.clone(),
@@ -346,7 +433,10 @@ impl Store {
             created_ms: apz_plaza::now_ms(),
         };
         if let Ok(mut queues) = self.queues.lock() {
-            queues.entry(node.to_string()).or_default().push_back(command);
+            queues
+                .entry(node.to_string())
+                .or_default()
+                .push_back(command);
         }
         self.queue_signal.notify_all();
         id
@@ -371,7 +461,10 @@ impl Store {
                 Err(_) => return Vec::new(),
             };
         }
-        queues.get_mut(node).map(|q| q.drain(..).collect()).unwrap_or_default()
+        queues
+            .get_mut(node)
+            .map(|q| q.drain(..).collect())
+            .unwrap_or_default()
     }
     /// Stores a command's result and wakes whoever waits for it.
     pub fn put_result(&self, _node: &str, result: CommandResult) {
@@ -392,13 +485,21 @@ impl Store {
             if now >= deadline {
                 return None;
             }
-            results = self.result_signal.wait_timeout(results, deadline - now).ok()?.0;
+            results = self
+                .result_signal
+                .wait_timeout(results, deadline - now)
+                .ok()?
+                .0;
         }
     }
     /// Records the machine summary a node reported with its heartbeat.
     pub fn set_machine(&self, id: &str, machine: Value) -> Result<(), String> {
         let mut persisted = self.inner.lock().map_err(|e| e.to_string())?;
-        let node = persisted.nodes.iter_mut().find(|n| n.id == id).ok_or_else(|| "unknown node".to_string())?;
+        let node = persisted
+            .nodes
+            .iter_mut()
+            .find(|n| n.id == id)
+            .ok_or_else(|| "unknown node".to_string())?;
         node.machine = machine;
         Ok(())
     }
@@ -416,7 +517,11 @@ impl Store {
 
 /// Join attempts per source in the last minute, shared with the workstation codes (stations/): an attempt past
 /// [`JOIN_RATE_PER_MINUTE`] is refused, and a refused attempt is not recorded.
-pub(crate) fn admit_join(attempts: &Mutex<BTreeMap<String, Vec<u64>>>, source: &str, now_ms: u64) -> Result<(), String> {
+pub(crate) fn admit_join(
+    attempts: &Mutex<BTreeMap<String, Vec<u64>>>,
+    source: &str,
+    now_ms: u64,
+) -> Result<(), String> {
     let mut attempts = attempts.lock().map_err(|e| e.to_string())?;
     let cutoff = now_ms.saturating_sub(JOIN_WINDOW_MS);
     attempts.retain(|_, times| {
@@ -452,7 +557,11 @@ pub fn check_freshness(ts_secs: u64, now_ms: u64) -> Result<(), String> {
 }
 
 /// Records a nonce for `key` (node, nonce) until its TTL passes; refuses one already recorded.
-fn record_nonce(nonces: &mut BTreeMap<(String, String), u64>, key: (String, String), now_ms: u64) -> Result<(), String> {
+fn record_nonce(
+    nonces: &mut BTreeMap<(String, String), u64>,
+    key: (String, String),
+    now_ms: u64,
+) -> Result<(), String> {
     nonces.retain(|_, expiry| *expiry > now_ms);
     if nonces.contains_key(&key) {
         return Err("nonce already used".into());
@@ -463,7 +572,10 @@ fn record_nonce(nonces: &mut BTreeMap<(String, String), u64>, key: (String, Stri
 
 /// The next sequence number after the ids that start with `prefix` (`n3` → 4; none → 1).
 pub(crate) fn next_seq<'a>(ids: impl Iterator<Item = &'a str>, prefix: char) -> u64 {
-    ids.filter_map(|id| id.strip_prefix(prefix)?.parse::<u64>().ok()).max().unwrap_or(0) + 1
+    ids.filter_map(|id| id.strip_prefix(prefix)?.parse::<u64>().ok())
+        .max()
+        .unwrap_or(0)
+        + 1
 }
 
 pub(crate) fn hex(bytes: &[u8]) -> String {
@@ -473,8 +585,15 @@ pub(crate) fn hex(bytes: &[u8]) -> String {
 fn view(node: Node, agents: &[crate::agents::Agent], now_ms: u64) -> NodeView {
     let online = !node.revoked && now_ms.saturating_sub(node.last_seen_ms) < OFFLINE_AFTER_MS;
     let end = node.cid_base + node.cid_count;
-    let count = agents.iter().filter(|a| a.cid >= node.cid_base && a.cid < end).count();
-    NodeView { node, online, agents: u32::try_from(count).unwrap_or(u32::MAX) }
+    let count = agents
+        .iter()
+        .filter(|a| a.cid >= node.cid_base && a.cid < end)
+        .count();
+    NodeView {
+        node,
+        online,
+        agents: u32::try_from(count).unwrap_or(u32::MAX),
+    }
 }
 
 fn view_of(app: &App, node: Node) -> NodeView {
@@ -485,7 +604,9 @@ pub fn routes(router: Router<App>) -> Router<App> {
     router
         .get("/v1/nodes", |app, _, _| Response::json(200, &views(app)))
         .post("/v1/nodes/codes", issue_route)
-        .get("/v1/nodes/codes", |app, _, _| Response::json(200, &app.nodes.codes(apz_plaza::now_ms())))
+        .get("/v1/nodes/codes", |app, _, _| {
+            Response::json(200, &app.nodes.codes(apz_plaza::now_ms()))
+        })
         .delete("/v1/nodes/codes/{id}", revoke_code_route)
         .post("/v1/nodes/{id}/revoke", revoke_route)
         .post("/v1/nodes/{id}/drain", drain_route)
@@ -503,7 +624,10 @@ fn views(app: &App) -> Vec<NodeView> {
     let local_up = matches!(app.noded.get("/v1/machine"), Ok((200, _)));
     let local = Node {
         id: "n0".into(),
-        name: local_summary()["host"].as_str().unwrap_or("this hub").to_string(),
+        name: local_summary()["host"]
+            .as_str()
+            .unwrap_or("this hub")
+            .to_string(),
         public_key: String::new(),
         cid_base: 0,
         cid_count: REMOTE_CID_BASE,
@@ -514,7 +638,10 @@ fn views(app: &App) -> Vec<NodeView> {
         revoked: false,
         address: "loopback".into(),
     };
-    std::iter::once(local).chain(app.nodes.list()).map(|node| view(node, &agents, now)).collect()
+    std::iter::once(local)
+        .chain(app.nodes.list())
+        .map(|node| view(node, &agents, now))
+        .collect()
 }
 
 /// This machine's summary, as a joined node reports its own: cpus, memory_mib, host, version.
@@ -523,7 +650,11 @@ pub(crate) fn local_summary() -> Value {
     let cpus = std::thread::available_parallelism().map_or(0, |n| n.get());
     let host = std::fs::read_to_string("/etc/hostname")
         .ok()
-        .or_else(|| std::env::var("HOSTNAME").or_else(|_| std::env::var("COMPUTERNAME")).ok())
+        .or_else(|| {
+            std::env::var("HOSTNAME")
+                .or_else(|_| std::env::var("COMPUTERNAME"))
+                .ok()
+        })
         .map(|h| h.trim().to_string())
         .unwrap_or_default();
     serde_json::json!({"cpus": cpus, "memory_mib": memory_mib(), "host": host, "version": env!("CARGO_PKG_VERSION")})
@@ -533,7 +664,11 @@ pub(crate) fn local_summary() -> Value {
 fn memory_mib() -> Value {
     std::fs::read_to_string("/proc/meminfo")
         .ok()
-        .and_then(|t| t.lines().find(|l| l.starts_with("MemTotal:")).and_then(|l| l.split_whitespace().nth(1)?.parse::<u64>().ok()))
+        .and_then(|t| {
+            t.lines()
+                .find(|l| l.starts_with("MemTotal:"))
+                .and_then(|l| l.split_whitespace().nth(1)?.parse::<u64>().ok())
+        })
         .map_or(Value::from(0), |kb| Value::from(kb / 1024))
 }
 
@@ -563,7 +698,8 @@ struct DrainBody {
 }
 
 fn parse<T: DeserializeOwned>(req: &Request) -> Result<T, Response> {
-    req.json::<T>().map_err(|e| Response::error(400, &format!("bad body: {e}")))
+    req.json::<T>()
+        .map_err(|e| Response::error(400, &format!("bad body: {e}")))
 }
 
 fn parse_or_default<T: DeserializeOwned + Default>(req: &Request) -> Result<T, Response> {
@@ -579,8 +715,15 @@ fn issue_route(app: &App, req: &Request, _p: &Params<'_>) -> Response {
         Ok(body) => body,
         Err(refusal) => return refusal,
     };
-    match app.nodes.issue_code(app, &body.label.unwrap_or_default(), body.ttl_minutes.unwrap_or(0)) {
-        Ok((id, token, expires_ms)) => Response::json(201, &serde_json::json!({"id": id, "token": token, "expires_ms": expires_ms})),
+    match app.nodes.issue_code(
+        app,
+        &body.label.unwrap_or_default(),
+        body.ttl_minutes.unwrap_or(0),
+    ) {
+        Ok((id, token, expires_ms)) => Response::json(
+            201,
+            &serde_json::json!({"id": id, "token": token, "expires_ms": expires_ms}),
+        ),
         Err(e) => Response::error(400, &e),
     }
 }
@@ -622,10 +765,22 @@ fn join_route(app: &App, req: &Request, _p: &Params<'_>) -> Response {
         Ok(body) => body,
         Err(refusal) => return refusal,
     };
-    match app.nodes.join(&source_of(req), &body.secret, &body.public_key, &body.name, body.machine, apz_plaza::now_ms()) {
+    match app.nodes.join(
+        &source_of(req),
+        &body.secret,
+        &body.public_key,
+        &body.name,
+        body.machine,
+        apz_plaza::now_ms(),
+    ) {
         Ok(node) => {
             app.bus.publish("node", &node);
-            let hub = app.hub_auth.config.lock().map(|c| c.name.clone()).unwrap_or_default();
+            let hub = app
+                .hub_auth
+                .config
+                .lock()
+                .map(|c| c.name.clone())
+                .unwrap_or_default();
             Response::json(
                 201,
                 &serde_json::json!({"node_id": node.id, "cid_base": node.cid_base, "cid_count": node.cid_count, "hub": hub}),
@@ -634,7 +789,6 @@ fn join_route(app: &App, req: &Request, _p: &Params<'_>) -> Response {
         Err(e) => Response::error(403, &e),
     }
 }
-
 
 /// The node a signed request speaks for, provided it is the node named in the path.
 fn signed_node(app: &App, req: &Request, p: &Params<'_>) -> Result<Node, Response> {
@@ -649,7 +803,11 @@ fn commands_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
         Ok(n) => n,
         Err(resp) => return resp,
     };
-    let wait = req.query_param("wait").and_then(|w| w.parse::<u64>().ok()).unwrap_or(25).min(25);
+    let wait = req
+        .query_param("wait")
+        .and_then(|w| w.parse::<u64>().ok())
+        .unwrap_or(25)
+        .min(25);
     Response::json(200, &app.nodes.take(&node.id, wait * 1000))
 }
 
@@ -716,8 +874,21 @@ mod tests {
         });
     }
 
-    fn redeem(store: &Store, source: &str, secret: &[u8], name: &str, now: u64) -> Result<Node, String> {
-        store.join(source, &apz_trust::b64(secret), &apz_trust::b64(&KEY), name, Value::Null, now)
+    fn redeem(
+        store: &Store,
+        source: &str,
+        secret: &[u8],
+        name: &str,
+        now: u64,
+    ) -> Result<Node, String> {
+        store.join(
+            source,
+            &apz_trust::b64(secret),
+            &apz_trust::b64(&KEY),
+            name,
+            Value::Null,
+            now,
+        )
     }
 
     #[test]
@@ -725,10 +896,19 @@ mod tests {
         let store = Store::default();
         add_code(&store, "c1", &SECRET, NOW + TTL_MS);
         for _ in 0..JOIN_RATE_PER_MINUTE {
-            assert_eq!(redeem(&store, "a", &[1; 16], "box", NOW).unwrap_err(), INVALID_CODE);
+            assert_eq!(
+                redeem(&store, "a", &[1; 16], "box", NOW).unwrap_err(),
+                INVALID_CODE
+            );
         }
-        assert_eq!(redeem(&store, "a", &SECRET, "box", NOW).unwrap_err(), RATE_LIMITED);
-        assert!(redeem(&store, "b", &SECRET, "box", NOW).is_ok(), "another source is not held back");
+        assert_eq!(
+            redeem(&store, "a", &SECRET, "box", NOW).unwrap_err(),
+            RATE_LIMITED
+        );
+        assert!(
+            redeem(&store, "b", &SECRET, "box", NOW).is_ok(),
+            "another source is not held back"
+        );
     }
 
     #[test]
@@ -738,7 +918,10 @@ mod tests {
         for _ in 0..JOIN_RATE_PER_MINUTE {
             let _ = redeem(&store, "a", &[1; 16], "box", NOW);
         }
-        assert_eq!(redeem(&store, "a", &SECRET, "box", NOW + 59_000).unwrap_err(), RATE_LIMITED);
+        assert_eq!(
+            redeem(&store, "a", &SECRET, "box", NOW + 59_000).unwrap_err(),
+            RATE_LIMITED
+        );
         assert!(redeem(&store, "a", &SECRET, "box", NOW + JOIN_WINDOW_MS + 1).is_ok());
     }
 
@@ -748,13 +931,22 @@ mod tests {
         add_code(&store, "c1", &SECRET, NOW + TTL_MS);
         add_code(&store, "c2", &OTHER_SECRET, NOW + TTL_MS);
         let first = redeem(&store, "a", &SECRET, "box", NOW).unwrap();
-        assert_eq!((first.id.as_str(), first.cid_base, first.cid_count), ("n1", REMOTE_CID_BASE, CIDS_PER_NODE));
-        assert_eq!(redeem(&store, "b", &SECRET, "box", NOW).unwrap_err(), INVALID_CODE);
+        assert_eq!(
+            (first.id.as_str(), first.cid_base, first.cid_count),
+            ("n1", REMOTE_CID_BASE, CIDS_PER_NODE)
+        );
+        assert_eq!(
+            redeem(&store, "b", &SECRET, "box", NOW).unwrap_err(),
+            INVALID_CODE
+        );
         let codes = store.codes(NOW);
         assert_eq!(codes[0].state, "used");
         assert_eq!(codes[0].used_by.as_deref(), Some("n1"));
         let second = redeem(&store, "b", &OTHER_SECRET, "box", NOW).unwrap();
-        assert_eq!((second.id.as_str(), second.cid_base), ("n2", REMOTE_CID_BASE + CIDS_PER_NODE));
+        assert_eq!(
+            (second.id.as_str(), second.cid_base),
+            ("n2", REMOTE_CID_BASE + CIDS_PER_NODE)
+        );
     }
 
     #[test]
@@ -762,7 +954,10 @@ mod tests {
         let store = Store::default();
         add_code(&store, "c1", &SECRET, NOW + 1_000);
         assert_eq!(store.codes(NOW + 1_000)[0].state, "expired");
-        assert_eq!(redeem(&store, "a", &SECRET, "box", NOW + 1_000).unwrap_err(), INVALID_CODE);
+        assert_eq!(
+            redeem(&store, "a", &SECRET, "box", NOW + 1_000).unwrap_err(),
+            INVALID_CODE
+        );
         assert!(store.list().is_empty());
     }
 
@@ -772,7 +967,10 @@ mod tests {
         add_code(&store, "c1", &SECRET, NOW + TTL_MS);
         store.revoke_code("c1").unwrap();
         assert_eq!(store.codes(NOW)[0].state, "revoked");
-        assert_eq!(redeem(&store, "a", &SECRET, "box", NOW).unwrap_err(), INVALID_CODE);
+        assert_eq!(
+            redeem(&store, "a", &SECRET, "box", NOW).unwrap_err(),
+            INVALID_CODE
+        );
         assert!(store.revoke_code("c9").is_err());
 
         add_code(&store, "c2", &OTHER_SECRET, NOW + TTL_MS);
@@ -786,9 +984,15 @@ mod tests {
         add_code(&store, "c1", &SECRET, NOW + TTL_MS);
         for _ in 0..JOIN_TRIES_PER_CODE {
             let err = redeem(&store, "a", &SECRET, "", NOW).unwrap_err();
-            assert!(err.contains("name"), "the matched secret reports the specific fault: {err}");
+            assert!(
+                err.contains("name"),
+                "the matched secret reports the specific fault: {err}"
+            );
         }
-        assert_eq!(redeem(&store, "a", &SECRET, "box", NOW).unwrap_err(), INVALID_CODE);
+        assert_eq!(
+            redeem(&store, "a", &SECRET, "box", NOW).unwrap_err(),
+            INVALID_CODE
+        );
         assert!(store.list().is_empty());
         assert!(store.inner.lock().unwrap().codes[0].failures >= JOIN_TRIES_PER_CODE);
     }
@@ -797,7 +1001,10 @@ mod tests {
     fn wrong_length_secret_is_refused_without_a_code_lookup() {
         let store = Store::default();
         add_code(&store, "c1", &SECRET, NOW + TTL_MS);
-        assert_eq!(redeem(&store, "a", &[7; 8], "box", NOW).unwrap_err(), INVALID_CODE);
+        assert_eq!(
+            redeem(&store, "a", &[7; 8], "box", NOW).unwrap_err(),
+            INVALID_CODE
+        );
     }
 
     #[test]
@@ -817,7 +1024,10 @@ mod tests {
         assert!(record_nonce(&mut nonces, key.clone(), NOW).is_ok());
         assert!(record_nonce(&mut nonces, key.clone(), NOW + 1_000).is_err());
         assert!(record_nonce(&mut nonces, ("n2".to_string(), "abc".to_string()), NOW).is_ok());
-        assert!(record_nonce(&mut nonces, key, NOW + NONCE_TTL_SECS * 1000 + 1).is_ok(), "pruned after its TTL");
+        assert!(
+            record_nonce(&mut nonces, key, NOW + NONCE_TTL_SECS * 1000 + 1).is_ok(),
+            "pruned after its TTL"
+        );
     }
 
     fn node(id: &str) -> Node {
@@ -857,11 +1067,31 @@ mod tests {
         let store = Store::default();
         store.inner.lock().unwrap().nodes.push(node("n1"));
         let now_s = NOW / 1000;
-        assert!(store.authenticate(&signed("n9", now_s, "x"), NOW).unwrap_err().contains("unknown"));
-        assert!(store.authenticate(&signed("n1", now_s - 300, "x"), NOW).unwrap_err().contains("window"));
-        assert!(store.authenticate(&signed("n1", now_s + 300, "x"), NOW).unwrap_err().contains("window"));
+        assert!(
+            store
+                .authenticate(&signed("n9", now_s, "x"), NOW)
+                .unwrap_err()
+                .contains("unknown")
+        );
+        assert!(
+            store
+                .authenticate(&signed("n1", now_s - 300, "x"), NOW)
+                .unwrap_err()
+                .contains("window")
+        );
+        assert!(
+            store
+                .authenticate(&signed("n1", now_s + 300, "x"), NOW)
+                .unwrap_err()
+                .contains("window")
+        );
         store.revoke("n1").unwrap();
-        assert!(store.authenticate(&signed("n1", now_s, "x"), NOW).unwrap_err().contains("revoked"));
+        assert!(
+            store
+                .authenticate(&signed("n1", now_s, "x"), NOW)
+                .unwrap_err()
+                .contains("revoked")
+        );
     }
 
     #[test]
@@ -900,7 +1130,10 @@ mod tests {
         });
         let node = redeem(&store, "a", &decoded.secret, "box", NOW).unwrap();
         assert_eq!(node.id, "n1");
-        assert_eq!(redeem(&store, "a", &decoded.secret, "box", NOW).unwrap_err(), INVALID_CODE);
+        assert_eq!(
+            redeem(&store, "a", &decoded.secret, "box", NOW).unwrap_err(),
+            INVALID_CODE
+        );
     }
 }
 
@@ -951,7 +1184,12 @@ mod queue_tests {
             thread::sleep(Duration::from_millis(20));
             writer.put_result(
                 "n1",
-                CommandResult { command: "k9".into(), ok: true, status: 200, body: Value::Null },
+                CommandResult {
+                    command: "k9".into(),
+                    ok: true,
+                    status: 200,
+                    body: Value::Null,
+                },
             );
         });
         let started = Instant::now();
@@ -959,7 +1197,10 @@ mod queue_tests {
         handle.join().unwrap();
         assert_eq!(got.map(|r| r.status), Some(200));
         assert!(started.elapsed() < Duration::from_millis(4_000));
-        assert!(store.wait_result("k9", 10).is_none(), "a result is removed once taken");
+        assert!(
+            store.wait_result("k9", 10).is_none(),
+            "a result is removed once taken"
+        );
     }
 
     #[test]

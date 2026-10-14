@@ -4,14 +4,34 @@ use crate::doc::{Block, Doc};
 use crate::{Finding, Kind, Rule, Severity};
 
 pub const RULES: &[Rule] = &[
-    Rule { id: "system-sections", severity: Severity::Warning, kinds: &[Kind::System], title: "Missing house section",
-        why: "Role prompts in this plaza share one outline: Purpose, Responsibilities, Deliverables, Boundaries. A missing one is usually a missing piece of the role." },
-    Rule { id: "second-person", severity: Severity::Info, kinds: &[Kind::System], title: "Address the model as \"you\"",
-        why: "A system prompt is spoken to the model. \"You review the code\" is clearer than \"The agent should review the code\"." },
-    Rule { id: "agents-md-sections", severity: Severity::Warning, kinds: &[Kind::AgentsMd], title: "Missing AGENTS.md section",
-        why: "The agents.md convention: Project overview, Setup or Build commands, Testing, Code style, Commit or PR guidelines, Security. Build and test commands are the ones agents need most (warning); the rest are info." },
-    Rule { id: "bare-command", severity: Severity::Warning, kinds: &[Kind::AgentsMd], title: "Command outside code formatting",
-        why: "Commands in `backticks` or a ```bash fence are copied exactly; in prose they get paraphrased or mangled." },
+    Rule {
+        id: "system-sections",
+        severity: Severity::Warning,
+        kinds: &[Kind::System],
+        title: "Missing house section",
+        why: "Role prompts in this plaza share one outline: Purpose, Responsibilities, Deliverables, Boundaries. A missing one is usually a missing piece of the role.",
+    },
+    Rule {
+        id: "second-person",
+        severity: Severity::Info,
+        kinds: &[Kind::System],
+        title: "Address the model as \"you\"",
+        why: "A system prompt is spoken to the model. \"You review the code\" is clearer than \"The agent should review the code\".",
+    },
+    Rule {
+        id: "agents-md-sections",
+        severity: Severity::Warning,
+        kinds: &[Kind::AgentsMd],
+        title: "Missing AGENTS.md section",
+        why: "The agents.md convention: Project overview, Setup or Build commands, Testing, Code style, Commit or PR guidelines, Security. Build and test commands are the ones agents need most (warning); the rest are info.",
+    },
+    Rule {
+        id: "bare-command",
+        severity: Severity::Warning,
+        kinds: &[Kind::AgentsMd],
+        title: "Command outside code formatting",
+        why: "Commands in `backticks` or a ```bash fence are copied exactly; in prose they get paraphrased or mangled.",
+    },
 ];
 
 /// The findings of the rules above for `kind`: each catalogue rule that applies to `kind` runs once.
@@ -43,10 +63,26 @@ fn has_heading(doc: &Doc, words: &[&str]) -> bool {
 
 fn system_sections(doc: &Doc, out: &mut Vec<Finding>) {
     const WANTED: [(&str, &[&str], &str); 4] = [
-        ("Purpose", &["purpose", "goal", "mission"], "what the role exists to achieve"),
-        ("Responsibilities", &["responsibilit", "duties", "what you do"], "what the role owns"),
-        ("Deliverables", &["deliverable", "output", "done when", "result"], "what is handed over when a task is finished"),
-        ("Boundaries", &["boundar", "constraint", "limit", "rules", "never"], "what the role must not do"),
+        (
+            "Purpose",
+            &["purpose", "goal", "mission"],
+            "what the role exists to achieve",
+        ),
+        (
+            "Responsibilities",
+            &["responsibilit", "duties", "what you do"],
+            "what the role owns",
+        ),
+        (
+            "Deliverables",
+            &["deliverable", "output", "done when", "result"],
+            "what is handed over when a task is finished",
+        ),
+        (
+            "Boundaries",
+            &["boundar", "constraint", "limit", "rules", "never"],
+            "what the role must not do",
+        ),
     ];
     for (label, words, what) in WANTED {
         if !has_heading(doc, words) {
@@ -61,7 +97,12 @@ fn system_sections(doc: &Doc, out: &mut Vec<Finding>) {
 }
 
 fn second_person(doc: &Doc, out: &mut Vec<Finding>) {
-    const PHRASES: [&str; 4] = ["the agent ", "the assistant ", "the model should", "this agent "];
+    const PHRASES: [&str; 4] = [
+        "the agent ",
+        "the assistant ",
+        "the model should",
+        "this agent ",
+    ];
     let hits: Vec<u32> = doc
         .prose()
         .filter(|l| {
@@ -87,11 +128,22 @@ fn agents_md_sections(doc: &Doc, out: &mut Vec<Finding>) {
     const WANTED: [(&str, &[&str], Severity, &str); 6] = [
         (
             "setup or build commands",
-            &["setup", "build", "install", "getting started", "development"],
+            &[
+                "setup",
+                "build",
+                "install",
+                "getting started",
+                "development",
+            ],
             Severity::Warning,
             "a \"## Setup\" section with the commands that install and build the project",
         ),
-        ("testing", &["test"], Severity::Warning, "a \"## Testing\" section with the command that runs the suite"),
+        (
+            "testing",
+            &["test"],
+            Severity::Warning,
+            "a \"## Testing\" section with the command that runs the suite",
+        ),
         (
             "the project overview",
             &["overview", "about", "project"],
@@ -119,7 +171,12 @@ fn agents_md_sections(doc: &Doc, out: &mut Vec<Finding>) {
     ];
     for (topic, words, severity, add) in WANTED {
         if !has_heading(doc, words) {
-            out.push(Finding::new("agents-md-sections", severity, 0, format!("No heading covers {topic}: add {add}.")));
+            out.push(Finding::new(
+                "agents-md-sections",
+                severity,
+                0,
+                format!("No heading covers {topic}: add {add}."),
+            ));
         }
     }
 }
@@ -154,13 +211,21 @@ fn strip_code(text: &str) -> String {
 
 /// Command words and the subcommands that make `word subcommand` a command.
 const COMMANDS: [(&str, &[&str]); 7] = [
-    ("cargo", &["build", "test", "run", "check", "clippy", "fmt", "install"]),
+    (
+        "cargo",
+        &["build", "test", "run", "check", "clippy", "fmt", "install"],
+    ),
     ("npm", &["install", "run", "test", "ci"]),
     ("pnpm", &["install", "run", "test", "add"]),
     ("yarn", &["install", "run", "test", "add"]),
     ("go", &["test", "build", "run", "vet", "mod"]),
     ("docker", &["build", "run", "compose", "push"]),
-    ("git", &["commit", "push", "pull", "checkout", "rebase", "clone", "merge"]),
+    (
+        "git",
+        &[
+            "commit", "push", "pull", "checkout", "rebase", "clone", "merge",
+        ],
+    ),
 ];
 
 /// Whether `plain` (a line with its code spans removed) reads as a command typed out in prose.
@@ -171,19 +236,30 @@ fn is_bare_command(plain: &str, is_item: bool) -> bool {
     }
     let punct = |c: char| c.is_ascii_punctuation();
     let raw_words: Vec<&str> = plain.split_whitespace().collect();
-    let words: Vec<String> = raw_words.iter().map(|w| w.trim_end_matches(punct).to_lowercase()).collect();
+    let words: Vec<String> = raw_words
+        .iter()
+        .map(|w| w.trim_end_matches(punct).to_lowercase())
+        .collect();
     if words.iter().any(|w| w.as_str() == "pytest") {
         return true;
     }
     if words.windows(2).any(|p| {
-        COMMANDS.iter().any(|(cmd, subs)| p[0] == *cmd && subs.contains(&p[1].as_str()))
+        COMMANDS
+            .iter()
+            .any(|(cmd, subs)| p[0] == *cmd && subs.contains(&p[1].as_str()))
     }) {
         return true;
     }
     // `make` opening a list item, then a lowercase target or nothing at all.
     is_item
-        && raw_words.first().copied().map(|w| w.trim_end_matches(punct)) == Some("make")
-        && raw_words.get(1).map_or(true, |w| w.starts_with(char::is_lowercase) && *w != "sure")
+        && raw_words
+            .first()
+            .copied()
+            .map(|w| w.trim_end_matches(punct))
+            == Some("make")
+        && raw_words
+            .get(1)
+            .map_or(true, |w| w.starts_with(char::is_lowercase) && *w != "sure")
 }
 
 #[cfg(test)]
@@ -191,23 +267,43 @@ mod tests {
     #[test]
     fn section_words_match_at_word_starts_only() {
         let body = "# Notes\n\n## Latest digital news\n\nText.\n";
-        let missing: Vec<_> = found(Kind::AgentsMd, body, "agents-md-sections").into_iter().map(|f| f.message).collect();
+        let missing: Vec<_> = found(Kind::AgentsMd, body, "agents-md-sections")
+            .into_iter()
+            .map(|f| f.message)
+            .collect();
         assert!(missing.iter().any(|m| m.contains("testing")), "{missing:?}");
-        assert!(found(Kind::AgentsMd, "# A\n\n- make sure the suite passes\n", "bare-command").is_empty());
+        assert!(
+            found(
+                Kind::AgentsMd,
+                "# A\n\n- make sure the suite passes\n",
+                "bare-command"
+            )
+            .is_empty()
+        );
     }
 
     use super::*;
 
     /// The findings of `rule` that `check` reports for `body` as `kind`.
     fn found(kind: Kind, body: &str, rule: &str) -> Vec<Finding> {
-        check(kind, &Doc::parse(body)).into_iter().filter(|f| f.rule == rule).collect()
+        check(kind, &Doc::parse(body))
+            .into_iter()
+            .filter(|f| f.rule == rule)
+            .collect()
     }
 
     #[test]
     fn system_sections_fire_for_each_missing_section() {
-        let f = found(Kind::System, "# Role\n\n## Purpose\nDo the job.\n", "system-sections");
+        let f = found(
+            Kind::System,
+            "# Role\n\n## Purpose\nDo the job.\n",
+            "system-sections",
+        );
         assert_eq!(f.len(), 3);
-        assert!(f.iter().all(|x| x.line == 0 && x.severity == Severity::Warning));
+        assert!(
+            f.iter()
+                .all(|x| x.line == 0 && x.severity == Severity::Warning)
+        );
         assert!(f[0].message.contains("Responsibilities"));
         assert!(f[1].message.contains("Deliverables"));
         assert!(f[2].message.contains("Boundaries"));
@@ -237,7 +333,11 @@ mod tests {
 
     #[test]
     fn agents_md_sections_warn_on_missing_setup_and_testing_and_inform_on_the_rest() {
-        let f = found(Kind::AgentsMd, "# Repo\n\n## Security\nKeep keys out of git.\n", "agents-md-sections");
+        let f = found(
+            Kind::AgentsMd,
+            "# Repo\n\n## Security\nKeep keys out of git.\n",
+            "agents-md-sections",
+        );
         assert_eq!(f.len(), 5);
         assert_eq!(f[0].severity, Severity::Warning);
         assert!(f[0].message.contains("setup or build"));
@@ -259,7 +359,10 @@ mod tests {
         let lines: Vec<u32> = f.iter().map(|x| x.line).collect();
         assert_eq!(lines, vec![3, 4, 5, 6, 7, 8]);
         assert!(f.iter().all(|x| x.severity == Severity::Warning));
-        assert_eq!(f[0].message, "Put the command in backticks or a ```bash block so it is copied exactly.");
+        assert_eq!(
+            f[0].message,
+            "Put the command in backticks or a ```bash block so it is copied exactly."
+        );
     }
 
     #[test]

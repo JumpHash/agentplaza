@@ -43,27 +43,26 @@ pub mod xstate;
 pub mod generated;
 
 use std::cmp::max;
-use std::fs::File;
 use std::fmt;
+use std::fs::File;
 use std::os::unix::fs::MetadataExt;
 
-use crate::vstate::memory::{u64_to_usize, usize_to_u64, Address, GuestAddress, GuestMemoryMmap, GuestMemoryRegion};
+use crate::vstate::memory::{
+    Address, GuestAddress, GuestMemoryMmap, GuestMemoryRegion, u64_to_usize, usize_to_u64,
+};
 use crate::vstate::vcpu::{KvmVcpuConfigureError, Vcpu};
 use kvm::Kvm;
-use layout::{
-    CMDLINE_START,
-    PCI_MMCONFIG_SIZE, PCI_MMCONFIG_START,
-};
+use layout::{CMDLINE_START, PCI_MMCONFIG_SIZE, PCI_MMCONFIG_START};
 use linux_loader::configurator::linux::LinuxBootConfigurator;
 use linux_loader::configurator::pvh::PvhBootConfigurator;
 use linux_loader::configurator::{BootConfigurator, BootParams};
 use linux_loader::loader::bootparam::{XLF_KERNEL_64, boot_params, setup_header};
 use linux_loader::loader::bzimage::BzImage as BzImageLoader;
+use linux_loader::loader::elf::Elf as ElfLoader;
 use linux_loader::loader::elf::Error as ElfError;
 use linux_loader::loader::elf::start_info::{
     hvm_memmap_table_entry, hvm_modlist_entry, hvm_start_info,
 };
-use linux_loader::loader::elf::Elf as ElfLoader;
 use linux_loader::loader::{
     Cmdline, Error as KernelLoaderError, KernelLoader, PvhBootCapability, load_cmdline,
 };
@@ -263,14 +262,7 @@ pub fn configure_system_for_boot(
     initrd: &Option<InitrdConfig>,
     boot_cmdline: Cmdline,
 ) -> Result<(), ConfigurationError> {
-    configure_vcpus_for_boot(
-        kvm,
-        vcpus,
-        vcpu_count,
-        smt,
-        vm.guest_memory(),
-        entry_point,
-    )?;
+    configure_vcpus_for_boot(kvm, vcpus, vcpu_count, smt, vm.guest_memory(), entry_point)?;
 
     // Write the kernel command line to guest memory. This is x86_64 specific, since on
     // aarch64 the command line will be specified through the FDT.
@@ -307,12 +299,8 @@ pub fn configure_system_for_boot(
 
     // Create ACPI tables and write them in guest memory
     // For the time being we only support ACPI in x86_64
-    crate::acpi::create_acpi_tables(
-        vm.guest_memory(),
-        &mut vm.resource_allocator(),
-        vcpu_count,
-    )
-    .map_err(ConfigurationError::AcpiTables)?;
+    crate::acpi::create_acpi_tables(vm.guest_memory(), &mut vm.resource_allocator(), vcpu_count)
+        .map_err(ConfigurationError::AcpiTables)?;
     Ok(())
 }
 

@@ -35,7 +35,11 @@ impl Server {
     /// Binds `addr`, whichever address that is; the caller decides how far
     /// it is exposed.
     pub fn bind_addr(addr: SocketAddr) -> io::Result<Self> {
-        Ok(Self { listener: TcpListener::bind(addr)?, limits: Limits::default(), tls: None })
+        Ok(Self {
+            listener: TcpListener::bind(addr)?,
+            limits: Limits::default(),
+            tls: None,
+        })
     }
 
     pub fn limits(mut self, limits: Limits) -> Self {
@@ -59,7 +63,11 @@ impl Server {
         let stop = Arc::new(AtomicBool::new(false));
         let flag = Arc::clone(&stop);
         let thread = thread::spawn(move || self.accept_loop(Arc::new(handler), &flag));
-        Ok(Handle { addr, stop, thread: Some(thread) })
+        Ok(Handle {
+            addr,
+            stop,
+            thread: Some(thread),
+        })
     }
 
     fn accept_loop<H>(self, handler: Arc<H>, stop: &AtomicBool)
@@ -201,7 +209,9 @@ impl Handle {
     /// Blocks until the server is stopped.
     pub fn join(mut self) -> io::Result<()> {
         match self.thread.take() {
-            Some(thread) => thread.join().map_err(|_| io::Error::other("the accept thread panicked")),
+            Some(thread) => thread
+                .join()
+                .map_err(|_| io::Error::other("the accept thread panicked")),
             None => Ok(()),
         }
     }
@@ -244,7 +254,9 @@ mod tests {
     /// Sends one `GET /x` over a plain socket and returns the whole reply.
     fn get_plain(port: u16) -> String {
         let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect");
-        stream.write_all(b"GET /x HTTP/1.1\r\nHost: localhost\r\n\r\n").expect("send");
+        stream
+            .write_all(b"GET /x HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .expect("send");
         let mut reply = String::new();
         stream.read_to_string(&mut reply).expect("read");
         reply
@@ -265,12 +277,16 @@ mod tests {
         assert!(reply.starts_with("HTTP/1.1 200 OK\r\n"), "{reply}");
         assert!(reply.ends_with("ok"), "{reply}");
         let loopback = IpAddr::V4(Ipv4Addr::LOCALHOST);
-        assert_eq!(*seen.lock().expect("lock"), Some(("/x".to_string(), Some(loopback))));
+        assert_eq!(
+            *seen.lock().expect("lock"),
+            Some(("/x".to_string(), Some(loopback)))
+        );
     }
 
     #[test]
     fn a_tls_request_is_served_after_the_handshake() {
-        let key = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).expect("a certificate");
+        let key = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
+            .expect("a certificate");
         let cert = key.cert.der().clone();
         let provider = Arc::new(rustls::crypto::ring::default_provider());
         let server_key = rustls::pki_types::PrivatePkcs8KeyDer::from(key.key_pair.serialize_der());
@@ -297,7 +313,8 @@ mod tests {
         let connection = rustls::ClientConnection::new(Arc::new(client), name).expect("a client");
         let socket = TcpStream::connect(("127.0.0.1", handle.port())).expect("connect");
         let mut tls = StreamOwned::new(connection, socket);
-        tls.write_all(b"GET /x HTTP/1.1\r\nHost: localhost\r\n\r\n").expect("send");
+        tls.write_all(b"GET /x HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .expect("send");
         let mut reply = Vec::new();
         // The server closes without a TLS close_notify, so the read ends in an
         // error after the whole reply has arrived.

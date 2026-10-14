@@ -4,7 +4,7 @@
 //! (or under such a node) is not an item, though it still counts as a solid.
 
 use glam::{Mat4, Vec3};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use apz_board::nav::drawn::GROUND_TOL;
 
@@ -67,7 +67,10 @@ struct Aabb {
 
 impl Aabb {
     fn empty() -> Aabb {
-        Aabb { min: [f64::INFINITY; 3], max: [f64::NEG_INFINITY; 3] }
+        Aabb {
+            min: [f64::INFINITY; 3],
+            max: [f64::NEG_INFINITY; 3],
+        }
     }
 
     fn is_empty(&self) -> bool {
@@ -156,7 +159,10 @@ pub fn ground_audit(roots: &[Obj]) -> GroundReport {
     for item in &items {
         check_item(&flat, item, &mut findings);
     }
-    GroundReport { items: items.len(), findings }
+    GroundReport {
+        items: items.len(),
+        findings,
+    }
 }
 
 fn visit(obj: &Obj, parent: Option<usize>, parent_world: Mat4, flat: &mut Flat) {
@@ -164,7 +170,12 @@ fn visit(obj: &Obj, parent: Option<usize>, parent_world: Mat4, flat: &mut Flat) 
     // Clone what is needed out of the guard; never recurse while holding it.
     let (name, kind, rest, children) = {
         let node = obj.get();
-        (node.name.clone(), node.kind.clone(), node.rest, node.children.clone())
+        (
+            node.name.clone(),
+            node.kind.clone(),
+            node.rest,
+            node.children.clone(),
+        )
     };
     let index = flat.records.len();
     let mut rec = Record {
@@ -186,11 +197,20 @@ fn visit(obj: &Obj, parent: Option<usize>, parent_world: Mat4, flat: &mut Flat) 
             rec.draws = vec![world];
             rec.solid = is_solid(mat);
         }
-        Kind::Instanced { geo, mat, instances, count } => {
+        Kind::Instanced {
+            geo,
+            mat,
+            instances,
+            count,
+        } => {
             rec.ty = "Mesh";
             rec.instanced = true;
             rec.geo = Some(geo.clone());
-            rec.draws = instances.iter().take(*count).map(|inst| world * inst.matrix).collect();
+            rec.draws = instances
+                .iter()
+                .take(*count)
+                .map(|inst| world * inst.matrix)
+                .collect();
             rec.solid = is_solid(mat);
         }
         Kind::Points { .. } => rec.ty = "Points",
@@ -251,7 +271,12 @@ fn items_of(flat: &Flat, gpu: &[bool]) -> Vec<Item> {
 
 fn push_item(out: &mut Vec<Item>, name: String, rec: usize, inst: Option<usize>, bbox: Aabb) {
     if !bbox.is_empty() {
-        out.push(Item { name, rec, inst, bbox });
+        out.push(Item {
+            name,
+            rec,
+            inst,
+            bbox,
+        });
     }
 }
 
@@ -279,7 +304,13 @@ fn check_item(flat: &Flat, item: &Item, findings: &mut Vec<GroundFinding>) {
         }
     }
     if let Some((gap, at, against)) = worst.filter(|w| w.0 > GROUND_TOL) {
-        findings.push(GroundFinding { item: item.name.clone(), kind: "floating", amount: gap, at, against });
+        findings.push(GroundFinding {
+            item: item.name.clone(),
+            kind: "floating",
+            amount: gap,
+            at,
+            against,
+        });
     }
 
     if b.min[1] < -GROUND_TOL {
@@ -331,7 +362,12 @@ fn top_under(flat: &Flat, item: &Item, x: f64, z: f64) -> Option<(f64, usize)> {
         if own(flat, s, item) || !contains_xz(&s.bbox, x, z) {
             continue;
         }
-        let v: Vec<V3> = s.geo.positions.iter().map(|p| xform(&s.matrix, p)).collect();
+        let v: Vec<V3> = s
+            .geo
+            .positions
+            .iter()
+            .map(|p| xform(&s.matrix, p))
+            .collect();
         for [i0, i1, i2] in tris(&s.geo) {
             let (a, b, c) = (v[i0], v[i1], v[i2]);
             // The y of (b - a) x (c - a): positive when the triangle faces up.
@@ -419,7 +455,9 @@ fn aabb_of(geo: &Geometry, m: &Mat4) -> Aabb {
 /// The triangles of a geometry as vertex indices (sequential when it has no index buffer).
 fn tris(geo: &Geometry) -> Vec<[usize; 3]> {
     if geo.indices.is_empty() {
-        (0..geo.positions.len() / 3).map(|i| [3 * i, 3 * i + 1, 3 * i + 2]).collect()
+        (0..geo.positions.len() / 3)
+            .map(|i| [3 * i, 3 * i + 1, 3 * i + 2])
+            .collect()
     } else {
         geo.indices
             .chunks_exact(3)
@@ -436,10 +474,12 @@ mod tests {
     /// retired build at 338f89c) and this one agree item for item and finding for finding.
     #[test]
     fn the_bare_boards_audit_as_the_three_js_build_did() {
-        let golden: serde_json::Value = serde_json::from_str(include_str!("../../testdata/ground-audit-ts.json")).unwrap();
+        let golden: serde_json::Value =
+            serde_json::from_str(include_str!("../../testdata/ground-audit-ts.json")).unwrap();
         for (key, want) in golden.as_object().unwrap() {
             let (name, params) = key.split_once('|').unwrap();
-            let params: std::collections::BTreeMap<String, f64> = serde_json::from_str(params).unwrap();
+            let params: std::collections::BTreeMap<String, f64> =
+                serde_json::from_str(params).unwrap();
             let model = crate::hardware::model(name).unwrap();
             let mut p = crate::hardware::Params::default();
             for (k, v) in &params {
@@ -451,20 +491,44 @@ mod tests {
             board.add(&crate::hardware::traces(model));
             root.add(&board);
             let got = ground_audit(&[root]);
-            assert_eq!(got.items as u64, want["items"].as_u64().unwrap(), "{key}: items");
+            assert_eq!(
+                got.items as u64,
+                want["items"].as_u64().unwrap(),
+                "{key}: items"
+            );
             let mut want: Vec<(String, String, f64, String)> = want["findings"]
                 .as_array()
                 .unwrap()
                 .iter()
-                .map(|f| (f[0].as_str().unwrap().into(), f[1].as_str().unwrap().into(), f[2].as_f64().unwrap(), f[3].as_str().unwrap().into()))
+                .map(|f| {
+                    (
+                        f[0].as_str().unwrap().into(),
+                        f[1].as_str().unwrap().into(),
+                        f[2].as_f64().unwrap(),
+                        f[3].as_str().unwrap().into(),
+                    )
+                })
                 .collect();
-            let mut got: Vec<(String, String, f64, String)> =
-                got.findings.iter().map(|f| (f.item.clone(), f.kind.to_string(), (f.amount * 1000.0).round() / 1000.0, f.against.clone())).collect();
+            let mut got: Vec<(String, String, f64, String)> = got
+                .findings
+                .iter()
+                .map(|f| {
+                    (
+                        f.item.clone(),
+                        f.kind.to_string(),
+                        (f.amount * 1000.0).round() / 1000.0,
+                        f.against.clone(),
+                    )
+                })
+                .collect();
             want.sort_by(|a, b| a.partial_cmp(b).unwrap());
             got.sort_by(|a, b| a.partial_cmp(b).unwrap());
             assert_eq!(got.len(), want.len(), "{key}: findings");
             for (g, w) in got.iter().zip(&want) {
-                assert!(g.0 == w.0 && g.1 == w.1 && g.3 == w.3 && (g.2 - w.2).abs() <= 0.002, "{key}: {g:?} != {w:?}");
+                assert!(
+                    g.0 == w.0 && g.1 == w.1 && g.3 == w.3 && (g.2 - w.2).abs() <= 0.002,
+                    "{key}: {g:?} != {w:?}"
+                );
             }
         }
     }
@@ -513,7 +577,11 @@ mod tests {
         root.add(&cube(1.4, true, &geo, &mat));
         let r = ground_audit(&[root]);
         assert_eq!(r.items, 2);
-        let sink = r.findings.iter().find(|f| f.kind == "sinking").expect("a sinking finding");
+        let sink = r
+            .findings
+            .iter()
+            .find(|f| f.kind == "sinking")
+            .expect("a sinking finding");
         assert!((sink.amount - 0.1).abs() < 1e-4, "{:?}", r.findings);
     }
 }

@@ -1,8 +1,8 @@
 //! The operate tools: they act within the plaza's own rules. Each goes through the same service the HTTP API uses.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use super::{version_arg, Ctx, Tool};
+use super::{Ctx, Tool, version_arg};
 use crate::hub_mcp::auth::Scope;
 
 pub struct MessageOrchestrator;
@@ -27,7 +27,8 @@ impl Tool for StationTool {
     }
 
     fn input_schema(&self) -> Value {
-        crate::stations::tools::spec(self.0).map_or_else(|| json!({"type": "object"}), |(_, schema)| schema)
+        crate::stations::tools::spec(self.0)
+            .map_or_else(|| json!({"type": "object"}), |(_, schema)| schema)
     }
 
     fn output_schema(&self) -> Value {
@@ -39,16 +40,24 @@ impl Tool for StationTool {
     }
 
     fn summary(&self, out: &Value) -> String {
-        format!("{} returned {} bytes of JSON.", self.0, out.to_string().len())
+        format!(
+            "{} returned {} bytes of JSON.",
+            self.0,
+            out.to_string().len()
+        )
     }
 }
 
 fn text_arg<'a>(args: &'a Value, key: &str) -> Result<&'a str, String> {
-    args.get(key).and_then(Value::as_str).ok_or_else(|| format!("{key} must be a string"))
+    args.get(key)
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("{key} must be a string"))
 }
 
 fn cid_arg(args: &Value) -> Result<u64, String> {
-    args.get("cid").and_then(Value::as_u64).ok_or_else(|| "cid must be a whole number".to_string())
+    args.get("cid")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| "cid must be a whole number".to_string())
 }
 
 impl Tool for PromptPropose {
@@ -97,12 +106,20 @@ impl Tool for PromptPropose {
             None | Some(Value::Null) => "",
             Some(value) => value.as_str().ok_or("note must be a string")?,
         };
-        ctx.plaza.prompt_propose(text_arg(args, "id")?, text_arg(args, "body")?, note, version_arg(args, "base_version")?)
+        ctx.plaza.prompt_propose(
+            text_arg(args, "id")?,
+            text_arg(args, "body")?,
+            note,
+            version_arg(args, "base_version")?,
+        )
     }
 
     fn summary(&self, out: &Value) -> String {
         if out["created"] == true {
-            format!("Added version {} with score {}.", out["version"], out["score"])
+            format!(
+                "Added version {} with score {}.",
+                out["version"], out["score"]
+            )
         } else {
             format!("Same body as version {}; nothing added.", out["version"])
         }
@@ -171,12 +188,24 @@ impl Tool for SkillPropose {
             None | Some(Value::Null) => "",
             Some(value) => value.as_str().ok_or("note must be a string")?,
         };
-        let files = args.get("files").and_then(Value::as_array).ok_or("files must be an array")?;
-        ctx.plaza.skill_propose(text_arg(args, "id")?, text_arg(args, "skill_md")?, files, note, version_arg(args, "base_version")?)
+        let files = args
+            .get("files")
+            .and_then(Value::as_array)
+            .ok_or("files must be an array")?;
+        ctx.plaza.skill_propose(
+            text_arg(args, "id")?,
+            text_arg(args, "skill_md")?,
+            files,
+            note,
+            version_arg(args, "base_version")?,
+        )
     }
 
     fn summary(&self, out: &Value) -> String {
-        format!("Added skill version {} with score {}.", out["version"], out["score"])
+        format!(
+            "Added skill version {} with score {}.",
+            out["version"], out["score"]
+        )
     }
 }
 
@@ -215,7 +244,10 @@ impl Tool for MessageOrchestrator {
     }
 
     fn summary(&self, out: &Value) -> String {
-        format!("Message queued for the orchestrator as work {}.", out["work"])
+        format!(
+            "Message queued for the orchestrator as work {}.",
+            out["work"]
+        )
     }
 }
 
@@ -249,7 +281,8 @@ impl Tool for TellAgent {
     }
 
     fn call(&self, ctx: &Ctx<'_>, args: &Value) -> Result<Value, String> {
-        ctx.plaza.tell_agent(cid_arg(args)?, text_arg(args, "text")?)
+        ctx.plaza
+            .tell_agent(cid_arg(args)?, text_arg(args, "text")?)
     }
 
     fn summary(&self, _out: &Value) -> String {
@@ -287,7 +320,8 @@ impl Tool for StopAgent {
     }
 
     fn call(&self, ctx: &Ctx<'_>, args: &Value) -> Result<Value, String> {
-        ctx.plaza.stop_agent(cid_arg(args)?, text_arg(args, "reason")?)
+        ctx.plaza
+            .stop_agent(cid_arg(args)?, text_arg(args, "reason")?)
     }
 
     fn summary(&self, _out: &Value) -> String {

@@ -15,11 +15,11 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use crate::pal::eventfd::EventFd;
 
-use super::device::Vsock;
 use super::VsockBackend;
-use crate::devices::virtio::mmio::{QueueConfig, VirtioDevice};
-use crate::devices::virtio::ack_feature_page;
+use super::device::Vsock;
 use crate::devices::virtio::VirtioError;
+use crate::devices::virtio::ack_feature_page;
+use crate::devices::virtio::mmio::{QueueConfig, VirtioDevice};
 use crate::vstate::memory::{GuestAddress, GuestMemoryMmap};
 
 /// `VIRTIO_ID_VSOCK`: the device type id of a virtio-vsock device.
@@ -61,9 +61,7 @@ where
     }
 
     fn lock(&self) -> MutexGuard<'_, Vsock<B>> {
-        self.device
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+        self.device.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
@@ -81,7 +79,12 @@ where
 
     fn ack_features_by_page(&mut self, page: u32, value: u32) -> Result<(), VirtioError> {
         let mut device = self.lock();
-        let acked = ack_feature_page(device.avail_features(), device.acked_features(), page, value)?;
+        let acked = ack_feature_page(
+            device.avail_features(),
+            device.acked_features(),
+            page,
+            value,
+        )?;
         device.set_acked_features(acked);
         Ok(())
     }
@@ -99,7 +102,10 @@ where
         let config = device.config_as_bytes();
         let start = usize::try_from(offset).unwrap_or(usize::MAX);
         for (index, byte) in data.iter_mut().enumerate() {
-            *byte = config.get(start.saturating_add(index)).copied().unwrap_or(0);
+            *byte = config
+                .get(start.saturating_add(index))
+                .copied()
+                .unwrap_or(0);
         }
     }
 
@@ -123,9 +129,7 @@ where
             queue.avail_ring_address = GuestAddress(config.avail);
             queue.used_ring_address = GuestAddress(config.used);
         }
-        let irq = irq
-            .try_clone()
-            .map_err(super::ActivateError::EventFd)?;
+        let irq = irq.try_clone().map_err(super::ActivateError::EventFd)?;
         device.activate(mem.clone(), irq).map_err(VirtioError::from)
     }
 

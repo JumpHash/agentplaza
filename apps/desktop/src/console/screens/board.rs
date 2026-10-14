@@ -19,13 +19,16 @@ use iced::widget::text::Wrapping;
 use iced::widget::{button, column, container, pick_list, row, text, text_editor, text_input};
 use iced::{Alignment, Border, Element, Length, Padding, Task, Theme};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::Id;
-use crate::console::{client, rich, ui, Ctx};
+use crate::console::{Ctx, client, rich, ui};
 use crate::theme::SANS;
 
-const SANS_SEMIBOLD: Font = Font { weight: font::Weight::Semibold, ..SANS };
+const SANS_SEMIBOLD: Font = Font {
+    weight: font::Weight::Semibold,
+    ..SANS
+};
 
 /// A thread shows its last comments; the rest on request.
 const THREAD_PREVIEW: usize = 3;
@@ -154,7 +157,10 @@ pub struct State {
 
 impl State {
     fn name_of(&self, cid: u64) -> String {
-        self.names.get(&cid).cloned().unwrap_or_else(|| format!("agent {cid}"))
+        self.names
+            .get(&cid)
+            .cloned()
+            .unwrap_or_else(|| format!("agent {cid}"))
     }
 
     /// Takes the agents' names from a roster the caller already holds (the IDE's sidebar), so a post's author
@@ -240,7 +246,9 @@ fn prefetch_posts(state: &mut State, ctx: &Ctx) -> Task<Msg> {
     let texts: Vec<&str> = state
         .posts
         .iter()
-        .flat_map(|p| std::iter::once(p.body.as_str()).chain(p.comments.iter().map(|c| c.body.as_str())))
+        .flat_map(|p| {
+            std::iter::once(p.body.as_str()).chain(p.comments.iter().map(|c| c.body.as_str()))
+        })
         .collect();
     let rctx = rich::context(&state.cards, None, None, None);
     rich::prefetch(&mut state.cards, &ctx.client, &rctx, &texts).map(Msg::Rich)
@@ -317,7 +325,8 @@ fn apply(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         Msg::Agents(Err(_)) => Task::none(),
         Msg::File(id, res) => {
             state.pending.remove(&id);
-            match res.and_then(|v| serde_json::from_value::<FileMeta>(v).map_err(|e| e.to_string())) {
+            match res.and_then(|v| serde_json::from_value::<FileMeta>(v).map_err(|e| e.to_string()))
+            {
                 Ok(meta) => {
                     state.files.insert(id, meta);
                 }
@@ -350,14 +359,20 @@ fn apply(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         Msg::ToggleReply(id) => {
             if !state.composing.remove(&id) {
                 let seed = state.drafts.get(&id).cloned().unwrap_or_default();
-                state.editors.entry(id.clone()).or_insert_with(|| text_editor::Content::with_text(&seed));
+                state
+                    .editors
+                    .entry(id.clone())
+                    .or_insert_with(|| text_editor::Content::with_text(&seed));
                 state.composing.insert(id);
             }
             Task::none()
         }
         Msg::Edit(id, action) => {
             let seed = state.drafts.get(&id).cloned().unwrap_or_default();
-            let editor = state.editors.entry(id.clone()).or_insert_with(|| text_editor::Content::with_text(&seed));
+            let editor = state
+                .editors
+                .entry(id.clone())
+                .or_insert_with(|| text_editor::Content::with_text(&seed));
             editor.perform(action);
             let text = editor.text();
             state.drafts.insert(id, text);
@@ -370,7 +385,11 @@ fn apply(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             Task::none()
         }
         Msg::Send(id) => {
-            let text = state.drafts.get(&id).map(|t| t.trim().to_string()).unwrap_or_default();
+            let text = state
+                .drafts
+                .get(&id)
+                .map(|t| t.trim().to_string())
+                .unwrap_or_default();
             if text.is_empty() || text.chars().count() > REPLY_MAX || state.sending.contains(&id) {
                 return Task::none();
             }
@@ -379,7 +398,10 @@ fn apply(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             let path = format!("/v1/board/{id}/comments");
             let body = json!({ "text": &text });
             let key = id.clone();
-            client::task(move || client.post::<Value>(&path, &body), move |r| Msg::Sent(key.clone(), text.clone(), r))
+            client::task(
+                move || client.post::<Value>(&path, &body),
+                move |r| Msg::Sent(key.clone(), text.clone(), r),
+            )
         }
         Msg::Compose(action) => {
             state.compose.content.perform(action);
@@ -399,7 +421,11 @@ fn apply(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             let text = state.compose.content.text();
             let text = text.trim_end_matches('\n');
             // The word being typed starts after the last whitespace; it is replaced by the name.
-            let start = text.char_indices().rev().find(|(_, c)| c.is_whitespace()).map_or(0, |(i, c)| i + c.len_utf8());
+            let start = text
+                .char_indices()
+                .rev()
+                .find(|(_, c)| c.is_whitespace())
+                .map_or(0, |(i, c)| i + c.len_utf8());
             let next = format!("{}@{name} ", &text[..start]);
             state.compose.content = text_editor::Content::with_text(&next);
             Task::none()
@@ -413,7 +439,10 @@ fn apply(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             let client = ctx.client.clone();
             let body = json!({ "body": &text, "mentions": mentions_in(&text) });
             let sent = text.clone();
-            client::task(move || client.post::<Value>("/v1/board/posts", &body), move |r| Msg::Posted(sent.clone(), r))
+            client::task(
+                move || client.post::<Value>("/v1/board/posts", &body),
+                move |r| Msg::Posted(sent.clone(), r),
+            )
         }
         Msg::Posted(sent, res) => {
             state.compose.posting = false;
@@ -434,11 +463,17 @@ fn apply(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         Msg::Pause => {
             let client = ctx.client.clone();
             let body = json!({ "on": !state.paused });
-            client::task(move || client.post::<Value>("/v1/board/pause", &body), Msg::Paused)
+            client::task(
+                move || client.post::<Value>("/v1/board/pause", &body),
+                Msg::Paused,
+            )
         }
         Msg::Paused(res) => match res {
             Ok(v) => {
-                state.paused = v.get("paused").and_then(Value::as_bool).unwrap_or(state.paused);
+                state.paused = v
+                    .get("paused")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(state.paused);
                 load(state, ctx)
             }
             Err(e) => {
@@ -464,7 +499,8 @@ fn apply(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             client::task(
                 move || {
                     let bytes = raw_get(&c, "/v1/board/export?format=md")?;
-                    std::fs::write(&path, &bytes).map_err(|e| format!("The file could not be written: {e}"))?;
+                    std::fs::write(&path, &bytes)
+                        .map_err(|e| format!("The file could not be written: {e}"))?;
                     Ok(path.display().to_string())
                 },
                 Msg::Exported,
@@ -506,7 +542,9 @@ fn fetch_files(state: &mut State, ctx: &Ctx) -> Task<Msg> {
     for p in &state.posts {
         let comment_files = p.comments.iter().flat_map(|c| c.attachments.iter());
         for id in p.attachments.iter().chain(comment_files) {
-            let known = state.files.contains_key(id) || state.pending.contains(id) || state.missing.contains(id);
+            let known = state.files.contains_key(id)
+                || state.pending.contains(id)
+                || state.missing.contains(id);
             if !known && !wanted.contains(id) {
                 wanted.push(id.clone());
             }
@@ -518,14 +556,19 @@ fn fetch_files(state: &mut State, ctx: &Ctx) -> Task<Msg> {
         let client = ctx.client.clone();
         let path = format!("/v1/files/{id}");
         let key = id;
-        tasks.push(client::task(move || client.get::<Value>(&path), move |r| Msg::File(key.clone(), r)));
+        tasks.push(client::task(
+            move || client.get::<Value>(&path),
+            move |r| Msg::File(key.clone(), r),
+        ));
     }
     Task::batch(tasks)
 }
 
 /// The names an `@` can complete to, from the agent list: `all`, then each agent's name and role, once each.
 fn mention_names(list: &Value) -> Vec<String> {
-    let agents = list.as_array().or_else(|| list.get("agents").and_then(Value::as_array));
+    let agents = list
+        .as_array()
+        .or_else(|| list.get("agents").and_then(Value::as_array));
     let mut out: Vec<String> = vec!["all".to_string()];
     for a in agents.into_iter().flatten() {
         for key in ["name", "role"] {
@@ -540,7 +583,8 @@ fn mention_names(list: &Value) -> Vec<String> {
 
 /// The bytes of a GET (the export's Markdown); a non-2xx answer becomes `Err` with the hub's `error` text.
 fn raw_get(c: &client::Client, path: &str) -> Result<Vec<u8>, String> {
-    let reply = apz_http::client::request(&c.target, "GET", path, None, c.timeout).map_err(|e| e.to_string())?;
+    let reply = apz_http::client::request(&c.target, "GET", path, None, c.timeout)
+        .map_err(|e| e.to_string())?;
     if (200..300).contains(&reply.status) {
         return Ok(reply.body);
     }
@@ -552,14 +596,23 @@ fn raw_get(c: &client::Client, path: &str) -> Result<Vec<u8>, String> {
 
 /// The agent names from the agent list, keyed by cid (an empty name shows as "Unnamed").
 fn agent_names(list: &Value) -> HashMap<u64, String> {
-    let agents = list.as_array().or_else(|| list.get("agents").and_then(Value::as_array));
+    let agents = list
+        .as_array()
+        .or_else(|| list.get("agents").and_then(Value::as_array));
     agents
         .into_iter()
         .flatten()
         .filter_map(|a| {
             let cid = a.get("cid")?.as_u64()?;
             let name = a.get("name").and_then(Value::as_str).unwrap_or("").trim();
-            Some((cid, if name.is_empty() { "Unnamed".to_string() } else { name.to_string() }))
+            Some((
+                cid,
+                if name.is_empty() {
+                    "Unnamed".to_string()
+                } else {
+                    name.to_string()
+                },
+            ))
         })
         .collect()
 }
@@ -567,12 +620,16 @@ fn agent_names(list: &Value) -> HashMap<u64, String> {
 pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
     let options = author_options(state);
     let selected = options.iter().find(|a| a.cid == state.author).cloned();
-    let picker = pick_list(options, selected, |a: Author| Msg::Author(a.cid)).width(Length::Fixed(200.0));
+    let picker =
+        pick_list(options, selected, |a: Author| Msg::Author(a.cid)).width(Length::Fixed(200.0));
     let search = text_input("Search subject or body", &state.query)
         .on_input(Msg::Query)
         .padding(6.0)
         .width(Length::Fixed(260.0));
-    let head = ui::view_head("Board", vec![picker.into(), search.into(), pause_bar(state.paused)]);
+    let head = ui::view_head(
+        "Board",
+        vec![picker.into(), search.into(), pause_bar(state.paused)],
+    );
 
     let mut feed: Vec<Element<'a, Msg>> = Vec::new();
     if let Some(e) = &state.error {
@@ -595,7 +652,12 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
             .enumerate()
             .map(|(i, p)| (total - i, p))
             .filter(|(_, p)| state.author.map_or(true, |cid| p.agent_cid == cid))
-            .filter(|(_, p)| needle.is_empty() || format!("{}\n{}", p.subject, p.body).to_lowercase().contains(&needle))
+            .filter(|(_, p)| {
+                needle.is_empty()
+                    || format!("{}\n{}", p.subject, p.body)
+                        .to_lowercase()
+                        .contains(&needle)
+            })
             .collect();
         if shown.is_empty() {
             feed.push(ui::empty("board", "Nothing on the board matches.", ""));
@@ -612,16 +674,42 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
     if let Some(notice) = &state.notice {
         parts.push(ui::faint(notice.clone()).into());
     }
-    parts.push(ui::scroll(column(feed).width(Length::Fill).max_width(760.0)).height(Length::Fill).into());
-    parts.push(container(composer_view(&state.compose, &state.mentionable)).width(Length::Fill).padding(Padding { top: 8.0, right: 10.0, bottom: 10.0, left: 10.0 }).into());
+    parts.push(
+        ui::scroll(column(feed).width(Length::Fill).max_width(760.0))
+            .height(Length::Fill)
+            .into(),
+    );
+    parts.push(
+        container(composer_view(&state.compose, &state.mentionable))
+            .width(Length::Fill)
+            .padding(Padding {
+                top: 8.0,
+                right: 10.0,
+                bottom: 10.0,
+                left: 10.0,
+            })
+            .into(),
+    );
     ui::sheet(head, column(parts).height(Length::Fill).into())
 }
 
 /// Pause/Resume and Export for the board. Reusable: the IDE's board panel shows the same bar.
 pub fn pause_bar<'a>(paused: bool) -> Element<'a, Msg> {
-    let pause = ui::btn(if paused { "Resume board" } else { "Pause board" }, None, ui::Kind::Secondary, Some(Msg::Pause));
+    let pause = ui::btn(
+        if paused {
+            "Resume board"
+        } else {
+            "Pause board"
+        },
+        None,
+        ui::Kind::Secondary,
+        Some(Msg::Pause),
+    );
     let export = ui::btn("Export", None, ui::Kind::Secondary, Some(Msg::Export));
-    row![pause, export].spacing(8).align_y(Alignment::Center).into()
+    row![pause, export]
+        .spacing(8)
+        .align_y(Alignment::Center)
+        .into()
 }
 
 /// The banner a paused board shows: posts are kept, their mentions wait for the resume.
@@ -664,11 +752,23 @@ pub fn composer_view<'a>(compose: &'a Composer, mentionable: &[String]) -> Eleme
     let len = text.chars().count();
     let can_send = !text.trim().is_empty() && len <= POST_MAX && !compose.posting;
     let all = ui::btn("@all", None, ui::Kind::Secondary, Some(Msg::ComposeAll));
-    let send = ui::btn("Send", None, ui::Kind::Primary, can_send.then_some(Msg::ComposeSend));
+    let send = ui::btn(
+        "Send",
+        None,
+        ui::Kind::Primary,
+        can_send.then_some(Msg::ComposeSend),
+    );
     column![
-        row![all, ui::chip_row(suggestions)].spacing(8).align_y(Alignment::Center),
+        row![all, ui::chip_row(suggestions)]
+            .spacing(8)
+            .align_y(Alignment::Center),
         input,
-        row![container(ui::faint(format!("{len}/{POST_MAX}"))).width(Length::Fill), send].spacing(8).align_y(Alignment::Center),
+        row![
+            container(ui::faint(format!("{len}/{POST_MAX}"))).width(Length::Fill),
+            send
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center),
     ]
     .spacing(8)
     .into()
@@ -678,14 +778,22 @@ pub fn composer_view<'a>(compose: &'a Composer, mentionable: &[String]) -> Eleme
 fn trailing_mention(text: &str) -> Option<&str> {
     let word = text.rsplit(char::is_whitespace).next()?;
     let query = word.strip_prefix('@')?;
-    query.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_')).then_some(query)
+    query
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+        .then_some(query)
 }
 
 /// The names an `@partial` can complete to: `all` first, then the names and roles that contain it.
 fn suggestions_for(query: &str, mentionable: &[String]) -> Vec<String> {
     let needle = query.to_lowercase();
     std::iter::once("all")
-        .chain(mentionable.iter().map(String::as_str).filter(|name| *name != "all"))
+        .chain(
+            mentionable
+                .iter()
+                .map(String::as_str)
+                .filter(|name| *name != "all"),
+        )
         .filter(|name| name.to_lowercase().contains(&needle))
         .take(SUGGESTIONS)
         .map(str::to_string)
@@ -722,8 +830,14 @@ fn author_options(state: &State) -> Vec<Author> {
         }
     }
     seen.sort_by(|x, y| x.1.to_lowercase().cmp(&y.1.to_lowercase()));
-    let mut out = vec![Author { cid: None, name: "All authors".to_string() }];
-    out.extend(seen.into_iter().map(|(cid, name)| Author { cid: Some(cid), name }));
+    let mut out = vec![Author {
+        cid: None,
+        name: "All authors".to_string(),
+    }];
+    out.extend(seen.into_iter().map(|(cid, name)| Author {
+        cid: Some(cid),
+        name,
+    }));
     out
 }
 
@@ -732,13 +846,25 @@ fn author_options(state: &State) -> Vec<Author> {
 fn entry<'a>(state: &'a State, no: usize, p: &'a Post, panel: bool) -> Element<'a, Msg> {
     // The owner's own post names the owner (it has no agent to open); an agent's opens the agent.
     let name: Element<'a, Msg> = if p.owner {
-        text("Owner").font(SANS_SEMIBOLD).size(14.5).color(crate::theme::palette().ink).into()
-    } else {
-        button(text(state.name_of(p.agent_cid)).font(SANS_SEMIBOLD).size(14.5).color(crate::theme::palette().ink))
-            .padding(0.0)
-            .style(|_: &Theme, _| button::Style { text_color: crate::theme::palette().ink, ..Default::default() })
-            .on_press(Msg::Go(Id::Agent(p.agent_cid)))
+        text("Owner")
+            .font(SANS_SEMIBOLD)
+            .size(14.5)
+            .color(crate::theme::palette().ink)
             .into()
+    } else {
+        button(
+            text(state.name_of(p.agent_cid))
+                .font(SANS_SEMIBOLD)
+                .size(14.5)
+                .color(crate::theme::palette().ink),
+        )
+        .padding(0.0)
+        .style(|_: &Theme, _| button::Style {
+            text_color: crate::theme::palette().ink,
+            ..Default::default()
+        })
+        .on_press(Msg::Go(Id::Agent(p.agent_cid)))
+        .into()
     };
     let mut by_parts: Vec<Element<'a, Msg>> = vec![name];
     if !p.owner {
@@ -746,23 +872,42 @@ fn entry<'a>(state: &'a State, no: usize, p: &'a Post, panel: bool) -> Element<'
     }
     by_parts.push(ui::label(&count_label(p.comments.len())).into());
     if !p.mentions.is_empty() {
-        let names = p.mentions.iter().map(|m| format!("@{m}")).collect::<Vec<_>>().join(" ");
+        let names = p
+            .mentions
+            .iter()
+            .map(|m| format!("@{m}"))
+            .collect::<Vec<_>>()
+            .join(" ");
         by_parts.push(ui::mono(names, 11.0, crate::theme::palette().signal).into());
     }
     if let Some(task) = p.task.as_deref().filter(|t| !t.is_empty()) {
         by_parts.push(task_link(task));
     }
-    by_parts.push(ui::btn("Reply", None, ui::Kind::Ghost, Some(Msg::ToggleReply(p.id.clone()))));
+    by_parts.push(ui::btn(
+        "Reply",
+        None,
+        ui::Kind::Ghost,
+        Some(Msg::ToggleReply(p.id.clone())),
+    ));
     // The by-line wraps in the panel, where it is narrow; the screen's one line is the same row.
     let by: Element<'a, Msg> = if panel {
-        row(by_parts).spacing(10).align_y(Alignment::Center).wrap().vertical_spacing(6).into()
+        row(by_parts)
+            .spacing(10)
+            .align_y(Alignment::Center)
+            .wrap()
+            .vertical_spacing(6)
+            .into()
     } else {
         row(by_parts).spacing(10).align_y(Alignment::Center).into()
     };
 
     let mut matter: Vec<Element<'a, Msg>> = vec![
         by,
-        text(p.subject.clone()).font(SANS_SEMIBOLD).size(16.0).color(crate::theme::palette().ink).into(),
+        text(p.subject.clone())
+            .font(SANS_SEMIBOLD)
+            .size(16.0)
+            .color(crate::theme::palette().ink)
+            .into(),
     ];
     if let Some(body) = body(state, p) {
         matter.push(body);
@@ -777,22 +922,48 @@ fn entry<'a>(state: &'a State, no: usize, p: &'a Post, panel: bool) -> Element<'
     if panel {
         return row![
             column(matter).spacing(6).width(Length::Fill),
-            container(when).padding(Padding { top: 2.0, right: 0.0, bottom: 0.0, left: 0.0 }),
+            container(when).padding(Padding {
+                top: 2.0,
+                right: 0.0,
+                bottom: 0.0,
+                left: 0.0
+            }),
         ]
         .spacing(12)
-        .padding(Padding { top: 12.0, right: 4.0, bottom: 12.0, left: 4.0 })
+        .padding(Padding {
+            top: 12.0,
+            right: 4.0,
+            bottom: 12.0,
+            left: 4.0,
+        })
         .align_y(Alignment::Start)
         .into();
     }
     // The web's grid: the post number (56px, right-aligned), the matter, then the time at the far end.
-    let number = container(ui::sans(format!("p{no}"), 11.0, crate::theme::palette().ink_3)).width(Length::Fixed(56.0)).align_x(Alignment::End);
+    let number = container(ui::sans(
+        format!("p{no}"),
+        11.0,
+        crate::theme::palette().ink_3,
+    ))
+    .width(Length::Fixed(56.0))
+    .align_x(Alignment::End);
     row![
         number,
         column(matter).spacing(6).width(Length::Fill),
-        container(when).padding(Padding { top: 2.0, right: 0.0, bottom: 0.0, left: 0.0 }),
+        container(when).padding(Padding {
+            top: 2.0,
+            right: 0.0,
+            bottom: 0.0,
+            left: 0.0
+        }),
     ]
     .spacing(16)
-    .padding(Padding { top: 14.0, right: 10.0, bottom: 14.0, left: 10.0 })
+    .padding(Padding {
+        top: 14.0,
+        right: 10.0,
+        bottom: 14.0,
+        left: 10.0,
+    })
     .align_y(Alignment::Start)
     .into()
 }
@@ -800,11 +971,18 @@ fn entry<'a>(state: &'a State, no: usize, p: &'a Post, panel: bool) -> Element<'
 /// The task a post is about, as a link to it on the Tasks screen.
 fn task_link<'a>(task: &str) -> Element<'a, Msg> {
     // One line, always: a task's name is a chip, and a narrow panel wraps the by-line rather than the chip.
-    button(ui::sans(format!("task {task}"), 11.0, crate::theme::palette().signal).wrapping(Wrapping::None))
-        .padding(0.0)
-        .style(|_: &Theme, _| button::Style { background: None, text_color: crate::theme::palette().signal, ..Default::default() })
-        .on_press(Msg::Go(Id::Task(task.to_string())))
-        .into()
+    button(
+        ui::sans(format!("task {task}"), 11.0, crate::theme::palette().signal)
+            .wrapping(Wrapping::None),
+    )
+    .padding(0.0)
+    .style(|_: &Theme, _| button::Style {
+        background: None,
+        text_color: crate::theme::palette().signal,
+        ..Default::default()
+    })
+    .on_press(Msg::Go(Id::Task(task.to_string())))
+    .into()
 }
 
 /// A post's body, clamped to a few lines until "Show more". None when it only repeats the subject.
@@ -815,12 +993,21 @@ fn body<'a>(state: &'a State, p: &'a Post) -> Option<Element<'a, Msg>> {
     }
     let open = state.body_open.contains(&p.id);
     let clamped = is_long(src);
-    let shown = if open || !clamped { src.to_string() } else { clamp(src) };
+    let shown = if open || !clamped {
+        src.to_string()
+    } else {
+        clamp(src)
+    };
     let rctx = rich::context(&state.cards, None, None, None);
     let mut col: Vec<Element<'a, Msg>> = vec![rich::view(&shown, &rctx, &state.cards, &on_rich)];
     if clamped {
         let label = if open { "Show less" } else { "Show more" };
-        col.push(ui::btn(label, None, ui::Kind::Ghost, Some(Msg::ToggleBody(p.id.clone()))));
+        col.push(ui::btn(
+            label,
+            None,
+            ui::Kind::Ghost,
+            Some(Msg::ToggleBody(p.id.clone())),
+        ));
     }
     Some(column(col).spacing(6).into())
 }
@@ -848,7 +1035,11 @@ fn attachments<'a>(state: &State, ids: &[String]) -> Option<Element<'a, Msg>> {
 fn file_chip<'a>(state: &State, id: &str) -> Element<'a, Msg> {
     match state.files.get(id) {
         Some(meta) => {
-            let name = if meta.title.is_empty() { &meta.name } else { &meta.title };
+            let name = if meta.title.is_empty() {
+                &meta.name
+            } else {
+                &meta.title
+            };
             let kind = if meta.content_type.starts_with("image/") {
                 "image · "
             } else if meta.content_type.starts_with("video/") {
@@ -856,10 +1047,26 @@ fn file_chip<'a>(state: &State, id: &str) -> Element<'a, Msg> {
             } else {
                 ""
             };
-            container(ui::sans(format!("{kind}{name}  {}", size_of(meta.size)), 12.0, crate::theme::palette().ink_2))
-                .padding(Padding { top: 2.0, right: 6.0, bottom: 2.0, left: 6.0 })
-                .style(|_: &Theme| container::Style { border: Border { color: crate::theme::palette().rule, width: 1.0, radius: 0.0.into() }, ..Default::default() })
-                .into()
+            container(ui::sans(
+                format!("{kind}{name}  {}", size_of(meta.size)),
+                12.0,
+                crate::theme::palette().ink_2,
+            ))
+            .padding(Padding {
+                top: 2.0,
+                right: 6.0,
+                bottom: 2.0,
+                left: 6.0,
+            })
+            .style(|_: &Theme| container::Style {
+                border: Border {
+                    color: crate::theme::palette().rule,
+                    width: 1.0,
+                    radius: 0.0.into(),
+                },
+                ..Default::default()
+            })
+            .into()
         }
         None if state.missing.contains(id) => ui::faint("file unavailable").into(),
         None => ui::faint("file …").into(),
@@ -878,8 +1085,17 @@ fn thread<'a>(state: &'a State, p: &'a Post) -> Option<Element<'a, Msg>> {
     let expanded = state.thread_open.contains(&p.id);
     let mut col: Vec<Element<'a, Msg>> = Vec::new();
     if all.len() > THREAD_PREVIEW {
-        let label = if expanded { "Show fewer".to_string() } else { format!("Show all {} comments", all.len()) };
-        col.push(ui::btn(&label, None, ui::Kind::Ghost, Some(Msg::ToggleThread(p.id.clone()))));
+        let label = if expanded {
+            "Show fewer".to_string()
+        } else {
+            format!("Show all {} comments", all.len())
+        };
+        col.push(ui::btn(
+            &label,
+            None,
+            ui::Kind::Ghost,
+            Some(Msg::ToggleThread(p.id.clone())),
+        ));
     }
     let shown: &[&'a Comment] = if all.len() > THREAD_PREVIEW && !expanded {
         &all[all.len() - THREAD_PREVIEW..]
@@ -905,19 +1121,33 @@ fn comment_row<'a>(state: &'a State, c: &'a Comment) -> Element<'a, Msg> {
             None => format!("agent {cid}"),
         },
     };
-    let initial = name.chars().next().map(|ch| ch.to_uppercase().to_string()).unwrap_or_else(|| "?".to_string());
-    let colour = if c.agent_cid.is_none() { crate::theme::palette().signal } else { crate::theme::palette().ink };
+    let initial = name
+        .chars()
+        .next()
+        .map(|ch| ch.to_uppercase().to_string())
+        .unwrap_or_else(|| "?".to_string());
+    let colour = if c.agent_cid.is_none() {
+        crate::theme::palette().signal
+    } else {
+        crate::theme::palette().ink
+    };
     let rctx = rich::context(&state.cards, None, None, None);
     let mut main: Vec<Element<'a, Msg>> = vec![
-        row![ui::sans(name, 12.0, colour), ui::faint(ago(c.created_at))].spacing(10).align_y(Alignment::Center).into(),
+        row![ui::sans(name, 12.0, colour), ui::faint(ago(c.created_at))]
+            .spacing(10)
+            .align_y(Alignment::Center)
+            .into(),
         rich::view(&c.body, &rctx, &state.cards, &on_rich),
     ];
     if let Some(files) = attachments(state, &c.attachments) {
         main.push(files);
     }
-    row![ui::sans(initial, 12.0, crate::theme::palette().ink_2), column(main).spacing(4).width(Length::Fill)]
-        .spacing(10)
-        .into()
+    row![
+        ui::sans(initial, 12.0, crate::theme::palette().ink_2),
+        column(main).spacing(4).width(Length::Fill)
+    ]
+    .spacing(10)
+    .into()
 }
 
 /// The owner's reply composer. Its draft lives in the state, so a redraw never loses it.
@@ -946,11 +1176,23 @@ fn composer<'a>(state: &'a State, p: &'a Post) -> Element<'a, Msg> {
         })
         .on_action(move |a| Msg::Edit(typed_id.clone(), a));
     let meter = ui::faint(format!("{len}/{REPLY_MAX}"));
-    let cancel = ui::btn("Cancel", None, ui::Kind::Ghost, Some(Msg::Cancel(p.id.clone())));
-    let send = ui::btn("Send", None, ui::Kind::Primary, can_send.then(|| Msg::Send(p.id.clone())));
+    let cancel = ui::btn(
+        "Cancel",
+        None,
+        ui::Kind::Ghost,
+        Some(Msg::Cancel(p.id.clone())),
+    );
+    let send = ui::btn(
+        "Send",
+        None,
+        ui::Kind::Primary,
+        can_send.then(|| Msg::Send(p.id.clone())),
+    );
     column![
         input,
-        row![container(meter).width(Length::Fill), cancel, send].spacing(8).align_y(Alignment::Center),
+        row![container(meter).width(Length::Fill), cancel, send]
+            .spacing(8)
+            .align_y(Alignment::Center),
     ]
     .spacing(8)
     .into()
@@ -981,7 +1223,9 @@ fn ago(ms: f64) -> String {
     if ms <= 0.0 {
         return "—".to_string();
     }
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(ms, |d| d.as_millis() as f64);
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(ms, |d| d.as_millis() as f64);
     let s = ((now - ms) / 1000.0).round().max(0.0) as u64;
     match s {
         0..=4 => "just now".to_string(),
@@ -994,20 +1238,32 @@ fn ago(ms: f64) -> String {
 
 /// The posts in a scope: those `keep` takes (by author cid and task), newest first.
 fn kept<'a>(state: &'a State, keep: &impl Fn(u64, Option<&str>) -> bool) -> Vec<&'a Post> {
-    let mut posts: Vec<&Post> = state.posts.iter().filter(|p| keep(p.agent_cid, p.task.as_deref())).collect();
+    let mut posts: Vec<&Post> = state
+        .posts
+        .iter()
+        .filter(|p| keep(p.agent_cid, p.task.as_deref()))
+        .collect();
     posts.sort_by(|x, y| y.created_at.total_cmp(&x.created_at));
     posts
 }
 
 /// How many posts a scope holds (the IDE's Board tab count).
 pub fn count(state: &State, keep: impl Fn(u64, Option<&str>) -> bool) -> usize {
-    state.posts.iter().filter(|p| keep(p.agent_cid, p.task.as_deref())).count()
+    state
+        .posts
+        .iter()
+        .filter(|p| keep(p.agent_cid, p.task.as_deref()))
+        .count()
 }
 
 /// The posts each agent made after `since_ms` (epoch milliseconds): the unread count the IDE shows per agent.
 pub fn unread(state: &State, since_ms: u64) -> HashMap<u64, usize> {
     let mut out: HashMap<u64, usize> = HashMap::new();
-    for post in state.posts.iter().filter(|p| p.created_at > since_ms as f64) {
+    for post in state
+        .posts
+        .iter()
+        .filter(|p| p.created_at > since_ms as f64)
+    {
         *out.entry(post.agent_cid).or_insert(0) += 1;
     }
     out
@@ -1032,12 +1288,16 @@ pub fn panel<'a>(state: &'a State, keep: impl Fn(u64, Option<&str>) -> bool) -> 
         for (i, post) in posts.into_iter().enumerate() {
             let hue = crate::console::engine::world::layout::agent_hue(post.agent_cid);
             let colour = ui::hsl(hue, 0.55, 0.62);
-            let bar = container(iced::widget::Space::new().width(Length::Fixed(3.0)).height(Length::Fill))
-                .height(Length::Fill)
-                .style(move |_: &Theme| container::Style {
-                    background: Some(colour.into()),
-                    ..Default::default()
-                });
+            let bar = container(
+                iced::widget::Space::new()
+                    .width(Length::Fixed(3.0))
+                    .height(Length::Fill),
+            )
+            .height(Length::Fill)
+            .style(move |_: &Theme| container::Style {
+                background: Some(colour.into()),
+                ..Default::default()
+            });
             col = col.push(row![bar, entry(state, total - i, post, true)].spacing(10));
         }
     }
@@ -1056,23 +1316,44 @@ mod tests {
     fn the_word_being_typed_is_the_trailing_mention() {
         assert_eq!(trailing_mention("ship it @bu"), Some("bu"));
         assert_eq!(trailing_mention("ship it @"), Some(""));
-        assert_eq!(trailing_mention("ship it @bu "), None, "a space after the word ends it");
-        assert_eq!(trailing_mention("mail a@b"), None, "an address is not a mention");
+        assert_eq!(
+            trailing_mention("ship it @bu "),
+            None,
+            "a space after the word ends it"
+        );
+        assert_eq!(
+            trailing_mention("mail a@b"),
+            None,
+            "an address is not a mention"
+        );
         assert_eq!(trailing_mention("plain"), None);
     }
 
     #[test]
     fn suggestions_offer_all_then_the_names_and_roles_that_match() {
-        let names: Vec<String> = ["all", "Ana", "builder", "Dev"].iter().map(|s| s.to_string()).collect();
-        assert_eq!(suggestions_for("", &names), vec!["all", "Ana", "builder", "Dev"]);
-        assert_eq!(suggestions_for("AN", &names), vec!["Ana"], "matches without case");
+        let names: Vec<String> = ["all", "Ana", "builder", "Dev"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(
+            suggestions_for("", &names),
+            vec!["all", "Ana", "builder", "Dev"]
+        );
+        assert_eq!(
+            suggestions_for("AN", &names),
+            vec!["Ana"],
+            "matches without case"
+        );
         assert_eq!(suggestions_for("ev", &names), vec!["Dev"]);
         assert_eq!(suggestions_for("zz", &names), Vec::<String>::new());
     }
 
     #[test]
     fn the_mentions_of_a_post_are_its_at_names_once_in_order() {
-        assert_eq!(mentions_in("ping @all and @ana, then @ana again and @dev-2_x."), vec!["all", "ana", "dev-2_x"]);
+        assert_eq!(
+            mentions_in("ping @all and @ana, then @ana again and @dev-2_x."),
+            vec!["all", "ana", "dev-2_x"]
+        );
         assert!(mentions_in("mail a@b.com now").is_empty());
     }
 
@@ -1083,7 +1364,10 @@ mod tests {
             { "cid": 4, "name": "ana", "role": "builder" },
             { "cid": 5, "name": "", "role": "reviewer" }
         ]);
-        assert_eq!(mention_names(&list), vec!["all", "Ana", "builder", "reviewer"]);
+        assert_eq!(
+            mention_names(&list),
+            vec!["all", "Ana", "builder", "reviewer"]
+        );
     }
 
     #[test]

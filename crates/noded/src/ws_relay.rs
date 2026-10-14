@@ -628,12 +628,18 @@ mod tests {
         let running = [4097, 4098];
         assert!(admitted(4097, &running));
         assert!(admitted(4098, &running));
-        assert!(!admitted(4099, &running), "a CID that is not running is refused");
+        assert!(
+            !admitted(4099, &running),
+            "a CID that is not running is refused"
+        );
         assert!(!admitted(HOST_CID, &[HOST_CID]), "the host is never a VM");
         assert!(!admitted(0, &[0]), "the reserved CIDs are never a VM");
         assert!(!admitted(1, &[1]), "the reserved CIDs are never a VM");
         assert!(!admitted(u32::MAX, &[u32::MAX]), "any-CID is not a peer");
-        assert!(!admitted(4097, &[]), "with no VM running, nothing is admitted");
+        assert!(
+            !admitted(4097, &[]),
+            "with no VM running, nothing is admitted"
+        );
     }
 
     #[test]
@@ -645,11 +651,26 @@ mod tests {
         routes.insert(4098, Arc::clone(&vm_b));
 
         let own = route_of_peer(&routes, Some(4097)).expect("VM 4097's own route");
-        assert!(Arc::ptr_eq(&own, &vm_a), "a peer gets its own route, never another VM's");
-        assert!(Arc::ptr_eq(&route_of_peer(&routes, Some(4098)).expect("VM 4098"), &vm_b));
-        assert!(route_of_peer(&routes, Some(HOST_CID)).is_none(), "the host is refused");
-        assert!(route_of_peer(&routes, Some(4099)).is_none(), "a stopped VM's CID is refused");
-        assert!(route_of_peer(&routes, None).is_none(), "a connection with no peer CID is refused");
+        assert!(
+            Arc::ptr_eq(&own, &vm_a),
+            "a peer gets its own route, never another VM's"
+        );
+        assert!(Arc::ptr_eq(
+            &route_of_peer(&routes, Some(4098)).expect("VM 4098"),
+            &vm_b
+        ));
+        assert!(
+            route_of_peer(&routes, Some(HOST_CID)).is_none(),
+            "the host is refused"
+        );
+        assert!(
+            route_of_peer(&routes, Some(4099)).is_none(),
+            "a stopped VM's CID is refused"
+        );
+        assert!(
+            route_of_peer(&routes, None).is_none(),
+            "a connection with no peer CID is refused"
+        );
     }
 
     #[test]

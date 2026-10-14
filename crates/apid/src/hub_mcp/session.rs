@@ -29,7 +29,13 @@ impl Sessions {
         let id = random_hex(16)?;
         let mut live = lock(&self.live);
         live.retain(|_, session| now.saturating_sub(session.last_ms) < IDLE_MS);
-        live.insert(id.clone(), Session { token_id: token_id.to_string(), last_ms: now });
+        live.insert(
+            id.clone(),
+            Session {
+                token_id: token_id.to_string(),
+                last_ms: now,
+            },
+        );
         Ok(id)
     }
 

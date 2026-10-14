@@ -16,8 +16,8 @@ use vmm_sys_util::eventfd::EventFd;
 use super::device::VirtioBlock;
 use super::{BLOCK_QUEUE_NUM, BLOCK_QUEUE_SIZE, VIRTIO_ID_BLOCK, VirtioBlockError};
 use crate::devices::virtio::VirtioError;
-use crate::devices::virtio::mmio::{QueueConfig, VirtioDevice};
 use crate::devices::virtio::ack_feature_page;
+use crate::devices::virtio::mmio::{QueueConfig, VirtioDevice};
 use crate::vstate::memory::{GuestAddress, GuestMemoryMmap};
 
 /// The virtio-mmio device that hands the block device to the transport.
@@ -83,7 +83,10 @@ impl VirtioDevice for BlockMmioDevice {
         let config = self.device.config_as_bytes();
         let start = usize::try_from(offset).unwrap_or(usize::MAX);
         for (index, byte) in data.iter_mut().enumerate() {
-            *byte = config.get(start.saturating_add(index)).copied().unwrap_or(0);
+            *byte = config
+                .get(start.saturating_add(index))
+                .copied()
+                .unwrap_or(0);
         }
     }
 
@@ -129,9 +132,7 @@ mod tests {
     use vmm_sys_util::tempfile::TempFile;
 
     use super::*;
-    use crate::devices::virtio::block::request::{
-        RequestHeader, VIRTIO_BLK_S_OK, VIRTIO_BLK_T_IN,
-    };
+    use crate::devices::virtio::block::request::{RequestHeader, VIRTIO_BLK_S_OK, VIRTIO_BLK_T_IN};
     use crate::devices::virtio::block::test_utils::RequestDescriptorChain;
     use crate::devices::virtio::mmio::VirtioMmioTransport;
     use crate::devices::virtio::test_utils::{VirtQueue, default_mem};
@@ -306,9 +307,21 @@ mod tests {
         write_u32(&mut transport, STATUS, ACKNOWLEDGE | DRIVER | FEATURES_OK);
         write_u32(&mut transport, QUEUE_SEL, 0);
         write_u32(&mut transport, QUEUE_NUM, 16);
-        write_u32(&mut transport, QUEUE_DESC_LOW, vq.desc_table_addr().0 as u32);
-        write_u32(&mut transport, QUEUE_DRIVER_LOW, vq.avail_ring_addr().0 as u32);
-        write_u32(&mut transport, QUEUE_DEVICE_LOW, vq.used_ring_addr().0 as u32);
+        write_u32(
+            &mut transport,
+            QUEUE_DESC_LOW,
+            vq.desc_table_addr().0 as u32,
+        );
+        write_u32(
+            &mut transport,
+            QUEUE_DRIVER_LOW,
+            vq.avail_ring_addr().0 as u32,
+        );
+        write_u32(
+            &mut transport,
+            QUEUE_DEVICE_LOW,
+            vq.used_ring_addr().0 as u32,
+        );
         write_u32(&mut transport, QUEUE_READY, 1);
         write_u32(
             &mut transport,

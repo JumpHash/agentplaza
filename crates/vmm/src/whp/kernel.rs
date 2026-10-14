@@ -76,7 +76,9 @@ pub enum KernelError {
     #[error("the bzImage boot protocol {0:#x} is older than 2.12 or has no 64-bit entry point")]
     NoBzImage64Entry(u16),
     /// A segment starts below `min` or does not fit in guest RAM.
-    #[error("a kernel segment at {addr:#x} (+{len:#x}) lies below {min:#x} or outside guest memory")]
+    #[error(
+        "a kernel segment at {addr:#x} (+{len:#x}) lies below {min:#x} or outside guest memory"
+    )]
     SegmentOutOfRange {
         /// Guest physical address of the segment.
         addr: u64,
@@ -207,9 +209,9 @@ fn load_elf(
             if p_paddr < himem_start {
                 return Err(segment_error(p_paddr, p_memsz, himem_start));
             }
-            let zero_len = p_memsz
-                .checked_sub(p_filesz)
-                .ok_or(KernelError::Truncated("PT_LOAD file size exceeds memory size"))?;
+            let zero_len = p_memsz.checked_sub(p_filesz).ok_or(KernelError::Truncated(
+                "PT_LOAD file size exceeds memory size",
+            ))?;
             let data = sub_slice(image, p_offset, p_filesz)
                 .ok_or(KernelError::Truncated("PT_LOAD file data"))?;
             let zero_at = p_paddr
@@ -415,10 +417,7 @@ mod tests {
         let image = elf_image(62, 0x20_0000, 0x20_0000, memsz, &[]);
         let loaded = load_kernel(&image, &mut ram, HIMEM).unwrap();
         assert_eq!(loaded.end, 0x20_0000 + memsz);
-        assert!(ram
-            .bytes(0x20_0000, memsz as usize)
-            .iter()
-            .all(|&b| b == 0));
+        assert!(ram.bytes(0x20_0000, memsz as usize).iter().all(|&b| b == 0));
         assert_eq!(ram.bytes(0x20_0000 + memsz, 1)[0], 0xAA);
     }
 
@@ -498,10 +497,7 @@ mod tests {
         let loaded = load_kernel(&image, &mut ram, HIMEM).unwrap();
         assert_eq!(loaded.entry, HIMEM + 0x200);
         assert_eq!(loaded.format, KernelFormat::BzImage);
-        assert_eq!(
-            loaded.setup_header.as_deref(),
-            Some(&image[0x1f1..0x212])
-        );
+        assert_eq!(loaded.setup_header.as_deref(), Some(&image[0x1f1..0x212]));
         assert_eq!(loaded.end, HIMEM + 0x300);
         assert!(ram.bytes(HIMEM, 0x300).iter().all(|&b| b == 0x77));
     }

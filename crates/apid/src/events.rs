@@ -43,7 +43,8 @@ impl Frame {
     /// The socket's text message: `{"event": <kind>, "data": <data>}`. Data that is not JSON goes
     /// out as `null`, so a message is always one valid JSON object.
     pub fn wire(&self) -> String {
-        let data = serde_json::from_str::<serde_json::Value>(&self.data).unwrap_or(serde_json::Value::Null);
+        let data = serde_json::from_str::<serde_json::Value>(&self.data)
+            .unwrap_or(serde_json::Value::Null);
         let kind = serde_json::to_string(&self.kind).unwrap_or_else(|_| "\"\"".into());
         format!("{{\"event\":{kind},\"data\":{data}}}")
     }
@@ -64,7 +65,10 @@ impl Bus {
 
     /// `data` must already be one line of JSON.
     pub fn publish_raw(&self, kind: &str, data: String) {
-        let frame = Frame { kind: kind.to_string(), data };
+        let frame = Frame {
+            kind: kind.to_string(),
+            data,
+        };
         self.subscribers
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -74,7 +78,10 @@ impl Bus {
     /// A subscription with a queue of [`QUEUE`] events.
     pub fn subscribe(&self) -> Receiver<Frame> {
         let (tx, rx) = std::sync::mpsc::sync_channel(QUEUE);
-        self.subscribers.lock().unwrap_or_else(PoisonError::into_inner).push(tx);
+        self.subscribers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(tx);
         rx
     }
 }
@@ -91,7 +98,12 @@ struct Open {
 
 impl Slots {
     pub const fn new() -> Self {
-        Slots { open: Mutex::new(Open { total: 0, per_peer: BTreeMap::new() }) }
+        Slots {
+            open: Mutex::new(Open {
+                total: 0,
+                per_peer: BTreeMap::new(),
+            }),
+        }
     }
 
     /// A place for a socket from `peer`, or `None` when that peer or the hub is at its cap.
@@ -109,7 +121,10 @@ impl Slots {
     /// How many sockets are open now.
     #[cfg(test)]
     pub fn open_count(&self) -> usize {
-        self.open.lock().unwrap_or_else(PoisonError::into_inner).total
+        self.open
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .total
     }
 
     fn release(&self, peer: Option<IpAddr>) {
@@ -149,10 +164,16 @@ pub fn routes(router: Router<App>) -> Router<App> {
             return Response::error(429, "too many open event sockets; close one first");
         };
         let events = app.bus.subscribe();
-        ws::accept(req, Origins::SameHost, Some(PROTOCOL), Limits::default(), move |socket| {
-            let _slot = slot;
-            serve(socket, events);
-        })
+        ws::accept(
+            req,
+            Origins::SameHost,
+            Some(PROTOCOL),
+            Limits::default(),
+            move |socket| {
+                let _slot = slot;
+                serve(socket, events);
+            },
+        )
     })
 }
 
@@ -197,10 +218,19 @@ pub fn spawn_relays(app: Arc<App>) {
         }
     });
     std::thread::spawn(move || {
-        let target = Target { base: format!("http://127.0.0.1:{}", app.noded.port), ..Default::default() };
+        let target = Target {
+            base: format!("http://127.0.0.1:{}", app.noded.port),
+            ..Default::default()
+        };
         let mut backoff = Duration::from_secs(1);
         loop {
-            if let Ok(mut socket) = ws::connect(&target, "/v1/ws", Some(NODED_PROTOCOL), CONNECT, Limits::default()) {
+            if let Ok(mut socket) = ws::connect(
+                &target,
+                "/v1/ws",
+                Some(NODED_PROTOCOL),
+                CONNECT,
+                Limits::default(),
+            ) {
                 backoff = Duration::from_secs(1);
                 relay_noded(&app.bus, &mut socket);
             }
@@ -247,11 +277,22 @@ mod tests {
     fn the_ninth_socket_from_one_peer_is_refused() {
         let slots = leaked();
         let peer: Option<IpAddr> = Some("10.0.0.5".parse().unwrap());
-        let held: Vec<Slot> = (0..PER_PEER).map(|_| slots.take(peer).expect("under the cap")).collect();
-        assert!(slots.take(peer).is_none(), "a ninth socket from one peer is refused");
-        assert!(slots.take(Some("10.0.0.6".parse().unwrap())).is_some(), "another peer still gets one");
+        let held: Vec<Slot> = (0..PER_PEER)
+            .map(|_| slots.take(peer).expect("under the cap"))
+            .collect();
+        assert!(
+            slots.take(peer).is_none(),
+            "a ninth socket from one peer is refused"
+        );
+        assert!(
+            slots.take(Some("10.0.0.6".parse().unwrap())).is_some(),
+            "another peer still gets one"
+        );
         drop(held);
-        assert!(slots.take(peer).is_some(), "a closed socket frees its place");
+        assert!(
+            slots.take(peer).is_some(),
+            "a closed socket frees its place"
+        );
     }
 
     #[test]
@@ -265,17 +306,26 @@ mod tests {
             }
         }
         assert_eq!(slots.open_count(), TOTAL);
-        assert!(slots.take(Some(IpAddr::from([10, 0, 1, 1]))).is_none(), "a 65th socket is refused");
+        assert!(
+            slots.take(Some(IpAddr::from([10, 0, 1, 1]))).is_none(),
+            "a 65th socket is refused"
+        );
     }
 
     #[test]
     fn a_bus_event_is_one_text_message_with_its_kind_and_data() {
         let bus = Bus::default();
         let rx = bus.subscribe();
-        let event = apz_plaza::events::Event::Run { id: "r1".to_string(), state: "running" };
+        let event = apz_plaza::events::Event::Run {
+            id: "r1".to_string(),
+            state: "running",
+        };
         bus.publish_raw(event.kind(), event.data());
         let frame = rx.try_recv().expect("the subscriber got the event");
-        assert_eq!(frame.wire(), r#"{"event":"run","data":{"id":"r1","state":"running"}}"#);
+        assert_eq!(
+            frame.wire(),
+            r#"{"event":"run","data":{"id":"r1","state":"running"}}"#
+        );
     }
 
     #[test]

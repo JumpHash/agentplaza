@@ -201,9 +201,9 @@ impl RawGuestRegionMmap {
             )
         };
         if ptr == libc::MAP_FAILED {
-            return Err(MemoryError::MmapRegionError(vm_memory::mmap::MmapRegionError::Mmap(
-                std::io::Error::last_os_error(),
-            )));
+            return Err(MemoryError::MmapRegionError(
+                vm_memory::mmap::MmapRegionError::Mmap(std::io::Error::last_os_error()),
+            ));
         }
 
         // Find the first 2 MiB-aligned address within the allocation.
@@ -434,7 +434,10 @@ impl From<&GuestRegionMmapExt> for kvm_userspace_memory_region {
 impl GuestRegionMmapExt {
     /// Adds a DRAM region which only contains a single plugged slot
     pub(crate) fn dram_from_mmap_region(region: GuestRegionMmap, slot: u32) -> Self {
-        GuestRegionMmapExt { inner: region, slot }
+        GuestRegionMmapExt {
+            inner: region,
+            slot,
+        }
     }
 }
 
@@ -576,7 +579,10 @@ pub(crate) mod tests {
     /// accordance with the requirements of the architecture on which the tests are being run
     /// (upstream: `test_utils::arch_mem`).
     // Only where a backend lays out memory for the host architecture (not Intel macOS).
-    #[cfg(any(all(any(target_os = "linux", windows), target_arch = "x86_64"), all(not(windows), target_arch = "aarch64")))]
+    #[cfg(any(
+        all(any(target_os = "linux", windows), target_arch = "x86_64"),
+        all(not(windows), target_arch = "aarch64")
+    ))]
     pub(crate) fn arch_mem(mem_size_bytes: usize) -> GuestMemoryMmap {
         // Upstream resolves this through `crate::arch::arch_memory_regions`; the
         // per-arch module is selected directly here.

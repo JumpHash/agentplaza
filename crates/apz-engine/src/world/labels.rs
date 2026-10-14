@@ -6,8 +6,8 @@
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
-use super::view::Label;
 use super::Floor;
+use super::view::Label;
 use crate::canvas::Canvas;
 use crate::scene::{Overlay, Tex};
 
@@ -56,7 +56,9 @@ impl Floor {
             if !label.is_shown() {
                 continue;
             }
-            let Some(bot) = self.bot(label.cid) else { continue };
+            let Some(bot) = self.bot(label.cid) else {
+                continue;
+            };
             // View space looks down -Z: the farther a robot, the more negative its z.
             let depth = camera.view().transform_point3(bot.robot.label_anchor()).z;
             let p = painted(&label, scale);
@@ -66,7 +68,16 @@ impl Floor {
             if x + w < 0.0 || x > width || y + h < 0.0 || y > height {
                 continue;
             }
-            items.push((depth, Overlay { tex: p.tex, x, y, w, h }));
+            items.push((
+                depth,
+                Overlay {
+                    tex: p.tex,
+                    x,
+                    y,
+                    w,
+                    h,
+                },
+            ));
         }
         items.sort_by(|a, b| a.0.total_cmp(&b.0));
         items.into_iter().map(|(_, overlay)| overlay).collect()
@@ -81,7 +92,11 @@ fn painted(label: &Label, scale: f32) -> Painted {
         return hit.clone();
     }
     let (canvas, box_w, box_h) = draw(label, scale);
-    let painted = Painted { tex: canvas.to_texture(), box_w, box_h };
+    let painted = Painted {
+        tex: canvas.to_texture(),
+        box_w,
+        box_h,
+    };
     let mut map = cache.lock().unwrap_or_else(|p| p.into_inner());
     if map.len() > CACHE_LIMIT {
         map.clear();
@@ -158,15 +173,22 @@ mod tests {
             role: "researcher".to_string(),
             status: status.to_string(),
             tier: "worker".to_string(),
-            model: "model".to_string(), species: None,
+            model: "model".to_string(),
+            species: None,
         }
     }
 
     /// A floor with one agent in `status` on the workstation's board, the view reset to a 640 × 480 stage.
     fn floor_with(status: &str) -> Floor {
         let mut floor = Floor::new();
-        let model = crate::hardware::model("board/workstation").expect("the workstation board parses");
-        floor.show_board("test".into(), model, crate::hardware::Params::default(), crate::hardware::Status::Online);
+        let model =
+            crate::hardware::model("board/workstation").expect("the workstation board parses");
+        floor.show_board(
+            "test".into(),
+            model,
+            crate::hardware::Params::default(),
+            crate::hardware::Status::Online,
+        );
         floor.sync(&[info(1, status)]);
         floor.reset_view(640.0 / 480.0);
         floor
@@ -208,7 +230,11 @@ mod tests {
 
         floor.selected = None;
         floor.hovered = Some(1);
-        assert_eq!(floor.label_overlays(640.0, 480.0, 2.0).len(), 1, "a hovered idle agent shows its tag");
+        assert_eq!(
+            floor.label_overlays(640.0, 480.0, 2.0).len(),
+            1,
+            "a hovered idle agent shows its tag"
+        );
     }
 
     #[test]
@@ -234,20 +260,38 @@ mod tests {
     #[test]
     fn selected_agent_has_one_label_among_three_bots() {
         let mut floor = Floor::new();
-        let model = crate::hardware::model("board/workstation").expect("the workstation board parses");
-        floor.show_board("test".into(), model, crate::hardware::Params::default(), crate::hardware::Status::Online);
+        let model =
+            crate::hardware::model("board/workstation").expect("the workstation board parses");
+        floor.show_board(
+            "test".into(),
+            model,
+            crate::hardware::Params::default(),
+            crate::hardware::Status::Online,
+        );
         floor.sync(&[info(1, "working"), info(2, "working"), info(3, "working")]);
         floor.reset_view(640.0 / 480.0);
         floor.selected = Some(2);
 
         let overlays = floor.label_overlays(640.0, 480.0, 2.0);
         assert_eq!(overlays.len(), 3, "one overlay per bot");
-        assert!(overlays.iter().all(|o| o.h == TAG_H + 2.0), "every agent carries the one tag");
+        assert!(
+            overlays.iter().all(|o| o.h == TAG_H + 2.0),
+            "every agent carries the one tag"
+        );
 
         let labels = floor.labels(640.0, 480.0);
         assert_eq!(labels.iter().filter(|l| l.selected).count(), 1);
-        assert_eq!(labels.iter().filter(|l| l.cid == 2).count(), 1, "the selected cid appears once");
-        assert_eq!(labels.len(), 3, "labels: {:?}", labels.iter().map(|l| l.cid).collect::<Vec<_>>());
+        assert_eq!(
+            labels.iter().filter(|l| l.cid == 2).count(),
+            1,
+            "the selected cid appears once"
+        );
+        assert_eq!(
+            labels.len(),
+            3,
+            "labels: {:?}",
+            labels.iter().map(|l| l.cid).collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -268,11 +312,18 @@ mod tests {
                 let v = p - cam.eye;
                 let depth = -v.dot(back);
                 let (nx, ny) = (v.dot(right) / (depth * tan_h), v.dot(up) / (depth * tan_v));
-                assert!(nx.abs() <= 0.86 && ny.abs() <= 0.86, "aspect {aspect}: a point at ({nx}, {ny})");
+                assert!(
+                    nx.abs() <= 0.86 && ny.abs() <= 0.86,
+                    "aspect {aspect}: a point at ({nx}, {ny})"
+                );
                 wide = wide.max(nx.abs());
                 tall = tall.max(ny.abs());
             }
-            assert!(wide.max(tall) >= 0.8, "aspect {aspect}: the plaza fills only {}", wide.max(tall));
+            assert!(
+                wide.max(tall) >= 0.8,
+                "aspect {aspect}: the plaza fills only {}",
+                wide.max(tall)
+            );
         }
     }
 }

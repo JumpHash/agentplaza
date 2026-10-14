@@ -66,7 +66,10 @@ fn set_elems(v: &Value, span: Span, what: &str) -> Result<Vec<Value>, Diag> {
         Value::Set(s) => Ok(s.iter().cloned().collect()),
         Value::List(l) => Ok(l.to_vec()),
         Value::Unknown(r) => err(span, format!("{what} is unknown: {r}")),
-        _ => err(span, format!("{what} must be a set, found {} {v}", v.type_name())),
+        _ => err(
+            span,
+            format!("{what} must be a set, found {} {v}", v.type_name()),
+        ),
     }
 }
 
@@ -102,8 +105,17 @@ impl MachineCtx {
             decl: decl.clone(),
         };
         for it in &decl.items {
-            if let MItem::Def { name, params, body, span } = it {
-                if m.defs.insert(name.clone(), (params.clone(), body.clone())).is_some() {
+            if let MItem::Def {
+                name,
+                params,
+                body,
+                span,
+            } = it
+            {
+                if m.defs
+                    .insert(name.clone(), (params.clone(), body.clone()))
+                    .is_some()
+                {
                     return err(*span, format!("`{name}` is defined twice"));
                 }
             }
@@ -112,17 +124,26 @@ impl MachineCtx {
         for (_, r, it) in prog.items() {
             if let Item::Enum(e) = it {
                 if prog.lookup_decl(pack, &e.name) == Some(r) {
-                    m.sets.insert(e.name.clone(), Value::set(e.members.iter().map(|x| Value::str(&x.0))));
+                    m.sets.insert(
+                        e.name.clone(),
+                        Value::set(e.members.iter().map(|x| Value::str(&x.0))),
+                    );
                 }
             }
         }
-        m.sets.insert("Bool".into(), Value::set([Value::Bool(false), Value::Bool(true)]));
+        m.sets.insert(
+            "Bool".into(),
+            Value::set([Value::Bool(false), Value::Bool(true)]),
+        );
         if let Some((md, mpack)) = model {
             for o in &md.opts {
                 match o {
                     MOpt::Values(t, e) => {
                         let ExprKind::Set(items) = &e.kind else {
-                            return err(e.span, "`values` takes a set of names, like {mayor, owner}");
+                            return err(
+                                e.span,
+                                "`values` takes a set of names, like {mayor, owner}",
+                            );
                         };
                         let mut set = BTreeSet::new();
                         for it in items {
@@ -144,23 +165,46 @@ impl MachineCtx {
                             return err(lo.span, "a domain is `lo .. hi` over numbers");
                         };
                         if da != db {
-                            return err(lo.span.to(hi.span), format!("domain ends differ in dimension: {} and {}", da.describe(), db.describe()));
+                            return err(
+                                lo.span.to(hi.span),
+                                format!(
+                                    "domain ends differ in dimension: {} and {}",
+                                    da.describe(),
+                                    db.describe()
+                                ),
+                            );
                         }
                         if let Some(td) = Dim::of_type_name(t) {
                             if td != *da {
-                                return err(lo.span, format!("domain {t} is {}, but the bounds are {}", td.describe(), da.describe()));
+                                return err(
+                                    lo.span,
+                                    format!(
+                                        "domain {t} is {}, but the bounds are {}",
+                                        td.describe(),
+                                        da.describe()
+                                    ),
+                                );
                             }
                         }
                         let (Some(ai), Some(bi)) = (a.as_int(), b.as_int()) else {
-                            return err(lo.span, "domain bounds must be whole base units (e.g. 0 cr .. 3 cr)");
+                            return err(
+                                lo.span,
+                                "domain bounds must be whole base units (e.g. 0 cr .. 3 cr)",
+                            );
                         };
                         if bi - ai > 100_000 {
                             return err(lo.span, "domain has more than 100,000 values");
                         }
-                        let set: BTreeSet<Value> = (ai..=bi).map(|i| Value::Num(Num::int(i), *da)).collect();
+                        let set: BTreeSet<Value> =
+                            (ai..=bi).map(|i| Value::Num(Num::int(i), *da)).collect();
                         m.sets.insert(t.clone(), Value::Set(set.into()));
                     }
-                    MOpt::Const(n, e) if !decl.items.iter().any(|i| matches!(i, MItem::Const { name, .. } if name == n)) => {
+                    MOpt::Const(n, e)
+                        if !decl
+                            .items
+                            .iter()
+                            .any(|i| matches!(i, MItem::Const { name, .. } if name == n)) =>
+                    {
                         return err(e.span, format!("machine {} has no const `{n}`", decl.name));
                     }
                     _ => {}
@@ -169,14 +213,24 @@ impl MachineCtx {
         }
         // Constants, in declaration order: model or scenario value, else the default.
         for it in &decl.items {
-            if let MItem::Const { name, ty, default, span } = it {
+            if let MItem::Const {
+                name,
+                ty,
+                default,
+                span,
+            } = it
+            {
                 let given_model = model.and_then(|(md, mpack)| {
                     md.opts.iter().find_map(|o| match o {
                         MOpt::Const(n, e) if n == name => Some((e, mpack)),
                         _ => None,
                     })
                 });
-                let given = consts.iter().find(|c| c.name == *name).map(|c| (c.expr, c.pack)).or(given_model);
+                let given = consts
+                    .iter()
+                    .find(|c| c.name == *name)
+                    .map(|c| (c.expr, c.pack))
+                    .or(given_model);
                 let v = match (given, default) {
                     (Some((e, p)), _) => {
                         let mut env = Env::machine(prog, &m, None);
@@ -194,17 +248,38 @@ impl MachineCtx {
             }
         }
         for c in consts {
-            if !m.consts.contains_key(&c.name) && !decl.items.iter().any(|i| matches!(i, MItem::Var { name, .. } if *name == c.name)) {
-                return err(c.expr.span, format!("machine {} has no const or var `{}`", decl.name, c.name));
+            if !m.consts.contains_key(&c.name)
+                && !decl
+                    .items
+                    .iter()
+                    .any(|i| matches!(i, MItem::Var { name, .. } if *name == c.name))
+            {
+                return err(
+                    c.expr.span,
+                    format!("machine {} has no const or var `{}`", decl.name, c.name),
+                );
             }
         }
         for it in &decl.items {
-            if let MItem::Var { name, ty, optional, init, span } = it {
+            if let MItem::Var {
+                name,
+                ty,
+                optional,
+                init,
+                span,
+            } = it
+            {
                 if m.var_index.contains_key(name) || m.consts.contains_key(name) {
                     return err(*span, format!("`{name}` is declared twice"));
                 }
                 m.var_index.insert(name.clone(), m.vars.len());
-                m.vars.push(VarInfo { name: name.clone(), ty: ty.clone(), optional: *optional, init: init.clone(), span: *span });
+                m.vars.push(VarInfo {
+                    name: name.clone(),
+                    ty: ty.clone(),
+                    optional: *optional,
+                    init: init.clone(),
+                    span: *span,
+                });
             }
         }
         Ok(m)
@@ -260,26 +335,45 @@ impl MachineCtx {
         let mut seen = BTreeSet::new();
         states.retain(|s| seen.insert(s.clone()));
         for s in &states {
-            if let Some((i, Value::Unknown(r))) = s.iter().enumerate().find(|(_, v)| matches!(v, Value::Unknown(_))) {
-                return err(self.vars[i].span, format!("initial value of `{}` is unknown: {r}", self.vars[i].name));
+            if let Some((i, Value::Unknown(r))) = s
+                .iter()
+                .enumerate()
+                .find(|(_, v)| matches!(v, Value::Unknown(_)))
+            {
+                return err(
+                    self.vars[i].span,
+                    format!("initial value of `{}` is unknown: {r}", self.vars[i].name),
+                );
             }
         }
         Ok(states)
     }
 
     fn apply(&self, cur: &[Value], b: &Branch) -> State {
-        cur.iter().zip(&b.next).map(|(c, n)| n.clone().unwrap_or_else(|| c.clone())).collect()
+        cur.iter()
+            .zip(&b.next)
+            .map(|(c, n)| n.clone().unwrap_or_else(|| c.clone()))
+            .collect()
     }
 
     /// The values each parameter of `a` ranges over in state `cur`.
-    pub fn param_values(&self, prog: &Program, a: &ActionDecl, cur: &[Value]) -> Result<Vec<Vec<Value>>, Diag> {
+    pub fn param_values(
+        &self,
+        prog: &Program,
+        a: &ActionDecl,
+        cur: &[Value],
+    ) -> Result<Vec<Vec<Value>>, Diag> {
         let mut out = Vec::new();
         for p in &a.params {
             let vals = match &p.dom {
                 ADom::In(e) => {
                     let mut env = Env::machine(prog, self, Some(cur));
                     let set = env.eval(e)?;
-                    set_elems(&set, e.span, &format!("the domain of parameter `{}`", p.name))?
+                    set_elems(
+                        &set,
+                        e.span,
+                        &format!("the domain of parameter `{}`", p.name),
+                    )?
                 }
                 ADom::Type(t) => {
                     let n = t.name().unwrap_or("");
@@ -300,7 +394,12 @@ impl MachineCtx {
     }
 
     /// All successors of one action from `cur`, over every parameter combination.
-    pub fn successors(&self, prog: &Program, a: &ActionDecl, cur: &[Value]) -> Result<Vec<Succ>, Diag> {
+    pub fn successors(
+        &self,
+        prog: &Program,
+        a: &ActionDecl,
+        cur: &[Value],
+    ) -> Result<Vec<Succ>, Diag> {
         let domains = self.param_values(prog, a, cur)?;
         let mut combos: Vec<Vec<(String, Value)>> = vec![vec![]];
         for (p, vals) in a.params.iter().zip(&domains) {
@@ -317,20 +416,38 @@ impl MachineCtx {
         let mut out = Vec::new();
         for params in combos {
             for s in self.step(prog, a, &params, cur)? {
-                out.push(Succ { params: params.clone(), next: s });
+                out.push(Succ {
+                    params: params.clone(),
+                    next: s,
+                });
             }
         }
         Ok(out)
     }
 
     /// Successor states of one action with fixed parameter values.
-    pub fn step(&self, prog: &Program, a: &ActionDecl, params: &[(String, Value)], cur: &[Value]) -> Result<Vec<State>, Diag> {
+    pub fn step(
+        &self,
+        prog: &Program,
+        a: &ActionDecl,
+        params: &[(String, Value)],
+        cur: &[Value],
+    ) -> Result<Vec<State>, Diag> {
         let branches = self.exec(prog, &a.body, cur, params.to_vec())?;
         Ok(branches.iter().map(|b| self.apply(cur, b)).collect())
     }
 
-    fn exec(&self, prog: &Program, body: &[Stmt], cur: &[Value], locals: Vec<(String, Value)>) -> Result<Vec<Branch>, Diag> {
-        let mut branches = vec![Branch { next: vec![None; self.vars.len()], locals }];
+    fn exec(
+        &self,
+        prog: &Program,
+        body: &[Stmt],
+        cur: &[Value],
+        locals: Vec<(String, Value)>,
+    ) -> Result<Vec<Branch>, Diag> {
+        let mut branches = vec![Branch {
+            next: vec![None; self.vars.len()],
+            locals,
+        }];
         for st in body {
             let mut out = Vec::new();
             for b in branches {
@@ -344,7 +461,14 @@ impl MachineCtx {
         Ok(branches)
     }
 
-    fn exec_stmt(&self, prog: &Program, st: &Stmt, cur: &[Value], b: Branch, out: &mut Vec<Branch>) -> Result<(), Diag> {
+    fn exec_stmt(
+        &self,
+        prog: &Program,
+        st: &Stmt,
+        cur: &[Value],
+        b: Branch,
+        out: &mut Vec<Branch>,
+    ) -> Result<(), Diag> {
         let eval = |b: &Branch, e: &Expr| -> Result<Value, Diag> {
             let mut env = Env::machine(prog, self, Some(cur));
             env.next = Some(&b.next);
@@ -356,11 +480,20 @@ impl MachineCtx {
                 Value::Bool(true) => out.push(b),
                 Value::Bool(false) => {}
                 Value::Unknown(r) => return err(e.span, format!("guard is unknown: {r}")),
-                v => return err(e.span, format!("a guard must be a Bool, found {} {v}", v.type_name())),
+                v => {
+                    return err(
+                        e.span,
+                        format!("a guard must be a Bool, found {} {v}", v.type_name()),
+                    )
+                }
             },
             StmtKind::Assign(x, e) => {
                 let Some(&i) = self.var_index.get(x) else {
-                    let what = if self.consts.contains_key(x) { "a const, which can't be assigned" } else { "not a state variable" };
+                    let what = if self.consts.contains_key(x) {
+                        "a const, which can't be assigned"
+                    } else {
+                        "not a state variable"
+                    };
                     return err(st.span, format!("`{x}` is {what}"));
                 };
                 if b.next[i].is_some() {
@@ -389,7 +522,12 @@ impl MachineCtx {
                 let body = match eval(&b, c)? {
                     Value::Bool(true) => then,
                     Value::Bool(false) => els,
-                    v => return err(c.span, format!("an `if` condition must be a Bool, found {v}")),
+                    v => {
+                        return err(
+                            c.span,
+                            format!("an `if` condition must be a Bool, found {v}"),
+                        )
+                    }
                 };
                 let mut bs = vec![b];
                 for s2 in body {
@@ -453,18 +591,29 @@ pub fn admits(prog: &Program, pack: usize, ty: &TypeExpr, v: &Value, optional: b
         let int_only = ty.name() == Some("Int");
         return matches!(v, Value::Num(n, vd) if *vd == d && (!int_only || n.as_int().is_some()));
     }
-    let TypeExpr::Named(n, args, _) = ty else { return true };
+    let TypeExpr::Named(n, args, _) = ty else {
+        return true;
+    };
     match (n.as_str(), v) {
         ("Bool", Value::Bool(_)) | ("String", Value::Str(_)) => true,
         ("Bool" | "String", _) => false,
-        ("List", Value::List(xs)) => args.first().is_none_or(|t| xs.iter().all(|x| admits(prog, pack, t, x, false))),
-        ("Set", Value::Set(xs)) => args.first().is_none_or(|t| xs.iter().all(|x| admits(prog, pack, t, x, false))),
+        ("List", Value::List(xs)) => args
+            .first()
+            .is_none_or(|t| xs.iter().all(|x| admits(prog, pack, t, x, false))),
+        ("Set", Value::Set(xs)) => args
+            .first()
+            .is_none_or(|t| xs.iter().all(|x| admits(prog, pack, t, x, false))),
         ("Map", Value::Map(m)) => {
-            args.len() != 2 || m.iter().all(|(k, x)| admits(prog, pack, &args[0], k, false) && admits(prog, pack, &args[1], x, false))
+            args.len() != 2
+                || m.iter().all(|(k, x)| {
+                    admits(prog, pack, &args[0], k, false) && admits(prog, pack, &args[1], x, false)
+                })
         }
         ("List" | "Set" | "Map", _) => false,
         _ => match prog.lookup_decl(pack, n).map(|r| prog.item(r)) {
-            Some(Item::Enum(e)) => matches!(v, Value::Str(s) if e.members.iter().any(|m| *m.0 == **s)),
+            Some(Item::Enum(e)) => {
+                matches!(v, Value::Str(s) if e.members.iter().any(|m| *m.0 == **s))
+            }
             _ => true,
         },
     }

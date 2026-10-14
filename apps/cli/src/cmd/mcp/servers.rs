@@ -8,13 +8,23 @@ use std::thread;
 use std::time::Duration;
 
 use clap::{Args, Subcommand};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
-use crate::ctx::{self, confirm, Ctx};
+use crate::ctx::{self, Ctx, confirm};
 
 /// The fields a server's config keeps. An edit sends exactly these (the id cannot change).
-const CONFIG_KEYS: [&str; 10] =
-    ["name", "enabled", "transport", "env", "headers", "tools", "access", "limits", "allow_private", "storage"];
+const CONFIG_KEYS: [&str; 10] = [
+    "name",
+    "enabled",
+    "transport",
+    "env",
+    "headers",
+    "tools",
+    "access",
+    "limits",
+    "allow_private",
+    "storage",
+];
 
 #[derive(Subcommand, Debug)]
 pub enum ServersCmd {
@@ -177,9 +187,26 @@ pub fn run(api: &Ctx, sub: ServersCmd) -> Result<(), String> {
             api.out(&view, print_view);
             Ok(())
         }
-        ServersCmd::Add { preset, custom, id, transport, fields } => {
-            let catalog = if preset.is_some() { api.client.get("/v1/mcp/catalog")? } else { Value::Null };
-            let body = new_config(&catalog, preset.as_deref(), custom, id.as_deref(), transport.as_deref(), &fields)?;
+        ServersCmd::Add {
+            preset,
+            custom,
+            id,
+            transport,
+            fields,
+        } => {
+            let catalog = if preset.is_some() {
+                api.client.get("/v1/mcp/catalog")?
+            } else {
+                Value::Null
+            };
+            let body = new_config(
+                &catalog,
+                preset.as_deref(),
+                custom,
+                id.as_deref(),
+                transport.as_deref(),
+                &fields,
+            )?;
             let view = api.client.post("/v1/mcp/servers", &body)?;
             api.out(&view, print_view);
             Ok(())
@@ -192,23 +219,36 @@ pub fn run(api: &Ctx, sub: ServersCmd) -> Result<(), String> {
             Ok(())
         }
         ServersCmd::Delete { id, purge, yes } => {
-            let volume = if purge { " and purge its storage volume" } else { "" };
-            if !confirm(yes, &format!("Delete MCP server {id}{volume}. Its vault bindings are removed."))? {
+            let volume = if purge {
+                " and purge its storage volume"
+            } else {
+                ""
+            };
+            if !confirm(
+                yes,
+                &format!("Delete MCP server {id}{volume}. Its vault bindings are removed."),
+            )? {
                 println!("cancelled");
                 return Ok(());
             }
             let query = if purge { "?purge=1" } else { "" };
             api.client.delete(&format!("{}{query}", path(&id)))?;
-            api.out(&json!({ "deleted": id }), |_| println!("deleted MCP server {id}"));
+            api.out(&json!({ "deleted": id }), |_| {
+                println!("deleted MCP server {id}")
+            });
             Ok(())
         }
         ServersCmd::Start { id } => {
-            let view = api.client.post(&format!("{}/start", path(&id)), &json!({}))?;
+            let view = api
+                .client
+                .post(&format!("{}/start", path(&id)), &json!({}))?;
             api.out(&view, print_view);
             Ok(())
         }
         ServersCmd::Stop { id } => {
-            let view = api.client.post(&format!("{}/stop", path(&id)), &json!({}))?;
+            let view = api
+                .client
+                .post(&format!("{}/stop", path(&id)), &json!({}))?;
             api.out(&view, print_view);
             Ok(())
         }
@@ -245,7 +285,10 @@ fn path(id: &str) -> String {
 /// A value on the command line: a vault secret by its name (with an optional header format), or a plain value.
 #[derive(Debug, Clone, PartialEq)]
 enum Reference {
-    Vault { secret: String, format: Option<String> },
+    Vault {
+        secret: String,
+        format: Option<String>,
+    },
     Plain(String),
 }
 
@@ -259,8 +302,10 @@ enum Assign {
 /// Reads `NAME=@vault:SECRET`, `NAME=@vault:SECRET|FORMAT`, `NAME=@plain:TEXT` or `NAME=`. A raw value is refused:
 /// secrets are named in the vault, never typed on the command line.
 fn parse_assign(text: &str) -> Result<Assign, String> {
-    let (name, reference) =
-        text.split_once('=').filter(|(name, _)| !name.is_empty()).ok_or_else(|| format!("{text}: write NAME=@vault:SECRET or NAME=@plain:TEXT"))?;
+    let (name, reference) = text
+        .split_once('=')
+        .filter(|(name, _)| !name.is_empty())
+        .ok_or_else(|| format!("{text}: write NAME=@vault:SECRET or NAME=@plain:TEXT"))?;
     if reference.is_empty() {
         return Ok(Assign::Unset(name.to_string()));
     }
@@ -272,12 +317,23 @@ fn parse_assign(text: &str) -> Result<Assign, String> {
         if secret.is_empty() {
             return Err(format!("{name}: @vault: names a vault secret"));
         }
-        return Ok(Assign::Set(name.to_string(), Reference::Vault { secret: secret.to_string(), format }));
+        return Ok(Assign::Set(
+            name.to_string(),
+            Reference::Vault {
+                secret: secret.to_string(),
+                format,
+            },
+        ));
     }
     if let Some(plain) = reference.strip_prefix("@plain:") {
-        return Ok(Assign::Set(name.to_string(), Reference::Plain(plain.to_string())));
+        return Ok(Assign::Set(
+            name.to_string(),
+            Reference::Plain(plain.to_string()),
+        ));
     }
-    Err(format!("{name}: a value is @vault:SECRET (a vault secret) or @plain:TEXT (a plain value); a raw secret is not taken on the command line"))
+    Err(format!(
+        "{name}: a value is @vault:SECRET (a vault secret) or @plain:TEXT (a plain value); a raw secret is not taken on the command line"
+    ))
 }
 
 fn assigns(texts: &[String]) -> Result<Vec<Assign>, String> {
@@ -286,7 +342,11 @@ fn assigns(texts: &[String]) -> Result<Vec<Assign>, String> {
 
 /// The setting a reference is in the config. A header's format is its own, else the one given (a preset's, or the
 /// one the header already has).
-fn setting(reference: &Reference, header: bool, default_format: Option<&str>) -> Result<Value, String> {
+fn setting(
+    reference: &Reference,
+    header: bool,
+    default_format: Option<&str>,
+) -> Result<Value, String> {
     match reference {
         Reference::Plain(text) => Ok(json!({ "value": text })),
         Reference::Vault { secret, format } => {
@@ -314,24 +374,47 @@ fn fixed_env(spec: &Value) -> Vec<(String, String)> {
         .as_array()
         .into_iter()
         .flatten()
-        .filter_map(|pair| Some((pair.get(0)?.as_str()?.to_string(), pair.get(1)?.as_str()?.to_string())))
+        .filter_map(|pair| {
+            Some((
+                pair.get(0)?.as_str()?.to_string(),
+                pair.get(1)?.as_str()?.to_string(),
+            ))
+        })
         .collect()
 }
 
 /// The env or headers a preset's specs and the flags make. Each spec takes the flag that names it; a required spec
 /// with no flag is refused unless the preset fixes its value. The preset's fixed settings are filled in unless a flag
 /// names them, and flags that name no spec are kept too.
-fn bound(specs: &Value, fixed: &[(String, String)], flags: &[Assign], header: bool) -> Result<Map<String, Value>, String> {
+fn bound(
+    specs: &Value,
+    fixed: &[(String, String)],
+    flags: &[Assign],
+    header: bool,
+) -> Result<Map<String, Value>, String> {
     let flag = if header { "--header" } else { "--env" };
     let mut out = Map::new();
     let spec_list: Vec<&Value> = specs.as_array().into_iter().flatten().collect();
     for spec in &spec_list {
         let name = ctx::s(spec, "name");
-        let default_format = if header { spec["format"].as_str() } else { None };
+        let default_format = if header {
+            spec["format"].as_str()
+        } else {
+            None
+        };
         if let Some(reference) = reference_for(flags, name) {
-            out.insert(name.to_string(), setting(reference, header, default_format)?);
-        } else if spec["required"].as_bool() == Some(true) && !fixed.iter().any(|(key, _)| key == name) {
-            let example = if spec["secret"].as_bool() == Some(true) { "@vault:SECRET" } else { "@plain:VALUE" };
+            out.insert(
+                name.to_string(),
+                setting(reference, header, default_format)?,
+            );
+        } else if spec["required"].as_bool() == Some(true)
+            && !fixed.iter().any(|(key, _)| key == name)
+        {
+            let example = if spec["secret"].as_bool() == Some(true) {
+                "@vault:SECRET"
+            } else {
+                "@plain:VALUE"
+            };
             return Err(format!("{name} is required: pass {flag} {name}={example}"));
         }
     }
@@ -363,13 +446,21 @@ fn find_preset<'a>(catalog: &'a Value, id: &str) -> Result<&'a Value, String> {
 fn preset_transport(preset: &Value) -> Result<Value, String> {
     let id = ctx::s(preset, "id");
     if ctx::s(preset, "transport") == "stdio" {
-        let image = preset["image"]
-            .as_str()
-            .ok_or_else(|| format!("{id} has no official image: add it with --custom --transport container --image IMG"))?;
-        let command = preset.get("command").filter(|c| c.is_array()).cloned().unwrap_or_else(|| json!([]));
+        let image = preset["image"].as_str().ok_or_else(|| {
+            format!(
+                "{id} has no official image: add it with --custom --transport container --image IMG"
+            )
+        })?;
+        let command = preset
+            .get("command")
+            .filter(|c| c.is_array())
+            .cloned()
+            .unwrap_or_else(|| json!([]));
         return Ok(json!({ "kind": "stdio", "image": image, "command": command }));
     }
-    let url = preset["url"].as_str().ok_or_else(|| format!("{id} has no URL in the catalog"))?;
+    let url = preset["url"]
+        .as_str()
+        .ok_or_else(|| format!("{id} has no URL in the catalog"))?;
     Ok(json!({ "kind": "http", "url": url }))
 }
 
@@ -379,14 +470,20 @@ fn custom_transport(kind: Option<&str>, fields: &Fields) -> Result<Value, String
             if fields.url.is_some() {
                 return Err("--url goes with --transport remote".to_string());
             }
-            let image = fields.image.as_deref().ok_or("--image IMG is required for a container server")?;
+            let image = fields
+                .image
+                .as_deref()
+                .ok_or("--image IMG is required for a container server")?;
             Ok(json!({ "kind": "stdio", "image": image, "command": fields.arg }))
         }
         Some("remote") => {
             if fields.image.is_some() || !fields.arg.is_empty() {
                 return Err("--image and --arg go with --transport container".to_string());
             }
-            let url = fields.url.as_deref().ok_or("--url URL is required for a remote server")?;
+            let url = fields
+                .url
+                .as_deref()
+                .ok_or("--url URL is required for a remote server")?;
             Ok(json!({ "kind": "http", "url": url }))
         }
         _ => Err("--transport container or remote is required with --custom".to_string()),
@@ -408,26 +505,51 @@ pub fn new_config(
     let (id, name, transport, env, headers, volume) = match (preset, custom) {
         (Some(preset), false) => {
             if transport.is_some() {
-                return Err("--transport goes with --custom: a preset fixes its transport".to_string());
+                return Err(
+                    "--transport goes with --custom: a preset fixes its transport".to_string(),
+                );
             }
             if fields.image.is_some() || fields.url.is_some() || !fields.arg.is_empty() {
-                return Err("--image, --url and --arg go with --custom: a preset fixes its image or URL".to_string());
+                return Err(
+                    "--image, --url and --arg go with --custom: a preset fixes its image or URL"
+                        .to_string(),
+                );
             }
             let spec = find_preset(catalog, preset)?;
             let env = bound(&spec["env"], &fixed_env(spec), &env_flags, false)?;
             let headers = bound(&spec["headers"], &[], &header_flags, true)?;
             let name = ctx::s(spec, "name").to_string();
             let volume = spec["volume"].as_bool() == Some(true);
-            (id.unwrap_or(preset).to_string(), name, preset_transport(spec)?, env, headers, volume)
+            (
+                id.unwrap_or(preset).to_string(),
+                name,
+                preset_transport(spec)?,
+                env,
+                headers,
+                volume,
+            )
         }
         (None, true) => {
             let id = id.ok_or("--id is required with --custom")?;
             let env = bound(&json!([]), &[], &env_flags, false)?;
             let headers = bound(&json!([]), &[], &header_flags, true)?;
-            (id.to_string(), id.to_string(), custom_transport(transport, fields)?, env, headers, false)
+            (
+                id.to_string(),
+                id.to_string(),
+                custom_transport(transport, fields)?,
+                env,
+                headers,
+                false,
+            )
         }
-        (Some(_), true) => return Err("--preset and --custom are two ways to add a server: give one".to_string()),
-        (None, false) => return Err("give --preset NAME for a preset, or --custom with --transport".to_string()),
+        (Some(_), true) => {
+            return Err("--preset and --custom are two ways to add a server: give one".to_string());
+        }
+        (None, false) => {
+            return Err(
+                "give --preset NAME for a preset, or --custom with --transport".to_string(),
+            );
+        }
     };
     let mut config = json!({
         "id": id,
@@ -450,7 +572,10 @@ pub fn new_config(
 pub fn edit_body(current: &Value, fields: &Fields) -> Result<Value, String> {
     let mut config = Map::new();
     for key in CONFIG_KEYS {
-        config.insert(key.to_string(), current.get(key).cloned().unwrap_or(Value::Null));
+        config.insert(
+            key.to_string(),
+            current.get(key).cloned().unwrap_or(Value::Null),
+        );
     }
     let mut config = Value::Object(config);
     apply(&mut config, fields)?;
@@ -472,7 +597,9 @@ fn merge_settings(map: &mut Value, flags: &[String], header: bool) -> Result<(),
             Assign::Set(name, reference) => {
                 let kept = map[name.as_str()]["format"].as_str().map(str::to_string);
                 let value = setting(&reference, header, kept.as_deref())?;
-                map.as_object_mut().ok_or("the settings are not an object")?.insert(name, value);
+                map.as_object_mut()
+                    .ok_or("the settings are not an object")?
+                    .insert(name, value);
             }
         }
     }
@@ -516,7 +643,10 @@ fn apply_transport(config: &mut Value, fields: &Fields) -> Result<(), String> {
     }
     if let Some(image) = &fields.image {
         let command = if fields.arg.is_empty() {
-            config["transport"].get("command").cloned().unwrap_or_else(|| json!([]))
+            config["transport"]
+                .get("command")
+                .cloned()
+                .unwrap_or_else(|| json!([]))
         } else {
             json!(fields.arg)
         };
@@ -598,7 +728,11 @@ fn pick_text(pick: &Value, empty: &str) -> String {
     match pick {
         Value::String(word) => word.clone(),
         Value::Array(names) if names.is_empty() => empty.to_string(),
-        Value::Array(names) => names.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", "),
+        Value::Array(names) => names
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>()
+            .join(", "),
         _ => empty.to_string(),
     }
 }
@@ -616,9 +750,17 @@ fn setting_text(setting: &Value) -> String {
 }
 
 fn bindings_text(settings: &Value) -> String {
-    let parts: Vec<String> =
-        settings.as_object().into_iter().flatten().map(|(name, setting)| format!("{name}={}", setting_text(setting))).collect();
-    if parts.is_empty() { "(none)".to_string() } else { parts.join(", ") }
+    let parts: Vec<String> = settings
+        .as_object()
+        .into_iter()
+        .flatten()
+        .map(|(name, setting)| format!("{name}={}", setting_text(setting)))
+        .collect();
+    if parts.is_empty() {
+        "(none)".to_string()
+    } else {
+        parts.join(", ")
+    }
 }
 
 /// The first line of the last error, while the server is not running.
@@ -626,7 +768,11 @@ fn error_line(server: &Value) -> String {
     if ctx::s(server, "status") == "running" {
         return String::new();
     }
-    server["last_error"].as_str().and_then(|error| error.lines().next()).unwrap_or_default().to_string()
+    server["last_error"]
+        .as_str()
+        .and_then(|error| error.lines().next())
+        .unwrap_or_default()
+        .to_string()
 }
 
 fn print_list(servers: &Value) {
@@ -639,14 +785,30 @@ fn print_list(servers: &Value) {
                 ctx::s(server, "id").to_string(),
                 ctx::s(server, "name").to_string(),
                 transport_text(&server["transport"]),
-                if server["enabled"].as_bool() == Some(true) { "on" } else { "off" }.to_string(),
+                if server["enabled"].as_bool() == Some(true) {
+                    "on"
+                } else {
+                    "off"
+                }
+                .to_string(),
                 ctx::s(server, "status").to_string(),
                 ctx::text(server, "tools_count"),
                 error_line(server),
             ]
         })
         .collect();
-    ctx::table(&["id", "name", "transport", "switch", "status", "tools", "last error"], &rows);
+    ctx::table(
+        &[
+            "id",
+            "name",
+            "transport",
+            "switch",
+            "status",
+            "tools",
+            "last error",
+        ],
+        &rows,
+    );
 }
 
 /// What a preset needs: its required settings, a secret marked `(vault)`.
@@ -655,12 +817,20 @@ fn needs_text(preset: &Value) -> String {
     for key in ["env", "headers"] {
         for spec in preset[key].as_array().into_iter().flatten() {
             if spec["required"].as_bool() == Some(true) {
-                let vault = if spec["secret"].as_bool() == Some(true) { " (vault)" } else { "" };
+                let vault = if spec["secret"].as_bool() == Some(true) {
+                    " (vault)"
+                } else {
+                    ""
+                };
                 needs.push(format!("{}{vault}", ctx::s(spec, "name")));
             }
         }
     }
-    if needs.is_empty() { "nothing".to_string() } else { needs.join(", ") }
+    if needs.is_empty() {
+        "nothing".to_string()
+    } else {
+        needs.join(", ")
+    }
 }
 
 fn print_catalog(presets: &Value) {
@@ -670,21 +840,32 @@ fn print_catalog(presets: &Value) {
         .flatten()
         .map(|preset| {
             let target = if ctx::s(preset, "transport") == "stdio" {
-                preset["image"].as_str().unwrap_or("(no image: use --custom)").to_string()
+                preset["image"]
+                    .as_str()
+                    .unwrap_or("(no image: use --custom)")
+                    .to_string()
             } else {
                 ctx::s(preset, "url").to_string()
             };
             vec![
                 ctx::s(preset, "id").to_string(),
                 ctx::s(preset, "name").to_string(),
-                if ctx::s(preset, "transport") == "stdio" { "container" } else { "remote" }.to_string(),
+                if ctx::s(preset, "transport") == "stdio" {
+                    "container"
+                } else {
+                    "remote"
+                }
+                .to_string(),
                 target,
                 needs_text(preset),
                 ctx::s(preset, "status").to_string(),
             ]
         })
         .collect();
-    ctx::table(&["id", "name", "transport", "target", "needs", "status"], &rows);
+    ctx::table(
+        &["id", "name", "transport", "target", "needs", "status"],
+        &rows,
+    );
 }
 
 fn print_view(view: &Value) {
@@ -702,13 +883,28 @@ fn print_view(view: &Value) {
     ctx::fields(&[
         ("id", ctx::s(view, "id").to_string()),
         ("name", ctx::s(view, "name").to_string()),
-        ("switch", if view["enabled"].as_bool() == Some(true) { "on" } else { "off" }.to_string()),
+        (
+            "switch",
+            if view["enabled"].as_bool() == Some(true) {
+                "on"
+            } else {
+                "off"
+            }
+            .to_string(),
+        ),
         ("status", ctx::s(view, "status").to_string()),
         ("transport", transport_text(&view["transport"])),
         ("tools", ctx::text(view, "tools_count")),
         ("server", server),
         ("last error", error_line_or_dash(view)),
-        ("last used", if last_used == 0 { "never".to_string() } else { ctx::ago(&json!(last_used)) }),
+        (
+            "last used",
+            if last_used == 0 {
+                "never".to_string()
+            } else {
+                ctx::ago(&json!(last_used))
+            },
+        ),
         ("roles", pick_text(&view["access"]["roles"], "nobody")),
         ("nodes", pick_text(&view["access"]["nodes"], "nobody")),
         ("tool allow", pick_text(&view["tools"]["allow"], "none")),
@@ -730,7 +926,11 @@ fn print_view(view: &Value) {
 
 fn error_line_or_dash(view: &Value) -> String {
     let line = error_line(view);
-    if line.is_empty() { "-".to_string() } else { line }
+    if line.is_empty() {
+        "-".to_string()
+    } else {
+        line
+    }
 }
 
 /// The tool rows: the name the server gives, the name agents see, the risk, and whether the allow list offers it.
@@ -744,7 +944,12 @@ fn tool_cells(tool: &Value) -> Vec<String> {
 }
 
 fn print_tools(tools: &Value) {
-    let rows: Vec<Vec<String>> = tools.as_array().into_iter().flatten().map(tool_cells).collect();
+    let rows: Vec<Vec<String>> = tools
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(tool_cells)
+        .collect();
     ctx::table(&["tool", "agent name", "risk", "allowed"], &rows);
 }
 
@@ -758,15 +963,30 @@ fn print_test(result: &Value) {
         return;
     }
     let info = &result["server_info"];
-    println!("ok in {ms} ms: {} {} ({})", ctx::s(info, "name"), ctx::s(info, "version"), ctx::s(info, "protocol"));
-    let tools: Vec<Vec<String>> = result["tools"].as_array().into_iter().flatten().map(tool_cells).collect();
+    println!(
+        "ok in {ms} ms: {} {} ({})",
+        ctx::s(info, "name"),
+        ctx::s(info, "version"),
+        ctx::s(info, "protocol")
+    );
+    let tools: Vec<Vec<String>> = result["tools"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(tool_cells)
+        .collect();
     println!("{} tools:", tools.len());
     ctx::table(&["tool", "agent name", "risk", "allowed"], &tools);
 }
 
 /// One log line: when it was written, its stream, its text.
 fn log_text(line: &Value) -> String {
-    format!("{} {:<6} {}", ctx::when(&line["ts_ms"]), ctx::s(line, "stream"), ctx::s(line, "line"))
+    format!(
+        "{} {:<6} {}",
+        ctx::when(&line["ts_ms"]),
+        ctx::s(line, "stream"),
+        ctx::s(line, "line")
+    )
 }
 
 fn logs(api: &Ctx, id: &str, limit: u64, follow: bool) -> Result<(), String> {
@@ -785,7 +1005,12 @@ fn logs(api: &Ctx, id: &str, limit: u64, follow: bool) -> Result<(), String> {
     loop {
         let mut next_seen = HashSet::new();
         for line in window.as_array().into_iter().flatten() {
-            let key = format!("{}|{}|{}", ctx::text(line, "ts_ms"), ctx::s(line, "stream"), ctx::s(line, "line"));
+            let key = format!(
+                "{}|{}|{}",
+                ctx::text(line, "ts_ms"),
+                ctx::s(line, "stream"),
+                ctx::s(line, "line")
+            );
             if !seen.contains(&key) {
                 if api.json {
                     println!("{line}");
@@ -869,29 +1094,58 @@ mod tests {
     fn a_binding_names_a_vault_secret_or_a_plain_value_and_never_a_raw_one() {
         assert_eq!(
             parse_assign("GITHUB_PERSONAL_ACCESS_TOKEN=@vault:GH_TOKEN").unwrap(),
-            Assign::Set("GITHUB_PERSONAL_ACCESS_TOKEN".into(), Reference::Vault { secret: "GH_TOKEN".into(), format: None })
+            Assign::Set(
+                "GITHUB_PERSONAL_ACCESS_TOKEN".into(),
+                Reference::Vault {
+                    secret: "GH_TOKEN".into(),
+                    format: None
+                }
+            )
         );
         assert_eq!(
             parse_assign("Authorization=@vault:LINEAR_KEY|Bearer {}").unwrap(),
             Assign::Set(
                 "Authorization".into(),
-                Reference::Vault { secret: "LINEAR_KEY".into(), format: Some("Bearer {}".into()) }
+                Reference::Vault {
+                    secret: "LINEAR_KEY".into(),
+                    format: Some("Bearer {}".into())
+                }
             )
         );
-        assert_eq!(parse_assign("GITHUB_HOST=@plain:https://ghe.test").unwrap(), Assign::Set("GITHUB_HOST".into(), Reference::Plain("https://ghe.test".into())));
-        assert_eq!(parse_assign("GITHUB_HOST=").unwrap(), Assign::Unset("GITHUB_HOST".into()));
-        assert!(parse_assign("GITHUB_PERSONAL_ACCESS_TOKEN=ghp_rawsecret").is_err(), "a raw value is refused");
+        assert_eq!(
+            parse_assign("GITHUB_HOST=@plain:https://ghe.test").unwrap(),
+            Assign::Set(
+                "GITHUB_HOST".into(),
+                Reference::Plain("https://ghe.test".into())
+            )
+        );
+        assert_eq!(
+            parse_assign("GITHUB_HOST=").unwrap(),
+            Assign::Unset("GITHUB_HOST".into())
+        );
+        assert!(
+            parse_assign("GITHUB_PERSONAL_ACCESS_TOKEN=ghp_rawsecret").is_err(),
+            "a raw value is refused"
+        );
         assert!(parse_assign("NO_EQUALS").is_err());
         assert!(parse_assign("=@vault:X").is_err(), "a binding needs a name");
-        assert!(parse_assign("X=@vault:").is_err(), "@vault: needs a secret name");
+        assert!(
+            parse_assign("X=@vault:").is_err(),
+            "@vault: needs a secret name"
+        );
     }
 
     #[test]
     fn a_format_goes_with_a_header_only() {
         let env = parse_assign("TOKEN=@vault:GH|Bearer {}").unwrap();
-        let Assign::Set(name, reference) = env else { panic!("a set") };
+        let Assign::Set(name, reference) = env else {
+            panic!("a set")
+        };
         assert_eq!(name, "TOKEN");
-        assert!(setting(&reference, false, None).is_err(), "an env var takes no format");
+        assert!(
+            setting(&reference, false, None).is_err(),
+            "an env var takes no format"
+        );
         assert!(setting(&reference, true, None).is_ok());
     }
 
@@ -909,20 +1163,54 @@ mod tests {
         assert_eq!(body["id"], "github", "the preset id is the default id");
         assert_eq!(body["name"], "GitHub");
         assert_eq!(body["enabled"], true);
-        assert_eq!(body["transport"], json!({ "kind": "stdio", "image": "ghcr.io/github/github-mcp-server", "command": [] }));
-        assert_eq!(body["env"]["GITHUB_PERSONAL_ACCESS_TOKEN"], json!({ "secret": "GH_TOKEN" }));
-        assert_eq!(body["env"]["GITHUB_TOOLSETS"], json!({ "value": "default" }), "a fixed setting is filled in");
-        assert!(body["env"].get("GITHUB_HOST").is_none(), "an optional setting nobody gave is left out");
+        assert_eq!(
+            body["transport"],
+            json!({ "kind": "stdio", "image": "ghcr.io/github/github-mcp-server", "command": [] })
+        );
+        assert_eq!(
+            body["env"]["GITHUB_PERSONAL_ACCESS_TOKEN"],
+            json!({ "secret": "GH_TOKEN" })
+        );
+        assert_eq!(
+            body["env"]["GITHUB_TOOLSETS"],
+            json!({ "value": "default" }),
+            "a fixed setting is filled in"
+        );
+        assert!(
+            body["env"].get("GITHUB_HOST").is_none(),
+            "an optional setting nobody gave is left out"
+        );
         assert_eq!(body["tools"]["allow"], "all");
-        assert_eq!(body["access"], json!({ "roles": [], "nodes": [] }), "nobody may use it until the owner says so");
-        assert_eq!(body["limits"], json!({ "timeout_s": 60, "max_output_kb": 256, "idle_stop_min": 10 }));
+        assert_eq!(
+            body["access"],
+            json!({ "roles": [], "nodes": [] }),
+            "nobody may use it until the owner says so"
+        );
+        assert_eq!(
+            body["limits"],
+            json!({ "timeout_s": 60, "max_output_kb": 256, "idle_stop_min": 10 })
+        );
     }
 
     #[test]
     fn a_preset_refuses_a_missing_required_secret_and_names_the_flag() {
-        let err = new_config(&catalog(), Some("github"), false, None, None, &Fields::default()).unwrap_err();
-        assert!(err.contains("GITHUB_PERSONAL_ACCESS_TOKEN is required"), "{err}");
-        assert!(err.contains("--env GITHUB_PERSONAL_ACCESS_TOKEN=@vault:SECRET"), "{err}");
+        let err = new_config(
+            &catalog(),
+            Some("github"),
+            false,
+            None,
+            None,
+            &Fields::default(),
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("GITHUB_PERSONAL_ACCESS_TOKEN is required"),
+            "{err}"
+        );
+        assert!(
+            err.contains("--env GITHUB_PERSONAL_ACCESS_TOKEN=@vault:SECRET"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -937,15 +1225,42 @@ mod tests {
         )
         .unwrap();
         assert_eq!(body["id"], "lin");
-        assert_eq!(body["headers"]["Authorization"], json!({ "secret": "LINEAR_KEY", "format": "Bearer {}" }));
-        assert_eq!(body["transport"], json!({ "kind": "http", "url": "https://mcp.linear.app/mcp" }));
+        assert_eq!(
+            body["headers"]["Authorization"],
+            json!({ "secret": "LINEAR_KEY", "format": "Bearer {}" })
+        );
+        assert_eq!(
+            body["transport"],
+            json!({ "kind": "http", "url": "https://mcp.linear.app/mcp" })
+        );
     }
 
     #[test]
     fn a_preset_without_an_image_says_to_go_custom() {
-        let err = new_config(&catalog(), Some("custom-only"), false, None, None, &Fields::default()).unwrap_err();
-        assert!(err.contains("no official image") && err.contains("--custom"), "{err}");
-        assert!(new_config(&catalog(), Some("nope"), false, None, None, &Fields::default()).is_err());
+        let err = new_config(
+            &catalog(),
+            Some("custom-only"),
+            false,
+            None,
+            None,
+            &Fields::default(),
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("no official image") && err.contains("--custom"),
+            "{err}"
+        );
+        assert!(
+            new_config(
+                &catalog(),
+                Some("nope"),
+                false,
+                None,
+                None,
+                &Fields::default()
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -976,10 +1291,31 @@ mod tests {
 
     #[test]
     fn a_preset_does_not_take_a_transport_or_an_image_flag() {
-        let err = new_config(&catalog(), Some("github"), false, None, None, &fields(|f| f.image = Some("x".into()))).unwrap_err();
+        let err = new_config(
+            &catalog(),
+            Some("github"),
+            false,
+            None,
+            None,
+            &fields(|f| f.image = Some("x".into())),
+        )
+        .unwrap_err();
         assert!(err.contains("--custom"), "{err}");
-        assert!(new_config(&catalog(), Some("github"), false, None, Some("container"), &Fields::default()).is_err());
-        assert!(new_config(&catalog(), None, false, None, None, &Fields::default()).is_err(), "a server is a preset or custom");
+        assert!(
+            new_config(
+                &catalog(),
+                Some("github"),
+                false,
+                None,
+                Some("container"),
+                &Fields::default()
+            )
+            .is_err()
+        );
+        assert!(
+            new_config(&catalog(), None, false, None, None, &Fields::default()).is_err(),
+            "a server is a preset or custom"
+        );
     }
 
     #[test]
@@ -999,7 +1335,10 @@ mod tests {
         .unwrap();
         assert_eq!(body["id"], "my-server");
         assert_eq!(body["name"], "my-server", "the name defaults to the id");
-        assert_eq!(body["transport"], json!({ "kind": "stdio", "image": "ghcr.io/me/server:1.0", "command": ["serve", "--stdio"] }));
+        assert_eq!(
+            body["transport"],
+            json!({ "kind": "stdio", "image": "ghcr.io/me/server:1.0", "command": ["serve", "--stdio"] })
+        );
         assert_eq!(body["env"], json!({ "TOKEN": { "secret": "MY_TOKEN" } }));
         assert_eq!(body["storage"]["volume"], false);
     }
@@ -1019,20 +1358,70 @@ mod tests {
             }),
         )
         .unwrap();
-        assert_eq!(body["transport"], json!({ "kind": "http", "url": "https://docs.test/mcp" }));
-        assert_eq!(body["headers"]["Authorization"], json!({ "secret": "DOCS_KEY", "format": "Bearer {}" }));
+        assert_eq!(
+            body["transport"],
+            json!({ "kind": "http", "url": "https://docs.test/mcp" })
+        );
+        assert_eq!(
+            body["headers"]["Authorization"],
+            json!({ "secret": "DOCS_KEY", "format": "Bearer {}" })
+        );
         assert_eq!(body["name"], "Docs");
-        let err = new_config(&json!([]), None, true, Some("docs"), Some("remote"), &fields(|f| f.image = Some("x".into()))).unwrap_err();
+        let err = new_config(
+            &json!([]),
+            None,
+            true,
+            Some("docs"),
+            Some("remote"),
+            &fields(|f| f.image = Some("x".into())),
+        )
+        .unwrap_err();
         assert!(err.contains("--transport container"), "{err}");
     }
 
     #[test]
     fn a_custom_server_names_its_id_and_its_kind() {
-        assert!(new_config(&json!([]), None, true, None, Some("container"), &fields(|f| f.image = Some("x".into()))).is_err());
-        assert!(new_config(&json!([]), None, true, Some("svc"), None, &fields(|f| f.image = Some("x".into()))).is_err());
-        let no_image = new_config(&json!([]), None, true, Some("svc"), Some("container"), &Fields::default()).unwrap_err();
+        assert!(
+            new_config(
+                &json!([]),
+                None,
+                true,
+                None,
+                Some("container"),
+                &fields(|f| f.image = Some("x".into()))
+            )
+            .is_err()
+        );
+        assert!(
+            new_config(
+                &json!([]),
+                None,
+                true,
+                Some("svc"),
+                None,
+                &fields(|f| f.image = Some("x".into()))
+            )
+            .is_err()
+        );
+        let no_image = new_config(
+            &json!([]),
+            None,
+            true,
+            Some("svc"),
+            Some("container"),
+            &Fields::default(),
+        )
+        .unwrap_err();
         assert!(no_image.contains("--image"), "{no_image}");
-        let no_url = new_config(&json!([]), None, true, Some("svc"), Some("remote"), &Fields::default()).unwrap_err();
+        let no_url = new_config(
+            &json!([]),
+            None,
+            true,
+            Some("svc"),
+            Some("remote"),
+            &Fields::default(),
+        )
+        .unwrap_err();
         assert!(no_url.contains("--url"), "{no_url}");
     }
 
@@ -1057,20 +1446,41 @@ mod tests {
             &current(),
             &fields(|f| {
                 f.disabled = true;
-                f.env = strings(&["GITHUB_PERSONAL_ACCESS_TOKEN=@vault:GH_TOKEN_2", "GITHUB_HOST="]);
+                f.env = strings(&[
+                    "GITHUB_PERSONAL_ACCESS_TOKEN=@vault:GH_TOKEN_2",
+                    "GITHUB_HOST=",
+                ]);
                 f.risk = strings(&["create_issue=write"]);
                 f.idle_stop_min = Some(5);
             }),
         )
         .unwrap();
         assert!(body.get("id").is_none(), "the id is not sent");
-        assert!(body.get("status").is_none() && body.get("tools_count").is_none(), "only config is sent");
+        assert!(
+            body.get("status").is_none() && body.get("tools_count").is_none(),
+            "only config is sent"
+        );
         assert_eq!(body["enabled"], false);
-        assert_eq!(body["env"], json!({ "GITHUB_PERSONAL_ACCESS_TOKEN": { "secret": "GH_TOKEN_2" } }), "one rebound, one removed");
-        assert_eq!(body["tools"]["allow"], json!(["list_issues"]), "an unflagged pick stays");
-        assert_eq!(body["tools"]["risk"], json!({ "list_issues": "read", "create_issue": "write" }), "risks merge");
+        assert_eq!(
+            body["env"],
+            json!({ "GITHUB_PERSONAL_ACCESS_TOKEN": { "secret": "GH_TOKEN_2" } }),
+            "one rebound, one removed"
+        );
+        assert_eq!(
+            body["tools"]["allow"],
+            json!(["list_issues"]),
+            "an unflagged pick stays"
+        );
+        assert_eq!(
+            body["tools"]["risk"],
+            json!({ "list_issues": "read", "create_issue": "write" }),
+            "risks merge"
+        );
         assert_eq!(body["access"], json!({ "roles": "all", "nodes": ["n0"] }));
-        assert_eq!(body["storage"]["volume"], true, "the volume setting is kept");
+        assert_eq!(
+            body["storage"]["volume"], true,
+            "the volume setting is kept"
+        );
         assert_eq!(body["limits"]["idle_stop_min"], 5);
         assert_eq!(body["limits"]["timeout_s"], 60);
     }
@@ -1089,7 +1499,10 @@ mod tests {
             }),
         )
         .unwrap();
-        assert_eq!(body["headers"]["Authorization"], json!({ "secret": "NEW", "format": "Bearer {}" }));
+        assert_eq!(
+            body["headers"]["Authorization"],
+            json!({ "secret": "NEW", "format": "Bearer {}" })
+        );
         assert_eq!(body["access"]["roles"], json!([]));
         assert_eq!(body["tools"]["allow"], "all");
         assert_eq!(body["name"], "Renamed");
@@ -1097,11 +1510,25 @@ mod tests {
 
     #[test]
     fn an_edit_switches_a_container_to_a_remote_url_and_keeps_its_settings() {
-        let body = edit_body(&current(), &fields(|f| f.url = Some("https://mcp.test/mcp".into()))).unwrap();
-        assert_eq!(body["transport"], json!({ "kind": "http", "url": "https://mcp.test/mcp" }));
+        let body = edit_body(
+            &current(),
+            &fields(|f| f.url = Some("https://mcp.test/mcp".into())),
+        )
+        .unwrap();
+        assert_eq!(
+            body["transport"],
+            json!({ "kind": "http", "url": "https://mcp.test/mcp" })
+        );
         let container = edit_body(&current(), &fields(|f| f.arg = strings(&["x"])));
-        assert_eq!(container.unwrap()["transport"]["command"], json!(["x"]), "an arg sets the command of a container");
-        let remote = edit_body(&json!({ "transport": { "kind": "http", "url": "https://a.test/mcp" } }), &fields(|f| f.arg = strings(&["x"])));
+        assert_eq!(
+            container.unwrap()["transport"]["command"],
+            json!(["x"]),
+            "an arg sets the command of a container"
+        );
+        let remote = edit_body(
+            &json!({ "transport": { "kind": "http", "url": "https://a.test/mcp" } }),
+            &fields(|f| f.arg = strings(&["x"])),
+        );
         assert!(remote.unwrap_err().contains("container"));
     }
 
@@ -1110,7 +1537,10 @@ mod tests {
         assert_eq!(pick_of(&[]).unwrap(), None);
         assert_eq!(pick_of(&strings(&["all"])).unwrap(), Some(json!("all")));
         assert_eq!(pick_of(&strings(&["none"])).unwrap(), Some(json!([])));
-        assert_eq!(pick_of(&strings(&["a", "b"])).unwrap(), Some(json!(["a", "b"])));
+        assert_eq!(
+            pick_of(&strings(&["a", "b"])).unwrap(),
+            Some(json!(["a", "b"]))
+        );
         assert!(pick_of(&strings(&["all", "a"])).is_err());
         assert_eq!(pick_text(&json!("all"), "nobody"), "all");
         assert_eq!(pick_text(&json!([]), "nobody"), "nobody");
@@ -1119,7 +1549,10 @@ mod tests {
 
     #[test]
     fn a_risk_names_a_tool_and_one_of_three_levels() {
-        assert_eq!(risk_of("create_issue=write").unwrap(), ("create_issue".to_string(), "write"));
+        assert_eq!(
+            risk_of("create_issue=write").unwrap(),
+            ("create_issue".to_string(), "write")
+        );
         assert_eq!(risk_of("drop=irreversible").unwrap().1, "irreversible");
         assert!(risk_of("drop=dangerous").is_err());
         assert!(risk_of("=read").is_err());
@@ -1128,11 +1561,23 @@ mod tests {
 
     #[test]
     fn the_settings_and_the_transport_read_back_for_the_owner() {
-        assert_eq!(setting_text(&json!({ "secret": "GH", "format": "Bearer {}" })), "@vault:GH|Bearer {}");
-        assert_eq!(setting_text(&json!({ "value": "https://x" })), "@plain:https://x");
+        assert_eq!(
+            setting_text(&json!({ "secret": "GH", "format": "Bearer {}" })),
+            "@vault:GH|Bearer {}"
+        );
+        assert_eq!(
+            setting_text(&json!({ "value": "https://x" })),
+            "@plain:https://x"
+        );
         assert_eq!(bindings_text(&json!({})), "(none)");
-        assert_eq!(transport_text(&json!({ "kind": "http", "url": "https://x/mcp" })), "remote · https://x/mcp");
-        assert_eq!(needs_text(&catalog()[0]), "GITHUB_PERSONAL_ACCESS_TOKEN (vault)");
+        assert_eq!(
+            transport_text(&json!({ "kind": "http", "url": "https://x/mcp" })),
+            "remote · https://x/mcp"
+        );
+        assert_eq!(
+            needs_text(&catalog()[0]),
+            "GITHUB_PERSONAL_ACCESS_TOKEN (vault)"
+        );
         assert_eq!(needs_text(&catalog()[2]), "nothing");
     }
 
@@ -1140,12 +1585,35 @@ mod tests {
     fn the_flags_parse_as_the_command_line_gives_them() {
         assert!(matches!(parse(&["list"]), Ok(ServersCmd::List)));
         assert!(matches!(parse(&["catalog"]), Ok(ServersCmd::Catalog)));
-        assert!(matches!(parse(&["show", "github"]), Ok(ServersCmd::Show { id }) if id == "github"));
-        let ServersCmd::Add { preset, custom, id, transport, fields } = parse(&[
-            "add", "--preset", "github", "--id", "gh", "--name", "Work GitHub", "--env", "GITHUB_PERSONAL_ACCESS_TOKEN=@vault:GH",
-            "--allow-tool", "list_issues", "--allow-tool", "get_me", "--roles", "builder,reviewer", "--disabled",
+        assert!(
+            matches!(parse(&["show", "github"]), Ok(ServersCmd::Show { id }) if id == "github")
+        );
+        let ServersCmd::Add {
+            preset,
+            custom,
+            id,
+            transport,
+            fields,
+        } = parse(&[
+            "add",
+            "--preset",
+            "github",
+            "--id",
+            "gh",
+            "--name",
+            "Work GitHub",
+            "--env",
+            "GITHUB_PERSONAL_ACCESS_TOKEN=@vault:GH",
+            "--allow-tool",
+            "list_issues",
+            "--allow-tool",
+            "get_me",
+            "--roles",
+            "builder,reviewer",
+            "--disabled",
         ])
-        .unwrap() else {
+        .unwrap()
+        else {
             panic!("an add")
         };
         assert_eq!(preset.as_deref(), Some("github"));
@@ -1155,22 +1623,68 @@ mod tests {
         assert_eq!(fields.allow_tool, strings(&["list_issues", "get_me"]));
         assert_eq!(fields.roles, strings(&["builder", "reviewer"]));
         assert!(fields.disabled && !fields.enabled);
-        assert!(parse(&["add", "--preset", "github", "--custom"]).is_err(), "a preset and a custom server are two");
+        assert!(
+            parse(&["add", "--preset", "github", "--custom"]).is_err(),
+            "a preset and a custom server are two"
+        );
         assert!(parse(&["add", "--custom", "--transport", "lambda", "--id", "x"]).is_err());
-        assert!(parse(&["add", "--custom", "--transport", "remote", "--id", "docs", "--url", "https://d.test/mcp"]).is_ok());
+        assert!(
+            parse(&[
+                "add",
+                "--custom",
+                "--transport",
+                "remote",
+                "--id",
+                "docs",
+                "--url",
+                "https://d.test/mcp"
+            ])
+            .is_ok()
+        );
         assert!(parse(&["add", "--preset", "github", "--enabled", "--disabled"]).is_err());
     }
 
     #[test]
     fn delete_edit_and_the_other_verbs_parse() {
-        assert!(matches!(parse(&["delete", "gh", "--purge", "--yes"]), Ok(ServersCmd::Delete { purge: true, yes: true, .. })));
-        assert!(matches!(parse(&["edit", "gh", "--no-volume", "--timeout-s", "90"]), Ok(ServersCmd::Edit { .. })));
-        assert!(matches!(parse(&["start", "gh"]), Ok(ServersCmd::Start { .. })));
-        assert!(matches!(parse(&["stop", "gh"]), Ok(ServersCmd::Stop { .. })));
-        assert!(matches!(parse(&["test", "gh", "--node", "n2"]), Ok(ServersCmd::Test { node: Some(n), .. }) if n == "n2"));
-        assert!(matches!(parse(&["tools", "gh"]), Ok(ServersCmd::Tools { .. })));
-        assert!(matches!(parse(&["logs", "gh", "--follow", "--limit", "500"]), Ok(ServersCmd::Logs { limit: 500, follow: true, .. })));
-        assert!(parse(&["logs", "gh", "--limit", "0"]).is_err(), "the limit is 1 to 500");
+        assert!(matches!(
+            parse(&["delete", "gh", "--purge", "--yes"]),
+            Ok(ServersCmd::Delete {
+                purge: true,
+                yes: true,
+                ..
+            })
+        ));
+        assert!(matches!(
+            parse(&["edit", "gh", "--no-volume", "--timeout-s", "90"]),
+            Ok(ServersCmd::Edit { .. })
+        ));
+        assert!(matches!(
+            parse(&["start", "gh"]),
+            Ok(ServersCmd::Start { .. })
+        ));
+        assert!(matches!(
+            parse(&["stop", "gh"]),
+            Ok(ServersCmd::Stop { .. })
+        ));
+        assert!(
+            matches!(parse(&["test", "gh", "--node", "n2"]), Ok(ServersCmd::Test { node: Some(n), .. }) if n == "n2")
+        );
+        assert!(matches!(
+            parse(&["tools", "gh"]),
+            Ok(ServersCmd::Tools { .. })
+        ));
+        assert!(matches!(
+            parse(&["logs", "gh", "--follow", "--limit", "500"]),
+            Ok(ServersCmd::Logs {
+                limit: 500,
+                follow: true,
+                ..
+            })
+        ));
+        assert!(
+            parse(&["logs", "gh", "--limit", "0"]).is_err(),
+            "the limit is 1 to 500"
+        );
         assert!(parse(&["logs", "gh", "--limit", "501"]).is_err());
         assert!(parse(&["edit", "gh", "--volume", "--no-volume"]).is_err());
     }

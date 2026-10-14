@@ -11,20 +11,20 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use apz_skill::{FileInfo, Finding, Report, Severity};
-use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use iced::widget::{checkbox, column, container, row, text_editor, text_input};
 use iced::{Alignment, Element, Font, Length, Task};
-use serde::de::DeserializeOwned;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde::de::DeserializeOwned;
+use serde_json::{Value, json};
 
-use crate::console::{client, ui, Ctx};
+use crate::console::{Ctx, client, ui};
 use crate::theme::palette;
 
 use super::mcp_hub;
 use super::prompt_editor;
-use super::skills::{field, Role};
+use super::skills::{Role, field};
 
 const SKILL_MD: &str = "SKILL.md";
 /// The binding that means every agent on the plaza.
@@ -176,7 +176,12 @@ pub enum Tab {
     Rules,
 }
 
-const TABS: [(Tab, &str); 4] = [(Tab::Edit, "Edit"), (Tab::Versions, "Versions"), (Tab::History, "History"), (Tab::Rules, "Rules")];
+const TABS: [(Tab, &str); 4] = [
+    (Tab::Edit, "Edit"),
+    (Tab::Versions, "Versions"),
+    (Tab::History, "History"),
+    (Tab::Rules, "Rules"),
+];
 
 #[derive(Debug, Clone)]
 pub enum Msg {
@@ -253,7 +258,10 @@ pub enum Msg {
 /// The body of one file in the draft: an editor for text, the bytes for anything else.
 #[derive(Debug)]
 enum Body {
-    Text { content: text_editor::Content, saved: String },
+    Text {
+        content: text_editor::Content,
+        saved: String,
+    },
     Binary(Vec<u8>),
 }
 
@@ -308,7 +316,10 @@ pub struct SkillDetails {
 
 impl SkillDetails {
     fn of(summary: &Summary) -> Self {
-        SkillDetails { title: summary.title.clone(), tags: summary.tags.join(", ") }
+        SkillDetails {
+            title: summary.title.clone(),
+            tags: summary.tags.join(", "),
+        }
     }
 }
 
@@ -366,7 +377,20 @@ pub struct State {
 /// The editor for skill `id`, and the task that loads it.
 pub fn open(id: String, ctx: &Ctx) -> (State, Task<Msg>) {
     let task = Task::batch([load(&id, ctx), roles_task(ctx)]);
-    (State { id, tab: Tab::Edit, loaded: None, error: None, notice: None, conflict: false, leaving: false, roles: Vec::new(), changed: false }, task)
+    (
+        State {
+            id,
+            tab: Tab::Edit,
+            loaded: None,
+            error: None,
+            notice: None,
+            conflict: false,
+            leaving: false,
+            roles: Vec::new(),
+            changed: false,
+        },
+        task,
+    )
 }
 
 /// The hub changed this skill: reload it when the draft has no unsaved edits, otherwise say so and keep the draft. An
@@ -472,7 +496,10 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         Msg::EditFile(action) => {
             if let Some(l) = state.loaded.as_mut() {
                 let edited = match l.selected_entry_mut() {
-                    Some(Entry { body: Body::Text { content, .. }, .. }) => {
+                    Some(Entry {
+                        body: Body::Text { content, .. },
+                        ..
+                    }) => {
                         content.perform(action);
                         true
                     }
@@ -499,7 +526,10 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         Msg::AddFile => {
             if let Some(l) = state.loaded.as_mut() {
                 let path = l.new_path.trim().to_string();
-                let body = Body::Text { content: text_editor::Content::new(), saved: String::new() };
+                let body = Body::Text {
+                    content: text_editor::Content::new(),
+                    saved: String::new(),
+                };
                 match add(l, path, body) {
                     Ok(()) => l.new_path.clear(),
                     Err(e) => state.notice = Some((e, true)),
@@ -519,7 +549,10 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         ),
         Msg::Picked(None) => Task::none(),
         Msg::Picked(Some(path)) => {
-            let name = path.file_name().and_then(|n| n.to_str()).map(str::to_string);
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map(str::to_string);
             match (name, std::fs::read(&path)) {
                 (Some(name), Ok(bytes)) => {
                     if let Some(l) = state.loaded.as_mut() {
@@ -528,8 +561,12 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                         }
                     }
                 }
-                (_, Err(e)) => state.notice = Some((format!("The file could not be read: {e}"), true)),
-                (None, _) => state.notice = Some(("The file name is not valid UTF-8.".to_string(), true)),
+                (_, Err(e)) => {
+                    state.notice = Some((format!("The file could not be read: {e}"), true))
+                }
+                (None, _) => {
+                    state.notice = Some(("The file name is not valid UTF-8.".to_string(), true))
+                }
             }
             Task::none()
         }
@@ -563,7 +600,10 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         }
         Msg::ToggleExec => {
             if let Some(l) = state.loaded.as_mut() {
-                let toggled = l.selected_entry_mut().map(|e| e.executable = !e.executable).is_some();
+                let toggled = l
+                    .selected_entry_mut()
+                    .map(|e| e.executable = !e.executable)
+                    .is_some();
                 if toggled {
                     l.structure_changed = true;
                 }
@@ -580,9 +620,20 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             match l.selected_entry() {
                 // A saved text file is written as its saved version, from the hub.
                 Some(e) if e.saved.is_some() && matches!(e.body, Body::Text { .. }) => {
-                    let (c, id, version, path) = (ctx.client.clone(), state.id.clone(), l.summary.latest_version, e.path.clone());
+                    let (c, id, version, path) = (
+                        ctx.client.clone(),
+                        state.id.clone(),
+                        l.summary.latest_version,
+                        e.path.clone(),
+                    );
                     let name = file_name(&path);
-                    client::task(move || raw(&c, "GET", &file_path(&id, version, &path), None).map(|bytes| (name, bytes)), Msg::SaveFetched)
+                    client::task(
+                        move || {
+                            raw(&c, "GET", &file_path(&id, version, &path), None)
+                                .map(|bytes| (name, bytes))
+                        },
+                        Msg::SaveFetched,
+                    )
                 }
                 Some(e) => save_dialog(file_name(&e.path), e.bytes()),
                 None => Task::none(),
@@ -619,7 +670,10 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             state.notice = Some(if added.created {
                 (format!("Saved as v{}", added.version.version), false)
             } else {
-                ("No changes: the files are the same as the latest version.".to_string(), false)
+                (
+                    "No changes: the files are the same as the latest version.".to_string(),
+                    false,
+                )
             });
             load(&state.id, ctx)
         }
@@ -654,9 +708,14 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                 let (c, id, bindings) = (ctx.client.clone(), state.id.clone(), l.bindings.clone());
                 client::task(
                     move || {
-                        send(&c, "PUT", &format!("{}/bindings", skill_path(&id)), Some(&json!({ "bindings": bindings })))
-                            .and_then(expect::<Value>)
-                            .map(|_| "Bindings saved".to_string())
+                        send(
+                            &c,
+                            "PUT",
+                            &format!("{}/bindings", skill_path(&id)),
+                            Some(&json!({ "bindings": bindings })),
+                        )
+                        .and_then(expect::<Value>)
+                        .map(|_| "Bindings saved".to_string())
                     },
                     Msg::Acted,
                 )
@@ -669,17 +728,30 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             if let Some(l) = state.loaded.as_mut() {
                 l.events = None;
             }
-            let events = if state.tab == Tab::History { history(&state.id, ctx) } else { Task::none() };
+            let events = if state.tab == Tab::History {
+                history(&state.id, ctx)
+            } else {
+                Task::none()
+            };
             Task::batch([refresh(&state.id, ctx), events])
         }
         Msg::Acted(Err(e)) => {
             state.notice = Some((e, true));
             Task::none()
         }
-        Msg::Publish(version) => act(&state.id, ctx, "publish", Some(json!({ "version": version })), format!("Published v{version}")),
+        Msg::Publish(version) => act(
+            &state.id,
+            ctx,
+            "publish",
+            Some(json!({ "version": version })),
+            format!("Published v{version}"),
+        ),
         Msg::Unpublish => act(&state.id, ctx, "unpublish", None, "Unpublished".to_string()),
         Msg::ToggleArchive => {
-            let archived = state.loaded.as_ref().is_some_and(|l| l.summary.archived_ms.is_some());
+            let archived = state
+                .loaded
+                .as_ref()
+                .is_some_and(|l| l.summary.archived_ms.is_some());
             if archived {
                 act(&state.id, ctx, "restore", None, "Restored".to_string())
             } else {
@@ -707,11 +779,21 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         Msg::ExportPicked(None) => Task::none(),
         Msg::ExportPicked(Some(path)) => match state.loaded.as_ref() {
             Some(l) => {
-                let (c, id, version) = (ctx.client.clone(), state.id.clone(), l.summary.latest_version);
+                let (c, id, version) = (
+                    ctx.client.clone(),
+                    state.id.clone(),
+                    l.summary.latest_version,
+                );
                 client::task(
                     move || {
-                        let bytes = raw(&c, "GET", &format!("{}/versions/{version}/export", skill_path(&id)), None)?;
-                        std::fs::write(&path, &bytes).map_err(|e| format!("The file could not be written: {e}"))?;
+                        let bytes = raw(
+                            &c,
+                            "GET",
+                            &format!("{}/versions/{version}/export", skill_path(&id)),
+                            None,
+                        )?;
+                        std::fs::write(&path, &bytes)
+                            .map_err(|e| format!("The file could not be written: {e}"))?;
                         Ok(format!("Exported v{version} to {}", path.display()))
                     },
                     Msg::Notice,
@@ -760,7 +842,12 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             Some(l) if l.picked.len() == 2 => {
                 let (from, to) = (l.picked[0].min(l.picked[1]), l.picked[0].max(l.picked[1]));
                 let (c, id) = (ctx.client.clone(), state.id.clone());
-                client::task(move || get::<Diff>(&c, &format!("{}/diff?from={from}&to={to}", skill_path(&id))), Msg::Compared)
+                client::task(
+                    move || {
+                        get::<Diff>(&c, &format!("{}/diff?from={from}&to={to}", skill_path(&id)))
+                    },
+                    Msg::Compared,
+                )
             }
             _ => Task::none(),
         },
@@ -784,7 +871,12 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                     .files
                     .iter()
                     .zip(files)
-                    .map(|(f, bytes)| Entry { path: f.path.clone(), executable: f.executable, saved: None, body: body_of(bytes) })
+                    .map(|(f, bytes)| Entry {
+                        path: f.path.clone(),
+                        executable: f.executable,
+                        saved: None,
+                        body: body_of(bytes),
+                    })
                     .collect();
                 l.skill_md = text_editor::Content::with_text(&version.skill_md);
                 l.selected = SKILL_MD.to_string();
@@ -794,7 +886,13 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                 l.recheck();
             }
             state.tab = Tab::Edit;
-            state.notice = Some((format!("v{} is in the editor. Save it to make it the latest version.", version.version), false));
+            state.notice = Some((
+                format!(
+                    "v{} is in the editor. Save it to make it the latest version.",
+                    version.version
+                ),
+                false,
+            ));
             Task::none()
         }
         Msg::Restored(Err(e)) => {
@@ -803,11 +901,17 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         }
         Msg::CheckGithub => {
             let (c, id) = (ctx.client.clone(), state.id.clone());
-            client::task(move || post::<GithubCheck>(&c, &format!("{}/github/check", skill_path(&id)), None), Msg::GithubChecked)
+            client::task(
+                move || post::<GithubCheck>(&c, &format!("{}/github/check", skill_path(&id)), None),
+                Msg::GithubChecked,
+            )
         }
         Msg::GithubChecked(Ok(check)) => {
             let text = if check.update_available {
-                format!("Update available: {} (this is {})", check.latest, check.current)
+                format!(
+                    "Update available: {} (this is {})",
+                    check.latest, check.current
+                )
             } else {
                 format!("Up to date at {}", check.current)
             };
@@ -823,7 +927,10 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         }
         Msg::UpdateGithub => {
             let (c, id) = (ctx.client.clone(), state.id.clone());
-            client::task(move || post::<Added>(&c, &format!("{}/github/update", skill_path(&id)), None), Msg::GithubUpdated)
+            client::task(
+                move || post::<Added>(&c, &format!("{}/github/update", skill_path(&id)), None),
+                Msg::GithubUpdated,
+            )
         }
         Msg::GithubUpdated(Ok(added)) => {
             state.notice = Some((
@@ -875,11 +982,21 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             Task::none()
         }
         Msg::SaveDetails => {
-            let body = state.loaded.as_ref().and_then(|l| l.details.as_ref().map(meta_body));
+            let body = state
+                .loaded
+                .as_ref()
+                .and_then(|l| l.details.as_ref().map(meta_body));
             match body {
                 Some(Ok(body)) => {
                     let (c, id) = (ctx.client.clone(), state.id.clone());
-                    client::task(move || send(&c, "PUT", &skill_path(&id), Some(&body)).and_then(expect::<Value>).map(|_| ()), Msg::DetailsSaved)
+                    client::task(
+                        move || {
+                            send(&c, "PUT", &skill_path(&id), Some(&body))
+                                .and_then(expect::<Value>)
+                                .map(|_| ())
+                        },
+                        Msg::DetailsSaved,
+                    )
                 }
                 Some(Err(e)) => {
                     state.notice = Some((e, true));
@@ -924,14 +1041,28 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
             Some(e) => ui::error_line(e),
             None => ui::loading(),
         };
-        return column![ui::btn_sm("Back", None, ui::Kind::Secondary, Some(Msg::Back)), status].spacing(16).into();
+        return column![
+            ui::btn_sm("Back", None, ui::Kind::Secondary, Some(Msg::Back)),
+            status
+        ]
+        .spacing(16)
+        .into();
     };
     let mut parts: Vec<Element<'a, Msg>> = vec![header(l)];
     if let Some((text, is_error)) = &state.notice {
-        parts.push(if *is_error { ui::error_line(text) } else { ui::faint(text.clone()).into() });
+        parts.push(if *is_error {
+            ui::error_line(text)
+        } else {
+            ui::faint(text.clone()).into()
+        });
     }
     if state.conflict {
-        parts.push(ui::btn_sm("Reload latest", None, ui::Kind::Secondary, Some(Msg::ReloadLatest)));
+        parts.push(ui::btn_sm(
+            "Reload latest",
+            None,
+            ui::Kind::Secondary,
+            Some(Msg::ReloadLatest),
+        ));
     }
     if state.changed && !state.conflict {
         parts.push(changed_notice());
@@ -941,7 +1072,12 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
             row![
                 ui::faint("Discard your changes?"),
                 ui::btn_sm("Discard", None, ui::Kind::Secondary, Some(Msg::Discard)),
-                ui::btn_sm("Keep editing", None, ui::Kind::Ghost, Some(Msg::KeepEditing)),
+                ui::btn_sm(
+                    "Keep editing",
+                    None,
+                    ui::Kind::Ghost,
+                    Some(Msg::KeepEditing)
+                ),
             ]
             .spacing(12)
             .align_y(Alignment::Center)
@@ -970,8 +1106,14 @@ fn skill_path(id: &str) -> String {
     format!("/v1/skills/{}", percent(id))
 }
 
-fn send(c: &client::Client, method: &str, path: &str, body: Option<&Value>) -> Result<Answer, String> {
-    apz_http::client::request_json(&c.target, method, path, body, c.timeout).map_err(|e| e.to_string())
+fn send(
+    c: &client::Client,
+    method: &str,
+    path: &str,
+    body: Option<&Value>,
+) -> Result<Answer, String> {
+    apz_http::client::request_json(&c.target, method, path, body, c.timeout)
+        .map_err(|e| e.to_string())
 }
 
 /// A 2xx answer as `T`; anything else as the hub's `error` text (or the status).
@@ -979,7 +1121,11 @@ fn expect<T: DeserializeOwned>((status, value): Answer) -> Result<T, String> {
     if (200..300).contains(&status) {
         serde_json::from_value(value).map_err(|e| e.to_string())
     } else {
-        Err(value.get("error").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| format!("HTTP {status}")))
+        Err(value
+            .get("error")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("HTTP {status}")))
     }
 }
 
@@ -987,14 +1133,24 @@ fn get<T: DeserializeOwned>(c: &client::Client, path: &str) -> Result<T, String>
     expect(send(c, "GET", path, None)?)
 }
 
-fn post<T: DeserializeOwned>(c: &client::Client, path: &str, body: Option<&Value>) -> Result<T, String> {
+fn post<T: DeserializeOwned>(
+    c: &client::Client,
+    path: &str,
+    body: Option<&Value>,
+) -> Result<T, String> {
     expect(send(c, "POST", path, body)?)
 }
 
 /// The bytes of one call, for a file or an export. Anything but a 2xx is an error.
-fn raw(c: &client::Client, method: &str, path: &str, body: Option<&Value>) -> Result<Vec<u8>, String> {
+fn raw(
+    c: &client::Client,
+    method: &str,
+    path: &str,
+    body: Option<&Value>,
+) -> Result<Vec<u8>, String> {
     let bytes = body.map(|b| b.to_string().into_bytes());
-    let reply = apz_http::client::request(&c.target, method, path, bytes.as_deref(), c.timeout).map_err(|e| e.to_string())?;
+    let reply = apz_http::client::request(&c.target, method, path, bytes.as_deref(), c.timeout)
+        .map_err(|e| e.to_string())?;
     if (200..300).contains(&reply.status) {
         Ok(reply.body)
     } else {
@@ -1003,7 +1159,11 @@ fn raw(c: &client::Client, method: &str, path: &str, body: Option<&Value>) -> Re
 }
 
 /// A version and every one of its files' bytes, in the version's file order.
-fn fetch_version(c: &client::Client, id: &str, version: u32) -> Result<(Version, Vec<Vec<u8>>), String> {
+fn fetch_version(
+    c: &client::Client,
+    id: &str,
+    version: u32,
+) -> Result<(Version, Vec<Vec<u8>>), String> {
     let v: Version = get(c, &format!("{}/versions/{version}", skill_path(id)))?;
     let mut files = Vec::with_capacity(v.files.len());
     for f in &v.files {
@@ -1014,7 +1174,11 @@ fn fetch_version(c: &client::Client, id: &str, version: u32) -> Result<(Version,
 
 /// The path of one file of a version: each segment percent-encoded, the slashes kept.
 fn file_path(id: &str, version: u32, path: &str) -> String {
-    format!("{}/versions/{version}/files/{}", skill_path(id), path.split('/').map(percent).collect::<Vec<_>>().join("/"))
+    format!(
+        "{}/versions/{version}/files/{}",
+        skill_path(id),
+        path.split('/').map(percent).collect::<Vec<_>>().join("/")
+    )
 }
 
 fn load(id: &str, ctx: &Ctx) -> Task<Msg> {
@@ -1034,14 +1198,25 @@ fn refresh(id: &str, ctx: &Ctx) -> Task<Msg> {
     client::task(move || get::<Detail>(&c, &skill_path(&id)), Msg::Refreshed)
 }
 
-fn version_task(id: &str, ctx: &Ctx, version: u32, map: fn(Result<Version, String>) -> Msg) -> Task<Msg> {
+fn version_task(
+    id: &str,
+    ctx: &Ctx,
+    version: u32,
+    map: fn(Result<Version, String>) -> Msg,
+) -> Task<Msg> {
     let (c, id) = (ctx.client.clone(), id.to_string());
-    client::task(move || get::<Version>(&c, &format!("{}/versions/{version}", skill_path(&id))), map)
+    client::task(
+        move || get::<Version>(&c, &format!("{}/versions/{version}", skill_path(&id))),
+        map,
+    )
 }
 
 fn history(id: &str, ctx: &Ctx) -> Task<Msg> {
     let (c, id) = (ctx.client.clone(), id.to_string());
-    client::task(move || get::<Events>(&c, &format!("{}/history", skill_path(&id))).map(|list| list.events), Msg::HistoryLoaded)
+    client::task(
+        move || get::<Events>(&c, &format!("{}/history", skill_path(&id))).map(|list| list.events),
+        Msg::HistoryLoaded,
+    )
 }
 
 /// The draft as a new version on top of the latest one. Unchanged files go by their sha256, the rest by their bytes.
@@ -1053,8 +1228,14 @@ fn save(id: &str, l: &Loaded, ctx: &Ctx) -> Task<Msg> {
     let base = l.summary.latest_version;
     client::task(
         move || {
-            let body = json!({ "skill_md": skill_md, "files": files, "note": note, "base_version": base });
-            let answer = send(&c, "POST", &format!("{}/versions", skill_path(&id)), Some(&body))?;
+            let body =
+                json!({ "skill_md": skill_md, "files": files, "note": note, "base_version": base });
+            let answer = send(
+                &c,
+                "POST",
+                &format!("{}/versions", skill_path(&id)),
+                Some(&body),
+            )?;
             if answer.0 == 409 {
                 return Err(CONFLICT.to_string());
             }
@@ -1067,7 +1248,14 @@ fn save(id: &str, l: &Loaded, ctx: &Ctx) -> Task<Msg> {
 /// A POST to one of the skill's action routes (publish, unpublish, archive, restore); `done` is the notice on success.
 fn act(id: &str, ctx: &Ctx, action: &str, body: Option<Value>, done: String) -> Task<Msg> {
     let (c, path) = (ctx.client.clone(), format!("{}/{action}", skill_path(id)));
-    client::task(move || send(&c, "POST", &path, body.as_ref()).and_then(expect::<Value>).map(|_| done), Msg::Acted)
+    client::task(
+        move || {
+            send(&c, "POST", &path, body.as_ref())
+                .and_then(expect::<Value>)
+                .map(|_| done)
+        },
+        Msg::Acted,
+    )
 }
 
 // ---- The draft -----------------------------------------------------------------------------------------------------
@@ -1100,7 +1288,12 @@ impl Loaded {
         let files: Vec<FileInfo> = self
             .entries
             .iter()
-            .map(|e| FileInfo { path: e.path.clone(), size: e.size(), executable: e.executable, text: e.text() })
+            .map(|e| FileInfo {
+                path: e.path.clone(),
+                size: e.size(),
+                executable: e.executable,
+                text: e.text(),
+            })
             .collect();
         self.report = apz_skill::check(&skill_md, &files);
     }
@@ -1112,7 +1305,12 @@ fn build(detail: Detail, version: Version, files: Vec<Vec<u8>>) -> Loaded {
         .files
         .iter()
         .zip(files)
-        .map(|(f, bytes)| Entry { path: f.path.clone(), executable: f.executable, saved: Some((f.sha256.clone(), f.size)), body: body_of(bytes) })
+        .map(|(f, bytes)| Entry {
+            path: f.path.clone(),
+            executable: f.executable,
+            saved: Some((f.sha256.clone(), f.size)),
+            body: body_of(bytes),
+        })
         .collect();
     let mut l = Loaded {
         bindings: detail.skill.bindings.clone(),
@@ -1123,7 +1321,17 @@ fn build(detail: Detail, version: Version, files: Vec<Vec<u8>>) -> Loaded {
         entries,
         selected: SKILL_MD.to_string(),
         structure_changed: false,
-        report: Report { rules_version: 0, findings: Vec::new(), score: 0, errors: 0, warnings: 0, infos: 0, stats: Default::default(), name: None, description: None },
+        report: Report {
+            rules_version: 0,
+            findings: Vec::new(),
+            score: 0,
+            errors: 0,
+            warnings: 0,
+            infos: 0,
+            stats: Default::default(),
+            name: None,
+            description: None,
+        },
         note: String::new(),
         new_path: String::new(),
         rename_to: String::new(),
@@ -1142,7 +1350,10 @@ fn build(detail: Detail, version: Version, files: Vec<Vec<u8>>) -> Loaded {
 /// A file's body: an editor when it is UTF-8 text the checks read, the bytes otherwise.
 fn body_of(bytes: Vec<u8>) -> Body {
     match String::from_utf8(bytes) {
-        Ok(text) if text.len() <= TEXT_LIMIT => Body::Text { content: text_editor::Content::with_text(&text), saved: normalised(&text) },
+        Ok(text) if text.len() <= TEXT_LIMIT => Body::Text {
+            content: text_editor::Content::with_text(&text),
+            saved: normalised(&text),
+        },
         Ok(text) => Body::Binary(text.into_bytes()),
         Err(e) => Body::Binary(e.into_bytes()),
     }
@@ -1151,20 +1362,31 @@ fn body_of(bytes: Vec<u8>) -> Body {
 /// The JSON of one file in a save: its sha256 when unchanged, its bytes (base64) otherwise.
 fn file_in(e: &Entry) -> Value {
     match &e.saved {
-        Some((sha256, _)) if !e.text_changed() => json!({ "path": e.path, "executable": e.executable, "sha256": sha256 }),
-        _ => json!({ "path": e.path, "executable": e.executable, "content_b64": STANDARD.encode(e.bytes()) }),
+        Some((sha256, _)) if !e.text_changed() => {
+            json!({ "path": e.path, "executable": e.executable, "sha256": sha256 })
+        }
+        _ => {
+            json!({ "path": e.path, "executable": e.executable, "content_b64": STANDARD.encode(e.bytes()) })
+        }
     }
 }
 
 /// Adds a file to the draft and selects it.
 fn add(l: &mut Loaded, path: String, body: Body) -> Result<(), String> {
     if !valid_path(&path) {
-        return Err(format!("{path:?} is not a valid file path: relative, no .., no empty part, and not SKILL.md"));
+        return Err(format!(
+            "{path:?} is not a valid file path: relative, no .., no empty part, and not SKILL.md"
+        ));
     }
     if l.has_path(&path) {
         return Err(format!("{path} is already in the skill"));
     }
-    l.entries.push(Entry { path: path.clone(), executable: false, saved: None, body });
+    l.entries.push(Entry {
+        path: path.clone(),
+        executable: false,
+        saved: None,
+        body,
+    });
     l.entries.sort_by(|a, b| a.path.cmp(&b.path));
     l.selected = path;
     l.structure_changed = true;
@@ -1179,7 +1401,9 @@ fn rename(l: &mut Loaded) -> Result<(), String> {
         return Err("SKILL.md keeps its name.".to_string());
     }
     if !valid_path(&to) {
-        return Err(format!("{to:?} is not a valid file path: relative, no .., no empty part, and not SKILL.md"));
+        return Err(format!(
+            "{to:?} is not a valid file path: relative, no .., no empty part, and not SKILL.md"
+        ));
     }
     if l.has_path(&to) {
         return Err(format!("{to} is already in the skill"));
@@ -1202,7 +1426,9 @@ fn valid_path(path: &str) -> bool {
         && !path.starts_with('/')
         && !path.contains('\\')
         && path != SKILL_MD
-        && path.split('/').all(|seg| !seg.is_empty() && seg != "." && seg != "..")
+        && path
+            .split('/')
+            .all(|seg| !seg.is_empty() && seg != "." && seg != "..")
 }
 
 /// The draft's text, without the trailing newline the editor adds.
@@ -1224,7 +1450,9 @@ fn meta_body(d: &SkillDetails) -> Result<Value, String> {
     }
     let tags = prompt_editor::parse_tags(&d.tags);
     if tags.len() > MAX_TAGS || tags.iter().any(|t| t.chars().count() > MAX_TAG) {
-        return Err(format!("At most {MAX_TAGS} tags of 1 to {MAX_TAG} characters."));
+        return Err(format!(
+            "At most {MAX_TAGS} tags of 1 to {MAX_TAG} characters."
+        ));
     }
     Ok(json!({ "title": title, "tags": tags }))
 }
@@ -1242,7 +1470,13 @@ fn file_name(path: &str) -> String {
 fn percent(segment: &str) -> String {
     segment
         .bytes()
-        .map(|b| if b.is_ascii_alphanumeric() || b"-._~".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") })
+        .map(|b| {
+            if b.is_ascii_alphanumeric() || b"-._~".contains(&b) {
+                (b as char).to_string()
+            } else {
+                format!("%{b:02X}")
+            }
+        })
         .collect()
 }
 
@@ -1259,7 +1493,10 @@ fn selected_text(l: &Loaded) -> Option<String> {
 }
 
 fn now_ms() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 fn score_tone(score: u8) -> ui::Tone {
@@ -1303,12 +1540,31 @@ fn header(l: &Loaded) -> Element<'_, Msg> {
             if editing { "Close details" } else { "Details" },
             None,
             ui::Kind::Secondary,
-            Some(if editing { Msg::CloseDetails } else { Msg::OpenDetails }),
+            Some(if editing {
+                Msg::CloseDetails
+            } else {
+                Msg::OpenDetails
+            }),
         ),
         ui::btn_sm("Export", None, ui::Kind::Secondary, Some(Msg::Export)),
-        ui::btn_sm("Publish", None, ui::Kind::Secondary, Some(Msg::Publish(s.latest_version))),
-        ui::btn_sm("Unpublish", None, ui::Kind::Secondary, s.active_version.map(|_| Msg::Unpublish)),
-        ui::btn_sm(if archived { "Restore" } else { "Archive" }, None, ui::Kind::Secondary, Some(Msg::ToggleArchive)),
+        ui::btn_sm(
+            "Publish",
+            None,
+            ui::Kind::Secondary,
+            Some(Msg::Publish(s.latest_version)),
+        ),
+        ui::btn_sm(
+            "Unpublish",
+            None,
+            ui::Kind::Secondary,
+            s.active_version.map(|_| Msg::Unpublish),
+        ),
+        ui::btn_sm(
+            if archived { "Restore" } else { "Archive" },
+            None,
+            ui::Kind::Secondary,
+            Some(Msg::ToggleArchive),
+        ),
     ];
     let live = match (s.active_version, s.score) {
         (Some(v), Some(score)) => format!("live v{v} · score {score}"),
@@ -1317,7 +1573,10 @@ fn header(l: &Loaded) -> Element<'_, Msg> {
     };
     let mut meta: Vec<Element<'_, Msg>> = vec![
         ui::faint(live).into(),
-        ui::badge(&format!("score {}", l.report.score), score_tone(l.report.score)),
+        ui::badge(
+            &format!("score {}", l.report.score),
+            score_tone(l.report.score),
+        ),
     ];
     if l.dirty() {
         meta.push(ui::badge("Unsaved", ui::Tone::Warn));
@@ -1325,7 +1584,10 @@ fn header(l: &Loaded) -> Element<'_, Msg> {
     if archived {
         meta.push(ui::badge("archived", ui::Tone::Warn));
     }
-    let mut parts: Vec<Element<'_, Msg>> = vec![ui::view_head(&s.title, actions), row(meta).spacing(12).align_y(Alignment::Center).into()];
+    let mut parts: Vec<Element<'_, Msg>> = vec![
+        ui::view_head(&s.title, actions),
+        row(meta).spacing(12).align_y(Alignment::Center).into(),
+    ];
     if !s.description.is_empty() {
         parts.push(ui::faint(s.description.clone()).into());
     }
@@ -1339,7 +1601,12 @@ fn header(l: &Loaded) -> Element<'_, Msg> {
 fn changed_notice<'a>() -> Element<'a, Msg> {
     row![
         ui::faint("Changed on the hub — reload. Reloading replaces the draft."),
-        ui::btn_sm("Reload latest", None, ui::Kind::Secondary, Some(Msg::ReloadLatest)),
+        ui::btn_sm(
+            "Reload latest",
+            None,
+            ui::Kind::Secondary,
+            Some(Msg::ReloadLatest)
+        ),
     ]
     .spacing(12)
     .align_y(Alignment::Center)
@@ -1351,14 +1618,27 @@ fn details_form(d: &SkillDetails) -> Element<'_, Msg> {
     let body = column![
         field(
             "Title",
-            text_input("Title", &d.title).on_input(Msg::DetailTitle).padding(8).style(crate::theme::input).into(),
+            text_input("Title", &d.title)
+                .on_input(Msg::DetailTitle)
+                .padding(8)
+                .style(crate::theme::input)
+                .into(),
         ),
         field(
             "Tags (comma separated)",
-            text_input("review, safety", &d.tags).on_input(Msg::DetailTags).padding(8).style(crate::theme::input).into(),
+            text_input("review, safety", &d.tags)
+                .on_input(Msg::DetailTags)
+                .padding(8)
+                .style(crate::theme::input)
+                .into(),
         ),
         row![
-            ui::btn("Save details", None, ui::Kind::Primary, Some(Msg::SaveDetails)),
+            ui::btn(
+                "Save details",
+                None,
+                ui::Kind::Primary,
+                Some(Msg::SaveDetails)
+            ),
             ui::btn("Cancel", None, ui::Kind::Ghost, Some(Msg::CloseDetails)),
         ]
         .spacing(8),
@@ -1369,10 +1649,15 @@ fn details_form(d: &SkillDetails) -> Element<'_, Msg> {
 
 fn edit_tab<'a>(l: &'a Loaded, roles: &'a [Role]) -> Element<'a, Msg> {
     let tree = container(file_tree(l)).width(Length::FillPortion(1));
-    let main = column![selected_pane(l), findings(l)].spacing(12).width(Length::FillPortion(3));
+    let main = column![selected_pane(l), findings(l)]
+        .spacing(12)
+        .width(Length::FillPortion(3));
     column![
         row![tree, main].spacing(16),
-        text_input("Note for this version", &l.note).on_input(Msg::Note).padding(8).style(crate::theme::input),
+        text_input("Note for this version", &l.note)
+            .on_input(Msg::Note)
+            .padding(8)
+            .style(crate::theme::input),
         bindings_card(l, roles),
         source_line(l),
     ]
@@ -1381,7 +1666,10 @@ fn edit_tab<'a>(l: &'a Loaded, roles: &'a [Role]) -> Element<'a, Msg> {
 }
 
 fn file_tree(l: &Loaded) -> Element<'_, Msg> {
-    let mut rows: Vec<Element<'_, Msg>> = vec![ui::label("skill folder").into(), tree_row(l, SKILL_MD, l.skill_changed())];
+    let mut rows: Vec<Element<'_, Msg>> = vec![
+        ui::label("skill folder").into(),
+        tree_row(l, SKILL_MD, l.skill_changed()),
+    ];
     for e in &l.entries {
         rows.push(tree_row(l, &e.path, e.changed()));
     }
@@ -1396,7 +1684,12 @@ fn file_tree(l: &Loaded) -> Element<'_, Msg> {
     rows.push(
         row![
             ui::btn_sm("Add file", None, ui::Kind::Secondary, Some(Msg::AddFile)),
-            ui::btn_sm("Add from disk", None, ui::Kind::Secondary, Some(Msg::PickFromDisk)),
+            ui::btn_sm(
+                "Add from disk",
+                None,
+                ui::Kind::Secondary,
+                Some(Msg::PickFromDisk)
+            ),
         ]
         .spacing(8)
         .into(),
@@ -1405,8 +1698,16 @@ fn file_tree(l: &Loaded) -> Element<'_, Msg> {
 }
 
 fn tree_row<'a>(l: &'a Loaded, path: &str, changed: bool) -> Element<'a, Msg> {
-    let label = if changed { format!("{path} •") } else { path.to_string() };
-    let kind = if l.selected == path { ui::Kind::Primary } else { ui::Kind::Ghost };
+    let label = if changed {
+        format!("{path} •")
+    } else {
+        path.to_string()
+    };
+    let kind = if l.selected == path {
+        ui::Kind::Primary
+    } else {
+        ui::Kind::Ghost
+    };
     ui::btn_sm(&label, None, kind, Some(Msg::Select(path.to_string())))
 }
 
@@ -1414,17 +1715,51 @@ fn tree_row<'a>(l: &'a Loaded, path: &str, changed: bool) -> Element<'a, Msg> {
 fn selected_pane(l: &Loaded) -> Element<'_, Msg> {
     let mut parts: Vec<Element<'_, Msg>> = Vec::new();
     if l.selected == SKILL_MD {
-        parts.push(row![ui::sans(SKILL_MD, 13.0, palette().ink), ui::btn_sm("Save as", None, ui::Kind::Secondary, Some(Msg::SaveAs))].spacing(12).align_y(Alignment::Center).into());
+        parts.push(
+            row![
+                ui::sans(SKILL_MD, 13.0, palette().ink),
+                ui::btn_sm("Save as", None, ui::Kind::Secondary, Some(Msg::SaveAs))
+            ]
+            .spacing(12)
+            .align_y(Alignment::Center)
+            .into(),
+        );
         parts.push(text_pane(&l.skill_md, true, Msg::EditSkill));
     } else if let Some(e) = l.selected_entry() {
-        let mut head: Vec<Element<'_, Msg>> = vec![ui::mono(e.path.clone(), 13.0, palette().ink).into(), ui::faint(format!("{} bytes", e.size())).into()];
-        head.push(ui::btn_sm(if e.executable { "Executable: yes" } else { "Executable: no" }, None, ui::Kind::Secondary, Some(Msg::ToggleExec)));
-        head.push(ui::btn_sm("Remove", None, ui::Kind::Ghost, Some(Msg::Remove)));
-        head.push(ui::btn_sm("Save as", None, ui::Kind::Secondary, Some(Msg::SaveAs)));
+        let mut head: Vec<Element<'_, Msg>> = vec![
+            ui::mono(e.path.clone(), 13.0, palette().ink).into(),
+            ui::faint(format!("{} bytes", e.size())).into(),
+        ];
+        head.push(ui::btn_sm(
+            if e.executable {
+                "Executable: yes"
+            } else {
+                "Executable: no"
+            },
+            None,
+            ui::Kind::Secondary,
+            Some(Msg::ToggleExec),
+        ));
+        head.push(ui::btn_sm(
+            "Remove",
+            None,
+            ui::Kind::Ghost,
+            Some(Msg::Remove),
+        ));
+        head.push(ui::btn_sm(
+            "Save as",
+            None,
+            ui::Kind::Secondary,
+            Some(Msg::SaveAs),
+        ));
         parts.push(row(head).spacing(12).align_y(Alignment::Center).into());
         parts.push(
             row![
-                text_input("rename to", &l.rename_to).on_input(Msg::RenameTo).on_submit(Msg::Rename).padding(8).style(crate::theme::input),
+                text_input("rename to", &l.rename_to)
+                    .on_input(Msg::RenameTo)
+                    .on_submit(Msg::Rename)
+                    .padding(8)
+                    .style(crate::theme::input),
                 ui::btn_sm("Rename", None, ui::Kind::Secondary, Some(Msg::Rename)),
             ]
             .spacing(12)
@@ -1434,17 +1769,30 @@ fn selected_pane(l: &Loaded) -> Element<'_, Msg> {
         match &e.body {
             Body::Text { content, .. } => {
                 if e.saved.is_some() && e.text_changed() {
-                    parts.push(ui::faint("Save as writes the saved version: unsaved edits are not in it.").into());
+                    parts.push(
+                        ui::faint("Save as writes the saved version: unsaved edits are not in it.")
+                            .into(),
+                    );
                 }
                 parts.push(text_pane(content, is_markdown(&e.path), Msg::EditFile));
             }
-            Body::Binary(bytes) => parts.push(ui::faint(format!("{} bytes · a binary file, not shown here", bytes.len())).into()),
+            Body::Binary(bytes) => parts.push(
+                ui::faint(format!(
+                    "{} bytes · a binary file, not shown here",
+                    bytes.len()
+                ))
+                .into(),
+            ),
         }
     } else {
         parts.push(ui::faint("Pick a file in the tree.").into());
     }
     if let Some(line) = l.jump {
-        if let Some(text) = selected_text(l).and_then(|t| t.lines().nth(line.saturating_sub(1) as usize).map(str::to_string)) {
+        if let Some(text) = selected_text(l).and_then(|t| {
+            t.lines()
+                .nth(line.saturating_sub(1) as usize)
+                .map(str::to_string)
+        }) {
             parts.push(ui::mono(format!("line {line}: {text}"), 12.0, palette().ink_3).into());
         }
     }
@@ -1452,19 +1800,38 @@ fn selected_pane(l: &Loaded) -> Element<'_, Msg> {
 }
 
 /// A text editor, beside a live markdown preview for markdown files.
-fn text_pane<'a>(content: &'a text_editor::Content, markdown: bool, on_edit: fn(text_editor::Action) -> Msg) -> Element<'a, Msg> {
-    let editor = text_editor(content).on_action(on_edit).font(Font::MONOSPACE).height(Length::Fixed(420.0));
+fn text_pane<'a>(
+    content: &'a text_editor::Content,
+    markdown: bool,
+    on_edit: fn(text_editor::Action) -> Msg,
+) -> Element<'a, Msg> {
+    let editor = text_editor(content)
+        .on_action(on_edit)
+        .font(Font::MONOSPACE)
+        .height(Length::Fixed(420.0));
     if !markdown {
         return editor.into();
     }
-    let preview = ui::scroll(ui::markdown::<Msg>(&source_text(content))).height(Length::Fixed(420.0));
-    row![container(editor).width(Length::FillPortion(1)), container(preview).width(Length::FillPortion(1))].spacing(16).into()
+    let preview =
+        ui::scroll(ui::markdown::<Msg>(&source_text(content))).height(Length::Fixed(420.0));
+    row![
+        container(editor).width(Length::FillPortion(1)),
+        container(preview).width(Length::FillPortion(1))
+    ]
+    .spacing(16)
+    .into()
 }
 
 /// The checks on the draft, grouped by file. Scripts get a warning; each place jumps to its file and line.
 fn findings(l: &Loaded) -> Element<'_, Msg> {
     let r = &l.report;
-    let mut parts: Vec<Element<'_, Msg>> = vec![ui::faint(format!("{} errors · {} warnings · {} infos · score {}", r.errors, r.warnings, r.infos, r.score)).into()];
+    let mut parts: Vec<Element<'_, Msg>> = vec![
+        ui::faint(format!(
+            "{} errors · {} warnings · {} infos · score {}",
+            r.errors, r.warnings, r.infos, r.score
+        ))
+        .into(),
+    ];
     if r.findings.iter().any(|f| f.rule == "script") {
         parts.push(
             ui::sans("This skill contains code. Agents may run it in their own VMs. Read it before publishing.", 13.0, ui::Tone::Warn.color()).into(),
@@ -1482,11 +1849,19 @@ fn findings(l: &Loaded) -> Element<'_, Msg> {
     for path in paths {
         parts.push(ui::label(path).into());
         for f in r.findings.iter().filter(|f| f.path == path) {
-            let place = if f.line == 0 { "file".to_string() } else { format!("line {}", f.line) };
+            let place = if f.line == 0 {
+                "file".to_string()
+            } else {
+                format!("line {}", f.line)
+            };
             parts.push(
                 row![
                     ui::badge(f.severity.as_str(), severity_tone(f.severity)),
-                    ui::link(&format!("{place} · {}", f.message), Msg::Jump(f.path.clone(), f.line), false),
+                    ui::link(
+                        &format!("{place} · {}", f.message),
+                        Msg::Jump(f.path.clone(), f.line),
+                        false
+                    ),
                     ui::mono(f.rule.clone(), 11.0, palette().ink_3),
                 ]
                 .spacing(12)
@@ -1501,10 +1876,12 @@ fn findings(l: &Loaded) -> Element<'_, Msg> {
 /// The bindings picker, the same as New skill and the import preview: an Every agent box, then a box per role, by label.
 fn bindings_card<'a>(l: &'a Loaded, roles: &'a [Role]) -> Element<'a, Msg> {
     let every = l.bindings.iter().any(|b| b.as_str() == EVERY_AGENT);
-    let mut boxes: Vec<Element<'a, Msg>> = vec![checkbox(every)
-        .label("Every agent")
-        .on_toggle(|on| Msg::ToggleBinding(EVERY_AGENT.to_string(), on))
-        .into()];
+    let mut boxes: Vec<Element<'a, Msg>> = vec![
+        checkbox(every)
+            .label("Every agent")
+            .on_toggle(|on| Msg::ToggleBinding(EVERY_AGENT.to_string(), on))
+            .into(),
+    ];
     let mut by_label: Vec<&Role> = roles.iter().collect();
     by_label.sort_by(|a, b| a.title.cmp(&b.title));
     for r in by_label {
@@ -1520,7 +1897,12 @@ fn bindings_card<'a>(l: &'a Loaded, roles: &'a [Role]) -> Element<'a, Msg> {
     column![
         ui::label("Bindings"),
         column(boxes).spacing(8),
-        ui::btn_sm("Save bindings", None, ui::Kind::Primary, Some(Msg::SaveBindings)),
+        ui::btn_sm(
+            "Save bindings",
+            None,
+            ui::Kind::Primary,
+            Some(Msg::SaveBindings)
+        ),
     ]
     .spacing(8)
     .into()
@@ -1534,12 +1916,26 @@ fn source_line(l: &Loaded) -> Element<'_, Msg> {
         Source::Github { repo, commit } => {
             let short: String = commit.chars().take(7).collect();
             parts.push(ui::faint(format!("Source: GitHub {repo}@{short}")).into());
-            parts.push(ui::btn_sm("Check for updates", None, ui::Kind::Secondary, Some(Msg::CheckGithub)));
+            parts.push(ui::btn_sm(
+                "Check for updates",
+                None,
+                ui::Kind::Secondary,
+                Some(Msg::CheckGithub),
+            ));
             if let Some(check) = l.github.as_ref() {
-                let text = if check.update_available { format!("Update available: {}", check.latest) } else { format!("Up to date at {}", check.current) };
+                let text = if check.update_available {
+                    format!("Update available: {}", check.latest)
+                } else {
+                    format!("Up to date at {}", check.current)
+                };
                 parts.push(ui::faint(text).into());
                 if check.update_available {
-                    parts.push(ui::btn_sm("Update", None, ui::Kind::Primary, Some(Msg::UpdateGithub)));
+                    parts.push(ui::btn_sm(
+                        "Update",
+                        None,
+                        ui::Kind::Primary,
+                        Some(Msg::UpdateGithub),
+                    ));
                 }
             }
         }
@@ -1559,8 +1955,18 @@ fn versions_tab(l: &Loaded) -> Element<'_, Msg> {
     parts.push(
         row![
             ui::faint(format!("{picked} of 2 picked to compare")),
-            ui::btn_sm("Compare", None, ui::Kind::Secondary, (picked == 2).then_some(Msg::Compare)),
-            ui::btn_sm("Clear", None, ui::Kind::Ghost, (picked > 0).then_some(Msg::ClearPicks)),
+            ui::btn_sm(
+                "Compare",
+                None,
+                ui::Kind::Secondary,
+                (picked == 2).then_some(Msg::Compare)
+            ),
+            ui::btn_sm(
+                "Clear",
+                None,
+                ui::Kind::Ghost,
+                (picked > 0).then_some(Msg::ClearPicks)
+            ),
         ]
         .spacing(12)
         .align_y(Alignment::Center)
@@ -1601,7 +2007,10 @@ fn history_tab(l: &Loaded) -> Element<'_, Msg> {
 
 fn version_row<'a>(l: &'a Loaded, v: &'a VersionMeta) -> Element<'a, Msg> {
     let n = v.version;
-    let mut head: Vec<Element<'a, Msg>> = vec![ui::sans(format!("v{n}"), 13.0, palette().ink).into(), ui::badge(&format!("score {}", v.score), score_tone(v.score))];
+    let mut head: Vec<Element<'a, Msg>> = vec![
+        ui::sans(format!("v{n}"), 13.0, palette().ink).into(),
+        ui::badge(&format!("score {}", v.score), score_tone(v.score)),
+    ];
     if l.summary.active_version == Some(n) {
         head.push(ui::badge("live", ui::Tone::Signal));
     }
@@ -1611,7 +2020,8 @@ fn version_row<'a>(l: &'a Loaded, v: &'a VersionMeta) -> Element<'a, Msg> {
     if v.rules_version < apz_skill::RULES_VERSION {
         head.push(ui::badge("stale", ui::Tone::Signal));
     }
-    let mut body: Vec<Element<'a, Msg>> = vec![row(head).spacing(10).align_y(Alignment::Center).into()];
+    let mut body: Vec<Element<'a, Msg>> =
+        vec![row(head).spacing(10).align_y(Alignment::Center).into()];
     if !v.note.is_empty() {
         body.push(ui::prose(v.note.clone()).into());
     }
@@ -1636,7 +2046,12 @@ fn version_row<'a>(l: &'a Loaded, v: &'a VersionMeta) -> Element<'a, Msg> {
             pick,
             ui::btn_sm("View", None, ui::Kind::Ghost, Some(Msg::View(n))),
             ui::btn_sm("Publish", None, ui::Kind::Secondary, Some(Msg::Publish(n))),
-            ui::btn_sm("Restore as new", None, ui::Kind::Secondary, Some(Msg::RestoreVersion(n))),
+            ui::btn_sm(
+                "Restore as new",
+                None,
+                ui::Kind::Secondary,
+                Some(Msg::RestoreVersion(n))
+            ),
         ]
         .spacing(12)
         .align_y(Alignment::Center)
@@ -1649,7 +2064,16 @@ fn viewing(v: &Version) -> Element<'_, Msg> {
     let stale = if v.stale { " · stale" } else { "" };
     let mut parts: Vec<Element<'_, Msg>> = vec![
         row![
-            ui::sans(format!("v{} · score {} · {} findings{stale}", v.version, v.score, v.findings.len()), 12.0, palette().ink_3),
+            ui::sans(
+                format!(
+                    "v{} · score {} · {} findings{stale}",
+                    v.version,
+                    v.score,
+                    v.findings.len()
+                ),
+                12.0,
+                palette().ink_3
+            ),
             ui::btn_sm("Close", None, ui::Kind::Ghost, Some(Msg::CloseView)),
         ]
         .spacing(12)
@@ -1662,7 +2086,11 @@ fn viewing(v: &Version) -> Element<'_, Msg> {
 }
 
 fn finding_row(f: &Finding) -> Element<'static, Msg> {
-    let place = if f.line == 0 { format!("{} · file", f.path) } else { format!("{} · line {}", f.path, f.line) };
+    let place = if f.line == 0 {
+        format!("{} · file", f.path)
+    } else {
+        format!("{} · line {}", f.path, f.line)
+    };
     row![
         ui::badge(f.severity.as_str(), severity_tone(f.severity)),
         ui::sans(place, 12.0, palette().ink_3),
@@ -1676,7 +2104,14 @@ fn finding_row(f: &Finding) -> Element<'static, Msg> {
 
 fn compare(d: &Diff) -> Element<'_, Msg> {
     let side = |v: &VersionMeta| {
-        ui::sans(format!("v{} · score {} · {} errors, {} warnings", v.version, v.score, v.errors, v.warnings), 12.0, palette().ink)
+        ui::sans(
+            format!(
+                "v{} · score {} · {} errors, {} warnings",
+                v.version, v.score, v.errors, v.warnings
+            ),
+            12.0,
+            palette().ink,
+        )
     };
     let mut lines: Vec<Element<'_, Msg>> = Vec::new();
     for line in &d.skill_md {
@@ -1685,7 +2120,19 @@ fn compare(d: &Diff) -> Element<'_, Msg> {
             "del" => ("−", ui::Tone::Danger.color()),
             _ => (" ", ui::Tone::Muted.color()),
         };
-        lines.push(ui::mono(format!("{:>4} {:>4} {mark} {}", num(line.old), num(line.new), line.text), 12.0, colour).into());
+        lines.push(
+            ui::mono(
+                format!(
+                    "{:>4} {:>4} {mark} {}",
+                    num(line.old),
+                    num(line.new),
+                    line.text
+                ),
+                12.0,
+                colour,
+            )
+            .into(),
+        );
     }
     column![
         row![side(&d.from), side(&d.to)].spacing(24),
@@ -1704,15 +2151,23 @@ fn compare(d: &Diff) -> Element<'_, Msg> {
 /// The rules that apply to skills, grouped by their usual severity, with the why under each.
 fn rules_tab() -> Element<'static, Msg> {
     let rules = apz_skill::rules();
-    let mut parts: Vec<Element<'static, Msg>> =
-        vec![ui::faint(format!("The rules for skills (rules version {}).", apz_skill::RULES_VERSION)).into()];
+    let mut parts: Vec<Element<'static, Msg>> = vec![
+        ui::faint(format!(
+            "The rules for skills (rules version {}).",
+            apz_skill::RULES_VERSION
+        ))
+        .into(),
+    ];
     for severity in [Severity::Error, Severity::Warning, Severity::Info] {
         parts.push(ui::label(severity.as_str()).into());
         for rule in rules.iter().filter(|r| r.severity == severity) {
             parts.push(
-                column![ui::mono(format!("{} · {}", rule.title, rule.id), 13.0, palette().ink), ui::prose(rule.why)]
-                    .spacing(4)
-                    .into(),
+                column![
+                    ui::mono(format!("{} · {}", rule.title, rule.id), 13.0, palette().ink),
+                    ui::prose(rule.why)
+                ]
+                .spacing(4)
+                .into(),
             );
         }
     }
@@ -1724,20 +2179,29 @@ mod tests {
     use super::*;
 
     fn details(title: &str, tags: &str) -> SkillDetails {
-        SkillDetails { title: title.to_string(), tags: tags.to_string() }
+        SkillDetails {
+            title: title.to_string(),
+            tags: tags.to_string(),
+        }
     }
 
     #[test]
     fn the_meta_body_carries_the_title_and_the_tags() {
         let body = meta_body(&details("  Review  ", " code, , safety ")).unwrap();
-        assert_eq!(body, json!({ "title": "Review", "tags": ["code", "safety"] }));
+        assert_eq!(
+            body,
+            json!({ "title": "Review", "tags": ["code", "safety"] })
+        );
     }
 
     #[test]
     fn the_meta_body_refuses_a_blank_or_long_title() {
         assert!(meta_body(&details("   ", "")).is_err());
         let long = "x".repeat(MAX_TITLE + 1);
-        assert_eq!(meta_body(&details(&long, "")), Err(format!("The title must be 1 to {MAX_TITLE} characters.")));
+        assert_eq!(
+            meta_body(&details(&long, "")),
+            Err(format!("The title must be 1 to {MAX_TITLE} characters."))
+        );
     }
 
     #[test]
@@ -1750,6 +2214,9 @@ mod tests {
 
     #[test]
     fn a_file_path_keeps_its_slashes_and_encodes_each_segment() {
-        assert_eq!(file_path("demo", 3, "scripts/run me.py"), "/v1/skills/demo/versions/3/files/scripts/run%20me.py");
+        assert_eq!(
+            file_path("demo", 3, "scripts/run me.py"),
+            "/v1/skills/demo/versions/3/files/scripts/run%20me.py"
+        );
     }
 }

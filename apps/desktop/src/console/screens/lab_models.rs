@@ -5,18 +5,18 @@
 //! screen shares this file's badge, action row, dialogs and [`Controls`], so both screens agree on
 //! what a state means and what an action asks. The web's `lab-models.ts` is the twin.
 
-use iced::widget::{column, container, row, text, text_input, Space};
+use iced::widget::{Space, column, container, row, text, text_input};
 use iced::{Alignment, Element, Length, Subscription, Task};
 use serde::Deserialize;
 
+use super::Id;
 use super::lab::{self, Section};
 use super::lab_common;
 use super::lab_hf;
-use super::Id;
+use crate::console::Ctx;
 use crate::console::client::{self, Client};
 use crate::console::lab_api::{self, ModelView};
 use crate::console::ui::{self, Kind, Tone};
-use crate::console::Ctx;
 use crate::theme::{MONO, SANS};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -99,7 +99,9 @@ impl Controls {
                 _ => None,
             },
             Act::Import => {
-                let Dialog::Import(path) = &self.dialog else { return None };
+                let Dialog::Import(path) = &self.dialog else {
+                    return None;
+                };
                 let path = path.trim().to_string();
                 if path.is_empty() {
                     self.problem = Some("Give the directory path.".to_string());
@@ -138,7 +140,11 @@ impl Controls {
 }
 
 /// Runs a request against apid as a task; its answer goes to `done`.
-pub fn run<M: Send + 'static>(client: &Client, request: Request, done: impl Fn(Result<ModelView, String>) -> M + Send + 'static) -> Task<M> {
+pub fn run<M: Send + 'static>(
+    client: &Client,
+    request: Request,
+    done: impl Fn(Result<ModelView, String>) -> M + Send + 'static,
+) -> Task<M> {
     let c = client.clone();
     client::task(
         move || match request {
@@ -164,7 +170,10 @@ pub fn tone(state: &str) -> Tone {
 
 /// Why an imported model is not servable yet: the reason its source record keeps, if any.
 pub fn reason_of(m: &ModelView) -> Option<String> {
-    m.source.get("servable_reason").and_then(|v| v.as_str()).map(str::to_string)
+    m.source
+        .get("servable_reason")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
 }
 
 /// Whether a model serves: an imported one does not (its reason says why), the others do.
@@ -179,30 +188,57 @@ pub fn servable_text(m: &ModelView) -> String {
 /// The agreement as a percent with its counts (`92% · 46 of 50`), or a dash before any shadow run.
 pub fn agreement_text(m: &ModelView) -> String {
     match m.agreement_rate {
-        Some(rate) if m.shadow.runs > 0 => format!("{} · {} of {}", lab_common::percent(rate), lab_common::count(m.shadow.agreed), lab_common::count(m.shadow.runs)),
+        Some(rate) if m.shadow.runs > 0 => format!(
+            "{} · {} of {}",
+            lab_common::percent(rate),
+            lab_common::count(m.shadow.agreed),
+            lab_common::count(m.shadow.runs)
+        ),
         _ => "—".to_string(),
     }
 }
 
 /// A model's actions as the registry allows them: Shadow while trained, Promote while in shadow,
 /// Retire while not retired. Each opens its confirm (Promote, Retire) or runs at once (Shadow).
-pub fn actions<'a, M: Clone + 'a>(m: &ModelView, busy: bool, act: impl Fn(Act) -> M + Copy + 'a) -> Element<'a, M> {
+pub fn actions<'a, M: Clone + 'a>(
+    m: &ModelView,
+    busy: bool,
+    act: impl Fn(Act) -> M + Copy + 'a,
+) -> Element<'a, M> {
     let id = m.id.clone();
     let mut items: Vec<Element<'a, M>> = Vec::new();
     if m.state == "trained" {
-        items.push(ui::btn_sm("Shadow", Some("play"), Kind::Secondary, (!busy).then(|| act(Act::Shadow(id.clone())))));
+        items.push(ui::btn_sm(
+            "Shadow",
+            Some("play"),
+            Kind::Secondary,
+            (!busy).then(|| act(Act::Shadow(id.clone()))),
+        ));
     }
     if m.state == "shadow" {
-        items.push(ui::btn_sm("Promote", Some("check"), Kind::Primary, (!busy).then(|| act(Act::Ask(Dialog::Promote(id.clone()))))));
+        items.push(ui::btn_sm(
+            "Promote",
+            Some("check"),
+            Kind::Primary,
+            (!busy).then(|| act(Act::Ask(Dialog::Promote(id.clone())))),
+        ));
     }
     if m.state != "retired" {
-        items.push(ui::btn_sm("Retire", Some("ban"), Kind::Danger, (!busy).then(|| act(Act::Ask(Dialog::Retire(id.clone()))))));
+        items.push(ui::btn_sm(
+            "Retire",
+            Some("ban"),
+            Kind::Danger,
+            (!busy).then(|| act(Act::Ask(Dialog::Retire(id.clone())))),
+        ));
     }
     row(items).spacing(8).align_y(Alignment::Center).into()
 }
 
 /// The open dialog (import, promote or retire) as a card above the page; None while closed.
-pub fn dialog<'a, M: Clone + 'a>(c: &'a Controls, act: impl Fn(Act) -> M + Copy + 'a) -> Option<Element<'a, M>> {
+pub fn dialog<'a, M: Clone + 'a>(
+    c: &'a Controls,
+    act: impl Fn(Act) -> M + Copy + 'a,
+) -> Option<Element<'a, M>> {
     let busy = c.busy;
     match &c.dialog {
         Dialog::Closed => None,
@@ -212,9 +248,20 @@ pub fn dialog<'a, M: Clone + 'a>(c: &'a Controls, act: impl Fn(Act) -> M + Copy 
                 .on_submit(act(Act::Import))
                 .padding(8);
             let body = column![
-                ui::faint("An absolute path to a directory holding model.onnx and model_card.json."),
+                ui::faint(
+                    "An absolute path to a directory holding model.onnx and model_card.json."
+                ),
                 field,
-                footer(c, act, ui::btn("Import", Some("plus"), Kind::Primary, (!busy).then(|| act(Act::Import)))),
+                footer(
+                    c,
+                    act,
+                    ui::btn(
+                        "Import",
+                        Some("plus"),
+                        Kind::Primary,
+                        (!busy).then(|| act(Act::Import))
+                    )
+                ),
             ]
             .spacing(12);
             Some(ui::card("Import a model", body.into()))
@@ -241,23 +288,36 @@ pub fn dialog<'a, M: Clone + 'a>(c: &'a Controls, act: impl Fn(Act) -> M + Copy 
 }
 
 /// A dialog's foot: the refusal (if any), then Cancel and the confirm.
-fn footer<'a, M: Clone + 'a>(c: &'a Controls, act: impl Fn(Act) -> M + Copy + 'a, confirm: Element<'a, M>) -> Element<'a, M> {
+fn footer<'a, M: Clone + 'a>(
+    c: &'a Controls,
+    act: impl Fn(Act) -> M + Copy + 'a,
+    confirm: Element<'a, M>,
+) -> Element<'a, M> {
     let mut lines: Vec<Element<'a, M>> = Vec::new();
     if let Some(problem) = c.problem.as_deref() {
         lines.push(ui::error_line(problem));
     }
     lines.push(
-        row![Space::new().width(Length::Fill), ui::btn("Cancel", None, Kind::Ghost, Some(act(Act::Dismiss))), confirm]
-            .spacing(8)
-            .align_y(Alignment::Center)
-            .into(),
+        row![
+            Space::new().width(Length::Fill),
+            ui::btn("Cancel", None, Kind::Ghost, Some(act(Act::Dismiss))),
+            confirm
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center)
+        .into(),
     );
     column(lines).spacing(12).into()
 }
 
 /// A text value in the table and card voice: mono, ink-2.
 pub fn value<'a, M: 'a>(s: String) -> Element<'a, M> {
-    text(s).font(SANS).size(12.0).color(crate::theme::palette().ink_2).width(Length::Fill).into()
+    text(s)
+        .font(SANS)
+        .size(12.0)
+        .color(crate::theme::palette().ink_2)
+        .width(Length::Fill)
+        .into()
 }
 
 #[derive(Debug, Default)]
@@ -307,7 +367,14 @@ pub fn load(state: &mut State, ctx: &Ctx) -> Task<Msg> {
     let c = ctx.client.clone();
     let base = state.base_only;
     let list = client::task(
-        move || if base { c.get::<ModelList>("/v1/foundry/models?kind=base").map(|l| l.models) } else { lab_api::list_models(&c) },
+        move || {
+            if base {
+                c.get::<ModelList>("/v1/foundry/models?kind=base")
+                    .map(|l| l.models)
+            } else {
+                lab_api::list_models(&c)
+            }
+        },
         Msg::Loaded,
     );
     Task::batch([list, lab_hf::load(&mut state.hf, ctx).map(Msg::Hf)])
@@ -362,7 +429,12 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
 }
 
 pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
-    let import = ui::btn("Import", Some("plus"), Kind::Secondary, Some(Msg::Act(Act::ImportOpen)));
+    let import = ui::btn(
+        "Import",
+        Some("plus"),
+        Kind::Secondary,
+        Some(Msg::Act(Act::ImportOpen)),
+    );
     let mut parts: Vec<Element<'a, Msg>> = vec![ui::view_head("Models", vec![import])];
     if let Some(dialog) = dialog(&state.controls, Msg::Act) {
         parts.push(dialog);
@@ -405,17 +477,29 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
     lab::frame(Section::Models, column(parts).spacing(22).into(), Msg::Go)
 }
 
-
 /// The view switch and the count line: `3 models · 0 in shadow · 1 promoted`.
 fn toolbar<'a>(state: &'a State, list: &[ModelView]) -> Element<'a, Msg> {
     let shadow = list.iter().filter(|m| m.state == "shadow").count() as u64;
     let promoted = list.iter().filter(|m| m.state == "promoted").count() as u64;
     let n = list.len() as u64;
     let noun = if n == 1 { "model" } else { "models" };
-    let summary = format!("{} {noun} · {} in shadow · {} promoted", lab_common::count(n), lab_common::count(shadow), lab_common::count(promoted));
+    let summary = format!(
+        "{} {noun} · {} in shadow · {} promoted",
+        lab_common::count(n),
+        lab_common::count(shadow),
+        lab_common::count(promoted)
+    );
     row![
-        ui::seg(&[(View::Table, "Table"), (View::Cards, "Cards")], state.view, Msg::View),
-        ui::seg(&[(false, "All models"), (true, "Base models")], state.base_only, Msg::Kind),
+        ui::seg(
+            &[(View::Table, "Table"), (View::Cards, "Cards")],
+            state.view,
+            Msg::View
+        ),
+        ui::seg(
+            &[(false, "All models"), (true, "Base models")],
+            state.base_only,
+            Msg::Kind
+        ),
         ui::faint(summary),
     ]
     .spacing(16)
@@ -434,7 +518,14 @@ fn cell<'a>(portion: u16, right: bool, content: impl Into<Element<'a, Msg>>) -> 
 }
 
 fn head_cell<'a>(portion: u16, right: bool, label: &str) -> Element<'a, Msg> {
-    cell(portion, right, text(label.to_string()).font(SANS).size(11.0).color(crate::theme::palette().ink_3))
+    cell(
+        portion,
+        right,
+        text(label.to_string())
+            .font(SANS)
+            .size(11.0)
+            .color(crate::theme::palette().ink_3),
+    )
 }
 
 /// The registry as a table: name and id (linked), version, state, size, parameters, created,
@@ -462,8 +553,15 @@ fn table<'a>(list: &'a [ModelView], busy: bool) -> Element<'a, Msg> {
 
 fn table_row<'a>(m: &'a ModelView, busy: bool) -> Element<'a, Msg> {
     let name = column![
-        ui::link(&m.card.name, Msg::Go(Id::LabModelDetail(m.id.clone())), true),
-        text(m.id.clone()).font(MONO).size(11.0).color(crate::theme::palette().ink_3),
+        ui::link(
+            &m.card.name,
+            Msg::Go(Id::LabModelDetail(m.id.clone())),
+            true
+        ),
+        text(m.id.clone())
+            .font(MONO)
+            .size(11.0)
+            .color(crate::theme::palette().ink_3),
     ]
     .spacing(2);
     let job: Element<'a, Msg> = match &m.source_job {
@@ -501,29 +599,42 @@ fn cards<'a>(list: &'a [ModelView], busy: bool) -> Element<'a, Msg> {
 
 fn model_card<'a>(m: &'a ModelView, busy: bool) -> Element<'a, Msg> {
     let body = column![
-        row![ui::badge(&m.state, tone(&m.state)), value(format!("{} · v{}", m.id, m.card.version))]
-            .spacing(12)
-            .align_y(Alignment::Center),
+        row![
+            ui::badge(&m.state, tone(&m.state)),
+            value(format!("{} · v{}", m.id, m.card.version))
+        ]
+        .spacing(12)
+        .align_y(Alignment::Center),
         field("Servable", value(servable_text(m))),
         field("Size", value(lab_common::size(m.size_bytes))),
         field("Params", value(lab_common::count(m.parameters))),
         field("Created", value(lab_common::time(m.created_ms))),
-        field("Source job", match &m.source_job {
-            Some(job) => ui::link(job, Msg::Go(Id::LabJobDetail(job.clone())), true),
-            None => value("—".to_string()),
-        }),
+        field(
+            "Source job",
+            match &m.source_job {
+                Some(job) => ui::link(job, Msg::Go(Id::LabJobDetail(job.clone())), true),
+                None => value("—".to_string()),
+            }
+        ),
         field("Agreement", value(agreement_text(m))),
         actions(m, busy, Msg::Act),
     ]
     .spacing(10);
-    container(ui::card(&m.card.name, body.into())).width(Length::FillPortion(1)).into()
+    container(ui::card(&m.card.name, body.into()))
+        .width(Length::FillPortion(1))
+        .into()
 }
 
 /// A state's cell: the badge, and for an imported model the reason it is not servable yet.
 fn state_cell<'a>(m: &ModelView) -> Element<'a, Msg> {
     let badge = ui::badge(&m.state, tone(&m.state));
     if m.state == "imported" {
-        column![badge, ui::faint(reason_of(m).unwrap_or_else(|| "Not servable yet.".to_string()))].spacing(4).into()
+        column![
+            badge,
+            ui::faint(reason_of(m).unwrap_or_else(|| "Not servable yet.".to_string()))
+        ]
+        .spacing(4)
+        .into()
     } else {
         badge
     }
@@ -531,5 +642,11 @@ fn state_cell<'a>(m: &ModelView) -> Element<'a, Msg> {
 
 /// A labelled figure in a card: the label in caps, the value beside it.
 fn field<'a>(label: &str, value: Element<'a, Msg>) -> Element<'a, Msg> {
-    row![container(ui::label(label)).width(Length::Fixed(110.0)), value].spacing(12).align_y(Alignment::Center).into()
+    row![
+        container(ui::label(label)).width(Length::Fixed(110.0)),
+        value
+    ]
+    .spacing(12)
+    .align_y(Alignment::Center)
+    .into()
 }

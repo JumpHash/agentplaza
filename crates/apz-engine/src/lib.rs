@@ -19,8 +19,8 @@ pub mod engine;
 pub mod entry;
 pub mod entry_scene;
 pub mod fleet;
-pub mod gpus;
 pub mod geometry;
+pub mod gpus;
 pub mod hardware;
 pub mod hardware_lab;
 pub mod input;
@@ -42,7 +42,9 @@ pub mod toon;
 pub mod warm;
 pub mod world;
 
-pub use engine::{agent_list, feed_from_json, Cmd, Engine, Feed, FrameOut, Pick, Renderer, Thumbnail};
+pub use engine::{
+    Cmd, Engine, Feed, FrameOut, Pick, Renderer, Thumbnail, agent_list, feed_from_json,
+};
 pub use stage::Motion;
 
 /// The env overrides a host sets (the web's robot lab passes its options as `APZ_ROBOT_*`). They read before the real env.

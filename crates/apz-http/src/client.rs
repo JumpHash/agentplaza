@@ -34,12 +34,19 @@ pub struct Reply {
 
 impl Reply {
     pub fn json(&self) -> io::Result<Value> {
-        serde_json::from_slice(&self.body).map_err(|err| invalid(format!("the answer is not JSON: {err}")))
+        serde_json::from_slice(&self.body)
+            .map_err(|err| invalid(format!("the answer is not JSON: {err}")))
     }
 }
 
 /// Sends one request and reads the whole answer.
-pub fn send(port: u16, method: &str, path: &str, body: Option<&[u8]>, timeout: Duration) -> io::Result<Reply> {
+pub fn send(
+    port: u16,
+    method: &str,
+    path: &str,
+    body: Option<&[u8]>,
+    timeout: Duration,
+) -> io::Result<Reply> {
     send_with(port, method, path, &[], body, timeout)
 }
 
@@ -61,7 +68,12 @@ pub fn send_with(
 /// Reads one whole answer: the head, then a Content-Length body or everything to the close.
 fn read_reply(mut reader: impl BufRead) -> io::Result<Reply> {
     let (status, headers) = read_head(&mut reader)?;
-    let header = |name: &str| headers.iter().find(|(key, _)| key == name).map(|(_, value)| value.as_str());
+    let header = |name: &str| {
+        headers
+            .iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.as_str())
+    };
     match header("transfer-encoding") {
         Some(te) if te.eq_ignore_ascii_case("chunked") => {
             let body = read_chunked(&mut reader)?;
@@ -72,10 +84,17 @@ fn read_reply(mut reader: impl BufRead) -> io::Result<Reply> {
     }
     // Without a Content-Length the body runs to the close.
     let length = header("content-length")
-        .map(|length| length.parse::<usize>().map_err(|_| invalid(format!("Content-Length {length:?}"))))
+        .map(|length| {
+            length
+                .parse::<usize>()
+                .map_err(|_| invalid(format!("Content-Length {length:?}")))
+        })
         .transpose()?;
     let mut body = Vec::new();
-    match reader.take(length.unwrap_or(MAX_BODY + 1).min(MAX_BODY + 1) as u64).read_to_end(&mut body) {
+    match reader
+        .take(length.unwrap_or(MAX_BODY + 1).min(MAX_BODY + 1) as u64)
+        .read_to_end(&mut body)
+    {
         // A TLS peer may close without its close_notify; a body with no length ends there too.
         Err(err) if length.is_none() && err.kind() == io::ErrorKind::UnexpectedEof => {}
         result => {
@@ -83,20 +102,37 @@ fn read_reply(mut reader: impl BufRead) -> io::Result<Reply> {
         }
     }
     if body.len() > MAX_BODY || length.is_some_and(|length| length != body.len()) {
-        return Err(invalid(format!("the answer's body is {} bytes, not {length:?}", body.len())));
+        return Err(invalid(format!(
+            "the answer's body is {} bytes, not {length:?}",
+            body.len()
+        )));
     }
     Ok(reply_of(status, &headers, body))
 }
 
 /// The reply of a head and its body.
 fn reply_of(status: u16, headers: &[(String, String)], body: Vec<u8>) -> Reply {
-    let header = |name: &str| headers.iter().find(|(key, _)| key == name).map(|(_, value)| value.as_str());
+    let header = |name: &str| {
+        headers
+            .iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.as_str())
+    };
     // Printable ASCII only: a proxy writes this into its own response head.
     let content_type = match header("content-type") {
-        Some(value) if !value.is_empty() && value.bytes().all(|byte| (0x20..=0x7e).contains(&byte)) => value,
+        Some(value)
+            if !value.is_empty() && value.bytes().all(|byte| (0x20..=0x7e).contains(&byte)) =>
+        {
+            value
+        }
         _ => "application/octet-stream",
     };
-    Reply { status, content_type: content_type.to_string(), body, headers: headers.to_vec() }
+    Reply {
+        status,
+        content_type: content_type.to_string(),
+        body,
+        headers: headers.to_vec(),
+    }
 }
 
 /// A chunked body (RFC 9112 7.1): hex-sized chunks (extensions ignored) up to the zero chunk, then the trailers, which
@@ -108,12 +144,15 @@ fn read_chunked(reader: &mut impl BufRead) -> io::Result<Vec<u8>> {
         line.clear();
         reader.by_ref().take(MAX_HEAD as u64).read_line(&mut line)?;
         let size = line.trim_end().split(';').next().unwrap_or("").trim();
-        let size = usize::from_str_radix(size, 16).map_err(|_| invalid(format!("chunk size {size:?}")))?;
+        let size =
+            usize::from_str_radix(size, 16).map_err(|_| invalid(format!("chunk size {size:?}")))?;
         if size == 0 {
             break;
         }
         if body.len() + size > MAX_BODY {
-            return Err(invalid(format!("the answer's body is over {MAX_BODY} bytes")));
+            return Err(invalid(format!(
+                "the answer's body is over {MAX_BODY} bytes"
+            )));
         }
         let start = body.len();
         body.resize(start + size, 0);
@@ -127,7 +166,9 @@ fn read_chunked(reader: &mut impl BufRead) -> io::Result<Vec<u8>> {
     // The trailers, to the empty line (or the close).
     loop {
         line.clear();
-        if reader.by_ref().take(MAX_HEAD as u64).read_line(&mut line)? == 0 || line.trim_end().is_empty() {
+        if reader.by_ref().take(MAX_HEAD as u64).read_line(&mut line)? == 0
+            || line.trim_end().is_empty()
+        {
             return Ok(body);
         }
     }
@@ -140,8 +181,19 @@ pub fn get_json(port: u16, path: &str, timeout: Duration) -> io::Result<(u16, Va
 }
 
 /// `POST path` with a JSON body, answered with JSON.
-pub fn post_json(port: u16, path: &str, body: &Value, timeout: Duration) -> io::Result<(u16, Value)> {
-    let reply = send(port, "POST", path, Some(body.to_string().as_bytes()), timeout)?;
+pub fn post_json(
+    port: u16,
+    path: &str,
+    body: &Value,
+    timeout: Duration,
+) -> io::Result<(u16, Value)> {
+    let reply = send(
+        port,
+        "POST",
+        path,
+        Some(body.to_string().as_bytes()),
+        timeout,
+    )?;
     Ok((reply.status, reply.json()?))
 }
 
@@ -156,9 +208,16 @@ pub fn events(port: u16, path: &str, idle: Duration) -> io::Result<EventStream> 
         .iter()
         .any(|(key, value)| key == "content-type" && value.starts_with("text/event-stream"));
     if status != 200 || !streaming {
-        return Err(io::Error::other(format!("{path} answered {status}, not an event stream")));
+        return Err(io::Error::other(format!(
+            "{path} answered {status}, not an event stream"
+        )));
     }
-    Ok(EventStream { reader, line: Vec::new(), event: String::new(), data: String::new() })
+    Ok(EventStream {
+        reader,
+        line: Vec::new(),
+        event: String::new(),
+        data: String::new(),
+    })
 }
 
 /// One server-sent event.
@@ -183,7 +242,9 @@ impl EventStream {
     pub fn next_event(&mut self) -> io::Result<Option<Event>> {
         loop {
             let room = MAX_EVENT_LINE.saturating_sub(self.line.len()) as u64 + 1;
-            (&mut self.reader).take(room).read_until(b'\n', &mut self.line)?;
+            (&mut self.reader)
+                .take(room)
+                .read_until(b'\n', &mut self.line)?;
             if self.line.last() != Some(&b'\n') {
                 if self.line.len() > MAX_EVENT_LINE {
                     return Err(invalid("an event line is too long".to_string()));
@@ -199,7 +260,11 @@ impl EventStream {
                 }
                 let event = std::mem::take(&mut self.event);
                 return Ok(Some(Event {
-                    event: if event.is_empty() { "message".to_string() } else { event },
+                    event: if event.is_empty() {
+                        "message".to_string()
+                    } else {
+                        event
+                    },
                     data: std::mem::take(&mut self.data),
                 }));
             }
@@ -242,16 +307,28 @@ fn connect(
 
 /// The request's bytes: the request line, `Host`, `Connection: close`, the extra headers (a name
 /// with a colon or a line break, or a value with a line break, is refused), then a JSON body.
-fn request_bytes(method: &str, path: &str, host: &str, headers: &[(&str, &str)], body: Option<&[u8]>) -> io::Result<Vec<u8>> {
+fn request_bytes(
+    method: &str,
+    path: &str,
+    host: &str,
+    headers: &[(&str, &str)],
+    body: Option<&[u8]>,
+) -> io::Result<Vec<u8>> {
     let mut head = format!("{method} {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n");
     for (name, value) in headers {
         if name.contains(['\r', '\n', ':']) || value.contains(['\r', '\n']) {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("header {name:?} has a line break or colon")));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("header {name:?} has a line break or colon"),
+            ));
         }
         head.push_str(&format!("{name}: {value}\r\n"));
     }
     if let Some(body) = body {
-        head.push_str(&format!("Content-Type: application/json\r\nContent-Length: {}\r\n", body.len()));
+        head.push_str(&format!(
+            "Content-Type: application/json\r\nContent-Length: {}\r\n",
+            body.len()
+        ));
     }
     head.push_str("\r\n");
     let mut wire = head.into_bytes();
@@ -269,9 +346,13 @@ pub(crate) fn read_head(reader: &mut impl BufRead) -> io::Result<(u16, Vec<(Stri
     let version = parts.next().unwrap_or_default();
     let code = parts.next().unwrap_or_default();
     if !matches!(version, "HTTP/1.1" | "HTTP/1.0") || code.len() != 3 {
-        return Err(invalid(format!("{status_line:?} is not an HTTP/1.x status line")));
+        return Err(invalid(format!(
+            "{status_line:?} is not an HTTP/1.x status line"
+        )));
     }
-    let status = code.parse().map_err(|_| invalid(format!("{code:?} is not a status code")))?;
+    let status = code
+        .parse()
+        .map_err(|_| invalid(format!("{code:?} is not a status code")))?;
     let mut headers = Vec::new();
     loop {
         read_line(reader, &mut line, &mut budget)?;
@@ -291,7 +372,9 @@ fn read_line(reader: &mut impl BufRead, line: &mut Vec<u8>, budget: &mut usize) 
     line.clear();
     reader.take(*budget as u64).read_until(b'\n', line)?;
     if line.last() != Some(&b'\n') {
-        return Err(invalid("the answer's head is cut short or too large".to_string()));
+        return Err(invalid(
+            "the answer's head is cut short or too large".to_string(),
+        ));
     }
     *budget -= line.len();
     line.pop();
@@ -315,7 +398,8 @@ struct Timed<R> {
 
 impl<R: Read + Duplex> Read for Timed<R> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let timed_out = || io::Error::new(io::ErrorKind::TimedOut, "the server did not answer in time");
+        let timed_out =
+            || io::Error::new(io::ErrorKind::TimedOut, "the server did not answer in time");
         let left = self.deadline.saturating_duration_since(Instant::now());
         if left.is_zero() {
             return Err(timed_out());
@@ -334,7 +418,10 @@ mod tests {
     fn a_chunked_answer_is_read_whole() {
         let raw = b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n4;x=1\r\n{\"a\"\r\n3\r\n:1}\r\n0\r\nX-Trailer: y\r\n\r\n";
         let reply = read_reply(std::io::BufReader::new(&raw[..])).expect("a chunked answer");
-        assert_eq!((reply.status, reply.body.as_slice()), (200, &b"{\"a\":1}"[..]));
+        assert_eq!(
+            (reply.status, reply.body.as_slice()),
+            (200, &b"{\"a\":1}"[..])
+        );
         let bad = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip\r\n\r\n";
         assert!(read_reply(std::io::BufReader::new(&bad[..])).is_err());
     }
@@ -351,7 +438,10 @@ mod tests {
         let router: Router<()> = Router::new()
             .post("/v1/echo/{name}", |_, request, params| {
                 let body: Value = request.json().unwrap_or(Value::Null);
-                Response::json(200, &serde_json::json!({ "name": params.get("name"), "body": body }))
+                Response::json(
+                    200,
+                    &serde_json::json!({ "name": params.get("name"), "body": body }),
+                )
             })
             .get("/v1/events", |_, _, _| {
                 Response::sse(|sse| {
@@ -360,19 +450,32 @@ mod tests {
                     sse.event("vm", r#"{"vm":0}"#)
                 })
             });
-        server.spawn(move |request| router.handle(&(), request)).expect("serves")
+        server
+            .spawn(move |request| router.handle(&(), request))
+            .expect("serves")
     }
 
     #[test]
     fn a_request_round_trips_and_a_rebinding_host_is_refused() {
         let server = server();
-        let (status, body) =
-            post_json(server.port(), "/v1/echo/ada", &serde_json::json!({ "n": 1 }), Duration::from_secs(5))
-                .expect("the server answers");
+        let (status, body) = post_json(
+            server.port(),
+            "/v1/echo/ada",
+            &serde_json::json!({ "n": 1 }),
+            Duration::from_secs(5),
+        )
+        .expect("the server answers");
         assert_eq!(status, 200);
-        assert_eq!(body, serde_json::json!({ "name": "ada", "body": { "n": 1 } }));
-        let missing = send(server.port(), "GET", "/nope", None, Duration::from_secs(5)).expect("answers");
-        assert_eq!((missing.status, missing.content_type.as_str()), (404, crate::JSON));
+        assert_eq!(
+            body,
+            serde_json::json!({ "name": "ada", "body": { "n": 1 } })
+        );
+        let missing =
+            send(server.port(), "GET", "/nope", None, Duration::from_secs(5)).expect("answers");
+        assert_eq!(
+            (missing.status, missing.content_type.as_str()),
+            (404, crate::JSON)
+        );
 
         // The rebinding guard: a foreign Host is refused, a Host-less probe served.
         let raw = |request: &str| {
@@ -382,8 +485,12 @@ mod tests {
             stream.read_to_string(&mut answer).expect("reads");
             answer
         };
-        let refused = raw("POST /v1/echo/x HTTP/1.1\r\nHost: evil.example:8899\r\nContent-Length: 0\r\n\r\n");
-        assert!(refused.starts_with("HTTP/1.1 403 Forbidden\r\n"), "{refused}");
+        let refused =
+            raw("POST /v1/echo/x HTTP/1.1\r\nHost: evil.example:8899\r\nContent-Length: 0\r\n\r\n");
+        assert!(
+            refused.starts_with("HTTP/1.1 403 Forbidden\r\n"),
+            "{refused}"
+        );
         let served = raw("POST /v1/echo/x HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
         assert!(served.starts_with("HTTP/1.1 200 OK\r\n"), "{served}");
         assert!(raw("GET /x\r\n\r\n").starts_with("HTTP/1.1 400 Bad Request\r\n"));
@@ -392,10 +499,20 @@ mod tests {
     #[test]
     fn an_event_stream_is_relayed_event_by_event() {
         let server = server();
-        let mut stream = events(server.port(), "/v1/events", Duration::from_secs(5)).expect("a stream");
-        let event = |event: &str, data: &str| Event { event: event.into(), data: data.into() };
-        assert_eq!(stream.next_event().expect("reads"), Some(event("run", r#"{"id":"r1"}"#)));
-        assert_eq!(stream.next_event().expect("reads"), Some(event("vm", r#"{"vm":0}"#)));
+        let mut stream =
+            events(server.port(), "/v1/events", Duration::from_secs(5)).expect("a stream");
+        let event = |event: &str, data: &str| Event {
+            event: event.into(),
+            data: data.into(),
+        };
+        assert_eq!(
+            stream.next_event().expect("reads"),
+            Some(event("run", r#"{"id":"r1"}"#))
+        );
+        assert_eq!(
+            stream.next_event().expect("reads"),
+            Some(event("vm", r#"{"vm":0}"#))
+        );
         assert_eq!(stream.next_event().expect("reads"), None);
     }
 
@@ -404,7 +521,8 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").expect("binds");
         let port = listener.local_addr().expect("an address").port();
         let started = Instant::now();
-        let err = send(port, "GET", "/", None, Duration::from_millis(200)).expect_err("nobody answers");
+        let err =
+            send(port, "GET", "/", None, Duration::from_millis(200)).expect_err("nobody answers");
         assert_eq!(err.kind(), io::ErrorKind::TimedOut, "{err}");
         assert!(started.elapsed() < Duration::from_secs(2));
         drop(listener);
@@ -413,7 +531,10 @@ mod tests {
     #[test]
     fn a_target_over_plain_http_round_trips_json() {
         let server = server();
-        let target = Target { base: format!("http://127.0.0.1:{}", server.port()), ..Target::default() };
+        let target = Target {
+            base: format!("http://127.0.0.1:{}", server.port()),
+            ..Target::default()
+        };
         let (status, body) = request_json(
             &target,
             "POST",
@@ -423,10 +544,17 @@ mod tests {
         )
         .expect("the server answers");
         assert_eq!(status, 200);
-        assert_eq!(body, serde_json::json!({ "name": "ada", "body": { "n": 1 } }));
-        let missing = request(&target, "GET", "/nope", None, Duration::from_secs(5)).expect("answers");
+        assert_eq!(
+            body,
+            serde_json::json!({ "name": "ada", "body": { "n": 1 } })
+        );
+        let missing =
+            request(&target, "GET", "/nope", None, Duration::from_secs(5)).expect("answers");
         assert_eq!(missing.status, 404);
-        let ftp = Target { base: "ftp://127.0.0.1:1".to_string(), ..Target::default() };
+        let ftp = Target {
+            base: "ftp://127.0.0.1:1".to_string(),
+            ..Target::default()
+        };
         assert!(request(&ftp, "GET", "/", None, Duration::from_secs(5)).is_err());
     }
 
@@ -435,14 +563,20 @@ mod tests {
         let pair = apz_trust::tls::self_signed(&["localhost".to_string()]).expect("a certificate");
         let config = apz_trust::tls::server_config(&pair).expect("a server config");
         let pin = apz_trust::tls::fingerprint(&pair.cert_pem).expect("a pin");
-        (serve(Server::bind(0).expect("an ephemeral port").tls(config)), pin)
+        (
+            serve(Server::bind(0).expect("an ephemeral port").tls(config)),
+            pin,
+        )
     }
 
     #[test]
     fn a_target_over_https_answers_to_the_pinned_certificate() {
         let (server, pin) = tls_server();
-        let target =
-            Target { base: format!("https://localhost:{}", server.port()), pin: Some(pin), ..Target::default() };
+        let target = Target {
+            base: format!("https://localhost:{}", server.port()),
+            pin: Some(pin),
+            ..Target::default()
+        };
         let (status, body) = request_json(
             &target,
             "POST",
@@ -452,16 +586,27 @@ mod tests {
         )
         .expect("the server answers over TLS");
         assert_eq!(status, 200);
-        assert_eq!(body, serde_json::json!({ "name": "ada", "body": { "n": 1 } }));
+        assert_eq!(
+            body,
+            serde_json::json!({ "name": "ada", "body": { "n": 1 } })
+        );
     }
 
     #[test]
     fn a_target_over_https_with_a_wrong_or_no_pin_fails() {
         let (server, _pin) = tls_server();
         let base = format!("https://localhost:{}", server.port());
-        let wrong = Target { base: base.clone(), pin: Some([0; 32]), ..Target::default() };
+        let wrong = Target {
+            base: base.clone(),
+            pin: Some([0; 32]),
+            ..Target::default()
+        };
         assert!(request(&wrong, "GET", "/v1/events", None, Duration::from_secs(5)).is_err());
-        let unpinned = Target { base, pin: None, ..Target::default() };
+        let unpinned = Target {
+            base,
+            pin: None,
+            ..Target::default()
+        };
         assert!(request(&unpinned, "GET", "/v1/events", None, Duration::from_secs(5)).is_err());
     }
 
@@ -469,12 +614,26 @@ mod tests {
     fn an_unpinned_https_target_refuses_a_self_signed_certificate() {
         // No pin means a public host: the Mozilla roots must sign it, and a self-signed hub cert is not signed by them.
         let (server, pin) = tls_server();
-        let target = Target { base: format!("https://localhost:{}", server.port()), pin: None, ..Target::default() };
-        let err = request(&target, "GET", "/v1/echo/ada", None, Duration::from_secs(5)).expect_err("no CA signs it");
+        let target = Target {
+            base: format!("https://localhost:{}", server.port()),
+            pin: None,
+            ..Target::default()
+        };
+        let err = request(&target, "GET", "/v1/echo/ada", None, Duration::from_secs(5))
+            .expect_err("no CA signs it");
         assert_ne!(err.kind(), io::ErrorKind::TimedOut, "{err}");
         // The same server still answers its own pin, so the refusal is the CA check, not a dead server.
-        let pinned = Target { base: target.base.clone(), pin: Some(pin), ..Target::default() };
-        assert_eq!(request(&pinned, "GET", "/v1/nope", None, Duration::from_secs(5)).expect("answers").status, 404);
+        let pinned = Target {
+            base: target.base.clone(),
+            pin: Some(pin),
+            ..Target::default()
+        };
+        assert_eq!(
+            request(&pinned, "GET", "/v1/nope", None, Duration::from_secs(5))
+                .expect("answers")
+                .status,
+            404
+        );
     }
 }
 
@@ -497,16 +656,34 @@ pub struct Target {
 /// One request to `target.base + path`, over plain TCP (http) or TLS (https: pinned for the hub,
 /// CA-verified for a public host; see [`Target`]). Same reply
 /// handling as [`send_with`] (Content-Length, chunked, or read to close).
-pub fn request(target: &Target, method: &str, path: &str, body: Option<&[u8]>, timeout: Duration) -> io::Result<Reply> {
+pub fn request(
+    target: &Target,
+    method: &str,
+    path: &str,
+    body: Option<&[u8]>,
+    timeout: Duration,
+) -> io::Result<Reply> {
     let deadline = Instant::now() + timeout;
     let (tls, host, port) = split_base(&target.base)?;
-    let host_header = if host.contains(':') { format!("[{host}]:{port}") } else { format!("{host}:{port}") };
-    let bearer = target.bearer.as_ref().map(|token| format!("Bearer {token}"));
+    let host_header = if host.contains(':') {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    };
+    let bearer = target
+        .bearer
+        .as_ref()
+        .map(|token| format!("Bearer {token}"));
     let mut headers: Vec<(&str, &str)> = Vec::new();
     if let Some(bearer) = &bearer {
         headers.push(("Authorization", bearer.as_str()));
     }
-    headers.extend(target.headers.iter().map(|(name, value)| (name.as_str(), value.as_str())));
+    headers.extend(
+        target
+            .headers
+            .iter()
+            .map(|(name, value)| (name.as_str(), value.as_str())),
+    );
     let wire = request_bytes(method, path, &host_header, &headers, body)?;
     if !tls {
         let stream = dial(&host, port, timeout)?;
@@ -518,10 +695,20 @@ pub fn request(target: &Target, method: &str, path: &str, body: Option<&[u8]>, t
 }
 
 /// [`request`] with a JSON body and a JSON answer (Null when empty).
-pub fn request_json(target: &Target, method: &str, path: &str, body: Option<&Value>, timeout: Duration) -> io::Result<(u16, Value)> {
+pub fn request_json(
+    target: &Target,
+    method: &str,
+    path: &str,
+    body: Option<&Value>,
+    timeout: Duration,
+) -> io::Result<(u16, Value)> {
     let bytes = body.map(|body| body.to_string().into_bytes());
     let reply = request(target, method, path, bytes.as_deref(), timeout)?;
-    let value = if reply.body.is_empty() { Value::Null } else { reply.json()? };
+    let value = if reply.body.is_empty() {
+        Value::Null
+    } else {
+        reply.json()?
+    };
     Ok((reply.status, value))
 }
 
@@ -540,18 +727,29 @@ pub fn request_over<S: Read + Write + Duplex + 'static>(
     timeout: Duration,
 ) -> io::Result<Reply> {
     let deadline = Instant::now() + timeout;
-    let bearer = target.bearer.as_ref().map(|token| format!("Bearer {token}"));
+    let bearer = target
+        .bearer
+        .as_ref()
+        .map(|token| format!("Bearer {token}"));
     let mut headers: Vec<(&str, &str)> = Vec::new();
     if let Some(bearer) = &bearer {
         headers.push(("Authorization", bearer.as_str()));
     }
-    headers.extend(target.headers.iter().map(|(name, value)| (name.as_str(), value.as_str())));
+    headers.extend(
+        target
+            .headers
+            .iter()
+            .map(|(name, value)| (name.as_str(), value.as_str())),
+    );
     let wire = request_bytes(method, path, tls.unwrap_or("localhost"), &headers, body)?;
     match tls {
         None => exchange(stream, deadline, &wire),
         Some(name) => {
             let pin = target.pin.ok_or_else(|| {
-                io::Error::new(io::ErrorKind::InvalidInput, "a stream with no host name needs the hub's certificate pin")
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "a stream with no host name needs the hub's certificate pin",
+                )
             })?;
             let session = tls_session(Some(pin), name)?;
             exchange(rustls::StreamOwned::new(session, stream), deadline, &wire)
@@ -571,14 +769,23 @@ pub fn request_json_over<S: Read + Write + Duplex + 'static>(
 ) -> io::Result<(u16, Value)> {
     let bytes = body.map(|body| body.to_string().into_bytes());
     let reply = request_over(stream, tls, target, method, path, bytes.as_deref(), timeout)?;
-    let value = if reply.body.is_empty() { Value::Null } else { reply.json()? };
+    let value = if reply.body.is_empty() {
+        Value::Null
+    } else {
+        reply.json()?
+    };
     Ok((reply.status, value))
 }
 
 /// Splits `http://host:port` or `https://host:port` (no path) into (is https, host without
 /// brackets, port). A missing port is 80 or 443.
 pub fn split_base(base: &str) -> io::Result<(bool, String, u16)> {
-    let bad = || io::Error::new(io::ErrorKind::InvalidInput, format!("{base:?} is not an http:// or https:// base of host:port"));
+    let bad = || {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{base:?} is not an http:// or https:// base of host:port"),
+        )
+    };
     let (tls, rest) = match (base.strip_prefix("https://"), base.strip_prefix("http://")) {
         (Some(rest), _) => (true, rest),
         (None, Some(rest)) => (false, rest),
@@ -598,7 +805,11 @@ pub fn split_base(base: &str) -> io::Result<(bool, String, u16)> {
     if host.is_empty() || host.contains('/') {
         return Err(bad());
     }
-    let port = if port.is_empty() { if tls { 443 } else { 80 } } else { port.parse::<u16>().map_err(|_| bad())? };
+    let port = if port.is_empty() {
+        if tls { 443 } else { 80 }
+    } else {
+        port.parse::<u16>().map_err(|_| bad())?
+    };
     Ok((tls, host.to_string(), port))
 }
 
@@ -625,12 +836,21 @@ pub(crate) fn dial(host: &str, port: u16, timeout: Duration) -> io::Result<TcpSt
 pub(crate) fn tls_session(pin: Option<[u8; 32]>, host: &str) -> io::Result<ClientConnection> {
     let (config, name) = match pin {
         Some(pin) => {
-            let name = ServerName::try_from(host.to_string()).or_else(|_| ServerName::try_from("hub".to_string()));
+            let name = ServerName::try_from(host.to_string())
+                .or_else(|_| ServerName::try_from("hub".to_string()));
             (apz_trust::tls::pinned_client_config(pin), name)
         }
-        None => (public_client_config(), ServerName::try_from(host.to_string())),
+        None => (
+            public_client_config(),
+            ServerName::try_from(host.to_string()),
+        ),
     };
-    let name = name.map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, format!("{host:?} as a TLS name: {err}")))?;
+    let name = name.map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{host:?} as a TLS name: {err}"),
+        )
+    })?;
     ClientConnection::new(config, name).map_err(|err| io::Error::other(format!("TLS setup: {err}")))
 }
 
@@ -641,18 +861,24 @@ fn public_client_config() -> Arc<ClientConfig> {
     CONFIG
         .get_or_init(|| {
             let roots = RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-            let config = ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
-                .with_safe_default_protocol_versions()
-                .expect("the ring provider supports the default protocol versions")
-                .with_root_certificates(roots)
-                .with_no_client_auth();
+            let config = ClientConfig::builder_with_provider(Arc::new(
+                rustls::crypto::ring::default_provider(),
+            ))
+            .with_safe_default_protocol_versions()
+            .expect("the ring provider supports the default protocol versions")
+            .with_root_certificates(roots)
+            .with_no_client_auth();
             Arc::new(config)
         })
         .clone()
 }
 
 /// Writes the request, then reads the answer through [`Timed`], bounded by `deadline`.
-fn exchange<S: Read + Write + Duplex>(mut stream: S, deadline: Instant, wire: &[u8]) -> io::Result<Reply> {
+fn exchange<S: Read + Write + Duplex>(
+    mut stream: S,
+    deadline: Instant,
+    wire: &[u8],
+) -> io::Result<Reply> {
     stream.write_all(wire)?;
     stream.flush()?;
     read_reply(BufReader::new(Timed { stream, deadline }))
@@ -734,10 +960,16 @@ mod over_stream_tests {
             Duration::from_secs(5),
         )
         .expect("the reply");
-        assert_eq!((status, value), (201, serde_json::json!({"station": "ws-9"})));
+        assert_eq!(
+            (status, value),
+            (201, serde_json::json!({"station": "ws-9"}))
+        );
 
         let seen = serving.join().expect("the server");
-        assert!(seen.starts_with("POST /v1/stations/join HTTP/1.1\r\n"), "{seen}");
+        assert!(
+            seen.starts_with("POST /v1/stations/join HTTP/1.1\r\n"),
+            "{seen}"
+        );
         assert!(seen.contains("Host: hub\r\n"), "{seen}");
         assert!(seen.contains("Authorization: Bearer tok\r\n"), "{seen}");
     }
@@ -746,7 +978,16 @@ mod over_stream_tests {
     fn a_stream_with_no_host_name_is_refused_without_a_pin() {
         let (client, _server) = UnixStream::pair().expect("a stream pair");
         let target = Target::default();
-        let err = request_over(Wire(client), Some("hub"), &target, "GET", "/", None, Duration::from_secs(1)).unwrap_err();
+        let err = request_over(
+            Wire(client),
+            Some("hub"),
+            &target,
+            "GET",
+            "/",
+            None,
+            Duration::from_secs(1),
+        )
+        .unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput, "{err}");
     }
 }

@@ -22,8 +22,15 @@ pub enum Outcome {
 }
 
 pub fn run(prog: &Program, pack: usize, sc: &ScenarioDecl) -> Outcome {
-    if let Some(s) = sc.steps.iter().find(|s| matches!(s.kind, SStepKind::Fixture(_))) {
-        return Outcome::Skip(format!("needs a fixture graph (not in v0), at {}", prog.locate(s.span)));
+    if let Some(s) = sc
+        .steps
+        .iter()
+        .find(|s| matches!(s.kind, SStepKind::Fixture(_)))
+    {
+        return Outcome::Skip(format!(
+            "needs a fixture graph (not in v0), at {}",
+            prog.locate(s.span)
+        ));
     }
     let r = match &sc.machine {
         Some(m) => run_machine(prog, pack, sc, m),
@@ -42,7 +49,11 @@ fn run_pure(prog: &Program, pack: usize, sc: &ScenarioDecl) -> Result<Outcome, D
             SStepKind::Then(e) => {
                 let v = Env::new(prog, pack).eval(e)?;
                 if v != Value::Bool(true) {
-                    return Ok(Outcome::Fail(format!("{}: `then` is {v}: {}", prog.locate(e.span), prog.sources.snippet(e.span))));
+                    return Ok(Outcome::Fail(format!(
+                        "{}: `then` is {v}: {}",
+                        prog.locate(e.span),
+                        prog.sources.snippet(e.span)
+                    )));
                 }
                 n += 1;
             }
@@ -58,8 +69,15 @@ fn run_pure(prog: &Program, pack: usize, sc: &ScenarioDecl) -> Result<Outcome, D
     Ok(Outcome::Pass(format!("{n} assertion(s)")))
 }
 
-fn run_machine(prog: &Program, pack: usize, sc: &ScenarioDecl, mname: &str) -> Result<Outcome, Diag> {
-    let (mpack, decl) = prog.machine(pack, mname).map_err(|e| Diag::error(sc.span, e))?;
+fn run_machine(
+    prog: &Program,
+    pack: usize,
+    sc: &ScenarioDecl,
+    mname: &str,
+) -> Result<Outcome, Diag> {
+    let (mpack, decl) = prog
+        .machine(pack, mname)
+        .map_err(|e| Diag::error(sc.span, e))?;
     // `given` steps before the first `when` set constants and initial values.
     let mut const_src = Vec::new();
     let mut first_given: Vec<&(String, Expr)> = Vec::new();
@@ -70,10 +88,18 @@ fn run_machine(prog: &Program, pack: usize, sc: &ScenarioDecl, mname: &str) -> R
             _ => {}
         }
     }
-    let is_const = |n: &str| decl.items.iter().any(|i| matches!(i, MItem::Const { name, .. } if name == n));
+    let is_const = |n: &str| {
+        decl.items
+            .iter()
+            .any(|i| matches!(i, MItem::Const { name, .. } if name == n))
+    };
     for (n, e) in &first_given {
         if is_const(n) {
-            const_src.push(ConstSource { name: n.clone(), expr: e, pack });
+            const_src.push(ConstSource {
+                name: n.clone(),
+                expr: e,
+                pack,
+            });
         }
     }
     let ctx = MachineCtx::new(prog, mpack, decl, None, &const_src)?;
@@ -84,7 +110,11 @@ fn run_machine(prog: &Program, pack: usize, sc: &ScenarioDecl, mname: &str) -> R
     for st in &sc.steps {
         if let Some(a) = &pending_reject {
             if !matches!(st.kind, SStepKind::Rejected(_)) {
-                return Ok(Outcome::Fail(format!("{}: {a} is not enabled in {}", prog.locate(st.span), show_all(&ctx, &states))));
+                return Ok(Outcome::Fail(format!(
+                    "{}: {a} is not enabled in {}",
+                    prog.locate(st.span),
+                    show_all(&ctx, &states)
+                )));
             }
         }
         match &st.kind {
@@ -92,12 +122,18 @@ fn run_machine(prog: &Program, pack: usize, sc: &ScenarioDecl, mname: &str) -> R
                 for (n, e) in asg {
                     if is_const(n) {
                         if started {
-                            return Ok(Outcome::Fail(format!("{}: const {n} can only be given before the first `when`", prog.locate(st.span))));
+                            return Ok(Outcome::Fail(format!(
+                                "{}: const {n} can only be given before the first `when`",
+                                prog.locate(st.span)
+                            )));
                         }
                         continue;
                     }
                     let Some(&i) = ctx.var_index.get(n) else {
-                        return Err(Diag::error(e.span, format!("{mname} has no const or var `{n}`")));
+                        return Err(Diag::error(
+                            e.span,
+                            format!("{mname} has no const or var `{n}`"),
+                        ));
                     };
                     for s in states.iter_mut() {
                         let mut env = Env::machine(prog, &ctx, Some(s));
@@ -114,31 +150,59 @@ fn run_machine(prog: &Program, pack: usize, sc: &ScenarioDecl, mname: &str) -> R
                     ExprKind::Name(n) => (n.clone(), vec![]),
                     ExprKind::Call(f, args) => match &f.kind {
                         ExprKind::Name(n) => (n.clone(), args.clone()),
-                        _ => return Err(Diag::error(e.span, "`when` names an action: `when Draw(150 cr)`")),
+                        _ => {
+                            return Err(Diag::error(
+                                e.span,
+                                "`when` names an action: `when Draw(150 cr)`",
+                            ))
+                        }
                     },
-                    _ => return Err(Diag::error(e.span, "`when` names an action: `when Draw(150 cr)`")),
+                    _ => {
+                        return Err(Diag::error(
+                            e.span,
+                            "`when` names an action: `when Draw(150 cr)`",
+                        ))
+                    }
                 };
                 let Some(a) = ctx.action(&aname) else {
-                    return Err(Diag::error(e.span, format!("{mname} has no action `{aname}`")));
+                    return Err(Diag::error(
+                        e.span,
+                        format!("{mname} has no action `{aname}`"),
+                    ));
                 };
                 if args.len() != a.params.len() {
-                    return Err(Diag::error(e.span, format!("{aname} takes {} argument(s), got {}", a.params.len(), args.len())));
+                    return Err(Diag::error(
+                        e.span,
+                        format!(
+                            "{aname} takes {} argument(s), got {}",
+                            a.params.len(),
+                            args.len()
+                        ),
+                    ));
                 }
                 let mut next_states = Vec::new();
                 for s in &states {
                     let mut params = Vec::new();
                     for (p, arg) in a.params.iter().zip(&args) {
                         if arg.name.as_ref().is_some_and(|n| *n != p.name) {
-                            return Err(Diag::error(arg.value.span, format!("{aname} has parameter `{}` here", p.name)));
+                            return Err(Diag::error(
+                                arg.value.span,
+                                format!("{aname} has parameter `{}` here", p.name),
+                            ));
                         }
                         let mut env = Env::machine(prog, &ctx, Some(s));
                         env.pack = pack;
                         let v = env.eval(&arg.value)?;
                         // `a in S` parameters must be in S when S can be evaluated here.
                         if let ADom::In(dom) = &p.dom {
-                            if let Ok(Value::Set(set)) = Env::machine(prog, &ctx, Some(s)).eval(dom) {
+                            if let Ok(Value::Set(set)) = Env::machine(prog, &ctx, Some(s)).eval(dom)
+                            {
                                 if !set.contains(&v) {
-                                    return Ok(Outcome::Fail(format!("{}: {v} is not in the domain of `{}`", prog.locate(arg.value.span), p.name)));
+                                    return Ok(Outcome::Fail(format!(
+                                        "{}: {v} is not in the domain of `{}`",
+                                        prog.locate(arg.value.span),
+                                        p.name
+                                    )));
                                 }
                             }
                         }
@@ -170,21 +234,38 @@ fn run_machine(prog: &Program, pack: usize, sc: &ScenarioDecl, mname: &str) -> R
             }
             SStepKind::Rejected(_) => {
                 if pending_reject.take().is_none() {
-                    return Ok(Outcome::Fail(format!("{}: expected the last `when` to be rejected, but it was enabled", prog.locate(st.span))));
+                    return Ok(Outcome::Fail(format!(
+                        "{}: expected the last `when` to be rejected, but it was enabled",
+                        prog.locate(st.span)
+                    )));
                 }
             }
             SStepKind::Fixture(_) => unreachable!(),
         }
     }
     if let Some(a) = pending_reject {
-        return Ok(Outcome::Fail(format!("{a} is not enabled in {}", show_all(&ctx, &states))));
+        return Ok(Outcome::Fail(format!(
+            "{a} is not enabled in {}",
+            show_all(&ctx, &states)
+        )));
     }
     let n = states.len();
-    Ok(Outcome::Pass(format!("{mname}, {steps} step(s){}", if n > 1 { format!(", {n} final states") } else { String::new() })))
+    Ok(Outcome::Pass(format!(
+        "{mname}, {steps} step(s){}",
+        if n > 1 {
+            format!(", {n} final states")
+        } else {
+            String::new()
+        }
+    )))
 }
 
 fn show_all(ctx: &MachineCtx, states: &[State]) -> String {
-    states.iter().map(|s| format!("[{}]", ctx.show(s, None))).collect::<Vec<_>>().join(" or ")
+    states
+        .iter()
+        .map(|s| format!("[{}]", ctx.show(s, None)))
+        .collect::<Vec<_>>()
+        .join(" or ")
 }
 
 #[cfg(test)]
@@ -195,7 +276,13 @@ mod tests {
         let (p, d) = Program::load(vec![("t.jhrl".into(), src.into())]);
         assert!(d.is_empty(), "{d:?}");
         p.items()
-            .filter_map(|(pk, _, it)| if let Item::Scenario(s) = it { Some(run(&p, pk, s)) } else { None })
+            .filter_map(|(pk, _, it)| {
+                if let Item::Scenario(s) = it {
+                    Some(run(&p, pk, s))
+                } else {
+                    None
+                }
+            })
             .collect()
     }
 
@@ -214,10 +301,22 @@ mod tests {
         ));
         assert!(matches!(out[0], Outcome::Pass(_)), "{:?}", out[0]);
         assert!(matches!(out[1], Outcome::Pass(_)), "{:?}", out[1]);
-        assert!(matches!(&out[2], Outcome::Fail(m) if m.contains("not enabled")), "{:?}", out[2]);
-        assert!(matches!(&out[3], Outcome::Fail(m) if m.contains("is false")), "{:?}", out[3]);
+        assert!(
+            matches!(&out[2], Outcome::Fail(m) if m.contains("not enabled")),
+            "{:?}",
+            out[2]
+        );
+        assert!(
+            matches!(&out[3], Outcome::Fail(m) if m.contains("is false")),
+            "{:?}",
+            out[3]
+        );
         assert!(matches!(out[4], Outcome::Pass(_)), "{:?}", out[4]);
-        assert!(matches!(&out[5], Outcome::Fail(m) if m.contains("not in the domain")), "{:?}", out[5]);
+        assert!(
+            matches!(&out[5], Outcome::Fail(m) if m.contains("not in the domain")),
+            "{:?}",
+            out[5]
+        );
     }
 
     #[test]

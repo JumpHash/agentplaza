@@ -43,13 +43,27 @@ pub fn syntax_theme() -> SyntaxTheme {
 /// The palette role nearest to `c` (by RGB distance). Ties keep the earlier role.
 pub fn nearest(c: Color, roles: &[Color]) -> Color {
     let dist = |r: &Color| (c.r - r.r).powi(2) + (c.g - r.g).powi(2) + (c.b - r.b).powi(2);
-    roles.iter().copied().min_by(|a, b| dist(a).total_cmp(&dist(b))).unwrap_or(c)
+    roles
+        .iter()
+        .copied()
+        .min_by(|a, b| dist(a).total_cmp(&dist(b)))
+        .unwrap_or(c)
 }
 
 /// A highlight as a format: its colour mapped onto the palette, its font as the highlighter gives it.
 fn format(h: &Highlight, _theme: &Theme) -> Format<Font> {
     let p = theme::palette();
-    let roles = [p.ink, p.ink_2, p.ink_3, p.signal, p.signal_ink, p.info, p.ok, p.warn, p.crit];
+    let roles = [
+        p.ink,
+        p.ink_2,
+        p.ink_3,
+        p.signal,
+        p.signal_ink,
+        p.info,
+        p.ok,
+        p.warn,
+        p.crit,
+    ];
     Format {
         color: h.color().map(|c| nearest(c, &roles)),
         font: h.font(),
@@ -74,7 +88,11 @@ fn editor_style(_theme: &Theme, status: text_editor::Status) -> text_editor::Sty
 }
 
 /// The tab strip: one tab per open file (its name, a dirty dot, a conflict mark), each with a close.
-pub fn tab_strip<'a>(open: &'a [String], active: Option<&'a str>, tabs: &'a BTreeMap<String, Tab>) -> Element<'a, Msg> {
+pub fn tab_strip<'a>(
+    open: &'a [String],
+    active: Option<&'a str>,
+    tabs: &'a BTreeMap<String, Tab>,
+) -> Element<'a, Msg> {
     let p = theme::palette();
     let mut strip = row![].spacing(2).align_y(Alignment::Center);
     for path in open {
@@ -114,8 +132,18 @@ pub fn editor<'a>(path: &'a str, tab: &'a Tab, writable: bool) -> Element<'a, Ms
         let banner = row![
             ui::badge(&format!("conflict: {hub}"), ui::Tone::Danger),
             Space::new().width(Length::Fill),
-            ui::btn_sm("Reload", None, Kind::Secondary, Some(Msg::Reload(path.to_string()))),
-            ui::btn_sm("Keep mine", None, Kind::Primary, Some(Msg::KeepMine(path.to_string()))),
+            ui::btn_sm(
+                "Reload",
+                None,
+                Kind::Secondary,
+                Some(Msg::Reload(path.to_string()))
+            ),
+            ui::btn_sm(
+                "Keep mine",
+                None,
+                Kind::Primary,
+                Some(Msg::KeepMine(path.to_string()))
+            ),
         ]
         .spacing(10)
         .align_y(Alignment::Center);
@@ -143,7 +171,10 @@ pub fn editor<'a>(path: &'a str, tab: &'a Tab, writable: bool) -> Element<'a, Ms
     let input = input.highlight_with::<iced::highlighter::Highlighter>(settings, format);
     col = col.push(input);
     if !writable {
-        col = col.push(row![ui::badge("read only", ui::Tone::Muted), Space::new().width(Length::Fill)]);
+        col = col.push(row![
+            ui::badge("read only", ui::Tone::Muted),
+            Space::new().width(Length::Fill)
+        ]);
     }
     col.into()
 }
@@ -171,7 +202,9 @@ pub fn quick_open<'a>(query: &'a str, hits: Vec<String>, id: iced::widget::Id) -
         .padding(8);
     let mut list = column![].spacing(0);
     if hits.is_empty() {
-        list = list.push(ui::faint("No loaded file matches. Open folders in the tree to load more."));
+        list = list.push(ui::faint(
+            "No loaded file matches. Open folders in the tree to load more.",
+        ));
     }
     for path in hits {
         list = list.push(
@@ -197,7 +230,11 @@ mod tests {
         assert_eq!(token_for("src/main.RS"), "rs");
         assert_eq!(token_for("Cargo.toml"), "toml");
         assert_eq!(token_for("Makefile"), "makefile");
-        assert_eq!(token_for(".gitignore"), "gitignore", "a dotfile has no extension to read");
+        assert_eq!(
+            token_for(".gitignore"),
+            "gitignore",
+            "a dotfile has no extension to read"
+        );
     }
 
     #[test]
@@ -218,7 +255,10 @@ mod tests {
             .iter()
             .map(|s| s.to_string())
             .collect();
-        assert_eq!(matches(&paths, "IDE"), ["src/ide.rs", "src/IDE_tree.rs", "docs/ide.md"]);
+        assert_eq!(
+            matches(&paths, "IDE"),
+            ["src/ide.rs", "src/IDE_tree.rs", "docs/ide.md"]
+        );
         assert_eq!(matches(&paths, "  readme "), ["README.md"]);
         assert_eq!(matches(&paths, "").len(), 4);
         assert!(matches(&paths, "zzz").is_empty());

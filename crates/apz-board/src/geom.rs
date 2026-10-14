@@ -16,7 +16,9 @@ use crate::hardware::Geo;
 /// A matrix in three.js's layout: 16 elements, column-major (element (row r, column c) is `m[c * 4 + r]`).
 pub type M4 = [f64; 16];
 
-pub const IDENTITY: M4 = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0];
+pub const IDENTITY: M4 = [
+    1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+];
 
 /// Rounds to the nearest f32 and back, as a value stored in a Float32Array.
 pub fn f32r(x: f64) -> f64 {
@@ -64,7 +66,20 @@ pub fn trs(pos: [f64; 3], rot_deg: [f64; 3], scale: [f64; 3]) -> M4 {
     let (e, f) = (deg_to_rad(rot_deg[2]).cos(), deg_to_rad(rot_deg[2]).sin());
     let (ae, af, be, bf) = (a * e, a * f, b * e, b * f);
     // three.js Matrix4.makeRotationFromEuler, order XYZ (column-major elements te[0..9]).
-    let r = [c * e, af + be * d, bf - ae * d, 0.0, -c * f, ae - bf * d, be + af * d, 0.0, d, -b * c, a * c, 0.0];
+    let r = [
+        c * e,
+        af + be * d,
+        bf - ae * d,
+        0.0,
+        -c * f,
+        ae - bf * d,
+        be + af * d,
+        0.0,
+        d,
+        -b * c,
+        a * c,
+        0.0,
+    ];
     let mut m = [0.0; 16];
     for col in 0..3 {
         for row in 0..3 {
@@ -88,7 +103,11 @@ pub struct Geometry {
 impl Geometry {
     /// The largest y of any vertex (the value a label sits on), or 0 when there are none.
     pub fn top(&self) -> f64 {
-        self.pos.iter().map(|p| p[1]).fold(None, |m: Option<f64>, y| Some(m.map_or(y, |m| m.max(y)))).unwrap_or(0.0)
+        self.pos
+            .iter()
+            .map(|p| p[1])
+            .fold(None, |m: Option<f64>, y| Some(m.map_or(y, |m| m.max(y))))
+            .unwrap_or(0.0)
     }
 
     fn rotate_x(&mut self, angle: f64) {
@@ -127,7 +146,19 @@ pub fn label(size: f64) -> Geometry {
 /// BoxGeometry's buildPlane: one face of the box, a grid of gx by gy segments. The argument order and signs
 /// follow three.js exactly (the -width and -height of the negative faces are passed as they are).
 #[allow(clippy::too_many_arguments)]
-fn build_plane(g: &mut Geometry, u: usize, v: usize, w: usize, udir: f64, vdir: f64, width: f64, height: f64, depth: f64, gx: usize, gy: usize) {
+fn build_plane(
+    g: &mut Geometry,
+    u: usize,
+    v: usize,
+    w: usize,
+    udir: f64,
+    vdir: f64,
+    width: f64,
+    height: f64,
+    depth: f64,
+    gx: usize,
+    gy: usize,
+) {
     let seg_w = width / gx as f64;
     let seg_h = height / gy as f64;
     let wh = width / 2.0;
@@ -223,7 +254,11 @@ fn cylinder(rt: f64, rb: f64, h: f64, seg: u32) -> Geometry {
         for x in 0..=rs {
             let u = x as f64 / rs as f64;
             let theta = u * (2.0 * PI);
-            g.pos.push([f32r(radius * theta.sin()), f32r(-v * h + half), f32r(radius * theta.cos())]);
+            g.pos.push([
+                f32r(radius * theta.sin()),
+                f32r(-v * h + half),
+                f32r(radius * theta.cos()),
+            ]);
             row.push(g.pos.len() - 1);
         }
         rows.push(row);
@@ -253,7 +288,11 @@ fn cylinder(rt: f64, rb: f64, h: f64, seg: u32) -> Geometry {
         for x in 0..=rs {
             let u = x as f64 / rs as f64;
             let theta = u * (2.0 * PI);
-            g.pos.push([f32r(radius * theta.sin()), f32r(half * sign), f32r(radius * theta.cos())]);
+            g.pos.push([
+                f32r(radius * theta.sin()),
+                f32r(half * sign),
+                f32r(radius * theta.cos()),
+            ]);
         }
         for x in 0..rs {
             let c = centre_start + x;
@@ -281,7 +320,11 @@ fn sphere(r: f64, ws: usize, hs: usize) -> Geometry {
         for ix in 0..=ws {
             let u = ix as f64 / ws as f64;
             let phi = u * (2.0 * PI);
-            g.pos.push([f32r(-ring_radius * phi.cos()), f32r(y), f32r(ring_radius * phi.sin())]);
+            g.pos.push([
+                f32r(-ring_radius * phi.cos()),
+                f32r(y),
+                f32r(ring_radius * phi.sin()),
+            ]);
             row.push(g.pos.len() - 1);
         }
         grid.push(row);
@@ -312,7 +355,8 @@ fn torus(r: f64, tube: f64, radial: usize, tubular: usize, arc: f64) -> Geometry
         for i in 0..=tubular {
             let u = i as f64 / tubular as f64 * arc;
             let rr = r + tube * v.cos();
-            g.pos.push([f32r(rr * u.cos()), f32r(rr * u.sin()), f32r(tube * v.sin())]);
+            g.pos
+                .push([f32r(rr * u.cos()), f32r(rr * u.sin()), f32r(tube * v.sin())]);
         }
     }
     let row = tubular + 1;
@@ -361,7 +405,8 @@ fn ring(ri: f64, ro: f64, theta_segments: usize) -> Geometry {
     for _j in 0..=1usize {
         for i in 0..=theta_segments {
             let seg = i as f64 / theta_segments as f64 * (2.0 * PI);
-            g.pos.push([f32r(radius * seg.cos()), f32r(radius * seg.sin()), 0.0]);
+            g.pos
+                .push([f32r(radius * seg.cos()), f32r(radius * seg.sin()), 0.0]);
         }
         radius += step;
     }
@@ -413,7 +458,11 @@ fn shape(points: &[[f64; 2]], h: f64) -> Geometry {
         let (a, b, c) = (g.pos[tri[0]], g.pos[tri[1]], g.pos[tri[2]]);
         let e1 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
         let e2 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
-        let nrm = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
+        let nrm = [
+            e1[1] * e2[2] - e1[2] * e2[1],
+            e1[2] * e2[0] - e1[0] * e2[2],
+            e1[0] * e2[1] - e1[1] * e2[0],
+        ];
         let facing = nrm[0] * want[0] + nrm[1] * want[1] + nrm[2] * want[2];
         if facing < 0.0 {
             g.tris.push([tri[0], tri[2], tri[1]]);
@@ -494,7 +543,11 @@ mod tests {
 
     #[test]
     fn box_has_six_faces_of_two_triangles_per_cell() {
-        let g = make(&Geo::Cube { w: 2.0, h: 1.0, d: 3.0 });
+        let g = make(&Geo::Cube {
+            w: 2.0,
+            h: 1.0,
+            d: 3.0,
+        });
         assert_eq!(g.pos.len(), 24);
         assert_eq!(g.tris.len(), 12);
         let top = g.pos.iter().map(|p| p[1]).fold(f64::MIN, f64::max);
@@ -503,7 +556,12 @@ mod tests {
 
     #[test]
     fn rounded_box_stays_inside_its_size() {
-        let g = make(&Geo::Rbox { w: 4.0, h: 2.0, d: 6.0, r: 0.5 });
+        let g = make(&Geo::Rbox {
+            w: 4.0,
+            h: 2.0,
+            d: 6.0,
+            r: 0.5,
+        });
         let max = |k: usize| g.pos.iter().map(|p| p[k]).fold(f64::MIN, f64::max);
         assert!((max(0) - 2.0).abs() < 1e-6);
         assert!((max(1) - 1.0).abs() < 1e-6);
@@ -512,11 +570,22 @@ mod tests {
 
     #[test]
     fn shape_top_cap_is_upward_at_its_height() {
-        let g = make(&Geo::Shape { points: vec![[0.0, 0.0], [2.0, 0.0], [2.0, 2.0], [0.0, 2.0]], h: 0.5 });
+        let g = make(&Geo::Shape {
+            points: vec![[0.0, 0.0], [2.0, 0.0], [2.0, 2.0], [0.0, 2.0]],
+            h: 0.5,
+        });
         // A square: two caps of two triangles, and four walls of two triangles.
         assert_eq!(g.tris.len(), 12);
-        let upward: Vec<&[usize; 3]> = g.tris.iter().filter(|t| t.iter().all(|&v| (g.pos[v][1] - 0.5).abs() < 1e-6)).collect();
-        assert_eq!(upward.len(), 2, "the top cap is the only flat face at the top");
+        let upward: Vec<&[usize; 3]> = g
+            .tris
+            .iter()
+            .filter(|t| t.iter().all(|&v| (g.pos[v][1] - 0.5).abs() < 1e-6))
+            .collect();
+        assert_eq!(
+            upward.len(),
+            2,
+            "the top cap is the only flat face at the top"
+        );
     }
 
     #[test]

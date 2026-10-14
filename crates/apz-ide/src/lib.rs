@@ -24,8 +24,8 @@ pub mod workspace;
 
 pub use buffer::Buffer;
 pub use diff::{
-    ChangeSet, DiffError, FileChange, Hunk, Line, LineKind, Stats, Status, parse_unified, write_binary,
-    write_unified,
+    ChangeSet, DiffError, FileChange, Hunk, Line, LineKind, Stats, Status, parse_unified,
+    write_binary, write_unified,
 };
 pub use path::{PathError, check_dir, check_path, check_read, check_write, is_secret};
 pub use state::{Action, Base, IdeState, Panel, reduce};

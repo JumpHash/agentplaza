@@ -1449,7 +1449,8 @@ mod tests {
         {
             let mut file = std::fs::File::create(&base).expect("the sparse base");
             file.set_len(64 << 20).expect("64 MiB, mostly holes");
-            file.seek(SeekFrom::Start(32 << 20)).expect("seek to 32 MiB");
+            file.seek(SeekFrom::Start(32 << 20))
+                .expect("seek to 32 MiB");
             let data = vec![0xA5u8; 1 << 20];
             file.write_all(&data).expect("1 MiB of data at 32 MiB");
         }
@@ -1458,7 +1459,10 @@ mod tests {
         let copy = dir.join("copy.ext4");
         assert_eq!(copy_sparse(&base, &copy).expect("a sparse copy"), 64 << 20);
         assert_eq!(std::fs::read(&copy).expect("the copy"), want);
-        let allocated = std::fs::metadata(&copy).expect("the copy's metadata").blocks() * 512;
+        let allocated = std::fs::metadata(&copy)
+            .expect("the copy's metadata")
+            .blocks()
+            * 512;
         assert!(allocated < 4 << 20, "the copy allocated {allocated} bytes");
 
         let fallback = dir.join("fallback.ext4");

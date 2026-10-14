@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use apz_http::{Params, Request, Response, Router};
 use apz_proto::wire::{Control, WorkKind};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::agents::Agent;
 use crate::scheduler::Origin;
@@ -27,7 +27,9 @@ pub const LOOP_DONE: &str = "LOOP DONE";
 
 /// Who may use the controls: the orchestrator tier, the mayor and the mayor's office.
 pub fn may_control(role: &str) -> bool {
-    crate::settings::tier_of(role) == crate::settings::Tier::Orchestrator || role == "mayor" || role == "mayor-office"
+    crate::settings::tier_of(role) == crate::settings::Tier::Orchestrator
+        || role == "mayor"
+        || role == "mayor-office"
 }
 
 /// Per-agent limits that override the plaza's defaults.
@@ -87,17 +89,32 @@ impl Store {
     /// A missing or unreadable file starts empty.
     pub fn load(state_dir: &Path) -> Self {
         let path = state_dir.join("harness.json");
-        let saved: Saved = std::fs::read(&path).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
-        Self { path, inner: Mutex::new((saved.loops, saved.limits)) }
+        let saved: Saved = std::fs::read(&path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default();
+        Self {
+            path,
+            inner: Mutex::new((saved.loops, saved.limits)),
+        }
     }
 
     fn locked(&self) -> MutexGuard<'_, Inner> {
-        self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        self.inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// Writes the state to a temp file, then renames it over `harness.json`.
-    fn save(&self, loops: &[Loop], limits: &std::collections::BTreeMap<u64, Limits>) -> Result<(), String> {
-        let saved = Saved { loops: loops.to_vec(), limits: limits.clone() };
+    fn save(
+        &self,
+        loops: &[Loop],
+        limits: &std::collections::BTreeMap<u64, Limits>,
+    ) -> Result<(), String> {
+        let saved = Saved {
+            loops: loops.to_vec(),
+            limits: limits.clone(),
+        };
         let bytes = serde_json::to_vec_pretty(&saved).map_err(|err| err.to_string())?;
         let tmp = self.path.with_extension("json.tmp");
         std::fs::write(&tmp, bytes)
@@ -150,7 +167,15 @@ impl Store {
         Ok(next)
     }
 
-    pub fn start_loop(&self, cid: u64, prompt: &str, every_secs: u64, max_runs: u32, by: &str, by_cid: u64) -> Result<Loop, String> {
+    pub fn start_loop(
+        &self,
+        cid: u64,
+        prompt: &str,
+        every_secs: u64,
+        max_runs: u32,
+        by: &str,
+        by_cid: u64,
+    ) -> Result<Loop, String> {
         let prompt = prompt.trim();
         let chars = prompt.chars().count();
         if chars == 0 || chars > 4000 {
@@ -160,7 +185,11 @@ impl Store {
             return Err("a loop runs at most once a minute (every_minutes >= 1)".into());
         }
         let mut guard = self.locked();
-        let running = guard.0.iter().filter(|l| l.cid == cid && l.state == "running").count();
+        let running = guard
+            .0
+            .iter()
+            .filter(|l| l.cid == cid && l.state == "running")
+            .count();
         if running >= 20 {
             return Err("this agent already has 20 running loops".into());
         }
@@ -189,7 +218,11 @@ impl Store {
 
     pub fn stop_loop(&self, id: &str) -> Result<Loop, String> {
         let mut guard = self.locked();
-        let index = guard.0.iter().position(|l| l.id == id).ok_or_else(|| format!("no loop {id}"))?;
+        let index = guard
+            .0
+            .iter()
+            .position(|l| l.id == id)
+            .ok_or_else(|| format!("no loop {id}"))?;
         if guard.0[index].state != "running" {
             return Ok(guard.0[index].clone());
         }
@@ -204,12 +237,19 @@ impl Store {
 
 /// `l<n+1>` where n is the largest existing loop number.
 fn next_id(loops: &[Loop]) -> String {
-    let max = loops.iter().filter_map(|l| l.id.strip_prefix('l')?.parse::<u64>().ok()).max().unwrap_or(0);
+    let max = loops
+        .iter()
+        .filter_map(|l| l.id.strip_prefix('l')?.parse::<u64>().ok())
+        .max()
+        .unwrap_or(0);
     format!("l{}", max + 1)
 }
 
 fn now_ms() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 /// Called once a second by apid's ticker: sends each due loop's prompt to its agent.
@@ -219,7 +259,14 @@ pub fn tick(app: &App) {
     }
     app.work.dispatch_idle(app);
     let now = now_ms();
-    let due: Vec<Loop> = app.harness.locked().0.iter().filter(|l| l.state == "running" && l.next_at_ms <= now).cloned().collect();
+    let due: Vec<Loop> = app
+        .harness
+        .locked()
+        .0
+        .iter()
+        .filter(|l| l.state == "running" && l.next_at_ms <= now)
+        .cloned()
+        .collect();
     for l in due {
         // The agent is still busy with the previous run of this loop: wait for it.
         if let Some(previous) = l.last_work {
@@ -228,7 +275,11 @@ pub fn tick(app: &App) {
             }
         }
         let run = l.runs + 1;
-        let of = if l.max_runs > 0 { format!("/{}", l.max_runs) } else { String::new() };
+        let of = if l.max_runs > 0 {
+            format!("/{}", l.max_runs)
+        } else {
+            String::new()
+        };
         let text = format!(
             "[loop {id}, run {run}{of}] {prompt}\n\nWhen the loop's purpose is fulfilled, include the words {done} in your final answer.",
             id = l.id,
@@ -236,10 +287,19 @@ pub fn tick(app: &App) {
             done = LOOP_DONE
         );
         // Enqueue without holding the store lock: the work may end synchronously.
-        let work = app.work.enqueue(app, l.cid, WorkKind::Message, format!("loop-{}", l.id), text, Origin::default());
+        let work = app.work.enqueue(
+            app,
+            l.cid,
+            WorkKind::Message,
+            format!("loop-{}", l.id),
+            text,
+            Origin::default(),
+        );
         let updated = {
             let mut guard = app.harness.locked();
-            let Some(index) = guard.0.iter().position(|x| x.id == l.id) else { continue };
+            let Some(index) = guard.0.iter().position(|x| x.id == l.id) else {
+                continue;
+            };
             if guard.0[index].state != "running" {
                 continue;
             }
@@ -262,7 +322,13 @@ pub fn tick(app: &App) {
 pub fn work_ended(app: &App, cid: u64, work: u64, summary: &str) {
     let ended = {
         let mut guard = app.harness.locked();
-        let Some(index) = guard.0.iter().position(|l| l.cid == cid && l.last_work == Some(work)) else { return };
+        let Some(index) = guard
+            .0
+            .iter()
+            .position(|l| l.cid == cid && l.last_work == Some(work))
+        else {
+            return;
+        };
         let mut loops = guard.0.clone();
         let lp = &mut loops[index];
         lp.last_summary = Some(summary.chars().take(2000).collect());
@@ -280,48 +346,83 @@ pub fn work_ended(app: &App, cid: u64, work: u64, summary: &str) {
 
 /// Starts the loop ticker: `tick` once a second, for the life of the process.
 pub fn spawn_ticker(app: Arc<App>) {
-    std::thread::spawn(move || loop {
-        std::thread::sleep(std::time::Duration::from_secs(1));
-        tick(&app);
+    std::thread::spawn(move || {
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            tick(&app);
+        }
     });
 }
 
 /// Sends a control to the agent's running work (Err when it has none).
 pub fn control(app: &App, cid: u64, control: Control) -> Result<u64, String> {
-    let item = app.work.current(cid).ok_or_else(|| format!("agent {cid} has no running work"))?;
+    let item = app
+        .work
+        .current(cid)
+        .ok_or_else(|| format!("agent {cid} has no running work"))?;
     let data = json!({ "control": control.clone() });
-    let message = apz_proto::wire::HostMessage::Control { work: item.id, control };
+    let message = apz_proto::wire::HostMessage::Control {
+        work: item.id,
+        control,
+    };
     match crate::fleet::send(app, cid, &json!({ "message": message })) {
         Ok((code, _)) if (200..300).contains(&code) => {}
         Ok((code, _)) => return Err(format!("agent {cid} refused the control (HTTP {code})")),
         Err(e) => return Err(format!("agent {cid} is unreachable: {e}")),
     }
-    app.transcripts.record(&app.bus, cid, item.id, "control", data);
+    app.transcripts
+        .record(&app.bus, cid, item.id, "control", data);
     Ok(item.id)
 }
 
 /// One harness action, shared by the tool (`by` is the calling agent's name) and the owner's
 /// route (`by` is "owner"). `input` carries `action` and the action's fields.
 fn act(app: &App, cid: u64, input: &Value, by: &str) -> Result<String, String> {
-    let agent = app.agents.get(cid).ok_or_else(|| format!("no agent {cid}"))?;
+    let agent = app
+        .agents
+        .get(cid)
+        .ok_or_else(|| format!("no agent {cid}"))?;
     match input["action"].as_str().unwrap_or("") {
-        "compress" => control(app, cid, Control::Compress).map(|w| format!("compression queued for work {w}")),
+        "compress" => {
+            control(app, cid, Control::Compress).map(|w| format!("compression queued for work {w}"))
+        }
         "steer" => {
-            let text = input["text"].as_str().map(str::trim).filter(|t| !t.is_empty()).ok_or("steer needs text")?;
+            let text = input["text"]
+                .as_str()
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
+                .ok_or("steer needs text")?;
             if text.chars().count() > 2000 {
                 return Err("steer text is over 2000 characters".into());
             }
-            let note = Control::Steer { from: by.to_string(), text: text.to_string() };
+            let note = Control::Steer {
+                from: by.to_string(),
+                text: text.to_string(),
+            };
             control(app, cid, note).map(|w| format!("steer queued for work {w}"))
         }
         "extend_turns" => {
-            let turns = input["turns"].as_u64().filter(|t| (1..=200).contains(t)).ok_or("extend_turns needs turns from 1 to 200")?;
-            control(app, cid, Control::ExtendTurns { turns: turns as u32 }).map(|w| format!("work {w} may take {turns} more turns"))
+            let turns = input["turns"]
+                .as_u64()
+                .filter(|t| (1..=200).contains(t))
+                .ok_or("extend_turns needs turns from 1 to 200")?;
+            control(
+                app,
+                cid,
+                Control::ExtendTurns {
+                    turns: turns as u32,
+                },
+            )
+            .map(|w| format!("work {w} may take {turns} more turns"))
         }
         "set_limits" => {
-            let max_turns = input["max_turns"].as_u64().and_then(|v| u32::try_from(v).ok());
+            let max_turns = input["max_turns"]
+                .as_u64()
+                .and_then(|v| u32::try_from(v).ok());
             let compress_at = input["compress_at"].as_u64();
-            let keep_recent = input["keep_recent"].as_u64().and_then(|v| u32::try_from(v).ok());
+            let keep_recent = input["keep_recent"]
+                .as_u64()
+                .and_then(|v| u32::try_from(v).ok());
             if max_turns.is_none() && compress_at.is_none() && keep_recent.is_none() {
                 return Err("set_limits needs max_turns, compress_at or keep_recent".into());
             }
@@ -341,10 +442,17 @@ fn act(app: &App, cid: u64, input: &Value, by: &str) -> Result<String, String> {
         }
         "show" => {
             let running_work = app.work.current(cid).map(|w| w.id);
-            let loops: Vec<Loop> = app.harness.loops().into_iter().filter(|l| l.cid == cid).collect();
+            let loops: Vec<Loop> = app
+                .harness
+                .loops()
+                .into_iter()
+                .filter(|l| l.cid == cid)
+                .collect();
             Ok(json!({ "limits": app.harness.limits(cid), "running_work": running_work, "loops": loops }).to_string())
         }
-        other => Err(format!("unknown action {other:?}; use compress, steer, extend_turns, set_limits or show")),
+        other => Err(format!(
+            "unknown action {other:?}; use compress, steer, extend_turns, set_limits or show"
+        )),
     }
 }
 
@@ -353,26 +461,32 @@ pub fn spec(name: &str) -> Option<(&'static str, Value)> {
     Some(match name {
         "plaza_agent_control" => (
             "Manage an agent's harness (orchestrator and mayor): compress its running work's conversation, steer it with a note, give it more turns, or set its limits (max_turns per work item, compress_at bytes, keep_recent turns).",
-            obj(json!({
-                "cid": {"type": "integer"},
-                "action": {"type": "string", "enum": ["compress", "steer", "extend_turns", "set_limits", "show"]},
-                "text": {"type": "string"},
-                "turns": {"type": "integer"},
-                "max_turns": {"type": "integer"},
-                "compress_at": {"type": "integer"},
-                "keep_recent": {"type": "integer"}
-            }), &["cid", "action"]),
+            obj(
+                json!({
+                    "cid": {"type": "integer"},
+                    "action": {"type": "string", "enum": ["compress", "steer", "extend_turns", "set_limits", "show"]},
+                    "text": {"type": "string"},
+                    "turns": {"type": "integer"},
+                    "max_turns": {"type": "integer"},
+                    "compress_at": {"type": "integer"},
+                    "keep_recent": {"type": "integer"}
+                }),
+                &["cid", "action"],
+            ),
         ),
         "plaza_loop" => (
             "Run a prompt on an agent repeatedly (orchestrator and mayor): start (cid, prompt, every_minutes, max_runs — 0 runs until the agent's answer contains \"LOOP DONE\"), stop (id), or list.",
-            obj(json!({
-                "action": {"type": "string", "enum": ["start", "stop", "list"]},
-                "cid": {"type": "integer"},
-                "prompt": {"type": "string"},
-                "every_minutes": {"type": "integer"},
-                "max_runs": {"type": "integer"},
-                "id": {"type": "string"}
-            }), &["action"]),
+            obj(
+                json!({
+                    "action": {"type": "string", "enum": ["start", "stop", "list"]},
+                    "cid": {"type": "integer"},
+                    "prompt": {"type": "string"},
+                    "every_minutes": {"type": "integer"},
+                    "max_runs": {"type": "integer"},
+                    "id": {"type": "string"}
+                }),
+                &["action"],
+            ),
         ),
         _ => return None,
     })
@@ -402,19 +516,45 @@ fn run_loop(app: &App, agent: &Agent, input: &Value) -> Result<String, String> {
             if cid == agent.cid {
                 return Err("an agent may not loop itself".into());
             }
-            app.agents.get(cid).ok_or_else(|| format!("no agent {cid}"))?;
-            let prompt = input["prompt"].as_str().map(str::trim).filter(|p| !p.is_empty()).ok_or("start needs a prompt")?;
-            let minutes = input["every_minutes"].as_u64().filter(|m| *m >= 1).ok_or("every_minutes must be at least 1")?;
-            let max_runs = u32::try_from(input["max_runs"].as_u64().unwrap_or(0)).map_err(|_| "max_runs is too large".to_string())?;
-            let looped = app.harness.start_loop(cid, prompt, minutes.saturating_mul(60), max_runs, caller(agent), agent.cid)?;
+            app.agents
+                .get(cid)
+                .ok_or_else(|| format!("no agent {cid}"))?;
+            let prompt = input["prompt"]
+                .as_str()
+                .map(str::trim)
+                .filter(|p| !p.is_empty())
+                .ok_or("start needs a prompt")?;
+            let minutes = input["every_minutes"]
+                .as_u64()
+                .filter(|m| *m >= 1)
+                .ok_or("every_minutes must be at least 1")?;
+            let max_runs = u32::try_from(input["max_runs"].as_u64().unwrap_or(0))
+                .map_err(|_| "max_runs is too large".to_string())?;
+            let looped = app.harness.start_loop(
+                cid,
+                prompt,
+                minutes.saturating_mul(60),
+                max_runs,
+                caller(agent),
+                agent.cid,
+            )?;
             app.bus.publish("loop", &looped);
-            Ok(format!("loop {} started: every {minutes} minutes for agent {cid}", looped.id))
+            Ok(format!(
+                "loop {} started: every {minutes} minutes for agent {cid}",
+                looped.id
+            ))
         }
         "stop" => {
-            let id = input["id"].as_str().filter(|s| !s.is_empty()).ok_or("stop needs the loop id")?;
+            let id = input["id"]
+                .as_str()
+                .filter(|s| !s.is_empty())
+                .ok_or("stop needs the loop id")?;
             let stopped = app.harness.stop_loop(id)?;
             app.bus.publish("loop", &stopped);
-            Ok(format!("loop {} stopped after {} runs", stopped.id, stopped.runs))
+            Ok(format!(
+                "loop {} stopped after {} runs",
+                stopped.id, stopped.runs
+            ))
         }
         "list" => {
             let lines: Vec<String> = app
@@ -423,9 +563,15 @@ fn run_loop(app: &App, agent: &Agent, input: &Value) -> Result<String, String> {
                 .iter()
                 .map(|l| json!({ "id": l.id, "cid": l.cid, "state": l.state, "runs": l.runs, "max_runs": l.max_runs, "every_secs": l.every_secs, "prompt": l.prompt }).to_string())
                 .collect();
-            Ok(if lines.is_empty() { "no loops".to_string() } else { lines.join("\n") })
+            Ok(if lines.is_empty() {
+                "no loops".to_string()
+            } else {
+                lines.join("\n")
+            })
         }
-        other => Err(format!("unknown loop action {other:?}; use start, stop or list")),
+        other => Err(format!(
+            "unknown loop action {other:?}; use start, stop or list"
+        )),
     }
 }
 
@@ -439,16 +585,22 @@ fn caller(agent: &Agent) -> &str {
 }
 
 fn cid_of(input: &Value) -> Result<u64, String> {
-    input["cid"].as_u64().ok_or_else(|| "cid is required".to_string())
+    input["cid"]
+        .as_u64()
+        .ok_or_else(|| "cid is required".to_string())
 }
 
 pub fn routes(router: Router<App>) -> Router<App> {
     router
-        .get("/v1/loops", |app, _, _| Response::json(200, &app.harness.loops()))
+        .get("/v1/loops", |app, _, _| {
+            Response::json(200, &app.harness.loops())
+        })
         .post("/v1/loops", start_route)
         .delete("/v1/loops/{id}", stop_route)
         .post("/v1/agents/{cid}/control", control_route)
-        .get("/v1/agents/{cid}/limits", |app, _, p| Response::json(200, &app.harness.limits(p.get("cid").parse().unwrap_or(0))))
+        .get("/v1/agents/{cid}/limits", |app, _, p| {
+            Response::json(200, &app.harness.limits(p.get("cid").parse().unwrap_or(0)))
+        })
 }
 
 #[derive(Deserialize)]
@@ -465,7 +617,14 @@ fn start_route(app: &App, req: &Request, _: &Params<'_>) -> Response {
         Ok(body) => body,
         Err(err) => return Response::error(400, &format!("bad body: {err}")),
     };
-    match app.harness.start_loop(body.cid, &body.prompt, body.every_minutes.saturating_mul(60), body.max_runs, "owner", 0) {
+    match app.harness.start_loop(
+        body.cid,
+        &body.prompt,
+        body.every_minutes.saturating_mul(60),
+        body.max_runs,
+        "owner",
+        0,
+    ) {
         Ok(lp) => {
             app.bus.publish("loop", &lp);
             Response::json(200, &lp)
@@ -499,12 +658,15 @@ fn control_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
     }
 }
 
-
 impl Store {
     /// The whole state as JSON, for Postgres (`crate::db`); "" when there is nothing to save.
     pub fn snapshot(&self) -> String {
         let inner = self.locked();
-        serde_json::to_string_pretty(&Saved { loops: inner.0.clone(), limits: inner.1.clone() }).unwrap_or_default()
+        serde_json::to_string_pretty(&Saved {
+            loops: inner.0.clone(),
+            limits: inner.1.clone(),
+        })
+        .unwrap_or_default()
     }
 
     /// Replaces the state with a [`Store::snapshot`]; a refusal changes nothing.
@@ -524,7 +686,8 @@ mod tests {
     #[test]
     fn snapshot_restores_into_a_fresh_store() {
         let a = Store::load(&fresh_dir("snapshot"));
-        a.start_loop(1, "check the queue", 60, 3, "alpha", 1).unwrap();
+        a.start_loop(1, "check the queue", 60, 3, "alpha", 1)
+            .unwrap();
         let b = Store::load(&fresh_dir("snapshot-restored"));
         b.restore(&a.snapshot()).unwrap();
         assert_eq!(b.snapshot(), a.snapshot());
@@ -532,8 +695,12 @@ mod tests {
     }
 
     fn fresh_dir(tag: &str) -> PathBuf {
-        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
-        let dir = std::env::temp_dir().join(format!("harness-{tag}-{}-{nanos}", std::process::id()));
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir =
+            std::env::temp_dir().join(format!("harness-{tag}-{}-{nanos}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
@@ -542,21 +709,119 @@ mod tests {
     fn harness_limits_are_validated_and_merged() {
         let dir = fresh_dir("limits");
         let store = Store::load(&dir);
-        let first = store.set_limits(7, Limits { max_turns: Some(40), ..Default::default() }).unwrap();
-        assert_eq!(first, Limits { max_turns: Some(40), ..Default::default() });
-        let merged = store.set_limits(7, Limits { keep_recent: Some(3), ..Default::default() }).unwrap();
-        assert_eq!(merged, Limits { max_turns: Some(40), compress_at: None, keep_recent: Some(3) });
+        let first = store
+            .set_limits(
+                7,
+                Limits {
+                    max_turns: Some(40),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            first,
+            Limits {
+                max_turns: Some(40),
+                ..Default::default()
+            }
+        );
+        let merged = store
+            .set_limits(
+                7,
+                Limits {
+                    keep_recent: Some(3),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            merged,
+            Limits {
+                max_turns: Some(40),
+                compress_at: None,
+                keep_recent: Some(3)
+            }
+        );
         assert_eq!(store.limits(7), merged);
         assert_eq!(store.limits(8), Limits::default());
-        assert!(store.set_limits(7, Limits { max_turns: Some(0), ..Default::default() }).is_err());
-        assert!(store.set_limits(7, Limits { max_turns: Some(501), ..Default::default() }).is_err());
-        assert!(store.set_limits(7, Limits { compress_at: Some(19_999), ..Default::default() }).is_err());
-        assert!(store.set_limits(7, Limits { compress_at: Some(4_000_001), ..Default::default() }).is_err());
-        assert!(store.set_limits(7, Limits { keep_recent: Some(51), ..Default::default() }).is_err());
-        assert_eq!(store.set_limits(7, Limits { compress_at: Some(0), ..Default::default() }).unwrap().compress_at, Some(0));
+        assert!(
+            store
+                .set_limits(
+                    7,
+                    Limits {
+                        max_turns: Some(0),
+                        ..Default::default()
+                    }
+                )
+                .is_err()
+        );
+        assert!(
+            store
+                .set_limits(
+                    7,
+                    Limits {
+                        max_turns: Some(501),
+                        ..Default::default()
+                    }
+                )
+                .is_err()
+        );
+        assert!(
+            store
+                .set_limits(
+                    7,
+                    Limits {
+                        compress_at: Some(19_999),
+                        ..Default::default()
+                    }
+                )
+                .is_err()
+        );
+        assert!(
+            store
+                .set_limits(
+                    7,
+                    Limits {
+                        compress_at: Some(4_000_001),
+                        ..Default::default()
+                    }
+                )
+                .is_err()
+        );
+        assert!(
+            store
+                .set_limits(
+                    7,
+                    Limits {
+                        keep_recent: Some(51),
+                        ..Default::default()
+                    }
+                )
+                .is_err()
+        );
+        assert_eq!(
+            store
+                .set_limits(
+                    7,
+                    Limits {
+                        compress_at: Some(0),
+                        ..Default::default()
+                    }
+                )
+                .unwrap()
+                .compress_at,
+            Some(0)
+        );
         // Rejected values changed nothing; the accepted ones survive a reload.
         let reloaded = Store::load(&dir);
-        assert_eq!(reloaded.limits(7), Limits { max_turns: Some(40), compress_at: Some(0), keep_recent: Some(3) });
+        assert_eq!(
+            reloaded.limits(7),
+            Limits {
+                max_turns: Some(40),
+                compress_at: Some(0),
+                keep_recent: Some(3)
+            }
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -564,14 +829,20 @@ mod tests {
     fn harness_loops_persist_across_load() {
         let dir = fresh_dir("loops");
         let store = Store::load(&dir);
-        let a = store.start_loop(5, "  check the build  ", 60, 3, "owner", 0).unwrap();
+        let a = store
+            .start_loop(5, "  check the build  ", 60, 3, "owner", 0)
+            .unwrap();
         assert_eq!(a.id, "l1");
         assert_eq!(a.prompt, "check the build");
         assert_eq!(a.state, "running");
         assert_eq!(a.next_at_ms, a.created_ms + 60_000);
         assert!(store.start_loop(5, "too fast", 59, 0, "owner", 0).is_err());
         assert!(store.start_loop(5, "   ", 60, 0, "owner", 0).is_err());
-        assert!(store.start_loop(5, &"x".repeat(4001), 60, 0, "owner", 0).is_err());
+        assert!(
+            store
+                .start_loop(5, &"x".repeat(4001), 60, 0, "owner", 0)
+                .is_err()
+        );
         let b = store.start_loop(6, "second", 120, 0, "mayor", 9).unwrap();
         assert_eq!(b.id, "l2");
         assert_eq!(store.stop_loop("l1").unwrap().state, "stopped");
@@ -579,10 +850,19 @@ mod tests {
 
         let reloaded = Store::load(&dir);
         let loops = reloaded.loops();
-        assert_eq!(loops.iter().map(|l| l.id.as_str()).collect::<Vec<_>>(), ["l2", "l1"]);
+        assert_eq!(
+            loops.iter().map(|l| l.id.as_str()).collect::<Vec<_>>(),
+            ["l2", "l1"]
+        );
         assert_eq!(loops[1].state, "stopped");
         assert_eq!(loops[0].by_cid, 9);
-        assert_eq!(reloaded.start_loop(6, "third", 60, 0, "owner", 0).unwrap().id, "l3");
+        assert_eq!(
+            reloaded
+                .start_loop(6, "third", 60, 0, "owner", 0)
+                .unwrap()
+                .id,
+            "l3"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

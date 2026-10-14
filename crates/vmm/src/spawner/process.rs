@@ -792,7 +792,14 @@ mod tests {
                 available_mib: Some(180),
             }))
         );
-        for bad in ["", "okay", "ok extra", "stats 512 256", "stats 512 x 200 - -", "usable 5"] {
+        for bad in [
+            "",
+            "okay",
+            "ok extra",
+            "stats 512 256",
+            "stats 512 x 200 - -",
+            "usable 5",
+        ] {
             assert!(parse_reply(bad).is_err(), "{bad:?} is not a reply");
         }
     }

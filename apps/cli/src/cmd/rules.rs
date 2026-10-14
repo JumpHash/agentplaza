@@ -4,9 +4,9 @@
 use std::io::Read;
 
 use clap::Subcommand;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use crate::ctx::{self, confirm, Ctx};
+use crate::ctx::{self, Ctx, confirm};
 
 /// The tier the hub gives a constitutional law (`crates/apid/src/laws.rs`).
 const CONSTITUTION: &str = "constitution";
@@ -121,12 +121,20 @@ fn array(v: &Value) -> &[Value] {
 /// A list of strings joined with ", " ("-" when there are none).
 fn list_of(v: &Value) -> String {
     let items: Vec<&str> = array(v).iter().filter_map(Value::as_str).collect();
-    if items.is_empty() { "-".to_string() } else { items.join(", ") }
+    if items.is_empty() {
+        "-".to_string()
+    } else {
+        items.join(", ")
+    }
 }
 
 /// The effects of the laws one owner rule declares ("forbid", "permit", or both), or "-".
 fn effects_of(laws: &Value, rule_id: &str) -> String {
-    let mut effects: Vec<&str> = array(laws).iter().filter(|l| ctx::s(l, "rule_id") == rule_id).map(|l| ctx::s(l, "effect")).collect();
+    let mut effects: Vec<&str> = array(laws)
+        .iter()
+        .filter(|l| ctx::s(l, "rule_id") == rule_id)
+        .map(|l| ctx::s(l, "effect"))
+        .collect();
     effects.sort_unstable();
     effects.dedup();
     list_of(&json!(effects))
@@ -152,14 +160,20 @@ fn infraction_table(v: &Value) {
 /// A title or reason as typed, trimmed; blank is refused.
 fn non_blank(text: &str, what: &str) -> Result<String, String> {
     let trimmed = text.trim();
-    if trimmed.is_empty() { Err(format!("{what} is empty")) } else { Ok(trimmed.to_string()) }
+    if trimmed.is_empty() {
+        Err(format!("{what} is empty"))
+    } else {
+        Ok(trimmed.to_string())
+    }
 }
 
 /// A JHRL source from a file (`-` reads stdin). A blank source is refused.
 fn read_source(file: &str) -> Result<String, String> {
     let text = if file == "-" {
         let mut buf = String::new();
-        std::io::stdin().read_to_string(&mut buf).map_err(|e| format!("reading stdin: {e}"))?;
+        std::io::stdin()
+            .read_to_string(&mut buf)
+            .map_err(|e| format!("reading stdin: {e}"))?;
         buf
     } else {
         std::fs::read_to_string(file).map_err(|e| format!("{file}: {e}"))?
@@ -172,9 +186,16 @@ fn read_source(file: &str) -> Result<String, String> {
 
 /// A switch-off of a constitutional law needs `confirm` set to its exact id (the hub answers 409
 /// without it). Switching on, and any statute, need nothing extra.
-fn override_confirm_ok(tier: &str, law: &str, disabled: bool, confirm: Option<&str>) -> Result<(), String> {
+fn override_confirm_ok(
+    tier: &str,
+    law: &str,
+    disabled: bool,
+    confirm: Option<&str>,
+) -> Result<(), String> {
     if disabled && tier == CONSTITUTION && confirm != Some(law) {
-        return Err(format!("{law} is a constitutional law: to switch it off, pass --confirm {law} (its id, typed again)"));
+        return Err(format!(
+            "{law} is a constitutional law: to switch it off, pass --confirm {law} (its id, typed again)"
+        ));
     }
     Ok(())
 }
@@ -197,8 +218,13 @@ fn settings_with_strict(settings: &Value, on: bool) -> Value {
 /// Turns an owner rule on or off; its laws start or stop applying.
 fn set_rule_enabled(ctx: &Ctx, id: &str, enabled: bool) -> Result<(), String> {
     let action = if enabled { "enable" } else { "disable" };
-    let rule = ctx.client.post(&format!("/v1/laws/rules/{}/{action}", ctx::seg(id)), &json!({}))?;
-    ctx.out(&rule, |_| println!("rule {id} {}", if enabled { "enabled" } else { "disabled" }));
+    let rule = ctx.client.post(
+        &format!("/v1/laws/rules/{}/{action}", ctx::seg(id)),
+        &json!({}),
+    )?;
+    ctx.out(&rule, |_| {
+        println!("rule {id} {}", if enabled { "enabled" } else { "disabled" })
+    });
     Ok(())
 }
 
@@ -209,7 +235,14 @@ fn check_report(v: &Value) {
         println!("does not compile:");
         let rows: Vec<Vec<String>> = array(&v["diagnostics"])
             .iter()
-            .map(|d| vec![ctx::text(d, "file"), ctx::text(d, "line"), ctx::text(d, "column"), ctx::s(d, "message").to_string()])
+            .map(|d| {
+                vec![
+                    ctx::text(d, "file"),
+                    ctx::text(d, "line"),
+                    ctx::text(d, "column"),
+                    ctx::s(d, "message").to_string(),
+                ]
+            })
             .collect();
         ctx::table(&["file", "line", "column", "message"], &rows);
         return;
@@ -218,7 +251,15 @@ fn check_report(v: &Value) {
     println!();
     let rows: Vec<Vec<String>> = array(&v["would_refuse"])
         .iter()
-        .map(|w| vec![ctx::text(w, "cid"), ctx::s(w, "role").to_string(), ctx::s(w, "tool").to_string(), ctx::when(&w["at_ms"]), list_of(&w["laws"])])
+        .map(|w| {
+            vec![
+                ctx::text(w, "cid"),
+                ctx::s(w, "role").to_string(),
+                ctx::s(w, "tool").to_string(),
+                ctx::when(&w["at_ms"]),
+                list_of(&w["laws"]),
+            ]
+        })
         .collect();
     println!("recent calls it would refuse: {}", rows.len());
     ctx::table(&["cid", "role", "tool", "at", "laws"], &rows);
@@ -257,20 +298,36 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                 .cloned()
                 .ok_or_else(|| format!("no law {id}"))?;
             ctx.out(&law, |l| {
-                let ops: Vec<String> = array(l.get("ops").unwrap_or(&Value::Null)).iter().map(|o| o.as_str().unwrap_or_default().to_string()).collect();
-                let conditions: Vec<String> = array(l.get("conditions").unwrap_or(&Value::Null)).iter().map(|c| c.as_str().unwrap_or_default().to_string()).collect();
+                let ops: Vec<String> = array(l.get("ops").unwrap_or(&Value::Null))
+                    .iter()
+                    .map(|o| o.as_str().unwrap_or_default().to_string())
+                    .collect();
+                let conditions: Vec<String> = array(l.get("conditions").unwrap_or(&Value::Null))
+                    .iter()
+                    .map(|c| c.as_str().unwrap_or_default().to_string())
+                    .collect();
                 ctx::fields(&[
                     ("id", ctx::text(l, "id")),
                     ("title", ctx::text(l, "title")),
                     ("effect", ctx::text(l, "effect")),
                     ("severity", ctx::text(l, "severity")),
                     ("enforcement", ctx::text(l, "enforcement")),
-                    ("applies to", format!("{} -> {}", ctx::s(l, "principal"), ctx::s(l, "resource"))),
+                    (
+                        "applies to",
+                        format!("{} -> {}", ctx::s(l, "principal"), ctx::s(l, "resource")),
+                    ),
                     ("operations", ops.join(", ")),
                     ("statement", ctx::text(l, "statement")),
                     ("in short", ctx::text(l, "explanation")),
                     ("why", ctx::text(l, "rationale")),
-                    ("conditions", if conditions.is_empty() { "none".to_string() } else { conditions.join("; ") }),
+                    (
+                        "conditions",
+                        if conditions.is_empty() {
+                            "none".to_string()
+                        } else {
+                            conditions.join("; ")
+                        },
+                    ),
                     ("file", ctx::text(l, "file")),
                     ("refusals", ctx::text(l, "refusals")),
                 ]);
@@ -279,7 +336,10 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
         Cmd::Infractions { limit, law } => {
             // With a law, the hub filters before its limit, so the newest rows of that law come back.
             let v = match law {
-                Some(law) => ctx.client.get(&format!("/v1/laws/violations?law={}&limit={limit}", ctx::seg(&law)))?,
+                Some(law) => ctx.client.get(&format!(
+                    "/v1/laws/violations?law={}&limit={limit}",
+                    ctx::seg(&law)
+                ))?,
                 None => ctx.client.get(&format!("/v1/infractions?limit={limit}"))?,
             };
             ctx.out(&v, infraction_table);
@@ -292,22 +352,39 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                     .iter()
                     .map(|rule| {
                         let id = ctx::s(rule, "id");
-                        let enabled = if rule["enabled"].as_bool().unwrap_or(false) { "yes" } else { "no" };
-                        vec![id.to_string(), enabled.to_string(), effects_of(&laws, id), ctx::s(rule, "title").to_string()]
+                        let enabled = if rule["enabled"].as_bool().unwrap_or(false) {
+                            "yes"
+                        } else {
+                            "no"
+                        };
+                        vec![
+                            id.to_string(),
+                            enabled.to_string(),
+                            effects_of(&laws, id),
+                            ctx::s(rule, "title").to_string(),
+                        ]
                     })
                     .collect();
                 ctx::table(&["id", "enabled", "effect", "title"], &rows);
             });
         }
         Cmd::Violations { law, limit } => {
-            let v = ctx.client.get(&format!("/v1/laws/violations?law={}&limit={limit}", ctx::seg(&law)))?;
+            let v = ctx.client.get(&format!(
+                "/v1/laws/violations?law={}&limit={limit}",
+                ctx::seg(&law)
+            ))?;
             ctx.out(&v, infraction_table);
         }
         Cmd::Create { title, file } => {
             let title = non_blank(&title, "the title")?;
             let source = read_source(&file)?;
-            let made = ctx.client.post("/v1/laws/rules", &json!({ "title": title, "source": source }))?;
-            ctx.out(&made, |r| println!("rule {} created: {}", ctx::s(r, "id"), ctx::s(r, "title")));
+            let made = ctx.client.post(
+                "/v1/laws/rules",
+                &json!({ "title": title, "source": source }),
+            )?;
+            ctx.out(&made, |r| {
+                println!("rule {} created: {}", ctx::s(r, "id"), ctx::s(r, "title"))
+            });
         }
         Cmd::Edit { id, title, file } => {
             let mut body = serde_json::Map::new();
@@ -320,17 +397,27 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             if body.is_empty() {
                 return Err("nothing to change: pass --title, --file or both".into());
             }
-            let rule = ctx.client.put(&format!("/v1/laws/rules/{}", ctx::seg(&id)), &Value::Object(body))?;
-            ctx.out(&rule, |r| println!("rule {} saved: {}", ctx::s(r, "id"), ctx::s(r, "title")));
+            let rule = ctx.client.put(
+                &format!("/v1/laws/rules/{}", ctx::seg(&id)),
+                &Value::Object(body),
+            )?;
+            ctx.out(&rule, |r| {
+                println!("rule {} saved: {}", ctx::s(r, "id"), ctx::s(r, "title"))
+            });
         }
         Cmd::Enable { id } => set_rule_enabled(ctx, &id, true)?,
         Cmd::Disable { id } => set_rule_enabled(ctx, &id, false)?,
         Cmd::Delete { id, yes } => {
-            if !confirm(yes, &format!("Delete rule {id} and the laws it declares? They stop applying for good."))? {
+            if !confirm(
+                yes,
+                &format!("Delete rule {id} and the laws it declares? They stop applying for good."),
+            )? {
                 println!("not deleted");
                 return Ok(());
             }
-            let deleted = ctx.client.delete(&format!("/v1/laws/rules/{}", ctx::seg(&id)))?;
+            let deleted = ctx
+                .client
+                .delete(&format!("/v1/laws/rules/{}", ctx::seg(&id)))?;
             ctx.out(&deleted, |_| println!("rule {id} deleted"));
         }
         Cmd::Check { file, id } => {
@@ -341,7 +428,12 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             let result = ctx.client.post("/v1/laws/check", &body)?;
             ctx.out(&result, check_report);
         }
-        Cmd::Override { law, state, reason, confirm } => {
+        Cmd::Override {
+            law,
+            state,
+            reason,
+            confirm,
+        } => {
             let disabled = state == "off";
             let catalog = ctx.client.get("/v1/laws")?;
             let tier = array(&catalog)
@@ -355,14 +447,29 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                 return Err(format!("say why {law} is switched off: pass --reason"));
             }
             let body = json!({ "disabled": disabled, "reason": reason, "confirm": confirm.filter(|_| disabled) });
-            let made = ctx.client.put(&format!("/v1/laws/overrides/{}", ctx::seg(&law)), &body)?;
-            ctx.out(&made, |_| println!("{law} {}", if disabled { "switched off" } else { "switched on" }));
+            let made = ctx
+                .client
+                .put(&format!("/v1/laws/overrides/{}", ctx::seg(&law)), &body)?;
+            ctx.out(&made, |_| {
+                println!(
+                    "{law} {}",
+                    if disabled {
+                        "switched off"
+                    } else {
+                        "switched on"
+                    }
+                )
+            });
         }
         Cmd::Strict { state } => {
             let on = state == "on";
             let settings = ctx.client.get("/v1/settings")?;
-            let saved = ctx.client.put("/v1/settings", &settings_with_strict(&settings, on))?;
-            ctx.out(&saved, |_| println!("strict permits {}", if on { "on" } else { "off" }));
+            let saved = ctx
+                .client
+                .put("/v1/settings", &settings_with_strict(&settings, on))?;
+            ctx.out(&saved, |_| {
+                println!("strict permits {}", if on { "on" } else { "off" })
+            });
         }
     }
     Ok(())

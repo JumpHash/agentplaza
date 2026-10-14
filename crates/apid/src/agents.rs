@@ -11,13 +11,13 @@ use std::time::Duration;
 use apz_http::{Params, Request, Response, Router};
 use apz_proto::chat::Usage;
 use apz_proto::wire::{AgentProfile, HostMessage, WorkKind};
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde_json::{Value, json};
 
 use crate::db::Db;
 use crate::role::Role;
 use crate::scheduler::Origin;
-use crate::settings::{tier_of, Tier};
+use crate::settings::{Tier, tier_of};
 use crate::state::App;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -61,7 +61,10 @@ pub struct Roster {
 impl Roster {
     /// A roster that writes through to `store`; None when this run has no database.
     pub fn with_db(store: Option<Arc<Db>>) -> Self {
-        Self { agents: Mutex::default(), store }
+        Self {
+            agents: Mutex::default(),
+            store,
+        }
     }
 
     pub fn get(&self, cid: u64) -> Option<Agent> {
@@ -128,7 +131,12 @@ impl Roster {
 
 /// The fields the `agents` row holds; a change to one of them is written through.
 fn durable(agent: &Agent) -> (String, String, Option<String>, String) {
-    (agent.name.clone(), agent.role.clone(), agent.model_override.clone(), agent.species.clone())
+    (
+        agent.name.clone(),
+        agent.role.clone(),
+        agent.model_override.clone(),
+        agent.species.clone(),
+    )
 }
 
 /// Loads the active rows of the `agents` table onto the roster before reconcile runs; without a
@@ -166,7 +174,11 @@ impl Names {
             .ok()
             .and_then(|text| serde_json::from_str(&text).ok())
             .unwrap_or_default();
-        Self { path, names: Mutex::new(names), asked: Mutex::new(BTreeSet::new()) }
+        Self {
+            path,
+            names: Mutex::new(names),
+            asked: Mutex::new(BTreeSet::new()),
+        }
     }
 
     pub fn get(&self, cid: u64) -> Option<String> {
@@ -176,7 +188,9 @@ impl Names {
     /// Whether another agent already uses `name` (case-insensitive).
     pub fn used_by_other(&self, cid: u64, name: &str) -> bool {
         let wanted = name.to_lowercase();
-        self.guard().iter().any(|(other, used)| *other != cid && used.to_lowercase() == wanted)
+        self.guard()
+            .iter()
+            .any(|(other, used)| *other != cid && used.to_lowercase() == wanted)
     }
 
     /// Stores `name` for `cid` and writes the file; on failure nothing changes.
@@ -191,13 +205,19 @@ impl Names {
 
     /// True the first time it is called for `cid` in this run.
     pub fn first_ask(&self, cid: u64) -> bool {
-        self.asked.lock().unwrap_or_else(PoisonError::into_inner).insert(cid)
+        self.asked
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(cid)
     }
 
     /// Forgets `cid`'s chosen name and lets it choose again; writes the file, and on
     /// failure nothing changes.
     pub fn forget(&self, cid: u64) -> std::io::Result<()> {
-        self.asked.lock().unwrap_or_else(PoisonError::into_inner).remove(&cid);
+        self.asked
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&cid);
         let mut names = self.guard();
         if !names.contains_key(&cid) {
             return Ok(());
@@ -225,7 +245,9 @@ pub fn check_name(app: &App, cid: u64, raw: &str) -> Result<String, String> {
     }
     let separators = name.chars().filter(|c| *c == ' ' || *c == '-').count();
     let edged = name.starts_with([' ', '-']) || name.ends_with([' ', '-']);
-    let letters = name.chars().all(|c| c.is_alphabetic() || c == ' ' || c == '-');
+    let letters = name
+        .chars()
+        .all(|c| c.is_alphabetic() || c == ' ' || c == '-');
     if separators > 1 || edged || !letters {
         return Err("name must be letters only, with at most one inner space or hyphen".into());
     }
@@ -240,7 +262,9 @@ pub fn check_name(app: &App, cid: u64, raw: &str) -> Result<String, String> {
 
 /// Stores a checked name: the file first, then the roster.
 fn store_name(app: &App, cid: u64, name: &str) -> Result<(), String> {
-    app.names.set(cid, name).map_err(|e| format!("name not saved: {e}"))?;
+    app.names
+        .set(cid, name)
+        .map_err(|e| format!("name not saved: {e}"))?;
     app.agents.update(cid, |agent| agent.name = name.to_owned());
     Ok(())
 }
@@ -290,11 +314,17 @@ impl Roles {
     /// A missing manifest yields empty roles (with a warning); a malformed one is an error.
     pub fn load(manifest: &Path, prompts: &Path) -> std::io::Result<Self> {
         // contract
-        let mut roles = Self { tools: BTreeMap::new(), prompts: BTreeMap::new() };
+        let mut roles = Self {
+            tools: BTreeMap::new(),
+            prompts: BTreeMap::new(),
+        };
         let text = match std::fs::read_to_string(manifest) {
             Ok(text) => text,
             Err(err) => {
-                eprintln!("apid: roles manifest {} not read ({err}); no roles loaded", manifest.display());
+                eprintln!(
+                    "apid: roles manifest {} not read ({err}); no roles loaded",
+                    manifest.display()
+                );
                 return Ok(roles);
             }
         };
@@ -306,10 +336,15 @@ impl Roles {
         for (role, entry) in entries {
             let tools = entry["tools"]
                 .as_array()
-                .map(|list| list.iter().filter_map(|tool| tool.as_str().map(str::to_owned)).collect())
+                .map(|list| {
+                    list.iter()
+                        .filter_map(|tool| tool.as_str().map(str::to_owned))
+                        .collect()
+                })
                 .unwrap_or_default();
             roles.tools.insert(role.clone(), tools);
-            let prompt = std::fs::read_to_string(prompts.join(role).join("prompt.md")).unwrap_or_default();
+            let prompt =
+                std::fs::read_to_string(prompts.join(role).join("prompt.md")).unwrap_or_default();
             roles.prompts.insert(role.clone(), strip_comment(&prompt));
         }
         Ok(roles)
@@ -341,7 +376,8 @@ pub fn connected_agent(agent: &Agent) -> apz_plaza::ConnectedAgent {
 /// The agent's resolved model.
 pub fn model_of(app: &App, agent: &Agent) -> String {
     // contract
-    app.settings.resolve(&agent.role, agent.model_override.as_deref())
+    app.settings
+        .resolve(&agent.role, agent.model_override.as_deref())
 }
 
 /// The agent's profile: name, role, model, system prompt, tools, limits.
@@ -358,14 +394,20 @@ pub fn profile(app: &App, agent: &Agent) -> AgentProfile {
         system: with_skills(
             with_house_rules(
                 render_vars(&system_prompt(agent, role_prompt), agent),
-                app.prompts.bound_body("plaza").map(|rules| render_vars(&rules, agent)),
+                app.prompts
+                    .bound_body("plaza")
+                    .map(|rules| render_vars(&rules, agent)),
             ),
             crate::skills::agent_tools::prompt_section(app, &agent.role),
         ),
         tools: crate::tools::specs_for_agent(app, agent),
         max_turns: limits.max_turns.unwrap_or(app.settings.get().max_turns),
-        compress_at: limits.compress_at.unwrap_or(crate::harness_control::DEFAULT_COMPRESS_AT),
-        keep_recent: limits.keep_recent.unwrap_or(crate::harness_control::DEFAULT_KEEP_RECENT),
+        compress_at: limits
+            .compress_at
+            .unwrap_or(crate::harness_control::DEFAULT_COMPRESS_AT),
+        keep_recent: limits
+            .keep_recent
+            .unwrap_or(crate::harness_control::DEFAULT_KEEP_RECENT),
     }
 }
 
@@ -376,7 +418,14 @@ fn render_vars(text: &str, agent: &Agent) -> String {
         _ => "worker",
     };
     let vars = std::collections::BTreeMap::from([
-        ("name", if agent.name.is_empty() { role_label(&agent.role).to_string() } else { agent.name.clone() }),
+        (
+            "name",
+            if agent.name.is_empty() {
+                role_label(&agent.role).to_string()
+            } else {
+                agent.name.clone()
+            },
+        ),
         ("role", role_label(&agent.role).to_string()),
         ("cid", agent.cid.to_string()),
         ("tier", tier.to_string()),
@@ -388,7 +437,9 @@ fn render_vars(text: &str, agent: &Agent) -> String {
 /// The plaza's AGENTS.md (the library prompt bound to `plaza`), appended to every agent's system prompt.
 fn with_house_rules(system: String, rules: Option<String>) -> String {
     match rules {
-        Some(rules) if !rules.trim().is_empty() => format!("{system}\n\n## House rules (AGENTS.md)\n\n{}", rules.trim()),
+        Some(rules) if !rules.trim().is_empty() => {
+            format!("{system}\n\n## House rules (AGENTS.md)\n\n{}", rules.trim())
+        }
         _ => system,
     }
 }
@@ -406,9 +457,15 @@ fn system_prompt(agent: &Agent, role_prompt: &str) -> String {
     let orchestrator = tier_of(&agent.role) == Tier::Orchestrator;
     let label = role_label(&agent.role);
     let who = if agent.name.is_empty() {
-        format!("You have no name yet. You are the {label} agent of an AgentPlaza (CID {}).", agent.cid)
+        format!(
+            "You have no name yet. You are the {label} agent of an AgentPlaza (CID {}).",
+            agent.cid
+        )
     } else {
-        format!("You are {}, the {label} agent of an AgentPlaza (CID {}).", agent.name, agent.cid)
+        format!(
+            "You are {}, the {label} agent of an AgentPlaza (CID {}).",
+            agent.name, agent.cid
+        )
     };
     let mut text = format!(
         "{who}\n\n\
@@ -523,13 +580,19 @@ pub fn hello(app: &App, cid: u64, role: &str, vm: u32) -> Option<AgentProfile> {
         cid,
         name: app.names.get(cid).unwrap_or_default(),
         role,
-        model_override: previous.as_ref().and_then(|old| old.model_override.clone()).or(registered),
+        model_override: previous
+            .as_ref()
+            .and_then(|old| old.model_override.clone())
+            .or(registered),
         status: Status::Idle,
         connected_at_ms: now,
         last_seen_ms: now,
         run: previous.as_ref().and_then(|old| old.run.clone()),
         vm: Some(vm),
-        usage: previous.as_ref().map(|old| old.usage.clone()).unwrap_or_default(),
+        usage: previous
+            .as_ref()
+            .map(|old| old.usage.clone())
+            .unwrap_or_default(),
         species,
         kind: "llm".into(),
     };
@@ -560,9 +623,11 @@ pub fn gone(app: &App, cid: u64, reason: &str) {
 /// Every 10 s: reconcile the roster with the hub's sessions and noded's runs.
 pub fn spawn_reconcile(app: Arc<App>) {
     // contract
-    std::thread::spawn(move || loop {
-        reconcile_once(&app);
-        std::thread::sleep(Duration::from_secs(10));
+    std::thread::spawn(move || {
+        loop {
+            reconcile_once(&app);
+            std::thread::sleep(Duration::from_secs(10));
+        }
     });
 }
 
@@ -578,13 +643,19 @@ fn reconcile_once(app: &App) {
                 let (Some(cid), Some(role)) = (row["cid"].as_u64(), row["role"].as_str()) else {
                     continue;
                 };
-                let known_online = app.agents.get(cid).is_some_and(|agent| agent.status != Status::Offline);
+                let known_online = app
+                    .agents
+                    .get(cid)
+                    .is_some_and(|agent| agent.status != Status::Offline);
                 if !known_online {
                     hello(app, cid, role, 0);
                 }
             }
             for agent in app.agents.list() {
-                if agent.status != Status::Offline && crate::fleet::node_of(app, agent.cid) == node && !live.contains(&agent.cid) {
+                if agent.status != Status::Offline
+                    && crate::fleet::node_of(app, agent.cid) == node
+                    && !live.contains(&agent.cid)
+                {
                     gone(app, agent.cid, "session not on its node's gateway");
                 }
             }
@@ -601,7 +672,10 @@ fn reconcile_once(app: &App) {
                 if let (Some(guest), Some(id)) = (vm["guest_cid"].as_u64(), vm["id"].as_u64()) {
                     placements.insert(guest, (run_id.to_owned(), id as u32));
                     // The role noded booted this guest with: trusted, unlike the role the guest claims in its hello.
-                    let role = vm["role"].as_str().or(run["role"].as_str()).unwrap_or_default();
+                    let role = vm["role"]
+                        .as_str()
+                        .or(run["role"].as_str())
+                        .unwrap_or_default();
                     if !role.is_empty() {
                         app.spawned.note_fleet_role(guest, role);
                     }
@@ -615,15 +689,23 @@ fn reconcile_once(app: &App) {
         };
         // The trusted role (an operator spawn's, else the one noded booted the guest with) wins: an agent that said
         // hello before noded's runs were read, or before a noded restart, follows it.
-        let role = app.spawned.role_of(agent.cid).unwrap_or_else(|| agent.role.clone());
+        let role = app
+            .spawned
+            .role_of(agent.cid)
+            .unwrap_or_else(|| agent.role.clone());
         // The orchestrator is always the rover, also when its role arrived after its look was dealt.
-        let species = if role != agent.role && role == crate::settings::ORCHESTRATOR_ROLE && agent.species != crate::looks::ROVER {
-            app.looks.set(agent.cid, crate::looks::ROVER, apz_plaza::now_ms());
+        let species = if role != agent.role
+            && role == crate::settings::ORCHESTRATOR_ROLE
+            && agent.species != crate::looks::ROVER
+        {
+            app.looks
+                .set(agent.cid, crate::looks::ROVER, apz_plaza::now_ms());
             crate::looks::ROVER.to_owned()
         } else {
             agent.species.clone()
         };
-        if agent.run.as_deref() != Some(run.as_str()) || agent.vm != Some(vm) || role != agent.role {
+        if agent.run.as_deref() != Some(run.as_str()) || agent.vm != Some(vm) || role != agent.role
+        {
             let updated = app.agents.update(agent.cid, |slot| {
                 slot.run = Some(run);
                 slot.vm = Some(vm);
@@ -649,14 +731,22 @@ pub fn routes(router: Router<App>) -> Router<App> {
             Ok(agent) => Response::json(200, &view(app, &agent)),
             Err(resp) => resp,
         })
-        .route("PATCH", "/v1/agents/{cid}", |app, req, p| patch(app, req, p))
+        .route("PATCH", "/v1/agents/{cid}", |app, req, p| {
+            patch(app, req, p)
+        })
         .delete("/v1/agents/{cid}", |app, _req, p| delete(app, p))
         .post("/v1/agents/{cid}/chat", |app, req, p| chat(app, req, p))
         .post("/v1/agents/{cid}/assign", |app, req, p| assign(app, req, p))
         .post("/v1/agents/{cid}/cancel", |app, _req, p| cancel(app, p))
-        .post("/v1/agents/{cid}/stop", |app, req, p| to_hub(app, req, p, "stop"))
-        .post("/v1/agents/{cid}/tell", |app, req, p| to_hub(app, req, p, "tell"))
-        .get("/v1/agents/{cid}/transcript", |app, req, p| transcript(app, req, p))
+        .post("/v1/agents/{cid}/stop", |app, req, p| {
+            to_hub(app, req, p, "stop")
+        })
+        .post("/v1/agents/{cid}/tell", |app, req, p| {
+            to_hub(app, req, p, "tell")
+        })
+        .get("/v1/agents/{cid}/transcript", |app, req, p| {
+            transcript(app, req, p)
+        })
 }
 
 /// Chat text limit, in characters.
@@ -681,7 +771,9 @@ pub fn check_chat_text(text: &str) -> Result<(), String> {
         return Err("text must not be empty".into());
     }
     if n > MAX_CHAT_CHARS {
-        return Err(format!("text is {n} characters; the limit is {MAX_CHAT_CHARS}"));
+        return Err(format!(
+            "text is {n} characters; the limit is {MAX_CHAT_CHARS}"
+        ));
     }
     Ok(())
 }
@@ -710,12 +802,15 @@ pub(crate) fn agent_at(app: &App, params: &Params<'_>) -> Result<Agent, Response
         .get("cid")
         .parse::<u64>()
         .map_err(|_| Response::error(400, "cid must be a number"))?;
-    app.agents.get(cid).ok_or_else(|| Response::error(404, "no such agent"))
+    app.agents
+        .get(cid)
+        .ok_or_else(|| Response::error(404, "no such agent"))
 }
 
 /// The request body as `T`, or a 400 response.
 pub(crate) fn body<T: DeserializeOwned>(req: &Request) -> Result<T, Response> {
-    req.json::<T>().map_err(|e| Response::error(400, &format!("bad body: {e}")))
+    req.json::<T>()
+        .map_err(|e| Response::error(400, &format!("bad body: {e}")))
 }
 
 #[derive(Deserialize)]
@@ -754,7 +849,13 @@ fn spawn(app: &App, req: &Request) -> Response {
         Ok(b) => b,
         Err(resp) => return resp,
     };
-    match spawn_agents(app, &b.role, b.count.unwrap_or(1), b.model.as_deref(), b.node.as_deref()) {
+    match spawn_agents(
+        app,
+        &b.role,
+        b.count.unwrap_or(1),
+        b.model.as_deref(),
+        b.node.as_deref(),
+    ) {
         Ok(value) => Response::json(200, &value),
         Err(e) if e.starts_with("noded") => Response::error(502, &e),
         Err(e) => Response::error(400, &e),
@@ -764,7 +865,13 @@ fn spawn(app: &App, req: &Request) -> Response {
 /// Spawns `count` agents of `role` on `node` (default `n0`): checks the role, the count, the
 /// model's tier and that the node takes new agents, asks its noded for the runs and records them.
 /// Returns noded's reply; errors are the message for the caller.
-pub fn spawn_agents(app: &App, role: &str, count: u32, model: Option<&str>, node: Option<&str>) -> Result<Value, String> {
+pub fn spawn_agents(
+    app: &App,
+    role: &str,
+    count: u32,
+    model: Option<&str>,
+    node: Option<&str>,
+) -> Result<Value, String> {
     let node = node.unwrap_or(crate::fleet::LOCAL);
     if node != crate::fleet::LOCAL {
         match app.nodes.get(node) {
@@ -864,12 +971,20 @@ fn delete(app: &App, params: &Params<'_>) -> Response {
         Ok(agent) => agent,
         Err(resp) => return resp,
     };
-    let _ = crate::fleet::gateway(app, agent.cid, "POST", &format!("/v1/agents/{}/stop", agent.cid), Some(&json!({})));
+    let _ = crate::fleet::gateway(
+        app,
+        agent.cid,
+        "POST",
+        &format!("/v1/agents/{}/stop", agent.cid),
+        Some(&json!({})),
+    );
     if let Err(e) = app.spawned.forget(agent.cid) {
         eprintln!("apid: spawned.json not saved: {e}");
     }
     let run_status = agent.run.as_ref().and_then(|run| {
-        crate::fleet::noded_for(app, agent.cid, "DELETE", &format!("/v1/runs/{run}"), None).map(|(status, _)| status).ok()
+        crate::fleet::noded_for(app, agent.cid, "DELETE", &format!("/v1/runs/{run}"), None)
+            .map(|(status, _)| status)
+            .ok()
     });
     Response::json(200, &json!({"deleted": true, "run_status": run_status}))
 }
@@ -894,7 +1009,17 @@ fn chat(app: &App, req: &Request, params: &Params<'_>) -> Response {
         return Response::error(400, &e);
     }
     let thread = format!("op-{}", agent.cid);
-    let work = app.work.enqueue(app, agent.cid, WorkKind::Chat, thread, b.text, Origin { owner: true, ..Origin::default() });
+    let work = app.work.enqueue(
+        app,
+        agent.cid,
+        WorkKind::Chat,
+        thread,
+        b.text,
+        Origin {
+            owner: true,
+            ..Origin::default()
+        },
+    );
     Response::json(200, &json!({"work": work}))
 }
 
@@ -929,8 +1054,18 @@ fn assign(app: &App, req: &Request, params: &Params<'_>) -> Response {
         prompt.push_str("\n\nAcceptance: ");
         prompt.push_str(acceptance);
     }
-    let origin = Origin { task: Some(id.clone()), ..Origin::default() };
-    let work = app.work.enqueue(app, agent.cid, WorkKind::Task, format!("task-{id}"), prompt, origin);
+    let origin = Origin {
+        task: Some(id.clone()),
+        ..Origin::default()
+    };
+    let work = app.work.enqueue(
+        app,
+        agent.cid,
+        WorkKind::Task,
+        format!("task-{id}"),
+        prompt,
+        origin,
+    );
     Response::json(200, &json!({"work": work, "task": id}))
 }
 
@@ -951,7 +1086,13 @@ fn to_hub(app: &App, req: &Request, params: &Params<'_>, action: &str) -> Respon
         Err(resp) => return resp,
     };
     let body: Option<Value> = serde_json::from_slice(&req.body).ok();
-    crate::fleet::respond(crate::fleet::gateway(app, agent.cid, "POST", &format!("/v1/agents/{}/{action}", agent.cid), body.as_ref()))
+    crate::fleet::respond(crate::fleet::gateway(
+        app,
+        agent.cid,
+        "POST",
+        &format!("/v1/agents/{}/{action}", agent.cid),
+        body.as_ref(),
+    ))
 }
 
 /// The agent's transcript after entry `after`, at most `limit` (max 1000), oldest first. With
@@ -962,15 +1103,26 @@ fn transcript(app: &App, req: &Request, params: &Params<'_>) -> Response {
         Err(resp) => return resp,
     };
     if req.query_param("after").is_none() {
-        if let Some(last) = req.query_param("last").and_then(|v| v.parse::<usize>().ok()) {
+        if let Some(last) = req
+            .query_param("last")
+            .and_then(|v| v.parse::<usize>().ok())
+        {
             return Response::json(200, &app.transcripts.last(agent.cid, last.min(1000)));
         }
     }
-    let after = req.query_param("after").and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
-    let limit = req.query_param("limit").and_then(|v| v.parse::<usize>().ok()).unwrap_or(200);
-    Response::json(200, &app.transcripts.after(agent.cid, after, limit.min(1000)))
+    let after = req
+        .query_param("after")
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(0);
+    let limit = req
+        .query_param("limit")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(200);
+    Response::json(
+        200,
+        &app.transcripts.after(agent.cid, after, limit.min(1000)),
+    )
 }
-
 
 impl Names {
     /// The whole state as JSON, for Postgres (`crate::db`); "" when there is nothing to save.
@@ -980,7 +1132,8 @@ impl Names {
 
     /// Replaces the state with a [`Names::snapshot`]; a refusal changes nothing.
     pub fn restore(&self, json: &str) -> Result<(), String> {
-        let names: BTreeMap<u64, String> = serde_json::from_str(json).map_err(|e| format!("bad names snapshot: {e}"))?;
+        let names: BTreeMap<u64, String> =
+            serde_json::from_str(json).map_err(|e| format!("bad names snapshot: {e}"))?;
         let mut current = self.guard();
         self.save(&names).map_err(|e| format!("write names: {e}"))?;
         *current = names;
@@ -1013,7 +1166,10 @@ mod tests {
         let other = Names::load(b.join("names.json"));
         other.restore(&names.snapshot()).unwrap();
         assert_eq!(other.get(3).as_deref(), Some("Ada"));
-        assert_eq!(Names::load(b.join("names.json")).get(3).as_deref(), Some("Ada"));
+        assert_eq!(
+            Names::load(b.join("names.json")).get(3).as_deref(),
+            Some("Ada")
+        );
         assert!(other.restore("not json").is_err());
         assert_eq!(other.get(3).as_deref(), Some("Ada"));
         let _ = std::fs::remove_dir_all(&dir);
@@ -1063,7 +1219,8 @@ mod route_tests {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |since| since.as_nanos());
-        let dir = std::env::temp_dir().join(format!("apid-agents-{tag}-{}-{nanos}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("apid-agents-{tag}-{}-{nanos}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
@@ -1079,7 +1236,11 @@ mod route_tests {
         .unwrap();
         let prompts = dir.join("prompts");
         std::fs::create_dir_all(prompts.join("builder")).unwrap();
-        std::fs::write(prompts.join("builder").join("prompt.md"), "<!-- internal -->\n\nBuild carefully.\n").unwrap();
+        std::fs::write(
+            prompts.join("builder").join("prompt.md"),
+            "<!-- internal -->\n\nBuild carefully.\n",
+        )
+        .unwrap();
 
         let roles = Roles::load(&manifest, &prompts).unwrap();
         assert_eq!(roles.tools["builder"], vec!["bash", "submit_claim"]);
@@ -1101,7 +1262,10 @@ mod route_tests {
         assert!(!worker.contains("delegate"));
         assert!(worker.contains("You are builder-42, the Builder agent"));
         assert!(worker.ends_with("Write the code."));
-        let unnamed = Agent { name: String::new(), ..agent("qa") };
+        let unnamed = Agent {
+            name: String::new(),
+            ..agent("qa")
+        };
         let text = system_prompt(&unnamed, "");
         assert!(text.contains("You have no name yet. You are the QA agent"));
     }

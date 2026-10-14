@@ -51,7 +51,12 @@ fn at(app: &App, path: &str, pointer: &str) -> String {
 
 /// A service's flag from an endpoint's answer as a word: `up` or `down`.
 fn up(app: &App, path: &str, pointer: &str) -> String {
-    match app.data.get(path).and_then(|v| v.pointer(pointer)).and_then(Value::as_bool) {
+    match app
+        .data
+        .get(path)
+        .and_then(|v| v.pointer(pointer))
+        .and_then(Value::as_bool)
+    {
         Some(true) => "up".to_string(),
         Some(false) => "down".to_string(),
         None => "-".to_string(),
@@ -71,7 +76,11 @@ fn plaza(app: &App) -> String {
         .and_then(Value::as_i64)
         .map(|ms| format!(" since {}", local_time(ms)))
         .unwrap_or_default();
-    let reason = state.and_then(|v| v.get("reason")).and_then(Value::as_str).unwrap_or_default().trim();
+    let reason = state
+        .and_then(|v| v.get("reason"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim();
     if reason.is_empty() {
         format!("HELD by {by}{since}")
     } else {
@@ -93,7 +102,11 @@ pub fn local_time(ms: i64) -> String {
     let day = doy - (153 * mp + 2) / 5 + 1;
     let month = if mp < 10 { mp + 3 } else { mp - 9 };
     let year = yoe + era * 400 + i64::from(month <= 2);
-    format!("{year:04}-{month:02}-{day:02} {:02}:{:02}", minute_of_day / 60, minute_of_day % 60)
+    format!(
+        "{year:04}-{month:02}-{day:02} {:02}:{:02}",
+        minute_of_day / 60,
+        minute_of_day % 60
+    )
 }
 
 /// What an agent is doing now: its work's kind and prompt, or "-".
@@ -115,18 +128,30 @@ pub fn header(frame: &mut Frame, area: Rect, app: &App) {
         }
     });
     let mut spans = vec![
-        Span::styled(format!(" {name} "), Style::new().add_modifier(Modifier::BOLD)),
-        Span::styled(format!("{}   ", app.client.base()), Style::new().fg(palette.muted)),
+        Span::styled(
+            format!(" {name} "),
+            Style::new().add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("{}   ", app.client.base()),
+            Style::new().fg(palette.muted),
+        ),
         Span::raw(format!("working {working}  idle {idle}  ")),
     ];
     if app.paused() {
         spans.push(Span::styled(
             " HELD ",
-            Style::new().fg(palette.paper).bg(palette.accent).add_modifier(Modifier::BOLD),
+            Style::new()
+                .fg(palette.paper)
+                .bg(palette.accent)
+                .add_modifier(Modifier::BOLD),
         ));
     }
     if !app.link {
-        spans.push(Span::styled("  events offline", Style::new().fg(palette.muted)));
+        spans.push(Span::styled(
+            "  events offline",
+            Style::new().fg(palette.muted),
+        ));
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
@@ -136,11 +161,17 @@ pub fn tab_bar(frame: &mut Frame, area: Rect, app: &App) {
     let mut spans = Vec::new();
     for tab in Tab::ALL {
         let style = if tab == app.tab {
-            Style::new().fg(palette.paper).bg(palette.accent).add_modifier(Modifier::BOLD)
+            Style::new()
+                .fg(palette.paper)
+                .bg(palette.accent)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::new().fg(palette.muted)
         };
-        spans.push(Span::styled(format!(" {} {} ", tab.key(), tab.label()), style));
+        spans.push(Span::styled(
+            format!(" {} {} ", tab.key(), tab.label()),
+            style,
+        ));
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
@@ -155,16 +186,27 @@ pub fn event_log(frame: &mut Frame, area: Rect, app: &App) {
         .log
         .iter()
         .skip(skip)
-        .map(|line| Line::from(Span::styled(clip(line, width), Style::new().fg(palette.muted))))
+        .map(|line| {
+            Line::from(Span::styled(
+                clip(line, width),
+                Style::new().fg(palette.muted),
+            ))
+        })
         .collect();
-    frame.render_widget(Paragraph::new(lines).block(Block::bordered().title(" events ")), area);
+    frame.render_widget(
+        Paragraph::new(lines).block(Block::bordered().title(" events ")),
+        area,
+    );
 }
 
 pub fn footer(frame: &mut Frame, area: Rect, app: &App) {
     let palette = app.palette;
     let line = if let Some(ob) = &app.onboarding {
         match &app.notice {
-            Some(notice) => Line::from(Span::styled(format!(" {notice}"), Style::new().fg(palette.accent))),
+            Some(notice) => Line::from(Span::styled(
+                format!(" {notice}"),
+                Style::new().fg(palette.accent),
+            )),
             None => Line::from(Span::styled(ob.hint(), Style::new().fg(palette.muted))),
         }
     } else if let Some(confirm) = &app.confirm {
@@ -174,20 +216,38 @@ pub fn footer(frame: &mut Frame, area: Rect, app: &App) {
         ))
     } else if let Some((cid, draft)) = &app.draft {
         Line::from(vec![
-            Span::styled(format!(" message to agent {cid}: "), Style::new().fg(palette.accent)),
+            Span::styled(
+                format!(" message to agent {cid}: "),
+                Style::new().fg(palette.accent),
+            ),
             Span::raw(format!("{draft}_")),
-            Span::styled("   Enter sends · Esc cancels", Style::new().fg(palette.muted)),
+            Span::styled(
+                "   Enter sends · Esc cancels",
+                Style::new().fg(palette.muted),
+            ),
         ])
     } else if let Some(panel) = &app.desk {
         Line::from(vec![
-            Span::styled(format!(" takeover of {} · ", panel.station), Style::new().fg(palette.accent)),
+            Span::styled(
+                format!(" takeover of {} · ", panel.station),
+                Style::new().fg(palette.accent),
+            ),
             Span::raw(format!("> {}_", panel.line)),
-            Span::styled("   Enter sends · give-back or Esc gives the session back", Style::new().fg(palette.muted)),
+            Span::styled(
+                "   Enter sends · give-back or Esc gives the session back",
+                Style::new().fg(palette.muted),
+            ),
         ])
     } else if let Some(error) = &app.error {
-        Line::from(Span::styled(format!(" hub unreachable: {error}"), Style::new().fg(palette.accent)))
+        Line::from(Span::styled(
+            format!(" hub unreachable: {error}"),
+            Style::new().fg(palette.accent),
+        ))
     } else if let Some(notice) = &app.notice {
-        Line::from(Span::styled(format!(" {notice}"), Style::new().fg(palette.ok)))
+        Line::from(Span::styled(
+            format!(" {notice}"),
+            Style::new().fg(palette.ok),
+        ))
     } else if app.tab == Tab::Workspace {
         Line::from(Span::styled(
             " Tab pane · ↑↓ move · / filter · i steer · p post · P pause · E export · o IDE · Enter expand · 0-9 tabs · q quit",
@@ -209,7 +269,15 @@ pub fn footer(frame: &mut Frame, area: Rect, app: &App) {
 
 pub fn overview(frame: &mut Frame, area: Rect, app: &App) {
     let mut lines = vec![
-        kv("hub", format!("{} {}", at(app, "/v1/hub/identity", "/name"), at(app, "/v1/hub/identity", "/version")), app),
+        kv(
+            "hub",
+            format!(
+                "{} {}",
+                at(app, "/v1/hub/identity", "/name"),
+                at(app, "/v1/hub/identity", "/version")
+            ),
+            app,
+        ),
         kv("url", app.client.base().to_string(), app),
         kv(
             "agents",
@@ -244,18 +312,27 @@ pub fn overview(frame: &mut Frame, area: Rect, app: &App) {
         Line::from(""),
         Line::from(Span::styled("tasks", Style::new().fg(app.palette.muted))),
     ];
-    if let Some(tasks) = app.data.get("/v1/overview").and_then(|v| v.get("tasks")).and_then(Value::as_object) {
+    if let Some(tasks) = app
+        .data
+        .get("/v1/overview")
+        .and_then(|v| v.get("tasks"))
+        .and_then(Value::as_object)
+    {
         for (state, count) in tasks {
             lines.push(kv(state, count.to_string(), app));
         }
     }
-    frame.render_widget(Paragraph::new(lines).block(Block::bordered().title(" overview ")), area);
+    frame.render_widget(
+        Paragraph::new(lines).block(Block::bordered().title(" overview ")),
+        area,
+    );
 }
 
 pub fn agents(frame: &mut Frame, area: Rect, app: &App) {
     let list = app.agents();
     let (table_area, detail_area) = if app.detail && !list.is_empty() {
-        let [table, detail] = Layout::vertical([Constraint::Min(0), Constraint::Length(10)]).areas(area);
+        let [table, detail] =
+            Layout::vertical([Constraint::Min(0), Constraint::Length(10)]).areas(area);
         (table, Some(detail))
     } else {
         (area, None)
@@ -294,14 +371,30 @@ pub fn agents(frame: &mut Frame, area: Rect, app: &App) {
     if let (Some(detail), Some(agent)) = (detail_area, list.get(app.selected)) {
         let lines = vec![
             kv("name", show(agent.get("name")), app),
-            kv("role", format!("{} · {}", show(agent.get("role_label")), show(agent.get("tier"))), app),
+            kv(
+                "role",
+                format!(
+                    "{} · {}",
+                    show(agent.get("role_label")),
+                    show(agent.get("tier"))
+                ),
+                app,
+            ),
             kv(
                 "model",
-                format!("{} · from {}", show(agent.get("model")), show(agent.get("model_source"))),
+                format!(
+                    "{} · from {}",
+                    show(agent.get("model")),
+                    show(agent.get("model_source"))
+                ),
                 app,
             ),
             kv("status", show(agent.get("status")), app),
-            kv("run / vm", format!("{} / {}", show(agent.get("run")), show(agent.get("vm"))), app),
+            kv(
+                "run / vm",
+                format!("{} / {}", show(agent.get("run")), show(agent.get("vm"))),
+                app,
+            ),
             kv("queue", show(agent.get("queue")), app),
             kv("doing", doing(agent), app),
             kv(
@@ -315,7 +408,8 @@ pub fn agents(frame: &mut Frame, area: Rect, app: &App) {
             ),
         ];
         frame.render_widget(
-            Paragraph::new(lines).block(Block::bordered().title(" agent · t message · Enter close ")),
+            Paragraph::new(lines)
+                .block(Block::bordered().title(" agent · t message · Enter close ")),
             detail,
         );
     }
@@ -390,9 +484,16 @@ pub fn board(frame: &mut Frame, area: Rect, app: &App) {
         .wrapped("/v1/board", "posts")
         .iter()
         .map(|p| {
-            let comments = p.get("comments").and_then(Value::as_array).map_or(0, Vec::len);
+            let comments = p
+                .get("comments")
+                .and_then(Value::as_array)
+                .map_or(0, Vec::len);
             vec![
-                Cell::from(format!("{} #{}", show(p.get("role")), show(p.get("agent_cid")))),
+                Cell::from(format!(
+                    "{} #{}",
+                    show(p.get("role")),
+                    show(p.get("agent_cid"))
+                )),
                 Cell::from(comments.to_string()),
                 Cell::from(Line::from(rich::spans(&show(p.get("subject")), &rich_ctx))),
             ]
@@ -404,7 +505,11 @@ pub fn board(frame: &mut Frame, area: Rect, app: &App) {
         "board",
         &["FROM", "COMMENTS", "SUBJECT"],
         rows,
-        &[Constraint::Length(20), Constraint::Length(9), Constraint::Fill(1)],
+        &[
+            Constraint::Length(20),
+            Constraint::Length(9),
+            Constraint::Fill(1),
+        ],
         app,
     );
 }
@@ -416,9 +521,21 @@ pub fn conversations(frame: &mut Frame, area: Rect, app: &App) {
         .iter()
         .map(|c| {
             vec![
-                Cell::from(format!("{} #{}", show(c.get("from_role")), show(c.get("from_cid")))),
-                Cell::from(format!("{} #{}", show(c.get("to_role")), show(c.get("to_cid")))),
-                Cell::from(if flag(c.get("delivered")) { "yes" } else { "no" }),
+                Cell::from(format!(
+                    "{} #{}",
+                    show(c.get("from_role")),
+                    show(c.get("from_cid"))
+                )),
+                Cell::from(format!(
+                    "{} #{}",
+                    show(c.get("to_role")),
+                    show(c.get("to_cid"))
+                )),
+                Cell::from(if flag(c.get("delivered")) {
+                    "yes"
+                } else {
+                    "no"
+                }),
                 Cell::from(Line::from(rich::spans(&show(c.get("text")), &rich_ctx))),
             ]
         })
@@ -499,7 +616,10 @@ fn grid<C: Into<Cell<'static>>>(
     let palette = app.palette;
     let block = Block::bordered().title(format!(" {title} · {} ", rows.len()));
     if rows.is_empty() {
-        let empty = Line::from(Span::styled("nothing here yet", Style::new().fg(palette.muted)));
+        let empty = Line::from(Span::styled(
+            "nothing here yet",
+            Style::new().fg(palette.muted),
+        ));
         frame.render_widget(Paragraph::new(empty).block(block), area);
         return;
     }
@@ -513,5 +633,8 @@ fn grid<C: Into<Cell<'static>>>(
             row
         }
     });
-    frame.render_widget(Table::new(body, widths.to_vec()).header(head).block(block), area);
+    frame.render_widget(
+        Table::new(body, widths.to_vec()).header(head).block(block),
+        area,
+    );
 }

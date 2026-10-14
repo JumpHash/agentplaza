@@ -6,7 +6,7 @@ use std::f32::consts::TAU;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use super::canvas::Canvas;
-use super::scene::{next_id, Color, Mat, Tex, Texture};
+use super::scene::{Color, Mat, Tex, Texture, next_id};
 
 /// mulberry32, as `textures.ts`'s `rng(seed)`: the same seed gives the same sequence as the web.
 #[derive(Debug, Clone)]
@@ -66,7 +66,13 @@ fn material_cache() -> &'static Mutex<HashMap<String, Mat>> {
 
 /// A repeat-wrapped canvas texture, drawn once per key and cached.
 /// `draw` gets the canvas, its size and an `Rng` seeded from the key.
-pub fn canvas_texture(key: &str, w: u32, h: u32, repeat: f32, draw: impl FnOnce(&mut Canvas, f32, f32, &mut Rng)) -> Tex {
+pub fn canvas_texture(
+    key: &str,
+    w: u32,
+    h: u32,
+    repeat: f32,
+    draw: impl FnOnce(&mut Canvas, f32, f32, &mut Rng),
+) -> Tex {
     let hit = lock(texture_cache()).get(key).cloned();
     if let Some(hit) = hit {
         return hit;
@@ -75,10 +81,19 @@ pub fn canvas_texture(key: &str, w: u32, h: u32, repeat: f32, draw: impl FnOnce(
     draw(&mut canvas, w as f32, h as f32, &mut Rng::new(seed_of(key)));
     let base = canvas.to_texture();
     // repeat-wrapped, repeat × repeat, sRGB, as the TS sets on the CanvasTexture.
-    let tex: Tex = Arc::new(Texture { id: next_id(), repeat: [repeat, repeat], wrap: true, srgb: true, ..(*base).clone() });
+    let tex: Tex = Arc::new(Texture {
+        id: next_id(),
+        repeat: [repeat, repeat],
+        wrap: true,
+        srgb: true,
+        ..(*base).clone()
+    });
     // The first texture stored for the key wins: a caller that drew it at the same time (another thread missed the
     // cache too) takes the stored one, so every user of the key shares one texture and their draws merge.
-    lock(texture_cache()).entry(key.to_string()).or_insert(tex).clone()
+    lock(texture_cache())
+        .entry(key.to_string())
+        .or_insert(tex)
+        .clone()
 }
 
 /// Rounded rectangle path.
@@ -97,7 +112,20 @@ fn rrect(g: &mut Canvas, x: f32, y: f32, w: f32, h: f32, radius: f32) {
 /// spans the ground plane once, centred on the plaza.
 pub fn ground() -> Tex {
     canvas_texture("ground", 1024, 1024, 1.0, |g, w, h, _| {
-        g.set_fill_radial(w / 2.0, h / 2.0, 0.0, w / 2.0, h / 2.0, w / 2.0, &[(0.0, "#3d4680"), (0.12, "#353d72"), (0.35, "#272d58"), (1.0, "#161a36")]);
+        g.set_fill_radial(
+            w / 2.0,
+            h / 2.0,
+            0.0,
+            w / 2.0,
+            h / 2.0,
+            w / 2.0,
+            &[
+                (0.0, "#3d4680"),
+                (0.12, "#353d72"),
+                (0.35, "#272d58"),
+                (1.0, "#161a36"),
+            ],
+        );
         g.fill_rect(0.0, 0.0, w, h);
         g.set_stroke("rgba(160,180,255,0.07)");
         g.set_line_width(2.0);
@@ -111,59 +139,71 @@ pub fn ground() -> Tex {
 
 /// Cobblestones: rounded stones, each with a highlight and an inked edge, set in dark grout.
 pub fn paving(tint: Color, repeat: f32) -> Tex {
-    canvas_texture(&format!("paving:{}:{}", css_of(tint), repeat), 256, 256, repeat, move |g, w, h, r| {
-        let rows: i32 = 5;
-        let row_h = h / rows as f32;
-        let stone_w = w / 4.0;
-        g.set_fill(&css_of(tint.scale(0.55)));
-        g.fill_rect(0.0, 0.0, w, h);
-        for row in 0..rows {
-            let shift = (row % 2) as f32 * (stone_w / 2.0);
-            for col in -1..=4 {
-                let x = col as f32 * stone_w + shift + 3.0 + r.next() * 2.0;
-                let y = row as f32 * row_h + 3.0 + r.next() * 2.0;
-                let sw = stone_w - 7.0;
-                let sh = row_h - 7.0;
-                rrect(g, x, y, sw, sh, 9.0);
-                g.set_fill(&css_of(tint.scale(0.92 + r.next() * 0.14)));
-                g.fill();
-                g.set_line_width(2.0);
-                g.set_stroke("rgba(43,36,32,0.55)");
-                g.stroke();
-                rrect(g, x + 5.0, y + 4.0, sw * 0.45, 5.0, 2.5);
-                g.set_fill("rgba(255,255,255,0.45)");
-                g.fill();
+    canvas_texture(
+        &format!("paving:{}:{}", css_of(tint), repeat),
+        256,
+        256,
+        repeat,
+        move |g, w, h, r| {
+            let rows: i32 = 5;
+            let row_h = h / rows as f32;
+            let stone_w = w / 4.0;
+            g.set_fill(&css_of(tint.scale(0.55)));
+            g.fill_rect(0.0, 0.0, w, h);
+            for row in 0..rows {
+                let shift = (row % 2) as f32 * (stone_w / 2.0);
+                for col in -1..=4 {
+                    let x = col as f32 * stone_w + shift + 3.0 + r.next() * 2.0;
+                    let y = row as f32 * row_h + 3.0 + r.next() * 2.0;
+                    let sw = stone_w - 7.0;
+                    let sh = row_h - 7.0;
+                    rrect(g, x, y, sw, sh, 9.0);
+                    g.set_fill(&css_of(tint.scale(0.92 + r.next() * 0.14)));
+                    g.fill();
+                    g.set_line_width(2.0);
+                    g.set_stroke("rgba(43,36,32,0.55)");
+                    g.stroke();
+                    rrect(g, x + 5.0, y + 4.0, sw * 0.45, 5.0, 2.5);
+                    g.set_fill("rgba(255,255,255,0.45)");
+                    g.fill();
+                }
             }
-        }
-    })
+        },
+    )
 }
 
 /// A district's floor: big glazed tiles in its role hue, a highlight on each and inked grout.
 pub fn tiles(hue: f32, repeat: f32) -> Tex {
-    canvas_texture(&format!("tiles:{}:{}", js_round(hue), repeat), 256, 256, repeat, move |g, w, h, r| {
-        let grout = Color::hsl(hue / 360.0, 0.28, 0.66);
-        let base = Color::hsl(hue / 360.0, 0.5, 0.84);
-        g.set_fill(&css_of(grout));
-        g.fill_rect(0.0, 0.0, w, h);
-        let n: usize = 4;
-        let t = w / n as f32;
-        for j in 0..n {
-            for i in 0..n {
-                let (fi, fj) = (i as f32, j as f32);
-                let alt = if (i + j) % 2 == 0 { 1.0 } else { 0.9 };
-                rrect(g, fi * t + 3.0, fj * t + 3.0, t - 6.0, t - 6.0, 6.0);
-                g.set_fill(&css_of(base.scale(alt * (0.97 + r.next() * 0.06))));
-                g.fill();
-                g.begin_path();
-                g.move_to(fi * t + 10.0, fj * t + 14.0);
-                g.line_to(fi * t + 22.0, fj * t + 9.0);
-                g.set_stroke("rgba(255,255,255,0.6)");
-                g.set_line_width(3.0);
-                g.set_line_cap("round");
-                g.stroke();
+    canvas_texture(
+        &format!("tiles:{}:{}", js_round(hue), repeat),
+        256,
+        256,
+        repeat,
+        move |g, w, h, r| {
+            let grout = Color::hsl(hue / 360.0, 0.28, 0.66);
+            let base = Color::hsl(hue / 360.0, 0.5, 0.84);
+            g.set_fill(&css_of(grout));
+            g.fill_rect(0.0, 0.0, w, h);
+            let n: usize = 4;
+            let t = w / n as f32;
+            for j in 0..n {
+                for i in 0..n {
+                    let (fi, fj) = (i as f32, j as f32);
+                    let alt = if (i + j) % 2 == 0 { 1.0 } else { 0.9 };
+                    rrect(g, fi * t + 3.0, fj * t + 3.0, t - 6.0, t - 6.0, 6.0);
+                    g.set_fill(&css_of(base.scale(alt * (0.97 + r.next() * 0.06))));
+                    g.fill();
+                    g.begin_path();
+                    g.move_to(fi * t + 10.0, fj * t + 14.0);
+                    g.line_to(fi * t + 22.0, fj * t + 9.0);
+                    g.set_stroke("rgba(255,255,255,0.6)");
+                    g.set_line_width(3.0);
+                    g.set_line_cap("round");
+                    g.stroke();
+                }
             }
-        }
-    })
+        },
+    )
 }
 
 /// Cartoon planks: warm, flat bands with inked seams and a few knots.
@@ -207,27 +247,33 @@ pub fn metal() -> Tex {
 
 /// Polished stone: the tint, a little warmer, with a few soft cartoon sparkles.
 pub fn polish(tint: Color) -> Tex {
-    canvas_texture(&format!("polish:{}", css_of(tint)), 256, 256, 2.0, move |g, w, h, r| {
-        g.set_fill(&css_of(tint));
-        g.fill_rect(0.0, 0.0, w, h);
-        for _ in 0..14 {
-            g.set_fill("rgba(255,255,255,0.35)");
-            let x = r.next() * w;
-            let y = r.next() * h;
-            let sw = 18.0 + r.next() * 30.0;
-            rrect(g, x, y, sw, 5.0, 2.5);
-            g.fill();
-        }
-        for _ in 0..10 {
-            g.set_fill("rgba(120,100,80,0.12)");
-            g.begin_path();
-            let x = r.next() * w;
-            let y = r.next() * h;
-            let rad = 8.0 + r.next() * 14.0;
-            g.arc(x, y, rad, 0.0, TAU, false);
-            g.fill();
-        }
-    })
+    canvas_texture(
+        &format!("polish:{}", css_of(tint)),
+        256,
+        256,
+        2.0,
+        move |g, w, h, r| {
+            g.set_fill(&css_of(tint));
+            g.fill_rect(0.0, 0.0, w, h);
+            for _ in 0..14 {
+                g.set_fill("rgba(255,255,255,0.35)");
+                let x = r.next() * w;
+                let y = r.next() * h;
+                let sw = 18.0 + r.next() * 30.0;
+                rrect(g, x, y, sw, 5.0, 2.5);
+                g.fill();
+            }
+            for _ in 0..10 {
+                g.set_fill("rgba(120,100,80,0.12)");
+                g.begin_path();
+                let x = r.next() * w;
+                let y = r.next() * h;
+                let rad = 8.0 + r.next() * 14.0;
+                g.arc(x, y, rad, 0.0, TAU, false);
+                g.fill();
+            }
+        },
+    )
 }
 
 /// Water: flat cartoon teal with white wave squiggles. Scrolled over time by the fountain.

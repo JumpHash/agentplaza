@@ -12,12 +12,19 @@ use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec3};
 
 use super::fleet::{FleetInstances, PacketInstance, RingInstance, WRAP_PERIOD};
-use super::scene::{merge, world_sphere, Draw, DrawKind, Fade, Frame, Frustum, Geo, Shading, Side, Texture};
-use super::hardware::{over_area, CUTAWAY_OPACITY};
+use super::hardware::{CUTAWAY_OPACITY, over_area};
+use super::scene::{
+    Draw, DrawKind, Fade, Frame, Frustum, Geo, Shading, Side, Texture, merge, world_sphere,
+};
 
 /// A rectangle in pixels: the host's widget or target rectangle.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
-pub struct Rect { pub x: f32, pub y: f32, pub width: f32, pub height: f32 }
+pub struct Rect {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+}
 
 const SAMPLES: u32 = 4;
 
@@ -81,7 +88,14 @@ fn perf_on() -> bool {
 }
 
 /// Adds one frame to the `APZ_PERF` counters and logs them once a second.
-fn perf_frame(cpu: std::time::Duration, draws: usize, static_draws: usize, tris: u64, instances: usize, culled: usize) {
+fn perf_frame(
+    cpu: std::time::Duration,
+    draws: usize,
+    static_draws: usize,
+    tris: u64,
+    instances: usize,
+    culled: usize,
+) {
     if !perf_on() {
         return;
     }
@@ -108,7 +122,10 @@ fn perf_frame(cpu: std::time::Duration, draws: usize, static_draws: usize, tris:
             s.tris as f64 / n,
             s.instances as f64 / n,
         );
-        *s = PerfStats { since: Some(now), ..PerfStats::default() };
+        *s = PerfStats {
+            since: Some(now),
+            ..PerfStats::default()
+        };
     }
 }
 /// The draw passes the counters split a frame's draw calls into, in table order.
@@ -250,7 +267,8 @@ impl Pipeline {
 
     /// The draw calls of the frame so far by category (see [`DrawStats`]).
     pub fn draw_stats(&self) -> DrawStats {
-        let programs = std::array::from_fn(|i| self.programs[i].load(std::sync::atomic::Ordering::Relaxed));
+        let programs =
+            std::array::from_fn(|i| self.programs[i].load(std::sync::atomic::Ordering::Relaxed));
         DrawStats {
             triangles: self.tris.load(std::sync::atomic::Ordering::Relaxed),
             geometries: self.meshes.len() as u32,
@@ -269,7 +287,11 @@ struct PassLog {
     draws: [u64; 5],
 }
 
-static PASS_LOG: std::sync::Mutex<PassLog> = std::sync::Mutex::new(PassLog { since: None, frames: 0, draws: [0; 5] });
+static PASS_LOG: std::sync::Mutex<PassLog> = std::sync::Mutex::new(PassLog {
+    since: None,
+    frames: 0,
+    draws: [0; 5],
+});
 
 /// Adds one frame's draw counts to the `APZ_PERF` window and logs the per-pass table once a second: the draws per
 /// frame of each pass, which is where the Machines view's draw budget goes.
@@ -287,9 +309,20 @@ fn perf_passes(counts: [u32; 5]) {
     let span = now.saturating_duration_since(since).as_secs_f64();
     if span >= 1.0 {
         let n = f64::from(s.frames.max(1));
-        let parts: Vec<String> = DRAW_PASSES.iter().zip(s.draws).map(|(name, d)| format!("{name} {:.0}", d as f64 / n)).collect();
-        eprintln!("agentplaza-desktop: draws per frame by pass: {}", parts.join(", "));
-        *s = PassLog { since: Some(now), frames: 0, draws: [0; 5] };
+        let parts: Vec<String> = DRAW_PASSES
+            .iter()
+            .zip(s.draws)
+            .map(|(name, d)| format!("{name} {:.0}", d as f64 / n))
+            .collect();
+        eprintln!(
+            "agentplaza-desktop: draws per frame by pass: {}",
+            parts.join(", ")
+        );
+        *s = PassLog {
+            since: Some(now),
+            frames: 0,
+            draws: [0; 5],
+        };
     }
 }
 
@@ -454,7 +487,6 @@ struct GpuTex {
     group: wgpu::BindGroup,
 }
 
-
 /// The offscreen targets, sized to the widget in physical pixels.
 struct Targets {
     size: (u32, u32),
@@ -510,7 +542,11 @@ impl FleetGpu {
             entries: &[wgpu::BindGroupLayoutEntry {
                 binding: 0,
                 visibility: wgpu::ShaderStages::VERTEX,
-                ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
                 count: None,
             }],
         });
@@ -523,14 +559,27 @@ impl FleetGpu {
         let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("fleet animation"),
             layout: &layout,
-            entries: &[wgpu::BindGroupEntry { binding: 0, resource: globals.as_entire_binding() }],
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: globals.as_entire_binding(),
+            }],
         });
         let packet = unit_sphere(8, 6);
         let ring = unit_ring(64);
         FleetGpu {
-            packet_mesh: vertex_buffer(device, queue, "fleet packet mesh", bytemuck::cast_slice(&packet[..])),
+            packet_mesh: vertex_buffer(
+                device,
+                queue,
+                "fleet packet mesh",
+                bytemuck::cast_slice(&packet[..]),
+            ),
             packet_verts: packet.len() as u32,
-            ring_mesh: vertex_buffer(device, queue, "fleet ring mesh", bytemuck::cast_slice(&ring[..])),
+            ring_mesh: vertex_buffer(
+                device,
+                queue,
+                "fleet ring mesh",
+                bytemuck::cast_slice(&ring[..]),
+            ),
             ring_verts: ring.len() as u32,
             packet_rows: (vertex_buffer(device, queue, "fleet packets", &[]), 0),
             ring_rows: (vertex_buffer(device, queue, "fleet rings", &[]), 0),
@@ -546,14 +595,40 @@ impl FleetGpu {
 
     /// This frame: the globals (the clock wrapped at `WRAP_PERIOD`), the instances when they changed, and the
     /// pipelines for `samples` (built once per sample count).
-    fn prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat, samples: u32, view_proj: Mat4, time: f32, animated: Option<&Arc<FleetInstances>>) {
-        let globals = FleetGlobals { view_proj: view_proj.to_cols_array_2d(), time: [time % WRAP_PERIOD, 0.0, 0.0, 0.0] };
+    fn prepare(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        format: wgpu::TextureFormat,
+        samples: u32,
+        view_proj: Mat4,
+        time: f32,
+        animated: Option<&Arc<FleetInstances>>,
+    ) {
+        let globals = FleetGlobals {
+            view_proj: view_proj.to_cols_array_2d(),
+            time: [time % WRAP_PERIOD, 0.0, 0.0, 0.0],
+        };
         queue.write_buffer(&self.globals, 0, bytemuck::bytes_of(&globals));
         self.shown = animated.is_some();
         let Some(inst) = animated else { return };
         if self.uploaded.as_deref() != Some(&**inst) {
-            replace_rows(&mut self.packet_rows, device, queue, "fleet packets", bytemuck::cast_slice(&inst.packets[..]), inst.packets.len() as u32);
-            replace_rows(&mut self.ring_rows, device, queue, "fleet rings", bytemuck::cast_slice(&inst.rings[..]), inst.rings.len() as u32);
+            replace_rows(
+                &mut self.packet_rows,
+                device,
+                queue,
+                "fleet packets",
+                bytemuck::cast_slice(&inst.packets[..]),
+                inst.packets.len() as u32,
+            );
+            replace_rows(
+                &mut self.ring_rows,
+                device,
+                queue,
+                "fleet rings",
+                bytemuck::cast_slice(&inst.rings[..]),
+                inst.rings.len() as u32,
+            );
             self.uploaded = Some(Arc::clone(inst));
         }
         if self.pipelines.as_ref().map(|p| p.0) != Some(samples) {
@@ -563,28 +638,54 @@ impl FleetGpu {
     }
 
     /// The packet pipeline (additive, depth read only) and the ring pipeline (opaque), for `samples` samples.
-    fn build(&self, device: &wgpu::Device, format: wgpu::TextureFormat, samples: u32) -> (wgpu::RenderPipeline, wgpu::RenderPipeline) {
+    fn build(
+        &self,
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        samples: u32,
+    ) -> (wgpu::RenderPipeline, wgpu::RenderPipeline) {
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("fleet animation"),
             bind_group_layouts: &[&self.layout],
             push_constant_ranges: &[],
         });
         let additive = wgpu::BlendState {
-            color: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::SrcAlpha, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add },
-            alpha: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::Zero, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add },
+            color: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::SrcAlpha,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
+            },
+            alpha: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::Zero,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
+            },
         };
         let packet = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("fleet packets"),
             layout: Some(&layout),
-            vertex: wgpu::VertexState { module: &self.module, entry_point: Some("vs_packet"), compilation_options: Default::default(), buffers: &[fleet_base_layout(), fleet_packet_layout()] },
+            vertex: wgpu::VertexState {
+                module: &self.module,
+                entry_point: Some("vs_packet"),
+                compilation_options: Default::default(),
+                buffers: &[fleet_base_layout(), fleet_packet_layout()],
+            },
             primitive: Default::default(),
             depth_stencil: Some(fleet_depth(false)),
-            multisample: wgpu::MultisampleState { count: samples, mask: !0, alpha_to_coverage_enabled: false },
+            multisample: wgpu::MultisampleState {
+                count: samples,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
             fragment: Some(wgpu::FragmentState {
                 module: &self.module,
                 entry_point: Some("fs_color"),
                 compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState { format, blend: Some(additive), write_mask: wgpu::ColorWrites::ALL })],
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(additive),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
             }),
             multiview: None,
             cache: None,
@@ -592,16 +693,29 @@ impl FleetGpu {
         let ring = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("fleet rings"),
             layout: Some(&layout),
-            vertex: wgpu::VertexState { module: &self.module, entry_point: Some("vs_ring"), compilation_options: Default::default(), buffers: &[fleet_base_layout(), fleet_ring_layout()] },
+            vertex: wgpu::VertexState {
+                module: &self.module,
+                entry_point: Some("vs_ring"),
+                compilation_options: Default::default(),
+                buffers: &[fleet_base_layout(), fleet_ring_layout()],
+            },
             primitive: Default::default(),
             // fleet.ts's rings are transparent (their opacity pulses) and write no depth.
             depth_stencil: Some(fleet_depth(false)),
-            multisample: wgpu::MultisampleState { count: samples, mask: !0, alpha_to_coverage_enabled: false },
+            multisample: wgpu::MultisampleState {
+                count: samples,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
             fragment: Some(wgpu::FragmentState {
                 module: &self.module,
                 entry_point: Some("fs_color"),
                 compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState { format, blend: Some(wgpu::BlendState::ALPHA_BLENDING), write_mask: wgpu::ColorWrites::ALL })],
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
             }),
             multiview: None,
             cache: None,
@@ -611,7 +725,9 @@ impl FleetGpu {
 
     /// Draws the packets and then the rings, one instanced draw each. Returns the draws issued.
     fn draw(&self, pass: &mut wgpu::RenderPass<'_>) -> usize {
-        let Some((_, packet, ring)) = &self.pipelines else { return 0 };
+        let Some((_, packet, ring)) = &self.pipelines else {
+            return 0;
+        };
         if !self.shown {
             return 0;
         }
@@ -705,12 +821,20 @@ const ANIM_STRIDE: u64 = 20 * 4;
 
 fn anim_layout() -> wgpu::VertexBufferLayout<'static> {
     const ATTRS: [wgpu::VertexAttribute; 7] = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x4, 3 => Float32x4, 4 => Float32x4, 5 => Float32, 6 => Float32];
-    wgpu::VertexBufferLayout { array_stride: ANIM_STRIDE, step_mode: wgpu::VertexStepMode::Vertex, attributes: &ATTRS }
+    wgpu::VertexBufferLayout {
+        array_stride: ANIM_STRIDE,
+        step_mode: wgpu::VertexStepMode::Vertex,
+        attributes: &ATTRS,
+    }
 }
 
 impl AnimGpu {
     /// `globals` is the floor's globals layout (group 0 of the main pass); `shadow_globals` the shadow pass's.
-    fn new(device: &wgpu::Device, globals: &wgpu::BindGroupLayout, shadow_globals: &wgpu::BindGroupLayout) -> Self {
+    fn new(
+        device: &wgpu::Device,
+        globals: &wgpu::BindGroupLayout,
+        shadow_globals: &wgpu::BindGroupLayout,
+    ) -> Self {
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("hardware animation"),
             source: wgpu::ShaderSource::Wgsl(crate::hardware::HW_ANIM_WGSL.into()),
@@ -725,16 +849,35 @@ impl AnimGpu {
             bind_group_layouts: &[shadow_globals],
             push_constant_ranges: &[],
         });
-        AnimGpu { module, scene_layout, shadow_layout, version: None, batches: Vec::new(), pipelines: None, shadow: None }
+        AnimGpu {
+            module,
+            scene_layout,
+            shadow_layout,
+            version: None,
+            batches: Vec::new(),
+            pipelines: None,
+            shadow: None,
+        }
     }
 
     /// This frame: the batches when the statics changed, and the pipelines for `samples` and the shadow pass (built
     /// once, and only when there is something to draw).
-    fn prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat, samples: u32, version: u64, batches: &[super::scene::AnimBatch]) {
+    fn prepare(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        format: wgpu::TextureFormat,
+        samples: u32,
+        version: u64,
+        batches: &[super::scene::AnimBatch],
+    ) {
         if self.version != Some(version) {
             self.batches = batches
                 .iter()
-                .filter(|b| !b.vertices.is_empty() && matches!(b.draw.kind, DrawKind::Mesh | DrawKind::Outline))
+                .filter(|b| {
+                    !b.vertices.is_empty()
+                        && matches!(b.draw.kind, DrawKind::Mesh | DrawKind::Outline)
+                })
                 .map(|b| upload_anim(device, queue, b))
                 .collect();
             self.version = Some(version);
@@ -747,22 +890,64 @@ impl AnimGpu {
             let target = Some((format, samples));
             let pipelines = AnimPipelines {
                 spin: anim_pipeline(device, m, layout, target, "vs_spin", Some("fs_color"), None),
-                blink: anim_pipeline(device, m, layout, target, "vs_blink", Some("fs_emissive"), None),
-                machine: anim_pipeline(device, m, layout, target, "vs_machine", Some("fs_emissive"), None),
-                spin_outline: anim_pipeline(device, m, layout, target, "vs_spin_outline", Some("fs_outline"), Some(wgpu::Face::Front)),
-                blink_outline: anim_pipeline(device, m, layout, target, "vs_blink_outline", Some("fs_outline"), Some(wgpu::Face::Front)),
+                blink: anim_pipeline(
+                    device,
+                    m,
+                    layout,
+                    target,
+                    "vs_blink",
+                    Some("fs_emissive"),
+                    None,
+                ),
+                machine: anim_pipeline(
+                    device,
+                    m,
+                    layout,
+                    target,
+                    "vs_machine",
+                    Some("fs_emissive"),
+                    None,
+                ),
+                spin_outline: anim_pipeline(
+                    device,
+                    m,
+                    layout,
+                    target,
+                    "vs_spin_outline",
+                    Some("fs_outline"),
+                    Some(wgpu::Face::Front),
+                ),
+                blink_outline: anim_pipeline(
+                    device,
+                    m,
+                    layout,
+                    target,
+                    "vs_blink_outline",
+                    Some("fs_outline"),
+                    Some(wgpu::Face::Front),
+                ),
             };
             self.pipelines = Some((samples, pipelines));
         }
         if self.shadow.is_none() && self.batches.iter().any(|b| b.shadow) {
-            self.shadow = Some(anim_pipeline(device, &self.module, &self.shadow_layout, None, "vs_spin_shadow", None, None));
+            self.shadow = Some(anim_pipeline(
+                device,
+                &self.module,
+                &self.shadow_layout,
+                None,
+                "vs_spin_shadow",
+                None,
+                None,
+            ));
         }
     }
 
     /// Draws each batch with its pipeline: one indexed draw per batch. Returns the draws issued. The floor's globals
     /// are bound at group 0 by the caller.
     fn draw(&self, pass: &mut wgpu::RenderPass<'_>) -> usize {
-        let Some((_, p)) = &self.pipelines else { return 0 };
+        let Some((_, p)) = &self.pipelines else {
+            return 0;
+        };
         for b in &self.batches {
             pass.set_pipeline(match (b.kind, b.outline) {
                 (super::scene::AnimKind::Spin, false) => &p.spin,
@@ -796,7 +981,11 @@ impl AnimGpu {
 
 /// An animated batch's buffers: its vertices as flat `AnimVertex` floats, and its indices (identity when the
 /// geometry has none).
-fn upload_anim(device: &wgpu::Device, queue: &wgpu::Queue, b: &super::scene::AnimBatch) -> GpuAnimBatch {
+fn upload_anim(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    b: &super::scene::AnimBatch,
+) -> GpuAnimBatch {
     let mut flat: Vec<f32> = Vec::with_capacity(b.vertices.len() * 20);
     for v in &b.vertices {
         flat.extend(v.pos);
@@ -807,7 +996,11 @@ fn upload_anim(device: &wgpu::Device, queue: &wgpu::Queue, b: &super::scene::Ani
         flat.push(v.machine);
         flat.push(v.lift);
     }
-    let indices: Vec<u32> = if b.draw.geo.indices.is_empty() { (0..b.vertices.len() as u32).collect() } else { b.draw.geo.indices.clone() };
+    let indices: Vec<u32> = if b.draw.geo.indices.is_empty() {
+        (0..b.vertices.len() as u32).collect()
+    } else {
+        b.draw.geo.indices.clone()
+    };
     let vertex_bytes: &[u8] = bytemuck::cast_slice(&flat);
     let index_bytes: &[u8] = bytemuck::cast_slice(&indices);
     let vertices = device.create_buffer(&wgpu::BufferDescriptor {
@@ -826,7 +1019,14 @@ fn upload_anim(device: &wgpu::Device, queue: &wgpu::Queue, b: &super::scene::Ani
     queue.write_buffer(&index_buffer, 0, index_bytes);
     let outline = matches!(b.draw.kind, DrawKind::Outline);
     let shadow = !outline && b.draw.cast_shadow && b.kind == super::scene::AnimKind::Spin;
-    GpuAnimBatch { kind: b.kind, outline, shadow, vertices, indices: index_buffer, count: indices.len() as u32 }
+    GpuAnimBatch {
+        kind: b.kind,
+        outline,
+        shadow,
+        vertices,
+        indices: index_buffer,
+        count: indices.len() as u32,
+    }
 }
 
 /// One depth-tested pipeline of hw_anim.wgsl: the vertex entry `vs`, the fragment entry `fs` when the pass has
@@ -842,23 +1042,52 @@ fn anim_pipeline(
 ) -> wgpu::RenderPipeline {
     let buffers = [anim_layout()];
     let format = scene.map_or(wgpu::TextureFormat::Rgba8Unorm, |s| s.0);
-    let targets = [Some(wgpu::ColorTargetState { format, blend: None, write_mask: wgpu::ColorWrites::ALL })];
-    let fragment = fs.map(|fs| wgpu::FragmentState { module, entry_point: Some(fs), compilation_options: Default::default(), targets: &targets });
+    let targets = [Some(wgpu::ColorTargetState {
+        format,
+        blend: None,
+        write_mask: wgpu::ColorWrites::ALL,
+    })];
+    let fragment = fs.map(|fs| wgpu::FragmentState {
+        module,
+        entry_point: Some(fs),
+        compilation_options: Default::default(),
+        targets: &targets,
+    });
     let shadow = scene.is_none();
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("hardware animation"),
         layout: Some(layout),
-        vertex: wgpu::VertexState { module, entry_point: Some(vs), compilation_options: Default::default(), buffers: &buffers },
-        primitive: wgpu::PrimitiveState { cull_mode: cull, ..Default::default() },
+        vertex: wgpu::VertexState {
+            module,
+            entry_point: Some(vs),
+            compilation_options: Default::default(),
+            buffers: &buffers,
+        },
+        primitive: wgpu::PrimitiveState {
+            cull_mode: cull,
+            ..Default::default()
+        },
         depth_stencil: Some(wgpu::DepthStencilState {
             format: DEPTH,
             depth_write_enabled: true,
             depth_compare: wgpu::CompareFunction::LessEqual,
             stencil: Default::default(),
             // The shadow pass takes the floor's shadow bias.
-            bias: if shadow { wgpu::DepthBiasState { constant: 2, slope_scale: 1.5, clamp: 0.0 } } else { Default::default() },
+            bias: if shadow {
+                wgpu::DepthBiasState {
+                    constant: 2,
+                    slope_scale: 1.5,
+                    clamp: 0.0,
+                }
+            } else {
+                Default::default()
+            },
         }),
-        multisample: wgpu::MultisampleState { count: scene.map_or(1, |s| s.1), mask: !0, alpha_to_coverage_enabled: false },
+        multisample: wgpu::MultisampleState {
+            count: scene.map_or(1, |s| s.1),
+            mask: !0,
+            alpha_to_coverage_enabled: false,
+        },
         fragment,
         multiview: None,
         cache: None,
@@ -866,33 +1095,60 @@ fn anim_pipeline(
 }
 
 fn fleet_depth(write: bool) -> wgpu::DepthStencilState {
-    wgpu::DepthStencilState { format: DEPTH, depth_write_enabled: write, depth_compare: wgpu::CompareFunction::LessEqual, stencil: Default::default(), bias: Default::default() }
+    wgpu::DepthStencilState {
+        format: DEPTH,
+        depth_write_enabled: write,
+        depth_compare: wgpu::CompareFunction::LessEqual,
+        stencil: Default::default(),
+        bias: Default::default(),
+    }
 }
 
 /// The base vertex buffer of both animation draws: one position per vertex (`pos` at location 0).
 fn fleet_base_layout() -> wgpu::VertexBufferLayout<'static> {
     const ATTRS: [wgpu::VertexAttribute; 1] = wgpu::vertex_attr_array![0 => Float32x3];
-    wgpu::VertexBufferLayout { array_stride: 12, step_mode: wgpu::VertexStepMode::Vertex, attributes: &ATTRS }
+    wgpu::VertexBufferLayout {
+        array_stride: 12,
+        step_mode: wgpu::VertexStepMode::Vertex,
+        attributes: &ATTRS,
+    }
 }
 
 /// `PacketInstance` per instance: from, to, params, color (`PacketIn` locations 1 to 4).
 fn fleet_packet_layout() -> wgpu::VertexBufferLayout<'static> {
-    const ATTRS: [wgpu::VertexAttribute; 4] = wgpu::vertex_attr_array![1 => Float32x3, 2 => Float32x3, 3 => Float32x4, 4 => Float32x4];
-    wgpu::VertexBufferLayout { array_stride: std::mem::size_of::<PacketInstance>() as u64, step_mode: wgpu::VertexStepMode::Instance, attributes: &ATTRS }
+    const ATTRS: [wgpu::VertexAttribute; 4] =
+        wgpu::vertex_attr_array![1 => Float32x3, 2 => Float32x3, 3 => Float32x4, 4 => Float32x4];
+    wgpu::VertexBufferLayout {
+        array_stride: std::mem::size_of::<PacketInstance>() as u64,
+        step_mode: wgpu::VertexStepMode::Instance,
+        attributes: &ATTRS,
+    }
 }
 
 /// `RingInstance` per instance: centre, pulse, color (`RingIn` locations 1 to 3).
 fn fleet_ring_layout() -> wgpu::VertexBufferLayout<'static> {
-    const ATTRS: [wgpu::VertexAttribute; 3] = wgpu::vertex_attr_array![1 => Float32x4, 2 => Float32x4, 3 => Float32x4];
-    wgpu::VertexBufferLayout { array_stride: std::mem::size_of::<RingInstance>() as u64, step_mode: wgpu::VertexStepMode::Instance, attributes: &ATTRS }
+    const ATTRS: [wgpu::VertexAttribute; 3] =
+        wgpu::vertex_attr_array![1 => Float32x4, 2 => Float32x4, 3 => Float32x4];
+    wgpu::VertexBufferLayout {
+        array_stride: std::mem::size_of::<RingInstance>() as u64,
+        step_mode: wgpu::VertexStepMode::Instance,
+        attributes: &ATTRS,
+    }
 }
 
 /// A unit sphere as a triangle list, `slices` around and `stacks` down.
 fn unit_sphere(slices: u32, stacks: u32) -> Vec<[f32; 3]> {
     use std::f32::consts::{PI, TAU};
     let at = |i: u32, j: u32| {
-        let (theta, phi) = (PI * j as f32 / stacks as f32, TAU * i as f32 / slices as f32);
-        [theta.sin() * phi.cos(), theta.cos(), theta.sin() * phi.sin()]
+        let (theta, phi) = (
+            PI * j as f32 / stacks as f32,
+            TAU * i as f32 / slices as f32,
+        );
+        [
+            theta.sin() * phi.cos(),
+            theta.cos(),
+            theta.sin() * phi.sin(),
+        ]
     };
     let mut out = Vec::new();
     for j in 0..stacks {
@@ -921,7 +1177,12 @@ fn unit_ring(segments: u32) -> Vec<[f32; 3]> {
 }
 
 /// A vertex or instance buffer holding `bytes` (an empty one when there are none).
-fn vertex_buffer(device: &wgpu::Device, queue: &wgpu::Queue, label: &str, bytes: &[u8]) -> wgpu::Buffer {
+fn vertex_buffer(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    label: &str,
+    bytes: &[u8],
+) -> wgpu::Buffer {
     let buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some(label),
         size: (bytes.len() as u64).max(4),
@@ -935,7 +1196,14 @@ fn vertex_buffer(device: &wgpu::Device, queue: &wgpu::Queue, label: &str, bytes:
 }
 
 /// Replaces an instance buffer with `bytes` (`count` instances), destroying the old one.
-fn replace_rows(slot: &mut (wgpu::Buffer, u32), device: &wgpu::Device, queue: &wgpu::Queue, label: &str, bytes: &[u8], count: u32) {
+fn replace_rows(
+    slot: &mut (wgpu::Buffer, u32),
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    label: &str,
+    bytes: &[u8],
+    count: u32,
+) {
     let old = std::mem::replace(slot, (vertex_buffer(device, queue, label, bytes), count));
     old.0.destroy();
 }
@@ -1022,7 +1290,11 @@ impl Pipeline {
         let uniform = |binding| wgpu::BindGroupLayoutEntry {
             binding,
             visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-            ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
             count: None,
         };
         let globals_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -1047,10 +1319,11 @@ impl Pipeline {
                 },
             ],
         });
-        let shadow_globals_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("floor shadow globals"),
-            entries: &[uniform(0)],
-        });
+        let shadow_globals_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("floor shadow globals"),
+                entries: &[uniform(0)],
+            });
         let tex_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("floor map"),
             entries: &[
@@ -1091,7 +1364,11 @@ impl Pipeline {
         });
         let shadow = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("floor shadow map"),
-            size: wgpu::Extent3d { width: SHADOW_SIZE, height: SHADOW_SIZE, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width: SHADOW_SIZE,
+                height: SHADOW_SIZE,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -1111,15 +1388,27 @@ impl Pipeline {
             label: Some("floor globals"),
             layout: &globals_layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: globals.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&shadow_view) },
-                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&compare) },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: globals.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&shadow_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&compare),
+                },
             ],
         });
         let shadow_globals_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("floor shadow globals"),
             layout: &shadow_globals_layout,
-            entries: &[wgpu::BindGroupEntry { binding: 0, resource: globals.as_entire_binding() }],
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: globals.as_entire_binding(),
+            }],
         });
 
         let shadow_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -1131,13 +1420,20 @@ impl Pipeline {
                 compilation_options: Default::default(),
                 buffers: &[mesh_layout(), row_layout()],
             },
-            primitive: wgpu::PrimitiveState { cull_mode: None, ..Default::default() },
+            primitive: wgpu::PrimitiveState {
+                cull_mode: None,
+                ..Default::default()
+            },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: DEPTH,
                 depth_write_enabled: true,
                 depth_compare: wgpu::CompareFunction::LessEqual,
                 stencil: Default::default(),
-                bias: wgpu::DepthBiasState { constant: 2, slope_scale: 1.5, clamp: 0.0 },
+                bias: wgpu::DepthBiasState {
+                    constant: 2,
+                    slope_scale: 1.5,
+                    clamp: 0.0,
+                },
             }),
             multisample: Default::default(),
             fragment: None,
@@ -1178,7 +1474,12 @@ impl Pipeline {
         let blit_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("floor blit"),
             layout: Some(&blit_pipeline_layout),
-            vertex: wgpu::VertexState { module: &blit_module, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },
+            vertex: wgpu::VertexState {
+                module: &blit_module,
+                entry_point: Some("vs"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
             primitive: Default::default(),
             depth_stencil: None,
             multisample: Default::default(),
@@ -1188,7 +1489,11 @@ impl Pipeline {
                 compilation_options: Default::default(),
                 // Premultiplied: the picture's colour is premultiplied by its alpha (a card's clear is 0), so a transparent
                 // texel leaves the page showing through it. The floor's alpha is 1 everywhere: its picture is unchanged.
-                targets: &[Some(wgpu::ColorTargetState { format, blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING), write_mask: wgpu::ColorWrites::ALL })],
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
             }),
             multiview: None,
             cache: None,
@@ -1210,7 +1515,11 @@ impl Pipeline {
                 module: &overlay_module,
                 entry_point: Some("vs"),
                 compilation_options: Default::default(),
-                buffers: &[wgpu::VertexBufferLayout { array_stride: 16, step_mode: wgpu::VertexStepMode::Instance, attributes: &RECT }],
+                buffers: &[wgpu::VertexBufferLayout {
+                    array_stride: 16,
+                    step_mode: wgpu::VertexStepMode::Instance,
+                    attributes: &RECT,
+                }],
             },
             primitive: Default::default(),
             depth_stencil: None,
@@ -1219,7 +1528,11 @@ impl Pipeline {
                 module: &overlay_module,
                 entry_point: Some("fs"),
                 compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState { format, blend: Some(wgpu::BlendState::ALPHA_BLENDING), write_mask: wgpu::ColorWrites::ALL })],
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
             }),
             multiview: None,
             cache: None,
@@ -1281,7 +1594,10 @@ impl Pipeline {
             probe_corner: false,
         };
         // The white 1x1 map that unmapped materials sample (texture id 0).
-        let white = Texture { id: 0, ..Texture::new(1, 1, vec![255; 4]) };
+        let white = Texture {
+            id: 0,
+            ..Texture::new(1, 1, vec![255; 4])
+        };
         pipeline.upload_texture(device, queue, &white);
         pipeline
     }
@@ -1289,7 +1605,11 @@ impl Pipeline {
 
 fn mesh_layout() -> wgpu::VertexBufferLayout<'static> {
     const ATTRS: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x2, 10 => Float32x3, 11 => Uint32];
-    wgpu::VertexBufferLayout { array_stride: std::mem::size_of::<Vertex>() as u64, step_mode: wgpu::VertexStepMode::Vertex, attributes: &ATTRS }
+    wgpu::VertexBufferLayout {
+        array_stride: std::mem::size_of::<Vertex>() as u64,
+        step_mode: wgpu::VertexStepMode::Vertex,
+        attributes: &ATTRS,
+    }
 }
 
 fn row_layout() -> wgpu::VertexBufferLayout<'static> {
@@ -1297,21 +1617,37 @@ fn row_layout() -> wgpu::VertexBufferLayout<'static> {
         3 => Float32x4, 4 => Float32x4, 5 => Float32x4, 6 => Float32x4, 7 => Float32x4, 8 => Float32x4, 9 => Float32x4,
         12 => Float32x4, 13 => Float32x4, 14 => Float32x4
     ];
-    wgpu::VertexBufferLayout { array_stride: std::mem::size_of::<Row>() as u64, step_mode: wgpu::VertexStepMode::Instance, attributes: &ATTRS }
+    wgpu::VertexBufferLayout {
+        array_stride: std::mem::size_of::<Row>() as u64,
+        step_mode: wgpu::VertexStepMode::Instance,
+        attributes: &ATTRS,
+    }
 }
 
 impl Pipeline {
     fn sampler(&mut self, device: &wgpu::Device, wrap: bool, nearest: bool) -> &wgpu::Sampler {
         self.samplers.entry((wrap, nearest)).or_insert_with(|| {
-            let mode = if wrap { wgpu::AddressMode::Repeat } else { wgpu::AddressMode::ClampToEdge };
-            let filter = if nearest { wgpu::FilterMode::Nearest } else { wgpu::FilterMode::Linear };
+            let mode = if wrap {
+                wgpu::AddressMode::Repeat
+            } else {
+                wgpu::AddressMode::ClampToEdge
+            };
+            let filter = if nearest {
+                wgpu::FilterMode::Nearest
+            } else {
+                wgpu::FilterMode::Linear
+            };
             device.create_sampler(&wgpu::SamplerDescriptor {
                 label: Some("floor map"),
                 address_mode_u: mode,
                 address_mode_v: mode,
                 mag_filter: filter,
                 min_filter: filter,
-                mipmap_filter: if nearest { wgpu::FilterMode::Nearest } else { wgpu::FilterMode::Linear },
+                mipmap_filter: if nearest {
+                    wgpu::FilterMode::Nearest
+                } else {
+                    wgpu::FilterMode::Linear
+                },
                 anisotropy_clamp: if nearest { 1 } else { 4 },
                 ..Default::default()
             })
@@ -1319,11 +1655,23 @@ impl Pipeline {
     }
 
     fn upload_texture(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, tex: &Texture) {
-        let levels = if tex.nearest { vec![(tex.width, tex.height, tex.rgba.to_vec())] } else { mip_chain(tex.width, tex.height, &tex.rgba) };
-        let format = if tex.srgb { wgpu::TextureFormat::Rgba8UnormSrgb } else { wgpu::TextureFormat::Rgba8Unorm };
+        let levels = if tex.nearest {
+            vec![(tex.width, tex.height, tex.rgba.to_vec())]
+        } else {
+            mip_chain(tex.width, tex.height, &tex.rgba)
+        };
+        let format = if tex.srgb {
+            wgpu::TextureFormat::Rgba8UnormSrgb
+        } else {
+            wgpu::TextureFormat::Rgba8Unorm
+        };
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("floor map"),
-            size: wgpu::Extent3d { width: tex.width.max(1), height: tex.height.max(1), depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width: tex.width.max(1),
+                height: tex.height.max(1),
+                depth_or_array_layers: 1,
+            },
             mip_level_count: levels.len() as u32,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -1333,10 +1681,23 @@ impl Pipeline {
         });
         for (level, (w, h, data)) in levels.iter().enumerate() {
             queue.write_texture(
-                wgpu::TexelCopyTextureInfo { texture: &texture, mip_level: level as u32, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+                wgpu::TexelCopyTextureInfo {
+                    texture: &texture,
+                    mip_level: level as u32,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
                 data,
-                wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(4 * w), rows_per_image: Some(*h) },
-                wgpu::Extent3d { width: *w, height: *h, depth_or_array_layers: 1 },
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(4 * w),
+                    rows_per_image: Some(*h),
+                },
+                wgpu::Extent3d {
+                    width: *w,
+                    height: *h,
+                    depth_or_array_layers: 1,
+                },
             );
         }
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -1345,14 +1706,25 @@ impl Pipeline {
             label: Some("floor map"),
             layout: &self.tex_layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler) },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
             ],
         });
         self.textures.insert(tex.id, GpuTex { group });
     }
 
-    fn upload_mesh(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, geo: &super::scene::Geometry) {
+    fn upload_mesh(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        geo: &super::scene::Geometry,
+    ) {
         let mut vertices: Vec<Vertex> = (0..geo.positions.len())
             .map(|i| Vertex {
                 position: geo.positions[i],
@@ -1360,10 +1732,15 @@ impl Pipeline {
                 uv: geo.uvs[i],
                 color: geo.colors.get(i).copied().unwrap_or([1.0; 3]),
                 // The robot slot in the low byte, the lift slot (scene::Node::lift) above it.
-                slot: u32::from(geo.slots.get(i).copied().unwrap_or(0)) | (u32::from(geo.lifts.get(i).copied().unwrap_or(0)) << 8),
+                slot: u32::from(geo.slots.get(i).copied().unwrap_or(0))
+                    | (u32::from(geo.lifts.get(i).copied().unwrap_or(0)) << 8),
             })
             .collect();
-        let mut indices: Vec<u32> = if geo.indices.is_empty() { (0..geo.positions.len() as u32).collect() } else { geo.indices.clone() };
+        let mut indices: Vec<u32> = if geo.indices.is_empty() {
+            (0..geo.positions.len() as u32).collect()
+        } else {
+            geo.indices.clone()
+        };
         let count = indices.len() as u32;
         // wgpu refuses empty buffers: an empty mesh gets one unused vertex and index.
         if vertices.is_empty() {
@@ -1390,20 +1767,39 @@ impl Pipeline {
             mapped_at_creation: false,
         });
         queue.write_buffer(&indices, 0, index_bytes);
-        MESH_UPLOAD_BYTES.fetch_add((vertex_bytes.len() + index_bytes.len()) as u64, std::sync::atomic::Ordering::Relaxed);
-        self.meshes.insert(geo.id, GpuMesh { vertices, indices, count });
+        MESH_UPLOAD_BYTES.fetch_add(
+            (vertex_bytes.len() + index_bytes.len()) as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        self.meshes.insert(
+            geo.id,
+            GpuMesh {
+                vertices,
+                indices,
+                count,
+            },
+        );
     }
 
     fn ensure_pipeline(&mut self, device: &wgpu::Device, key: Key) {
         if self.pipelines.contains_key(&key) {
             return;
         }
-        let (vs, fs, buffers): (&str, &str, Vec<wgpu::VertexBufferLayout<'static>>) = match key.prog {
+        let (vs, fs, buffers): (&str, &str, Vec<wgpu::VertexBufferLayout<'static>>) = match key.prog
+        {
             Prog::Toon => ("vs_mesh", "fs_toon", vec![mesh_layout(), row_layout()]),
             Prog::Grass => ("vs_grass", "fs_toon", vec![mesh_layout(), row_layout()]),
             Prog::Basic => ("vs_mesh", "fs_basic", vec![mesh_layout(), row_layout()]),
-            Prog::ShadowCatcher => ("vs_mesh", "fs_shadow_catcher", vec![mesh_layout(), row_layout()]),
-            Prog::Outline => ("vs_outline", "fs_outline", vec![mesh_layout(), row_layout()]),
+            Prog::ShadowCatcher => (
+                "vs_mesh",
+                "fs_shadow_catcher",
+                vec![mesh_layout(), row_layout()],
+            ),
+            Prog::Outline => (
+                "vs_outline",
+                "fs_outline",
+                vec![mesh_layout(), row_layout()],
+            ),
             Prog::Sky => ("vs_sky", "fs_sky", vec![mesh_layout(), row_layout()]),
             Prog::Points => ("vs_points", "fs_basic", vec![row_layout()]),
         };
@@ -1411,8 +1807,16 @@ impl Pipeline {
             Blend::Opaque => None,
             Blend::Alpha => Some(wgpu::BlendState::ALPHA_BLENDING),
             Blend::Additive => Some(wgpu::BlendState {
-                color: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::SrcAlpha, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add },
-                alpha: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::Zero, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add },
+                color: wgpu::BlendComponent {
+                    src_factor: wgpu::BlendFactor::SrcAlpha,
+                    dst_factor: wgpu::BlendFactor::One,
+                    operation: wgpu::BlendOperation::Add,
+                },
+                alpha: wgpu::BlendComponent {
+                    src_factor: wgpu::BlendFactor::Zero,
+                    dst_factor: wgpu::BlendFactor::One,
+                    operation: wgpu::BlendOperation::Add,
+                },
             }),
         };
         let cull_mode = match key.cull {
@@ -1423,21 +1827,49 @@ impl Pipeline {
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("floor"),
             layout: Some(&self.layout),
-            vertex: wgpu::VertexState { module: &self.module, entry_point: Some(vs), compilation_options: Default::default(), buffers: &buffers },
-            primitive: wgpu::PrimitiveState { cull_mode, ..Default::default() },
+            vertex: wgpu::VertexState {
+                module: &self.module,
+                entry_point: Some(vs),
+                compilation_options: Default::default(),
+                buffers: &buffers,
+            },
+            primitive: wgpu::PrimitiveState {
+                cull_mode,
+                ..Default::default()
+            },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: DEPTH,
                 depth_write_enabled: key.depth_write,
-                depth_compare: if key.depth_test { wgpu::CompareFunction::LessEqual } else { wgpu::CompareFunction::Always },
+                depth_compare: if key.depth_test {
+                    wgpu::CompareFunction::LessEqual
+                } else {
+                    wgpu::CompareFunction::Always
+                },
                 stencil: Default::default(),
-                bias: if key.decal { wgpu::DepthBiasState { constant: -2, slope_scale: -1.0, clamp: 0.0 } } else { Default::default() },
+                bias: if key.decal {
+                    wgpu::DepthBiasState {
+                        constant: -2,
+                        slope_scale: -1.0,
+                        clamp: 0.0,
+                    }
+                } else {
+                    Default::default()
+                },
             }),
-            multisample: wgpu::MultisampleState { count: key.samples, mask: !0, alpha_to_coverage_enabled: false },
+            multisample: wgpu::MultisampleState {
+                count: key.samples,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
             fragment: Some(wgpu::FragmentState {
                 module: &self.module,
                 entry_point: Some(fs),
                 compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState { format: self.format, blend, write_mask: wgpu::ColorWrites::ALL })],
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: self.format,
+                    blend,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
             }),
             multiview: None,
             cache: None,
@@ -1446,14 +1878,22 @@ impl Pipeline {
     }
 
     fn ensure_targets(&mut self, device: &wgpu::Device, size: (u32, u32), samples: u32) {
-        if self.targets.as_ref().is_some_and(|t| t.size == size && t.samples == samples) {
+        if self
+            .targets
+            .as_ref()
+            .is_some_and(|t| t.size == size && t.samples == samples)
+        {
             return;
         }
         let make = |label, format, samples, usage| {
             device
                 .create_texture(&wgpu::TextureDescriptor {
                     label: Some(label),
-                    size: wgpu::Extent3d { width: size.0, height: size.1, depth_or_array_layers: 1 },
+                    size: wgpu::Extent3d {
+                        width: size.0,
+                        height: size.1,
+                        depth_or_array_layers: 1,
+                    },
                     mip_level_count: 1,
                     sample_count: samples,
                     dimension: wgpu::TextureDimension::D2,
@@ -1463,16 +1903,34 @@ impl Pipeline {
                 })
                 .create_view(&wgpu::TextureViewDescriptor::default())
         };
-        let msaa = (samples > 1).then(|| make("floor msaa", self.format, samples, wgpu::TextureUsages::RENDER_ATTACHMENT));
-        let depth = make("floor depth", DEPTH, samples, wgpu::TextureUsages::RENDER_ATTACHMENT);
+        let msaa = (samples > 1).then(|| {
+            make(
+                "floor msaa",
+                self.format,
+                samples,
+                wgpu::TextureUsages::RENDER_ATTACHMENT,
+            )
+        });
+        let depth = make(
+            "floor depth",
+            DEPTH,
+            samples,
+            wgpu::TextureUsages::RENDER_ATTACHMENT,
+        );
         let resolve_tex = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("floor resolve"),
-            size: wgpu::Extent3d { width: size.0, height: size.1, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width: size.0,
+                height: size.1,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: self.format,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
         let resolve = resolve_tex.create_view(&wgpu::TextureViewDescriptor::default());
@@ -1480,11 +1938,25 @@ impl Pipeline {
             label: Some("floor blit"),
             layout: &self.blit_layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&resolve) },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.linear_clamp) },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&resolve),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.linear_clamp),
+                },
             ],
         });
-        self.targets = Some(Targets { size, samples, msaa, depth, resolve, resolve_tex, blit_group });
+        self.targets = Some(Targets {
+            size,
+            samples,
+            msaa,
+            depth,
+            resolve,
+            resolve_tex,
+            blit_group,
+        });
     }
 }
 
@@ -1500,8 +1972,13 @@ fn mip_chain(width: u32, height: u32, rgba: &[u8]) -> Vec<(u32, u32, Vec<u8>)> {
         for y in 0..nh {
             for x in 0..nw {
                 for c in 0..4 {
-                    let at = |sx: u32, sy: u32| u32::from(data[((sy.min(h - 1) * w + sx.min(w - 1)) * 4 + c) as usize]);
-                    let sum = at(2 * x, 2 * y) + at(2 * x + 1, 2 * y) + at(2 * x, 2 * y + 1) + at(2 * x + 1, 2 * y + 1);
+                    let at = |sx: u32, sy: u32| {
+                        u32::from(data[((sy.min(h - 1) * w + sx.min(w - 1)) * 4 + c) as usize])
+                    };
+                    let sum = at(2 * x, 2 * y)
+                        + at(2 * x + 1, 2 * y)
+                        + at(2 * x, 2 * y + 1)
+                        + at(2 * x + 1, 2 * y + 1);
                     next[((y * nw + x) * 4 + c) as usize] = (sum / 4) as u8;
                 }
             }
@@ -1565,18 +2042,18 @@ fn casts_shadow(d: &Draw) -> bool {
 /// Whether a draw is drawn after the opaque ones, back to front: transparent, additive, a shadow
 /// catcher, or faded.
 fn is_transparent(d: &Draw, alpha: f32) -> bool {
-    d.material.transparent || d.material.additive || matches!(d.material.shading, Shading::Shadow) || alpha < 1.0
+    d.material.transparent
+        || d.material.additive
+        || matches!(d.material.shading, Shading::Shadow)
+        || alpha < 1.0
 }
 
 /// The opacity a cutaway eases toward: `CUTAWAY_OPACITY` while the segment from the eye to the focus
 /// passes through its box, or the plaza area is known and the box stands over it; else 100 %.
 fn fade_target(f: &Fade, eye: Vec3, focus: Vec3, plaza: Option<(Vec3, Vec3)>) -> f32 {
-    let hit = segment_hits(f.min, f.max, eye, focus) || plaza.is_some_and(|(lo, hi)| over_area(f.min, f.max, lo, hi));
-    if hit {
-        CUTAWAY_OPACITY
-    } else {
-        1.0
-    }
+    let hit = segment_hits(f.min, f.max, eye, focus)
+        || plaza.is_some_and(|(lo, hi)| over_area(f.min, f.max, lo, hi));
+    if hit { CUTAWAY_OPACITY } else { 1.0 }
 }
 
 /// Whether the segment `a`..`b` passes through the box `min`..`max` (the slab test).
@@ -1608,7 +2085,14 @@ impl Pipeline {
     /// Eases each cutaway's opacity toward `CUTAWAY_OPACITY` while the segment from the eye to the focus
     /// passes through its box or the box is over the plaza area, and back to 100 % once it is not
     /// (settled in about 0.3 s).
-    fn fade_step(&mut self, fades: &[Fade], eye: Vec3, focus: Vec3, plaza: Option<(Vec3, Vec3)>, time: f32) {
+    fn fade_step(
+        &mut self,
+        fades: &[Fade],
+        eye: Vec3,
+        focus: Vec3,
+        plaza: Option<(Vec3, Vec3)>,
+        time: f32,
+    ) {
         let dt = self.fade_time.map_or(0.0, |t| (time - t).clamp(0.0, 0.1));
         self.fade_time = Some(time);
         let k = 1.0 - (-dt * 12.0).exp();
@@ -1621,13 +2105,24 @@ impl Pipeline {
 
     /// Whether the cached statics were built from this Frame's statics with this stamp.
     fn statics_are(&self, src: &Arc<Vec<Draw>>, stamp: Stamp) -> bool {
-        self.static_src.as_ref().is_some_and(|s| Arc::ptr_eq(s, src)) && self.stamp == Some(stamp)
+        self.static_src
+            .as_ref()
+            .is_some_and(|s| Arc::ptr_eq(s, src))
+            && self.stamp == Some(stamp)
     }
 
     /// Builds the statics' rows, draws and shadows: one row per copy, the uploads of their meshes
     /// and textures, and the commands in their order. Rebuilt when the statics or the stamp change;
     /// their rows are then written to the start of the rows buffer.
-    fn build_statics(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, src: &Arc<Vec<Draw>>, stamp: Stamp, ink: [f32; 3], samples: u32) {
+    fn build_statics(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        src: &Arc<Vec<Draw>>,
+        stamp: Stamp,
+        ink: [f32; 3],
+        samples: u32,
+    ) {
         self.static_rows.clear();
         self.static_opaque.clear();
         self.static_transparent.clear();
@@ -1638,7 +2133,11 @@ impl Pipeline {
         let mut casters: Vec<(Geo, Mat4)> = Vec::new();
         for d in src.iter() {
             let a = d.material.opacity;
-            if stamp.shadows && d.cast_shadow && matches!(d.kind, DrawKind::Mesh) && !is_transparent(d, a) {
+            if stamp.shadows
+                && d.cast_shadow
+                && matches!(d.kind, DrawKind::Mesh)
+                && !is_transparent(d, a)
+            {
                 casters.push((Arc::clone(&d.geo), d.model));
             }
             let rows = rows_of(d, ink, stamp.shadows, a);
@@ -1648,7 +2147,10 @@ impl Pipeline {
             let start = self.static_rows.len() as u32;
             self.static_rows.extend(rows);
             let range = start..self.static_rows.len() as u32;
-            let key = Key { samples, ..key_of(d, a) };
+            let key = Key {
+                samples,
+                ..key_of(d, a)
+            };
             self.ensure_pipeline(device, key);
             let mesh = match d.kind {
                 DrawKind::Points(_) => None,
@@ -1670,14 +2172,26 @@ impl Pipeline {
                 }
                 None => 0,
             };
-            if d.cast_shadow && stamp.shadows && casts_shadow(d) && !matches!(d.kind, DrawKind::Mesh) {
+            if d.cast_shadow
+                && stamp.shadows
+                && casts_shadow(d)
+                && !matches!(d.kind, DrawKind::Mesh)
+            {
                 if let Some(id) = mesh {
                     self.static_shadow.push((id, range.clone()));
                 }
             }
-            let cmd = Cmd { key, mesh, tex, rows: range, order: d.render_order, owner: d.owner };
+            let cmd = Cmd {
+                key,
+                mesh,
+                tex,
+                rows: range,
+                order: d.render_order,
+                owner: d.owner,
+            };
             if is_transparent(d, a) {
-                self.static_transparent.push((cmd, d.model.w_axis.truncate()));
+                self.static_transparent
+                    .push((cmd, d.model.w_axis.truncate()));
             } else {
                 self.static_opaque.push(cmd);
             }
@@ -1738,7 +2252,15 @@ fn key_of(draw: &Draw, alpha: f32) -> Key {
         Prog::Sky => false,
         _ => m.depth_write && !m.additive,
     };
-    Key { prog, cull, blend, depth_write, depth_test: m.depth_test, decal: m.decal, samples: SAMPLES }
+    Key {
+        prog,
+        cull,
+        blend,
+        depth_write,
+        depth_test: m.depth_test,
+        decal: m.decal,
+        samples: SAMPLES,
+    }
 }
 
 fn rows_of(draw: &Draw, world_ink: [f32; 3], shadows: bool, alpha: f32) -> Vec<Row> {
@@ -1754,7 +2276,13 @@ fn rows_of(draw: &Draw, world_ink: [f32; 3], shadows: bool, alpha: f32) -> Vec<R
         flags += 4.0;
     }
     // 8: a robot material (its vertex slots 1 to 3 take the hues below).
-    let hues = m.robot.map_or([[0.0; 4]; 3], |h| [[h.shell.r, h.shell.g, h.shell.b, 0.0], [h.shell2.r, h.shell2.g, h.shell2.b, 0.0], [h.panel.r, h.panel.g, h.panel.b, 0.0]]);
+    let hues = m.robot.map_or([[0.0; 4]; 3], |h| {
+        [
+            [h.shell.r, h.shell.g, h.shell.b, 0.0],
+            [h.shell2.r, h.shell2.g, h.shell2.b, 0.0],
+            [h.panel.r, h.panel.g, h.panel.b, 0.0],
+        ]
+    });
     if m.robot.is_some() {
         flags += 8.0;
     }
@@ -1766,7 +2294,12 @@ fn rows_of(draw: &Draw, world_ink: [f32; 3], shadows: bool, alpha: f32) -> Vec<R
     // uv' = uv * repeat + offset; a flipY texture (a canvas's) reads v as 1 - v first, as three uploads it.
     let uv = m.map.as_ref().map_or([1.0, 1.0, 0.0, 0.0], |t| {
         if t.flip_y {
-            [t.repeat[0], -t.repeat[1], t.offset[0], t.offset[1] + t.repeat[1]]
+            [
+                t.repeat[0],
+                -t.repeat[1],
+                t.offset[0],
+                t.offset[1] + t.repeat[1],
+            ]
         } else {
             [t.repeat[0], t.repeat[1], t.offset[0], t.offset[1]]
         }
@@ -1784,20 +2317,48 @@ fn rows_of(draw: &Draw, world_ink: [f32; 3], shadows: bool, alpha: f32) -> Vec<R
         DrawKind::Instanced(instances, count) => instances
             .iter()
             .take(*count)
-            .map(|inst| row(draw.model * inst.matrix, m.color.mul(inst.color).to_array(), uv))
+            .map(|inst| {
+                row(
+                    draw.model * inst.matrix,
+                    m.color.mul(inst.color).to_array(),
+                    uv,
+                )
+            })
             .collect(),
-        DrawKind::OutlineInstanced(instances, count) => {
-            instances.iter().take(*count).map(|inst| row(draw.model * inst.matrix, world_ink, uv)).collect()
-        }
+        DrawKind::OutlineInstanced(instances, count) => instances
+            .iter()
+            .take(*count)
+            .map(|inst| row(draw.model * inst.matrix, world_ink, uv))
+            .collect(),
         DrawKind::Points(points) => {
-            let size = if let Shading::Points { size } = m.shading { size } else { 0.1 };
-            points.iter().map(|p| row(draw.model * Mat4::from_translation(Vec3::from(*p)), m.color.to_array(), [size, 0.0, 0.0, 0.0])).collect()
+            let size = if let Shading::Points { size } = m.shading {
+                size
+            } else {
+                0.1
+            };
+            points
+                .iter()
+                .map(|p| {
+                    row(
+                        draw.model * Mat4::from_translation(Vec3::from(*p)),
+                        m.color.to_array(),
+                        [size, 0.0, 0.0, 0.0],
+                    )
+                })
+                .collect()
         }
     }
 }
 
 impl Primitive {
-    pub fn prepare(&self, p: &mut Pipeline, device: &wgpu::Device, queue: &wgpu::Queue, bounds: &Rect, scale: f32) {
+    pub fn prepare(
+        &self,
+        p: &mut Pipeline,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        bounds: &Rect,
+        scale: f32,
+    ) {
         for count in &p.draws {
             count.store(0, std::sync::atomic::Ordering::Relaxed);
         }
@@ -1807,12 +2368,24 @@ impl Primitive {
         p.tris.store(0, std::sync::atomic::Ordering::Relaxed);
         p.owned.get_mut().unwrap_or_else(|e| e.into_inner()).clear();
         let started = web_time::Instant::now();
-        let full = (((bounds.width * scale).round() as u32).max(1), ((bounds.height * scale).round() as u32).max(1));
+        let full = (
+            ((bounds.width * scale).round() as u32).max(1),
+            ((bounds.height * scale).round() as u32).max(1),
+        );
         let light = light();
         let (samples, shadows) = if light { (1, false) } else { (SAMPLES, true) };
         // Light mode draws the 3D at half resolution; the blit stretches it over the widget.
-        let size = if light { ((full.0 / 2).max(1), (full.1 / 2).max(1)) } else { full };
-        p.physical = Rect { x: bounds.x * scale, y: bounds.y * scale, width: full.0 as f32, height: full.1 as f32 };
+        let size = if light {
+            ((full.0 / 2).max(1), (full.1 / 2).max(1))
+        } else {
+            full
+        };
+        p.physical = Rect {
+            x: bounds.x * scale,
+            y: bounds.y * scale,
+            width: full.0 as f32,
+            height: full.1 as f32,
+        };
         p.ensure_targets(device, size, samples);
 
         let f = &self.frame;
@@ -1824,13 +2397,24 @@ impl Primitive {
         let light_view = Mat4::look_at_rh(w.sun_position, Vec3::ZERO, Vec3::Y);
         let e = w.shadow_extent;
         let light_proj = Mat4::orthographic_rh(-e, e, -e, e, w.shadow_near, w.shadow_far);
-        let sky = f
-            .statics
-            .iter()
-            .chain(&f.draws)
-            .find_map(|d| if let Shading::Sky { top, horizon, ground } = d.material.shading { Some((top, horizon, ground)) } else { None });
+        let sky = f.statics.iter().chain(&f.draws).find_map(|d| {
+            if let Shading::Sky {
+                top,
+                horizon,
+                ground,
+            } = d.material.shading
+            {
+                Some((top, horizon, ground))
+            } else {
+                None
+            }
+        });
         let flat = (w.background, w.background, w.background);
-        let (sky_top, sky_horizon, sky_ground) = if w.flat_background { flat } else { sky.unwrap_or(flat) };
+        let (sky_top, sky_horizon, sky_ground) = if w.flat_background {
+            flat
+        } else {
+            sky.unwrap_or(flat)
+        };
         let v4 = |c: super::scene::Color, a: f32| [c.r, c.g, c.b, a];
         let mut point_pos = [[0.0; 4]; 4];
         let mut point_color = [[0.0; 4]; 4];
@@ -1849,42 +2433,93 @@ impl Primitive {
             hemi_sky: v4(w.hemi_sky.scale(w.hemi_intensity), 0.0),
             hemi_ground: v4(w.hemi_ground.scale(w.hemi_intensity), 0.0),
             fog_color: v4(w.fog_color, w.fog_near),
-            params: [w.fog_far, w.outline_thickness, size.1 as f32, if p.format.is_srgb() { 0.0 } else { 1.0 }],
+            params: [
+                w.fog_far,
+                w.outline_thickness,
+                size.1 as f32,
+                if p.format.is_srgb() { 0.0 } else { 1.0 },
+            ],
             ink: v4(w.ink, 1.0),
             sky_top: v4(sky_top, 0.0),
             sky_horizon: v4(sky_horizon, 0.0),
             sky_ground: v4(sky_ground, 0.0),
             point_pos,
             point_color,
-            counts: [f.lights.len().min(4) as f32, 1.0 / SHADOW_SIZE as f32, f.time % WRAP_PERIOD, 0.0],
+            counts: [
+                f.lights.len().min(4) as f32,
+                1.0 / SHADOW_SIZE as f32,
+                f.time % WRAP_PERIOD,
+                0.0,
+            ],
             machine_angle: machine_angles(f.animated.as_deref()),
             machine_state: machine_rows(f.animated.as_deref().map(|x| x.machine_states.as_slice())),
-            machine_status: machine_rows(f.animated.as_deref().map(|x| x.machine_statuses.as_slice())),
+            machine_status: machine_rows(
+                f.animated.as_deref().map(|x| x.machine_statuses.as_slice()),
+            ),
             leds: crate::hardware::led_colours(),
         };
         queue.write_buffer(&p.globals, 0, bytemuck::bytes_of(&globals));
-        p.fleet.prepare(device, queue, p.format, samples, proj * view, f.time, f.animated.as_ref());
-        p.anim.prepare(device, queue, p.format, samples, f.statics_version, f.anim_batches.as_slice());
+        p.fleet.prepare(
+            device,
+            queue,
+            p.format,
+            samples,
+            proj * view,
+            f.time,
+            f.animated.as_ref(),
+        );
+        p.anim.prepare(
+            device,
+            queue,
+            p.format,
+            samples,
+            f.statics_version,
+            f.anim_batches.as_slice(),
+        );
         let bg = w.background;
         // Premultiplied: the clear's alpha scales its colour, so a card's clear of 0 is fully transparent.
         let a = f64::from(p.clear_alpha);
         p.background = if p.format.is_srgb() {
-            wgpu::Color { r: f64::from(bg.r) * a, g: f64::from(bg.g) * a, b: f64::from(bg.b) * a, a }
+            wgpu::Color {
+                r: f64::from(bg.r) * a,
+                g: f64::from(bg.g) * a,
+                b: f64::from(bg.b) * a,
+                a,
+            }
         } else {
             let [r, g, b] = bg.to_srgb();
-            wgpu::Color { r: f64::from(r) * a, g: f64::from(g) * a, b: f64::from(b) * a, a }
+            wgpu::Color {
+                r: f64::from(r) * a,
+                g: f64::from(g) * a,
+                b: f64::from(b) * a,
+                a,
+            }
         };
 
         let ink = w.ink.to_array();
         // The cutaways' fades (the detail parts show by their nodes' visibility, set by the scene).
         let eye = camera.eye;
-        p.fade_step(&f.fades, eye, f.focus.unwrap_or(camera.target), f.plaza, f.time);
+        p.fade_step(
+            &f.fades,
+            eye,
+            f.focus.unwrap_or(camera.target),
+            f.plaza,
+            f.time,
+        );
         let fades_now = p.fade_alpha.clone();
         let alpha = |d: &Draw| -> f32 {
-            let fade = if d.fade != 0 { fades_now.get(&d.fade).copied().unwrap_or(1.0) } else { 1.0 };
+            let fade = if d.fade != 0 {
+                fades_now.get(&d.fade).copied().unwrap_or(1.0)
+            } else {
+                1.0
+            };
             d.material.opacity * fade
         };
-        let stamp = Stamp { shadows, ink: ink.map(f32::to_bits), samples };
+        let stamp = Stamp {
+            shadows,
+            ink: ink.map(f32::to_bits),
+            samples,
+        };
         let statics_changed = !p.statics_are(&f.statics, stamp);
         if statics_changed {
             p.build_statics(device, queue, &f.statics, stamp, ink, samples);
@@ -1908,7 +2543,8 @@ impl Primitive {
         for d in f.draws.iter() {
             let a = alpha(d);
             let in_main = bounds_visible(d, &main_frustum);
-            let in_shadow = shadows && d.cast_shadow && casts_shadow(d) && bounds_visible(d, &shadow_frustum);
+            let in_shadow =
+                shadows && d.cast_shadow && casts_shadow(d) && bounds_visible(d, &shadow_frustum);
             if !in_main {
                 culled += 1;
             }
@@ -1922,7 +2558,10 @@ impl Primitive {
             let start = base + dyn_rows.len() as u32;
             dyn_rows.extend(rows);
             let range = start..base + dyn_rows.len() as u32;
-            let key = Key { samples, ..key_of(d, a) };
+            let key = Key {
+                samples,
+                ..key_of(d, a)
+            };
             p.ensure_pipeline(device, key);
             let mesh = match d.kind {
                 DrawKind::Points(_) => None,
@@ -1952,7 +2591,14 @@ impl Primitive {
             if !in_main {
                 continue;
             }
-            let cmd = Cmd { key, mesh, tex, rows: range, order: d.render_order, owner: d.owner };
+            let cmd = Cmd {
+                key,
+                mesh,
+                tex,
+                rows: range,
+                order: d.render_order,
+                owner: d.owner,
+            };
             if is_transparent(d, a) {
                 dyn_transparent.push((cmd, d.model.w_axis.truncate().distance(eye)));
             } else {
@@ -1967,7 +2613,11 @@ impl Primitive {
         cmds.extend(p.static_opaque.iter().cloned());
         cmds.extend(dyn_opaque);
         cmds.sort_by_key(|c| c.order);
-        let mut transparent: Vec<(Cmd, f32)> = p.static_transparent.iter().map(|(c, at)| (c.clone(), at.distance(eye))).collect();
+        let mut transparent: Vec<(Cmd, f32)> = p
+            .static_transparent
+            .iter()
+            .map(|(c, at)| (c.clone(), at.distance(eye)))
+            .collect();
         transparent.extend(dyn_transparent);
         transparent.sort_by(|a, b| a.0.order.cmp(&b.0.order).then(b.1.total_cmp(&a.1)));
         cmds.extend(transparent.into_iter().map(|(c, _)| c));
@@ -1986,12 +2636,16 @@ impl Primitive {
             for v in (light_proj * light_view).to_cols_array() {
                 v.to_bits().hash(&mut h);
             }
-            p.static_src.as_ref().map(|s| Arc::as_ptr(s) as usize).hash(&mut h);
+            p.static_src
+                .as_ref()
+                .map(|s| Arc::as_ptr(s) as usize)
+                .hash(&mut h);
             h.finish()
         };
         p.shadow_frame += 1;
         let every = u64::from(w.shadow_every);
-        p.shadow_due = p.shadow_sig != Some(sig) || (every > 0 && p.shadow_frame.is_multiple_of(every));
+        p.shadow_due =
+            p.shadow_sig != Some(sig) || (every > 0 && p.shadow_frame.is_multiple_of(every));
         p.shadow_sig = Some(sig);
         p.shadow_cmds = shadow_cmds;
         // Overlays: their rectangles in the widget's NDC, their textures uploaded.
@@ -2003,12 +2657,20 @@ impl Primitive {
             }
             used_textures.insert(o.tex.id);
             let (w, h) = (bounds.width.max(1.0), bounds.height.max(1.0));
-            rects.push([o.x / w * 2.0 - 1.0, 1.0 - o.y / h * 2.0, (o.x + o.w) / w * 2.0 - 1.0, 1.0 - (o.y + o.h) / h * 2.0]);
+            rects.push([
+                o.x / w * 2.0 - 1.0,
+                1.0 - o.y / h * 2.0,
+                (o.x + o.w) / w * 2.0 - 1.0,
+                1.0 - (o.y + o.h) / h * 2.0,
+            ]);
             p.overlay_cmds.push(o.tex.id);
         }
         if !rects.is_empty() {
             let bytes: &[u8] = bytemuck::cast_slice(&rects);
-            if p.overlay_rects.as_ref().is_none_or(|(_, cap)| *cap < bytes.len()) {
+            if p.overlay_rects
+                .as_ref()
+                .is_none_or(|(_, cap)| *cap < bytes.len())
+            {
                 let cap = bytes.len().next_power_of_two();
                 let buffer = device.create_buffer(&wgpu::BufferDescriptor {
                     label: Some("floor overlays"),
@@ -2022,8 +2684,10 @@ impl Primitive {
                 queue.write_buffer(buffer, 0, bytes);
             }
         }
-        p.meshes.retain(|id, _| used_meshes.contains(id) || p.static_meshes.contains(id));
-        p.textures.retain(|id, _| used_textures.contains(id) || p.static_textures.contains(id));
+        p.meshes
+            .retain(|id, _| used_meshes.contains(id) || p.static_meshes.contains(id));
+        p.textures
+            .retain(|id, _| used_textures.contains(id) || p.static_textures.contains(id));
 
         // The rows: the statics' (uploaded when they change), then this frame's dynamic ones.
         let static_bytes = p.static_rows.len() * row_size;
@@ -2054,11 +2718,23 @@ impl Primitive {
             let tris: u64 = p
                 .cmds
                 .iter()
-                .filter_map(|c| c.mesh.and_then(|id| p.meshes.get(&id)).map(|m| u64::from(m.count / 3) * u64::from(c.rows.end - c.rows.start)))
+                .filter_map(|c| {
+                    c.mesh
+                        .and_then(|id| p.meshes.get(&id))
+                        .map(|m| u64::from(m.count / 3) * u64::from(c.rows.end - c.rows.start))
+                })
                 .sum();
             let instances = p.static_rows.len() + dyn_rows.len();
-            let static_draws = p.static_opaque.len() + p.static_transparent.len() + p.static_shadow.len();
-            perf_frame(started.elapsed(), p.cmds.len() + p.shadow_cmds.len(), static_draws, tris, instances, culled);
+            let static_draws =
+                p.static_opaque.len() + p.static_transparent.len() + p.static_shadow.len();
+            perf_frame(
+                started.elapsed(),
+                p.cmds.len() + p.shadow_cmds.len(),
+                static_draws,
+                tris,
+                instances,
+                culled,
+            );
         }
     }
 
@@ -2099,7 +2775,9 @@ fn probe_card_corner(p: &Pipeline, device: &wgpu::Device, queue: &wgpu::Queue) {
     if !p.probe_corner || p.clear_alpha >= 1.0 || crate::env_var("APZ_CARD_PROBE").is_none() {
         return;
     }
-    let (Some(targets), Some(_)) = (&p.targets, &p.rows) else { return };
+    let (Some(targets), Some(_)) = (&p.targets, &p.rows) else {
+        return;
+    };
     if CARD_PROBED.swap(true, std::sync::atomic::Ordering::Relaxed) {
         return;
     }
@@ -2109,11 +2787,29 @@ fn probe_card_corner(p: &Pipeline, device: &wgpu::Device, queue: &wgpu::Queue) {
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
     });
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("card probe") });
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("card probe"),
+    });
     encoder.copy_texture_to_buffer(
-        wgpu::TexelCopyTextureInfo { texture: &targets.resolve_tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
-        wgpu::TexelCopyBufferInfo { buffer: &buffer, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(256), rows_per_image: None } },
-        wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+        wgpu::TexelCopyTextureInfo {
+            texture: &targets.resolve_tex,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::TexelCopyBufferInfo {
+            buffer: &buffer,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(256),
+                rows_per_image: None,
+            },
+        },
+        wgpu::Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
     );
     queue.submit([encoder.finish()]);
     let slice = buffer.slice(..);
@@ -2139,117 +2835,139 @@ fn record(p: &Pipeline, device: &wgpu::Device, queue: &wgpu::Queue) {
     let (Some(targets), Some((rows, _))) = (&p.targets, &p.rows) else {
         return;
     };
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("floor") });
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("floor"),
+    });
     // No shadow casters (light mode, the Machines view): the pass is skipped, after one that clears what an earlier
     // frame's casters left in the map.
     // A frame with casters redraws the map when it is due (the cadence, or new casters); one without clears it once.
     let casters = !p.shadow_cmds.is_empty();
-    let redraw = if casters { p.shadow_due } else { p.shadow_written.swap(false, std::sync::atomic::Ordering::Relaxed) };
+    let redraw = if casters {
+        p.shadow_due
+    } else {
+        p.shadow_written
+            .swap(false, std::sync::atomic::Ordering::Relaxed)
+    };
     if casters && redraw {
-        p.shadow_written.store(true, std::sync::atomic::Ordering::Relaxed);
+        p.shadow_written
+            .store(true, std::sync::atomic::Ordering::Relaxed);
     }
     if redraw {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("floor shadow"),
-                color_attachments: &[],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &p.shadow_view,
-                    depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Store }),
-                    stencil_ops: None,
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("floor shadow"),
+            color_attachments: &[],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &p.shadow_view,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(1.0),
+                    store: wgpu::StoreOp::Store,
                 }),
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-            pass.set_pipeline(&p.shadow_pipeline);
-            pass.set_bind_group(0, &p.shadow_globals_group, &[]);
-            pass.set_vertex_buffer(1, rows.slice(..));
-            for (id, range) in &p.shadow_cmds {
-                if let Some(mesh) = p.meshes.get(id) {
-                    pass.set_vertex_buffer(0, mesh.vertices.slice(..));
-                    pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
-                    p.count(PASS_SHADOW);
-                    p.count_tris(u64::from(mesh.count / 3) * u64::from(range.end - range.start));
-                    pass.draw_indexed(0..mesh.count, 0, range.clone());
-                }
-            }
-            for _ in 0..p.anim.draw_shadow(&mut pass) {
+                stencil_ops: None,
+            }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        pass.set_pipeline(&p.shadow_pipeline);
+        pass.set_bind_group(0, &p.shadow_globals_group, &[]);
+        pass.set_vertex_buffer(1, rows.slice(..));
+        for (id, range) in &p.shadow_cmds {
+            if let Some(mesh) = p.meshes.get(id) {
+                pass.set_vertex_buffer(0, mesh.vertices.slice(..));
+                pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
                 p.count(PASS_SHADOW);
+                p.count_tris(u64::from(mesh.count / 3) * u64::from(range.end - range.start));
+                pass.draw_indexed(0..mesh.count, 0, range.clone());
             }
         }
+        for _ in 0..p.anim.draw_shadow(&mut pass) {
+            p.count(PASS_SHADOW);
+        }
+    }
     {
-            let tally = tallying();
-            let mut owned: Vec<u32> = Vec::new();
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("floor"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: targets.msaa.as_ref().unwrap_or(&targets.resolve),
-                    depth_slice: None,
-                    resolve_target: targets.msaa.as_ref().map(|_| &targets.resolve),
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(p.background),
-                        store: if targets.msaa.is_some() { wgpu::StoreOp::Discard } else { wgpu::StoreOp::Store },
+        let tally = tallying();
+        let mut owned: Vec<u32> = Vec::new();
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("floor"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: targets.msaa.as_ref().unwrap_or(&targets.resolve),
+                depth_slice: None,
+                resolve_target: targets.msaa.as_ref().map(|_| &targets.resolve),
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(p.background),
+                    store: if targets.msaa.is_some() {
+                        wgpu::StoreOp::Discard
+                    } else {
+                        wgpu::StoreOp::Store
                     },
-                })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &targets.depth,
-                    depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Discard }),
-                    stencil_ops: None,
+                },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &targets.depth,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(1.0),
+                    store: wgpu::StoreOp::Discard,
                 }),
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-            pass.set_bind_group(0, &p.globals_group, &[]);
-            let mut current: Option<Key> = None;
-            for cmd in &p.cmds {
-                // A card's clear is transparent: its sky dome would paint an opaque square behind the machine, so only the meshes draw.
-                if p.clear_alpha < 1.0 && cmd.key.prog == Prog::Sky {
-                    continue;
-                }
-                let Some(pipeline) = p.pipelines.get(&cmd.key) else { continue };
-                if current != Some(cmd.key) {
-                    pass.set_pipeline(pipeline);
-                    current = Some(cmd.key);
-                }
-                if let Some(tex) = p.textures.get(&cmd.tex).or_else(|| p.textures.get(&0)) {
-                    pass.set_bind_group(1, &tex.group, &[]);
-                }
-                match cmd.mesh.and_then(|id| p.meshes.get(&id)) {
-                    Some(mesh) => {
-                        pass.set_vertex_buffer(0, mesh.vertices.slice(..));
-                        pass.set_vertex_buffer(1, rows.slice(..));
-                        pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
-                        p.count(PASS_MESH);
-                        p.count_tris(u64::from(mesh.count / 3) * u64::from(cmd.rows.end - cmd.rows.start));
-                        p.count_program(cmd.key.prog);
-                        if tally {
-                            count_owned(&mut owned, cmd.owner);
-                        }
-                        pass.draw_indexed(0..mesh.count, 0, cmd.rows.clone());
+                stencil_ops: None,
+            }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        pass.set_bind_group(0, &p.globals_group, &[]);
+        let mut current: Option<Key> = None;
+        for cmd in &p.cmds {
+            // A card's clear is transparent: its sky dome would paint an opaque square behind the machine, so only the meshes draw.
+            if p.clear_alpha < 1.0 && cmd.key.prog == Prog::Sky {
+                continue;
+            }
+            let Some(pipeline) = p.pipelines.get(&cmd.key) else {
+                continue;
+            };
+            if current != Some(cmd.key) {
+                pass.set_pipeline(pipeline);
+                current = Some(cmd.key);
+            }
+            if let Some(tex) = p.textures.get(&cmd.tex).or_else(|| p.textures.get(&0)) {
+                pass.set_bind_group(1, &tex.group, &[]);
+            }
+            match cmd.mesh.and_then(|id| p.meshes.get(&id)) {
+                Some(mesh) => {
+                    pass.set_vertex_buffer(0, mesh.vertices.slice(..));
+                    pass.set_vertex_buffer(1, rows.slice(..));
+                    pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
+                    p.count(PASS_MESH);
+                    p.count_tris(
+                        u64::from(mesh.count / 3) * u64::from(cmd.rows.end - cmd.rows.start),
+                    );
+                    p.count_program(cmd.key.prog);
+                    if tally {
+                        count_owned(&mut owned, cmd.owner);
                     }
-                    None if cmd.key.prog == Prog::Points => {
-                        pass.set_vertex_buffer(0, rows.slice(..));
-                        p.count(PASS_QUAD);
-                        p.count_program(cmd.key.prog);
-                        if tally {
-                            count_owned(&mut owned, cmd.owner);
-                        }
-                        pass.draw(0..6, cmd.rows.clone());
-                    }
-                    None => {}
+                    pass.draw_indexed(0..mesh.count, 0, cmd.rows.clone());
                 }
-            }
-            for _ in 0..p.fleet.draw(&mut pass) {
-                p.count(PASS_MESH);
-            }
-            // The fleet's instanced draws leave their own group at 0; the animated hardware reads the floor's globals.
-            pass.set_bind_group(0, &p.globals_group, &[]);
-            for _ in 0..p.anim.draw(&mut pass) {
-                p.count(PASS_MESH);
-            }
-            if tally {
-                *p.owned.lock().unwrap_or_else(|e| e.into_inner()) = owned;
+                None if cmd.key.prog == Prog::Points => {
+                    pass.set_vertex_buffer(0, rows.slice(..));
+                    p.count(PASS_QUAD);
+                    p.count_program(cmd.key.prog);
+                    if tally {
+                        count_owned(&mut owned, cmd.owner);
+                    }
+                    pass.draw(0..6, cmd.rows.clone());
+                }
+                None => {}
             }
         }
+        for _ in 0..p.fleet.draw(&mut pass) {
+            p.count(PASS_MESH);
+        }
+        // The fleet's instanced draws leave their own group at 0; the animated hardware reads the floor's globals.
+        pass.set_bind_group(0, &p.globals_group, &[]);
+        for _ in 0..p.anim.draw(&mut pass) {
+            p.count(PASS_MESH);
+        }
+        if tally {
+            *p.owned.lock().unwrap_or_else(|e| e.into_inner()) = owned;
+        }
+    }
     queue.submit([encoder.finish()]);
 }
 
@@ -2271,9 +2989,18 @@ mod tests {
 
     #[test]
     fn the_mip_chain_halves_down_to_one_pixel_and_averages() {
-        let levels = mip_chain(4, 2, &[0, 0, 0, 255, 255, 255, 255, 255, 0, 0, 0, 255, 255, 255, 255, 255,
-            0, 0, 0, 255, 255, 255, 255, 255, 0, 0, 0, 255, 255, 255, 255, 255]);
-        assert_eq!(levels.iter().map(|l| (l.0, l.1)).collect::<Vec<_>>(), vec![(4, 2), (2, 1), (1, 1)]);
+        let levels = mip_chain(
+            4,
+            2,
+            &[
+                0, 0, 0, 255, 255, 255, 255, 255, 0, 0, 0, 255, 255, 255, 255, 255, 0, 0, 0, 255,
+                255, 255, 255, 255, 0, 0, 0, 255, 255, 255, 255, 255,
+            ],
+        );
+        assert_eq!(
+            levels.iter().map(|l| (l.0, l.1)).collect::<Vec<_>>(),
+            vec![(4, 2), (2, 1), (1, 1)]
+        );
         assert_eq!(levels[1].2[0], 127);
     }
 
@@ -2283,7 +3010,11 @@ mod tests {
         for owner in [1, 2, 0, 2, 2] {
             count_owned(&mut owned, owner);
         }
-        assert_eq!(owned, vec![0, 1, 3], "index n is tally n; the unowned draw counts nowhere");
+        assert_eq!(
+            owned,
+            vec![0, 1, 3],
+            "index n is tally n; the unowned draw counts nowhere"
+        );
     }
 
     #[test]
@@ -2306,7 +3037,16 @@ mod tests {
     #[test]
     fn globals_match_the_shaders_layout() {
         // 4 mat4 + 11 vec4 + 2 x 4 vec4 + 1 vec4 + the fan table + the machine state and status tables + 2 LED colours, all 16-byte aligned.
-        assert_eq!(std::mem::size_of::<Globals>(), 4 * 64 + 11 * 16 + 8 * 16 + 16 + MACHINE_VEC4 * 16 + 2 * crate::fleet::MACHINE_SLOTS * 16 + 2 * 16);
+        assert_eq!(
+            std::mem::size_of::<Globals>(),
+            4 * 64
+                + 11 * 16
+                + 8 * 16
+                + 16
+                + MACHINE_VEC4 * 16
+                + 2 * crate::fleet::MACHINE_SLOTS * 16
+                + 2 * 16
+        );
         // 112 bytes of material and transform, plus the robot hues (shell, shell2, panel) as three vec4s.
         assert_eq!(std::mem::size_of::<Row>(), 112 + 3 * 16);
     }
@@ -2319,7 +3059,11 @@ mod plaza_fade_tests {
     #[test]
     fn a_part_over_the_plaza_eases_to_the_cutaway_opacity() {
         // The part's box is clear of the eye-to-focus segment (both at x = 100), but over the plaza area.
-        let part = Fade { id: 1, min: Vec3::new(10.0, 0.0, 10.0), max: Vec3::new(12.0, 2.0, 12.0) };
+        let part = Fade {
+            id: 1,
+            min: Vec3::new(10.0, 0.0, 10.0),
+            max: Vec3::new(12.0, 2.0, 12.0),
+        };
         let (eye, focus) = (Vec3::new(100.0, 50.0, 100.0), Vec3::new(100.0, 0.0, 100.0));
         let plaza = Some((Vec3::new(-20.0, -1.0, -20.0), Vec3::new(20.0, 5.0, 20.0)));
         assert_eq!(fade_target(&part, eye, focus, None), 1.0);
@@ -2338,8 +3082,12 @@ mod plaza_fade_tests {
 mod hw_anim_tests {
     /// The text of WGSL function `name`, from its `fn` through the closing brace at column 0.
     fn wgsl_fn<'a>(src: &'a str, name: &str) -> &'a str {
-        let start = src.find(&format!("fn {name}(")).unwrap_or_else(|| panic!("no fn {name}"));
-        let close = src[start..].find("\n}\n").unwrap_or_else(|| panic!("fn {name} is not closed"));
+        let start = src
+            .find(&format!("fn {name}("))
+            .unwrap_or_else(|| panic!("no fn {name}"));
+        let close = src[start..]
+            .find("\n}\n")
+            .unwrap_or_else(|| panic!("fn {name} is not closed"));
         &src[start..start + close + 3]
     }
 
@@ -2349,7 +3097,11 @@ mod hw_anim_tests {
         let floor = include_str!("floor.wgsl");
         let anim = include_str!("shaders/hw_anim.wgsl");
         for name in ["ramp", "sun_shadow", "attenuation", "fogged", "encode"] {
-            assert_eq!(wgsl_fn(anim, name), wgsl_fn(floor, name), "hw_anim.wgsl's {name} drifted from floor.wgsl");
+            assert_eq!(
+                wgsl_fn(anim, name),
+                wgsl_fn(floor, name),
+                "hw_anim.wgsl's {name} drifted from floor.wgsl"
+            );
         }
     }
 }

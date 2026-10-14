@@ -1,15 +1,15 @@
 //! The hub's MCP server, run through its router in-process.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use apz_http::{Request, Response, Router};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::audit::MemoryAudit;
-use super::auth::{sha256_hex, MemoryTokens, NewToken, Scope, TokenRecord};
-use super::tools::{observe, visible, Ctx, Plaza, Tool, REGISTRY};
-use super::{routes, HubMcp, Host};
+use super::auth::{MemoryTokens, NewToken, Scope, TokenRecord, sha256_hex};
+use super::tools::{Ctx, Plaza, REGISTRY, Tool, observe, visible};
+use super::{Host, HubMcp, routes};
 use crate::prompts::store_mem::MemoryPrompts;
 use crate::prompts::{NewPrompt, Prompts};
 use crate::skills::Skills;
@@ -26,7 +26,10 @@ struct FakePlaza {
 }
 
 fn fake_plaza() -> FakePlaza {
-    FakePlaza { prompts: Prompts::new(Arc::new(MemoryPrompts::in_memory())), skills: None }
+    FakePlaza {
+        prompts: Prompts::new(Arc::new(MemoryPrompts::in_memory())),
+        skills: None,
+    }
 }
 
 /// Adds a prompt with a starter body (publishable) to the fake plaza's library, unpublished.
@@ -39,7 +42,16 @@ fn seed_prompt(plaza: &FakePlaza, id: &str) {
         tags: Vec::new(),
         binding: Some("role:coder".into()),
     };
-    plaza.prompts.create(&new, apz_prompt::template(Kind::System).to_string(), "seed".into(), "owner", T0).expect("a prompt");
+    plaza
+        .prompts
+        .create(
+            &new,
+            apz_prompt::template(Kind::System).to_string(),
+            "seed".into(),
+            "owner",
+            T0,
+        )
+        .expect("a prompt");
 }
 
 impl Plaza for FakePlaza {
@@ -52,19 +64,38 @@ impl Plaza for FakePlaza {
     }
 
     fn create_task(&self, input: &Value) -> Result<Value, String> {
-        if input["goal"] == "" { Err("goal must be a non-empty string".into()) } else { Ok(json!({ "id": "t2", "goal": input["goal"] })) }
+        if input["goal"] == "" {
+            Err("goal must be a non-empty string".into())
+        } else {
+            Ok(json!({ "id": "t2", "goal": input["goal"] }))
+        }
     }
 
     fn search_library(&self, query: &str, _limit: usize) -> Vec<Value> {
-        if query == "weather" { vec![json!({ "name": "weather", "version": 1, "state": "published" })] } else { Vec::new() }
+        if query == "weather" {
+            vec![json!({ "name": "weather", "version": 1, "state": "published" })]
+        } else {
+            Vec::new()
+        }
     }
 
     fn restart_agent(&self, cid: u64) -> Result<Value, String> {
-        if cid == 1 { Ok(json!({ "ok": true, "cid": cid })) } else { Err(format!("no agent {cid}")) }
+        if cid == 1 {
+            Ok(json!({ "ok": true, "cid": cid }))
+        } else {
+            Err(format!("no agent {cid}"))
+        }
     }
 
-    fn record_decision(&self, approval_id: &str, decision: &str, _note: &str) -> Result<Value, String> {
-        Ok(json!({ "recorded": true, "decided": false, "approval_id": approval_id, "decision": decision }))
+    fn record_decision(
+        &self,
+        approval_id: &str,
+        decision: &str,
+        _note: &str,
+    ) -> Result<Value, String> {
+        Ok(
+            json!({ "recorded": true, "decided": false, "approval_id": approval_id, "decision": decision }),
+        )
     }
 
     fn status(&self) -> Value {
@@ -86,15 +117,21 @@ impl Plaza for FakePlaza {
     }
 
     fn agent(&self, cid: u64) -> Option<Value> {
-        self.agents().into_iter().find(|agent| agent["cid"].as_u64() == Some(cid))
+        self.agents()
+            .into_iter()
+            .find(|agent| agent["cid"].as_u64() == Some(cid))
     }
 
     fn transcript(&self, cid: u64, _after: u64, _limit: usize) -> Vec<Value> {
-        vec![json!({ "seq": 1, "at_ms": 0, "cid": cid, "work": 1, "kind": "tool_result", "data": "x".repeat(5000) })]
+        vec![
+            json!({ "seq": 1, "at_ms": 0, "cid": cid, "work": 1, "kind": "tool_result", "data": "x".repeat(5000) }),
+        ]
     }
 
     fn tasks(&self) -> Vec<Value> {
-        vec![json!({ "id": "t1", "title": "Ship", "status": "open", "assignee": null, "project": null })]
+        vec![
+            json!({ "id": "t1", "title": "Ship", "status": "open", "assignee": null, "project": null }),
+        ]
     }
 
     fn task(&self, id: &str) -> Option<Value> {
@@ -210,7 +247,14 @@ fn harness(enabled: bool) -> Harness {
         Box::new(MemoryAudit::default()),
         Box::new(move || reading.load(Ordering::SeqCst)),
     );
-    Harness { host: TestHost { hub, plaza: fake_plaza(), clock }, router: routes(Router::new()) }
+    Harness {
+        host: TestHost {
+            hub,
+            plaza: fake_plaza(),
+            clock,
+        },
+        router: routes(Router::new()),
+    }
 }
 
 fn header(name: &str, value: &str) -> (String, String) {
@@ -226,7 +270,10 @@ fn body_of(resp: &Response) -> Value {
 }
 
 fn reply_header(resp: &Response, name: &str) -> Option<String> {
-    resp.headers.iter().find(|(key, _)| key.eq_ignore_ascii_case(name)).map(|(_, value)| value.clone())
+    resp.headers
+        .iter()
+        .find(|(key, _)| key.eq_ignore_ascii_case(name))
+        .map(|(_, value)| value.clone())
 }
 
 fn request_body(id: u64, method: &str, params: Value) -> Value {
@@ -234,11 +281,19 @@ fn request_body(id: u64, method: &str, params: Value) -> Value {
 }
 
 fn tool_call(name: &str, arguments: Value) -> Value {
-    request_body(7, "tools/call", json!({ "name": name, "arguments": arguments }))
+    request_body(
+        7,
+        "tools/call",
+        json!({ "name": name, "arguments": arguments }),
+    )
 }
 
 fn listed_names(h: &Harness, token: &str, session: &str) -> Vec<String> {
-    let body = body_of(&h.call(token, Some(session), request_body(3, "tools/list", json!({}))));
+    let body = body_of(&h.call(
+        token,
+        Some(session),
+        request_body(3, "tools/list", json!({})),
+    ));
     body["result"]["tools"]
         .as_array()
         .expect("a tools array")
@@ -256,14 +311,35 @@ impl Harness {
         self.host.clock.fetch_add(ms, Ordering::SeqCst);
     }
 
-    fn mint(&self, scope: Scope, allowlist: &[&str], expires_ms: Option<u64>) -> (String, TokenRecord) {
+    fn mint(
+        &self,
+        scope: Scope,
+        allowlist: &[&str],
+        expires_ms: Option<u64>,
+    ) -> (String, TokenRecord) {
         let allowlist = allowlist.iter().map(|name| name.to_string()).collect();
-        let new = NewToken { name: "test".into(), scope, allowlist, expires_ms };
-        self.host.hub.tokens.create(new, self.now()).expect("a token")
+        let new = NewToken {
+            name: "test".into(),
+            scope,
+            allowlist,
+            expires_ms,
+        };
+        self.host
+            .hub
+            .tokens
+            .create(new, self.now())
+            .expect("a token")
     }
 
     fn raw(&self, method: &str, headers: Vec<(String, String)>, body: Vec<u8>) -> Response {
-        let req = Request { method: method.into(), path: "/mcp".into(), headers, body, peer: Some(std::net::Ipv4Addr::LOCALHOST.into()), ..Request::default() };
+        let req = Request {
+            method: method.into(),
+            path: "/mcp".into(),
+            headers,
+            body,
+            peer: Some(std::net::Ipv4Addr::LOCALHOST.into()),
+            ..Request::default()
+        };
         self.router.handle(&self.host, &req)
     }
 
@@ -278,7 +354,11 @@ impl Harness {
 
     /// Initializes a session for `token` and returns its ID.
     fn session(&self, token: &str) -> String {
-        let resp = self.call(token, None, request_body(1, "initialize", json!({ "protocolVersion": "2025-06-18" })));
+        let resp = self.call(
+            token,
+            None,
+            request_body(1, "initialize", json!({ "protocolVersion": "2025-06-18" })),
+        );
         assert_eq!(resp.status, 200);
         reply_header(&resp, "Mcp-Session-Id").expect("a session header")
     }
@@ -288,12 +368,19 @@ impl Harness {
 fn initialize_negotiates_the_version_and_issues_a_session() {
     let h = harness(true);
     let (token, _) = h.mint(Scope::Observe, &[], None);
-    let init = request_body(1, "initialize", json!({ "protocolVersion": "2025-06-18", "capabilities": {} }));
+    let init = request_body(
+        1,
+        "initialize",
+        json!({ "protocolVersion": "2025-06-18", "capabilities": {} }),
+    );
     let resp = h.call(&token, None, init);
     assert_eq!(resp.status, 200);
     let body = body_of(&resp);
     assert_eq!(body["result"]["protocolVersion"], "2025-06-18");
-    assert_eq!(body["result"]["capabilities"]["tools"]["listChanged"], false);
+    assert_eq!(
+        body["result"]["capabilities"]["tools"]["listChanged"],
+        false
+    );
     assert!(reply_header(&resp, "Mcp-Session-Id").is_some_and(|id| !id.is_empty()));
 }
 
@@ -302,7 +389,11 @@ fn an_unknown_version_gets_the_newest_and_a_known_older_one_is_kept() {
     let h = harness(true);
     let (token, _) = h.mint(Scope::Observe, &[], None);
     for (asked, answered) in [("1999-01-01", "2025-06-18"), ("2025-03-26", "2025-03-26")] {
-        let resp = h.call(&token, None, request_body(1, "initialize", json!({ "protocolVersion": asked })));
+        let resp = h.call(
+            &token,
+            None,
+            request_body(1, "initialize", json!({ "protocolVersion": asked })),
+        );
         assert_eq!(body_of(&resp)["result"]["protocolVersion"], answered);
     }
 }
@@ -312,7 +403,11 @@ fn notifications_get_no_body_ping_answers_and_batches_answer_per_message() {
     let h = harness(true);
     let (token, _) = h.mint(Scope::Observe, &[], None);
     let session = h.session(&token);
-    let note = h.call(&token, Some(&session), json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }));
+    let note = h.call(
+        &token,
+        Some(&session),
+        json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }),
+    );
     assert_eq!((note.status, note.bytes().len()), (202, 0));
     let ping = body_of(&h.call(&token, Some(&session), request_body(2, "ping", json!({}))));
     assert_eq!(ping["result"], json!({}));
@@ -326,7 +421,11 @@ fn notifications_get_no_body_ping_answers_and_batches_answer_per_message() {
         ]),
     );
     assert_eq!(body_of(&batch).as_array().map(Vec::len), Some(2));
-    let garbage = h.raw("POST", vec![bearer(&token), header("mcp-session-id", &session)], b"{nope".to_vec());
+    let garbage = h.raw(
+        "POST",
+        vec![bearer(&token), header("mcp-session-id", &session)],
+        b"{nope".to_vec(),
+    );
     assert_eq!(body_of(&garbage)["error"]["code"], -32700);
 }
 
@@ -340,17 +439,58 @@ fn tools_list_shows_what_the_scope_and_the_allowlist_permit() {
     let s_operator = h.session(&operator);
     let s_narrow = h.session(&narrow);
     let observe_tools = [
-        "plaza_status", "list_agents", "get_agent", "get_transcript", "list_tasks", "get_task", "list_board",
-        "list_projects", "get_project", "list_approvals", "list_machines", "treasury_summary", "usage_summary",
-        "list_laws", "search_library", "prompts_list", "prompt_get", "skills_list", "skill_get", "station_list",
+        "plaza_status",
+        "list_agents",
+        "get_agent",
+        "get_transcript",
+        "list_tasks",
+        "get_task",
+        "list_board",
+        "list_projects",
+        "get_project",
+        "list_approvals",
+        "list_machines",
+        "treasury_summary",
+        "usage_summary",
+        "list_laws",
+        "search_library",
+        "prompts_list",
+        "prompt_get",
+        "skills_list",
+        "skill_get",
+        "station_list",
     ];
     let operate_tools = [
-        "message_orchestrator", "tell_agent", "stop_agent", "restart_agent", "create_task", "prompt_propose", "skill_propose",
-        "station_lease", "station_release", "station_screenshot", "station_click", "station_type", "station_key", "station_scroll",
-        "station_drag", "station_wait", "station_ui_tree", "station_ui_act", "station_shell", "station_run", "station_files",
-        "station_app_list", "station_app_launch", "app_script",
+        "message_orchestrator",
+        "tell_agent",
+        "stop_agent",
+        "restart_agent",
+        "create_task",
+        "prompt_propose",
+        "skill_propose",
+        "station_lease",
+        "station_release",
+        "station_screenshot",
+        "station_click",
+        "station_type",
+        "station_key",
+        "station_scroll",
+        "station_drag",
+        "station_wait",
+        "station_ui_tree",
+        "station_ui_act",
+        "station_shell",
+        "station_run",
+        "station_files",
+        "station_app_list",
+        "station_app_launch",
+        "app_script",
     ];
-    let all: Vec<&str> = observe_tools.iter().chain(operate_tools.iter()).copied().collect();
+    let all: Vec<&str> = observe_tools
+        .iter()
+        .chain(operate_tools.iter())
+        .copied()
+        .collect();
     assert_eq!(listed_names(&h, &reader, &s_reader), observe_tools);
     assert_eq!(listed_names(&h, &operator, &s_operator), all);
     assert_eq!(listed_names(&h, &narrow, &s_narrow), ["get_agent"]);
@@ -368,7 +508,12 @@ fn tools_list_shows_what_the_scope_and_the_allowlist_permit() {
         calls: 0,
         revoked_at_ms: None,
     };
-    let names = |scope| -> Vec<&'static str> { visible(&REGISTRY, &token_of(scope)).iter().map(|tool| tool.name()).collect() };
+    let names = |scope| -> Vec<&'static str> {
+        visible(&REGISTRY, &token_of(scope))
+            .iter()
+            .map(|tool| tool.name())
+            .collect()
+    };
     assert_eq!(names(Scope::Observe), vec!["plaza_status"]);
     assert_eq!(names(Scope::Operate), vec!["fake_operate", "plaza_status"]);
 }
@@ -388,7 +533,10 @@ fn bad_missing_revoked_and_expired_tokens_get_401_with_a_challenge() {
     let late = h.call(&expiring, None, init.clone());
     for resp in [&missing, &bad, &gone, &late] {
         assert_eq!(resp.status, 401);
-        assert_eq!(reply_header(resp, "WWW-Authenticate").as_deref(), Some("Bearer"));
+        assert_eq!(
+            reply_header(resp, "WWW-Authenticate").as_deref(),
+            Some("Bearer")
+        );
     }
     assert_eq!(h.call(&live, None, init).status, 200);
 }
@@ -398,9 +546,17 @@ fn a_foreign_origin_gets_403_and_the_hub_origin_is_allowed() {
     let h = harness(true);
     let (token, _) = h.mint(Scope::Observe, &[], None);
     let init = request_body(1, "initialize", json!({ "protocolVersion": "2025-06-18" }));
-    let foreign = h.raw("POST", vec![bearer(&token), header("origin", "https://evil.example")], serde_json::to_vec(&init).expect("json"));
+    let foreign = h.raw(
+        "POST",
+        vec![bearer(&token), header("origin", "https://evil.example")],
+        serde_json::to_vec(&init).expect("json"),
+    );
     assert_eq!(foreign.status, 403);
-    let own = h.raw("POST", vec![bearer(&token), header("origin", ORIGIN)], serde_json::to_vec(&init).expect("json"));
+    let own = h.raw(
+        "POST",
+        vec![bearer(&token), header("origin", ORIGIN)],
+        serde_json::to_vec(&init).expect("json"),
+    );
     assert_eq!(own.status, 200);
 }
 
@@ -433,15 +589,39 @@ fn prompts_list_and_get_read_the_library() {
     assert_eq!(rows[0]["active_version"], Value::Null);
     assert_eq!(rows[0]["latest_version"], 1);
     assert_eq!(rows[0]["score"], Value::Null);
-    let fragments = body_of(&h.call(&token, Some(&session), tool_call("prompts_list", json!({ "kind": "fragment" }))));
-    assert_eq!(fragments["result"]["structuredContent"]["prompts"].as_array().map(Vec::len), Some(0));
-    let bad_kind = body_of(&h.call(&token, Some(&session), tool_call("prompts_list", json!({ "kind": "poem" }))));
+    let fragments = body_of(&h.call(
+        &token,
+        Some(&session),
+        tool_call("prompts_list", json!({ "kind": "fragment" })),
+    ));
+    assert_eq!(
+        fragments["result"]["structuredContent"]["prompts"]
+            .as_array()
+            .map(Vec::len),
+        Some(0)
+    );
+    let bad_kind = body_of(&h.call(
+        &token,
+        Some(&session),
+        tool_call("prompts_list", json!({ "kind": "poem" })),
+    ));
     assert_eq!(bad_kind["result"]["isError"], true);
     // Nothing is live, so the latest version is read.
-    let got = body_of(&h.call(&token, Some(&session), tool_call("prompt_get", json!({ "id": "coder-system" }))));
+    let got = body_of(&h.call(
+        &token,
+        Some(&session),
+        tool_call("prompt_get", json!({ "id": "coder-system" })),
+    ));
     assert_eq!(got["result"]["structuredContent"]["version"], 1);
-    assert_eq!(got["result"]["structuredContent"]["body"], apz_prompt::template(Kind::System));
-    let missing = body_of(&h.call(&token, Some(&session), tool_call("prompt_get", json!({ "id": "nope" }))));
+    assert_eq!(
+        got["result"]["structuredContent"]["body"],
+        apz_prompt::template(Kind::System)
+    );
+    let missing = body_of(&h.call(
+        &token,
+        Some(&session),
+        tool_call("prompt_get", json!({ "id": "nope" })),
+    ));
     assert_eq!(missing["result"]["isError"], true);
 }
 
@@ -453,12 +633,27 @@ fn skill_tools_are_scoped_like_the_prompt_tools() {
     let reader_session = h.session(&reader);
     let operator_session = h.session(&operator);
     // Scope is checked before the tool runs, so these refusals never reach the skill library.
-    let args = json!({ "id": "pdf-forms", "skill_md": "# PDF forms\n", "files": [], "base_version": 1 });
-    let refused = body_of(&h.call(&reader, Some(&reader_session), tool_call("skill_propose", args)));
-    assert!(refused["error"].is_object(), "an observe token must not reach skill_propose");
+    let args =
+        json!({ "id": "pdf-forms", "skill_md": "# PDF forms\n", "files": [], "base_version": 1 });
+    let refused = body_of(&h.call(
+        &reader,
+        Some(&reader_session),
+        tool_call("skill_propose", args),
+    ));
+    assert!(
+        refused["error"].is_object(),
+        "an observe token must not reach skill_propose"
+    );
     let publish = json!({ "id": "pdf-forms", "version": 1 });
-    let by_operator = body_of(&h.call(&operator, Some(&operator_session), tool_call("skill_publish", publish)));
-    assert!(by_operator["error"].is_object(), "an operate token must not reach skill_publish");
+    let by_operator = body_of(&h.call(
+        &operator,
+        Some(&operator_session),
+        tool_call("skill_publish", publish),
+    ));
+    assert!(
+        by_operator["error"].is_object(),
+        "an operate token must not reach skill_publish"
+    );
 }
 
 #[test]
@@ -469,18 +664,41 @@ fn prompt_propose_is_operate_only_and_never_publishes() {
     let (operator, _) = h.mint(Scope::Operate, &[], None);
     let reader_session = h.session(&reader);
     let operator_session = h.session(&operator);
-    let args = json!({ "id": "coder-system", "body": "a new body", "note": "try", "base_version": 1 });
-    let refused = body_of(&h.call(&reader, Some(&reader_session), tool_call("prompt_propose", args.clone())));
-    assert!(refused["error"].is_object(), "an observe token must not reach prompt_propose");
-    let proposed = body_of(&h.call(&operator, Some(&operator_session), tool_call("prompt_propose", args)));
+    let args =
+        json!({ "id": "coder-system", "body": "a new body", "note": "try", "base_version": 1 });
+    let refused = body_of(&h.call(
+        &reader,
+        Some(&reader_session),
+        tool_call("prompt_propose", args.clone()),
+    ));
+    assert!(
+        refused["error"].is_object(),
+        "an observe token must not reach prompt_propose"
+    );
+    let proposed = body_of(&h.call(
+        &operator,
+        Some(&operator_session),
+        tool_call("prompt_propose", args),
+    ));
     assert_eq!(proposed["result"]["isError"], false);
     assert_eq!(proposed["result"]["structuredContent"]["version"], 2);
     assert_eq!(proposed["result"]["structuredContent"]["created"], true);
     let same = json!({ "id": "coder-system", "body": "a new body", "base_version": 2 });
-    let unchanged = body_of(&h.call(&operator, Some(&operator_session), tool_call("prompt_propose", same)));
+    let unchanged = body_of(&h.call(
+        &operator,
+        Some(&operator_session),
+        tool_call("prompt_propose", same),
+    ));
     assert_eq!(unchanged["result"]["structuredContent"]["created"], false);
     assert_eq!(unchanged["result"]["structuredContent"]["version"], 2);
-    let stored = h.host.plaza.prompts.store().get("coder-system").expect("a read").expect("a prompt");
+    let stored = h
+        .host
+        .plaza
+        .prompts
+        .store()
+        .get("coder-system")
+        .expect("a read")
+        .expect("a prompt");
     assert_eq!(stored.active_version, None, "a proposal must not publish");
 }
 
@@ -488,18 +706,61 @@ fn prompt_propose_is_operate_only_and_never_publishes() {
 fn prompt_publish_is_govern_only_and_refuses_a_version_with_errors() {
     let h = harness(true);
     seed_prompt(&h.host.plaza, "coder-system");
-    let broken = h.host.plaza.prompts.add_version("coder-system", 1, "```\nbroken".into(), "broken".into(), "owner", T0).expect("a version").0;
+    let broken = h
+        .host
+        .plaza
+        .prompts
+        .add_version(
+            "coder-system",
+            1,
+            "```\nbroken".into(),
+            "broken".into(),
+            "owner",
+            T0,
+        )
+        .expect("a version")
+        .0;
     let (operator, _) = h.mint(Scope::Operate, &[], None);
     let (governor, _) = h.mint(Scope::Govern, &[], None);
     let operator_session = h.session(&operator);
     let governor_session = h.session(&governor);
-    let by_operator = body_of(&h.call(&operator, Some(&operator_session), tool_call("prompt_publish", json!({ "id": "coder-system", "version": 1 }))));
-    assert!(by_operator["error"].is_object(), "an operate token must not reach prompt_publish");
-    let refused = body_of(&h.call(&governor, Some(&governor_session), tool_call("prompt_publish", json!({ "id": "coder-system", "version": broken.version }))));
-    assert_eq!(refused["result"]["isError"], true, "a version with errors must not publish");
-    let published = body_of(&h.call(&governor, Some(&governor_session), tool_call("prompt_publish", json!({ "id": "coder-system", "version": 1 }))));
+    let by_operator = body_of(&h.call(
+        &operator,
+        Some(&operator_session),
+        tool_call(
+            "prompt_publish",
+            json!({ "id": "coder-system", "version": 1 }),
+        ),
+    ));
+    assert!(
+        by_operator["error"].is_object(),
+        "an operate token must not reach prompt_publish"
+    );
+    let refused = body_of(&h.call(
+        &governor,
+        Some(&governor_session),
+        tool_call(
+            "prompt_publish",
+            json!({ "id": "coder-system", "version": broken.version }),
+        ),
+    ));
+    assert_eq!(
+        refused["result"]["isError"], true,
+        "a version with errors must not publish"
+    );
+    let published = body_of(&h.call(
+        &governor,
+        Some(&governor_session),
+        tool_call(
+            "prompt_publish",
+            json!({ "id": "coder-system", "version": 1 }),
+        ),
+    ));
     assert_eq!(published["result"]["isError"], false);
-    assert_eq!(published["result"]["structuredContent"]["active_version"], 1);
+    assert_eq!(
+        published["result"]["structuredContent"]["active_version"],
+        1
+    );
 }
 
 #[test]
@@ -512,7 +773,11 @@ fn plaza_status_answers_with_structured_content_and_text() {
     assert_eq!(result["isError"], false);
     assert_eq!(result["structuredContent"]["agents"]["total"], 2);
     assert_eq!(result["content"][0]["type"], "text");
-    assert!(result["content"][0]["text"].as_str().is_some_and(|text| text.contains("2 agents")));
+    assert!(
+        result["content"][0]["text"]
+            .as_str()
+            .is_some_and(|text| text.contains("2 agents"))
+    );
 }
 
 #[test]
@@ -520,14 +785,38 @@ fn list_agents_and_get_agent_read_the_roster_and_refuse_bad_input() {
     let h = harness(true);
     let (token, _) = h.mint(Scope::Observe, &[], None);
     let session = h.session(&token);
-    let listed = body_of(&h.call(&token, Some(&session), tool_call("list_agents", json!({ "role": "coder" }))));
-    assert_eq!(listed["result"]["structuredContent"]["agents"].as_array().map(Vec::len), Some(1));
-    assert_eq!(listed["result"]["structuredContent"]["agents"][0]["name"], "Ada");
-    let one = body_of(&h.call(&token, Some(&session), tool_call("get_agent", json!({ "cid": 2 }))));
+    let listed = body_of(&h.call(
+        &token,
+        Some(&session),
+        tool_call("list_agents", json!({ "role": "coder" })),
+    ));
+    assert_eq!(
+        listed["result"]["structuredContent"]["agents"]
+            .as_array()
+            .map(Vec::len),
+        Some(1)
+    );
+    assert_eq!(
+        listed["result"]["structuredContent"]["agents"][0]["name"],
+        "Ada"
+    );
+    let one = body_of(&h.call(
+        &token,
+        Some(&session),
+        tool_call("get_agent", json!({ "cid": 2 })),
+    ));
     assert_eq!(one["result"]["structuredContent"]["name"], "Bo");
-    let missing = body_of(&h.call(&token, Some(&session), tool_call("get_agent", json!({ "cid": 9 }))));
+    let missing = body_of(&h.call(
+        &token,
+        Some(&session),
+        tool_call("get_agent", json!({ "cid": 9 })),
+    ));
     assert_eq!(missing["result"]["isError"], true);
-    let too_many = body_of(&h.call(&token, Some(&session), tool_call("list_agents", json!({ "limit": 500 }))));
+    let too_many = body_of(&h.call(
+        &token,
+        Some(&session),
+        tool_call("list_agents", json!({ "limit": 500 })),
+    ));
     assert_eq!(too_many["result"]["isError"], true);
 }
 
@@ -554,15 +843,25 @@ fn every_tool_call_writes_an_audit_row() {
     let (token, record) = h.mint(Scope::Observe, &[], None);
     let session = h.session(&token);
     h.call(&token, Some(&session), tool_call("plaza_status", json!({})));
-    h.call(&token, Some(&session), tool_call("get_agent", json!({ "cid": 9 })));
+    h.call(
+        &token,
+        Some(&session),
+        tool_call("get_agent", json!({ "cid": 9 })),
+    );
     let rows = h.host.hub.audit.list();
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0].token_id.as_deref(), Some(record.id.as_str()));
     assert_eq!((rows[0].tool.as_str(), rows[0].ok), ("plaza_status", true));
     assert_eq!(rows[0].args_sha256, sha256_hex(b"{}"));
     assert_eq!(rows[1].tool, "get_agent");
-    assert_eq!((rows[1].ok, rows[1].error.as_deref()), (false, Some("tool_error")));
-    assert_eq!(rows[1].args_sha256, sha256_hex(json!({ "cid": 9 }).to_string().as_bytes()));
+    assert_eq!(
+        (rows[1].ok, rows[1].error.as_deref()),
+        (false, Some("tool_error"))
+    );
+    assert_eq!(
+        rows[1].args_sha256,
+        sha256_hex(json!({ "cid": 9 }).to_string().as_bytes())
+    );
 }
 
 #[test]
@@ -572,18 +871,53 @@ fn a_session_expires_after_an_hour_idle_and_is_bound_to_its_token() {
     let (other, _) = h.mint(Scope::Observe, &[], None);
     let session = h.session(&token);
     h.advance(59 * MINUTE);
-    assert_eq!(h.call(&token, Some(&session), request_body(4, "ping", json!({}))).status, 200);
-    assert_eq!(h.call(&other, Some(&session), request_body(5, "ping", json!({}))).status, 404);
+    assert_eq!(
+        h.call(&token, Some(&session), request_body(4, "ping", json!({})))
+            .status,
+        200
+    );
+    assert_eq!(
+        h.call(&other, Some(&session), request_body(5, "ping", json!({})))
+            .status,
+        404
+    );
     h.advance(61 * MINUTE);
-    assert_eq!(h.call(&token, Some(&session), request_body(6, "ping", json!({}))).status, 404);
-    assert_eq!(h.call(&token, Some("no-such-session"), request_body(7, "ping", json!({}))).status, 404);
+    assert_eq!(
+        h.call(&token, Some(&session), request_body(6, "ping", json!({})))
+            .status,
+        404
+    );
+    assert_eq!(
+        h.call(
+            &token,
+            Some("no-such-session"),
+            request_body(7, "ping", json!({}))
+        )
+        .status,
+        404
+    );
 }
 
 #[test]
 fn the_registry_never_offers_a_tool_that_reaches_the_never_list() {
     const BANNED: [&str; 17] = [
-        "vault", "secret", "key", "token", "join", "mint", "fine", "transfer", "payment", "law_edit", "override",
-        "sanction", "stop_all", "resume", "promote", "retire_model", "setting",
+        "vault",
+        "secret",
+        "key",
+        "token",
+        "join",
+        "mint",
+        "fine",
+        "transfer",
+        "payment",
+        "law_edit",
+        "override",
+        "sanction",
+        "stop_all",
+        "resume",
+        "promote",
+        "retire_model",
+        "setting",
     ];
     // `station_key` presses a keyboard key on a workstation (the word is in its name by meaning, not as a credential).
     const ALLOWED: [&str; 3] = ["propose_law_change", "stop_agent", "station_key"];
@@ -593,7 +927,10 @@ fn the_registry_never_offers_a_tool_that_reaches_the_never_list() {
             continue;
         }
         for word in BANNED {
-            assert!(!name.contains(word), "{name} reaches the never list through {word}");
+            assert!(
+                !name.contains(word),
+                "{name} reaches the never list through {word}"
+            );
         }
     }
 }
@@ -603,8 +940,15 @@ fn an_observe_token_cannot_call_an_operate_tool() {
     let h = harness(true);
     let (token, _) = h.mint(Scope::Observe, &[], None);
     let session = h.session(&token);
-    let body = body_of(&h.call(&token, Some(&session), tool_call("tell_agent", json!({ "cid": 1, "text": "hi" }))));
-    assert!(body.get("error").is_some() || body["result"]["isError"] == true, "{body}");
+    let body = body_of(&h.call(
+        &token,
+        Some(&session),
+        tool_call("tell_agent", json!({ "cid": 1, "text": "hi" })),
+    ));
+    assert!(
+        body.get("error").is_some() || body["result"]["isError"] == true,
+        "{body}"
+    );
     assert!(body["result"]["structuredContent"].is_null(), "{body}");
 }
 
@@ -613,13 +957,21 @@ fn one_happy_call_per_scope_reaches_its_service() {
     let h = harness(true);
     let (observe, _) = h.mint(Scope::Observe, &[], None);
     let session = h.session(&observe);
-    let tasks = body_of(&h.call(&observe, Some(&session), tool_call("list_tasks", json!({ "status": "open" }))));
+    let tasks = body_of(&h.call(
+        &observe,
+        Some(&session),
+        tool_call("list_tasks", json!({ "status": "open" })),
+    ));
     assert_eq!(tasks["result"]["isError"], false, "{tasks}");
     assert_eq!(tasks["result"]["structuredContent"]["tasks"][0]["id"], "t1");
 
     let (operate, _) = h.mint(Scope::Operate, &[], None);
     let session = h.session(&operate);
-    let told = body_of(&h.call(&operate, Some(&session), tool_call("tell_agent", json!({ "cid": 1, "text": "look at t1" }))));
+    let told = body_of(&h.call(
+        &operate,
+        Some(&session),
+        tool_call("tell_agent", json!({ "cid": 1, "text": "look at t1" })),
+    ));
     assert_eq!(told["result"]["isError"], false, "{told}");
     assert_eq!(told["result"]["structuredContent"]["text"], "look at t1");
 }
@@ -629,11 +981,19 @@ fn a_tool_result_in_a_transcript_is_cut_to_4_kb() {
     let h = harness(true);
     let (token, _) = h.mint(Scope::Observe, &[], None);
     let session = h.session(&token);
-    let body = body_of(&h.call(&token, Some(&session), tool_call("get_transcript", json!({ "cid": 1 }))));
+    let body = body_of(&h.call(
+        &token,
+        Some(&session),
+        tool_call("get_transcript", json!({ "cid": 1 })),
+    ));
     assert_eq!(body["result"]["isError"], false, "{body}");
     let entry = &body["result"]["structuredContent"]["entries"][0];
     assert_eq!(entry["data"]["truncated"], true);
-    assert!(entry["data"]["preview"].as_str().is_some_and(|text| text.len() == 4096));
+    assert!(
+        entry["data"]["preview"]
+            .as_str()
+            .is_some_and(|text| text.len() == 4096)
+    );
 }
 
 #[test]
@@ -641,10 +1001,21 @@ fn search_library_finds_a_package_by_its_text() {
     let h = harness(true);
     let (observe, _) = h.mint(Scope::Observe, &[], None);
     let session = h.session(&observe);
-    let found = body_of(&h.call(&observe, Some(&session), tool_call("search_library", json!({ "query": "weather" }))));
+    let found = body_of(&h.call(
+        &observe,
+        Some(&session),
+        tool_call("search_library", json!({ "query": "weather" })),
+    ));
     assert_eq!(found["result"]["isError"], false, "{found}");
-    assert_eq!(found["result"]["structuredContent"]["packages"][0]["name"], "weather");
-    let none = body_of(&h.call(&observe, Some(&session), tool_call("search_library", json!({ "query": "zzz" }))));
+    assert_eq!(
+        found["result"]["structuredContent"]["packages"][0]["name"],
+        "weather"
+    );
+    let none = body_of(&h.call(
+        &observe,
+        Some(&session),
+        tool_call("search_library", json!({ "query": "zzz" })),
+    ));
     assert_eq!(none["result"]["structuredContent"]["packages"], json!([]));
 }
 
@@ -653,10 +1024,18 @@ fn restart_agent_is_an_operate_tool_and_refuses_an_unknown_agent() {
     let h = harness(true);
     let (operate, _) = h.mint(Scope::Operate, &[], None);
     let session = h.session(&operate);
-    let ok = body_of(&h.call(&operate, Some(&session), tool_call("restart_agent", json!({ "cid": 1 }))));
+    let ok = body_of(&h.call(
+        &operate,
+        Some(&session),
+        tool_call("restart_agent", json!({ "cid": 1 })),
+    ));
     assert_eq!(ok["result"]["isError"], false, "{ok}");
     assert_eq!(ok["result"]["structuredContent"]["ok"], true);
-    let refused = body_of(&h.call(&operate, Some(&session), tool_call("restart_agent", json!({ "cid": 9 }))));
+    let refused = body_of(&h.call(
+        &operate,
+        Some(&session),
+        tool_call("restart_agent", json!({ "cid": 9 })),
+    ));
     assert_eq!(refused["result"]["isError"], true, "{refused}");
 }
 
@@ -668,7 +1047,10 @@ fn request_decision_records_a_recommendation_and_never_decides() {
     let body = body_of(&h.call(
         &govern,
         Some(&session),
-        tool_call("request_decision", json!({ "approval_id": "a1", "decision": "approve", "note": "looks fine" })),
+        tool_call(
+            "request_decision",
+            json!({ "approval_id": "a1", "decision": "approve", "note": "looks fine" }),
+        ),
     ));
     assert_eq!(body["result"]["isError"], false, "{body}");
     assert_eq!(body["result"]["structuredContent"]["recorded"], true);
@@ -676,7 +1058,10 @@ fn request_decision_records_a_recommendation_and_never_decides() {
     let bad = body_of(&h.call(
         &govern,
         Some(&session),
-        tool_call("request_decision", json!({ "approval_id": "a1", "decision": "maybe", "note": "" })),
+        tool_call(
+            "request_decision",
+            json!({ "approval_id": "a1", "decision": "maybe", "note": "" }),
+        ),
     ));
     assert_eq!(bad["result"]["isError"], true, "{bad}");
 }
@@ -689,9 +1074,15 @@ fn an_operate_token_cannot_call_a_govern_tool() {
     let body = body_of(&h.call(
         &token,
         Some(&session),
-        tool_call("request_decision", json!({ "approval_id": "a1", "decision": "deny", "note": "" })),
+        tool_call(
+            "request_decision",
+            json!({ "approval_id": "a1", "decision": "deny", "note": "" }),
+        ),
     ));
-    assert!(body.get("error").is_some() || body["result"]["isError"] == true, "{body}");
+    assert!(
+        body.get("error").is_some() || body["result"]["isError"] == true,
+        "{body}"
+    );
     assert!(body["result"]["structuredContent"].is_null(), "{body}");
 }
 
@@ -700,10 +1091,18 @@ fn create_task_files_a_task_and_refuses_an_empty_title() {
     let h = harness(true);
     let (operate, _) = h.mint(Scope::Operate, &[], None);
     let session = h.session(&operate);
-    let made = body_of(&h.call(&operate, Some(&session), tool_call("create_task", json!({ "title": "Ship it" }))));
+    let made = body_of(&h.call(
+        &operate,
+        Some(&session),
+        tool_call("create_task", json!({ "title": "Ship it" })),
+    ));
     assert_eq!(made["result"]["isError"], false, "{made}");
     assert_eq!(made["result"]["structuredContent"]["id"], "t2");
-    let refused = body_of(&h.call(&operate, Some(&session), tool_call("create_task", json!({ "title": "" }))));
+    let refused = body_of(&h.call(
+        &operate,
+        Some(&session),
+        tool_call("create_task", json!({ "title": "" })),
+    ));
     assert_eq!(refused["result"]["isError"], true, "{refused}");
 }
 
@@ -726,18 +1125,43 @@ mod open_modes {
         )
         .listening(tls, defaults);
         hub.apply(&settings);
-        Harness { host: TestHost { hub, plaza: fake_plaza(), clock }, router: routes(Router::new()) }
+        Harness {
+            host: TestHost {
+                hub,
+                plaza: fake_plaza(),
+                clock,
+            },
+            router: routes(Router::new()),
+        }
     }
 
-    fn settings(enabled: bool, bind: Bind, mode: AuthMode, scope: Scope) -> crate::hub_mcp::Settings {
-        crate::hub_mcp::Settings { enabled, bind, allowed_origins: vec![], auth_mode: mode, open_scope: scope }
+    fn settings(
+        enabled: bool,
+        bind: Bind,
+        mode: AuthMode,
+        scope: Scope,
+    ) -> crate::hub_mcp::Settings {
+        crate::hub_mcp::Settings {
+            enabled,
+            bind,
+            allowed_origins: vec![],
+            auth_mode: mode,
+            open_scope: scope,
+        }
     }
 
     /// A POST from `from`, with the given headers, through the router.
     fn send(h: &Harness, from: &str, headers: Vec<(String, String)>, body: Value) -> Response {
         let peer: std::net::IpAddr = from.parse().expect("an address");
         let body = serde_json::to_vec(&body).expect("json");
-        let req = Request { method: "POST".into(), path: "/mcp".into(), headers, body, peer: Some(peer), ..Request::default() };
+        let req = Request {
+            method: "POST".into(),
+            path: "/mcp".into(),
+            headers,
+            body,
+            peer: Some(peer),
+            ..Request::default()
+        };
         h.router.handle(&h.host, &req)
     }
 
@@ -751,20 +1175,41 @@ mod open_modes {
 
     #[test]
     fn open_mode_lets_an_anonymous_caller_list_and_observe_without_a_token() {
-        let h = built(false, settings(true, Bind::Local, AuthMode::Open, Scope::Observe));
+        let h = built(
+            false,
+            settings(true, Bind::Local, AuthMode::Open, Scope::Observe),
+        );
         let session = anonymous_session(&h, "127.0.0.1");
-        let list = send(&h, "127.0.0.1", vec![header("mcp-session-id", &session)], request_body(2, "tools/list", json!({})));
+        let list = send(
+            &h,
+            "127.0.0.1",
+            vec![header("mcp-session-id", &session)],
+            request_body(2, "tools/list", json!({})),
+        );
         let listed = body_of(&list)["result"]["tools"].to_string();
         assert!(listed.contains("plaza_status") && !listed.contains("create_task"));
-        let call = send(&h, "127.0.0.1", vec![header("mcp-session-id", &session)], tool_call("plaza_status", json!({})));
+        let call = send(
+            &h,
+            "127.0.0.1",
+            vec![header("mcp-session-id", &session)],
+            tool_call("plaza_status", json!({})),
+        );
         assert_eq!(body_of(&call)["result"]["isError"], json!(false));
     }
 
     #[test]
     fn open_mode_refuses_a_tool_above_the_open_scope() {
-        let h = built(false, settings(true, Bind::Local, AuthMode::Open, Scope::Observe));
+        let h = built(
+            false,
+            settings(true, Bind::Local, AuthMode::Open, Scope::Observe),
+        );
         let session = anonymous_session(&h, "127.0.0.1");
-        let resp = send(&h, "127.0.0.1", vec![header("mcp-session-id", &session)], tool_call("create_task", json!({ "title": "x" })));
+        let resp = send(
+            &h,
+            "127.0.0.1",
+            vec![header("mcp-session-id", &session)],
+            tool_call("create_task", json!({ "title": "x" })),
+        );
         assert_eq!(body_of(&resp)["error"]["code"], json!(-32602));
         let rows = h.host.hub.audit.list();
         assert_eq!(rows[0].error.as_deref(), Some("unknown_tool"));
@@ -773,10 +1218,17 @@ mod open_modes {
 
     #[test]
     fn open_mode_gives_a_token_its_own_scope() {
-        let h = built(false, settings(true, Bind::Local, AuthMode::Open, Scope::Observe));
+        let h = built(
+            false,
+            settings(true, Bind::Local, AuthMode::Open, Scope::Observe),
+        );
         let (token, _) = h.mint(Scope::Operate, &[], None);
         let session = h.session(&token);
-        let resp = h.call(&token, Some(&session), tool_call("create_task", json!({ "title": "from a token" })));
+        let resp = h.call(
+            &token,
+            Some(&session),
+            tool_call("create_task", json!({ "title": "from a token" })),
+        );
         assert_eq!(body_of(&resp)["result"]["isError"], json!(false));
     }
 
@@ -791,15 +1243,39 @@ mod open_modes {
             open_scope: "observe".into(),
             confirm_open_remote: confirm,
         };
-        let tls = built(true, settings(false, Bind::Local, AuthMode::Secure, Scope::Observe));
-        let ctx = crate::hub_mcp::owner::Ctx { hub: &tls.host.hub, db: &db, public_url: "https://hub.test" };
-        assert_eq!(crate::hub_mcp::owner::apply_settings(&ctx, body("remote", "open", false)).status, 400);
-        assert_eq!(tls.host.hub.settings().auth_mode, AuthMode::Secure, "a refused body changes nothing");
-        assert_eq!(crate::hub_mcp::owner::apply_settings(&ctx, body("remote", "open", true)).status, 200);
+        let tls = built(
+            true,
+            settings(false, Bind::Local, AuthMode::Secure, Scope::Observe),
+        );
+        let ctx = crate::hub_mcp::owner::Ctx {
+            hub: &tls.host.hub,
+            db: &db,
+            public_url: "https://hub.test",
+        };
+        assert_eq!(
+            crate::hub_mcp::owner::apply_settings(&ctx, body("remote", "open", false)).status,
+            400
+        );
+        assert_eq!(
+            tls.host.hub.settings().auth_mode,
+            AuthMode::Secure,
+            "a refused body changes nothing"
+        );
+        assert_eq!(
+            crate::hub_mcp::owner::apply_settings(&ctx, body("remote", "open", true)).status,
+            200
+        );
         assert_eq!(tls.host.hub.settings().auth_mode, AuthMode::Open);
 
-        let plain = built(false, settings(false, Bind::Local, AuthMode::Secure, Scope::Observe));
-        let ctx = crate::hub_mcp::owner::Ctx { hub: &plain.host.hub, db: &db, public_url: "https://hub.test" };
+        let plain = built(
+            false,
+            settings(false, Bind::Local, AuthMode::Secure, Scope::Observe),
+        );
+        let ctx = crate::hub_mcp::owner::Ctx {
+            hub: &plain.host.hub,
+            db: &db,
+            public_url: "https://hub.test",
+        };
         let refused = crate::hub_mcp::owner::apply_settings(&ctx, body("remote", "secure", false));
         assert_eq!(refused.status, 400);
         assert!(String::from_utf8_lossy(refused.bytes()).contains("not serving TLS"));
@@ -808,36 +1284,103 @@ mod open_modes {
     #[test]
     fn a_non_loopback_peer_gets_404_under_local_and_remote_needs_tls() {
         let init = || request_body(1, "initialize", json!({ "protocolVersion": "2025-06-18" }));
-        let local = built(true, settings(true, Bind::Local, AuthMode::Secure, Scope::Observe));
+        let local = built(
+            true,
+            settings(true, Bind::Local, AuthMode::Secure, Scope::Observe),
+        );
         let (token, _) = local.mint(Scope::Observe, &[], None);
-        assert_eq!(send(&local, "203.0.113.7", vec![bearer(&token)], init()).status, 404);
-        assert_eq!(send(&local, "127.0.0.1", vec![bearer(&token)], init()).status, 200);
+        assert_eq!(
+            send(&local, "203.0.113.7", vec![bearer(&token)], init()).status,
+            404
+        );
+        assert_eq!(
+            send(&local, "127.0.0.1", vec![bearer(&token)], init()).status,
+            200
+        );
 
-        let plain = built(false, settings(true, Bind::Remote, AuthMode::Secure, Scope::Observe));
+        let plain = built(
+            false,
+            settings(true, Bind::Remote, AuthMode::Secure, Scope::Observe),
+        );
         let (token, _) = plain.mint(Scope::Observe, &[], None);
-        assert_eq!(send(&plain, "203.0.113.7", vec![bearer(&token)], init()).status, 404, "remote over a plain connection");
+        assert_eq!(
+            send(&plain, "203.0.113.7", vec![bearer(&token)], init()).status,
+            404,
+            "remote over a plain connection"
+        );
 
-        let tls = built(true, settings(true, Bind::Remote, AuthMode::Secure, Scope::Observe));
+        let tls = built(
+            true,
+            settings(true, Bind::Remote, AuthMode::Secure, Scope::Observe),
+        );
         let (token, _) = tls.mint(Scope::Observe, &[], None);
-        assert_eq!(send(&tls, "203.0.113.7", vec![bearer(&token)], init()).status, 200);
+        assert_eq!(
+            send(&tls, "203.0.113.7", vec![bearer(&token)], init()).status,
+            200
+        );
     }
 
     #[test]
     fn the_hubs_own_origins_are_allowed_whatever_the_owners_list_says() {
-        let h = built(false, settings(true, Bind::Local, AuthMode::Secure, Scope::Observe));
+        let h = built(
+            false,
+            settings(true, Bind::Local, AuthMode::Secure, Scope::Observe),
+        );
         let (token, _) = h.mint(Scope::Observe, &[], None);
-        let init = serde_json::to_vec(&request_body(1, "initialize", json!({ "protocolVersion": "2025-06-18" }))).expect("json");
-        assert_eq!(h.raw("POST", vec![bearer(&token), header("origin", "http://127.0.0.1:19080")], init.clone()).status, 200);
-        assert_eq!(h.raw("POST", vec![bearer(&token), header("origin", "https://hub.test")], init.clone()).status, 200);
-        assert_eq!(h.raw("POST", vec![bearer(&token), header("origin", "https://evil.example")], init).status, 403);
-        assert!(h.host.hub.effective_origins().contains(&"http://[::1]:19080".to_string()));
+        let init = serde_json::to_vec(&request_body(
+            1,
+            "initialize",
+            json!({ "protocolVersion": "2025-06-18" }),
+        ))
+        .expect("json");
+        assert_eq!(
+            h.raw(
+                "POST",
+                vec![bearer(&token), header("origin", "http://127.0.0.1:19080")],
+                init.clone()
+            )
+            .status,
+            200
+        );
+        assert_eq!(
+            h.raw(
+                "POST",
+                vec![bearer(&token), header("origin", "https://hub.test")],
+                init.clone()
+            )
+            .status,
+            200
+        );
+        assert_eq!(
+            h.raw(
+                "POST",
+                vec![bearer(&token), header("origin", "https://evil.example")],
+                init
+            )
+            .status,
+            403
+        );
+        assert!(
+            h.host
+                .hub
+                .effective_origins()
+                .contains(&"http://[::1]:19080".to_string())
+        );
     }
 
     #[test]
     fn an_anonymous_call_is_audited_with_its_ip_and_no_token() {
-        let h = built(true, settings(true, Bind::Remote, AuthMode::Open, Scope::Observe));
+        let h = built(
+            true,
+            settings(true, Bind::Remote, AuthMode::Open, Scope::Observe),
+        );
         let session = anonymous_session(&h, "203.0.113.7");
-        let resp = send(&h, "203.0.113.7", vec![header("mcp-session-id", &session)], tool_call("plaza_status", json!({})));
+        let resp = send(
+            &h,
+            "203.0.113.7",
+            vec![header("mcp-session-id", &session)],
+            tool_call("plaza_status", json!({})),
+        );
         assert_eq!(body_of(&resp)["result"]["isError"], json!(false));
         let rows = h.host.hub.audit.list();
         let last = rows.last().expect("a row");

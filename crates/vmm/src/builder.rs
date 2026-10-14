@@ -30,8 +30,8 @@ use std::thread;
 use vmm_sys_util::eventfd::EventFd;
 
 use crate::devices::legacy::SerialDevice;
-use crate::devices::virtio::vsock::unix::VsockUnixBackend;
 use crate::devices::virtio::vsock::Vsock;
+use crate::devices::virtio::vsock::unix::VsockUnixBackend;
 use crate::spawner::{SpawnError, VmRuntime, VmSpec};
 use crate::vstate::vm::KvmVm;
 
@@ -151,7 +151,12 @@ fn jail_the_vm(spec: &VmSpec, id: u32) -> Result<(), crate::jail::jailer::Jailer
 /// This is deliberate and documented, not a hidden rewrite: the appended
 /// strings are constants derived from the port's own layout, never host state
 /// (no environment variable, token or path can reach the guest this way).
-fn guest_cmdline(requested: &str, has_vsock: bool, has_workspace: bool, has_balloon: bool) -> String {
+fn guest_cmdline(
+    requested: &str,
+    has_vsock: bool,
+    has_workspace: bool,
+    has_balloon: bool,
+) -> String {
     const LOGLEVEL_ARGS: [&str; 4] = ["loglevel=", "ignore_loglevel", "quiet", "debug"];
     const PCI_ARGS: [&str; 1] = ["pci="];
     #[cfg(target_arch = "x86_64")]
@@ -526,8 +531,8 @@ mod x86_64 {
     use vmm_sys_util::eventfd::EventFd;
 
     use crate::arch::x86_64::layout::{
-        BALLOON_GSI, BALLOON_MMIO_START, CMDLINE_MAX_SIZE, MMIO_LEN, VSOCK_GSI, VSOCK_MMIO_START, WORKSPACE_GSI,
-        WORKSPACE_MMIO_START,
+        BALLOON_GSI, BALLOON_MMIO_START, CMDLINE_MAX_SIZE, MMIO_LEN, VSOCK_GSI, VSOCK_MMIO_START,
+        WORKSPACE_GSI, WORKSPACE_MMIO_START,
     };
     use crate::arch::x86_64::{
         ConfigurationError, InitrdConfig, InitrdError, arch_memory_regions,
@@ -537,8 +542,8 @@ mod x86_64 {
         I8042Device, PM1_CNT_SIZE, Pm1CntDevice, SLEEP_CONTROL_PORT, SerialDevice, SerialOut,
     };
     use crate::devices::virtio::VirtioError;
-    use crate::devices::virtio::block::device::VirtioBlock;
     use crate::devices::virtio::balloon::{SharedBalloon, VirtioBalloon};
+    use crate::devices::virtio::block::device::VirtioBlock;
     use crate::devices::virtio::block::mmio_device::BlockMmioDevice;
     use crate::devices::virtio::mmio::VirtioMmioTransport;
     use crate::devices::virtio::vsock::VsockError;
@@ -761,7 +766,8 @@ mod x86_64 {
         let workspace = match &spec.workspace {
             Some(image) => {
                 let irq = EventFd::new(libc::EFD_NONBLOCK).map_err(BootError::EventFd)?;
-                vm.register_irq(&irq, WORKSPACE_GSI).map_err(BootError::Irq)?;
+                vm.register_irq(&irq, WORKSPACE_GSI)
+                    .map_err(BootError::Irq)?;
                 let device = VirtioBlock::new(image)
                     .map_err(VirtioError::from)
                     .map_err(BootError::Virtio)?;
@@ -800,10 +806,7 @@ mod x86_64 {
                     .insert(transport.clone(), BALLOON_MMIO_START, MMIO_LEN)?;
                 let max_mib = u32::try_from(spec.memory_mib).unwrap_or(u32::MAX);
                 shared.set_usable_mib(max_mib, usable);
-                runtime.set_memory_control(Arc::new(super::InProcessBalloon {
-                    shared,
-                    max_mib,
-                }));
+                runtime.set_memory_control(Arc::new(super::InProcessBalloon { shared, max_mib }));
                 Some(transport)
             }
             None => None,
@@ -846,7 +849,7 @@ mod x86_64 {
                 spec.workspace.is_some(),
                 spec.balloon.is_some(),
             )
-                .as_str(),
+            .as_str(),
             CMDLINE_MAX_SIZE,
         )?;
         configure_system_for_boot(
@@ -907,8 +910,8 @@ mod aarch64 {
 
     use crate::arch::aarch64::gic::GICVersion as KvmGicVersion;
     use crate::arch::aarch64::layout::{
-        CMDLINE_MAX_SIZE, GSI_LEGACY_START, MMIO_LEN, SERIAL_MEM_START, VSOCK_GSI, VSOCK_MMIO_START,
-        WORKSPACE_GSI, WORKSPACE_MMIO_START,
+        CMDLINE_MAX_SIZE, GSI_LEGACY_START, MMIO_LEN, SERIAL_MEM_START, VSOCK_GSI,
+        VSOCK_MMIO_START, WORKSPACE_GSI, WORKSPACE_MMIO_START,
     };
     use crate::arch::aarch64::{
         ConfigurationError, InitrdConfig, InitrdError, SerialFdtInfo, VirtioMmioFdtInfo,
@@ -1093,7 +1096,8 @@ mod aarch64 {
         let workspace = match &spec.workspace {
             Some(image) => {
                 let irq = EventFd::new(libc::EFD_NONBLOCK).map_err(BootError::EventFd)?;
-                vm.register_irq(&irq, WORKSPACE_GSI).map_err(BootError::Irq)?;
+                vm.register_irq(&irq, WORKSPACE_GSI)
+                    .map_err(BootError::Irq)?;
                 let device = VirtioBlock::new(image)
                     .map_err(VirtioError::from)
                     .map_err(BootError::Virtio)?;
@@ -1172,7 +1176,7 @@ mod aarch64 {
                 spec.workspace.is_some(),
                 spec.balloon.is_some(),
             )
-                .as_str(),
+            .as_str(),
             CMDLINE_MAX_SIZE,
         )?;
         let serial_info = SerialFdtInfo {

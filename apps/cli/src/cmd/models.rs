@@ -3,14 +3,16 @@
 use std::io::Read;
 
 use clap::Subcommand;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use crate::ctx::{self, confirm, Ctx};
+use crate::ctx::{self, Ctx, confirm};
 
 /// The provider kinds whose models are decision models (as the console decides it).
 const DECISION_KINDS: [&str; 3] = ["openai-decisions", "systemone", "azure-decisions"];
 /// The effort levels the hub's settings accept, and `default`, which clears the setting (the provider's own default).
-const EFFORTS: [&str; 8] = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "default"];
+const EFFORTS: [&str; 8] = [
+    "none", "minimal", "low", "medium", "high", "xhigh", "max", "default",
+];
 
 #[derive(Subcommand, Debug)]
 pub enum Cmd {
@@ -201,7 +203,10 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                             provider_group(p).to_string(),
                             key_status(ctx::s(p, "credential")).to_string(),
                             ctx::text(p, "base_url"),
-                            p.get("models").and_then(Value::as_array).map_or(0, Vec::len).to_string(),
+                            p.get("models")
+                                .and_then(Value::as_array)
+                                .map_or(0, Vec::len)
+                                .to_string(),
                         ]
                     })
                     .collect();
@@ -227,8 +232,22 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             });
             Ok(())
         }
-        Cmd::Add { preset, id, kind, base_url, env, secret, command, models, key_stdin } => {
-            let key = if key_stdin { Some(read_secret_from_stdin()?) } else { None };
+        Cmd::Add {
+            preset,
+            id,
+            kind,
+            base_url,
+            env,
+            secret,
+            command,
+            models,
+            key_stdin,
+        } => {
+            let key = if key_stdin {
+                Some(read_secret_from_stdin()?)
+            } else {
+                None
+            };
             let mut body = match &preset {
                 Some(name) => {
                     if kind.is_some() {
@@ -238,7 +257,9 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                     let found = items(&kinds)
                         .find(|k| ctx::s(k, "id") == name.as_str())
                         .cloned()
-                        .ok_or_else(|| format!("no preset {name}: see `agentplaza models presets`"))?;
+                        .ok_or_else(|| {
+                            format!("no preset {name}: see `agentplaza models presets`")
+                        })?;
                     let mut body = json!({
                         "id": id.clone().unwrap_or_else(|| name.clone()),
                         "kind": ctx::s(&found, "kind"),
@@ -272,14 +293,28 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             ctx.client.post("/v1/providers", &body)?;
             let stored = key.is_some();
             if let Some(key) = key {
-                ctx.client.put(&format!("/v1/providers/{}/secret", ctx::seg(&pid)), &json!({ "value": key }))?;
+                ctx.client.put(
+                    &format!("/v1/providers/{}/secret", ctx::seg(&pid)),
+                    &json!({ "value": key }),
+                )?;
             }
             ctx.out(&json!({ "id": pid, "key": stored }), |v| {
-                println!("added provider {}{}", ctx::s(v, "id"), if stored { ", key stored" } else { "" });
+                println!(
+                    "added provider {}{}",
+                    ctx::s(v, "id"),
+                    if stored { ", key stored" } else { "" }
+                );
             });
             Ok(())
         }
-        Cmd::Edit { id, base_url, env, secret, command, models } => {
+        Cmd::Edit {
+            id,
+            base_url,
+            env,
+            secret,
+            command,
+            models,
+        } => {
             let list = ctx.client.get("/v1/providers")?;
             let current = items(&list)
                 .find(|p| ctx::s(p, "id") == id.as_str())
@@ -305,7 +340,9 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             if let Some(auth) = auth_from_flags(env, secret, command)? {
                 body["auth"] = auth;
             }
-            let saved = ctx.client.put(&format!("/v1/providers/{}", ctx::seg(&id)), &body)?;
+            let saved = ctx
+                .client
+                .put(&format!("/v1/providers/{}", ctx::seg(&id)), &body)?;
             ctx.out(&saved, |_| println!("saved provider {id}"));
             Ok(())
         }
@@ -313,25 +350,39 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             if !confirm(yes, &format!("Remove provider {id}."))? {
                 return Err("cancelled".into());
             }
-            let gone = ctx.client.delete(&format!("/v1/providers/{}", ctx::seg(&id)))?;
+            let gone = ctx
+                .client
+                .delete(&format!("/v1/providers/{}", ctx::seg(&id)))?;
             ctx.out(&gone, |_| println!("removed provider {id}"));
             Ok(())
         }
         Cmd::Key { id, value } => {
             expect_stdin_marker(&value)?;
             let key = read_secret_from_stdin()?;
-            ctx.client.put(&format!("/v1/providers/{}/secret", ctx::seg(&id)), &json!({ "value": key }))?;
-            ctx.out(&json!({ "id": id, "key": "stored" }), |v| println!("key stored for provider {}", ctx::s(v, "id")));
+            ctx.client.put(
+                &format!("/v1/providers/{}/secret", ctx::seg(&id)),
+                &json!({ "value": key }),
+            )?;
+            ctx.out(&json!({ "id": id, "key": "stored" }), |v| {
+                println!("key stored for provider {}", ctx::s(v, "id"))
+            });
             Ok(())
         }
         Cmd::Test { id, model } => {
             let body = model.map_or_else(|| json!({}), |m| json!({ "model": m }));
-            let report = ctx.client.post(&format!("/v1/providers/{}/test", ctx::seg(&id)), &body)?;
+            let report = ctx
+                .client
+                .post(&format!("/v1/providers/{}/test", ctx::seg(&id)), &body)?;
             let ok = report.get("ok").and_then(Value::as_bool).unwrap_or(false);
             let error = ctx::s(&report, "error").to_string();
             ctx.out(&report, |r| {
                 if ok {
-                    println!("ok  {}  {} ms  {}", ctx::s(r, "model"), ctx::text(r, "latency_ms"), ctx::s(r, "reply"));
+                    println!(
+                        "ok  {}  {} ms  {}",
+                        ctx::s(r, "model"),
+                        ctx::text(r, "latency_ms"),
+                        ctx::s(r, "reply")
+                    );
                 } else {
                     println!("failed  {}  {}", ctx::s(r, "model"), ctx::s(r, "error"));
                 }
@@ -364,9 +415,16 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                         ]
                     })
                     .collect();
-                ctx::table(&["provider", "id", "name", "group", "trains on data"], &rows);
+                ctx::table(
+                    &["provider", "id", "name", "group", "trains on data"],
+                    &rows,
+                );
                 for e in items(&v["errors"]) {
-                    println!("could not list {}: {}", ctx::s(e, "provider"), ctx::s(e, "error"));
+                    println!(
+                        "could not list {}: {}",
+                        ctx::s(e, "provider"),
+                        ctx::s(e, "error")
+                    );
                 }
             });
             Ok(())
@@ -392,9 +450,12 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                 allow_training_models,
             } => {
                 let mut settings = ctx.client.get("/v1/settings")?;
-                let root = settings.as_object_mut().ok_or("the hub's settings are not an object")?;
+                let root = settings
+                    .as_object_mut()
+                    .ok_or("the hub's settings are not an object")?;
                 if let Some(list) = orchestrator {
-                    nested(root, "model_policy")?.insert("orchestrator".into(), json!(entries(&list)?));
+                    nested(root, "model_policy")?
+                        .insert("orchestrator".into(), json!(entries(&list)?));
                 }
                 if let Some(list) = worker {
                     nested(root, "model_policy")?.insert("worker".into(), json!(entries(&list)?));
@@ -409,8 +470,14 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                     root.insert("max_tokens".into(), json!(n));
                 }
                 if !fetch_block.is_empty() || !fetch_unblock.is_empty() {
-                    let add = fetch_block.iter().map(|h| bare_host(h)).collect::<Result<Vec<_>, _>>()?;
-                    let remove = fetch_unblock.iter().map(|h| bare_host(h)).collect::<Result<Vec<_>, _>>()?;
+                    let add = fetch_block
+                        .iter()
+                        .map(|h| bare_host(h))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let remove = fetch_unblock
+                        .iter()
+                        .map(|h| bare_host(h))
+                        .collect::<Result<Vec<_>, _>>()?;
                     edit_blocklist(root, &add, &remove);
                 }
                 if let Some(model) = default_model {
@@ -420,7 +487,9 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                     root.insert("orchestrator_model".into(), json!(checked_entry(&model)?));
                 }
                 for pair in role_models {
-                    let (role, model) = pair.split_once('=').ok_or_else(|| format!("--role-model takes ROLE=MODEL, not {pair}"))?;
+                    let (role, model) = pair
+                        .split_once('=')
+                        .ok_or_else(|| format!("--role-model takes ROLE=MODEL, not {pair}"))?;
                     let roles = nested(root, "role_models")?;
                     if model.is_empty() {
                         roles.remove(role);
@@ -429,11 +498,22 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                     }
                 }
                 for pair in prices {
-                    let (model, rate) = pair.split_once('=').ok_or_else(|| format!("--price takes MODEL=IN:OUT, not {pair}"))?;
-                    let (input, output) = rate.split_once(':').ok_or_else(|| format!("--price takes MODEL=IN:OUT, not {pair}"))?;
-                    let input: f64 = input.parse().map_err(|_| format!("the input price in {pair} is not a number"))?;
-                    let output: f64 = output.parse().map_err(|_| format!("the output price in {pair} is not a number"))?;
-                    nested(root, "prices")?.insert(model.to_string(), json!({ "input": input, "output": output }));
+                    let (model, rate) = pair
+                        .split_once('=')
+                        .ok_or_else(|| format!("--price takes MODEL=IN:OUT, not {pair}"))?;
+                    let (input, output) = rate
+                        .split_once(':')
+                        .ok_or_else(|| format!("--price takes MODEL=IN:OUT, not {pair}"))?;
+                    let input: f64 = input
+                        .parse()
+                        .map_err(|_| format!("the input price in {pair} is not a number"))?;
+                    let output: f64 = output
+                        .parse()
+                        .map_err(|_| format!("the output price in {pair} is not a number"))?;
+                    nested(root, "prices")?.insert(
+                        model.to_string(),
+                        json!({ "input": input, "output": output }),
+                    );
                 }
                 if let Some(allow) = allow_training_models {
                     root.insert("allow_training_models".into(), json!(allow));
@@ -448,7 +528,9 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             ctx.out(&v, print_price);
             Ok(())
         }
-        Cmd::Prices { action: Some(PricesCmd::Refresh) } => {
+        Cmd::Prices {
+            action: Some(PricesCmd::Refresh),
+        } => {
             let v = ctx.client.call("POST", "/v1/prices/refresh", None)?;
             ctx.out(&v, print_refresh);
             Ok(())
@@ -458,14 +540,19 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             ctx.out(&v, print_prices);
             Ok(())
         }
-        Cmd::Decisions { action: DecisionsCmd::Current { provider, model } } => match (provider, model) {
+        Cmd::Decisions {
+            action: DecisionsCmd::Current { provider, model },
+        } => match (provider, model) {
             (None, None) => {
                 let current = ctx.client.get("/v1/decisions/default")?;
                 ctx.out(&current, print_decision);
                 Ok(())
             }
             (Some(provider), Some(model)) => {
-                let saved = ctx.client.put("/v1/decisions/default", &json!({ "provider": provider, "model": model }))?;
+                let saved = ctx.client.put(
+                    "/v1/decisions/default",
+                    &json!({ "provider": provider, "model": model }),
+                )?;
                 ctx.out(&saved, print_decision);
                 Ok(())
             }
@@ -483,7 +570,12 @@ pub(crate) fn items(v: &Value) -> impl Iterator<Item = &Value> {
 
 /// The string items of an optional array, joined with commas ("" when there are none).
 pub(crate) fn joined(v: Option<&Value>) -> String {
-    let parts: Vec<&str> = v.and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).collect();
+    let parts: Vec<&str> = v
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect();
     parts.join(", ")
 }
 
@@ -498,13 +590,19 @@ pub(crate) fn none_if_empty(text: String) -> String {
 
 /// Splits a comma-separated flag, dropping blanks.
 pub(crate) fn split_list(text: &str) -> Vec<String> {
-    text.split(',').map(str::trim).filter(|s| !s.is_empty()).map(str::to_string).collect()
+    text.split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 /// The key on stdin, trimmed. Never an argument, never echoed.
 pub(crate) fn read_secret_from_stdin() -> Result<String, String> {
     let mut text = String::new();
-    std::io::stdin().read_to_string(&mut text).map_err(|e| format!("cannot read the key from stdin: {e}"))?;
+    std::io::stdin()
+        .read_to_string(&mut text)
+        .map_err(|e| format!("cannot read the key from stdin: {e}"))?;
     let key = text.trim().to_string();
     if key.is_empty() {
         Err("stdin held no key".into())
@@ -526,7 +624,12 @@ pub(crate) fn expect_stdin_marker(value: &str) -> Result<(), String> {
 
 /// The providers or models in `group` (all when None), as an array.
 fn filter(list: &Value, group: Option<&str>, group_of: fn(&Value) -> &'static str) -> Value {
-    Value::Array(items(list).filter(|p| group.map_or(true, |g| group_of(p) == g)).cloned().collect())
+    Value::Array(
+        items(list)
+            .filter(|p| group.map_or(true, |g| group_of(p) == g))
+            .cloned()
+            .collect(),
+    )
 }
 
 /// `--group`: chat or decisions (or none).
@@ -535,7 +638,10 @@ fn group_filter(group: Option<String>) -> Result<Option<String>, String> {
     if ok {
         Ok(group)
     } else {
-        Err(format!("--group is chat or decisions, not {}", group.unwrap_or_default()))
+        Err(format!(
+            "--group is chat or decisions, not {}",
+            group.unwrap_or_default()
+        ))
     }
 }
 
@@ -598,7 +704,11 @@ fn auth_label(auth: Option<&Value>) -> String {
 }
 
 /// The auth the flags name: at most one of `--env`, `--secret`, `--command`. None when no flag is given.
-fn auth_from_flags(env: Option<String>, secret: Option<String>, command: Option<String>) -> Result<Option<Value>, String> {
+fn auth_from_flags(
+    env: Option<String>,
+    secret: Option<String>,
+    command: Option<String>,
+) -> Result<Option<Value>, String> {
     let picked: Vec<Value> = [
         env.map(|name| json!({ "env": name })),
         secret.map(|name| json!({ "secret": name })),
@@ -620,13 +730,17 @@ fn auth_from_flags(env: Option<String>, secret: Option<String>, command: Option<
 fn checked_entry(entry: &str) -> Result<String, String> {
     let base = entry.split('@').next().unwrap_or_default();
     let ok = match base.split_once('/') {
-        Some((provider, model)) => !provider.is_empty() && !model.is_empty() && !entry.chars().any(char::is_whitespace),
+        Some((provider, model)) => {
+            !provider.is_empty() && !model.is_empty() && !entry.chars().any(char::is_whitespace)
+        }
         None => false,
     };
     if ok {
         Ok(entry.to_string())
     } else {
-        Err(format!("{entry}: use provider/model, with an optional @effort"))
+        Err(format!(
+            "{entry}: use provider/model, with an optional @effort"
+        ))
     }
 }
 
@@ -646,7 +760,9 @@ fn bare_host(text: &str) -> Result<String, String> {
     if bare {
         Ok(host.to_string())
     } else {
-        Err(format!("{text}: a host is example.com, or *.example.com for its subdomains only"))
+        Err(format!(
+            "{text}: a host is example.com, or *.example.com for its subdomains only"
+        ))
     }
 }
 
@@ -655,7 +771,12 @@ fn edit_blocklist(root: &mut serde_json::Map<String, Value>, add: &[String], rem
     let mut list: Vec<String> = root
         .get("fetch_block")
         .and_then(Value::as_array)
-        .map(|hosts| hosts.iter().filter_map(|h| h.as_str().map(str::to_string)).collect())
+        .map(|hosts| {
+            hosts
+                .iter()
+                .filter_map(|h| h.as_str().map(str::to_string))
+                .collect()
+        })
         .unwrap_or_default();
     for host in add {
         if !list.contains(host) {
@@ -671,12 +792,22 @@ fn set_effort(root: &mut serde_json::Map<String, Value>, level: &str) -> Result<
     if !EFFORTS.contains(&level) {
         return Err(format!("effort is one of {}", EFFORTS.join(", ")));
     }
-    root.insert("effort".into(), if level == "default" { Value::Null } else { json!(level) });
+    root.insert(
+        "effort".into(),
+        if level == "default" {
+            Value::Null
+        } else {
+            json!(level)
+        },
+    );
     Ok(())
 }
 
 /// The object under `key` in `parent`, made when it is missing.
-fn nested<'a>(parent: &'a mut serde_json::Map<String, Value>, key: &str) -> Result<&'a mut serde_json::Map<String, Value>, String> {
+fn nested<'a>(
+    parent: &'a mut serde_json::Map<String, Value>,
+    key: &str,
+) -> Result<&'a mut serde_json::Map<String, Value>, String> {
     parent
         .entry(key.to_string())
         .or_insert_with(|| json!({}))
@@ -688,21 +819,55 @@ fn nested<'a>(parent: &'a mut serde_json::Map<String, Value>, key: &str) -> Resu
 fn print_policy(s: &Value) {
     let policy = s.get("model_policy");
     ctx::fields(&[
-        ("orchestrator models", none_if_empty(joined(policy.and_then(|p| p.get("orchestrator"))))),
-        ("worker models", none_if_empty(joined(policy.and_then(|p| p.get("worker"))))),
-        ("orchestrator", none_if_empty(ctx::text(s, "orchestrator_model"))),
-        ("worker default", none_if_empty(ctx::text(s, "default_model"))),
+        (
+            "orchestrator models",
+            none_if_empty(joined(policy.and_then(|p| p.get("orchestrator")))),
+        ),
+        (
+            "worker models",
+            none_if_empty(joined(policy.and_then(|p| p.get("worker")))),
+        ),
+        (
+            "orchestrator",
+            none_if_empty(ctx::text(s, "orchestrator_model")),
+        ),
+        (
+            "worker default",
+            none_if_empty(ctx::text(s, "default_model")),
+        ),
         ("effort", none_if_empty(ctx::text(s, "effort"))),
         ("max turns", ctx::text(s, "max_turns")),
         ("max tokens", ctx::text(s, "max_tokens")),
         ("fetch block", none_if_empty(joined(s.get("fetch_block")))),
-        ("training models", if s.get("allow_training_models").and_then(Value::as_bool) == Some(true) { "allowed" } else { "not allowed" }.to_string()),
+        (
+            "training models",
+            if s.get("allow_training_models").and_then(Value::as_bool) == Some(true) {
+                "allowed"
+            } else {
+                "not allowed"
+            }
+            .to_string(),
+        ),
     ]);
-    for (role, model) in s.get("role_models").and_then(Value::as_object).into_iter().flatten() {
+    for (role, model) in s
+        .get("role_models")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flatten()
+    {
         println!("role {role}: {}", model.as_str().unwrap_or(""));
     }
-    for (model, rate) in s.get("prices").and_then(Value::as_object).into_iter().flatten() {
-        println!("price {model}: in {} out {} per 1M", ctx::text(rate, "input"), ctx::text(rate, "output"));
+    for (model, rate) in s
+        .get("prices")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flatten()
+    {
+        println!(
+            "price {model}: in {} out {} per 1M",
+            ctx::text(rate, "input"),
+            ctx::text(rate, "output")
+        );
     }
 }
 
@@ -737,7 +902,14 @@ fn print_price(v: &Value) {
 /// One row per price source a refresh fetched: its name, how many models it gave, whether it worked, and why not.
 fn source_rows(v: &Value) -> Vec<Vec<String>> {
     items(v.get("sources").unwrap_or(&Value::Null))
-        .map(|s| vec![ctx::s(s, "name").to_string(), ctx::text(s, "models"), ctx::text(s, "ok"), rate(s, "error")])
+        .map(|s| {
+            vec![
+                ctx::s(s, "name").to_string(),
+                ctx::text(s, "models"),
+                ctx::text(s, "ok"),
+                rate(s, "error"),
+            ]
+        })
         .collect()
 }
 
@@ -746,14 +918,22 @@ fn price_rows(v: &Value) -> Vec<Vec<String>> {
     items(v.get("models").unwrap_or(&Value::Null))
         .map(|m| {
             let price = m.get("price").unwrap_or(&Value::Null);
-            vec![ctx::text(m, "model"), rate(price, "input"), rate(price, "output"), ctx::s(price, "source").to_string()]
+            vec![
+                ctx::text(m, "model"),
+                rate(price, "input"),
+                rate(price, "output"),
+                ctx::s(price, "source").to_string(),
+            ]
         })
         .collect()
 }
 
 /// What a refresh fetched: when, and each source's outcome.
 fn print_refresh(v: &Value) {
-    println!("refreshed the price sources, fetched {}", ctx::when(v.get("fetched_at_ms").unwrap_or(&Value::Null)));
+    println!(
+        "refreshed the price sources, fetched {}",
+        ctx::when(v.get("fetched_at_ms").unwrap_or(&Value::Null))
+    );
     println!();
     ctx::table(&["source", "models", "ok", "error"], &source_rows(v));
 }
@@ -796,21 +976,40 @@ mod tests {
 
     #[test]
     fn fetch_block_and_unblock_repeat_and_the_old_fetch_allow_flag_is_gone() {
-        let PolicyCmd::Set { fetch_block, fetch_unblock, .. } =
-            policy_set(&["--fetch-block", "evil.example", "--fetch-block", "*.ads.net", "--fetch-unblock", "docs.example"])
-                .expect("repeatable flags parse")
+        let PolicyCmd::Set {
+            fetch_block,
+            fetch_unblock,
+            ..
+        } = policy_set(&[
+            "--fetch-block",
+            "evil.example",
+            "--fetch-block",
+            "*.ads.net",
+            "--fetch-unblock",
+            "docs.example",
+        ])
+        .expect("repeatable flags parse")
         else {
             panic!("expected set");
         };
-        assert_eq!(fetch_block, vec!["evil.example".to_string(), "*.ads.net".to_string()]);
+        assert_eq!(
+            fetch_block,
+            vec!["evil.example".to_string(), "*.ads.net".to_string()]
+        );
         assert_eq!(fetch_unblock, vec!["docs.example".to_string()]);
-        assert!(policy_set(&["--fetch-allow", "example.com"]).is_err(), "the flag the hub never read is gone");
+        assert!(
+            policy_set(&["--fetch-allow", "example.com"]).is_err(),
+            "the flag the hub never read is gone"
+        );
     }
 
     #[test]
     fn the_fetch_flags_name_themselves_in_help() {
         let cmd = Probe::command();
-        let set = cmd.find_subcommand("policy").and_then(|p| p.find_subcommand("set")).expect("policy set");
+        let set = cmd
+            .find_subcommand("policy")
+            .and_then(|p| p.find_subcommand("set"))
+            .expect("policy set");
         let help = |id: &str| {
             set.get_arguments()
                 .find(|a| a.get_id() == id)
@@ -818,15 +1017,31 @@ mod tests {
                 .map(ToString::to_string)
                 .unwrap_or_default()
         };
-        assert!(help("fetch_block").contains("*.example.com"), "{}", help("fetch_block"));
-        assert!(help("fetch_unblock").contains("Repeatable"), "{}", help("fetch_unblock"));
+        assert!(
+            help("fetch_block").contains("*.example.com"),
+            "{}",
+            help("fetch_block")
+        );
+        assert!(
+            help("fetch_unblock").contains("Repeatable"),
+            "{}",
+            help("fetch_unblock")
+        );
     }
 
     #[test]
     fn bare_host_takes_example_com_and_wildcards_and_refuses_urls_and_paths() {
         assert_eq!(bare_host("example.com").unwrap(), "example.com");
         assert_eq!(bare_host(" *.example.net ").unwrap(), "*.example.net");
-        for bad in ["https://example.com", "example.com/path", "host:8080", "has space.com", "", "*", "a.*.com"] {
+        for bad in [
+            "https://example.com",
+            "example.com/path",
+            "host:8080",
+            "has space.com",
+            "",
+            "*",
+            "a.*.com",
+        ] {
             assert!(bare_host(bad).is_err(), "{bad:?} should be refused");
         }
     }
@@ -849,46 +1064,79 @@ mod tests {
             assert_eq!(root["effort"], json!(level));
         }
         set_effort(&mut root, "default").unwrap();
-        assert_eq!(root["effort"], Value::Null, "default clears the setting to unset");
+        assert_eq!(
+            root["effort"],
+            Value::Null,
+            "default clears the setting to unset"
+        );
         let err = set_effort(&mut root, "extreme").unwrap_err();
-        assert_eq!(err, "effort is one of none, minimal, low, medium, high, xhigh, max, default");
+        assert_eq!(
+            err,
+            "effort is one of none, minimal, low, medium, high, xhigh, max, default"
+        );
     }
 
     #[test]
     fn the_effort_help_lists_exactly_the_accepted_values() {
         let cmd = Probe::command();
-        let set = cmd.find_subcommand("policy").and_then(|p| p.find_subcommand("set")).expect("policy set");
+        let set = cmd
+            .find_subcommand("policy")
+            .and_then(|p| p.find_subcommand("set"))
+            .expect("policy set");
         let help = set
             .get_arguments()
             .find(|a| a.get_id() == "effort")
             .and_then(|a| a.get_help())
             .map(ToString::to_string)
             .unwrap_or_default();
-        assert!(help.contains("none, minimal, low, medium, high, xhigh, max"), "{help}");
+        assert!(
+            help.contains("none, minimal, low, medium, high, xhigh, max"),
+            "{help}"
+        );
         assert!(help.contains("`default` clears it"), "{help}");
-        assert!(!help.contains("default, low"), "the old list is gone: {help}");
+        assert!(
+            !help.contains("default, low"),
+            "the old list is gone: {help}"
+        );
     }
 
     #[test]
     fn a_price_path_is_one_encoded_segment() {
-        assert_eq!(price_path("anthropic/claude-x"), "/v1/prices/anthropic%2Fclaude-x");
+        assert_eq!(
+            price_path("anthropic/claude-x"),
+            "/v1/prices/anthropic%2Fclaude-x"
+        );
         assert_eq!(price_path("glm-5.3"), "/v1/prices/glm-5.3");
     }
 
     #[test]
     fn the_trains_marker_shows_only_for_contributor_models() {
-        assert_eq!(trains_marker(&json!({ "id": "m", "trains_on_data": true })), "yes");
-        assert_eq!(trains_marker(&json!({ "id": "m", "trains_on_data": false })), "");
+        assert_eq!(
+            trains_marker(&json!({ "id": "m", "trains_on_data": true })),
+            "yes"
+        );
+        assert_eq!(
+            trains_marker(&json!({ "id": "m", "trains_on_data": false })),
+            ""
+        );
         assert_eq!(trains_marker(&json!({ "id": "m" })), "");
     }
 
     #[test]
     fn allow_training_models_takes_true_or_false() {
-        let PolicyCmd::Set { allow_training_models, .. } = policy_set(&["--allow-training-models", "true"]).expect("true parses") else {
+        let PolicyCmd::Set {
+            allow_training_models,
+            ..
+        } = policy_set(&["--allow-training-models", "true"]).expect("true parses")
+        else {
             panic!("expected set");
         };
         assert_eq!(allow_training_models, Some(true));
-        let PolicyCmd::Set { allow_training_models, .. } = policy_set(&["--allow-training-models", "false"]).expect("false parses") else {
+        let PolicyCmd::Set {
+            allow_training_models,
+            ..
+        } = policy_set(&["--allow-training-models", "false"]).expect("false parses")
+        else {
             panic!("expected set");
         };
         assert_eq!(allow_training_models, Some(false));
@@ -897,9 +1145,19 @@ mod tests {
 
     #[test]
     fn price_takes_a_model_and_prices_takes_refresh_or_nothing() {
-        assert!(matches!(Probe::try_parse_from(["models", "price", "anthropic/claude-x"]).map(|p| p.cmd), Ok(Cmd::Price { model }) if model == "anthropic/claude-x"));
-        assert!(matches!(Probe::try_parse_from(["models", "prices", "refresh"]).map(|p| p.cmd), Ok(Cmd::Prices { action: Some(PricesCmd::Refresh) })));
-        assert!(matches!(Probe::try_parse_from(["models", "prices"]).map(|p| p.cmd), Ok(Cmd::Prices { action: None })));
+        assert!(
+            matches!(Probe::try_parse_from(["models", "price", "anthropic/claude-x"]).map(|p| p.cmd), Ok(Cmd::Price { model }) if model == "anthropic/claude-x")
+        );
+        assert!(matches!(
+            Probe::try_parse_from(["models", "prices", "refresh"]).map(|p| p.cmd),
+            Ok(Cmd::Prices {
+                action: Some(PricesCmd::Refresh)
+            })
+        ));
+        assert!(matches!(
+            Probe::try_parse_from(["models", "prices"]).map(|p| p.cmd),
+            Ok(Cmd::Prices { action: None })
+        ));
     }
 
     #[test]
@@ -915,8 +1173,18 @@ mod tests {
         assert_eq!(
             source_rows(&v),
             vec![
-                vec!["openrouter".to_string(), "3".into(), "true".into(), "—".into()],
-                vec!["litellm".to_string(), "0".into(), "false".into(), "timeout".into()],
+                vec![
+                    "openrouter".to_string(),
+                    "3".into(),
+                    "true".into(),
+                    "—".into()
+                ],
+                vec![
+                    "litellm".to_string(),
+                    "0".into(),
+                    "false".into(),
+                    "timeout".into()
+                ],
             ]
         );
     }
@@ -934,8 +1202,18 @@ mod tests {
         assert_eq!(
             price_rows(&v),
             vec![
-                vec!["anthropic/claude-x".to_string(), "15.0".into(), "75.0".into(), "openrouter".into()],
-                vec!["mystery".to_string(), "1.0".into(), "—".into(), "litellm".into()],
+                vec![
+                    "anthropic/claude-x".to_string(),
+                    "15.0".into(),
+                    "75.0".into(),
+                    "openrouter".into()
+                ],
+                vec![
+                    "mystery".to_string(),
+                    "1.0".into(),
+                    "—".into(),
+                    "litellm".into()
+                ],
             ]
         );
     }

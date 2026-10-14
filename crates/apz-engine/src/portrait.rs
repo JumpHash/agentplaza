@@ -7,8 +7,10 @@ use std::sync::Arc;
 
 use glam::{Mat4, Vec3};
 
-use crate::robot::{robot_palette, species_of, Robot, RobotPose, RobotState};
-use crate::scene::{self, Camera, Draw, DrawKind, Frame, Geometry, Material, Shading, Texture, World};
+use crate::robot::{Robot, RobotPose, RobotState, robot_palette, species_of};
+use crate::scene::{
+    self, Camera, Draw, DrawKind, Frame, Geometry, Material, Shading, Texture, World,
+};
 
 /// One portrait's subject: the agent's robot (its cid and species), its hues, and whether it is the orchestrator or offline.
 #[derive(Debug, Clone, PartialEq)]
@@ -28,16 +30,29 @@ impl PortraitSpec {
     /// Reads the web's spec: `{"cid", "roleHue", "bodyHue", "orchestrator", "offline", "species"}`. The flags default to
     /// false, and the species to the cid's deal.
     pub fn from_json(json: &str) -> Result<PortraitSpec, String> {
-        let v: serde_json::Value = serde_json::from_str(json).map_err(|e| format!("the portrait spec is not JSON: {e}"))?;
-        let num = |key: &str| v.get(key).and_then(serde_json::Value::as_f64).ok_or_else(|| format!("the portrait spec has no number '{key}'"));
-        let flag = |key: &str| v.get(key).and_then(serde_json::Value::as_bool).unwrap_or(false);
+        let v: serde_json::Value = serde_json::from_str(json)
+            .map_err(|e| format!("the portrait spec is not JSON: {e}"))?;
+        let num = |key: &str| {
+            v.get(key)
+                .and_then(serde_json::Value::as_f64)
+                .ok_or_else(|| format!("the portrait spec has no number '{key}'"))
+        };
+        let flag = |key: &str| {
+            v.get(key)
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+        };
         Ok(PortraitSpec {
             cid: num("cid")? as u64,
             orchestrator: flag("orchestrator"),
             role_hue: num("roleHue")? as f32,
             body_hue: num("bodyHue")? as f32,
             offline: flag("offline"),
-            species: v.get("species").and_then(serde_json::Value::as_str).filter(|s| !s.is_empty()).map(str::to_string),
+            species: v
+                .get("species")
+                .and_then(serde_json::Value::as_str)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
         })
     }
 }
@@ -47,9 +62,24 @@ impl PortraitSpec {
 pub fn frame(spec: &PortraitSpec, aspect: f32, stage: bool) -> Frame {
     let species = species_of(spec.species.as_deref(), spec.cid);
     let palette = robot_palette();
-    let mut robot = Robot::with_variant(spec.role_hue, spec.orchestrator, &palette, spec.body_hue, species);
-    robot.set_state(if spec.offline { RobotState::Offline } else { RobotState::Idle });
-    let poses = [RobotPose::Wave, RobotPose::Proud, RobotPose::Think, RobotPose::Cheer];
+    let mut robot = Robot::with_variant(
+        spec.role_hue,
+        spec.orchestrator,
+        &palette,
+        spec.body_hue,
+        species,
+    );
+    robot.set_state(if spec.offline {
+        RobotState::Offline
+    } else {
+        RobotState::Idle
+    });
+    let poses = [
+        RobotPose::Wave,
+        RobotPose::Proud,
+        RobotPose::Think,
+        RobotPose::Cheer,
+    ];
     robot.pose(poses[(spec.cid % 4) as usize]);
     robot.update(0.0, 0.0);
 
@@ -84,7 +114,14 @@ pub fn frame(spec: &PortraitSpec, aspect: f32, stage: bool) -> Frame {
     world.fog_far = 1.0e6 + 1.0;
     Frame {
         animated: None,
-        camera: Camera { eye: Vec3::new(1.0, 1.25, 3.4), target: Vec3::new(0.0, 0.72, 0.0), fov: 30.0, near: 0.1, far: 50.0, aspect },
+        camera: Camera {
+            eye: Vec3::new(1.0, 1.25, 3.4),
+            target: Vec3::new(0.0, 0.72, 0.0),
+            fov: 30.0,
+            near: 0.1,
+            far: 50.0,
+            aspect,
+        },
         world,
         statics: Arc::new(Vec::new()),
         statics_version: scene::next_id(),
@@ -92,7 +129,7 @@ pub fn frame(spec: &PortraitSpec, aspect: f32, stage: bool) -> Frame {
         lights,
         time: 0.0,
         overlays: Vec::new(),
-                fades: Arc::new(Vec::new()),
+        fades: Arc::new(Vec::new()),
         plaza: None,
         anim_batches: Arc::new(Vec::new()),
         focus: None,
@@ -102,19 +139,36 @@ pub fn frame(spec: &PortraitSpec, aspect: f32, stage: bool) -> Frame {
 /// A colour pulled 85 per cent toward its own grey (CSS `grayscale(0.85)`, on luma).
 fn greyed(c: scene::Color) -> scene::Color {
     let luma = 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
-    c.lerp(scene::Color { r: luma, g: luma, b: luma }, 0.85)
+    c.lerp(
+        scene::Color {
+            r: luma,
+            g: luma,
+            b: luma,
+        },
+        0.85,
+    )
 }
 
 /// The web's 9 x 9 card at z -2.2 (`portrait.ts`'s backdrop, a basic material): the sunburst of the agent's hue. Its
 /// texture's top row is the top of the card; drawn first, so the robot stands in front of it.
 fn backdrop(hue: f32) -> Draw {
     let geo = Geometry::new(
-        vec![[-4.5, 5.7, -2.2], [-4.5, -3.3, -2.2], [4.5, -3.3, -2.2], [4.5, 5.7, -2.2]],
+        vec![
+            [-4.5, 5.7, -2.2],
+            [-4.5, -3.3, -2.2],
+            [4.5, -3.3, -2.2],
+            [4.5, 5.7, -2.2],
+        ],
         vec![[0.0, 0.0, 1.0]; 4],
         vec![[0.0, 0.0], [0.0, 1.0], [1.0, 1.0], [1.0, 0.0]],
         vec![0, 1, 2, 0, 2, 3],
     );
-    let material = Material { shading: Shading::Basic, map: Some(Arc::new(sunburst(hue))), fog: false, ..Material::default() };
+    let material = Material {
+        shading: Shading::Basic,
+        map: Some(Arc::new(sunburst(hue))),
+        fog: false,
+        ..Material::default()
+    };
     Draw {
         kind: DrawKind::Mesh,
         geo,
@@ -147,7 +201,15 @@ fn shadow_disc() -> Draw {
     }
     let normals = vec![[0.0, 1.0, 0.0]; positions.len()];
     let geo = Geometry::new(positions, normals, Vec::new(), indices);
-    let material = Material { shading: Shading::Shadow, color: scene::Color::BLACK, opacity: 0.25, transparent: true, depth_write: false, fog: false, ..Material::default() };
+    let material = Material {
+        shading: Shading::Shadow,
+        color: scene::Color::BLACK,
+        opacity: 0.25,
+        transparent: true,
+        depth_write: false,
+        fog: false,
+        ..Material::default()
+    };
     Draw {
         kind: DrawKind::Mesh,
         geo,
@@ -201,7 +263,11 @@ fn sunburst(hue: f32) -> Texture {
             if angle < 0.0 {
                 angle += TAU;
             }
-            let mut c = if ((angle / sector) as u32) % 2 == 0 { ray } else { night };
+            let mut c = if ((angle / sector) as u32) % 2 == 0 {
+                ray
+            } else {
+                night
+            };
             // The glow: 0.75 at the centre, fading to nothing 260 px out.
             let r = (dx * dx + dy * dy).sqrt();
             let a = if r <= 10.0 {
@@ -243,24 +309,36 @@ fn sunburst(hue: f32) -> Texture {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::{block_ready, Renderer};
+    use crate::engine::{Renderer, block_ready};
     use crate::robot::robot_variant;
 
     /// A device for the GPU tests, or None on a machine with no adapter (the tests are then skipped).
     fn test_device() -> Option<(wgpu::Device, wgpu::Queue)> {
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
-        let adapter = block_ready(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
+        let adapter =
+            block_ready(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
         block_ready(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
     }
 
     fn spec(cid: u64, species: &str) -> PortraitSpec {
-        PortraitSpec { cid, orchestrator: false, role_hue: 200.0, body_hue: 30.0, offline: false, species: Some(species.to_string()) }
+        PortraitSpec {
+            cid,
+            orchestrator: false,
+            role_hue: 200.0,
+            body_hue: 30.0,
+            offline: false,
+            species: Some(species.to_string()),
+        }
     }
 
     /// The RGBA8 of the robot alone (no sunburst, no shadow), 96 by 96, read back from the GPU.
     fn robot_alone(renderer: &mut Renderer, device: &wgpu::Device, spec: &PortraitSpec) -> Vec<u8> {
-        let thumb = renderer.draw_offscreen(frame(spec, 1.0, false), 96, 96).expect("the render");
-        device.poll(wgpu::PollType::wait_indefinitely()).expect("the poll");
+        let thumb = renderer
+            .draw_offscreen(frame(spec, 1.0, false), 96, 96)
+            .expect("the render");
+        device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .expect("the poll");
         block_ready(thumb.pixels()).expect("the readback")
     }
 
@@ -272,9 +350,18 @@ mod tests {
         };
         let mut renderer = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
         for species in ["rover", robot_variant(1)] {
-            let px = renderer.portrait(&spec(7, species), 96, 96).expect("the portrait");
-            assert_eq!(px.len(), 96 * 96 * 4, "{species}: the portrait is 96 by 96 RGBA");
-            assert!(px.iter().any(|b| *b != 0), "{species}: the portrait is empty");
+            let px = renderer
+                .portrait(&spec(7, species), 96, 96)
+                .expect("the portrait");
+            assert_eq!(
+                px.len(),
+                96 * 96 * 4,
+                "{species}: the portrait is 96 by 96 RGBA"
+            );
+            assert!(
+                px.iter().any(|b| *b != 0),
+                "{species}: the portrait is empty"
+            );
         }
     }
 
@@ -305,8 +392,14 @@ mod tests {
             let cy = ((y0 + y1 + 1) as f32 / 2.0) / 96.0;
             // The web's own camera (copied here) measures 0.84 to 0.91 of the height: rover's cheer and proud poses reach 0.91,
             // and hover, whose body is lopsided, sits about 0.10 left of centre. The bounds take those measured values.
-            assert!((0.6..=0.92).contains(&height), "{species}: the robot fills {height:.2} of the height");
-            assert!((cx - 0.5).abs() < 0.12 && (cy - 0.5).abs() < 0.1, "{species}: the robot sits off centre at ({cx:.2}, {cy:.2})");
+            assert!(
+                (0.6..=0.92).contains(&height),
+                "{species}: the robot fills {height:.2} of the height"
+            );
+            assert!(
+                (cx - 0.5).abs() < 0.12 && (cy - 0.5).abs() < 0.1,
+                "{species}: the robot sits off centre at ({cx:.2}, {cy:.2})"
+            );
         }
     }
 }

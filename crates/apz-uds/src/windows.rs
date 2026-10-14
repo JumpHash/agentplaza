@@ -14,10 +14,10 @@ use std::sync::{Arc, Once};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use vm_memory::bitmap::BitmapSlice;
-use windows_sys::Win32::Foundation::HANDLE;
-use windows_sys::Win32::System::IO::CancelIoEx;
 use vm_memory::{ReadVolatile, VolatileMemoryError, VolatileSlice, WriteVolatile};
+use windows_sys::Win32::Foundation::HANDLE;
 use windows_sys::Win32::Networking::WinSock as ws;
+use windows_sys::Win32::System::IO::CancelIoEx;
 
 use crate::encode_sun_path;
 
@@ -468,7 +468,10 @@ impl UnixListener {
         if s == ws::INVALID_SOCKET {
             return Err(last_error());
         }
-        Ok((UnixStream(Arc::new(Socket::from_raw(s))), SocketAddr::from_raw(&addr, len)))
+        Ok((
+            UnixStream(Arc::new(Socket::from_raw(s))),
+            SocketAddr::from_raw(&addr, len),
+        ))
     }
 
     /// Iterates over incoming connections, blocking on each `next` call.

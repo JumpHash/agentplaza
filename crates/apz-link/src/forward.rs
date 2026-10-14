@@ -36,10 +36,16 @@ pub fn handle(identity: &Identity, key: &NodeKey, token: &str, request: &Request
         Err(error) => return Response::error(502, &error),
     };
     if let Some(content_type) = request.header("content-type") {
-        target.headers.push(("content-type".to_string(), content_type.to_string()));
+        target
+            .headers
+            .push(("content-type".to_string(), content_type.to_string()));
     }
 
-    let body = if request.body.is_empty() { None } else { Some(request.body.as_slice()) };
+    let body = if request.body.is_empty() {
+        None
+    } else {
+        Some(request.body.as_slice())
+    };
     match apz_http::client::request(&target, &request.method, &full_path, body, HUB_TIMEOUT) {
         Ok(reply) => Response::new(reply.status, &reply.content_type, reply.body),
         Err(error) => Response::error(502, &error.to_string()),
@@ -47,7 +53,12 @@ pub fn handle(identity: &Identity, key: &NodeKey, token: &str, request: &Request
 }
 
 /// Serves [`handle`] on 127.0.0.1:`port` until the process ends.
-pub fn serve(identity: Arc<Identity>, key: Arc<NodeKey>, token: String, port: u16) -> std::io::Result<apz_http::Handle> {
+pub fn serve(
+    identity: Arc<Identity>,
+    key: Arc<NodeKey>,
+    token: String,
+    port: u16,
+) -> std::io::Result<apz_http::Handle> {
     apz_http::Server::bind(port)?.spawn(move |request| handle(&identity, &key, &token, request))
 }
 
@@ -83,7 +94,10 @@ mod tests {
         let missing = request("/internal/v1/agents", Vec::new());
         assert_eq!(handle(&identity(), &key, "secret", &missing).status, 403);
 
-        let wrong = request("/internal/v1/agents", vec![("x-apz-internal".into(), "nope".into())]);
+        let wrong = request(
+            "/internal/v1/agents",
+            vec![("x-apz-internal".into(), "nope".into())],
+        );
         assert_eq!(handle(&identity(), &key, "secret", &wrong).status, 403);
 
         let empty_token = request("/internal/v1/agents", Vec::new());
@@ -93,7 +107,10 @@ mod tests {
     #[test]
     fn forward_refuses_paths_outside_internal() {
         let key = NodeKey::generate();
-        let outside = request("/v1/agents", vec![("x-apz-internal".into(), "secret".into())]);
+        let outside = request(
+            "/v1/agents",
+            vec![("x-apz-internal".into(), "secret".into())],
+        );
         assert_eq!(handle(&identity(), &key, "secret", &outside).status, 404);
     }
 }

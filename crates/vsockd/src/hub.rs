@@ -73,9 +73,16 @@ fn epoch_ms_now() -> u64 {
 #[derive(Debug)]
 pub enum Command {
     /// Run one tool call; the matching `tool_result` goes to `reply`.
-    Call { name: String, args: serde_json::Value, reply: Option<Sender<ToolReply>> },
+    Call {
+        name: String,
+        args: serde_json::Value,
+        reply: Option<Sender<ToolReply>>,
+    },
     /// Write one host line as is; `written` hears when it is on the wire.
-    Send { message: HostMessage, written: Sender<()> },
+    Send {
+        message: HostMessage,
+        written: Sender<()>,
+    },
     /// End the session with the wire's `stop`.
     Stop { reason: String },
 }
@@ -89,7 +96,10 @@ pub struct ToolReply {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TellOutcome {
-    Answered { ok: bool, output: String },
+    Answered {
+        ok: bool,
+        output: String,
+    },
     /// No answer within the wait; the session is untouched.
     TimedOut,
     NotConnected,
@@ -106,7 +116,9 @@ pub enum SendOutcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StopOutcome {
     /// The session ended; `calls` is the guest's `bye` count when it said one.
-    Ended { calls: u64 },
+    Ended {
+        calls: u64,
+    },
     /// The stop went out but the session was still up when the wait lapsed.
     /// The hub cannot kill a session; its idle deadline still applies.
     StillUp,
@@ -169,7 +181,12 @@ impl Hub {
         Self::started_at(log, apid, Instant::now(), epoch_ms_now())
     }
 
-    pub(crate) fn started_at(log: Arc<dyn SessionLog + Send + Sync>, apid: Apid, at: Instant, epoch_ms: u64) -> Self {
+    pub(crate) fn started_at(
+        log: Arc<dyn SessionLog + Send + Sync>,
+        apid: Apid,
+        at: Instant,
+        epoch_ms: u64,
+    ) -> Self {
         Self {
             registry: Mutex::new(Registry::default()),
             steering: Mutex::new(HashMap::new()),
@@ -199,19 +216,35 @@ impl Hub {
     pub fn connect(&self, cid: u32, role: &str, now: Instant) -> (u64, Receiver<Command>) {
         let token = self.epoch.fetch_add(1, Ordering::SeqCst) + 1;
         let (commands, receiver) = channel();
-        self.steering().insert(cid, Live { token, commands, ended: Arc::default() });
-        let agent = Agent { cid, role: role.to_string(), connected_at: now, last_heartbeat: now, busy: false, calls: 0 };
+        self.steering().insert(
+            cid,
+            Live {
+                token,
+                commands,
+                ended: Arc::default(),
+            },
+        );
+        let agent = Agent {
+            cid,
+            role: role.to_string(),
+            connected_at: now,
+            last_heartbeat: now,
+            busy: false,
+            calls: 0,
+        };
         let previous = {
             let mut registry = self.registry();
             registry.beats.remove(&cid);
             registry.agents.insert(cid, agent)
         };
-        self.log.line(&format!("vsockd: agent {cid} role {role} connected"));
+        self.log
+            .line(&format!("vsockd: agent {cid} role {role} connected"));
         if let Some(previous) = previous {
             self.log.line(&format!(
                 "vsockd: agent {cid} re-adopted (previous session role {}, connected {}s ago)",
                 previous.role,
-                now.saturating_duration_since(previous.connected_at).as_secs()
+                now.saturating_duration_since(previous.connected_at)
+                    .as_secs()
             ));
         }
         (token, receiver)
@@ -227,7 +260,8 @@ impl Hub {
             agent.busy = busy;
             let beats = registry.beats.entry(cid).or_insert(0);
             *beats += 1;
-            (*beats == 1 || beats.is_multiple_of(HEARTBEAT_LOG_EVERY)).then(|| format!("vsockd: agent {cid} heartbeat {seq}"))
+            (*beats == 1 || beats.is_multiple_of(HEARTBEAT_LOG_EVERY))
+                .then(|| format!("vsockd: agent {cid} heartbeat {seq}"))
         };
         if let Some(line) = line {
             self.log.line(&line);
@@ -243,14 +277,19 @@ impl Hub {
     /// A session that said `bye`.
     pub fn end_clean(&self, cid: u32, token: u64, calls: u64, guest_calls: u64) {
         if self.forget(cid, token, Some(guest_calls)) {
-            self.log.line(&format!("vsockd: agent {cid} session ended cleanly after {calls} tool calls"));
+            self.log.line(&format!(
+                "vsockd: agent {cid} session ended cleanly after {calls} tool calls"
+            ));
         }
     }
 
     /// A session that stopped heartbeating.
     pub fn reap_idle(&self, cid: u32, token: u64, idle: Duration) {
         if self.forget(cid, token, None) {
-            self.log.line(&format!("vsockd: agent {cid} reaped idle > {}s", idle.as_secs()));
+            self.log.line(&format!(
+                "vsockd: agent {cid} reaped idle > {}s",
+                idle.as_secs()
+            ));
         }
     }
 
@@ -280,12 +319,26 @@ impl Hub {
 
     /// Runs one tool call on `cid` and waits up to `wait` for its answer. The
     /// session numbers the call.
-    pub fn tell(&self, cid: u32, name: &str, args: serde_json::Value, wait: Duration) -> TellOutcome {
+    pub fn tell(
+        &self,
+        cid: u32,
+        name: &str,
+        args: serde_json::Value,
+        wait: Duration,
+    ) -> TellOutcome {
         let Some(live) = self.live(cid) else {
             return TellOutcome::NotConnected;
         };
         let (reply, answer) = channel();
-        if live.commands.send(Command::Call { name: name.to_string(), args, reply: Some(reply) }).is_err() {
+        if live
+            .commands
+            .send(Command::Call {
+                name: name.to_string(),
+                args,
+                reply: Some(reply),
+            })
+            .is_err()
+        {
             return TellOutcome::NotConnected;
         }
         match answer.recv_timeout(wait) {
@@ -303,7 +356,11 @@ impl Hub {
             return SendOutcome::NotConnected;
         };
         let (written, taken) = channel();
-        if live.commands.send(Command::Send { message, written }).is_err() {
+        if live
+            .commands
+            .send(Command::Send { message, written })
+            .is_err()
+        {
             return SendOutcome::NotConnected;
         }
         match taken.recv_timeout(wait) {
@@ -318,11 +375,19 @@ impl Hub {
         let Some(live) = self.live(cid) else {
             return StopOutcome::NotConnected;
         };
-        if live.commands.send(Command::Stop { reason: reason.to_string() }).is_err() {
+        if live
+            .commands
+            .send(Command::Stop {
+                reason: reason.to_string(),
+            })
+            .is_err()
+        {
             return StopOutcome::NotConnected;
         }
         match live.ended.wait(wait) {
-            Some(ended) => StopOutcome::Ended { calls: ended.guest_calls.unwrap_or(ended.calls) },
+            Some(ended) => StopOutcome::Ended {
+                calls: ended.guest_calls.unwrap_or(ended.calls),
+            },
             None => StopOutcome::StillUp,
         }
     }
@@ -353,7 +418,10 @@ impl Hub {
             })
             .collect();
         rows.sort_by_key(|row| row.cid);
-        Snapshot { rows, sessions_active: self.steering().len() }
+        Snapshot {
+            rows,
+            sessions_active: self.steering().len(),
+        }
     }
 
     fn epoch_ms(&self, at: Instant) -> u64 {
@@ -373,20 +441,29 @@ pub(crate) mod tests {
 
     impl Recording {
         pub(crate) fn text(&self) -> String {
-            self.0.lock().unwrap_or_else(|err| err.into_inner()).join("\n")
+            self.0
+                .lock()
+                .unwrap_or_else(|err| err.into_inner())
+                .join("\n")
         }
     }
 
     impl SessionLog for Recording {
         fn line(&self, text: &str) {
-            self.0.lock().unwrap_or_else(|err| err.into_inner()).push(text.to_string());
+            self.0
+                .lock()
+                .unwrap_or_else(|err| err.into_inner())
+                .push(text.to_string());
         }
     }
 
     /// A hub whose apid client is `apid` (forwarding off when `None`).
     pub(crate) fn hub_with(apid: Option<Apid>) -> (Arc<Recording>, Hub) {
         let log = Arc::new(Recording::default());
-        (Arc::clone(&log), Hub::new(log, apid.unwrap_or_else(Apid::off)))
+        (
+            Arc::clone(&log),
+            Hub::new(log, apid.unwrap_or_else(Apid::off)),
+        )
     }
 
     #[test]
@@ -429,23 +506,48 @@ pub(crate) mod tests {
     #[test]
     fn tell_answers_times_out_or_reports_a_gone_session() {
         let (_log, hub) = hub_with(None);
-        assert_eq!(hub.tell(99, "echo", serde_json::json!({}), Duration::from_millis(10)), TellOutcome::NotConnected);
+        assert_eq!(
+            hub.tell(99, "echo", serde_json::json!({}), Duration::from_millis(10)),
+            TellOutcome::NotConnected
+        );
 
         let (_token, steering) = hub.connect(10, "builder", Instant::now());
         let agent = thread::spawn(move || {
-            if let Ok(Command::Call { name, reply: Some(reply), .. }) = steering.recv() {
-                reply.send(ToolReply { ok: true, output: format!("ran {name}") }).unwrap();
+            if let Ok(Command::Call {
+                name,
+                reply: Some(reply),
+                ..
+            }) = steering.recv()
+            {
+                reply
+                    .send(ToolReply {
+                        ok: true,
+                        output: format!("ran {name}"),
+                    })
+                    .unwrap();
             }
             steering
         });
         let answer = hub.tell(10, "list", serde_json::json!({}), Duration::from_secs(5));
-        assert_eq!(answer, TellOutcome::Answered { ok: true, output: "ran list".into() });
+        assert_eq!(
+            answer,
+            TellOutcome::Answered {
+                ok: true,
+                output: "ran list".into()
+            }
+        );
         let steering = agent.join().unwrap();
         // Held but never read: an honest timeout, the session untouched.
-        assert_eq!(hub.tell(10, "list", serde_json::json!({}), Duration::from_millis(50)), TellOutcome::TimedOut);
+        assert_eq!(
+            hub.tell(10, "list", serde_json::json!({}), Duration::from_millis(50)),
+            TellOutcome::TimedOut
+        );
         assert_eq!(hub.agent_count(), 1);
         drop(steering);
-        assert_eq!(hub.tell(10, "list", serde_json::json!({}), Duration::from_millis(50)), TellOutcome::NotConnected);
+        assert_eq!(
+            hub.tell(10, "list", serde_json::json!({}), Duration::from_millis(50)),
+            TellOutcome::NotConnected
+        );
     }
 
     #[test]
@@ -460,21 +562,39 @@ pub(crate) mod tests {
                     assert!(matches!(steering.recv(), Ok(Command::Stop { .. })));
                     thread::sleep(Duration::from_millis(50));
                     hub.note_calls(10, 3);
-                    if bye { hub.end_clean(10, token, 3, 2) } else { hub.hangup(10, token) }
+                    if bye {
+                        hub.end_clean(10, token, 3, 2)
+                    } else {
+                        hub.hangup(10, token)
+                    }
                 })
             };
-            assert_eq!(hub.stop(10, "operator stop", Duration::from_secs(5)), StopOutcome::Ended { calls: expected });
+            assert_eq!(
+                hub.stop(10, "operator stop", Duration::from_secs(5)),
+                StopOutcome::Ended { calls: expected }
+            );
             session.join().unwrap();
         }
         let (_token, _steering) = hub.connect(10, "builder", Instant::now());
-        assert_eq!(hub.stop(10, "operator stop", Duration::from_millis(50)), StopOutcome::StillUp);
-        assert_eq!(hub.stop(99, "operator stop", Duration::from_millis(50)), StopOutcome::NotConnected);
+        assert_eq!(
+            hub.stop(10, "operator stop", Duration::from_millis(50)),
+            StopOutcome::StillUp
+        );
+        assert_eq!(
+            hub.stop(99, "operator stop", Duration::from_millis(50)),
+            StopOutcome::NotConnected
+        );
     }
 
     #[test]
     fn the_snapshot_is_ordered_by_cid_in_epoch_milliseconds() {
         let anchor = Instant::now();
-        let hub = Hub::started_at(Arc::new(Recording::default()), Apid::off(), anchor, 1_700_000_000_000);
+        let hub = Hub::started_at(
+            Arc::new(Recording::default()),
+            Apid::off(),
+            anchor,
+            1_700_000_000_000,
+        );
         hub.connect(11, "builder", anchor + Duration::from_millis(250));
         hub.connect(10, "reviewer", anchor + Duration::from_millis(500));
         hub.note_calls(10, 4);
@@ -484,10 +604,23 @@ pub(crate) mod tests {
         assert_eq!(
             snapshot.rows,
             [
-                Row { cid: 10, role: "reviewer".into(), connected_at_ms: 1_700_000_000_500, last_heartbeat_ms: 1_700_000_005_500, busy: true, calls: 4 },
-                Row { cid: 11, role: "builder".into(), connected_at_ms: 1_700_000_000_250, last_heartbeat_ms: 1_700_000_000_250, busy: false, calls: 0 },
+                Row {
+                    cid: 10,
+                    role: "reviewer".into(),
+                    connected_at_ms: 1_700_000_000_500,
+                    last_heartbeat_ms: 1_700_000_005_500,
+                    busy: true,
+                    calls: 4
+                },
+                Row {
+                    cid: 11,
+                    role: "builder".into(),
+                    connected_at_ms: 1_700_000_000_250,
+                    last_heartbeat_ms: 1_700_000_000_250,
+                    busy: false,
+                    calls: 0
+                },
             ]
         );
     }
-
 }

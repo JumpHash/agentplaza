@@ -153,8 +153,8 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use serde::{Deserialize, Serialize};
 
 use crate::events::{Event, EventBus};
-use crate::{now_ms, ConnectedAgent};
 use crate::tasks::{optional_text, required_text};
+use crate::{ConnectedAgent, now_ms};
 
 /// The seat the head of **Finance** holds (S-008 / 0034).
 pub const FINANCE: &str = "finance";
@@ -414,7 +414,10 @@ impl State {
     /// the council's own (a decided motion is not re-decided; a majority is not
     /// routed around).
     pub fn owner_decides(self) -> bool {
-        matches!(self, State::TieToOwner | State::AwaitingOwner | State::NoQuorum)
+        matches!(
+            self,
+            State::TieToOwner | State::AwaitingOwner | State::NoQuorum
+        )
     }
 }
 
@@ -928,8 +931,8 @@ impl Motion {
         MotionView {
             id: self.id.clone(),
             proposer_cid: self.proposer_cid,
-            proposer_role: SEATS[seat_of(&self.proposer_role)
-                .expect("a motion's proposer holds a seat")],
+            proposer_role: SEATS
+                [seat_of(&self.proposer_role).expect("a motion's proposer holds a seat")],
             kind: self.kind.as_str(),
             text: self.text.clone(),
             amount: self.amount,
@@ -1186,11 +1189,7 @@ impl Council {
     /// is stored with the stamp. The decision is never changed afterwards and
     /// no later vote touches it (a decided motion takes no further vote, and
     /// such a vote is refused before any decision is consulted).
-    pub fn decide(
-        &self,
-        id: &str,
-        decision: CheckedDecision,
-    ) -> Result<MotionView, CouncilError> {
+    pub fn decide(&self, id: &str, decision: CheckedDecision) -> Result<MotionView, CouncilError> {
         let live = self.quorum();
         let mut inner = self.lock();
         let Some(index) = inner.motions.iter().position(|motion| motion.id == id) else {
@@ -1250,7 +1249,6 @@ fn seated_index(agent: &ConnectedAgent) -> Result<usize, CouncilError> {
     }
 }
 
-
 impl Council {
     /// The whole state as JSON: the motions, their votes and owner decisions,
     /// and the counter. The bus is not in it, and a restore publishes nothing.
@@ -1279,11 +1277,17 @@ fn check_council_snapshot(inner: &CouncilInner) -> Result<(), String> {
             return Err(format!("motion {} is where {want} belongs", motion.id));
         }
         if !is_seated(&motion.proposer_role) {
-            return Err(format!("motion {} names {} as its proposer seat", motion.id, motion.proposer_role));
+            return Err(format!(
+                "motion {} names {} as its proposer seat",
+                motion.id, motion.proposer_role
+            ));
         }
     }
     if inner.seq < inner.motions.len() as u64 {
-        return Err(format!("the counter {} is behind its newest motion", inner.seq));
+        return Err(format!(
+            "the counter {} is behind its newest motion",
+            inner.seq
+        ));
     }
     Ok(())
 }
@@ -1295,11 +1299,18 @@ mod tests {
     #[test]
     fn a_snapshot_restores_the_same_motions_and_refuses_garbage() {
         let (council, _notes) = lab();
-        for (cid, seat, text) in [(100, SEATS[0], "move the budget"), (101, SEATS[1], "move it again")] {
+        for (cid, seat, text) in [
+            (100, SEATS[0], "move the budget"),
+            (101, SEATS[1], "move it again"),
+        ] {
             let mut request = proposal(Kind::BudgetMove, text, Some(100), None);
             request.proposer_cid = cid;
-            let checked = request.checked(1000).expect("a proposal inside the contract");
-            council.propose(&agent(cid, seat), checked).expect("a motion");
+            let checked = request
+                .checked(1000)
+                .expect("a proposal inside the contract");
+            council
+                .propose(&agent(cid, seat), checked)
+                .expect("a motion");
         }
         let json = council.snapshot();
 
@@ -1314,7 +1325,11 @@ mod tests {
         // Garbage, a broken id sequence and a counter behind its motions are refused.
         assert!(restored.restore("not json").is_err());
         assert!(restored.restore(&json.replace("\"m2\"", "\"m9\"")).is_err());
-        assert!(restored.restore(&json.replace("\"seq\":2", "\"seq\":1")).is_err());
+        assert!(
+            restored
+                .restore(&json.replace("\"seq\":2", "\"seq\":1"))
+                .is_err()
+        );
         assert_eq!(restored.snapshot(), json);
     }
 
@@ -1339,7 +1354,12 @@ mod tests {
     }
 
     /// The proposal a test varies: `kind`, `text`, `amount`, `needs_owner`.
-    fn proposal(kind: Kind, text: &str, amount: Option<u64>, needs_owner: Option<bool>) -> ProposeRequest {
+    fn proposal(
+        kind: Kind,
+        text: &str,
+        amount: Option<u64>,
+        needs_owner: Option<bool>,
+    ) -> ProposeRequest {
         ProposeRequest {
             proposer_cid: 0,
             kind,
@@ -1364,7 +1384,9 @@ mod tests {
         let checked = request
             .checked(minted_total)
             .expect("a proposal inside the contract");
-        council.propose(&agent(cid, role), checked).expect("a motion")
+        council
+            .propose(&agent(cid, role), checked)
+            .expect("a motion")
     }
 
     /// The vote a test varies.
@@ -1436,17 +1458,30 @@ mod tests {
     #[test]
     fn the_derived_gate_follows_the_kind_and_the_budget_fraction() {
         // Always-gated kinds, whatever they name.
-        for kind in [Kind::LawProposal, Kind::TownProposal, Kind::MayorReplacement] {
-            assert!(derived_needs_owner(kind, None, 0), "{kind:?} is always gated");
+        for kind in [
+            Kind::LawProposal,
+            Kind::TownProposal,
+            Kind::MayorReplacement,
+        ] {
+            assert!(
+                derived_needs_owner(kind, None, 0),
+                "{kind:?} is always gated"
+            );
             assert!(derived_needs_owner(kind, Some(1), 1000));
         }
         // The proposer's kinds are the council's majority.
         for kind in [Kind::Priority, Kind::Other] {
-            assert!(!derived_needs_owner(kind, None, 1000), "{kind:?} is not gated");
+            assert!(
+                !derived_needs_owner(kind, None, 1000),
+                "{kind:?} is not gated"
+            );
             assert!(!derived_needs_owner(kind, Some(999), 1000));
         }
         // A budget_move is gated strictly over 10% of the minted total.
-        assert!(!derived_needs_owner(Kind::BudgetMove, Some(100), 1000), "10% exactly is not over");
+        assert!(
+            !derived_needs_owner(Kind::BudgetMove, Some(100), 1000),
+            "10% exactly is not over"
+        );
         assert!(derived_needs_owner(Kind::BudgetMove, Some(101), 1000));
         // An empty ledger gates any positive move and no zero move.
         assert!(derived_needs_owner(Kind::BudgetMove, Some(1), 0));
@@ -1502,7 +1537,9 @@ mod tests {
     #[test]
     fn the_text_caps_hold() {
         assert_eq!(
-            proposal(Kind::Priority, "  ", None, None).checked(0).unwrap_err(),
+            proposal(Kind::Priority, "  ", None, None)
+                .checked(0)
+                .unwrap_err(),
             "text must not be empty"
         );
         let long = "x".repeat(MAX_MOTION_TEXT + 1);
@@ -1514,7 +1551,10 @@ mod tests {
         );
         let reason = "y".repeat(MAX_REASON + 1);
         let refused = vote(100, Vote::Yes, &reason).checked().unwrap_err();
-        assert_eq!(refused, format!("reason must be at most {MAX_REASON} bytes"));
+        assert_eq!(
+            refused,
+            format!("reason must be at most {MAX_REASON} bytes")
+        );
         assert_eq!(
             vote(100, Vote::Yes, " ").checked().unwrap_err(),
             "reason must not be empty"
@@ -1564,10 +1604,14 @@ mod tests {
         // A motion proposed by a seat, and a vote from a role that holds none.
         let motion = propose(&council, 100, FINANCE, Kind::Priority, "an agenda", 0);
         let refused = council
-            .vote("m1", &agent(200, "builder"), CheckedVote {
-                vote: Vote::Yes,
-                reason: "looks fine".to_string(),
-            })
+            .vote(
+                "m1",
+                &agent(200, "builder"),
+                CheckedVote {
+                    vote: Vote::Yes,
+                    reason: "looks fine".to_string(),
+                },
+            )
             .unwrap_err();
         assert_eq!(refused.status(), 403);
         assert!(refused.to_string().contains("builder"), "{refused}");
@@ -1587,10 +1631,14 @@ mod tests {
 
         // An unknown id names nothing.
         let refused = council
-            .vote("m9", &agent(100, FINANCE), CheckedVote {
-                vote: Vote::Yes,
-                reason: "a reason".to_string(),
-            })
+            .vote(
+                "m9",
+                &agent(100, FINANCE),
+                CheckedVote {
+                    vote: Vote::Yes,
+                    reason: "a reason".to_string(),
+                },
+            )
             .unwrap_err();
         assert_eq!(refused.status(), 404);
         assert_eq!(refused.to_string(), "no motion with id m9");
@@ -1602,60 +1650,176 @@ mod tests {
         let full = Quorum::of(SEAT_COUNT);
         assert_eq!(full.required, 3);
         // All four yes: carried below the gate, awaiting_owner at it.
-        let all_yes = TallyView { yes: 4, no: 0, abstain: 0, voted: 4, seats: 4 };
+        let all_yes = TallyView {
+            yes: 4,
+            no: 0,
+            abstain: 0,
+            voted: 4,
+            seats: 4,
+        };
         assert_eq!(state_of(all_yes, false, full), State::Carried);
         assert_eq!(state_of(all_yes, true, full), State::AwaitingOwner);
 
         // 3 yes, 1 no: carried.
         assert_eq!(
-            state_of(TallyView { yes: 3, no: 1, abstain: 0, voted: 4, seats: 4 }, false, full),
+            state_of(
+                TallyView {
+                    yes: 3,
+                    no: 1,
+                    abstain: 0,
+                    voted: 4,
+                    seats: 4
+                },
+                false,
+                full
+            ),
             State::Carried
         );
         // 3 yes, 0 no, 1 abstain: abstain never counts toward the majority.
         assert_eq!(
-            state_of(TallyView { yes: 3, no: 0, abstain: 1, voted: 4, seats: 4 }, false, full),
+            state_of(
+                TallyView {
+                    yes: 3,
+                    no: 0,
+                    abstain: 1,
+                    voted: 4,
+                    seats: 4
+                },
+                false,
+                full
+            ),
             State::Carried
         );
         // 2 yes, 1 no, 1 abstain: a relative majority carries.
         assert_eq!(
-            state_of(TallyView { yes: 2, no: 1, abstain: 1, voted: 4, seats: 4 }, false, full),
+            state_of(
+                TallyView {
+                    yes: 2,
+                    no: 1,
+                    abstain: 1,
+                    voted: 4,
+                    seats: 4
+                },
+                false,
+                full
+            ),
             State::Carried
         );
         // 2-2: the doctrine's tie.
         assert_eq!(
-            state_of(TallyView { yes: 2, no: 2, abstain: 0, voted: 4, seats: 4 }, false, full),
+            state_of(
+                TallyView {
+                    yes: 2,
+                    no: 2,
+                    abstain: 0,
+                    voted: 4,
+                    seats: 4
+                },
+                false,
+                full
+            ),
             State::TieToOwner
         );
         // An equal split with abstentions is the same no-majority.
         assert_eq!(
-            state_of(TallyView { yes: 1, no: 1, abstain: 2, voted: 4, seats: 4 }, false, full),
+            state_of(
+                TallyView {
+                    yes: 1,
+                    no: 1,
+                    abstain: 2,
+                    voted: 4,
+                    seats: 4
+                },
+                false,
+                full
+            ),
             State::TieToOwner
         );
         // A majority of no rejects.
         assert_eq!(
-            state_of(TallyView { yes: 1, no: 3, abstain: 0, voted: 4, seats: 4 }, false, full),
+            state_of(
+                TallyView {
+                    yes: 1,
+                    no: 3,
+                    abstain: 0,
+                    voted: 4,
+                    seats: 4
+                },
+                false,
+                full
+            ),
             State::Rejected
         );
         assert_eq!(
-            state_of(TallyView { yes: 0, no: 2, abstain: 2, voted: 4, seats: 4 }, false, full),
+            state_of(
+                TallyView {
+                    yes: 0,
+                    no: 2,
+                    abstain: 2,
+                    voted: 4,
+                    seats: 4
+                },
+                false,
+                full
+            ),
             State::Rejected
         );
         // Fewer than the quorum requires is open, whatever the split.
         assert_eq!(
-            state_of(TallyView { yes: 2, no: 0, abstain: 0, voted: 2, seats: 4 }, false, full),
+            state_of(
+                TallyView {
+                    yes: 2,
+                    no: 0,
+                    abstain: 0,
+                    voted: 2,
+                    seats: 4
+                },
+                false,
+                full
+            ),
             State::Open
         );
         assert_eq!(
-            state_of(TallyView { yes: 0, no: 0, abstain: 1, voted: 1, seats: 4 }, true, full),
+            state_of(
+                TallyView {
+                    yes: 0,
+                    no: 0,
+                    abstain: 1,
+                    voted: 1,
+                    seats: 4
+                },
+                true,
+                full
+            ),
             State::Open
         );
         // Three of four is the quorum: the count decides, even with a seat unvoted.
         assert_eq!(
-            state_of(TallyView { yes: 2, no: 0, abstain: 1, voted: 3, seats: 4 }, false, full),
+            state_of(
+                TallyView {
+                    yes: 2,
+                    no: 0,
+                    abstain: 1,
+                    voted: 3,
+                    seats: 4
+                },
+                false,
+                full
+            ),
             State::Carried
         );
         assert_eq!(
-            state_of(TallyView { yes: 1, no: 1, abstain: 1, voted: 3, seats: 4 }, false, full),
+            state_of(
+                TallyView {
+                    yes: 1,
+                    no: 1,
+                    abstain: 1,
+                    voted: 3,
+                    seats: 4
+                },
+                false,
+                full
+            ),
             State::TieToOwner
         );
     }
@@ -1871,7 +2035,11 @@ mod tests {
         let all = council.motions(MOTIONS_LIMIT);
         assert_eq!(all.total, 5);
         assert!(!all.truncated);
-        let ids: Vec<&str> = all.motions.iter().map(|motion| motion.id.as_str()).collect();
+        let ids: Vec<&str> = all
+            .motions
+            .iter()
+            .map(|motion| motion.id.as_str())
+            .collect();
         assert_eq!(ids, vec!["m5", "m4", "m3", "m2", "m1"], "newest first");
 
         let window = council.motions(2);
@@ -1917,7 +2085,11 @@ mod tests {
 
         // A 2-2 tie escalates to the owner; their `approve` ratifies it.
         propose(&council, 100, FINANCE, Kind::Priority, "an agenda", 0);
-        let tied = vote_all(&council, "m1", [Vote::Yes, Vote::No, Vote::Abstain, Vote::No]);
+        let tied = vote_all(
+            &council,
+            "m1",
+            [Vote::Yes, Vote::No, Vote::Abstain, Vote::No],
+        );
         assert_eq!(tied.state, "tie_to_owner");
         assert_eq!(tied.owner, None, "the owner has not decided");
         let ratified = council
@@ -1927,14 +2099,21 @@ mod tests {
         let owner = ratified.owner.clone().expect("the recorded decision");
         assert!(owner.approve);
         assert_eq!(owner.note.as_deref(), Some("carry it"));
-        assert!(owner.at >= ratified.created_at, "the stamp is the decision's own moment");
+        assert!(
+            owner.at >= ratified.created_at,
+            "the stamp is the decision's own moment"
+        );
         assert_eq!(ratified.tally, tied.tally, "the decision touches no tally");
         assert_eq!(ratified.votes, tied.votes, "and no vote");
         assert!(ratified.updated_at >= tied.updated_at);
 
         // A second tie, vetoed.
         propose(&council, 100, FINANCE, Kind::Priority, "another agenda", 0);
-        vote_all(&council, "m2", [Vote::No, Vote::Yes, Vote::Abstain, Vote::Yes]);
+        vote_all(
+            &council,
+            "m2",
+            [Vote::No, Vote::Yes, Vote::Abstain, Vote::Yes],
+        );
         let vetoed = council
             .decide("m2", decision(false, None))
             .expect("the owner decides");
@@ -2019,13 +2198,19 @@ mod tests {
     fn the_owner_decides_a_motion_once() {
         let (council, _notes) = lab();
         propose(&council, 100, FINANCE, Kind::Priority, "an agenda", 0);
-        vote_all(&council, "m1", [Vote::Yes, Vote::No, Vote::Abstain, Vote::No]);
+        vote_all(
+            &council,
+            "m1",
+            [Vote::Yes, Vote::No, Vote::Abstain, Vote::No],
+        );
         council
             .decide("m1", decision(true, Some("carry it")))
             .expect("the owner decides");
 
         // A second decision is refused, and the first stands untouched.
-        let refused = council.decide("m1", decision(false, Some("changed my mind"))).unwrap_err();
+        let refused = council
+            .decide("m1", decision(false, Some("changed my mind")))
+            .unwrap_err();
         assert_eq!(refused.status(), 409);
         assert_eq!(
             refused.to_string(),
@@ -2042,7 +2227,11 @@ mod tests {
     fn a_decided_motion_takes_no_further_vote() {
         let (council, _notes) = lab();
         propose(&council, 100, FINANCE, Kind::Priority, "an agenda", 0);
-        vote_all(&council, "m1", [Vote::Yes, Vote::No, Vote::Abstain, Vote::No]);
+        vote_all(
+            &council,
+            "m1",
+            [Vote::Yes, Vote::No, Vote::Abstain, Vote::No],
+        );
         council
             .decide("m1", decision(false, None))
             .expect("the owner vetoes");
@@ -2085,7 +2274,8 @@ mod tests {
                 "{body} is outside the contract"
             );
         }
-        let bare: DecideRequest = serde_json::from_str(r#"{"approve":true}"#).expect("a bare approve");
+        let bare: DecideRequest =
+            serde_json::from_str(r#"{"approve":true}"#).expect("a bare approve");
         assert!(bare.approve);
         assert_eq!(bare.note, None);
 
@@ -2094,9 +2284,12 @@ mod tests {
 
         // Blank is refused in the shared text rule's words.
         assert_eq!(
-            DecideRequest { approve: false, note: Some("   ".to_string()) }
-                .checked()
-                .unwrap_err(),
+            DecideRequest {
+                approve: false,
+                note: Some("   ".to_string())
+            }
+            .checked()
+            .unwrap_err(),
             "note must not be empty"
         );
 
@@ -2105,13 +2298,21 @@ mod tests {
         assert_eq!(MAX_DECISION_NOTE, 1000);
         let long = "x".repeat(1001);
         assert_eq!(
-            DecideRequest { approve: true, note: Some(long) }.checked().unwrap_err(),
+            DecideRequest {
+                approve: true,
+                note: Some(long)
+            }
+            .checked()
+            .unwrap_err(),
             "note must be at most 1000 bytes".to_string()
         );
         let at_cap = "y".repeat(1000);
-        let accepted = DecideRequest { approve: true, note: Some(at_cap.clone()) }
-            .checked()
-            .expect("at the cap is inside the contract");
+        let accepted = DecideRequest {
+            approve: true,
+            note: Some(at_cap.clone()),
+        }
+        .checked()
+        .expect("at the cap is inside the contract");
         assert_eq!(accepted.note.as_deref(), Some(at_cap.as_str()));
     }
 
@@ -2125,10 +2326,20 @@ mod tests {
         // misled.
         let before =
             serde_json::to_value(council.motion("m1").expect("the motion")).expect("a view");
-        assert!(before.get("owner").is_some(), "the owner key is always present: {before}");
-        assert!(before["owner"].is_null(), "and null until decided: {before}");
+        assert!(
+            before.get("owner").is_some(),
+            "the owner key is always present: {before}"
+        );
+        assert!(
+            before["owner"].is_null(),
+            "and null until decided: {before}"
+        );
 
-        vote_all(&council, "m1", [Vote::Yes, Vote::No, Vote::Abstain, Vote::No]);
+        vote_all(
+            &council,
+            "m1",
+            [Vote::Yes, Vote::No, Vote::Abstain, Vote::No],
+        );
         assert_eq!(
             council.motion("m1").expect("the motion").owner,
             None,
@@ -2161,7 +2372,11 @@ mod tests {
     fn the_owners_decision_publishes_the_motion_frame() {
         let (council, notes) = lab();
         propose(&council, 100, FINANCE, Kind::Priority, "an agenda", 0);
-        vote_all(&council, "m1", [Vote::Yes, Vote::No, Vote::Abstain, Vote::No]);
+        vote_all(
+            &council,
+            "m1",
+            [Vote::Yes, Vote::No, Vote::Abstain, Vote::No],
+        );
         // The propose and vote frames are not what is under test here.
         while notes.try_recv().is_ok() {}
 
@@ -2182,11 +2397,18 @@ mod tests {
             frame.frame(),
             "event: motion\ndata: {\"id\":\"m1\",\"kind\":\"priority\",\"state\":\"ratified\"}\n\n"
         );
-        assert!(notes.try_recv().is_err(), "exactly one frame on the decision");
+        assert!(
+            notes.try_recv().is_err(),
+            "exactly one frame on the decision"
+        );
 
         // A veto publishes the same frame, carrying `vetoed`.
         propose(&council, 100, FINANCE, Kind::Priority, "another agenda", 0);
-        vote_all(&council, "m2", [Vote::No, Vote::Yes, Vote::Abstain, Vote::Yes]);
+        vote_all(
+            &council,
+            "m2",
+            [Vote::No, Vote::Yes, Vote::Abstain, Vote::Yes],
+        );
         while notes.try_recv().is_ok() {}
         council
             .decide("m2", decision(false, None))
@@ -2258,7 +2480,10 @@ mod tests {
         assert_eq!(decided.state, "carried");
         assert_eq!(decided.tally.voted, 2);
         assert_eq!(decided.quorum.required, 2);
-        assert_eq!(decided.quorum.seats, SEAT_COUNT, "the seat table is still four");
+        assert_eq!(
+            decided.quorum.seats, SEAT_COUNT,
+            "the seat table is still four"
+        );
     }
 
     #[test]
@@ -2268,14 +2493,20 @@ mod tests {
         propose(&council, 100, FINANCE, Kind::Priority, "an agenda", 0);
         assert_eq!(yes_from(&council, "m1", 0).expect("a vote").state, "open");
         assert_eq!(yes_from(&council, "m1", 1).expect("a vote").state, "open");
-        assert_eq!(yes_from(&council, "m1", 2).expect("a vote").state, "carried");
+        assert_eq!(
+            yes_from(&council, "m1", 2).expect("a vote").state,
+            "carried"
+        );
 
         // Three filled: two votes decide it, one does not.
         let (council, _notes) = lab();
         council.set_filled(3);
         propose(&council, 100, FINANCE, Kind::Priority, "an agenda", 0);
         assert_eq!(yes_from(&council, "m1", 0).expect("a vote").state, "open");
-        assert_eq!(yes_from(&council, "m1", 2).expect("a vote").state, "carried");
+        assert_eq!(
+            yes_from(&council, "m1", 2).expect("a vote").state,
+            "carried"
+        );
     }
 
     #[test]
@@ -2285,7 +2516,10 @@ mod tests {
         council.set_filled(2);
         propose(&council, 100, FINANCE, Kind::Priority, "an agenda", 0);
         assert_eq!(yes_from(&council, "m1", 0).expect("a vote").state, "open");
-        assert_eq!(yes_from(&council, "m1", 2).expect("a vote").state, "carried");
+        assert_eq!(
+            yes_from(&council, "m1", 2).expect("a vote").state,
+            "carried"
+        );
 
         // One filled: no two votes can ever be cast, so the motion is `no_quorum`
         // and the owner decides it, whatever a single seat votes.
@@ -2326,7 +2560,13 @@ mod tests {
             Some(false)
         );
         // Decided once.
-        assert_eq!(council.decide("m1", decision(true, None)).unwrap_err().status(), 409);
+        assert_eq!(
+            council
+                .decide("m1", decision(true, None))
+                .unwrap_err()
+                .status(),
+            409
+        );
     }
 
     #[test]
@@ -2336,7 +2576,10 @@ mod tests {
         council.set_filled(2);
         propose(&council, 100, FINANCE, Kind::Priority, "an agenda", 0);
         yes_from(&council, "m1", 0).expect("a vote");
-        assert_eq!(yes_from(&council, "m1", 2).expect("a vote").state, "carried");
+        assert_eq!(
+            yes_from(&council, "m1", 2).expect("a vote").state,
+            "carried"
+        );
 
         // The roster fills the other two seats. The motion stays carried: a
         // quorum of three would have left it open, but it was counted already.
@@ -2347,7 +2590,14 @@ mod tests {
         assert_eq!(after.quorum.required, 2);
         assert_eq!(yes_from(&council, "m1", 1).unwrap_err().status(), 409);
         // A motion not yet counted takes the council's quorum as it stands.
-        propose(&council, 103, LEGAL_AGENTS_COUNSEL, Kind::Priority, "a second", 0);
+        propose(
+            &council,
+            103,
+            LEGAL_AGENTS_COUNSEL,
+            Kind::Priority,
+            "a second",
+            0,
+        );
         assert_eq!(council.motion("m2").expect("the motion").quorum.required, 3);
     }
 
@@ -2378,7 +2628,11 @@ mod tests {
         council.set_filled(1);
         let view = council.motions(10);
         assert!(!view.quorum.can_decide);
-        assert!(view.quorum.rule.contains("the owner decides"), "{}", view.quorum.rule);
+        assert!(
+            view.quorum.rule.contains("the owner decides"),
+            "{}",
+            view.quorum.rule
+        );
         assert_eq!(view.motions[0].state, "no_quorum");
         assert_eq!(view.quorum.filled, 1);
     }
@@ -2387,16 +2641,46 @@ mod tests {
     fn the_state_table_takes_the_quorum() {
         let two = Quorum::of(2);
         assert_eq!(
-            state_of(TallyView { yes: 1, no: 0, abstain: 0, voted: 1, seats: 4 }, false, two),
+            state_of(
+                TallyView {
+                    yes: 1,
+                    no: 0,
+                    abstain: 0,
+                    voted: 1,
+                    seats: 4
+                },
+                false,
+                two
+            ),
             State::Open
         );
         assert_eq!(
-            state_of(TallyView { yes: 2, no: 0, abstain: 0, voted: 2, seats: 4 }, false, two),
+            state_of(
+                TallyView {
+                    yes: 2,
+                    no: 0,
+                    abstain: 0,
+                    voted: 2,
+                    seats: 4
+                },
+                false,
+                two
+            ),
             State::Carried
         );
         // Whatever the votes, no quorum is `no_quorum`.
         assert_eq!(
-            state_of(TallyView { yes: 4, no: 0, abstain: 0, voted: 4, seats: 4 }, false, Quorum::of(1)),
+            state_of(
+                TallyView {
+                    yes: 4,
+                    no: 0,
+                    abstain: 0,
+                    voted: 4,
+                    seats: 4
+                },
+                false,
+                Quorum::of(1)
+            ),
             State::NoQuorum
         );
         assert!(State::NoQuorum.owner_decides());

@@ -7,7 +7,10 @@
 use std::os::unix::process::CommandExt;
 
 fn main() -> iced::Result {
-    if std::env::args().skip(1).any(|arg| arg == "--version" || arg == "-V") {
+    if std::env::args()
+        .skip(1)
+        .any(|arg| arg == "--version" || arg == "-V")
+    {
         println!("agentplaza-desktop {}", apz_os::version());
         return Ok(());
     }
@@ -27,7 +30,12 @@ fn snapshot_off_screen() {
     if std::env::var_os("APZ_SNAPSHOT").is_none() || std::env::var_os("WAYLAND_DISPLAY").is_none() {
         return;
     }
-    let Ok(exe) = std::env::current_exe() else { return };
-    let err = std::process::Command::new(exe).args(std::env::args_os().skip(1)).env_remove("WAYLAND_DISPLAY").exec();
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    let err = std::process::Command::new(exe)
+        .args(std::env::args_os().skip(1))
+        .env_remove("WAYLAND_DISPLAY")
+        .exec();
     eprintln!("agentplaza-desktop: cannot restart the snapshot on X11: {err}");
 }

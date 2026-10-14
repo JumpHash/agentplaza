@@ -5,13 +5,16 @@
 //! tests call the handlers without an `App`.
 
 use apz_http::{Request, Response, Router};
-use apz_skill::{FileInfo, Report, RULES_VERSION};
+use apz_skill::{FileInfo, RULES_VERSION, Report};
 use base64::Engine as _;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use super::{sha256_hex, valid_binding, valid_id, FileBody, FileIn, NewSkill, Skill, SkillFile, Skills, Source, StoreError, Version, VersionMeta, MAX_TAG, MAX_TAGS, MAX_TITLE};
+use super::{
+    FileBody, FileIn, MAX_TAG, MAX_TAGS, MAX_TITLE, NewSkill, Skill, SkillFile, Skills, Source,
+    StoreError, Version, VersionMeta, sha256_hex, valid_binding, valid_id,
+};
 use crate::events::Bus;
 use crate::state::App;
 
@@ -22,34 +25,69 @@ pub fn routes(router: Router<App>) -> Router<App> {
     // `check` and `rules` are registered before the `{id}` routes.
     router
         .post("/v1/skills/check", |_, req, _| with_body(req, check))
-        .get("/v1/skills/rules", |_, _, _| Response::json(200, &rules_body()))
-        .get("/v1/skills", |app, req, _| reply(list(&app.skills, req.query_param("archived") == Some("true"))))
-        .post("/v1/skills", |app, req, _| with_body(req, |b: CreateBody| create(&app.skills, &app.bus, b)))
-        .get("/v1/skills/{id}", |app, _, p| reply(detail(&app.skills, p.get("id"))))
+        .get("/v1/skills/rules", |_, _, _| {
+            Response::json(200, &rules_body())
+        })
+        .get("/v1/skills", |app, req, _| {
+            reply(list(
+                &app.skills,
+                req.query_param("archived") == Some("true"),
+            ))
+        })
+        .post("/v1/skills", |app, req, _| {
+            with_body(req, |b: CreateBody| create(&app.skills, &app.bus, b))
+        })
+        .get("/v1/skills/{id}", |app, _, p| {
+            reply(detail(&app.skills, p.get("id")))
+        })
         .route("PUT", "/v1/skills/{id}", |app, req, p| {
-            with_body(req, |b: MetaBody| set_meta(&app.skills, &app.bus, p.get("id"), b))
+            with_body(req, |b: MetaBody| {
+                set_meta(&app.skills, &app.bus, p.get("id"), b)
+            })
         })
         .route("PUT", "/v1/skills/{id}/bindings", |app, req, p| {
-            with_body(req, |b: BindingsBody| set_bindings(&app.skills, &app.bus, p.get("id"), b))
+            with_body(req, |b: BindingsBody| {
+                set_bindings(&app.skills, &app.bus, p.get("id"), b)
+            })
         })
-        .get("/v1/skills/{id}/versions/{v}", |app, _, p| reply(version(&app.skills, p.get("id"), p.get("v"))))
+        .get("/v1/skills/{id}/versions/{v}", |app, _, p| {
+            reply(version(&app.skills, p.get("id"), p.get("v")))
+        })
         // `{path..}` takes the rest of the path, so a file in a folder keeps its slashes.
-        .get("/v1/skills/{id}/versions/{v}/files/{path..}", |app, _, p| {
-            reply(file(&app.skills, p.get("id"), p.get("v"), p.get("path")))
-        })
+        .get(
+            "/v1/skills/{id}/versions/{v}/files/{path..}",
+            |app, _, p| reply(file(&app.skills, p.get("id"), p.get("v"), p.get("path"))),
+        )
         .post("/v1/skills/{id}/versions", |app, req, p| {
-            with_body(req, |b: VersionBody| add_version(&app.skills, &app.bus, p.get("id"), b))
+            with_body(req, |b: VersionBody| {
+                add_version(&app.skills, &app.bus, p.get("id"), b)
+            })
         })
         .post("/v1/skills/{id}/publish", |app, req, p| {
-            with_body(req, |b: PublishBody| publish(&app.skills, &app.bus, p.get("id"), b))
+            with_body(req, |b: PublishBody| {
+                publish(&app.skills, &app.bus, p.get("id"), b)
+            })
         })
-        .post("/v1/skills/{id}/unpublish", |app, _, p| reply(unpublish(&app.skills, &app.bus, p.get("id"))))
-        .post("/v1/skills/{id}/archive", |app, _, p| reply(archive(&app.skills, &app.bus, p.get("id"), true)))
-        .post("/v1/skills/{id}/restore", |app, _, p| reply(archive(&app.skills, &app.bus, p.get("id"), false)))
+        .post("/v1/skills/{id}/unpublish", |app, _, p| {
+            reply(unpublish(&app.skills, &app.bus, p.get("id")))
+        })
+        .post("/v1/skills/{id}/archive", |app, _, p| {
+            reply(archive(&app.skills, &app.bus, p.get("id"), true))
+        })
+        .post("/v1/skills/{id}/restore", |app, _, p| {
+            reply(archive(&app.skills, &app.bus, p.get("id"), false))
+        })
         .get("/v1/skills/{id}/diff", |app, req, p| {
-            reply(diff_versions(&app.skills, p.get("id"), req.query_param("from"), req.query_param("to")))
+            reply(diff_versions(
+                &app.skills,
+                p.get("id"),
+                req.query_param("from"),
+                req.query_param("to"),
+            ))
         })
-        .get("/v1/skills/{id}/history", |app, _, p| reply(history(&app.skills, p.get("id"))))
+        .get("/v1/skills/{id}/history", |app, _, p| {
+            reply(history(&app.skills, p.get("id")))
+        })
 }
 
 #[derive(Debug, Deserialize)]
@@ -142,7 +180,14 @@ fn view<'a>(skills: &Skills, v: &'a Version) -> Result<VersionView<'a>, StoreErr
     } else {
         None
     };
-    Ok(VersionView { meta: &v.meta, skill_md: &v.skill_md, files: &v.files, findings: &v.findings, stale, recheck })
+    Ok(VersionView {
+        meta: &v.meta,
+        skill_md: &v.skill_md,
+        files: &v.files,
+        findings: &v.findings,
+        stale,
+        recheck,
+    })
 }
 
 /// The files a diff lists: added, removed, and changed (sha256 or the executable bit).
@@ -154,11 +199,17 @@ struct FileChanges {
 }
 
 fn file_changes(old: &[SkillFile], new: &[SkillFile]) -> FileChanges {
-    let mut out = FileChanges { added: vec![], removed: vec![], changed: vec![] };
+    let mut out = FileChanges {
+        added: vec![],
+        removed: vec![],
+        changed: vec![],
+    };
     for f in new {
         match old.iter().find(|o| o.path == f.path) {
             None => out.added.push(f.path.clone()),
-            Some(o) if o.sha256 != f.sha256 || o.executable != f.executable => out.changed.push(f.path.clone()),
+            Some(o) if o.sha256 != f.sha256 || o.executable != f.executable => {
+                out.changed.push(f.path.clone())
+            }
             Some(_) => {}
         }
     }
@@ -182,7 +233,10 @@ fn reply(result: Result<Response, StoreError>) -> Response {
 }
 
 /// Parses the body as `T` (400 when it is not valid JSON for the route), then runs the handler.
-fn with_body<T: DeserializeOwned>(req: &Request, handle: impl FnOnce(T) -> Result<Response, StoreError>) -> Response {
+fn with_body<T: DeserializeOwned>(
+    req: &Request,
+    handle: impl FnOnce(T) -> Result<Response, StoreError>,
+) -> Response {
     match req.json::<T>() {
         Ok(body) => reply(handle(body)),
         Err(_) => Response::error(400, "the body is not valid JSON for this route"),
@@ -203,8 +257,14 @@ fn validate_meta(title: &str, tags: &[String]) -> Result<(), StoreError> {
     if title_len == 0 || title_len > MAX_TITLE {
         return Err(invalid(format!("title must be 1-{MAX_TITLE} characters")));
     }
-    if tags.len() > MAX_TAGS || tags.iter().any(|t| t.trim().is_empty() || t.chars().count() > MAX_TAG) {
-        return Err(invalid(format!("at most {MAX_TAGS} tags of 1-{MAX_TAG} characters")));
+    if tags.len() > MAX_TAGS
+        || tags
+            .iter()
+            .any(|t| t.trim().is_empty() || t.chars().count() > MAX_TAG)
+    {
+        return Err(invalid(format!(
+            "at most {MAX_TAGS} tags of 1-{MAX_TAG} characters"
+        )));
     }
     Ok(())
 }
@@ -212,7 +272,9 @@ fn validate_meta(title: &str, tags: &[String]) -> Result<(), StoreError> {
 /// Checks each binding (`plaza` or `role:<role>`) and returns them sorted and without repeats, as the store keeps them.
 fn bindings_checked(mut bindings: Vec<String>) -> Result<Vec<String>, StoreError> {
     if let Some(b) = bindings.iter().find(|b| !valid_binding(b)) {
-        return Err(invalid(format!("{b} is not a binding (plaza or role:<role>)")));
+        return Err(invalid(format!(
+            "{b} is not a binding (plaza or role:<role>)"
+        )));
     }
     bindings.sort();
     bindings.dedup();
@@ -231,9 +293,18 @@ fn file_ins(files: Vec<FileBodyIn>) -> Result<Vec<FileIn>, StoreError> {
                         .map_err(|_| invalid(format!("{}: content_b64 is not base64", f.path)))?,
                 ),
                 (None, Some(sha)) => FileBody::Known(sha),
-                _ => return Err(invalid(format!("{}: give content_b64 or sha256, not both", f.path))),
+                _ => {
+                    return Err(invalid(format!(
+                        "{}: give content_b64 or sha256, not both",
+                        f.path
+                    )));
+                }
             };
-            Ok(FileIn { path: f.path, body, executable: f.executable })
+            Ok(FileIn {
+                path: f.path,
+                body,
+                executable: f.executable,
+            })
         })
         .collect()
 }
@@ -248,7 +319,10 @@ fn unchanged(latest: &Version, skill_md: &str, files: &[FileIn]) -> bool {
             FileBody::Bytes(bytes) => sha256_hex(bytes),
             FileBody::Known(sha) => sha.clone(),
         };
-        latest.files.iter().any(|old| old.path == f.path && old.sha256 == sha && old.executable == f.executable)
+        latest
+            .files
+            .iter()
+            .any(|old| old.path == f.path && old.sha256 == sha && old.executable == f.executable)
     })
 }
 
@@ -263,7 +337,9 @@ fn content_type(path: &str, bytes: &[u8]) -> &'static str {
         "jpg" | "jpeg" => "image/jpeg",
         "gif" => "image/gif",
         "webp" => "image/webp",
-        _ if std::str::from_utf8(bytes).is_ok() && !bytes.contains(&0) => "text/plain; charset=utf-8",
+        _ if std::str::from_utf8(bytes).is_ok() && !bytes.contains(&0) => {
+            "text/plain; charset=utf-8"
+        }
         _ => "application/octet-stream",
     }
 }
@@ -284,7 +360,10 @@ fn load_version(skills: &Skills, id: &str, v: u32) -> Result<Version, StoreError
 fn summary(skills: &Skills, s: &Skill) -> Result<Value, StoreError> {
     let versions = skills.store().versions(&s.id)?;
     let best = apz_prompt::best_version(versions.iter().map(|v| (v.version, v.score)));
-    let score = s.active_version.and_then(|live| versions.iter().find(|v| v.version == live)).map(|v| v.score);
+    let score = s
+        .active_version
+        .and_then(|live| versions.iter().find(|v| v.version == live))
+        .map(|v| v.score);
     Ok(json!({
         "id": s.id,
         "name": s.name,
@@ -324,13 +403,21 @@ fn announce(bus: &Bus, id: &str, action: &str) {
 fn create(skills: &Skills, bus: &Bus, b: CreateBody) -> Result<Response, StoreError> {
     let id = b.id.unwrap_or_else(|| apz_prompt::slug(&b.title));
     if !valid_id(&id) {
-        return Err(invalid("id must be 1-63 lower-case letters, digits and dashes, starting with a letter or digit"));
+        return Err(invalid(
+            "id must be 1-63 lower-case letters, digits and dashes, starting with a letter or digit",
+        ));
     }
     validate_meta(&b.title, &b.tags)?;
     let bindings = bindings_checked(b.bindings)?;
     let files = file_ins(b.files)?;
     let first = skills.prepare(b.skill_md, files, b.note, None)?;
-    let new = NewSkill { id, title: b.title, tags: b.tags, bindings, source: Source::Built };
+    let new = NewSkill {
+        id,
+        title: b.title,
+        tags: b.tags,
+        bindings,
+        source: Source::Built,
+    };
     let skill = skills.store().create(&new, &first, OWNER, now())?;
     announce(bus, &skill.id, "create");
     skill_reply(skills, skill, 201)
@@ -338,12 +425,19 @@ fn create(skills: &Skills, bus: &Bus, b: CreateBody) -> Result<Response, StoreEr
 
 fn set_meta(skills: &Skills, bus: &Bus, id: &str, b: MetaBody) -> Result<Response, StoreError> {
     validate_meta(&b.title, &b.tags)?;
-    let skill = skills.store().set_meta(id, &b.title, &b.tags, OWNER, now())?;
+    let skill = skills
+        .store()
+        .set_meta(id, &b.title, &b.tags, OWNER, now())?;
     announce(bus, id, "update");
     skill_reply(skills, skill, 200)
 }
 
-fn set_bindings(skills: &Skills, bus: &Bus, id: &str, b: BindingsBody) -> Result<Response, StoreError> {
+fn set_bindings(
+    skills: &Skills,
+    bus: &Bus,
+    id: &str,
+    b: BindingsBody,
+) -> Result<Response, StoreError> {
     let bindings = bindings_checked(b.bindings)?;
     let skill = skills.store().set_bindings(id, &bindings, OWNER, now())?;
     announce(bus, id, "bindings");
@@ -359,7 +453,10 @@ fn detail(skills: &Skills, id: &str) -> Result<Response, StoreError> {
         None => None,
     };
     let live = live_version.as_ref().map(|v| view(skills, v)).transpose()?;
-    Ok(Response::json(200, &json!({ "skill": head, "versions": versions, "live": live })))
+    Ok(Response::json(
+        200,
+        &json!({ "skill": head, "versions": versions, "live": live }),
+    ))
 }
 
 fn version(skills: &Skills, id: &str, v: &str) -> Result<Response, StoreError> {
@@ -372,24 +469,48 @@ fn version(skills: &Skills, id: &str, v: &str) -> Result<Response, StoreError> {
 fn file(skills: &Skills, id: &str, v: &str, path: &str) -> Result<Response, StoreError> {
     find(skills, id)?;
     let ver = load_version(skills, id, number(v)?)?;
-    let entry = ver.files.iter().find(|f| f.path == path).ok_or(StoreError::NotFound)?;
-    let bytes = skills.blobs().get(&entry.sha256).map_err(StoreError::Failed)?;
+    let entry = ver
+        .files
+        .iter()
+        .find(|f| f.path == path)
+        .ok_or(StoreError::NotFound)?;
+    let bytes = skills
+        .blobs()
+        .get(&entry.sha256)
+        .map_err(StoreError::Failed)?;
     let ct = content_type(path, &bytes);
     Ok(Response::new(200, ct, bytes).with_header("x-content-type-options", "nosniff"))
 }
 
 /// Adds a version, or returns the latest one unchanged (`created` false) when SKILL.md and every file equal it.
-fn add_version(skills: &Skills, bus: &Bus, id: &str, b: VersionBody) -> Result<Response, StoreError> {
+fn add_version(
+    skills: &Skills,
+    bus: &Bus,
+    id: &str,
+    b: VersionBody,
+) -> Result<Response, StoreError> {
     let files = file_ins(b.files)?;
-    let latest_meta = skills.store().versions(id)?.pop().ok_or(StoreError::NotFound)?;
+    let latest_meta = skills
+        .store()
+        .versions(id)?
+        .pop()
+        .ok_or(StoreError::NotFound)?;
     let latest = load_version(skills, id, latest_meta.version)?;
     if unchanged(&latest, &b.skill_md, &files) {
-        return Ok(Response::json(200, &json!({ "version": latest.meta, "created": false })));
+        return Ok(Response::json(
+            200,
+            &json!({ "version": latest.meta, "created": false }),
+        ));
     }
     let next = skills.prepare(b.skill_md, files, b.note, None)?;
-    let meta = skills.store().add_version(id, b.base_version, &next, OWNER, now())?;
+    let meta = skills
+        .store()
+        .add_version(id, b.base_version, &next, OWNER, now())?;
     announce(bus, id, "version");
-    Ok(Response::json(201, &json!({ "version": meta, "created": true })))
+    Ok(Response::json(
+        201,
+        &json!({ "version": meta, "created": true }),
+    ))
 }
 
 fn publish(skills: &Skills, bus: &Bus, id: &str, b: PublishBody) -> Result<Response, StoreError> {
@@ -411,8 +532,16 @@ fn archive(skills: &Skills, bus: &Bus, id: &str, archived: bool) -> Result<Respo
     skill_reply(skills, skill, 200)
 }
 
-fn diff_versions(skills: &Skills, id: &str, from: Option<&str>, to: Option<&str>) -> Result<Response, StoreError> {
-    let (Some(from), Some(to)) = (from.and_then(|v| v.parse::<u32>().ok()), to.and_then(|v| v.parse::<u32>().ok())) else {
+fn diff_versions(
+    skills: &Skills,
+    id: &str,
+    from: Option<&str>,
+    to: Option<&str>,
+) -> Result<Response, StoreError> {
+    let (Some(from), Some(to)) = (
+        from.and_then(|v| v.parse::<u32>().ok()),
+        to.and_then(|v| v.parse::<u32>().ok()),
+    ) else {
         return Err(invalid("from and to must be version numbers"));
     };
     find(skills, id)?;
@@ -422,7 +551,10 @@ fn diff_versions(skills: &Skills, id: &str, from: Option<&str>, to: Option<&str>
     let files = file_changes(&old.files, &new.files);
     let old_view = view(skills, &old)?;
     let new_view = view(skills, &new)?;
-    Ok(Response::json(200, &json!({ "from": old_view, "to": new_view, "skill_md": lines, "files": files })))
+    Ok(Response::json(
+        200,
+        &json!({ "from": old_view, "to": new_view, "skill_md": lines, "files": files }),
+    ))
 }
 
 fn history(skills: &Skills, id: &str) -> Result<Response, StoreError> {
@@ -435,7 +567,12 @@ fn check(b: CheckBody) -> Result<Response, StoreError> {
     let infos: Vec<FileInfo> = b
         .files
         .into_iter()
-        .map(|f| FileInfo { path: f.path, size: f.size, executable: f.executable, text: f.text })
+        .map(|f| FileInfo {
+            path: f.path,
+            size: f.size,
+            executable: f.executable,
+            text: f.text,
+        })
         .collect();
     Ok(Response::json(200, &apz_skill::check(&b.skill_md, &infos)))
 }
@@ -460,7 +597,10 @@ mod tests {
     const REFERENCE: &[u8] = b"# Reference\n";
 
     fn library() -> Skills {
-        Skills::new(Arc::new(MemorySkills::in_memory()), Arc::new(MemBlobs::default()))
+        Skills::new(
+            Arc::new(MemorySkills::in_memory()),
+            Arc::new(MemBlobs::default()),
+        )
     }
 
     fn json_of(r: &Response) -> Value {
@@ -472,7 +612,12 @@ mod tests {
     }
 
     fn in_file(path: &str, content_b64: Option<String>, sha256: Option<String>) -> FileBodyIn {
-        FileBodyIn { path: path.into(), executable: false, content_b64, sha256 }
+        FileBodyIn {
+            path: path.into(),
+            executable: false,
+            content_b64,
+            sha256,
+        }
     }
 
     fn new_skill(md: &str) -> CreateBody {
@@ -488,7 +633,12 @@ mod tests {
     }
 
     fn version_body(md: &str, files: Vec<FileBodyIn>, base: u32) -> VersionBody {
-        VersionBody { skill_md: md.into(), files, note: "more".into(), base_version: base }
+        VersionBody {
+            skill_md: md.into(),
+            files,
+            note: "more".into(),
+            base_version: base,
+        }
     }
 
     #[test]
@@ -498,7 +648,10 @@ mod tests {
         let created = create(&lib, &bus, new_skill(GOOD)).expect("create");
         assert_eq!(created.status, 201);
         assert_eq!(json_of(&created)["skill"]["id"], "pdf-forms");
-        assert_eq!(json_of(&created)["skill"]["latest_version"].as_u64(), Some(1));
+        assert_eq!(
+            json_of(&created)["skill"]["latest_version"].as_u64(),
+            Some(1)
+        );
 
         let got = detail(&lib, "pdf-forms").expect("detail");
         assert_eq!(json_of(&got)["versions"].as_array().map(Vec::len), Some(1));
@@ -506,49 +659,109 @@ mod tests {
 
         // Version 2 changes SKILL.md; the reference file is sent by its sha256 alone.
         let more = format!("{GOOD}\nMore.\n");
-        let added = add_version(&lib, &bus, "pdf-forms", version_body(&more, vec![in_file("reference.md", None, Some(sha256_hex(REFERENCE)))], 1))
-            .expect("version 2");
+        let added = add_version(
+            &lib,
+            &bus,
+            "pdf-forms",
+            version_body(
+                &more,
+                vec![in_file("reference.md", None, Some(sha256_hex(REFERENCE)))],
+                1,
+            ),
+        )
+        .expect("version 2");
         assert_eq!(added.status, 201);
         assert_eq!(json_of(&added)["version"]["version"].as_u64(), Some(2));
 
         // The same SKILL.md and files again is not a new version.
-        let same = add_version(&lib, &bus, "pdf-forms", version_body(&more, vec![in_file("reference.md", None, Some(sha256_hex(REFERENCE)))], 2))
-            .expect("unchanged");
+        let same = add_version(
+            &lib,
+            &bus,
+            "pdf-forms",
+            version_body(
+                &more,
+                vec![in_file("reference.md", None, Some(sha256_hex(REFERENCE)))],
+                2,
+            ),
+        )
+        .expect("unchanged");
         assert_eq!(same.status, 200);
         assert_eq!(json_of(&same)["created"], false);
 
         // A stale base is a conflict.
         assert!(matches!(
-            add_version(&lib, &bus, "pdf-forms", version_body(GOOD, vec![in_file("reference.md", None, Some(sha256_hex(REFERENCE)))], 1)),
+            add_version(
+                &lib,
+                &bus,
+                "pdf-forms",
+                version_body(
+                    GOOD,
+                    vec![in_file("reference.md", None, Some(sha256_hex(REFERENCE)))],
+                    1
+                )
+            ),
             Err(StoreError::Conflict(_))
         ));
 
         let diff = diff_versions(&lib, "pdf-forms", Some("1"), Some("2")).expect("diff");
         assert_eq!(diff.status, 200);
-        assert!(json_of(&diff)["skill_md"].as_array().is_some_and(|l| !l.is_empty()));
-        assert!(json_of(&diff)["files"]["changed"].as_array().is_some_and(Vec::is_empty));
-        assert!(matches!(diff_versions(&lib, "pdf-forms", Some("1"), None), Err(StoreError::Invalid(_))));
+        assert!(
+            json_of(&diff)["skill_md"]
+                .as_array()
+                .is_some_and(|l| !l.is_empty())
+        );
+        assert!(
+            json_of(&diff)["files"]["changed"]
+                .as_array()
+                .is_some_and(Vec::is_empty)
+        );
+        assert!(matches!(
+            diff_versions(&lib, "pdf-forms", Some("1"), None),
+            Err(StoreError::Invalid(_))
+        ));
 
         let live = publish(&lib, &bus, "pdf-forms", PublishBody { version: 2 }).expect("publish");
         assert_eq!(json_of(&live)["skill"]["active_version"].as_u64(), Some(2));
-        assert!(matches!(publish(&lib, &bus, "pdf-forms", PublishBody { version: 9 }), Err(StoreError::Invalid(_))));
+        assert!(matches!(
+            publish(&lib, &bus, "pdf-forms", PublishBody { version: 9 }),
+            Err(StoreError::Invalid(_))
+        ));
         let live_detail = detail(&lib, "pdf-forms").expect("detail");
         assert_eq!(json_of(&live_detail)["live"]["version"].as_u64(), Some(2));
 
         let events = history(&lib, "pdf-forms").expect("history");
-        assert!(json_of(&events)["events"].as_array().is_some_and(|e| e.len() >= 4));
+        assert!(
+            json_of(&events)["events"]
+                .as_array()
+                .is_some_and(|e| e.len() >= 4)
+        );
 
         let got_file = file(&lib, "pdf-forms", "2", "reference.md").expect("file");
         assert_eq!(got_file.status, 200);
         assert_eq!(got_file.bytes(), REFERENCE);
-        assert!(got_file.headers.iter().any(|(k, v)| k == "Content-Type" && v.starts_with("text/markdown")));
-        assert!(matches!(file(&lib, "pdf-forms", "2", "missing.md"), Err(StoreError::NotFound)));
+        assert!(
+            got_file
+                .headers
+                .iter()
+                .any(|(k, v)| k == "Content-Type" && v.starts_with("text/markdown"))
+        );
+        assert!(matches!(
+            file(&lib, "pdf-forms", "2", "missing.md"),
+            Err(StoreError::NotFound)
+        ));
 
-        let report = check(CheckBody { skill_md: GOOD.into(), files: vec![] }).expect("check");
+        let report = check(CheckBody {
+            skill_md: GOOD.into(),
+            files: vec![],
+        })
+        .expect("check");
         assert_eq!(report.status, 200);
 
         let rules = Response::json(200, &rules_body());
-        assert_eq!(json_of(&rules)["rules_version"].as_u64(), Some(u64::from(RULES_VERSION)));
+        assert_eq!(
+            json_of(&rules)["rules_version"].as_u64(),
+            Some(u64::from(RULES_VERSION))
+        );
     }
 
     #[test]
@@ -558,32 +771,66 @@ mod tests {
         create(&lib, &bus, new_skill(GOOD)).expect("create");
 
         // The same id again is a conflict.
-        assert!(matches!(create(&lib, &bus, new_skill(GOOD)), Err(StoreError::Conflict(_))));
+        assert!(matches!(
+            create(&lib, &bus, new_skill(GOOD)),
+            Err(StoreError::Conflict(_))
+        ));
 
         let mut bad_id = new_skill(GOOD);
         bad_id.id = Some("Not An Id".into());
-        assert!(matches!(create(&lib, &bus, bad_id), Err(StoreError::Invalid(_))));
+        assert!(matches!(
+            create(&lib, &bus, bad_id),
+            Err(StoreError::Invalid(_))
+        ));
 
         let mut bad_binding = new_skill(GOOD);
         bad_binding.id = Some("other".into());
         bad_binding.bindings = vec!["everyone".into()];
-        assert!(matches!(create(&lib, &bus, bad_binding), Err(StoreError::Invalid(_))));
+        assert!(matches!(
+            create(&lib, &bus, bad_binding),
+            Err(StoreError::Invalid(_))
+        ));
 
         let mut bad_path = new_skill(GOOD);
         bad_path.id = Some("other".into());
         bad_path.files = vec![in_file("../x", Some(b64(b"x")), None)];
-        assert!(matches!(create(&lib, &bus, bad_path), Err(StoreError::Invalid(_))));
+        assert!(matches!(
+            create(&lib, &bus, bad_path),
+            Err(StoreError::Invalid(_))
+        ));
 
         assert!(matches!(detail(&lib, "missing"), Err(StoreError::NotFound)));
-        assert!(matches!(version(&lib, "pdf-forms", "9"), Err(StoreError::NotFound)));
-        assert!(matches!(history(&lib, "missing"), Err(StoreError::NotFound)));
         assert!(matches!(
-            set_bindings(&lib, &bus, "pdf-forms", BindingsBody { bindings: vec!["role:".into()] }),
+            version(&lib, "pdf-forms", "9"),
+            Err(StoreError::NotFound)
+        ));
+        assert!(matches!(
+            history(&lib, "missing"),
+            Err(StoreError::NotFound)
+        ));
+        assert!(matches!(
+            set_bindings(
+                &lib,
+                &bus,
+                "pdf-forms",
+                BindingsBody {
+                    bindings: vec!["role:".into()]
+                }
+            ),
             Err(StoreError::Invalid(_))
         ));
         // A sha256 of a file the blobs do not hold is refused, not stored.
         assert!(matches!(
-            add_version(&lib, &bus, "pdf-forms", version_body(GOOD, vec![in_file("reference.md", None, Some("0".repeat(64)))], 1)),
+            add_version(
+                &lib,
+                &bus,
+                "pdf-forms",
+                version_body(
+                    GOOD,
+                    vec![in_file("reference.md", None, Some("0".repeat(64)))],
+                    1
+                )
+            ),
             Err(StoreError::Invalid(_))
         ));
     }
@@ -596,13 +843,39 @@ mod tests {
 
         create(&lib, &bus, new_skill(GOOD)).expect("create");
         let more = format!("{GOOD}\nMore.\n");
-        add_version(&lib, &bus, "pdf-forms", version_body(&more, vec![in_file("reference.md", None, Some(sha256_hex(REFERENCE)))], 1))
-            .expect("version");
+        add_version(
+            &lib,
+            &bus,
+            "pdf-forms",
+            version_body(
+                &more,
+                vec![in_file("reference.md", None, Some(sha256_hex(REFERENCE)))],
+                1,
+            ),
+        )
+        .expect("version");
         // The same SKILL.md and files again is not a new version, so it publishes nothing.
-        add_version(&lib, &bus, "pdf-forms", version_body(&more, vec![in_file("reference.md", None, Some(sha256_hex(REFERENCE)))], 2))
-            .expect("unchanged");
+        add_version(
+            &lib,
+            &bus,
+            "pdf-forms",
+            version_body(
+                &more,
+                vec![in_file("reference.md", None, Some(sha256_hex(REFERENCE)))],
+                2,
+            ),
+        )
+        .expect("unchanged");
         publish(&lib, &bus, "pdf-forms", PublishBody { version: 2 }).expect("publish");
-        set_bindings(&lib, &bus, "pdf-forms", BindingsBody { bindings: vec!["role:reviewer".into()] }).expect("bindings");
+        set_bindings(
+            &lib,
+            &bus,
+            "pdf-forms",
+            BindingsBody {
+                bindings: vec!["role:reviewer".into()],
+            },
+        )
+        .expect("bindings");
         unpublish(&lib, &bus, "pdf-forms").expect("unpublish");
         archive(&lib, &bus, "pdf-forms", true).expect("archive");
         archive(&lib, &bus, "pdf-forms", false).expect("restore");
@@ -611,11 +884,29 @@ mod tests {
             .try_iter()
             .map(|f| {
                 let data: Value = serde_json::from_str(&f.data).expect("JSON data");
-                (f.kind, data["id"].as_str().unwrap_or_default().to_string(), data["action"].as_str().unwrap_or_default().to_string())
+                (
+                    f.kind,
+                    data["id"].as_str().unwrap_or_default().to_string(),
+                    data["action"].as_str().unwrap_or_default().to_string(),
+                )
             })
             .collect();
         let actions: Vec<&str> = got.iter().map(|(_, _, action)| action.as_str()).collect();
-        assert_eq!(actions, ["create", "version", "publish", "bindings", "unpublish", "archive", "restore"]);
-        assert!(got.iter().all(|(kind, id, _)| kind == "skill" && id == "pdf-forms"));
+        assert_eq!(
+            actions,
+            [
+                "create",
+                "version",
+                "publish",
+                "bindings",
+                "unpublish",
+                "archive",
+                "restore"
+            ]
+        );
+        assert!(
+            got.iter()
+                .all(|(kind, id, _)| kind == "skill" && id == "pdf-forms")
+        );
     }
 }

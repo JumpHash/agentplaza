@@ -85,11 +85,7 @@ pub fn round_num(v: f64) -> f64 {
     let f = y.floor();
     let r = if y - f >= 0.5 { f + 1.0 } else { f };
     let out = r / 1000.0;
-    if out == 0.0 {
-        0.0
-    } else {
-        out
-    }
+    if out == 0.0 { 0.0 } else { out }
 }
 
 /// A rounded number as the canonical JSON writes it (`String(roundNum(v))`): the shortest decimal, `-0` as `0`.
@@ -389,18 +385,28 @@ pub fn role_order() -> &'static [String] {
         roles: InOrder,
     }
     static ORDER: OnceLock<Vec<String>> = OnceLock::new();
-    ORDER.get_or_init(|| serde_json::from_str::<File>(ROLES_JSON).expect("assets/rooms/roles.json parses").roles.0)
+    ORDER.get_or_init(|| {
+        serde_json::from_str::<File>(ROLES_JSON)
+            .expect("assets/rooms/roles.json parses")
+            .roles
+            .0
+    })
 }
 
 /// The template of a role: its own entry, else the family "other" (`templateFor` in gen.ts).
 pub fn template_for<'r>(role: &str, roles: &'r Roles) -> Option<&'r RoleTemplate> {
-    roles.roles.get(role).or_else(|| roles.families.get("other"))
+    roles
+        .roles
+        .get(role)
+        .or_else(|| roles.families.get("other"))
 }
 
 /// The precomputed minimum sizes: role -> the minSize for 1..6 agents (`null` = none up to 8).
 pub fn min_size_table() -> &'static BTreeMap<String, Vec<Option<f64>>> {
     static TABLE: OnceLock<BTreeMap<String, Vec<Option<f64>>>> = OnceLock::new();
-    TABLE.get_or_init(|| serde_json::from_str(MIN_SIZE_JSON).expect("assets/rooms/minsize.json parses"))
+    TABLE.get_or_init(|| {
+        serde_json::from_str(MIN_SIZE_JSON).expect("assets/rooms/minsize.json parses")
+    })
 }
 
 /// The smallest square side (0.5 steps from 2.5 to 8) at which the required groups of `role` always place, for
@@ -422,7 +428,14 @@ pub fn compute_min_size(role: &str, agents: usize, data: &Data) -> f64 {
         let side = 2.5 + 0.5 * f64::from(k);
         let fits = SIDES.iter().all(|&door| {
             (1..=500_u32).all(|seed| {
-                let input = Input { role: role.to_string(), w: side, d: side, door, seed, agents: Some(agents) };
+                let input = Input {
+                    role: role.to_string(),
+                    w: side,
+                    d: side,
+                    door,
+                    seed,
+                    agents: Some(agents),
+                };
                 generate(&input, data).dropped.is_empty()
             })
         });
@@ -567,7 +580,12 @@ fn idx_range(lo: f64, hi: f64, half: f64, cell: f64, n: i64) -> (i64, i64) {
 
 /// The extent of rotated points: (min x, max x, min z, max z), as the web's running min and max.
 fn extent(pts: &[(f64, f64)]) -> (f64, f64, f64, f64) {
-    let (mut mnx, mut mxx, mut mnz, mut mxz) = (f64::INFINITY, f64::NEG_INFINITY, f64::INFINITY, f64::NEG_INFINITY);
+    let (mut mnx, mut mxx, mut mnz, mut mxz) = (
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+    );
     for &(px, pz) in pts {
         if px < mnx {
             mnx = px;
@@ -624,7 +642,12 @@ struct Geo {
 
 impl Geo {
     fn bx(&self) -> Bx {
-        Bx { x0: self.x0, x1: self.x1, z0: self.z0, z1: self.z1 }
+        Bx {
+            x0: self.x0,
+            x1: self.x1,
+            z0: self.z0,
+            z1: self.z1,
+        }
     }
 }
 
@@ -739,7 +762,11 @@ fn clear_of(cat: &CatItem) -> (f64, f64) {
 fn make_geo(ctx: &Ctx, cat: &CatItem, x: f64, z: f64, rot: f64) -> Geo {
     let kind = kind_of(cat);
     let fw = cat.size[0];
-    let fd = if kind == Kind::Wall { WALLMOUNT_DEPTH } else { cat.size[2] };
+    let fd = if kind == Kind::Wall {
+        WALLMOUNT_DEPTH
+    } else {
+        cat.size[2]
+    };
     let along = rot % 180.0 == 0.0;
     let sx = if along { fw } else { fd };
     let sz = if along { fd } else { fw };
@@ -812,13 +839,25 @@ fn view_of(g: &Geo, rot: f64) -> Bx {
     let lw = g.fw / 2.0 + MOUNT_VIEW_SIDE;
     let d0 = g.fd / 2.0;
     let d1 = g.fd / 2.0 + MOUNT_VIEW;
-    let pts = [rot_pt(-lw, d0, rot), rot_pt(lw, d0, rot), rot_pt(lw, d1, rot), rot_pt(-lw, d1, rot)];
+    let pts = [
+        rot_pt(-lw, d0, rot),
+        rot_pt(lw, d0, rot),
+        rot_pt(lw, d1, rot),
+        rot_pt(-lw, d1, rot),
+    ];
     let (mnx, mxx, mnz, mxz) = extent(&pts);
-    Bx { x0: g.x + mnx, x1: g.x + mxx, z0: g.z + mnz, z1: g.z + mxz }
+    Bx {
+        x0: g.x + mnx,
+        x1: g.x + mxx,
+        z0: g.z + mnz,
+        z1: g.z + mxz,
+    }
 }
 
 fn coplanar_clash(ctx: &Ctx, top: f64, g: &Geo) -> bool {
-    ctx.recs.iter().any(|r| r.kind != Kind::Floor && (r.top - top).abs() <= COPLANAR_TOL && overlaps(g.bx(), r.g.bx()))
+    ctx.recs.iter().any(|r| {
+        r.kind != Kind::Floor && (r.top - top).abs() <= COPLANAR_TOL && overlaps(g.bx(), r.g.bx())
+    })
 }
 
 /// Build a record (`makeRec`): the spots transformed, the check cells, the view strip of a wall item.
@@ -840,7 +879,12 @@ fn make_rec<'a>(
         let x = g.x + dx;
         let z = g.z + dz;
         let face = (((s.face + g.rot) % 360.0) + 360.0) % 360.0;
-        spots.push(Spot { x, z, face, cell: exact_cell(ctx, x, z) });
+        spots.push(Spot {
+            x,
+            z,
+            face,
+            cell: exact_cell(ctx, x, z),
+        });
         spot_clips.push(s.clip.clone());
     }
     let mut checks = Vec::new();
@@ -856,8 +900,16 @@ fn make_rec<'a>(
             checks.push(cell_index_of(ctx, g.x + dx, g.z + dz) as i64);
         }
     }
-    let view = if kind == Kind::Wall { Some(view_of(&g, g.rot)) } else { None };
-    let limit = if kind == Kind::Wall { cat.mount.unwrap_or(0.0) + cat.size[1] / 2.0 } else { 0.0 };
+    let view = if kind == Kind::Wall {
+        Some(view_of(&g, g.rot))
+    } else {
+        None
+    };
+    let limit = if kind == Kind::Wall {
+        cat.mount.unwrap_or(0.0) + cat.size[1] / 2.0
+    } else {
+        0.0
+    };
     Rec {
         n: ctx.recs.len(),
         id: id.to_string(),
@@ -918,7 +970,15 @@ fn reachable(ctx: &mut Ctx, cand: &Rec, cand_blocks: bool) -> bool {
             }
         }
     }
-    let Ctx { blk, mark, vis, queue, door_cells, recs, .. } = ctx;
+    let Ctx {
+        blk,
+        mark,
+        vis,
+        queue,
+        door_cells,
+        recs,
+        ..
+    } = ctx;
     let blocked_at = |c: usize| blk[c] > 0 || (cand_blocks && mark[c] == s);
     let mut qh = 0;
     queue.clear();
@@ -991,9 +1051,14 @@ fn try_place<'a>(
             return None;
         }
         let srec = make_rec(ctx, id, cat, *g, kind, Some(hi), htop, top, gi);
-        return if spots_valid(ctx, &srec, false) { Some(srec) } else { None };
+        return if spots_valid(ctx, &srec, false) {
+            Some(srec)
+        } else {
+            None
+        };
     }
-    if !(g.x0 >= -ctx.w / 2.0 && g.x1 <= ctx.w / 2.0 && g.z0 >= -ctx.d / 2.0 && g.z1 <= ctx.d / 2.0) {
+    if !(g.x0 >= -ctx.w / 2.0 && g.x1 <= ctx.w / 2.0 && g.z0 >= -ctx.d / 2.0 && g.z1 <= ctx.d / 2.0)
+    {
         return None;
     }
     if ban && kind != Kind::Floor && g.x.abs() <= ctx.w / 4.0 && g.z.abs() <= ctx.d / 4.0 {
@@ -1006,11 +1071,19 @@ fn try_place<'a>(
             }
         }
     }
-    let y = if kind == Kind::Wall { cat.mount.unwrap_or(0.0) } else { 0.0 };
+    let y = if kind == Kind::Wall {
+        cat.mount.unwrap_or(0.0)
+    } else {
+        0.0
+    };
     let top = y + cat.size[1];
     if kind == Kind::Floor {
         let frec = make_rec(ctx, id, cat, *g, kind, host, y, top, gi);
-        return if spots_valid(ctx, &frec, false) { Some(frec) } else { None };
+        return if spots_valid(ctx, &frec, false) {
+            Some(frec)
+        } else {
+            None
+        };
     }
     if kind == Kind::Solid {
         for j in g.j0..=g.j1 {
@@ -1068,7 +1141,9 @@ fn try_place<'a>(
     if !spots_valid(ctx, &rec, kind == Kind::Solid && !cat.walk) {
         return None;
     }
-    if (kind == Kind::Solid || kind == Kind::Wall) && !reachable(ctx, &rec, kind == Kind::Solid && !cat.walk) {
+    if (kind == Kind::Solid || kind == Kind::Wall)
+        && !reachable(ctx, &rec, kind == Kind::Solid && !cat.walk)
+    {
         return None;
     }
     Some(rec)
@@ -1159,14 +1234,26 @@ fn anchor_candidates(ctx: &Ctx, cat: &CatItem, rule: Anchor) -> Vec<Cand> {
     let push = |out: &mut Vec<Cand>, x: f64, z: f64, rot: f64, rule_fit: f64| {
         let dx = x - door_pt.0;
         let dz = z - door_pt.1;
-        let work_far = if has_spots { (dx * dx + dz * dz).sqrt() / ctx.diag } else { 0.0 };
-        out.push(Cand { geo: make_geo(ctx, cat, x, z, rot), rule_fit, work_far });
+        let work_far = if has_spots {
+            (dx * dx + dz * dz).sqrt() / ctx.diag
+        } else {
+            0.0
+        };
+        out.push(Cand {
+            geo: make_geo(ctx, cat, x, z, rot),
+            rule_fit,
+            work_far,
+        });
     };
     let fw = cat.size[0];
     let fd0 = cat.size[2];
     match rule {
         Anchor::Wall | Anchor::Wallmount | Anchor::Door => {
-            let fd_use = if rule == Anchor::Wallmount { WALLMOUNT_DEPTH } else { fd0 };
+            let fd_use = if rule == Anchor::Wallmount {
+                WALLMOUNT_DEPTH
+            } else {
+                fd0
+            };
             for side in SIDES {
                 if rule == Anchor::Door && side != ctx.door {
                     continue;
@@ -1183,13 +1270,21 @@ fn anchor_candidates(ctx: &Ctx, cat: &CatItem, rule: Anchor) -> Vec<Cand> {
                 let hz = (if along { fd_use } else { fw }) / 2.0;
                 let base = if rule == Anchor::Wall { 1.0 } else { 0.0 };
                 if side == Door::N || side == Door::S {
-                    let z = if side == Door::N { -ctx.d / 2.0 + hz + INSET } else { ctx.d / 2.0 - hz - INSET };
+                    let z = if side == Door::N {
+                        -ctx.d / 2.0 + hz + INSET
+                    } else {
+                        ctx.d / 2.0 - hz - INSET
+                    };
                     for i in 0..ctx.cols {
                         let x = ctx.xs[i as usize];
                         if on_door_side && !beyond_opening(ctx.door_half, x - hx, x + hx) {
                             continue;
                         }
-                        let rf = if rule == Anchor::Door { door_fit(x.abs() - ctx.door_half - hx) } else { base };
+                        let rf = if rule == Anchor::Door {
+                            door_fit(x.abs() - ctx.door_half - hx)
+                        } else {
+                            base
+                        };
                         // A door candidate must hug the opening (within DOOR_NEAR of its edge); others are not candidates.
                         if rule == Anchor::Door && rf == 0.0 {
                             continue;
@@ -1197,13 +1292,21 @@ fn anchor_candidates(ctx: &Ctx, cat: &CatItem, rule: Anchor) -> Vec<Cand> {
                         push(&mut out, x, z, rot, rf);
                     }
                 } else {
-                    let x = if side == Door::W { -ctx.w / 2.0 + hx + INSET } else { ctx.w / 2.0 - hx - INSET };
+                    let x = if side == Door::W {
+                        -ctx.w / 2.0 + hx + INSET
+                    } else {
+                        ctx.w / 2.0 - hx - INSET
+                    };
                     for j in 0..ctx.rows {
                         let z = ctx.zs[j as usize];
                         if on_door_side && !beyond_opening(ctx.door_half, z - hz, z + hz) {
                             continue;
                         }
-                        let rf = if rule == Anchor::Door { door_fit(z.abs() - ctx.door_half - hz) } else { base };
+                        let rf = if rule == Anchor::Door {
+                            door_fit(z.abs() - ctx.door_half - hz)
+                        } else {
+                            base
+                        };
                         if rule == Anchor::Door && rf == 0.0 {
                             continue;
                         }
@@ -1213,17 +1316,31 @@ fn anchor_candidates(ctx: &Ctx, cat: &CatItem, rule: Anchor) -> Vec<Cand> {
             }
         }
         Anchor::Corner => {
-            let corners = [(-1.0, -1.0, Door::N, Door::W), (1.0, -1.0, Door::N, Door::E), (1.0, 1.0, Door::S, Door::E), (-1.0, 1.0, Door::S, Door::W)];
+            let corners = [
+                (-1.0, -1.0, Door::N, Door::W),
+                (1.0, -1.0, Door::N, Door::E),
+                (1.0, 1.0, Door::S, Door::E),
+                (-1.0, 1.0, Door::S, Door::W),
+            ];
             for (sx, sz, a, b) in corners {
                 if a == ctx.door || b == ctx.door {
                     continue;
                 }
                 // The rotation comes from the centre computed with the rot-0 footprint; the centre then uses that rot.
-                let rot = facing(sx * (ctx.w / 2.0 - INSET - fw / 2.0), sz * (ctx.d / 2.0 - INSET - fd0 / 2.0));
+                let rot = facing(
+                    sx * (ctx.w / 2.0 - INSET - fw / 2.0),
+                    sz * (ctx.d / 2.0 - INSET - fd0 / 2.0),
+                );
                 let along = rot % 180.0 == 0.0;
                 let hx = (if along { fw } else { fd0 }) / 2.0;
                 let hz = (if along { fd0 } else { fw }) / 2.0;
-                push(&mut out, sx * (ctx.w / 2.0 - INSET - hx), sz * (ctx.d / 2.0 - INSET - hz), rot, 1.0);
+                push(
+                    &mut out,
+                    sx * (ctx.w / 2.0 - INSET - hx),
+                    sz * (ctx.d / 2.0 - INSET - hz),
+                    rot,
+                    1.0,
+                );
             }
         }
         // centre (and any other rule): row-major, the middle half only.
@@ -1250,10 +1367,16 @@ fn anchor_candidates(ctx: &Ctx, cat: &CatItem, rule: Anchor) -> Vec<Cand> {
 fn build_slots<'a>(ctx: &mut Ctx<'a>, gid: &str, station: Option<&str>) -> Vec<Slot<'a>> {
     let items = ctx.items;
     let groups = ctx.groups;
-    let def = groups.get(gid).unwrap_or_else(|| panic!("rooms: unknown group \"{gid}\""));
+    let def = groups
+        .get(gid)
+        .unwrap_or_else(|| panic!("rooms: unknown group \"{gid}\""));
     let mut slots: Vec<Slot<'a>> = Vec::new();
     for (idx, e) in def.items.iter().enumerate() {
-        let id = if e.id == "$station" { station.unwrap_or("") } else { e.id.as_str() };
+        let id = if e.id == "$station" {
+            station.unwrap_or("")
+        } else {
+            e.id.as_str()
+        };
         let cat = match items.get(id) {
             Some(c) if !id.is_empty() => c,
             _ => panic!("rooms: group \"{gid}\" item \"{}\" unresolved", e.id),
@@ -1274,11 +1397,21 @@ fn build_slots<'a>(ctx: &mut Ctx<'a>, gid: &str, station: Option<&str>) -> Vec<S
         }
         for c in 1..=n {
             let is_anchor = idx == 0 && c == 1;
-            let mut rel = e.rel.clone().unwrap_or_else(|| if idx == 0 { "row".to_string() } else { String::new() });
+            let mut rel = e.rel.clone().unwrap_or_else(|| {
+                if idx == 0 {
+                    "row".to_string()
+                } else {
+                    String::new()
+                }
+            });
             if is_anchor {
                 rel.clear();
             }
-            let side = if rel == "around" { sides.get((c - 1) as usize).copied() } else { None };
+            let side = if rel == "around" {
+                sides.get((c - 1) as usize).copied()
+            } else {
+                None
+            };
             slots.push(Slot {
                 id: id.to_string(),
                 cat,
@@ -1290,7 +1423,10 @@ fn build_slots<'a>(ctx: &mut Ctx<'a>, gid: &str, station: Option<&str>) -> Vec<S
             });
         }
     }
-    assert!(!slots.is_empty() && !slots[0].id.is_empty(), "rooms: group \"{gid}\" has no anchor");
+    assert!(
+        !slots.is_empty() && !slots[0].id.is_empty(),
+        "rooms: group \"{gid}\" has no anchor"
+    );
     slots
 }
 
@@ -1348,19 +1484,39 @@ fn slot_geo(ctx: &Ctx, s: &Slot, a: &Rec, row: &mut RowState) -> Option<Geo> {
         }
         "mirror" => {
             // Reflect the anchor's centre across the door's axis, same rot.
-            let mx = if ctx.door == Door::N || ctx.door == Door::S { -a.g.x } else { a.g.x };
-            let mz = if ctx.door == Door::E || ctx.door == Door::W { -a.g.z } else { a.g.z };
+            let mx = if ctx.door == Door::N || ctx.door == Door::S {
+                -a.g.x
+            } else {
+                a.g.x
+            };
+            let mz = if ctx.door == Door::E || ctx.door == Door::W {
+                -a.g.z
+            } else {
+                a.g.z
+            };
             return Some(make_geo(ctx, s.cat, mx, mz, a.g.rot));
         }
         _ => return None,
     }
     let (dx, dz) = rot_pt(lx, lz, a.g.rot);
-    Some(make_geo(ctx, s.cat, a.g.x + dx, a.g.z + dz, ((a.g.rot + rr) % 360.0 + 360.0) % 360.0))
+    Some(make_geo(
+        ctx,
+        s.cat,
+        a.g.x + dx,
+        a.g.z + dz,
+        ((a.g.rot + rr) % 360.0 + 360.0) % 360.0,
+    ))
 }
 
 /// One whole group at one anchor placement: the anchor, then each later slot in order (`attemptGroup`). The
 /// state is restored on any required failure, so an attempt leaves nothing behind when it fails.
-fn attempt_group<'a>(ctx: &mut Ctx<'a>, gi: usize, anchor: &Geo, slots: &[Slot<'a>], rule: Anchor) -> bool {
+fn attempt_group<'a>(
+    ctx: &mut Ctx<'a>,
+    gi: usize,
+    anchor: &Geo,
+    slots: &[Slot<'a>],
+    rule: Anchor,
+) -> bool {
     let occ = ctx.occ.clone();
     let blk = ctx.blk.clone();
     let res = ctx.res.clone();
@@ -1378,7 +1534,13 @@ fn attempt_group<'a>(ctx: &mut Ctx<'a>, gi: usize, anchor: &Geo, slots: &[Slot<'
     ok
 }
 
-fn place_slots<'a>(ctx: &mut Ctx<'a>, gi: usize, anchor: &Geo, slots: &[Slot<'a>], rule: Anchor) -> bool {
+fn place_slots<'a>(
+    ctx: &mut Ctx<'a>,
+    gi: usize,
+    anchor: &Geo,
+    slots: &[Slot<'a>],
+    rule: Anchor,
+) -> bool {
     let ban = rule != Anchor::Center;
     ctx.members.clear();
     let first = &slots[0];
@@ -1388,7 +1550,10 @@ fn place_slots<'a>(ctx: &mut Ctx<'a>, gi: usize, anchor: &Geo, slots: &[Slot<'a>
     let an = ar.n;
     commit(ctx, ar);
     ctx.members.push(an);
-    let mut row = RowState { right: first.cat.size[0] / 2.0, stopped: false };
+    let mut row = RowState {
+        right: first.cat.size[0] / 2.0,
+        stopped: false,
+    };
     for s in &slots[1..] {
         let geo = {
             let a = &ctx.recs[an];
@@ -1422,7 +1587,10 @@ fn anchor_rules_of(ctx: &Ctx, gid: &str, desk_facing: &str) -> Vec<Anchor> {
     if gid == "desk-set" && desk_facing == "room" {
         return vec![Anchor::Corner, Anchor::Wall];
     }
-    let def = ctx.groups.get(gid).unwrap_or_else(|| panic!("rooms: unknown group \"{gid}\""));
+    let def = ctx
+        .groups
+        .get(gid)
+        .unwrap_or_else(|| panic!("rooms: unknown group \"{gid}\""));
     vec![def.anchor]
 }
 
@@ -1447,7 +1615,12 @@ fn place_group<'a>(ctx: &mut Ctx<'a>, gid: &str, station: Option<&str>, rules: &
         score[k] = c.rule_fit + 0.5 * c.work_far - 0.3 * sp + 0.05 * ctx.rng.next_f64();
     }
     let mut order: Vec<usize> = (0..cands.len()).collect();
-    order.sort_by(|&a, &b| score[b].partial_cmp(&score[a]).unwrap_or(std::cmp::Ordering::Equal).then(a.cmp(&b)));
+    order.sort_by(|&a, &b| {
+        score[b]
+            .partial_cmp(&score[a])
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.cmp(&b))
+    });
     for k in order {
         let geo = cands[k].geo;
         if attempt_group(ctx, gi, &geo, &slots, rule) {
@@ -1471,8 +1644,12 @@ fn default_agents(w: f64, d: f64) -> usize {
 
 /// Generate the room layout for one input (`generate`). Pure: the same input and data give the same output.
 pub fn generate(input: &Input, data: &Data) -> Layout {
-    let tpl = template_for(&input.role, &data.roles)
-        .unwrap_or_else(|| panic!("rooms: no template for role \"{}\" and no \"other\" family", input.role));
+    let tpl = template_for(&input.role, &data.roles).unwrap_or_else(|| {
+        panic!(
+            "rooms: no template for role \"{}\" and no \"other\" family",
+            input.role
+        )
+    });
     let rng = Rng::new(input.seed);
     let cell = data.catalog.cell.unwrap_or(CELL_DEFAULT);
     let w = input.w;
@@ -1480,8 +1657,12 @@ pub fn generate(input: &Input, data: &Data) -> Layout {
     let door = input.door;
     let cols = (w / cell).floor() as i64;
     let rows = (d / cell).floor() as i64;
-    let xs: Vec<f64> = (0..cols).map(|i| -w / 2.0 + (i as f64 + 0.5) * cell).collect();
-    let zs: Vec<f64> = (0..rows).map(|j| -d / 2.0 + (j as f64 + 0.5) * cell).collect();
+    let xs: Vec<f64> = (0..cols)
+        .map(|i| -w / 2.0 + (i as f64 + 0.5) * cell)
+        .collect();
+    let zs: Vec<f64> = (0..rows)
+        .map(|j| -d / 2.0 + (j as f64 + 0.5) * cell)
+        .collect();
     let n_cells = (cols * rows) as usize;
     let mut ctx = Ctx {
         w,
@@ -1522,18 +1703,42 @@ pub fn generate(input: &Input, data: &Data) -> Layout {
     let wall = pick_str(&tpl.shell.wall, &mut ctx.rng);
     let open_room = ctx.rng.next_f64() < tpl.shell.open;
     // Every closed room has a wall on all four sides (the door side has stubs around the opening, A0).
-    let walls: Vec<Door> = if open_room { Vec::new() } else { SIDES.to_vec() };
+    let walls: Vec<Door> = if open_room {
+        Vec::new()
+    } else {
+        SIDES.to_vec()
+    };
     ctx.walls = walls.clone();
     // Robot spots stay 0.15 off each wall that exists (the room edge where there is none).
-    ctx.sx0 = if walls.contains(&Door::W) { -w / 2.0 + 0.15 } else { -w / 2.0 };
-    ctx.sx1 = if walls.contains(&Door::E) { w / 2.0 - 0.15 } else { w / 2.0 };
-    ctx.sz0 = if walls.contains(&Door::N) { -d / 2.0 + 0.15 } else { -d / 2.0 };
-    ctx.sz1 = if walls.contains(&Door::S) { d / 2.0 - 0.15 } else { d / 2.0 };
+    ctx.sx0 = if walls.contains(&Door::W) {
+        -w / 2.0 + 0.15
+    } else {
+        -w / 2.0
+    };
+    ctx.sx1 = if walls.contains(&Door::E) {
+        w / 2.0 - 0.15
+    } else {
+        w / 2.0
+    };
+    ctx.sz0 = if walls.contains(&Door::N) {
+        -d / 2.0 + 0.15
+    } else {
+        -d / 2.0
+    };
+    ctx.sz1 = if walls.contains(&Door::S) {
+        d / 2.0 - 0.15
+    } else {
+        d / 2.0
+    };
     let (d_lo, d_hi) = (tpl.density[0], tpl.density[1]);
     let density = d_lo + ctx.rng.next_f64() * (d_hi - d_lo);
 
     // Door zone (1.0 deep, centred, at most side - 0.5 wide) and the spine from the door to the centre.
-    let side_len = if door == Door::N || door == Door::S { w } else { d };
+    let side_len = if door == Door::N || door == Door::S {
+        w
+    } else {
+        d
+    };
     let door_width = 1.0_f64.min(side_len - 0.5);
     let half_width = door_width / 2.0;
     ctx.door_half = half_width;
@@ -1559,14 +1764,29 @@ pub fn generate(input: &Input, data: &Data) -> Layout {
 
     // Required groups first (the station, then the per-agent desk-sets), then preferred (skipped, never dropped),
     // then the pool. A per-agent entry repeats `agents` times (default cap(w, d)).
-    let desk_facing = tpl.desk_facing.clone().unwrap_or_else(|| "wall".to_string());
+    let desk_facing = tpl
+        .desk_facing
+        .clone()
+        .unwrap_or_else(|| "wall".to_string());
     let agents = input.agents.unwrap_or_else(|| default_agents(w, d));
     let mut dropped: Vec<String> = Vec::new();
     let mut skipped: Vec<String> = Vec::new();
-    let mut required_ordered: Vec<&RoleGroupRef> = tpl.required.iter().filter(|e| e.per.as_deref() != Some("agent")).collect();
-    required_ordered.extend(tpl.required.iter().filter(|e| e.per.as_deref() == Some("agent")));
+    let mut required_ordered: Vec<&RoleGroupRef> = tpl
+        .required
+        .iter()
+        .filter(|e| e.per.as_deref() != Some("agent"))
+        .collect();
+    required_ordered.extend(
+        tpl.required
+            .iter()
+            .filter(|e| e.per.as_deref() == Some("agent")),
+    );
     for e in required_ordered {
-        let count = if e.per.as_deref() == Some("agent") { agents } else { 1 };
+        let count = if e.per.as_deref() == Some("agent") {
+            agents
+        } else {
+            1
+        };
         for _ in 0..count {
             if !place_ref(&mut ctx, &e.group, e.station.as_deref(), &desk_facing) {
                 dropped.push(e.group.clone());
@@ -1574,7 +1794,11 @@ pub fn generate(input: &Input, data: &Data) -> Layout {
         }
     }
     for e in &tpl.preferred {
-        let count = if e.per.as_deref() == Some("agent") { agents } else { 1 };
+        let count = if e.per.as_deref() == Some("agent") {
+            agents
+        } else {
+            1
+        };
         for _ in 0..count {
             if !place_ref(&mut ctx, &e.group, e.station.as_deref(), &desk_facing) {
                 skipped.push(e.group.clone());
@@ -1642,7 +1866,13 @@ pub fn generate(input: &Input, data: &Data) -> Layout {
             g: r.gi,
         });
         for (s, clip) in r.spots.iter().zip(&r.spot_clips) {
-            spots.push(LayoutSpot { item: r.n, x: round_num(s.x), z: round_num(s.z), face: s.face, clip: clip.clone() });
+            spots.push(LayoutSpot {
+                item: r.n,
+                x: round_num(s.x),
+                z: round_num(s.z),
+                face: s.face,
+                clip: clip.clone(),
+            });
         }
     }
     Layout {
@@ -1650,7 +1880,11 @@ pub fn generate(input: &Input, data: &Data) -> Layout {
             floor,
             wall,
             walls,
-            door: LayoutDoor { side: door, at: 0.0, width: round_num(door_width) },
+            door: LayoutDoor {
+                side: door,
+                at: 0.0,
+                width: round_num(door_width),
+            },
         },
         items,
         spots,
@@ -1675,20 +1909,30 @@ pub struct FixtureCase {
 /// The shared golden set, read from the repository's `assets/rooms/fixtures.json`.
 #[cfg(test)]
 pub fn fixture_cases() -> Vec<FixtureCase> {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/rooms/fixtures.json");
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../assets/rooms/fixtures.json"
+    );
     let text = std::fs::read_to_string(path).expect("assets/rooms/fixtures.json is readable");
     let doc: Value = serde_json::from_str(&text).expect("fixtures.json parses");
-    let cases = doc["cases"].as_array().expect("fixtures.json has a cases array");
+    let cases = doc["cases"]
+        .as_array()
+        .expect("fixtures.json has a cases array");
     cases
         .iter()
         .map(|c| {
-            let count = |key: &str| c[key].as_u64().unwrap_or_else(|| panic!("fixture field {key}")) as usize;
+            let count = |key: &str| {
+                c[key]
+                    .as_u64()
+                    .unwrap_or_else(|| panic!("fixture field {key}")) as usize
+            };
             FixtureCase {
                 input: Input {
                     role: c["role"].as_str().expect("fixture role").to_string(),
                     w: c["w"].as_f64().expect("fixture w"),
                     d: c["d"].as_f64().expect("fixture d"),
-                    door: Door::parse(c["door"].as_str().expect("fixture door")).expect("a door side"),
+                    door: Door::parse(c["door"].as_str().expect("fixture door"))
+                        .expect("a door side"),
                     seed: c["seed"].as_u64().expect("fixture seed") as u32,
                     agents: Some(count("agents")),
                 },
@@ -1707,11 +1951,18 @@ mod tests {
     #[test]
     fn the_role_order_is_the_files_and_names_every_role() {
         let order = role_order();
-        let first = ROLES_JSON.find("\"roles\"").map(|at| &ROLES_JSON[at..]).and_then(|r| r.split('"').nth(3)).unwrap();
+        let first = ROLES_JSON
+            .find("\"roles\"")
+            .map(|at| &ROLES_JSON[at..])
+            .and_then(|r| r.split('"').nth(3))
+            .unwrap();
         assert_eq!(order[0], first, "the first role is the file's first");
         let mut sorted = order.to_vec();
         sorted.sort();
-        assert_eq!(sorted, data().roles.roles.keys().cloned().collect::<Vec<_>>());
+        assert_eq!(
+            sorted,
+            data().roles.roles.keys().cloned().collect::<Vec<_>>()
+        );
     }
 
     /// The golden set: every case's layout hash equals the one the web's generator (gen.ts, retired with three.js) wrote,
@@ -1726,7 +1977,10 @@ mod tests {
         for (k, c) in cases.iter().enumerate() {
             let layout = generate(&c.input, d);
             let got = format!("{:08x}", layout_hash(&layout));
-            if got != c.hash || layout.skipped.len() != c.skipped || layout.dropped.len() != c.dropped {
+            if got != c.hash
+                || layout.skipped.len() != c.skipped
+                || layout.dropped.len() != c.dropped
+            {
                 bad.push(format!(
                     "case {k}: {} w={} d={} door={} seed={} agents={:?}: rust {got} golden {} (skipped {} vs {}, dropped {} vs {})",
                     c.input.role,
@@ -1760,12 +2014,18 @@ mod tests {
         let d = data();
         let table = min_size_table();
         let mut want: Vec<&str> = d.roles.roles.keys().map(String::as_str).collect();
-        assert!(d.roles.families.contains_key("other"), "the family fallback row");
+        assert!(
+            d.roles.families.contains_key("other"),
+            "the family fallback row"
+        );
         want.push("other");
         let mut have: Vec<&str> = table.keys().map(String::as_str).collect();
         want.sort_unstable();
         have.sort_unstable();
-        assert_eq!(have, want, "one row per role, plus the family fallback `other`");
+        assert_eq!(
+            have, want,
+            "one row per role, plus the family fallback `other`"
+        );
         for (role, row) in table {
             assert_eq!(row.len(), 6, "{role}: six desk counts");
         }
@@ -1798,11 +2058,18 @@ mod tests {
                 let want = v.unwrap_or(f64::INFINITY);
                 let got = compute_min_size(role, i + 1, d);
                 if got != want {
-                    differ.push(format!("{role} agents {}: table {want} computed {got}", i + 1));
+                    differ.push(format!(
+                        "{role} agents {}: table {want} computed {got}",
+                        i + 1
+                    ));
                 }
             }
         }
-        assert!(differ.is_empty(), "the minsize table differs from the computed minSize:\n{}", differ.join("\n"));
+        assert!(
+            differ.is_empty(),
+            "the minsize table differs from the computed minSize:\n{}",
+            differ.join("\n")
+        );
     }
 
     #[test]
@@ -1848,8 +2115,12 @@ mod tests {
     /// The canonical form is generic: keys are sorted at every depth, and an unknown key changes the hash.
     #[test]
     fn canonical_json_is_generic_over_keys() {
-        let v: Value = serde_json::json!({ "b": [1.0, -0.0, 2.25], "a": { "z": null, "y": "s" }, "g": 0 });
-        assert_eq!(canonical_value(&v), r#"{"a":{"y":"s","z":null},"b":[1,0,2.25],"g":0}"#);
+        let v: Value =
+            serde_json::json!({ "b": [1.0, -0.0, 2.25], "a": { "z": null, "y": "s" }, "g": 0 });
+        assert_eq!(
+            canonical_value(&v),
+            r#"{"a":{"y":"s","z":null},"b":[1,0,2.25],"g":0}"#
+        );
         let mut more = v.clone();
         more["extra"] = serde_json::json!(3);
         assert_ne!(canonical_value(&v), canonical_value(&more));
@@ -1861,13 +2132,23 @@ mod tests {
         let mut drops = Vec::new();
         for role in d.roles.roles.keys() {
             for seed in 1..=3 {
-                let input = Input { role: role.clone(), w: 4.0, d: 3.5, door: Door::S, seed, agents: None };
+                let input = Input {
+                    role: role.clone(),
+                    w: 4.0,
+                    d: 3.5,
+                    door: Door::S,
+                    seed,
+                    agents: None,
+                };
                 let l = generate(&input, d);
                 if !l.dropped.is_empty() {
                     drops.push(format!("{role} seed {seed}: {:?}", l.dropped));
                 }
                 assert!(!l.items.is_empty(), "{role} seed {seed}");
-                assert!(l.items.iter().all(|it| it.g < l.groups.len()), "{role} seed {seed}: g indexes groups");
+                assert!(
+                    l.items.iter().all(|it| it.g < l.groups.len()),
+                    "{role} seed {seed}: g indexes groups"
+                );
             }
         }
         eprintln!("drops: {drops:?}");
@@ -1897,9 +2178,23 @@ mod tests {
             let l = generate(&input, d);
             let got = format!("{:08x}", layout_hash(&l));
             let want = r["hash"].as_str().unwrap();
-            let want_dropped: Vec<String> = r["dropped"].as_array().unwrap().iter().map(|v| v.as_str().unwrap().to_string()).collect();
-            let want_skipped: Vec<String> = r["skipped"].as_array().unwrap().iter().map(|v| v.as_str().unwrap().to_string()).collect();
-            if got != want || l.dropped != want_dropped || l.skipped != want_skipped || l.items.len() as u64 != r["items"].as_u64().unwrap() {
+            let want_dropped: Vec<String> = r["dropped"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_str().unwrap().to_string())
+                .collect();
+            let want_skipped: Vec<String> = r["skipped"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_str().unwrap().to_string())
+                .collect();
+            if got != want
+                || l.dropped != want_dropped
+                || l.skipped != want_skipped
+                || l.items.len() as u64 != r["items"].as_u64().unwrap()
+            {
                 bad.push(format!(
                     "{} {}x{} {} seed {}: rust {got} web {want} (dropped {:?} vs {:?}, skipped {:?} vs {:?})",
                     input.role,
@@ -1914,7 +2209,12 @@ mod tests {
                 ));
             }
         }
-        assert!(bad.is_empty(), "{} of {total} differ, first: {:?}", bad.len(), &bad[..bad.len().min(8)]);
+        assert!(
+            bad.is_empty(),
+            "{} of {total} differ, first: {:?}",
+            bad.len(),
+            &bad[..bad.len().min(8)]
+        );
         eprintln!("matches_the_web_dump: {total} cases match");
     }
 
@@ -1925,7 +2225,10 @@ mod tests {
         for role in d.roles.roles.keys() {
             assert!(template_for(role, &d.roles).is_some(), "{role}");
         }
-        assert!(template_for("no-such-role", &d.roles).is_some(), "the family fallback");
+        assert!(
+            template_for("no-such-role", &d.roles).is_some(),
+            "the family fallback"
+        );
     }
 
     /// Every group of the catalogue names known items, and every role's group is a catalogue group.
@@ -1934,15 +2237,27 @@ mod tests {
         let d = data();
         for (gid, g) in &d.catalog.groups {
             for it in &g.items {
-                assert!(it.id == "$station" || d.catalog.items.contains_key(&it.id), "{gid}: item {}", it.id);
+                assert!(
+                    it.id == "$station" || d.catalog.items.contains_key(&it.id),
+                    "{gid}: item {}",
+                    it.id
+                );
             }
         }
         for (role, t) in &d.roles.roles {
             for e in t.required.iter().chain(&t.preferred) {
-                assert!(d.catalog.groups.contains_key(&e.group), "{role}: group {}", e.group);
+                assert!(
+                    d.catalog.groups.contains_key(&e.group),
+                    "{role}: group {}",
+                    e.group
+                );
             }
             for p in &t.pool {
-                assert!(d.catalog.groups.contains_key(&p.group), "{role}: pool group {}", p.group);
+                assert!(
+                    d.catalog.groups.contains_key(&p.group),
+                    "{role}: pool group {}",
+                    p.group
+                );
             }
         }
     }

@@ -12,7 +12,7 @@ use apz_http::{Request, Response, Router};
 use apz_proto::chat::ToolSpec;
 use apz_proto::wire::{Program, ProgramFile};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::state::App;
 
@@ -105,7 +105,10 @@ impl Store {
             .ok()
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
             .unwrap_or_default();
-        Store { root, entries: Mutex::new(entries) }
+        Store {
+            root,
+            entries: Mutex::new(entries),
+        }
     }
 
     fn lock(&self) -> MutexGuard<'_, Vec<Entry>> {
@@ -115,7 +118,8 @@ impl Store {
     fn save(&self, entries: &[Entry]) -> Result<(), String> {
         fs::create_dir_all(&self.root).map_err(|e| e.to_string())?;
         let bytes = serde_json::to_vec_pretty(entries).map_err(|e| e.to_string())?;
-        crate::providers::write_atomic(&self.root.join("index.json"), &bytes, 0o644).map_err(|e| e.to_string())
+        crate::providers::write_atomic(&self.root.join("index.json"), &bytes, 0o644)
+            .map_err(|e| e.to_string())
     }
 
     fn files_dir(&self, name: &str, version: u32) -> PathBuf {
@@ -135,17 +139,28 @@ impl Store {
         let mut files = Vec::new();
         for file in &package.files {
             check_rel_path(&file.path)?;
-            let bytes = base64_decode(&file.content_b64).ok_or_else(|| format!("file {} is not base64", file.path))?;
+            let bytes = base64_decode(&file.content_b64)
+                .ok_or_else(|| format!("file {} is not base64", file.path))?;
             if bytes.len() > MAX_FILE_BYTES {
                 return Err(format!("file {} is too large", file.path));
             }
-            files.push(FileInfo { path: file.path.clone(), size: bytes.len() as u64, executable: file.executable });
+            files.push(FileInfo {
+                path: file.path.clone(),
+                size: bytes.len() as u64,
+                executable: file.executable,
+            });
             blobs.push((file.path.clone(), bytes));
         }
         let hash = digest(&blobs);
 
         let mut entries = self.lock();
-        let version = entries.iter().filter(|e| e.name == package.name).map(|e| e.version).max().unwrap_or(0) + 1;
+        let version = entries
+            .iter()
+            .filter(|e| e.name == package.name)
+            .map(|e| e.version)
+            .max()
+            .unwrap_or(0)
+            + 1;
         let dir = self.files_dir(&package.name, version);
         for (file, (_, bytes)) in package.files.iter().zip(&blobs) {
             let target = dir.join(&file.path);
@@ -164,7 +179,12 @@ impl Store {
             command: package.command.clone(),
             requires: package.requires.clone(),
             input_schema: package.input_schema.clone(),
-            state: if package.publish { "pending" } else { "private" }.to_string(),
+            state: if package.publish {
+                "pending"
+            } else {
+                "private"
+            }
+            .to_string(),
             files,
             hash,
             created_ms: now_ms(),
@@ -180,7 +200,13 @@ impl Store {
     }
 
     /// Approves or rejects the pending version; returns its new state.
-    pub fn review(&self, name: &str, version: u32, approve: bool, note: &str) -> Result<String, String> {
+    pub fn review(
+        &self,
+        name: &str,
+        version: u32,
+        approve: bool,
+        note: &str,
+    ) -> Result<String, String> {
         let mut entries = self.lock();
         let entry = entries
             .iter_mut()
@@ -224,7 +250,10 @@ impl Store {
             .filter(|entry| {
                 entry.name.to_lowercase().contains(&needle)
                     || entry.description.to_lowercase().contains(&needle)
-                    || entry.files.iter().any(|file| file.path.to_lowercase().contains(&needle))
+                    || entry
+                        .files
+                        .iter()
+                        .any(|file| file.path.to_lowercase().contains(&needle))
             })
             .take(limit)
             .collect()
@@ -263,7 +292,9 @@ impl Store {
             .filter(|e| e.name == name && offerable(e, cid))
             .max_by_key(|e| e.version)?
             .clone();
-        let idx = entries.iter().position(|e| e.name == entry.name && e.version == entry.version)?;
+        let idx = entries
+            .iter()
+            .position(|e| e.name == entry.name && e.version == entry.version)?;
         entries[idx].calls += 1;
         let _ = self.save(&entries);
         drop(entries);
@@ -274,7 +305,11 @@ impl Store {
             .iter()
             .map(|f| {
                 let bytes = fs::read(dir.join(&f.path)).ok()?;
-                Some(ProgramFile { path: f.path.clone(), content_b64: base64_encode(&bytes), executable: f.executable })
+                Some(ProgramFile {
+                    path: f.path.clone(),
+                    content_b64: base64_encode(&bytes),
+                    executable: f.executable,
+                })
             })
             .collect::<Option<Vec<_>>>()?;
         Some(Program {
@@ -291,7 +326,8 @@ impl Store {
 
 /// A version agent `cid` may see: published ones for everyone, its own drafts for the author.
 fn offerable(entry: &Entry, cid: u64) -> bool {
-    entry.state == "published" || (entry.author_cid == cid && (entry.state == "private" || entry.state == "pending"))
+    entry.state == "published"
+        || (entry.author_cid == cid && (entry.state == "private" || entry.state == "pending"))
 }
 
 /// The newest offerable version of each name, as agent `cid` sees the library.
@@ -329,7 +365,11 @@ pub fn program(app: &App, cid: u64, name: &str) -> Option<Program> {
 /// Stores a package reported by a guest's `tool_package` call and announces it when pending.
 pub fn accept(app: &App, cid: u64, output: &str) -> Result<Entry, String> {
     let report: Report = serde_json::from_str(output).map_err(|e| e.to_string())?;
-    let author = app.agents.get(cid).map(|a| a.name.clone()).unwrap_or_default();
+    let author = app
+        .agents
+        .get(cid)
+        .map(|a| a.name.clone())
+        .unwrap_or_default();
     let entry = app.library.insert(cid, &author, report.package)?;
     announce(app, &entry.name, entry.version, &entry.state);
     // The author can use its new tool at once: its tool list is pushed again.
@@ -340,7 +380,10 @@ pub fn accept(app: &App, cid: u64, output: &str) -> Result<Entry, String> {
 }
 
 fn announce(app: &App, name: &str, version: u32, state: &str) {
-    app.bus.publish("library", &json!({ "name": name, "version": version, "state": state }));
+    app.bus.publish(
+        "library",
+        &json!({ "name": name, "version": version, "state": state }),
+    );
 }
 
 type Calls = Mutex<HashMap<(u64, String), ()>>;
@@ -352,24 +395,38 @@ fn package_calls() -> &'static Calls {
 
 /// Remembers that guest `cid` made the `tool_package` call `call`.
 pub fn remember_package_call(cid: u64, call: &str) {
-    package_calls().lock().unwrap_or_else(PoisonError::into_inner).insert((cid, call.to_string()), ());
+    package_calls()
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .insert((cid, call.to_string()), ());
 }
 
 /// Whether `call` was a `tool_package` call; forgets it either way.
 pub fn take_package_call(cid: u64, call: &str) -> bool {
-    package_calls().lock().unwrap_or_else(PoisonError::into_inner).remove(&(cid, call.to_string())).is_some()
+    package_calls()
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .remove(&(cid, call.to_string()))
+        .is_some()
 }
 
 pub fn routes(router: Router<App>) -> Router<App> {
     router
         .get("/v1/library", |app, _req, _p| list(app))
         .get("/v1/library/{name}/{version}/files", |app, req, p| {
-            files(app, p.get("name"), p.get("version"), req.query_param("path"))
+            files(
+                app,
+                p.get("name"),
+                p.get("version"),
+                req.query_param("path"),
+            )
         })
         .post("/v1/library/{name}/{version}/review", |app, req, p| {
             review(app, req, p.get("name"), p.get("version"))
         })
-        .delete("/v1/library/{name}/{version}", |app, _req, p| delete(app, p.get("name"), p.get("version")))
+        .delete("/v1/library/{name}/{version}", |app, _req, p| {
+            delete(app, p.get("name"), p.get("version"))
+        })
 }
 
 #[derive(Deserialize)]
@@ -389,8 +446,14 @@ fn files(app: &App, name: &str, version: &str, path: Option<&str>) -> Response {
         return Response::error(400, "the version must be a number");
     };
     match (app.library.view(name, version), path) {
-        (Ok(files), None) => Response::json(200, &json!({ "name": name, "version": version, "files": files })),
-        (Ok(files), Some(path)) => match files.into_iter().find(|f| f["path"].as_str() == Some(path)) {
+        (Ok(files), None) => Response::json(
+            200,
+            &json!({ "name": name, "version": version, "files": files }),
+        ),
+        (Ok(files), Some(path)) => match files
+            .into_iter()
+            .find(|f| f["path"].as_str() == Some(path))
+        {
             Some(file) => Response::json(200, &json!({ "path": path, "content": file["content"] })),
             None => Response::error(404, &format!("no file {path} in {name} v{version}")),
         },
@@ -430,20 +493,29 @@ fn delete(app: &App, name: &str, version: &str) -> Response {
 fn validate_name(name: &str) -> Result<(), String> {
     let ok = !name.is_empty()
         && name.len() <= 64
-        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
     if ok {
         Ok(())
     } else {
-        Err(format!("tool name {name:?} may use letters, digits, '_' and '-' only"))
+        Err(format!(
+            "tool name {name:?} may use letters, digits, '_' and '-' only"
+        ))
     }
 }
 
 fn check_rel_path(path: &str) -> Result<(), String> {
-    let ok = !path.is_empty() && Path::new(path).components().all(|c| matches!(c, Component::Normal(_)));
+    let ok = !path.is_empty()
+        && Path::new(path)
+            .components()
+            .all(|c| matches!(c, Component::Normal(_)));
     if ok {
         Ok(())
     } else {
-        Err(format!("file path {path:?} must be relative and stay inside the package"))
+        Err(format!(
+            "file path {path:?} must be relative and stay inside the package"
+        ))
     }
 }
 
@@ -461,7 +533,11 @@ fn digest(blobs: &[(String, Vec<u8>)]) -> String {
         hasher.update((bytes.len() as u64).to_be_bytes());
         hasher.update(bytes);
     }
-    hasher.finalize().iter().map(|b| format!("{b:02x}")).collect()
+    hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 fn now_ms() -> u64 {
@@ -495,7 +571,10 @@ fn base64_decode(text: &str) -> Option<Vec<u8>> {
     let mut out = Vec::new();
     let mut acc: u32 = 0;
     let mut bits: u32 = 0;
-    for c in text.bytes().filter(|c| !c.is_ascii_whitespace() && *c != b'=') {
+    for c in text
+        .bytes()
+        .filter(|c| !c.is_ascii_whitespace() && *c != b'=')
+    {
         let value = B64.iter().position(|x| *x == c)? as u32;
         acc = (acc << 6) | value;
         bits += 6;
@@ -507,7 +586,6 @@ fn base64_decode(text: &str) -> Option<Vec<u8>> {
     }
     Some(out)
 }
-
 
 impl Store {
     /// The whole state as JSON, for Postgres (`crate::db`); "" when there is nothing to save.
@@ -568,7 +646,10 @@ mod tests {
     #[test]
     fn base64_round_trips_and_matches_a_known_vector() {
         assert_eq!(base64_encode(b"Man"), "TWFu");
-        assert_eq!(base64_decode(&base64_encode(b"hello!?")).unwrap(), b"hello!?");
+        assert_eq!(
+            base64_decode(&base64_encode(b"hello!?")).unwrap(),
+            b"hello!?"
+        );
     }
 
     #[test]
@@ -583,8 +664,20 @@ mod tests {
     #[test]
     fn versions_count_up_per_name() {
         let store = store("versions");
-        assert_eq!(store.insert(7, "scout", package("adder", false)).unwrap().version, 1);
-        assert_eq!(store.insert(7, "scout", package("adder", false)).unwrap().version, 2);
+        assert_eq!(
+            store
+                .insert(7, "scout", package("adder", false))
+                .unwrap()
+                .version,
+            1
+        );
+        assert_eq!(
+            store
+                .insert(7, "scout", package("adder", false))
+                .unwrap()
+                .version,
+            2
+        );
     }
 
     #[test]
@@ -617,8 +710,14 @@ mod tests {
         assert!(store.program(8, "x_missing").is_none());
         assert!(store.program(8, "adder").is_none());
         let program = store.program(7, "x_adder").unwrap();
-        assert_eq!((program.name.as_str(), program.version, program.timeout_s), ("adder", 1, 120));
-        assert_eq!(base64_decode(&program.files[0].content_b64).unwrap(), b"print(1)");
+        assert_eq!(
+            (program.name.as_str(), program.version, program.timeout_s),
+            ("adder", 1, 120)
+        );
+        assert_eq!(
+            base64_decode(&program.files[0].content_b64).unwrap(),
+            b"print(1)"
+        );
         assert_eq!(store.all()[0].calls, 2);
     }
 }

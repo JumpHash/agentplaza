@@ -48,7 +48,9 @@ impl fmt::Display for IdError {
             IdError::Cid => "agent cid must be a decimal number without leading zeros",
             IdError::Name => "repo name must be [A-Za-z0-9._-]+ and not . or ..",
             IdError::Ref => "repo id needs @<ref>, and the ref must be a valid git ref",
-            IdError::Station => "station id must be w followed by a decimal number without leading zeros",
+            IdError::Station => {
+                "station id must be w followed by a decimal number without leading zeros"
+            }
         })
     }
 }
@@ -273,8 +275,19 @@ mod tests {
         let id: WorkspaceId = "station:w12".parse().unwrap();
         assert_eq!(id, WorkspaceId::Station("w12".into()));
         assert_eq!(id.to_string(), "station:w12");
-        assert_eq!("station:w0".parse::<WorkspaceId>().unwrap().to_string(), "station:w0");
-        for s in ["station:", "station:w", "station:12", "station:w01", "station:wx", "station:w1/..", "station:w 1"] {
+        assert_eq!(
+            "station:w0".parse::<WorkspaceId>().unwrap().to_string(),
+            "station:w0"
+        );
+        for s in [
+            "station:",
+            "station:w",
+            "station:12",
+            "station:w01",
+            "station:wx",
+            "station:w1/..",
+            "station:w 1",
+        ] {
             assert_eq!(s.parse::<WorkspaceId>(), Err(IdError::Station), "{s}");
         }
         let ws = Workspace::new(id, "~/AgentPlaza", true);

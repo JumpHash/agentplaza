@@ -106,7 +106,8 @@ pub fn join_from_node(
 pub fn fetch_config(source: &str) -> Result<NodeConfig, String> {
     let (cid, port) = vsock::parse_vsock(source)
         .ok_or_else(|| "the node's config address is not a vsock:// address".to_string())?;
-    let mut stream = VsockStream::connect(cid, port).map_err(|e| format!("cannot reach the node: {e}"))?;
+    let mut stream =
+        VsockStream::connect(cid, port).map_err(|e| format!("cannot reach the node: {e}"))?;
     stream
         .set_read_timeout(Some(TIMEOUT))
         .map_err(|e| format!("cannot reach the node: {e}"))?;
@@ -136,15 +137,24 @@ pub fn read_config(reader: impl Read) -> Result<NodeConfig, String> {
 fn post_join(hub: &str, pin: Option<[u8; 32]>, body: &Value) -> Result<(u16, Value), String> {
     if let Some((cid, port)) = vsock::parse_vsock(hub) {
         let pin = pin.ok_or_else(|| "a vsock hub needs the hub's certificate pin".to_string())?;
-        let stream = VsockStream::connect(cid, port).map_err(|e| format!("cannot reach the node: {e}"))?;
+        let stream =
+            VsockStream::connect(cid, port).map_err(|e| format!("cannot reach the node: {e}"))?;
         let target = Target {
             base: String::new(),
             pin: Some(pin),
             bearer: None,
             headers: Vec::new(),
         };
-        return request_json_over(stream, Some(TLS_NAME), &target, "POST", JOIN_PATH, Some(body), TIMEOUT)
-            .map_err(|e| format!("cannot reach the hub: {e}"));
+        return request_json_over(
+            stream,
+            Some(TLS_NAME),
+            &target,
+            "POST",
+            JOIN_PATH,
+            Some(body),
+            TIMEOUT,
+        )
+        .map_err(|e| format!("cannot reach the hub: {e}"));
     }
     let target = Target {
         base: hub.to_string(),
@@ -152,7 +162,8 @@ fn post_join(hub: &str, pin: Option<[u8; 32]>, body: &Value) -> Result<(u16, Val
         bearer: None,
         headers: Vec::new(),
     };
-    request_json(&target, "POST", JOIN_PATH, Some(body), TIMEOUT).map_err(|e| format!("cannot reach the hub: {e}"))
+    request_json(&target, "POST", JOIN_PATH, Some(body), TIMEOUT)
+        .map_err(|e| format!("cannot reach the hub: {e}"))
 }
 
 /// The hub's `error` when it sent one, else its status.
@@ -312,7 +323,10 @@ mod tests {
     fn a_join_config_is_read_and_a_broken_one_never_echoes_its_code() {
         let good = r#"{"hub":"vsock://2:5100","pin":"cGlu","code":"apzj1.SECRET"}"#;
         let config = read_config(good.as_bytes()).expect("a config");
-        assert_eq!((config.hub.as_str(), config.pin.as_str()), ("vsock://2:5100", "cGlu"));
+        assert_eq!(
+            (config.hub.as_str(), config.pin.as_str()),
+            ("vsock://2:5100", "cGlu")
+        );
         assert_eq!(config.code, "apzj1.SECRET");
 
         let truncated = r#"{"hub":"vsock://2:5100","pin":"cGlu","code":"apzj1.SECRET""#;
@@ -320,9 +334,17 @@ mod tests {
         assert!(!err.contains("SECRET"), "{err}");
 
         let tcp_hub = r#"{"hub":"https://hub.example:7443","pin":"cGlu","code":"c"}"#;
-        assert!(read_config(tcp_hub.as_bytes()).unwrap_err().contains("vsock://"));
+        assert!(
+            read_config(tcp_hub.as_bytes())
+                .unwrap_err()
+                .contains("vsock://")
+        );
         let no_code = r#"{"hub":"vsock://2:5100","pin":"cGlu","code":""}"#;
-        assert!(read_config(no_code.as_bytes()).unwrap_err().contains("no join code"));
+        assert!(
+            read_config(no_code.as_bytes())
+                .unwrap_err()
+                .contains("no join code")
+        );
         let huge = vec![b' '; MAX_CONFIG as usize + 10];
         assert!(read_config(&huge[..]).is_err());
     }

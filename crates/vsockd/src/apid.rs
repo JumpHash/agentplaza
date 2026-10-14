@@ -44,12 +44,18 @@ impl Apid {
     /// Forwarding off (the daemon's own is `new` without a token file).
     #[cfg(test)]
     pub fn off() -> Self {
-        Self { port: 0, token_file: None }
+        Self {
+            port: 0,
+            token_file: None,
+        }
     }
 
     /// Forwarding to `url` (`http://127.0.0.1:PORT`) with the token in `token_file`.
     pub fn new(url: &str, token_file: Option<PathBuf>) -> Result<Self, String> {
-        Ok(Self { port: port_of(url)?, token_file })
+        Ok(Self {
+            port: port_of(url)?,
+            token_file,
+        })
     }
 
     /// Whether v3 lines and hellos go to apid at all.
@@ -60,14 +66,22 @@ impl Apid {
     /// The agent's profile from apid (`None` when apid has none for it).
     pub fn hello(&self, cid: u32, role: &str, vm: u32) -> Result<Option<AgentProfile>, String> {
         let body = json!({ "role": role, "vm": vm }).to_string();
-        let reply = self.post(&format!("/internal/v1/agents/{cid}/hello"), &body, HELLO_TIMEOUT)?;
+        let reply = self.post(
+            &format!("/internal/v1/agents/{cid}/hello"),
+            &body,
+            HELLO_TIMEOUT,
+        )?;
         serde_json::from_value(reply.get("profile").cloned().unwrap_or_default())
             .map_err(|err| format!("apid's profile is malformed: {err}"))
     }
 
     /// Forwards one guest line (`line`, the message's JSON) and returns apid's reply, if any.
     pub fn message(&self, cid: u32, line: &str) -> Result<Option<HostMessage>, String> {
-        let reply = self.post(&format!("/internal/v1/agents/{cid}/message"), line, FORWARD_TIMEOUT)?;
+        let reply = self.post(
+            &format!("/internal/v1/agents/{cid}/message"),
+            line,
+            FORWARD_TIMEOUT,
+        )?;
         serde_json::from_value(reply.get("reply").cloned().unwrap_or_default())
             .map_err(|err| format!("apid's reply is not a host message: {err}"))
     }
@@ -75,12 +89,22 @@ impl Apid {
     /// Tells apid the agent's session ended and why.
     pub fn gone(&self, cid: u32, reason: &str) -> Result<(), String> {
         let body = json!({ "reason": reason }).to_string();
-        self.post(&format!("/internal/v1/agents/{cid}/gone"), &body, GONE_TIMEOUT).map(drop)
+        self.post(
+            &format!("/internal/v1/agents/{cid}/gone"),
+            &body,
+            GONE_TIMEOUT,
+        )
+        .map(drop)
     }
 
     /// Sends one egress audit record (`record`, its JSON) for the agent at `cid`.
     pub fn egress(&self, cid: u32, record: &str) -> Result<(), String> {
-        self.post(&format!("/internal/v1/agents/{cid}/egress"), record, Duration::from_secs(2)).map(drop)
+        self.post(
+            &format!("/internal/v1/agents/{cid}/egress"),
+            record,
+            Duration::from_secs(2),
+        )
+        .map(drop)
     }
 
     /// Asks apid whether the agent at `cid` may connect to `host:port`: its fetch blocklist and its
@@ -88,8 +112,15 @@ impl Apid {
     pub fn check_egress(&self, cid: u32, host: &str, port: u16) -> Result<EgressAnswer, String> {
         let body = json!({ "cid": cid, "host": host, "port": port }).to_string();
         let reply = self.post("/internal/egress/check", &body, EGRESS_CHECK_TIMEOUT)?;
-        let allow = reply.get("allow").and_then(serde_json::Value::as_bool).ok_or("apid's egress answer names no allow")?;
-        let reason = reply.get("reason").and_then(serde_json::Value::as_str).unwrap_or("refused").to_string();
+        let allow = reply
+            .get("allow")
+            .and_then(serde_json::Value::as_bool)
+            .ok_or("apid's egress answer names no allow")?;
+        let reason = reply
+            .get("reason")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("refused")
+            .to_string();
         Ok(EgressAnswer { allow, reason })
     }
 
@@ -103,8 +134,15 @@ impl Apid {
     /// One authenticated POST whose answer must be 200 and JSON.
     fn post(&self, path: &str, body: &str, timeout: Duration) -> Result<serde_json::Value, String> {
         let token = self.token()?;
-        let reply = send_with(self.port, "POST", path, &[(TOKEN_HEADER, &token)], Some(body.as_bytes()), timeout)
-            .map_err(|err| format!("apid unreachable: {err}"))?;
+        let reply = send_with(
+            self.port,
+            "POST",
+            path,
+            &[(TOKEN_HEADER, &token)],
+            Some(body.as_bytes()),
+            timeout,
+        )
+        .map_err(|err| format!("apid unreachable: {err}"))?;
         if reply.status != 200 {
             return Err(format!("apid answered {} to {path}", reply.status));
         }
@@ -113,8 +151,12 @@ impl Apid {
 
     /// The token as the file holds it now (trimmed). Never echoed in an error.
     pub fn token(&self) -> Result<String, String> {
-        let path = self.token_file.as_ref().ok_or("forwarding is off: no --internal-token-file")?;
-        let text = std::fs::read_to_string(path).map_err(|err| format!("cannot read the internal token: {err}"))?;
+        let path = self
+            .token_file
+            .as_ref()
+            .ok_or("forwarding is off: no --internal-token-file")?;
+        let text = std::fs::read_to_string(path)
+            .map_err(|err| format!("cannot read the internal token: {err}"))?;
         let token = text.trim();
         if token.is_empty() || !token.bytes().all(|byte| byte.is_ascii_graphic()) {
             return Err("the internal token file holds no usable token".to_string());
@@ -125,13 +167,20 @@ impl Apid {
 
 /// The port of `http://127.0.0.1:PORT` (a trailing `/` is allowed).
 fn port_of(url: &str) -> Result<u16, String> {
-    let rest = url.strip_prefix("http://").ok_or_else(|| format!("{url:?} is not an http:// URL"))?;
+    let rest = url
+        .strip_prefix("http://")
+        .ok_or_else(|| format!("{url:?} is not an http:// URL"))?;
     let rest = rest.strip_suffix('/').unwrap_or(rest);
-    let (host, port) = rest.rsplit_once(':').ok_or_else(|| format!("{url:?} names no port"))?;
+    let (host, port) = rest
+        .rsplit_once(':')
+        .ok_or_else(|| format!("{url:?} names no port"))?;
     if host != "127.0.0.1" {
-        return Err(format!("{url:?}: apid's internal surface is loopback only (use http://127.0.0.1:PORT)"));
+        return Err(format!(
+            "{url:?}: apid's internal surface is loopback only (use http://127.0.0.1:PORT)"
+        ));
     }
-    port.parse().map_err(|err| format!("{url:?}: invalid port: {err}"))
+    port.parse()
+        .map_err(|err| format!("{url:?}: invalid port: {err}"))
 }
 
 /// The reply that unblocks a guest whose forward failed: a model call fails
@@ -164,9 +213,18 @@ mod tests {
     fn apid_is_reached_on_loopback_only_over_plain_http() {
         assert_eq!(port_of(DEFAULT_APID), Ok(7700));
         assert_eq!(port_of("http://127.0.0.1:19090/"), Ok(19090));
-        assert!(port_of("http://10.0.0.5:7700").is_err(), "a routable host is refused");
-        assert!(port_of("https://127.0.0.1:7700").is_err(), "plain http only");
-        assert!(port_of("http://127.0.0.1:7700/internal").is_err(), "the paths are fixed");
+        assert!(
+            port_of("http://10.0.0.5:7700").is_err(),
+            "a routable host is refused"
+        );
+        assert!(
+            port_of("https://127.0.0.1:7700").is_err(),
+            "plain http only"
+        );
+        assert!(
+            port_of("http://127.0.0.1:7700/internal").is_err(),
+            "the paths are fixed"
+        );
         assert!(!Apid::off().enabled() && Apid::off().token().is_err());
     }
 }

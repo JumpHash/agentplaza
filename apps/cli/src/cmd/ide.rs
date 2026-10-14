@@ -10,13 +10,13 @@ use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use apz_ide::diff::{parse_unified, ChangeSet};
+use apz_ide::diff::{ChangeSet, parse_unified};
 use apz_ide::path::{check_dir, check_read, check_write};
 use apz_ide::{LineKind, WorkspaceId};
 use clap::Subcommand;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use crate::ctx::{self, confirm, Ctx};
+use crate::ctx::{self, Ctx, confirm};
 
 /// Entries a recursive `ls` lists before it stops.
 const WALK_CAP: usize = 2000;
@@ -182,7 +182,10 @@ fn workspace_seg(workspace: &str) -> Result<String, String> {
 
 /// The path of a workspace's resource (`rest` is appended, e.g. "/file").
 fn ws_path(workspace: &str, rest: &str) -> Result<String, String> {
-    Ok(format!("/v1/ide/workspaces/{}{rest}", workspace_seg(workspace)?))
+    Ok(format!(
+        "/v1/ide/workspaces/{}{rest}",
+        workspace_seg(workspace)?
+    ))
 }
 
 /// One call that keeps the status, so a 404 or a 409 can be read. Transport failures are errors.
@@ -205,12 +208,18 @@ fn ok_or_error(method: &str, path: &str, status: u16, body: Value) -> Result<Val
 
 /// The objects of a list the hub returns: a bare array, or an object holding one under `key`.
 fn items<'a>(v: &'a Value, key: &str) -> &'a [Value] {
-    v.as_array().or_else(|| v.get(key).and_then(Value::as_array)).map(Vec::as_slice).unwrap_or_default()
+    v.as_array()
+        .or_else(|| v.get(key).and_then(Value::as_array))
+        .map(Vec::as_slice)
+        .unwrap_or_default()
 }
 
 /// The first of `keys` that holds something, as text.
 fn first_of(v: &Value, keys: &[&str]) -> String {
-    keys.iter().map(|k| ctx::text(v, k)).find(|t| !t.is_empty()).unwrap_or_default()
+    keys.iter()
+        .map(|k| ctx::text(v, k))
+        .find(|t| !t.is_empty())
+        .unwrap_or_default()
 }
 
 /// A file's record from the hub (its hash and text), or None when the file does not exist.
@@ -234,7 +243,10 @@ fn text_of(record: &Value, path: &str) -> Result<String, String> {
 
 /// The content hash of a file record, if it has one.
 fn hash_of(record: &Value) -> Option<String> {
-    record.get("hash").and_then(Value::as_str).map(str::to_string)
+    record
+        .get("hash")
+        .and_then(Value::as_str)
+        .map(str::to_string)
 }
 
 /// What a save came back as: written, or refused because the hub's version moved on.
@@ -249,13 +261,23 @@ enum Save {
 /// and anything else is an error.
 fn classify_save(api: &str, status: u16, body: Value) -> Result<Save, String> {
     if status == 409 && body.get("error").and_then(Value::as_str) == Some("conflict") {
-        return Ok(Save::Conflict(body.get("current_hash").and_then(Value::as_str).map(str::to_string)));
+        return Ok(Save::Conflict(
+            body.get("current_hash")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+        ));
     }
     ok_or_error("PUT", api, status, body).map(Save::Saved)
 }
 
 /// Writes a file's text, expecting the hash it was read at (None: no check).
-fn save(ctx: &Ctx, workspace: &str, path: &str, text: &str, expected: Option<&str>) -> Result<Save, String> {
+fn save(
+    ctx: &Ctx,
+    workspace: &str,
+    path: &str,
+    text: &str,
+    expected: Option<&str>,
+) -> Result<Save, String> {
     let api = ws_path(workspace, "/file")?;
     let body = json!({ "path": path, "text": text, "expected_hash": expected });
     let (status, value) = raw(ctx, "PUT", &api, Some(&body))?;
@@ -309,7 +331,11 @@ fn ask_resolution() -> Result<Resolution, String> {
         print!("the file changed on the hub: [r]eload and re-edit / [k]eep mine / [a]bort: ");
         std::io::stdout().flush().map_err(|e| e.to_string())?;
         let mut line = String::new();
-        if std::io::stdin().read_line(&mut line).map_err(|e| e.to_string())? == 0 {
+        if std::io::stdin()
+            .read_line(&mut line)
+            .map_err(|e| e.to_string())?
+            == 0
+        {
             return Ok(Resolution::Abort);
         }
         if let Some(resolution) = parse_resolution(&line) {
@@ -332,7 +358,10 @@ struct Scratch {
 impl Scratch {
     fn new(path: &str) -> Result<Scratch, String> {
         let name = path.rsplit('/').next().unwrap_or(path).to_string();
-        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
         let dir = std::env::temp_dir().join(format!("apz-ide-{}-{nanos}", std::process::id()));
         apz_os::private::create_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         let file = dir.join(&name);
@@ -340,7 +369,8 @@ impl Scratch {
     }
 
     fn write(&self, text: &str) -> Result<(), String> {
-        apz_os::private::write(&self.file, text.as_bytes()).map_err(|e| format!("{}: {e}", self.file.display()))
+        apz_os::private::write(&self.file, text.as_bytes())
+            .map_err(|e| format!("{}: {e}", self.file.display()))
     }
 
     fn read(&self) -> Result<String, String> {
@@ -350,7 +380,8 @@ impl Scratch {
     /// Keeps `text` as `<name>.mine` beside the edit, and returns its path.
     fn keep_mine(&self, text: &str) -> Result<PathBuf, String> {
         let mine = self.dir.join(format!("{}.mine", self.name));
-        apz_os::private::write(&mine, text.as_bytes()).map_err(|e| format!("{}: {e}", mine.display()))?;
+        apz_os::private::write(&mine, text.as_bytes())
+            .map_err(|e| format!("{}: {e}", mine.display()))?;
         Ok(mine)
     }
 
@@ -378,7 +409,8 @@ fn split_command(line: &str) -> Option<(String, Vec<String>)> {
 /// Opens `file` in the editor and waits for it to exit.
 fn open_editor(file: &Path) -> Result<(), String> {
     let line = editor_command();
-    let (program, args) = split_command(&line).ok_or_else(|| "the editor setting is empty".to_string())?;
+    let (program, args) =
+        split_command(&line).ok_or_else(|| "the editor setting is empty".to_string())?;
     let status = std::process::Command::new(&program)
         .args(&args)
         .arg(file)
@@ -395,7 +427,8 @@ fn open_editor(file: &Path) -> Result<(), String> {
 /// is handled by `on_conflict`: keep yours (`--force`), ask (reload, keep, or abort), or refuse.
 fn edit(ctx: &Ctx, workspace: &str, path: &str, force: bool) -> Result<(), String> {
     let path = check_write(path).map_err(|e| format!("{path}: {e}"))?;
-    let record = file_record(ctx, workspace, &path)?.ok_or_else(|| format!("{path}: no such file"))?;
+    let record =
+        file_record(ctx, workspace, &path)?.ok_or_else(|| format!("{path}: no such file"))?;
     let mut base = text_of(&record, &path)?;
     let mut expected = hash_of(&record);
     let scratch = Scratch::new(&path)?;
@@ -416,33 +449,43 @@ fn edit(ctx: &Ctx, workspace: &str, path: &str, force: bool) -> Result<(), Strin
                 ctx.out(&saved, |s| println!("saved {path} ({})", ctx::s(s, "hash")));
                 return Ok(());
             }
-            Ok(Save::Conflict(current)) => match on_conflict(force, std::io::stdin().is_terminal()) {
-                OnConflict::KeepMine => {
-                    eprintln!("{path} changed on the hub; keeping your version over it");
-                    expected = current;
-                }
-                OnConflict::Refuse => {
-                    return Err(format!(
-                        "{path} changed on the hub since you opened it; your edit is kept at {kept}. Edit again, or pass --force to keep yours"
-                    ))
-                }
-                OnConflict::Ask => match ask_resolution()? {
-                    Resolution::Keep => expected = current,
-                    Resolution::Abort => return Err(format!("aborted; your edit is kept at {kept}")),
-                    Resolution::Reload => {
-                        let mine = scratch.keep_mine(&body)?;
-                        let fresh = file_record(ctx, workspace, &path)?.ok_or_else(|| {
+            Ok(Save::Conflict(current)) => {
+                match on_conflict(force, std::io::stdin().is_terminal()) {
+                    OnConflict::KeepMine => {
+                        eprintln!("{path} changed on the hub; keeping your version over it");
+                        expected = current;
+                    }
+                    OnConflict::Refuse => {
+                        return Err(format!(
+                            "{path} changed on the hub since you opened it; your edit is kept at {kept}. Edit again, or pass --force to keep yours"
+                        ));
+                    }
+                    OnConflict::Ask => {
+                        match ask_resolution()? {
+                            Resolution::Keep => expected = current,
+                            Resolution::Abort => {
+                                return Err(format!("aborted; your edit is kept at {kept}"));
+                            }
+                            Resolution::Reload => {
+                                let mine = scratch.keep_mine(&body)?;
+                                let fresh = file_record(ctx, workspace, &path)?.ok_or_else(|| {
                             format!("{path} was removed on the hub; your version is kept at {}", mine.display())
                         })?;
-                        base = text_of(&fresh, &path)?;
-                        expected = hash_of(&fresh);
-                        scratch.write(&base)?;
-                        println!("reloaded {path}; your version is kept at {}", mine.display());
-                        open_editor(&scratch.file).map_err(|e| format!("{e}; the file is at {kept}"))?;
-                        body = scratch.read()?;
+                                base = text_of(&fresh, &path)?;
+                                expected = hash_of(&fresh);
+                                scratch.write(&base)?;
+                                println!(
+                                    "reloaded {path}; your version is kept at {}",
+                                    mine.display()
+                                );
+                                open_editor(&scratch.file)
+                                    .map_err(|e| format!("{e}; the file is at {kept}"))?;
+                                body = scratch.read()?;
+                            }
+                        }
                     }
-                },
-            },
+                }
+            }
         }
     }
 }
@@ -453,7 +496,9 @@ fn edit(ctx: &Ctx, workspace: &str, path: &str, force: bool) -> Result<(), Strin
 fn read_input(file: &Path) -> Result<String, String> {
     if file == Path::new("-") {
         let mut text = String::new();
-        std::io::stdin().read_to_string(&mut text).map_err(|e| format!("reading stdin: {e}"))?;
+        std::io::stdin()
+            .read_to_string(&mut text)
+            .map_err(|e| format!("reading stdin: {e}"))?;
         return Ok(text);
     }
     std::fs::read_to_string(file).map_err(|e| format!("{}: {e}", file.display()))
@@ -461,12 +506,21 @@ fn read_input(file: &Path) -> Result<String, String> {
 
 /// Writes a file. `--new` refuses an existing file; `--expected` refuses a changed one; with neither,
 /// the file's current hash is read first and the write goes over that version.
-fn put(ctx: &Ctx, workspace: &str, path: &str, file: &Path, expected: Option<String>, new: bool) -> Result<(), String> {
+fn put(
+    ctx: &Ctx,
+    workspace: &str,
+    path: &str,
+    file: &Path,
+    expected: Option<String>,
+    new: bool,
+) -> Result<(), String> {
     let path = check_write(path).map_err(|e| format!("{path}: {e}"))?;
     let text = read_input(file)?;
     let expected = if new {
         if file_record(ctx, workspace, &path)?.is_some() {
-            return Err(format!("{path} already exists; pass --expected HASH to overwrite it"));
+            return Err(format!(
+                "{path} already exists; pass --expected HASH to overwrite it"
+            ));
         }
         None
     } else if let Some(hash) = expected {
@@ -475,7 +529,9 @@ fn put(ctx: &Ctx, workspace: &str, path: &str, file: &Path, expected: Option<Str
         }
         Some(hash)
     } else {
-        file_record(ctx, workspace, &path)?.as_ref().and_then(hash_of)
+        file_record(ctx, workspace, &path)?
+            .as_ref()
+            .and_then(hash_of)
     };
     match save(ctx, workspace, &path, &text, expected.as_deref())? {
         Save::Saved(saved) => {
@@ -550,28 +606,32 @@ fn colour_diff(text: &str, colour: bool) -> String {
 
 /// One line per changed file (path, added and removed lines), then the totals.
 fn stat_lines(set: &ChangeSet) -> Vec<String> {
-    let width = set.files.iter().map(|f| f.path.chars().count()).max().unwrap_or(0);
-    let mut lines: Vec<String> = set
+    let width = set
         .files
         .iter()
-        .map(|f| {
-            let counts = if f.binary {
-                "binary".to_string()
-            } else {
-                let (added, removed) = f
-                    .hunks
-                    .iter()
-                    .flat_map(|h| &h.lines)
-                    .fold((0usize, 0usize), |(a, r), line| match line.kind {
-                        LineKind::Add => (a + 1, r),
-                        LineKind::Remove => (a, r + 1),
-                        LineKind::Context | LineKind::NoNewline => (a, r),
-                    });
-                format!("+{added} -{removed}")
-            };
-            format!(" {:<width$} | {counts}", f.path, width = width)
-        })
-        .collect();
+        .map(|f| f.path.chars().count())
+        .max()
+        .unwrap_or(0);
+    let mut lines: Vec<String> =
+        set.files
+            .iter()
+            .map(|f| {
+                let counts = if f.binary {
+                    "binary".to_string()
+                } else {
+                    let (added, removed) = f.hunks.iter().flat_map(|h| &h.lines).fold(
+                        (0usize, 0usize),
+                        |(a, r), line| match line.kind {
+                            LineKind::Add => (a + 1, r),
+                            LineKind::Remove => (a, r + 1),
+                            LineKind::Context | LineKind::NoNewline => (a, r),
+                        },
+                    );
+                    format!("+{added} -{removed}")
+                };
+                format!(" {:<width$} | {counts}", f.path, width = width)
+            })
+            .collect();
     let totals = set.stats();
     lines.push(format!(
         "{} files changed, {} insertions(+), {} deletions(-)",
@@ -589,7 +649,12 @@ fn checkpoints_of(v: &Value) -> &[Value] {
 
 /// The folder's children (or every folder below it, when `recursive`), page after page, capped at
 /// `WALK_CAP` entries. The flag says whether the cap stopped the walk.
-fn walk(ctx: &Ctx, workspace: &str, root: &str, recursive: bool) -> Result<(Vec<Value>, bool), String> {
+fn walk(
+    ctx: &Ctx,
+    workspace: &str,
+    root: &str,
+    recursive: bool,
+) -> Result<(Vec<Value>, bool), String> {
     let base = ws_path(workspace, "/tree")?;
     let mut queue = VecDeque::from([root.to_string()]);
     let mut out: Vec<Value> = Vec::new();
@@ -662,7 +727,11 @@ fn release_interrupt() {}
 /// The process exit code of a finished run: 124 on timeout, the command's own code otherwise
 /// (a signal's negative code becomes 128 plus the signal), and 130 when the user stopped it.
 fn exit_code(snapshot: &Value, interrupted: bool) -> i32 {
-    if snapshot.get("timed_out").and_then(Value::as_bool).unwrap_or(false) {
+    if snapshot
+        .get("timed_out")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
         return 124;
     }
     match snapshot.get("exit_code").and_then(Value::as_i64) {
@@ -675,7 +744,10 @@ fn exit_code(snapshot: &Value, interrupted: bool) -> i32 {
 
 /// Each argument quoted for a POSIX shell, so `sh -c 'a && b'` reaches the hub intact.
 fn shell_quote(arg: &str) -> String {
-    let plain = !arg.is_empty() && arg.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_./=:,@%+".contains(&b));
+    let plain = !arg.is_empty()
+        && arg
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"-_./=:,@%+".contains(&b));
     if plain {
         arg.to_string()
     } else {
@@ -684,7 +756,10 @@ fn shell_quote(arg: &str) -> String {
 }
 
 fn shell_join(args: &[String]) -> String {
-    args.iter().map(|a| shell_quote(a)).collect::<Vec<_>>().join(" ")
+    args.iter()
+        .map(|a| shell_quote(a))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Polls a run's output from its offset until it is done, printing each new chunk (or, with `--json`,
@@ -705,7 +780,10 @@ fn stream(ctx: &Ctx, base: &str, run: &str) -> Result<(Value, String), String> {
                 let _ = std::io::stdout().flush();
             }
         }
-        offset = snap.get("next").and_then(Value::as_u64).unwrap_or(offset + chunk.len() as u64);
+        offset = snap
+            .get("next")
+            .and_then(Value::as_u64)
+            .unwrap_or(offset + chunk.len() as u64);
         if snap.get("done").and_then(Value::as_bool).unwrap_or(false) {
             return Ok((snap, captured));
         }
@@ -721,12 +799,20 @@ fn stream(ctx: &Ctx, base: &str, run: &str) -> Result<(Value, String), String> {
 }
 
 /// Starts a bounded command in a workspace, streams it, and returns the exit code it should end with.
-fn run_command(ctx: &Ctx, workspace: &str, timeout: u32, command: &[String]) -> Result<i32, String> {
+fn run_command(
+    ctx: &Ctx,
+    workspace: &str,
+    timeout: u32,
+    command: &[String],
+) -> Result<i32, String> {
     if timeout == 0 {
         return Err("--timeout is at least 1 second".into());
     }
     let line = shell_join(command);
-    let started = ctx.client.post(&ws_path(workspace, "/runs")?, &json!({ "command": line, "timeout_s": timeout }))?;
+    let started = ctx.client.post(
+        &ws_path(workspace, "/runs")?,
+        &json!({ "command": line, "timeout_s": timeout }),
+    )?;
     let run = ctx::text(&started, "run");
     if run.is_empty() {
         return Err("the hub did not return a run id".into());
@@ -739,12 +825,19 @@ fn run_command(ctx: &Ctx, workspace: &str, timeout: u32, command: &[String]) -> 
     let interrupted = INTERRUPTED.load(Ordering::SeqCst);
     let code = exit_code(&last, interrupted);
     if ctx.json {
-        let timed_out = last.get("timed_out").and_then(Value::as_bool).unwrap_or(false);
+        let timed_out = last
+            .get("timed_out")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         ctx.out(
             &json!({ "run": run, "output": captured, "exit_code": code, "timed_out": timed_out }),
             |_| {},
         );
-    } else if last.get("timed_out").and_then(Value::as_bool).unwrap_or(false) {
+    } else if last
+        .get("timed_out")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
         eprintln!("timed out after {timeout} s");
     }
     Ok(code)
@@ -757,19 +850,33 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
         Cmd::Workspaces => {
             let list = ctx.client.get("/v1/ide/workspaces")?;
             ctx.out(&list, |v| {
-                let rows: Vec<Vec<String>> = items(v, "workspaces").iter().map(workspace_row).collect();
-                ctx::table(&["id", "kind", "owner", "name", "os", "writable", "status"], &rows);
+                let rows: Vec<Vec<String>> =
+                    items(v, "workspaces").iter().map(workspace_row).collect();
+                ctx::table(
+                    &["id", "kind", "owner", "name", "os", "writable", "status"],
+                    &rows,
+                );
             });
             Ok(())
         }
-        Cmd::Ls { workspace, path, recursive } => {
+        Cmd::Ls {
+            workspace,
+            path,
+            recursive,
+        } => {
             let dir = check_dir(&path).map_err(|e| format!("{path}: {e}"))?;
             let (entries, truncated) = walk(ctx, &workspace, &dir, recursive)?;
             let listing = json!({ "entries": entries, "truncated": truncated });
             ctx.out(&listing, |_| {
                 let rows: Vec<Vec<String>> = entries
                     .iter()
-                    .map(|e| vec![ctx::s(e, "kind").to_string(), ctx::text(e, "size"), ctx::s(e, "path").to_string()])
+                    .map(|e| {
+                        vec![
+                            ctx::s(e, "kind").to_string(),
+                            ctx::text(e, "size"),
+                            ctx::s(e, "path").to_string(),
+                        ]
+                    })
                     .collect();
                 ctx::table(&["kind", "size", "path"], &rows);
             });
@@ -778,9 +885,14 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             }
             Ok(())
         }
-        Cmd::Cat { workspace, path, hash } => {
+        Cmd::Cat {
+            workspace,
+            path,
+            hash,
+        } => {
             let path = check_read(&path).map_err(|e| format!("{path}: {e}"))?;
-            let record = file_record(ctx, &workspace, &path)?.ok_or_else(|| format!("{path}: no such file"))?;
+            let record = file_record(ctx, &workspace, &path)?
+                .ok_or_else(|| format!("{path}: no such file"))?;
             if ctx.json {
                 ctx.out(&record, |_| {});
             } else if hash {
@@ -791,11 +903,29 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             }
             Ok(())
         }
-        Cmd::Edit { workspace, path, force } => edit(ctx, &workspace, &path, force),
-        Cmd::Put { workspace, path, file, expected, new } => put(ctx, &workspace, &path, &file, expected, new),
-        Cmd::Diff { workspace, base, stat } => {
+        Cmd::Edit {
+            workspace,
+            path,
+            force,
+        } => edit(ctx, &workspace, &path, force),
+        Cmd::Put {
+            workspace,
+            path,
+            file,
+            expected,
+            new,
+        } => put(ctx, &workspace, &path, &file, expected, new),
+        Cmd::Diff {
+            workspace,
+            base,
+            stat,
+        } => {
             let base = parse_base(&base)?;
-            let url = format!("{}?base={}", ws_path(&workspace, "/changes")?, ctx::seg(&base));
+            let url = format!(
+                "{}?base={}",
+                ws_path(&workspace, "/changes")?,
+                ctx::seg(&base)
+            );
             let changes = ctx.client.get(&url)?;
             let text = ctx::s(&changes, "diff");
             if stat {
@@ -814,7 +944,16 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                     if text.trim().is_empty() {
                         println!("no changes since {base}");
                     } else {
-                        print!("{}", colour_diff(text, use_colour(std::io::stdout().is_terminal(), std::env::var_os("NO_COLOR").is_some())));
+                        print!(
+                            "{}",
+                            colour_diff(
+                                text,
+                                use_colour(
+                                    std::io::stdout().is_terminal(),
+                                    std::env::var_os("NO_COLOR").is_some()
+                                )
+                            )
+                        );
                     }
                 });
             }
@@ -825,23 +964,39 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             ctx.out(&list, |v| {
                 let rows: Vec<Vec<String>> = checkpoints_of(v)
                     .iter()
-                    .map(|c| vec![ctx::text(c, "n"), ctx::s(c, "label").to_string(), ctx::when(&c["created_ms"]), ctx::text(c, "files")])
+                    .map(|c| {
+                        vec![
+                            ctx::text(c, "n"),
+                            ctx::s(c, "label").to_string(),
+                            ctx::when(&c["created_ms"]),
+                            ctx::text(c, "files"),
+                        ]
+                    })
                     .collect();
                 ctx::table(&["n", "label", "created", "files"], &rows);
             });
             Ok(())
         }
         Cmd::Restore { workspace, n, yes } => {
-            let question = format!("Restore checkpoint {n} in {workspace}? Files go back to their state at that checkpoint.");
+            let question = format!(
+                "Restore checkpoint {n} in {workspace}? Files go back to their state at that checkpoint."
+            );
             if !confirm(yes, &question)? {
                 println!("not restored");
                 return Ok(());
             }
-            let r = ctx.client.post(&format!("{}/{n}/restore", ws_path(&workspace, "/checkpoints")?), &json!({}))?;
+            let r = ctx.client.post(
+                &format!("{}/{n}/restore", ws_path(&workspace, "/checkpoints")?),
+                &json!({}),
+            )?;
             ctx.out(&r, |_| println!("restored checkpoint {n} in {workspace}"));
             Ok(())
         }
-        Cmd::Search { workspace, query, glob } => {
+        Cmd::Search {
+            workspace,
+            query,
+            glob,
+        } => {
             if query.trim().is_empty() {
                 return Err("the query is empty".into());
             }
@@ -850,14 +1005,22 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                 url.push_str(&format!("&glob={}", ctx::seg(&glob)));
             }
             let res = ctx.client.get(&url)?;
-            let truncated = res.get("truncated").and_then(Value::as_bool).unwrap_or(false);
+            let truncated = res
+                .get("truncated")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
             ctx.out(&res, |r| {
                 let matches = items(r, "matches");
                 if matches.is_empty() {
                     println!("no matches");
                 }
                 for m in matches {
-                    println!("{}:{}  {}", ctx::s(m, "path"), ctx::text(m, "line"), ctx::s(m, "text"));
+                    println!(
+                        "{}:{}  {}",
+                        ctx::s(m, "path"),
+                        ctx::text(m, "line"),
+                        ctx::s(m, "text")
+                    );
                 }
             });
             if truncated && !ctx.json {
@@ -865,7 +1028,11 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             }
             Ok(())
         }
-        Cmd::Run { workspace, timeout, command } => {
+        Cmd::Run {
+            workspace,
+            timeout,
+            command,
+        } => {
             let code = run_command(ctx, &workspace, timeout, &command)?;
             if code != 0 {
                 let _ = std::io::stdout().flush();
@@ -883,7 +1050,11 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                 let rows: Vec<Vec<String>> = items(v, "entries")
                     .iter()
                     .map(|e| {
-                        let at = if e["at"].is_null() { &e["created_ms"] } else { &e["at"] };
+                        let at = if e["at"].is_null() {
+                            &e["created_ms"]
+                        } else {
+                            &e["at"]
+                        };
                         vec![
                             ctx::when(at),
                             first_of(e, &["action", "kind"]),
@@ -897,7 +1068,14 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             });
             Ok(())
         }
-        Cmd::Term { workspace, cwd, attach, offset, kill, no_tty } => {
+        Cmd::Term {
+            workspace,
+            cwd,
+            attach,
+            offset,
+            kill,
+            no_tty,
+        } => {
             let code = term_command(ctx, &workspace, cwd, attach, offset, kill, no_tty)?;
             if code != 0 {
                 let _ = std::io::stdout().flush();
@@ -995,7 +1173,9 @@ mod term {
     ) -> Result<i32, String> {
         let id = WorkspaceId::from_str(workspace).map_err(|e| format!("{workspace}: {e}"))?;
         if !has_shell(&id) {
-            return Err(format!("{workspace}: a terminal is for agent and station workspaces; a repo has no VM to open a shell in"));
+            return Err(format!(
+                "{workspace}: a terminal is for agent and station workspaces; a repo has no VM to open a shell in"
+            ));
         }
         let path = format!("/v1/ide/terminal/{}", workspace_seg(workspace)?);
         if let Some(term) = kill {
@@ -1034,8 +1214,14 @@ mod term {
     }
 
     fn connect(ctx: &Ctx, path: &str) -> Result<Socket, String> {
-        ws::connect(&ctx.client.target, path, Some(PROTOCOL), Duration::from_secs(10), Limits::default())
-            .map_err(|e| format!("{} {path}: {e}", ctx.client.base()))
+        ws::connect(
+            &ctx.client.target,
+            path,
+            Some(PROTOCOL),
+            Duration::from_secs(10),
+            Limits::default(),
+        )
+        .map_err(|e| format!("{} {path}: {e}", ctx.client.base()))
     }
 
     // ---- Frames -------------------------------------------------------------------------------------
@@ -1081,41 +1267,60 @@ mod term {
     }
 
     fn parse_term_frame(text: &str) -> Result<TermFrame, String> {
-        let value: Value =
-            serde_json::from_str(text).map_err(|e| format!("the hub sent a frame that is not JSON: {e}"))?;
+        let value: Value = serde_json::from_str(text)
+            .map_err(|e| format!("the hub sent a frame that is not JSON: {e}"))?;
         match value.get("t").and_then(Value::as_str).unwrap_or_default() {
-            "opened" => Ok(TermFrame::Opened { term: field_str(&value, "term")?.to_string() }),
+            "opened" => Ok(TermFrame::Opened {
+                term: field_str(&value, "term")?.to_string(),
+            }),
             "out" => Ok(TermFrame::Out {
                 data: STANDARD
                     .decode(field_str(&value, "data")?)
                     .map_err(|e| format!("\"data\" is not base64: {e}"))?,
                 offset: field_u64(&value, "offset")?,
             }),
-            "lost" => Ok(TermFrame::Lost { bytes: field_u64(&value, "bytes")? }),
-            "exit" => Ok(TermFrame::Exit { code: value.get("code").and_then(Value::as_i64) }),
-            "error" => Ok(TermFrame::Error { message: field_str(&value, "message")?.to_string() }),
+            "lost" => Ok(TermFrame::Lost {
+                bytes: field_u64(&value, "bytes")?,
+            }),
+            "exit" => Ok(TermFrame::Exit {
+                code: value.get("code").and_then(Value::as_i64),
+            }),
+            "error" => Ok(TermFrame::Error {
+                message: field_str(&value, "message")?.to_string(),
+            }),
             "pong" => Ok(TermFrame::Pong),
             other => Err(format!("the hub sent no frame named {other:?}")),
         }
     }
 
     fn field_str<'a>(value: &'a Value, key: &str) -> Result<&'a str, String> {
-        value.get(key).and_then(Value::as_str).ok_or_else(|| format!("\"{key}\" must be a string"))
+        value
+            .get(key)
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("\"{key}\" must be a string"))
     }
 
     fn field_u64(value: &Value, key: &str) -> Result<u64, String> {
-        value.get(key).and_then(Value::as_u64).ok_or_else(|| format!("\"{key}\" must be a whole number"))
+        value
+            .get(key)
+            .and_then(Value::as_u64)
+            .ok_or_else(|| format!("\"{key}\" must be a whole number"))
     }
 
     fn send_frame(socket: &mut Socket, frame: &Value) -> Result<(), String> {
-        socket.send(&Message::Text(frame.to_string())).map_err(|e| e.to_string())
+        socket
+            .send(&Message::Text(frame.to_string()))
+            .map_err(|e| e.to_string())
     }
 
     /// The first answer to an open or an attach: the terminal's id, or the hub's refusal.
     fn await_opened(socket: &mut Socket) -> Result<String, String> {
         let deadline = Instant::now() + ANSWER;
         while Instant::now() < deadline {
-            let Some(message) = socket.recv(Duration::from_millis(500)).map_err(|e| e.to_string())? else {
+            let Some(message) = socket
+                .recv(Duration::from_millis(500))
+                .map_err(|e| e.to_string())?
+            else {
                 continue;
             };
             if let Message::Text(text) = message {
@@ -1187,7 +1392,10 @@ mod term {
                     send.push(byte);
                 }
             }
-            Keys { send, detach: false }
+            Keys {
+                send,
+                detach: false,
+            }
         }
     }
 
@@ -1234,7 +1442,12 @@ mod term {
     }
 
     fn window_size(fd: libc::c_int) -> Option<(u16, u16)> {
-        let mut size = libc::winsize { ws_row: 0, ws_col: 0, ws_xpixel: 0, ws_ypixel: 0 };
+        let mut size = libc::winsize {
+            ws_row: 0,
+            ws_col: 0,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        };
         // SAFETY: TIOCGWINSZ writes one winsize into the struct it is given.
         let ok = unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &mut size as *mut libc::winsize) } == 0;
         ok.then_some((size.ws_col, size.ws_row))
@@ -1259,8 +1472,14 @@ mod term {
             return Err(format!("stdin: {}", io::Error::last_os_error()));
         }
         let mut raw = original;
-        raw.c_iflag &=
-            !(libc::IGNBRK | libc::BRKINT | libc::PARMRK | libc::ISTRIP | libc::INLCR | libc::IGNCR | libc::ICRNL | libc::IXON);
+        raw.c_iflag &= !(libc::IGNBRK
+            | libc::BRKINT
+            | libc::PARMRK
+            | libc::ISTRIP
+            | libc::INLCR
+            | libc::IGNCR
+            | libc::ICRNL
+            | libc::IXON);
         raw.c_oflag &= !libc::OPOST;
         raw.c_lflag &= !(libc::ECHO | libc::ECHONL | libc::ICANON | libc::ISIG | libc::IEXTEN);
         raw.c_cflag &= !(libc::CSIZE | libc::PARENB);
@@ -1358,7 +1577,10 @@ mod term {
             if let Some(end) = self.keys()? {
                 return Ok(Some(end));
             }
-            if self.input_done.is_some_and(|at| at.elapsed() >= INPUT_GRACE) {
+            if self
+                .input_done
+                .is_some_and(|at| at.elapsed() >= INPUT_GRACE)
+            {
                 return Ok(Some(End::Detached));
             }
             if self.last_sent.elapsed() >= KEEPALIVE {
@@ -1433,12 +1655,20 @@ mod term {
 
     fn show(data: &[u8]) -> Result<(), String> {
         let mut out = io::stdout().lock();
-        out.write_all(data).map_err(|e| format!("writing the terminal: {e}"))?;
-        out.flush().map_err(|e| format!("writing the terminal: {e}"))
+        out.write_all(data)
+            .map_err(|e| format!("writing the terminal: {e}"))?;
+        out.flush()
+            .map_err(|e| format!("writing the terminal: {e}"))
     }
 
     /// Runs the attached session until it ends, then puts the terminal back and reports how it ended.
-    fn interactive(socket: Socket, workspace: &str, term: &str, offset: u64, no_tty: bool) -> Result<i32, String> {
+    fn interactive(
+        socket: Socket,
+        workspace: &str,
+        term: &str,
+        offset: u64,
+        no_tty: bool,
+    ) -> Result<i32, String> {
         let raw = !no_tty;
         if raw {
             enter_raw()?;
@@ -1502,10 +1732,23 @@ mod term {
 
         #[test]
         fn the_client_frames_have_the_documented_shape() {
-            assert_eq!(open_frame(80, 24, None), json!({"t": "open", "cols": 80, "rows": 24}));
-            assert_eq!(open_frame(80, 24, Some("src")), json!({"t": "open", "cols": 80, "rows": 24, "cwd": "src"}));
-            assert_eq!(open_frame(80, 24, Some("")), json!({"t": "open", "cols": 80, "rows": 24}), "an empty cwd is the root");
-            assert_eq!(attach_frame("term-1", 5), json!({"t": "attach", "term": "term-1", "offset": 5}));
+            assert_eq!(
+                open_frame(80, 24, None),
+                json!({"t": "open", "cols": 80, "rows": 24})
+            );
+            assert_eq!(
+                open_frame(80, 24, Some("src")),
+                json!({"t": "open", "cols": 80, "rows": 24, "cwd": "src"})
+            );
+            assert_eq!(
+                open_frame(80, 24, Some("")),
+                json!({"t": "open", "cols": 80, "rows": 24}),
+                "an empty cwd is the root"
+            );
+            assert_eq!(
+                attach_frame("term-1", 5),
+                json!({"t": "attach", "term": "term-1", "offset": 5})
+            );
             assert_eq!(input_frame(b"ls\r"), json!({"t": "in", "data": "bHMN"}));
             assert_eq!(kill_frame(), json!({"t": "kill"}));
             assert_eq!(ping_frame(), json!({"t": "ping"}));
@@ -1515,7 +1758,9 @@ mod term {
         fn keys_survive_the_base64_round_trip() {
             let bytes: Vec<u8> = (0u8..=255).collect();
             let frame = input_frame(&bytes);
-            let back = STANDARD.decode(frame["data"].as_str().unwrap_or_default()).unwrap_or_default();
+            let back = STANDARD
+                .decode(frame["data"].as_str().unwrap_or_default())
+                .unwrap_or_default();
             assert_eq!(back, bytes);
         }
 
@@ -1523,18 +1768,34 @@ mod term {
         fn the_hubs_frames_parse() {
             assert_eq!(
                 parse_term_frame(r#"{"t":"opened","term":"term-1"}"#),
-                Ok(TermFrame::Opened { term: "term-1".into() })
+                Ok(TermFrame::Opened {
+                    term: "term-1".into()
+                })
             );
             assert_eq!(
                 parse_term_frame(r#"{"t":"out","data":"aGk=","offset":7}"#),
-                Ok(TermFrame::Out { data: b"hi".to_vec(), offset: 7 })
+                Ok(TermFrame::Out {
+                    data: b"hi".to_vec(),
+                    offset: 7
+                })
             );
-            assert_eq!(parse_term_frame(r#"{"t":"lost","bytes":12}"#), Ok(TermFrame::Lost { bytes: 12 }));
-            assert_eq!(parse_term_frame(r#"{"t":"exit","code":3}"#), Ok(TermFrame::Exit { code: Some(3) }));
-            assert_eq!(parse_term_frame(r#"{"t":"exit","code":null}"#), Ok(TermFrame::Exit { code: None }));
+            assert_eq!(
+                parse_term_frame(r#"{"t":"lost","bytes":12}"#),
+                Ok(TermFrame::Lost { bytes: 12 })
+            );
+            assert_eq!(
+                parse_term_frame(r#"{"t":"exit","code":3}"#),
+                Ok(TermFrame::Exit { code: Some(3) })
+            );
+            assert_eq!(
+                parse_term_frame(r#"{"t":"exit","code":null}"#),
+                Ok(TermFrame::Exit { code: None })
+            );
             assert_eq!(
                 parse_term_frame(r#"{"t":"error","message":"no agent 9"}"#),
-                Ok(TermFrame::Error { message: "no agent 9".into() })
+                Ok(TermFrame::Error {
+                    message: "no agent 9".into()
+                })
             );
             assert_eq!(parse_term_frame(r#"{"t":"pong"}"#), Ok(TermFrame::Pong));
         }
@@ -1543,51 +1804,129 @@ mod term {
         fn a_bad_hub_frame_is_an_error_not_a_guess() {
             assert!(parse_term_frame("not json").is_err());
             assert!(parse_term_frame(r#"{"t":"nope"}"#).is_err());
-            assert!(parse_term_frame(r#"{"t":"out","data":"!!","offset":0}"#).is_err(), "data is base64");
-            assert!(parse_term_frame(r#"{"t":"out","data":"aGk="}"#).is_err(), "an out needs its offset");
+            assert!(
+                parse_term_frame(r#"{"t":"out","data":"!!","offset":0}"#).is_err(),
+                "data is base64"
+            );
+            assert!(
+                parse_term_frame(r#"{"t":"out","data":"aGk="}"#).is_err(),
+                "an out needs its offset"
+            );
             assert!(parse_term_frame(r#"{"t":"lost"}"#).is_err());
         }
 
         #[test]
         fn ctrl_bracket_then_d_detaches_and_keeps_the_keys_before_it() {
             let mut escape = Escape::default();
-            assert_eq!(escape.feed(b"ls"), Keys { send: b"ls".to_vec(), detach: false });
-            assert_eq!(escape.feed(&[ESCAPE, b'd']), Keys { send: vec![], detach: true });
+            assert_eq!(
+                escape.feed(b"ls"),
+                Keys {
+                    send: b"ls".to_vec(),
+                    detach: false
+                }
+            );
+            assert_eq!(
+                escape.feed(&[ESCAPE, b'd']),
+                Keys {
+                    send: vec![],
+                    detach: true
+                }
+            );
             let mut escape = Escape::default();
-            assert_eq!(escape.feed(b"a\x1dd"), Keys { send: b"a".to_vec(), detach: true });
+            assert_eq!(
+                escape.feed(b"a\x1dd"),
+                Keys {
+                    send: b"a".to_vec(),
+                    detach: true
+                }
+            );
         }
 
         #[test]
         fn the_detach_sequence_can_be_split_across_reads() {
             let mut escape = Escape::default();
-            assert_eq!(escape.feed(&[ESCAPE]), Keys { send: vec![], detach: false });
-            assert_eq!(escape.feed(b"d"), Keys { send: vec![], detach: true });
+            assert_eq!(
+                escape.feed(&[ESCAPE]),
+                Keys {
+                    send: vec![],
+                    detach: false
+                }
+            );
+            assert_eq!(
+                escape.feed(b"d"),
+                Keys {
+                    send: vec![],
+                    detach: true
+                }
+            );
         }
 
         #[test]
         fn a_plain_d_is_only_a_key_and_ctrl_bracket_otherwise_sends_both() {
             let mut escape = Escape::default();
-            assert_eq!(escape.feed(b"d"), Keys { send: b"d".to_vec(), detach: false });
-            assert_eq!(escape.feed(&[ESCAPE, b'x']), Keys { send: vec![ESCAPE, b'x'], detach: false });
-            assert_eq!(escape.feed(&[ESCAPE, ESCAPE]), Keys { send: vec![ESCAPE], detach: false });
-            assert_eq!(escape.feed(b"d"), Keys { send: b"d".to_vec(), detach: false }, "the escape is over");
-            assert_eq!(escape.feed(&[ESCAPE, ESCAPE, b'd']), Keys { send: vec![ESCAPE, b'd'], detach: false });
+            assert_eq!(
+                escape.feed(b"d"),
+                Keys {
+                    send: b"d".to_vec(),
+                    detach: false
+                }
+            );
+            assert_eq!(
+                escape.feed(&[ESCAPE, b'x']),
+                Keys {
+                    send: vec![ESCAPE, b'x'],
+                    detach: false
+                }
+            );
+            assert_eq!(
+                escape.feed(&[ESCAPE, ESCAPE]),
+                Keys {
+                    send: vec![ESCAPE],
+                    detach: false
+                }
+            );
+            assert_eq!(
+                escape.feed(b"d"),
+                Keys {
+                    send: b"d".to_vec(),
+                    detach: false
+                },
+                "the escape is over"
+            );
+            assert_eq!(
+                escape.feed(&[ESCAPE, ESCAPE, b'd']),
+                Keys {
+                    send: vec![ESCAPE, b'd'],
+                    detach: false
+                }
+            );
         }
 
         #[test]
         fn the_size_message_carries_a_size_the_hub_takes() {
             assert_eq!(fit_size(120, 40), (120, 40));
-            assert_eq!(fit_size(0, 0), DEFAULT_SIZE, "a terminal that reports no size gets 80 by 24");
+            assert_eq!(
+                fit_size(0, 0),
+                DEFAULT_SIZE,
+                "a terminal that reports no size gets 80 by 24"
+            );
             assert_eq!(fit_size(5000, 50), (MAX_SIZE, 50));
             let (cols, rows) = fit_size(120, 40);
-            assert_eq!(size_frame(cols, rows), json!({"t": "resize", "cols": 120, "rows": 40}));
+            assert_eq!(
+                size_frame(cols, rows),
+                json!({"t": "resize", "cols": 120, "rows": 40})
+            );
         }
 
         #[test]
         fn a_shell_exit_code_is_the_process_exit_code() {
             assert_eq!(exit_status(Some(0)), 0);
             assert_eq!(exit_status(Some(3)), 3);
-            assert_eq!(exit_status(Some(-9)), 137, "a signal is 128 plus its number");
+            assert_eq!(
+                exit_status(Some(-9)),
+                137,
+                "a signal is 128 plus its number"
+            );
             assert_eq!(exit_status(None), 1, "no code from the guest is a failure");
         }
 
@@ -1618,15 +1957,27 @@ mod tests {
     #[test]
     fn workspace_ids_are_encoded_as_one_segment() {
         assert_eq!(workspace_seg("agent:12").unwrap(), "agent%3A12");
-        assert_eq!(workspace_seg("repo:demo@feature/x").unwrap(), "repo%3Ademo%40feature%2Fx");
-        assert_eq!(ws_path("agent:0", "/tree").unwrap(), "/v1/ide/workspaces/agent%3A0/tree");
+        assert_eq!(
+            workspace_seg("repo:demo@feature/x").unwrap(),
+            "repo%3Ademo%40feature%2Fx"
+        );
+        assert_eq!(
+            ws_path("agent:0", "/tree").unwrap(),
+            "/v1/ide/workspaces/agent%3A0/tree"
+        );
     }
 
     #[test]
     fn a_station_id_parses_as_one_segment_and_a_bad_one_fails() {
         assert_eq!(workspace_seg("station:w3").unwrap(), "station%3Aw3");
-        assert_eq!(ws_path("station:w3", "/tree").unwrap(), "/v1/ide/workspaces/station%3Aw3/tree");
-        assert!(workspace_seg("station:3").is_err(), "a station id is w and a number");
+        assert_eq!(
+            ws_path("station:w3", "/tree").unwrap(),
+            "/v1/ide/workspaces/station%3Aw3/tree"
+        );
+        assert!(
+            workspace_seg("station:3").is_err(),
+            "a station id is w and a number"
+        );
         assert!(workspace_seg("station:w03").is_err(), "no leading zeros");
     }
 
@@ -1641,7 +1992,18 @@ mod tests {
     #[test]
     fn a_station_row_shows_its_kind_and_os() {
         let station = json!({"id": "station:w3", "kind": "station", "owner": "w3", "name": "studio mac", "os": "macos", "writable": true, "status": "online"});
-        assert_eq!(workspace_row(&station), ["station:w3", "station", "w3", "studio mac", "macos", "true", "online"]);
+        assert_eq!(
+            workspace_row(&station),
+            [
+                "station:w3",
+                "station",
+                "w3",
+                "studio mac",
+                "macos",
+                "true",
+                "online"
+            ]
+        );
         let agent = json!({"id": "agent:7", "kind": "agent", "owner": "7", "name": "scout", "writable": true, "status": "idle"});
         assert_eq!(workspace_row(&agent)[4], "", "an agent has no OS to show");
     }
@@ -1656,13 +2018,22 @@ mod tests {
     #[test]
     fn a_409_is_a_conflict_with_the_current_hash() {
         let body = json!({"error": "conflict", "current_hash": "h2"});
-        assert_eq!(classify_save("/x", 409, body).unwrap(), Save::Conflict(Some("h2".into())));
-        assert_eq!(classify_save("/x", 409, json!({"error": "conflict"})).unwrap(), Save::Conflict(None));
+        assert_eq!(
+            classify_save("/x", 409, body).unwrap(),
+            Save::Conflict(Some("h2".into()))
+        );
+        assert_eq!(
+            classify_save("/x", 409, json!({"error": "conflict"})).unwrap(),
+            Save::Conflict(None)
+        );
     }
 
     #[test]
     fn other_failures_are_errors_and_a_2xx_is_saved() {
-        assert_eq!(classify_save("/x", 500, json!({"error": "boom"})).unwrap_err(), "boom");
+        assert_eq!(
+            classify_save("/x", 500, json!({"error": "boom"})).unwrap_err(),
+            "boom"
+        );
         assert!(classify_save("/x", 409, json!({"error": "locked"})).is_err());
         assert_eq!(
             classify_save("/x", 200, json!({"hash": "h3"})).unwrap(),
@@ -1689,7 +2060,10 @@ mod tests {
 
     #[test]
     fn editors_split_into_a_program_and_arguments() {
-        assert_eq!(split_command("code --wait"), Some(("code".into(), vec!["--wait".into()])));
+        assert_eq!(
+            split_command("code --wait"),
+            Some(("code".into(), vec!["--wait".into()]))
+        );
         assert_eq!(split_command("vi"), Some(("vi".into(), vec![])));
         assert_eq!(split_command("   "), None);
     }
@@ -1705,7 +2079,10 @@ mod tests {
 
     #[test]
     fn colour_is_only_for_a_terminal_without_no_color() {
-        assert!(!use_colour(false, false), "a pipe or a file gets plain text");
+        assert!(
+            !use_colour(false, false),
+            "a pipe or a file gets plain text"
+        );
         assert!(!use_colour(true, true), "NO_COLOR turns it off");
         assert!(use_colour(true, false));
     }
@@ -1752,17 +2129,41 @@ mod tests {
     #[test]
     fn a_run_ends_with_the_command_code_124_on_timeout_or_130_when_stopped() {
         assert_eq!(exit_code(&json!({"done": true, "exit_code": 0}), false), 0);
-        assert_eq!(exit_code(&json!({"done": true, "exit_code": 3, "timed_out": false}), false), 3);
-        assert_eq!(exit_code(&json!({"done": true, "exit_code": null, "timed_out": true}), false), 124);
-        assert_eq!(exit_code(&json!({"done": true, "exit_code": null}), true), 130);
-        assert_eq!(exit_code(&json!({"done": true, "exit_code": -9}), false), 137);
+        assert_eq!(
+            exit_code(
+                &json!({"done": true, "exit_code": 3, "timed_out": false}),
+                false
+            ),
+            3
+        );
+        assert_eq!(
+            exit_code(
+                &json!({"done": true, "exit_code": null, "timed_out": true}),
+                false
+            ),
+            124
+        );
+        assert_eq!(
+            exit_code(&json!({"done": true, "exit_code": null}), true),
+            130
+        );
+        assert_eq!(
+            exit_code(&json!({"done": true, "exit_code": -9}), false),
+            137
+        );
     }
 
     #[test]
     fn command_arguments_are_quoted_for_a_shell() {
-        let args: Vec<String> = ["cargo", "test", "-p", "apz-ide"].iter().map(|s| s.to_string()).collect();
+        let args: Vec<String> = ["cargo", "test", "-p", "apz-ide"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         assert_eq!(shell_join(&args), "cargo test -p apz-ide");
-        let args: Vec<String> = ["sh", "-c", "a && b", "it's", ""].iter().map(|s| s.to_string()).collect();
+        let args: Vec<String> = ["sh", "-c", "a && b", "it's", ""]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         assert_eq!(shell_join(&args), "sh -c 'a && b' 'it'\\''s' ''");
     }
 
@@ -1783,15 +2184,37 @@ mod tests {
         assert!(parse(&["cat", "agent:1", "a.txt", "--hash"]).is_ok());
         assert!(parse(&["put", "agent:1", "a.txt", "--file", "-", "--expected", "h"]).is_ok());
         assert!(parse(&["put", "agent:1", "a.txt", "--file", "-", "--new"]).is_ok());
-        assert!(parse(&["put", "agent:1", "a.txt"]).is_err(), "--file is required");
-        assert!(parse(&["put", "agent:1", "a.txt", "--file", "-", "--expected", "h", "--new"]).is_err(), "one or the other");
+        assert!(
+            parse(&["put", "agent:1", "a.txt"]).is_err(),
+            "--file is required"
+        );
+        assert!(
+            parse(&[
+                "put",
+                "agent:1",
+                "a.txt",
+                "--file",
+                "-",
+                "--expected",
+                "h",
+                "--new"
+            ])
+            .is_err(),
+            "one or the other"
+        );
         assert!(parse(&["diff", "agent:1", "--base", "checkpoint:2", "--stat"]).is_ok());
-        assert!(parse(&["restore", "agent:1"]).is_err(), "a restore needs its checkpoint number");
+        assert!(
+            parse(&["restore", "agent:1"]).is_err(),
+            "a restore needs its checkpoint number"
+        );
         assert!(parse(&["restore", "agent:1", "4", "--yes"]).is_ok());
         assert!(parse(&["search", "agent:1", "todo", "--glob", "*.rs"]).is_ok());
         assert!(parse(&["run", "agent:1", "--", "cargo", "test"]).is_ok());
         assert!(parse(&["run", "agent:1", "--timeout", "5", "--", "ls"]).is_ok());
-        assert!(parse(&["run", "agent:1"]).is_err(), "a run needs its command after --");
+        assert!(
+            parse(&["run", "agent:1"]).is_err(),
+            "a run needs its command after --"
+        );
         assert!(parse(&["audit", "--workspace", "agent:1", "--limit", "10"]).is_ok());
     }
 
@@ -1803,8 +2226,17 @@ mod tests {
         assert!(parse(&["term", "agent:1", "--attach", "term-1", "--offset", "4"]).is_ok());
         assert!(parse(&["term", "agent:1", "--kill", "term-1"]).is_ok());
         assert!(parse(&["term"]).is_err(), "a workspace is required");
-        assert!(parse(&["term", "agent:1", "--offset", "4"]).is_err(), "an offset needs --attach");
-        assert!(parse(&["term", "agent:1", "--kill", "t", "--attach", "t"]).is_err(), "kill and attach conflict");
-        assert!(parse(&["term", "agent:1", "--kill", "t", "--cwd", "src"]).is_err(), "kill takes no folder");
+        assert!(
+            parse(&["term", "agent:1", "--offset", "4"]).is_err(),
+            "an offset needs --attach"
+        );
+        assert!(
+            parse(&["term", "agent:1", "--kill", "t", "--attach", "t"]).is_err(),
+            "kill and attach conflict"
+        );
+        assert!(
+            parse(&["term", "agent:1", "--kill", "t", "--cwd", "src"]).is_err(),
+            "kill takes no folder"
+        );
     }
 }

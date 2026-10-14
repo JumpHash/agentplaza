@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 
 use apz_http::{Params, Request, Response, Router};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::db::Infraction;
 use crate::laws::{Failure, Override};
@@ -61,7 +61,12 @@ fn rule_create_route(app: &App, req: &Request, _: &Params<'_>) -> Response {
         Err(response) => return response,
     };
     let enabled = body.get("enabled").and_then(Value::as_bool).unwrap_or(true);
-    match app.laws.add_rule(&text_field(&body, "title"), &text_field(&body, "source"), enabled, apz_plaza::now_ms()) {
+    match app.laws.add_rule(
+        &text_field(&body, "title"),
+        &text_field(&body, "source"),
+        enabled,
+        apz_plaza::now_ms(),
+    ) {
         Ok(rule) => Response::json(201, &rule),
         Err(failure) => failure_response(failure),
     }
@@ -74,7 +79,12 @@ fn rule_update_route(app: &App, req: &Request, params: &Params<'_>) -> Response 
         Err(response) => return response,
     };
     let source = body.get("source").and_then(Value::as_str);
-    match app.laws.update_rule(params.get("id"), &text_field(&body, "title"), source, apz_plaza::now_ms()) {
+    match app.laws.update_rule(
+        params.get("id"),
+        &text_field(&body, "title"),
+        source,
+        apz_plaza::now_ms(),
+    ) {
         Ok(rule) => Response::json(200, &rule),
         Err(failure) => failure_response(failure),
     }
@@ -112,8 +122,14 @@ fn check_route(app: &App, req: &Request, _: &Params<'_>) -> Response {
     };
     let replaces = body.get("id").and_then(Value::as_str);
     match app.laws.dry_run(&text_field(&body, "source"), replaces) {
-        Ok(run) => Response::json(200, &json!({ "ok": true, "diagnostics": [], "laws": run.laws, "would_refuse": run.would_refuse })),
-        Err(Failure::Diagnostics(list)) => Response::json(200, &json!({ "ok": false, "diagnostics": list, "laws": [], "would_refuse": [] })),
+        Ok(run) => Response::json(
+            200,
+            &json!({ "ok": true, "diagnostics": [], "laws": run.laws, "would_refuse": run.would_refuse }),
+        ),
+        Err(Failure::Diagnostics(list)) => Response::json(
+            200,
+            &json!({ "ok": false, "diagnostics": list, "laws": [], "would_refuse": [] }),
+        ),
         Err(failure) => failure_response(failure),
     }
 }
@@ -126,15 +142,36 @@ fn override_route(app: &App, req: &Request, params: &Params<'_>) -> Response {
         Ok(body) => body,
         Err(response) => return response,
     };
-    set_override_answer(&app.laws, &app.bus, params.get("law"), &body, apz_plaza::now_ms())
+    set_override_answer(
+        &app.laws,
+        &app.bus,
+        params.get("law"),
+        &body,
+        apz_plaza::now_ms(),
+    )
 }
 
 /// Sets or clears one built-in override from a request body (`disabled`, `reason`, and `confirm`,
 /// the typed law id a constitutional law needs to be switched off). A constitutional law's change
 /// goes out on the event stream as `law`, with the laws now off.
-fn set_override_answer(laws: &crate::laws::Laws, bus: &crate::events::Bus, law: &str, body: &Value, now_ms: u64) -> Response {
-    let disabled = body.get("disabled").and_then(Value::as_bool).unwrap_or(true);
-    match laws.set_override(law, disabled, &text_field(body, "reason"), &text_field(body, "confirm"), now_ms) {
+fn set_override_answer(
+    laws: &crate::laws::Laws,
+    bus: &crate::events::Bus,
+    law: &str,
+    body: &Value,
+    now_ms: u64,
+) -> Response {
+    let disabled = body
+        .get("disabled")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    match laws.set_override(
+        law,
+        disabled,
+        &text_field(body, "reason"),
+        &text_field(body, "confirm"),
+        now_ms,
+    ) {
         Ok(made) => {
             let made: Option<Override> = made;
             announce_constitutional(laws, bus, law, now_ms);
@@ -146,9 +183,16 @@ fn set_override_answer(laws: &crate::laws::Laws, bus: &crate::events::Bus, law: 
 
 /// Publishes a `law` event for a constitutional law, so every console shows the change and the
 /// laws that are switched off now. Other tiers publish nothing.
-fn announce_constitutional(laws: &crate::laws::Laws, bus: &crate::events::Bus, law: &str, now_ms: u64) {
+fn announce_constitutional(
+    laws: &crate::laws::Laws,
+    bus: &crate::events::Bus,
+    law: &str,
+    now_ms: u64,
+) {
     let catalog = laws.catalog();
-    let Some(info) = catalog.iter().find(|info| info.id == law) else { return };
+    let Some(info) = catalog.iter().find(|info| info.id == law) else {
+        return;
+    };
     if info.tier != crate::laws::CONSTITUTION {
         return;
     }
@@ -186,13 +230,22 @@ fn violations_route(app: &App, req: &Request, _: &Params<'_>) -> Response {
 fn body_of(req: &Request) -> Result<Value, Response> {
     match req.json::<Value>() {
         Ok(body) if body.is_object() => Ok(body),
-        Ok(_) => Err(Response::json(400, &json!({ "error": "the body must be a JSON object" }))),
-        Err(e) => Err(Response::json(400, &json!({ "error": format!("bad JSON: {e}") }))),
+        Ok(_) => Err(Response::json(
+            400,
+            &json!({ "error": "the body must be a JSON object" }),
+        )),
+        Err(e) => Err(Response::json(
+            400,
+            &json!({ "error": format!("bad JSON: {e}") }),
+        )),
     }
 }
 
 fn text_field(body: &Value, key: &str) -> String {
-    body.get(key).and_then(Value::as_str).unwrap_or_default().to_string()
+    body.get(key)
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
 }
 
 /// A refused change: 404 for an unknown id, 400 otherwise with the reason (and the diagnostics, when
@@ -202,7 +255,10 @@ fn failure_response(failure: Failure) -> Response {
         Failure::NotFound(_) => Response::json(404, &json!({ "error": failure.message() })),
         Failure::Invalid(_) => Response::json(400, &json!({ "error": failure.message() })),
         Failure::Unconfirmed(_) => Response::json(409, &json!({ "error": failure.message() })),
-        Failure::Diagnostics(list) => Response::json(400, &json!({ "error": "the source does not compile", "diagnostics": list })),
+        Failure::Diagnostics(list) => Response::json(
+            400,
+            &json!({ "error": "the source does not compile", "diagnostics": list }),
+        ),
     }
 }
 
@@ -252,7 +308,10 @@ fn agent_infractions_route(app: &App, _: &Request, params: &Params<'_>) -> Respo
         Ok(cid) => cid,
         Err(_) => return Response::error(400, "cid must be a number"),
     };
-    Response::json(200, &infraction_rows(app, infractions_of(app, Some(cid), i64::MAX)))
+    Response::json(
+        200,
+        &infraction_rows(app, infractions_of(app, Some(cid), i64::MAX)),
+    )
 }
 
 /// Infractions, newest first: from Postgres when it is enabled, else from the laws' own record.
@@ -265,7 +324,13 @@ fn infractions_of(app: &App, cid: Option<u64>, limit: i64) -> Vec<Infraction> {
         .all_violations()
         .into_iter()
         .filter(|(agent, _)| cid.is_none_or(|want| *agent == want))
-        .map(|(cid, v)| Infraction { cid, law: v.law, at_ms: v.at_ms, tool: String::new(), detail: v.detail })
+        .map(|(cid, v)| Infraction {
+            cid,
+            law: v.law,
+            at_ms: v.at_ms,
+            tool: String::new(),
+            detail: v.detail,
+        })
         .collect();
     found.sort_by(|a, b| b.at_ms.cmp(&a.at_ms));
     found.truncate(usize::try_from(limit).unwrap_or(0));
@@ -279,7 +344,9 @@ fn infraction_rows(app: &App, found: Vec<Infraction>) -> Vec<Value> {
         .into_iter()
         .map(|infraction| {
             let law = catalog.iter().find(|law| law.id == infraction.law);
-            let law_title = law.map_or(infraction.law.as_str(), |law| law.title.as_str()).to_string();
+            let law_title = law
+                .map_or(infraction.law.as_str(), |law| law.title.as_str())
+                .to_string();
             let statement = law.map_or("", |law| law.statement.as_str()).to_string();
             let mut value = serde_json::to_value(&infraction).unwrap_or(Value::Null);
             if let Some(map) = value.as_object_mut() {
@@ -298,7 +365,11 @@ fn agent_name(app: &App, cid: u64) -> String {
         Some(agent) if !agent.name.is_empty() => agent.name,
         Some(agent) if !agent.role.is_empty() => crate::agents::role_label(&agent.role).to_string(),
         // An agent that is not connected now keeps the name it chose.
-        _ => app.names.get(cid).filter(|n| !n.is_empty()).unwrap_or_else(|| format!("agent {cid}")),
+        _ => app
+            .names
+            .get(cid)
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| format!("agent {cid}")),
     }
 }
 
@@ -312,7 +383,8 @@ mod tests {
     const C: &str = "C-002b";
 
     fn laws(name: &str) -> Laws {
-        let dir = std::env::temp_dir().join(format!("apid-rules-route-{}-{name}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("apid-rules-route-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         Laws::load(&dir)
@@ -334,12 +406,27 @@ mod tests {
         let laws = laws("no-confirm");
         let bus = Bus::default();
         let asked = format!("{C} is a constitutional law; to switch it off, send confirm: \"{C}\"");
-        let none = answer(&laws, &bus, C, json!({"disabled": true, "reason": "testing"}));
+        let none = answer(
+            &laws,
+            &bus,
+            C,
+            json!({"disabled": true, "reason": "testing"}),
+        );
         assert_eq!(none.status, 409);
         assert_eq!(json_of(&none)["error"], asked);
-        let mismatch = answer(&laws, &bus, C, json!({"disabled": true, "reason": "testing", "confirm": "C-004a"}));
+        let mismatch = answer(
+            &laws,
+            &bus,
+            C,
+            json!({"disabled": true, "reason": "testing", "confirm": "C-004a"}),
+        );
         assert_eq!(mismatch.status, 409);
-        assert!(json_of(&mismatch)["error"].as_str().unwrap().ends_with(&asked));
+        assert!(
+            json_of(&mismatch)["error"]
+                .as_str()
+                .unwrap()
+                .ends_with(&asked)
+        );
         // Refused changes apply nothing: the law still holds, and no change is on record.
         assert!(laws.constitutional_off().is_empty());
         assert!(laws.rules().history.is_empty());
@@ -350,25 +437,48 @@ mod tests {
         let laws = laws("confirmed");
         let bus = Bus::default();
         let events = bus.subscribe();
-        let off = answer(&laws, &bus, C, json!({"disabled": true, "reason": "testing", "confirm": C}));
+        let off = answer(
+            &laws,
+            &bus,
+            C,
+            json!({"disabled": true, "reason": "testing", "confirm": C}),
+        );
         assert_eq!(off.status, 200);
         assert_eq!(laws.constitutional_off(), vec![C.to_string()]);
         let history = laws.rules().history;
         assert_eq!(history.len(), 1);
-        assert_eq!((history[0].law.as_str(), history[0].by.as_str(), history[0].at_ms, history[0].disabled), (C, OWNER, 5_000, true));
+        assert_eq!(
+            (
+                history[0].law.as_str(),
+                history[0].by.as_str(),
+                history[0].at_ms,
+                history[0].disabled
+            ),
+            (C, OWNER, 5_000, true)
+        );
         assert!(!history[0].title.is_empty());
         let frame = events.try_recv().expect("a law event");
         assert_eq!(frame.kind, "law");
         let data: Value = serde_json::from_str(&frame.data).unwrap();
-        assert_eq!((data["law"].as_str(), data["enabled"].as_bool()), (Some(C), Some(false)));
+        assert_eq!(
+            (data["law"].as_str(), data["enabled"].as_bool()),
+            (Some(C), Some(false))
+        );
         assert_eq!(data["constitutional_off"], json!([C]));
         // Switching it back on: no confirmation, recorded, and announced with nothing off.
         let on = answer(&laws, &bus, C, json!({"disabled": false}));
         assert_eq!(on.status, 200);
         assert!(laws.constitutional_off().is_empty());
         assert_eq!(laws.rules().history.len(), 2);
-        let data: Value = serde_json::from_str(&events.try_recv().expect("a law event").data).unwrap();
-        assert_eq!((data["enabled"].as_bool(), data["constitutional_off"].as_array().map(Vec::len)), (Some(true), Some(0)));
+        let data: Value =
+            serde_json::from_str(&events.try_recv().expect("a law event").data).unwrap();
+        assert_eq!(
+            (
+                data["enabled"].as_bool(),
+                data["constitutional_off"].as_array().map(Vec::len)
+            ),
+            (Some(true), Some(0))
+        );
     }
 
     #[test]
@@ -376,7 +486,12 @@ mod tests {
         let laws = laws("statute");
         let bus = Bus::default();
         let events = bus.subscribe();
-        let off = answer(&laws, &bus, "S-013d", json!({"disabled": true, "reason": "researchers may commit"}));
+        let off = answer(
+            &laws,
+            &bus,
+            "S-013d",
+            json!({"disabled": true, "reason": "researchers may commit"}),
+        );
         assert_eq!(off.status, 200);
         assert!(laws.rules().history.is_empty());
         assert!(events.try_recv().is_err(), "no event for a statute");

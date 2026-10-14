@@ -1,7 +1,7 @@
 //! `agentplaza projects`: Projects and their repositories.
 
 use clap::Subcommand;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::ctx::{self, Ctx};
 
@@ -66,7 +66,11 @@ fn task_rows(project_tasks: &[Value], all_tasks: &[Value]) -> Vec<Value> {
         .iter()
         .map(|t| {
             let id = t.as_str().unwrap_or_default();
-            all_tasks.iter().find(|task| ctx::s(task, "id") == id).cloned().unwrap_or_else(|| json!({ "id": id }))
+            all_tasks
+                .iter()
+                .find(|task| ctx::s(task, "id") == id)
+                .cloned()
+                .unwrap_or_else(|| json!({ "id": id }))
         })
         .collect()
 }
@@ -115,15 +119,29 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                 println!("\nTasks ({})", array_at(p, "tasks").len());
                 for t in &tasks {
                     let goal = ctx::s(t, "goal");
-                    let title = if goal.is_empty() { "(not in the task list)" } else { title_of(goal) };
+                    let title = if goal.is_empty() {
+                        "(not in the task list)"
+                    } else {
+                        title_of(goal)
+                    };
                     println!("  {}  {}  {}", ctx::s(t, "id"), ctx::s(t, "state"), title);
                 }
                 println!("\nDocuments ({})", array_at(p, "docs").len());
                 for d in array_at(p, "docs") {
                     // The file's id is what `library download` takes; a document without a file has none.
                     let file = ctx::text(d, "file");
-                    let file = if file.is_empty() { "-".to_string() } else { file };
-                    println!("  {}  {}  file {}: {}", ctx::s(d, "kind"), ctx::s(d, "title"), file, ctx::s(d, "summary"));
+                    let file = if file.is_empty() {
+                        "-".to_string()
+                    } else {
+                        file
+                    };
+                    println!(
+                        "  {}  {}  file {}: {}",
+                        ctx::s(d, "kind"),
+                        ctx::s(d, "title"),
+                        file,
+                        ctx::s(d, "summary")
+                    );
                 }
                 println!("\nCritiques ({})", array_at(p, "critiques").len());
                 for c in array_at(p, "critiques") {
@@ -138,14 +156,27 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                 println!("\nHistory");
                 for e in array_at(p, "history") {
                     let note = ctx::s(e, "note");
-                    let note = if note.is_empty() { String::new() } else { format!(" ({note})") };
-                    println!("  {}  {} {}{}", ctx::when(&e["at_ms"]), ctx::s(e, "by"), ctx::s(e, "what"), note);
+                    let note = if note.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" ({note})")
+                    };
+                    println!(
+                        "  {}  {} {}{}",
+                        ctx::when(&e["at_ms"]),
+                        ctx::s(e, "by"),
+                        ctx::s(e, "what"),
+                        note
+                    );
                 }
             });
             Ok(())
         }
         Cmd::Approve { id, note } => {
-            let p = ctx.client.post(&format!("/v1/projects/{}/approve", ctx::seg(&id)), &json!({ "note": note }))?;
+            let p = ctx.client.post(
+                &format!("/v1/projects/{}/approve", ctx::seg(&id)),
+                &json!({ "note": note }),
+            )?;
             ctx.out(&p, |_| println!("approved the plan of project {id}"));
             Ok(())
         }
@@ -154,7 +185,9 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                 return Err("give a reason so the team knows what to change".into());
             }
             let body = json!({ "stage": stage, "reason": reason.trim() });
-            let p = ctx.client.post(&format!("/v1/projects/{}/veto", ctx::seg(&id)), &body)?;
+            let p = ctx
+                .client
+                .post(&format!("/v1/projects/{}/veto", ctx::seg(&id)), &body)?;
             ctx.out(&p, |_| println!("sent project {id} back to {stage}"));
             Ok(())
         }
@@ -176,7 +209,11 @@ mod tests {
         let ids: Vec<&str> = rows.iter().map(|t| ctx::s(t, "id")).collect();
         assert_eq!(ids, vec!["t2", "t9", "t1"]);
         assert_eq!(ctx::s(&rows[0], "state"), "open");
-        assert_eq!(ctx::s(&rows[1], "state"), "", "an unknown task stays a bare id");
+        assert_eq!(
+            ctx::s(&rows[1], "state"),
+            "",
+            "an unknown task stays a bare id"
+        );
         assert_eq!(title_of(ctx::s(&rows[2], "goal")), "Write the plan");
     }
 }

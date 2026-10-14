@@ -2,7 +2,7 @@
 //! top, lowered onto whatever the room stands on, with columns down to the ground or to the support
 //! below. The slab is split into cells that are then sampled for their support heights.
 
-use apz_board::nav::drawn::{top_below, Support, GROUND_TOL};
+use apz_board::nav::drawn::{GROUND_TOL, Support, top_below};
 
 use crate::geometry::{box_geo, cylinder};
 use crate::scene::{Mat, Obj};
@@ -80,12 +80,26 @@ pub fn resting_slab(s: &Slab, support: Option<&Support>, mat: &Mat) -> Obj {
 /// The web's `split` (a recursive inner function in restingSlab): a cell is kept as a leaf when its
 /// five sample heights agree within GROUND_TOL or it is at the column cell, and is otherwise cut into
 /// four quarters. A round slab drops the cells whose centre lies outside its radius.
-fn split(s: &Slab, support: Option<&Support>, x: f32, z: f32, sx: f32, sz: f32, leaves: &mut Vec<Leaf>) {
+fn split(
+    s: &Slab,
+    support: Option<&Support>,
+    x: f32,
+    z: f32,
+    sx: f32,
+    sz: f32,
+    leaves: &mut Vec<Leaf>,
+) {
     if s.round && (x - s.cx).hypot(z - s.cz) > s.hw {
         return;
     }
     let k = (sx.min(sz) - 0.04) * 0.4;
-    let pts = [(x, z), (x - k, z - k), (x + k, z - k), (x - k, z + k), (x + k, z + k)];
+    let pts = [
+        (x, z),
+        (x - k, z - k),
+        (x + k, z - k),
+        (x - k, z + k),
+        (x + k, z + k),
+    ];
     let heights: Vec<f64> = pts
         .iter()
         .map(|&(px, pz)| top_below(support, f64::from(px), f64::from(pz), f64::from(s.top)))
@@ -100,18 +114,32 @@ fn split(s: &Slab, support: Option<&Support>, x: f32, z: f32, sx: f32, sz: f32, 
         }
         return;
     }
-    leaves.push(Leaf { x, z, sx, sz, sup: hi as f32 });
+    leaves.push(Leaf {
+        x,
+        z,
+        sx,
+        sz,
+        sup: hi as f32,
+    });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use apz_board::nav::drawn::{key_of, SupportField};
     use crate::scene::Color;
+    use apz_board::nav::drawn::{SupportField, key_of};
     use std::collections::BTreeMap;
 
     fn room(top: f32) -> Slab {
-        Slab { cx: 0.0, cz: 0.0, hw: 2.0, hd: 2.0, round: false, top, role: "x".to_string() }
+        Slab {
+            cx: 0.0,
+            cz: 0.0,
+            hw: 2.0,
+            hd: 2.0,
+            round: false,
+            top,
+            role: "x".to_string(),
+        }
     }
 
     #[test]
@@ -141,7 +169,14 @@ mod tests {
                 cells.insert(key_of(i, j), vec![0, 1]);
             }
         }
-        let sup = Support { field: SupportField { cell: 0.5, tris, cells }, scale: 1.0 };
+        let sup = Support {
+            field: SupportField {
+                cell: 0.5,
+                tris,
+                cells,
+            },
+            scale: 1.0,
+        };
         let mat = Mat::toon(Color::hex(0xffffff));
         let g = resting_slab(&room(3.0), Some(&sup), &mat);
         let kids = g.get().children.clone();
@@ -149,7 +184,10 @@ mod tests {
         // The plate's bottom is min(highest support 1.0, top - PLATE) = 1.0.
         let thick = 3.0 - 1.0;
         assert!((plate.get().position.y - (1.0 + thick / 2.0)).abs() < 1e-4);
-        assert!(kids.len() > 1, "the half over x > 0 stands over the ground, so it needs a column");
+        assert!(
+            kids.len() > 1,
+            "the half over x > 0 stands over the ground, so it needs a column"
+        );
         assert!(kids[1..].iter().all(|c| c.get().name == "column x"));
     }
 }

@@ -44,16 +44,49 @@ pub enum MatRef {
 #[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
 pub enum Geo {
     #[serde(rename = "box")]
-    Cube { w: f64, h: f64, d: f64 },
-    Rbox { w: f64, h: f64, d: f64, r: f64 },
-    Cyl { rt: f64, rb: f64, h: f64, seg: Option<u32> },
-    Cone { r: f64, h: f64, seg: Option<u32> },
-    Sphere { r: f64 },
-    Torus { r: f64, tube: f64, arc: Option<f64> },
-    Plane { w: f64, d: f64 },
-    Ring { ri: f64, ro: f64 },
+    Cube {
+        w: f64,
+        h: f64,
+        d: f64,
+    },
+    Rbox {
+        w: f64,
+        h: f64,
+        d: f64,
+        r: f64,
+    },
+    Cyl {
+        rt: f64,
+        rb: f64,
+        h: f64,
+        seg: Option<u32>,
+    },
+    Cone {
+        r: f64,
+        h: f64,
+        seg: Option<u32>,
+    },
+    Sphere {
+        r: f64,
+    },
+    Torus {
+        r: f64,
+        tube: f64,
+        arc: Option<f64>,
+    },
+    Plane {
+        w: f64,
+        d: f64,
+    },
+    Ring {
+        ri: f64,
+        ro: f64,
+    },
     /// A flat outline of [x, z] points, extruded up by h.
-    Shape { points: Vec<[f64; 2]>, h: f64 },
+    Shape {
+        points: Vec<[f64; 2]>,
+        h: f64,
+    },
 }
 
 /// A scale: one number for all axes, or [x, y, z].
@@ -245,7 +278,9 @@ impl Library {
     /// The embedded library. Panics if an embedded file does not parse (the crate's tests check every file).
     pub fn get() -> &'static Library {
         static LIB: OnceLock<Library> = OnceLock::new();
-        LIB.get_or_init(|| Library::parse().unwrap_or_else(|e| panic!("apz-board: embedded hardware: {e}")))
+        LIB.get_or_init(|| {
+            Library::parse().unwrap_or_else(|e| panic!("apz-board: embedded hardware: {e}"))
+        })
     }
 
     fn parse() -> Result<Library, String> {
@@ -253,14 +288,19 @@ impl Library {
         let mut models = BTreeMap::new();
         for (name, text) in embedded::EMBEDDED {
             if *name == "palette" {
-                let file: PaletteFile = serde_json::from_str(text).map_err(|e| format!("{name}: {e}"))?;
+                let file: PaletteFile =
+                    serde_json::from_str(text).map_err(|e| format!("{name}: {e}"))?;
                 palette = Some(file.colors);
             } else {
-                let model: Model = serde_json::from_str(text).map_err(|e| format!("{name}: {e}"))?;
+                let model: Model =
+                    serde_json::from_str(text).map_err(|e| format!("{name}: {e}"))?;
                 models.insert(name.to_string(), model);
             }
         }
-        Ok(Library { palette: palette.ok_or("no palette.json")?, models })
+        Ok(Library {
+            palette: palette.ok_or("no palette.json")?,
+            models,
+        })
     }
 
     /// A model by its embedded name ("board/edge", "parts/gpu-pcie").
@@ -322,19 +362,34 @@ pub fn parse_when(expr: &str) -> Option<When> {
     let name = &rest[..end];
     let tail = rest[end..].trim_start();
     if tail.is_empty() {
-        return Some(When { name: name.to_string(), negate, cond: None });
+        return Some(When {
+            name: name.to_string(),
+            negate,
+            cond: None,
+        });
     }
     if negate {
         return None;
     }
-    let (op, after) = [(">=", Op::Ge), ("<=", Op::Le), ("==", Op::Eq), ("!=", Op::Ne), (">", Op::Gt), ("<", Op::Lt)]
-        .iter()
-        .find_map(|(t, op)| tail.strip_prefix(t).map(|r| (*op, r)))?;
+    let (op, after) = [
+        (">=", Op::Ge),
+        ("<=", Op::Le),
+        ("==", Op::Eq),
+        ("!=", Op::Ne),
+        (">", Op::Gt),
+        ("<", Op::Lt),
+    ]
+    .iter()
+    .find_map(|(t, op)| tail.strip_prefix(t).map(|r| (*op, r)))?;
     let num = after.trim_start();
     if !valid_number(num) {
         return None;
     }
-    Some(When { name: name.to_string(), negate, cond: Some((op, num.parse().ok()?)) })
+    Some(When {
+        name: name.to_string(),
+        negate,
+        cond: Some((op, num.parse().ok()?)),
+    })
 }
 
 /// `-?\d+(\.\d+)?` and nothing else.
@@ -373,11 +428,46 @@ mod tests {
 
     #[test]
     fn when_forms_parse() {
-        assert_eq!(parse_when("gpus"), Some(When { name: "gpus".into(), negate: false, cond: None }));
-        assert_eq!(parse_when("!amd"), Some(When { name: "amd".into(), negate: true, cond: None }));
-        assert_eq!(parse_when("gpus >= 2"), Some(When { name: "gpus".into(), negate: false, cond: Some((Op::Ge, 2.0)) }));
-        assert_eq!(parse_when("p_x<-1.5"), Some(When { name: "p_x".into(), negate: false, cond: Some((Op::Lt, -1.5)) }));
-        assert_eq!(parse_when("a != 0"), Some(When { name: "a".into(), negate: false, cond: Some((Op::Ne, 0.0)) }));
+        assert_eq!(
+            parse_when("gpus"),
+            Some(When {
+                name: "gpus".into(),
+                negate: false,
+                cond: None
+            })
+        );
+        assert_eq!(
+            parse_when("!amd"),
+            Some(When {
+                name: "amd".into(),
+                negate: true,
+                cond: None
+            })
+        );
+        assert_eq!(
+            parse_when("gpus >= 2"),
+            Some(When {
+                name: "gpus".into(),
+                negate: false,
+                cond: Some((Op::Ge, 2.0))
+            })
+        );
+        assert_eq!(
+            parse_when("p_x<-1.5"),
+            Some(When {
+                name: "p_x".into(),
+                negate: false,
+                cond: Some((Op::Lt, -1.5))
+            })
+        );
+        assert_eq!(
+            parse_when("a != 0"),
+            Some(When {
+                name: "a".into(),
+                negate: false,
+                cond: Some((Op::Ne, 0.0))
+            })
+        );
         assert_eq!(parse_when("!a > 1"), None);
         assert_eq!(parse_when("a >="), None);
         assert_eq!(parse_when("1a"), None);

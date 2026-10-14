@@ -34,7 +34,12 @@ pub const MAX_TOTAL_BYTES: u64 = 20 * 1024 * 1024;
 pub enum Source {
     Built,
     Upload,
-    Github { repo: String, git_ref: Option<String>, path: String, commit: String },
+    Github {
+        repo: String,
+        git_ref: Option<String>,
+        path: String,
+        commit: String,
+    },
 }
 
 impl Source {
@@ -207,19 +212,56 @@ pub trait SkillStore: Send + Sync {
     fn versions(&self, id: &str) -> Result<Vec<VersionMeta>, String>;
     fn version(&self, id: &str, version: u32) -> Result<Option<Version>, String>;
     /// Creates the skill with version 1 (`Create` then `Version` events). Unpublished.
-    fn create(&self, new: &NewSkill, first: &NewVersion, actor: &str, now_ms: u64) -> Result<Skill, StoreError>;
+    fn create(
+        &self,
+        new: &NewSkill,
+        first: &NewVersion,
+        actor: &str,
+        now_ms: u64,
+    ) -> Result<Skill, StoreError>;
     /// Appends version `base + 1`; `Conflict` unless `base` is the latest. For a GitHub skill, `next.source_commit`
     /// also becomes the skill's `source.commit`.
-    fn add_version(&self, id: &str, base: u32, next: &NewVersion, actor: &str, now_ms: u64)
-        -> Result<VersionMeta, StoreError>;
+    fn add_version(
+        &self,
+        id: &str,
+        base: u32,
+        next: &NewVersion,
+        actor: &str,
+        now_ms: u64,
+    ) -> Result<VersionMeta, StoreError>;
     /// Title and tags (`Edit`).
-    fn set_meta(&self, id: &str, title: &str, tags: &[String], actor: &str, now_ms: u64) -> Result<Skill, StoreError>;
+    fn set_meta(
+        &self,
+        id: &str,
+        title: &str,
+        tags: &[String],
+        actor: &str,
+        now_ms: u64,
+    ) -> Result<Skill, StoreError>;
     /// Replaces the bindings (`Bind`).
-    fn set_bindings(&self, id: &str, bindings: &[String], actor: &str, now_ms: u64) -> Result<Skill, StoreError>;
+    fn set_bindings(
+        &self,
+        id: &str,
+        bindings: &[String],
+        actor: &str,
+        now_ms: u64,
+    ) -> Result<Skill, StoreError>;
     /// `Some(v)` publishes (the version must exist), `None` unpublishes.
-    fn set_active(&self, id: &str, version: Option<u32>, actor: &str, now_ms: u64) -> Result<Skill, StoreError>;
+    fn set_active(
+        &self,
+        id: &str,
+        version: Option<u32>,
+        actor: &str,
+        now_ms: u64,
+    ) -> Result<Skill, StoreError>;
     /// Restoring a skill whose name another live skill took meanwhile is a `Conflict`.
-    fn set_archived(&self, id: &str, archived: bool, actor: &str, now_ms: u64) -> Result<Skill, StoreError>;
+    fn set_archived(
+        &self,
+        id: &str,
+        archived: bool,
+        actor: &str,
+        now_ms: u64,
+    ) -> Result<Skill, StoreError>;
     /// Newest first, at most `limit`.
     fn events(&self, id: &str, limit: u32) -> Result<Vec<Event>, String>;
     /// The live, published skills holding `binding`, with their live version's meta, by name.
@@ -268,50 +310,98 @@ impl Skills {
 
     /// Checks SKILL.md and the files, stores the file bytes, and returns the version to write. Refuses (Invalid) a
     /// version over the size limits or with an unsafe path; findings of other rules are stored, not refused.
-    pub fn prepare(&self, skill_md: String, files: Vec<FileIn>, note: String, source_commit: Option<String>)
-        -> Result<NewVersion, StoreError> {
+    pub fn prepare(
+        &self,
+        skill_md: String,
+        files: Vec<FileIn>,
+        note: String,
+        source_commit: Option<String>,
+    ) -> Result<NewVersion, StoreError> {
         if skill_md.chars().count() > MAX_SKILL_MD {
-            return Err(StoreError::Invalid(format!("SKILL.md is longer than {MAX_SKILL_MD} characters")));
+            return Err(StoreError::Invalid(format!(
+                "SKILL.md is longer than {MAX_SKILL_MD} characters"
+            )));
         }
         if note.chars().count() > MAX_NOTE {
-            return Err(StoreError::Invalid(format!("the note is longer than {MAX_NOTE} characters")));
+            return Err(StoreError::Invalid(format!(
+                "the note is longer than {MAX_NOTE} characters"
+            )));
         }
         if files.len() > MAX_FILES {
-            return Err(StoreError::Invalid(format!("a skill holds at most {MAX_FILES} files")));
+            return Err(StoreError::Invalid(format!(
+                "a skill holds at most {MAX_FILES} files"
+            )));
         }
         let mut stored = Vec::with_capacity(files.len());
         let mut infos = Vec::with_capacity(files.len());
         let mut total = 0u64;
         for f in files {
             if !safe_path(&f.path) {
-                return Err(StoreError::Invalid(format!("{}: not a relative path inside the skill", f.path)));
+                return Err(StoreError::Invalid(format!(
+                    "{}: not a relative path inside the skill",
+                    f.path
+                )));
             }
             let bytes = match f.body {
                 FileBody::Bytes(b) => b,
-                FileBody::Known(sha) => self.blobs.get(&sha).map_err(|_| StoreError::Invalid(format!("{}: unknown file {sha}", f.path)))?,
+                FileBody::Known(sha) => self
+                    .blobs
+                    .get(&sha)
+                    .map_err(|_| StoreError::Invalid(format!("{}: unknown file {sha}", f.path)))?,
             };
             let size = bytes.len() as u64;
             if size > MAX_FILE_BYTES {
-                return Err(StoreError::Invalid(format!("{} is larger than 5 MB", f.path)));
+                return Err(StoreError::Invalid(format!(
+                    "{} is larger than 5 MB",
+                    f.path
+                )));
             }
             total += size;
             if total > MAX_TOTAL_BYTES {
                 return Err(StoreError::Invalid("the skill is larger than 20 MB".into()));
             }
-            let text = (size <= 1024 * 1024).then(|| String::from_utf8(bytes.clone()).ok()).flatten();
+            let text = (size <= 1024 * 1024)
+                .then(|| String::from_utf8(bytes.clone()).ok())
+                .flatten();
             let sha256 = self.blobs.put(&bytes)?;
-            infos.push(FileInfo { path: f.path.clone(), size, executable: f.executable, text });
-            stored.push(SkillFile { path: f.path, sha256, size, executable: f.executable });
+            infos.push(FileInfo {
+                path: f.path.clone(),
+                size,
+                executable: f.executable,
+                text,
+            });
+            stored.push(SkillFile {
+                path: f.path,
+                sha256,
+                size,
+                executable: f.executable,
+            });
         }
         stored.sort_by(|a, b| a.path.cmp(&b.path));
         let report = apz_skill::check(&skill_md, &infos);
         let sha256 = sha256_hex(skill_md.as_bytes());
-        Ok(NewVersion { skill_md, sha256, files: stored, note, report, source_commit })
+        Ok(NewVersion {
+            skill_md,
+            sha256,
+            files: stored,
+            note,
+            report,
+            source_commit,
+        })
     }
 
     /// Publishes `version`; refused when it has error-level findings under the current rules.
-    pub fn publish(&self, id: &str, version: u32, actor: &str, now_ms: u64) -> Result<Skill, StoreError> {
-        let v = self.store.version(id, version)?.ok_or_else(|| StoreError::Invalid(format!("{id} has no version {version}")))?;
+    pub fn publish(
+        &self,
+        id: &str,
+        version: u32,
+        actor: &str,
+        now_ms: u64,
+    ) -> Result<Skill, StoreError> {
+        let v = self
+            .store
+            .version(id, version)?
+            .ok_or_else(|| StoreError::Invalid(format!("{id} has no version {version}")))?;
         let infos = self.file_infos(&v.files)?;
         let report = apz_skill::check(&v.skill_md, &infos);
         if !report.publishable() {
@@ -328,15 +418,30 @@ impl Skills {
         files
             .iter()
             .map(|f| {
-                let text = if f.size <= 1024 * 1024 { self.blobs.get(&f.sha256).ok().and_then(|b| String::from_utf8(b).ok()) } else { None };
-                Ok(FileInfo { path: f.path.clone(), size: f.size, executable: f.executable, text })
+                let text = if f.size <= 1024 * 1024 {
+                    self.blobs
+                        .get(&f.sha256)
+                        .ok()
+                        .and_then(|b| String::from_utf8(b).ok())
+                } else {
+                    None
+                };
+                Ok(FileInfo {
+                    path: f.path.clone(),
+                    size: f.size,
+                    executable: f.executable,
+                    text,
+                })
             })
             .collect()
     }
 }
 
 pub fn sha256_hex(bytes: &[u8]) -> String {
-    Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 /// A relative `/`-separated path inside a skill: no `..`, no leading `/`, no `\`, not empty, not SKILL.md.
@@ -346,7 +451,9 @@ pub fn safe_path(path: &str) -> bool {
         && !path.starts_with('/')
         && !path.contains('\\')
         && path != "SKILL.md"
-        && path.split('/').all(|seg| !seg.is_empty() && seg != "." && seg != "..")
+        && path
+            .split('/')
+            .all(|seg| !seg.is_empty() && seg != "." && seg != "..")
 }
 
 pub fn valid_id(id: &str) -> bool {
@@ -357,7 +464,10 @@ pub fn valid_id(id: &str) -> bool {
 pub fn valid_binding(binding: &str) -> bool {
     binding == "plaza"
         || binding.strip_prefix("role:").is_some_and(|r| {
-            !r.is_empty() && r.len() <= 64 && r.bytes().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
+            !r.is_empty()
+                && r.len() <= 64
+                && r.bytes()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
         })
 }
 

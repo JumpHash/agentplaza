@@ -7,7 +7,7 @@ use std::io::{IsTerminal, Write};
 use std::time::Duration;
 
 use apz_setup::{Check, Mode, Need, State};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::ctx::{self, Client};
 
@@ -26,7 +26,13 @@ pub struct Args {
     hub: Option<String>,
 }
 
-pub fn run(args: Args, json: bool, hub_flag: Option<String>, token: Option<String>, pin: Option<String>) -> Result<(), String> {
+pub fn run(
+    args: Args,
+    json: bool,
+    hub_flag: Option<String>,
+    token: Option<String>,
+    pin: Option<String>,
+) -> Result<(), String> {
     let checks = apz_setup::check_all(Mode::Local);
     let plan = match (args.fix, args.fix_all) {
         (Some(need), _) => select(&checks, Some(need))?,
@@ -34,12 +40,19 @@ pub fn run(args: Args, json: bool, hub_flag: Option<String>, token: Option<Strin
         (None, false) => {
             let hub_rows = match args.hub.as_deref() {
                 None => None,
-                Some("") => Some(hub_checks(&ctx::resolve(hub_flag, token, pin, json)?.client)),
-                Some(named) => Some(hub_checks(&ctx::resolve(Some(named.to_string()), token, pin, json)?.client)),
+                Some("") => Some(hub_checks(
+                    &ctx::resolve(hub_flag, token, pin, json)?.client,
+                )),
+                Some(named) => Some(hub_checks(
+                    &ctx::resolve(Some(named.to_string()), token, pin, json)?.client,
+                )),
             };
             match (json, hub_rows) {
                 (true, None) => println!("{}", to_json(&checks)),
-                (true, Some(rows)) => println!("{}", json!({ "local": to_json(&checks), "hub": hub_to_json(&rows) })),
+                (true, Some(rows)) => println!(
+                    "{}",
+                    json!({ "local": to_json(&checks), "hub": hub_to_json(&rows) })
+                ),
                 (false, rows) => {
                     print_checks(&checks);
                     if let Some(rows) = rows {
@@ -84,7 +97,9 @@ pub fn select(checks: &[Check], only: Option<Need>) -> Result<Vec<Check>, String
         State::Ok => Err(format!("{} is already set up", check.label)),
         State::Missing if check.fix.is_some() => Ok(vec![check.clone()]),
         State::Missing => Err(format!("{}: {}", check.label, check.detail)),
-        State::Blocked | State::Warning => Err(format!("{} needs you: {}", check.label, check.detail)),
+        State::Blocked | State::Warning => {
+            Err(format!("{} needs you: {}", check.label, check.detail))
+        }
     }
 }
 
@@ -113,7 +128,9 @@ fn confirm(plan: &[Check]) -> Result<bool, String> {
     print!("Run these now? [y/N] ");
     std::io::stdout().flush().map_err(|e| e.to_string())?;
     let mut answer = String::new();
-    std::io::stdin().read_line(&mut answer).map_err(|e| e.to_string())?;
+    std::io::stdin()
+        .read_line(&mut answer)
+        .map_err(|e| e.to_string())?;
     Ok(confirms(&answer))
 }
 
@@ -148,8 +165,18 @@ pub struct HubCheck {
 }
 
 impl HubCheck {
-    fn new(label: &'static str, state: HubState, detail: impl Into<String>, fix: Option<&str>) -> HubCheck {
-        HubCheck { label, state, detail: detail.into(), fix: fix.map(str::to_string) }
+    fn new(
+        label: &'static str,
+        state: HubState,
+        detail: impl Into<String>,
+        fix: Option<&str>,
+    ) -> HubCheck {
+        HubCheck {
+            label,
+            state,
+            detail: detail.into(),
+            fix: fix.map(str::to_string),
+        }
     }
 }
 
@@ -196,7 +223,15 @@ fn flag(v: &Value, key: &str) -> bool {
 
 fn reachable_row(overview: &Result<Value, String>) -> HubCheck {
     match overview {
-        Ok(over) => HubCheck::new("Hub reachable", HubState::Ok, format!("apid answers, {} on this plaza", plural(count(over.pointer("/agents/total")), "agent")), None),
+        Ok(over) => HubCheck::new(
+            "Hub reachable",
+            HubState::Ok,
+            format!(
+                "apid answers, {} on this plaza",
+                plural(count(over.pointer("/agents/total")), "agent")
+            ),
+            None,
+        ),
         // A hub that wants the owner signed in answers with that refusal, so it is reachable.
         Err(e) if e.contains("sign in") => HubCheck::new(
             "Hub reachable",
@@ -208,21 +243,36 @@ fn reachable_row(overview: &Result<Value, String>) -> HubCheck {
             "Hub reachable",
             HubState::Failed,
             "apid does not answer",
-            Some("start AgentPlaza on this machine (desktop app: Start locally), then run the checks again"),
+            Some(
+                "start AgentPlaza on this machine (desktop app: Start locally), then run the checks again",
+            ),
         ),
     }
 }
 
 fn identity_row(identity: Option<&Value>) -> HubCheck {
     let Some(id) = identity else {
-        return HubCheck::new("Hub identity", HubState::Failed, "the hub does not say who it is", None);
+        return HubCheck::new(
+            "Hub identity",
+            HubState::Failed,
+            "the hub does not say who it is",
+            None,
+        );
     };
     let who = format!("{} {}", ctx::s(id, "name"), ctx::s(id, "version"));
-    let https = id.get("fingerprint").and_then(Value::as_str).is_some_and(|f| !f.is_empty());
+    let https = id
+        .get("fingerprint")
+        .and_then(Value::as_str)
+        .is_some_and(|f| !f.is_empty());
     let nodes = count(id.get("nodes"));
     if https || nodes == 0 {
         let scheme = if https { "HTTPS" } else { "plain HTTP" };
-        HubCheck::new("Hub identity", HubState::Ok, format!("{who}, {scheme}"), None)
+        HubCheck::new(
+            "Hub identity",
+            HubState::Ok,
+            format!("{who}, {scheme}"),
+            None,
+        )
     } else {
         HubCheck::new(
             "Hub identity",
@@ -235,9 +285,19 @@ fn identity_row(identity: Option<&Value>) -> HubCheck {
 
 fn service_row(over: &Value) -> HubCheck {
     if flag(over, "hub") {
-        HubCheck::new("Hub service", HubState::Ok, "the hub serves the console and the API", None)
+        HubCheck::new(
+            "Hub service",
+            HubState::Ok,
+            "the hub serves the console and the API",
+            None,
+        )
     } else {
-        HubCheck::new("Hub service", HubState::Failed, "the hub service is not running", Some("start the services (desktop app: Start locally)"))
+        HubCheck::new(
+            "Hub service",
+            HubState::Failed,
+            "the hub service is not running",
+            Some("start the services (desktop app: Start locally)"),
+        )
     }
 }
 
@@ -249,45 +309,79 @@ fn node_row(over: &Value) -> HubCheck {
             "Node here",
             HubState::Warning,
             "no node on this machine: agents cannot run here",
-            Some("add this machine as a node: agentplaza nodes code, then agentplaza node join <code> on the machine"),
+            Some(
+                "add this machine as a node: agentplaza nodes code, then agentplaza node join <code> on the machine",
+            ),
         )
     }
 }
 
 fn network_row(link: Option<&Value>) -> HubCheck {
     let Some(net) = link else {
-        return HubCheck::new("Network", HubState::Warning, "could not read the node link", Some("see `agentplaza nodes list`"));
+        return HubCheck::new(
+            "Network",
+            HubState::Warning,
+            "could not read the node link",
+            Some("see `agentplaza nodes list`"),
+        );
     };
     if !flag(net, "joined") {
-        return HubCheck::new("Network", HubState::Ok, "this hub runs its own network", None);
+        return HubCheck::new(
+            "Network",
+            HubState::Ok,
+            "this hub runs its own network",
+            None,
+        );
     }
     let hub = match ctx::s(net, "hub") {
         "" => "another hub",
         hub => hub,
     };
     let running = flag(net, "running");
-    let detail = format!("joined {hub}, node {}", if running { "running" } else { "stopped" });
+    let detail = format!(
+        "joined {hub}, node {}",
+        if running { "running" } else { "stopped" }
+    );
     if running {
         HubCheck::new("Network", HubState::Ok, detail, None)
     } else {
-        HubCheck::new("Network", HubState::Warning, detail, Some("start the node on that machine: agentplaza node start"))
+        HubCheck::new(
+            "Network",
+            HubState::Warning,
+            detail,
+            Some("start the node on that machine: agentplaza node start"),
+        )
     }
 }
 
 fn machine_row(machine: Option<&Value>) -> HubCheck {
     let Some(m) = machine else {
-        return HubCheck::new("Machine and hypervisor", HubState::Pending, "the hub did not report the machine; agentplaza setup checks the hypervisor here", None);
+        return HubCheck::new(
+            "Machine and hypervisor",
+            HubState::Pending,
+            "the hub did not report the machine; agentplaza setup checks the hypervisor here",
+            None,
+        );
     };
     let backend = ctx::s(m, "backend");
     let detail = format!(
         "{} on {}, {} CPUs, {} MiB",
-        if backend.is_empty() { "no hypervisor backend" } else { backend },
+        if backend.is_empty() {
+            "no hypervisor backend"
+        } else {
+            backend
+        },
         ctx::s(m, "arch"),
         ctx::text(m, "cpus"),
         ctx::text(m, "memory_mib"),
     );
     if backend.is_empty() {
-        HubCheck::new("Machine and hypervisor", HubState::Warning, detail, Some("turn on virtualization in the firmware: agents run in VMs"))
+        HubCheck::new(
+            "Machine and hypervisor",
+            HubState::Warning,
+            detail,
+            Some("turn on virtualization in the firmware: agents run in VMs"),
+        )
     } else {
         HubCheck::new("Machine and hypervisor", HubState::Ok, detail, None)
     }
@@ -296,53 +390,129 @@ fn machine_row(machine: Option<&Value>) -> HubCheck {
 fn vault_row(vault: Option<&Value>) -> HubCheck {
     const LABEL: &str = "Vault";
     let Some(v) = vault else {
-        return HubCheck::new(LABEL, HubState::Warning, "could not read the vault", Some("see `agentplaza vault status`"));
+        return HubCheck::new(
+            LABEL,
+            HubState::Warning,
+            "could not read the vault",
+            Some("see `agentplaza vault status`"),
+        );
     };
     match ctx::s(v, "state") {
-        "uninitialized" => HubCheck::new(LABEL, HubState::Warning, "not created yet: secrets have no encrypted home", Some("open the Vault in the desktop app or the web console")),
-        "sealed" => HubCheck::new(LABEL, HubState::Warning, "sealed: agents cannot read secrets until it is unsealed", Some("agentplaza vault unseal")),
+        "uninitialized" => HubCheck::new(
+            LABEL,
+            HubState::Warning,
+            "not created yet: secrets have no encrypted home",
+            Some("open the Vault in the desktop app or the web console"),
+        ),
+        "sealed" => HubCheck::new(
+            LABEL,
+            HubState::Warning,
+            "sealed: agents cannot read secrets until it is unsealed",
+            Some("agentplaza vault unseal"),
+        ),
         "tampered" => {
             let why = match ctx::s(v, "tampered") {
                 "" => String::new(),
                 reason => format!(": {reason}"),
             };
-            HubCheck::new(LABEL, HubState::Failed, format!("tampered{why}"), Some("read the audit log and recover: agentplaza vault audit"))
+            HubCheck::new(
+                LABEL,
+                HubState::Failed,
+                format!("tampered{why}"),
+                Some("read the audit log and recover: agentplaza vault audit"),
+            )
         }
         "unsealed" => {
             let env_keys = count(v.get("env_file_keys"));
             if env_keys > 0 {
-                return HubCheck::new(LABEL, HubState::Warning, format!("{} still in the env file, not in the vault", plural(env_keys, "key")), Some("agentplaza vault import"));
+                return HubCheck::new(
+                    LABEL,
+                    HubState::Warning,
+                    format!(
+                        "{} still in the env file, not in the vault",
+                        plural(env_keys, "key")
+                    ),
+                    Some("agentplaza vault import"),
+                );
             }
             match v.get("audit_ok") {
-                None | Some(Value::Null) => HubCheck::new(LABEL, HubState::Pending, "audit chain not checked until unsealed", None),
-                Some(Value::Bool(false)) => HubCheck::new(LABEL, HubState::Warning, "unsealed, but the audit chain does not verify", Some("agentplaza vault audit")),
+                None | Some(Value::Null) => HubCheck::new(
+                    LABEL,
+                    HubState::Pending,
+                    "audit chain not checked until unsealed",
+                    None,
+                ),
+                Some(Value::Bool(false)) => HubCheck::new(
+                    LABEL,
+                    HubState::Warning,
+                    "unsealed, but the audit chain does not verify",
+                    Some("agentplaza vault audit"),
+                ),
                 Some(_) => {
-                    let slots = v.get("slots").and_then(Value::as_array).map_or(0, |s| s.len() as u64);
-                    let detail = format!("unsealed: {}, {}", plural(count(v.get("entries")), "secret"), plural(slots, "unlock slot"));
+                    let slots = v
+                        .get("slots")
+                        .and_then(Value::as_array)
+                        .map_or(0, |s| s.len() as u64);
+                    let detail = format!(
+                        "unsealed: {}, {}",
+                        plural(count(v.get("entries")), "secret"),
+                        plural(slots, "unlock slot")
+                    );
                     HubCheck::new(LABEL, HubState::Ok, detail, None)
                 }
             }
         }
-        other => HubCheck::new(LABEL, HubState::Warning, format!("unknown state {}", if other.is_empty() { "-" } else { other }), None),
+        other => HubCheck::new(
+            LABEL,
+            HubState::Warning,
+            format!(
+                "unknown state {}",
+                if other.is_empty() { "-" } else { other }
+            ),
+            None,
+        ),
     }
 }
 
 fn providers_row(providers: Option<&Value>) -> HubCheck {
     const LABEL: &str = "Model providers";
     let Some(list) = providers.and_then(Value::as_array) else {
-        return HubCheck::new(LABEL, HubState::Warning, "could not list the providers", Some("see `agentplaza models providers`"));
+        return HubCheck::new(
+            LABEL,
+            HubState::Warning,
+            "could not list the providers",
+            Some("see `agentplaza models providers`"),
+        );
     };
     if list.is_empty() {
-        return HubCheck::new(LABEL, HubState::Failed, "none: agents cannot call a model", Some("add a provider and its key: agentplaza models add"));
+        return HubCheck::new(
+            LABEL,
+            HubState::Failed,
+            "none: agents cannot call a model",
+            Some("add a provider and its key: agentplaza models add"),
+        );
     }
-    let missing: Vec<&str> = list.iter().filter(|p| ctx::s(p, "credential") == "missing").map(|p| ctx::s(p, "id")).collect();
+    let missing: Vec<&str> = list
+        .iter()
+        .filter(|p| ctx::s(p, "credential") == "missing")
+        .map(|p| ctx::s(p, "id"))
+        .collect();
     if missing.is_empty() {
-        HubCheck::new(LABEL, HubState::Ok, format!("{}, every key set", plural(list.len() as u64, "provider")), None)
+        HubCheck::new(
+            LABEL,
+            HubState::Ok,
+            format!("{}, every key set", plural(list.len() as u64, "provider")),
+            None,
+        )
     } else {
         HubCheck::new(
             LABEL,
             HubState::Warning,
-            format!("{} without a key (of {})", missing.join(", "), plural(list.len() as u64, "provider")),
+            format!(
+                "{} without a key (of {})",
+                missing.join(", "),
+                plural(list.len() as u64, "provider")
+            ),
             Some("set the key for each one: agentplaza models key"),
         )
     }
@@ -350,17 +520,32 @@ fn providers_row(providers: Option<&Value>) -> HubCheck {
 
 fn default_model_row(over: &Value) -> HubCheck {
     match ctx::s(over, "default_model") {
-        "" => HubCheck::new("Default model", HubState::Warning, "none set: agents have no model by default", Some("pick a default model: agentplaza models --help")),
+        "" => HubCheck::new(
+            "Default model",
+            HubState::Warning,
+            "none set: agents have no model by default",
+            Some("pick a default model: agentplaza models --help"),
+        ),
         model => HubCheck::new("Default model", HubState::Ok, model, None),
     }
 }
 
 fn git_row(git: Option<&Value>) -> HubCheck {
     let Some(g) = git else {
-        return HubCheck::new("Git host", HubState::Warning, "could not ask the git host", None);
+        return HubCheck::new(
+            "Git host",
+            HubState::Warning,
+            "could not ask the git host",
+            None,
+        );
     };
     if flag(g, "configured") {
-        HubCheck::new("Git host", HubState::Ok, format!("org {}", ctx::s(g, "org")), None)
+        HubCheck::new(
+            "Git host",
+            HubState::Ok,
+            format!("org {}", ctx::s(g, "org")),
+            None,
+        )
     } else {
         HubCheck::new(
             "Git host",
@@ -374,7 +559,12 @@ fn git_row(git: Option<&Value>) -> HubCheck {
 fn print_hub(rows: &[HubCheck]) {
     let width = rows.iter().map(|row| row.label.len()).max().unwrap_or(0);
     for row in rows {
-        println!("{:<width$}  {:<8}  {}", row.label, row.state.word(), row.detail);
+        println!(
+            "{:<width$}  {:<8}  {}",
+            row.label,
+            row.state.word(),
+            row.detail
+        );
         if let Some(fix) = &row.fix {
             println!("{:<width$}  {:<8}  fix: {fix}", "", "");
         }
@@ -406,12 +596,26 @@ fn word(state: State) -> &'static str {
 }
 
 fn print_checks(checks: &[Check]) {
-    let width = checks.iter().map(|check| check.label.len()).max().unwrap_or(0);
+    let width = checks
+        .iter()
+        .map(|check| check.label.len())
+        .max()
+        .unwrap_or(0);
     for check in checks {
         let optional = if check.required { "" } else { " (optional)" };
-        println!("{:<width$}  {:<8}  {}{optional}", check.label, word(check.state), check.detail);
+        println!(
+            "{:<width$}  {:<8}  {}{optional}",
+            check.label,
+            word(check.state),
+            check.detail
+        );
         if check.fix.is_some() {
-            println!("{:<width$}  {:<8}  fix: agentplaza setup --fix {}", "", "", check.need.name());
+            println!(
+                "{:<width$}  {:<8}  fix: agentplaza setup --fix {}",
+                "",
+                "",
+                check.need.name()
+            );
         }
     }
 }
@@ -462,8 +666,15 @@ mod tests {
 
     #[test]
     fn a_plan_names_each_requirement_and_what_its_fix_does() {
-        let plan = vec![row(Need::Postgres, State::Missing, Some("Create the container agentplaza-postgres"))];
-        assert_eq!(plan_lines(&plan), vec!["  postgres: Create the container agentplaza-postgres".to_string()]);
+        let plan = vec![row(
+            Need::Postgres,
+            State::Missing,
+            Some("Create the container agentplaza-postgres"),
+        )];
+        assert_eq!(
+            plan_lines(&plan),
+            vec!["  postgres: Create the container agentplaza-postgres".to_string()]
+        );
     }
 
     #[test]
@@ -500,14 +711,19 @@ mod tests {
             row(Need::Postgres, State::Missing, None),
             row(Need::Garage, State::Missing, Some("Create Garage")),
         ];
-        let plan: Vec<Need> = select(&checks, None).unwrap().iter().map(|c| c.need).collect();
+        let plan: Vec<Need> = select(&checks, None)
+            .unwrap()
+            .iter()
+            .map(|c| c.need)
+            .collect();
         assert_eq!(plan, vec![Need::Docker, Need::DockerRunning, Need::Garage]);
         assert!(select(&checks[..1], None).unwrap().is_empty());
     }
 
     #[test]
     fn the_flags_parse_and_conflict() {
-        let parsed = crate::Cli::try_parse_from(["agentplaza", "setup", "--fix", "docker-running"]).unwrap();
+        let parsed =
+            crate::Cli::try_parse_from(["agentplaza", "setup", "--fix", "docker-running"]).unwrap();
         match parsed.command {
             crate::Command::Setup(args) => assert_eq!(args.fix, Some(Need::DockerRunning)),
             other => panic!("not setup: {other:?}"),
@@ -518,14 +734,19 @@ mod tests {
             other => panic!("not setup: {other:?}"),
         }
         assert!(crate::Cli::try_parse_from(["agentplaza", "setup", "--fix", "nope"]).is_err());
-        assert!(crate::Cli::try_parse_from(["agentplaza", "setup", "--fix", "garage", "--fix-all"]).is_err());
+        assert!(
+            crate::Cli::try_parse_from(["agentplaza", "setup", "--fix", "garage", "--fix-all"])
+                .is_err()
+        );
     }
 
     #[test]
     fn the_hub_flag_checks_the_hub_and_takes_no_fix() {
         let parsed = crate::Cli::try_parse_from(["agentplaza", "setup", "--hub"]).unwrap();
         match parsed.command {
-            crate::Command::Setup(args) => assert!(args.hub.as_deref() == Some("") && args.fix.is_none() && !args.fix_all),
+            crate::Command::Setup(args) => {
+                assert!(args.hub.as_deref() == Some("") && args.fix.is_none() && !args.fix_all)
+            }
             other => panic!("not setup: {other:?}"),
         }
         let named = crate::Cli::try_parse_from(["agentplaza", "setup", "--hub", "work"]).unwrap();
@@ -545,7 +766,10 @@ mod tests {
         assert_eq!(row.state, HubState::Warning);
         assert!(row.fix.unwrap().contains("hub login"));
         let answered: Result<Value, String> = Ok(json!({ "agents": { "total": 3 } }));
-        assert_eq!(reachable_row(&answered).detail, "apid answers, 3 agents on this plaza");
+        assert_eq!(
+            reachable_row(&answered).detail,
+            "apid answers, 3 agents on this plaza"
+        );
     }
 
     #[test]
@@ -561,10 +785,22 @@ mod tests {
 
     #[test]
     fn the_vault_reads_its_state_in_the_web_order() {
-        assert_eq!(vault_row(Some(&json!({ "state": "sealed" }))).state, HubState::Warning);
-        assert_eq!(vault_row(Some(&json!({ "state": "tampered", "tampered": "bad chain" }))).detail, "tampered: bad chain");
+        assert_eq!(
+            vault_row(Some(&json!({ "state": "sealed" }))).state,
+            HubState::Warning
+        );
+        assert_eq!(
+            vault_row(Some(
+                &json!({ "state": "tampered", "tampered": "bad chain" })
+            ))
+            .detail,
+            "tampered: bad chain"
+        );
         let loose = json!({ "state": "unsealed", "env_file_keys": 1, "audit_ok": true });
-        assert_eq!(vault_row(Some(&loose)).detail, "1 key still in the env file, not in the vault");
+        assert_eq!(
+            vault_row(Some(&loose)).detail,
+            "1 key still in the env file, not in the vault"
+        );
         let unchecked = json!({ "state": "unsealed", "env_file_keys": 0, "audit_ok": null });
         assert_eq!(vault_row(Some(&unchecked)).state, HubState::Pending);
         let ok = json!({ "state": "unsealed", "env_file_keys": 0, "audit_ok": true, "entries": 4, "slots": [{}] });
@@ -581,23 +817,40 @@ mod tests {
         assert_eq!(row.state, HubState::Warning);
         assert_eq!(row.detail, "anthropic without a key (of 2 providers)");
         let all = json!([{ "id": "openai", "credential": "secret" }]);
-        assert_eq!(providers_row(Some(&all)).detail, "1 provider, every key set");
+        assert_eq!(
+            providers_row(Some(&all)).detail,
+            "1 provider, every key set"
+        );
     }
 
     #[test]
     fn the_network_and_the_default_model_say_what_they_found() {
-        assert_eq!(network_row(Some(&json!({ "joined": false }))).detail, "this hub runs its own network");
+        assert_eq!(
+            network_row(Some(&json!({ "joined": false }))).detail,
+            "this hub runs its own network"
+        );
         let stopped = json!({ "joined": true, "hub": "other.example", "running": false });
         let row = network_row(Some(&stopped));
         assert_eq!(row.state, HubState::Warning);
         assert_eq!(row.detail, "joined other.example, node stopped");
-        assert_eq!(default_model_row(&json!({ "default_model": "" })).state, HubState::Warning);
-        assert_eq!(default_model_row(&json!({ "default_model": "glm-5" })).detail, "glm-5");
+        assert_eq!(
+            default_model_row(&json!({ "default_model": "" })).state,
+            HubState::Warning
+        );
+        assert_eq!(
+            default_model_row(&json!({ "default_model": "glm-5" })).detail,
+            "glm-5"
+        );
     }
 
     #[test]
     fn the_hub_rows_go_out_as_json_with_their_fixes() {
-        let rows = vec![HubCheck::new("Git host", HubState::Warning, "not configured", Some("set it"))];
+        let rows = vec![HubCheck::new(
+            "Git host",
+            HubState::Warning,
+            "not configured",
+            Some("set it"),
+        )];
         let value = hub_to_json(&rows);
         assert_eq!(value[0]["state"], "warning");
         assert_eq!(value[0]["fix"], "set it");

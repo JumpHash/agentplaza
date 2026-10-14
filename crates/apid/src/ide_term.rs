@@ -114,18 +114,32 @@ impl Target {
 /// A frame from the client.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClientFrame {
-    Open { cols: u16, rows: u16, cwd: Option<String> },
-    Attach { term: String, offset: u64 },
+    Open {
+        cols: u16,
+        rows: u16,
+        cwd: Option<String>,
+    },
+    Attach {
+        term: String,
+        offset: u64,
+    },
     Input(Vec<u8>),
-    Resize { cols: u16, rows: u16 },
+    Resize {
+        cols: u16,
+        rows: u16,
+    },
     Kill,
     Ping,
 }
 
 /// Reads one client frame. A frame that is not one of these is an error for the client to hear.
 pub fn parse_client(text: &str) -> Result<ClientFrame, String> {
-    let value: Value = serde_json::from_str(text).map_err(|err| format!("the frame is not JSON: {err}"))?;
-    let kind = value.get("t").and_then(Value::as_str).ok_or("the frame names no \"t\"")?;
+    let value: Value =
+        serde_json::from_str(text).map_err(|err| format!("the frame is not JSON: {err}"))?;
+    let kind = value
+        .get("t")
+        .and_then(Value::as_str)
+        .ok_or("the frame names no \"t\"")?;
     match kind {
         "open" => Ok(ClientFrame::Open {
             cols: size(&value, "cols")?,
@@ -143,7 +157,10 @@ pub fn parse_client(text: &str) -> Result<ClientFrame, String> {
                 .map(ClientFrame::Input)
                 .map_err(|err| format!("\"data\" is not base64: {err}"))
         }
-        "resize" => Ok(ClientFrame::Resize { cols: size(&value, "cols")?, rows: size(&value, "rows")? }),
+        "resize" => Ok(ClientFrame::Resize {
+            cols: size(&value, "cols")?,
+            rows: size(&value, "rows")?,
+        }),
         "kill" => Ok(ClientFrame::Kill),
         "ping" => Ok(ClientFrame::Ping),
         other => Err(format!("no frame named {other:?}")),
@@ -182,14 +199,24 @@ impl ServerFrame {
     pub fn parse(text: &str) -> Result<ServerFrame, String> {
         let value: Value = serde_json::from_str(text).map_err(|err| err.to_string())?;
         match value.get("t").and_then(Value::as_str).unwrap_or_default() {
-            "opened" => Ok(ServerFrame::Opened { term: text_field(&value, "term")? }),
+            "opened" => Ok(ServerFrame::Opened {
+                term: text_field(&value, "term")?,
+            }),
             "out" => Ok(ServerFrame::Out {
-                data: STANDARD.decode(text_field(&value, "data")?).map_err(|err| err.to_string())?,
+                data: STANDARD
+                    .decode(text_field(&value, "data")?)
+                    .map_err(|err| err.to_string())?,
                 offset: value["offset"].as_u64().ok_or("no offset")?,
             }),
-            "lost" => Ok(ServerFrame::Lost { bytes: value["bytes"].as_u64().ok_or("no bytes")? }),
-            "exit" => Ok(ServerFrame::Exit { code: value["code"].as_i64() }),
-            "error" => Ok(ServerFrame::Error { message: text_field(&value, "message")? }),
+            "lost" => Ok(ServerFrame::Lost {
+                bytes: value["bytes"].as_u64().ok_or("no bytes")?,
+            }),
+            "exit" => Ok(ServerFrame::Exit {
+                code: value["code"].as_i64(),
+            }),
+            "error" => Ok(ServerFrame::Error {
+                message: text_field(&value, "message")?,
+            }),
             "pong" => Ok(ServerFrame::Pong),
             other => Err(format!("no frame named {other:?}")),
         }
@@ -230,7 +257,9 @@ fn optional_text(value: &Value, key: &str) -> Result<Option<String>, String> {
 fn optional_offset(value: &Value) -> Result<u64, String> {
     match value.get("offset") {
         None | Some(Value::Null) => Ok(0),
-        Some(offset) => offset.as_u64().ok_or_else(|| "\"offset\" must be a whole number".to_string()),
+        Some(offset) => offset
+            .as_u64()
+            .ok_or_else(|| "\"offset\" must be a whole number".to_string()),
     }
 }
 
@@ -264,7 +293,10 @@ impl Coalescer {
     /// The pending input, split into writes of at most [`WRITE_CHUNK`]. Nothing is pending after it.
     pub fn take(&mut self) -> Vec<Vec<u8>> {
         self.since = None;
-        std::mem::take(&mut self.pending).chunks(WRITE_CHUNK).map(<[u8]>::to_vec).collect()
+        std::mem::take(&mut self.pending)
+            .chunks(WRITE_CHUNK)
+            .map(<[u8]>::to_vec)
+            .collect()
     }
 }
 
@@ -310,7 +342,13 @@ struct Live(Arc<App>);
 impl TermHost for Live {
     fn tell(&self, cid: u64, name: &str, args: &Value) -> Result<(u16, Value), String> {
         let body = json!({ "name": name, "args": args, "timeout_ms": TELL_TIMEOUT_MS });
-        crate::fleet::gateway(&self.0, cid, "POST", &format!("/v1/agents/{cid}/tell"), Some(&body))
+        crate::fleet::gateway(
+            &self.0,
+            cid,
+            "POST",
+            &format!("/v1/agents/{cid}/tell"),
+            Some(&body),
+        )
     }
 
     fn request(&self, station: &str, op: Op) -> Result<Value, String> {
@@ -356,7 +394,11 @@ fn call(host: &dyn TermHost, target: &Target, name: &str, args: &Value) -> Resul
             let op = station_term_op(name, args)
                 .ok_or_else(|| Failure::Refused(format!("{name} is not a terminal operation")))?;
             host.request(id, Op::Term(op)).map_err(|message| {
-                if is_unreachable(&message) { Failure::Unreachable(message) } else { Failure::Refused(message) }
+                if is_unreachable(&message) {
+                    Failure::Unreachable(message)
+                } else {
+                    Failure::Refused(message)
+                }
             })
         }
     }
@@ -368,11 +410,27 @@ fn station_term_op(name: &str, args: &Value) -> Option<TermOp> {
     let number = |key: &str| args.get(key).and_then(Value::as_u64);
     let size = |key: &str| number(key).and_then(|n| u16::try_from(n).ok());
     Some(match name {
-        "ide_term_open" => TermOp::Open { cols: size("cols")?, rows: size("rows")?, cwd: text("cwd") },
-        "ide_term_write" => TermOp::Write { term: text("term")?, data_b64: text("data_b64")? },
-        "ide_term_read" => TermOp::Read { term: text("term")?, offset: number("offset") },
-        "ide_term_resize" => TermOp::Resize { term: text("term")?, cols: size("cols")?, rows: size("rows")? },
-        "ide_term_close" => TermOp::Close { term: text("term")? },
+        "ide_term_open" => TermOp::Open {
+            cols: size("cols")?,
+            rows: size("rows")?,
+            cwd: text("cwd"),
+        },
+        "ide_term_write" => TermOp::Write {
+            term: text("term")?,
+            data_b64: text("data_b64")?,
+        },
+        "ide_term_read" => TermOp::Read {
+            term: text("term")?,
+            offset: number("offset"),
+        },
+        "ide_term_resize" => TermOp::Resize {
+            term: text("term")?,
+            cols: size("cols")?,
+            rows: size("rows")?,
+        },
+        "ide_term_close" => TermOp::Close {
+            term: text("term")?,
+        },
         _ => return None,
     })
 }
@@ -382,7 +440,11 @@ fn call_agent(host: &dyn TermHost, cid: u64, name: &str, args: &Value) -> Result
     let (status, body) = host
         .tell(cid, name, args)
         .map_err(|err| Failure::Unreachable(format!("the agent's node did not answer: {err}")))?;
-    let output = body.get("output").and_then(Value::as_str).unwrap_or_default().to_string();
+    let output = body
+        .get("output")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
     if status != 200 {
         return Err(match status {
             403 => Failure::Refused(output),
@@ -393,11 +455,18 @@ fn call_agent(host: &dyn TermHost, cid: u64, name: &str, args: &Value) -> Result
         });
     }
     if !body.get("ok").and_then(Value::as_bool).unwrap_or(false) {
-        let message = if output.is_empty() { "the agent refused the call".to_string() } else { output };
+        let message = if output.is_empty() {
+            "the agent refused the call".to_string()
+        } else {
+            output
+        };
         return Err(Failure::Refused(message));
     }
-    serde_json::from_str(&output)
-        .map_err(|err| Failure::Refused(format!("the agent answered with text that is not JSON: {err}")))
+    serde_json::from_str(&output).map_err(|err| {
+        Failure::Refused(format!(
+            "the agent answered with text that is not JSON: {err}"
+        ))
+    })
 }
 
 /// One `ide_term_read` answer.
@@ -417,13 +486,27 @@ struct Chunk {
 fn parse_chunk(value: &Value) -> Result<Chunk, Failure> {
     let bad = |what: &str| Failure::Refused(format!("the agent's read answer has no valid {what}"));
     let data = STANDARD
-        .decode(value.get("data_b64").and_then(Value::as_str).unwrap_or_default())
+        .decode(
+            value
+                .get("data_b64")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+        )
         .map_err(|_| bad("data_b64"))?;
     Ok(Chunk {
-        offset: value.get("offset").and_then(Value::as_u64).ok_or_else(|| bad("offset"))?,
-        next: value.get("next").and_then(Value::as_u64).ok_or_else(|| bad("next"))?,
+        offset: value
+            .get("offset")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| bad("offset"))?,
+        next: value
+            .get("next")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| bad("next"))?,
         data,
-        exited: value.get("exited").and_then(Value::as_bool).unwrap_or(false),
+        exited: value
+            .get("exited")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
         exit_code: value.get("exit_code").and_then(Value::as_i64),
         lost: value.get("lost").and_then(Value::as_u64).unwrap_or(0),
     })
@@ -431,19 +514,32 @@ fn parse_chunk(value: &Value) -> Result<Chunk, Failure> {
 
 /// Sends `data` to the shell. The harness takes what fits in its wait and says how much it took; the
 /// rest goes out again until all of it is in.
-fn write_all(host: &dyn TermHost, target: &Target, term: &str, mut rest: &[u8]) -> Result<(), Failure> {
+fn write_all(
+    host: &dyn TermHost,
+    target: &Target,
+    term: &str,
+    mut rest: &[u8],
+) -> Result<(), Failure> {
     let mut stalls = 0;
     while !rest.is_empty() {
-        let answer = call(host, target, "ide_term_write", &json!({ "term": term, "data_b64": STANDARD.encode(rest) }))?;
+        let answer = call(
+            host,
+            target,
+            "ide_term_write",
+            &json!({ "term": term, "data_b64": STANDARD.encode(rest) }),
+        )?;
         let written = answer
             .get("written")
             .and_then(Value::as_u64)
             .filter(|n| *n <= rest.len() as u64)
-            .ok_or_else(|| Failure::Refused("the agent's write answer has no valid \"written\"".into()))?
-            as usize;
+            .ok_or_else(|| {
+                Failure::Refused("the agent's write answer has no valid \"written\"".into())
+            })? as usize;
         stalls = if written == 0 { stalls + 1 } else { 0 };
         if stalls >= WRITE_STALLS {
-            return Err(Failure::Unreachable("the shell is not reading its input".into()));
+            return Err(Failure::Unreachable(
+                "the shell is not reading its input".into(),
+            ));
         }
         rest = &rest[written..];
     }
@@ -473,11 +569,15 @@ struct Session<'a> {
 
 impl Session<'_> {
     fn send(&mut self, frame: &ServerFrame) -> Flow {
-        self.socket.send(&Message::Text(frame.wire())).map_err(|_| Ended)
+        self.socket
+            .send(&Message::Text(frame.wire()))
+            .map_err(|_| Ended)
     }
 
     fn error(&mut self, message: impl Into<String>) -> Flow {
-        self.send(&ServerFrame::Error { message: message.into() })
+        self.send(&ServerFrame::Error {
+            message: message.into(),
+        })
     }
 
     fn end(&mut self, code: u16, reason: &str) -> Flow {
@@ -509,13 +609,20 @@ impl Session<'_> {
             if let (Some(map), Value::Object(detail)) = (data.as_object_mut(), detail) {
                 map.extend(detail);
             }
-            self.host.append_station_audit(&crate::stations::audit_row(Some(id), None, "owner_ide", "owner", data))?;
+            self.host.append_station_audit(&crate::stations::audit_row(
+                Some(id),
+                None,
+                "owner_ide",
+                "owner",
+                data,
+            ))?;
         }
         Ok(())
     }
 
     fn publish(&self, kind: &str) {
-        self.host.publish(&json!({ "workspace": self.workspace(), "path": null, "kind": kind }));
+        self.host
+            .publish(&json!({ "workspace": self.workspace(), "path": null, "kind": kind }));
     }
 
     /// One client frame, acted on.
@@ -542,7 +649,9 @@ impl Session<'_> {
 
     fn open(&mut self, cols: u16, rows: u16, cwd: Option<String>) -> Flow {
         if self.term.is_some() {
-            return self.error("this socket already has a terminal; open another socket for a second shell");
+            return self.error(
+                "this socket already has a terminal; open another socket for a second shell",
+            );
         }
         let mut args = json!({ "cols": cols, "rows": rows });
         if let Some(cwd) = &cwd {
@@ -552,13 +661,28 @@ impl Session<'_> {
             Ok(answer) => answer,
             Err(failure) => return self.error(failure.into_message()),
         };
-        let Some(term) = answer.get("term").and_then(Value::as_str).map(str::to_string) else {
+        let Some(term) = answer
+            .get("term")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+        else {
             return self.error("the agent's answer names no terminal");
         };
         // A shell that is not in the audit is closed again: every terminal the owner opens is recorded.
-        if let Err(err) = self.audit("term_open", &term, json!({ "cols": cols, "rows": rows, "cwd": cwd })) {
-            let _ = call(self.host, &self.target, "ide_term_close", &json!({ "term": term }));
-            self.error(format!("the terminal was closed: its audit row could not be written ({err})"))?;
+        if let Err(err) = self.audit(
+            "term_open",
+            &term,
+            json!({ "cols": cols, "rows": rows, "cwd": cwd }),
+        ) {
+            let _ = call(
+                self.host,
+                &self.target,
+                "ide_term_close",
+                &json!({ "term": term }),
+            );
+            self.error(format!(
+                "the terminal was closed: its audit row could not be written ({err})"
+            ))?;
             return self.end(1011, "the audit log is unavailable");
         }
         self.publish("term_open");
@@ -592,7 +716,12 @@ impl Session<'_> {
         let Some(term) = self.term.clone() else {
             return self.error("there is no terminal yet: open or attach one first");
         };
-        match call(self.host, &self.target, "ide_term_resize", &json!({ "term": term, "cols": cols, "rows": rows })) {
+        match call(
+            self.host,
+            &self.target,
+            "ide_term_resize",
+            &json!({ "term": term, "cols": cols, "rows": rows }),
+        ) {
             Ok(_) => Ok(()),
             Err(failure) => self.error(failure.into_message()),
         }
@@ -602,10 +731,17 @@ impl Session<'_> {
         let Some(term) = self.term.clone() else {
             return self.error("there is no terminal to kill");
         };
-        match call(self.host, &self.target, "ide_term_close", &json!({ "term": term })) {
+        match call(
+            self.host,
+            &self.target,
+            "ide_term_close",
+            &json!({ "term": term }),
+        ) {
             Ok(_) => {
                 if let Err(err) = self.audit("term_kill", &term, json!({})) {
-                    self.error(format!("the terminal was closed, but its audit row could not be written ({err})"))?;
+                    self.error(format!(
+                        "the terminal was closed, but its audit row could not be written ({err})"
+                    ))?;
                 }
                 self.publish("term_kill");
                 self.end(1000, "the terminal was killed")
@@ -615,7 +751,12 @@ impl Session<'_> {
     }
 
     fn read(&self, term: &str) -> Result<Chunk, Failure> {
-        let answer = call(self.host, &self.target, "ide_term_read", &json!({ "term": term, "offset": self.offset }))?;
+        let answer = call(
+            self.host,
+            &self.target,
+            "ide_term_read",
+            &json!({ "term": term, "offset": self.offset }),
+        )?;
         parse_chunk(&answer)
     }
 
@@ -629,10 +770,15 @@ impl Session<'_> {
         self.offset = chunk.next;
         if !chunk.data.is_empty() {
             self.last_data = Instant::now();
-            self.send(&ServerFrame::Out { data: chunk.data, offset: chunk.offset })?;
+            self.send(&ServerFrame::Out {
+                data: chunk.data,
+                offset: chunk.offset,
+            })?;
         }
         if exited_and_drained {
-            self.send(&ServerFrame::Exit { code: chunk.exit_code })?;
+            self.send(&ServerFrame::Exit {
+                code: chunk.exit_code,
+            })?;
             self.socket.close(1000, "the shell exited");
             return Err(Ended);
         }
@@ -642,7 +788,8 @@ impl Session<'_> {
     /// Sets the next output poll from whether this one had data.
     fn schedule(&mut self, had_data: bool) {
         let now = Instant::now();
-        self.poll_at = Some(now + poll_delay(had_data, now.saturating_duration_since(self.last_data)));
+        self.poll_at =
+            Some(now + poll_delay(had_data, now.saturating_duration_since(self.last_data)));
     }
 
     /// One scheduled output poll. Three in a row that the node cannot answer end the socket; so does a
@@ -724,7 +871,9 @@ pub fn serve(host: &dyn TermHost, target: Target, socket: &mut dyn Wire) {
     loop {
         let now = Instant::now();
         if idle_expired(session.last_client, now) {
-            session.socket.close(1000, "idle: closed, the terminal keeps running");
+            session
+                .socket
+                .close(1000, "idle: closed, the terminal keeps running");
             return;
         }
         if session.input.due(now) && session.flush_input().is_err() {
@@ -756,8 +905,15 @@ pub fn serve(host: &dyn TermHost, target: Target, socket: &mut dyn Wire) {
 fn target_of(app: &App, id: &str) -> Result<Target, Response> {
     match id.parse::<WorkspaceId>() {
         Ok(WorkspaceId::Agent(cid)) => {
-            if !app.agents.get(cid).is_some_and(|agent| agent.run.is_some() && agent.vm.is_some()) {
-                return Err(Response::error(404, &format!("no workspace {}", WorkspaceId::Agent(cid))));
+            if !app
+                .agents
+                .get(cid)
+                .is_some_and(|agent| agent.run.is_some() && agent.vm.is_some())
+            {
+                return Err(Response::error(
+                    404,
+                    &format!("no workspace {}", WorkspaceId::Agent(cid)),
+                ));
             }
             Ok(Target::Agent(cid))
         }
@@ -775,7 +931,13 @@ fn target_of(app: &App, id: &str) -> Result<Target, Response> {
 
 /// The socket's upgrade: the subprotocol, and the origin rule of `/v1/ws`.
 fn upgrade(req: &Request, run: impl FnOnce(Socket) + Send + 'static) -> Response {
-    ws::accept(req, Origins::SameHost, Some(PROTOCOL), Limits::default(), run)
+    ws::accept(
+        req,
+        Origins::SameHost,
+        Some(PROTOCOL),
+        Limits::default(),
+        run,
+    )
 }
 
 /// The terminal sockets open now, per peer and in all (the event socket's caps, its own pool).
@@ -788,7 +950,9 @@ pub struct Places {
 
 impl Places {
     pub const fn new() -> Self {
-        Places { open: Mutex::new(BTreeMap::new()) }
+        Places {
+            open: Mutex::new(BTreeMap::new()),
+        }
     }
 
     /// A place for a socket on `workspace`, or `None` when the workspace is at [`PER_WORKSPACE`].
@@ -799,7 +963,10 @@ impl Places {
             return None;
         }
         open.insert(workspace.to_string(), held + 1);
-        Some(Place { places: self, workspace: workspace.to_string() })
+        Some(Place {
+            places: self,
+            workspace: workspace.to_string(),
+        })
     }
 
     fn release(&self, workspace: &str) {
@@ -814,7 +981,12 @@ impl Places {
 
     #[cfg(test)]
     fn held(&self, workspace: &str) -> usize {
-        self.open.lock().unwrap_or_else(PoisonError::into_inner).get(workspace).copied().unwrap_or(0)
+        self.open
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(workspace)
+            .copied()
+            .unwrap_or(0)
     }
 }
 
@@ -842,7 +1014,12 @@ pub fn routes(router: Router<App>) -> Router<App> {
             return Response::error(429, "too many open terminal sockets; close one first");
         };
         let Some(place) = PLACES.take(&target.workspace()) else {
-            return Response::error(429, &format!("{PER_WORKSPACE} terminal sockets are open on this workspace; close one first"));
+            return Response::error(
+                429,
+                &format!(
+                    "{PER_WORKSPACE} terminal sockets are open on this workspace; close one first"
+                ),
+            );
         };
         let weak = app.handle();
         upgrade(req, move |mut socket| {
@@ -874,16 +1051,28 @@ mod tests {
     fn an_open_frame_takes_its_size_and_an_optional_cwd() {
         assert_eq!(
             parse_client(r#"{"t":"open","cols":80,"rows":24}"#),
-            Ok(ClientFrame::Open { cols: 80, rows: 24, cwd: None })
+            Ok(ClientFrame::Open {
+                cols: 80,
+                rows: 24,
+                cwd: None
+            })
         );
         assert_eq!(
             parse_client(r#"{"t":"open","cols":80,"rows":24,"cwd":""}"#),
-            Ok(ClientFrame::Open { cols: 80, rows: 24, cwd: None }),
+            Ok(ClientFrame::Open {
+                cols: 80,
+                rows: 24,
+                cwd: None
+            }),
             "an empty cwd is none"
         );
         assert_eq!(
             parse_client(r#"{"t":"open","cols":1,"rows":1000,"cwd":"src"}"#),
-            Ok(ClientFrame::Open { cols: 1, rows: 1000, cwd: Some("src".into()) })
+            Ok(ClientFrame::Open {
+                cols: 1,
+                rows: 1000,
+                cwd: Some("src".into())
+            })
         );
     }
 
@@ -891,18 +1080,33 @@ mod tests {
     fn an_attach_frame_resumes_at_its_offset_or_at_the_start() {
         assert_eq!(
             parse_client(r#"{"t":"attach","term":"term-1","offset":4096}"#),
-            Ok(ClientFrame::Attach { term: "term-1".into(), offset: 4096 })
+            Ok(ClientFrame::Attach {
+                term: "term-1".into(),
+                offset: 4096
+            })
         );
         assert_eq!(
             parse_client(r#"{"t":"attach","term":"term-1"}"#),
-            Ok(ClientFrame::Attach { term: "term-1".into(), offset: 0 })
+            Ok(ClientFrame::Attach {
+                term: "term-1".into(),
+                offset: 0
+            })
         );
     }
 
     #[test]
     fn input_resize_kill_and_ping_parse() {
-        assert_eq!(parse_client(r#"{"t":"in","data":"aGkK"}"#), Ok(ClientFrame::Input(b"hi\n".to_vec())));
-        assert_eq!(parse_client(r#"{"t":"resize","cols":100,"rows":30}"#), Ok(ClientFrame::Resize { cols: 100, rows: 30 }));
+        assert_eq!(
+            parse_client(r#"{"t":"in","data":"aGkK"}"#),
+            Ok(ClientFrame::Input(b"hi\n".to_vec()))
+        );
+        assert_eq!(
+            parse_client(r#"{"t":"resize","cols":100,"rows":30}"#),
+            Ok(ClientFrame::Resize {
+                cols: 100,
+                rows: 30
+            })
+        );
         assert_eq!(parse_client(r#"{"t":"kill"}"#), Ok(ClientFrame::Kill));
         assert_eq!(parse_client(r#"{"t":"ping"}"#), Ok(ClientFrame::Ping));
     }
@@ -927,17 +1131,46 @@ mod tests {
     #[test]
     fn every_server_frame_serialises_to_its_documented_shape() {
         let cases = [
-            (ServerFrame::Opened { term: "term-1".into() }, json!({"t":"opened","term":"term-1"})),
-            (ServerFrame::Out { data: b"hi".to_vec(), offset: 5 }, json!({"t":"out","data":"aGk=","offset":5})),
-            (ServerFrame::Lost { bytes: 3 }, json!({"t":"lost","bytes":3})),
-            (ServerFrame::Exit { code: Some(0) }, json!({"t":"exit","code":0})),
-            (ServerFrame::Exit { code: None }, json!({"t":"exit","code":null})),
-            (ServerFrame::Error { message: "no".into() }, json!({"t":"error","message":"no"})),
+            (
+                ServerFrame::Opened {
+                    term: "term-1".into(),
+                },
+                json!({"t":"opened","term":"term-1"}),
+            ),
+            (
+                ServerFrame::Out {
+                    data: b"hi".to_vec(),
+                    offset: 5,
+                },
+                json!({"t":"out","data":"aGk=","offset":5}),
+            ),
+            (
+                ServerFrame::Lost { bytes: 3 },
+                json!({"t":"lost","bytes":3}),
+            ),
+            (
+                ServerFrame::Exit { code: Some(0) },
+                json!({"t":"exit","code":0}),
+            ),
+            (
+                ServerFrame::Exit { code: None },
+                json!({"t":"exit","code":null}),
+            ),
+            (
+                ServerFrame::Error {
+                    message: "no".into(),
+                },
+                json!({"t":"error","message":"no"}),
+            ),
             (ServerFrame::Pong, json!({"t":"pong"})),
         ];
         for (frame, expected) in cases {
             let wire = frame.wire();
-            assert_eq!(serde_json::from_str::<Value>(&wire).unwrap(), expected, "{wire}");
+            assert_eq!(
+                serde_json::from_str::<Value>(&wire).unwrap(),
+                expected,
+                "{wire}"
+            );
             assert_eq!(ServerFrame::parse(&wire), Ok(frame), "{wire} reads back");
         }
     }
@@ -948,8 +1181,14 @@ mod tests {
     fn output_is_polled_at_once_while_it_flows_and_backs_off_after_two_seconds_of_quiet() {
         assert_eq!(poll_delay(true, Duration::from_secs(9)), Duration::ZERO);
         assert_eq!(poll_delay(false, Duration::ZERO), Duration::from_millis(60));
-        assert_eq!(poll_delay(false, Duration::from_millis(1999)), Duration::from_millis(60));
-        assert_eq!(poll_delay(false, Duration::from_secs(2)), Duration::from_millis(250));
+        assert_eq!(
+            poll_delay(false, Duration::from_millis(1999)),
+            Duration::from_millis(60)
+        );
+        assert_eq!(
+            poll_delay(false, Duration::from_secs(2)),
+            Duration::from_millis(250)
+        );
     }
 
     #[test]
@@ -969,7 +1208,10 @@ mod tests {
         assert!(!input.due(t0 + Duration::from_millis(9)));
         assert!(input.due(t0 + Duration::from_millis(10)));
         assert_eq!(input.take(), vec![b"abc".to_vec()]);
-        assert!(!input.due(t0 + Duration::from_secs(1)), "taken input leaves nothing due");
+        assert!(
+            !input.due(t0 + Duration::from_secs(1)),
+            "taken input leaves nothing due"
+        );
     }
 
     #[test]
@@ -986,13 +1228,27 @@ mod tests {
 
     #[test]
     fn the_terminal_targets_are_agents_and_stations_and_a_bad_id_is_refused() {
-        assert_eq!("agent:12".parse::<WorkspaceId>().ok(), Some(WorkspaceId::Agent(12)));
-        assert_eq!("station:w3".parse::<WorkspaceId>().ok(), Some(WorkspaceId::Station("w3".into())));
+        assert_eq!(
+            "agent:12".parse::<WorkspaceId>().ok(),
+            Some(WorkspaceId::Agent(12))
+        );
+        assert_eq!(
+            "station:w3".parse::<WorkspaceId>().ok(),
+            Some(WorkspaceId::Station("w3".into()))
+        );
         assert_eq!(Target::Station("w3".into()).workspace(), "station:w3");
         assert_eq!(Target::Agent(12).workspace(), "agent:12");
-        for refused in ["repo:p1-plaza@main", "agent:x", "agent:012", "station:3", "nope"] {
+        for refused in [
+            "repo:p1-plaza@main",
+            "agent:x",
+            "agent:012",
+            "station:3",
+            "nope",
+        ] {
             assert!(
-                refused.parse::<WorkspaceId>().map_or(true, |id| matches!(id, WorkspaceId::Repo { .. })),
+                refused
+                    .parse::<WorkspaceId>()
+                    .map_or(true, |id| matches!(id, WorkspaceId::Repo { .. })),
                 "{refused} is not a terminal target"
             );
         }
@@ -1001,12 +1257,23 @@ mod tests {
     #[test]
     fn a_workspace_holds_four_terminal_sockets_and_a_closed_one_frees_its_place() {
         let places = leaked_places();
-        let held: Vec<Place> = (0..PER_WORKSPACE).map(|_| places.take("agent:12").expect("under the cap")).collect();
-        assert!(places.take("agent:12").is_none(), "a fifth socket on the workspace is refused");
-        assert!(places.take("station:w12").is_some(), "another workspace still gets one");
+        let held: Vec<Place> = (0..PER_WORKSPACE)
+            .map(|_| places.take("agent:12").expect("under the cap"))
+            .collect();
+        assert!(
+            places.take("agent:12").is_none(),
+            "a fifth socket on the workspace is refused"
+        );
+        assert!(
+            places.take("station:w12").is_some(),
+            "another workspace still gets one"
+        );
         drop(held);
         assert_eq!(places.held("agent:12"), 0);
-        assert!(places.take("agent:12").is_some(), "a closed socket frees its place");
+        assert!(
+            places.take("agent:12").is_some(),
+            "a closed socket frees its place"
+        );
     }
 
     fn upgrade_request(origin: Option<&str>, protocol: &str) -> Request {
@@ -1014,30 +1281,58 @@ mod tests {
             ("upgrade".to_string(), "websocket".to_string()),
             ("connection".to_string(), "Upgrade".to_string()),
             ("sec-websocket-version".to_string(), "13".to_string()),
-            ("sec-websocket-key".to_string(), "dGhlIHNhbXBsZSBub25jZQ==".to_string()),
+            (
+                "sec-websocket-key".to_string(),
+                "dGhlIHNhbXBsZSBub25jZQ==".to_string(),
+            ),
             ("host".to_string(), "127.0.0.1:7700".to_string()),
             ("sec-websocket-protocol".to_string(), protocol.to_string()),
         ];
         if let Some(origin) = origin {
             headers.push(("origin".to_string(), origin.to_string()));
         }
-        Request { method: "GET".into(), path: "/v1/ide/terminal/agent:12".into(), headers, ..Request::default() }
+        Request {
+            method: "GET".into(),
+            path: "/v1/ide/terminal/agent:12".into(),
+            headers,
+            ..Request::default()
+        }
     }
 
     #[test]
     fn a_socket_from_this_host_or_a_client_without_an_origin_is_upgraded() {
-        assert_eq!(upgrade(&upgrade_request(Some("http://127.0.0.1:7700"), PROTOCOL), |_| {}).status, 101);
-        assert_eq!(upgrade(&upgrade_request(None, PROTOCOL), |_| {}).status, 101);
+        assert_eq!(
+            upgrade(
+                &upgrade_request(Some("http://127.0.0.1:7700"), PROTOCOL),
+                |_| {}
+            )
+            .status,
+            101
+        );
+        assert_eq!(
+            upgrade(&upgrade_request(None, PROTOCOL), |_| {}).status,
+            101
+        );
     }
 
     #[test]
     fn a_socket_from_another_origin_is_refused_with_403() {
-        assert_eq!(upgrade(&upgrade_request(Some("http://evil.example"), PROTOCOL), |_| {}).status, 403);
+        assert_eq!(
+            upgrade(
+                &upgrade_request(Some("http://evil.example"), PROTOCOL),
+                |_| {}
+            )
+            .status,
+            403
+        );
     }
 
     #[test]
     fn a_socket_that_does_not_ask_for_the_subprotocol_is_refused_with_400() {
-        assert_eq!(upgrade(&upgrade_request(None, "apz.events.v1"), |_| {}).status, 400);
+        assert_eq!(
+            upgrade(&upgrade_request(None, "apz.events.v1"), |_| {}).status,
+            400
+        );
     }
 
     // The bridge, against a fake guest and a scripted client.
@@ -1065,7 +1360,11 @@ mod tests {
 
     impl Fake {
         fn with_output(output: &[u8], oldest: usize) -> Fake {
-            Fake(Mutex::new(Guest { output: output.to_vec(), oldest, ..Guest::default() }))
+            Fake(Mutex::new(Guest {
+                output: output.to_vec(),
+                oldest,
+                ..Guest::default()
+            }))
         }
 
         fn guest(&self) -> MutexGuard<'_, Guest> {
@@ -1085,10 +1384,22 @@ mod tests {
         fn request(&self, _station: &str, op: Op) -> Result<Value, String> {
             // The inverse of the production mapping: a workstation's terminal operation as the agent's tool call.
             let (name, args) = match op {
-                Op::Term(TermOp::Open { cols, rows, cwd }) => ("ide_term_open", json!({ "cols": cols, "rows": rows, "cwd": cwd })),
-                Op::Term(TermOp::Write { term, data_b64 }) => ("ide_term_write", json!({ "term": term, "data_b64": data_b64 })),
-                Op::Term(TermOp::Read { term, offset }) => ("ide_term_read", json!({ "term": term, "offset": offset.unwrap_or(0) })),
-                Op::Term(TermOp::Resize { term, cols, rows }) => ("ide_term_resize", json!({ "term": term, "cols": cols, "rows": rows })),
+                Op::Term(TermOp::Open { cols, rows, cwd }) => (
+                    "ide_term_open",
+                    json!({ "cols": cols, "rows": rows, "cwd": cwd }),
+                ),
+                Op::Term(TermOp::Write { term, data_b64 }) => (
+                    "ide_term_write",
+                    json!({ "term": term, "data_b64": data_b64 }),
+                ),
+                Op::Term(TermOp::Read { term, offset }) => (
+                    "ide_term_read",
+                    json!({ "term": term, "offset": offset.unwrap_or(0) }),
+                ),
+                Op::Term(TermOp::Resize { term, cols, rows }) => (
+                    "ide_term_resize",
+                    json!({ "term": term, "cols": cols, "rows": rows }),
+                ),
                 Op::Term(TermOp::Close { term }) => ("ide_term_close", json!({ "term": term })),
                 other => return Err(format!("the fake has no answer for {other:?}")),
             };
@@ -1111,13 +1422,16 @@ mod tests {
             if name == "ide_term_read" && guest.unreachable_reads {
                 return Ok((504, json!({ "ok": false, "output": "" })));
             }
-            if name != "ide_term_open" && args.get("term").and_then(Value::as_str) != Some("term-1") {
+            if name != "ide_term_open" && args.get("term").and_then(Value::as_str) != Some("term-1")
+            {
                 return Ok(refused(format!("no terminal {:?}", args.get("term"))));
             }
             Ok(match name {
                 "ide_term_open" => ok(json!({ "term": "term-1" })),
                 "ide_term_write" => {
-                    let data = STANDARD.decode(args["data_b64"].as_str().unwrap_or_default()).unwrap_or_default();
+                    let data = STANDARD
+                        .decode(args["data_b64"].as_str().unwrap_or_default())
+                        .unwrap_or_default();
                     let take = if guest.short_writes > 0 {
                         guest.short_writes -= 1;
                         data.len() / 2
@@ -1210,7 +1524,10 @@ mod tests {
                     let wire: Value = serde_json::from_str(&frame.wire()).unwrap_or(Value::Null);
                     wire["t"] == *kind
                 }),
-                Gate::Received(text) => self.received.windows(text.len()).any(|window| window == text.as_bytes()),
+                Gate::Received(text) => self
+                    .received
+                    .windows(text.len())
+                    .any(|window| window == text.as_bytes()),
             }
         }
     }
@@ -1267,26 +1584,57 @@ mod tests {
         let host = Fake::default();
         host.guest().short_writes = 1;
         let mut client = Client::new(vec![
-            (Gate::Now, text(json!({ "t": "open", "cols": 80, "rows": 24 }))),
+            (
+                Gate::Now,
+                text(json!({ "t": "open", "cols": 80, "rows": 24 })),
+            ),
             (Gate::Sent("opened"), input(b"echo hi\n")),
-            (Gate::Received("echo hi"), text(json!({ "t": "resize", "cols": 100, "rows": 30 }))),
+            (
+                Gate::Received("echo hi"),
+                text(json!({ "t": "resize", "cols": 100, "rows": 30 })),
+            ),
             (Gate::Received("echo hi"), input(b"exit\n")),
         ]);
         serve(&host, Target::Agent(12), &mut client);
 
         assert_eq!(client.closed, Some((1000, "the shell exited".to_string())));
-        assert_eq!(client.sent.first(), Some(&ServerFrame::Opened { term: "term-1".into() }));
-        assert!(client.received.windows(7).any(|window| window == b"echo hi"), "the echo came back");
-        assert_eq!(client.sent.last(), Some(&ServerFrame::Exit { code: Some(0) }));
+        assert_eq!(
+            client.sent.first(),
+            Some(&ServerFrame::Opened {
+                term: "term-1".into()
+            })
+        );
+        assert!(
+            client
+                .received
+                .windows(7)
+                .any(|window| window == b"echo hi"),
+            "the echo came back"
+        );
+        assert_eq!(
+            client.sent.last(),
+            Some(&ServerFrame::Exit { code: Some(0) })
+        );
 
         let guest = host.guest();
-        assert_eq!(guest.written, b"echo hi\nexit\n", "a short write is sent again from where it stopped");
+        assert_eq!(
+            guest.written, b"echo hi\nexit\n",
+            "a short write is sent again from where it stopped"
+        );
         let calls: Vec<&str> = guest.calls.iter().map(|(name, _)| name.as_str()).collect();
         assert!(calls.contains(&"ide_term_open"));
         assert!(calls.contains(&"ide_term_resize"));
         assert!(!calls.contains(&"ide_term_close"), "an exit is not a kill");
-        let open = guest.calls.iter().find(|(name, _)| name == "ide_term_open").expect("opened");
-        assert_eq!(open.1, json!({ "cols": 80, "rows": 24 }), "no cwd is sent when there is none");
+        let open = guest
+            .calls
+            .iter()
+            .find(|(name, _)| name == "ide_term_open")
+            .expect("opened");
+        assert_eq!(
+            open.1,
+            json!({ "cols": 80, "rows": 24 }),
+            "no cwd is sent when there is none"
+        );
         assert_eq!(guest.audit.len(), 1, "one open is audited");
         assert_eq!(guest.audit[0]["kind"], "term_open");
         assert_eq!(guest.audit[0]["workspace"], "agent:12");
@@ -1298,19 +1646,31 @@ mod tests {
     fn a_workstation_shell_is_audited_in_both_logs_and_takes_keys() {
         let host = Fake::default();
         let mut client = Client::new(vec![
-            (Gate::Now, text(json!({ "t": "open", "cols": 80, "rows": 24 }))),
+            (
+                Gate::Now,
+                text(json!({ "t": "open", "cols": 80, "rows": 24 })),
+            ),
             (Gate::Sent("opened"), input(b"exit\n")),
         ]);
         serve(&host, Target::Station("w3".into()), &mut client);
 
-        assert_eq!(client.sent.first(), Some(&ServerFrame::Opened { term: "term-1".into() }));
+        assert_eq!(
+            client.sent.first(),
+            Some(&ServerFrame::Opened {
+                term: "term-1".into()
+            })
+        );
         assert_eq!(client.closed, Some((1000, "the shell exited".to_string())));
         let guest = host.guest();
         assert_eq!(guest.written, b"exit\n");
         assert_eq!(guest.audit.len(), 1);
         assert_eq!(guest.audit[0]["workspace"], "station:w3");
         assert_eq!(guest.audit[0]["kind"], "term_open");
-        assert_eq!(guest.station_audit.len(), 1, "a workstation's shell is also a station audit row");
+        assert_eq!(
+            guest.station_audit.len(),
+            1,
+            "a workstation's shell is also a station audit row"
+        );
         assert_eq!(guest.station_audit[0]["kind"], "owner_ide");
         assert_eq!(guest.station_audit[0]["station"], "w3");
         assert_eq!(guest.station_audit[0]["action"], "term_open");
@@ -1320,10 +1680,19 @@ mod tests {
     #[test]
     fn a_workstation_operation_that_is_not_linked_is_unreachable_and_a_refusal_is_not() {
         assert!(matches!(
-            call(&Fake::default(), &Target::Station("w3".into()), "ide_term_close", &json!({ "term": "term-9" })),
+            call(
+                &Fake::default(),
+                &Target::Station("w3".into()),
+                "ide_term_close",
+                &json!({ "term": "term-9" })
+            ),
             Err(Failure::Refused(_))
         ));
-        assert_eq!(station_term_op("ide_term_open", &json!({ "cols": 80_000, "rows": 24 })), None, "an oversized size is no operation");
+        assert_eq!(
+            station_term_op("ide_term_open", &json!({ "cols": 80_000, "rows": 24 })),
+            None,
+            "an oversized size is no operation"
+        );
         assert!(is_unreachable("the workstation is not linked"));
         assert!(!is_unreachable("no such terminal"));
     }
@@ -1332,19 +1701,50 @@ mod tests {
     fn a_reattach_resumes_at_the_offset_the_client_holds_and_kill_ends_the_shell() {
         let host = Fake::with_output(b"abcdefgh", 0);
         let mut client = Client::new(vec![
-            (Gate::Now, text(json!({ "t": "attach", "term": "term-1", "offset": 4 }))),
+            (
+                Gate::Now,
+                text(json!({ "t": "attach", "term": "term-1", "offset": 4 })),
+            ),
             (Gate::Received("efgh"), text(json!({ "t": "kill" }))),
         ]);
         serve(&host, Target::Agent(12), &mut client);
 
-        assert_eq!(client.sent[0], ServerFrame::Opened { term: "term-1".into() });
-        assert_eq!(client.sent[1], ServerFrame::Out { data: b"efgh".to_vec(), offset: 4 });
-        assert_eq!(client.closed, Some((1000, "the terminal was killed".to_string())));
+        assert_eq!(
+            client.sent[0],
+            ServerFrame::Opened {
+                term: "term-1".into()
+            }
+        );
+        assert_eq!(
+            client.sent[1],
+            ServerFrame::Out {
+                data: b"efgh".to_vec(),
+                offset: 4
+            }
+        );
+        assert_eq!(
+            client.closed,
+            Some((1000, "the terminal was killed".to_string()))
+        );
 
         let guest = host.guest();
-        assert!(guest.calls.iter().any(|(name, args)| name == "ide_term_read" && args["offset"] == 4));
-        assert!(guest.calls.iter().any(|(name, args)| name == "ide_term_close" && args["term"] == "term-1"));
-        assert_eq!(guest.audit.len(), 1, "the kill is audited; an attach is not an open");
+        assert!(
+            guest
+                .calls
+                .iter()
+                .any(|(name, args)| name == "ide_term_read" && args["offset"] == 4)
+        );
+        assert!(
+            guest
+                .calls
+                .iter()
+                .any(|(name, args)| name == "ide_term_close" && args["term"] == "term-1")
+        );
+        assert_eq!(
+            guest.audit.len(),
+            1,
+            "the kill is audited; an attach is not an open"
+        );
         assert_eq!(guest.audit[0]["kind"], "term_kill");
         assert!(guest.calls.iter().all(|(name, _)| name != "ide_term_open"));
     }
@@ -1359,17 +1759,37 @@ mod tests {
         serve(&host, Target::Agent(12), &mut client);
 
         assert_eq!(client.sent[1], ServerFrame::Lost { bytes: 2 });
-        assert_eq!(client.sent[2], ServerFrame::Out { data: b"cdefgh".to_vec(), offset: 2 });
+        assert_eq!(
+            client.sent[2],
+            ServerFrame::Out {
+                data: b"cdefgh".to_vec(),
+                offset: 2
+            }
+        );
     }
 
     #[test]
     fn a_closed_socket_leaves_the_shell_running() {
         let host = Fake::default();
-        let mut client = Client::new(vec![(Gate::Now, text(json!({ "t": "open", "cols": 80, "rows": 24 })))]);
+        let mut client = Client::new(vec![(
+            Gate::Now,
+            text(json!({ "t": "open", "cols": 80, "rows": 24 })),
+        )]);
         serve(&host, Target::Agent(12), &mut client);
 
-        assert_eq!(client.sent, vec![ServerFrame::Opened { term: "term-1".into() }]);
-        assert!(host.guest().calls.iter().all(|(name, _)| name != "ide_term_close"), "the socket's end kills nothing");
+        assert_eq!(
+            client.sent,
+            vec![ServerFrame::Opened {
+                term: "term-1".into()
+            }]
+        );
+        assert!(
+            host.guest()
+                .calls
+                .iter()
+                .all(|(name, _)| name != "ide_term_close"),
+            "the socket's end kills nothing"
+        );
     }
 
     #[test]
@@ -1383,8 +1803,14 @@ mod tests {
         serve(&host, Target::Agent(12), &mut client);
 
         let kinds: Vec<&ServerFrame> = client.sent.iter().collect();
-        assert!(matches!(kinds[0], ServerFrame::Error { .. }), "a frame that is not JSON is an error");
-        assert!(matches!(kinds[1], ServerFrame::Error { .. }), "input with no terminal is an error");
+        assert!(
+            matches!(kinds[0], ServerFrame::Error { .. }),
+            "a frame that is not JSON is an error"
+        );
+        assert!(
+            matches!(kinds[1], ServerFrame::Error { .. }),
+            "input with no terminal is an error"
+        );
         assert_eq!(kinds[2], &ServerFrame::Pong);
         assert_eq!(client.closed, None);
     }
@@ -1401,23 +1827,48 @@ mod tests {
     fn a_terminal_whose_open_cannot_be_audited_is_closed_again() {
         let host = Fake::default();
         host.guest().audit_fails = true;
-        let mut client = Client::new(vec![(Gate::Now, text(json!({ "t": "open", "cols": 80, "rows": 24 })))]);
+        let mut client = Client::new(vec![(
+            Gate::Now,
+            text(json!({ "t": "open", "cols": 80, "rows": 24 })),
+        )]);
         serve(&host, Target::Agent(12), &mut client);
 
-        assert!(!client.sent.iter().any(|frame| matches!(frame, ServerFrame::Opened { .. })), "nothing is opened");
-        assert!(matches!(client.sent.first(), Some(ServerFrame::Error { .. })));
+        assert!(
+            !client
+                .sent
+                .iter()
+                .any(|frame| matches!(frame, ServerFrame::Opened { .. })),
+            "nothing is opened"
+        );
+        assert!(matches!(
+            client.sent.first(),
+            Some(ServerFrame::Error { .. })
+        ));
         assert_eq!(client.closed.map(|(code, _)| code), Some(1011));
-        assert!(host.guest().calls.iter().any(|(name, _)| name == "ide_term_close"), "the shell is closed again");
+        assert!(
+            host.guest()
+                .calls
+                .iter()
+                .any(|(name, _)| name == "ide_term_close"),
+            "the shell is closed again"
+        );
     }
 
     #[test]
     fn a_node_that_cannot_answer_three_reads_in_a_row_ends_the_socket() {
         let host = Fake::default();
         host.guest().unreachable_reads = true;
-        let mut client = Client::new(vec![(Gate::Now, text(json!({ "t": "open", "cols": 80, "rows": 24 })))]);
+        let mut client = Client::new(vec![(
+            Gate::Now,
+            text(json!({ "t": "open", "cols": 80, "rows": 24 })),
+        )]);
         serve(&host, Target::Agent(12), &mut client);
 
-        let errors = client.sent.iter().filter(|frame| matches!(frame, ServerFrame::Error { .. })).count();
+        let errors = client
+            .sent
+            .iter()
+            .filter(|frame| matches!(frame, ServerFrame::Error { .. }))
+            .count();
         assert_eq!(errors, 3, "each failed read is reported");
         assert_eq!(client.closed.map(|(code, _)| code), Some(1011));
     }

@@ -242,10 +242,19 @@ mod tests {
         let env = env.with_var("APZ_OPS_TEST", "seen");
         let runs = Runs::new();
         let started = runs
-            .start(&root, &env, "echo \"$APZ_OPS_TEST:$PATH\"; echo \"$HOME\"", None)
+            .start(
+                &root,
+                &env,
+                "echo \"$APZ_OPS_TEST:$PATH\"; echo \"$HOME\"",
+                None,
+            )
             .expect("the run starts");
         let reply = settle(&runs, &started.run);
-        assert!(reply.output.starts_with(&format!("seen:{PATH}\n")), "{:?}", reply.output);
+        assert!(
+            reply.output.starts_with(&format!("seen:{PATH}\n")),
+            "{:?}",
+            reply.output
+        );
     }
 
     #[cfg(target_os = "linux")]
@@ -260,7 +269,8 @@ mod tests {
         let reply = settle(&runs, &started.run);
         assert!(reply.timed_out);
         assert_eq!(reply.exit_code, None);
-        let pid = fs::read_to_string(dir.join("child.pid")).expect("the shell wrote its child's pid");
+        let pid =
+            fs::read_to_string(dir.join("child.pid")).expect("the shell wrote its child's pid");
         let pid = pid.trim();
         assert!(
             !pid_is_alive(pid),
@@ -297,7 +307,9 @@ mod tests {
             "offset {}",
             reply.offset
         );
-        assert!(reply.output.len() <= crate::page::CHUNK && reply.output.bytes().all(|b| b == b'a'));
+        assert!(
+            reply.output.len() <= crate::page::CHUNK && reply.output.bytes().all(|b| b == b'a')
+        );
         assert_eq!(reply.next, reply.offset + reply.output.len() as u64);
         assert!(runs.poll(&started.run, Some(total + 1)).is_err());
     }

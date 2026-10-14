@@ -1,7 +1,7 @@
 //! `agentplaza council`: The council: motions, their votes, and the owner's decision on each.
 
 use clap::Subcommand;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::ctx::{self, Ctx};
 
@@ -33,23 +33,44 @@ pub enum Cmd {
 
 /// The motions of the `/v1/motions` answer.
 fn motions(v: &Value) -> &[Value] {
-    v.get("motions").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[])
+    v.get("motions")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
 }
 
 /// A motion's tally as one line.
 fn tally(m: &Value) -> String {
-    let field = |key: &str| m.get("tally").map(|t| ctx::text(t, key)).unwrap_or_default();
-    format!("yes {} no {} abstain {} ({} of {} seats voted)", field("yes"), field("no"), field("abstain"), field("voted"), field("seats"))
+    let field = |key: &str| {
+        m.get("tally")
+            .map(|t| ctx::text(t, key))
+            .unwrap_or_default()
+    };
+    format!(
+        "yes {} no {} abstain {} ({} of {} seats voted)",
+        field("yes"),
+        field("no"),
+        field("abstain"),
+        field("voted"),
+        field("seats")
+    )
 }
 
 /// A motion's quorum: the rule in words, from the motion's `quorum` view.
 fn quorum(m: &Value) -> String {
-    m.get("quorum").map(|q| ctx::text(q, "rule")).unwrap_or_default()
+    m.get("quorum")
+        .map(|q| ctx::text(q, "rule"))
+        .unwrap_or_default()
 }
 
 /// One vote as a `show` row: the agent that cast it, its seat, the word and the reason.
 fn vote_row(x: &Value) -> Vec<String> {
-    vec![ctx::text(x, "agent_cid"), ctx::text(x, "seat"), ctx::text(x, "vote"), ctx::text(x, "reason")]
+    vec![
+        ctx::text(x, "agent_cid"),
+        ctx::text(x, "seat"),
+        ctx::text(x, "vote"),
+        ctx::text(x, "reason"),
+    ]
 }
 
 /// The `POST /v1/motions/{id}/decide` body: `approve` as the hub reads it, and the note, or null
@@ -103,13 +124,31 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                     ("text", ctx::text(m, "text")),
                 ]);
                 println!();
-                let votes: Vec<Vec<String>> = m.get("votes").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]).iter().map(vote_row).collect();
+                let votes: Vec<Vec<String>> = m
+                    .get("votes")
+                    .and_then(Value::as_array)
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[])
+                    .iter()
+                    .map(vote_row)
+                    .collect();
                 ctx::table(&["agent", "seat", "vote", "reason"], &votes);
             });
         }
-        Cmd::Decide { id, decision, reason } => {
-            let v = ctx.client.post(&format!("/v1/motions/{}/decide", ctx::seg(&id)), &decide_body(&decision, &reason))?;
-            let past = if decision == "approve" { "approved" } else { "rejected" };
+        Cmd::Decide {
+            id,
+            decision,
+            reason,
+        } => {
+            let v = ctx.client.post(
+                &format!("/v1/motions/{}/decide", ctx::seg(&id)),
+                &decide_body(&decision, &reason),
+            )?;
+            let past = if decision == "approve" {
+                "approved"
+            } else {
+                "rejected"
+            };
             ctx.out(&v, |_| println!("{past} motion {id}"));
         }
     }
@@ -122,14 +161,25 @@ mod tests {
 
     #[test]
     fn decide_body_serialises_approve_and_note_as_the_hub_reads_them() {
-        assert_eq!(serde_json::to_string(&decide_body("approve", "fine")).unwrap(), r#"{"approve":true,"note":"fine"}"#);
-        assert_eq!(serde_json::to_string(&decide_body("reject", "  no  ")).unwrap(), r#"{"approve":false,"note":"no"}"#);
-        assert_eq!(serde_json::to_string(&decide_body("reject", "")).unwrap(), r#"{"approve":false,"note":null}"#);
+        assert_eq!(
+            serde_json::to_string(&decide_body("approve", "fine")).unwrap(),
+            r#"{"approve":true,"note":"fine"}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&decide_body("reject", "  no  ")).unwrap(),
+            r#"{"approve":false,"note":"no"}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&decide_body("reject", "")).unwrap(),
+            r#"{"approve":false,"note":null}"#
+        );
     }
 
     #[test]
     fn a_vote_row_reads_its_seat_and_agent() {
-        let row = vote_row(&json!({ "seat": "architect", "agent_cid": 42, "vote": "yes", "reason": "sound" }));
+        let row = vote_row(
+            &json!({ "seat": "architect", "agent_cid": 42, "vote": "yes", "reason": "sound" }),
+        );
         assert_eq!(row, vec!["42", "architect", "yes", "sound"]);
     }
 

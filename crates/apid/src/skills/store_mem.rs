@@ -9,7 +9,10 @@ use std::sync::{Mutex, PoisonError};
 use apz_skill::{Finding, Report};
 use serde::{Deserialize, Serialize};
 
-use super::{Action, Event, NewSkill, NewVersion, Skill, SkillFile, SkillStore, Source, StoreError, Version, VersionMeta};
+use super::{
+    Action, Event, NewSkill, NewVersion, Skill, SkillFile, SkillStore, Source, StoreError, Version,
+    VersionMeta,
+};
 
 pub struct MemorySkills {
     /// `None` when nothing is persisted.
@@ -50,7 +53,12 @@ struct Stored {
 enum StoredSource {
     Built,
     Upload,
-    Github { repo: String, git_ref: Option<String>, path: String, commit: String },
+    Github {
+        repo: String,
+        git_ref: Option<String>,
+        path: String,
+        commit: String,
+    },
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -92,7 +100,10 @@ struct StoredEvent {
 
 /// The name and description a skill takes from its latest version's frontmatter (the id and "" when it did not parse).
 fn frontmatter(report: &Report, id: &str) -> (String, String) {
-    (report.name.clone().unwrap_or_else(|| id.to_string()), report.description.clone().unwrap_or_default())
+    (
+        report.name.clone().unwrap_or_else(|| id.to_string()),
+        report.description.clone().unwrap_or_default(),
+    )
 }
 
 /// Sorted and deduplicated bindings.
@@ -116,7 +127,14 @@ impl Data {
         self.skills.get_mut(id).ok_or(StoreError::NotFound)
     }
 
-    fn log(&mut self, skill_id: &str, action: Action, version: Option<u32>, actor: &str, at_ms: u64) {
+    fn log(
+        &mut self,
+        skill_id: &str,
+        action: Action,
+        version: Option<u32>,
+        actor: &str,
+        at_ms: u64,
+    ) {
         self.last_event += 1;
         self.events.push(StoredEvent {
             id: self.last_event,
@@ -161,7 +179,12 @@ impl StoredSource {
         match source {
             Source::Built => StoredSource::Built,
             Source::Upload => StoredSource::Upload,
-            Source::Github { repo, git_ref, path, commit } => StoredSource::Github {
+            Source::Github {
+                repo,
+                git_ref,
+                path,
+                commit,
+            } => StoredSource::Github {
                 repo: repo.clone(),
                 git_ref: git_ref.clone(),
                 path: path.clone(),
@@ -174,7 +197,12 @@ impl StoredSource {
         match self {
             StoredSource::Built => Source::Built,
             StoredSource::Upload => Source::Upload,
-            StoredSource::Github { repo, git_ref, path, commit } => Source::Github {
+            StoredSource::Github {
+                repo,
+                git_ref,
+                path,
+                commit,
+            } => Source::Github {
                 repo: repo.clone(),
                 git_ref: git_ref.clone(),
                 path: path.clone(),
@@ -201,7 +229,12 @@ impl StoredVersion {
             files: next
                 .files
                 .iter()
-                .map(|f| StoredFile { path: f.path.clone(), sha256: f.sha256.clone(), size: f.size, executable: f.executable })
+                .map(|f| StoredFile {
+                    path: f.path.clone(),
+                    sha256: f.sha256.clone(),
+                    size: f.size,
+                    executable: f.executable,
+                })
                 .collect(),
             findings: next.report.findings.clone(),
             source_commit: next.source_commit.clone(),
@@ -233,7 +266,12 @@ impl StoredVersion {
             files: self
                 .files
                 .iter()
-                .map(|f| SkillFile { path: f.path.clone(), sha256: f.sha256.clone(), size: f.size, executable: f.executable })
+                .map(|f| SkillFile {
+                    path: f.path.clone(),
+                    sha256: f.sha256.clone(),
+                    size: f.size,
+                    executable: f.executable,
+                })
                 .collect(),
             findings: self.findings.clone(),
         }
@@ -244,7 +282,10 @@ impl MemorySkills {
     /// Not persisted (tests).
     #[cfg(test)]
     pub fn in_memory() -> MemorySkills {
-        MemorySkills { path: None, inner: Mutex::new(Data::default()) }
+        MemorySkills {
+            path: None,
+            inner: Mutex::new(Data::default()),
+        }
     }
 
     /// Loads `<state_dir>/skills.json` if it exists, and writes it after every change.
@@ -271,12 +312,18 @@ impl MemorySkills {
                 return MemorySkills { path: None, inner: Mutex::new(Data::default()) };
             }
         };
-        MemorySkills { path: Some(path), inner: Mutex::new(data) }
+        MemorySkills {
+            path: Some(path),
+            inner: Mutex::new(data),
+        }
     }
 
     /// Applies `change` to a copy of the data, persists the copy, and only then makes it the live data: a failed
     /// check or a failed write leaves everything as it was.
-    fn write<T>(&self, change: impl FnOnce(&mut Data) -> Result<T, StoreError>) -> Result<T, StoreError> {
+    fn write<T>(
+        &self,
+        change: impl FnOnce(&mut Data) -> Result<T, StoreError>,
+    ) -> Result<T, StoreError> {
         let mut guard = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
         let mut next = guard.clone();
         let out = change(&mut next)?;
@@ -291,8 +338,11 @@ impl MemorySkills {
     }
 
     fn persist(&self, data: &Data) -> Result<(), StoreError> {
-        let Some(path) = &self.path else { return Ok(()) };
-        let bytes = serde_json::to_vec_pretty(data).map_err(|e| StoreError::Failed(format!("encoding the skill library: {e}")))?;
+        let Some(path) = &self.path else {
+            return Ok(());
+        };
+        let bytes = serde_json::to_vec_pretty(data)
+            .map_err(|e| StoreError::Failed(format!("encoding the skill library: {e}")))?;
         let tmp = path.with_extension("json.tmp");
         let written = std::fs::File::create(&tmp)
             .and_then(|mut f| {
@@ -306,7 +356,13 @@ impl MemorySkills {
 
 impl SkillStore for MemorySkills {
     fn list(&self, archived: bool) -> Result<Vec<Skill>, String> {
-        Ok(self.read(|d| d.skills.values().filter(|s| archived || s.live()).map(Stored::skill).collect()))
+        Ok(self.read(|d| {
+            d.skills
+                .values()
+                .filter(|s| archived || s.live())
+                .map(Stored::skill)
+                .collect()
+        }))
     }
 
     fn get(&self, id: &str) -> Result<Option<Skill>, String> {
@@ -314,21 +370,37 @@ impl SkillStore for MemorySkills {
     }
 
     fn versions(&self, id: &str) -> Result<Vec<VersionMeta>, String> {
-        Ok(self.read(|d| d.skills.get(id).map(|s| s.versions.iter().map(StoredVersion::meta).collect()).unwrap_or_default()))
+        Ok(self.read(|d| {
+            d.skills
+                .get(id)
+                .map(|s| s.versions.iter().map(StoredVersion::meta).collect())
+                .unwrap_or_default()
+        }))
     }
 
     fn version(&self, id: &str, version: u32) -> Result<Option<Version>, String> {
         Ok(self.read(|d| d.skills.get(id)?.version(version).map(StoredVersion::full)))
     }
 
-    fn create(&self, new: &NewSkill, first: &NewVersion, actor: &str, now_ms: u64) -> Result<Skill, StoreError> {
+    fn create(
+        &self,
+        new: &NewSkill,
+        first: &NewVersion,
+        actor: &str,
+        now_ms: u64,
+    ) -> Result<Skill, StoreError> {
         self.write(|d| {
             if d.skills.contains_key(&new.id) {
-                return Err(StoreError::Conflict(format!("a skill named {} exists", new.id)));
+                return Err(StoreError::Conflict(format!(
+                    "a skill named {} exists",
+                    new.id
+                )));
             }
             let (name, description) = frontmatter(&first.report, &new.id);
             if let Some(other) = d.name_holder(&name, &new.id) {
-                return Err(StoreError::Conflict(format!("{name} is the name of {other}")));
+                return Err(StoreError::Conflict(format!(
+                    "{name} is the name of {other}"
+                )));
             }
             let stored = Stored {
                 id: new.id.clone(),
@@ -352,15 +424,26 @@ impl SkillStore for MemorySkills {
         })
     }
 
-    fn add_version(&self, id: &str, base: u32, next: &NewVersion, actor: &str, now_ms: u64) -> Result<VersionMeta, StoreError> {
+    fn add_version(
+        &self,
+        id: &str,
+        base: u32,
+        next: &NewVersion,
+        actor: &str,
+        now_ms: u64,
+    ) -> Result<VersionMeta, StoreError> {
         self.write(|d| {
             let latest = d.skills.get(id).ok_or(StoreError::NotFound)?.versions.len() as u32;
             if base != latest {
-                return Err(StoreError::Conflict(format!("{id} is at version {latest}, not {base}")));
+                return Err(StoreError::Conflict(format!(
+                    "{id} is at version {latest}, not {base}"
+                )));
             }
             let (name, description) = frontmatter(&next.report, id);
             if let Some(other) = d.name_holder(&name, id) {
-                return Err(StoreError::Conflict(format!("{name} is the name of {other}")));
+                return Err(StoreError::Conflict(format!(
+                    "{name} is the name of {other}"
+                )));
             }
             let v = StoredVersion::new(latest + 1, next, actor, now_ms);
             let meta = v.meta();
@@ -369,7 +452,9 @@ impl SkillStore for MemorySkills {
             s.name = name;
             s.description = description;
             s.updated_ms = now_ms;
-            if let (StoredSource::Github { commit, .. }, Some(c)) = (&mut s.source, &next.source_commit) {
+            if let (StoredSource::Github { commit, .. }, Some(c)) =
+                (&mut s.source, &next.source_commit)
+            {
                 *commit = c.clone();
             }
             d.log(id, Action::Version, Some(latest + 1), actor, now_ms);
@@ -377,7 +462,14 @@ impl SkillStore for MemorySkills {
         })
     }
 
-    fn set_meta(&self, id: &str, title: &str, tags: &[String], actor: &str, now_ms: u64) -> Result<Skill, StoreError> {
+    fn set_meta(
+        &self,
+        id: &str,
+        title: &str,
+        tags: &[String],
+        actor: &str,
+        now_ms: u64,
+    ) -> Result<Skill, StoreError> {
         self.write(|d| {
             let s = d.skill_mut(id)?;
             s.title = title.to_string();
@@ -389,7 +481,13 @@ impl SkillStore for MemorySkills {
         })
     }
 
-    fn set_bindings(&self, id: &str, bindings: &[String], actor: &str, now_ms: u64) -> Result<Skill, StoreError> {
+    fn set_bindings(
+        &self,
+        id: &str,
+        bindings: &[String],
+        actor: &str,
+        now_ms: u64,
+    ) -> Result<Skill, StoreError> {
         self.write(|d| {
             let s = d.skill_mut(id)?;
             s.bindings = normalised(bindings);
@@ -400,7 +498,13 @@ impl SkillStore for MemorySkills {
         })
     }
 
-    fn set_active(&self, id: &str, version: Option<u32>, actor: &str, now_ms: u64) -> Result<Skill, StoreError> {
+    fn set_active(
+        &self,
+        id: &str,
+        version: Option<u32>,
+        actor: &str,
+        now_ms: u64,
+    ) -> Result<Skill, StoreError> {
         self.write(|d| {
             let s = d.skill_mut(id)?;
             if let Some(v) = version {
@@ -411,25 +515,45 @@ impl SkillStore for MemorySkills {
             s.active_version = version;
             s.updated_ms = now_ms;
             let skill = s.skill();
-            let action = if version.is_some() { Action::Publish } else { Action::Unpublish };
+            let action = if version.is_some() {
+                Action::Publish
+            } else {
+                Action::Unpublish
+            };
             d.log(id, action, version, actor, now_ms);
             Ok(skill)
         })
     }
 
-    fn set_archived(&self, id: &str, archived: bool, actor: &str, now_ms: u64) -> Result<Skill, StoreError> {
+    fn set_archived(
+        &self,
+        id: &str,
+        archived: bool,
+        actor: &str,
+        now_ms: u64,
+    ) -> Result<Skill, StoreError> {
         self.write(|d| {
             let name = d.skill_mut(id)?.name.clone();
             if !archived {
                 if let Some(other) = d.name_holder(&name, id) {
-                    return Err(StoreError::Conflict(format!("{name} is the name of {other}")));
+                    return Err(StoreError::Conflict(format!(
+                        "{name} is the name of {other}"
+                    )));
                 }
             }
             let s = d.skill_mut(id)?;
-            s.archived_ms = if archived { s.archived_ms.or(Some(now_ms)) } else { None };
+            s.archived_ms = if archived {
+                s.archived_ms.or(Some(now_ms))
+            } else {
+                None
+            };
             s.updated_ms = now_ms;
             let skill = s.skill();
-            let action = if archived { Action::Archive } else { Action::Restore };
+            let action = if archived {
+                Action::Archive
+            } else {
+                Action::Restore
+            };
             d.log(id, action, None, actor, now_ms);
             Ok(skill)
         })
@@ -443,8 +567,17 @@ impl SkillStore for MemorySkills {
                 .filter(|e| e.skill_id == id)
                 .take(limit as usize)
                 .map(|e| {
-                    let action = Action::parse(&e.action).ok_or_else(|| format!("unknown action {} in the history of {id}", e.action))?;
-                    Ok(Event { id: e.id, skill_id: e.skill_id.clone(), action, version: e.version, actor: e.actor.clone(), at_ms: e.at_ms })
+                    let action = Action::parse(&e.action).ok_or_else(|| {
+                        format!("unknown action {} in the history of {id}", e.action)
+                    })?;
+                    Ok(Event {
+                        id: e.id,
+                        skill_id: e.skill_id.clone(),
+                        action,
+                        version: e.version,
+                        actor: e.actor.clone(),
+                        at_ms: e.at_ms,
+                    })
                 })
                 .collect::<Result<Vec<Event>, String>>()
         })

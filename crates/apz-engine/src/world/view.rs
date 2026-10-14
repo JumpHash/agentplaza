@@ -5,7 +5,7 @@ use std::sync::{Mutex, OnceLock};
 
 use glam::Vec3;
 
-use super::{display_name, Bot, Floor, Phase};
+use super::{Bot, Floor, Phase, display_name};
 use crate::fleet::{self, FleetScene};
 use crate::hardware::Status;
 use crate::scene::{Camera, Overlay, Tex};
@@ -16,13 +16,22 @@ const TAG_CACHE_LIMIT: usize = 64;
 
 /// The overlay tags over the machines: each machine's name and status square, above its label.
 /// `hovered` is the machine under the pointer (kept for the host's API: the three.js tags did not change on hover).
-pub fn machine_overlays(fleet: &FleetScene, camera: &Camera, width: f32, height: f32, scale: f32, hovered: Option<&str>) -> Vec<Overlay> {
+pub fn machine_overlays(
+    fleet: &FleetScene,
+    camera: &Camera,
+    width: f32,
+    height: f32,
+    scale: f32,
+    hovered: Option<&str>,
+) -> Vec<Overlay> {
     if width <= 0.0 || height <= 0.0 {
         return Vec::new();
     }
     let mut out = Vec::new();
     for tag in fleet.tags() {
-        let Some((x, y)) = camera.to_screen(Vec3::from(tag.pos), width, height) else { continue };
+        let Some((x, y)) = camera.to_screen(Vec3::from(tag.pos), width, height) else {
+            continue;
+        };
         let _ = hovered;
         let painted = painted_tag(&tag.name, tag.status, scale);
         let x = x - painted.box_w / 2.0;
@@ -31,7 +40,13 @@ pub fn machine_overlays(fleet: &FleetScene, camera: &Camera, width: f32, height:
         if x + w < 0.0 || x > width || y + h < 0.0 || y > height {
             continue;
         }
-        out.push(Overlay { tex: painted.tex, x, y, w, h });
+        out.push(Overlay {
+            tex: painted.tex,
+            x,
+            y,
+            w,
+            h,
+        });
     }
     out
 }
@@ -54,8 +69,16 @@ fn painted_tag(name: &str, status: Status, scale: f32) -> PaintedTag {
     if let Some(hit) = cache.lock().unwrap_or_else(|p| p.into_inner()).get(&key) {
         return hit.clone();
     }
-    let (canvas, box_w, box_h) = super::labels::paint_tag(name, &format!("rgb({}, {}, {})", led[0], led[1], led[2]), scale);
-    let painted = PaintedTag { tex: canvas.to_texture(), box_w, box_h };
+    let (canvas, box_w, box_h) = super::labels::paint_tag(
+        name,
+        &format!("rgb({}, {}, {})", led[0], led[1], led[2]),
+        scale,
+    );
+    let painted = PaintedTag {
+        tex: canvas.to_texture(),
+        box_w,
+        box_h,
+    };
     let mut map = cache.lock().unwrap_or_else(|p| p.into_inner());
     if map.len() > TAG_CACHE_LIMIT {
         map.clear();
@@ -115,7 +138,9 @@ impl Floor {
             if !bot.robot.group.get().visible {
                 continue;
             }
-            let Some((x, y)) = camera.to_screen(bot.robot.label_anchor(), width, height) else { continue };
+            let Some((x, y)) = camera.to_screen(bot.robot.label_anchor(), width, height) else {
+                continue;
+            };
             let cid = bot.agent.cid;
             out.push(Label {
                 cid,
@@ -136,7 +161,10 @@ impl Floor {
 
     /// The world point of a robot's label anchor on this view, or None when no robot of it has that cid.
     pub fn anchor_of(&self, cid: u64) -> Option<glam::Vec3> {
-        self.bots.iter().find(|b| b.agent.cid == cid).map(|b| b.robot.label_anchor())
+        self.bots
+            .iter()
+            .find(|b| b.agent.cid == cid)
+            .map(|b| b.robot.label_anchor())
     }
 
     /// The robot under the pointer (`pick`): the nearest whose bounding sphere the ray hits. The
@@ -151,7 +179,9 @@ impl Floor {
         let mut best: Option<(f32, u64)> = None;
         for bot in &self.bots {
             let centre = bot.robot.group.position() + Vec3::Y * 0.6;
-            let Some(t) = ray_sphere(origin, dir, centre, 0.75) else { continue };
+            let Some(t) = ray_sphere(origin, dir, centre, 0.75) else {
+                continue;
+            };
             if best.is_none_or(|(bt, _)| t < bt) {
                 best = Some((t, bot.agent.cid));
             }

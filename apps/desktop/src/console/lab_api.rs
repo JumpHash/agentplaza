@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::client::Client;
 
@@ -32,7 +32,10 @@ pub fn list_recipes(client: &Client) -> Result<Vec<Recipe>, String> {
 
 /// The owner vets a commit: 400 unless `commit` is 7 to 64 hex characters (or `dev-...`), 403 on a local-dev pin mismatch.
 pub fn vet_recipe(client: &Client, id: &str, commit: &str) -> Result<Recipe, String> {
-    client.post(&format!("/v1/foundry/recipes/{}/vet", enc(id)), &json!({ "commit": commit }))
+    client.post(
+        &format!("/v1/foundry/recipes/{}/vet", enc(id)),
+        &json!({ "commit": commit }),
+    )
 }
 
 // ---- Datasets --------------------------------------------------------------
@@ -80,8 +83,19 @@ pub fn create_dataset(client: &Client, spec: &DatasetSpec) -> Result<Dataset, St
 /// Imports a JSONL body as a dataset. Each row needs `ts` (unix ms), `label` and the recipe's feature fields.
 pub fn upload_dataset(client: &Client, name: &str, jsonl: &str) -> Result<Dataset, String> {
     let path = format!("/v1/foundry/datasets/upload?name={}", enc(name));
-    let reply = apz_http::client::request(&client.target, "POST", &path, Some(jsonl.as_bytes()), client.timeout).map_err(|e| e.to_string())?;
-    let value = if reply.body.is_empty() { Value::Null } else { reply.json().map_err(|e| e.to_string())? };
+    let reply = apz_http::client::request(
+        &client.target,
+        "POST",
+        &path,
+        Some(jsonl.as_bytes()),
+        client.timeout,
+    )
+    .map_err(|e| e.to_string())?;
+    let value = if reply.body.is_empty() {
+        Value::Null
+    } else {
+        reply.json().map_err(|e| e.to_string())?
+    };
     answered(reply.status, value)
 }
 
@@ -318,8 +332,14 @@ pub enum SubmitError {
 /// Submits a job document and dispatches it (the owner's real machines: only on an explicit request).
 pub fn submit_job(client: &Client, doc: &JobDocument) -> Result<JobView, SubmitError> {
     let body = serde_json::to_value(doc).map_err(|e| SubmitError::Refused(e.to_string()))?;
-    let (status, value) = apz_http::client::request_json(&client.target, "POST", "/v1/foundry/jobs", Some(&body), client.timeout)
-        .map_err(|e| SubmitError::Refused(e.to_string()))?;
+    let (status, value) = apz_http::client::request_json(
+        &client.target,
+        "POST",
+        "/v1/foundry/jobs",
+        Some(&body),
+        client.timeout,
+    )
+    .map_err(|e| SubmitError::Refused(e.to_string()))?;
     submit_answer(status, value)
 }
 
@@ -330,8 +350,15 @@ fn submit_answer(status: u16, value: Value) -> Result<JobView, SubmitError> {
         200..=299 => serde_json::from_value(value).map_err(|e| SubmitError::Refused(e.to_string())),
         422 => {
             let message = failure(status, &value);
-            match value.get("job").filter(|job| !job.is_null()).map(|job| serde_json::from_value::<JobView>(job.clone())) {
-                Some(Ok(job)) => Err(SubmitError::Dispatch { message, job: Box::new(job) }),
+            match value
+                .get("job")
+                .filter(|job| !job.is_null())
+                .map(|job| serde_json::from_value::<JobView>(job.clone()))
+            {
+                Some(Ok(job)) => Err(SubmitError::Dispatch {
+                    message,
+                    job: Box::new(job),
+                }),
                 _ => Err(SubmitError::Refused(message)),
             }
         }
@@ -350,7 +377,10 @@ pub fn get_job(client: &Client, id: &str) -> Result<JobView, String> {
 
 /// The job's stored events after sequence `after`; keep `next` for the following call.
 pub fn job_events(client: &Client, id: &str, after: u64) -> Result<JobEventsPage, String> {
-    client.get(&format!("/v1/foundry/jobs/{}/events?after={after}", enc(id)))
+    client.get(&format!(
+        "/v1/foundry/jobs/{}/events?after={after}",
+        enc(id)
+    ))
 }
 
 pub fn cancel_job(client: &Client, id: &str) -> Result<JobView, String> {
@@ -415,7 +445,9 @@ struct ModelList {
 }
 
 pub fn list_models(client: &Client) -> Result<Vec<ModelView>, String> {
-    client.get::<ModelList>("/v1/foundry/models").map(|list| list.models)
+    client
+        .get::<ModelList>("/v1/foundry/models")
+        .map(|list| list.models)
 }
 
 pub fn get_model(client: &Client, id: &str) -> Result<ModelView, String> {
@@ -428,15 +460,24 @@ pub fn import_model(client: &Client, path: &str) -> Result<ModelView, String> {
 }
 
 pub fn shadow_model(client: &Client, id: &str) -> Result<ModelView, String> {
-    client.post(&format!("/v1/foundry/models/{}/shadow", enc(id)), &json!({}))
+    client.post(
+        &format!("/v1/foundry/models/{}/shadow", enc(id)),
+        &json!({}),
+    )
 }
 
 pub fn promote_model(client: &Client, id: &str) -> Result<ModelView, String> {
-    client.post(&format!("/v1/foundry/models/{}/promote", enc(id)), &json!({}))
+    client.post(
+        &format!("/v1/foundry/models/{}/promote", enc(id)),
+        &json!({}),
+    )
 }
 
 pub fn retire_model(client: &Client, id: &str) -> Result<ModelView, String> {
-    client.post(&format!("/v1/foundry/models/{}/retire", enc(id)), &json!({}))
+    client.post(
+        &format!("/v1/foundry/models/{}/retire", enc(id)),
+        &json!({}),
+    )
 }
 
 /// The rederive's answer: the model, re-registered from its download, and its state.
@@ -448,7 +489,12 @@ struct Rederived {
 
 /// Re-registers an imported model from its download (`POST .../rederive`); only an imported model has one.
 pub fn rederive_model(client: &Client, id: &str) -> Result<ModelView, String> {
-    client.post::<Rederived>(&format!("/v1/foundry/models/{}/rederive", enc(id)), &json!({})).map(|answer| answer.model)
+    client
+        .post::<Rederived>(
+            &format!("/v1/foundry/models/{}/rederive", enc(id)),
+            &json!({}),
+        )
+        .map(|answer| answer.model)
 }
 
 // ---- Shared ----------------------------------------------------------------
@@ -464,7 +510,11 @@ fn answered<T: DeserializeOwned>(status: u16, value: Value) -> Result<T, String>
 
 /// The hub's `error` text, or the status when it gave none.
 fn failure(status: u16, value: &Value) -> String {
-    value.get("error").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| format!("HTTP {status}"))
+    value
+        .get("error")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("HTTP {status}"))
 }
 
 /// Percent-encodes a path segment or query value.
@@ -472,7 +522,9 @@ fn enc(text: &str) -> String {
     text.bytes()
         .map(|b| match b {
             // `@` stays raw: a recipe id is `name@version`, and apid reads the raw form (RFC 3986 allows it).
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'@' => (b as char).to_string(),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'@' => {
+                (b as char).to_string()
+            }
             _ => format!("%{b:02X}"),
         })
         .collect()
@@ -486,7 +538,10 @@ mod tests {
     fn a_planner_refusal_keeps_its_message() {
         // The planner's 422 has only `{error}`: no job was recorded, so the message is the answer.
         let refused = submit_answer(422, json!({ "error": "no machine fits 8 devices" }));
-        assert!(matches!(refused, Err(SubmitError::Refused(ref m)) if m == "no machine fits 8 devices"), "{refused:?}");
+        assert!(
+            matches!(refused, Err(SubmitError::Refused(ref m)) if m == "no machine fits 8 devices"),
+            "{refused:?}"
+        );
     }
 
     #[test]
@@ -503,6 +558,8 @@ mod tests {
 
     #[test]
     fn a_refusal_without_a_status_text_names_the_status() {
-        assert!(matches!(submit_answer(403, json!({})), Err(SubmitError::Refused(ref m)) if m == "HTTP 403"));
+        assert!(
+            matches!(submit_answer(403, json!({})), Err(SubmitError::Refused(ref m)) if m == "HTTP 403")
+        );
     }
 }

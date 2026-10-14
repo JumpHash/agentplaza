@@ -95,7 +95,8 @@ impl Config {
         }
         config.tls = tls || !config.bind.is_loopback();
         let scheme = if config.tls { "https" } else { "http" };
-        config.public_url = public_url.unwrap_or_else(|| format!("{scheme}://127.0.0.1:{}", config.port));
+        config.public_url =
+            public_url.unwrap_or_else(|| format!("{scheme}://127.0.0.1:{}", config.port));
         Ok(config)
     }
 }
@@ -189,14 +190,19 @@ impl App {
     pub fn start(config: Config) -> std::io::Result<apz_http::Handle> {
         // Parse the species index now: a broken index stops the hub here, not at the first hello.
         crate::looks::catalog();
-        let env = config.env_file.as_deref().map(read_env_file).unwrap_or_default();
+        let env = config
+            .env_file
+            .as_deref()
+            .map(read_env_file)
+            .unwrap_or_default();
         // The vault's startup reads the env file's variables after the providers take their copy.
         let vault_env = env.clone();
         std::fs::create_dir_all(&config.state_dir)?;
         let token = write_token(&config.state_dir)?;
         let snapshot = std::fs::read_to_string(config.state_dir.join("treasury.json")).ok();
-        let hub_auth = crate::hub_auth::Hub::load(&config.state_dir, &config.public_url, config.tls)
-            .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))?;
+        let hub_auth =
+            crate::hub_auth::Hub::load(&config.state_dir, &config.public_url, config.tls)
+                .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))?;
         let foundry_dir = config.state_dir.join("foundry");
         let db = Arc::new(crate::db::Db::connect(&env));
         let vault_db = db.enabled().then(|| Arc::clone(&db));
@@ -205,11 +211,21 @@ impl App {
         let prompt_store: Arc<dyn crate::prompts::PromptStore> = if db.enabled() {
             Arc::new(crate::prompts::store_db::DbPrompts::new(Arc::clone(&db)))
         } else {
-            Arc::new(crate::prompts::store_mem::MemoryPrompts::open(&config.state_dir))
+            Arc::new(crate::prompts::store_mem::MemoryPrompts::open(
+                &config.state_dir,
+            ))
         };
-        let vault = Arc::new(crate::vault::Store::open(&config.state_dir, &config.vault_key, vault_db));
+        let vault = Arc::new(crate::vault::Store::open(
+            &config.state_dir,
+            &config.vault_key,
+            vault_db,
+        ));
         // The Library of deliverables, shared with the skill library's file store.
-        let library = Arc::new(crate::deliverables::Store::load(&config.state_dir, &env, Arc::clone(&vault))?);
+        let library = Arc::new(crate::deliverables::Store::load(
+            &config.state_dir,
+            &env,
+            Arc::clone(&vault),
+        )?);
         let app = Arc::new(App {
             me: std::sync::OnceLock::new(),
             bus: events::Bus::default(),
@@ -239,20 +255,33 @@ impl App {
             foundry: crate::foundry::store::Foundry::open(foundry_dir, apz_plaza::now_ms()),
             mcp: crate::mcp::Mcp::load(&config.state_dir, config.mcp_proxy_port),
             hub_auth,
-            hub_mcp: crate::hub_mcp::HubMcp::open(crate::hub_mcp::default_origins(config.port, &config.public_url, config.tls || !config.bind.is_loopback()), config.tls || !config.bind.is_loopback(), hub_mcp_db),
+            hub_mcp: crate::hub_mcp::HubMcp::open(
+                crate::hub_mcp::default_origins(
+                    config.port,
+                    &config.public_url,
+                    config.tls || !config.bind.is_loopback(),
+                ),
+                config.tls || !config.bind.is_loopback(),
+                hub_mcp_db,
+            ),
             prompts: crate::prompts::Prompts::new(prompt_store),
             skills: {
                 // Skill files go to the Library's object store (the same Store the App holds) when Garage is configured.
                 let blobs: Arc<dyn crate::skills::Blobs> = if library.has_garage() {
-                    Arc::new(crate::skills::blobs::LibraryBlobs::new(Arc::clone(&library)))
+                    Arc::new(crate::skills::blobs::LibraryBlobs::new(Arc::clone(
+                        &library,
+                    )))
                 } else {
                     Arc::new(crate::skills::blobs::FsBlobs::open(&config.state_dir))
                 };
                 crate::skills::Skills::new(
                     if db.enabled() {
-                        Arc::new(crate::skills::store_db::DbSkills::new(Arc::clone(&db))) as Arc<dyn crate::skills::SkillStore>
+                        Arc::new(crate::skills::store_db::DbSkills::new(Arc::clone(&db)))
+                            as Arc<dyn crate::skills::SkillStore>
                     } else {
-                        Arc::new(crate::skills::store_mem::MemorySkills::open(&config.state_dir))
+                        Arc::new(crate::skills::store_mem::MemorySkills::open(
+                            &config.state_dir,
+                        ))
                     },
                     blobs,
                 )
@@ -283,9 +312,11 @@ impl App {
         crate::foundry::routes::spawn_tracker(Arc::clone(&app));
         // Model prices: refreshed when stale (at start, then hourly; the catalog decides).
         let prices_app = Arc::clone(&app);
-        std::thread::spawn(move || loop {
-            prices_app.prices.refresh_if_stale(apz_plaza::now_ms());
-            std::thread::sleep(std::time::Duration::from_secs(60 * 60));
+        std::thread::spawn(move || {
+            loop {
+                prices_app.prices.refresh_if_stale(apz_plaza::now_ms());
+                std::thread::sleep(std::time::Duration::from_secs(60 * 60));
+            }
         });
         // Every note an agent writes is a live `memory` event for the console.
         let weak = Arc::downgrade(&app);
@@ -310,8 +341,15 @@ impl App {
             apz_plaza::now_ms(),
         );
         // The vault starts after the database is read: it initialises, unseals with its key file, or stays sealed.
-        app.vault.boot(apz_plaza::now_ms()).map_err(|err| std::io::Error::other(err.message()))?;
-        app.vault.startup(&app, app.config.env_file.as_deref(), &vault_env, apz_plaza::now_ms());
+        app.vault
+            .boot(apz_plaza::now_ms())
+            .map_err(|err| std::io::Error::other(err.message()))?;
+        app.vault.startup(
+            &app,
+            app.config.env_file.as_deref(),
+            &vault_env,
+            apz_plaza::now_ms(),
+        );
         crate::vault::spawn_saver(Arc::clone(&app));
         // Promoted models come back on the roster with their CIDs.
         app.models.revive(&app.agents, &app.looks);
@@ -327,7 +365,10 @@ impl App {
         let mut server = if app.config.bind.is_loopback() {
             apz_http::Server::bind(app.config.port)?
         } else {
-            apz_http::Server::bind_addr(std::net::SocketAddr::new(app.config.bind, app.config.port))?
+            apz_http::Server::bind_addr(std::net::SocketAddr::new(
+                app.config.bind,
+                app.config.port,
+            ))?
         };
         if app.config.tls || !app.config.bind.is_loopback() {
             let dir = app.config.state_dir.join("tls");
@@ -337,10 +378,18 @@ impl App {
             };
             let tls = apz_trust::tls::server_config(&pair).map_err(std::io::Error::other)?;
             server = server.tls(tls);
-            eprintln!("apid: serving HTTPS on {}:{} (certificate pin {})", app.config.bind, app.config.port, app.hub_auth.fingerprint_b64());
+            eprintln!(
+                "apid: serving HTTPS on {}:{} (certificate pin {})",
+                app.config.bind,
+                app.config.port,
+                app.hub_auth.fingerprint_b64()
+            );
         }
         // Deliverables (videos, images) arrive as request bodies: allow up to 512 MiB.
-        let server = server.limits(apz_http::Limits { max_head: 16 << 10, max_body: 512 << 20 });
+        let server = server.limits(apz_http::Limits {
+            max_head: 16 << 10,
+            max_body: 512 << 20,
+        });
         let router = api::router();
         // The hub's front door first (owner token off loopback), then the routes.
         server.spawn(move |request| match crate::hub_auth::gate(&app, &request) {
@@ -361,12 +410,19 @@ fn attached_laws(state_dir: &Path) -> &'static crate::laws::Laws {
 }
 
 fn read_env_file(path: &Path) -> BTreeMap<String, String> {
-    let Ok(text) = std::fs::read_to_string(path) else { return BTreeMap::new() };
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return BTreeMap::new();
+    };
     text.lines()
         .map(str::trim)
         .filter(|line| !line.is_empty() && !line.starts_with('#'))
         .filter_map(|line| line.strip_prefix("export ").unwrap_or(line).split_once('='))
-        .map(|(k, v)| (k.trim().to_string(), v.trim().trim_matches('"').trim_matches('\'').to_string()))
+        .map(|(k, v)| {
+            (
+                k.trim().to_string(),
+                v.trim().trim_matches('"').trim_matches('\'').to_string(),
+            )
+        })
         .filter(|(k, _)| !k.is_empty())
         .collect()
 }
@@ -375,17 +431,19 @@ fn read_env_file(path: &Path) -> BTreeMap<String, String> {
 /// seconds whenever they changed. Their files are the copy at start when Postgres does not hold them
 /// yet; a component whose load failed is not written (db::Db::is_held).
 fn spawn_component_savers(app: Arc<App>) {
-    std::thread::spawn(move || loop {
-        std::thread::sleep(std::time::Duration::from_secs(3));
-        crate::mcp::tick(&app);
-        if !app.db.is_held("foundry") {
-            if let Err(err) = app.foundry.save() {
-                eprintln!("apid: cannot save the foundry: {err}");
+    std::thread::spawn(move || {
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            crate::mcp::tick(&app);
+            if !app.db.is_held("foundry") {
+                if let Err(err) = app.foundry.save() {
+                    eprintln!("apid: cannot save the foundry: {err}");
+                }
             }
-        }
-        if !app.db.is_held("looks") {
-            if let Err(err) = app.looks.save() {
-                eprintln!("apid: cannot save the looks: {err}");
+            if !app.db.is_held("looks") {
+                if let Err(err) = app.looks.save() {
+                    eprintln!("apid: cannot save the looks: {err}");
+                }
             }
         }
     });
@@ -445,8 +503,14 @@ mod tests {
         let file = dir.join("keys.env");
         std::fs::write(&file, "ENVFILE_KEY_4417=SENTINEL-ENVFILE-4417\n").unwrap();
         let map = read_env_file(&file);
-        assert_eq!(map.get("ENVFILE_KEY_4417").map(String::as_str), Some("SENTINEL-ENVFILE-4417"));
-        assert!(std::env::var("ENVFILE_KEY_4417").is_err(), "the loader must not set the process environment");
+        assert_eq!(
+            map.get("ENVFILE_KEY_4417").map(String::as_str),
+            Some("SENTINEL-ENVFILE-4417")
+        );
+        assert!(
+            std::env::var("ENVFILE_KEY_4417").is_err(),
+            "the loader must not set the process environment"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

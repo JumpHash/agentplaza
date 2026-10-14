@@ -45,7 +45,8 @@ use serde_json::{Value, json};
 
 pub use config::{Auth, Preset, ProviderConfig, ProviderKind, lists_training_model, presets};
 pub use decisions::{
-    Answer, ChoiceOption, ChoiceProbability, DecisionRequest, DecisionResponse, Level, LevelProbability, Question, Usage,
+    Answer, ChoiceOption, ChoiceProbability, DecisionRequest, DecisionResponse, Level,
+    LevelProbability, Question, Usage,
 };
 pub use error::{GatewayError, SecretReason};
 
@@ -95,7 +96,9 @@ pub trait SecretSource: Send + Sync {
     /// source that can say more (the vault: sealed, tampered, held elsewhere) overrides this instead, so
     /// the gateway makes one lookup per call, and that lookup is the only one audited.
     fn fetch(&self, name: &str, read: &SecretRead<'_>) -> Result<String, SecretReason> {
-        self.get(name, read).filter(|s| !s.is_empty()).ok_or(SecretReason::Missing)
+        self.get(name, read)
+            .filter(|s| !s.is_empty())
+            .ok_or(SecretReason::Missing)
     }
 }
 
@@ -130,7 +133,11 @@ pub struct ModelInfo {
 
 impl ModelInfo {
     pub fn new(id: impl Into<String>) -> Self {
-        ModelInfo { id: id.into(), name: None, context: None }
+        ModelInfo {
+            id: id.into(),
+            name: None,
+            context: None,
+        }
     }
 }
 
@@ -186,7 +193,11 @@ impl GatewayBuilder {
     }
 
     pub fn build(self) -> Gateway {
-        let providers = self.providers.into_iter().map(|p| (p.id.clone(), p)).collect();
+        let providers = self
+            .providers
+            .into_iter()
+            .map(|p| (p.id.clone(), p))
+            .collect();
         Gateway {
             inner: Arc::new(Inner {
                 providers: RwLock::new(providers),
@@ -234,59 +245,101 @@ impl Gateway {
 
     /// A gateway over `providers`, reading secrets from `secrets`.
     pub fn new(providers: Vec<ProviderConfig>, secrets: impl SecretSource + 'static) -> Self {
-        Gateway::builder().providers(providers).secrets(secrets).build()
+        Gateway::builder()
+            .providers(providers)
+            .secrets(secrets)
+            .build()
     }
 
     /// The configured providers, by id.
     pub fn providers(&self) -> Vec<ProviderConfig> {
-        self.inner.providers.read().unwrap_or_else(|e| e.into_inner()).values().cloned().collect()
+        self.inner
+            .providers
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .cloned()
+            .collect()
     }
 
     /// Replaces the configured providers (cached tokens are kept).
     pub fn set_providers(&self, providers: Vec<ProviderConfig>) {
         let map = providers.into_iter().map(|p| (p.id.clone(), p)).collect();
-        *self.inner.providers.write().unwrap_or_else(|e| e.into_inner()) = map;
+        *self
+            .inner
+            .providers
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = map;
     }
 
     pub fn provider(&self, id: &str) -> Result<ProviderConfig, GatewayError> {
-        let providers = self.inner.providers.read().unwrap_or_else(|e| e.into_inner());
-        providers.get(id).cloned().ok_or_else(|| GatewayError::UnknownProvider(id.to_string()))
+        let providers = self
+            .inner
+            .providers
+            .read()
+            .unwrap_or_else(|e| e.into_inner());
+        providers
+            .get(id)
+            .cloned()
+            .ok_or_else(|| GatewayError::UnknownProvider(id.to_string()))
     }
 
     /// One model call. `req.model` is `"<provider-id>/<model-id>"`, optionally
     /// `@<effort>` (which overrides `req.effort`; see [`ModelRef`]); live
     /// fragments go to `sink`; the returned response's `model` is
     /// `provider-id/<the model the API says answered>`.
-    pub fn complete(&self, req: &ChatRequest, sink: &mut dyn FnMut(Delta)) -> Result<ChatResponse, GatewayError> {
+    pub fn complete(
+        &self,
+        req: &ChatRequest,
+        sink: &mut dyn FnMut(Delta),
+    ) -> Result<ChatResponse, GatewayError> {
         self.complete_for(req, sink, &Caller::Hub)
     }
 
     /// [`Gateway::complete`] for `caller`: the credential is read for that caller only.
-    pub fn complete_for(&self, req: &ChatRequest, sink: &mut dyn FnMut(Delta), caller: &Caller) -> Result<ChatResponse, GatewayError> {
+    pub fn complete_for(
+        &self,
+        req: &ChatRequest,
+        sink: &mut dyn FnMut(Delta),
+        caller: &Caller,
+    ) -> Result<ChatResponse, GatewayError> {
         let name = ModelRef::parse(&req.model)?;
         let pinned;
         let req = match &name.effort {
             Some(effort) if req.effort.as_ref() != Some(effort) => {
-                pinned = ChatRequest { effort: Some(effort.clone()), ..req.clone() };
+                pinned = ChatRequest {
+                    effort: Some(effort.clone()),
+                    ..req.clone()
+                };
                 &pinned
             }
             _ => req,
         };
         let (provider_id, model) = (name.provider.as_str(), name.model.as_str());
         let p = self.provider(provider_id)?;
-        let ctx = Ctx { gw: &self.inner, p: &p, caller };
+        let ctx = Ctx {
+            gw: &self.inner,
+            p: &p,
+            caller,
+        };
         let mut resp = match p.kind {
-            ProviderKind::Anthropic | ProviderKind::VertexAnthropic => anthropic::complete(&ctx, req, model, sink),
+            ProviderKind::Anthropic | ProviderKind::VertexAnthropic => {
+                anthropic::complete(&ctx, req, model, sink)
+            }
             ProviderKind::OpenAi | ProviderKind::OpenAiCompatible | ProviderKind::AzureOpenAi => {
                 openai::complete(&ctx, req, model, sink)
             }
             ProviderKind::OpenAiResponses => responses::complete(&ctx, req, model, sink),
-            ProviderKind::Gemini | ProviderKind::VertexGemini => gemini::complete(&ctx, req, model, sink),
+            ProviderKind::Gemini | ProviderKind::VertexGemini => {
+                gemini::complete(&ctx, req, model, sink)
+            }
             ProviderKind::Bedrock => bedrock::complete(&ctx, req, model, sink),
             ProviderKind::Mock => Ok(mock::complete(req, model, sink)),
-            ProviderKind::OpenAiDecisions | ProviderKind::SystemOne | ProviderKind::AzureDecisions => Err(
-                GatewayError::Config(format!("{provider_id} is a decision model; it answers questions, not chats")),
-            ),
+            ProviderKind::OpenAiDecisions
+            | ProviderKind::SystemOne
+            | ProviderKind::AzureDecisions => Err(GatewayError::Config(format!(
+                "{provider_id} is a decision model; it answers questions, not chats"
+            ))),
         }?;
         if resp.model.is_empty() {
             resp.model = model.to_string();
@@ -302,16 +355,24 @@ impl Gateway {
     }
 
     /// [`Gateway::list_models`] for `caller`.
-    pub fn list_models_for(&self, provider_id: &str, caller: &Caller) -> Result<Vec<ModelInfo>, GatewayError> {
+    pub fn list_models_for(
+        &self,
+        provider_id: &str,
+        caller: &Caller,
+    ) -> Result<Vec<ModelInfo>, GatewayError> {
         let p = self.provider(provider_id)?;
         // The live listing, fetched from the provider's API.
         let fetch = || -> Result<Vec<ModelInfo>, GatewayError> {
-            let ctx = Ctx { gw: &self.inner, p: &p, caller };
+            let ctx = Ctx {
+                gw: &self.inner,
+                p: &p,
+                caller,
+            };
             Ok(match p.kind {
                 ProviderKind::Anthropic => anthropic::list_models(&ctx)?,
-                ProviderKind::OpenAi | ProviderKind::OpenAiCompatible | ProviderKind::OpenAiResponses => {
-                    openai::list_models(&ctx)?
-                }
+                ProviderKind::OpenAi
+                | ProviderKind::OpenAiCompatible
+                | ProviderKind::OpenAiResponses => openai::list_models(&ctx)?,
                 ProviderKind::Gemini => gemini::list_models(&ctx)?,
                 ProviderKind::Bedrock => bedrock::list_models(&ctx)?,
                 ProviderKind::Mock => mock::MODELS.iter().map(|m| ModelInfo::new(*m)).collect(),
@@ -324,7 +385,12 @@ impl Gateway {
             })
         };
         // `options.models_cache_secs` (a positive integer) keeps the live listing for that long.
-        let ttl = p.options.get("models_cache_secs").and_then(Value::as_u64).filter(|s| *s > 0).map(Duration::from_secs);
+        let ttl = p
+            .options
+            .get("models_cache_secs")
+            .and_then(Value::as_u64)
+            .filter(|s| *s > 0)
+            .map(Duration::from_secs);
         let mut models = match ttl {
             None => fetch()?,
             Some(ttl) => {
@@ -341,7 +407,10 @@ impl Gateway {
                         // A failed listing returns its error and is not cached.
                         let models = fetch()?;
                         let entry = (Instant::now(), models.clone());
-                        cache.lock().unwrap_or_else(|e| e.into_inner()).insert(provider_id.to_string(), entry);
+                        cache
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .insert(provider_id.to_string(), entry);
                         models
                     }
                 }
@@ -358,13 +427,25 @@ impl Gateway {
     /// One decision call: the decision model `model` of `provider_id` answers
     /// `req`'s questions. A chat provider is refused; the request is validated
     /// before anything is sent.
-    pub fn decide(&self, provider_id: &str, model: &str, req: &DecisionRequest) -> Result<DecisionResponse, GatewayError> {
+    pub fn decide(
+        &self,
+        provider_id: &str,
+        model: &str,
+        req: &DecisionRequest,
+    ) -> Result<DecisionResponse, GatewayError> {
         let p = self.provider(provider_id)?;
         if p.kind.group() != "decisions" {
-            return Err(GatewayError::Config(format!("{provider_id} is a chat model; it does not answer decisions")));
+            return Err(GatewayError::Config(format!(
+                "{provider_id} is a chat model; it does not answer decisions"
+            )));
         }
-        req.validate().map_err(|e| GatewayError::Config(format!("invalid decision request: {e}")))?;
-        let ctx = Ctx { gw: &self.inner, p: &p, caller: &Caller::Hub };
+        req.validate()
+            .map_err(|e| GatewayError::Config(format!("invalid decision request: {e}")))?;
+        let ctx = Ctx {
+            gw: &self.inner,
+            p: &p,
+            caller: &Caller::Hub,
+        };
         decisions::decide(&ctx, model, req)
     }
 
@@ -376,7 +457,12 @@ impl Gateway {
     }
 
     /// [`Gateway::test`] for `caller` (the owner's console test passes [`Caller::Owner`]).
-    pub fn test_for(&self, provider_id: &str, model: Option<&str>, caller: &Caller) -> Result<TestReport, GatewayError> {
+    pub fn test_for(
+        &self,
+        provider_id: &str,
+        model: Option<&str>,
+        caller: &Caller,
+    ) -> Result<TestReport, GatewayError> {
         let p = self.provider(provider_id)?;
         let model = match model.filter(|m| !m.is_empty()) {
             Some(m) => m.to_string(),
@@ -387,7 +473,9 @@ impl Gateway {
                     .into_iter()
                     .next()
                     .map(|m| m.id)
-                    .ok_or_else(|| GatewayError::Config(format!("provider `{provider_id}` lists no models")))?,
+                    .ok_or_else(|| {
+                        GatewayError::Config(format!("provider `{provider_id}` lists no models"))
+                    })?,
             },
         };
         let req = ChatRequest {
@@ -403,8 +491,20 @@ impl Gateway {
         let result = self.complete_for(&req, &mut |_| {}, caller);
         let latency_ms = started.elapsed().as_millis() as u64;
         Ok(match result {
-            Ok(resp) => TestReport { ok: true, reply: resp.text(), model: resp.model, latency_ms, error: None },
-            Err(e) => TestReport { ok: false, model: req.model, latency_ms, reply: String::new(), error: Some(e.to_string()) },
+            Ok(resp) => TestReport {
+                ok: true,
+                reply: resp.text(),
+                model: resp.model,
+                latency_ms,
+                error: None,
+            },
+            Err(e) => TestReport {
+                ok: false,
+                model: req.model,
+                latency_ms,
+                reply: String::new(),
+                error: Some(e.to_string()),
+            },
         })
     }
 }
@@ -438,7 +538,11 @@ impl ModelRef {
         if provider.is_empty() || model.is_empty() {
             return Err(bad());
         }
-        Ok(ModelRef { provider: provider.to_string(), model: model.to_string(), effort })
+        Ok(ModelRef {
+            provider: provider.to_string(),
+            model: model.to_string(),
+            effort,
+        })
     }
 
     /// `provider/model`, without the effort pin.
@@ -468,8 +572,12 @@ impl std::str::FromStr for ModelRef {
 /// in `options.trains_on_data`. Such a model trains its provider's future models on what it is sent
 /// and returns, so the hub never picks one by itself (see `apid`'s settings).
 pub fn trains_on_data(name: &str) -> bool {
-    let Ok(model) = ModelRef::parse(name) else { return false };
-    presets().iter().any(|p| p.id == model.provider && lists_training_model(&p.options, &model.model))
+    let Ok(model) = ModelRef::parse(name) else {
+        return false;
+    };
+    presets()
+        .iter()
+        .any(|p| p.id == model.provider && lists_training_model(&p.options, &model.model))
 }
 
 /// What an adapter needs for one call: the gateway and the provider.
@@ -492,7 +600,10 @@ impl Ctx<'_> {
     /// The named credential for this provider and caller: the source's value, or why there is none.
     /// One lookup per call.
     fn read_secret(&self, name: &str) -> Result<String, SecretReason> {
-        let read = SecretRead { provider: &self.p.id, caller: self.caller };
+        let read = SecretRead {
+            provider: &self.p.id,
+            caller: self.caller,
+        };
         self.gw.secrets.fetch(name, &read)
     }
 
@@ -501,7 +612,12 @@ impl Ctx<'_> {
     /// environment (the AWS key pair is read this way).
     pub(crate) fn required_secret(&self, name: &str) -> Result<String, GatewayError> {
         self.read_secret(name).map_err(|reason| {
-            reason.error().unwrap_or_else(|| GatewayError::Auth(format!("secret `{name}` is not set (provider `{}`)", self.p.id)))
+            reason.error().unwrap_or_else(|| {
+                GatewayError::Auth(format!(
+                    "secret `{name}` is not set (provider `{}`)",
+                    self.p.id
+                ))
+            })
         })
     }
 
@@ -527,15 +643,18 @@ impl Ctx<'_> {
                 Ok(value) => Ok(Some(value)),
                 Err(reason) => match reason.error() {
                     // Only a name the vault does not hold may come from the process environment.
-                    None => self
-                        .env(name)
-                        .map(Some)
-                        .ok_or_else(|| GatewayError::Auth(format!("environment variable {name} is not set (provider `{id}`)"))),
+                    None => self.env(name).map(Some).ok_or_else(|| {
+                        GatewayError::Auth(format!(
+                            "environment variable {name} is not set (provider `{id}`)"
+                        ))
+                    }),
                     Some(refusal) => Err(refusal),
                 },
             },
             Auth::Secret(name) => self.read_secret(name).map(Some).map_err(|reason| {
-                reason.error().unwrap_or_else(|| GatewayError::Auth(format!("secret `{name}` is not set (provider `{id}`)")))
+                reason.error().unwrap_or_else(|| {
+                    GatewayError::Auth(format!("secret `{name}` is not set (provider `{id}`)"))
+                })
             }),
             Auth::Command(cmd) => self.command_token(cmd).map(Some),
         }
@@ -543,8 +662,12 @@ impl Ctx<'_> {
 
     /// The credential, which this provider kind cannot do without.
     pub fn required_credential(&self) -> Result<String, GatewayError> {
-        self.credential()?
-            .ok_or_else(|| GatewayError::Auth(format!("provider `{}` has no credential configured", self.p.id)))
+        self.credential()?.ok_or_else(|| {
+            GatewayError::Auth(format!(
+                "provider `{}` has no credential configured",
+                self.p.id
+            ))
+        })
     }
 
     fn command_token(&self, cmd: &str) -> Result<String, GatewayError> {
@@ -582,14 +705,21 @@ impl Ctx<'_> {
     /// A Vertex AI model endpoint: `options.project` (else
     /// `GOOGLE_CLOUD_PROJECT`), `options.location` (else `CLOUD_ML_REGION`,
     /// else `global`); `base_url` replaces the regional host.
-    pub fn vertex_url(&self, publisher: &str, model: &str, method: &str) -> Result<String, GatewayError> {
+    pub fn vertex_url(
+        &self,
+        publisher: &str,
+        model: &str,
+        method: &str,
+    ) -> Result<String, GatewayError> {
         let project = self
             .p
             .option("project")
             .map(str::to_string)
             .or_else(|| self.env("GOOGLE_CLOUD_PROJECT"))
             .or_else(|| self.env("ANTHROPIC_VERTEX_PROJECT_ID"))
-            .ok_or_else(|| GatewayError::Config(format!("provider `{}` needs options.project", self.p.id)))?;
+            .ok_or_else(|| {
+                GatewayError::Config(format!("provider `{}` needs options.project", self.p.id))
+            })?;
         let location = self
             .p
             .option("location")
@@ -601,13 +731,17 @@ impl Ctx<'_> {
             None if location == "global" => "https://aiplatform.googleapis.com".to_string(),
             None => format!("https://{location}-aiplatform.googleapis.com"),
         };
-        Ok(format!("{host}/v1/projects/{project}/locations/{location}/publishers/{publisher}/models/{model}:{method}"))
+        Ok(format!(
+            "{host}/v1/projects/{project}/locations/{location}/publishers/{publisher}/models/{model}:{method}"
+        ))
     }
 }
 
 /// Deep-merges object `extra` into `base`; a `null` member deletes.
 fn merge_json(base: &mut Value, extra: &Value) {
-    let (Some(base), Some(extra)) = (base.as_object_mut(), extra.as_object()) else { return };
+    let (Some(base), Some(extra)) = (base.as_object_mut(), extra.as_object()) else {
+        return;
+    };
     for (key, value) in extra {
         match (base.get_mut(key), value) {
             (_, Value::Null) => {
@@ -629,7 +763,10 @@ pub(crate) fn parse_tool_input(raw: &str) -> (Value, Option<Value>) {
     }
     match serde_json::from_str::<Value>(raw) {
         Ok(v @ Value::Object(_)) => (v, None),
-        _ => (json!({}), Some(json!({"kind": "gateway", "error": INVALID_JSON, "raw": truncate(raw, 2000)}))),
+        _ => (
+            json!({}),
+            Some(json!({"kind": "gateway", "error": INVALID_JSON, "raw": truncate(raw, 2000)})),
+        ),
     }
 }
 
@@ -643,17 +780,24 @@ pub(crate) fn replayable<'b>(block: &'b Block, tag: &str) -> Option<&'b Value> {
 
 /// `ToolUse.meta` if it belongs to `tag`'s provider kind.
 pub(crate) fn own_meta<'m>(meta: &'m Option<Value>, tag: &str) -> Option<&'m Value> {
-    meta.as_ref().filter(|m| m.get("kind").and_then(Value::as_str) == Some(tag))
+    meta.as_ref()
+        .filter(|m| m.get("kind").and_then(Value::as_str) == Some(tag))
 }
 
 /// The number of tool calls already in a conversation (for synthesized ids).
 pub(crate) fn tool_use_count(messages: &[Message]) -> usize {
-    messages.iter().flat_map(|m| &m.content).filter(|b| matches!(b, Block::ToolUse { .. })).count()
+    messages
+        .iter()
+        .flat_map(|m| &m.content)
+        .filter(|b| matches!(b, Block::ToolUse { .. }))
+        .count()
 }
 
 /// Tool results first: providers want them ahead of any text in a message.
 pub(crate) fn results_first(blocks: &[Block]) -> Vec<&Block> {
-    let (mut results, rest): (Vec<_>, Vec<_>) = blocks.iter().partition(|b| matches!(b, Block::ToolResult { .. }));
+    let (mut results, rest): (Vec<_>, Vec<_>) = blocks
+        .iter()
+        .partition(|b| matches!(b, Block::ToolResult { .. }));
     results.extend(rest);
     results
 }
@@ -695,11 +839,20 @@ mod tests {
     #[test]
     fn a_refused_secret_is_asked_for_once_and_the_call_says_why() {
         let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let source = Counting { asked: Arc::clone(&asked), reason: SecretReason::Sealed };
+        let source = Counting {
+            asked: Arc::clone(&asked),
+            reason: SecretReason::Sealed,
+        };
         let mut p = ProviderConfig::new("claude", ProviderKind::Anthropic);
         p.auth = Auth::Secret("CLAUDE_KEY".to_string());
-        let gw = Gateway::builder().providers(vec![p]).secrets(source).build();
-        let req = ChatRequest { model: "claude/m".to_string(), ..crate::testutil::request("hi") };
+        let gw = Gateway::builder()
+            .providers(vec![p])
+            .secrets(source)
+            .build();
+        let req = ChatRequest {
+            model: "claude/m".to_string(),
+            ..crate::testutil::request("hi")
+        };
         let err = gw.complete(&req, &mut |_| {}).unwrap_err();
         assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 1);
         assert_eq!(err.to_string(), "vault sealed");
@@ -715,7 +868,10 @@ mod tests {
             .secrets(Refusing(Some(SecretReason::Sealed)))
             .env(|_| Some("PROCESS-VALUE-4417".to_string()))
             .build();
-        let req = ChatRequest { model: "claude/m".to_string(), ..crate::testutil::request("hi") };
+        let req = ChatRequest {
+            model: "claude/m".to_string(),
+            ..crate::testutil::request("hi")
+        };
         let err = gw.complete(&req, &mut |_| {}).unwrap_err();
         assert_eq!(err.to_string(), "vault sealed");
     }
@@ -724,50 +880,92 @@ mod tests {
     fn refused_call(source: Refusing) -> GatewayError {
         let mut p = ProviderConfig::new("claude", ProviderKind::Anthropic);
         p.auth = Auth::Secret("CLAUDE_KEY".to_string());
-        let gw = Gateway::builder().providers(vec![p]).secrets(source).build();
-        let req = ChatRequest { model: "claude/m".to_string(), ..crate::testutil::request("hi") };
+        let gw = Gateway::builder()
+            .providers(vec![p])
+            .secrets(source)
+            .build();
+        let req = ChatRequest {
+            model: "claude/m".to_string(),
+            ..crate::testutil::request("hi")
+        };
         gw.complete(&req, &mut |_| {}).unwrap_err()
     }
 
     #[test]
     fn a_sealed_vault_fails_the_call_with_its_own_text_not_not_set() {
         let err = refused_call(Refusing(Some(SecretReason::Sealed)));
-        assert!(matches!(&err, GatewayError::Vault { status: 503, .. }), "{err:?}");
+        assert!(
+            matches!(&err, GatewayError::Vault { status: 503, .. }),
+            "{err:?}"
+        );
         assert_eq!(err.to_string(), "vault sealed");
     }
 
     #[test]
     fn a_tampered_vault_and_a_secret_held_elsewhere_fail_with_their_own_status() {
-        let tampered = refused_call(Refusing(Some(SecretReason::Tampered("the index MAC does not match".into()))));
-        assert!(matches!(&tampered, GatewayError::Vault { status: 503, .. }), "{tampered:?}");
-        assert_eq!(tampered.to_string(), "vault tampered: the index MAC does not match");
+        let tampered = refused_call(Refusing(Some(SecretReason::Tampered(
+            "the index MAC does not match".into(),
+        ))));
+        assert!(
+            matches!(&tampered, GatewayError::Vault { status: 503, .. }),
+            "{tampered:?}"
+        );
+        assert_eq!(
+            tampered.to_string(),
+            "vault tampered: the index MAC does not match"
+        );
         let elsewhere = refused_call(Refusing(Some(SecretReason::OutOfScope)));
-        assert!(matches!(&elsewhere, GatewayError::Vault { status: 403, .. }), "{elsewhere:?}");
-        assert_eq!(elsewhere.to_string(), "that secret is not scoped to this node");
+        assert!(
+            matches!(&elsewhere, GatewayError::Vault { status: 403, .. }),
+            "{elsewhere:?}"
+        );
+        assert_eq!(
+            elsewhere.to_string(),
+            "that secret is not scoped to this node"
+        );
     }
 
     #[test]
     fn without_a_reason_the_call_still_says_the_secret_is_not_set() {
         let err = refused_call(Refusing(None));
         assert!(matches!(&err, GatewayError::Auth(_)), "{err:?}");
-        assert!(err.to_string().contains("secret `CLAUDE_KEY` is not set"), "{err}");
+        assert!(
+            err.to_string().contains("secret `CLAUDE_KEY` is not set"),
+            "{err}"
+        );
     }
 
     #[test]
     fn model_names_with_effort_pins() {
         let r = |s: &str| ModelRef::parse(s).unwrap();
         let pinned = r("anthropic/claude-opus-5-5@low");
-        assert_eq!((pinned.provider.as_str(), pinned.model.as_str(), pinned.effort.as_deref()), ("anthropic", "claude-opus-5-5", Some("low")));
+        assert_eq!(
+            (
+                pinned.provider.as_str(),
+                pinned.model.as_str(),
+                pinned.effort.as_deref()
+            ),
+            ("anthropic", "claude-opus-5-5", Some("low"))
+        );
         assert_eq!(pinned.to_string(), "anthropic/claude-opus-5-5@low");
         assert_eq!(pinned.base_name(), "anthropic/claude-opus-5-5");
         assert_eq!(r("xai/grok-4.7@XHigh").to_string(), "xai/grok-4.7@xhigh");
         assert_eq!(r("openrouter/anthropic/claude").model, "anthropic/claude");
         // A Vertex version suffix is part of the model, not an effort.
         let vertex = r("vertex/claude-sonnet-4-5@20250929");
-        assert_eq!((vertex.model.as_str(), vertex.effort), ("claude-sonnet-4-5@20250929", None));
-        assert_eq!(r("vertex/claude-sonnet-4-5@20250929@max").effort.as_deref(), Some("max"));
+        assert_eq!(
+            (vertex.model.as_str(), vertex.effort),
+            ("claude-sonnet-4-5@20250929", None)
+        );
+        assert_eq!(
+            r("vertex/claude-sonnet-4-5@20250929@max").effort.as_deref(),
+            Some("max")
+        );
         for bad in ["gpt-5", "openai/", "/gpt-5", "openai/@low"] {
-            assert!(matches!(ModelRef::parse(bad), Err(GatewayError::BadModelName(_))), "{bad}");
+            assert!(
+                matches!(ModelRef::parse(bad), Err(GatewayError::BadModelName(_))),
+                "{bad}"
+            );
         }
     }
 
@@ -775,20 +973,46 @@ mod tests {
     fn nested_model_ids_split_on_the_first_slash() {
         let r = |s: &str| ModelRef::parse(s).unwrap();
         let plain = r("openrouter/anthropic/claude-x");
-        assert_eq!((plain.provider.as_str(), plain.model.as_str(), plain.effort.as_deref()), ("openrouter", "anthropic/claude-x", None));
+        assert_eq!(
+            (
+                plain.provider.as_str(),
+                plain.model.as_str(),
+                plain.effort.as_deref()
+            ),
+            ("openrouter", "anthropic/claude-x", None)
+        );
         let free = r("openrouter/meta-llama/llama-3.3-70b-instruct:free");
         assert_eq!(free.model, "meta-llama/llama-3.3-70b-instruct:free");
         let zen = r("opencode/claude-x@high");
-        assert_eq!((zen.provider.as_str(), zen.model.as_str(), zen.effort.as_deref()), ("opencode", "claude-x", Some("high")));
+        assert_eq!(
+            (
+                zen.provider.as_str(),
+                zen.model.as_str(),
+                zen.effort.as_deref()
+            ),
+            ("opencode", "claude-x", Some("high"))
+        );
         let pinned = r("openrouter/anthropic/claude-x@xhigh");
-        assert_eq!((pinned.model.as_str(), pinned.effort.as_deref()), ("anthropic/claude-x", Some("xhigh")));
+        assert_eq!(
+            (pinned.model.as_str(), pinned.effort.as_deref()),
+            ("anthropic/claude-x", Some("xhigh"))
+        );
         // Not an effort: the `@` stays part of the model.
         let bogus = r("openrouter/vendor/model@bogus");
-        assert_eq!((bogus.model.as_str(), bogus.effort.is_none()), ("vendor/model@bogus", true));
+        assert_eq!(
+            (bogus.model.as_str(), bogus.effort.is_none()),
+            ("vendor/model@bogus", true)
+        );
         // The base name round-trips the nested id, and the pin survives Display.
         assert_eq!(pinned.base_name(), "openrouter/anthropic/claude-x");
-        assert_eq!(free.base_name(), "openrouter/meta-llama/llama-3.3-70b-instruct:free");
-        assert_eq!(ModelRef::parse(&pinned.base_name()).unwrap().base_name(), pinned.base_name());
+        assert_eq!(
+            free.base_name(),
+            "openrouter/meta-llama/llama-3.3-70b-instruct:free"
+        );
+        assert_eq!(
+            ModelRef::parse(&pinned.base_name()).unwrap().base_name(),
+            pinned.base_name()
+        );
         assert_eq!(pinned.to_string(), "openrouter/anthropic/claude-x@xhigh");
     }
 
@@ -806,7 +1030,11 @@ mod tests {
             let first = gw.list_models("o").unwrap();
             let second = gw.list_models("o").unwrap();
             assert_eq!(first, second);
-            assert_eq!(server.requests().len(), upstream_calls, "models_cache_secs {cache:?}");
+            assert_eq!(
+                server.requests().len(),
+                upstream_calls,
+                "models_cache_secs {cache:?}"
+            );
         }
     }
 
@@ -819,18 +1047,45 @@ mod tests {
     }
 
     fn ok_stream() -> testutil::Reply {
-        testutil::Reply::sse(testutil::sse_data(&[r#"{"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}"#, "[DONE]"]))
+        testutil::Reply::sse(testutil::sse_data(&[
+            r#"{"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}"#,
+            "[DONE]",
+        ]))
     }
 
     #[test]
     fn retryable_statuses_are_retried_then_reported() {
         use testutil::{FakeServer, Reply, gateway, provider, request};
         let busy = || Reply::json(503, &json!({"error": "busy"})).header("retry-after", "0");
-        let server = FakeServer::start(vec![busy(), busy(), busy(), Reply::json(429, &json!({})), ok_stream()]);
-        let gw = gateway(vec![provider("o", ProviderKind::OpenAiCompatible, &server, Auth::None)]);
-        let req = ChatRequest { model: "o/m".into(), ..request("hi") };
+        let server = FakeServer::start(vec![
+            busy(),
+            busy(),
+            busy(),
+            Reply::json(429, &json!({})),
+            ok_stream(),
+        ]);
+        let gw = gateway(vec![provider(
+            "o",
+            ProviderKind::OpenAiCompatible,
+            &server,
+            Auth::None,
+        )]);
+        let req = ChatRequest {
+            model: "o/m".into(),
+            ..request("hi")
+        };
         let err = gw.complete(&req, &mut |_| {}).unwrap_err();
-        assert!(matches!(&err, GatewayError::Http { status: 503, retryable: true, .. }), "{err:?}");
+        assert!(
+            matches!(
+                &err,
+                GatewayError::Http {
+                    status: 503,
+                    retryable: true,
+                    ..
+                }
+            ),
+            "{err:?}"
+        );
         assert!(err.is_retryable());
         assert_eq!(server.requests().len(), 3, "one call plus two retries");
         assert_eq!(gw.complete(&req, &mut |_| {}).unwrap().text(), "ok");
@@ -844,22 +1099,63 @@ mod tests {
         let server = FakeServer::start(vec![Reply::json(401, &leak)]);
         let gw = gateway(vec![
             provider("o", ProviderKind::OpenAi, &server, Auth::Secret("s".into())),
-            provider("g", ProviderKind::Gemini, &server, Auth::Secret("missing".into())),
+            provider(
+                "g",
+                ProviderKind::Gemini,
+                &server,
+                Auth::Secret("missing".into()),
+            ),
         ]);
-        let err = gw.complete(&ChatRequest { model: "o/gpt-6-luna".into(), ..request("hi") }, &mut |_| {}).unwrap_err();
+        let err = gw
+            .complete(
+                &ChatRequest {
+                    model: "o/gpt-6-luna".into(),
+                    ..request("hi")
+                },
+                &mut |_| {},
+            )
+            .unwrap_err();
         let shown = err.to_string();
-        assert!(shown.contains("401") && shown.contains("[redacted]") && !shown.contains("sk-secret-value"), "{shown}");
+        assert!(
+            shown.contains("401")
+                && shown.contains("[redacted]")
+                && !shown.contains("sk-secret-value"),
+            "{shown}"
+        );
         assert!(!format!("{err:?}").contains("sk-secret-value"));
         assert_eq!(server.requests().len(), 1, "401 is not retried");
-        let missing = gw.complete(&ChatRequest { model: "g/gemini-3-pro".into(), ..request("hi") }, &mut |_| {}).unwrap_err();
-        assert_eq!(missing, GatewayError::Auth("secret `missing` is not set (provider `g`)".into()));
-        assert!(matches!(gw.complete(&ChatRequest { model: "nope/m".into(), ..request("hi") }, &mut |_| {}), Err(GatewayError::UnknownProvider(_))));
+        let missing = gw
+            .complete(
+                &ChatRequest {
+                    model: "g/gemini-3-pro".into(),
+                    ..request("hi")
+                },
+                &mut |_| {},
+            )
+            .unwrap_err();
+        assert_eq!(
+            missing,
+            GatewayError::Auth("secret `missing` is not set (provider `g`)".into())
+        );
+        assert!(matches!(
+            gw.complete(
+                &ChatRequest {
+                    model: "nope/m".into(),
+                    ..request("hi")
+                },
+                &mut |_| {}
+            ),
+            Err(GatewayError::UnknownProvider(_))
+        ));
     }
 
     #[test]
     fn extra_body_deep_merges_and_null_deletes() {
         let mut body = json!({"a": {"x": 1, "y": 2}, "stream_options": {}, "k": 1});
-        merge_json(&mut body, &json!({"a": {"y": 3}, "stream_options": null, "z": true}));
+        merge_json(
+            &mut body,
+            &json!({"a": {"y": 3}, "stream_options": null, "z": true}),
+        );
         assert_eq!(body, json!({"a": {"x": 1, "y": 3}, "k": 1, "z": true}));
     }
 }

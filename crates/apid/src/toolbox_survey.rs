@@ -21,7 +21,11 @@ pub fn survey(app: &App, agent: &Agent, query: &str) -> String {
     let query = query.trim();
     let words = words_of(query);
     let filtered = !words.is_empty();
-    let who = if agent.name.is_empty() { agent.role.as_str() } else { agent.name.as_str() };
+    let who = if agent.name.is_empty() {
+        agent.role.as_str()
+    } else {
+        agent.name.as_str()
+    };
 
     let mut out: Vec<String> = vec![if filtered {
         format!("Toolbox for {who}, matching \"{query}\"")
@@ -52,7 +56,9 @@ pub fn survey(app: &App, agent: &Agent, query: &str) -> String {
                     services.len() - 1
                 }
             };
-            services[index].1.push((name, action.description.to_string()));
+            services[index]
+                .1
+                .push((name, action.description.to_string()));
         } else {
             match crate::tools::runs(&name) {
                 Some(crate::tools::Runs::Guest) if wanted(&words, &text) => {
@@ -68,7 +74,10 @@ pub fn survey(app: &App, agent: &Agent, query: &str) -> String {
 
     let mut service_lines: Vec<String> = Vec::new();
     for (connector, actions) in &services {
-        let connector_text = format!("{} {} {}", connector.label, connector.category, connector.description);
+        let connector_text = format!(
+            "{} {} {}",
+            connector.label, connector.category, connector.description
+        );
         let connector_hit = wanted(&words, &connector_text);
         let hits: Vec<String> = actions
             .iter()
@@ -92,7 +101,10 @@ pub fn survey(app: &App, agent: &Agent, query: &str) -> String {
         if enabled.contains(&connector.id) {
             continue;
         }
-        let connector_text = format!("{} {} {}", connector.label, connector.category, connector.description);
+        let connector_text = format!(
+            "{} {} {}",
+            connector.label, connector.category, connector.description
+        );
         if wanted(&words, &connector_text) {
             not_enabled.push(format!(
                 "- {} ({}): {}",
@@ -118,7 +130,11 @@ pub fn survey(app: &App, agent: &Agent, query: &str) -> String {
 
     section(&mut out, "In your VM", vm);
     section(&mut out, "On the plaza", plaza);
-    section(&mut out, "Outside services (keys held by the plaza)", service_lines);
+    section(
+        &mut out,
+        "Outside services (keys held by the plaza)",
+        service_lines,
+    );
     if !not_enabled.is_empty() {
         let mut lines = vec![
             "The owner can enable these; propose it on the board or with plaza_connector_propose if you need one."
@@ -169,12 +185,24 @@ fn found_lines(d: &Discovery) -> Vec<String> {
 
 /// The text a discovery is searched by, when the store's own search finds nothing.
 fn discovery_text(d: &Discovery) -> String {
-    format!("{} {} {} {} {} {}", d.name, d.kind, d.what_for, d.how, d.verdict, d.tags.join(" "))
+    format!(
+        "{} {} {} {} {} {}",
+        d.name,
+        d.kind,
+        d.what_for,
+        d.how,
+        d.verdict,
+        d.tags.join(" ")
+    )
 }
 
 /// The lowercase words of a query.
 fn words_of(query: &str) -> Vec<String> {
-    query.to_lowercase().split_whitespace().map(str::to_string).collect()
+    query
+        .to_lowercase()
+        .split_whitespace()
+        .map(str::to_string)
+        .collect()
 }
 
 /// True when there is no filter, or when `text` holds one of `words`.
@@ -216,7 +244,10 @@ mod tests {
     fn first_sentence_stops_at_the_first_sentence_end() {
         assert_eq!(first_sentence("Runs a thing. Then more."), "Runs a thing.");
         assert_eq!(first_sentence("  no   period  "), "no period");
-        assert_eq!(first_sentence(&"x".repeat(200)).chars().count(), SENTENCE_MAX);
+        assert_eq!(
+            first_sentence(&"x".repeat(200)).chars().count(),
+            SENTENCE_MAX
+        );
     }
 
     #[test]

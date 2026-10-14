@@ -8,8 +8,8 @@
 use super::follow::{clear_stuck, progress_made, segment_heading};
 use super::*;
 use crate::grid::NAV_JUMP_UP;
-use crate::nav::plan::{find_path, snap_walk};
 use crate::nav::NAV_PATH_TTL;
+use crate::nav::plan::{find_path, snap_walk};
 
 impl NavWorld {
     /// Invariant 4: the goal, or the nearest walk cell of the start's component to it (None: no such cell).
@@ -33,7 +33,11 @@ impl NavWorld {
         }
         let cell = self.snap_in_component(goal.x, goal.z, comp)?;
         let c = grid.centre(cell);
-        Some(NavGoal { x: c[0], z: c[1], ..goal })
+        Some(NavGoal {
+            x: c[0],
+            z: c[1],
+            ..goal
+        })
     }
 
     /// The walk cell of `component` nearest (x, z): rings out to SNAP_COMPONENT_RINGS, then the whole grid.
@@ -43,7 +47,8 @@ impl NavWorld {
         let cj = ((z - grid.z0) / grid.cell).floor() as i64;
         let cols = grid.cols as i64;
         let rows = grid.rows as i64;
-        let in_comp = |n: usize| grid.walk.get(n) == Some(&1) && self.comp.get(n) == Some(&component);
+        let in_comp =
+            |n: usize| grid.walk.get(n) == Some(&1) && self.comp.get(n) == Some(&component);
         let d2 = |n: usize| {
             let dx = grid.x0 + ((n % grid.cols) as f64 + 0.5) * grid.cell - x;
             let dz = grid.z0 + ((n / grid.cols) as f64 + 0.5) * grid.cell - z;
@@ -94,7 +99,12 @@ impl NavWorld {
     }
 
     /// Invariant 4: the path between two points, or None when either cannot be snapped or they are in two components.
-    pub(super) fn search(&mut self, from: [f64; 2], to: [f64; 2], penalty: Option<&[f64]>) -> Option<NavPath> {
+    pub(super) fn search(
+        &mut self,
+        from: [f64; 2],
+        to: [f64; 2],
+        penalty: Option<&[f64]>,
+    ) -> Option<NavPath> {
         let grid = &self.grid;
         let s = snap_walk(grid, from[0], from[1])?;
         let g = snap_walk(grid, to[0], to[1])?;
@@ -122,7 +132,9 @@ impl NavWorld {
             if o.id == id {
                 continue;
             }
-            let Some(c) = grid.cell_at(o.x, o.z) else { continue };
+            let Some(c) = grid.cell_at(o.x, o.z) else {
+                continue;
+            };
             let ci = c as i64 % cols;
             let cj = c as i64 / cols;
             for dj in -k..=k {
@@ -148,7 +160,11 @@ impl NavWorld {
 
     /// Invariant 2: replans from the robot's cell to its goal, with the crowd penalty; false when no plan was found.
     pub(super) fn replan_stuck(&mut self, id: u32) -> bool {
-        let Some((goal, x, z)) = self.robots.get(&id).and_then(|r| r.goal.clone().map(|g| (g, r.x, r.z))) else {
+        let Some((goal, x, z)) = self
+            .robots
+            .get(&id)
+            .and_then(|r| r.goal.clone().map(|g| (g, r.x, r.z)))
+        else {
             return false;
         };
         let pen = self.crowd_penalty(id);
@@ -156,11 +172,19 @@ impl NavWorld {
             return false;
         };
         let face = final_face_of(&goal, &p.points);
-        let Some(r) = self.robots.get_mut(&id) else { return false };
+        let Some(r) = self.robots.get_mut(&id) else {
+            return false;
+        };
         r.path = Some(p.points);
         r.ref_path = None;
         r.next = 0;
-        r.from = NavPoint { x: r.x, y: r.y, z: r.z, portal: -1, edge: None };
+        r.from = NavPoint {
+            x: r.x,
+            y: r.y,
+            z: r.z,
+            portal: -1,
+            edge: None,
+        };
         r.final_face = face;
         r.proposal = None;
         true
@@ -186,7 +210,9 @@ impl NavWorld {
     /// all), a lift wait, a yield (invariant 3) and turning in place (up to TURN_WAIT s). Otherwise the robot replans after
     /// REPLAN_AFTER s without progress, retries a failed plan after RETRY_AFTER s, and gives up after GIVE_UP_AFTER s.
     pub(super) fn watch(&mut self, id: u32, dt: f64) {
-        let Some(r) = self.robots.get(&id) else { return };
+        let Some(r) = self.robots.get(&id) else {
+            return;
+        };
         let ended = matches!(&r.path, Some(p) if r.next >= p.len());
         if r.riding || r.goal.is_none() || ended {
             if let Some(r) = self.robots.get_mut(&id) {
@@ -199,7 +225,9 @@ impl NavWorld {
         if yielding || lift_wait || self.in_lift_queue(id) {
             return;
         }
-        let Some(r) = self.robots.get_mut(&id) else { return };
+        let Some(r) = self.robots.get_mut(&id) else {
+            return;
+        };
         if r.turning && r.v == 0.0 {
             r.turn_t += dt;
             if r.turn_t <= TURN_WAIT {
@@ -209,7 +237,11 @@ impl NavWorld {
             r.turn_t = 0.0;
         }
         // The distance to the current waypoint; None when there is no path (the TS's `pts && target`).
-        let dist = r.path.as_ref().and_then(|p| p.get(r.next)).map(|t| (t.x - r.x).hypot(t.z - r.z));
+        let dist = r
+            .path
+            .as_ref()
+            .and_then(|p| p.get(r.next))
+            .map(|t| (t.x - r.x).hypot(t.z - r.z));
         if let Some(dist) = dist {
             if r.ref_path != r.path || r.ref_next != r.next {
                 // A new path, or a waypoint reached (its distance has shrunk on the way: that was the progress). Crossing a
@@ -234,27 +266,41 @@ impl NavWorld {
                 r.replan_at = r.stuck_t + delay;
             }
         }
-        if self.robots.get(&id).is_some_and(|r| r.stuck_t >= GIVE_UP_AFTER) {
+        if self
+            .robots
+            .get(&id)
+            .is_some_and(|r| r.stuck_t >= GIVE_UP_AFTER)
+        {
             self.give_up(id);
         }
     }
 
     /// Rule 2: plans the robot's path to its goal from `start` (x, y, z).
     pub(super) fn plan(&mut self, id: u32, start: [f64; 3]) {
-        let Some((riding, goal)) = self.robots.get(&id).map(|r| (r.riding, r.goal.clone())) else { return };
+        let Some((riding, goal)) = self.robots.get(&id).map(|r| (r.riding, r.goal.clone())) else {
+            return;
+        };
         let exit = if riding { Some(self.exit_of(id)) } else { None };
         let pts = match &goal {
             Some(g) => self.find_cached([start[0], start[2]], g.clone()),
             None => None,
         };
-        let Some(r) = self.robots.get_mut(&id) else { return };
+        let Some(r) = self.robots.get_mut(&id) else {
+            return;
+        };
         r.next = 0;
         r.proposal = None;
         if let (Some(g), Some(pts)) = (&goal, pts) {
             if !pts.is_empty() {
                 r.ref_path = None;
                 r.path = Some(pts);
-                r.from = NavPoint { x: start[0], y: start[1], z: start[2], portal: -1, edge: None };
+                r.from = NavPoint {
+                    x: start[0],
+                    y: start[1],
+                    z: start[2],
+                    portal: -1,
+                    edge: None,
+                };
                 r.final_face = final_face_of(g, r.path.as_deref().unwrap_or(&[]));
                 return;
             }

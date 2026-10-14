@@ -10,9 +10,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use apz_http::client::Target;
 use apz_http::ws::{self, Limits, Message, Socket};
+use iced::Subscription;
 use iced::futures::channel::mpsc;
 use iced::futures::{SinkExt, Stream, StreamExt};
-use iced::Subscription;
 use serde_json::Value;
 
 use super::client::Client;
@@ -62,11 +62,15 @@ pub fn top_bar(target: &Target) -> Subscription<Event> {
 /// Whether the socket to `target`'s hub is connected, for the top bar's "Live" or "Reconnecting…":
 /// the state now, then each change. It is down until the first connection.
 pub fn link(target: &Target) -> Subscription<bool> {
-    Subscription::run_with(Feed(target.clone(), "link"), |feed: &Feed| watch(feed.0.clone()))
+    Subscription::run_with(Feed(target.clone(), "link"), |feed: &Feed| {
+        watch(feed.0.clone())
+    })
 }
 
 fn stream(target: &Target, tag: &'static str) -> Subscription<Event> {
-    Subscription::run_with(Feed(target.clone(), tag), |feed: &Feed| open(feed.0.clone()))
+    Subscription::run_with(Feed(target.clone(), tag), |feed: &Feed| {
+        open(feed.0.clone())
+    })
 }
 
 /// The subscription's data: the target and a tag, hashed by its base URL and the tag. A screen's stream and
@@ -112,7 +116,9 @@ fn hubs() -> MutexGuard<'static, Vec<(String, Vec<mpsc::Sender<Event>>)>> {
 }
 
 fn links() -> MutexGuard<'static, Vec<Link>> {
-    LINKS.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    LINKS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// `base`'s connection entry, made down when it is first asked for.
@@ -120,7 +126,11 @@ fn link_of<'a>(links: &'a mut Vec<Link>, base: &str) -> &'a mut Link {
     let i = match links.iter().position(|link| link.base == base) {
         Some(i) => i,
         None => {
-            links.push(Link { base: base.to_string(), up: false, watchers: Vec::new() });
+            links.push(Link {
+                base: base.to_string(),
+                up: false,
+                watchers: Vec::new(),
+            });
             links.len() - 1
         }
     };
@@ -164,7 +174,13 @@ fn run(target: Target) {
     let base = target.base.clone();
     let mut backoff = MIN_BACKOFF;
     while wanted(&base) {
-        if let Ok(mut socket) = ws::connect(&target, PATH, Some(PROTOCOL), CONNECT_TIMEOUT, Limits::default()) {
+        if let Ok(mut socket) = ws::connect(
+            &target,
+            PATH,
+            Some(PROTOCOL),
+            CONNECT_TIMEOUT,
+            Limits::default(),
+        ) {
             set_link(&base, true);
             let connected = Instant::now();
             read(&mut socket, &base);
@@ -249,7 +265,9 @@ fn pause(total: Duration, base: &str) -> bool {
 
 /// The backoff with ±25% jitter (from the clock's sub-second part, no RNG), at most `MAX_BACKOFF`.
 fn jittered(base: Duration) -> Duration {
-    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.subsec_nanos());
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.subsec_nanos());
     let unit = f64::from(nanos) / 1e9;
     base.mul_f64(0.75 + 0.5 * unit).min(MAX_BACKOFF)
 }
@@ -285,7 +303,11 @@ mod tests {
         assert!(!rx.try_recv().unwrap());
         let links = links();
         let link = links.iter().find(|link| link.base == base).unwrap();
-        assert_eq!(link.watchers.len(), 1, "the gone watcher is removed, the live one stays");
+        assert_eq!(
+            link.watchers.len(),
+            1,
+            "the gone watcher is removed, the live one stays"
+        );
         assert!(!link.up);
     }
 
@@ -293,19 +315,26 @@ mod tests {
     fn events_fan_out_reaches_every_live_subscriber_and_prunes_the_closed_one() {
         let (a, mut ra) = mpsc::channel::<Event>(4);
         let (b, rb) = mpsc::channel::<Event>(4);
-        let (c, mut rc) = mpsc::channel::<Event>(0);  // one slot: a sender's capacity is buffer + 1
+        let (c, mut rc) = mpsc::channel::<Event>(0); // one slot: a sender's capacity is buffer + 1
         drop(rb);
         let mut subs = vec![a, b, c];
         let frame = parse(r#"{"event":"agent","data":{"cid":200}}"#).unwrap();
         fan_out(&mut subs, &frame);
         fan_out(&mut subs, &frame);
-        assert_eq!(subs.len(), 2, "the closed subscriber is removed, the full one stays");
+        assert_eq!(
+            subs.len(),
+            2,
+            "the closed subscriber is removed, the full one stays"
+        );
         for _ in 0..2 {
             let got = ra.try_recv().unwrap();
             assert_eq!(got.kind, "agent");
             assert_eq!(got.data["cid"], 200);
         }
         assert_eq!(rc.try_recv().unwrap().kind, "agent");
-        assert!(rc.try_recv().is_err(), "a full subscriber drops the frame rather than blocking");
+        assert!(
+            rc.try_recv().is_err(),
+            "a full subscriber drops the frame rather than blocking"
+        );
     }
 }

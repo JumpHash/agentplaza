@@ -17,11 +17,11 @@ use std::sync::Arc;
 use kvm_bindings::KVM_CPUID_FLAG_SIGNIFCANT_INDEX;
 use kvm_ioctls::{VcpuExit, VcpuFd};
 
+use crate::arch::x86_64::EntryPoint;
 use crate::arch::x86_64::interrupts;
 use crate::arch::x86_64::kvm::Kvm;
 use crate::arch::x86_64::msr::{MsrError, create_boot_msr_entries, set_msrs};
 use crate::arch::x86_64::regs::{SetupFpuError, SetupRegistersError, SetupSpecialRegistersError};
-use crate::arch::x86_64::EntryPoint;
 use crate::vstate::bus::Bus;
 use crate::vstate::memory::GuestMemoryMmap;
 use crate::vstate::vcpu::{VcpuEmulation, VcpuError};
@@ -205,7 +205,12 @@ fn set_range(x: &mut u32, range: std::ops::RangeInclusive<u8>, y: u32) {
 /// vCPU with index `cpu_index` (inlined, trimmed version of upstream's
 /// `cpu_config::x86_64::cpuid::normalize`: `update_feature_info_entry` and
 /// `update_extended_topology_entry`).
-fn normalize_cpuid_topology(cpuid: &mut [kvm_bindings::kvm_cpuid_entry2], cpu_index: u8, cpu_count: u8, cpu_bits: u8) {
+fn normalize_cpuid_topology(
+    cpuid: &mut [kvm_bindings::kvm_cpuid_entry2],
+    cpu_index: u8,
+    cpu_count: u8,
+    cpu_bits: u8,
+) {
     // Logical processors per core: 2 when SMT is enabled, 1 otherwise.
     let cpus_per_core = u8::from(cpu_bits > 0) + 1;
 
@@ -218,7 +223,11 @@ fn normalize_cpuid_topology(cpuid: &mut [kvm_bindings::kvm_cpuid_entry2], cpu_in
                 // CPUID.01H:EBX[23:16] — maximum number of addressable IDs
                 // for logical processors in this physical package (the
                 // nearest power-of-2 integer not smaller than the vCPU count).
-                set_range(&mut entry.ebx, 16..=23, u32::from(cpu_count.max(1).next_power_of_two()));
+                set_range(
+                    &mut entry.ebx,
+                    16..=23,
+                    u32::from(cpu_count.max(1).next_power_of_two()),
+                );
                 // CPUID.01H:EBX[31:24] — initial APIC ID.
                 set_range(&mut entry.ebx, 24..=31, u32::from(cpu_index));
                 // CPUID.01H:ECX[24] (TSC-Deadline) and ECX[31] (Hypervisor).
@@ -309,9 +318,7 @@ impl Peripherals {
                 }
                 Ok(VcpuEmulation::Handled)
             }
-            unexpected_exit => Err(VcpuError::UnhandledKvmExit(format!(
-                "{unexpected_exit:?}"
-            ))),
+            unexpected_exit => Err(VcpuError::UnhandledKvmExit(format!("{unexpected_exit:?}"))),
         }
     }
 }
@@ -384,7 +391,10 @@ mod tests {
         // Subleaf 1: core domain; 2^N >= MAX_SUPPORTED_VCPUS (N = 5 for 32),
         // all 6 logical processors, domain type 2.
         let sub1 = &entries[2];
-        assert_eq!(sub1.eax & 0x1f, u32::from(MAX_SUPPORTED_VCPUS.next_power_of_two().ilog2()));
+        assert_eq!(
+            sub1.eax & 0x1f,
+            u32::from(MAX_SUPPORTED_VCPUS.next_power_of_two().ilog2())
+        );
         assert_eq!(sub1.ebx & 0xffff, 6);
         assert_eq!(sub1.ecx & 0xff, 1);
         assert_eq!((sub1.ecx >> 8) & 0xff, 2);

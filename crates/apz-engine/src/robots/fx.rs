@@ -26,14 +26,24 @@ pub const LIVE_MAX: usize = 60;
 const WARM: u32 = 0xffc46b;
 
 /// The kinds built now. A kind's index is its pool and texture.
-const KINDS: [&str; 12] = ["sparks", "zzz", "dots", "hearts", "keys", "steam", "ink", "glow", "notes", "bubbles", "confetti", "trail"];
+const KINDS: [&str; 12] = [
+    "sparks", "zzz", "dots", "hearts", "keys", "steam", "ink", "glow", "notes", "bubbles",
+    "confetti", "trail",
+];
 const TEXTURE_SIZE: usize = 64;
 /// A note's colours, one picked per note (fx.ts's tints), and a confetti flake's, and a trail puff's.
 const NOTE_TINTS: [u32; 3] = [0x7a5cff, 0xff7ab6, 0x3fb6a8];
 const CONFETTI_TINTS: [u32; 5] = [0xff6b8a, 0xffc23d, 0x5bd1b5, 0x8fb8ff, 0xb08bff];
 const TRAIL_TINTS: [u32; 1] = [0x2ee6a6];
 /// The six spheres of an ink blot: (centre x, centre y, radius) on the texture, as fx.ts.
-const INK: [(f32, f32, f32); 6] = [(32.0, 32.0, 13.0), (22.0, 27.0, 11.0), (42.0, 27.0, 11.0), (21.0, 40.0, 10.0), (43.0, 40.0, 10.0), (32.0, 44.0, 11.0)];
+const INK: [(f32, f32, f32); 6] = [
+    (32.0, 32.0, 13.0),
+    (22.0, 27.0, 11.0),
+    (42.0, 27.0, 11.0),
+    (21.0, 40.0, 10.0),
+    (43.0, 40.0, 10.0),
+    (32.0, 44.0, 11.0),
+];
 /// The three puffs of a steam cloud: (centre x, centre y, radius) on the texture, as fx.ts.
 const STEAM: [(f32, f32, f32); 3] = [(24.0, 38.0, 14.0), (41.0, 32.0, 16.0), (33.0, 44.0, 12.0)];
 
@@ -128,16 +138,85 @@ fn look_of(kind: usize) -> Look {
         stage: false,
     };
     match KINDS[kind] {
-        "sparks" => Look { life: 0.5, size: 0.14, rise: 0.2, rise_jitter: 0.3, spread: 0.5, ..base },
-        "zzz" => Look { life: 1.6, size: 0.24, grow: [0.7, 1.2], rise: 0.32, spread: 0.12, ..base },
-        "dots" => Look { life: 1.2, size: 0.26, spread: 0.12, ..base },
-        "hearts" => Look { life: 1.5, size: 0.2, rise: 0.45, spread: 0.12, ..base },
-        "keys" => Look { life: 0.4, size: 0.14, grow: [0.4, 1.1], rise: 0.25, spread: 0.12, pop: true, ..base },
-        "steam" => Look { life: 1.2, size: 0.26, grow: [0.6, 1.9], rise: 0.3, spread: 0.08, peak: 0.85, fade: Fade::Puff, ..base },
-        "ink" => Look { life: 1.0, size: 0.42, grow: [0.6, 1.3], rise: 0.04, peak: 0.8, fade: Fade::Linear, ..base },
+        "sparks" => Look {
+            life: 0.5,
+            size: 0.14,
+            rise: 0.2,
+            rise_jitter: 0.3,
+            spread: 0.5,
+            ..base
+        },
+        "zzz" => Look {
+            life: 1.6,
+            size: 0.24,
+            grow: [0.7, 1.2],
+            rise: 0.32,
+            spread: 0.12,
+            ..base
+        },
+        "dots" => Look {
+            life: 1.2,
+            size: 0.26,
+            spread: 0.12,
+            ..base
+        },
+        "hearts" => Look {
+            life: 1.5,
+            size: 0.2,
+            rise: 0.45,
+            spread: 0.12,
+            ..base
+        },
+        "keys" => Look {
+            life: 0.4,
+            size: 0.14,
+            grow: [0.4, 1.1],
+            rise: 0.25,
+            spread: 0.12,
+            pop: true,
+            ..base
+        },
+        "steam" => Look {
+            life: 1.2,
+            size: 0.26,
+            grow: [0.6, 1.9],
+            rise: 0.3,
+            spread: 0.08,
+            peak: 0.85,
+            fade: Fade::Puff,
+            ..base
+        },
+        "ink" => Look {
+            life: 1.0,
+            size: 0.42,
+            grow: [0.6, 1.3],
+            rise: 0.04,
+            peak: 0.8,
+            fade: Fade::Linear,
+            ..base
+        },
         // The rise is fx.ts's rise × (0.6 + 0.8·r): a base of 0.6 × rise, plus up to 0.8 × rise at random.
-        "notes" => Look { life: 1.4, size: 0.2, grow: [1.0, 1.1], rise: 0.24, rise_jitter: 0.32, spread: 0.1, sway: 0.12, tints: &NOTE_TINTS, ..base },
-        "bubbles" => Look { life: 1.4, size: 0.13, grow: [1.0, 1.25], rise: 0.18, rise_jitter: 0.24, spread: 0.05, sway: 0.04, ..base },
+        "notes" => Look {
+            life: 1.4,
+            size: 0.2,
+            grow: [1.0, 1.1],
+            rise: 0.24,
+            rise_jitter: 0.32,
+            spread: 0.1,
+            sway: 0.12,
+            tints: &NOTE_TINTS,
+            ..base
+        },
+        "bubbles" => Look {
+            life: 1.4,
+            size: 0.13,
+            grow: [1.0, 1.25],
+            rise: 0.18,
+            rise_jitter: 0.24,
+            spread: 0.05,
+            sway: 0.04,
+            ..base
+        },
         "confetti" => Look {
             life: 1.8,
             size: 0.13,
@@ -150,8 +229,22 @@ fn look_of(kind: usize) -> Look {
             tints: &CONFETTI_TINTS,
             ..base
         },
-        "trail" => Look { life: 6.0, size: 0.13, tints: &TRAIL_TINTS, stage: true, ..base },
-        _ => Look { life: 1.0, size: 1.0, peak: 0.6, fade: Fade::Arc, cone: true, additive: true, ..base },
+        "trail" => Look {
+            life: 6.0,
+            size: 0.13,
+            tints: &TRAIL_TINTS,
+            stage: true,
+            ..base
+        },
+        _ => Look {
+            life: 1.0,
+            size: 1.0,
+            peak: 0.6,
+            fade: Fade::Arc,
+            cone: true,
+            additive: true,
+            ..base
+        },
     }
 }
 
@@ -160,7 +253,11 @@ fn kind_index(kind: &str) -> Option<usize> {
 }
 
 fn hex(v: u32) -> [f32; 3] {
-    [((v >> 16) & 0xff) as f32, ((v >> 8) & 0xff) as f32, (v & 0xff) as f32]
+    [
+        ((v >> 16) & 0xff) as f32,
+        ((v >> 8) & 0xff) as f32,
+        (v & 0xff) as f32,
+    ]
 }
 
 fn mix(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
@@ -205,7 +302,10 @@ fn gradient_t(p: (f32, f32), f: (f32, f32), r0: f32, c: (f32, f32), r1: f32) -> 
         return 0.0;
     }
     let s = disc.sqrt();
-    let best = [(b + s) / a, (b - s) / a].into_iter().filter(|t| r0 + t * dr >= 0.0).fold(f32::MIN, f32::max);
+    let best = [(b + s) / a, (b - s) / a]
+        .into_iter()
+        .filter(|t| r0 + t * dr >= 0.0)
+        .fold(f32::MIN, f32::max);
     best.clamp(0.0, 1.0)
 }
 
@@ -263,13 +363,22 @@ fn texel(kind: usize, x: f32, y: f32) -> ([f32; 3], f32) {
         }
         "zzz" => {
             // A zed: a top bar, a diagonal and a bottom bar.
-            let d = [((18.0, 16.0), (46.0, 16.0)), ((46.0, 16.0), (18.0, 48.0)), ((18.0, 48.0), (46.0, 48.0))]
-                .iter()
-                .map(|(a, b)| segment_distance((x, y), *a, *b))
-                .fold(f32::MAX, f32::min);
+            let d = [
+                ((18.0, 16.0), (46.0, 16.0)),
+                ((46.0, 16.0), (18.0, 48.0)),
+                ((18.0, 48.0), (46.0, 48.0)),
+            ]
+            .iter()
+            .map(|(a, b)| segment_distance((x, y), *a, *b))
+            .fold(f32::MAX, f32::min);
             (hex(0x8fb8ff), on(d <= 2.5))
         }
-        "dots" => (hex(0x5b6475), on([14.0, 32.0, 50.0].iter().any(|cx| (x - cx).hypot(y - 32.0) <= 6.0))),
+        "dots" => (
+            hex(0x5b6475),
+            on([14.0, 32.0, 50.0]
+                .iter()
+                .any(|cx| (x - cx).hypot(y - 32.0) <= 6.0)),
+        ),
         "hearts" => {
             // The heart curve (x² + y² − 1)³ − x²y³ ≤ 0, y up.
             let (hx, hy) = ((x - 32.0) / 20.0, (34.0 - y) / 20.0);
@@ -300,11 +409,15 @@ fn texel(kind: usize, x: f32, y: f32) -> ([f32; 3], f32) {
         }
         "notes" => {
             // A beamed pair of eighth notes, white (the piece's tint colours it): two heads, two stems and a beam.
-            let head = |cx: f32, cy: f32| ((x - cx) / 6.5).powi(2) + ((y - cy) / 4.5).powi(2) <= 1.0;
+            let head =
+                |cx: f32, cy: f32| ((x - cx) / 6.5).powi(2) + ((y - cy) / 4.5).powi(2) <= 1.0;
             let stem_l = segment_distance((x, y), (27.5, 46.0), (27.5, 16.0)) <= 1.6;
             let stem_r = segment_distance((x, y), (47.5, 42.0), (47.5, 12.0)) <= 1.6;
             let beam = segment_distance((x, y), (27.5, 16.0), (47.5, 12.0)) <= 2.5;
-            ([255.0; 3], on(head(22.0, 46.0) || head(42.0, 42.0) || stem_l || stem_r || beam))
+            (
+                [255.0; 3],
+                on(head(22.0, 46.0) || head(42.0, 42.0) || stem_l || stem_r || beam),
+            )
         }
         "bubbles" => {
             // A translucent blue disc with a bright rim and a white glint at its top-left (fx.ts).
@@ -323,18 +436,29 @@ fn texel(kind: usize, x: f32, y: f32) -> ([f32; 3], f32) {
         }
         "confetti" => {
             // A white flake, wider than tall; its piece's tint colours it.
-            ([255.0; 3], on((10.0..54.0).contains(&x) && (22.0..42.0).contains(&y)))
+            (
+                [255.0; 3],
+                on((10.0..54.0).contains(&x) && (22.0..42.0).contains(&y)),
+            )
         }
         "trail" => {
             // A soft dot: a bright core, fading out at the rim (its tint colours it).
             let d = (x - 32.0).hypot(y - 32.0) / 32.0;
-            let a = if d <= 0.6 { 1.0 - 0.05 * d / 0.6 } else { (0.95 * (1.0 - (d - 0.6) / 0.4)).max(0.0) };
+            let a = if d <= 0.6 {
+                1.0 - 0.05 * d / 0.6
+            } else {
+                (0.95 * (1.0 - (d - 0.6) / 0.4)).max(0.0)
+            };
             ([255.0; 3], a)
         }
         "glow" => {
             // A cone's texture: clear at the apex (the top row, uv v = 1), bright at the base (the bottom row).
             let t = y / TEXTURE_SIZE as f32;
-            let a = if t < 0.5 { 0.3 * t / 0.5 } else { 0.3 + 0.6 * (t - 0.5) / 0.5 };
+            let a = if t < 0.5 {
+                0.3 * t / 0.5
+            } else {
+                0.3 + 0.6 * (t - 0.5) / 0.5
+            };
             (hex(0xffffff), a)
         }
         _ => ([0.0; 3], 0.0),
@@ -351,7 +475,12 @@ fn textures() -> &'static [Tex] {
                 for y in 0..n {
                     for x in 0..n {
                         let (rgb, a) = texel(kind, x as f32 + 0.5, y as f32 + 0.5);
-                        rgba.extend_from_slice(&[rgb[0] as u8, rgb[1] as u8, rgb[2] as u8, (a * 255.0) as u8]);
+                        rgba.extend_from_slice(&[
+                            rgb[0] as u8,
+                            rgb[1] as u8,
+                            rgb[2] as u8,
+                            (a * 255.0) as u8,
+                        ]);
                     }
                 }
                 Arc::new(Texture::new(n as u32, n as u32, rgba))
@@ -375,7 +504,11 @@ fn cone() -> &'static Geo {
         let mut normals = Vec::with_capacity(2 * (seg + 1));
         let mut uvs = Vec::with_capacity(2 * (seg + 1));
         for row in 0..2 {
-            let (radius, y, v) = if row == 0 { (0.0, 0.0, 1.0) } else { (r, -h, 0.0) };
+            let (radius, y, v) = if row == 0 {
+                (0.0, 0.0, 1.0)
+            } else {
+                (r, -h, 0.0)
+            };
             for x in 0..=seg {
                 let u = x as f32 / seg as f32;
                 let (s, c) = (u * TAU).sin_cos();
@@ -386,7 +519,12 @@ fn cone() -> &'static Geo {
         }
         let mut indices = Vec::with_capacity(seg * 6);
         for x in 0..seg {
-            let (a, b, c, d) = (x as u32, (seg + 1 + x) as u32, (seg + 2 + x) as u32, (x + 1) as u32);
+            let (a, b, c, d) = (
+                x as u32,
+                (seg + 1 + x) as u32,
+                (seg + 2 + x) as u32,
+                (x + 1) as u32,
+            );
             indices.extend_from_slice(&[a, b, d, b, c, d]);
         }
         Geometry::new(positions, normals, uvs, indices)
@@ -397,7 +535,10 @@ fn cone() -> &'static Geo {
 /// angle, the eye's direction from the target).
 fn facing() -> Quat {
     let (sp, cp) = (POLAR.sin(), POLAR.cos());
-    Quat::from_rotation_arc(Vec3::Z, Vec3::new(sp * AZIMUTH.sin(), cp, sp * AZIMUTH.cos()))
+    Quat::from_rotation_arc(
+        Vec3::Z,
+        Vec3::new(sp * AZIMUTH.sin(), cp, sp * AZIMUTH.cos()),
+    )
 }
 
 /// A pooled effect: its quad or cone and its own material (its opacity and colour are its own).
@@ -478,7 +619,10 @@ impl Fx {
 
 impl Fx {
     pub fn new(seed: u32) -> Fx {
-        Fx { items: Vec::new(), rng: Rng::new(seed) }
+        Fx {
+            items: Vec::new(),
+            rng: Rng::new(seed),
+        }
     }
 
     /// Spawns one effect under `parent` at `at`, in the warm light's colour (a glow's colour only). False when the
@@ -506,7 +650,11 @@ impl Fx {
         }
         let sway = look.sway * (0.5 + self.rng.next());
         let phase = self.rng.next() * TAU;
-        let spin = if look.spin > 0.0 { (if self.rng.next() < 0.5 { -1.0 } else { 1.0 }) * look.spin * (0.5 + self.rng.next()) } else { 0.0 };
+        let spin = if look.spin > 0.0 {
+            (if self.rng.next() < 0.5 { -1.0 } else { 1.0 }) * look.spin * (0.5 + self.rng.next())
+        } else {
+            0.0
+        };
         // A glow takes the caller's colour; a piece with tints takes one of them at random; the rest keep white.
         let rgb = if look.cone {
             Some(color)
@@ -518,9 +666,22 @@ impl Fx {
         };
         puff.mat.get().color = rgb.map_or(Color::WHITE, Color::hex);
         puff.mat.get().opacity = look.peak * look.fade.value(0.0);
-        puff.obj.set_position(at.x, at.y, at.z).set_scalar(look.size);
+        puff.obj
+            .set_position(at.x, at.y, at.z)
+            .set_scalar(look.size);
         parent.add(&puff.obj);
-        self.items.push(Item { puff, parent: parent.clone(), look, age: 0.0, vx, vy, sway, phase, spin, at });
+        self.items.push(Item {
+            puff,
+            parent: parent.clone(),
+            look,
+            age: 0.0,
+            vx,
+            vy,
+            sway,
+            phase,
+            spin,
+            at,
+        });
         LIVE.fetch_add(1, Ordering::Relaxed);
         true
     }
@@ -548,12 +709,23 @@ impl Fx {
             let obj = &it.puff.obj;
             if look.stage {
                 let p = inverse.transform_point3(it.at);
-                obj.set_position(p.x, p.y, p.z).set_scalar(s / scale.x.max(1e-6)).set_quaternion(root_rot.inverse() * face);
+                obj.set_position(p.x, p.y, p.z)
+                    .set_scalar(s / scale.x.max(1e-6))
+                    .set_quaternion(root_rot.inverse() * face);
             } else {
                 let wobble = it.sway * (5.0 * it.age + it.phase).sin();
-                obj.set_position(it.at.x + it.vx * it.age + wobble, it.at.y + it.vy * it.age, it.at.z).set_scalar(s);
+                obj.set_position(
+                    it.at.x + it.vx * it.age + wobble,
+                    it.at.y + it.vy * it.age,
+                    it.at.z,
+                )
+                .set_scalar(s);
                 if !look.cone {
-                    let tumble = if it.spin != 0.0 { it.spin * it.age + it.phase } else { 0.0 };
+                    let tumble = if it.spin != 0.0 {
+                        it.spin * it.age + it.phase
+                    } else {
+                        0.0
+                    };
                     obj.set_quaternion(face * Quat::from_rotation_z(tumble));
                 }
             }
@@ -610,7 +782,10 @@ mod tests {
         for kind in ["notes", "bubbles", "confetti", "trail"] {
             let root = Obj::group();
             let mut fx = Fx::new(11);
-            assert!(fx.spawn(kind, &root, Vec3::new(0.0, 0.5, 0.0)), "{kind} spawns");
+            assert!(
+                fx.spawn(kind, &root, Vec3::new(0.0, 0.5, 0.0)),
+                "{kind} spawns"
+            );
             assert_eq!(fx.items.len(), 1, "{kind}");
             assert_eq!(children_of(&root), 1, "{kind} is under its parent");
             let start = fx.items[0].puff.obj.position();
@@ -650,8 +825,15 @@ mod tests {
             assert!(fx.spawn("confetti", &root, Vec3::ZERO));
         }
         let colors: Vec<Color> = fx.items.iter().map(|it| it.puff.mat.get().color).collect();
-        assert!(colors.iter().all(|c| CONFETTI_TINTS.iter().any(|t| *c == Color::hex(*t))));
-        assert!(colors.iter().any(|c| *c != colors[0]), "the flakes differ in colour");
+        assert!(
+            colors
+                .iter()
+                .all(|c| CONFETTI_TINTS.iter().any(|t| *c == Color::hex(*t)))
+        );
+        assert!(
+            colors.iter().any(|c| *c != colors[0]),
+            "the flakes differ in colour"
+        );
         fx.clear();
         assert!(fx.spawn("notes", &root, Vec3::ZERO));
         let note = fx.items[0].puff.mat.get().color;
@@ -668,20 +850,26 @@ mod tests {
         let left = Vec3::new(1.0, 0.0, 2.0);
         assert!(fx.spawn("trail", &root, left));
         // The robot walks on and turns: the puff stays in the frame it was left in, at its own size.
-        root.set_position(-4.0, 0.0, 1.0).set_rotation(0.0, 1.2, 0.0);
+        root.set_position(-4.0, 0.0, 1.0)
+            .set_rotation(0.0, 1.2, 0.0);
         let frame = root.local_matrix();
         fx.update(0.1, frame);
         let puff = &fx.items[0].puff.obj;
         let world = frame.transform_point3(puff.position());
         assert!(world.distance(left) < 1e-4, "the trail is at {world:?}");
         let (world_scale, _, _) = (frame * puff.local_matrix()).to_scale_rotation_translation();
-        assert!((world_scale.x - 0.13).abs() < 1e-4, "the trail keeps its size: {}", world_scale.x);
+        assert!(
+            (world_scale.x - 0.13).abs() < 1e-4,
+            "the trail keeps its size: {}",
+            world_scale.x
+        );
         fx.clear();
     }
 
     #[test]
     fn the_new_textures_are_drawn() {
-        let at = |kind: &str, x: f32, y: f32| texel(kind_index(kind).expect("a built kind"), x, y).1;
+        let at =
+            |kind: &str, x: f32, y: f32| texel(kind_index(kind).expect("a built kind"), x, y).1;
         assert_eq!(at("notes", 22.0, 46.0), 1.0, "a note's head");
         assert_eq!(at("notes", 2.0, 2.0), 0.0);
         assert_eq!(at("bubbles", 32.0, 10.0), 1.0, "a bubble's rim");

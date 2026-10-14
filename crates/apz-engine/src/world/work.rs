@@ -14,26 +14,29 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::OnceLock;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
+use super::AgentInfo;
 use super::behaviour::{
-    Behaviour, BehaviourConfig, BotIn, BotState, Decision, EventIn, Personality as BehPersonality, Pos, QuirkIn, SpotIn,
-    TickIn,
+    Behaviour, BehaviourConfig, BotIn, BotState, Decision, EventIn, Personality as BehPersonality,
+    Pos, QuirkIn, SpotIn, TickIn,
 };
 use super::board_layout::{BoardDistrict, BoardLayout, TraceGraph};
-use super::spots::{board_spots, desk_spots, district_key, region_of, room_spots, RoomFrame, RoomItem, RoomSpot};
-use super::AgentInfo;
+use super::spots::{
+    RoomFrame, RoomItem, RoomSpot, board_spots, desk_spots, district_key, region_of, room_spots,
+};
 use crate::hardware::{Model, Params};
 use crate::robot::Robot;
-use crate::robots::types::Species;
 use crate::robots::types::Personality as SpeciesPersonality;
+use crate::robots::types::Species;
 
 static CONFIG: OnceLock<BehaviourConfig> = OnceLock::new();
 
 /// The behaviour config (`assets/robots/behaviour.json`), parsed once.
 fn config() -> &'static BehaviourConfig {
     CONFIG.get_or_init(|| {
-        serde_json::from_str(include_str!("../../../../assets/robots/behaviour.json")).expect("behaviour.json parses")
+        serde_json::from_str(include_str!("../../../../assets/robots/behaviour.json"))
+            .expect("behaviour.json parses")
     })
 }
 
@@ -154,8 +157,14 @@ pub fn straight_step(b: &mut WorkBot, gx: f32, gz: f32, dt: f32) -> Option<f32> 
 }
 
 /// A spot's nav component (-1 off the walk), cached until the next second's refresh.
-fn spot_comp_of(cache: &mut BTreeMap<String, i64>, reach: Option<&dyn Fn(f32, f32) -> i64>, s: &SpotIn) -> i64 {
-    *cache.entry(s.key.clone()).or_insert_with(|| reach.map_or(-1, |f| f(s.x as f32, s.z as f32)))
+fn spot_comp_of(
+    cache: &mut BTreeMap<String, i64>,
+    reach: Option<&dyn Fn(f32, f32) -> i64>,
+    s: &SpotIn,
+) -> i64 {
+    *cache
+        .entry(s.key.clone())
+        .or_insert_with(|| reach.map_or(-1, |f| f(s.x as f32, s.z as f32)))
 }
 
 fn bot_state(status: &str) -> BotState {
@@ -241,15 +250,31 @@ impl RobotWork {
     }
 
     /// A room was built on district `d` (its group turned by `turn`): its stations become the room's region.
-    pub fn add_room(&mut self, d: &BoardDistrict, turn: f32, spots: &[RoomSpot], items: &[RoomItem]) {
+    pub fn add_room(
+        &mut self,
+        d: &BoardDistrict,
+        turn: f32,
+        spots: &[RoomSpot],
+        items: &[RoomItem],
+    ) {
         let region = self.rooms.len() as i64 + 1;
-        let frame = RoomFrame { region, d: d.clone(), spots: room_spots(region, d, turn, spots, items) };
+        let frame = RoomFrame {
+            region,
+            d: d.clone(),
+            spots: room_spots(region, d, turn, spots, items),
+        };
         self.rooms.insert(district_key(&d.district), frame);
         self.recombine();
     }
 
     /// The board's spots (components, commons, docks, traces, anywhere) for this board and layout. Call after the rooms.
-    pub fn set_board(&mut self, model: &Model, params: &Params, graph: &TraceGraph, layout: &BoardLayout) {
+    pub fn set_board(
+        &mut self,
+        model: &Model,
+        params: &Params,
+        graph: &TraceGraph,
+        layout: &BoardLayout,
+    ) {
         self.board_list = board_spots(model, params, graph, layout);
         self.recombine();
     }
@@ -270,7 +295,11 @@ impl RobotWork {
     /// The floor reports a tool call an agent made (its transcript's tool_request).
     pub fn note_tool(&mut self, cid: i64, tool: &str, inp: &Value) {
         let clock = self.clock;
-        let to_cid = if tool == "plaza_send_message" { inp.get("to_cid").and_then(Value::as_i64) } else { None };
+        let to_cid = if tool == "plaza_send_message" {
+            inp.get("to_cid").and_then(Value::as_i64)
+        } else {
+            None
+        };
         let tr = track_entry(&mut self.tracks, cid);
         tr.last_tool = Some(tool.to_string());
         match to_cid {
@@ -296,24 +325,41 @@ impl RobotWork {
                 let id = d.get("id").and_then(Value::as_str);
                 let lead = d.get("lead_cid").and_then(Value::as_i64);
                 let stage = d.get("stage").and_then(Value::as_str).unwrap_or("");
-                let (Some(id), Some(lead)) = (id, lead) else { return };
+                let (Some(id), Some(lead)) = (id, lead) else {
+                    return;
+                };
                 if self.stages.get(id).map(String::as_str) == Some(stage) {
                     return;
                 }
                 self.stages.insert(id.to_string(), stage.to_string());
                 // The members: the lowest-numbered robots that are on the board, other than the lead (the feed names none).
                 let max = config().events.standup.max as usize;
-                let members: Vec<i64> = self.by_cid.keys().copied().filter(|&c| c != lead).take(max).collect();
-                self.pending.push(EventIn::Standup { conductor: lead, members });
+                let members: Vec<i64> = self
+                    .by_cid
+                    .keys()
+                    .copied()
+                    .filter(|&c| c != lead)
+                    .take(max)
+                    .collect();
+                self.pending.push(EventIn::Standup {
+                    conductor: lead,
+                    members,
+                });
             }
             "file" => {
                 if d.get("deleted").and_then(Value::as_bool) == Some(true) {
                     return;
                 }
-                let Some(author) = d.get("author_cid").and_then(Value::as_i64) else { return };
+                let Some(author) = d.get("author_cid").and_then(Value::as_i64) else {
+                    return;
+                };
                 if let Some(to) = self.orchestrator_cid() {
                     if to != author {
-                        self.pending.push(EventIn::Deliver { from: author, to, item: Some("crate".into()) });
+                        self.pending.push(EventIn::Deliver {
+                            from: author,
+                            to,
+                            item: Some("crate".into()),
+                        });
                     }
                 }
             }
@@ -323,10 +369,14 @@ impl RobotWork {
                 {
                     return;
                 }
-                let Some(work) = d.get("work").and_then(Value::as_i64) else { return };
+                let Some(work) = d.get("work").and_then(Value::as_i64) else {
+                    return;
+                };
                 // The feed names no component: the failure's slot is picked by its work id (a stable spread over the slots).
                 let slot = FAILURE_SLOTS[work.rem_euclid(FAILURE_SLOTS.len() as i64) as usize];
-                self.pending.push(EventIn::Respond { slot: slot.to_string() });
+                self.pending.push(EventIn::Respond {
+                    slot: slot.to_string(),
+                });
             }
             _ => {}
         }
@@ -334,7 +384,10 @@ impl RobotWork {
 
     /// The orchestrator's cid (the lead of the plaza's work), or None when it is not on the board.
     fn orchestrator_cid(&self) -> Option<i64> {
-        self.by_cid.iter().find(|(_, s)| s.orchestrator).map(|(c, _)| *c)
+        self.by_cid
+            .iter()
+            .find(|(_, s)| s.orchestrator)
+            .map(|(c, _)| *c)
     }
 
     /// One frame, before the poses are read: the engine's clock, the status events, and a decision tick when due.
@@ -344,7 +397,11 @@ impl RobotWork {
         self.held = held;
         self.by_cid.clear();
         for b in bots {
-            let seen = Seen { x: b.x, y: b.y, orchestrator: b.agent.tier == "orchestrator" };
+            let seen = Seen {
+                x: b.x,
+                y: b.y,
+                orchestrator: b.agent.tier == "orchestrator",
+            };
             self.by_cid.insert(cid_of(b), seen);
         }
         let cids: BTreeSet<i64> = bots.iter().map(cid_of).collect();
@@ -352,7 +409,9 @@ impl RobotWork {
         self.prev_status.retain(|c, _| cids.contains(c));
         for b in bots {
             let cid = cid_of(b);
-            if self.prev_status.get(&cid).map(String::as_str) == Some("working") && b.agent.status == "idle" {
+            if self.prev_status.get(&cid).map(String::as_str) == Some("working")
+                && b.agent.status == "idle"
+            {
                 self.pending.push(EventIn::Celebrate { cid });
             }
             self.prev_status.insert(cid, b.agent.status.clone());
@@ -368,7 +427,9 @@ impl RobotWork {
     /// does not re-send the goal every frame).
     pub fn goal_for(&mut self, b: &WorkBot) -> Option<WorkGoal> {
         let cid = cid_of(b);
-        let partner_seen = |d: &Decision, by_cid: &BTreeMap<i64, Seen>| d.partner.and_then(|c| by_cid.get(&c).copied());
+        let partner_seen = |d: &Decision, by_cid: &BTreeMap<i64, Seen>| {
+            d.partner.and_then(|c| by_cid.get(&c).copied())
+        };
         let by_cid = &self.by_cid;
         let tr = track_entry(&mut self.tracks, cid);
         let Some(d) = tr.dec.clone() else {
@@ -380,7 +441,11 @@ impl RobotWork {
             tr.target = (g.x as f32, g.z as f32);
             tr.has_target = true;
             let goal = (g.x as f32, g.z as f32, g.face.map(|f| f as f32));
-            return Some(WorkGoal { key: tr.seq.to_string(), goal, activity: d.activity });
+            return Some(WorkGoal {
+                key: tr.seq.to_string(),
+                goal,
+                activity: d.activity,
+            });
         }
         let Some(p) = p else {
             tr.has_target = false;
@@ -391,14 +456,22 @@ impl RobotWork {
             let dx = b.x - p.x;
             let dz = b.y - p.y;
             let len = dx.hypot(dz);
-            tr.side = if len > 1e-6 { (dx / len, dz / len) } else { (-1.0, 0.0) };
+            tr.side = if len > 1e-6 {
+                (dx / len, dz / len)
+            } else {
+                (-1.0, 0.0)
+            };
         }
         let x = p.x + tr.side.0 * BESIDE;
         let z = p.y + tr.side.1 * BESIDE;
         tr.target = (x, z);
         tr.has_target = true;
         let key = format!("{}:{},{}", tr.seq, quant(x), quant(z));
-        Some(WorkGoal { key, goal: (x, z, None), activity: d.activity })
+        Some(WorkGoal {
+            key,
+            goal: (x, z, None),
+            activity: d.activity,
+        })
     }
 
     /// Called every frame after the robot's pose is read. Walking shows the walk clip and puts down the last activity's
@@ -410,7 +483,8 @@ impl RobotWork {
         if tr.started == tr.seq {
             return;
         }
-        let reached = tr.has_target && !b.moving && (b.x - tr.target.0).hypot(b.y - tr.target.1) < ARRIVE;
+        let reached =
+            tr.has_target && !b.moving && (b.x - tr.target.0).hypot(b.y - tr.target.1) < ARRIVE;
         if !reached {
             if tr.shown.take().is_some() {
                 robot.play(None, None);
@@ -424,7 +498,11 @@ impl RobotWork {
             return;
         }
         tr.started = tr.seq;
-        let clip = if d.clip == "@walk" { None } else { Some(d.clip.clone()) };
+        let clip = if d.clip == "@walk" {
+            None
+        } else {
+            Some(d.clip.clone())
+        };
         robot.play(clip.as_deref(), Some(true));
         tr.shown = clip;
         robot.hold(d.tool.as_deref());
@@ -444,7 +522,11 @@ impl RobotWork {
             if d.goal.is_some() {
                 return Some(face_point(b, p));
             }
-            return if tr.started == tr.seq { Some(face_point(b, p)) } else { None };
+            return if tr.started == tr.seq {
+                Some(face_point(b, p))
+            } else {
+                None
+            };
         }
         if tr.started == tr.seq {
             if let Some(face) = d.goal.and_then(|g| g.face) {
@@ -456,9 +538,12 @@ impl RobotWork {
 
     /// Whether a robot is in a chat or a huddle right now (its label shows the talk dots).
     pub fn talking(&self, cid: i64) -> bool {
-        self.tracks.get(&cid).and_then(|t| t.dec.as_ref()).is_some_and(|d| {
-            d.partner.is_some() && (d.activity == "chat" || d.activity == "huddle")
-        })
+        self.tracks
+            .get(&cid)
+            .and_then(|t| t.dec.as_ref())
+            .is_some_and(|d| {
+                d.partner.is_some() && (d.activity == "chat" || d.activity == "huddle")
+            })
     }
 
     /// The nav world gave up a robot's walk (no progress for a while; its goal is cleared). The robot's spot goes on its
@@ -466,8 +551,12 @@ impl RobotWork {
     /// the robot stands, so a new decision's clock starts when the robot reaches its new goal. Its tool and item are put
     /// down. `bot` is the robot, when the floor has it (the put-down needs it).
     pub fn unreachable(&mut self, cid: i64, robot: Option<&mut Robot>) {
-        let Some(tr) = self.tracks.get_mut(&cid) else { return };
-        let Some(spot) = tr.dec.as_ref().map(|d| d.spot.clone()) else { return };
+        let Some(tr) = self.tracks.get_mut(&cid) else {
+            return;
+        };
+        let Some(spot) = tr.dec.as_ref().map(|d| d.spot.clone()) else {
+            return;
+        };
         if let Some(s) = spot {
             tr.unreach.insert(s);
         }
@@ -526,7 +615,9 @@ impl RobotWork {
         self.desks = match &self.homes {
             Some(homes) => {
                 let rooms = &self.rooms;
-                desk_spots(homes, &self.districts, |d| rooms.get(&district_key(d)).map_or(0, |r| r.region))
+                desk_spots(homes, &self.districts, |d| {
+                    rooms.get(&district_key(d)).map_or(0, |r| r.region)
+                })
             }
             None => Vec::new(),
         };
@@ -559,21 +650,46 @@ impl RobotWork {
             let avoid = self.avoid_for(b, &unreach);
             robots.push(BotIn {
                 cid,
-                role: if b.agent.tier == "orchestrator" { "orchestrator".to_string() } else { b.agent.role.clone() },
+                role: if b.agent.tier == "orchestrator" {
+                    "orchestrator".to_string()
+                } else {
+                    b.agent.role.clone()
+                },
                 personality: beh_personality(sp.personality),
                 state: bot_state(&b.agent.status),
                 last_tool,
                 talking_to,
-                at: Pos { x: b.x as f64, z: b.y as f64, region: region_of(self.rooms.values(), b.x, b.y) },
-                desk: if self.desk_keys.contains(&desk) { Some(desk) } else { None },
-                quirks: sp.quirks.iter().map(|q| QuirkIn { clip: q.clip.clone(), weight: q.weight as f64 }).collect(),
+                at: Pos {
+                    x: b.x as f64,
+                    z: b.y as f64,
+                    region: region_of(self.rooms.values(), b.x, b.y),
+                },
+                desk: if self.desk_keys.contains(&desk) {
+                    Some(desk)
+                } else {
+                    None
+                },
+                quirks: sp
+                    .quirks
+                    .iter()
+                    .map(|q| QuirkIn {
+                        clip: q.clip.clone(),
+                        weight: q.weight as f64,
+                    })
+                    .collect(),
                 arrived: Some(arrived),
                 avoid,
             });
         }
         let events = std::mem::take(&mut self.pending);
         let spots = self.spot_list.clone();
-        let decisions = self.engine.step(TickIn { now: self.clock, robots, spots, held, events });
+        let decisions = self.engine.step(TickIn {
+            now: self.clock,
+            robots,
+            spots,
+            held,
+            events,
+        });
         for d in decisions {
             let cid = d.cid;
             let changed = d.changed;
@@ -627,14 +743,21 @@ impl RobotWork {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::robot::{robot_palette, Robot};
+    use crate::robot::{Robot, robot_palette};
     use crate::world::District;
 
     fn room_district() -> BoardDistrict {
         BoardDistrict {
             plan: None,
             key: "dev".into(),
-            district: District { role: "dev".into(), cx: 0.0, cy: 0.0, r: 3.0, hue: 0.0, round: false },
+            district: District {
+                role: "dev".into(),
+                cx: 0.0,
+                cy: 0.0,
+                r: 3.0,
+                hue: 0.0,
+                round: false,
+            },
             y: 0.0,
             slot: "s0".into(),
             w: 6.0,
@@ -666,8 +789,20 @@ mod tests {
         let mut work = RobotWork::new();
         work.begin_rooms();
         let spots: Vec<RoomSpot> = vec![
-            RoomSpot { item: 0, x: 1.0, z: 1.0, face: 0.0, clip: None },
-            RoomSpot { item: 0, x: -1.0, z: -1.0, face: 180.0, clip: None },
+            RoomSpot {
+                item: 0,
+                x: 1.0,
+                z: 1.0,
+                face: 0.0,
+                clip: None,
+            },
+            RoomSpot {
+                item: 0,
+                x: -1.0,
+                z: -1.0,
+                face: 180.0,
+                clip: None,
+            },
         ];
         work.add_room(&room_district(), 0.0, &spots, &[]);
         let mut bots = vec![bot(1, 1.0, 1.0), bot(2, -1.0, -1.0)];
@@ -676,12 +811,22 @@ mod tests {
         }
         let mut goals = Vec::new();
         for b in &bots {
-            let g = work.goal_for(b).expect("an idle robot has a goal after 5 s");
+            let g = work
+                .goal_for(b)
+                .expect("an idle robot has a goal after 5 s");
             assert!(!g.key.is_empty());
             let (gx, gz, _) = g.goal;
-            let at_spot = work.spot_list.iter().any(|s| (s.x as f32 - gx).abs() < 1e-3 && (s.z as f32 - gz).abs() < 1e-3);
-            let beside_partner = bots.iter().any(|o| o.agent.cid != b.agent.cid && (o.x - gx).hypot(o.y - gz) < BESIDE + 0.01);
-            assert!(at_spot || beside_partner, "a goal at a board spot or beside a partner");
+            let at_spot = work
+                .spot_list
+                .iter()
+                .any(|s| (s.x as f32 - gx).abs() < 1e-3 && (s.z as f32 - gz).abs() < 1e-3);
+            let beside_partner = bots
+                .iter()
+                .any(|o| o.agent.cid != b.agent.cid && (o.x - gx).hypot(o.y - gz) < BESIDE + 0.01);
+            assert!(
+                at_spot || beside_partner,
+                "a goal at a board spot or beside a partner"
+            );
             goals.push(g);
         }
         // A robot that stands at its goal arrives; its goal key does not change.

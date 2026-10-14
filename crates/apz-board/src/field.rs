@@ -22,8 +22,8 @@ use std::collections::BinaryHeap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::grid::{Grid, DIRS8};
-use crate::plan::{edge_cost, Edge};
+use crate::grid::{DIRS8, Grid};
+use crate::plan::{Edge, edge_cost};
 
 /// The move a robot makes out of a cell on the way to a goal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -75,7 +75,11 @@ impl Field {
 /// ignored: no robot can stand on them. The result depends only on the grid and the set of goals, not on their order.
 pub fn toward(grid: &Grid, goals: &[usize]) -> Field {
     let n = grid.cols * grid.rows;
-    let mut goals: Vec<usize> = goals.iter().copied().filter(|&g| g < n && grid.walk[g] == 1).collect();
+    let mut goals: Vec<usize> = goals
+        .iter()
+        .copied()
+        .filter(|&g| g < n && grid.walk[g] == 1)
+        .collect();
     goals.sort_unstable();
     goals.dedup();
 
@@ -103,23 +107,47 @@ pub fn toward(grid: &Grid, goals: &[usize]) -> Field {
                 continue;
             };
             if to == d {
-                relax(&mut cost, &mut step, &mut heap, c, cd + w, Step::Move { k, edge });
+                relax(
+                    &mut cost,
+                    &mut step,
+                    &mut heap,
+                    c,
+                    cd + w,
+                    Step::Move { k, edge },
+                );
             }
         }
         // Lift rides c -> d: only from the first portal at c, as the planner does.
         for &(c, p) in &inbound[d] {
-            relax(&mut cost, &mut step, &mut heap, c, cd + grid.portals[p].cost, Step::Portal { p });
+            relax(
+                &mut cost,
+                &mut step,
+                &mut heap,
+                c,
+                cd + grid.portals[p].cost,
+                Step::Portal { p },
+            );
         }
     }
     Field { goals, cost, step }
 }
 
 /// Lowers the cost of `c` to `candidate` when that is strictly less, and records the step out of `c` and the heap entry.
-fn relax(cost: &mut [f64], step: &mut [Option<Step>], heap: &mut BinaryHeap<Node>, c: usize, candidate: f64, s: Step) {
+fn relax(
+    cost: &mut [f64],
+    step: &mut [Option<Step>],
+    heap: &mut BinaryHeap<Node>,
+    c: usize,
+    candidate: f64,
+    s: Step,
+) {
     if candidate < cost[c] {
         cost[c] = candidate;
         step[c] = Some(s);
-        heap.push(Node { cost: candidate, cell: c });
+        heap.push(Node {
+            cost: candidate,
+            cell: c,
+        });
     }
 }
 
@@ -147,7 +175,10 @@ impl PartialOrd for Node {
 impl Ord for Node {
     /// Reversed, so that the binary max-heap pops the smallest (cost, cell) first.
     fn cmp(&self, other: &Self) -> Ordering {
-        other.cost.total_cmp(&self.cost).then_with(|| other.cell.cmp(&self.cell))
+        other
+            .cost
+            .total_cmp(&self.cost)
+            .then_with(|| other.cell.cmp(&self.cell))
     }
 }
 
@@ -155,7 +186,10 @@ impl Ord for Node {
 fn opposites() -> [usize; 8] {
     std::array::from_fn(|k| {
         let (di, dj) = DIRS8[k];
-        DIRS8.iter().position(|&(a, b)| a == -di && b == -dj).expect("DIRS8 is symmetric")
+        DIRS8
+            .iter()
+            .position(|&(a, b)| a == -di && b == -dj)
+            .expect("DIRS8 is symmetric")
     })
 }
 
@@ -189,11 +223,24 @@ mod tests {
     }
 
     fn surf(id: u32, poly: Vec<[f64; 2]>, height: Plane, sides: Vec<Side>) -> WalkSurface {
-        WalkSurface { id, kind: SurfaceKind::Plate, poly, height, owner: format!("s{id}"), sides }
+        WalkSurface {
+            id,
+            kind: SurfaceKind::Plate,
+            poly,
+            height,
+            owner: format!("s{id}"),
+            sides,
+        }
     }
 
     fn link(from: u32, to: u32, kind: LinkKind, at: [f64; 2]) -> WalkLink {
-        WalkLink { from, to, kind, via: None, at }
+        WalkLink {
+            from,
+            to,
+            kind,
+            via: None,
+            at,
+        }
     }
 
     fn open() -> Vec<Side> {
@@ -213,7 +260,12 @@ mod tests {
         WalkSet {
             surfaces: vec![
                 surf(0, rect(0.0, 0.0, 6.0, 4.0), Plane::flat(0.0), open()),
-                surf(1, rect(2.0, 0.0, 4.0, 4.0), Plane::flat(1.0), vec![Side::Walled; 4]),
+                surf(
+                    1,
+                    rect(2.0, 0.0, 4.0, 4.0),
+                    Plane::flat(1.0),
+                    vec![Side::Walled; 4],
+                ),
                 surf(2, rect(0.0, 4.0, 6.0, 8.0), Plane::flat(0.5), open()),
                 surf(3, rect(0.0, 8.0, 6.0, 12.0), Plane::flat(2.0), high_sides),
                 surf(4, rect(8.0, 8.0, 10.0, 10.0), Plane::flat(0.0), open()),
@@ -246,12 +298,18 @@ mod tests {
         let mut total = 0.0;
         let mut c = start;
         while f.cost(c) > 0.0 {
-            let step = f.step(c).expect("a reachable cell that is not a goal has a step");
+            let step = f
+                .step(c)
+                .expect("a reachable cell that is not a goal has a step");
             let (d, w) = match step {
                 Step::Move { k, .. } => {
                     let (d, w, edge) = edge_cost(g, c, k).expect("the step is a legal move");
                     assert_eq!(Some(d), g.neighbour(c, k));
-                    assert_eq!(edge, step_edge(step), "the step's edge kind matches the move");
+                    assert_eq!(
+                        edge,
+                        step_edge(step),
+                        "the step's edge kind matches the move"
+                    );
                     (d, w)
                 }
                 Step::Portal { p } => {
@@ -285,11 +343,24 @@ mod tests {
         let g = build(&map());
         let goal = cell(&g, 5.5, 0.5);
         let f = toward(&g, &[goal]);
-        let starts = [(0.5, 0.5), (0.5, 2.0), (5.5, 2.0), (3.0, 6.0), (3.0, 10.0), (5.5, 10.5), (1.0, 11.0)];
+        let starts = [
+            (0.5, 0.5),
+            (0.5, 2.0),
+            (5.5, 2.0),
+            (3.0, 6.0),
+            (3.0, 10.0),
+            (5.5, 10.5),
+            (1.0, 11.0),
+        ];
         for (x, z) in starts {
             let s = cell(&g, x, z);
-            let want = planned(&g, s, goal).unwrap_or_else(|| panic!("the planner finds no path from ({x}, {z})"));
-            assert!((f.cost(s) - want).abs() < TOL, "({x}, {z}): field {} vs planner {want}", f.cost(s));
+            let want = planned(&g, s, goal)
+                .unwrap_or_else(|| panic!("the planner finds no path from ({x}, {z})"));
+            assert!(
+                (f.cost(s) - want).abs() < TOL,
+                "({x}, {z}): field {} vs planner {want}",
+                f.cost(s)
+            );
         }
     }
 
@@ -300,8 +371,15 @@ mod tests {
         let f = toward(&g, &[goal]);
         for c in walk_cells(&g) {
             match planned(&g, c, goal) {
-                Some(want) => assert!((f.cost(c) - want).abs() < TOL, "cell {c}: field {} vs planner {want}", f.cost(c)),
-                None => assert!(f.cost(c).is_infinite(), "cell {c} has no planner path but a finite cost"),
+                Some(want) => assert!(
+                    (f.cost(c) - want).abs() < TOL,
+                    "cell {c}: field {} vs planner {want}",
+                    f.cost(c)
+                ),
+                None => assert!(
+                    f.cost(c).is_infinite(),
+                    "cell {c} has no planner path but a finite cost"
+                ),
             }
         }
     }
@@ -317,8 +395,16 @@ mod tests {
                 continue;
             }
             let (cells, total) = follow(&g, &f, c);
-            assert_eq!(cells.last(), Some(&goal), "the path from {c} ends at the goal");
-            assert!((total - f.cost(c)).abs() < TOL, "cell {c}: summed steps {total} vs cost {}", f.cost(c));
+            assert_eq!(
+                cells.last(),
+                Some(&goal),
+                "the path from {c} ends at the goal"
+            );
+            assert!(
+                (total - f.cost(c)).abs() < TOL,
+                "cell {c}: summed steps {total} vs cost {}",
+                f.cost(c)
+            );
             reached += 1;
         }
         assert!(reached > 100, "many cells are reachable (got {reached})");
@@ -377,10 +463,18 @@ mod tests {
         assert_eq!(cells.last(), Some(&goal));
         assert!(cells.len() < 40, "the short way down");
         assert!(
-            cells.windows(2).any(|w| g.surface[w[0]] == 3 && g.surface[w[1]] == 2),
+            cells
+                .windows(2)
+                .any(|w| g.surface[w[0]] == 3 && g.surface[w[1]] == 2),
             "the path crosses from the high surface to the ledge"
         );
-        assert!(cells.iter().any(|&c| matches!(f.step(c), Some(Step::Move { edge: Some(Edge::Drop), .. }))));
+        assert!(cells.iter().any(|&c| matches!(
+            f.step(c),
+            Some(Step::Move {
+                edge: Some(Edge::Drop),
+                ..
+            })
+        )));
         assert!((total - planned(&g, high, goal).expect("a path")).abs() < TOL);
 
         // From the ledge, the drop cannot be climbed back: the way up to the high surface is the lift, and no step on
@@ -392,8 +486,17 @@ mod tests {
         assert_eq!(cells.last(), Some(&up));
         // The ledge's own descent to the floor is a StepDown move (a two-way fall above NAV_STEP), but the drop onto the ledge is
         // one way: no step climbs from the ledge straight onto the high surface.
-        assert!(cells.windows(2).all(|w| !(g.surface[w[0]] == 2 && g.surface[w[1]] == 3)));
-        assert!(cells.iter().any(|&c| matches!(f_up.step(c), Some(Step::Portal { .. }))), "the lift is ridden");
+        assert!(
+            cells
+                .windows(2)
+                .all(|w| !(g.surface[w[0]] == 2 && g.surface[w[1]] == 3))
+        );
+        assert!(
+            cells
+                .iter()
+                .any(|&c| matches!(f_up.step(c), Some(Step::Portal { .. }))),
+            "the lift is ridden"
+        );
         assert!((total - planned(&g, ledge, up).expect("a path")).abs() < TOL);
     }
 
@@ -405,10 +508,18 @@ mod tests {
         let start = cell(&g, 0.5, 0.5);
         let (cells, total) = follow(&g, &f, start);
         assert_eq!(cells.last(), Some(&goal));
-        assert!(cells.iter().any(|&c| matches!(f.step(c), Some(Step::Portal { .. }))));
+        assert!(
+            cells
+                .iter()
+                .any(|&c| matches!(f.step(c), Some(Step::Portal { .. })))
+        );
         assert!((total - planned(&g, start, goal).expect("a path")).abs() < TOL);
         // next() has no direction for a ride, so it reports None there.
-        let ride = cells.iter().copied().find(|&c| matches!(f.step(c), Some(Step::Portal { .. }))).unwrap();
+        let ride = cells
+            .iter()
+            .copied()
+            .find(|&c| matches!(f.step(c), Some(Step::Portal { .. })))
+            .unwrap();
         assert_eq!(f.next(ride), None);
     }
 
@@ -418,7 +529,11 @@ mod tests {
         let goal = cell(&g, 5.5, 0.5);
         assert_eq!(toward(&g, &[goal]), toward(&g, &[goal]));
         let other = cell(&g, 3.0, 6.0);
-        assert_eq!(toward(&g, &[goal, other]), toward(&g, &[other, goal]), "the order of goals does not matter");
+        assert_eq!(
+            toward(&g, &[goal, other]),
+            toward(&g, &[other, goal]),
+            "the order of goals does not matter"
+        );
     }
 
     #[test]

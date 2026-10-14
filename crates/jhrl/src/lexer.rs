@@ -12,7 +12,11 @@ pub enum Tok {
     /// String contents with escapes resolved; `{…}` interpolations are left as text.
     Str(String),
     /// A number, already multiplied into base units. `text` is the literal as written.
-    Num { value: Num, dim: Dim, text: String },
+    Num {
+        value: Num,
+        dim: Dim,
+        text: String,
+    },
     ReqId(String),
     Sym(&'static str),
     Eof,
@@ -27,13 +31,30 @@ pub struct Token {
 }
 
 pub const RESERVED: &[&str] = &[
-    "for", "in", "where", "let", "require", "if", "then", "else", "and", "or", "not", "is", "true", "false",
-    "yield", "when", "always", "eventually", "leads_to",
+    "for",
+    "in",
+    "where",
+    "let",
+    "require",
+    "if",
+    "then",
+    "else",
+    "and",
+    "or",
+    "not",
+    "is",
+    "true",
+    "false",
+    "yield",
+    "when",
+    "always",
+    "eventually",
+    "leads_to",
 ];
 
 const SYMS: &[&str] = &[
-    "..", "==", "!=", "<=", ">=", "=>", "->", "??", "||", "~>", "(", ")", "[", "]", "{", "}", ",", ";", ":", ".",
-    "=", "<", ">", "+", "-", "*", "/", "^", "|", "?",
+    "..", "==", "!=", "<=", ">=", "=>", "->", "??", "||", "~>", "(", ")", "[", "]", "{", "}", ",",
+    ";", ":", ".", "=", "<", ">", "+", "-", "*", "/", "^", "|", "?",
 ];
 
 fn is_ident_start(c: char) -> bool {
@@ -88,15 +109,23 @@ pub fn lex(file: u32, text: &str) -> Result<Vec<Token>, Diag> {
             }
             let word = &text[i..j];
             // Requirement id: AP-NNN or AP-NNN.Rn
-            if word == "AP" && text[j..].starts_with('-') && text[j + 1..].starts_with(|c: char| c.is_ascii_digit()) {
+            if word == "AP"
+                && text[j..].starts_with('-')
+                && text[j + 1..].starts_with(|c: char| c.is_ascii_digit())
+            {
                 let mut k = j + 1;
                 while k < text.len() && b[k].is_ascii_digit() {
                     k += 1;
                 }
                 if k - (j + 1) != 3 {
-                    return Err(Diag::error(sp(i, k), "a requirement id has three digits: AP-NNN.Rn"));
+                    return Err(Diag::error(
+                        sp(i, k),
+                        "a requirement id has three digits: AP-NNN.Rn",
+                    ));
                 }
-                if text[k..].starts_with(".R") && text[k + 2..].starts_with(|c: char| c.is_ascii_digit()) {
+                if text[k..].starts_with(".R")
+                    && text[k + 2..].starts_with(|c: char| c.is_ascii_digit())
+                {
                     k += 2;
                     while k < text.len() && b[k].is_ascii_digit() {
                         k += 1;
@@ -131,11 +160,21 @@ pub fn lex(file: u32, text: &str) -> Result<Vec<Token>, Diag> {
                             Some('\\') => '\\',
                             Some('n') => '\n',
                             Some('t') => '\t',
-                            _ => return Err(Diag::error(sp(j, j + 2), "unknown escape; use \\\" \\\\ \\n or \\t")),
+                            _ => {
+                                return Err(Diag::error(
+                                    sp(j, j + 2),
+                                    "unknown escape; use \\\" \\\\ \\n or \\t",
+                                ))
+                            }
                         });
                         j += 2;
                     }
-                    '\n' => return Err(Diag::error(sp(i, j), "unterminated string (strings are one line)")),
+                    '\n' => {
+                        return Err(Diag::error(
+                            sp(i, j),
+                            "unterminated string (strings are one line)",
+                        ))
+                    }
                     _ => {
                         s.push(ch);
                         j += ch.len_utf8();
@@ -145,9 +184,14 @@ pub fn lex(file: u32, text: &str) -> Result<Vec<Token>, Diag> {
             tok = Tok::Str(s);
             i = j;
         } else if c == '\'' {
-            let adjacent = out.last().is_some_and(|t| matches!(t.tok, Tok::Ident(_)) && t.span.hi as usize == i);
+            let adjacent = out
+                .last()
+                .is_some_and(|t| matches!(t.tok, Tok::Ident(_)) && t.span.hi as usize == i);
             if !adjacent {
-                return Err(Diag::error(sp(i, i + 1), "a prime `'` must follow a variable name directly"));
+                return Err(Diag::error(
+                    sp(i, i + 1),
+                    "a prime `'` must follow a variable name directly",
+                ));
             }
             tok = Tok::Prime;
             i += 1;
@@ -171,16 +215,31 @@ pub fn lex(file: u32, text: &str) -> Result<Vec<Token>, Diag> {
                 };
                 i += c.len_utf8();
             } else if let Some(s) = SYMS.iter().find(|s| text[i..].starts_with(**s)) {
-                tok = if *s == "~>" { Tok::Ident("leads_to".into()) } else { Tok::Sym(s) };
+                tok = if *s == "~>" {
+                    Tok::Ident("leads_to".into())
+                } else {
+                    Tok::Sym(s)
+                };
                 i += s.len();
             } else {
-                return Err(Diag::error(sp(i, i + c.len_utf8()), format!("unexpected character `{c}`")));
+                return Err(Diag::error(
+                    sp(i, i + c.len_utf8()),
+                    format!("unexpected character `{c}`"),
+                ));
             }
         }
-        out.push(Token { tok, span: sp(start, i), nl_before: nl });
+        out.push(Token {
+            tok,
+            span: sp(start, i),
+            nl_before: nl,
+        });
         nl = false;
     }
-    out.push(Token { tok: Tok::Eof, span: sp(text.len(), text.len()), nl_before: true });
+    out.push(Token {
+        tok: Tok::Eof,
+        span: sp(text.len(), text.len()),
+        nl_before: true,
+    });
     Ok(out)
 }
 
@@ -245,14 +304,28 @@ fn lex_number(file: u32, text: &str, i: usize) -> Result<(Tok, usize), Diag> {
     let mut dim = Dim::NONE;
     let mut end = j;
     // A unit directly after the number, or after exactly one space.
-    let ustart = if text[j..].starts_with(' ') && !text[j + 1..].starts_with(' ') { j + 1 } else { j };
+    let ustart = if text[j..].starts_with(' ') && !text[j + 1..].starts_with(' ') {
+        j + 1
+    } else {
+        j
+    };
     if let Some(n) = unit_len(&text[ustart..]) {
-        let (f, d) = unit_expr(&text[ustart..ustart + n]).map_err(|e| Diag::error(Span::new(file, ustart, ustart + n), e))?;
-        value = value.mul(f).map_err(|e| Diag::error(Span::new(file, i, ustart + n), e))?;
+        let (f, d) = unit_expr(&text[ustart..ustart + n])
+            .map_err(|e| Diag::error(Span::new(file, ustart, ustart + n), e))?;
+        value = value
+            .mul(f)
+            .map_err(|e| Diag::error(Span::new(file, i, ustart + n), e))?;
         dim = d;
         end = ustart + n;
     }
-    Ok((Tok::Num { value, dim, text: text[i..end].to_string() }, end))
+    Ok((
+        Tok::Num {
+            value,
+            dim,
+            text: text[i..end].to_string(),
+        },
+        end,
+    ))
 }
 
 #[cfg(test)]
@@ -284,10 +357,18 @@ mod tests {
             t => panic!("{t:?}"),
         }
         match &toks("20 %")[0] {
-            Tok::Num { value, dim, .. } => assert_eq!((*value, *dim), (Num::rat(1, 5).unwrap(), Dim::NONE)),
+            Tok::Num { value, dim, .. } => {
+                assert_eq!((*value, *dim), (Num::rat(1, 5).unwrap(), Dim::NONE))
+            }
             t => panic!("{t:?}"),
         }
-        for (src, d) in [("5 ms", Dim::TIME), ("2 wk", Dim::TIME), ("3 Mtok", Dim::TOKENS), ("1 GB", Dim::INFO), ("7 kcr", Dim::CREDITS)] {
+        for (src, d) in [
+            ("5 ms", Dim::TIME),
+            ("2 wk", Dim::TIME),
+            ("3 Mtok", Dim::TOKENS),
+            ("1 GB", Dim::INFO),
+            ("7 kcr", Dim::CREDITS),
+        ] {
             match &toks(src)[0] {
                 Tok::Num { dim, .. } => assert_eq!(*dim, d, "{src}"),
                 t => panic!("{t:?}"),

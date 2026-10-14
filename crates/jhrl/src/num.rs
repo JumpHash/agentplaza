@@ -63,7 +63,12 @@ impl Num {
     pub fn parse_decimal(text: &str) -> Result<Num, String> {
         let t: String = text.chars().filter(|c| *c != '_').collect();
         let (mant, exp) = match t.find(['e', 'E']) {
-            Some(i) => (&t[..i], t[i + 1..].parse::<i32>().map_err(|_| format!("bad exponent in `{text}`"))?),
+            Some(i) => (
+                &t[..i],
+                t[i + 1..]
+                    .parse::<i32>()
+                    .map_err(|_| format!("bad exponent in `{text}`"))?,
+            ),
             None => (&t[..], 0),
         };
         let (int_part, frac_part) = match mant.find('.') {
@@ -109,7 +114,9 @@ impl Num {
     pub fn add(self, o: Num) -> NumResult {
         match (self, o) {
             (Num::Rat(a, b), Num::Rat(c, d)) => {
-                let n = a.checked_mul(d).and_then(|x| c.checked_mul(b).and_then(|y| x.checked_add(y)));
+                let n = a
+                    .checked_mul(d)
+                    .and_then(|x| c.checked_mul(b).and_then(|y| x.checked_add(y)));
                 let den = b.checked_mul(d);
                 match (n, den) {
                     (Some(n), Some(den)) => Num::rat(n, den),
@@ -190,7 +197,11 @@ impl Num {
         match self {
             Num::Rat(n, d) => {
                 let twice = n.checked_mul(2).ok_or(OVERFLOW)?;
-                let q = if n >= 0 { (twice + d).div_euclid(2 * d) } else { -((-twice + d).div_euclid(2 * d)) };
+                let q = if n >= 0 {
+                    (twice + d).div_euclid(2 * d)
+                } else {
+                    -((-twice + d).div_euclid(2 * d))
+                };
                 Ok(Num::int(q))
             }
             Num::Real(x) => Ok(Num::real(x.round())),
@@ -212,7 +223,10 @@ impl Num {
                 (Some(x), Some(y)) => x.cmp(&y),
                 _ => self.to_f64().total_cmp(&o.to_f64()),
             },
-            _ => self.to_f64().partial_cmp(&o.to_f64()).unwrap_or(Ordering::Equal),
+            _ => self
+                .to_f64()
+                .partial_cmp(&o.to_f64())
+                .unwrap_or(Ordering::Equal),
         }
     }
 }
@@ -329,7 +343,15 @@ impl Dim {
 
     /// A readable name: the type name when there is one, else the base-unit expression.
     pub fn describe(self) -> String {
-        for n in ["Number", "Credits", "Money", "Duration", "Information", "Tokens", "Frequency"] {
+        for n in [
+            "Number",
+            "Credits",
+            "Money",
+            "Duration",
+            "Information",
+            "Tokens",
+            "Frequency",
+        ] {
             if Dim::of_type_name(n) == Some(self) {
                 return n.to_string();
             }
@@ -346,7 +368,13 @@ impl Dim {
         let mut den = Vec::new();
         for (i, &e) in self.0.iter().enumerate() {
             let u = BASE_UNIT[i];
-            let s = |k: i8| if k.abs() == 1 { u.to_string() } else { format!("{u}^{}", k.abs()) };
+            let s = |k: i8| {
+                if k.abs() == 1 {
+                    u.to_string()
+                } else {
+                    format!("{u}^{}", k.abs())
+                }
+            };
             match e.cmp(&0) {
                 Ordering::Greater => num.push(s(e)),
                 Ordering::Less => den.push(s(e)),
@@ -422,9 +450,15 @@ mod tests {
 
     #[test]
     fn decimals_are_exact() {
-        assert_eq!(Num::parse_decimal("0.15").unwrap(), Num::rat(3, 20).unwrap());
+        assert_eq!(
+            Num::parse_decimal("0.15").unwrap(),
+            Num::rat(3, 20).unwrap()
+        );
         assert_eq!(Num::parse_decimal("1_000").unwrap(), Num::int(1000));
-        assert_eq!(Num::parse_decimal("1e-3").unwrap(), Num::rat(1, 1000).unwrap());
+        assert_eq!(
+            Num::parse_decimal("1e-3").unwrap(),
+            Num::rat(1, 1000).unwrap()
+        );
         assert_eq!(format!("{}", Num::parse_decimal("0.44").unwrap()), "0.44");
         assert_eq!(format!("{}", Num::rat(1, 3).unwrap()), "1/3");
     }
@@ -436,7 +470,10 @@ mod tests {
         assert_eq!(f.mul(g).unwrap(), Num::int(1));
         assert_eq!(d.mul(e), Dim::CREDITS);
         assert_eq!(unit_expr("/min").unwrap().1, Dim::TIME.inv());
-        assert_eq!(unit_expr("KiB").unwrap().0, Num::int(16384).div(Num::int(16)).unwrap());
+        assert_eq!(
+            unit_expr("KiB").unwrap().0,
+            Num::int(16384).div(Num::int(16)).unwrap()
+        );
         assert!(unit_expr("parsec").is_err());
     }
 
@@ -444,7 +481,10 @@ mod tests {
     fn rounding_and_powers() {
         assert_eq!(Num::rat(5, 2).unwrap().round().unwrap(), Num::int(3));
         assert_eq!(Num::rat(-5, 2).unwrap().round().unwrap(), Num::int(-3));
-        assert_eq!(Num::int(2).pow(Num::int(-2)).unwrap(), Num::rat(1, 4).unwrap());
+        assert_eq!(
+            Num::int(2).pow(Num::int(-2)).unwrap(),
+            Num::rat(1, 4).unwrap()
+        );
         assert_eq!(Num::rat(-7, 2).unwrap().floor().unwrap(), Num::int(-4));
         assert!(Num::int(i128::MAX).add(Num::int(1)).is_err());
     }

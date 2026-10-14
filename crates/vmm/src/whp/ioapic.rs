@@ -50,8 +50,12 @@ const RTE_MASKED: u64 = 1 << 16;
 const RTE_DEST_SHIFT: u32 = 56;
 const RTE_DEST_MASK: u64 = 0xff << RTE_DEST_SHIFT;
 /// Bits of the low dword that the guest may write.
-const RTE_LOW_WRITABLE: u64 =
-    RTE_VECTOR_MASK | (0x7 << RTE_DELIVERY_SHIFT) | RTE_LOGICAL | RTE_POLARITY | RTE_LEVEL | RTE_MASKED;
+const RTE_LOW_WRITABLE: u64 = RTE_VECTOR_MASK
+    | (0x7 << RTE_DELIVERY_SHIFT)
+    | RTE_LOGICAL
+    | RTE_POLARITY
+    | RTE_LEVEL
+    | RTE_MASKED;
 
 /// Interrupt delivery mode of a redirection entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -269,7 +273,8 @@ impl IoApic {
         } else {
             // Remote IRR is read-only to the guest and delivery status is always 0.
             let remote_irr = *rte & RTE_REMOTE_IRR;
-            *rte = (*rte & 0xffff_ffff_0000_0000) | remote_irr | (u64::from(value) & RTE_LOW_WRITABLE);
+            *rte =
+                (*rte & 0xffff_ffff_0000_0000) | remote_irr | (u64::from(value) & RTE_LOW_WRITABLE);
         }
         self.deliver_on_write(pin).into_iter().collect()
     }
@@ -480,7 +485,10 @@ mod tests {
         write_rte(&mut io, 8, 4 << 8);
         assert_eq!(io.pulse_irq(8).map(|i| i.delivery), Some(DeliveryMode::Nmi));
         write_rte(&mut io, 9, 6 << 8);
-        assert_eq!(io.pulse_irq(9).map(|i| i.delivery), Some(DeliveryMode::Fixed));
+        assert_eq!(
+            io.pulse_irq(9).map(|i| i.delivery),
+            Some(DeliveryMode::Fixed)
+        );
     }
 
     #[test]

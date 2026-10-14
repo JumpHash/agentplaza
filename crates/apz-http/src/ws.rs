@@ -179,7 +179,10 @@ impl Socket {
             Message::Binary(bytes) => (OP_BINARY, bytes.as_slice()),
         };
         if payload.len() > self.limits.max_message {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "the message is over max_message"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "the message is over max_message",
+            ));
         }
         let parts: Vec<&[u8]> = if payload.is_empty() {
             vec![payload]
@@ -210,7 +213,10 @@ impl Socket {
             let silent = now.saturating_duration_since(self.last_rx);
             if silent >= self.limits.dead_after {
                 self.close(1001, "no frame from the peer");
-                return Err(io::Error::new(io::ErrorKind::TimedOut, "the peer stopped answering"));
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "the peer stopped answering",
+                ));
             }
             if !self.ping_out && silent >= self.limits.ping_every {
                 self.ping_out = true;
@@ -224,7 +230,8 @@ impl Socket {
             if !self.ping_out {
                 wake = wake.min(self.last_rx + self.limits.ping_every);
             }
-            self.io.set_read_timeout(Some(wake.saturating_duration_since(now).max(MIN_WAIT)))?;
+            self.io
+                .set_read_timeout(Some(wake.saturating_duration_since(now).max(MIN_WAIT)))?;
             let room = (self.limits.max_frame + MAX_HEADER).saturating_sub(self.buf.len());
             if room == 0 {
                 return Err(self.fail(1009, "the read buffer is full"));
@@ -234,13 +241,18 @@ impl Socket {
             match self.io.read(&mut scratch[..want]) {
                 Ok(0) => {
                     self.closed = true;
-                    return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "the connection ended without a close"));
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "the connection ended without a close",
+                    ));
                 }
                 Ok(read) => self.buf.extend_from_slice(&scratch[..read]),
                 Err(err)
                     if matches!(
                         err.kind(),
-                        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut | io::ErrorKind::Interrupted
+                        io::ErrorKind::WouldBlock
+                            | io::ErrorKind::TimedOut
+                            | io::ErrorKind::Interrupted
                     ) => {}
                 Err(err) => {
                     self.closed = true;
@@ -271,7 +283,11 @@ impl Socket {
 
     /// Writes one frame, masked when this side is the client.
     fn write_frame(&mut self, fin: bool, opcode: u8, payload: &[u8]) -> io::Result<()> {
-        let mask = if self.role == Role::Client { Some(apz_trust::random::<4>()) } else { None };
+        let mask = if self.role == Role::Client {
+            Some(apz_trust::random::<4>())
+        } else {
+            None
+        };
         let mask_bit = if mask.is_some() { 0x80 } else { 0 };
         let mut out = Vec::with_capacity(payload.len() + MAX_HEADER);
         out.push((if fin { 0x80 } else { 0 }) | opcode);
@@ -289,7 +305,12 @@ impl Socket {
         match mask {
             Some(key) => {
                 out.extend_from_slice(&key);
-                out.extend(payload.iter().enumerate().map(|(index, byte)| byte ^ key[index % 4]));
+                out.extend(
+                    payload
+                        .iter()
+                        .enumerate()
+                        .map(|(index, byte)| byte ^ key[index % 4]),
+                );
             }
             None => out.extend_from_slice(payload),
         }
@@ -337,7 +358,10 @@ impl Socket {
                 opcode => {
                     let text = opcode == OP_TEXT;
                     if !header.fin {
-                        self.fragment = Some(Fragment { text, data: payload });
+                        self.fragment = Some(Fragment {
+                            text,
+                            data: payload,
+                        });
                         continue;
                     }
                     return self.complete(text, payload).map(Some);
@@ -357,12 +381,19 @@ impl Socket {
             return Err(self.fail(1002, "a reserved bit is set"));
         }
         let opcode = first & 0x0f;
-        if !matches!(opcode, OP_CONTINUATION | OP_TEXT | OP_BINARY | OP_CLOSE | OP_PING | OP_PONG) {
+        if !matches!(
+            opcode,
+            OP_CONTINUATION | OP_TEXT | OP_BINARY | OP_CLOSE | OP_PING | OP_PONG
+        ) {
             return Err(self.fail(1002, "an unknown opcode"));
         }
         let masked = second & 0x80 != 0;
         if masked != (self.role == Role::Server) {
-            let reason = if masked { "a server frame is masked" } else { "a client frame is not masked" };
+            let reason = if masked {
+                "a server frame is masked"
+            } else {
+                "a client frame is not masked"
+            };
             return Err(self.fail(1002, reason));
         }
         let extended: usize = match second & 0x7f {
@@ -410,16 +441,29 @@ impl Socket {
         }
         if !control {
             match (opcode, self.fragment.is_some()) {
-                (OP_CONTINUATION, false) => return Err(self.fail(1002, "a continuation starts no message")),
-                (OP_TEXT | OP_BINARY, true) => return Err(self.fail(1002, "a new message starts mid-fragment")),
+                (OP_CONTINUATION, false) => {
+                    return Err(self.fail(1002, "a continuation starts no message"));
+                }
+                (OP_TEXT | OP_BINARY, true) => {
+                    return Err(self.fail(1002, "a new message starts mid-fragment"));
+                }
                 _ => {}
             }
-            let held = self.fragment.as_ref().map_or(0, |fragment| fragment.data.len()) as u64;
+            let held = self
+                .fragment
+                .as_ref()
+                .map_or(0, |fragment| fragment.data.len()) as u64;
             if held + len > self.limits.max_message as u64 {
                 return Err(self.fail(1009, "a message is over max_message"));
             }
         }
-        Ok(Some(Header { fin, opcode, head, len: len as usize, key }))
+        Ok(Some(Header {
+            fin,
+            opcode,
+            head,
+            len: len as usize,
+            key,
+        }))
     }
 
     /// The peer's close frame: validated, echoed, and the socket ends.
@@ -438,7 +482,10 @@ impl Socket {
         }
         self.closed = true;
         let _ = self.write_frame(true, OP_CLOSE, payload);
-        io::Error::new(io::ErrorKind::ConnectionAborted, "the peer closed the connection")
+        io::Error::new(
+            io::ErrorKind::ConnectionAborted,
+            "the peer closed the connection",
+        )
     }
 
     /// A finished message: binary as it is, text only when it is UTF-8.
@@ -446,7 +493,9 @@ impl Socket {
         if !text {
             return Ok(Message::Binary(data));
         }
-        String::from_utf8(data).map(Message::Text).map_err(|_| self.fail(1007, "a text message is not UTF-8"))
+        String::from_utf8(data)
+            .map(Message::Text)
+            .map_err(|_| self.fail(1007, "a text message is not UTF-8"))
     }
 }
 
@@ -487,15 +536,21 @@ pub fn accept(
         return Response::error(405, "a WebSocket is opened with GET");
     }
     let lists_token = |name: &str, token: &str| {
-        request
-            .header(name)
-            .is_some_and(|value| value.split(',').any(|item| item.trim().eq_ignore_ascii_case(token)))
+        request.header(name).is_some_and(|value| {
+            value
+                .split(',')
+                .any(|item| item.trim().eq_ignore_ascii_case(token))
+        })
     };
     if !lists_token("upgrade", "websocket") || !lists_token("connection", "upgrade") {
-        return Response::error(400, "not a WebSocket upgrade: Upgrade: websocket and Connection: Upgrade");
+        return Response::error(
+            400,
+            "not a WebSocket upgrade: Upgrade: websocket and Connection: Upgrade",
+        );
     }
     if request.header("sec-websocket-version").map(str::trim) != Some("13") {
-        return Response::error(426, "the WebSocket version must be 13").with_header("Sec-WebSocket-Version", "13");
+        return Response::error(426, "the WebSocket version must be 13")
+            .with_header("Sec-WebSocket-Version", "13");
     }
     let Some(key) = request.header("sec-websocket-key") else {
         return Response::error(400, "Sec-WebSocket-Key is missing");
@@ -507,7 +562,9 @@ pub fn accept(
     if let Some(origin) = request.header("origin") {
         let allowed = match origins {
             Origins::None => false,
-            Origins::SameHost => request.header("host").is_some_and(|host| same_origin(origin, host)),
+            Origins::SameHost => request
+                .header("host")
+                .is_some_and(|host| same_origin(origin, host)),
         };
         if !allowed {
             return Response::error(403, "the Origin is not allowed to open this socket");
@@ -533,7 +590,9 @@ pub fn accept(
     Response {
         status: 101,
         headers,
-        body: Body::Upgrade(Box::new(move |conn| run(Socket::new(Role::Server, conn, limits)))),
+        body: Body::Upgrade(Box::new(move |conn| {
+            run(Socket::new(Role::Server, conn, limits))
+        })),
     }
 }
 
@@ -548,9 +607,10 @@ fn same_origin(origin: &str, host: &str) -> bool {
     } else {
         return false;
     };
-    let (Some((origin_host, origin_port)), Some((host_name, host_port))) =
-        (split_authority(authority, default), split_authority(host, default))
-    else {
+    let (Some((origin_host, origin_port)), Some((host_name, host_port))) = (
+        split_authority(authority, default),
+        split_authority(host, default),
+    ) else {
         return false;
     };
     origin_host.eq_ignore_ascii_case(&host_name) && origin_port == host_port
@@ -578,9 +638,19 @@ fn split_authority(authority: &str, default: u16) -> Option<(String, u16)> {
 /// The client side: opens `target.base + path` (ws over http, wss over TLS as [`Target`] says: pinned
 /// for the hub, CA-verified for a public host; with the target's bearer and headers), sends the handshake with a random key and `protocol` if any, and
 /// checks `101`, `Sec-WebSocket-Accept`, no extension and the protocol before returning the socket.
-pub fn connect(target: &Target, path: &str, protocol: Option<&str>, timeout: Duration, limits: Limits) -> io::Result<Socket> {
+pub fn connect(
+    target: &Target,
+    path: &str,
+    protocol: Option<&str>,
+    timeout: Duration,
+    limits: Limits,
+) -> io::Result<Socket> {
     let (tls, host, port) = split_base(&target.base)?;
-    let host_header = if host.contains(':') { format!("[{host}]:{port}") } else { format!("{host}:{port}") };
+    let host_header = if host.contains(':') {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    };
     let key = STANDARD.encode(apz_trust::random::<16>());
     let head = handshake_head(&host_header, &key, target, path, protocol)?;
     let tcp = dial(&host, port, timeout)?;
@@ -609,9 +679,9 @@ pub fn connect_over<S: Duplex + 'static>(
     let head = handshake_head(&host_header, &key, target, path, protocol)?;
     let io: Box<dyn Duplex> = match tls {
         Some(name) => {
-            let pin = target
-                .pin
-                .ok_or_else(|| refused("a stream with no host name needs the hub's certificate pin"))?;
+            let pin = target.pin.ok_or_else(|| {
+                refused("a stream with no host name needs the hub's certificate pin")
+            })?;
             Box::new(StreamOwned::new(tls_session(Some(pin), name)?, stream))
         }
         None => Box::new(stream),
@@ -620,7 +690,13 @@ pub fn connect_over<S: Duplex + 'static>(
 }
 
 /// The opening handshake's request text, checked before anything is dialled or sent.
-fn handshake_head(host_header: &str, key: &str, target: &Target, path: &str, protocol: Option<&str>) -> io::Result<String> {
+fn handshake_head(
+    host_header: &str,
+    key: &str,
+    target: &Target,
+    path: &str,
+    protocol: Option<&str>,
+) -> io::Result<String> {
     let mut head = format!(
         "GET {path} HTTP/1.1\r\nHost: {host_header}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\
          Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: {key}\r\n"
@@ -650,19 +726,35 @@ fn handshake_head(host_header: &str, key: &str, target: &Target, path: &str, pro
 }
 
 /// Sends the handshake over `io`, then checks the server's `101` and returns the socket.
-fn finish(mut io: Box<dyn Duplex>, head: &str, key: &str, protocol: Option<&str>, limits: Limits) -> io::Result<Socket> {
+fn finish(
+    mut io: Box<dyn Duplex>,
+    head: &str,
+    key: &str,
+    protocol: Option<&str>,
+    limits: Limits,
+) -> io::Result<Socket> {
     io.write_all(head.as_bytes())?;
     io.flush()?;
 
     let mut reader = BufReader::new(io);
     let (status, headers) = read_head(&mut reader)?;
-    let header = |name: &str| headers.iter().find(|(found, _)| found == name).map(|(_, value)| value.as_str());
+    let header = |name: &str| {
+        headers
+            .iter()
+            .find(|(found, _)| found == name)
+            .map(|(_, value)| value.as_str())
+    };
     if status != 101 {
-        return Err(io::Error::other(format!("the server answered {status}, not 101 Switching Protocols")));
+        return Err(io::Error::other(format!(
+            "the server answered {status}, not 101 Switching Protocols"
+        )));
     }
     let upgrades = header("upgrade").is_some_and(|value| value.eq_ignore_ascii_case("websocket"));
-    let connection = header("connection")
-        .is_some_and(|value| value.split(',').any(|item| item.trim().eq_ignore_ascii_case("upgrade")));
+    let connection = header("connection").is_some_and(|value| {
+        value
+            .split(',')
+            .any(|item| item.trim().eq_ignore_ascii_case("upgrade"))
+    });
     if !upgrades || !connection {
         return Err(refused("the server's 101 is not a WebSocket upgrade"));
     }
@@ -670,7 +762,9 @@ fn finish(mut io: Box<dyn Duplex>, head: &str, key: &str, protocol: Option<&str>
         return Err(refused("Sec-WebSocket-Accept does not match the key"));
     }
     if header("sec-websocket-extensions").is_some() {
-        return Err(refused("the server negotiated an extension, which this client never asks for"));
+        return Err(refused(
+            "the server negotiated an extension, which this client never asks for",
+        ));
     }
     match (protocol, header("sec-websocket-protocol")) {
         (None, None) => {}
@@ -757,16 +851,25 @@ mod tests {
 
     fn server_socket(limits: Limits) -> (Socket, Pipe) {
         let pipe = Pipe::default();
-        (Socket::new(Role::Server, Box::new(pipe.clone()), limits), pipe)
+        (
+            Socket::new(Role::Server, Box::new(pipe.clone()), limits),
+            pipe,
+        )
     }
 
     fn client_socket(limits: Limits) -> (Socket, Pipe) {
         let pipe = Pipe::default();
-        (Socket::new(Role::Client, Box::new(pipe.clone()), limits), pipe)
+        (
+            Socket::new(Role::Client, Box::new(pipe.clone()), limits),
+            pipe,
+        )
     }
 
     fn feed(pipe: &Pipe, bytes: &[u8]) {
-        pipe.input.lock().expect("lock").extend(bytes.iter().copied());
+        pipe.input
+            .lock()
+            .expect("lock")
+            .extend(bytes.iter().copied());
     }
 
     fn written(pipe: &Pipe) -> Vec<u8> {
@@ -788,7 +891,12 @@ mod tests {
             }
         }
         frame.extend_from_slice(&KEY);
-        frame.extend(payload.iter().enumerate().map(|(index, byte)| byte ^ KEY[index % 4]));
+        frame.extend(
+            payload
+                .iter()
+                .enumerate()
+                .map(|(index, byte)| byte ^ KEY[index % 4]),
+        );
         frame
     }
 
@@ -833,18 +941,29 @@ mod tests {
         frames_written(pipe)
             .into_iter()
             .find(|(opcode, _)| *opcode == OP_CLOSE)
-            .and_then(|(_, payload)| payload.get(..2).map(|code| u16::from_be_bytes([code[0], code[1]])))
+            .and_then(|(_, payload)| {
+                payload
+                    .get(..2)
+                    .map(|code| u16::from_be_bytes([code[0], code[1]]))
+            })
     }
 
     /// Asserts that `socket.recv` fails and the socket closed with `code`.
     fn assert_refused(socket: &mut Socket, pipe: &Pipe, code: u16) {
         let result = socket.recv(Duration::from_secs(1));
-        assert!(result.is_err(), "a frame that breaks the rules must fail, got {result:?}");
+        assert!(
+            result.is_err(),
+            "a frame that breaks the rules must fail, got {result:?}"
+        );
         assert_eq!(close_code(pipe), Some(code));
     }
 
     fn header_of(response: &Response, name: &str) -> Option<String> {
-        response.headers.iter().find(|(found, _)| found.eq_ignore_ascii_case(name)).map(|(_, value)| value.clone())
+        response
+            .headers
+            .iter()
+            .find(|(found, _)| found.eq_ignore_ascii_case(name))
+            .map(|(_, value)| value.clone())
     }
 
     const KEY_HEADER: &str = "dGhlIHNhbXBsZSBub25jZQ==";
@@ -861,7 +980,10 @@ mod tests {
         ];
         let mut headers: Vec<(String, String)> = Vec::new();
         for (name, value) in defaults {
-            let value = overrides.iter().find(|(found, _)| *found == name).map_or(value, |(_, v)| *v);
+            let value = overrides
+                .iter()
+                .find(|(found, _)| *found == name)
+                .map_or(value, |(_, v)| *v);
             if !value.is_empty() {
                 headers.push((name.to_string(), value.to_string()));
             }
@@ -871,7 +993,12 @@ mod tests {
                 headers.push((name.to_string(), value.to_string()));
             }
         }
-        Request { method: "GET".to_string(), path: "/ws".to_string(), headers, ..Request::default() }
+        Request {
+            method: "GET".to_string(),
+            path: "/ws".to_string(),
+            headers,
+            ..Request::default()
+        }
     }
 
     fn status(request: &Request, origins: Origins, protocol: Option<&str>) -> u16 {
@@ -880,66 +1007,150 @@ mod tests {
 
     #[test]
     fn the_accept_key_is_the_rfc_example() {
-        assert_eq!(accept_key("dGhlIHNhbXBsZSBub25jZQ=="), "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=");
+        assert_eq!(
+            accept_key("dGhlIHNhbXBsZSBub25jZQ=="),
+            "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
+        );
     }
 
     #[test]
     fn a_valid_handshake_is_upgraded_with_its_accept_key() {
-        let response = accept(&request(&[]), Origins::SameHost, None, Limits::default(), |_| {});
+        let response = accept(
+            &request(&[]),
+            Origins::SameHost,
+            None,
+            Limits::default(),
+            |_| {},
+        );
         assert_eq!(response.status, 101);
-        assert_eq!(header_of(&response, "Sec-WebSocket-Accept").as_deref(), Some("s3pPLMBiTxaQ9kYGzzhZRbK+xOo="));
+        assert_eq!(
+            header_of(&response, "Sec-WebSocket-Accept").as_deref(),
+            Some("s3pPLMBiTxaQ9kYGzzhZRbK+xOo=")
+        );
         assert!(matches!(response.body, Body::Upgrade(_)));
     }
 
     #[test]
     fn a_wrong_version_is_426_and_names_the_one_it_speaks() {
-        let response = accept(&request(&[("sec-websocket-version", "8")]), Origins::SameHost, None, Limits::default(), |_| {});
+        let response = accept(
+            &request(&[("sec-websocket-version", "8")]),
+            Origins::SameHost,
+            None,
+            Limits::default(),
+            |_| {},
+        );
         assert_eq!(response.status, 426);
-        assert_eq!(header_of(&response, "Sec-WebSocket-Version").as_deref(), Some("13"));
+        assert_eq!(
+            header_of(&response, "Sec-WebSocket-Version").as_deref(),
+            Some("13")
+        );
     }
 
     #[test]
     fn a_bad_key_is_refused() {
         // "short" is five bytes, not sixteen; an empty key is no key at all.
-        assert_eq!(status(&request(&[("sec-websocket-key", "c2hvcnQ=")]), Origins::SameHost, None), 400);
-        assert_eq!(status(&request(&[("sec-websocket-key", "")]), Origins::SameHost, None), 400);
+        assert_eq!(
+            status(
+                &request(&[("sec-websocket-key", "c2hvcnQ=")]),
+                Origins::SameHost,
+                None
+            ),
+            400
+        );
+        assert_eq!(
+            status(
+                &request(&[("sec-websocket-key", "")]),
+                Origins::SameHost,
+                None
+            ),
+            400
+        );
     }
 
     #[test]
     fn a_request_that_is_not_a_websocket_upgrade_is_refused() {
-        assert_eq!(status(&request(&[("upgrade", "")]), Origins::SameHost, None), 400);
-        assert_eq!(status(&request(&[("connection", "keep-alive")]), Origins::SameHost, None), 400);
-        let post = Request { method: "POST".to_string(), ..request(&[]) };
+        assert_eq!(
+            status(&request(&[("upgrade", "")]), Origins::SameHost, None),
+            400
+        );
+        assert_eq!(
+            status(
+                &request(&[("connection", "keep-alive")]),
+                Origins::SameHost,
+                None
+            ),
+            400
+        );
+        let post = Request {
+            method: "POST".to_string(),
+            ..request(&[])
+        };
         assert_eq!(status(&post, Origins::SameHost, None), 405);
     }
 
     #[test]
     fn the_origin_policy_matches_the_host_with_default_ports() {
-        let same = |host: &str, origin: &str| status(&request(&[("host", host), ("origin", origin)]), Origins::SameHost, None);
+        let same = |host: &str, origin: &str| {
+            status(
+                &request(&[("host", host), ("origin", origin)]),
+                Origins::SameHost,
+                None,
+            )
+        };
         assert_eq!(same("127.0.0.1:7700", "http://127.0.0.1:7700"), 101);
         assert_eq!(same("example.com", "https://Example.com:443"), 101);
         assert_eq!(same("example.com:80", "http://example.com"), 101);
         assert_eq!(same("example.com:8080", "http://example.com"), 403);
         assert_eq!(same("127.0.0.1:7700", "https://evil.example"), 403);
         assert_eq!(same("127.0.0.1:7700", "null"), 403);
-        assert_eq!(status(&request(&[("host", ""), ("origin", "http://127.0.0.1:7700")]), Origins::SameHost, None), 403);
+        assert_eq!(
+            status(
+                &request(&[("host", ""), ("origin", "http://127.0.0.1:7700")]),
+                Origins::SameHost,
+                None
+            ),
+            403
+        );
         // A client that sends no Origin (a daemon) is served.
         assert_eq!(status(&request(&[]), Origins::SameHost, None), 101);
     }
 
     #[test]
     fn with_no_browsers_any_origin_is_refused() {
-        assert_eq!(status(&request(&[("origin", "http://127.0.0.1:7700")]), Origins::None, None), 403);
+        assert_eq!(
+            status(
+                &request(&[("origin", "http://127.0.0.1:7700")]),
+                Origins::None,
+                None
+            ),
+            403
+        );
         assert_eq!(status(&request(&[]), Origins::None, None), 101);
     }
 
     #[test]
     fn the_subprotocol_is_echoed_only_when_it_is_the_one_asked_for() {
         let offered = request(&[("sec-websocket-protocol", "other, chat.v1")]);
-        let asked = accept(&offered, Origins::SameHost, Some("chat.v1"), Limits::default(), |_| {});
+        let asked = accept(
+            &offered,
+            Origins::SameHost,
+            Some("chat.v1"),
+            Limits::default(),
+            |_| {},
+        );
         assert_eq!(asked.status, 101);
-        assert_eq!(header_of(&asked, "Sec-WebSocket-Protocol").as_deref(), Some("chat.v1"));
-        assert_eq!(status(&request(&[("sec-websocket-protocol", "other")]), Origins::SameHost, Some("chat.v1")), 400);
+        assert_eq!(
+            header_of(&asked, "Sec-WebSocket-Protocol").as_deref(),
+            Some("chat.v1")
+        );
+        assert_eq!(
+            status(
+                &request(&[("sec-websocket-protocol", "other")]),
+                Origins::SameHost,
+                Some("chat.v1")
+            ),
+            400
+        );
         let unasked = accept(&offered, Origins::SameHost, None, Limits::default(), |_| {});
         assert_eq!(unasked.status, 101);
         assert_eq!(header_of(&unasked, "Sec-WebSocket-Protocol"), None);
@@ -969,16 +1180,34 @@ mod tests {
     }
 
     fn echo(request: &Request) -> Response {
-        accept(request, Origins::SameHost, None, Limits::default(), echo_session)
+        accept(
+            request,
+            Origins::SameHost,
+            None,
+            Limits::default(),
+            echo_session,
+        )
     }
 
     fn next(socket: &mut Socket) -> Message {
-        socket.recv(Duration::from_secs(5)).expect("a read").expect("a message in time")
+        socket
+            .recv(Duration::from_secs(5))
+            .expect("a read")
+            .expect("a message in time")
     }
 
     fn round_trip(target: &Target) {
-        let mut socket = connect(target, "/ws", None, Duration::from_secs(5), Limits::default()).expect("the handshake");
-        socket.send(&Message::Text("hello".to_string())).expect("send");
+        let mut socket = connect(
+            target,
+            "/ws",
+            None,
+            Duration::from_secs(5),
+            Limits::default(),
+        )
+        .expect("the handshake");
+        socket
+            .send(&Message::Text("hello".to_string()))
+            .expect("send");
         assert_eq!(next(&mut socket), Message::Text("hello".to_string()));
         socket.send(&Message::Binary(vec![1, 2, 3])).expect("send");
         assert_eq!(next(&mut socket), Message::Binary(vec![1, 2, 3]));
@@ -988,7 +1217,10 @@ mod tests {
     #[test]
     fn a_message_round_trips_over_plain_tcp() {
         let server = Server::bind(0).expect("bind").spawn(echo).expect("spawn");
-        let target = Target { base: format!("http://127.0.0.1:{}", server.port()), ..Target::default() };
+        let target = Target {
+            base: format!("http://127.0.0.1:{}", server.port()),
+            ..Target::default()
+        };
         round_trip(&target);
     }
 
@@ -997,7 +1229,11 @@ mod tests {
         let pair = apz_trust::tls::self_signed(&["localhost".to_string()]).expect("a certificate");
         let config = apz_trust::tls::server_config(&pair).expect("a server config");
         let pin = apz_trust::tls::fingerprint(&pair.cert_pem).expect("a pin");
-        let server = Server::bind(0).expect("bind").tls(config).spawn(echo).expect("spawn");
+        let server = Server::bind(0)
+            .expect("bind")
+            .tls(config)
+            .spawn(echo)
+            .expect("spawn");
         let target = Target {
             base: format!("https://localhost:{}", server.port()),
             pin: Some(pin),
@@ -1011,10 +1247,27 @@ mod tests {
         // No pin means a public host: the Mozilla roots must sign the certificate, and a self-signed one is refused.
         let pair = apz_trust::tls::self_signed(&["localhost".to_string()]).expect("a certificate");
         let config = apz_trust::tls::server_config(&pair).expect("a server config");
-        let server = Server::bind(0).expect("bind").tls(config).spawn(echo).expect("spawn");
-        let target = Target { base: format!("https://localhost:{}", server.port()), pin: None, ..Target::default() };
-        let refused = connect(&target, "/ws", None, Duration::from_secs(5), Limits::default());
-        assert!(refused.is_err(), "a self-signed certificate must not open a wss socket without a pin");
+        let server = Server::bind(0)
+            .expect("bind")
+            .tls(config)
+            .spawn(echo)
+            .expect("spawn");
+        let target = Target {
+            base: format!("https://localhost:{}", server.port()),
+            pin: None,
+            ..Target::default()
+        };
+        let refused = connect(
+            &target,
+            "/ws",
+            None,
+            Duration::from_secs(5),
+            Limits::default(),
+        );
+        assert!(
+            refused.is_err(),
+            "a self-signed certificate must not open a wss socket without a pin"
+        );
     }
 
     #[test]
@@ -1074,7 +1327,10 @@ mod tests {
         feed(&pipe, &frame);
         assert_refused(&mut socket, &pipe, 1009);
 
-        let small = Limits { max_frame: 16, ..Limits::default() };
+        let small = Limits {
+            max_frame: 16,
+            ..Limits::default()
+        };
         let (mut socket, pipe) = server_socket(small);
         feed(&pipe, &client_frame(true, OP_BINARY, &[0u8; 17]));
         assert_refused(&mut socket, &pipe, 1009);
@@ -1086,8 +1342,14 @@ mod tests {
         feed(&pipe, &client_frame(false, OP_TEXT, b"hel"));
         feed(&pipe, &client_frame(true, OP_PING, b"p"));
         feed(&pipe, &client_frame(true, OP_CONTINUATION, b"lo"));
-        assert_eq!(socket.recv(Duration::from_secs(1)).expect("a read"), Some(Message::Text("hello".to_string())));
-        assert!(frames_written(&pipe).contains(&(OP_PONG, b"p".to_vec())), "the pong repeats the ping's payload");
+        assert_eq!(
+            socket.recv(Duration::from_secs(1)).expect("a read"),
+            Some(Message::Text("hello".to_string()))
+        );
+        assert!(
+            frames_written(&pipe).contains(&(OP_PONG, b"p".to_vec())),
+            "the pong repeats the ping's payload"
+        );
     }
 
     #[test]
@@ -1100,7 +1362,11 @@ mod tests {
 
     #[test]
     fn a_message_over_max_message_is_1009_and_sending_one_is_refused() {
-        let limits = Limits { max_frame: 8, max_message: 10, ..Limits::default() };
+        let limits = Limits {
+            max_frame: 8,
+            max_message: 10,
+            ..Limits::default()
+        };
         let (mut socket, pipe) = server_socket(limits);
         feed(&pipe, &client_frame(false, OP_TEXT, b"aaaaa"));
         feed(&pipe, &client_frame(true, OP_CONTINUATION, b"bbbbbb"));
@@ -1118,11 +1384,18 @@ mod tests {
     #[test]
     fn a_close_is_echoed_and_the_socket_ends() {
         let (mut socket, pipe) = server_socket(Limits::default());
-        feed(&pipe, &client_frame(true, OP_CLOSE, &[0x03, 0xe8, b'b', b'y', b'e']));
+        feed(
+            &pipe,
+            &client_frame(true, OP_CLOSE, &[0x03, 0xe8, b'b', b'y', b'e']),
+        );
         assert!(socket.recv(Duration::from_secs(1)).is_err());
-        let echoed = frames_written(&pipe).contains(&(OP_CLOSE, vec![0x03, 0xe8, b'b', b'y', b'e']));
+        let echoed =
+            frames_written(&pipe).contains(&(OP_CLOSE, vec![0x03, 0xe8, b'b', b'y', b'e']));
         assert!(echoed, "the close is echoed with its code and reason");
-        assert!(socket.recv(Duration::from_secs(1)).is_err(), "nothing more is received after a close");
+        assert!(
+            socket.recv(Duration::from_secs(1)).is_err(),
+            "nothing more is received after a close"
+        );
     }
 
     #[test]
@@ -1137,18 +1410,31 @@ mod tests {
         let (mut socket, pipe) = server_socket(Limits::default());
         let frame = client_frame(true, OP_TEXT, b"hello");
         feed(&pipe, &frame[..8]);
-        assert_eq!(socket.recv(Duration::from_millis(20)).expect("a read"), None);
+        assert_eq!(
+            socket.recv(Duration::from_millis(20)).expect("a read"),
+            None
+        );
         feed(&pipe, &frame[8..]);
-        assert_eq!(socket.recv(Duration::from_secs(1)).expect("a read"), Some(Message::Text("hello".to_string())));
+        assert_eq!(
+            socket.recv(Duration::from_secs(1)).expect("a read"),
+            Some(Message::Text("hello".to_string()))
+        );
     }
 
     #[test]
     fn a_silent_peer_is_pinged_then_closed_after_dead_after() {
-        let limits = Limits { ping_every: Duration::from_millis(10), dead_after: Duration::from_millis(30), ..Limits::default() };
+        let limits = Limits {
+            ping_every: Duration::from_millis(10),
+            dead_after: Duration::from_millis(30),
+            ..Limits::default()
+        };
         let (mut socket, pipe) = server_socket(limits);
         assert!(socket.recv(Duration::from_secs(2)).is_err());
         let frames = frames_written(&pipe);
-        assert!(frames.iter().any(|(opcode, _)| *opcode == OP_PING), "a keepalive ping went out");
+        assert!(
+            frames.iter().any(|(opcode, _)| *opcode == OP_PING),
+            "a keepalive ping went out"
+        );
         assert_eq!(close_code(&pipe), Some(1001));
     }
 
@@ -1156,7 +1442,10 @@ mod tests {
     fn an_unsolicited_pong_is_ignored() {
         let (mut socket, pipe) = server_socket(Limits::default());
         feed(&pipe, &client_frame(true, OP_PONG, b""));
-        assert_eq!(socket.recv(Duration::from_millis(20)).expect("a read"), None);
+        assert_eq!(
+            socket.recv(Duration::from_millis(20)).expect("a read"),
+            None
+        );
         assert_eq!(close_code(&pipe), None);
     }
 
@@ -1172,7 +1461,11 @@ mod tests {
         assert_eq!(sent[0], 0x81);
         assert_eq!(sent[1], 0x80 | 2, "the mask bit is set");
         let key = [sent[2], sent[3], sent[4], sent[5]];
-        let unmasked: Vec<u8> = sent[6..].iter().enumerate().map(|(index, byte)| byte ^ key[index % 4]).collect();
+        let unmasked: Vec<u8> = sent[6..]
+            .iter()
+            .enumerate()
+            .map(|(index, byte)| byte ^ key[index % 4])
+            .collect();
         assert_eq!(unmasked, b"hi");
     }
 
@@ -1188,7 +1481,10 @@ mod tests {
         let (mut socket, pipe) = server_socket(Limits::default());
         socket.close(1000, "a");
         socket.close(1001, "b");
-        let closes = frames_written(&pipe).iter().filter(|(opcode, _)| *opcode == OP_CLOSE).count();
+        let closes = frames_written(&pipe)
+            .iter()
+            .filter(|(opcode, _)| *opcode == OP_CLOSE)
+            .count();
         assert_eq!(closes, 1);
         assert!(socket.send(&Message::Text("late".to_string())).is_err());
     }
@@ -1221,19 +1517,38 @@ mod connect_over_tests {
             .expect("bind")
             .tls(config)
             .spawn(|request: &crate::Request| {
-                accept(request, Origins::None, None, Limits::default(), echo_session)
+                accept(
+                    request,
+                    Origins::None,
+                    None,
+                    Limits::default(),
+                    echo_session,
+                )
             })
             .expect("spawn");
         let tcp = TcpStream::connect(("127.0.0.1", server.port())).expect("dial");
-        tcp.set_read_timeout(Some(Duration::from_secs(5))).expect("a read timeout");
+        tcp.set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("a read timeout");
         let target = Target {
             pin: Some(pin),
             ..Target::default()
         };
-        let mut socket = connect_over(tcp, Some("localhost"), &target, "/ws", None, Limits::default())
-            .expect("the handshake");
-        socket.send(&Message::Text("hello".to_string())).expect("send");
-        let reply = socket.recv(Duration::from_secs(5)).expect("a read").expect("a message in time");
+        let mut socket = connect_over(
+            tcp,
+            Some("localhost"),
+            &target,
+            "/ws",
+            None,
+            Limits::default(),
+        )
+        .expect("the handshake");
+        socket
+            .send(&Message::Text("hello".to_string()))
+            .expect("send");
+        let reply = socket
+            .recv(Duration::from_secs(5))
+            .expect("a read")
+            .expect("a message in time");
         assert_eq!(reply, Message::Text("hello".to_string()));
         socket.close(1000, "bye");
     }
@@ -1242,7 +1557,14 @@ mod connect_over_tests {
     fn a_stream_with_no_host_name_is_refused_before_anything_is_sent() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
         let tcp = TcpStream::connect(listener.local_addr().expect("addr")).expect("dial");
-        let Err(err) = connect_over(tcp, Some("hub"), &Target::default(), "/ws", None, Limits::default()) else {
+        let Err(err) = connect_over(
+            tcp,
+            Some("hub"),
+            &Target::default(),
+            "/ws",
+            None,
+            Limits::default(),
+        ) else {
             panic!("a stream with no pin must be refused");
         };
         assert!(err.to_string().contains("pin"), "{err}");

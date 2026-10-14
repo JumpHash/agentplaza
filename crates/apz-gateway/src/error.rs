@@ -21,7 +21,11 @@ pub enum GatewayError {
     Config(String),
     /// The provider answered with an error status.
     #[error("HTTP {status}: {body}")]
-    Http { status: u16, body: String, retryable: bool },
+    Http {
+        status: u16,
+        body: String,
+        retryable: bool,
+    },
     /// The provider reported an error inside a stream.
     #[error("provider error: {message}")]
     Provider { message: String, retryable: bool },
@@ -62,7 +66,9 @@ impl GatewayError {
     /// Whether trying the same call again later may succeed.
     pub fn is_retryable(&self) -> bool {
         match self {
-            GatewayError::Http { retryable, .. } | GatewayError::Provider { retryable, .. } => *retryable,
+            GatewayError::Http { retryable, .. } | GatewayError::Provider { retryable, .. } => {
+                *retryable
+            }
             GatewayError::Transport(_) => true,
             _ => false,
         }

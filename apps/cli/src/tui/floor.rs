@@ -113,7 +113,9 @@ impl FloorView {
 
     /// The agents (the `GET /v1/agents` answer), on load and on every poll.
     pub fn on_agents(&mut self, agents: &Value) {
-        let list = agents.as_array().or_else(|| agents.get("agents").and_then(Value::as_array));
+        let list = agents
+            .as_array()
+            .or_else(|| agents.get("agents").and_then(Value::as_array));
         let Some(list) = list else { return };
         self.agents = list.iter().filter_map(parse_agent).collect();
     }
@@ -152,15 +154,21 @@ impl FloorView {
         }
         let buf = frame.buffer_mut();
         let legend = area.height >= 8;
-        let floor = Rect { height: if legend { area.height - 1 } else { area.height }, ..area };
+        let floor = Rect {
+            height: if legend { area.height - 1 } else { area.height },
+            ..area
+        };
 
         let rooms = layout(&self.room_sizes(), floor);
         let mut at: HashMap<i64, (f32, f32)> = HashMap::new();
         for (role, rect) in &rooms {
             let color = role_color(role);
             draw_box(buf, *rect, role, color);
-            let members: Vec<&Agent> =
-                self.agents.iter().filter(|a| !a.orchestrator && a.role == *role).collect();
+            let members: Vec<&Agent> = self
+                .agents
+                .iter()
+                .filter(|a| !a.orchestrator && a.role == *role)
+                .collect();
             self.draw_members(buf, inner(*rect), 1, &members, color, &mut at);
         }
 
@@ -171,7 +179,10 @@ impl FloorView {
         let hub_inner = inner(hub);
         let hub_cols = usize::from((hub_inner.width / SLOT_W).max(1));
         self.draw_members(buf, hub_inner, hub_cols, &orchestrators, hub_color, &mut at);
-        let hub_at = ((hub.x + hub.width / 2) as f32, (hub.y + hub.height / 2) as f32);
+        let hub_at = (
+            (hub.x + hub.width / 2) as f32,
+            (hub.y + hub.height / 2) as f32,
+        );
 
         for p in &self.packets {
             let from = match p.from {
@@ -200,7 +211,12 @@ impl FloorView {
         if self.packets.len() >= MAX_PACKETS {
             self.packets.remove(0);
         }
-        self.packets.push(Packet { kind, from, to, age: 0.0 });
+        self.packets.push(Packet {
+            kind,
+            from,
+            to,
+            age: 0.0,
+        });
     }
 
     fn knows(&self, end: End) -> bool {
@@ -213,10 +229,16 @@ impl FloorView {
     /// The live transcript: model calls and tool runs leave an agent for the gateway, messages
     /// and task hand-offs travel between agents.
     fn on_transcript(&mut self, entry: &Value) {
-        let Some(cid) = entry.get("cid").and_then(Value::as_i64) else { return };
+        let Some(cid) = entry.get("cid").and_then(Value::as_i64) else {
+            return;
+        };
         let inner = entry.get("data").unwrap_or(&NULL);
         let me = End::Agent(cid);
-        match entry.get("kind").and_then(Value::as_str).unwrap_or_default() {
+        match entry
+            .get("kind")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+        {
             "model_request" => self.send(Kind::ModelCall, me, End::Hub),
             "tool_request" => {
                 let mut tool = text_of(inner, "tool");
@@ -225,7 +247,10 @@ impl FloorView {
                 }
                 if MESSAGE_TOOLS.contains(&tool.as_str()) {
                     let input = inner.get("input").unwrap_or(&NULL);
-                    let to = input.get("to_cid").or_else(|| input.get("assignee")).and_then(Value::as_i64);
+                    let to = input
+                        .get("to_cid")
+                        .or_else(|| input.get("assignee"))
+                        .and_then(Value::as_i64);
                     if let Some(to) = to {
                         self.send(Kind::Message, me, End::Agent(to));
                     }
@@ -234,11 +259,16 @@ impl FloorView {
                 }
             }
             "work_start" => {
-                let from = inner.get("origin").and_then(|o| o.get("from_cid")).and_then(Value::as_i64);
+                let from = inner
+                    .get("origin")
+                    .and_then(|o| o.get("from_cid"))
+                    .and_then(Value::as_i64);
                 match from {
                     Some(from) => self.send(Kind::Message, End::Agent(from), me),
                     None if inner.get("kind").and_then(Value::as_str) == Some("task") => {
-                        if let Some(boss) = self.agents.iter().find(|a| a.orchestrator).map(|a| a.cid) {
+                        if let Some(boss) =
+                            self.agents.iter().find(|a| a.orchestrator).map(|a| a.cid)
+                        {
                             self.send(Kind::Message, End::Agent(boss), me);
                         }
                     }
@@ -251,8 +281,12 @@ impl FloorView {
 
     /// The non-gateway roles, sorted: one room each.
     fn room_roles(&self) -> Vec<String> {
-        let set: BTreeSet<&str> =
-            self.agents.iter().filter(|a| !a.orchestrator).map(|a| a.role.as_str()).collect();
+        let set: BTreeSet<&str> = self
+            .agents
+            .iter()
+            .filter(|a| !a.orchestrator)
+            .map(|a| a.role.as_str())
+            .collect();
         set.into_iter().map(str::to_string).collect()
     }
 
@@ -288,14 +322,22 @@ impl FloorView {
             return;
         }
         let capacity = cols * inner.height as usize;
-        let shown = if members.len() > capacity { capacity - 1 } else { members.len() };
+        let shown = if members.len() > capacity {
+            capacity - 1
+        } else {
+            members.len()
+        };
         let blink_on = self.phase.sin() > 0.0;
         for (i, a) in members[..shown].iter().enumerate() {
             let (x, y) = slot(inner, cols, i);
             let (glyph, glyph_style, name_style) = agent_style(a, color, blink_on);
             put(buf, x, y, glyph, glyph_style);
             // In a multi-column row a name stops at its slot's edge; a room's name runs to its wall.
-            let edge = if cols > 1 { (x + SLOT_W).min(inner.right()) } else { inner.right() };
+            let edge = if cols > 1 {
+                (x + SLOT_W).min(inner.right())
+            } else {
+                inner.right()
+            };
             let room = edge.saturating_sub(x + 2) as usize;
             put(buf, x + 2, y, &trunc(&a.name, room), name_style);
             at.insert(a.cid, (x as f32, y as f32));
@@ -324,13 +366,20 @@ fn parse_agent(v: &Value) -> Option<Agent> {
 }
 
 fn text_of(v: &Value, key: &str) -> String {
-    v.get(key).and_then(Value::as_str).unwrap_or_default().to_string()
+    v.get(key)
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
 }
 
 /// The size of one room: wide enough for the full role name and for its longest "● name" line,
 /// one row per member and at least three rows in all.
 fn room_size(role: &str, names: &[&str]) -> (u16, u16) {
-    let longest = names.iter().map(|n| n.chars().count() + 2).max().unwrap_or(0);
+    let longest = names
+        .iter()
+        .map(|n| n.chars().count() + 2)
+        .max()
+        .unwrap_or(0);
     let w = (role.chars().count() + 6).max(longest + 4).min(ROOM_MAX_W);
     let h = (names.len() + 2).max(3);
     (w as u16, h as u16)
@@ -344,8 +393,10 @@ pub fn layout(rooms: &[(String, u16, u16)], area: Rect) -> Vec<(String, Rect)> {
     if n == 0 || area.width == 0 || area.height == 0 {
         return Vec::new();
     }
-    let rooms: Vec<(String, u16, u16)> =
-        rooms.iter().map(|(role, w, h)| (role.clone(), (*w).min(area.width), (*h).min(area.height))).collect();
+    let rooms: Vec<(String, u16, u16)> = rooms
+        .iter()
+        .map(|(role, w, h)| (role.clone(), (*w).min(area.width), (*h).min(area.height)))
+        .collect();
     let (w, h) = (area.width as f32, area.height as f32);
     let max_w = rooms.iter().map(|r| r.1).max().unwrap_or(0) as f32;
     let max_h = rooms.iter().map(|r| r.2).max().unwrap_or(0) as f32;
@@ -359,7 +410,12 @@ pub fn layout(rooms: &[(String, u16, u16)], area: Rect) -> Vec<(String, Rect)> {
             let a = -FRAC_PI_2 + TAU * i as f32 / n as f32;
             let x = cx + rx * a.cos() - rw as f32 / 2.0;
             let y = cy + ry * a.sin() - rh as f32 / 2.0;
-            Rect::new(snap(x, area.x, area.right() - rw), snap(y, area.y, area.bottom() - rh), rw, rh)
+            Rect::new(
+                snap(x, area.x, area.right() - rw),
+                snap(y, area.y, area.bottom() - rh),
+                rw,
+                rh,
+            )
         })
         .collect();
     if crowded(&ring) {
@@ -392,7 +448,10 @@ fn grid(rooms: &[(String, u16, u16)], area: Rect) -> Option<Vec<(String, Rect)>>
             .enumerate()
             .map(|(i, (role, w, h))| {
                 let (col, row) = ((i % cols) as u16, (i / cols) as u16);
-                (role.clone(), Rect::new(x0 + col * cell_w, y0 + row * cell_h, *w, *h))
+                (
+                    role.clone(),
+                    Rect::new(x0 + col * cell_w, y0 + row * cell_h, *w, *h),
+                )
             })
             .collect(),
     )
@@ -415,11 +474,21 @@ fn crowded(rects: &[Rect]) -> bool {
 fn hub_rect(area: Rect) -> Rect {
     let w = (area.width / 3).clamp(10, 26).min(area.width);
     let h = 5.min(area.height);
-    Rect::new(area.x + (area.width - w) / 2, area.y + (area.height - h) / 2, w, h)
+    Rect::new(
+        area.x + (area.width - w) / 2,
+        area.y + (area.height - h) / 2,
+        w,
+        h,
+    )
 }
 
 fn inner(r: Rect) -> Rect {
-    Rect::new(r.x + 1, r.y + 1, r.width.saturating_sub(2), r.height.saturating_sub(2))
+    Rect::new(
+        r.x + 1,
+        r.y + 1,
+        r.width.saturating_sub(2),
+        r.height.saturating_sub(2),
+    )
 }
 
 /// Where the i-th agent of a room sits: left to right, then down.
@@ -433,14 +502,28 @@ fn slot(inner: Rect, cols: usize, i: usize) -> (u16, u16) {
 fn agent_style(a: &Agent, color: Color, blink_on: bool) -> (&'static str, Style, Style) {
     match a.status {
         Status::Working => {
-            let m = if blink_on { Modifier::BOLD } else { Modifier::DIM };
-            ("●", Style::default().fg(color).add_modifier(m), Style::default().fg(color))
+            let m = if blink_on {
+                Modifier::BOLD
+            } else {
+                Modifier::DIM
+            };
+            (
+                "●",
+                Style::default().fg(color).add_modifier(m),
+                Style::default().fg(color),
+            )
         }
-        Status::Idle => ("●", Style::default().fg(color), Style::default().fg(Color::Gray)),
+        Status::Idle => (
+            "●",
+            Style::default().fg(color),
+            Style::default().fg(Color::Gray),
+        ),
         Status::Offline => (
             "○",
             Style::default().fg(color).add_modifier(Modifier::DIM),
-            Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM),
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::DIM),
         ),
     }
 }
@@ -479,7 +562,13 @@ fn draw_box(buf: &mut Buffer, r: Rect, label: &str, color: Color) {
     let max = (r.width as usize).saturating_sub(4);
     if max > 2 && !label.is_empty() {
         let text = format!(" {} ", trunc(label, max - 2));
-        put(buf, x0 + 2, y0, &text, Style::default().fg(color).add_modifier(Modifier::BOLD));
+        put(
+            buf,
+            x0 + 2,
+            y0,
+            &text,
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        );
     }
 }
 
@@ -498,7 +587,11 @@ fn draw_packet(buf: &mut Buffer, floor: Rect, p: &Packet, from: (f32, f32), to: 
             v * v * from.1 + 2.0 * v * u * ctrl.1 + u * u * to.1,
         )
     };
-    let modifier = if t > 0.7 { Modifier::DIM } else { Modifier::BOLD };
+    let modifier = if t > 0.7 {
+        Modifier::DIM
+    } else {
+        Modifier::BOLD
+    };
     let style = Style::default().fg(p.kind.color()).add_modifier(modifier);
     for k in 1..=3 {
         let (x, y) = point((s - 0.05 * k as f32).max(0.0));
@@ -510,7 +603,11 @@ fn draw_packet(buf: &mut Buffer, floor: Rect, p: &Packet, from: (f32, f32), to: 
 
 fn put_cell(buf: &mut Buffer, floor: Rect, x: f32, y: f32, s: &str, style: Style) {
     let (x, y) = (x.round(), y.round());
-    if x < floor.x as f32 || y < floor.y as f32 || x >= floor.right() as f32 || y >= floor.bottom() as f32 {
+    if x < floor.x as f32
+        || y < floor.y as f32
+        || x >= floor.right() as f32
+        || y >= floor.bottom() as f32
+    {
         return;
     }
     put(buf, x as u16, y as u16, s, style);
@@ -524,7 +621,12 @@ fn draw_legend(buf: &mut Buffer, area: Rect) {
         Span::raw("model call  "),
         Span::styled("■ ", Style::default().fg(Kind::ToolRun.color())),
         Span::raw("tool run  "),
-        Span::styled("● ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "● ",
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::raw("working  "),
         Span::styled("● ", Style::default().fg(Color::Gray)),
         Span::raw("idle  "),
@@ -577,7 +679,10 @@ mod tests {
         assert_eq!(placed.len(), 8);
         for (role, r) in &placed {
             assert!(
-                r.x >= area.x && r.y >= area.y && r.right() <= area.right() && r.bottom() <= area.bottom(),
+                r.x >= area.x
+                    && r.y >= area.y
+                    && r.right() <= area.right()
+                    && r.bottom() <= area.bottom(),
                 "{role} outside the area: {r:?}"
             );
         }
@@ -588,9 +693,22 @@ mod tests {
     #[test]
     fn sixteen_roles_show_their_full_names_without_overlap() {
         let roles = [
-            "architect", "edge-operator", "orchestrator", "designer", "developer", "reviewer", "tester",
-            "security", "data-engineer", "devops", "product-owner", "writer", "analyst", "support",
-            "researcher", "qa-lead",
+            "architect",
+            "edge-operator",
+            "orchestrator",
+            "designer",
+            "developer",
+            "reviewer",
+            "tester",
+            "security",
+            "data-engineer",
+            "devops",
+            "product-owner",
+            "writer",
+            "analyst",
+            "support",
+            "researcher",
+            "qa-lead",
         ];
         let agents: Vec<Value> = roles
             .iter()
@@ -608,10 +726,15 @@ mod tests {
         let mut term = Terminal::new(TestBackend::new(160, 40)).unwrap();
         term.draw(|f| view.render(f, f.area())).unwrap();
         let buf = term.backend().buffer();
-        let rows: Vec<String> = (0..40).map(|y| (0..160).map(|x| buf[(x, y)].symbol().to_string()).collect()).collect();
+        let rows: Vec<String> = (0..40)
+            .map(|y| (0..160).map(|x| buf[(x, y)].symbol().to_string()).collect())
+            .collect();
         for role in roles {
             let label = format!(" {role} ");
-            assert!(rows.iter().any(|row| row.contains(&label)), "{role} is not shown in full");
+            assert!(
+                rows.iter().any(|row| row.contains(&label)),
+                "{role} is not shown in full"
+            );
         }
     }
 
@@ -641,7 +764,10 @@ mod tests {
             {"cid": 2, "name": "boss", "role": "", "status": "working", "tier": "orchestrator"}
         ]));
         view.on_event("conversation", &json!({"from_cid": 1, "to_cid": 2}));
-        view.on_event("transcript", &json!({"cid": 1, "kind": "tool_request", "data": {"tool": "bash", "input": {}}}));
+        view.on_event(
+            "transcript",
+            &json!({"cid": 1, "kind": "tool_request", "data": {"tool": "bash", "input": {}}}),
+        );
         view.on_agents(&json!([
             {"cid": 1, "name": "ada2", "role": "dev", "status": "offline"},
             {"cid": 2, "name": "boss", "role": "", "status": "idle", "tier": "orchestrator"}

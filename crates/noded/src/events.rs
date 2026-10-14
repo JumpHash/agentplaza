@@ -188,16 +188,18 @@ impl EventBus {
         self.subscribers
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .retain(|subscriber| match subscriber.sender.try_send(event.clone()) {
-                Ok(()) => true,
-                // The flag is raised before the sender is dropped (the drop
-                // is what ends the subscription's queue).
-                Err(TrySendError::Full(_)) => {
-                    subscriber.overflowed.store(true, Ordering::Release);
-                    false
-                }
-                Err(TrySendError::Disconnected(_)) => false,
-            });
+            .retain(
+                |subscriber| match subscriber.sender.try_send(event.clone()) {
+                    Ok(()) => true,
+                    // The flag is raised before the sender is dropped (the drop
+                    // is what ends the subscription's queue).
+                    Err(TrySendError::Full(_)) => {
+                        subscriber.overflowed.store(true, Ordering::Release);
+                        false
+                    }
+                    Err(TrySendError::Disconnected(_)) => false,
+                },
+            );
     }
 }
 

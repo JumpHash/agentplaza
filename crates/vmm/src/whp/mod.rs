@@ -57,11 +57,11 @@ pub mod zero_page;
 // an in-hypervisor GICv3, which the arm64 guest path (the HVF backend's FDT
 // and memory map, on WHP) would build on - until then the layer has no
 // caller there.
+#[cfg(all(windows, target_arch = "x86_64"))]
+mod boot;
 #[cfg(windows)]
 #[cfg_attr(not(target_arch = "x86_64"), allow(dead_code))]
 pub(crate) mod sys;
-#[cfg(all(windows, target_arch = "x86_64"))]
-mod boot;
 #[cfg(all(windows, target_arch = "x86_64"))]
 mod vcpu;
 #[cfg(windows)]
@@ -100,7 +100,11 @@ pub struct MmioTransport {
 ///
 /// The appended values are this backend's layout constants and the host's
 /// clock rate - never a path, token or environment variable.
-pub fn guest_cmdline(requested: &str, transports: &[MmioTransport], tsc_khz: Option<u64>) -> String {
+pub fn guest_cmdline(
+    requested: &str,
+    transports: &[MmioTransport],
+    tsc_khz: Option<u64>,
+) -> String {
     const LOGLEVEL_ARGS: [&str; 4] = ["loglevel=", "ignore_loglevel", "quiet", "debug"];
 
     let requested = requested.trim();
@@ -162,7 +166,10 @@ mod tests {
             "console=ttyS0 pci=off loglevel=7 reboot=acpi \
              virtio_mmio.device=0x1000@0xc0001000:5 tsc_early_khz=2995200 tsc=reliable"
         );
-        assert_eq!(guest_cmdline("", &[], None), "pci=off loglevel=7 reboot=acpi");
+        assert_eq!(
+            guest_cmdline("", &[], None),
+            "pci=off loglevel=7 reboot=acpi"
+        );
     }
 
     #[test]
@@ -179,7 +186,13 @@ mod tests {
 
     #[test]
     fn an_unknown_or_zero_clock_adds_nothing() {
-        assert_eq!(guest_cmdline("a", &[], Some(0)), "a pci=off loglevel=7 reboot=acpi");
-        assert_eq!(guest_cmdline("a", &[], None), "a pci=off loglevel=7 reboot=acpi");
+        assert_eq!(
+            guest_cmdline("a", &[], Some(0)),
+            "a pci=off loglevel=7 reboot=acpi"
+        );
+        assert_eq!(
+            guest_cmdline("a", &[], None),
+            "a pci=off loglevel=7 reboot=acpi"
+        );
     }
 }

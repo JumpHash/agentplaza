@@ -124,7 +124,10 @@ fn settings_of_trims_the_folder_and_checks_each_bound() {
         );
     }
     form.record_fps = "1".to_string();
-    assert!(settings_of(&form).is_ok(), "one frame a second is the least");
+    assert!(
+        settings_of(&form).is_ok(),
+        "one frame a second is the least"
+    );
 }
 
 #[test]

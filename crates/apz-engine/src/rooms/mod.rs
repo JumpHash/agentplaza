@@ -22,7 +22,14 @@ const MAX_SIDE: f64 = 8.0;
 
 /// The palette the rooms are built with: the sheet and rule are fixed, the rest are the floor's colours.
 pub fn kit_palette(c: &Colors) -> KitPalette {
-    KitPalette { sheet: Color::hex(0xe9edf7), rule: Color::hex(0xa9b4cc), ink3: c.ink3, signal: c.signal, ok: c.ok, info: c.info }
+    KitPalette {
+        sheet: Color::hex(0xe9edf7),
+        rule: Color::hex(0xa9b4cc),
+        ink3: c.ink3,
+        signal: c.signal,
+        ok: c.ok,
+        info: c.info,
+    }
 }
 
 /// The options of a room (`RoomInput` in index.ts).
@@ -63,9 +70,18 @@ pub struct BuiltRoom {
 /// `opts.w` by `opts.d`. The board layout grows a slot's cells to its rooms' minimums (world/board_layout.rs), so a
 /// size below the minimum here only means no slot holds the room: it is NOT enlarged (that would overlap the
 /// neighbouring slots), its required items may not place, and a warning names the role and the minimum.
-pub fn build_room(role: &str, s: f32, hue: f32, palette: &KitPalette, opts: &RoomOptions) -> BuiltRoom {
+pub fn build_room(
+    role: &str,
+    s: f32,
+    hue: f32,
+    palette: &KitPalette,
+    opts: &RoomOptions,
+) -> BuiltRoom {
     let data = generate::data();
-    let agents = opts.agents.unwrap_or_else(|| default_agents(opts.w, opts.d)).max(1);
+    let agents = opts
+        .agents
+        .unwrap_or_else(|| default_agents(opts.w, opts.d))
+        .max(1);
     let need = min_side(role, agents).min(MAX_SIDE);
     // The minimum is a cell size: compare the cell (2 * s), not the room inside its wall margin (index.ts buildRoom).
     let warned = 2.0 * f64::from(s) < need - 1e-9;
@@ -75,9 +91,25 @@ pub fn build_room(role: &str, s: f32, hue: f32, palette: &KitPalette, opts: &Roo
             opts.w, opts.d
         );
     }
-    let input = Input { role: role.to_string(), w: opts.w, d: opts.d, door: opts.door, seed: opts.seed, agents: Some(agents) };
+    let input = Input {
+        role: role.to_string(),
+        w: opts.w,
+        d: opts.d,
+        door: opts.door,
+        seed: opts.seed,
+        agents: Some(agents),
+    };
     let layout = generate::generate(&input, data);
-    let built = build::build_layout(&layout, &data.catalog, hue, palette, opts.w, opts.d, s, &role_name(role));
+    let built = build::build_layout(
+        &layout,
+        &data.catalog,
+        hue,
+        palette,
+        opts.w,
+        opts.d,
+        s,
+        &role_name(role),
+    );
     BuiltRoom {
         group: built.group,
         floor: built.floor,
@@ -100,8 +132,14 @@ pub fn default_agents(w: f64, d: f64) -> usize {
 /// assets/rooms/minsize.json). A role the table does not list is 0; a desk count above the table's last entry uses
 /// that entry (the 6-agent row); a `null` entry (no side up to 8 qualifies) is infinite. Never computed here.
 pub(crate) fn min_side(role: &str, agents: usize) -> f64 {
-    let Some(row) = generate::min_size_table().get(role) else { return 0.0 };
-    match agents.min(row.len()).checked_sub(1).and_then(|i| row.get(i)) {
+    let Some(row) = generate::min_size_table().get(role) else {
+        return 0.0;
+    };
+    match agents
+        .min(row.len())
+        .checked_sub(1)
+        .and_then(|i| row.get(i))
+    {
         Some(Some(v)) => *v,
         Some(None) => f64::INFINITY,
         None => 0.0,

@@ -10,8 +10,7 @@
 use std::cmp::Ordering;
 use std::collections::btree_map::BTreeMap;
 use std::sync::{
-    Arc, Barrier, Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard,
-    Weak,
+    Arc, Barrier, Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard, Weak,
 };
 
 use crate::vstate::memory::usize_to_u64;
@@ -31,7 +30,6 @@ pub(crate) fn read_lock<T: ?Sized>(rwlock: &RwLock<T>) -> RwLockReadGuard<'_, T>
 pub(crate) fn write_lock<T: ?Sized>(rwlock: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
     rwlock.write().unwrap_or_else(PoisonError::into_inner)
 }
-
 
 /// Trait for devices that respond to reads or writes in an arbitrary address space.
 ///

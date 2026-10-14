@@ -9,9 +9,9 @@ use iced::widget::{checkbox, column, container, pick_list, row, slider, text_inp
 use iced::{Alignment, Element, Length, Subscription, Task};
 use serde_json::Value;
 
-use super::floor;
 use super::Id;
-use crate::console::{ui, Ctx};
+use super::floor;
+use crate::console::{Ctx, ui};
 use crate::theme;
 
 /// Which lab the screen shows.
@@ -96,7 +96,8 @@ pub struct State {
 
 impl Default for State {
     fn default() -> State {
-        let catalog = serde_json::from_str(&apz_engine::lab_catalog::catalog_json()).unwrap_or(Value::Null);
+        let catalog =
+            serde_json::from_str(&apz_engine::lab_catalog::catalog_json()).unwrap_or(Value::Null);
         State {
             kind: Kind::Robot,
             values: Kind::Robot.defaults(),
@@ -112,7 +113,10 @@ impl Default for State {
 
 impl std::fmt::Debug for State {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("EngineLab").field("kind", &self.kind).field("values", &self.values).finish_non_exhaustive()
+        f.debug_struct("EngineLab")
+            .field("kind", &self.kind)
+            .field("values", &self.values)
+            .finish_non_exhaustive()
     }
 }
 
@@ -133,7 +137,11 @@ pub enum Msg {
 }
 
 /// The env names the engine's labs read (apz-engine-web's `LAB_OPTIONS`, `ROOM_LAB_OPTIONS`, `HARDWARE_LAB_OPTIONS`).
-fn env_of(kind: Kind, values: &BTreeMap<&'static str, String>, params: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+fn env_of(
+    kind: Kind,
+    values: &BTreeMap<&'static str, String>,
+    params: &BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
     let names: &[(&str, &str)] = match kind {
         Kind::Robot => &[
             ("species", "APZ_ROBOT_LAB"),
@@ -165,15 +173,29 @@ fn env_of(kind: Kind, values: &BTreeMap<&'static str, String>, params: &BTreeMap
             ("cam", "APZ_HW_CAM"),
         ],
     };
-    let mut env: BTreeMap<String, String> =
-        names.iter().filter_map(|&(k, name)| values.get(k).filter(|v| !v.is_empty()).map(|v| (name.to_string(), v.clone()))).collect();
+    let mut env: BTreeMap<String, String> = names
+        .iter()
+        .filter_map(|&(k, name)| {
+            values
+                .get(k)
+                .filter(|v| !v.is_empty())
+                .map(|v| (name.to_string(), v.clone()))
+        })
+        .collect();
     match kind {
         Kind::Room => {
-            let (w, d) = (values.get("w").cloned().unwrap_or_default(), values.get("d").cloned().unwrap_or_default());
+            let (w, d) = (
+                values.get("w").cloned().unwrap_or_default(),
+                values.get("d").cloned().unwrap_or_default(),
+            );
             env.insert("APZ_ROOM_SIZE".into(), format!("{w}x{d}"));
         }
         Kind::Hardware if !params.is_empty() => {
-            let pairs: Vec<String> = params.iter().filter(|(_, v)| v.trim().parse::<f64>().is_ok()).map(|(k, v)| format!("{k}={}", v.trim())).collect();
+            let pairs: Vec<String> = params
+                .iter()
+                .filter(|(_, v)| v.trim().parse::<f64>().is_ok())
+                .map(|(k, v)| format!("{k}={}", v.trim()))
+                .collect();
             env.insert("APZ_HW_PARAMS".into(), pairs.join(","));
         }
         _ => {}
@@ -209,7 +231,9 @@ pub fn open(state: &mut State, kind: Kind) -> Task<Msg> {
 fn number_value(key: &str, text: &str) -> Option<String> {
     let x = text.trim().parse::<f64>().ok().filter(|x| x.is_finite())?;
     if key == "seed" {
-        return (0.0..=4_294_967_295.0).contains(&x).then(|| (x.floor() as u64).to_string());
+        return (0.0..=4_294_967_295.0)
+            .contains(&x)
+            .then(|| (x.floor() as u64).to_string());
     }
     (1.0..=12.0).contains(&x).then(|| format!("{}", x))
 }
@@ -230,7 +254,10 @@ mod tests {
     fn number_value_floors_the_seed_within_range() {
         assert_eq!(number_value("seed", "12.7").as_deref(), Some("12"));
         assert_eq!(number_value("seed", "0").as_deref(), Some("0"));
-        assert_eq!(number_value("seed", "4294967295").as_deref(), Some("4294967295"));
+        assert_eq!(
+            number_value("seed", "4294967295").as_deref(),
+            Some("4294967295")
+        );
         assert_eq!(number_value("seed", "-1"), None);
         assert_eq!(number_value("seed", "4294967296"), None);
     }
@@ -263,7 +290,11 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             Task::none()
         }
         Msg::Commit(key) => {
-            if let Some(value) = state.drafts.remove(key).and_then(|text| number_value(key, &text)) {
+            if let Some(value) = state
+                .drafts
+                .remove(key)
+                .and_then(|text| number_value(key, &text))
+            {
                 state.values.insert(key, value);
                 restart(state);
             }
@@ -293,7 +324,14 @@ pub fn subscription(state: &State) -> Subscription<Msg> {
 
 /// A catalog list (`species`, `props` …) as strings.
 fn list(catalog: &Value, key: &str) -> Vec<String> {
-    catalog[key].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default()
+    catalog[key]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// A dropdown choice: its value and the label shown (an empty value reads as `none`).
@@ -310,17 +348,43 @@ impl std::fmt::Display for Choice {
 }
 
 /// A labelled dropdown over `options`, an empty first option labelled `none` when given.
-fn select<'a>(state: &State, label: &str, key: &'static str, none: Option<&str>, options: Vec<String>) -> Element<'a, Msg> {
-    let mut choices: Vec<Choice> = none.map(|n| Choice { value: String::new(), label: n.to_string() }).into_iter().collect();
-    choices.extend(options.into_iter().map(|v| Choice { label: v.clone(), value: v }));
+fn select<'a>(
+    state: &State,
+    label: &str,
+    key: &'static str,
+    none: Option<&str>,
+    options: Vec<String>,
+) -> Element<'a, Msg> {
+    let mut choices: Vec<Choice> = none
+        .map(|n| Choice {
+            value: String::new(),
+            label: n.to_string(),
+        })
+        .into_iter()
+        .collect();
+    choices.extend(options.into_iter().map(|v| Choice {
+        label: v.clone(),
+        value: v,
+    }));
     let current = state.values.get(key).cloned().unwrap_or_default();
     let selected = choices.iter().find(|c| c.value == current).cloned();
-    field(label, pick_list(choices, selected, move |c: Choice| Msg::Set(key, c.value)).style(theme::pick_list).text_size(13.0).into())
+    field(
+        label,
+        pick_list(choices, selected, move |c: Choice| Msg::Set(key, c.value))
+            .style(theme::pick_list)
+            .text_size(13.0)
+            .into(),
+    )
 }
 
 /// A labelled number field: the typed text is a draft until Enter applies it (see [`number_value`]).
 fn number<'a>(state: &State, label: &str, key: &'static str) -> Element<'a, Msg> {
-    let value = state.drafts.get(key).or_else(|| state.values.get(key)).cloned().unwrap_or_default();
+    let value = state
+        .drafts
+        .get(key)
+        .or_else(|| state.values.get(key))
+        .cloned()
+        .unwrap_or_default();
     field(
         label,
         text_input("", &value)
@@ -336,16 +400,36 @@ fn number<'a>(state: &State, label: &str, key: &'static str) -> Element<'a, Msg>
 /// A labelled checkbox stored as 1 or 0.
 fn toggle<'a>(state: &State, label: &str, key: &'static str) -> Element<'a, Msg> {
     let on = state.values.get(key).is_some_and(|v| v == "1");
-    checkbox(on).label(label.to_string()).on_toggle(move |b| Msg::Set(key, if b { "1" } else { "0" }.into())).text_size(13.0).into()
+    checkbox(on)
+        .label(label.to_string())
+        .on_toggle(move |b| Msg::Set(key, if b { "1" } else { "0" }.into()))
+        .text_size(13.0)
+        .into()
 }
 
 /// A labelled slider over `lo..=hi`.
-fn range<'a>(state: &State, label: &str, key: &'static str, lo: f32, hi: f32, step: f32) -> Element<'a, Msg> {
-    let v = state.values.get(key).and_then(|v| v.parse::<f32>().ok()).unwrap_or(lo);
+fn range<'a>(
+    state: &State,
+    label: &str,
+    key: &'static str,
+    lo: f32,
+    hi: f32,
+    step: f32,
+) -> Element<'a, Msg> {
+    let v = state
+        .values
+        .get(key)
+        .and_then(|v| v.parse::<f32>().ok())
+        .unwrap_or(lo);
     field(
         label,
         row![
-            slider(lo..=hi, v, move |x| Msg::Set(key, format!("{}", (x / step).round() * step))).step(step).width(Length::Fixed(120.0)),
+            slider(lo..=hi, v, move |x| Msg::Set(
+                key,
+                format!("{}", (x / step).round() * step)
+            ))
+            .step(step)
+            .width(Length::Fixed(120.0)),
             ui::sans(format!("{v:.2}"), 12.0, theme::palette().ink_2),
         ]
         .spacing(8)
@@ -356,12 +440,25 @@ fn range<'a>(state: &State, label: &str, key: &'static str, lo: f32, hi: f32, st
 
 /// The option buttons (the camera, the GPU count): each a (value, label), the selected one in signal orange, as the
 /// web's segmented buttons.
-fn buttons<'a>(state: &State, key: &'static str, options: &[(&'static str, &'static str)]) -> Element<'a, Msg> {
+fn buttons<'a>(
+    state: &State,
+    key: &'static str,
+    options: &[(&'static str, &'static str)],
+) -> Element<'a, Msg> {
     let current = state.values.get(key).cloned().unwrap_or_default();
     let mut r = row![].spacing(4);
     for &(value, label) in options {
-        let kind = if current == value { ui::Kind::Primary } else { ui::Kind::Secondary };
-        r = r.push(ui::btn_sm(label, None, kind, Some(Msg::Set(key, value.to_string()))));
+        let kind = if current == value {
+            ui::Kind::Primary
+        } else {
+            ui::Kind::Secondary
+        };
+        r = r.push(ui::btn_sm(
+            label,
+            None,
+            kind,
+            Some(Msg::Set(key, value.to_string())),
+        ));
     }
     r.into()
 }
@@ -379,7 +476,12 @@ fn controls<'a>(state: &State) -> Vec<Element<'a, Msg>> {
             // The clips: the shared ones and the species' own, de-duplicated and sorted as the web's list.
             let mut clips = list(c, "clips");
             clips.extend(
-                c["speciesClips"].get(&species).and_then(Value::as_array).into_iter().flatten().filter_map(|v| v.as_str().map(String::from)),
+                c["speciesClips"]
+                    .get(&species)
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|v| v.as_str().map(String::from)),
             );
             clips.sort();
             clips.dedup();
@@ -394,10 +496,28 @@ fn controls<'a>(state: &State) -> Vec<Element<'a, Msg>> {
                 select(state, "Tool", "tool", Some("(no tool)"), list(c, "tools")),
                 select(state, "Carry", "carry", Some("(nothing)"), list(c, "carry")),
                 select(state, "Effect", "fx", Some("(no effect)"), list(c, "fx")),
-                select(state, "State", "state", None, ["idle", "working", "walking", "offline"].map(String::from).to_vec()),
+                select(
+                    state,
+                    "State",
+                    "state",
+                    None,
+                    ["idle", "working", "walking", "offline"]
+                        .map(String::from)
+                        .to_vec(),
+                ),
                 range(state, "Hue", "hue", 0.0, 360.0, 1.0),
                 toggle(state, "Orchestrator", "orch"),
-                buttons(state, "cam", &[("front", "FRONT"), ("iso", "ISO"), ("side", "SIDE"), ("q34", "Q34"), ("top", "TOP")]),
+                buttons(
+                    state,
+                    "cam",
+                    &[
+                        ("front", "FRONT"),
+                        ("iso", "ISO"),
+                        ("side", "SIDE"),
+                        ("q34", "Q34"),
+                        ("top", "TOP"),
+                    ],
+                ),
             ]
         }
         Kind::Room => {
@@ -407,10 +527,22 @@ fn controls<'a>(state: &State) -> Vec<Element<'a, Msg>> {
                 select(state, "Role", "role", None, roles),
                 number(state, "Width", "w"),
                 number(state, "Depth", "d"),
-                select(state, "Door", "door", None, ["n", "e", "s", "w"].map(String::from).to_vec()),
+                select(
+                    state,
+                    "Door",
+                    "door",
+                    None,
+                    ["n", "e", "s", "w"].map(String::from).to_vec(),
+                ),
                 number(state, "Seed", "seed"),
                 toggle(state, "Twelve seeds", "grid"),
-                select(state, "Camera", "cam", None, ["oblique", "top"].map(String::from).to_vec()),
+                select(
+                    state,
+                    "Camera",
+                    "cam",
+                    None,
+                    ["oblique", "top"].map(String::from).to_vec(),
+                ),
                 toggle(state, "Debug", "debug"),
             ]
         }
@@ -418,8 +550,20 @@ fn controls<'a>(state: &State) -> Vec<Element<'a, Msg>> {
             let model = state.values.get("model").cloned().unwrap_or_default();
             let mut out = vec![
                 select(state, "Model", "model", None, list(c, "models")),
-                buttons(state, "gpus", &[("0", "0 GPUs"), ("1", "1 GPU"), ("2", "2 GPUs")]),
-                select(state, "Status", "status", None, ["online", "draining", "offline", "revoked"].map(String::from).to_vec()),
+                buttons(
+                    state,
+                    "gpus",
+                    &[("0", "0 GPUs"), ("1", "1 GPU"), ("2", "2 GPUs")],
+                ),
+                select(
+                    state,
+                    "Status",
+                    "status",
+                    None,
+                    ["online", "draining", "offline", "revoked"]
+                        .map(String::from)
+                        .to_vec(),
+                ),
                 range(state, "Working", "working", 0.0, 6.0, 1.0),
                 range(state, "Open", "open", 0.0, 1.0, 0.01),
                 toggle(state, "Traces (boards)", "traces"),
@@ -429,7 +573,12 @@ fn controls<'a>(state: &State) -> Vec<Element<'a, Msg>> {
                 let mut names: Vec<&String> = defaults.keys().collect();
                 names.sort();
                 for k in names {
-                    let shown = state.param_drafts.get(k).or_else(|| state.params.get(k)).cloned().unwrap_or_else(|| defaults[k].to_string());
+                    let shown = state
+                        .param_drafts
+                        .get(k)
+                        .or_else(|| state.params.get(k))
+                        .cloned()
+                        .unwrap_or_else(|| defaults[k].to_string());
                     let (draft, commit) = (k.clone(), k.clone());
                     out.push(field(
                         k,
@@ -443,7 +592,17 @@ fn controls<'a>(state: &State) -> Vec<Element<'a, Msg>> {
                     ));
                 }
             }
-            out.push(buttons(state, "cam", &[("iso", "ISO"), ("top", "TOP"), ("front", "FRONT"), ("side", "SIDE"), ("anchor", "ANCHOR")]));
+            out.push(buttons(
+                state,
+                "cam",
+                &[
+                    ("iso", "ISO"),
+                    ("top", "TOP"),
+                    ("front", "FRONT"),
+                    ("side", "SIDE"),
+                    ("anchor", "ANCHOR"),
+                ],
+            ));
             out
         }
     }
@@ -459,9 +618,18 @@ fn prop_screen(state: &State) -> bool {
 /// screen's props, robots and whole-frame calls (the main pass).
 fn robot_draws_text(counts: &apz_engine::robots::lab::DrawCounts, prop: bool) -> String {
     if prop {
-        return format!("props: {} · robots: {} · draw calls (main pass, whole frame): {}", counts.props, counts.robots.len(), counts.calls);
+        return format!(
+            "props: {} · robots: {} · draw calls (main pass, whole frame): {}",
+            counts.props,
+            counts.robots.len(),
+            counts.calls
+        );
     }
-    let parts: Vec<String> = counts.robots.iter().map(|r| format!("{} {}", r.species, r.calls)).collect();
+    let parts: Vec<String> = counts
+        .robots
+        .iter()
+        .map(|r| format!("{} {}", r.species, r.calls))
+        .collect();
     format!("draw calls per robot (main pass): {}", parts.join(" · "))
 }
 
@@ -469,32 +637,63 @@ fn robot_draws_text(counts: &apz_engine::robots::lab::DrawCounts, prop: bool) ->
 /// draw calls of the last frame.
 fn readout(state: &State) -> (String, Vec<String>, bool) {
     let info: Value = serde_json::from_str(&state.stage.lab_info()).unwrap_or(Value::Null);
-    let lines = |key: &str| info[key].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default();
+    let lines = |key: &str| {
+        info[key]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
     match state.kind {
         Kind::Robot => {
             use crate::console::floor_engine::{LAST_MAIN_CALLS, LAST_OWNED_CALLS};
-            let owned = LAST_OWNED_CALLS.lock().map(|v| v.clone()).unwrap_or_default();
+            let owned = LAST_OWNED_CALLS
+                .lock()
+                .map(|v| v.clone())
+                .unwrap_or_default();
             let calls = LAST_MAIN_CALLS.load(std::sync::atomic::Ordering::Relaxed);
-            let text = state.stage.lab.as_ref().map(|lab| robot_draws_text(&lab.draw_counts(&owned, calls), prop_screen(state)));
+            let text =
+                state.stage.lab.as_ref().map(|lab| {
+                    robot_draws_text(&lab.draw_counts(&owned, calls), prop_screen(state))
+                });
             (text.unwrap_or_default(), Vec::new(), false)
         }
         Kind::Room => {
             let debug = state.values.get("debug").is_some_and(|v| v == "1");
-            (info["summary"].as_str().unwrap_or_default().to_string(), if debug { lines("lines") } else { Vec::new() }, false)
+            (
+                info["summary"].as_str().unwrap_or_default().to_string(),
+                if debug { lines("lines") } else { Vec::new() },
+                false,
+            )
         }
         Kind::Hardware => {
             let errors: Vec<String> = lines("errors");
-            (info["summary"].as_str().unwrap_or_default().to_string(), Vec::new(), !errors.is_empty())
+            (
+                info["summary"].as_str().unwrap_or_default().to_string(),
+                Vec::new(),
+                !errors.is_empty(),
+            )
         }
     }
 }
 
 pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
     let head = ui::view_head(state.kind.title(), Vec::new());
-    let bar = row(controls(state)).spacing(16).align_y(Alignment::End).wrap().vertical_spacing(10);
+    let bar = row(controls(state))
+        .spacing(16)
+        .align_y(Alignment::End)
+        .wrap()
+        .vertical_spacing(10);
     let (summary, lines, bad) = readout(state);
     let p = theme::palette();
-    let mut body = column![bar, ui::sans(summary, 12.0, if bad { p.crit } else { p.ink_2 })].spacing(12);
+    let mut body = column![
+        bar,
+        ui::sans(summary, 12.0, if bad { p.crit } else { p.ink_2 })
+    ]
+    .spacing(12);
     for l in lines {
         body = body.push(ui::sans(l, 12.0, p.ink));
     }
@@ -504,7 +703,9 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
         Kind::Room => 540.0,
         Kind::Robot | Kind::Hardware => 420.0,
     };
-    let stage = container(floor::stage(&state.stage, ctx).map(Msg::Stage)).width(Length::Fill).height(Length::Fixed(tall));
+    let stage = container(floor::stage(&state.stage, ctx).map(Msg::Stage))
+        .width(Length::Fill)
+        .height(Length::Fixed(tall));
     let page = ui::scroll(body.push(stage).height(Length::Shrink)).height(Length::Fill);
     ui::sheet(head, page.into())
 }

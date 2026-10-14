@@ -11,10 +11,10 @@ use serde::Serialize;
 use serde_json::Value;
 
 use super::client::{Client, Error, ServerInfo, ToolInfo};
-use super::config::{volume_name, McpServer, Setting, Transport as Wire};
-use super::egress::{proxy_env, Egress, Lease};
-use super::http::{check_endpoint, HttpTransport, Policy};
-use super::stdio::{push_capped, LaunchSpec, Launcher, StdioTransport};
+use super::config::{McpServer, Setting, Transport as Wire, volume_name};
+use super::egress::{Egress, Lease, proxy_env};
+use super::http::{HttpTransport, Policy, check_endpoint};
+use super::stdio::{LaunchSpec, Launcher, StdioTransport, push_capped};
 use super::{McpSecrets, OnBehalf};
 
 /// Failures in this window count toward giving up.
@@ -187,7 +187,10 @@ fn cap_text(text: String, cap: usize) -> String {
 pub fn decode_base64(text: &str) -> Option<Vec<u8>> {
     let mut out = Vec::with_capacity(text.len() * 3 / 4);
     let (mut acc, mut bits) = (0u32, 0u32);
-    for byte in text.bytes().filter(|b| !b.is_ascii_whitespace() && *b != b'=') {
+    for byte in text
+        .bytes()
+        .filter(|b| !b.is_ascii_whitespace() && *b != b'=')
+    {
         let value = match byte {
             b'A'..=b'Z' => byte - b'A',
             b'a'..=b'z' => byte - b'a' + 26,
@@ -209,21 +212,50 @@ pub fn decode_base64(text: &str) -> Option<Vec<u8>> {
 
 /// Turns a `tools/call` result into text and media, scrubbed and capped.
 pub fn shape(result: &Value, secrets: &[String], cap: usize) -> (String, bool, Vec<Media>) {
-    let is_error = result.get("isError").and_then(Value::as_bool).unwrap_or(false);
+    let is_error = result
+        .get("isError")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let mut parts = Vec::new();
     let mut media = Vec::new();
-    for item in result.get("content").and_then(Value::as_array).into_iter().flatten() {
+    for item in result
+        .get("content")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
         match item.get("type").and_then(Value::as_str).unwrap_or("") {
-            "text" => parts.push(item.get("text").and_then(Value::as_str).unwrap_or("").to_string()),
+            "text" => parts.push(
+                item.get("text")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+            ),
             "resource" => match item.pointer("/resource/text").and_then(Value::as_str) {
                 Some(text) => parts.push(text.to_string()),
-                None => parts.push(format!("[resource {}]", item.pointer("/resource/uri").and_then(Value::as_str).unwrap_or("?"))),
+                None => parts.push(format!(
+                    "[resource {}]",
+                    item.pointer("/resource/uri")
+                        .and_then(Value::as_str)
+                        .unwrap_or("?")
+                )),
             },
             kind @ ("image" | "audio") => {
-                let mime = item.get("mimeType").and_then(Value::as_str).unwrap_or("application/octet-stream").to_string();
-                match item.get("data").and_then(Value::as_str).and_then(decode_base64) {
+                let mime = item
+                    .get("mimeType")
+                    .and_then(Value::as_str)
+                    .unwrap_or("application/octet-stream")
+                    .to_string();
+                match item
+                    .get("data")
+                    .and_then(Value::as_str)
+                    .and_then(decode_base64)
+                {
                     Some(bytes) => {
-                        parts.push(format!("[{kind} {mime}, {} bytes, saved to the file store]", bytes.len()));
+                        parts.push(format!(
+                            "[{kind} {mime}, {} bytes, saved to the file store]",
+                            bytes.len()
+                        ));
                         media.push(Media { mime, bytes });
                     }
                     None => parts.push(format!("[unreadable {kind}]")),
@@ -240,23 +272,44 @@ impl Runtime {
     /// A runtime whose stdio servers get no network proxy: their launches are not isolated (tests only).
     #[cfg(test)]
     pub fn new(launcher: Arc<dyn Launcher>) -> Runtime {
-        Runtime { launcher, slots: Mutex::new(BTreeMap::new()), egress: None }
+        Runtime {
+            launcher,
+            slots: Mutex::new(BTreeMap::new()),
+            egress: None,
+        }
     }
 
     /// A runtime whose stdio servers reach the network only through `egress`.
     pub fn with_egress(launcher: Arc<dyn Launcher>, egress: Arc<Egress>) -> Runtime {
-        Runtime { launcher, slots: Mutex::new(BTreeMap::new()), egress: Some(egress) }
+        Runtime {
+            launcher,
+            slots: Mutex::new(BTreeMap::new()),
+            egress: Some(egress),
+        }
     }
 
     fn slot(&self, server: &str, node: &str) -> Arc<Slot> {
         let mut slots = lock(&self.slots);
-        Arc::clone(slots.entry((server.to_string(), node.to_string())).or_insert_with(|| {
-            Arc::new(Slot { client: Mutex::new(None), state: Mutex::new(State::default()) })
-        }))
+        Arc::clone(
+            slots
+                .entry((server.to_string(), node.to_string()))
+                .or_insert_with(|| {
+                    Arc::new(Slot {
+                        client: Mutex::new(None),
+                        state: Mutex::new(State::default()),
+                    })
+                }),
+        )
     }
 
     /// Calls `tool` on `server` for `ctx.node`, starting the instance if needed.
-    pub fn call(&self, server: &McpServer, ctx: &Ctx, tool: &str, args: Value) -> Result<Output, String> {
+    pub fn call(
+        &self,
+        server: &McpServer,
+        ctx: &Ctx,
+        tool: &str,
+        args: Value,
+    ) -> Result<Output, String> {
         let slot = self.slot(&server.id, &ctx.node);
         let timeout = Duration::from_secs(server.limits.timeout_s);
         let mut fresh = None;
@@ -274,8 +327,17 @@ impl Runtime {
             let client = guard.as_mut().ok_or("the server is not running")?;
             match client.call_tool(tool, args.clone(), timeout) {
                 Ok(result) => {
-                    let (text, is_error, media) = shape(&result, &secrets, server.limits.max_output_kb as usize * 1024);
-                    return Ok(Output { text, is_error, media, tools: fresh });
+                    let (text, is_error, media) = shape(
+                        &result,
+                        &secrets,
+                        server.limits.max_output_kb as usize * 1024,
+                    );
+                    return Ok(Output {
+                        text,
+                        is_error,
+                        media,
+                        tools: fresh,
+                    });
                 }
                 Err(Error::SessionLost) if attempt == 1 => {
                     // The HTTP session expired: start a new one and send the call again, once.
@@ -311,19 +373,36 @@ impl Runtime {
         let mut guard = lock(&slot.client);
         let started = self.ensure(server, &slot, &mut guard, ctx)?;
         let secrets = lock(&slot.state).secrets.clone();
-        let info = lock(&slot.state).server_info.clone().unwrap_or(ServerInfo { name: String::new(), version: String::new(), protocol: String::new() });
+        let info = lock(&slot.state).server_info.clone().unwrap_or(ServerInfo {
+            name: String::new(),
+            version: String::new(),
+            protocol: String::new(),
+        });
         let client = guard.as_mut().ok_or("the server is not running")?;
         let tools = match started {
             Some(tools) => tools,
-            None => client.list_tools(timeout).map_err(|e| redact(&e.to_string(), &secrets))?,
+            None => client
+                .list_tools(timeout)
+                .map_err(|e| redact(&e.to_string(), &secrets))?,
         };
         let resources = client.list_resources(timeout).unwrap_or_default();
         let prompts = client.list_prompts(timeout).unwrap_or_default();
-        Ok(Probe { server_info: info, tools, resources, prompts })
+        Ok(Probe {
+            server_info: info,
+            tools,
+            resources,
+            prompts,
+        })
     }
 
     /// Starts the instance if it is not running. Returns the tool listing when it did start.
-    fn ensure(&self, server: &McpServer, slot: &Arc<Slot>, guard: &mut Option<Client>, ctx: &Ctx) -> Result<Option<Vec<ToolInfo>>, String> {
+    fn ensure(
+        &self,
+        server: &McpServer,
+        slot: &Arc<Slot>,
+        guard: &mut Option<Client>,
+        ctx: &Ctx,
+    ) -> Result<Option<Vec<ToolInfo>>, String> {
         if let Some(client) = guard.as_mut() {
             if client.alive() {
                 return Ok(None);
@@ -342,7 +421,11 @@ impl Runtime {
             }
             if ctx.now < st.next_attempt_ms {
                 let wait = st.next_attempt_ms.saturating_sub(ctx.now).div_ceil(1000);
-                return Err(format!("{} restarts after a failure, in {wait} s: {}", server.id, st.last_error.clone().unwrap_or_default()));
+                return Err(format!(
+                    "{} restarts after a failure, in {wait} s: {}",
+                    server.id,
+                    st.last_error.clone().unwrap_or_default()
+                ));
             }
         }
         // Secrets resolve before anything starts; a refused resolution is not a failure of the server.
@@ -355,15 +438,21 @@ impl Runtime {
         };
         lock(&slot.state).secrets = resolved.secrets.clone();
         let transport: Box<dyn super::client::Transport> = match &server.transport {
-            Wire::Stdio { image, command, workdir } => {
+            Wire::Stdio {
+                image,
+                command,
+                workdir,
+            } => {
                 let lease: Option<Lease> = match &self.egress {
-                    Some(egress) => match egress.attach(&server.id, server.allow_private, &ctx.blocklist) {
-                        Ok(lease) => Some(lease),
-                        Err(why) => {
-                            record_failure(&mut lock(&slot.state), ctx.now, &why);
-                            return Err(format!("{} did not start: {why}", server.id));
+                    Some(egress) => {
+                        match egress.attach(&server.id, server.allow_private, &ctx.blocklist) {
+                            Ok(lease) => Some(lease),
+                            Err(why) => {
+                                record_failure(&mut lock(&slot.state), ctx.now, &why);
+                                return Err(format!("{} did not start: {why}", server.id));
+                            }
                         }
-                    },
+                    }
                     None => None,
                 };
                 let mut env = resolved.env;
@@ -382,7 +471,11 @@ impl Runtime {
                 let child = match self.launcher.launch(&spec) {
                     Ok(child) => child,
                     Err(why) => {
-                        record_failure(&mut lock(&slot.state), ctx.now, &redact(&why, &resolved.secrets));
+                        record_failure(
+                            &mut lock(&slot.state),
+                            ctx.now,
+                            &redact(&why, &resolved.secrets),
+                        );
                         return Err(format!("{} did not start: {why}", server.id));
                     }
                 };
@@ -390,7 +483,15 @@ impl Runtime {
                 let on_stderr: Arc<dyn Fn(String) + Send + Sync> = Arc::new(move |line: String| {
                     let mut st = lock(&sink_slot.state);
                     let line = redact(&line, &st.secrets.clone());
-                    push_capped(&mut st.logs, LogLine { ts_ms: apz_plaza::now_ms(), stream: "stderr", line }, LOG_LINES);
+                    push_capped(
+                        &mut st.logs,
+                        LogLine {
+                            ts_ms: apz_plaza::now_ms(),
+                            stream: "stderr",
+                            line,
+                        },
+                        LOG_LINES,
+                    );
                 });
                 match StdioTransport::new(child, on_stderr, lease) {
                     Ok(transport) => Box::new(transport),
@@ -405,15 +506,25 @@ impl Runtime {
                     record_failure(&mut lock(&slot.state), ctx.now, &why);
                     return Err(format!("{}: {why}", server.id));
                 }
-                let policy = Policy { allow_private: server.allow_private, blocklist: ctx.blocklist.clone() };
-                Box::new(HttpTransport::new(url.clone(), resolved.headers, resolved.secrets.clone(), policy))
+                let policy = Policy {
+                    allow_private: server.allow_private,
+                    blocklist: ctx.blocklist.clone(),
+                };
+                Box::new(HttpTransport::new(
+                    url.clone(),
+                    resolved.headers,
+                    resolved.secrets.clone(),
+                    policy,
+                ))
             }
         };
         let mut client = Client::new(transport);
-        let handshake = client.initialize("agentplaza", env!("CARGO_PKG_VERSION"), HANDSHAKE).and_then(|info| {
-            let tools = client.list_tools(HANDSHAKE)?;
-            Ok((info, tools))
-        });
+        let handshake = client
+            .initialize("agentplaza", env!("CARGO_PKG_VERSION"), HANDSHAKE)
+            .and_then(|info| {
+                let tools = client.list_tools(HANDSHAKE)?;
+                Ok((info, tools))
+            });
         match handshake {
             Ok((info, tools)) => {
                 let mut st = lock(&slot.state);
@@ -440,7 +551,11 @@ impl Runtime {
 
     /// Stops every instance of `server_id` (its child is killed; an http session is forgotten).
     pub fn stop(&self, server_id: &str) {
-        let slots: Vec<Arc<Slot>> = lock(&self.slots).iter().filter(|((id, _), _)| id == server_id).map(|(_, s)| Arc::clone(s)).collect();
+        let slots: Vec<Arc<Slot>> = lock(&self.slots)
+            .iter()
+            .filter(|((id, _), _)| id == server_id)
+            .map(|(_, s)| Arc::clone(s))
+            .collect();
         for slot in slots {
             take_client(&mut lock(&slot.client));
             let mut st = lock(&slot.state);
@@ -452,7 +567,11 @@ impl Runtime {
 
     /// Clears the failures of `server_id`, so an owner's start can try again after giving up.
     pub fn reset(&self, server_id: &str) {
-        let slots: Vec<Arc<Slot>> = lock(&self.slots).iter().filter(|((id, _), _)| id == server_id).map(|(_, s)| Arc::clone(s)).collect();
+        let slots: Vec<Arc<Slot>> = lock(&self.slots)
+            .iter()
+            .filter(|((id, _), _)| id == server_id)
+            .map(|(_, s)| Arc::clone(s))
+            .collect();
         for slot in slots {
             let mut st = lock(&slot.state);
             st.failures.clear();
@@ -465,7 +584,9 @@ impl Runtime {
     pub fn reap_idle(&self, now_ms: u64) {
         let slots: Vec<Arc<Slot>> = lock(&self.slots).values().cloned().collect();
         for slot in slots {
-            let Ok(mut guard) = slot.client.try_lock() else { continue };
+            let Ok(mut guard) = slot.client.try_lock() else {
+                continue;
+            };
             if guard.is_none() {
                 continue;
             }
@@ -481,7 +602,11 @@ impl Runtime {
     pub fn summary(&self, server_id: &str) -> Summary {
         let mut out = Summary::default();
         let (mut running, mut failed) = (false, false);
-        for slot in lock(&self.slots).iter().filter(|((id, _), _)| id == server_id).map(|(_, s)| Arc::clone(s)) {
+        for slot in lock(&self.slots)
+            .iter()
+            .filter(|((id, _), _)| id == server_id)
+            .map(|(_, s)| Arc::clone(s))
+        {
             let st = lock(&slot.state);
             running |= st.status == Status::Running;
             failed |= st.status == Status::Error || st.gave_up;
@@ -506,7 +631,11 @@ impl Runtime {
     /// The last stderr lines of `server_id`, oldest first, at most `limit`.
     pub fn logs(&self, server_id: &str, limit: usize) -> Vec<LogLine> {
         let mut lines: Vec<LogLine> = Vec::new();
-        for slot in lock(&self.slots).iter().filter(|((id, _), _)| id == server_id).map(|(_, s)| Arc::clone(s)) {
+        for slot in lock(&self.slots)
+            .iter()
+            .filter(|((id, _), _)| id == server_id)
+            .map(|(_, s)| Arc::clone(s))
+        {
             lines.extend(lock(&slot.state).logs.iter().cloned());
         }
         lines.sort_by_key(|l| l.ts_ms);
@@ -524,7 +653,8 @@ fn take_client(guard: &mut Option<Client>) {
 
 /// Counts a failure at `now`, and sets the backoff, or gives up at the limit.
 fn record_failure(st: &mut State, now: u64, why: &str) {
-    st.failures.retain(|t| now.saturating_sub(*t) < FAILURE_WINDOW_MS);
+    st.failures
+        .retain(|t| now.saturating_sub(*t) < FAILURE_WINDOW_MS);
     st.failures.push_back(now);
     st.status = Status::Error;
     st.last_error = Some(why.to_string());
@@ -543,7 +673,11 @@ struct Resolved {
 }
 
 fn resolve(server: &McpServer, ctx: &Ctx) -> Result<Resolved, String> {
-    let mut out = Resolved { env: Vec::new(), headers: Vec::new(), secrets: Vec::new() };
+    let mut out = Resolved {
+        env: Vec::new(),
+        headers: Vec::new(),
+        secrets: Vec::new(),
+    };
     for (name, setting) in &server.env {
         let value = value_of(setting, server, ctx, &mut out.secrets)?;
         out.env.push((name.clone(), value));
@@ -556,7 +690,12 @@ fn resolve(server: &McpServer, ctx: &Ctx) -> Result<Resolved, String> {
 }
 
 /// One setting's value: the literal, or the vault's value for the server (with a header's `format` applied).
-fn value_of(setting: &Setting, server: &McpServer, ctx: &Ctx, secrets: &mut Vec<String>) -> Result<String, String> {
+fn value_of(
+    setting: &Setting,
+    server: &McpServer,
+    ctx: &Ctx,
+    secrets: &mut Vec<String>,
+) -> Result<String, String> {
     match setting {
         Setting::Value { value } => Ok(value.clone()),
         Setting::Secret { secret, format } => {
@@ -577,7 +716,10 @@ mod tests {
     #[test]
     fn backoff_doubles_from_one_second_and_stops_at_a_minute() {
         let steps: Vec<u64> = (1..=8).map(backoff_ms).collect();
-        assert_eq!(steps, vec![1000, 2000, 4000, 8000, 16000, 32000, 60000, 60000]);
+        assert_eq!(
+            steps,
+            vec![1000, 2000, 4000, 8000, 16000, 32000, 60000, 60000]
+        );
     }
 
     #[test]
@@ -590,7 +732,10 @@ mod tests {
     fn redaction_covers_the_value_and_its_base64_and_url_forms() {
         let secret = "sk-SENTINEL/+&=value".to_string();
         let b64 = crate::connectors::base64(secret.as_bytes());
-        let text = format!("raw {secret}; b64 {b64}; url {}", crate::connectors::encode(&secret));
+        let text = format!(
+            "raw {secret}; b64 {b64}; url {}",
+            crate::connectors::encode(&secret)
+        );
         let clean = redact(&text, std::slice::from_ref(&secret));
         assert!(!clean.contains("SENTINEL"), "{clean}");
         assert_eq!(clean.matches(REDACTED).count(), 3);

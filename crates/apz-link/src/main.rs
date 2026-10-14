@@ -46,7 +46,12 @@ fn dispatch(args: &[String]) -> Result<(), String> {
         ["join", token, more @ ..] => {
             let name = flag(more, "--name")?.map_or_else(hostname, str::to_string);
             let id = join::join(token, &name, join::machine_summary(), &state)?;
-            println!("joined {} as {} (agents {})", id.hub_url, id.node_id, id.cid_range());
+            println!(
+                "joined {} as {} (agents {})",
+                id.hub_url,
+                id.node_id,
+                id.cid_range()
+            );
             Ok(())
         }
         ["run", more @ ..] => {
@@ -78,7 +83,11 @@ fn dispatch(args: &[String]) -> Result<(), String> {
 fn flag<'a>(args: &[&'a str], name: &str) -> Result<Option<&'a str>, String> {
     match args.iter().position(|arg| *arg == name) {
         None => Ok(None),
-        Some(at) => args.get(at + 1).copied().map(Some).ok_or_else(|| format!("{name} needs a value")),
+        Some(at) => args
+            .get(at + 1)
+            .copied()
+            .map(Some)
+            .ok_or_else(|| format!("{name} needs a value")),
     }
 }
 
@@ -88,5 +97,7 @@ fn default_state() -> PathBuf {
 }
 
 fn hostname() -> String {
-    std::fs::read_to_string("/etc/hostname").map(|h| h.trim().to_string()).unwrap_or_else(|_| "node".to_string())
+    std::fs::read_to_string("/etc/hostname")
+        .map(|h| h.trim().to_string())
+        .unwrap_or_else(|_| "node".to_string())
 }

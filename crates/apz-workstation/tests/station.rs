@@ -855,7 +855,14 @@ fn a_stream_is_scaled_by_the_hubs_factor_before_it_is_encoded() {
         },
     ));
     match link.event(|e| matches!(e, Event::Frame { .. })) {
-        Event::Frame { session: s, w, h, format, data_b64, .. } => {
+        Event::Frame {
+            session: s,
+            w,
+            h,
+            format,
+            data_b64,
+            ..
+        } => {
             assert_eq!(s, session);
             assert_eq!((w, h), (640, 400), "scaled before it was encoded");
             assert_eq!(format, ImageFormat::Jpeg);
@@ -897,7 +904,11 @@ fn a_shared_session_the_hub_opens_for_the_owners_live_view_names_no_agent_and_is
             action: InputAction::Move { x: 5, y: 5 },
         },
     ));
-    assert_eq!(rig.inputs.lock().expect("the recorder").len(), 1, "the view is a live session");
+    assert_eq!(
+        rig.inputs.lock().expect("the recorder").len(),
+        1,
+        "the view is a live session"
+    );
     assert!(rig.finish().is_ok());
 }
 

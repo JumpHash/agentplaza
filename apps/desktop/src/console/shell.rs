@@ -5,12 +5,17 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
-use iced::widget::{button, column, container, mouse_area, row, stack, text, text_input, tooltip, Space, Stack};
-use iced::{alignment, event, mouse, Alignment, Border, Color, Element, Length, Padding, Subscription, Task, Theme};
+use iced::widget::{
+    Space, Stack, button, column, container, mouse_area, row, stack, text, text_input, tooltip,
+};
+use iced::{
+    Alignment, Border, Color, Element, Length, Padding, Subscription, Task, Theme, alignment,
+    event, mouse,
+};
 
 use super::events;
 use super::screens::{Id, NAV};
-use super::{toast, ui, Ctx};
+use super::{Ctx, toast, ui};
 use crate::theme::SANS;
 
 /// The open sidebar's default width (the web's `DEFAULT_WIDTH`) and its limits.
@@ -26,7 +31,10 @@ fn saved_mode() -> Mode {
     if cfg!(test) {
         return Mode::Open;
     }
-    match super::boot::saved_setting("sidebar").as_ref().and_then(|v| v.as_str()) {
+    match super::boot::saved_setting("sidebar")
+        .as_ref()
+        .and_then(|v| v.as_str())
+    {
         Some("rail") => Mode::Rail,
         _ => Mode::Open,
     }
@@ -196,7 +204,10 @@ pub fn load(ctx: &Ctx) -> Task<Msg> {
 
 fn post(ctx: &Ctx, path: &'static str, body: serde_json::Value) -> Task<Msg> {
     let client = ctx.client.clone();
-    super::client::task(move || client.post::<serde_json::Value>(path, &body), Msg::Done)
+    super::client::task(
+        move || client.post::<serde_json::Value>(path, &body),
+        Msg::Done,
+    )
 }
 
 /// Returns a task and, when the user picked a screen, where to go.
@@ -214,7 +225,10 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> (Task<Msg>, Option<Id>)
         Msg::ToggleTheme => {
             let light = !crate::theme::is_light();
             crate::theme::choose(light);
-            let _ = super::boot::save_setting("theme", serde_json::json!(if light { "light" } else { "dark" }));
+            let _ = super::boot::save_setting(
+                "theme",
+                serde_json::json!(if light { "light" } else { "dark" }),
+            );
             (Task::none(), None)
         }
         Msg::Appearance(mode) => {
@@ -227,7 +241,11 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> (Task<Msg>, Option<Id>)
                 Mode::Rail => Mode::Open,
             };
             // Remembered across runs, as the web keeps it in localStorage (`apz.sidebar`).
-            let name = if state.mode == Mode::Rail { "rail" } else { "open" };
+            let name = if state.mode == Mode::Rail {
+                "rail"
+            } else {
+                "open"
+            };
             if let Err(err) = save_mode(name) {
                 eprintln!("agentplaza-desktop: the sidebar mode was not saved: {err}");
             }
@@ -289,7 +307,14 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> (Task<Msg>, Option<Id>)
                 _ => String::new(),
             };
             state.confirm = None;
-            (post(ctx, "/v1/plaza/stop", serde_json::json!({ "reason": reason })), None)
+            (
+                post(
+                    ctx,
+                    "/v1/plaza/stop",
+                    serde_json::json!({ "reason": reason }),
+                ),
+                None,
+            )
         }
         Msg::ResumeGo => {
             state.confirm = None;
@@ -306,19 +331,36 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> (Task<Msg>, Option<Id>)
             state.node_ok = v["overview"]["noded"].as_bool().unwrap_or(false);
             state.working = v["overview"]["agents"]["working"].as_u64().unwrap_or(0) as u32;
             state.idle = v["overview"]["agents"]["idle"].as_u64().unwrap_or(0) as u32;
-            state.counts.insert("agents", v["overview"]["agents"]["total"].as_u64().unwrap_or(0) as u32);
+            state.counts.insert(
+                "agents",
+                v["overview"]["agents"]["total"].as_u64().unwrap_or(0) as u32,
+            );
             super::rich::set_plaza_git_host(&v["overview"]);
             set_control(state, &v["control"]);
             state.hub = ctx.client.base().to_string();
             state.target = Some(ctx.client.target.clone());
             state.loading = false;
-            (if std::mem::take(&mut state.again) { load(ctx) } else { Task::none() }, None)
+            (
+                if std::mem::take(&mut state.again) {
+                    load(ctx)
+                } else {
+                    Task::none()
+                },
+                None,
+            )
         }
         Msg::Loaded(Err(_)) => {
             state.hub_ok = false;
             state.node_ok = false;
             state.loading = false;
-            (if std::mem::take(&mut state.again) { load(ctx) } else { Task::none() }, None)
+            (
+                if std::mem::take(&mut state.again) {
+                    load(ctx)
+                } else {
+                    Task::none()
+                },
+                None,
+            )
         }
         Msg::Toast(kind, text) => {
             toast::push(&mut state.toasts, kind, text, Instant::now());
@@ -375,9 +417,17 @@ pub fn full_window(current: &Id) -> bool {
 }
 
 /// The shell around `screen`; the shell's own messages are lifted into the app's with `wrap`.
-pub fn view<'a, M: Clone + 'a>(state: &'a State, screen: Element<'a, M>, wrap: fn(Msg) -> M) -> Element<'a, M> {
+pub fn view<'a, M: Clone + 'a>(
+    state: &'a State,
+    screen: Element<'a, M>,
+    wrap: fn(Msg) -> M,
+) -> Element<'a, M> {
     let base: Element<'a, M> = if full_window(&state.current) {
-        container(screen).width(Length::Fill).height(Length::Fill).style(ui::paper).into()
+        container(screen)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .style(ui::paper)
+            .into()
     } else {
         let mut main = column![top_bar(state, wrap)];
         if state.paused {
@@ -390,10 +440,22 @@ pub fn view<'a, M: Clone + 'a>(state: &'a State, screen: Element<'a, M>, wrap: f
         let screen = if manages_scroll(&state.current) {
             screen
         } else {
-            ui::scroll(screen).id(SCREEN_SCROLL.clone()).width(Length::Fill).height(Length::Fill).into()
+            ui::scroll(screen)
+                .id(SCREEN_SCROLL.clone())
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .into()
         };
-        main = main.push(container(screen).padding(16).width(Length::Fill).height(Length::Fill));
-        let main = container(main).width(Length::Fill).height(Length::Fill).style(ui::paper);
+        main = main.push(
+            container(screen)
+                .padding(16)
+                .width(Length::Fill)
+                .height(Length::Fill),
+        );
+        let main = container(main)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .style(ui::paper);
         row![sidebar(state, wrap), main].height(Length::Fill).into()
     };
     let mut layers = Stack::new().push(base);
@@ -412,12 +474,17 @@ pub static SCREEN_SCROLL: std::sync::LazyLock<iced::widget::Id> =
     std::sync::LazyLock::new(iced::widget::Id::unique);
 
 /// The id of the sidebar's list of entries: the tour scrolls it to the entry it describes.
-pub static SIDEBAR_SCROLL: std::sync::LazyLock<iced::widget::Id> = std::sync::LazyLock::new(iced::widget::Id::unique);
+pub static SIDEBAR_SCROLL: std::sync::LazyLock<iced::widget::Id> =
+    std::sync::LazyLock::new(iced::widget::Id::unique);
 
 /// Whether the sidebar entry `entry` is the screen that shows `current`: a task opened from a project is
 /// shown by the Tasks screen, and a repo by the Git screen.
 fn shows(entry: &Id, current: &Id) -> bool {
-    entry == current || matches!((entry, current), (Id::Tasks, Id::Task(_)) | (Id::Git, Id::Repo(_)))
+    entry == current
+        || matches!(
+            (entry, current),
+            (Id::Tasks, Id::Task(_)) | (Id::Git, Id::Repo(_))
+        )
 }
 
 /// Screens whose view scrolls its own page (a `scrollable` inside `ui::sheet`), or that handle their own
@@ -461,18 +528,33 @@ pub fn subscription(state: &State) -> Subscription<Msg> {
         None => Subscription::none(),
     };
     // The toasts' clock runs only while a toast is on screen (a quarter-second step ends them within 4.25 s).
-    let clock = if state.toasts.is_empty() { Subscription::none() } else { iced::time::every(Duration::from_millis(250)).map(Msg::ToastTick) };
+    let clock = if state.toasts.is_empty() {
+        Subscription::none()
+    } else {
+        iced::time::every(Duration::from_millis(250)).map(Msg::ToastTick)
+    };
     // The `[` key cycles the sidebar, as on the web. A key a focused text field takes is captured
     // (status Captured), so it does not reach here while the STOP ALL reason is being typed.
     let keys = iced::event::listen_with(|event, status, _| match event {
-        iced::Event::Keyboard(iced::keyboard::Event::KeyPressed { key: iced::keyboard::Key::Character(c), modifiers, .. })
-            if status == iced::event::Status::Ignored && c.as_str() == "[" && !modifiers.control() && !modifiers.alt() && !modifiers.logo() =>
+        iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+            key: iced::keyboard::Key::Character(c),
+            modifiers,
+            ..
+        }) if status == iced::event::Status::Ignored
+            && c.as_str() == "["
+            && !modifiers.control()
+            && !modifiers.alt()
+            && !modifiers.logo() =>
         {
             Some(Msg::ToggleSidebar)
         }
         // Ctrl+Shift+E (Cmd+Shift+E on macOS) opens the IDE; a focused text field that takes the key keeps it.
         iced::Event::Keyboard(iced::keyboard::Event::KeyPressed { key, modifiers, .. })
-            if super::screens::ide::open_shortcut(&key, modifiers, status == iced::event::Status::Captured) =>
+            if super::screens::ide::open_shortcut(
+                &key,
+                modifiers,
+                status == iced::event::Status::Captured,
+            ) =>
         {
             Some(Msg::OpenIde)
         }
@@ -480,13 +562,19 @@ pub fn subscription(state: &State) -> Subscription<Msg> {
     });
     // While a resize drag runs, the pointer's moves and the button's release come from anywhere in
     // the window (the pointer can leave the handle), so they are listened to for the drag only.
-    let drag = if state.drag.is_some() { event::listen_with(drag_event) } else { Subscription::none() };
+    let drag = if state.drag.is_some() {
+        event::listen_with(drag_event)
+    } else {
+        Subscription::none()
+    };
     Subscription::batch([frames, live, clock, keys, drag])
 }
 
 fn drag_event(event: iced::Event, _: event::Status, _: iced::window::Id) -> Option<Msg> {
     match event {
-        iced::Event::Mouse(mouse::Event::CursorMoved { position }) => Some(Msg::DragMove(position.x)),
+        iced::Event::Mouse(mouse::Event::CursorMoved { position }) => {
+            Some(Msg::DragMove(position.x))
+        }
         iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => Some(Msg::DragEnd),
         _ => None,
     }
@@ -500,11 +588,23 @@ fn confirm_view<'a, M: Clone + 'a>(which: &'a Confirm, wrap: fn(Msg) -> M) -> El
             "Every agent's running work is cancelled and nothing new starts until you resume. Queued work, VMs and workspaces are kept.",
             column![
                 ui::label("Reason"),
-                text_input("Why (optional)", reason).on_input(move |s| wrap(Msg::StopReason(s))).padding(8),
+                text_input("Why (optional)", reason)
+                    .on_input(move |s| wrap(Msg::StopReason(s)))
+                    .padding(8),
                 ui::faint("Optional. Shown on the held banner."),
                 row![
-                    ui::btn("Cancel", None, ui::Kind::Ghost, Some(wrap(Msg::CancelConfirm))),
-                    top_btn("Stop all", "stop", crate::theme::palette().crit, wrap(Msg::StopGo)),
+                    ui::btn(
+                        "Cancel",
+                        None,
+                        ui::Kind::Ghost,
+                        Some(wrap(Msg::CancelConfirm))
+                    ),
+                    top_btn(
+                        "Stop all",
+                        "stop",
+                        crate::theme::palette().crit,
+                        wrap(Msg::StopGo)
+                    ),
                 ]
                 .spacing(8),
             ]
@@ -515,26 +615,56 @@ fn confirm_view<'a, M: Clone + 'a>(which: &'a Confirm, wrap: fn(Msg) -> M) -> El
             "Resume the plaza?",
             "New work can start again. The items cancelled by the stop stay cancelled.",
             row![
-                ui::btn("Cancel", None, ui::Kind::Ghost, Some(wrap(Msg::CancelConfirm))),
-                top_btn("Resume", "play", crate::theme::palette().signal, wrap(Msg::ResumeGo)),
+                ui::btn(
+                    "Cancel",
+                    None,
+                    ui::Kind::Ghost,
+                    Some(wrap(Msg::CancelConfirm))
+                ),
+                top_btn(
+                    "Resume",
+                    "play",
+                    crate::theme::palette().signal,
+                    wrap(Msg::ResumeGo)
+                ),
             ]
             .spacing(8)
             .into(),
         ),
     };
-    let panel = container(column![ui::sans(title, 14.0, crate::theme::palette().ink), ui::sans(body, 12.0, crate::theme::palette().ink_2), action].spacing(14))
-        .padding(18)
-        .width(Length::Fixed(440.0))
-        .style(|_: &Theme| container::Style {
-            background: Some(crate::theme::palette().sheet.into()),
-            border: Border { color: crate::theme::palette().ink, width: 1.0, radius: 0.0.into() },
-            ..Default::default()
-        });
+    let panel = container(
+        column![
+            ui::sans(title, 14.0, crate::theme::palette().ink),
+            ui::sans(body, 12.0, crate::theme::palette().ink_2),
+            action
+        ]
+        .spacing(14),
+    )
+    .padding(18)
+    .width(Length::Fixed(440.0))
+    .style(|_: &Theme| container::Style {
+        background: Some(crate::theme::palette().sheet.into()),
+        border: Border {
+            color: crate::theme::palette().ink,
+            width: 1.0,
+            radius: 0.0.into(),
+        },
+        ..Default::default()
+    });
     container(panel)
         .width(Length::Fill)
         .height(Length::Fill)
         .center(Length::Fill)
-        .style(|_: &Theme| container::Style { background: Some(Color { a: 0.5, ..Color::BLACK }.into()), ..Default::default() })
+        .style(|_: &Theme| container::Style {
+            background: Some(
+                Color {
+                    a: 0.5,
+                    ..Color::BLACK
+                }
+                .into(),
+            ),
+            ..Default::default()
+        })
         .into()
 }
 
@@ -548,40 +678,76 @@ fn sidebar<'a, M: Clone + 'a>(state: &'a State, wrap: fn(Msg) -> M) -> Element<'
             let top = if section.is_none() { 0.0 } else { 14.0 };
             section = Some(*sec);
             if open {
-                list = list.push(container(ui::section(sec)).padding(Padding { top, right: 10.0, bottom: 6.0, left: 10.0 }));
+                list = list.push(container(ui::section(sec)).padding(Padding {
+                    top,
+                    right: 10.0,
+                    bottom: 6.0,
+                    left: 10.0,
+                }));
             }
         }
         list = list.push(nav_item(state, id, label, icon_name, open, wrap));
     }
     // The scrollbar's rail (6 px) sits in its own gutter, clear of the rows' count badges.
-    let list = container(list).padding(Padding { top: 0.0, right: 8.0, bottom: 0.0, left: 0.0 });
-    let mut col = column![brand(open), ui::scroll(list).id(SIDEBAR_SCROLL.clone()).height(Length::Fill)].height(Length::Fill);
+    let list = container(list).padding(Padding {
+        top: 0.0,
+        right: 8.0,
+        bottom: 0.0,
+        left: 0.0,
+    });
+    let mut col = column![
+        brand(open),
+        ui::scroll(list)
+            .id(SIDEBAR_SCROLL.clone())
+            .height(Length::Fill)
+    ]
+    .height(Length::Fill);
     if open {
         col = col.push(footer(state, wrap));
     }
     let width = if open { state.width } else { 60.0 };
-    let body = container(col).width(Length::Fixed(width)).height(Length::Fill).style(|_: &Theme| container::Style {
-        background: Some(crate::theme::palette().sheet.into()),
-        border: Border { color: crate::theme::palette().rule, width: 1.0, radius: 0.0.into() },
-        ..Default::default()
-    });
+    let body = container(col)
+        .width(Length::Fixed(width))
+        .height(Length::Fill)
+        .style(|_: &Theme| container::Style {
+            background: Some(crate::theme::palette().sheet.into()),
+            border: Border {
+                color: crate::theme::palette().rule,
+                width: 1.0,
+                radius: 0.0.into(),
+            },
+            ..Default::default()
+        });
     if !open {
         return body.into();
     }
     // The handle is laid over the sidebar's right edge, so the sidebar's width is unchanged.
-    let edge = row![Space::new().width(Length::Fill), resize_handle(state, wrap)].height(Length::Fill);
-    stack(vec![body.into(), edge.into()]).width(Length::Fixed(width)).height(Length::Fill).into()
+    let edge =
+        row![Space::new().width(Length::Fill), resize_handle(state, wrap)].height(Length::Fill);
+    stack(vec![body.into(), edge.into()])
+        .width(Length::Fixed(width))
+        .height(Length::Fill)
+        .into()
 }
 
 /// The resize handle: a strip at the right edge; a 2 px signal line shows while the pointer is over
 /// it or dragging it. Drag clamps 200–420 (in `update`); a double-click resets the default width.
 fn resize_handle<'a, M: Clone + 'a>(state: &'a State, wrap: fn(Msg) -> M) -> Element<'a, M> {
     let lit = state.handle_hot || state.drag.is_some();
-    let line = container(Space::new().width(Length::Fixed(2.0)).height(Length::Fill)).height(Length::Fill).style(move |_: &Theme| container::Style {
-        background: if lit { Some(crate::theme::palette().signal.into()) } else { None },
-        ..Default::default()
-    });
-    let strip = container(line).width(Length::Fixed(HANDLE_W)).height(Length::Fill).align_x(alignment::Horizontal::Right);
+    let line = container(Space::new().width(Length::Fixed(2.0)).height(Length::Fill))
+        .height(Length::Fill)
+        .style(move |_: &Theme| container::Style {
+            background: if lit {
+                Some(crate::theme::palette().signal.into())
+            } else {
+                None
+            },
+            ..Default::default()
+        });
+    let strip = container(line)
+        .width(Length::Fixed(HANDLE_W))
+        .height(Length::Fill)
+        .align_x(alignment::Horizontal::Right);
     mouse_area(strip)
         .interaction(mouse::Interaction::ResizingHorizontally)
         .on_enter(wrap(Msg::HandleEnter))
@@ -596,24 +762,57 @@ fn resize_handle<'a, M: Clone + 'a>(state: &'a State, wrap: fn(Msg) -> M) -> Ele
 fn brand<'a, M: 'a>(open: bool) -> Element<'a, M> {
     let mark = ui::hive(26.0);
     let head: Element<'a, M> = if open {
-        row![mark, ui::sans("AgentPlaza", 14.0, crate::theme::palette().ink)].spacing(10).align_y(Alignment::Center).into()
+        row![
+            mark,
+            ui::sans("AgentPlaza", 14.0, crate::theme::palette().ink)
+        ]
+        .spacing(10)
+        .align_y(Alignment::Center)
+        .into()
     } else {
         mark
     };
-    container(head).padding(Padding { top: 14.0, right: 12.0, bottom: 10.0, left: 12.0 }).width(Length::Fill).align_x(Alignment::Center).into()
+    container(head)
+        .padding(Padding {
+            top: 14.0,
+            right: 12.0,
+            bottom: 10.0,
+            left: 12.0,
+        })
+        .width(Length::Fill)
+        .align_x(Alignment::Center)
+        .into()
 }
 
-fn nav_item<'a, M: Clone + 'a>(state: &'a State, id: &Id, label: &str, icon_name: &str, open: bool, wrap: fn(Msg) -> M) -> Element<'a, M> {
+fn nav_item<'a, M: Clone + 'a>(
+    state: &'a State,
+    id: &Id,
+    label: &str,
+    icon_name: &str,
+    open: bool,
+    wrap: fn(Msg) -> M,
+) -> Element<'a, M> {
     let active = shows(id, &state.current);
     // The entry the tour is describing is marked as its screen is, on the web too.
     let marked = state.highlight.as_ref() == Some(id);
     let lit = active || marked;
-    let glyph = if lit { crate::theme::palette().signal } else { crate::theme::palette().ink_3 };
+    let glyph = if lit {
+        crate::theme::palette().signal
+    } else {
+        crate::theme::palette().ink_3
+    };
     // The web's `.nav a`: a 3 px signal bar inside the row on the active screen; the row takes the
     // active tint (`--hover`) or the hover tint (`--rule-faint`); labels are ink when hot or active.
-    let bar = container(Space::new().width(Length::Fixed(3.0)).height(Length::Fill)).height(Length::Fill).style(move |_: &Theme| {
-        container::Style { background: if lit { Some(crate::theme::palette().signal.into()) } else { None }, ..Default::default() }
-    });
+    let bar = container(Space::new().width(Length::Fixed(3.0)).height(Length::Fill))
+        .height(Length::Fill)
+        .style(move |_: &Theme| container::Style {
+            background: if lit {
+                Some(crate::theme::palette().signal.into())
+            } else {
+                None
+            },
+            ..Default::default()
+        });
     let content: Element<'a, M> = if open {
         let mut r = row![
             bar,
@@ -632,7 +831,11 @@ fn nav_item<'a, M: Clone + 'a>(state: &'a State, id: &Id, label: &str, icon_name
     } else {
         row![
             bar,
-            container(ui::icon(icon_name, 16.0, glyph)).width(Length::Fill).height(Length::Fill).align_x(Alignment::Center).align_y(Alignment::Center),
+            container(ui::icon(icon_name, 16.0, glyph))
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .align_x(Alignment::Center)
+                .align_y(Alignment::Center),
         ]
         .height(Length::Fill)
         .into()
@@ -644,13 +847,24 @@ fn nav_item<'a, M: Clone + 'a>(state: &'a State, id: &Id, label: &str, icon_name
         .style(move |_: &Theme, status: button::Status| {
             let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
             let (background, text_color) = if lit {
-                (Some(crate::theme::palette().hover.into()), crate::theme::palette().ink)
+                (
+                    Some(crate::theme::palette().hover.into()),
+                    crate::theme::palette().ink,
+                )
             } else if hovered {
-                (Some(crate::theme::palette().rule_faint.into()), crate::theme::palette().ink)
+                (
+                    Some(crate::theme::palette().rule_faint.into()),
+                    crate::theme::palette().ink,
+                )
             } else {
                 (None, crate::theme::palette().ink_2)
             };
-            button::Style { background, text_color, border: Border::default(), ..Default::default() }
+            button::Style {
+                background,
+                text_color,
+                border: Border::default(),
+                ..Default::default()
+            }
         })
         .on_press(wrap(Msg::Go(id.clone())));
     let line: Element<'a, M> = item.into();
@@ -659,9 +873,19 @@ fn nav_item<'a, M: Clone + 'a>(state: &'a State, id: &Id, label: &str, icon_name
     } else {
         tooltip(
             line,
-            container(ui::sans(label.to_string(), 11.0, crate::theme::palette().ink)).padding([4, 8]).style(|_: &Theme| container::Style {
+            container(ui::sans(
+                label.to_string(),
+                11.0,
+                crate::theme::palette().ink,
+            ))
+            .padding([4, 8])
+            .style(|_: &Theme| container::Style {
                 background: Some(crate::theme::palette().sheet.into()),
-                border: Border { color: crate::theme::palette().ink, width: 1.0, radius: 0.0.into() },
+                border: Border {
+                    color: crate::theme::palette().ink,
+                    width: 1.0,
+                    radius: 0.0.into(),
+                },
                 ..Default::default()
             }),
             tooltip::Position::Right,
@@ -683,7 +907,12 @@ fn footer<'a, M: Clone + 'a>(state: &'a State, wrap: fn(Msg) -> M) -> Element<'a
         .align_y(Alignment::Center),
     ]
     .spacing(8)
-    .padding(Padding { top: 10.0, right: 12.0, bottom: 12.0, left: 12.0 })
+    .padding(Padding {
+        top: 10.0,
+        right: 12.0,
+        bottom: 12.0,
+        left: 12.0,
+    })
     .into()
 }
 
@@ -704,37 +933,89 @@ fn top_bar_title(current: &Id) -> &'static str {
 }
 
 fn top_bar<'a, M: Clone + 'a>(state: &'a State, wrap: fn(Msg) -> M) -> Element<'a, M> {
-    let toggle = ui::btn("", Some("panel-left"), ui::Kind::Ghost, Some(wrap(Msg::ToggleSidebar)));
+    let toggle = ui::btn(
+        "",
+        Some("panel-left"),
+        ui::Kind::Ghost,
+        Some(wrap(Msg::ToggleSidebar)),
+    );
     let title = top_bar_title(&state.current);
     let health = row![
         indicator(state.hub_ok, "HUB"),
         indicator(state.node_ok, "NODE"),
         indicator(state.live, live_word(state.live)),
-        row![hollow_mark(crate::theme::palette().ink_2), ui::sans(format!("{} WORKING · {} IDLE", state.working, state.idle), 11.5, crate::theme::palette().ink_2)]
-            .spacing(7)
-            .align_y(Alignment::Center),
+        row![
+            hollow_mark(crate::theme::palette().ink_2),
+            ui::sans(
+                format!("{} WORKING · {} IDLE", state.working, state.idle),
+                11.5,
+                crate::theme::palette().ink_2
+            )
+        ]
+        .spacing(7)
+        .align_y(Alignment::Center),
     ]
     .spacing(14)
     .align_y(Alignment::Center);
     let mut right = row![health].spacing(16).align_y(Alignment::Center);
-    right = right.push(top_btn("Open IDE", "square-code", crate::theme::palette().signal, wrap(Msg::OpenIde)));
-    let (theme_label, theme_icon) = if crate::theme::is_light() { ("Dark theme", "moon") } else { ("Light theme", "sun") };
-    right = right.push(ui::btn(theme_label, Some(theme_icon), ui::Kind::Ghost, Some(wrap(Msg::ToggleTheme))));
-    if state.paused {
-        right = right.push(row![ui::sans("◆", 11.0, crate::theme::palette().crit), ui::sans("HELD", 11.5, crate::theme::palette().crit)].spacing(5).align_y(Alignment::Center));
-        right = right.push(top_btn("Resume", "play", crate::theme::palette().signal, wrap(Msg::Resume)));
+    right = right.push(top_btn(
+        "Open IDE",
+        "square-code",
+        crate::theme::palette().signal,
+        wrap(Msg::OpenIde),
+    ));
+    let (theme_label, theme_icon) = if crate::theme::is_light() {
+        ("Dark theme", "moon")
     } else {
-        right = right.push(top_btn("Stop all", "stop", crate::theme::palette().crit, wrap(Msg::StopAll)));
+        ("Light theme", "sun")
+    };
+    right = right.push(ui::btn(
+        theme_label,
+        Some(theme_icon),
+        ui::Kind::Ghost,
+        Some(wrap(Msg::ToggleTheme)),
+    ));
+    if state.paused {
+        right = right.push(
+            row![
+                ui::sans("◆", 11.0, crate::theme::palette().crit),
+                ui::sans("HELD", 11.5, crate::theme::palette().crit)
+            ]
+            .spacing(5)
+            .align_y(Alignment::Center),
+        );
+        right = right.push(top_btn(
+            "Resume",
+            "play",
+            crate::theme::palette().signal,
+            wrap(Msg::Resume),
+        ));
+    } else {
+        right = right.push(top_btn(
+            "Stop all",
+            "stop",
+            crate::theme::palette().crit,
+            wrap(Msg::StopAll),
+        ));
     }
     container(
-        row![toggle, ui::sans(title.to_string(), 13.0, crate::theme::palette().ink), Space::new().width(Length::Fill), right]
-            .spacing(16)
-            .align_y(Alignment::Center),
+        row![
+            toggle,
+            ui::sans(title.to_string(), 13.0, crate::theme::palette().ink),
+            Space::new().width(Length::Fill),
+            right
+        ]
+        .spacing(16)
+        .align_y(Alignment::Center),
     )
     .padding([10, 16])
     .width(Length::Fill)
     .style(|_: &Theme| container::Style {
-        border: Border { color: crate::theme::palette().rule, width: 1.0, radius: 0.0.into() },
+        border: Border {
+            color: crate::theme::palette().rule,
+            width: 1.0,
+            radius: 0.0.into(),
+        },
         ..Default::default()
     })
     .into()
@@ -761,27 +1042,45 @@ fn gpu_banner<'a, M: 'a>(adapter: &'a str) -> Element<'a, M> {
 
 /// The web's outlined square mark (`base.css`, "Marks"): an 8 px box with a 1 px border in `tone`.
 fn hollow_mark<'a, M: 'a>(tone: Color) -> Element<'a, M> {
-    container(Space::new().width(Length::Fixed(8.0)).height(Length::Fixed(8.0)))
-        .style(move |_: &Theme| container::Style {
-            border: Border { color: tone, width: 1.0, radius: 0.0.into() },
-            ..Default::default()
-        })
-        .into()
+    container(
+        Space::new()
+            .width(Length::Fixed(8.0))
+            .height(Length::Fixed(8.0)),
+    )
+    .style(move |_: &Theme| container::Style {
+        border: Border {
+            color: tone,
+            width: 1.0,
+            radius: 0.0.into(),
+        },
+        ..Default::default()
+    })
+    .into()
 }
 
 /// A header button at the web's `.btn` size: 36 px high, 14 px sides, 11.5 px mono, white on `fill` with an
 /// ink border. `ui::btn` is 29 px high, so the top bar draws its own.
 fn top_btn<'a, M: Clone + 'a>(label: &str, icon_name: &str, fill: Color, msg: M) -> Element<'a, M> {
-    let inner = row![ui::icon(icon_name, 14.0, Color::WHITE), text(label.to_string()).font(ui::SANS_MEDIUM).size(crate::theme::TYPE_UI).color(Color::WHITE)]
-        .spacing(7)
-        .align_y(Alignment::Center);
+    let inner = row![
+        ui::icon(icon_name, 14.0, Color::WHITE),
+        text(label.to_string())
+            .font(ui::SANS_MEDIUM)
+            .size(crate::theme::TYPE_UI)
+            .color(Color::WHITE)
+    ]
+    .spacing(7)
+    .align_y(Alignment::Center);
     button(inner)
         .padding([10, 14])
         .on_press(msg)
         .style(move |_: &Theme, _: button::Status| button::Style {
             background: Some(fill.into()),
             text_color: Color::WHITE,
-            border: Border { color: crate::theme::palette().ink, width: 1.0, radius: 0.0.into() },
+            border: Border {
+                color: crate::theme::palette().ink,
+                width: 1.0,
+                radius: 0.0.into(),
+            },
             ..Default::default()
         })
         .into()
@@ -794,9 +1093,18 @@ pub fn live_word(up: bool) -> &'static str {
 }
 
 fn indicator<'a, M: 'a>(up: bool, label: &'static str) -> Element<'a, M> {
-    let tone = if up { crate::theme::palette().ok } else { crate::theme::palette().crit };
+    let tone = if up {
+        crate::theme::palette().ok
+    } else {
+        crate::theme::palette().crit
+    };
     row![
-        container(Space::new().width(Length::Fixed(8.0)).height(Length::Fixed(8.0))).style(move |_: &Theme| container::Style {
+        container(
+            Space::new()
+                .width(Length::Fixed(8.0))
+                .height(Length::Fixed(8.0))
+        )
+        .style(move |_: &Theme| container::Style {
             background: Some(tone.into()),
             ..Default::default()
         }),
@@ -812,7 +1120,10 @@ fn ago_text(ms: u64) -> String {
     if ms == 0 {
         return "—".into();
     }
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
     let s = now.saturating_sub(ms) / 1000;
     match s {
         0..=4 => "just now".into(),
@@ -825,8 +1136,16 @@ fn ago_text(ms: u64) -> String {
 
 /// The held banner under the top bar, worded as the web's: what was cancelled, when, by whom and why.
 fn held_banner<'a, M: Clone + 'a>(state: &'a State, wrap: fn(Msg) -> M) -> Element<'a, M> {
-    let by = if state.held_by.is_empty() { String::new() } else { format!(" by {}", state.held_by) };
-    let reason = if state.held_note.is_empty() { String::new() } else { format!(": {}", state.held_note) };
+    let by = if state.held_by.is_empty() {
+        String::new()
+    } else {
+        format!(" by {}", state.held_by)
+    };
+    let reason = if state.held_note.is_empty() {
+        String::new()
+    } else {
+        format!(": {}", state.held_note)
+    };
     let text = format!(
         "The plaza is stopped — {} running items were cancelled {}{}{}. Nothing new starts until you resume.",
         state.held_cancelled,
@@ -838,7 +1157,12 @@ fn held_banner<'a, M: Clone + 'a>(state: &'a State, wrap: fn(Msg) -> M) -> Eleme
         row![
             hollow_mark(crate::theme::palette().crit),
             ui::sans(text, 12.5, crate::theme::palette().crit).width(Length::Fill),
-            top_btn("Resume", "play", crate::theme::palette().signal, wrap(Msg::Resume)),
+            top_btn(
+                "Resume",
+                "play",
+                crate::theme::palette().signal,
+                wrap(Msg::Resume)
+            ),
         ]
         .spacing(10)
         .align_y(Alignment::Center),
@@ -847,7 +1171,11 @@ fn held_banner<'a, M: Clone + 'a>(state: &'a State, wrap: fn(Msg) -> M) -> Eleme
     .width(Length::Fill)
     .style(|_: &Theme| container::Style {
         background: Some(crate::theme::palette().sheet.into()),
-        border: Border { color: crate::theme::palette().crit, width: 1.0, radius: 0.0.into() },
+        border: Border {
+            color: crate::theme::palette().crit,
+            width: 1.0,
+            radius: 0.0.into(),
+        },
         ..Default::default()
     })
     .into()
@@ -861,11 +1189,16 @@ mod tests {
     fn the_top_bar_says_live_or_reconnecting_as_the_web_does() {
         assert_eq!(live_word(true), "Live");
         assert_eq!(live_word(false), "Reconnecting…");
-        assert!(!State::default().live, "the stream is down until it connects");
+        assert!(
+            !State::default().live,
+            "the stream is down until it connects"
+        );
     }
 
     fn ctx() -> Ctx {
-        Ctx { client: super::super::client::Client::new("http://127.0.0.1:1", None, None) }
+        Ctx {
+            client: super::super::client::Client::new("http://127.0.0.1:1", None, None),
+        }
     }
 
     #[test]
@@ -920,7 +1253,10 @@ mod tests {
         assert!(!apply_frame(&mut s, "plaza", &held));
         assert!(s.paused);
         assert_eq!((s.held_cancelled, s.held_since_ms), (3, 1000));
-        assert_eq!((s.held_by.as_str(), s.held_note.as_str()), ("owner", "held"));
+        assert_eq!(
+            (s.held_by.as_str(), s.held_note.as_str()),
+            ("owner", "held")
+        );
         let resumed = serde_json::json!({ "paused": false, "since_ms": 0, "by": "", "reason": "", "cancelled": 0 });
         assert!(!apply_frame(&mut s, "plaza", &resumed));
         assert!(!s.paused);
@@ -929,7 +1265,11 @@ mod tests {
     #[test]
     fn events_agent_and_work_frames_ask_for_a_reload_and_others_do_not() {
         let mut s = State::default();
-        assert!(apply_frame(&mut s, "agent", &serde_json::json!({ "cid": 1 })));
+        assert!(apply_frame(
+            &mut s,
+            "agent",
+            &serde_json::json!({ "cid": 1 })
+        ));
         assert!(apply_frame(&mut s, "work", &serde_json::json!({})));
         assert!(!apply_frame(&mut s, "transcript", &serde_json::json!({})));
     }
@@ -939,7 +1279,10 @@ mod tests {
         let ctx = ctx();
         let mut s = State::default();
         s.loading = true;
-        let frame = events::Event { kind: "agent".into(), data: serde_json::json!({}) };
+        let frame = events::Event {
+            kind: "agent".into(),
+            data: serde_json::json!({}),
+        };
         let _ = update(&mut s, Msg::Frame(frame), &ctx);
         assert!(s.again);
         assert!(s.loading);

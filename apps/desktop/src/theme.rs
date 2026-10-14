@@ -3,9 +3,11 @@
 //! stamps — as far as iced's widgets carry it (no rotation, no dot leaders:
 //! the rules and the space between them stand in).
 
-use iced::widget::{button, container, rule, text_input};
 use iced::widget::text::LineHeight;
-use iced::{Background, Border, Color, Font, Shadow, Theme, Vector, font, theme::Palette as IcedPalette};
+use iced::widget::{button, container, rule, text_input};
+use iced::{
+    Background, Border, Color, Font, Shadow, Theme, Vector, font, theme::Palette as IcedPalette,
+};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// The page behind everything: the console's night navy.
@@ -52,13 +54,25 @@ pub const SUBSTRATE: Color = Color::from_rgb8(0x0e, 0x13, 0x21);
 /// the console embeds (Regular, Medium, SemiBold, Bold, Italic); they share the "Inter" family.
 pub const SANS: Font = Font::with_name("Inter");
 /// Inter at 500: controls and buttons.
-pub const SANS_MEDIUM: Font = Font { weight: font::Weight::Medium, ..SANS };
+pub const SANS_MEDIUM: Font = Font {
+    weight: font::Weight::Medium,
+    ..SANS
+};
 /// Inter at 600: titles, selected tabs, badges and the labels that were uppercase mono.
-pub const SANS_SEMIBOLD: Font = Font { weight: font::Weight::Semibold, ..SANS };
+pub const SANS_SEMIBOLD: Font = Font {
+    weight: font::Weight::Semibold,
+    ..SANS
+};
 /// Inter at 700: figures and the empty-state titles.
-pub const SANS_BOLD: Font = Font { weight: font::Weight::Bold, ..SANS };
+pub const SANS_BOLD: Font = Font {
+    weight: font::Weight::Bold,
+    ..SANS
+};
 /// Inter in italic: the error line and the notes.
-pub const SANS_ITALIC: Font = Font { style: font::Style::Italic, ..SANS };
+pub const SANS_ITALIC: Font = Font {
+    style: font::Style::Italic,
+    ..SANS
+};
 
 /// The code voice: code, diffs, terminals, raw tool output, and the ids, hashes and paths where
 /// alignment matters. Martian Mono, embedded by the console (`console::run`). Nothing else.
@@ -117,7 +131,11 @@ impl Tone {
 pub fn theme() -> Theme {
     let p = palette();
     Theme::custom(
-        if is_light() { "AgentPlaza register (light)" } else { "AgentPlaza register" },
+        if is_light() {
+            "AgentPlaza register (light)"
+        } else {
+            "AgentPlaza register"
+        },
         IcedPalette {
             background: p.paper,
             text: p.ink,
@@ -143,7 +161,9 @@ pub fn index(_theme: &Theme) -> container::Style {
     container::Style {
         text_color: Some(crate::theme::palette().ink_2),
         background: Some(crate::theme::palette().paper.into()),
-        border: Border::default().width(1.0).color(crate::theme::palette().rule),
+        border: Border::default()
+            .width(1.0)
+            .color(crate::theme::palette().rule),
         snap: true,
         ..container::Style::default()
     }
@@ -154,7 +174,9 @@ pub fn sheet(_theme: &Theme) -> container::Style {
     container::Style {
         text_color: Some(crate::theme::palette().ink),
         background: Some(crate::theme::palette().sheet.into()),
-        border: Border::default().width(1.0).color(crate::theme::palette().rule),
+        border: Border::default()
+            .width(1.0)
+            .color(crate::theme::palette().rule),
         shadow: print_shadow(),
         snap: true,
     }
@@ -177,7 +199,9 @@ pub fn margin(_theme: &Theme) -> container::Style {
 pub fn swatch(color: Color) -> impl Fn(&Theme) -> container::Style {
     move |_theme: &Theme| container::Style {
         background: Some(Background::Color(color)),
-        border: Border::default().width(1.0).color(crate::theme::palette().ink_3),
+        border: Border::default()
+            .width(1.0)
+            .color(crate::theme::palette().ink_3),
         snap: true,
         ..container::Style::default()
     }
@@ -203,7 +227,9 @@ pub fn boxed(_theme: &Theme) -> container::Style {
     container::Style {
         text_color: Some(crate::theme::palette().ink),
         background: Some(crate::theme::palette().sheet.into()),
-        border: Border::default().width(1.0).color(crate::theme::palette().rule_faint),
+        border: Border::default()
+            .width(1.0)
+            .color(crate::theme::palette().rule_faint),
         snap: true,
         ..container::Style::default()
     }
@@ -248,7 +274,9 @@ pub fn register_row(selected: bool) -> impl Fn(&Theme, button::Status) -> button
     move |_theme, status| {
         let background = match (selected, status) {
             (true, _) => Some(crate::theme::palette().taint.into()),
-            (false, button::Status::Hovered | button::Status::Pressed) => Some(crate::theme::palette().hover.into()),
+            (false, button::Status::Hovered | button::Status::Pressed) => {
+                Some(crate::theme::palette().hover.into())
+            }
             (false, button::Status::Active | button::Status::Disabled) => None,
         };
         button::Style {
@@ -278,12 +306,18 @@ pub fn act_button(tone: Tone, armed: bool) -> impl Fn(&Theme, button::Status) ->
                         a: 0.12,
                         ..tone.color()
                     },
-                    button::Status::Active | button::Status::Disabled => crate::theme::palette().sheet,
+                    button::Status::Active | button::Status::Disabled => {
+                        crate::theme::palette().sheet
+                    }
                 }
             }
             .into(),
         ),
-        text_color: if armed { crate::theme::palette().sheet } else { tone.color() },
+        text_color: if armed {
+            crate::theme::palette().sheet
+        } else {
+            tone.color()
+        },
         border: Border::default().width(2.0).color(tone.color()),
         shadow: Shadow::default(),
         snap: true,
@@ -307,7 +341,9 @@ pub fn input(_theme: &Theme, status: text_input::Status) -> text_input::Style {
         } else {
             Background::Color(crate::theme::palette().sheet)
         },
-        border: Border::default().width(1.0).color(crate::theme::palette().rule),
+        border: Border::default()
+            .width(1.0)
+            .color(crate::theme::palette().rule),
         icon: crate::theme::palette().ink_3,
         placeholder: crate::theme::palette().ink_3,
         value: crate::theme::palette().ink,
@@ -347,7 +383,10 @@ fn ruled(color: Color) -> rule::Style {
 
 /// The pick list as the web's select: no fill, the value set in ink, the signal rule while open.
 /// iced borders are uniform, so the web's bottom-only rule becomes a full hairline.
-pub fn pick_list(_theme: &Theme, status: iced::widget::pick_list::Status) -> iced::widget::pick_list::Style {
+pub fn pick_list(
+    _theme: &Theme,
+    status: iced::widget::pick_list::Status,
+) -> iced::widget::pick_list::Style {
     use iced::widget::pick_list::Status;
     let (edge, width) = match status {
         Status::Opened { .. } => (crate::theme::palette().signal, 2.0),
@@ -444,7 +483,11 @@ static CHOSEN: AtomicBool = AtomicBool::new(false);
 
 /// The palette in use now.
 pub fn palette() -> Palette {
-    if is_light() { Palette::light() } else { Palette::dark() }
+    if is_light() {
+        Palette::light()
+    } else {
+        Palette::dark()
+    }
 }
 
 /// Whether the light palette is in use.
@@ -479,15 +522,36 @@ mod tests {
     use super::*;
 
     fn tokens(p: &Palette) -> [Color; 18] {
-        [p.paper, p.sheet, p.rule, p.rule_faint, p.margin, p.ink, p.ink_2, p.ink_3, p.signal, p.signal_ink,
-            p.on_signal, p.info, p.crit, p.warn, p.ok, p.taint, p.hover, p.substrate]
+        [
+            p.paper,
+            p.sheet,
+            p.rule,
+            p.rule_faint,
+            p.margin,
+            p.ink,
+            p.ink_2,
+            p.ink_3,
+            p.signal,
+            p.signal_ink,
+            p.on_signal,
+            p.info,
+            p.crit,
+            p.warn,
+            p.ok,
+            p.taint,
+            p.hover,
+            p.substrate,
+        ]
     }
 
     #[test]
     fn dark_palette_is_the_old_constants() {
         assert_eq!(
             tokens(&Palette::dark()),
-            [PAPER, SHEET, RULE, RULE_FAINT, MARGIN, INK, INK_2, INK_3, SIGNAL, SIGNAL_INK, ON_SIGNAL, INFO, CRIT, WARN, OK, TAINT, HOVER, SUBSTRATE]
+            [
+                PAPER, SHEET, RULE, RULE_FAINT, MARGIN, INK, INK_2, INK_3, SIGNAL, SIGNAL_INK,
+                ON_SIGNAL, INFO, CRIT, WARN, OK, TAINT, HOVER, SUBSTRATE
+            ]
         );
     }
 

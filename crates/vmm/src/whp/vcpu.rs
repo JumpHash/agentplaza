@@ -76,7 +76,10 @@ impl Interrupts {
         for interrupt in interrupts {
             any = true;
             if let Err(err) = self.partition.request_interrupt(interrupt) {
-                eprintln!("whp: interrupt vector {:#x} not delivered: {err}", interrupt.vector);
+                eprintln!(
+                    "whp: interrupt vector {:#x} not delivered: {err}",
+                    interrupt.vector
+                );
             }
         }
         if any {

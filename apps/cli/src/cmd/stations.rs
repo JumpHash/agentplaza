@@ -261,7 +261,15 @@ impl OnOff {
     }
 }
 
-const LIST_HEAD: [&str; 7] = ["id", "name", "status", "os", "account", "leases", "last seen"];
+const LIST_HEAD: [&str; 7] = [
+    "id",
+    "name",
+    "status",
+    "os",
+    "account",
+    "leases",
+    "last seen",
+];
 const CODE_HEAD: [&str; 6] = ["id", "label", "state", "created", "expires", "used"];
 const LEASE_HEAD: [&str; 7] = ["id", "agent", "kind", "state", "queue", "task", "started"];
 const AUDIT_HEAD: [&str; 6] = ["at", "actor", "station", "agent", "kind", "detail"];
@@ -302,16 +310,25 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             if name.is_empty() {
                 return Err("the name is empty".into());
             }
-            let station = ctx.client.patch(&format!("/v1/stations/{}", seg(&id)), &json!({ "name": name }))?;
+            let station = ctx.client.patch(
+                &format!("/v1/stations/{}", seg(&id)),
+                &json!({ "name": name }),
+            )?;
             ctx.out(&station, |v| println!("{id} is now {}", name_or(v, &id)));
         }
         Cmd::Drain { id } => {
-            let station = ctx.client.post(&format!("/v1/stations/{}/drain", seg(&id)), &json!({}))?;
+            let station = ctx
+                .client
+                .post(&format!("/v1/stations/{}/drain", seg(&id)), &json!({}))?;
             ctx.out(&station, |v| println!("{} is draining", name_or(v, &id)));
         }
         Cmd::Undrain { id } => {
-            let station = ctx.client.post(&format!("/v1/stations/{}/undrain", seg(&id)), &json!({}))?;
-            ctx.out(&station, |v| println!("{} is back in service", name_or(v, &id)));
+            let station = ctx
+                .client
+                .post(&format!("/v1/stations/{}/undrain", seg(&id)), &json!({}))?;
+            ctx.out(&station, |v| {
+                println!("{} is back in service", name_or(v, &id))
+            });
         }
         Cmd::Revoke { id, yes } => {
             if !confirm(
@@ -321,7 +338,9 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                 println!("not revoked");
                 return Ok(());
             }
-            let station = ctx.client.post(&format!("/v1/stations/{}/revoke", seg(&id)), &json!({}))?;
+            let station = ctx
+                .client
+                .post(&format!("/v1/stations/{}/revoke", seg(&id)), &json!({}))?;
             ctx.out(&station, |v| println!("{} revoked", name_or(v, &id)));
         }
         Cmd::Codes { action } => match action.unwrap_or(CodesCmd::List) {
@@ -333,9 +352,10 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                 });
             }
             CodesCmd::Create { label, ttl } => {
-                let made = ctx
-                    .client
-                    .post("/v1/stations/codes", &json!({ "label": label, "ttl_minutes": ttl }))?;
+                let made = ctx.client.post(
+                    "/v1/stations/codes",
+                    &json!({ "label": label, "ttl_minutes": ttl }),
+                )?;
                 ctx.out(&made, |v| {
                     let token = ctx::s(v, "token");
                     println!("join code for {label}, valid {ttl} minutes (shown once):");
@@ -344,12 +364,16 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                 });
             }
             CodesCmd::Revoke { id } => {
-                let revoked = ctx.client.delete(&format!("/v1/stations/codes/{}", seg(&id)))?;
+                let revoked = ctx
+                    .client
+                    .delete(&format!("/v1/stations/codes/{}", seg(&id)))?;
                 ctx.out(&revoked, |_| println!("join code {id} revoked"));
             }
         },
         Cmd::Leases { id } => {
-            let leases = ctx.client.get(&format!("/v1/stations/{}/leases", seg(&id)))?;
+            let leases = ctx
+                .client
+                .get(&format!("/v1/stations/{}/leases", seg(&id)))?;
             ctx.out(&leases, |v| lease_table(items(v)));
         }
         Cmd::Release { id, lease } => {
@@ -358,7 +382,9 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             ctx.out(&released, |_| println!("lease {lease} released on {id}"));
         }
         Cmd::Settings { id, action: None } => {
-            let settings = ctx.client.get(&format!("/v1/stations/{}/settings", seg(&id)))?;
+            let settings = ctx
+                .client
+                .get(&format!("/v1/stations/{}/settings", seg(&id)))?;
             ctx.out(&settings, |v| ctx::fields(&settings_fields(v)));
         }
         Cmd::Settings {
@@ -368,8 +394,8 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             check_set(&set)?;
             let path = format!("/v1/stations/{}/settings", seg(&id));
             // The merge is done here, on the hub's current values: the PUT carries every setting.
-            let current: StationSettings =
-                serde_json::from_value(ctx.client.get(&path)?).map_err(|e| format!("the hub's settings: {e}"))?;
+            let current: StationSettings = serde_json::from_value(ctx.client.get(&path)?)
+                .map_err(|e| format!("the hub's settings: {e}"))?;
             let body = serde_json::to_value(merged(current, &set)).map_err(|e| e.to_string())?;
             let answer = ctx.client.put(&path, &body)?;
             ctx.out(&answer, |a| {
@@ -394,23 +420,42 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                 ctx::table(&AUDIT_HEAD, &rows);
             });
         }
-        Cmd::Recordings { action, station, limit, before } => {
+        Cmd::Recordings {
+            action,
+            station,
+            limit,
+            before,
+        } => {
             recordings::run(ctx, station.as_deref(), limit, before, action)?;
         }
         Cmd::Sync { id, action } => files::sync(ctx, &id, action)?,
         Cmd::Files { id, prefix, action } => files::files(ctx, &id, prefix.as_deref(), action)?,
-        Cmd::Screenshot { id, session, scale, out } => {
+        Cmd::Screenshot {
+            id,
+            session,
+            scale,
+            out,
+        } => {
             screen::check_session(&session)?;
             screen::check_scale(scale)?;
             screen::screenshot(ctx, &id, &session, scale, &out)?;
         }
-        Cmd::Watch { id, session, fps, save } => {
+        Cmd::Watch {
+            id,
+            session,
+            fps,
+            save,
+        } => {
             screen::check_session(&session)?;
             screen::check_fps(fps)?;
             screen::watch(ctx, &id, &session, fps, save.as_deref())?;
         }
         Cmd::Take { id, session } => control::take(ctx, &id, &session)?,
-        Cmd::Input { id, session, command } => control::input(ctx, &id, &session, &command.join(" "))?,
+        Cmd::Input {
+            id,
+            session,
+            command,
+        } => control::input(ctx, &id, &session, &command.join(" "))?,
         Cmd::Vms { action } => vms::run(ctx, action)?,
     }
     Ok(())
@@ -450,7 +495,11 @@ pub fn check_set(set: &SetArgs) -> Result<(), String> {
     if *set == SetArgs::default() {
         return Err("nothing to set: give at least one setting flag (see `agentplaza stations settings --help`)".into());
     }
-    if set.work_folder.as_deref().is_some_and(|folder| folder.trim().is_empty()) {
+    if set
+        .work_folder
+        .as_deref()
+        .is_some_and(|folder| folder.trim().is_empty())
+    {
         return Err("the work folder is empty".into());
     }
     Ok(())
@@ -466,7 +515,10 @@ pub fn station_fields(s: &Value) -> Vec<(&'static str, String)> {
         .flatten()
         .filter_map(|g| g.get("name").and_then(Value::as_str))
         .collect();
-    let displays = f.get("displays").and_then(Value::as_array).map_or(0, Vec::len);
+    let displays = f
+        .get("displays")
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len);
     vec![
         ("id", ctx::text(s, "id")),
         ("name", ctx::text(s, "name")),
@@ -478,14 +530,25 @@ pub fn station_fields(s: &Value) -> Vec<(&'static str, String)> {
         ("last seen", last_seen(s)),
         (
             "os",
-            dash(format!("{} {}", ctx::text(f, "os"), ctx::text(f, "os_version")).trim().to_string()),
+            dash(
+                format!("{} {}", ctx::text(f, "os"), ctx::text(f, "os_version"))
+                    .trim()
+                    .to_string(),
+            ),
         ),
         ("arch", dash(ctx::text(f, "arch"))),
         ("form", dash(ctx::text(f, "form"))),
         ("hostname", dash(ctx::text(f, "hostname"))),
         ("cpus", dash(ctx::text(f, "cpus"))),
         ("memory", format!("{} MiB", ctx::text(f, "ram_mb"))),
-        ("gpus", if gpus.is_empty() { "none".to_string() } else { gpus.join(", ") }),
+        (
+            "gpus",
+            if gpus.is_empty() {
+                "none".to_string()
+            } else {
+                gpus.join(", ")
+            },
+        ),
         ("displays", displays.to_string()),
         ("account", account(s)),
         ("apps", dash(ctx::text(f, "apps"))),
@@ -499,7 +562,10 @@ pub fn settings_fields(s: &Value) -> Vec<(&'static str, String)> {
     vec![
         ("takeover", takeover_word(ctx::s(s, "takeover")).to_string()),
         ("record", on_off(&s["record"])),
-        ("retention", format!("{} days", ctx::text(s, "retention_days"))),
+        (
+            "retention",
+            format!("{} days", ctx::text(s, "retention_days")),
+        ),
         ("record fps", ctx::text(s, "record_fps")),
         ("takeovers recorded", on_off(&s["record_takeovers"])),
         ("work folder", ctx::text(s, "work_folder")),
@@ -513,14 +579,20 @@ pub fn rate_text(credits: u64) -> String {
     if credits == 0 {
         "0 credits/h (free)".to_string()
     } else {
-        format!("{credits} credits/h (${}.{:03}/h)", credits / 1000, credits % 1000)
+        format!(
+            "{credits} credits/h (${}.{:03}/h)",
+            credits / 1000,
+            credits % 1000
+        )
     }
 }
 
 /// The warning shown wherever a station's agents act as the owner's own account: "agents act as <name>".
 pub fn account_warning(s: &Value) -> Option<String> {
     match account_mode(s)? {
-        AccountMode::Owner { name } => Some(format!("warning: agents act as {name} (the owner's own account)")),
+        AccountMode::Owner { name } => Some(format!(
+            "warning: agents act as {name} (the owner's own account)"
+        )),
         AccountMode::AgentUser { .. } => None,
     }
 }
@@ -555,7 +627,10 @@ pub fn lease_row(l: &Value) -> Vec<String> {
 
 /// A station's leases as the hub lists them (empty when it has none).
 pub fn leases(s: &Value) -> &[Value] {
-    s.get("leases").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[])
+    s.get("leases")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
 }
 
 fn lease_table(leases: &[Value]) {
@@ -587,7 +662,9 @@ fn audit_row(r: &Value) -> Vec<String> {
 
 /// An audit row's fields beyond its columns, as `key=value` words.
 fn detail(r: &Value) -> String {
-    let Some(map) = r.as_object() else { return String::new() };
+    let Some(map) = r.as_object() else {
+        return String::new();
+    };
     map.iter()
         .filter(|(key, value)| !AUDIT_COLUMNS.contains(&key.as_str()) && !value.is_null())
         .map(|(key, value)| format!("{key}={}", plain(value)))
@@ -640,11 +717,19 @@ fn items(v: &Value) -> &[Value] {
 
 fn name_or(v: &Value, id: &str) -> String {
     let name = ctx::s(v, "name");
-    if name.is_empty() { id.to_string() } else { name.to_string() }
+    if name.is_empty() {
+        id.to_string()
+    } else {
+        name.to_string()
+    }
 }
 
 fn dash(text: String) -> String {
-    if text.is_empty() { "-".to_string() } else { text }
+    if text.is_empty() {
+        "-".to_string()
+    } else {
+        text
+    }
 }
 
 fn on_off(v: &Value) -> String {

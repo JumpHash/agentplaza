@@ -13,12 +13,21 @@ pub enum Button {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Event {
     /// A button went down. `at` is the cursor inside the widget, None when outside.
-    Pressed { button: Button, at: Option<(f32, f32)> },
+    Pressed {
+        button: Button,
+        at: Option<(f32, f32)>,
+    },
     /// The cursor moved. `at` is its position inside the widget (None when outside), and `to` is
     /// its position always, even outside, so a drag keeps going past the edge.
-    Moved { at: Option<(f32, f32)>, to: (f32, f32) },
+    Moved {
+        at: Option<(f32, f32)>,
+        to: (f32, f32),
+    },
     /// A button went up. `at` is the cursor inside the widget, None when outside.
-    Released { button: Button, at: Option<(f32, f32)> },
+    Released {
+        button: Button,
+        at: Option<(f32, f32)>,
+    },
     /// A wheel turn, in lines (positive is up, already normalised by the host). Sent only while
     /// the cursor is inside the widget.
     Wheel { lines: f32 },
@@ -60,7 +69,13 @@ impl Pointer {
     pub fn update(&mut self, size: (f32, f32), event: Event) -> Option<(Action, bool)> {
         if size != self.size {
             self.size = size;
-            return Some((Action::Resized { width: size.0, height: size.1 }, false));
+            return Some((
+                Action::Resized {
+                    width: size.0,
+                    height: size.1,
+                },
+                false,
+            ));
         }
         match event {
             Event::Pressed { button, at } => {
@@ -120,28 +135,90 @@ mod tests {
     fn a_new_size_is_reported_first_and_drops_the_event() {
         let mut p = Pointer::default();
         let wheel = Event::Wheel { lines: 1.0 };
-        assert_eq!(p.update(SIZE, wheel), Some((Action::Resized { width: 800.0, height: 600.0 }, false)));
+        assert_eq!(
+            p.update(SIZE, wheel),
+            Some((
+                Action::Resized {
+                    width: 800.0,
+                    height: 600.0
+                },
+                false
+            ))
+        );
         assert_eq!(p.update(SIZE, wheel), Some((Action::Dolly(-1.0), true)));
     }
 
     #[test]
     fn a_held_button_orbits_with_left_and_pans_with_other() {
         let mut p = primed();
-        assert_eq!(p.update(SIZE, Event::Pressed { button: Button::Left, at: Some((10.0, 10.0)) }), None);
-        let moved = Event::Moved { at: Some((13.0, 14.0)), to: (13.0, 14.0) };
-        assert_eq!(p.update(SIZE, moved), Some((Action::Rotate { dx: 3.0, dy: 4.0, height: 600.0 }, true)));
+        assert_eq!(
+            p.update(
+                SIZE,
+                Event::Pressed {
+                    button: Button::Left,
+                    at: Some((10.0, 10.0))
+                }
+            ),
+            None
+        );
+        let moved = Event::Moved {
+            at: Some((13.0, 14.0)),
+            to: (13.0, 14.0),
+        };
+        assert_eq!(
+            p.update(SIZE, moved),
+            Some((
+                Action::Rotate {
+                    dx: 3.0,
+                    dy: 4.0,
+                    height: 600.0
+                },
+                true
+            ))
+        );
 
         let mut p = primed();
-        assert_eq!(p.update(SIZE, Event::Pressed { button: Button::Other, at: Some((10.0, 10.0)) }), None);
-        assert_eq!(p.update(SIZE, moved), Some((Action::Pan { dx: 3.0, dy: 4.0, height: 600.0 }, true)));
+        assert_eq!(
+            p.update(
+                SIZE,
+                Event::Pressed {
+                    button: Button::Other,
+                    at: Some((10.0, 10.0))
+                }
+            ),
+            None
+        );
+        assert_eq!(
+            p.update(SIZE, moved),
+            Some((
+                Action::Pan {
+                    dx: 3.0,
+                    dy: 4.0,
+                    height: 600.0
+                },
+                true
+            ))
+        );
     }
 
     #[test]
     fn a_short_press_and_release_selects_and_a_release_without_a_drag_does_nothing() {
         let mut p = primed();
-        p.update(SIZE, Event::Pressed { button: Button::Left, at: Some((5.0, 5.0)) });
-        let release = Event::Released { button: Button::Left, at: Some((5.0, 5.0)) };
-        assert_eq!(p.update(SIZE, release), Some((Action::Select((5.0, 5.0)), true)));
+        p.update(
+            SIZE,
+            Event::Pressed {
+                button: Button::Left,
+                at: Some((5.0, 5.0)),
+            },
+        );
+        let release = Event::Released {
+            button: Button::Left,
+            at: Some((5.0, 5.0)),
+        };
+        assert_eq!(
+            p.update(SIZE, release),
+            Some((Action::Select((5.0, 5.0)), true))
+        );
         assert_eq!(p.update(SIZE, release), None);
     }
 }

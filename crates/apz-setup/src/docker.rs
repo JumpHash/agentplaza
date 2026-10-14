@@ -2,12 +2,12 @@
 //! through the [`Runner`](crate::Runner) of the [`Env`](crate::Env).
 
 use crate::Env;
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-use std::time::{Duration, Instant};
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-use std::thread;
 #[cfg(target_os = "macos")]
 use std::path::Path;
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+use std::thread;
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+use std::time::{Duration, Instant};
 
 /// Installs Docker for this platform, logging each step through `log`. Blocking.
 #[cfg(target_os = "linux")]
@@ -30,26 +30,53 @@ pub fn install(env: &Env, log: &mut dyn FnMut(String)) -> Result<(), String> {
                 env,
                 log,
                 "pkexec",
-                &["env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "install", "-y", "docker.io"],
+                &[
+                    "env",
+                    "DEBIAN_FRONTEND=noninteractive",
+                    "apt-get",
+                    "install",
+                    "-y",
+                    "docker.io",
+                ],
             )?;
         }
         "dnf" => {
             run(env, log, "pkexec", &["dnf", "install", "-y", "moby-engine"])?;
         }
         "pacman" => {
-            run(env, log, "pkexec", &["pacman", "-S", "--noconfirm", "docker"])?;
+            run(
+                env,
+                log,
+                "pkexec",
+                &["pacman", "-S", "--noconfirm", "docker"],
+            )?;
         }
         // zypper: the only other manager `manager_for` returns.
         _ => {
-            run(env, log, "pkexec", &["zypper", "--non-interactive", "install", "docker"])?;
+            run(
+                env,
+                log,
+                "pkexec",
+                &["zypper", "--non-interactive", "install", "docker"],
+            )?;
         }
     }
-    run(env, log, "pkexec", &["systemctl", "enable", "--now", "docker"])?;
+    run(
+        env,
+        log,
+        "pkexec",
+        &["systemctl", "enable", "--now", "docker"],
+    )?;
     let user = match &env.user {
         Some(user) => user.clone(),
         None => run(env, log, "id", &["-un"])?.trim().to_string(),
     };
-    run(env, log, "pkexec", &["usermod", "-aG", "docker", user.as_str()])?;
+    run(
+        env,
+        log,
+        "pkexec",
+        &["usermod", "-aG", "docker", user.as_str()],
+    )?;
     log("Docker is installed. Log out and back in once so your user can use it.".into());
     Ok(())
 }
@@ -64,7 +91,10 @@ pub fn install(env: &Env, log: &mut dyn FnMut(String)) -> Result<(), String> {
         None => install_dmg(env, log)?,
     }
     run(env, log, "open", &["-a", "Docker"])?;
-    log("Docker Desktop is installed and opening: finish its setup window, then come back here.".into());
+    log(
+        "Docker Desktop is installed and opening: finish its setup window, then come back here."
+            .into(),
+    );
     Ok(())
 }
 
@@ -149,7 +179,10 @@ fn manager_for(os_release: &str) -> Option<&'static str> {
         Some("dnf")
     } else if has(&["arch"]) {
         Some("pacman")
-    } else if ids.iter().any(|id| id == "suse" || id.starts_with("opensuse")) {
+    } else if ids
+        .iter()
+        .any(|id| id == "suse" || id.starts_with("opensuse"))
+    {
         Some("zypper")
     } else {
         None
@@ -160,7 +193,12 @@ fn manager_for(os_release: &str) -> Option<&'static str> {
 /// line as it arrives. Returns the captured stdout on success; on a non-zero exit, the error names
 /// the command and the last line it printed to stderr.
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-fn run(env: &Env, log: &mut dyn FnMut(String), program: &str, args: &[&str]) -> Result<String, String> {
+fn run(
+    env: &Env,
+    log: &mut dyn FnMut(String),
+    program: &str,
+    args: &[&str],
+) -> Result<String, String> {
     let line = std::iter::once(program)
         .chain(args.iter().copied())
         .collect::<Vec<_>>()
@@ -244,7 +282,12 @@ fn start_desktop(env: &Env, log: &mut dyn FnMut(String)) -> Result<(), String> {
         env,
         log,
         "cmd",
-        &["/C", "start", "", r"C:\Program Files\Docker\Docker\Docker Desktop.exe"],
+        &[
+            "/C",
+            "start",
+            "",
+            r"C:\Program Files\Docker\Docker\Docker Desktop.exe",
+        ],
     )?;
     Ok(())
 }
@@ -280,10 +323,22 @@ fn install_dmg(env: &Env, log: &mut dyn FnMut(String)) -> Result<(), String> {
         env,
         log,
         "hdiutil",
-        &["attach", "-nobrowse", "-readonly", "-mountpoint", mnt.as_str(), dmg.as_str()],
+        &[
+            "attach",
+            "-nobrowse",
+            "-readonly",
+            "-mountpoint",
+            mnt.as_str(),
+            dmg.as_str(),
+        ],
     )?;
     let app = format!("{mnt}/Docker.app");
-    let copied = run(env, log, "ditto", &[app.as_str(), "/Applications/Docker.app"]);
+    let copied = run(
+        env,
+        log,
+        "ditto",
+        &[app.as_str(), "/Applications/Docker.app"],
+    );
     let detached = run(env, log, "hdiutil", &["detach", mnt.as_str()]);
     let _ = std::fs::remove_dir_all(&dir);
     copied?;
@@ -297,18 +352,20 @@ mod tests {
     #[cfg(target_os = "linux")]
     use super::{install, start};
     #[cfg(target_os = "linux")]
-    use crate::runner::mock::Mock;
+    use crate::Env;
     #[cfg(target_os = "linux")]
     use crate::runner::Output;
     #[cfg(target_os = "linux")]
-    use crate::Env;
+    use crate::runner::mock::Mock;
 
     const UBUNTU: &str = "PRETTY_NAME=\"Ubuntu 24.04 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"24.04\"\nID=ubuntu\nID_LIKE=debian\n";
     const RASPBIAN: &str = "PRETTY_NAME=\"Raspbian GNU/Linux 12 (bookworm)\"\nNAME=\"Raspbian GNU/Linux\"\nID=raspbian\nID_LIKE=debian\n";
-    const FEDORA: &str = "NAME=\"Fedora Linux\"\nVERSION_ID=41\nID=fedora\nPLATFORM_ID=\"platform:f41\"\n";
+    const FEDORA: &str =
+        "NAME=\"Fedora Linux\"\nVERSION_ID=41\nID=fedora\nPLATFORM_ID=\"platform:f41\"\n";
     const RHEL: &str = "NAME=\"Red Hat Enterprise Linux\"\nID=\"rhel\"\nID_LIKE=\"fedora\"\n";
     const ARCH: &str = "NAME=\"Arch Linux\"\nID=arch\nBUILD_ID=rolling\n";
-    const TUMBLEWEED: &str = "NAME=\"openSUSE Tumbleweed\"\nID=\"opensuse-tumbleweed\"\nID_LIKE=\"opensuse suse\"\n";
+    const TUMBLEWEED: &str =
+        "NAME=\"openSUSE Tumbleweed\"\nID=\"opensuse-tumbleweed\"\nID_LIKE=\"opensuse suse\"\n";
     const GENTOO: &str = "NAME=Gentoo\nID=gentoo\n";
 
     #[test]
@@ -362,7 +419,11 @@ mod tests {
         let mut mock = Mock::new(all_succeed);
         mock.paths = vec!["pkexec"];
         mock.files = vec![("/etc/os-release", UBUNTU.to_string())];
-        let env = Env { runner: &mock, keys: None, user: Some("tester".into()) };
+        let env = Env {
+            runner: &mock,
+            keys: None,
+            user: Some("tester".into()),
+        };
         let mut lines = Vec::new();
         install(&env, &mut |l| lines.push(l)).unwrap();
         assert_eq!(
@@ -381,7 +442,11 @@ mod tests {
     #[test]
     fn install_asks_for_pkexec_first_and_runs_nothing_without_it() {
         let mock = Mock::new(all_succeed);
-        let env = Env { runner: &mock, keys: None, user: Some("tester".into()) };
+        let env = Env {
+            runner: &mock,
+            keys: None,
+            user: Some("tester".into()),
+        };
         assert!(install(&env, &mut |_| {}).is_err());
         assert!(mock.calls().is_empty());
     }
@@ -398,20 +463,41 @@ mod tests {
         });
         mock.paths = vec!["pkexec"];
         mock.files = vec![("/etc/os-release", UBUNTU.to_string())];
-        let env = Env { runner: &mock, keys: None, user: Some("tester".into()) };
+        let env = Env {
+            runner: &mock,
+            keys: None,
+            user: Some("tester".into()),
+        };
         let err = install(&env, &mut |_| {}).unwrap_err();
-        assert!(err.contains("E: Unable to locate package docker.io"), "{err}");
-        assert_eq!(mock.calls().len(), 2, "the install stops at the failed step");
+        assert!(
+            err.contains("E: Unable to locate package docker.io"),
+            "{err}"
+        );
+        assert_eq!(
+            mock.calls().len(),
+            2,
+            "the install stops at the failed step"
+        );
     }
 
     #[cfg(target_os = "linux")]
     #[test]
     fn start_restarts_the_daemon_and_waits_until_it_answers() {
         let mock = Mock::new(all_succeed);
-        let env = Env { runner: &mock, keys: None, user: None };
+        let env = Env {
+            runner: &mock,
+            keys: None,
+            user: None,
+        };
         let mut lines = Vec::new();
         start(&env, &mut |l| lines.push(l)).unwrap();
-        assert_eq!(mock.calls(), vec!["pkexec systemctl start docker", "docker info --format {{.ServerVersion}}"]);
+        assert_eq!(
+            mock.calls(),
+            vec![
+                "pkexec systemctl start docker",
+                "docker info --format {{.ServerVersion}}"
+            ]
+        );
         assert!(lines.contains(&"Docker 27.1.1 is running".to_string()));
     }
 
@@ -424,7 +510,11 @@ mod tests {
         });
         mock.paths = vec!["pkexec"];
         mock.files = vec![("/etc/os-release", FEDORA.to_string())];
-        let env = Env { runner: &mock, keys: None, user: None };
+        let env = Env {
+            runner: &mock,
+            keys: None,
+            user: None,
+        };
         install(&env, &mut |_| {}).unwrap();
         let calls = mock.calls();
         assert!(calls.contains(&"id -un".to_string()));
@@ -437,7 +527,11 @@ mod tests {
         let mut mock = Mock::new(all_succeed);
         mock.paths = vec!["pkexec"];
         mock.files = vec![("/etc/os-release", GENTOO.to_string())];
-        let env = Env { runner: &mock, keys: None, user: Some("tester".into()) };
+        let env = Env {
+            runner: &mock,
+            keys: None,
+            user: Some("tester".into()),
+        };
         assert!(install(&env, &mut |_| {}).is_err());
         assert!(mock.calls().is_empty());
     }

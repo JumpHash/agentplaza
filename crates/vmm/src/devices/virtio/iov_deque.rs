@@ -135,7 +135,11 @@ impl<const L: u16> IovDeque<L> {
         // Add seals to prevent further resizing.
         // SAFETY: `mfd` is a valid open file descriptor.
         if unsafe {
-            libc::fcntl(mfd, libc::F_ADD_SEALS, libc::F_SEAL_SHRINK | libc::F_SEAL_GROW)
+            libc::fcntl(
+                mfd,
+                libc::F_ADD_SEALS,
+                libc::F_SEAL_SHRINK | libc::F_SEAL_GROW,
+            )
         } < 0
         {
             return Err(IovDequeError::Memfd(std::io::Error::last_os_error()));
@@ -536,14 +540,16 @@ mod tests {
             deque.push_back(*iov);
         }
         assert_eq!(deque.len(), 4);
-        deque.as_slice()
+        deque
+            .as_slice()
             .iter()
             .zip(iovs.iter())
             .for_each(|(actual, expected)| assert_iov_eq(actual, expected));
 
         deque.pop_front(2);
         assert_eq!(deque.len(), 2);
-        deque.as_slice()
+        deque
+            .as_slice()
             .iter()
             .zip(iovs[2..].iter())
             .for_each(|(actual, expected)| assert_iov_eq(actual, expected));

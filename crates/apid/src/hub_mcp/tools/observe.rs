@@ -3,14 +3,16 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use apz_http::Response;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use super::{version_arg, Ctx, Plaza, Tool};
+use super::{Ctx, Plaza, Tool, version_arg};
 use crate::hub_mcp::auth::Scope;
 use crate::state::App;
 
 /// The keys a roster row carries in `list_agents`.
-const ROW_KEYS: [&str; 8] = ["cid", "name", "role", "tier", "status", "node", "model", "work"];
+const ROW_KEYS: [&str; 8] = [
+    "cid", "name", "role", "tier", "status", "node", "model", "work",
+];
 const DEFAULT_LIMIT: u64 = 50;
 const MAX_LIMIT: u64 = 200;
 /// A transcript tool result longer than this is cut, in bytes.
@@ -49,7 +51,8 @@ impl Plaza for App {
     }
 
     fn announce(&self, kind: &str, id: &str, action: &str) {
-        self.bus.publish(kind, &json!({ "id": id, "action": action }));
+        self.bus
+            .publish(kind, &json!({ "id": id, "action": action }));
     }
 
     fn stations(&self) -> Vec<Value> {
@@ -62,11 +65,18 @@ impl Plaza for App {
     }
 
     fn search_library(&self, query: &str, limit: usize) -> Vec<Value> {
-        self.library.search(query, limit).iter().filter_map(|entry| serde_json::to_value(entry).ok()).collect()
+        self.library
+            .search(query, limit)
+            .iter()
+            .filter_map(|entry| serde_json::to_value(entry).ok())
+            .collect()
     }
 
     fn create_task(&self, input: &Value) -> Result<Value, String> {
-        response_json(crate::plaza::create_task(self, input.to_string().as_bytes()))
+        response_json(crate::plaza::create_task(
+            self,
+            input.to_string().as_bytes(),
+        ))
     }
 
     fn restart_agent(&self, cid: u64) -> Result<Value, String> {
@@ -76,7 +86,12 @@ impl Plaza for App {
         Ok(json!({ "ok": true, "cid": cid }))
     }
 
-    fn record_decision(&self, approval_id: &str, decision: &str, note: &str) -> Result<Value, String> {
+    fn record_decision(
+        &self,
+        approval_id: &str,
+        decision: &str,
+        note: &str,
+    ) -> Result<Value, String> {
         let approval = self
             .approvals
             .list()
@@ -84,13 +99,18 @@ impl Plaza for App {
             .find(|approval| approval.id == approval_id)
             .ok_or_else(|| format!("no approval {approval_id}"))?;
         let row = serde_json::to_value(&approval).map_err(|err| err.to_string())?;
-        if !row["state"].as_str().is_some_and(|state| state.eq_ignore_ascii_case("pending")) {
+        if !row["state"]
+            .as_str()
+            .is_some_and(|state| state.eq_ignore_ascii_case("pending"))
+        {
             return Err(format!("approval {approval_id} is not pending"));
         }
         // A recommendation only: the approval is decided by the owner, never here.
         let recorded = super::govern::record(approval_id, decision, note);
         self.bus.publish("decision_recommendation", &recorded);
-        Ok(json!({ "recorded": true, "decided": false, "approval_id": approval_id, "decision": decision }))
+        Ok(
+            json!({ "recorded": true, "decided": false, "approval_id": approval_id, "decision": decision }),
+        )
     }
 
     fn status(&self) -> Value {
@@ -102,19 +122,33 @@ impl Plaza for App {
     }
 
     fn agent(&self, cid: u64) -> Option<Value> {
-        self.agents.get(cid).map(|agent| crate::agents::view(self, &agent))
+        self.agents
+            .get(cid)
+            .map(|agent| crate::agents::view(self, &agent))
     }
 
     fn transcript(&self, cid: u64, after: u64, limit: usize) -> Vec<Value> {
-        self.transcripts.after(cid, after, limit).iter().filter_map(|entry| serde_json::to_value(entry).ok()).collect()
+        self.transcripts
+            .after(cid, after, limit)
+            .iter()
+            .filter_map(|entry| serde_json::to_value(entry).ok())
+            .collect()
     }
 
     fn tasks(&self) -> Vec<Value> {
-        self.plaza.tasks.list().iter().filter_map(|task| serde_json::to_value(task.view()).ok()).collect()
+        self.plaza
+            .tasks
+            .list()
+            .iter()
+            .filter_map(|task| serde_json::to_value(task.view()).ok())
+            .collect()
     }
 
     fn task(&self, id: &str) -> Option<Value> {
-        self.plaza.tasks.find(id).and_then(|task| serde_json::to_value(task.view()).ok())
+        self.plaza
+            .tasks
+            .find(id)
+            .and_then(|task| serde_json::to_value(task.view()).ok())
     }
 
     fn board(&self, limit: usize) -> Value {
@@ -129,11 +163,17 @@ impl Plaza for App {
     }
 
     fn projects(&self) -> Vec<Value> {
-        self.projects.list().iter().filter_map(|project| serde_json::to_value(project).ok()).collect()
+        self.projects
+            .list()
+            .iter()
+            .filter_map(|project| serde_json::to_value(project).ok())
+            .collect()
     }
 
     fn project(&self, id: &str) -> Option<Value> {
-        self.projects.get(id).and_then(|project| serde_json::to_value(project).ok())
+        self.projects
+            .get(id)
+            .and_then(|project| serde_json::to_value(project).ok())
     }
 
     fn approvals(&self) -> Vec<Value> {
@@ -151,7 +191,11 @@ impl Plaza for App {
     }
 
     fn machines(&self) -> Vec<Value> {
-        self.nodes.list().iter().filter_map(|node| serde_json::to_value(node).ok()).collect()
+        self.nodes
+            .list()
+            .iter()
+            .filter_map(|node| serde_json::to_value(node).ok())
+            .collect()
     }
 
     fn treasury(&self, journal_limit: usize) -> Value {
@@ -167,7 +211,11 @@ impl Plaza for App {
     }
 
     fn laws(&self) -> Vec<Value> {
-        self.laws.catalog().iter().filter_map(|law| serde_json::to_value(law).ok()).collect()
+        self.laws
+            .catalog()
+            .iter()
+            .filter_map(|law| serde_json::to_value(law).ok())
+            .collect()
     }
 
     fn message_orchestrator(&self, text: &str) -> Result<Value, String> {
@@ -180,17 +228,40 @@ impl Plaza for App {
             .map(|agent| agent.cid)
             .ok_or_else(|| "no orchestrator is on the roster".to_string())?;
         // The same work the owner's chat route queues: the owner's thread, with the owner's origin.
-        let origin = crate::scheduler::Origin { owner: true, mcp: true, ..Default::default() };
-        let work = self.work.enqueue(self, cid, apz_proto::wire::WorkKind::Chat, format!("op-{cid}"), text.to_string(), origin);
+        let origin = crate::scheduler::Origin {
+            owner: true,
+            mcp: true,
+            ..Default::default()
+        };
+        let work = self.work.enqueue(
+            self,
+            cid,
+            apz_proto::wire::WorkKind::Chat,
+            format!("op-{cid}"),
+            text.to_string(),
+            origin,
+        );
         Ok(json!({ "work": work, "cid": cid }))
     }
 
     fn tell_agent(&self, cid: u64, text: &str) -> Result<Value, String> {
-        gateway_reply(crate::fleet::gateway(self, cid, "POST", &format!("/v1/agents/{cid}/tell"), Some(&json!({ "text": text }))))
+        gateway_reply(crate::fleet::gateway(
+            self,
+            cid,
+            "POST",
+            &format!("/v1/agents/{cid}/tell"),
+            Some(&json!({ "text": text })),
+        ))
     }
 
     fn stop_agent(&self, cid: u64, reason: &str) -> Result<Value, String> {
-        gateway_reply(crate::fleet::gateway(self, cid, "POST", &format!("/v1/agents/{cid}/stop"), Some(&json!({ "reason": reason }))))
+        gateway_reply(crate::fleet::gateway(
+            self,
+            cid,
+            "POST",
+            &format!("/v1/agents/{cid}/stop"),
+            Some(&json!({ "reason": reason })),
+        ))
     }
 }
 
@@ -232,7 +303,10 @@ impl Tool for PromptsList {
     }
 
     fn summary(&self, out: &Value) -> String {
-        format!("{} prompt(s).", out["prompts"].as_array().map_or(0, Vec::len))
+        format!(
+            "{} prompt(s).",
+            out["prompts"].as_array().map_or(0, Vec::len)
+        )
     }
 }
 
@@ -262,7 +336,10 @@ impl Tool for SkillsList {
     }
 
     fn summary(&self, out: &Value) -> String {
-        format!("{} live skills.", out["skills"].as_array().map_or(0, Vec::len))
+        format!(
+            "{} live skills.",
+            out["skills"].as_array().map_or(0, Vec::len)
+        )
     }
 }
 
@@ -307,7 +384,10 @@ impl Tool for SkillGet {
     }
 
     fn call(&self, ctx: &Ctx<'_>, args: &Value) -> Result<Value, String> {
-        let id = args.get("id").and_then(Value::as_str).ok_or("id must be a string")?;
+        let id = args
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or("id must be a string")?;
         let version = match args.get("version") {
             None | Some(Value::Null) => None,
             Some(_) => Some(version_arg(args, "version")?),
@@ -316,7 +396,12 @@ impl Tool for SkillGet {
     }
 
     fn summary(&self, out: &Value) -> String {
-        format!("Skill {} version {}, score {}.", out["id"].as_str().unwrap_or("?"), out["version"], out["score"])
+        format!(
+            "Skill {} version {}, score {}.",
+            out["id"].as_str().unwrap_or("?"),
+            out["version"],
+            out["score"]
+        )
     }
 }
 
@@ -360,7 +445,10 @@ impl Tool for PromptGet {
     }
 
     fn call(&self, ctx: &Ctx<'_>, args: &Value) -> Result<Value, String> {
-        let id = args.get("id").and_then(Value::as_str).ok_or("id must be a string")?;
+        let id = args
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or("id must be a string")?;
         let version = match args.get("version") {
             None | Some(Value::Null) => None,
             Some(_) => Some(version_arg(args, "version")?),
@@ -417,17 +505,24 @@ fn up(value: &Value) -> &'static str {
 fn compact(agent: &Value) -> Value {
     let mut row = serde_json::Map::new();
     for key in ROW_KEYS {
-        row.insert(key.to_string(), agent.get(key).cloned().unwrap_or(Value::Null));
+        row.insert(
+            key.to_string(),
+            agent.get(key).cloned().unwrap_or(Value::Null),
+        );
     }
     Value::Object(row)
 }
 
 fn now_ms() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_millis() as u64)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis() as u64)
 }
 
 fn cid_arg(args: &Value) -> Result<u64, String> {
-    args.get("cid").and_then(Value::as_u64).ok_or_else(|| "cid must be a whole number".to_string())
+    args.get("cid")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| "cid must be a whole number".to_string())
 }
 
 fn limit_of(args: &Value) -> Result<usize, String> {
@@ -444,7 +539,9 @@ fn limit_of(args: &Value) -> Result<usize, String> {
 fn cursor_of(args: &Value) -> Result<usize, String> {
     match args.get("cursor").and_then(Value::as_str) {
         None => Ok(0),
-        Some(text) => text.parse::<usize>().map_err(|_| "cursor is not a next_cursor from this tool".to_string()),
+        Some(text) => text
+            .parse::<usize>()
+            .map_err(|_| "cursor is not a next_cursor from this tool".to_string()),
     }
 }
 
@@ -462,7 +559,10 @@ fn page(rows: Vec<Value>, args: &Value, key: &str) -> Result<Value, String> {
 fn keep(rows: Vec<Value>, field: &str, wanted: Option<&Value>) -> Vec<Value> {
     match wanted {
         None | Some(Value::Null) => rows,
-        Some(wanted) => rows.into_iter().filter(|row| &row[field] == wanted).collect(),
+        Some(wanted) => rows
+            .into_iter()
+            .filter(|row| &row[field] == wanted)
+            .collect(),
     }
 }
 
@@ -588,7 +688,11 @@ impl Tool for ListAgents {
 
     fn summary(&self, out: &Value) -> String {
         let shown = out["agents"].as_array().map_or(0, Vec::len);
-        let more = if out["next_cursor"].is_string() { ", more on the next page" } else { "" };
+        let more = if out["next_cursor"].is_string() {
+            ", more on the next page"
+        } else {
+            ""
+        };
         format!("{shown} agents on this page{more}.")
     }
 }
@@ -626,7 +730,9 @@ impl Tool for GetAgent {
 
     fn call(&self, ctx: &Ctx<'_>, args: &Value) -> Result<Value, String> {
         let cid = cid_arg(args)?;
-        ctx.plaza.agent(cid).ok_or_else(|| format!("no agent with cid {cid}"))
+        ctx.plaza
+            .agent(cid)
+            .ok_or_else(|| format!("no agent with cid {cid}"))
     }
 
     fn summary(&self, out: &Value) -> String {
@@ -683,13 +789,24 @@ impl Tool for GetTranscript {
         }
         let after = args.get("after").and_then(Value::as_u64).unwrap_or(0);
         let limit = limit_of(args)?;
-        let entries: Vec<Value> = ctx.plaza.transcript(cid, after, limit).into_iter().map(capped).collect();
-        let next_after = entries.last().and_then(|entry| entry["seq"].as_u64()).unwrap_or(after);
+        let entries: Vec<Value> = ctx
+            .plaza
+            .transcript(cid, after, limit)
+            .into_iter()
+            .map(capped)
+            .collect();
+        let next_after = entries
+            .last()
+            .and_then(|entry| entry["seq"].as_u64())
+            .unwrap_or(after);
         Ok(json!({ "entries": entries, "next_after": next_after }))
     }
 
     fn summary(&self, out: &Value) -> String {
-        format!("{} transcript entries.", out["entries"].as_array().map_or(0, Vec::len))
+        format!(
+            "{} transcript entries.",
+            out["entries"].as_array().map_or(0, Vec::len)
+        )
     }
 }
 
@@ -740,7 +857,11 @@ impl Tool for ListTasks {
 
     fn summary(&self, out: &Value) -> String {
         let shown = out["tasks"].as_array().map_or(0, Vec::len);
-        let more = if out["next_cursor"].is_string() { ", more on the next page" } else { "" };
+        let more = if out["next_cursor"].is_string() {
+            ", more on the next page"
+        } else {
+            ""
+        };
         format!("{shown} tasks on this page{more}.")
     }
 }
@@ -772,12 +893,21 @@ impl Tool for GetTask {
     }
 
     fn call(&self, ctx: &Ctx<'_>, args: &Value) -> Result<Value, String> {
-        let id = args.get("id").and_then(Value::as_str).ok_or_else(|| "id must be a string".to_string())?;
-        ctx.plaza.task(id).ok_or_else(|| format!("no task with id {id}"))
+        let id = args
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "id must be a string".to_string())?;
+        ctx.plaza
+            .task(id)
+            .ok_or_else(|| format!("no task with id {id}"))
     }
 
     fn summary(&self, out: &Value) -> String {
-        format!("Task {}: {}.", out["id"].as_str().unwrap_or("?"), out["status"].as_str().unwrap_or("status unknown"))
+        format!(
+            "Task {}: {}.",
+            out["id"].as_str().unwrap_or("?"),
+            out["status"].as_str().unwrap_or("status unknown")
+        )
     }
 }
 
@@ -812,7 +942,10 @@ impl Tool for ListBoard {
     }
 
     fn summary(&self, out: &Value) -> String {
-        format!("Board: {} posts shown.", out["posts"].as_array().map_or(0, Vec::len))
+        format!(
+            "Board: {} posts shown.",
+            out["posts"].as_array().map_or(0, Vec::len)
+        )
     }
 }
 
@@ -853,11 +986,18 @@ impl Tool for ListProjects {
     }
 
     fn call(&self, ctx: &Ctx<'_>, args: &Value) -> Result<Value, String> {
-        page(keep(ctx.plaza.projects(), "status", args.get("status")), args, "projects")
+        page(
+            keep(ctx.plaza.projects(), "status", args.get("status")),
+            args,
+            "projects",
+        )
     }
 
     fn summary(&self, out: &Value) -> String {
-        format!("{} projects on this page.", out["projects"].as_array().map_or(0, Vec::len))
+        format!(
+            "{} projects on this page.",
+            out["projects"].as_array().map_or(0, Vec::len)
+        )
     }
 }
 
@@ -888,8 +1028,13 @@ impl Tool for GetProject {
     }
 
     fn call(&self, ctx: &Ctx<'_>, args: &Value) -> Result<Value, String> {
-        let id = args.get("id").and_then(Value::as_str).ok_or_else(|| "id must be a string".to_string())?;
-        ctx.plaza.project(id).ok_or_else(|| format!("no project with id {id}"))
+        let id = args
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "id must be a string".to_string())?;
+        ctx.plaza
+            .project(id)
+            .ok_or_else(|| format!("no project with id {id}"))
     }
 
     fn summary(&self, out: &Value) -> String {
@@ -934,20 +1079,29 @@ impl Tool for ListApprovals {
     }
 
     fn call(&self, ctx: &Ctx<'_>, args: &Value) -> Result<Value, String> {
-        let status = args.get("status").and_then(Value::as_str).unwrap_or("pending");
+        let status = args
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("pending");
         let rows: Vec<Value> = ctx
             .plaza
             .approvals()
             .into_iter()
             .filter(|row| {
-                status == "all" || row["state"].as_str().is_some_and(|state| state.eq_ignore_ascii_case(status))
+                status == "all"
+                    || row["state"]
+                        .as_str()
+                        .is_some_and(|state| state.eq_ignore_ascii_case(status))
             })
             .collect();
         page(rows, args, "approvals")
     }
 
     fn summary(&self, out: &Value) -> String {
-        format!("{} approvals on this page.", out["approvals"].as_array().map_or(0, Vec::len))
+        format!(
+            "{} approvals on this page.",
+            out["approvals"].as_array().map_or(0, Vec::len)
+        )
     }
 }
 
@@ -980,7 +1134,10 @@ impl Tool for StationList {
     }
 
     fn summary(&self, out: &Value) -> String {
-        format!("{} workstations.", out["stations"].as_array().map_or(0, Vec::len))
+        format!(
+            "{} workstations.",
+            out["stations"].as_array().map_or(0, Vec::len)
+        )
     }
 }
 
@@ -1024,7 +1181,10 @@ impl Tool for ListMachines {
     }
 
     fn summary(&self, out: &Value) -> String {
-        format!("{} machines on this page.", out["machines"].as_array().map_or(0, Vec::len))
+        format!(
+            "{} machines on this page.",
+            out["machines"].as_array().map_or(0, Vec::len)
+        )
     }
 }
 
@@ -1102,7 +1262,10 @@ impl Tool for UsageSummary {
     }
 
     fn summary(&self, out: &Value) -> String {
-        format!("Usage: {} calls.", out["totals"]["calls"].as_u64().unwrap_or(0))
+        format!(
+            "Usage: {} calls.",
+            out["totals"]["calls"].as_u64().unwrap_or(0)
+        )
     }
 }
 
@@ -1136,7 +1299,10 @@ impl Tool for ListLaws {
     }
 
     fn summary(&self, out: &Value) -> String {
-        format!("{} laws in force.", out["laws"].as_array().map_or(0, Vec::len))
+        format!(
+            "{} laws in force.",
+            out["laws"].as_array().map_or(0, Vec::len)
+        )
     }
 }
 
@@ -1179,11 +1345,18 @@ impl Tool for SearchLibrary {
             .and_then(Value::as_str)
             .filter(|query| !query.is_empty())
             .ok_or("query must be a non-empty string")?;
-        let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(DEFAULT_LIMIT).min(MAX_LIMIT);
+        let limit = args
+            .get("limit")
+            .and_then(Value::as_u64)
+            .unwrap_or(DEFAULT_LIMIT)
+            .min(MAX_LIMIT);
         Ok(json!({ "packages": ctx.plaza.search_library(query, limit as usize) }))
     }
 
     fn summary(&self, out: &Value) -> String {
-        format!("{} library packages match.", out["packages"].as_array().map_or(0, Vec::len))
+        format!(
+            "{} library packages match.",
+            out["packages"].as_array().map_or(0, Vec::len)
+        )
     }
 }

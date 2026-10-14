@@ -7,18 +7,18 @@
 use std::sync::Arc;
 
 use apz_http::{Request, Response, Router};
+use apz_plaza::ConnectedAgent;
 use apz_plaza::agora::{self, Agora};
 use apz_plaza::council::{self, Council, DecideRequest, ProposeRequest, VoteRequest};
 use apz_plaza::events::EventBus;
-use apz_plaza::social::{self, ContactRequest, Presence, PostRequest, ReadRequest, Social};
+use apz_plaza::social::{self, ContactRequest, PostRequest, Presence, ReadRequest, Social};
 use apz_plaza::tasks::{
-    resolve_budget, ClaimError, ClaimRequest, CreateTask, FinishRequest, TaskLedger, TasksView,
+    ClaimError, ClaimRequest, CreateTask, FinishRequest, TaskLedger, TasksView, resolve_budget,
 };
 use apz_plaza::treasury::{self, Treasury};
-use apz_plaza::ConnectedAgent;
 use apz_proto::wire::WorkKind;
-use serde::de::DeserializeOwned;
 use serde::Deserialize;
+use serde::de::DeserializeOwned;
 
 use crate::agents::{self, Status};
 use crate::owner_board::ProjectIndex;
@@ -79,32 +79,60 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .get("/v1/tasks", |app, _, _| list_tasks(app))
         .post("/v1/tasks", |app, req, _| create_task(app, &req.body))
         .get("/v1/tasks/{id}", |app, _, p| get_task(app, p.get("id")))
-        .delete("/v1/tasks/{id}", |app, _, p| withdraw_task(app, p.get("id")))
-        .post("/v1/tasks/{id}/claim", |app, req, p| claim_task(app, p.get("id"), &req.body))
-        .post("/v1/tasks/{id}/finish", |app, req, p| finish_task(app, p.get("id"), &req.body))
-        .post("/v1/tasks/{id}/bid", |app, req, p| bid_task(app, p.get("id"), &req.body))
-        .post("/v1/tasks/{id}/award", |app, req, p| award_task(app, p.get("id"), &req.body))
+        .delete("/v1/tasks/{id}", |app, _, p| {
+            withdraw_task(app, p.get("id"))
+        })
+        .post("/v1/tasks/{id}/claim", |app, req, p| {
+            claim_task(app, p.get("id"), &req.body)
+        })
+        .post("/v1/tasks/{id}/finish", |app, req, p| {
+            finish_task(app, p.get("id"), &req.body)
+        })
+        .post("/v1/tasks/{id}/bid", |app, req, p| {
+            bid_task(app, p.get("id"), &req.body)
+        })
+        .post("/v1/tasks/{id}/award", |app, req, p| {
+            award_task(app, p.get("id"), &req.body)
+        })
         .get("/v1/treasury", |app, _, _| treasury_view(app))
-        .get("/v1/treasury/journal", |app, req, _| treasury_journal(app, req))
-        .get("/v1/treasury/series", |app, req, _| treasury_series(app, req))
-        .post("/v1/treasury/mint", |app, req, _| treasury_mint(app, &req.body))
-        .post("/v1/treasury/fine", |app, req, _| treasury_fine(app, &req.body))
+        .get("/v1/treasury/journal", |app, req, _| {
+            treasury_journal(app, req)
+        })
+        .get("/v1/treasury/series", |app, req, _| {
+            treasury_series(app, req)
+        })
+        .post("/v1/treasury/mint", |app, req, _| {
+            treasury_mint(app, &req.body)
+        })
+        .post("/v1/treasury/fine", |app, req, _| {
+            treasury_fine(app, &req.body)
+        })
         .get("/v1/treasury/wallets", |app, _, _| treasury_wallets(app))
         .get("/v1/agora", |app, _, _| agora_view(app))
         .get("/v1/board", |app, req, _| board_view(app, req))
         .post("/v1/board", |app, req, _| board_post(app, &req.body))
-        .post("/v1/board/{id}/comments", |app, req, p| board_comment(app, p.get("id"), &req.body))
+        .post("/v1/board/{id}/comments", |app, req, p| {
+            board_comment(app, p.get("id"), &req.body)
+        })
         .post("/v1/board/read", |app, req, _| board_read(app, &req.body))
-        .get("/v1/conversations", |app, req, _| conversations_view(app, req))
+        .get("/v1/conversations", |app, req, _| {
+            conversations_view(app, req)
+        })
         .get("/v1/conversations/{a}/{b}", |app, req, p| {
             conversation_thread(app, p.get("a"), p.get("b"), req)
         })
         .get("/v1/motions", |app, _, _| motions_view(app))
         .post("/v1/motions", |app, req, _| motion_propose(app, &req.body))
         .get("/v1/motions/{id}", |app, _, p| motion_get(app, p.get("id")))
-        .post("/v1/motions/{id}/vote", |app, req, p| motion_vote(app, p.get("id"), &req.body))
-        .post("/v1/motions/{id}/decide", |app, req, p| motion_decide(app, p.get("id"), &req.body))
-        .get("/v1/agents/{cid}/contacts", |app, _, p| agent_contacts(app, p.get("cid")))
+        .post("/v1/motions/{id}/vote", |app, req, p| {
+            motion_vote(app, p.get("id"), &req.body)
+        })
+        .post("/v1/motions/{id}/decide", |app, req, p| {
+            motion_decide(app, p.get("id"), &req.body)
+        })
+        .get("/v1/agents/{cid}/contacts", |app, _, p| {
+            agent_contacts(app, p.get("cid"))
+        })
         .post("/v1/agents/{cid}/contacts", |app, req, p| {
             agent_contact_add(app, p.get("cid"), &req.body)
         })
@@ -136,7 +164,10 @@ fn guest_cid(segment: &str) -> Result<u64, Response> {
 /// unreachable agent is refused before any task is touched.
 fn connected(app: &App, cid: u64) -> Result<ConnectedAgent, Response> {
     let Some(agent) = app.agents.get(cid) else {
-        return Err(Response::error(404, &format!("no agent with guest CID {cid}")));
+        return Err(Response::error(
+            404,
+            &format!("no agent with guest CID {cid}"),
+        ));
     };
     if agent.status == Status::Offline {
         let refused = ClaimError::AgentNotConnected { cid };
@@ -175,9 +206,13 @@ fn list_tasks(app: &App) -> Response {
 /// `GET /v1/treasury`: balances (derived from the journal), totals and v0's
 /// note on real spend.
 fn treasury_view(app: &App) -> Response {
-    let mut view = serde_json::to_value(app.plaza.treasury.view()).unwrap_or(serde_json::Value::Null);
+    let mut view =
+        serde_json::to_value(app.plaza.treasury.view()).unwrap_or(serde_json::Value::Null);
     if let Some(fields) = view.as_object_mut() {
-        fields.insert("plaza_budget".to_string(), serde_json::json!(app.plaza.treasury.plaza_budget_balance()));
+        fields.insert(
+            "plaza_budget".to_string(),
+            serde_json::json!(app.plaza.treasury.plaza_budget_balance()),
+        );
     }
     Response::json(200, &view)
 }
@@ -226,7 +261,7 @@ fn journal_query(req: &Request) -> Result<treasury::JournalQuery, Response> {
                 return Err(Response::error(
                     400,
                     &format!("limit must be 1..={}, not {raw:?}", treasury::JOURNAL_LIMIT),
-                ))
+                ));
             }
         },
     };
@@ -234,14 +269,28 @@ fn journal_query(req: &Request) -> Result<treasury::JournalQuery, Response> {
         None => None,
         Some(raw) => match raw.parse::<u64>() {
             Ok(id) => Some(id),
-            Err(_) => return Err(Response::error(400, &format!("before must name an entry id, not {raw:?}"))),
+            Err(_) => {
+                return Err(Response::error(
+                    400,
+                    &format!("before must name an entry id, not {raw:?}"),
+                ));
+            }
         },
     };
     let kind = match req.query_param("kind").map(percent_decode) {
         Some(kind) if !kind.is_empty() => {
-            if !treasury::EntryKind::ALL.iter().any(|known| known.as_str() == kind) {
-                let kinds: Vec<&str> = treasury::EntryKind::ALL.iter().map(|known| known.as_str()).collect();
-                return Err(Response::error(400, &format!("kind must be one of {}, not {kind:?}", kinds.join(", "))));
+            if !treasury::EntryKind::ALL
+                .iter()
+                .any(|known| known.as_str() == kind)
+            {
+                let kinds: Vec<&str> = treasury::EntryKind::ALL
+                    .iter()
+                    .map(|known| known.as_str())
+                    .collect();
+                return Err(Response::error(
+                    400,
+                    &format!("kind must be one of {}, not {kind:?}", kinds.join(", ")),
+                ));
             }
             Some(kind)
         }
@@ -250,18 +299,32 @@ fn journal_query(req: &Request) -> Result<treasury::JournalQuery, Response> {
     let wallet = match req.query_param("wallet") {
         Some(raw) if !raw.is_empty() => match raw.parse::<u64>() {
             Ok(cid) => Some(cid.to_string()),
-            Err(_) => return Err(Response::error(400, &format!("wallet must name an agent cid, not {raw:?}"))),
+            Err(_) => {
+                return Err(Response::error(
+                    400,
+                    &format!("wallet must name an agent cid, not {raw:?}"),
+                ));
+            }
         },
         _ => None,
     };
     let task = match req.query_param("task").map(percent_decode) {
         Some(task) if task.len() > JOURNAL_TASK_MAX => {
-            return Err(Response::error(400, &format!("task is longer than {JOURNAL_TASK_MAX} bytes")))
+            return Err(Response::error(
+                400,
+                &format!("task is longer than {JOURNAL_TASK_MAX} bytes"),
+            ));
         }
         Some(task) if !task.is_empty() => Some(task),
         _ => None,
     };
-    Ok(treasury::JournalQuery { before, limit, kind, wallet, task })
+    Ok(treasury::JournalQuery {
+        before,
+        limit,
+        kind,
+        wallet,
+        task,
+    })
 }
 
 /// `GET /v1/treasury/series?from=&to=&bucket=hour|day`: the treasury over time,
@@ -274,7 +337,9 @@ fn treasury_series(app: &App, req: &Request) -> Response {
     let bucket_ms = match req.query_param("bucket").unwrap_or("day") {
         "hour" => HOUR_MS,
         "day" => DAY_MS,
-        other => return Response::error(400, &format!("bucket must be hour or day, not {other:?}")),
+        other => {
+            return Response::error(400, &format!("bucket must be hour or day, not {other:?}"));
+        }
     };
     let to = match instant_param(req, "to") {
         Ok(to) => to.unwrap_or_else(apz_plaza::now_ms),
@@ -294,10 +359,12 @@ fn treasury_series(app: &App, req: &Request) -> Response {
 fn instant_param(req: &Request, name: &str) -> Result<Option<u64>, Response> {
     match req.query_param(name) {
         None => Ok(None),
-        Some(raw) => raw
-            .parse::<u64>()
-            .map(Some)
-            .map_err(|_| Response::error(400, &format!("{name} must be milliseconds since the epoch, not {raw:?}"))),
+        Some(raw) => raw.parse::<u64>().map(Some).map_err(|_| {
+            Response::error(
+                400,
+                &format!("{name} must be milliseconds since the epoch, not {raw:?}"),
+            )
+        }),
     }
 }
 
@@ -332,7 +399,11 @@ fn treasury_fine(app: &App, body: &[u8]) -> Response {
         Ok(request) => request,
         Err(e) => return Response::error(400, &e.to_string()),
     };
-    match app.plaza.treasury.fine(request.cid, request.amount, &request.memo) {
+    match app
+        .plaza
+        .treasury
+        .fine(request.cid, request.amount, &request.memo)
+    {
         Ok(entry) => Response::json(200, &serde_json::json!({ "entry": entry })),
         Err(e) => Response::error(e.status(), &format!("{e:?}")),
     }
@@ -356,7 +427,8 @@ fn treasury_wallets(app: &App) -> Response {
 /// The request with its budget resolved: the default when none is named, and a
 /// 400 (naming the minimum) when the named budget is below it.
 fn with_budget(mut request: CreateTask) -> Result<CreateTask, Response> {
-    let budget = resolve_budget(request.budget).map_err(|refusal| Response::error(400, &refusal))?;
+    let budget =
+        resolve_budget(request.budget).map_err(|refusal| Response::error(400, &refusal))?;
     request.budget = Some(budget);
     Ok(request)
 }
@@ -396,7 +468,14 @@ pub(crate) fn create_task(app: &App, body: &[u8]) -> Response {
             task: Some(id.clone()),
             ..Default::default()
         };
-        app.work.enqueue(app, cid, WorkKind::Task, format!("task-{id}"), prompt, origin);
+        app.work.enqueue(
+            app,
+            cid,
+            WorkKind::Task,
+            format!("task-{id}"),
+            prompt,
+            origin,
+        );
     }
     Response::json(201, &task.view())
 }
@@ -538,7 +617,10 @@ fn award_task(app: &App, id: &str, body: &[u8]) -> Response {
                     eprintln!("apid: award on {id} posted the hiring note {}", note.id);
                 }
                 if seed.linked {
-                    eprintln!("apid: award on {id} linked guest CIDs {} and {}", awarder.cid, agent.cid);
+                    eprintln!(
+                        "apid: award on {id} linked guest CIDs {} and {}",
+                        awarder.cid, agent.cid
+                    );
                 }
             }
             Response::json(200, &task.view())
@@ -558,7 +640,11 @@ fn agora_view(app: &App) -> Response {
 /// project's posts; `paused` says whether that board's deliveries are held (and `paused_all` whether
 /// the whole board is).
 fn board_view(app: &App, req: &Request) -> Response {
-    let project = req.query_param("project").map(str::trim).filter(|p| !p.is_empty()).map(str::to_string);
+    let project = req
+        .query_param("project")
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .map(str::to_string);
     if let Some(id) = &project
         && app.projects.get(id).is_none()
     {
@@ -572,9 +658,14 @@ fn board_view(app: &App, req: &Request) -> Response {
         .map(|agent| agent.cid)
         .collect();
     let index = ProjectIndex::new(app);
-    let view = app.plaza.social.board_for(&connected, social::BOARD_LIMIT, |post| {
-        project.as_deref().is_none_or(|id| index.of(post).as_deref() == Some(id))
-    });
+    let view = app
+        .plaza
+        .social
+        .board_for(&connected, social::BOARD_LIMIT, |post| {
+            project
+                .as_deref()
+                .is_none_or(|id| index.of(post).as_deref() == Some(id))
+        });
     let pauses = app.settings.get().board_pauses;
     Response::json(
         200,
@@ -640,13 +731,32 @@ fn board_comment(app: &App, post: &str, body: &[u8]) -> Response {
 
 /// Tells a post's author that someone commented on it, through the author's
 /// work queue. The author is not told of its own comments.
-pub(crate) fn notify_post_author(app: &App, post: &str, commenter: Option<u64>, who: &str, text: &str) {
-    let Some(found) = app.plaza.social.board(&[], 200).posts.into_iter().find(|p| p.id == post) else {
+pub(crate) fn notify_post_author(
+    app: &App,
+    post: &str,
+    commenter: Option<u64>,
+    who: &str,
+    text: &str,
+) {
+    let Some(found) = app
+        .plaza
+        .social
+        .board(&[], 200)
+        .posts
+        .into_iter()
+        .find(|p| p.id == post)
+    else {
         return;
     };
     // The owner's own posts have no agent to tell, and a paused board is not nudged: the comment is
     // stored on the post, where the author sees it when it reads the board (no replay on resume).
-    if found.owner || app.settings.get().board_pauses.holds(ProjectIndex::new(app).of(&found).as_deref()) {
+    if found.owner
+        || app
+            .settings
+            .get()
+            .board_pauses
+            .holds(ProjectIndex::new(app).of(&found).as_deref())
+    {
         return;
     }
     let (author_cid, subject) = (found.agent_cid, found.subject);
@@ -720,8 +830,11 @@ fn conversation_query(app: &App, req: &Request) -> Result<social::ConversationQu
             _ => {
                 return Err(Response::error(
                     400,
-                    &format!("limit must be 1..={}, not {raw:?}", social::CONVERSATIONS_LIMIT),
-                ))
+                    &format!(
+                        "limit must be 1..={}, not {raw:?}",
+                        social::CONVERSATIONS_LIMIT
+                    ),
+                ));
             }
         },
     };
@@ -730,14 +843,20 @@ fn conversation_query(app: &App, req: &Request) -> Result<social::ConversationQu
         Some(raw) => match raw.strip_prefix('c').unwrap_or(raw).parse::<u64>() {
             Ok(seq) => Some(seq),
             Err(_) => {
-                return Err(Response::error(400, &format!("before must name an exchange (c<n>), not {raw:?}")))
+                return Err(Response::error(
+                    400,
+                    &format!("before must name an exchange (c<n>), not {raw:?}"),
+                ));
             }
         },
     };
     let text = match req.query_param("q").map(percent_decode) {
         Some(q) if q.trim().is_empty() => None,
         Some(q) if q.trim().len() > social::MAX_QUERY => {
-            return Err(Response::error(400, &format!("q is longer than {} bytes", social::MAX_QUERY)))
+            return Err(Response::error(
+                400,
+                &format!("q is longer than {} bytes", social::MAX_QUERY),
+            ));
         }
         Some(q) => Some(q.trim().to_string()),
         None => None,
@@ -750,14 +869,22 @@ fn conversation_query(app: &App, req: &Request) -> Result<social::ConversationQu
                 .iter()
                 .filter(|agent| {
                     agent.role.to_lowercase().contains(&needle)
-                        || app.names.get(agent.cid).is_some_and(|name| name.to_lowercase().contains(&needle))
+                        || app
+                            .names
+                            .get(agent.cid)
+                            .is_some_and(|name| name.to_lowercase().contains(&needle))
                 })
                 .map(|agent| agent.cid)
                 .collect()
         }
         None => Vec::new(),
     };
-    Ok(social::ConversationQuery { text, cids, before, limit })
+    Ok(social::ConversationQuery {
+        text,
+        cids,
+        before,
+        limit,
+    })
 }
 
 /// A query-string value, percent-decoded (`+` is a space). A malformed escape
@@ -806,7 +933,9 @@ pub fn filled_seats(agents: &[agents::Agent]) -> usize {
 /// route goes through this before it reads or acts on the council, so no count
 /// waits for a seat that no live agent holds.
 pub fn council_now(app: &App) -> &Council {
-    app.plaza.council.set_filled(filled_seats(&app.agents.list()));
+    app.plaza
+        .council
+        .set_filled(filled_seats(&app.agents.list()));
     &app.plaza.council
 }
 
@@ -816,7 +945,9 @@ pub fn council_now(app: &App) -> &Council {
 /// so the scheduler's motion offers (made before this runs on each tick) see a
 /// roster at most one tick old.
 pub fn retain(app: &App) {
-    app.plaza.social.prune(app.settings.get().retention.policy());
+    app.plaza
+        .social
+        .prune(app.settings.get().retention.policy());
     council_now(app);
 }
 
@@ -976,7 +1107,10 @@ mod tests {
         ];
         assert_eq!(filled_seats(&roster), 4);
         // Two live agents holding one seat fill it once.
-        let roster = [seated(6, FINANCE, Status::Idle), seated(7, FINANCE, Status::Working)];
+        let roster = [
+            seated(6, FINANCE, Status::Idle),
+            seated(7, FINANCE, Status::Working),
+        ];
         assert_eq!(filled_seats(&roster), 1);
     }
 
@@ -992,9 +1126,16 @@ mod tests {
 
     #[test]
     fn assignee_is_optional_and_must_be_a_number() {
-        assert_eq!(parse::<Assignee>(b"{}", "create").ok().and_then(|a| a.assignee), None);
         assert_eq!(
-            parse::<Assignee>(br#"{"assignee": 7}"#, "create").ok().and_then(|a| a.assignee),
+            parse::<Assignee>(b"{}", "create")
+                .ok()
+                .and_then(|a| a.assignee),
+            None
+        );
+        assert_eq!(
+            parse::<Assignee>(br#"{"assignee": 7}"#, "create")
+                .ok()
+                .and_then(|a| a.assignee),
             Some(7)
         );
         assert!(parse::<Assignee>(br#"{"assignee": "seven"}"#, "create").is_err());
@@ -1004,12 +1145,24 @@ mod tests {
     fn an_absent_task_budget_gets_the_default_and_a_low_one_is_a_400() {
         use apz_plaza::tasks::{DEFAULT_TASK_BUDGET, MIN_TASK_BUDGET};
         let resolve = |body: &str| {
-            let request: CreateTask = parse(body.as_bytes(), "create").expect("a valid create body");
+            let request: CreateTask =
+                parse(body.as_bytes(), "create").expect("a valid create body");
             with_budget(request)
         };
-        assert_eq!(resolve(r#"{"goal": "work"}"#).ok().and_then(|r| r.budget), Some(DEFAULT_TASK_BUDGET as u64));
-        assert_eq!(resolve(r#"{"goal": "work", "budget": 200}"#).ok().and_then(|r| r.budget), Some(MIN_TASK_BUDGET as u64));
-        for body in [r#"{"goal": "work", "budget": 100}"#, r#"{"goal": "work", "budget": 0}"#] {
+        assert_eq!(
+            resolve(r#"{"goal": "work"}"#).ok().and_then(|r| r.budget),
+            Some(DEFAULT_TASK_BUDGET as u64)
+        );
+        assert_eq!(
+            resolve(r#"{"goal": "work", "budget": 200}"#)
+                .ok()
+                .and_then(|r| r.budget),
+            Some(MIN_TASK_BUDGET as u64)
+        );
+        for body in [
+            r#"{"goal": "work", "budget": 100}"#,
+            r#"{"goal": "work", "budget": 0}"#,
+        ] {
             let refusal = resolve(body).err().expect("below the minimum is refused");
             assert_eq!(refusal.status, 400);
             assert!(String::from_utf8_lossy(refusal.bytes()).contains("minimum of 200"));

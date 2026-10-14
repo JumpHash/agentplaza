@@ -81,7 +81,12 @@ struct FontSpec {
 
 impl Default for FontSpec {
     fn default() -> Self {
-        FontSpec { size: 10.0, mono: false, bold: false, martian: false }
+        FontSpec {
+            size: 10.0,
+            mono: false,
+            bold: false,
+            martian: false,
+        }
     }
 }
 
@@ -212,14 +217,36 @@ impl Canvas {
 
     /// `createLinearGradient(x0, y0, x1, y1)` + `addColorStop`s, set as the fill.
     pub fn set_fill_linear(&mut self, x0: f32, y0: f32, x1: f32, y1: f32, stops: &[(f32, &str)]) {
-        self.state.fill = Style::Linear { x0, y0, x1, y1, stops: parse_stops(stops) };
+        self.state.fill = Style::Linear {
+            x0,
+            y0,
+            x1,
+            y1,
+            stops: parse_stops(stops),
+        };
     }
 
     /// `createRadialGradient(x0, y0, r0, x1, y1, r1)` + stops, set as the fill.
     #[allow(clippy::too_many_arguments)]
-    pub fn set_fill_radial(&mut self, x0: f32, y0: f32, r0: f32, x1: f32, y1: f32, r1: f32, stops: &[(f32, &str)]) {
+    pub fn set_fill_radial(
+        &mut self,
+        x0: f32,
+        y0: f32,
+        r0: f32,
+        x1: f32,
+        y1: f32,
+        r1: f32,
+        stops: &[(f32, &str)],
+    ) {
         let _ = r0; // tiny-skia's radial gradient starts from a zero-radius focal point
-        self.state.fill = Style::Radial { x0, y0, x1, y1, r1, stops: parse_stops(stops) };
+        self.state.fill = Style::Radial {
+            x0,
+            y0,
+            x1,
+            y1,
+            r1,
+            stops: parse_stops(stops),
+        };
     }
 
     pub fn save(&mut self) {
@@ -270,7 +297,8 @@ impl Canvas {
                 anti_alias: true,
                 ..Paint::default()
             };
-            self.pixmap.fill_path(&p, &paint, FillRule::Winding, self.state.transform, None);
+            self.pixmap
+                .fill_path(&p, &paint, FillRule::Winding, self.state.transform, None);
         }
     }
 
@@ -320,7 +348,10 @@ impl Canvas {
         };
         let (ux0, uy0) = (x0 - x1, y0 - y1);
         let (ux2, uy2) = (x2 - x1, y2 - y1);
-        let (l0, l2) = ((ux0 * ux0 + uy0 * uy0).sqrt(), (ux2 * ux2 + uy2 * uy2).sqrt());
+        let (l0, l2) = (
+            (ux0 * ux0 + uy0 * uy0).sqrt(),
+            (ux2 * ux2 + uy2 * uy2).sqrt(),
+        );
         if r == 0.0 || l0 == 0.0 || l2 == 0.0 {
             self.add_line(x1, y1);
             return;
@@ -350,7 +381,17 @@ impl Canvas {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn ellipse(&mut self, x: f32, y: f32, rx: f32, ry: f32, rotation: f32, start: f32, end: f32, ccw: bool) {
+    pub fn ellipse(
+        &mut self,
+        x: f32,
+        y: f32,
+        rx: f32,
+        ry: f32,
+        rotation: f32,
+        start: f32,
+        end: f32,
+        ccw: bool,
+    ) {
         let sweep = arc_sweep(start, end, ccw);
         self.sweep_arc(x, y, rx, ry, rotation, start, sweep);
     }
@@ -403,7 +444,9 @@ impl Canvas {
             return 0.0;
         };
         let scaled = font.as_scaled(PxScale::from(self.state.font.size));
-        text.chars().map(|c| scaled.h_advance(scaled.glyph_id(c))).sum()
+        text.chars()
+            .map(|c| scaled.h_advance(scaled.glyph_id(c)))
+            .sum()
     }
 
     // ---- Out
@@ -429,7 +472,10 @@ impl Canvas {
     /// A clamped, linear, sRGB texture of the pixels (three's `CanvasTexture` defaults as the floor sets them).
     pub fn to_texture(&self) -> Tex {
         // A canvas texture, as three's CanvasTexture: its top row is v = 1 on a mesh (flipY).
-        std::sync::Arc::new(Texture { flip_y: true, ..Texture::new(self.width, self.height, self.rgba()) })
+        std::sync::Arc::new(Texture {
+            flip_y: true,
+            ..Texture::new(self.width, self.height, self.rgba())
+        })
     }
 
     // ---- Internals
@@ -439,7 +485,8 @@ impl Canvas {
         let Some(paint) = paint_for(&self.state.fill, self.state.alpha) else {
             return;
         };
-        self.pixmap.fill_path(path, &paint, FillRule::Winding, self.state.transform, None);
+        self.pixmap
+            .fill_path(path, &paint, FillRule::Winding, self.state.transform, None);
     }
 
     /// Strokes `path` with the stroke style and the line settings.
@@ -454,7 +501,8 @@ impl Canvas {
             line_join: self.state.join,
             ..Stroke::default()
         };
-        self.pixmap.stroke_path(path, &paint, &stroke, self.state.transform, None);
+        self.pixmap
+            .stroke_path(path, &paint, &stroke, self.state.transform, None);
     }
 
     /// A subpath move: starts a new subpath at (x, y).
@@ -484,7 +532,10 @@ impl Canvas {
         let (sr, cr) = rot.sin_cos();
         let point = |t: f32| {
             let (s, c) = t.sin_cos();
-            (cx + rx * c * cr - ry * s * sr, cy + rx * c * sr + ry * s * cr)
+            (
+                cx + rx * c * cr - ry * s * sr,
+                cy + rx * c * sr + ry * s * cr,
+            )
         };
         let tangent = |t: f32| {
             let (s, c) = t.sin_cos();
@@ -620,21 +671,37 @@ fn to_color(c: Rgba, alpha: f32) -> Color {
 }
 
 fn gradient_stops(stops: &[(f32, Rgba)], alpha: f32) -> Vec<GradientStop> {
-    stops.iter().map(|(o, c)| GradientStop::new(*o, to_color(*c, alpha))).collect()
+    stops
+        .iter()
+        .map(|(o, c)| GradientStop::new(*o, to_color(*c, alpha)))
+        .collect()
 }
 
 /// The tiny-skia paint for a style at the canvas's global alpha; `None` when the gradient is degenerate.
 fn paint_for(style: &Style, alpha: f32) -> Option<Paint<'static>> {
     let shader = match style {
         Style::Solid(c) => Shader::SolidColor(to_color(*c, alpha)),
-        Style::Linear { x0, y0, x1, y1, stops } => LinearGradient::new(
+        Style::Linear {
+            x0,
+            y0,
+            x1,
+            y1,
+            stops,
+        } => LinearGradient::new(
             Point::from_xy(*x0, *y0),
             Point::from_xy(*x1, *y1),
             gradient_stops(stops, alpha),
             SpreadMode::Pad,
             Transform::identity(),
         )?,
-        Style::Radial { x0, y0, x1, y1, r1, stops } => RadialGradient::new(
+        Style::Radial {
+            x0,
+            y0,
+            x1,
+            y1,
+            r1,
+            stops,
+        } => RadialGradient::new(
             Point::from_xy(*x0, *y0),
             Point::from_xy(*x1, *y1),
             *r1,
@@ -643,7 +710,11 @@ fn paint_for(style: &Style, alpha: f32) -> Option<Paint<'static>> {
             Transform::identity(),
         )?,
     };
-    Some(Paint { shader, anti_alias: true, ..Paint::default() })
+    Some(Paint {
+        shader,
+        anti_alias: true,
+        ..Paint::default()
+    })
 }
 
 fn parse_stops(stops: &[(f32, &str)]) -> Vec<(f32, Rgba)> {
@@ -709,11 +780,7 @@ pub(crate) fn parse_css_colour(css: &str) -> Option<Rgba> {
 }
 
 fn clamp01(v: f32) -> f32 {
-    if v.is_nan() {
-        0.0
-    } else {
-        v.clamp(0.0, 1.0)
-    }
+    if v.is_nan() { 0.0 } else { v.clamp(0.0, 1.0) }
 }
 
 fn percent(t: &str) -> Option<f32> {
@@ -734,15 +801,28 @@ fn percent_or_unit(t: &str) -> Option<f32> {
 }
 
 fn parse_hex(h: &str) -> Option<Rgba> {
-    let d: Vec<u8> = h.chars().map(|c| c.to_digit(16).map(|v| v as u8)).collect::<Option<_>>()?;
+    let d: Vec<u8> = h
+        .chars()
+        .map(|c| c.to_digit(16).map(|v| v as u8))
+        .collect::<Option<_>>()?;
     let (r, g, b, a) = match d.len() {
         3 => (d[0] * 17, d[1] * 17, d[2] * 17, 255),
         4 => (d[0] * 17, d[1] * 17, d[2] * 17, d[3] * 17),
         6 => (d[0] * 16 + d[1], d[2] * 16 + d[3], d[4] * 16 + d[5], 255),
-        8 => (d[0] * 16 + d[1], d[2] * 16 + d[3], d[4] * 16 + d[5], d[6] * 16 + d[7]),
+        8 => (
+            d[0] * 16 + d[1],
+            d[2] * 16 + d[3],
+            d[4] * 16 + d[5],
+            d[6] * 16 + d[7],
+        ),
         _ => return None,
     };
-    Some([r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, a as f32 / 255.0])
+    Some([
+        r as f32 / 255.0,
+        g as f32 / 255.0,
+        b as f32 / 255.0,
+        a as f32 / 255.0,
+    ])
 }
 
 fn hsl_to_rgb(h: f32, s: f32, l: f32) -> [f32; 3] {
@@ -768,12 +848,17 @@ fn parse_font(css: &str) -> Option<FontSpec> {
     let tokens: Vec<&str> = lower.split_whitespace().collect();
     let idx = tokens.iter().position(|t| t.ends_with("px"))?;
     let size = tokens[idx].trim_end_matches("px").parse::<f32>().ok()?;
-    let bold = tokens[..idx].iter().any(|t| {
-        *t == "bold" || *t == "bolder" || t.parse::<u32>().map_or(false, |w| w >= 600)
-    });
+    let bold = tokens[..idx]
+        .iter()
+        .any(|t| *t == "bold" || *t == "bolder" || t.parse::<u32>().map_or(false, |w| w >= 600));
     let family = tokens[idx + 1..].join(" ");
     let mono = family.contains("mono") || family.contains("courier");
-    Some(FontSpec { size, mono, bold, martian: family.contains("martian") })
+    Some(FontSpec {
+        size,
+        mono,
+        bold,
+        martian: family.contains("martian"),
+    })
 }
 
 /// The faces, indexed by `mono * 2 + bold`: the first system font found (DejaVu where Linux keeps
@@ -827,14 +912,20 @@ fn font_for(spec: &FontSpec) -> Option<&'static FontVec> {
         return FONTS[4 + spec.bold as usize].get_or_init(bundled).as_ref();
     }
     let i = (spec.mono as usize) * 2 + spec.bold as usize;
-    FONTS[i].get_or_init(|| system_face(i).or_else(bundled)).as_ref()
+    FONTS[i]
+        .get_or_init(|| system_face(i).or_else(bundled))
+        .as_ref()
 }
 
 /// The desktop's own face for slot `i`, the first of its files that reads. A browser has no file system: the
 /// bundled face is used there.
 #[cfg(not(target_arch = "wasm32"))]
 fn system_face(i: usize) -> Option<FontVec> {
-    FONT_FILES[i].iter().find_map(|path| std::fs::read(path).ok().and_then(|d| FontVec::try_from_vec(d).ok()))
+    FONT_FILES[i].iter().find_map(|path| {
+        std::fs::read(path)
+            .ok()
+            .and_then(|d| FontVec::try_from_vec(d).ok())
+    })
 }
 
 #[cfg(target_arch = "wasm32")]

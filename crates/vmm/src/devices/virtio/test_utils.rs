@@ -84,7 +84,15 @@ impl<'a> VirtQueue<'a> {
 
     /// Set descriptor `index` to `(addr, len, flags, next)`.
     pub fn set_desc(&self, index: u16, addr: u64, len: u32, flags: u16, next: u16) {
-        self.write_desc(index, Descriptor { addr, len, flags, next });
+        self.write_desc(
+            index,
+            Descriptor {
+                addr,
+                len,
+                flags,
+                next,
+            },
+        );
     }
 
     pub fn desc_addr(&self, index: u16) -> u64 {
@@ -101,14 +109,21 @@ impl<'a> VirtQueue<'a> {
     /// Publish descriptor `index` to the avail ring (append to its `idx`).
     pub fn publish(&self, index: u16) {
         let idx: u16 = self.mem.read_obj(self.avail_idx_addr()).unwrap();
-        let ring_addr = self.avail_start.checked_add(4 + u64::from(idx) * 2).unwrap();
+        let ring_addr = self
+            .avail_start
+            .checked_add(4 + u64::from(idx) * 2)
+            .unwrap();
         self.mem.write_obj::<u16>(index, ring_addr).unwrap();
-        self.mem.write_obj::<u16>(idx.wrapping_add(1), self.avail_idx_addr()).unwrap();
+        self.mem
+            .write_obj::<u16>(idx.wrapping_add(1), self.avail_idx_addr())
+            .unwrap();
     }
 
     /// Set the avail-ring `idx` directly (used to simulate a malicious driver).
     pub fn set_avail_idx(&self, idx: u16) {
-        self.mem.write_obj::<u16>(idx, self.avail_idx_addr()).unwrap();
+        self.mem
+            .write_obj::<u16>(idx, self.avail_idx_addr())
+            .unwrap();
     }
 
     /// Read the avail-ring `idx`.
@@ -118,7 +133,9 @@ impl<'a> VirtQueue<'a> {
 
     /// Read the used-ring `idx`.
     pub fn used_idx(&self) -> u16 {
-        self.mem.read_obj(self.used_start.checked_add(2).unwrap()).unwrap()
+        self.mem
+            .read_obj(self.used_start.checked_add(2).unwrap())
+            .unwrap()
     }
 
     /// Read used-ring element `i` as `(id, len)`.

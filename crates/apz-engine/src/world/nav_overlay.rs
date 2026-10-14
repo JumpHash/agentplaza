@@ -8,13 +8,13 @@
 //! whose path points and rings are rewritten each frame, so nothing is added to or removed from the scene per robot.
 
 use apz_board::grid::NAV_COST_OPEN;
-use apz_board::nav::world::NavWorld;
 use apz_board::nav::NavPoint;
-use apz_board::navgrid::{NavGrid, PortalKind, NAV_COST_TRACE};
+use apz_board::nav::world::NavWorld;
+use apz_board::navgrid::{NAV_COST_TRACE, NavGrid, PortalKind};
 use glam::{Mat4, Vec3};
 
 use crate::geometry::box_geo;
-use crate::scene::{merge, Color, Geo, Geometry, Instance, Mat, Material, Obj, Shading, Side};
+use crate::scene::{Color, Geo, Geometry, Instance, Mat, Material, Obj, Shading, Side, merge};
 
 use super::lift_mesh::along;
 
@@ -327,7 +327,7 @@ impl NavOverlay {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use apz_board::layout::{layout, nav_scene, AgentSpec, LayoutInput};
+    use apz_board::layout::{AgentSpec, LayoutInput, layout, nav_scene};
 
     #[test]
     fn the_overlay_draws_the_cells_of_a_real_board() {

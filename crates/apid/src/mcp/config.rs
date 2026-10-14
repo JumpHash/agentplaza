@@ -67,7 +67,13 @@ pub fn volume_name(id: &str) -> String {
 }
 
 /// Env vars the hub sets itself on every stdio container (the egress proxy); a config may not name them.
-pub const RESERVED_ENV: [&str; 5] = ["HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "NODE_USE_ENV_PROXY", "NODE_OPTIONS"];
+pub const RESERVED_ENV: [&str; 5] = [
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+    "NODE_USE_ENV_PROXY",
+    "NODE_OPTIONS",
+];
 
 /// Where a server runs: a container (stdio) or a remote endpoint (http).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -111,7 +117,10 @@ pub struct ToolPolicy {
 
 impl Default for ToolPolicy {
     fn default() -> Self {
-        ToolPolicy { allow: Pick::All, risk: BTreeMap::new() }
+        ToolPolicy {
+            allow: Pick::All,
+            risk: BTreeMap::new(),
+        }
     }
 }
 
@@ -217,7 +226,11 @@ fn idle_stop_min() -> u64 {
 
 impl Default for Limits {
     fn default() -> Self {
-        Limits { timeout_s: timeout_s(), max_output_kb: max_output_kb(), idle_stop_min: idle_stop_min() }
+        Limits {
+            timeout_s: timeout_s(),
+            max_output_kb: max_output_kb(),
+            idle_stop_min: idle_stop_min(),
+        }
     }
 }
 
@@ -230,7 +243,10 @@ pub struct Invalid {
 
 impl Invalid {
     fn new(field: &str, message: impl Into<String>) -> Self {
-        Invalid { field: field.to_string(), message: message.into() }
+        Invalid {
+            field: field.to_string(),
+            message: message.into(),
+        }
     }
 }
 
@@ -245,7 +261,9 @@ pub fn valid_id(id: &str) -> bool {
     let bytes = id.as_bytes();
     (2..=32).contains(&bytes.len())
         && bytes[0].is_ascii_lowercase()
-        && bytes.iter().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'-')
+        && bytes
+            .iter()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'-')
 }
 
 fn env_name(name: &str) -> bool {
@@ -253,18 +271,24 @@ fn env_name(name: &str) -> bool {
     !bytes.is_empty()
         && bytes.len() <= 64
         && (bytes[0].is_ascii_uppercase() || bytes[0] == b'_')
-        && bytes.iter().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || *b == b'_')
+        && bytes
+            .iter()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || *b == b'_')
 }
 
 fn secret_name(name: &str) -> bool {
     let bytes = name.as_bytes();
     (2..=64).contains(&bytes.len())
         && bytes[0].is_ascii_uppercase()
-        && bytes.iter().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || *b == b'_')
+        && bytes
+            .iter()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || *b == b'_')
 }
 
 fn header_name(name: &str) -> bool {
-    !name.is_empty() && name.len() <= 64 && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    !name.is_empty()
+        && name.len() <= 64
+        && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
 }
 
 fn plain(text: &str) -> bool {
@@ -272,53 +296,91 @@ fn plain(text: &str) -> bool {
 }
 
 fn role_or_node(name: &str) -> bool {
-    !name.is_empty() && name.len() <= 64 && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    !name.is_empty()
+        && name.len() <= 64
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
 /// Checks every field of a server config. The error names the field that is wrong.
 pub fn validate(server: &McpServer) -> Result<(), Invalid> {
     if !valid_id(&server.id) {
-        return Err(Invalid::new("id", "use 2 to 32 characters: a lowercase letter, then lowercase letters, digits or '-'"));
+        return Err(Invalid::new(
+            "id",
+            "use 2 to 32 characters: a lowercase letter, then lowercase letters, digits or '-'",
+        ));
     }
     let name_len = server.name.trim().chars().count();
     if name_len == 0 || name_len > 80 || server.name.chars().any(char::is_control) {
         return Err(Invalid::new("name", "use 1 to 80 printable characters"));
     }
     match &server.transport {
-        Transport::Stdio { image, command, workdir } => {
+        Transport::Stdio {
+            image,
+            command,
+            workdir,
+        } => {
             let ok = !image.is_empty()
                 && image.len() <= 200
                 && !image.starts_with('-')
-                && image.bytes().all(|b| b.is_ascii_alphanumeric() || b"._/:@-".contains(&b));
+                && image
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"._/:@-".contains(&b));
             if !ok {
-                return Err(Invalid::new("transport.image", "a container image name such as ghcr.io/org/server:1.0"));
+                return Err(Invalid::new(
+                    "transport.image",
+                    "a container image name such as ghcr.io/org/server:1.0",
+                ));
             }
-            if command.len() > 32 || command.iter().any(|arg| arg.len() > 512 || arg.contains('\0')) {
-                return Err(Invalid::new("transport.command", "at most 32 arguments of 512 bytes each"));
+            if command.len() > 32
+                || command
+                    .iter()
+                    .any(|arg| arg.len() > 512 || arg.contains('\0'))
+            {
+                return Err(Invalid::new(
+                    "transport.command",
+                    "at most 32 arguments of 512 bytes each",
+                ));
             }
             if let Some(dir) = workdir {
                 if !dir.starts_with('/') || dir.len() > 256 || dir.contains('\0') {
-                    return Err(Invalid::new("transport.workdir", "an absolute path inside the container"));
+                    return Err(Invalid::new(
+                        "transport.workdir",
+                        "an absolute path inside the container",
+                    ));
                 }
             }
             for (name, setting) in &server.env {
                 if !env_name(name) || RESERVED_ENV.contains(&name.as_str()) {
-                    return Err(Invalid::new("env", format!("`{name}` is not an env var a server may set")));
+                    return Err(Invalid::new(
+                        "env",
+                        format!("`{name}` is not an env var a server may set"),
+                    ));
                 }
                 check_setting(&format!("env.{name}"), setting, false)?;
             }
             if !server.headers.is_empty() {
-                return Err(Invalid::new("headers", "headers apply to http servers only"));
+                return Err(Invalid::new(
+                    "headers",
+                    "headers apply to http servers only",
+                ));
             }
         }
         Transport::Http { url } => {
             if server.storage.volume {
-                return Err(Invalid::new("storage", "a volume applies to stdio servers only"));
+                return Err(Invalid::new(
+                    "storage",
+                    "a volume applies to stdio servers only",
+                ));
             }
             check_url(url, server.allow_private)?;
             for (name, setting) in &server.headers {
                 if !header_name(name) {
-                    return Err(Invalid::new("headers", format!("`{name}` is not a header name")));
+                    return Err(Invalid::new(
+                        "headers",
+                        format!("`{name}` is not a header name"),
+                    ));
                 }
                 check_setting(&format!("headers.{name}"), setting, true)?;
             }
@@ -329,17 +391,31 @@ pub fn validate(server: &McpServer) -> Result<(), Invalid> {
     }
     for tool in server.tools.risk.keys() {
         if tool.is_empty() || tool.len() > 128 {
-            return Err(Invalid::new("tools.risk", "a tool name of 1 to 128 characters"));
+            return Err(Invalid::new(
+                "tools.risk",
+                "a tool name of 1 to 128 characters",
+            ));
         }
     }
     if let Pick::Only(names) = &server.tools.allow {
         if names.iter().any(|n| n.is_empty() || n.len() > 128) {
-            return Err(Invalid::new("tools.allow", "tool names of 1 to 128 characters"));
+            return Err(Invalid::new(
+                "tools.allow",
+                "tool names of 1 to 128 characters",
+            ));
         }
     }
     for (field, pick, check) in [
-        ("access.roles", &server.access.roles, role_or_node as fn(&str) -> bool),
-        ("access.nodes", &server.access.nodes, role_or_node as fn(&str) -> bool),
+        (
+            "access.roles",
+            &server.access.roles,
+            role_or_node as fn(&str) -> bool,
+        ),
+        (
+            "access.nodes",
+            &server.access.nodes,
+            role_or_node as fn(&str) -> bool,
+        ),
     ] {
         if let Pick::Only(names) = pick {
             if names.iter().any(|n| !check(n)) {
@@ -364,13 +440,20 @@ fn check_setting(field: &str, setting: &Setting, header: bool) -> Result<(), Inv
     match setting {
         Setting::Secret { secret, format } => {
             if !secret_name(secret) {
-                return Err(Invalid::new(field, format!("`{secret}` is not a vault secret name")));
+                return Err(Invalid::new(
+                    field,
+                    format!("`{secret}` is not a vault secret name"),
+                ));
             }
             match format {
-                Some(f) if !header => Err(Invalid::new(field, format!("`format` ({f}) applies to headers only"))),
-                Some(f) if !f.contains("{}") || f.len() > 256 || !plain(f) => {
-                    Err(Invalid::new(field, "format must contain {} where the secret goes"))
-                }
+                Some(f) if !header => Err(Invalid::new(
+                    field,
+                    format!("`format` ({f}) applies to headers only"),
+                )),
+                Some(f) if !f.contains("{}") || f.len() > 256 || !plain(f) => Err(Invalid::new(
+                    field,
+                    "format must contain {} where the secret goes",
+                )),
                 _ => Ok(()),
             }
         }
@@ -429,14 +512,21 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 impl Store {
     /// Loads `path`. A file that does not parse is set aside as `mcp.json.rejected`, and the store starts empty.
     pub fn load(path: PathBuf) -> Store {
-        let store = Store { path, inner: Mutex::new(Inner::default()), version: AtomicU64::new(0), saved: AtomicU64::new(0) };
+        let store = Store {
+            path,
+            inner: Mutex::new(Inner::default()),
+            version: AtomicU64::new(0),
+            saved: AtomicU64::new(0),
+        };
         if let Ok(text) = std::fs::read_to_string(&store.path) {
             if let Err(err) = store.restore(&text) {
                 eprintln!("apid: mcp.json refused ({err}); kept aside as mcp.json.rejected");
                 let _ = std::fs::rename(&store.path, store.path.with_extension("json.rejected"));
             }
         }
-        store.saved.store(store.version.load(Ordering::SeqCst), Ordering::SeqCst);
+        store
+            .saved
+            .store(store.version.load(Ordering::SeqCst), Ordering::SeqCst);
         store
     }
 
@@ -482,7 +572,10 @@ impl Store {
     pub fn replace(&self, id: &str, server: McpServer) -> Result<McpServer, StoreError> {
         validate(&server).map_err(StoreError::Invalid)?;
         if server.id != id {
-            return Err(StoreError::Invalid(Invalid::new("id", "an id cannot change")));
+            return Err(StoreError::Invalid(Invalid::new(
+                "id",
+                "an id cannot change",
+            )));
         }
         let mut inner = lock(&self.inner);
         if !inner.servers.contains_key(id) {
@@ -515,14 +608,19 @@ impl Store {
     pub fn snapshot(&self) -> String {
         let inner = lock(&self.inner);
         let servers: Vec<&McpServer> = inner.servers.values().collect();
-        serde_json::to_string_pretty(&serde_json::json!({ "format": 1, "servers": servers, "tools": inner.tools }))
-            .unwrap_or_default()
+        serde_json::to_string_pretty(
+            &serde_json::json!({ "format": 1, "servers": servers, "tools": inner.tools }),
+        )
+        .unwrap_or_default()
     }
 
     /// Replaces the store with a snapshot. A snapshot with an invalid server changes nothing.
     pub fn restore(&self, json: &str) -> Result<(), String> {
         let value: serde_json::Value = serde_json::from_str(json).map_err(|e| e.to_string())?;
-        let list = value.get("servers").cloned().unwrap_or(serde_json::Value::Array(Vec::new()));
+        let list = value
+            .get("servers")
+            .cloned()
+            .unwrap_or(serde_json::Value::Array(Vec::new()));
         let servers: Vec<McpServer> = serde_json::from_value(list).map_err(|e| e.to_string())?;
         let mut next = Inner::default();
         for server in servers {
@@ -551,7 +649,6 @@ impl Store {
         self.saved.store(version, Ordering::SeqCst);
         Ok(true)
     }
-
 }
 
 /// Why a store change was refused.
@@ -568,7 +665,8 @@ mod tests {
     use super::*;
 
     fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("apz-mcp-config-{name}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("apz-mcp-config-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -579,11 +677,24 @@ mod tests {
             id: id.into(),
             name: "Test".into(),
             enabled: true,
-            transport: Transport::Stdio { image: "ghcr.io/example/server:1.0".into(), command: vec![], workdir: None },
-            env: BTreeMap::from([("TOKEN".to_string(), Setting::Secret { secret: "GITHUB_TOKEN".into(), format: None })]),
+            transport: Transport::Stdio {
+                image: "ghcr.io/example/server:1.0".into(),
+                command: vec![],
+                workdir: None,
+            },
+            env: BTreeMap::from([(
+                "TOKEN".to_string(),
+                Setting::Secret {
+                    secret: "GITHUB_TOKEN".into(),
+                    format: None,
+                },
+            )]),
             headers: BTreeMap::new(),
             tools: ToolPolicy::default(),
-            access: Access { roles: Pick::All, nodes: Pick::All },
+            access: Access {
+                roles: Pick::All,
+                nodes: Pick::All,
+            },
             limits: Limits::default(),
             allow_private: false,
             storage: Storage::default(),
@@ -596,7 +707,13 @@ mod tests {
         let mut server = stdio(id);
         server.transport = Transport::Http { url: url.into() };
         server.env.clear();
-        server.headers = BTreeMap::from([("Authorization".to_string(), Setting::Secret { secret: "LINEAR_KEY".into(), format: Some("Bearer {}".into()) })]);
+        server.headers = BTreeMap::from([(
+            "Authorization".to_string(),
+            Setting::Secret {
+                secret: "LINEAR_KEY".into(),
+                format: Some("Bearer {}".into()),
+            },
+        )]);
         server
     }
 
@@ -626,48 +743,93 @@ mod tests {
     #[test]
     fn the_message_names_the_bad_field() {
         let mut server = stdio("github");
-        server.transport = Transport::Stdio { image: "-rm".into(), command: vec![], workdir: None };
-        assert_eq!(validate(&server).unwrap_err().to_string(), "transport.image: a container image name such as ghcr.io/org/server:1.0");
+        server.transport = Transport::Stdio {
+            image: "-rm".into(),
+            command: vec![],
+            workdir: None,
+        };
+        assert_eq!(
+            validate(&server).unwrap_err().to_string(),
+            "transport.image: a container image name such as ghcr.io/org/server:1.0"
+        );
         let mut server = stdio("github");
-        server.env.insert("lower".into(), Setting::Value { value: "x".into() });
+        server
+            .env
+            .insert("lower".into(), Setting::Value { value: "x".into() });
         assert_eq!(field(&server), "env");
         let mut server = stdio("github");
-        server.env.insert("OK".into(), Setting::Value { value: "two\nlines".into() });
+        server.env.insert(
+            "OK".into(),
+            Setting::Value {
+                value: "two\nlines".into(),
+            },
+        );
         assert_eq!(field(&server), "env.OK");
     }
 
     #[test]
     fn secrets_must_name_vault_entries_and_formats_fit_headers() {
         let mut server = stdio("github");
-        server.env.insert("TOKEN".into(), Setting::Secret { secret: "lower".into(), format: None });
+        server.env.insert(
+            "TOKEN".into(),
+            Setting::Secret {
+                secret: "lower".into(),
+                format: None,
+            },
+        );
         assert_eq!(field(&server), "env.TOKEN");
         let mut server = stdio("github");
-        server.env.insert("TOKEN".into(), Setting::Secret { secret: "GITHUB_TOKEN".into(), format: Some("Bearer {}".into()) });
+        server.env.insert(
+            "TOKEN".into(),
+            Setting::Secret {
+                secret: "GITHUB_TOKEN".into(),
+                format: Some("Bearer {}".into()),
+            },
+        );
         assert_eq!(field(&server), "env.TOKEN");
         let mut server = http("linear", "https://mcp.linear.app/mcp");
-        server.headers.insert("Authorization".into(), Setting::Secret { secret: "LINEAR_KEY".into(), format: Some("Bearer".into()) });
+        server.headers.insert(
+            "Authorization".into(),
+            Setting::Secret {
+                secret: "LINEAR_KEY".into(),
+                format: Some("Bearer".into()),
+            },
+        );
         assert_eq!(field(&server), "headers.Authorization");
     }
 
     #[test]
     fn transports_do_not_mix_settings() {
         let mut server = http("linear", "https://mcp.linear.app/mcp");
-        server.env.insert("X".into(), Setting::Value { value: "1".into() });
+        server
+            .env
+            .insert("X".into(), Setting::Value { value: "1".into() });
         assert_eq!(field(&server), "env");
         let mut server = stdio("github");
-        server.headers.insert("X-Key".into(), Setting::Value { value: "1".into() });
+        server
+            .headers
+            .insert("X-Key".into(), Setting::Value { value: "1".into() });
         assert_eq!(field(&server), "headers");
     }
 
     #[test]
     fn urls_must_be_https_without_credentials() {
-        assert_eq!(field(&http("linear", "http://mcp.linear.app/mcp")), "transport.url");
+        assert_eq!(
+            field(&http("linear", "http://mcp.linear.app/mcp")),
+            "transport.url"
+        );
         assert!(validate(&http("linear", "http://127.0.0.1:9000/mcp")).is_err());
         let mut local = http("local", "http://127.0.0.1:9000/mcp");
         local.allow_private = true;
         assert!(validate(&local).is_ok());
-        assert_eq!(field(&http("linear", "https://user:pw@mcp.linear.app/mcp")), "transport.url");
-        assert_eq!(field(&http("linear", "mcp.linear.app/mcp")), "transport.url");
+        assert_eq!(
+            field(&http("linear", "https://user:pw@mcp.linear.app/mcp")),
+            "transport.url"
+        );
+        assert_eq!(
+            field(&http("linear", "mcp.linear.app/mcp")),
+            "transport.url"
+        );
     }
 
     #[test]
@@ -695,7 +857,10 @@ mod tests {
         let dir = scratch("store");
         let store = Store::load(dir.join(FILE));
         store.insert(stdio("github")).unwrap();
-        assert_eq!(store.insert(stdio("github")).unwrap_err(), StoreError::Duplicate("github".into()));
+        assert_eq!(
+            store.insert(stdio("github")).unwrap_err(),
+            StoreError::Duplicate("github".into())
+        );
         assert!(store.save_if_changed().unwrap());
         assert!(!store.save_if_changed().unwrap());
         let text = std::fs::read_to_string(dir.join(FILE)).unwrap();
@@ -723,8 +888,14 @@ mod tests {
         let dir = scratch("replace");
         let store = Store::load(dir.join(FILE));
         store.insert(stdio("github")).unwrap();
-        assert_eq!(store.replace("nope", stdio("nope")).unwrap_err(), StoreError::Missing);
-        assert!(matches!(store.replace("github", stdio("other")), Err(StoreError::Invalid(_))));
+        assert_eq!(
+            store.replace("nope", stdio("nope")).unwrap_err(),
+            StoreError::Missing
+        );
+        assert!(matches!(
+            store.replace("github", stdio("other")),
+            Err(StoreError::Invalid(_))
+        ));
         let mut renamed = stdio("github");
         renamed.name = "Renamed".into();
         assert_eq!(store.replace("github", renamed).unwrap().name, "Renamed");
@@ -736,7 +907,9 @@ mod tests {
         server.storage.volume = true;
         assert_eq!(field(&server), "storage");
         let mut server = stdio("github");
-        server.env.insert("HTTP_PROXY".into(), Setting::Value { value: "x".into() });
+        server
+            .env
+            .insert("HTTP_PROXY".into(), Setting::Value { value: "x".into() });
         assert_eq!(field(&server), "env");
         let mut server = stdio("memory");
         server.storage.volume = true;

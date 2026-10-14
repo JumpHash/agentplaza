@@ -24,8 +24,8 @@ use apz_http::ws::{self, Limits, Message, Socket};
 use apz_vt as vt;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
-use iced::futures::channel::mpsc;
 use iced::futures::SinkExt;
+use iced::futures::channel::mpsc;
 use iced::keyboard;
 use iced::mouse;
 use iced::widget::canvas::{self, Canvas};
@@ -55,7 +55,12 @@ const POLL: Duration = Duration::from_millis(20);
 /// A ping when the socket has been quiet this long (the hub closes one silent for ten minutes).
 const PING_EVERY: Duration = Duration::from_secs(60);
 /// Reconnect waits, in order; the last one repeats.
-const BACKOFF: [Duration; 4] = [Duration::from_secs(1), Duration::from_secs(2), Duration::from_secs(5), Duration::from_secs(10)];
+const BACKOFF: [Duration; 4] = [
+    Duration::from_secs(1),
+    Duration::from_secs(2),
+    Duration::from_secs(5),
+    Duration::from_secs(10),
+];
 /// A connection that stayed up this long resets the backoff.
 const RESET_AFTER: Duration = Duration::from_secs(30);
 /// How long a parked socket thread sleeps between looks at its commands.
@@ -79,7 +84,9 @@ struct Resume {
 }
 
 fn resumes() -> MutexGuard<'static, BTreeMap<String, Resume>> {
-    RESUME.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    RESUME
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -123,7 +130,13 @@ pub fn parse_server(text: &str) -> Option<Server> {
         }
         "lost" => Some(Server::Lost(value.get("bytes")?.as_u64()?)),
         "exit" => Some(Server::Exit(value.get("code").and_then(Value::as_i64))),
-        "error" => Some(Server::Error(value.get("message").and_then(Value::as_str).unwrap_or_default().to_string())),
+        "error" => Some(Server::Error(
+            value
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+        )),
         "pong" => Some(Server::Pong),
         _ => None,
     }
@@ -216,7 +229,11 @@ fn csi_letter(letter: u8, m: u8, app_cursor: bool) -> Vec<u8> {
 
 /// A key with a number before its `~`: `CSI n ~`, `CSI n;m ~` with modifiers.
 fn csi_tilde(code: u8, m: u8) -> Vec<u8> {
-    if m > 1 { format!("\x1b[{code};{m}~").into_bytes() } else { format!("\x1b[{code}~").into_bytes() }
+    if m > 1 {
+        format!("\x1b[{code};{m}~").into_bytes()
+    } else {
+        format!("\x1b[{code}~").into_bytes()
+    }
 }
 
 /// The bytes a key sends, given the modifiers and whether the program asked for application cursor keys.
@@ -259,7 +276,11 @@ pub fn key_bytes(key: Key, mods: Mods, app_cursor: bool) -> Vec<u8> {
         Key::PageDown => csi_tilde(6, m),
         Key::F(n @ 1..=4) => {
             let letter = b"PQRS"[usize::from(n) - 1];
-            if m > 1 { format!("\x1b[1;{m}{}", char::from(letter)).into_bytes() } else { vec![0x1b, b'O', letter] }
+            if m > 1 {
+                format!("\x1b[1;{m}{}", char::from(letter)).into_bytes()
+            } else {
+                vec![0x1b, b'O', letter]
+            }
         }
         Key::F(n) => {
             let code = match n {
@@ -368,7 +389,10 @@ impl Hash for Feed {
 }
 
 fn resume_key(feed: &Feed) -> String {
-    format!("{}\u{1f}{}\u{1f}{}", feed.target.base, feed.workspace, feed.slot)
+    format!(
+        "{}\u{1f}{}\u{1f}{}",
+        feed.target.base, feed.workspace, feed.slot
+    )
 }
 
 /// The thread's state across connections.
@@ -460,7 +484,12 @@ fn send(socket: &mut Socket, st: &mut Session, frame: String) -> io::Result<()> 
 
 /// Applies one command. `socket` is `None` while offline: a kill of a shell waits for the next
 /// connection, and input is dropped.
-fn apply(st: &mut Session, cmd: Command, socket: Option<&mut Socket>, out: &mut mpsc::Sender<Msg>) -> Result<(), Outcome> {
+fn apply(
+    st: &mut Session,
+    cmd: Command,
+    socket: Option<&mut Socket>,
+    out: &mut mpsc::Sender<Msg>,
+) -> Result<(), Outcome> {
     match cmd {
         // The resize itself goes out from `serve`, once the shell is open on this connection.
         Command::Size(cols, rows) => st.size = Some((cols, rows)),
@@ -469,7 +498,8 @@ fn apply(st: &mut Session, cmd: Command, socket: Option<&mut Socket>, out: &mut 
                 && st.term.is_some()
             {
                 for chunk in bytes.chunks(WRITE_CHUNK) {
-                    send(socket, st, input_frame(chunk)).map_err(|err| Outcome::Dropped(err.to_string()))?;
+                    send(socket, st, input_frame(chunk))
+                        .map_err(|err| Outcome::Dropped(err.to_string()))?;
                 }
             }
         }
@@ -497,7 +527,11 @@ fn apply(st: &mut Session, cmd: Command, socket: Option<&mut Socket>, out: &mut 
 }
 
 /// Applies every command waiting, without blocking. Err when the thread should stop.
-fn drain(st: &mut Session, mut socket: Option<&mut Socket>, out: &mut mpsc::Sender<Msg>) -> Result<(), Outcome> {
+fn drain(
+    st: &mut Session,
+    mut socket: Option<&mut Socket>,
+    out: &mut mpsc::Sender<Msg>,
+) -> Result<(), Outcome> {
     loop {
         match st.commands.try_recv() {
             Ok(cmd) => apply(st, cmd, socket.as_deref_mut(), out)?,
@@ -546,15 +580,28 @@ fn serve(socket: &mut Socket, st: &mut Session, out: &mut mpsc::Sender<Msg>) -> 
             st.want_open = false;
             st.kill = false;
             st.forget();
-            return if deliver(out, Msg::Link(Link::Killed)) { Outcome::Done } else { Outcome::Closed };
+            return if deliver(out, Msg::Link(Link::Killed)) {
+                Outcome::Done
+            } else {
+                Outcome::Closed
+            };
         }
         if st.kill && st.term.is_none() && !st.opening {
             // A kill waited for an open that the hub refused: there is no shell left to end.
             st.want_open = false;
             st.kill = false;
-            return if deliver(out, Msg::Link(Link::Killed)) { Outcome::Done } else { Outcome::Closed };
+            return if deliver(out, Msg::Link(Link::Killed)) {
+                Outcome::Done
+            } else {
+                Outcome::Closed
+            };
         }
-        if st.term.is_none() && !st.opening && st.want_open && let Some((cols, rows)) = st.size && Instant::now() >= st.open_after {
+        if st.term.is_none()
+            && !st.opening
+            && st.want_open
+            && let Some((cols, rows)) = st.size
+            && Instant::now() >= st.open_after
+        {
             st.offset = 0;
             if let Err(err) = send(socket, st, open_frame(cols, rows)) {
                 return Outcome::Dropped(err.to_string());
@@ -599,7 +646,13 @@ fn on_frame(frame: Server, st: &mut Session, out: &mut mpsc::Sender<Msg>) -> Opt
             st.term = Some(term.clone());
             st.attaching = false;
             st.opening = false;
-            resumes().insert(st.key.clone(), Resume { term: term.clone(), offset: st.offset });
+            resumes().insert(
+                st.key.clone(),
+                Resume {
+                    term: term.clone(),
+                    offset: st.offset,
+                },
+            );
             deliver(out, Msg::Link(Link::Opened(term)))
         }
         Server::Out { data, offset } => {
@@ -645,7 +698,13 @@ fn supervise(feed: Feed, commands: std_mpsc::Receiver<Command>, mut out: mpsc::S
             return;
         }
         if st.wants_socket() {
-            match ws::connect(&feed.target, &path, Some(PROTOCOL), CONNECT_TIMEOUT, Limits::default()) {
+            match ws::connect(
+                &feed.target,
+                &path,
+                Some(PROTOCOL),
+                CONNECT_TIMEOUT,
+                Limits::default(),
+            ) {
                 Ok(mut socket) => {
                     if !deliver(&mut out, Msg::Link(Link::Connected)) {
                         return;
@@ -690,7 +749,11 @@ fn supervise(feed: Feed, commands: std_mpsc::Receiver<Command>, mut out: mpsc::S
 fn link(feed: Feed) -> impl iced::futures::Stream<Item = Msg> {
     iced::stream::channel(BUFFER, move |mut out: mpsc::Sender<Msg>| async move {
         let (tx, rx) = std_mpsc::channel::<Command>();
-        if out.send(Msg::Link(Link::Ready(Commands(tx)))).await.is_err() {
+        if out
+            .send(Msg::Link(Link::Ready(Commands(tx))))
+            .await
+            .is_err()
+        {
             return;
         }
         let thread_out = out.clone();
@@ -720,7 +783,11 @@ pub struct Selection {
 impl Selection {
     /// The selection's ends, first to last.
     pub fn range(self) -> (Pos, Pos) {
-        if self.anchor <= self.head { (self.anchor, self.head) } else { (self.head, self.anchor) }
+        if self.anchor <= self.head {
+            (self.anchor, self.head)
+        } else {
+            (self.head, self.anchor)
+        }
     }
 }
 
@@ -856,7 +923,12 @@ impl Terminal {
                 }
             }
             Msg::Scroll(lines) => self.emu.scroll_view(lines),
-            Msg::SelectStart(pos) => self.selection = Some(Selection { anchor: pos, head: pos }),
+            Msg::SelectStart(pos) => {
+                self.selection = Some(Selection {
+                    anchor: pos,
+                    head: pos,
+                })
+            }
             Msg::SelectTo(pos) => {
                 if let Some(selection) = self.selection.as_mut() {
                     selection.head = pos;
@@ -870,7 +942,10 @@ impl Terminal {
             Msg::Copy => {
                 if let Some(selection) = self.selection {
                     let (start, end) = selection.range();
-                    let text = self.emu.screen().text_between((start.line, start.col), (end.line, end.col));
+                    let text = self
+                        .emu
+                        .screen()
+                        .text_between((start.line, start.col), (end.line, end.col));
                     if !text.is_empty() {
                         return iced::clipboard::write(text);
                     }
@@ -934,7 +1009,9 @@ impl Terminal {
                 }
                 let _ = self.emu.screen_mut().take_bell();
             }
-            Link::Lost(bytes) => self.notice = Some(format!("{bytes} bytes of output were dropped")),
+            Link::Lost(bytes) => {
+                self.notice = Some(format!("{bytes} bytes of output were dropped"))
+            }
             Link::Exited(code) => {
                 self.term = None;
                 self.status = Status::Ended(code);
@@ -985,10 +1062,19 @@ impl Terminal {
     /// The terminal's view: its grid on a canvas, and a line below it with the status.
     pub fn view(&self) -> Element<'_, Msg> {
         let palette = theme::palette();
-        let surface = Canvas::new(Surface { screen: self.emu.screen(), selection: self.selection })
-            .width(Length::Fill)
-            .height(Length::Fill);
-        let mut bar = row![text(self.caption()).font(MONO).size(11).color(palette.ink_3)].spacing(10);
+        let surface = Canvas::new(Surface {
+            screen: self.emu.screen(),
+            selection: self.selection,
+        })
+        .width(Length::Fill)
+        .height(Length::Fill);
+        let mut bar = row![
+            text(self.caption())
+                .font(MONO)
+                .size(11)
+                .color(palette.ink_3)
+        ]
+        .spacing(10);
         if matches!(self.status, Status::Ended(_) | Status::Killed) {
             bar = bar.push(button(text("RESTART").font(MONO).size(11)).on_press(Msg::Restart));
         }
@@ -1048,7 +1134,12 @@ pub enum TabsMsg {
 impl TerminalTabs {
     /// The tabs for `workspace`, with one terminal open.
     pub fn new(target: Target, workspace: impl Into<String>) -> TerminalTabs {
-        let mut tabs = TerminalTabs { target, workspace: workspace.into(), tabs: Vec::new(), active: 0 };
+        let mut tabs = TerminalTabs {
+            target,
+            workspace: workspace.into(),
+            tabs: Vec::new(),
+            active: 0,
+        };
         tabs.add();
         tabs
     }
@@ -1078,8 +1169,14 @@ impl TerminalTabs {
         if self.tabs.len() >= MAX_TABS {
             return false;
         }
-        let slot = (0..MAX_TABS).find(|slot| self.tabs.iter().all(|tab| tab.slot != *slot)).unwrap_or(0);
-        self.tabs.push(Terminal::new(self.target.clone(), self.workspace.clone(), slot));
+        let slot = (0..MAX_TABS)
+            .find(|slot| self.tabs.iter().all(|tab| tab.slot != *slot))
+            .unwrap_or(0);
+        self.tabs.push(Terminal::new(
+            self.target.clone(),
+            self.workspace.clone(),
+            slot,
+        ));
         self.active = self.tabs.len() - 1;
         true
     }
@@ -1132,7 +1229,12 @@ impl TerminalTabs {
     /// Takes the tabs apart for the IDE's leave. Each tab's socket thread stops when its command channel goes
     /// with the tab; no shell is ended, so each keeps its term id and the offset its screen has reached.
     pub fn detach(self) -> KeptTabs {
-        let TerminalTabs { workspace, tabs, active, .. } = self;
+        let TerminalTabs {
+            workspace,
+            tabs,
+            active,
+            ..
+        } = self;
         let tabs = tabs
             .into_iter()
             .map(|tab| KeptTab {
@@ -1142,23 +1244,41 @@ impl TerminalTabs {
                 emu: tab.emu,
             })
             .collect();
-        KeptTabs { workspace, tabs, active }
+        KeptTabs {
+            workspace,
+            tabs,
+            active,
+        }
     }
 
     /// The tabs again, as [`TerminalTabs::detach`] kept them: the same slots, shells, offsets and screens, each
     /// with a new socket that attaches to its shell at its offset.
     pub fn restore(target: Target, kept: KeptTabs) -> TerminalTabs {
-        let KeptTabs { workspace, tabs, active } = kept;
+        let KeptTabs {
+            workspace,
+            tabs,
+            active,
+        } = kept;
         let active = active.min(tabs.len().saturating_sub(1));
-        let tabs = tabs.into_iter().map(|tab| Terminal::resumed(target.clone(), workspace.clone(), tab)).collect();
-        TerminalTabs { target, workspace, tabs, active }
+        let tabs = tabs
+            .into_iter()
+            .map(|tab| Terminal::resumed(target.clone(), workspace.clone(), tab))
+            .collect();
+        TerminalTabs {
+            target,
+            workspace,
+            tabs,
+            active,
+        }
     }
 
     /// The subscriptions of every terminal.
     pub fn subscription(&self) -> Subscription<TabsMsg> {
         Subscription::batch(self.tabs.iter().map(|tab| {
             // The slot is part of each subscription's identity, and comes back with its messages.
-            tab.subscription().with(tab.slot).map(|(slot, msg)| TabsMsg::Tab(slot, msg))
+            tab.subscription()
+                .with(tab.slot)
+                .map(|(slot, msg)| TabsMsg::Tab(slot, msg))
         }))
     }
 
@@ -1166,7 +1286,11 @@ impl TerminalTabs {
     pub fn view(&self) -> Element<'_, TabsMsg> {
         let mut strip = row![].spacing(6);
         for index in 0..self.tabs.len() {
-            let label = if index == self.active { format!("[TERM {}]", index + 1) } else { format!("TERM {}", index + 1) };
+            let label = if index == self.active {
+                format!("[TERM {}]", index + 1)
+            } else {
+                format!("TERM {}", index + 1)
+            };
             strip = strip
                 .push(button(text(label).font(MONO).size(11)).on_press(TabsMsg::Select(index)))
                 .push(button(text("X").font(MONO).size(11)).on_press(TabsMsg::Close(index)));
@@ -1198,13 +1322,25 @@ fn grid_size(bounds: Rectangle) -> (usize, usize) {
 
 /// The text position under `point` (relative to the view), clamped to the grid.
 fn cell_at(screen: &vt::Screen, point: Point) -> Pos {
-    let col = ((point.x - PAD) / CELL_W).floor().clamp(0.0, (screen.cols() - 1) as f32) as usize;
-    let row = ((point.y - PAD) / CELL_H).floor().clamp(0.0, (screen.rows() - 1) as f32) as usize;
-    Pos { line: screen.abs_of_view_row(row), col }
+    let col = ((point.x - PAD) / CELL_W)
+        .floor()
+        .clamp(0.0, (screen.cols() - 1) as f32) as usize;
+    let row = ((point.y - PAD) / CELL_H)
+        .floor()
+        .clamp(0.0, (screen.rows() - 1) as f32) as usize;
+    Pos {
+        line: screen.abs_of_view_row(row),
+        col,
+    }
 }
 
 fn mix(a: Color, b: Color, t: f32) -> Color {
-    Color { r: a.r + (b.r - a.r) * t, g: a.g + (b.g - a.g) * t, b: a.b + (b.b - a.b) * t, a: a.a }
+    Color {
+        r: a.r + (b.r - a.r) * t,
+        g: a.g + (b.g - a.g) * t,
+        b: a.b + (b.b - a.b) * t,
+        a: a.a,
+    }
 }
 
 /// One of the six ANSI hues, from the theme's roles.
@@ -1278,7 +1414,14 @@ type Run = (usize, Color, bool, String);
 
 fn flush(frame: &mut canvas::Frame, run: &mut Option<Run>, top: f32) {
     if let Some((start, color, bold, content)) = run.take() {
-        draw_text(frame, PAD + start as f32 * CELL_W, top, content, color, bold);
+        draw_text(
+            frame,
+            PAD + start as f32 * CELL_W,
+            top,
+            content,
+            color,
+            bold,
+        );
     }
 }
 
@@ -1288,7 +1431,11 @@ fn draw_text(frame: &mut canvas::Frame, x: f32, y: f32, content: String, color: 
         position: Point::new(x, y),
         color,
         size: Pixels(TEXT_SIZE),
-        font: if bold { crate::console::ui::MONO_BOLD } else { MONO },
+        font: if bold {
+            crate::console::ui::MONO_BOLD
+        } else {
+            MONO
+        },
         ..Default::default()
     });
 }
@@ -1337,7 +1484,12 @@ fn key_of(key: &keyboard::Key) -> Option<Key> {
 }
 
 /// What a key press does: copy or paste (Ctrl+Shift+C and V), text typed as it is, or the key's bytes.
-fn keystroke(screen: &vt::Screen, key: &keyboard::Key, modifiers: keyboard::Modifiers, text: Option<&str>) -> Option<canvas::Action<Msg>> {
+fn keystroke(
+    screen: &vt::Screen,
+    key: &keyboard::Key,
+    modifiers: keyboard::Modifiers,
+    text: Option<&str>,
+) -> Option<canvas::Action<Msg>> {
     if modifiers.control()
         && modifiers.shift()
         && let keyboard::Key::Character(c) = key
@@ -1348,10 +1500,15 @@ fn keystroke(screen: &vt::Screen, key: &keyboard::Key, modifiers: keyboard::Modi
             _ => {}
         }
     }
-    let mods = Mods { shift: modifiers.shift(), alt: modifiers.alt(), ctrl: modifiers.control() };
+    let mods = Mods {
+        shift: modifiers.shift(),
+        alt: modifiers.alt(),
+        ctrl: modifiers.control(),
+    };
     if !mods.ctrl
         && !mods.alt
-        && let Some(typed) = text.filter(|typed| !typed.is_empty() && typed.chars().all(|c| !c.is_control()))
+        && let Some(typed) =
+            text.filter(|typed| !typed.is_empty() && typed.chars().all(|c| !c.is_control()))
     {
         return Some(canvas::Action::publish(Msg::Input(typed.as_bytes().to_vec())).and_capture());
     }
@@ -1378,37 +1535,56 @@ struct Surface<'a> {
 impl canvas::Program<Msg> for Surface<'_> {
     type State = State;
 
-    fn update(&self, state: &mut State, event: &canvas::Event, bounds: Rectangle, cursor: mouse::Cursor) -> Option<canvas::Action<Msg>> {
+    fn update(
+        &self,
+        state: &mut State,
+        event: &canvas::Event,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
+    ) -> Option<canvas::Action<Msg>> {
         let (cols, rows) = grid_size(bounds);
         if state.reported != Some((cols, rows)) {
             state.reported = Some((cols, rows));
             return Some(canvas::Action::publish(Msg::Resized(cols, rows)));
         }
         match event {
-            canvas::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => match cursor.position_in(bounds) {
-                Some(point) => {
-                    state.focused = true;
-                    state.dragging = true;
-                    Some(canvas::Action::publish(Msg::SelectStart(cell_at(self.screen, point))))
+            canvas::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
+                match cursor.position_in(bounds) {
+                    Some(point) => {
+                        state.focused = true;
+                        state.dragging = true;
+                        Some(canvas::Action::publish(Msg::SelectStart(cell_at(
+                            self.screen,
+                            point,
+                        ))))
+                    }
+                    None if state.focused => {
+                        state.focused = false;
+                        Some(canvas::Action::request_redraw())
+                    }
+                    None => None,
                 }
-                None if state.focused => {
-                    state.focused = false;
-                    Some(canvas::Action::request_redraw())
-                }
-                None => None,
-            },
-            canvas::Event::Mouse(mouse::Event::CursorMoved { .. }) if state.dragging => cursor.position().map(|point| {
-                let inside = Point::new(point.x - bounds.x, point.y - bounds.y);
-                canvas::Action::publish(Msg::SelectTo(cell_at(self.screen, inside)))
-            }),
-            canvas::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) if state.dragging => {
+            }
+            canvas::Event::Mouse(mouse::Event::CursorMoved { .. }) if state.dragging => {
+                cursor.position().map(|point| {
+                    let inside = Point::new(point.x - bounds.x, point.y - bounds.y);
+                    canvas::Action::publish(Msg::SelectTo(cell_at(self.screen, inside)))
+                })
+            }
+            canvas::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))
+                if state.dragging =>
+            {
                 state.dragging = false;
                 Some(canvas::Action::publish(Msg::SelectEnd))
             }
-            canvas::Event::Mouse(mouse::Event::WheelScrolled { delta }) if cursor.is_over(bounds) => {
+            canvas::Event::Mouse(mouse::Event::WheelScrolled { delta })
+                if cursor.is_over(bounds) =>
+            {
                 let lines = match *delta {
                     mouse::ScrollDelta::Lines { y, .. } => (y * WHEEL_LINES).round() as isize,
-                    mouse::ScrollDelta::Pixels { y, .. } => (y / CELL_H * WHEEL_LINES).round() as isize,
+                    mouse::ScrollDelta::Pixels { y, .. } => {
+                        (y / CELL_H * WHEEL_LINES).round() as isize
+                    }
                 };
                 if lines == 0 {
                     None
@@ -1422,14 +1598,24 @@ impl canvas::Program<Msg> for Surface<'_> {
                     Some(canvas::Action::publish(Msg::Scroll(lines)).and_capture())
                 }
             }
-            canvas::Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, text, .. }) if state.focused => {
-                keystroke(self.screen, key, *modifiers, text.as_deref())
-            }
+            canvas::Event::Keyboard(keyboard::Event::KeyPressed {
+                key,
+                modifiers,
+                text,
+                ..
+            }) if state.focused => keystroke(self.screen, key, *modifiers, text.as_deref()),
             _ => None,
         }
     }
 
-    fn draw(&self, state: &State, renderer: &iced::Renderer, _theme: &iced::Theme, bounds: Rectangle, _cursor: mouse::Cursor) -> Vec<canvas::Geometry> {
+    fn draw(
+        &self,
+        state: &State,
+        renderer: &iced::Renderer,
+        _theme: &iced::Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<canvas::Geometry> {
         let p = theme::palette();
         let screen = self.screen;
         let mut frame = canvas::Frame::new(renderer, bounds.size());
@@ -1454,7 +1640,11 @@ impl canvas::Program<Msg> for Surface<'_> {
                     frame.fill_rectangle(Point::new(x, top), cell, Color { a: 0.3, ..p.info });
                 }
                 if c.style.underline && c.width != 0 {
-                    frame.fill_rectangle(Point::new(x, top + CELL_H - 2.0), Size::new(CELL_W, 1.0), fg);
+                    frame.fill_rectangle(
+                        Point::new(x, top + CELL_H - 2.0),
+                        Size::new(CELL_W, 1.0),
+                        fg,
+                    );
                 }
                 match c.width {
                     0 => flush(&mut frame, &mut run, top),
@@ -1464,7 +1654,11 @@ impl canvas::Program<Msg> for Surface<'_> {
                     }
                     _ if c.ch == ' ' => flush(&mut frame, &mut run, top),
                     _ => match &mut run {
-                        Some((_, color, bold, content)) if *color == fg && *bold == c.style.bold => content.push(c.ch),
+                        Some((_, color, bold, content))
+                            if *color == fg && *bold == c.style.bold =>
+                        {
+                            content.push(c.ch)
+                        }
                         _ => {
                             flush(&mut frame, &mut run, top);
                             run = Some((col, fg, c.style.bold, c.ch.to_string()));
@@ -1479,22 +1673,50 @@ impl canvas::Program<Msg> for Surface<'_> {
             let top = PAD + cy as f32 * CELL_H;
             if state.focused {
                 frame.fill_rectangle(Point::new(x, top), cell, p.signal);
-                if let Some(under) = screen.view_row(cy).and_then(|row| row.cells.get(cx)).filter(|c| c.width == 1 && c.ch != ' ') {
-                    draw_text(&mut frame, x, top, under.ch.to_string(), p.paper, under.style.bold);
+                if let Some(under) = screen
+                    .view_row(cy)
+                    .and_then(|row| row.cells.get(cx))
+                    .filter(|c| c.width == 1 && c.ch != ' ')
+                {
+                    draw_text(
+                        &mut frame,
+                        x,
+                        top,
+                        under.ch.to_string(),
+                        p.paper,
+                        under.style.bold,
+                    );
                 }
             } else {
                 let edge = 1.0;
                 frame.fill_rectangle(Point::new(x, top), Size::new(CELL_W, edge), p.signal);
-                frame.fill_rectangle(Point::new(x, top + CELL_H - edge), Size::new(CELL_W, edge), p.signal);
+                frame.fill_rectangle(
+                    Point::new(x, top + CELL_H - edge),
+                    Size::new(CELL_W, edge),
+                    p.signal,
+                );
                 frame.fill_rectangle(Point::new(x, top), Size::new(edge, CELL_H), p.signal);
-                frame.fill_rectangle(Point::new(x + CELL_W - edge, top), Size::new(edge, CELL_H), p.signal);
+                frame.fill_rectangle(
+                    Point::new(x + CELL_W - edge, top),
+                    Size::new(edge, CELL_H),
+                    p.signal,
+                );
             }
         }
         vec![frame.into_geometry()]
     }
 
-    fn mouse_interaction(&self, _state: &State, bounds: Rectangle, cursor: mouse::Cursor) -> mouse::Interaction {
-        if cursor.is_over(bounds) { mouse::Interaction::Text } else { mouse::Interaction::default() }
+    fn mouse_interaction(
+        &self,
+        _state: &State,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
+    ) -> mouse::Interaction {
+        if cursor.is_over(bounds) {
+            mouse::Interaction::Text
+        } else {
+            mouse::Interaction::default()
+        }
     }
 }
 
@@ -1513,45 +1735,109 @@ mod tests {
     }
 
     fn ctrl() -> Mods {
-        Mods { ctrl: true, ..Mods::default() }
+        Mods {
+            ctrl: true,
+            ..Mods::default()
+        }
     }
 
     fn alt() -> Mods {
-        Mods { alt: true, ..Mods::default() }
+        Mods {
+            alt: true,
+            ..Mods::default()
+        }
     }
 
     #[test]
     fn socket_paths_encode_the_workspace_as_one_segment() {
         assert_eq!(socket_path("agent:12"), "/v1/ide/terminal/agent%3A12");
-        assert_eq!(socket_path("repo:app@feature/x"), "/v1/ide/terminal/repo%3Aapp%40feature%2Fx");
-        assert_eq!(socket_path("agent-1_a.b~c"), "/v1/ide/terminal/agent-1_a.b~c");
+        assert_eq!(
+            socket_path("repo:app@feature/x"),
+            "/v1/ide/terminal/repo%3Aapp%40feature%2Fx"
+        );
+        assert_eq!(
+            socket_path("agent-1_a.b~c"),
+            "/v1/ide/terminal/agent-1_a.b~c"
+        );
     }
 
     #[test]
     fn hub_frames_parse_and_unknown_ones_are_skipped() {
-        assert_eq!(parse_server(r#"{"t":"opened","term":"term-1"}"#), Some(Server::Opened("term-1".into())));
-        let out = format!(r#"{{"t":"out","data":"{}","offset":10}}"#, STANDARD.encode(b"hi\x1b[0m"));
-        assert_eq!(parse_server(&out), Some(Server::Out { data: b"hi\x1b[0m".to_vec(), offset: 10 }));
-        assert_eq!(parse_server(r#"{"t":"lost","bytes":7}"#), Some(Server::Lost(7)));
-        assert_eq!(parse_server(r#"{"t":"exit","code":0}"#), Some(Server::Exit(Some(0))));
-        assert_eq!(parse_server(r#"{"t":"exit","code":null}"#), Some(Server::Exit(None)));
-        assert_eq!(parse_server(r#"{"t":"error","message":"no such terminal"}"#), Some(Server::Error("no such terminal".into())));
+        assert_eq!(
+            parse_server(r#"{"t":"opened","term":"term-1"}"#),
+            Some(Server::Opened("term-1".into()))
+        );
+        let out = format!(
+            r#"{{"t":"out","data":"{}","offset":10}}"#,
+            STANDARD.encode(b"hi\x1b[0m")
+        );
+        assert_eq!(
+            parse_server(&out),
+            Some(Server::Out {
+                data: b"hi\x1b[0m".to_vec(),
+                offset: 10
+            })
+        );
+        assert_eq!(
+            parse_server(r#"{"t":"lost","bytes":7}"#),
+            Some(Server::Lost(7))
+        );
+        assert_eq!(
+            parse_server(r#"{"t":"exit","code":0}"#),
+            Some(Server::Exit(Some(0)))
+        );
+        assert_eq!(
+            parse_server(r#"{"t":"exit","code":null}"#),
+            Some(Server::Exit(None))
+        );
+        assert_eq!(
+            parse_server(r#"{"t":"error","message":"no such terminal"}"#),
+            Some(Server::Error("no such terminal".into()))
+        );
         assert_eq!(parse_server(r#"{"t":"pong"}"#), Some(Server::Pong));
         assert_eq!(parse_server(r#"{"t":"novel"}"#), None);
-        assert_eq!(parse_server(r#"{"t":"out","data":"!!","offset":0}"#), None, "bad base64 is ignored");
+        assert_eq!(
+            parse_server(r#"{"t":"out","data":"!!","offset":0}"#),
+            None,
+            "bad base64 is ignored"
+        );
         assert_eq!(parse_server("not json"), None);
     }
 
     #[test]
     fn client_frames_have_the_protocol_fields() {
         let open: Value = serde_json::from_str(&open_frame(80, 24)).unwrap();
-        assert_eq!((open["t"].as_str(), open["cols"].as_u64(), open["rows"].as_u64()), (Some("open"), Some(80), Some(24)));
+        assert_eq!(
+            (
+                open["t"].as_str(),
+                open["cols"].as_u64(),
+                open["rows"].as_u64()
+            ),
+            (Some("open"), Some(80), Some(24))
+        );
         let attach: Value = serde_json::from_str(&attach_frame("term-1", 4096)).unwrap();
-        assert_eq!((attach["t"].as_str(), attach["term"].as_str(), attach["offset"].as_u64()), (Some("attach"), Some("term-1"), Some(4096)));
+        assert_eq!(
+            (
+                attach["t"].as_str(),
+                attach["term"].as_str(),
+                attach["offset"].as_u64()
+            ),
+            (Some("attach"), Some("term-1"), Some(4096))
+        );
         let input: Value = serde_json::from_str(&input_frame(b"ls\r")).unwrap();
-        assert_eq!(STANDARD.decode(input["data"].as_str().unwrap()).unwrap(), b"ls\r");
+        assert_eq!(
+            STANDARD.decode(input["data"].as_str().unwrap()).unwrap(),
+            b"ls\r"
+        );
         let resize: Value = serde_json::from_str(&resize_frame(100, 30)).unwrap();
-        assert_eq!((resize["t"].as_str(), resize["cols"].as_u64(), resize["rows"].as_u64()), (Some("resize"), Some(100), Some(30)));
+        assert_eq!(
+            (
+                resize["t"].as_str(),
+                resize["cols"].as_u64(),
+                resize["rows"].as_u64()
+            ),
+            (Some("resize"), Some(100), Some(30))
+        );
         assert_eq!(kill_frame(), r#"{"t":"kill"}"#);
         assert_eq!(ping_frame(), r#"{"t":"ping"}"#);
     }
@@ -1561,19 +1847,52 @@ mod tests {
         assert_eq!(bytes(Key::Char('a'), Mods::default(), false), "a");
         assert_eq!(bytes(Key::Char('é'), Mods::default(), false), "é");
         assert_eq!(bytes(Key::Char('c'), ctrl(), false), "\u{3}", "Ctrl-C");
-        assert_eq!(bytes(Key::Char('['), ctrl(), false), "\u{1b}", "Ctrl-[ is Escape");
-        assert_eq!(bytes(Key::Char('d'), alt(), false), "\u{1b}d", "Alt sends ESC first");
+        assert_eq!(
+            bytes(Key::Char('['), ctrl(), false),
+            "\u{1b}",
+            "Ctrl-[ is Escape"
+        );
+        assert_eq!(
+            bytes(Key::Char('d'), alt(), false),
+            "\u{1b}d",
+            "Alt sends ESC first"
+        );
         assert_eq!(bytes(Key::Enter, Mods::default(), false), "\r");
         assert_eq!(bytes(Key::Backspace, Mods::default(), false), "\u{7f}");
-        assert_eq!(bytes(Key::Tab, Mods { shift: true, ..Mods::default() }, false), "\x1b[Z");
+        assert_eq!(
+            bytes(
+                Key::Tab,
+                Mods {
+                    shift: true,
+                    ..Mods::default()
+                },
+                false
+            ),
+            "\x1b[Z"
+        );
         assert_eq!(bytes(Key::Escape, Mods::default(), false), "\u{1b}");
     }
 
     #[test]
     fn arrows_follow_application_cursor_mode_and_modifiers() {
         assert_eq!(bytes(Key::Up, Mods::default(), false), "\x1b[A");
-        assert_eq!(bytes(Key::Up, Mods::default(), true), "\x1bOA", "DECCKM sends SS3");
-        assert_eq!(bytes(Key::Left, Mods { ctrl: true, ..Mods::default() }, false), "\x1b[1;5D", "Ctrl-Left");
+        assert_eq!(
+            bytes(Key::Up, Mods::default(), true),
+            "\x1bOA",
+            "DECCKM sends SS3"
+        );
+        assert_eq!(
+            bytes(
+                Key::Left,
+                Mods {
+                    ctrl: true,
+                    ..Mods::default()
+                },
+                false
+            ),
+            "\x1b[1;5D",
+            "Ctrl-Left"
+        );
         assert_eq!(bytes(Key::Home, Mods::default(), true), "\x1bOH");
         assert_eq!(bytes(Key::End, Mods::default(), false), "\x1b[F");
     }
@@ -1581,7 +1900,17 @@ mod tests {
     #[test]
     fn editing_and_function_keys() {
         assert_eq!(bytes(Key::PageUp, Mods::default(), false), "\x1b[5~");
-        assert_eq!(bytes(Key::PageDown, Mods { shift: true, ..Mods::default() }, false), "\x1b[6;2~");
+        assert_eq!(
+            bytes(
+                Key::PageDown,
+                Mods {
+                    shift: true,
+                    ..Mods::default()
+                },
+                false
+            ),
+            "\x1b[6;2~"
+        );
         assert_eq!(bytes(Key::Delete, Mods::default(), false), "\x1b[3~");
         assert_eq!(bytes(Key::Insert, Mods::default(), false), "\x1b[2~");
         assert_eq!(bytes(Key::F(1), Mods::default(), false), "\x1bOP");
@@ -1600,18 +1929,34 @@ mod tests {
 
     #[test]
     fn the_grid_size_follows_the_view_and_the_cell() {
-        let bounds = Rectangle { x: 0.0, y: 0.0, width: 2.0 * PAD + 10.0 * CELL_W, height: 2.0 * PAD + 5.0 * CELL_H };
+        let bounds = Rectangle {
+            x: 0.0,
+            y: 0.0,
+            width: 2.0 * PAD + 10.0 * CELL_W,
+            height: 2.0 * PAD + 5.0 * CELL_H,
+        };
         assert_eq!(grid_size(bounds), (10, 5));
-        let tiny = Rectangle { x: 0.0, y: 0.0, width: 1.0, height: 1.0 };
+        let tiny = Rectangle {
+            x: 0.0,
+            y: 0.0,
+            width: 1.0,
+            height: 1.0,
+        };
         assert_eq!(grid_size(tiny), (1, 1));
     }
 
     #[test]
     fn the_cell_is_the_mono_font_advance() {
         use ab_glyph::{Font, FontRef};
-        let font = FontRef::try_from_slice(include_bytes!("../../../../../assets/fonts/MartianMono-Regular.ttf")).unwrap();
+        let font = FontRef::try_from_slice(include_bytes!(
+            "../../../../../assets/fonts/MartianMono-Regular.ttf"
+        ))
+        .unwrap();
         let advance = font.h_advance_unscaled(font.glyph_id('M')) / font.units_per_em().unwrap();
-        assert!((advance - 0.7).abs() < 0.005, "Martian Mono advances {advance} em, not 0.7");
+        assert!(
+            (advance - 0.7).abs() < 0.005,
+            "Martian Mono advances {advance} em, not 0.7"
+        );
     }
 
     #[test]
@@ -1645,7 +1990,10 @@ mod tests {
 
     #[test]
     fn a_terminal_takes_its_hub_frames_into_the_screen() {
-        let target = Target { base: "http://127.0.0.1:1".into(), ..Target::default() };
+        let target = Target {
+            base: "http://127.0.0.1:1".into(),
+            ..Target::default()
+        };
         let mut term = Terminal::new(target, "agent:1", 0);
         let _ = term.update(Msg::Link(Link::Output(b"ls\r\n".to_vec(), 4)));
         assert_eq!(term.screen().line_text(0), "ls");
@@ -1655,7 +2003,11 @@ mod tests {
         let _ = term.update(Msg::Link(Link::Exited(Some(3))));
         assert_eq!(term.status(), &Status::Ended(Some(3)));
         let _ = term.update(Msg::Link(Link::Disconnected("gone".into())));
-        assert_eq!(term.status(), &Status::Ended(Some(3)), "an ended shell stays ended through a dropped socket");
+        assert_eq!(
+            term.status(),
+            &Status::Ended(Some(3)),
+            "an ended shell stays ended through a dropped socket"
+        );
     }
 
     /// Reads one client frame the hub received, and records its text.
@@ -1682,13 +2034,19 @@ mod tests {
         if connection == 0 {
             let _ = read_frame(socket, frames);
             let _ = send_frame(socket, json!({"t": "opened", "term": "term-1"}));
-            let _ = send_frame(socket, json!({"t": "out", "data": STANDARD.encode(b"hello"), "offset": 0}));
+            let _ = send_frame(
+                socket,
+                json!({"t": "out", "data": STANDARD.encode(b"hello"), "offset": 0}),
+            );
             socket.close(1001, "restart");
         } else if connection == 1 {
             let _ = read_frame(socket, frames);
             let _ = send_frame(socket, json!({"t": "opened", "term": "term-1"}));
             if wait_for(socket, frames, "in").is_some() {
-                let _ = send_frame(socket, json!({"t": "out", "data": STANDARD.encode(b"ls"), "offset": 5}));
+                let _ = send_frame(
+                    socket,
+                    json!({"t": "out", "data": STANDARD.encode(b"ls"), "offset": 5}),
+                );
             }
             let _ = wait_for(socket, frames, "kill");
             socket.close(1000, "killed");
@@ -1697,7 +2055,11 @@ mod tests {
 
     /// Reads client frames until one of kind `kind` (the others, such as the resize after an attach, are
     /// recorded and passed over).
-    fn wait_for(socket: &mut Socket, frames: &std_mpsc::Sender<String>, kind: &str) -> Option<Value> {
+    fn wait_for(
+        socket: &mut Socket,
+        frames: &std_mpsc::Sender<String>,
+        kind: &str,
+    ) -> Option<Value> {
         loop {
             let frame = read_frame(socket, frames)?;
             if frame["t"].as_str() == Some(kind) {
@@ -1717,9 +2079,15 @@ mod tests {
                 }
                 let connection = connections.fetch_add(1, Ordering::SeqCst);
                 let frames = frames.clone();
-                ws::accept(request, Origins::None, Some(PROTOCOL), Limits::default(), move |mut socket| {
-                    hub_connection(&mut socket, connection, &frames);
-                })
+                ws::accept(
+                    request,
+                    Origins::None,
+                    Some(PROTOCOL),
+                    Limits::default(),
+                    move |mut socket| {
+                        hub_connection(&mut socket, connection, &frames);
+                    },
+                )
             })
             .unwrap()
     }
@@ -1750,7 +2118,10 @@ mod tests {
     fn the_socket_thread_opens_streams_reattaches_and_ends_the_shell() {
         let (frames_tx, frames_rx) = std_mpsc::channel::<String>();
         let hub = fake_hub(frames_tx);
-        let target = Target { base: format!("http://127.0.0.1:{}", hub.port()), ..Target::default() };
+        let target = Target {
+            base: format!("http://127.0.0.1:{}", hub.port()),
+            ..Target::default()
+        };
         let feed = Feed {
             id: 9_001,
             target,
@@ -1765,24 +2136,58 @@ mod tests {
 
         commands.send(Command::Size(80, 24)).unwrap();
         let mut seen = Vec::new();
-        until(&mut out_rx, &mut seen, |link| matches!(link, Link::Opened(term) if term == "term-1"));
-        until(&mut out_rx, &mut seen, |link| matches!(link, Link::Output(bytes, _) if bytes == b"hello"));
-        until(&mut out_rx, &mut seen, |link| matches!(link, Link::Disconnected(_)));
-        until(&mut out_rx, &mut seen, |link| matches!(link, Link::Opened(term) if term == "term-1"));
+        until(
+            &mut out_rx,
+            &mut seen,
+            |link| matches!(link, Link::Opened(term) if term == "term-1"),
+        );
+        until(
+            &mut out_rx,
+            &mut seen,
+            |link| matches!(link, Link::Output(bytes, _) if bytes == b"hello"),
+        );
+        until(&mut out_rx, &mut seen, |link| {
+            matches!(link, Link::Disconnected(_))
+        });
+        until(
+            &mut out_rx,
+            &mut seen,
+            |link| matches!(link, Link::Opened(term) if term == "term-1"),
+        );
         commands.send(Command::Input(b"ls".to_vec())).unwrap();
-        until(&mut out_rx, &mut seen, |link| matches!(link, Link::Output(bytes, _) if bytes == b"ls"));
+        until(
+            &mut out_rx,
+            &mut seen,
+            |link| matches!(link, Link::Output(bytes, _) if bytes == b"ls"),
+        );
         commands.send(Command::Kill).unwrap();
         until(&mut out_rx, &mut seen, |link| matches!(link, Link::Killed));
 
-        let sent: Vec<Value> = frames_rx.try_iter().filter_map(|text| serde_json::from_str(&text).ok()).collect();
-        let kinds: Vec<&str> = sent.iter().filter_map(|frame| frame["t"].as_str()).collect();
+        let sent: Vec<Value> = frames_rx
+            .try_iter()
+            .filter_map(|text| serde_json::from_str(&text).ok())
+            .collect();
+        let kinds: Vec<&str> = sent
+            .iter()
+            .filter_map(|frame| frame["t"].as_str())
+            .collect();
         // The re-attach tells the hub the view's size again, since the shell may have been resized elsewhere.
         assert_eq!(kinds, vec!["open", "attach", "resize", "in", "kill"]);
         assert_eq!(sent[0]["cols"].as_u64(), Some(80));
         assert_eq!(sent[1]["term"].as_str(), Some("term-1"));
-        assert_eq!(sent[1]["offset"].as_u64(), Some(5), "the re-attach resumes after the five bytes it had");
-        assert_eq!((sent[2]["cols"].as_u64(), sent[2]["rows"].as_u64()), (Some(80), Some(24)));
-        assert_eq!(STANDARD.decode(sent[3]["data"].as_str().unwrap()).unwrap(), b"ls");
+        assert_eq!(
+            sent[1]["offset"].as_u64(),
+            Some(5),
+            "the re-attach resumes after the five bytes it had"
+        );
+        assert_eq!(
+            (sent[2]["cols"].as_u64(), sent[2]["rows"].as_u64()),
+            (Some(80), Some(24))
+        );
+        assert_eq!(
+            STANDARD.decode(sent[3]["data"].as_str().unwrap()).unwrap(),
+            b"ls"
+        );
 
         drop(out_rx);
         drop(hub);
@@ -1791,31 +2196,53 @@ mod tests {
 
     #[test]
     fn the_tabs_hold_at_most_four_and_reuse_a_closed_slot() {
-        let target = Target { base: "http://127.0.0.1:1".into(), ..Target::default() };
+        let target = Target {
+            base: "http://127.0.0.1:1".into(),
+            ..Target::default()
+        };
         let mut tabs = TerminalTabs::new(target, "agent:1");
         assert_eq!(tabs.len(), 1);
         assert!(tabs.add() && tabs.add() && tabs.add());
         assert!(!tabs.add(), "a fifth terminal is refused");
         assert_eq!(tabs.len(), MAX_TABS);
-        let slots: Vec<usize> = (0..tabs.len()).map(|i| tabs.get(i).unwrap().slot()).collect();
+        let slots: Vec<usize> = (0..tabs.len())
+            .map(|i| tabs.get(i).unwrap().slot())
+            .collect();
         assert_eq!(slots, vec![0, 1, 2, 3]);
         tabs.remove(1);
         assert!(tabs.add());
-        assert_eq!(tabs.get(tabs.active()).unwrap().slot(), 1, "the freed slot comes back");
+        assert_eq!(
+            tabs.get(tabs.active()).unwrap().slot(),
+            1,
+            "the freed slot comes back"
+        );
     }
 
     #[test]
     fn a_kept_terminal_keeps_its_screen_and_its_offset() {
-        let target = Target { base: "http://127.0.0.1:1".into(), ..Target::default() };
+        let target = Target {
+            base: "http://127.0.0.1:1".into(),
+            ..Target::default()
+        };
         let mut tabs = TerminalTabs::new(target.clone(), "agent:1");
         let _ = tabs.update(TabsMsg::Tab(0, Msg::Link(Link::Opened("term-1".into()))));
-        let _ = tabs.update(TabsMsg::Tab(0, Msg::Link(Link::Output(b"hello".to_vec(), 5))));
+        let _ = tabs.update(TabsMsg::Tab(
+            0,
+            Msg::Link(Link::Output(b"hello".to_vec(), 5)),
+        ));
         let kept = tabs.detach();
         assert_eq!(kept.workspace(), "agent:1");
         let back = TerminalTabs::restore(target, kept);
         let tab = back.get(0).unwrap();
-        assert_eq!((tab.term(), tab.offset()), (Some("term-1"), 5), "the shell and its offset come back");
-        assert!(tab.screen().line_text(0).starts_with("hello"), "the screen it drew comes back with it");
+        assert_eq!(
+            (tab.term(), tab.offset()),
+            (Some("term-1"), 5),
+            "the shell and its offset come back"
+        );
+        assert!(
+            tab.screen().line_text(0).starts_with("hello"),
+            "the screen it drew comes back with it"
+        );
     }
 
     #[test]
@@ -1824,7 +2251,11 @@ mod tests {
         let _ = term.update(Msg::Link(Link::Opened("term-1".into())));
         let _ = term.update(Msg::Link(Link::Output(b"abc".to_vec(), 3)));
         let _ = term.update(Msg::Link(Link::Opened("term-1".into())));
-        assert_eq!(term.offset(), 3, "the same shell, attached again, keeps its offset");
+        assert_eq!(
+            term.offset(),
+            3,
+            "the same shell, attached again, keeps its offset"
+        );
         let _ = term.update(Msg::Link(Link::Opened("term-2".into())));
         assert_eq!((term.term(), term.offset()), (Some("term-2"), 0));
     }

@@ -12,7 +12,7 @@
 //! The readout (`Lab::info`) is the model's validation: its errors, or "<model>: no errors".
 
 use glam::Vec3;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::controls::FOV_DEG;
 use super::hardware::{self, Params, State, Status};
@@ -42,7 +42,10 @@ fn var(name: &str) -> Option<String> {
 
 /// A finite number from the env, clamped to `lo..=hi`; the fallback when unset or unreadable.
 fn number(name: &str, lo: f32, hi: f32, fallback: f32) -> f32 {
-    var(name).and_then(|s| s.trim().parse::<f32>().ok()).filter(|v| v.is_finite()).map_or(fallback, |v| v.clamp(lo, hi))
+    var(name)
+        .and_then(|s| s.trim().parse::<f32>().ok())
+        .filter(|v| v.is_finite())
+        .map_or(fallback, |v| v.clamp(lo, hi))
 }
 
 fn status(s: Option<String>) -> Status {
@@ -59,7 +62,9 @@ fn status(s: Option<String>) -> Status {
 fn params_of(gpus: f32, extra: Option<&str>) -> Params {
     let mut params = Params::default().with("gpus", f64::from(gpus));
     for pair in extra.unwrap_or("").split(',') {
-        let Some((name, value)) = pair.split_once('=') else { continue };
+        let Some((name, value)) = pair.split_once('=') else {
+            continue;
+        };
         let name = name.trim();
         if name.is_empty() || name == "gpus" {
             continue;
@@ -102,7 +107,10 @@ fn view(model: &hardware::Model, cam: &str) -> ([f32; 3], [f32; 3]) {
 pub fn build(floor: &mut Floor) -> Option<Lab> {
     let name = var("APZ_HW_LAB")?;
     let model = hardware::model(&name)?;
-    let params = params_of(number("APZ_HW_GPUS", 0.0, 2.0, 0.0).round(), var("APZ_HW_PARAMS").as_deref());
+    let params = params_of(
+        number("APZ_HW_GPUS", 0.0, 2.0, 0.0).round(),
+        var("APZ_HW_PARAMS").as_deref(),
+    );
     let state = State {
         status: status(var("APZ_HW_STATUS")),
         activity: (number("APZ_HW_WORKING", 0.0, 6.0, 0.0) / 4.0).min(1.0),
@@ -130,15 +138,29 @@ pub fn build(floor: &mut Floor) -> Option<Lab> {
         None
     };
     floor.statics_dirty = true; // the model's static parts are baked
-    let (eye, target) = view(model, &var("APZ_HW_CAM").unwrap_or_else(|| "iso".to_string()));
+    let (eye, target) = view(
+        model,
+        &var("APZ_HW_CAM").unwrap_or_else(|| "iso".to_string()),
+    );
     floor.orbit.look(eye.into(), target.into());
     // hardware-lab.ts's OrbitControls: any polar angle, a distance from 0.5 to 1000.
     floor.orbit.unlimited(0.5, 1000.0);
     let errors = hardware::validate(model, &name);
-    let summary = if errors.is_empty() { format!("{name}: no errors") } else { errors.join("\n") };
+    let summary = if errors.is_empty() {
+        format!("{name}: no errors")
+    } else {
+        errors.join("\n")
+    };
     let info = json!({ "kind": "hardware", "model": name, "errors": errors, "summary": summary });
     let exterior = model.view == hardware::View::Exterior;
-    let mut lab = Lab { built, pulses, atom, exterior, state, info };
+    let mut lab = Lab {
+        built,
+        pulses,
+        atom,
+        exterior,
+        state,
+        info,
+    };
     lab.step(0.0, 0.0);
     Some(lab)
 }
@@ -153,18 +175,34 @@ fn night_stage(floor: &mut Floor) {
     floor.dust.set_visible(false);
     floor.backdrop.set_visible(false);
     floor.ground.set_visible(false);
-    let ground = Obj::mesh(&crate::geometry::plane(800.0, 800.0, 1, 1), &crate::toon::toon_mat(crate::scene::Material { color: Color::hex(0x1d2140), ..Default::default() }));
-    ground.set_rotation(-FRAC_PI_2, 0.0, 0.0).set_position(0.0, -0.01, 0.0).set_shadows(false, true);
+    let ground = Obj::mesh(
+        &crate::geometry::plane(800.0, 800.0, 1, 1),
+        &crate::toon::toon_mat(crate::scene::Material {
+            color: Color::hex(0x1d2140),
+            ..Default::default()
+        }),
+    );
+    ground
+        .set_rotation(-FRAC_PI_2, 0.0, 0.0)
+        .set_position(0.0, -0.01, 0.0)
+        .set_shadows(false, true);
     floor.root.add(&ground);
-    let (centre, line) = (Mat::basic(Color::hex(0x3b4566)), Mat::basic(Color::hex(0x242a48)));
+    let (centre, line) = (
+        Mat::basic(Color::hex(0x3b4566)),
+        Mat::basic(Color::hex(0x242a48)),
+    );
     let grid = Obj::group();
     for k in 0..=120 {
         let at = k as f32 - 60.0;
         let mat = if k == 60 { &centre } else { &line };
         let along_x = Obj::mesh(&crate::geometry::plane(120.0, 0.05, 1, 1), mat);
-        along_x.set_rotation(-FRAC_PI_2, 0.0, 0.0).set_position(0.0, 0.002, at);
+        along_x
+            .set_rotation(-FRAC_PI_2, 0.0, 0.0)
+            .set_position(0.0, 0.002, at);
         let along_z = Obj::mesh(&crate::geometry::plane(0.05, 120.0, 1, 1), mat);
-        along_z.set_rotation(-FRAC_PI_2, 0.0, 0.0).set_position(at, 0.002, 0.0);
+        along_z
+            .set_rotation(-FRAC_PI_2, 0.0, 0.0)
+            .set_position(at, 0.002, 0.0);
         // three's GridHelper is lines: they neither cast nor take a shadow.
         along_x.set_shadows(false, false);
         along_z.set_shadows(false, false);
@@ -198,7 +236,8 @@ impl Lab {
     /// Per frame: the model's detail parts show by the camera's eye (see `Built::frame_detail`). `top` is the scene the
     /// lab's model sits under. True when a part switched.
     pub fn frame_detail(&mut self, eye: Vec3, top: &Obj) -> bool {
-        top.world_matrix_of(&self.built.root).is_some_and(|world| self.built.frame_detail(eye, world))
+        top.world_matrix_of(&self.built.root)
+            .is_some_and(|world| self.built.frame_detail(eye, world))
     }
 
     /// Advances the model by `dt` seconds (the fans turn by it) at the ambient clock `clock` in seconds (the LEDs and
@@ -211,7 +250,8 @@ impl Lab {
         if let Some(atom) = self.atom.as_mut() {
             (atom.anim)(clock);
             // An exterior's atom glows through its window only while the machine is online (hardware-lab.ts).
-            atom.node.set_visible(!self.exterior || self.state.status == Status::Online);
+            atom.node
+                .set_visible(!self.exterior || self.state.status == Status::Online);
         }
     }
 }
@@ -235,7 +275,10 @@ mod tests {
 
     #[test]
     fn the_params_read_as_name_value_pairs_and_the_gpus_are_their_own() {
-        let p = params_of(1.0, Some("amd=1,studio=0.5,gpus=2,bad,x=NaN, pcb_top = 0.336"));
+        let p = params_of(
+            1.0,
+            Some("amd=1,studio=0.5,gpus=2,bad,x=NaN, pcb_top = 0.336"),
+        );
         assert_eq!(p.values.get("gpus"), Some(&1.0));
         assert_eq!(p.values.get("amd"), Some(&1.0));
         assert_eq!(p.values.get("studio"), Some(&0.5));
@@ -247,10 +290,16 @@ mod tests {
     fn the_camera_presets_look_at_the_model_from_their_side() {
         let model = hardware::model("exterior/workstation").expect("the model is embedded");
         let (front, target) = view(model, "front");
-        assert!(front[2] > 0.0 && front[0].abs() < 1e-4, "front looks from +z: {front:?}");
+        assert!(
+            front[2] > 0.0 && front[0].abs() < 1e-4,
+            "front looks from +z: {front:?}"
+        );
         assert!((target[1] - model.size[1] / 2.0).abs() < 1e-4);
         let (iso, _) = view(model, "iso");
-        assert!(iso[0] > 0.0 && iso[1] > target[1] && iso[2] > 0.0, "iso is up and to the front-right: {iso:?}");
+        assert!(
+            iso[0] > 0.0 && iso[1] > target[1] && iso[2] > 0.0,
+            "iso is up and to the front-right: {iso:?}"
+        );
         let (top, _) = view(model, "top");
         assert!(top[1] > front[1], "top is above the front view");
     }
@@ -288,11 +337,17 @@ mod tests {
         let model = hardware::model("board/workstation").expect("embedded");
         let mut built = hardware::build(model, &Params::default());
         let strip = dimm_strip(&built);
-        assert!(built.details()[strip].shown(), "shown until the camera has framed it");
+        assert!(
+            built.details()[strip].shown(),
+            "shown until the camera has framed it"
+        );
         // The lab's top view: its eye is about 123 units from the strip's box, past the 90 of detail 2 (plus the band).
         let (eye, _) = view(model, "top");
         built.frame_detail(Vec3::from(eye), glam::Mat4::IDENTITY);
-        assert!(!built.details()[strip].shown(), "the strip hides from the top view");
+        assert!(
+            !built.details()[strip].shown(),
+            "the strip hides from the top view"
+        );
     }
 
     #[test]
@@ -303,13 +358,23 @@ mod tests {
         // 30 units above the strip: within detail 2's 90.
         let near = built.details()[strip].centre() + Vec3::Y * 30.0;
         built.frame_detail(near, glam::Mat4::IDENTITY);
-        assert!(built.details()[strip].shown(), "the strip shows 30 units from it");
+        assert!(
+            built.details()[strip].shown(),
+            "the strip shows 30 units from it"
+        );
     }
 
     #[test]
     fn the_lab_places_the_plaza_atom_at_the_models_anchor() {
         let name = "board/workstation";
-        assert!(hardware::model(name).expect("embedded").anchors.atom.is_some(), "the board has an atom anchor");
+        assert!(
+            hardware::model(name)
+                .expect("embedded")
+                .anchors
+                .atom
+                .is_some(),
+            "the board has an atom anchor"
+        );
         let mut floor = Floor::new();
         let mut vars = std::collections::BTreeMap::new();
         vars.insert("APZ_HW_LAB".to_string(), name.to_string());
@@ -317,7 +382,12 @@ mod tests {
         let lab = build(&mut floor);
         crate::set_env_overrides(std::collections::BTreeMap::new());
         let lab = lab.expect("the lab builds");
-        let node = lab.atom.as_ref().expect("the atom is placed at the anchor").node.clone();
+        let node = lab
+            .atom
+            .as_ref()
+            .expect("the atom is placed at the anchor")
+            .node
+            .clone();
         let mut under_root = false;
         floor.root.traverse(&mut |o: &Obj| under_root |= *o == node);
         assert!(under_root, "the atom's node is under the lab's scene root");

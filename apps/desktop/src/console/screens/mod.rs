@@ -2,60 +2,20 @@
 //! `Go(Id)` variant for navigation), `go(&Msg)`, `load`, `update`, `view`. This registry is the only
 //! place that knows them all; a screen module touches nothing outside itself.
 
-pub mod agent_side;
-pub mod memory_graph;
-pub mod wizard;
-pub mod overview;
-pub mod agents;
-pub mod projects;
-pub mod prompts;
-pub mod skills;
-pub mod skill_editor;
-pub mod prompt_editor;
-pub mod tasks;
-pub mod git;
-pub mod library;
-pub mod approvals;
-pub mod floor;
-pub mod engine_lab;
-pub mod society;
-pub mod conversations;
-pub mod board;
-pub mod council;
-pub mod treasury;
-pub mod rules;
-pub mod models;
-pub mod usage;
-pub mod tools;
-pub mod mcp;
-pub mod mcp_hub;
-pub mod mcp_wizard;
-pub mod vault;
-pub mod machines;
-pub mod workstations;
-pub mod workstations_live;
-pub mod workstations_rec;
-pub mod workstations_files;
-pub mod workstations_vms;
-pub mod nodes;
-pub mod setup;
 pub mod agent;
-pub mod ide_terminal;
-pub mod sanctions;
-pub mod lab;
-pub mod lab_common;
-pub mod lab_jobs;
-pub mod lab_job_detail;
-pub mod lab_recipes;
-pub mod lab_datasets;
-pub mod lab_models;
-pub mod lab_model_detail;
-pub mod lab_breeders;
-pub mod lab_hf;
+pub mod agent_side;
+pub mod agents;
+pub mod approvals;
+pub mod board;
+pub mod conversations;
+pub mod council;
+pub mod engine_lab;
+pub mod floor;
+pub mod git;
 pub mod ide;
-pub mod ide_diff;
 pub mod ide_chat;
 pub mod ide_chrome;
+pub mod ide_diff;
 pub mod ide_editor;
 pub mod ide_files;
 pub mod ide_model;
@@ -63,7 +23,47 @@ pub mod ide_palette;
 pub mod ide_panels;
 pub mod ide_right;
 pub mod ide_sidebar;
+pub mod ide_terminal;
 pub mod ide_tree;
+pub mod lab;
+pub mod lab_breeders;
+pub mod lab_common;
+pub mod lab_datasets;
+pub mod lab_hf;
+pub mod lab_job_detail;
+pub mod lab_jobs;
+pub mod lab_model_detail;
+pub mod lab_models;
+pub mod lab_recipes;
+pub mod library;
+pub mod machines;
+pub mod mcp;
+pub mod mcp_hub;
+pub mod mcp_wizard;
+pub mod memory_graph;
+pub mod models;
+pub mod nodes;
+pub mod overview;
+pub mod projects;
+pub mod prompt_editor;
+pub mod prompts;
+pub mod rules;
+pub mod sanctions;
+pub mod setup;
+pub mod skill_editor;
+pub mod skills;
+pub mod society;
+pub mod tasks;
+pub mod tools;
+pub mod treasury;
+pub mod usage;
+pub mod vault;
+pub mod wizard;
+pub mod workstations;
+pub mod workstations_files;
+pub mod workstations_live;
+pub mod workstations_rec;
+pub mod workstations_vms;
 
 use iced::{Element, Task};
 
@@ -135,7 +135,12 @@ pub const NAV: &[(Id, &str, &str, &str)] = &[
     (Id::Approvals, "Approvals", "Plaza", "approval"),
     (Id::Floor, "Floor", "Plaza", "floor"),
     (Id::Society, "Society", "Social", "society"),
-    (Id::Conversations, "Conversations", "Social", "conversations"),
+    (
+        Id::Conversations,
+        "Conversations",
+        "Social",
+        "conversations",
+    ),
     (Id::Board, "Board", "Social", "boardpin"),
     (Id::Council, "Council", "Social", "council"),
     (Id::Treasury, "Treasury", "Social", "treasury"),
@@ -279,18 +284,37 @@ pub fn open(screens: &mut Screens, id: Id, ctx: &Ctx) -> Task<Msg> {
     // Any screen change drops the new token from the MCP page, so it never outlives the tab.
     mcp_hub::leave(&mut screens.mcp.hub);
     if let Id::Agent(cid) = id {
-        screens.agent = agent::State { cid, ..Default::default() };
+        screens.agent = agent::State {
+            cid,
+            ..Default::default()
+        };
     }
     // A takeover ends when the owner leaves the Workstations screen: its socket closes, and the hub gives the screen back.
     if !matches!(id, Id::Workstations) {
         workstations::leave(&mut screens.workstations);
     }
     match &id {
-        Id::LabJobDetail(job) => screens.lab_job_detail = lab_job_detail::State { job: job.clone(), ..Default::default() },
-        Id::LabModelDetail(model) => screens.lab_model_detail = lab_model_detail::State { model: model.clone(), ..Default::default() },
+        Id::LabJobDetail(job) => {
+            screens.lab_job_detail = lab_job_detail::State {
+                job: job.clone(),
+                ..Default::default()
+            }
+        }
+        Id::LabModelDetail(model) => {
+            screens.lab_model_detail = lab_model_detail::State {
+                model: model.clone(),
+                ..Default::default()
+            }
+        }
         Id::Task(task) => screens.tasks = tasks::opened(task.clone()),
         Id::Ide(Some(workspace)) => screens.ide.preselect = Some(workspace.clone()),
-        Id::Repo(repo) => screens.git = git::State { repo: repo.clone(), tab: git::Tab::Code, ..Default::default() },
+        Id::Repo(repo) => {
+            screens.git = git::State {
+                repo: repo.clone(),
+                tab: git::Tab::Code,
+                ..Default::default()
+            }
+        }
         _ => {}
     }
     refresh(screens, &id, ctx)
@@ -323,11 +347,18 @@ pub fn refresh(screens: &mut Screens, id: &Id, ctx: &Ctx) -> Task<Msg> {
         Id::Library => library::load(&mut screens.library, ctx).map(Msg::Library),
         Id::Approvals => approvals::load(&mut screens.approvals, ctx).map(Msg::Approvals),
         Id::Floor => floor::load(&mut screens.floor, ctx).map(Msg::Floor),
-        Id::RobotLab => engine_lab::open(&mut screens.engine_lab, engine_lab::Kind::Robot).map(Msg::EngineLab),
-        Id::RoomLab => engine_lab::open(&mut screens.engine_lab, engine_lab::Kind::Room).map(Msg::EngineLab),
-        Id::HardwareLab => engine_lab::open(&mut screens.engine_lab, engine_lab::Kind::Hardware).map(Msg::EngineLab),
+        Id::RobotLab => {
+            engine_lab::open(&mut screens.engine_lab, engine_lab::Kind::Robot).map(Msg::EngineLab)
+        }
+        Id::RoomLab => {
+            engine_lab::open(&mut screens.engine_lab, engine_lab::Kind::Room).map(Msg::EngineLab)
+        }
+        Id::HardwareLab => engine_lab::open(&mut screens.engine_lab, engine_lab::Kind::Hardware)
+            .map(Msg::EngineLab),
         Id::Society => society::load(&mut screens.society, ctx).map(Msg::Society),
-        Id::Conversations => conversations::load(&mut screens.conversations, ctx).map(Msg::Conversations),
+        Id::Conversations => {
+            conversations::load(&mut screens.conversations, ctx).map(Msg::Conversations)
+        }
         Id::Board => board::load(&mut screens.board, ctx).map(Msg::Board),
         Id::Council => council::load(&mut screens.council, ctx).map(Msg::Council),
         Id::Treasury => treasury::load(&mut screens.treasury, ctx).map(Msg::Treasury),
@@ -338,17 +369,23 @@ pub fn refresh(screens: &mut Screens, id: &Id, ctx: &Ctx) -> Task<Msg> {
         Id::Mcp => mcp::load(&mut screens.mcp, ctx).map(Msg::Mcp),
         Id::Vault => vault::load(&mut screens.vault, ctx).map(Msg::Vault),
         Id::Machines => machines::load(&mut screens.machines, ctx).map(Msg::Machines),
-        Id::Workstations => workstations::load(&mut screens.workstations, ctx).map(Msg::Workstations),
+        Id::Workstations => {
+            workstations::load(&mut screens.workstations, ctx).map(Msg::Workstations)
+        }
         Id::Nodes => nodes::load(&mut screens.nodes, ctx).map(Msg::Nodes),
         Id::Setup => setup::load(&mut screens.setup, ctx).map(Msg::Setup),
         Id::Agent(_) => agent::load(&mut screens.agent, ctx).map(Msg::Agent),
         Id::Lab => lab::load(&mut screens.lab, ctx).map(Msg::Lab),
         Id::LabJobs => lab_jobs::load(&mut screens.lab_jobs, ctx).map(Msg::LabJobs),
-        Id::LabJobDetail(_) => lab_job_detail::load(&mut screens.lab_job_detail, ctx).map(Msg::LabJobDetail),
+        Id::LabJobDetail(_) => {
+            lab_job_detail::load(&mut screens.lab_job_detail, ctx).map(Msg::LabJobDetail)
+        }
         Id::LabRecipes => lab_recipes::load(&mut screens.lab_recipes, ctx).map(Msg::LabRecipes),
         Id::LabDatasets => lab_datasets::load(&mut screens.lab_datasets, ctx).map(Msg::LabDatasets),
         Id::LabModels => lab_models::load(&mut screens.lab_models, ctx).map(Msg::LabModels),
-        Id::LabModelDetail(_) => lab_model_detail::load(&mut screens.lab_model_detail, ctx).map(Msg::LabModelDetail),
+        Id::LabModelDetail(_) => {
+            lab_model_detail::load(&mut screens.lab_model_detail, ctx).map(Msg::LabModelDetail)
+        }
         Id::LabBreeders => lab_breeders::load(&mut screens.lab_breeders, ctx).map(Msg::LabBreeders),
         Id::Ide(_) => ide::load(&mut screens.ide, ctx).map(Msg::Ide),
     }
@@ -366,9 +403,13 @@ pub fn update(screens: &mut Screens, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         Msg::Library(m) => library::update(&mut screens.library, m, ctx).map(Msg::Library),
         Msg::Approvals(m) => approvals::update(&mut screens.approvals, m, ctx).map(Msg::Approvals),
         Msg::Floor(m) => floor::update(&mut screens.floor, m, ctx).map(Msg::Floor),
-        Msg::EngineLab(m) => engine_lab::update(&mut screens.engine_lab, m, ctx).map(Msg::EngineLab),
+        Msg::EngineLab(m) => {
+            engine_lab::update(&mut screens.engine_lab, m, ctx).map(Msg::EngineLab)
+        }
         Msg::Society(m) => society::update(&mut screens.society, m, ctx).map(Msg::Society),
-        Msg::Conversations(m) => conversations::update(&mut screens.conversations, m, ctx).map(Msg::Conversations),
+        Msg::Conversations(m) => {
+            conversations::update(&mut screens.conversations, m, ctx).map(Msg::Conversations)
+        }
         Msg::Board(m) => board::update(&mut screens.board, m, ctx).map(Msg::Board),
         Msg::Council(m) => council::update(&mut screens.council, m, ctx).map(Msg::Council),
         Msg::Treasury(m) => treasury::update(&mut screens.treasury, m, ctx).map(Msg::Treasury),
@@ -379,18 +420,32 @@ pub fn update(screens: &mut Screens, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         Msg::Mcp(m) => mcp::update(&mut screens.mcp, m, ctx).map(Msg::Mcp),
         Msg::Vault(m) => vault::update(&mut screens.vault, m, ctx).map(Msg::Vault),
         Msg::Machines(m) => machines::update(&mut screens.machines, m, ctx).map(Msg::Machines),
-        Msg::Workstations(m) => workstations::update(&mut screens.workstations, m, ctx).map(Msg::Workstations),
+        Msg::Workstations(m) => {
+            workstations::update(&mut screens.workstations, m, ctx).map(Msg::Workstations)
+        }
         Msg::Nodes(m) => nodes::update(&mut screens.nodes, m, ctx).map(Msg::Nodes),
         Msg::Setup(m) => setup::update(&mut screens.setup, m, ctx).map(Msg::Setup),
         Msg::Agent(m) => agent::update(&mut screens.agent, m, ctx).map(Msg::Agent),
         Msg::Lab(m) => lab::update(&mut screens.lab, m, ctx).map(Msg::Lab),
         Msg::LabJobs(m) => lab_jobs::update(&mut screens.lab_jobs, m, ctx).map(Msg::LabJobs),
-        Msg::LabJobDetail(m) => lab_job_detail::update(&mut screens.lab_job_detail, m, ctx).map(Msg::LabJobDetail),
-        Msg::LabRecipes(m) => lab_recipes::update(&mut screens.lab_recipes, m, ctx).map(Msg::LabRecipes),
-        Msg::LabDatasets(m) => lab_datasets::update(&mut screens.lab_datasets, m, ctx).map(Msg::LabDatasets),
-        Msg::LabModels(m) => lab_models::update(&mut screens.lab_models, m, ctx).map(Msg::LabModels),
-        Msg::LabModelDetail(m) => lab_model_detail::update(&mut screens.lab_model_detail, m, ctx).map(Msg::LabModelDetail),
-        Msg::LabBreeders(m) => lab_breeders::update(&mut screens.lab_breeders, m, ctx).map(Msg::LabBreeders),
+        Msg::LabJobDetail(m) => {
+            lab_job_detail::update(&mut screens.lab_job_detail, m, ctx).map(Msg::LabJobDetail)
+        }
+        Msg::LabRecipes(m) => {
+            lab_recipes::update(&mut screens.lab_recipes, m, ctx).map(Msg::LabRecipes)
+        }
+        Msg::LabDatasets(m) => {
+            lab_datasets::update(&mut screens.lab_datasets, m, ctx).map(Msg::LabDatasets)
+        }
+        Msg::LabModels(m) => {
+            lab_models::update(&mut screens.lab_models, m, ctx).map(Msg::LabModels)
+        }
+        Msg::LabModelDetail(m) => {
+            lab_model_detail::update(&mut screens.lab_model_detail, m, ctx).map(Msg::LabModelDetail)
+        }
+        Msg::LabBreeders(m) => {
+            lab_breeders::update(&mut screens.lab_breeders, m, ctx).map(Msg::LabBreeders)
+        }
         Msg::Ide(m) => ide::update(&mut screens.ide, m, ctx).map(Msg::Ide),
     }
 }
@@ -402,10 +457,17 @@ pub fn subscription(screens: &Screens, id: &Id, ctx: &Ctx) -> iced::Subscription
         Id::Agents => agents::subscription(ctx).map(Msg::Agents),
         Id::Prompts => prompts::subscription(ctx).map(Msg::Prompts),
         Id::Skills => skills::subscription(ctx).map(Msg::Skills),
-        Id::Floor => iced::Subscription::batch([floor::subscription(&screens.floor), floor::events(ctx)]).map(Msg::Floor),
-        Id::RobotLab | Id::RoomLab | Id::HardwareLab => engine_lab::subscription(&screens.engine_lab).map(Msg::EngineLab),
+        Id::Floor => {
+            iced::Subscription::batch([floor::subscription(&screens.floor), floor::events(ctx)])
+                .map(Msg::Floor)
+        }
+        Id::RobotLab | Id::RoomLab | Id::HardwareLab => {
+            engine_lab::subscription(&screens.engine_lab).map(Msg::EngineLab)
+        }
         Id::Machines => machines::subscription(&screens.machines).map(Msg::Machines),
-        Id::Workstations => workstations::subscription(&screens.workstations, ctx).map(Msg::Workstations),
+        Id::Workstations => {
+            workstations::subscription(&screens.workstations, ctx).map(Msg::Workstations)
+        }
         Id::Usage => usage::subscription(&screens.usage).map(Msg::Usage),
         Id::Agent(_) => agent::stream(ctx).map(Msg::Agent),
         Id::Treasury => treasury::subscription(&screens.treasury, ctx).map(Msg::Treasury),
@@ -424,12 +486,20 @@ pub fn subscription(screens: &Screens, id: &Id, ctx: &Ctx) -> iced::Subscription
         Id::LabDatasets => lab_datasets::subscription(ctx).map(Msg::LabDatasets),
         Id::LabRecipes => lab_recipes::subscription(ctx).map(Msg::LabRecipes),
         Id::Ide(_) => ide::subscription(&screens.ide, ctx).map(Msg::Ide),
-        Id::LabJobDetail(_) => lab_common::live(&ctx.client).filter_map(|e| lab_common::training_frame(&e)).map(lab_job_detail::Msg::Live).map(Msg::LabJobDetail),
+        Id::LabJobDetail(_) => lab_common::live(&ctx.client)
+            .filter_map(|e| lab_common::training_frame(&e))
+            .map(lab_job_detail::Msg::Live)
+            .map(Msg::LabJobDetail),
         _ => iced::Subscription::none(),
     }
 }
 
-pub fn view<'a>(screens: &'a Screens, id: &Id, ctx: &'a Ctx, plaza: ide::Plaza) -> Element<'a, Msg> {
+pub fn view<'a>(
+    screens: &'a Screens,
+    id: &Id,
+    ctx: &'a Ctx,
+    plaza: ide::Plaza,
+) -> Element<'a, Msg> {
     match id {
         Id::Overview => overview::view(&screens.overview, ctx).map(Msg::Overview),
         Id::Agents => agents::view(&screens.agents, ctx).map(Msg::Agents),
@@ -441,9 +511,13 @@ pub fn view<'a>(screens: &'a Screens, id: &Id, ctx: &'a Ctx, plaza: ide::Plaza) 
         Id::Library => library::view(&screens.library, ctx).map(Msg::Library),
         Id::Approvals => approvals::view(&screens.approvals, ctx).map(Msg::Approvals),
         Id::Floor => floor::view(&screens.floor, ctx).map(Msg::Floor),
-        Id::RobotLab | Id::RoomLab | Id::HardwareLab => engine_lab::view(&screens.engine_lab, ctx).map(Msg::EngineLab),
+        Id::RobotLab | Id::RoomLab | Id::HardwareLab => {
+            engine_lab::view(&screens.engine_lab, ctx).map(Msg::EngineLab)
+        }
         Id::Society => society::view(&screens.society, ctx).map(Msg::Society),
-        Id::Conversations => conversations::view(&screens.conversations, ctx).map(Msg::Conversations),
+        Id::Conversations => {
+            conversations::view(&screens.conversations, ctx).map(Msg::Conversations)
+        }
         Id::Board => board::view(&screens.board, ctx).map(Msg::Board),
         Id::Council => council::view(&screens.council, ctx).map(Msg::Council),
         Id::Treasury => treasury::view(&screens.treasury, ctx).map(Msg::Treasury),
@@ -460,11 +534,15 @@ pub fn view<'a>(screens: &'a Screens, id: &Id, ctx: &'a Ctx, plaza: ide::Plaza) 
         Id::Agent(_) => agent::view(&screens.agent, ctx).map(Msg::Agent),
         Id::Lab => lab::view(&screens.lab, ctx).map(Msg::Lab),
         Id::LabJobs => lab_jobs::view(&screens.lab_jobs, ctx).map(Msg::LabJobs),
-        Id::LabJobDetail(_) => lab_job_detail::view(&screens.lab_job_detail, ctx).map(Msg::LabJobDetail),
+        Id::LabJobDetail(_) => {
+            lab_job_detail::view(&screens.lab_job_detail, ctx).map(Msg::LabJobDetail)
+        }
         Id::LabRecipes => lab_recipes::view(&screens.lab_recipes, ctx).map(Msg::LabRecipes),
         Id::LabDatasets => lab_datasets::view(&screens.lab_datasets, ctx).map(Msg::LabDatasets),
         Id::LabModels => lab_models::view(&screens.lab_models, ctx).map(Msg::LabModels),
-        Id::LabModelDetail(_) => lab_model_detail::view(&screens.lab_model_detail, ctx).map(Msg::LabModelDetail),
+        Id::LabModelDetail(_) => {
+            lab_model_detail::view(&screens.lab_model_detail, ctx).map(Msg::LabModelDetail)
+        }
         Id::LabBreeders => lab_breeders::view(&screens.lab_breeders, ctx).map(Msg::LabBreeders),
         Id::Ide(_) => ide::view(&screens.ide, plaza).map(Msg::Ide),
     }

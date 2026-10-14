@@ -447,7 +447,11 @@ pub(crate) fn give_to_agent(path: &Path) {
 
 /// `create_dir_all`, handing every folder it creates to the agent user.
 pub(crate) fn create_dirs(dir: &Path) -> io::Result<()> {
-    let missing: Vec<PathBuf> = dir.ancestors().take_while(|a| !a.exists()).map(Path::to_path_buf).collect();
+    let missing: Vec<PathBuf> = dir
+        .ancestors()
+        .take_while(|a| !a.exists())
+        .map(Path::to_path_buf)
+        .collect();
     fs::create_dir_all(dir)?;
     for made in missing {
         give_to_agent(&made);
@@ -573,8 +577,16 @@ pub fn read_file(workspace: &Workspace, args: &Value) -> Result<String, ToolErro
 
     let total = text.split_inclusive('\n').count();
     let mut content = String::new();
-    for (index, line) in text.split_inclusive('\n').enumerate().skip(offset).take(limit) {
-        content.push_str(&numbered_line(index + 1, line.strip_suffix('\n').unwrap_or(line)));
+    for (index, line) in text
+        .split_inclusive('\n')
+        .enumerate()
+        .skip(offset)
+        .take(limit)
+    {
+        content.push_str(&numbered_line(
+            index + 1,
+            line.strip_suffix('\n').unwrap_or(line),
+        ));
     }
     let last = offset.saturating_add(limit).min(total);
     let lines_cut = last < total;
@@ -628,7 +640,8 @@ pub fn download(workspace: &Workspace, args: &Value) -> Result<String, ToolError
     }
     let created = !path.exists();
     if let Some(parent) = path.parent() {
-        create_dirs(parent).map_err(|err| io_tool_error(err, format!("cannot create the folders of {label}")))?;
+        create_dirs(parent)
+            .map_err(|err| io_tool_error(err, format!("cannot create the folders of {label}")))?;
     }
     write_atomic(&path, &fetched.body)
         .map_err(|err| io_tool_error(err, format!("cannot write {label}")))?;
@@ -671,7 +684,8 @@ pub fn write_file(workspace: &Workspace, args: &Value) -> Result<String, ToolErr
     // `resolve` proved the deepest existing ancestor is inside the workspace,
     // so the missing directories it creates are too.
     if let Some(parent) = path.parent() {
-        create_dirs(parent).map_err(|err| io_tool_error(err, format!("cannot create the folders of {label}")))?;
+        create_dirs(parent)
+            .map_err(|err| io_tool_error(err, format!("cannot create the folders of {label}")))?;
     }
     write_atomic(&path, content.as_bytes())
         .map_err(|err| io_tool_error(err, format!("cannot write {label}")))?;
@@ -950,7 +964,9 @@ fn edit_spec(args: &Value) -> Result<Edit, ToolError> {
         )));
     }
     if old == new {
-        return Err(invalid("\"old\" and \"new\" are the same; the edit would change nothing"));
+        return Err(invalid(
+            "\"old\" and \"new\" are the same; the edit would change nothing",
+        ));
     }
     Ok(Edit {
         old,
@@ -1509,7 +1525,10 @@ mod tests {
                 "append_file",
                 json!({ "path": "esc", "content": "escaped\n" }),
             ),
-            ("write_file", json!({ "path": "esc", "content": "escaped\n" })),
+            (
+                "write_file",
+                json!({ "path": "esc", "content": "escaped\n" }),
+            ),
             (
                 "edit_file",
                 json!({ "path": "esc", "find": "x", "replace": "y" }),
@@ -1617,13 +1636,27 @@ mod tests {
         assert_eq!(tail["content"], "     3\tthree\n     4\tfour\n");
         assert_eq!(tail["truncated"], false);
         let past = window(json!({ "path": "notes.txt", "offset": 99 }));
-        assert!(past["content"].as_str().expect("content").contains("past the end"), "{past}");
+        assert!(
+            past["content"]
+                .as_str()
+                .expect("content")
+                .contains("past the end"),
+            "{past}"
+        );
         assert!(matches!(
-            refused(&workspace, "read_file", json!({ "path": "notes.txt", "limit": 0 })),
+            refused(
+                &workspace,
+                "read_file",
+                json!({ "path": "notes.txt", "limit": 0 })
+            ),
             ToolError::InvalidInput { .. }
         ));
         assert!(matches!(
-            refused(&workspace, "read_file", json!({ "path": "notes.txt", "offset": -1 })),
+            refused(
+                &workspace,
+                "read_file",
+                json!({ "path": "notes.txt", "offset": -1 })
+            ),
             ToolError::InvalidInput { .. }
         ));
     }
@@ -1717,7 +1750,10 @@ mod tests {
 
     #[test]
     fn the_mount_point_prefix_is_the_workspace() {
-        assert_eq!(relative_parts("/workspace/a/b.txt").unwrap(), ["a", "b.txt"]);
+        assert_eq!(
+            relative_parts("/workspace/a/b.txt").unwrap(),
+            ["a", "b.txt"]
+        );
         assert!(relative_parts("/workspace").unwrap().is_empty());
         assert!(relative_parts("/workspacex/a").is_err());
         assert!(relative_parts("/etc/passwd").is_err());
@@ -1726,8 +1762,15 @@ mod tests {
     #[test]
     fn write_file_creates_missing_folders() {
         let (workspace, _outside) = scratch("nested-write");
-        write_file(&workspace, &json!({"path": "notes/a/b.md", "content": "hi"})).expect("nested write");
-        assert_eq!(fs::read_to_string(workspace.root().join("notes/a/b.md")).unwrap(), "hi");
+        write_file(
+            &workspace,
+            &json!({"path": "notes/a/b.md", "content": "hi"}),
+        )
+        .expect("nested write");
+        assert_eq!(
+            fs::read_to_string(workspace.root().join("notes/a/b.md")).unwrap(),
+            "hi"
+        );
     }
 
     #[test]
@@ -1913,14 +1956,24 @@ mod tests {
             json!({ "path": "code.txt", "old": "three", "new": "THREE" }),
         );
         assert_eq!(result["replacements"], 1);
-        assert_eq!(result["snippet"], "     2\ttwo\n     3\tTHREE\n     4\tfour\n");
-        assert_eq!(read_back(&workspace, "code.txt"), "one\ntwo\nTHREE\nfour\nfive\n");
+        assert_eq!(
+            result["snippet"],
+            "     2\ttwo\n     3\tTHREE\n     4\tfour\n"
+        );
+        assert_eq!(
+            read_back(&workspace, "code.txt"),
+            "one\ntwo\nTHREE\nfour\nfive\n"
+        );
     }
 
     #[test]
     fn edit_file_names_the_closest_line_when_the_text_is_missing() {
         let (workspace, _outside) = scratch("edit-closest");
-        write_inside(&workspace, "code.txt", b"fn main() {\n    let total = 1;\n}\n");
+        write_inside(
+            &workspace,
+            "code.txt",
+            b"fn main() {\n    let total = 1;\n}\n",
+        );
         let err = refused(
             &workspace,
             "edit_file",
@@ -2000,8 +2053,8 @@ mod tests {
         assert!(err.contains("edit 1"), "{err}");
         assert_eq!(read_back(&workspace, "a.txt"), "alpha\nbeta\n");
         // An empty edit list is refused before the file is touched.
-        let err = multi_edit(&workspace, &json!({ "path": "a.txt", "edits": [] }))
-            .expect_err("no edits");
+        let err =
+            multi_edit(&workspace, &json!({ "path": "a.txt", "edits": [] })).expect_err("no edits");
         assert!(err.contains("at least one edit"), "{err}");
     }
 

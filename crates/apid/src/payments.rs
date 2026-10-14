@@ -37,10 +37,18 @@ pub(crate) struct Settled {
 
 /// Charges `credits` for agent `cid`'s call to its payer (see [`paying_from`]), capped at that
 /// payer's balance so no balance goes negative.
-pub(crate) fn settle(treasury: &Treasury, cid: u64, task: Option<&str>, credits: i64, memo: &str) -> Settled {
+pub(crate) fn settle(
+    treasury: &Treasury,
+    cid: u64,
+    task: Option<&str>,
+    credits: i64,
+    memo: &str,
+) -> Settled {
     let escrow = task.map_or(0, |task| treasury.escrow_balance(task));
     let (charge_task, available) = paying_from(task, escrow, treasury.wallet(cid));
-    let amount = i64::try_from(available.max(0)).unwrap_or(i64::MAX).min(credits);
+    let amount = i64::try_from(available.max(0))
+        .unwrap_or(i64::MAX)
+        .min(credits);
     let (charged, error) = if amount > 0 {
         match treasury.charge_model(cid, charge_task, amount, memo) {
             Ok(_) => (amount, None),
@@ -49,7 +57,13 @@ pub(crate) fn settle(treasury: &Treasury, cid: u64, task: Option<&str>, credits:
     } else {
         (0, None)
     };
-    Settled { wanted: credits, charged, available, task_paid: charge_task.is_some() && charged > 0, error }
+    Settled {
+        wanted: credits,
+        charged,
+        available,
+        task_paid: charge_task.is_some() && charged > 0,
+        error,
+    }
 }
 
 /// The charge every model call makes, whichever path it came by. With `charging` off (the
@@ -94,9 +108,19 @@ struct Payment {
 
 impl Payment {
     fn from_detail(detail: &Value) -> Result<Payment, String> {
-        let to = detail.get("to").and_then(Value::as_u64).ok_or("the payment names no `to`")?;
-        let amount = detail.get("amount").and_then(Value::as_i64).ok_or("the payment names no `amount`")?;
-        let memo = detail.get("memo").and_then(Value::as_str).unwrap_or_default().to_string();
+        let to = detail
+            .get("to")
+            .and_then(Value::as_u64)
+            .ok_or("the payment names no `to`")?;
+        let amount = detail
+            .get("amount")
+            .and_then(Value::as_i64)
+            .ok_or("the payment names no `amount`")?;
+        let memo = detail
+            .get("memo")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
         Ok(Payment { to, amount, memo })
     }
 
@@ -107,7 +131,11 @@ impl Payment {
 }
 
 /// Moves the credits of an approved payment from `from`; returns the journal entry.
-fn execute(treasury: &apz_plaza::treasury::Treasury, from: u64, payment: &Payment) -> Result<u64, String> {
+fn execute(
+    treasury: &apz_plaza::treasury::Treasury,
+    from: u64,
+    payment: &Payment,
+) -> Result<u64, String> {
     treasury
         .transfer(from, payment.to, payment.amount, &payment.memo)
         .map_err(|e| format!("{e:?}"))
@@ -119,21 +147,47 @@ fn execute(treasury: &apz_plaza::treasury::Treasury, from: u64, payment: &Paymen
 pub fn decided(app: &App, item: &Approval, approve: bool) -> Result<(), String> {
     let payment = Payment::from_detail(&item.detail)?;
     if !approve {
-        let why = item.reason.as_ref().map(|r| format!(": {r}")).unwrap_or_default();
-        tell(app, item.cid, format!("The owner cancelled your payment of {}{why}.", payment.describe()));
+        let why = item
+            .reason
+            .as_ref()
+            .map(|r| format!(": {r}"))
+            .unwrap_or_default();
+        tell(
+            app,
+            item.cid,
+            format!(
+                "The owner cancelled your payment of {}{why}.",
+                payment.describe()
+            ),
+        );
         return Ok(());
     }
     match execute(&app.plaza.treasury, item.cid, &payment) {
         Ok(entry) => {
-            crate::society::interact(app, item.cid, payment.to, apz_plaza::bonds::Interaction::Credit);
-            tell(app, item.cid, format!("The owner approved your payment of {} (entry {entry}).", payment.describe()));
+            crate::society::interact(
+                app,
+                item.cid,
+                payment.to,
+                apz_plaza::bonds::Interaction::Credit,
+            );
+            tell(
+                app,
+                item.cid,
+                format!(
+                    "The owner approved your payment of {} (entry {entry}).",
+                    payment.describe()
+                ),
+            );
             Ok(())
         }
         Err(why) => {
             tell(
                 app,
                 item.cid,
-                format!("The owner approved your payment of {}, but it failed: {why}. No credits moved.", payment.describe()),
+                format!(
+                    "The owner approved your payment of {}, but it failed: {why}. No credits moved.",
+                    payment.describe()
+                ),
             );
             Err(why)
         }
@@ -163,7 +217,9 @@ mod tests {
     fn funded() -> Treasury {
         let treasury = Treasury::new(EventBus::new());
         treasury.fund_task("t1", 300).expect("fund");
-        treasury.charge_spend(Some("t1"), 100, "real cost").expect("spend");
+        treasury
+            .charge_spend(Some("t1"), 100, "real cost")
+            .expect("spend");
         treasury.pay_agent("t1", 7, 20).expect("pay");
         treasury
     }
@@ -175,13 +231,18 @@ mod tests {
         assert!(!held(5, 500));
         assert!(held(1, 0), "approve_over 0: every payment asks");
         assert!(!held(0, 0));
-        assert!(!held(-5, 0), "a non-positive amount is not held; the transfer refuses it");
+        assert!(
+            !held(-5, 0),
+            "a non-positive amount is not held; the transfer refuses it"
+        );
     }
 
     #[test]
     fn an_approved_payment_moves_the_credits() {
         let treasury = funded();
-        let payment = Payment::from_detail(&json!({"cid": 7, "to": 8, "amount": 10, "memo": "thanks"})).expect("detail");
+        let payment =
+            Payment::from_detail(&json!({"cid": 7, "to": 8, "amount": 10, "memo": "thanks"}))
+                .expect("detail");
         assert_eq!(payment.describe(), "10 to 8");
         execute(&treasury, 7, &payment).expect("approved payment executes");
         assert_eq!(treasury.wallet(7), 10);
@@ -191,7 +252,8 @@ mod tests {
     #[test]
     fn an_approved_payment_the_wallet_cannot_cover_fails_and_moves_nothing() {
         let treasury = funded();
-        let payment = Payment::from_detail(&json!({"cid": 7, "to": 8, "amount": 25, "memo": ""})).expect("detail");
+        let payment = Payment::from_detail(&json!({"cid": 7, "to": 8, "amount": 25, "memo": ""}))
+            .expect("detail");
         assert!(execute(&treasury, 7, &payment).is_err());
         assert_eq!(treasury.wallet(7), 20);
         assert_eq!(treasury.wallet(8), 0);
@@ -214,17 +276,41 @@ mod tests {
     fn the_agent_loop_charge_comes_off_the_escrow_and_is_metered_spend_when_charging_is_on() {
         let treasury = task_funded();
         let mut metered = Vec::new();
-        let settled = charge_model_call(&treasury, true, |task, credits| metered.push((task.to_string(), credits)), 7, Some("t1"), 40, "model m")
-            .expect("charging is on, so the call is charged");
-        assert_eq!((settled.wanted, settled.charged, settled.task_paid), (40, 40, true));
+        let settled = charge_model_call(
+            &treasury,
+            true,
+            |task, credits| metered.push((task.to_string(), credits)),
+            7,
+            Some("t1"),
+            40,
+            "model m",
+        )
+        .expect("charging is on, so the call is charged");
+        assert_eq!(
+            (settled.wanted, settled.charged, settled.task_paid),
+            (40, 40, true)
+        );
         assert_eq!(settled.error, None);
         assert_eq!(treasury.escrow_balance("t1"), 260);
-        assert_eq!(metered, vec![("t1".to_string(), 40)], "the task's metered spend is updated");
+        assert_eq!(
+            metered,
+            vec![("t1".to_string(), 40)],
+            "the task's metered spend is updated"
+        );
         assert_eq!(treasury.view().spent, 40, "the Spent total counts it");
-        let kinds: Vec<_> = treasury.journal(10).entries.iter().map(|e| e.kind.to_string()).collect();
+        let kinds: Vec<_> = treasury
+            .journal(10)
+            .entries
+            .iter()
+            .map(|e| e.kind.to_string())
+            .collect();
         assert_eq!(
             kinds,
-            vec!["mint".to_string(), "subcontract".to_string(), "model".to_string()],
+            vec![
+                "mint".to_string(),
+                "subcontract".to_string(),
+                "model".to_string()
+            ],
             "the funding entries, then one model entry and no spend entry"
         );
     }
@@ -232,7 +318,10 @@ mod tests {
     #[test]
     fn the_agent_loop_charges_nothing_when_charging_is_off() {
         let treasury = task_funded();
-        assert_eq!(charge_model_call(&treasury, false, |_, _| {}, 7, Some("t1"), 40, "model m"), None);
+        assert_eq!(
+            charge_model_call(&treasury, false, |_, _| {}, 7, Some("t1"), 40, "model m"),
+            None
+        );
         assert_eq!(treasury.escrow_balance("t1"), 300);
         assert_eq!(treasury.view().spent, 0);
     }
@@ -240,23 +329,42 @@ mod tests {
     #[test]
     fn a_gateway_call_from_a_wallet_counts_in_spent_when_charging_is_on() {
         let treasury = task_funded();
-        treasury.charge_spend(Some("t1"), 100, "real cost").expect("the cost is spent");
+        treasury
+            .charge_spend(Some("t1"), 100, "real cost")
+            .expect("the cost is spent");
         treasury.pay_agent("t1", 7, 20).expect("the agent is paid");
         let mut metered = Vec::new();
-        let settled = charge_model_call(&treasury, true, |task, credits| metered.push((task.to_string(), credits)), 7, None, 15, "model m")
-            .expect("charging is on");
+        let settled = charge_model_call(
+            &treasury,
+            true,
+            |task, credits| metered.push((task.to_string(), credits)),
+            7,
+            None,
+            15,
+            "model m",
+        )
+        .expect("charging is on");
         assert_eq!((settled.charged, settled.task_paid), (15, false));
         assert_eq!(treasury.wallet(7), 5, "the wallet pays");
         assert!(metered.is_empty(), "a wallet call is no task's spend");
-        assert_eq!(treasury.view().spent, 115, "the 100 spent plus the 15 from the wallet");
+        assert_eq!(
+            treasury.view().spent,
+            115,
+            "the 100 spent plus the 15 from the wallet"
+        );
     }
 
     #[test]
     fn a_gateway_call_charges_nothing_when_charging_is_off() {
         let treasury = task_funded();
-        treasury.charge_spend(Some("t1"), 100, "real cost").expect("the cost is spent");
+        treasury
+            .charge_spend(Some("t1"), 100, "real cost")
+            .expect("the cost is spent");
         treasury.pay_agent("t1", 7, 20).expect("the agent is paid");
-        assert_eq!(charge_model_call(&treasury, false, |_, _| {}, 7, None, 15, "model m"), None);
+        assert_eq!(
+            charge_model_call(&treasury, false, |_, _| {}, 7, None, 15, "model m"),
+            None
+        );
         assert_eq!(treasury.wallet(7), 20);
         assert_eq!(treasury.view().spent, 100);
     }
@@ -265,17 +373,25 @@ mod tests {
     fn a_charge_larger_than_the_escrow_is_capped_and_reported_short() {
         let treasury = Treasury::new(EventBus::new());
         treasury.fund_task("t1", 30).expect("fund");
-        let settled = charge_model_call(&treasury, true, |_, _| {}, 7, Some("t1"), 50, "model m").expect("charging is on");
-        assert_eq!((settled.wanted, settled.charged, settled.available), (50, 30, 30));
+        let settled = charge_model_call(&treasury, true, |_, _| {}, 7, Some("t1"), 50, "model m")
+            .expect("charging is on");
+        assert_eq!(
+            (settled.wanted, settled.charged, settled.available),
+            (50, 30, 30)
+        );
         assert_eq!(treasury.escrow_balance("t1"), 0, "never negative");
     }
 
     #[test]
     fn a_model_charge_counts_toward_the_chain_margin_cap() {
         let treasury = task_funded();
-        charge_model_call(&treasury, true, |_, _| {}, 7, Some("t1"), 40, "model m").expect("charged");
+        charge_model_call(&treasury, true, |_, _| {}, 7, Some("t1"), 40, "model m")
+            .expect("charged");
         // The cap is 20 % of the chain's real cost: 40 of model cost allows 8 to the agent.
-        assert!(treasury.pay_agent("t1", 7, 9).is_err(), "a model charge is real cost for the margin");
+        assert!(
+            treasury.pay_agent("t1", 7, 9).is_err(),
+            "a model charge is real cost for the margin"
+        );
         assert!(treasury.pay_agent("t1", 7, 8).is_ok());
     }
 }

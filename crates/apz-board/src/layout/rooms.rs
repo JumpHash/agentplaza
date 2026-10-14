@@ -4,15 +4,16 @@
 
 use std::collections::BTreeMap;
 
-use super::geom::Frame;
 use super::Door;
+use super::geom::Frame;
 
 /// The room minimums (assets/rooms/minsize.json): role -> the smallest square side for 1..6 agents; null = none fits.
 pub type MinTable = BTreeMap<String, Vec<Option<f64>>>;
 
 /// The minimums the layout reads (the same file the web reads).
 pub fn min_table() -> MinTable {
-    serde_json::from_str(include_str!("../../../../assets/rooms/minsize.json")).expect("apz-board: minsize.json is valid")
+    serde_json::from_str(include_str!("../../../../assets/rooms/minsize.json"))
+        .expect("apz-board: minsize.json is valid")
 }
 
 /// The orchestrator tier's role name; the input has no tier, so this role is the orchestrator's seat.
@@ -28,7 +29,9 @@ pub const DAIS_HUE: f64 = 25.0;
 /// The aisle's width: the lane the rooms open onto.
 pub const AISLE: f64 = 1.0;
 /// The Floor's curated district hues (floor.ts roleHue).
-const HUES: [f64; 10] = [8.0, 28.0, 46.0, 88.0, 140.0, 172.0, 198.0, 222.0, 262.0, 340.0];
+const HUES: [f64; 10] = [
+    8.0, 28.0, 46.0, 88.0, 140.0, 172.0, 198.0, 222.0, 262.0, 340.0,
+];
 
 /// A role's family (roles.ts). Orchestrator is `Command`; a role the map does not list is `Other`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -102,7 +105,9 @@ pub fn cell_need_of(m: f64) -> f64 {
 /// The most desks a room of `role` seats on a cell of `w` x `d` (deskCapOf).
 pub fn desk_cap(role: &str, w: f64, d: f64, table: &MinTable) -> usize {
     let inner = inner_of(w.min(d));
-    let cap = table.get(role).map_or(DESKS_MAX, |row| DESKS_MAX.min(row.len()));
+    let cap = table
+        .get(role)
+        .map_or(DESKS_MAX, |row| DESKS_MAX.min(row.len()));
     let mut n = 0;
     for k in 1..=cap {
         match minimum_side(role, k, table) {
@@ -118,7 +123,9 @@ pub fn desk_cap(role: &str, w: f64, d: f64, table: &MinTable) -> usize {
 pub fn typical_row_depth(agents: &[(&str, bool)], table: &MinTable) -> f64 {
     let mut sides: Vec<f64> = agents
         .iter()
-        .filter_map(|(role, _)| minimum_side(if role.is_empty() { "other" } else { role }, 1, table))
+        .filter_map(|(role, _)| {
+            minimum_side(if role.is_empty() { "other" } else { role }, 1, table)
+        })
         .filter(|v| *v > 0.0)
         .collect();
     if sides.is_empty() {
@@ -172,11 +179,42 @@ pub fn configs(f: &Frame, row_min: f64) -> Vec<Config> {
         out.push(Config {
             double: true,
             aisle: [half, half + AISLE],
-            rows: vec![Row { v0: 0.0, v1: half, face: [0.0, 1.0], gap: None }, Row { v0: half + AISLE, v1: s, face: [0.0, -1.0], gap: None }],
+            rows: vec![
+                Row {
+                    v0: 0.0,
+                    v1: half,
+                    face: [0.0, 1.0],
+                    gap: None,
+                },
+                Row {
+                    v0: half + AISLE,
+                    v1: s,
+                    face: [0.0, -1.0],
+                    gap: None,
+                },
+            ],
         });
     }
-    out.push(Config { double: false, aisle: [s - AISLE, s], rows: vec![Row { v0: 0.0, v1: s - AISLE, face: [0.0, 1.0], gap: None }] });
-    out.push(Config { double: false, aisle: [0.0, AISLE], rows: vec![Row { v0: AISLE, v1: s, face: [0.0, -1.0], gap: None }] });
+    out.push(Config {
+        double: false,
+        aisle: [s - AISLE, s],
+        rows: vec![Row {
+            v0: 0.0,
+            v1: s - AISLE,
+            face: [0.0, 1.0],
+            gap: None,
+        }],
+    });
+    out.push(Config {
+        double: false,
+        aisle: [0.0, AISLE],
+        rows: vec![Row {
+            v0: AISLE,
+            v1: s,
+            face: [0.0, -1.0],
+            gap: None,
+        }],
+    });
     out
 }
 
@@ -206,7 +244,10 @@ fn row_spans(row: &Row, a: &Aisle) -> Vec<(f64, f64)> {
         Some(g) => vec![(0.0, g[0] - RAMP_DEPTH), (g[1] + RAMP_DEPTH, l)],
         None => vec![(0.0, l)],
     };
-    cut.into_iter().map(|(u0, u1)| (u0.max(lo), u1.min(hi))).filter(|(u0, u1)| u1 - u0 > 1e-9).collect()
+    cut.into_iter()
+        .map(|(u0, u1)| (u0.max(lo), u1.min(hi)))
+        .filter(|(u0, u1)| u1 - u0 > 1e-9)
+        .collect()
 }
 
 /// A run of room cells in one row: its frame span [u0, u1] and how many cells of the needed side fit in it.
@@ -226,7 +267,11 @@ pub fn spans_at(a: &Aisle, need: f64) -> Vec<Span> {
             continue;
         }
         for (u0, u1) in row_spans(r, a) {
-            let k = if need <= 0.0 { a.cap } else { ((u1 - u0) / need + 1e-9).floor() as usize };
+            let k = if need <= 0.0 {
+                a.cap
+            } else {
+                ((u1 - u0) / need + 1e-9).floor() as usize
+            };
             if k > 0 {
                 out.push(Span { row, u0, u1, k });
             }
@@ -256,7 +301,12 @@ pub fn room_cells(a: &Aisle, need: f64) -> Vec<Cell> {
         let len = (g.u1 - g.u0) / n as f64;
         let row = &a.rows[g.row];
         for j in 0..n {
-            let r = a.f.rect(g.u0 + j as f64 * len, g.u0 + (j + 1) as f64 * len, row.v0, row.v1);
+            let r = a.f.rect(
+                g.u0 + j as f64 * len,
+                g.u0 + (j + 1) as f64 * len,
+                row.v0,
+                row.v1,
+            );
             cells.push(Cell {
                 cx: r[0] + r[2] / 2.0,
                 cz: r[1] + r[3] / 2.0,
@@ -273,16 +323,16 @@ pub fn room_cells(a: &Aisle, need: f64) -> Vec<Cell> {
 /// faces its aisle; a round room turns to the board's centre and its door is the side nearest its aisle.
 pub fn turn_and_door(cell: &Cell, round: bool) -> (f64, Door) {
     let [ux, uz] = cell.face;
-    let turn = if round { (-cell.cx).atan2(-cell.cz) } else { ux.atan2(uz) };
+    let turn = if round {
+        (-cell.cx).atan2(-cell.cz)
+    } else {
+        ux.atan2(uz)
+    };
     let (c, s) = (turn.cos(), turn.sin());
     let lx = ux * c - uz * s;
     let lz = ux * s + uz * c;
     let door = if lx.abs() > lz.abs() {
-        if lx > 0.0 {
-            Door::E
-        } else {
-            Door::W
-        }
+        if lx > 0.0 { Door::E } else { Door::W }
     } else if lz > 0.0 {
         Door::S
     } else {

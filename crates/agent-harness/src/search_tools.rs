@@ -114,8 +114,8 @@ pub fn grep(workspace: &Workspace, input: &Value) -> Result<String, String> {
         .case_insensitive(bool_arg(input, "case_insensitive")?)
         .build()
         .map_err(|err| format!("invalid regex {pattern:?}: {err}"))?;
-    let mode = optional_str(input, "output_mode")?
-        .unwrap_or_else(|| "files_with_matches".to_string());
+    let mode =
+        optional_str(input, "output_mode")?.unwrap_or_else(|| "files_with_matches".to_string());
     match mode.as_str() {
         "files_with_matches" | "content" | "count" => {}
         other => {
@@ -232,7 +232,8 @@ fn search_root(workspace: &Workspace, input: &Value) -> Result<(PathBuf, PathBuf
             }
         }
     }
-    let start = fs::canonicalize(&start).map_err(|err| format!("cannot search {given:?}: {err}"))?;
+    let start =
+        fs::canonicalize(&start).map_err(|err| format!("cannot search {given:?}: {err}"))?;
     if !start.starts_with(&root) {
         return Err(format!("path {given:?} resolves outside the workspace"));
     }
@@ -482,10 +483,8 @@ mod tests {
     fn scratch(name: &str) -> Workspace {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let unique = NEXT.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!(
-            "apz-search-{}-{name}-{unique}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("apz-search-{}-{name}-{unique}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).expect("a scratch workspace");
         Workspace::at(dir)
@@ -540,7 +539,10 @@ mod tests {
         file(&ws, "node_modules/pkg/index.rs", b"", 9_000);
         file(&ws, "target/debug/build.rs", b"", 9_000);
         file(&ws, "ok.rs", b"", 1_000);
-        assert_eq!(glob(&ws, &json!({ "pattern": "**/*.rs" })).unwrap(), "ok.rs");
+        assert_eq!(
+            glob(&ws, &json!({ "pattern": "**/*.rs" })).unwrap(),
+            "ok.rs"
+        );
         let err = glob(&ws, &json!({ "pattern": "*", "path": ".plaza" })).unwrap_err();
         assert!(err.contains("harness's own state"), "{err}");
     }
@@ -595,7 +597,11 @@ mod tests {
         let ws = scratch("grep-content");
         file(&ws, "f.txt", b"alpha\nneedle here\nbeta\n", 1_000);
         assert_eq!(
-            grep(&ws, &json!({ "pattern": "needle", "output_mode": "content" })).unwrap(),
+            grep(
+                &ws,
+                &json!({ "pattern": "needle", "output_mode": "content" })
+            )
+            .unwrap(),
             "f.txt:2:needle here"
         );
     }
@@ -631,7 +637,11 @@ mod tests {
         let ws = scratch("grep-case");
         file(&ws, "f.txt", b"NEEDLE\n", 1_000);
         assert_eq!(
-            grep(&ws, &json!({ "pattern": "needle", "case_insensitive": true })).unwrap(),
+            grep(
+                &ws,
+                &json!({ "pattern": "needle", "case_insensitive": true })
+            )
+            .unwrap(),
             "f.txt"
         );
         assert_eq!(
@@ -658,7 +668,10 @@ mod tests {
         file(&ws, ".plaza/state.txt", b"needle\n", 9_000);
         file(&ws, "bin.dat", b"needle\0\x01", 9_000);
         file(&ws, "ok.txt", b"needle\n", 1_000);
-        assert_eq!(grep(&ws, &json!({ "pattern": "needle" })).unwrap(), "ok.txt");
+        assert_eq!(
+            grep(&ws, &json!({ "pattern": "needle" })).unwrap(),
+            "ok.txt"
+        );
         let err = grep(&ws, &json!({ "pattern": "needle", "path": ".plaza" })).unwrap_err();
         assert!(err.contains("harness's own state"), "{err}");
     }

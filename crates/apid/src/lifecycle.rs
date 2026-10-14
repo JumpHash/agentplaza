@@ -78,10 +78,16 @@ fn wipe_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
     }
     if wipe.identity {
         if let Err(err) = app.names.forget(cid) {
-            return Response::error(500, &format!("could not forget the name of agent {cid}: {err}"));
+            return Response::error(
+                500,
+                &format!("could not forget the name of agent {cid}: {err}"),
+            );
         }
         if let Err(err) = app.bonds.forget(cid) {
-            return Response::error(500, &format!("could not forget the bonds of agent {cid}: {err:?}"));
+            return Response::error(
+                500,
+                &format!("could not forget the bonds of agent {cid}: {err:?}"),
+            );
         }
         wiped.push("identity");
     }
@@ -111,7 +117,9 @@ fn retire_route(app: &App, _req: &Request, p: &Params<'_>) -> Response {
 }
 
 fn cid_of(p: &Params<'_>) -> Result<u64, Response> {
-    p.get("cid").parse::<u64>().map_err(|_| Response::error(400, "bad agent id"))
+    p.get("cid")
+        .parse::<u64>()
+        .map_err(|_| Response::error(400, "bad agent id"))
 }
 
 /// The run and VM index the agent sits on; 404 if unknown, 409 if it has no VM here.
@@ -121,16 +129,28 @@ pub(crate) fn place(app: &App, cid: u64) -> Result<(String, u32), Response> {
     };
     match (agent.run, agent.vm) {
         (Some(run), Some(vm)) => Ok((run, vm)),
-        _ => Err(Response::error(409, &format!("agent {cid} has no VM on this node"))),
+        _ => Err(Response::error(
+            409,
+            &format!("agent {cid} has no VM on this node"),
+        )),
     }
 }
 
 /// Asks noded to run `action` on the VM; any failure becomes the response.
-pub(crate) fn noded_call(app: &App, cid: u64, run: &str, vm: u32, action: &str) -> Result<(), Response> {
+pub(crate) fn noded_call(
+    app: &App,
+    cid: u64,
+    run: &str,
+    vm: u32,
+    action: &str,
+) -> Result<(), Response> {
     let path = format!("/v1/runs/{run}/vms/{vm}/{action}");
     match crate::fleet::noded_for(app, cid, "POST", &path, Some(&json!({}))) {
         Ok((code, _)) if (200..300).contains(&code) => Ok(()),
-        Ok((code, body)) => Err(Response::error(502, &format!("noded {action} failed: {code} {body}"))),
+        Ok((code, body)) => Err(Response::error(
+            502,
+            &format!("noded {action} failed: {code} {body}"),
+        )),
         Err(err) => Err(Response::error(502, &format!("noded unreachable: {err}"))),
     }
 }

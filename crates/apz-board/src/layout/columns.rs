@@ -41,10 +41,21 @@ impl Lattice {
         let mut sup = Vec::with_capacity(nx * nz);
         for j in 0..nz {
             for i in 0..nx {
-                sup.push(sup_at(x0 + (i as f64 + 0.5) * cw, z0 + (j as f64 + 0.5) * cd));
+                sup.push(sup_at(
+                    x0 + (i as f64 + 0.5) * cw,
+                    z0 + (j as f64 + 0.5) * cd,
+                ));
             }
         }
-        Lattice { x0, z0, cw, cd, nx, nz, sup }
+        Lattice {
+            x0,
+            z0,
+            cw,
+            cd,
+            nx,
+            nz,
+            sup,
+        }
     }
 
     /// The highest sample: the plate's underside (0 over the ground).
@@ -76,7 +87,12 @@ impl Lattice {
         // The tolerance has a float epsilon so a block at exactly GROUND_TOL spread is one height on both sides (the test's skip uses it too).
         if single || hi - lo <= GROUND_TOL + 1e-9 {
             if hi < under - 1e-9 {
-                let rect = [self.x0 + i0 as f64 * self.cw, self.z0 + j0 as f64 * self.cd, (i1 - i0) as f64 * self.cw, (j1 - j0) as f64 * self.cd];
+                let rect = [
+                    self.x0 + i0 as f64 * self.cw,
+                    self.z0 + j0 as f64 * self.cd,
+                    (i1 - i0) as f64 * self.cw,
+                    (j1 - j0) as f64 * self.cd,
+                ];
                 out.push(Leaf { rect, bottom: hi });
             }
             return;

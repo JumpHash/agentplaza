@@ -23,12 +23,16 @@ fn table(frame: &mut Frame, area: Rect, app: &App) {
     let machines = app.array("/v1/machines");
     let block = Block::bordered().title(format!(" machines · {} ", machines.len()));
     if machines.is_empty() {
-        let empty = Line::from(Span::styled("no machines reported yet", Style::new().fg(palette.muted)));
+        let empty = Line::from(Span::styled(
+            "no machines reported yet",
+            Style::new().fg(palette.muted),
+        ));
         frame.render_widget(Paragraph::new(empty).block(block), area);
         return;
     }
-    let head = Row::new(["NAME", "STATE", "AGENTS", "RUNS", "CPUS", "MEMORY", "CPU"].map(String::from))
-        .style(Style::new().fg(palette.muted).add_modifier(Modifier::BOLD));
+    let head =
+        Row::new(["NAME", "STATE", "AGENTS", "RUNS", "CPUS", "MEMORY", "CPU"].map(String::from))
+            .style(Style::new().fg(palette.muted).add_modifier(Modifier::BOLD));
     let body = machines.iter().enumerate().map(|(i, m)| {
         let cells = vec![
             show(m.get("name")),
@@ -68,24 +72,42 @@ fn details(frame: &mut Frame, area: Rect, app: &App) {
     let mut lines: Vec<Line> = detail_fields(machine)
         .into_iter()
         .map(|(label, value)| {
-            Line::from(vec![Span::styled(format!("{label:>12}  "), Style::new().fg(palette.muted)), Span::raw(value)])
+            Line::from(vec![
+                Span::styled(format!("{label:>12}  "), Style::new().fg(palette.muted)),
+                Span::raw(value),
+            ])
         })
         .collect();
     lines.push(Line::raw(""));
-    lines.push(Line::from(Span::styled("runs", Style::new().fg(palette.muted))));
+    lines.push(Line::from(Span::styled(
+        "runs",
+        Style::new().fg(palette.muted),
+    )));
     let run_lines = runs(machine);
     if run_lines.is_empty() {
         lines.push(Line::raw("  none"));
     }
     for run in run_lines {
-        lines.push(Line::raw(format!("  {}  {}  {}  {} vms", clip(&show(run.get("id")), 12), show(run.get("state")), show(run.get("role")), run.get("vms").and_then(Value::as_array).map_or(0, Vec::len))));
+        lines.push(Line::raw(format!(
+            "  {}  {}  {}  {} vms",
+            clip(&show(run.get("id")), 12),
+            show(run.get("state")),
+            show(run.get("role")),
+            run.get("vms").and_then(Value::as_array).map_or(0, Vec::len)
+        )));
     }
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
 /// The fields `machines show` prints for one machine, as (label, value) pairs.
 fn detail_fields(m: &Value) -> Vec<(&'static str, String)> {
-    let gpus: Vec<&str> = m.get("gpus").and_then(Value::as_array).into_iter().flatten().filter_map(|g| g.get("name").and_then(Value::as_str)).collect();
+    let gpus: Vec<&str> = m
+        .get("gpus")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|g| g.get("name").and_then(Value::as_str))
+        .collect();
     vec![
         ("id", show(m.get("id"))),
         ("name", show(m.get("name"))),
@@ -95,7 +117,14 @@ fn detail_fields(m: &Value) -> Vec<(&'static str, String)> {
         ("cpus", show(m.get("cpus"))),
         ("memory", format!("{} MiB", show(m.get("memory_mib")))),
         ("state", state(m).to_string()),
-        ("gpus", if gpus.is_empty() { "none".to_string() } else { gpus.join(", ") }),
+        (
+            "gpus",
+            if gpus.is_empty() {
+                "none".to_string()
+            } else {
+                gpus.join(", ")
+            },
+        ),
         ("cpu", figure(stat(m, "cpu_percent"), "%")),
         ("load", load(m)),
         ("memory used", figure(stat(m, "mem_used_mib"), " MiB")),
@@ -115,12 +144,17 @@ pub fn state(m: &Value) -> &'static str {
 
 /// The machine's runs (its `runs` array; none when it lists none).
 fn runs(m: &Value) -> &[Value] {
-    m.get("runs").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[])
+    m.get("runs")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
 }
 
 /// One figure from the machine's live stats (`-` when the node reports none).
 fn stat<'a>(m: &'a Value, key: &str) -> Option<&'a Value> {
-    m.get("stats").filter(|s| !s.is_null()).and_then(|s| s.get(key))
+    m.get("stats")
+        .filter(|s| !s.is_null())
+        .and_then(|s| s.get(key))
 }
 
 fn figure(v: Option<&Value>, unit: &str) -> String {
@@ -143,7 +177,12 @@ fn memory(m: &Value) -> String {
 fn load(m: &Value) -> String {
     stat(m, "load")
         .and_then(Value::as_array)
-        .map(|l| l.iter().map(|n| format!("{:.2}", n.as_f64().unwrap_or(0.0))).collect::<Vec<_>>().join(" "))
+        .map(|l| {
+            l.iter()
+                .map(|n| format!("{:.2}", n.as_f64().unwrap_or(0.0)))
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
         .unwrap_or_else(|| "-".to_string())
 }
 
@@ -173,7 +212,10 @@ mod tests {
 
     #[test]
     fn runs_are_listed_or_none() {
-        assert_eq!(runs(&json!({ "runs": [{ "id": "r1" }, { "id": "r2" }] })).len(), 2);
+        assert_eq!(
+            runs(&json!({ "runs": [{ "id": "r1" }, { "id": "r2" }] })).len(),
+            2
+        );
         assert!(runs(&json!({})).is_empty());
     }
 }

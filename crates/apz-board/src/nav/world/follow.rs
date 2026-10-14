@@ -7,16 +7,18 @@
 #![allow(unused_variables)]
 
 use super::*;
-use crate::grid::{move_kind, NAV_STEP};
+use crate::grid::{NAV_STEP, move_kind};
 use crate::nav::drawn::{drawn_top_at, drawn_top_below};
-use crate::nav::height::{grounded, step_body, BodyMode, Surfaces};
+use crate::nav::height::{BodyMode, Surfaces, grounded, step_body};
 use crate::nav::lift::LiftTicket;
 use crate::nav::{Edge, NAV_RADIUS, NAV_RESPAWN_OUT};
 use std::f64::consts::PI;
 
 /// The robot `id`, which the world holds for the whole step (follow only runs for robots in the world).
 fn rob(robots: &mut BTreeMap<u32, RobotState>, id: u32) -> &mut RobotState {
-    robots.get_mut(&id).expect("follow: the robot is in the world")
+    robots
+        .get_mut(&id)
+        .expect("follow: the robot is in the world")
 }
 
 /// A robot with nothing to walk this step.
@@ -30,11 +32,7 @@ pub(super) fn wrap_angle(a: f64) -> f64 {
     let t = (a + PI) % TAU;
     let u = if t < 0.0 { t + TAU } else { t };
     let r = u - PI;
-    if r == -PI {
-        PI
-    } else {
-        r
-    }
+    if r == -PI { PI } else { r }
 }
 
 /// The heading moved toward `desired` by at most `max_step` along the shortest signed angle.
@@ -67,7 +65,13 @@ pub(super) fn step_height_ok(grid: &NavGrid, a: usize, b: usize, edges: &[EdgeCe
 
 /// Invariant 1: the cells a move touches (supercover, Amanatides-Woo, the X axis first at a corner), start excluded;
 /// None when the move leaves the grid.
-pub(super) fn sweep_cells(grid: &NavGrid, x0: f64, z0: f64, x1: f64, z1: f64) -> Option<Vec<usize>> {
+pub(super) fn sweep_cells(
+    grid: &NavGrid,
+    x0: f64,
+    z0: f64,
+    x1: f64,
+    z1: f64,
+) -> Option<Vec<usize>> {
     let mut cells = Vec::new();
     let s = grid.cell;
     let mut i = ((x0 - grid.x0) / s).floor() as i64;
@@ -80,8 +84,16 @@ pub(super) fn sweep_cells(grid: &NavGrid, x0: f64, z0: f64, x1: f64, z1: f64) ->
     let sj: i64 = if tj >= j { 1 } else { -1 };
     let dx = x1 - x0;
     let dz = z1 - z0;
-    let tdx = if dx != 0.0 { s / dx.abs() } else { f64::INFINITY };
-    let tdz = if dz != 0.0 { s / dz.abs() } else { f64::INFINITY };
+    let tdx = if dx != 0.0 {
+        s / dx.abs()
+    } else {
+        f64::INFINITY
+    };
+    let tdz = if dz != 0.0 {
+        s / dz.abs()
+    } else {
+        f64::INFINITY
+    };
     let mut tx = if dx > 0.0 {
         (grid.x0 + (i + 1) as f64 * s - x0) / dx
     } else if dx < 0.0 {
@@ -126,7 +138,11 @@ pub(super) fn on_portal_edge(grid: &NavGrid, x0: f64, z0: f64, x1: f64, z1: f64)
     let on = |px: f64, pz: f64, a: [f64; 2], b: [f64; 2]| {
         let (vx, vz) = (b[0] - a[0], b[1] - a[1]);
         let len2 = vx * vx + vz * vz;
-        let t = if len2 > 0.0 { (((px - a[0]) * vx + (pz - a[1]) * vz) / len2).clamp(0.0, 1.0) } else { 0.0 };
+        let t = if len2 > 0.0 {
+            (((px - a[0]) * vx + (pz - a[1]) * vz) / len2).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
         (a[0] + t * vx - px).hypot(a[1] + t * vz - pz) <= PORTAL_EDGE
     };
     grid.portals.iter().any(|p| {
@@ -138,7 +154,13 @@ pub(super) fn on_portal_edge(grid: &NavGrid, x0: f64, z0: f64, x1: f64, z1: f64)
 
 /// Rule 3f: the height along a flagged edge toward point `next`, from `from` ([x, y, z]); None when the target is not an
 /// edge.
-pub(super) fn height_at(pts: &[NavPoint], next: usize, from: [f64; 3], x: f64, z: f64) -> Option<f64> {
+pub(super) fn height_at(
+    pts: &[NavPoint],
+    next: usize,
+    from: [f64; 3],
+    x: f64,
+    z: f64,
+) -> Option<f64> {
     let last = pts.last()?;
     let Some(t) = pts.get(next) else {
         return Some(last.y);
@@ -148,7 +170,9 @@ pub(super) fn height_at(pts: &[NavPoint], next: usize, from: [f64; 3], x: f64, z
     let len2 = dx * dx + dz * dz;
     let mut u = 0.0;
     if len2 > 1e-12 {
-        u = (((x - from[0]) * dx + (z - from[2]) * dz) / len2).max(0.0).min(1.0);
+        u = (((x - from[0]) * dx + (z - from[2]) * dz) / len2)
+            .max(0.0)
+            .min(1.0);
     }
     Some(from[1] + (t.y - from[1]) * u)
 }
@@ -327,14 +351,12 @@ impl NavWorld {
 
     /// Rule A: moves the proposal (a push keeps the path progress of a followed proposal), or makes one.
     pub(super) fn move_proposal(&mut self, id: u32, x: f64, z: f64) {
-        let p = rob(&mut self.robots, id)
-            .proposal
-            .get_or_insert(Proposal {
-                x,
-                z,
-                lift: false,
-                walk: None,
-            });
+        let p = rob(&mut self.robots, id).proposal.get_or_insert(Proposal {
+            x,
+            z,
+            lift: false,
+            walk: None,
+        });
         p.x = x;
         p.z = z;
     }
@@ -479,7 +501,9 @@ impl NavWorld {
     }
 
     pub(super) fn walkable_at(&self, x: f64, z: f64) -> bool {
-        self.grid.cell_at(x, z).is_some_and(|c| self.grid.walk[c] == 1)
+        self.grid
+            .cell_at(x, z)
+            .is_some_and(|c| self.grid.walk[c] == 1)
     }
 
     pub(super) fn rest_height(&mut self, id: u32) {
@@ -506,7 +530,9 @@ impl NavWorld {
         // cancels it here. Waiting, holding and yielding keep it: nothing times a request out (lift-ctrl.ts).
         for lid in self.lifts.keys().copied().collect::<Vec<usize>>() {
             let ticket = self.lifts.get(&lid).map(|s| s.ctrl.ticket(id));
-            if matches!(ticket, Some(LiftTicket::Queued | LiftTicket::Boarding)) && !self.path_uses_lift(id, lid) {
+            if matches!(ticket, Some(LiftTicket::Queued | LiftTicket::Boarding))
+                && !self.path_uses_lift(id, lid)
+            {
                 if let Some(s) = self.lifts.get_mut(&lid) {
                     s.ctrl.cancel(id);
                 }
@@ -542,7 +568,17 @@ impl NavWorld {
 
         let (rx, rz, next0, from0, mut heading, turn_rate, speed, final_face, mut v) = {
             let r = &self.robots[&id];
-            (r.x, r.z, r.next, r.from, r.heading, r.turn_rate, r.speed, r.final_face, r.v)
+            (
+                r.x,
+                r.z,
+                r.next,
+                r.from,
+                r.heading,
+                r.turn_rate,
+                r.speed,
+                r.final_face,
+                r.v,
+            )
         };
         let used = next0 >= n;
         let (mut x, mut z) = (rx, rz);

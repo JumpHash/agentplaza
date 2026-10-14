@@ -120,8 +120,8 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use serde::{Deserialize, Serialize};
 
 use crate::events::{Event, EventBus};
-use crate::{ConnectedAgent, now_ms};
 use crate::tasks::{self, Task};
+use crate::{ConnectedAgent, now_ms};
 
 /// The absolute ceiling on posts the board holds. The owner's retention
 /// ([`Prune::posts_max`]) is the working cap, and sits below this; a post past
@@ -294,7 +294,12 @@ impl OwnerPostRequest {
     /// contract. The project's existence is the caller's to check.
     pub fn checked(&self) -> Result<CheckedOwnerPost, String> {
         let body = tasks::required_text("body", &self.body, MAX_BODY)?;
-        let subject = match self.subject.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        let subject = match self
+            .subject
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
             Some(subject) => tasks::required_text("subject", subject, MAX_SUBJECT)?,
             None => body.trim().chars().take(60).collect(),
         };
@@ -304,12 +309,18 @@ impl OwnerPostRequest {
         }
         let mut mentions: Vec<String> = Vec::new();
         for raw in &self.mentions {
-            let name = tasks::required_text("mention", raw.trim().trim_start_matches('@'), MAX_MENTION)?;
+            let name =
+                tasks::required_text("mention", raw.trim().trim_start_matches('@'), MAX_MENTION)?;
             if !mentions.iter().any(|seen| seen.eq_ignore_ascii_case(&name)) {
                 mentions.push(name);
             }
         }
-        Ok(CheckedOwnerPost { subject, body, project, mentions })
+        Ok(CheckedOwnerPost {
+            subject,
+            body,
+            project,
+            mentions,
+        })
     }
 }
 
@@ -762,11 +773,21 @@ impl Social {
 
     /// [`Social::board`] over the posts `keep` accepts: the newest `limit` of them, and their count.
     /// The unread counts are the board's own: a cursor counts every post, kept or not.
-    pub fn board_for(&self, connected: &[u64], limit: usize, keep: impl Fn(&PostView) -> bool) -> BoardView {
+    pub fn board_for(
+        &self,
+        connected: &[u64],
+        limit: usize,
+        keep: impl Fn(&PostView) -> bool,
+    ) -> BoardView {
         let inner = self.lock();
         let kept: Vec<&PostView> = inner.posts.iter().filter(|post| keep(post)).collect();
         let total = kept.len();
-        let posts = kept.iter().rev().take(limit).map(|post| (*post).clone()).collect();
+        let posts = kept
+            .iter()
+            .rev()
+            .take(limit)
+            .map(|post| (*post).clone())
+            .collect();
         let mut agents: Vec<u64> = connected.to_vec();
         for cid in inner.cursors.keys() {
             if !agents.contains(cid) {
@@ -864,7 +885,12 @@ impl Social {
 
     /// Every post `keep` accepts, oldest first: a whole thread, for an export.
     pub fn posts_matching(&self, keep: impl Fn(&PostView) -> bool) -> Vec<PostView> {
-        self.lock().posts.iter().filter(|post| keep(post)).cloned().collect()
+        self.lock()
+            .posts
+            .iter()
+            .filter(|post| keep(post))
+            .cloned()
+            .collect()
     }
 
     /// The most comments a post keeps; the oldest is dropped past it.
@@ -887,7 +913,9 @@ impl Social {
     ) -> Result<CommentView, SocialError> {
         let body = body.trim();
         if body.is_empty() {
-            return Err(SocialError::Invalid("a comment must not be empty".to_string()));
+            return Err(SocialError::Invalid(
+                "a comment must not be empty".to_string(),
+            ));
         }
         if body.chars().count() > Self::MAX_COMMENT_BODY {
             return Err(SocialError::Invalid(format!(
@@ -951,21 +979,39 @@ impl Social {
     pub fn attach(&self, on: &str, id: &str, files: &[String]) -> Result<(), SocialError> {
         let mut inner = self.lock();
         let slot = match on {
-            "post" => inner.posts.iter_mut().find(|p| p.id == id).map(|p| &mut p.attachments),
+            "post" => inner
+                .posts
+                .iter_mut()
+                .find(|p| p.id == id)
+                .map(|p| &mut p.attachments),
             "comment" => inner
                 .posts
                 .iter_mut()
                 .flat_map(|p| p.comments.iter_mut())
                 .find(|c| c.id == id)
                 .map(|c| &mut c.attachments),
-            "message" => inner.conversations.iter_mut().find(|c| c.id == id).map(|c| &mut c.attachments),
-            _ => return Err(SocialError::Invalid(format!("cannot attach files to a {on}"))),
+            "message" => inner
+                .conversations
+                .iter_mut()
+                .find(|c| c.id == id)
+                .map(|c| &mut c.attachments),
+            _ => {
+                return Err(SocialError::Invalid(format!(
+                    "cannot attach files to a {on}"
+                )));
+            }
         };
         let slot = slot.ok_or_else(|| SocialError::Unknown(format!("no {on} {id}")))?;
         *slot = files.to_vec();
         if on != "message" {
             // A board view refetches on any board frame, so the files show without a reload.
-            self.events.publish(Event::Board { kind: "attach", post: None, agent_cid: 0, role: String::new(), read_up_to: None });
+            self.events.publish(Event::Board {
+                kind: "attach",
+                post: None,
+                agent_cid: 0,
+                role: String::new(),
+                read_up_to: None,
+            });
         }
         Ok(())
     }
@@ -1145,16 +1191,23 @@ impl Social {
         let conversations = drop_oldest(
             &mut inner.conversations,
             policy.conversations_max,
-            policy.conversations_older_than_ms.map(|age| now.saturating_sub(age)),
+            policy
+                .conversations_older_than_ms
+                .map(|age| now.saturating_sub(age)),
             |row| row.created_at,
         );
         let posts = drop_oldest(
             &mut inner.posts,
             policy.posts_max,
-            policy.posts_older_than_ms.map(|age| now.saturating_sub(age)),
+            policy
+                .posts_older_than_ms
+                .map(|age| now.saturating_sub(age)),
             |post| post.created_at,
         );
-        Pruned { conversations, posts }
+        Pruned {
+            conversations,
+            posts,
+        }
     }
 
     /// One pair's thread: every exchange between the two CIDs, oldest first and
@@ -1224,7 +1277,10 @@ impl Social {
         .map_err(SocialError::Invalid)
         .and_then(|post| self.post(awarder, post));
         if let Err(refused) = &note {
-            eprintln!("noded: the award on {} posted no hiring note: {refused}", task.id());
+            eprintln!(
+                "noded: the award on {} posted no hiring note: {refused}",
+                task.id()
+            );
         }
         let mut linked = true;
         if awarder.cid == contractor.cid {
@@ -1240,7 +1296,10 @@ impl Social {
                 (contractor, awarder, WAS_HIRED),
             ] {
                 if let Err(refused) = self.link(one, other, kind) {
-                    eprintln!("noded: the award on {} recorded no {kind} contact: {refused}", task.id());
+                    eprintln!(
+                        "noded: the award on {} recorded no {kind} contact: {refused}",
+                        task.id()
+                    );
                     linked = false;
                 }
             }
@@ -1341,7 +1400,10 @@ fn unread_of(inner: &SocialInner, cursor: u64) -> usize {
 
 /// A conversation's numbered id (`c<seq>`), or `0` for one that is not.
 fn conv_seq(row: &ConversationView) -> u64 {
-    row.id.strip_prefix('c').and_then(|n| n.parse().ok()).unwrap_or(0)
+    row.id
+        .strip_prefix('c')
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(0)
 }
 
 /// The search as the matcher reads it: lowercased, or `None` for no filter.
@@ -1503,7 +1565,8 @@ impl Social {
 /// post it names, and no cursor past the board (its unread arithmetic would
 /// underflow).
 fn check_snapshot(state: &SocialInner) -> Result<(), String> {
-    let seq_of = |id: &str, prefix: char| id.strip_prefix(prefix).and_then(|n| n.parse::<u64>().ok());
+    let seq_of =
+        |id: &str, prefix: char| id.strip_prefix(prefix).and_then(|n| n.parse::<u64>().ok());
     let held = state.posts.len() as u64;
     if held > state.posts_seq {
         return Err(format!(
@@ -1516,22 +1579,36 @@ fn check_snapshot(state: &SocialInner) -> Result<(), String> {
     let mut comment_seqs = std::collections::BTreeSet::new();
     for (index, post) in state.posts.iter().enumerate() {
         if post.id != format!("p{}", first + index as u64 + 1) {
-            return Err(format!("post {} is out of place at position {}", post.id, index + 1));
+            return Err(format!(
+                "post {} is out of place at position {}",
+                post.id,
+                index + 1
+            ));
         }
         if post.comments.len() > Social::MAX_COMMENTS {
-            return Err(format!("post {} holds more than {} comments", post.id, Social::MAX_COMMENTS));
+            return Err(format!(
+                "post {} holds more than {} comments",
+                post.id,
+                Social::MAX_COMMENTS
+            ));
         }
         for comment in &post.comments {
             let seq = seq_of(&comment.id, 'c')
                 .ok_or_else(|| format!("comment id {:?} is malformed", comment.id))?;
             if seq == 0 || seq > state.comment_seq {
-                return Err(format!("comment {} is past the comment counter {}", comment.id, state.comment_seq));
+                return Err(format!(
+                    "comment {} is past the comment counter {}",
+                    comment.id, state.comment_seq
+                ));
             }
             if !comment_seqs.insert(seq) {
                 return Err(format!("comment id {} appears twice", comment.id));
             }
             if comment.post != post.id {
-                return Err(format!("comment {} is filed under {} but names {}", comment.id, post.id, comment.post));
+                return Err(format!(
+                    "comment {} is filed under {} but names {}",
+                    comment.id, post.id, comment.post
+                ));
             }
         }
     }
@@ -1547,7 +1624,11 @@ fn check_snapshot(state: &SocialInner) -> Result<(), String> {
         }
         last = seq;
     }
-    if let Some((cid, cursor)) = state.cursors.iter().find(|(_, cursor)| **cursor > state.posts_seq) {
+    if let Some((cid, cursor)) = state
+        .cursors
+        .iter()
+        .find(|(_, cursor)| **cursor > state.posts_seq)
+    {
         return Err(format!("agent {cid}'s cursor {cursor} is past the board"));
     }
     Ok(())
@@ -1652,9 +1733,13 @@ mod tests {
             .say(&builder, &scout, "are you free?", &|_, _, _| (true, None))
             .expect("an exchange");
         social
-            .say(&scout, &builder, "yes", &|_, _, _| (false, Some("offline".to_string())))
+            .say(&scout, &builder, "yes", &|_, _, _| {
+                (false, Some("offline".to_string()))
+            })
             .expect("a reply");
-        social.add_contact(&builder, &scout).expect("a contact link");
+        social
+            .add_contact(&builder, &scout)
+            .expect("a contact link");
         let json = social.snapshot();
 
         let (restored, notes) = lab();
@@ -1707,7 +1792,12 @@ mod tests {
             SocialError::Invalid("a comment must not be empty".to_string())
         );
         assert!(matches!(
-            social.comment("p1", None, "owner", &"x".repeat(Social::MAX_COMMENT_BODY + 1)),
+            social.comment(
+                "p1",
+                None,
+                "owner",
+                &"x".repeat(Social::MAX_COMMENT_BODY + 1)
+            ),
             Err(SocialError::Invalid(_))
         ));
     }
@@ -1718,9 +1808,15 @@ mod tests {
         let auth = agent(100, "builder");
         posted(&social, &auth, "first");
         posted(&social, &auth, "second");
-        social.comment("p1", Some(101), "scout", "one").expect("a comment");
-        social.comment("p2", None, "owner", "two").expect("a comment");
-        social.comment("p1", None, "owner", "three").expect("a comment");
+        social
+            .comment("p1", Some(101), "scout", "one")
+            .expect("a comment");
+        social
+            .comment("p2", None, "owner", "two")
+            .expect("a comment");
+        social
+            .comment("p1", None, "owner", "three")
+            .expect("a comment");
         let board = social.board(&[], 10);
         assert_eq!(board.posts[0].id, "p2");
         assert_eq!(board.posts[1].id, "p1");
@@ -1747,7 +1843,10 @@ mod tests {
         let thread = &board.posts[0].comments;
         assert_eq!(thread.len(), Social::MAX_COMMENTS);
         assert_eq!(thread[0].body, "comment 1");
-        assert_eq!(thread[Social::MAX_COMMENTS - 1].body, format!("comment {}", Social::MAX_COMMENTS));
+        assert_eq!(
+            thread[Social::MAX_COMMENTS - 1].body,
+            format!("comment {}", Social::MAX_COMMENTS)
+        );
     }
 
     #[test]
@@ -1831,14 +1930,22 @@ mod tests {
         assert_eq!(board.limit, BOARD_LIMIT);
         assert!(!board.truncated);
         assert_eq!(
-            board.posts.iter().map(|post| post.id.as_str()).collect::<Vec<_>>(),
+            board
+                .posts
+                .iter()
+                .map(|post| post.id.as_str())
+                .collect::<Vec<_>>(),
             ["p3", "p2", "p1"]
         );
 
         // The window is the newest posts, and says it cut the rest.
         let window = social.board(&[100], 2);
         assert_eq!(
-            window.posts.iter().map(|post| post.id.as_str()).collect::<Vec<_>>(),
+            window
+                .posts
+                .iter()
+                .map(|post| post.id.as_str())
+                .collect::<Vec<_>>(),
             ["p3", "p2"]
         );
         assert!(window.truncated, "the window dropped p1");
@@ -1859,21 +1966,35 @@ mod tests {
         assert_eq!(
             board.unread,
             vec![
-                UnreadView { agent_cid: 100, count: 3 },
-                UnreadView { agent_cid: 101, count: 3 },
+                UnreadView {
+                    agent_cid: 100,
+                    count: 3
+                },
+                UnreadView {
+                    agent_cid: 101,
+                    count: 3
+                },
             ],
             "ascending CID order, one row each"
         );
 
-        let read = social.read(&librarian, "p2").expect("a cursor on the board");
+        let read = social
+            .read(&librarian, "p2")
+            .expect("a cursor on the board");
         assert_eq!(read.unread, 1);
         assert_eq!(read.agent_cid, 101);
         assert_eq!(read.up_to, "p2");
         assert_eq!(
             social.board(&[100, 101], BOARD_LIMIT).unread,
             vec![
-                UnreadView { agent_cid: 100, count: 3 },
-                UnreadView { agent_cid: 101, count: 1 },
+                UnreadView {
+                    agent_cid: 100,
+                    count: 3
+                },
+                UnreadView {
+                    agent_cid: 101,
+                    count: 1
+                },
             ]
         );
         // The count follows the cursor, not the reader: a newer post is unread
@@ -1882,8 +2003,14 @@ mod tests {
         assert_eq!(
             social.board(&[100, 101], BOARD_LIMIT).unread,
             vec![
-                UnreadView { agent_cid: 100, count: 4 },
-                UnreadView { agent_cid: 101, count: 2 },
+                UnreadView {
+                    agent_cid: 100,
+                    count: 4
+                },
+                UnreadView {
+                    agent_cid: 101,
+                    count: 2
+                },
             ]
         );
     }
@@ -1904,7 +2031,10 @@ mod tests {
             SocialError::Conflict("up_to p3 is past the newest post p2".to_string())
         );
         // A cursor is monotonic: once at p2, p1 is behind it.
-        assert_eq!(social.read(&librarian, "p2").expect("on the board").unread, 0);
+        assert_eq!(
+            social.read(&librarian, "p2").expect("on the board").unread,
+            0
+        );
         assert_eq!(
             social.read(&librarian, "p1").unwrap_err(),
             SocialError::Conflict("up_to p1 is behind the agent's read cursor p2".to_string())
@@ -1912,7 +2042,13 @@ mod tests {
         // Idempotent: the cursor it already sits at is the same answer, and
         // nothing is published because nothing changed.
         while notes.try_recv().is_ok() {}
-        assert_eq!(social.read(&librarian, "p2").expect("the same cursor").unread, 0);
+        assert_eq!(
+            social
+                .read(&librarian, "p2")
+                .expect("the same cursor")
+                .unread,
+            0
+        );
         assert!(
             notes.try_recv().is_err(),
             "a replay publishes nothing: the bus is quiet"
@@ -1969,16 +2105,30 @@ mod tests {
             let mut inner = social.lock();
             let template = inner.posts[0].clone();
             inner.posts = (1..=MAX_POSTS as u64)
-                .map(|seq| PostView { id: format!("p{seq}"), ..template.clone() })
+                .map(|seq| PostView {
+                    id: format!("p{seq}"),
+                    ..template.clone()
+                })
                 .collect();
             inner.posts_seq = MAX_POSTS as u64;
         }
         let next = posted(&social, &auth, "one more");
-        assert_eq!(next.id, format!("p{}", MAX_POSTS + 1), "the id keeps counting");
+        assert_eq!(
+            next.id,
+            format!("p{}", MAX_POSTS + 1),
+            "the id keeps counting"
+        );
         let inner = social.lock();
         assert_eq!(inner.posts.len(), MAX_POSTS, "still at the ceiling");
-        assert_eq!(inner.posts.first().map(|p| p.id.as_str()), Some("p2"), "the oldest went");
-        assert_eq!(inner.posts.last().map(|p| p.id.as_str()), Some(next.id.as_str()));
+        assert_eq!(
+            inner.posts.first().map(|p| p.id.as_str()),
+            Some("p2"),
+            "the oldest went"
+        );
+        assert_eq!(
+            inner.posts.last().map(|p| p.id.as_str()),
+            Some(next.id.as_str())
+        );
     }
 
     #[test]
@@ -2032,12 +2182,18 @@ mod tests {
             SocialError::Unknown("no agent with guest CID 999".to_string())
         );
         assert_eq!(
-            social.contacts(999, Presence::Live).expect("a live agent").total,
+            social
+                .contacts(999, Presence::Live)
+                .expect("a live agent")
+                .total,
             0
         );
         // A list this store holds outlives the agent's liveness: the record is
         // not thrown away when a VM stops.
-        assert_eq!(social.contacts(100, Presence::Absent).expect("held").total, 1);
+        assert_eq!(
+            social.contacts(100, Presence::Absent).expect("held").total,
+            1
+        );
     }
 
     #[test]
@@ -2061,7 +2217,9 @@ mod tests {
             );
         }
         assert_eq!(
-            social.add_contact(&builder, &agent(101, "librarian")).unwrap_err(),
+            social
+                .add_contact(&builder, &agent(101, "librarian"))
+                .unwrap_err(),
             SocialError::Conflict(format!(
                 "agent 100 holds its cap of {MAX_CONTACTS_PER_AGENT} contacts"
             ))
@@ -2103,8 +2261,7 @@ mod tests {
         assert_eq!(note.role, "mayor");
         assert_eq!(note.posted_by, "mayor");
         assert_eq!(
-            note.body,
-            "builder — ship the social layer (acceptance: the board shows the note)",
+            note.body, "builder — ship the social layer (acceptance: the board shows the note)",
             "the body is a template over the task's own fields"
         );
 
@@ -2145,11 +2302,19 @@ mod tests {
         assert!(again.note.is_ok());
         assert!(again.linked);
         assert_eq!(
-            social.contacts(100, Presence::Live).expect("known").contacts[0].kind,
+            social
+                .contacts(100, Presence::Live)
+                .expect("known")
+                .contacts[0]
+                .kind,
             HIRED
         );
         assert_eq!(
-            social.contacts(101, Presence::Live).expect("known").contacts[0].kind,
+            social
+                .contacts(101, Presence::Live)
+                .expect("known")
+                .contacts[0]
+                .kind,
             WAS_HIRED
         );
     }
@@ -2204,7 +2369,11 @@ mod tests {
             "the clamp cut on a character boundary"
         );
         assert_eq!(clamp("short", MAX_BODY), "short");
-        assert_eq!(clamp(&"é".repeat(3), 3), "é", "a 2-byte char at 3 bytes cuts to one");
+        assert_eq!(
+            clamp(&"é".repeat(3), 3),
+            "é",
+            "a 2-byte char at 3 bytes cuts to one"
+        );
     }
 
     #[test]
@@ -2215,7 +2384,12 @@ mod tests {
         let reviewer = agent(102, "reviewer");
 
         let first = social
-            .say(&builder, &librarian, "do you have the plans?", &|_, _, _| (true, None))
+            .say(
+                &builder,
+                &librarian,
+                "do you have the plans?",
+                &|_, _, _| (true, None),
+            )
             .expect("a room in the record");
         assert_eq!(first.id, "c1");
         assert_eq!(first.from_cid, 100);
@@ -2238,7 +2412,10 @@ mod tests {
         assert_eq!(all.total, 3);
         assert!(!all.truncated);
         assert_eq!(
-            all.conversations.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(),
+            all.conversations
+                .iter()
+                .map(|row| row.id.as_str())
+                .collect::<Vec<_>>(),
             ["c3", "c2", "c1"]
         );
         let window = social.conversations(&page(1));
@@ -2252,7 +2429,11 @@ mod tests {
         let thread = social.thread(100, 101, &page(CONVERSATIONS_LIMIT));
         assert_eq!(thread.total, 2);
         assert_eq!(
-            thread.messages.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(),
+            thread
+                .messages
+                .iter()
+                .map(|row| row.id.as_str())
+                .collect::<Vec<_>>(),
             ["c1", "c2"]
         );
         assert!(thread.active, "an exchange just happened");
@@ -2266,7 +2447,11 @@ mod tests {
         let bounded = social.thread(100, 101, &page(1));
         assert!(bounded.truncated);
         assert_eq!(
-            bounded.messages.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(),
+            bounded
+                .messages
+                .iter()
+                .map(|row| row.id.as_str())
+                .collect::<Vec<_>>(),
             ["c2"],
             "the newest exchange is what the window keeps",
         );
@@ -2288,7 +2473,9 @@ mod tests {
         );
         // And an agent does not speak to itself.
         assert_eq!(
-            social.say(&builder, &builder, "hello me", &|_, _, _| (true, None)).unwrap_err(),
+            social
+                .say(&builder, &builder, "hello me", &|_, _, _| (true, None))
+                .unwrap_err(),
             SocialError::Conflict("guest CID 100 cannot speak to itself".to_string())
         );
     }
@@ -2312,7 +2499,10 @@ mod tests {
         assert!(is_active(1_000_000, 1_000_000));
         assert!(is_active(1_000_000, 1_000_000 + ACTIVE_SECS * 1000));
         assert!(!is_active(1_000_000, 1_000_000 + ACTIVE_SECS * 1000 + 1));
-        assert!(is_active(1_000_000, 999_000), "a clock that went back is not a gap");
+        assert!(
+            is_active(1_000_000, 999_000),
+            "a clock that went back is not a gap"
+        );
 
         let rows = vec![
             row("c1", 101, 100, 1000),
@@ -2368,7 +2558,10 @@ mod tests {
                 attachments: Vec::new(),
             };
             inner.conversations = (1..=MAX_CONVERSATIONS as u64)
-                .map(|seq| ConversationView { id: format!("c{seq}"), ..template.clone() })
+                .map(|seq| ConversationView {
+                    id: format!("c{seq}"),
+                    ..template.clone()
+                })
                 .collect();
             inner.conv_seq = MAX_CONVERSATIONS as u64;
         }
@@ -2377,16 +2570,27 @@ mod tests {
         let view = social.conversations(&page(1));
         assert_eq!(view.total, MAX_CONVERSATIONS);
         assert_eq!(view.conversations[0].id, row.id);
-        assert_eq!(social.lock().conversations.first().map(|r| r.id.as_str()), Some("c2"));
+        assert_eq!(
+            social.lock().conversations.first().map(|r| r.id.as_str()),
+            Some("c2")
+        );
     }
 
     /// A query for one page of `limit` exchanges, no search.
     fn page(limit: usize) -> ConversationQuery {
-        ConversationQuery { limit, ..ConversationQuery::default() }
+        ConversationQuery {
+            limit,
+            ..ConversationQuery::default()
+        }
     }
 
     /// Records one exchange from `from` to `to` that the peer took.
-    fn said(social: &Social, from: &ConnectedAgent, to: &ConnectedAgent, text: &str) -> ConversationView {
+    fn said(
+        social: &Social,
+        from: &ConnectedAgent,
+        to: &ConnectedAgent,
+        text: &str,
+    ) -> ConversationView {
         social
             .say(from, to, text, &|_, _, _| (true, None))
             .expect("an exchange is recorded")
@@ -2410,11 +2614,20 @@ mod tests {
         for index in 1..=5 {
             said(&social, &builder, &librarian, &format!("message {index}"));
         }
-        assert_eq!(social.prune(keep(3, 1024)), Pruned { conversations: 2, posts: 0 });
+        assert_eq!(
+            social.prune(keep(3, 1024)),
+            Pruned {
+                conversations: 2,
+                posts: 0
+            }
+        );
         let view = social.conversations(&page(10));
         assert_eq!(view.total, 3);
         assert_eq!(
-            view.conversations.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(),
+            view.conversations
+                .iter()
+                .map(|row| row.id.as_str())
+                .collect::<Vec<_>>(),
             ["c5", "c4", "c3"]
         );
         // Pruning again with nothing to drop changes nothing.
@@ -2445,10 +2658,30 @@ mod tests {
             posts_max: 100,
             posts_older_than_ms: Some(3_600_000),
         };
-        assert_eq!(social.prune(hour), Pruned { conversations: 1, posts: 1 });
+        assert_eq!(
+            social.prune(hour),
+            Pruned {
+                conversations: 1,
+                posts: 1
+            }
+        );
         let view = social.conversations(&page(10));
-        assert_eq!(view.conversations.iter().map(|row| row.text.as_str()).collect::<Vec<_>>(), ["fresh"]);
-        assert_eq!(social.board(&[], 10).posts.iter().map(|p| p.subject.as_str()).collect::<Vec<_>>(), ["fresh post"]);
+        assert_eq!(
+            view.conversations
+                .iter()
+                .map(|row| row.text.as_str())
+                .collect::<Vec<_>>(),
+            ["fresh"]
+        );
+        assert_eq!(
+            social
+                .board(&[], 10)
+                .posts
+                .iter()
+                .map(|p| p.subject.as_str())
+                .collect::<Vec<_>>(),
+            ["fresh post"]
+        );
     }
 
     #[test]
@@ -2467,9 +2700,23 @@ mod tests {
         // not the three posts the raw arithmetic would name.
         let board = social.board(&[100, 101], 10);
         assert_eq!(board.total, 2);
-        assert_eq!(board.unread.iter().find(|u| u.agent_cid == 101).map(|u| u.count), Some(2));
+        assert_eq!(
+            board
+                .unread
+                .iter()
+                .find(|u| u.agent_cid == 101)
+                .map(|u| u.count),
+            Some(2)
+        );
         // An author with no cursor also sees only the held posts as unread.
-        assert_eq!(board.unread.iter().find(|u| u.agent_cid == 100).map(|u| u.count), Some(2));
+        assert_eq!(
+            board
+                .unread
+                .iter()
+                .find(|u| u.agent_cid == 100)
+                .map(|u| u.count),
+            Some(2)
+        );
         let next = social.read(&reader, "p5").expect("p5 is readable");
         assert_eq!(next.unread, 0);
     }
@@ -2483,25 +2730,72 @@ mod tests {
             said(&social, &builder, &librarian, &format!("message {index}"));
         }
         let first = social.conversations(&page(2));
-        assert_eq!(first.conversations.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["c5", "c4"]);
+        assert_eq!(
+            first
+                .conversations
+                .iter()
+                .map(|r| r.id.as_str())
+                .collect::<Vec<_>>(),
+            ["c5", "c4"]
+        );
         assert_eq!(first.next_before, Some(4));
         assert!(first.truncated);
 
-        let second = social.conversations(&ConversationQuery { before: first.next_before, ..page(2) });
-        assert_eq!(second.conversations.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["c3", "c2"]);
+        let second = social.conversations(&ConversationQuery {
+            before: first.next_before,
+            ..page(2)
+        });
+        assert_eq!(
+            second
+                .conversations
+                .iter()
+                .map(|r| r.id.as_str())
+                .collect::<Vec<_>>(),
+            ["c3", "c2"]
+        );
         assert_eq!(second.next_before, Some(2));
 
-        let last = social.conversations(&ConversationQuery { before: second.next_before, ..page(2) });
-        assert_eq!(last.conversations.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["c1"]);
+        let last = social.conversations(&ConversationQuery {
+            before: second.next_before,
+            ..page(2)
+        });
+        assert_eq!(
+            last.conversations
+                .iter()
+                .map(|r| r.id.as_str())
+                .collect::<Vec<_>>(),
+            ["c1"]
+        );
         assert_eq!(last.next_before, None);
         assert!(!last.truncated);
 
         // A thread pages the same way, each page oldest first.
         let thread = social.thread(101, 100, &page(2));
-        assert_eq!(thread.messages.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["c4", "c5"]);
+        assert_eq!(
+            thread
+                .messages
+                .iter()
+                .map(|r| r.id.as_str())
+                .collect::<Vec<_>>(),
+            ["c4", "c5"]
+        );
         assert_eq!(thread.next_before, Some(4));
-        let older = social.thread(100, 101, &ConversationQuery { before: thread.next_before, ..page(2) });
-        assert_eq!(older.messages.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["c2", "c3"]);
+        let older = social.thread(
+            100,
+            101,
+            &ConversationQuery {
+                before: thread.next_before,
+                ..page(2)
+            },
+        );
+        assert_eq!(
+            older
+                .messages
+                .iter()
+                .map(|r| r.id.as_str())
+                .collect::<Vec<_>>(),
+            ["c2", "c3"]
+        );
         assert_eq!(older.total, 5);
     }
 
@@ -2515,23 +2809,61 @@ mod tests {
         said(&social, &builder, &librarian, "lunch?");
         said(&social, &librarian, &reviewer, "nothing to see");
 
-        let by_text = ConversationQuery { text: Some("budget".into()), ..page(10) };
+        let by_text = ConversationQuery {
+            text: Some("budget".into()),
+            ..page(10)
+        };
         assert_eq!(
-            social.conversations(&by_text).conversations.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
+            social
+                .conversations(&by_text)
+                .conversations
+                .iter()
+                .map(|r| r.id.as_str())
+                .collect::<Vec<_>>(),
             ["c1"],
             "the match is case-insensitive"
         );
-        let by_role = ConversationQuery { text: Some("reviewer".into()), ..page(10) };
-        assert_eq!(social.conversations(&by_role).conversations.len(), 1, "a role is searched too");
-        // A name the caller mapped to a CID matches every exchange that CID is in.
-        let by_name = ConversationQuery { text: Some("zzz".into()), cids: vec![102], ..page(10) };
+        let by_role = ConversationQuery {
+            text: Some("reviewer".into()),
+            ..page(10)
+        };
         assert_eq!(
-            social.conversations(&by_name).conversations.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
+            social.conversations(&by_role).conversations.len(),
+            1,
+            "a role is searched too"
+        );
+        // A name the caller mapped to a CID matches every exchange that CID is in.
+        let by_name = ConversationQuery {
+            text: Some("zzz".into()),
+            cids: vec![102],
+            ..page(10)
+        };
+        assert_eq!(
+            social
+                .conversations(&by_name)
+                .conversations
+                .iter()
+                .map(|r| r.id.as_str())
+                .collect::<Vec<_>>(),
             ["c3"]
         );
         // Search narrows the thread too; the pair's total is still the whole pair.
-        let thread = social.thread(100, 101, &ConversationQuery { text: Some("lunch".into()), ..page(10) });
-        assert_eq!(thread.messages.iter().map(|r| r.text.as_str()).collect::<Vec<_>>(), ["lunch?"]);
+        let thread = social.thread(
+            100,
+            101,
+            &ConversationQuery {
+                text: Some("lunch".into()),
+                ..page(10)
+            },
+        );
+        assert_eq!(
+            thread
+                .messages
+                .iter()
+                .map(|r| r.text.as_str())
+                .collect::<Vec<_>>(),
+            ["lunch?"]
+        );
         assert_eq!(thread.total, 2);
         assert!(thread.next_before.is_none());
     }
@@ -2607,7 +2939,12 @@ mod tests {
 mod owner_post_tests {
     use super::*;
 
-    fn request(subject: Option<&str>, body: &str, project: Option<&str>, mentions: &[&str]) -> OwnerPostRequest {
+    fn request(
+        subject: Option<&str>,
+        body: &str,
+        project: Option<&str>,
+        mentions: &[&str],
+    ) -> OwnerPostRequest {
         OwnerPostRequest {
             subject: subject.map(str::to_string),
             body: body.to_string(),
@@ -2618,20 +2955,46 @@ mod owner_post_tests {
 
     #[test]
     fn an_owner_post_is_checked_and_its_mentions_normalized() {
-        let checked = request(None, "  ship the release  ", Some("pr1"), &["@builder", "BUILDER", " all "])
-            .checked()
-            .expect("a valid owner post");
-        assert_eq!(checked.subject, "ship the release", "the subject defaults to the body's start, trimmed");
+        let checked = request(
+            None,
+            "  ship the release  ",
+            Some("pr1"),
+            &["@builder", "BUILDER", " all "],
+        )
+        .checked()
+        .expect("a valid owner post");
+        assert_eq!(
+            checked.subject, "ship the release",
+            "the subject defaults to the body's start, trimmed"
+        );
         assert_eq!(checked.body, "  ship the release  ");
         assert_eq!(checked.project.as_deref(), Some("pr1"));
-        assert_eq!(checked.mentions, vec!["builder".to_string(), "all".to_string()]);
+        assert_eq!(
+            checked.mentions,
+            vec!["builder".to_string(), "all".to_string()]
+        );
 
-        assert!(request(None, "   ", None, &[]).checked().is_err(), "an empty body is refused");
-        assert!(request(Some("  "), "x", None, &[]).checked().is_ok(), "a blank subject takes the default");
-        assert!(request(None, "x", None, &["@"]).checked().is_err(), "an empty mention is refused");
+        assert!(
+            request(None, "   ", None, &[]).checked().is_err(),
+            "an empty body is refused"
+        );
+        assert!(
+            request(Some("  "), "x", None, &[]).checked().is_ok(),
+            "a blank subject takes the default"
+        );
+        assert!(
+            request(None, "x", None, &["@"]).checked().is_err(),
+            "an empty mention is refused"
+        );
         let many: Vec<String> = (0..=MAX_MENTIONS).map(|i| format!("a{i}")).collect();
-        let refused = OwnerPostRequest { mentions: many, ..request(None, "x", None, &[]) };
-        assert!(refused.checked().is_err(), "more than the cap of mentions is refused");
+        let refused = OwnerPostRequest {
+            mentions: many,
+            ..request(None, "x", None, &[])
+        };
+        assert!(
+            refused.checked().is_err(),
+            "more than the cap of mentions is refused"
+        );
         let long = "x".repeat(MAX_MENTION + 1);
         assert!(request(None, "x", None, &[&long]).checked().is_err());
     }
@@ -2641,10 +3004,15 @@ mod owner_post_tests {
         let events = EventBus::new();
         let notes = events.subscribe();
         let social = Social::new(events);
-        let checked = request(Some("hello"), "all hands", Some("pr2"), &["all"]).checked().unwrap();
+        let checked = request(Some("hello"), "all hands", Some("pr2"), &["all"])
+            .checked()
+            .unwrap();
         let view = social.post_as_owner(checked);
         assert_eq!(view.id, "p1");
-        assert_eq!((view.agent_cid, view.role.as_str(), view.owner), (0, OWNER_ROLE, true));
+        assert_eq!(
+            (view.agent_cid, view.role.as_str(), view.owner),
+            (0, OWNER_ROLE, true)
+        );
         assert_eq!(view.project.as_deref(), Some("pr2"));
         assert_eq!(view.mentions, vec!["all".to_string()]);
         let frame = notes.try_recv().expect("the post is published");
@@ -2656,14 +3024,28 @@ mod owner_post_tests {
     fn the_board_can_be_filtered_and_the_export_is_the_whole_thread_oldest_first() {
         let social = Social::new(EventBus::new());
         for (subject, project) in [("one", Some("pr1")), ("two", None), ("three", Some("pr1"))] {
-            let checked = request(Some(subject), "body", project, &[]).checked().unwrap();
+            let checked = request(Some(subject), "body", project, &[])
+                .checked()
+                .unwrap();
             social.post_as_owner(checked);
         }
         let kept = social.board_for(&[], 10, |post| post.project.as_deref() == Some("pr1"));
         assert_eq!(kept.total, 2);
-        assert_eq!(kept.posts.iter().map(|p| p.subject.as_str()).collect::<Vec<_>>(), vec!["three", "one"]);
+        assert_eq!(
+            kept.posts
+                .iter()
+                .map(|p| p.subject.as_str())
+                .collect::<Vec<_>>(),
+            vec!["three", "one"]
+        );
         let thread = social.posts_matching(|post| post.project.as_deref() == Some("pr1"));
-        assert_eq!(thread.iter().map(|p| p.subject.as_str()).collect::<Vec<_>>(), vec!["one", "three"]);
+        assert_eq!(
+            thread
+                .iter()
+                .map(|p| p.subject.as_str())
+                .collect::<Vec<_>>(),
+            vec!["one", "three"]
+        );
         assert_eq!(social.board(&[], 10).total, 3);
     }
 }

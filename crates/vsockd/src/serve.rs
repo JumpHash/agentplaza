@@ -14,9 +14,9 @@
 
 use std::fmt;
 use std::io::{self, Read, Write};
-use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -132,9 +132,17 @@ pub fn handle_session<S: Read + Write + ReadTimeout>(
         Recv::Idle => return Err(violation("the guest sent no hello within the read timeout")),
         Recv::Closed => return Err(violation("the guest closed before sending hello")),
     };
-    log.line(&format!("[guest {peer_cid} vm? ->] {}", sanitize_for_log(&line)));
+    log.line(&format!(
+        "[guest {peer_cid} vm? ->] {}",
+        sanitize_for_log(&line)
+    ));
     let (vm, role, keepalive) = match GuestMessage::from_line(&line) {
-        Ok(GuestMessage::Hello { vm, guest_cid, role, keepalive }) => {
+        Ok(GuestMessage::Hello {
+            vm,
+            guest_cid,
+            role,
+            keepalive,
+        }) => {
             // Identity is the socket path's; a guest claiming another CID is dropped.
             if guest_cid != peer_cid {
                 return Err(violation(format!(
@@ -145,17 +153,30 @@ pub fn handle_session<S: Read + Write + ReadTimeout>(
             (vm, role, keepalive == Some(true))
         }
         Ok(other) => return Err(violation(format!("{} before hello", guest_kind(&other)))),
-        Err(err) => return Err(violation(format!("unparsable guest line ({err}): {line:?}"))),
+        Err(err) => {
+            return Err(violation(format!(
+                "unparsable guest line ({err}): {line:?}"
+            )));
+        }
     };
-    let session = Session { cid: peer_cid, vm, limits, log };
+    let session = Session {
+        cid: peer_cid,
+        vm,
+        limits,
+        log,
+    };
     if !keepalive {
         session.send(lines, &HostMessage::welcome(None, None, None))?;
         return session.v1(lines);
     }
     let Some(idle) = limits.keepalive_idle else {
-        return Err(violation("a keepalive hello on a daemon configured for one-shot sessions only"));
+        return Err(violation(
+            "a keepalive hello on a daemon configured for one-shot sessions only",
+        ));
     };
-    lines.get_ref().set_read_timeout(Some(limits.keepalive_read_slice))?;
+    lines
+        .get_ref()
+        .set_read_timeout(Some(limits.keepalive_read_slice))?;
     let outcome = session.keepalive(lines, role.as_deref().unwrap_or(""), idle, hub, clock);
     session.gone(hub, &outcome);
     outcome
@@ -174,7 +195,11 @@ impl Session<'_> {
         let (cid, vm) = (self.cid, self.vm);
         let mut calls = 0u64;
         loop {
-            if self.limits.deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            if self
+                .limits
+                .deadline
+                .is_some_and(|deadline| Instant::now() >= deadline)
+            {
                 return Err(violation("session deadline exceeded"));
             }
             let line = match lines.recv()? {
@@ -187,18 +212,36 @@ impl Session<'_> {
                     self.charge(&mut calls, &name)?;
                     let (ok, output) = run_tool(&name, &args);
                     self.send(lines, &HostMessage::ToolResult { call, ok, output })?;
-                    self.log.line(&format!("vsockd: answered call {call} ({}) for guest {cid} vm {vm}", sanitize_for_log(&name)));
+                    self.log.line(&format!(
+                        "vsockd: answered call {call} ({}) for guest {cid} vm {vm}",
+                        sanitize_for_log(&name)
+                    ));
                 }
                 GuestMessage::Bye { calls: guest_calls } => {
                     if guest_calls != calls {
                         self.log.line(&format!("vsockd: guest {cid} vm {vm} counted {guest_calls} tool calls, this side counted {calls}"));
                     }
-                    self.log.line(&format!("vsockd: guest {cid} vm {vm} said bye after {calls} tool calls"));
-                    return Ok(SessionSummary { guest_cid: cid, vm, calls, guest_calls, keepalive: false });
+                    self.log.line(&format!(
+                        "vsockd: guest {cid} vm {vm} said bye after {calls} tool calls"
+                    ));
+                    return Ok(SessionSummary {
+                        guest_cid: cid,
+                        vm,
+                        calls,
+                        guest_calls,
+                        keepalive: false,
+                    });
                 }
-                GuestMessage::Hello { .. } => return Err(violation(format!("a second hello from guest {cid} vm {vm}"))),
+                GuestMessage::Hello { .. } => {
+                    return Err(violation(format!(
+                        "a second hello from guest {cid} vm {vm}"
+                    )));
+                }
                 other => {
-                    return Err(violation(format!("{} in a session that did not ask for keepalive", guest_kind(&other))));
+                    return Err(violation(format!(
+                        "{} in a session that did not ask for keepalive",
+                        guest_kind(&other)
+                    )));
                 }
             }
         }
@@ -221,7 +264,12 @@ impl Session<'_> {
         let _registered = Registration { hub, cid, token };
         let apid = hub.apid();
         let (settled_tx, settled) = channel();
-        let bridge = Bridge { apid: Arc::clone(&apid), in_flight: Arc::new(AtomicUsize::new(0)), settled_tx, settled };
+        let bridge = Bridge {
+            apid: Arc::clone(&apid),
+            in_flight: Arc::new(AtomicUsize::new(0)),
+            settled_tx,
+            settled,
+        };
         // The profile is asked for before the welcome. Without one (apid down, or none
         // for this agent) the hub asks again every HELLO_RETRY until one comes.
         let mut profile = None;
@@ -229,13 +277,18 @@ impl Session<'_> {
         if apid.enabled() {
             match apid.hello(cid, role, self.vm) {
                 Ok(found) => profile = found,
-                Err(err) => self.log.line(&format!("vsockd: agent {cid} hello to apid failed: {err}")),
+                Err(err) => self
+                    .log
+                    .line(&format!("vsockd: agent {cid} hello to apid failed: {err}")),
             }
             if profile.is_none() {
                 next_hello = Some(clock.now() + HELLO_RETRY);
             }
         }
-        self.send(lines, &HostMessage::welcome(Some(role.to_string()), Some(true), profile))?;
+        self.send(
+            lines,
+            &HostMessage::welcome(Some(role.to_string()), Some(true), profile),
+        )?;
 
         let mut calls = 0u64;
         // Dispatched tool calls not yet answered, and who waits on each.
@@ -267,7 +320,14 @@ impl Session<'_> {
                         self.charge(&mut calls, &name)?;
                         hub.note_calls(cid, calls);
                         outstanding.push((calls, reply));
-                        self.send(lines, &HostMessage::ToolCall { call: calls, name, args })?;
+                        self.send(
+                            lines,
+                            &HostMessage::ToolCall {
+                                call: calls,
+                                name,
+                                args,
+                            },
+                        )?;
                     }
                     Command::Send { message, written } => {
                         self.send(lines, &message)?;
@@ -283,10 +343,14 @@ impl Session<'_> {
                 Recv::Line(line) => line,
                 Recv::Idle => continue,
                 Recv::Closed if stopping => {
-                    return Err(HostError::Dropped("the agent dropped after a stop, before its bye".into()));
+                    return Err(HostError::Dropped(
+                        "the agent dropped after a stop, before its bye".into(),
+                    ));
                 }
                 Recv::Closed => {
-                    return Err(HostError::Dropped("the agent's connection dropped; it reconnects with backoff".into()));
+                    return Err(HostError::Dropped(
+                        "the agent's connection dropped; it reconnects with backoff".into(),
+                    ));
                 }
             };
             match self.parse(&line)? {
@@ -316,21 +380,34 @@ impl Session<'_> {
                     hub.note_calls(cid, calls);
                     let (ok, output) = run_tool(&name, &args);
                     self.send(lines, &HostMessage::ToolResult { call, ok, output })?;
-                    self.log.line(&format!("vsockd: answered call {call} ({}) for agent {cid}", sanitize_for_log(&name)));
+                    self.log.line(&format!(
+                        "vsockd: answered call {call} ({}) for agent {cid}",
+                        sanitize_for_log(&name)
+                    ));
                 }
                 GuestMessage::Bye { calls: guest_calls } => {
                     if guest_calls != calls {
                         self.log.line(&format!("vsockd: agent {cid} counted {guest_calls} tool calls, this side counted {calls}"));
                     }
                     hub.end_clean(cid, token, calls, guest_calls);
-                    return Ok(SessionSummary { guest_cid: cid, vm: self.vm, calls, guest_calls, keepalive: true });
+                    return Ok(SessionSummary {
+                        guest_cid: cid,
+                        vm: self.vm,
+                        calls,
+                        guest_calls,
+                        keepalive: true,
+                    });
                 }
-                GuestMessage::Hello { .. } => return Err(violation(format!("a second hello from agent {cid}"))),
+                GuestMessage::Hello { .. } => {
+                    return Err(violation(format!("a second hello from agent {cid}")));
+                }
                 message @ (GuestMessage::ModelCall { .. }
                 | GuestMessage::ToolRequest { .. }
                 | GuestMessage::ToolReport { .. }
                 | GuestMessage::WorkDone { .. }
-                | GuestMessage::Compressed { .. }) => self.forward(lines, &bridge, &line, message)?,
+                | GuestMessage::Compressed { .. }) => {
+                    self.forward(lines, &bridge, &line, message)?
+                }
             }
         }
     }
@@ -346,24 +423,36 @@ impl Session<'_> {
     ) -> Result<(), HostError> {
         let (cid, kind) = (self.cid, guest_kind(&message));
         if bridge.in_flight.load(Ordering::SeqCst) >= MAX_FORWARDS {
-            let reason = format!("the hub already has {MAX_FORWARDS} forwards in flight for agent {cid}");
-            self.log.line(&format!("vsockd: agent {cid} {kind} refused: {reason}"));
+            let reason =
+                format!("the hub already has {MAX_FORWARDS} forwards in flight for agent {cid}");
+            self.log
+                .line(&format!("vsockd: agent {cid} {kind} refused: {reason}"));
             if let Some(reply) = apid::refusal(&message, &reason) {
                 self.send(lines, &reply)?;
             }
             return Ok(());
         }
         bridge.in_flight.fetch_add(1, Ordering::SeqCst);
-        let (apid, in_flight, tx, line) =
-            (Arc::clone(&bridge.apid), Arc::clone(&bridge.in_flight), bridge.settled_tx.clone(), line.to_string());
+        let (apid, in_flight, tx, line) = (
+            Arc::clone(&bridge.apid),
+            Arc::clone(&bridge.in_flight),
+            bridge.settled_tx.clone(),
+            line.to_string(),
+        );
         thread::spawn(move || {
             let done = match apid.message(cid, &line) {
-                Ok(Some(reply)) => Settled { note: format!("apid answered {kind}"), line: Some(reply) },
+                Ok(Some(reply)) => Settled {
+                    note: format!("apid answered {kind}"),
+                    line: Some(reply),
+                },
                 Ok(None) => Settled {
                     note: format!("apid sent no reply to {kind}"),
                     line: apid::refusal(&message, "apid sent no reply"),
                 },
-                Err(err) => Settled { note: format!("apid failed {kind}: {err}"), line: apid::refusal(&message, &err) },
+                Err(err) => Settled {
+                    note: format!("apid failed {kind}: {err}"),
+                    line: apid::refusal(&message, &err),
+                },
             };
             in_flight.fetch_sub(1, Ordering::SeqCst);
             let _ = tx.send(done);
@@ -382,14 +471,23 @@ impl Session<'_> {
             Err(err) => err.to_string(),
         };
         if let Err(err) = apid.gone(self.cid, &reason) {
-            self.log.line(&format!("vsockd: agent {} gone notice to apid failed: {err}", self.cid));
+            self.log.line(&format!(
+                "vsockd: agent {} gone notice to apid failed: {err}",
+                self.cid
+            ));
         }
     }
 
     /// Logs a guest line and parses it; an unparsable line drops the session.
     fn parse(&self, line: &str) -> Result<GuestMessage, HostError> {
-        self.log.line(&format!("[guest {} vm{} ->] {}", self.cid, self.vm, sanitize_for_log(line)));
-        GuestMessage::from_line(line).map_err(|err| violation(format!("unparsable guest line ({err}): {line:?}")))
+        self.log.line(&format!(
+            "[guest {} vm{} ->] {}",
+            self.cid,
+            self.vm,
+            sanitize_for_log(line)
+        ));
+        GuestMessage::from_line(line)
+            .map_err(|err| violation(format!("unparsable guest line ({err}): {line:?}")))
     }
 
     /// Counts one tool call against the session's budget.
@@ -408,8 +506,15 @@ impl Session<'_> {
     }
 
     fn send<S: Write>(&self, lines: &mut Lines<S>, message: &HostMessage) -> Result<(), HostError> {
-        let line = message.to_line().map_err(|err| violation(format!("cannot encode a host line: {err}")))?;
-        self.log.line(&format!("[<-] guest {} vm{} {}", self.cid, self.vm, sanitize_for_log(&line)));
+        let line = message
+            .to_line()
+            .map_err(|err| violation(format!("cannot encode a host line: {err}")))?;
+        self.log.line(&format!(
+            "[<-] guest {} vm{} {}",
+            self.cid,
+            self.vm,
+            sanitize_for_log(&line)
+        ));
         lines.send(&line)?;
         Ok(())
     }
@@ -433,14 +538,25 @@ struct Settled {
 impl Bridge {
     /// Asks apid for the profile again, on a thread (a hello is bounded at 2 s).
     fn hello(&self, cid: u32, role: &str, vm: u32) {
-        let (apid, tx, role) = (Arc::clone(&self.apid), self.settled_tx.clone(), role.to_string());
+        let (apid, tx, role) = (
+            Arc::clone(&self.apid),
+            self.settled_tx.clone(),
+            role.to_string(),
+        );
         thread::spawn(move || {
             let done = match apid.hello(cid, &role, vm) {
-                Ok(Some(profile)) => {
-                    Settled { note: "got its profile from apid".to_string(), line: Some(HostMessage::Profile { profile }) }
-                }
-                Ok(None) => Settled { note: "has no profile from apid yet".to_string(), line: None },
-                Err(err) => Settled { note: format!("hello to apid failed, retrying: {err}"), line: None },
+                Ok(Some(profile)) => Settled {
+                    note: "got its profile from apid".to_string(),
+                    line: Some(HostMessage::Profile { profile }),
+                },
+                Ok(None) => Settled {
+                    note: "has no profile from apid yet".to_string(),
+                    line: None,
+                },
+                Err(err) => Settled {
+                    note: format!("hello to apid failed, retrying: {err}"),
+                    line: None,
+                },
             };
             let _ = tx.send(done);
         });
@@ -480,7 +596,10 @@ fn run_tool(name: &str, args: &serde_json::Value) -> (bool, String) {
     match name {
         "echo" => match args.get("text").and_then(serde_json::Value::as_str) {
             Some(text) => (true, text.to_string()),
-            None => (false, r#"invalid arguments: echo needs a string "text""#.to_string()),
+            None => (
+                false,
+                r#"invalid arguments: echo needs a string "text""#.to_string(),
+            ),
         },
         "uptime" => match host_uptime() {
             Ok(uptime) => (true, uptime),
@@ -504,7 +623,10 @@ fn host_uptime() -> io::Result<String> {
     let text = std::fs::read_to_string("/proc/uptime")?;
     match text.split_whitespace().take(2).collect::<Vec<_>>()[..] {
         [up, idle] => Ok(format!("{up} {idle}")),
-        _ => Err(io::Error::new(io::ErrorKind::InvalidData, "/proc/uptime has fewer than two fields")),
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "/proc/uptime has fewer than two fields",
+        )),
     }
 }
 
@@ -535,13 +657,13 @@ mod tests {
     use super::*;
     use crate::hub::tests::{Recording, hub_with};
     use crate::hub::{SendOutcome, StopOutcome, TellOutcome};
+    use apz_uds::UnixStream;
+    use serde_json::{Value, json};
     use std::fs;
     use std::net::Shutdown;
-    use apz_uds::UnixStream;
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
     use std::thread;
-    use serde_json::{Value, json};
 
     /// What a fake apid saw: (path, token header, body), in arrival order.
     type Requests = Arc<Mutex<Vec<(String, Option<String>, String)>>>;
@@ -571,14 +693,30 @@ mod tests {
                 let body = String::from_utf8_lossy(&request.body).into_owned();
                 let token = request.header("x-apz-internal").map(str::to_string);
                 let reply = answer(&request.path, &body);
-                recorded.lock().unwrap().push((request.path.clone(), token, body));
+                recorded
+                    .lock()
+                    .unwrap()
+                    .push((request.path.clone(), token, body));
                 apz_http::Response::new(200, "application/json", reply)
             })
             .unwrap();
-        let token = std::env::temp_dir().join(format!("vsockd-serve-token-{}-{}", std::process::id(), server.port()));
+        let token = std::env::temp_dir().join(format!(
+            "vsockd-serve-token-{}-{}",
+            std::process::id(),
+            server.port()
+        ));
         fs::write(&token, "s3cret\n").unwrap();
-        let apid = Apid::new(&format!("http://127.0.0.1:{}", server.port()), Some(token.clone())).unwrap();
-        FakeApid { apid, seen, token, _server: server }
+        let apid = Apid::new(
+            &format!("http://127.0.0.1:{}", server.port()),
+            Some(token.clone()),
+        )
+        .unwrap();
+        FakeApid {
+            apid,
+            seen,
+            token,
+            _server: server,
+        }
     }
 
     /// Starts a keepalive session over a socket pair, with `apid` as its forwarding target.
@@ -586,12 +724,23 @@ mod tests {
         apid: Apid,
     ) -> (Lines<UnixStream>, Arc<Hub>, Arc<Recording>, SessionThread) {
         let (guest, host) = UnixStream::pair().unwrap();
-        guest.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        guest
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
         let (log, hub) = hub_with(Some(apid));
         let hub = Arc::new(hub);
         let session = {
             let (hub, log) = (Arc::clone(&hub), Arc::clone(&log));
-            thread::spawn(move || handle_session(&mut Lines::new(host), 3, keepalive_limits(), &*log, &hub, &SystemClock))
+            thread::spawn(move || {
+                handle_session(
+                    &mut Lines::new(host),
+                    3,
+                    keepalive_limits(),
+                    &*log,
+                    &hub,
+                    &SystemClock,
+                )
+            })
         };
         (Lines::new(guest), hub, log, session)
     }
@@ -615,7 +764,10 @@ mod tests {
         session.join().unwrap().expect("a clean end");
         let seen = fake.seen.lock().unwrap();
         let (path, token, body) = &seen[0];
-        assert_eq!((path.as_str(), token.as_deref()), ("/internal/v1/agents/3/hello", Some("s3cret")));
+        assert_eq!(
+            (path.as_str(), token.as_deref()),
+            ("/internal/v1/agents/3/hello", Some("s3cret"))
+        );
         assert_eq!(json_line(body), json!({ "role": "builder", "vm": 0 }));
     }
 
@@ -634,57 +786,118 @@ mod tests {
         let (mut guest, hub, _log, session) = keepalive_session(fake.apid.clone());
         guest.send(KEEPALIVE_HELLO).unwrap();
         recv(&mut guest);
-        guest.send(r#"{"type":"model_call","req":1,"work":1,"request":{"messages":[]}}"#).unwrap();
-        guest.send(r#"{"type":"heartbeat","seq":1,"busy":true}"#).unwrap();
+        guest
+            .send(r#"{"type":"model_call","req":1,"work":1,"request":{"messages":[]}}"#)
+            .unwrap();
+        guest
+            .send(r#"{"type":"heartbeat","seq":1,"busy":true}"#)
+            .unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
         while !hub.snapshot().rows.first().is_some_and(|row| row.busy) {
-            assert!(Instant::now() < deadline, "the heartbeat was not read while the model call was out");
+            assert!(
+                Instant::now() < deadline,
+                "the heartbeat was not read while the model call was out"
+            );
             thread::sleep(Duration::from_millis(10));
         }
         release.send(()).unwrap();
         let reply = json_line(&recv(&mut guest));
-        assert_eq!(reply, json!({ "type": "model_result", "req": 1, "ok": false, "error": "fake model" }));
+        assert_eq!(
+            reply,
+            json!({ "type": "model_result", "req": 1, "ok": false, "error": "fake model" })
+        );
         guest.send(r#"{"type":"bye","calls":0}"#).unwrap();
         session.join().unwrap().expect("a clean end");
         let seen = fake.seen.lock().unwrap();
-        let (path, token, body) = seen.iter().find(|entry| entry.0.ends_with("/message")).expect("forwarded");
-        assert_eq!((path.as_str(), token.as_deref()), ("/internal/v1/agents/3/message", Some("s3cret")));
+        let (path, token, body) = seen
+            .iter()
+            .find(|entry| entry.0.ends_with("/message"))
+            .expect("forwarded");
+        assert_eq!(
+            (path.as_str(), token.as_deref()),
+            ("/internal/v1/agents/3/message", Some("s3cret"))
+        );
         assert_eq!(json_line(body)["type"], "model_call");
     }
 
     #[test]
     fn with_apid_down_a_failed_model_call_and_tool_request_are_refused_and_the_guest_never_waits() {
-        let port = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap().local_addr().unwrap().port();
+        let port = std::net::TcpListener::bind(("127.0.0.1", 0))
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
         let token = std::env::temp_dir().join(format!("vsockd-serve-down-{}", std::process::id()));
         fs::write(&token, "s3cret").unwrap();
         let apid = Apid::new(&format!("http://127.0.0.1:{port}"), Some(token.clone())).unwrap();
         let (mut guest, _hub, log, session) = keepalive_session(apid);
         guest.send(KEEPALIVE_HELLO).unwrap();
         let welcome = json_line(&recv(&mut guest));
-        assert!(welcome.get("profile").is_none(), "no profile without apid: {welcome}");
+        assert!(
+            welcome.get("profile").is_none(),
+            "no profile without apid: {welcome}"
+        );
 
-        guest.send(r#"{"type":"model_call","req":7,"work":1,"request":{"messages":[]}}"#).unwrap();
+        guest
+            .send(r#"{"type":"model_call","req":7,"work":1,"request":{"messages":[]}}"#)
+            .unwrap();
         let model = json_line(&recv(&mut guest));
-        assert_eq!((model["type"].as_str(), model["req"].as_u64(), model["ok"].as_bool()), (Some("model_result"), Some(7), Some(false)));
-        assert!(model["error"].as_str().unwrap_or_default().starts_with("apid unreachable"), "{model}");
+        assert_eq!(
+            (
+                model["type"].as_str(),
+                model["req"].as_u64(),
+                model["ok"].as_bool()
+            ),
+            (Some("model_result"), Some(7), Some(false))
+        );
+        assert!(
+            model["error"]
+                .as_str()
+                .unwrap_or_default()
+                .starts_with("apid unreachable"),
+            "{model}"
+        );
 
-        guest.send(r#"{"type":"tool_request","work":1,"call":"toolu_1","name":"bash","input":{}}"#).unwrap();
+        guest
+            .send(r#"{"type":"tool_request","work":1,"call":"toolu_1","name":"bash","input":{}}"#)
+            .unwrap();
         let decision = json_line(&recv(&mut guest));
         assert_eq!(
-            (decision["type"].as_str(), decision["call"].as_str(), decision["decision"].as_str(), decision["is_error"].as_bool()),
-            (Some("tool_decision"), Some("toolu_1"), Some("deny"), Some(true)),
+            (
+                decision["type"].as_str(),
+                decision["call"].as_str(),
+                decision["decision"].as_str(),
+                decision["is_error"].as_bool()
+            ),
+            (
+                Some("tool_decision"),
+                Some("toolu_1"),
+                Some("deny"),
+                Some(true)
+            ),
             "{decision}"
         );
 
         // A report and a work_done expect no answer, so nothing else is written.
-        guest.send(r#"{"type":"tool_report","work":1,"call":"toolu_1","ok":true,"output":"x"}"#).unwrap();
-        guest.send(r#"{"type":"work_done","work":1,"status":"done","summary":""}"#).unwrap();
+        guest
+            .send(r#"{"type":"tool_report","work":1,"call":"toolu_1","ok":true,"output":"x"}"#)
+            .unwrap();
+        guest
+            .send(r#"{"type":"work_done","work":1,"status":"done","summary":""}"#)
+            .unwrap();
         guest.send(r#"{"type":"bye","calls":0}"#).unwrap();
         session.join().unwrap().expect("a clean end");
-        let rest = String::from_utf8(crate::read_until_closed(guest.get_ref(), Duration::from_secs(20))).unwrap();
+        let rest = String::from_utf8(crate::read_until_closed(
+            guest.get_ref(),
+            Duration::from_secs(20),
+        ))
+        .unwrap();
         assert_eq!(rest, "", "nothing is written after the refusals");
         let log = log.text();
-        assert!(log.contains("hello to apid failed") && log.contains("apid failed model_call"), "{log}");
+        assert!(
+            log.contains("hello to apid failed") && log.contains("apid failed model_call"),
+            "{log}"
+        );
         fs::remove_file(token).unwrap();
     }
 
@@ -697,17 +910,30 @@ mod tests {
         guest.send(r#"{"type":"bye","calls":0}"#).unwrap();
         session.join().unwrap().expect("a clean end");
         let seen = fake.seen.lock().unwrap();
-        let (path, token, body) = seen.iter().find(|entry| entry.0.ends_with("/gone")).expect("a gone notice");
-        assert_eq!((path.as_str(), token.as_deref()), ("/internal/v1/agents/3/gone", Some("s3cret")));
+        let (path, token, body) = seen
+            .iter()
+            .find(|entry| entry.0.ends_with("/gone"))
+            .expect("a gone notice");
+        assert_eq!(
+            (path.as_str(), token.as_deref()),
+            ("/internal/v1/agents/3/gone", Some("s3cret"))
+        );
         assert_eq!(json_line(body), json!({ "reason": "bye" }));
     }
 
     const HELLO: &str = r#"{"type":"hello","vm":0,"guest_cid":3}"#;
-    const KEEPALIVE_HELLO: &str = r#"{"type":"hello","vm":0,"guest_cid":3,"role":"builder","keepalive":true}"#;
-    const KEEPALIVE_WELCOME: &str = r#"{"type":"welcome","echo":"plaza-orchestrator","role":"builder","keepalive":true}"#;
+    const KEEPALIVE_HELLO: &str =
+        r#"{"type":"hello","vm":0,"guest_cid":3,"role":"builder","keepalive":true}"#;
+    const KEEPALIVE_WELCOME: &str =
+        r#"{"type":"welcome","echo":"plaza-orchestrator","role":"builder","keepalive":true}"#;
 
     fn v1_limits() -> SessionLimits {
-        SessionLimits { max_calls: 64, deadline: None, keepalive_idle: None, keepalive_read_slice: Duration::from_secs(1) }
+        SessionLimits {
+            max_calls: 64,
+            deadline: None,
+            keepalive_idle: None,
+            keepalive_read_slice: Duration::from_secs(1),
+        }
     }
 
     fn keepalive_limits() -> SessionLimits {
@@ -737,8 +963,13 @@ mod tests {
         let (log, hub) = hub_with(None);
         let result = handle_session(&mut Lines::new(host), 3, limits, &*log, &hub, clock);
         assert_eq!(hub.agent_count(), 0, "no session outlives its end");
-        let sent = String::from_utf8(crate::read_until_closed(&guest, Duration::from_secs(20))).unwrap();
-        (result, log.text(), sent.lines().map(str::to_string).collect())
+        let sent =
+            String::from_utf8(crate::read_until_closed(&guest, Duration::from_secs(20))).unwrap();
+        (
+            result,
+            log.text(),
+            sent.lines().map(str::to_string).collect(),
+        )
     }
 
     fn recv(guest: &mut Lines<UnixStream>) -> String {
@@ -763,48 +994,102 @@ mod tests {
             &SystemClock,
         );
         let summary = result.expect("the session completes");
-        assert_eq!((summary.calls, summary.guest_calls, summary.keepalive), (3, 3, false));
+        assert_eq!(
+            (summary.calls, summary.guest_calls, summary.keepalive),
+            (3, 3, false)
+        );
         assert_eq!(sent[0], r#"{"type":"welcome","echo":"plaza-orchestrator"}"#);
-        assert_eq!(sent[1], r#"{"type":"tool_result","call":1,"ok":true,"output":"plaza-guest-3-hello"}"#);
+        assert_eq!(
+            sent[1],
+            r#"{"type":"tool_result","call":1,"ok":true,"output":"plaza-guest-3-hello"}"#
+        );
         let uptime: serde_json::Value = serde_json::from_str(&sent[2]).unwrap();
-        assert_eq!(uptime["output"].as_str().unwrap().split_whitespace().count(), 2, "{uptime}");
-        assert_eq!(sent[3], r#"{"type":"tool_result","call":3,"ok":false,"output":"unknown tool: rm_rf"}"#);
-        assert!(log.contains("[guest 3 vm? ->] {\"type\":\"hello\"") && log.contains("said bye after 3 tool calls"), "{log}");
+        assert_eq!(
+            uptime["output"]
+                .as_str()
+                .unwrap()
+                .split_whitespace()
+                .count(),
+            2,
+            "{uptime}"
+        );
+        assert_eq!(
+            sent[3],
+            r#"{"type":"tool_result","call":3,"ok":false,"output":"unknown tool: rm_rf"}"#
+        );
+        assert!(
+            log.contains("[guest 3 vm? ->] {\"type\":\"hello\"")
+                && log.contains("said bye after 3 tool calls"),
+            "{log}"
+        );
     }
 
     #[test]
     fn protocol_violations_drop_the_session() {
-        let budget = SessionLimits { max_calls: 1, ..v1_limits() };
-        let past = SessionLimits { deadline: Some(Instant::now()), ..v1_limits() };
+        let budget = SessionLimits {
+            max_calls: 1,
+            ..v1_limits()
+        };
+        let past = SessionLimits {
+            deadline: Some(Instant::now()),
+            ..v1_limits()
+        };
         let echo = r#"{"type":"tool_call","call":1,"name":"echo","args":{"text":"a"}}"#;
         let cases: [(&[&str], SessionLimits, &str); 9] = [
             (&[echo], v1_limits(), "tool_call before hello"),
             (&["not json"], v1_limits(), "unparsable guest line"),
-            (&[r#"{"type":"hello","vm":0,"guest_cid":4}"#], v1_limits(), "claims guest_cid 4"),
+            (
+                &[r#"{"type":"hello","vm":0,"guest_cid":4}"#],
+                v1_limits(),
+                "claims guest_cid 4",
+            ),
             (&[HELLO, HELLO], v1_limits(), "second hello"),
-            (&[HELLO, r#"{"type":"heartbeat","seq":1}"#], v1_limits(), "did not ask for keepalive"),
-            (&[HELLO, echo, echo], budget, "tool-call budget (1) exceeded"),
+            (
+                &[HELLO, r#"{"type":"heartbeat","seq":1}"#],
+                v1_limits(),
+                "did not ask for keepalive",
+            ),
+            (
+                &[HELLO, echo, echo],
+                budget,
+                "tool-call budget (1) exceeded",
+            ),
             (&[HELLO], past, "session deadline exceeded"),
-            (&[KEEPALIVE_HELLO], v1_limits(), "configured for one-shot sessions"),
+            (
+                &[KEEPALIVE_HELLO],
+                v1_limits(),
+                "configured for one-shot sessions",
+            ),
             (&[], v1_limits(), "closed before sending hello"),
         ];
         for (script, limits, expected) in cases {
             let (result, _, _) = scripted(script, true, limits, &SystemClock);
             let err = result.expect_err(expected);
-            assert!(matches!(&err, HostError::Protocol(detail) if detail.contains(expected)), "{expected}: {err:?}");
+            assert!(
+                matches!(&err, HostError::Protocol(detail) if detail.contains(expected)),
+                "{expected}: {err:?}"
+            );
         }
     }
 
     #[test]
     fn control_characters_in_a_guest_line_are_escaped_in_the_log() {
-        let (_, log, _) = scripted(&["not json\u{1b}[2K\rforged line"], true, v1_limits(), &SystemClock);
+        let (_, log, _) = scripted(
+            &["not json\u{1b}[2K\rforged line"],
+            true,
+            v1_limits(),
+            &SystemClock,
+        );
         assert!(log.contains("\\x1b") && log.contains("\\x0d"), "{log}");
         assert!(!log.contains('\u{1b}') && !log.contains('\r'), "{log}");
     }
 
     #[test]
     fn a_role_without_keepalive_gets_the_v1_welcome() {
-        let script = [r#"{"type":"hello","vm":0,"guest_cid":3,"role":"builder"}"#, r#"{"type":"bye","calls":0}"#];
+        let script = [
+            r#"{"type":"hello","vm":0,"guest_cid":3,"role":"builder"}"#,
+            r#"{"type":"bye","calls":0}"#,
+        ];
         let (result, _, sent) = scripted(&script, true, keepalive_limits(), &SystemClock);
         assert!(!result.expect("a v1 session").keepalive);
         assert_eq!(sent, [r#"{"type":"welcome","echo":"plaza-orchestrator"}"#]);
@@ -838,17 +1123,30 @@ mod tests {
     #[test]
     fn the_hub_steers_a_keepalive_session_end_to_end() {
         let (guest, host) = UnixStream::pair().unwrap();
-        guest.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        guest
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
         let (log, hub) = hub_with(None);
         let hub = Arc::new(hub);
         let session = {
             let (hub, log) = (Arc::clone(&hub), Arc::clone(&log));
-            thread::spawn(move || handle_session(&mut Lines::new(host), 3, keepalive_limits(), &*log, &hub, &SystemClock))
+            thread::spawn(move || {
+                handle_session(
+                    &mut Lines::new(host),
+                    3,
+                    keepalive_limits(),
+                    &*log,
+                    &hub,
+                    &SystemClock,
+                )
+            })
         };
         let mut guest = Lines::new(guest);
         guest.send(KEEPALIVE_HELLO).unwrap();
         assert_eq!(recv(&mut guest), KEEPALIVE_WELCOME);
-        guest.send(r#"{"type":"heartbeat","seq":1,"busy":true}"#).unwrap();
+        guest
+            .send(r#"{"type":"heartbeat","seq":1,"busy":true}"#)
+            .unwrap();
 
         let tell = |name: &'static str| {
             let hub = Arc::clone(&hub);
@@ -856,13 +1154,30 @@ mod tests {
         };
         let answered = tell("list");
         let dispatched: serde_json::Value = serde_json::from_str(&recv(&mut guest)).unwrap();
-        assert_eq!((dispatched["type"].as_str(), dispatched["call"].as_u64()), (Some("tool_call"), Some(1)));
-        guest.send(r#"{"type":"tool_result","call":1,"ok":true,"output":"[]"}"#).unwrap();
-        assert_eq!(answered.join().unwrap(), TellOutcome::Answered { ok: true, output: "[]".into() });
+        assert_eq!(
+            (dispatched["type"].as_str(), dispatched["call"].as_u64()),
+            (Some("tool_call"), Some(1))
+        );
+        guest
+            .send(r#"{"type":"tool_result","call":1,"ok":true,"output":"[]"}"#)
+            .unwrap();
+        assert_eq!(
+            answered.join().unwrap(),
+            TellOutcome::Answered {
+                ok: true,
+                output: "[]".into()
+            }
+        );
         assert!(hub.snapshot().rows[0].busy);
 
-        let cancel = HostMessage::Cancel { work: 7, reason: "operator".into() };
-        assert_eq!(hub.send(3, cancel.clone(), Duration::from_secs(5)), SendOutcome::Sent);
+        let cancel = HostMessage::Cancel {
+            work: 7,
+            reason: "operator".into(),
+        };
+        assert_eq!(
+            hub.send(3, cancel.clone(), Duration::from_secs(5)),
+            SendOutcome::Sent
+        );
         assert_eq!(recv(&mut guest), cancel.to_line().unwrap());
 
         let abandoned = tell("read_file");
@@ -871,11 +1186,23 @@ mod tests {
             let hub = Arc::clone(&hub);
             thread::spawn(move || hub.stop(3, "slice proof", Duration::from_secs(5)))
         };
-        assert_eq!(recv(&mut guest), r#"{"type":"stop","reason":"slice proof"}"#);
+        assert_eq!(
+            recv(&mut guest),
+            r#"{"type":"stop","reason":"slice proof"}"#
+        );
         guest.send(r#"{"type":"bye","calls":2}"#).unwrap();
         assert_eq!(stopper.join().unwrap(), StopOutcome::Ended { calls: 2 });
-        assert_eq!(abandoned.join().unwrap(), TellOutcome::NotConnected, "nobody is left to answer");
+        assert_eq!(
+            abandoned.join().unwrap(),
+            TellOutcome::NotConnected,
+            "nobody is left to answer"
+        );
         assert_eq!(session.join().unwrap().expect("a clean end").calls, 2);
-        assert!(log.text().contains("vsockd: agent 3 session ended cleanly after 2 tool calls"), "{}", log.text());
+        assert!(
+            log.text()
+                .contains("vsockd: agent 3 session ended cleanly after 2 tool calls"),
+            "{}",
+            log.text()
+        );
     }
 }

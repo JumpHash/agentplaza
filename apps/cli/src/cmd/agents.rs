@@ -13,9 +13,9 @@ use std::time::Duration;
 
 use apz_rich::Ctx as RichCtx;
 use clap::Subcommand;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use crate::ctx::{self, confirm, text_arg, Ctx};
+use crate::ctx::{self, Ctx, confirm, text_arg};
 use crate::rich;
 
 use self::lifecycle::WipeWhat;
@@ -188,16 +188,33 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
     match cmd {
         Cmd::Cancel { cid } => lifecycle::cancel(ctx, cid),
         Cmd::Retire { cid, yes } => lifecycle::retire(ctx, cid, yes),
-        Cmd::Wipe { cid, memory, transcript, identity, yes } => {
-            lifecycle::wipe(ctx, cid, WipeWhat { memory, transcript, identity }, yes)
-        }
+        Cmd::Wipe {
+            cid,
+            memory,
+            transcript,
+            identity,
+            yes,
+        } => lifecycle::wipe(
+            ctx,
+            cid,
+            WipeWhat {
+                memory,
+                transcript,
+                identity,
+            },
+            yes,
+        ),
         Cmd::Harness { cid, action } => harness::harness(ctx, cid, action),
         Cmd::Loops { cid, action } => harness::loops(ctx, cid, action),
         Cmd::Permissions { cid, action } => oversight::permissions(ctx, cid, action),
         Cmd::Infractions { cid } => oversight::infractions(ctx, cid),
         Cmd::Sanctions { cid } => oversight::sanctions(ctx, cid),
         Cmd::Lift { id, reason } => oversight::lift(ctx, id, &reason),
-        Cmd::Memory { cid, search, action } => records::memory(ctx, cid, search.as_deref(), action),
+        Cmd::Memory {
+            cid,
+            search,
+            action,
+        } => records::memory(ctx, cid, search.as_deref(), action),
         Cmd::Proposals { action } => records::proposals(ctx, action),
         Cmd::List { role, status } => list(ctx, role.as_deref(), status.as_deref()),
         Cmd::Show { cid } => show(ctx, cid),
@@ -207,7 +224,9 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             if !confirm(yes, &format!("Stop agent {cid}?"))? {
                 return cancelled();
             }
-            let v = ctx.client.post(&format!("/v1/agents/{cid}/stop"), &json!({}))?;
+            let v = ctx
+                .client
+                .post(&format!("/v1/agents/{cid}/stop"), &json!({}))?;
             ctx.out(&v, |_| println!("stopped agent {cid}"));
             Ok(())
         }
@@ -215,7 +234,9 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             if !confirm(yes, &format!("Restart agent {cid}? Its VM restarts."))? {
                 return cancelled();
             }
-            let v = ctx.client.post(&format!("/v1/agents/{cid}/restart"), &json!({}))?;
+            let v = ctx
+                .client
+                .post(&format!("/v1/agents/{cid}/restart"), &json!({}))?;
             ctx.out(&v, |_| println!("restarting agent {cid}"));
             Ok(())
         }
@@ -228,8 +249,14 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             Ok(())
         }
         Cmd::Model { cid, model } => {
-            let value = if model == "default" { Value::Null } else { Value::String(model.clone()) };
-            let v = ctx.client.patch(&format!("/v1/agents/{cid}"), &json!({ "model": value }))?;
+            let value = if model == "default" {
+                Value::Null
+            } else {
+                Value::String(model.clone())
+            };
+            let v = ctx
+                .client
+                .patch(&format!("/v1/agents/{cid}"), &json!({ "model": value }))?;
             ctx.out(&v, |_| {
                 if model == "default" {
                     println!("agent {cid} uses its default model again");
@@ -304,7 +331,10 @@ fn list(ctx: &Ctx, role: Option<&str>, status: Option<&str>) -> Result<(), Strin
                 ]
             })
             .collect();
-        ctx::table(&["cid", "name", "role", "status", "model", "queue", "work"], &rows);
+        ctx::table(
+            &["cid", "name", "role", "status", "model", "queue", "work"],
+            &rows,
+        );
     });
     Ok(())
 }
@@ -318,10 +348,26 @@ fn show(ctx: &Ctx, cid: u64) -> Result<(), String> {
         let tasks = &p["tasks"];
         let fines = &p["fines"];
         ctx::fields(&[
-            ("agent", format!("{} (cid {})", name_of(a), ctx::text(a, "cid"))),
-            ("role", format!("{} ({})", ctx::s(a, "role_label"), ctx::s(a, "role"))),
-            ("status", format!("{} · {}", ctx::s(a, "status"), ctx::s(a, "tier"))),
-            ("model", format!("{} (from {})", ctx::s(a, "model"), ctx::s(a, "model_source"))),
+            (
+                "agent",
+                format!("{} (cid {})", name_of(a), ctx::text(a, "cid")),
+            ),
+            (
+                "role",
+                format!("{} ({})", ctx::s(a, "role_label"), ctx::s(a, "role")),
+            ),
+            (
+                "status",
+                format!("{} · {}", ctx::s(a, "status"), ctx::s(a, "tier")),
+            ),
+            (
+                "model",
+                format!(
+                    "{} (from {})",
+                    ctx::s(a, "model"),
+                    ctx::s(a, "model_source")
+                ),
+            ),
             ("queue", ctx::text(a, "queue")),
             ("work", work_of(a)),
             ("wallet", ctx::text(p, "wallet")),
@@ -339,9 +385,19 @@ fn show(ctx: &Ctx, cid: u64) -> Result<(), String> {
             ),
             ("reputation", ctx::text(p, "reputation")),
             ("conduct", format!("{}/100", ctx::text(p, "conduct"))),
-            ("fines", format!("{} ({} total)", ctx::text(fines, "count"), ctx::text(fines, "total"))),
+            (
+                "fines",
+                format!(
+                    "{} ({} total)",
+                    ctx::text(fines, "count"),
+                    ctx::text(fines, "total")
+                ),
+            ),
             ("denials", ctx::text(p, "denials")),
-            ("memory", format!("{} note(s)", ctx::text(p, "memory_notes"))),
+            (
+                "memory",
+                format!("{} note(s)", ctx::text(p, "memory_notes")),
+            ),
         ]);
     });
     Ok(())
@@ -356,14 +412,23 @@ fn create(ctx: &Ctx, role: &str, count: u32, model: Option<&str>) -> Result<(), 
         body["model"] = json!(m);
     }
     let v = ctx.client.post("/v1/agents", &body)?;
-    ctx.out(&v, |_| println!("created {count} {role} agent{}", if count == 1 { "" } else { "s" }));
+    ctx.out(&v, |_| {
+        println!(
+            "created {count} {role} agent{}",
+            if count == 1 { "" } else { "s" }
+        )
+    });
     Ok(())
 }
 
 fn tell(ctx: &Ctx, cid: u64, text: &str) -> Result<(), String> {
     let text = text_arg(text)?;
-    let v = ctx.client.post(&format!("/v1/agents/{cid}/chat"), &json!({ "text": text }))?;
-    ctx.out(&v, |v| println!("sent to agent {cid} (work {})", ctx::text(v, "work")));
+    let v = ctx
+        .client
+        .post(&format!("/v1/agents/{cid}/chat"), &json!({ "text": text }))?;
+    ctx.out(&v, |v| {
+        println!("sent to agent {cid} (work {})", ctx::text(v, "work"))
+    });
     Ok(())
 }
 
@@ -372,7 +437,9 @@ fn logs(ctx: &Ctx, cid: u64, follow: bool) -> Result<(), String> {
     let mut after = 0u64;
     let rich_ctx = rich::context_for(ctx);
     loop {
-        let page = ctx.client.get(&format!("/v1/agents/{cid}/transcript?after={after}&limit={PAGE}"))?;
+        let page = ctx.client.get(&format!(
+            "/v1/agents/{cid}/transcript?after={after}&limit={PAGE}"
+        ))?;
         let entries = page.as_array().cloned().unwrap_or_default();
         for e in &entries {
             if let Some(seq) = e.get("seq").and_then(Value::as_u64) {
@@ -395,7 +462,19 @@ fn print_entry(ctx: &Ctx, rich_ctx: &RichCtx, e: &Value) {
         println!("{e}");
         return;
     }
-    let data: String = e.get("data").map(|d| d.to_string()).unwrap_or_default().chars().take(160).collect();
+    let data: String = e
+        .get("data")
+        .map(|d| d.to_string())
+        .unwrap_or_default()
+        .chars()
+        .take(160)
+        .collect();
     let data = rich::render(&data, rich_ctx, &ctx.rich);
-    println!("#{} work {} {:<14} {}", ctx::text(e, "seq"), ctx::text(e, "work"), ctx::s(e, "kind"), data);
+    println!(
+        "#{} work {} {:<14} {}",
+        ctx::text(e, "seq"),
+        ctx::text(e, "work"),
+        ctx::s(e, "kind"),
+        data
+    );
 }

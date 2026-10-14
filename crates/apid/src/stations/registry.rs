@@ -17,7 +17,9 @@ use super::leases::{LeaseView, Leases};
 use super::link::StationLink;
 use super::sync::SyncPause;
 use super::vms::VmRecord;
-use crate::nodes::{self, Code, CodeView, DEFAULT_TTL_MINUTES, JOIN_TRIES_PER_CODE, MAX_CODE_MINUTES};
+use crate::nodes::{
+    self, Code, CodeView, DEFAULT_TTL_MINUTES, JOIN_TRIES_PER_CODE, MAX_CODE_MINUTES,
+};
 
 /// A station is offline when its link has been silent this long.
 pub const OFFLINE_AFTER_MS: u64 = 30_000;
@@ -129,7 +131,14 @@ pub struct Store {
 /// Whether a machine reporting `reported` may be enrolled or linked by a hub whose hostname is `hub`:
 /// both names must be known, and differ on their first label (so `box.local` and `box` are the same).
 pub fn may_join(reported: &str, hub: &str) -> bool {
-    let label = |name: &str| name.trim().trim_end_matches('.').split('.').next().unwrap_or("").to_ascii_lowercase();
+    let label = |name: &str| {
+        name.trim()
+            .trim_end_matches('.')
+            .split('.')
+            .next()
+            .unwrap_or("")
+            .to_ascii_lowercase()
+    };
     let (reported, hub) = (label(reported), label(hub));
     !reported.is_empty() && !hub.is_empty() && reported != hub
 }
@@ -151,7 +160,9 @@ fn same_machine(reported: Option<&str>, hub: Option<&str>) -> bool {
 /// A usable name: 1 to [`MAX_NAME_CHARS`] characters, none of them control characters.
 pub fn valid_name(name: &str) -> bool {
     let name = name.trim();
-    !name.is_empty() && name.chars().count() <= MAX_NAME_CHARS && !name.chars().any(char::is_control)
+    !name.is_empty()
+        && name.chars().count() <= MAX_NAME_CHARS
+        && !name.chars().any(char::is_control)
 }
 
 fn code_id_prefix() -> char {
@@ -168,7 +179,11 @@ impl Store {
     }
 
     pub fn snapshot(&self) -> String {
-        self.inner.lock().ok().and_then(|p| serde_json::to_string(&*p).ok()).unwrap_or_default()
+        self.inner
+            .lock()
+            .ok()
+            .and_then(|p| serde_json::to_string(&*p).ok())
+            .unwrap_or_default()
     }
 
     pub fn restore(&self, json: &str) -> Result<(), String> {
@@ -178,7 +193,10 @@ impl Store {
     }
 
     pub fn list(&self) -> Vec<Station> {
-        self.inner.lock().map(|p| p.stations.clone()).unwrap_or_default()
+        self.inner
+            .lock()
+            .map(|p| p.stations.clone())
+            .unwrap_or_default()
     }
 
     pub fn station(&self, id: &str) -> Option<Station> {
@@ -196,7 +214,9 @@ impl Store {
 
     /// The VM whose station is `station`, when it enrolled from one.
     pub fn vm_of_station(&self, station: &str) -> Option<VmRecord> {
-        self.vms().into_iter().find(|v| v.station.as_deref() == Some(station))
+        self.vms()
+            .into_iter()
+            .find(|v| v.station.as_deref() == Some(station))
     }
 
     /// The VM a join code was issued for (`j<seq>`).
@@ -207,7 +227,10 @@ impl Store {
     /// The next VM id (`v<seq>`).
     pub fn new_vm_id(&self) -> Result<String, String> {
         let p = self.guard()?;
-        Ok(format!("v{}", nodes::next_seq(p.vms.iter().map(|v| v.id.as_str()), 'v')))
+        Ok(format!(
+            "v{}",
+            nodes::next_seq(p.vms.iter().map(|v| v.id.as_str()), 'v')
+        ))
     }
 
     pub fn add_vm(&self, record: VmRecord) -> Result<(), String> {
@@ -231,7 +254,10 @@ impl Store {
 
     /// Marks a station as resetting. False when it already is, or the marks cannot be read.
     pub fn begin_reset(&self, station: &str) -> bool {
-        self.resetting.lock().map(|mut set| set.insert(station.to_string())).unwrap_or(false)
+        self.resetting
+            .lock()
+            .map(|mut set| set.insert(station.to_string()))
+            .unwrap_or(false)
     }
 
     pub fn end_reset(&self, station: &str) {
@@ -241,12 +267,22 @@ impl Store {
     }
 
     pub fn is_resetting(&self, station: &str) -> bool {
-        self.resetting.lock().map(|set| set.contains(station)).unwrap_or(false)
+        self.resetting
+            .lock()
+            .map(|set| set.contains(station))
+            .unwrap_or(false)
     }
 
     /// Issues a join code for `hub_url` pinned to the hub's certificate: its id, its text (shown once) and
     /// its expiry in ms.
-    pub fn issue_code(&self, hub_url: &str, cert: [u8; 32], label: &str, ttl_minutes: u64, now: u64) -> Result<(String, String, u64), String> {
+    pub fn issue_code(
+        &self,
+        hub_url: &str,
+        cert: [u8; 32],
+        label: &str,
+        ttl_minutes: u64,
+        now: u64,
+    ) -> Result<(String, String, u64), String> {
         let ttl = match ttl_minutes {
             0 => DEFAULT_TTL_MINUTES,
             m => m.min(MAX_CODE_MINUTES),
@@ -255,7 +291,11 @@ impl Store {
         let text = token.encode();
         let expires_ms = now + ttl * 60_000;
         let mut p = self.guard()?;
-        let id = format!("{}{}", code_id_prefix(), nodes::next_seq(p.codes.iter().map(|c| c.id.as_str()), code_id_prefix()));
+        let id = format!(
+            "{}{}",
+            code_id_prefix(),
+            nodes::next_seq(p.codes.iter().map(|c| c.id.as_str()), code_id_prefix())
+        );
         p.codes.push(Code {
             id: id.clone(),
             label: label.trim().chars().take(64).collect(),
@@ -291,7 +331,11 @@ impl Store {
     /// Revokes a code no station has used yet.
     pub fn revoke_code(&self, id: &str) -> Result<(), String> {
         let mut p = self.guard()?;
-        let code = p.codes.iter_mut().find(|c| c.id == id).ok_or("no such code")?;
+        let code = p
+            .codes
+            .iter_mut()
+            .find(|c| c.id == id)
+            .ok_or("no such code")?;
         if code.used_by.is_some() {
             return Err("that code was already used".into());
         }
@@ -310,10 +354,13 @@ impl Store {
         now: u64,
     ) -> Result<(Station, String), Refusal> {
         nodes::admit_join(&self.join_attempts, source, now).map_err(|_| Refusal::RateLimited)?;
-        let token = apz_trust::token::JoinToken::decode(code_text).map_err(|_| Refusal::Invalid(INVALID_CODE.into()))?;
+        let token = apz_trust::token::JoinToken::decode(code_text)
+            .map_err(|_| Refusal::Invalid(INVALID_CODE.into()))?;
         let hash = nodes::hex(&token.secret_hash());
         let mut p = self.guard().map_err(Refusal::Invalid)?;
-        let Persisted { stations, codes, .. } = &mut *p;
+        let Persisted {
+            stations, codes, ..
+        } = &mut *p;
         let mut found = None;
         for (i, code) in codes.iter().enumerate() {
             if apz_trust::ct_eq(code.secret_sha256.as_bytes(), hash.as_bytes()) {
@@ -322,7 +369,10 @@ impl Store {
         }
         let i = found.ok_or_else(|| Refusal::Invalid(INVALID_CODE.into()))?;
         let code = &mut codes[i];
-        let usable = code.used_by.is_none() && !code.revoked && now < code.expires_ms && code.failures < JOIN_TRIES_PER_CODE;
+        let usable = code.used_by.is_none()
+            && !code.revoked
+            && now < code.expires_ms
+            && code.failures < JOIN_TRIES_PER_CODE;
         if !usable {
             code.failures = code.failures.saturating_add(1);
             return Err(Refusal::Invalid(INVALID_CODE.into()));
@@ -333,10 +383,16 @@ impl Store {
                 "this machine is the hub's own host, or its hostname cannot be told apart from the hub's: a workstation is another machine".into(),
             ));
         }
-        let name = name.map(str::trim).filter(|n| !n.is_empty()).unwrap_or(facts.hostname.trim()).to_string();
+        let name = name
+            .map(str::trim)
+            .filter(|n| !n.is_empty())
+            .unwrap_or(facts.hostname.trim())
+            .to_string();
         if !valid_name(&name) {
             code.failures = code.failures.saturating_add(1);
-            return Err(Refusal::Invalid("the name must be 1 to 64 printable characters".into()));
+            return Err(Refusal::Invalid(
+                "the name must be 1 to 64 printable characters".into(),
+            ));
         }
 
         let seq = nodes::next_seq(stations.iter().map(|s| s.id.as_str()), station_id_prefix());
@@ -386,7 +442,11 @@ impl Store {
     /// Records a daemon's hello: its version and facts, and that it spoke now.
     pub fn hello(&self, id: &str, version: &str, facts: Facts, now: u64) -> Result<(), String> {
         let mut p = self.guard()?;
-        let station = p.stations.iter_mut().find(|s| s.id == id).ok_or("no such workstation")?;
+        let station = p
+            .stations
+            .iter_mut()
+            .find(|s| s.id == id)
+            .ok_or("no such workstation")?;
         station.version = version.to_string();
         station.facts = facts;
         station.last_seen_ms = now;
@@ -440,14 +500,20 @@ impl Store {
 
     fn update(&self, id: &str, change: impl FnOnce(&mut Station)) -> Result<Station, String> {
         let mut p = self.guard()?;
-        let station = p.stations.iter_mut().find(|s| s.id == id).ok_or("no such workstation")?;
+        let station = p
+            .stations
+            .iter_mut()
+            .find(|s| s.id == id)
+            .ok_or("no such workstation")?;
         change(station);
         Ok(station.clone())
     }
 
     /// Whether a takeover on `session` is due an audit row: at most one per `window` ms per session.
     pub fn takeover_due(&self, session: u64, now: u64, window: u64) -> bool {
-        let Ok(mut taken) = self.takeovers.lock() else { return true };
+        let Ok(mut taken) = self.takeovers.lock() else {
+            return true;
+        };
         match taken.get(&session) {
             Some(last) if now.saturating_sub(*last) < window => false,
             _ => {
@@ -459,17 +525,24 @@ impl Store {
 
     /// The next link generation (unique per hub run).
     pub fn next_link_id(&self) -> u64 {
-        self.link_seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1
+        self.link_seq
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            + 1
     }
 
     /// Attaches `link` as its station's link. The link it replaces is returned, for the caller to end.
     pub fn attach(&self, link: Arc<StationLink>) -> Option<Arc<StationLink>> {
-        self.links.lock().ok()?.insert(link.station().to_string(), link)
+        self.links
+            .lock()
+            .ok()?
+            .insert(link.station().to_string(), link)
     }
 
     /// Detaches a station's link, when it is still the one `id` names (a replaced link leaves nothing behind).
     pub fn detach(&self, station: &str, id: u64) {
-        let Ok(mut links) = self.links.lock() else { return };
+        let Ok(mut links) = self.links.lock() else {
+            return;
+        };
         if links.get(station).is_some_and(|l| l.id() == id) {
             links.remove(station);
         }
@@ -477,17 +550,26 @@ impl Store {
 
     /// The station's live link, if the daemon holds one open.
     pub fn live(&self, station: &str) -> Option<Arc<StationLink>> {
-        self.links.lock().ok()?.get(station).filter(|l| !l.is_closed()).cloned()
+        self.links
+            .lock()
+            .ok()?
+            .get(station)
+            .filter(|l| !l.is_closed())
+            .cloned()
     }
 
     /// Every live link.
     pub fn live_links(&self) -> Vec<Arc<StationLink>> {
-        self.links.lock().map(|links| links.values().filter(|l| !l.is_closed()).cloned().collect()).unwrap_or_default()
+        self.links
+            .lock()
+            .map(|links| links.values().filter(|l| !l.is_closed()).cloned().collect())
+            .unwrap_or_default()
     }
 
     /// Whether a station is online now: its link is open and spoke within [`OFFLINE_AFTER_MS`].
     pub fn is_online(&self, station: &str, now: u64) -> bool {
-        self.live(station).is_some_and(|link| now.saturating_sub(link.last_seen_ms()) < OFFLINE_AFTER_MS)
+        self.live(station)
+            .is_some_and(|link| now.saturating_sub(link.last_seen_ms()) < OFFLINE_AFTER_MS)
     }
 
     /// A station as the console lists it, with its leases.
@@ -502,7 +584,9 @@ impl Store {
         } else {
             "offline"
         };
-        let last_seen_ms = self.live(&station.id).map_or(station.last_seen_ms, |link| link.last_seen_ms());
+        let last_seen_ms = self
+            .live(&station.id)
+            .map_or(station.last_seen_ms, |link| link.last_seen_ms());
         StationView {
             leases: self.leases.views(&station.id),
             id: station.id,
@@ -546,7 +630,9 @@ mod tests {
             ram_mb: 16384,
             gpus: vec![],
             displays: vec![],
-            account: AccountMode::AgentUser { name: "agentws".into() },
+            account: AccountMode::AgentUser {
+                name: "agentws".into(),
+            },
             apps: 3,
             virtual_displays: true,
             ui_tree: true,
@@ -556,7 +642,9 @@ mod tests {
 
     /// A code for `store`, returned with its join text.
     fn code(store: &Store, label: &str, ttl: u64, now: u64) -> (String, String) {
-        let (id, text, _) = store.issue_code("https://hub.test:7700", [3; 32], label, ttl, now).unwrap();
+        let (id, text, _) = store
+            .issue_code("https://hub.test:7700", [3; 32], label, ttl, now)
+            .unwrap();
         (id, text)
     }
 
@@ -564,16 +652,32 @@ mod tests {
     fn a_code_joins_once_and_its_token_is_stored_only_as_a_hash() {
         let store = Store::default();
         let (code_id, text) = code(&store, "desk", 0, NOW);
-        let (station, token) = store.redeem("203.0.113.7", &text, facts("desk-1"), None, HUB, NOW).unwrap();
+        let (station, token) = store
+            .redeem("203.0.113.7", &text, facts("desk-1"), None, HUB, NOW)
+            .unwrap();
         assert_eq!(station.id, "w1");
-        assert_eq!(station.name, "desk-1", "the name defaults to the reported hostname");
+        assert_eq!(
+            station.name, "desk-1",
+            "the name defaults to the reported hostname"
+        );
         assert_eq!(station.code, code_id);
-        assert_eq!(station.token_sha256, nodes::hex(&apz_trust::sha256(token.as_bytes())));
-        assert!(!store.snapshot().contains(&token), "the token itself is never saved");
+        assert_eq!(
+            station.token_sha256,
+            nodes::hex(&apz_trust::sha256(token.as_bytes()))
+        );
+        assert!(
+            !store.snapshot().contains(&token),
+            "the token itself is never saved"
+        );
         assert_eq!(store.authenticate(&token).unwrap().id, "w1");
         assert!(store.authenticate("another").is_err());
         assert_eq!(store.codes(NOW)[0].state, "used");
-        assert!(store.redeem("203.0.113.8", &text, facts("desk-2"), None, HUB, NOW).is_err(), "a code joins once");
+        assert!(
+            store
+                .redeem("203.0.113.8", &text, facts("desk-2"), None, HUB, NOW)
+                .is_err(),
+            "a code joins once"
+        );
     }
 
     #[test]
@@ -583,13 +687,19 @@ mod tests {
         let later = NOW + 61_000;
         assert_eq!(store.codes(later)[0].state, "expired");
         assert_eq!(
-            store.redeem("a", &text, facts("box"), None, HUB, later).unwrap_err(),
+            store
+                .redeem("a", &text, facts("box"), None, HUB, later)
+                .unwrap_err(),
             Refusal::Invalid(INVALID_CODE.into())
         );
         let (id, text2) = code(&store, "mine", 10, NOW);
         store.revoke_code(&id).unwrap();
         assert_eq!(store.codes(NOW)[1].state, "revoked");
-        assert!(store.redeem("a", &text2, facts("box"), None, HUB, NOW).is_err());
+        assert!(
+            store
+                .redeem("a", &text2, facts("box"), None, HUB, NOW)
+                .is_err()
+        );
         assert!(store.revoke_code("j9").is_err());
     }
 
@@ -597,25 +707,63 @@ mod tests {
     fn the_hubs_own_host_is_refused_and_the_code_is_kept_for_another_machine() {
         let store = Store::default();
         let (_, text) = code(&store, "desk", 10, NOW);
-        assert!(matches!(store.redeem("127.0.0.1", &text, facts(HUB), None, HUB, NOW), Err(Refusal::OwnHost(_))));
-        assert!(matches!(store.redeem("192.168.1.9", &text, facts("HUB-BOX.local"), None, HUB, NOW), Err(Refusal::OwnHost(_))));
-        assert!(matches!(store.redeem("192.168.1.9", &text, facts(""), None, HUB, NOW), Err(Refusal::OwnHost(_))), "an unnamed machine is not trusted");
-        assert!(matches!(store.redeem("192.168.1.9", &text, facts("desk"), None, "", NOW), Err(Refusal::OwnHost(_))), "an unknown hub host refuses");
-        let (station, _) = store.redeem("192.168.1.9", &text, facts("desk"), None, HUB, NOW).unwrap();
-        assert_eq!(station.id, "w1", "the refused attempts did not use the code");
+        assert!(matches!(
+            store.redeem("127.0.0.1", &text, facts(HUB), None, HUB, NOW),
+            Err(Refusal::OwnHost(_))
+        ));
+        assert!(matches!(
+            store.redeem("192.168.1.9", &text, facts("HUB-BOX.local"), None, HUB, NOW),
+            Err(Refusal::OwnHost(_))
+        ));
+        assert!(
+            matches!(
+                store.redeem("192.168.1.9", &text, facts(""), None, HUB, NOW),
+                Err(Refusal::OwnHost(_))
+            ),
+            "an unnamed machine is not trusted"
+        );
+        assert!(
+            matches!(
+                store.redeem("192.168.1.9", &text, facts("desk"), None, "", NOW),
+                Err(Refusal::OwnHost(_))
+            ),
+            "an unknown hub host refuses"
+        );
+        let (station, _) = store
+            .redeem("192.168.1.9", &text, facts("desk"), None, HUB, NOW)
+            .unwrap();
+        assert_eq!(
+            station.id, "w1",
+            "the refused attempts did not use the code"
+        );
     }
 
     #[test]
     fn a_wrong_code_burns_after_its_tries_and_a_bad_name_counts_as_one() {
         let store = Store::default();
         let (_, text) = code(&store, "desk", 10, NOW);
-        assert!(store.redeem("a", &text, facts("desk"), Some(""), HUB, NOW).is_ok(), "an empty name falls back to the hostname");
+        assert!(
+            store
+                .redeem("a", &text, facts("desk"), Some(""), HUB, NOW)
+                .is_ok(),
+            "an empty name falls back to the hostname"
+        );
         let (_, second) = code(&store, "two", 10, NOW);
         for _ in 0..JOIN_TRIES_PER_CODE {
-            let bad = store.redeem("b", &second, facts("box"), Some("\u{7}bell"), HUB, NOW).unwrap_err();
-            assert!(matches!(bad, Refusal::Invalid(ref m) if m.contains("name")), "the matched code reports the name");
+            let bad = store
+                .redeem("b", &second, facts("box"), Some("\u{7}bell"), HUB, NOW)
+                .unwrap_err();
+            assert!(
+                matches!(bad, Refusal::Invalid(ref m) if m.contains("name")),
+                "the matched code reports the name"
+            );
         }
-        assert_eq!(store.redeem("b", &second, facts("box"), None, HUB, NOW).unwrap_err(), Refusal::Invalid(INVALID_CODE.into()));
+        assert_eq!(
+            store
+                .redeem("b", &second, facts("box"), None, HUB, NOW)
+                .unwrap_err(),
+            Refusal::Invalid(INVALID_CODE.into())
+        );
     }
 
     #[test]
@@ -624,7 +772,12 @@ mod tests {
         for _ in 0..nodes::JOIN_RATE_PER_MINUTE {
             let _ = store.redeem("a", "apzj1.nope", facts("box"), None, HUB, NOW);
         }
-        assert_eq!(store.redeem("a", "apzj1.nope", facts("box"), None, HUB, NOW).unwrap_err(), Refusal::RateLimited);
+        assert_eq!(
+            store
+                .redeem("a", "apzj1.nope", facts("box"), None, HUB, NOW)
+                .unwrap_err(),
+            Refusal::RateLimited
+        );
     }
 
     #[test]
@@ -650,7 +803,11 @@ mod tests {
             machine_id: id.map(str::to_string),
             ..facts(host)
         };
-        assert!(may_join_facts(&with_id("desk", Some("abc")), "hub", Some("def")));
+        assert!(may_join_facts(
+            &with_id("desk", Some("abc")),
+            "hub",
+            Some("def")
+        ));
         assert!(
             !may_join_facts(&with_id("desk", Some("ABC")), "hub", Some("abc")),
             "the same machine, renamed, is still the hub's"
@@ -670,18 +827,38 @@ mod tests {
     fn revoke_drain_rename_and_settings_change_the_record() {
         let store = Store::default();
         let (_, text) = code(&store, "desk", 10, NOW);
-        let (station, token) = store.redeem("a", &text, facts("desk"), None, HUB, NOW).unwrap();
+        let (station, token) = store
+            .redeem("a", &text, facts("desk"), None, HUB, NOW)
+            .unwrap();
         assert!(store.set_draining(&station.id, true).unwrap().draining);
         assert!(store.rename(&station.id, "  \t ").is_err());
-        assert_eq!(store.rename(&station.id, " studio ").unwrap().name, "studio");
-        let settings = StationSettings { record: false, ..StationSettings::default() };
-        assert_eq!(store.set_settings(&station.id, settings.clone()).unwrap().settings, settings);
+        assert_eq!(
+            store.rename(&station.id, " studio ").unwrap().name,
+            "studio"
+        );
+        let settings = StationSettings {
+            record: false,
+            ..StationSettings::default()
+        };
+        assert_eq!(
+            store
+                .set_settings(&station.id, settings.clone())
+                .unwrap()
+                .settings,
+            settings
+        );
         let view = store.view(store.station("w1").unwrap(), NOW);
         assert_eq!(view.status, "draining");
         assert_eq!(view.code, station.code);
         store.revoke("w1").unwrap();
-        assert_eq!(store.view(store.station("w1").unwrap(), NOW).status, "revoked");
-        assert_eq!(store.authenticate(&token).unwrap_err(), "this workstation was revoked");
+        assert_eq!(
+            store.view(store.station("w1").unwrap(), NOW).status,
+            "revoked"
+        );
+        assert_eq!(
+            store.authenticate(&token).unwrap_err(),
+            "this workstation was revoked"
+        );
         assert!(store.revoke("w9").is_err());
     }
 
@@ -691,10 +868,16 @@ mod tests {
         let (first, _first_rx) = StationLink::new("w1", store.next_link_id(), NOW);
         assert!(store.attach(Arc::clone(&first)).is_none());
         let (second, _second_rx) = StationLink::new("w1", store.next_link_id(), NOW);
-        let replaced = store.attach(Arc::clone(&second)).expect("the link it replaces is returned, to be ended");
+        let replaced = store
+            .attach(Arc::clone(&second))
+            .expect("the link it replaces is returned, to be ended");
         assert_eq!(replaced.id(), first.id());
         store.detach("w1", first.id());
-        assert_eq!(store.live("w1").map(|l| l.id()), Some(second.id()), "the replacement stays attached");
+        assert_eq!(
+            store.live("w1").map(|l| l.id()),
+            Some(second.id()),
+            "the replacement stays attached"
+        );
         store.detach("w1", second.id());
         assert!(store.live("w1").is_none());
     }
@@ -705,12 +888,21 @@ mod tests {
         let (link, _rx) = StationLink::new("w1", store.next_link_id(), NOW);
         store.attach(Arc::clone(&link));
         assert!(store.is_online("w1", NOW + OFFLINE_AFTER_MS - 1));
-        assert!(!store.is_online("w1", NOW + OFFLINE_AFTER_MS), "silent for 30 s: offline");
+        assert!(
+            !store.is_online("w1", NOW + OFFLINE_AFTER_MS),
+            "silent for 30 s: offline"
+        );
         link.touch(NOW + OFFLINE_AFTER_MS);
         assert!(store.is_online("w1", NOW + OFFLINE_AFTER_MS + 1_000));
         link.finish();
-        assert!(!store.is_online("w1", NOW + OFFLINE_AFTER_MS + 1_000), "a finished link is not online");
-        assert!(store.live_links().is_empty(), "and a STOP ALL reaches no finished link");
+        assert!(
+            !store.is_online("w1", NOW + OFFLINE_AFTER_MS + 1_000),
+            "a finished link is not online"
+        );
+        assert!(
+            store.live_links().is_empty(),
+            "and a STOP ALL reaches no finished link"
+        );
     }
 
     #[test]
@@ -719,20 +911,29 @@ mod tests {
         assert!(store.takeover_due(9, NOW, 30_000));
         assert!(!store.takeover_due(9, NOW + 29_000, 30_000));
         assert!(store.takeover_due(9, NOW + 30_000, 30_000));
-        assert!(store.takeover_due(10, NOW, 30_000), "another session has its own window");
+        assert!(
+            store.takeover_due(10, NOW, 30_000),
+            "another session has its own window"
+        );
     }
 
     #[test]
     fn the_registry_survives_a_snapshot_and_restore() {
         let store = Store::default();
         let (_, text) = code(&store, "desk", 10, NOW);
-        let (_, token) = store.redeem("a", &text, facts("desk"), Some("front"), HUB, NOW).unwrap();
+        let (_, token) = store
+            .redeem("a", &text, facts("desk"), Some("front"), HUB, NOW)
+            .unwrap();
         let json = store.snapshot();
         let restored = Store::default();
         restored.restore(&json).unwrap();
         assert_eq!(restored.station("w1").unwrap().name, "front");
         assert_eq!(restored.authenticate(&token).unwrap().id, "w1");
         assert!(restored.restore("not json").is_err());
-        assert_eq!(restored.list().len(), 1, "a refused restore changes nothing");
+        assert_eq!(
+            restored.list().len(),
+            1,
+            "a refused restore changes nothing"
+        );
     }
 }

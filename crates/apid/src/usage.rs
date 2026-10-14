@@ -161,13 +161,21 @@ mod hour_list {
 
     use super::{HourKey, HourRow};
 
-    pub fn serialize<S: Serializer>(hours: &BTreeMap<HourKey, HourRow>, s: S) -> Result<S::Ok, S::Error> {
+    pub fn serialize<S: Serializer>(
+        hours: &BTreeMap<HourKey, HourRow>,
+        s: S,
+    ) -> Result<S::Ok, S::Error> {
         s.collect_seq(hours.values())
     }
 
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<BTreeMap<HourKey, HourRow>, D::Error> {
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        d: D,
+    ) -> Result<BTreeMap<HourKey, HourRow>, D::Error> {
         let rows = Vec::<HourRow>::deserialize(d)?;
-        Ok(rows.into_iter().map(|row| ((row.hour_ms, row.model.clone(), row.cid), row)).collect())
+        Ok(rows
+            .into_iter()
+            .map(|row| ((row.hour_ms, row.model.clone(), row.cid), row))
+            .collect())
     }
 }
 
@@ -196,14 +204,17 @@ impl Ledger {
         state.next_id += 1;
         call.id = state.next_id;
         let hour_ms = call.at_ms - call.at_ms % HOUR_MS;
-        let row = state.hours.entry((hour_ms, call.model.clone(), call.cid)).or_insert_with(|| HourRow {
-            hour_ms,
-            model: call.model.clone(),
-            provider: call.provider.clone(),
-            cid: call.cid,
-            role: call.role.clone(),
-            totals: Totals::default(),
-        });
+        let row = state
+            .hours
+            .entry((hour_ms, call.model.clone(), call.cid))
+            .or_insert_with(|| HourRow {
+                hour_ms,
+                model: call.model.clone(),
+                provider: call.provider.clone(),
+                cid: call.cid,
+                role: call.role.clone(),
+                totals: Totals::default(),
+            });
         row.totals.add_call(&call);
         state.calls.push_back(call.clone());
         call
@@ -217,12 +228,28 @@ impl Ledger {
         let mut agents: BTreeMap<String, Totals> = BTreeMap::new();
         let mut roles: BTreeMap<String, Totals> = BTreeMap::new();
         let mut providers: BTreeMap<String, Totals> = BTreeMap::new();
-        for row in state.hours.values().filter(|row| overlaps(row.hour_ms, from_ms, to_ms)) {
+        for row in state
+            .hours
+            .values()
+            .filter(|row| overlaps(row.hour_ms, from_ms, to_ms))
+        {
             total.merge(&row.totals);
-            models.entry(row.model.clone()).or_default().merge(&row.totals);
-            agents.entry(row.cid.to_string()).or_default().merge(&row.totals);
-            roles.entry(row.role.clone()).or_default().merge(&row.totals);
-            providers.entry(row.provider.clone()).or_default().merge(&row.totals);
+            models
+                .entry(row.model.clone())
+                .or_default()
+                .merge(&row.totals);
+            agents
+                .entry(row.cid.to_string())
+                .or_default()
+                .merge(&row.totals);
+            roles
+                .entry(row.role.clone())
+                .or_default()
+                .merge(&row.totals);
+            providers
+                .entry(row.provider.clone())
+                .or_default()
+                .merge(&row.totals);
         }
         let unpriced = models
             .iter()
@@ -256,24 +283,51 @@ impl Ledger {
             }
             let count = (to_ms - start).div_ceil(bucket_ms) as usize;
             points = (0..count)
-                .map(|i| Point { at_ms: start + i as u64 * bucket_ms, ..Point::default() })
+                .map(|i| Point {
+                    at_ms: start + i as u64 * bucket_ms,
+                    ..Point::default()
+                })
                 .collect::<Vec<Point>>();
             let state = self.lock();
-            for row in state.hours.values().filter(|row| row.hour_ms >= start && row.hour_ms < to_ms) {
+            for row in state
+                .hours
+                .values()
+                .filter(|row| row.hour_ms >= start && row.hour_ms < to_ms)
+            {
                 let point = &mut points[((row.hour_ms - start) / bucket_ms) as usize];
                 point.totals.merge(&row.totals);
-                point.groups.entry(group_of(row, by)).or_default().merge(&row.totals);
+                point
+                    .groups
+                    .entry(group_of(row, by))
+                    .or_default()
+                    .merge(&row.totals);
             }
         }
-        Series { from_ms: start, to_ms, bucket_ms, by: by.to_string(), points }
+        Series {
+            from_ms: start,
+            to_ms,
+            bucket_ms,
+            by: by.to_string(),
+            points,
+        }
     }
 
     /// The newest calls first, those with an id below `before` (when given), matching `model`
     /// and `cid` (when given). `limit` 0 means [`CALLS_PAGE`]; it is capped at [`CALLS_LIMIT`].
     /// `total` counts every retained call that matches the filters. `next_before` is the id of
     /// the last call returned when more matching calls remain.
-    pub fn calls(&self, before: Option<u64>, limit: usize, model: Option<&str>, cid: Option<u64>) -> CallsPage {
-        let limit = if limit == 0 { CALLS_PAGE } else { limit.min(CALLS_LIMIT) };
+    pub fn calls(
+        &self,
+        before: Option<u64>,
+        limit: usize,
+        model: Option<&str>,
+        cid: Option<u64>,
+    ) -> CallsPage {
+        let limit = if limit == 0 {
+            CALLS_PAGE
+        } else {
+            limit.min(CALLS_LIMIT)
+        };
         let state = self.lock();
         let matches = |call: &&Call| {
             model.is_none_or(|m| call.model == m) && cid.is_none_or(|id| call.cid == id)
@@ -281,15 +335,29 @@ impl Ledger {
         let total = state.calls.iter().filter(matches).count();
         let mut calls = Vec::new();
         let mut more = false;
-        for call in state.calls.iter().rev().filter(matches).filter(|c| before.is_none_or(|b| c.id < b)) {
+        for call in state
+            .calls
+            .iter()
+            .rev()
+            .filter(matches)
+            .filter(|c| before.is_none_or(|b| c.id < b))
+        {
             if calls.len() == limit {
                 more = true;
                 break;
             }
             calls.push(call.clone());
         }
-        let next_before = if more { calls.last().map(|c| c.id) } else { None };
-        CallsPage { calls, total, next_before }
+        let next_before = if more {
+            calls.last().map(|c| c.id)
+        } else {
+            None
+        };
+        CallsPage {
+            calls,
+            total,
+            next_before,
+        }
     }
 
     /// Drops call rows beyond `calls_max` (oldest first) and hour rows older than `days`
@@ -306,7 +374,11 @@ impl Ledger {
     }
 
     pub fn snapshot(&self) -> String {
-        self.state.lock().ok().and_then(|s| serde_json::to_string(&*s).ok()).unwrap_or_default()
+        self.state
+            .lock()
+            .ok()
+            .and_then(|s| serde_json::to_string(&*s).ok())
+            .unwrap_or_default()
     }
 
     pub fn restore(&self, json: &str) -> Result<(), String> {
@@ -359,13 +431,16 @@ fn escalates(earlier: &VecDeque<Call>, call: &Call) -> bool {
         return false;
     };
     earlier.iter().rev().any(|c| {
-        c.task.as_deref() == Some(task) && rung_rank(c.rung.as_deref()).is_some_and(|lower| lower < rung)
+        c.task.as_deref() == Some(task)
+            && rung_rank(c.rung.as_deref()).is_some_and(|lower| lower < rung)
     })
 }
 
 /// The shadow models that run on the cascade: those whose card id starts with `rung` and that are
 /// in state shadow.
-pub fn shadow_rung_ids(models: impl IntoIterator<Item = (String, crate::foundry::registry::State)>) -> Vec<String> {
+pub fn shadow_rung_ids(
+    models: impl IntoIterator<Item = (String, crate::foundry::registry::State)>,
+) -> Vec<String> {
     use crate::foundry::registry::State;
     models
         .into_iter()
@@ -387,14 +462,22 @@ fn comparison_line(id: &str, model: &str, rung: &str, result: &Result<bool, Stri
 /// real rung decision. It runs on its own thread, so the call never waits for it, and it only reads
 /// the call: the real rung stays as it was filed.
 fn shadow_on_cascade(app: &App, call: &Call) {
-    let Some(rung) = call.rung.clone() else { return };
+    let Some(rung) = call.rung.clone() else {
+        return;
+    };
     let ids = app.models.derived_ids(|records| {
-        shadow_rung_ids(records.iter().map(|record| (record.card.id.clone(), record.state)))
+        shadow_rung_ids(
+            records
+                .iter()
+                .map(|record| (record.card.id.clone(), record.state)),
+        )
     });
     if ids.is_empty() {
         return;
     }
-    let Some(handle) = app.handle().upgrade() else { return };
+    let Some(handle) = app.handle().upgrade() else {
+        return;
+    };
     let features = serde_json::json!({
         "model": call.model,
         "task": call.task,
@@ -419,7 +502,9 @@ fn shadow_on_cascade(app: &App, call: &Call) {
 /// The provider of a plaza model id: the part before the first `/` (`openrouter/x/y` is
 /// `openrouter`), or the whole id when it has no `/`.
 pub fn provider_of(model: &str) -> &str {
-    model.split_once('/').map_or(model, |(provider, _)| provider)
+    model
+        .split_once('/')
+        .map_or(model, |(provider, _)| provider)
 }
 
 fn hit_rate(tokens: &Tokens) -> f64 {
@@ -452,22 +537,43 @@ fn group_of(row: &HourRow, by: &str) -> String {
 
 /// The groups, biggest spend first (then by key).
 fn groups(by_key: BTreeMap<String, Totals>) -> Vec<Group> {
-    let mut out: Vec<Group> = by_key.into_iter().map(|(key, totals)| Group { key, totals }).collect();
-    out.sort_by(|a, b| b.totals.usd.total_cmp(&a.totals.usd).then_with(|| a.key.cmp(&b.key)));
+    let mut out: Vec<Group> = by_key
+        .into_iter()
+        .map(|(key, totals)| Group { key, totals })
+        .collect();
+    out.sort_by(|a, b| {
+        b.totals
+            .usd
+            .total_cmp(&a.totals.usd)
+            .then_with(|| a.key.cmp(&b.key))
+    });
     out
 }
 
 /// Builds a [`Call`] for one metered call (role and provider looked up from the roster and the
 /// providers, the estimate from the price catalog and the manual prices) and records it.
-pub fn meter(app: &App, cid: u64, model: &str, tokens: Tokens, cost_usd: Option<f64>, task: Option<String>, via: &str) {
+pub fn meter(
+    app: &App,
+    cid: u64,
+    model: &str,
+    tokens: Tokens,
+    cost_usd: Option<f64>,
+    task: Option<String>,
+    via: &str,
+) {
     let settings = app.settings.get();
     let priced = app.prices.lookup(model, &settings.prices);
-    let rung = crate::foundry::datasets::rung_for_price(priced.as_ref().map(|p| p.price.output)).map(str::to_string);
+    let rung = crate::foundry::datasets::rung_for_price(priced.as_ref().map(|p| p.price.output))
+        .map(str::to_string);
     let call = Call {
         id: 0,
         at_ms: apz_plaza::now_ms(),
         cid,
-        role: app.agents.get(cid).map(|agent| agent.role).unwrap_or_default(),
+        role: app
+            .agents
+            .get(cid)
+            .map(|agent| agent.role)
+            .unwrap_or_default(),
         model: model.to_string(),
         provider: provider_of(model).to_string(),
         tokens,
@@ -485,7 +591,11 @@ pub fn meter(app: &App, cid: u64, model: &str, tokens: Tokens, cost_usd: Option<
 /// Applies the usage retention settings (the scheduler calls this every tick).
 pub fn retain(app: &App) {
     let retention = app.settings.get().retention;
-    app.usage.prune(apz_plaza::now_ms(), retention.usage_calls_max as usize, retention.usage_days);
+    app.usage.prune(
+        apz_plaza::now_ms(),
+        retention.usage_calls_max as usize,
+        retention.usage_days,
+    );
 }
 
 pub fn routes(router: Router<App>) -> Router<App> {
@@ -510,11 +620,18 @@ fn series_route(app: &App, req: &Request) -> Response {
     let bucket = match req.query_param("bucket").unwrap_or("hour") {
         "hour" => HOUR_MS,
         "day" => DAY_MS,
-        other => return Response::error(400, &format!("bucket must be hour or day, not {other:?}")),
+        other => {
+            return Response::error(400, &format!("bucket must be hour or day, not {other:?}"));
+        }
     };
     let by = match req.query_param("by").unwrap_or("model") {
         by @ ("model" | "agent" | "role" | "provider") => by,
-        other => return Response::error(400, &format!("by must be model, agent, role or provider, not {other:?}")),
+        other => {
+            return Response::error(
+                400,
+                &format!("by must be model, agent, role or provider, not {other:?}"),
+            );
+        }
     };
     Response::json(200, &app.usage.series(from, to, bucket, by))
 }
@@ -524,7 +641,12 @@ fn calls_route(app: &App, req: &Request) -> Response {
         None => 0,
         Some(raw) => match raw.parse::<usize>() {
             Ok(n) if (1..=CALLS_LIMIT).contains(&n) => n,
-            _ => return Response::error(400, &format!("limit must be 1..={CALLS_LIMIT}, not {raw:?}")),
+            _ => {
+                return Response::error(
+                    400,
+                    &format!("limit must be 1..={CALLS_LIMIT}, not {raw:?}"),
+                );
+            }
         },
     };
     let before = match param_u64(req, "before") {
@@ -535,7 +657,10 @@ fn calls_route(app: &App, req: &Request) -> Response {
         Ok(cid) => cid,
         Err(response) => return response,
     };
-    let model = req.query_param("model").map(crate::plaza::percent_decode).filter(|m| !m.is_empty());
+    let model = req
+        .query_param("model")
+        .map(crate::plaza::percent_decode)
+        .filter(|m| !m.is_empty());
     Response::json(200, &app.usage.calls(before, limit, model.as_deref(), cid))
 }
 
@@ -544,7 +669,10 @@ fn window(req: &Request, days: u64) -> Result<(u64, u64), Response> {
     let to = param_u64(req, "to")?.unwrap_or_else(apz_plaza::now_ms);
     let from = param_u64(req, "from")?.unwrap_or(to.saturating_sub(days * DAY_MS));
     if from > to {
-        return Err(Response::error(400, &format!("from ({from}) is after to ({to})")));
+        return Err(Response::error(
+            400,
+            &format!("from ({from}) is after to ({to})"),
+        ));
     }
     Ok((from, to))
 }
@@ -552,10 +680,9 @@ fn window(req: &Request, days: u64) -> Result<(u64, u64), Response> {
 fn param_u64(req: &Request, name: &str) -> Result<Option<u64>, Response> {
     match req.query_param(name) {
         None => Ok(None),
-        Some(raw) => raw
-            .parse::<u64>()
-            .map(Some)
-            .map_err(|_| Response::error(400, &format!("{name} must be a whole number, not {raw:?}"))),
+        Some(raw) => raw.parse::<u64>().map(Some).map_err(|_| {
+            Response::error(400, &format!("{name} must be a whole number, not {raw:?}"))
+        }),
     }
 }
 
@@ -575,10 +702,22 @@ mod tests {
     const H: u64 = 1_000 * HOUR_MS;
 
     fn tok(input: u64, output: u64, cache_read: u64, cache_write: u64) -> Tokens {
-        Tokens { input, output, cache_read, cache_write }
+        Tokens {
+            input,
+            output,
+            cache_read,
+            cache_write,
+        }
     }
 
-    fn call(at_ms: u64, cid: u64, model: &str, tokens: Tokens, cost_usd: Option<f64>, est_usd: f64) -> Call {
+    fn call(
+        at_ms: u64,
+        cid: u64,
+        model: &str,
+        tokens: Tokens,
+        cost_usd: Option<f64>,
+        est_usd: f64,
+    ) -> Call {
         Call {
             id: 0,
             at_ms,
@@ -599,10 +738,38 @@ mod tests {
     #[test]
     fn summary_totals_the_hours_in_the_window() {
         let ledger = Ledger::default();
-        ledger.file(call(H + 5, 1, "anthropic/a", tok(100, 10, 300, 0), Some(0.5), 0.4));
-        ledger.file(call(H + 9 * 60_000, 2, "anthropic/a", tok(100, 20, 0, 100), None, 0.25));
-        ledger.file(call(H + HOUR_MS + 1, 1, "openai/b", tok(50, 5, 0, 0), None, 0.0));
-        ledger.file(call(H + HOUR_MS + 2, 3, "free/c", tok(10, 1, 0, 0), None, 0.0));
+        ledger.file(call(
+            H + 5,
+            1,
+            "anthropic/a",
+            tok(100, 10, 300, 0),
+            Some(0.5),
+            0.4,
+        ));
+        ledger.file(call(
+            H + 9 * 60_000,
+            2,
+            "anthropic/a",
+            tok(100, 20, 0, 100),
+            None,
+            0.25,
+        ));
+        ledger.file(call(
+            H + HOUR_MS + 1,
+            1,
+            "openai/b",
+            tok(50, 5, 0, 0),
+            None,
+            0.0,
+        ));
+        ledger.file(call(
+            H + HOUR_MS + 2,
+            3,
+            "free/c",
+            tok(10, 1, 0, 0),
+            None,
+            0.0,
+        ));
 
         let s = ledger.summary(H, H + 2 * HOUR_MS);
         assert_eq!(s.totals.calls, 4);
@@ -614,7 +781,13 @@ mod tests {
 
         assert_eq!(s.by_model[0].key, "anthropic/a");
         assert_eq!(s.by_model[0].totals.calls, 2);
-        assert_eq!(s.by_agent.iter().map(|g| g.key.as_str()).collect::<Vec<_>>(), ["1", "2", "3"]);
+        assert_eq!(
+            s.by_agent
+                .iter()
+                .map(|g| g.key.as_str())
+                .collect::<Vec<_>>(),
+            ["1", "2", "3"]
+        );
         assert_eq!(s.by_provider.len(), 3);
         // Models with tokens but no price at all: openai/b and free/c.
         assert_eq!(s.unpriced, ["free/c", "openai/b"]);
@@ -629,7 +802,14 @@ mod tests {
     fn series_emits_empty_buckets_and_caps_points() {
         let ledger = Ledger::default();
         ledger.file(call(H, 1, "a/x", tok(10, 0, 0, 0), None, 1.0));
-        ledger.file(call(H + 2 * HOUR_MS + 5, 2, "b/y", tok(10, 0, 0, 0), None, 2.0));
+        ledger.file(call(
+            H + 2 * HOUR_MS + 5,
+            2,
+            "b/y",
+            tok(10, 0, 0, 0),
+            None,
+            2.0,
+        ));
 
         let s = ledger.series(H + 7 * 60_000, H + 4 * HOUR_MS, HOUR_MS, "model");
         assert_eq!(s.from_ms, H);
@@ -681,7 +861,10 @@ mod tests {
         assert_eq!(ids(&by_model), [3]);
         assert_eq!(by_model.next_before, Some(3));
 
-        assert_eq!(ledger.calls(None, 50, Some("zzz/none"), None), CallsPage::default());
+        assert_eq!(
+            ledger.calls(None, 50, Some("zzz/none"), None),
+            CallsPage::default()
+        );
         assert_eq!(ledger.calls(None, 0, None, None).calls.len(), 5);
     }
 
@@ -690,10 +873,22 @@ mod tests {
         let ledger = Ledger::default();
         ledger.file(call(H, 1, "a/x", tok(1, 0, 0, 0), None, 1.0));
         ledger.file(call(H + 2 * DAY_MS, 1, "a/x", tok(1, 0, 0, 0), None, 1.0));
-        ledger.file(call(H + 2 * DAY_MS + 1, 2, "a/x", tok(1, 0, 0, 0), None, 1.0));
+        ledger.file(call(
+            H + 2 * DAY_MS + 1,
+            2,
+            "a/x",
+            tok(1, 0, 0, 0),
+            None,
+            1.0,
+        ));
 
         ledger.prune(H + 2 * DAY_MS + 2, 2, 0);
-        let kept: Vec<u64> = ledger.calls(None, 50, None, None).calls.iter().map(|c| c.id).collect();
+        let kept: Vec<u64> = ledger
+            .calls(None, 50, None, None)
+            .calls
+            .iter()
+            .map(|c| c.id)
+            .collect();
         assert_eq!(kept, [3, 2]);
         assert_eq!(ledger.summary(0, u64::MAX).totals.calls, 3);
 
@@ -710,8 +905,14 @@ mod tests {
         let restored = Ledger::default();
         restored.restore(&ledger.snapshot()).unwrap();
         assert_eq!(restored.summary(0, u64::MAX), ledger.summary(0, u64::MAX));
-        assert_eq!(restored.calls(None, 50, None, None), ledger.calls(None, 50, None, None));
-        assert_eq!(restored.series(H, H + 2 * HOUR_MS, HOUR_MS, "role"), ledger.series(H, H + 2 * HOUR_MS, HOUR_MS, "role"));
+        assert_eq!(
+            restored.calls(None, 50, None, None),
+            ledger.calls(None, 50, None, None)
+        );
+        assert_eq!(
+            restored.series(H, H + 2 * HOUR_MS, HOUR_MS, "role"),
+            ledger.series(H, H + 2 * HOUR_MS, HOUR_MS, "role")
+        );
 
         let next = restored.file(call(H + 3, 1, "a/x", tok(1, 0, 0, 0), None, 0.0));
         assert_eq!(next.id, 3);
@@ -719,20 +920,38 @@ mod tests {
     }
 
     fn rung_call(task: Option<&str>, rung: Option<&str>) -> Call {
-        Call { task: task.map(str::to_string), rung: rung.map(str::to_string), ..call(H, 1, "a/x", tok(1, 0, 0, 0), None, 0.0) }
+        Call {
+            task: task.map(str::to_string),
+            rung: rung.map(str::to_string),
+            ..call(H, 1, "a/x", tok(1, 0, 0, 0), None, 0.0)
+        }
     }
 
     #[test]
     fn a_call_records_its_rung_and_a_later_higher_rung_call_of_its_task_escalates() {
         let ledger = Ledger::default();
         let first = ledger.file(rung_call(Some("t1"), Some("cheap")));
-        assert_eq!((first.rung.as_deref(), first.escalated), (Some("cheap"), false));
+        assert_eq!(
+            (first.rung.as_deref(), first.escalated),
+            (Some("cheap"), false)
+        );
         let second = ledger.file(rung_call(Some("t1"), Some("frontier")));
-        assert_eq!((second.rung.as_deref(), second.escalated), (Some("frontier"), true));
+        assert_eq!(
+            (second.rung.as_deref(), second.escalated),
+            (Some("frontier"), true)
+        );
         // The task already had a cheaper call, so a later call on the frontier is still an escalation.
-        assert!(ledger.file(rung_call(Some("t1"), Some("frontier"))).escalated);
+        assert!(
+            ledger
+                .file(rung_call(Some("t1"), Some("frontier")))
+                .escalated
+        );
         // Another task, no task, and a same-rung repeat with no lower call before are not.
-        assert!(!ledger.file(rung_call(Some("t2"), Some("frontier"))).escalated);
+        assert!(
+            !ledger
+                .file(rung_call(Some("t2"), Some("frontier")))
+                .escalated
+        );
         assert!(!ledger.file(rung_call(None, Some("mid"))).escalated);
         assert!(!ledger.file(rung_call(Some("t3"), Some("mid"))).escalated);
         assert!(!ledger.file(rung_call(Some("t3"), Some("mid"))).escalated);
@@ -741,7 +960,14 @@ mod tests {
         assert!(!ledger.file(rung_call(Some("t4"), Some("cheap"))).escalated);
 
         let page = ledger.calls(None, 50, None, None);
-        assert_eq!(page.calls.iter().find(|c| c.id == second.id).and_then(|c| c.rung.clone()).as_deref(), Some("frontier"));
+        assert_eq!(
+            page.calls
+                .iter()
+                .find(|c| c.id == second.id)
+                .and_then(|c| c.rung.clone())
+                .as_deref(),
+            Some("frontier")
+        );
 
         // A record saved before rungs still loads, with no rung and no escalation.
         let old = r#"{"id":1,"at_ms":5,"cid":1,"role":"worker","model":"a/x","provider":"a","input":1,"output":0,"cache_read":0,"cache_write":0,"est_usd":0.0,"via":"harness"}"#;
@@ -760,9 +986,15 @@ mod tests {
         assert_eq!(picked, ["rung-a"]);
 
         let agreed = comparison_line("rung-a", "a/x", "mid", &Ok(true));
-        assert_eq!(agreed, "apid: shadow rung-a agreed with the real rung mid on a/x");
+        assert_eq!(
+            agreed,
+            "apid: shadow rung-a agreed with the real rung mid on a/x"
+        );
         let differed = comparison_line("rung-a", "a/x", "mid", &Ok(false));
-        assert!(differed.contains("differed from the real rung mid"), "{differed}");
+        assert!(
+            differed.contains("differed from the real rung mid"),
+            "{differed}"
+        );
         let failed = comparison_line("rung-a", "a/x", "mid", &Err("no model".into()));
         assert!(failed.contains("did not run on a/x: no model"), "{failed}");
     }

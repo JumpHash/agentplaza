@@ -12,13 +12,13 @@ pub mod catalog;
 pub mod client;
 pub mod config;
 pub mod egress;
+#[cfg(test)]
+pub mod fixture;
 pub mod http;
 pub mod relay;
 pub mod routes;
 pub mod runtime;
 pub mod stdio;
-#[cfg(test)]
-pub mod fixture;
 #[cfg(test)]
 mod tests;
 
@@ -30,7 +30,7 @@ use std::time::Instant;
 
 use apz_proto::chat::ToolSpec;
 use secrecy::ExposeSecret;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::agents::Agent;
@@ -81,7 +81,10 @@ pub struct VaultSecrets<'a> {
 
 impl<'a> VaultSecrets<'a> {
     pub fn new(app: &'a App) -> VaultSecrets<'a> {
-        VaultSecrets { vault: &app.vault, nodes: app.nodes.list() }
+        VaultSecrets {
+            vault: &app.vault,
+            nodes: app.nodes.list(),
+        }
     }
 }
 
@@ -104,7 +107,13 @@ impl McpSecrets for VaultSecrets<'_> {
 
 /// The context a call or a probe runs in: the secrets it reads, who for, and the node the instance is for.
 pub fn ctx<'a>(app: &App, secrets: &'a dyn McpSecrets, behalf: OnBehalf, node: String) -> Ctx<'a> {
-    Ctx { secrets, behalf, node, blocklist: app.settings.get().fetch_block.clone(), now: apz_plaza::now_ms() }
+    Ctx {
+        secrets,
+        behalf,
+        node,
+        blocklist: app.settings.get().fetch_block.clone(),
+        now: apz_plaza::now_ms(),
+    }
 }
 
 /// The MCP state of the hub: the store of servers and the running instances.
@@ -119,7 +128,10 @@ impl Mcp {
     pub fn load(state_dir: &Path, port: u16) -> Mcp {
         Mcp {
             store: config::Store::load(state_dir.join(config::FILE)),
-            runtime: Runtime::with_egress(Arc::new(stdio::DockerLauncher), egress::Egress::new(state_dir.to_path_buf(), port)),
+            runtime: Runtime::with_egress(
+                Arc::new(stdio::DockerLauncher),
+                egress::Egress::new(state_dir.to_path_buf(), port),
+            ),
         }
     }
 }
@@ -136,7 +148,16 @@ pub struct Entry {
 static REGISTRY: RwLock<BTreeMap<String, Entry>> = RwLock::new(BTreeMap::new());
 
 fn sanitize(original: &str) -> String {
-    original.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' }).collect()
+    original
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 /// `name` cut to leave room for `_` and six hex digits of the sha256 of `original`.
@@ -168,7 +189,11 @@ pub fn wire_names(server: &str, tools: &[ToolInfo]) -> Vec<String> {
 
 /// The registry entry for a wire name, if it is an offered MCP tool.
 pub fn lookup(name: &str) -> Option<Entry> {
-    REGISTRY.read().unwrap_or_else(|p| p.into_inner()).get(name).cloned()
+    REGISTRY
+        .read()
+        .unwrap_or_else(|p| p.into_inner())
+        .get(name)
+        .cloned()
 }
 
 /// The risk class of an MCP tool's wire name. The laws read it (`laws::risk_class`, C-004a).
@@ -177,20 +202,33 @@ pub fn risk_of(name: &str) -> Option<&'static str> {
 }
 
 /// Rebuilds the registry entries of the servers given, from their tool listings. Other servers keep theirs.
-pub fn publish_risks(servers: &BTreeMap<String, McpServer>, tools: &BTreeMap<String, Vec<ToolInfo>>) {
+pub fn publish_risks(
+    servers: &BTreeMap<String, McpServer>,
+    tools: &BTreeMap<String, Vec<ToolInfo>>,
+) {
     let mut registry = REGISTRY.write().unwrap_or_else(|p| p.into_inner());
     registry.retain(|_, entry| !servers.contains_key(&entry.server));
     for (id, server) in servers {
         let listed = tools.get(id).cloned().unwrap_or_default();
         for (tool, name) in listed.iter().zip(wire_names(id, &listed)) {
-            registry.insert(name, Entry { server: id.clone(), tool: tool.name.clone(), risk: risk_for(server, tool).as_str() });
+            registry.insert(
+                name,
+                Entry {
+                    server: id.clone(),
+                    tool: tool.name.clone(),
+                    risk: risk_for(server, tool).as_str(),
+                },
+            );
         }
     }
 }
 
 /// Drops the registry entries of a removed server.
 pub fn forget_risks(server: &str) {
-    REGISTRY.write().unwrap_or_else(|p| p.into_inner()).retain(|_, entry| entry.server != server);
+    REGISTRY
+        .write()
+        .unwrap_or_else(|p| p.into_inner())
+        .retain(|_, entry| entry.server != server);
 }
 
 /// The risk a tool's annotations give, before any owner override (destructive is irreversible, read-only
@@ -208,13 +246,20 @@ pub fn auto_risk(tool: &ToolInfo) -> Risk {
 
 /// A tool's effective risk: the owner's override, else the annotations' risk.
 pub fn risk_for(server: &McpServer, tool: &ToolInfo) -> Risk {
-    server.tools.risk.get(&tool.name).copied().unwrap_or_else(|| auto_risk(tool))
+    server
+        .tools
+        .risk
+        .get(&tool.name)
+        .copied()
+        .unwrap_or_else(|| auto_risk(tool))
 }
 
 /// Whether a server is offered to `role` on `node`: enabled, and both its access lists admit them.
 /// A caller with no known node is refused.
 pub fn allowed(server: &McpServer, role: &str, node: Option<&str>) -> bool {
-    server.enabled && server.access.roles.admits(role) && node.is_some_and(|n| server.access.nodes.admits(n))
+    server.enabled
+        && server.access.roles.admits(role)
+        && node.is_some_and(|n| server.access.nodes.admits(n))
 }
 
 /// The tool specs an agent is offered: each allowed tool of each server the agent may use, that the laws
@@ -250,26 +295,55 @@ pub fn specs_for_agent(app: &App, agent: &Agent) -> Vec<ToolSpec> {
 /// tool and risk) already ran in the caller. Errors are tool errors: a refused call, a server error, or a
 /// result the server marked `isError`. Each call that reaches the server is recorded in the transcript as
 /// an `mcp_call` with its server, tool, time, outcome and output size.
-pub fn call_for_agent(app: &App, agent: &Agent, work: u64, name: &str, input: &Value) -> Result<String, String> {
+pub fn call_for_agent(
+    app: &App,
+    agent: &Agent,
+    work: u64,
+    name: &str,
+    input: &Value,
+) -> Result<String, String> {
     let entry = lookup(name).ok_or_else(|| format!("{name} is not an MCP tool"))?;
-    let server = app.mcp.store.get(&entry.server).ok_or_else(|| format!("no MCP server `{}`", entry.server))?;
-    let node = app.nodes.owner_of_cid(agent.cid).map(|n| n.id).ok_or("your node is not known")?;
+    let server = app
+        .mcp
+        .store
+        .get(&entry.server)
+        .ok_or_else(|| format!("no MCP server `{}`", entry.server))?;
+    let node = app
+        .nodes
+        .owner_of_cid(agent.cid)
+        .map(|n| n.id)
+        .ok_or("your node is not known")?;
     if !allowed(&server, &agent.role, Some(&node)) {
-        return Err(format!("{name} is not available to the {} role on this node", agent.role));
+        return Err(format!(
+            "{name} is not available to the {} role on this node",
+            agent.role
+        ));
     }
     if !server.tools.allow.admits(&entry.tool) {
         return Err(format!("{} does not allow {}", entry.server, entry.tool));
     }
-    if !app.mcp.store.tools_of(&entry.server).iter().any(|t| t.name == entry.tool) {
+    if !app
+        .mcp
+        .store
+        .tools_of(&entry.server)
+        .iter()
+        .any(|t| t.name == entry.tool)
+    {
         return Err(format!("{} does not offer {}", entry.server, entry.tool));
     }
     if !crate::laws::global().permits(&agent.role, name) {
-        return Err(format!("{name} is not available to the {} role", agent.role));
+        return Err(format!(
+            "{name} is not available to the {} role",
+            agent.role
+        ));
     }
     let secrets = VaultSecrets::new(app);
     let ctx = ctx(app, &secrets, OnBehalf::Agent { cid: agent.cid }, node);
     let started = Instant::now();
-    let result = app.mcp.runtime.call(&server, &ctx, &entry.tool, input.clone());
+    let result = app
+        .mcp
+        .runtime
+        .call(&server, &ctx, &entry.tool, input.clone());
     let ms = started.elapsed().as_millis() as u64;
     let record = |ok: bool, output_bytes: usize| {
         app.transcripts.record(
@@ -291,7 +365,11 @@ pub fn call_for_agent(app: &App, agent: &Agent, work: u64, name: &str, input: &V
         app.mcp.store.set_tools(&entry.server, tools.clone());
     }
     record(!output.is_error, output.text.len());
-    let author = if agent.name.is_empty() { agent.role.clone() } else { agent.name.clone() };
+    let author = if agent.name.is_empty() {
+        agent.role.clone()
+    } else {
+        agent.name.clone()
+    };
     let mut text = output.text;
     for media in &output.media {
         let upload = Upload {
@@ -309,11 +387,7 @@ pub fn call_for_agent(app: &App, agent: &Agent, work: u64, name: &str, input: &V
         let stored = app.deliverables.add(upload, &media.bytes)?;
         text.push_str(&format!("\nSaved as file {}. Fetch it into your VM with download from http://plaza.gateway/files/{}", stored.id, stored.id));
     }
-    if output.is_error {
-        Err(text)
-    } else {
-        Ok(text)
-    }
+    if output.is_error { Err(text) } else { Ok(text) }
 }
 
 /// A file extension for the image and audio types MCP servers return.

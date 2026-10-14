@@ -7,15 +7,17 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use apz_skill::{find_skills, write_zip, Entry};
-use iced::widget::{button, checkbox, column, container, pick_list, row, text, text_editor, text_input};
+use apz_skill::{Entry, find_skills, write_zip};
+use iced::widget::{
+    button, checkbox, column, container, pick_list, row, text, text_editor, text_input,
+};
 use iced::{Element, Length, Subscription, Task};
-use serde::de::DeserializeOwned;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde::de::DeserializeOwned;
+use serde_json::{Value, json};
 
-use super::{skill_editor, Id};
-use crate::console::{client, events, ui, Ctx};
+use super::{Id, skill_editor};
+use crate::console::{Ctx, client, events, ui};
 
 /// The binding filter's first two choices.
 const ANY: &str = "Any binding";
@@ -242,7 +244,12 @@ pub fn go(msg: &Msg) -> Option<Id> {
 pub fn load(st: &mut State, ctx: &Ctx) -> Task<Msg> {
     st.loading = true;
     st.error = None;
-    let path: String = (if st.show_archived { "/v1/skills?archived=true" } else { "/v1/skills" }).to_string();
+    let path: String = (if st.show_archived {
+        "/v1/skills?archived=true"
+    } else {
+        "/v1/skills"
+    })
+    .to_string();
     let c = ctx.client.clone();
     let list = client::task(move || c.get::<ListResp>(&path), Msg::Loaded);
     let c = ctx.client.clone();
@@ -416,7 +423,8 @@ pub fn update(st: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                     let bytes = if path.is_dir() {
                         folder_zip(&path)?
                     } else {
-                        std::fs::read(&path).map_err(|e| format!("The file could not be read: {e}"))?
+                        std::fs::read(&path)
+                            .map_err(|e| format!("The file could not be read: {e}"))?
                     };
                     zip_preview(&c, &bytes)
                 },
@@ -452,7 +460,10 @@ pub fn update(st: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             st.busy = true;
             st.notice = None;
             let c = ctx.client.clone();
-            client::task(move || c.post::<Preview>("/v1/skills/github/preview", &json!({ "url": url })), Msg::Previewed)
+            client::task(
+                move || c.post::<Preview>("/v1/skills/github/preview", &json!({ "url": url })),
+                Msg::Previewed,
+            )
         }
         Msg::PreviewPick(path, on) => {
             if on {
@@ -478,7 +489,10 @@ pub fn update(st: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             });
             st.committing = true;
             let c = ctx.client.clone();
-            client::task(move || c.post::<CommitResp>("/v1/skills/import/commit", &body), Msg::Committed)
+            client::task(
+                move || c.post::<CommitResp>("/v1/skills/import/commit", &body),
+                Msg::Committed,
+            )
         }
         Msg::Committed(Ok(r)) => {
             st.committing = false;
@@ -495,7 +509,11 @@ pub fn update(st: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         }
         Msg::ExportSelected => {
             let ids: Vec<String> = st.selected.iter().cloned().collect();
-            let name = if ids.len() == 1 { "skill.zip" } else { "skills.zip" };
+            let name = if ids.len() == 1 {
+                "skill.zip"
+            } else {
+                "skills.zip"
+            };
             Task::perform(
                 async move {
                     rfd::AsyncFileDialog::new()
@@ -516,7 +534,8 @@ pub fn update(st: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             client::task(
                 move || {
                     let bytes = raw(&c, "GET", &p, None)?;
-                    std::fs::write(&path, &bytes).map_err(|e| format!("The file could not be written: {e}"))?;
+                    std::fs::write(&path, &bytes)
+                        .map_err(|e| format!("The file could not be written: {e}"))?;
                     Ok(path.display().to_string())
                 },
                 Msg::Exported,
@@ -534,7 +553,11 @@ pub fn update(st: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             if event.kind != "skill" {
                 return Task::none();
             }
-            let id = event.data.get("id").and_then(Value::as_str).unwrap_or_default();
+            let id = event
+                .data
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
             match st.editor.as_mut() {
                 Some(ed) if ed.id == id => skill_editor::hub_changed(ed, ctx).map(Msg::Editor),
                 Some(_) => Task::none(),
@@ -603,12 +626,21 @@ fn create(st: &mut State, ctx: &Ctx) -> Task<Msg> {
     st.creating = true;
     st.form_error = None;
     let c = ctx.client.clone();
-    client::task(move || c.post::<OneResp>("/v1/skills", &payload), Msg::Created)
+    client::task(
+        move || c.post::<OneResp>("/v1/skills", &payload),
+        Msg::Created,
+    )
 }
 
 /// One hub call with a raw body (a zip) or none; a non-2xx answer becomes `Err` with the hub's `error` text.
-fn raw(c: &client::Client, method: &str, path: &str, body: Option<&[u8]>) -> Result<Vec<u8>, String> {
-    let reply = apz_http::client::request(&c.target, method, path, body, c.timeout).map_err(|e| e.to_string())?;
+fn raw(
+    c: &client::Client,
+    method: &str,
+    path: &str,
+    body: Option<&[u8]>,
+) -> Result<Vec<u8>, String> {
+    let reply = apz_http::client::request(&c.target, method, path, body, c.timeout)
+        .map_err(|e| e.to_string())?;
     if (200..300).contains(&reply.status) {
         return Ok(reply.body);
     }
@@ -651,10 +683,14 @@ fn collect(base: &Path, dir: &Path, out: &mut Vec<Entry>) -> Result<(), String> 
             }
         } else if file_type.is_file() {
             let rel = path.strip_prefix(base).map_err(|e| e.to_string())?;
-            let parts: Vec<String> = rel.iter().map(|p| p.to_string_lossy().into_owned()).collect();
+            let parts: Vec<String> = rel
+                .iter()
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect();
             out.push(Entry {
                 path: parts.join("/"),
-                bytes: std::fs::read(&path).map_err(|e| format!("A file could not be read: {e}"))?,
+                bytes: std::fs::read(&path)
+                    .map_err(|e| format!("A file could not be read: {e}"))?,
                 executable: is_executable(&path),
             });
         }
@@ -665,7 +701,9 @@ fn collect(base: &Path, dir: &Path, out: &mut Vec<Entry>) -> Result<(), String> 
 #[cfg(unix)]
 fn is_executable(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
-    std::fs::metadata(path).map(|m| m.permissions().mode() & 0o111 != 0).unwrap_or(false)
+    std::fs::metadata(path)
+        .map(|m| m.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
 }
 
 #[cfg(not(unix))]
@@ -677,7 +715,10 @@ fn source_label(source: &Source) -> String {
     match source {
         Source::Built => "Built in".to_string(),
         Source::Upload => "Uploaded".to_string(),
-        Source::Github { repo, commit } => format!("GitHub {repo}@{}", commit.chars().take(7).collect::<String>()),
+        Source::Github { repo, commit } => format!(
+            "GitHub {repo}@{}",
+            commit.chars().take(7).collect::<String>()
+        ),
     }
 }
 
@@ -709,7 +750,11 @@ fn binding_label(b: &str) -> String {
 }
 
 fn binding_options(st: &State) -> Vec<String> {
-    let bound: BTreeSet<&str> = st.skills.iter().flat_map(|s| s.bindings.iter().map(String::as_str)).collect();
+    let bound: BTreeSet<&str> = st
+        .skills
+        .iter()
+        .flat_map(|s| s.bindings.iter().map(String::as_str))
+        .collect();
     let mut out = vec![ANY.to_string(), NOT_BOUND.to_string()];
     out.extend(bound.into_iter().map(str::to_string));
     out
@@ -767,13 +812,27 @@ pub fn view<'a>(st: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
         "Skills",
         vec![
             ui::btn(
-                if st.form == Form::New { "Close" } else { "New skill" },
+                if st.form == Form::New {
+                    "Close"
+                } else {
+                    "New skill"
+                },
                 None,
                 ui::Kind::Primary,
                 Some(Msg::Form(Form::New)),
             ),
-            ui::btn("Import", None, ui::Kind::Secondary, Some(Msg::Form(Form::Import))),
-            ui::btn("From GitHub", None, ui::Kind::Secondary, Some(Msg::Form(Form::Github))),
+            ui::btn(
+                "Import",
+                None,
+                ui::Kind::Secondary,
+                Some(Msg::Form(Form::Import)),
+            ),
+            ui::btn(
+                "From GitHub",
+                None,
+                ui::Kind::Secondary,
+                Some(Msg::Form(Form::Github)),
+            ),
             ui::btn(
                 "Export selected",
                 None,
@@ -788,11 +847,19 @@ pub fn view<'a>(st: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
         (SourceFilter::Upload, "Uploaded"),
         (SourceFilter::Github, "GitHub"),
     ];
-    let choice = if st.binding.is_empty() { ANY.to_string() } else { st.binding.clone() };
+    let choice = if st.binding.is_empty() {
+        ANY.to_string()
+    } else {
+        st.binding.clone()
+    };
     let toolbar = row![
         ui::seg(&sources, st.filter_source, Msg::Filter),
         pick_list(binding_options(st), Some(choice), Msg::Binding),
-        ui::seg(&[(false, "Hide archived"), (true, "Show archived")], st.show_archived, Msg::Archived),
+        ui::seg(
+            &[(false, "Hide archived"), (true, "Show archived")],
+            st.show_archived,
+            Msg::Archived
+        ),
     ]
     .spacing(12);
     let search = text_input("Search id, name, title, description or tags", &st.query)
@@ -841,8 +908,17 @@ pub fn view<'a>(st: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
         } else if visible(st).is_empty() {
             page = page.push(
                 column![
-                    ui::empty("wrench", "Nothing matches", "Try another source or binding, or clear the search."),
-                    ui::btn_sm("Clear filters", None, ui::Kind::Secondary, Some(Msg::ClearFilters)),
+                    ui::empty(
+                        "wrench",
+                        "Nothing matches",
+                        "Try another source or binding, or clear the search."
+                    ),
+                    ui::btn_sm(
+                        "Clear filters",
+                        None,
+                        ui::Kind::Secondary,
+                        Some(Msg::ClearFilters)
+                    ),
                 ]
                 .spacing(12),
             );
@@ -870,7 +946,10 @@ fn row_card(s: &Summary, selected: bool) -> Element<'_, Msg> {
     }
     match s.active_version {
         Some(v) => badges.push(ui::badge(&format!("v{v} live"), ui::Tone::Ok)),
-        None => badges.push(ui::badge(&format!("Unpublished, latest v{}", s.latest_version), ui::Tone::Warn)),
+        None => badges.push(ui::badge(
+            &format!("Unpublished, latest v{}", s.latest_version),
+            ui::Tone::Warn,
+        )),
     }
     if let Some(score) = s.score {
         badges.push(ui::badge(&format!("score {score:.0}"), score_tone(score)));
@@ -899,7 +978,11 @@ fn row_card(s: &Summary, selected: bool) -> Element<'_, Msg> {
     if !s.tags.is_empty() {
         body = body.push(text(s.tags.join(" · ")).size(12.0).color(muted));
     }
-    body = body.push(text(format!("updated {}", ago(s.updated_ms))).size(12.0).color(muted));
+    body = body.push(
+        text(format!("updated {}", ago(s.updated_ms)))
+            .size(12.0)
+            .color(muted),
+    );
     let id = s.id.clone();
     let card = ui::card(&s.name, body.into());
     row![
@@ -912,15 +995,25 @@ fn row_card(s: &Summary, selected: bool) -> Element<'_, Msg> {
 
 /// A form field: its label above its input.
 pub(super) fn field<'a, M: 'a>(label: &str, input: Element<'a, M>) -> Element<'a, M> {
-    column![text(label.to_string()).size(12.0).color(crate::theme::palette().ink_3), input]
-        .spacing(4)
-        .into()
+    column![
+        text(label.to_string())
+            .size(12.0)
+            .color(crate::theme::palette().ink_3),
+        input
+    ]
+    .spacing(4)
+    .into()
 }
 
 /// The bindings picker: an Every agent box, then a box per role on the roles list.
 fn picker<'a>(target: Target, roles: &'a [Role], picks: &'a Picks) -> Element<'a, Msg> {
     let muted = crate::theme::palette().ink_3;
-    let mut boxes: Vec<Element<'a, Msg>> = vec![checkbox(picks.every).label("Every agent").on_toggle(move |on| Msg::Every(target, on)).into()];
+    let mut boxes: Vec<Element<'a, Msg>> = vec![
+        checkbox(picks.every)
+            .label("Every agent")
+            .on_toggle(move |on| Msg::Every(target, on))
+            .into(),
+    ];
     for r in roles {
         let id = r.id.clone();
         boxes.push(
@@ -930,7 +1023,12 @@ fn picker<'a>(target: Target, roles: &'a [Role], picks: &'a Picks) -> Element<'a
                 .into(),
         );
     }
-    column![text("Bindings").size(12.0).color(muted), column(boxes).spacing(8)].spacing(4).into()
+    column![
+        text("Bindings").size(12.0).color(muted),
+        column(boxes).spacing(8)
+    ]
+    .spacing(4)
+    .into()
 }
 
 fn new_form(st: &State) -> Element<'_, Msg> {
@@ -997,12 +1095,15 @@ fn github_panel(st: &State) -> Element<'_, Msg> {
     let body = column![
         field(
             "GitHub repository",
-            text_input("https://github.com/owner/repo, or a folder link inside it", &st.github_url)
-                .on_input(Msg::GithubUrl)
-                .on_submit(Msg::GithubPreview)
-                .padding(8)
-                .style(crate::theme::input)
-                .into(),
+            text_input(
+                "https://github.com/owner/repo, or a folder link inside it",
+                &st.github_url
+            )
+            .on_input(Msg::GithubUrl)
+            .on_submit(Msg::GithubPreview)
+            .padding(8)
+            .style(crate::theme::input)
+            .into(),
         ),
         ui::btn(
             "Preview",
@@ -1019,14 +1120,24 @@ fn preview_view<'a>(st: &'a State, p: &'a Preview) -> Element<'a, Msg> {
     let muted = crate::theme::palette().ink_3;
     let mut list = column![].spacing(10);
     for s in &p.skills {
-        let mut badges: Vec<Element<'a, Msg>> = vec![ui::badge(&format!("{} files", s.files), ui::Tone::Muted)];
+        let mut badges: Vec<Element<'a, Msg>> =
+            vec![ui::badge(&format!("{} files", s.files), ui::Tone::Muted)];
         if s.report.errors > 0 {
-            badges.push(ui::badge(&format!("{} errors", s.report.errors), ui::Tone::Danger));
+            badges.push(ui::badge(
+                &format!("{} errors", s.report.errors),
+                ui::Tone::Danger,
+            ));
         }
         if s.report.warnings > 0 {
-            badges.push(ui::badge(&format!("{} warnings", s.report.warnings), ui::Tone::Warn));
+            badges.push(ui::badge(
+                &format!("{} warnings", s.report.warnings),
+                ui::Tone::Warn,
+            ));
         }
-        badges.push(ui::badge(&format!("score {:.0}", s.report.score), score_tone(s.report.score)));
+        badges.push(ui::badge(
+            &format!("score {:.0}", s.report.score),
+            score_tone(s.report.score),
+        ));
         if let Some(id) = s.exists.as_deref() {
             badges.push(ui::badge(&format!("Exists as {id}"), ui::Tone::Warn));
         }
@@ -1039,7 +1150,8 @@ fn preview_view<'a>(st: &'a State, p: &'a Preview) -> Element<'a, Msg> {
         .spacing(6);
         list = list.push(
             row![
-                checkbox(st.picks.contains(&s.path)).on_toggle(move |on| Msg::PreviewPick(path.clone(), on)),
+                checkbox(st.picks.contains(&s.path))
+                    .on_toggle(move |on| Msg::PreviewPick(path.clone(), on)),
                 body,
             ]
             .spacing(12),
@@ -1048,15 +1160,28 @@ fn preview_view<'a>(st: &'a State, p: &'a Preview) -> Element<'a, Msg> {
     let n = p.skills.len();
     let noun = if n == 1 { "skill" } else { "skills" };
     let count = st.picks.len();
-    let label = if st.committing { "Importing...".to_string() } else { format!("Import {count}") };
+    let label = if st.committing {
+        "Importing...".to_string()
+    } else {
+        format!("Import {count}")
+    };
     let bindings = picker(Target::Preview, &st.roles, &st.preview_picks);
     let actions = row![
-        ui::btn(&label, None, ui::Kind::Primary, (count > 0 && !st.committing).then_some(Msg::Commit)),
+        ui::btn(
+            &label,
+            None,
+            ui::Kind::Primary,
+            (count > 0 && !st.committing).then_some(Msg::Commit)
+        ),
         ui::btn("Close", None, ui::Kind::Ghost, Some(Msg::ClosePreview)),
     ]
     .spacing(8);
     let body = column![
-        text(format!("{n} {noun} found, from {}", source_label(&p.source))).size(14.0),
+        text(format!(
+            "{n} {noun} found, from {}",
+            source_label(&p.source)
+        ))
+        .size(14.0),
         list,
         bindings,
         actions,

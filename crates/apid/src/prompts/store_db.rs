@@ -9,9 +9,12 @@ use apz_prompt::{Finding, Kind, Severity};
 use postgres::types::{FromSql, Type};
 use postgres::{Client, Row, Transaction};
 
-use super::{Action, Event, Meta, NewPrompt, NewVersion, Prompt, PromptStore, StoreError, Version, VersionMeta};
-use crate::db::sql;
+use super::{
+    Action, Event, Meta, NewPrompt, NewVersion, Prompt, PromptStore, StoreError, Version,
+    VersionMeta,
+};
 use crate::db::Db;
+use crate::db::sql;
 
 pub struct DbPrompts {
     db: Arc<Db>,
@@ -23,7 +26,10 @@ impl DbPrompts {
     }
 
     /// Runs one write. Only `Done` commits; the other outcomes become the store's errors.
-    fn write<T>(&self, op: impl FnMut(&mut Client) -> Result<Outcome<T>, postgres::Error>) -> Result<T, StoreError> {
+    fn write<T>(
+        &self,
+        op: impl FnMut(&mut Client) -> Result<Outcome<T>, postgres::Error>,
+    ) -> Result<T, StoreError> {
         match self.db.run(op)? {
             Outcome::Done(value) => Ok(value),
             Outcome::NotFound => Err(StoreError::NotFound),
@@ -69,7 +75,9 @@ impl Named for Action {
 impl<'a, T: Named> FromSql<'a> for Parsed<T> {
     fn from_sql(_: &Type, raw: &'a [u8]) -> Result<Self, Box<dyn Error + Sync + Send>> {
         let text = std::str::from_utf8(raw)?;
-        T::named(text).map(Parsed).ok_or_else(|| format!("unknown value {text:?}").into())
+        T::named(text)
+            .map(Parsed)
+            .ok_or_else(|| format!("unknown value {text:?}").into())
     }
 
     fn accepts(ty: &Type) -> bool {
@@ -86,7 +94,11 @@ impl PromptStore for DbPrompts {
     }
 
     fn get(&self, id: &str) -> Result<Option<Prompt>, String> {
-        self.db.run(|c| c.query_opt(sql::PROMPT_GET, &[&id])?.map(|row| prompt_of(&row)).transpose())
+        self.db.run(|c| {
+            c.query_opt(sql::PROMPT_GET, &[&id])?
+                .map(|row| prompt_of(&row))
+                .transpose()
+        })
     }
 
     fn versions(&self, id: &str) -> Result<Vec<VersionMeta>, String> {
@@ -105,25 +117,48 @@ impl PromptStore for DbPrompts {
             let body: String = row.try_get(10)?;
             let rows = c.query(sql::PROMPT_FINDINGS, &[&id, &(version as i32)])?;
             let findings = rows.iter().map(finding_of).collect::<Result<Vec<_>, _>>()?;
-            Ok(Some(Version { meta, body, findings }))
+            Ok(Some(Version {
+                meta,
+                body,
+                findings,
+            }))
         })
     }
 
-    fn create(&self, new: &NewPrompt, first: &NewVersion, actor: &str, now_ms: u64) -> Result<Prompt, StoreError> {
+    fn create(
+        &self,
+        new: &NewPrompt,
+        first: &NewVersion,
+        actor: &str,
+        now_ms: u64,
+    ) -> Result<Prompt, StoreError> {
         self.write(|c| {
             let mut tx = c.transaction()?;
             if lock_prompt(&mut tx, &new.id)?.is_some() {
-                return Ok(Outcome::Conflict(format!("a prompt named {} already exists", new.id)));
+                return Ok(Outcome::Conflict(format!(
+                    "a prompt named {} already exists",
+                    new.id
+                )));
             }
             if let Some(binding) = new.binding.as_deref() {
                 if let Some(holder) = binding_holder(&mut tx, binding, &new.id)? {
-                    return Ok(Outcome::Conflict(format!("binding {binding} is held by {holder}")));
+                    return Ok(Outcome::Conflict(format!(
+                        "binding {binding} is held by {holder}"
+                    )));
                 }
             }
             let now = now_ms as i64;
             tx.execute(
                 sql::PROMPT_INSERT,
-                &[&new.id, &new.kind.as_str(), &new.title, &new.description, &new.tags, &new.binding, &now],
+                &[
+                    &new.id,
+                    &new.kind.as_str(),
+                    &new.title,
+                    &new.description,
+                    &new.tags,
+                    &new.binding,
+                    &now,
+                ],
             )?;
             insert_version(&mut tx, &new.id, 1, first, actor, now)?;
             insert_event(&mut tx, &new.id, Action::Create, None, actor, now)?;
@@ -134,20 +169,37 @@ impl PromptStore for DbPrompts {
         })
     }
 
-    fn add_version(&self, id: &str, base: u32, next: &NewVersion, actor: &str, now_ms: u64) -> Result<VersionMeta, StoreError> {
+    fn add_version(
+        &self,
+        id: &str,
+        base: u32,
+        next: &NewVersion,
+        actor: &str,
+        now_ms: u64,
+    ) -> Result<VersionMeta, StoreError> {
         self.write(|c| {
             let mut tx = c.transaction()?;
             let Some(prompt) = lock_prompt(&mut tx, id)? else {
                 return Ok(Outcome::NotFound);
             };
             if prompt.latest_version != base {
-                return Ok(Outcome::Conflict(format!("{id} is at version {}, not {base}", prompt.latest_version)));
+                return Ok(Outcome::Conflict(format!(
+                    "{id} is at version {}, not {base}",
+                    prompt.latest_version
+                )));
             }
             let version = base + 1;
             let now = now_ms as i64;
             insert_version(&mut tx, id, version as i32, next, actor, now)?;
             tx.execute(sql::PROMPT_SET_LATEST, &[&id, &(version as i32), &now])?;
-            insert_event(&mut tx, id, Action::Version, Some(version as i32), actor, now)?;
+            insert_event(
+                &mut tx,
+                id,
+                Action::Version,
+                Some(version as i32),
+                actor,
+                now,
+            )?;
             tx.commit()?;
             let report = &next.report;
             Ok(Outcome::Done(VersionMeta {
@@ -165,7 +217,13 @@ impl PromptStore for DbPrompts {
         })
     }
 
-    fn set_meta(&self, id: &str, meta: &Meta, actor: &str, now_ms: u64) -> Result<Prompt, StoreError> {
+    fn set_meta(
+        &self,
+        id: &str,
+        meta: &Meta,
+        actor: &str,
+        now_ms: u64,
+    ) -> Result<Prompt, StoreError> {
         self.write(|c| {
             let mut tx = c.transaction()?;
             if lock_prompt(&mut tx, id)?.is_none() {
@@ -173,11 +231,23 @@ impl PromptStore for DbPrompts {
             }
             if let Some(binding) = meta.binding.as_deref() {
                 if let Some(holder) = binding_holder(&mut tx, binding, id)? {
-                    return Ok(Outcome::Conflict(format!("binding {binding} is held by {holder}")));
+                    return Ok(Outcome::Conflict(format!(
+                        "binding {binding} is held by {holder}"
+                    )));
                 }
             }
             let now = now_ms as i64;
-            tx.execute(sql::PROMPT_SET_META, &[&id, &meta.title, &meta.description, &meta.tags, &meta.binding, &now])?;
+            tx.execute(
+                sql::PROMPT_SET_META,
+                &[
+                    &id,
+                    &meta.title,
+                    &meta.description,
+                    &meta.tags,
+                    &meta.binding,
+                    &now,
+                ],
+            )?;
             insert_event(&mut tx, id, Action::Edit, None, actor, now)?;
             let prompt = reread(&mut tx, id)?;
             tx.commit()?;
@@ -185,7 +255,13 @@ impl PromptStore for DbPrompts {
         })
     }
 
-    fn set_active(&self, id: &str, version: Option<u32>, actor: &str, now_ms: u64) -> Result<Prompt, StoreError> {
+    fn set_active(
+        &self,
+        id: &str,
+        version: Option<u32>,
+        actor: &str,
+        now_ms: u64,
+    ) -> Result<Prompt, StoreError> {
         self.write(|c| {
             let mut tx = c.transaction()?;
             if lock_prompt(&mut tx, id)?.is_none() {
@@ -210,7 +286,13 @@ impl PromptStore for DbPrompts {
         })
     }
 
-    fn set_archived(&self, id: &str, archived: bool, actor: &str, now_ms: u64) -> Result<Prompt, StoreError> {
+    fn set_archived(
+        &self,
+        id: &str,
+        archived: bool,
+        actor: &str,
+        now_ms: u64,
+    ) -> Result<Prompt, StoreError> {
         self.write(|c| {
             let mut tx = c.transaction()?;
             let Some(prompt) = lock_prompt(&mut tx, id)? else {
@@ -219,13 +301,19 @@ impl PromptStore for DbPrompts {
             if !archived {
                 if let Some(binding) = prompt.binding.as_deref() {
                     if let Some(holder) = binding_holder(&mut tx, binding, id)? {
-                        return Ok(Outcome::Conflict(format!("binding {binding} is held by {holder}")));
+                        return Ok(Outcome::Conflict(format!(
+                            "binding {binding} is held by {holder}"
+                        )));
                     }
                 }
             }
             let now = now_ms as i64;
             tx.execute(sql::PROMPT_SET_ARCHIVED, &[&id, &archived, &now])?;
-            let action = if archived { Action::Archive } else { Action::Restore };
+            let action = if archived {
+                Action::Archive
+            } else {
+                Action::Restore
+            };
             insert_event(&mut tx, id, action, None, actor, now)?;
             let prompt = reread(&mut tx, id)?;
             tx.commit()?;
@@ -254,7 +342,9 @@ impl PromptStore for DbPrompts {
 
 /// Locks the prompt row until the transaction ends; `None` when there is no such prompt.
 fn lock_prompt(tx: &mut Transaction<'_>, id: &str) -> Result<Option<Prompt>, postgres::Error> {
-    tx.query_opt(sql::PROMPT_LOCK, &[&id])?.map(|row| prompt_of(&row)).transpose()
+    tx.query_opt(sql::PROMPT_LOCK, &[&id])?
+        .map(|row| prompt_of(&row))
+        .transpose()
 }
 
 /// The prompt row as `prompt_get.sql` reads it, inside the transaction.
@@ -264,12 +354,25 @@ fn reread(tx: &mut Transaction<'_>, id: &str) -> Result<Prompt, postgres::Error>
 }
 
 /// The id of another live prompt holding `binding`, if any.
-fn binding_holder(tx: &mut Transaction<'_>, binding: &str, id: &str) -> Result<Option<String>, postgres::Error> {
-    tx.query_opt(sql::PROMPT_BINDING_HOLDER, &[&binding, &id])?.map(|row| row.try_get::<_, String>(0)).transpose()
+fn binding_holder(
+    tx: &mut Transaction<'_>,
+    binding: &str,
+    id: &str,
+) -> Result<Option<String>, postgres::Error> {
+    tx.query_opt(sql::PROMPT_BINDING_HOLDER, &[&binding, &id])?
+        .map(|row| row.try_get::<_, String>(0))
+        .transpose()
 }
 
 /// Writes a version, its check score and its findings (seq from 0).
-fn insert_version(tx: &mut Transaction<'_>, id: &str, version: i32, next: &NewVersion, actor: &str, now: i64) -> Result<(), postgres::Error> {
+fn insert_version(
+    tx: &mut Transaction<'_>,
+    id: &str,
+    version: i32,
+    next: &NewVersion,
+    actor: &str,
+    now: i64,
+) -> Result<(), postgres::Error> {
     let report = &next.report;
     tx.execute(
         sql::PROMPT_VERSION_INSERT,
@@ -291,14 +394,32 @@ fn insert_version(tx: &mut Transaction<'_>, id: &str, version: i32, next: &NewVe
     for (seq, finding) in report.findings.iter().enumerate() {
         tx.execute(
             sql::PROMPT_FINDING_INSERT,
-            &[&id, &version, &(seq as i32), &finding.rule, &finding.severity.as_str(), &(finding.line as i32), &finding.message],
+            &[
+                &id,
+                &version,
+                &(seq as i32),
+                &finding.rule,
+                &finding.severity.as_str(),
+                &(finding.line as i32),
+                &finding.message,
+            ],
         )?;
     }
     Ok(())
 }
 
-fn insert_event(tx: &mut Transaction<'_>, id: &str, action: Action, version: Option<i32>, actor: &str, now: i64) -> Result<(), postgres::Error> {
-    tx.execute(sql::PROMPT_EVENT_INSERT, &[&id, &action.as_str(), &version, &actor, &now])?;
+fn insert_event(
+    tx: &mut Transaction<'_>,
+    id: &str,
+    action: Action,
+    version: Option<i32>,
+    actor: &str,
+    now: i64,
+) -> Result<(), postgres::Error> {
+    tx.execute(
+        sql::PROMPT_EVENT_INSERT,
+        &[&id, &action.as_str(), &version, &actor, &now],
+    )?;
     Ok(())
 }
 

@@ -8,14 +8,14 @@ use std::collections::BTreeMap;
 
 use iced::widget::{checkbox, column, row};
 use iced::{Alignment, Element, Length, Task};
-use serde::de::DeserializeOwned;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde::de::DeserializeOwned;
+use serde_json::{Value, json};
 
+use super::Id;
 use super::mcp_hub;
 use super::mcp_wizard;
-use super::Id;
-use crate::console::{client, ui, Ctx};
+use crate::console::{Ctx, client, ui};
 
 const LOG_LINES: usize = 100;
 
@@ -166,7 +166,11 @@ pub fn row_error(server: &Server) -> Option<&str> {
     if Status::from_wire(&server.status) == Status::Running {
         return None;
     }
-    server.last_error.as_deref().and_then(|e| e.lines().next()).filter(|line| !line.trim().is_empty())
+    server
+        .last_error
+        .as_deref()
+        .and_then(|e| e.lines().next())
+        .filter(|line| !line.trim().is_empty())
 }
 
 // ---- State and messages ---------------------------------------------------------------------
@@ -251,14 +255,21 @@ pub fn load(state: &mut State, ctx: &Ctx) -> Task<Msg> {
     if state.tab == Tab::Hub {
         return mcp_hub::load(&state.hub, ctx).map(Msg::Hub);
     }
-    let mut tasks = vec![servers_task(ctx), fetch(ctx, "/v1/mcp/catalog".to_string(), Msg::CatalogueLoaded)];
+    let mut tasks = vec![
+        servers_task(ctx),
+        fetch(ctx, "/v1/mcp/catalog".to_string(), Msg::CatalogueLoaded),
+    ];
     if let Some(id) = state.selected.clone() {
         tasks.push(tools_task(ctx, &id));
     }
     Task::batch(tasks)
 }
 
-fn fetch<T>(ctx: &Ctx, path: String, map: impl Fn(Result<T, String>) -> Msg + Send + 'static) -> Task<Msg>
+fn fetch<T>(
+    ctx: &Ctx,
+    path: String,
+    map: impl Fn(Result<T, String>) -> Msg + Send + 'static,
+) -> Task<Msg>
 where
     T: DeserializeOwned + Send + 'static,
 {
@@ -272,12 +283,18 @@ fn servers_task(ctx: &Ctx) -> Task<Msg> {
 
 fn tools_task(ctx: &Ctx, id: &str) -> Task<Msg> {
     let owned = id.to_string();
-    fetch(ctx, format!("/v1/mcp/servers/{id}/tools"), move |res| Msg::ToolsLoaded(owned.clone(), res))
+    fetch(ctx, format!("/v1/mcp/servers/{id}/tools"), move |res| {
+        Msg::ToolsLoaded(owned.clone(), res)
+    })
 }
 
 fn logs_task(ctx: &Ctx, id: &str) -> Task<Msg> {
     let owned = id.to_string();
-    fetch(ctx, format!("/v1/mcp/servers/{id}/logs?limit={LOG_LINES}"), move |res| Msg::LogsLoaded(owned.clone(), res))
+    fetch(
+        ctx,
+        format!("/v1/mcp/servers/{id}/logs?limit={LOG_LINES}"),
+        move |res| Msg::LogsLoaded(owned.clone(), res),
+    )
 }
 
 /// The open detail's tools and logs, reloaded.
@@ -289,7 +306,11 @@ fn detail_tasks(state: &State, ctx: &Ctx) -> Task<Msg> {
 }
 
 /// One write to the hub; on success the screen reports `done`.
-fn act(ctx: &Ctx, done: String, run: impl FnOnce(&client::Client) -> Result<(), String> + Send + 'static) -> Task<Msg> {
+fn act(
+    ctx: &Ctx,
+    done: String,
+    run: impl FnOnce(&client::Client) -> Result<(), String> + Send + 'static,
+) -> Task<Msg> {
     let client = ctx.client.clone();
     client::task(move || run(&client).map(|()| done), Msg::Done)
 }
@@ -349,27 +370,55 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         Msg::Start(id) => {
             state.busy = true;
             let done = format!("Started {id}.");
-            act(ctx, done, move |c| c.post::<Value>(&format!("/v1/mcp/servers/{id}/start"), &json!({})).map(|_| ()))
+            act(ctx, done, move |c| {
+                c.post::<Value>(&format!("/v1/mcp/servers/{id}/start"), &json!({}))
+                    .map(|_| ())
+            })
         }
         Msg::Stop(id) => {
             state.busy = true;
             let done = format!("Stopped {id}.");
-            act(ctx, done, move |c| c.post::<Value>(&format!("/v1/mcp/servers/{id}/stop"), &json!({})).map(|_| ()))
+            act(ctx, done, move |c| {
+                c.post::<Value>(&format!("/v1/mcp/servers/{id}/stop"), &json!({}))
+                    .map(|_| ())
+            })
         }
         Msg::Test(id) => {
             state.busy = true;
             state.test_stderr.clear();
             let client = ctx.client.clone();
-            client::task(move || client.post::<TestOutcome>(&format!("/v1/mcp/servers/{id}/test"), &json!({})), Msg::Tested)
+            client::task(
+                move || {
+                    client.post::<TestOutcome>(&format!("/v1/mcp/servers/{id}/test"), &json!({}))
+                },
+                Msg::Tested,
+            )
         }
         Msg::Tested(Ok(outcome)) => {
             state.busy = false;
             state.notice = Some(if outcome.ok {
-                (format!("Test passed: {} tools in {:.0} ms.", outcome.tools.len(), outcome.ms), false)
+                (
+                    format!(
+                        "Test passed: {} tools in {:.0} ms.",
+                        outcome.tools.len(),
+                        outcome.ms
+                    ),
+                    false,
+                )
             } else {
-                (outcome.error.clone().unwrap_or_else(|| "Test failed.".to_string()), true)
+                (
+                    outcome
+                        .error
+                        .clone()
+                        .unwrap_or_else(|| "Test failed.".to_string()),
+                    true,
+                )
             });
-            state.test_stderr = if outcome.ok { Vec::new() } else { outcome.stderr };
+            state.test_stderr = if outcome.ok {
+                Vec::new()
+            } else {
+                outcome.stderr
+            };
             Task::batch([servers_task(ctx), detail_tasks(state, ctx)])
         }
         Msg::Tested(Err(e)) => {
@@ -415,15 +464,24 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             }
             state.busy = true;
             let done = format!("Removed {id}.");
-            act(ctx, done, move |c| c.delete(&delete_path(&id, purge)).map(|_| ()))
+            act(ctx, done, move |c| {
+                c.delete(&delete_path(&id, purge)).map(|_| ())
+            })
         }
         Msg::OpenAdd(preset) => {
-            state.wizard = Some(mcp_wizard::State::new(None, preset.as_deref(), &state.catalogue));
+            state.wizard = Some(mcp_wizard::State::new(
+                None,
+                preset.as_deref(),
+                &state.catalogue,
+            ));
             mcp_wizard::start(ctx).map(Msg::Wiz)
         }
         Msg::OpenEdit(id) => {
             let client = ctx.client.clone();
-            client::task(move || client.get::<Value>(&format!("/v1/mcp/servers/{id}")), Msg::Edited)
+            client::task(
+                move || client.get::<Value>(&format!("/v1/mcp/servers/{id}")),
+                Msg::Edited,
+            )
         }
         Msg::Edited(Ok(view)) => {
             state.wizard = Some(mcp_wizard::State::new(Some(&view), None, &state.catalogue));
@@ -434,7 +492,9 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             Task::none()
         }
         Msg::Wiz(m) => {
-            let Some(wiz) = state.wizard.as_mut() else { return Task::none() };
+            let Some(wiz) = state.wizard.as_mut() else {
+                return Task::none();
+            };
             match mcp_wizard::update(wiz, m, ctx) {
                 mcp_wizard::Outcome::Stay(task) => task.map(Msg::Wiz),
                 mcp_wizard::Outcome::Closed(label) => {
@@ -458,11 +518,7 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
 // ---- The view -------------------------------------------------------------------------------
 
 fn gate(busy: bool, msg: Msg) -> Option<Msg> {
-    if busy {
-        None
-    } else {
-        Some(msg)
-    }
+    if busy { None } else { Some(msg) }
 }
 
 pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
@@ -472,20 +528,33 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
     };
     let body: Element<'a, Msg> = match &state.wizard {
         Some(wiz) => mcp_wizard::view(wiz).map(Msg::Wiz),
-        None => column![tab_bar(state.tab), content].spacing(22).width(Length::Fill).into(),
+        None => column![tab_bar(state.tab), content]
+            .spacing(22)
+            .width(Length::Fill)
+            .into(),
     };
     // The page scrolls as the web does: a tall list is not squeezed into the window.
-    ui::scroll(ui::sheet(ui::view_head("MCP", vec![]), body)).height(Length::Fill).into()
+    ui::scroll(ui::sheet(ui::view_head("MCP", vec![]), body))
+        .height(Length::Fill)
+        .into()
 }
 
 /// The servers tab: the note, the notices, the servers, the open server and the catalogue.
 fn servers_view(state: &State) -> Element<'_, Msg> {
     let mut parts: Vec<Element<'_, Msg>> = vec![ui::faint("Servers the plaza runs for agents. Keys stay in the vault; only the names of a server's env settings are shown here.").into()];
     if let Some((text, is_error)) = &state.notice {
-        parts.push(if *is_error { ui::error_line(text) } else { ui::faint(text.clone()).into() });
+        parts.push(if *is_error {
+            ui::error_line(text)
+        } else {
+            ui::faint(text.clone()).into()
+        });
     }
     if !state.test_stderr.is_empty() {
-        let tail: Vec<Element<'_, Msg>> = state.test_stderr.iter().map(|l| ui::mono(l.line.clone(), 11.0, crate::theme::palette().ink_2).into()).collect();
+        let tail: Vec<Element<'_, Msg>> = state
+            .test_stderr
+            .iter()
+            .map(|l| ui::mono(l.line.clone(), 11.0, crate::theme::palette().ink_2).into())
+            .collect();
         parts.push(column(tail).spacing(2).into());
     }
     if let (Some(error), Some(_)) = (&state.error, &state.servers) {
@@ -503,8 +572,26 @@ fn servers_view(state: &State) -> Element<'_, Msg> {
 fn tab_bar<'a>(tab: Tab) -> Element<'a, Msg> {
     let servers_open = tab == Tab::Servers;
     let items: Vec<Element<'a, Msg>> = vec![
-        ui::btn_sm("Servers", None, if servers_open { ui::Kind::Secondary } else { ui::Kind::Ghost }, (!servers_open).then_some(Msg::Tab(Tab::Servers))),
-        ui::btn_sm("This hub as a server", None, if servers_open { ui::Kind::Ghost } else { ui::Kind::Secondary }, servers_open.then_some(Msg::Tab(Tab::Hub))),
+        ui::btn_sm(
+            "Servers",
+            None,
+            if servers_open {
+                ui::Kind::Secondary
+            } else {
+                ui::Kind::Ghost
+            },
+            (!servers_open).then_some(Msg::Tab(Tab::Servers)),
+        ),
+        ui::btn_sm(
+            "This hub as a server",
+            None,
+            if servers_open {
+                ui::Kind::Ghost
+            } else {
+                ui::Kind::Secondary
+            },
+            servers_open.then_some(Msg::Tab(Tab::Hub)),
+        ),
     ];
     row(items).spacing(8).align_y(Alignment::Center).into()
 }
@@ -525,26 +612,53 @@ fn servers_section<'a>(state: &'a State) -> Element<'a, Msg> {
             "No MCP servers",
             "Add one to give agents outside tools. The hub runs each server, and agents never see its credentials.",
         ),
-        Some(list) => column(list.iter().map(|s| server_row(state.busy, s)).collect::<Vec<Element<'a, Msg>>>()).spacing(18).into(),
+        Some(list) => column(
+            list.iter()
+                .map(|s| server_row(state.busy, s))
+                .collect::<Vec<Element<'a, Msg>>>(),
+        )
+        .spacing(18)
+        .into(),
     };
     ui::card("Servers", body)
 }
 
 fn server_row<'a>(busy: bool, server: &Server) -> Element<'a, Msg> {
     let status = Status::from_wire(&server.status);
-    let mut head: Vec<Element<'a, Msg>> = vec![ui::link(&server.name, Msg::Select(server.id.clone()), false), ui::badge(status.label(), status.tone())];
+    let mut head: Vec<Element<'a, Msg>> = vec![
+        ui::link(&server.name, Msg::Select(server.id.clone()), false),
+        ui::badge(status.label(), status.tone()),
+    ];
     if !server.enabled {
         head.push(ui::badge("Disabled", ui::Tone::Muted));
     }
-    let facts: Element<'a, Msg> = ui::faint(format!("{} · {} tools", transport_text(&server.transport), server.tools_count)).into();
-    let mut lines: Vec<Element<'a, Msg>> = vec![row(head).spacing(10).align_y(Alignment::Center).into(), facts];
+    let facts: Element<'a, Msg> = ui::faint(format!(
+        "{} · {} tools",
+        transport_text(&server.transport),
+        server.tools_count
+    ))
+    .into();
+    let mut lines: Vec<Element<'a, Msg>> = vec![
+        row(head).spacing(10).align_y(Alignment::Center).into(),
+        facts,
+    ];
     if let Some(error) = row_error(server) {
         lines.push(ui::error_line(error));
     }
     let id = server.id.clone();
     let actions: Vec<Element<'a, Msg>> = vec![
-        ui::btn_sm("Start", None, ui::Kind::Secondary, gate(busy, Msg::Start(id.clone()))),
-        ui::btn_sm("Stop", None, ui::Kind::Secondary, gate(busy, Msg::Stop(id.clone()))),
+        ui::btn_sm(
+            "Start",
+            None,
+            ui::Kind::Secondary,
+            gate(busy, Msg::Start(id.clone())),
+        ),
+        ui::btn_sm(
+            "Stop",
+            None,
+            ui::Kind::Secondary,
+            gate(busy, Msg::Stop(id.clone())),
+        ),
         ui::btn_sm("Test", None, ui::Kind::Secondary, gate(busy, Msg::Test(id))),
     ];
     lines.push(row(actions).spacing(8).into());
@@ -552,12 +666,31 @@ fn server_row<'a>(busy: bool, server: &Server) -> Element<'a, Msg> {
 }
 
 fn detail_section<'a>(state: &'a State, id: &'a str) -> Element<'a, Msg> {
-    let Some(server) = state.servers.as_ref().and_then(|list| list.iter().find(|s| s.id == id)) else {
-        return ui::card("Server", ui::empty("terminal", "Not listed", "This server is no longer on the hub."));
+    let Some(server) = state
+        .servers
+        .as_ref()
+        .and_then(|list| list.iter().find(|s| s.id == id))
+    else {
+        return ui::card(
+            "Server",
+            ui::empty(
+                "terminal",
+                "Not listed",
+                "This server is no longer on the hub.",
+            ),
+        );
     };
-    let mut parts: Vec<Element<'a, Msg>> = vec![ui::faint(transport_text(&server.transport)).into()];
+    let mut parts: Vec<Element<'a, Msg>> =
+        vec![ui::faint(transport_text(&server.transport)).into()];
     if !server.transport.command.is_empty() {
-        parts.push(ui::mono(format!("$ {}", server.transport.command.join(" ")), 12.0, crate::theme::palette().ink_2).into());
+        parts.push(
+            ui::mono(
+                format!("$ {}", server.transport.command.join(" ")),
+                12.0,
+                crate::theme::palette().ink_2,
+            )
+            .into(),
+        );
     }
     parts.push(ui::faint(format!("Env: {}", env_names(server))).into());
     if let Some(error) = &state.detail_error {
@@ -567,33 +700,80 @@ fn detail_section<'a>(state: &'a State, id: &'a str) -> Element<'a, Msg> {
     let tools: Element<'a, Msg> = match &state.tools {
         None => ui::loading(),
         Some(list) if list.is_empty() => ui::faint("This server has no tools.").into(),
-        Some(list) => column(list.iter().map(tool_row).collect::<Vec<Element<'a, Msg>>>()).spacing(10).into(),
+        Some(list) => column(list.iter().map(tool_row).collect::<Vec<Element<'a, Msg>>>())
+            .spacing(10)
+            .into(),
     };
     parts.push(tools);
     parts.push(ui::label("Logs").into());
     let logs: Element<'a, Msg> = match &state.logs {
         None => ui::loading(),
         Some(lines) if lines.is_empty() => ui::faint("No log lines yet.").into(),
-        Some(lines) => column(lines.iter().map(|l| ui::mono(format!("{} {}", l.stream, l.line), 11.0, crate::theme::palette().ink_2).into()).collect::<Vec<Element<'a, Msg>>>()).spacing(2).into(),
+        Some(lines) => column(
+            lines
+                .iter()
+                .map(|l| {
+                    ui::mono(
+                        format!("{} {}", l.stream, l.line),
+                        11.0,
+                        crate::theme::palette().ink_2,
+                    )
+                    .into()
+                })
+                .collect::<Vec<Element<'a, Msg>>>(),
+        )
+        .spacing(2)
+        .into(),
     };
     parts.push(ui::scroll(logs).height(Length::Fixed(240.0)).into());
     let actions: Vec<Element<'a, Msg>> = vec![
-        ui::btn_sm("Refresh", None, ui::Kind::Secondary, gate(state.busy, Msg::Refresh)),
-        ui::btn_sm("Edit", None, ui::Kind::Secondary, gate(state.busy, Msg::OpenEdit(id.to_string()))),
-        ui::btn_sm("Remove", None, ui::Kind::Danger, gate(state.busy, Msg::AskRemove(id.to_string()))),
+        ui::btn_sm(
+            "Refresh",
+            None,
+            ui::Kind::Secondary,
+            gate(state.busy, Msg::Refresh),
+        ),
+        ui::btn_sm(
+            "Edit",
+            None,
+            ui::Kind::Secondary,
+            gate(state.busy, Msg::OpenEdit(id.to_string())),
+        ),
+        ui::btn_sm(
+            "Remove",
+            None,
+            ui::Kind::Danger,
+            gate(state.busy, Msg::AskRemove(id.to_string())),
+        ),
         ui::link("Close", Msg::Close, false),
     ];
     parts.push(row(actions).spacing(12).align_y(Alignment::Center).into());
     if state.confirm_remove.as_deref() == Some(id) {
-        let mut confirm: Vec<Element<'a, Msg>> = vec![ui::faint(format!("Remove {}? Its config is deleted and agents lose its tools.", server.name)).into()];
+        let mut confirm: Vec<Element<'a, Msg>> = vec![
+            ui::faint(format!(
+                "Remove {}? Its config is deleted and agents lose its tools.",
+                server.name
+            ))
+            .into(),
+        ];
         if server.storage.volume {
-            confirm.push(checkbox(state.purge).label("Also delete its storage volume").on_toggle(Msg::SetPurge).into());
+            confirm.push(
+                checkbox(state.purge)
+                    .label("Also delete its storage volume")
+                    .on_toggle(Msg::SetPurge)
+                    .into(),
+            );
             confirm.push(ui::faint("The volume keeps what the server stored between runs. It is deleted only when this is ticked.").into());
         }
         confirm.push(
             row![
                 ui::btn_sm("Cancel", None, ui::Kind::Ghost, Some(Msg::CancelRemove)),
-                ui::btn_sm("Remove", None, ui::Kind::Danger, gate(state.busy, Msg::Remove(id.to_string()))),
+                ui::btn_sm(
+                    "Remove",
+                    None,
+                    ui::Kind::Danger,
+                    gate(state.busy, Msg::Remove(id.to_string()))
+                ),
             ]
             .spacing(10)
             .align_y(Alignment::Center)
@@ -601,26 +781,52 @@ fn detail_section<'a>(state: &'a State, id: &'a str) -> Element<'a, Msg> {
         );
         parts.push(column(confirm).spacing(8).into());
     }
-    ui::card(&format!("Server · {}", server.name), column(parts).spacing(14).width(Length::Fill).into())
+    ui::card(
+        &format!("Server · {}", server.name),
+        column(parts).spacing(14).width(Length::Fill).into(),
+    )
 }
 
 fn tool_row<'a>(tool: &Tool) -> Element<'a, Msg> {
-    let parts: Vec<Element<'a, Msg>> = vec![ui::mono(tool.name.clone(), 12.0, crate::theme::palette().ink).into(), ui::prose(tool.description.clone()).into()];
+    let parts: Vec<Element<'a, Msg>> = vec![
+        ui::mono(tool.name.clone(), 12.0, crate::theme::palette().ink).into(),
+        ui::prose(tool.description.clone()).into(),
+    ];
     column(parts).spacing(3).into()
 }
 
 fn catalogue_section<'a>(state: &'a State) -> Element<'a, Msg> {
     let body: Element<'a, Msg> = if state.catalogue.is_empty() {
-        ui::empty("terminal", "No presets", "The catalogue is empty on this hub.")
+        ui::empty(
+            "terminal",
+            "No presets",
+            "The catalogue is empty on this hub.",
+        )
     } else {
-        column(state.catalogue.iter().map(preset_row).collect::<Vec<Element<'a, Msg>>>()).spacing(14).into()
+        column(
+            state
+                .catalogue
+                .iter()
+                .map(preset_row)
+                .collect::<Vec<Element<'a, Msg>>>(),
+        )
+        .spacing(14)
+        .into()
     };
-    let custom: Element<'a, Msg> = ui::btn_sm("Custom server", None, ui::Kind::Secondary, Some(Msg::OpenAdd(None)));
+    let custom: Element<'a, Msg> = ui::btn_sm(
+        "Custom server",
+        None,
+        ui::Kind::Secondary,
+        Some(Msg::OpenAdd(None)),
+    );
     ui::card("Catalogue", column(vec![custom, body]).spacing(14).into())
 }
 
 fn preset_row<'a>(preset: &Preset) -> Element<'a, Msg> {
-    let facts: Vec<String> = [preset.transport.clone(), preset.note.clone()].into_iter().filter(|s| !s.is_empty()).collect();
+    let facts: Vec<String> = [preset.transport.clone(), preset.note.clone()]
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .collect();
     let info: Vec<Element<'a, Msg>> = vec![
         ui::sans(preset.name.clone(), 12.0, crate::theme::palette().ink).into(),
         ui::prose(preset.description.clone()).into(),
@@ -628,7 +834,12 @@ fn preset_row<'a>(preset: &Preset) -> Element<'a, Msg> {
     ];
     let items: Vec<Element<'a, Msg>> = vec![
         column(info).spacing(4).width(Length::Fill).into(),
-        ui::btn_sm("Add", None, ui::Kind::Secondary, Some(Msg::OpenAdd(Some(preset.id.clone())))),
+        ui::btn_sm(
+            "Add",
+            None,
+            ui::Kind::Secondary,
+            Some(Msg::OpenAdd(Some(preset.id.clone()))),
+        ),
     ];
     row(items).spacing(12).align_y(Alignment::Center).into()
 }
@@ -674,8 +885,14 @@ mod tests {
         assert_eq!(env_names(&list[0]), "ROOT, TOKEN");
         assert!(!env_names(&list[0]).contains("fs_token"));
         assert_eq!(env_names(&list[1]), "none");
-        assert_eq!(transport_text(&list[0].transport), "container · ghcr.io/x/fs:1");
-        assert_eq!(transport_text(&list[1].transport), "remote · https://mcp.example.com/sse");
+        assert_eq!(
+            transport_text(&list[0].transport),
+            "container · ghcr.io/x/fs:1"
+        );
+        assert_eq!(
+            transport_text(&list[1].transport),
+            "remote · https://mcp.example.com/sse"
+        );
     }
 
     #[test]
@@ -703,18 +920,28 @@ mod tests {
         assert_eq!(tools[0].name, "read_file");
         assert_eq!(tools[0].description, "Read a file");
         let logs: Vec<LogLine> = serde_json::from_str(LOGS).unwrap();
-        assert_eq!((logs[0].stream.as_str(), logs[0].line.as_str()), ("stderr", "boom"));
+        assert_eq!(
+            (logs[0].stream.as_str(), logs[0].line.as_str()),
+            ("stderr", "boom")
+        );
         let outcome: TestOutcome = serde_json::from_str(TEST_FAILED).unwrap();
         assert!(!outcome.ok);
         assert_eq!(outcome.error.as_deref(), Some("exit 1"));
         assert!(outcome.tools.is_empty());
         assert_eq!(outcome.stderr.len(), 1);
-        assert_eq!((outcome.stderr[0].stream.as_str(), outcome.stderr[0].line.as_str()), ("stderr", "no such file"));
+        assert_eq!(
+            (
+                outcome.stderr[0].stream.as_str(),
+                outcome.stderr[0].line.as_str()
+            ),
+            ("stderr", "no such file")
+        );
     }
 
     #[test]
     fn mcp_test_failure_without_stderr_parses_empty() {
-        let outcome: TestOutcome = serde_json::from_str(r#"{"ok":false,"ms":1.0,"error":"exit 1"}"#).unwrap();
+        let outcome: TestOutcome =
+            serde_json::from_str(r#"{"ok":false,"ms":1.0,"error":"exit 1"}"#).unwrap();
         assert!(outcome.stderr.is_empty());
     }
 
@@ -722,7 +949,9 @@ mod tests {
     fn mcp_server_storage_parses_and_defaults_off() {
         let list: Vec<Server> = serde_json::from_str(SERVERS).unwrap();
         assert!(!list[0].storage.volume, "no storage key means no volume");
-        let with: Server = serde_json::from_str(r#"{"id":"fs","name":"Files","storage":{"volume":true}}"#).unwrap();
+        let with: Server =
+            serde_json::from_str(r#"{"id":"fs","name":"Files","storage":{"volume":true}}"#)
+                .unwrap();
         assert!(with.storage.volume);
     }
 

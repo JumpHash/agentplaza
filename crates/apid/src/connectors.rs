@@ -16,11 +16,11 @@ use std::time::{Duration, Instant};
 use apz_http::{Params, Request, Response, Router};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 use crate::providers::write_atomic;
 use crate::state::App;
-use crate::vault::{node_for_cid, OnBehalf};
+use crate::vault::{OnBehalf, node_for_cid};
 use secrecy::SecretString;
 
 /// How much of a response body `call` returns.
@@ -127,7 +127,10 @@ pub enum Auth {
     /// `Authorization: Bearer <key>`.
     Bearer,
     /// `<name>: <prefix><key>`.
-    Header { name: &'static str, prefix: &'static str },
+    Header {
+        name: &'static str,
+        prefix: &'static str,
+    },
     /// `?<name>=<key>` on the URL.
     Query(&'static str),
     /// The key fills the `{secret}` placeholder of the URL.
@@ -184,7 +187,14 @@ pub const CATALOG: &[Connector] = &[
         category: "research",
         description: "Scrape pages to markdown and search the web.",
         docs_url: "https://docs.firecrawl.dev",
-        fields: &[Field { name: "api_key", label: "API key", env: "FIRECRAWL_API_KEY", hint: "API key (fc-...)", secret: true, required: true }],
+        fields: &[Field {
+            name: "api_key",
+            label: "API key",
+            env: "FIRECRAWL_API_KEY",
+            hint: "API key (fc-...)",
+            secret: true,
+            required: true,
+        }],
         auth: Auth::Bearer,
         actions: &[
             Action {
@@ -218,8 +228,18 @@ pub const CATALOG: &[Connector] = &[
         category: "media",
         description: "Voices and text-to-speech.",
         docs_url: "https://elevenlabs.io/docs",
-        fields: &[Field { name: "api_key", label: "API key", env: "ELEVENLABS_API_KEY", hint: "API key (xi-api-key)", secret: true, required: true }],
-        auth: Auth::Header { name: "xi-api-key", prefix: "" },
+        fields: &[Field {
+            name: "api_key",
+            label: "API key",
+            env: "ELEVENLABS_API_KEY",
+            hint: "API key (xi-api-key)",
+            secret: true,
+            required: true,
+        }],
+        auth: Auth::Header {
+            name: "xi-api-key",
+            prefix: "",
+        },
         actions: &[
             Action {
                 name: "voices",
@@ -253,11 +273,35 @@ pub const CATALOG: &[Connector] = &[
         description: "Search free stock photos.",
         docs_url: "https://unsplash.com/documentation",
         fields: &[
-            Field { name: "access_key", label: "Access key", env: "UNSPLASH_ACCESS_KEY", hint: "Access key (Client-ID)", secret: true, required: true },
-            Field { name: "secret_key", label: "Secret key", env: "UNSPLASH_SECRET_KEY", hint: "Secret key (not used for search)", secret: true, required: false },
-            Field { name: "app_id", label: "Application ID", env: "UNSPLASH_APP_ID", hint: "Application ID (optional)", secret: false, required: false },
+            Field {
+                name: "access_key",
+                label: "Access key",
+                env: "UNSPLASH_ACCESS_KEY",
+                hint: "Access key (Client-ID)",
+                secret: true,
+                required: true,
+            },
+            Field {
+                name: "secret_key",
+                label: "Secret key",
+                env: "UNSPLASH_SECRET_KEY",
+                hint: "Secret key (not used for search)",
+                secret: true,
+                required: false,
+            },
+            Field {
+                name: "app_id",
+                label: "Application ID",
+                env: "UNSPLASH_APP_ID",
+                hint: "Application ID (optional)",
+                secret: false,
+                required: false,
+            },
         ],
-        auth: Auth::Header { name: "Authorization", prefix: "Client-ID " },
+        auth: Auth::Header {
+            name: "Authorization",
+            prefix: "Client-ID ",
+        },
         actions: &[Action {
             name: "search",
             description: "Search photos.",
@@ -278,8 +322,18 @@ pub const CATALOG: &[Connector] = &[
         category: "media",
         description: "Search free stock photos and videos.",
         docs_url: "https://www.pexels.com/api/documentation/",
-        fields: &[Field { name: "api_key", label: "API key", env: "PEXELS_API_KEY", hint: "API key", secret: true, required: true }],
-        auth: Auth::Header { name: "Authorization", prefix: "" },
+        fields: &[Field {
+            name: "api_key",
+            label: "API key",
+            env: "PEXELS_API_KEY",
+            hint: "API key",
+            secret: true,
+            required: true,
+        }],
+        auth: Auth::Header {
+            name: "Authorization",
+            prefix: "",
+        },
         actions: &[Action {
             name: "search",
             description: "Search photos.",
@@ -300,7 +354,14 @@ pub const CATALOG: &[Connector] = &[
         category: "media",
         description: "Search free images.",
         docs_url: "https://pixabay.com/api/docs/",
-        fields: &[Field { name: "api_key", label: "API key", env: "PIXABAY_API_KEY", hint: "API key (sent in the query)", secret: true, required: true }],
+        fields: &[Field {
+            name: "api_key",
+            label: "API key",
+            env: "PIXABAY_API_KEY",
+            hint: "API key (sent in the query)",
+            secret: true,
+            required: true,
+        }],
         auth: Auth::Query("key"),
         actions: &[Action {
             name: "search",
@@ -322,7 +383,14 @@ pub const CATALOG: &[Connector] = &[
         category: "media",
         description: "Run hosted models.",
         docs_url: "https://replicate.com/docs",
-        fields: &[Field { name: "api_token", label: "API token", env: "REPLICATE_API_TOKEN", hint: "API token (r8_...)", secret: true, required: true }],
+        fields: &[Field {
+            name: "api_token",
+            label: "API token",
+            env: "REPLICATE_API_TOKEN",
+            hint: "API token (r8_...)",
+            secret: true,
+            required: true,
+        }],
         auth: Auth::Bearer,
         actions: &[
             Action {
@@ -357,8 +425,22 @@ pub const CATALOG: &[Connector] = &[
         description: "Send messages through a Telegram bot.",
         docs_url: "https://core.telegram.org/bots/api",
         fields: &[
-            Field { name: "bot_token", label: "Bot token", env: "TELEGRAM_BOT_TOKEN", hint: "Bot token from @BotFather", secret: true, required: true },
-            Field { name: "chat_id", label: "Default chat ID", env: "TELEGRAM_CHAT_ID", hint: "Chat ID used when a message names none (optional)", secret: false, required: false },
+            Field {
+                name: "bot_token",
+                label: "Bot token",
+                env: "TELEGRAM_BOT_TOKEN",
+                hint: "Bot token from @BotFather",
+                secret: true,
+                required: true,
+            },
+            Field {
+                name: "chat_id",
+                label: "Default chat ID",
+                env: "TELEGRAM_CHAT_ID",
+                hint: "Chat ID used when a message names none (optional)",
+                secret: false,
+                required: false,
+            },
         ],
         auth: Auth::Path,
         actions: &[Action {
@@ -382,8 +464,22 @@ pub const CATALOG: &[Connector] = &[
         description: "Zones and DNS records.",
         docs_url: "https://developers.cloudflare.com/api/",
         fields: &[
-            Field { name: "api_token", label: "API token", env: "CLOUDFLARE_API_TOKEN", hint: "API token", secret: true, required: true },
-            Field { name: "account_id", label: "Account ID", env: "CLOUDFLARE_ACCOUNT_ID", hint: "Account ID (optional)", secret: false, required: false },
+            Field {
+                name: "api_token",
+                label: "API token",
+                env: "CLOUDFLARE_API_TOKEN",
+                hint: "API token",
+                secret: true,
+                required: true,
+            },
+            Field {
+                name: "account_id",
+                label: "Account ID",
+                env: "CLOUDFLARE_ACCOUNT_ID",
+                hint: "Account ID (optional)",
+                secret: false,
+                required: false,
+            },
         ],
         auth: Auth::Bearer,
         actions: &[
@@ -408,7 +504,11 @@ pub const CATALOG: &[Connector] = &[
                 probe: "{}",
             },
         ],
-        cli: Some(Cli { package: "wrangler", binary: "wrangler", env: "CLOUDFLARE_API_TOKEN" }),
+        cli: Some(Cli {
+            package: "wrangler",
+            binary: "wrangler",
+            env: "CLOUDFLARE_API_TOKEN",
+        }),
     },
     Connector {
         id: "digitalocean",
@@ -418,7 +518,14 @@ pub const CATALOG: &[Connector] = &[
         category: "infra",
         description: "Droplets.",
         docs_url: "https://docs.digitalocean.com/reference/api/",
-        fields: &[Field { name: "api_token", label: "Personal access token", env: "DIGITALOCEAN_TOKEN", hint: "Personal access token", secret: true, required: true }],
+        fields: &[Field {
+            name: "api_token",
+            label: "Personal access token",
+            env: "DIGITALOCEAN_TOKEN",
+            hint: "Personal access token",
+            secret: true,
+            required: true,
+        }],
         auth: Auth::Bearer,
         actions: &[
             Action {
@@ -442,7 +549,11 @@ pub const CATALOG: &[Connector] = &[
                 probe: "{}",
             },
         ],
-        cli: Some(Cli { package: "doctl", binary: "doctl", env: "DIGITALOCEAN_ACCESS_TOKEN" }),
+        cli: Some(Cli {
+            package: "doctl",
+            binary: "doctl",
+            env: "DIGITALOCEAN_ACCESS_TOKEN",
+        }),
     },
     Connector {
         id: "github",
@@ -452,7 +563,14 @@ pub const CATALOG: &[Connector] = &[
         category: "dev",
         description: "Repositories through the gh CLI or the REST API.",
         docs_url: "https://docs.github.com/en/rest",
-        fields: &[Field { name: "token", label: "Personal access token", env: "GITHUB_TOKEN", hint: "Personal access token", secret: true, required: true }],
+        fields: &[Field {
+            name: "token",
+            label: "Personal access token",
+            env: "GITHUB_TOKEN",
+            hint: "Personal access token",
+            secret: true,
+            required: true,
+        }],
         auth: Auth::Bearer,
         actions: &[Action {
             name: "repos",
@@ -464,7 +582,11 @@ pub const CATALOG: &[Connector] = &[
             defaults: "{}",
             probe: r#"{"per_page":1}"#,
         }],
-        cli: Some(Cli { package: "gh", binary: "gh", env: "GH_TOKEN" }),
+        cli: Some(Cli {
+            package: "gh",
+            binary: "gh",
+            env: "GH_TOKEN",
+        }),
     },
     Connector {
         id: "namecheap",
@@ -475,10 +597,38 @@ pub const CATALOG: &[Connector] = &[
         description: "Domains. Coming soon.",
         docs_url: "https://www.namecheap.com/support/api/intro/",
         fields: &[
-            Field { name: "api_key", label: "API key", env: "NAMECHEAP_API_KEY", hint: "API key", secret: true, required: true },
-            Field { name: "api_user", label: "API user", env: "NAMECHEAP_API_USER", hint: "API user", secret: false, required: true },
-            Field { name: "username", label: "Username", env: "NAMECHEAP_USERNAME", hint: "Account username", secret: false, required: true },
-            Field { name: "client_ip", label: "Client IP", env: "NAMECHEAP_CLIENT_IP", hint: "Whitelisted client IP", secret: false, required: true },
+            Field {
+                name: "api_key",
+                label: "API key",
+                env: "NAMECHEAP_API_KEY",
+                hint: "API key",
+                secret: true,
+                required: true,
+            },
+            Field {
+                name: "api_user",
+                label: "API user",
+                env: "NAMECHEAP_API_USER",
+                hint: "API user",
+                secret: false,
+                required: true,
+            },
+            Field {
+                name: "username",
+                label: "Username",
+                env: "NAMECHEAP_USERNAME",
+                hint: "Account username",
+                secret: false,
+                required: true,
+            },
+            Field {
+                name: "client_ip",
+                label: "Client IP",
+                env: "NAMECHEAP_CLIENT_IP",
+                hint: "Whitelisted client IP",
+                secret: false,
+                required: true,
+            },
         ],
         auth: Auth::Pending,
         actions: &[],
@@ -493,8 +643,22 @@ pub const CATALOG: &[Connector] = &[
         description: "Video generation. Coming soon.",
         docs_url: "https://higgsfield.ai",
         fields: &[
-            Field { name: "api_key", label: "API key", env: "HIGGSFIELD_API_KEY", hint: "API key", secret: true, required: true },
-            Field { name: "api_secret", label: "API secret", env: "HIGGSFIELD_API_SECRET", hint: "API secret", secret: true, required: true },
+            Field {
+                name: "api_key",
+                label: "API key",
+                env: "HIGGSFIELD_API_KEY",
+                hint: "API key",
+                secret: true,
+                required: true,
+            },
+            Field {
+                name: "api_secret",
+                label: "API secret",
+                env: "HIGGSFIELD_API_SECRET",
+                hint: "API secret",
+                secret: true,
+                required: true,
+            },
         ],
         auth: Auth::Pending,
         actions: &[],
@@ -508,7 +672,14 @@ pub const CATALOG: &[Connector] = &[
         category: "media",
         description: "Image upscaling and enhancement. Coming soon.",
         docs_url: "https://magnific.ai",
-        fields: &[Field { name: "api_key", label: "API key", env: "MAGNIFIC_API_KEY", hint: "API key", secret: true, required: true }],
+        fields: &[Field {
+            name: "api_key",
+            label: "API key",
+            env: "MAGNIFIC_API_KEY",
+            hint: "API key",
+            secret: true,
+            required: true,
+        }],
         auth: Auth::Pending,
         actions: &[],
         cli: None,
@@ -528,7 +699,10 @@ pub(crate) fn find(id: &str) -> Option<&'static Connector> {
 
 /// The connector's main key: the first required field, else the first field.
 pub(crate) fn main_field(c: &Connector) -> Option<&'static Field> {
-    c.fields.iter().find(|f| f.required).or_else(|| c.fields.first())
+    c.fields
+        .iter()
+        .find(|f| f.required)
+        .or_else(|| c.fields.first())
 }
 
 /// The field a call names, or the main key when it names none.
@@ -598,7 +772,8 @@ impl Store {
     pub fn register(&self) {
         for c in catalog() {
             for f in c.fields {
-                self.vault.register_consumer(&binding_of(c.id), c.label, f.env);
+                self.vault
+                    .register_consumer(&binding_of(c.id), c.label, f.env);
             }
         }
     }
@@ -622,18 +797,28 @@ impl Store {
     fn values(&self, c: &Connector, on_behalf: &OnBehalf) -> BTreeMap<String, String> {
         c.fields
             .iter()
-            .filter_map(|f| self.vault.value_for(f.env, &binding_of(c.id), on_behalf).map(|v| (f.name.to_string(), v)))
+            .filter_map(|f| {
+                self.vault
+                    .value_for(f.env, &binding_of(c.id), on_behalf)
+                    .map(|v| (f.name.to_string(), v))
+            })
             .collect()
     }
 
     /// True when every required field is in `values`.
     fn complete(c: &Connector, values: &BTreeMap<String, String>) -> bool {
-        c.fields.iter().filter(|f| f.required).all(|f| values.contains_key(f.name))
+        c.fields
+            .iter()
+            .filter(|f| f.required)
+            .all(|f| values.contains_key(f.name))
     }
 
     /// True when every required field has a source (the views: no decrypt).
     fn configured(&self, c: &Connector) -> bool {
-        c.fields.iter().filter(|f| f.required).all(|f| matches!(self.source_of(c.id, f), Source::Vault | Source::Env))
+        c.fields
+            .iter()
+            .filter(|f| f.required)
+            .all(|f| matches!(self.source_of(c.id, f), Source::Vault | Source::Env))
     }
 
     /// The whole catalog with each connector's settings. Never carries a value.
@@ -711,7 +896,14 @@ impl Store {
         let _guard = lock(&self.write);
         let label = format!("{}: {}", c.label, field.label);
         self.vault
-            .put_plaza(field.env, &binding_of(c.id), &label, &SecretString::from(value.to_string()), "owner", apz_plaza::now_ms())
+            .put_plaza(
+                field.env,
+                &binding_of(c.id),
+                &label,
+                &SecretString::from(value.to_string()),
+                "owner",
+                apz_plaza::now_ms(),
+            )
             .map_err(vault_failure)?;
         self.register();
         Ok(self.view(c))
@@ -736,10 +928,19 @@ impl Store {
                 }
                 removed = true;
                 if entry.bindings.len() == 1 {
-                    self.vault.delete(&entry.id, "owner", now).map_err(vault_failure)?;
+                    self.vault
+                        .delete(&entry.id, "owner", now)
+                        .map_err(vault_failure)?;
                 } else {
-                    let rest: Vec<String> = entry.bindings.iter().filter(|b| **b != binding).cloned().collect();
-                    self.vault.patch(&entry.id, None, None, Some(rest), "owner", now).map_err(vault_failure)?;
+                    let rest: Vec<String> = entry
+                        .bindings
+                        .iter()
+                        .filter(|b| **b != binding)
+                        .cloned()
+                        .collect();
+                    self.vault
+                        .patch(&entry.id, None, None, Some(rest), "owner", now)
+                        .map_err(vault_failure)?;
                 }
             }
         }
@@ -763,7 +964,9 @@ impl Store {
             .iter()
             .find(|a| a.risk == Risk::Read && !a.path.replace("{secret}", "").contains('{'));
         let Some(action) = probe else {
-            return Ok(json!({ "ok": true, "latency_ms": 0, "detail": "key stored; no read action to probe" }));
+            return Ok(
+                json!({ "ok": true, "latency_ms": 0, "detail": "key stored; no read action to probe" }),
+            );
         };
         let input: Value = serde_json::from_str(action.probe).unwrap_or(Value::Null);
         let started = Instant::now();
@@ -818,12 +1021,20 @@ struct SecretBody {
 fn secret_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
     let body: SecretBody = match req.json() {
         Ok(body) => body,
-        Err(_) => return failure((400, "body must be {\"field\": \"...\", \"value\": \"...\"}".into())),
+        Err(_) => {
+            return failure((
+                400,
+                "body must be {\"field\": \"...\", \"value\": \"...\"}".into(),
+            ));
+        }
     };
     if body.value.is_empty() {
         return failure((400, "value is empty".into()));
     }
-    match app.connectors.set_secret(p.get("id"), body.field.as_deref(), &body.value) {
+    match app
+        .connectors
+        .set_secret(p.get("id"), body.field.as_deref(), &body.value)
+    {
         Ok(view) => {
             // Agents see the change at once: their tool lists are pushed again.
             crate::agents::push_profiles(app);
@@ -834,7 +1045,10 @@ fn secret_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
 }
 
 fn delete_secret_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
-    match app.connectors.remove_secret(p.get("id"), req.query_param("field")) {
+    match app
+        .connectors
+        .remove_secret(p.get("id"), req.query_param("field"))
+    {
         Ok(view) => {
             // Agents see the change at once: their tool lists are pushed again.
             crate::agents::push_profiles(app);
@@ -859,16 +1073,33 @@ fn failure((status, message): Failure) -> Response {
 /// unknown, disabled, unconfigured or role-forbidden connector before anything is sent.
 /// `agent` is `(cid, name)` for an agent's call, which stores a binary reply in the file
 /// store and returns its id; `None` (an owner or console call) gets the base64 text.
-pub fn call(app: &App, agent: Option<(u64, &str)>, role: &str, connector: &str, action: &str, input: &Value) -> Result<String, String> {
+pub fn call(
+    app: &App,
+    agent: Option<(u64, &str)>,
+    role: &str,
+    connector: &str,
+    action: &str,
+    input: &Value,
+) -> Result<String, String> {
     let on_behalf = match agent {
-        Some((cid, _)) => OnBehalf::Agent { cid, node: node_for_cid(&app.nodes.list(), cid) },
+        Some((cid, _)) => OnBehalf::Agent {
+            cid,
+            node: node_for_cid(&app.nodes.list(), cid),
+        },
         None => OnBehalf::Owner { node: None },
     };
     let plan = gate(&app.connectors, role, connector, action, &on_behalf)?;
     match execute(plan.connector, plan.action, &plan.values, input)? {
         Reply::Text(text) => Ok(text),
-        Reply::Binary { content_type, bytes } => match agent {
-            None => Ok(format!("[{content_type}; {} bytes; base64]\n{}", bytes.len(), base64(&bytes))),
+        Reply::Binary {
+            content_type,
+            bytes,
+        } => match agent {
+            None => Ok(format!(
+                "[{content_type}; {} bytes; base64]\n{}",
+                bytes.len(),
+                base64(&bytes)
+            )),
             Some((cid, name)) => {
                 let upload = crate::deliverables::Upload {
                     name: format!("{connector}-{action}.{}", extension(&content_type)),
@@ -897,14 +1128,20 @@ pub fn call(app: &App, agent: Option<(u64, &str)>, role: &str, connector: &str, 
 /// A successful upstream reply: text, or a binary body that goes to the file store.
 enum Reply {
     Text(String),
-    Binary { content_type: String, bytes: Vec<u8> },
+    Binary {
+        content_type: String,
+        bytes: Vec<u8>,
+    },
 }
 
 /// The text form of a reply: a binary body is described, not inlined.
 fn reply_text(reply: Reply) -> String {
     match reply {
         Reply::Text(text) => text,
-        Reply::Binary { content_type, bytes } => format!("[{content_type}; {} bytes]", bytes.len()),
+        Reply::Binary {
+            content_type,
+            bytes,
+        } => format!("[{content_type}; {} bytes]", bytes.len()),
     }
 }
 
@@ -929,7 +1166,13 @@ struct Plan {
     values: BTreeMap<String, String>,
 }
 
-fn gate(store: &Store, role: &str, connector: &str, action: &str, on_behalf: &OnBehalf) -> Result<Plan, String> {
+fn gate(
+    store: &Store,
+    role: &str,
+    connector: &str,
+    action: &str,
+    on_behalf: &OnBehalf,
+) -> Result<Plan, String> {
     let c = find(connector).ok_or_else(|| format!("no connector `{connector}`"))?;
     let a = c
         .actions
@@ -947,14 +1190,25 @@ fn gate(store: &Store, role: &str, connector: &str, action: &str, on_behalf: &On
     if !Store::complete(c, &values) {
         return Err(format!("connector `{}` has no key stored", c.id));
     }
-    Ok(Plan { connector: c, action: a, values })
+    Ok(Plan {
+        connector: c,
+        action: a,
+        values,
+    })
 }
 
 /// Sends one action upstream. The credentials are attached here and redacted from
 /// every error; the body comes back as text, or as binary bytes for the file store.
-fn execute(c: &Connector, a: &Action, values: &BTreeMap<String, String>, input: &Value) -> Result<Reply, String> {
+fn execute(
+    c: &Connector,
+    a: &Action,
+    values: &BTreeMap<String, String>,
+    input: &Value,
+) -> Result<Reply, String> {
     let main = main_field(c);
-    let secret = main.and_then(|f| values.get(f.name)).map_or("", String::as_str);
+    let secret = main
+        .and_then(|f| values.get(f.name))
+        .map_or("", String::as_str);
     // Every value that must never reach an error: the main key and each secret field.
     let secrets: Vec<&str> = c
         .fields
@@ -989,11 +1243,16 @@ fn execute(c: &Connector, a: &Action, values: &BTreeMap<String, String>, input: 
     };
     if !query.is_empty() {
         let sep = if url.contains('?') { '&' } else { '?' };
-        let pairs: Vec<String> = query.iter().map(|(k, v)| format!("{}={}", encode(k), encode(v))).collect();
+        let pairs: Vec<String> = query
+            .iter()
+            .map(|(k, v)| format!("{}={}", encode(k), encode(v)))
+            .collect();
         url.push(sep);
         url.push_str(&pairs.join("&"));
     }
-    let mut builder = ureq::http::Request::builder().method(a.method).uri(url.as_str());
+    let mut builder = ureq::http::Request::builder()
+        .method(a.method)
+        .uri(url.as_str());
     for (k, v) in &headers {
         builder = builder.header(k.as_str(), v.as_str());
     }
@@ -1025,16 +1284,26 @@ fn execute(c: &Connector, a: &Action, values: &BTreeMap<String, String>, input: 
     if (200..300).contains(&status) && !is_text(&content_type) {
         // A cut-off file would be stored as if whole, so an oversized binary body is refused.
         if bytes.len() > BINARY_CAP {
-            return Err(format!("{}.{} returned a binary body over 100 MiB; not stored", c.id, a.name));
+            return Err(format!(
+                "{}.{} returned a binary body over 100 MiB; not stored",
+                c.id, a.name
+            ));
         }
-        return Ok(Reply::Binary { content_type, bytes });
+        return Ok(Reply::Binary {
+            content_type,
+            bytes,
+        });
     }
     let truncated = bytes.len() > BODY_CAP;
     bytes.truncate(BODY_CAP);
     let mut text = if is_text(&content_type) {
         String::from_utf8_lossy(&bytes).into_owned()
     } else {
-        format!("[{content_type}; {} bytes; base64]\n{}", bytes.len(), base64(&bytes))
+        format!(
+            "[{content_type}; {} bytes; base64]\n{}",
+            bytes.len(),
+            base64(&bytes)
+        )
     };
     if truncated {
         text.push_str("\n[truncated at 256 KiB]");
@@ -1042,7 +1311,15 @@ fn execute(c: &Connector, a: &Action, values: &BTreeMap<String, String>, input: 
     if (200..300).contains(&status) {
         Ok(Reply::Text(text))
     } else {
-        Err(redact_all(&format!("{}.{} returned HTTP {status}: {}", c.id, a.name, snippet(&text)), &secrets))
+        Err(redact_all(
+            &format!(
+                "{}.{} returned HTTP {status}: {}",
+                c.id,
+                a.name,
+                snippet(&text)
+            ),
+            &secrets,
+        ))
     }
 }
 
@@ -1062,9 +1339,18 @@ fn with_defaults(defaults: &str, input: &Value) -> Result<Map<String, Value>, St
 
 /// A non-secret field fills an input the action declares and the caller left out:
 /// Telegram's `chat_id`, for one.
-fn field_defaults(c: &Connector, a: &Action, values: &BTreeMap<String, String>, body: &mut Map<String, Value>) {
-    let Ok(schema) = serde_json::from_str::<Value>(a.input_schema) else { return };
-    let Some(props) = schema.get("properties").and_then(Value::as_object) else { return };
+fn field_defaults(
+    c: &Connector,
+    a: &Action,
+    values: &BTreeMap<String, String>,
+    body: &mut Map<String, Value>,
+) {
+    let Ok(schema) = serde_json::from_str::<Value>(a.input_schema) else {
+        return;
+    };
+    let Some(props) = schema.get("properties").and_then(Value::as_object) else {
+        return;
+    };
     let missing: Vec<&Field> = c
         .fields
         .iter()
@@ -1104,7 +1390,9 @@ fn fill(
                 .ok_or_else(|| format!("no value for field `{field}`"))?;
             out.push_str(value);
         } else {
-            let value = input.get(name).ok_or_else(|| format!("missing input `{name}`"))?;
+            let value = input
+                .get(name)
+                .ok_or_else(|| format!("missing input `{name}`"))?;
             out.push_str(&encode(&scalar(value)?));
             used.push(name.to_string());
         }
@@ -1159,7 +1447,11 @@ pub(crate) fn base64(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
-        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        let b = [
+            chunk[0],
+            *chunk.get(1).unwrap_or(&0),
+            *chunk.get(2).unwrap_or(&0),
+        ];
         let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
         for i in 0..4 {
             if i <= chunk.len() {
@@ -1185,7 +1477,8 @@ fn action_view(a: &Action) -> Value {
 
 fn read_map<T: DeserializeOwned>(path: &Path) -> io::Result<BTreeMap<String, T>> {
     match std::fs::read(path) {
-        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string())),
+        Ok(bytes) => serde_json::from_slice(&bytes)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string())),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(BTreeMap::new()),
         Err(e) => Err(e),
     }
@@ -1193,14 +1486,14 @@ fn read_map<T: DeserializeOwned>(path: &Path) -> io::Result<BTreeMap<String, T>>
 
 /// Saves a map atomically at mode 0600.
 fn save<T: Serialize>(path: &Path, map: &BTreeMap<String, T>) -> io::Result<()> {
-    let bytes = serde_json::to_vec_pretty(map).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+    let bytes = serde_json::to_vec_pretty(map)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
     write_atomic(path, &bytes, 0o600)
 }
 
 fn io_failure(e: io::Error) -> Failure {
     (500, format!("cannot save: {e}"))
 }
-
 
 /// The snapshot's shape: the operator settings and every proposal, whatever its state. The vault is not in it.
 #[derive(Serialize, Deserialize)]
@@ -1212,16 +1505,22 @@ struct Snapshot {
 impl Store {
     /// The whole state as JSON, for Postgres (`crate::db`); "" when there is nothing to save.
     pub fn snapshot(&self) -> String {
-        let snap = Snapshot { settings: lock(&self.settings).clone(), proposals: lock(&self.proposals).clone() };
+        let snap = Snapshot {
+            settings: lock(&self.settings).clone(),
+            proposals: lock(&self.proposals).clone(),
+        };
         serde_json::to_string(&snap).unwrap_or_default()
     }
 
     /// Replaces the state with a [`Store::snapshot`]; a refusal changes nothing.
     pub fn restore(&self, json: &str) -> Result<(), String> {
-        let snap: Snapshot = serde_json::from_str(json).map_err(|e| format!("bad connectors snapshot: {e}"))?;
+        let snap: Snapshot =
+            serde_json::from_str(json).map_err(|e| format!("bad connectors snapshot: {e}"))?;
         let _guard = lock(&self.write);
-        save(&self.dir.join("connectors.json"), &snap.settings).map_err(|e| format!("write connectors: {e}"))?;
-        save_proposals(&self.dir.join(PROPOSALS), &snap.proposals).map_err(|e| format!("write proposals: {e}"))?;
+        save(&self.dir.join("connectors.json"), &snap.settings)
+            .map_err(|e| format!("write connectors: {e}"))?;
+        save_proposals(&self.dir.join(PROPOSALS), &snap.proposals)
+            .map_err(|e| format!("write proposals: {e}"))?;
         for proposal in snap.proposals.iter().filter(|p| p.state == "approved") {
             adopt(&proposal.spec);
         }
@@ -1245,7 +1544,8 @@ mod tests {
     #[cfg(unix)]
 
     fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("apid-connectors-{}-{name}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("apid-connectors-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         dir
     }
@@ -1258,7 +1558,10 @@ mod tests {
     }
 
     fn only(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
     }
 
     fn connector(id: &str) -> &'static Connector {
@@ -1275,7 +1578,8 @@ mod tests {
             assert!(main_field(c).is_some(), "{} has no key field", c.id);
             for a in c.actions {
                 for text in [a.input_schema, a.defaults, a.probe] {
-                    serde_json::from_str::<Value>(text).unwrap_or_else(|e| panic!("{}.{}: {e}", c.id, a.name));
+                    serde_json::from_str::<Value>(text)
+                        .unwrap_or_else(|e| panic!("{}.{}: {e}", c.id, a.name));
                 }
             }
         }
@@ -1285,16 +1589,27 @@ mod tests {
     fn secret_is_stored_in_the_vault_and_never_listed() {
         let dir = scratch("secret");
         let store = Store::load(&dir, vault_for(&dir)).unwrap();
-        store.set_secret("unsplash", None, "SENTINEL-CONN-4417").unwrap();
+        store
+            .set_secret("unsplash", None, "SENTINEL-CONN-4417")
+            .unwrap();
         let listed = serde_json::to_string(&store.views()).unwrap();
         assert!(!listed.contains("SENTINEL-CONN-4417"));
         assert!(listed.contains("\"configured\":true"));
-        assert_eq!(store.view(connector("unsplash"))["fields"][0]["source"], "vault");
-        assert!(!dir.join("connector-secrets.json").exists(), "no plaintext connector file is written");
+        assert_eq!(
+            store.view(connector("unsplash"))["fields"][0]["source"],
+            "vault"
+        );
+        assert!(
+            !dir.join("connector-secrets.json").exists(),
+            "no plaintext connector file is written"
+        );
         let vault_file = std::fs::read(dir.join("vault.json")).unwrap();
         assert!(!String::from_utf8_lossy(&vault_file).contains("SENTINEL-CONN-4417"));
         assert_eq!(
-            store.values(connector("unsplash"), &OnBehalf::Hub).get("access_key").map(String::as_str),
+            store
+                .values(connector("unsplash"), &OnBehalf::Hub)
+                .get("access_key")
+                .map(String::as_str),
             Some("SENTINEL-CONN-4417")
         );
         let _ = std::fs::remove_dir_all(&dir);
@@ -1306,13 +1621,24 @@ mod tests {
         let store = Store::load(&dir, vault_for(&dir)).unwrap();
         let vault = Arc::clone(&store.vault);
         let wanted = |v: &crate::vault::Store| {
-            v.consumers(&[]).unwrap().iter().any(|c| c["binding"] == "connector:firecrawl" && c["wants"] == "FIRECRAWL_API_KEY")
+            v.consumers(&[])
+                .unwrap()
+                .iter()
+                .any(|c| c["binding"] == "connector:firecrawl" && c["wants"] == "FIRECRAWL_API_KEY")
         };
         assert!(wanted(&vault), "the field registers at load");
-        store.set_secret("firecrawl", None, "SENTINEL-CONN-4417").unwrap();
-        assert_eq!(vault.presence("FIRECRAWL_API_KEY", "connector:firecrawl"), "secret");
+        store
+            .set_secret("firecrawl", None, "SENTINEL-CONN-4417")
+            .unwrap();
+        assert_eq!(
+            vault.presence("FIRECRAWL_API_KEY", "connector:firecrawl"),
+            "secret"
+        );
         store.remove_secret("firecrawl", None).unwrap();
-        assert_eq!(vault.presence("FIRECRAWL_API_KEY", "connector:firecrawl"), "missing");
+        assert_eq!(
+            vault.presence("FIRECRAWL_API_KEY", "connector:firecrawl"),
+            "missing"
+        );
         assert_eq!(store.remove_secret("firecrawl", None).unwrap_err().0, 404);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1323,9 +1649,13 @@ mod tests {
         let store = Store::load(&dir, vault_for(&dir)).unwrap();
         let ua = connector("unsplash");
         assert!(!store.configured(ua));
-        store.set_secret("unsplash", Some("app_id"), "APP-1").unwrap();
+        store
+            .set_secret("unsplash", Some("app_id"), "APP-1")
+            .unwrap();
         assert!(!store.configured(ua));
-        store.set_secret("unsplash", Some("access_key"), "AK-333").unwrap();
+        store
+            .set_secret("unsplash", Some("access_key"), "AK-333")
+            .unwrap();
         assert!(store.configured(ua));
         let view = store.view(ua);
         let fields = view["fields"].as_array().unwrap();
@@ -1341,8 +1671,17 @@ mod tests {
     fn unknown_fields_are_refused() {
         let dir = scratch("unknown");
         let store = Store::load(&dir, vault_for(&dir)).unwrap();
-        assert_eq!(store.set_secret("unsplash", Some("nope"), "x").unwrap_err().0, 400);
-        assert_eq!(store.remove_secret("unsplash", Some("nope")).unwrap_err().0, 400);
+        assert_eq!(
+            store
+                .set_secret("unsplash", Some("nope"), "x")
+                .unwrap_err()
+                .0,
+            400
+        );
+        assert_eq!(
+            store.remove_secret("unsplash", Some("nope")).unwrap_err().0,
+            400
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1351,14 +1690,27 @@ mod tests {
         let input = json!({ "voice_id": "a/b c", "text": "hi" });
         let map = input.as_object().unwrap().clone();
         let none = BTreeMap::new();
-        let (url, used) = fill("https://x.test/v1/voices/{voice_id}/run", &map, "k", &none).unwrap();
+        let (url, used) =
+            fill("https://x.test/v1/voices/{voice_id}/run", &map, "k", &none).unwrap();
         assert_eq!(url, "https://x.test/v1/voices/a%2Fb%20c/run");
         assert_eq!(used, vec!["voice_id".to_string()]);
         assert!(fill("https://x.test/{missing}", &map, "k", &none).is_err());
-        let (bot, _) = fill("https://api.telegram.org/bot{secret}/sendMessage", &map, "123:ABC", &none).unwrap();
+        let (bot, _) = fill(
+            "https://api.telegram.org/bot{secret}/sendMessage",
+            &map,
+            "123:ABC",
+            &none,
+        )
+        .unwrap();
         assert_eq!(bot, "https://api.telegram.org/bot123:ABC/sendMessage");
         let named = only(&[("bot_token", "123:ABC")]);
-        let (by_field, _) = fill("https://api.telegram.org/bot{field:bot_token}/sendMessage", &map, "", &named).unwrap();
+        let (by_field, _) = fill(
+            "https://api.telegram.org/bot{field:bot_token}/sendMessage",
+            &map,
+            "",
+            &named,
+        )
+        .unwrap();
         assert_eq!(by_field, bot);
         assert!(fill("https://x.test/{field:nope}", &map, "k", &named).is_err());
     }
@@ -1381,18 +1733,39 @@ mod tests {
         let dir = scratch("gate");
         let store = Store::load(&dir, vault_for(&dir)).unwrap();
         assert!(refusal(gate(&store, "any", "nope", "x", &OnBehalf::Hub)).contains("no connector"));
-        assert!(refusal(gate(&store, "any", "unsplash", "nope", &OnBehalf::Hub)).contains("no action"));
-        assert!(refusal(gate(&store, "any", "unsplash", "search", &OnBehalf::Hub)).contains("disabled"));
+        assert!(
+            refusal(gate(&store, "any", "unsplash", "nope", &OnBehalf::Hub)).contains("no action")
+        );
+        assert!(
+            refusal(gate(&store, "any", "unsplash", "search", &OnBehalf::Hub)).contains("disabled")
+        );
         store
-            .update("unsplash", Patch { enabled: Some(true), roles: None })
+            .update(
+                "unsplash",
+                Patch {
+                    enabled: Some(true),
+                    roles: None,
+                },
+            )
             .unwrap();
-        assert!(refusal(gate(&store, "any", "unsplash", "search", &OnBehalf::Hub)).contains("no key"));
+        assert!(
+            refusal(gate(&store, "any", "unsplash", "search", &OnBehalf::Hub)).contains("no key")
+        );
         store.set_secret("unsplash", None, "k").unwrap();
         assert!(gate(&store, "any", "unsplash", "search", &OnBehalf::Hub).is_ok());
         store
-            .update("unsplash", Patch { enabled: None, roles: Some(vec!["researcher".into()]) })
+            .update(
+                "unsplash",
+                Patch {
+                    enabled: None,
+                    roles: Some(vec!["researcher".into()]),
+                },
+            )
             .unwrap();
-        assert!(refusal(gate(&store, "writer", "unsplash", "search", &OnBehalf::Hub)).contains("may not"));
+        assert!(
+            refusal(gate(&store, "writer", "unsplash", "search", &OnBehalf::Hub))
+                .contains("may not")
+        );
         assert!(gate(&store, "researcher", "unsplash", "search", &OnBehalf::Hub).is_ok());
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1535,16 +1908,27 @@ fn check(spec: &Spec) -> Vec<String> {
         "bearer" => {}
         "header" | "query" => {
             let name = spec.auth.name.as_deref().unwrap_or("");
-            if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
-                out.push(format!("auth `{}` needs a name made of letters, digits, - or _", spec.auth.kind));
+            if name.is_empty()
+                || !name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+            {
+                out.push(format!(
+                    "auth `{}` needs a name made of letters, digits, - or _",
+                    spec.auth.kind
+                ));
             }
         }
         "path" => {
-            if !spec.base_url.contains("{secret}") && !spec.actions.iter().any(|a| a.path.contains("{secret}")) {
+            if !spec.base_url.contains("{secret}")
+                && !spec.actions.iter().any(|a| a.path.contains("{secret}"))
+            {
                 out.push("auth `path` needs {secret} in base_url or in an action path".to_string());
             }
         }
-        other => out.push(format!("auth kind `{other}` is not bearer, header, query or path")),
+        other => out.push(format!(
+            "auth kind `{other}` is not bearer, header, query or path"
+        )),
     }
     if !spec.fields.iter().any(|f| f.required) {
         out.push("at least one field must be required (the key)".to_string());
@@ -1555,23 +1939,44 @@ fn check(spec: &Spec) -> Vec<String> {
         }
     }
     if spec.actions.is_empty() || spec.actions.len() > 20 {
-        out.push(format!("a connector needs 1 to 20 actions, not {}", spec.actions.len()));
+        out.push(format!(
+            "a connector needs 1 to 20 actions, not {}",
+            spec.actions.len()
+        ));
     }
     for a in &spec.actions {
         if !shaped(&a.name, '_', 1..=30) {
-            out.push(format!("action name `{}` must be lowercase letters, digits or underscores", a.name));
+            out.push(format!(
+                "action name `{}` must be lowercase letters, digits or underscores",
+                a.name
+            ));
         }
-        if !matches!(a.method.as_str(), "GET" | "POST" | "PUT" | "PATCH" | "DELETE") {
-            out.push(format!("action `{}` has method `{}`; use GET, POST, PUT, PATCH or DELETE", a.name, a.method));
+        if !matches!(
+            a.method.as_str(),
+            "GET" | "POST" | "PUT" | "PATCH" | "DELETE"
+        ) {
+            out.push(format!(
+                "action `{}` has method `{}`; use GET, POST, PUT, PATCH or DELETE",
+                a.name, a.method
+            ));
         }
         if !a.path.starts_with('/') || a.path.contains("..") {
-            out.push(format!("action `{}` path must start with / and must not contain ..", a.name));
+            out.push(format!(
+                "action `{}` path must start with / and must not contain ..",
+                a.name
+            ));
         }
         if !matches!(a.risk.as_str(), "read" | "write" | "irreversible") {
-            out.push(format!("action `{}` has risk `{}`; use read, write or irreversible", a.name, a.risk));
+            out.push(format!(
+                "action `{}` has risk `{}`; use read, write or irreversible",
+                a.name, a.risk
+            ));
         }
         if !a.input_schema.is_object() {
-            out.push(format!("action `{}` input_schema must be a JSON object", a.name));
+            out.push(format!(
+                "action `{}` input_schema must be a JSON object",
+                a.name
+            ));
         }
     }
     out
@@ -1601,11 +2006,19 @@ fn host_problem(host: &str) -> Option<String> {
     if host.is_empty() {
         return Some("base_url has no host".to_string());
     }
-    if host == "localhost" || host.ends_with(".localhost") || host.ends_with(".local") || host.ends_with(".internal") {
-        return Some(format!("base_url host `{host}` is local, not a public service"));
+    if host == "localhost"
+        || host.ends_with(".localhost")
+        || host.ends_with(".local")
+        || host.ends_with(".internal")
+    {
+        return Some(format!(
+            "base_url host `{host}` is local, not a public service"
+        ));
     }
     match host.parse::<std::net::IpAddr>() {
-        Ok(ip) if private_ip(ip) => Some(format!("base_url host `{host}` is a private, loopback or link-local address")),
+        Ok(ip) if private_ip(ip) => Some(format!(
+            "base_url host `{host}` is a private, loopback or link-local address"
+        )),
         _ => None,
     }
 }
@@ -1613,12 +2026,21 @@ fn host_problem(host: &str) -> Option<String> {
 pub(crate) fn private_ip(ip: std::net::IpAddr) -> bool {
     use std::net::IpAddr;
     match ip {
-        IpAddr::V4(v4) => v4.is_private() || v4.is_loopback() || v4.is_link_local() || v4.is_unspecified() || v4.is_broadcast(),
+        IpAddr::V4(v4) => {
+            v4.is_private()
+                || v4.is_loopback()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                || v4.is_broadcast()
+        }
         IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
             Some(v4) => private_ip(IpAddr::V4(v4)),
             None => {
                 let first = v6.segments()[0];
-                v6.is_loopback() || v6.is_unspecified() || (first & 0xfe00) == 0xfc00 || (first & 0xffc0) == 0xfe80
+                v6.is_loopback()
+                    || v6.is_unspecified()
+                    || (first & 0xfe00) == 0xfc00
+                    || (first & 0xffc0) == 0xfe80
             }
         },
     }
@@ -1650,7 +2072,10 @@ fn to_connector(spec: &Spec) -> &'static Connector {
         .collect();
     let auth_name = leak(spec.auth.name.clone().unwrap_or_default());
     let auth = match spec.auth.kind.as_str() {
-        "header" => Auth::Header { name: auth_name, prefix: "" },
+        "header" => Auth::Header {
+            name: auth_name,
+            prefix: "",
+        },
         "query" => Auth::Query(auth_name),
         "path" => Auth::Path,
         _ => Auth::Bearer,
@@ -1699,14 +2124,16 @@ fn adopt(spec: &Spec) {
 
 fn read_proposals(path: &Path) -> io::Result<Vec<Proposal>> {
     match std::fs::read(path) {
-        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string())),
+        Ok(bytes) => serde_json::from_slice(&bytes)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string())),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
         Err(e) => Err(e),
     }
 }
 
 fn save_proposals(path: &Path, proposals: &[Proposal]) -> io::Result<()> {
-    let bytes = serde_json::to_vec_pretty(proposals).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+    let bytes = serde_json::to_vec_pretty(proposals)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
     write_atomic(path, &bytes, 0o600)
 }
 
@@ -1761,13 +2188,22 @@ impl Store {
             .find(|p| p.id == id)
             .ok_or_else(|| (404, format!("no proposal `{id}`")))?;
         if proposal.state != "pending" {
-            return Err((409, format!("proposal `{id}` is already {}", proposal.state)));
+            return Err((
+                409,
+                format!("proposal `{id}` is already {}", proposal.state),
+            ));
         }
         if approve && !proposal.checks.is_empty() {
-            return Err((409, format!("proposal `{id}` fails its checks and cannot be approved")));
+            return Err((
+                409,
+                format!("proposal `{id}` fails its checks and cannot be approved"),
+            ));
         }
         if approve && catalog().iter().any(|c| c.id == proposal.spec.id) {
-            return Err((409, format!("the connector id `{}` is already taken", proposal.spec.id)));
+            return Err((
+                409,
+                format!("the connector id `{}` is already taken", proposal.spec.id),
+            ));
         }
         proposal.state = if approve { "approved" } else { "rejected" }.to_string();
         proposal.note = note.map(|n| n.trim().to_string()).filter(|n| !n.is_empty());
@@ -1784,13 +2220,17 @@ impl Store {
 
 /// `plaza_connector_propose`: an agent proposes a connector (a declarative spec) for the owner's review.
 pub fn propose(app: &App, agent: &crate::agents::Agent, input: &Value) -> Result<String, String> {
-    let spec: Spec = serde_json::from_value(input.clone()).map_err(|e| format!("not a connector spec: {e}"))?;
+    let spec: Spec =
+        serde_json::from_value(input.clone()).map_err(|e| format!("not a connector spec: {e}"))?;
     let proposal = app
         .connectors
         .submit(agent.cid, &agent.name, spec)
         .map_err(|(_, message)| message)?;
     app.bus.publish("connector", &proposal);
-    let mut text = format!("proposed {} ({}) for the owner's review", proposal.spec.label, proposal.id);
+    let mut text = format!(
+        "proposed {} ({}) for the owner's review",
+        proposal.spec.label, proposal.id
+    );
     if !proposal.checks.is_empty() {
         text.push_str(". It fails these checks and cannot be approved until they pass: ");
         text.push_str(&proposal.checks.join("; "));
@@ -1815,11 +2255,21 @@ fn review_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
         Ok(body) => body,
         Err(e) => return failure((400, format!("bad body: {e}"))),
     };
-    match app.connectors.review(p.get("id"), body.approve, body.note.as_deref()) {
+    match app
+        .connectors
+        .review(p.get("id"), body.approve, body.note.as_deref())
+    {
         Ok(proposal) => {
             app.bus.publish("connector", &proposal);
-            let note = proposal.note.as_deref().map(|n| format!(": {n}")).unwrap_or_default();
-            let text = format!("[plaza] The owner {} your connector proposal {}{note}.", proposal.state, proposal.spec.label);
+            let note = proposal
+                .note
+                .as_deref()
+                .map(|n| format!(": {n}"))
+                .unwrap_or_default();
+            let text = format!(
+                "[plaza] The owner {} your connector proposal {}{note}.",
+                proposal.state, proposal.spec.label
+            );
             let _ = app.work.enqueue(
                 app,
                 proposal.proposer_cid,
@@ -1839,7 +2289,8 @@ mod proposal_tests {
     use super::*;
 
     fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("apid-proposals-{}-{name}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("apid-proposals-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         dir
     }
@@ -1911,7 +2362,10 @@ mod proposal_tests {
         assert_eq!(approved.state, "approved");
         let entry = catalog().into_iter().find(|c| c.id == "acme-good").unwrap();
         assert_eq!(entry.actions[0].name, "find_note");
-        assert_eq!(entry.actions[0].path, "https://api.acme-test.example/v1/notes");
+        assert_eq!(
+            entry.actions[0].path,
+            "https://api.acme-test.example/v1/notes"
+        );
         assert_eq!(store.review(&good.id, false, None).unwrap_err().0, 409);
         drop(store);
 

@@ -83,10 +83,14 @@ impl FromStr for Need {
 
     fn from_str(s: &str) -> Result<Need, String> {
         let wanted = s.trim().to_ascii_lowercase();
-        Need::ALL.iter().copied().find(|need| need.name() == wanted).ok_or_else(|| {
-            let names: Vec<&str> = Need::ALL.iter().map(|need| need.name()).collect();
-            format!("unknown requirement \"{s}\" (one of: {})", names.join(", "))
-        })
+        Need::ALL
+            .iter()
+            .copied()
+            .find(|need| need.name() == wanted)
+            .ok_or_else(|| {
+                let names: Vec<&str> = Need::ALL.iter().map(|need| need.name()).collect();
+                format!("unknown requirement \"{s}\" (one of: {})", names.join(", "))
+            })
     }
 }
 
@@ -130,7 +134,11 @@ pub enum Mode {
 
 /// The rows that a fix can be run for: missing, with a description of what it does.
 pub fn fixable(checks: &[Check]) -> Vec<Check> {
-    checks.iter().filter(|c| c.state == State::Missing && c.fix.is_some()).cloned().collect()
+    checks
+        .iter()
+        .filter(|c| c.state == State::Missing && c.fix.is_some())
+        .cloned()
+        .collect()
 }
 
 /// What the setup works against: the host's commands and files, keys.env's path, and the login name.
@@ -148,7 +156,8 @@ impl Env<'static> {
     pub fn system() -> Env<'static> {
         Env {
             runner: &SystemRunner,
-            keys: apz_os::dirs::home().map(|home| home.join(".config").join("agentplaza").join("keys.env")),
+            keys: apz_os::dirs::home()
+                .map(|home| home.join(".config").join("agentplaza").join("keys.env")),
             user: std::env::var("USER").ok().filter(|user| !user.is_empty()),
         }
     }

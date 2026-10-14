@@ -2,9 +2,9 @@
 //! (recurring prompts) that run on agents. The web's harness card sends the same bodies.
 
 use clap::Subcommand;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use crate::ctx::{self, text_arg, Ctx};
+use crate::ctx::{self, Ctx, text_arg};
 
 /// Most characters a steer note may have (the hub's limit).
 const STEER_MAX_CHARS: usize = 2000;
@@ -68,7 +68,11 @@ pub enum LoopAction {
 pub fn harness(ctx: &Ctx, cid: u64, action: Option<Action>) -> Result<(), String> {
     match action {
         None => show(ctx, cid),
-        Some(Action::Set { turns, compress_kb, keep_recent }) => {
+        Some(Action::Set {
+            turns,
+            compress_kb,
+            keep_recent,
+        }) => {
             let body = limits_body(turns, compress_kb, keep_recent)?;
             control(ctx, cid, &body)
         }
@@ -93,7 +97,9 @@ fn show(ctx: &Ctx, cid: u64) -> Result<(), String> {
 
 /// Posts a control body; the hub's answer is a line of text (or the saved limits).
 fn control(ctx: &Ctx, cid: u64, body: &Value) -> Result<(), String> {
-    let v = ctx.client.post(&format!("/v1/agents/{cid}/control"), body)?;
+    let v = ctx
+        .client
+        .post(&format!("/v1/agents/{cid}/control"), body)?;
     let action = body["action"].as_str().unwrap_or("");
     ctx.out(&v, |v| {
         if action == "set_limits" {
@@ -106,7 +112,11 @@ fn control(ctx: &Ctx, cid: u64, body: &Value) -> Result<(), String> {
 }
 
 /// The `set_limits` body: only the limits given. Compress is given in KB and sent in bytes.
-pub fn limits_body(turns: Option<u32>, compress_kb: Option<f64>, keep_recent: Option<u32>) -> Result<Value, String> {
+pub fn limits_body(
+    turns: Option<u32>,
+    compress_kb: Option<f64>,
+    keep_recent: Option<u32>,
+) -> Result<Value, String> {
     if turns.is_none() && compress_kb.is_none() && keep_recent.is_none() {
         return Err("set needs at least one of --turns, --compress-kb, --keep-recent".into());
     }
@@ -142,7 +152,9 @@ pub fn extend_body(turns: u32) -> Result<Value, String> {
 /// The `steer` body; the note is already trimmed and non-empty (see `text_arg`).
 pub fn steer_body(text: &str) -> Result<Value, String> {
     if text.chars().count() > STEER_MAX_CHARS {
-        return Err(format!("the steer note is over {STEER_MAX_CHARS} characters"));
+        return Err(format!(
+            "the steer note is over {STEER_MAX_CHARS} characters"
+        ));
     }
     Ok(json!({ "action": "steer", "text": text }))
 }
@@ -151,10 +163,17 @@ pub fn steer_body(text: &str) -> Result<Value, String> {
 pub fn loops(ctx: &Ctx, cid: Option<u64>, action: Option<LoopAction>) -> Result<(), String> {
     match action {
         None => list_loops(ctx, cid),
-        Some(LoopAction::Start { cid, prompt, every, max_runs }) => {
+        Some(LoopAction::Start {
+            cid,
+            prompt,
+            every,
+            max_runs,
+        }) => {
             let body = loop_body(cid, &text_arg(&prompt)?, every, max_runs)?;
             let v = ctx.client.post("/v1/loops", &body)?;
-            ctx.out(&v, |l| println!("started loop {} for agent {cid}", ctx::text(l, "id")));
+            ctx.out(&v, |l| {
+                println!("started loop {} for agent {cid}", ctx::text(l, "id"))
+            });
             Ok(())
         }
         Some(LoopAction::Stop { id }) => {
@@ -166,22 +185,37 @@ pub fn loops(ctx: &Ctx, cid: Option<u64>, action: Option<LoopAction>) -> Result<
 }
 
 /// The `POST /v1/loops` body.
-pub fn loop_body(cid: u64, prompt: &str, every_minutes: u64, max_runs: u32) -> Result<Value, String> {
+pub fn loop_body(
+    cid: u64,
+    prompt: &str,
+    every_minutes: u64,
+    max_runs: u32,
+) -> Result<Value, String> {
     if every_minutes < 1 {
         return Err("--every is at least 1 minute".into());
     }
-    Ok(json!({ "cid": cid, "prompt": prompt, "every_minutes": every_minutes, "max_runs": max_runs }))
+    Ok(
+        json!({ "cid": cid, "prompt": prompt, "every_minutes": every_minutes, "max_runs": max_runs }),
+    )
 }
 
 fn list_loops(ctx: &Ctx, cid: Option<u64>) -> Result<(), String> {
     let all = ctx.client.get("/v1/loops")?;
-    let shown: Vec<Value> = super::items(&all).iter().filter(|l| cid.is_none_or(|c| l["cid"].as_u64() == Some(c))).cloned().collect();
+    let shown: Vec<Value> = super::items(&all)
+        .iter()
+        .filter(|l| cid.is_none_or(|c| l["cid"].as_u64() == Some(c)))
+        .cloned()
+        .collect();
     ctx.out(&Value::Array(shown.clone()), |_| {
         let rows: Vec<Vec<String>> = shown
             .iter()
             .map(|l| {
                 let max = l["max_runs"].as_u64().unwrap_or(0);
-                let max = if max == 0 { "∞".to_string() } else { max.to_string() };
+                let max = if max == 0 {
+                    "∞".to_string()
+                } else {
+                    max.to_string()
+                };
                 vec![
                     ctx::text(l, "id"),
                     ctx::text(l, "cid"),
@@ -237,7 +271,10 @@ mod tests {
     #[test]
     fn set_sends_only_the_limits_given_with_compress_in_bytes() {
         let body = limits_body(Some(40), Some(20.0), None).unwrap();
-        assert_eq!(body, json!({ "action": "set_limits", "max_turns": 40, "compress_at": 20_480 }));
+        assert_eq!(
+            body,
+            json!({ "action": "set_limits", "max_turns": 40, "compress_at": 20_480 })
+        );
         let body = limits_body(None, None, Some(3)).unwrap();
         assert_eq!(body, json!({ "action": "set_limits", "keep_recent": 3 }));
     }
@@ -249,14 +286,20 @@ mod tests {
 
     #[test]
     fn extend_takes_one_to_two_hundred_turns() {
-        assert_eq!(extend_body(20).unwrap(), json!({ "action": "extend_turns", "turns": 20 }));
+        assert_eq!(
+            extend_body(20).unwrap(),
+            json!({ "action": "extend_turns", "turns": 20 })
+        );
         assert!(extend_body(0).is_err());
         assert!(extend_body(201).is_err());
     }
 
     #[test]
     fn a_steer_note_is_at_most_two_thousand_characters() {
-        assert_eq!(steer_body("slow down").unwrap(), json!({ "action": "steer", "text": "slow down" }));
+        assert_eq!(
+            steer_body("slow down").unwrap(),
+            json!({ "action": "steer", "text": "slow down" })
+        );
         assert!(steer_body(&"x".repeat(2000)).is_ok());
         assert!(steer_body(&"x".repeat(2001)).is_err());
     }
@@ -264,7 +307,10 @@ mod tests {
     #[test]
     fn a_loop_runs_at_least_every_minute() {
         let body = loop_body(7, "check the queue", 30, 0).unwrap();
-        assert_eq!(body, json!({ "cid": 7, "prompt": "check the queue", "every_minutes": 30, "max_runs": 0 }));
+        assert_eq!(
+            body,
+            json!({ "cid": 7, "prompt": "check the queue", "every_minutes": 30, "max_runs": 0 })
+        );
         assert!(loop_body(7, "check", 0, 0).is_err());
     }
 

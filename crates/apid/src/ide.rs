@@ -82,9 +82,11 @@ const PLATFORM_REPOS: &[&str] = &["agentplaza", "agentplaza-mvp"];
 /// How long a workstation gets to answer one IDE operation (its daemon's own cap for a run is shorter).
 pub const STATION_TIMEOUT: Duration = Duration::from_secs(15);
 /// The refusal of every IDE operation while STOP ALL holds the plaza.
-const STOP_ALL_MESSAGE: &str = "STOP ALL holds the plaza: resume it before IDE work on a workstation";
+const STOP_ALL_MESSAGE: &str =
+    "STOP ALL holds the plaza: resume it before IDE work on a workstation";
 /// Why a workstation has no checkpoints, changes or restore.
-const NO_CHECKPOINTS: &str = "a workstation has no checkpoints: its work folder is not versioned by the hub";
+const NO_CHECKPOINTS: &str =
+    "a workstation has no checkpoints: its work folder is not versioned by the hub";
 
 type Reply = Result<Value, Response>;
 
@@ -116,7 +118,13 @@ struct Live<'a>(&'a App);
 impl Host for Live<'_> {
     fn tell(&self, cid: u64, name: &str, args: &Value) -> Result<(u16, Value), String> {
         let body = json!({ "name": name, "args": args, "timeout_ms": TELL_TIMEOUT_MS });
-        crate::fleet::gateway(self.0, cid, "POST", &format!("/v1/agents/{cid}/tell"), Some(&body))
+        crate::fleet::gateway(
+            self.0,
+            cid,
+            "POST",
+            &format!("/v1/agents/{cid}/tell"),
+            Some(&body),
+        )
     }
 
     fn db(&self) -> &Db {
@@ -170,8 +178,14 @@ fn station_spaces(app: &App) -> Vec<StationSpace> {
     app.stations
         .list()
         .into_iter()
-        .filter(|station| !station.revoked && !station.draining && app.stations.is_online(&station.id, now))
-        .map(|station| StationSpace { os: os_name(station.facts.os), id: station.id, name: station.name })
+        .filter(|station| {
+            !station.revoked && !station.draining && app.stations.is_online(&station.id, now)
+        })
+        .map(|station| StationSpace {
+            os: os_name(station.facts.os),
+            id: station.id,
+            name: station.name,
+        })
         .collect()
 }
 
@@ -205,7 +219,10 @@ fn check_station(host: &dyn Host, id: &str) -> Result<(), Response> {
     if host.stations().iter().any(|station| station.id == id) {
         Ok(())
     } else {
-        Err(Response::error(404, &format!("no workspace {}", WorkspaceId::Station(id.to_string()))))
+        Err(Response::error(
+            404,
+            &format!("no workspace {}", WorkspaceId::Station(id.to_string())),
+        ))
     }
 }
 
@@ -250,14 +267,27 @@ fn call(host: &dyn Host, cid: u64, name: &str, args: &Value) -> Result<Answer, R
     let (status, body) = host
         .tell(cid, name, args)
         .map_err(|err| Response::error(502, &format!("the agent's node did not answer: {err}")))?;
-    let output = body.get("output").and_then(Value::as_str).unwrap_or_default().to_string();
+    let output = body
+        .get("output")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
     match status {
-        200 => Ok(Answer { ok: body.get("ok").and_then(Value::as_bool).unwrap_or(false), output }),
+        200 => Ok(Answer {
+            ok: body.get("ok").and_then(Value::as_bool).unwrap_or(false),
+            output,
+        }),
         403 => Err(Response::error(403, &output)),
         404 => Err(Response::error(404, &format!("no agent {cid}"))),
         409 => Err(Response::error(409, "the agent has no session")),
-        504 => Err(Response::error(504, "the agent did not answer in time (it may be busy)")),
-        other => Err(Response::error(502, &format!("the agent's node answered {other}: {body}"))),
+        504 => Err(Response::error(
+            504,
+            "the agent did not answer in time (it may be busy)",
+        )),
+        other => Err(Response::error(
+            502,
+            &format!("the agent's node answered {other}: {body}"),
+        )),
     }
 }
 
@@ -266,8 +296,12 @@ fn reply(answer: Answer) -> Reply {
     if !answer.ok {
         return Err(Response::error(400, &answer.output));
     }
-    serde_json::from_str(&answer.output)
-        .map_err(|err| Response::error(502, &format!("the agent answered with text that is not JSON: {err}")))
+    serde_json::from_str(&answer.output).map_err(|err| {
+        Response::error(
+            502,
+            &format!("the agent answered with text that is not JSON: {err}"),
+        )
+    })
 }
 
 /// One tool call whose answer is JSON.
@@ -277,18 +311,28 @@ fn tool(host: &dyn Host, cid: u64, name: &str, args: &Value) -> Reply {
 
 /// One Forgejo call as the owner: its JSON answer, or the Forgejo status and message.
 fn forge_call(host: &dyn Host, method: &str, path: &str, body: Option<&Value>) -> Reply {
-    git::forge_on(host.forge(), method, path, body, None).map_err(|f| Response::error(f.status, &f.message))
+    git::forge_on(host.forge(), method, path, body, None)
+        .map_err(|f| Response::error(f.status, &f.message))
 }
 
 /// One Forgejo call as the owner, raw: the status and the body, so the caller can read a conflict. A transport
 /// failure is 503.
-fn forge_raw(host: &dyn Host, method: &str, path: &str, body: Option<&Value>) -> Result<(u16, Value), Response> {
-    host.forge().call(method, path, body, None).map_err(|err| Response::error(503, &err))
+fn forge_raw(
+    host: &dyn Host,
+    method: &str,
+    path: &str,
+    body: Option<&Value>,
+) -> Result<(u16, Value), Response> {
+    host.forge()
+        .call(method, path, body, None)
+        .map_err(|err| Response::error(503, &err))
 }
 
 /// The message in a Forgejo answer, or a generic one.
 fn message_of(answer: &Value) -> &str {
-    answer["message"].as_str().unwrap_or("the git host refused the request")
+    answer["message"]
+        .as_str()
+        .unwrap_or("the git host refused the request")
 }
 
 fn respond(result: Reply) -> Response {
@@ -312,13 +356,17 @@ fn workspace_of(cid: u64) -> String {
 
 /// The workspace id of a route, parsed. A malformed id is 400.
 fn parse_id(id: &str) -> Result<WorkspaceId, Response> {
-    id.parse::<WorkspaceId>().map_err(|err| Response::error(400, &err.to_string()))
+    id.parse::<WorkspaceId>()
+        .map_err(|err| Response::error(400, &err.to_string()))
 }
 
 /// Refuses the platform's own repository by name: it is never listed, and a direct id is refused too.
 fn offered(name: &str) -> Result<(), Response> {
     if PLATFORM_REPOS.contains(&name) {
-        Err(Response::error(403, "the platform's own repository is not offered in the IDE"))
+        Err(Response::error(
+            403,
+            "the platform's own repository is not offered in the IDE",
+        ))
     } else {
         Ok(())
     }
@@ -356,14 +404,20 @@ fn event(workspace: &str, path: Option<&str>, kind: &str) -> Value {
 /// has happened, so the owner must hear that its record is missing.
 fn record(host: &dyn Host, row: Value, data: Value) -> Result<(), Response> {
     host.db().append_ide_audit(&row).map_err(|err| {
-        Response::error(500, &format!("the action happened but the audit log could not be written: {err}"))
+        Response::error(
+            500,
+            &format!("the action happened but the audit log could not be written: {err}"),
+        )
     })?;
     host.publish(&data);
     Ok(())
 }
 
 /// A path, cleaned by `check`. A refused path is 400 and nothing is sent to the agent or the forge.
-fn checked(raw: Option<&str>, check: fn(&str) -> Result<String, PathError>) -> Result<String, Response> {
+fn checked(
+    raw: Option<&str>,
+    check: fn(&str) -> Result<String, PathError>,
+) -> Result<String, Response> {
     check(raw.unwrap_or("")).map_err(|err| Response::error(400, &err.to_string()))
 }
 
@@ -384,7 +438,8 @@ fn opt_str<'a>(body: &'a Value, key: &str) -> Result<Option<&'a str>, Response> 
 }
 
 fn parse_u64(raw: &str, name: &str) -> Result<u64, Response> {
-    raw.parse::<u64>().map_err(|_| Response::error(400, &format!("\"{name}\" must be a whole number")))
+    raw.parse::<u64>()
+        .map_err(|_| Response::error(400, &format!("\"{name}\" must be a whole number")))
 }
 
 /// A string field of a chunk reply.
@@ -411,15 +466,31 @@ pub fn open_repos(host: &dyn Host) -> Vec<RepoSpace> {
     if !forge.is_configured() {
         return Vec::new();
     }
-    let names: BTreeSet<String> = host.project_repos().into_iter().filter(|name| offered(name).is_ok()).collect();
+    let names: BTreeSet<String> = host
+        .project_repos()
+        .into_iter()
+        .filter(|name| offered(name).is_ok())
+        .collect();
     names
         .into_iter()
         .filter_map(|name| {
-            match git::forge_on(forge, "GET", &format!("/api/v1/repos/{ORG}/{}", git::seg(&name)), None, None) {
-                Ok(repo) => Some(RepoSpace { default_branch: repo["default_branch"].as_str()?.to_string(), name }),
+            match git::forge_on(
+                forge,
+                "GET",
+                &format!("/api/v1/repos/{ORG}/{}", git::seg(&name)),
+                None,
+                None,
+            ) {
+                Ok(repo) => Some(RepoSpace {
+                    default_branch: repo["default_branch"].as_str()?.to_string(),
+                    name,
+                }),
                 Err(failure) if failure.status == 404 => None,
                 Err(failure) => {
-                    eprintln!("apid: the IDE cannot read {ORG}/{name}: {}", failure.message);
+                    eprintln!(
+                        "apid: the IDE cannot read {ORG}/{name}: {}",
+                        failure.message
+                    );
                     None
                 }
             }
@@ -430,7 +501,10 @@ pub fn open_repos(host: &dyn Host) -> Vec<RepoSpace> {
 /// The workspace list: the agent workspaces (every agent that has a VM, in CID order), then the station ones,
 /// then the repo ones.
 pub fn workspaces(agents: &[Agent], stations: &[StationSpace], repos: &[RepoSpace]) -> Value {
-    let mut rows: Vec<&Agent> = agents.iter().filter(|agent| agent.run.is_some() && agent.vm.is_some()).collect();
+    let mut rows: Vec<&Agent> = agents
+        .iter()
+        .filter(|agent| agent.run.is_some() && agent.vm.is_some())
+        .collect();
     rows.sort_by_key(|agent| agent.cid);
     let mut out: Vec<Value> = rows
         .into_iter()
@@ -481,15 +555,25 @@ fn with_workspace(
     let host = Live(app);
     match parse_id(id)? {
         WorkspaceId::Agent(cid) => {
-            if !app.agents.get(cid).is_some_and(|agent| agent.run.is_some() && agent.vm.is_some()) {
-                return Err(Response::error(404, &format!("no workspace {}", workspace_of(cid))));
+            if !app
+                .agents
+                .get(cid)
+                .is_some_and(|agent| agent.run.is_some() && agent.vm.is_some())
+            {
+                return Err(Response::error(
+                    404,
+                    &format!("no workspace {}", workspace_of(cid)),
+                ));
             }
             on_agent(&host, cid)
         }
         WorkspaceId::Repo { name, git_ref } => {
             offered(&name)?;
             if !host.project_repos().contains(&name) {
-                return Err(Response::error(404, &format!("no workspace repo:{name}@{git_ref}")));
+                return Err(Response::error(
+                    404,
+                    &format!("no workspace repo:{name}@{git_ref}"),
+                ));
             }
             on_repo(&host, &RepoWs { name, git_ref })
         }
@@ -507,7 +591,10 @@ fn not_for_repos(message: &str) -> Reply {
 
 /// A route only the repo kind has.
 fn repo_only() -> Reply {
-    Err(Response::error(400, "a pull request and a branch are for repo workspaces"))
+    Err(Response::error(
+        400,
+        "a pull request and a branch are for repo workspaces",
+    ))
 }
 
 /// `GET .../tree`: one page of a directory. A missing `path` is the root.
@@ -524,7 +611,14 @@ pub fn tree(host: &dyn Host, cid: u64, path: Option<&str>, cursor: Option<&str>)
 /// it is read is 409, since the chunks would not add up to one version.
 pub fn read_file(host: &dyn Host, cid: u64, path: Option<&str>) -> Reply {
     let path = checked(path, check_read)?;
-    assemble_read(&path, |offset| tool(host, cid, "ide_read", &json!({ "path": path, "offset": offset })))
+    assemble_read(&path, |offset| {
+        tool(
+            host,
+            cid,
+            "ide_read",
+            &json!({ "path": path, "offset": offset }),
+        )
+    })
 }
 
 /// A text file read in chunks: `next(offset)` gives each chunk (`hash`, `text`, `done`) until the last. The
@@ -539,7 +633,10 @@ fn assemble_read(path: &str, next: impl Fn(usize) -> Reply) -> Reply {
         if hash.is_none() {
             hash = Some(got.to_string());
         } else if hash.as_deref() != Some(got) {
-            return Err(Response::error(409, "the file changed while it was read; read it again"));
+            return Err(Response::error(
+                409,
+                "the file changed while it was read; read it again",
+            ));
         }
         let part = text_field(&chunk, "text")?;
         text.push_str(part);
@@ -551,7 +648,10 @@ fn assemble_read(path: &str, next: impl Fn(usize) -> Reply) -> Reply {
         }
         offset += part.len();
     }
-    Err(Response::error(502, "the file took too many chunks to read"))
+    Err(Response::error(
+        502,
+        "the file took too many chunks to read",
+    ))
 }
 
 /// A write's body, checked: the path (cleaned, and refused for secrets and `.plaza/`), the text, and the hash
@@ -575,20 +675,35 @@ fn write_args(body: &Value) -> Result<WriteArgs, Response> {
             ));
         }
     };
-    Ok(WriteArgs { path, text, expected })
+    Ok(WriteArgs {
+        path,
+        text,
+        expected,
+    })
 }
 
 /// `PUT .../file` with `{path, text, expected_hash}`. `expected_hash` is the hash last read, or null for
 /// a file that must not exist yet. A stale hash is 409 with the current one, and nothing is written. A
 /// write is logged and published once it has happened.
 pub fn write_file(host: &dyn Host, cid: u64, body: &Value) -> Reply {
-    let WriteArgs { path, text, expected } = write_args(body)?;
+    let WriteArgs {
+        path,
+        text,
+        expected,
+    } = write_args(body)?;
     let args = json!({ "path": path, "text": text, "expected_hash": expected });
     let answer = call(host, cid, "ide_write", &args)?;
     if !answer.ok {
         if let Some(now) = answer.output.strip_prefix("conflict: ") {
-            let current = if now == "missing" { Value::Null } else { json!(now) };
-            return Err(Response::json(409, &json!({ "error": "conflict", "current_hash": current })));
+            let current = if now == "missing" {
+                Value::Null
+            } else {
+                json!(now)
+            };
+            return Err(Response::json(
+                409,
+                &json!({ "error": "conflict", "current_hash": current }),
+            ));
         }
         return Err(Response::error(400, &answer.output));
     }
@@ -612,15 +727,21 @@ pub fn changes(host: &dyn Host, cid: u64, base: Option<&str>) -> Reply {
     let mut checkpoint = Value::Null;
     let mut offset = 0usize;
     for _ in 0..MAX_CHUNKS {
-        let chunk = tool(host, cid, "ide_changes", &json!({ "base": base, "offset": offset }))?;
+        let chunk = tool(
+            host,
+            cid,
+            "ide_changes",
+            &json!({ "base": base, "offset": offset }),
+        )?;
         if offset == 0 {
             checkpoint = chunk["checkpoint"].clone();
         }
         let part = text_field(&chunk, "diff")?;
         diff.push_str(part);
         if chunk["done"] == json!(true) {
-            let set = parse_unified(&diff)
-                .map_err(|err| Response::error(502, &format!("the agent's diff does not parse: {err}")))?;
+            let set = parse_unified(&diff).map_err(|err| {
+                Response::error(502, &format!("the agent's diff does not parse: {err}"))
+            })?;
             let stats = set.stats();
             return Ok(json!({
                 "base": base,
@@ -635,7 +756,10 @@ pub fn changes(host: &dyn Host, cid: u64, base: Option<&str>) -> Reply {
         }
         offset += part.len();
     }
-    Err(Response::error(502, "the diff took too many chunks to read"))
+    Err(Response::error(
+        502,
+        "the diff took too many chunks to read",
+    ))
 }
 
 /// `GET .../checkpoints`.
@@ -647,13 +771,24 @@ pub fn checkpoints(host: &dyn Host, cid: u64) -> Reply {
 pub fn restore(host: &dyn Host, cid: u64, n: u64) -> Reply {
     let done = tool(host, cid, "ide_restore", &json!({ "n": n }))?;
     let ws = workspace_of(cid);
-    let row = audit_row(&ws, "restore", None, json!({ "restored": n, "checkpoint": done["checkpoint"] }));
+    let row = audit_row(
+        &ws,
+        "restore",
+        None,
+        json!({ "restored": n, "checkpoint": done["checkpoint"] }),
+    );
     record(host, row, event(&ws, None, "restore"))?;
     Ok(done)
 }
 
 /// `GET .../search?q=&glob=&max=`. `q` is required.
-pub fn search(host: &dyn Host, cid: u64, q: Option<&str>, glob: Option<&str>, max: Option<&str>) -> Reply {
+pub fn search(
+    host: &dyn Host,
+    cid: u64,
+    q: Option<&str>,
+    glob: Option<&str>,
+    max: Option<&str>,
+) -> Reply {
     let q = q
         .filter(|q| !q.is_empty())
         .ok_or_else(|| Response::error(400, "\"q\" is required"))?;
@@ -676,11 +811,9 @@ pub fn run_start(host: &dyn Host, cid: u64, body: &Value) -> Reply {
     let mut args = json!({ "command": command });
     let timeout = match body.get("timeout_s") {
         None | Some(Value::Null) => None,
-        Some(value) => Some(
-            value
-                .as_u64()
-                .ok_or_else(|| Response::error(400, "\"timeout_s\" must be a whole number of seconds"))?,
-        ),
+        Some(value) => Some(value.as_u64().ok_or_else(|| {
+            Response::error(400, "\"timeout_s\" must be a whole number of seconds")
+        })?),
     };
     if let Some(timeout) = timeout {
         args["timeout_s"] = json!(timeout);
@@ -710,7 +843,11 @@ pub fn run_poll(host: &dyn Host, cid: u64, run: &str, offset: Option<&str>) -> R
 pub fn run_stop(host: &dyn Host, cid: u64, run: &str) -> Reply {
     let done = tool(host, cid, "ide_run_stop", &json!({ "run": run }))?;
     let ws = workspace_of(cid);
-    record(host, audit_row(&ws, "run_stop", None, json!({ "run": run })), event(&ws, None, "run"))?;
+    record(
+        host,
+        audit_row(&ws, "run_stop", None, json!({ "run": run })),
+        event(&ws, None, "run"),
+    )?;
     Ok(done)
 }
 
@@ -758,29 +895,54 @@ fn station_row(id: &str, action: &str, detail: Value) -> Value {
 
 /// Writes the station audit row. A row that cannot be written is a 500, as for the IDE audit in [`record`].
 fn record_station(host: &dyn Host, id: &str, action: &str, detail: Value) -> Result<(), Response> {
-    host.db().append_station_audit(&station_row(id, action, detail)).map_err(|err| {
-        Response::error(500, &format!("the action happened but the station audit log could not be written: {err}"))
-    })
+    host.db()
+        .append_station_audit(&station_row(id, action, detail))
+        .map_err(|err| {
+            Response::error(
+                500,
+                &format!(
+                    "the action happened but the station audit log could not be written: {err}"
+                ),
+            )
+        })
 }
 
 /// `GET .../tree` of a station: one page of a folder in its work folder. A missing `path` is the work folder.
 pub fn station_tree(host: &dyn Host, id: &str, path: Option<&str>, cursor: Option<&str>) -> Reply {
     let path = checked(path, check_dir)?;
-    station_call(host, id, Op::Files(FilesOp::List { path, cursor: cursor.map(str::to_string) }))
+    station_call(
+        host,
+        id,
+        Op::Files(FilesOp::List {
+            path,
+            cursor: cursor.map(str::to_string),
+        }),
+    )
 }
 
 /// `GET .../file` of a station: the whole text file, assembled from the daemon's chunks.
 pub fn station_read(host: &dyn Host, id: &str, path: Option<&str>) -> Reply {
     let path = checked(path, check_read)?;
     assemble_read(&path, |offset| {
-        station_call(host, id, Op::Files(FilesOp::Read { path: path.clone(), offset: Some(offset as u64) }))
+        station_call(
+            host,
+            id,
+            Op::Files(FilesOp::Read {
+                path: path.clone(),
+                offset: Some(offset as u64),
+            }),
+        )
     })
 }
 
 /// `PUT .../file` of a station: the file is written in the work folder, atomically. A stale `expected_hash` is 409
 /// with the hash the file has now, and nothing is written. A write is logged in the IDE audit and the station audit.
 pub fn station_write(host: &dyn Host, id: &str, body: &Value) -> Reply {
-    let WriteArgs { path, text, expected } = write_args(body)?;
+    let WriteArgs {
+        path,
+        text,
+        expected,
+    } = write_args(body)?;
     let op = Op::Files(FilesOp::Write {
         path: path.clone(),
         text,
@@ -790,8 +952,15 @@ pub fn station_write(host: &dyn Host, id: &str, body: &Value) -> Reply {
         Ok(done) => done,
         Err(message) => {
             if let Some(now) = message.strip_prefix("conflict: ") {
-                let current = if now == "missing" { Value::Null } else { json!(now) };
-                return Err(Response::json(409, &json!({ "error": "conflict", "current_hash": current })));
+                let current = if now == "missing" {
+                    Value::Null
+                } else {
+                    json!(now)
+                };
+                return Err(Response::json(
+                    409,
+                    &json!({ "error": "conflict", "current_hash": current }),
+                ));
             }
             return Err(station_failure(message));
         }
@@ -804,12 +973,23 @@ pub fn station_write(host: &dyn Host, id: &str, body: &Value) -> Reply {
         json!({ "hash_before": expected, "hash_after": done["hash"], "checkpoint": null }),
     );
     record(host, row, event(&ws, Some(path.as_str()), "write"))?;
-    record_station(host, id, "write", json!({ "path": path, "hash_before": expected, "hash_after": done["hash"] }))?;
+    record_station(
+        host,
+        id,
+        "write",
+        json!({ "path": path, "hash_before": expected, "hash_after": done["hash"] }),
+    )?;
     Ok(done)
 }
 
 /// `GET .../search?q=&glob=&max=` of a station. `q` is required.
-pub fn station_search(host: &dyn Host, id: &str, q: Option<&str>, glob: Option<&str>, max: Option<&str>) -> Reply {
+pub fn station_search(
+    host: &dyn Host,
+    id: &str,
+    q: Option<&str>,
+    glob: Option<&str>,
+    max: Option<&str>,
+) -> Reply {
     let q = q
         .filter(|q| !q.is_empty())
         .ok_or_else(|| Response::error(400, "\"q\" is required"))?;
@@ -823,7 +1003,11 @@ pub fn station_search(host: &dyn Host, id: &str, q: Option<&str>, glob: Option<&
     station_call(
         host,
         id,
-        Op::Files(FilesOp::Search { q: q.to_string(), glob: glob.map(str::to_string), max }),
+        Op::Files(FilesOp::Search {
+            q: q.to_string(),
+            glob: glob.map(str::to_string),
+            max,
+        }),
     )
 }
 
@@ -844,17 +1028,26 @@ pub fn station_run_start(host: &dyn Host, id: &str, body: &Value) -> Reply {
             value
                 .as_u64()
                 .and_then(|n| u32::try_from(n).ok())
-                .ok_or_else(|| Response::error(400, "\"timeout_s\" must be a whole number of seconds"))?,
+                .ok_or_else(|| {
+                    Response::error(400, "\"timeout_s\" must be a whole number of seconds")
+                })?,
         ),
     };
     let done = station_call(
         host,
         id,
-        Op::Run(RunOp::Start { command: command.to_string(), timeout_s: timeout }),
+        Op::Run(RunOp::Start {
+            command: command.to_string(),
+            timeout_s: timeout,
+        }),
     )?;
     let ws = station_ws(id);
     let detail = json!({ "run": done["run"], "command": command, "timeout_s": timeout });
-    record(host, audit_row(&ws, "run", None, detail.clone()), event(&ws, None, "run"))?;
+    record(
+        host,
+        audit_row(&ws, "run", None, detail.clone()),
+        event(&ws, None, "run"),
+    )?;
     record_station(host, id, "run", detail)?;
     Ok(done)
 }
@@ -862,14 +1055,31 @@ pub fn station_run_start(host: &dyn Host, id: &str, body: &Value) -> Reply {
 /// `GET .../runs/{run}?offset=` of a station: the run's output from an offset, and its state.
 pub fn station_run_poll(host: &dyn Host, id: &str, run: &str, offset: Option<&str>) -> Reply {
     let offset = offset.map(|raw| parse_u64(raw, "offset")).transpose()?;
-    station_call(host, id, Op::Run(RunOp::Poll { run: run.to_string(), offset }))
+    station_call(
+        host,
+        id,
+        Op::Run(RunOp::Poll {
+            run: run.to_string(),
+            offset,
+        }),
+    )
 }
 
 /// `POST .../runs/{run}/stop` of a station.
 pub fn station_run_stop(host: &dyn Host, id: &str, run: &str) -> Reply {
-    let done = station_call(host, id, Op::Run(RunOp::Stop { run: run.to_string() }))?;
+    let done = station_call(
+        host,
+        id,
+        Op::Run(RunOp::Stop {
+            run: run.to_string(),
+        }),
+    )?;
     let ws = station_ws(id);
-    record(host, audit_row(&ws, "run_stop", None, json!({ "run": run })), event(&ws, None, "run"))?;
+    record(
+        host,
+        audit_row(&ws, "run_stop", None, json!({ "run": run })),
+        event(&ws, None, "run"),
+    )?;
     record_station(host, id, "run_stop", json!({ "run": run }))?;
     Ok(done)
 }
@@ -883,7 +1093,11 @@ fn repo_entry(item: &Value) -> Value {
         Some("symlink") => "symlink",
         _ => "file",
     };
-    let hash = if kind == "file" { item["sha"].clone() } else { Value::Null };
+    let hash = if kind == "file" {
+        item["sha"].clone()
+    } else {
+        Value::Null
+    };
     json!({
         "path": item["path"],
         "kind": kind,
@@ -895,7 +1109,12 @@ fn repo_entry(item: &Value) -> Value {
 
 /// The last segment of an entry's path: its name.
 fn entry_name(entry: &Value) -> &str {
-    entry["path"].as_str().unwrap_or("").rsplit('/').next().unwrap_or("")
+    entry["path"]
+        .as_str()
+        .unwrap_or("")
+        .rsplit('/')
+        .next()
+        .unwrap_or("")
 }
 
 /// `GET .../tree` of a repo: one page of a directory at the branch. Directories come first, then names
@@ -904,11 +1123,16 @@ pub fn repo_tree(host: &dyn Host, ws: &RepoWs, path: Option<&str>, cursor: Optio
     let path = checked(path, check_dir)?;
     let start = match cursor {
         None => 0,
-        Some(raw) => raw
-            .parse::<usize>()
-            .map_err(|_| Response::error(400, "\"cursor\" must be a cursor from a previous page"))?,
+        Some(raw) => raw.parse::<usize>().map_err(|_| {
+            Response::error(400, "\"cursor\" must be a cursor from a previous page")
+        })?,
     };
-    let listing = forge_call(host, "GET", &git::contents_path(&ws.name, &path, Some(&ws.git_ref)), None)?;
+    let listing = forge_call(
+        host,
+        "GET",
+        &git::contents_path(&ws.name, &path, Some(&ws.git_ref)),
+        None,
+    )?;
     let Some(items) = listing.as_array() else {
         return Err(Response::error(400, &format!("{path} is not a directory")));
     };
@@ -917,7 +1141,11 @@ pub fn repo_tree(host: &dyn Host, ws: &RepoWs, path: Option<&str>, cursor: Optio
         let dir = |entry: &Value| entry["kind"] == json!("dir");
         dir(b)
             .cmp(&dir(a))
-            .then_with(|| entry_name(a).to_lowercase().cmp(&entry_name(b).to_lowercase()))
+            .then_with(|| {
+                entry_name(a)
+                    .to_lowercase()
+                    .cmp(&entry_name(b).to_lowercase())
+            })
             .then_with(|| entry_name(a).cmp(entry_name(b)))
     });
     let end = (start + PAGE_SIZE).min(entries.len());
@@ -930,28 +1158,48 @@ pub fn repo_tree(host: &dyn Host, ws: &RepoWs, path: Option<&str>, cursor: Optio
 /// one over 1 MiB, and a directory are refused.
 pub fn repo_read(host: &dyn Host, ws: &RepoWs, path: Option<&str>) -> Reply {
     let path = checked(path, check_read)?;
-    let file = forge_call(host, "GET", &git::contents_path(&ws.name, &path, Some(&ws.git_ref)), None)?;
+    let file = forge_call(
+        host,
+        "GET",
+        &git::contents_path(&ws.name, &path, Some(&ws.git_ref)),
+        None,
+    )?;
     if file.is_array() {
-        return Err(Response::error(400, &format!("{path} is a directory; the IDE reads one file")));
+        return Err(Response::error(
+            400,
+            &format!("{path} is a directory; the IDE reads one file"),
+        ));
     }
     let size = file["size"].as_u64().unwrap_or(0);
     if size > MAX_TEXT {
-        return Err(Response::error(400, &format!("{path} is {size} bytes, over the {MAX_TEXT}-byte cap")));
+        return Err(Response::error(
+            400,
+            &format!("{path} is {size} bytes, over the {MAX_TEXT}-byte cap"),
+        ));
     }
     let content = file["content"]
         .as_str()
         .ok_or_else(|| Response::error(502, &format!("the git host sent no content for {path}")))?;
     let bytes = git::base64_decode(content).map_err(|err| Response::error(502, &err))?;
     if bytes.contains(&0) {
-        return Err(Response::error(400, &format!("{path} is binary (it holds a NUL byte); the IDE opens text only")));
+        return Err(Response::error(
+            400,
+            &format!("{path} is binary (it holds a NUL byte); the IDE opens text only"),
+        ));
     }
-    let text = String::from_utf8(bytes).map_err(|_| Response::error(400, &format!("{path} is not UTF-8 text")))?;
+    let text = String::from_utf8(bytes)
+        .map_err(|_| Response::error(400, &format!("{path} is not UTF-8 text")))?;
     Ok(json!({ "path": path, "size": text.len(), "hash": file["sha"], "text": text }))
 }
 
 /// The blob hash of `path` at the workspace's branch: None when the file is not there.
 fn repo_hash(host: &dyn Host, ws: &RepoWs, path: &str) -> Result<Option<String>, Response> {
-    let (status, answer) = forge_raw(host, "GET", &git::contents_path(&ws.name, path, Some(&ws.git_ref)), None)?;
+    let (status, answer) = forge_raw(
+        host,
+        "GET",
+        &git::contents_path(&ws.name, path, Some(&ws.git_ref)),
+        None,
+    )?;
     match status {
         200..=299 => Ok(answer["sha"].as_str().map(str::to_string)),
         404 => Ok(None),
@@ -964,7 +1212,11 @@ fn repo_hash(host: &dyn Host, ws: &RepoWs, path: &str) -> Result<Option<String>,
 /// hash (Forgejo answers 409 or 422, or 404 when the file was removed) is a 409 with the hash the file has now,
 /// and nothing is committed. Answers `{path, hash, checkpoint}` with the commit's sha as the checkpoint.
 pub fn repo_write(host: &dyn Host, ws: &RepoWs, body: &Value) -> Reply {
-    let WriteArgs { path, text, expected } = write_args(body)?;
+    let WriteArgs {
+        path,
+        text,
+        expected,
+    } = write_args(body)?;
     let url = git::contents_path(&ws.name, &path, None);
     let mut payload = json!({
         "content": git::base64(text.as_bytes()),
@@ -997,7 +1249,10 @@ pub fn repo_write(host: &dyn Host, ws: &RepoWs, body: &Value) -> Reply {
     if moved {
         let now = repo_hash(host, ws, &path)?;
         if now.as_deref() != expected.as_str() {
-            return Err(Response::json(409, &json!({ "error": "conflict", "current_hash": now })));
+            return Err(Response::json(
+                409,
+                &json!({ "error": "conflict", "current_hash": now }),
+            ));
         }
     }
     Err(Response::error(status, message_of(&answer)))
@@ -1010,7 +1265,12 @@ fn first_line(text: &str) -> &str {
 
 /// The default branch of a project repo.
 fn default_branch(host: &dyn Host, name: &str) -> Result<String, Response> {
-    let repo = forge_call(host, "GET", &format!("/api/v1/repos/{ORG}/{}", git::seg(name)), None)?;
+    let repo = forge_call(
+        host,
+        "GET",
+        &format!("/api/v1/repos/{ORG}/{}", git::seg(name)),
+        None,
+    )?;
     repo["default_branch"]
         .as_str()
         .map(str::to_string)
@@ -1027,7 +1287,12 @@ enum Side {
 
 /// A repo file at `reference` (a branch, a tag or a commit), through the contents API. 404 is `Absent`.
 fn repo_side(host: &dyn Host, ws: &RepoWs, path: &str, reference: &str) -> Result<Side, Response> {
-    let (status, answer) = forge_raw(host, "GET", &git::contents_path(&ws.name, path, Some(reference)), None)?;
+    let (status, answer) = forge_raw(
+        host,
+        "GET",
+        &git::contents_path(&ws.name, path, Some(reference)),
+        None,
+    )?;
     match status {
         404 => return Ok(Side::Absent),
         200..=299 => {}
@@ -1078,7 +1343,11 @@ pub fn repo_changes(host: &dyn Host, ws: &RepoWs, base: Option<&str>) -> Reply {
     let commits = forge_call(
         host,
         "GET",
-        &format!("/api/v1/repos/{ORG}/{}/commits?sha={}&limit=1&stat=false", git::seg(&ws.name), git::seg(&ws.git_ref)),
+        &format!(
+            "/api/v1/repos/{ORG}/{}/commits?sha={}&limit=1&stat=false",
+            git::seg(&ws.name),
+            git::seg(&ws.git_ref)
+        ),
         None,
     )?;
     let head = commits
@@ -1139,11 +1408,18 @@ pub fn repo_changes(host: &dyn Host, ws: &RepoWs, base: Option<&str>) -> Reply {
         let new_path = (!matches!(new, Side::Absent)).then_some(name);
         diff.push_str(&file_diff(old_path, new_path, &old, &new));
         if diff.len() > MAX_DIFF {
-            return Err(Response::error(413, "the diff is over 8 MiB; compare smaller ranges"));
+            return Err(Response::error(
+                413,
+                "the diff is over 8 MiB; compare smaller ranges",
+            ));
         }
     }
-    let set = parse_unified(&diff)
-        .map_err(|err| Response::error(502, &format!("the diff built from the git host's files does not parse: {err}")))?;
+    let set = parse_unified(&diff).map_err(|err| {
+        Response::error(
+            502,
+            &format!("the diff built from the git host's files does not parse: {err}"),
+        )
+    })?;
     let stats = set.stats();
     Ok(json!({
         "base": label,
@@ -1186,8 +1462,18 @@ pub fn repo_branch(host: &dyn Host, ws: &RepoWs, body: &Value) -> Reply {
     let name = arg_str(body, "name")?;
     check_branch(name)?;
     let payload = json!({ "new_branch_name": name, "old_branch_name": ws.git_ref, "old_ref_name": ws.git_ref });
-    forge_call(host, "POST", &format!("/api/v1/repos/{ORG}/{}/branches", git::seg(&ws.name)), Some(&payload))?;
-    let row = audit_row(&ws.id(), "branch", None, json!({ "branch": name, "from": ws.git_ref }));
+    forge_call(
+        host,
+        "POST",
+        &format!("/api/v1/repos/{ORG}/{}/branches", git::seg(&ws.name)),
+        Some(&payload),
+    )?;
+    let row = audit_row(
+        &ws.id(),
+        "branch",
+        None,
+        json!({ "branch": name, "from": ws.git_ref }),
+    );
     record(host, row, event(&ws.id(), None, "branch"))?;
     Ok(json!({ "id": format!("repo:{}@{name}", ws.name) }))
 }
@@ -1207,26 +1493,47 @@ pub fn repo_pull(host: &dyn Host, ws: &RepoWs, body: &Value) -> Reply {
         }
         None => default_branch(host, &ws.name)?,
     };
-    let row = git::open_pr(host.forge(), None, &ws.name, &ws.git_ref, &base, title, text)
-        .map_err(|f| Response::error(f.status, &f.message))?;
+    let row = git::open_pr(
+        host.forge(),
+        None,
+        &ws.name,
+        &ws.git_ref,
+        &base,
+        title,
+        text,
+    )
+    .map_err(|f| Response::error(f.status, &f.message))?;
     let id = ws.id();
     let detail = json!({ "number": row["number"], "head": ws.git_ref, "base": base });
-    record(host, audit_row(&id, "pull", None, detail), event(&id, None, "pull"))?;
+    record(
+        host,
+        audit_row(&id, "pull", None, detail),
+        event(&id, None, "pull"),
+    )?;
     Ok(row)
 }
 
 /// Milliseconds since the Unix epoch of an RFC 3339 instant, such as `2026-10-14T09:30:00Z` or one with
 /// fractional seconds and an offset. None when it does not parse.
 pub(crate) fn rfc3339_ms(text: &str) -> Option<u64> {
-    let field = |range: std::ops::Range<usize>| text.get(range).and_then(|raw| raw.parse::<i64>().ok());
+    let field =
+        |range: std::ops::Range<usize>| text.get(range).and_then(|raw| raw.parse::<i64>().ok());
     let (year, month, day) = (field(0..4)?, field(5..7)?, field(8..10)?);
     let (hour, minute, second) = (field(11..13)?, field(14..16)?, field(17..19)?);
     let bytes = text.as_bytes();
     let separators = [(4, b'-'), (7, b'-'), (10, b'T'), (13, b':'), (16, b':')];
-    if separators.iter().any(|&(at, want)| bytes.get(at) != Some(&want)) {
+    if separators
+        .iter()
+        .any(|&(at, want)| bytes.get(at) != Some(&want))
+    {
         return None;
     }
-    if !(1..=12).contains(&month) || !(1..=31).contains(&day) || hour > 23 || minute > 59 || second > 60 {
+    if !(1..=12).contains(&month)
+        || !(1..=31).contains(&day)
+        || hour > 23
+        || minute > 59
+        || second > 60
+    {
         return None;
     }
     let mut rest = &text[19..];
@@ -1281,7 +1588,10 @@ pub fn audit_rows(host: &dyn Host, workspace: Option<&str>, limit: Option<&str>)
         Some(raw) => match parse_u64(raw, "limit")? {
             n @ 1..=1_000 => n as usize,
             _ => {
-                return Err(Response::error(400, &format!("\"limit\" must be 1 to {MAX_AUDIT_LIMIT}")));
+                return Err(Response::error(
+                    400,
+                    &format!("\"limit\" must be 1 to {MAX_AUDIT_LIMIT}"),
+                ));
             }
         },
     };
@@ -1294,17 +1604,27 @@ pub fn audit_rows(host: &dyn Host, workspace: Option<&str>, limit: Option<&str>)
 
 /// A query value, percent-decoded. An empty value is absent.
 fn query(req: &Request, name: &str) -> Option<String> {
-    req.query_param(name).map(percent_decode).filter(|value| !value.is_empty())
+    req.query_param(name)
+        .map(percent_decode)
+        .filter(|value| !value.is_empty())
 }
 
 fn body(req: &Request) -> Result<Value, Response> {
-    req.json::<Value>().map_err(|_| Response::error(400, "the body must be JSON"))
+    req.json::<Value>()
+        .map_err(|_| Response::error(400, "the body must be JSON"))
 }
 
 pub fn routes(router: Router<App>) -> Router<App> {
     router
         .get("/v1/ide/workspaces", |app, _, _| {
-            Response::json(200, &workspaces(&app.agents.list(), &Live(app).stations(), &open_repos(&Live(app))))
+            Response::json(
+                200,
+                &workspaces(
+                    &app.agents.list(),
+                    &Live(app).stations(),
+                    &open_repos(&Live(app)),
+                ),
+            )
         })
         .get("/v1/ide/workspaces/{id}/tree", |app, req, p| {
             let (path, cursor) = (query(req, "path"), query(req, "cursor"));
@@ -1348,19 +1668,32 @@ pub fn routes(router: Router<App>) -> Router<App> {
             ))
         })
         .get("/v1/ide/workspaces/{id}/checkpoints", |app, _, p| {
-            respond(with_workspace(app, p.get("id"), checkpoints, repo_checkpoints, station_checkpoints))
+            respond(with_workspace(
+                app,
+                p.get("id"),
+                checkpoints,
+                repo_checkpoints,
+                station_checkpoints,
+            ))
         })
-        .post("/v1/ide/workspaces/{id}/checkpoints/{n}/restore", |app, _, p| {
-            respond(parse_u64(p.get("n"), "n").and_then(|n| {
-                with_workspace(
-                    app,
-                    p.get("id"),
-                    |host, cid| restore(host, cid, n),
-                    |_, _| not_for_repos("restore is not served for repo workspaces: use git revert"),
-                    |_, _| not_for_stations(NO_CHECKPOINTS),
-                )
-            }))
-        })
+        .post(
+            "/v1/ide/workspaces/{id}/checkpoints/{n}/restore",
+            |app, _, p| {
+                respond(parse_u64(p.get("n"), "n").and_then(|n| {
+                    with_workspace(
+                        app,
+                        p.get("id"),
+                        |host, cid| restore(host, cid, n),
+                        |_, _| {
+                            not_for_repos(
+                                "restore is not served for repo workspaces: use git revert",
+                            )
+                        },
+                        |_, _| not_for_stations(NO_CHECKPOINTS),
+                    )
+                }))
+            },
+        )
         .get("/v1/ide/workspaces/{id}/search", |app, req, p| {
             let (q, glob, max) = (query(req, "q"), query(req, "glob"), query(req, "max"));
             respond(with_workspace(
@@ -1424,7 +1757,11 @@ pub fn routes(router: Router<App>) -> Router<App> {
             }))
         })
         .get("/v1/ide/audit", |app, req, _| {
-            respond(audit_rows(&Live(app), query(req, "workspace").as_deref(), query(req, "limit").as_deref()))
+            respond(audit_rows(
+                &Live(app),
+                query(req, "workspace").as_deref(),
+                query(req, "limit").as_deref(),
+            ))
         })
 }
 
@@ -1439,8 +1776,8 @@ mod tests {
     use apz_station::{HubFrame, StationFrame};
 
     use super::*;
-    use crate::stations::link::tests as link_tests;
     use crate::stations::link::StationLink;
+    use crate::stations::link::tests as link_tests;
 
     type Answerer = Box<dyn Fn(&str, &Value) -> Result<(u16, Value), String>>;
     type ForgeAnswerer = Box<dyn Fn(&str, &str, Option<&Value>) -> Result<(u16, Value), String>>;
@@ -1465,15 +1802,26 @@ mod tests {
     }
 
     impl Fake {
-        fn new(tag: &str, answer: impl Fn(&str, &Value) -> Result<(u16, Value), String> + 'static) -> Self {
-            let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |since| since.as_nanos());
-            let dir = std::env::temp_dir().join(format!("apid-ide-{tag}-{}-{nanos}", std::process::id()));
+        fn new(
+            tag: &str,
+            answer: impl Fn(&str, &Value) -> Result<(u16, Value), String> + 'static,
+        ) -> Self {
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |since| since.as_nanos());
+            let dir =
+                std::env::temp_dir().join(format!("apid-ide-{tag}-{}-{nanos}", std::process::id()));
             std::fs::create_dir_all(&dir).unwrap();
             Self {
                 answer: Box::new(answer),
                 log: RefCell::default(),
                 events: RefCell::default(),
-                forge_answer: Box::new(|_, path, _| Ok((404, json!({ "message": format!("no forge answer for {path}") })))),
+                forge_answer: Box::new(|_, path, _| {
+                    Ok((
+                        404,
+                        json!({ "message": format!("no forge answer for {path}") }),
+                    ))
+                }),
                 forge_log: RefCell::default(),
                 projects: Vec::new(),
                 stations: Vec::new(),
@@ -1485,7 +1833,10 @@ mod tests {
         }
 
         /// The forge answers with `answer`: (method, path, body).
-        fn with_forge(mut self, answer: impl Fn(&str, &str, Option<&Value>) -> Result<(u16, Value), String> + 'static) -> Self {
+        fn with_forge(
+            mut self,
+            answer: impl Fn(&str, &str, Option<&Value>) -> Result<(u16, Value), String> + 'static,
+        ) -> Self {
             self.forge_answer = Box::new(answer);
             self
         }
@@ -1498,7 +1849,11 @@ mod tests {
 
         /// Workstation `id` is online and answers through `link`.
         fn with_station(mut self, id: &str, link: Arc<StationLink>) -> Self {
-            self.stations.push(StationSpace { id: id.to_string(), name: "office".into(), os: "linux" });
+            self.stations.push(StationSpace {
+                id: id.to_string(),
+                name: "office".into(),
+                os: "linux",
+            });
             self.links.push((id.to_string(), link));
             self
         }
@@ -1515,17 +1870,29 @@ mod tests {
         }
 
         fn last_args(&self) -> Value {
-            self.log.borrow().last().map(|(_, args)| args.clone()).unwrap_or(Value::Null)
+            self.log
+                .borrow()
+                .last()
+                .map(|(_, args)| args.clone())
+                .unwrap_or(Value::Null)
         }
 
         /// The forge calls made so far, as `METHOD path`.
         fn forge_paths(&self) -> Vec<String> {
-            self.forge_log.borrow().iter().map(|(method, path, _)| format!("{method} {path}")).collect()
+            self.forge_log
+                .borrow()
+                .iter()
+                .map(|(method, path, _)| format!("{method} {path}"))
+                .collect()
         }
 
         /// The body of the last forge call.
         fn last_forge_body(&self) -> Value {
-            self.forge_log.borrow().last().map(|(_, _, body)| body.clone()).unwrap_or(Value::Null)
+            self.forge_log
+                .borrow()
+                .last()
+                .map(|(_, _, body)| body.clone())
+                .unwrap_or(Value::Null)
         }
     }
 
@@ -1572,30 +1939,52 @@ mod tests {
             true
         }
 
-        fn call(&self, method: &str, path: &str, body: Option<&Value>, _sudo: Option<&str>) -> Result<(u16, Value), String> {
-            self.forge_log.borrow_mut().push((method.to_string(), path.to_string(), body.cloned().unwrap_or(Value::Null)));
+        fn call(
+            &self,
+            method: &str,
+            path: &str,
+            body: Option<&Value>,
+            _sudo: Option<&str>,
+        ) -> Result<(u16, Value), String> {
+            self.forge_log.borrow_mut().push((
+                method.to_string(),
+                path.to_string(),
+                body.cloned().unwrap_or(Value::Null),
+            ));
             (self.forge_answer)(method, path, body)
         }
     }
 
     /// A workstation whose daemon is a script: `answer` gives each operation's result (an error is a refusal, and
     /// any other operation answers `null`). The operations the daemon was sent are kept in the returned log.
-    fn scripted_station(answer: impl Fn(&Op) -> Result<Value, String> + Send + 'static) -> (Arc<StationLink>, Arc<Mutex<Vec<Op>>>) {
+    fn scripted_station(
+        answer: impl Fn(&Op) -> Result<Value, String> + Send + 'static,
+    ) -> (Arc<StationLink>, Arc<Mutex<Vec<Op>>>) {
         let (link, daemon, _served) = link_tests::start("w3", Arc::new(link_tests::Accept));
         link_tests::greet(&link, &daemon);
         let seen = Arc::new(Mutex::new(Vec::new()));
         let log = Arc::clone(&seen);
         thread::spawn(move || {
             while let Ok(text) = daemon.hears.recv() {
-                let Ok(HubFrame::Request { id, op }) = serde_json::from_str::<HubFrame>(&text) else { continue };
+                let Ok(HubFrame::Request { id, op }) = serde_json::from_str::<HubFrame>(&text)
+                else {
+                    continue;
+                };
                 let (ok, result, error) = match answer(&op) {
                     Ok(value) => (true, Some(value), None),
                     Err(message) => (false, None, Some(message)),
                 };
                 if op != Op::Facts {
-                    log.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).push(op);
+                    log.lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .push(op);
                 }
-                daemon.say(&StationFrame::Response { id, ok, result, error });
+                daemon.say(&StationFrame::Response {
+                    id,
+                    ok,
+                    result,
+                    error,
+                });
             }
         });
         (link, seen)
@@ -1645,7 +2034,10 @@ mod tests {
     }
 
     fn repo(name: &str, branch: &str) -> RepoWs {
-        RepoWs { name: name.into(), git_ref: branch.into() }
+        RepoWs {
+            name: name.into(),
+            git_ref: branch.into(),
+        }
     }
 
     #[test]
@@ -1667,7 +2059,10 @@ mod tests {
             agent(7, None, None, Status::Offline),
             agent(9, Some("run-a"), Some(1), Status::Idle),
         ];
-        let repos = vec![RepoSpace { name: "p1-plaza".into(), default_branch: "main".into() }];
+        let repos = vec![RepoSpace {
+            name: "p1-plaza".into(),
+            default_branch: "main".into(),
+        }];
         let rows = workspaces(&agents, &[], &repos);
         let rows = rows.as_array().unwrap();
         assert_eq!(rows.len(), 3);
@@ -1678,14 +2073,17 @@ mod tests {
         assert_eq!(rows[1]["owner"], json!(42));
         assert_eq!(rows[1]["kind"], json!("agent"));
         assert_eq!(rows[1]["writable"], json!(true));
-        assert_eq!(rows[2], json!({
-            "id": "repo:p1-plaza@main",
-            "kind": "repo",
-            "owner": "p1-plaza",
-            "name": "p1-plaza",
-            "writable": true,
-            "status": "idle",
-        }));
+        assert_eq!(
+            rows[2],
+            json!({
+                "id": "repo:p1-plaza@main",
+                "kind": "repo",
+                "owner": "p1-plaza",
+                "name": "p1-plaza",
+                "writable": true,
+                "status": "idle",
+            })
+        );
     }
 
     #[test]
@@ -1694,15 +2092,32 @@ mod tests {
             .with_projects(&["p1-plaza", "agentplaza", "p2-gone"])
             .with_forge(|method, path, _| {
                 assert_eq!(method, "GET");
-                assert!(!path.contains("agentplaza/agentplaza"), "the platform repo must not be asked for: {path}");
+                assert!(
+                    !path.contains("agentplaza/agentplaza"),
+                    "the platform repo must not be asked for: {path}"
+                );
                 match path {
-                    "/api/v1/repos/agentplaza/p1-plaza" => forge_ok(200, json!({ "default_branch": "main" })),
+                    "/api/v1/repos/agentplaza/p1-plaza" => {
+                        forge_ok(200, json!({ "default_branch": "main" }))
+                    }
                     _ => forge_ok(404, json!({ "message": "not found" })),
                 }
             });
         let repos = open_repos(&fake);
-        assert_eq!(repos, vec![RepoSpace { name: "p1-plaza".into(), default_branch: "main".into() }]);
-        assert_eq!(fake.forge_paths(), vec!["GET /api/v1/repos/agentplaza/p1-plaza", "GET /api/v1/repos/agentplaza/p2-gone"]);
+        assert_eq!(
+            repos,
+            vec![RepoSpace {
+                name: "p1-plaza".into(),
+                default_branch: "main".into()
+            }]
+        );
+        assert_eq!(
+            fake.forge_paths(),
+            vec![
+                "GET /api/v1/repos/agentplaza/p1-plaza",
+                "GET /api/v1/repos/agentplaza/p2-gone"
+            ]
+        );
     }
 
     #[test]
@@ -1719,8 +2134,14 @@ mod tests {
         });
         let page = repo_tree(&fake, &repo("p1-plaza", "main"), Some("docs/"), None).unwrap();
         let entries = page["entries"].as_array().unwrap();
-        let paths: Vec<&str> = entries.iter().map(|e| e["path"].as_str().unwrap()).collect();
-        assert_eq!(paths, vec!["docs/Zed", "docs/a.md", "docs/b.txt", "docs/link"]);
+        let paths: Vec<&str> = entries
+            .iter()
+            .map(|e| e["path"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            paths,
+            vec!["docs/Zed", "docs/a.md", "docs/b.txt", "docs/link"]
+        );
         assert_eq!(entries[0]["kind"], json!("dir"));
         assert_eq!(entries[0]["hash"], Value::Null);
         assert_eq!(entries[1]["hash"], json!("blob-a"));
@@ -1733,7 +2154,8 @@ mod tests {
         let listing: Vec<Value> = (0..501)
             .map(|i| json!({"name": format!("f{i:03}"), "path": format!("big/f{i:03}"), "type": "file", "size": 1, "sha": format!("s{i}")}))
             .collect();
-        let fake = Fake::new("rpage", |_, _| ok(json!({}))).with_forge(move |_, _, _| forge_ok(200, Value::Array(listing.clone())));
+        let fake = Fake::new("rpage", |_, _| ok(json!({})))
+            .with_forge(move |_, _, _| forge_ok(200, Value::Array(listing.clone())));
         let ws = repo("p1-plaza", "main");
         let first = repo_tree(&fake, &ws, Some("big"), None).unwrap();
         assert_eq!(first["entries"].as_array().unwrap().len(), PAGE_SIZE);
@@ -1742,7 +2164,10 @@ mod tests {
         assert_eq!(second["entries"].as_array().unwrap().len(), 1);
         assert_eq!(second["entries"][0]["path"], json!("big/f500"));
         assert_eq!(second["next"], Value::Null);
-        assert_eq!(status_of(repo_tree(&fake, &ws, Some("big"), Some("abc"))), 400);
+        assert_eq!(
+            status_of(repo_tree(&fake, &ws, Some("big"), Some("abc"))),
+            400
+        );
         assert_eq!(status_of(repo_tree(&fake, &ws, Some("../x"), None)), 400);
     }
 
@@ -1761,8 +2186,14 @@ mod tests {
     #[test]
     fn repo_read_refuses_binary_huge_and_directory_answers() {
         let fake = Fake::new("rrefuse", |_, _| ok(json!({}))).with_forge(|_, path, _| match path {
-            p if p.contains("bin.dat") => forge_ok(200, json!({"size": 3, "sha": "b", "content": git::base64(b"a\0b")})),
-            p if p.contains("huge.txt") => forge_ok(200, json!({"size": 1_048_577u64, "sha": "h", "content": ""})),
+            p if p.contains("bin.dat") => forge_ok(
+                200,
+                json!({"size": 3, "sha": "b", "content": git::base64(b"a\0b")}),
+            ),
+            p if p.contains("huge.txt") => forge_ok(
+                200,
+                json!({"size": 1_048_577u64, "sha": "h", "content": ""}),
+            ),
             p if p.contains("docs") => forge_ok(200, json!([])),
             _ => forge_ok(404, json!({"message": "gone"})),
         });
@@ -1771,18 +2202,34 @@ mod tests {
         assert_eq!(status_of(repo_read(&fake, &ws, Some("huge.txt"))), 400);
         assert_eq!(status_of(repo_read(&fake, &ws, Some("docs"))), 400);
         assert_eq!(status_of(repo_read(&fake, &ws, Some("missing.txt"))), 404);
-        assert_eq!(status_of(repo_read(&fake, &ws, Some(".env"))), 400, "a secret file is refused before the forge");
+        assert_eq!(
+            status_of(repo_read(&fake, &ws, Some(".env"))),
+            400,
+            "a secret file is refused before the forge"
+        );
     }
 
     #[test]
     fn repo_create_commits_a_new_file_on_the_branch_and_audits_it() {
         let fake = Fake::new("rcreate", |_, _| ok(json!({}))).with_forge(|method, path, _| {
-            assert_eq!((method, path), ("POST", "/api/v1/repos/agentplaza/p1-plaza/contents/notes/new.txt"));
-            forge_ok(201, json!({"content": {"sha": "blob-new"}, "commit": {"sha": "commit-9"}}))
+            assert_eq!(
+                (method, path),
+                (
+                    "POST",
+                    "/api/v1/repos/agentplaza/p1-plaza/contents/notes/new.txt"
+                )
+            );
+            forge_ok(
+                201,
+                json!({"content": {"sha": "blob-new"}, "commit": {"sha": "commit-9"}}),
+            )
         });
         let body = json!({ "path": "notes/new.txt", "text": "one\n", "expected_hash": null });
         let done = repo_write(&fake, &repo("p1-plaza", "feature/x"), &body).unwrap();
-        assert_eq!(done, json!({"path": "notes/new.txt", "hash": "blob-new", "checkpoint": "commit-9"}));
+        assert_eq!(
+            done,
+            json!({"path": "notes/new.txt", "hash": "blob-new", "checkpoint": "commit-9"})
+        );
 
         let sent = fake.last_forge_body();
         assert_eq!(sent["branch"], json!("feature/x"));
@@ -1790,63 +2237,88 @@ mod tests {
         assert_eq!(sent["content"], json!(git::base64(b"one\n")));
         assert!(sent.get("sha").is_none(), "a create sends no sha");
 
-        let rows = fake.db.ide_audit(Some("repo:p1-plaza@feature/x"), 10).unwrap();
+        let rows = fake
+            .db
+            .ide_audit(Some("repo:p1-plaza@feature/x"), 10)
+            .unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0]["kind"], json!("write"));
         assert_eq!(rows[0]["hash_before"], Value::Null);
         assert_eq!(rows[0]["hash_after"], json!("blob-new"));
         assert_eq!(rows[0]["checkpoint"], json!("commit-9"));
-        assert_eq!(fake.events.borrow()[0], json!({ "workspace": "repo:p1-plaza@feature/x", "path": "notes/new.txt", "kind": "write" }));
+        assert_eq!(
+            fake.events.borrow()[0],
+            json!({ "workspace": "repo:p1-plaza@feature/x", "path": "notes/new.txt", "kind": "write" })
+        );
     }
 
     #[test]
     fn repo_update_sends_the_sha_and_a_stale_one_is_a_conflict_with_the_current_hash() {
-        let fake = Fake::new("rstale", |_, _| ok(json!({}))).with_forge(|method, path, _| match method {
-            "PUT" => forge_ok(422, json!({"message": "sha does not match"})),
-            _ => {
-                assert_eq!(path, "/api/v1/repos/agentplaza/p1-plaza/contents/a.txt?ref=main");
-                forge_ok(200, json!({"sha": "now"}))
-            }
-        });
+        let fake =
+            Fake::new("rstale", |_, _| ok(json!({}))).with_forge(|method, path, _| match method {
+                "PUT" => forge_ok(422, json!({"message": "sha does not match"})),
+                _ => {
+                    assert_eq!(
+                        path,
+                        "/api/v1/repos/agentplaza/p1-plaza/contents/a.txt?ref=main"
+                    );
+                    forge_ok(200, json!({"sha": "now"}))
+                }
+            });
         let body = json!({ "path": "a.txt", "text": "two", "expected_hash": "old" });
         let response = repo_write(&fake, &repo("p1-plaza", "main"), &body).unwrap_err();
         assert_eq!(response.status, 409);
         let answer = body_of(response);
         assert_eq!(answer, json!({"error": "conflict", "current_hash": "now"}));
-        assert_eq!(fake.forge_paths()[0], "PUT /api/v1/repos/agentplaza/p1-plaza/contents/a.txt");
+        assert_eq!(
+            fake.forge_paths()[0],
+            "PUT /api/v1/repos/agentplaza/p1-plaza/contents/a.txt"
+        );
         assert_eq!(fake.forge_log.borrow()[0].2["sha"], json!("old"));
-        assert!(fake.db.ide_audit(None, 10).unwrap().is_empty(), "a refused write is not audited");
+        assert!(
+            fake.db.ide_audit(None, 10).unwrap().is_empty(),
+            "a refused write is not audited"
+        );
         assert!(fake.events.borrow().is_empty());
     }
 
     #[test]
     fn repo_write_conflicts_report_null_for_a_removed_file_and_a_new_one_for_a_create() {
         // Update of a file that is gone: the PUT is 404 and the file has no hash now.
-        let gone = Fake::new("rgone", |_, _| ok(json!({}))).with_forge(|method, _, _| match method {
-            "PUT" => forge_ok(404, json!({"message": "file does not exist"})),
-            _ => forge_ok(404, json!({"message": "file does not exist"})),
-        });
+        let gone =
+            Fake::new("rgone", |_, _| ok(json!({}))).with_forge(|method, _, _| match method {
+                "PUT" => forge_ok(404, json!({"message": "file does not exist"})),
+                _ => forge_ok(404, json!({"message": "file does not exist"})),
+            });
         let update = json!({ "path": "a.txt", "text": "x", "expected_hash": "old" });
         let response = repo_write(&gone, &repo("p1-plaza", "main"), &update).unwrap_err();
-        assert_eq!(body_of(response), json!({"error": "conflict", "current_hash": null}));
+        assert_eq!(
+            body_of(response),
+            json!({"error": "conflict", "current_hash": null})
+        );
 
         // A create over a file that exists: the POST is 422 and the file has a hash.
-        let exists = Fake::new("rexists", |_, _| ok(json!({}))).with_forge(|method, _, _| match method {
-            "POST" => forge_ok(422, json!({"message": "already exists"})),
-            _ => forge_ok(200, json!({"sha": "now"})),
-        });
+        let exists =
+            Fake::new("rexists", |_, _| ok(json!({}))).with_forge(|method, _, _| match method {
+                "POST" => forge_ok(422, json!({"message": "already exists"})),
+                _ => forge_ok(200, json!({"sha": "now"})),
+            });
         let create = json!({ "path": "a.txt", "text": "x", "expected_hash": null });
         let response = repo_write(&exists, &repo("p1-plaza", "main"), &create).unwrap_err();
-        assert_eq!(body_of(response), json!({"error": "conflict", "current_hash": "now"}));
+        assert_eq!(
+            body_of(response),
+            json!({"error": "conflict", "current_hash": "now"})
+        );
     }
 
     #[test]
     fn a_refusal_that_is_not_a_conflict_keeps_forgejos_status() {
         // The file still has the hash the owner read, so the 422 is some other refusal.
-        let fake = Fake::new("rother", |_, _| ok(json!({}))).with_forge(|method, _, _| match method {
-            "PUT" => forge_ok(422, json!({"message": "branch is protected"})),
-            _ => forge_ok(200, json!({"sha": "old"})),
-        });
+        let fake =
+            Fake::new("rother", |_, _| ok(json!({}))).with_forge(|method, _, _| match method {
+                "PUT" => forge_ok(422, json!({"message": "branch is protected"})),
+                _ => forge_ok(200, json!({"sha": "old"})),
+            });
         let body = json!({ "path": "a.txt", "text": "x", "expected_hash": "old" });
         let response = repo_write(&fake, &repo("p1-plaza", "main"), &body).unwrap_err();
         assert_eq!(response.status, 422);
@@ -1855,7 +2327,8 @@ mod tests {
 
     #[test]
     fn a_repo_write_with_a_bad_path_is_refused_before_the_forge() {
-        let fake = Fake::new("rbad", |_, _| ok(json!({}))).with_forge(|_, _, _| forge_ok(200, json!({})));
+        let fake =
+            Fake::new("rbad", |_, _| ok(json!({}))).with_forge(|_, _, _| forge_ok(200, json!({})));
         let ws = repo("p1-plaza", "main");
         for path in [".plaza/state.json", "config/.env", "../x", "/etc/passwd"] {
             let body = json!({ "path": path, "text": "x", "expected_hash": null });
@@ -1872,7 +2345,10 @@ mod tests {
     ];
 
     /// The contents API's answer for `path` (a `/contents/<path>?ref=<ref>` call) from `files`.
-    fn contents(files: &'static [(&'static str, &'static str, &'static str)], path: &str) -> Result<(u16, Value), String> {
+    fn contents(
+        files: &'static [(&'static str, &'static str, &'static str)],
+        path: &str,
+    ) -> Result<(u16, Value), String> {
         let Some((name, reference)) = path
             .strip_prefix("/api/v1/repos/agentplaza/p1-plaza/contents/")
             .and_then(|rest| rest.split_once("?ref="))
@@ -1917,8 +2393,12 @@ mod tests {
         assert_eq!(reply["stats"]["additions"], json!(2));
         assert_eq!(reply["stats"]["deletions"], json!(1));
         assert_eq!(reply["truncated"], json!(false));
-        assert!(fake.forge_paths().contains(&"GET /api/v1/repos/agentplaza/p1-plaza/contents/a.txt?ref=par0".to_string()));
-        assert!(fake.forge_paths().contains(&"GET /api/v1/repos/agentplaza/p1-plaza/contents/b.txt?ref=head1".to_string()));
+        assert!(fake.forge_paths().contains(
+            &"GET /api/v1/repos/agentplaza/p1-plaza/contents/a.txt?ref=par0".to_string()
+        ));
+        assert!(fake.forge_paths().contains(
+            &"GET /api/v1/repos/agentplaza/p1-plaza/contents/b.txt?ref=head1".to_string()
+        ));
     }
 
     #[test]
@@ -1940,19 +2420,33 @@ mod tests {
         let reply = repo_changes(&fake, &repo("p1-plaza", "feature/x"), None).unwrap();
         assert_eq!(reply["base"], json!("branch:main"));
         assert_eq!(reply["files"].as_array().unwrap().len(), 2);
-        assert!(fake.forge_paths().iter().any(|p| p.ends_with("compare/main...head2")));
+        assert!(
+            fake.forge_paths()
+                .iter()
+                .any(|p| p.ends_with("compare/main...head2"))
+        );
     }
 
     #[test]
     fn changes_refuse_a_base_that_is_not_a_branch_and_an_empty_compare_has_no_files() {
         let fake = Fake::new("rbase", |_, _| ok(json!({}))).with_forge(|_, path, _| match path {
-            p if p.contains("commits?sha=") => forge_ok(200, json!([{"sha": "h", "parents": [], "commit": {}}])),
-            "/api/v1/repos/agentplaza/p1-plaza/compare/main...h" => forge_ok(200, json!({"files": []})),
+            p if p.contains("commits?sha=") => {
+                forge_ok(200, json!([{"sha": "h", "parents": [], "commit": {}}]))
+            }
+            "/api/v1/repos/agentplaza/p1-plaza/compare/main...h" => {
+                forge_ok(200, json!({"files": []}))
+            }
             _ => forge_ok(200, json!({"default_branch": "main"})),
         });
         let ws = repo("p1-plaza", "main");
-        assert_eq!(status_of(repo_changes(&fake, &ws, Some("checkpoint:3"))), 400);
-        assert_eq!(status_of(repo_changes(&fake, &ws, Some("branch:a..b"))), 400);
+        assert_eq!(
+            status_of(repo_changes(&fake, &ws, Some("checkpoint:3"))),
+            400
+        );
+        assert_eq!(
+            status_of(repo_changes(&fake, &ws, Some("branch:a..b"))),
+            400
+        );
         let empty = repo_changes(&fake, &ws, Some("branch:main")).unwrap();
         assert_eq!(empty["files"], json!([]));
         assert_eq!(empty["stats"]["files"], json!(0));
@@ -1968,9 +2462,10 @@ mod tests {
             ("bin.dat", "head3", "\0\u{2}"),
         ];
         let fake = Fake::new("rren", |_, _| ok(json!({}))).with_forge(|_, path, _| match path {
-            p if p.ends_with("/commits?sha=main&limit=1&stat=false") => {
-                forge_ok(200, json!([{"sha": "head3", "parents": [{"sha": "par9"}], "commit": {}}]))
-            }
+            p if p.ends_with("/commits?sha=main&limit=1&stat=false") => forge_ok(
+                200,
+                json!([{"sha": "head3", "parents": [{"sha": "par9"}], "commit": {}}]),
+            ),
             "/api/v1/repos/agentplaza/p1-plaza" => forge_ok(200, json!({"default_branch": "main"})),
             "/api/v1/repos/agentplaza/p1-plaza/compare/par9...head3" => forge_ok(
                 200,
@@ -1990,48 +2485,78 @@ mod tests {
             )
         );
         let files = reply["files"].as_array().unwrap();
-        assert_eq!((files[0]["status"].clone(), files[0]["old_path"].clone()), (json!("renamed"), json!("old.txt")));
+        assert_eq!(
+            (files[0]["status"].clone(), files[0]["old_path"].clone()),
+            (json!("renamed"), json!("old.txt"))
+        );
         assert_eq!(files[0]["hunks"], json!([]));
-        assert_eq!((files[1]["path"].clone(), files[1]["binary"].clone()), (json!("bin.dat"), json!(true)));
+        assert_eq!(
+            (files[1]["path"].clone(), files[1]["binary"].clone()),
+            (json!("bin.dat"), json!(true))
+        );
     }
 
     #[test]
     fn changes_list_at_most_300_files_and_say_so_when_there_are_more() {
-        let listed: Vec<Value> = (0..301).map(|i| json!({"filename": format!("f{i}.txt"), "status": "changed"})).collect();
+        let listed: Vec<Value> = (0..301)
+            .map(|i| json!({"filename": format!("f{i}.txt"), "status": "changed"}))
+            .collect();
         let listing = json!({"files": listed});
-        let fake = Fake::new("rmany", |_, _| ok(json!({}))).with_forge(move |_, path, _| match path {
-            p if p.ends_with("/commits?sha=main&limit=1&stat=false") => {
-                forge_ok(200, json!([{"sha": "h", "parents": [{"sha": "p"}], "commit": {}}]))
-            }
-            "/api/v1/repos/agentplaza/p1-plaza" => forge_ok(200, json!({"default_branch": "main"})),
-            "/api/v1/repos/agentplaza/p1-plaza/compare/p...h" => forge_ok(200, listing.clone()),
-            // The same text at both refs: each file is read, and none differs.
-            _ => forge_ok(200, json!({"type": "file", "size": 2, "sha": "s", "content": git::base64(b"x\n")})),
-        });
+        let fake =
+            Fake::new("rmany", |_, _| ok(json!({}))).with_forge(move |_, path, _| match path {
+                p if p.ends_with("/commits?sha=main&limit=1&stat=false") => forge_ok(
+                    200,
+                    json!([{"sha": "h", "parents": [{"sha": "p"}], "commit": {}}]),
+                ),
+                "/api/v1/repos/agentplaza/p1-plaza" => {
+                    forge_ok(200, json!({"default_branch": "main"}))
+                }
+                "/api/v1/repos/agentplaza/p1-plaza/compare/p...h" => forge_ok(200, listing.clone()),
+                // The same text at both refs: each file is read, and none differs.
+                _ => forge_ok(
+                    200,
+                    json!({"type": "file", "size": 2, "sha": "s", "content": git::base64(b"x\n")}),
+                ),
+            });
         let reply = repo_changes(&fake, &repo("p1-plaza", "main"), None).unwrap();
         assert_eq!(reply["truncated"], json!(true));
         assert_eq!(reply["files"], json!([]));
-        let reads = fake.forge_paths().iter().filter(|p| p.contains("/contents/")).count();
+        let reads = fake
+            .forge_paths()
+            .iter()
+            .filter(|p| p.contains("/contents/"))
+            .count();
         assert_eq!(reads, 2 * MAX_CHANGED_FILES);
     }
 
     #[test]
     fn a_compare_without_a_file_list_is_the_git_hosts_fault() {
         let fake = Fake::new("rnolist", |_, _| ok(json!({}))).with_forge(|_, path, _| match path {
-            p if p.contains("commits?sha=") => forge_ok(200, json!([{"sha": "h", "parents": [{"sha": "p"}], "commit": {}}])),
+            p if p.contains("commits?sha=") => forge_ok(
+                200,
+                json!([{"sha": "h", "parents": [{"sha": "p"}], "commit": {}}]),
+            ),
             p if p.contains("/compare/") => forge_ok(200, json!({"total_commits": 1})),
             _ => forge_ok(200, json!({"default_branch": "main"})),
         });
-        assert_eq!(status_of(repo_changes(&fake, &repo("p1-plaza", "main"), None)), 502);
+        assert_eq!(
+            status_of(repo_changes(&fake, &repo("p1-plaza", "main"), None)),
+            502
+        );
     }
 
     #[test]
     fn the_first_commit_has_nothing_before_it_to_compare_with() {
         let fake = Fake::new("rroot", |_, _| ok(json!({}))).with_forge(|_, path, _| match path {
-            p if p.contains("commits?sha=") => forge_ok(200, json!([{"sha": "h", "parents": [], "commit": {}}])),
+            p if p.contains("commits?sha=") => {
+                forge_ok(200, json!([{"sha": "h", "parents": [], "commit": {}}]))
+            }
             _ => forge_ok(200, json!({"default_branch": "main"})),
         });
-        assert_eq!(status_of(repo_changes(&fake, &repo("p1-plaza", "main"), None)), 400);
+        assert_eq!(
+            status_of(repo_changes(&fake, &repo("p1-plaza", "main"), None)),
+            400
+        );
     }
 
     #[test]
@@ -2045,16 +2570,28 @@ mod tests {
         });
         let list = repo_checkpoints(&fake, &repo("p1-plaza", "main")).unwrap();
         let rows = list["checkpoints"].as_array().unwrap();
-        assert_eq!(rows[0], json!({"n": 0, "label": "Fix it", "created_ms": 1_791_970_200_000u64, "sha": "c2"}));
-        assert_eq!(rows[1], json!({"n": 1, "label": "First", "created_ms": null, "sha": "c1"}));
+        assert_eq!(
+            rows[0],
+            json!({"n": 0, "label": "Fix it", "created_ms": 1_791_970_200_000u64, "sha": "c2"})
+        );
+        assert_eq!(
+            rows[1],
+            json!({"n": 1, "label": "First", "created_ms": null, "sha": "c1"})
+        );
     }
 
     #[test]
     fn rfc3339_instants_become_milliseconds() {
         assert_eq!(rfc3339_ms("1970-01-01T00:00:00Z"), Some(0));
         assert_eq!(rfc3339_ms("2026-10-14T09:30:00Z"), Some(1_791_970_200_000));
-        assert_eq!(rfc3339_ms("2026-10-14T09:30:00.250+02:00"), Some(1_791_963_000_250));
-        assert_eq!(rfc3339_ms("2026-10-14T09:30:00.25-01:30"), Some(1_791_975_600_250));
+        assert_eq!(
+            rfc3339_ms("2026-10-14T09:30:00.250+02:00"),
+            Some(1_791_963_000_250)
+        );
+        assert_eq!(
+            rfc3339_ms("2026-10-14T09:30:00.25-01:30"),
+            Some(1_791_975_600_250)
+        );
         assert_eq!(rfc3339_ms("2026-10-14"), None);
         assert_eq!(rfc3339_ms("2026-13-01T00:00:00Z"), None);
         assert_eq!(rfc3339_ms("2026-10-14T09:30:00.Z"), None);
@@ -2078,10 +2615,23 @@ mod tests {
         assert_eq!(row["base"], json!("main"));
         assert_eq!(row["head"], json!("feature/x"));
 
-        let sent = fake.forge_log.borrow().iter().find(|(m, p, _)| m == "POST" && p.ends_with("/pulls")).unwrap().2.clone();
-        assert_eq!(sent, json!({"head": "feature/x", "base": "main", "title": "Add the IDE", "body": "details"}));
+        let sent = fake
+            .forge_log
+            .borrow()
+            .iter()
+            .find(|(m, p, _)| m == "POST" && p.ends_with("/pulls"))
+            .unwrap()
+            .2
+            .clone();
+        assert_eq!(
+            sent,
+            json!({"head": "feature/x", "base": "main", "title": "Add the IDE", "body": "details"})
+        );
 
-        let rows = fake.db.ide_audit(Some("repo:p1-plaza@feature/x"), 10).unwrap();
+        let rows = fake
+            .db
+            .ide_audit(Some("repo:p1-plaza@feature/x"), 10)
+            .unwrap();
         assert_eq!(rows[0]["kind"], json!("pull"));
         assert_eq!(rows[0]["number"], json!(4));
         assert_eq!(fake.events.borrow()[0]["kind"], json!("pull"));
@@ -2089,25 +2639,50 @@ mod tests {
 
     #[test]
     fn a_pull_request_needs_a_title_and_a_real_base() {
-        let fake = Fake::new("rpullbad", |_, _| ok(json!({}))).with_forge(|_, _, _| forge_ok(200, json!({})));
+        let fake = Fake::new("rpullbad", |_, _| ok(json!({})))
+            .with_forge(|_, _, _| forge_ok(200, json!({})));
         let ws = repo("p1-plaza", "feature/x");
-        assert_eq!(status_of(repo_pull(&fake, &ws, &json!({"title": "   "}))), 400);
+        assert_eq!(
+            status_of(repo_pull(&fake, &ws, &json!({"title": "   "}))),
+            400
+        );
         assert_eq!(status_of(repo_pull(&fake, &ws, &json!({}))), 400);
-        assert_eq!(status_of(repo_pull(&fake, &ws, &json!({"title": "T", "body": 3}))), 400);
-        assert_eq!(status_of(repo_pull(&fake, &ws, &json!({"title": "T", "base": "a..b"}))), 400);
-        assert!(fake.forge_paths().is_empty(), "nothing is sent for a refused pull request");
+        assert_eq!(
+            status_of(repo_pull(&fake, &ws, &json!({"title": "T", "body": 3}))),
+            400
+        );
+        assert_eq!(
+            status_of(repo_pull(
+                &fake,
+                &ws,
+                &json!({"title": "T", "base": "a..b"})
+            )),
+            400
+        );
+        assert!(
+            fake.forge_paths().is_empty(),
+            "nothing is sent for a refused pull request"
+        );
     }
 
     #[test]
     fn a_branch_is_created_from_the_ref_and_answers_its_workspace_id() {
         let fake = Fake::new("rbranch2", |_, _| ok(json!({}))).with_forge(|method, path, body| {
-            assert_eq!((method, path), ("POST", "/api/v1/repos/agentplaza/p1-plaza/branches"));
+            assert_eq!(
+                (method, path),
+                ("POST", "/api/v1/repos/agentplaza/p1-plaza/branches")
+            );
             let body = body.unwrap();
             assert_eq!(body["new_branch_name"], json!("feature/y"));
             assert_eq!(body["old_ref_name"], json!("main"));
             forge_ok(201, json!({"name": "feature/y"}))
         });
-        let done = repo_branch(&fake, &repo("p1-plaza", "main"), &json!({"name": "feature/y"})).unwrap();
+        let done = repo_branch(
+            &fake,
+            &repo("p1-plaza", "main"),
+            &json!({"name": "feature/y"}),
+        )
+        .unwrap();
         assert_eq!(done, json!({"id": "repo:p1-plaza@feature/y"}));
         let rows = fake.db.ide_audit(Some("repo:p1-plaza@main"), 10).unwrap();
         assert_eq!(rows[0]["kind"], json!("branch"));
@@ -2116,17 +2691,26 @@ mod tests {
 
     #[test]
     fn a_bad_branch_name_is_refused_before_the_forge() {
-        let fake = Fake::new("rbadbranch", |_, _| ok(json!({}))).with_forge(|_, _, _| forge_ok(201, json!({})));
+        let fake = Fake::new("rbadbranch", |_, _| ok(json!({})))
+            .with_forge(|_, _, _| forge_ok(201, json!({})));
         let ws = repo("p1-plaza", "main");
-        assert_eq!(status_of(repo_branch(&fake, &ws, &json!({"name": "bad name"}))), 400);
-        assert_eq!(status_of(repo_branch(&fake, &ws, &json!({"name": "a..b"}))), 400);
+        assert_eq!(
+            status_of(repo_branch(&fake, &ws, &json!({"name": "bad name"}))),
+            400
+        );
+        assert_eq!(
+            status_of(repo_branch(&fake, &ws, &json!({"name": "a..b"}))),
+            400
+        );
         assert_eq!(status_of(repo_branch(&fake, &ws, &json!({}))), 400);
         assert!(fake.forge_paths().is_empty());
     }
 
     #[test]
     fn an_agent_write_still_goes_through_its_tool() {
-        let fake = Fake::new("agentwrite", |_, _| ok(json!({ "path": "docs/a.txt", "hash": "new", "checkpoint": 7 })));
+        let fake = Fake::new("agentwrite", |_, _| {
+            ok(json!({ "path": "docs/a.txt", "hash": "new", "checkpoint": 7 }))
+        });
         let body = json!({ "path": "docs/a.txt", "text": "two", "expected_hash": "old" });
         let done = write_file(&fake, 12, &body).unwrap();
         assert_eq!(done["hash"], json!("new"));
@@ -2170,8 +2754,14 @@ mod tests {
     fn read_refuses_a_file_that_changes_while_it_is_read() {
         let fake = Fake::new("moving", |_, args| {
             let offset = args["offset"].as_u64().unwrap();
-            let (hash, text, done) = if offset == 0 { ("h1", "abcd", false) } else { ("h2", "efgh", true) };
-            ok(json!({ "path": "a.txt", "size": 8, "hash": hash, "offset": offset, "text": text, "done": done }))
+            let (hash, text, done) = if offset == 0 {
+                ("h1", "abcd", false)
+            } else {
+                ("h2", "efgh", true)
+            };
+            ok(
+                json!({ "path": "a.txt", "size": 8, "hash": hash, "offset": offset, "text": text, "done": done }),
+            )
         });
         assert_eq!(status_of(read_file(&fake, 12, Some("a.txt"))), 409);
     }
@@ -2180,7 +2770,11 @@ mod tests {
     fn bad_paths_are_refused_before_any_tell() {
         let fake = Fake::new("refuse", |_, _| ok(json!({})));
         for raw in ["", "../x", "/etc/passwd", ".env", "keys/id_rsa.pem"] {
-            assert_eq!(status_of(read_file(&fake, 12, Some(raw))), 400, "read {raw:?}");
+            assert_eq!(
+                status_of(read_file(&fake, 12, Some(raw))),
+                400,
+                "read {raw:?}"
+            );
         }
         assert_eq!(status_of(tree(&fake, 12, Some("a/../b"), None)), 400);
         assert_eq!(status_of(tree(&fake, 12, Some(".ssh"), None)), 400);
@@ -2221,7 +2815,9 @@ mod tests {
 
     #[test]
     fn a_write_is_audited_and_published_and_survives_a_reopen() {
-        let fake = Fake::new("write", |_, _| ok(json!({ "path": "docs/a.txt", "hash": "new", "checkpoint": 7 })));
+        let fake = Fake::new("write", |_, _| {
+            ok(json!({ "path": "docs/a.txt", "hash": "new", "checkpoint": 7 }))
+        });
         let body = json!({ "path": "docs/a.txt", "text": "two", "expected_hash": "old" });
         let done = write_file(&fake, 12, &body).unwrap();
         assert_eq!(done["hash"], json!("new"));
@@ -2235,7 +2831,10 @@ mod tests {
         assert_eq!(rows[0]["hash_after"], json!("new"));
         assert_eq!(rows[0]["checkpoint"], json!(7));
         assert!(rows[0]["at_ms"].as_u64().is_some());
-        assert_eq!(fake.events.borrow()[0], json!({ "workspace": "agent:12", "path": "docs/a.txt", "kind": "write" }));
+        assert_eq!(
+            fake.events.borrow()[0],
+            json!({ "workspace": "agent:12", "path": "docs/a.txt", "kind": "write" })
+        );
 
         // The row is on disk: a fresh handle on the same file reads it back.
         let reopened = Db::files_only(&fake.dir);
@@ -2289,7 +2888,11 @@ index 0000000..3333333
 
     #[test]
     fn an_empty_diff_has_no_files() {
-        let fake = Fake::new("empty", |_, _| ok(json!({ "base": "work_start", "checkpoint": 1, "offset": 0, "total": 0, "diff": "", "done": true })));
+        let fake = Fake::new("empty", |_, _| {
+            ok(
+                json!({ "base": "work_start", "checkpoint": 1, "offset": 0, "total": 0, "diff": "", "done": true }),
+            )
+        });
         let reply = changes(&fake, 12, None).unwrap();
         assert_eq!(reply["files"], json!([]));
         assert_eq!(reply["stats"]["files"], json!(0));
@@ -2297,14 +2900,23 @@ index 0000000..3333333
 
     #[test]
     fn changes_forward_the_base() {
-        let fake = Fake::new("base", |_, _| ok(json!({ "base": "checkpoint:4", "checkpoint": 4, "offset": 0, "total": 0, "diff": "", "done": true })));
+        let fake = Fake::new("base", |_, _| {
+            ok(
+                json!({ "base": "checkpoint:4", "checkpoint": 4, "offset": 0, "total": 0, "diff": "", "done": true }),
+            )
+        });
         assert!(changes(&fake, 12, Some("checkpoint:4")).is_ok());
-        assert_eq!(fake.last_args(), json!({ "base": "checkpoint:4", "offset": 0 }));
+        assert_eq!(
+            fake.last_args(),
+            json!({ "base": "checkpoint:4", "offset": 0 })
+        );
     }
 
     #[test]
     fn restore_is_audited() {
-        let fake = Fake::new("restore", |_, _| ok(json!({ "restored": 3, "checkpoint": 9 })));
+        let fake = Fake::new("restore", |_, _| {
+            ok(json!({ "restored": 3, "checkpoint": 9 }))
+        });
         let done = restore(&fake, 12, 3).unwrap();
         assert_eq!(done["checkpoint"], json!(9));
         let rows = fake.db.ide_audit(Some("agent:12"), 10).unwrap();
@@ -2319,9 +2931,17 @@ index 0000000..3333333
             "ide_run_start" => ok(json!({ "run": "run-1" })),
             _ => ok(json!({ "run": "run-1", "stopped": true, "done": true })),
         });
-        let started = run_start(&fake, 12, &json!({ "command": "cargo test", "timeout_s": 30 })).unwrap();
+        let started = run_start(
+            &fake,
+            12,
+            &json!({ "command": "cargo test", "timeout_s": 30 }),
+        )
+        .unwrap();
         assert_eq!(started["run"], json!("run-1"));
-        assert_eq!(fake.last_args(), json!({ "command": "cargo test", "timeout_s": 30 }));
+        assert_eq!(
+            fake.last_args(),
+            json!({ "command": "cargo test", "timeout_s": 30 })
+        );
         run_stop(&fake, 12, "run-1").unwrap();
 
         let rows = audit_rows(&fake, Some("agent:12"), None).unwrap();
@@ -2337,8 +2957,18 @@ index 0000000..3333333
     #[test]
     fn a_run_with_a_bad_command_is_refused_before_any_tell() {
         let fake = Fake::new("badrun", |_, _| ok(json!({})));
-        assert_eq!(status_of(run_start(&fake, 12, &json!({ "command": "   " }))), 400);
-        assert_eq!(status_of(run_start(&fake, 12, &json!({ "command": "ls", "timeout_s": "soon" }))), 400);
+        assert_eq!(
+            status_of(run_start(&fake, 12, &json!({ "command": "   " }))),
+            400
+        );
+        assert_eq!(
+            status_of(run_start(
+                &fake,
+                12,
+                &json!({ "command": "ls", "timeout_s": "soon" })
+            )),
+            400
+        );
         assert_eq!(status_of(run_start(&fake, 12, &json!({}))), 400);
         assert_eq!(fake.calls(), 0);
         assert!(fake.db.ide_audit(None, 10).unwrap().is_empty());
@@ -2346,13 +2976,21 @@ index 0000000..3333333
 
     #[test]
     fn search_needs_a_query_and_forwards_the_rest() {
-        let fake = Fake::new("search", |_, _| ok(json!({ "matches": [], "truncated": false })));
+        let fake = Fake::new("search", |_, _| {
+            ok(json!({ "matches": [], "truncated": false }))
+        });
         assert_eq!(status_of(search(&fake, 12, None, None, None)), 400);
         assert_eq!(status_of(search(&fake, 12, Some(""), None, None)), 400);
         assert_eq!(fake.calls(), 0);
         assert!(search(&fake, 12, Some("needle"), Some("*.rs"), Some("5")).is_ok());
-        assert_eq!(fake.last_args(), json!({ "q": "needle", "glob": "*.rs", "max": 5 }));
-        assert_eq!(status_of(search(&fake, 12, Some("needle"), None, Some("many"))), 400);
+        assert_eq!(
+            fake.last_args(),
+            json!({ "q": "needle", "glob": "*.rs", "max": 5 })
+        );
+        assert_eq!(
+            status_of(search(&fake, 12, Some("needle"), None, Some("many"))),
+            400
+        );
     }
 
     #[test]
@@ -2361,11 +2999,36 @@ index 0000000..3333333
         let cases: [(&str, Tell, u16); 7] = [
             ("timeout", |_, _| Ok((504, json!({ "error": "x" }))), 504),
             ("no session", |_, _| Ok((409, json!({ "error": "x" }))), 409),
-            ("unknown cid", |_, _| Ok((404, json!({ "error": "x" }))), 404),
-            ("role", |_, _| Ok((403, json!({ "ok": false, "output": "role does not grant ide_list" }))), 403),
-            ("node down", |_, _| Err("node n2 is offline".to_string()), 502),
-            ("refusal", |_, _| refused("denied: secret files are not available"), 400),
-            ("not json", |_, _| Ok((200, json!({ "ok": true, "output": "nope" }))), 502),
+            (
+                "unknown cid",
+                |_, _| Ok((404, json!({ "error": "x" }))),
+                404,
+            ),
+            (
+                "role",
+                |_, _| {
+                    Ok((
+                        403,
+                        json!({ "ok": false, "output": "role does not grant ide_list" }),
+                    ))
+                },
+                403,
+            ),
+            (
+                "node down",
+                |_, _| Err("node n2 is offline".to_string()),
+                502,
+            ),
+            (
+                "refusal",
+                |_, _| refused("denied: secret files are not available"),
+                400,
+            ),
+            (
+                "not json",
+                |_, _| Ok((200, json!({ "ok": true, "output": "nope" }))),
+                502,
+            ),
         ];
         for (tag, answer, want) in cases {
             let fake = Fake::new(tag, answer);
@@ -2375,17 +3038,34 @@ index 0000000..3333333
 
     #[test]
     fn an_unknown_tell_text_is_the_refusal_text() {
-        let fake = Fake::new("text", |_, _| refused("denied: secret files are not available"));
+        let fake = Fake::new("text", |_, _| {
+            refused("denied: secret files are not available")
+        });
         let response = tree(&fake, 12, None, None).unwrap_err();
-        assert_eq!(body_of(response)["error"], json!("denied: secret files are not available"));
+        assert_eq!(
+            body_of(response)["error"],
+            json!("denied: secret files are not available")
+        );
     }
 
     #[test]
     fn the_audit_log_filters_and_checks_its_limit() {
         let fake = Fake::new("auditq", |_, _| ok(json!({ "run": "run-1" })));
-        fake.db.append_ide_audit(&json!({ "at_ms": 1, "workspace": "agent:12", "kind": "write", "n": 1 })).unwrap();
-        fake.db.append_ide_audit(&json!({ "at_ms": 2, "workspace": "agent:40", "kind": "write", "n": 2 })).unwrap();
-        fake.db.append_ide_audit(&json!({ "at_ms": 3, "workspace": "agent:12", "kind": "restore", "n": 3 })).unwrap();
+        fake.db
+            .append_ide_audit(
+                &json!({ "at_ms": 1, "workspace": "agent:12", "kind": "write", "n": 1 }),
+            )
+            .unwrap();
+        fake.db
+            .append_ide_audit(
+                &json!({ "at_ms": 2, "workspace": "agent:40", "kind": "write", "n": 2 }),
+            )
+            .unwrap();
+        fake.db
+            .append_ide_audit(
+                &json!({ "at_ms": 3, "workspace": "agent:12", "kind": "restore", "n": 3 }),
+            )
+            .unwrap();
 
         let mine = audit_rows(&fake, Some("agent:12"), None).unwrap();
         assert_eq!(mine.as_array().unwrap().len(), 2);
@@ -2413,10 +3093,22 @@ index 0000000..3333333
     #[test]
     fn online_stations_are_listed_between_the_agents_and_the_repos() {
         let agents = vec![agent(3, Some("r"), Some(7), Status::Idle)];
-        let stations = vec![StationSpace { id: "w3".into(), name: "office".into(), os: "linux" }];
-        let repos = vec![RepoSpace { name: "plaza-web".into(), default_branch: "main".into() }];
+        let stations = vec![StationSpace {
+            id: "w3".into(),
+            name: "office".into(),
+            os: "linux",
+        }];
+        let repos = vec![RepoSpace {
+            name: "plaza-web".into(),
+            default_branch: "main".into(),
+        }];
         let rows = workspaces(&agents, &stations, &repos);
-        let ids: Vec<&str> = rows.as_array().expect("a list").iter().filter_map(|row| row["id"].as_str()).collect();
+        let ids: Vec<&str> = rows
+            .as_array()
+            .expect("a list")
+            .iter()
+            .filter_map(|row| row["id"].as_str())
+            .collect();
         assert_eq!(ids, ["agent:3", "station:w3", "repo:plaza-web@main"]);
         assert_eq!(rows[1]["kind"], "station");
         assert_eq!(rows[1]["owner"], "w3");
@@ -2428,57 +3120,98 @@ index 0000000..3333333
     #[test]
     fn a_station_lists_and_reads_its_work_folder_through_its_daemon() {
         let (link, seen) = scripted_station(|op| match op {
-            Op::Files(FilesOp::List { .. }) => Ok(json!({ "entries": [{ "path": "docs", "kind": "dir" }], "next": null })),
-            Op::Files(FilesOp::Read { .. }) => Ok(json!({ "path": "docs/a.txt", "hash": "h1", "text": "hi", "done": true })),
+            Op::Files(FilesOp::List { .. }) => {
+                Ok(json!({ "entries": [{ "path": "docs", "kind": "dir" }], "next": null }))
+            }
+            Op::Files(FilesOp::Read { .. }) => {
+                Ok(json!({ "path": "docs/a.txt", "hash": "h1", "text": "hi", "done": true }))
+            }
             _ => Ok(Value::Null),
         });
         let host = Fake::new("station-read", |_, _| Err("no tool".into())).with_station("w3", link);
 
-        let tree = station_tree(&host, "w3", Some("docs"), Some("0")).ok().expect("listed");
+        let tree = station_tree(&host, "w3", Some("docs"), Some("0"))
+            .ok()
+            .expect("listed");
         assert_eq!(tree["entries"][0]["path"], "docs");
-        let text = station_read(&host, "w3", Some("docs/a.txt")).ok().expect("read");
-        assert_eq!((text["text"].as_str(), text["hash"].as_str()), (Some("hi"), Some("h1")));
+        let text = station_read(&host, "w3", Some("docs/a.txt"))
+            .ok()
+            .expect("read");
+        assert_eq!(
+            (text["text"].as_str(), text["hash"].as_str()),
+            (Some("hi"), Some("h1"))
+        );
         assert_eq!(
             *seen.lock().unwrap(),
             vec![
-                Op::Files(FilesOp::List { path: "docs".into(), cursor: Some("0".into()) }),
-                Op::Files(FilesOp::Read { path: "docs/a.txt".into(), offset: Some(0) }),
+                Op::Files(FilesOp::List {
+                    path: "docs".into(),
+                    cursor: Some("0".into())
+                }),
+                Op::Files(FilesOp::Read {
+                    path: "docs/a.txt".into(),
+                    offset: Some(0)
+                }),
             ]
         );
         assert_eq!(status_of(station_read(&host, "w3", Some("../secret"))), 400);
-        assert_eq!(seen.lock().unwrap().len(), 2, "a refused path never reaches the daemon");
+        assert_eq!(
+            seen.lock().unwrap().len(),
+            2,
+            "a refused path never reaches the daemon"
+        );
     }
 
     #[test]
     fn a_station_write_is_audited_in_both_logs_and_a_stale_one_is_a_conflict() {
         let (link, seen) = scripted_station(|op| match op {
-            Op::Files(FilesOp::Write { expected_hash, .. }) if expected_hash.as_deref() == Some("h1") => {
+            Op::Files(FilesOp::Write { expected_hash, .. })
+                if expected_hash.as_deref() == Some("h1") =>
+            {
                 Ok(json!({ "path": "a.txt", "hash": "h2" }))
             }
             Op::Files(FilesOp::Write { .. }) => Err("conflict: h9".into()),
             _ => Ok(Value::Null),
         });
-        let host = Fake::new("station-write", |_, _| Err("no tool".into())).with_station("w3", link);
+        let host =
+            Fake::new("station-write", |_, _| Err("no tool".into())).with_station("w3", link);
 
-        let saved = station_write(&host, "w3", &json!({ "path": "a.txt", "text": "new", "expected_hash": "h1" }))
-            .ok()
-            .expect("saved");
+        let saved = station_write(
+            &host,
+            "w3",
+            &json!({ "path": "a.txt", "text": "new", "expected_hash": "h1" }),
+        )
+        .ok()
+        .expect("saved");
         assert_eq!(saved["hash"], "h2");
-        let Err(stale) = station_write(&host, "w3", &json!({ "path": "a.txt", "text": "newer", "expected_hash": "h0" }))
-        else {
+        let Err(stale) = station_write(
+            &host,
+            "w3",
+            &json!({ "path": "a.txt", "text": "newer", "expected_hash": "h0" }),
+        ) else {
             panic!("a stale write is refused");
         };
         assert_eq!(stale.status, 409);
         assert_eq!(body_of(stale)["current_hash"], "h9");
 
-        assert_eq!(seen.lock().unwrap().len(), 2, "both writes reached the daemon");
-        let rows = host.db.ide_audit(Some("station:w3"), 10).expect("the audit reads");
+        assert_eq!(
+            seen.lock().unwrap().len(),
+            2,
+            "both writes reached the daemon"
+        );
+        let rows = host
+            .db
+            .ide_audit(Some("station:w3"), 10)
+            .expect("the audit reads");
         assert_eq!(rows.len(), 1, "only the write that happened is audited");
         assert_eq!(rows[0]["kind"], "write");
         assert_eq!(rows[0]["path"], "a.txt");
         assert_eq!(rows[0]["hash_before"], "h1");
         assert_eq!(rows[0]["hash_after"], "h2");
-        let station = host.db.station_audit(Some("w3"), 10).expect("the station audit reads");
+        let station = host
+            .db
+            .station_audit(Some("w3"), 10)
+            .expect("the station audit reads");
         assert_eq!(station.len(), 1);
         assert_eq!(station[0]["kind"], "owner_ide");
         assert_eq!(station[0]["action"], "write");
@@ -2490,40 +3223,82 @@ index 0000000..3333333
     fn a_station_run_starts_polls_and_stops_on_its_daemon_and_is_audited() {
         let (link, seen) = scripted_station(|op| match op {
             Op::Run(RunOp::Start { .. }) => Ok(json!({ "run": "run-1" })),
-            Op::Run(RunOp::Poll { .. }) => Ok(json!({ "run": "run-1", "output": "hi\n", "next": 3, "done": true, "exit_code": 0, "timed_out": false })),
+            Op::Run(RunOp::Poll { .. }) => Ok(
+                json!({ "run": "run-1", "output": "hi\n", "next": 3, "done": true, "exit_code": 0, "timed_out": false }),
+            ),
             Op::Run(RunOp::Stop { .. }) => Ok(json!({ "run": "run-1", "stopped": true })),
             _ => Ok(Value::Null),
         });
         let host = Fake::new("station-run", |_, _| Err("no tool".into())).with_station("w3", link);
 
-        assert_eq!(status_of(station_run_start(&host, "w3", &json!({ "command": "  " }))), 400, "an empty command is refused");
-        let started = station_run_start(&host, "w3", &json!({ "command": "ls", "timeout_s": 30 })).ok().expect("started");
+        assert_eq!(
+            status_of(station_run_start(&host, "w3", &json!({ "command": "  " }))),
+            400,
+            "an empty command is refused"
+        );
+        let started = station_run_start(&host, "w3", &json!({ "command": "ls", "timeout_s": 30 }))
+            .ok()
+            .expect("started");
         assert_eq!(started["run"], "run-1");
-        let polled = station_run_poll(&host, "w3", "run-1", Some("0")).ok().expect("polled");
+        let polled = station_run_poll(&host, "w3", "run-1", Some("0"))
+            .ok()
+            .expect("polled");
         assert_eq!(polled["output"], "hi\n");
-        station_run_stop(&host, "w3", "run-1").ok().expect("stopped");
+        station_run_stop(&host, "w3", "run-1")
+            .ok()
+            .expect("stopped");
         assert_eq!(
             *seen.lock().unwrap(),
             vec![
-                Op::Run(RunOp::Start { command: "ls".into(), timeout_s: Some(30) }),
-                Op::Run(RunOp::Poll { run: "run-1".into(), offset: Some(0) }),
-                Op::Run(RunOp::Stop { run: "run-1".into() }),
+                Op::Run(RunOp::Start {
+                    command: "ls".into(),
+                    timeout_s: Some(30)
+                }),
+                Op::Run(RunOp::Poll {
+                    run: "run-1".into(),
+                    offset: Some(0)
+                }),
+                Op::Run(RunOp::Stop {
+                    run: "run-1".into()
+                }),
             ]
         );
-        let rows = host.db.ide_audit(Some("station:w3"), 10).expect("the audit reads");
+        let rows = host
+            .db
+            .ide_audit(Some("station:w3"), 10)
+            .expect("the audit reads");
         let kinds: Vec<&str> = rows.iter().filter_map(|row| row["kind"].as_str()).collect();
-        assert_eq!(kinds, ["run_stop", "run"], "newest first, and a poll is not audited");
-        assert_eq!(host.db.station_audit(Some("w3"), 10).expect("the station audit reads").len(), 2);
+        assert_eq!(
+            kinds,
+            ["run_stop", "run"],
+            "newest first, and a poll is not audited"
+        );
+        assert_eq!(
+            host.db
+                .station_audit(Some("w3"), 10)
+                .expect("the station audit reads")
+                .len(),
+            2
+        );
     }
 
     #[test]
     fn a_station_has_no_checkpoints_and_says_why() {
         let (link, _) = scripted_station(|_| Ok(Value::Null));
-        let host = Fake::new("station-checkpoints", |_, _| Err("no tool".into())).with_station("w3", link);
+        let host =
+            Fake::new("station-checkpoints", |_, _| Err("no tool".into())).with_station("w3", link);
         let answer = station_checkpoints(&host, "w3").ok().expect("answers");
         assert_eq!(answer["checkpoints"], json!([]));
-        assert!(answer["reason"].as_str().is_some_and(|reason| reason.contains("no checkpoints")));
-        assert_eq!(status_of(not_for_stations(NO_CHECKPOINTS)), 501, "changes and restore are not served");
+        assert!(
+            answer["reason"]
+                .as_str()
+                .is_some_and(|reason| reason.contains("no checkpoints"))
+        );
+        assert_eq!(
+            status_of(not_for_stations(NO_CHECKPOINTS)),
+            501,
+            "changes and restore are not served"
+        );
     }
 
     #[test]
@@ -2532,19 +3307,50 @@ index 0000000..3333333
         let frozen = Fake::new("station-frozen", |_, _| Err("no tool".into()))
             .with_station("w3", link.clone())
             .with_stop_all();
-        assert_eq!(check_station(&frozen, "w3").expect_err("STOP ALL refuses").status, 409);
-        let online = Fake::new("station-online", |_, _| Err("no tool".into())).with_station("w3", link);
+        assert_eq!(
+            check_station(&frozen, "w3")
+                .expect_err("STOP ALL refuses")
+                .status,
+            409
+        );
+        let online =
+            Fake::new("station-online", |_, _| Err("no tool".into())).with_station("w3", link);
         assert!(check_station(&online, "w3").is_ok());
-        assert_eq!(check_station(&online, "w9").expect_err("not an online station").status, 404);
-        assert!(seen.lock().unwrap().is_empty(), "no refused check reaches the daemon");
+        assert_eq!(
+            check_station(&online, "w9")
+                .expect_err("not an online station")
+                .status,
+            404
+        );
+        assert!(
+            seen.lock().unwrap().is_empty(),
+            "no refused check reaches the daemon"
+        );
     }
 
     #[test]
     fn a_station_answer_maps_to_a_status_by_why_it_failed() {
-        assert_eq!(status_of::<Value>(Err(station_failure("frozen by STOP ALL".into()))), 409);
-        assert_eq!(status_of::<Value>(Err(station_failure("the workstation is not linked".into()))), 409);
-        assert_eq!(status_of::<Value>(Err(station_failure("the workstation is draining".into()))), 409);
-        assert_eq!(status_of::<Value>(Err(station_failure("the workstation did not answer in time".into()))), 504);
-        assert_eq!(status_of::<Value>(Err(station_failure("no such file".into()))), 400);
+        assert_eq!(
+            status_of::<Value>(Err(station_failure("frozen by STOP ALL".into()))),
+            409
+        );
+        assert_eq!(
+            status_of::<Value>(Err(station_failure("the workstation is not linked".into()))),
+            409
+        );
+        assert_eq!(
+            status_of::<Value>(Err(station_failure("the workstation is draining".into()))),
+            409
+        );
+        assert_eq!(
+            status_of::<Value>(Err(station_failure(
+                "the workstation did not answer in time".into()
+            ))),
+            504
+        );
+        assert_eq!(
+            status_of::<Value>(Err(station_failure("no such file".into()))),
+            400
+        );
     }
 }

@@ -51,7 +51,8 @@ const VIRTIO_RING_F_EVENT_IDX: u64 = 1 << 29;
 ///   them available.
 /// - VIRTIO_RING_F_EVENT_IDX: the device supports used_event/avail_event notification
 ///   suppression.
-pub(crate) const AVAIL_FEATURES: u64 = VIRTIO_F_VERSION_1 | VIRTIO_F_IN_ORDER | VIRTIO_RING_F_EVENT_IDX;
+pub(crate) const AVAIL_FEATURES: u64 =
+    VIRTIO_F_VERSION_1 | VIRTIO_F_IN_ORDER | VIRTIO_RING_F_EVENT_IDX;
 
 /// Error type for [`Vsock::activate`], mirroring upstream's `ActivateError`.
 #[derive(Debug, thiserror::Error)]
@@ -126,7 +127,9 @@ where
     ) -> Result<Vsock<B>, VsockError> {
         let mut queue_events = Vec::new();
         for _ in 0..queues.len() {
-            queue_events.push(EventFd::new(crate::pal::eventfd::EFD_NONBLOCK).map_err(VsockError::EventFd)?);
+            queue_events.push(
+                EventFd::new(crate::pal::eventfd::EFD_NONBLOCK).map_err(VsockError::EventFd)?,
+            );
         }
 
         Ok(Vsock {
@@ -136,7 +139,8 @@ where
             backend,
             avail_features: AVAIL_FEATURES,
             acked_features: 0,
-            activate_evt: EventFd::new(crate::pal::eventfd::EFD_NONBLOCK).map_err(VsockError::EventFd)?,
+            activate_evt: EventFd::new(crate::pal::eventfd::EFD_NONBLOCK)
+                .map_err(VsockError::EventFd)?,
             activated: false,
             mem: None,
             irq: None,
@@ -237,7 +241,10 @@ where
         // live `is_activated()` while holding this device's lock, immediately
         // before it dispatches an event to here, so a reset cannot land between
         // that check and this call.
-        let mem = self.mem.as_ref().expect("vsock: process_rx on an inactive device");
+        let mem = self
+            .mem
+            .as_ref()
+            .expect("vsock: process_rx on an inactive device");
 
         let queue = &mut self.queues[RXQ_INDEX];
         let mut have_used = false;
@@ -295,7 +302,10 @@ where
         // live `is_activated()` while holding this device's lock, immediately
         // before it dispatches an event to here, so a reset cannot land between
         // that check and this call.
-        let mem = self.mem.as_ref().expect("vsock: process_tx on an inactive device");
+        let mem = self
+            .mem
+            .as_ref()
+            .expect("vsock: process_tx on an inactive device");
 
         let queue = &mut self.queues[TXQ_INDEX];
         let mut have_used = false;
@@ -334,7 +344,10 @@ where
         // activated, so a caller must hold the device and observe
         // `is_activated()` first (`activate` and `reset` maintain the two
         // together).
-        let mem = self.mem.as_ref().expect("vsock: send_transport_reset_event on an inactive device");
+        let mem = self
+            .mem
+            .as_ref()
+            .expect("vsock: send_transport_reset_event on an inactive device");
 
         let queue = &mut self.queues[EVQ_INDEX];
         let head = queue.pop()?.ok_or_else(|| {
@@ -343,7 +356,9 @@ where
         })?;
 
         mem.write_obj::<u32>(VIRTIO_VSOCK_EVENT_TRANSPORT_RESET, head.addr)
-            .unwrap_or_else(|err| eprintln!("error: failed to write virtio vsock reset event: {err:?}"));
+            .unwrap_or_else(|err| {
+                eprintln!("error: failed to write virtio vsock reset event: {err:?}")
+            });
 
         queue.add_used(head.index, head.len).unwrap_or_else(|err| {
             eprintln!("error: failed to add used descriptor {}: {err}", head.index);
@@ -380,7 +395,8 @@ where
         assert!(!self.activated);
 
         for q in self.queues.iter_mut() {
-            q.initialize(&mem).map_err(ActivateError::QueueMemoryError)?;
+            q.initialize(&mem)
+                .map_err(ActivateError::QueueMemoryError)?;
         }
 
         if self.queues.len() != defs::VSOCK_NUM_QUEUES {
@@ -460,7 +476,7 @@ mod tests {
 
     use super::*;
     use crate::devices::virtio::queue::{VIRTQ_DESC_F_NEXT, VIRTQ_DESC_F_WRITE};
-    use crate::devices::virtio::test_utils::{default_mem, VirtQueue};
+    use crate::devices::virtio::test_utils::{VirtQueue, default_mem};
     use crate::devices::virtio::vsock::packet::VsockPacketHeader;
     use crate::devices::virtio::vsock::{VsockChannel, VsockEpollListener};
     use crate::vstate::memory::{GuestAddress, GuestMemoryMmap};
@@ -529,9 +545,7 @@ mod tests {
     /// Lay three virtqueues out in `mem` (RX at 0, TX at 0x2000, EV at 0x4000)
     /// and return a device activated against a clone of `mem` together with the
     /// guest-side virtqueues, which borrow `mem` from the caller.
-    fn activated_ctx<'a>(
-        mem: &'a GuestMemoryMmap,
-    ) -> (Vsock<FakeBackend>, Vec<VirtQueue<'a>>) {
+    fn activated_ctx<'a>(mem: &'a GuestMemoryMmap) -> (Vsock<FakeBackend>, Vec<VirtQueue<'a>>) {
         let vqs = vec![
             VirtQueue::new(GuestAddress(0), mem, 16),
             VirtQueue::new(GuestAddress(0x2000), mem, 16),
@@ -566,7 +580,8 @@ mod tests {
             .set_len(4)
             .set_type(defs::uapi::VSOCK_TYPE_STREAM)
             .set_op(defs::uapi::VSOCK_OP_RW);
-        mem.write_slice(hdr.as_slice(), GuestAddress(0x8000)).unwrap();
+        mem.write_slice(hdr.as_slice(), GuestAddress(0x8000))
+            .unwrap();
         vq.set_desc(0, 0x8000, VSOCK_PKT_HDR_SIZE, VIRTQ_DESC_F_NEXT, 1);
         vq.set_desc(1, 0x9000, 4, 0, 0);
         // The driver published the chain.
@@ -575,7 +590,10 @@ mod tests {
         device.notify_queue(TXQ_INDEX).unwrap();
 
         assert!(device.process_tx().unwrap());
-        assert_eq!(device.backend().received_tx, vec![(defs::uapi::VSOCK_OP_RW, 4)]);
+        assert_eq!(
+            device.backend().received_tx,
+            vec![(defs::uapi::VSOCK_OP_RW, 4)]
+        );
         assert_eq!(vq.used_idx(), 1);
         assert_eq!(vq.used_elem(0), (0, 0));
     }
@@ -587,7 +605,13 @@ mod tests {
         let vq = &vqs[RXQ_INDEX];
 
         // An RX buffer: write-only header + write-only payload.
-        vq.set_desc(0, 0x8000, VSOCK_PKT_HDR_SIZE, VIRTQ_DESC_F_WRITE | VIRTQ_DESC_F_NEXT, 1);
+        vq.set_desc(
+            0,
+            0x8000,
+            VSOCK_PKT_HDR_SIZE,
+            VIRTQ_DESC_F_WRITE | VIRTQ_DESC_F_NEXT,
+            1,
+        );
         vq.set_desc(1, 0x9000, 4, VIRTQ_DESC_F_WRITE, 0);
         vq.publish(0);
 

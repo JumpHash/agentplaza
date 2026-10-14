@@ -78,7 +78,8 @@ const DENY_TTL: Duration = Duration::from_secs(10);
 const MAX_DECISIONS: usize = 4096;
 
 /// Apid's decisions by (CID, host, port), kept for their TTL and shared by every connection thread.
-static DECISIONS: Mutex<BTreeMap<(u32, String, u16), (Instant, EgressAnswer)>> = Mutex::new(BTreeMap::new());
+static DECISIONS: Mutex<BTreeMap<(u32, String, u16), (Instant, EgressAnswer)>> =
+    Mutex::new(BTreeMap::new());
 
 /// The two sockets of a tunnel, cloned so either pump can hang both up, and
 /// the flag that tells the other pump to stop. The flag is what ends the other
@@ -93,7 +94,11 @@ struct Hangup {
 
 impl Hangup {
     fn new(guest: UnixStream, upstream: TcpStream) -> Self {
-        Self { guest, upstream, done: AtomicBool::new(false) }
+        Self {
+            guest,
+            upstream,
+            done: AtomicBool::new(false),
+        }
     }
 
     fn is_done(&self) -> bool {
@@ -123,7 +128,10 @@ pub struct Policy {
 
 impl Policy {
     pub fn new(extra_ports: Vec<u16>) -> Self {
-        Self { extra_ports, allow_loopback: false }
+        Self {
+            extra_ports,
+            allow_loopback: false,
+        }
     }
 
     fn port_allowed(&self, port: u16) -> bool {
@@ -203,10 +211,19 @@ enum Stop {
 impl Stop {
     fn answer(&self) -> Vec<u8> {
         let fixed: &[u8] = match self {
-            Stop::Bad => &b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"[..],
-            Stop::Forbidden => &b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"[..],
-            Stop::Unreachable => &b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"[..],
-            Stop::TooMany => &b"HTTP/1.1 429 Too Many Requests\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"[..],
+            Stop::Bad => {
+                &b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"[..]
+            }
+            Stop::Forbidden => {
+                &b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"[..]
+            }
+            Stop::Unreachable => {
+                &b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"[..]
+            }
+            Stop::TooMany => {
+                &b"HTTP/1.1 429 Too Many Requests\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    [..]
+            }
             Stop::Refused(reason) => {
                 let body = format!("{reason}\n");
                 let head = format!(
@@ -226,7 +243,12 @@ enum Head {
     /// `CONNECT host:port HTTP/1.1`
     Connect { host: String, port: u16 },
     /// `METHOD http://host[:port]/path HTTP/1.1`; the path is kept in origin form.
-    Absolute { method: String, host: String, port: u16, path: String },
+    Absolute {
+        method: String,
+        host: String,
+        port: u16,
+        path: String,
+    },
 }
 
 /// What one connection did, for the audit line.
@@ -258,7 +280,9 @@ impl Audit {
             })
             .to_string();
             if let Err(err) = apid.egress(cid, &record) {
-                println!("vsockd: warning: cannot send the egress record for cid {cid} to apid: {err}");
+                println!(
+                    "vsockd: warning: cannot send the egress record for cid {cid} to apid: {err}"
+                );
             }
         }
     }
@@ -296,7 +320,13 @@ fn serve_conn(mut guest: UnixStream, cid: u32, policy: &Policy, apid: &Apid) -> 
 
 /// Reads the request, checks it, connects out, and tunnels or forwards.
 /// Every `Err` happens before anything is written to the guest.
-fn proxy(guest: &mut UnixStream, cid: u32, policy: &Policy, apid: &Apid, audit: &mut Audit) -> Result<(), Stop> {
+fn proxy(
+    guest: &mut UnixStream,
+    cid: u32,
+    policy: &Policy,
+    apid: &Apid,
+    audit: &mut Audit,
+) -> Result<(), Stop> {
     let (head, rest) = read_head(guest)?;
     let parsed = parse_head(&head)?;
     let (host, port) = match &parsed {
@@ -307,9 +337,20 @@ fn proxy(guest: &mut UnixStream, cid: u32, policy: &Policy, apid: &Apid, audit: 
     if host.eq_ignore_ascii_case(GATEWAY_HOST) {
         // Plain HTTP only; CONNECT to the gateway is refused.
         return match parsed {
-            Head::Absolute { method, path, port: GATEWAY_PORT, .. } => {
-                gateway(guest, cid, apid, (method.as_str(), path.as_str()), &head, rest, audit)
-            }
+            Head::Absolute {
+                method,
+                path,
+                port: GATEWAY_PORT,
+                ..
+            } => gateway(
+                guest,
+                cid,
+                apid,
+                (method.as_str(), path.as_str()),
+                &head,
+                rest,
+                audit,
+            ),
             _ => Err(Stop::Forbidden),
         };
     }
@@ -319,7 +360,10 @@ fn proxy(guest: &mut UnixStream, cid: u32, policy: &Policy, apid: &Apid, audit: 
     // Decided before anything is resolved or dialled: a refused host is never contacted.
     let answer = egress_decision(apid, cid, &host, port);
     if !answer.allow {
-        println!("vsockd: egress refused cid={cid} host={host} port={port}: {}", answer.reason);
+        println!(
+            "vsockd: egress refused cid={cid} host={host} port={port}: {}",
+            answer.reason
+        );
         return Err(Stop::Refused(answer.reason));
     }
     let addrs = checked_addrs(policy, &host, port)?;
@@ -333,8 +377,12 @@ fn proxy(guest: &mut UnixStream, cid: u32, policy: &Policy, apid: &Apid, audit: 
         }
     }
     let upstream = upstream.ok_or(Stop::Unreachable)?;
-    guest.set_read_timeout(Some(PUMP_POLL)).map_err(|_| Stop::Unreachable)?;
-    upstream.set_read_timeout(Some(PUMP_POLL)).map_err(|_| Stop::Unreachable)?;
+    guest
+        .set_read_timeout(Some(PUMP_POLL))
+        .map_err(|_| Stop::Unreachable)?;
+    upstream
+        .set_read_timeout(Some(PUMP_POLL))
+        .map_err(|_| Stop::Unreachable)?;
 
     // Every clone is made before anything is written, so a failure here still
     // leaves the guest an error answer rather than half a tunnel.
@@ -354,7 +402,9 @@ fn proxy(guest: &mut UnixStream, cid: u32, policy: &Policy, apid: &Apid, audit: 
         }
         Head::Absolute { method, path, .. } => {
             let out = origin_head(&method, &path, &head);
-            upstream_write.write_all(out.as_bytes()).map_err(|_| Stop::Unreachable)?;
+            upstream_write
+                .write_all(out.as_bytes())
+                .map_err(|_| Stop::Unreachable)?;
             sent += out.len() as u64;
         }
     }
@@ -394,11 +444,21 @@ fn gateway(
         return Err(Stop::Forbidden);
     }
     // Held until the tunnel ends, so the cap counts open sockets, not requests.
-    let _slot = if upgrade { Some(UpgradeSlot::take(cid).ok_or(Stop::TooMany)?) } else { None };
+    let _slot = if upgrade {
+        Some(UpgradeSlot::take(cid).ok_or(Stop::TooMany)?)
+    } else {
+        None
+    };
     let token = apid.token().map_err(|_| Stop::Unreachable)?;
-    let mut upstream = apid.connect(CONNECT_TIMEOUT).map_err(|_| Stop::Unreachable)?;
-    guest.set_read_timeout(Some(IDLE_TIMEOUT)).map_err(|_| Stop::Unreachable)?;
-    upstream.set_read_timeout(Some(IDLE_TIMEOUT)).map_err(|_| Stop::Unreachable)?;
+    let mut upstream = apid
+        .connect(CONNECT_TIMEOUT)
+        .map_err(|_| Stop::Unreachable)?;
+    guest
+        .set_read_timeout(Some(IDLE_TIMEOUT))
+        .map_err(|_| Stop::Unreachable)?;
+    upstream
+        .set_read_timeout(Some(IDLE_TIMEOUT))
+        .map_err(|_| Stop::Unreachable)?;
 
     let guest_read = guest.try_clone().map_err(|_| Stop::Unreachable)?;
     let mut guest_write = guest.try_clone().map_err(|_| Stop::Unreachable)?;
@@ -409,7 +469,9 @@ fn gateway(
     ));
 
     let out = gateway_head(method, cid, path, head, &token, upgrade);
-    upstream_write.write_all(out.as_bytes()).map_err(|_| Stop::Unreachable)?;
+    upstream_write
+        .write_all(out.as_bytes())
+        .map_err(|_| Stop::Unreachable)?;
     let mut sent = out.len() as u64;
     if upstream_write.write_all(&rest).is_ok() {
         sent += rest.len() as u64;
@@ -427,9 +489,16 @@ fn gateway(
     }
 
     if switched {
-        println!("vsockd: egress websocket cid={cid} path={} upgraded", path.split('?').next().unwrap_or(""));
-        guest.set_read_timeout(Some(WS_POLL)).map_err(|_| Stop::Unreachable)?;
-        upstream.set_read_timeout(Some(WS_POLL)).map_err(|_| Stop::Unreachable)?;
+        println!(
+            "vsockd: egress websocket cid={cid} path={} upgraded",
+            path.split('?').next().unwrap_or("")
+        );
+        guest
+            .set_read_timeout(Some(WS_POLL))
+            .map_err(|_| Stop::Unreachable)?;
+        upstream
+            .set_read_timeout(Some(WS_POLL))
+            .map_err(|_| Stop::Unreachable)?;
         let clock = Arc::new(WsClock::new());
         let up_clock = Arc::clone(&clock);
         let up_hangup = Arc::clone(&hangup);
@@ -439,8 +508,12 @@ fn gateway(
         return Ok(());
     }
 
-    guest.set_read_timeout(Some(PUMP_POLL)).map_err(|_| Stop::Unreachable)?;
-    upstream.set_read_timeout(Some(PUMP_POLL)).map_err(|_| Stop::Unreachable)?;
+    guest
+        .set_read_timeout(Some(PUMP_POLL))
+        .map_err(|_| Stop::Unreachable)?;
+    upstream
+        .set_read_timeout(Some(PUMP_POLL))
+        .map_err(|_| Stop::Unreachable)?;
     let up_hangup = Arc::clone(&hangup);
     let up = thread::spawn(move || pump(guest_read, upstream_write, &up_hangup));
     audit.down = answered + pump(upstream, guest_write, &hangup);
@@ -456,14 +529,22 @@ fn is_websocket_upgrade(method: &str, head: &str) -> bool {
         return false;
     }
     let (mut upgrade, mut connection, mut key) = (false, false, false);
-    for line in head.split("\r\n").skip(1).take_while(|line| !line.is_empty()) {
+    for line in head
+        .split("\r\n")
+        .skip(1)
+        .take_while(|line| !line.is_empty())
+    {
         let Some((name, value)) = line.split_once(':') else {
             continue;
         };
         let value = value.trim();
         match name.trim().to_ascii_lowercase().as_str() {
             "upgrade" => upgrade |= value.eq_ignore_ascii_case("websocket"),
-            "connection" => connection |= value.split(',').any(|item| item.trim().eq_ignore_ascii_case("upgrade")),
+            "connection" => {
+                connection |= value
+                    .split(',')
+                    .any(|item| item.trim().eq_ignore_ascii_case("upgrade"))
+            }
             "sec-websocket-key" => key |= !value.is_empty(),
             _ => {}
         }
@@ -486,7 +567,9 @@ static UPGRADES: Mutex<BTreeMap<u32, usize>> = Mutex::new(BTreeMap::new());
 impl UpgradeSlot {
     /// A slot for `cid`, or `None` when it already holds [`MAX_UPGRADES_PER_CID`].
     fn take(cid: u32) -> Option<Self> {
-        let mut open = UPGRADES.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut open = UPGRADES
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let count = open.entry(cid).or_insert(0);
         if *count >= MAX_UPGRADES_PER_CID {
             return None;
@@ -498,7 +581,9 @@ impl UpgradeSlot {
 
 impl Drop for UpgradeSlot {
     fn drop(&mut self) {
-        let mut open = UPGRADES.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut open = UPGRADES
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Some(count) = open.get_mut(&self.0) {
             *count -= 1;
             if *count == 0 {
@@ -516,11 +601,15 @@ struct WsClock {
 
 impl WsClock {
     fn new() -> Self {
-        Self { start: Instant::now(), last_ms: AtomicU64::new(0) }
+        Self {
+            start: Instant::now(),
+            last_ms: AtomicU64::new(0),
+        }
     }
 
     fn touch(&self) {
-        self.last_ms.store(self.start.elapsed().as_millis() as u64, Ordering::Relaxed);
+        self.last_ms
+            .store(self.start.elapsed().as_millis() as u64, Ordering::Relaxed);
     }
 
     /// True once the tunnel is past its lifetime or has been idle too long.
@@ -564,18 +653,36 @@ fn pump_ws(mut from: impl Read, mut to: impl Write, clock: &WsClock, hangup: &Ar
 /// (`Content-Length`, `Transfer-Encoding`) stay, because the body is relayed as bytes.
 /// For an `upgrade`, the `Upgrade` header stays and the connection is `Upgrade`
 /// instead of `close`, so apid can switch protocols.
-fn gateway_head(method: &str, cid: u32, path: &str, head: &str, token: &str, upgrade: bool) -> String {
-    let lines: Vec<&str> = head.split("\r\n").skip(1).take_while(|line| !line.is_empty()).collect();
+fn gateway_head(
+    method: &str,
+    cid: u32,
+    path: &str,
+    head: &str,
+    token: &str,
+    upgrade: bool,
+) -> String {
+    let lines: Vec<&str> = head
+        .split("\r\n")
+        .skip(1)
+        .take_while(|line| !line.is_empty())
+        .collect();
     let listed: Vec<String> = lines
         .iter()
         .filter_map(|line| line.split_once(':'))
         .filter(|(name, _)| name.trim().eq_ignore_ascii_case("connection"))
-        .flat_map(|(_, value)| value.split(',').map(|item| item.trim().to_ascii_lowercase()))
+        .flat_map(|(_, value)| {
+            value
+                .split(',')
+                .map(|item| item.trim().to_ascii_lowercase())
+        })
         .filter(|item| !(upgrade && item == "upgrade"))
         .collect();
-    let mut out = format!("{method} /internal/v1/agents/{cid}/gateway{path} HTTP/1.1\r\nHost: 127.0.0.1\r\n");
+    let mut out =
+        format!("{method} /internal/v1/agents/{cid}/gateway{path} HTTP/1.1\r\nHost: 127.0.0.1\r\n");
     for line in lines {
-        let name = line.split_once(':').map_or(String::new(), |(name, _)| name.trim().to_ascii_lowercase());
+        let name = line
+            .split_once(':')
+            .map_or(String::new(), |(name, _)| name.trim().to_ascii_lowercase());
         let kept_upgrade = upgrade && name == "upgrade";
         if (GATEWAY_DROPPED.contains(&name.as_str()) && !kept_upgrade) || listed.contains(&name) {
             continue;
@@ -584,7 +691,9 @@ fn gateway_head(method: &str, cid: u32, path: &str, head: &str, token: &str, upg
         out.push_str("\r\n");
     }
     let connection = if upgrade { "Upgrade" } else { "close" };
-    out.push_str(&format!("{TOKEN_HEADER}: {token}\r\nConnection: {connection}\r\n\r\n"));
+    out.push_str(&format!(
+        "{TOKEN_HEADER}: {token}\r\nConnection: {connection}\r\n\r\n"
+    ));
     out
 }
 
@@ -626,12 +735,18 @@ fn read_head(guest: &mut impl Read) -> Result<(String, Vec<u8>), Stop> {
     let mut buf = Vec::with_capacity(1024);
     let mut chunk = [0u8; 1024];
     loop {
-        if let Some(end) = buf.windows(4).position(|window| window == b"\r\n\r\n").map(|at| at + 4) {
+        if let Some(end) = buf
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .map(|at| at + 4)
+        {
             if end > MAX_HEAD {
                 return Err(Stop::Bad);
             }
             let rest = buf.split_off(end);
-            return String::from_utf8(buf).map(|head| (head, rest)).map_err(|_| Stop::Bad);
+            return String::from_utf8(buf)
+                .map(|head| (head, rest))
+                .map_err(|_| Stop::Bad);
         }
         if buf.len() >= MAX_HEAD {
             return Err(Stop::Bad);
@@ -650,7 +765,10 @@ fn parse_head(head: &str) -> Result<Head, Stop> {
     let &[method, target, version] = parts.as_slice() else {
         return Err(Stop::Bad);
     };
-    if !version.starts_with("HTTP/1.") || method.is_empty() || !method.bytes().all(|b| b.is_ascii_uppercase()) {
+    if !version.starts_with("HTTP/1.")
+        || method.is_empty()
+        || !method.bytes().all(|b| b.is_ascii_uppercase())
+    {
         return Err(Stop::Bad);
     }
     if method == "CONNECT" {
@@ -666,7 +784,12 @@ fn parse_head(head: &str) -> Result<Head, Stop> {
         None => (rest, "/"),
     };
     let (host, port) = authority(auth, Some(80)).ok_or(Stop::Bad)?;
-    Ok(Head::Absolute { method: method.to_string(), host, port, path: path.to_string() })
+    Ok(Head::Absolute {
+        method: method.to_string(),
+        host,
+        port,
+        path: path.to_string(),
+    })
 }
 
 /// `host[:port]` or `[v6][:port]`; the port falls back to `default`.
@@ -700,7 +823,11 @@ fn authority(auth: &str, default: Option<u16>) -> Option<(String, u16)> {
 /// `Proxy-Connection` header dropped.
 fn origin_head(method: &str, path: &str, head: &str) -> String {
     let mut out = format!("{method} {path} HTTP/1.1\r\n");
-    for line in head.split("\r\n").skip(1).take_while(|line| !line.is_empty()) {
+    for line in head
+        .split("\r\n")
+        .skip(1)
+        .take_while(|line| !line.is_empty())
+    {
         if !line.to_ascii_lowercase().starts_with("proxy-connection:") {
             out.push_str(line);
             out.push_str("\r\n");
@@ -716,7 +843,9 @@ fn origin_head(method: &str, path: &str, head: &str) -> String {
 fn egress_decision(apid: &Apid, cid: u32, host: &str, port: u16) -> EgressAnswer {
     let key = (cid, host.to_ascii_lowercase(), port);
     {
-        let kept = DECISIONS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let kept = DECISIONS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Some((expires, answer)) = kept.get(&key) {
             if Instant::now() < *expires {
                 return answer.clone();
@@ -725,11 +854,16 @@ fn egress_decision(apid: &Apid, cid: u32, host: &str, port: u16) -> EgressAnswer
     }
     let answer = apid.check_egress(cid, host, port).unwrap_or_else(|err| {
         println!("vsockd: warning: egress check for cid {cid} failed, refusing: {err}");
-        EgressAnswer { allow: false, reason: "refused: apid could not decide".to_string() }
+        EgressAnswer {
+            allow: false,
+            reason: "refused: apid could not decide".to_string(),
+        }
     });
     let now = Instant::now();
     let ttl = if answer.allow { ALLOW_TTL } else { DENY_TTL };
-    let mut kept = DECISIONS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut kept = DECISIONS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     kept.retain(|_, (expires, _)| *expires > now);
     if kept.len() < MAX_DECISIONS {
         kept.insert(key, (now + ttl, answer.clone()));
@@ -741,7 +875,10 @@ fn egress_decision(apid: &Apid, cid: u32, host: &str, port: u16) -> EgressAnswer
 /// the destination. The returned addresses are the ones that were checked, and
 /// they are the only ones connected to.
 fn checked_addrs(policy: &Policy, host: &str, port: u16) -> Result<Vec<SocketAddr>, Stop> {
-    let addrs: Vec<SocketAddr> = (host, port).to_socket_addrs().map_err(|_| Stop::Unreachable)?.collect();
+    let addrs: Vec<SocketAddr> = (host, port)
+        .to_socket_addrs()
+        .map_err(|_| Stop::Unreachable)?
+        .collect();
     if addrs.is_empty() {
         return Err(Stop::Unreachable);
     }
@@ -762,13 +899,31 @@ mod tests {
     fn the_policy_refuses_non_public_addresses_and_unlisted_ports() {
         let policy = Policy::new(vec![8080]);
         for ip in [
-            "127.0.0.1", "10.1.2.3", "172.16.0.9", "172.31.255.1", "192.168.1.1", "169.254.10.10", "0.0.0.0",
-            "255.255.255.255", "224.0.0.1", "::1", "::", "fe80::1", "fc00::5", "fd12::5", "::ffff:10.0.0.5",
+            "127.0.0.1",
+            "10.1.2.3",
+            "172.16.0.9",
+            "172.31.255.1",
+            "192.168.1.1",
+            "169.254.10.10",
+            "0.0.0.0",
+            "255.255.255.255",
+            "224.0.0.1",
+            "::1",
+            "::",
+            "fe80::1",
+            "fc00::5",
+            "fd12::5",
+            "::ffff:10.0.0.5",
         ] {
             let ip: IpAddr = ip.parse().unwrap();
             assert!(policy.refusal(ip).is_some(), "{ip} must be refused");
         }
-        for ip in ["93.184.216.34", "172.32.0.1", "8.8.8.8", "2606:2800:220:1::1"] {
+        for ip in [
+            "93.184.216.34",
+            "172.32.0.1",
+            "8.8.8.8",
+            "2606:2800:220:1::1",
+        ] {
             let ip: IpAddr = ip.parse().unwrap();
             assert_eq!(policy.refusal(ip), None, "{ip} is public and allowed");
         }
@@ -780,19 +935,35 @@ mod tests {
     fn heads_parse_into_connect_and_absolute_requests() {
         assert_eq!(
             parse_head("CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n"),
-            Ok(Head::Connect { host: "example.com".into(), port: 443 })
+            Ok(Head::Connect {
+                host: "example.com".into(),
+                port: 443
+            })
         );
         assert_eq!(
             parse_head("CONNECT [2606:2800::1]:8443 HTTP/1.1\r\n\r\n"),
-            Ok(Head::Connect { host: "2606:2800::1".into(), port: 8443 })
+            Ok(Head::Connect {
+                host: "2606:2800::1".into(),
+                port: 8443
+            })
         );
         assert_eq!(
             parse_head("GET http://example.com/a?b=1 HTTP/1.1\r\nHost: example.com\r\n\r\n"),
-            Ok(Head::Absolute { method: "GET".into(), host: "example.com".into(), port: 80, path: "/a?b=1".into() })
+            Ok(Head::Absolute {
+                method: "GET".into(),
+                host: "example.com".into(),
+                port: 80,
+                path: "/a?b=1".into()
+            })
         );
         assert_eq!(
             parse_head("POST HTTP://Example.com:8080 HTTP/1.1\r\n\r\n"),
-            Ok(Head::Absolute { method: "POST".into(), host: "Example.com".into(), port: 8080, path: "/".into() })
+            Ok(Head::Absolute {
+                method: "POST".into(),
+                host: "Example.com".into(),
+                port: 8080,
+                path: "/".into()
+            })
         );
         for bad in [
             "CONNECT example.com HTTP/1.1\r\n\r\n",
@@ -806,7 +977,11 @@ mod tests {
             assert_eq!(parse_head(bad), Err(Stop::Bad), "{bad:?}");
         }
         assert_eq!(
-            origin_head("GET", "/a", "GET http://x/a HTTP/1.1\r\nHost: x\r\nProxy-Connection: keep-alive\r\n\r\n"),
+            origin_head(
+                "GET",
+                "/a",
+                "GET http://x/a HTTP/1.1\r\nHost: x\r\nProxy-Connection: keep-alive\r\n\r\n"
+            ),
             "GET /a HTTP/1.1\r\nHost: x\r\n\r\n"
         );
     }
@@ -836,10 +1011,18 @@ mod tests {
             let policy = Policy::new(vec![]);
             let proxy = thread::spawn(move || serve_conn(server, 7, &policy, &Apid::off()));
             client.write_all(request.as_bytes()).unwrap();
-            let answer = String::from_utf8(crate::read_until_closed(&client, Duration::from_secs(20))).unwrap();
-            assert!(answer.starts_with("HTTP/1.1 403 Forbidden\r\n"), "{request:?}: {answer:?}");
+            let answer =
+                String::from_utf8(crate::read_until_closed(&client, Duration::from_secs(20)))
+                    .unwrap();
+            assert!(
+                answer.starts_with("HTTP/1.1 403 Forbidden\r\n"),
+                "{request:?}: {answer:?}"
+            );
             let audit = proxy.join().unwrap();
-            assert!(!audit.allowed && audit.host.eq_ignore_ascii_case(GATEWAY_HOST), "{audit:?}");
+            assert!(
+                !audit.allowed && audit.host.eq_ignore_ascii_case(GATEWAY_HOST),
+                "{audit:?}"
+            );
         }
     }
 
@@ -848,17 +1031,31 @@ mod tests {
         const ANSWER: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: 11\r\n\r\nhello world";
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
-        let token_file = std::env::temp_dir().join(format!("vsockd-gateway-test-{}", std::process::id()));
+        let token_file =
+            std::env::temp_dir().join(format!("vsockd-gateway-test-{}", std::process::id()));
         std::fs::write(&token_file, "test-token\n").unwrap();
-        let apid = Apid::new(&format!("http://127.0.0.1:{port}"), Some(token_file.clone())).unwrap();
+        let apid = Apid::new(
+            &format!("http://127.0.0.1:{port}"),
+            Some(token_file.clone()),
+        )
+        .unwrap();
 
         // The stand-in for apid: checks the rewritten head and the body, then answers.
         let stand_in = thread::spawn(move || {
             let (mut conn, _) = listener.accept().unwrap();
             let (head, mut body) = read_head(&mut conn).unwrap();
-            assert!(head.starts_with("POST /internal/v1/agents/7/gateway/v1/messages HTTP/1.1\r\n"), "{head}");
-            assert!(head.contains("\r\nx-apz-internal: test-token\r\n"), "{head}");
-            assert!(!head.to_ascii_lowercase().contains("authorization"), "{head}");
+            assert!(
+                head.starts_with("POST /internal/v1/agents/7/gateway/v1/messages HTTP/1.1\r\n"),
+                "{head}"
+            );
+            assert!(
+                head.contains("\r\nx-apz-internal: test-token\r\n"),
+                "{head}"
+            );
+            assert!(
+                !head.to_ascii_lowercase().contains("authorization"),
+                "{head}"
+            );
             while body.len() < 4 {
                 let mut chunk = [0u8; 64];
                 let n = conn.read(&mut chunk).unwrap();
@@ -873,7 +1070,9 @@ mod tests {
         // Every wait is bounded and reads a known length: on Windows a read already blocked on an
         // AF_UNIX socket is not reliably woken when the peer closes, so waiting for the end of the
         // stream could hang where the relay itself is done.
-        client.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(20)))
+            .unwrap();
         let policy = Policy::new(vec![]);
         let (finished, proxy) = std::sync::mpsc::channel();
         thread::spawn(move || {
@@ -886,33 +1085,56 @@ mod tests {
             )
             .unwrap();
         let mut answer = vec![0u8; ANSWER.len()];
-        client.read_exact(&mut answer).expect("apid's answer comes back");
+        client
+            .read_exact(&mut answer)
+            .expect("apid's answer comes back");
         assert_eq!(answer, ANSWER);
 
         stand_in.join().unwrap();
-        let audit = proxy.recv_timeout(Duration::from_secs(20)).expect("the relay ends once apid has answered");
+        let audit = proxy
+            .recv_timeout(Duration::from_secs(20))
+            .expect("the relay ends once apid has answered");
         let _ = std::fs::remove_file(&token_file);
-        assert!(audit.allowed && audit.host == GATEWAY_HOST && audit.port == 80, "{audit:?}");
+        assert!(
+            audit.allowed && audit.host == GATEWAY_HOST && audit.port == 80,
+            "{audit:?}"
+        );
     }
 
     #[test]
     fn a_websocket_upgrade_to_a_model_path_is_relayed_and_bytes_flow_both_ways() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
-        let token_file = std::env::temp_dir().join(format!("vsockd-upgrade-test-{}", std::process::id()));
+        let token_file =
+            std::env::temp_dir().join(format!("vsockd-upgrade-test-{}", std::process::id()));
         std::fs::write(&token_file, "test-token\n").unwrap();
-        let apid = Apid::new(&format!("http://127.0.0.1:{port}"), Some(token_file.clone())).unwrap();
+        let apid = Apid::new(
+            &format!("http://127.0.0.1:{port}"),
+            Some(token_file.clone()),
+        )
+        .unwrap();
 
         // The stand-in for apid: checks the rewritten upgrade head, switches protocols,
         // then echoes one message the other way.
         let stand_in = thread::spawn(move || {
             let (mut conn, _) = listener.accept().unwrap();
             let (head, _) = read_head(&mut conn).unwrap();
-            assert!(head.starts_with("GET /internal/v1/agents/7/gateway/openai/v1/responses HTTP/1.1\r\n"), "{head}");
-            assert!(head.contains("\r\nx-apz-internal: test-token\r\n"), "{head}");
+            assert!(
+                head.starts_with(
+                    "GET /internal/v1/agents/7/gateway/openai/v1/responses HTTP/1.1\r\n"
+                ),
+                "{head}"
+            );
+            assert!(
+                head.contains("\r\nx-apz-internal: test-token\r\n"),
+                "{head}"
+            );
             assert!(head.contains("\r\nUpgrade: websocket\r\n"), "{head}");
             assert!(head.contains("\r\nConnection: Upgrade\r\n"), "{head}");
-            assert!(!head.to_ascii_lowercase().contains("authorization"), "{head}");
+            assert!(
+                !head.to_ascii_lowercase().contains("authorization"),
+                "{head}"
+            );
             conn.write_all(b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n").unwrap();
             let mut ping = [0u8; 4];
             conn.read_exact(&mut ping).unwrap();
@@ -922,7 +1144,9 @@ mod tests {
 
         let (mut client, server) = UnixStream::pair().unwrap();
         // Bounded waits of known lengths, as in the plain gateway test.
-        client.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(20)))
+            .unwrap();
         let policy = Policy::new(vec![]);
         let (finished, proxy) = std::sync::mpsc::channel();
         thread::spawn(move || {
@@ -937,16 +1161,26 @@ mod tests {
             .unwrap();
         let (switching, early) = read_head(&mut client).unwrap();
         assert!(switching.starts_with("HTTP/1.1 101 "), "{switching}");
-        assert!(early.is_empty(), "nothing follows the 101 before the guest speaks");
+        assert!(
+            early.is_empty(),
+            "nothing follows the 101 before the guest speaks"
+        );
         client.write_all(b"ping").unwrap();
         let mut pong = [0u8; 4];
-        client.read_exact(&mut pong).expect("the pong comes back through the socket");
+        client
+            .read_exact(&mut pong)
+            .expect("the pong comes back through the socket");
         assert_eq!(&pong, b"pong");
 
         stand_in.join().unwrap();
-        let audit = proxy.recv_timeout(Duration::from_secs(20)).expect("the relay ends once apid has hung up");
+        let audit = proxy
+            .recv_timeout(Duration::from_secs(20))
+            .expect("the relay ends once apid has hung up");
         let _ = std::fs::remove_file(&token_file);
-        assert!(audit.allowed && audit.host == GATEWAY_HOST && audit.port == 80, "{audit:?}");
+        assert!(
+            audit.allowed && audit.host == GATEWAY_HOST && audit.port == 80,
+            "{audit:?}"
+        );
     }
 
     #[test]
@@ -961,8 +1195,12 @@ mod tests {
                   Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
             )
             .unwrap();
-        let answer = String::from_utf8(crate::read_until_closed(&client, Duration::from_secs(20))).unwrap();
-        assert!(answer.starts_with("HTTP/1.1 403 Forbidden\r\n"), "{answer:?}");
+        let answer =
+            String::from_utf8(crate::read_until_closed(&client, Duration::from_secs(20))).unwrap();
+        assert!(
+            answer.starts_with("HTTP/1.1 403 Forbidden\r\n"),
+            "{answer:?}"
+        );
         let audit = proxy.join().unwrap();
         assert!(!audit.allowed, "{audit:?}");
     }
@@ -970,11 +1208,19 @@ mod tests {
     #[test]
     fn a_fifth_upgraded_socket_for_one_agent_is_refused_with_429() {
         const CID: u32 = 9_001;
-        let held: Vec<UpgradeSlot> = (0..MAX_UPGRADES_PER_CID).map(|_| UpgradeSlot::take(CID).unwrap()).collect();
-        assert!(UpgradeSlot::take(CID).is_none(), "the fifth socket must be refused");
+        let held: Vec<UpgradeSlot> = (0..MAX_UPGRADES_PER_CID)
+            .map(|_| UpgradeSlot::take(CID).unwrap())
+            .collect();
+        assert!(
+            UpgradeSlot::take(CID).is_none(),
+            "the fifth socket must be refused"
+        );
         assert!(UpgradeSlot::take(CID + 1).is_some(), "the cap is per agent");
         drop(held);
-        assert!(UpgradeSlot::take(CID).is_some(), "a closed socket frees its slot");
+        assert!(
+            UpgradeSlot::take(CID).is_some(),
+            "a closed socket frees its slot"
+        );
         assert!(Stop::TooMany.answer().starts_with(b"HTTP/1.1 429 "));
     }
 
@@ -988,16 +1234,23 @@ mod tests {
     ) -> (Apid, Arc<AtomicUsize>, PathBuf) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
-        let token_file = std::env::temp_dir().join(format!("vsockd-egress-check-{name}-{}", std::process::id()));
+        let token_file =
+            std::env::temp_dir().join(format!("vsockd-egress-check-{name}-{}", std::process::id()));
         std::fs::write(&token_file, "test-token\n").unwrap();
-        let apid = Apid::new(&format!("http://127.0.0.1:{port}"), Some(token_file.clone())).unwrap();
+        let apid = Apid::new(
+            &format!("http://127.0.0.1:{port}"),
+            Some(token_file.clone()),
+        )
+        .unwrap();
         let checks = Arc::new(AtomicUsize::new(0));
         let counter = Arc::clone(&checks);
         thread::spawn(move || {
             for conn in listener.incoming() {
                 let Ok(mut conn) = conn else { continue };
                 let _ = conn.set_read_timeout(Some(Duration::from_secs(20)));
-                let Ok((head, mut body)) = read_head(&mut conn) else { continue };
+                let Ok((head, mut body)) = read_head(&mut conn) else {
+                    continue;
+                };
                 let length = head
                     .lines()
                     .filter_map(|line| line.split_once(':'))
@@ -1011,10 +1264,15 @@ mod tests {
                         _ => break,
                     }
                 }
-                let trusted = head.to_ascii_lowercase().contains("x-apz-internal: test-token");
-                let (status, reply) = if trusted && head.starts_with("POST /internal/egress/check HTTP/1.1\r\n") {
+                let trusted = head
+                    .to_ascii_lowercase()
+                    .contains("x-apz-internal: test-token");
+                let (status, reply) = if trusted
+                    && head.starts_with("POST /internal/egress/check HTTP/1.1\r\n")
+                {
                     counter.fetch_add(1, Ordering::SeqCst);
-                    let request: serde_json::Value = serde_json::from_slice(&body[..length.min(body.len())]).unwrap_or_default();
+                    let request: serde_json::Value =
+                        serde_json::from_slice(&body[..length.min(body.len())]).unwrap_or_default();
                     (200, decide(&request).to_string())
                 } else {
                     (403, "{}".to_string())
@@ -1042,7 +1300,10 @@ mod tests {
     /// A policy under which the loopback port `port` may be reached (test only), and nothing else
     /// is refused by the policy, so only apid can refuse a connection to it.
     fn loopback_policy(port: u16) -> Policy {
-        Policy { allow_loopback: true, ..Policy::new(vec![port]) }
+        Policy {
+            allow_loopback: true,
+            ..Policy::new(vec![port])
+        }
     }
 
     fn connect_request(host: &str, port: u16) -> String {
@@ -1053,7 +1314,9 @@ mod tests {
     /// guest read until the proxy closed the connection, with the audit. Every wait is bounded.
     fn serve_one(cid: u32, policy: Policy, apid: &Apid, request: &str) -> (Vec<u8>, Audit) {
         let (mut client, server) = UnixStream::pair().unwrap();
-        client.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(20)))
+            .unwrap();
         let apid = apid.clone();
         let (finished, proxy) = std::sync::mpsc::channel();
         thread::spawn(move || {
@@ -1061,7 +1324,9 @@ mod tests {
         });
         client.write_all(request.as_bytes()).unwrap();
         let answer = crate::read_until_closed(&client, Duration::from_secs(20));
-        let audit = proxy.recv_timeout(Duration::from_secs(20)).expect("the proxy ends once it has answered");
+        let audit = proxy
+            .recv_timeout(Duration::from_secs(20))
+            .expect("the proxy ends once it has answered");
         (answer, audit)
     }
 
@@ -1069,18 +1334,26 @@ mod tests {
     /// by the guest, and audited. Every wait is bounded.
     fn tunnel(cid: u32, policy: Policy, apid: &Apid, port: u16) -> Audit {
         let (mut client, server) = UnixStream::pair().unwrap();
-        client.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(20)))
+            .unwrap();
         let apid = apid.clone();
         let (finished, proxy) = std::sync::mpsc::channel();
         thread::spawn(move || {
             let _ = finished.send(serve_conn(server, cid, &policy, &apid));
         });
-        client.write_all(connect_request("127.0.0.1", port).as_bytes()).unwrap();
+        client
+            .write_all(connect_request("127.0.0.1", port).as_bytes())
+            .unwrap();
         let mut answer = vec![0u8; ESTABLISHED.len()];
-        client.read_exact(&mut answer).expect("the tunnel is established");
+        client
+            .read_exact(&mut answer)
+            .expect("the tunnel is established");
         assert_eq!(answer, ESTABLISHED);
         client.shutdown(Shutdown::Write).unwrap();
-        proxy.recv_timeout(Duration::from_secs(20)).expect("the tunnel ends once the guest closed its side")
+        proxy
+            .recv_timeout(Duration::from_secs(20))
+            .expect("the tunnel ends once the guest closed its side")
     }
 
     #[test]
@@ -1093,13 +1366,29 @@ mod tests {
                 "reason": "refused by law S-013d: Researchers never write to repositories",
             })
         });
-        let (answer, audit) = serve_one(7_002, loopback_policy(port), &apid, &connect_request("127.0.0.1", port));
+        let (answer, audit) = serve_one(
+            7_002,
+            loopback_policy(port),
+            &apid,
+            &connect_request("127.0.0.1", port),
+        );
         let _ = std::fs::remove_file(&token);
         let answer = String::from_utf8(answer).unwrap();
-        assert!(answer.starts_with("HTTP/1.1 403 Forbidden\r\n") && answer.contains("S-013d"), "{answer:?}");
+        assert!(
+            answer.starts_with("HTTP/1.1 403 Forbidden\r\n") && answer.contains("S-013d"),
+            "{answer:?}"
+        );
         assert!(!audit.allowed, "{audit:?}");
-        assert_eq!(checks.load(Ordering::SeqCst), 1, "the connection was checked once");
-        assert_eq!(echo.accept().unwrap_err().kind(), std::io::ErrorKind::WouldBlock, "the refused host was dialled");
+        assert_eq!(
+            checks.load(Ordering::SeqCst),
+            1,
+            "the connection was checked once"
+        );
+        assert_eq!(
+            echo.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock,
+            "the refused host was dialled"
+        );
     }
 
     #[test]
@@ -1112,12 +1401,25 @@ mod tests {
         assert!(tunnel(7_003, loopback_policy(port), &apid, port).allowed);
         assert!(tunnel(7_003, loopback_policy(port), &apid, port).allowed);
         for _ in 0..2 {
-            let (answer, audit) = serve_one(7_003, Policy::new(vec![]), &apid, &connect_request("denied.example", 443));
-            assert!(String::from_utf8(answer).unwrap().starts_with("HTTP/1.1 403 Forbidden\r\n"));
+            let (answer, audit) = serve_one(
+                7_003,
+                Policy::new(vec![]),
+                &apid,
+                &connect_request("denied.example", 443),
+            );
+            assert!(
+                String::from_utf8(answer)
+                    .unwrap()
+                    .starts_with("HTTP/1.1 403 Forbidden\r\n")
+            );
             assert!(!audit.allowed);
         }
         let _ = std::fs::remove_file(&token);
-        assert_eq!(checks.load(Ordering::SeqCst), 2, "one check for the allowed host and one for the refused, both kept");
+        assert_eq!(
+            checks.load(Ordering::SeqCst),
+            2,
+            "one check for the allowed host and one for the refused, both kept"
+        );
     }
 
     #[test]
@@ -1126,15 +1428,32 @@ mod tests {
         let dead = TcpListener::bind("127.0.0.1:0").unwrap();
         let dead_port = dead.local_addr().unwrap().port();
         drop(dead);
-        let token = std::env::temp_dir().join(format!("vsockd-egress-check-down-{}", std::process::id()));
+        let token =
+            std::env::temp_dir().join(format!("vsockd-egress-check-down-{}", std::process::id()));
         std::fs::write(&token, "test-token\n").unwrap();
-        let apid = Apid::new(&format!("http://127.0.0.1:{dead_port}"), Some(token.clone())).unwrap();
-        let (answer, audit) = serve_one(7_004, loopback_policy(port), &apid, &connect_request("127.0.0.1", port));
+        let apid = Apid::new(
+            &format!("http://127.0.0.1:{dead_port}"),
+            Some(token.clone()),
+        )
+        .unwrap();
+        let (answer, audit) = serve_one(
+            7_004,
+            loopback_policy(port),
+            &apid,
+            &connect_request("127.0.0.1", port),
+        );
         let _ = std::fs::remove_file(&token);
         let answer = String::from_utf8(answer).unwrap();
-        assert!(answer.starts_with("HTTP/1.1 403 Forbidden\r\n") && answer.contains("could not decide"), "{answer:?}");
+        assert!(
+            answer.starts_with("HTTP/1.1 403 Forbidden\r\n") && answer.contains("could not decide"),
+            "{answer:?}"
+        );
         assert!(!audit.allowed, "{audit:?}");
-        assert_eq!(echo.accept().unwrap_err().kind(), std::io::ErrorKind::WouldBlock, "the host was dialled without apid");
+        assert_eq!(
+            echo.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock,
+            "the host was dialled without apid"
+        );
     }
 
     #[test]
@@ -1153,11 +1472,16 @@ mod tests {
         });
 
         // Test-only override: loopback is reachable, and the echo port is allowed.
-        let policy = Policy { allow_loopback: true, ..Policy::new(vec![port]) };
+        let policy = Policy {
+            allow_loopback: true,
+            ..Policy::new(vec![port])
+        };
         let (mut client, server) = UnixStream::pair().unwrap();
         // Every wait is bounded, so a stall fails at the step that stalled
         // instead of hanging the test.
-        client.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(20)))
+            .unwrap();
         let (apid, checks, token) = fake_apid("e2e", |_| json!({ "allow": true }));
         let (finished, proxy) = std::sync::mpsc::channel();
         thread::spawn(move || {
@@ -1165,16 +1489,23 @@ mod tests {
         });
 
         client
-            .write_all(format!("CONNECT 127.0.0.1:{port} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n").as_bytes())
+            .write_all(
+                format!("CONNECT 127.0.0.1:{port} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n")
+                    .as_bytes(),
+            )
             .unwrap();
         let mut answer = vec![0u8; ESTABLISHED.len()];
-        client.read_exact(&mut answer).expect("the tunnel is established");
+        client
+            .read_exact(&mut answer)
+            .expect("the tunnel is established");
         assert_eq!(answer, ESTABLISHED);
 
         let payload = b"ping through the tunnel";
         client.write_all(payload).unwrap();
         let mut echoed = vec![0u8; payload.len()];
-        client.read_exact(&mut echoed).expect("the payload comes back through the tunnel");
+        client
+            .read_exact(&mut echoed)
+            .expect("the payload comes back through the tunnel");
         assert_eq!(&echoed[..], &payload[..]);
 
         client.shutdown(Shutdown::Write).unwrap();
@@ -1182,9 +1513,16 @@ mod tests {
             .recv_timeout(Duration::from_secs(20))
             .expect("the relay ends once the guest closed its side");
         let _ = std::fs::remove_file(&token);
-        assert_eq!(checks.load(Ordering::SeqCst), 1, "the connection was checked once");
+        assert_eq!(
+            checks.load(Ordering::SeqCst),
+            1,
+            "the connection was checked once"
+        );
         assert!(
-            audit.allowed && audit.port == port && audit.up == payload.len() as u64 && audit.down == payload.len() as u64,
+            audit.allowed
+                && audit.port == port
+                && audit.up == payload.len() as u64
+                && audit.down == payload.len() as u64,
             "{audit:?}"
         );
     }

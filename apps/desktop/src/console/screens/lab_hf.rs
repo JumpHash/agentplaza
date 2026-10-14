@@ -7,22 +7,27 @@
 
 use std::collections::BTreeMap;
 
-use iced::widget::{column, container, row, text, text_input, Space};
+use iced::widget::{Space, column, container, row, text, text_input};
 use iced::{Alignment, Element, Length, Subscription, Task, Theme};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use super::lab_common;
 use super::Id;
+use super::lab_common;
+use crate::console::Ctx;
 use crate::console::client::{self, Client};
 use crate::console::events;
 use crate::console::ui::{self, Kind, Tone};
-use crate::console::Ctx;
 use crate::theme::{MONO, SANS};
 
 const GIB: u64 = 1024 * 1024 * 1024;
 const LIBRARIES: [&str; 5] = ["any", "onnx", "safetensors", "transformers", "gguf"];
-const SORTS: [(&str, &str); 4] = [("downloads", "Downloads"), ("likes", "Likes"), ("lastModified", "Updated"), ("trending", "Trending")];
+const SORTS: [(&str, &str); 4] = [
+    ("downloads", "Downloads"),
+    ("likes", "Likes"),
+    ("lastModified", "Updated"),
+    ("trending", "Trending"),
+];
 /// The default file sets, as the contract names them (the hub checks the real files at import).
 const BASE_FILES: [&str; 10] = [
     "config.json",
@@ -37,7 +42,13 @@ const BASE_FILES: [&str; 10] = [
     "pytorch_model.bin",
 ];
 const BASE_SUFFIXES: [&str; 2] = [".safetensors", ".safetensors.index.json"];
-const SERVABLE_FILES: [&str; 5] = ["config.json", "model_card.json", "onnx/model.onnx", "model.onnx", "tokenizer.json"];
+const SERVABLE_FILES: [&str; 5] = [
+    "config.json",
+    "model_card.json",
+    "onnx/model.onnx",
+    "model.onnx",
+    "tokenizer.json",
+];
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
@@ -232,15 +243,27 @@ pub fn subscription(ctx: &Ctx) -> Subscription<Msg> {
 }
 
 fn frame(event: &events::Event) -> Option<Msg> {
-    if event.kind != "foundry" || event.data.get("kind").and_then(Value::as_str) != Some("hf_import") {
+    if event.kind != "foundry"
+        || event.data.get("kind").and_then(Value::as_str) != Some("hf_import")
+    {
         return None;
     }
     Some(Msg::Frame(Frame {
         import: event.data.get("import")?.as_u64()?,
-        file: event.data.get("file").and_then(Value::as_str).unwrap_or("").to_string(),
+        file: event
+            .data
+            .get("file")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
         bytes: event.data.get("bytes").and_then(Value::as_u64).unwrap_or(0),
         total: event.data.get("total").and_then(Value::as_u64).unwrap_or(0),
-        state: event.data.get("state").and_then(Value::as_str).unwrap_or("").to_string(),
+        state: event
+            .data
+            .get("state")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
     }))
 }
 
@@ -252,7 +275,9 @@ fn model_path(id: &str) -> String {
 fn enc(s: &str) -> String {
     s.bytes()
         .map(|b| match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (b as char).to_string()
+            }
             _ => format!("%{b:02X}"),
         })
         .collect()
@@ -271,7 +296,8 @@ pub fn default_files<'a>(files: &'a [HfFile], as_kind: &str) -> Vec<&'a HfFile> 
             if as_kind == "servable" {
                 SERVABLE_FILES.contains(&f.path.as_str())
             } else {
-                BASE_FILES.contains(&f.path.as_str()) || BASE_SUFFIXES.iter().any(|s| f.path.ends_with(s))
+                BASE_FILES.contains(&f.path.as_str())
+                    || BASE_SUFFIXES.iter().any(|s| f.path.ends_with(s))
             }
         })
         .collect()
@@ -282,7 +308,8 @@ fn token_status_get(c: &Client) -> Result<HfStatus, String> {
 }
 
 fn imports_get(c: &Client) -> Result<Vec<ImportRecord>, String> {
-    c.get::<ImportList>("/v1/foundry/hf/imports").map(|l| l.imports)
+    c.get::<ImportList>("/v1/foundry/hf/imports")
+        .map(|l| l.imports)
 }
 
 /// Loads the token state and the import queue; the search and the drawer load on demand.
@@ -298,7 +325,10 @@ pub fn load(state: &mut State, ctx: &Ctx) -> Task<Msg> {
 
 fn search_task(c: &Client, state: &State, cursor: Option<String>) -> Task<Msg> {
     let c = c.clone();
-    let mut query = vec![format!("sort={}", SORTS[state.sort].0), "limit=30".to_string()];
+    let mut query = vec![
+        format!("sort={}", SORTS[state.sort].0),
+        "limit=30".to_string(),
+    ];
     if !state.search.trim().is_empty() {
         query.push(format!("search={}", enc(state.search.trim())));
     }
@@ -331,7 +361,16 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                 return Task::none();
             }
             state.token_error = None;
-            client::task(move || c.call("PUT", "/v1/foundry/hf/token", Some(&json!({ "value": value }))), Msg::Token)
+            client::task(
+                move || {
+                    c.call(
+                        "PUT",
+                        "/v1/foundry/hf/token",
+                        Some(&json!({ "value": value })),
+                    )
+                },
+                Msg::Token,
+            )
         }
         Msg::RemoveToken => {
             state.token_error = None;
@@ -418,9 +457,16 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         }
         Msg::Import(id, as_kind) => {
             state.import_error = None;
-            let revision = state.detail.as_ref().map(|d| d.sha.clone()).unwrap_or_else(|| "main".to_string());
+            let revision = state
+                .detail
+                .as_ref()
+                .map(|d| d.sha.clone())
+                .unwrap_or_else(|| "main".to_string());
             let body = json!({ "id": id, "revision": revision, "as": as_kind });
-            client::task(move || c.post::<Value>("/v1/foundry/hf/import", &body), Msg::Imported)
+            client::task(
+                move || c.post::<Value>("/v1/foundry/hf/import", &body),
+                Msg::Imported,
+            )
         }
         Msg::Imported(Ok(_)) => load(state, ctx),
         Msg::Imported(Err(err)) => {
@@ -446,10 +492,16 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             state.imports_error = Some(err);
             Task::none()
         }
-        Msg::Cancel(n) => client::task(move || c.delete(&format!("/v1/foundry/hf/imports/{n}")), Msg::Acted),
+        Msg::Cancel(n) => client::task(
+            move || c.delete(&format!("/v1/foundry/hf/imports/{n}")),
+            Msg::Acted,
+        ),
         Msg::Resume(r) => {
             let body = json!({ "id": r.id, "revision": r.revision, "as": r.as_kind });
-            client::task(move || c.post::<Value>("/v1/foundry/hf/import", &body), Msg::Acted)
+            client::task(
+                move || c.post::<Value>("/v1/foundry/hf/import", &body),
+                Msg::Acted,
+            )
         }
         Msg::Acted(Ok(_)) => load(state, ctx),
         Msg::Acted(Err(err)) => {
@@ -511,24 +563,55 @@ fn token_block<'a>(state: &'a State) -> Element<'a, Msg> {
         .size(12.0)
         .color(crate::theme::palette().ink_2)
         .into(),
-        None => ui::faint(state.status_error.clone().unwrap_or_else(|| "Reading the token state".to_string())).into(),
+        None => ui::faint(
+            state
+                .status_error
+                .clone()
+                .unwrap_or_else(|| "Reading the token state".to_string()),
+        )
+        .into(),
     };
-    let field = text_input("Token value", &state.token_input).on_input(Msg::TokenInput).secure(true).on_submit(Msg::SaveToken).padding(8);
-    let save = ui::btn("Save token", None, Kind::Primary, (!state.token_input.trim().is_empty()).then_some(Msg::SaveToken));
+    let field = text_input("Token value", &state.token_input)
+        .on_input(Msg::TokenInput)
+        .secure(true)
+        .on_submit(Msg::SaveToken)
+        .padding(8);
+    let save = ui::btn(
+        "Save token",
+        None,
+        Kind::Primary,
+        (!state.token_input.trim().is_empty()).then_some(Msg::SaveToken),
+    );
     let remove = set.then(|| ui::btn("Remove token", None, Kind::Danger, Some(Msg::RemoveToken)));
     let mut actions = row![field, save].spacing(8).align_y(Alignment::Center);
     if let Some(remove) = remove {
         actions = actions.push(remove);
     }
     let mut body: Vec<Element<'a, Msg>> = vec![
-        row![ui::badge(if state.status.is_none() { "Token state unknown" } else if set { "Token set" } else { "Token not set" }, if set { Tone::Ok } else { Tone::Muted }), facts]
-            .spacing(12)
-            .align_y(Alignment::Center)
-            .into(),
+        row![
+            ui::badge(
+                if state.status.is_none() {
+                    "Token state unknown"
+                } else if set {
+                    "Token set"
+                } else {
+                    "Token not set"
+                },
+                if set { Tone::Ok } else { Tone::Muted }
+            ),
+            facts
+        ]
+        .spacing(12)
+        .align_y(Alignment::Center)
+        .into(),
         actions.into(),
         row![
             ui::faint("The token is stored on this machine and never shown back. Create one at"),
-            ui::link("huggingface.co/settings/tokens", Msg::OpenUrl("https://huggingface.co/settings/tokens".to_string()), false),
+            ui::link(
+                "huggingface.co/settings/tokens",
+                Msg::OpenUrl("https://huggingface.co/settings/tokens".to_string()),
+                false
+            ),
         ]
         .spacing(6)
         .align_y(Alignment::Center)
@@ -541,17 +624,34 @@ fn token_block<'a>(state: &'a State) -> Element<'a, Msg> {
 }
 
 fn search_block<'a>(state: &'a State) -> Element<'a, Msg> {
-    let search = text_input("Search models", &state.search).on_input(Msg::SearchText).on_submit(Msg::Submit).padding(8);
-    let task = text_input("Task, e.g. text-classification", &state.task).on_input(Msg::TaskText).on_submit(Msg::Submit).padding(8);
-    let libs: Vec<(usize, &str)> = LIBRARIES.iter().enumerate().map(|(i, l)| (i, if i == 0 { "Any library" } else { *l })).collect();
-    let sorts: Vec<(usize, &str)> = SORTS.iter().enumerate().map(|(i, (_, label))| (i, *label)).collect();
+    let search = text_input("Search models", &state.search)
+        .on_input(Msg::SearchText)
+        .on_submit(Msg::Submit)
+        .padding(8);
+    let task = text_input("Task, e.g. text-classification", &state.task)
+        .on_input(Msg::TaskText)
+        .on_submit(Msg::Submit)
+        .padding(8);
+    let libs: Vec<(usize, &str)> = LIBRARIES
+        .iter()
+        .enumerate()
+        .map(|(i, l)| (i, if i == 0 { "Any library" } else { *l }))
+        .collect();
+    let sorts: Vec<(usize, &str)> = SORTS
+        .iter()
+        .enumerate()
+        .map(|(i, (_, label))| (i, *label))
+        .collect();
     let mut body: Vec<Element<'a, Msg>> = vec![
         row![search, task].spacing(8).into(),
         ui::seg(&libs, state.library, Msg::Library),
-        row![ui::seg(&sorts, state.sort, Msg::Sort), ui::btn("Search", Some("search"), Kind::Primary, Some(Msg::Submit))]
-            .spacing(12)
-            .align_y(Alignment::Center)
-            .into(),
+        row![
+            ui::seg(&sorts, state.sort, Msg::Sort),
+            ui::btn("Search", Some("search"), Kind::Primary, Some(Msg::Submit))
+        ]
+        .spacing(12)
+        .align_y(Alignment::Center)
+        .into(),
     ];
     body.push(results(state));
     if let Some(err) = &state.search_error {
@@ -562,7 +662,8 @@ fn search_block<'a>(state: &'a State) -> Element<'a, Msg> {
 
 fn results<'a>(state: &'a State) -> Element<'a, Msg> {
     if !state.searched {
-        return ui::faint("Search the Hub, or leave the box empty for the most downloaded models.").into();
+        return ui::faint("Search the Hub, or leave the box empty for the most downloaded models.")
+            .into();
     }
     if state.items.is_empty() {
         return ui::faint("No models match.").into();
@@ -593,15 +694,35 @@ fn results<'a>(state: &'a State) -> Element<'a, Msg> {
     .spacing(10);
     let mut lines = column![head, ui::hairline()].spacing(8);
     for m in items {
-        let access: Element<'a, Msg> = if is_gated(&m.gated) { ui::badge("gated", Tone::Warn) } else { value("open") };
+        let access: Element<'a, Msg> = if is_gated(&m.gated) {
+            ui::badge("gated", Tone::Warn)
+        } else {
+            value("open")
+        };
         lines = lines.push(
             row![
-                cell(4, false, column![ui::link(&m.id, Msg::Open(m.id.clone()), true), value(&m.author)].spacing(2)),
+                cell(
+                    4,
+                    false,
+                    column![
+                        ui::link(&m.id, Msg::Open(m.id.clone()), true),
+                        value(&m.author)
+                    ]
+                    .spacing(2)
+                ),
                 cell(2, false, value(m.task.as_deref().unwrap_or("—"))),
                 cell(2, false, value(m.library.as_deref().unwrap_or("—"))),
                 cell(2, true, value(&lab_common::count(m.downloads))),
                 cell(1, true, value(&lab_common::count(m.likes))),
-                cell(2, false, value(m.last_modified.as_deref().map_or("—", |d| d.get(..10).unwrap_or(d)))),
+                cell(
+                    2,
+                    false,
+                    value(
+                        m.last_modified
+                            .as_deref()
+                            .map_or("—", |d| d.get(..10).unwrap_or(d))
+                    )
+                ),
                 cell(2, false, value(m.license.as_deref().unwrap_or("—"))),
                 cell(2, false, access),
             ]
@@ -618,19 +739,45 @@ fn results<'a>(state: &'a State) -> Element<'a, Msg> {
 }
 
 fn sort_head<'a>(label: &str, key: SortKey, state: &State, portion: u16) -> Element<'a, Msg> {
-    let mark = if state.sort_key == Some(key) { if state.sort_asc { " ^" } else { " v" } } else { "" };
-    cell(portion, false, ui::link(&format!("{label}{mark}"), Msg::SortBy(key), true))
+    let mark = if state.sort_key == Some(key) {
+        if state.sort_asc { " ^" } else { " v" }
+    } else {
+        ""
+    };
+    cell(
+        portion,
+        false,
+        ui::link(&format!("{label}{mark}"), Msg::SortBy(key), true),
+    )
 }
 
 /// The drawer: a model's identity, its gate, what it can be imported as, its files against the cap, and the imports.
 fn drawer<'a>(state: &'a State, d: &'a HfDetail) -> Element<'a, Msg> {
-    let cap = state.status.as_ref().map_or(0, |s| (s.hf_max_gb * GIB as f64) as u64);
+    let cap = state
+        .status
+        .as_ref()
+        .map_or(0, |s| (s.hf_max_gb * GIB as f64) as u64);
     let base: u64 = default_files(&d.files, "base").iter().map(|f| f.size).sum();
-    let servable: u64 = default_files(&d.files, "servable").iter().map(|f| f.size).sum();
+    let servable: u64 = default_files(&d.files, "servable")
+        .iter()
+        .map(|f| f.size)
+        .sum();
     let size_line = |label: &str, size: u64| -> Element<'a, Msg> {
         let over = size > cap;
-        let line = format!("{label}: {}{}", lab_common::size(size), if over { " (over the cap)" } else { "" });
-        text(line).font(MONO).size(12.0).color(if over { crate::theme::palette().crit } else { crate::theme::palette().ink_2 }).into()
+        let line = format!(
+            "{label}: {}{}",
+            lab_common::size(size),
+            if over { " (over the cap)" } else { "" }
+        );
+        text(line)
+            .font(MONO)
+            .size(12.0)
+            .color(if over {
+                crate::theme::palette().crit
+            } else {
+                crate::theme::palette().ink_2
+            })
+            .into()
     };
     let mut body: Vec<Element<'a, Msg>> = Vec::new();
     if is_gated(&d.gated) {
@@ -655,8 +802,34 @@ fn drawer<'a>(state: &'a State, d: &'a HfDetail) -> Element<'a, Msg> {
             pair("License", value(d.license.as_deref().unwrap_or("—"))),
             pair("Downloads", value(&lab_common::count(d.downloads))),
             pair("Likes", value(&lab_common::count(d.likes))),
-            pair("Servable", value(&if d.importable.servable { "yes".to_string() } else { format!("no: {}", d.importable.servable_reason.as_deref().unwrap_or("not a servable model")) })),
-            pair("Base", value(&if d.importable.base { "yes".to_string() } else { format!("no: {}", d.importable.base_reason.as_deref().unwrap_or("not a base model")) })),
+            pair(
+                "Servable",
+                value(&if d.importable.servable {
+                    "yes".to_string()
+                } else {
+                    format!(
+                        "no: {}",
+                        d.importable
+                            .servable_reason
+                            .as_deref()
+                            .unwrap_or("not a servable model")
+                    )
+                })
+            ),
+            pair(
+                "Base",
+                value(&if d.importable.base {
+                    "yes".to_string()
+                } else {
+                    format!(
+                        "no: {}",
+                        d.importable
+                            .base_reason
+                            .as_deref()
+                            .unwrap_or("not a base model")
+                    )
+                })
+            ),
         ]
         .spacing(8)
         .into(),
@@ -665,13 +838,37 @@ fn drawer<'a>(state: &'a State, d: &'a HfDetail) -> Element<'a, Msg> {
         body.push(ui::faint(d.summary.clone()).into());
     }
     body.push(section_title("Default selections against the cap"));
-    body.push(row![size_line("Base set", base), size_line("Servable set", servable), value(&format!("Cap: {} GB", lab_common::number(cap as f64 / GIB as f64, 0)))].spacing(18).into());
-    body.push(section_title(&format!("Files ({})", lab_common::count(d.files.len() as u64))));
+    body.push(
+        row![
+            size_line("Base set", base),
+            size_line("Servable set", servable),
+            value(&format!(
+                "Cap: {} GB",
+                lab_common::number(cap as f64 / GIB as f64, 0)
+            ))
+        ]
+        .spacing(18)
+        .into(),
+    );
+    body.push(section_title(&format!(
+        "Files ({})",
+        lab_common::count(d.files.len() as u64)
+    )));
     body.push(file_table(&d.files));
     body.push(
         row![
-            ui::btn("Import as base", Some("plus"), Kind::Primary, Some(Msg::Import(d.id.clone(), "base"))),
-            ui::btn("Import as servable", Some("plus"), Kind::Secondary, Some(Msg::Import(d.id.clone(), "servable"))),
+            ui::btn(
+                "Import as base",
+                Some("plus"),
+                Kind::Primary,
+                Some(Msg::Import(d.id.clone(), "base"))
+            ),
+            ui::btn(
+                "Import as servable",
+                Some("plus"),
+                Kind::Secondary,
+                Some(Msg::Import(d.id.clone(), "servable"))
+            ),
         ]
         .spacing(8)
         .into(),
@@ -679,9 +876,13 @@ fn drawer<'a>(state: &'a State, d: &'a HfDetail) -> Element<'a, Msg> {
     if let Some(err) = &state.import_error {
         body.push(ui::error_line(err));
     }
-    let head = row![ui::link(&d.id, Msg::OpenUrl(d.url.clone()), true), Space::new().width(Length::Fill), ui::btn("Close", None, Kind::Ghost, Some(Msg::CloseDetail))]
-        .spacing(10)
-        .align_y(Alignment::Center);
+    let head = row![
+        ui::link(&d.id, Msg::OpenUrl(d.url.clone()), true),
+        Space::new().width(Length::Fill),
+        ui::btn("Close", None, Kind::Ghost, Some(Msg::CloseDetail))
+    ]
+    .spacing(10)
+    .align_y(Alignment::Center);
     section_head(head.into(), column(body).spacing(14).into())
 }
 
@@ -689,7 +890,15 @@ fn file_table<'a>(files: &'a [HfFile]) -> Element<'a, Msg> {
     if files.is_empty() {
         return ui::faint("No files listed.").into();
     }
-    let mut lines = column![row![cell(6, false, ui::faint("File".to_string())), cell(2, true, ui::faint("Size".to_string())), cell(2, false, ui::faint("Storage".to_string()))].spacing(10)].spacing(6);
+    let mut lines = column![
+        row![
+            cell(6, false, ui::faint("File".to_string())),
+            cell(2, true, ui::faint("Size".to_string())),
+            cell(2, false, ui::faint("Storage".to_string()))
+        ]
+        .spacing(10)
+    ]
+    .spacing(6);
     for f in files {
         lines = lines.push(
             row![
@@ -710,24 +919,46 @@ fn imports_block<'a>(state: &'a State) -> Element<'a, Msg> {
     }
     let mut lines = column(Vec::<Element<'a, Msg>>::new()).spacing(10);
     for r in &state.imports {
-        let percent = if r.total > 0 { (r.bytes as f64 / r.total as f64).clamp(0.0, 1.0) } else { 0.0 };
-        let active = matches!(r.state.as_str(), "queued" | "downloading" | "verifying" | "registering");
+        let percent = if r.total > 0 {
+            (r.bytes as f64 / r.total as f64).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let active = matches!(
+            r.state.as_str(),
+            "queued" | "downloading" | "verifying" | "registering"
+        );
         let model: Element<'a, Msg> = match &r.model_id {
             Some(model) => ui::link(model, Msg::Go(Id::LabModelDetail(model.clone())), true),
             None => value(&r.id),
         };
         let mut actions = row![].spacing(8);
         if r.state == "interrupted" {
-            actions = actions.push(ui::btn_sm("Resume", None, Kind::Primary, Some(Msg::Resume(r.clone()))));
+            actions = actions.push(ui::btn_sm(
+                "Resume",
+                None,
+                Kind::Primary,
+                Some(Msg::Resume(r.clone())),
+            ));
         }
-        let (label, kind) = if active { ("Cancel", Kind::Danger) } else { ("Remove", Kind::Secondary) };
+        let (label, kind) = if active {
+            ("Cancel", Kind::Danger)
+        } else {
+            ("Remove", Kind::Secondary)
+        };
         actions = actions.push(ui::btn_sm(label, None, kind, Some(Msg::Cancel(r.n))));
         let mut state_cell: Vec<Element<'a, Msg>> = vec![ui::badge(&r.state, state_tone(&r.state))];
         if let Some(reason) = &r.reason {
             state_cell.push(ui::faint(reason.clone()).into());
         }
         if let Some(error) = &r.error {
-            state_cell.push(text(error.clone()).font(SANS).size(12.0).color(crate::theme::palette().crit).into());
+            state_cell.push(
+                text(error.clone())
+                    .font(SANS)
+                    .size(12.0)
+                    .color(crate::theme::palette().crit)
+                    .into(),
+            );
         }
         lines = lines.push(
             row![
@@ -735,7 +966,19 @@ fn imports_block<'a>(state: &'a State) -> Element<'a, Msg> {
                 cell(4, false, column![model, value(&r.revision)].spacing(2)),
                 cell(1, false, value(&r.as_kind)),
                 cell(2, false, column(state_cell).spacing(4)),
-                cell(3, false, column![bar(percent), value(&format!("{} of {}", lab_common::size(r.bytes), lab_common::size(r.total)))].spacing(4)),
+                cell(
+                    3,
+                    false,
+                    column![
+                        bar(percent),
+                        value(&format!(
+                            "{} of {}",
+                            lab_common::size(r.bytes),
+                            lab_common::size(r.total)
+                        ))
+                    ]
+                    .spacing(4)
+                ),
                 cell(2, false, value(&lab_common::time(r.updated_ms))),
                 cell(3, true, actions),
             ]
@@ -764,11 +1007,22 @@ fn state_tone(state: &str) -> Tone {
 
 /// A labelled figure: the label in caps beside its value.
 fn pair<'a>(label: &str, value: Element<'a, Msg>) -> Element<'a, Msg> {
-    row![container(ui::label(label)).width(Length::Fixed(130.0)), value].spacing(12).align_y(Alignment::Center).into()
+    row![
+        container(ui::label(label)).width(Length::Fixed(130.0)),
+        value
+    ]
+    .spacing(12)
+    .align_y(Alignment::Center)
+    .into()
 }
 
 fn value<'a>(s: &str) -> Element<'a, Msg> {
-    text(s.to_string()).font(SANS).size(12.0).color(crate::theme::palette().ink_2).width(Length::Fill).into()
+    text(s.to_string())
+        .font(SANS)
+        .size(12.0)
+        .color(crate::theme::palette().ink_2)
+        .width(Length::Fill)
+        .into()
 }
 
 fn bar<'a>(ratio: f64) -> Element<'a, Msg> {
@@ -776,10 +1030,16 @@ fn bar<'a>(ratio: f64) -> Element<'a, Msg> {
     row![
         container(Space::new().width(Length::Fill).height(6.0))
             .width(Length::FillPortion(pct.max(1)))
-            .style(|_: &Theme| container::Style { background: Some(crate::theme::palette().signal.into()), ..Default::default() }),
+            .style(|_: &Theme| container::Style {
+                background: Some(crate::theme::palette().signal.into()),
+                ..Default::default()
+            }),
         container(Space::new().width(Length::Fill).height(6.0))
             .width(Length::FillPortion((100 - pct).max(1)))
-            .style(|_: &Theme| container::Style { background: Some(crate::theme::palette().rule_faint.into()), ..Default::default() }),
+            .style(|_: &Theme| container::Style {
+                background: Some(crate::theme::palette().rule_faint.into()),
+                ..Default::default()
+            }),
     ]
     .into()
 }
@@ -794,27 +1054,67 @@ fn cell<'a>(portion: u16, right: bool, content: impl Into<Element<'a, Msg>>) -> 
 }
 
 fn section_title<'a>(label: &str) -> Element<'a, Msg> {
-    text(label.to_string()).font(SANS).size(11.0).color(crate::theme::palette().ink_3).into()
+    text(label.to_string())
+        .font(SANS)
+        .size(11.0)
+        .color(crate::theme::palette().ink_3)
+        .into()
 }
 
 /// A panel section: a ruled box with its title in caps and its body.
 fn section<'a>(title: &str, body: Element<'a, Msg>) -> Element<'a, Msg> {
-    container(column![
-        text(title.to_string()).font(SANS).size(11.5).color(crate::theme::palette().ink),
-        container(Space::new().height(1.0)).width(Length::Fill).style(|_: &Theme| container::Style { background: Some(crate::theme::palette().rule.into()), ..Default::default() }),
-        body,
-    ]
-    .spacing(12))
+    container(
+        column![
+            text(title.to_string())
+                .font(SANS)
+                .size(11.5)
+                .color(crate::theme::palette().ink),
+            container(Space::new().height(1.0))
+                .width(Length::Fill)
+                .style(|_: &Theme| container::Style {
+                    background: Some(crate::theme::palette().rule.into()),
+                    ..Default::default()
+                }),
+            body,
+        ]
+        .spacing(12),
+    )
     .padding(16)
     .width(Length::Fill)
-    .style(|_: &Theme| container::Style { border: iced::Border { color: crate::theme::palette().rule, width: 1.0, radius: 0.0.into() }, ..Default::default() })
+    .style(|_: &Theme| container::Style {
+        border: iced::Border {
+            color: crate::theme::palette().rule,
+            width: 1.0,
+            radius: 0.0.into(),
+        },
+        ..Default::default()
+    })
     .into()
 }
 
 fn section_head<'a>(head: Element<'a, Msg>, body: Element<'a, Msg>) -> Element<'a, Msg> {
-    container(column![head, container(Space::new().height(1.0)).width(Length::Fill).style(|_: &Theme| container::Style { background: Some(crate::theme::palette().rule.into()), ..Default::default() }), body].spacing(12))
-        .padding(16)
-        .width(Length::Fill)
-        .style(|_: &Theme| container::Style { border: iced::Border { color: crate::theme::palette().rule, width: 1.0, radius: 0.0.into() }, ..Default::default() })
-        .into()
+    container(
+        column![
+            head,
+            container(Space::new().height(1.0))
+                .width(Length::Fill)
+                .style(|_: &Theme| container::Style {
+                    background: Some(crate::theme::palette().rule.into()),
+                    ..Default::default()
+                }),
+            body
+        ]
+        .spacing(12),
+    )
+    .padding(16)
+    .width(Length::Fill)
+    .style(|_: &Theme| container::Style {
+        border: iced::Border {
+            color: crate::theme::palette().rule,
+            width: 1.0,
+            radius: 0.0.into(),
+        },
+        ..Default::default()
+    })
+    .into()
 }

@@ -29,7 +29,10 @@ impl Params<'_> {
     /// The segment captured as `{name}`, decoded (`%40` is `@`, `%2F` a slash inside the value); empty when
     /// the pattern has none.
     pub fn get(&self, name: &str) -> &str {
-        self.pairs.iter().find(|(key, _)| *key == name).map_or("", |(_, value)| value.as_ref())
+        self.pairs
+            .iter()
+            .find(|(key, _)| *key == name)
+            .map_or("", |(_, value)| value.as_ref())
     }
 }
 
@@ -89,7 +92,10 @@ impl<S> Router<S> {
             let params = match matches(&route.pattern, &request.path) {
                 None => continue,
                 Some(Err(())) => {
-                    return Response::error(400, "a path parameter is not valid UTF-8 once percent-decoded");
+                    return Response::error(
+                        400,
+                        "a path parameter is not valid UTF-8 once percent-decoded",
+                    );
                 }
                 Some(Ok(params)) => params,
             };
@@ -104,7 +110,8 @@ impl<S> Router<S> {
             return Response::error(404, "no such endpoint");
         }
         let allowed = allowed.join(", ");
-        Response::error(405, &format!("this endpoint accepts {allowed}")).with_header("Allow", &allowed)
+        Response::error(405, &format!("this endpoint accepts {allowed}"))
+            .with_header("Allow", &allowed)
     }
 }
 
@@ -119,7 +126,9 @@ fn decode_segment(raw: &str) -> Option<Cow<'_, str>> {
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(byte) = std::str::from_utf8(&bytes[i + 1..i + 3]).map(|hex| u8::from_str_radix(hex, 16)) {
+            if let Ok(byte) =
+                std::str::from_utf8(&bytes[i + 1..i + 3]).map(|hex| u8::from_str_radix(hex, 16))
+            {
                 if let Ok(byte) = byte {
                     out.push(byte);
                     i += 3;
@@ -143,9 +152,16 @@ fn matches<'a>(pattern: &[&'static str], path: &'a str) -> Option<Result<Params<
     for want in pattern {
         // `{name..}` as the last segment captures the rest of the path (one or more segments). Each
         // segment is decoded on its own, so an escaped slash inside one stays in that segment's value.
-        if let Some(name) = want.strip_prefix('{').and_then(|rest| rest.strip_suffix("..}")) {
+        if let Some(name) = want
+            .strip_prefix('{')
+            .and_then(|rest| rest.strip_suffix("..}"))
+        {
             let rest = body.get(offset..).filter(|rest| !rest.is_empty())?;
-            let Some(parts) = rest.split('/').map(decode_segment).collect::<Option<Vec<_>>>() else {
+            let Some(parts) = rest
+                .split('/')
+                .map(decode_segment)
+                .collect::<Option<Vec<_>>>()
+            else {
                 return Some(Err(()));
             };
             pairs.push((name, Cow::Owned(parts.join("/"))));
@@ -153,7 +169,10 @@ fn matches<'a>(pattern: &[&'static str], path: &'a str) -> Option<Result<Params<
         }
         let got = segments.next()?;
         offset += got.len() + 1;
-        match want.strip_prefix('{').and_then(|rest| rest.strip_suffix('}')) {
+        match want
+            .strip_prefix('{')
+            .and_then(|rest| rest.strip_suffix('}'))
+        {
             Some(name) if !got.is_empty() => match decode_segment(got) {
                 Some(value) => pairs.push((name, value)),
                 None => return Some(Err(())),
@@ -171,7 +190,11 @@ mod tests {
     use super::*;
 
     fn request(method: &str, path: &str) -> Request {
-        Request { method: method.into(), path: path.into(), ..Request::default() }
+        Request {
+            method: method.into(),
+            path: path.into(),
+            ..Request::default()
+        }
     }
 
     #[test]
@@ -187,35 +210,63 @@ mod tests {
 
         let wrong_method = router.handle(&7, &request("GET", "/v1/agents/42/tell"));
         assert_eq!(wrong_method.status, 405);
-        assert!(wrong_method.headers.contains(&("Allow".into(), "POST".into())));
-        for path in ["/v1/agents//tell", "/v1/agents/42/tell/x", "/v1/agents/42", "/nope"] {
-            assert_eq!(router.handle(&7, &request("POST", path)).status, 404, "{path}");
+        assert!(
+            wrong_method
+                .headers
+                .contains(&("Allow".into(), "POST".into()))
+        );
+        for path in [
+            "/v1/agents//tell",
+            "/v1/agents/42/tell/x",
+            "/v1/agents/42",
+            "/nope",
+        ] {
+            assert_eq!(
+                router.handle(&7, &request("POST", path)).status,
+                404,
+                "{path}"
+            );
         }
     }
 
     #[test]
     fn a_wildcard_segment_captures_the_rest_of_the_path() {
         let router: Router<u32> = Router::new()
-            .get("/v1/hf/models/{id..}", |_, _, params| Response::text(200, params.get("id")))
+            .get("/v1/hf/models/{id..}", |_, _, params| {
+                Response::text(200, params.get("id"))
+            })
             .get("/v1/hf/models", |_, _, _| Response::text(200, "list"));
         let answer = router.handle(&0, &request("GET", "/v1/hf/models/org/name"));
         assert_eq!((answer.status, answer.bytes()), (200, &b"org/name"[..]));
         let single = router.handle(&0, &request("GET", "/v1/hf/models/gpt2"));
         assert_eq!((single.status, single.bytes()), (200, &b"gpt2"[..]));
-        assert_eq!(router.handle(&0, &request("GET", "/v1/hf/models")).bytes(), b"list");
-        assert_eq!(router.handle(&0, &request("GET", "/v1/hf/models/")).status, 404);
+        assert_eq!(
+            router.handle(&0, &request("GET", "/v1/hf/models")).bytes(),
+            b"list"
+        );
+        assert_eq!(
+            router.handle(&0, &request("GET", "/v1/hf/models/")).status,
+            404
+        );
     }
 
     #[test]
     fn captured_values_are_percent_decoded_and_an_escaped_slash_stays_in_its_segment() {
         let router: Router<u32> = Router::new()
-            .get("/v1/recipes/{id}", |_, _, params| Response::text(200, params.get("id")))
-            .get("/v1/hf/models/{id..}", |_, _, params| Response::text(200, params.get("id")));
+            .get("/v1/recipes/{id}", |_, _, params| {
+                Response::text(200, params.get("id"))
+            })
+            .get("/v1/hf/models/{id..}", |_, _, params| {
+                Response::text(200, params.get("id"))
+            });
         let get = |path: &str| router.handle(&0, &request("GET", path));
         // A plain segment is unchanged.
         assert_eq!(get("/v1/recipes/plain").bytes(), b"plain");
         // `%40` is `@`: the recipe name the Lab sends as `rung-predictor%401`.
-        assert_eq!(get("/v1/recipes/rung-predictor%401").bytes(), b"rung-predictor@1");
+        assert_eq!(
+            get("/v1/recipes/rung-predictor%401").bytes(),
+            b"rung-predictor@1"
+        );
         // `%2F` inside a single segment is part of that one value, not a path separator.
         let single = get("/v1/recipes/a%2Fb");
         assert_eq!((single.status, single.bytes()), (200, &b"a/b"[..]));
@@ -231,11 +282,18 @@ mod tests {
 
     #[test]
     fn an_encoded_slash_stays_in_one_segment() {
-        let router: Router<u32> = Router::new()
-            .get("/v1/prices/{model}", |_, _, params| Response::text(200, params.get("model")));
+        let router: Router<u32> = Router::new().get("/v1/prices/{model}", |_, _, params| {
+            Response::text(200, params.get("model"))
+        });
         // The web sends the provider/model key encoded, so it is one segment whose value holds the slash.
-        let encoded = router.handle(&0, &request("GET", "/v1/prices/anthropic%2Fclaude-opus-5-5"));
-        assert_eq!((encoded.status, encoded.bytes()), (200, &b"anthropic/claude-opus-5-5"[..]));
+        let encoded = router.handle(
+            &0,
+            &request("GET", "/v1/prices/anthropic%2Fclaude-opus-5-5"),
+        );
+        assert_eq!(
+            (encoded.status, encoded.bytes()),
+            (200, &b"anthropic/claude-opus-5-5"[..])
+        );
         // Unescaped, the slash is a path separator and the one-segment pattern no longer matches.
         let split = router.handle(&0, &request("GET", "/v1/prices/anthropic/claude-opus-5-5"));
         assert_eq!(split.status, 404);

@@ -127,8 +127,8 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use serde::{Deserialize, Serialize};
 
 use crate::events::{Event, EventBus};
-use crate::{now_ms, ConnectedAgent};
 use crate::tasks::Task;
+use crate::{ConnectedAgent, now_ms};
 
 /// The most bids one call holds. A fresh bid past the cap is refused (a 409);
 /// a re-bid still fits, because it replaces the bidder's own row rather than
@@ -477,10 +477,7 @@ impl Agora {
             });
         }
         let bids = inner.bids.entry(bid.task.clone()).or_default();
-        match bids
-            .iter_mut()
-            .find(|held| held.agent_cid == bid.agent_cid)
-        {
+        match bids.iter_mut().find(|held| held.agent_cid == bid.agent_cid) {
             Some(slot) => *slot = bid.clone(),
             None => bids.push(bid.clone()),
         }
@@ -622,7 +619,6 @@ impl Agora {
     }
 }
 
-
 impl Agora {
     /// The whole state as JSON: each call's bids and its award. The bus is not
     /// in it, and a restore publishes nothing.
@@ -658,7 +654,10 @@ fn check_agora_snapshot(inner: &AgoraInner) -> Result<(), String> {
     }
     for (task, award) in &inner.awards {
         if &award.task != task {
-            return Err(format!("an award under {task} names the call {}", award.task));
+            return Err(format!(
+                "an award under {task} names the call {}",
+                award.task
+            ));
         }
     }
     Ok(())
@@ -676,10 +675,18 @@ mod tests {
         let (ledger, agora) = lab(&events);
         let called = call_task(&ledger, "ship the agora", "builder", 500);
         let other = call_task(&ledger, "review the agora", "reviewer", 300);
-        agora.bid(&called, &agent(100, "builder"), 400).expect("a bid");
-        agora.bid(&called, &agent(101, "builder"), 350).expect("a bid");
-        agora.award(&called, &agent(101, "builder")).expect("an award");
-        agora.bid(&other, &agent(102, "reviewer"), 200).expect("a bid");
+        agora
+            .bid(&called, &agent(100, "builder"), 400)
+            .expect("a bid");
+        agora
+            .bid(&called, &agent(101, "builder"), 350)
+            .expect("a bid");
+        agora
+            .award(&called, &agent(101, "builder"))
+            .expect("an award");
+        agora
+            .bid(&other, &agent(102, "reviewer"), 200)
+            .expect("a bid");
 
         let json = agora.snapshot();
         let restored = Agora::new(Arc::clone(&events));
@@ -690,7 +697,10 @@ mod tests {
         );
         // The bid maps are hash maps, so compare the snapshots as values.
         let again: serde_json::Value = serde_json::from_str(&restored.snapshot()).expect("json");
-        assert_eq!(again, serde_json::from_str::<serde_json::Value>(&json).expect("json"));
+        assert_eq!(
+            again,
+            serde_json::from_str::<serde_json::Value>(&json).expect("json")
+        );
     }
 
     #[test]
@@ -698,7 +708,9 @@ mod tests {
         let events = EventBus::new();
         let (ledger, agora) = lab(&events);
         let called = call_task(&ledger, "ship the agora", "builder", 500);
-        agora.bid(&called, &agent(100, "builder"), 400).expect("a bid");
+        agora
+            .bid(&called, &agent(100, "builder"), 400)
+            .expect("a bid");
         let before = agora.snapshot();
 
         assert!(agora.restore("not json").is_err());
@@ -863,10 +875,15 @@ mod tests {
 
         // The edges are inside the contract: the ceiling itself, and zero (the
         // schema's floor is enforced by the type; the ceiling is inclusive).
-        let at_ceiling = agora.bid(&task, &agent(100, "builder"), 500).expect("the ceiling");
+        let at_ceiling = agora
+            .bid(&task, &agent(100, "builder"), 500)
+            .expect("the ceiling");
         assert_eq!(at_ceiling.price, 500);
         assert_eq!(
-            agora.bid(&task, &agent(101, "builder"), 0).expect("zero").price,
+            agora
+                .bid(&task, &agent(101, "builder"), 0)
+                .expect("zero")
+                .price,
             0
         );
         let view = board(&agora, &ledger);
@@ -904,13 +921,20 @@ mod tests {
 
         // One bid per agent: a re-bid replaces the row in place, with its own
         // time, and the call still holds exactly one bid from that agent.
-        let first = agora.bid(&task, &agent(100, "builder"), 400).expect("a bid");
+        let first = agora
+            .bid(&task, &agent(100, "builder"), 400)
+            .expect("a bid");
         assert_eq!(first.price, 400);
         let first_at = first.created_at;
-        let second = agora.bid(&task, &agent(100, "builder"), 300).expect("a re-bid");
+        let second = agora
+            .bid(&task, &agent(100, "builder"), 300)
+            .expect("a re-bid");
         assert_eq!(second.price, 300);
         assert_eq!(second.agent_cid, 100);
-        assert!(second.created_at >= first_at, "the re-bid carries its own time");
+        assert!(
+            second.created_at >= first_at,
+            "the re-bid carries its own time"
+        );
         let view = board(&agora, &ledger);
         assert_eq!(view.calls[0].bids.len(), 1, "one bid per agent");
         assert_eq!(view.calls[0].bids[0].price, 300);
@@ -920,12 +944,22 @@ mod tests {
         // fits, because it replaces rather than adds.
         for index in 1..MAX_BIDS_PER_TASK {
             let cid = 1000 + index as u64;
-            agora.bid(&task, &agent(cid, "builder"), 10).expect("a bid under the cap");
+            agora
+                .bid(&task, &agent(cid, "builder"), 10)
+                .expect("a bid under the cap");
         }
         let cap = agora.bid(&task, &agent(9999, "builder"), 10).unwrap_err();
-        assert_eq!(cap, BidError::Full { max: MAX_BIDS_PER_TASK });
+        assert_eq!(
+            cap,
+            BidError::Full {
+                max: MAX_BIDS_PER_TASK
+            }
+        );
         assert_eq!(cap.to_string(), "the call already holds its 32 bids");
-        assert_eq!(board(&agora, &ledger).calls[0].bids.len(), MAX_BIDS_PER_TASK);
+        assert_eq!(
+            board(&agora, &ledger).calls[0].bids.len(),
+            MAX_BIDS_PER_TASK
+        );
         assert_eq!(
             agora
                 .bid(&task, &agent(100, "builder"), 20)
@@ -933,7 +967,10 @@ mod tests {
                 .price,
             20
         );
-        assert_eq!(board(&agora, &ledger).calls[0].bids.len(), MAX_BIDS_PER_TASK);
+        assert_eq!(
+            board(&agora, &ledger).calls[0].bids.len(),
+            MAX_BIDS_PER_TASK
+        );
     }
 
     #[test]
@@ -957,7 +994,9 @@ mod tests {
         );
 
         // A bid from another agent does not let this one be awarded.
-        agora.bid(&task, &agent(101, "builder"), 200).expect("a bid");
+        agora
+            .bid(&task, &agent(101, "builder"), 200)
+            .expect("a bid");
         assert!(matches!(
             agora.award(&task, &agent(100, "builder")),
             Err(AwardError::NoBid { .. })
@@ -965,8 +1004,12 @@ mod tests {
 
         // The award is made at the price the agent bid, and it performs the
         // claim: the task is bound exactly as the claim path binds it.
-        agora.bid(&task, &agent(100, "builder"), 300).expect("a bid");
-        agora.award(&task, &agent(100, "builder")).expect("an award");
+        agora
+            .bid(&task, &agent(100, "builder"), 300)
+            .expect("a bid");
+        agora
+            .award(&task, &agent(100, "builder"))
+            .expect("an award");
         let view = task.view();
         assert_eq!(view.state, "claimed");
         assert_eq!(view.assignee_id.as_deref(), Some("builder"));
@@ -983,7 +1026,11 @@ mod tests {
         assert_eq!(award.contractor, "builder");
         assert_eq!(award.agent_cid, 100);
         assert_eq!(award.price, 300);
-        assert_eq!(award.escrow_entry, Some(2), "the plaza mint is entry 1, the funding entry 2");
+        assert_eq!(
+            award.escrow_entry,
+            Some(2),
+            "the plaza mint is entry 1, the funding entry 2"
+        );
         assert_eq!(ledger.treasury().escrow_balance("t1"), 500);
 
         // A second award is refused by the call's key, in the award's own
@@ -996,10 +1043,7 @@ mod tests {
                 contractor: "builder".to_string()
             }
         );
-        assert_eq!(
-            again.to_string(),
-            "call t1 is already awarded to builder"
-        );
+        assert_eq!(again.to_string(), "call t1 is already awarded to builder");
         assert_eq!(
             board(&agora, &ledger).calls[0]
                 .award
@@ -1012,8 +1056,12 @@ mod tests {
         // An unbudgeted call has no escrow entry to name — and a zero-price
         // award is inside the contract, the ceiling being inclusive.
         let free = call_task(&ledger, "free work", "builder", 0);
-        agora.bid(&free, &agent(100, "builder"), 0).expect("a zero bid");
-        agora.award(&free, &agent(100, "builder")).expect("a zero award");
+        agora
+            .bid(&free, &agent(100, "builder"), 0)
+            .expect("a zero bid");
+        agora
+            .award(&free, &agent(100, "builder"))
+            .expect("a zero award");
         let call = board(&agora, &ledger)
             .calls
             .into_iter()
@@ -1027,7 +1075,9 @@ mod tests {
         let events = EventBus::new();
         let (ledger, agora) = lab(&events);
         let task = call_task(&ledger, "ship the agora", "builder", 500);
-        agora.bid(&task, &agent(100, "builder"), 300).expect("a bid");
+        agora
+            .bid(&task, &agent(100, "builder"), 300)
+            .expect("a bid");
 
         // The bid rule refuses a price above the ceiling, so the only way the
         // award's own guard can fire is a store that was corrupted some other
@@ -1103,7 +1153,9 @@ mod tests {
         // One that was bid on stays, showing the bid that was made and the
         // state its own ledger reports.
         let bid_on = call_task(&ledger, "bid on then claimed", "builder", 5);
-        agora.bid(&bid_on, &agent(100, "builder"), 5).expect("a bid");
+        agora
+            .bid(&bid_on, &agent(100, "builder"), 5)
+            .expect("a bid");
         bid_on.claim(&agent(100, "builder")).expect("claim");
         let view = board(&agora, &ledger);
         assert_eq!(view.total, 1);
@@ -1114,8 +1166,12 @@ mod tests {
 
         // An awarded call keeps its award through the task's whole life.
         let awarded = call_task(&ledger, "awarded", "builder", 5);
-        agora.bid(&awarded, &agent(100, "builder"), 5).expect("a bid");
-        agora.award(&awarded, &agent(100, "builder")).expect("the award");
+        agora
+            .bid(&awarded, &agent(100, "builder"), 5)
+            .expect("a bid");
+        agora
+            .award(&awarded, &agent(100, "builder"))
+            .expect("the award");
         awarded
             .finish(FinishOutcome::Done, Some("done".to_string()))
             .expect("claimed -> done");
@@ -1135,10 +1191,18 @@ mod tests {
         let (ledger, agora) = lab(&events);
         let task = call_task(&ledger, "ship the agora", "builder", 500);
 
-        agora.bid(&task, &agent(100, "builder"), 400).expect("a bid");
-        agora.bid(&task, &agent(101, "builder"), 350).expect("another bid");
-        agora.bid(&task, &agent(100, "builder"), 300).expect("a re-bid");
-        agora.award(&task, &agent(100, "builder")).expect("an award");
+        agora
+            .bid(&task, &agent(100, "builder"), 400)
+            .expect("a bid");
+        agora
+            .bid(&task, &agent(101, "builder"), 350)
+            .expect("another bid");
+        agora
+            .bid(&task, &agent(100, "builder"), 300)
+            .expect("a re-bid");
+        agora
+            .award(&task, &agent(100, "builder"))
+            .expect("an award");
 
         // The bus carries the ledger's and the treasury's frames too; what is
         // under test here is the agora's own, in the order they were taken.
@@ -1157,9 +1221,15 @@ mod tests {
         // The award's frame carries the price it was made at, not the last one
         // the bidder offered: for the 101 bidder the two differ.
         let task2 = call_task(&ledger, "the second call", "reviewer", 90);
-        agora.bid(&task2, &agent(201, "reviewer"), 80).expect("a bid");
-        agora.bid(&task2, &agent(202, "reviewer"), 70).expect("a bid");
-        agora.award(&task2, &agent(201, "reviewer")).expect("an award");
+        agora
+            .bid(&task2, &agent(201, "reviewer"), 80)
+            .expect("a bid");
+        agora
+            .bid(&task2, &agent(202, "reviewer"), 70)
+            .expect("a bid");
+        agora
+            .award(&task2, &agent(201, "reviewer"))
+            .expect("an award");
         frames = agora_frames(&receiver);
         assert_eq!(
             frames,

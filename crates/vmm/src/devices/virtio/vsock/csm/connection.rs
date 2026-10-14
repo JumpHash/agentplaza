@@ -1,6 +1,7 @@
 // Copyright 2018 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 //
+use crate::pal::{AsRawFd, RawFd};
 use std::fmt::Debug;
 /// The main job of `VsockConnection` is to forward data traffic, back and forth, between a
 /// guest-side AF_VSOCK socket and a host-side generic `Read + Write + AsRawFd` stream, while
@@ -79,21 +80,20 @@ use std::fmt::Debug;
 //          Our implementation uses the proactive approach.
 use std::io::{ErrorKind, Write};
 use std::num::Wrapping;
-use crate::pal::{AsRawFd, RawFd};
 use std::time::{Duration, Instant};
 
+use crate::pal::epoll::EventSet;
 use vm_memory::GuestMemoryError;
 use vm_memory::io::{ReadVolatile, WriteVolatile};
-use crate::pal::epoll::EventSet;
 
 use super::super::defs::uapi;
 use super::super::{VsockChannel, VsockEpollListener, VsockError};
 use super::txbuf::TxBuf;
+use super::wrap_usize_to_u32;
 use super::{ConnState, PendingRx, PendingRxSet, VsockCsmError, defs};
+use crate::devices::virtio::vsock::metrics::IncMetric;
 use crate::devices::virtio::vsock::metrics::METRICS;
 use crate::devices::virtio::vsock::packet::{VsockPacketHeader, VsockPacketRx, VsockPacketTx};
-use crate::devices::virtio::vsock::metrics::IncMetric;
-use super::wrap_usize_to_u32;
 
 /// Trait that vsock connection backends need to implement.
 ///
@@ -303,7 +303,6 @@ where
                 if pkt.hdr.op() == uapi::VSOCK_OP_RW =>
             {
                 if pkt.buf_size() == 0 {
-
                     return;
                 }
 
@@ -382,9 +381,7 @@ where
                 self.pending_rx.insert(PendingRx::CreditUpdate);
             }
 
-            _ => {
-
-            }
+            _ => {}
         };
     }
 
@@ -686,14 +683,14 @@ where
 mod tests {
     use std::io::Error as IoError;
 
+    use crate::pal::eventfd::EventFd;
     use vm_memory::bitmap::BitmapSlice;
     use vm_memory::{VolatileMemoryError, VolatileSlice};
-    use crate::pal::eventfd::EventFd;
 
     use super::super::super::defs::uapi;
     use super::*;
     use crate::devices::virtio::queue::{VIRTQ_DESC_F_NEXT, VIRTQ_DESC_F_WRITE};
-    use crate::devices::virtio::test_utils::{default_mem, VirtQueue};
+    use crate::devices::virtio::test_utils::{VirtQueue, default_mem};
     use crate::devices::virtio::vsock::packet::{VSOCK_PKT_HDR_SIZE, VsockPacketRx, VsockPacketTx};
     use crate::vstate::memory::GuestAddress;
 
@@ -760,9 +757,9 @@ mod tests {
         ) -> Result<usize, VolatileMemoryError> {
             match self.read_state {
                 StreamState::Closed => Ok(0),
-                StreamState::Error(kind) => Err(VolatileMemoryError::IOError(IoError::new(
-                    kind, "whatevs",
-                ))),
+                StreamState::Error(kind) => {
+                    Err(VolatileMemoryError::IOError(IoError::new(kind, "whatevs")))
+                }
                 StreamState::Ready => {
                     if self.read_buf.is_empty() {
                         return Err(VolatileMemoryError::IOError(IoError::new(
@@ -808,9 +805,9 @@ mod tests {
                     ErrorKind::BrokenPipe,
                     "EPIPE",
                 ))),
-                StreamState::Error(kind) => Err(VolatileMemoryError::IOError(IoError::new(
-                    kind, "whatevs",
-                ))),
+                StreamState::Error(kind) => {
+                    Err(VolatileMemoryError::IOError(IoError::new(kind, "whatevs")))
+                }
                 StreamState::Ready => self.write_buf.write_volatile(buf),
                 StreamState::WouldBlock => Err(VolatileMemoryError::IOError(IoError::new(
                     ErrorKind::WouldBlock,

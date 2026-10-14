@@ -17,7 +17,13 @@ pub(crate) struct Credentials {
 /// Signs `req` in place: adds `x-amz-date`, `x-amz-security-token` (with a
 /// session token) and `authorization`. Every header already on the request
 /// is signed, plus `host`.
-pub(crate) fn sign(req: &mut Req, creds: &Credentials, region: &str, service: &str, now: SystemTime) {
+pub(crate) fn sign(
+    req: &mut Req,
+    creds: &Credentials,
+    region: &str,
+    service: &str,
+    now: SystemTime,
+) {
     let amz_date = amz_date(now);
     req.set_header("x-amz-date", &amz_date);
     if let Some(token) = &creds.session_token {
@@ -27,7 +33,12 @@ pub(crate) fn sign(req: &mut Req, creds: &Credentials, region: &str, service: &s
     let mut headers: Vec<(String, String)> = req
         .headers
         .iter()
-        .map(|(n, v)| (n.to_ascii_lowercase(), v.split_whitespace().collect::<Vec<_>>().join(" ")))
+        .map(|(n, v)| {
+            (
+                n.to_ascii_lowercase(),
+                v.split_whitespace().collect::<Vec<_>>().join(" "),
+            )
+        })
         .collect();
     headers.push(("host".into(), host.to_string()));
     headers.sort();
@@ -38,15 +49,27 @@ pub(crate) fn sign(req: &mut Req, creds: &Credentials, region: &str, service: &s
         req.method(),
         canonical_uri(path),
         canonical_query(query),
-        headers.iter().map(|(n, v)| format!("{n}:{v}\n")).collect::<String>(),
+        headers
+            .iter()
+            .map(|(n, v)| format!("{n}:{v}\n"))
+            .collect::<String>(),
         signed,
         hex(&Sha256::digest(&req.body)),
     );
     let date = &amz_date[..8];
     let scope = format!("{date}/{region}/{service}/aws4_request");
-    let to_sign = format!("AWS4-HMAC-SHA256\n{amz_date}\n{scope}\n{}", hex(&Sha256::digest(canonical.as_bytes())));
-    let signature = hex(&hmac(&signing_key(&creds.secret_key, date, region, service), to_sign.as_bytes()));
-    let auth = format!("AWS4-HMAC-SHA256 Credential={}/{scope}, SignedHeaders={signed}, Signature={signature}", creds.access_key);
+    let to_sign = format!(
+        "AWS4-HMAC-SHA256\n{amz_date}\n{scope}\n{}",
+        hex(&Sha256::digest(canonical.as_bytes()))
+    );
+    let signature = hex(&hmac(
+        &signing_key(&creds.secret_key, date, region, service),
+        to_sign.as_bytes(),
+    ));
+    let auth = format!(
+        "AWS4-HMAC-SHA256 Credential={}/{scope}, SignedHeaders={signed}, Signature={signature}",
+        creds.access_key
+    );
     req.set_header("authorization", &auth);
     req.set_secret(&creds.secret_key);
 }
@@ -71,7 +94,9 @@ fn hex(bytes: &[u8]) -> String {
 /// `scheme://host/path?query` → (host, path, query).
 fn split_url(url: &str) -> (&str, &str, &str) {
     let rest = url.split_once("://").map_or(url, |(_, r)| r);
-    let (host, path_query) = rest.find('/').map_or((rest, "/"), |i| (&rest[..i], &rest[i..]));
+    let (host, path_query) = rest
+        .find('/')
+        .map_or((rest, "/"), |i| (&rest[..i], &rest[i..]));
     let (path, query) = path_query.split_once('?').unwrap_or((path_query, ""));
     (host, path, query)
 }
@@ -79,7 +104,10 @@ fn split_url(url: &str) -> (&str, &str, &str) {
 /// Every path segment URI-encoded (again — non-S3 services sign the
 /// encoded path encoded once more).
 fn canonical_uri(path: &str) -> String {
-    path.split('/').map(uri_encode).collect::<Vec<_>>().join("/")
+    path.split('/')
+        .map(uri_encode)
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 fn canonical_query(query: &str) -> String {
@@ -88,18 +116,27 @@ fn canonical_query(query: &str) -> String {
         .filter(|p| !p.is_empty())
         .map(|p| {
             let (k, v) = p.split_once('=').unwrap_or((p, ""));
-            (uri_encode(&percent_decode(k)), uri_encode(&percent_decode(v)))
+            (
+                uri_encode(&percent_decode(k)),
+                uri_encode(&percent_decode(v)),
+            )
         })
         .collect();
     pairs.sort();
-    pairs.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join("&")
+    pairs
+        .iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect::<Vec<_>>()
+        .join("&")
 }
 
 /// RFC 3986 encoding: everything but unreserved characters.
 pub(crate) fn uri_encode(s: &str) -> String {
     s.bytes()
         .map(|b| match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (b as char).to_string()
+            }
             _ => format!("%{b:02X}"),
         })
         .collect()
@@ -111,7 +148,11 @@ fn percent_decode(s: &str) -> String {
     let mut i = 0;
     while i < bytes.len() {
         let hex = |c: u8| (c as char).to_digit(16);
-        match (bytes[i], bytes.get(i + 1).and_then(|c| hex(*c)), bytes.get(i + 2).and_then(|c| hex(*c))) {
+        match (
+            bytes[i],
+            bytes.get(i + 1).and_then(|c| hex(*c)),
+            bytes.get(i + 2).and_then(|c| hex(*c)),
+        ) {
             (b'%', Some(h), Some(l)) => {
                 out.push((h * 16 + l) as u8);
                 i += 3;
@@ -139,7 +180,12 @@ fn amz_date(t: SystemTime) -> String {
     let day = doy - (153 * mp + 2) / 5 + 1;
     let month = if mp < 10 { mp + 3 } else { mp - 9 };
     let year = yoe + era * 400 + i64::from(month <= 2);
-    format!("{year:04}{month:02}{day:02}T{:02}{:02}{:02}Z", rem / 3600, rem % 3600 / 60, rem % 60)
+    format!(
+        "{year:04}{month:02}{day:02}T{:02}{:02}{:02}Z",
+        rem / 3600,
+        rem % 3600 / 60,
+        rem % 60
+    )
 }
 
 #[cfg(test)]
@@ -166,13 +212,27 @@ mod tests {
     fn aws_published_vectors() {
         assert_eq!(amz_date(example_time()), "20150830T123600Z");
         assert_eq!(
-            hex(&signing_key("wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY", "20150830", "us-east-1", "iam")),
+            hex(&signing_key(
+                "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+                "20150830",
+                "us-east-1",
+                "iam"
+            )),
             "c4afb1cc5771d871763a393e44b703571b55cc28424d1a5e86da6ed3c154a4b9"
         );
 
         let mut iam = Req::get("https://iam.amazonaws.com/?Version=2010-05-08&Action=ListUsers")
-            .header("content-type", "application/x-www-form-urlencoded; charset=utf-8");
-        sign(&mut iam, &example_creds(), "us-east-1", "iam", example_time());
+            .header(
+                "content-type",
+                "application/x-www-form-urlencoded; charset=utf-8",
+            );
+        sign(
+            &mut iam,
+            &example_creds(),
+            "us-east-1",
+            "iam",
+            example_time(),
+        );
         assert_eq!(
             iam.header_value("authorization"),
             Some(
@@ -183,7 +243,13 @@ mod tests {
         );
 
         let mut vanilla = Req::get("https://example.amazonaws.com/");
-        sign(&mut vanilla, &example_creds(), "us-east-1", "service", example_time());
+        sign(
+            &mut vanilla,
+            &example_creds(),
+            "us-east-1",
+            "service",
+            example_time(),
+        );
         assert_eq!(
             vanilla.header_value("authorization"),
             Some(
@@ -192,6 +258,9 @@ mod tests {
                  Signature=5fa00fa31553b73ebf1942676e86291e8372ff2a2260956d9b8aae1d763fbf31"
             )
         );
-        assert_eq!(canonical_uri("/model/us.anthropic.claude%3A0/converse"), "/model/us.anthropic.claude%253A0/converse");
+        assert_eq!(
+            canonical_uri("/model/us.anthropic.claude%3A0/converse"),
+            "/model/us.anthropic.claude%253A0/converse"
+        );
     }
 }

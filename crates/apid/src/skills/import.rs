@@ -11,14 +11,17 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use apz_http::{Response, Router};
-use apz_skill::archive::{find_skills, parse_github_url, read_zip, write_zip, Entry, FoundSkill, Limits};
-use apz_skill::{check, FileInfo};
+use apz_skill::archive::{
+    Entry, FoundSkill, Limits, find_skills, parse_github_url, read_zip, write_zip,
+};
+use apz_skill::{FileInfo, check};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::events::Bus;
 use crate::skills::{
-    valid_binding, valid_id, FileBody, FileIn, NewSkill, Skill, SkillStore, Skills, Source, StoreError, MAX_TITLE,
+    FileBody, FileIn, MAX_TITLE, NewSkill, Skill, SkillStore, Skills, Source, StoreError,
+    valid_binding, valid_id,
 };
 use crate::state::App;
 use crate::vault::OnBehalf;
@@ -42,29 +45,48 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .post("/v1/skills/import/preview", |app, req, _| {
             respond(zip_preview(&app.skills, previews(), &req.body, now()))
         })
-        .post("/v1/skills/github/preview", |app, req, _| match req.json::<UrlBody>() {
-            Ok(body) => respond(github_preview(
-                &app.skills,
-                previews(),
-                &Net,
-                github_token(app).as_deref(),
-                &body.url,
-                now(),
-            )),
-            Err(_) => Response::error(400, "the body is not {\"url\": \"...\"}"),
+        .post("/v1/skills/github/preview", |app, req, _| {
+            match req.json::<UrlBody>() {
+                Ok(body) => respond(github_preview(
+                    &app.skills,
+                    previews(),
+                    &Net,
+                    github_token(app).as_deref(),
+                    &body.url,
+                    now(),
+                )),
+                Err(_) => Response::error(400, "the body is not {\"url\": \"...\"}"),
+            }
         })
-        .post("/v1/skills/import/commit", |app, req, _| match req.json::<CommitBody>() {
-            Ok(body) => respond(commit(&app.skills, &app.bus, previews(), body, now())),
-            Err(_) => Response::error(400, "the body is not valid JSON for this route"),
+        .post("/v1/skills/import/commit", |app, req, _| {
+            match req.json::<CommitBody>() {
+                Ok(body) => respond(commit(&app.skills, &app.bus, previews(), body, now())),
+                Err(_) => Response::error(400, "the body is not valid JSON for this route"),
+            }
         })
         .post("/v1/skills/{id}/github/check", |app, _, p| {
-            respond(github_check(&app.skills, &Net, github_token(app).as_deref(), p.get("id")))
+            respond(github_check(
+                &app.skills,
+                &Net,
+                github_token(app).as_deref(),
+                p.get("id"),
+            ))
         })
         .post("/v1/skills/{id}/github/update", |app, _, p| {
-            respond(github_update(&app.skills, &app.bus, &Net, github_token(app).as_deref(), p.get("id"), now()))
+            respond(github_update(
+                &app.skills,
+                &app.bus,
+                &Net,
+                github_token(app).as_deref(),
+                p.get("id"),
+                now(),
+            ))
         })
         .get("/v1/skills/export", |app, req, _| {
-            respond_zip(export_many(&app.skills, req.query_param("ids").unwrap_or("")))
+            respond_zip(export_many(
+                &app.skills,
+                req.query_param("ids").unwrap_or(""),
+            ))
         })
         .get("/v1/skills/{id}/versions/{v}/export", |app, _, p| {
             respond_zip(export_version(&app.skills, p.get("id"), p.get("v")))
@@ -122,9 +144,10 @@ fn respond(result: Result<Value, Fail>) -> Response {
 
 fn respond_zip(result: Result<(Vec<u8>, String), Fail>) -> Response {
     match result {
-        Ok((bytes, name)) => {
-            Response::new(200, "application/zip", bytes).with_header("content-disposition", &format!("attachment; filename=\"{name}\""))
-        }
+        Ok((bytes, name)) => Response::new(200, "application/zip", bytes).with_header(
+            "content-disposition",
+            &format!("attachment; filename=\"{name}\""),
+        ),
         Err(f) => fail(f),
     }
 }
@@ -135,7 +158,8 @@ fn now() -> u64 {
 
 /// The owner's GitHub token: the vault's `github_token` bound to the `github` consumer, else GITHUB_TOKEN.
 pub(crate) fn github_token(app: &App) -> Option<String> {
-    app.vault.value_for(GITHUB_TOKEN, GITHUB_BINDING, &OnBehalf::Hub)
+    app.vault
+        .value_for(GITHUB_TOKEN, GITHUB_BINDING, &OnBehalf::Hub)
 }
 
 // ---- previews ----
@@ -164,7 +188,10 @@ impl Previews {
         let mut map = self.inner.lock().unwrap_or_else(|p| p.into_inner());
         map.retain(|_, p| p.expires_ms > now);
         while map.len() >= MAX_PREVIEWS {
-            let oldest = map.iter().min_by_key(|(_, p)| p.expires_ms).map(|(k, _)| k.clone());
+            let oldest = map
+                .iter()
+                .min_by_key(|(_, p)| p.expires_ms)
+                .map(|(k, _)| k.clone());
             match oldest {
                 Some(k) => {
                     map.remove(&k);
@@ -198,14 +225,25 @@ fn previews() -> &'static Previews {
 fn new_id() -> String {
     let mut id = String::with_capacity(32);
     for _ in 0..2 {
-        id.push_str(&format!("{:016x}", std::collections::hash_map::RandomState::new().build_hasher().finish()));
+        id.push_str(&format!(
+            "{:016x}",
+            std::collections::hash_map::RandomState::new()
+                .build_hasher()
+                .finish()
+        ));
     }
     id
 }
 
 /// The preview answer: its id, the source, when it expires, and per skill its path (the folder), name, title,
 /// report, file count and the live skill of the same name (`exists`).
-fn offer(skills: &Skills, previews: &Previews, source: Source, found: Vec<FoundSkill>, now: u64) -> Result<Value, Fail> {
+fn offer(
+    skills: &Skills,
+    previews: &Previews,
+    source: Source,
+    found: Vec<FoundSkill>,
+    now: u64,
+) -> Result<Value, Fail> {
     let live = skills.store().list(false)?;
     let mut items = Vec::with_capacity(found.len());
     for f in &found {
@@ -226,14 +264,31 @@ fn offer(skills: &Skills, previews: &Previews, source: Source, found: Vec<FoundS
         }));
     }
     let expires_ms = now + PREVIEW_TTL_MS;
-    let preview_id = previews.put(Preview { source: source.clone(), skills: found, expires_ms }, now);
-    Ok(json!({"preview_id": preview_id, "source": source, "expires_ms": expires_ms, "skills": items}))
+    let preview_id = previews.put(
+        Preview {
+            source: source.clone(),
+            skills: found,
+            expires_ms,
+        },
+        now,
+    );
+    Ok(
+        json!({"preview_id": preview_id, "source": source, "expires_ms": expires_ms, "skills": items}),
+    )
 }
 
 /// A zip upload: every folder under the archive root with a SKILL.md.
-fn zip_preview(skills: &Skills, previews: &Previews, bytes: &[u8], now: u64) -> Result<Value, Fail> {
+fn zip_preview(
+    skills: &Skills,
+    previews: &Previews,
+    bytes: &[u8],
+    now: u64,
+) -> Result<Value, Fail> {
     if bytes.len() > MAX_UPLOAD {
-        return Err(Fail::Status(413, "the archive is larger than 100 MB".into()));
+        return Err(Fail::Status(
+            413,
+            "the archive is larger than 100 MB".into(),
+        ));
     }
     let entries = read_zip(bytes, Limits::ARCHIVE).map_err(|e| Fail::Status(422, e))?;
     let found = find_skills(&entries, "");
@@ -257,7 +312,10 @@ fn github_preview(
     let entries = download(fetch, token, &gh.owner, &gh.repo, &commit)?;
     let found = repo_relative(find_skills(&entries, &gh.path));
     if found.is_empty() {
-        return Err(Fail::Status(422, "no SKILL.md under that path in this repository".into()));
+        return Err(Fail::Status(
+            422,
+            "no SKILL.md under that path in this repository".into(),
+        ));
     }
     let source = Source::Github {
         repo: format!("{}/{}", gh.owner, gh.repo),
@@ -271,7 +329,13 @@ fn github_preview(
 // ---- commit ----
 
 /// Creates the picked skills, all or none: every pick is checked and its name is free before anything is written.
-fn commit(skills: &Skills, bus: &Bus, previews: &Previews, body: CommitBody, now: u64) -> Result<Value, Fail> {
+fn commit(
+    skills: &Skills,
+    bus: &Bus,
+    previews: &Previews,
+    body: CommitBody,
+    now: u64,
+) -> Result<Value, Fail> {
     let preview = previews
         .get(&body.preview_id, now)
         .ok_or_else(|| Fail::Status(404, "no such preview, or it has expired".into()))?;
@@ -280,7 +344,10 @@ fn commit(skills: &Skills, bus: &Bus, previews: &Previews, body: CommitBody, now
     }
     let mut bindings = body.bindings.clone();
     if let Some(bad) = bindings.iter().find(|b| !valid_binding(b)) {
-        return Err(Fail::Status(422, format!("{bad} is not a binding (plaza or role:<role>)")));
+        return Err(Fail::Status(
+            422,
+            format!("{bad} is not a binding (plaza or role:<role>)"),
+        ));
     }
     bindings.sort();
     bindings.dedup();
@@ -311,10 +378,15 @@ fn commit(skills: &Skills, bus: &Bus, previews: &Previews, body: CommitBody, now
         let report = check(&found.skill_md, &infos(&found.files));
         if let Some(name) = &report.name {
             if let Some(holder) = live.iter().find(|s| &s.name == name) {
-                return Err(Fail::Store(StoreError::Conflict(format!("{name} is already a live skill ({})", holder.id))));
+                return Err(Fail::Store(StoreError::Conflict(format!(
+                    "{name} is already a live skill ({})",
+                    holder.id
+                ))));
             }
             if !names.insert(name.clone()) {
-                return Err(Fail::Store(StoreError::Conflict(format!("{name} is in the picks twice"))));
+                return Err(Fail::Store(StoreError::Conflict(format!(
+                    "{name} is in the picks twice"
+                ))));
             }
         }
         let title = title_of(&found.dir, report.name.as_deref());
@@ -330,7 +402,13 @@ fn commit(skills: &Skills, bus: &Bus, previews: &Previews, body: CommitBody, now
     let mut out = Vec::with_capacity(prepared.len());
     for (title, nv, source) in prepared {
         let id = unique_id(skills.store(), &title)?;
-        let new = NewSkill { id, title, tags: Vec::new(), bindings: bindings.clone(), source };
+        let new = NewSkill {
+            id,
+            title,
+            tags: Vec::new(),
+            bindings: bindings.clone(),
+            source,
+        };
         let skill = skills.store().create(&new, &nv, OWNER, now)?;
         bus.publish("skill", &json!({ "id": skill.id, "action": "import" }));
         out.push(summary(skills.store(), &skill)?);
@@ -342,7 +420,11 @@ fn commit(skills: &Skills, bus: &Bus, previews: &Previews, body: CommitBody, now
 fn unique_id(store: &dyn SkillStore, title: &str) -> Result<String, Fail> {
     let base: String = apz_prompt::slug(title).chars().take(50).collect();
     let base = base.trim_end_matches('-').to_string();
-    let base = if base.is_empty() { "skill".to_string() } else { base };
+    let base = if base.is_empty() {
+        "skill".to_string()
+    } else {
+        base
+    };
     let mut candidate = base.clone();
     let mut n = 2;
     while store.get(&candidate)?.is_some() {
@@ -350,7 +432,10 @@ fn unique_id(store: &dyn SkillStore, title: &str) -> Result<String, Fail> {
         n += 1;
     }
     if !valid_id(&candidate) {
-        return Err(Fail::Status(422, format!("{candidate} is not a valid skill id")));
+        return Err(Fail::Status(
+            422,
+            format!("{candidate} is not a valid skill id"),
+        ));
     }
     Ok(candidate)
 }
@@ -362,7 +447,10 @@ fn summary(store: &dyn SkillStore, skill: &Skill) -> Result<Value, Fail> {
         .active_version
         .and_then(|live| versions.iter().find(|v| v.version == live))
         .map(|v| v.score);
-    let best = versions.iter().max_by_key(|v| (v.score, v.version)).map(|v| v.version);
+    let best = versions
+        .iter()
+        .max_by_key(|v| (v.score, v.version))
+        .map(|v| v.version);
     Ok(json!({
         "id": skill.id,
         "name": skill.name,
@@ -384,10 +472,24 @@ fn summary(store: &dyn SkillStore, skill: &Skill) -> Result<Value, Fail> {
 // ---- GitHub check and update ----
 
 /// Whether the skill's ref now points at a newer commit than the one it was taken from.
-fn github_check(skills: &Skills, fetch: &dyn Fetch, token: Option<&str>, id: &str) -> Result<Value, Fail> {
+fn github_check(
+    skills: &Skills,
+    fetch: &dyn Fetch,
+    token: Option<&str>,
+    id: &str,
+) -> Result<Value, Fail> {
     let skill = skills.store().get(id)?.ok_or(StoreError::NotFound)?;
-    let Source::Github { repo, git_ref, commit, .. } = &skill.source else {
-        return Err(Fail::Status(422, "this skill was not imported from GitHub".into()));
+    let Source::Github {
+        repo,
+        git_ref,
+        commit,
+        ..
+    } = &skill.source
+    else {
+        return Err(Fail::Status(
+            422,
+            "this skill was not imported from GitHub".into(),
+        ));
     };
     let (owner, name) = split_repo(repo)?;
     let latest = resolve_commit(fetch, token, owner, name, git_ref.as_deref())?;
@@ -395,16 +497,36 @@ fn github_check(skills: &Skills, fetch: &dyn Fetch, token: Option<&str>, id: &st
 }
 
 /// Imports the skill at its path in the latest commit as a new version (author `github`). Unchanged: created false.
-fn github_update(skills: &Skills, bus: &Bus, fetch: &dyn Fetch, token: Option<&str>, id: &str, now: u64) -> Result<Value, Fail> {
+fn github_update(
+    skills: &Skills,
+    bus: &Bus,
+    fetch: &dyn Fetch,
+    token: Option<&str>,
+    id: &str,
+    now: u64,
+) -> Result<Value, Fail> {
     let store = skills.store();
     let skill = store.get(id)?.ok_or(StoreError::NotFound)?;
-    let Source::Github { repo, git_ref, path, commit } = &skill.source else {
-        return Err(Fail::Status(422, "this skill was not imported from GitHub".into()));
+    let Source::Github {
+        repo,
+        git_ref,
+        path,
+        commit,
+    } = &skill.source
+    else {
+        return Err(Fail::Status(
+            422,
+            "this skill was not imported from GitHub".into(),
+        ));
     };
     let (owner, name) = split_repo(repo)?;
     let latest = resolve_commit(fetch, token, owner, name, git_ref.as_deref())?;
     if latest == *commit {
-        let last = store.versions(id)?.into_iter().last().ok_or(StoreError::NotFound)?;
+        let last = store
+            .versions(id)?
+            .into_iter()
+            .last()
+            .ok_or(StoreError::NotFound)?;
         return Ok(json!({"version": last, "created": false}));
     }
     let entries = download(fetch, token, owner, name, &latest)?;
@@ -424,27 +546,51 @@ fn github_update(skills: &Skills, bus: &Bus, fetch: &dyn Fetch, token: Option<&s
 }
 
 /// The commit a ref points at: the API answers the bare sha with the `sha` media type.
-fn resolve_commit(fetch: &dyn Fetch, token: Option<&str>, owner: &str, repo: &str, git_ref: Option<&str>) -> Result<String, Fail> {
-    let url = format!("https://api.github.com/repos/{owner}/{repo}/commits/{}", git_ref.unwrap_or("HEAD"));
+fn resolve_commit(
+    fetch: &dyn Fetch,
+    token: Option<&str>,
+    owner: &str,
+    repo: &str,
+    git_ref: Option<&str>,
+) -> Result<String, Fail> {
+    let url = format!(
+        "https://api.github.com/repos/{owner}/{repo}/commits/{}",
+        git_ref.unwrap_or("HEAD")
+    );
     let body = fetch
         .get(&url, token, Some("application/vnd.github.sha"), API_LIMIT)
         .map_err(|e| Fail::Status(502, format!("GitHub did not resolve the ref: {e}")))?;
-    let sha = String::from_utf8(body).map(|s| s.trim().to_string()).unwrap_or_default();
-    let well_formed = sha.len() == 40 && sha.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+    let sha = String::from_utf8(body)
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+    let well_formed = sha.len() == 40
+        && sha
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
     if !well_formed {
-        return Err(Fail::Status(502, "GitHub did not answer with a commit id".into()));
+        return Err(Fail::Status(
+            502,
+            "GitHub did not answer with a commit id".into(),
+        ));
     }
     Ok(sha)
 }
 
 /// The commit's zipball, read within the archive limits. Its paths keep the `<repo>-<sha>/` folder: `find_skills`
 /// needs that common top to match a path inside the repo; `repo_relative` removes it from the results.
-fn download(fetch: &dyn Fetch, token: Option<&str>, owner: &str, repo: &str, sha: &str) -> Result<Vec<Entry>, Fail> {
+fn download(
+    fetch: &dyn Fetch,
+    token: Option<&str>,
+    owner: &str,
+    repo: &str,
+    sha: &str,
+) -> Result<Vec<Entry>, Fail> {
     let url = format!("https://codeload.github.com/{owner}/{repo}/zip/{sha}");
     let bytes = fetch
         .get(&url, token, None, MAX_UPLOAD as u64)
         .map_err(|e| Fail::Status(502, format!("GitHub did not send the archive: {e}")))?;
-    read_zip(&bytes, Limits::ARCHIVE).map_err(|e| Fail::Status(422, format!("the GitHub archive: {e}")))
+    read_zip(&bytes, Limits::ARCHIVE)
+        .map_err(|e| Fail::Status(422, format!("the GitHub archive: {e}")))
 }
 
 /// The found skills with the zipball's `<repo>-<sha>/` folder removed from each dir, so paths are relative to the
@@ -453,7 +599,11 @@ fn repo_relative(found: Vec<FoundSkill>) -> Vec<FoundSkill> {
     found
         .into_iter()
         .map(|mut f| {
-            f.dir = f.dir.split_once('/').map(|(_, rest)| rest.to_string()).unwrap_or_default();
+            f.dir = f
+                .dir
+                .split_once('/')
+                .map(|(_, rest)| rest.to_string())
+                .unwrap_or_default();
             f
         })
         .collect()
@@ -468,7 +618,9 @@ fn split_repo(repo: &str) -> Result<(&str, &str), Fail> {
 
 /// One version as a zip whose folder is the skill's name.
 fn export_version(skills: &Skills, id: &str, version: &str) -> Result<(Vec<u8>, String), Fail> {
-    let v: u32 = version.parse().map_err(|_| Fail::Status(404, "no such version".into()))?;
+    let v: u32 = version
+        .parse()
+        .map_err(|_| Fail::Status(404, "no such version".into()))?;
     let skill = skills.store().get(id)?.ok_or(StoreError::NotFound)?;
     let found = found_for(skills, &skill, v)?;
     let bytes = write_zip(&[found]).map_err(|e| Fail::Status(500, e))?;
@@ -482,7 +634,10 @@ fn export_many(skills: &Skills, ids: &str) -> Result<(Vec<u8>, String), Fail> {
         return Err(Fail::Status(422, "ids is empty".into()));
     }
     if ids.len() > MAX_EXPORT_IDS {
-        return Err(Fail::Status(422, format!("at most {MAX_EXPORT_IDS} skills in one export")));
+        return Err(Fail::Status(
+            422,
+            format!("at most {MAX_EXPORT_IDS} skills in one export"),
+        ));
     }
     let mut seen = HashSet::new();
     let mut picked = Vec::new();
@@ -502,21 +657,35 @@ fn export_many(skills: &Skills, ids: &str) -> Result<(Vec<u8>, String), Fail> {
 }
 
 fn found_for(skills: &Skills, skill: &Skill, version: u32) -> Result<FoundSkill, Fail> {
-    let v = skills.store().version(&skill.id, version)?.ok_or(StoreError::NotFound)?;
+    let v = skills
+        .store()
+        .version(&skill.id, version)?
+        .ok_or(StoreError::NotFound)?;
     let files = v
         .files
         .iter()
         .map(|f| -> Result<Entry, String> {
-            Ok(Entry { path: f.path.clone(), bytes: skills.blobs().get(&f.sha256)?, executable: f.executable })
+            Ok(Entry {
+                path: f.path.clone(),
+                bytes: skills.blobs().get(&f.sha256)?,
+                executable: f.executable,
+            })
         })
         .collect::<Result<Vec<_>, String>>()?;
-    Ok(FoundSkill { dir: skill.name.clone(), skill_md: v.skill_md, files })
+    Ok(FoundSkill {
+        dir: skill.name.clone(),
+        skill_md: v.skill_md,
+        files,
+    })
 }
 
 /// The skill's name as a file name when it is plain, else its id.
 fn file_stem(skill: &Skill) -> String {
     let plain = !skill.name.is_empty()
-        && skill.name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.');
+        && skill
+            .name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.');
     if plain {
         skill.name.clone()
     } else {
@@ -529,29 +698,48 @@ fn file_stem(skill: &Skill) -> String {
 /// The HTTP the GitHub calls need: a GET with optional headers, at most 3 redirects, a body cap. The token is sent
 /// as a Bearer header and never put in an error.
 pub trait Fetch {
-    fn get(&self, url: &str, token: Option<&str>, accept: Option<&str>, limit: u64) -> Result<Vec<u8>, String>;
+    fn get(
+        &self,
+        url: &str,
+        token: Option<&str>,
+        accept: Option<&str>,
+        limit: u64,
+    ) -> Result<Vec<u8>, String>;
 }
 
 /// The real network, through ureq (rustls, webpki roots).
 struct Net;
 
 impl Fetch for Net {
-    fn get(&self, url: &str, token: Option<&str>, accept: Option<&str>, limit: u64) -> Result<Vec<u8>, String> {
-        let mut builder = ureq::http::Request::builder().method("GET").uri(url).header("user-agent", "agentplaza");
+    fn get(
+        &self,
+        url: &str,
+        token: Option<&str>,
+        accept: Option<&str>,
+        limit: u64,
+    ) -> Result<Vec<u8>, String> {
+        let mut builder = ureq::http::Request::builder()
+            .method("GET")
+            .uri(url)
+            .header("user-agent", "agentplaza");
         if let Some(accept) = accept {
             builder = builder.header("accept", accept);
         }
         if let Some(token) = token {
             builder = builder.header("authorization", format!("Bearer {token}"));
         }
-        let request = builder.body(Vec::new()).map_err(|_| "bad request".to_string())?;
+        let request = builder
+            .body(Vec::new())
+            .map_err(|_| "bad request".to_string())?;
         let config = ureq::Agent::config_builder()
             .timeout_global(Some(FETCH_TIMEOUT))
             .max_redirects(3)
             .http_status_as_error(false)
             .build();
         let agent = ureq::Agent::new_with_config(config);
-        let mut response = agent.run(request).map_err(|e| format!("did not answer: {e}"))?;
+        let mut response = agent
+            .run(request)
+            .map_err(|e| format!("did not answer: {e}"))?;
         let status = response.status().as_u16();
         if !(200..300).contains(&status) {
             return Err(format!("answered {status}"));
@@ -572,7 +760,11 @@ fn infos(files: &[Entry]) -> Vec<FileInfo> {
             path: f.path.clone(),
             size: f.bytes.len() as u64,
             executable: f.executable,
-            text: if f.bytes.len() <= 1024 * 1024 { String::from_utf8(f.bytes.clone()).ok() } else { None },
+            text: if f.bytes.len() <= 1024 * 1024 {
+                String::from_utf8(f.bytes.clone()).ok()
+            } else {
+                None
+            },
         })
         .collect()
 }
@@ -580,13 +772,19 @@ fn infos(files: &[Entry]) -> Vec<FileInfo> {
 fn files_in(files: &[Entry]) -> Vec<FileIn> {
     files
         .iter()
-        .map(|f| FileIn { path: f.path.clone(), body: FileBody::Bytes(f.bytes.clone()), executable: f.executable })
+        .map(|f| FileIn {
+            path: f.path.clone(),
+            body: FileBody::Bytes(f.bytes.clone()),
+            executable: f.executable,
+        })
         .collect()
 }
 
 /// The frontmatter name, else the folder's name, cut to the title limit.
 fn title_of(dir: &str, name: Option<&str>) -> String {
-    let raw = name.map(str::to_string).unwrap_or_else(|| dir.rsplit('/').next().unwrap_or("").to_string());
+    let raw = name
+        .map(str::to_string)
+        .unwrap_or_else(|| dir.rsplit('/').next().unwrap_or("").to_string());
     let title: String = raw.chars().take(MAX_TITLE).collect();
     if title.trim().is_empty() {
         "skill".to_string()
@@ -598,7 +796,12 @@ fn title_of(dir: &str, name: Option<&str>) -> String {
 /// A picked skill's source: the GitHub source with this folder's path, or an upload.
 fn source_for(source: &Source, dir: &str) -> Source {
     match source {
-        Source::Github { repo, git_ref, commit, .. } => Source::Github {
+        Source::Github {
+            repo,
+            git_ref,
+            commit,
+            ..
+        } => Source::Github {
             repo: repo.clone(),
             git_ref: git_ref.clone(),
             path: dir.to_string(),
@@ -610,7 +813,9 @@ fn source_for(source: &Source, dir: &str) -> Source {
 
 fn origin_text(source: &Source) -> String {
     match source {
-        Source::Github { repo, commit, path, .. } => format!("{repo}@{} {path}", short(commit)),
+        Source::Github {
+            repo, commit, path, ..
+        } => format!("{repo}@{} {path}", short(commit)),
         _ => "a zip upload".to_string(),
     }
 }
@@ -623,7 +828,7 @@ fn short(sha: &str) -> &str {
 mod tests {
     use super::*;
     use crate::skills::store_mem::MemorySkills;
-    use crate::skills::{sha256_hex, Blobs};
+    use crate::skills::{Blobs, sha256_hex};
     use std::sync::Arc;
 
     /// File bytes in memory, by sha256.
@@ -640,7 +845,12 @@ mod tests {
         }
 
         fn get(&self, sha256: &str) -> Result<Vec<u8>, String> {
-            self.map.lock().unwrap().get(sha256).cloned().ok_or_else(|| format!("no blob {sha256}"))
+            self.map
+                .lock()
+                .unwrap()
+                .get(sha256)
+                .cloned()
+                .ok_or_else(|| format!("no blob {sha256}"))
         }
     }
 
@@ -651,17 +861,29 @@ mod tests {
     }
 
     impl Fetch for FakeGithub {
-        fn get(&self, url: &str, _token: Option<&str>, accept: Option<&str>, _limit: u64) -> Result<Vec<u8>, String> {
+        fn get(
+            &self,
+            url: &str,
+            _token: Option<&str>,
+            accept: Option<&str>,
+            _limit: u64,
+        ) -> Result<Vec<u8>, String> {
             if url.starts_with("https://api.github.com/repos/o/r/commits/") {
                 assert_eq!(accept, Some("application/vnd.github.sha"));
                 return Ok(self.head.lock().unwrap().clone().into_bytes());
             }
-            self.archives.get(url).cloned().ok_or_else(|| "answered 404".to_string())
+            self.archives
+                .get(url)
+                .cloned()
+                .ok_or_else(|| "answered 404".to_string())
         }
     }
 
     fn library() -> Skills {
-        Skills::new(Arc::new(MemorySkills::in_memory()), Arc::new(TestBlobs::default()))
+        Skills::new(
+            Arc::new(MemorySkills::in_memory()),
+            Arc::new(TestBlobs::default()),
+        )
     }
 
     fn zip_of(dir: &str, skill_md: &str, files: &[(&str, &[u8])]) -> Vec<u8> {
@@ -670,7 +892,11 @@ mod tests {
             skill_md: skill_md.to_string(),
             files: files
                 .iter()
-                .map(|(path, bytes)| Entry { path: path.to_string(), bytes: bytes.to_vec(), executable: false })
+                .map(|(path, bytes)| Entry {
+                    path: path.to_string(),
+                    bytes: bytes.to_vec(),
+                    executable: false,
+                })
                 .collect(),
         };
         write_zip(&[found]).unwrap()
@@ -693,7 +919,11 @@ mod tests {
         assert_eq!(preview["skills"][0]["path"], "folder");
         let preview_id = preview["preview_id"].as_str().unwrap().to_string();
 
-        let body = CommitBody { preview_id: preview_id.clone(), picks: vec!["folder".into()], bindings: vec!["plaza".into()] };
+        let body = CommitBody {
+            preview_id: preview_id.clone(),
+            picks: vec!["folder".into()],
+            bindings: vec!["plaza".into()],
+        };
         let made = commit(&lib, &bus, &previews, body, now).unwrap();
         let id = made["skills"][0]["id"].as_str().unwrap().to_string();
         assert_eq!(made["skills"][0]["bindings"], json!(["plaza"]));
@@ -706,14 +936,31 @@ mod tests {
 
         let (many, name) = export_many(&lib, &id).unwrap();
         assert_eq!(name, "skills.zip");
-        assert_eq!(read_zip(&many, Limits::ARCHIVE).unwrap().len(), entries.len());
+        assert_eq!(
+            read_zip(&many, Limits::ARCHIVE).unwrap().len(),
+            entries.len()
+        );
 
         // The name is live now: the same pick again is refused, and nothing is created.
-        let again = CommitBody { preview_id, picks: vec!["folder".into()], bindings: vec![] };
-        assert!(matches!(commit(&lib, &bus, &previews, again, now), Err(Fail::Store(StoreError::Conflict(_)))));
+        let again = CommitBody {
+            preview_id,
+            picks: vec!["folder".into()],
+            bindings: vec![],
+        };
+        assert!(matches!(
+            commit(&lib, &bus, &previews, again, now),
+            Err(Fail::Store(StoreError::Conflict(_)))
+        ));
         // An unknown preview is a 404.
-        let unknown = CommitBody { preview_id: "nope".into(), picks: vec!["folder".into()], bindings: vec![] };
-        assert!(matches!(commit(&lib, &bus, &previews, unknown, now), Err(Fail::Status(404, _))));
+        let unknown = CommitBody {
+            preview_id: "nope".into(),
+            picks: vec!["folder".into()],
+            bindings: vec![],
+        };
+        assert!(matches!(
+            commit(&lib, &bus, &previews, unknown, now),
+            Err(Fail::Status(404, _))
+        ));
     }
 
     #[test]
@@ -726,13 +973,30 @@ mod tests {
         let md_b = format!("{md_a}\nA newer line.\n");
         let sha_a = "a".repeat(40);
         let sha_b = "b".repeat(40);
-        let gh_zip = |sha: &str, md: &str| zip_of(&format!("r-{sha}/skills/foo"), md, &[("scripts/run.sh", b"echo hi")]);
+        let gh_zip = |sha: &str, md: &str| {
+            zip_of(
+                &format!("r-{sha}/skills/foo"),
+                md,
+                &[("scripts/run.sh", b"echo hi")],
+            )
+        };
         let fake = FakeGithub {
             head: Mutex::new(sha_a.clone()),
-            archives: HashMap::from([(archive_url(&sha_a), gh_zip(&sha_a, &md_a)), (archive_url(&sha_b), gh_zip(&sha_b, &md_b))]),
+            archives: HashMap::from([
+                (archive_url(&sha_a), gh_zip(&sha_a, &md_a)),
+                (archive_url(&sha_b), gh_zip(&sha_b, &md_b)),
+            ]),
         };
 
-        let preview = github_preview(&lib, &previews, &fake, None, "https://github.com/o/r/tree/main/skills", now).unwrap();
+        let preview = github_preview(
+            &lib,
+            &previews,
+            &fake,
+            None,
+            "https://github.com/o/r/tree/main/skills",
+            now,
+        )
+        .unwrap();
         assert_eq!(preview["skills"][0]["path"], "skills/foo");
         let body = CommitBody {
             preview_id: preview["preview_id"].as_str().unwrap().to_string(),
@@ -761,13 +1025,20 @@ mod tests {
     #[test]
     fn an_archive_over_100_mb_is_refused_with_413() {
         let big = vec![0u8; MAX_UPLOAD + 1];
-        assert!(matches!(zip_preview(&library(), &Previews::new(), &big, 0), Err(Fail::Status(413, _))));
+        assert!(matches!(
+            zip_preview(&library(), &Previews::new(), &big, 0),
+            Err(Fail::Status(413, _))
+        ));
     }
 
     #[test]
     fn previews_expire_and_are_capped() {
         let p = Previews::new();
-        let mk = |expires_ms| Preview { source: Source::Upload, skills: Vec::new(), expires_ms };
+        let mk = |expires_ms| Preview {
+            source: Source::Upload,
+            skills: Vec::new(),
+            expires_ms,
+        };
         let id = p.put(mk(100), 0);
         assert!(p.get(&id, 99).is_some());
         assert!(p.get(&id, 100).is_none());

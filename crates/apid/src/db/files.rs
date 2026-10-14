@@ -169,7 +169,12 @@ impl Files {
 
     /// `open` with the rotation size and the read block size given (tests use small ones).
     pub fn open_with(state_dir: &Path, rotate_bytes: u64, chunk: u64) -> Files {
-        Files { dir: state_dir.to_path_buf(), rotate_bytes, chunk, open: Mutex::default() }
+        Files {
+            dir: state_dir.to_path_buf(),
+            rotate_bytes,
+            chunk,
+            open: Mutex::default(),
+        }
     }
 
     fn lock(&self) -> MutexGuard<'_, Open> {
@@ -205,24 +210,44 @@ impl Files {
     }
 
     /// Appends one transcript record. `Ok(false)` when `seq` is already stored for `cid`.
-    pub fn append_transcript(&self, cid: u64, seq: u64, work: u64, kind: &str, at_ms: u64, data: &Value) -> Result<bool, String> {
+    pub fn append_transcript(
+        &self,
+        cid: u64,
+        seq: u64,
+        work: u64,
+        kind: &str,
+        at_ms: u64,
+        data: &Value,
+    ) -> Result<bool, String> {
         let mut guard = self.lock();
         let open = &mut *guard;
         let high = match open.high.get(&cid).copied() {
             Some(high) => high,
             None => {
-                let high = self.newest(&self.transcript_path(cid), |r: &TranscriptIn| r.seq).map_err(text)?;
+                let high = self
+                    .newest(&self.transcript_path(cid), |r: &TranscriptIn| r.seq)
+                    .map_err(text)?;
                 open.high.insert(cid, high);
                 high
             }
         };
-        if high.is_some_and(|high| seq <= high) && self.has_transcript_seq(cid, seq).map_err(text)? {
+        if high.is_some_and(|high| seq <= high)
+            && self.has_transcript_seq(cid, seq).map_err(text)?
+        {
             return Ok(false);
         }
-        let line = to_line(&TranscriptOut { seq, work, kind, at_ms, data })?;
+        let line = to_line(&TranscriptOut {
+            seq,
+            work,
+            kind,
+            at_ms,
+            data,
+        })?;
         let slot = open.transcripts.entry(cid).or_default();
-        self.append_line(slot, &self.transcript_path(cid), &line, false).map_err(text)?;
-        open.high.insert(cid, Some(high.map_or(seq, |high| high.max(seq))));
+        self.append_line(slot, &self.transcript_path(cid), &line, false)
+            .map_err(text)?;
+        open.high
+            .insert(cid, Some(high.map_or(seq, |high| high.max(seq))));
         open.dirty = true;
         Ok(true)
     }
@@ -263,7 +288,11 @@ impl Files {
             let name = entry.map_err(text)?.file_name();
             let name = name.to_string_lossy();
             if let Some(stem) = name.strip_suffix(".jsonl") {
-                if let Some(cid) = stem.split('.').next().and_then(|cid| cid.parse::<u64>().ok()) {
+                if let Some(cid) = stem
+                    .split('.')
+                    .next()
+                    .and_then(|cid| cid.parse::<u64>().ok())
+                {
                     cids.insert(cid);
                 }
             }
@@ -288,7 +317,10 @@ impl Files {
         let open = &mut *guard;
         let id = match open.next_id {
             Some(id) => id,
-            None => self.newest(&self.infraction_path(), |r: &InfractionIn| r.id).map_err(text)?.map_or(1, |last| last + 1),
+            None => self
+                .newest(&self.infraction_path(), |r: &InfractionIn| r.id)
+                .map_err(text)?
+                .map_or(1, |last| last + 1),
         };
         let line = to_line(&InfractionOut {
             id,
@@ -298,7 +330,8 @@ impl Files {
             tool: &infraction.tool,
             detail: &infraction.detail,
         })?;
-        self.append_line(&mut open.infractions, &self.infraction_path(), &line, false).map_err(text)?;
+        self.append_line(&mut open.infractions, &self.infraction_path(), &line, false)
+            .map_err(text)?;
         open.next_id = Some(id + 1);
         open.dirty = true;
         Ok(())
@@ -327,7 +360,13 @@ impl Files {
         rows.truncate(limit);
         Ok(rows
             .into_iter()
-            .map(|r| Infraction { cid: r.cid, law: r.law, at_ms: r.at_ms, tool: r.tool, detail: r.detail })
+            .map(|r| Infraction {
+                cid: r.cid,
+                law: r.law,
+                at_ms: r.at_ms,
+                tool: r.tool,
+                detail: r.detail,
+            })
             .collect())
     }
 
@@ -360,7 +399,9 @@ impl Files {
 
     /// Writes one index line of the recordings: a recording as it stands (its start, or its end and counts).
     pub fn put_recording(&self, recording: &Recording) -> Result<(), String> {
-        let line = RecordingLine::Put { recording: recording.clone() };
+        let line = RecordingLine::Put {
+            recording: recording.clone(),
+        };
         let mut guard = self.lock();
         let open = &mut *guard;
         self.append_audit(&mut open.station_recordings, &self.recordings_path(), &line)
@@ -388,17 +429,19 @@ impl Files {
             if settled {
                 break;
             }
-            for_each_line_rev(&file, self.chunk, |line| match serde_json::from_slice::<RecordingLine>(line) {
-                Ok(RecordingLine::Put { recording }) if recording.id == id => {
-                    answer = Some(recording);
-                    settled = true;
-                    false
+            for_each_line_rev(&file, self.chunk, |line| {
+                match serde_json::from_slice::<RecordingLine>(line) {
+                    Ok(RecordingLine::Put { recording }) if recording.id == id => {
+                        answer = Some(recording);
+                        settled = true;
+                        false
+                    }
+                    Ok(RecordingLine::Delete { id: gone }) if gone == id => {
+                        settled = true;
+                        false
+                    }
+                    _ => true,
                 }
-                Ok(RecordingLine::Delete { id: gone }) if gone == id => {
-                    settled = true;
-                    false
-                }
-                _ => true,
             })?;
         }
         Ok(answer)
@@ -426,11 +469,19 @@ impl Files {
 
     /// Recordings, newest first (by start, then id): one workstation's when `station` is given, and only those
     /// started before `before` (ms) when it is given.
-    pub fn recordings(&self, station: Option<&str>, before: Option<u64>, limit: i64) -> Result<Vec<Recording>, String> {
+    pub fn recordings(
+        &self,
+        station: Option<&str>,
+        before: Option<u64>,
+        limit: i64,
+    ) -> Result<Vec<Recording>, String> {
         let limit = limit.max(0) as usize;
         let _guard = self.lock();
         let mut rows = self.recordings_latest().map_err(text)?;
-        rows.retain(|r| station.is_none_or(|wanted| r.station == wanted) && before.is_none_or(|b| r.started_ms < b));
+        rows.retain(|r| {
+            station.is_none_or(|wanted| r.station == wanted)
+                && before.is_none_or(|b| r.started_ms < b)
+        });
         rows.sort_by(|a, b| (b.started_ms, &b.id).cmp(&(a.started_ms, &a.id)));
         rows.truncate(limit);
         Ok(rows)
@@ -451,21 +502,44 @@ impl Files {
         let line = EventOut { recording, event };
         let mut guard = self.lock();
         let open = &mut *guard;
-        self.append_audit(&mut open.recording_events, &self.recording_events_path(), &line)
+        self.append_audit(
+            &mut open.recording_events,
+            &self.recording_events_path(),
+            &line,
+        )
     }
 
     /// Appends one frame's capture time to the recordings' frames, and fsyncs it.
-    pub fn put_recording_frame(&self, recording: &str, frame: FrameTime, bytes: u64) -> Result<(), String> {
-        let line = FrameOut { recording: recording.to_string(), seq: frame.seq, ts_ms: frame.ts_ms, bytes };
+    pub fn put_recording_frame(
+        &self,
+        recording: &str,
+        frame: FrameTime,
+        bytes: u64,
+    ) -> Result<(), String> {
+        let line = FrameOut {
+            recording: recording.to_string(),
+            seq: frame.seq,
+            ts_ms: frame.ts_ms,
+            bytes,
+        };
         let mut guard = self.lock();
         let open = &mut *guard;
-        self.append_audit(&mut open.recording_frames, &self.recording_frames_path(), &line)
+        self.append_audit(
+            &mut open.recording_frames,
+            &self.recording_frames_path(),
+            &line,
+        )
     }
 
     /// The capture times of a recording's frames, in seq order: those with a seq up to `upto` (the frames its index
     /// counts), at most `limit`. Nothing when the recording is not in the index. A seq written twice keeps its last
     /// time, as the Postgres upsert does.
-    pub fn recording_frame_times(&self, recording: &str, upto: u64, limit: i64) -> Result<Vec<FrameTime>, String> {
+    pub fn recording_frame_times(
+        &self,
+        recording: &str,
+        upto: u64,
+        limit: i64,
+    ) -> Result<Vec<FrameTime>, String> {
         let limit = limit.max(0) as usize;
         let _guard = self.lock();
         if self.recording_unlocked(recording).map_err(text)?.is_none() {
@@ -475,14 +549,21 @@ impl Files {
         let mut times: BTreeMap<u64, u64> = BTreeMap::new();
         for file in generations(&self.recording_frames_path()) {
             for_each_line_rev(&file, self.chunk, |line| {
-                if let Some(row) = serde_json::from_slice::<FrameIn>(line).ok().filter(|row| row.recording == recording && row.seq <= upto) {
+                if let Some(row) = serde_json::from_slice::<FrameIn>(line)
+                    .ok()
+                    .filter(|row| row.recording == recording && row.seq <= upto)
+                {
                     times.entry(row.seq).or_insert(row.ts_ms);
                 }
                 true
             })
             .map_err(text)?;
         }
-        Ok(times.into_iter().take(limit).map(|(seq, ts_ms)| FrameTime { seq, ts_ms }).collect())
+        Ok(times
+            .into_iter()
+            .take(limit)
+            .map(|(seq, ts_ms)| FrameTime { seq, ts_ms })
+            .collect())
     }
 
     /// The newest `limit` actions of a recording, oldest first. Nothing when the recording is not in the index (a
@@ -524,7 +605,11 @@ impl Files {
     pub fn save_station_sync_rows(&self, station: &str, rows: &[Row]) -> Result<(), String> {
         let _guard = self.lock();
         let path = self.sync_path(station)?;
-        let mut all: BTreeMap<String, Row> = read_sync_rows(&path).map_err(text)?.into_iter().map(|r| (r.path.clone(), r)).collect();
+        let mut all: BTreeMap<String, Row> = read_sync_rows(&path)
+            .map_err(text)?
+            .into_iter()
+            .map(|r| (r.path.clone(), r))
+            .collect();
         for row in rows {
             all.insert(row.path.clone(), row.clone());
         }
@@ -538,11 +623,17 @@ impl Files {
 
     /// The file of one workstation's sync rows. The id must be plain, since it names the file.
     fn sync_path(&self, station: &str) -> Result<PathBuf, String> {
-        let plain = !station.is_empty() && station.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_');
+        let plain = !station.is_empty()
+            && station
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_');
         if !plain {
             return Err(format!("{station:?} is not a workstation id"));
         }
-        Ok(self.dir.join("station-sync").join(format!("{station}.json")))
+        Ok(self
+            .dir
+            .join("station-sync")
+            .join(format!("{station}.json")))
     }
 
     /// Fsyncs the files written since the last call (the periodic saver runs it).
@@ -551,7 +642,12 @@ impl Files {
         if !open.dirty {
             return Ok(());
         }
-        for file in open.transcripts.values().flatten().chain(open.infractions.iter()) {
+        for file in open
+            .transcripts
+            .values()
+            .flatten()
+            .chain(open.infractions.iter())
+        {
             file.sync_all().map_err(text)?;
         }
         open.dirty = false;
@@ -563,7 +659,8 @@ impl Files {
         for file in generations(&self.transcript_path(cid)) {
             let mut found = false;
             for_each_line_rev(&file, self.chunk, |line| {
-                found = serde_json::from_slice::<TranscriptIn>(line).is_ok_and(|row| row.seq == seq);
+                found =
+                    serde_json::from_slice::<TranscriptIn>(line).is_ok_and(|row| row.seq == seq);
                 !found
             })?;
             if found {
@@ -574,15 +671,21 @@ impl Files {
     }
 
     /// The key (seq or id) of the newest record in `path`'s generations, if any has one.
-    fn newest<T: DeserializeOwned>(&self, path: &Path, key: impl Fn(&T) -> u64) -> io::Result<Option<u64>> {
+    fn newest<T: DeserializeOwned>(
+        &self,
+        path: &Path,
+        key: impl Fn(&T) -> u64,
+    ) -> io::Result<Option<u64>> {
         for file in generations(path) {
             let mut found = None;
-            for_each_line_rev(&file, self.chunk, |line| match serde_json::from_slice::<T>(line) {
-                Ok(row) => {
-                    found = Some(key(&row));
-                    false
+            for_each_line_rev(&file, self.chunk, |line| {
+                match serde_json::from_slice::<T>(line) {
+                    Ok(row) => {
+                        found = Some(key(&row));
+                        false
+                    }
+                    Err(_) => true,
                 }
-                Err(_) => true,
             })?;
             if found.is_some() {
                 return Ok(found);
@@ -592,7 +695,12 @@ impl Files {
     }
 
     /// Appends one audit row to `path` (private, mode 0600) and fsyncs it. The caller holds the lock.
-    fn append_audit<T: Serialize>(&self, slot: &mut Option<File>, path: &Path, row: &T) -> Result<(), String> {
+    fn append_audit<T: Serialize>(
+        &self,
+        slot: &mut Option<File>,
+        path: &Path,
+        row: &T,
+    ) -> Result<(), String> {
         let line = to_line(row)?;
         self.append_line(slot, path, &line, true).map_err(text)?;
         match slot.as_ref() {
@@ -603,7 +711,13 @@ impl Files {
 
     /// Audit rows of `path`, newest first (a stable sort by `at_ms` keeps the file's order among ties),
     /// filtered to those whose `column` equals `value` when one is given. The caller holds the lock.
-    fn audit_rows(&self, path: &Path, column: &str, value: Option<&str>, limit: i64) -> Result<Vec<Value>, String> {
+    fn audit_rows(
+        &self,
+        path: &Path,
+        column: &str,
+        value: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<Value>, String> {
         let limit = limit.max(0) as usize;
         let mut rows: Vec<Value> = Vec::new();
         for file in generations(path) {
@@ -611,8 +725,12 @@ impl Files {
                 break;
             }
             for_each_line_rev(&file, self.chunk, |line| {
-                let row = serde_json::from_slice::<Value>(line).ok().filter(Value::is_object);
-                if let Some(row) = row.filter(|row| value.is_none_or(|wanted| row[column] == wanted)) {
+                let row = serde_json::from_slice::<Value>(line)
+                    .ok()
+                    .filter(Value::is_object);
+                if let Some(row) =
+                    row.filter(|row| value.is_none_or(|wanted| row[column] == wanted))
+                {
                     rows.push(row);
                 }
                 rows.len() < limit
@@ -626,7 +744,13 @@ impl Files {
 
     /// Writes one line to `path` through `slot` (the open file), rotating first when the file has
     /// reached the limit. A `private` file is created mode 0600.
-    fn append_line(&self, slot: &mut Option<File>, path: &Path, line: &[u8], private: bool) -> io::Result<()> {
+    fn append_line(
+        &self,
+        slot: &mut Option<File>,
+        path: &Path,
+        line: &[u8],
+        private: bool,
+    ) -> io::Result<()> {
         let mut file = match slot.take() {
             Some(file) => file,
             None => open_for_append(path, private)?,
@@ -645,7 +769,8 @@ impl Files {
 /// One workstation's sync rows from its file; a missing file holds none.
 fn read_sync_rows(path: &Path) -> io::Result<Vec<Row>> {
     match fs::read(path) {
-        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string())),
+        Ok(bytes) => serde_json::from_slice(&bytes)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string())),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
         Err(e) => Err(e),
     }
@@ -663,7 +788,10 @@ fn to_line<T: Serialize>(value: &T) -> Result<Vec<u8>, String> {
 
 /// `<stem>.<n>.jsonl` next to `path` (`123.jsonl` gives `123.1.jsonl`).
 fn generation(path: &Path, n: u32) -> PathBuf {
-    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or_default();
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or_default();
     path.with_file_name(format!("{stem}.{n}.jsonl"))
 }
 
@@ -729,7 +857,11 @@ fn rotate(path: &Path) -> io::Result<()> {
 
 /// Calls `visit` with each complete line of `path`, newest first, until it returns false. Reads
 /// `chunk` bytes at a time from the end; a line split across blocks is joined before it is visited.
-fn for_each_line_rev(path: &Path, chunk: u64, mut visit: impl FnMut(&[u8]) -> bool) -> io::Result<()> {
+fn for_each_line_rev(
+    path: &Path,
+    chunk: u64,
+    mut visit: impl FnMut(&[u8]) -> bool,
+) -> io::Result<()> {
     let mut file = match File::open(path) {
         Ok(file) => file,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
@@ -792,7 +924,16 @@ mod tests {
                 true
             })
             .unwrap();
-            assert_eq!(seen, vec!["last", "", "second is longer than the block size", "first line"], "chunk {chunk}");
+            assert_eq!(
+                seen,
+                vec![
+                    "last",
+                    "",
+                    "second is longer than the block size",
+                    "first line"
+                ],
+                "chunk {chunk}"
+            );
         }
         let mut count = 0;
         for_each_line_rev(&path, 4, |_| {
@@ -808,16 +949,29 @@ mod tests {
         let dir = state("round-trip");
         let files = Files::open(&dir);
         for seq in 1..=5 {
-            assert_eq!(files.append_transcript(7, seq, 2, "step", 100 + seq, &json!({ "n": seq })), Ok(true));
+            assert_eq!(
+                files.append_transcript(7, seq, 2, "step", 100 + seq, &json!({ "n": seq })),
+                Ok(true)
+            );
         }
-        assert_eq!(seqs(&files.transcript(7, 3).unwrap()), vec![3, 4, 5], "the newest three, oldest first");
+        assert_eq!(
+            seqs(&files.transcript(7, 3).unwrap()),
+            vec![3, 4, 5],
+            "the newest three, oldest first"
+        );
         assert_eq!(files.transcript_cids().unwrap(), vec![7]);
         drop(files);
 
         let reopened = Files::open(&dir);
-        assert_eq!(seqs(&reopened.transcript(7, 500).unwrap()), vec![1, 2, 3, 4, 5]);
+        assert_eq!(
+            seqs(&reopened.transcript(7, 500).unwrap()),
+            vec![1, 2, 3, 4, 5]
+        );
         assert_eq!(reopened.transcript(7, 500).unwrap()[4].4, json!({ "n": 5 }));
-        assert_eq!(reopened.append_transcript(7, 6, 2, "step", 106, &json!({})), Ok(true));
+        assert_eq!(
+            reopened.append_transcript(7, 6, 2, "step", 106, &json!({})),
+            Ok(true)
+        );
         assert_eq!(seqs(&reopened.transcript(7, 2).unwrap()), vec![5, 6]);
     }
 
@@ -826,16 +980,32 @@ mod tests {
         let dir = state("duplicate");
         let files = Files::open_with(&dir, 150, CHUNK);
         for seq in 1..=12 {
-            assert_eq!(files.append_transcript(9, seq, 1, "step", seq, &json!({ "n": seq })), Ok(true));
+            assert_eq!(
+                files.append_transcript(9, seq, 1, "step", seq, &json!({ "n": seq })),
+                Ok(true)
+            );
         }
         // Duplicates are found in the kept generations: the oldest kept record and the newest.
         let rows = files.transcript(9, 500).unwrap();
         let oldest_kept = rows[0].0;
-        assert!(oldest_kept > 1, "the test needs a rotation to have dropped the oldest records");
-        assert_eq!(files.append_transcript(9, oldest_kept, 1, "step", 3, &json!({ "again": true })), Ok(false));
-        assert_eq!(files.append_transcript(9, 12, 1, "step", 12, &json!({})), Ok(false), "the newest seq too");
+        assert!(
+            oldest_kept > 1,
+            "the test needs a rotation to have dropped the oldest records"
+        );
+        assert_eq!(
+            files.append_transcript(9, oldest_kept, 1, "step", 3, &json!({ "again": true })),
+            Ok(false)
+        );
+        assert_eq!(
+            files.append_transcript(9, 12, 1, "step", 12, &json!({})),
+            Ok(false),
+            "the newest seq too"
+        );
         let rows = files.transcript(9, 500).unwrap();
-        assert!(rows.iter().all(|r| r.4 != json!({ "again": true })), "the duplicate's data is not stored");
+        assert!(
+            rows.iter().all(|r| r.4 != json!({ "again": true })),
+            "the duplicate's data is not stored"
+        );
         let mut sorted = seqs(&rows);
         sorted.dedup();
         assert_eq!(sorted.len(), rows.len(), "no seq appears twice");
@@ -845,8 +1015,12 @@ mod tests {
     fn a_torn_last_line_is_skipped_and_the_next_record_starts_clean() {
         let dir = state("torn");
         let files = Files::open(&dir);
-        files.append_transcript(4, 1, 1, "step", 1, &json!({})).unwrap();
-        files.append_transcript(4, 2, 1, "step", 2, &json!({})).unwrap();
+        files
+            .append_transcript(4, 1, 1, "step", 1, &json!({}))
+            .unwrap();
+        files
+            .append_transcript(4, 2, 1, "step", 2, &json!({}))
+            .unwrap();
         drop(files);
         let path = dir.join("transcripts").join("4.jsonl");
         let mut torn = fs::OpenOptions::new().append(true).open(&path).unwrap();
@@ -854,11 +1028,22 @@ mod tests {
         drop(torn);
 
         let files = Files::open(&dir);
-        assert_eq!(seqs(&files.transcript(4, 500).unwrap()), vec![1, 2], "the torn line is not a record");
-        assert_eq!(files.append_transcript(4, 3, 1, "step", 3, &json!({ "fresh": true })), Ok(true));
+        assert_eq!(
+            seqs(&files.transcript(4, 500).unwrap()),
+            vec![1, 2],
+            "the torn line is not a record"
+        );
+        assert_eq!(
+            files.append_transcript(4, 3, 1, "step", 3, &json!({ "fresh": true })),
+            Ok(true)
+        );
         let rows = files.transcript(4, 500).unwrap();
         assert_eq!(seqs(&rows), vec![1, 2, 3]);
-        assert_eq!(rows[2].4, json!({ "fresh": true }), "the new record is intact, not joined to the torn bytes");
+        assert_eq!(
+            rows[2].4,
+            json!({ "fresh": true }),
+            "the new record is intact, not joined to the torn bytes"
+        );
     }
 
     #[test]
@@ -866,16 +1051,24 @@ mod tests {
         let dir = state("rotation");
         let files = Files::open_with(&dir, 200, CHUNK);
         for seq in 1..=30 {
-            files.append_transcript(5, seq, 1, "step", seq, &json!({ "pad": "x".repeat(20) })).unwrap();
+            files
+                .append_transcript(5, seq, 1, "step", seq, &json!({ "pad": "x".repeat(20) }))
+                .unwrap();
         }
         let folder = dir.join("transcripts");
         assert!(folder.join("5.jsonl").exists());
         assert!(folder.join("5.1.jsonl").exists());
         assert!(folder.join("5.2.jsonl").exists());
-        assert!(!folder.join("5.3.jsonl").exists(), "only two rotations are kept");
+        assert!(
+            !folder.join("5.3.jsonl").exists(),
+            "only two rotations are kept"
+        );
         let rows = seqs(&files.transcript(5, 500).unwrap());
         assert_eq!(*rows.last().unwrap(), 30);
-        assert!(rows.windows(2).all(|w| w[1] == w[0] + 1), "the retained records are contiguous: {rows:?}");
+        assert!(
+            rows.windows(2).all(|w| w[1] == w[0] + 1),
+            "the retained records are contiguous: {rows:?}"
+        );
         assert!(rows[0] > 1, "the oldest generation was dropped");
         assert_eq!(seqs(&files.transcript(5, 3).unwrap()), vec![28, 29, 30]);
     }
@@ -898,13 +1091,26 @@ mod tests {
 
         let files = Files::open(&dir);
         files.append_infraction(&infraction(1, 30, "d")).unwrap();
-        let details = |rows: Vec<Infraction>| rows.into_iter().map(|r| r.detail).collect::<Vec<_>>();
-        assert_eq!(details(files.infractions(None, 10).unwrap()), vec!["d", "c", "b", "a"]);
-        assert_eq!(details(files.infractions(Some(1), 10).unwrap()), vec!["d", "c", "a"]);
+        let details =
+            |rows: Vec<Infraction>| rows.into_iter().map(|r| r.detail).collect::<Vec<_>>();
+        assert_eq!(
+            details(files.infractions(None, 10).unwrap()),
+            vec!["d", "c", "b", "a"]
+        );
+        assert_eq!(
+            details(files.infractions(Some(1), 10).unwrap()),
+            vec!["d", "c", "a"]
+        );
         assert_eq!(details(files.infractions(Some(1), 1).unwrap()), vec!["d"]);
         let ids: Vec<u64> = {
             let text = fs::read_to_string(dir.join("infractions.jsonl")).unwrap();
-            text.lines().map(|l| serde_json::from_str::<Value>(l).unwrap()["id"].as_u64().unwrap()).collect()
+            text.lines()
+                .map(|l| {
+                    serde_json::from_str::<Value>(l).unwrap()["id"]
+                        .as_u64()
+                        .unwrap()
+                })
+                .collect()
         };
         assert_eq!(ids, vec![1, 2, 3, 4], "ids continue after the restart");
     }
@@ -914,31 +1120,57 @@ mod tests {
     #[test]
     fn ide_audit_round_trips_filters_limits_and_pages_newest_first() {
         let dir = state("ide-audit");
-        let row = |at_ms: u64, workspace: &str, kind: &str| {
-            json!({ "at_ms": at_ms, "actor": "owner", "workspace": workspace, "kind": kind, "path": null })
+        let row = |at_ms: u64, workspace: &str, kind: &str| json!({ "at_ms": at_ms, "actor": "owner", "workspace": workspace, "kind": kind, "path": null });
+        let kinds = |rows: Vec<Value>| {
+            rows.iter()
+                .map(|r| r["kind"].as_str().unwrap().to_string())
+                .collect::<Vec<_>>()
         };
-        let kinds = |rows: Vec<Value>| rows.iter().map(|r| r["kind"].as_str().unwrap().to_string()).collect::<Vec<_>>();
 
         let files = Files::open(&dir);
-        files.append_ide_audit(&row(10, "agent:12", "write")).unwrap();
-        files.append_ide_audit(&row(20, "agent:40", "write")).unwrap();
-        files.append_ide_audit(&row(20, "agent:12", "restore")).unwrap();
+        files
+            .append_ide_audit(&row(10, "agent:12", "write"))
+            .unwrap();
+        files
+            .append_ide_audit(&row(20, "agent:40", "write"))
+            .unwrap();
+        files
+            .append_ide_audit(&row(20, "agent:12", "restore"))
+            .unwrap();
         drop(files);
 
         let files = Files::open(&dir);
         files.append_ide_audit(&row(30, "agent:12", "run")).unwrap();
-        assert_eq!(kinds(files.ide_audit(None, 10).unwrap()), vec!["run", "restore", "write", "write"]);
-        assert_eq!(kinds(files.ide_audit(Some("agent:12"), 10).unwrap()), vec!["run", "restore", "write"]);
-        assert_eq!(kinds(files.ide_audit(Some("agent:12"), 2).unwrap()), vec!["run", "restore"]);
-        assert_eq!(kinds(files.ide_audit(Some("agent:40"), 10).unwrap()), vec!["write"]);
+        assert_eq!(
+            kinds(files.ide_audit(None, 10).unwrap()),
+            vec!["run", "restore", "write", "write"]
+        );
+        assert_eq!(
+            kinds(files.ide_audit(Some("agent:12"), 10).unwrap()),
+            vec!["run", "restore", "write"]
+        );
+        assert_eq!(
+            kinds(files.ide_audit(Some("agent:12"), 2).unwrap()),
+            vec!["run", "restore"]
+        );
+        assert_eq!(
+            kinds(files.ide_audit(Some("agent:40"), 10).unwrap()),
+            vec!["write"]
+        );
         assert!(files.ide_audit(Some("agent:99"), 10).unwrap().is_empty());
-        assert_eq!(files.ide_audit(None, 1).unwrap(), vec![row(30, "agent:12", "run")]);
+        assert_eq!(
+            files.ide_audit(None, 1).unwrap(),
+            vec![row(30, "agent:12", "run")]
+        );
         assert!(files.ide_audit(None, 0).unwrap().is_empty());
 
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mode = fs::metadata(dir.join("ide-audit.jsonl")).unwrap().permissions().mode();
+            let mode = fs::metadata(dir.join("ide-audit.jsonl"))
+                .unwrap()
+                .permissions()
+                .mode();
             assert_eq!(mode & 0o777, 0o600, "the audit file is private");
         }
     }
@@ -950,21 +1182,50 @@ mod tests {
         let dir = state("station-audit");
         let files = Files::open(&dir);
         let row = |at_ms: u64, station: Option<&str>, kind: &str| json!({ "at_ms": at_ms, "actor": "owner", "station": station, "agent": null, "kind": kind });
-        let kinds = |rows: Vec<Value>| rows.iter().map(|r| r["kind"].as_str().unwrap().to_string()).collect::<Vec<_>>();
-        files.append_station_audit(&row(10, Some("w1"), "join")).unwrap();
-        files.append_station_audit(&row(20, Some("w2"), "join")).unwrap();
-        files.append_station_audit(&row(20, None, "code_issue")).unwrap();
-        files.append_station_audit(&row(30, Some("w1"), "drain")).unwrap();
-        assert_eq!(kinds(files.station_audit(None, 10).unwrap()), vec!["drain", "code_issue", "join", "join"]);
-        assert_eq!(kinds(files.station_audit(Some("w1"), 10).unwrap()), vec!["drain", "join"]);
-        assert_eq!(kinds(files.station_audit(Some("w1"), 1).unwrap()), vec!["drain"]);
+        let kinds = |rows: Vec<Value>| {
+            rows.iter()
+                .map(|r| r["kind"].as_str().unwrap().to_string())
+                .collect::<Vec<_>>()
+        };
+        files
+            .append_station_audit(&row(10, Some("w1"), "join"))
+            .unwrap();
+        files
+            .append_station_audit(&row(20, Some("w2"), "join"))
+            .unwrap();
+        files
+            .append_station_audit(&row(20, None, "code_issue"))
+            .unwrap();
+        files
+            .append_station_audit(&row(30, Some("w1"), "drain"))
+            .unwrap();
+        assert_eq!(
+            kinds(files.station_audit(None, 10).unwrap()),
+            vec!["drain", "code_issue", "join", "join"]
+        );
+        assert_eq!(
+            kinds(files.station_audit(Some("w1"), 10).unwrap()),
+            vec!["drain", "join"]
+        );
+        assert_eq!(
+            kinds(files.station_audit(Some("w1"), 1).unwrap()),
+            vec!["drain"]
+        );
         assert!(files.station_audit(Some("w9"), 10).unwrap().is_empty());
         assert!(files.station_audit(None, 0).unwrap().is_empty());
         assert!(dir.join(STATION_AUDIT_FILE).exists());
-        assert_eq!(files.ide_audit(None, 10).unwrap().len(), 0, "the IDE audit's file is its own");
+        assert_eq!(
+            files.ide_audit(None, 10).unwrap().len(),
+            0,
+            "the IDE audit's file is its own"
+        );
 
         let reopened = Files::open(&dir);
-        assert_eq!(kinds(reopened.station_audit(Some("w2"), 10).unwrap()), vec!["join"], "the rows survive a restart");
+        assert_eq!(
+            kinds(reopened.station_audit(Some("w2"), 10).unwrap()),
+            vec!["join"],
+            "the rows survive a restart"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -978,10 +1239,21 @@ mod tests {
         }
         assert!(dir.join("ide-audit.1.jsonl").exists());
         assert!(dir.join("ide-audit.2.jsonl").exists());
-        assert!(!dir.join("ide-audit.3.jsonl").exists(), "only two rotations are kept");
-        let ats: Vec<u64> = files.ide_audit(None, 500).unwrap().iter().map(|r| r["at_ms"].as_u64().unwrap()).collect();
+        assert!(
+            !dir.join("ide-audit.3.jsonl").exists(),
+            "only two rotations are kept"
+        );
+        let ats: Vec<u64> = files
+            .ide_audit(None, 500)
+            .unwrap()
+            .iter()
+            .map(|r| r["at_ms"].as_u64().unwrap())
+            .collect();
         assert_eq!(ats.first(), Some(&30));
-        assert!(ats.windows(2).all(|w| w[0] == w[1] + 1), "the kept rows are contiguous: {ats:?}");
+        assert!(
+            ats.windows(2).all(|w| w[0] == w[1] + 1),
+            "the kept rows are contiguous: {ats:?}"
+        );
         assert_eq!(files.ide_audit(Some("agent:12"), 3).unwrap().len(), 3);
     }
 }

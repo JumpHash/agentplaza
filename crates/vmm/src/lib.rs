@@ -78,17 +78,17 @@ pub mod builder;
 #[cfg(target_os = "linux")]
 mod sys;
 
+pub mod devices;
+/// The host end of a vhost-vsock guest's connections (Linux): the `AF_VSOCK` listeners a QEMU workstation VM's relay
+/// serves. See the allowlist above.
+#[cfg(target_os = "linux")]
+pub mod host_vsock;
 /// The VMM's confinement layer (v0): the seccomp-bpf allowlist installed per
 /// VMM thread, with `no_new_privs`. Linux/KVM only for now — the
 /// Hypervisor.framework path has its own confinement story.
 #[cfg(target_os = "linux")]
 pub mod jail;
-pub mod devices;
 pub mod spawner;
-/// The host end of a vhost-vsock guest's connections (Linux): the `AF_VSOCK` listeners a QEMU workstation VM's relay
-/// serves. See the allowlist above.
-#[cfg(target_os = "linux")]
-pub mod host_vsock;
 
 /// ACPI table generation (`x86_64` guests only; aarch64 uses FDT).
 #[cfg(all(any(target_os = "linux", windows), target_arch = "x86_64"))]
@@ -96,16 +96,20 @@ pub mod acpi;
 
 // On Windows only x86_64 guests are built (the WHP backend); arm64 Windows
 // hosts run the hub, the apps and the node daemons but no VM yet.
-#[cfg(any(target_os = "linux", target_os = "macos", all(windows, target_arch = "x86_64")))]
+#[cfg(any(
+    target_os = "linux",
+    target_os = "macos",
+    all(windows, target_arch = "x86_64")
+))]
 pub mod arch;
 
-#[cfg(any(target_os = "linux", target_os = "macos", windows))]
-pub mod vstate;
 /// The `hvf` module declares itself on every target; its own `mod.rs` gates the
 /// platform halves: the pure decode/PSCI/GIC model (and its unit tests)
 /// compiles and runs on any target, the FFI/vm/vcpu backend only on
 /// macOS/Apple Silicon.
 pub mod hvf;
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+pub mod vstate;
 /// The Windows Hypervisor Platform backend. Like [`hvf`], its pure half (the
 /// I/O APIC model, the x86_64 boot state, the zero page and the kernel loader)
 /// compiles and is tested on any target; the FFI half only on Windows.

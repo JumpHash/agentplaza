@@ -151,7 +151,6 @@ impl WindowsDesktop {
         // SAFETY: the window handle came from this thread's window queries.
         unsafe { self.uia.ElementFromHandle(hwnd) }.map_err(platform_error)
     }
-
 }
 
 impl Desktop for WindowsDesktop {

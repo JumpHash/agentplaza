@@ -13,7 +13,7 @@ use std::f32::consts::TAU;
 
 use iced::keyboard::{self, key::Named};
 use iced::widget::canvas::{self, Canvas, Event, Frame, Path, Stroke, Text};
-use iced::{mouse, Color, Element, Length, Pixels, Point, Rectangle, Renderer, Size, Theme};
+use iced::{Color, Element, Length, Pixels, Point, Rectangle, Renderer, Size, Theme, mouse};
 
 use super::agent_side::Note;
 
@@ -124,17 +124,26 @@ impl Layout {
     /// Recomputes the layout when the set of notes (or a note's update stamp) changed. Notes that were already placed
     /// start where they were, so a refresh only nudges the graph.
     pub fn refresh(&mut self, notes: &[Note]) {
-        let key: Vec<(String, u64)> = notes.iter().map(|n| (n.slug.clone(), n.updated_ms)).collect();
+        let key: Vec<(String, u64)> = notes
+            .iter()
+            .map(|n| (n.slug.clone(), n.updated_ms))
+            .collect();
         if key == self.key {
             return;
         }
-        let prev: HashMap<String, (f32, f32)> = self.nodes.iter().map(|n| (n.slug.clone(), (n.x, n.y))).collect();
+        let prev: HashMap<String, (f32, f32)> = self
+            .nodes
+            .iter()
+            .map(|n| (n.slug.clone(), (n.x, n.y)))
+            .collect();
         *self = Layout::build(notes, &prev, key);
     }
 
     /// Holds a note at (x, y) while it is dragged; the rest of the graph settles around it.
     pub fn hold(&mut self, slug: &str, x: f32, y: f32) {
-        let Some(i) = self.nodes.iter().position(|n| n.slug == slug) else { return };
+        let Some(i) = self.nodes.iter().position(|n| n.slug == slug) else {
+            return;
+        };
         self.held = Some((i, x, y));
         let mut rng = Rng(SEED);
         for _ in 0..8 {
@@ -178,7 +187,11 @@ impl Layout {
             .collect();
 
         // `[[links]]` (by slug, or by the web's normalised form), then a faint edge between neighbours sharing a tag.
-        let index: HashMap<&str, usize> = notes.iter().enumerate().map(|(i, n)| (n.slug.as_str(), i)).collect();
+        let index: HashMap<&str, usize> = notes
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (n.slug.as_str(), i))
+            .collect();
         let mut edges = Vec::new();
         let mut seen = HashSet::new();
         for (i, n) in notes.iter().enumerate() {
@@ -213,7 +226,13 @@ impl Layout {
         // Cooling: a fresh layout starts hot, a refresh starts warm. Same decay and stop as the web.
         let mut alpha = if prev.is_empty() { 1.0 } else { 0.3 };
         nodes.shrink_to_fit();
-        let mut lay = Layout { nodes, edges, neighbours, key, held: None };
+        let mut lay = Layout {
+            nodes,
+            edges,
+            neighbours,
+            key,
+            held: None,
+        };
         loop {
             lay.tick(alpha, &mut rng);
             alpha *= 0.985;
@@ -291,7 +310,13 @@ impl Layout {
     }
 }
 
-fn push_edge(edges: &mut Vec<Edge>, seen: &mut HashSet<(usize, usize)>, a: usize, b: usize, tag: bool) {
+fn push_edge(
+    edges: &mut Vec<Edge>,
+    seen: &mut HashSet<(usize, usize)>,
+    a: usize,
+    b: usize,
+    tag: bool,
+) {
     if a == b {
         return;
     }
@@ -301,7 +326,10 @@ fn push_edge(edges: &mut Vec<Edge>, seen: &mut HashSet<(usize, usize)>, a: usize
 }
 
 fn resolve(index: &HashMap<&str, usize>, r: &str) -> Option<usize> {
-    index.get(r).copied().or_else(|| index.get(norm(r).as_str()).copied())
+    index
+        .get(r)
+        .copied()
+        .or_else(|| index.get(norm(r).as_str()).copied())
 }
 
 /// The web's slug form: lower case, runs of other characters become one dash, no edge dashes, at most 60 characters.
@@ -352,8 +380,14 @@ fn fit(lay: &Layout, bounds: Rectangle) -> Cam {
         y1 = y1.max(n.y + n.r + 30.0);
     }
     let (w, h) = (bounds.width.max(1.0), bounds.height.max(1.0));
-    let k = ((w - 60.0) / (x1 - x0).max(1e-3)).min((h - 60.0) / (y1 - y0).max(1e-3)).clamp(0.25, 1.6);
-    Cam { k, x: w / 2.0 - (x0 + x1) / 2.0 * k, y: h / 2.0 - (y0 + y1) / 2.0 * k }
+    let k = ((w - 60.0) / (x1 - x0).max(1e-3))
+        .min((h - 60.0) / (y1 - y0).max(1e-3))
+        .clamp(0.25, 1.6);
+    Cam {
+        k,
+        x: w / 2.0 - (x0 + x1) / 2.0 * k,
+        y: h / 2.0 - (y0 + y1) / 2.0 * k,
+    }
 }
 
 /// The zoom limits and the step one click of + or − takes.
@@ -365,7 +399,11 @@ const ZOOM_STEP: f32 = 1.25;
 fn zoom_about(cam: Cam, p: Point, factor: f32) -> Cam {
     let k = (cam.k * factor).clamp(ZOOM_MIN, ZOOM_MAX);
     let s = k / cam.k;
-    Cam { k, x: p.x - (p.x - cam.x) * s, y: p.y - (p.y - cam.y) * s }
+    Cam {
+        k,
+        x: p.x - (p.x - cam.x) * s,
+        y: p.y - (p.y - cam.y) * s,
+    }
 }
 
 /// The buttons in the canvas's top-right corner.
@@ -397,7 +435,12 @@ fn buttons(bounds: Rectangle) -> [(Button, Rectangle); 3] {
     let mut right = bounds.width - BUTTON_MARGIN;
     [Button::Fit, Button::ZoomOut, Button::ZoomIn].map(|b| {
         let w = if b == Button::Fit { FIT_W } else { BUTTON_W };
-        let rect = Rectangle { x: right - w, y: BUTTON_MARGIN, width: w, height: BUTTON_H };
+        let rect = Rectangle {
+            x: right - w,
+            y: BUTTON_MARGIN,
+            width: w,
+            height: BUTTON_H,
+        };
         right = rect.x - BUTTON_GAP;
         (b, rect)
     })
@@ -405,7 +448,10 @@ fn buttons(bounds: Rectangle) -> [(Button, Rectangle); 3] {
 
 /// The button under a point (canvas-relative), if one is.
 fn button_at(bounds: Rectangle, p: Point) -> Option<Button> {
-    buttons(bounds).into_iter().find(|(_, r)| r.contains(p)).map(|(b, _)| b)
+    buttons(bounds)
+        .into_iter()
+        .find(|(_, r)| r.contains(p))
+        .map(|(b, _)| b)
 }
 
 /// The node under a point (canvas-relative), the nearest one when several overlap.
@@ -451,7 +497,13 @@ impl GraphView<'_> {
 impl canvas::Program<Msg> for GraphView<'_> {
     type State = View;
 
-    fn update(&self, st: &mut View, event: &Event, bounds: Rectangle, cursor: mouse::Cursor) -> Option<canvas::Action<Msg>> {
+    fn update(
+        &self,
+        st: &mut View,
+        event: &Event,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
+    ) -> Option<canvas::Action<Msg>> {
         match event {
             Event::Mouse(mouse::Event::CursorMoved { .. }) => {
                 let p = cursor.position_in(bounds)?;
@@ -469,7 +521,11 @@ impl canvas::Program<Msg> for GraphView<'_> {
                         let (x, y) = ((p.x - cam.x) / cam.k, (p.y - cam.y) / cam.k);
                         return Some(canvas::Action::publish(Msg::Drag { slug, x, y }));
                     }
-                    st.cam = Some(Cam { x: cam.x + dx, y: cam.y + dy, ..cam });
+                    st.cam = Some(Cam {
+                        x: cam.x + dx,
+                        y: cam.y + dy,
+                        ..cam
+                    });
                     return Some(canvas::Action::request_redraw());
                 }
                 let hover = hit(self.layout, self.cam(st, bounds), p);
@@ -508,7 +564,9 @@ impl canvas::Program<Msg> for GraphView<'_> {
                 }
                 let i = hit(self.layout, self.cam(st, bounds), press)?;
                 st.selected = Some(i);
-                Some(canvas::Action::publish(Msg::Open(self.layout.nodes[i].slug.clone())))
+                Some(canvas::Action::publish(Msg::Open(
+                    self.layout.nodes[i].slug.clone(),
+                )))
             }
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)) => {
                 st.cam = None;
@@ -529,7 +587,14 @@ impl canvas::Program<Msg> for GraphView<'_> {
         }
     }
 
-    fn draw(&self, st: &View, renderer: &Renderer, _theme: &Theme, bounds: Rectangle, _cursor: mouse::Cursor) -> Vec<canvas::Geometry<Renderer>> {
+    fn draw(
+        &self,
+        st: &View,
+        renderer: &Renderer,
+        _theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<canvas::Geometry<Renderer>> {
         let pal = crate::theme::palette();
         let mut frame = Frame::new(renderer, bounds.size());
         frame.fill_rectangle(Point::ORIGIN, bounds.size(), pal.paper);
@@ -546,8 +611,11 @@ impl canvas::Program<Msg> for GraphView<'_> {
             Some(f) => i == f || lay.neighbours[f].contains(&i),
         };
         // The find text dims the notes whose titles miss it (the web's `off` class, the strongest fade).
-        let matches = |n: &Node| self.query.is_empty() || n.title.to_lowercase().contains(&self.query);
-        let kb = self.kb.and_then(|s| lay.nodes.iter().position(|n| n.slug == s));
+        let matches =
+            |n: &Node| self.query.is_empty() || n.title.to_lowercase().contains(&self.query);
+        let kb = self
+            .kb
+            .and_then(|s| lay.nodes.iter().position(|n| n.slug == s));
 
         for e in &lay.edges {
             let (na, nb) = (&lay.nodes[e.a], &lay.nodes[e.b]);
@@ -565,9 +633,13 @@ impl canvas::Program<Msg> for GraphView<'_> {
                 }
             });
             let stroke = if e.tag {
-                Stroke::default().with_color(fade(pal.ink_3, fade_to * 0.6)).with_width(1.0)
+                Stroke::default()
+                    .with_color(fade(pal.ink_3, fade_to * 0.6))
+                    .with_width(1.0)
             } else {
-                Stroke::default().with_color(fade(pal.ink, fade_to)).with_width(1.8)
+                Stroke::default()
+                    .with_color(fade(pal.ink, fade_to))
+                    .with_width(1.8)
             };
             frame.stroke(&path, stroke);
         }
@@ -585,15 +657,32 @@ impl canvas::Program<Msg> for GraphView<'_> {
                 0.3
             };
             frame.fill(&Path::circle(c, r), fade(kind_colour(&n.kind), a));
-            frame.fill(&Path::circle(Point::new(c.x - r * 0.35, c.y - r * 0.4), r * 0.28), fade(Color::WHITE, 0.55 * a));
-            frame.stroke(&Path::circle(c, r), Stroke::default().with_color(fade(pal.ink, a)).with_width(1.6));
+            frame.fill(
+                &Path::circle(Point::new(c.x - r * 0.35, c.y - r * 0.4), r * 0.28),
+                fade(Color::WHITE, 0.55 * a),
+            );
+            frame.stroke(
+                &Path::circle(c, r),
+                Stroke::default()
+                    .with_color(fade(pal.ink, a))
+                    .with_width(1.6),
+            );
             if kb == Some(i) {
-                frame.stroke(&Path::circle(c, r + 5.0), Stroke::default().with_color(pal.ink).with_width(2.5));
+                frame.stroke(
+                    &Path::circle(c, r + 5.0),
+                    Stroke::default().with_color(pal.ink).with_width(2.5),
+                );
             }
 
             let tw = n.tag_w * ls * cam.k;
             let top = c.y + (n.r + 7.0 * ls) * cam.k;
-            frame.fill(&Path::rectangle(Point::new(c.x - tw / 2.0, top), Size::new(tw, 20.0 * ls * cam.k)), fade(pal.sheet, 0.92 * a));
+            frame.fill(
+                &Path::rectangle(
+                    Point::new(c.x - tw / 2.0, top),
+                    Size::new(tw, 20.0 * ls * cam.k),
+                ),
+                fade(pal.sheet, 0.92 * a),
+            );
             frame.fill_text(Text {
                 content: n.label.clone(),
                 position: Point::new(c.x - tw / 2.0 + 9.0 * ls * cam.k, top + 3.0 * ls * cam.k),
@@ -604,8 +693,14 @@ impl canvas::Program<Msg> for GraphView<'_> {
         }
 
         for (b, r) in buttons(bounds) {
-            frame.fill(&Path::rectangle(r.position(), r.size()), fade(pal.sheet, 0.95));
-            frame.stroke(&Path::rectangle(r.position(), r.size()), Stroke::default().with_color(pal.ink_3).with_width(1.0));
+            frame.fill(
+                &Path::rectangle(r.position(), r.size()),
+                fade(pal.sheet, 0.95),
+            );
+            frame.stroke(
+                &Path::rectangle(r.position(), r.size()),
+                Stroke::default().with_color(pal.ink_3).with_width(1.0),
+            );
             frame.fill_text(Text {
                 content: b.label().to_string(),
                 position: Point::new(r.x + r.width / 2.0, r.y + 5.0),
@@ -628,8 +723,15 @@ impl canvas::Program<Msg> for GraphView<'_> {
         vec![frame.into_geometry()]
     }
 
-    fn mouse_interaction(&self, st: &View, bounds: Rectangle, cursor: mouse::Cursor) -> mouse::Interaction {
-        let on_button = cursor.position_in(bounds).is_some_and(|p| button_at(bounds, p).is_some());
+    fn mouse_interaction(
+        &self,
+        st: &View,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
+    ) -> mouse::Interaction {
+        let on_button = cursor
+            .position_in(bounds)
+            .is_some_and(|p| button_at(bounds, p).is_some());
         if st.moved {
             mouse::Interaction::Grabbing
         } else if on_button || st.hover.is_some() {
@@ -644,7 +746,10 @@ impl canvas::Program<Msg> for GraphView<'_> {
 /// notes whose titles miss it are dimmed.
 pub fn view<'a>(layout: &'a Layout, query: String, kb: Option<&'a str>) -> Element<'a, Msg> {
     let query = query.trim().to_lowercase();
-    Canvas::new(GraphView { layout, query, kb }).width(Length::Fill).height(Length::Fixed(480.0)).into()
+    Canvas::new(GraphView { layout, query, kb })
+        .width(Length::Fill)
+        .height(Length::Fixed(480.0))
+        .into()
 }
 
 #[cfg(test)]
@@ -652,12 +757,21 @@ mod tests {
     use super::*;
 
     fn canvas() -> Rectangle {
-        Rectangle { x: 0.0, y: 0.0, width: 400.0, height: 300.0 }
+        Rectangle {
+            x: 0.0,
+            y: 0.0,
+            width: 400.0,
+            height: 300.0,
+        }
     }
 
     #[test]
     fn a_zoom_keeps_the_point_under_the_pointer_in_place() {
-        let cam = Cam { k: 1.0, x: 0.0, y: 0.0 };
+        let cam = Cam {
+            k: 1.0,
+            x: 0.0,
+            y: 0.0,
+        };
         let p = Point::new(100.0, 50.0);
         let z = zoom_about(cam, p, 2.0);
         assert_eq!(z.k, 2.0);
@@ -667,7 +781,11 @@ mod tests {
 
     #[test]
     fn a_zoom_stops_at_the_limits() {
-        let cam = Cam { k: 1.0, x: 0.0, y: 0.0 };
+        let cam = Cam {
+            k: 1.0,
+            x: 0.0,
+            y: 0.0,
+        };
         assert_eq!(zoom_about(cam, Point::ORIGIN, 100.0).k, ZOOM_MAX);
         assert_eq!(zoom_about(cam, Point::ORIGIN, 0.001).k, ZOOM_MIN);
     }
@@ -675,8 +793,14 @@ mod tests {
     #[test]
     fn the_buttons_sit_in_the_top_right_corner_and_a_click_finds_them() {
         for (button, rect) in buttons(canvas()) {
-            assert!(rect.x > canvas().width / 2.0, "{button:?} sits in the right half");
-            assert!(rect.y < canvas().height / 4.0, "{button:?} sits along the top");
+            assert!(
+                rect.x > canvas().width / 2.0,
+                "{button:?} sits in the right half"
+            );
+            assert!(
+                rect.y < canvas().height / 4.0,
+                "{button:?} sits along the top"
+            );
             let centre = Point::new(rect.x + rect.width / 2.0, rect.y + rect.height / 2.0);
             assert_eq!(button_at(canvas(), centre), Some(button));
         }

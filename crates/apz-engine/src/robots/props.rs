@@ -8,11 +8,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::OnceLock;
 
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::super::robot::RobotPalette;
 use super::super::scene::{Color, Obj};
-use super::files::{registry, ROBOT_FILES};
+use super::files::{ROBOT_FILES, registry};
 use super::rig::{add_bone, bake_prop, robot_mats};
 use super::types::{Part, Vec3};
 use super::validate::validate_tool;
@@ -61,7 +61,9 @@ fn is_num(v: &Value) -> bool {
 
 /// A prop file's errors, each named by its path (props.ts `validateProp`). Empty when the file is valid.
 pub fn validate_prop(file: &Value, name: &str, clips: &BTreeSet<String>) -> Vec<String> {
-    let Some(obj) = file.as_object() else { return vec![format!("{name}: a JSON object")] };
+    let Some(obj) = file.as_object() else {
+        return vec![format!("{name}: a JSON object")];
+    };
     let mut errs = Vec::new();
     for k in obj.keys() {
         if !PROP_KEYS.contains(&k.as_str()) {
@@ -74,13 +76,22 @@ pub fn validate_prop(file: &Value, name: &str, clips: &BTreeSet<String>) -> Vec<
     if obj.get("id").and_then(Value::as_str) != Some(name) {
         errs.push(format!("{name}.id: must match the file name \"{name}\""));
     }
-    if !obj.get("name").and_then(Value::as_str).is_some_and(|s| !s.is_empty()) {
+    if !obj
+        .get("name")
+        .and_then(Value::as_str)
+        .is_some_and(|s| !s.is_empty())
+    {
         errs.push(format!("{name}.name: a name"));
     }
     let footprint_ok = obj
         .get("footprint")
         .and_then(Value::as_array)
-        .is_some_and(|fp| fp.len() == 2 && fp.iter().all(|n| n.as_f64().is_some_and(|v| v.is_finite() && v > 0.0)));
+        .is_some_and(|fp| {
+            fp.len() == 2
+                && fp
+                    .iter()
+                    .all(|n| n.as_f64().is_some_and(|v| v.is_finite() && v > 0.0))
+        });
     if !footprint_ok {
         errs.push(format!("{name}.footprint: [width, depth], both above 0"));
     }
@@ -103,7 +114,10 @@ pub fn validate_prop(file: &Value, name: &str, clips: &BTreeSet<String>) -> Vec<
                         errs.push(format!("{sp}.{k}: unknown field"));
                     }
                 }
-                let at_ok = o.get("at").and_then(Value::as_array).is_some_and(|a| a.len() == 3 && a.iter().all(is_num));
+                let at_ok = o
+                    .get("at")
+                    .and_then(Value::as_array)
+                    .is_some_and(|a| a.len() == 3 && a.iter().all(is_num));
                 if !at_ok {
                     errs.push(format!("{sp}.at: [x, y, z] on the floor"));
                 }
@@ -112,7 +126,10 @@ pub fn validate_prop(file: &Value, name: &str, clips: &BTreeSet<String>) -> Vec<
                 }
                 let clip = o.get("clip").and_then(Value::as_str);
                 if !clip.is_some_and(|c| clips.contains(c)) {
-                    errs.push(format!("{sp}.clip: \"{}\" is not a shared clip (clips.json)", clip.unwrap_or("undefined")));
+                    errs.push(format!(
+                        "{sp}.clip: \"{}\" is not a shared clip (clips.json)",
+                        clip.unwrap_or("undefined")
+                    ));
                 }
             }
         }
@@ -129,7 +146,9 @@ fn build_props(ids: &[String], files: &[(&str, &str)], clips: &BTreeSet<String>)
     for id in ids {
         let key = format!("props/{id}");
         let Some((_, src)) = files.iter().find(|(k, _)| *k == key) else {
-            errors.push(format!("index.props: \"{id}\" has no file (assets/robots/props/{id}.json)"));
+            errors.push(format!(
+                "index.props: \"{id}\" has no file (assets/robots/props/{id}.json)"
+            ));
             continue;
         };
         let file: Value = match serde_json::from_str(src) {
@@ -152,7 +171,11 @@ fn build_props(ids: &[String], files: &[(&str, &str)], clips: &BTreeSet<String>)
             Err(e) => errors.push(format!("{key}: {e}")),
         }
     }
-    PropRegistry { props, order, errors }
+    PropRegistry {
+        props,
+        order,
+        errors,
+    }
 }
 
 static PROPS: OnceLock<PropRegistry> = OnceLock::new();
@@ -185,7 +208,10 @@ pub fn build_prop(prop: &Prop, pal: &RobotPalette, hue: f32) -> BuiltProp {
     let group = Obj::group();
     group.set_name(&format!("prop:{}", prop.id));
     add_bone(&group, &geo, &mats, &mut Vec::new());
-    BuiltProp { group, spots: prop.spots.clone() }
+    BuiltProp {
+        group,
+        spots: prop.spots.clone(),
+    }
 }
 
 #[cfg(test)]

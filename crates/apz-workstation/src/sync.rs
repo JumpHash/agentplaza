@@ -21,8 +21,8 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, UNIX_EPOCH};
 
 use apz_station::{
-    Event, FolderState, SYNC_CHUNK, SYNC_FILE_CAP, SYNC_PART_PREFIX, SyncEntry, SyncManifest, SyncOp, SyncPull,
-    SyncPushed, SyncStatus, ignored_name, valid_path,
+    Event, FolderState, SYNC_CHUNK, SYNC_FILE_CAP, SYNC_PART_PREFIX, SyncEntry, SyncManifest,
+    SyncOp, SyncPull, SyncPushed, SyncStatus, ignored_name, valid_path,
 };
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
@@ -76,9 +76,12 @@ pub struct Walk {
 impl Walk {
     /// Whether `path` lies under a folder, or is a file, that could not be read.
     fn is_unreadable(&self, path: &str) -> bool {
-        self.unreadable
-            .iter()
-            .any(|at| path == at || path.strip_prefix(at.as_str()).is_some_and(|rest| rest.starts_with('/')))
+        self.unreadable.iter().any(|at| {
+            path == at
+                || path
+                    .strip_prefix(at.as_str())
+                    .is_some_and(|rest| rest.starts_with('/'))
+        })
     }
 }
 
@@ -243,7 +246,9 @@ pub fn walk(root: &Path, previous: &BTreeMap<String, Known>, cap: u64) -> io::Re
             continue;
         }
         // Gone from the walk: a deletion, unless the file is still there (too big now, or unreadable this time).
-        if out.is_unreadable(path) || fs::symlink_metadata(root.join(path)).is_ok_and(|m| m.is_file()) {
+        if out.is_unreadable(path)
+            || fs::symlink_metadata(root.join(path)).is_ok_and(|m| m.is_file())
+        {
             out.files.insert(path.clone(), old.clone());
         }
     }
@@ -729,22 +734,36 @@ mod tests {
         write(&root, "keep.txt", b"kept");
         let mirror = Mirror::default();
         let present = manifest_of(&mirror, &root);
-        assert_eq!((present.state, present.entries.len()), (FolderState::Present, 1));
+        assert_eq!(
+            (present.state, present.entries.len()),
+            (FolderState::Present, 1)
+        );
 
         fs::remove_dir_all(&root).unwrap();
         let gone = manifest_of(&mirror, &root);
         assert_eq!((gone.state, gone.entries.len()), (FolderState::Missing, 0));
-        assert_eq!(mirror.status().files, 1, "the mirror keeps its entries for when the folder is back");
+        assert_eq!(
+            mirror.status().files,
+            1,
+            "the mirror keeps its entries for when the folder is back"
+        );
 
         fs::create_dir_all(&root).unwrap();
         fs::write(root.join("keep.txt"), b"kept").unwrap();
         let back = manifest_of(&mirror, &root);
         assert_eq!((back.state, back.entries.len()), (FolderState::Present, 1));
-        assert!(mirror.status().pending == 0, "the same file is not a change");
+        assert!(
+            mirror.status().pending == 0,
+            "the same file is not a change"
+        );
 
         fs::remove_file(root.join("keep.txt")).unwrap();
         let wiped = manifest_of(&mirror, &root);
-        assert_eq!(wiped.state, FolderState::Present, "an emptied folder is present; the hub's threshold guards it");
+        assert_eq!(
+            wiped.state,
+            FolderState::Present,
+            "an emptied folder is present; the hub's threshold guards it"
+        );
         assert!(wiped.entries.is_empty());
         fs::remove_dir_all(root).unwrap();
     }
@@ -765,7 +784,10 @@ mod tests {
             fs::remove_dir_all(root).unwrap();
             return;
         }
-        assert_eq!((locked.state, locked.entries.len()), (FolderState::Missing, 0));
+        assert_eq!(
+            (locked.state, locked.entries.len()),
+            (FolderState::Missing, 0)
+        );
 
         let back = manifest_of(&mirror, &root);
         assert_eq!((back.state, back.entries.len()), (FolderState::Present, 1));
@@ -786,11 +808,19 @@ mod tests {
         let second = manifest_of(&mirror, &root);
         set_mode(&root.join("locked"), 0o755);
         let walked = walked.unwrap();
-        assert_eq!(walked.unreadable, ["locked"], "the folder is named as unreadable");
+        assert_eq!(
+            walked.unreadable,
+            ["locked"],
+            "the folder is named as unreadable"
+        );
         assert!(walked.changed.is_empty(), "nothing in it is a change");
         assert_eq!(second.state, FolderState::Present);
         let paths: Vec<&str> = second.entries.iter().map(|e| e.path.as_str()).collect();
-        assert_eq!(paths, ["a.txt", "locked/b.txt"], "the unreadable folder's file stands, not deleted");
+        assert_eq!(
+            paths,
+            ["a.txt", "locked/b.txt"],
+            "the unreadable folder's file stands, not deleted"
+        );
         fs::remove_dir_all(root).unwrap();
     }
 

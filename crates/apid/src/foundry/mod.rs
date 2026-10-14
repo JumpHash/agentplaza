@@ -6,12 +6,12 @@ pub mod registry;
 // The breeder tools and invoke_model (S-006).
 pub mod breeder;
 // The APZW1 payload codec and the hub side of loose DiLoCo training.
-pub mod wire;
+pub mod datasets;
 pub mod diloco;
-pub mod store;
 pub mod jobs;
 pub mod routes;
-pub mod datasets;
+pub mod store;
+pub mod wire;
 // Hugging Face: the client (search, detail, egress) and the imports (docs/design/foundry.md).
 pub mod hf;
 pub mod hf_import;

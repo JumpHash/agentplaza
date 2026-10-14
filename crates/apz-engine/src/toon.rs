@@ -26,7 +26,9 @@ pub fn outline(root: &Obj, min_size: f32) {
         let candidate = {
             let node = o.get();
             match &node.kind {
-                Kind::Mesh { geo, mat } | Kind::Instanced { geo, mat, .. } if !node.no_outline && node.hull.is_none() => {
+                Kind::Mesh { geo, mat } | Kind::Instanced { geo, mat, .. }
+                    if !node.no_outline && node.hull.is_none() =>
+                {
                     Some((Arc::clone(geo), mat.clone()))
                 }
                 _ => None,
@@ -43,7 +45,10 @@ pub fn outline(root: &Obj, min_size: f32) {
     });
     let mut hulls: HashMap<u64, Geo> = HashMap::new();
     for (obj, geo) in found {
-        let hull = hulls.entry(geo.id).or_insert_with(|| weld_smooth(&geo, 1e-3)).clone();
+        let hull = hulls
+            .entry(geo.id)
+            .or_insert_with(|| weld_smooth(&geo, 1e-3))
+            .clone();
         obj.get().hull = Some(hull);
     }
 }
@@ -53,7 +58,11 @@ pub fn outline(root: &Obj, min_size: f32) {
 pub fn sky(top: Color, horizon: Color, ground: Color) -> Obj {
     let geo = sphere(400.0, 32, 16);
     let mat = Mat::new(Material {
-        shading: Shading::Sky { top, horizon, ground },
+        shading: Shading::Sky {
+            top,
+            horizon,
+            ground,
+        },
         side: Side::Back,
         depth_write: false,
         fog: false,
@@ -122,7 +131,10 @@ pub fn starfield(n: u32, radius: f32, rand: &mut Rng) -> Starfield {
             ..Material::default()
         }),
     );
-    let ring_geo = transformed(&ring(24.0, 33.0, 64, 1, 0.0, TAU), Mat4::from_rotation_x(-FRAC_PI_2));
+    let ring_geo = transformed(
+        &ring(24.0, 33.0, 64, 1, 0.0, TAU),
+        Mat4::from_rotation_x(-FRAC_PI_2),
+    );
     let ring_mat = Mat::new(Material {
         shading: Shading::Basic,
         color: Color::hex(0x8fd8ff),
@@ -150,7 +162,11 @@ mod tests {
 
     #[test]
     fn sky_is_a_back_side_dome_drawn_first() {
-        let dome = sky(Color::hex(0x3a7bd5), Color::hex(0xf5d7a1), Color::hex(0x6b8f3a));
+        let dome = sky(
+            Color::hex(0x3a7bd5),
+            Color::hex(0xf5d7a1),
+            Color::hex(0x6b8f3a),
+        );
         assert_eq!(dome.get().render_order, -1);
         let mat = dome.material().expect("the dome is a mesh");
         let m = mat.get();

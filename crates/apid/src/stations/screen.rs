@@ -365,11 +365,15 @@ fn settle(screens: &dyn Screens, feeds: &mut BTreeMap<Key, Feed>, key: &Key) -> 
     match want {
         None => {
             feeds.remove(key);
-            if let Some(last) = streaming && let Err(reason) = screens.stream(station, session, false, last) {
+            if let Some(last) = streaming
+                && let Err(reason) = screens.stream(station, session, false, last)
+            {
                 eprintln!("apid: workstation {station}: its stream did not stop: {reason}");
             }
             if shared && let Err(reason) = screens.close(station, session) {
-                eprintln!("apid: workstation {station}: its shared session did not close: {reason}");
+                eprintln!(
+                    "apid: workstation {station}: its shared session did not close: {reason}"
+                );
             }
             Ok(())
         }

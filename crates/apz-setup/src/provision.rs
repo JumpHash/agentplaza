@@ -6,8 +6,8 @@
 //! the log: every command line shown to the user has its secrets replaced by `***` ([`redact`]),
 //! and failures are reported redacted too.
 
-use crate::runner::Output;
 use crate::Env;
+use crate::runner::Output;
 use std::fs::{self, OpenOptions};
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
@@ -87,7 +87,10 @@ pub fn postgres(env: &Env, log: &mut dyn FnMut(String)) -> Result<(), String> {
             let url = format!("postgres://apz:{pw}@127.0.0.1:5434/apz");
             set_keys(
                 env,
-                &[("APZ_POSTGRES_PASSWORD", pw.as_str()), ("APZ_DATABASE_URL", url.as_str())],
+                &[
+                    ("APZ_POSTGRES_PASSWORD", pw.as_str()),
+                    ("APZ_DATABASE_URL", url.as_str()),
+                ],
             )?;
         }
     }
@@ -155,7 +158,14 @@ pub fn forgejo(env: &Env, log: &mut dyn FnMut(String)) -> Result<(), String> {
     wait_until(
         env,
         log,
-        &["exec", FORGEJO, "wget", "-q", "-O-", "http://127.0.0.1:3000/api/v1/version"],
+        &[
+            "exec",
+            FORGEJO,
+            "wget",
+            "-q",
+            "-O-",
+            "http://127.0.0.1:3000/api/v1/version",
+        ],
         Duration::from_secs(120),
         Duration::from_secs(2),
     )?;
@@ -220,7 +230,10 @@ pub fn forgejo(env: &Env, log: &mut dyn FnMut(String)) -> Result<(), String> {
         if token.is_empty() {
             return Err("Forgejo did not return an access token".to_string());
         }
-        let mut keys = vec![("FORGEJO_URL", "http://127.0.0.1:3300"), ("FORGEJO_TOKEN", token.as_str())];
+        let mut keys = vec![
+            ("FORGEJO_URL", "http://127.0.0.1:3300"),
+            ("FORGEJO_TOKEN", token.as_str()),
+        ];
         if created {
             keys.push(("FORGEJO_ADMIN_PASSWORD", pw.as_str()));
         }
@@ -256,8 +269,18 @@ pub fn garage(env: &Env, log: &mut dyn FnMut(String)) -> Result<(), String> {
         None => {
             let config = garage_config(env)?;
             let mount = format!("{}:/etc/garage.toml:ro", config.display());
-            run_docker(env, log, &["volume", "create", "agentplaza-garage-meta"], &[])?;
-            run_docker(env, log, &["volume", "create", "agentplaza-garage-data"], &[])?;
+            run_docker(
+                env,
+                log,
+                &["volume", "create", "agentplaza-garage-meta"],
+                &[],
+            )?;
+            run_docker(
+                env,
+                log,
+                &["volume", "create", "agentplaza-garage-data"],
+                &[],
+            )?;
             run_docker(
                 env,
                 log,
@@ -299,7 +322,11 @@ pub fn garage(env: &Env, log: &mut dyn FnMut(String)) -> Result<(), String> {
             .filter(|id| !id.is_empty())
             .ok_or("Garage did not return its node id")?
             .to_string();
-        garage_cli(env, log, &["layout", "assign", "-z", "plaza", "-c", "1G", node.as_str()])?;
+        garage_cli(
+            env,
+            log,
+            &["layout", "assign", "-z", "plaza", "-c", "1G", node.as_str()],
+        )?;
         garage_cli(env, log, &["layout", "apply", "--version", "1"])?;
         garage_cli(env, log, &["bucket", "create", GARAGE_BUCKET])?;
         let created = garage_cli(env, log, &["key", "create", GARAGE_KEY_NAME])?;
@@ -307,7 +334,16 @@ pub fn garage(env: &Env, log: &mut dyn FnMut(String)) -> Result<(), String> {
         garage_cli(
             env,
             log,
-            &["bucket", "allow", "--read", "--write", "--owner", GARAGE_BUCKET, "--key", GARAGE_KEY_NAME],
+            &[
+                "bucket",
+                "allow",
+                "--read",
+                "--write",
+                "--owner",
+                GARAGE_BUCKET,
+                "--key",
+                GARAGE_KEY_NAME,
+            ],
         )?;
         set_keys(
             env,
@@ -320,7 +356,9 @@ pub fn garage(env: &Env, log: &mut dyn FnMut(String)) -> Result<(), String> {
             ],
         )?;
     }
-    log(format!("Garage is ready on {GARAGE_ENDPOINT} (bucket {GARAGE_BUCKET})"));
+    log(format!(
+        "Garage is ready on {GARAGE_ENDPOINT} (bucket {GARAGE_BUCKET})"
+    ));
     Ok(())
 }
 
@@ -370,14 +408,24 @@ fn garage_config(env: &Env) -> Result<PathBuf, String> {
 
 /// Whether the container `name` exists and is running: `None` when it does not exist.
 fn running_state(env: &Env, log: &mut dyn FnMut(String), name: &str) -> Option<bool> {
-    run_docker(env, log, &["inspect", "-f", "{{.State.Running}}", name], &[])
-        .ok()
-        .map(|out| out == "true")
+    run_docker(
+        env,
+        log,
+        &["inspect", "-f", "{{.State.Running}}", name],
+        &[],
+    )
+    .ok()
+    .map(|out| out == "true")
 }
 
 /// Runs `docker` with `args` through the runner, logging the command line with each of `secrets`
 /// shown as `***`. Returns stdout, trimmed; a failure is an Err with the command's last stderr line.
-fn run_docker(env: &Env, log: &mut dyn FnMut(String), args: &[&str], secrets: &[&str]) -> Result<String, String> {
+fn run_docker(
+    env: &Env,
+    log: &mut dyn FnMut(String),
+    args: &[&str],
+    secrets: &[&str],
+) -> Result<String, String> {
     log(format!("$ docker {}", redact(&args.join(" "), secrets)));
     let out = env
         .runner
@@ -399,7 +447,10 @@ fn wait_until(
     timeout: Duration,
     every: Duration,
 ) -> Result<(), String> {
-    log(format!("$ docker {} (retried until it succeeds)", args.join(" ")));
+    log(format!(
+        "$ docker {} (retried until it succeeds)",
+        args.join(" ")
+    ));
     let started = Instant::now();
     loop {
         let last = match env.runner.output("docker", args) {
@@ -447,7 +498,9 @@ fn secret() -> Result<String, String> {
 
 /// The file apid reads its settings from, or an error when there is no home directory.
 fn keys_file(env: &Env) -> Result<PathBuf, String> {
-    env.keys.clone().ok_or_else(|| "the home directory is not set".to_string())
+    env.keys
+        .clone()
+        .ok_or_else(|| "the home directory is not set".to_string())
 }
 
 /// The value of `name` in keys.env; `None` when the file or the key is missing, or the value empty.
@@ -458,7 +511,11 @@ fn get_key(env: &Env, name: &str) -> Option<String> {
 
 /// Whether keys.env holds a value for every name in `names`.
 pub(crate) fn keys_set(env: &Env, names: &[&str]) -> bool {
-    let Some(text) = env.keys.as_ref().and_then(|path| fs::read_to_string(path).ok()) else {
+    let Some(text) = env
+        .keys
+        .as_ref()
+        .and_then(|path| fs::read_to_string(path).ok())
+    else {
         return false;
     };
     names.iter().all(|name| lookup(&text, name).is_some())
@@ -495,7 +552,9 @@ fn write_private(path: &Path, text: &str) -> Result<(), String> {
 }
 
 fn file_name(path: &Path) -> String {
-    path.file_name().map(|name| name.to_string_lossy().to_string()).unwrap_or_default()
+    path.file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_default()
 }
 
 /// Creates `path` for writing, failing if it exists; private (0600) on Unix.
@@ -559,12 +618,15 @@ fn lookup(text: &str, name: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runner::mock::{scratch, Mock};
+    use crate::runner::mock::{Mock, scratch};
 
     #[test]
     fn merge_replaces_appends_and_keeps_other_lines() {
         let existing = "# keys\nANTHROPIC_API_KEY=sk-1\nAPZ_DATABASE_URL=old\n\nOTHER=x\n";
-        let merged = merge(existing, &[("APZ_DATABASE_URL", "new"), ("FORGEJO_TOKEN", "t")]);
+        let merged = merge(
+            existing,
+            &[("APZ_DATABASE_URL", "new"), ("FORGEJO_TOKEN", "t")],
+        );
         assert_eq!(
             merged,
             "# keys\nANTHROPIC_API_KEY=sk-1\nAPZ_DATABASE_URL=new\n\nOTHER=x\nFORGEJO_TOKEN=t\n"
@@ -592,7 +654,10 @@ mod tests {
     #[test]
     fn redact_hides_each_secret() {
         assert_eq!(
-            redact("$ docker run -e POSTGRES_PASSWORD=abc123 --password abc123", &["abc123"]),
+            redact(
+                "$ docker run -e POSTGRES_PASSWORD=abc123 --password abc123",
+                &["abc123"]
+            ),
             "$ docker run -e POSTGRES_PASSWORD=*** --password ***"
         );
         assert_eq!(redact("nothing here", &[""]), "nothing here");
@@ -608,7 +673,10 @@ mod tests {
     #[test]
     fn garage_key_reads_the_id_and_the_secret_of_the_answer() {
         let answer = "Key name: agentplaza-apid\nKey ID: GK0123456789abcdef\nSecret key: 9f8e7d6c\nCan create buckets: false\n";
-        assert_eq!(garage_key(answer), Some(("GK0123456789abcdef".to_string(), "9f8e7d6c".to_string())));
+        assert_eq!(
+            garage_key(answer),
+            Some(("GK0123456789abcdef".to_string(), "9f8e7d6c".to_string()))
+        );
         assert_eq!(garage_key("Key ID: GK1\n"), None, "no secret, no key");
     }
 
@@ -620,7 +688,11 @@ mod tests {
 
     /// The first recorded command that contains `needle`.
     fn call_with(calls: &[String], needle: &str) -> String {
-        calls.iter().find(|c| c.contains(needle)).cloned().unwrap_or_else(|| panic!("no call with {needle}"))
+        calls
+            .iter()
+            .find(|c| c.contains(needle))
+            .cloned()
+            .unwrap_or_else(|| panic!("no call with {needle}"))
     }
 
     /// The keys.env in `dir`, as text (empty when there is none).
@@ -636,7 +708,11 @@ mod tests {
     fn postgres_creates_the_container_and_records_its_url_redacted() {
         let dir = scratch("provision-postgres");
         let mock = docker_says(inspect_absent);
-        let env = Env { runner: &mock, keys: Some(dir.join("keys.env")), user: None };
+        let env = Env {
+            runner: &mock,
+            keys: Some(dir.join("keys.env")),
+            user: None,
+        };
         let mut log = Vec::new();
         postgres(&env, &mut |l| log.push(l)).unwrap();
 
@@ -647,13 +723,26 @@ mod tests {
             Some(format!("postgres://apz:{password}@127.0.0.1:5434/apz"))
         );
         let calls = mock.calls();
-        assert_eq!(calls[0], "docker inspect -f {{.State.Running}} agentplaza-postgres");
+        assert_eq!(
+            calls[0],
+            "docker inspect -f {{.State.Running}} agentplaza-postgres"
+        );
         assert_eq!(calls[1], "docker volume create agentplaza-postgres");
-        assert!(call_with(&calls, "docker run -d --name agentplaza-postgres").contains(&format!("POSTGRES_PASSWORD={password}")));
-        assert_eq!(calls.last().unwrap(), "docker exec agentplaza-postgres pg_isready -U apz -q");
+        assert!(
+            call_with(&calls, "docker run -d --name agentplaza-postgres")
+                .contains(&format!("POSTGRES_PASSWORD={password}"))
+        );
+        assert_eq!(
+            calls.last().unwrap(),
+            "docker exec agentplaza-postgres pg_isready -U apz -q"
+        );
         // The password never reaches the log; the command is shown with it hidden.
         assert!(log.iter().all(|line| !line.contains(&password)), "{log:?}");
-        assert!(log.iter().any(|line| line.contains("POSTGRES_PASSWORD=***")), "{log:?}");
+        assert!(
+            log.iter()
+                .any(|line| line.contains("POSTGRES_PASSWORD=***")),
+            "{log:?}"
+        );
         assert!(log.last().unwrap().starts_with("Postgres is ready"));
         let _ = fs::remove_dir_all(&dir);
     }
@@ -661,14 +750,25 @@ mod tests {
     #[test]
     fn an_existing_stopped_postgres_is_only_started() {
         let dir = scratch("provision-postgres-stopped");
-        fs::write(dir.join("keys.env"), "APZ_DATABASE_URL=postgres://apz:x@127.0.0.1:5434/apz\n").unwrap();
-        let mock = docker_says(|args| {
-            (args.first() == Some(&"inspect")).then(|| Output::ok("false\n"))
-        });
-        let env = Env { runner: &mock, keys: Some(dir.join("keys.env")), user: None };
+        fs::write(
+            dir.join("keys.env"),
+            "APZ_DATABASE_URL=postgres://apz:x@127.0.0.1:5434/apz\n",
+        )
+        .unwrap();
+        let mock =
+            docker_says(|args| (args.first() == Some(&"inspect")).then(|| Output::ok("false\n")));
+        let env = Env {
+            runner: &mock,
+            keys: Some(dir.join("keys.env")),
+            user: None,
+        };
         postgres(&env, &mut |_| {}).unwrap();
         let calls = mock.calls();
-        assert_eq!(calls.len(), 3, "inspect, start, then wait: nothing is created");
+        assert_eq!(
+            calls.len(),
+            3,
+            "inspect, start, then wait: nothing is created"
+        );
         assert_eq!(calls[1], "docker start agentplaza-postgres");
         let _ = fs::remove_dir_all(&dir);
     }
@@ -676,8 +776,13 @@ mod tests {
     #[test]
     fn an_existing_postgres_without_its_url_is_an_error_that_says_what_to_do() {
         let dir = scratch("provision-postgres-nokeys");
-        let mock = docker_says(|args| (args.first() == Some(&"inspect")).then(|| Output::ok("true\n")));
-        let env = Env { runner: &mock, keys: Some(dir.join("keys.env")), user: None };
+        let mock =
+            docker_says(|args| (args.first() == Some(&"inspect")).then(|| Output::ok("true\n")));
+        let env = Env {
+            runner: &mock,
+            keys: Some(dir.join("keys.env")),
+            user: None,
+        };
         let err = postgres(&env, &mut |_| {}).unwrap_err();
         assert!(err.contains("docker rm -f agentplaza-postgres"), "{err}");
         let _ = fs::remove_dir_all(&dir);
@@ -695,16 +800,30 @@ mod tests {
                 None
             }
         });
-        let env = Env { runner: &mock, keys: Some(dir.join("keys.env")), user: None };
+        let env = Env {
+            runner: &mock,
+            keys: Some(dir.join("keys.env")),
+            user: None,
+        };
         let mut log = Vec::new();
         forgejo(&env, &mut |l| log.push(l)).unwrap();
 
         let keys = keys_text(&dir);
-        let admin_pw = lookup(&keys, "FORGEJO_ADMIN_PASSWORD").expect("the admin password is recorded");
-        assert_eq!(lookup(&keys, "FORGEJO_TOKEN"), Some("tok-forgejo-1".to_string()));
-        assert_eq!(lookup(&keys, "FORGEJO_URL"), Some("http://127.0.0.1:3300".to_string()));
+        let admin_pw =
+            lookup(&keys, "FORGEJO_ADMIN_PASSWORD").expect("the admin password is recorded");
+        assert_eq!(
+            lookup(&keys, "FORGEJO_TOKEN"),
+            Some("tok-forgejo-1".to_string())
+        );
+        assert_eq!(
+            lookup(&keys, "FORGEJO_URL"),
+            Some("http://127.0.0.1:3300".to_string())
+        );
         assert!(log.iter().all(|line| !line.contains(&admin_pw)), "{log:?}");
-        assert!(log.iter().any(|line| line.contains("--password ***")), "{log:?}");
+        assert!(
+            log.iter().any(|line| line.contains("--password ***")),
+            "{log:?}"
+        );
         let calls = mock.calls();
         assert!(call_with(&calls, "admin user create").contains(&format!("--password {admin_pw}")));
         let _ = fs::remove_dir_all(&dir);
@@ -726,17 +845,30 @@ mod tests {
                 None
             }
         });
-        let env = Env { runner: &mock, keys: Some(dir.join("keys.env")), user: None };
+        let env = Env {
+            runner: &mock,
+            keys: Some(dir.join("keys.env")),
+            user: None,
+        };
         let mut log = Vec::new();
         garage(&env, &mut |l| log.push(l)).unwrap();
 
         let calls = mock.calls();
-        assert_eq!(calls[0], "docker inspect -f {{.State.Running}} agentplaza-garage");
+        assert_eq!(
+            calls[0],
+            "docker inspect -f {{.State.Running}} agentplaza-garage"
+        );
         assert_eq!(calls[1], "docker volume create agentplaza-garage-meta");
         assert_eq!(calls[2], "docker volume create agentplaza-garage-data");
         let run = call_with(&calls, "docker run -d --name agentplaza-garage");
         assert!(run.contains("dxflrs/garage:v1.0.1"), "{run}");
-        assert!(run.contains(&format!("{}:/etc/garage.toml:ro", dir.join("garage.toml").display())), "{run}");
+        assert!(
+            run.contains(&format!(
+                "{}:/etc/garage.toml:ro",
+                dir.join("garage.toml").display()
+            )),
+            "{run}"
+        );
         assert_eq!(
             calls[4..].to_vec(),
             vec![
@@ -750,12 +882,27 @@ mod tests {
             ]
         );
         let keys = keys_text(&dir);
-        assert_eq!(lookup(&keys, "APZ_S3_ENDPOINT"), Some("http://127.0.0.1:3900".to_string()));
-        assert_eq!(lookup(&keys, "APZ_S3_BUCKET"), Some("agentplaza".to_string()));
+        assert_eq!(
+            lookup(&keys, "APZ_S3_ENDPOINT"),
+            Some("http://127.0.0.1:3900".to_string())
+        );
+        assert_eq!(
+            lookup(&keys, "APZ_S3_BUCKET"),
+            Some("agentplaza".to_string())
+        );
         assert_eq!(lookup(&keys, "APZ_S3_REGION"), Some("garage".to_string()));
-        assert_eq!(lookup(&keys, "APZ_S3_ACCESS_KEY"), Some("GK0123456789abcdef".to_string()));
-        assert_eq!(lookup(&keys, "APZ_S3_SECRET_KEY"), Some("9f8e7d6c5b4a".to_string()));
-        assert!(log.iter().all(|line| !line.contains("9f8e7d6c5b4a")), "{log:?}");
+        assert_eq!(
+            lookup(&keys, "APZ_S3_ACCESS_KEY"),
+            Some("GK0123456789abcdef".to_string())
+        );
+        assert_eq!(
+            lookup(&keys, "APZ_S3_SECRET_KEY"),
+            Some("9f8e7d6c5b4a".to_string())
+        );
+        assert!(
+            log.iter().all(|line| !line.contains("9f8e7d6c5b4a")),
+            "{log:?}"
+        );
         assert!(log.last().unwrap().starts_with("Garage is ready"));
         let _ = fs::remove_dir_all(&dir);
     }
@@ -764,7 +911,11 @@ mod tests {
     fn garage_config_has_a_64_hex_rpc_secret_and_is_private() {
         let dir = scratch("provision-garage-config");
         let mock = Mock::new(|_, _| Output::ok(""));
-        let env = Env { runner: &mock, keys: Some(dir.join("keys.env")), user: None };
+        let env = Env {
+            runner: &mock,
+            keys: Some(dir.join("keys.env")),
+            user: None,
+        };
         let path = garage_config(&env).unwrap();
         assert_eq!(path, dir.join("garage.toml"));
         let text = fs::read_to_string(&path).unwrap();
@@ -780,7 +931,10 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+            assert_eq!(
+                fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
         }
         let _ = fs::remove_dir_all(&dir);
     }
@@ -788,8 +942,13 @@ mod tests {
     #[test]
     fn an_existing_garage_without_its_keys_is_an_error_that_says_what_to_do() {
         let dir = scratch("provision-garage-nokeys");
-        let mock = docker_says(|args| (args.first() == Some(&"inspect")).then(|| Output::ok("true\n")));
-        let env = Env { runner: &mock, keys: Some(dir.join("keys.env")), user: None };
+        let mock =
+            docker_says(|args| (args.first() == Some(&"inspect")).then(|| Output::ok("true\n")));
+        let env = Env {
+            runner: &mock,
+            keys: Some(dir.join("keys.env")),
+            user: None,
+        };
         let err = garage(&env, &mut |_| {}).unwrap_err();
         assert!(err.contains("docker rm -f agentplaza-garage"), "{err}");
         assert_eq!(mock.calls().len(), 1, "nothing else runs");
@@ -799,14 +958,22 @@ mod tests {
     #[test]
     fn a_failed_docker_command_is_reported_without_its_password() {
         let dir = scratch("provision-redacted-failure");
-        fs::write(dir.join("keys.env"), "APZ_POSTGRES_PASSWORD=hunter2-secret\n").unwrap();
+        fs::write(
+            dir.join("keys.env"),
+            "APZ_POSTGRES_PASSWORD=hunter2-secret\n",
+        )
+        .unwrap();
         // The daemon refuses the run and echoes the password it was given.
         let mock = Mock::new(|_, args| match args.first() {
             Some(&"inspect") => Output::failed("No such object"),
             Some(&"run") => Output::failed("Error: invalid POSTGRES_PASSWORD=hunter2-secret value"),
             _ => Output::ok(""),
         });
-        let env = Env { runner: &mock, keys: Some(dir.join("keys.env")), user: None };
+        let env = Env {
+            runner: &mock,
+            keys: Some(dir.join("keys.env")),
+            user: None,
+        };
         let err = postgres(&env, &mut |_| {}).unwrap_err();
         assert!(!err.contains("hunter2-secret"), "{err}");
         assert!(err.contains("invalid POSTGRES_PASSWORD=*** value"), "{err}");
@@ -816,9 +983,19 @@ mod tests {
     #[test]
     fn wait_until_gives_up_after_its_timeout() {
         let mock = Mock::new(|_, _| Output::failed("not yet"));
-        let env = Env { runner: &mock, keys: None, user: None };
-        let err = wait_until(&env, &mut |_| {}, &["exec", "x", "true"], Duration::ZERO, Duration::from_millis(1))
-            .unwrap_err();
+        let env = Env {
+            runner: &mock,
+            keys: None,
+            user: None,
+        };
+        let err = wait_until(
+            &env,
+            &mut |_| {},
+            &["exec", "x", "true"],
+            Duration::ZERO,
+            Duration::from_millis(1),
+        )
+        .unwrap_err();
         assert!(err.contains("not yet"), "{err}");
         assert_eq!(mock.calls().len(), 1);
     }
@@ -826,10 +1003,23 @@ mod tests {
     #[test]
     fn without_a_home_directory_no_container_is_created() {
         let mock = docker_says(|_| None);
-        let env = Env { runner: &mock, keys: None, user: None };
-        assert_eq!(postgres(&env, &mut |_| {}).unwrap_err(), "the home directory is not set");
-        assert_eq!(forgejo(&env, &mut |_| {}).unwrap_err(), "the home directory is not set");
-        assert_eq!(garage(&env, &mut |_| {}).unwrap_err(), "the home directory is not set");
+        let env = Env {
+            runner: &mock,
+            keys: None,
+            user: None,
+        };
+        assert_eq!(
+            postgres(&env, &mut |_| {}).unwrap_err(),
+            "the home directory is not set"
+        );
+        assert_eq!(
+            forgejo(&env, &mut |_| {}).unwrap_err(),
+            "the home directory is not set"
+        );
+        assert_eq!(
+            garage(&env, &mut |_| {}).unwrap_err(),
+            "the home directory is not set"
+        );
         assert!(mock.calls().is_empty());
     }
 }

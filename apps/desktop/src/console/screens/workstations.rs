@@ -491,7 +491,11 @@ fn thumbs_due(state: &mut State) -> bool {
 /// Takes each station's thumbnail: the picture of its active session, one JPEG each, from the hub.
 fn thumbs_task(state: &State, ctx: &Ctx) -> Task<Msg> {
     let ids: Vec<String> = match &state.stations {
-        Load::Ready(list) => list.iter().filter(|s| !s.revoked).map(|s| s.id.clone()).collect(),
+        Load::Ready(list) => list
+            .iter()
+            .filter(|s| !s.revoked)
+            .map(|s| s.id.clone())
+            .collect(),
         _ => return Task::none(),
     };
     if ids.is_empty() {
@@ -1006,7 +1010,10 @@ pub fn station_event(kind: &str) -> bool {
         || kind.starts_with("lease_")
         || matches!(
             kind,
-            "station_takeover" | "station_give_back" | "station_sync_conflict" | "station_sync_paused"
+            "station_takeover"
+                | "station_give_back"
+                | "station_sync_conflict"
+                | "station_sync_paused"
         )
 }
 
@@ -1136,9 +1143,13 @@ fn station_row<'a>(s: &'a Station, thumb: Option<&'a image::Handle>) -> Element<
             .width(Length::Fixed(THUMB_W))
             .height(Length::Fixed(THUMB_H))
             .into(),
-        None => container(Space::new().width(Length::Fixed(THUMB_W)).height(Length::Fixed(THUMB_H)))
-            .style(ui::frame(Some(theme::SUBSTRATE), theme::RULE))
-            .into(),
+        None => container(
+            Space::new()
+                .width(Length::Fixed(THUMB_W))
+                .height(Length::Fixed(THUMB_H)),
+        )
+        .style(ui::frame(Some(theme::SUBSTRATE), theme::RULE))
+        .into(),
     };
     cells(vec![
         (
@@ -1251,11 +1262,20 @@ fn station_page<'a>(
     }
     parts.insert(0, ui::link("All workstations", Msg::Deselect, false));
     parts.push(ui::chip_row(chips));
-    parts.push(ui::card("Live view", live::view(&state.live, s).map(Msg::Live)));
+    parts.push(ui::card(
+        "Live view",
+        live::view(&state.live, s).map(Msg::Live),
+    ));
     parts.push(ui::card("Facts", facts_view(s)));
     parts.push(ui::card("Leases", leases_view(state, s)));
-    parts.push(ui::card("Work folder", files::view(&state.files).map(Msg::Files)));
-    parts.push(ui::card("Recordings", rec::station_view(&state.rec, &state.names).map(Msg::Rec)));
+    parts.push(ui::card(
+        "Work folder",
+        files::view(&state.files).map(Msg::Files),
+    ));
+    parts.push(ui::card(
+        "Recordings",
+        rec::station_view(&state.rec, &state.names).map(Msg::Rec),
+    ));
     parts.push(ui::card("Settings", settings_view(state, s)));
     parts.push(ui::card("Audit", audit_view(state)));
     ui::sheet(head, column(parts).spacing(16).width(Length::Fill).into())
@@ -2006,9 +2026,8 @@ pub fn settings_of(f: &SettingsForm) -> Result<Settings, String> {
             "The work folder is a path of up to {WORK_FOLDER_MAX} characters."
         ));
     }
-    let rate = whole_in(&f.rate_per_hour, (0, RATE_MAX)).ok_or_else(|| {
-        format!("Charge whole credits an hour, from 0 to {RATE_MAX}.")
-    })?;
+    let rate = whole_in(&f.rate_per_hour, (0, RATE_MAX))
+        .ok_or_else(|| format!("Charge whole credits an hour, from 0 to {RATE_MAX}."))?;
     Ok(Settings {
         takeover: f.takeover,
         record: f.record,

@@ -16,7 +16,7 @@
 //!   APZ_ROBOT_T        seconds: a frozen clock (each robot takes its pose at that time, then stops)
 //!   APZ_ROBOT_BG       dark | light (the scene background, see `Lab::background`; unset: the engine's)
 
-use super::super::robot::{robot_palette, Robot, RobotPalette, RobotPose, RobotState};
+use super::super::robot::{Robot, RobotPalette, RobotPose, RobotState, robot_palette};
 use super::super::scene::Color;
 use super::super::world::Floor;
 use super::files::registry;
@@ -115,7 +115,10 @@ fn var(name: &str) -> Option<String> {
 
 /// The hue as the web reads it: a number, wrapped into 0–360; anything else is the default 200.
 pub fn hue_of(v: Option<&str>) -> f32 {
-    match v.and_then(|s| s.parse::<f32>().ok()).filter(|h| h.is_finite()) {
+    match v
+        .and_then(|s| s.parse::<f32>().ok())
+        .filter(|h| h.is_finite())
+    {
         Some(h) => h.rem_euclid(360.0),
         None => DEFAULT_HUE,
     }
@@ -123,7 +126,9 @@ pub fn hue_of(v: Option<&str>) -> f32 {
 
 /// The frozen clock: a finite time in seconds, not below zero; None for the live clock.
 pub fn frozen_of(v: Option<&str>) -> Option<f32> {
-    v.and_then(|s| s.parse::<f32>().ok()).filter(|t| t.is_finite()).map(|t| t.max(0.0))
+    v.and_then(|s| s.parse::<f32>().ok())
+        .filter(|t| t.is_finite())
+        .map(|t| t.max(0.0))
 }
 
 /// The scene background of the web's `bg` (dark or light); None: the engine's own.
@@ -175,9 +180,19 @@ pub(crate) fn pale_stage(floor: &mut Floor, bg: Color) {
 /// shadows show on the flat background.
 pub(crate) fn shadow_ground(floor: &mut Floor, geo: &crate::scene::Geo) {
     use crate::scene::{Mat, Material, Obj, Shading};
-    let mat = Mat::new(Material { shading: Shading::Shadow, color: Color::BLACK, opacity: 0.2, transparent: true, depth_write: false, fog: false, ..Material::default() });
+    let mat = Mat::new(Material {
+        shading: Shading::Shadow,
+        color: Color::BLACK,
+        opacity: 0.2,
+        transparent: true,
+        depth_write: false,
+        fog: false,
+        ..Material::default()
+    });
     let ground = Obj::mesh(geo, &mat);
-    ground.set_rotation(-std::f32::consts::FRAC_PI_2, 0.0, 0.0).set_shadows(false, true);
+    ground
+        .set_rotation(-std::f32::consts::FRAC_PI_2, 0.0, 0.0)
+        .set_shadows(false, true);
     floor.root.add(&ground);
 }
 
@@ -216,21 +231,43 @@ fn dress(floor: &Floor, robot: &mut Robot, look: &Look, clip: Option<&str>) {
 /// The prop screen (the web's buildProps): one prop, or every prop in a line-up. Each prop stands on the floor, and
 /// each spot gets a robot facing it, playing the spot's clip. `species` is APZ_ROBOT_LAB: `all` deals the species in
 /// turn, one to each spot; a named species is every robot. Returns the number of props built.
-fn build_props(floor: &mut Floor, prop: &str, species: &str, look: &Look, hue: f32, palette: &RobotPalette, robots: &mut Vec<Robot>) -> usize {
+fn build_props(
+    floor: &mut Floor,
+    prop: &str,
+    species: &str,
+    look: &Look,
+    hue: f32,
+    palette: &RobotPalette,
+    robots: &mut Vec<Robot>,
+) -> usize {
     let reg = prop_registry();
     let lineup = prop == "all";
-    let ids: Vec<String> = if lineup { reg.order.clone() } else { vec![prop.to_string()] };
+    let ids: Vec<String> = if lineup {
+        reg.order.clone()
+    } else {
+        vec![prop.to_string()]
+    };
     let cols = if lineup { PROP_COLS } else { 1 };
     let rows = ids.len().div_ceil(cols);
     let species_ids = &registry().index.species;
     let mut dealt = 0usize;
     let mut built_props = 0usize;
     for (i, pid) in ids.iter().enumerate() {
-        let Some(p) = reg.props.get(pid) else { continue };
+        let Some(p) = reg.props.get(pid) else {
+            continue;
+        };
         built_props += 1;
         let (col, row) = ((i % cols) as f32, (i / cols) as f32);
-        let ox = if lineup { (col - (cols as f32 - 1.0) / 2.0) * PROP_SPACING_X } else { 0.0 };
-        let oz = if lineup { ((rows as f32 - 1.0) / 2.0 - row) * PROP_SPACING_Z } else { 0.0 };
+        let ox = if lineup {
+            (col - (cols as f32 - 1.0) / 2.0) * PROP_SPACING_X
+        } else {
+            0.0
+        };
+        let oz = if lineup {
+            ((rows as f32 - 1.0) / 2.0 - row) * PROP_SPACING_Z
+        } else {
+            0.0
+        };
         let built = build_prop(p, palette, hue);
         built.group.set_position(ox, 0.0, oz);
         floor.root.add(&built.group);
@@ -242,8 +279,16 @@ fn build_props(floor: &mut Floor, prop: &str, species: &str, look: &Look, hue: f
             };
             dealt += 1;
             let mut robot = Robot::with_variant(hue, false, palette, hue, id);
-            robot.group.set_position(ox + s.at[0], s.at[1], oz + s.at[2]).set_rotation(0.0, s.face.to_radians(), 0.0);
-            dress(floor, &mut robot, look, look.clip.as_deref().or(Some(s.clip.as_str())));
+            robot
+                .group
+                .set_position(ox + s.at[0], s.at[1], oz + s.at[2])
+                .set_rotation(0.0, s.face.to_radians(), 0.0);
+            dress(
+                floor,
+                &mut robot,
+                look,
+                look.clip.as_deref().or(Some(s.clip.as_str())),
+            );
             robots.push(robot);
         }
     }
@@ -255,7 +300,11 @@ fn build_props(floor: &mut Floor, prop: &str, species: &str, look: &Look, hue: f
 pub fn build(floor: &mut Floor) -> Option<Lab> {
     let want = var("APZ_ROBOT_LAB")?;
     let lineup = want == "all";
-    let ids: Vec<String> = if lineup { registry().index.species.clone() } else { vec![want.clone()] };
+    let ids: Vec<String> = if lineup {
+        registry().index.species.clone()
+    } else {
+        vec![want.clone()]
+    };
     let palette = robot_palette();
     let state = match var("APZ_ROBOT_STATE").as_deref() {
         Some("working") => RobotState::Working,
@@ -276,13 +325,26 @@ pub fn build(floor: &mut Floor) -> Option<Lab> {
     let hue = hue_of(var("APZ_ROBOT_HUE").as_deref());
     let orch = var("APZ_ROBOT_ORCH").as_deref() == Some("1");
     let frozen = frozen_of(var("APZ_ROBOT_T").as_deref());
-    let cam = var("APZ_ROBOT_CAM").as_deref().and_then(Cam::parse).unwrap_or(Cam::Front);
+    let cam = var("APZ_ROBOT_CAM")
+        .as_deref()
+        .and_then(Cam::parse)
+        .unwrap_or(Cam::Front);
     let bg = background_or_default(var("APZ_ROBOT_BG").as_deref());
     pale_stage(floor, bg);
     // robot-lab.ts's floor: a disc of radius 4.5 that shows only the shadows.
-    shadow_ground(floor, &crate::geometry::circle(4.5, 48, 0.0, std::f32::consts::TAU));
+    shadow_ground(
+        floor,
+        &crate::geometry::circle(4.5, 48, 0.0, std::f32::consts::TAU),
+    );
 
-    let look = Look { state, tool, carry, clip, pose, frozen };
+    let look = Look {
+        state,
+        tool,
+        carry,
+        clip,
+        pose,
+        frozen,
+    };
     let mut robots = Vec::new();
     let mut props = 0;
     let (eye, target) = match var("APZ_ROBOT_PROP") {
@@ -363,9 +425,16 @@ impl Lab {
             .robots
             .iter()
             .enumerate()
-            .map(|(i, r)| RobotCalls { species: r.species().id.clone(), calls: owned.get(i + 1).copied().unwrap_or(0) })
+            .map(|(i, r)| RobotCalls {
+                species: r.species().id.clone(),
+                calls: owned.get(i + 1).copied().unwrap_or(0),
+            })
             .collect();
-        DrawCounts { props: self.props, robots, calls }
+        DrawCounts {
+            props: self.props,
+            robots,
+            calls,
+        }
     }
 }
 
@@ -413,7 +482,11 @@ mod tests {
             (Cam::Top, [0.0, 11.0, 1.8], [0.0, 5.0, 0.8]),
         ];
         for (cam, lineup, one) in cases {
-            assert_eq!(cam.view(true), (lineup, [0.0, 0.75, 0.0]), "{cam:?} line-up");
+            assert_eq!(
+                cam.view(true),
+                (lineup, [0.0, 0.75, 0.0]),
+                "{cam:?} line-up"
+            );
             assert_eq!(cam.view(false), (one, [0.0, 0.7, 0.0]), "{cam:?} one");
         }
         assert_eq!(Cam::parse("q34"), Some(Cam::Q34));
@@ -485,21 +558,36 @@ mod tests {
         let before = floor.orbit.camera(1.0).eye;
         floor.orbit.update();
         let after = floor.orbit.camera(1.0).eye;
-        assert!(before.distance(after) < 1e-4, "the update moved the eye from {before:?} to {after:?}");
+        assert!(
+            before.distance(after) < 1e-4,
+            "the update moved the eye from {before:?} to {after:?}"
+        );
         assert!(floor.orbit.radius < 4.0, "radius {}", floor.orbit.radius);
     }
 
     #[test]
     fn prop_camera_presets_are_the_webs_numbers() {
-        assert_eq!(Cam::Front.view_prop(true), ([0.0, 8.0, 17.0], [0.0, 0.5, 0.0]));
-        assert_eq!(Cam::Top.view_prop(false), ([0.0, 5.6, 0.9], [0.0, 0.6, 0.0]));
-        assert_eq!(Cam::Side.view_prop(true), ([17.0, 5.0, 0.0], [0.0, 0.5, 0.0]));
+        assert_eq!(
+            Cam::Front.view_prop(true),
+            ([0.0, 8.0, 17.0], [0.0, 0.5, 0.0])
+        );
+        assert_eq!(
+            Cam::Top.view_prop(false),
+            ([0.0, 5.6, 0.9], [0.0, 0.6, 0.0])
+        );
+        assert_eq!(
+            Cam::Side.view_prop(true),
+            ([17.0, 5.0, 0.0], [0.0, 0.5, 0.0])
+        );
     }
 
     /// Builds the lab on a fresh floor with the given options, on the test thread's own overrides; the floor is the
     /// test's to frame.
     fn build_on_floor(options: &[(&str, &str)]) -> (Floor, Option<Lab>) {
-        let vars = options.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        let vars = options
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
         crate::set_env_overrides(vars);
         let mut floor = Floor::new();
         let lab = build(&mut floor);
@@ -512,13 +600,23 @@ mod tests {
         let (mut floor, lab) = build_on_floor(&[("APZ_ROBOT_LAB", "all")]);
         let lab = lab.expect("the lab builds");
         let n = lab.robots.len();
-        assert!(n >= 2, "the index lists {n} species, so the line-up has at least two robots");
-        assert!(crate::render::tallying(), "the lab turns the readout's count on");
+        assert!(
+            n >= 2,
+            "the index lists {n} species, so the line-up has at least two robots"
+        );
+        assert!(
+            crate::render::tallying(),
+            "the lab turns the readout's count on"
+        );
         let frame = floor.frame(1.0);
         // Each draw counts toward the robot it was walked from: one tally per robot, none left out.
         let mut owned = vec![0u32; n + 1];
         for d in &frame.draws {
-            assert!((d.owner as usize) <= n, "owner {} names a robot of the lab", d.owner);
+            assert!(
+                (d.owner as usize) <= n,
+                "owner {} names a robot of the lab",
+                d.owner
+            );
             owned[d.owner as usize] += 1;
         }
         assert_eq!(owned[0], 0, "every draw of the line-up is a robot's");
@@ -534,7 +632,10 @@ mod tests {
 
     /// Builds the lab with the given options, on the test thread's own overrides.
     fn build_with(options: &[(&str, &str)]) -> Option<Lab> {
-        let vars = options.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        let vars = options
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
         crate::set_env_overrides(vars);
         let mut floor = Floor::new();
         let lab = build(&mut floor);
@@ -547,7 +648,11 @@ mod tests {
         let reg = prop_registry();
         let prop = reg.order.first().expect("the index lists a prop").clone();
         let spots = reg.props[&prop].spots.len();
-        let lab = build_with(&[("APZ_ROBOT_LAB", "rover"), ("APZ_ROBOT_PROP", prop.as_str())]).expect("the lab builds");
+        let lab = build_with(&[
+            ("APZ_ROBOT_LAB", "rover"),
+            ("APZ_ROBOT_PROP", prop.as_str()),
+        ])
+        .expect("the lab builds");
         assert_eq!(lab.robots.len(), spots, "{prop}: one robot per spot");
     }
 
@@ -555,14 +660,16 @@ mod tests {
     fn the_prop_line_up_deals_every_spot_of_every_prop() {
         let reg = prop_registry();
         let all: usize = reg.order.iter().map(|p| reg.props[p].spots.len()).sum();
-        let lab = build_with(&[("APZ_ROBOT_LAB", "all"), ("APZ_ROBOT_PROP", "all")]).expect("the lab builds");
+        let lab = build_with(&[("APZ_ROBOT_LAB", "all"), ("APZ_ROBOT_PROP", "all")])
+            .expect("the lab builds");
         assert_eq!(lab.robots.len(), all);
         assert!(all > 0, "the index lists props with spots");
     }
 
     #[test]
     fn an_effect_option_is_kept_for_the_lab_to_spawn() {
-        let lab = build_with(&[("APZ_ROBOT_LAB", "rover"), ("APZ_ROBOT_FX", "hearts")]).expect("the lab builds");
+        let lab = build_with(&[("APZ_ROBOT_LAB", "rover"), ("APZ_ROBOT_FX", "hearts")])
+            .expect("the lab builds");
         assert_eq!(lab.fx.as_deref(), Some("hearts"));
         let mut lab = lab;
         // The first step's timer is spent at once: the effect spawns on every robot, and the timer rearms.

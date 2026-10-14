@@ -168,7 +168,12 @@ fn run(cli: Cli) -> Result<(), String> {
         return cmd::setup::run(args, cli.json, cli.hub, cli.token, cli.pin);
     }
     if let Command::Mcp(cmd) = cli.command {
-        let globals = cmd::mcp::Globals { hub: cli.hub, token: cli.token, pin: cli.pin, json: cli.json };
+        let globals = cmd::mcp::Globals {
+            hub: cli.hub,
+            token: cli.token,
+            pin: cli.pin,
+            json: cli.json,
+        };
         return cmd::mcp::run(cmd, globals);
     }
     let terminal = rich::Terminal::from_env(cli.plain);
@@ -205,7 +210,11 @@ fn run(cli: Cli) -> Result<(), String> {
         Command::Decide(a) => cmd::decide::run(&ctx, a),
         Command::Events(a) => cmd::events::run(&ctx, a),
         Command::Tui(args) => tui::run(&ctx, args),
-        Command::Hub(_) | Command::Node(_) | Command::Workstation(_) | Command::Mcp(_) | Command::Setup(_) => {
+        Command::Hub(_)
+        | Command::Node(_)
+        | Command::Workstation(_)
+        | Command::Mcp(_)
+        | Command::Setup(_) => {
             unreachable!("handled above")
         }
     }

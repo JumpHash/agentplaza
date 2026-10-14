@@ -329,7 +329,6 @@ pub fn setup_mptable(
     Ok(())
 }
 
-
 #[cfg(test)]
 mod tests {
 

@@ -13,9 +13,9 @@ use crate::fleet::FleetResponse;
 use crate::input::{self, Action, Pointer};
 use crate::render;
 use crate::scene::{Camera, Frame};
-use crate::stage::{machine_at, Motion, Stage, View};
-use crate::world::view::Label;
+use crate::stage::{Motion, Stage, View, machine_at};
 use crate::world::AgentInfo;
+use crate::world::view::Label;
 
 /// What the host has fetched since the last call. `None` means "no change" for that source.
 #[derive(Debug, Default, Clone)]
@@ -105,7 +105,13 @@ impl Renderer {
     /// Builds this frame's work from the stage's frame, for `bounds` (logical px) at `scale` device px per logical px.
     pub fn prepare(&mut self, frame: Arc<Frame>, bounds: render::Rect, scale: f32) {
         let primitive = render::Primitive { frame };
-        primitive.prepare(&mut self.pipeline, &self.device, &self.queue, &bounds, scale);
+        primitive.prepare(
+            &mut self.pipeline,
+            &self.device,
+            &self.queue,
+            &bounds,
+            scale,
+        );
         self.primitive = Some(primitive);
     }
 
@@ -142,7 +148,6 @@ impl Renderer {
     pub fn owned_draws(&self) -> Vec<u32> {
         self.pipeline.owned_draws()
     }
-
 }
 
 /// The largest side a thumbnail renders at, in device px.
@@ -190,7 +195,11 @@ impl Thumbnail {
         })
         .await;
         result.map_err(|e| format!("the thumbnail readback failed: {e:?}"))?;
-        let (line, rows, row) = (self.width as usize * 4, self.height as usize, self.row as usize);
+        let (line, rows, row) = (
+            self.width as usize * 4,
+            self.height as usize,
+            self.row as usize,
+        );
         let mut out = Vec::with_capacity(line * rows);
         {
             let view = self.buffer.slice(..).get_mapped_range();
@@ -211,24 +220,48 @@ impl Thumbnail {
 impl Renderer {
     /// Renders one machine's stage pose offscreen at `w` by `h` (each capped at [`THUMB_MAX`]) and starts the readback.
     /// The pixels come from [`Thumbnail::pixels`].
-    pub fn thumbnail_begin(&mut self, machine: &crate::machine_stage::MachineStage, w: u32, h: u32) -> Result<Thumbnail, String> {
+    pub fn thumbnail_begin(
+        &mut self,
+        machine: &crate::machine_stage::MachineStage,
+        w: u32,
+        h: u32,
+    ) -> Result<Thumbnail, String> {
         let (w, h) = (w.clamp(1, THUMB_MAX), h.clamp(1, THUMB_MAX));
         self.draw_offscreen(machine.thumbnail_frame(w as f32 / h as f32), w, h)
     }
 
     /// An agent's robot portrait ([`crate::portrait`]) offscreen at `w` by `h` (each capped at [`THUMB_MAX`]). The pixels
     /// come from [`Thumbnail::pixels`].
-    pub fn portrait_begin(&mut self, spec: &crate::portrait::PortraitSpec, w: u32, h: u32) -> Result<Thumbnail, String> {
+    pub fn portrait_begin(
+        &mut self,
+        spec: &crate::portrait::PortraitSpec,
+        w: u32,
+        h: u32,
+    ) -> Result<Thumbnail, String> {
         let (w, h) = (w.clamp(1, THUMB_MAX), h.clamp(1, THUMB_MAX));
-        self.draw_offscreen(crate::portrait::frame(spec, w as f32 / h as f32, true), w, h)
+        self.draw_offscreen(
+            crate::portrait::frame(spec, w as f32 / h as f32, true),
+            w,
+            h,
+        )
     }
 
     /// One frame drawn offscreen as a card at `w` by `h` (capped at [`THUMB_MAX`]): a transparent clear, the sky left out.
-    pub(crate) fn draw_offscreen(&mut self, frame: Frame, w: u32, h: u32) -> Result<Thumbnail, String> {
+    pub(crate) fn draw_offscreen(
+        &mut self,
+        frame: Frame,
+        w: u32,
+        h: u32,
+    ) -> Result<Thumbnail, String> {
         let (w, h) = (w.clamp(1, THUMB_MAX), h.clamp(1, THUMB_MAX));
         let format = thumb_format(self.format);
         let frame = Arc::new(frame);
-        let bounds = render::Rect { x: 0.0, y: 0.0, width: w as f32, height: h as f32 };
+        let bounds = render::Rect {
+            x: 0.0,
+            y: 0.0,
+            width: w as f32,
+            height: h as f32,
+        };
         let primitive = render::Primitive { frame };
         let pipeline = self.thumb_pipeline.get_or_insert_with(|| {
             let mut p = render::Pipeline::new(&self.device, &self.queue, format);
@@ -242,7 +275,11 @@ impl Renderer {
             Some((tw, th, texture)) if (tw, th) == (w, h) => texture,
             _ => self.device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("apz-engine thumbnail"),
-                size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                size: wgpu::Extent3d {
+                    width: w,
+                    height: h,
+                    depth_or_array_layers: 1,
+                },
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
@@ -260,7 +297,11 @@ impl Renderer {
             usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("apz-engine thumbnail") });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("apz-engine thumbnail"),
+            });
         {
             let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -269,7 +310,10 @@ impl Renderer {
                     view: &view,
                     depth_slice: None,
                     resolve_target: None,
-                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store },
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
                 })],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
@@ -278,41 +322,80 @@ impl Renderer {
             primitive.draw(pipeline, &mut pass);
         }
         encoder.copy_texture_to_buffer(
-            wgpu::TexelCopyTextureInfo { texture: &texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
             wgpu::TexelCopyBufferInfo {
                 buffer: &buffer,
-                layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row), rows_per_image: Some(h) },
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(row),
+                    rows_per_image: Some(h),
+                },
             },
-            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
         );
         self.queue.submit(Some(encoder.finish()));
 
         let slot = Arc::new(std::sync::Mutex::new(Mapped::default()));
         let sink = slot.clone();
-        buffer.slice(..).map_async(wgpu::MapMode::Read, move |result| {
-            let mut mapped = sink.lock().unwrap_or_else(|e| e.into_inner());
-            mapped.result = Some(result);
-            if let Some(waker) = mapped.waker.take() {
-                waker.wake();
-            }
-        });
-        let swap_rb = matches!(format, wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb);
-        Ok(Thumbnail { buffer, slot, width: w, height: h, row, swap_rb })
+        buffer
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, move |result| {
+                let mut mapped = sink.lock().unwrap_or_else(|e| e.into_inner());
+                mapped.result = Some(result);
+                if let Some(waker) = mapped.waker.take() {
+                    waker.wake();
+                }
+            });
+        let swap_rb = matches!(
+            format,
+            wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb
+        );
+        Ok(Thumbnail {
+            buffer,
+            slot,
+            width: w,
+            height: h,
+            row,
+            swap_rb,
+        })
     }
 
     /// One machine's thumbnail as RGBA8 bytes, natively: the device is polled until the pixels are mapped.
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn thumbnail(&mut self, machine: &crate::machine_stage::MachineStage, w: u32, h: u32) -> Result<Vec<u8>, String> {
+    pub fn thumbnail(
+        &mut self,
+        machine: &crate::machine_stage::MachineStage,
+        w: u32,
+        h: u32,
+    ) -> Result<Vec<u8>, String> {
         let thumb = self.thumbnail_begin(machine, w, h)?;
-        self.device.poll(wgpu::PollType::wait_indefinitely()).map_err(|e| format!("{e:?}"))?;
+        self.device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .map_err(|e| format!("{e:?}"))?;
         block_ready(thumb.pixels())
     }
 
     /// An agent's robot portrait as RGBA8 bytes, natively: the device is polled until the pixels are mapped.
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn portrait(&mut self, spec: &crate::portrait::PortraitSpec, w: u32, h: u32) -> Result<Vec<u8>, String> {
+    pub fn portrait(
+        &mut self,
+        spec: &crate::portrait::PortraitSpec,
+        w: u32,
+        h: u32,
+    ) -> Result<Vec<u8>, String> {
         let thumb = self.portrait_begin(spec, w, h)?;
-        self.device.poll(wgpu::PollType::wait_indefinitely()).map_err(|e| format!("{e:?}"))?;
+        self.device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .map_err(|e| format!("{e:?}"))?;
         block_ready(thumb.pixels())
     }
 }
@@ -352,7 +435,10 @@ const INPUT_WINDOW: Duration = Duration::from_millis(250);
 impl Engine {
     /// Builds the engine with a GPU on the host's device (the browser). The assets are embedded in the crate.
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
-        Engine { gpu: Some(Renderer::new(device, queue, format)), ..Self::detached() }
+        Engine {
+            gpu: Some(Renderer::new(device, queue, format)),
+            ..Self::detached()
+        }
     }
 
     /// Builds the engine with no GPU: the host draws with a [`Renderer`] of its own (the desktop).
@@ -473,34 +559,63 @@ impl Engine {
             self.dirty = true;
         }
         let stage_motion = self.stage.tick(now);
-        let recent_input = self.last_input.is_some_and(|t| now.saturating_duration_since(t) < INPUT_WINDOW);
-        let motion = if self.dirty || recent_input { stage_motion.max(Motion::Active) } else { stage_motion };
+        let recent_input = self
+            .last_input
+            .is_some_and(|t| now.saturating_duration_since(t) < INPUT_WINDOW);
+        let motion = if self.dirty || recent_input {
+            stage_motion.max(Motion::Active)
+        } else {
+            stage_motion
+        };
         self.dirty = false;
         self.busy = motion != Motion::Rest;
 
         if let Some(machine) = self.stage.machine.as_ref() {
-            return FrameOut { motion, labels: Vec::new(), camera: machine.camera() };
+            return FrameOut {
+                motion,
+                labels: Vec::new(),
+                camera: machine.camera(),
+            };
         }
         let floor = match self.stage.view {
             View::Machines => &self.stage.machines,
             _ => &self.stage.floor,
         };
         let aspect = if size.1 > 0.0 { size.0 / size.1 } else { 1.0 };
-        FrameOut { motion, labels: floor.labels(size.0, size.1), camera: floor.orbit.camera(aspect) }
+        FrameOut {
+            motion,
+            labels: floor.labels(size.0, size.1),
+            camera: floor.orbit.camera(aspect),
+        }
     }
 
     /// Advances to `now`, then draws the frame into `target` (cleared to transparent) when there is a GPU.
     ///
     /// `size_px` is the target's size in device pixels and `scale` is device pixels per logical pixel (above zero).
     /// The stage works in logical pixels, the same units the pointer reports, so the engine converts once here.
-    pub fn frame(&mut self, now: Instant, target: &wgpu::TextureView, size_px: (u32, u32), scale: f32) -> FrameOut {
+    pub fn frame(
+        &mut self,
+        now: Instant,
+        target: &wgpu::TextureView,
+        size_px: (u32, u32),
+        scale: f32,
+    ) -> FrameOut {
         let logical = (size_px.0 as f32 / scale, size_px.1 as f32 / scale);
         let out = self.advance(now, logical);
         if let Some(gpu) = self.gpu.as_mut() {
-            let bounds = render::Rect { x: 0.0, y: 0.0, width: logical.0, height: logical.1 };
+            let bounds = render::Rect {
+                x: 0.0,
+                y: 0.0,
+                width: logical.0,
+                height: logical.1,
+            };
             gpu.prepare(self.stage.frame.clone(), bounds, scale);
 
-            let mut encoder = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("apz-engine frame") });
+            let mut encoder = gpu
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("apz-engine frame"),
+                });
             {
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("apz-engine floor"),
@@ -508,7 +623,10 @@ impl Engine {
                         view: target,
                         depth_slice: None,
                         resolve_target: None,
-                        ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store },
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            store: wgpu::StoreOp::Store,
+                        },
                     })],
                     depth_stencil_attachment: None,
                     timestamp_writes: None,
@@ -525,14 +643,28 @@ impl Engine {
     /// Starts the thumbnail of one machine of the feed, rendered offscreen at `w` by `h` ([`Renderer::thumbnail_begin`]).
     /// Err when there is no GPU, the feed has no such machine, or the render fails.
     pub fn thumbnail_begin(&mut self, id: &str, w: u32, h: u32) -> Result<Thumbnail, String> {
-        let machine = self.stage.machine_stage_for(id).ok_or_else(|| format!("no machine '{id}' on the feed"))?;
-        let gpu = self.gpu.as_mut().ok_or_else(|| "the engine has no GPU".to_string())?;
+        let machine = self
+            .stage
+            .machine_stage_for(id)
+            .ok_or_else(|| format!("no machine '{id}' on the feed"))?;
+        let gpu = self
+            .gpu
+            .as_mut()
+            .ok_or_else(|| "the engine has no GPU".to_string())?;
         gpu.thumbnail_begin(&machine, w, h)
     }
 
     /// Starts an agent's robot portrait, offscreen at `w` by `h` ([`Renderer::portrait_begin`]). Err when there is no GPU.
-    pub fn portrait_begin(&mut self, spec: &crate::portrait::PortraitSpec, w: u32, h: u32) -> Result<Thumbnail, String> {
-        let gpu = self.gpu.as_mut().ok_or_else(|| "the engine has no GPU".to_string())?;
+    pub fn portrait_begin(
+        &mut self,
+        spec: &crate::portrait::PortraitSpec,
+        w: u32,
+        h: u32,
+    ) -> Result<Thumbnail, String> {
+        let gpu = self
+            .gpu
+            .as_mut()
+            .ok_or_else(|| "the engine has no GPU".to_string())?;
         gpu.portrait_begin(spec, w, h)
     }
 
@@ -567,11 +699,18 @@ impl Engine {
         match pick {
             Pick::Machine(id) => {
                 let anchor = self.stage.fleet.as_ref()?.label_of(id)?;
-                self.stage.machines.orbit.camera(w / h).to_screen(glam::Vec3::from_array(anchor), w, h)
+                self.stage.machines.orbit.camera(w / h).to_screen(
+                    glam::Vec3::from_array(anchor),
+                    w,
+                    h,
+                )
             }
             Pick::Robot(cid) => {
                 let floor = &self.stage.floor;
-                floor.orbit.camera(w / h).to_screen(floor.anchor_of(*cid)?, w, h)
+                floor
+                    .orbit
+                    .camera(w / h)
+                    .to_screen(floor.anchor_of(*cid)?, w, h)
             }
         }
     }
@@ -593,7 +732,9 @@ impl Engine {
 
     /// The draw calls of the last frame drawn with the GPU by category (zeros without a GPU).
     pub fn draw_stats(&self) -> render::DrawStats {
-        self.gpu.as_ref().map_or_else(render::DrawStats::default, Renderer::draw_stats)
+        self.gpu
+            .as_ref()
+            .map_or_else(render::DrawStats::default, Renderer::draw_stats)
     }
 
     /// The main-pass draw calls of the last frame drawn with the GPU (0 without a GPU).
@@ -604,7 +745,10 @@ impl Engine {
     /// The robot lab's draw counts for the last frame drawn with the GPU (see [`crate::robots::lab::DrawCounts`]), or
     /// None when no robot lab runs.
     pub fn lab_draws(&self) -> Option<crate::robots::lab::DrawCounts> {
-        let owned = self.gpu.as_ref().map_or_else(Vec::new, Renderer::owned_draws);
+        let owned = self
+            .gpu
+            .as_ref()
+            .map_or_else(Vec::new, Renderer::owned_draws);
         let lab = self.stage.lab.as_ref()?;
         Some(lab.draw_counts(&owned, self.main_pass_calls()))
     }
@@ -617,17 +761,30 @@ impl Engine {
 
 /// The agents from the hub's list: a bare array, or `{ "agents": [...] }`.
 pub fn agent_list(v: &Value) -> Vec<AgentInfo> {
-    let items = v.as_array().or_else(|| v.get("agents").and_then(Value::as_array)).cloned().unwrap_or_default();
+    let items = v
+        .as_array()
+        .or_else(|| v.get("agents").and_then(Value::as_array))
+        .cloned()
+        .unwrap_or_default();
     items
         .iter()
         .filter_map(|a| {
-            let text = |key: &str| a.get(key).and_then(Value::as_str).unwrap_or_default().to_string();
+            let text = |key: &str| {
+                a.get(key)
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string()
+            };
             let status = text("status");
             Some(AgentInfo {
                 cid: a.get("cid")?.as_u64()?,
                 name: text("name"),
                 role: text("role"),
-                status: if status.is_empty() { "idle".to_string() } else { status },
+                status: if status.is_empty() {
+                    "idle".to_string()
+                } else {
+                    status
+                },
                 tier: text("tier"),
                 model: text("model"),
                 species: a.get("species").and_then(Value::as_str).map(str::to_string),
@@ -640,7 +797,9 @@ pub fn agent_list(v: &Value) -> Vec<AgentInfo> {
 /// and `fleet_error` (a message). A missing or null key is no change for that source.
 pub fn feed_from_json(json: &str) -> Result<Feed, String> {
     let value: Value = serde_json::from_str(json).map_err(|e| e.to_string())?;
-    let object = value.as_object().ok_or_else(|| "the feed is not a JSON object".to_string())?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| "the feed is not a JSON object".to_string())?;
     let present = |key: &str| object.get(key).filter(|v| !v.is_null());
 
     let fleet = present("fleet")
@@ -648,9 +807,17 @@ pub fn feed_from_json(json: &str) -> Result<Feed, String> {
         .transpose()?;
     let agents = present("agents").map(agent_list);
     let fleet_error = present("fleet_error")
-        .map(|v| v.as_str().map(str::to_string).ok_or_else(|| "fleet_error is not a string".to_string()))
+        .map(|v| {
+            v.as_str()
+                .map(str::to_string)
+                .ok_or_else(|| "fleet_error is not a string".to_string())
+        })
         .transpose()?;
-    Ok(Feed { fleet, agents, fleet_error })
+    Ok(Feed {
+        fleet,
+        agents,
+        fleet_error,
+    })
 }
 
 #[cfg(test)]

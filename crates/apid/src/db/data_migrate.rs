@@ -73,7 +73,10 @@ fn run_domains(client: &mut Client) -> Result<(), String> {
         match step(client) {
             Ok(outcome) => {
                 record(client, domain, &outcome)?;
-                eprintln!("db: data migration {domain}: {} ({})", outcome.status, outcome.detail);
+                eprintln!(
+                    "db: data migration {domain}: {} ({})",
+                    outcome.status, outcome.detail
+                );
             }
             Err(detail) => {
                 if let Err(e) = client.execute(sql::DATA_MIGRATION_FAIL, &[&domain, &detail]) {
@@ -146,10 +149,14 @@ fn agents(client: &mut Client) -> Result<Outcome, String> {
         serde_json::from_str(&text).map_err(|e| format!("the agents blob does not parse: {e}"))?;
     let expected = blob.len() as i64;
 
-    let mut tx = client.transaction().map_err(|e| format!("open the agents transaction: {e}"))?;
-    tx.execute(sql::AGENTS_DELETE, &[]).map_err(|e| format!("empty agents: {e}"))?;
+    let mut tx = client
+        .transaction()
+        .map_err(|e| format!("open the agents transaction: {e}"))?;
+    tx.execute(sql::AGENTS_DELETE, &[])
+        .map_err(|e| format!("empty agents: {e}"))?;
     for agent in &blob {
-        let cid = i64::try_from(agent.cid).map_err(|_| format!("agent cid {} is above i64::MAX", agent.cid))?;
+        let cid = i64::try_from(agent.cid)
+            .map_err(|_| format!("agent cid {} is above i64::MAX", agent.cid))?;
         let state = agent.state.as_deref().unwrap_or("active");
         tx.execute(
             sql::AGENTS_INSERT,
@@ -175,7 +182,8 @@ fn agents(client: &mut Client) -> Result<Outcome, String> {
     if loaded != expected {
         return Err(format!("expected {expected} rows, loaded {loaded}"));
     }
-    tx.commit().map_err(|e| format!("commit the agents transaction: {e}"))?;
+    tx.commit()
+        .map_err(|e| format!("commit the agents transaction: {e}"))?;
     Ok(Outcome {
         status: "verified",
         source: Source::Blob,
@@ -202,7 +210,9 @@ mod tests {
     /// Whether the error is the server refusing a write with forbid_mutation(); the refusal is the
     /// server message, which the error's Display does not show.
     fn append_only(error: &postgres::Error) -> bool {
-        error.as_db_error().is_some_and(|db| db.message().contains("append-only"))
+        error
+            .as_db_error()
+            .is_some_and(|db| db.message().contains("append-only"))
     }
 
     fn connect(url: &str) -> Client {
@@ -213,33 +223,67 @@ mod tests {
     /// by forbid_mutation() refuses UPDATE, DELETE and TRUNCATE and keeps its row.
     #[test]
     fn data_migrations_exists_and_forbid_mutation_rejects_update_and_delete() {
-        let Some(url) = crate::db::test_database("forbid_mutation") else { return };
+        let Some(url) = crate::db::test_database("forbid_mutation") else {
+            return;
+        };
         let mut client = connect(&url);
-        assert_eq!(schema::migrate(&mut client), Ok(schema::MIGRATIONS.iter().map(|m| m.version).collect()));
+        assert_eq!(
+            schema::migrate(&mut client),
+            Ok(schema::MIGRATIONS.iter().map(|m| m.version).collect())
+        );
         assert!(
-            client.query_one(DATA_MIGRATIONS_EXISTS, &[]).expect("look up data_migrations").get::<_, bool>(0),
+            client
+                .query_one(DATA_MIGRATIONS_EXISTS, &[])
+                .expect("look up data_migrations")
+                .get::<_, bool>(0),
             "data_migrations exists after 0002"
         );
 
-        client.batch_execute(PROBE_SETUP).expect("the probe table guarded by forbid_mutation");
-        let update = client.execute(PROBE_UPDATE, &[]).expect_err("UPDATE must be refused");
+        client
+            .batch_execute(PROBE_SETUP)
+            .expect("the probe table guarded by forbid_mutation");
+        let update = client
+            .execute(PROBE_UPDATE, &[])
+            .expect_err("UPDATE must be refused");
         assert!(append_only(&update), "{update:?}");
-        let delete = client.execute(PROBE_DELETE, &[]).expect_err("DELETE must be refused");
+        let delete = client
+            .execute(PROBE_DELETE, &[])
+            .expect_err("DELETE must be refused");
         assert!(append_only(&delete), "{delete:?}");
-        let truncate = client.execute(PROBE_TRUNCATE, &[]).expect_err("TRUNCATE must be refused");
+        let truncate = client
+            .execute(PROBE_TRUNCATE, &[])
+            .expect_err("TRUNCATE must be refused");
         assert!(append_only(&truncate), "{truncate:?}");
-        assert_eq!(client.query_one(PROBE_COUNT, &[]).expect("count").get::<_, i64>(0), 1, "the row is still there");
+        assert_eq!(
+            client
+                .query_one(PROBE_COUNT, &[])
+                .expect("count")
+                .get::<_, i64>(0),
+            1,
+            "the row is still there"
+        );
     }
 
     /// The agents stub with no source records none/verified, and a second run changes nothing.
     #[test]
     fn the_agents_stub_records_no_source_as_verified_and_runs_once() {
-        let Some(url) = crate::db::test_database("data_agents") else { return };
+        let Some(url) = crate::db::test_database("data_agents") else {
+            return;
+        };
         let mut client = connect(&url);
-        assert_eq!(schema::migrate(&mut client), Ok(schema::MIGRATIONS.iter().map(|m| m.version).collect()));
+        assert_eq!(
+            schema::migrate(&mut client),
+            Ok(schema::MIGRATIONS.iter().map(|m| m.version).collect())
+        );
         run(&mut client).expect("the first run");
         run(&mut client).expect("the second run");
-        assert_eq!(client.query_one(AGENTS_ROW, &[]).expect("the agents row").get::<_, String>(0), "verified none");
+        assert_eq!(
+            client
+                .query_one(AGENTS_ROW, &[])
+                .expect("the agents row")
+                .get::<_, String>(0),
+            "verified none"
+        );
     }
 
     const AGENTS_SEED: &str = include_str!("../../sql/test/agents_seed.sql");
@@ -251,38 +295,74 @@ mod tests {
     const SEEDED_ROWS: &str = "1000|ada|worker|openrouter/x|fox|active|1700000000000;1001|bo|orchestrator|-|owl|retired|1700000000000;1002|cy|researcher|-|kite|active|1700000050000";
 
     fn agents_rows(client: &mut Client) -> String {
-        client.query_one(AGENTS_ROWS, &[]).expect("the agents rows").get::<_, String>(0)
+        client
+            .query_one(AGENTS_ROWS, &[])
+            .expect("the agents rows")
+            .get::<_, String>(0)
     }
 
     /// A plaza_state agents blob of three agents loads into the agents table with its columns; the
     /// status records verified, 3 of 3 rows and the blob's sha256; a second run changes nothing.
     #[test]
     fn the_agents_blob_loads_once_and_a_second_run_changes_nothing() {
-        let Some(url) = crate::db::test_database("data_agents_blob") else { return };
+        let Some(url) = crate::db::test_database("data_agents_blob") else {
+            return;
+        };
         let mut client = connect(&url);
-        assert_eq!(schema::migrate(&mut client), Ok(schema::MIGRATIONS.iter().map(|m| m.version).collect()));
-        client.batch_execute(AGENTS_SEED).expect("seed the agents blob");
+        assert_eq!(
+            schema::migrate(&mut client),
+            Ok(schema::MIGRATIONS.iter().map(|m| m.version).collect())
+        );
+        client
+            .batch_execute(AGENTS_SEED)
+            .expect("seed the agents blob");
         run(&mut client).expect("the first run");
         assert_eq!(agents_rows(&mut client), SEEDED_ROWS);
-        let status = client.query_one(AGENTS_STATUS, &[]).expect("the status row").get::<_, String>(0);
+        let status = client
+            .query_one(AGENTS_STATUS, &[])
+            .expect("the status row")
+            .get::<_, String>(0);
         assert_eq!(status, "verified blob 3 3 64");
         run(&mut client).expect("the second run");
         assert_eq!(agents_rows(&mut client), SEEDED_ROWS);
-        assert_eq!(client.query_one(AGENTS_STATUS, &[]).expect("the status row").get::<_, String>(0), status);
+        assert_eq!(
+            client
+                .query_one(AGENTS_STATUS, &[])
+                .expect("the status row")
+                .get::<_, String>(0),
+            status
+        );
     }
 
     /// A blob that repeats a cid fails closed: the run names the domain, the status records failed,
     /// and the agents table keeps no rows from the failed load.
     #[test]
     fn a_duplicate_agent_in_the_blob_fails_closed() {
-        let Some(url) = crate::db::test_database("data_agents_dup") else { return };
+        let Some(url) = crate::db::test_database("data_agents_dup") else {
+            return;
+        };
         let mut client = connect(&url);
-        assert_eq!(schema::migrate(&mut client), Ok(schema::MIGRATIONS.iter().map(|m| m.version).collect()));
-        client.batch_execute(AGENTS_SEED_DUPLICATE).expect("seed the duplicate blob");
+        assert_eq!(
+            schema::migrate(&mut client),
+            Ok(schema::MIGRATIONS.iter().map(|m| m.version).collect())
+        );
+        client
+            .batch_execute(AGENTS_SEED_DUPLICATE)
+            .expect("seed the duplicate blob");
         let error = run(&mut client).expect_err("a duplicate cid must fail");
         assert!(error.contains("data migration agents failed"), "{error}");
-        let status: String = client.query_one(sql::DATA_MIGRATION_STATUS, &[&"agents"]).expect("the status row").get(0);
+        let status: String = client
+            .query_one(sql::DATA_MIGRATION_STATUS, &[&"agents"])
+            .expect("the status row")
+            .get(0);
         assert_eq!(status, "failed");
-        assert_eq!(client.query_one(sql::AGENTS_COUNT, &[]).expect("count").get::<_, i64>(0), 0, "the load rolled back");
+        assert_eq!(
+            client
+                .query_one(sql::AGENTS_COUNT, &[])
+                .expect("count")
+                .get::<_, i64>(0),
+            0,
+            "the load rolled back"
+        );
     }
 }

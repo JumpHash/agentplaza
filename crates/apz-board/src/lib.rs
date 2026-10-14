@@ -30,9 +30,9 @@ pub mod grid;
 pub mod layout;
 pub mod mesh;
 pub mod nav;
-pub mod rooms;
 pub mod navgrid;
 pub mod plan;
+pub mod rooms;
 pub mod walk;
 pub mod zfight;
 
@@ -43,8 +43,8 @@ mod support;
 
 use std::collections::BTreeMap;
 
-pub use hardware::embedded_files;
 use hardware::Library;
+pub use hardware::embedded_files;
 use support::Support;
 
 /// An axis-aligned box in world units (the board's root frame): min and max corners.
@@ -57,7 +57,10 @@ pub struct Aabb {
 impl Aabb {
     /// The box with nothing in it: every union with it is the other box.
     pub fn empty() -> Aabb {
-        Aabb { min: [f64::INFINITY; 3], max: [f64::NEG_INFINITY; 3] }
+        Aabb {
+            min: [f64::INFINITY; 3],
+            max: [f64::NEG_INFINITY; 3],
+        }
     }
 
     /// Whether no point has been included.
@@ -118,8 +121,14 @@ impl Board {
         let lib = Library::get();
         let name = format!("board/{kind}");
         let model = lib.model(&name).unwrap_or_else(|| {
-            let known: Vec<&str> = lib.model_names().filter(|n| n.starts_with("board/")).collect();
-            panic!("apz-board: no board kind \"{kind}\" (known: {})", known.join(", "))
+            let known: Vec<&str> = lib
+                .model_names()
+                .filter(|n| n.starts_with("board/"))
+                .collect();
+            panic!(
+                "apz-board: no board kind \"{kind}\" (known: {})",
+                known.join(", ")
+            )
         });
         let scene = scene::build(lib, model, params);
         let mut bounds = Aabb::empty();
@@ -127,11 +136,22 @@ impl Board {
             bounds = bounds.union(&it.bounds);
         }
         if bounds.is_empty() {
-            bounds = Aabb { min: [0.0; 3], max: [0.0; 3] };
+            bounds = Aabb {
+                min: [0.0; 3],
+                max: [0.0; 3],
+            };
         }
         let mut merged = model.params.clone().unwrap_or_default();
         merged.extend(params.iter().map(|(k, v)| (k.clone(), *v)));
-        Board { items: scene.items, boxes: scene.boxes, support: scene.support, part_count: scene.part_count, bounds, model: name, params: merged }
+        Board {
+            items: scene.items,
+            boxes: scene.boxes,
+            support: scene.support,
+            part_count: scene.part_count,
+            bounds,
+            model: name,
+            params: merged,
+        }
     }
 
     /// The resting items, in the web's traversal order.

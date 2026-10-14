@@ -13,10 +13,10 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use crate::geom::{apply, mul, trs, IDENTITY, M4};
-use crate::hardware::{eval_when, parse_when, Geo, Library, MatRef, Model, Part, Scale};
-use crate::scene::repeat_offsets;
 use crate::Board;
+use crate::geom::{IDENTITY, M4, apply, mul, trs};
+use crate::hardware::{Geo, Library, MatRef, Model, Part, Scale, eval_when, parse_when};
+use crate::scene::repeat_offsets;
 
 /// Faces closer than this along their normal are coplanar.
 pub const COPLANAR: f64 = 0.002;
@@ -87,7 +87,9 @@ pub fn zfight(board: &Board) -> Vec<Finding> {
 /// The lint of one board, built with the params it was built with.
 pub fn zfight_report(board: &Board) -> Report {
     let lib = Library::get();
-    let model = lib.model(&board.model).expect("apz-board: the board's model is in the library");
+    let model = lib
+        .model(&board.model)
+        .expect("apz-board: the board's model is in the library");
     lint_model(lib, &board.model, model, &board.params)
 }
 
@@ -95,21 +97,47 @@ pub fn zfight_report(board: &Board) -> Report {
 /// the axis, the plane and the overlap.
 pub fn describe(f: &Finding) -> String {
     let ax = AXES[f.axis];
-    format!("{} | {} | {} | {} | axis {ax} | plane {:.4} | overlap {:.3}", f.a.model, f.why, side(&f.a), side(&f.b), f.plane, f.overlap)
+    format!(
+        "{} | {} | {} | {} | axis {ax} | plane {:.4} | overlap {:.3}",
+        f.a.model,
+        f.why,
+        side(&f.a),
+        side(&f.b),
+        f.plane,
+        f.overlap
+    )
 }
 
 fn side(x: &Face) -> String {
     let ax = AXES[x.axis];
     let sign = if x.sign > 0.0 { '+' } else { '-' };
     let tilde = if x.approx { " ~" } else { "" };
-    format!("{} [{}:{}] {}{sign}{ax}{tilde}", x.id, x.file, x.path, x.mat)
+    format!(
+        "{} [{}:{}] {}{sign}{ax}{tilde}",
+        x.id, x.file, x.path, x.mat
+    )
 }
 
 fn lint_model(lib: &Library, name: &str, model: &Model, params: &BTreeMap<String, f64>) -> Report {
-    let mut ctx = Ctx { lib, model: name.to_string(), params: params.clone(), faces: Vec::new(), skipped: Vec::new() };
-    ctx.walk(&model.parts, &IDENTITY, &format!("assets/hardware/{name}.json"), "parts");
+    let mut ctx = Ctx {
+        lib,
+        model: name.to_string(),
+        params: params.clone(),
+        faces: Vec::new(),
+        skipped: Vec::new(),
+    };
+    ctx.walk(
+        &model.parts,
+        &IDENTITY,
+        &format!("assets/hardware/{name}.json"),
+        "parts",
+    );
     let Ctx { faces, skipped, .. } = ctx;
-    Report { findings: lint_faces(&faces), skipped, faces: faces.len() }
+    Report {
+        findings: lint_faces(&faces),
+        skipped,
+        faces: faces.len(),
+    }
 }
 
 // ---- Local faces -----------------------------------------------------------------------------------
@@ -123,7 +151,12 @@ struct LFace {
 }
 
 fn face(n: Vec3, pts: Vec<Vec3>, decal: bool, approx: bool) -> LFace {
-    LFace { n, pts, decal, approx }
+    LFace {
+        n,
+        pts,
+        decal,
+        approx,
+    }
 }
 
 /// The four corners of a rectangle on the plane where coordinate `axis` equals `value`.
@@ -158,15 +191,42 @@ fn box_faces(half: Vec3, approx: bool) -> Vec<LFace> {
 /// The planar faces of a geometry, in its own frame. Curved faces are left out.
 fn geo_faces(g: &Geo) -> Vec<LFace> {
     match g {
-        Geo::Cube { w, h, d } | Geo::Rbox { w, h, d, .. } => box_faces([w / 2.0, h / 2.0, d / 2.0], false),
+        Geo::Cube { w, h, d } | Geo::Rbox { w, h, d, .. } => {
+            box_faces([w / 2.0, h / 2.0, d / 2.0], false)
+        }
         Geo::Cyl { rt, rb, h, .. } => vec![
-            face([0.0, 1.0, 0.0], rect(1, h / 2.0, [*rt, h / 2.0, *rt]), false, true),
-            face([0.0, -1.0, 0.0], rect(1, -h / 2.0, [*rb, h / 2.0, *rb]), false, true),
+            face(
+                [0.0, 1.0, 0.0],
+                rect(1, h / 2.0, [*rt, h / 2.0, *rt]),
+                false,
+                true,
+            ),
+            face(
+                [0.0, -1.0, 0.0],
+                rect(1, -h / 2.0, [*rb, h / 2.0, *rb]),
+                false,
+                true,
+            ),
         ],
-        Geo::Cone { r, h, .. } => vec![face([0.0, -1.0, 0.0], rect(1, -h / 2.0, [*r, h / 2.0, *r]), false, true)],
+        Geo::Cone { r, h, .. } => vec![face(
+            [0.0, -1.0, 0.0],
+            rect(1, -h / 2.0, [*r, h / 2.0, *r]),
+            false,
+            true,
+        )],
         Geo::Sphere { .. } | Geo::Torus { .. } => Vec::new(),
-        Geo::Plane { w, d } => vec![face([0.0, 1.0, 0.0], rect(1, 0.0, [w / 2.0, 0.0, d / 2.0]), true, false)],
-        Geo::Ring { ro, .. } => vec![face([0.0, 1.0, 0.0], rect(1, 0.0, [*ro, 0.0, *ro]), true, true)],
+        Geo::Plane { w, d } => vec![face(
+            [0.0, 1.0, 0.0],
+            rect(1, 0.0, [w / 2.0, 0.0, d / 2.0]),
+            true,
+            false,
+        )],
+        Geo::Ring { ro, .. } => vec![face(
+            [0.0, 1.0, 0.0],
+            rect(1, 0.0, [*ro, 0.0, *ro]),
+            true,
+            true,
+        )],
         Geo::Shape { points, h } => shape_faces(points, *h),
     }
 }
@@ -179,8 +239,18 @@ fn shape_faces(pts2: &[[f64; 2]], h: f64) -> Vec<LFace> {
     }
     let at = |i: usize| pts2[i % n];
     let mut out = vec![
-        face([0.0, -1.0, 0.0], pts2.iter().map(|&[x, z]| [x, 0.0, z]).collect(), false, true),
-        face([0.0, 1.0, 0.0], pts2.iter().map(|&[x, z]| [x, h, z]).collect(), false, true),
+        face(
+            [0.0, -1.0, 0.0],
+            pts2.iter().map(|&[x, z]| [x, 0.0, z]).collect(),
+            false,
+            true,
+        ),
+        face(
+            [0.0, 1.0, 0.0],
+            pts2.iter().map(|&[x, z]| [x, h, z]).collect(),
+            false,
+            true,
+        ),
     ];
     let mut area = 0.0;
     for i in 0..n {
@@ -199,10 +269,20 @@ fn shape_faces(pts2: &[[f64; 2]], h: f64) -> Vec<LFace> {
         }
         if ex.abs() < 1e-9 {
             let s = sign_or_one(ez * flip);
-            out.push(face([s, 0.0, 0.0], vec![[x0, 0.0, z0], [x0, 0.0, z1], [x0, h, z1], [x0, h, z0]], false, false));
+            out.push(face(
+                [s, 0.0, 0.0],
+                vec![[x0, 0.0, z0], [x0, 0.0, z1], [x0, h, z1], [x0, h, z0]],
+                false,
+                false,
+            ));
         } else {
             let s = sign_or_one(-ex * flip);
-            out.push(face([0.0, 0.0, s], vec![[x0, 0.0, z0], [x1, 0.0, z0], [x1, h, z0], [x0, h, z0]], false, false));
+            out.push(face(
+                [0.0, 0.0, s],
+                vec![[x0, 0.0, z0], [x1, 0.0, z0], [x1, h, z0], [x0, h, z0]],
+                false,
+                false,
+            ));
         }
     }
     out
@@ -296,21 +376,36 @@ impl Ctx<'_> {
                     self.skipped.push(format!("{} {file}:{path}", self.model));
                     continue;
                 }
-                let meta = Meta { id: id.clone(), file: file.to_string(), path: path.clone(), mat: mat_key(p.mat.as_ref()) };
+                let meta = Meta {
+                    id: id.clone(),
+                    file: file.to_string(),
+                    path: path.clone(),
+                    mat: mat_key(p.mat.as_ref()),
+                };
                 if let Some(g) = &p.geo {
                     let lf = geo_faces(g);
                     self.emit(&lf, &m, &meta, false);
                     // A label is a decal on the part's top face, drawn with no lift.
-                    if let (Some(label), Some(top)) = (&p.label, lf.iter().find(|f| !f.decal && f.n[1] == 1.0)) {
+                    if let (Some(label), Some(top)) =
+                        (&p.label, lf.iter().find(|f| !f.decal && f.n[1] == 1.0))
+                    {
                         let deco = [face(top.n, top.pts.clone(), true, true)];
-                        let lmeta = Meta { mat: format!("label:{}", label.text), ..meta.clone() };
+                        let lmeta = Meta {
+                            mat: format!("label:{}", label.text),
+                            ..meta.clone()
+                        };
                         self.emit(&deco, &m, &lmeta, true);
                     }
                 }
                 if let Some(u) = &p.use_ {
                     let lib = self.lib;
                     if let Some(target) = lib.model(u) {
-                        self.walk(&target.parts, &m, &format!("assets/hardware/{u}.json"), "parts");
+                        self.walk(
+                            &target.parts,
+                            &m,
+                            &format!("assets/hardware/{u}.json"),
+                            "parts",
+                        );
                     }
                 }
                 if let Some(children) = &p.children {
@@ -328,7 +423,13 @@ impl Ctx<'_> {
             }
             let pts: Vec<Vec3> = f.pts.iter().map(|&p| apply(m, p)).collect();
             let nw = turn(m, f.n);
-            let axis = (1..3).fold(0, |best, k| if nw[k].abs() > nw[best].abs() { k } else { best });
+            let axis = (1..3).fold(0, |best, k| {
+                if nw[k].abs() > nw[best].abs() {
+                    k
+                } else {
+                    best
+                }
+            });
             let count = pts.len() as f64;
             let plane = pts.iter().map(|p| p[axis]).sum::<f64>() / count;
             if pts.iter().any(|p| (p[axis] - plane).abs() > 1e-4) {
@@ -369,11 +470,7 @@ impl Ctx<'_> {
 fn overlap(a: &Face, b: &Face) -> f64 {
     let w = a.hi[0].min(b.hi[0]) - a.lo[0].max(b.lo[0]);
     let h = a.hi[1].min(b.hi[1]) - a.lo[1].max(b.lo[1]);
-    if w > 0.0 && h > 0.0 {
-        w * h
-    } else {
-        0.0
-    }
+    if w > 0.0 && h > 0.0 { w * h } else { 0.0 }
 }
 
 /// The plane bucket of a value, of width COPLANAR: two planes within COPLANAR are in the same or adjacent buckets.
@@ -413,7 +510,11 @@ fn lint_faces(faces: &[Face]) -> Vec<Finding> {
                     continue;
                 }
                 // The lower plane is the first face (ties keep face order), as the web's sorted sweep has it.
-                let (ia, ib) = if faces[j].plane < faces[i].plane { (j, i) } else { (i, j) };
+                let (ia, ib) = if faces[j].plane < faces[i].plane {
+                    (j, i)
+                } else {
+                    (i, j)
+                };
                 let (pa, pb) = (&faces[ia], &faces[ib]);
                 if pa.sign != pb.sign && pa.mat == pb.mat {
                     continue; // face to face, one material: a contact, never seen
@@ -429,7 +530,15 @@ fn lint_faces(faces: &[Face]) -> Vec<Finding> {
                 } else {
                     "contact"
                 };
-                out.push(Finding { kind: Kind::Pair, why, a: pa.clone(), b: pb.clone(), axis, plane: pa.plane, overlap: area });
+                out.push(Finding {
+                    kind: Kind::Pair,
+                    why,
+                    a: pa.clone(),
+                    b: pb.clone(),
+                    axis,
+                    plane: pa.plane,
+                    overlap: area,
+                });
             }
         }
     }
@@ -440,8 +549,20 @@ fn lint_faces(faces: &[Face]) -> Vec<Finding> {
             if area <= MIN_OVERLAP {
                 continue;
             }
-            let why = if d.label { "label on a surface, no lift" } else { "decal on a surface, no lift" };
-            out.push(Finding { kind: Kind::Decal, why, a: d.clone(), b: s.clone(), axis: d.axis, plane: d.plane, overlap: area });
+            let why = if d.label {
+                "label on a surface, no lift"
+            } else {
+                "decal on a surface, no lift"
+            };
+            out.push(Finding {
+                kind: Kind::Decal,
+                why,
+                a: d.clone(),
+                b: s.clone(),
+                axis: d.axis,
+                plane: d.plane,
+                overlap: area,
+            });
         }
     }
     out

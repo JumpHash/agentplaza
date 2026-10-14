@@ -67,7 +67,10 @@ impl BinOp {
         }
     }
     pub fn is_comparison(self) -> bool {
-        matches!(self, BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge)
+        matches!(
+            self,
+            BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge
+        )
     }
 }
 
@@ -134,7 +137,13 @@ pub enum ExprKind {
     Map(Vec<(Expr, Expr)>),
     Record(Vec<(String, Expr)>),
     Tuple(Vec<Expr>),
-    Comp { kind: CompKind, gens: Vec<Gen>, filter: Option<Box<Expr>>, key: Box<Expr>, val: Option<Box<Expr>> },
+    Comp {
+        kind: CompKind,
+        gens: Vec<Gen>,
+        filter: Option<Box<Expr>>,
+        key: Box<Expr>,
+        val: Option<Box<Expr>>,
+    },
     Quant(Quant, Vec<Gen>, Box<Expr>),
     /// `base with [k].f = v`: a copy of base with the value at the path replaced.
     With(Box<Expr>, Vec<PathSeg>, Box<Expr>),
@@ -551,16 +560,51 @@ pub enum InvBody {
 
 #[derive(Clone, Debug)]
 pub enum MItem {
-    Const { name: String, ty: TypeExpr, default: Option<Expr>, span: Span },
-    Var { name: String, ty: TypeExpr, optional: bool, init: VarInit, span: Span },
+    Const {
+        name: String,
+        ty: TypeExpr,
+        default: Option<Expr>,
+        span: Span,
+    },
+    Var {
+        name: String,
+        ty: TypeExpr,
+        optional: bool,
+        init: VarInit,
+        span: Span,
+    },
     Init(Vec<Stmt>, Span),
     /// `let name(params) = e`: a definition that reads the current state (TLA's `Op == …`).
-    Def { name: String, params: Vec<String>, body: Expr, span: Span },
+    Def {
+        name: String,
+        params: Vec<String>,
+        body: Expr,
+        span: Span,
+    },
     Action(ActionDecl),
-    Invariant { name: String, body: InvBody, implements: Vec<String>, span: Span },
-    Transition { name: String, expr: Expr, implements: Vec<String>, span: Span },
-    Property { name: String, expr: Expr, implements: Vec<String>, span: Span },
-    Fairness { strong: bool, actions: Vec<String>, span: Span },
+    Invariant {
+        name: String,
+        body: InvBody,
+        implements: Vec<String>,
+        span: Span,
+    },
+    Transition {
+        name: String,
+        expr: Expr,
+        implements: Vec<String>,
+        span: Span,
+    },
+    Property {
+        name: String,
+        expr: Expr,
+        implements: Vec<String>,
+        span: Span,
+    },
+    Fairness {
+        strong: bool,
+        actions: Vec<String>,
+        span: Span,
+    },
     Terminal(Expr),
 }
 
@@ -615,7 +659,13 @@ pub struct MachineDecl {
 
 impl MachineDecl {
     pub fn actions(&self) -> impl Iterator<Item = &ActionDecl> {
-        self.items.iter().filter_map(|i| if let MItem::Action(a) = i { Some(a) } else { None })
+        self.items.iter().filter_map(|i| {
+            if let MItem::Action(a) = i {
+                Some(a)
+            } else {
+                None
+            }
+        })
     }
 }
 
@@ -641,9 +691,21 @@ pub struct ModelDecl {
 
 #[derive(Clone, Debug)]
 pub enum MutOp {
-    Replace { text: String, action: String, with: String, span: Span },
-    DropWhen { n: usize, action: String, span: Span },
-    RemoveAction { action: String, span: Span },
+    Replace {
+        text: String,
+        action: String,
+        with: String,
+        span: Span,
+    },
+    DropWhen {
+        n: usize,
+        action: String,
+        span: Span,
+    },
+    RemoveAction {
+        action: String,
+        span: Span,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]

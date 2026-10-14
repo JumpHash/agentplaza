@@ -9,11 +9,11 @@ use std::collections::BTreeMap;
 use iced::widget::{checkbox, column, pick_list, row, text};
 use iced::{Element, Length, Task};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use super::forms::{valid_name, ScopeMode};
-use super::{ago, gate, node_name, now_ms, stack, ConsumerRef, Msg, NodeRef, State};
-use crate::console::{client, ui, Ctx};
+use super::forms::{ScopeMode, valid_name};
+use super::{ConsumerRef, Msg, NodeRef, State, ago, gate, node_name, now_ms, stack};
+use crate::console::{Ctx, client, ui};
 
 /// This hub's node id. The matrix shows it first, named "This hub".
 const HUB: &str = "n0";
@@ -93,7 +93,11 @@ pub fn chain_message(ok: bool, verified: Option<u64>, broken: Option<&BrokenEntr
         None => "Chain broken".to_string(),
         Some(b) => {
             let at = b.seq.map(|s| format!(" (seq {s})")).unwrap_or_default();
-            format!("Chain broken at entry #{}{at}: {} entries verified before it", b.index, verified.unwrap_or(b.index))
+            format!(
+                "Chain broken at entry #{}{at}: {} entries verified before it",
+                b.index,
+                verified.unwrap_or(b.index)
+            )
         }
     }
 }
@@ -107,22 +111,36 @@ pub fn audit_path(after: u64, verify: bool) -> String {
 pub fn page_task(ctx: &Ctx, after: u64) -> Task<Msg> {
     let c = ctx.client.clone();
     let path = audit_path(after, false);
-    client::task(move || c.call("GET", &path, None).and_then(parse_audit), Msg::AuditPage)
+    client::task(
+        move || c.call("GET", &path, None).and_then(parse_audit),
+        Msg::AuditPage,
+    )
 }
 
 pub fn verify_task(ctx: &Ctx) -> Task<Msg> {
     let c = ctx.client.clone();
     let path = audit_path(0, true);
-    client::task(move || c.call("GET", &path, None).and_then(parse_audit), Msg::AuditVerified)
+    client::task(
+        move || c.call("GET", &path, None).and_then(parse_audit),
+        Msg::AuditVerified,
+    )
 }
 
 pub fn audit_card<'a>(state: &'a State) -> Element<'a, Msg> {
     let audit = &state.audit;
     let now = now_ms();
-    let mut head: Vec<Element<'a, Msg>> = vec![ui::btn_sm("Verify chain", None, ui::Kind::Secondary, gate(audit.busy, Msg::AuditVerify))];
+    let mut head: Vec<Element<'a, Msg>> = vec![ui::btn_sm(
+        "Verify chain",
+        None,
+        ui::Kind::Secondary,
+        gate(audit.busy, Msg::AuditVerify),
+    )];
     if let Some(ok) = audit.chain {
         let message = chain_message(ok, audit.verified, audit.broken.as_ref());
-        head.push(ui::badge(&message, if ok { ui::Tone::Ok } else { ui::Tone::Danger }));
+        head.push(ui::badge(
+            &message,
+            if ok { ui::Tone::Ok } else { ui::Tone::Danger },
+        ));
     }
     let mut items: Vec<Element<'a, Msg>> = vec![row(head).spacing(12).into()];
     if let Some(error) = &audit.error {
@@ -131,7 +149,11 @@ pub fn audit_card<'a>(state: &'a State) -> Element<'a, Msg> {
     if !audit.loaded && audit.error.is_none() {
         items.push(ui::faint("Loading the audit log.").into());
     } else if audit.loaded && audit.lines.is_empty() {
-        items.push(ui::empty("key", "No audit events yet", "Events appear here as the vault is used."));
+        items.push(ui::empty(
+            "key",
+            "No audit events yet",
+            "Events appear here as the vault is used.",
+        ));
     }
     for (i, line) in audit.lines.iter().enumerate() {
         if i > 0 {
@@ -141,25 +163,55 @@ pub fn audit_card<'a>(state: &'a State) -> Element<'a, Msg> {
         items.push(audit_row(line, &state.nodes, now, broken));
     }
     if audit.more {
-        items.push(row(vec![ui::btn("Load more", None, ui::Kind::Secondary, gate(audit.busy, Msg::AuditMore))]).into());
+        items.push(
+            row(vec![ui::btn(
+                "Load more",
+                None,
+                ui::Kind::Secondary,
+                gate(audit.busy, Msg::AuditMore),
+            )])
+            .into(),
+        );
     }
     ui::card("Audit log", stack(items))
 }
 
 /// One audit row. The broken entry (when this row is it) gets a badge and the hashes that did not match.
-fn audit_row<'a>(line: &AuditLine, nodes: &[NodeRef], now: f64, broken: Option<&BrokenEntry>) -> Element<'a, Msg> {
-    let actor = if line.actor.is_empty() { "-".to_string() } else { line.actor.clone() };
-    let entry = line.name.clone().or_else(|| line.entry.clone()).unwrap_or_else(|| "-".to_string());
-    let node = line.node.as_deref().map(|id| node_name(nodes, id)).unwrap_or_else(|| "-".to_string());
+fn audit_row<'a>(
+    line: &AuditLine,
+    nodes: &[NodeRef],
+    now: f64,
+    broken: Option<&BrokenEntry>,
+) -> Element<'a, Msg> {
+    let actor = if line.actor.is_empty() {
+        "-".to_string()
+    } else {
+        line.actor.clone()
+    };
+    let entry = line
+        .name
+        .clone()
+        .or_else(|| line.entry.clone())
+        .unwrap_or_else(|| "-".to_string());
+    let node = line
+        .node
+        .as_deref()
+        .map(|id| node_name(nodes, id))
+        .unwrap_or_else(|| "-".to_string());
     let event_text = format!("{}  #{}", line.event, line.seq);
     let event: Element<'a, Msg> = if broken.is_some() {
-        let parts: Vec<Element<'a, Msg>> = vec![text(event_text).into(), ui::badge("broken", ui::Tone::Danger)];
+        let parts: Vec<Element<'a, Msg>> = vec![
+            text(event_text).into(),
+            ui::badge("broken", ui::Tone::Danger),
+        ];
         row(parts).spacing(8).width(Length::FillPortion(3)).into()
     } else {
         text(event_text).width(Length::FillPortion(3)).into()
     };
     let top: Element<'a, Msg> = row(vec![
-        ui::faint(ago(line.ts_ms, now)).width(Length::FillPortion(2)).into(),
+        ui::faint(ago(line.ts_ms, now))
+            .width(Length::FillPortion(2))
+            .into(),
         event,
         text(actor).width(Length::FillPortion(2)).into(),
         text(entry).width(Length::FillPortion(3)).into(),
@@ -186,7 +238,14 @@ fn audit_row<'a>(line: &AuditLine, nodes: &[NodeRef], now: f64, broken: Option<&
 /// One row per consumer, one column per node: the entry that resolves there, or the gap.
 pub fn consumers_card<'a>(state: &'a State) -> Element<'a, Msg> {
     if state.consumers.is_empty() {
-        return ui::card("Consumers", ui::empty("key", "Nothing asks for a secret yet", "Providers, MCP servers and connectors list the secrets they want here."));
+        return ui::card(
+            "Consumers",
+            ui::empty(
+                "key",
+                "Nothing asks for a secret yet",
+                "Providers, MCP servers and connectors list the secrets they want here.",
+            ),
+        );
     }
     let nodes: &[NodeRef] = match state.status.as_ref().map(|s| s.nodes.as_slice()) {
         Some(nodes) if !nodes.is_empty() => nodes,
@@ -202,17 +261,30 @@ pub fn consumers_card<'a>(state: &'a State) -> Element<'a, Msg> {
     ])
     .spacing(8)
     .into();
-    let mut head: Vec<Element<'a, Msg>> = vec![text("Binding").width(Length::FillPortion(3)).into()];
+    let mut head: Vec<Element<'a, Msg>> =
+        vec![text("Binding").width(Length::FillPortion(3)).into()];
     for n in nodes {
         head.push(text(node_label(n)).width(Length::FillPortion(2)).into());
     }
-    let mut items: Vec<Element<'a, Msg>> = vec![legend, row(head).spacing(12).into(), ui::hairline()];
+    let mut items: Vec<Element<'a, Msg>> =
+        vec![legend, row(head).spacing(12).into(), ui::hairline()];
     for c in &state.consumers {
-        let title = if c.label.is_empty() { c.binding.clone() } else { c.label.clone() };
-        let binding: Element<'a, Msg> = column(vec![text(title).into(), ui::faint(c.wants.clone()).into()]).width(Length::FillPortion(3)).into();
+        let title = if c.label.is_empty() {
+            c.binding.clone()
+        } else {
+            c.label.clone()
+        };
+        let binding: Element<'a, Msg> =
+            column(vec![text(title).into(), ui::faint(c.wants.clone()).into()])
+                .width(Length::FillPortion(3))
+                .into();
         let mut cells: Vec<Element<'a, Msg>> = vec![binding];
         for n in nodes {
-            cells.push(column(vec![matrix_cell(state, c, n)]).width(Length::FillPortion(2)).into());
+            cells.push(
+                column(vec![matrix_cell(state, c, n)])
+                    .width(Length::FillPortion(2))
+                    .into(),
+            );
         }
         items.push(row(cells).spacing(12).into());
         items.push(ui::hairline());
@@ -239,14 +311,26 @@ fn matrix_cell<'a>(state: &'a State, consumer: &ConsumerRef, node: &NodeRef) -> 
                 "Add",
                 None,
                 ui::Kind::Ghost,
-                gate(state.busy, Msg::OpenCreateFor(consumer.wants.clone(), consumer.binding.clone(), node.id.clone())),
+                gate(
+                    state.busy,
+                    Msg::OpenCreateFor(
+                        consumer.wants.clone(),
+                        consumer.binding.clone(),
+                        node.id.clone(),
+                    ),
+                ),
             ),
         ])
         .spacing(8)
         .into(),
         Some("out_of_scope") => ui::badge("out of scope", ui::Tone::Muted),
         Some(id) => {
-            let name = state.entries.iter().find(|e| e.id == id).map(|e| e.name.clone()).unwrap_or_else(|| "Unknown entry".to_string());
+            let name = state
+                .entries
+                .iter()
+                .find(|e| e.id == id)
+                .map(|e| e.name.clone())
+                .unwrap_or_else(|| "Unknown entry".to_string());
             ui::badge(&name, ui::Tone::Ok)
         }
         None => ui::faint("-").into(),
@@ -297,11 +381,17 @@ pub struct ImportForm {
 
 /// Reads a `.env` file the owner picks. `None` when the dialog is cancelled.
 pub async fn pick_env_file() -> Result<Option<(String, String)>, String> {
-    let Some(file) = rfd::AsyncFileDialog::new().set_title("Choose a .env file").pick_file().await else {
+    let Some(file) = rfd::AsyncFileDialog::new()
+        .set_title("Choose a .env file")
+        .pick_file()
+        .await
+    else {
         return Ok(None);
     };
     let name = file.file_name();
-    std::fs::read_to_string(file.path()).map(|raw| Some((name, raw))).map_err(|_| "The file could not be read.".to_string())
+    std::fs::read_to_string(file.path())
+        .map(|raw| Some((name, raw)))
+        .map_err(|_| "The file could not be read.".to_string())
 }
 
 /// The name a dotenv line sets: `NAME=...` or `export NAME=...`. None for a line with no name or no "=".
@@ -342,7 +432,12 @@ pub fn scan_names(raw: &str) -> (Vec<String>, Vec<String>, usize) {
 }
 
 /// The body of `POST /v1/vault/import`: only the lines of the picked names, the scope, and the bindings.
-pub fn import_body(raw: &str, names: &[String], scope: Value, bindings: &BTreeMap<String, Vec<String>>) -> Value {
+pub fn import_body(
+    raw: &str,
+    names: &[String],
+    scope: Value,
+    bindings: &BTreeMap<String, Vec<String>>,
+) -> Value {
     let text = raw
         .lines()
         .filter(|line| dotenv_name(line).is_some_and(|name| names.iter().any(|n| n == name)))
@@ -356,7 +451,12 @@ pub fn import_scope(form: &ImportForm) -> Result<Value, String> {
     match form.scope {
         ScopeMode::Plaza => Ok(json!({ "kind": "plaza" })),
         ScopeMode::Nodes => {
-            let nodes: Vec<&str> = form.nodes.iter().filter(|(_, on)| *on).map(|(id, _)| id.as_str()).collect();
+            let nodes: Vec<&str> = form
+                .nodes
+                .iter()
+                .filter(|(_, on)| *on)
+                .map(|(id, _)| id.as_str())
+                .collect();
             if nodes.is_empty() {
                 Err("Pick at least one node, or choose Plaza.".into())
             } else {
@@ -368,26 +468,32 @@ pub fn import_scope(form: &ImportForm) -> Result<Value, String> {
 
 /// Each ticked binding that wants a ticked name, mapped to that name.
 pub fn import_bindings(state: &State) -> BTreeMap<String, Vec<String>> {
-    let picked: Vec<&str> = state.import.picked.iter().filter(|(_, on)| *on).map(|(n, _)| n.as_str()).collect();
+    let picked: Vec<&str> = state
+        .import
+        .picked
+        .iter()
+        .filter(|(_, on)| *on)
+        .map(|(n, _)| n.as_str())
+        .collect();
     let mut map: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (binding, on) in &state.import.bindings {
         if !*on {
             continue;
         }
-        let Some(c) = state.consumers.iter().find(|c| &c.binding == binding) else { continue };
+        let Some(c) = state.consumers.iter().find(|c| &c.binding == binding) else {
+            continue;
+        };
         if picked.contains(&c.wants.as_str()) {
-            map.entry(c.wants.clone()).or_default().push(binding.clone());
+            map.entry(c.wants.clone())
+                .or_default()
+                .push(binding.clone());
         }
     }
     map
 }
 
 fn noun(n: usize) -> &'static str {
-    if n == 1 {
-        "name"
-    } else {
-        "names"
-    }
+    if n == 1 { "name" } else { "names" }
 }
 
 pub fn import_card<'a>(state: &'a State) -> Element<'a, Msg> {
@@ -399,36 +505,78 @@ pub fn import_card<'a>(state: &'a State) -> Element<'a, Msg> {
         ui::btn("Choose a .env file", None, ui::Kind::Secondary, gate(state.busy, Msg::ImportPick)),
     ];
     match &imp.source {
-        None => items.push(ui::faint("Choose a file to see its names. Values are never shown.").into()),
+        None => {
+            items.push(ui::faint("Choose a file to see its names. Values are never shown.").into())
+        }
         Some(source) => {
             let total = imp.picked.len();
-            items.push(ui::faint(format!("{source}: {total} {} found. Values are not shown.", noun(total))).into());
+            items.push(
+                ui::faint(format!(
+                    "{source}: {total} {} found. Values are not shown.",
+                    noun(total)
+                ))
+                .into(),
+            );
             if !imp.invalid.is_empty() {
-                items.push(ui::faint(format!("Not valid names, so skipped: {}", imp.invalid.join(", "))).into());
+                items.push(
+                    ui::faint(format!(
+                        "Not valid names, so skipped: {}",
+                        imp.invalid.join(", ")
+                    ))
+                    .into(),
+                );
             }
             if imp.skipped_lines > 0 {
-                let lines = if imp.skipped_lines == 1 { "line" } else { "lines" };
-                items.push(ui::faint(format!("{} unreadable {lines} skipped (no name, or no \"=\").", imp.skipped_lines)).into());
+                let lines = if imp.skipped_lines == 1 {
+                    "line"
+                } else {
+                    "lines"
+                };
+                items.push(
+                    ui::faint(format!(
+                        "{} unreadable {lines} skipped (no name, or no \"=\").",
+                        imp.skipped_lines
+                    ))
+                    .into(),
+                );
             }
             for (i, (name, on)) in imp.picked.iter().enumerate() {
-                items.push(checkbox(*on).label(name.clone()).on_toggle(move |v| Msg::ImportName(i, v)).into());
+                items.push(
+                    checkbox(*on)
+                        .label(name.clone())
+                        .on_toggle(move |v| Msg::ImportName(i, v))
+                        .into(),
+                );
             }
             items.push(
                 row(vec![
                     ui::label("Scope").into(),
-                    pick_list(vec![ScopeMode::Plaza, ScopeMode::Nodes], Some(imp.scope), Msg::ImportScope).into(),
+                    pick_list(
+                        vec![ScopeMode::Plaza, ScopeMode::Nodes],
+                        Some(imp.scope),
+                        Msg::ImportScope,
+                    )
+                    .into(),
                 ])
                 .spacing(12)
                 .into(),
             );
             if imp.scope == ScopeMode::Nodes {
                 for (i, (id, on)) in imp.nodes.iter().enumerate() {
-                    items.push(checkbox(*on).label(node_name(&state.nodes, id)).on_toggle(move |v| Msg::ImportNode(i, v)).into());
+                    items.push(
+                        checkbox(*on)
+                            .label(node_name(&state.nodes, id))
+                            .on_toggle(move |v| Msg::ImportNode(i, v))
+                            .into(),
+                    );
                 }
             }
             items.push(ui::label("Bindings").into());
             if imp.bindings.is_empty() {
-                items.push(ui::faint("Nothing asks for a secret yet. The names import without bindings.").into());
+                items.push(
+                    ui::faint("Nothing asks for a secret yet. The names import without bindings.")
+                        .into(),
+                );
             }
             for (i, (binding, on)) in imp.bindings.iter().enumerate() {
                 let label = match state.consumers.iter().find(|c| &c.binding == binding) {
@@ -436,12 +584,22 @@ pub fn import_card<'a>(state: &'a State) -> Element<'a, Msg> {
                     Some(c) => c.label.clone(),
                     None => binding.clone(),
                 };
-                items.push(checkbox(*on).label(label).on_toggle(move |v| Msg::ImportBinding(i, v)).into());
+                items.push(
+                    checkbox(*on)
+                        .label(label)
+                        .on_toggle(move |v| Msg::ImportBinding(i, v))
+                        .into(),
+                );
             }
             items.push(
                 row(vec![
                     ui::btn("Clear", None, ui::Kind::Ghost, Some(Msg::ImportClear)),
-                    ui::btn(&format!("Import {picked} {}", noun(picked)), None, ui::Kind::Primary, gate(state.busy || picked == 0, Msg::ImportSubmit)),
+                    ui::btn(
+                        &format!("Import {picked} {}", noun(picked)),
+                        None,
+                        ui::Kind::Primary,
+                        gate(state.busy || picked == 0, Msg::ImportSubmit),
+                    ),
                 ])
                 .spacing(12)
                 .into(),
@@ -453,7 +611,12 @@ pub fn import_card<'a>(state: &'a State) -> Element<'a, Msg> {
         let line = if names.is_empty() {
             "Nothing was imported.".to_string()
         } else {
-            format!("Imported {} {}: {}.", names.len(), noun(names.len()), names.join(", "))
+            format!(
+                "Imported {} {}: {}.",
+                names.len(),
+                noun(names.len()),
+                names.join(", ")
+            )
         };
         items.push(ui::faint(line).into());
         for s in &result.skipped {
@@ -479,20 +642,37 @@ mod tests {
         assert_eq!(page.entries[0].name.as_deref(), Some("API_KEY"));
         assert_eq!(page.entries[0].node.as_deref(), Some("n1"));
         assert_eq!(page.chain_ok, Some(false));
-        assert_eq!(parse_audit(json!({ "entries": [] })).unwrap().chain_ok, None);
+        assert_eq!(
+            parse_audit(json!({ "entries": [] })).unwrap().chain_ok,
+            None
+        );
     }
 
     #[test]
     fn vault_audit_chain_message_names_the_broken_entry() {
-        assert_eq!(chain_message(true, Some(5), None), "Chain intact: 5 entries verified");
-        let broken = BrokenEntry { index: 2, seq: Some(3), expected: "a".into(), found: "b".into() };
-        assert_eq!(chain_message(false, Some(2), Some(&broken)), "Chain broken at entry #2 (seq 3): 2 entries verified before it");
+        assert_eq!(
+            chain_message(true, Some(5), None),
+            "Chain intact: 5 entries verified"
+        );
+        let broken = BrokenEntry {
+            index: 2,
+            seq: Some(3),
+            expected: "a".into(),
+            found: "b".into(),
+        };
+        assert_eq!(
+            chain_message(false, Some(2), Some(&broken)),
+            "Chain broken at entry #2 (seq 3): 2 entries verified before it"
+        );
     }
 
     #[test]
     fn vault_audit_paths_page_and_verify() {
         assert_eq!(audit_path(50, false), "/v1/vault/audit?after=50&limit=50");
-        assert_eq!(audit_path(0, true), "/v1/vault/audit?after=0&limit=50&verify=1");
+        assert_eq!(
+            audit_path(0, true),
+            "/v1/vault/audit?after=0&limit=50&verify=1"
+        );
     }
 
     #[test]
@@ -515,7 +695,12 @@ mod tests {
         assert_eq!(valid, vec!["API_KEY".to_string(), "DB_URL".to_string()]);
         assert_eq!(invalid, vec!["lower".to_string()]);
         assert_eq!(skipped, 1);
-        let body = import_body(raw, &["DB_URL".to_string()], json!({ "kind": "plaza" }), &BTreeMap::new());
+        let body = import_body(
+            raw,
+            &["DB_URL".to_string()],
+            json!({ "kind": "plaza" }),
+            &BTreeMap::new(),
+        );
         assert_eq!(body["format"], "dotenv");
         assert_eq!(body["text"], "DB_URL=postgres://x");
         assert_eq!(body["scope"]["kind"], "plaza");

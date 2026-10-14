@@ -10,11 +10,11 @@
 
 mod aisle;
 mod board_grid;
-mod scene;
 mod columns;
 mod geom;
 mod mouth;
 mod rooms;
+mod scene;
 mod surfaces;
 #[cfg(test)]
 mod tests;
@@ -23,22 +23,22 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::hardware::{eval_when, parse_when, Library, Model, Part};
-use crate::grid::{Grid, NAV_CELL, NAV_STEP};
-use crate::navgrid::{self, landing_clear_at, Slab};
-use crate::walk::{SurfaceKind, WalkSet};
-use std::cmp::Ordering;
 use crate::Board;
-use aisle::{exit_of, gangway_of, open_share, perimeter_open, Site};
+use crate::grid::{Grid, NAV_CELL, NAV_STEP};
+use crate::hardware::{Library, Model, Part, eval_when, parse_when};
+use crate::navgrid::{self, Slab, landing_clear_at};
+use crate::walk::{SurfaceKind, WalkSet};
+use aisle::{Site, exit_of, gangway_of, open_share, perimeter_open};
 use board_grid::board_grid;
-pub use scene::{nav_scene, room_plan, NavScene, RoomPlan};
 use columns::Lattice;
-use geom::{belongs, segment_blocked, Frame, Rect};
-use mouth::{mouth, Mouth};
-use rooms::{Aisle, Cell, Config, MinTable, AISLE, RAMP_DEPTH, ROOM_SHARE};
+use geom::{Frame, Rect, belongs, segment_blocked};
+use mouth::{Mouth, mouth};
+use rooms::{AISLE, Aisle, Cell, Config, MinTable, RAMP_DEPTH, ROOM_SHARE};
+pub use scene::{NavScene, RoomPlan, nav_scene, room_plan};
+use std::cmp::Ordering;
 use surfaces::{Assembly, PlateGeo, RoomGeo};
 
-pub use aisle::{Exit, ExitKind, Gap, Gangway};
+pub use aisle::{Exit, ExitKind, Gangway, Gap};
 pub use mouth::MouthIds;
 pub use rooms::Family;
 
@@ -61,7 +61,8 @@ const OCCLUSION_SHARE: f64 = 1.0 / 3.0;
 /// The reason a slot's aisle strip is blocked in every configuration (REASON_TALL).
 const REASON_TALL: &str = "a part stands over the aisle strip of every configuration";
 /// The reason a room cannot reach the main component through its plate (board-layout.ts REASON_ROOM).
-const REASON_ROOM: &str = "a room cannot reach its door through this plate with its furniture in place";
+const REASON_ROOM: &str =
+    "a room cannot reach its door through this plate with its furniture in place";
 
 /// An agent the layout seats.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -322,7 +323,14 @@ pub fn layout(board_kind: &str, input: &LayoutInput) -> Layout {
     let mut merged = model.params.clone().unwrap_or_default();
     merged.extend(params);
     let ground = ground_targets(&board, model);
-    let ctx = Ctx { board: &board, model, kind: board_kind, params: merged, table: rooms::min_table(), ground };
+    let ctx = Ctx {
+        board: &board,
+        model,
+        kind: board_kind,
+        params: merged,
+        table: rooms::min_table(),
+        ground,
+    };
     let mut s = 1.0;
     let mut last = String::new();
     // The smallest scale's layout that seats everyone but leaves some plate's exit off the main walk, and the scales tried
@@ -359,7 +367,11 @@ pub fn layout(board_kind: &str, input: &LayoutInput) -> Layout {
             }
         }
         // Of the passes that seat everyone in parts, the one with the most lifts (the most plates the walk reaches).
-        if pass.layout.homes.len() == input.agents.len() && partial.as_ref().is_none_or(|(l, _)| pass.layout.lifts.len() > l.lifts.len()) {
+        if pass.layout.homes.len() == input.agents.len()
+            && partial
+                .as_ref()
+                .is_none_or(|(l, _)| pass.layout.lifts.len() > l.lifts.len())
+        {
             let tried = partial.as_ref().map_or(0, |(_, t)| *t);
             partial = Some((pass.layout.clone(), tried));
         }
@@ -391,7 +403,11 @@ pub fn layout(board_kind: &str, input: &LayoutInput) -> Layout {
             pass.layout.plates.len(),
             pass.layout.homes.len(),
             pass.rejected,
-            pass.layout.unusable.iter().map(|u| u.reason.as_str()).collect::<Vec<_>>()
+            pass.layout
+                .unusable
+                .iter()
+                .map(|u| u.reason.as_str())
+                .collect::<Vec<_>>()
         );
         s *= BOARD_SCALE_STEP;
     }
@@ -416,7 +432,10 @@ const REASON_ENCLOSED: &str = "enclosed: no walk path leaves the plate on any si
 
 /// The reason for an aisle that finds no exit within LANDING_REACH cells of the main component.
 fn reason_perimeter() -> String {
-    format!("no perimeter point within {} cells of the main component", aisle::LANDING_REACH)
+    format!(
+        "no perimeter point within {} cells of the main component",
+        aisle::LANDING_REACH
+    )
 }
 
 /// The per-layout inputs every scale shares: the board, its model, the merged params (the model's own, then the
@@ -497,7 +516,10 @@ fn sample_max(sup: &dyn Fn(f64, f64) -> f64, rect: [f64; 4]) -> f64 {
     let mut top = 0.0_f64;
     for i in 0..5 {
         for j in 0..5 {
-            top = top.max(sup(x0 + (i as f64 + 0.5) / 5.0 * w, z0 + (j as f64 + 0.5) / 5.0 * d));
+            top = top.max(sup(
+                x0 + (i as f64 + 0.5) / 5.0 * w,
+                z0 + (j as f64 + 0.5) / 5.0 * d,
+            ));
         }
     }
     top
@@ -505,7 +527,12 @@ fn sample_max(sup: &dyn Fn(f64, f64) -> f64, rect: [f64; 4]) -> f64 {
 
 /// The parts hidden by their own or an ancestor's `when` (buildModel draws them): an unparseable one hides.
 fn hidden_ids(parts: &[Part], params: &BTreeMap<String, f64>) -> BTreeSet<String> {
-    fn walk(parts: &[Part], dark: bool, params: &BTreeMap<String, f64>, out: &mut BTreeSet<String>) {
+    fn walk(
+        parts: &[Part],
+        dark: bool,
+        params: &BTreeMap<String, f64>,
+        out: &mut BTreeSet<String>,
+    ) {
         for p in parts {
             let mut off = dark;
             if let Some(expr) = &p.when {
@@ -550,11 +577,18 @@ fn tall_on(b: &PartBox, strip: [f64; 4], top: f64) -> bool {
 fn blocked_share(cand: &Cand, cam: [f64; 3], boxes: &[PartBox]) -> f64 {
     let [x, z, w, d] = cand.rect;
     let n = OCCLUSION_GRID;
-    let others: Vec<&PartBox> = boxes.iter().filter(|b| !belongs(b.name, &cand.on)).collect();
+    let others: Vec<&PartBox> = boxes
+        .iter()
+        .filter(|b| !belongs(b.name, &cand.on))
+        .collect();
     let mut blocked = 0;
     for i in 0..n {
         for j in 0..n {
-            let to = [x + w * (i as f64 + 0.5) / n as f64, cand.top + OCCLUSION_HEIGHT, z + d * (j as f64 + 0.5) / n as f64];
+            let to = [
+                x + w * (i as f64 + 0.5) / n as f64,
+                cand.top + OCCLUSION_HEIGHT,
+                z + d * (j as f64 + 0.5) / n as f64,
+            ];
             if others.iter().any(|b| segment_blocked(cam, to, b.lo, b.hi)) {
                 blocked += 1;
             }
@@ -573,9 +607,26 @@ fn outside_strip(f: &Frame, cfg: &Config) -> [f64; 4] {
 }
 
 /// The exit site of a candidate's configuration (the plate, its frame, its rise and its configuration key).
-fn site_of<'a>(c: &Cand, f: Frame, cfg: &Config, pcb_top: f64, tall: &'a dyn Fn([f64; 4]) -> bool) -> Site<'a> {
-    let ck = format!("{}|{}{:.3}", c.id, if cfg.double { 'D' } else { 'S' }, cfg.aisle[0]);
-    Site { rect: c.rect, f, rise: c.top - pcb_top, ck, tall }
+fn site_of<'a>(
+    c: &Cand,
+    f: Frame,
+    cfg: &Config,
+    pcb_top: f64,
+    tall: &'a dyn Fn([f64; 4]) -> bool,
+) -> Site<'a> {
+    let ck = format!(
+        "{}|{}{:.3}",
+        c.id,
+        if cfg.double { 'D' } else { 'S' },
+        cfg.aisle[0]
+    );
+    Site {
+        rect: c.rect,
+        f,
+        rise: c.top - pcb_top,
+        ck,
+        tall,
+    }
 }
 
 /// The aisle a plate's candidate takes (board-layout.ts planAisle): the configurations are the double first (when it is
@@ -584,25 +635,68 @@ fn site_of<'a>(c: &Cand, f: Frame, cfg: &Config, pcb_top: f64, tall: &'a dyn Fn(
 /// configuration first, then the gangways). A candidate in `excluded` (its slot, or the exit keys the layout rejected) is
 /// not used. An error names why no configuration works.
 #[allow(clippy::too_many_arguments)]
-fn plan_aisle(ci: usize, c: &Cand, boxes: &[PartBox], row_min: f64, grid: &Grid, main: i32, pcb_top: f64, excluded: &BTreeSet<String>) -> Result<(Aisle, Exit), String> {
+fn plan_aisle(
+    ci: usize,
+    c: &Cand,
+    boxes: &[PartBox],
+    row_min: f64,
+    grid: &Grid,
+    main: i32,
+    pcb_top: f64,
+    excluded: &BTreeSet<String>,
+) -> Result<(Aisle, Exit), String> {
     if excluded.contains(&format!("slot|{}", c.id)) {
         return Err(REASON_ROOM.to_string());
     }
     let f = Frame::of(c.rect);
-    let (doubles, singles): (Vec<Config>, Vec<Config>) = rooms::configs(&f, row_min).into_iter().partition(|cfg| cfg.double);
-    let mut keyed: Vec<(f64, Config)> = singles.into_iter().map(|cfg| (open_share(grid, outside_strip(&f, &cfg)), cfg)).collect();
-    keyed.sort_by(|a, b| if (b.0 - a.0).abs() < 1e-9 { Ordering::Equal } else { b.0.total_cmp(&a.0) });
+    let (doubles, singles): (Vec<Config>, Vec<Config>) = rooms::configs(&f, row_min)
+        .into_iter()
+        .partition(|cfg| cfg.double);
+    let mut keyed: Vec<(f64, Config)> = singles
+        .into_iter()
+        .map(|cfg| (open_share(grid, outside_strip(&f, &cfg)), cfg))
+        .collect();
+    keyed.sort_by(|a, b| {
+        if (b.0 - a.0).abs() < 1e-9 {
+            Ordering::Equal
+        } else {
+            b.0.total_cmp(&a.0)
+        }
+    });
     let mut configs = doubles;
     configs.extend(keyed.into_iter().map(|(_, cfg)| cfg));
     let tall = |r: [f64; 4]| boxes.iter().any(|b| tall_on(b, r, c.top));
-    let clear: Vec<Config> = configs.into_iter().filter(|cfg| !tall(f.rect(0.0, f.l, cfg.aisle[0], cfg.aisle[1]))).collect();
+    let clear: Vec<Config> = configs
+        .into_iter()
+        .filter(|cfg| !tall(f.rect(0.0, f.l, cfg.aisle[0], cfg.aisle[1])))
+        .collect();
     if clear.is_empty() {
         return Err(REASON_TALL.to_string());
     }
     let found = clear
         .iter()
-        .find_map(|cfg| exit_of(&site_of(c, f, cfg, pcb_top, &tall), cfg, grid, main, excluded).map(|e| (cfg, e)))
-        .or_else(|| clear.iter().find_map(|cfg| gangway_of(&site_of(c, f, cfg, pcb_top, &tall), cfg, grid, main, excluded).map(|e| (cfg, e))));
+        .find_map(|cfg| {
+            exit_of(
+                &site_of(c, f, cfg, pcb_top, &tall),
+                cfg,
+                grid,
+                main,
+                excluded,
+            )
+            .map(|e| (cfg, e))
+        })
+        .or_else(|| {
+            clear.iter().find_map(|cfg| {
+                gangway_of(
+                    &site_of(c, f, cfg, pcb_top, &tall),
+                    cfg,
+                    grid,
+                    main,
+                    excluded,
+                )
+                .map(|e| (cfg, e))
+            })
+        });
     match found {
         Some((cfg, exit)) => {
             let mut rows = cfg.rows.clone();
@@ -610,8 +704,19 @@ fn plan_aisle(ci: usize, c: &Cand, boxes: &[PartBox], row_min: f64, grid: &Grid,
                 rows[g.row].gap = Some(g.span);
             }
             let un = f.vec(1.0, 0.0);
-            let end_side = if exit.spur.is_some() { 0.0 } else { exit.dir[0] * un[0] + exit.dir[1] * un[1] };
-            let aisle = Aisle { cand: ci, f, rows, double: cfg.double, cap: c.capacity as usize, end_side };
+            let end_side = if exit.spur.is_some() {
+                0.0
+            } else {
+                exit.dir[0] * un[0] + exit.dir[1] * un[1]
+            };
+            let aisle = Aisle {
+                cand: ci,
+                f,
+                rows,
+                double: cfg.double,
+                cap: c.capacity as usize,
+                end_side,
+            };
             Ok((aisle, exit))
         }
         None if !perimeter_open(grid, &f) => Err(REASON_ENCLOSED.to_string()),
@@ -636,11 +741,15 @@ impl Fill<'_> {
     /// The aisle a room goes to (board-layout.ts place): the orchestrator takes the open aisle nearest the atom; any
     /// other room the open aisle with the lowest fill, the family's preferred slot type breaking a tie.
     fn place(&self, family: Family, centre: bool, m: f64, atom: [f64; 2]) -> Option<usize> {
-        let open: Vec<usize> = (0..self.aisles.len()).filter(|&i| self.load[i] < self.holds_at(i, m)).collect();
+        let open: Vec<usize> = (0..self.aisles.len())
+            .filter(|&i| self.load[i] < self.holds_at(i, m))
+            .collect();
         let rect = |i: usize| self.cands[self.aisles[i].cand].rect;
         if centre {
             return open.into_iter().reduce(|best, i| {
-                if rect_distance(rect(i), atom[0], atom[1]) < rect_distance(rect(best), atom[0], atom[1]) {
+                if rect_distance(rect(i), atom[0], atom[1])
+                    < rect_distance(rect(best), atom[0], atom[1])
+                {
                     i
                 } else {
                     best
@@ -649,7 +758,8 @@ impl Fill<'_> {
         }
         let fill = |i: usize| self.load[i] as f64 / self.holds_at(i, m).max(1) as f64;
         let preferred = |i: usize| {
-            if rooms::family_types(family).contains(&self.cands[self.aisles[i].cand].kind.as_str()) {
+            if rooms::family_types(family).contains(&self.cands[self.aisles[i].cand].kind.as_str())
+            {
                 0
             } else {
                 1
@@ -658,11 +768,7 @@ impl Fill<'_> {
         open.into_iter().reduce(|best, i| {
             let (fi, fb) = (fill(i), fill(best));
             if (fi - fb).abs() > 1e-9 {
-                if fi < fb {
-                    i
-                } else {
-                    best
-                }
+                if fi < fb { i } else { best }
             } else if preferred(i) < preferred(best) {
                 i
             } else {
@@ -697,30 +803,57 @@ fn scale_setup<'a>(ctx: &Ctx<'a>, s: f64) -> ScaleSetup<'a> {
     let (board, model, p) = (ctx.board, ctx.model, &ctx.params);
     let scale3 = |v: [f64; 3]| [v[0] * s, v[1] * s, v[2] * s];
     let pcb_top = p.get("pcb_top").copied().unwrap_or(PCB_TOP_DEFAULT) * s;
-    let atom = model.anchors.as_ref().and_then(|a| a.atom).map(scale3).unwrap_or([0.0, pcb_top, 0.0]);
+    let atom = model
+        .anchors
+        .as_ref()
+        .and_then(|a| a.atom)
+        .map(scale3)
+        .unwrap_or([0.0, pcb_top, 0.0]);
     let hidden = hidden_ids(&model.parts, p);
     // Every part's box (board-layout.ts scaleBoxes(partBoxes)): the camera's view, the aisles' tall test, the planning grid
     // and the nav grid all read them, the fitted GPU cards and the attached parts included.
-    let boxes: Vec<PartBox<'a>> = board.part_boxes().iter().map(|it| PartBox { name: &it.name, lo: scale3(it.bounds.min), hi: scale3(it.bounds.max) }).collect();
+    let boxes: Vec<PartBox<'a>> = board
+        .part_boxes()
+        .iter()
+        .map(|it| PartBox {
+            name: &it.name,
+            lo: scale3(it.bounds.min),
+            hi: scale3(it.bounds.max),
+        })
+        .collect();
 
     // The slots the default camera sees, on a part that shows; an explicit `occluded` overrides the camera's view.
-    let camera = model.anchors.as_ref().and_then(|a| a.camera.as_ref()).map(|c| scale3(c.at));
+    let camera = model
+        .anchors
+        .as_ref()
+        .and_then(|a| a.camera.as_ref())
+        .map(|c| scale3(c.at));
     let mut visible = Vec::new();
     for (i, sl) in model.slots.as_deref().unwrap_or(&[]).iter().enumerate() {
         let cand = Cand {
             id: sl.id.clone(),
             on: sl.on.clone(),
             kind: sl.kind.clone(),
-            rect: [sl.rect[0] * s, sl.rect[1] * s, sl.rect[2] * s, sl.rect[3] * s],
+            rect: [
+                sl.rect[0] * s,
+                sl.rect[1] * s,
+                sl.rect[2] * s,
+                sl.rect[3] * s,
+            ],
             top: ctx.ground[i] * s,
             capacity: sl.capacity,
         };
         // The camera test samples just above the slot's own top in the model (board-layout.ts slotBlockedShare uses
         // `slot.top`), not its ground: a slot under a GPU card grounds on the card, and rays from up there are never blocked.
-        let seen_from = Cand { top: sl.top * s, ..cand.clone() };
+        let seen_from = Cand {
+            top: sl.top * s,
+            ..cand.clone()
+        };
         let occluded = match sl.occluded {
             Some(b) => b,
-            None => camera.is_some_and(|cam| blocked_share(&seen_from, cam, &boxes) > OCCLUSION_SHARE),
+            None => {
+                camera.is_some_and(|cam| blocked_share(&seen_from, cam, &boxes) > OCCLUSION_SHARE)
+            }
         };
         if !hidden.contains(&sl.on) && !occluded {
             visible.push(cand);
@@ -741,13 +874,23 @@ fn scale_setup<'a>(ctx: &Ctx<'a>, s: f64) -> ScaleSetup<'a> {
     };
 
     // The planning grid: the board-only nav grid over the PCB, the part boxes and the candidate plates (board_grid.rs).
-    let pcb = Rect { x0: -size[0] / 2.0, z0: -size[1] / 2.0, x1: size[0] / 2.0, z1: size[1] / 2.0 };
+    let pcb = Rect {
+        x0: -size[0] / 2.0,
+        z0: -size[1] / 2.0,
+        x1: size[0] / 2.0,
+        z1: size[1] / 2.0,
+    };
     // The walk's holes are the parts the grid blocks (nav-grid.ts rule 4 on the PCB): every part box standing more than
     // NAV_STEP above it, as the planning grid takes them.
     let tall: Vec<Rect> = boxes
         .iter()
         .filter(|b| b.hi[1] - pcb_top > NAV_STEP)
-        .map(|b| Rect { x0: b.lo[0], z0: b.lo[2], x1: b.hi[0], z1: b.hi[2] })
+        .map(|b| Rect {
+            x0: b.lo[0],
+            z0: b.lo[2],
+            x1: b.hi[0],
+            z1: b.hi[2],
+        })
         .collect();
     let plate_list: Vec<([f64; 4], f64)> = cands.iter().map(|c| (c.rect, c.top)).collect();
     // Every part box counts here (board-layout.ts navBoardOf takes partBoxes), the GPU cards and attached parts too.
@@ -757,16 +900,44 @@ fn scale_setup<'a>(ctx: &Ctx<'a>, s: f64) -> ScaleSetup<'a> {
 
     let sup_at = |x: f64, z: f64| s * board.support_below(x / s, z / s, f64::INFINITY);
     let lattices: Vec<Lattice> = cands.iter().map(|c| Lattice::of(c.rect, &sup_at)).collect();
-    ScaleSetup { s, pcb, pcb_top, atom, size, boxes, parts, tall, cands, grid0, main, lattices }
+    ScaleSetup {
+        s,
+        pcb,
+        pcb_top,
+        atom,
+        size,
+        boxes,
+        parts,
+        tall,
+        cands,
+        grid0,
+        main,
+        lattices,
+    }
 }
 
 /// One layout pass at the setup's scale with the `excluded` keys left out (board-layout.ts layoutAtScale, without the
 /// exits and the acceptance's walk). Each pass plans the aisles again, since the excluded keys change them.
-fn at_scale(ctx: &Ctx, input: &LayoutInput, setup: &ScaleSetup, excluded: &BTreeSet<String>) -> Pass {
+fn at_scale(
+    ctx: &Ctx,
+    input: &LayoutInput,
+    setup: &ScaleSetup,
+    excluded: &BTreeSet<String>,
+) -> Pass {
     let table = &ctx.table;
     let (s, pcb, pcb_top, atom, size) = (setup.s, setup.pcb, setup.pcb_top, setup.atom, setup.size);
-    let (boxes, tall, cands, grid0, main) = (&setup.boxes, &setup.tall, &setup.cands, &setup.grid0, setup.main);
-    let roles: Vec<(&str, bool)> = input.agents.iter().map(|a| (a.role.as_str(), a.role == rooms::ORCHESTRATOR)).collect();
+    let (boxes, tall, cands, grid0, main) = (
+        &setup.boxes,
+        &setup.tall,
+        &setup.cands,
+        &setup.grid0,
+        setup.main,
+    );
+    let roles: Vec<(&str, bool)> = input
+        .agents
+        .iter()
+        .map(|a| (a.role.as_str(), a.role == rooms::ORCHESTRATOR))
+        .collect();
     let row_min = rooms::typical_row_depth(&roles, table);
     let mut aisles = Vec::new();
     let mut exits = Vec::new();
@@ -777,7 +948,10 @@ fn at_scale(ctx: &Ctx, input: &LayoutInput, setup: &ScaleSetup, excluded: &BTree
                 aisles.push(a);
                 exits.push(e);
             }
-            Err(reason) => unusable.push(UnusableSlot { slot: c.id.clone(), reason }),
+            Err(reason) => unusable.push(UnusableSlot {
+                slot: c.id.clone(),
+                reason,
+            }),
         }
     }
     let n = aisles.len();
@@ -805,11 +979,19 @@ fn at_scale(ctx: &Ctx, input: &LayoutInput, setup: &ScaleSetup, excluded: &BTree
         if roles[i].1 {
             continue;
         }
-        let key = if a.role.is_empty() { format!("unnamed:{}", a.id) } else { a.role.clone() };
+        let key = if a.role.is_empty() {
+            format!("unnamed:{}", a.id)
+        } else {
+            a.role.clone()
+        };
         groups.entry(key).or_default().push(i);
     }
     for (key, members) in groups {
-        let role = if key.starts_with("unnamed:") { "other".to_string() } else { key };
+        let role = if key.starts_with("unnamed:") {
+            "other".to_string()
+        } else {
+            key
+        };
         let family = rooms::family_of(&role);
         requests.push((role, family, members, false));
     }
@@ -818,17 +1000,32 @@ fn at_scale(ctx: &Ctx, input: &LayoutInput, setup: &ScaleSetup, excluded: &BTree
     let mut seats = Vec::with_capacity(requests.len());
     for (role, family, members, centre) in requests {
         let m = rooms::minimum_side(&role, members.len(), table).unwrap_or(0.0);
-        let slot = Fill { aisles: &aisles, cands, load: &load, need: &need }.place(family, centre, m, [atom[0], atom[2]]);
+        let slot = Fill {
+            aisles: &aisles,
+            cands,
+            load: &load,
+            need: &need,
+        }
+        .place(family, centre, m, [atom[0], atom[2]]);
         if let Some(i) = slot {
             load[i] += 1;
             need[i] = need[i].max(rooms::cell_need_of(m));
         }
-        seats.push(Seat { role, family, members, centre, slot, min_side: m });
+        seats.push(Seat {
+            role,
+            family,
+            members,
+            centre,
+            slot,
+            min_side: m,
+        });
     }
 
     // Rooms: the orchestrator takes the cell nearest the atom; the others take the first free cell. A seat with no free
     // cell is joined below, as a seat with no slot is.
-    let cells: Vec<Vec<Cell>> = (0..n).map(|i| rooms::room_cells(&aisles[i], need[i])).collect();
+    let cells: Vec<Vec<Cell>> = (0..n)
+        .map(|i| rooms::room_cells(&aisles[i], need[i]))
+        .collect();
     let mut taken: Vec<BTreeSet<usize>> = vec![BTreeSet::new(); n];
     let mut built: Vec<Built> = Vec::new();
     let mut unseated: Vec<usize> = Vec::new();
@@ -837,9 +1034,16 @@ fn at_scale(ctx: &Ctx, input: &LayoutInput, setup: &ScaleSetup, excluded: &BTree
             unseated.push(si);
             continue;
         };
-        let free: Vec<usize> = (0..cells[i].len()).filter(|k| !taken[i].contains(k)).collect();
+        let free: Vec<usize> = (0..cells[i].len())
+            .filter(|k| !taken[i].contains(k))
+            .collect();
         let dist = |k: usize| (cells[i][k].cx - atom[0]).hypot(cells[i][k].cz - atom[2]);
-        let pick = if seat.centre { free.into_iter().reduce(|best, k| if dist(k) < dist(best) { k } else { best }) } else { free.first().copied() };
+        let pick = if seat.centre {
+            free.into_iter()
+                .reduce(|best, k| if dist(k) < dist(best) { k } else { best })
+        } else {
+            free.first().copied()
+        };
         let Some(k) = pick else {
             unseated.push(si);
             continue;
@@ -863,7 +1067,8 @@ fn at_scale(ctx: &Ctx, input: &LayoutInput, setup: &ScaleSetup, excluded: &BTree
         if built.is_empty() {
             break;
         }
-        let pref = (0..n).find(|&i| rooms::family_types(seat.family).contains(&aisle_cand(i).kind.as_str()));
+        let pref = (0..n)
+            .find(|&i| rooms::family_types(seat.family).contains(&aisle_cand(i).kind.as_str()));
         let (px, pz) = match pref {
             Some(i) => {
                 let c = centre_of(aisle_cand(i).rect);
@@ -872,19 +1077,32 @@ fn at_scale(ctx: &Ctx, input: &LayoutInput, setup: &ScaleSetup, excluded: &BTree
             None => (atom[0], atom[2]),
         };
         let dist = |slot: usize| rect_distance(aisle_cand(slot).rect, px, pz);
-        let fits_seat = |b: &Built| b.members.len() + seat.members.len() <= rooms::desk_cap(&b.role, b.cell.w, b.cell.d, table);
-        let mut order: Vec<usize> = (0..built.len()).filter(|&b| rooms::family_of(&built[b].role) == seat.family).collect();
-        order.sort_by(|&x, &y| dist(built[x].slot).total_cmp(&dist(built[y].slot)).then_with(|| built[x].role.cmp(&built[y].role)));
+        let fits_seat = |b: &Built| {
+            b.members.len() + seat.members.len()
+                <= rooms::desk_cap(&b.role, b.cell.w, b.cell.d, table)
+        };
+        let mut order: Vec<usize> = (0..built.len())
+            .filter(|&b| rooms::family_of(&built[b].role) == seat.family)
+            .collect();
+        order.sort_by(|&x, &y| {
+            dist(built[x].slot)
+                .total_cmp(&dist(built[y].slot))
+                .then_with(|| built[x].role.cmp(&built[y].role))
+        });
         let host = match order.iter().copied().find(|&b| fits_seat(&built[b])) {
             Some(b) => b,
             None => {
-                let spare = (0..built.len()).filter(|&b| fits_seat(&built[b])).reduce(|best, b| {
-                    if built[b].cell.w.min(built[b].cell.d) > built[best].cell.w.min(built[best].cell.d) {
-                        b
-                    } else {
-                        best
-                    }
-                });
+                let spare = (0..built.len())
+                    .filter(|&b| fits_seat(&built[b]))
+                    .reduce(|best, b| {
+                        if built[b].cell.w.min(built[b].cell.d)
+                            > built[best].cell.w.min(built[best].cell.d)
+                        {
+                            b
+                        } else {
+                            best
+                        }
+                    });
                 match spare {
                     Some(b) => b,
                     None => continue,
@@ -892,7 +1110,11 @@ fn at_scale(ctx: &Ctx, input: &LayoutInput, setup: &ScaleSetup, excluded: &BTree
             }
         };
         built[host].members.extend(seat.members.iter().copied());
-        let (role, count, old) = (built[host].role.clone(), built[host].members.len(), built[host].min_side);
+        let (role, count, old) = (
+            built[host].role.clone(),
+            built[host].members.len(),
+            built[host].min_side,
+        );
         built[host].min_side = rooms::minimum_side(&role, count, table).unwrap_or(old);
     }
 
@@ -903,22 +1125,41 @@ fn at_scale(ctx: &Ctx, input: &LayoutInput, setup: &ScaleSetup, excluded: &BTree
         let c = b.cell;
         let (turn, door) = rooms::turn_and_door(&c, b.centre);
         let [fx, fz] = c.face;
-        let door_at = if fx.abs() > fz.abs() { [c.cx + fx.signum() * c.w / 2.0, c.cz] } else { [c.cx, c.cz + fz.signum() * c.d / 2.0] };
+        let door_at = if fx.abs() > fz.abs() {
+            [c.cx + fx.signum() * c.w / 2.0, c.cz]
+        } else {
+            [c.cx, c.cz + fz.signum() * c.d / 2.0]
+        };
         let mut members: Vec<usize> = b.members.clone();
         members.sort_by(|&x, &y| input.agents[x].id.cmp(&input.agents[y].id));
         let side = ((members.len() as f64).sqrt().ceil() as usize).max(1);
-        let step = if side > 1 { (0.8 * c.w.min(c.d) / (side - 1) as f64).min(3.0) } else { 0.0 };
+        let step = if side > 1 {
+            (0.8 * c.w.min(c.d) / (side - 1) as f64).min(3.0)
+        } else {
+            0.0
+        };
         let span = step * (side - 1) as f64 / 2.0;
         for (k, &a) in members.iter().enumerate() {
-            let at = [c.cx - span + (k % side) as f64 * step, c.cz - span + (k / side) as f64 * step];
-            homes.push(Home { agent: input.agents[a].id.clone(), room: rid, at });
+            let at = [
+                c.cx - span + (k % side) as f64 * step,
+                c.cz - span + (k / side) as f64 * step,
+            ];
+            homes.push(Home {
+                agent: input.agents[a].id.clone(),
+                room: rid,
+                at,
+            });
         }
         rooms_out.push(Room {
             id: rid,
             role: b.role.clone(),
             family: b.family,
             round: b.centre,
-            hue: if b.centre { rooms::DAIS_HUE } else { rooms::role_hue(&b.role) },
+            hue: if b.centre {
+                rooms::DAIS_HUE
+            } else {
+                rooms::role_hue(&b.role)
+            },
             r: c.w.min(c.d) / 2.0 * ROOM_SHARE,
             centre: [c.cx, c.cz],
             half: [c.w / 2.0, c.d / 2.0],
@@ -929,7 +1170,10 @@ fn at_scale(ctx: &Ctx, input: &LayoutInput, setup: &ScaleSetup, excluded: &BTree
             door,
             door_at,
             aisle_dir: c.face,
-            members: members.iter().map(|&a| input.agents[a].id.clone()).collect(),
+            members: members
+                .iter()
+                .map(|&a| input.agents[a].id.clone())
+                .collect(),
         });
     }
 
@@ -941,11 +1185,31 @@ fn at_scale(ctx: &Ctx, input: &LayoutInput, setup: &ScaleSetup, excluded: &BTree
         let c = aisle_cand(i);
         let (top, highest, leaves) = &plate_geo[i];
         for l in leaves {
-            columns_out.push(Column { plate: i, rect: l.rect, bottom: l.bottom, top: *highest });
+            columns_out.push(Column {
+                plate: i,
+                rect: l.rect,
+                bottom: l.bottom,
+                top: *highest,
+            });
         }
-        plates.push(Plate { id: i, slot: c.id.clone(), rect: c.rect, y: *top, support: *highest, bottom: *highest, exit: Some(exits[i].clone()) });
-        let on_slot: Vec<usize> = rooms_out.iter().filter(|r| r.plate == i).map(|r| r.id).collect();
-        let agents: Vec<String> = on_slot.iter().flat_map(|&r| rooms_out[r].members.clone()).collect();
+        plates.push(Plate {
+            id: i,
+            slot: c.id.clone(),
+            rect: c.rect,
+            y: *top,
+            support: *highest,
+            bottom: *highest,
+            exit: Some(exits[i].clone()),
+        });
+        let on_slot: Vec<usize> = rooms_out
+            .iter()
+            .filter(|r| r.plate == i)
+            .map(|r| r.id)
+            .collect();
+        let agents: Vec<String> = on_slot
+            .iter()
+            .flat_map(|&r| rooms_out[r].members.clone())
+            .collect();
         slots_out.push(LayoutSlot {
             id: c.id.clone(),
             on: c.on.clone(),
@@ -962,18 +1226,34 @@ fn at_scale(ctx: &Ctx, input: &LayoutInput, setup: &ScaleSetup, excluded: &BTree
         .iter()
         .enumerate()
         .filter(|(_, e)| e.kind == ExitKind::Gangway)
-        .map(|(i, e)| Gangway { plate: i, dir: e.dir, bridge: e.bridge.clone(), landing: e.board_at })
+        .map(|(i, e)| Gangway {
+            plate: i,
+            dir: e.dir,
+            bridge: e.bridge.clone(),
+            landing: e.board_at,
+        })
         .collect();
 
     // The walk: each plate's mouth (mouth.rs) where it fits clear of the rooms (with their cliff band), the other plates and
     // the mouths already placed. The mouths give the walk surfaces and the lifts; the acceptance is the web's, below.
-    let plate_geo: Vec<PlateGeo> = (0..n).map(|i| PlateGeo { id: i, rect: Rect::from_xywh(aisle_cand(i).rect), y: plate_top[i] }).collect();
+    let plate_geo: Vec<PlateGeo> = (0..n)
+        .map(|i| PlateGeo {
+            id: i,
+            rect: Rect::from_xywh(aisle_cand(i).rect),
+            y: plate_top[i],
+        })
+        .collect();
     let room_geo: Vec<RoomGeo> = rooms_out
         .iter()
         .map(|r| RoomGeo {
             id: r.id,
             plate: r.plate,
-            rect: Rect { x0: r.centre[0] - r.half[0], z0: r.centre[1] - r.half[1], x1: r.centre[0] + r.half[0], z1: r.centre[1] + r.half[1] },
+            rect: Rect {
+                x0: r.centre[0] - r.half[0],
+                z0: r.centre[1] - r.half[1],
+                x1: r.centre[0] + r.half[0],
+                z1: r.centre[1] + r.half[1],
+            },
             floor_y: r.floor_y,
             door_at: r.door_at,
             face: r.aisle_dir,
@@ -982,11 +1262,17 @@ fn at_scale(ctx: &Ctx, input: &LayoutInput, setup: &ScaleSetup, excluded: &BTree
     let mut mouths: Vec<(usize, Mouth)> = Vec::new();
     let mut accepted: Vec<(usize, Rect)> = Vec::new();
     for (i, e) in exits.iter().enumerate() {
-        let Some(m) = mouth(e, aisle_cand(i).rect, plate_top[i], pcb_top) else { continue };
+        let Some(m) = mouth(e, aisle_cand(i).rect, plate_top[i], pcb_top) else {
+            continue;
+        };
         let footprint = mouth::footprint(&m);
         let clear = footprint.iter().all(|r| {
-            room_geo.iter().all(|rr| !overlaps(r, &grow(&rr.rect, RAMP_DEPTH)))
-                && plate_geo.iter().all(|pg| pg.id == i || !overlaps(r, &pg.rect))
+            room_geo
+                .iter()
+                .all(|rr| !overlaps(r, &grow(&rr.rect, RAMP_DEPTH)))
+                && plate_geo
+                    .iter()
+                    .all(|pg| pg.id == i || !overlaps(r, &pg.rect))
                 && accepted.iter().all(|(j, ar)| *j == i || !overlaps(r, ar))
         });
         if clear {
@@ -994,21 +1280,55 @@ fn at_scale(ctx: &Ctx, input: &LayoutInput, setup: &ScaleSetup, excluded: &BTree
             mouths.push((i, m));
         }
     }
-    let asm = surfaces::assemble(&Assembly { pcb, pcb_top, tall, plates: &plate_geo, rooms: &room_geo, mouths: &mouths });
+    let asm = surfaces::assemble(&Assembly {
+        pcb,
+        pcb_top,
+        tall,
+        plates: &plate_geo,
+        rooms: &room_geo,
+        mouths: &mouths,
+    });
     #[cfg(test)]
     LAST_WALK.with(|w| *w.borrow_mut() = Some(asm.walk.clone()));
 
     // The acceptance (board-layout.ts layoutAtScale and unreachedKeys): a landing must be clear of the rooms (landingClear);
     // once every landing is, the nav grid with the rooms and their furniture in place must reach every plate (its own
     // landing search, rule 6), and every room's door must reach the main component, else the room's slot is taken out.
-    let slabs: Vec<Slab> = rooms_out.iter().map(|r| Slab { cx: r.centre[0], cz: r.centre[1], half: r.half[0].min(r.half[1]), round: r.round }).collect();
+    let slabs: Vec<Slab> = rooms_out
+        .iter()
+        .map(|r| Slab {
+            cx: r.centre[0],
+            cz: r.centre[1],
+            half: r.half[0].min(r.half[1]),
+            round: r.round,
+        })
+        .collect();
     let slot_rects: Vec<[f64; 4]> = (0..n).map(|i| aisle_cand(i).rect).collect();
-    let mut rejected: BTreeSet<String> = exits.iter().filter(|e| !landing_clear(e, &slabs, &slot_rects)).map(|e| e.key.clone()).collect();
+    let mut rejected: BTreeSet<String> = exits
+        .iter()
+        .filter(|e| !landing_clear(e, &slabs, &slot_rects))
+        .map(|e| e.key.clone())
+        .collect();
     if rejected.is_empty() {
-        let slots: Vec<([f64; 4], f64)> = (0..n).map(|i| (aisle_cand(i).rect, aisle_cand(i).top)).collect();
+        let slots: Vec<([f64; 4], f64)> = (0..n)
+            .map(|i| (aisle_cand(i).rect, aisle_cand(i).top))
+            .collect();
         let traces = scene::traces_of(ctx.model, s);
-        let landings: Vec<([f64; 4], f64, &Exit)> = slots.iter().zip(&exits).map(|(&(rect, top), e)| (rect, top, e)).collect();
-        let grid = scene::scene(setup.size, pcb_top, &setup.parts, traces, &landings, &rooms_out, None).grid;
+        let landings: Vec<([f64; 4], f64, &Exit)> = slots
+            .iter()
+            .zip(&exits)
+            .map(|(&(rect, top), e)| (rect, top, e))
+            .collect();
+        let grid = scene::scene(
+            setup.size,
+            pcb_top,
+            &setup.parts,
+            traces,
+            &landings,
+            &rooms_out,
+            None,
+        )
+        .grid;
         let first = rooms_out.len() as i32 + 1;
         for id in &grid.unreached {
             if let Some(e) = exits.get((id - first) as usize) {
@@ -1026,7 +1346,23 @@ fn at_scale(ctx: &Ctx, input: &LayoutInput, setup: &ScaleSetup, excluded: &BTree
     let mut lifts = Vec::new();
     let mut landings = Vec::new();
     for ((plate, m), ids) in mouths.iter().zip(&asm.mouths) {
-        if let (Mouth::Lift { cab, bottom, top, top_kind, door, gangway, bottom_y, top_y, .. }, Some(cab_id), Some(bottom_id), Some(top_id)) = (m, ids.cab, ids.bottom, ids.top) {
+        if let (
+            Mouth::Lift {
+                cab,
+                bottom,
+                top,
+                top_kind,
+                door,
+                gangway,
+                bottom_y,
+                top_y,
+                ..
+            },
+            Some(cab_id),
+            Some(bottom_id),
+            Some(top_id),
+        ) = (m, ids.cab, ids.bottom, ids.top)
+        {
             let _ = (cab, bottom, top);
             lifts.push(Lift {
                 plate: *plate,
@@ -1038,9 +1374,23 @@ fn at_scale(ctx: &Ctx, input: &LayoutInput, setup: &ScaleSetup, excluded: &BTree
                 door: *door,
                 gangway: *gangway,
             });
-            landings.push(Landing { surface: bottom_id, plate: *plate, height: *bottom_y, role: LandingRole::Bottom });
-            let role = if *top_kind == SurfaceKind::Bridge { LandingRole::Bridge } else { LandingRole::Top };
-            landings.push(Landing { surface: top_id, plate: *plate, height: *top_y, role });
+            landings.push(Landing {
+                surface: bottom_id,
+                plate: *plate,
+                height: *bottom_y,
+                role: LandingRole::Bottom,
+            });
+            let role = if *top_kind == SurfaceKind::Bridge {
+                LandingRole::Bridge
+            } else {
+                LandingRole::Top
+            };
+            landings.push(Landing {
+                surface: top_id,
+                plate: *plate,
+                height: *top_y,
+                role,
+            });
         }
     }
     let rejected: Vec<String> = rejected.into_iter().collect();
@@ -1049,7 +1399,12 @@ fn at_scale(ctx: &Ctx, input: &LayoutInput, setup: &ScaleSetup, excluded: &BTree
         board_scale: s,
         pcb_top,
         atom,
-        bounds: Bounds { cx: 0.0, cz: 0.0, w: size[0], d: size[1] },
+        bounds: Bounds {
+            cx: 0.0,
+            cz: 0.0,
+            w: size[0],
+            d: size[1],
+        },
         slots: slots_out,
         unusable,
         plates,
@@ -1068,13 +1423,20 @@ fn at_scale(ctx: &Ctx, input: &LayoutInput, setup: &ScaleSetup, excluded: &BTree
 /// (and a lift's queue) is outside every slab and cliff band, its plate cell outside every slab, and a gangway's bridge
 /// outside every slab (a bridge may cross a band, not a wall).
 fn landing_clear(e: &Exit, slabs: &[Slab], plates: &[[f64; 4]]) -> bool {
-    let on_plate = |x: f64, z: f64| plates.iter().any(|&[px, pz, w, d]| x >= px && x < px + w && z >= pz && z < pz + d);
+    let on_plate = |x: f64, z: f64| {
+        plates
+            .iter()
+            .any(|&[px, pz, w, d]| x >= px && x < px + w && z >= pz && z < pz + d)
+    };
     let [bx, bz] = e.board_at;
     if !landing_clear_at(slabs, bx, bz, on_plate(bx, bz)) {
         return false;
     }
     if e.kind == ExitKind::Gangway {
-        return e.bridge.iter().all(|&[x, z]| landing_clear_at(slabs, x, z, true));
+        return e
+            .bridge
+            .iter()
+            .all(|&[x, z]| landing_clear_at(slabs, x, z, true));
     }
     if !landing_clear_at(slabs, e.plate_at[0], e.plate_at[1], true) {
         return false;
@@ -1095,7 +1457,12 @@ fn overlaps(a: &Rect, b: &Rect) -> bool {
 
 /// A rect grown by `d` on every side.
 fn grow(r: &Rect, d: f64) -> Rect {
-    Rect { x0: r.x0 - d, z0: r.z0 - d, x1: r.x1 + d, z1: r.z1 + d }
+    Rect {
+        x0: r.x0 - d,
+        z0: r.z0 - d,
+        x1: r.x1 + d,
+        z1: r.z1 + d,
+    }
 }
 
 // Test hook: the walk set of the latest grid pass of `layout` on this thread.
@@ -1107,9 +1474,19 @@ thread_local! {
 /// The walk set of the last grid pass of a one-agent layout (the orchestrator) on a board kind, for the grid tests.
 #[cfg(test)]
 pub(crate) fn real_walk(board_kind: &str) -> WalkSet {
-    let agents = vec![AgentSpec { id: "agent-00".to_string(), role: "orchestrator".to_string(), seat_hint: None }];
+    let agents = vec![AgentSpec {
+        id: "agent-00".to_string(),
+        role: "orchestrator".to_string(),
+        seat_hint: None,
+    }];
     // Edge does not seat one agent under the cap, which panics; its last pass still holds a real board's walk.
-    let input = LayoutInput { agents, gpus: 0, scale_cap: 3.0 };
+    let input = LayoutInput {
+        agents,
+        gpus: 0,
+        scale_cap: 3.0,
+    };
     let _ = std::panic::catch_unwind(|| layout(board_kind, &input));
-    LAST_WALK.with(|w| w.borrow_mut().take()).expect("layout runs a grid pass")
+    LAST_WALK
+        .with(|w| w.borrow_mut().take())
+        .expect("layout runs a grid pass")
 }

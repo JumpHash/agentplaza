@@ -3,9 +3,9 @@
 use std::path::PathBuf;
 
 use clap::Subcommand;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use crate::ctx::{self, confirm, Ctx};
+use crate::ctx::{self, Ctx, confirm};
 use crate::rich;
 
 #[derive(Subcommand, Debug)]
@@ -194,7 +194,11 @@ fn short(id: &str) -> String {
 
 /// The pull requests' path: the state, the page (from 1) and the limit (1 to 50).
 fn pulls_path(repo: &str, state: &str, page: u64, limit: u64) -> String {
-    format!("{}?state={}&page={page}&limit={limit}", repo_path(repo, "/pulls"), ctx::seg(state))
+    format!(
+        "{}?state={}&page={page}&limit={limit}",
+        repo_path(repo, "/pulls"),
+        ctx::seg(state)
+    )
 }
 
 /// The URL an agent clones a repository from: the web and the desktop show the same one.
@@ -205,9 +209,14 @@ fn clone_url(org: &str, repo: &str) -> String {
 /// The text of a `--body` (`-` reads stdin) or a `--file`; None when neither is given or it is blank.
 fn text_from(body: Option<String>, file: Option<PathBuf>) -> Result<Option<String>, String> {
     if let Some(file) = file {
-        let text = std::fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display()))?;
+        let text =
+            std::fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display()))?;
         let text = text.trim();
-        return if text.is_empty() { Err("the text is empty".into()) } else { Ok(Some(text.to_string())) };
+        return if text.is_empty() {
+            Err("the text is empty".into())
+        } else {
+            Ok(Some(text.to_string()))
+        };
     }
     match body.filter(|b| !b.trim().is_empty()) {
         Some(body) => ctx::text_arg(&body).map(Some),
@@ -217,12 +226,20 @@ fn text_from(body: Option<String>, file: Option<PathBuf>) -> Result<Option<Strin
 
 /// Every line of `text` after `pad`.
 fn indent(text: &str, pad: &str) -> String {
-    text.lines().map(|line| format!("{pad}{line}")).collect::<Vec<_>>().join("\n")
+    text.lines()
+        .map(|line| format!("{pad}{line}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// One comment as the screen shows it: its author and time, then its body indented.
 fn comment_text(c: &Value) -> String {
-    format!("  {}  {}\n{}", ctx::s(c, "author"), ctx::when(&c["at"]), indent(ctx::s(c, "body"), "    "))
+    format!(
+        "  {}  {}\n{}",
+        ctx::s(c, "author"),
+        ctx::when(&c["at"]),
+        indent(ctx::s(c, "body"), "    ")
+    )
 }
 
 /// What stands between a pull request and a merge: not approved (or changes requested), or not mergeable.
@@ -255,7 +272,8 @@ fn pull_state(p: &Value) -> &str {
 
 /// Why a pull request cannot be reopened: a merged one cannot, since its merge closed it for good.
 fn reopen_refusal(p: &Value, repo: &str, number: u64) -> Option<String> {
-    is_merged(p).then(|| format!("#{number} in {repo} is merged: a merged pull request cannot be reopened"))
+    is_merged(p)
+        .then(|| format!("#{number} in {repo} is merged: a merged pull request cannot be reopened"))
 }
 
 /// Why a pull request cannot be merged again: a merged one is already in the base branch, and Forgejo would only refuse.
@@ -265,8 +283,15 @@ fn merge_refusal(p: &Value, repo: &str, number: u64) -> Option<String> {
 
 /// Closes (`closed`) or reopens (`open`) a pull request and prints it.
 fn change_state(ctx: &Ctx, repo: &str, number: u64, state: &str) -> Result<(), String> {
-    let p = ctx.client.post(&pull_path(repo, number, "/state"), &json!({ "state": state }))?;
-    let verb = if state == "closed" { "closed" } else { "reopened" };
+    let p = ctx.client.post(
+        &pull_path(repo, number, "/state"),
+        &json!({ "state": state }),
+    )?;
+    let verb = if state == "closed" {
+        "closed"
+    } else {
+        "reopened"
+    };
     ctx.out(&p, |_| println!("{verb} #{number} in {repo}"));
     Ok(())
 }
@@ -303,7 +328,10 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
         Cmd::Status => {
             let git = ctx.client.get("/v1/git")?;
             ctx.out(&git, |g| {
-                if g.get("configured").and_then(Value::as_bool).unwrap_or(false) {
+                if g.get("configured")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+                {
                     println!("git host: organisation {}", ctx::s(g, "org"));
                 } else {
                     println!("git host: not configured");
@@ -327,7 +355,17 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                         ]
                     })
                     .collect();
-                ctx::table(&["name", "branch", "open prs", "project", "updated", "description"], &rows);
+                ctx::table(
+                    &[
+                        "name",
+                        "branch",
+                        "open prs",
+                        "project",
+                        "updated",
+                        "description",
+                    ],
+                    &rows,
+                );
             });
             Ok(())
         }
@@ -336,9 +374,18 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             if name.is_empty() {
                 return Err("name the repository".into());
             }
-            let description = description.filter(|d| !d.trim().is_empty()).map(|d| ctx::text_arg(&d)).transpose()?.unwrap_or_default();
-            let repo = ctx.client.post("/v1/git/repos", &json!({ "name": name, "description": description }))?;
-            ctx.out(&repo, |r| println!("created repository {}", ctx::s(r, "name")));
+            let description = description
+                .filter(|d| !d.trim().is_empty())
+                .map(|d| ctx::text_arg(&d))
+                .transpose()?
+                .unwrap_or_default();
+            let repo = ctx.client.post(
+                "/v1/git/repos",
+                &json!({ "name": name, "description": description }),
+            )?;
+            ctx.out(&repo, |r| {
+                println!("created repository {}", ctx::s(r, "name"))
+            });
             Ok(())
         }
         Cmd::Show { repo } => {
@@ -350,8 +397,14 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                 ctx::fields(&[
                     ("name", ctx::s(&info, "name").to_string()),
                     ("description", ctx::s(&info, "description").to_string()),
-                    ("default branch", ctx::s(&info, "default_branch").to_string()),
-                    ("clone", clone_url(ctx::s(&host, "org"), ctx::s(&info, "name"))),
+                    (
+                        "default branch",
+                        ctx::s(&info, "default_branch").to_string(),
+                    ),
+                    (
+                        "clone",
+                        clone_url(ctx::s(&host, "org"), ctx::s(&info, "name")),
+                    ),
                     ("open pull requests", ctx::text(&info, "open_prs")),
                     ("project", ctx::text(&info, "project")),
                     ("updated", ctx::s(&info, "updated_at").to_string()),
@@ -366,8 +419,16 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             ctx.out(&branches, print_branches);
             Ok(())
         }
-        Cmd::Commits { repo, reference, limit } => {
-            let path = format!("{}?ref={}&limit={limit}", repo_path(&repo, "/commits"), ctx::seg(&reference));
+        Cmd::Commits {
+            repo,
+            reference,
+            limit,
+        } => {
+            let path = format!(
+                "{}?ref={}&limit={limit}",
+                repo_path(&repo, "/commits"),
+                ctx::seg(&reference)
+            );
             let commits = ctx.client.get(&path)?;
             ctx.out(&commits, |v| {
                 let rows: Vec<Vec<String>> = array(v)
@@ -377,8 +438,16 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                             ctx::s(c, "short").to_string(),
                             ctx::s(c, "author").to_string(),
                             ctx::when(&c["at"]),
-                            format!("+{} -{}", ctx::text(c, "additions"), ctx::text(c, "deletions")),
-                            ctx::s(c, "message").lines().next().unwrap_or("").to_string(),
+                            format!(
+                                "+{} -{}",
+                                ctx::text(c, "additions"),
+                                ctx::text(c, "deletions")
+                            ),
+                            ctx::s(c, "message")
+                                .lines()
+                                .next()
+                                .unwrap_or("")
+                                .to_string(),
                         ]
                     })
                     .collect();
@@ -386,31 +455,64 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             });
             Ok(())
         }
-        Cmd::Tree { repo, reference, path } => {
-            let url = format!("{}?ref={}&path={}", repo_path(&repo, "/tree"), ctx::seg(&reference), ctx::seg(&path));
+        Cmd::Tree {
+            repo,
+            reference,
+            path,
+        } => {
+            let url = format!(
+                "{}?ref={}&path={}",
+                repo_path(&repo, "/tree"),
+                ctx::seg(&reference),
+                ctx::seg(&path)
+            );
             let entries = ctx.client.get(&url)?;
             ctx.out(&entries, |v| {
                 let rows: Vec<Vec<String>> = array(v)
                     .iter()
-                    .map(|e| vec![ctx::s(e, "kind").to_string(), ctx::text(e, "size"), ctx::s(e, "path").to_string()])
+                    .map(|e| {
+                        vec![
+                            ctx::s(e, "kind").to_string(),
+                            ctx::text(e, "size"),
+                            ctx::s(e, "path").to_string(),
+                        ]
+                    })
                     .collect();
                 ctx::table(&["kind", "size", "path"], &rows);
             });
             Ok(())
         }
-        Cmd::File { repo, path, reference } => {
-            let url = format!("{}?ref={}&path={}", repo_path(&repo, "/file"), ctx::seg(&reference), ctx::seg(&path));
+        Cmd::File {
+            repo,
+            path,
+            reference,
+        } => {
+            let url = format!(
+                "{}?ref={}&path={}",
+                repo_path(&repo, "/file"),
+                ctx::seg(&reference),
+                ctx::seg(&path)
+            );
             let file = ctx.client.get(&url)?;
             ctx.out(&file, |f| {
                 if f.get("binary").and_then(Value::as_bool).unwrap_or(false) {
-                    println!("{} is a binary file ({} bytes)", ctx::s(f, "path"), ctx::text(f, "size"));
+                    println!(
+                        "{} is a binary file ({} bytes)",
+                        ctx::s(f, "path"),
+                        ctx::text(f, "size")
+                    );
                 } else {
                     println!("{}", ctx::s(f, "text"));
                 }
             });
             Ok(())
         }
-        Cmd::Pulls { repo, state, page, limit } => {
+        Cmd::Pulls {
+            repo,
+            state,
+            page,
+            limit,
+        } => {
             let pulls = ctx.client.get(&pulls_path(&repo, &state, page, limit))?;
             ctx.out(&pulls, |v| {
                 let rows: Vec<Vec<String>> = array(v)
@@ -426,7 +528,10 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                         ]
                     })
                     .collect();
-                ctx::table(&["number", "state", "review", "author", "flow", "title"], &rows);
+                ctx::table(
+                    &["number", "state", "review", "author", "flow", "title"],
+                    &rows,
+                );
             });
             Ok(())
         }
@@ -440,17 +545,32 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                     ("state", pull_state(p).to_string()),
                     ("review", ctx::text(p, "review")),
                     ("author", ctx::text(p, "author")),
-                    ("flow", format!("{} -> {}", ctx::s(p, "head"), ctx::s(p, "base"))),
+                    (
+                        "flow",
+                        format!("{} -> {}", ctx::s(p, "head"), ctx::s(p, "base")),
+                    ),
                     ("mergeable", ctx::text(p, "mergeable")),
                     ("comments", ctx::text(p, "comments")),
                     ("updated", ctx::text(p, "updated_at")),
                 ]);
                 let body = ctx::s(p, "body");
                 let body = rich::render(body, &rich_ctx, &ctx.rich);
-                println!("\n{}", if body.is_empty() { "No description provided.".to_string() } else { body });
+                println!(
+                    "\n{}",
+                    if body.is_empty() {
+                        "No description provided.".to_string()
+                    } else {
+                        body
+                    }
+                );
                 println!("\nFiles changed ({})", array_at(p, "files").len());
                 for f in array_at(p, "files") {
-                    println!("  +{} -{}  {}", ctx::text(f, "additions"), ctx::text(f, "deletions"), ctx::s(f, "path"));
+                    println!(
+                        "  +{} -{}  {}",
+                        ctx::text(f, "additions"),
+                        ctx::text(f, "deletions"),
+                        ctx::s(f, "path")
+                    );
                 }
                 println!("\nReviews ({})", array_at(p, "reviews").len());
                 for r in array_at(p, "reviews") {
@@ -473,21 +593,40 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             ctx.out(&p, |p| println!("{}", ctx::s(p, "diff")));
             Ok(())
         }
-        Cmd::Review { repo, number, event, body } => {
+        Cmd::Review {
+            repo,
+            number,
+            event,
+            body,
+        } => {
             let event = match event.as_str() {
                 "approve" => "APPROVE",
                 "request-changes" => "REQUEST_CHANGES",
                 _ => "COMMENT",
             };
-            let body = body.filter(|b| !b.trim().is_empty()).map(|b| ctx::text_arg(&b)).transpose()?.unwrap_or_default();
+            let body = body
+                .filter(|b| !b.trim().is_empty())
+                .map(|b| ctx::text_arg(&b))
+                .transpose()?
+                .unwrap_or_default();
             if event != "APPROVE" && body.is_empty() {
                 return Err("write the review's text first (--body)".into());
             }
-            let r = ctx.client.post(&pull_path(&repo, number, "/review"), &json!({ "event": event, "body": body }))?;
+            let r = ctx.client.post(
+                &pull_path(&repo, number, "/review"),
+                &json!({ "event": event, "body": body }),
+            )?;
             ctx.out(&r, |_| println!("reviewed #{number} in {repo}: {event}"));
             Ok(())
         }
-        Cmd::OpenPr { repo, title, head, base, body, file } => {
+        Cmd::OpenPr {
+            repo,
+            title,
+            head,
+            base,
+            body,
+            file,
+        } => {
             let title = title.trim().to_string();
             if title.is_empty() {
                 return Err("title the pull request".into());
@@ -506,13 +645,29 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             let body = text_from(body, file)?.unwrap_or_default();
             let input = json!({ "title": title, "head": head, "base": base, "body": body });
             let p = ctx.client.post(&repo_path(&repo, "/pulls"), &input)?;
-            ctx.out(&p, |p| println!("opened #{} in {repo}: {head} -> {base}", ctx::text(p, "number")));
+            ctx.out(&p, |p| {
+                println!(
+                    "opened #{} in {repo}: {head} -> {base}",
+                    ctx::text(p, "number")
+                )
+            });
             Ok(())
         }
-        Cmd::Comment { repo, number, body, file } => {
-            let text = text_from(body, file)?.ok_or("write the comment's text first (--body or --file)")?;
-            let c = ctx.client.post(&pull_path(&repo, number, "/comments"), &json!({ "body": text }))?;
-            ctx.out(&c, |c| println!("commented on #{number} in {repo}\n{}", comment_text(c)));
+        Cmd::Comment {
+            repo,
+            number,
+            body,
+            file,
+        } => {
+            let text = text_from(body, file)?
+                .ok_or("write the comment's text first (--body or --file)")?;
+            let c = ctx.client.post(
+                &pull_path(&repo, number, "/comments"),
+                &json!({ "body": text }),
+            )?;
+            ctx.out(&c, |c| {
+                println!("commented on #{number} in {repo}\n{}", comment_text(c))
+            });
             Ok(())
         }
         Cmd::Close { repo, number } => change_state(ctx, &repo, number, "closed"),
@@ -523,12 +678,20 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             }
             change_state(ctx, &repo, number, "open")
         }
-        Cmd::Merge { repo, number, style, yes } => {
+        Cmd::Merge {
+            repo,
+            number,
+            style,
+            yes,
+        } => {
             let p = ctx.client.get(&pull_path(&repo, number, ""))?;
             if let Some(refusal) = merge_refusal(&p, &repo, number) {
                 return Err(refusal);
             }
-            let problems = merge_problems(ctx::s(&p, "review"), p["mergeable"].as_bool().unwrap_or(false));
+            let problems = merge_problems(
+                ctx::s(&p, "review"),
+                p["mergeable"].as_bool().unwrap_or(false),
+            );
             if problems.is_empty() {
                 if !confirm(yes, &format!("Merge #{number} in {repo} ({style})."))? {
                     return Err("not done".into());
@@ -538,10 +701,15 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                     eprintln!("warning: #{number} {problem}");
                 }
                 if !yes {
-                    return Err(format!("#{number} is not ready to merge: pass --yes to merge it anyway"));
+                    return Err(format!(
+                        "#{number} is not ready to merge: pass --yes to merge it anyway"
+                    ));
                 }
             }
-            let r = ctx.client.post(&pull_path(&repo, number, "/merge"), &json!({ "style": style }))?;
+            let r = ctx.client.post(
+                &pull_path(&repo, number, "/merge"),
+                &json!({ "style": style }),
+            )?;
             ctx.out(&r, |_| println!("merged #{number} in {repo} ({style})"));
             Ok(())
         }
@@ -554,17 +722,26 @@ mod tests {
 
     #[test]
     fn pulls_path_carries_the_state_page_and_limit() {
-        assert_eq!(pulls_path("demo", "closed", 2, 10), "/v1/git/repos/demo/pulls?state=closed&page=2&limit=10");
+        assert_eq!(
+            pulls_path("demo", "closed", 2, 10),
+            "/v1/git/repos/demo/pulls?state=closed&page=2&limit=10"
+        );
     }
 
     #[test]
     fn clone_url_is_the_agents_gateway_address() {
-        assert_eq!(clone_url("agentplaza", "demo"), "http://plaza.gateway/git/agentplaza/demo.git");
+        assert_eq!(
+            clone_url("agentplaza", "demo"),
+            "http://plaza.gateway/git/agentplaza/demo.git"
+        );
     }
 
     #[test]
     fn text_from_takes_the_body_or_nothing() {
-        assert_eq!(text_from(Some("  hi  ".into()), None).unwrap(), Some("hi".into()));
+        assert_eq!(
+            text_from(Some("  hi  ".into()), None).unwrap(),
+            Some("hi".into())
+        );
         assert_eq!(text_from(Some("   ".into()), None).unwrap(), None);
         assert_eq!(text_from(None, None).unwrap(), None);
     }
@@ -572,7 +749,10 @@ mod tests {
     #[test]
     fn comment_text_indents_the_body_under_author_and_time() {
         let c = json!({"author": "alice", "body": "one\ntwo", "at": "2026-10-14 10:00"});
-        assert_eq!(comment_text(&c), "  alice  2026-10-14 10:00\n    one\n    two");
+        assert_eq!(
+            comment_text(&c),
+            "  alice  2026-10-14 10:00\n    one\n    two"
+        );
     }
 
     #[test]
@@ -583,13 +763,24 @@ mod tests {
             #[command(subcommand)]
             cmd: Cmd,
         }
-        let parse = |args: &[&str]| Wrap::try_parse_from(std::iter::once("git").chain(args.iter().copied())).map(|w| w.cmd);
+        let parse = |args: &[&str]| {
+            Wrap::try_parse_from(std::iter::once("git").chain(args.iter().copied())).map(|w| w.cmd)
+        };
         assert!(parse(&["pulls", "demo", "--page", "2", "--limit", "50"]).is_ok());
-        assert!(parse(&["pulls", "demo", "--limit", "51"]).is_err(), "a page holds at most 50");
-        assert!(parse(&["pulls", "demo", "--page", "0"]).is_err(), "pages start at 1");
+        assert!(
+            parse(&["pulls", "demo", "--limit", "51"]).is_err(),
+            "a page holds at most 50"
+        );
+        assert!(
+            parse(&["pulls", "demo", "--page", "0"]).is_err(),
+            "pages start at 1"
+        );
         assert!(parse(&["open-pr", "demo", "--title", "t", "--head", "feature"]).is_ok());
         assert!(parse(&["comment", "demo", "3", "--body", "-"]).is_ok());
-        assert!(parse(&["comment", "demo", "3", "--body", "a", "--file", "f.md"]).is_err(), "one source of text");
+        assert!(
+            parse(&["comment", "demo", "3", "--body", "a", "--file", "f.md"]).is_err(),
+            "one source of text"
+        );
         assert!(parse(&["close", "demo", "3"]).is_ok());
         assert!(parse(&["reopen", "demo", "3"]).is_ok());
     }
@@ -601,7 +792,12 @@ mod tests {
         assert_eq!(pull_state(&merged), "merged");
         assert!(is_merged(&merged));
         let refusal = reopen_refusal(&merged, "demo", 4).expect("a merged pull request is refused");
-        assert!(refusal.contains("#4") && refusal.contains("merged") && refusal.contains("cannot be reopened"), "{refusal}");
+        assert!(
+            refusal.contains("#4")
+                && refusal.contains("merged")
+                && refusal.contains("cannot be reopened"),
+            "{refusal}"
+        );
 
         // A closed pull request that did not merge can still be reopened.
         let closed = json!({"number": 5, "state": "closed", "merged": false, "merged_at": null});
@@ -619,9 +815,15 @@ mod tests {
     fn merge_problems_are_empty_only_for_an_approved_mergeable_pull_request() {
         assert!(merge_problems("approved", true).is_empty());
         assert_eq!(merge_problems("pending", true), vec!["is not approved"]);
-        assert_eq!(merge_problems("changes_requested", true), vec!["has changes requested"]);
+        assert_eq!(
+            merge_problems("changes_requested", true),
+            vec!["has changes requested"]
+        );
         assert_eq!(merge_problems("approved", false), vec!["is not mergeable"]);
-        assert_eq!(merge_problems("pending", false), vec!["is not approved", "is not mergeable"]);
+        assert_eq!(
+            merge_problems("pending", false),
+            vec!["is not approved", "is not mergeable"]
+        );
     }
 
     #[test]
@@ -630,8 +832,22 @@ mod tests {
         let refusal = merge_refusal(&merged, "demo", 4).expect("a merged pull request is refused");
         assert_eq!(refusal, "#4 in demo is already merged");
         // An open pull request, a closed one that did not merge, and an older hub's (no `merged`) can be merged.
-        assert!(merge_refusal(&json!({"number": 5, "state": "open", "merged": false}), "demo", 5).is_none());
-        assert!(merge_refusal(&json!({"number": 6, "state": "closed", "merged": false}), "demo", 6).is_none());
+        assert!(
+            merge_refusal(
+                &json!({"number": 5, "state": "open", "merged": false}),
+                "demo",
+                5
+            )
+            .is_none()
+        );
+        assert!(
+            merge_refusal(
+                &json!({"number": 6, "state": "closed", "merged": false}),
+                "demo",
+                6
+            )
+            .is_none()
+        );
         assert!(merge_refusal(&json!({"number": 7, "state": "open"}), "demo", 7).is_none());
     }
 }
