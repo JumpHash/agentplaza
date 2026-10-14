@@ -347,6 +347,8 @@ pub fn update(screens: &mut Screens, msg: Msg, ctx: &Ctx) -> Task<Msg> {
 /// The shown screen's own subscriptions: the Floor's animation frames and the hub's events while it is open.
 pub fn subscription(screens: &Screens, id: &Id, ctx: &Ctx) -> iced::Subscription<Msg> {
     match id {
+        Id::Overview => overview::subscription(ctx).map(Msg::Overview),
+        Id::Agents => agents::subscription(ctx).map(Msg::Agents),
         Id::Floor => iced::Subscription::batch([floor::subscription(&screens.floor), floor::events(ctx)]).map(Msg::Floor),
         Id::RobotLab | Id::RoomLab | Id::HardwareLab => engine_lab::subscription(&screens.engine_lab).map(Msg::EngineLab),
         Id::Machines => machines::subscription(&screens.machines).map(Msg::Machines),
