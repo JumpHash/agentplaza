@@ -963,39 +963,10 @@ mod tests {
             {"ev": "step", "step": 10, "loss": 0.5, "lr": 0.002, "samples": 256, "line": 1},
             {"ev": "done", "metrics": {"val": {"loss": 0.4}}, "line": 2}]});
         let fake = Fake::new(usize::MAX, events);
-        let job = Job {
-            id: "tj-poll".into(),
-            status: "running".into(),
-            created_ms: 0,
-            updated_ms: 0,
-            recipe: "rung-predictor@1".into(),
-            datasets: vec![],
-            mode: "single".into(),
-            budget_gpu_hours: 1.0,
-            gpu_hours: 0.0,
-            doc: json!({}),
-            plan: json!({}),
-            runs: vec![Run {
-                node_job: "tj-poll-i1".into(),
-                node: "n0".into(),
-                island: "i1".into(),
-                devices: vec![0],
-                started_ms: 0,
-                ended_ms: None,
-                state: "running".into(),
-                exit_code: None,
-                next: 0,
-                gpu_hours: 0.0,
-            }],
-            series: vec![],
-            seq: 0,
-            outputs: vec![],
-            outputs_remote: false,
-            metrics: json!(null),
-            error: None,
-            candidates: Vec::new(),
-        };
-        store.write().jobs.insert("tj-poll".into(), job);
+        store
+            .write()
+            .jobs
+            .insert("tj-poll".into(), running("tj-poll"));
         let models = crate::foundry::registry::Models::open(&dir.join("state"));
         let lines = poll(&fake, &store, &models, "tj-poll", 3_600_000);
         assert_eq!(lines.len(), 2);
@@ -1054,20 +1025,24 @@ mod tests {
             {"ev": "done", "metrics": {"val": {"accuracy": 0.9}}, "line": 2}]})
     }
 
+    /// The serving contract a trained card carries: three numeric inputs, three labels.
+    fn serving_contract() -> Value {
+        json!({
+            "input": {"type": "object", "properties": {"x0": {"type": "number"}, "x1": {"type": "number"}, "x2": {"type": "number"}}, "required": ["x0", "x1", "x2"]},
+            "output": {"type": "object", "properties": {"label": {"type": "string", "enum": ["cat", "dog", "bird"]}, "probabilities": {"type": "object"}}, "required": ["label", "probabilities"]},
+            "features": [{"name": "x0", "kind": "numeric"}, {"name": "x1", "kind": "numeric"}, {"name": "x2", "kind": "numeric"}],
+            "labels": ["cat", "dog", "bird"],
+            "allowed_roles": ["breeder"]
+        })
+    }
+
     /// A job's output directory as the trainer leaves it: the model, and its card when given.
     fn write_outputs(store: &Foundry, id: &str, with_card: bool) {
         let out = store.jobs_dir().join(id).join("out");
         std::fs::create_dir_all(&out).expect("out");
         std::fs::write(out.join("model.onnx"), LINEAR3).expect("onnx");
         if with_card {
-            let serving = json!({
-                "input": {"type": "object", "properties": {"x0": {"type": "number"}, "x1": {"type": "number"}, "x2": {"type": "number"}}, "required": ["x0", "x1", "x2"]},
-                "output": {"type": "object", "properties": {"label": {"type": "string", "enum": ["cat", "dog", "bird"]}, "probabilities": {"type": "object"}}, "required": ["label", "probabilities"]},
-                "features": [{"name": "x0", "kind": "numeric"}, {"name": "x1", "kind": "numeric"}, {"name": "x2", "kind": "numeric"}],
-                "labels": ["cat", "dog", "bird"],
-                "allowed_roles": ["breeder"]
-            });
-            let card = json!({"recipe": "rung_predictor", "job_id": id, "metrics": {"val": {"accuracy": 0.9}}, "serving": serving});
+            let card = json!({"recipe": "rung_predictor", "job_id": id, "metrics": {"val": {"accuracy": 0.9}}, "serving": serving_contract()});
             std::fs::write(out.join("model_card.json"), card.to_string()).expect("card");
         }
     }
@@ -1108,14 +1083,7 @@ mod tests {
         let out = store.jobs_dir().join(id).join("out").join(island);
         std::fs::create_dir_all(&out).expect("island out");
         std::fs::write(out.join("model.onnx"), LINEAR3).expect("onnx");
-        let serving = json!({
-            "input": {"type": "object", "properties": {"x0": {"type": "number"}, "x1": {"type": "number"}, "x2": {"type": "number"}}, "required": ["x0", "x1", "x2"]},
-            "output": {"type": "object", "properties": {"label": {"type": "string", "enum": ["cat", "dog", "bird"]}, "probabilities": {"type": "object"}}, "required": ["label", "probabilities"]},
-            "features": [{"name": "x0", "kind": "numeric"}, {"name": "x1", "kind": "numeric"}, {"name": "x2", "kind": "numeric"}],
-            "labels": ["cat", "dog", "bird"],
-            "allowed_roles": ["breeder"]
-        });
-        let card = json!({"recipe": "rung_predictor", "job_id": id, "metrics": {"val": {"accuracy": accuracy}}, "serving": serving});
+        let card = json!({"recipe": "rung_predictor", "job_id": id, "metrics": {"val": {"accuracy": accuracy}}, "serving": serving_contract()});
         std::fs::write(out.join("model_card.json"), card.to_string()).expect("card");
     }
 

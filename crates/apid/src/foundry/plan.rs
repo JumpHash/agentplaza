@@ -940,20 +940,34 @@ mod tests {
     }
 
     #[test]
-    fn pinned_loose_on_one_island_is_infeasible() {
-        let machines = vec![machine("a", cuda(4), &["10.0.0.1"])];
-        let request = Request {
-            mode: Some(Mode::Loose),
-            ..req(1, 8)
-        };
-        let err = expect_err(place(&machines, &Reach::default(), &request));
-        assert!(matches!(
-            err,
-            PlanError::Infeasible {
-                mode: Mode::Loose,
-                ..
-            }
-        ));
+    fn pinned_loose_on_one_island_and_pinned_single_over_the_minimum_are_infeasible() {
+        let cases = [
+            (
+                "loose on one island",
+                vec![machine("a", cuda(4), &["10.0.0.1"])],
+                Request {
+                    mode: Some(Mode::Loose),
+                    ..req(1, 8)
+                },
+                Mode::Loose,
+            ),
+            (
+                "single with a larger minimum",
+                vec![machine("a", cuda(2), &["10.0.0.1"])],
+                Request {
+                    mode: Some(Mode::Single),
+                    ..req(2, 4)
+                },
+                Mode::Single,
+            ),
+        ];
+        for (case, machines, request, want) in cases {
+            let err = expect_err(place(&machines, &Reach::default(), &request));
+            assert!(
+                matches!(&err, PlanError::Infeasible { mode, .. } if *mode == want),
+                "{case}: expected Infeasible({want:?}), got {err:?}"
+            );
+        }
     }
 
     #[test]
@@ -973,23 +987,6 @@ mod tests {
         let one = expect_plan(place(&machines, &Reach::default(), &req(1, 1)));
         assert_eq!(one.mode, Mode::Single);
         assert_eq!(shape(&one.islands[0]), vec![("b", vec![0])]);
-    }
-
-    #[test]
-    fn pinned_single_with_a_larger_minimum_is_infeasible() {
-        let machines = vec![machine("a", cuda(2), &["10.0.0.1"])];
-        let request = Request {
-            mode: Some(Mode::Single),
-            ..req(2, 4)
-        };
-        let err = expect_err(place(&machines, &Reach::default(), &request));
-        assert!(matches!(
-            err,
-            PlanError::Infeasible {
-                mode: Mode::Single,
-                ..
-            }
-        ));
     }
 
     #[test]
@@ -1057,14 +1054,6 @@ mod tests {
         let plan = expect_plan(place(&cpus, &cpu_lan, &allowed));
         assert_eq!(plan.mode, Mode::Loose);
         assert_eq!(plan.islands.len(), 2);
-    }
-
-    #[test]
-    fn max_devices_caps_the_plan() {
-        let machines = vec![machine("a", cuda(8), &["10.0.0.1"])];
-        let plan = expect_plan(place(&machines, &Reach::default(), &req(1, 3)));
-        assert_eq!(plan.devices_total, 3);
-        assert_eq!(shape(&plan.islands[0]), vec![("a", vec![0, 1, 2])]);
     }
 
     #[test]

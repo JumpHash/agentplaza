@@ -1026,20 +1026,6 @@ mod tests {
     }
 
     #[test]
-    fn a_model_is_stored_and_read_back_after_a_restart() {
-        let root = scratch("restart");
-        let models = Models::open(&root);
-        let dir = job_dir(&root, "job-2", Some(serving()));
-        let id = models.register_from_job(&dir, None).unwrap().card.id;
-        let reopened = Models::open(&root);
-        let record = reopened.get(&id).expect("the record is on disk");
-        assert_eq!(record.parameters, 12);
-        assert_eq!(record.provenance["train"]["rows"], 10);
-        assert_eq!(reopened.list().len(), 1);
-        let _ = fs::remove_dir_all(&root);
-    }
-
-    #[test]
     fn an_import_takes_an_absolute_directory_only() {
         assert_eq!(absolute("relative/job-1").unwrap_err(), "path is absolute");
         assert_eq!(absolute("").unwrap_err(), "path is absolute");
@@ -1179,7 +1165,7 @@ mod tests {
     }
 
     /// The list survives a restart with no database: every record is on disk as its card.json, and a
-    /// reopen reads the same records, the promoted one with its shadow stats.
+    /// reopen reads the same records, the promoted one with its shadow stats, parameters and provenance.
     #[test]
     fn the_model_list_survives_a_restart_without_the_database() {
         let root = scratch("list-restart");
@@ -1197,8 +1183,12 @@ mod tests {
         drop(models);
         let reopened = Models::open(&root);
         assert_eq!(reopened.list(), before);
-        assert_eq!(reopened.get(&id).map(|r| r.state), Some(State::Promoted));
-        assert_eq!(reopened.get(&id).map(|r| r.shadow.runs), Some(1));
+        assert_eq!(reopened.list().len(), 1);
+        let record = reopened.get(&id).expect("the record is on disk");
+        assert_eq!(record.state, State::Promoted);
+        assert_eq!(record.shadow.runs, 1);
+        assert_eq!(record.parameters, 12);
+        assert_eq!(record.provenance["train"]["rows"], 10);
         let _ = fs::remove_dir_all(&root);
     }
 

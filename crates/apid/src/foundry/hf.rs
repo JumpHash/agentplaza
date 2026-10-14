@@ -983,7 +983,7 @@ mod tests {
     }
 
     #[test]
-    fn default_files_pick_the_graph_and_the_base_files() {
+    fn default_files_and_the_import_offer_pick_the_graph_and_the_base_files() {
         let files = files();
         assert_eq!(
             default_files("servable", &files).unwrap(),
@@ -1001,17 +1001,13 @@ mod tests {
         assert!(!base.iter().any(|p| p.starts_with("onnx/")), "{base:?}");
         assert!(default_files("tensors", &files).is_err());
         assert!(default_files("servable", &[]).is_err());
-    }
-
-    #[test]
-    fn import_files_are_the_two_default_sets_and_empty_where_an_import_is_refused() {
-        let files = files();
+        // The import offer carries both sets, and is empty where an import is refused.
         let sets = import_files(&files);
         assert_eq!(
             sets["servable"],
             json!(default_files("servable", &files).unwrap())
         );
-        assert_eq!(sets["base"], json!(default_files("base", &files).unwrap()));
+        assert_eq!(sets["base"], json!(base));
         assert_eq!(import_files(&[]), json!({ "base": [], "servable": [] }));
     }
 
