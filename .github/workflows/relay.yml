@@ -1,7 +1,7 @@
 name: relay
 
-# The MCP relay container's binary (docs/design/mcp.md): static musl builds for x86_64 and aarch64, uploaded as
-# one artifact that every package that can run container servers takes.
+# The MCP relay container's binary (docs/design/mcp.md): static musl builds for x86_64 and aarch64, saved to
+# the Actions cache (no artifact storage) under this commit, for every package that can run container servers.
 on:
   workflow_call:
 
@@ -21,5 +21,9 @@ jobs:
             mkdir -p relay-out &&
             cp \${CARGO_TARGET_DIR:-target}/x86_64-unknown-linux-musl/release/mcp_relay relay-out/mcp_relay-x86_64 &&
             cp \${CARGO_TARGET_DIR:-target}/aarch64-unknown-linux-musl/release/mcp_relay relay-out/mcp_relay-aarch64"
-      - uses: actions/upload-artifact@v4
-        with: { name: mcp-relay, path: relay-out/, retention-days: 1, if-no-files-found: error }
+      # The cache restores an entry at the path it was saved from, so the directory is renamed to the
+      # path the platform jobs read (relay/) before it is saved.
+      - name: Rename for the cache
+        run: mv relay-out relay
+      - uses: actions/cache/save@v4
+        with: { path: relay, key: "mcp-relay-x86_64-aarch64-${{ github.sha }}" }

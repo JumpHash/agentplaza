@@ -97,8 +97,8 @@ jobs:
           enableCrossOsArchive: true
       - name: The relay binaries (both architectures, from the relay job)
         if: inputs.package
-        uses: actions/download-artifact@v4
-        with: { name: mcp-relay, path: relay }
+        uses: actions/cache/restore@v4
+        with: { path: relay, key: "mcp-relay-x86_64-aarch64-${{ github.sha }}", fail-on-cache-miss: true }
       - name: Stage and package
         if: inputs.package
         env:
