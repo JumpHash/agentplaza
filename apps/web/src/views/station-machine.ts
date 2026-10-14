@@ -1,11 +1,23 @@
 // A workstation as the Machines list shows it: its row (a MachineNode) plus the station it came from. Pure, no DOM.
-import type { MachineNode, StationForm, StationView } from '../api';
+import type { MachineNode, StationFacts, StationForm, StationView } from '../api';
+import type { Look } from './machine-look';
 
 /** A workstation's row in the Machines list: the machine's fields, with the station kept beside them. */
 export interface StationNode extends MachineNode { station: StationView }
 
 const FORM_LABEL: Record<StationForm, string> = { laptop: 'Laptop', desktop: 'Desktop', mini: 'Mini', server: 'Server', vm: 'VM' };
 const OS_LABEL: Record<StationView['facts']['os'], string> = { macos: 'macOS', windows: 'Windows', linux: 'Linux' };
+
+/**
+ * The picture a workstation is drawn as, by its form: a laptop (a MacBook on macOS), a Mac mini or other mini PC,
+ * a tower for a desktop, a rack for a server or a VM. The machine's kind says only "workstation" for all of them.
+ */
+export function stationLook(facts: Pick<StationFacts, 'form' | 'os'>): Look {
+  if (facts.form === 'laptop') return facts.os === 'macos' ? 'macbook' : 'laptop';
+  if (facts.form === 'mini') return 'mac';
+  if (facts.form === 'server' || facts.form === 'vm') return 'server';
+  return 'workstation';
+}
 
 /** Lease counts: every lease, the ones holding the station (opening or active), and the ones waiting in the queue. */
 export function leaseCounts(s: StationView): { leases: number; active: number; queued: number } {

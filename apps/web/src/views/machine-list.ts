@@ -11,9 +11,8 @@ import { agentName, roleLabel } from '../roles';
 import { ago, badge, button, type Tone } from '../ui/components';
 import { deviceVisual } from '../ui/devices';
 import { h, icon, replace } from '../ui/dom';
-import { lookOf } from './machine-look';
-import { isStationNode, leaseCounts, stationBadge, stationLine } from './station-machine';
-import { specKey, THUMB_H, THUMB_W, type PictureSpec } from './machine-picture';
+import { isStationNode, leaseCounts, stationBadge, stationLine, stationLook } from './station-machine';
+import { lookOfSpec, specKey, THUMB_H, THUMB_W, type PictureSpec } from './machine-picture';
 import { engineWanted, isEngineStopped, startEngineStage, startThumbEngine, type EngineStage } from './engine-mount';
 
 export type Stats = NonNullable<MachineNode['stats']>;
@@ -99,7 +98,9 @@ export function normalizeMachines(fetched: MachineNode[] | null): MachineNode[] 
 
 /** The picture a machine is drawn as: the same spec the engine's thumbnails take. */
 export function specOf(m: MachineNode): PictureSpec {
-  return { kind: m.kind, vendor: m.vendor ?? null, memory_mib: m.memory_mib, gpus: m.gpus.map((g) => ({ vendor: g.vendor })) };
+  const spec: PictureSpec = { kind: m.kind, vendor: m.vendor ?? null, memory_mib: m.memory_mib, gpus: m.gpus.map((g) => ({ vendor: g.vendor })) };
+  // A workstation's kind is always "workstation": its picture follows its form (a laptop, a mini, a tower, a rack).
+  return isStationNode(m) ? { ...spec, look: stationLook(m.station.facts) } : spec;
 }
 
 // The last 60 CPU samples on a small canvas: a ruled baseline and one ink line.
@@ -747,7 +748,7 @@ const easeInOutCubic = (t: number): number => (t < 0.5 ? 4 * t * t * t : 1 - Mat
 /** The line art of a row with no picture of its own: the device drawing, or a generic icon when the kind is unknown. */
 function fallbackPicture(row: ListRow): Node {
   if (!row.spec) return h('span.mlist-unknown', null, icon('machine'));
-  return deviceVisual(lookOf(row.spec.kind, row.spec.vendor), { gpu: row.spec.gpus.length > 0, active: row.active });
+  return deviceVisual(lookOfSpec(row.spec), { gpu: row.spec.gpus.length > 0, active: row.active });
 }
 
 /** Shows a thumbnail (a PNG data URL, or null for the line art) in the picture box. */

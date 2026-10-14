@@ -18,6 +18,13 @@ export interface PictureSpec {
   gpus: { vendor: string }[];
   /** Storage device count: only the workstation's M.2 slot draws them. */
   drives?: number;
+  /** The look drawn, when the kind and vendor do not say it (a workstation's form: laptop, mini, tower, rack). */
+  look?: Look;
+}
+
+/** The look a spec is drawn as: its own when it has one, else the kind's (with the vendor's Apple shapes). */
+export function lookOfSpec(spec: PictureSpec): Look {
+  return spec.look ?? lookOf(spec.kind, spec.vendor);
 }
 
 // ---- The picture's fields ---------------------------------------------------------------------
@@ -72,7 +79,7 @@ function drivesFor(drives: number | undefined): number {
 }
 
 function pictureOf(spec: PictureSpec): Picture {
-  const look = lookOf(spec.kind, spec.vendor);
+  const look = lookOfSpec(spec);
   const max = CARD_LOOKS.get(look) ?? 0;
   const tints = spec.gpus.slice(0, max).map((g) => CARD_TINT.get(String(g.vendor ?? '').toLowerCase()) ?? null);
   const slots = MEMORY_SLOTS.get(look) ?? 0;

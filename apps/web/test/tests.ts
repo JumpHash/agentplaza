@@ -29,8 +29,9 @@ import { applyBuffer, badgeOf, diffMark, dirsOf, fuzzyScore, isViewed, languageF
 import type { FileChange } from '../src/ide/types';
 import { CENTRE_MIN, clampSize, defaultLayout, fitSize, isNarrow, LEFT_SIZE, leftViewFor, originFallback, parseLayout, RIGHT_SIZE, rightTabFor, serializeLayout, hasDiff, leftViewsFor, rightTabsFor, runsFor } from '../src/ide/layout';
 import { MAX_TERMINALS, attachFrame, base64ToBytes, bytesToBase64, clearSession, inputFrame, killFrame, nextOffset, openFrame, parseServerFrame, plainText, readSession, reconnectDelay, resizeFrame, sessionKey, splitInput, storedTerminalCount, terminalSocketUrl, writeSession, type KeyValueStore } from '../src/views/ide-terminal-model';
-import { auditLabel, codeChip, countdown, displaysText, formLabel, gpuLine, gpuSummary, joinCommand, leaseCount, leaseStateChip, nameProblem, osText, ramText, readSettings, accountBadge, accountText, settingsForm, sortStations, stationSummary, statusChip, takeoverText, type SettingsForm, actionFrame, activeAction, backoffMs, bytesText, buttonAction, clockText, controlSocketUrl, crumbsOf, dollarsPerHour, defaultsForm, frameAt, frameTime, frameTimes, framePoint, inputButton, joinPath, keyAction, moveAction, parentDir, parseControlText, parseFrame, parseScreenText, pendingPaths, rateText, readDefaults, readRate, recordingSpan, scrollNotches, screenSocketUrl, sessionChoices, takeoverBanner, treeOf, uploadProblem, wheelAction, actionText, type KeyEventLike } from '../src/views/workstations-model';
-import { isStationNode, leaseCounts, stationBadge, stationLine, stationMachine, stationThumbnailPath } from '../src/views/station-machine';
+import { auditLabel, codeChip, countdown, displaysText, formLabel, gpuLine, gpuSummary, joinCommand, leaseCount, leaseStateChip, nameProblem, osText, pictureNote, ramText, readSettings, accountBadge, accountText, settingsForm, sortStations, stationSummary, statusChip, takeoverText, type SettingsForm, actionFrame, activeAction, backoffMs, bytesText, buttonAction, clockText, controlSocketUrl, crumbsOf, dollarsPerHour, defaultsForm, frameAt, frameTime, frameTimes, framePoint, inputButton, joinPath, keyAction, moveAction, parentDir, parseControlText, parseFrame, parseScreenText, pendingPaths, rateText, readDefaults, readRate, recordingSpan, scrollNotches, screenSocketUrl, sessionChoices, takeoverBanner, treeOf, uploadProblem, wheelAction, actionText, type KeyEventLike } from '../src/views/workstations-model';
+import { isStationNode, leaseCounts, stationBadge, stationLine, stationLook, stationMachine, stationThumbnailPath } from '../src/views/station-machine';
+import { lookOfSpec, specKey, type PictureSpec } from '../src/views/machine-picture';
 
 let failures = 0;
 // Each section checks its own failures and reports them, then the run goes on to the next section (so one failing
@@ -333,6 +334,13 @@ sectionEnd('web tests: ok');
   eq(script.includes("'wasm-unsafe-eval'"), true, "csp: script-src allows 'wasm-unsafe-eval' (the engine's wasm)");
   eq(policy.includes("'unsafe-eval'"), false, "csp: the policy never allows 'unsafe-eval'");
   eq(script.includes("'unsafe-inline'"), false, "csp: script-src allows no inline script");
+  // A workstation's picture and a recording's frames load from object URLs (blob:), as data: and https: already did.
+  const directive = (name: string): string => new RegExp(`${name}([^;]*)`).exec(policy)?.[1] ?? '';
+  eq(
+    [directive('img-src').includes('blob:'), directive('media-src').includes('blob:'), directive('img-src').includes('data:'), directive('img-src').includes('https:')],
+    [true, true, true, true],
+    'csp: images and media may be blob: object URLs, data: and https: kept',
+  );
 }
 
 // The hub-as-a-server tab's setup text: the Claude Code command carries the URL and the bearer header, and the
@@ -945,6 +953,35 @@ eq(leaseCounts(station({ leases: [lease2('active'), lease2('opening'), lease2('q
 const plain: MachineNode = { id: 'p1', name: 'Rig', kind: 'laptop', arch: 'x86_64', backend: 'kvm', irqchip: '', class: '', cpus: 4, memory_mib: 8192, vsock_mode: '', started_at_ms: 0, gpus: [], stats: null };
 eq([isStationNode(mini), isStationNode(plain)], [true, false], 'isStationNode: true for a station row, false for a plain machine');
 eq(stationThumbnailPath('a/b c'), '/v1/stations/a%2Fb%20c/thumbnail', 'station thumbnail path: the id is encoded');
+// The picture follows the form: the kind says "workstation" for all of them.
+eq(
+  [
+    stationLook({ os: 'windows', form: 'laptop' }),
+    stationLook({ os: 'macos', form: 'laptop' }),
+    stationLook({ os: 'windows', form: 'mini' }),
+    stationLook({ os: 'macos', form: 'mini' }),
+    stationLook({ os: 'windows', form: 'desktop' }),
+    stationLook({ os: 'linux', form: 'server' }),
+    stationLook({ os: 'linux', form: 'vm' }),
+  ],
+  ['laptop', 'macbook', 'mac', 'mac', 'workstation', 'server', 'server'],
+  'station picture: a laptop (a MacBook on macOS), a mini, a tower for a desktop, a rack for a server or a VM',
+);
+const winLaptop = stationMachine(station({ facts: stationFacts({ os: 'windows', form: 'laptop', gpus: [], ram_mb: 8192 }) }));
+const winTower = stationMachine(station({ facts: stationFacts({ os: 'windows', form: 'desktop', gpus: [], ram_mb: 8192 }) }));
+const laptopSpec: PictureSpec = { kind: 'workstation', vendor: null, memory_mib: 8192, gpus: [], look: stationLook(winLaptop.station.facts) };
+const towerSpec: PictureSpec = { kind: 'workstation', vendor: null, memory_mib: 8192, gpus: [], look: stationLook(winTower.station.facts) };
+eq(
+  [lookOfSpec(laptopSpec), lookOfSpec(towerSpec), lookOfSpec({ kind: 'workstation', vendor: null, memory_mib: 0, gpus: [] }), lookOfSpec({ kind: 'laptop', vendor: 'apple', memory_mib: 0, gpus: [] })],
+  ['laptop', 'workstation', 'workstation', 'macbook'],
+  'picture look: a station\'s form wins over its kind; plain machines keep their kind\'s look',
+);
+eq(specKey(laptopSpec) !== specKey(towerSpec), true, 'picture key: a laptop and a tower of the same spec draw differently');
+eq(
+  [pictureNote({ online: true, revoked: false }), pictureNote({ online: false, revoked: false }), pictureNote({ online: false, revoked: true }), pictureNote({ online: true, revoked: true })],
+  ['No screen open', 'Offline', 'Revoked', 'Revoked'],
+  'row picture: why a row has no picture (revoked first)',
+);
 sectionEnd('station machine tests: ok');
 
 // ---- IDE agent view model (src/ide/view.ts) ----

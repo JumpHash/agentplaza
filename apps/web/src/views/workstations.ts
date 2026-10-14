@@ -27,6 +27,7 @@ import {
   MAX_NAME_CHARS,
   nameProblem,
   osText,
+  pictureNote,
   ramText,
   RATE_MAX,
   RECORD_FPS,
@@ -127,15 +128,17 @@ function listScreen(root: HTMLElement): Cleanup {
     defaults.el,
   );
 
-  /** A row's picture: the screen as it was last asked for, or a note when no session is open. Offline machines have none. */
-  const thumb = (s: StationView): HTMLElement | null => {
-    if (!s.online || s.revoked) return null;
-    const url = pictures.get(s.id);
+  /**
+   * A row's picture box, always there so the rows line up: the screen as it was last asked for, or a neutral box with
+   * the OS and why there is no picture (no session open, offline, revoked).
+   */
+  const thumb = (s: StationView): HTMLElement => {
+    const url = s.online && !s.revoked ? pictures.get(s.id) : undefined;
     return h(
       'span.ws-row-thumb',
       null,
       h('img', { 'data-thumb': s.id, alt: `Screen of ${s.name}`, src: url ?? null, hidden: url === undefined }),
-      h('span.ws-thumb-empty', null, 'No screen open'),
+      h('span.ws-thumb-empty', null, h('span.ws-thumb-os', null, osText(s.facts)), h('span.ws-thumb-note', null, pictureNote(s))),
     );
   };
 
@@ -535,7 +538,7 @@ function detailScreen(root: HTMLElement, id: string): Cleanup {
   const actions = (s: StationView): HTMLElement[] => {
     if (s.revoked) return [h('span.faint', null, 'Revoked: its link is closed.')];
     return [
-      button('Rename', () => openRename(s), { kind: 'ghost' }),
+      button('Rename', () => openRename(s)),
       button(s.draining ? 'Resume' : 'Drain', () => void drain(s), {
         title: s.draining ? 'Back in service: it takes new work again.' : 'Takes no new work; its link closes once its current answers are in.',
       }),

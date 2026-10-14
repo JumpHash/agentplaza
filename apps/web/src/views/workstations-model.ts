@@ -118,6 +118,13 @@ export function stationSummary(facts: StationFacts): string {
   return [osText(facts), formLabel(facts.form), ramText(facts.ram_mb), gpuSummary(facts.gpus)].filter((part) => part && part !== '—').join(' · ');
 }
 
+/** What a row's picture box says when there is no picture: why there is none. */
+export function pictureNote(s: { online: boolean; revoked: boolean }): string {
+  if (s.revoked) return 'Revoked';
+  if (!s.online) return 'Offline';
+  return 'No screen open';
+}
+
 /** The leases that hold a machine (opening or active) and those waiting for one. */
 export function leaseCount(leases: StationLease[]): { holding: number; waiting: number } {
   const waiting = leases.filter((l) => l.state === 'queued').length;
