@@ -43,6 +43,9 @@ enum Command {
     /// Git: the plaza's repositories, branches and changes.
     #[command(subcommand)]
     Git(cmd::git::Cmd),
+    /// The IDE: an agent's workspace or a project repo, browsed, edited, diffed, checkpointed, searched and run.
+    #[command(subcommand)]
+    Ide(cmd::ide::Cmd),
     /// The library: files and images the agents share.
     #[command(subcommand)]
     Library(cmd::library::Cmd),
@@ -158,6 +161,7 @@ fn run(cli: Cli) -> Result<(), String> {
         Command::Projects(c) => cmd::projects::run(&ctx, c),
         Command::Tasks(c) => cmd::tasks::run(&ctx, c),
         Command::Git(c) => cmd::git::run(&ctx, c),
+        Command::Ide(c) => cmd::ide::run(&ctx, c),
         Command::Library(c) => cmd::library::run(&ctx, c),
         Command::Prompts(c) => cmd::prompts::run(&ctx, c),
         Command::Skills(c) => cmd::skills::run(&ctx, c),

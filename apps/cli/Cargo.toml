@@ -13,6 +13,7 @@ path = "src/main.rs"
 [dependencies]
 apz-http = { path = "../../crates/apz-http" }
 apz-skill = { path = "../../crates/apz-skill" }
+apz-ide = { path = "../../crates/apz-ide" }
 apz-os = { path = "../../crates/apz-os" }
 apz-setup = { path = "../../crates/apz-setup" }
 serde = { workspace = true }

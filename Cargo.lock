@@ -63,6 +63,7 @@ name = "agentplaza-cli"
 version = "0.1.0"
 dependencies = [
  "apz-http",
+ "apz-ide",
  "apz-os",
  "apz-setup",
  "apz-skill",
