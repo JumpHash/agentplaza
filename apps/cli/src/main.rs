@@ -46,6 +46,12 @@ enum Command {
     /// The library: files and images the agents share.
     #[command(subcommand)]
     Library(cmd::library::Cmd),
+    /// The prompt library: system prompts, AGENTS.md and fragments, versioned, checked, published and bound.
+    #[command(subcommand)]
+    Prompts(cmd::prompts::Cmd),
+    /// The skill library: SKILL.md folders, versioned, checked, bound, imported from zips or GitHub, and exported.
+    #[command(subcommand)]
+    Skills(cmd::skills::Cmd),
     /// Approvals waiting for the owner.
     #[command(subcommand)]
     Approvals(cmd::approvals::Cmd),
@@ -153,6 +159,8 @@ fn run(cli: Cli) -> Result<(), String> {
         Command::Tasks(c) => cmd::tasks::run(&ctx, c),
         Command::Git(c) => cmd::git::run(&ctx, c),
         Command::Library(c) => cmd::library::run(&ctx, c),
+        Command::Prompts(c) => cmd::prompts::run(&ctx, c),
+        Command::Skills(c) => cmd::skills::run(&ctx, c),
         Command::Approvals(c) => cmd::approvals::run(&ctx, c),
         Command::Society(c) => cmd::society::run(&ctx, c),
         Command::Conversations(c) => cmd::conversations::run(&ctx, c),
