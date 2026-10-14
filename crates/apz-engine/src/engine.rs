@@ -133,6 +133,16 @@ impl Renderer {
         self.pipeline.draw_stats()
     }
 
+    /// The prepared frame's main-pass draw calls (see [`render::Pipeline::main_pass_calls`]).
+    pub fn main_pass_calls(&self) -> u32 {
+        self.pipeline.main_pass_calls()
+    }
+
+    /// The prepared frame's main-pass draw calls by owner (see [`render::Pipeline::owned_draws`]).
+    pub fn owned_draws(&self) -> Vec<u32> {
+        self.pipeline.owned_draws()
+    }
+
 }
 
 /// The largest side a thumbnail renders at, in device px.
@@ -584,6 +594,19 @@ impl Engine {
     /// The draw calls of the last frame drawn with the GPU by category (zeros without a GPU).
     pub fn draw_stats(&self) -> render::DrawStats {
         self.gpu.as_ref().map_or_else(render::DrawStats::default, Renderer::draw_stats)
+    }
+
+    /// The main-pass draw calls of the last frame drawn with the GPU (0 without a GPU).
+    pub fn main_pass_calls(&self) -> u32 {
+        self.gpu.as_ref().map_or(0, Renderer::main_pass_calls)
+    }
+
+    /// The robot lab's draw counts for the last frame drawn with the GPU (see [`crate::robots::lab::DrawCounts`]), or
+    /// None when no robot lab runs.
+    pub fn lab_draws(&self) -> Option<crate::robots::lab::DrawCounts> {
+        let owned = self.gpu.as_ref().map_or_else(Vec::new, Renderer::owned_draws);
+        let lab = self.stage.lab.as_ref()?;
+        Some(lab.draw_counts(&owned, self.main_pass_calls()))
     }
 
     /// Seconds since the ENTER sequence began (`Entry::elapsed`), or None when no sequence runs. The debug hook reads it.

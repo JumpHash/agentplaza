@@ -469,6 +469,9 @@ pub struct Node {
     pub fade: u32,
     /// An opaque tag for picking (a robot's cid) and lookups.
     pub tag: Option<u64>,
+    /// The robot lab's tally (1-based; 0: none): the draws under this node count toward it in the lab's readout (see
+    /// [`Draw::owner`]). Set on a dynamic root, a robot's group, which is where the lab's draws are walked from.
+    pub tally: u32,
     pub children: Vec<Obj>,
 }
 
@@ -506,6 +509,7 @@ impl Obj {
             lod: 0,
             fade: 0,
             tag: None,
+            tally: 0,
             children: Vec::new(),
         })))
     }
@@ -607,6 +611,11 @@ impl Obj {
     }
     pub fn set_tag(&self, tag: u64) -> &Self {
         self.get().tag = Some(tag);
+        self
+    }
+    /// Sets the robot lab's tally of this subtree (see [`Node::tally`]); 0 clears it.
+    pub fn set_tally(&self, tally: u32) -> &Self {
+        self.get().tally = tally;
         self
     }
     pub fn set_render_order(&self, order: i32) -> &Self {
@@ -872,6 +881,9 @@ pub struct Draw {
     pub fade: u32,
     /// The lift slot of its node (see [`Node::lift`]); a static bake writes it to the merged vertices.
     pub lift: u8,
+    /// The tally of the node it was walked from (see [`Node::tally`]); 0: none. The lab counts the draw toward that
+    /// robot. An instanced draw whose instances come from more than one owner keeps 0: it counts toward none of them.
+    pub owner: u32,
 }
 
 /// Whether the static bake takes the GPU-animated nodes (fan spins, LED blinks) out of the per-frame
@@ -995,7 +1007,7 @@ pub struct Overlay {
 pub fn flatten(root: &Obj, filter: Filter) -> (Vec<Draw>, Vec<PointLightDraw>) {
     let mut draws = Vec::new();
     let mut lights = Vec::new();
-    walk(root, Mat4::IDENTITY, false, 0, filter, &mut draws, &mut lights, None);
+    walk(root, Mat4::IDENTITY, false, 0, 0, filter, &mut draws, &mut lights, None);
     (draws, lights)
 }
 
@@ -1021,18 +1033,20 @@ fn walk(
     parent: Mat4,
     dynamic_above: bool,
     lift_above: u8,
+    owner_above: u32,
     filter: Filter,
     draws: &mut Vec<Draw>,
     lights: &mut Vec<PointLightDraw>,
     mut split: Option<&mut Vec<AnimDraw>>,
 ) {
-    let (world, dynamic, children, anim, lift) = {
+    let (world, dynamic, children, anim, lift, owner) = {
         let n = node.get();
         if !n.visible {
             return;
         }
         let world = parent * local_of(&n);
-        (world, dynamic_above || n.dynamic, n.children.clone(), n.anim, if n.lift != 0 { n.lift } else { lift_above })
+        let owner = if n.tally != 0 { n.tally } else { owner_above };
+        (world, dynamic_above || n.dynamic, n.children.clone(), n.anim, if n.lift != 0 { n.lift } else { lift_above }, owner)
     };
     let first = draws.len();
     let wanted = match filter {
@@ -1047,6 +1061,7 @@ fn walk(
                 emit(node, world, &mut own, &mut Vec::new());
                 for mut draw in own {
                     draw.lift = lift;
+                    draw.owner = owner;
                     if matches!(draw.kind, DrawKind::Mesh | DrawKind::Outline) {
                         out.push(AnimDraw { draw, anim });
                     } else {
@@ -1056,14 +1071,15 @@ fn walk(
             }
             _ => emit(node, world, draws, lights),
         }
-        if lift != 0 {
-            for d in &mut draws[first..] {
+        for d in &mut draws[first..] {
+            d.owner = owner;
+            if lift != 0 {
                 d.lift = lift;
             }
         }
     }
     for child in &children {
-        walk(child, world, dynamic, lift, filter, draws, lights, split.as_deref_mut());
+        walk(child, world, dynamic, lift, owner, filter, draws, lights, split.as_deref_mut());
     }
 }
 
@@ -1098,6 +1114,7 @@ fn draw_of(kind: DrawKind, geo: &Geo, mat: &Mat, world: Mat4, at: Place) -> Opti
         lod: at.lod,
         fade: at.fade,
         lift: 0,
+        owner: 0,
     })
 }
 
@@ -1190,13 +1207,18 @@ pub struct Rig {
     children: Vec<Rig>,
     /// The lifting node above a top rig (see [`Node::lift`]): its `lift_y` raises the rig each frame.
     lift: Option<Obj>,
+    /// The tally the rig's draws count toward (see [`Node::tally`]); 0: none.
+    owner: u32,
 }
 
-/// The rig of dynamic `node`, whose parent sits at `chain` (see [`Rig`]).
-fn rig_of(node: &Obj, chain: Mat4) -> Rig {
-    let mut rig = Rig { node: node.clone(), chain, loose: Vec::new(), merged: Vec::new(), sig: 0, children: Vec::new(), lift: None };
+/// The rig of dynamic `node`, whose parent sits at `chain` and whose tally is `owner` (see [`Rig`]).
+fn rig_of(node: &Obj, chain: Mat4, owner: u32) -> Rig {
+    let mut rig = Rig { node: node.clone(), chain, loose: Vec::new(), merged: Vec::new(), sig: 0, children: Vec::new(), lift: None, owner };
     let mut meshes = Vec::new();
     gather(node, Mat4::IDENTITY, true, &mut rig, &mut meshes);
+    for d in &mut meshes {
+        d.owner = owner;
+    }
     rig.merged = merge_draws(meshes, true);
     rig.sig = rig_signature(&rig.merged);
     rig
@@ -1234,7 +1256,8 @@ fn gather(node: &Obj, parent: Mat4, root: bool, rig: &mut Rig, meshes: &mut Vec<
         (n.dynamic, n.visible, rel, n.kind.clone(), n.hull.clone(), Place::of(&n), n.children.clone())
     };
     if !root && dynamic {
-        rig.children.push(rig_of(node, parent));
+        let tally = node.get().tally;
+        rig.children.push(rig_of(node, parent, if tally != 0 { tally } else { rig.owner }));
         return;
     }
     if !root && !visible {
@@ -1259,20 +1282,22 @@ fn gather(node: &Obj, parent: Mat4, root: bool, rig: &mut Rig, meshes: &mut Vec<
 pub fn rigs(node: &Obj, parent: Mat4) -> Vec<Rig> {
     lifted_roots(node, parent)
         .into_iter()
-        .map(|(root, chain, lift)| Rig { lift, ..rig_of(&root, chain) })
+        .map(|(root, chain, lift, owner)| Rig { lift, ..rig_of(&root, chain, owner) })
         .collect()
 }
 
-/// [`dynamic_roots`], each with the nearest node above it that has a lift slot (see [`Node::lift`]).
-fn lifted_roots(node: &Obj, parent: Mat4) -> Vec<(Obj, Mat4, Option<Obj>)> {
+/// [`dynamic_roots`], each with the nearest node above it that has a lift slot (see [`Node::lift`]) and the tally its
+/// draws count toward (see [`Node::tally`]).
+fn lifted_roots(node: &Obj, parent: Mat4) -> Vec<(Obj, Mat4, Option<Obj>, u32)> {
     let mut found = Vec::new();
-    fn visit(node: &Obj, parent: Mat4, lift: Option<&Obj>, found: &mut Vec<(Obj, Mat4, Option<Obj>)>) {
-        let (dynamic, visible, world, children, lifts) = {
+    fn visit(node: &Obj, parent: Mat4, lift: Option<&Obj>, owner: u32, found: &mut Vec<(Obj, Mat4, Option<Obj>, u32)>) {
+        let (dynamic, visible, world, children, lifts, tally) = {
             let n = node.get();
-            (n.dynamic, n.visible, parent * local_of(&n), n.children.clone(), n.lift != 0)
+            (n.dynamic, n.visible, parent * local_of(&n), n.children.clone(), n.lift != 0, n.tally)
         };
+        let owner = if tally != 0 { tally } else { owner };
         if dynamic {
-            found.push((node.clone(), parent, lift.cloned()));
+            found.push((node.clone(), parent, lift.cloned(), owner));
             return;
         }
         if !visible {
@@ -1280,10 +1305,10 @@ fn lifted_roots(node: &Obj, parent: Mat4) -> Vec<(Obj, Mat4, Option<Obj>)> {
         }
         let lift = if lifts { Some(node) } else { lift };
         for child in &children {
-            visit(child, world, lift, found);
+            visit(child, world, lift, owner, found);
         }
     }
-    visit(node, parent, None, &mut found);
+    visit(node, parent, None, 0, &mut found);
     found
 }
 
@@ -1303,7 +1328,11 @@ fn frame_rig(rig: &Rig, parent: Mat4, draws: &mut Vec<Draw>, lights: &mut Vec<Po
     };
     draws.extend(rig.merged.iter().map(|d| Draw { model: frame * d.model, ..d.clone() }));
     for (node, rel) in &rig.loose {
+        let first = draws.len();
         emit(node, frame * *rel, draws, lights);
+        for d in &mut draws[first..] {
+            d.owner = rig.owner;
+        }
     }
     for child in &rig.children {
         frame_rig(child, frame, draws, lights);
@@ -1332,7 +1361,11 @@ fn frame_rig_into<'a>(rig: &'a Rig, parent: Mat4, shown: &mut Vec<(&'a Rig, Mat4
     };
     shown.push((rig, frame));
     for (node, rel) in &rig.loose {
+        let first = draws.len();
         emit(node, frame * *rel, draws, lights);
+        for d in &mut draws[first..] {
+            d.owner = rig.owner;
+        }
     }
     for child in &rig.children {
         frame_rig_into(child, frame, shown, draws, lights);
@@ -1341,7 +1374,9 @@ fn frame_rig_into<'a>(rig: &'a Rig, parent: Mat4, shown: &mut Vec<(&'a Rig, Mat4
 
 /// [`flatten_rigs`], with the rigs of one content (the same hardware built alike, at several places)
 /// sharing one instanced draw per merged draw: its instances are those rigs' frames. Loose draws stay
-/// one each, as they move on their own.
+/// one each, as they move on their own. An instanced draw keeps a tally only when all its instances
+/// are that tally's: rigs of two owners that share a content give one instanced draw with owner 0,
+/// which the lab counts toward no robot (it is still in the frame's total).
 pub fn flatten_rigs_instanced(list: &[Rig]) -> (Vec<Draw>, Vec<PointLightDraw>) {
     let mut draws = Vec::new();
     let mut lights = Vec::new();
@@ -1350,29 +1385,30 @@ pub fn flatten_rigs_instanced(list: &[Rig]) -> (Vec<Draw>, Vec<PointLightDraw>) 
         frame_rig_into(rig, Mat4::IDENTITY, &mut shown, &mut draws, &mut lights);
     }
     let mut at: HashMap<u64, usize> = HashMap::new();
-    let mut groups: Vec<(&Rig, Vec<Mat4>)> = Vec::new();
+    let mut groups: Vec<(&Rig, Vec<(Mat4, u32)>)> = Vec::new();
     for (rig, frame) in shown {
         match at.get(&rig.sig) {
-            Some(&i) => groups[i].1.push(frame),
+            Some(&i) => groups[i].1.push((frame, rig.owner)),
             None => {
                 at.insert(rig.sig, groups.len());
-                groups.push((rig, vec![frame]));
+                groups.push((rig, vec![(frame, rig.owner)]));
             }
         }
     }
     for (rig, frames) in &groups {
+        let owner = if frames.iter().all(|(_, o)| *o == frames[0].1) { frames[0].1 } else { 0 };
         for d in &rig.merged {
             if frames.len() == 1 || !matches!(d.kind, DrawKind::Mesh | DrawKind::Outline) {
-                draws.extend(frames.iter().map(|f| Draw { model: *f * d.model, ..d.clone() }));
+                draws.extend(frames.iter().map(|(f, o)| Draw { model: *f * d.model, owner: *o, ..d.clone() }));
                 continue;
             }
-            let instances: Vec<Instance> = frames.iter().map(|f| Instance { matrix: *f * d.model, color: Color::WHITE }).collect();
+            let instances: Vec<Instance> = frames.iter().map(|(f, _)| Instance { matrix: *f * d.model, color: Color::WHITE }).collect();
             let count = instances.len();
             let kind = match d.kind {
                 DrawKind::Outline => DrawKind::OutlineInstanced(Arc::new(instances), count),
                 _ => DrawKind::Instanced(Arc::new(instances), count),
             };
-            draws.push(Draw { kind, model: Mat4::IDENTITY, ..d.clone() });
+            draws.push(Draw { kind, model: Mat4::IDENTITY, owner, ..d.clone() });
         }
     }
     (draws, lights)
@@ -1384,7 +1420,7 @@ pub fn flatten_roots(roots: &[(Obj, Mat4)]) -> (Vec<Draw>, Vec<PointLightDraw>) 
     let mut draws = Vec::new();
     let mut lights = Vec::new();
     for (node, parent) in roots {
-        walk(node, *parent, true, 0, Filter::Dynamic, &mut draws, &mut lights, None);
+        walk(node, *parent, true, 0, 0, Filter::Dynamic, &mut draws, &mut lights, None);
     }
     (draws, lights)
 }
@@ -1405,7 +1441,7 @@ pub fn bake(root: &Obj) -> Vec<Draw> {
 pub fn bake_split(root: &Obj, gpu_anim: bool) -> Baked {
     let (mut draws, mut lights, mut anim) = (Vec::new(), Vec::new(), Vec::new());
     let split = if gpu_anim { Some(&mut anim) } else { None };
-    walk(root, Mat4::IDENTITY, false, 0, Filter::Static, &mut draws, &mut lights, split);
+    walk(root, Mat4::IDENTITY, false, 0, 0, Filter::Static, &mut draws, &mut lights, split);
     Baked { statics: merge_draws(draws, false), animated: merge_anim(anim) }
 }
 
@@ -1705,6 +1741,43 @@ mod tests {
         let (draws, _) = flatten_roots(&roots);
         assert_eq!(draws.len(), 1);
         assert_eq!(draws[0].model.transform_point3(Vec3::ZERO), Vec3::new(5.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn a_draw_takes_the_tally_of_its_nearest_tallied_node() {
+        let geo = Geometry::new(vec![[0.0; 3]], vec![], vec![], vec![0]);
+        let mat = Mat::toon(Color::WHITE);
+        let root = Obj::group();
+        // Two dynamic roots (robots 1 and 2): robot 1 has a second mesh under it, robot 2 has one; a static mesh is no robot's.
+        let one = Obj::group();
+        one.set_dynamic(true).set_tally(1).add(&Obj::mesh(&geo, &mat)).add(&Obj::mesh(&geo, &mat));
+        let two = Obj::group();
+        two.set_dynamic(true).set_tally(2).add(&Obj::mesh(&geo, &mat));
+        root.add(&one).add(&two).add(&Obj::mesh(&geo, &mat));
+        let (draws, _) = flatten_roots(&dynamic_roots(&root, Mat4::IDENTITY));
+        let owners: Vec<u32> = draws.iter().map(|d| d.owner).collect();
+        assert_eq!(owners, vec![1, 1, 2]);
+    }
+
+    #[test]
+    fn an_instanced_draw_keeps_a_tally_only_when_one_owner_has_all_its_instances() {
+        let geo = Geometry::new(vec![[0.0; 3]], vec![], vec![], vec![0]);
+        let mat = Mat::toon(Color::WHITE);
+        // Two dynamic roots of the same content: their rigs share one instanced draw.
+        let part = |tally: u32, x: f32| {
+            let g = Obj::group();
+            g.set_dynamic(true).set_tally(tally).set_position(x, 0.0, 0.0);
+            g.add(&Obj::mesh(&geo, &mat)).add(&Obj::mesh(&geo, &mat));
+            g
+        };
+        let instanced = |a: u32, b: u32| {
+            let root = Obj::group();
+            root.add(&part(a, 0.0)).add(&part(b, 2.0));
+            let (draws, _) = flatten_rigs_instanced(&rigs(&root, Mat4::IDENTITY));
+            draws.iter().filter(|d| matches!(d.kind, DrawKind::Instanced(..))).map(|d| d.owner).collect::<Vec<_>>()
+        };
+        assert_eq!(instanced(1, 1), vec![1], "one robot's instances keep its tally");
+        assert_eq!(instanced(1, 2), vec![0], "two robots' instances keep none");
     }
 
     #[test]

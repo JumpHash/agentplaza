@@ -3,7 +3,7 @@
 //! engine's [`Frame`] through the engine's [`Renderer`].
 
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use apz_engine::input::{Action, Button, Event, Pointer};
 use apz_engine::render;
@@ -12,8 +12,11 @@ use apz_engine::Renderer;
 use iced::widget::shader::{self, Viewport};
 use iced::{mouse, wgpu, Rectangle};
 
-/// The draw calls of the frame the floor's pipeline prepared last (the labs' readout).
-pub static LAST_DRAW_CALLS: AtomicU32 = AtomicU32::new(0);
+/// The main pass's draw calls of the frame the floor's pipeline prepared last (the robot lab's readout).
+pub static LAST_MAIN_CALLS: AtomicU32 = AtomicU32::new(0);
+
+/// The main pass's draw calls by owner (robot n - 1 is owner n) of that frame, while the robot lab counts them.
+pub static LAST_OWNED_CALLS: Mutex<Vec<u32>> = Mutex::new(Vec::new());
 
 /// The shader widget's program: draws the frame the host built, and turns pointer input into the host's messages
 /// (`wrap` maps each engine action to one of them).
@@ -105,7 +108,10 @@ impl shader::Primitive for FloorPrimitive {
     ) {
         let rect = render::Rect { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height };
         pipeline.0.prepare(Arc::clone(&self.0), rect, viewport.scale_factor());
-        LAST_DRAW_CALLS.store(pipeline.0.draw_calls(), Ordering::Relaxed);
+        LAST_MAIN_CALLS.store(pipeline.0.main_pass_calls(), Ordering::Relaxed);
+        if render::tallying() {
+            *LAST_OWNED_CALLS.lock().unwrap_or_else(|e| e.into_inner()) = pipeline.0.owned_draws();
+        }
     }
 
     fn draw(&self, pipeline: &FloorPipeline, pass: &mut wgpu::RenderPass<'_>) -> bool {

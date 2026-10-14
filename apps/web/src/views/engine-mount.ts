@@ -47,6 +47,8 @@ export interface WebEngine {
   draw_stats(): string;
   /** The lab's readout, JSON: the room lab's violations or the hardware lab's model validation; `{}` when no lab runs. */
   lab_info(): string;
+  /** The robot lab's draw counts of the last frame's main pass, JSON (`props`, `robots` with `species` and `calls`, `calls`); `{}` when no robot lab runs. */
+  lab_draws(): string;
   /** The shown view: `machines` or `floor` (as the three.js build's __apzPerf named it). */
   view_name(): string;
   /** The shown view's camera, JSON: { view, eye, target, fov, roomsTop }. */

@@ -128,6 +128,7 @@ fn backdrop(hue: f32) -> Draw {
         lod: 0,
         fade: 0,
         lift: 0,
+        owner: 0,
     }
 }
 
@@ -160,6 +161,7 @@ fn shadow_disc() -> Draw {
         lod: 0,
         fade: 0,
         lift: 0,
+        owner: 0,
     }
 }
 

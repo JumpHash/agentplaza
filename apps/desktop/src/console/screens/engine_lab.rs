@@ -449,6 +449,22 @@ fn controls<'a>(state: &State) -> Vec<Element<'a, Msg>> {
     }
 }
 
+/// Whether the robot lab shows a prop (its prop screen): the same readout as the web's lab, which counts the props and
+/// the whole frame there.
+fn prop_screen(state: &State) -> bool {
+    state.values.get("prop").is_some_and(|v| !v.is_empty())
+}
+
+/// The robot lab's readout line, in the web lab's wording: the species screen's draw calls per robot, or the prop
+/// screen's props, robots and whole-frame calls (the main pass).
+fn robot_draws_text(counts: &apz_engine::robots::lab::DrawCounts, prop: bool) -> String {
+    if prop {
+        return format!("props: {} · robots: {} · draw calls (main pass, whole frame): {}", counts.props, counts.robots.len(), counts.calls);
+    }
+    let parts: Vec<String> = counts.robots.iter().map(|r| format!("{} {}", r.species, r.calls)).collect();
+    format!("draw calls per robot (main pass): {}", parts.join(" · "))
+}
+
 /// The lab's readout: the room lab's violations and rooms, the hardware lab's summary (red on errors), the robot lab's
 /// draw calls of the last frame.
 fn readout(state: &State) -> (String, Vec<String>, bool) {
@@ -456,8 +472,11 @@ fn readout(state: &State) -> (String, Vec<String>, bool) {
     let lines = |key: &str| info[key].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default();
     match state.kind {
         Kind::Robot => {
-            let calls = crate::console::floor_engine::LAST_DRAW_CALLS.load(std::sync::atomic::Ordering::Relaxed);
-            (format!("draw calls (last frame): {calls}"), Vec::new(), false)
+            use crate::console::floor_engine::{LAST_MAIN_CALLS, LAST_OWNED_CALLS};
+            let owned = LAST_OWNED_CALLS.lock().map(|v| v.clone()).unwrap_or_default();
+            let calls = LAST_MAIN_CALLS.load(std::sync::atomic::Ordering::Relaxed);
+            let text = state.stage.lab.as_ref().map(|lab| robot_draws_text(&lab.draw_counts(&owned, calls), prop_screen(state)));
+            (text.unwrap_or_default(), Vec::new(), false)
         }
         Kind::Room => {
             let debug = state.values.get("debug").is_some_and(|v| v == "1");

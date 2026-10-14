@@ -215,6 +215,7 @@ fn shadow_catcher() -> Draw {
         lod: 0,
         fade: 0,
         lift: 0,
+        owner: 0,
     }
 }
 

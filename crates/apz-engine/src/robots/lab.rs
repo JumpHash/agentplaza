@@ -35,6 +35,8 @@ const PROP_COLS: usize = 6;
 /// The robots of a line-up, and their clock.
 pub struct Lab {
     pub robots: Vec<Robot>,
+    /// The props on screen (0 on the species screen).
+    pub props: usize,
     t: f32,
     fx: Option<String>,
     fx_timer: f32,
@@ -213,8 +215,8 @@ fn dress(floor: &Floor, robot: &mut Robot, look: &Look, clip: Option<&str>) {
 
 /// The prop screen (the web's buildProps): one prop, or every prop in a line-up. Each prop stands on the floor, and
 /// each spot gets a robot facing it, playing the spot's clip. `species` is APZ_ROBOT_LAB: `all` deals the species in
-/// turn, one to each spot; a named species is every robot.
-fn build_props(floor: &mut Floor, prop: &str, species: &str, look: &Look, hue: f32, palette: &RobotPalette, robots: &mut Vec<Robot>) {
+/// turn, one to each spot; a named species is every robot. Returns the number of props built.
+fn build_props(floor: &mut Floor, prop: &str, species: &str, look: &Look, hue: f32, palette: &RobotPalette, robots: &mut Vec<Robot>) -> usize {
     let reg = prop_registry();
     let lineup = prop == "all";
     let ids: Vec<String> = if lineup { reg.order.clone() } else { vec![prop.to_string()] };
@@ -222,8 +224,10 @@ fn build_props(floor: &mut Floor, prop: &str, species: &str, look: &Look, hue: f
     let rows = ids.len().div_ceil(cols);
     let species_ids = &registry().index.species;
     let mut dealt = 0usize;
+    let mut built_props = 0usize;
     for (i, pid) in ids.iter().enumerate() {
         let Some(p) = reg.props.get(pid) else { continue };
+        built_props += 1;
         let (col, row) = ((i % cols) as f32, (i / cols) as f32);
         let ox = if lineup { (col - (cols as f32 - 1.0) / 2.0) * PROP_SPACING_X } else { 0.0 };
         let oz = if lineup { ((rows as f32 - 1.0) / 2.0 - row) * PROP_SPACING_Z } else { 0.0 };
@@ -243,6 +247,7 @@ fn build_props(floor: &mut Floor, prop: &str, species: &str, look: &Look, hue: f
             robots.push(robot);
         }
     }
+    built_props
 }
 
 /// The line-up, when `APZ_ROBOT_LAB` asks for one: its robots join the floor's root, and the camera
@@ -279,10 +284,11 @@ pub fn build(floor: &mut Floor) -> Option<Lab> {
 
     let look = Look { state, tool, carry, clip, pose, frozen };
     let mut robots = Vec::new();
+    let mut props = 0;
     let (eye, target) = match var("APZ_ROBOT_PROP") {
         Some(prop) => {
             let prop_lineup = prop == "all";
-            build_props(floor, &prop, &want, &look, hue, &palette, &mut robots);
+            props = build_props(floor, &prop, &want, &look, hue, &palette, &mut robots);
             cam.view_prop(prop_lineup)
         }
         None => {
@@ -299,6 +305,11 @@ pub fn build(floor: &mut Floor) -> Option<Lab> {
             cam.view(lineup)
         }
     };
+    // The readout's tally: robot i's draws count toward owner i + 1 (see `Node::tally`); the readout turns counting on.
+    for (i, robot) in robots.iter().enumerate() {
+        robot.group.set_tally(i as u32 + 1);
+    }
+    crate::render::set_tally(true);
     // The web's camera was 30 degrees and the orbit's is FOV_DEG: the eye comes in by tan 15 / tan(FOV_DEG / 2), so
     // the robots fill the frame as they did.
     let field = 15f32.to_radians().tan() / (crate::controls::FOV_DEG / 2.0).to_radians().tan();
@@ -308,6 +319,7 @@ pub fn build(floor: &mut Floor) -> Option<Lab> {
     floor.orbit.unlimited(0.0, f32::INFINITY);
     Some(Lab {
         robots,
+        props,
         t: frozen.unwrap_or(0.0),
         fx: var("APZ_ROBOT_FX"),
         fx_timer: 0.0,
@@ -343,6 +355,38 @@ impl Lab {
     pub fn background(&self) -> Option<Color> {
         self.bg
     }
+
+    /// The readout's draw counts for one frame's main pass: `owned` is the main pass's draw calls by owner (index n is
+    /// tally n, robot n - 1; see `Renderer::owned_draws`) and `calls` its whole total.
+    pub fn draw_counts(&self, owned: &[u32], calls: u32) -> DrawCounts {
+        let robots = self
+            .robots
+            .iter()
+            .enumerate()
+            .map(|(i, r)| RobotCalls { species: r.species().id.clone(), calls: owned.get(i + 1).copied().unwrap_or(0) })
+            .collect();
+        DrawCounts { props: self.props, robots, calls }
+    }
+}
+
+/// The robot lab's draw calls of one frame's main pass, as its readout shows them (`Engine::lab_draws`): the props on
+/// screen, each robot's draws by species (in the lab's order), and the whole main pass. A robot's draws are those whose
+/// node is under its group. An instanced draw shared by several robots counts toward none of them (it is in `calls`).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct DrawCounts {
+    /// The props on screen: 0 on the species screen.
+    pub props: usize,
+    /// Each robot's species id and its draw calls, in the lab's order.
+    pub robots: Vec<RobotCalls>,
+    /// The main pass's draw calls, the whole frame.
+    pub calls: u32,
+}
+
+/// One robot's draw calls in the main pass.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct RobotCalls {
+    pub species: String,
+    pub calls: u32,
 }
 
 #[cfg(test)]
@@ -450,6 +494,42 @@ mod tests {
         assert_eq!(Cam::Front.view_prop(true), ([0.0, 8.0, 17.0], [0.0, 0.5, 0.0]));
         assert_eq!(Cam::Top.view_prop(false), ([0.0, 5.6, 0.9], [0.0, 0.6, 0.0]));
         assert_eq!(Cam::Side.view_prop(true), ([17.0, 5.0, 0.0], [0.0, 0.5, 0.0]));
+    }
+
+    /// Builds the lab on a fresh floor with the given options, on the test thread's own overrides; the floor is the
+    /// test's to frame.
+    fn build_on_floor(options: &[(&str, &str)]) -> (Floor, Option<Lab>) {
+        let vars = options.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        crate::set_env_overrides(vars);
+        let mut floor = Floor::new();
+        let lab = build(&mut floor);
+        crate::set_env_overrides(Default::default());
+        (floor, lab)
+    }
+
+    #[test]
+    fn a_line_up_reports_the_draws_of_each_robot() {
+        let (mut floor, lab) = build_on_floor(&[("APZ_ROBOT_LAB", "all")]);
+        let lab = lab.expect("the lab builds");
+        let n = lab.robots.len();
+        assert!(n >= 2, "the index lists {n} species, so the line-up has at least two robots");
+        assert!(crate::render::tallying(), "the lab turns the readout's count on");
+        let frame = floor.frame(1.0);
+        // Each draw counts toward the robot it was walked from: one tally per robot, none left out.
+        let mut owned = vec![0u32; n + 1];
+        for d in &frame.draws {
+            assert!((d.owner as usize) <= n, "owner {} names a robot of the lab", d.owner);
+            owned[d.owner as usize] += 1;
+        }
+        assert_eq!(owned[0], 0, "every draw of the line-up is a robot's");
+        let counts = lab.draw_counts(&owned, frame.draws.len() as u32);
+        assert_eq!(counts.props, 0, "the species screen has no props");
+        assert_eq!(counts.robots.len(), n);
+        for (i, r) in counts.robots.iter().enumerate() {
+            assert_eq!(r.species, lab.robots[i].species().id);
+            assert!(r.calls > 0, "{} draws its own meshes", r.species);
+        }
+        assert_eq!(counts.calls as usize, frame.draws.len());
     }
 
     /// Builds the lab with the given options, on the test thread's own overrides.

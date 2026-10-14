@@ -38,6 +38,26 @@ interface LabState {
   bg: string;
 }
 
+/** The robot lab's draw counts of the last frame's main pass, as the engine reports them (`lab_draws`). */
+interface DrawCounts {
+  props: number;
+  robots: { species: string; calls: number }[];
+  calls: number;
+}
+
+/**
+ * The readout line, in the three.js lab's wording: the species screen's draw calls per robot, or the prop screen's
+ * props, robots and whole-frame calls. Empty until the engine has drawn a robot lab frame.
+ */
+function drawReadout(s: LabState, json: string): string {
+  const c = JSON.parse(json) as Partial<DrawCounts>;
+  if (!c.robots) return '';
+  if (s.prop !== '') {
+    return `props: ${c.props} · robots: ${c.robots.length} · draw calls (main pass, whole frame): ${c.calls}`;
+  }
+  return `draw calls per robot (main pass): ${c.robots.map((r) => `${r.species} ${r.calls}`).join(' · ')}`;
+}
+
 function readState(hash: string): LabState {
   const q = new URLSearchParams(hash.split('?')[1] ?? '');
   const state = q.get('state') ?? '';
@@ -200,7 +220,7 @@ function mountLab(root: HTMLElement, cat: LabCatalog): Cleanup {
   const host = mountLabEngine(panel, startLabEngine, toOptions(s), undefined, () => 'display:block;width:100%;height:420px;border-radius:12px;touch-action:none');
   const tick = window.setInterval(() => {
     const live = host.engine();
-    stats.textContent = live ? `draw calls (last frame): ${live.draw_calls()}` : '';
+    stats.textContent = live ? drawReadout(s, live.lab_draws()) : '';
   }, 500);
 
   return () => {

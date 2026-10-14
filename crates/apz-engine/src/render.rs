@@ -35,6 +35,19 @@ pub fn light() -> bool {
     LIGHT.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+static TALLY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Turns the per-owner count of the main pass's draws on or off (the robot lab sets it; see [`Pipeline::owned_draws`]).
+/// Off, a frame counts nothing per owner, so the lab's readout costs nothing elsewhere.
+pub fn set_tally(on: bool) {
+    TALLY.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether the per-owner count of the main pass's draws is on.
+pub fn tallying() -> bool {
+    TALLY.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// `APZ_PERF`: the renderer's numbers, logged once a second: frames, CPU time per frame (the
 /// `prepare` work), draw calls, triangles and instances. The GPU time needs timestamp queries,
 /// which the host's device does not enable, so it is reported as not available.
@@ -213,6 +226,21 @@ impl Pipeline {
     /// The draw calls of the frame so far, all passes.
     pub fn draw_calls(&self) -> u32 {
         self.draw_breakdown().iter().sum()
+    }
+
+    /// The draw calls of the frame's main pass (the floor's scene passes: meshes, outlines, points, the fleet and the
+    /// animated batches; not the shadow map, the host's overlays or its blit). Set by `record`.
+    pub fn main_pass_calls(&self) -> u32 {
+        let [_, mesh, quad, _, _] = self.draw_breakdown();
+        mesh + quad
+    }
+
+    /// The main pass's draw calls by owner, when [`tallying`] is on: index n is the number of main-pass draws whose
+    /// owner is tally n (the lab's robot n-1, see `robots::lab`); index 0 is always 0. Instanced draws keep an owner
+    /// only when all their instances share it (see `scene::flatten_rigs_instanced`); the others count in
+    /// [`Pipeline::main_pass_calls`] alone. Empty when tallying is off.
+    pub fn owned_draws(&self) -> Vec<u32> {
+        self.owned.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     /// Counts one mesh or sprite draw by the program that selects its pipeline.
@@ -402,6 +430,8 @@ struct Cmd {
     rows: std::ops::Range<u32>,
     /// The draw's render order.
     order: i32,
+    /// The tally of the draw's node (see [`scene::Draw::owner`]); 0: none.
+    owner: u32,
 }
 
 struct GpuMesh {
@@ -980,6 +1010,9 @@ pub struct Pipeline {
     pub programs: [std::sync::atomic::AtomicU32; PROGRAM_COUNT],
     /// This frame's triangles drawn by the mesh passes (see [`DrawStats::triangles`]).
     pub tris: std::sync::atomic::AtomicU64,
+    /// This frame's main-pass draws by owner, when [`tallying`] is on: index n counts the draws of tally n (see
+    /// [`Pipeline::owned_draws`]). Filled by `record`; cleared by each `prepare`.
+    owned: std::sync::Mutex<Vec<u32>>,
 }
 
 impl Pipeline {
@@ -1247,6 +1280,7 @@ impl Pipeline {
             draws: Default::default(),
             programs: Default::default(),
             tris: std::sync::atomic::AtomicU64::new(0),
+            owned: std::sync::Mutex::new(Vec::new()),
             probe_corner: false,
         };
         // The white 1x1 map that unmapped materials sample (texture id 0).
@@ -1671,7 +1705,7 @@ impl Pipeline {
                     self.static_shadow.push((id, range.clone()));
                 }
             }
-            let cmd = Cmd { key, mesh, tex, rows: range, order: d.render_order };
+            let cmd = Cmd { key, mesh, tex, rows: range, order: d.render_order, owner: d.owner };
             if is_transparent(d, a) {
                 self.static_transparent.push((cmd, d.model.w_axis.truncate()));
             } else {
@@ -1801,6 +1835,7 @@ impl Primitive {
             count.store(0, std::sync::atomic::Ordering::Relaxed);
         }
         p.tris.store(0, std::sync::atomic::Ordering::Relaxed);
+        p.owned.get_mut().unwrap_or_else(|e| e.into_inner()).clear();
         let started = web_time::Instant::now();
         let full = (((bounds.width * scale).round() as u32).max(1), ((bounds.height * scale).round() as u32).max(1));
         let light = light();
@@ -1948,7 +1983,7 @@ impl Primitive {
             if !in_main {
                 continue;
             }
-            let cmd = Cmd { key, mesh, tex, rows: range, order: d.render_order };
+            let cmd = Cmd { key, mesh, tex, rows: range, order: d.render_order, owner: d.owner };
             if is_transparent(d, a) {
                 dyn_transparent.push((cmd, d.model.w_axis.truncate().distance(eye)));
             } else {
@@ -2173,6 +2208,8 @@ fn record(p: &Pipeline, device: &wgpu::Device, queue: &wgpu::Queue) {
             }
         }
     {
+            let tally = tallying();
+            let mut owned: Vec<u32> = Vec::new();
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("floor"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -2215,12 +2252,18 @@ fn record(p: &Pipeline, device: &wgpu::Device, queue: &wgpu::Queue) {
                         p.count(PASS_MESH);
                         p.count_tris(u64::from(mesh.count / 3) * u64::from(cmd.rows.end - cmd.rows.start));
                         p.count_program(cmd.key.prog);
+                        if tally {
+                            count_owned(&mut owned, cmd.owner);
+                        }
                         pass.draw_indexed(0..mesh.count, 0, cmd.rows.clone());
                     }
                     None if cmd.key.prog == Prog::Points => {
                         pass.set_vertex_buffer(0, rows.slice(..));
                         p.count(PASS_QUAD);
                         p.count_program(cmd.key.prog);
+                        if tally {
+                            count_owned(&mut owned, cmd.owner);
+                        }
                         pass.draw(0..6, cmd.rows.clone());
                     }
                     None => {}
@@ -2234,8 +2277,23 @@ fn record(p: &Pipeline, device: &wgpu::Device, queue: &wgpu::Queue) {
             for _ in 0..p.anim.draw(&mut pass) {
                 p.count(PASS_MESH);
             }
+            if tally {
+                *p.owned.lock().unwrap_or_else(|e| e.into_inner()) = owned;
+            }
         }
     queue.submit([encoder.finish()]);
+}
+
+/// Counts one main-pass draw toward tally `owner` (0: none, not counted).
+fn count_owned(owned: &mut Vec<u32>, owner: u32) {
+    if owner == 0 {
+        return;
+    }
+    let i = owner as usize;
+    if owned.len() <= i {
+        owned.resize(i + 1, 0);
+    }
+    owned[i] += 1;
 }
 
 #[cfg(test)]
@@ -2248,6 +2306,15 @@ mod tests {
             0, 0, 0, 255, 255, 255, 255, 255, 0, 0, 0, 255, 255, 255, 255, 255]);
         assert_eq!(levels.iter().map(|l| (l.0, l.1)).collect::<Vec<_>>(), vec![(4, 2), (2, 1), (1, 1)]);
         assert_eq!(levels[1].2[0], 127);
+    }
+
+    #[test]
+    fn main_pass_draws_count_toward_their_tally_and_not_toward_none() {
+        let mut owned = Vec::new();
+        for owner in [1, 2, 0, 2, 2] {
+            count_owned(&mut owned, owner);
+        }
+        assert_eq!(owned, vec![0, 1, 3], "index n is tally n; the unowned draw counts nowhere");
     }
 
     #[test]

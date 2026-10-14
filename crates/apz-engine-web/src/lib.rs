@@ -532,6 +532,16 @@ impl WebEngine {
         self.shared.borrow().engine.draw_stats().to_json()
     }
 
+    /// The robot lab's draw counts of the last drawn frame, as JSON (`apz_engine::robots::lab::DrawCounts`): `props`,
+    /// `robots` (each with its `species` and its main-pass `calls`), and `calls` (the main pass, the whole frame). `{}`
+    /// when no robot lab runs.
+    pub fn lab_draws(&self) -> String {
+        match self.shared.borrow().engine.lab_draws() {
+            Some(counts) => serde_json::to_string(&counts).unwrap_or_else(|_| "{}".to_string()),
+            None => "{}".to_string(),
+        }
+    }
+
     /// The floor's robots as the web's `__apzBots` reads them, JSON (see `apz_engine::debug`).
     pub fn bots_json(&self) -> String {
         self.shared.borrow().engine.stage.bots_json()
