@@ -9,6 +9,12 @@
 //!   POST   /v1/stations/join                  {code, facts, name?} → 201 {station, token}   (public; another machine only)
 //!   GET    /v1/stations/link                  (WebSocket, subprotocol apz.station.v1, Bearer station token; public)
 //!   GET    /v1/stations/audit?station=&limit= → [audit row], newest first (every station's when `station` is absent)
+//!   GET    /v1/stations/recordings?station=&limit=&before= → [Recording], newest first (`before` is a start in ms)
+//!   GET    /v1/stations/recordings/{id}       → Recording + `events` (its newest actions, oldest first)
+//!   GET    /v1/stations/recordings/{id}/frames/{seq} → the frame's JPEG (seq counts from 1)
+//!   DELETE /v1/stations/recordings/{id}       → {id, deleted} (not while its lease is open)
+//!   GET    /v1/stations/recording-defaults    → RecordingDefaults (for the stations that join from now on)
+//!   PUT    /v1/stations/recording-defaults    RecordingDefaults → the saved defaults
 //!   GET    /v1/stations                       → [StationView]
 //!   GET    /v1/stations/{id}                  → StationView
 //!   POST   /v1/stations/{id}/drain            → StationView (no new work; the link closes once its answers are in)
@@ -37,6 +43,8 @@ use serde_json::json;
 
 use super::leases::Kind;
 use super::ops::{self, Failure};
+use super::recordings;
+use crate::settings::RecordingDefaults;
 use crate::state::App;
 
 /// Who the owner's routes record as the actor of an action.
@@ -50,6 +58,12 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .post("/v1/stations/join", |app, req, _| join_route(app, req))
         .get("/v1/stations/link", |app, req, _| link_route(app, req))
         .get("/v1/stations/audit", |app, req, _| audit_route(app, req))
+        .get("/v1/stations/recordings", |app, req, _| recordings_list_route(app, req))
+        .get("/v1/stations/recordings/{id}", |app, _, p| recording_show_route(app, p.get("id")))
+        .get("/v1/stations/recordings/{id}/frames/{seq}", |app, _, p| recording_frame_route(app, p.get("id"), p.get("seq")))
+        .delete("/v1/stations/recordings/{id}", |app, _, p| recording_delete_route(app, p.get("id")))
+        .get("/v1/stations/recording-defaults", |app, _, _| Response::json(200, &app.settings.get().workstation_recordings))
+        .route("PUT", "/v1/stations/recording-defaults", |app, req, _| recording_defaults_route(app, req))
         .get("/v1/stations", |app, _, _| Response::json(200, &app.stations.views(apz_plaza::now_ms())))
         .get("/v1/stations/{id}", |app, _, p| show_route(app, p.get("id")))
         .post("/v1/stations/{id}/drain", |app, _, p| drain_route(app, p.get("id"), true))
@@ -181,6 +195,60 @@ fn audit_route(app: &App, req: &Request) -> Response {
     match app.db.station_audit(station, limit) {
         Ok(rows) => Response::json(200, &rows),
         Err(reason) => Response::error(500, &reason),
+    }
+}
+
+/// The recordings' list: `station`, `limit` (50 by default, at most 200) and `before` (a start in ms) are optional.
+fn recordings_list_route(app: &App, req: &Request) -> Response {
+    let limit = req.query_param("limit").and_then(|l| l.parse::<i64>().ok()).unwrap_or(50).clamp(1, 200);
+    let station = req.query_param("station").filter(|s| !s.is_empty());
+    let before = match req.query_param("before") {
+        Some(text) => match text.parse::<u64>() {
+            Ok(ms) => Some(ms),
+            Err(_) => return Response::error(400, "before is a time in milliseconds"),
+        },
+        None => None,
+    };
+    match recordings::list(app, station, before, limit) {
+        Ok(rows) => Response::json(200, &rows),
+        Err(reason) => Response::error(500, &reason),
+    }
+}
+
+fn recording_show_route(app: &App, id: &str) -> Response {
+    match recordings::detail(app, id) {
+        Ok(Some(detail)) => Response::json(200, &detail),
+        Ok(None) => Response::error(404, "no such recording"),
+        Err(reason) => Response::error(500, &reason),
+    }
+}
+
+fn recording_frame_route(app: &App, id: &str, seq: &str) -> Response {
+    let Ok(seq) = seq.parse::<u64>() else {
+        return Response::error(400, "a frame's seq is a number, counted from 1");
+    };
+    match recordings::frame(app, id, seq) {
+        Ok(Some(jpeg)) => Response::new(200, "image/jpeg", jpeg).with_header("x-content-type-options", "nosniff"),
+        Ok(None) => Response::error(404, "no such frame"),
+        Err(reason) => Response::error(500, &reason),
+    }
+}
+
+fn recording_delete_route(app: &App, id: &str) -> Response {
+    match recordings::remove(app, id, OWNER) {
+        Ok(rec) => Response::json(200, &json!({"id": rec.id, "deleted": true})),
+        Err(failure) => fail(failure),
+    }
+}
+
+fn recording_defaults_route(app: &App, req: &Request) -> Response {
+    let defaults: RecordingDefaults = match parse(req) {
+        Ok(defaults) => defaults,
+        Err(refusal) => return refusal,
+    };
+    match recordings::set_defaults(app, defaults, OWNER) {
+        Ok(saved) => Response::json(200, &saved),
+        Err(failure) => fail(failure),
     }
 }
 

@@ -16,6 +16,7 @@ use serde_json::{Value, json};
 
 use super::leases::{self, Kind, Lease, LeaseView, State};
 use super::link::{self, Hooks, StationLink};
+use super::recordings;
 use super::registry::{self, Refusal, Station};
 use super::takeover;
 use crate::state::App;
@@ -91,6 +92,11 @@ pub fn revoke_code(app: &App, id: &str, actor: &str) -> Result<(), Failure> {
 pub fn join(app: &App, source: &str, code: &str, facts: Facts, name: Option<&str>) -> Result<(String, String), Failure> {
     match app.stations.redeem(source, code, facts, name, &hub_host(), now()) {
         Ok((station, token)) => {
+            let defaults = app.settings.get().workstation_recordings;
+            if let Err(reason) = app.stations.set_settings(&station.id, recordings::join_settings(&defaults)) {
+                app.stations.undo_join(&station.id);
+                return Err(server_error(reason));
+            }
             let row = json!({"name": station.name, "code": station.code, "address": source, "hostname": station.facts.hostname});
             if let Err(e) = audit(app, Some(&station.id), None, "join", "station", row) {
                 app.stations.undo_join(&station.id);
@@ -116,6 +122,7 @@ pub fn revoke(app: &App, id: &str, actor: &str) -> Result<Station, Failure> {
         link.kill(1000, "revoked");
     }
     for lease in app.stations.leases.drop_station(id) {
+        recordings::end(app, id, &lease.id);
         let _ = audit(app, Some(id), Some(lease.agent), "lease_ended", actor, json!({"lease": lease.id, "reason": "revoked"}));
         app.bus.publish("lease_ended", &lease);
     }
@@ -198,6 +205,8 @@ pub fn open_lease(app: &App, station_id: &str, agent: u64, task: Option<String>,
     if view.lease.state == State::Queued {
         app.bus.publish("lease_waiting", &view);
     } else if kind == Kind::Shared {
+        // A pixel lease's recording begins when its session is granted (grant_next); a shared one is active now.
+        recordings::begin(app, station_id, &view);
         app.bus.publish("lease_granted", &view);
     }
     Ok(view)
@@ -227,6 +236,7 @@ fn release_with(app: &App, station_id: &str, lease_id: &str, agent: Option<u64>,
         return Err((403, "that lease belongs to another agent".into()));
     }
     app.stations.leases.remove(lease_id).ok_or((404, "no such lease".to_string()))?;
+    recordings::end(app, station_id, lease_id);
     let close_error = match (lease.kind, lease.session, app.stations.live(station_id)) {
         (Kind::Pixel, Some(session), Some(link)) => link.request(Op::SessionClose { session }, RPC_TIMEOUT).err(),
         _ => None,
@@ -263,6 +273,7 @@ pub fn grant_next(app: &App, station_id: &str) {
                 if app.stations.leases.granted(&lease.id, session) {
                     let _ = audit(app, Some(station_id), Some(lease.agent), "lease_granted", "station", json!({"lease": lease.id, "session": session}));
                     if let Some(view) = lease_view(app, &lease.id) {
+                        recordings::begin(app, station_id, &view);
                         app.bus.publish("lease_granted", &view);
                     }
                 } else {
@@ -314,6 +325,8 @@ pub fn freeze_all(app: &App, on: bool, actor: &str) {
 
 /// Starts the ticker: a station that came online or went offline since the last tick is announced on the bus.
 pub fn spawn(app: Arc<App>) {
+    recordings::spawn_sampler(&app);
+    recordings::spawn_sweep(&app);
     std::thread::spawn(move || {
         let mut seen: BTreeMap<String, bool> = BTreeMap::new();
         loop {
@@ -408,6 +421,7 @@ impl Hooks for Live<'_> {
                 takeover::session_ended(app, id, session);
                 if let Some(lease) = app.stations.leases.by_session(id, session) {
                     app.stations.leases.remove(&lease.id);
+                    recordings::end(app, id, &lease.id);
                     let _ = audit(app, Some(id), Some(lease.agent), "lease_ended", "station", json!({"lease": lease.id, "session": session, "reason": reason}));
                     app.bus.publish("lease_ended", &lease);
                     schedule_grant(app, id);
@@ -416,6 +430,7 @@ impl Hooks for Live<'_> {
             Event::OwnerInput { session } => {
                 takeover::owner_input(app, id, session);
                 let Some(lease) = app.stations.leases.by_session(id, session) else { return };
+                recordings::on_owner_input(app, &lease.id);
                 if app.stations.takeover_due(session, now(), TAKEOVER_AUDIT_MS) {
                     let _ = audit(app, Some(id), Some(lease.agent), "owner_input", "owner", json!({"lease": lease.id, "session": session}));
                 }

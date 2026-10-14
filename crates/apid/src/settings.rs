@@ -9,6 +9,7 @@ use std::sync::Mutex;
 
 use apz_gateway::ModelRef;
 use apz_http::{Response, Router};
+use apz_station::StationSettings;
 use apz_plaza::social::{self, Prune};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -105,10 +106,39 @@ pub struct Settings {
     /// Minutes a done task waits for a reviewer before the owner is asked to rule on it (an
     /// approval of kind `review`). 0 asks at the scheduler's next tick. See `scheduler.rs`.
     pub review_timeout_minutes: u32,
+    /// The recording settings a newly joined workstation starts with (`stations/recordings.rs`); a station's own
+    /// settings are edited on the station after that.
+    pub workstation_recordings: RecordingDefaults,
 }
 
 /// The default for `review_timeout_minutes`: half an hour.
 pub const DEFAULT_REVIEW_TIMEOUT_MINUTES: u32 = 30;
+
+/// A workstation's recording settings, as the hub's defaults hold them (the same fields as `StationSettings`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RecordingDefaults {
+    /// Whether a lease on the station is recorded.
+    pub record: bool,
+    /// How many days ended recordings are kept.
+    pub retention_days: u32,
+    /// Frames per second a pixel lease keeps (0: actions only; at most 5).
+    pub record_fps: u8,
+    /// Whether the owner's takeovers of a session are recorded too.
+    pub record_takeovers: bool,
+}
+
+impl Default for RecordingDefaults {
+    fn default() -> Self {
+        let station = StationSettings::default();
+        Self {
+            record: station.record,
+            retention_days: station.retention_days,
+            record_fps: station.record_fps,
+            record_takeovers: station.record_takeovers,
+        }
+    }
+}
 
 /// The Lab's settings. `hf_max_gb`: the most a Hugging Face import may download, in GiB.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -144,6 +174,7 @@ impl Default for Settings {
             foundry: FoundrySettings::default(),
             allow_training_models: false,
             review_timeout_minutes: DEFAULT_REVIEW_TIMEOUT_MINUTES,
+            workstation_recordings: RecordingDefaults::default(),
         }
     }
 }

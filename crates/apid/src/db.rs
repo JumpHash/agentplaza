@@ -43,6 +43,7 @@ pub mod files;
 pub mod data_migrate;
 pub mod hub_mcp;
 pub mod migrate;
+pub mod recordings;
 pub mod roster;
 pub mod sql;
 

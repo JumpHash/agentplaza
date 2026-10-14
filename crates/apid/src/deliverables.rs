@@ -263,6 +263,18 @@ impl Store {
         std::fs::read(self.object_path(key)?).map_err(|e| e.to_string())
     }
 
+    /// Deletes an object `put_object` wrote. A missing one is not an error.
+    pub fn delete_object(&self, key: &str) -> Result<(), String> {
+        if self.garage.is_some() {
+            return self.garage()?.delete(key);
+        }
+        match std::fs::remove_file(self.object_path(key)?) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
     /// `<dir>/objects/<key>`, for a key of plain segments only.
     fn object_path(&self, key: &str) -> Result<PathBuf, String> {
         if key.is_empty() || key.split('/').any(|s| s.is_empty() || s == "." || s == "..") {

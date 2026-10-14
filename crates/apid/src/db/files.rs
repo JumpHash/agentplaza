@@ -6,6 +6,12 @@
 //!   <state_dir>/infractions.jsonl              (newest) and infractions.1.jsonl, infractions.2.jsonl
 //!   <state_dir>/ide-audit.jsonl                (newest) and ide-audit.1.jsonl, ide-audit.2.jsonl
 //!   <state_dir>/station-audit.jsonl            (newest) and station-audit.1.jsonl, station-audit.2.jsonl
+//!   <state_dir>/station-recordings.jsonl       (newest) and .1, .2: the recordings' index, a put or a delete per line
+//!   <state_dir>/station-recording-events.jsonl (newest) and .1, .2: the recordings' actions
+//!
+//! The recordings' index is not append-only in Postgres (rows are updated and deleted), so here a line is a write:
+//! the newest line of an id is its state, and a delete line ends it. Listing reads the whole index (it is small: a line
+//! is a few hundred bytes), so a page costs the index's size, not the page's.
 //!
 //! An IDE audit line is the row as the route returns it (`{at_ms, actor, workspace, kind, ...}`), so a
 //! file from before the audit moved into this store reads as it did. The audit file is private (mode
@@ -20,7 +26,7 @@
 //! kept generations is forgotten, so a seq that old would be accepted again (the agents' seqs only
 //! grow, so this does not arise).
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -31,6 +37,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::Infraction;
+use crate::stations::recordings::{Event, Recording};
 
 /// The size at which a file rotates to its first generation.
 pub const ROTATE_BYTES: u64 = 32 * 1024 * 1024;
@@ -38,6 +45,10 @@ pub const ROTATE_BYTES: u64 = 32 * 1024 * 1024;
 pub const IDE_AUDIT_FILE: &str = "ide-audit.jsonl";
 /// The station audit's file in the state directory (stations/: owner actions and lease changes).
 pub const STATION_AUDIT_FILE: &str = "station-audit.jsonl";
+/// The recordings' index in the state directory (stations/recordings.rs).
+pub const STATION_RECORDINGS_FILE: &str = "station-recordings.jsonl";
+/// The recordings' actions in the state directory.
+pub const RECORDING_EVENTS_FILE: &str = "station-recording-events.jsonl";
 /// How much a backwards read takes from the file at a time.
 const CHUNK: u64 = 64 * 1024;
 
@@ -60,6 +71,29 @@ struct TranscriptIn {
     kind: String,
     at_ms: u64,
     data: Value,
+}
+
+/// One line of the recordings' index: the recording as written, or the deletion of an id.
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+enum RecordingLine {
+    Put { recording: Recording },
+    Delete { id: String },
+}
+
+/// One line of the recordings' actions: the recording's id, then the event's fields.
+#[derive(Serialize)]
+struct EventOut<'a> {
+    recording: &'a str,
+    #[serde(flatten)]
+    event: &'a Event,
+}
+
+#[derive(Deserialize)]
+struct EventIn {
+    recording: String,
+    #[serde(flatten)]
+    event: Event,
 }
 
 #[derive(Serialize)]
@@ -91,6 +125,8 @@ struct Open {
     infractions: Option<File>,
     ide_audit: Option<File>,
     station_audit: Option<File>,
+    station_recordings: Option<File>,
+    recording_events: Option<File>,
     /// The next infraction id (read lazily from the tail; ids start at 1, as a bigserial does).
     next_id: Option<u64>,
     /// Appended since the last `sync`.
@@ -133,6 +169,14 @@ impl Files {
 
     fn station_audit_path(&self) -> PathBuf {
         self.dir.join(STATION_AUDIT_FILE)
+    }
+
+    fn recordings_path(&self) -> PathBuf {
+        self.dir.join(STATION_RECORDINGS_FILE)
+    }
+
+    fn recording_events_path(&self) -> PathBuf {
+        self.dir.join(RECORDING_EVENTS_FILE)
     }
 
     /// Appends one transcript record. `Ok(false)` when `seq` is already stored for `cid`.
@@ -289,6 +333,130 @@ impl Files {
         self.audit_rows(&self.station_audit_path(), "station", station, limit)
     }
 
+    /// Writes one index line of the recordings: a recording as it stands (its start, or its end and counts).
+    pub fn put_recording(&self, recording: &Recording) -> Result<(), String> {
+        let line = RecordingLine::Put { recording: recording.clone() };
+        let mut guard = self.lock();
+        let open = &mut *guard;
+        self.append_audit(&mut open.station_recordings, &self.recordings_path(), &line)
+    }
+
+    /// Writes the deletion of a recording's index line (its events stay in their file until it rotates out).
+    pub fn delete_recording(&self, id: &str) -> Result<(), String> {
+        let line = RecordingLine::Delete { id: id.to_string() };
+        let mut guard = self.lock();
+        let open = &mut *guard;
+        self.append_audit(&mut open.station_recordings, &self.recordings_path(), &line)
+    }
+
+    /// One recording as the index holds it now, or None when it was never written or was deleted.
+    pub fn recording(&self, id: &str) -> Result<Option<Recording>, String> {
+        let _guard = self.lock();
+        self.recording_unlocked(id).map_err(text)
+    }
+
+    /// `recording` for a caller that holds the lock: the newest line of `id` decides, so the scan stops there.
+    fn recording_unlocked(&self, id: &str) -> io::Result<Option<Recording>> {
+        let mut answer = None;
+        let mut settled = false;
+        for file in generations(&self.recordings_path()) {
+            if settled {
+                break;
+            }
+            for_each_line_rev(&file, self.chunk, |line| match serde_json::from_slice::<RecordingLine>(line) {
+                Ok(RecordingLine::Put { recording }) if recording.id == id => {
+                    answer = Some(recording);
+                    settled = true;
+                    false
+                }
+                Ok(RecordingLine::Delete { id: gone }) if gone == id => {
+                    settled = true;
+                    false
+                }
+                _ => true,
+            })?;
+        }
+        Ok(answer)
+    }
+
+    /// The state of every recording the index holds (the newest line of each id), by id; deleted ones are left out.
+    fn recordings_latest(&self) -> io::Result<Vec<Recording>> {
+        let mut seen: BTreeMap<String, Option<Recording>> = BTreeMap::new();
+        for file in generations(&self.recordings_path()) {
+            for_each_line_rev(&file, self.chunk, |line| {
+                match serde_json::from_slice::<RecordingLine>(line) {
+                    Ok(RecordingLine::Put { recording }) => {
+                        seen.entry(recording.id.clone()).or_insert(Some(recording));
+                    }
+                    Ok(RecordingLine::Delete { id }) => {
+                        seen.entry(id).or_insert(None);
+                    }
+                    Err(_) => {}
+                }
+                true
+            })?;
+        }
+        Ok(seen.into_values().flatten().collect())
+    }
+
+    /// Recordings, newest first (by start, then id): one workstation's when `station` is given, and only those
+    /// started before `before` (ms) when it is given.
+    pub fn recordings(&self, station: Option<&str>, before: Option<u64>, limit: i64) -> Result<Vec<Recording>, String> {
+        let limit = limit.max(0) as usize;
+        let _guard = self.lock();
+        let mut rows = self.recordings_latest().map_err(text)?;
+        rows.retain(|r| station.is_none_or(|wanted| r.station == wanted) && before.is_none_or(|b| r.started_ms < b));
+        rows.sort_by(|a, b| (b.started_ms, &b.id).cmp(&(a.started_ms, &a.id)));
+        rows.truncate(limit);
+        Ok(rows)
+    }
+
+    /// The recordings of one workstation that ended before `cutoff` (or never ended and started before it), oldest
+    /// first: the retention sweep's list.
+    pub fn recordings_expired(&self, station: &str, cutoff: u64) -> Result<Vec<Recording>, String> {
+        let _guard = self.lock();
+        let mut rows = self.recordings_latest().map_err(text)?;
+        rows.retain(|r| r.station == station && r.ended_ms.unwrap_or(r.started_ms) < cutoff);
+        rows.sort_by(|a, b| (a.started_ms, &a.id).cmp(&(b.started_ms, &b.id)));
+        Ok(rows)
+    }
+
+    /// Appends one action to a recording's events and fsyncs it (the same contract as the audits).
+    pub fn append_recording_event(&self, recording: &str, event: &Event) -> Result<(), String> {
+        let line = EventOut { recording, event };
+        let mut guard = self.lock();
+        let open = &mut *guard;
+        self.append_audit(&mut open.recording_events, &self.recording_events_path(), &line)
+    }
+
+    /// The newest `limit` actions of a recording, oldest first. Nothing when the recording is not in the index (a
+    /// deleted one's events are unreachable, as Postgres' cascade makes them).
+    pub fn recording_events(&self, recording: &str, limit: i64) -> Result<Vec<Event>, String> {
+        let limit = limit.max(0) as usize;
+        let _guard = self.lock();
+        if self.recording_unlocked(recording).map_err(text)?.is_none() {
+            return Ok(Vec::new());
+        }
+        let mut rows: Vec<Event> = Vec::new();
+        for file in generations(&self.recording_events_path()) {
+            if rows.len() >= limit {
+                break;
+            }
+            for_each_line_rev(&file, self.chunk, |line| {
+                if let Ok(row) = serde_json::from_slice::<EventIn>(line) {
+                    if row.recording == recording {
+                        rows.push(row.event);
+                    }
+                }
+                rows.len() < limit
+            })
+            .map_err(text)?;
+        }
+        rows.truncate(limit);
+        rows.reverse();
+        Ok(rows)
+    }
+
     /// Fsyncs the files written since the last call (the periodic saver runs it).
     pub fn sync(&self) -> Result<(), String> {
         let mut open = self.lock();
@@ -336,7 +504,7 @@ impl Files {
     }
 
     /// Appends one audit row to `path` (private, mode 0600) and fsyncs it. The caller holds the lock.
-    fn append_audit(&self, slot: &mut Option<File>, path: &Path, row: &Value) -> Result<(), String> {
+    fn append_audit<T: Serialize>(&self, slot: &mut Option<File>, path: &Path, row: &T) -> Result<(), String> {
         let line = to_line(row)?;
         self.append_line(slot, path, &line, true).map_err(text)?;
         match slot.as_ref() {

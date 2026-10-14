@@ -6,6 +6,7 @@
 //! - `link`: one station's live link: requests and their answers by id, event fan-out, the loop that serves it.
 //! - `leases`: an agent's claim on a station, the pixel capacity of a machine, and the queue.
 //! - `ops`: the actions with the rest of the hub: the audit, the hello and events, grants, STOP ALL, the ticker.
+//! - `recordings`: a lease's recording (its actions, its frames in Garage), the sampler and the retention sweep.
 //! - `api`: the routes, listed in its module docs.
 //! - `screen`: the live view (`WS .../screen`) and the thumbnails; the viewers of a session share one stream.
 //! - `control`: the owner's takeover socket (`WS .../control`): take, input, give back.
@@ -19,6 +20,7 @@ mod control;
 mod leases;
 mod link;
 mod ops;
+pub mod recordings;
 mod registry;
 mod screen;
 mod takeover;

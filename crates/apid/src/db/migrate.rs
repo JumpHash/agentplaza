@@ -56,6 +56,10 @@ pub const MIGRATIONS: &[Migration] = &[Migration {
     version: 9,
     name: "station_audit",
     sql: include_str!("../../sql/migrations/0009_station_audit.sql"),
+}, Migration {
+    version: 10,
+    name: "station_recordings",
+    sql: include_str!("../../sql/migrations/0010_station_recordings.sql"),
 }];
 
 /// The advisory lock every runner takes: "APZMIG" in ASCII. Fixed for the life of the schema.
@@ -231,14 +235,14 @@ mod tests {
 
     /// The three rows a fresh run records: 0001, 0002 and 0003.
     fn both_applied() -> Vec<(i32, String, String)> {
-        vec![(1, "init".to_string(), checksum(MIGRATIONS[0].sql)), (2, "common".to_string(), checksum(MIGRATIONS[1].sql)), (3, "agents".to_string(), checksum(MIGRATIONS[2].sql)), (4, "hub_mcp".to_string(), checksum(MIGRATIONS[3].sql)), (5, "hub_mcp_modes".to_string(), checksum(MIGRATIONS[4].sql)), (6, "prompts".to_string(), checksum(MIGRATIONS[5].sql)), (7, "skills".to_string(), checksum(MIGRATIONS[6].sql)), (8, "ide_audit".to_string(), checksum(MIGRATIONS[7].sql)), (9, "station_audit".to_string(), checksum(MIGRATIONS[8].sql))]
+        vec![(1, "init".to_string(), checksum(MIGRATIONS[0].sql)), (2, "common".to_string(), checksum(MIGRATIONS[1].sql)), (3, "agents".to_string(), checksum(MIGRATIONS[2].sql)), (4, "hub_mcp".to_string(), checksum(MIGRATIONS[3].sql)), (5, "hub_mcp_modes".to_string(), checksum(MIGRATIONS[4].sql)), (6, "prompts".to_string(), checksum(MIGRATIONS[5].sql)), (7, "skills".to_string(), checksum(MIGRATIONS[6].sql)), (8, "ide_audit".to_string(), checksum(MIGRATIONS[7].sql)), (9, "station_audit".to_string(), checksum(MIGRATIONS[8].sql)), (10, "station_recordings".to_string(), checksum(MIGRATIONS[9].sql))]
     }
 
     #[test]
     fn applies_on_an_empty_database() {
         let Some(url) = fresh("applies_on_empty") else { return };
         let mut client = connect(&url);
-        assert_eq!(migrate(&mut client), Ok(vec![1, 2, 3, 4, 5, 6, 7, 8, 9]));
+        assert_eq!(migrate(&mut client), Ok(vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]));
         assert_eq!(applied(&mut client), both_applied());
         assert!(describe(&mut client).is_some_and(|d| d.contains("column plaza_state.component")));
     }
@@ -247,7 +251,7 @@ mod tests {
     fn rerunning_is_a_no_op() {
         let Some(url) = fresh("rerun") else { return };
         let mut client = connect(&url);
-        assert_eq!(migrate(&mut client), Ok(vec![1, 2, 3, 4, 5, 6, 7, 8, 9]));
+        assert_eq!(migrate(&mut client), Ok(vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]));
         let before = describe(&mut client);
         assert_eq!(migrate(&mut client), Ok(vec![]));
         assert_eq!(migrate(&mut client), Ok(vec![]));
@@ -268,7 +272,7 @@ mod tests {
             .expect("a row written by the old code");
         let legacy_before = describe(&mut legacy);
 
-        assert_eq!(migrate(&mut legacy), Ok(vec![1, 2, 3, 4, 5, 6, 7, 8, 9]), "0001 records as applied over the legacy tables");
+        assert_eq!(migrate(&mut legacy), Ok(vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]), "0001 records as applied over the legacy tables");
         assert_eq!(applied(&mut legacy), both_applied());
         let kept: String = legacy.query_one(sql::STATE_GET, &[&"apz_legacy_component"]).expect("the old row").get(0);
         assert_eq!(serde_json::from_str::<serde_json::Value>(&kept).unwrap(), serde_json::json!({ "kept": true }));
@@ -283,9 +287,9 @@ mod tests {
     fn a_changed_applied_migration_refuses() {
         let Some(url) = fresh("tampered") else { return };
         let mut client = connect(&url);
-        assert_eq!(migrate(&mut client), Ok(vec![1, 2, 3, 4, 5, 6, 7, 8, 9]));
+        assert_eq!(migrate(&mut client), Ok(vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]));
 
-        let edited = [Migration { version: 1, name: "init", sql: "-- edited after it was applied\n" }, Migration { version: 2, name: "common", sql: MIGRATIONS[1].sql }, Migration { version: 3, name: "agents", sql: MIGRATIONS[2].sql }, Migration { version: 4, name: "hub_mcp", sql: MIGRATIONS[3].sql }, Migration { version: 5, name: "hub_mcp_modes", sql: MIGRATIONS[4].sql }, Migration { version: 6, name: "prompts", sql: MIGRATIONS[5].sql }, Migration { version: 7, name: "skills", sql: MIGRATIONS[6].sql }, Migration { version: 8, name: "ide_audit", sql: MIGRATIONS[7].sql }, Migration { version: 9, name: "station_audit", sql: MIGRATIONS[8].sql }];
+        let edited = [Migration { version: 1, name: "init", sql: "-- edited after it was applied\n" }, Migration { version: 2, name: "common", sql: MIGRATIONS[1].sql }, Migration { version: 3, name: "agents", sql: MIGRATIONS[2].sql }, Migration { version: 4, name: "hub_mcp", sql: MIGRATIONS[3].sql }, Migration { version: 5, name: "hub_mcp_modes", sql: MIGRATIONS[4].sql }, Migration { version: 6, name: "prompts", sql: MIGRATIONS[5].sql }, Migration { version: 7, name: "skills", sql: MIGRATIONS[6].sql }, Migration { version: 8, name: "ide_audit", sql: MIGRATIONS[7].sql }, Migration { version: 9, name: "station_audit", sql: MIGRATIONS[8].sql }, Migration { version: 10, name: "station_recordings", sql: MIGRATIONS[9].sql }];
         let error = migrate_with(&mut client, &edited).expect_err("a changed applied migration must refuse");
         assert!(error.contains("0001_init.sql"), "{error}");
         assert!(error.contains("applied migrations are immutable: add a new migration instead"), "{error}");
@@ -324,7 +328,7 @@ mod tests {
             .collect();
         let results: Vec<Result<Vec<i32>, String>> = runners.into_iter().map(|t| t.join().expect("runner thread")).collect();
         let total: Vec<i32> = results.into_iter().flat_map(|r| r.expect("both runners succeed")).collect();
-        assert_eq!(total, vec![1, 2, 3, 4, 5, 6, 7, 8, 9], "exactly one runner applies every migration");
+        assert_eq!(total, vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10], "exactly one runner applies every migration");
         assert_eq!(applied(&mut connect(&url)).len(), MIGRATIONS.len());
     }
 }

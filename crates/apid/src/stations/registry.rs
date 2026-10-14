@@ -106,6 +106,8 @@ pub struct Store {
     pub screen: super::screen::Live,
     /// The sessions the owner has taken, and the policies in force on them (takeover.rs).
     pub taken: super::takeover::Sessions,
+    /// The recordings of the open leases (their index rows are in the database, see `recordings`).
+    pub recordings: super::recordings::Recordings,
     /// When each session's owner input was last audited (a takeover is one row per window, not one per key).
     takeovers: Mutex<BTreeMap<u64, u64>>,
     /// The last link generation handed out.
