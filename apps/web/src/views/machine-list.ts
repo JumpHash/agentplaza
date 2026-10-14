@@ -1,7 +1,8 @@
 // The machines as a list, shared by the Machines and Nodes screens. A row shows the machine's
-// picture (a 160 x 120 thumbnail) with its facts and load bars. Opening a row grows its panel
-// open and morphs the picture into the live 3D stage; closing reverses it. One row is open at a
-// time. The stage is a singleton: only the open row holds its canvas.
+// picture (a 160 x 120 thumbnail, drawn by the Rust engine) with its facts and load bars. Opening
+// a row grows its panel open, and the engine's live 3D view fills the row's stage slot; closing
+// hides it. One row is open at a time, and the engine's one stage canvas sits over the open row.
+// A build without the engine shows each row's line-art picture instead.
 
 import '../styles/ops.css';
 import '../styles/machine-list.css';
@@ -10,8 +11,8 @@ import { agentName, roleLabel } from '../roles';
 import { ago, badge, button, type Tone } from '../ui/components';
 import { deviceVisual } from '../ui/devices';
 import { h, icon, replace } from '../ui/dom';
-import { lookOf } from './floor3d/machine-model';
-import { getStage, specKey, THUMB_H, THUMB_W, thumbnail, type PictureSpec, type Stage } from './floor3d/machine-stage';
+import { lookOf } from './machine-look';
+import { specKey, THUMB_H, THUMB_W, type PictureSpec } from './machine-picture';
 import { engineWanted, isEngineStopped, startEngineStage, startThumbEngine, type EngineStage } from './engine-mount';
 
 export type Stats = NonNullable<MachineNode['stats']>;
@@ -92,7 +93,7 @@ export function normalizeMachines(fetched: MachineNode[] | null): MachineNode[] 
   }));
 }
 
-/** The picture a machine is drawn as: the same spec the stage and the thumbnails take. */
+/** The picture a machine is drawn as: the same spec the engine's thumbnails take. */
 export function specOf(m: MachineNode): PictureSpec {
   return { kind: m.kind, vendor: m.vendor ?? null, memory_mib: m.memory_mib, gpus: m.gpus.map((g) => ({ vendor: g.vendor })) };
 }
@@ -578,10 +579,6 @@ interface Box {
 interface Anim {
   kind: 'open' | 'close';
   it: Item;
-  /** The canvas flies between the thumbnail and the stage slot (false: only the panel grows). */
-  flight: boolean;
-  pic: Box;
-  slot: Box;
   h0: number;
   h1: number;
   t0: number;
@@ -589,7 +586,6 @@ interface Anim {
 
 const DURATION_MS = 600;
 const thumbs = new Map<string, string | null>();
-const prepared = new Set<string>();
 
 const pixelRatio = (): number => Math.min(2, Math.max(1, window.devicePixelRatio || 1));
 const reducedMotion = (): boolean => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true;
@@ -620,30 +616,6 @@ function pngOf(rgba: Uint8Array, w: number, h: number): string | null {
   if (!ctx) return null;
   ctx.putImageData(new ImageData(new Uint8ClampedArray(rgba), w, h), 0, 0);
   return c.toDataURL('image/png');
-}
-
-/** The three.js thumbnail, for the page without ?engine=wasm: the PNG of the shared renderer, else the line art. */
-function paintThreeThumb(it: Item): void {
-  const spec = it.row.spec;
-  if (!spec) return;
-  const k = specKey(spec);
-  if (it.picKey === k) return;
-  const pr = pixelRatio();
-  const ck = `${k}@${pr}`;
-  let url = thumbs.get(ck);
-  if (url === undefined) {
-    url = thumbnail(spec, pr);
-    thumbs.set(ck, url);
-  }
-  showThumb(it, k, url);
-}
-
-function prepare(spec: PictureSpec): void {
-  if (engineWanted()) return; // the engine draws the rows: no three.js stage
-  const k = specKey(spec);
-  if (prepared.has(k)) return;
-  prepared.add(k);
-  getStage()?.prepare(spec);
 }
 
 function placeCanvas(c: HTMLCanvasElement, x: number, y: number, w: number, h: number, transform: string, interactive: boolean): void {
@@ -699,13 +671,9 @@ export function machineList(): MachineList {
   let desired: string | null = null;
   let openKey: string | null = null;
   let anim: Anim | null = null;
-  // The stage, while a row holds its canvas, and the open row's stage slot.
-  let held: Stage | null = null;
-  let openBox: Box | null = null;
-  // The wasm engine's stage for the open row (under ?engine=wasm): its canvas sits over the row's stage slot.
+  // The engine's stage for the open row: its canvas sits over the row's stage slot.
   let eng: { canvas: HTMLCanvasElement; stage: EngineStage } | null = null;
   let raf = 0;
-  let lastNow = 0;
   let destroyed = false;
   let uid = 0;
   // The thumbnail engine (no row open): one per page, started when a thumbnail waits and destroyed once the queue drains.
@@ -770,10 +738,9 @@ export function machineList(): MachineList {
       });
   }
 
-  /** Paints a row's thumbnail: from the engine under ?engine=wasm (no three.js renderer is made), else from three.js. */
+  /** Paints a row's thumbnail from the engine (a build without the engine keeps the line art). */
   const paintThumb = (it: Item): void => {
     if (engineWanted()) requestThumb(it);
-    else paintThreeThumb(it);
   };
 
   const rel = (el: Element): Box => {
@@ -844,7 +811,7 @@ export function machineList(): MachineList {
     if (want !== it.want) {
       it.want = want;
       it.picKey = null;
-      if (row.spec) {
+      if (row.spec && engineWanted()) {
         replace(it.pic); // the empty box until its thumbnail is drawn
         if (it.visible) wantThumb(it);
       } else {
@@ -894,12 +861,6 @@ export function machineList(): MachineList {
         choose(key);
       }
     });
-    const prime = (): void => {
-      const spec = items.get(key)?.row.spec;
-      if (spec) prepare(spec);
-    };
-    summary.addEventListener('pointerenter', prime);
-    summary.addEventListener('pointerdown', prime);
     byPic.set(pic, it);
     io.observe(pic);
     return it;
@@ -933,49 +894,29 @@ export function machineList(): MachineList {
       const it = items.get(openKey);
       if (it) {
         paintDetail(it);
-        relayout();
+        placeEngine();
       }
     }
   };
 
   // ---- the stage: the open row's canvas ----
 
-  // Keeps the stage slot on the canvas when the list's width changes.
-  function relayout(): void {
-    if (!held || openKey === null || anim) return;
-    const it = items.get(openKey);
-    if (!it || !it.onStage) return;
-    const slotEl = it.inner.querySelector<HTMLElement>('.mlist-stage-slot');
-    if (!slotEl) return;
-    const box = rel(slotEl);
-    const prev = openBox;
-    openBox = box;
-    placeCanvas(held.canvas, box.x, box.y, box.w, box.h, 'none', true);
-    if (!prev || prev.w !== box.w || prev.h !== box.h) held.resize({ w: box.w, h: box.h }, pixelRatio());
-  }
-
+  // Keeps the engine's canvas on the stage slot when the list's width changes.
   let lastWidth = -1;
   const ro = new ResizeObserver((entries) => {
     const w = entries[0]?.contentRect.width ?? 0;
     if (w === lastWidth) return;
     lastWidth = w;
-    if (!anim) relayout();
+    if (!anim) placeEngine();
   });
   ro.observe(root);
 
   // Frees the stage at once (a removed row, or the list's end): no animation.
   function hardReset(): void {
     stopEngine();
-    if (held) {
-      held.orbit(false);
-      held.canvas.remove();
-      held.release();
-      held = null;
-    }
     anim = null;
     openKey = null;
     desired = null;
-    openBox = null;
   }
 
   /** The open row's engine canvas: over its stage slot, faded in once the engine has drawn its first frame. */
@@ -1011,62 +952,24 @@ export function machineList(): MachineList {
   }
 
   function beginOpen(it: Item): void {
-    const spec = it.row.spec;
-    // Under ?engine=wasm the open row's orbit is the engine's: the three.js stage (and its renderer) is not touched.
+    // The open row's 3D view is the engine's: a row with no machine id opens its panel with no view.
     const engineId = engineWanted() ? it.row.machineId : null;
-    const st = spec && engineId === null ? getStage() : null;
     openKey = it.key;
-    it.onStage = (st !== null && spec !== null) || engineId !== null;
+    it.onStage = engineId !== null;
     it.panel.hidden = false;
     paintDetail(it);
     const h1 = it.panel.scrollHeight;
     it.summary.setAttribute('aria-expanded', 'true');
-    const pr = pixelRatio();
-    const pic = rel(it.pic);
-    const slotEl = it.inner.querySelector<HTMLElement>('.mlist-stage-slot');
-    const slot = slotEl ? rel(slotEl) : { x: 0, y: 0, w: THUMB_W, h: THUMB_H };
-    openBox = slot;
     if (engineId !== null) {
       stopThumbStage(); // one engine per page: the row's engine takes over the thumbnails
       startEngineRow(engineId);
     }
-
-    if (st && spec && reducedMotion()) {
-      // No animation: the final state at once.
-      held = st;
-      st.place(spec, { w: slot.w, h: slot.h }, pr);
-      st.pose(1);
-      placeCanvas(st.canvas, slot.x, slot.y, slot.w, slot.h, 'none', true);
-      root.append(st.canvas);
-      st.orbit(true);
-      it.el.classList.add('is-open');
-      it.panel.style.height = 'auto';
-      ensureLoop();
-      return;
-    }
-    if (st && spec) {
-      // The canvas starts exactly over the thumbnail, drawn in the same pose 0 pixels.
-      held = st;
-      st.place(spec, { w: THUMB_W, h: THUMB_H }, pr);
-      // Origin at the list's corner: the frames move it by absolute translates from the thumbnail's box.
-      placeCanvas(st.canvas, 0, 0, THUMB_W, THUMB_H, `translate(${pic.x}px, ${pic.y}px) scale(1)`, false);
-      root.append(st.canvas);
-      it.el.classList.add('is-open');
-      anim = { kind: 'open', it, flight: true, pic, slot, h0: 0, h1, t0: performance.now() };
-    } else {
-      anim = { kind: 'open', it, flight: false, pic, slot, h0: 0, h1, t0: performance.now() };
-    }
+    anim = { kind: 'open', it, h0: 0, h1, t0: performance.now() };
     ensureLoop();
   }
 
   function finishOpen(a: Anim): void {
     a.it.panel.style.height = 'auto';
-    if (a.flight && held) {
-      held.resize({ w: a.slot.w, h: a.slot.h }, pixelRatio());
-      held.pose(1);
-      placeCanvas(held.canvas, a.slot.x, a.slot.y, a.slot.w, a.slot.h, 'none', true);
-      held.orbit(true);
-    }
   }
 
   function beginClose(it: Item): void {
@@ -1074,33 +977,19 @@ export function machineList(): MachineList {
       eng.canvas.style.opacity = '0';
       eng.canvas.style.pointerEvents = 'none';
     }
-    const flight = held !== null && it.onStage;
     const h0 = it.panel.getBoundingClientRect().height;
-    const pic = rel(it.pic);
     paintThumb(it); // the row's picture is in place under the canvas when it lands
-    const slot = openBox ?? { x: 0, y: 0, w: THUMB_W, h: THUMB_H };
-    if (flight && held) {
-      held.orbit(false);
-      const s = slot.w / THUMB_W;
-      placeCanvas(held.canvas, 0, 0, THUMB_W, THUMB_H, `translate(${slot.x}px, ${slot.y}px) scale(${s})`, false);
-    }
     it.panel.style.height = `${h0}px`;
     if (reducedMotion()) {
       finishClose(it);
       return;
     }
-    anim = { kind: 'close', it, flight, pic, slot, h0, h1: 0, t0: performance.now() };
+    anim = { kind: 'close', it, h0, h1: 0, t0: performance.now() };
     ensureLoop();
   }
 
   function finishClose(it: Item): void {
     stopEngine();
-    if (held) {
-      held.canvas.remove();
-      held.release();
-      held = null;
-    }
-    openBox = null;
     it.el.classList.remove('is-open');
     it.summary.setAttribute('aria-expanded', 'false');
     it.panel.style.height = '0px';
@@ -1136,10 +1025,10 @@ export function machineList(): MachineList {
     if (needsLoop()) ensureLoop();
   }
 
-  // ---- the frame loop: morph steps, and the live stage's ticks while a row is open ----
+  // ---- the frame loop: the panel's morph steps, and the engine's canvas over the open row ----
 
   function needsLoop(): boolean {
-    return anim !== null || (held !== null && openKey !== null) || (eng !== null && openKey !== null);
+    return anim !== null || (eng !== null && openKey !== null);
   }
 
   function ensureLoop(): void {
@@ -1149,32 +1038,19 @@ export function machineList(): MachineList {
   function frame(now: number): void {
     raf = 0;
     if (destroyed) return;
-    const dt = lastNow ? Math.min(100, now - lastNow) : 16;
-    lastNow = now;
     const a = anim;
     if (a) {
       const t = Math.min(1, (now - a.t0) / DURATION_MS);
-      const e = easeInOutCubic(t);
-      a.it.panel.style.height = `${lerp(a.h0, a.h1, e)}px`;
-      if (a.flight && held) {
-        // p runs 0 (the thumbnail) to 1 (the stage slot); a close runs it back.
-        const p = a.kind === 'open' ? e : 1 - e;
-        const s = a.slot.w / THUMB_W;
-        held.canvas.style.transform = `translate(${lerp(a.pic.x, a.slot.x, p)}px, ${lerp(a.pic.y, a.slot.y, p)}px) scale(${lerp(1, s, p)})`;
-        held.pose(p);
-      }
+      a.it.panel.style.height = `${lerp(a.h0, a.h1, easeInOutCubic(t))}px`;
       if (t >= 1) {
         anim = null;
         if (a.kind === 'open') finishOpen(a);
         else finishClose(a.it);
         settle();
       }
-    } else if (held && openKey !== null) {
-      held.tick(dt);
     }
     placeEngine();
     if (!raf && needsLoop()) raf = requestAnimationFrame(frame);
-    if (!needsLoop()) lastNow = 0;
   }
 
   // Escape closes the open row.
