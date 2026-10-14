@@ -68,6 +68,24 @@ filters, fields, tabs, form checks, keyboard, empty and error states, and live u
 | Machines | the desktop's diagnostics and live stats on the web | web |
 | Sign-in | sign out on the web | web |
 
+## Third pass (2026-10-14)
+
+What landed on 2026-10-14. Each row gives the file and line where the feature lives in each app.
+
+| Screen | What | Web | Desktop | Commit |
+|---|---|---|---|---|
+| Usage | "Used by" column: where each model is used (default, orchestrator, role) | `apps/web/src/views/usage.ts:675` (column), `:412` (`settingsUses`) | `apps/desktop/src/console/screens/usage.rs:1217` (header), `:1232` (value), `:598` (`settings_uses`); the desktop had it already | bf6db01 (web) |
+| Usage | An unpriced model links to Models to set a price | `apps/web/src/views/usage.ts:686` (link "set a price under Models") | `apps/desktop/src/console/screens/usage.rs:1235` (the same link, `Msg::Go(Id::Models)`) | bf6db01 (desktop) |
+| Models | Each model's price on a provider's model list | `apps/web/src/views/models-providers.ts:144` (`api.price`), `:145` (rates line); the key is encoded by `apps/web/src/api.ts:579` | `apps/desktop/src/console/screens/models.rs:424` (`model_prices`), `:565-566` (path from `price_path`), `:572-580` (`Msg::Price`), `:1164` (`price_path`, percent-encodes the key), `:1500-1501` (the line) | bf6db01, 2816382 |
+| Treasury | "see usage" link on the real model cost | `apps/web/src/views/treasury.ts:699` (the link under the cost tile) | `apps/desktop/src/console/screens/treasury.rs:687` (`Msg::Go(Id::Usage)` on the cost tile), `:761` (the link) | bf6db01 |
+| Rules | Edit button on an owner rule | `apps/web/src/views/rules.ts:537` (Edit button per rule) | `apps/desktop/src/console/screens/rules.rs:1401` (Edit button in `rule_row`) | bf6db01 |
+| Tools | Connector Docs link opens the docs. The desktop opens https only (`openable`, `apps/desktop/src/console/ui.rs:983`); the web opens http too | `apps/web/src/views/tools.ts:274` (connector link), `:427` (proposal link, http or https) | `apps/desktop/src/console/screens/tools.rs:935` (connector link), `:1053` (proposal link), `:614` (`Msg::OpenDocs`) | bf6db01 |
+| Robot lab | Clips list (shared and species clips), draw-call readout | `apps/web/src/views/robot-lab.ts:106` (`clipsOf`), `:144` (clip choices), `:203` (readout) | `apps/desktop/src/console/screens/engine_lab.rs:352-357` (clip list), `:365` (Clip select), `:431-432` (readout); `apps/desktop/src/console/floor_engine.rs:16`, `:108` (`LAST_DRAW_CALLS`) | bf6db01, 37902f8 |
+| Room lab | Width, depth and seed commit on Enter, and clamp | `apps/web/src/views/room-lab.ts:143-144`, `:152` (commit on change: Enter or blur; an out-of-range value keeps the last one, `readNum` at `:71`, rather than clamping) | `apps/desktop/src/console/screens/engine_lab.rs:380-383` (fields), `:294-300` (`number`, `on_submit`), `:208-215` (`number_value`, clamps to 1 to 12 and rounds to halves) | bf6db01 |
+| Hardware lab | GPU buttons "0 GPUs / 1 GPU / 2 GPUs", open slider step 0.01, params sorted, readout red on errors | `apps/web/src/views/hardware-lab.ts:148` (GPU buttons), `:155` (open step), `:165` (params sorted), `:220` (red on errors) | `apps/desktop/src/console/screens/engine_lab.rs:393` (GPU buttons), `:396` (open step), `:402` (params sorted), `:440` (error flag), `:450` (summary red) | bf6db01 |
+
+The desktop screens were checked by self-snapshot (APZ_SNAPSHOT) against a stand-in hub. The robot lab reads 117 draw calls on the default all-species view.
+
 ## Out of scope
 
 **Hidden labs.** The hardware, robot and room labs are developer tools behind hidden routes on the web and environment
