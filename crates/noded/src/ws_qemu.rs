@@ -808,6 +808,9 @@ mod tests {
         }
     }
 
+    // QEMU runs only on a Linux node (`detect` refuses elsewhere): this asserts the KVM command line and its unix QMP
+    // socket, which only exist there. A Windows host has no `-qmp unix:` socket to build.
+    #[cfg(target_os = "linux")]
     #[test]
     fn a_linux_plaza_disk_boots_directly_on_kvm_with_vsock_and_no_nic() {
         let dir = dir_plan();

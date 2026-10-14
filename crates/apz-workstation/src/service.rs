@@ -20,7 +20,7 @@ use apz_station::Os;
 
 use crate::account::{self, home_for};
 use crate::facts::host_os;
-use crate::plan::Plan;
+use crate::plan::{Plan, join_for};
 use crate::state::RECORD_FILE;
 
 /// The systemd unit's name (without `.service`).
@@ -67,9 +67,11 @@ pub fn service_state_dir(spec: &ServiceSpec) -> PathBuf {
     }
     match spec.os {
         Os::Linux => PathBuf::from(LINUX_AGENT_STATE),
-        Os::Macos => spec
-            .run_as_home
-            .join("Library/Application Support/AgentPlaza Workstation"),
+        Os::Macos => join_for(
+            Os::Macos,
+            &spec.run_as_home,
+            "Library/Application Support/AgentPlaza Workstation",
+        ),
         // ProgramData is shared on Windows: the record stays put, and the agents' account is granted it.
         Os::Windows => spec.state_dir.clone(),
     }
@@ -93,8 +95,7 @@ pub fn plan_remove(spec: &ServiceSpec) -> Plan {
     };
     // The agents' copy of the record must go too, or the agents' daemon keeps the old token.
     if spec.is_agent_account() && spec.os != Os::Windows {
-        let record = service_state_dir(spec)
-            .join(RECORD_FILE)
+        let record = join_for(spec.os, &service_state_dir(spec), RECORD_FILE)
             .display()
             .to_string();
         plan.run("rm", &["-f", record.as_str()]);
@@ -186,9 +187,11 @@ fn uid_of(user: &str) -> Option<u32> {
 }
 
 fn launch_agent_path(spec: &ServiceSpec) -> PathBuf {
-    spec.run_as_home
-        .join("Library/LaunchAgents")
-        .join(format!("{LAUNCHD_LABEL}.plist"))
+    join_for(
+        spec.os,
+        &spec.run_as_home,
+        &format!("Library/LaunchAgents/{LAUNCHD_LABEL}.plist"),
+    )
 }
 
 fn plan_linux(spec: &ServiceSpec) -> Plan {
@@ -213,8 +216,10 @@ fn plan_linux(spec: &ServiceSpec) -> Plan {
                 state_text.as_str(),
             ],
         );
-        let record = spec.state_dir.join(RECORD_FILE).display().to_string();
-        let target = state.join(RECORD_FILE).display().to_string();
+        let record = join_for(spec.os, &spec.state_dir, RECORD_FILE)
+            .display()
+            .to_string();
+        let target = join_for(spec.os, &state, RECORD_FILE).display().to_string();
         plan.run(
             "install",
             &[
@@ -272,9 +277,7 @@ fn plan_macos(spec: &ServiceSpec) -> Plan {
     if spec.is_agent_account() {
         let user = spec.run_as.as_str();
         plan.privileged = true;
-        let agents = spec
-            .run_as_home
-            .join("Library/LaunchAgents")
+        let agents = join_for(Os::Macos, &spec.run_as_home, "Library/LaunchAgents")
             .display()
             .to_string();
         plan.run(
@@ -294,8 +297,10 @@ fn plan_macos(spec: &ServiceSpec) -> Plan {
                 state_text.as_str(),
             ],
         );
-        let record = spec.state_dir.join(RECORD_FILE).display().to_string();
-        let target = state.join(RECORD_FILE).display().to_string();
+        let record = join_for(spec.os, &spec.state_dir, RECORD_FILE)
+            .display()
+            .to_string();
+        let target = join_for(spec.os, &state, RECORD_FILE).display().to_string();
         plan.run(
             "install",
             &[

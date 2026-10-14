@@ -1252,6 +1252,16 @@ mod tests {
         dir
     }
 
+    /// An absolute image path on this node. The check asks the host what "absolute" means, so a Windows node takes a
+    /// drive path.
+    fn node_image() -> &'static str {
+        if cfg!(windows) {
+            r"C:\srv\win.img"
+        } else {
+            "/srv/win.img"
+        }
+    }
+
     fn request(os: Os) -> CreateWorkstation {
         CreateWorkstation {
             name: "desk-1".into(),
@@ -1261,7 +1271,7 @@ mod tests {
             disk_gb: 40,
             gpu: Gpu::None,
             image: if os == Os::Windows {
-                Some("/srv/win.img".into())
+                Some(node_image().into())
             } else {
                 None
             },

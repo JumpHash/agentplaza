@@ -5,8 +5,23 @@
 //! printed form is `shown`, and a failure names the program and its status, never the arguments.
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+
+use apz_station::Os;
+
+/// `leaf` under `dir`, as a path in `os`'s own syntax. Linux and macOS paths always join with `/`, whatever separator
+/// the host uses, so a plan for a Unix target reads the same on every host (a Windows host's `Path::join` would give
+/// `/home/agentplaza\AgentPlaza`). A Windows target keeps the host's join.
+pub fn join_for(os: Os, dir: &Path, leaf: &str) -> PathBuf {
+    match os {
+        Os::Windows => dir.join(leaf),
+        Os::Linux | Os::Macos => PathBuf::from(format!(
+            "{}/{leaf}",
+            dir.to_string_lossy().trim_end_matches('/')
+        )),
+    }
+}
 
 /// One thing a plan does.
 #[derive(Debug, Clone, PartialEq, Eq)]

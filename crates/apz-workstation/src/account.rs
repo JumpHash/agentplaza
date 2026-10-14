@@ -12,7 +12,7 @@ use apz_station::{AccountMode, Os};
 
 use crate::cli::AccountArg;
 use crate::facts::host_os;
-use crate::plan::Plan;
+use crate::plan::{Plan, join_for};
 
 /// The user name setup proposes for the agents.
 pub const DEFAULT_AGENT_USER: &str = "agentplaza";
@@ -139,8 +139,8 @@ pub fn validate_user(user: &str) -> Result<(), String> {
 /// The new user's home on each OS. Windows puts profiles under the system drive.
 pub fn home_for(os: Os, user: &str, system_drive: &str) -> PathBuf {
     match os {
-        Os::Linux => PathBuf::from("/home").join(user),
-        Os::Macos => PathBuf::from("/Users").join(user),
+        Os::Linux => join_for(Os::Linux, Path::new("/home"), user),
+        Os::Macos => join_for(Os::Macos, Path::new("/Users"), user),
         Os::Windows => PathBuf::from(format!("{system_drive}\\Users")).join(user),
     }
 }
@@ -164,7 +164,7 @@ pub fn plan_agent_user(
     exists: bool,
     password: &str,
 ) -> Plan {
-    let work = home.join(WORK_FOLDER);
+    let work = join_for(os, home, WORK_FOLDER);
     let work_text = work.display().to_string();
     let mut plan = Plan {
         privileged: true,
