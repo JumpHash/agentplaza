@@ -39,6 +39,9 @@ pub struct State {
     sending: bool,
     note: Option<String>,
     chat_error: Option<String>,
+    /// A load is in flight; hub events that arrive meanwhile only mark `again`.
+    loading: bool,
+    again: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -53,6 +56,8 @@ pub enum Msg {
     Send,
     /// The chat message was accepted or refused.
     Sent(Result<Value, String>),
+    /// A hub event: the roster or the transcript changed.
+    Event(crate::console::events::Event),
 }
 
 #[derive(Debug, Clone)]
@@ -117,8 +122,15 @@ pub fn go(msg: &Msg) -> Option<Id> {
     }
 }
 
-/// Loads the screen's data (called when it opens and on every poll tick).
+/// The hub's events while the screen is open: the web refreshes the fleet on `agent` and `work`
+/// frames and the feed on `transcript` frames.
+pub fn subscription(ctx: &Ctx) -> iced::Subscription<Msg> {
+    crate::console::events::subscription(&ctx.client).map(Msg::Event)
+}
+
+/// Loads the screen's data (called when it opens, on every poll tick and on a hub event).
 pub fn load(state: &mut State, ctx: &Ctx) -> Task<Msg> {
+    state.loading = true;
     let client = ctx.client.clone();
     let cursors = state.cursors.clone();
     client::task(
@@ -158,10 +170,22 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             state.overview = Some(snap.overview);
             state.agents = snap.agents;
             state.error = None;
+            return landed(state, ctx);
         }
         Msg::Loaded(Err(e)) => {
             state.overview = None;
             state.error = Some(e);
+            return landed(state, ctx);
+        }
+        Msg::Event(event) => {
+            if !matches!(event.kind.as_str(), "agent" | "work" | "transcript") {
+                return Task::none();
+            }
+            if state.loading {
+                state.again = true;
+                return Task::none();
+            }
+            return load(state, ctx);
         }
         Msg::Goal(action) => state.goal.perform(action),
         Msg::Send => {
@@ -192,6 +216,16 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         }
     }
     Task::none()
+}
+
+/// A load landed: one more runs if hub events came in while it was in flight.
+fn landed(state: &mut State, ctx: &Ctx) -> Task<Msg> {
+    state.loading = false;
+    if std::mem::take(&mut state.again) {
+        load(state, ctx)
+    } else {
+        Task::none()
+    }
 }
 
 pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {

@@ -37,6 +37,9 @@ pub struct State {
     role_filter: Option<String>,
     status_filter: StatusFilter,
     pub wizard: wizard::Wizard,
+    /// A load is in flight; hub events that arrive meanwhile only mark `again`.
+    loading: bool,
+    again: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -51,6 +54,8 @@ pub enum Msg {
     Stop(u64),
     Acted(Result<(), String>, &'static str),
     Wizard(WizardMsg),
+    /// A hub event: the roster changed.
+    Event(crate::console::events::Event),
 }
 
 /// The status filter's choices, as the web's select offers them.
@@ -164,10 +169,26 @@ pub fn go(msg: &Msg) -> Option<Id> {
     }
 }
 
-/// Loads the screen's data (called when it opens and on every poll tick).
-pub fn load(_state: &mut State, ctx: &Ctx) -> Task<Msg> {
+/// The hub's events while the screen is open: the web refreshes the roster on `agent` and `work` frames.
+pub fn subscription(ctx: &Ctx) -> iced::Subscription<Msg> {
+    crate::console::events::subscription(&ctx.client).map(Msg::Event)
+}
+
+/// Loads the screen's data (called when it opens, on every poll tick and on a hub event).
+pub fn load(state: &mut State, ctx: &Ctx) -> Task<Msg> {
+    state.loading = true;
     let client = ctx.client.clone();
     client::task(move || client.get::<Value>("/v1/agents"), Msg::Loaded)
+}
+
+/// A load landed: one more runs if hub events came in while it was in flight.
+fn landed(state: &mut State, ctx: &Ctx) -> Task<Msg> {
+    state.loading = false;
+    if std::mem::take(&mut state.again) {
+        load(state, ctx)
+    } else {
+        Task::none()
+    }
 }
 
 pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
@@ -181,11 +202,21 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             }
             state.agents = Some(list);
             state.error = None;
-            Task::none()
+            landed(state, ctx)
         }
         Msg::Loaded(Err(e)) => {
             state.error = Some(e);
-            Task::none()
+            landed(state, ctx)
+        }
+        Msg::Event(event) => {
+            if !matches!(event.kind.as_str(), "agent" | "work") {
+                return Task::none();
+            }
+            if state.loading {
+                state.again = true;
+                return Task::none();
+            }
+            load(state, ctx)
         }
         Msg::SetRole(role) => {
             state.role_filter = role;

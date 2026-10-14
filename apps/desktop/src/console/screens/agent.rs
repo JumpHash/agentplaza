@@ -66,6 +66,8 @@ pub struct State {
     pub agent: Option<Value>,
     pub profile: Option<Value>,
     pub infractions: Vec<Value>,
+    /// The last infractions request failed: the headline says so instead of a count.
+    pub infractions_failed: bool,
     pub infractions_all: bool,
     pub entries: Vec<Value>,
     pub last_seq: u64,
@@ -96,7 +98,14 @@ pub struct Snapshot {
     pub cid: u64,
     pub agent: Value,
     pub entries: Vec<Value>,
-    pub extras: Option<(Option<Value>, Vec<Value>)>,
+    pub extras: Option<Extras>,
+}
+
+/// The slower reads of a poll: the profile, and the infractions (or why they did not load).
+#[derive(Debug, Clone)]
+pub struct Extras {
+    pub profile: Option<Value>,
+    pub infractions: Result<Vec<Value>, String>,
 }
 
 #[derive(Debug, Clone)]
@@ -245,8 +254,8 @@ fn fetch(client: &client::Client, cid: u64, after: u64, extras: bool) -> Result<
     entries.sort_by_key(|e| u(e, "seq"));
     let extras = extras.then(|| {
         let profile = client.get::<Value>(&format!("/v1/agents/{cid}/profile")).ok();
-        let infractions = client.get::<Vec<Value>>(&format!("/v1/agents/{cid}/infractions")).unwrap_or_default();
-        (profile, infractions)
+        let infractions = client.get::<Vec<Value>>(&format!("/v1/agents/{cid}/infractions"));
+        Extras { profile, infractions }
     });
     Ok(Snapshot { cid, agent, entries, extras })
 }
@@ -276,9 +285,19 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                             grew = true;
                         }
                     }
-                    if let Some((profile, infractions)) = snap.extras {
+                    if let Some(Extras { profile, infractions }) = snap.extras {
                         state.profile = profile;
-                        state.infractions = infractions;
+                        match infractions {
+                            Ok(list) => {
+                                state.infractions = list;
+                                state.infractions_failed = false;
+                            }
+                            Err(_) => {
+                                // Nothing stale under a headline that says the list is unavailable.
+                                state.infractions.clear();
+                                state.infractions_failed = true;
+                            }
+                        }
                     }
                 }
                 Ok(_) => {}
@@ -692,6 +711,8 @@ fn profile_card<'a>(state: &'a State, a: &'a Value) -> Element<'a, Msg> {
     let n = state.infractions.len();
     let headline: Element<'a, Msg> = if state.extras_at.is_none() {
         ui::faint("Loading…").into()
+    } else if state.infractions_failed {
+        ui::faint("Infractions unavailable").into()
     } else if n == 0 {
         ui::badge("No infractions", ui::Tone::Ok)
     } else {

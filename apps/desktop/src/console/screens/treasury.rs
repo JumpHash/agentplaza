@@ -191,19 +191,20 @@ pub enum Range {
     #[default]
     Month,
     Quarter,
-    /// The last year: the series is bucketed by day, so "all" is bounded here.
+    /// Since the first account was created (see `window_from`).
     All,
 }
 
 impl Range {
     const ALL: [(Range, &'static str); 4] = [(Range::Week, "7 d"), (Range::Month, "30 d"), (Range::Quarter, "90 d"), (Range::All, "All")];
 
-    fn days(self) -> u64 {
+    /// The window's length in days; `All` has none of its own.
+    fn days(self) -> Option<u64> {
         match self {
-            Range::Week => 7,
-            Range::Month => 30,
-            Range::Quarter => 90,
-            Range::All => 365,
+            Range::Week => Some(7),
+            Range::Month => Some(30),
+            Range::Quarter => Some(90),
+            Range::All => None,
         }
     }
 
@@ -311,14 +312,23 @@ pub fn subscription(state: &State, ctx: &Ctx) -> Subscription<Msg> {
 /// when it opens and on every poll tick).
 pub fn load(state: &mut State, ctx: &Ctx) -> Task<Msg> {
     state.loading = true;
-    let to = now_ms() as u64;
-    let query = Query { from: to.saturating_sub(state.range.days() * DAY_MS), to, bucket: state.range.bucket(), filter: state.filter.clone() };
+    let query = Query { range: state.range, to: now_ms() as u64, bucket: state.range.bucket(), filter: state.filter.clone() };
     let client = ctx.client.clone();
     client::task(move || fetch(&client, &query), Msg::Loaded)
 }
 
+/// The window's start, as the web's `windowOf`: `All` reaches back to the first account (at least a day,
+/// at most 1999 days); the other ranges are their fixed length.
+fn window_from(range: Range, to: u64, first_at: u64) -> u64 {
+    let days = match range.days() {
+        Some(days) => days,
+        None => to.saturating_sub(first_at).div_ceil(DAY_MS).clamp(1, 1999),
+    };
+    to.saturating_sub(days * DAY_MS)
+}
+
 struct Query {
-    from: u64,
+    range: Range,
     to: u64,
     bucket: &'static str,
     filter: JournalFilter,
@@ -326,10 +336,13 @@ struct Query {
 
 fn fetch(c: &Client, q: &Query) -> Result<Snapshot, String> {
     let treasury: Value = c.get("/v1/treasury")?;
+    // The first account's creation time, as the web's `firstAt`: `now` when there is none.
+    let first_at = list(&treasury, "accounts").iter().map(|a| num(a, "created_at") as u64).min().unwrap_or(q.to);
+    let from = window_from(q.range, q.to, first_at);
     let wallets: Value = c.get("/v1/treasury/wallets")?;
     let roster: Value = c.get("/v1/agents")?;
-    let series: Value = c.get(&format!("/v1/treasury/series?from={}&to={}&bucket={}", q.from, q.to, q.bucket))?;
-    let usage: Value = c.get(&format!("/v1/usage/summary?from={}&to={}", q.from, q.to))?;
+    let series: Value = c.get(&format!("/v1/treasury/series?from={}&to={}&bucket={}", from, q.to, q.bucket))?;
+    let usage: Value = c.get(&format!("/v1/usage/summary?from={}&to={}", from, q.to))?;
     let page = journal_page(c, &q.filter, None)?;
     let mut data = Data::parse(&treasury, &wallets, &roster, &series, &usage);
     // Earned and spent come from each wallet's agent profile; a profile that fails leaves them out (shown as a dash).
@@ -2016,6 +2029,19 @@ mod tests {
 
     fn ids(v: &[Entry]) -> Vec<i64> {
         v.iter().map(|e| e.id).collect()
+    }
+
+    #[test]
+    fn all_starts_at_the_first_account_as_the_web_does() {
+        let to = 3_000 * DAY_MS;
+        // Ten days and a millisecond old rounds up to eleven days.
+        assert_eq!(window_from(Range::All, to, to - 10 * DAY_MS - 1), to - 11 * DAY_MS);
+        // No account (first_at == now) still spans a day.
+        assert_eq!(window_from(Range::All, to, to), to - DAY_MS);
+        // Older than the cap: 1999 days.
+        assert_eq!(window_from(Range::All, to, 0), to - 1999 * DAY_MS);
+        assert_eq!(window_from(Range::Month, to, 0), to - 30 * DAY_MS);
+        assert_eq!(window_from(Range::Week, to, 0), to - 7 * DAY_MS);
     }
 
     #[test]

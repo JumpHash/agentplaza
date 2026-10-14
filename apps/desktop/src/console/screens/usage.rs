@@ -531,10 +531,7 @@ fn fetch(c: &Client, q: Query) -> Result<Data, String> {
     let settings: SettingsView = c.get("/v1/settings")?;
     let mut prices = q.cache;
     for model in models_in_use(&summary, &settings) {
-        if !prices.contains_key(&model) {
-            let found = c.get::<Priced>(&format!("/v1/prices/{}", enc(&model))).ok().map(|p| p.price);
-            prices.insert(model, found);
-        }
+        prices.entry(model).or_insert_with_key(|model| price_of(c, model));
     }
     let head = if q.want_head { c.get::<PriceHead>("/v1/prices").ok() } else { None };
     let kinds: Vec<serde_json::Value> = c.get("/v1/provider-kinds").unwrap_or_default();
@@ -550,6 +547,31 @@ fn fetch(c: &Client, q: Query) -> Result<Data, String> {
         head,
         trains: trains_models(&kinds),
     })
+}
+
+/// A model's price: its exact id, else the id without its `@effort` suffix (the web's `priceOf`).
+fn price_of(c: &Client, model: &str) -> Option<Price> {
+    let get = |id: &str| c.get::<Priced>(&format!("/v1/prices/{}", enc(id))).ok().map(|p| p.price);
+    get(model).or_else(|| model.split_once('@').and_then(|(base, _)| get(base)))
+}
+
+/// Dollars the cache reads saved against the full input price, over the models with known prices, and
+/// whether every model with cache reads had one (the web's `cacheSaving`).
+fn cache_saving(by_model: &[Group], prices: &BTreeMap<String, Option<Price>>) -> (f64, bool) {
+    let mut saved = 0.0;
+    let mut complete = true;
+    for m in by_model.iter().filter(|m| m.totals.cache_read > 0) {
+        match prices.get(&m.key).and_then(Option::as_ref).and_then(|p| Some((p.input, p.cache_read?))) {
+            Some((input, cache_read)) => saved += m.totals.cache_read as f64 * (input - cache_read).max(0.0) / 1e6,
+            None => complete = false,
+        }
+    }
+    (saved, complete)
+}
+
+/// Whether `model` is a contributor model: `provider/model`, with any `@effort` suffix left off (the web's `isTrainer`).
+fn trains_on_data(d: &Data, model: &str) -> bool {
+    d.trains.contains(model.split('@').next().unwrap_or(model))
 }
 
 /// The contributor models the provider presets flag (`options.trains_on_data`), as `provider/model`.
@@ -954,6 +976,12 @@ fn tiles<'a>(state: &'a State, d: &'a Data, now: Instant) -> Element<'a, Msg> {
     let spark: Vec<f64> = d.timeline.points.iter().map(|p| p.totals.usd).collect();
     let spend_note = format!("reported {} · estimated {}", usd(t.cost_usd), usd(t.est_usd));
     let calls_note = if t.calls == 0 { "no calls in this range yet" } else { "in this range" };
+    let cache_note = if t.cache_read == 0 {
+        "no cache reads yet".to_string()
+    } else {
+        let (saved, complete) = cache_saving(&d.summary.by_model, &d.prices);
+        format!("{} cached tokens saved ~{}{}", compact(t.cache_read as f64), usd(saved), if complete { "" } else { " (partly priced)" })
+    };
     row![
         tile(usd(c.usd.at(now)), "Spend", spend_note, Some(chart::sparkline(spark, crate::theme::palette().signal))),
         tile(
@@ -962,7 +990,7 @@ fn tiles<'a>(state: &'a State, d: &'a Data, now: Instant) -> Element<'a, Msg> {
             format!("cache read {} · write {}", compact(t.cache_read as f64), compact(t.cache_write as f64)),
             None,
         ),
-        tile(pct(c.hit.at(now) / 100.0), "Cache hit rate", "of input served from cache".to_string(), None),
+        tile(pct(c.hit.at(now) / 100.0), "Cache hit rate", cache_note, None),
         tile(commas(&(c.calls.at(now).round() as u64).to_string()), "Calls", calls_note.to_string(), None),
     ]
     .spacing(12)
@@ -1078,7 +1106,7 @@ fn table<'a>(state: &'a State, d: &'a Data) -> Element<'a, Msg> {
     let mut lines = column![head].spacing(8);
     for g in rows {
         let share = if total_value > 0.0 { state.unit.value(&g.totals) / total_value } else { 0.0 };
-        let trains = matches!(state.group, GroupBy::Model) && d.trains.contains(&g.key);
+        let trains = matches!(state.group, GroupBy::Model) && trains_on_data(d, &g.key);
         lines = lines.push(table_row(state.group.display(&g.key, &d.agents), trains, &g.totals, Some(share)));
     }
     lines = lines.push(table_row("Total".to_string(), false, &d.summary.totals, None));
@@ -1182,7 +1210,7 @@ fn calls_card<'a>(state: &'a State, d: &'a Data) -> Element<'a, Msg> {
             cell(3, false, txt(stamp(c.at_ms))),
             cell(3, false, txt(agent)),
             cell(2, false, txt(c.role.clone())),
-            cell(4, false, with_badge(txt(c.model.clone()), d.trains.contains(&c.model))),
+            cell(4, false, with_badge(txt(c.model.clone()), trains_on_data(d, &c.model))),
             cell(2, true, txt(compact(c.input as f64))),
             cell(2, true, txt(compact(c.output as f64))),
             cell(2, true, txt(compact(c.cache_read as f64))),
