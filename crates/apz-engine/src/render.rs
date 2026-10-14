@@ -144,6 +144,9 @@ pub struct DrawStats {
     pub textures: u32,
     /// The render pipelines the renderer has built.
     pub pipelines: u32,
+    /// The mesh bytes uploaded to the GPU so far (vertices and indices, every upload since the start): a steady view
+    /// adds nothing.
+    pub uploaded: u64,
     pub programs: ProgramStats,
 }
 
@@ -225,6 +228,7 @@ impl Pipeline {
             geometries: self.meshes.len() as u32,
             textures: self.textures.len() as u32,
             pipelines: self.pipelines.len() as u32,
+            uploaded: MESH_UPLOAD_BYTES.load(std::sync::atomic::Ordering::Relaxed),
             ..DrawStats::from_counts(self.draw_breakdown(), programs)
         }
     }

@@ -30,7 +30,7 @@ flag. The `floor3d/**` paths below are the retired sources; the Rust code is in 
 | 19 | Nav overlay `?nav=1` (`nav-overlay.ts`) | done: `world/nav_overlay.rs` (`?nav=1` on the web, `APZ_NAV_OVERLAY=1` on the desktop) |
 | 20 | Debug hooks (`__apzLookAt`, `__apzLifts`, `__apzNavCell`, `__apzScene` …) | done: every hook reads the engine (`debug.rs`), `__apzLiftRide` included |
 | 21 | Cutaway of tall parts over the plaza (the web fix of 2026-10-13) | done (`over_area`, 15 % as on the web) |
-| 22 | Performance budget (≤300 machines, ≤400 board, 0 frames at rest) | done for the Machines view: 217 draw items (budget test on), 246 draws on the Floor in the browser; fans, LEDs and screens animate on the GPU from per-machine state; the board view's budget is not measured yet |
+| 22 | Performance budget (≤300 machines, ≤400 board, 0 frames at rest) | done for the Machines view: 222 draw items (budget test on; the shadow casters bake apart), 246 draws on the Floor in the browser; fans, LEDs and screens animate on the GPU from per-machine state; the board view's budget is not measured yet |
 
 ## Beyond three.js (engine only)
 
@@ -58,3 +58,31 @@ flag. The `floor3d/**` paths below are the retired sources; the Rust code is in 
 5. The nav overlay (`?nav=1`).
 6. **Done (`987394f`).** The wasm engine is the web's default (no `?engine=wasm`); the three.js renderers, their pure-TS
    cores that only they used, their tests and the `three` dependency are deleted.
+
+## The side-by-side audit (2026-10-14)
+
+The three.js build (`338f89c`) and the engine build were loaded on the same routes and the same stand-in hub, their
+screenshots compared side by side, their debug hooks called and their scenes measured. What it found and fixed:
+
+- **Labs.** The orbit's Floor limits (polar 0.2–1.3, distance 6–300) applied in the labs, where three's OrbitControls
+  had none: a lone robot's close level view and the room lab's straight-down view were pushed out and tilted. The labs'
+  canvases, key light, shadow camera and ShadowMaterial ground are three's; the robot lab's line-up spacing and facing
+  too; the room lab's roles are in roles.json's order and `window.__roomLab` is back.
+- **Shadows.** The shadow map was never cleared in a scene with no casters from the start (all in shadow). Board and
+  exterior parts never cast or took shadows: hardware.ts `shadowsFor` (bounding radius ≥ 2, no decals) is ported.
+- **Board view.** `reset_view` was an older floor.ts: it is now `fitView` (the occupied rooms' box, at least 0.3 of
+  the board, grown 15 %, up to the built rooms' top, along the board's camera anchor, higher on a big board), with the
+  haze at 0.8 and 3 times the distance. The rooms were an older terrace 0.5 above the slot (robots stood half a unit into
+  the floor): they are board-rooms.ts `restingSlab` plates on the board's support field, with columns, and the nav
+  bakes its walk heights from the drawn tops. A crowded board grows to the shared layout's `board_scale`.
+- **Machines view.** The ring was an older fleet.ts with x and z swapped (a mirror image), ids sorted as text, no
+  chord or hub minimum, and machines turned by their angle rather than their port: `ringLayout`, `facingAngle` and the
+  numeric `byId` are ported, and the status ring is the 0.4 band at a pulsing 0.6–0.9 opacity.
+- **Tags.** Every robot and machine tag is floor.ts's `LABEL_CSS` tag (Martian Mono 600 10.5px); the selected agent no
+  longer gets a larger box, and a hovered idle agent shows its tag.
+- **Hooks.** `__apzBots`, `__apzLifts`, `__apzPerf` and `__apzGroundAudit` return the three.js build's shapes;
+  `__apzScene` (three's Scene object) is the engine's frame counts; `__apzCamera` is new.
+- **Layout.** The engine's board layout is `apz-board`'s, not the retired board-layout.ts: the TS layout failed on the
+  two- and four-GPU workstations of the fixture and grew other boards differently, so its numbers are not a target.
+- **Lifts on hardware.** On lumen in a WebGPU browser on the GPU, two robots sent through lift 0 boarded, rode the cab
+  (body `lift`, cab rising) and got off at the other level.

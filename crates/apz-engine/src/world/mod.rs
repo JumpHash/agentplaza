@@ -142,6 +142,8 @@ pub struct Board {
     pub status: Status,
     /// The board's group in the root: the built parts, the copper and the pulses.
     pub obj: Obj,
+    /// The model's group under `obj` (the built parts, copper, atom, pulses and glow plates), at the layout's world scale.
+    pub model_obj: Obj,
     pub built: Built,
     /// The atom's animation, when the board has an atom anchor.
     pub atom: Option<Anim>,
@@ -387,10 +389,19 @@ impl Floor {
                 center: Vec3::new(0.0, b.model.size[1] * 0.5, 0.0),
                 radius: 0.5 * Vec3::from(b.model.size).length(),
             }),
-            fades: Arc::new(self.board.as_ref().map(|b| b.built.fades.clone()).unwrap_or_default()),
+            // The cutaways' boxes and the atom are the model's, at the board's world scale.
+            fades: Arc::new(
+                self.board
+                    .as_ref()
+                    .map(|b| {
+                        let s = b.layout.scale;
+                        b.built.fades.iter().map(|f| scene::Fade { id: f.id, min: f.min * s, max: f.max * s }).collect()
+                    })
+                    .unwrap_or_default(),
+            ),
             plaza: self.plaza_area(),
             anim_batches: Arc::clone(&self.anim_batches),
-            focus: self.board.as_ref().and_then(|b| b.model.anchors.atom).map(Vec3::from),
+            focus: self.board.as_ref().and_then(|b| b.model.anchors.atom.map(|a| Vec3::from(a) * b.layout.scale)),
         }
     }
 

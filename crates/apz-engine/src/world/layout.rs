@@ -530,16 +530,20 @@ impl Floor {
         // The built parts are the machine's own (its id, model and params): a machine shown again takes them from the cache.
         let cache_key = board_key(&self.machine_id, &key, &params);
         let built = take_board(&mut self.boards, &cache_key, || hardware::build(model, &params));
+        // floor.ts buildBoard: the model, its copper, atom, pulses and glow plates in one group at the layout's world
+        // scale (`sync` sets it); the walkways join `obj` beside it, in the layout's units already.
         let obj = Obj::group();
-        obj.add(&built.root);
-        obj.add(&hardware::traces(model));
+        let model_obj = Obj::group();
+        obj.add(&model_obj);
+        model_obj.add(&built.root);
+        model_obj.add(&hardware::traces(model));
         // The atom's wrap is the child `place_atom` appends: its node is kept for the ENTER's glow.
-        let before = obj.get().children.len();
-        let atom = hardware::place_atom(model, &obj, &prop_palette(&self.colors));
-        let atom_node = obj.get().children.get(before).cloned();
+        let before = model_obj.get().children.len();
+        let atom = hardware::place_atom(model, &model_obj, &prop_palette(&self.colors));
+        let atom_node = model_obj.get().children.get(before).cloned();
         let pulses = trace_pulses(model);
         for tp in &pulses {
-            obj.add(&tp.pulses.obj);
+            model_obj.add(&tp.pulses.obj);
         }
         // Only the parts that move are dynamic (the built model's animated parts, the pulses and the
         // atom, set in `hardware`): the rest of the board is baked with the statics.
@@ -566,7 +570,7 @@ impl Floor {
             mesh.get().no_outline = true;
             mesh.set_dynamic(true); // its opacity and visibility follow the work every frame
             mesh.set_visible(false);
-            obj.add(&mesh);
+            model_obj.add(&mesh);
             glow_plates.insert(slot.id.clone(), (mesh, mat));
         }
         let graph = trace_graph(model);
@@ -592,6 +596,7 @@ impl Floor {
             params,
             status,
             obj,
+            model_obj,
             built,
             atom,
             atom_node,
@@ -839,6 +844,14 @@ impl Floor {
         board.sig = sig;
         board.layout = layout;
         if changed {
+            // floor.ts: the board's group and its walkway graph follow the layout's world scale.
+            let scale = board.layout.scale;
+            board.model_obj.set_scalar(scale);
+            board.graph = trace_graph(board.model);
+            for n in &mut board.graph.nodes {
+                n[0] *= scale;
+                n[1] *= scale;
+            }
             self.start_rooms();
             self.rebuild_nav();
             self.reset_work();
@@ -1022,6 +1035,27 @@ mod tests {
 
     fn agent(cid: u64, role: &str) -> AgentInfo {
         AgentInfo { cid, name: format!("agent {cid}"), role: role.into(), status: "idle".into(), tier: if role == "orchestrator" { "orchestrator".into() } else { "worker".into() }, model: String::new(), species: None }
+    }
+
+    #[test]
+    fn a_crowded_board_grows_to_the_shared_layouts_scale() {
+        // 25 agents do not seat on a laptop at scale 1: the shared layout grows it, and the model's group follows.
+        let model = hardware::model("board/laptop").expect("the laptop board parses");
+        let roles = ["coder", "reviewer", "tester", "architect", "writer", "researcher"];
+        let list: Vec<AgentInfo> = (0..25).map(|i| agent(1000 + i as u64, if i == 0 { "orchestrator" } else { roles[i % roles.len()] })).collect();
+        let mut floor = Floor::new();
+        floor.show_board("test".into(), model, Params::default(), Status::Online);
+        floor.sync(&list);
+        let t0 = std::time::Instant::now();
+        while floor.board.as_ref().is_some_and(|b| b.layout.shared.is_none()) && t0.elapsed() < Duration::from_secs(60) {
+            floor.step_rooms(Duration::from_millis(50));
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let board = floor.board.as_ref().expect("a board");
+        assert!(board.layout.shared.is_some(), "the shared layout was adopted");
+        let scale = board.layout.scale;
+        assert!(scale > 1.0, "the laptop grew (scale {scale})");
+        assert_eq!(board.model_obj.get().scale, glam::Vec3::splat(scale), "the model's group is at the layout's scale");
     }
 
     #[test]
