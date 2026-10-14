@@ -201,6 +201,7 @@ function entry(p: BoardPost, no: number, name: string, ui: Ui): HTMLElement {
         h('a.board-author', { href: href('agents', p.agent_cid) }, name),
         h('span.board-role', null, roleLabel(p.role)),
         h('span.board-count', null, countLabel(commentsOf(p).length)),
+        p.task ? h('a.board-task', { href: href('tasks', p.task) }, `Task ${p.task}`) : null,
         replyLink(p, ui),
       ),
       h('h3.board-subject', null, p.subject),

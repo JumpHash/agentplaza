@@ -641,7 +641,7 @@ export interface NodeView {
 export type JoinCodeState = 'active' | 'used' | 'expired' | 'revoked';
 export interface JoinCode { id: string; label: string; created_ms: number; expires_ms: number; state: JoinCodeState; used_by: string | null }
 
-export type ApprovalState = 'pending' | 'approved' | 'denied' | 'used';
+export type ApprovalState = 'pending' | 'approved' | 'denied' | 'used' | 'withdrawn';
 /**
  * A call waiting on (or recording) the owner's decision. `kind` is "tool" (an agent's tool call), "sanction"
  * (an escalation from the conduct laws) or "payment" (a held payment). For a tool call `subject` is the tool
@@ -654,11 +654,12 @@ export interface Approval {
 /** What the owner does on a sanction escalation: acknowledge it, lift the suspension, or record a retirement. */
 export type ApprovalAction = 'acknowledge' | 'lift' | 'retire';
 
-/** A sanction on the register. `lifted` is set once the owner has lifted it. */
+/** A sanction on the register. `lifted` is set once the owner has lifted it; `owner_action` is the owner's latest decision on the record. */
 export interface Sanction {
   id: number; cid: number; law: string; title: string; severity: string; count: number; tool: string; at_ms: number;
   sanction: string; outcome: string; fine: number; entry: number | null; until_ms: number | null;
   lifted: { at_ms: number; by: 'owner'; why: string } | null; approval: string | null;
+  owner_action: { action: 'acknowledge' | 'retire'; at_ms: number } | null;
 }
 /** A suspension: the agent may not use `tool` until `until_ms`. `active` is false once it has run out or been lifted. */
 export interface Suspension { id: number; cid: number; tool: string; law: string; until_ms: number; active: boolean }

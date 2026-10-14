@@ -8,7 +8,7 @@ import { api, type AgentProposal, type Approval, type ApprovalAction } from '../
 import { href } from '../router';
 import { agentName } from '../roles';
 import { agents, on } from '../store';
-import { ago, attempt, badge, button, card, empty, textarea } from '../ui/components';
+import { ago, attempt, badge, button, card, empty, textarea, type Tone } from '../ui/components';
 import { h, replace } from '../ui/dom';
 import { openAgentWizard } from './agent-wizard';
 import type { Cleanup } from './index';
@@ -21,17 +21,19 @@ function sanctionIdOf(a: Approval): number | null {
   return typeof d?.sanction_id === 'number' ? d.sanction_id : null;
 }
 
-const TONE: Record<Approval['state'], 'warn' | 'ok' | 'danger' | 'info'> = {
+const TONE: Record<Approval['state'], Tone> = {
   pending: 'warn',
   approved: 'ok',
   denied: 'danger',
   used: 'info',
+  withdrawn: 'muted',
 };
 const LABEL: Record<Approval['state'], string> = {
   pending: 'Waiting',
   approved: 'Approved',
   denied: 'Denied',
   used: 'Used',
+  withdrawn: 'Withdrawn',
 };
 const PROPOSAL_TONE: Record<AgentProposal['state'], 'warn' | 'ok' | 'danger'> = {
   pending: 'warn',
