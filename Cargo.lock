@@ -359,6 +359,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "apz-desktop-windows"
+version = "0.1.0"
+dependencies = [
+ "apz-desktop",
+ "apz-station",
+ "windows 0.58.0",
+]
+
+[[package]]
 name = "apz-engine"
 version = "0.1.0"
 dependencies = [
