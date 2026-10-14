@@ -361,6 +361,8 @@ pub fn subscription(screens: &Screens, id: &Id, ctx: &Ctx) -> iced::Subscription
     match id {
         Id::Overview => overview::subscription(ctx).map(Msg::Overview),
         Id::Agents => agents::subscription(ctx).map(Msg::Agents),
+        Id::Prompts => prompts::subscription(ctx).map(Msg::Prompts),
+        Id::Skills => skills::subscription(ctx).map(Msg::Skills),
         Id::Floor => iced::Subscription::batch([floor::subscription(&screens.floor), floor::events(ctx)]).map(Msg::Floor),
         Id::RobotLab | Id::RoomLab | Id::HardwareLab => engine_lab::subscription(&screens.engine_lab).map(Msg::EngineLab),
         Id::Machines => machines::subscription(&screens.machines).map(Msg::Machines),
