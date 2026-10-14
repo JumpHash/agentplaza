@@ -238,6 +238,25 @@ fn merge_problems(review: &str, mergeable: bool) -> Vec<&'static str> {
     problems
 }
 
+/// True when the hub says the pull request merged. A hub from before `merged` existed sends no such field: not merged.
+fn is_merged(p: &Value) -> bool {
+    p["merged"].as_bool() == Some(true)
+}
+
+/// A pull request's state as the CLI shows it: `merged` for a merged one (Forgejo keeps it closed), else its state.
+fn pull_state(p: &Value) -> &str {
+    if is_merged(p) {
+        "merged"
+    } else {
+        ctx::s(p, "state")
+    }
+}
+
+/// Why a pull request cannot be reopened: a merged one cannot, since its merge closed it for good.
+fn reopen_refusal(p: &Value, repo: &str, number: u64) -> Option<String> {
+    is_merged(p).then(|| format!("#{number} in {repo} is merged: a merged pull request cannot be reopened"))
+}
+
 /// Closes (`closed`) or reopens (`open`) a pull request and prints it.
 fn change_state(ctx: &Ctx, repo: &str, number: u64, state: &str) -> Result<(), String> {
     let p = ctx.client.post(&pull_path(repo, number, "/state"), &json!({ "state": state }))?;
@@ -393,7 +412,7 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                     .map(|p| {
                         vec![
                             ctx::text(p, "number"),
-                            ctx::s(p, "state").to_string(),
+                            pull_state(p).to_string(),
                             ctx::s(p, "review").to_string(),
                             ctx::s(p, "author").to_string(),
                             format!("{} -> {}", ctx::s(p, "head"), ctx::s(p, "base")),
@@ -411,7 +430,7 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                 ctx::fields(&[
                     ("number", format!("#{}", ctx::text(p, "number"))),
                     ("title", ctx::text(p, "title")),
-                    ("state", ctx::text(p, "state")),
+                    ("state", pull_state(p).to_string()),
                     ("review", ctx::text(p, "review")),
                     ("author", ctx::text(p, "author")),
                     ("flow", format!("{} -> {}", ctx::s(p, "head"), ctx::s(p, "base"))),
@@ -488,7 +507,13 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             Ok(())
         }
         Cmd::Close { repo, number } => change_state(ctx, &repo, number, "closed"),
-        Cmd::Reopen { repo, number } => change_state(ctx, &repo, number, "open"),
+        Cmd::Reopen { repo, number } => {
+            let p = ctx.client.get(&pull_path(&repo, number, ""))?;
+            if let Some(refusal) = reopen_refusal(&p, &repo, number) {
+                return Err(refusal);
+            }
+            change_state(ctx, &repo, number, "open")
+        }
         Cmd::Merge { repo, number, style, yes } => {
             let p = ctx.client.get(&pull_path(&repo, number, ""))?;
             let problems = merge_problems(ctx::s(&p, "review"), p["mergeable"].as_bool().unwrap_or(false));
@@ -555,6 +580,27 @@ mod tests {
         assert!(parse(&["comment", "demo", "3", "--body", "a", "--file", "f.md"]).is_err(), "one source of text");
         assert!(parse(&["close", "demo", "3"]).is_ok());
         assert!(parse(&["reopen", "demo", "3"]).is_ok());
+    }
+
+    #[test]
+    fn a_merged_pull_request_shows_as_merged_and_cannot_be_reopened() {
+        // Forgejo keeps a merged pull request closed; the hub says it merged.
+        let merged = json!({"number": 4, "state": "closed", "merged": true, "merged_at": "2026-10-03T09:30:00Z"});
+        assert_eq!(pull_state(&merged), "merged");
+        assert!(is_merged(&merged));
+        let refusal = reopen_refusal(&merged, "demo", 4).expect("a merged pull request is refused");
+        assert!(refusal.contains("#4") && refusal.contains("merged") && refusal.contains("cannot be reopened"), "{refusal}");
+
+        // A closed pull request that did not merge can still be reopened.
+        let closed = json!({"number": 5, "state": "closed", "merged": false, "merged_at": null});
+        assert_eq!(pull_state(&closed), "closed");
+        assert!(reopen_refusal(&closed, "demo", 5).is_none());
+
+        // An older hub sends no `merged`: the state stands, and a closed one reopens.
+        let older = json!({"number": 6, "state": "closed"});
+        assert_eq!(pull_state(&older), "closed");
+        assert!(reopen_refusal(&older, "demo", 6).is_none());
+        assert_eq!(pull_state(&json!({"number": 7, "state": "open"})), "open");
     }
 
     #[test]

@@ -382,6 +382,7 @@ function pullRow(repo: string, p: GitPull): HTMLElement {
     h('span.git-flow', null, `${p.head} → ${p.base}`),
     h('span.git-by', null, p.author),
     reviewBadge(p.review),
+    p.merged === true ? badge('merged', 'ok') : null,
     h('span.git-when', null, `${p.comments} comments`),
     h('span.git-when', null, `updated ${ago(Date.parse(p.updated_at))}`),
   );
@@ -399,17 +400,19 @@ async function pullView(c: Ctx, n: number): Promise<void> {
     h('span.git-sep', null, '/'),
     `#${d.number}`,
   );
+  // A merged pull request is closed in Forgejo: it has no Merge, Close or Reopen.
+  const merged = d.merged === true;
   const mergeable = d.state === 'open' && d.review === 'approved' && d.mergeable;
   const actions = h('div.git-actions', null,
     button('Approve', () => reviewModal(c, d, 'APPROVE', 'Approve'), { kind: 'primary' }),
     button('Request changes', () => reviewModal(c, d, 'REQUEST_CHANGES', 'Request changes'), { kind: 'danger' }),
     button('Comment', () => reviewModal(c, d, 'COMMENT', 'Comment'), { kind: 'ghost' }),
-    button('Merge', () => mergeModal(c, d), {
+    merged ? null : button('Merge', () => mergeModal(c, d), {
       kind: 'primary',
       disabled: !mergeable,
       title: mergeable ? 'Merge this pull request' : 'Needs an approving review and no conflicts',
     }),
-    d.state === 'open'
+    merged ? null : d.state === 'open'
       ? button('Close', () => void togglePull(c, d), { kind: 'danger', title: 'Close without merging' })
       : button('Reopen', () => void togglePull(c, d), { kind: 'ghost', title: 'Reopen this pull request' }),
   );
@@ -418,11 +421,12 @@ async function pullView(c: Ctx, n: number): Promise<void> {
     head(d.title),
     h('div.git-pr-meta', null,
       h('span.git-num', null, `#${d.number}`),
-      badge(d.state, d.state === 'open' ? 'ok' : 'muted'),
+      merged ? badge('merged', 'ok') : badge(d.state, d.state === 'open' ? 'ok' : 'muted'),
       reviewBadge(d.review),
       h('span.git-by', null, d.author),
       h('span.git-flow', null, `${d.head} → ${d.base}`),
       h('span.git-when', null, `updated ${ago(Date.parse(d.updated_at))}`),
+      merged && d.merged_at ? h('span.git-when', null, `merged ${ago(Date.parse(d.merged_at))}`) : null,
     ),
     actions,
     card('Description', h('div.git-prose', null, d.body || 'No description provided.')),

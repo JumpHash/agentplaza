@@ -90,6 +90,11 @@ pub struct Pull {
     comments: u64,
     review: String,
     mergeable: bool,
+    /// A merged pull request is closed in Forgejo, with `merged` true. Older hubs omit both fields.
+    #[serde(default)]
+    merged: bool,
+    #[serde(default)]
+    merged_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1050,7 +1055,7 @@ fn pull_row<'a>(p: &Pull) -> Element<'a, Msg> {
         row![
             cell(Length::Fixed(60.0), ui::mono(format!("#{}", p.number), 13.0, INK_2)),
             cell(Length::Fill, text(p.title.clone()).font(SERIF_SEMIBOLD).size(15.0).color(INK)),
-            cell(Length::Fixed(80.0), state_badge(&p.state)),
+            cell(Length::Fixed(80.0), state_badge(p)),
             cell(Length::Fixed(220.0), ui::mono(format!("{} → {}", p.head, p.base), 12.0, INK_2)),
             cell(Length::Fixed(120.0), ui::faint(p.author.clone())),
             review_badge(&p.review),
@@ -1073,6 +1078,7 @@ fn pull_page<'a>(state: &'a State) -> Element<'a, Msg> {
     };
     let p = &d.pull;
     let open = p.state == "open";
+    let merged = p.merged;
     let mergeable = open && p.review == "approved" && p.mergeable;
     // The trail sits above the title, as on the web (repo / Pull requests / #n).
     let trail = row![
@@ -1084,9 +1090,9 @@ fn pull_page<'a>(state: &'a State) -> Element<'a, Msg> {
     ]
     .spacing(6)
     .align_y(Alignment::Center);
-    let meta = row![
+    let mut meta = row![
         ui::mono(format!("#{}", p.number), 13.0, INK_2),
-        state_badge(&p.state),
+        state_badge(p),
         review_badge(&p.review),
         ui::faint(p.author.clone()),
         ui::mono(format!("{} → {}", p.head, p.base), 12.0, INK_2),
@@ -1094,21 +1100,26 @@ fn pull_page<'a>(state: &'a State) -> Element<'a, Msg> {
     ]
     .spacing(12)
     .align_y(Alignment::Center);
-    let toggle = if open {
-        ui::btn("Close", None, Kind::Ghost, Some(Msg::SetState("closed")))
-    } else {
-        ui::btn("Reopen", None, Kind::Ghost, Some(Msg::SetState("open")))
-    };
-    let buttons = row![
+    if let (true, Some(at)) = (merged, &p.merged_at) {
+        meta = meta.push(ui::faint(format!("merged {}", ago(at))));
+    }
+    let mut buttons = row![
         ui::btn("Approve", None, Kind::Primary, Some(Msg::Modal(Modal::Review(ReviewEvent::Approve)))),
         ui::btn("Request changes", None, Kind::Danger, Some(Msg::Modal(Modal::Review(ReviewEvent::RequestChanges)))),
         ui::btn("Comment", None, Kind::Ghost, Some(Msg::Modal(Modal::Review(ReviewEvent::Comment)))),
-        ui::btn("Merge", None, Kind::Primary, mergeable.then_some(Msg::Modal(Modal::Merge))),
-        toggle,
     ]
     .spacing(8);
+    // A merged pull request is closed in Forgejo: it has no Merge, Close or Reopen.
+    if !merged {
+        let toggle = if open {
+            ui::btn("Close", None, Kind::Ghost, Some(Msg::SetState("closed")))
+        } else {
+            ui::btn("Reopen", None, Kind::Ghost, Some(Msg::SetState("open")))
+        };
+        buttons = buttons.push(ui::btn("Merge", None, Kind::Primary, mergeable.then_some(Msg::Modal(Modal::Merge)))).push(toggle);
+    }
     // The web explains a disabled Merge in its tooltip; the desktop says it under the buttons.
-    let actions: Element<'a, Msg> = if mergeable {
+    let actions: Element<'a, Msg> = if mergeable || merged {
         buttons.into()
     } else {
         column![buttons, ui::faint("Needs an approving review and no conflicts")].spacing(6).into()
@@ -1239,10 +1250,13 @@ fn diff_style(line: &str) -> (Color, Option<Color>, Font) {
     }
 }
 
-/// A pull request's state: open in the ok tone, closed or merged muted.
-fn state_badge<'a>(state: &str) -> Element<'a, Msg> {
-    let tone = if state == "open" { Tone::Ok } else { Tone::Muted };
-    ui::badge(state, tone)
+/// A pull request's state: merged or open in the ok tone, closed muted.
+fn state_badge<'a>(p: &Pull) -> Element<'a, Msg> {
+    if p.merged {
+        return ui::badge("merged", Tone::Ok);
+    }
+    let tone = if p.state == "open" { Tone::Ok } else { Tone::Muted };
+    ui::badge(&p.state, tone)
 }
 
 fn review_badge<'a>(review: &str) -> Element<'a, Msg> {
@@ -1529,6 +1543,29 @@ mod tests {
         assert_eq!(detail.discussion[1].body, "second");
         assert_eq!(detail.reviews.len(), 1);
         assert_eq!(detail.files[0].path, "a.rs");
+    }
+
+    #[test]
+    fn git_pull_row_says_whether_it_merged_and_defaults_to_not_merged() {
+        // A merged pull request: closed, with merged true and the merge time.
+        let merged: Pull = serde_json::from_str(
+            r#"{"number": 9, "title": "t", "state": "closed", "author": "a", "head": "h", "base": "main",
+                "updated_at": "2026-10-03T09:30:00Z", "comments": 0, "review": "approved", "mergeable": false,
+                "merged": true, "merged_at": "2026-10-03T09:30:00Z"}"#,
+        )
+        .expect("merged row parses");
+        assert!(merged.merged);
+        assert_eq!(merged.merged_at.as_deref(), Some("2026-10-03T09:30:00Z"));
+        assert_eq!(merged.state, "closed");
+
+        // An older hub's row has neither field: it reads as not merged.
+        let older: Pull = serde_json::from_str(
+            r#"{"number": 10, "title": "t", "state": "closed", "author": "a", "head": "h", "base": "main",
+                "updated_at": "", "comments": 0, "review": "pending", "mergeable": false}"#,
+        )
+        .expect("older row parses");
+        assert!(!older.merged);
+        assert!(older.merged_at.is_none());
     }
 
     #[test]

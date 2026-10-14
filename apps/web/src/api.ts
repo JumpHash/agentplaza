@@ -188,8 +188,8 @@ export interface GitBranch { name: string; commit: { id: string; message: string
 export interface GitCommit { id: string; short: string; message: string; author: string; at: string; additions: number; deletions: number }
 export interface GitEntry { name: string; path: string; kind: 'file' | 'dir'; size: number }
 export interface GitFile { path: string; ref: string; size: number; text: string | null; binary: boolean }
-/** A pull request row; `comments` is the count of its discussion, which the detail carries in full. */
-export interface GitPull { number: number; title: string; state: string; author: string; head: string; base: string; created_at: string; updated_at: string; comments: number; review: 'approved' | 'changes_requested' | 'pending'; mergeable: boolean }
+/** A pull request row; `comments` is the count of its discussion, which the detail carries in full. A merged pull request is closed, with `merged` true; older hubs omit `merged`. */
+export interface GitPull { number: number; title: string; state: string; author: string; head: string; base: string; created_at: string; updated_at: string; comments: number; review: 'approved' | 'changes_requested' | 'pending'; mergeable: boolean; merged?: boolean; merged_at?: string | null }
 export interface GitComment { author: string; body: string; at: string }
 export interface GitPullDetail extends GitPull { body: string; diff: string; reviews: { author: string; state: string; body: string; at: string }[]; discussion: GitComment[]; files: { path: string; additions: number; deletions: number }[] }
 export interface HarnessLimits { max_turns: number | null; compress_at: number | null; keep_recent: number | null }

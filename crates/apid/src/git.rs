@@ -625,7 +625,9 @@ fn pr_row(p: &Value, review: &str) -> Value {
         "updated_at": at(p, "updated_at"),
         "comments": num(p, "comments"),
         "review": review,
-        "mergeable": p["mergeable"].as_bool().unwrap_or(false)
+        "mergeable": p["mergeable"].as_bool().unwrap_or(false),
+        "merged": p["merged"].as_bool().unwrap_or(false),
+        "merged_at": p["merged_at"].as_str()
     })
 }
 
@@ -1215,6 +1217,32 @@ mod tests {
         for bad in [json!({"state": "merged"}), json!({"state": "Closed"}), json!({"state": ""}), json!({})] {
             assert_eq!(status(state_input(&bad)), Some(400), "{bad} must be refused");
         }
+    }
+
+    #[test]
+    fn pr_row_says_whether_a_pull_request_merged_and_when() {
+        // A merged pull request is closed in Forgejo, with merged true and the merge time.
+        let mut merged = pull_fixture();
+        merged["state"] = json!("closed");
+        merged["merged"] = json!(true);
+        merged["merged_at"] = json!("2026-10-03T09:30:00Z");
+        let row = pr_row(&merged, "approved");
+        assert_eq!(row["state"], json!("closed"));
+        assert_eq!(row["merged"], json!(true));
+        assert_eq!(row["merged_at"], json!("2026-10-03T09:30:00Z"));
+
+        // An open pull request has merged false and no merge time.
+        let mut open = pull_fixture();
+        open["merged"] = json!(false);
+        open["merged_at"] = Value::Null;
+        let row = pr_row(&open, "pending");
+        assert_eq!(row["merged"], json!(false));
+        assert_eq!(row["merged_at"], Value::Null);
+
+        // An older Forgejo answer with no merged fields reads as not merged.
+        let row = pr_row(&pull_fixture(), "pending");
+        assert_eq!(row["merged"], json!(false));
+        assert_eq!(row["merged_at"], Value::Null);
     }
 
     #[test]
