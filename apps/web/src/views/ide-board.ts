@@ -9,6 +9,7 @@ import { api, type BoardComment, type BoardPost, type Project } from '../api';
 import { roleLabel } from '../roles';
 import { on } from '../store';
 import { ago, button, empty, toast } from '../ui/components';
+import type { EmbedContext } from '../ui/embeds';
 import { h, replace } from '../ui/dom';
 import { renderMarkdown } from '../ui/markdown';
 import { authorHue, mentionsOf } from '../ide/view';
@@ -25,7 +26,7 @@ export interface BoardPanel {
   dispose(): void;
 }
 
-export function boardPanel(opts: { project: Project | null; onCount(n: number): void }): BoardPanel {
+export function boardPanel(opts: { project: Project | null; onCount(n: number): void; embeds: () => EmbedContext }): BoardPanel {
   injectStyle();
   const count = h('span.ide-board-count', null);
   const feed = h('div.ide-board-feed', null);
@@ -156,7 +157,7 @@ export function boardPanel(opts: { project: Project | null; onCount(n: number): 
 
   // Markdown text, with its @mentions marked.
   const richText = (cls: string, text: string): HTMLElement => {
-    const el = h('div', { class: cls }, renderMarkdown(text));
+    const el = h('div', { class: cls }, renderMarkdown(text, { embeds: opts.embeds() }));
     markMentions(el, text);
     return el;
   };
@@ -294,7 +295,8 @@ function markMentions(root: HTMLElement, text: string): void {
   found.sort((a, b) => b.length - a.length);
   const pattern = new RegExp(`(${found.map(escapeRe).join('|')})(?![\\w-])`);
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
-    acceptNode: (node) => (node.parentElement?.closest('code, pre') ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT),
+    // A reference rendered as a chip already says what it is: the mention is not marked again inside it.
+    acceptNode: (node) => (node.parentElement?.closest('code, pre, .embed-chip') ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT),
   });
   const nodes: Text[] = [];
   for (let node = walker.nextNode(); node; node = walker.nextNode()) nodes.push(node as Text);

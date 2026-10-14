@@ -68,6 +68,8 @@ export interface Actions {
   renderRightTabs(): void;
   openTab(path: string, line?: number): Promise<void>;
   reloadTab(path: string): Promise<void>;
+  /** Selects an agent in the sidebar and shows its chat (a rich reference to an agent, in the IDE's own text). */
+  selectAgent(cid: number): void;
 }
 
 export interface IdeCtx {

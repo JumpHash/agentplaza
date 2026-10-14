@@ -6,6 +6,7 @@ import { api, type Entry } from '../api';
 import { buildChat, formatMs, stepLabel, type ChatItem, type Step } from '../ide/view';
 import { on } from '../store';
 import { attempt, button, toast } from '../ui/components';
+import type { EmbedContext } from '../ui/embeds';
 import { h, replace } from '../ui/dom';
 import { renderMarkdown } from '../ui/markdown';
 
@@ -21,6 +22,8 @@ export interface ChatPaneOpts {
   agentName: string;
   project: string | null;
   working: () => boolean;
+  /** The rich-content context for the agent's text, read at each render (the IDE's files and handlers). */
+  embeds: () => EmbedContext;
 }
 
 const STYLE_ID = 'apz-ide-chat-style';
@@ -181,12 +184,12 @@ export function chatPane(opts: ChatPaneOpts): ChatPane {
     return d;
   }
 
-  function renderItem(item: ChatItem, index: number): HTMLElement {
+  function renderItem(item: ChatItem, index: number, embeds: EmbedContext): HTMLElement {
     switch (item.kind) {
       case 'owner':
         return h('div.ide-chat-msg.owner', null, h('div.ide-chat-bubble', null, item.text));
       case 'agent':
-        return h('div.ide-chat-agent', null, renderMarkdown(item.text));
+        return h('div.ide-chat-agent', null, renderMarkdown(item.text, { embeds }));
       case 'steps':
         return stepsBlock(item, `${item.at}:${index}`);
       case 'working':
@@ -203,9 +206,10 @@ export function chatPane(opts: ChatPaneOpts): ChatPane {
 
   function render(): void {
     const items = buildChat(entries, opts.working());
+    const embeds = opts.embeds();
     replace(
       column,
-      items.length ? items.map((item, index) => renderItem(item, index)) : h('div.ide-chat-empty', null, `No messages with ${opts.agentName} yet.`),
+      items.length ? items.map((item, index) => renderItem(item, index, embeds)) : h('div.ide-chat-empty', null, `No messages with ${opts.agentName} yet.`),
     );
     syncComposer();
     if (pinned) log.scrollTop = log.scrollHeight;

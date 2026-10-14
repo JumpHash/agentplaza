@@ -163,6 +163,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     renderRightTabs: () => renderRightTabs(c),
     openTab: (path, line) => openTab(c, path, line),
     reloadTab: (path) => reloadTab(c, path),
+    selectAgent: (cid) => selectAgent(c, cid, 'chat'),
   };
   wireFrame();
 

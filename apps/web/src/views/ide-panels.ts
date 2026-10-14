@@ -11,6 +11,7 @@ import { quickOpen, searchView } from './ide-find';
 import { closeOverlay, message, repoNameOf, type IdeCtx } from './ide-ctx';
 import { loadDir, restore, scheduleRefresh } from './ide-data';
 import { openTab } from './ide-editing';
+import { ideEmbeds } from './ide-rich';
 import { closeDrawerIfNarrow, setRightOpen } from './ide-layout';
 import { tasksPanel } from './ide-tasks';
 import { approvalsPanel, runPanel, type Panel as TabPanel } from './ide-tabs';
@@ -37,6 +38,7 @@ export function boardFor(c: IdeCtx, project: Project | null) {
         c.boardCount = n;
         c.act.renderRightTabs();
       },
+      embeds: () => ideEmbeds(c, project),
     });
     c.boardKey = key;
   }

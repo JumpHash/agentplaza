@@ -1,11 +1,12 @@
 // The IDE's selection: which agent or repository the centre shows, and which view the centre and the right panel show.
 // Choosing an agent shows its workspace (ide-data); the sidebar's keys and the palette come here.
-import type { IdeWorkspaceInfo } from '../api';
+import type { IdeWorkspaceInfo, Project } from '../api';
 import { groupByProject, startAgent, projectOf } from '../ide/groups';
 import { closeDrawerIfNarrow, setRightOpen } from './ide-layout';
 import { setWorkspace, showAgentWorkspace } from './ide-data';
 import { type IdeCtx } from './ide-ctx';
 import { chatPane } from './ide-chat';
+import { ideEmbeds } from './ide-rich';
 import { openAgentWizard } from './agent-wizard';
 import type { CentreView, RightView } from './ide-frame';
 
@@ -65,7 +66,18 @@ export function selectAgent(c: IdeCtx, next: number, view: CentreView): void {
   const agent = c.agentList.find((a) => a.cid === next);
   if (!c.chat) {
     const project = agent ? projectOf(agent, c.projects, c.tasks) : null;
-    c.chat = chatPane({ cid: next, agentName: agent?.name ?? `agent ${next}`, project: project?.title ?? null, working: () => c.agentWorking });
+    // The project is read at each render: the agent's project can arrive after the chat is made.
+    const projectNow = (): Project | null => {
+      const a = c.agentList.find((x) => x.cid === next);
+      return a ? projectOf(a, c.projects, c.tasks) : null;
+    };
+    c.chat = chatPane({
+      cid: next,
+      agentName: agent?.name ?? `agent ${next}`,
+      project: project?.title ?? null,
+      working: () => c.agentWorking,
+      embeds: () => ideEmbeds(c, projectNow()),
+    });
   }
   c.dom.sidebar.setSelected(`agent:${next}`);
   void showAgentWorkspace(c, next);

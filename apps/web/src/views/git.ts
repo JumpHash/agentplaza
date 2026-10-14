@@ -6,8 +6,14 @@ import { api, type GitBranch, type GitComment, type GitCommit, type GitEntry, ty
 import { href } from '../router';
 import { openIde } from '../ide/open';
 import { ago, attempt, badge, button, card, empty, field, input, modal, select, tabs, textarea, toast } from '../ui/components';
+import { embedContextFromStore } from '../ui/embeds';
 import { append, h, replace } from '../ui/dom';
+import { renderMarkdown } from '../ui/markdown';
 import type { Cleanup } from './index';
+
+/** The rich-content context of a repository's pages: `PR #N` there is a pull request on the plaza's git host. The
+ * organisation is the forge's (apid's ORG). */
+const richOf = (c: Ctx) => embedContextFromStore({ project_repo: `agentplaza/${c.repo}` });
 
 type PullState = 'open' | 'closed' | 'all';
 type ReviewEvent = 'APPROVE' | 'REQUEST_CHANGES' | 'COMMENT';
@@ -433,12 +439,12 @@ async function pullView(c: Ctx, n: number): Promise<void> {
       merged && d.merged_at ? h('span.git-when', null, `merged ${ago(Date.parse(d.merged_at))}`) : null,
     ),
     actions,
-    card('Description', h('div.git-prose', null, d.body || 'No description provided.')),
+    card('Description', h('div.git-prose', null, d.body ? renderMarkdown(d.body, { embeds: richOf(c) }) : 'No description provided.')),
     card(`Files changed (${d.files.length})`, d.files.length ? scroll(filesTable(d.files)) : h('p.git-note', null, 'No files.')),
     card('Diff', h('pre.git-diff', null, diffLines(d.diff))),
-    card(`Reviews (${d.reviews.length})`, d.reviews.length ? d.reviews.map(reviewRow) : h('p.git-note', null, 'No reviews yet.')),
+    card(`Reviews (${d.reviews.length})`, d.reviews.length ? d.reviews.map((rv) => reviewRow(c, rv)) : h('p.git-note', null, 'No reviews yet.')),
     card(`Discussion (${d.discussion.length})`, [
-      ...(d.discussion.length ? d.discussion.map(commentRow) : [h('p.git-note', null, 'No comments yet.')]),
+      ...(d.discussion.length ? d.discussion.map((cm) => commentRow(c, cm)) : [h('p.git-note', null, 'No comments yet.')]),
       commentBox(c, d),
     ]),
   ));
@@ -478,10 +484,10 @@ function commentBox(c: Ctx, d: GitPullDetail): HTMLElement {
   return h('div.git-form', null, field('Comment', text), h('div.git-actions', null, post));
 }
 
-function commentRow(cm: GitComment): HTMLElement {
+function commentRow(c: Ctx, cm: GitComment): HTMLElement {
   return h('div.git-review', null,
     h('div.git-review-head', null, h('strong', null, cm.author), h('span.git-when', null, ago(Date.parse(cm.at)))),
-    h('div.git-prose', null, cm.body),
+    h('div.git-prose', null, renderMarkdown(cm.body, { embeds: richOf(c) })),
   );
 }
 
@@ -527,12 +533,12 @@ function mergeModal(c: Ctx, d: GitPullDetail): void {
   ));
 }
 
-function reviewRow(rv: GitPullDetail['reviews'][number]): HTMLElement {
+function reviewRow(c: Ctx, rv: GitPullDetail['reviews'][number]): HTMLElement {
   const s = rv.state.toLowerCase();
   const tone = s.includes('approv') ? 'ok' : s.includes('change') ? 'danger' : 'muted';
   return h('div.git-review', null,
     h('div.git-review-head', null, h('strong', null, rv.author), badge(s.replace(/_/g, ' '), tone), h('span.git-when', null, ago(Date.parse(rv.at)))),
-    rv.body ? h('div.git-prose', null, rv.body) : null,
+    rv.body ? h('div.git-prose', null, renderMarkdown(rv.body, { embeds: richOf(c) })) : null,
   );
 }
 

@@ -153,8 +153,9 @@ function downloadFile(d: Deliverable): void {
   a.click();
 }
 
-export function mount(root: HTMLElement): Cleanup {
+export function mount(root: HTMLElement, params: string[] = []): Cleanup {
   let files: Deliverable[] = [];
+  let opening = params[0] ?? '';
 
   const search = input({ type: 'search', placeholder: 'Search by title or name', autocomplete: 'off' });
   const typeSelect = h(
@@ -263,6 +264,14 @@ export function mount(root: HTMLElement): Cleanup {
     const list = await attempt(() => api.files(kind));
     if (list) files = list.slice().sort((a, b) => b.created_ms - a.created_ms);
     render();
+    // A link to one item (`#/library/<id>`, from a rich reference in agent text) opens its detail once it is listed.
+    if (opening) {
+      const d = files.find((f) => f.id === opening);
+      if (d) {
+        opening = '';
+        openDetail(d);
+      }
+    }
   };
 
   const openDelete = (d: Deliverable, onDone: () => void): void => {

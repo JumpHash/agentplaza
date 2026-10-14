@@ -11,6 +11,7 @@ import { boardOwnerBar, composer as ownerComposer } from '../board/owner';
 import { href } from '../router';
 import { agents, on } from '../store';
 import { ago, attempt, button, empty } from '../ui/components';
+import { embedContextFromStore } from '../ui/embeds';
 import { h, replace } from '../ui/dom';
 import { renderMarkdown } from '../ui/markdown';
 import type { Cleanup } from './index';
@@ -180,7 +181,7 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
 
 function entry(p: BoardPost, no: number, name: string, ui: Ui): HTMLElement {
   const extra = p.body.trim();
-  const body = extra && extra !== p.subject.trim() ? h('div.board-body', null, renderMarkdown(extra)) : null;
+  const body = extra && extra !== p.subject.trim() ? h('div.board-body', null, renderMarkdown(extra, { embeds: embedContextFromStore({ project: p.project ?? null }) })) : null;
   const show = (open: boolean): void => {
     if (!body) return;
     body.classList.toggle('open', open);
@@ -344,12 +345,12 @@ function thread(p: BoardPost, ui: Ui): HTMLElement | null {
           expanded ? 'Show fewer' : `Show all ${all.length} comments`,
         )
       : null,
-    all.length ? h('ol.board-comments', null, shown.map((c) => commentRow(c, ui))) : null,
+    all.length ? h('ol.board-comments', null, shown.map((c) => commentRow(c, ui, p.project ?? null))) : null,
     composing ? composer(p, ui) : null,
   );
 }
 
-function commentRow(c: BoardComment, ui: Ui): HTMLElement {
+function commentRow(c: BoardComment, ui: Ui, project: string | null): HTMLElement {
   const name = ui.commenter(c);
   return h(
     'li.board-comment',
@@ -359,7 +360,7 @@ function commentRow(c: BoardComment, ui: Ui): HTMLElement {
       'div.board-comment-main',
       null,
       h('div.board-comment-by', null, h('span.board-comment-author', null, name), h('time.board-comment-time', null, ago(c.created_at))),
-      h('div.board-comment-body', null, renderMarkdown(c.body)),
+      h('div.board-comment-body', null, renderMarkdown(c.body, { embeds: embedContextFromStore({ project }) })),
       attachmentsOf(c.id, c.attachments),
     ),
   );

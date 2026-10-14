@@ -8,7 +8,8 @@
 
 import '../styles/embeds.css';
 import { api, type UnfurlAnswer, type UnfurlCard } from '../api';
-import { agents as roster } from '../store';
+import { go } from '../router';
+import { agents as roster, overview } from '../store';
 import { agentHue } from '../views/floor-common';
 import { BRAND_ICONS } from './brands.gen';
 import { ago } from './components';
@@ -19,11 +20,18 @@ import { label, targetOf, type AgentName, type Ref, type RefSpan, type RichCtx }
 export interface EmbedContext extends RichCtx {
   /** An agent was chosen: its cid when the text gives one or the name resolves to one, else its name. */
   openAgent?: (who: number | string) => void;
+  /** A task by its number (`task #528`). */
   openTask?: (number: number) => void;
+  /** A workspace file at a line (null when the reference names none). */
   openPath?: (path: string, line: number | null) => void;
   /** A library item: a deliverable's id, or `name/version` for a library tool. */
   openLibrary?: (id: string) => void;
+  /** The first lines of a workspace file, for the hover preview of a path (the IDE's read API). Absent: no preview. */
+  readHead?: (path: string) => Promise<string[] | null>;
 }
+
+/** The lines a path's hover preview shows. */
+export const HEAD_LINES = 12;
 
 const HOVER_MS = 300;
 const LONG_PRESS_MS = 500;
@@ -439,7 +447,7 @@ function chip(r: Ref, raw: string, text: string | null, embeds: EmbedContext): H
   const agentName = r.kind === 'agent' ? (r.name ?? embeds.agents?.find((a) => a.cid === agentCid)?.name ?? null) : null;
   const shown = text || (agentName ? `@${agentName}` : label(r));
   const action = actionFor(r, embeds);
-  const hasCard = carded(r.kind);
+  const hasCard = carded(r.kind) || previewable(r, embeds);
 
   const body: Node[] = [];
   const lead = leading(r);
@@ -474,8 +482,8 @@ function chip(r: Ref, raw: string, text: string | null, embeds: EmbedContext): H
     else if (webUrl) window.open(webUrl, '_blank', 'noopener,noreferrer');
   });
 
-  if (hasCard) {
-    wireHover(el, r);
+  if (hasCard) wireHover(el, r, embeds);
+  if (carded(r.kind)) {
     subscribe(r, (answer) => {
       if (!answer.ok) return;
       webUrl = str(answer.card, 'url');
@@ -486,6 +494,11 @@ function chip(r: Ref, raw: string, text: string | null, embeds: EmbedContext): H
     });
   }
   return el;
+}
+
+/** A workspace file (not a folder) the page can preview: the reference is a path and the page can read the file. */
+function previewable(r: Ref, embeds: EmbedContext): boolean {
+  return r.kind === 'path' && !r.dir && !!embeds.readHead;
 }
 
 // ---- Media ---------------------------------------------------------------------------------------------------------
@@ -654,7 +667,7 @@ function place(pop: HTMLElement, anchor: HTMLElement): void {
   pop.style.left = `${left}px`;
 }
 
-function showCard(anchor: HTMLElement, r: Ref): void {
+function showCard(anchor: HTMLElement, r: Ref, embeds: EmbedContext): void {
   cancelHide();
   if (active?.anchor === anchor) return;
   hideCard();
@@ -676,12 +689,26 @@ function showCard(anchor: HTMLElement, r: Ref): void {
       replace(pop, bodyOf(r, answer));
       place(pop, anchor);
     });
+  } else if (r.kind === 'path' && embeds.readHead) {
+    // A workspace file: its first lines, read by the page. The card stays what it was if the reader moved on.
+    const read = embeds.readHead(r.path);
+    void read
+      .catch(() => null)
+      .then((lines) => {
+        if (active?.pop !== pop) return;
+        const head = lines ? lines.slice(0, HEAD_LINES) : null;
+        replace(pop, [
+          ...bodyOf(r, undefined),
+          head === null ? h('p.embed-muted', null, 'No preview') : head.length ? h('pre.embed-code', null, head.join('\n')) : h('p.embed-muted', null, 'Empty file'),
+        ]);
+        place(pop, anchor);
+      });
   }
 }
 
 /** Pointer and keyboard behaviour of a chip with a card: hover opens after a short wait and stays while hovered; focus
  * (keyboard) and a long press (touch) open it at once. */
-function wireHover(el: HTMLElement, r: Ref): void {
+function wireHover(el: HTMLElement, r: Ref, embeds: EmbedContext): void {
   let showTimer: ReturnType<typeof setTimeout> | undefined;
   let pressTimer: ReturnType<typeof setTimeout> | undefined;
   const stopPress = (): void => clearTimeout(pressTimer);
@@ -689,14 +716,14 @@ function wireHover(el: HTMLElement, r: Ref): void {
     if (e.pointerType !== 'mouse') return;
     cancelHide();
     clearTimeout(showTimer);
-    showTimer = setTimeout(() => showCard(el, r), HOVER_MS);
+    showTimer = setTimeout(() => showCard(el, r, embeds), HOVER_MS);
   });
   el.addEventListener('pointerleave', (e) => {
     clearTimeout(showTimer);
     if (e.pointerType === 'mouse') scheduleHide();
   });
   el.addEventListener('focus', () => {
-    if (el.matches(':focus-visible')) showCard(el, r);
+    if (el.matches(':focus-visible')) showCard(el, r, embeds);
   });
   el.addEventListener('blur', scheduleHide);
   el.addEventListener('pointerdown', (e) => {
@@ -705,7 +732,7 @@ function wireHover(el: HTMLElement, r: Ref): void {
     stopPress();
     pressTimer = setTimeout(() => {
       pressed.add(el);
-      showCard(el, r);
+      showCard(el, r, embeds);
     }, LONG_PRESS_MS);
   });
   el.addEventListener('pointerup', stopPress);
@@ -760,8 +787,25 @@ export function refNode(value: RefSpan['value'], embeds: EmbedContext): HTMLElem
   }
 }
 
-/** The page's rich-content context from the console's agent roster (names to cids), plus what the caller knows. The
- * project, its repository and the workspace paths come from the caller (the IDE knows them; others pass nothing). */
+/** An agent by its cid, or by its name (the roster's). Opens its page; a name nobody holds opens nothing. */
+function openAgentPage(who: number | string): void {
+  if (typeof who === 'number') {
+    go('agents', who);
+    return;
+  }
+  const known = roster.get().find((a) => a.name === who);
+  if (known) go('agents', known.cid);
+}
+
+/** A library item opens on the Library (a deliverable by its id); a library tool (`name/version`) on the Tools screen. */
+function openLibraryPage(id: string): void {
+  if (id.includes('/')) go('tools');
+  else go('library', id);
+}
+
+/** The page's rich-content context: the agent roster (names to cids), the plaza's git host from the overview, and the
+ * handlers that open an agent's page, a task and a library item. A page passes what it knows in `extra`: the project,
+ * its repository and the workspace paths (the IDE), and its own handlers. */
 export function embedContextFromStore(extra: Partial<EmbedContext> = {}): EmbedContext {
   const names = roster
     .get()
@@ -770,10 +814,13 @@ export function embedContextFromStore(extra: Partial<EmbedContext> = {}): EmbedC
   return {
     project: null,
     project_repo: null,
-    plaza_git_host: null,
+    plaza_git_host: overview.get()?.git_host ?? null,
     hub_host: typeof location === 'undefined' ? null : location.host,
     paths: [],
     agents: names,
+    openAgent: openAgentPage,
+    openTask: (number) => go('tasks', number),
+    openLibrary: openLibraryPage,
     ...extra,
   };
 }

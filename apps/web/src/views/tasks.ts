@@ -9,7 +9,9 @@ import { go, href } from '../router';
 import { openIde } from '../ide/open';
 import { agents, on } from '../store';
 import { ago, attempt, badge, button, clip, field, input, modal, select, textarea, type Tone } from '../ui/components';
+import { embedContextFromStore } from '../ui/embeds';
 import { h, icon, replace } from '../ui/dom';
+import { renderMarkdown } from '../ui/markdown';
 import type { Cleanup } from './index';
 
 // The task budget's default and minimum: the hub's apz_plaza::tasks constants (DEFAULT_TASK_BUDGET,
@@ -138,8 +140,11 @@ function assigneeLink(cid: number | null): HTMLElement {
 
 const timelineRow = (e: Entry): HTMLElement => h('li', { class: `k-${e.kind}` }, h('time', null, clock(e.at_ms)), h('span', null, describe(e)));
 
+/** A task's id from its route: `t528`, or just its number (`#/tasks/528`, the link a `task #528` reference opens). */
+const taskId = (raw: string): string => (/^\d+$/.test(raw) ? `t${raw}` : raw);
+
 export function mount(root: HTMLElement, params: string[]): Cleanup {
-  const id = params[0] ?? '';
+  const id = taskId(params[0] ?? '');
   let tasks: Task[] = [];
   let current: Task | null = null;
   let timeline: Entry[] | null = null; // null while the assignee's transcript loads
@@ -446,12 +451,15 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
           ? h('p.tk-empty', null, t.agent_cid === null ? 'Not yet assigned.' : 'No steps recorded yet.')
           : h('ol.tk-tl', null, tl.map(timelineRow));
 
+    // The goal, acceptance, result and outcome are agent-written (or the owner's words to an agent): rich content applies.
+    const embeds = embedContextFromStore();
     const main = h(
       'div.tk-main',
       null,
-      h('section.tk-block', null, h('h3.tk-label', null, 'Goal'), h('div.tk-goal', null, t.goal)),
-      t.acceptance ? h('section.tk-block', null, h('h3.tk-label', null, 'Acceptance'), h('div.tk-prose', null, t.acceptance)) : null,
-      t.note ? h('section.tk-block', null, h('h3.tk-label', null, 'Result'), h('div.tk-result', null, t.note)) : null,
+      h('section.tk-block', null, h('h3.tk-label', null, 'Goal'), h('div.tk-goal', null, renderMarkdown(t.goal, { embeds }))),
+      t.acceptance ? h('section.tk-block', null, h('h3.tk-label', null, 'Acceptance'), h('div.tk-prose', null, renderMarkdown(t.acceptance, { embeds }))) : null,
+      t.note ? h('section.tk-block', null, h('h3.tk-label', null, 'Result'), h('div.tk-result', null, renderMarkdown(t.note, { embeds }))) : null,
+      t.outcome && t.outcome !== t.note ? h('section.tk-block', null, h('h3.tk-label', null, 'Outcome'), h('div.tk-result', null, renderMarkdown(t.outcome, { embeds }))) : null,
     );
     const side = h(
       'aside.tk-side',

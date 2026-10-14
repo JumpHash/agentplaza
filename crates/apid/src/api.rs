@@ -138,6 +138,8 @@ pub(crate) fn overview_value(app: &App) -> Value {
             "dev_models": app.settings.dev_models(),
             "noded": app.noded.get("/v1/machine").map(|(s, _)| s == 200).unwrap_or(false),
             "hub": app.hub.get("/healthz").map(|(s, _)| s == 200).unwrap_or(false),
+            // The plaza's git host's web origin (FORGEJO_URL), for the console's rich links; null when unset.
+            "git_host": app.forge.base_url(),
         })
 }
 

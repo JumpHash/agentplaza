@@ -66,6 +66,8 @@ export interface Overview {
   agents: { total: number; idle: number; working: number; offline: number };
   tasks: Record<string, number>;
   default_model: string; orchestrator_model: string; dev_models: boolean; hub: boolean; noded: boolean;
+  /** The plaza's git host's web origin, for the rich links in agent text (null when the forge is not configured). */
+  git_host: string | null;
 }
 
 export type Auth = 'none' | { env: string } | { secret: string } | { command: string };

@@ -8,11 +8,16 @@ import { href } from '../router';
 import { openIde } from '../ide/open';
 import { on } from '../store';
 import { ago, attempt, badge, button, card, empty, field, modal, select, textarea, toast, type Tone } from '../ui/components';
+import { embedContextFromStore } from '../ui/embeds';
 import { h, replace } from '../ui/dom';
 import { renderMarkdown } from '../ui/markdown';
 import type { Cleanup } from './index';
 
 const DEBOUNCE_MS = 300;
+
+/** The rich-content context of one project's documents and critiques: its id (`task #N` is a task) and its repository
+ * on the plaza's git host (the organisation is the forge's, apid's ORG). */
+const richOf = (p: Project) => embedContextFromStore({ project: p.id, project_repo: p.repo ? `agentplaza/${p.repo}` : null });
 const VERDICT_TONE: Record<ProjectCritique['verdict'], Tone> = { approve: 'ok', revise: 'danger', comment: 'muted' };
 const APPROVABLE: ProjectStage[] = ['critique', 'approval'];
 
@@ -71,14 +76,14 @@ function pipeline(stage: ProjectStage): HTMLElement {
   );
 }
 
-function docItem(d: ProjectDoc): HTMLElement {
+function docItem(d: ProjectDoc, p: Project): HTMLElement {
   const commit = d.commit ? ` @ ${d.commit.slice(0, 7)}` : '';
   return h(
     'article.pj-doc',
     null,
     h('div.pj-doc-head', null, h('span.pj-doc-title', null, d.title), badge(d.kind, 'muted')),
     h('div.pj-meta', null, `by ${d.by} · ${ago(d.at_ms)}`),
-    d.summary ? h('div.pj-doc-summary', null, renderMarkdown(d.summary)) : null,
+    d.summary ? h('div.pj-doc-summary', null, renderMarkdown(d.summary, { embeds: richOf(p) })) : null,
     h(
       'div.pj-doc-links',
       null,
@@ -96,7 +101,7 @@ function docsBody(p: Project): Node {
   return h(
     'div.pj-docs',
     null,
-    kinds.map((k) => h('section.pj-doc-group', null, h('h3.pj-group', null, label(k)), (groups.get(k) ?? []).map(docItem))),
+    kinds.map((k) => h('section.pj-doc-group', null, h('h3.pj-group', null, label(k)), (groups.get(k) ?? []).map((d) => docItem(d, p)))),
   );
 }
 
@@ -117,7 +122,7 @@ function critiquesBody(p: Project): Node {
           h('span.pj-muted', null, `revision ${c.revision}`),
           h('span.pj-muted', null, ago(c.at_ms)),
         ),
-        c.text ? h('div.pj-crit-text', null, renderMarkdown(c.text)) : null,
+        c.text ? h('div.pj-crit-text', null, renderMarkdown(c.text, { embeds: richOf(p) })) : null,
       ),
     ),
   );
