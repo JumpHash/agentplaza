@@ -2,15 +2,18 @@
 // requests with their reviews; the owner reviews and merges here.
 
 import '../styles/git.css';
-import { api, type GitBranch, type GitCommit, type GitEntry, type GitFile, type GitPull, type GitPullDetail, type GitRepo } from '../api';
+import { api, type GitBranch, type GitComment, type GitCommit, type GitEntry, type GitFile, type GitPull, type GitPullDetail, type GitRepo } from '../api';
 import { href } from '../router';
 import { ago, attempt, badge, button, card, empty, field, input, modal, select, tabs, textarea, toast } from '../ui/components';
-import { h, replace } from '../ui/dom';
+import { append, h, replace } from '../ui/dom';
 import type { Cleanup } from './index';
 
 type PullState = 'open' | 'closed' | 'all';
 type ReviewEvent = 'APPROVE' | 'REQUEST_CHANGES' | 'COMMENT';
 type MergeStyle = 'merge' | 'squash' | 'rebase';
+
+/** The pull request list's page size: the hub's maximum. */
+const PULL_LIMIT = 50;
 
 /** One mounted view: its route, the live flag, and the state that survives a redraw. */
 interface Ctx {
@@ -21,6 +24,7 @@ interface Ctx {
   live: () => boolean;
   redraw: () => void;
   code: { ref: string; path: string; file: string };
+  commitRef: string;
   pulls: PullState;
 }
 
@@ -42,6 +46,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     live: () => live,
     redraw: () => void draw(ctx),
     code: { ref: '', path: '', file: '' },
+    commitRef: '',
     pulls: 'open',
   };
   void draw(ctx);
@@ -52,8 +57,19 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
 
 async function draw(c: Ctx): Promise<void> {
   replace(c.root, wrap(head('Git'), h('p.git-note', null, 'Loading…')));
+  // Only the status call says the host is offline; any other failure is shown as itself.
+  let git: { configured: boolean; org: string };
   try {
-    const git = await api.git();
+    git = await api.git();
+  } catch (err) {
+    if (c.live()) {
+      const offline = empty('git', 'The git host is offline', 'Start the Forgejo container to browse repositories.');
+      offline.title = errMsg(err);
+      replace(c.root, wrap(head('Git'), offline));
+    }
+    return;
+  }
+  try {
     if (!c.live()) return;
     if (!git.configured) {
       replace(c.root, wrap(head('Git'), empty('git', 'The git host is not configured.')));
@@ -63,11 +79,7 @@ async function draw(c: Ctx): Promise<void> {
     else if (c.tab === 'pulls' && c.num) await pullView(c, Number(c.num));
     else await repoView(c, git.org);
   } catch (err) {
-    if (c.live()) {
-      const offline = empty('git', 'The git host is offline', 'Start the Forgejo container to browse repositories.');
-      offline.title = errMsg(err);
-      replace(c.root, wrap(head('Git'), offline));
-    }
+    if (c.live()) replace(c.root, wrap(head('Git'), empty('git', errMsg(err))));
   }
 }
 
@@ -142,13 +154,33 @@ async function repoView(c: Ctx, org: string): Promise<void> {
 }
 
 async function tabBody(c: Ctx, info: GitRepo, branches: GitBranch[]): Promise<Node> {
-  if (c.tab === 'commits') {
-    const commits = await api.gitCommits(c.repo);
-    return commits.length ? h('div.git-list', null, commits.map(commitRow)) : empty('git', 'No commits yet');
-  }
+  if (c.tab === 'commits') return commitsView(c, info, branches);
   if (c.tab === 'branches') return branchesView(branches);
-  if (c.tab === 'pulls') return pullsView(c);
+  if (c.tab === 'pulls') return pullsView(c, info, branches);
   return codeView(c, info, branches);
+}
+
+/** A branch picker over a list: its change redraws the view with the chosen branch. */
+function branchPicker(names: string[], current: string, onPick: (name: string) => void): HTMLElement {
+  const picker = select(names.map((n) => ({ value: n, label: n })), current);
+  picker.addEventListener('change', () => onPick(picker.value));
+  return h('div.git-toolbar', null, h('label.git-branch', null, 'Branch', picker));
+}
+
+async function commitsView(c: Ctx, info: GitRepo, branches: GitBranch[]): Promise<Node> {
+  const names = branches.map((b) => b.name);
+  if (!names.length) return empty('git', 'No commits yet');
+  if (!names.includes(c.commitRef)) c.commitRef = names.includes(info.default_branch) ? info.default_branch : (names[0] ?? '');
+  const toolbar = branchPicker(names, c.commitRef, (name) => {
+    c.commitRef = name;
+    c.redraw();
+  });
+  try {
+    const commits = await api.gitCommits(c.repo, c.commitRef);
+    return h('div', null, toolbar, commits.length ? h('div.git-list', null, commits.map(commitRow)) : empty('git', 'No commits yet'));
+  } catch (err) {
+    return h('div', null, toolbar, empty('git', errMsg(err)));
+  }
 }
 
 function codeView(c: Ctx, info: GitRepo, branches: GitBranch[]): Node {
@@ -164,15 +196,15 @@ function codeView(c: Ctx, info: GitRepo, branches: GitBranch[]): Node {
     void paint();
   };
   const paint = async (): Promise<void> => {
+    // The picker is kept on a failed load, so another branch can still be chosen.
+    const toolbar = branchPicker(names, st.ref, (name) => {
+      st.ref = name;
+      st.path = '';
+      st.file = '';
+      void paint();
+    });
     try {
       const tree = await api.gitTree(c.repo, st.ref, st.path);
-      const picker = select(names.map((n) => ({ value: n, label: n })), st.ref);
-      picker.addEventListener('change', () => {
-        st.ref = picker.value;
-        st.path = '';
-        st.file = '';
-        void paint();
-      });
       const below: Node[] = [];
       if (st.file) {
         const f = await api.gitFile(c.repo, st.ref, st.file);
@@ -195,13 +227,13 @@ function codeView(c: Ctx, info: GitRepo, branches: GitBranch[]): Node {
         }
       };
       replace(box,
-        h('div.git-toolbar', null, h('label.git-branch', null, 'Branch', picker)),
+        toolbar,
         crumbs(c.repo, st.path, go),
         dirTable(tree, openEntry),
         ...below,
       );
     } catch (err) {
-      toast(errMsg(err), 'error');
+      if (c.live()) replace(box, toolbar, empty('git', errMsg(err)));
     }
   };
   void paint();
@@ -271,8 +303,9 @@ function branchesView(branches: GitBranch[]): Node {
   ));
 }
 
-function pullsView(c: Ctx): HTMLElement {
-  const box = h('div.git-list', null, h('p.git-note', null, 'Loading…'));
+function pullsView(c: Ctx, info: GitRepo, branches: GitBranch[]): HTMLElement {
+  const list = h('div.git-list', null, h('p.git-note', null, 'Loading…'));
+  const pager = h('div.git-pager', null);
   const filter = tabs(
     [{ key: 'open', label: 'Open' }, { key: 'closed', label: 'Closed' }, { key: 'all', label: 'All' }],
     c.pulls,
@@ -281,16 +314,65 @@ function pullsView(c: Ctx): HTMLElement {
       c.redraw();
     },
   );
-  void (async () => {
+  // Pages are appended to the list; a change of filter redraws the view from page 1.
+  let page = 0;
+  const more = (busy: boolean): HTMLButtonElement => button(busy ? 'Loading…' : 'Load more', () => void loadPage(), { kind: 'ghost', disabled: busy });
+  const loadPage = async (): Promise<void> => {
+    const next = page + 1;
+    replace(pager, more(true));
     try {
-      const pulls = await api.gitPulls(c.repo, c.pulls);
+      const pulls = await api.gitPulls(c.repo, c.pulls, next, PULL_LIMIT);
       if (!c.live()) return;
-      replace(box, pulls.length ? pulls.map((p) => pullRow(c.repo, p)) : empty('git', 'No pull requests here'));
+      page = next;
+      const rows = pulls.map((p) => pullRow(c.repo, p));
+      if (next === 1) replace(list, rows.length ? rows : empty('git', 'No pull requests here'));
+      else append(list, rows);
+      replace(pager, pulls.length === PULL_LIMIT ? more(false) : null);
     } catch (err) {
-      toast(errMsg(err), 'error');
+      if (!c.live()) return;
+      if (next === 1) replace(list, empty('git', errMsg(err)));
+      else toast(errMsg(err), 'error');
+      replace(pager, page ? more(false) : null);
     }
-  })();
-  return h('div.git-pulls', null, filter, box);
+  };
+  void loadPage();
+  const create = button('New pull request', () => newPullModal(c, info, branches), { kind: 'primary' });
+  return h('div.git-pulls', null, filter, h('div.git-actions', null, create), list, pager);
+}
+
+/** A small form that opens a pull request from one branch into another, then opens it. */
+function newPullModal(c: Ctx, info: GitRepo, branches: GitBranch[]): void {
+  const names = branches.map((b) => b.name);
+  const baseName = names.includes(info.default_branch) ? info.default_branch : (names[0] ?? '');
+  const headName = names.find((n) => n !== baseName) ?? baseName;
+  const title = input({ placeholder: 'What this change does', autocomplete: 'off' });
+  const from = select(names.map((n) => ({ value: n, label: n })), headName);
+  const into = select(names.map((n) => ({ value: n, label: n })), baseName);
+  const desc = textarea({ rows: 6, placeholder: 'Describe the change (optional)' });
+  const create = button('Open pull request', async () => {
+    const value = title.value.trim();
+    if (!value) {
+      toast('Give the pull request a title', 'error');
+      return;
+    }
+    if (!from.value || !into.value || from.value === into.value) {
+      toast('Choose two different branches', 'error');
+      return;
+    }
+    const made = await attempt(() => api.gitOpenPull(c.repo, value, from.value, into.value, desc.value.trim()), 'Pull request opened');
+    if (made) {
+      close();
+      location.hash = href('git', c.repo, 'pulls', made.number);
+    }
+  }, { kind: 'primary' });
+  const cancel = button('Cancel', () => close(), { kind: 'ghost' });
+  const close = modal('New pull request', h('div.git-form', null,
+    field('Title', title),
+    field('Head branch', from, 'The branch with the changes'),
+    field('Base branch', into, 'The branch they merge into'),
+    field('Description', desc),
+    h('div.git-actions', null, cancel, create),
+  ));
 }
 
 function pullRow(repo: string, p: GitPull): HTMLElement {
@@ -327,6 +409,9 @@ async function pullView(c: Ctx, n: number): Promise<void> {
       disabled: !mergeable,
       title: mergeable ? 'Merge this pull request' : 'Needs an approving review and no conflicts',
     }),
+    d.state === 'open'
+      ? button('Close', () => void togglePull(c, d), { kind: 'danger', title: 'Close without merging' })
+      : button('Reopen', () => void togglePull(c, d), { kind: 'ghost', title: 'Reopen this pull request' }),
   );
   replace(c.root, wrap(
     trail,
@@ -344,7 +429,52 @@ async function pullView(c: Ctx, n: number): Promise<void> {
     card(`Files changed (${d.files.length})`, d.files.length ? scroll(filesTable(d.files)) : h('p.git-note', null, 'No files.')),
     card('Diff', h('pre.git-diff', null, diffLines(d.diff))),
     card(`Reviews (${d.reviews.length})`, d.reviews.length ? d.reviews.map(reviewRow) : h('p.git-note', null, 'No reviews yet.')),
+    card(`Discussion (${d.discussion.length})`, [
+      ...(d.discussion.length ? d.discussion.map(commentRow) : [h('p.git-note', null, 'No comments yet.')]),
+      commentBox(c, d),
+    ]),
   ));
+}
+
+/** Closes an open pull request, or reopens a closed one, after a confirmation for closing. */
+async function togglePull(c: Ctx, d: GitPullDetail): Promise<void> {
+  const closing = d.state === 'open';
+  if (closing && !window.confirm(`Close #${d.number}? It can be reopened later.`)) return;
+  const changed = await attempt(
+    () => api.gitSetPullState(c.repo, d.number, closing ? 'closed' : 'open'),
+    closing ? `#${d.number} closed` : `#${d.number} reopened`,
+  );
+  if (changed) c.redraw();
+}
+
+function commentBox(c: Ctx, d: GitPullDetail): HTMLElement {
+  const text = textarea({ rows: 4, placeholder: 'Write a comment (Ctrl+Enter or Cmd+Enter posts it)' });
+  const post = button('Post comment', () => void send(), { kind: 'primary' });
+  const send = async (): Promise<void> => {
+    const body = text.value.trim();
+    if (!body) {
+      toast('Write something first', 'error');
+      return;
+    }
+    post.disabled = true;
+    const sent = await attempt(() => api.gitComment(c.repo, d.number, body), 'Comment posted');
+    if (sent) c.redraw();
+    else post.disabled = false;
+  };
+  text.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault();
+      void send();
+    }
+  });
+  return h('div.git-form', null, field('Comment', text), h('div.git-actions', null, post));
+}
+
+function commentRow(cm: GitComment): HTMLElement {
+  return h('div.git-review', null,
+    h('div.git-review-head', null, h('strong', null, cm.author), h('span.git-when', null, ago(Date.parse(cm.at)))),
+    h('div.git-prose', null, cm.body),
+  );
 }
 
 function reviewModal(c: Ctx, d: GitPullDetail, event: ReviewEvent, label: string): void {
