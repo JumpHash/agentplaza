@@ -16,6 +16,7 @@ use iced::{Alignment, Border, Element, Length, Padding, Task, Theme};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
+use super::usage::enc;
 use super::Id;
 use crate::console::client::{self, Client};
 use crate::console::ui::{Kind, Tone};
@@ -561,7 +562,7 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                 .map(|m| {
                     let c = ctx.client.clone();
                     let key = format!("{id}/{}", m.id);
-                    let path = format!("/v1/prices/{key}");
+                    let path = price_path(&key);
                     client::task(move || c.get::<Value>(&path), move |r| Msg::Price(key.clone(), r))
                 })
                 .collect();
@@ -1156,6 +1157,12 @@ fn tier_list_mut(s: &mut Settings, tier: Tier) -> &mut Vec<String> {
         Tier::Orchestrator => &mut s.model_policy.orchestrator,
         Tier::Worker => &mut s.model_policy.worker,
     }
+}
+
+/// The hub's price route takes the model as one path segment, so the `provider/model` key is
+/// percent-encoded (the slash goes as `%2F`), as the web does.
+fn price_path(key: &str) -> String {
+    format!("/v1/prices/{}", enc(key))
 }
 
 fn price_key(model: &str, side: Side) -> String {
@@ -1813,4 +1820,14 @@ fn prices_card<'a>(state: &'a State, p: &'a Policy) -> Element<'a, Msg> {
     }
     let items: Vec<Element<'a, Msg>> = vec![toggle, column(table).spacing(8).into()];
     ui::card("Prices", column(items).spacing(12).into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn price_path_encodes_the_provider_model_key() {
+        assert_eq!(price_path("anthropic/claude-opus-5-5"), "/v1/prices/anthropic%2Fclaude-opus-5-5");
+    }
 }
