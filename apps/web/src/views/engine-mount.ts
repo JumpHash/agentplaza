@@ -24,7 +24,7 @@ interface LabelMeta {
 }
 
 /** The surface of the wasm engine this mount uses (the crate's WebEngine, wasm-bindgen --target web). */
-interface WebEngine {
+export interface WebEngine {
   /** Seconds since ENTER began (the entry clock), or undefined when no sequence runs. */
   entry_time: () => number | undefined;
   backend(): string;
@@ -256,6 +256,76 @@ export async function startRoomLabEngine(canvas: HTMLCanvasElement, lab: RoomLab
 /** The hardware lab on the wasm engine: the route's options under the engine's APZ_HW_* names. Throws without a glue. */
 export async function startHardwareLabEngine(canvas: HTMLCanvasElement, lab: HardwareLabOptions): Promise<WebEngine> {
   return (await loadGlue()).start_hardware_lab(canvas, { ...lab, backend: backendOf() });
+}
+
+/** A lab's engine in a box under its controls. `restart` destroys the engine and starts one with the new options on a
+ *  fresh canvas in the same box; `onStarted` runs for each engine and returns its cleanup (the lab's debug hooks). The
+ *  starts run one after another (the engine reads its options while it starts), and a start that a restart overtook
+ *  is destroyed as it lands. */
+export interface LabHost<O> {
+  restart(opts: O): void;
+  /** The live engine, or null while one starts. */
+  engine(): WebEngine | null;
+  close(): void;
+}
+
+export function mountLabEngine<O>(
+  root: HTMLElement,
+  start: (canvas: HTMLCanvasElement, opts: O) => Promise<WebEngine>,
+  initial: O,
+  onStarted: (engine: WebEngine) => () => void = () => () => {},
+): LabHost<O> {
+  const box = document.createElement('div');
+  root.append(box);
+  let live: WebEngine | null = null;
+  let unhook: () => void = () => {};
+  let turn = 0;
+  let closed = false;
+  let chain: Promise<void> = Promise.resolve();
+
+  const drop = (): void => {
+    unhook();
+    unhook = () => {};
+    const old = live;
+    live = null;
+    old?.destroy();
+  };
+  const boot = (opts: O): void => {
+    const mine = ++turn;
+    chain = chain.then(async () => {
+      if (closed || mine !== turn) return;
+      const canvas = document.createElement('canvas');
+      canvas.style.cssText = 'display:block;width:100%;height:70vh;min-height:420px;touch-action:none';
+      box.replaceChildren(canvas);
+      try {
+        const started = await start(canvas, opts);
+        if (closed || mine !== turn) {
+          started.destroy();
+          return;
+        }
+        live = started;
+        unhook = onStarted(started);
+      } catch (err) {
+        if (closed || mine !== turn) return;
+        const msg = err instanceof Error ? err.message : String(err);
+        box.replaceChildren(h('p', { style: 'color:var(--ink-2)' }, `The engine did not start: ${msg}`));
+      }
+    });
+  };
+  boot(initial);
+  return {
+    restart(opts: O): void {
+      if (closed) return;
+      drop();
+      boot(opts);
+    },
+    engine: () => live,
+    close(): void {
+      closed = true;
+      drop();
+      box.remove();
+    },
+  };
 }
 
 /** A thumbnail request a destroyed engine never answered: the caller asks again on the engine that replaces it. */
