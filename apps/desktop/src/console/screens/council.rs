@@ -27,9 +27,18 @@ pub struct Motion {
     pub tally: Tally,
     #[serde(default)]
     pub votes: Vec<Vote>,
+    #[serde(default)]
+    pub quorum: Quorum,
     /// Milliseconds since the Unix epoch.
     #[serde(default)]
     pub created_at: f64,
+}
+
+/// A motion's quorum (`quorum` on the motion): the rule in words, with its numbers.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct Quorum {
+    #[serde(default)]
+    pub rule: String,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -46,10 +55,13 @@ pub struct Tally {
     pub seats: u32,
 }
 
+/// One seat's vote: the seat that cast it (its role), the agent that acted for it, the word and the reason.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Vote {
     #[serde(default)]
-    pub role: String,
+    pub seat: String,
+    #[serde(default)]
+    pub agent_cid: u64,
     #[serde(default)]
     pub vote: String,
     #[serde(default)]
@@ -70,13 +82,6 @@ pub enum Verdict {
 }
 
 impl Verdict {
-    fn word(self) -> &'static str {
-        match self {
-            Verdict::Approve => "approve",
-            Verdict::Reject => "reject",
-        }
-    }
-
     fn verb(self) -> &'static str {
         match self {
             Verdict::Approve => "Approve",
@@ -91,6 +96,16 @@ impl Verdict {
         }
     }
 }
+
+/// The `POST /v1/motions/{id}/decide` body: `approve` as the hub reads it, and the note, or null
+/// when the reason is blank (the hub refuses an empty note, but takes an absent one).
+fn decide_body(verdict: Verdict, reason: &str) -> Value {
+    let note = reason.trim();
+    json!({ "approve": verdict == Verdict::Approve, "note": if note.is_empty() { Value::Null } else { json!(note) } })
+}
+
+/// The states the hub reports (`State::as_str`), in the order a motion moves through them.
+const STATES: [&str; 8] = ["open", "no_quorum", "carried", "rejected", "tie_to_owner", "awaiting_owner", "ratified", "vetoed"];
 
 /// The decision form that is open: which motion, and which verdict.
 #[derive(Debug, Clone)]
@@ -111,6 +126,8 @@ pub struct State {
     /// A decision is on its way to the hub.
     pub busy: bool,
     pub decide_error: Option<String>,
+    /// The state the list shows; None shows every motion.
+    pub filter: Option<String>,
     /// A live refresh is in flight; an event that came meanwhile runs once more when it lands.
     refreshing: bool,
     again: bool,
@@ -127,6 +144,8 @@ pub enum Msg {
     Cancel,
     Submit,
     Decided(Result<Value, String>),
+    /// Show only the motions in this state (None: all of them).
+    Filter(Option<String>),
     /// A hub event: a motion change reloads the screen.
     Event(crate::console::events::Event),
 }
@@ -199,6 +218,10 @@ fn apply(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             state.decide_error = None;
             Task::none()
         }
+        Msg::Filter(filter) => {
+            state.filter = filter;
+            Task::none()
+        }
         Msg::Submit => {
             let Some(pending) = state.pending.clone() else {
                 return Task::none();
@@ -208,7 +231,7 @@ fn apply(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             }
             state.busy = true;
             state.decide_error = None;
-            let body = json!({ "decision": pending.verdict.word(), "reason": state.reason.trim() });
+            let body = decide_body(pending.verdict, &state.reason);
             let path = format!("/v1/motions/{}/decide", pending.id);
             let client = ctx.client.clone();
             client::task(move || client.post::<Value>(&path, &body), Msg::Decided)
@@ -234,33 +257,44 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
         (None, Some(motions)) if motions.is_empty() => {
             ui::empty("council", "No motions", "Council seats propose and vote on changes to how the plaza runs.")
         }
-        (None, Some(motions)) => column(motions.iter().map(|m| motion_card(m, state)).collect::<Vec<_>>())
-            .spacing(14)
-            .width(Length::Fill)
-            .into(),
+        (None, Some(motions)) => {
+            let shown: Vec<&Motion> = motions.iter().filter(|m| state.filter.as_deref().is_none_or(|f| m.state == f)).collect();
+            let list: Element<'a, Msg> = if shown.is_empty() {
+                ui::empty("council", "No motions in this state", "Pick another state to see the rest.")
+            } else {
+                column(shown.into_iter().map(|m| motion_card(m, state)).collect::<Vec<_>>()).spacing(14).width(Length::Fill).into()
+            };
+            column![filter_row(state.filter.as_deref()), list].spacing(14).width(Length::Fill).into()
+        }
     };
     ui::sheet(ui::view_head("Council", vec![]), body)
 }
 
-/// Whether a motion waits for the owner's decision (the web's `needsOwner`).
-fn needs_owner(state: &str) -> bool {
-    let s = state.to_lowercase();
-    s.contains("owner") || s.contains("await")
+/// The state filter: an "All" chip, then one chip per state; the chosen one is filled.
+fn filter_row<'a>(active: Option<&str>) -> Element<'a, Msg> {
+    let all = filter_chip("All", None, active);
+    let states = STATES.iter().copied().map(|s| filter_chip(&s.replace('_', " "), Some(s), active));
+    ui::chip_row(std::iter::once(all).chain(states).collect())
 }
 
-/// The tone of a motion's state badge (the web's `stateTone`).
+fn filter_chip<'a>(label: &str, value: Option<&str>, active: Option<&str>) -> Element<'a, Msg> {
+    let kind = if value == active { ui::Kind::Primary } else { ui::Kind::Secondary };
+    ui::btn_sm(label, None, kind, Some(Msg::Filter(value.map(str::to_string))))
+}
+
+/// Whether a motion waits for the owner's decision (the web's `needsOwner`).
+fn needs_owner(state: &str) -> bool {
+    matches!(state, "tie_to_owner" | "awaiting_owner")
+}
+
+/// The tone of a motion's state badge (the web's `stateTone`): explicit, so an unknown state is muted.
 fn state_tone(state: &str) -> ui::Tone {
-    let s = state.to_lowercase();
-    if needs_owner(state) {
-        ui::Tone::Warn
-    } else if s.contains("carr") || s.contains("pass") || s.contains("approv") {
-        ui::Tone::Ok
-    } else if s.contains("reject") || s.contains("fail") || s.contains("den") {
-        ui::Tone::Danger
-    } else if s.contains("open") {
-        ui::Tone::Info
-    } else {
-        ui::Tone::Muted
+    match state {
+        "open" => ui::Tone::Info,
+        "carried" | "ratified" => ui::Tone::Ok,
+        "rejected" | "vetoed" => ui::Tone::Danger,
+        "tie_to_owner" | "awaiting_owner" => ui::Tone::Warn,
+        _ => ui::Tone::Muted,
     }
 }
 
@@ -337,7 +371,7 @@ fn tally_bar<'a>(t: &Tally) -> Element<'a, Msg> {
 
 fn vote_row<'a>(v: &Vote) -> Element<'a, Msg> {
     row![
-        ui::faint(role_label(&v.role)),
+        ui::faint(role_label(&v.seat)),
         ui::badge(&v.vote, vote_tone(&v.vote)),
         container(ui::faint(v.reason.clone())).width(Length::Fill),
     ]
@@ -362,6 +396,7 @@ fn motion_card<'a>(m: &Motion, state: &'a State) -> Element<'a, Msg> {
         container(ui::prose(m.text.clone())).max_width(620),
         tally_bar(t),
         ui::faint(format!("{} yes · {} no · {} abstain · {}/{}", t.yes, t.no, t.abstain, t.voted, t.seats)),
+        ui::faint(format!("Quorum: {}", m.quorum.rule)),
     ]
     .spacing(12)
     .width(Length::Fill);
@@ -414,4 +449,43 @@ fn motion_card<'a>(m: &Motion, state: &'a State) -> Element<'a, Msg> {
 
 pub fn subscription(ctx: &Ctx) -> iced::Subscription<Msg> {
     crate::console::events::subscription(&ctx.client).map(Msg::Event)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decide_body_serialises_approve_and_note_as_the_hub_reads_them() {
+        assert_eq!(decide_body(Verdict::Approve, "fine").to_string(), r#"{"approve":true,"note":"fine"}"#);
+        assert_eq!(decide_body(Verdict::Reject, "  no  ").to_string(), r#"{"approve":false,"note":"no"}"#);
+        assert_eq!(decide_body(Verdict::Reject, "   ").to_string(), r#"{"approve":false,"note":null}"#);
+    }
+
+    #[test]
+    fn a_vote_row_parses_its_seat_and_agent() {
+        let vote: Vote = serde_json::from_value(json!({ "seat": "architect", "agent_cid": 42, "vote": "yes", "reason": "sound", "at": 1 })).unwrap();
+        assert_eq!(vote.seat, "architect");
+        assert_eq!(vote.agent_cid, 42);
+        assert_eq!(vote.vote, "yes");
+    }
+
+    #[test]
+    fn a_motion_parses_its_quorum_rule() {
+        let motion: Motion = serde_json::from_value(json!({
+            "id": "m1",
+            "state": "open",
+            "quorum": { "rule": "a motion is counted once 3 of the 4 filled seats have voted", "seats": 4, "filled": 4, "required": 3, "can_decide": true }
+        }))
+        .unwrap();
+        assert!(motion.quorum.rule.contains("3 of the 4 filled seats"));
+    }
+
+    #[test]
+    fn owner_states_wait_for_the_owner_and_are_toned_explicitly() {
+        assert!(needs_owner("awaiting_owner"));
+        assert!(needs_owner("tie_to_owner"));
+        assert!(!needs_owner("ratified"));
+        assert!(!needs_owner("no_quorum"));
+    }
 }

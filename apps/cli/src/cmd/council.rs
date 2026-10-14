@@ -42,6 +42,23 @@ fn tally(m: &Value) -> String {
     format!("yes {} no {} abstain {} ({} of {} seats voted)", field("yes"), field("no"), field("abstain"), field("voted"), field("seats"))
 }
 
+/// A motion's quorum: the rule in words, from the motion's `quorum` view.
+fn quorum(m: &Value) -> String {
+    m.get("quorum").map(|q| ctx::text(q, "rule")).unwrap_or_default()
+}
+
+/// One vote as a `show` row: the agent that cast it, its seat, the word and the reason.
+fn vote_row(x: &Value) -> Vec<String> {
+    vec![ctx::text(x, "agent_cid"), ctx::text(x, "seat"), ctx::text(x, "vote"), ctx::text(x, "reason")]
+}
+
+/// The `POST /v1/motions/{id}/decide` body: `approve` as the hub reads it, and the note, or null
+/// when the reason is blank (the hub refuses an empty note, but takes an absent one).
+fn decide_body(decision: &str, reason: &str) -> Value {
+    let note = reason.trim();
+    json!({ "approve": decision == "approve", "note": if note.is_empty() { Value::Null } else { json!(note) } })
+}
+
 pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
     match cmd {
         Cmd::List { state } => {
@@ -82,25 +99,44 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                     ("state", ctx::text(m, "state")),
                     ("proposer", ctx::text(m, "proposer_cid")),
                     ("tally", tally(m)),
+                    ("quorum", quorum(m)),
                     ("text", ctx::text(m, "text")),
                 ]);
                 println!();
-                let votes: Vec<Vec<String>> = m
-                    .get("votes")
-                    .and_then(Value::as_array)
-                    .map(Vec::as_slice)
-                    .unwrap_or(&[])
-                    .iter()
-                    .map(|x| vec![ctx::text(x, "cid"), ctx::text(x, "role"), ctx::text(x, "vote"), ctx::text(x, "reason")])
-                    .collect();
-                ctx::table(&["cid", "role", "vote", "reason"], &votes);
+                let votes: Vec<Vec<String>> = m.get("votes").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]).iter().map(vote_row).collect();
+                ctx::table(&["agent", "seat", "vote", "reason"], &votes);
             });
         }
         Cmd::Decide { id, decision, reason } => {
-            let v = ctx.client.post(&format!("/v1/motions/{}/decide", ctx::seg(&id)), &json!({ "decision": decision, "reason": reason }))?;
+            let v = ctx.client.post(&format!("/v1/motions/{}/decide", ctx::seg(&id)), &decide_body(&decision, &reason))?;
             let past = if decision == "approve" { "approved" } else { "rejected" };
             ctx.out(&v, |_| println!("{past} motion {id}"));
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decide_body_serialises_approve_and_note_as_the_hub_reads_them() {
+        assert_eq!(serde_json::to_string(&decide_body("approve", "fine")).unwrap(), r#"{"approve":true,"note":"fine"}"#);
+        assert_eq!(serde_json::to_string(&decide_body("reject", "  no  ")).unwrap(), r#"{"approve":false,"note":"no"}"#);
+        assert_eq!(serde_json::to_string(&decide_body("reject", "")).unwrap(), r#"{"approve":false,"note":null}"#);
+    }
+
+    #[test]
+    fn a_vote_row_reads_its_seat_and_agent() {
+        let row = vote_row(&json!({ "seat": "architect", "agent_cid": 42, "vote": "yes", "reason": "sound" }));
+        assert_eq!(row, vec!["42", "architect", "yes", "sound"]);
+    }
+
+    #[test]
+    fn a_motion_shows_its_quorum_rule() {
+        let m = json!({ "quorum": { "rule": "3 of the 4 filled seats", "seats": 4, "filled": 4, "required": 3, "can_decide": true } });
+        assert_eq!(quorum(&m), "3 of the 4 filled seats");
+        assert_eq!(quorum(&json!({})), "");
+    }
 }

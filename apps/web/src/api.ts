@@ -239,7 +239,11 @@ export interface ThreadPage {
   a: number; b: number; active: boolean; active_secs: number; messages: Conversation[];
   total: number; limit: number; truncated: boolean; next_before: number | null;
 }
-export interface Motion { id: string; kind: string; text: string; state: string; proposer_cid: number; tally: { yes: number; no: number; abstain: number; voted: number; seats: number }; votes?: { cid: number; role: string; vote: string; reason: string }[]; created_at: number }
+/** The quorum a motion is counted under: the rule in words and its numbers. */
+export interface MotionQuorum { rule: string; seats: number; filled: number; required: number; can_decide: boolean }
+/** One seat's vote on a motion: the seat (its role), the agent that cast it, the word and the reason. */
+export interface MotionVote { seat: string; agent_cid: number; vote: string; reason: string; at: number }
+export interface Motion { id: string; kind: string; text: string; state: string; proposer_cid: number; tally: { yes: number; no: number; abstain: number; voted: number; seats: number }; votes?: MotionVote[]; quorum: MotionQuorum; created_at: number }
 export interface Account { id: number; kind: string; owner_ref: string; balance: number; credit_limit: number; created_at: number }
 export interface Treasury { accounts: Account[]; totals: { accounts: number; entries: number; credits: number; debits: number; balance: number }; spent: number; plaza_budget: number; note: string }
 /** One leg of a journal entry: a debit is negative, a credit positive. `account` is the account id. */
@@ -444,7 +448,8 @@ export const api = {
   conversationThread: (a: number, b: number, q: ConversationQuery = {}) =>
     get<ThreadPage>(`/v1/conversations/${a}/${b}${query({ limit: q.limit, before: q.before, q: q.q })}`),
   motions: () => get<{ motions: Motion[] }>('/v1/motions').then((r) => r.motions),
-  decide: (id: string, decision: 'approve' | 'reject', reason: string) => post<Motion>(`/v1/motions/${id}/decide`, { decision, reason }),
+  /** The owner's decision: `approve` ratifies the motion, `false` vetoes it. A blank `note` is sent as `null`, since the hub refuses an empty string. */
+  decide: (id: string, approve: boolean, note?: string) => post<Motion>(`/v1/motions/${id}/decide`, { approve, note: note?.trim() ? note.trim() : null }),
   treasury: () => get<Treasury>('/v1/treasury'),
   /** Entries newest first. Pass the previous page's `next_before` to load older ones. */
   treasuryJournal: (q: JournalQuery = {}) =>
