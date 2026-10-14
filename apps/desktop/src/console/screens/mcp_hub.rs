@@ -429,6 +429,8 @@ pub fn leave(state: &mut State) {
 #[derive(Debug, Clone)]
 pub enum Msg {
     StatusLoaded(Result<HubStatus, String>),
+    /// "Try again" after a failed status load: the status alone is fetched once more.
+    RetryStatus,
     Saved(Result<HubStatus, String>),
     TokensLoaded(Result<Vec<HubToken>, String>),
     CallsLoaded(Result<Vec<HubCall>, String>),
@@ -554,6 +556,7 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             state.status_error = Some(e);
             Task::none()
         }
+        Msg::RetryStatus => status_task(ctx),
         Msg::Saved(Ok(status)) => {
             state.busy = false;
             apply_draft(state, &status);
@@ -812,7 +815,12 @@ fn enable_card(state: &State) -> Element<'_, Msg> {
 
 fn status_line(state: &State) -> Element<'_, Msg> {
     if let Some(error) = &state.status_error {
-        return ui::empty("alert", "Could not load the hub server", error);
+        return column![
+            ui::empty("alert", "Could not load the hub server", error),
+            ui::btn_sm("Try again", None, ui::Kind::Ghost, Some(Msg::RetryStatus)),
+        ]
+        .align_x(Alignment::Center)
+        .into();
     }
     let Some(status) = &state.status else {
         return ui::faint("Loading...").into();
@@ -919,7 +927,7 @@ fn snippet<'a>(title: &str, text: &str, note: &str) -> Element<'a, Msg> {
 
 fn tokens_card(state: &State) -> Element<'_, Msg> {
     let body: Element<'_, Msg> = if let Some(error) = &state.tokens_error {
-        ui::error_line(error)
+        ui::empty("alert", "Could not load the tokens", error)
     } else {
         match &state.tokens {
             None => ui::loading(),
@@ -977,7 +985,7 @@ fn calls_card(state: &State) -> Element<'_, Msg> {
     .align_y(Alignment::Center)
     .into();
     let body: Element<'_, Msg> = if let Some(error) = &state.calls_error {
-        ui::error_line(error)
+        ui::empty("alert", "Could not load the calls", error)
     } else {
         match &state.calls {
             None => ui::loading(),

@@ -1059,6 +1059,10 @@ fn table<'a>(state: &'a State, d: &'a Data) -> Element<'a, Msg> {
             ord.reverse()
         }
     });
+    // As the web's table pane: with no rows, the empty state stands in for the whole table.
+    if rows.is_empty() {
+        return ui::empty("zap", "Nothing to rank yet", "The table ranks each group once calls are recorded.");
+    }
     let head = row![
         sort_head("Name", Sort::Name, state, 5),
         sort_head("Calls", Sort::Calls, state, 2),
@@ -1072,17 +1076,12 @@ fn table<'a>(state: &'a State, d: &'a Data) -> Element<'a, Msg> {
         sort_head("Share", Sort::Share, state, 4),
     ].spacing(10);
     let mut lines = column![head].spacing(8);
-    if rows.is_empty() {
-        lines = lines.push(ui::faint("Nothing to group yet."));
-    }
     for g in rows {
         let share = if total_value > 0.0 { state.unit.value(&g.totals) / total_value } else { 0.0 };
         let trains = matches!(state.group, GroupBy::Model) && d.trains.contains(&g.key);
         lines = lines.push(table_row(state.group.display(&g.key, &d.agents), trains, &g.totals, Some(share)));
     }
-    if !groups.is_empty() {
-        lines = lines.push(table_row("Total".to_string(), false, &d.summary.totals, None));
-    }
+    lines = lines.push(table_row("Total".to_string(), false, &d.summary.totals, None));
     lines.into()
 }
 

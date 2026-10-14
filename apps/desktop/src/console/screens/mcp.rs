@@ -194,6 +194,8 @@ pub enum Msg {
     ToolsLoaded(String, Result<Vec<Tool>, String>),
     LogsLoaded(String, Result<Vec<LogLine>, String>),
     Refresh,
+    /// "Try again" after a failed load: the screen's load runs once more.
+    Retry,
     Close,
     Start(String),
     Stop(String),
@@ -311,6 +313,7 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             Task::none()
         }
         Msg::Refresh => detail_tasks(state, ctx),
+        Msg::Retry => load(state, ctx),
         Msg::Close => {
             state.selected = None;
             state.tools = None;
@@ -469,10 +472,19 @@ fn tab_bar<'a>(tab: Tab) -> Element<'a, Msg> {
 fn servers_section<'a>(state: &'a State) -> Element<'a, Msg> {
     let body: Element<'a, Msg> = match &state.servers {
         None => match &state.error {
-            Some(error) => ui::empty("alert", "Could not load MCP servers", error),
+            Some(error) => column![
+                ui::empty("alert", "Could not load MCP servers", error),
+                ui::btn_sm("Try again", None, ui::Kind::Ghost, Some(Msg::Retry)),
+            ]
+            .align_x(Alignment::Center)
+            .into(),
             None => ui::faint("Loading MCP servers...").into(),
         },
-        Some(list) if list.is_empty() => ui::empty("terminal", "No servers yet", "Add one from the catalogue below, or in the web console."),
+        Some(list) if list.is_empty() => ui::empty(
+            "terminal",
+            "No MCP servers",
+            "Add one to give agents outside tools. The hub runs each server, and agents never see its credentials.",
+        ),
         Some(list) => column(list.iter().map(|s| server_row(state.busy, s)).collect::<Vec<Element<'a, Msg>>>()).spacing(18).into(),
     };
     ui::card("Servers", body)
