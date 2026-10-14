@@ -203,16 +203,44 @@ pub fn open(state: &mut State, kind: Kind) -> Task<Msg> {
     Task::none()
 }
 
-/// The stored value of a number field's typed text, as the web's lab reads it: a seed a whole number from 0 to
-/// 4294967295; a width or depth a number rounded to halves from 1 to 12. None when the text is not a number.
+/// The stored value of a number field's typed text, read as the web's lab does: a seed from 0 to 4294967295, floored;
+/// a width or depth from 1 to 12, kept as typed. Out of range, or not a number, is None, and the field keeps its last
+/// value.
 fn number_value(key: &str, text: &str) -> Option<String> {
-    let text = text.trim();
+    let x = text.trim().parse::<f64>().ok().filter(|x| x.is_finite())?;
     if key == "seed" {
-        let n = text.parse::<u64>().ok()?;
-        return Some(n.min(4_294_967_295).to_string());
+        return (0.0..=4_294_967_295.0).contains(&x).then(|| (x.floor() as u64).to_string());
     }
-    let x = text.parse::<f64>().ok().filter(|x| x.is_finite())?;
-    Some(format!("{}", ((x * 2.0).round() / 2.0).clamp(1.0, 12.0)))
+    (1.0..=12.0).contains(&x).then(|| format!("{}", x))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn number_value_reads_the_size_as_typed() {
+        assert_eq!(number_value("width", "3.3").as_deref(), Some("3.3"));
+        assert_eq!(number_value("depth", " 12 ").as_deref(), Some("12"));
+        assert_eq!(number_value("width", "13"), None);
+        assert_eq!(number_value("width", "0.5"), None);
+    }
+
+    #[test]
+    fn number_value_floors_the_seed_within_range() {
+        assert_eq!(number_value("seed", "12.7").as_deref(), Some("12"));
+        assert_eq!(number_value("seed", "0").as_deref(), Some("0"));
+        assert_eq!(number_value("seed", "4294967295").as_deref(), Some("4294967295"));
+        assert_eq!(number_value("seed", "-1"), None);
+        assert_eq!(number_value("seed", "4294967296"), None);
+    }
+
+    #[test]
+    fn number_value_rejects_text_that_is_not_a_number() {
+        assert_eq!(number_value("width", "abc"), None);
+        assert_eq!(number_value("seed", "abc"), None);
+        assert_eq!(number_value("width", "NaN"), None);
+    }
 }
 
 pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
