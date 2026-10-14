@@ -29,9 +29,9 @@ pub enum Cmd {
     Token(TokenCmd),
     /// The call log of the hub's MCP server: which token called which tool, and whether it worked.
     Calls {
-        /// Only the calls of this token (its id, from `mcp token list`).
-        #[arg(long)]
-        token: Option<String>,
+        /// Only the calls of this MCP token (its id, from `mcp token list`). Not --token: that is the owner token.
+        #[arg(long = "token-id", value_name = "ID")]
+        token_id: Option<String>,
         /// Only the calls of this tool.
         #[arg(long)]
         tool: Option<String>,
@@ -120,9 +120,9 @@ pub fn run(cmd: Cmd, globals: Globals) -> Result<(), String> {
             let api = ctx::resolve(globals.hub, globals.token, globals.pin, globals.json)?;
             token(&api, sub)
         }
-        Cmd::Calls { token, tool, limit } => {
+        Cmd::Calls { token_id, tool, limit } => {
             let api = ctx::resolve(globals.hub, globals.token, globals.pin, globals.json)?;
-            calls(&api, token.as_deref(), tool.as_deref(), limit)
+            calls(&api, token_id.as_deref(), tool.as_deref(), limit)
         }
         Cmd::Login => login(globals.hub.as_deref(), io::stdin().lock()),
         Cmd::Serve => serve(globals.hub.as_deref(), globals.pin.as_deref()),
@@ -271,10 +271,10 @@ fn tools_text(token: &Value) -> String {
 }
 
 /// `mcp calls`: the call log, newest first, with the filters the flags give.
-fn calls(api: &Ctx, token: Option<&str>, tool: Option<&str>, limit: Option<u64>) -> Result<(), String> {
+fn calls(api: &Ctx, token_id: Option<&str>, tool: Option<&str>, limit: Option<u64>) -> Result<(), String> {
     let mut query = Vec::new();
-    if let Some(token) = token {
-        query.push(format!("token={}", ctx::seg(token)));
+    if let Some(token_id) = token_id {
+        query.push(format!("token={}", ctx::seg(token_id)));
     }
     if let Some(tool) = tool {
         query.push(format!("tool={}", ctx::seg(tool)));
@@ -547,7 +547,15 @@ mod tests {
         assert!(matches!(enable.map(|cli| cli.cmd), Ok(Cmd::Server(ServerCmd::Enable { confirm_open_remote: true, .. }))));
         assert!(TestCli::try_parse_from(["agentplaza", "server", "enable", "--auth", "bogus"]).is_err());
         assert!(TestCli::try_parse_from(["agentplaza", "server", "enable", "--open-scope", "root"]).is_err());
-        assert!(TestCli::try_parse_from(["agentplaza", "calls", "--token", "mcp_1", "--tool", "hub_status", "--limit", "20"]).is_ok());
+        assert!(TestCli::try_parse_from(["agentplaza", "calls", "--token-id", "mcp_1", "--tool", "hub_status", "--limit", "20"]).is_ok());
         assert!(TestCli::try_parse_from(["agentplaza", "calls", "--limit", "501"]).is_err());
+    }
+
+    #[test]
+    fn calls_filters_by_token_id_and_never_takes_the_owner_token_flag() {
+        // `--token` is the global owner flag (main.rs): on `calls` it must not filter, or it would shadow authentication.
+        let filtered = TestCli::try_parse_from(["agentplaza", "calls", "--token-id", "mcp_1"]);
+        assert!(matches!(filtered.map(|cli| cli.cmd), Ok(Cmd::Calls { token_id: Some(ref id), .. }) if id == "mcp_1"));
+        assert!(TestCli::try_parse_from(["agentplaza", "calls", "--token", "mcp_1"]).is_err(), "--token is not a calls filter");
     }
 }

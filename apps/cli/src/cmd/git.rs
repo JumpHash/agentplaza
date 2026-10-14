@@ -257,6 +257,11 @@ fn reopen_refusal(p: &Value, repo: &str, number: u64) -> Option<String> {
     is_merged(p).then(|| format!("#{number} in {repo} is merged: a merged pull request cannot be reopened"))
 }
 
+/// Why a pull request cannot be merged again: a merged one is already in the base branch, and Forgejo would only refuse.
+fn merge_refusal(p: &Value, repo: &str, number: u64) -> Option<String> {
+    is_merged(p).then(|| format!("#{number} in {repo} is already merged"))
+}
+
 /// Closes (`closed`) or reopens (`open`) a pull request and prints it.
 fn change_state(ctx: &Ctx, repo: &str, number: u64, state: &str) -> Result<(), String> {
     let p = ctx.client.post(&pull_path(repo, number, "/state"), &json!({ "state": state }))?;
@@ -516,6 +521,9 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
         }
         Cmd::Merge { repo, number, style, yes } => {
             let p = ctx.client.get(&pull_path(&repo, number, ""))?;
+            if let Some(refusal) = merge_refusal(&p, &repo, number) {
+                return Err(refusal);
+            }
             let problems = merge_problems(ctx::s(&p, "review"), p["mergeable"].as_bool().unwrap_or(false));
             if problems.is_empty() {
                 if !confirm(yes, &format!("Merge #{number} in {repo} ({style})."))? {
@@ -610,5 +618,16 @@ mod tests {
         assert_eq!(merge_problems("changes_requested", true), vec!["has changes requested"]);
         assert_eq!(merge_problems("approved", false), vec!["is not mergeable"]);
         assert_eq!(merge_problems("pending", false), vec!["is not approved", "is not mergeable"]);
+    }
+
+    #[test]
+    fn a_merged_pull_request_is_refused_before_a_merge_is_sent() {
+        let merged = json!({"number": 4, "state": "closed", "merged": true, "merged_at": "2026-10-03T09:30:00Z"});
+        let refusal = merge_refusal(&merged, "demo", 4).expect("a merged pull request is refused");
+        assert_eq!(refusal, "#4 in demo is already merged");
+        // An open pull request, a closed one that did not merge, and an older hub's (no `merged`) can be merged.
+        assert!(merge_refusal(&json!({"number": 5, "state": "open", "merged": false}), "demo", 5).is_none());
+        assert!(merge_refusal(&json!({"number": 6, "state": "closed", "merged": false}), "demo", 6).is_none());
+        assert!(merge_refusal(&json!({"number": 7, "state": "open"}), "demo", 7).is_none());
     }
 }

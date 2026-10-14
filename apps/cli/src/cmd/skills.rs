@@ -638,6 +638,9 @@ fn dir_zip(root: &Path) -> Result<(Vec<u8>, Vec<String>), String> {
     }
     let entries = kept.iter().map(read_entry).collect::<Result<Vec<Entry>, _>>()?;
     let skills = find_skills(&entries, "");
+    if skills.is_empty() {
+        return Err(format!("no SKILL.md found under {}", root.display()));
+    }
     Ok((write_zip(&skills)?, notes))
 }
 
@@ -1098,6 +1101,18 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("notes.txt"), "x").unwrap();
         assert!(read_folder(&root).is_err());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_import_of_a_folder_with_no_skill_file_is_refused_before_the_hub() {
+        let root = std::env::temp_dir().join(format!("apz-cli-skills-import-nomd-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        std::fs::write(root.join("notes.txt"), "x").unwrap();
+        std::fs::write(root.join("sub/readme.md"), "# not a skill\n").unwrap();
+        let err = dir_zip(&root).unwrap_err();
+        assert_eq!(err, format!("no SKILL.md found under {}", root.display()));
         let _ = std::fs::remove_dir_all(&root);
     }
 
