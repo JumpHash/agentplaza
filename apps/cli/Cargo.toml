@@ -12,10 +12,12 @@ path = "src/main.rs"
 
 [dependencies]
 apz-http = { path = "../../crates/apz-http" }
+apz-skill = { path = "../../crates/apz-skill" }
 apz-os = { path = "../../crates/apz-os" }
 apz-setup = { path = "../../crates/apz-setup" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+base64.workspace = true
 clap = { version = "4.6", features = ["derive", "env", "wrap_help"] }
 ratatui = "0.30"
 crossterm = "0.29"

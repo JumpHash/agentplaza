@@ -12,6 +12,9 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use apz_skill::{find_skills, write_zip, Entry};
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine;
 use clap::Subcommand;
 use serde_json::{json, Value};
 
@@ -465,7 +468,7 @@ fn publish_body(version: u32) -> Value {
 
 /// A file as a version takes it: its path, its executable bit, and its bytes in base64.
 fn file_json(f: &Entry) -> Value {
-    json!({ "path": f.path, "executable": f.executable, "content_b64": base64(&f.bytes) })
+    json!({ "path": f.path, "executable": f.executable, "content_b64": STANDARD.encode(&f.bytes) })
 }
 
 /// A new version's body: SKILL.md, the files, the note and the version it was made from.
@@ -484,13 +487,6 @@ fn commit_body(preview_id: &str, picks: &[String], bindings: &[String]) -> Value
 }
 
 // ---- Folders ----------------------------------------------------------------------------------
-
-/// One file to send: its path inside the skill, its executable bit, and its bytes.
-struct Entry {
-    path: String,
-    executable: bool,
-    bytes: Vec<u8>,
-}
 
 /// A file found by the walk, not yet read.
 struct Found {
@@ -620,11 +616,12 @@ fn read_entry(f: &Found) -> Result<Entry, String> {
     Ok(Entry { path: f.path.clone(), executable: f.executable, bytes })
 }
 
-/// A whole folder as a zip for an import: every file the hub takes, paths relative to the folder. The notes say
-/// what was left out.
+/// A whole folder as a zip for an import, built the way the hub reads it: the skills apz-skill finds in the folder
+/// (each folder holding a SKILL.md, with its files) are written by apz-skill's writer. Hidden files and files over
+/// 5 MB are left out, and the notes say which.
 fn dir_zip(root: &Path) -> Result<(Vec<u8>, Vec<String>), String> {
     let Walk { files, mut notes } = walk(root)?;
-    let mut entries = Vec::new();
+    let mut kept = Vec::new();
     let mut total = 0u64;
     for f in files {
         match skip_reason(&f.path, f.size) {
@@ -632,124 +629,16 @@ fn dir_zip(root: &Path) -> Result<(Vec<u8>, Vec<String>), String> {
             Some(Skip::TooLarge) => notes.push(format!("{}: larger than 5 MB", f.path)),
             None => {
                 total += f.size;
-                entries.push(f);
+                kept.push(f);
             }
         }
     }
     if total > MAX_UPLOAD {
         return Err(format!("{}: the folder is larger than 100 MB", root.display()));
     }
-    let packed = entries.iter().map(read_entry).collect::<Result<Vec<_>, _>>()?;
-    Ok((stored_zip(&packed)?, notes))
-}
-
-// ---- Encoders for the upload ------------------------------------------------------------------
-
-const BASE64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-/// Standard base64 with padding.
-fn base64(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let n = (u32::from(chunk[0]) << 16) | (u32::from(*chunk.get(1).unwrap_or(&0)) << 8) | u32::from(*chunk.get(2).unwrap_or(&0));
-        out.push(BASE64[(n >> 18) as usize & 63] as char);
-        out.push(BASE64[(n >> 12) as usize & 63] as char);
-        out.push(if chunk.len() > 1 { BASE64[(n >> 6) as usize & 63] as char } else { '=' });
-        out.push(if chunk.len() > 2 { BASE64[n as usize & 63] as char } else { '=' });
-    }
-    out
-}
-
-const CRC_TABLE: [u32; 256] = crc_table();
-
-const fn crc_table() -> [u32; 256] {
-    let mut table = [0u32; 256];
-    let mut n = 0;
-    while n < 256 {
-        let mut c = n as u32;
-        let mut k = 0;
-        while k < 8 {
-            c = if c & 1 != 0 { 0xEDB8_8320 ^ (c >> 1) } else { c >> 1 };
-            k += 1;
-        }
-        table[n] = c;
-        n += 1;
-    }
-    table
-}
-
-/// CRC-32 (the zip's checksum).
-fn crc32(bytes: &[u8]) -> u32 {
-    let mut crc = 0xFFFF_FFFFu32;
-    for b in bytes {
-        crc = CRC_TABLE[((crc ^ u32::from(*b)) & 0xFF) as usize] ^ (crc >> 8);
-    }
-    !crc
-}
-
-/// A zip of the entries, each stored (no compression), as the hub's import reads it. The date is 1980-01-01, the
-/// zip's epoch, so the archive is the same for the same files.
-fn stored_zip(entries: &[Entry]) -> Result<Vec<u8>, String> {
-    const DOS_DATE: u16 = 0x0021;
-    const UTF8_NAMES: u16 = 0x0800;
-    let count = u16::try_from(entries.len()).map_err(|_| "too many files for one zip".to_string())?;
-    let mut out = Vec::new();
-    let mut central = Vec::new();
-    for e in entries {
-        let name = e.path.as_bytes();
-        let name_len = u16::try_from(name.len()).map_err(|_| format!("{}: the name is too long", e.path))?;
-        let size = u32::try_from(e.bytes.len()).map_err(|_| format!("{}: too large for a zip entry", e.path))?;
-        let crc = crc32(&e.bytes);
-        let offset = u32::try_from(out.len()).map_err(|_| "the zip is too large".to_string())?;
-        let mode: u32 = if e.executable { 0o755 } else { 0o644 };
-        let attrs = (0o100000 | mode) << 16;
-        // The local header, the name and the bytes.
-        out.extend_from_slice(&0x0403_4b50u32.to_le_bytes());
-        out.extend_from_slice(&20u16.to_le_bytes());
-        out.extend_from_slice(&UTF8_NAMES.to_le_bytes());
-        out.extend_from_slice(&0u16.to_le_bytes());
-        out.extend_from_slice(&0u16.to_le_bytes());
-        out.extend_from_slice(&DOS_DATE.to_le_bytes());
-        out.extend_from_slice(&crc.to_le_bytes());
-        out.extend_from_slice(&size.to_le_bytes());
-        out.extend_from_slice(&size.to_le_bytes());
-        out.extend_from_slice(&name_len.to_le_bytes());
-        out.extend_from_slice(&0u16.to_le_bytes());
-        out.extend_from_slice(name);
-        out.extend_from_slice(&e.bytes);
-        // Its central directory entry.
-        central.extend_from_slice(&0x0201_4b50u32.to_le_bytes());
-        central.extend_from_slice(&20u16.to_le_bytes());
-        central.extend_from_slice(&20u16.to_le_bytes());
-        central.extend_from_slice(&UTF8_NAMES.to_le_bytes());
-        central.extend_from_slice(&0u16.to_le_bytes());
-        central.extend_from_slice(&0u16.to_le_bytes());
-        central.extend_from_slice(&DOS_DATE.to_le_bytes());
-        central.extend_from_slice(&crc.to_le_bytes());
-        central.extend_from_slice(&size.to_le_bytes());
-        central.extend_from_slice(&size.to_le_bytes());
-        central.extend_from_slice(&name_len.to_le_bytes());
-        central.extend_from_slice(&0u16.to_le_bytes());
-        central.extend_from_slice(&0u16.to_le_bytes());
-        central.extend_from_slice(&0u16.to_le_bytes());
-        central.extend_from_slice(&0u16.to_le_bytes());
-        central.extend_from_slice(&attrs.to_le_bytes());
-        central.extend_from_slice(&offset.to_le_bytes());
-        central.extend_from_slice(name);
-    }
-    let central_at = u32::try_from(out.len()).map_err(|_| "the zip is too large".to_string())?;
-    let central_size = u32::try_from(central.len()).map_err(|_| "the zip is too large".to_string())?;
-    out.extend_from_slice(&central);
-    // The end of the central directory.
-    out.extend_from_slice(&0x0605_4b50u32.to_le_bytes());
-    out.extend_from_slice(&0u16.to_le_bytes());
-    out.extend_from_slice(&0u16.to_le_bytes());
-    out.extend_from_slice(&count.to_le_bytes());
-    out.extend_from_slice(&count.to_le_bytes());
-    out.extend_from_slice(&central_size.to_le_bytes());
-    out.extend_from_slice(&central_at.to_le_bytes());
-    out.extend_from_slice(&0u16.to_le_bytes());
-    Ok(out)
+    let entries = kept.iter().map(read_entry).collect::<Result<Vec<Entry>, _>>()?;
+    let skills = find_skills(&entries, "");
+    Ok((write_zip(&skills)?, notes))
 }
 
 // ---- Commands ---------------------------------------------------------------------------------
@@ -1126,7 +1015,7 @@ mod tests {
         assert_eq!(body["note"], "why");
         assert_eq!(body["files"][0]["path"], "scripts/run.sh");
         assert_eq!(body["files"][0]["executable"], true);
-        assert_eq!(body["files"][0]["content_b64"], base64(b"echo hi"));
+        assert_eq!(body["files"][0]["content_b64"], STANDARD.encode(b"echo hi"));
     }
 
     #[test]
@@ -1136,33 +1025,6 @@ mod tests {
         assert_eq!(text["size"], 5);
         let binary = check_file_json(&entry("a.bin", &[0xff, 0xfe, 0x00], false));
         assert!(binary["text"].is_null());
-    }
-
-    #[test]
-    fn base64_matches_the_standard_encoding() {
-        assert_eq!(base64(b""), "");
-        assert_eq!(base64(b"f"), "Zg==");
-        assert_eq!(base64(b"fo"), "Zm8=");
-        assert_eq!(base64(b"foo"), "Zm9v");
-        assert_eq!(base64(b"foobar"), "Zm9vYmFy");
-        assert_eq!(base64(&[0xfb, 0xff]), "+/8=");
-    }
-
-    #[test]
-    fn crc32_matches_the_check_value() {
-        assert_eq!(crc32(b"123456789"), 0xCBF4_3926);
-        assert_eq!(crc32(b""), 0);
-    }
-
-    #[test]
-    fn a_stored_zip_ends_with_its_directory_and_counts_its_entries() {
-        let zip = stored_zip(&[entry("SKILL.md", b"# S\n", false), entry("scripts/run.sh", b"echo", true)]).unwrap();
-        assert_eq!(&zip[..4], &[0x50, 0x4b, 0x03, 0x04], "starts with a local header");
-        let eocd = zip.len() - 22;
-        assert_eq!(&zip[eocd..eocd + 4], &[0x50, 0x4b, 0x05, 0x06], "ends with the end of the central directory");
-        assert_eq!(u16::from_le_bytes([zip[eocd + 10], zip[eocd + 11]]), 2, "two entries");
-        assert!(zip.windows(b"scripts/run.sh".len()).any(|w| w == b"scripts/run.sh"));
-        assert!(stored_zip(&[]).unwrap().len() == 22, "an empty zip is the end record alone");
     }
 
     #[test]
@@ -1194,6 +1056,38 @@ mod tests {
         let (zip, _) = dir_zip(&root).unwrap();
         assert!(zip.windows(b"sub/a.txt".len()).any(|w| w == b"sub/a.txt"));
         assert!(!zip.windows(b".env".len()).any(|w| w == b".env"), "a hidden file is not zipped");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_folder_zipped_for_an_import_reads_back_as_its_skills() {
+        let root = std::env::temp_dir().join(format!("apz-cli-skills-roundtrip-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        std::fs::create_dir_all(root.join("nested")).unwrap();
+        std::fs::create_dir_all(root.join(".hidden")).unwrap();
+        std::fs::write(root.join("SKILL.md"), "# root\n").unwrap();
+        std::fs::write(root.join("run.sh"), "echo hi").unwrap();
+        std::fs::write(root.join("sub/a.txt"), "a").unwrap();
+        std::fs::write(root.join("nested/SKILL.md"), "# nested\n").unwrap();
+        std::fs::write(root.join("nested/b.txt"), "b").unwrap();
+        std::fs::write(root.join(".hidden/x"), "x").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(root.join("run.sh"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let (zip, _) = dir_zip(&root).unwrap();
+        let entries = apz_skill::read_zip(&zip, apz_skill::Limits::ARCHIVE).unwrap();
+        let found = find_skills(&entries, "");
+        assert_eq!(found.iter().map(|s| s.dir.as_str()).collect::<Vec<_>>(), ["", "nested"]);
+        assert_eq!(found[0].skill_md, "# root\n");
+        let mut names: Vec<(&str, &[u8], bool)> = found[0].files.iter().map(|f| (f.path.as_str(), f.bytes.as_slice(), f.executable)).collect();
+        names.sort();
+        assert_eq!(names, vec![("run.sh", b"echo hi".as_slice(), cfg!(unix)), ("sub/a.txt", b"a".as_slice(), false)]);
+        assert_eq!(found[1].skill_md, "# nested\n");
+        assert_eq!(found[1].files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(), ["b.txt"]);
+        assert!(!entries.iter().any(|e| e.path.starts_with(".hidden")), "a hidden folder is not zipped");
         let _ = std::fs::remove_dir_all(&root);
     }
 

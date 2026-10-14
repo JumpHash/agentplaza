@@ -65,6 +65,8 @@ dependencies = [
  "apz-http",
  "apz-os",
  "apz-setup",
+ "apz-skill",
+ "base64 0.22.1",
  "clap",
  "crossterm",
  "libc",
