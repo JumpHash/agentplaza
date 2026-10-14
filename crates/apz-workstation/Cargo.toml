@@ -1,0 +1,36 @@
+[package]
+name = "apz-workstation"
+description = "AgentPlaza workstation daemon: joins a hub, dials its station link, and serves files, terminals, runs, screens, input and STOP ALL in the work folder"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "apz-workstation"
+path = "src/main.rs"
+
+[dependencies]
+apz-desktop = { path = "../apz-desktop" }
+apz-http = { path = "../apz-http" }
+apz-ops = { path = "../apz-ops" }
+apz-os = { path = "../apz-os" }
+apz-station = { path = "../apz-station" }
+apz-trust = { path = "../apz-trust" }
+base64.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+# Platform backends. Each is off until its crate lands: the integrator adds the crate as an optional
+# dependency and turns the feature on, and `backend::open` then constructs it. With every feature off,
+# `backend::choose` picks the fake desktop.
+[features]
+default = []
+x11 = []
+wayland = []
+macos = []
+windows = []
+atspi = []
