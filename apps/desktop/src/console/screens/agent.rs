@@ -13,7 +13,7 @@ use iced::{Alignment, Border, Color, Element, Length, Task, Theme};
 use serde_json::{json, Value};
 
 use super::{agent_side, sanctions, Id};
-use crate::console::floor3d::world::layout::{agent_hue, role_hue};
+use crate::console::engine::world::layout::{agent_hue, role_hue};
 use crate::console::{client, events, ui, Ctx};
 use crate::theme::{SERIF};
 
@@ -603,7 +603,7 @@ fn profile_card<'a>(state: &'a State, a: &'a Value) -> Element<'a, Msg> {
         role_hue: hue,
         body_hue,
         offline: !matches!(s(a, "status"), "working" | "idle"),
-        species: crate::console::floor3d::robot::species_of(Some(s(a, "species")), cid),
+        species: crate::console::engine::robot::species_of(Some(s(a, "species")), cid),
     };
     let layers: Vec<Element<'a, Msg>> = match crate::console::render_card::robot_portrait(7, spec, PORTRAIT) {
         Some(robot) => vec![letter.into(), robot],

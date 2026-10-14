@@ -4,9 +4,12 @@ Owner's rule (2026-10-13): everything the web's three.js 3D does must be in the 
 more. three.js is removed when every row below says **done**. Status comes from the audit of the web's
 `apps/web/src/views/floor3d/**` against `crates/apz-engine`, and from the work since.
 
-| # | Feature (three.js source) | Engine status |
+**Status (2026-10-14): three.js is removed** (`987394f`). The web's 3D is the engine only, with no `?engine=wasm`
+flag. The `floor3d/**` paths below are the retired sources; the Rust code is in `crates/apz-engine` and `crates/apz-board`.
+
+| # | Feature (retired three.js source) | Engine status |
 |---|---|---|
-| 1 | Machines view: fleet ring, cables, LEDs, labels, hover, select, popup | done (web `?engine=wasm`, desktop) |
+| 1 | Machines view: fleet ring, cables, LEDs, labels, hover, select, popup | done (web, desktop) |
 | 2 | ENTER flight, occlusion fade, case opening, Back (`entry.ts`) | done; the distance fade and the plaza cutaway match the web |
 | 3 | Idle camera drift, Reset restarts it | done |
 | 4 | Render on demand, motion tiers | done (Rest, Ambient 12 fps, Active) |
@@ -20,12 +23,12 @@ more. three.js is removed when every row below says **done**. Status comes from 
 | 12 | Grounding, drawn tops and support (`ground.ts`, `drawn-tops.ts`) | in `apz-board` (support field); engine hookup missing |
 | 13 | Warm-up budget for board builds (`warm.ts`) | done: a re-entered machine's board comes from the build cache; budgeted steps exist (`warm.rs`) but the board build is still one call |
 | 14 | Shadow proxies (`bake.ts`) | done in kind: the engine merges every static opaque caster into one geometry that only the shadow pass draws (`render.rs` build_statics), the proxies' purpose, in one bucket instead of per-cell buckets |
-| 15 | Portrait studio (`portrait.ts`) | done in the engine (`portrait.rs`, offscreen) and on the web under `?engine=wasm`; the desktop still draws its own copy in `render_card.rs` |
-| 16 | Robot lab: species, clip, tool, carry, hue, orch, cam (`robot-lab.ts`) | done, also in the browser (`#/robot-lab?engine=wasm`) on the web lab's own pale stage |
+| 15 | Portrait studio (`portrait.ts`) | done in the engine (`portrait.rs`, offscreen) and on the web; the desktop still draws its own copy in `render_card.rs` |
+| 16 | Robot lab: species, clip, tool, carry, hue, orch, cam (`robot-lab.ts`) | done, also in the browser (`#/robot-lab`) on the web lab's own pale stage |
 | 17 | Z-fight lint over the hardware models (`zfight.ts`) | ported (`apz-board::zfight`), counts equal to the web on all 11 cases; committed with the board fixes |
 | 18 | Robot design audit and eye seating (`robots/audit.ts`, `seat.ts`) | done (`robots/audit.rs`); issue counts not yet cross-checked against the TS run |
 | 19 | Nav overlay `?nav=1` (`nav-overlay.ts`) | missing |
-| 20 | Debug hooks (`__apzLookAt`, `__apzLifts`, `__apzNavCell`, `__apzScene` …) | partial: every name is installed in engine mode; LookAt, EntryTime, Scene, Perf and Programs work; Bots and the nav and lift hooks wait for walking robots |
+| 20 | Debug hooks (`__apzLookAt`, `__apzLifts`, `__apzNavCell`, `__apzScene` …) | partial: every name is installed by the engine; LookAt, EntryTime, Scene, Perf, Programs, Bots, NavCell, NavAudit, Lifts, Shove and GroundAudit read the engine (`debug.rs`); LiftRide is a stub |
 | 21 | Cutaway of tall parts over the plaza (the web fix of 2026-10-13) | done (`over_area`, 15 % as on the web) |
 | 22 | Performance budget (≤300 machines, ≤400 board, 0 frames at rest) | done for the Machines view: 217 draw items (budget test on), 246 draws on the Floor in the browser; fans, LEDs and screens animate on the GPU from per-machine state; the board view's budget is not measured yet |
 
@@ -53,5 +56,5 @@ more. three.js is removed when every row below says **done**. Status comes from 
    hooks (`__apzBots`, `__apzLifts`, `__apzNavCell`).
 4. The browser: the shared layout computed in a web worker running the same wasm, posted back to the engine.
 5. The nav overlay (`?nav=1`).
-6. The wasm engine becomes the web's default (no `?engine=wasm`); the three.js renderers, their pure-TS cores that only
-   they use, their tests and the `three` dependency are deleted.
+6. **Done (`987394f`).** The wasm engine is the web's default (no `?engine=wasm`); the three.js renderers, their pure-TS
+   cores that only they used, their tests and the `three` dependency are deleted.

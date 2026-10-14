@@ -78,7 +78,7 @@ ray test remains the fallback.
 3. Port the board: hardware, rooms, robots and lifts, with `apz-board` driving motion in the fixed schedule, and robot
    clips (walk, jump, fall, land) as components.
 4. Add compute culling and indirect draws on WebGPU/native, flow fields, and particles.
-5. Port the portrait studio and the robot lab as states. Then the web drops three.js (`engine.md` phase 4).
+5. Port the portrait studio and the robot lab as states. Then the web drops three.js (`engine.md` phase 4; done in `987394f`).
 
 ## Budgets (tests)
 

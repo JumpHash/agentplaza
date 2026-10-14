@@ -9,8 +9,8 @@
 pub mod boot;
 pub mod brands;
 pub mod cli_link;
-// The Floor's 3D engine lives in `crates/apz-engine`; `floor3d::` is kept as its name here.
-pub use apz_engine as floor3d;
+// The 3D engine (`crates/apz-engine`), shared with the web's wasm build.
+pub use apz_engine as engine;
 pub mod floor_engine;
 pub mod chart;
 pub mod client;

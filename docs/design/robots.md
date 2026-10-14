@@ -31,8 +31,9 @@ assets/robots/
   props/<id>.json     station props placed in rooms (easel, lab bench, workbench, …)
 ```
 
-Web: `apps/web/src/views/floor3d/robots/` (loader, rig, clips, engine) and `#/robot-lab`.
-Desktop: `apps/desktop/src/console/floor3d/robots/` (the same modules, by the same names).
+Code: `crates/apz-engine/src/robots/` (loader `files.rs`, `rig.rs`, `clips.rs`, `audit.rs`, `lab.rs`), one copy for
+the web and the desktop. The web lab is `#/robot-lab`. (The TypeScript modules under `apps/web/src/views/floor3d/robots/`
+were retired in `987394f`.)
 Hub: `crates/apid/src/looks.rs` (dealing and keeping species).
 
 ## Species format (`species/<id>.json`, schema 1)
@@ -209,7 +210,7 @@ Personality is 0–9: **so**cial, **en**ergy, **fo**cus, **cu**riosity, **pl**ay
 
 ## What they do: the behaviour engine
 
-A small utility AI per robot, the same rules in both apps (`behaviour.ts` / `behaviour.rs`) and its tables
+A small utility AI per robot, the same rules in one Rust module (`crates/apz-engine/src/world/behaviour.rs`) and its tables
 in `behaviour.json`. It runs on the client from what the client already sees: agent status, the latest
 tool call (the activity line), conversations (who messages whom), tasks and projects events, the board
 layout. It decides an **activity** (a clip, a tool, a place, a duration, maybe a partner); the floor walks
@@ -305,11 +306,10 @@ Idle extras by trait: a ball (play ≥ 7), a broom (tidy ≥ 7), a coffee mug (f
 ### Engine status and integration (floor)
 
 Status: the engine is built in both apps with the same algorithm and the same tables.
-`apps/web/src/views/floor3d/behaviour.ts` (`Behaviour`, `runScenario`) and
-`apps/desktop/src/console/floor3d/world/behaviour.rs`. Tables: `assets/robots/behaviour.json` (tool categories,
+`crates/apz-engine/src/world/behaviour.rs` (`Behaviour`, `runScenario`; the TS original, `behaviour.ts`, is retired). Tables: `assets/robots/behaviour.json` (tool categories,
 roles and work, activities, idle scores, events, scoring). Parity: `assets/robots/behaviour-fixtures.json` holds
-the decision hashes of 100 seeded scenarios (40 ticks each); both apps must reproduce every hash. It is not yet
-called from `floor.ts` or `motion.rs`; those wait for nav to land.
+the decision hashes of 100 seeded scenarios (40 ticks each); the engine must reproduce every hash. The engine calls it from
+`world/work.rs` and `world/spots.rs`.
 
 Per tick (the floor calls `step` at most every `scoring.decision_s`, 0.25 s, and never per frame):
 
@@ -338,7 +338,7 @@ Per tick (the floor calls `step` at most every `scoring.decision_s`, 0.25 s, and
 4. **Determinism.** Given the same inputs in the same order the engine returns the same decisions (a seeded pick per
    robot and decision). The floor must pass the robots in any order: the engine sorts them by cid itself.
 
-Check: `apps/web/test/tests.ts` ("Robot behaviour engine") and the Rust tests in `world/behaviour.rs` run the same
+Check: the Rust tests in `crates/apz-engine/src/world/behaviour.rs` (the TS suite, "Robot behaviour engine", is retired) run the same
 checks (data, choice per role and category, idle traits, reservation, groups, offline, held, pairs, payments,
 determinism, fixtures).
 
@@ -363,7 +363,7 @@ determinism, fixtures).
 
 ## Verification
 
-- Validation: every file in `index.json` parses and validates (web `npm run check`, a Rust test); every
+- Validation: every file in `index.json` parses and validates (a Rust test, `cargo test -p apz-engine`); every
   species has the required bones; every clip names existing bones; every tool named by `behaviour.json`
   exists.
 - Lab screenshots of every species in both themes, in idle, walk, type, carry and its quirks.

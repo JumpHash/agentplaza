@@ -31,8 +31,8 @@ for (const file of readdirSync(fontsDir).filter((f) => f.endsWith('.ttf'))) {
   copyFileSync(join(fontsDir, file), join(dist, file));
 }
 
-// The engine is optional until crates/apz-engine-web exists: without it the app builds as before (the names are null
-// and the app keeps its three.js floor). With it, apz-pack (tools/apz-pack, Rust) builds the engine for wasm, binds it
+// The engine is the web's 3D (crates/apz-engine-web): without the crate the names are null and the app falls back to
+// its 2D floor. With it, apz-pack (tools/apz-pack, Rust) builds the engine for wasm, binds it
 // with wasm-bindgen at the version Cargo.lock pins (and, built with --features wasm-opt, runs wasm-opt -Oz, kept only
 // when it compresses smaller), and writes the glue and the wasm to dist.next under content-hashed names. It prints one
 // JSON line with those names and the sizes.

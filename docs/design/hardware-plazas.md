@@ -33,9 +33,9 @@ counts, GPU core count, unified memory) feed the board's params (`p_cores`, `e_c
 
 ## One source of truth: hardware models as data
 
-Every model is a JSON file under `assets/hardware/`, read by both renderers — three.js on the web
-(`apps/web/src/views/floor3d/hardware.ts`) and the desktop's renderer
-(`apps/desktop/src/console/floor3d/hardware.rs`). Neither app hand-codes a machine: parity comes
+Every model is a JSON file under `assets/hardware/`, read by the one renderer, the Rust engine
+(`crates/apz-engine/src/hardware.rs`, geometry in `crates/apz-board/src/hardware.rs`), on both the web and the desktop. (The three.js
+renderer, `apps/web/src/views/floor3d/hardware.ts`, was retired in `987394f`.) Neither app hand-codes a machine: parity comes
 from the shared data.
 
 ```
@@ -138,17 +138,16 @@ polylines on the PCB, drawn as copper; current pulses travel along them; robots 
 
 ## Grounding
 
-Every solid of a model rests on what is directly under it (the full rule and the attached exemptions: `assets/hardware/README.md`, "Grounding"). Its bottom is at the top of the highest solid beneath it, within 0.02, and it does not sink into a solid beneath it or below the ground. The audit (`groundAudit`, `apps/web/src/views/floor3d/ground.ts`) checks this for every board at 1, 4, 8 and 20 agents, and the web test suite fails on any floating or sinking part.
+Every solid of a model rests on what is directly under it (the full rule and the attached exemptions: `assets/hardware/README.md`, "Grounding"). Its bottom is at the top of the highest solid beneath it, within 0.02, and it does not sink into a solid beneath it or below the ground. The audit (`groundAudit`, retired with `apps/web/src/views/floor3d/ground.ts`; its support field is now `crates/apz-board/src/support.rs`) checks this for every board at 1, 4, 8 and 20 agents, and `cargo test -p apz-board` fails on any floating or sinking part.
 
 - **Parts:** a solid that is not `attached` rests on the parts under it. An `attached` part (a fan on its shroud, a cable, a glow, a light) is not tested. Decals (flat `plane` and `ring`), the copper traces and additive glows neither rest nor hold anything up.
 - **Slots and plates:** a slot's `top` is the top of its `on` part plus the plate thickness (0.2). The terrace plate spans from the highest solid under it up to its top; where it stands over lower ground, its columns go down to what is under them. The plate never hangs in air and never sinks into a part.
-- **The desktop renderer must mirror this (`apps/desktop/src/console/floor3d/`; not done yet):** it reads the same `attached` flag and the same slot tops, and builds each terrace plate the same way. The plate's underside is the highest solid under its footprint, never less than 0.2 below its top. Each 0.5-unit cell that stands over lower ground gets a column from the support under it up to the underside, the support being the highest solid box at the cell's centre and four inset corners (the web reads the solids' boxes, taken before the bake, since the baked meshes are merged). The desktop's grounding check must hold the same zero-finding bar on the board data.
+- **The Rust port (`crates/apz-board/src/support.rs`, `crates/apz-board/src/layout/`) mirrors this, and the desktop uses the same code:** it reads the same `attached` flag and the same slot tops, and builds each terrace plate the same way. The plate's underside is the highest solid under its footprint, never less than 0.2 below its top. Each 0.5-unit cell that stands over lower ground gets a column from the support under it up to the underside, the support being the highest solid box at the cell's centre and four inset corners (the web reads the solids' boxes, taken before the bake, since the baked meshes are merged). The grounding check must hold the same zero-finding bar on the board data.
 
 ## The atom at the centre
 
 The plaza's atom — the glowing nucleus with its electron shells that hovers over today's central
-dais (`xenonAtom` in `apps/web/src/views/floor3d/props.ts`, its port in
-`apps/desktop/src/console/floor3d/props.rs`) — is kept exactly as it is and sits **at the centre
+dais (`xenonAtom`, formerly in the retired `apps/web/src/views/floor3d/props.ts`; now `crates/apz-engine/src/props.rs`) — is kept exactly as it is and sits **at the centre
 of every machine's plaza**: over the main CPU's die (cpu0) or, on an SoC board, over the SoC,
 always at the board's centre point. Every board model has an anchor `"atom": [x, y, z]` at its
 centre above the main processor; the renderer places the existing atom builder there (scaled to
@@ -192,7 +191,7 @@ A host's desk count rises by the joiners, so its minimum is recomputed for the n
 layout time). Joining adds desks, not cells, so no other room's cell changes. Each agent's home is a desk in its
 room: the square grid of desks, three apart, closer when the cell is small. With the 17-role roster, every model
 seats all 17 agents and no room is under its minimum for its desk count (tests: `board join`).
-A slot the board's default camera cannot see is not used. The camera is `anchors.camera.at` of the board model. For each slot, nine samples sit in a 3 by 3 grid over the slot's top, one unit above it; a sample is blocked when the segment from the camera to it crosses a part box other than the slot's own part (`partBoxes`, zfight.ts). A slot is occluded when MORE than a third of its samples are blocked (4 or more of 9). `occludedSlotIds` (board-layout.ts) computes this; the slot's `occluded` field, when set, overrides it (the workstation leaves it unset). The third is a measured choice: on the workstation the RAM slot is a third blocked (its near row sits behind the GPU card) and stays usable, m2_2 is four ninths blocked and is hidden. A 25% share would hide the RAM. Per-cell occlusion (hiding only the cells that are blocked) is the principled refinement and is not done yet. On the workstation with one GPU the occluded slots are the chipset, m2_1 and m2_2; with two GPUs, m2_3 is occluded too. The other five models have no occluded slot.
+A slot the board's default camera cannot see is not used. The camera is `anchors.camera.at` of the board model. For each slot, nine samples sit in a 3 by 3 grid over the slot's top, one unit above it; a sample is blocked when the segment from the camera to it crosses a part box other than the slot's own part (`partBoxes`, `crates/apz-board/src/zfight.rs`). A slot is occluded when MORE than a third of its samples are blocked (4 or more of 9). `occludedSlotIds` (board-layout.ts) computes this; the slot's `occluded` field, when set, overrides it (the workstation leaves it unset). The third is a measured choice: on the workstation the RAM slot is a third blocked (its near row sits behind the GPU card) and stays usable, m2_2 is four ninths blocked and is hidden. A 25% share would hide the RAM. Per-cell occlusion (hiding only the cells that are blocked) is the principled refinement and is not done yet. On the workstation with one GPU the occluded slots are the chipset, m2_1 and m2_2; with two GPUs, m2_3 is occluded too. The other five models have no occluded slot.
 An agent with no role (an empty role from the fleet) gets a room of its own, built as the `other` family (its own minimum row in minsize.json), rather than one room shared by every unnamed agent.
 
 ## Aisles, landings and the gangway
@@ -211,10 +210,10 @@ and no door faces a part or another room's wall.
   perimeter point. A slot with no landing is unusable and its rooms go to other slots.
 - **Gangway.** Where no plain landing exists, a gangway carries the plate over the solid cells to a lift shaft on the
   first walkable board cell outside the part's footprint. The bridge runs at plate height, walkable, and the lift
-  drops to the board from its end. The reach is `GANGWAY_REACH` (board-layout.ts), 3.25 units. The task's first draft
+  drops to the board from its end. The reach is `GANGWAY_REACH` (formerly board-layout.ts, now `crates/apz-board/src/layout.rs`), 3.25 units. The task's first draft
   said 2.5; that would leave the cooler unusable (the nearest walkable cell is 3.1 units out). The orchestrator's room
   is on the cooler next to the atom, so the cooler stays usable: **3.25 is a deliberate deviation from 2.5.**
-- **The lift and the gangway (lift.ts, lift-ctrl.ts).** A lift is a cab in a shaft beside a plate, 1.6 wide along the wall,
+- **The lift and the gangway (`crates/apz-engine/src/world/lift_mesh.rs`, `world/walkway_mesh.rs`, `crates/apz-board/src/nav/lift.rs`).** A lift is a cab in a shaft beside a plate, 1.6 wide along the wall,
   between the board (PCB top) and the plate top, open at both landings with a gate and a call panel at each stop, and a
   counterweight on a cable. The gangway is only its bridge, which ends flush at the cab's plate side. The cab's rules (up to
   three riders, a queue in arrival order, eased travel, doors that open only at a stop) are in navigation.md, "Lifts". The

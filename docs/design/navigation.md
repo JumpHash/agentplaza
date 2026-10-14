@@ -3,7 +3,9 @@
 Status: design (2026-10-13). The owner: "the robots walk towards walls, items, props, etc and look clunky walking into
 those. We need path mapping/tracing for them." Today a robot walks straight at its goal (or along the trace graph between
 rooms) and slides through furniture and walls. This adds a navigation grid, path planning, path following and local
-avoidance — the same algorithm in both apps (`floor3d/nav.ts`, `floor3d/world/nav.rs`), proven by shared fixtures.
+avoidance — one algorithm, in Rust, for the engine on both hosts (`crates/apz-board/src/nav/`, `crates/apz-engine/src/world/nav.rs`), proven by Rust tests.
+
+**Note (2026-10-14):** the TypeScript sources and tests named in this doc (`floor3d/*.ts`, `nav-*.ts`, `lift*.ts`, `board-layout.ts`, `test/tests.ts`) were deleted in `987394f`. Their Rust ports are named where each rule is stated. The rule numbers still refer to the retired TS. The tests are `cargo test -p apz-board -p apz-engine`.
 
 ## The nav grid
 
@@ -75,7 +77,7 @@ The grid is rebuilt when the board, its params or any room layout changes (cheap
   layout every pair of seats has a path both ways; every plate that holds a room is reached; every desk connects to its
   room's door both ways.
 
-**The desktop port must mirror** (apps/desktop/src/console/floor3d/world/):
+**The Rust port** (`crates/apz-board/src/navgrid.rs`, `navgrid/rooms.rs`) follows these rules:
 
 1. The nav grid's rule 6 (landing search): the open-cell test (not blocked, not inflated) for the plate source, the BFS
    cells and the board cell; the clearance test for the plate source (outside every slab), the board cell and a lift's
@@ -142,7 +144,7 @@ The invariants (numbered as in `nav-agents.ts`):
 ## Avoiding each other
 
 Each tick, the avoidance pass (`avoid`, then `separate`) reads the robots' paths and positions and proposes moves; the
-rules below are numbered as in `apps/web/src/views/floor3d/nav-agents.ts` (its rule 10 covers the look-ahead, the
+rules below are numbered as in the retired `nav-agents.ts` (`crates/apz-board/src/nav/world/`; its rule 10 covers the look-ahead, the
 priority, the yield and the hold; its rule 12 the separation).
 
 8. **Look-ahead.** Robots are discs. Each tick a robot looks 1.2 units ahead along its path. Another robot whose centre
@@ -168,7 +170,7 @@ priority, the yield and the hold; its rule 12 the separation).
 
 ## Gravity and heights
 
-The robot's height is its body, not its cell. The pose's `y` is the body's feet height (`floor3d/nav-height.ts`). The nav
+The robot's height is its body, not its cell. The pose's `y` is the body's feet height (`crates/apz-board/src/nav/height.rs`). The nav
 world plans on cells as before (rules 1 to 13). After each step's commit and stuck check, `NavWorld.step` steps every
 robot's body once, in id order (`vertical`), and then audits it (`audit1`).
 
@@ -247,7 +249,7 @@ the head, the arms): a crouch (body 0.92, down 0.06, arms down), a jump (body 1.
 them by `AIR_FEET` in the air (jump +0.06, fall -0.03). Floating species (`floats`) skip the crouch and glide; wheeled
 species (no feet) get the body channels only.
 
-**The desktop port must mirror** (apps/desktop/src/console/floor3d/world/motion.rs, and robot.rs for the clips):
+**The Rust port** (`crates/apz-engine/src/world/motion.rs`, and `crates/apz-engine/src/robots/clips.rs` for the clips) follows these rules:
 
 1. The constants above, with the same values.
 2. The body's modes, transitions and formulas exactly as listed (the anchor, the launch velocity, the landing test with
@@ -265,8 +267,8 @@ species (no feet) get the body channels only.
 
 A lift is a cab in a shaft beside a plate: it serves two stops, the board (stop 0, the PCB top `NavLift.low`) and the plate
 (stop 1, `NavLift.high`). Robots ride it between a plate and the board, up to three at a time, in queue order. The shaft
-and its look are `floor3d/lift.ts`; the cab's mechanics are `floor3d/lift-ctrl.ts` (one `LiftController` per lift, no
-three.js, no grid); the robots' side is `nav-agents.ts` (rule 4). The gangway (`gangway.ts`) is only the bridge: it ends at
+and its look are `world/lift_mesh.rs`; the cab's mechanics are `nav/lift.rs` (one `LiftController` per lift, no
+renderer, no grid); the robots' side is `nav/world/` (rule 4). The gangway (`world/walkway_mesh.rs`) is only the bridge: it ends at
 the cab's plate side, so the bridge's deck and the top stop meet flush.
 
 **Geometry** (lift.ts, in the lift's frame: z = 0 is the front cell's centre, +z toward the walkway, -z toward the plate).
@@ -323,15 +325,15 @@ landing and waits at the queue (a legitimate wait, not a stall); it boards when 
 the doors open, and its remaining path is its plan to the goal. A plan takes a lift only for a change of level (the
 `noLifts` option, as before).
 
-**The desktop port must mirror** (apps/desktop/src/console/floor3d/world/, and its lift renderer):
+**The Rust port** (`crates/apz-board/src/nav/lift.rs`, `nav/world/`, and `crates/apz-engine/src/world/lift_mesh.rs`) follows these rules:
 
-1. `lift-ctrl.ts`: the constants (`QUEUE_TTL` 3, `MAX_DT` 0.25, the sub-step 1/60 s, the defaults above), the phase machine
+1. `lift-ctrl.ts` (now `nav/lift.rs`): the constants (`QUEUE_TTL` 3, `MAX_DT` 0.25, the sub-step 1/60 s, the defaults above), the phase machine
    (`tick`, `decide`, `afterOpen`, `beginBoarding`, `startTravel`, `arrive`), the queue order (by arrival `seq`, a missed
    robot gets a new one), the admission and capacity, the smoothstep travel and its duration `|high - low| / speed`.
-2. `nav-agents.ts` rule 4: the request, touch, board, aboard (riding; arrived with doorT < 1), alight, cancel and the
+2. `nav-agents.ts` rule 4 (now `nav/world/`): the request, touch, board, aboard (riding; arrived with doorT < 1), alight, cancel and the
    step-off, and the removal of a robot from every cab (`remove`, respawn).
-3. `lift.ts` geometry: the frame, the cab's planes (`CAB_W`, `CAB_BACK`, `CAB_FRONT`), gates, call lamps, counterweight and
-   cables. `gangway.ts`: the bridge length `(bx - sx) n + (bz - sz) n + CAB_BACK`.
+3. `lift.ts` geometry (now `world/lift_mesh.rs`): the frame, the cab's planes (`CAB_W`, `CAB_BACK`, `CAB_FRONT`), gates, call lamps, counterweight and
+   cables. `gangway.ts` (now `world/walkway_mesh.rs`): the bridge length `(bx - sx) n + (bz - sz) n + CAB_BACK`.
 4. `NavWorld.lift(id)` and `liftState(id)`; the floor reads the handle's `state()` each frame (never a second cab).
 
 Tests (test/tests.ts): the controller's "lift:" block (ordering, capacity, no move with the doors open, every request

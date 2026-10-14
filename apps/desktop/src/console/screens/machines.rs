@@ -18,7 +18,7 @@ use apz_engine::input::Action;
 use apz_engine::{Cmd, Engine, Feed, Motion};
 
 use super::Id;
-use crate::console::floor3d::fleet::FleetResponse;
+use crate::console::engine::fleet::FleetResponse;
 use crate::console::floor_engine::EngineProgram;
 use crate::console::ui::{Kind, Tone, INK, INK_2, INK_3, RULE, RULE_FAINT, SHEET, SIGNAL};
 use crate::console::{client, render_card, ui, Ctx};
@@ -272,7 +272,7 @@ fn stage_fleet(ctx: &Ctx) -> Task<Msg> {
 /// it only turns, none at rest.
 pub fn subscription(state: &State) -> Subscription<Msg> {
     match state.stage.as_ref().map(|s| s.motion) {
-        Some(Motion::Active) if crate::console::floor3d::render::light() => {
+        Some(Motion::Active) if crate::console::engine::render::light() => {
             iced::time::every(Duration::from_millis(33)).map(Msg::StageFrame)
         }
         Some(Motion::Active) => iced::window::frames().map(Msg::StageFrame),

@@ -4,9 +4,9 @@ Owner's rule: the web console and the desktop app have 1:1 parity, in full. This
 other lacks, from an audit on 2026-10-13. The audit compared the hub API calls each screen makes, plus the shared UI
 features. Tick an item off when it lands, with its commit.
 
-The 3D views are a separate effort: the shared Rust engine replaces three.js on the web and serves the desktop
-(`docs/design/engine.md`). Once the engine has them, both apps get the same Floor, Machines thumbnails, portraits and
-labs.
+The 3D views are one Rust engine on both apps. three.js is deleted from the web (`987394f`, the last phase of
+`docs/design/engine.md`, done), so the web's 3D is the engine too. Both apps get the same Floor, Machines thumbnails,
+portraits and labs.
 
 ## Desktop gaps (web has it)
 

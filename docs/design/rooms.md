@@ -14,12 +14,14 @@ apply are folded in at the end of this file.
 assets/rooms/
   catalog.json     the items (footprint, height, placement, clearance, spots, model) and the groups
   roles.json       per role (and family fallback): shell options, required and preferred groups, decor pool, density
-  fixtures.json    golden cases: (role, w, d, door, seed) -> layout hash, checked by both apps
+  fixtures.json    golden cases: (role, w, d, door, seed) -> layout hash, checked by the Rust tests
   minsize.json     per role and desk count (1..6): the smallest room side at which the required groups always place
 docs/design/rooms.md
-web:     apps/web/src/views/floor3d/rooms/gen.ts (generator), verify.ts, build.ts (layout -> meshes), kit.ts; #/room-lab
-desktop: apps/desktop/src/console/floor3d/rooms/gen.rs, verify.rs, build.rs; APZ_ROOM_LAB (ports v1; re-sync to v2 from
-         this file and fixtures.json)
+generator: crates/apz-board/src/rooms/generate.rs; verifier: crates/apz-board/src/rooms/verify.rs
+engine:    crates/apz-engine/src/rooms/ (build.rs: layout -> meshes, kit.rs, lab.rs); web room lab at #/room-lab
+(The TypeScript files `gen.ts`, `verify.ts`, `build.ts`, `kit.ts` and `rooms/index.ts` named in the text below were
+retired in `987394f`; the Rust files above replace them.)
+desktop: the same crates, no copy of its own; APZ_ROOM_LAB (the room lab's switch)
 ```
 
 ## Inputs and output
@@ -175,13 +177,12 @@ the check is a follow-up).
 
 ## Testing and reproducing
 
-- **Property test** (`npm run rooms:prop`): every role x sizes 2.5-8 (step 0.5, and the w != d pairs) x 4 doors x
+- **Property test** (the `npm run rooms:prop` script is removed; the checks are Rust tests, `cargo test -p apz-board`): every role x sizes 2.5-8 (step 0.5, and the w != d pairs) x 4 doors x
   `--seeds` seeds (default 500) -> zero violations and zero dropped. The desk count is `cap(w, d)`; the sweep starts at
   the role's minSize. A failure prints its input as a lab URL. The run reports, per role and size, how often a
   preferred group was skipped.
-- **Fixtures** (`npm run rooms:fixtures`, `fixtures.json`, 200 cases): both apps compute the layout hash and must
-  match. Regenerate only when the algorithm or the catalogue changes on purpose. The same run writes `minsize.json`.
-- **Room lab**: `#/room-lab?role=<role>&w=4&d=3.5&door=s&seed=7` (one room; `debug=1` overlays the grid, solids,
+- **Fixtures** (`cargo test -p apz-board`, `fixtures.json`, 200 cases): the generator computes the layout hash and must
+  match. Regenerate only when the algorithm or the catalogue changes on purpose.- **Room lab**: `#/room-lab?role=<role>&w=4&d=3.5&door=s&seed=7` (one room; `debug=1` overlays the grid, solids,
   reservations, spots and violations), `&grid=1` (12 seeds side by side), `&role=all` (every role).
   Desktop: `APZ_ROOM_LAB=<role>` with `APZ_ROOM_SEED`, `APZ_ROOM_SIZE=4x3.5`, `APZ_ROOM_DOOR`.
 
@@ -213,7 +214,7 @@ reads `spots` as the room's stations; `g` is available to group-aware behaviour 
 - Desktop port: the shell is `walls` = all four sides (or none), plus `door`; the stubs are the door side split at the
   opening, as above. The lintel is render-only.
 
-Everything here is what `gen.ts` does. Where the v1 text above or the v1 resolutions below differ, this appendix decides.
+Everything here is what the generator (`rooms/generate.rs`, formerly `gen.ts`) does. Where the v1 text above or the v1 resolutions below differ, this appendix decides.
 
 ### A1. Constants and helpers
 

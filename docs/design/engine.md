@@ -5,10 +5,10 @@ the browser (WebAssembly, using WebGPU with a WebGL2 fallback). three.js is remo
 
 ## Starting point
 
-- **Desktop:** `apps/desktop/src/console/floor3d/` is already a Rust/wgpu renderer (wgpu 27, through iced 0.14),
+- **Desktop:** `apps/desktop/src/console/floor3d/` was already a Rust/wgpu renderer (wgpu 27, through iced 0.14; the folder is gone, its code is `crates/apz-engine` now),
   about 23k lines. It covers the toon shading, outlines, hardware models, robots, rooms, world and layout, and
   the entry flight. Only `render.rs` and `world/view.rs` touch iced.
-- **Web:** `apps/web/src/views/floor3d/` and `floor.ts`, about 24k lines of three.js. The web is currently AHEAD
+- **Web:** `apps/web/src/views/floor3d/` and `floor.ts`, about 24k lines of three.js (deleted in `987394f`). The web was AHEAD
   on several features:
   - redesigned robots and eye seating;
   - nav, walk surfaces, gravity and lifts;
@@ -60,12 +60,12 @@ apps/web                 the TS views keep the DOM UI (panels, popups, labels as
 1. **Extract.** Move the desktop floor3d into `crates/apz-engine` behind the host contract. The desktop keeps
    working through an iced adapter, with byte-identical snapshots before and after. The crate also compiles for
    wasm32.
-2. **Web shell.** `apz-engine-web`, plus an `apps/web` canvas mount behind a feature flag (`?engine=wasm`).
+2. **Web shell.** `apz-engine-web`, plus an `apps/web` canvas mount (`apps/web/src/views/engine-mount.ts`; first behind the `?engine=wasm` flag, now the default with no flag).
    The machines view renders in the browser from the hub feed, under both WebGPU and WebGL2.
 3. **Parity.** Port the features the web has and the engine lacks: robots, rooms, aisles, grounding,
    `apz-board` logic, lifts, ENTER, machine list and morph, portraits, robot lab, GPU cards. A parity harness
-   renders the same scene in both (three.js, while it exists, against the engine) and diffs screenshots.
-4. **Switch.**
+   renders the same scene in both (three.js, while it existed, against the engine) and diffs screenshots.
+4. **Switch.** Done in `987394f`.
    - The web uses the engine by default.
    - Every three.js view is replaced: floor, machine list, portraits, robot lab, and the landing crowd renderer
      script.

@@ -15,7 +15,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use super::{sanctions, Id};
-use crate::console::floor3d::world::layout::agent_hue;
+use crate::console::engine::world::layout::agent_hue;
 use crate::console::ui::{self, Kind, Tone};
 use crate::console::{client, Ctx};
 

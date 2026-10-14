@@ -32,12 +32,12 @@ use super::Id;
 use apz_engine::stage::{ms_since, perf_line, perf_log_on, perf_t, Stage, View};
 use apz_engine::input::Action;
 use apz_engine::{Engine, Motion};
-use crate::console::floor3d::fleet::{self, FleetResponse, Machine};
-use crate::console::floor3d::hardware::Status;
-use crate::console::floor3d::scene::Color as SceneColor;
-use crate::console::floor3d::world::view::Label;
+use crate::console::engine::fleet::{self, FleetResponse, Machine};
+use crate::console::engine::hardware::Status;
+use crate::console::engine::scene::Color as SceneColor;
+use crate::console::engine::world::view::Label;
 use crate::console::floor_engine::EngineProgram;
-use crate::console::floor3d::world::display_name;
+use crate::console::engine::world::display_name;
 use crate::console::{client, events, ui, Ctx};
 
 /// The card's width, and the machine popup's.
@@ -136,7 +136,7 @@ pub fn go(msg: &Msg) -> Option<Id> {
 pub fn subscription(state: &State) -> Subscription<Msg> {
     let frames = match state.1 {
         // On a software adapter, 30 frames a second: every frame costs the CPU the whole picture.
-        Motion::Active if crate::console::floor3d::render::light() => {
+        Motion::Active if crate::console::engine::render::light() => {
             iced::time::every(Duration::from_millis(33)).map(Msg::Frame)
         }
         Motion::Active => iced::window::frames().map(Msg::Frame),

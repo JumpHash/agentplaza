@@ -11,7 +11,7 @@ use serde_json::Value;
 
 use super::wizard::{self, WizardMsg};
 use super::Id;
-use crate::console::floor3d::world::layout::{agent_hue, role_hue};
+use crate::console::engine::world::layout::{agent_hue, role_hue};
 use crate::console::{client, render_card, ui, Ctx};
 use crate::theme::{self};
 use crate::console::ui::Kind;
@@ -409,7 +409,7 @@ fn agent_cell<'a>(a: &'a AgentRow, slot: usize) -> Element<'a, Msg> {
         role_hue: if a.orchestrator { 25.0 } else { role_hue(&a.role) },
         body_hue: agent_hue(a.cid),
         offline: a.status == "offline",
-        species: crate::console::floor3d::robot::species_of(Some(a.species.as_str()), a.cid),
+        species: crate::console::engine::robot::species_of(Some(a.species.as_str()), a.cid),
     };
     let layers: Vec<Element<'a, Msg>> = match render_card::robot_portrait(slot, spec, AVATAR) {
         Some(robot) => vec![tile.into(), robot],

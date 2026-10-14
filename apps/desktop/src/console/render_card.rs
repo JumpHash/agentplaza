@@ -1,5 +1,5 @@
 //! The floor's renderer in small scenes: a machine's exterior in a card (`exterior`), and an agent's robot portrait
-//! (`robot_portrait`). Both draw through the floor's own renderer (`floor3d::render`), each on its own slot. The cards
+//! (`robot_portrait`). Both draw through the floor's own renderer (`engine::render`), each on its own slot. The cards
 //! and the portraits are two pools of slots: iced keeps one pipeline per type, and two primitives on one pipeline
 //! overwrite each other's targets within a frame, so a card and a portrait never share a slot.
 
@@ -12,10 +12,10 @@ use glam::{Mat4, Vec3};
 use iced::widget::shader::{self, Viewport};
 use iced::{mouse, wgpu, window, Element, Length, Rectangle};
 
-use crate::console::floor3d::hardware::{self, Built, Model, Params, Status};
-use crate::console::floor3d::render;
-use crate::console::floor3d::robot::{robot_palette, Robot, RobotPose, RobotState};
-use crate::console::floor3d::scene::{self, Camera, Draw, DrawKind, Filter, Frame, Geometry, Material, Obj, PointLightDraw, Shading, Texture, World};
+use crate::console::engine::hardware::{self, Built, Model, Params, Status};
+use crate::console::engine::render;
+use crate::console::engine::robot::{robot_palette, Robot, RobotPose, RobotState};
+use crate::console::engine::scene::{self, Camera, Draw, DrawKind, Filter, Frame, Geometry, Material, Obj, PointLightDraw, Shading, Texture, World};
 
 /// The machine cards' slots (`slot` wraps at this count).
 pub(crate) const CARD_SLOTS: usize = 8;
@@ -203,7 +203,7 @@ pub(crate) fn exterior<'a, M: 'a>(slot: usize, kind: &str, vendor: &str, gpus: u
 
 // ---- An agent's portrait: the web's studio photograph ----------------------------------------
 
-/// An agent's portrait (the web's `floor3d/portrait.ts`): its own robot, its species in its hues, posed and drawn once,
+/// An agent's portrait (the web draws the same, through the wasm engine): its own robot, its species in its hues, posed and drawn once,
 /// on the sunburst of its own hue. The orchestrator is drawn at 0.85 of its size (`portrait_frame`).
 #[derive(Clone, Copy)]
 pub(crate) struct PortraitSpec {

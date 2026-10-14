@@ -2,8 +2,8 @@
 
 This crate implements the parts the web and desktop apps must agree on exactly. It does it once, in Rust. The
 desktop links it natively. The web loads it as WebAssembly (`wasm32-unknown-unknown` + `wasm-bindgen`). This was
-the owner's decision on 2026-10-13. It replaces the TypeScript `board-layout.ts`, `nav-*.ts`, `ground.ts` and
-`lift-ctrl.ts`, and their partial Rust copies in `apps/desktop/src/console/floor3d/world/`.
+the owner's decision on 2026-10-13. It replaced the TypeScript `board-layout.ts`, `nav-*.ts`, `ground.ts` and
+`lift-ctrl.ts` (all deleted in `987394f`), and the partial Rust copies that lived in the desktop's `floor3d/world/` (also gone).
 
 ## Scope
 
@@ -68,7 +68,8 @@ give the same output on both targets. Golden fixtures (`assets/nav/fixtures.json
    rules, and it is validated by the audits rather than by matching the old TS output byte for byte. The old
    output had the bugs the owner reported.
 2. The web swaps `board-layout.ts`, `nav-*.ts`, `ground.ts` and `lift-ctrl.ts` for the WASM module behind the
-   same call sites, wrapped as `floor3d/board-core.ts`. The renderers consume `Layout` and robot poses.
+   same call sites (done: the web loads this crate through `apz-engine-web`; the TS files and `floor3d/board-core.ts` are
+   deleted). The renderers consume `Layout` and robot poses.
 3. The desktop swaps `world/board_layout.rs`, `layout.rs` and `motion.rs` for the crate.
 4. The old TS and Rust copies are deleted. The web test suite keeps its rendering-side tests and calls the crate
    for logic; the logic tests live in the crate (`cargo test -p apz-board`).
