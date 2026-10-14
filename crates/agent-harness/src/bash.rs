@@ -125,28 +125,32 @@ pub(crate) fn command(program: &str, args: &[&str], dir: &std::path::Path, privi
 }
 
 /// The environment and working directory every guest command runs in (see [`command`]), set on
-/// a builder the caller has already made: the terminals ([`crate::term`]) use it too, but make
-/// their own session, so they cannot take the process group [`command`] gives.
+/// a builder the caller has already made. The shared operations ([`apz_ops`]) build the same
+/// environment for the IDE's runs and terminals through [`agent_env`].
 pub(crate) fn environment(builder: &mut Command, dir: &std::path::Path, privilege: Privilege) -> Result<(), String> {
-    builder
-        .current_dir(dir)
-        .env_clear()
-        .env("HOME", if privilege == Privilege::Root { std::path::Path::new("/root") } else { dir })
-        .env("PATH", match privilege {
-            Privilege::Root => ADMIN_PATH,
-            Privilege::Agent if AGENT_RUNS_AS_ROOT => AGENT_PATH,
-            Privilege::Agent => USER_PATH,
-        })
-        .env("http_proxy", PROXY_URL)
-        .env("https_proxy", PROXY_URL)
-        .env("HTTP_PROXY", PROXY_URL)
-        .env("HTTPS_PROXY", PROXY_URL);
-    // The agent is root in its own VM (the owner's choice): the VM is the boundary, so
-    // nothing is dropped. Set `AGENT_RUNS_AS_ROOT` to false to run commands as uid 1000.
-    if privilege == Privilege::Agent && !AGENT_RUNS_AS_ROOT && runs_as_root()? {
-        builder.uid(UNPRIVILEGED).gid(UNPRIVILEGED);
+    builder.current_dir(dir);
+    match privilege {
+        Privilege::Root => with_proxy(apz_ops::Env::new("/root", ADMIN_PATH)).apply(builder),
+        Privilege::Agent => agent_env(dir)?.apply(builder),
     }
     Ok(())
+}
+
+/// The environment of an agent's command, with `home` as its `HOME`: the agent's PATH and the egress
+/// proxy. The agent is root in its own VM (the owner's choice): the VM is the boundary, so nothing is
+/// dropped. Set `AGENT_RUNS_AS_ROOT` to false to run commands as uid 1000.
+pub(crate) fn agent_env(home: &std::path::Path) -> Result<apz_ops::Env, String> {
+    let uid = if !AGENT_RUNS_AS_ROOT && runs_as_root()? { Some(UNPRIVILEGED) } else { None };
+    let path = if AGENT_RUNS_AS_ROOT { AGENT_PATH } else { USER_PATH };
+    Ok(with_proxy(apz_ops::Env::new(home, path)).with_uid(uid))
+}
+
+/// The egress proxy's variables, which every guest command gets.
+fn with_proxy(env: apz_ops::Env) -> apz_ops::Env {
+    env.with_var("http_proxy", PROXY_URL)
+        .with_var("https_proxy", PROXY_URL)
+        .with_var("HTTP_PROXY", PROXY_URL)
+        .with_var("HTTPS_PROXY", PROXY_URL)
 }
 
 /// Runs `program args` in `dir` with a cleared environment (the proxy set), output captured

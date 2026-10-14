@@ -219,6 +219,29 @@ impl fmt::Display for ToolError {
 
 impl std::error::Error for ToolError {}
 
+impl From<apz_ops::OpError> for ToolError {
+    /// The shared operations' errors keep their kind and their reason, so the taxonomy the hub reads is the same.
+    fn from(err: apz_ops::OpError) -> Self {
+        use apz_ops::OpError;
+        match err {
+            OpError::InvalidInput(reason) => Self::InvalidInput { reason },
+            OpError::Denied(reason) => Self::Denied { reason },
+            OpError::NotFound(reason) => Self::NotFound { reason },
+            OpError::LimitExceeded(reason) => Self::LimitExceeded { reason },
+            OpError::Conflict(reason) => Self::Conflict { reason },
+            OpError::Unavailable(reason) => Self::Unavailable { reason },
+            OpError::Internal(reason) => Self::Internal { reason },
+        }
+    }
+}
+
+/// A reply as the JSON text a tool returns.
+pub(crate) fn reply_json<T: serde::Serialize>(reply: &T) -> Result<String, ToolError> {
+    serde_json::to_string(reply).map_err(|err| ToolError::Internal {
+        reason: format!("cannot encode the reply: {err}"),
+    })
+}
+
 /// Runs the tool `name`, in `workspace`, with `args`.
 pub fn serve(workspace: &Workspace, name: &str, args: &Value) -> Result<String, ToolError> {
     match TOOLS.iter().find(|tool| tool.name == name) {

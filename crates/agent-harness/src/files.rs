@@ -438,7 +438,7 @@ fn read_text(path: &Path, label: &str) -> Result<String, ToolError> {
 /// removes it again, so a refusal leaves no litter.
 /// In a root guest, hands a file or folder the file tools made to the agent user (uid 1000),
 /// so the agent's own shell — which runs as that user — can change it like anything it made.
-fn give_to_agent(path: &Path) {
+pub(crate) fn give_to_agent(path: &Path) {
     if crate::bash::runs_as_root().unwrap_or(false) {
         let id = crate::bash::UNPRIVILEGED;
         let _ = std::os::unix::fs::lchown(path, Some(id), Some(id));

@@ -48,6 +48,7 @@ name = "agent-harness"
 version = "0.1.0"
 dependencies = [
  "apz-ide",
+ "apz-ops",
  "apz-proto",
  "base64 0.22.1",
  "globset",
@@ -412,6 +413,20 @@ dependencies = [
  "rcgen",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "apz-ops"
+version = "0.1.0"
+dependencies = [
+ "apz-ide",
+ "apz-proto",
+ "base64 0.22.1",
+ "globset",
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
 ]
 
 [[package]]
