@@ -28,8 +28,9 @@ use web_time::{Duration, Instant};
 
 /// A click is a pointerdown and a pointerup at most this far apart (logical px), the engine's own click test.
 const CLICK_SLOP: f32 = 4.0;
-/// The ambient tier (the throttled frames) draws at most this often: 12 per second.
-const AMBIENT_INTERVAL: Duration = Duration::from_micros(1_000_000 / 12);
+/// The ambient tier (the throttled frames) draws at most this often: 30 per second. At 12 the idle fleet (its packets,
+/// fans and sway) read as stutter; a Machines frame costs about a millisecond since a hover stopped re-baking it.
+const AMBIENT_INTERVAL: Duration = Duration::from_micros(1_000_000 / 30);
 /// Frames submitted but not yet done on the GPU. A frame waits for an earlier one to finish once this many are in
 /// flight: a slow GPU (a software one in the test browser) would otherwise queue frames, and the staging memory of
 /// their uploads, until the device runs out (createBuffer throws).
@@ -910,7 +911,7 @@ fn frame_tick(shared: &Rc<RefCell<Inner>>) {
 
     let now = Instant::now();
     let first = std::mem::replace(&mut s.first_tick, false);
-    // Ambient frames are throttled to 12 per second; with reduced motion they are treated as Rest (no throttle).
+    // Ambient frames are throttled to 30 per second; with reduced motion they are treated as Rest (no throttle).
     let ambient_wait = s.last_motion == Motion::Ambient
         && !s.reduced_motion
         && s.last_draw.is_some_and(|t| now.saturating_duration_since(t) < AMBIENT_INTERVAL);

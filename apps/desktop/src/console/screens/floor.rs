@@ -140,7 +140,8 @@ pub fn subscription(state: &State) -> Subscription<Msg> {
             iced::time::every(Duration::from_millis(33)).map(Msg::Frame)
         }
         Motion::Active => iced::window::frames().map(Msg::Frame),
-        Motion::Ambient => iced::time::every(Duration::from_millis(83)).map(Msg::Frame),
+        // The idle fleet at 30 frames a second, as the web draws it (12 read as stutter).
+        Motion::Ambient => iced::time::every(Duration::from_millis(33)).map(Msg::Frame),
         Motion::Rest => Subscription::none(),
     };
     let poll = iced::time::every(FLEET_EVERY).map(|_| Msg::FleetTick);

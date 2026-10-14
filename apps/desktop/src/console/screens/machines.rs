@@ -276,7 +276,7 @@ pub fn subscription(state: &State) -> Subscription<Msg> {
             iced::time::every(Duration::from_millis(33)).map(Msg::StageFrame)
         }
         Some(Motion::Active) => iced::window::frames().map(Msg::StageFrame),
-        Some(Motion::Ambient) => iced::time::every(Duration::from_millis(83)).map(Msg::StageFrame),
+        Some(Motion::Ambient) => iced::time::every(Duration::from_millis(33)).map(Msg::StageFrame),
         _ => Subscription::none(),
     }
 }

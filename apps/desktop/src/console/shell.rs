@@ -498,6 +498,8 @@ fn sidebar<'a, M: Clone + 'a>(state: &'a State, wrap: fn(Msg) -> M) -> Element<'
         }
         list = list.push(nav_item(state, id, label, icon_name, open, wrap));
     }
+    // The scrollbar's rail (6 px) sits in its own gutter, clear of the rows' count badges.
+    let list = container(list).padding(Padding { top: 0.0, right: 8.0, bottom: 0.0, left: 0.0 });
     let mut col = column![brand(open), ui::scroll(list).height(Length::Fill)].height(Length::Fill);
     if open {
         col = col.push(footer(state, wrap));

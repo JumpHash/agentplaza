@@ -319,8 +319,8 @@ fn list<'a>(state: &'a State) -> Element<'a, Msg> {
 fn table<'a>(rows: Vec<&'a AgentRow>) -> Element<'a, Msg> {
     let header = row![
         cell(3, head_label("Agent"), false),
-        cell(5, head_label("Model"), false),
-        cell(2, head_label("Work"), false),
+        cell(3, head_label("Model"), false),
+        cell(4, head_label("Work"), false),
         cell(1, head_label("Tokens"), true),
         container(Space::new()).width(Length::Fixed(ACTIONS_WIDTH)),
     ]
@@ -349,14 +349,16 @@ fn cell<'a>(portion: u16, content: Element<'a, Msg>, right: bool) -> Element<'a,
         .padding([0, 14])
         .width(Length::FillPortion(portion))
         .align_x(if right { Alignment::End } else { Alignment::Start })
+        // A long prompt ends at its column (the web truncates it), not over the tokens and the actions.
+        .clip(true)
         .into()
 }
 
 fn row_view<'a>(a: &'a AgentRow, slot: usize) -> Element<'a, Msg> {
     let line = row![
         cell(3, agent_cell(a, slot), false),
-        cell(5, model_cell(a), false),
-        cell(2, work_cell(a), false),
+        cell(3, model_cell(a), false),
+        cell(4, work_cell(a), false),
         cell(1, tokens_cell(a.tokens), true),
         container(actions(a)).padding([0, 14]).width(Length::Fixed(ACTIONS_WIDTH)).align_x(Alignment::End),
     ]
