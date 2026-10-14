@@ -727,6 +727,42 @@ impl Robot {
 mod tests {
     use super::*;
 
+    /// Every clip with effects (clips.json `fx`, and a species' own) spawns each of its kinds while it plays, on every species,
+    /// in its first two seconds (one-shot clips such as `celebrate` end at 2.2 s).
+    #[test]
+    fn every_clip_spawns_its_effects() {
+        let clips: Vec<(String, Vec<String>)> = registry()
+            .clips
+            .iter()
+            .filter(|(_, c)| !c.fx.is_empty())
+            .map(|(id, c)| (id.clone(), c.fx.iter().map(|f| f.kind.clone()).collect()))
+            .collect();
+        assert!(clips.len() >= 5, "the clips with effects: {clips:?}");
+        let palette = robot_palette();
+        let mut checked = 0;
+        for species in registry().index.species.iter().filter(|s| *s != "oracle") {
+            // The shared clips with effects, and the species' own.
+            let own: Vec<String> = registry().species.get(species).map_or_else(Vec::new, |sp| sp.clips.iter().filter(|(_, c)| !c.fx.is_empty()).map(|(id, _)| id.clone()).collect());
+            for clip in clips.iter().map(|(id, _)| id).chain(own.iter()) {
+                let mut robot = Robot::with_variant(200.0, false, &palette, 200.0, species);
+                // The clip that plays: a species' own clip of the name (crab.pour) replaces the shared one, effects and all.
+                let Some(played) = clip_named(robot.sp, clip) else { continue };
+                let kinds: Vec<String> = played.fx.iter().map(|f| f.kind.clone()).collect();
+                robot.play(Some(clip), None);
+                let mut seen = std::collections::BTreeSet::new();
+                for f in 0..40 {
+                    robot.update(0.05, f as f32 * 0.05);
+                    seen.extend(robot.fx.live_kinds());
+                }
+                for kind in &kinds {
+                    assert!(seen.contains(kind.as_str()), "{species}: clip {clip} spawned no {kind} (saw {seen:?})");
+                }
+                checked += 1;
+            }
+        }
+        assert!(checked > 100, "only {checked} species-clip pairs checked");
+    }
+
     #[test]
     fn robot_variant_cycles_through_the_species() {
         let list: Vec<&str> = registry().index.species.iter().map(String::as_str).filter(|s| *s != "oracle").collect();

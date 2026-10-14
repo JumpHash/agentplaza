@@ -469,6 +469,14 @@ pub struct Fx {
 }
 
 impl Fx {
+    /// The live effects of each kind (a test's view of what a clip spawned).
+    #[cfg(test)]
+    pub(crate) fn live_kinds(&self) -> std::collections::BTreeSet<&'static str> {
+        self.items.iter().map(|it| KINDS[it.puff.kind]).collect()
+    }
+}
+
+impl Fx {
     pub fn new(seed: u32) -> Fx {
         Fx { items: Vec::new(), rng: Rng::new(seed) }
     }

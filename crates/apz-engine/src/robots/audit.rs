@@ -1517,6 +1517,34 @@ mod tests {
         registry().species.values().cloned().collect()
     }
 
+    /// Cross-checked against the retired three.js audit (testdata/robot-audit-ts.json, its 138 issues): the port finds
+    /// every one, and its only extras are seven `attach` errors on rounded-box parts, where the TS audit's gap came out
+    /// NaN (so `gap > CONTACT` was false and it never flagged them); the port measures them at 0.020 to 0.105.
+    #[test]
+    fn the_audit_finds_every_issue_the_three_js_audit_found() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!("../../testdata/robot-audit-ts.json")).expect("the fixture parses");
+        let want: std::collections::BTreeSet<Vec<String>> = fixture["issues"]
+            .as_array()
+            .expect("issues")
+            .iter()
+            .map(|r| r.as_array().expect("a row").iter().map(|v| v.as_str().unwrap_or_default().to_string()).collect())
+            .collect();
+        let list = all_species();
+        let got: std::collections::BTreeSet<Vec<String>> = audit_all(&list, &AuditOptions::default())
+            .into_iter()
+            .flat_map(|(id, issues)| {
+                issues.into_iter().map(move |i| {
+                    vec![id.clone(), format!("{:?}", i.severity).to_lowercase(), i.kind.as_str().to_string(), i.pose.name().to_string(), i.path, i.label]
+                })
+            })
+            .collect();
+        let missing: Vec<_> = want.difference(&got).collect();
+        assert!(missing.is_empty(), "issues the three.js audit found and the port does not: {missing:?}");
+        let extra: Vec<_> = got.difference(&want).collect();
+        assert!(extra.iter().all(|r| r[2] == "attach"), "extra issues beyond the NaN attach gaps: {extra:?}");
+        assert_eq!(extra.len(), 7, "the port's extra attach errors: {extra:?}");
+    }
+
     #[test]
     fn every_species_is_audited() {
         let list = all_species();

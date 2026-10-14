@@ -26,7 +26,7 @@ flag. The `floor3d/**` paths below are the retired sources; the Rust code is in 
 | 15 | Portrait studio (`portrait.ts`) | done in the engine (`portrait.rs`, offscreen) and on the web; the desktop still draws its own copy in `render_card.rs` |
 | 16 | Robot lab: species, clip, tool, carry, hue, orch, cam (`robot-lab.ts`) | done, also in the browser (`#/robot-lab`) on the web lab's own pale stage |
 | 17 | Z-fight lint over the hardware models (`zfight.ts`) | ported (`apz-board::zfight`), counts equal to the web on all 11 cases; committed with the board fixes |
-| 18 | Robot design audit and eye seating (`robots/audit.ts`, `seat.ts`) | done (`robots/audit.rs`); issue counts not yet cross-checked against the TS run |
+| 18 | Robot design audit and eye seating (`robots/audit.ts`, `seat.ts`) | done (`robots/audit.rs`), cross-checked against the TS run (`testdata/robot-audit-ts.json`, 138 issues, three 0.186.1): every TS issue is found; the 7 extra `attach` errors are rounded-box parts whose TS gap came out NaN and so were never flagged |
 | 19 | Nav overlay `?nav=1` (`nav-overlay.ts`) | done: `world/nav_overlay.rs` (`?nav=1` on the web, `APZ_NAV_OVERLAY=1` on the desktop) |
 | 20 | Debug hooks (`__apzLookAt`, `__apzLifts`, `__apzNavCell`, `__apzScene` …) | done: every hook reads the engine (`debug.rs`), `__apzLiftRide` included |
 | 21 | Cutaway of tall parts over the plaza (the web fix of 2026-10-13) | done (`over_area`, 15 % as on the web) |
