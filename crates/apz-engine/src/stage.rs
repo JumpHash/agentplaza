@@ -241,6 +241,17 @@ impl Stage {
         if let Some(lab) = self.hardware_lab.as_ref() {
             return lab.info().to_string();
         }
+        if let Some(lab) = self.lab.as_ref() {
+            // The robot lab's robots and its camera (the eye and the target its `cam` set, or where a drag left them).
+            let o = &self.machines.orbit;
+            let eye = o.camera(1.0).eye;
+            return serde_json::json!({
+                "robots": lab.robots.len(),
+                "eye": [eye.x, eye.y, eye.z],
+                "target": [o.target.x, o.target.y, o.target.z],
+            })
+            .to_string();
+        }
         "{}".to_string()
     }
 

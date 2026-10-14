@@ -361,6 +361,37 @@ pub fn data() -> &'static Data {
     })
 }
 
+/// The role ids in roles.json's own order (the web's `Object.keys(ROLES.roles)`): the room lab lines them up in it.
+pub fn role_order() -> &'static [String] {
+    use serde::de::{Deserializer, IgnoredAny, MapAccess, Visitor};
+    struct Keys;
+    impl<'de> Visitor<'de> for Keys {
+        type Value = Vec<String>;
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("a map of roles")
+        }
+        fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Vec<String>, A::Error> {
+            let mut keys = Vec::new();
+            while let Some((k, IgnoredAny)) = map.next_entry::<String, IgnoredAny>()? {
+                keys.push(k);
+            }
+            Ok(keys)
+        }
+    }
+    struct InOrder(Vec<String>);
+    impl<'de> Deserialize<'de> for InOrder {
+        fn deserialize<D: Deserializer<'de>>(d: D) -> Result<InOrder, D::Error> {
+            d.deserialize_map(Keys).map(InOrder)
+        }
+    }
+    #[derive(Deserialize)]
+    struct File {
+        roles: InOrder,
+    }
+    static ORDER: OnceLock<Vec<String>> = OnceLock::new();
+    ORDER.get_or_init(|| serde_json::from_str::<File>(ROLES_JSON).expect("assets/rooms/roles.json parses").roles.0)
+}
+
 /// The template of a role: its own entry, else the family "other" (`templateFor` in gen.ts).
 pub fn template_for<'r>(role: &str, roles: &'r Roles) -> Option<&'r RoleTemplate> {
     roles.roles.get(role).or_else(|| roles.families.get("other"))
@@ -1672,6 +1703,16 @@ pub fn fixture_cases() -> Vec<FixtureCase> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_role_order_is_the_files_and_names_every_role() {
+        let order = role_order();
+        let first = ROLES_JSON.find("\"roles\"").map(|at| &ROLES_JSON[at..]).and_then(|r| r.split('"').nth(3)).unwrap();
+        assert_eq!(order[0], first, "the first role is the file's first");
+        let mut sorted = order.to_vec();
+        sorted.sort();
+        assert_eq!(sorted, data().roles.roles.keys().cloned().collect::<Vec<_>>());
+    }
 
     /// The golden set: every case's layout hash equals the one the web's generator (gen.ts, retired with three.js) wrote,
     /// and its skipped and dropped counts too. A mismatch names its case: a change to this generator that moves a hash

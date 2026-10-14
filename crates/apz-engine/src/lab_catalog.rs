@@ -35,7 +35,7 @@ pub fn catalog() -> Value {
         .iter()
         .filter(|id| reg.tools.get(*id).is_some_and(|t| t.grip == "carry"))
         .collect();
-    let roles: Vec<&String> = generate::data().roles.roles.keys().collect();
+    let roles: Vec<&String> = generate::role_order().iter().collect();
     let mut models: Vec<&str> = hardware::MODELS
         .iter()
         .chain(hardware::PARTS.iter())

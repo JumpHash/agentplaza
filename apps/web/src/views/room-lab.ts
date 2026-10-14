@@ -77,6 +77,8 @@ function readNum(el: HTMLInputElement, fallback: number, lo: number, hi: number)
 interface RoomInfo {
   summary?: string;
   lines?: string[];
+  roles?: string[];
+  layouts?: Record<string, unknown>;
 }
 
 function roomInfo(engine: WebEngine): RoomInfo {
@@ -180,12 +182,15 @@ function mountLab(root: HTMLElement, roles: string[]): Cleanup {
   paint();
 
   // The readout is the running engine's: it is read each time an engine starts (every control change restarts it).
-  const host = mountLabEngine(root, startRoomLabEngine, toOptions(s), (engine) => {
+  // The canvas sits in the panel, 540 pixels high (760 for every role), as the three.js lab had it.
+  const host = mountLabEngine(panel, startRoomLabEngine, toOptions(s), (engine) => {
     const info = roomInfo(engine);
     readout.textContent = info.summary ?? '';
     list.textContent = s.debug ? (info.lines ?? []).join('\n') : '';
+    // For headless checks, as the three.js lab had it: the roles shown and each room's layout by its key.
+    (window as unknown as { __roomLab?: { roles: string[]; layouts: Record<string, unknown> } }).__roomLab = { roles: info.roles ?? [], layouts: info.layouts ?? {} };
     return () => {};
-  });
+  }, (o) => `display:block;width:100%;height:${o.role === 'all' ? 760 : 540}px;border-radius:12px;touch-action:none`);
 
   return () => {
     host.close();

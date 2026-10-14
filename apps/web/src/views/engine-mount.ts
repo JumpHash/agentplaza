@@ -310,11 +310,15 @@ export interface LabHost<O> {
   close(): void;
 }
 
+/** A lab canvas's default size: most of the window's height, never under 420 pixels. */
+export const LAB_CANVAS = 'display:block;width:100%;height:70vh;min-height:420px;touch-action:none';
+
 export function mountLabEngine<O>(
   root: HTMLElement,
   start: (canvas: HTMLCanvasElement, opts: O) => Promise<WebEngine>,
   initial: O,
   onStarted: (engine: WebEngine) => () => void = () => () => {},
+  canvasStyle: (opts: O) => string = () => LAB_CANVAS,
 ): LabHost<O> {
   const box = document.createElement('div');
   root.append(box);
@@ -336,7 +340,7 @@ export function mountLabEngine<O>(
     chain = chain.then(async () => {
       if (closed || mine !== turn) return;
       const canvas = document.createElement('canvas');
-      canvas.style.cssText = 'display:block;width:100%;height:70vh;min-height:420px;touch-action:none';
+      canvas.style.cssText = canvasStyle(opts);
       box.replaceChildren(canvas);
       try {
         const started = await start(canvas, opts);
@@ -345,6 +349,8 @@ export function mountLabEngine<O>(
           return;
         }
         live = started;
+        // The running engine, for developers (as the Floor's): its `lab_info()` is the lab's readout.
+        (window as unknown as { apzEngine?: WebEngine }).apzEngine = started;
         unhook = onStarted(started);
       } catch (err) {
         if (closed || mine !== turn) return;

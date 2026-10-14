@@ -89,6 +89,15 @@ impl Orbit {
         self.pan += -right * move_left + up * move_up;
     }
 
+    /// Lifts the Floor's limits for a lab, as three's OrbitControls defaults were there: any polar angle, and a
+    /// distance between `min` and `max`.
+    pub fn unlimited(&mut self, min: f32, max: f32) {
+        self.min_polar = 0.0;
+        self.max_polar = PI;
+        self.min_distance = min;
+        self.max_distance = max;
+    }
+
     /// Wheel: positive `steps` zoom out (three: scale 0.95^steps).
     pub fn dolly(&mut self, steps: f32) {
         self.scale *= ZOOM_BASE.powf(-steps);

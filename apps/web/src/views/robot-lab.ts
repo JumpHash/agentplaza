@@ -196,7 +196,8 @@ function mountLab(root: HTMLElement, cat: LabCatalog): Cleanup {
   root.append(panel);
   paint();
 
-  const host = mountLabEngine(root, startLabEngine, toOptions(s));
+  // The canvas sits in the panel, 420 pixels high with rounded corners, as the three.js lab had it.
+  const host = mountLabEngine(panel, startLabEngine, toOptions(s), undefined, () => 'display:block;width:100%;height:420px;border-radius:12px;touch-action:none');
   const tick = window.setInterval(() => {
     const live = host.engine();
     stats.textContent = live ? `draw calls (last frame): ${live.draw_calls()}` : '';

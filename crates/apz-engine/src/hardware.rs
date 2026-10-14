@@ -837,6 +837,22 @@ fn label_node(l: &Label, top: f32) -> Obj {
 
 /// Parts under this bounding radius (in units) get no ink outline: they read as specks.
 const OUTLINE_MIN: f32 = 0.6;
+/// Parts at or over this bounding radius (in units, scaled) cast and take the sun's shadow (hardware.ts SHADOW_RADIUS).
+const SHADOW_RADIUS: f32 = 2.0;
+
+/// hardware.ts `shadowsFor`: only the big solids cast and take shadows (a decal, a plane or a ring, never does).
+fn shadows_for(obj: &Obj, part_geo: &Geo, geo: &scene::Geo, scale: Option<&Scale>) {
+    if matches!(part_geo, Geo::Plane { .. } | Geo::Ring { .. }) {
+        return;
+    }
+    let s = match scale {
+        Some(Scale::Uniform(s)) => *s,
+        Some(Scale::Xyz([x, y, z])) => x.max(*y).max(*z),
+        None => 1.0,
+    };
+    let big = geo.radius * s >= SHADOW_RADIUS;
+    obj.set_shadows(big, big);
+}
 /// One frame of a spin's angle: `Built::update` advances it by `dt` seconds at `rps` revolutions per second.
 fn spin_step(angle: f32, rps: f32, dt: f32) -> f32 {
     (angle + rps * TAU * dt) % TAU
@@ -1081,6 +1097,7 @@ impl Builder {
             })
             .collect();
         let obj = Obj::instanced(&geo, &mat, instances);
+        shadows_for(&obj, g, &geo, first.scale.as_ref());
         obj.get().lod = self.lod_of(first);
         obj.get().fade = self.fade;
         if !first.outline.unwrap_or(!matches!(first.geo, Some(Geo::Plane { .. } | Geo::Ring { .. }))) {
@@ -1160,6 +1177,7 @@ impl Builder {
             .map(|i| Instance { matrix: Mat4::from_scale_rotation_translation(scale, rest_q, at + repeat_offset(rep, i)), color: Color::WHITE })
             .collect();
         let obj = Obj::instanced(&geo, &mat, instances);
+        shadows_for(&obj, g, &geo, p.scale.as_ref());
         obj.get().lod = self.lod_of(p);
         obj.get().fade = self.fade;
         if !p.outline.unwrap_or(!matches!(p.geo, Some(Geo::Plane { .. } | Geo::Ring { .. }))) {
@@ -1192,7 +1210,12 @@ impl Builder {
         let flat_geo = matches!(p.geo, Some(Geo::Plane { .. } | Geo::Ring { .. }));
         let mat = p.geo.as_ref().map(|_| self.material_for(p));
         let obj = match (&p.geo, &mat) {
-            (Some(g), Some(m)) => Obj::mesh(&geometry_of(g), m),
+            (Some(g), Some(m)) => {
+                let geo = geometry_of(g);
+                let mesh = Obj::mesh(&geo, m);
+                shadows_for(&mesh, g, &geo, p.scale.as_ref());
+                mesh
+            }
             _ => Obj::group(),
         };
         let rot = p.rot.unwrap_or([0.0; 3]);

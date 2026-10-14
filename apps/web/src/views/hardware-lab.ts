@@ -229,11 +229,12 @@ function mountEngineLab(root: HTMLElement, s: LabState, cat: LabCatalog): Cleanu
     readout.textContent = info.summary ?? '';
     readout.style.color = info.errors?.length ? 'var(--danger, #c0392b)' : 'var(--ink-2)';
   };
+  // The canvas is 420 pixels high, as the three.js lab's stage was (its flex never grew it).
   const host = mountLabEngine(root, startHardwareLabEngine, toOptions(s), (engine) => {
     const hooks = installHooks(engine);
     showInfo(engine);
     return hooks;
-  });
+  }, () => 'display:block;width:100%;height:420px;touch-action:none;cursor:grab');
   return () => {
     host.close();
     panel.remove();

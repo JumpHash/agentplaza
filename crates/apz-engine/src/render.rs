@@ -903,8 +903,10 @@ pub struct Pipeline {
     globals_group: wgpu::BindGroup,
     shadow_globals_group: wgpu::BindGroup,
     shadow_view: wgpu::TextureView,
-    /// Whether the shadow map holds casters from an earlier frame: a frame with none clears it once, so receivers do
-    /// not read a view's stale shadows (the board's on the Machines view after Back).
+    /// Whether the shadow map may hold anything but the far plane: casters from an earlier frame, or (true at the
+    /// start) the zeros a new texture is made with. A frame with no casters clears it once, so receivers neither read
+    /// a view's stale shadows (the board's on the Machines view after Back) nor a map that was never cleared (a scene
+    /// that never has casters would read as all in shadow).
     shadow_written: std::sync::atomic::AtomicBool,
     samplers: HashMap<(bool, bool), wgpu::Sampler>,
     linear_clamp: wgpu::Sampler,
@@ -1181,7 +1183,7 @@ impl Pipeline {
             globals_group,
             shadow_globals_group,
             shadow_view,
-            shadow_written: std::sync::atomic::AtomicBool::new(false),
+            shadow_written: std::sync::atomic::AtomicBool::new(true),
             samplers: HashMap::new(),
             linear_clamp,
             meshes: HashMap::new(),

@@ -18,13 +18,12 @@
 
 use super::super::robot::{robot_palette, Robot, RobotPalette, RobotPose, RobotState};
 use super::super::scene::Color;
-use super::super::world::layout::AZIMUTH;
 use super::super::world::Floor;
 use super::files::registry;
 use super::props::{build_prop, prop_registry};
 
-/// The distance between two robots of the line-up, along x.
-const SPACING: f32 = 1.6;
+/// The distance between two robots of the line-up, along x (the web's 2.2).
+const SPACING: f32 = 2.2;
 const FX_EVERY: f32 = 0.7;
 /// The web's default hue (the lab's pale blue).
 const DEFAULT_HUE: f32 = 200.0;
@@ -35,7 +34,7 @@ const PROP_COLS: usize = 6;
 
 /// The robots of a line-up, and their clock.
 pub struct Lab {
-    robots: Vec<Robot>,
+    pub robots: Vec<Robot>,
     t: f32,
     fx: Option<String>,
     fx_timer: f32,
@@ -161,7 +160,21 @@ pub(crate) fn pale_stage(floor: &mut Floor, bg: Color) {
     world.hemi_intensity = 1.3;
     world.sun_color = Color::hex(0xfff1d6);
     world.sun_intensity = 2.6;
-    world.sun_position = [25.0, 40.0, 30.0].into();
+    // The labs' key light at (2.5, 4, 3), with three's default shadow camera (5 each way, near 0.5, far 500).
+    world.sun_position = [2.5, 4.0, 3.0].into();
+    world.shadow_extent = 5.0;
+    world.shadow_near = 0.5;
+    world.shadow_far = 500.0;
+}
+
+/// The labs' ground: a `ShadowMaterial` at 0.2 on `geo` (laid flat at the origin), so only the robots' and the rooms'
+/// shadows show on the flat background.
+pub(crate) fn shadow_ground(floor: &mut Floor, geo: &crate::scene::Geo) {
+    use crate::scene::{Mat, Material, Obj, Shading};
+    let mat = Mat::new(Material { shading: Shading::Shadow, color: Color::BLACK, opacity: 0.2, transparent: true, depth_write: false, fog: false, ..Material::default() });
+    let ground = Obj::mesh(geo, &mat);
+    ground.set_rotation(-std::f32::consts::FRAC_PI_2, 0.0, 0.0).set_shadows(false, true);
+    floor.root.add(&ground);
 }
 
 /// The web's orchestrator rule: the rover alone, or in a line-up only the first robot, when it is the rover.
@@ -259,6 +272,8 @@ pub fn build(floor: &mut Floor) -> Option<Lab> {
     let cam = var("APZ_ROBOT_CAM").as_deref().and_then(Cam::parse).unwrap_or(Cam::Front);
     let bg = background_or_default(var("APZ_ROBOT_BG").as_deref());
     pale_stage(floor, bg);
+    // robot-lab.ts's floor: a disc of radius 4.5 that shows only the shadows.
+    shadow_ground(floor, &crate::geometry::circle(4.5, 48, 0.0, std::f32::consts::TAU));
 
     let look = Look { state, tool, carry, clip, pose, frozen };
     let mut robots = Vec::new();
@@ -274,7 +289,7 @@ pub fn build(floor: &mut Floor) -> Option<Lab> {
                 let as_orch = is_orchestrator(orch, id, i, lineup);
                 let mut robot = Robot::with_variant(hue, as_orch, &palette, hue, id);
                 let x = (i as f32 - (n as f32 - 1.0) / 2.0) * SPACING;
-                robot.group.set_position(x, 0.0, 0.0).set_rotation(0.0, AZIMUTH, 0.0);
+                robot.group.set_position(x, 0.0, 0.0);
                 dress(floor, &mut robot, &look, look.clip.as_deref());
                 robots.push(robot);
             }
@@ -282,7 +297,13 @@ pub fn build(floor: &mut Floor) -> Option<Lab> {
             cam.view(lineup)
         }
     };
+    // The web's camera was 30 degrees and the orbit's is FOV_DEG: the eye comes in by tan 15 / tan(FOV_DEG / 2), so
+    // the robots fill the frame as they did.
+    let field = 15f32.to_radians().tan() / (crate::controls::FOV_DEG / 2.0).to_radians().tan();
+    let eye = std::array::from_fn::<f32, 3, _>(|i| target[i] + (eye[i] - target[i]) * field);
     floor.orbit.look(eye.into(), target.into());
+    // robot-lab.ts's OrbitControls kept three's defaults: no polar or distance limits (the front view is near level).
+    floor.orbit.unlimited(0.0, f32::INFINITY);
     Some(Lab {
         robots,
         t: frozen.unwrap_or(0.0),
@@ -404,6 +425,22 @@ mod tests {
         assert!(!is_orchestrator(true, "crab", 0, true));
         assert!(!is_orchestrator(true, "crab", 0, false));
         assert!(!is_orchestrator(false, "rover", 0, false));
+    }
+
+    #[test]
+    fn one_robot_keeps_its_close_level_view_through_the_orbits_update() {
+        let mut vars = std::collections::BTreeMap::new();
+        vars.insert("APZ_ROBOT_LAB".to_string(), "duck".to_string());
+        crate::set_env_overrides(vars);
+        let mut floor = Floor::machines();
+        let lab = build(&mut floor);
+        crate::set_env_overrides(Default::default());
+        assert!(lab.is_some());
+        let before = floor.orbit.camera(1.0).eye;
+        floor.orbit.update();
+        let after = floor.orbit.camera(1.0).eye;
+        assert!(before.distance(after) < 1e-4, "the update moved the eye from {before:?} to {after:?}");
+        assert!(floor.orbit.radius < 4.0, "radius {}", floor.orbit.radius);
     }
 
     #[test]

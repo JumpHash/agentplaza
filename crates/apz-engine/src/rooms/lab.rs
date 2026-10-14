@@ -59,7 +59,7 @@ fn parse_size(s: &str) -> Option<(f64, f64)> {
 /// The rooms of the lab: every role (`all`), the twelve seeds of one role (`grid`), or the one room, at the origin.
 fn placements(role: &str, w: f32, d: f32, seed: u32, grid: bool) -> Vec<Placement> {
     if role == "all" {
-        let roles: Vec<&String> = generate::data().roles.roles.keys().collect();
+        let roles: Vec<&String> = generate::role_order().iter().collect();
         let rows = roles.len().div_ceil(ALL_COLS);
         return roles
             .into_iter()
@@ -113,6 +113,9 @@ pub fn build(floor: &mut Floor) -> Option<Lab> {
     let (mut reach_x, mut reach_z) = (0.0_f32, 0.0_f32);
     let (mut total, mut warnings) = (0usize, 0usize);
     let mut lines: Vec<String> = Vec::new();
+    // room-lab.ts's window.__roomLab: the roles shown and each room's layout, by its key (the role, or `seed:N` in the grid).
+    let mut layouts = serde_json::Map::new();
+    let mut roles: Vec<String> = Vec::new();
     let placed = placements(&want, w as f32, d as f32, seed, grid);
     let count = placed.len();
     for p in &placed {
@@ -137,6 +140,11 @@ pub fn build(floor: &mut Floor) -> Option<Lab> {
         total += violations.len();
         warnings += usize::from(built.warned);
         lines.push(room_line(&label_of(&want, p), &built.layout, violations.len()));
+        let key = if grid && want != "all" { format!("seed:{}", p.seed) } else { p.role.clone() };
+        layouts.insert(key, serde_json::to_value(&built.layout).unwrap_or(Value::Null));
+        if !roles.contains(&p.role) {
+            roles.push(p.role.clone());
+        }
         lines.extend(violations.iter().map(|v| format!("    {v}")));
         built.group.set_position(p.x, 0.0, p.z);
         floor.root.add(&built.group);
@@ -151,6 +159,12 @@ pub fn build(floor: &mut Floor) -> Option<Lab> {
         reach_z = reach_z.max(p.z.abs() + built.d as f32 / 2.0 + 1.0);
         anims.push(built.animate);
     }
+    // room-lab.ts's ground and its key light's shadow camera: a shadow-only plane 6 wider and deeper than the rooms, and
+    // a shadow square 2 past them (the engine's is square, so the larger half).
+    crate::robots::lab::shadow_ground(floor, &crate::geometry::plane(2.0 * reach_x + 6.0, 2.0 * reach_z + 6.0, 1, 1));
+    floor.world.shadow_extent = reach_x.max(reach_z) + 2.0;
+    floor.world.shadow_near = 1.0;
+    floor.world.shadow_far = 80.0;
     floor.statics_dirty = true; // the rooms' static parts are baked
     // room-lab.ts frame: the span (the larger of the lab's width and depth) times 1.45 plus 4, from (0.55, 0.85, 0.9)
     // or straight down, at the origin. Its camera's field was 30 degrees and the orbit's is FOV_DEG, so the distance
@@ -160,11 +174,13 @@ pub fn build(floor: &mut Floor) -> Option<Lab> {
     let dist = (span * 1.45 + 4.0) * field;
     let eye = if top { glam::Vec3::new(0.0, dist, 0.001) } else { glam::Vec3::new(0.55, 0.85, 0.9).normalize() * dist };
     floor.orbit.look(eye, glam::Vec3::ZERO);
+    // room-lab.ts's OrbitControls kept three's defaults: no polar or distance limits (the top view looks straight down).
+    floor.orbit.unlimited(0.0, f32::INFINITY);
     let counts = if count == 1 { String::new() } else { format!("{count} rooms · ") };
     let small = if warnings > 0 { format!(" · {warnings} below minimum") } else { String::new() };
     let debug_tag = if debug { " · debug" } else { "" };
     let summary = format!("{counts}violations {total}{small} · {w} × {d} · door {}{debug_tag}", door.as_str());
-    let info = json!({ "kind": "rooms", "summary": summary, "violations": total, "rooms": count, "below_minimum": warnings, "lines": lines });
+    let info = json!({ "kind": "rooms", "summary": summary, "violations": total, "rooms": count, "below_minimum": warnings, "lines": lines, "roles": roles, "layouts": layouts });
     Some(Lab { anims, t: 0.0, info })
 }
 

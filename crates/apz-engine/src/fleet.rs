@@ -974,10 +974,11 @@ mod tests {
     }
 
     /// The fleet's draw items on the 15-machine feed, measured (its statics merged by colour, instances
-    /// unfolded into the merge: 29 static; the merged meshes of identical rigs instanced, one draw per
-    /// content; its cables and status rings unmerged, 188 per frame, its fans and LEDs in 3 GPU batches; its packets
-    /// instanced, so they hold no objects). A ratchet: it must not grow.
-    const FLEET_DRAW_ITEMS: usize = 218;
+    /// unfolded into the merge: 31 static, the big solids that cast the sun's shadow apart from the rest as
+    /// hardware.ts's shadowsFor has them; the merged meshes of identical rigs instanced, one draw per content; its
+    /// cables and status rings unmerged, 191 per frame, its fans and LEDs in 3 GPU batches; its packets instanced, so
+    /// they hold no objects). A ratchet: it must not grow.
+    const FLEET_DRAW_ITEMS: usize = 222;
 
     fn fleet_draw_items() -> (usize, usize) {
         let fleet: FleetResponse = serde_json::from_str(include_str!("../testdata/floor-15.json")).expect("the fixture parses");

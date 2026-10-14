@@ -113,6 +113,8 @@ pub fn build(floor: &mut Floor) -> Option<Lab> {
     floor.statics_dirty = true; // the model's static parts are baked
     let (eye, target) = view(model, &var("APZ_HW_CAM").unwrap_or_else(|| "iso".to_string()));
     floor.orbit.look(eye.into(), target.into());
+    // hardware-lab.ts's OrbitControls: any polar angle, a distance from 0.5 to 1000.
+    floor.orbit.unlimited(0.5, 1000.0);
     let errors = hardware::validate(model, &name);
     let summary = if errors.is_empty() { format!("{name}: no errors") } else { errors.join("\n") };
     let info = json!({ "kind": "hardware", "model": name, "errors": errors, "summary": summary });
@@ -143,6 +145,9 @@ fn night_stage(floor: &mut Floor) {
         along_x.set_rotation(-FRAC_PI_2, 0.0, 0.0).set_position(0.0, 0.002, at);
         let along_z = Obj::mesh(&crate::geometry::plane(0.05, 120.0, 1, 1), mat);
         along_z.set_rotation(-FRAC_PI_2, 0.0, 0.0).set_position(at, 0.002, 0.0);
+        // three's GridHelper is lines: they neither cast nor take a shadow.
+        along_x.set_shadows(false, false);
+        along_z.set_shadows(false, false);
         grid.add(&along_x);
         grid.add(&along_z);
     }
@@ -156,6 +161,10 @@ fn night_stage(floor: &mut Floor) {
     world.hemi_intensity = 1.15;
     world.sun_color = Color::hex(0xd2ddff);
     world.sun_intensity = 2.0;
+    // hardware-lab.ts's sun shadow camera: 60 each way, near 1, far 200.
+    world.shadow_extent = 60.0;
+    world.shadow_near = 1.0;
+    world.shadow_far = 200.0;
 }
 
 impl Lab {
