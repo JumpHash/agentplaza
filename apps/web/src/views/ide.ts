@@ -1,85 +1,61 @@
-// The IDE screen (route #/ide and #/ide/<workspace>): a full-window view of its own, with no console shell beside it. Its
-// header (the workspace, the state, the actions), an activity rail that picks the side panel (files, search, changes,
-// checkpoints), the editor tabs or the review in the centre, a right panel (agent, approvals, run, terminal) and a status
-// bar. The terminal can dock under the editor instead (the centre's bottom dock). This module owns the data; the chrome is ide-chrome, the editor ide-editor, the panels ide-side, ide-find and
-// ide-tabs. It loads on the first visit (views/index.ts), with CodeMirror. openIde (ide/open.ts) is how other screens get
-// here, and the Console button (and Escape) goes back to the screen it came from.
+// The IDE screen (route #/ide and #/ide/<workspace>): a full-window view of its own, with no console shell beside it. The
+// agent-first layout: projects and agents on the left; the selected agent's chat, terminal, editor or diff in the centre;
+// the board, files, tasks, approvals and activity on the right; a terminal and run drawer under the centre (Ctrl+`); a
+// status bar. This module owns the data and wires the parts: the frame (ide-frame), the sidebar, the chat, the panels
+// and the palette, plus the editor and the terminal of the workspace. The model is the wasm IDE state (ide/wasm).
+// Console (and Escape) goes back to the screen the IDE was opened from.
 
 import type { EditorState } from '@codemirror/state';
 import ideCss from '../styles/ide.css';
-import { ApiError, ideApi, type IdeChanges, type IdeCheckpoint, type IdeWorkspaceInfo } from '../api';
+import shellCss from '../styles/ide-shell.css';
+import { ApiError, api, ideApi, type Agent, type IdeCheckpoint, type IdeWorkspaceInfo, type Project, type Task } from '../api';
 import { go } from '../router';
 import { consoleOrigin } from '../ide/open';
-import {
-  applyBuffer,
-  badgeOf,
-  type Buffer,
-  dirsOf,
-  languageFor,
-  lineCounts,
-  LAST_WORKSPACE_KEY,
-  onRemote,
-  openBuffer,
-  parentDir,
-  parseViewed,
-  viewedKey,
-  withViewed,
-  type Viewed,
-} from '../ide/model';
-import { fitSize, LEFT_SIZE, leftViewFor, type LeftView, NARROW_QUERY, parseLayout, rightTabFor, RIGHT_SIZE, RAIL_WIDTH, type RightTab, serializeLayout, type Layout } from '../ide/layout';
+import { applyBuffer, badgeOf, type Buffer, dirsOf, languageFor, lineCounts, LAST_WORKSPACE_KEY, onRemote, openBuffer, parentDir, parseViewed, viewedKey, withViewed, type Viewed } from '../ide/model';
+import { fitSize, NARROW_QUERY, parseLayout, serializeLayout, type Layout } from '../ide/layout';
 import { loadIde, type Ide } from '../ide/wasm';
-import type { Base, Entry, FileChange, IdeState, Panel, Stats } from '../ide/types';
+import { projectFor, rowStatus, type PaletteItem } from '../ide/view';
+import type { Base, Entry, FileChange, IdeState, Stats } from '../ide/types';
 import { agents, on, onConnection } from '../store';
-import { brandMark } from '../ui/brand';
 import { badge, button, empty, modal, toast, type Tone } from '../ui/components';
-import { h, icon, replace } from '../ui/dom';
+import { h, replace } from '../ui/dom';
 import { heldBanner, onPlazaHeld } from '../ui/plaza-control';
 import { themeSwitch } from '../ui/theme';
 import type { Cleanup } from './index';
 import { Editor, stateFor } from './ide-editor';
 import { quickOpen, searchView } from './ide-find';
-import { activityRail, dockEdge, keyboardHelp, LANG_LABEL, panelEdge, type RightTabItem, rightTabStrip, statusBar, type StatusInfo } from './ide-chrome';
-import { changedList, changesPanel, checkpointsPanel } from './ide-side';
-import { agentPanel, approvalsPanel, runPanel, type Panel as TabPanel } from './ide-tabs';
+import { dockEdge, keyboardHelp, LANG_LABEL, panelEdge, statusBar, type StatusInfo } from './ide-chrome';
+import { changesPanel, checkpointsPanel } from './ide-side';
+import { approvalsPanel, runPanel, type Panel as TabPanel } from './ide-tabs';
 import { terminalTabs, type TabsHandle } from './ide-terminal';
+import { buildFrame, CENTRE_LABEL, type CentreView, type DrawerTab, type Frame, paintTabs, type RightView, setCrumb } from './ide-frame';
+import { treeRows } from './ide-files';
+import { sidebar } from './ide-sidebar';
+import { chatPane, type ChatPane } from './ide-chat';
+import { palette, type Palette } from './ide-palette';
+import { boardPanel, type BoardPanel } from './ide-board';
+import { tasksPanel, type TasksPanel } from './ide-tasks';
+import { activityPanel, type ActivityPanel } from './ide-activity';
 
 const STYLE_ID = 'apz-ide-style';
 const REFRESH_MS = 400;
 /** The panel sizes and open flags, kept per browser. */
 const LAYOUT_KEY = 'apz.ide.layout';
-/** Where the terminal sits (the right panel or under the editor) and the dock's height, kept per browser. */
-const TERM_KEY = 'apz.ide.terminal';
-/** The dock's height limits: the editor keeps `editorMin` px above it. */
-const DOCK = { min: 120, def: 240, max: 1200, editorMin: 160, step: 24 };
-
-type TermDock = 'side' | 'bottom';
-
-function readTermPrefs(): { dock: TermDock; height: number } {
-  try {
-    const v = JSON.parse(readStore(TERM_KEY) ?? 'null') as { dock?: unknown; height?: unknown } | null;
-    const height = typeof v?.height === 'number' && Number.isFinite(v.height) ? Math.min(Math.max(v.height, DOCK.min), DOCK.max) : DOCK.def;
-    return { dock: v?.dock === 'bottom' ? 'bottom' : 'side', height: Math.round(height) };
-  } catch {
-    return { dock: 'side', height: DOCK.def };
-  }
-}
-
-/** One open file: its buffer, and its editor state while another tab is shown (the shown tab's state is the view's). */
-interface Tab {
-  buf: Buffer;
-  state: EditorState | null;
-  /** Counts the user's edits, so a save that raced an edit knows the buffer is still dirty. */
-  version: number;
-}
+/** The drawer's open state, its tab and its height, kept per browser. */
+const DRAWER_KEY = 'apz.ide.drawer';
+/** The drawer's height limits: the centre keeps `editorMin` px above it. */
+const DRAWER = { min: 120, def: 240, max: 1200, editorMin: 160 };
+const MID_QUERY = '(max-width: 1199px)';
+const VIEWS: CentreView[] = ['chat', 'terminal', 'editor', 'diff'];
 
 const TONE: Record<string, Tone> = { conflict: 'danger', 'agent working': 'info', saved: 'ok', idle: 'muted', held: 'danger' };
 
-/** The stylesheet, inserted once on the first visit (build.mjs makes it text). */
+/** The stylesheets, inserted once on the first visit (build.mjs makes them text). The hidden attribute always hides. */
 function ensureStyle(): void {
   if (document.getElementById(STYLE_ID)) return;
   const style = document.createElement('style');
   style.id = STYLE_ID;
-  style.textContent = ideCss;
+  style.textContent = `${ideCss}\n${shellCss}\n.ide-host [hidden]{display:none!important}`;
   document.head.appendChild(style);
 }
 
@@ -99,6 +75,30 @@ function writeStore(key: string, value: string): void {
   }
 }
 
+interface DrawerPrefs {
+  open: boolean;
+  tab: DrawerTab;
+  height: number;
+}
+
+function readDrawerPrefs(): DrawerPrefs {
+  try {
+    const v = JSON.parse(readStore(DRAWER_KEY) ?? 'null') as { open?: unknown; tab?: unknown; height?: unknown } | null;
+    const height = typeof v?.height === 'number' && Number.isFinite(v.height) ? Math.min(Math.max(v.height, DRAWER.min), DRAWER.max) : DRAWER.def;
+    return { open: v?.open === true, tab: v?.tab === 'run' ? 'run' : 'terminal', height: Math.round(height) };
+  } catch {
+    return { open: false, tab: 'terminal', height: DRAWER.def };
+  }
+}
+
+/** One open file: its buffer, and its editor state while another tab is shown (the shown tab's state is the view's). */
+interface Tab {
+  buf: Buffer;
+  state: EditorState | null;
+  /** Counts the user's edits, so a save that raced an edit knows the buffer is still dirty. */
+  version: number;
+}
+
 /** The agent's cid for an `agent:<cid>` workspace, else null. */
 const cidOf = (id: string): number | null => {
   const m = /^agent:(\d+)$/.exec(id);
@@ -111,7 +111,8 @@ function toBase(v: string): Base {
   return v.startsWith('checkpoint:') ? { checkpoint: Number(v.slice('checkpoint:'.length)) } : 'work_start';
 }
 
-/** A repository workspace's branch (the ref after the @), else ''. */
+/** A repository workspace's name and branch: `repo:<name>@<ref>`. */
+const repoNameOf = (w: IdeWorkspaceInfo): string => w.id.slice('repo:'.length, w.id.lastIndexOf('@'));
 const refOf = (w: IdeWorkspaceInfo): string => (w.kind === 'repo' ? w.id.slice(w.id.lastIndexOf('@') + 1) : '');
 
 function totalsOf(files: FileChange[]): Stats {
@@ -146,33 +147,44 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
   let alive = true;
   let ide: Ide | null = null;
   let wsList: IdeWorkspaceInfo[] = [];
+  /** The workspace the editor and the diff show (an agent's, or a repository's). */
   let ws: IdeWorkspaceInfo | null = null;
+  /** The selected agent (null for a repository). */
+  let cid: number | null = null;
   let state: IdeState | null = null;
-  let changes: IdeChanges | null = null;
   let changesError = '';
   let files: FileChange[] = [];
   let stats: Stats = { files: 0, additions: 0, deletions: 0 };
   let checkpoints: IdeCheckpoint[] = [];
   let marks: Viewed = {};
-  /** The side panel's view, and the right panel's tab. A link's `panel` picks one of them and opens its panel. */
-  let leftView: LeftView = leftViewFor(startPanel) ?? 'files';
-  let rightTab: RightTab = rightTabFor(startPanel) ?? 'agent';
+  let agentList: Agent[] = [];
+  let projects: Project[] = [];
+  let tasks: Task[] = [];
+  let centreView: CentreView = 'editor';
+  let rightView: RightView = 'files';
+  const drawerPrefs = readDrawerPrefs();
+  let drawerOpen = drawerPrefs.open;
+  let drawerTab: DrawerTab = drawerPrefs.tab;
+  let dockHeight = drawerPrefs.height;
   const narrowMq = matchMedia(NARROW_QUERY);
+  const midMq = matchMedia(MID_QUERY);
   let narrow = narrowMq.matches;
+  let mid = midMq.matches;
   let layout: Layout = parseLayout(readStore(LAYOUT_KEY), window.innerWidth);
-  if (leftViewFor(startPanel)) layout.leftOpen = true;
-  if (rightTabFor(startPanel)) layout.rightOpen = true;
-  /** Review mode from openIde: applied once, to the first workspace this screen opens. */
-  let reviewPending = query.get('review') === '1';
   /** The file whose diff the review scrolls to, once it is drawn. */
   let focusPath: string | null = null;
-  /** The Agent, Approvals and Run tabs' controllers, per workspace: a tab switch keeps a draft or a running command. */
-  let panels: { agent: TabPanel | null; approvals: TabPanel | null; run: TabPanel | null } = { agent: null, approvals: null, run: null };
+  /** Per-selection controllers: made on first use, disposed when the selection moves on. */
+  let chat: ChatPane | null = null;
+  let activity: ActivityPanel | null = null;
+  let approvals: TabPanel | null = null;
+  let run: TabPanel | null = null;
+  let board: BoardPanel | null = null;
+  let boardKey: string | null = null;
+  let boardCount: number | null = null;
+  let taskPanel: TasksPanel | null = null;
+  let taskKey: string | null = null;
+  let taskCounts: { done: number; total: number } | null = null;
   let approvalCount = 0;
-  /** The terminal's place and size. The terminals themselves are made on first need, per agent workspace (see renderTerminal). */
-  const termPrefs = readTermPrefs();
-  let dock: TermDock = termPrefs.dock;
-  let dockHeight = termPrefs.height;
   let term: TabsHandle | null = null;
   let saved = false;
   let agentWorking = false;
@@ -182,7 +194,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
   let overlay: (() => void) | null = null;
   /** The file the editor shows (the reducer's `active` is the tab; this is what the view holds). */
   let shown: string | null = null;
-  /** The search view of the side panel, per workspace: its results stay while the panel shows another view. */
+  /** The search view of the Files tab, per workspace: its results stay while the tab shows another view. */
   let search: { wsId: string; ui: { el: HTMLElement; focus: () => void } } | null = null;
   const entries = new Map<string, Entry>();
   const loadedDirs = new Set<string>();
@@ -193,49 +205,6 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
   let refreshTimer: ReturnType<typeof setTimeout> | undefined;
 
   // ---- The shell ------------------------------------------------------------
-  const picker = h('select.select.ide-picker', { 'aria-label': 'Workspace' });
-  picker.addEventListener('change', () => go('ide', picker.value));
-  const kindHost = h('span.ide-kind');
-  const metaHost = h('span.ide-meta');
-  const countEl = h('span.ide-count');
-  const badgeHost = h('span.ide-badge-host');
-  const saveBtn = button('Save', () => void save(), { kind: 'primary', size: 'sm', title: 'Save (Ctrl+S)' });
-  const reviewBtn = button('Review', () => toggleReview(), { size: 'sm', title: 'Show the diff in the centre instead of the editor' });
-  const consoleBtn = button('Console', () => leaveIde(), { kind: 'ghost', size: 'sm', icon: 'overview', title: 'Back to the screen you opened the IDE from (Esc)' });
-  const leftToggle = button('', () => toggleLeft(), { kind: 'ghost', size: 'sm', icon: 'panel-left', title: 'Show or hide the side panel (Ctrl/Cmd+Alt+B)' });
-  const rightToggle = button('', () => toggleRight(), { kind: 'ghost', size: 'sm', icon: 'panel-left', title: 'Show or hide the right panel (Ctrl/Cmd+Alt+J)' });
-  rightToggle.classList.add('ide-flip');
-  const help = keyboardHelp();
-  const head = h(
-    'header.ide-head',
-    { 'aria-label': 'IDE header' },
-    h('div.ide-brand', null, brandMark(20), h('span.ide-brand-name', null, 'IDE')),
-    leftToggle,
-    h('div.ide-ws', null, kindHost, picker, metaHost),
-    countEl,
-    badgeHost,
-    h('span.spacer'),
-    h('div.ide-actions', null, reviewBtn, saveBtn),
-    // Repository actions (Commit, Open PR) go in this slot when repository workspaces get them.
-    h('span.ide-repo-actions'),
-    rightToggle,
-    themeSwitch(),
-    consoleBtn,
-    // The plaza's held state: the strip shows only while STOP ALL holds the plaza.
-    heldBanner(),
-  );
-
-  const rail = activityRail((key) => pickLeft(key));
-  const leftTitle = h('span.ide-left-title');
-  const leftBody = h('div.ide-left-body');
-  const leftHead = h(
-    'div.ide-left-head',
-    null,
-    leftTitle,
-    h('span.spacer'),
-    button('', () => setLeft(false), { icon: 'x', size: 'sm', title: 'Hide the side panel (Ctrl/Cmd+Alt+B)' }),
-  );
-
   const changedBox = h('input', { type: 'checkbox' });
   const changedToggle = h('label.ide-toggle', null, changedBox, h('span', null, 'Changed only'));
   changedBox.addEventListener('change', () => {
@@ -244,157 +213,253 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     if (state.filter_changed) void loadChangedDirs();
     renderAll();
   });
+  const searchBtn = button('', () => toggleSearch(), { icon: 'search', size: 'sm', title: 'Search the workspace (Ctrl/Cmd+Shift+F)' });
+  const quickBtn = button('', () => openQuick(), { icon: 'file', size: 'sm', title: 'Quick open (Ctrl/Cmd+P)' });
   const treeList = h('div.ide-tree-list', { role: 'tree' });
-  const filesView = h('div.ide-tree', null, h('div.ide-tree-tools', null, changedToggle, button('', () => openQuick(), { icon: 'search', title: 'Quick open (Ctrl/Cmd+P)', size: 'sm' })), treeList);
-  const leftPanel = h(
-    'aside.ide-left',
-    { 'aria-label': 'Side panel' },
-    leftHead,
-    leftBody,
-    panelEdge(
-      'left',
-      (x) => {
-        layout.left = fitSize(x - body.getBoundingClientRect().left - RAIL_WIDTH, 'left', window.innerWidth, layout.rightOpen ? layout.right : 0);
-        applyLayout();
-      },
-      saveLayout,
-      () => {
-        layout.left = LEFT_SIZE.def;
-        applyLayout();
-        saveLayout();
-      },
-    ),
-  );
+  const searchHost = h('div.iw-files-search', { hidden: true });
+  const cpHost = h('div.iw-files-cp');
+  const filesEl = h('div.iw-files', null, h('div.ide-tree-tools', null, changedToggle, searchBtn, quickBtn), searchHost, treeList, cpHost);
 
+  const saveBtn = button('Save', () => void save(), { kind: 'primary', size: 'sm', title: 'Save (Ctrl+S)' });
   const tabBar = h('div.ide-tabbar', { role: 'tablist' });
   const banners = h('div.ide-banners');
   const cmHost = h('div.ide-cm');
   const emptyHost = h('div.ide-empty-centre');
-  /** Review mode: the changes since the base, in place of the editor. */
+  /** The diff view: the changes since the base, in place of the editor. */
   const reviewHost = h('div.ide-review');
-
-  // The terminal. Its tabs (terminalTabs) mount into termHost, which moves between the two places a terminal can sit: the
-  // bottom dock under the editor, and the Terminal tab's slot in the right panel. A move keeps the terminal alive.
+  const editorBar = h('div.iw-editor-bar', null, h('span.spacer'), saveBtn);
+  /** The terminal's element: it moves between the centre's Terminal view and the drawer, and keeps running when it moves. */
   const termHost = h('div.ide-term-host');
-  const bottomBody = h('div.ide-bottom-body');
-  const bottomHost = h(
-    'section.ide-bottom',
-    { 'aria-label': 'Terminal, docked under the editor', hidden: true },
-    dockEdge(
-      (y) => {
-        dockHeight = clampDock(bottomHost.getBoundingClientRect().bottom - y);
-        bottomHost.style.height = `${dockHeight}px`;
-      },
-      () => saveTermPrefs(),
-      (px) => {
-        dockHeight = clampDock(dockHeight + px);
-        bottomHost.style.height = `${dockHeight}px`;
-        saveTermPrefs();
-      },
-    ),
-    h('div.ide-bottom-head', null, h('span.ide-bottom-title', null, 'Terminal'), h('span.spacer'), button('Move to side panel', () => setDock('side'), { kind: 'ghost', size: 'sm', title: 'Show the terminal in the right panel' })),
-    bottomBody,
-  );
-  const centre = h('section.ide-centre', { 'aria-label': 'Editor' }, tabBar, banners, cmHost, emptyHost, reviewHost, bottomHost);
   const editor = new Editor(cmHost);
 
-  const rightTabs = h('div.ide-side-tabs');
-  const rightBody = h('div.ide-side-body');
-  const dockToggle = button('Move terminal to bottom', () => setDock(dock === 'bottom' ? 'side' : 'bottom'), { size: 'sm', icon: 'terminal' });
-  const termSlot = h('div.ide-term-slot');
-  const termNote = h('div.ide-term-note');
-  /** The Terminal tab: the dock toggle, then the terminal in its slot (or a note in place of it). */
-  const termSide = h('div.ide-term-side', null, h('div.ide-term-side-bar', null, dockToggle), termSlot, termNote);
-  const rightPanel = h(
-    'aside.ide-right',
-    { 'aria-label': 'Agent, approvals, run and terminal' },
-    rightTabs,
-    rightBody,
-    panelEdge(
-      'right',
-      (x) => {
-        layout.right = fitSize(body.getBoundingClientRect().right - x, 'right', window.innerWidth, layout.leftOpen ? layout.left : 0);
-        applyLayout();
-      },
-      saveLayout,
-      () => {
-        layout.right = RIGHT_SIZE.def;
-        applyLayout();
-        saveLayout();
-      },
-    ),
+  const sideEl = sidebar({ onOpen: (key) => openKey(key), onNewAgent: () => newAgent() });
+  const help = keyboardHelp();
+  const status = statusBar(() => help.set(!help.isOpen()));
+  const sideEdge = panelEdge(
+    'left',
+    (x) => {
+      layout.left = fitSize(x - frame.root.getBoundingClientRect().left, 'left', window.innerWidth, layout.rightOpen && !mid ? layout.right : 0);
+      applyLayout();
+    },
+    saveLayout,
+    () => {
+      layout.left = 260;
+      applyLayout();
+      saveLayout();
+    },
+  );
+  const rightEdge = panelEdge(
+    'right',
+    (x) => {
+      layout.right = fitSize(frame.root.getBoundingClientRect().right - x, 'right', window.innerWidth, layout.leftOpen && !narrow ? layout.left : 0);
+      applyLayout();
+    },
+    saveLayout,
+    () => {
+      layout.right = 380;
+      applyLayout();
+      saveLayout();
+    },
+  );
+  const drawerEdge = dockEdge(
+    (y) => {
+      dockHeight = clampDock(frame.drawer.el.getBoundingClientRect().bottom - y);
+      applyLayout();
+    },
+    () => saveDrawerPrefs(),
+    (px) => {
+      dockHeight = clampDock(dockHeight + px);
+      applyLayout();
+      saveDrawerPrefs();
+    },
   );
 
-  const status = statusBar(() => help.set(!help.isOpen()));
-  const body = h('div.ide-body', null, rail.el, leftPanel, centre, rightPanel);
-  const screen = h('div.ide', null, head, body, status.el, help.el);
-  root.replaceChildren(screen);
-  applyLayout();
+  const frame: Frame = buildFrame({
+    side: sideEl.el,
+    sideEdge,
+    rightEdge,
+    drawerEdge,
+    held: heldBanner(),
+    theme: themeSwitch(),
+    status: status.el,
+  });
+  root.replaceChildren(frame.root, help.el);
+  frame.centre.views.editor.append(editorBar, tabBar, banners, cmHost, emptyHost);
+  frame.centre.views.diff.append(reviewHost);
+  frame.centre.views.terminal.append(termHost);
+  frame.centre.views.terminal.classList.add('iw-view-term');
+  wireFrame();
+
+  /** The palette (Ctrl/Cmd+K): agents, repositories, files, tasks and commands. */
+  const pal: Palette = palette((item) => runPaletteItem(item));
 
   // ---- Layout ---------------------------------------------------------------
   /** Puts the sizes and open flags on the screen: the columns are CSS variables, and a closed panel is hidden. */
   function applyLayout(): void {
     const width = window.innerWidth;
-    const leftPx = fitSize(layout.left, 'left', width, layout.rightOpen && !narrow ? layout.right : 0);
-    const rightPx = fitSize(layout.right, 'right', width, layout.leftOpen && !narrow ? leftPx : 0);
-    screen.style.setProperty('--ide-left', layout.leftOpen && !narrow ? `${leftPx}px` : '0px');
-    screen.style.setProperty('--ide-right', layout.rightOpen && !narrow ? `${rightPx}px` : '0px');
-    screen.classList.toggle('narrow', narrow);
-    leftPanel.hidden = !layout.leftOpen;
-    rightPanel.hidden = !layout.rightOpen;
-    leftToggle.setAttribute('aria-pressed', String(layout.leftOpen));
-    rightToggle.setAttribute('aria-pressed', String(layout.rightOpen));
-    rail.paint({ active: layout.leftOpen ? leftView : null, counts: { changes: files.length, checkpoints: checkpoints.length } });
+    const leftPx = fitSize(layout.left, 'left', width, !narrow && layout.rightOpen && !mid ? layout.right : 0);
+    const rightPx = fitSize(layout.right, 'right', width, !narrow && layout.leftOpen ? leftPx : 0);
+    frame.root.style.setProperty('--iw-side', layout.leftOpen && !narrow ? `${leftPx}px` : '0px');
+    frame.root.style.setProperty('--iw-right', layout.rightOpen && !mid ? `${rightPx}px` : '0px');
+    frame.root.style.setProperty('--iw-drawer', drawerOpen ? `${dockHeight}px` : '0px');
+    frame.root.classList.toggle('narrow', narrow);
+    frame.root.classList.toggle('mid', mid);
+    frame.side.hidden = !layout.leftOpen && !narrow;
+    frame.side.classList.toggle('open', layout.leftOpen && narrow);
+    frame.right.el.hidden = !layout.rightOpen && !mid;
+    frame.right.el.classList.toggle('open', layout.rightOpen && mid);
+    frame.scrim.classList.toggle('show', (narrow && layout.leftOpen) || (mid && layout.rightOpen));
+    frame.sideToggle.setAttribute('aria-pressed', String(layout.leftOpen));
+    frame.rightToggle.setAttribute('aria-pressed', String(layout.rightOpen));
   }
 
   function saveLayout(): void {
     writeStore(LAYOUT_KEY, serializeLayout(layout));
   }
 
+  function saveDrawerPrefs(): void {
+    writeStore(DRAWER_KEY, JSON.stringify({ open: drawerOpen, tab: drawerTab, height: dockHeight }));
+  }
+
+  /** Keeps the drawer within the centre column: at least DRAWER.min, and the centre keeps DRAWER.editorMin above it. */
+  function clampDock(px: number): number {
+    const column = frame.centre.el;
+    const room = column.clientHeight > 0 ? column.clientHeight - DRAWER.editorMin : Infinity;
+    return Math.round(Math.max(DRAWER.min, Math.min(px, Math.max(DRAWER.min, room))));
+  }
+
   function setLeft(open: boolean): void {
     layout.leftOpen = open;
     saveLayout();
-    renderAll();
+    applyLayout();
   }
 
-  function toggleLeft(): void {
-    setLeft(!layout.leftOpen);
-  }
-
-  function toggleRight(): void {
-    layout.rightOpen = !layout.rightOpen;
+  function setRightOpen(open: boolean): void {
+    layout.rightOpen = open;
     saveLayout();
-    renderAll();
+    applyLayout();
   }
 
-  /** Narrow screens: the drawer closes once the owner has picked something in it. */
+  /** Narrow screens: the sidebar drawer closes once the owner has picked something in it. */
   function closeDrawerIfNarrow(): void {
     if (narrow) layout.leftOpen = false;
-  }
-
-  /** The rail's click: the open view's item closes the panel; any other shows its view. */
-  function pickLeft(key: LeftView): void {
-    if (layout.leftOpen && leftView === key) {
-      setLeft(false);
-      return;
-    }
-    showLeft(key);
-  }
-
-  function showLeft(key: LeftView): void {
-    leftView = key;
-    layout.leftOpen = true;
-    if (key === 'changes' && ide && state) state = ide.reduce(state, { set_panel: 'changes' });
-    saveLayout();
-    renderAll();
-    if (key === 'search') searchUi()?.focus();
-  }
-
-  narrowMq.addEventListener('change', onNarrow);
-  window.addEventListener('resize', applyLayout);
-  function onNarrow(): void {
-    narrow = narrowMq.matches;
+    if (mid) layout.rightOpen = false;
     applyLayout();
+  }
+
+  function setDrawer(open: boolean, tab: DrawerTab = drawerTab): void {
+    drawerOpen = open;
+    drawerTab = tab;
+    saveDrawerPrefs();
+    renderAll();
+    if (open && tab === 'terminal') term?.focus();
+  }
+
+  narrowMq.addEventListener('change', onBreakpoint);
+  midMq.addEventListener('change', onBreakpoint);
+  window.addEventListener('resize', applyLayout);
+  function onBreakpoint(): void {
+    narrow = narrowMq.matches;
+    mid = midMq.matches;
+    applyLayout();
+  }
+
+  /** The header toggles, the scrim and the drawer's own buttons. */
+  function wireFrame(): void {
+    frame.sideToggle.addEventListener('click', () => setLeft(!layout.leftOpen));
+    frame.rightToggle.addEventListener('click', () => setRightOpen(!layout.rightOpen));
+    frame.consoleBtn.addEventListener('click', () => leaveIde());
+    frame.scrim.addEventListener('click', () => {
+      setLeft(false);
+      setRightOpen(false);
+    });
+    frame.drawer.close.addEventListener('click', () => setDrawer(false));
+    for (const v of VIEWS) frame.centre.seg[v].addEventListener('click', () => setCentre(v));
+    frame.centre.popout.addEventListener('click', () => {
+      if (cid !== null) go('agents', cid);
+    });
+    for (const k of Object.keys(frame.right.tabs) as RightView[]) frame.right.tabs[k].addEventListener('click', () => setRight(k));
+    for (const k of Object.keys(frame.drawer.tabs) as DrawerTab[]) frame.drawer.tabs[k].addEventListener('click', () => setDrawer(true, k));
+  }
+
+  // ---- Views ----------------------------------------------------------------
+  /** The centre's view. Chat and Terminal need an agent; Editor and Diff need a workspace. */
+  function setCentre(v: CentreView): void {
+    centreView = v;
+    renderAll();
+    if (v === 'terminal') term?.focus();
+  }
+
+  /** The right panel's tab. Approvals and Activity are for agents only. */
+  function setRight(v: RightView): void {
+    rightView = v;
+    if (!rightTabAllowed(v)) rightView = 'files';
+    if (!layout.rightOpen) setRightOpen(true);
+    else renderAll();
+  }
+
+  function rightTabAllowed(v: RightView): boolean {
+    return cid !== null || (v !== 'approvals' && v !== 'activity');
+  }
+
+  function centreAllowed(v: CentreView): boolean {
+    if (v === 'chat' || v === 'terminal') return cid !== null;
+    return true;
+  }
+
+  // ---- Sidebar selection ----------------------------------------------------
+  /** Opens a sidebar key: `agent:<cid>`, `term:<cid>` (the agent's terminal) or `ws:<workspace id>` (a repository). */
+  function openKey(key: string): void {
+    if (key.startsWith('agent:')) selectAgent(Number(key.slice('agent:'.length)), 'chat');
+    else if (key.startsWith('term:')) selectAgent(Number(key.slice('term:'.length)), 'terminal');
+    else if (key.startsWith('ws:')) {
+      const w = wsList.find((x) => x.id === key.slice('ws:'.length));
+      if (w) selectRepo(w);
+    }
+    closeDrawerIfNarrow();
+  }
+
+  function selectAgent(next: number, view: CentreView): void {
+    if (cid !== next) {
+      chat?.dispose();
+      chat = null;
+      activity?.dispose();
+      activity = null;
+      approvals?.dispose();
+      approvals = null;
+      cid = next;
+    }
+    centreView = view;
+    const agent = agentList.find((a) => a.cid === next);
+    const wsNext = wsList.find((w) => w.id === `agent:${next}`) ?? null;
+    if (!chat) {
+      const project = agent ? projectFor(agent, projects) : null;
+      chat = chatPane({ cid: next, agentName: agent?.name ?? `agent ${next}`, project: project?.title ?? null, working: () => agentWorking });
+    }
+    sideEl.setSelected(`agent:${next}`);
+    void setWorkspace(wsNext);
+    if (!rightTabAllowed(rightView)) rightView = 'files';
+    renderAll();
+  }
+
+  function selectRepo(info: IdeWorkspaceInfo): void {
+    chat?.dispose();
+    chat = null;
+    activity?.dispose();
+    activity = null;
+    approvals?.dispose();
+    approvals = null;
+    cid = null;
+    if (centreView === 'chat' || centreView === 'terminal') centreView = 'editor';
+    if (!rightTabAllowed(rightView)) rightView = 'files';
+    sideEl.setSelected(`ws:${info.id}`);
+    void setWorkspace(info);
+    renderAll();
+  }
+
+  /** The sidebar's "+ New agent": the agent wizard. */
+  function newAgent(): void {
+    go('agents');
   }
 
   // ---- Data -----------------------------------------------------------------
@@ -430,7 +495,6 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     try {
       const c = await ideApi.changes(id, base);
       if (!alive || ws?.id !== id) return;
-      changes = c;
       files = c.files ?? ide.parseUnified(c.diff ?? '').files;
       stats = c.stats ?? totalsOf(files);
       changesError = '';
@@ -493,23 +557,29 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
   }
 
   // ---- Workspaces -----------------------------------------------------------
-  async function selectWorkspace(info: IdeWorkspaceInfo): Promise<void> {
-    if (!ide) return;
+  /** Shows a workspace in the editor and the diff: loads its tree, changes and checkpoints. Null clears the view. */
+  async function setWorkspace(info: IdeWorkspaceInfo | null): Promise<void> {
+    if (info?.id === ws?.id && info !== null) return;
     disposeTerminal();
+    run?.dispose();
+    run = null;
     ws = info;
-    writeStore(LAST_WORKSPACE_KEY, info.id);
-    marks = parseViewed(readStore(viewedKey(info.id)));
     entries.clear();
     loadedDirs.clear();
     expanded.clear();
     tabsByPath.clear();
     shown = null;
-    changes = null;
     files = [];
     stats = { files: 0, additions: 0, deletions: 0 };
     checkpoints = [];
     saved = false;
-    resetPanels();
+    if (!info || !ide) {
+      state = ide ? ide.initialState() : null;
+      renderAll();
+      return;
+    }
+    writeStore(LAST_WORKSPACE_KEY, info.id);
+    marks = parseViewed(readStore(viewedKey(info.id)));
     try {
       const canonical = ide.parseWorkspaceId(info.id);
       state = ide.reduce(ide.initialState(), { set_workspace: canonical });
@@ -517,14 +587,6 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
       toast(message(err), 'error');
       state = ide.initialState();
     }
-    // The agent tabs exist for agent workspaces only; a repo keeps the Run tab.
-    if ((rightTab === 'agent' || rightTab === 'approvals') && cidOf(info.id) === null) rightTab = 'run';
-    if (reviewPending) {
-      reviewPending = false;
-      state = ide.reduce(state, 'toggle_review');
-    }
-    setRight(rightTab);
-    if (cidOf(info.id) !== null) void panelFor('approvals');
     renderAll();
     try {
       await loadDir('');
@@ -562,6 +624,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     }
     state = ide.reduce(state, { open: path });
     state = ide.reduce(state, { activate: path });
+    centreView = 'editor';
     showTab();
     if (line !== undefined) editor.reveal(line);
     renderAll();
@@ -722,6 +785,16 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     if (alive) renderAll();
   }
 
+  /** The project and the task list follow the console's own polls: the sidebar, the board and the tasks tab. */
+  async function refreshProjects(): Promise<void> {
+    try {
+      projects = await api.projects();
+    } catch {
+      // The sidebar shows what it has; the next poll tries again.
+    }
+    if (alive) renderAll();
+  }
+
   const unsub = [
     on('ide', (data) => {
       const e = data as { workspace?: unknown; path?: unknown };
@@ -731,17 +804,17 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     on('work', (data) => agentFrame(data)),
   ];
   function agentFrame(data: unknown): void {
-    const cid = (data as { cid?: unknown } | null)?.cid;
-    if (ws && cidOf(ws.id) !== null && (typeof cid !== 'number' || cid === cidOf(ws.id))) scheduleRefresh();
+    const frameCid = (data as { cid?: unknown } | null)?.cid;
+    if (ws && cidOf(ws.id) !== null && (typeof frameCid !== 'number' || frameCid === cidOf(ws.id))) scheduleRefresh();
   }
-  // The agent's working state comes from the roster. When it stops, its writes are in: refresh everything.
+  // The agents' roster: the sidebar's and the palette's list, and the selected agent's working state. When it stops, its writes are in.
   const unwatch = agents.watch((list) => {
-    const cid = ws ? cidOf(ws.id) : null;
+    agentList = list;
     const working = cid !== null && list.some((a) => a.cid === cid && a.status === 'working');
     if (wasWorking && !working) scheduleRefresh();
     wasWorking = working;
     agentWorking = working;
-    if (alive && ws) renderTop();
+    if (alive) renderAll();
   });
   // The plaza's held state and the live connection: the header's badge, the status bar.
   const unheld = onPlazaHeld((v) => {
@@ -752,13 +825,14 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     connected = up;
     if (alive) renderStatus();
   });
+  const projectsTimer = setInterval(() => void refreshProjects(), 20_000);
 
   // ---- Keys and overlays ----------------------------------------------------
   function openQuick(): void {
     if (!ws) return;
     closeOverlay();
     overlay = quickOpen(
-      screen,
+      root,
       () => [...entries.values()].filter((e) => e.kind === 'file').map((e) => e.path),
       (path) => {
         closeDrawerIfNarrow();
@@ -768,14 +842,26 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     );
   }
 
-  /** Ctrl/Cmd+Shift+F: the Search view, with the cursor in its field. */
+  /** Ctrl/Cmd+Shift+F and the Files tab's search button: the search view, shown above the tree. */
   function openSearch(): void {
     if (!ws) return;
-    closeOverlay();
-    showLeft('search');
+    rightView = 'files';
+    if (!layout.rightOpen) setRightOpen(true);
+    searchHost.hidden = false;
+    renderAll();
+    searchUi()?.focus();
   }
 
-  /** The Search view for the open workspace (made once per workspace, so its results stay). */
+  function toggleSearch(): void {
+    if (!searchHost.hidden) {
+      searchHost.hidden = true;
+      renderAll();
+      return;
+    }
+    openSearch();
+  }
+
+  /** The search view for the open workspace (made once per workspace, so its results stay). */
   function searchUi(): { el: HTMLElement; focus: () => void } | null {
     if (!ws) return null;
     if (!search || search.wsId !== ws.id) {
@@ -806,15 +892,96 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     location.hash = consoleOrigin();
   }
 
+  /** The palette's items: agents, repositories, the loaded files, the tasks and the commands. */
+  function paletteItems(): PaletteItem[] {
+    const items: PaletteItem[] = [];
+    for (const a of agentList) {
+      const project = projectFor(a, projects);
+      items.push({ id: `agent:${a.cid}`, group: 'agent', label: a.name, hint: `${rowStatus(a, null)}${project ? ` · ${project.title}` : ''}` });
+    }
+    for (const w of wsList) if (w.kind === 'repo') items.push({ id: `ws:${w.id}`, group: 'agent', label: repoNameOf(w), hint: `repository ${refOf(w)}` });
+    for (const e of entries.values()) if (e.kind === 'file') items.push({ id: `file:${e.path}`, group: 'file', label: e.path.slice(e.path.lastIndexOf('/') + 1), hint: e.path });
+    for (const t of tasks) items.push({ id: `task:${t.id}`, group: 'task', label: t.goal, hint: t.state });
+    const commands: [string, string][] = [
+      ['chat', 'Show the chat'],
+      ['terminal', 'Show the terminal'],
+      ['editor', 'Show the editor'],
+      ['diff', 'Show the diff'],
+      ['board', 'Show the board'],
+      ['files', 'Show the files'],
+      ['tasks', 'Show the tasks'],
+      ['approvals', 'Show the approvals'],
+      ['activity', 'Show the activity'],
+      ['drawer', 'Toggle the terminal drawer'],
+      ['sidebar', 'Toggle the sidebar'],
+      ['right', 'Toggle the right panel'],
+      ['search', 'Search the workspace'],
+      ['save', 'Save the file'],
+      ['console', 'Back to the console'],
+    ];
+    for (const [id, label] of commands) items.push({ id: `cmd:${id}`, group: 'command', label });
+    return items;
+  }
+
+  /** Opens the palette with fresh tasks (they are fetched when it opens). */
+  async function openPalette(): Promise<void> {
+    if (pal.isOpen()) {
+      pal.close();
+      return;
+    }
+    try {
+      tasks = await api.tasks();
+    } catch {
+      // The palette shows the tasks it has.
+    }
+    pal.open(paletteItems());
+  }
+
+  function runPaletteItem(item: PaletteItem): void {
+    const at = item.id.indexOf(':');
+    const kind = item.id.slice(0, at);
+    const value = item.id.slice(at + 1);
+    if (kind === 'agent') selectAgent(Number(value), 'chat');
+    else if (kind === 'ws') {
+      const w = wsList.find((x) => x.id === value);
+      if (w) selectRepo(w);
+    } else if (kind === 'file') void openTab(value);
+    else if (kind === 'task') setRight('tasks');
+    else if (kind === 'cmd') runCommand(value);
+  }
+
+  function runCommand(id: string): void {
+    const views: Record<string, CentreView> = { chat: 'chat', terminal: 'terminal', editor: 'editor', diff: 'diff' };
+    const rights: Record<string, RightView> = { board: 'board', files: 'files', tasks: 'tasks', approvals: 'approvals', activity: 'activity' };
+    if (views[id]) {
+      if (centreAllowed(views[id])) setCentre(views[id]);
+    } else if (rights[id]) setRight(rights[id]);
+    else if (id === 'drawer') setDrawer(!drawerOpen);
+    else if (id === 'sidebar') setLeft(!layout.leftOpen);
+    else if (id === 'right') setRightOpen(!layout.rightOpen);
+    else if (id === 'search') openSearch();
+    else if (id === 'save') void save();
+    else if (id === 'console') leaveIde();
+  }
+
   const onKey = (e: KeyboardEvent) => {
     if (!alive) return;
     const mod = e.metaKey || e.ctrlKey;
     if (mod && e.altKey && !e.shiftKey && e.code === 'KeyB') {
       e.preventDefault();
-      toggleLeft();
+      setLeft(!layout.leftOpen);
     } else if (mod && e.altKey && !e.shiftKey && e.code === 'KeyJ') {
       e.preventDefault();
-      toggleRight();
+      setRightOpen(!layout.rightOpen);
+    } else if (mod && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'k') {
+      e.preventDefault();
+      void openPalette();
+    } else if (!mod && !e.altKey && !e.shiftKey && e.code === 'Backquote' && !inTyping(e.target) && cid !== null) {
+      e.preventDefault();
+      setDrawer(!drawerOpen);
+    } else if (mod && !e.altKey && !e.shiftKey && e.code === 'Backquote' && !inTerminal(e.target) && cid !== null) {
+      e.preventDefault();
+      setDrawer(!drawerOpen);
     } else if (mod && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 's' && !inTerminal(e.target)) {
       e.preventDefault();
       void save();
@@ -827,40 +994,32 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     } else if (e.key === '?' && !mod && !e.altKey && !inTyping(e.target)) {
       e.preventDefault();
       help.set(!help.isOpen());
-    } else if (e.key === 'Escape' && !e.defaultPrevented && overlay === null && !document.querySelector('.modal-backdrop') && !inField(e.target)) {
+    } else if (e.key === 'Escape' && !e.defaultPrevented && overlay === null && !pal.isOpen() && !document.querySelector('.modal-backdrop') && !inField(e.target)) {
       // A field's Escape (the editor's search, a note) is the field's. Otherwise: the help, then a narrow drawer, then the console.
       if (help.isOpen()) help.set(false);
-      else if (narrow && layout.leftOpen) setLeft(false);
+      else if ((narrow && layout.leftOpen) || (mid && layout.rightOpen)) closeDrawerIfNarrow();
       else leaveIde();
     }
   };
   document.addEventListener('keydown', onKey);
 
-  // ---- Right panel and review -----------------------------------------------
-  function resetPanels(): void {
-    panels.agent?.dispose();
-    panels.approvals?.dispose();
-    panels.run?.dispose();
-    panels = { agent: null, approvals: null, run: null };
-    approvalCount = 0;
+  // ---- Panels ---------------------------------------------------------------
+  /** The project of the current selection: the agent's, or the repository's. */
+  function currentProject(): Project | null {
+    if (cid !== null) {
+      const a = agentList.find((x) => x.cid === cid);
+      return a ? projectFor(a, projects) : null;
+    }
+    if (ws?.kind === 'repo') return projects.find((p) => p.repo === repoNameOf(ws as IdeWorkspaceInfo)) ?? null;
+    return null;
   }
 
-  /** The controller of an agent-only or run tab, made on first use for this workspace. Null when the tab does not apply. */
-  function panelFor(k: 'agent' | 'approvals' | 'run'): TabPanel | null {
-    if (!ws) return null;
-    if (k === 'run') {
-      if (!panels.run) panels.run = runPanel(ws);
-      return panels.run;
-    }
-    const cid = cidOf(ws.id);
+  /** The controller of an agent's run tab or approvals, made on first use. */
+  function approvalsFor(): TabPanel | null {
     if (cid === null) return null;
-    if (k === 'agent') {
-      if (!panels.agent) panels.agent = agentPanel(cid);
-      return panels.agent;
-    }
-    if (!panels.approvals) {
-      panels.approvals = approvalsPanel({
-        wsId: ws.id,
+    if (!approvals) {
+      approvals = approvalsPanel({
+        wsId: `agent:${cid}`,
         cid,
         onCount: (n) => {
           approvalCount = n;
@@ -869,99 +1028,118 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
         onDecided: () => scheduleRefresh(),
       });
     }
-    return panels.approvals;
+    return approvals;
   }
 
-  /** Shows a right-hand tab, and tells the reducer which panel it is. A tab the owner chose takes the focus (`focus`). */
-  function setRight(next: RightTab, focus = false): void {
-    rightTab = next;
-    if (ide && state) state = ide.reduce(state, { set_panel: next as Panel });
-    if (next !== 'terminal') panelFor(next)?.show?.();
-    renderRight();
-    if (focus && next === 'terminal') term?.focus();
+  function runFor(): TabPanel | null {
+    if (!ws) return null;
+    if (!run) run = runPanel(ws);
+    return run;
   }
 
-  // ---- Terminal -------------------------------------------------------------
-  /** Keeps the dock's height within the editor column: at least DOCK.min, and the editor keeps DOCK.editorMin above it. */
-  function clampDock(px: number): number {
-    const column = bottomHost.parentElement;
-    const room = column && column.clientHeight > 0 ? column.clientHeight - DOCK.editorMin : Infinity;
-    return Math.round(Math.max(DOCK.min, Math.min(px, Math.max(DOCK.min, room))));
-  }
-
-  function saveTermPrefs(): void {
-    writeStore(TERM_KEY, JSON.stringify({ dock, height: dockHeight }));
-  }
-
-  /** Moves the terminal between the bottom dock and the right panel's Terminal tab. The terminal keeps running; it is focused. */
-  function setDock(next: TermDock): void {
-    dock = next;
-    saveTermPrefs();
-    renderRight();
-    term?.focus();
-  }
-
-  /** Ends the terminals of the workspace being left (the guest shells keep running, and re-attach when mounted again). */
-  function disposeTerminal(): void {
-    term?.dispose();
-    term = null;
-    termHost.remove();
-  }
-
-  /**
-   * Puts the terminal where it belongs: in the bottom dock when docked, else in the Terminal tab's slot while that tab
-   * shows, else nowhere (detached, still alive). The terminals are made the first time one is wanted, in an agent
-   * workspace; a move that is not needed is not made, so a redraw does not move the focus or the xterm DOM.
-   */
-  function renderTerminal(): void {
-    const agentWs = ws !== null && cidOf(ws.id) !== null;
-    const bottom = agentWs && dock === 'bottom';
-    const side = agentWs && !bottom && rightTab === 'terminal' && layout.rightOpen;
-    bottomHost.hidden = !bottom;
-    if (bottom) bottomHost.style.height = `${clampDock(dockHeight)}px`;
-    termSlot.hidden = !side;
-    // The host is in its place before a terminal is made in it: a terminal opened in a detached or hidden host measures nothing.
-    const home = bottom ? bottomBody : side ? termSlot : null;
-    if (home) {
-      if (termHost.parentElement !== home) home.append(termHost);
-    } else {
-      termHost.remove();
+  /** The right panel's body: the current tab's panel (made and shown on first use), or a note. */
+  function renderRight(): void {
+    const project = currentProject();
+    if (!ws && cid === null) {
+      replace(frame.right.body, empty('agents', 'Choose a project or an agent', 'The board, files, tasks and activity follow the selection.'));
+    } else if (rightView === 'board') {
+      const key = project?.id ?? '';
+      if (!board || boardKey !== key) {
+        board?.dispose();
+        board = boardPanel({
+          project,
+          onCount: (n) => {
+            boardCount = n;
+            renderRightTabs();
+          },
+        });
+        boardKey = key;
+      }
+      replace(frame.right.body, board.el);
+      board.show();
+    } else if (rightView === 'files') {
+      replace(frame.right.body, filesEl);
+      renderFiles();
+    } else if (rightView === 'tasks') {
+      const key = project?.id ?? '';
+      if (!taskPanel || taskKey !== key) {
+        taskPanel?.dispose();
+        taskPanel = tasksPanel({
+          project,
+          onCount: (done, total) => {
+            taskCounts = { done, total };
+            renderRightTabs();
+          },
+        });
+        taskKey = key;
+      }
+      replace(frame.right.body, taskPanel.el);
+      taskPanel.show();
+    } else if (rightView === 'approvals') {
+      const p = approvalsFor();
+      replace(frame.right.body, p ? p.el : empty('approval', 'No approvals here', 'Approvals are per agent.'));
+      p?.show?.();
+    } else if (rightView === 'activity') {
+      if (cid === null) replace(frame.right.body, empty('loop', 'No activity here', 'Activity is per agent.'));
+      else {
+        if (!activity) activity = activityPanel({ cid, agentName: agentList.find((a) => a.cid === cid)?.name ?? `agent ${cid}` });
+        replace(frame.right.body, activity.el);
+        activity.show();
+      }
     }
-    if (ws && (bottom || side) && !term) term = terminalTabs(termHost, ws.id);
   }
 
-  /** The Terminal tab's own bar and note: the toggle's label, and why there is no terminal here (a repo, or docked). */
-  function paintTermSide(): void {
-    const agentWs = ws !== null && cidOf(ws.id) !== null;
-    const docked = agentWs && dock === 'bottom';
-    dockToggle.textContent = docked ? 'Move terminal to side panel' : 'Move terminal to bottom';
-    dockToggle.setAttribute('aria-pressed', String(docked));
-    dockToggle.disabled = !agentWs;
-    if (!ws) replace(termNote, empty('terminal', 'Choose a workspace', 'Terminals run in agent workspaces.'));
-    else if (!agentWs) replace(termNote, empty('terminal', 'Terminals run in agent workspaces', 'A repository has no shell of its own. Open an agent workspace to get one.'));
-    else if (docked) replace(termNote, h('p.ide-note', null, 'The terminal is docked under the editor.'));
-    else replace(termNote);
+  function renderRightTabs(): void {
+    const counts: Partial<Record<RightView, string | null>> = {
+      board: boardCount !== null && boardCount > 0 ? String(boardCount) : null,
+      files: files.length > 0 ? String(files.length) : null,
+      tasks: taskCounts ? `${taskCounts.done}/${taskCounts.total}` : null,
+      approvals: approvalCount > 0 ? String(approvalCount) : null,
+      activity: null,
+    };
+    paintTabs(frame.right.tabs, rightView, counts);
+    frame.right.tabs.approvals.hidden = cid === null;
+    frame.right.tabs.activity.hidden = cid === null;
   }
 
-  function toggleReview(): void {
-    if (!ide || !state) return;
-    state = ide.reduce(state, 'toggle_review');
-    renderAll();
+  /** The Files tab's tree, its changed-only filter and the checkpoints. */
+  function renderFiles(): void {
+    if (!ide) return;
+    const filter = !!state?.filter_changed;
+    changedBox.checked = filter;
+    const all = [...entries.values()];
+    const keep = filter ? new Set(ide.changedFilter(all, { files }).map((e) => e.path)) : null;
+    const rows = treeRows({
+      ide,
+      all,
+      loaded: loadedDirs,
+      expanded,
+      changed: new Set(files.map((f) => f.path)),
+      keep,
+      active: state?.active ?? null,
+      hasWorkspace: ws !== null,
+      onOpen: (path) => {
+        closeDrawerIfNarrow();
+        void openTab(path);
+      },
+      onToggle: (path) => void toggleDir(path),
+    });
+    if (ws && rows.length === 0) rows.push(h('p.ide-note', null, filter ? 'No changed files in the loaded tree.' : 'The workspace is empty.'));
+    replace(treeList, rows);
+    if (!ws) replace(treeList, empty('file', 'No workspace', 'Pick an agent or a repository to see its files.'));
+    if (!searchHost.hidden) {
+      const s = searchUi();
+      replace(searchHost, s ? s.el : h('p.ide-note', null, 'Search runs in a workspace.'));
+    }
+    replace(cpHost, ws ? checkpointsPanel({ checkpoints, canRestore: true, onRestore: confirmRestore }) : null);
   }
 
-  /** From the changes list or the review: the editor shows the file, leaving review. */
-  function openFromChanges(path: string): void {
-    closeDrawerIfNarrow();
-    if (ide && state?.review) state = ide.reduce(state, 'toggle_review');
-    void openTab(path);
-  }
-
-  /** From the changes list: the review, scrolled to the file's diff. */
-  function focusChange(path: string): void {
-    if (!ide || !state) return;
-    if (!state.review) state = ide.reduce(state, 'toggle_review');
-    focusPath = path;
-    closeDrawerIfNarrow();
+  async function toggleDir(path: string): Promise<void> {
+    if (expanded.has(path)) expanded.delete(path);
+    else {
+      expanded.add(path);
+      if (!loadedDirs.has(path)) await loadDir(path).catch((err: unknown) => toast(message(err), 'error'));
+    }
     renderAll();
   }
 
@@ -984,138 +1162,83 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     );
   }
 
-  /** The side panel's Changes view: the changed files, a click on one opens its diff in the review. */
-  function changedListView(): HTMLElement {
-    return changedList({
-      files,
-      stats,
-      base: baseValue(),
-      bases: basesOf(),
-      marks,
-      active: state?.active ?? null,
-      error: changesError,
-      onBase: setBase,
-      onFocus: focusChange,
-      onOpen: openFromChanges,
-      onMark: markViewed,
-    });
+  /** From the review: the editor shows the file. */
+  function openFromChanges(path: string): void {
+    void openTab(path);
+  }
+
+  // ---- Terminal -------------------------------------------------------------
+  function disposeTerminal(): void {
+    term?.dispose();
+    term = null;
+    termHost.remove();
+  }
+
+  /**
+   * Puts the terminal where it belongs: in the centre's Terminal view while that view shows, else in the drawer while the
+   * drawer shows the Terminal tab, else nowhere (detached, still alive). It is made the first time it is wanted, in an
+   * agent workspace; a move that is not needed is not made, so a redraw does not move focus or the xterm DOM.
+   */
+  function renderTerminal(): void {
+    const agentWs = ws !== null && cidOf(ws.id) !== null;
+    const inCentre = agentWs && centreView === 'terminal';
+    const inDrawer = agentWs && !inCentre && drawerOpen && drawerTab === 'terminal';
+    const home = inCentre ? frame.centre.views.terminal : inDrawer ? frame.drawer.body : null;
+    if (home) {
+      if (termHost.parentElement !== home) home.append(termHost);
+    } else {
+      termHost.remove();
+    }
+    if (ws && home && !term && agentWs) term = terminalTabs(termHost, ws.id);
   }
 
   // ---- Rendering ------------------------------------------------------------
   function renderAll(): void {
     if (!alive) return;
-    renderPicker();
+    renderSelection();
     renderTop();
-    renderLeft();
+    renderCentre();
+    renderRightTabs();
+    renderRight();
+    renderDrawer();
     renderTabs();
     renderBanners();
-    renderCentre();
-    renderRight();
+    renderTerminal();
     renderStatus();
     applyLayout();
   }
 
-  function renderPicker(): void {
-    const opts = wsList.map((w) => h('option', { value: w.id, selected: w.id === ws?.id }, `${w.kind === 'agent' ? 'Agent' : 'Repo'} · ${w.name || w.owner}${w.writable ? '' : ' (read-only)'}`));
-    replace(picker, ws ? [] : h('option', { value: '', selected: true }, 'Choose a workspace'), opts);
-    replace(kindHost, ws ? icon(ws.kind === 'agent' ? 'agents' : 'git') : null);
-    const ref = ws ? refOf(ws) : '';
-    const vs = state?.base !== undefined && typeof state.base === 'object' && 'checkpoint' in state.base ? `vs #${state.base.checkpoint}` : 'vs work start';
-    replace(metaHost, ws ? [ref ? `${ref} · ` : '', vs] : null);
+  /** The centre's header: the dot, the title, the view toggle and the pop-out. */
+  function renderSelection(): void {
+    const agent = cid !== null ? agentList.find((a) => a.cid === cid) : undefined;
+    const title = agent?.name ?? (ws?.kind === 'repo' ? repoNameOf(ws) : cid !== null ? `agent ${cid}` : 'No selection');
+    frame.centre.title.textContent = title;
+    frame.centre.dot.className = `iw-dot ${agent ? rowStatus(agent, null) : 'idle'}`;
+    frame.centre.popout.hidden = cid === null;
+    for (const v of VIEWS) {
+      const btn = frame.centre.seg[v];
+      btn.hidden = (v === 'chat' || v === 'terminal') && cid === null;
+      btn.querySelector('.iw-seg-label')?.replaceChildren(CENTRE_LABEL[v]);
+    }
+    paintTabs(frame.centre.seg, centreView, {});
+    if (!centreAllowed(centreView)) centreView = 'editor';
+    for (const v of VIEWS) frame.centre.views[v].hidden = v !== centreView;
+    if (chat && frame.centre.views.chat.firstElementChild !== chat.el) replace(frame.centre.views.chat, chat.el);
+    if (cid === null && !ws) replace(frame.centre.views.editor, [empty('file', 'Choose a project or an agent', 'Pick an agent in the sidebar, or a repository. Ctrl/Cmd+K opens the palette.')]);
   }
 
   function renderTop(): void {
     const conflict = [...tabsByPath.values()].some((t) => t.buf.conflict !== null);
     const label: string = held ? 'held' : badgeOf({ conflict, agentWorking, saved });
-    replace(badgeHost, badge(label, TONE[label] ?? 'muted'));
-    countEl.textContent = changes ? `${files.length} changed` : '';
+    const project = currentProject();
+    const parts = ws
+      ? [project?.title ?? (cid !== null ? 'Unassigned' : 'Repositories'), ws.kind === 'agent' ? (agentList.find((a) => a.cid === cid)?.name ?? `agent ${cid}`) : repoNameOf(ws), refOf(ws) || 'work'].filter(Boolean)
+      : ['IDE'];
+    setCrumb(frame.crumb, parts);
+    frame.state.replaceChildren(badge(label, TONE[label] ?? 'muted'));
     const active = state?.active ?? null;
     const t = active !== null ? tabsByPath.get(active) : undefined;
     saveBtn.disabled = !(ws?.writable && t?.buf.dirty && !t.buf.saving);
-    const reviewing = !!state?.review;
-    reviewBtn.textContent = reviewing ? 'Editor' : 'Review';
-    reviewBtn.setAttribute('aria-pressed', reviewing ? 'true' : 'false');
-  }
-
-  /** The side panel: the view's title, and its body. The files tree is kept; the other views are made from the data. */
-  function renderLeft(): void {
-    const titles: Record<LeftView, string> = { files: 'Files', search: 'Search', changes: 'Changes', checkpoints: 'Checkpoints' };
-    leftTitle.textContent = titles[leftView];
-    if (leftView === 'files') {
-      renderTree();
-      replace(leftBody, filesView);
-    } else if (leftView === 'search') {
-      const s = searchUi();
-      replace(leftBody, s ? s.el : empty('search', 'Choose a workspace', 'Search runs in a workspace.'));
-    } else if (leftView === 'changes') {
-      replace(leftBody, ws ? changedListView() : empty('git', 'Choose a workspace', 'The changes are per workspace.'));
-    } else {
-      replace(leftBody, checkpointsPanel({ checkpoints, canRestore: !!ws, onRestore: confirmRestore }));
-    }
-  }
-
-  function renderTree(): void {
-    if (!ide) return;
-    const filter = !!state?.filter_changed;
-    changedBox.checked = filter;
-    const all = [...entries.values()];
-    const changedPaths = new Set(files.map((f) => f.path));
-    const keep = filter ? new Set(ide.changedFilter(all, { files }).map((e) => e.path)) : null;
-    const active = state?.active ?? null;
-    const rows: Node[] = [];
-    const visit = (dir: string, depth: number): void => {
-      let children = ide!.children(all, dir);
-      if (keep) children = children.filter((c) => keep.has(c.path));
-      for (const c of children) {
-        const isDir = c.kind === 'dir';
-        const open = isDir && (keep !== null || expanded.has(c.path));
-        rows.push(treeRow(c, depth, open, changedPaths.has(c.path), c.path === active));
-        if (!isDir || !open) continue;
-        if (!loadedDirs.has(c.path)) rows.push(h('div.ide-row.loading', { style: `padding-left:${22 + depth * 14}px` }, 'Loading…'));
-        else visit(c.path, depth + 1);
-      }
-    };
-    if (ws && loadedDirs.has('')) visit('', 0);
-    else if (ws) rows.push(h('div.ide-row.loading', { style: 'padding-left:8px' }, 'Loading…'));
-    if (ws && rows.length === 0) rows.push(h('p.ide-note', null, filter ? 'No changed files in the loaded tree.' : 'The workspace is empty.'));
-    replace(treeList, rows);
-  }
-
-  function treeRow(e: Entry, depth: number, open: boolean, changed: boolean, active: boolean): HTMLElement {
-    const isDir = e.kind === 'dir';
-    const name = e.path.slice(e.path.lastIndexOf('/') + 1);
-    const row = h(
-      'div.ide-row',
-      {
-        class: [isDir ? 'dir' : 'file', changed ? 'changed' : '', active ? 'on' : ''].filter(Boolean).join(' '),
-        role: 'treeitem',
-        'aria-expanded': isDir ? (open ? 'true' : 'false') : null,
-        'aria-selected': active ? 'true' : null,
-        style: `padding-left:${8 + depth * 14}px`,
-        title: e.path,
-      },
-      h('span.ide-caret', null, isDir ? (open ? '▾' : '▸') : ''),
-      h('span.ide-name', null, name),
-      e.binary ? h('span.ide-tag', null, 'bin') : null,
-      changed && !isDir ? h('span.ide-dot', { title: 'Changed since this base' }) : null,
-    );
-    row.addEventListener('click', () => {
-      if (isDir) void toggleDir(e.path);
-      else {
-        closeDrawerIfNarrow();
-        void openTab(e.path);
-      }
-    });
-    return row;
-  }
-
-  async function toggleDir(path: string): Promise<void> {
-    if (expanded.has(path)) expanded.delete(path);
-    else {
-      expanded.add(path);
-      if (!loadedDirs.has(path)) await loadDir(path).catch((err: unknown) => toast(message(err), 'error'));
-    }
-    renderAll();
   }
 
   function renderTabs(): void {
@@ -1123,7 +1246,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
       const t = tabsByPath.get(path);
       const name = path.slice(path.lastIndexOf('/') + 1);
       const on = path === state?.active;
-      const tab = h(
+      return h(
         'div.ide-tab',
         { class: on ? 'on' : '', role: 'tab', 'aria-selected': on ? 'true' : 'false', title: path },
         h(
@@ -1135,7 +1258,6 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
         ),
         h('button.ide-tab-x', { type: 'button', title: `Close ${name}`, 'aria-label': `Close ${name}`, onclick: () => void closeTab(path) }, '×'),
       );
-      return tab;
     });
     replace(tabBar, items);
   }
@@ -1164,19 +1286,25 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
       );
     }
     if (ws && !ws.writable) rows.push(h('div.ide-banner', null, 'This workspace is read-only.'));
-    if (agentWorking) rows.push(h('div.ide-banner', null, 'The agent is working in this workspace. A save over its newer write shows a conflict.'));
+    if (agentWorking && cid !== null) rows.push(h('div.ide-banner', null, 'The agent is working in this workspace. A save over its newer write shows a conflict.'));
     replace(banners, rows);
   }
 
+  /** The centre's editor and diff: the editor shows the active file or a note; the diff shows the changes. */
   function renderCentre(): void {
-    const review = !!state?.review && !!ws;
     const has = !!state?.active;
-    cmHost.hidden = review || !has;
-    emptyHost.hidden = review || has;
-    reviewHost.hidden = !review;
-    if (review) {
-      replace(reviewHost, reviewView());
-      // A file picked in the changes list: its diff is opened and brought into view.
+    const editing = centreView === 'editor' && !!ws;
+    cmHost.hidden = !editing || !has;
+    emptyHost.hidden = !editing || has;
+    tabBar.hidden = !editing;
+    banners.hidden = !editing;
+    editorBar.hidden = !editing;
+    if (editing && !has) {
+      replace(emptyHost, empty('file', 'No file open', 'Pick a file in the Files tab, or press Ctrl/Cmd+P to find one by name.'));
+    }
+    if (!ws && centreView === 'editor' && cid !== null) replace(emptyHost, empty('file', 'No workspace for this agent', 'This agent has no workspace yet.'));
+    if (centreView === 'diff') {
+      replace(reviewHost, ws ? reviewView() : empty('git', 'Choose a workspace', 'The changes are per workspace.'));
       if (focusPath !== null) {
         const path = focusPath;
         focusPath = null;
@@ -1184,46 +1312,31 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
         if (block instanceof HTMLDetailsElement) block.open = true;
         block?.scrollIntoView({ block: 'start' });
       }
-      return;
-    }
-    if (!has) {
-      replace(
-        emptyHost,
-        ws
-          ? empty('file', 'No file open', 'Pick a file in the tree, or press Ctrl/Cmd+P to find one by name.')
-          : empty('file', 'Choose a workspace', 'Agent workspaces and project repositories are listed above.'),
-      );
     }
   }
 
-  function renderRightTabs(): void {
-    const agentWs = ws !== null && cidOf(ws.id) !== null;
-    const items: RightTabItem[] = [];
-    if (agentWs) items.push({ key: 'agent', label: 'Agent', icon: 'agents' }, { key: 'approvals', label: 'Approvals', icon: 'approval', count: approvalCount });
-    items.push({ key: 'run', label: 'Run', icon: 'play' }, { key: 'terminal', label: 'Terminal', icon: 'terminal' });
-    replace(rightTabs, rightTabStrip(items, rightTab, (k) => setRight(k as RightTab, true)));
-  }
-
-  function renderRight(): void {
-    renderRightTabs();
-    if (rightTab === 'terminal') {
-      // The slot keeps its place: a redraw does not detach the terminal that sits in it.
-      if (rightBody.firstElementChild !== termSide || rightBody.childElementCount !== 1) replace(rightBody, termSide);
-      paintTermSide();
-    } else if (!ws) {
-      replace(rightBody, empty('agents', 'Choose a workspace', 'The agent, approvals and runs are per workspace.'));
-    } else {
-      const p = panelFor(rightTab);
-      replace(rightBody, p ? p.el : empty('file', 'Not for this workspace', 'The Agent and Approvals tabs are for agent workspaces.'));
+  /** The bottom drawer: its tab strip, and the run panel while the Run tab shows. */
+  function renderDrawer(): void {
+    frame.drawer.el.hidden = !drawerOpen;
+    paintTabs(frame.drawer.tabs, drawerTab, {});
+    if (!drawerOpen) return;
+    const body = frame.drawer.body;
+    if (drawerTab === 'run') {
+      const p = runFor();
+      if (p && body.firstElementChild !== p.el) replace(body, p.el);
+      p?.show?.();
+    } else if (cid === null) {
+      replace(body, empty('terminal', 'Terminals run in agent workspaces', 'Pick an agent to open its terminal.'));
+    } else if (body.firstElementChild !== termHost) {
+      // The Run panel leaves the drawer; the terminal (if it belongs here) is placed by renderTerminal.
+      body.replaceChildren();
     }
-    renderTerminal();
   }
 
-  /** The status bar: the workspace and its base, the live connection, the cursor, the language and the unsaved count. */
   function renderStatus(): void {
     const active = state?.active ?? null;
     let cursor: StatusInfo['cursor'] = null;
-    if (active !== null && !state?.review) {
+    if (active !== null && centreView === 'editor') {
       const s = editor.current();
       const at = s.selection.main.head;
       const line = s.doc.lineAt(at);
@@ -1248,10 +1361,19 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
         'div',
         null,
         h('p', null, 'The workspace files go back to this checkpoint. Changes made after it are lost. Open files are reloaded.'),
-        h('div.actions', null, button('Restore', () => {
-          close();
-          void restore(cp);
-        }, { kind: 'danger' }), button('Cancel', () => close(), { kind: 'ghost' })),
+        h(
+          'div.actions',
+          null,
+          button(
+            'Restore',
+            () => {
+              close();
+              void restore(cp);
+            },
+            { kind: 'danger' },
+          ),
+          button('Cancel', () => close(), { kind: 'ghost' }),
+        ),
       ),
     );
   }
@@ -1274,7 +1396,20 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
 
   // ---- Start ----------------------------------------------------------------
   function fatal(text: string): void {
-    replace(body, empty('alert', 'The IDE is not available', text));
+    replace(frame.centre.el, empty('alert', 'The IDE is not available', text));
+  }
+
+  /** The panel a link asks for (openIde's `panel`), mapped onto the new places. */
+  function applyStartPanel(): void {
+    if (startPanel === 'changes' || query.get('review') === '1') centreView = 'diff';
+    else if (startPanel === 'agent') centreView = 'chat';
+    else if (startPanel === 'terminal') centreView = 'terminal';
+    if (startPanel === 'checkpoints' || startPanel === 'files') rightView = 'files';
+    if (startPanel === 'approvals') rightView = 'approvals';
+    if (startPanel === 'run') {
+      drawerOpen = true;
+      drawerTab = 'run';
+    }
   }
 
   void (async () => {
@@ -1291,25 +1426,42 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
       return;
     }
     if (!alive) return;
-    if (!state) state = ide.initialState();
+    state = ide.initialState();
+    await refreshProjects();
+    try {
+      tasks = await api.tasks();
+    } catch {
+      tasks = [];
+    }
     const want = requested ?? readStore(LAST_WORKSPACE_KEY);
     const chosen = want !== null ? wsList.find((w) => w.id === want) : undefined;
     if (requested !== null && !chosen) toast(`No workspace ${requested}`, 'error');
+    applyStartPanel();
     renderAll();
-    if (chosen) await selectWorkspace(chosen);
+    if (chosen?.kind === 'agent') selectAgent(cidOf(chosen.id) as number, centreView);
+    else if (chosen) selectRepo(chosen);
   })();
 
   return () => {
     alive = false;
     clearTimeout(refreshTimer);
+    clearInterval(projectsTimer);
     document.removeEventListener('keydown', onKey);
-    narrowMq.removeEventListener('change', onNarrow);
+    narrowMq.removeEventListener('change', onBreakpoint);
+    midMq.removeEventListener('change', onBreakpoint);
     window.removeEventListener('resize', applyLayout);
     for (const u of unsub) u();
     unwatch();
     unheld();
     unconnect();
-    resetPanels();
+    chat?.dispose();
+    activity?.dispose();
+    approvals?.dispose();
+    run?.dispose();
+    board?.dispose();
+    taskPanel?.dispose();
+    sideEl.dispose();
+    pal.dispose();
     disposeTerminal();
     closeOverlay();
     editor.destroy();

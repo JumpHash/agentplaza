@@ -1,0 +1,377 @@
+/* The IDE's left sidebar: search, the projects with their agents and repo
+   workspaces, a hover card, and the pinned New agent button. Colours come
+   from the tokens only. The sidebar fills its container and scrolls inside. */
+
+.ide-side {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  box-sizing: border-box;
+  background: var(--surface);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: var(--fs-sm);
+  line-height: 1.4;
+}
+
+.ide-side-top {
+  flex: none;
+  padding: var(--s2) var(--s3);
+  border-bottom: 1px solid var(--border);
+}
+
+.ide-side-search {
+  box-sizing: border-box;
+  width: 100%;
+  height: 32px;
+  padding: 0 var(--s2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: var(--fs-sm);
+}
+
+.ide-side-search::placeholder {
+  color: var(--text-3);
+}
+
+.ide-side-search:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: var(--focus);
+}
+
+.ide-side-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--s1) 0;
+}
+
+.ide-side-empty {
+  padding: var(--s4);
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+/* Project group heads. */
+.ide-side-group {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 32px;
+  margin: 0;
+  padding: 0 var(--s3);
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-2);
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+  text-align: left;
+  cursor: pointer;
+}
+
+.ide-side-group:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.ide-side-caret {
+  flex: none;
+  width: 10px;
+  color: var(--text-3);
+}
+
+.ide-side-gtitle {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ide-side-count {
+  flex: none;
+  min-width: 20px;
+  padding: 0 6px;
+  border-radius: 6px;
+  background: var(--surface-3);
+  color: var(--text-2);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+  line-height: 18px;
+  text-align: center;
+}
+
+/* Agent and repo rows. */
+.ide-side-row {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s2);
+  box-sizing: border-box;
+  width: calc(100% - 12px);
+  min-height: 32px;
+  margin: 1px 6px;
+  padding: 5px var(--s2) 5px var(--s3);
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ide-side-row:hover {
+  background: var(--hover);
+}
+
+.ide-side-row[aria-current="true"] {
+  background: var(--accent-bg);
+}
+
+.ide-side-row[aria-current="true"]::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 4px;
+  bottom: 4px;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+
+.ide-side-row:focus-visible,
+.ide-side-group:focus-visible,
+.ide-side-term:focus-visible,
+.ide-side-new:focus-visible {
+  outline: none;
+  box-shadow: var(--focus);
+}
+
+.ide-side-mark {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 18px;
+  color: var(--text-3);
+}
+
+.ide-side-mark svg {
+  width: 12px;
+  height: 12px;
+}
+
+.ide-side-dot {
+  display: block;
+  box-sizing: border-box;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-3);
+}
+
+.ide-side-row[data-status="idle"] .ide-side-dot {
+  background: transparent;
+  border: 1.5px solid var(--text-2);
+}
+
+.ide-side-row[data-status="working"] .ide-side-dot {
+  background: var(--accent);
+  animation: ide-side-pulse 1.4s ease-in-out infinite;
+}
+
+.ide-side-row[data-status="failed"] .ide-side-dot {
+  background: var(--danger);
+}
+
+.ide-side-row[data-status="done"] .ide-side-mark {
+  color: var(--ok);
+}
+
+.ide-side-row[data-status="repo"] .ide-side-dot {
+  border-radius: 2px;
+  background: var(--text-3);
+}
+
+@keyframes ide-side-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ide-side-row[data-status="working"] .ide-side-dot {
+    animation: none;
+  }
+}
+
+.ide-side-body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.ide-side-name {
+  overflow: hidden;
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ide-side-row[data-status="done"] .ide-side-name {
+  color: var(--text-2);
+  text-decoration: line-through;
+}
+
+.ide-side-task {
+  overflow: hidden;
+  color: var(--text-2);
+  font-size: 12px;
+  font-style: italic;
+  line-height: 16px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ide-side-meta {
+  overflow: hidden;
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 16px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Terminal rows sit under their agent row. */
+.ide-side-term {
+  display: block;
+  box-sizing: border-box;
+  width: calc(100% - 34px);
+  min-height: 26px;
+  margin: 0 6px 1px 28px;
+  padding: 0 var(--s2);
+  border: 0;
+  border-left: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-2);
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+  line-height: 26px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ide-side-term:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.ide-side-term[aria-current="true"] {
+  background: var(--accent-bg);
+  color: var(--text);
+}
+
+/* Visually hidden status word for screen readers. */
+.ide-side-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+/* Pinned footer. */
+.ide-side-foot {
+  flex: none;
+  padding: var(--s2) var(--s3);
+  border-top: 1px solid var(--border);
+}
+
+.ide-side-new {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  width: 100%;
+  height: 32px;
+  margin: 0;
+  padding: 0 var(--s3);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.ide-side-new:hover {
+  background: var(--hover);
+}
+
+/* Hover card: fixed beside the row, never takes the pointer. */
+.ide-side-card {
+  position: fixed;
+  z-index: 1000;
+  box-sizing: border-box;
+  width: 248px;
+  padding: var(--s3);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow);
+  font-family: var(--font);
+  font-size: 12px;
+  line-height: 1.4;
+  pointer-events: none;
+}
+
+.ide-side-card[hidden] {
+  display: none;
+}
+
+.ide-side-card-name {
+  margin-bottom: var(--s2);
+  overflow-wrap: anywhere;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+
+.ide-side-card-line {
+  display: flex;
+  gap: var(--s2);
+  padding: 2px 0;
+}
+
+.ide-side-card-k {
+  flex: 0 0 84px;
+  color: var(--text-3);
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+}
+
+.ide-side-card-v {
+  min-width: 0;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}

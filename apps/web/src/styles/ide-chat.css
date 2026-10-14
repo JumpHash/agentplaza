@@ -1,0 +1,298 @@
+/* The IDE's Chat view: one agent's transcript as a reading column, and the composer under it. */
+
+.ide-chat {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+}
+
+.ide-chat-log {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: var(--s4) var(--s4) var(--s2);
+}
+
+.ide-chat-column {
+  max-width: 760px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+}
+
+.ide-chat-empty {
+  padding: var(--s8) 0;
+  text-align: center;
+  font-size: 13px;
+  color: var(--text-3);
+}
+
+/* Owner: a right-aligned, accent-tinted bubble. */
+.ide-chat-msg {
+  display: flex;
+  flex-direction: column;
+}
+
+.ide-chat-msg.owner {
+  align-items: flex-end;
+}
+
+.ide-chat-bubble {
+  max-width: 75%;
+  padding: var(--s2) var(--s3);
+  border-radius: 12px;
+  background: var(--accent-bg);
+  color: var(--text);
+  font-size: 15px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Agent: a flat block, rendered as markdown. */
+.ide-chat-agent {
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+/* Steps: a disclosure with a one-line summary and the list of steps when opened. */
+.ide-chat-steps {
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+.ide-chat-steps > summary {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  min-height: 32px;
+  padding: 0 var(--s2);
+  border-radius: 6px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.ide-chat-steps > summary::-webkit-details-marker {
+  display: none;
+}
+
+.ide-chat-steps > summary:hover {
+  background: var(--surface-2);
+}
+
+.ide-chat-steps > summary:focus-visible {
+  outline: none;
+  box-shadow: var(--focus);
+}
+
+.ide-chat-steps-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ide-chat-outcome {
+  flex: 0 0 auto;
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.ide-chat-outcome.ok {
+  color: var(--ok);
+}
+
+.ide-chat-outcome.failed {
+  color: var(--danger);
+}
+
+.ide-chat-outcome.running {
+  color: var(--info);
+}
+
+.ide-chat-outcome.mixed {
+  color: var(--warn);
+}
+
+.ide-chat-step-list {
+  margin: var(--s1) 0 0;
+  padding: 0 0 0 var(--s4);
+  list-style: none;
+  border-left: 1px solid var(--border);
+}
+
+.ide-chat-step {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--s3);
+  padding: 2px 0;
+  font-size: 12px;
+}
+
+.ide-chat-step-meta {
+  flex: 0 0 auto;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Working: three dots that pulse; still under reduced motion. */
+.ide-chat-working {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  font-size: 13px;
+  color: var(--text-3);
+}
+
+.ide-chat-dots {
+  display: inline-flex;
+  gap: 4px;
+}
+
+.ide-chat-dots > span {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: ide-chat-pulse 1.2s ease-in-out infinite;
+}
+
+.ide-chat-dots > span:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.ide-chat-dots > span:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+@keyframes ide-chat-pulse {
+  0%,
+  80%,
+  100% {
+    opacity: 0.25;
+  }
+  40% {
+    opacity: 1;
+  }
+}
+
+/* System: a centred, muted pill (board nudges). */
+.ide-chat-system {
+  align-self: center;
+  max-width: 90%;
+  padding: 2px var(--s3);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  font-size: 12px;
+  color: var(--text-3);
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+
+/* Composer: pinned under the column, same reading width. */
+.ide-chat-composer {
+  flex: 0 0 auto;
+  padding: var(--s3) var(--s4);
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.ide-chat-composer-inner {
+  max-width: 760px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+
+.ide-chat-target {
+  font-size: 12px;
+  color: var(--text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ide-chat-input-row {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--s2);
+}
+
+.ide-chat-field {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+}
+
+.ide-chat-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  box-sizing: border-box;
+  max-height: 200px;
+  padding: var(--s2) var(--s3);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 15px;
+  line-height: 1.5;
+  resize: none;
+}
+
+.ide-chat-input:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: var(--focus);
+}
+
+.ide-chat-actions {
+  flex: 0 0 auto;
+  display: flex;
+}
+
+/* Buttons are 32px tall, with the shared focus ring. */
+.ide-chat .btn {
+  min-height: 32px;
+  padding-top: 0;
+  padding-bottom: 0;
+}
+
+.ide-chat .btn:focus-visible {
+  outline: none;
+  box-shadow: var(--focus);
+}
+
+.ide-chat .btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* Visually hidden, still read by screen readers (the composer's label). */
+.ide-chat-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ide-chat-dots > span {
+    animation: none;
+    opacity: 0.6;
+  }
+}

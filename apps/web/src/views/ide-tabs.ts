@@ -1,11 +1,11 @@
-// The IDE's right-panel tabs that reach past the files: the agent's transcript and steer box (Agent), the agent's held
-// tool calls with their proposed changes (Approvals), and one bounded command (Run). The Terminal tab is ide-terminal.ts.
-// Each tab is a controller with its own element; the screen (views/ide.ts) keeps them per workspace, so a tab switch keeps
-// a draft or a running command, and disposes them when the workspace changes. Pure rendering over the hub's routes.
+// The IDE's panels that reach past the files: the agent's held tool calls with their proposed changes (Approvals), and one
+// bounded command (Run, in the drawer). The terminal is ide-terminal.ts. Each panel is a controller with its own element;
+// the screen (views/ide.ts) keeps them per selection, so a panel switch keeps a running command, and disposes them when
+// the selection changes. Pure rendering over the hub's routes.
 
-import { api, ApiError, ideApi, type Approval, type Entry, type IdeWorkspaceInfo } from '../api';
+import { api, ApiError, ideApi, type Approval, type IdeWorkspaceInfo } from '../api';
 import { on } from '../store';
-import { ago, attempt, badge, button, clip, empty, input, textarea, toast } from '../ui/components';
+import { ago, attempt, badge, button, empty, input, textarea, toast } from '../ui/components';
 import { h, replace } from '../ui/dom';
 
 /** One tab's controller: its element, a refresh for when the tab is shown, and the teardown. */
@@ -15,14 +15,8 @@ export interface Panel {
   dispose(): void;
 }
 
-/** How much of one reply, prompt or tool output the lists show at once. */
-const CLIP = 4000;
-/** The transcript entries the Agent tab loads before it follows the live ones. */
-const HISTORY = 200;
 /** The poll interval for a run's output, in milliseconds. */
 const RUN_POLL_MS = 500;
-/** The hub's limit for a steer note (harness_control.rs). */
-const STEER_MAX = 2000;
 /** The tools whose input carries a file change: the Approvals tab shows it as a diff. */
 const WRITES = new Set(['write_file', 'edit_file']);
 /** Unchanged lines kept on each side of a change; a longer run of them collapses. */
@@ -35,122 +29,6 @@ const message = (err: unknown): string => (err instanceof Error ? err.message : 
 // ---- Agent ------------------------------------------------------------------
 
 /** A content block of a model response, as the transcript carries it. */
-interface Block {
-  type?: string;
-  text?: string;
-  name?: string;
-}
-
-/** One transcript entry as a line of the Agent tab, or null for the kinds it leaves out (requests and plain results). */
-function entryNode(e: Entry): HTMLElement | null {
-  const d = e.data;
-  switch (e.kind) {
-    case 'work_start':
-      return h('div.ide-ag-item', null, h('span.ide-ag-kind', null, String(d['kind'] ?? 'work')), h('p.ide-ag-text', null, clip(String(d['prompt'] ?? ''), CLIP)));
-    case 'model_response': {
-      const blocks = Array.isArray(d['content']) ? (d['content'] as Block[]) : [];
-      const parts = blocks.map((b) => (b.type === 'text' ? h('p.ide-ag-text', null, clip(b.text ?? '', CLIP)) : b.type === 'tool_use' ? h('span.ide-ag-chip', null, `→ ${b.name ?? 'tool'}`) : null));
-      return parts.length ? h('div.ide-ag-item.reply', null, parts) : null;
-    }
-    case 'tool_result': {
-      const failed = d['is_error'] === true;
-      const body = String(d['content'] ?? d['output'] ?? '');
-      return h('details.ide-ag-result', null, h('summary', { class: failed ? 'danger' : 'ok' }, failed ? 'Error' : 'Output'), h('pre.ide-pre', null, clip(body, CLIP)));
-    }
-    case 'tool_decision':
-      return d['decision'] === 'deny' ? h('div.ide-ag-item', null, badge(`denied: ${String(d['reason'] ?? '')}`, 'danger')) : null;
-    case 'work_end': {
-      const s = String(d['status'] ?? '');
-      const tone = /fail|error/.test(s) ? 'danger' : /cancel|stop/.test(s) ? 'warn' : 'ok';
-      return h('div.ide-ag-item', null, badge(s || 'done', tone));
-    }
-    case 'error':
-      return h('div.ide-ag-item', null, h('p.ide-ag-error', null, String(d['message'] ?? 'Error')));
-    default:
-      return null;
-  }
-}
-
-/** The Agent tab: the agent's recent transcript, followed live, and a steer box that posts a note to its next step. */
-export function agentPanel(cid: number): Panel {
-  let alive = true;
-  let loaded = false;
-  let lastSeq = 0;
-  const early: Entry[] = [];
-  const log = h('div.ide-ag-log', { 'aria-live': 'polite' }, empty('clock', 'Loading the transcript…'));
-  const steerText = textarea({ rows: 3, placeholder: 'A note the agent reads before its next step', 'aria-label': 'Steer note' });
-  const send = button('Send note', () => void steer(), { kind: 'primary', size: 'sm', icon: 'send', title: 'Send the note (Ctrl+Enter)' });
-  steerText.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-      e.preventDefault();
-      void steer();
-    }
-  });
-  const el = h('div.ide-agent', null, log, h('div.ide-steer', null, steerText, h('div.ide-steer-row', null, h('span.spacer'), send)));
-
-  const add = (e: Entry): void => {
-    const node = entryNode(e);
-    if (!node) return;
-    const stick = log.scrollHeight - log.scrollTop - log.clientHeight < 80;
-    log.append(node);
-    if (stick) log.scrollTop = log.scrollHeight;
-  };
-
-  async function load(): Promise<void> {
-    try {
-      const history = (await api.transcriptLast(cid, HISTORY)).slice().sort((a, b) => a.seq - b.seq);
-      if (!alive) return;
-      const items = history.map(entryNode).filter((n): n is HTMLElement => n !== null);
-      lastSeq = history.length ? history[history.length - 1]!.seq : 0;
-      replace(log, items.length ? items : empty('clock', 'No transcript yet'));
-      loaded = true;
-      for (const e of early.splice(0)) if (e.seq > lastSeq) {
-        lastSeq = e.seq;
-        add(e);
-      }
-      log.scrollTop = log.scrollHeight;
-    } catch (err) {
-      if (alive) replace(log, empty('alert', 'The transcript did not load', message(err)));
-    }
-  }
-
-  async function steer(): Promise<void> {
-    const text = steerText.value.trim();
-    if (!text) {
-      toast('Write a note first', 'error');
-      return;
-    }
-    if (text.length > STEER_MAX) {
-      toast(`A note is at most ${STEER_MAX} characters`, 'error');
-      return;
-    }
-    send.disabled = true;
-    const sent = await attempt(() => api.agentControl(cid, { action: 'steer', text }).then(() => true), 'Note sent to the agent');
-    if (!alive) return;
-    send.disabled = false;
-    if (sent) steerText.value = '';
-  }
-
-  const off = on('transcript', (raw) => {
-    const e = raw as Entry;
-    if (!alive || e.cid !== cid) return;
-    if (!loaded) {
-      early.push(e);
-      return;
-    }
-    if (e.seq <= lastSeq) return;
-    lastSeq = e.seq;
-    add(e);
-  });
-  void load();
-  return {
-    el,
-    dispose: () => {
-      alive = false;
-      off();
-    },
-  };
-}
 
 // ---- Approvals --------------------------------------------------------------
 

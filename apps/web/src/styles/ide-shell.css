@@ -1,0 +1,201 @@
+/* The IDE shell: the full-window chrome around the workspace. A grid of top bar,
+   body and status bar; the body is sidebar | centre | right panel, and the
+   sidebar and right panel become overlay sheets as the window narrows. The shell
+   sets --iw-side, --iw-right and --iw-drawer (px) and the narrow/mid/open classes;
+   this file lays them out. Colours come from tokens.css, so both themes follow. */
+
+/* ---------- Root ---------- */
+
+.iw { position: relative; box-sizing: border-box; width: 100%; height: 100vh; height: 100dvh;
+  display: grid; grid-template-rows: auto minmax(0, 1fr) auto; overflow: hidden;
+  font: 500 13px / 1.4 var(--font); color: var(--ink); background: var(--paper); }
+.iw *, .iw *::before, .iw *::after { box-sizing: border-box; }
+.iw button { font: inherit; color: inherit; }
+/* The hidden attribute wins here, except on the overlay sheets, which keep their box to slide in. */
+.iw [hidden] { display: none !important; }
+.iw .spacer { flex: 1 1 auto; }
+
+/* ---------- Top bar ---------- */
+
+.iw-top { display: flex; align-items: center; gap: 8px; height: 44px; min-width: 0;
+  padding: 0 12px; border-bottom: 1px solid var(--rule); background: var(--paper); overflow: hidden; }
+.iw-brand { display: inline-flex; align-items: center; gap: 6px; flex: none;
+  font: 600 13px / 1 var(--font); color: var(--ink); }
+.iw-brand svg { width: 18px; height: 18px; flex: none; }
+.iw-crumb { display: flex; align-items: center; gap: 4px; flex: 0 1 auto; min-width: 0;
+  color: var(--ink-2); white-space: nowrap; overflow: hidden; }
+.iw-crumb-part { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.iw-crumb-part:last-of-type { color: var(--ink); font-weight: 600; }
+.iw-crumb-sep { flex: none; color: var(--ink-3); }
+.iw-state, .iw-git, .iw-held { display: flex; align-items: center; gap: 6px; flex: none; min-width: 0; }
+.iw-state:empty, .iw-git:empty, .iw-held:empty { display: none; }
+.iw-theme { margin-left: auto; }
+
+/* Icon buttons: 32px square, quiet until hovered or pressed. */
+.iw-toggle, .iw-popout, .iw-theme { display: inline-flex; align-items: center; justify-content: center;
+  flex: none; width: 32px; height: 32px; padding: 0; border: 1px solid transparent; border-radius: 6px;
+  background: transparent; color: var(--ink-2); cursor: pointer; }
+.iw-toggle svg, .iw-popout svg, .iw-theme svg { width: 18px; height: 18px; }
+.iw-toggle:hover, .iw-popout:hover, .iw-theme:hover, .iw-console:hover,
+.iw-drawer-head > button:not(.iw-rtab):hover { background: var(--surface-2); color: var(--ink); }
+.iw-toggle[aria-pressed="true"] { background: var(--surface-3); border-color: var(--rule); color: var(--ink); }
+.iw-flip svg { transform: scaleX(-1); }
+.iw-console { flex: none; height: 32px; padding: 0 10px; border: 1px solid var(--rule); border-radius: 6px;
+  background: transparent; color: var(--ink-2); font: 500 13px / 1 var(--font); cursor: pointer; }
+
+/* ---------- Body grid ---------- */
+
+.iw-body { position: relative; display: grid; min-height: 0; overflow: hidden;
+  grid-template-columns: var(--iw-side, 0px) minmax(0, 1fr) var(--iw-right, 0px); }
+/* Explicit placement: a hidden sidebar must not pull the centre into column 1. */
+.iw-side { grid-column: 1; }
+.iw-centre { grid-column: 2; }
+.iw-right { grid-column: 3; }
+
+/* ---------- Sidebar ---------- */
+
+aside.iw-side { position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0;
+  border-right: 1px solid var(--rule); background: var(--paper); }
+.iw-side-inner { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; min-height: 0; overflow: auto; }
+.iw-side-inner > * { flex: 0 0 auto; min-width: 0; }
+.iw-side-inner > .ide-tree { flex: 1 1 auto; min-height: 0; }
+
+/* ---------- Centre ---------- */
+
+section.iw-centre { position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0;
+  background: var(--sheet); }
+.iw-centre-head { display: flex; align-items: center; gap: 8px; flex: none; height: 44px; min-width: 0;
+  padding: 0 12px; border-bottom: 1px solid var(--rule); background: var(--sheet); }
+.iw-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--ink-3); }
+.iw-dot.working { background: var(--info); box-shadow: 0 0 0 3px var(--info-bg); }
+.iw-dot.done { background: var(--ok); }
+.iw-dot.failed { background: var(--danger); }
+.iw-dot.sleeping { background: transparent; box-shadow: inset 0 0 0 1.5px var(--ink-3); }
+.iw-title { flex: 0 1 auto; min-width: 0; overflow: hidden; font: 600 14px / 1.4 var(--font); color: var(--ink);
+  text-overflow: ellipsis; white-space: nowrap; }
+
+/* Segmented view toggle. */
+.iw-seg { display: inline-flex; align-items: center; flex: none; height: 32px; padding: 2px; gap: 2px;
+  border: 1px solid var(--rule); border-radius: 8px; background: var(--paper); }
+.iw-seg-btn { display: inline-flex; align-items: center; gap: 6px; height: 100%; padding: 0 10px; border: 0;
+  border-radius: 6px; background: transparent; color: var(--ink-2); font: 500 13px / 1 var(--font);
+  white-space: nowrap; cursor: pointer; }
+.iw-seg-btn svg { width: 16px; height: 16px; flex: none; }
+.iw-seg-btn:hover { background: var(--surface-2); color: var(--ink); }
+.iw-seg-btn[aria-selected="true"] { background: var(--surface-3); color: var(--ink); font-weight: 600; }
+
+/* The pane fills the centre between the head and the drawer. */
+.iw-pane { position: relative; display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; overflow: hidden; }
+.iw-view { display: flex; flex-direction: column; flex: 1 1 0; min-width: 0; min-height: 0; overflow: hidden; }
+/* Components written for a sized parent get the flex sizing they need. */
+.iw-view > .ide-tabbar, .iw-view > .ide-banner, .iw-view > .ide-bottom { flex: none; }
+.iw-view > .ide-cm, .iw-view > .ide-review, .iw-view > .ide-tree,
+.iw-view > .ide-empty-centre, .iw-view > .ide-term-host { flex: 1 1 auto; min-height: 0; height: auto; }
+
+/* ---------- Bottom drawer ---------- */
+
+section.iw-drawer { position: relative; display: flex; flex-direction: column; flex: none;
+  height: var(--iw-drawer, 0px); min-height: 0; border-top: 1px solid var(--rule); background: var(--paper); }
+.iw-drawer-head { display: flex; align-items: center; gap: 4px; flex: none; height: 32px; min-width: 0;
+  padding: 0 6px 0 8px; border-bottom: 1px solid var(--rule-faint); }
+.iw-drawer-tabs { display: flex; align-items: stretch; gap: 2px; height: 100%; min-width: 0; overflow-x: auto; }
+.iw-drawer-head > button:not(.iw-rtab) { display: inline-flex; align-items: center; justify-content: center;
+  flex: none; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 6px; background: transparent;
+  color: var(--ink-2); cursor: pointer; }
+.iw-drawer-body { display: flex; flex-direction: column; flex: 1 1 0; min-height: 0; overflow: hidden; }
+.iw-drawer-body > * { flex: 1 1 auto; min-height: 0; min-width: 0; }
+/* The shell owns the drawer's resize edge, so the dock's own edge is removed. */
+.iw-drawer .ide-bottom-edge { display: none; }
+.iw-drawer-body > .ide-bottom { flex: 1 1 auto; border-top: 0; }
+
+/* ---------- Right panel ---------- */
+
+aside.iw-right { position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0;
+  border-left: 1px solid var(--rule); background: var(--paper); }
+.iw-right-tabs { display: flex; align-items: stretch; flex: none; min-height: 36px; min-width: 0;
+  overflow-x: auto; border-bottom: 1px solid var(--rule); }
+/* Text tabs: the selected one carries a 2px accent underline. */
+.iw-rtab { position: relative; display: inline-flex; align-items: center; gap: 6px; flex: none; height: 36px;
+  padding: 0 10px; border: 0; border-radius: 0; background: transparent; color: var(--ink-2);
+  font: 500 13px / 1 var(--font); white-space: nowrap; cursor: pointer; }
+.iw-rtab:hover { background: var(--surface-2); color: var(--ink); }
+.iw-rtab::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 2px; background: transparent; }
+.iw-rtab[aria-selected="true"], .iw-rtab.on { color: var(--ink); font-weight: 600; }
+.iw-rtab[aria-selected="true"]::after, .iw-rtab.on::after { background: var(--accent); }
+.iw-count { display: inline-flex; align-items: center; justify-content: center; min-width: 18px; height: 16px;
+  padding: 0 5px; border-radius: 999px; background: var(--surface-3); color: var(--ink-2);
+  font: 600 11px / 1 var(--font); font-variant-numeric: tabular-nums; }
+.iw-right-body { flex: 1 1 0; min-height: 0; padding: 12px; overflow: auto; }
+
+/* ---------- Status bar ---------- */
+
+footer.iw-status { display: flex; align-items: center; gap: 12px; flex: none; height: 24px; min-width: 0;
+  padding: 0 12px; border-top: 1px solid var(--rule); background: var(--paper); color: var(--ink-2);
+  font: 400 12px / 1 var(--font); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; }
+.iw-status-item { display: inline-flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden;
+  text-overflow: ellipsis; }
+.iw-live { display: inline-block; flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--ok); }
+.iw-live.off { background: var(--ink-3); }
+
+/* ---------- Edge resize handles ---------- */
+
+/* A 6px hit area centred on the border it resizes; a 2px accent line shows on hover and focus. */
+.iw-edge { position: absolute; z-index: 4; top: 0; bottom: 0; width: 6px; height: 100%; margin: 0; padding: 0;
+  border: 0; background: transparent; cursor: col-resize; }
+.iw-edge::after { content: ""; position: absolute; top: 0; bottom: 0; left: 2px; width: 2px; background: transparent; }
+.iw-edge-side { right: -3px; }
+.iw-edge-right { left: -3px; }
+.iw-edge:hover::after, .iw-edge:focus-visible::after, .iw-edge.on::after { background: var(--accent); }
+/* The drawer edge runs along the drawer's top border. */
+.iw-edge-drawer { top: -3px; left: 0; right: 0; width: auto; height: 6px; cursor: row-resize; }
+.iw-edge-drawer::after { top: 2px; bottom: auto; left: 0; right: 0; width: auto; height: 2px; }
+
+/* ---------- Scrim ---------- */
+
+.iw-scrim { position: fixed; inset: 0; z-index: 50; display: none; background: rgba(0, 0, 0, 0.4); }
+.iw-scrim.show { display: block; }
+:root:not([data-theme="light"]) .iw-scrim,
+:root[data-theme="dark"] .iw-scrim { background: rgba(0, 0, 0, 0.6); }
+
+/* ---------- Focus ---------- */
+
+.iw :is(button, a, [role="tab"], .iw-edge):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* ---------- Narrow (below 900px): the sidebar becomes an overlay ---------- */
+
+.iw.narrow .iw-body { grid-template-columns: minmax(0, 1fr); }
+.iw.narrow .iw-centre { grid-column: 1; }
+.iw.narrow .iw-side { position: fixed; top: 0; bottom: 0; left: 0; z-index: 60; display: flex;
+  width: min(320px, 86vw); height: 100%; background: var(--paper); box-shadow: var(--shadow);
+  visibility: hidden; transform: translateX(-100%);
+  transition: transform 180ms ease, visibility 180ms ease; }
+.iw.narrow .iw-side.open { visibility: visible; transform: translateX(0); }
+.iw.narrow .iw-side[hidden] { display: flex !important; }
+
+/* ---------- Mid (below 1200px): the right panel becomes a sheet ---------- */
+
+.iw.mid .iw-body { grid-template-columns: var(--iw-side, 0px) minmax(0, 1fr); }
+.iw.mid .iw-right { position: fixed; top: 0; right: 0; bottom: 0; z-index: 60; display: flex;
+  width: min(380px, 90vw); height: 100%; background: var(--paper); box-shadow: var(--shadow);
+  visibility: hidden; transform: translateX(100%);
+  transition: transform 180ms ease, visibility 180ms ease; }
+.iw.mid .iw-right.open { visibility: visible; transform: translateX(0); }
+.iw.mid .iw-right[hidden] { display: flex !important; }
+
+/* ---------- Under 720px: phone-width chrome ---------- */
+
+@media (max-width: 719.98px) {
+  .iw-top { flex-wrap: wrap; height: auto; min-height: 44px; row-gap: 6px; padding: 6px 12px; }
+  .iw-crumb { flex: 1 1 120px; }
+  .iw-theme { margin-left: 0; }
+  .iw-centre-head { padding: 0 16px; gap: 6px; }
+  .iw-seg-btn { padding: 0 8px; }
+  .iw-seg-label { display: none; }
+  .iw-right-body, .iw-drawer-head { padding-left: 16px; padding-right: 16px; }
+}
+
+/* ---------- Reduced motion ---------- */
+
+@media (prefers-reduced-motion: reduce) {
+  .iw, .iw *, .iw-scrim, .iw-scrim * { transition: none !important; animation: none !important; }
+}

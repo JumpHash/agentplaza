@@ -18,6 +18,8 @@ import { agentTally, boardOf, gibText, machineFacts, machineSubtitle } from '../
 import { hubOrigin, setupSnippets } from '../src/views/hub-mcp-snippets';
 import { ENV_NAME_RE, limitsProblem, matchingPreset, ownRowProblem, specsOfBag } from '../src/views/mcp-common';
 import { wrapIde, type IdeGlue } from '../src/ide/wasm';
+import { activitySplit, authorHue, buildChat, currentTask, filterPalette, formatMs, groupByProject, matchScore, mentionsOf, rowStatus, stepLabel, type PaletteItem } from '../src/ide/view';
+import type { Entry, Project } from '../src/api';
 import { applyBuffer, badgeOf, diffMark, dirsOf, fuzzyScore, isViewed, languageFor, lineCounts, onRemote, openBuffer, parentDir, parseViewed, rankPaths, viewedKey, withViewed } from '../src/ide/model';
 import type { FileChange } from '../src/ide/types';
 import { CENTRE_MIN, clampSize, defaultLayout, fitSize, isNarrow, LEFT_SIZE, leftViewFor, originFallback, parseLayout, RIGHT_SIZE, rightTabFor, serializeLayout } from '../src/ide/layout';
@@ -670,6 +672,98 @@ sectionEnd('ide layout tests: ok');
   eq(plainText('\u001b[31mred\u0007\n'), '[31mred', 'ide terminal notices: control characters are dropped');
 }
 sectionEnd('ide terminal tests: ok');
+
+// ---- IDE agent view model (src/ide/view.ts) ----
+{
+  const ag = (cid: number, name: string, over: Record<string, unknown> = {}): Agent => ({ cid, name, status: 'idle', work: null, ...over }) as unknown as Agent;
+  const pj = (id: string, title: string, lead_cid: number, tasks: string[] = []): Project => ({ id, title, lead_cid, tasks }) as unknown as Project;
+  const en = (seq: number, at_ms: number, kind: Entry['kind'], data: Record<string, unknown> = {}, cid = 1, work = 7): Entry => ({ seq, at_ms, cid, work, kind, data });
+
+  const projects = [pj('p1', 'Alpha', 1, ['t1']), pj('p2', 'Beta', 2), pj('p3', 'Empty', 9)];
+  const agents = [
+    ag(1, 'zed'),
+    ag(2, 'amy'),
+    ag(3, 'bob'),
+    ag(4, 'cy', { work: { prompt: 'x', origin: { task: 't1', motion: null, from_cid: null } } }),
+    ag(5, 'dee', { work: { prompt: 'x', origin: { task: 'nope', motion: null, from_cid: null } } }),
+  ];
+  const groups = groupByProject(agents, projects);
+  eq(groups.map((g) => g.title).join(','), 'Alpha,Beta,Unassigned', 'groupByProject: project order, empty projects skipped, Unassigned last');
+  eq(groups[0].agents.map((a) => a.name).join(','), 'cy,zed', 'groupByProject: agents sorted by name, task-held agents join the project');
+  eq(groups[2].id, null, 'groupByProject: Unassigned has a null id');
+  eq(groups[2].agents.map((a) => a.name).join(','), 'bob,dee', 'groupByProject: unassigned agents sorted');
+
+  eq(rowStatus({ status: 'working' }), 'working', 'rowStatus: working');
+  eq(rowStatus({ status: 'offline' }, { state: 'done' }), 'sleeping', 'rowStatus: offline is sleeping whatever the last task');
+  eq(rowStatus({ status: 'idle' }, { state: 'done' }), 'done', 'rowStatus: idle after a done task');
+  eq(rowStatus({ status: 'idle' }, { state: 'failed' }), 'failed', 'rowStatus: idle after a failed task');
+  eq(rowStatus({ status: 'idle' }, null), 'idle', 'rowStatus: idle with no task');
+
+  eq(currentTask(ag(1, 'a', { work: { prompt: '\n  Fix the login bug  \nmore' } })), 'Fix the login bug', 'currentTask: first non-empty line, trimmed');
+  eq(currentTask(ag(1, 'a')), null, 'currentTask: null with no work');
+  eq(currentTask(ag(1, 'a', { work: { prompt: 'x'.repeat(200) } }))?.length, 120, 'currentTask: cut to 120 characters');
+
+  const chat = buildChat([
+    en(1, 0, 'work_start', { kind: 'chat', prompt: 'hello' }),
+    en(2, 10, 'model_response', { content: [{ type: 'text', text: 'On it.' }, { type: 'tool_use', id: 'c1', name: 'read_file', input: { path: 'a.rs' } }] }),
+    en(3, 20, 'tool_request', { id: 'c1', name: 'read_file', input: { path: 'src/main.rs' } }),
+    en(4, 30, 'tool_result', { id: 'c1', is_error: false, content: 'fn main' }),
+    en(5, 40, 'tool_request', { id: 'c2', name: 'bash', input: { command: 'cargo test' } }),
+    en(6, 50, 'tool_result', { id: 'c2', is_error: true, content: 'boom' }),
+    en(7, 60, 'model_response', { content: [{ type: 'text', text: 'Done.' }] }),
+  ], true);
+  eq(chat.map((c) => c.kind).join(','), 'owner,agent,steps,agent,working', 'buildChat: owner, prose, one steps item, prose, working');
+  const stepsItem = chat[2];
+  eq(stepsItem.kind === 'steps' ? stepsItem.steps.length : -1, 2, 'buildChat: both tool calls collapse into one steps item');
+  eq(stepsItem.kind === 'steps' ? stepsItem.last : '', 'Ran command', 'buildChat: last is the label of the last call');
+  eq(stepsItem.kind === 'steps' ? stepsItem.outcome : '', 'mixed', 'buildChat: one ok and one failed is mixed');
+  eq(stepsItem.kind === 'steps' ? stepLabel(stepsItem.steps[0]) : '', 'Read src/main.rs', 'stepLabel: read names the path');
+
+  const act = activitySplit([
+    en(1, 0, 'model_request'),
+    en(2, 100, 'model_response'),
+    en(3, 110, 'tool_request', { id: 'c1', name: 'bash', input: { command: 'ls' } }),
+    en(4, 150, 'tool_result', { id: 'c1', is_error: false }),
+    en(5, 160, 'model_request'),
+    en(6, 300, 'model_response'),
+  ]);
+  eq(act.thinkingMs, 240, 'activitySplit: thinking is request to response, summed');
+  eq(act.toolMs, 40, 'activitySplit: tool time is request to result');
+  eq(act.totalMs, 300, 'activitySplit: total is last minus first');
+  eq(act.calls.length === 1 && act.calls[0].ms === 40 && act.calls[0].outcome === 'ok' && act.calls[0].name === 'bash', true, 'activitySplit: one call with name, ms and outcome');
+  eq(activitySplit([en(1, 5, 'work_start')]).totalMs, 0, 'activitySplit: no span with one entry');
+
+  const pal: PaletteItem[] = [
+    { id: 'a', group: 'command', label: 'Open agent Zed' },
+    { id: 'b', group: 'file', label: 'Read main.rs' },
+    { id: 'c', group: 'command', label: 'Toggle terminal' },
+  ];
+  eq(filterPalette(pal, '').map((i) => i.id).join(','), 'a,b,c', 'filterPalette: empty query keeps input order');
+  eq(filterPalette(pal, '', 2).length, 2, 'filterPalette: empty query is capped at the limit');
+  eq(filterPalette(pal, 'term').map((i) => i.id).join(','), 'c', 'filterPalette: only matching items remain');
+  const rank: PaletteItem[] = [
+    { id: 'x', group: 'file', label: 'xa' },
+    { id: 'y', group: 'file', label: 'ax' },
+  ];
+  eq(filterPalette(rank, 'a').map((i) => i.id).join(','), 'y,x', 'filterPalette: earlier match ranks first');
+  eq(matchScore('Open agent', ''), 0, 'matchScore: empty query scores 0');
+  eq(matchScore('abc', 'z'), null, 'matchScore: no match is null');
+  const sub = matchScore('Open agent', 'oa');
+  eq(sub !== null && sub > 0 && sub < 100, true, 'matchScore: a subsequence scores below any substring');
+  eq(matchScore('Open agent', 'AGENT') !== null, true, 'matchScore: case-insensitive');
+
+  eq(formatMs(340), '340 ms', 'formatMs: milliseconds');
+  eq(formatMs(1200), '1.2 s', 'formatMs: seconds');
+  eq(formatMs(125000), '2 min 5 s', 'formatMs: minutes');
+
+  eq(mentionsOf('ping @all and @ana, then @ana again and @dev-2_x.').join(','), 'all,ana,dev-2_x', 'mentionsOf: names in order, no duplicates, trailing dot dropped');
+  eq(mentionsOf('mail a@b.com now').length, 0, 'mentionsOf: an address is not a mention');
+
+  const hues = ['zed', 'amy', '', 'Long Name Here'].map(authorHue);
+  eq(hues.every((h) => Number.isInteger(h) && h >= 0 && h <= 5), true, 'authorHue: integers 0..5');
+  eq(authorHue('amy') === authorHue('amy'), true, 'authorHue: stable for one name');
+}
+sectionEnd('ide agent view model tests: ok');
 
 if (failedSections.length) {
   console.error(`${failedSections.length} section(s) failed: ${failedSections.join(', ')}`);

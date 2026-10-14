@@ -1,50 +1,10 @@
-// The IDE's own chrome: the activity rail, the edges that resize a side panel, the status bar and the keyboard help.
-// Pure rendering: the screen (views/ide.ts) owns the state and passes the callbacks, and these paint what it gives them.
+// The IDE's own chrome: the edges that resize a panel or the drawer, the status bar and the keyboard help. Pure rendering:
+// the screen (views/ide.ts) owns the state and passes the callbacks, and these paint what it gives them.
 
 import type { Lang } from '../ide/model';
-import type { LeftView } from '../ide/layout';
 import { dot } from '../ui/components';
-import { h, icon, replace } from '../ui/dom';
-import type { IconName } from '../ui/icons.gen';
+import { h, replace } from '../ui/dom';
 
-const RAIL: { key: LeftView; label: string; icon: IconName }[] = [
-  { key: 'files', label: 'Files', icon: 'file' },
-  { key: 'search', label: 'Search', icon: 'search' },
-  { key: 'changes', label: 'Changes', icon: 'git' },
-  { key: 'checkpoints', label: 'Checkpoints', icon: 'clock' },
-];
-
-export interface RailPaint {
-  /** The view the side panel shows, or null when the panel is closed. */
-  active: LeftView | null;
-  /** The count a rail item shows (changed files, checkpoints). */
-  counts: Partial<Record<LeftView, number>>;
-}
-
-/** The activity rail: the side panel's views. Clicking the open view's item closes the panel (the screen decides). */
-export function activityRail(onPick: (key: LeftView) => void): { el: HTMLElement; paint(p: RailPaint): void } {
-  const items = new Map<LeftView, { button: HTMLButtonElement; count: HTMLElement }>();
-  const el = h('nav.ide-rail', { 'aria-label': 'IDE views' });
-  for (const item of RAIL) {
-    const count = h('span.ide-rail-count');
-    const button = h('button.ide-rail-item', { type: 'button', title: item.label, 'aria-label': item.label }, icon(item.icon), count);
-    button.addEventListener('click', () => onPick(item.key));
-    items.set(item.key, { button, count });
-    el.appendChild(button);
-  }
-  return {
-    el,
-    paint(p) {
-      for (const [key, { button, count }] of items) {
-        const on = key === p.active;
-        button.classList.toggle('on', on);
-        button.setAttribute('aria-pressed', on ? 'true' : 'false');
-        const n = p.counts[key];
-        count.textContent = n ? String(n) : '';
-      }
-    },
-  };
-}
 
 /**
  * The edge of a side panel: drag it to resize (`onDrag` gets the pointer's x while it is held, `onDone` when it is let
@@ -115,42 +75,6 @@ export function dockEdge(onDrag: (clientY: number) => void, onDone: () => void, 
   return el;
 }
 
-export interface RightTabItem {
-  key: string;
-  /** The full name: the tooltip and the accessible name. */
-  label: string;
-  icon: IconName;
-  /** A count shown as a small mark on the tab (Approvals), omitted when 0. */
-  count?: number;
-}
-
-/**
- * The right panel's tabs: an icon and a short label each, all of them in view. The label goes when the strip is narrow
- * (a container query in ide.css); the full name stays the tooltip, and a count is a small mark on the tab's corner.
- */
-export function rightTabStrip(items: RightTabItem[], current: string, onSelect: (key: string) => void): HTMLElement {
-  return h(
-    'div.ide-rtabs',
-    { role: 'tablist' },
-    items.map((item) => {
-      const full = item.count ? `${item.label} (${item.count})` : item.label;
-      return h(
-        'button.ide-rtab',
-        {
-          type: 'button',
-          role: 'tab',
-          title: full,
-          'aria-label': full,
-          'aria-selected': item.key === current ? 'true' : 'false',
-          onclick: () => onSelect(item.key),
-        },
-        icon(item.icon),
-        h('span.ide-rtab-label', null, item.label),
-        item.count ? h('span.ide-rtab-count', null, String(item.count)) : null,
-      );
-    }),
-  );
-}
 
 export interface StatusInfo {
   workspace: string;

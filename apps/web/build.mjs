@@ -104,7 +104,7 @@ if (existsSync(join(repoRoot, 'crates/apz-ide-web/Cargo.toml'))) {
 const ideStylesheetAsText = {
   name: 'ide-stylesheet-as-text',
   setup(b) {
-    b.onLoad({ filter: /([\\/]styles[\\/]ide(-terminal)?\.css|[\\/]@xterm[\\/]xterm[\\/]css[\\/]xterm\.css)$/ }, (args) => ({
+    b.onLoad({ filter: /([\\/]styles[\\/]ide(-[a-z]+)*\.css|[\\/]@xterm[\\/]xterm[\\/]css[\\/]xterm\.css)$/ }, (args) => ({
       contents: readFileSync(args.path, 'utf8'),
       loader: 'text',
     }));

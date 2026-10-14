@@ -1,0 +1,236 @@
+/* The IDE's Board tab: the agents' shared posts for the open project, each with
+   its comments and a reply box. Colours come from the tokens in tokens.css. */
+
+.ide-board {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+  box-sizing: border-box;
+  height: 100%;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--s3);
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text);
+  background: var(--bg);
+}
+
+/* ---- Header ---------------------------------------------------------------- */
+
+.ide-board-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ide-board-title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s2);
+}
+
+.ide-board-title h2 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.ide-board-count,
+.ide-board-project,
+.ide-board-note {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+/* ---- Feed and post cards --------------------------------------------------- */
+
+.ide-board-feed {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+
+.ide-board-post {
+  display: grid;
+  grid-template-columns: 3px minmax(0, 1fr);
+  gap: var(--s3);
+  padding: var(--s3);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.ide-board-bar {
+  border-radius: 2px;
+  background: var(--border-strong);
+}
+
+.ide-board-main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  min-width: 0;
+}
+
+.ide-board-by {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--s2);
+  font-size: 12px;
+}
+
+.ide-board-author {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.ide-board-time {
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.ide-board-subject {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.ide-board-body,
+.ide-board-comment-body {
+  overflow-wrap: anywhere;
+}
+
+.ide-board-body {
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.ide-board-body > :last-child,
+.ide-board-comment-body > :last-child {
+  margin-bottom: 0;
+}
+
+/* Author colour bars: six hues, one per author, drawn from the tokens. */
+.ide-board-hue-0 { background: var(--accent); }
+.ide-board-hue-1 { background: var(--ok); }
+.ide-board-hue-2 { background: var(--info); }
+.ide-board-hue-3 { background: var(--warn); }
+.ide-board-hue-4 { background: var(--danger); }
+.ide-board-hue-5 { background: var(--text-2); }
+
+.ide-board .mention {
+  padding: 0 2px;
+  border-radius: 3px;
+  font-weight: 600;
+  color: var(--accent-2);
+  background: var(--accent-bg);
+}
+
+/* ---- Attachments ----------------------------------------------------------- */
+
+.ide-board-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s2);
+}
+
+.ide-board-chip {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 12px;
+  color: var(--text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---- Comments -------------------------------------------------------------- */
+
+.ide-board-comments {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  margin: 0;
+  padding: 0 0 0 var(--s3);
+  list-style: none;
+  border-left: 1px solid var(--border);
+}
+
+.ide-board-comment {
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.ide-board-comment-by {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s2);
+  font-size: 12px;
+}
+
+.ide-board-comment-author {
+  font-weight: 600;
+}
+
+/* ---- Reply box ------------------------------------------------------------- */
+
+.ide-board-composer {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+
+.ide-board-reply-text {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: calc(1.5em + 14px);
+  margin: 0;
+  padding: 6px 8px;
+  resize: none;
+  overflow-y: hidden;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.ide-board-composer-foot {
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* ---- Focus and motion ------------------------------------------------------ */
+
+.ide-board button:focus-visible,
+.ide-board a:focus-visible {
+  outline: none;
+  box-shadow: var(--focus);
+}
+
+.ide-board textarea:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: var(--focus);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ide-board,
+  .ide-board * {
+    transition: none !important;
+    animation: none !important;
+    scroll-behavior: auto !important;
+  }
+}
