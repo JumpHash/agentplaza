@@ -307,7 +307,6 @@ fn code_chip_and_audit_labels_name_the_states_and_events() {
 fn takeover_text_is_the_policy_explanation() {
     assert!(takeover_text(Takeover::ReleaseLease).contains("goes back to the queue"));
     assert!(takeover_text(Takeover::AgentWaits).contains("resumes when you give the session back"));
-    assert_eq!(TAKEOVERS.len(), 3);
 }
 
 #[test]

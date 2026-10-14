@@ -326,6 +326,11 @@ fn the_body_names_only_what_applies() {
         body.get("image").is_none(),
         "an image goes only with a Windows VM"
     );
+    assert_eq!(
+        read_vm_form(&linux_form(), None, 0),
+        Err("Choose a node to run the VM on.".to_string()),
+        "a form with a problem builds no body"
+    );
 }
 
 #[test]
@@ -340,14 +345,6 @@ fn a_passthrough_gpu_is_sent_as_vfio_with_its_address_and_the_name_is_trimmed() 
     assert_eq!(body["gpu"], "vfio:0000:01:00.0");
     assert_eq!(body["name"], "desk-1");
     assert_eq!(body["backend"], "auto");
-}
-
-#[test]
-fn a_form_with_a_problem_builds_no_body() {
-    assert_eq!(
-        read_vm_form(&linux_form(), None, 0),
-        Err("Choose a node to run the VM on.".to_string())
-    );
 }
 
 #[test]

@@ -2229,6 +2229,9 @@ mod tests {
             json!({ "Authorization": { "secret": "WEB_KEY", "format": "Bearer {}" } })
         );
         assert!(body["transport"].get("command").is_none());
+        // A remote URL never sends a volume, even when the draft asked for one.
+        d.volume = true;
+        assert_eq!(d.patch_body()["storage"], json!({ "volume": false }));
     }
 
     #[test]
@@ -2393,14 +2396,6 @@ mod tests {
     }
 
     #[test]
-    fn mcp_wizard_a_remote_url_never_sends_a_volume() {
-        let mut d = Draft::blank();
-        d.http = true;
-        d.volume = true;
-        assert_eq!(d.patch_body()["storage"], json!({ "volume": false }));
-    }
-
-    #[test]
     fn mcp_wizard_own_rows_come_from_a_custom_servers_env() {
         let view: Value = serde_json::from_str(VIEW).unwrap();
         let st = State::new(Some(&view), None, &[]);
@@ -2411,18 +2406,6 @@ mod tests {
             .map(|r| (r.spec.name.as_str(), r.spec.secret))
             .collect();
         assert_eq!(rows, vec![("ROOT", false), ("TOKEN", true)]);
-    }
-
-    #[test]
-    fn mcp_wizard_own_row_names_follow_the_hub_rules() {
-        assert!(valid_own_name("GITHUB_TOKEN", false));
-        assert!(valid_own_name("_X", false));
-        assert!(!valid_own_name("github_token", false));
-        assert!(!valid_own_name("1TOKEN", false));
-        assert!(valid_own_name("Authorization", true));
-        assert!(valid_own_name("X-Api-Key", true));
-        assert!(!valid_own_name("Auth_Header", true));
-        assert!(!valid_own_name("", true));
     }
 
     #[test]
@@ -2488,7 +2471,15 @@ mod tests {
     }
 
     #[test]
-    fn mcp_wizard_id_and_secret_name_rules() {
+    fn mcp_wizard_names_follow_the_hub_rules() {
+        assert!(valid_own_name("GITHUB_TOKEN", false));
+        assert!(valid_own_name("_X", false));
+        assert!(!valid_own_name("github_token", false));
+        assert!(!valid_own_name("1TOKEN", false));
+        assert!(valid_own_name("Authorization", true));
+        assert!(valid_own_name("X-Api-Key", true));
+        assert!(!valid_own_name("Auth_Header", true));
+        assert!(!valid_own_name("", true));
         assert!(valid_id("fs"));
         assert!(valid_id("files-2"));
         assert!(!valid_id("1fs"));

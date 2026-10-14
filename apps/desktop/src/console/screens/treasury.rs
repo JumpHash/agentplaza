@@ -2856,10 +2856,11 @@ mod tests {
     }
 
     #[test]
-    fn money_groups_thousands() {
+    fn money_groups_thousands_and_shows_credits_in_tenths_of_a_cent() {
         assert_eq!(money(1_234_567.0), "1,234,567");
         assert_eq!(money(-1500.0), "-1,500");
         assert_eq!(money(0.4), "0");
+        assert_eq!(money(0.5 / CREDIT_USD), "500");
     }
 
     #[test]
@@ -2943,11 +2944,6 @@ mod tests {
         t.aim(100.0, t0);
         assert!(t.at(t0) < 1.0);
         assert_eq!(t.at(t0 + ANIM), 100.0);
-    }
-
-    #[test]
-    fn credits_are_a_tenth_of_a_cent() {
-        assert_eq!(money(0.5 / CREDIT_USD), "500");
     }
 
     #[test]
