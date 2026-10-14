@@ -8,3 +8,4 @@ publish = false
 
 [dependencies]
 apz-os = { path = "../apz-os" }
+serde_json = { workspace = true }

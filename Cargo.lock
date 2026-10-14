@@ -453,6 +453,7 @@ name = "apz-setup"
 version = "0.1.0"
 dependencies = [
  "apz-os",
+ "serde_json",
 ]
 
 [[package]]

@@ -13,7 +13,9 @@ use crate::ctx::{self, confirm, Client, Config, SavedHub};
 
 #[derive(Subcommand, Debug)]
 pub enum Cmd {
-    /// Sign in to a hub and save it (the first saved hub becomes the default).
+    /// Sign in to a hub and save it (the first saved hub becomes the default). Before the owner token
+    /// is sent, the hub's identity is checked: a pinned one must be the one it presents; on first use
+    /// its fingerprint is shown and asked about, then pinned.
     Login {
         /// The hub's URL, e.g. https://plaza.example:7700 (default: the local hub).
         url: Option<String>,
@@ -26,6 +28,9 @@ pub enum Cmd {
         /// A short name for it (default: its host).
         #[arg(long)]
         name: Option<String>,
+        /// Trust the hub's identity on first use without asking.
+        #[arg(long)]
+        yes: bool,
     },
     /// Forget a saved hub.
     Logout { name: String },
@@ -67,18 +72,44 @@ pub enum Cmd {
 pub fn run(cmd: Cmd, json_out: bool, hub: Option<String>, token: Option<String>, pin: Option<String>) -> Result<(), String> {
     let mut config = Config::load();
     match cmd {
-        Cmd::Login { url, token, pin, name } => {
+        Cmd::Login { url, token, pin, name, yes } => {
             let url = url.unwrap_or_else(|| ctx::LOCAL_HUB.to_string()).trim_end_matches('/').to_string();
             let token = token.or_else(|| (url == ctx::LOCAL_HUB).then(ctx::local_owner_token).flatten());
+            let name = name.unwrap_or_else(|| host_of(&url));
+            // The saved entry this sign-in writes, by name: its hex pin and pinned identity apply as
+            // `ctx::resolve` applies them, and a flag overrides the saved pin.
+            let saved = config.hubs.get(&name).cloned();
+            let pin = pin.or_else(|| saved.as_ref().and_then(|s| s.pin.clone()));
             let pin_bytes = pin.as_deref().map(ctx::parse_pin).transpose()?;
+            let pinned = ctx::pinned_identity(&Config::path(), &name);
+            // Checked before the owner token goes out.
+            let trust = check_identity(&name, pin_bytes.is_some(), pinned.as_deref(), || Client::new(&url, None, None).get("/v1/hub/identity"))?;
+            if let Trust::FirstUse { fingerprint, identity } = &trust {
+                if !json_out {
+                    let who = ctx::s(identity, "name");
+                    println!("{} {} at {url}", if who.is_empty() { "unnamed hub" } else { who }, ctx::s(identity, "version"));
+                    println!("certificate {fingerprint}");
+                }
+                if !confirm(yes, "Trust this identity? Later sign-ins refuse any other identity until the pin is forgotten.")? {
+                    println!("not signed in");
+                    return Ok(());
+                }
+            }
             let client = Client::new(&url, pin_bytes, token.clone());
             client.get("/v1/auth/check").map_err(|e| format!("{url} did not accept the sign-in: {e}"))?;
-            let name = name.unwrap_or_else(|| host_of(&url));
             config.hubs.insert(name.clone(), SavedHub { url: url.clone(), token, pin, mcp_token: None });
             if config.default.is_none() {
                 config.default = Some(name.clone());
             }
             config.save()?;
+            if let Trust::FirstUse { fingerprint, .. } = &trust {
+                // The entry `hub trust` writes: the saved hub's `pinned` fingerprint and the day.
+                let mut doc = load_doc();
+                if let Some(saved) = saved_hub(&mut doc, &name) {
+                    saved.insert("pinned".into(), json!({ "fingerprint": fingerprint, "since": utc_day(now_ms()) }));
+                }
+                save_doc(&doc)?;
+            }
             println!("signed in to {url} as `{name}`{}", if config.default.as_deref() == Some(&name) { " (default)" } else { "" });
         }
         Cmd::Logout { name } => {
@@ -211,6 +242,46 @@ pub fn run(cmd: Cmd, json_out: bool, hub: Option<String>, token: Option<String>,
     Ok(())
 }
 
+/// What `hub login` learns of the hub's identity before it sends the owner token.
+#[derive(Debug, PartialEq)]
+enum Trust {
+    /// A hex pin is in use: TLS checks the certificate against it before the token goes out.
+    Pin,
+    /// The hub presents the identity pinned for the saved hub.
+    Pinned,
+    /// Nothing is pinned yet: the identity is shown and asked about, then pinned.
+    FirstUse { fingerprint: String, identity: Value },
+    /// Nothing is pinned and the hub has no certificate to pin (it answers over plain HTTP).
+    Plain,
+}
+
+/// The identity check of `hub login`, as `ctx::resolve` makes it. A hex pin is checked by TLS and
+/// skips the identity call. A pinned identity must be the one the hub presents. With no pin, the
+/// presented identity is the one the user is asked to trust. `ask` fetches the identity (`GET
+/// /v1/hub/identity`, unauthenticated); its failure refuses the sign-in.
+fn check_identity(name: &str, hex_pin: bool, pinned: Option<&str>, ask: impl FnOnce() -> Result<Value, String>) -> Result<Trust, String> {
+    if hex_pin {
+        return Ok(Trust::Pin);
+    }
+    let identity = ask()?;
+    let presented = fingerprint_of(&identity);
+    match pinned {
+        Some(pinned) => {
+            ctx::compare_identity(name, pinned, presented.as_deref())?;
+            Ok(Trust::Pinned)
+        }
+        None => Ok(match presented {
+            Some(fingerprint) => Trust::FirstUse { fingerprint, identity },
+            None => Trust::Plain,
+        }),
+    }
+}
+
+/// The certificate fingerprint in a hub identity, when it has one.
+fn fingerprint_of(identity: &Value) -> Option<String> {
+    identity.get("fingerprint").and_then(Value::as_str).filter(|f| !f.is_empty()).map(str::to_string)
+}
+
 /// The saved hub a command means: the name it was given, else the global `--hub` (a saved name),
 /// else the default hub. An unsaved URL or no hub at all is an error.
 fn saved_name(config: &Config, named: Option<String>, flag: Option<String>) -> Result<String, String> {
@@ -303,6 +374,42 @@ mod tests {
         assert_eq!(utc_day(0), "1970-01-01");
         assert_eq!(utc_day(1_791_811_353_718), "2026-10-12");
         assert_eq!(utc_day(1_791_811_353_718 + 86_400_000), "2026-10-13");
+    }
+
+    #[test]
+    fn a_hex_pin_skips_the_identity_call() {
+        let trust = check_identity("home", true, Some("fp-a"), || -> Result<Value, String> { panic!("the identity is not asked for") });
+        assert_eq!(trust, Ok(Trust::Pin));
+    }
+
+    #[test]
+    fn a_pinned_identity_must_be_the_one_presented() {
+        assert_eq!(check_identity("home", false, Some("fp-a"), || Ok(json!({ "fingerprint": "fp-a" }))), Ok(Trust::Pinned));
+        let other = check_identity("home", false, Some("fp-a"), || Ok(json!({ "fingerprint": "fp-b" }))).unwrap_err();
+        assert_eq!(
+            other,
+            "the hub's identity changed: pinned fp-a, presented fp-b; run `agentplaza hub forget-pin home` if you expect this"
+        );
+        let none = check_identity("home", false, Some("fp-a"), || Ok(json!({ "name": "home" }))).unwrap_err();
+        assert!(none.contains("presented no certificate"), "{none}");
+    }
+
+    #[test]
+    fn a_first_sign_in_asks_about_the_presented_identity() {
+        let identity = json!({ "fingerprint": "fp-a", "name": "home", "version": "0.0.8" });
+        let trust = check_identity("home", false, None, || Ok(identity.clone())).unwrap();
+        assert_eq!(trust, Trust::FirstUse { fingerprint: "fp-a".into(), identity });
+    }
+
+    #[test]
+    fn a_hub_without_a_certificate_has_nothing_to_pin() {
+        assert_eq!(check_identity("local", false, None, || Ok(json!({ "name": "local" }))), Ok(Trust::Plain));
+    }
+
+    #[test]
+    fn an_identity_that_cannot_be_read_refuses_the_sign_in() {
+        assert_eq!(check_identity("home", false, Some("fp-a"), || Err("connection refused".into())), Err("connection refused".to_string()));
+        assert_eq!(check_identity("home", false, None, || Err("connection refused".into())), Err("connection refused".to_string()));
     }
 
     #[test]

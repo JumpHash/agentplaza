@@ -8,12 +8,15 @@
 //! - `docker`: installing Docker and starting its daemon, per platform.
 //! - `provision`: the Postgres, Forgejo and Garage containers, and their settings in apid's `keys.env`.
 //! - `runner`: the commands and files of the above, behind [`Runner`] so tests can mock them.
+//! - `node`: the node's service plan (apz-link, vsockd, noded) and the running-process check, shared
+//!   by the desktop app and the CLI so neither starts a second set.
 //!
 //! Nothing here runs without the user asking: `fix` is called only from the user's click or a
 //! confirmed command.
 
 mod checks;
 mod docker;
+pub mod node;
 mod provision;
 mod runner;
 

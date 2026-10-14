@@ -7,6 +7,8 @@ use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use apz_setup::node::{self, cid_list, find_pids, repo_dir, resource, Layout};
+
 /// One local service and its state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Service {
@@ -127,7 +129,7 @@ pub fn node_status() -> NodeStatus {
     let field = |key: &str| node.as_ref().and_then(|n| n.get(key));
     let text = |key: &str| field(key).and_then(|v| v.as_str()).unwrap_or_default().to_string();
     let cids = match (field("cid_base").and_then(|v| v.as_u64()), field("cid_count").and_then(|v| v.as_u64())) {
-        (Some(base), Some(count)) if count > 0 => cid_range(base, count),
+        (Some(base), Some(count)) if count > 0 => node::cid_range(base, count),
         _ => String::new(),
     };
     let pids = find_pids("apz-link");
@@ -142,7 +144,7 @@ pub fn node_status() -> NodeStatus {
 }
 
 fn start_with(mode: Mode, hub: Option<(&str, &str)>) -> Result<Vec<String>, String> {
-    if mode == Mode::Node && node_identity().is_none() {
+    if mode == Mode::Node && node::identity().is_none() {
         return Err("join a hub first".into());
     }
     Ok(plan(mode, hub).iter().map(start_one).collect())
@@ -151,7 +153,7 @@ fn start_with(mode: Mode, hub: Option<(&str, &str)>) -> Result<Vec<String>, Stri
 /// The services of `mode` in start order. `hub` adds the public bind arguments to apid.
 fn plan(mode: Mode, hub: Option<(&str, &str)>) -> Vec<Svc> {
     if mode == Mode::Node {
-        let (base, count) = node_identity().unwrap_or((0, 0));
+        let (base, count) = node::identity().unwrap_or((0, 0));
         return node_plan(base, count);
     }
     let roles = path_arg(&resource("roles/initial-roles.json", "docs/agents/initial-roles.json"));
@@ -212,68 +214,21 @@ fn plan(mode: Mode, hub: Option<(&str, &str)>) -> Vec<Svc> {
     ]
 }
 
-/// The node's services: apz-link forwards to the hub, vsockd and noded serve the node's CIDs.
+/// The node's services, from the plan both apps share (`apz_setup::node::plan`): apz-link forwards to
+/// the hub, vsockd and noded serve the node's CIDs. Each binary is found beside this app.
 fn node_plan(base: u64, count: u64) -> Vec<Svc> {
-    let roles = path_arg(&resource("roles/initial-roles.json", "docs/agents/initial-roles.json"));
-    let token = path_arg(&data_dir().join("node/internal-token"));
-    let cids = cid_list(base, count);
-    let run = cid_range(base, count);
-    vec![
-        Svc {
-            name: "apz-link",
-            how: How::Process {
-                bin: bin_path("apz-link"),
-                args: argv(&["run", "--noded", "8899", "--vsockd", "19080", "--forward", "7701"]),
-                env: None,
-            },
-        },
-        Svc {
-            name: "vsockd",
-            how: How::Process {
-                bin: bin_path("vsockd"),
-                args: argv(&[
-                    "--uds-dir", &uds_dir(), "--cids", &cids, "--port", "5000", "--http-port",
-                    "19080", "--apid", "http://127.0.0.1:7701", "--internal-token-file", &token,
-                ]),
-                env: None,
-            },
-        },
-        Svc {
-            name: "noded",
-            how: How::Process {
-                bin: bin_path("noded"),
-                args: argv(&[
-                    "--port", "8899", "--uds-dir", &uds_dir(), "--agents", &roles, "--run-cids", &run,
-                ]),
-                // The per-VM process mode and its jailer are Linux-only.
-                env: if cfg!(target_os = "linux") { Some(("APZ_VMM_SPAWN", "process")) } else { None },
-            },
-        },
-    ]
+    node::plan(base, count, &Layout::current())
+        .into_iter()
+        .map(|process| Svc {
+            name: process.name,
+            how: How::Process { bin: bin_path(process.name), args: process.args, env: process.env },
+        })
+        .collect()
 }
 
 /// The CIDs of the local hub's agents: 20 through 130.
 fn local_cids() -> String {
     cid_list(20, 111)
-}
-
-/// `base, base+1, …, base+count-1` as a comma list (`vsockd --cids`).
-fn cid_list(base: u64, count: u64) -> String {
-    (base..base + count).map(|cid| cid.to_string()).collect::<Vec<_>>().join(",")
-}
-
-/// `A-B` (`noded --run-cids`) for `count` CIDs from `base`.
-fn cid_range(base: u64, count: u64) -> String {
-    format!("{}-{}", base, base + count.saturating_sub(1))
-}
-
-/// The CID range this node was given when it joined: (`cid_base`, `cid_count`).
-fn node_identity() -> Option<(u64, u64)> {
-    let text = fs::read_to_string(data_dir().join("node/node.json")).ok()?;
-    let node: serde_json::Value = serde_json::from_str(&text).ok()?;
-    let base = node.get("cid_base")?.as_u64()?;
-    let count = node.get("cid_count")?.as_u64()?;
-    (count > 0).then_some((base, count))
 }
 
 /// Garage is the Library's file store: optional, so a machine without it is not "missing".
@@ -366,13 +321,11 @@ fn signal(pid: u32) -> bool {
 
 /// Starts a detached process: stdin closed, output appended to its log, its own process group.
 fn spawn(name: &str, bin: &Path, args: &[String], env: Option<(&str, &str)>) -> Result<u32, String> {
-    let logs = state_dir().join("logs");
-    fs::create_dir_all(&logs).map_err(|e| e.to_string())?;
-    let log = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(logs.join(format!("{name}.log")))
-        .map_err(|e| e.to_string())?;
+    let log_path = node::log_file(name);
+    if let Some(dir) = log_path.parent() {
+        fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    let log = OpenOptions::new().create(true).append(true).open(&log_path).map_err(|e| e.to_string())?;
     let errors = log.try_clone().map_err(|e| e.to_string())?;
     let mut cmd = Command::new(bin);
     cmd.args(args).stdin(Stdio::null()).stdout(Stdio::from(log)).stderr(Stdio::from(errors));
@@ -402,58 +355,6 @@ fn container_state(name: &str) -> &'static str {
     }
 }
 
-/// The pids whose argv[0] is `name` or ends in `/<name>`, found by scanning /proc (Linux).
-#[cfg(target_os = "linux")]
-fn find_pids(name: &str) -> Vec<u32> {
-    let Ok(entries) = fs::read_dir("/proc") else {
-        return Vec::new();
-    };
-    let suffix = format!("/{name}");
-    let mut pids: Vec<u32> = entries
-        .flatten()
-        .filter_map(|entry| {
-            let pid: u32 = entry.file_name().to_str()?.parse().ok()?;
-            let cmdline = fs::read(entry.path().join("cmdline")).ok()?;
-            let argv0 = cmdline.split(|b| *b == 0).next()?;
-            let argv0 = std::str::from_utf8(argv0).ok()?;
-            (argv0 == name || argv0.ends_with(&suffix)).then_some(pid)
-        })
-        .collect();
-    pids.sort_unstable();
-    pids
-}
-
-/// The pids of processes named exactly `name`: `pgrep -x` (macOS and the BSDs).
-#[cfg(all(unix, not(target_os = "linux")))]
-fn find_pids(name: &str) -> Vec<u32> {
-    let Ok(out) = Command::new("pgrep").args(["-x", name]).stdin(Stdio::null()).output() else {
-        return Vec::new();
-    };
-    let mut pids: Vec<u32> = String::from_utf8_lossy(&out.stdout).lines().filter_map(|l| l.trim().parse().ok()).collect();
-    pids.sort_unstable();
-    pids
-}
-
-/// The pids of `<name>.exe` processes: `tasklist` as CSV ("image","pid",…), Windows.
-#[cfg(windows)]
-fn find_pids(name: &str) -> Vec<u32> {
-    let image = apz_os::process::exe(name);
-    let filter = format!("IMAGENAME eq {image}");
-    let Ok(out) = Command::new("tasklist").args(["/FI", &filter, "/FO", "CSV", "/NH"]).stdin(Stdio::null()).output() else {
-        return Vec::new();
-    };
-    let mut pids: Vec<u32> = String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .filter_map(|line| {
-            let mut fields = line.split("\",\"");
-            let first = fields.next()?.trim_start_matches('"');
-            first.eq_ignore_ascii_case(&image).then(|| fields.next()?.trim_end_matches('"').parse().ok())?
-        })
-        .collect();
-    pids.sort_unstable();
-    pids
-}
-
 /// The first line of `apz-link join` stdout: "joined <hub> as <node id> (agents …)".
 fn parse_join_output(text: &str) -> Option<String> {
     text.lines().find_map(|line| {
@@ -471,29 +372,6 @@ fn state_dir() -> PathBuf {
 /// The plaza's data directory (`apz_os::dirs::data`).
 fn data_dir() -> PathBuf {
     apz_os::dirs::data()
-}
-
-/// The repository: `APZ_REPO`, or the directory three levels above this executable.
-fn repo_dir() -> PathBuf {
-    match env::var_os("APZ_REPO").filter(|v| !v.is_empty()) {
-        Some(repo) => PathBuf::from(repo),
-        None => env::current_exe()
-            .ok()
-            .and_then(|exe| exe.ancestors().nth(3).map(Path::to_path_buf))
-            .unwrap_or_default(),
-    }
-}
-
-/// A data file or directory of the app: under the installed resources (`apz_os::dirs::resources`)
-/// when it is there (the packaged app), else under the source repository (development).
-fn resource(rel_in_share: &str, rel_in_repo: &str) -> PathBuf {
-    if let Some(share) = apz_os::dirs::resources() {
-        let path = share.join(rel_in_share);
-        if path.exists() {
-            return path;
-        }
-    }
-    repo_dir().join(rel_in_repo)
 }
 
 /// The service binary `name`: beside this executable (the app ships its services next to itself),
