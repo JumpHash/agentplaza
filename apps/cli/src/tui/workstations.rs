@@ -2,8 +2,12 @@
 //! stations list` reads), one of them selected, and its detail as `agentplaza stations show` prints it: the
 //! machine's facts, its settings with the takeover policy and its leases in queue order. Beside them, the work
 //! folder's sync (a paused banner, the conflicts) and the recent recordings (`agentplaza stations sync` and
-//! `recordings`). Read-only; the tab refreshes on the hub's station, lease, takeover and sync events. Declared from
-//! `app.rs`, which reads the selected workstation's sync and recordings.
+//! `recordings`). The tab refreshes on the hub's station, lease, takeover and sync events. `T` takes over the selected
+//! station's shared session: a panel under the list takes the commands of `agentplaza stations take` in a line
+//! (Enter sends it, Esc gives the session back). Declared from `app.rs`, which reads the selected workstation's sync
+//! and recordings and holds the panel.
+
+use std::sync::mpsc::Sender;
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -14,12 +18,57 @@ use serde_json::Value;
 
 use super::App;
 use crate::cmd::stations;
+use crate::cmd::stations::control;
 use crate::cmd::stations::{files, recordings};
 
 /// Conflicts listed in the detail before the rest are counted.
 const CONFLICTS_SHOWN: usize = 3;
+/// The takeover panel's height: its border, and the rows of what the takeover has reported.
+const PANEL_ROWS: u16 = 5;
+/// The reports a takeover panel keeps.
+const PANEL_LOG: usize = 50;
+
+/// A takeover of the selected workstation's session, open on the Workstations tab: the line being typed, the orders
+/// to the takeover's thread, and what the thread has reported.
+pub struct Panel {
+    /// The panel's number: its thread's reports carry it, so a closed panel's late reports are not shown.
+    pub number: u64,
+    pub station: String,
+    /// The line being typed (the commands; Enter sends it).
+    pub line: String,
+    pub log: Vec<String>,
+    pub orders: Sender<control::Order>,
+}
+
+impl Panel {
+    pub fn new(number: u64, station: String, orders: Sender<control::Order>) -> Panel {
+        Panel {
+            number,
+            station,
+            line: String::new(),
+            log: Vec::new(),
+            orders,
+        }
+    }
+
+    /// Adds a report, keeping the newest `PANEL_LOG`.
+    pub fn push(&mut self, text: String) {
+        self.log.push(text);
+        if self.log.len() > PANEL_LOG {
+            self.log.remove(0);
+        }
+    }
+}
 
 pub fn render(frame: &mut Frame, area: Rect, app: &App) {
+    let area = match &app.desk {
+        Some(panel) => {
+            let [main, takeover] = Layout::vertical([Constraint::Min(0), Constraint::Length(PANEL_ROWS)]).areas(area);
+            takeover_log(frame, takeover, app, panel);
+            main
+        }
+        None => area,
+    };
     let [list, detail] = Layout::vertical([Constraint::Min(5), Constraint::Length(28)]).areas(area);
     table(frame, list, app);
     details(frame, detail, app);
@@ -91,6 +140,20 @@ fn details(frame: &mut Frame, area: Rect, app: &App) {
         settings_area,
     );
     sync_and_recordings(frame, sync_area, app, station);
+}
+
+/// The takeover panel's border, with the newest reports in it (the prompt is the footer's line).
+fn takeover_log(frame: &mut Frame, area: Rect, app: &App, panel: &Panel) {
+    let palette = app.palette;
+    let shown = (PANEL_ROWS as usize).saturating_sub(2);
+    let lines: Vec<Line> = if panel.log.is_empty() {
+        vec![Line::from(Span::styled("taking the session", Style::new().fg(palette.muted)))]
+    } else {
+        let from = panel.log.len().saturating_sub(shown);
+        panel.log[from..].iter().map(|text| Line::raw(text.clone())).collect()
+    };
+    let title = format!(" takeover · {} ", panel.station);
+    frame.render_widget(Paragraph::new(lines).block(Block::bordered().title(title)), area);
 }
 
 /// The work folder's sync (its paused banner, its state and its conflicts) and the recent recordings.

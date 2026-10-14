@@ -178,6 +178,12 @@ pub fn footer(frame: &mut Frame, area: Rect, app: &App) {
             Span::raw(format!("{draft}_")),
             Span::styled("   Enter sends · Esc cancels", Style::new().fg(palette.muted)),
         ])
+    } else if let Some(panel) = &app.desk {
+        Line::from(vec![
+            Span::styled(format!(" takeover of {} · ", panel.station), Style::new().fg(palette.accent)),
+            Span::raw(format!("> {}_", panel.line)),
+            Span::styled("   Enter sends · give-back or Esc gives the session back", Style::new().fg(palette.muted)),
+        ])
     } else if let Some(error) = &app.error {
         Line::from(Span::styled(format!(" hub unreachable: {error}"), Style::new().fg(palette.accent)))
     } else if let Some(notice) = &app.notice {
@@ -185,6 +191,11 @@ pub fn footer(frame: &mut Frame, area: Rect, app: &App) {
     } else if app.tab == Tab::Workspace {
         Line::from(Span::styled(
             " Tab pane · ↑↓ move · / filter · i steer · p post · P pause · E export · o IDE · Enter expand · 0-9 tabs · q quit",
+            Style::new().fg(palette.muted),
+        ))
+    } else if app.tab == Tab::Workstations {
+        Line::from(Span::styled(
+            " 1-9,0,w tabs · Tab next · ↑↓ move · T take over · r refresh · ? tour · q quit",
             Style::new().fg(palette.muted),
         ))
     } else {

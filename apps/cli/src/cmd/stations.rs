@@ -1,12 +1,14 @@
 //! `agentplaza stations`: the workstations enrolled on the hub (docs/design/workstations.md, section 7): the
 //! list and one station, rename, drain, revoke, join codes, leases, the settings with the takeover policy and the
 //! hourly rate, the station audit, the recordings, the work folder's sync and files, and the live screen (a
-//! screenshot, a watch). The submodules hold the last four; the machine's own side (`agentplaza workstation join`)
-//! is not here.
+//! screenshot, a watch), the owner's takeover of a session from the terminal (`take`, `input`) and the workstation
+//! VMs (`vms`). The submodules hold most of those; the machine's own side (`agentplaza workstation join`) is not here.
 
+pub mod control;
 pub mod files;
 pub mod recordings;
 pub mod screen;
+pub mod vms;
 
 use std::path::PathBuf;
 
@@ -140,6 +142,33 @@ pub enum Cmd {
         /// A folder to save every frame into.
         #[arg(long, value_name = "DIR")]
         save: Option<PathBuf>,
+    },
+    /// Take over a session: the station's policy applies to the agent meanwhile. Then the commands on stdin, one a line:
+    /// click X Y [left|right|middle] [double], move X Y, type TEXT, key CHORD, scroll DX DY [X Y] (positive DY scrolls
+    /// down), drag X1 Y1 X2 Y2, give-back. Give-back or the end of input gives the session back.
+    Take {
+        /// The station's id.
+        id: String,
+        /// The session: a number, or shared (the station's own screen).
+        #[arg(long, default_value = screen::DEFAULT_SESSION)]
+        session: String,
+    },
+    /// One input on a session: take it, do the command (the words of `take`'s commands), and give it back. For example
+    /// `input w1 click 640 360 right`, or `input w1 key ctrl+s`.
+    Input {
+        /// The station's id.
+        id: String,
+        /// The session: a number, or shared (the station's own screen).
+        #[arg(long, default_value = screen::DEFAULT_SESSION)]
+        session: String,
+        /// The command and its arguments.
+        #[arg(required = true, num_args = 1.., allow_hyphen_values = true, trailing_var_arg = true)]
+        command: Vec<String>,
+    },
+    /// The workstation VMs the plaza makes on its nodes. Without an action: the list. `vms create` and `vms delete`.
+    Vms {
+        #[command(subcommand)]
+        action: Option<vms::VmsCmd>,
     },
 }
 
@@ -380,6 +409,9 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             screen::check_fps(fps)?;
             screen::watch(ctx, &id, &session, fps, save.as_deref())?;
         }
+        Cmd::Take { id, session } => control::take(ctx, &id, &session)?,
+        Cmd::Input { id, session, command } => control::input(ctx, &id, &session, &command.join(" "))?,
+        Cmd::Vms { action } => vms::run(ctx, action)?,
     }
     Ok(())
 }

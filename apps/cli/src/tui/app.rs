@@ -27,6 +27,7 @@ use super::screens;
 use super::workspace::{self, Effect, Got, Want, Workspace};
 use super::workspace_view;
 use crate::cmd;
+use crate::cmd::stations::control;
 use crate::ctx::{Client, Config, seg};
 
 // The Machines and Workstations tabs' modules sit beside this file (the tui module lists its own modules).
@@ -230,6 +231,8 @@ enum Msg {
     Fetched(&'static str, Result<Value, String>),
     /// The selected workstation's sync state (`"sync"`) or its recent recordings (`"recordings"`).
     Station(String, &'static str, Result<Value, String>),
+    /// What the takeover panel (by its number) reports: a line, a refused command, or that it is over.
+    Desk(u64, control::Report),
     Link(bool),
     Event(String, Value),
     Done(String, Result<Value, String>),
@@ -262,6 +265,10 @@ pub struct App {
     pub station_sync: HashMap<String, Value>,
     /// The recent recordings of each workstation the Workstations tab has read, by id.
     pub station_recent: HashMap<String, Value>,
+    /// The takeover panel of the Workstations tab, while one is open (`T` opens it, Esc gives the session back).
+    pub desk: Option<workstations::Panel>,
+    /// The number the next takeover panel gets: a report of an earlier panel is not shown in a later one.
+    desk_seq: u64,
     /// The Workspace tab's state (the agents by project, the chat, the board).
     pub ws: Workspace,
     rx: Receiver<Msg>,
@@ -303,6 +310,8 @@ impl App {
             onboarding: None,
             station_sync: HashMap::new(),
             station_recent: HashMap::new(),
+            desk: None,
+            desk_seq: 0,
             ws: Workspace::default(),
             rx,
             tx,
@@ -473,6 +482,7 @@ impl App {
                     self.station_recent.insert(id, value);
                 }
                 Msg::Station(id, _, Err(e)) => self.error = Some(format!("/v1/stations/{id}: {e}")),
+                Msg::Desk(number, report) => self.on_desk_report(number, report),
                 Msg::Facts(facts) => {
                     if let Some(ob) = self.onboarding.as_mut() {
                         ob.facts = Some(facts);
@@ -607,7 +617,8 @@ impl App {
             return false;
         }
         let typing = self.tab == Tab::Workspace && self.ws.captures_keys();
-        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') && !typing {
+        // With a takeover panel open, Ctrl+C gives the session back rather than quitting (the panel takes it below).
+        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') && !typing && self.desk.is_none() {
             if self.draft.is_none() {
                 return true;
             }
@@ -617,6 +628,10 @@ impl App {
         self.notice = None;
         if self.onboarding.is_some() {
             self.on_onboarding_key(key.code);
+            return false;
+        }
+        if self.desk.is_some() {
+            self.on_desk_key(key);
             return false;
         }
         if self.draft.is_some() {
@@ -656,6 +671,7 @@ impl App {
                 }
             }
             KeyCode::Char('t') => self.start_draft(),
+            KeyCode::Char('T') => self.open_desk(),
             KeyCode::Char('?') => self.begin(Stage::Tour(0)),
             KeyCode::Char('a') => self.ask_decision(true),
             KeyCode::Char('d') => self.ask_decision(false),
@@ -730,6 +746,93 @@ impl App {
                 self.draft = Some((cid, text));
             }
             _ => self.draft = Some((cid, text)),
+        }
+    }
+
+    /// Opens the takeover panel on the selected workstation: a thread takes its shared session and does the panel's
+    /// lines. Only on the Workstations tab.
+    fn open_desk(&mut self) {
+        if self.tab != Tab::Workstations {
+            return;
+        }
+        let Some(station) = self
+            .array("/v1/stations")
+            .get(self.selected)
+            .and_then(|s| s.get("id"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+        else {
+            return;
+        };
+        self.desk_seq += 1;
+        let number = self.desk_seq;
+        let (orders, rx) = mpsc::channel();
+        let target = self.client.target.clone();
+        let tx = self.tx.clone();
+        let taking = station.clone();
+        thread::spawn(move || {
+            let say = |report: control::Report| {
+                let _ = tx.send(Msg::Desk(number, report));
+            };
+            control::run_panel(&target, &taking, cmd::stations::screen::DEFAULT_SESSION, &rx, &say);
+        });
+        self.desk = Some(workstations::Panel::new(number, station, orders));
+    }
+
+    /// A report of the takeover panel with that number. Its end closes the panel, unless it is already closed.
+    fn on_desk_report(&mut self, number: u64, report: control::Report) {
+        if self.desk.as_ref().is_none_or(|panel| panel.number != number) {
+            return;
+        }
+        match report {
+            control::Report::Line(text) => self.desk_push(text),
+            control::Report::Refused(text) => self.desk_push(format!("refused: {text}")),
+            control::Report::Ended => {
+                self.desk = None;
+                self.notice = Some("the takeover is over".to_string());
+            }
+        }
+    }
+
+    fn desk_push(&mut self, text: String) {
+        if let Some(panel) = self.desk.as_mut() {
+            panel.push(text);
+        }
+    }
+
+    /// The takeover panel takes the keys: the line being typed; Enter sends it (`give-back` gives the session back);
+    /// Esc or Ctrl+C gives the session back.
+    fn on_desk_key(&mut self, key: KeyEvent) {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        if key.code == KeyCode::Esc || (ctrl && key.code == KeyCode::Char('c')) {
+            self.close_desk();
+            return;
+        }
+        let Some(panel) = self.desk.as_mut() else { return };
+        match key.code {
+            KeyCode::Enter => {
+                let line = std::mem::take(&mut panel.line);
+                let text = line.trim().to_string();
+                if text == "give-back" || text == "give_back" {
+                    self.close_desk();
+                } else if !text.is_empty() {
+                    panel.push(format!("> {text}"));
+                    let _ = panel.orders.send(control::Order::Line(line));
+                }
+            }
+            KeyCode::Backspace => {
+                panel.line.pop();
+            }
+            KeyCode::Char(c) if !ctrl => panel.line.push(c),
+            _ => {}
+        }
+    }
+
+    /// Gives the session back: the takeover's thread does it, and its end is ignored once the panel is gone.
+    fn close_desk(&mut self) {
+        if let Some(panel) = self.desk.take() {
+            let _ = panel.orders.send(control::Order::GiveBack);
+            self.notice = Some(format!("giving {} back", panel.station));
         }
     }
 

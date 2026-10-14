@@ -642,3 +642,79 @@ fn settings_read_the_takeover_in_its_flag_spelling() {
     assert_eq!(fields[2], ("retention", "30 days".to_string()));
     assert_eq!(takeover_word("keep_working_pointer_paused"), "keep-working");
 }
+
+#[test]
+fn take_and_input_parse_with_the_shared_session_by_default() {
+    let Cmd::Take { id, session } = parsed(&["take", "w1"]) else {
+        panic!("take")
+    };
+    assert_eq!((id.as_str(), session.as_str()), ("w1", "shared"));
+    let Cmd::Take { session, .. } = parsed(&["take", "w1", "--session", "7"]) else {
+        panic!("take --session")
+    };
+    assert_eq!(session, "7");
+}
+
+#[test]
+fn input_takes_its_command_words_including_negative_numbers() {
+    let Cmd::Input { id, session, command } = parsed(&["input", "w1", "scroll", "0", "-3", "10", "20"]) else {
+        panic!("input scroll")
+    };
+    assert_eq!((id.as_str(), session.as_str()), ("w1", "shared"));
+    assert_eq!(command, ["scroll", "0", "-3", "10", "20"]);
+    let Cmd::Input { command, .. } = parsed(&["input", "w1", "--session", "3", "type", "hello world"]) else {
+        panic!("input type")
+    };
+    assert_eq!(command, ["type", "hello world"]);
+    assert!(parse(&["input", "w1"]).is_err(), "a command is required");
+}
+
+#[test]
+fn vms_parse_with_the_list_as_the_default() {
+    assert!(matches!(parsed(&["vms"]), Cmd::Vms { action: None }));
+    assert!(matches!(
+        parsed(&["vms", "list"]),
+        Cmd::Vms {
+            action: Some(vms::VmsCmd::List)
+        }
+    ));
+    let Cmd::Vms {
+        action: Some(vms::VmsCmd::Delete { id, yes }),
+    } = parsed(&["vms", "delete", "v3", "--yes"])
+    else {
+        panic!("vms delete")
+    };
+    assert_eq!((id.as_str(), yes), ("v3", true));
+}
+
+#[test]
+fn vms_create_takes_the_name_and_its_sizes_and_defaults_the_os_and_backend() {
+    let Cmd::Vms {
+        action: Some(vms::VmsCmd::Create(args)),
+    } = parsed(&["vms", "create", "desk-1", "--node", "n1", "--cpus", "4", "--ram-mb", "8192", "--disk-gb", "40"])
+    else {
+        panic!("vms create")
+    };
+    assert_eq!(args.name, "desk-1");
+    assert_eq!(args.node, "n1");
+    assert_eq!(args.os, vms::OsArg::Linux);
+    assert_eq!(args.backend, vms::BackendArg::Auto);
+    assert_eq!((args.cpus, args.ram_mb, args.disk_gb), (4, 8192, 40));
+    assert_eq!((args.gpu, args.image), (None, None));
+
+    let Cmd::Vms {
+        action: Some(vms::VmsCmd::Create(args)),
+    } = parsed(&[
+        "vms", "create", "win-1", "--node", "n2", "--os", "windows", "--cpus", "4", "--ram-mb", "8192", "--disk-gb", "80",
+        "--image", "/srv/win.img", "--gpu", "vfio:0000:01:00.0", "--backend", "qemu",
+    ])
+    else {
+        panic!("vms create windows")
+    };
+    assert_eq!(args.os, vms::OsArg::Windows);
+    assert_eq!(args.backend, vms::BackendArg::Qemu);
+    assert_eq!(args.image.as_deref(), Some("/srv/win.img"));
+    assert_eq!(args.gpu.as_deref(), Some("vfio:0000:01:00.0"));
+    assert!(parse(&["vms", "create", "x", "--node", "n1", "--cpus", "2", "--ram-mb", "4096"]).is_err(), "disk is required");
+    assert!(parse(&["vms", "create", "x", "--node", "n1", "--cpus", "2", "--ram-mb", "4096", "--disk-gb", "8", "--os", "beos"]).is_err());
+}
