@@ -20,6 +20,7 @@ pub mod plaza;
 pub mod projects;
 pub mod setup;
 pub mod rules;
+pub mod sanctions;
 pub mod society;
 pub mod tasks;
 pub mod tools;

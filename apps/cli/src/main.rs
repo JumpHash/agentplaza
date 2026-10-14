@@ -70,6 +70,9 @@ enum Command {
     /// The plaza's laws.
     #[command(subcommand)]
     Rules(cmd::rules::Cmd),
+    /// Sanctions: what the laws' violations drew, and lifting a tool suspension.
+    #[command(subcommand)]
+    Sanctions(cmd::sanctions::Cmd),
     /// The vault: the hub's encrypted secrets, scoped to nodes and bound to what uses them.
     #[command(subcommand)]
     Vault(cmd::vault::Cmd),
@@ -155,6 +158,7 @@ fn run(cli: Cli) -> Result<(), String> {
         Command::Treasury(c) => cmd::treasury::run(&ctx, c),
         Command::Usage(c) => cmd::usage::run(&ctx, c),
         Command::Rules(c) => cmd::rules::run(&ctx, c),
+        Command::Sanctions(c) => cmd::sanctions::run(&ctx, c),
         Command::Vault(c) => cmd::vault::run(&ctx, c),
         Command::Models(c) => cmd::models::run(&ctx, c),
         Command::Tools(c) => cmd::tools::run(&ctx, c),
