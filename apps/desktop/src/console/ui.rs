@@ -210,6 +210,8 @@ pub enum Kind {
     Ghost,
     /// Irreversible: solid crit.
     Danger,
+    /// A stop or a cancel: crit in an outline, quiet at rest and tinted under the pointer.
+    DangerOutline,
 }
 
 /// A mono uppercase button with an optional leading icon.
@@ -227,6 +229,7 @@ fn sized_btn<'a, M: Clone + 'a>(label_text: &str, icon_name: Option<&str>, kind:
     let fg = match kind {
         Kind::Primary => crate::theme::palette().on_signal,
         Kind::Danger => Color::WHITE,
+        Kind::DangerOutline => crate::theme::palette().crit,
         _ => crate::theme::palette().ink,
     };
     let mut inner = row![].spacing(6).align_y(Alignment::Center);
@@ -240,6 +243,7 @@ fn sized_btn<'a, M: Clone + 'a>(label_text: &str, icon_name: Option<&str>, kind:
         let (bg, border) = match kind {
             Kind::Primary => (Some(if hovered { crate::theme::palette().signal_ink } else { crate::theme::palette().signal }), crate::theme::palette().signal),
             Kind::Danger => (Some(crate::theme::palette().crit), crate::theme::palette().ink),
+            Kind::DangerOutline => (if hovered { Some(Color { a: 0.12, ..crate::theme::palette().crit }) } else { None }, crate::theme::palette().crit),
             Kind::Secondary => (if hovered { Some(crate::theme::palette().hover) } else { None }, crate::theme::palette().ink),
             Kind::Ghost => (if hovered { Some(crate::theme::palette().hover) } else { None }, Color::TRANSPARENT),
         };

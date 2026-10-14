@@ -2,6 +2,10 @@
 //! types. Up and Down move the cursor, Enter runs the item under it, Escape closes it. The items say what they
 //! do; `update` runs the one picked.
 
+// The IDE's own helpers and state, for the messages this area takes (moved from `ide.rs`).
+use super::ide_palette;
+use crate::console::Ctx;
+use iced::Task;
 use std::sync::LazyLock;
 
 use iced::widget::{button, column, container, text_input};
@@ -162,6 +166,51 @@ pub fn view(st: &State) -> Element<'_, Msg> {
         .align_x(iced::alignment::Horizontal::Center)
         .style(theme::scrim)
         .into()
+}
+
+// ---- The messages the IDE hands to this area (moved from `ide.rs`'s `update`) ----------------------
+
+/// Whether a message is this area's: `update` below takes it, and `ide.rs` hands it over.
+pub(super) fn handles(msg: &Msg) -> bool {
+    matches!(msg, Msg::PaletteOpen | Msg::PaletteQuery(..) | Msg::PaletteMove(..) | Msg::PaletteRun(..) | Msg::PaletteClose)
+}
+
+/// The area's messages: the state they change, and the tasks they start. See `handles`.
+pub(super) fn update(st: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
+    match msg {
+        Msg::PaletteOpen => {
+            st.palette = Some(ide_palette::Palette::default());
+            iced::widget::operation::focus(ide_palette::ID.clone())
+        }
+        Msg::PaletteQuery(query) => {
+            if let Some(palette) = st.palette.as_mut() {
+                palette.query = query;
+                palette.cursor = 0;
+            }
+            Task::none()
+        }
+        Msg::PaletteMove(step) => {
+            let count = ide_palette::filtered(st).len();
+            if let Some(palette) = st.palette.as_mut() {
+                let next = palette.cursor as i64 + i64::from(step);
+                palette.cursor = next.clamp(0, count.saturating_sub(1) as i64) as usize;
+            }
+            Task::none()
+        }
+        Msg::PaletteRun(index) => {
+            let picked = ide_palette::filtered(st).into_iter().nth(index);
+            st.palette = None;
+            match picked {
+                Some(item) => super::ide::update(st, item.run, ctx),
+                None => Task::none(),
+            }
+        }
+        Msg::PaletteClose => {
+            st.palette = None;
+            Task::none()
+        }
+        _ => Task::none(),
+    }
 }
 
 #[cfg(test)]

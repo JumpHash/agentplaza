@@ -15,13 +15,14 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use iced::font::{self, Font};
+use iced::widget::text::Wrapping;
 use iced::widget::{button, column, container, pick_list, row, text, text_editor, text_input};
 use iced::{Alignment, Border, Element, Length, Padding, Task, Theme};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
 use super::Id;
-use crate::console::{client, ui, Ctx};
+use crate::console::{client, rich, ui, Ctx};
 use crate::theme::SANS;
 
 const SANS_SEMIBOLD: Font = Font { weight: font::Weight::Semibold, ..SANS };
@@ -144,6 +145,8 @@ pub struct State {
     /// The editors the open composers type in, kept beside their drafts (each draft mirrors its editor).
     editors: HashMap<String, text_editor::Content>,
     sending: HashSet<String>,
+    /// The rich content of the posts: the hub's cards and images for their references (`console::rich`).
+    cards: rich::Cards,
     /// A live refresh is in flight; an event that came meanwhile runs once more when it lands.
     refreshing: bool,
     again: bool,
@@ -152,6 +155,27 @@ pub struct State {
 impl State {
     fn name_of(&self, cid: u64) -> String {
         self.names.get(&cid).cloned().unwrap_or_else(|| format!("agent {cid}"))
+    }
+
+    /// Takes the agents' names from a roster the caller already holds (the IDE's sidebar), so a post's author
+    /// reads by name at once rather than when the board's own agent list lands.
+    pub fn adopt_names(&mut self, names: impl IntoIterator<Item = (u64, String)>) {
+        self.names = names.into_iter().collect();
+    }
+
+    /// Whether the whole board's deliveries are paused.
+    pub fn paused(&self) -> bool {
+        self.paused
+    }
+
+    /// The owner's post box.
+    pub fn composer(&self) -> &Composer {
+        &self.compose
+    }
+
+    /// The names an `@` can complete to (`all` first).
+    pub fn mentionable(&self) -> &[String] {
+        &self.mentionable
     }
 }
 
@@ -193,14 +217,33 @@ pub enum Msg {
     Export,
     ExportPicked(Option<PathBuf>),
     Exported(Result<String, String>),
+    /// A rich-content click (a chip, a link, an Open button) or a load of its cards and images.
+    Rich(rich::Ev),
+}
+
+/// A rich-content click or load, as this screen's message.
+fn on_rich(action: rich::RichAction) -> Msg {
+    Msg::Rich(rich::Ev::Action(action))
 }
 
 /// The navigation this message asks for, if any.
 pub fn go(msg: &Msg) -> Option<Id> {
     match msg {
         Msg::Go(id) => Some(id.clone()),
+        Msg::Rich(rich::Ev::Action(action)) => action.route(),
         _ => None,
     }
+}
+
+/// Asks the hub for the cards and images that the posts' and comments' references need and the cards do not hold.
+fn prefetch_posts(state: &mut State, ctx: &Ctx) -> Task<Msg> {
+    let texts: Vec<&str> = state
+        .posts
+        .iter()
+        .flat_map(|p| std::iter::once(p.body.as_str()).chain(p.comments.iter().map(|c| c.body.as_str())))
+        .collect();
+    let rctx = rich::context(&state.cards, None, None, None);
+    rich::prefetch(&mut state.cards, &ctx.client, &rctx, &texts).map(Msg::Rich)
 }
 
 /// Loads the board and the agent names (called when it opens and on every poll tick).
@@ -243,6 +286,11 @@ fn apply(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             }
         }
         Msg::Go(_) => Task::none(),
+        // The cards are read where they are drawn (`view`); a click is the screen's (`go`).
+        Msg::Rich(ev) => {
+            rich::apply(&mut state.cards, ev);
+            Task::none()
+        }
         Msg::Loaded(res) => {
             match res.and_then(|v| serde_json::from_value::<Board>(v).map_err(|e| e.to_string())) {
                 Ok(board) => {
@@ -259,7 +307,7 @@ fn apply(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                     state.author = None;
                 }
             }
-            fetch_files(state, ctx)
+            Task::batch([fetch_files(state, ctx), prefetch_posts(state, ctx)])
         }
         Msg::Agents(Ok(list)) => {
             state.names = agent_names(&list);
@@ -553,7 +601,7 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
             feed.push(ui::empty("board", "Nothing on the board matches.", ""));
         }
         for (no, p) in shown {
-            feed.push(entry(state, no, p));
+            feed.push(entry(state, no, p, false));
             feed.push(ui::hairline());
         }
     }
@@ -679,8 +727,9 @@ fn author_options(state: &State) -> Vec<Author> {
     out
 }
 
-/// One post: its number, the by-line (author link, role, count, Reply), subject, body, files, thread, time.
-fn entry<'a>(state: &'a State, no: usize, p: &'a Post) -> Element<'a, Msg> {
+/// One post: its number, the by-line (author link, role, count, Reply), subject, body, files, thread, time. In the
+/// IDE's panel (`panel`) there is no number column, the by-line wraps, and the body takes the panel's whole width.
+fn entry<'a>(state: &'a State, no: usize, p: &'a Post, panel: bool) -> Element<'a, Msg> {
     // The owner's own post names the owner (it has no agent to open); an agent's opens the agent.
     let name: Element<'a, Msg> = if p.owner {
         text("Owner").font(SANS_SEMIBOLD).size(14.5).color(crate::theme::palette().ink).into()
@@ -704,10 +753,15 @@ fn entry<'a>(state: &'a State, no: usize, p: &'a Post) -> Element<'a, Msg> {
         by_parts.push(task_link(task));
     }
     by_parts.push(ui::btn("Reply", None, ui::Kind::Ghost, Some(Msg::ToggleReply(p.id.clone()))));
-    let by = row(by_parts).spacing(10).align_y(Alignment::Center);
+    // The by-line wraps in the panel, where it is narrow; the screen's one line is the same row.
+    let by: Element<'a, Msg> = if panel {
+        row(by_parts).spacing(10).align_y(Alignment::Center).wrap().vertical_spacing(6).into()
+    } else {
+        row(by_parts).spacing(10).align_y(Alignment::Center).into()
+    };
 
     let mut matter: Vec<Element<'a, Msg>> = vec![
-        by.into(),
+        by,
         text(p.subject.clone()).font(SANS_SEMIBOLD).size(16.0).color(crate::theme::palette().ink).into(),
     ];
     if let Some(body) = body(state, p) {
@@ -719,9 +773,19 @@ fn entry<'a>(state: &'a State, no: usize, p: &'a Post) -> Element<'a, Msg> {
     if let Some(thread) = thread(state, p) {
         matter.push(thread);
     }
+    let when = ui::sans(ago(p.created_at), 11.0, crate::theme::palette().ink_3);
+    if panel {
+        return row![
+            column(matter).spacing(6).width(Length::Fill),
+            container(when).padding(Padding { top: 2.0, right: 0.0, bottom: 0.0, left: 0.0 }),
+        ]
+        .spacing(12)
+        .padding(Padding { top: 12.0, right: 4.0, bottom: 12.0, left: 4.0 })
+        .align_y(Alignment::Start)
+        .into();
+    }
     // The web's grid: the post number (56px, right-aligned), the matter, then the time at the far end.
     let number = container(ui::sans(format!("p{no}"), 11.0, crate::theme::palette().ink_3)).width(Length::Fixed(56.0)).align_x(Alignment::End);
-    let when = ui::sans(ago(p.created_at), 11.0, crate::theme::palette().ink_3);
     row![
         number,
         column(matter).spacing(6).width(Length::Fill),
@@ -735,7 +799,8 @@ fn entry<'a>(state: &'a State, no: usize, p: &'a Post) -> Element<'a, Msg> {
 
 /// The task a post is about, as a link to it on the Tasks screen.
 fn task_link<'a>(task: &str) -> Element<'a, Msg> {
-    button(ui::sans(format!("task {task}"), 11.0, crate::theme::palette().signal))
+    // One line, always: a task's name is a chip, and a narrow panel wraps the by-line rather than the chip.
+    button(ui::sans(format!("task {task}"), 11.0, crate::theme::palette().signal).wrapping(Wrapping::None))
         .padding(0.0)
         .style(|_: &Theme, _| button::Style { background: None, text_color: crate::theme::palette().signal, ..Default::default() })
         .on_press(Msg::Go(Id::Task(task.to_string())))
@@ -751,7 +816,8 @@ fn body<'a>(state: &'a State, p: &'a Post) -> Option<Element<'a, Msg>> {
     let open = state.body_open.contains(&p.id);
     let clamped = is_long(src);
     let shown = if open || !clamped { src.to_string() } else { clamp(src) };
-    let mut col: Vec<Element<'a, Msg>> = vec![ui::markdown(&shown)];
+    let rctx = rich::context(&state.cards, None, None, None);
+    let mut col: Vec<Element<'a, Msg>> = vec![rich::view(&shown, &rctx, &state.cards, &on_rich)];
     if clamped {
         let label = if open { "Show less" } else { "Show more" };
         col.push(ui::btn(label, None, ui::Kind::Ghost, Some(Msg::ToggleBody(p.id.clone()))));
@@ -841,9 +907,10 @@ fn comment_row<'a>(state: &'a State, c: &'a Comment) -> Element<'a, Msg> {
     };
     let initial = name.chars().next().map(|ch| ch.to_uppercase().to_string()).unwrap_or_else(|| "?".to_string());
     let colour = if c.agent_cid.is_none() { crate::theme::palette().signal } else { crate::theme::palette().ink };
+    let rctx = rich::context(&state.cards, None, None, None);
     let mut main: Vec<Element<'a, Msg>> = vec![
         row![ui::sans(name, 12.0, colour), ui::faint(ago(c.created_at))].spacing(10).align_y(Alignment::Center).into(),
-        ui::markdown(&c.body),
+        rich::view(&c.body, &rctx, &state.cards, &on_rich),
     ];
     if let Some(files) = attachments(state, &c.attachments) {
         main.push(files);
@@ -971,7 +1038,7 @@ pub fn panel<'a>(state: &'a State, keep: impl Fn(u64, Option<&str>) -> bool) -> 
                     background: Some(colour.into()),
                     ..Default::default()
                 });
-            col = col.push(row![bar, entry(state, total - i, post)].spacing(10));
+            col = col.push(row![bar, entry(state, total - i, post, true)].spacing(10));
         }
     }
     col.into()

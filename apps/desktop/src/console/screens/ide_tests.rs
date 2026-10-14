@@ -724,3 +724,93 @@ fn a_run_is_not_read_on_while_the_ide_is_away_and_is_polled_again_on_entry() {
         "the output comes with that poll's answer"
     );
 }
+
+#[test]
+fn the_chat_opens_at_its_newest_entry_and_follows_it_only_from_the_bottom() {
+    use super::ide_chat::{decide, Follow};
+    assert_eq!(
+        decide(false, false, 0, 5),
+        Follow::Snap,
+        "the first view of a chat opens at the newest entry"
+    );
+    assert_eq!(
+        decide(true, true, 5, 8),
+        Follow::Snap,
+        "at the bottom, new entries are followed"
+    );
+    assert_eq!(
+        decide(true, false, 5, 8),
+        Follow::Pill(3),
+        "above them, the new entries are counted for the pill"
+    );
+    assert_eq!(
+        decide(true, false, 5, 5),
+        Follow::Keep,
+        "nothing came, so the reader's place stays"
+    );
+}
+
+#[test]
+fn an_agents_dot_reads_its_last_finished_task_on_the_roster() {
+    let task = |id: &str, state: &str, agent: Option<u64>| TaskRow {
+        id: id.into(),
+        goal: String::new(),
+        state: state.into(),
+        agent,
+    };
+    let tasks = vec![
+        task("t2", "failed", Some(7)),
+        task("t10", "done", Some(7)),
+        task("t11", "claimed", Some(7)),
+        task("t3", "done", Some(8)),
+    ];
+    assert_eq!(
+        ide_model::last_task_outcome(&tasks, 7).as_deref(),
+        Some("done"),
+        "the highest-numbered task it finished (t10, not the claimed t11)"
+    );
+    assert_eq!(
+        ide_model::last_task_outcome(&tasks, 8).as_deref(),
+        Some("done")
+    );
+    assert_eq!(
+        ide_model::last_task_outcome(&tasks, 9),
+        None,
+        "an agent that finished nothing has no outcome"
+    );
+}
+
+#[test]
+fn a_narrow_window_makes_the_side_panels_a_drawer_and_a_sheet_and_the_toggles_open_them() {
+    let mut st = State::default();
+    assert!(
+        !st.right_is_sheet() && !st.left_is_drawer(),
+        "an unknown width draws the wide layout"
+    );
+    st.width = 1400.0;
+    assert!(!st.right_is_sheet() && !st.left_is_drawer());
+    st.width = 1000.0;
+    assert!(st.right_is_sheet() && !st.left_is_drawer());
+    st.width = 700.0;
+    assert!(st.right_is_sheet() && st.left_is_drawer());
+
+    // The top bar's toggle opens the sheet there, and leaves the layout's own flag as it was.
+    let right_open = st.layout.right_open;
+    let _ = update(&mut st, Msg::ToggleRight, &ctx());
+    assert!(st.right_sheet);
+    assert_eq!(st.layout.right_open, right_open);
+    // Escape closes what lies over the centre before it goes back.
+    let _ = update(&mut st, Msg::Escape, &ctx());
+    assert!(!st.right_sheet);
+}
+
+#[test]
+fn the_terminal_view_opens_the_drawer_and_the_chat_comes_back_at_its_newest_entry() {
+    let mut st = screen_with_a_tab();
+    assert!(!st.layout.drawer, "the drawer starts closed");
+    let _ = update(&mut st, Msg::Centre(Centre::Terminal), &ctx());
+    assert!(st.layout.drawer, "the Terminal view opens the drawer");
+    let _ = update(&mut st, Msg::Centre(Centre::Chat), &ctx());
+    assert!(st.chat_scroll.shown && st.chat_scroll.at_bottom);
+    assert_eq!(st.chat_scroll.unread, 0);
+}

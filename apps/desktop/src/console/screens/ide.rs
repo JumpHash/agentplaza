@@ -24,6 +24,7 @@ use super::board;
 use super::ide_chat::{self, ChatMsg};
 use super::ide_chrome::{self, Drag, Edge, Layout};
 use super::ide_editor;
+use super::ide_files;
 use super::ide_model::{self, AgentRow, ProjectRow, TaskRow};
 use super::ide_palette;
 use super::ide_panels;
@@ -40,7 +41,7 @@ use crate::console::shell;
 use crate::console::ui::{self, Kind, Tone};
 
 /// The setting that keeps the last workspace the IDE opened (the console's Ctrl+Shift+E opens it).
-const REMEMBERED: &str = "ide_workspace";
+pub(super) const REMEMBERED: &str = "ide_workspace";
 
 /// The quick-open box and the search box: focused when they open.
 pub(super) static QUICK_ID: LazyLock<iced::widget::Id> = LazyLock::new(iced::widget::Id::unique);
@@ -299,6 +300,8 @@ pub struct State {
     pub checkpoints: Vec<Checkpoint>,
     /// The right panel's state beyond Changes (the agent, its approvals, the run).
     pub panels: ide_panels::State,
+    /// The chat's scroll: whether the reader is at the newest entry, and the entries that came while they were not.
+    pub chat_scroll: ide_chat::Scroll,
     /// The rich content of the transcript: the hub's cards and images for its references (`console::rich`).
     pub cards: rich::Cards,
     /// The checkpoint awaiting a confirmed restore.
@@ -355,6 +358,33 @@ pub struct State {
     pub away: bool,
     /// A poll of the run is on its way to the hub, so the run has a poll asking for its output.
     pub poll_inflight: bool,
+    /// The window's width in px (0 until it is known: the wide layout is drawn until then).
+    pub width: f32,
+    /// In a narrow window: the left sidebar drawn as a drawer over the centre, and the right panel as a sheet over it.
+    pub left_drawer: bool,
+    pub right_sheet: bool,
+}
+
+/// Below this window width the right panel is a sheet over the centre, toggled from the top bar.
+pub const RIGHT_SHEET_BELOW: f32 = 1100.0;
+/// Below this window width the left sidebar is a drawer over the centre, toggled from the top bar.
+pub const LEFT_DRAWER_BELOW: f32 = 800.0;
+
+impl State {
+    /// The window is narrow enough that the right panel is a sheet over the centre.
+    pub fn right_is_sheet(&self) -> bool {
+        self.width > 0.0 && self.width < RIGHT_SHEET_BELOW
+    }
+
+    /// The window is narrow enough that the left sidebar is a drawer over the centre.
+    pub fn left_is_drawer(&self) -> bool {
+        self.width > 0.0 && self.width < LEFT_DRAWER_BELOW
+    }
+
+    /// The widest a sheet or drawer may be: the window less a margin, so the centre still shows at its edge.
+    pub fn sheet_width(&self) -> f32 {
+        (self.width - 48.0).max(240.0)
+    }
 }
 
 // The terminal tabs hold a socket and an emulator, which have no Debug of their own; the screen's state derives it.
@@ -388,9 +418,12 @@ pub enum Msg {
     ShowDiff(String),
     /// Puts the editor back in the centre, in place of a diff.
     CloseDiff,
-    /// Folds or unfolds a side panel (the header's toggles, Ctrl+B and Ctrl+J).
+    /// Folds or unfolds a side panel (the header's toggles, Ctrl+B and Ctrl+J). In a narrow window the same toggles
+    /// open and close the drawer or the sheet over the centre.
     ToggleLeft,
     ToggleRight,
+    /// The window's width, when it changes or is first read: the narrow layouts follow it.
+    Resized(f32),
     /// The centre's view, the right panel's tab, and the drawer's tab.
     Centre(Centre),
     Right(RightTab),
@@ -512,12 +545,14 @@ pub fn go(msg: &Msg) -> Option<Id> {
         // "+ New agent" opens the Agents screen, whose wizard spawns one.
         Msg::NewAgent => Some(Id::Agents),
         Msg::Rich(rich::Ev::Action(action)) => action.route(),
+        // A link on a board post in the panel navigates as it does on the board screen.
+        Msg::Board(board::Msg::Rich(rich::Ev::Action(action))) => action.route(),
         _ => None,
     }
 }
 
 /// Asks the hub for the cards of the transcript's references that it does not hold yet.
-fn prefetch_transcript(st: &mut State, ctx: &Ctx) -> Task<Msg> {
+pub(super) fn prefetch_transcript(st: &mut State, ctx: &Ctx) -> Task<Msg> {
     let texts = ide_chat::transcript_texts(&st.panels.entries);
     let rctx = ide_chat::rich_ctx(st);
     rich::prefetch(&mut st.cards, &ctx.client, &rctx, &texts).map(Msg::Rich)
@@ -554,7 +589,7 @@ pub(super) fn route(ws: &WorkspaceId, rest: &str) -> String {
 
 /// The roster the sidebar, the chat and the palette read: the agents, the projects and the tasks. A list the hub
 /// does not answer as a list is an error; an entry that does not read is left out.
-fn fetch_roster(client: &Client) -> Result<Roster, String> {
+pub(super) fn fetch_roster(client: &Client) -> Result<Roster, String> {
     let agents = client.get::<Value>("/v1/agents")?;
     let projects = client.get::<Value>("/v1/projects")?;
     let tasks = client.get::<Value>("/v1/tasks")?;
@@ -632,11 +667,11 @@ pub(super) fn now_ms() -> u64 {
         .map_or(0, |d| d.as_millis() as u64)
 }
 
-fn fetch_workspaces(client: &Client) -> Result<Vec<WorkspaceInfo>, String> {
+pub(super) fn fetch_workspaces(client: &Client) -> Result<Vec<WorkspaceInfo>, String> {
     client.get("/v1/ide/workspaces")
 }
 
-fn fetch_tree(
+pub(super) fn fetch_tree(
     client: &Client,
     ws: &WorkspaceId,
     dir: &str,
@@ -658,7 +693,7 @@ pub(super) fn fetch_file(
 }
 
 /// `PUT .../file` with the base hash. A 409 becomes `Conflict` with the hub's hash now.
-fn put_file(
+pub(super) fn put_file(
     client: &Client,
     ws: &WorkspaceId,
     path: &str,
@@ -693,7 +728,7 @@ fn put_file(
 }
 
 /// The base as the hub names it in `?base=`.
-fn base_param(base: &Base) -> String {
+pub(super) fn base_param(base: &Base) -> String {
     match base {
         Base::WorkStart => "work_start".to_string(),
         Base::Checkpoint(n) => format!("checkpoint:{n}"),
@@ -701,7 +736,7 @@ fn base_param(base: &Base) -> String {
     }
 }
 
-fn fetch_changes(client: &Client, ws: &WorkspaceId, base: &Base) -> Result<ChangeSet, String> {
+pub(super) fn fetch_changes(client: &Client, ws: &WorkspaceId, base: &Base) -> Result<ChangeSet, String> {
     let value: Value = client.get(&route(
         ws,
         &format!("/changes?base={}", enc(&base_param(base))),
@@ -714,7 +749,7 @@ fn fetch_changes(client: &Client, ws: &WorkspaceId, base: &Base) -> Result<Chang
 }
 
 /// The checkpoint list, as a bare array or under `checkpoints`.
-fn parse_checkpoints(value: Value) -> Result<Vec<Checkpoint>, String> {
+pub(super) fn parse_checkpoints(value: Value) -> Result<Vec<Checkpoint>, String> {
     let list = if value.is_array() {
         value
     } else {
@@ -726,12 +761,12 @@ fn parse_checkpoints(value: Value) -> Result<Vec<Checkpoint>, String> {
     serde_json::from_value(list).map_err(|e| e.to_string())
 }
 
-fn fetch_checkpoints(client: &Client, ws: &WorkspaceId) -> Result<Vec<Checkpoint>, String> {
+pub(super) fn fetch_checkpoints(client: &Client, ws: &WorkspaceId) -> Result<Vec<Checkpoint>, String> {
     let value: Value = client.get(&route(ws, "/checkpoints"))?;
     parse_checkpoints(value)
 }
 
-fn fetch_search(
+pub(super) fn fetch_search(
     client: &Client,
     ws: &WorkspaceId,
     query: &str,
@@ -791,7 +826,7 @@ pub fn target(workspace: &str, review: bool, open: Option<&str>) -> String {
 }
 
 /// Reverses `enc`: `%XX` becomes its byte, anything else stays as it is.
-fn dec(s: &str) -> String {
+pub(super) fn dec(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
@@ -826,7 +861,7 @@ pub fn remembered() -> Option<String> {
 }
 
 /// Keeps `ws` as the last workspace (not from tests: they never write the owner's settings).
-fn remember(ws: &str) {
+pub(super) fn remember(ws: &str) {
     if !cfg!(test) {
         let _ = boot::save_setting(REMEMBERED, json!(ws));
     }
@@ -843,7 +878,7 @@ pub fn open_shortcut(key: &Key, modifiers: Modifiers, captured: bool) -> bool {
 }
 
 /// The line for a workspace the hub did not list.
-fn not_listed(id: &WorkspaceId) -> String {
+pub(super) fn not_listed(id: &WorkspaceId) -> String {
     match id {
         WorkspaceId::Repo { .. } => {
             format!("{id} is not served yet: the hub lists agent workspaces only for now.")
@@ -855,13 +890,13 @@ fn not_listed(id: &WorkspaceId) -> String {
 // ---- Helpers over the state -------------------------------------------------------------------
 
 /// Applies a reducer action to the shared state.
-fn dispatch(st: &mut State, action: Action) {
+pub(super) fn dispatch(st: &mut State, action: Action) {
     let ide = std::mem::take(&mut st.ide);
     st.ide = state::reduce(ide, action);
 }
 
 /// Whether `ws` (a hub id string) is the workspace on screen.
-fn is_current(st: &State, ws: &str) -> bool {
+pub(super) fn is_current(st: &State, ws: &str) -> bool {
     st.ide
         .workspace
         .as_ref()
@@ -869,7 +904,7 @@ fn is_current(st: &State, ws: &str) -> bool {
 }
 
 /// The workspace on screen as the hub listed it.
-fn current_info(st: &State) -> Option<&WorkspaceInfo> {
+pub(super) fn current_info(st: &State) -> Option<&WorkspaceInfo> {
     let id = st.ide.workspace.as_ref()?.to_string();
     st.workspaces.iter().find(|w| w.id == id)
 }
@@ -879,7 +914,7 @@ pub(super) fn writable(st: &State) -> bool {
 }
 
 /// Whether the agent of the workspace on screen is working (the hub's status says so).
-fn working(st: &State) -> bool {
+pub(super) fn working(st: &State) -> bool {
     current_info(st).is_some_and(|w| w.status.contains("work"))
 }
 
@@ -932,7 +967,7 @@ pub(super) fn quick_hits(st: &State) -> Vec<String> {
     ide_editor::matches(&paths, st.quick.as_deref().unwrap_or(""))
 }
 
-fn goto_line(tab: &mut Tab, line: usize) {
+pub(super) fn goto_line(tab: &mut Tab, line: usize) {
     let target = line.saturating_sub(1);
     tab.content.move_to(text_editor::Cursor {
         position: text_editor::Position {
@@ -944,7 +979,7 @@ fn goto_line(tab: &mut Tab, line: usize) {
 }
 
 /// Moves the editor to a pending line once its file has opened.
-fn apply_goto(st: &mut State, path: &str) {
+pub(super) fn apply_goto(st: &mut State, path: &str) {
     if let Some((target, line)) = st.goto.clone()
         && target == path
         && let Some(tab) = st.tabs.get_mut(path)
@@ -956,7 +991,7 @@ fn apply_goto(st: &mut State, path: &str) {
 
 // ---- Tasks ------------------------------------------------------------------------------------
 
-fn tree_task(client: &Client, ws: WorkspaceId, dir: String, cursor: Option<String>) -> Task<Msg> {
+pub(super) fn tree_task(client: &Client, ws: WorkspaceId, dir: String, cursor: Option<String>) -> Task<Msg> {
     let first = cursor.is_none();
     let key = ws.to_string();
     let c = client.clone();
@@ -973,7 +1008,7 @@ fn tree_task(client: &Client, ws: WorkspaceId, dir: String, cursor: Option<Strin
 }
 
 /// Lists one folder (marking it on its way).
-fn list_dir(st: &mut State, ctx: &Ctx, dir: String, cursor: Option<String>) -> Task<Msg> {
+pub(super) fn list_dir(st: &mut State, ctx: &Ctx, dir: String, cursor: Option<String>) -> Task<Msg> {
     let Some(ws) = st.ide.workspace.clone() else {
         return Task::none();
     };
@@ -982,7 +1017,7 @@ fn list_dir(st: &mut State, ctx: &Ctx, dir: String, cursor: Option<String>) -> T
 }
 
 /// Lists every open folder on screen whose listing is missing.
-fn load_missing(st: &mut State, ctx: &Ctx) -> Task<Msg> {
+pub(super) fn load_missing(st: &mut State, ctx: &Ctx) -> Task<Msg> {
     if st.ide.filter_changed {
         return Task::none();
     }
@@ -994,7 +1029,7 @@ fn load_missing(st: &mut State, ctx: &Ctx) -> Task<Msg> {
     )
 }
 
-fn changes_task(st: &mut State, ctx: &Ctx) -> Task<Msg> {
+pub(super) fn changes_task(st: &mut State, ctx: &Ctx) -> Task<Msg> {
     let Some(ws) = st.ide.workspace.clone() else {
         return Task::none();
     };
@@ -1014,7 +1049,7 @@ fn changes_task(st: &mut State, ctx: &Ctx) -> Task<Msg> {
 }
 
 /// The changes, unless a fetch is already on its way (events come often; one fetch at a time).
-fn changes_throttled(st: &mut State, ctx: &Ctx) -> Task<Msg> {
+pub(super) fn changes_throttled(st: &mut State, ctx: &Ctx) -> Task<Msg> {
     if st.changes_busy {
         Task::none()
     } else {
@@ -1022,7 +1057,7 @@ fn changes_throttled(st: &mut State, ctx: &Ctx) -> Task<Msg> {
     }
 }
 
-fn checkpoints_task(st: &State, ctx: &Ctx) -> Task<Msg> {
+pub(super) fn checkpoints_task(st: &State, ctx: &Ctx) -> Task<Msg> {
     let Some(ws) = st.ide.workspace.clone() else {
         return Task::none();
     };
@@ -1038,7 +1073,7 @@ fn checkpoints_task(st: &State, ctx: &Ctx) -> Task<Msg> {
 }
 
 /// Fetches an open file's hub copy, to check it against the tab.
-fn remote_task(st: &State, ctx: &Ctx, path: &str) -> Task<Msg> {
+pub(super) fn remote_task(st: &State, ctx: &Ctx, path: &str) -> Task<Msg> {
     let Some(ws) = st.ide.workspace.clone() else {
         return Task::none();
     };
@@ -1056,14 +1091,14 @@ fn remote_task(st: &State, ctx: &Ctx, path: &str) -> Task<Msg> {
     )
 }
 
-fn refresh_open(st: &State, ctx: &Ctx) -> Vec<Task<Msg>> {
+pub(super) fn refresh_open(st: &State, ctx: &Ctx) -> Vec<Task<Msg>> {
     st.tabs
         .keys()
         .map(|path| remote_task(st, ctx, path))
         .collect()
 }
 
-fn relist(st: &mut State, ctx: &Ctx) -> Task<Msg> {
+pub(super) fn relist(st: &mut State, ctx: &Ctx) -> Task<Msg> {
     if st.listing {
         return Task::none();
     }
@@ -1073,7 +1108,7 @@ fn relist(st: &mut State, ctx: &Ctx) -> Task<Msg> {
 }
 
 /// The root folder, the changes and the checkpoints of the workspace on screen.
-fn load_workspace(st: &mut State, ctx: &Ctx) -> Task<Msg> {
+pub(super) fn load_workspace(st: &mut State, ctx: &Ctx) -> Task<Msg> {
     let root = list_dir(st, ctx, String::new(), None);
     let changes = changes_task(st, ctx);
     let mut tasks = vec![root, changes, checkpoints_task(st, ctx)];
@@ -1092,24 +1127,24 @@ fn load_workspace(st: &mut State, ctx: &Ctx) -> Task<Msg> {
 }
 
 /// Asks the hub for the roster, the projects and the tasks. The sidebar, the chat's header and the palette read them.
-fn load_roster(ctx: &Ctx) -> Task<Msg> {
+pub(super) fn load_roster(ctx: &Ctx) -> Task<Msg> {
     let c = ctx.client.clone();
     client::task(move || fetch_roster(&c), Msg::Roster)
 }
 
 /// Asks the hub for the board: the Board tab's posts, and the unread counts the sidebar shows.
-fn load_board(st: &mut State, ctx: &Ctx) -> Task<Msg> {
+pub(super) fn load_board(st: &mut State, ctx: &Ctx) -> Task<Msg> {
     board::load(&mut st.board, ctx).map(Msg::Board)
 }
 
 /// Whether the workspace on screen is an agent's: its terminal runs in the agent's VM.
-fn on_agent(st: &State) -> bool {
+pub(super) fn on_agent(st: &State) -> bool {
     matches!(st.ide.workspace, Some(WorkspaceId::Agent(_)))
 }
 
 /// Makes the terminal tabs of an agent workspace on first need: when the Terminal tab is shown or the terminal
 /// is docked under the editor. Nothing is made for a repo workspace, or before the terminal is wanted.
-fn ensure_terminals(st: &mut State, ctx: &Ctx) {
+pub(super) fn ensure_terminals(st: &mut State, ctx: &Ctx) {
     let wanted = st.centre == Centre::Terminal || st.layout.drawer;
     if st.terminals.is_some() || !wanted || !on_agent(st) {
         return;
@@ -1121,7 +1156,7 @@ fn ensure_terminals(st: &mut State, ctx: &Ctx) {
 
 /// Makes the terminal tabs again with as many tabs as they had. The hub keeps each shell, and a fresh emulator
 /// re-attaches to it from the shell's oldest output.
-fn reopen_terminals(st: &mut State, ctx: &Ctx) {
+pub(super) fn reopen_terminals(st: &mut State, ctx: &Ctx) {
     let count = st.terminals.as_ref().map_or(1, TerminalTabs::len).max(1);
     st.terminals = None;
     st.terminal_links.clear();
@@ -1137,7 +1172,7 @@ fn reopen_terminals(st: &mut State, ctx: &Ctx) {
 /// back: the subscriptions stop when the screen is left, and the emulators would then replay the shell's output
 /// on top of themselves. So the tabs are made again. Otherwise the tabs take the message, and the slots that
 /// are gone are forgotten.
-fn terminal_task(st: &mut State, msg: TabsMsg, ctx: &Ctx) -> Task<Msg> {
+pub(super) fn terminal_task(st: &mut State, msg: TabsMsg, ctx: &Ctx) -> Task<Msg> {
     // No tabs on screen (the IDE was left): a message from a socket that is still ending takes no part.
     if st.terminals.is_none() {
         return Task::none();
@@ -1161,7 +1196,7 @@ fn terminal_task(st: &mut State, msg: TabsMsg, ctx: &Ctx) -> Task<Msg> {
 }
 
 /// Reloads everything the workspace on screen shows (after a restore).
-fn reload_all(st: &mut State, ctx: &Ctx) -> Task<Msg> {
+pub(super) fn reload_all(st: &mut State, ctx: &Ctx) -> Task<Msg> {
     st.tree.loaded.clear();
     st.tree.more.clear();
     st.tree.inflight.clear();
@@ -1171,7 +1206,7 @@ fn reload_all(st: &mut State, ctx: &Ctx) -> Task<Msg> {
 }
 
 /// Switches the screen to `id`: its tabs, tree and changes are its own, so the old ones go.
-fn select(st: &mut State, id: WorkspaceId, ctx: &Ctx) -> Task<Msg> {
+pub(super) fn select(st: &mut State, id: WorkspaceId, ctx: &Ctx) -> Task<Msg> {
     if st.ide.workspace.as_ref() == Some(&id) {
         return Task::none();
     }
@@ -1197,6 +1232,7 @@ fn select(st: &mut State, id: WorkspaceId, ctx: &Ctx) -> Task<Msg> {
     st.steps_open.clear();
     st.cancelling = false;
     st.panels = ide_panels::State::default();
+    st.chat_scroll = ide_chat::Scroll::default();
     st.terminals = None;
     st.terminal_links.clear();
     st.terminal_focus = false;
@@ -1207,7 +1243,7 @@ fn select(st: &mut State, id: WorkspaceId, ctx: &Ctx) -> Task<Msg> {
 }
 
 /// Shows the search panel on the left, with its box focused. A quick open gives way to it.
-fn open_search(st: &mut State) -> Task<Msg> {
+pub(super) fn open_search(st: &mut State) -> Task<Msg> {
     st.quick = None;
     st.search.get_or_insert_with(Search::default);
     iced::widget::operation::focus(SEARCH_ID.clone())
@@ -1215,7 +1251,7 @@ fn open_search(st: &mut State) -> Task<Msg> {
 
 /// Opens the target the screen's id named, once the list is in: its workspace, in review mode if asked,
 /// with its file open if one is named.
-fn apply_preselect(st: &mut State, ctx: &Ctx) -> Task<Msg> {
+pub(super) fn apply_preselect(st: &mut State, ctx: &Ctx) -> Task<Msg> {
     let Some(raw) = st.preselect.take() else {
         return Task::none();
     };
@@ -1249,7 +1285,7 @@ fn apply_preselect(st: &mut State, ctx: &Ctx) -> Task<Msg> {
 }
 
 /// Opens a file in a tab (or shows its tab). The hub's copy is read once; later changes come as events.
-fn open_path(st: &mut State, path: String, ctx: &Ctx) -> Task<Msg> {
+pub(super) fn open_path(st: &mut State, path: String, ctx: &Ctx) -> Task<Msg> {
     st.quick = None;
     // A file opened for the editor puts the editor in the centre, in place of the chat or a diff.
     st.diff_file = None;
@@ -1281,7 +1317,7 @@ fn open_path(st: &mut State, path: String, ctx: &Ctx) -> Task<Msg> {
 /// The screen's messages: the state changes, and the tasks they start.
 /// The chat's messages: a run of tool steps opens or folds, and the agent's current work is stopped (its cancel
 /// route; the agent keeps its session).
-fn chat_task(st: &mut State, msg: ChatMsg, ctx: &Ctx) -> Task<Msg> {
+pub(super) fn chat_task(st: &mut State, msg: ChatMsg, ctx: &Ctx) -> Task<Msg> {
     match msg {
         ChatMsg::Steps(first) => {
             if !st.steps_open.remove(&first) {
@@ -1311,6 +1347,9 @@ fn chat_task(st: &mut State, msg: ChatMsg, ctx: &Ctx) -> Task<Msg> {
             }
             Task::none()
         }
+        ChatMsg::Scrolled(_) | ChatMsg::JumpToNewest => {
+            ide_chat::update_scroll(st, msg).unwrap_or_else(Task::none)
+        }
     }
 }
 
@@ -1324,6 +1363,21 @@ pub fn update(st: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                 Task::none()
             }
         };
+    }
+    if ide_sidebar::handles(&msg) {
+        return ide_sidebar::update(st, msg, ctx);
+    }
+    if ide_chat::handles(&msg) {
+        return ide_chat::update(st, msg, ctx);
+    }
+    if ide_right::handles(&msg) {
+        return ide_right::update(st, msg, ctx);
+    }
+    if ide_palette::handles(&msg) {
+        return ide_palette::update(st, msg, ctx);
+    }
+    if ide_files::handles(&msg) {
+        return ide_files::update(st, msg, ctx);
     }
     match msg {
         Msg::Listed(res) => {
@@ -1343,111 +1397,19 @@ pub fn update(st: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                 }
             }
         }
-        Msg::Pick(pick) => match WorkspaceId::from_str(&pick.id) {
-            Ok(id) => select(st, id, ctx),
-            Err(e) => {
-                st.notice = Some(e.to_string());
-                Task::none()
-            }
-        },
-        Msg::Dir {
-            ws,
-            dir,
-            first,
-            res,
-        } => {
-            if !is_current(st, &ws) {
-                return Task::none();
-            }
-            match res {
-                Ok(page) => {
-                    ide_tree::apply_page(&mut st.tree, &dir, page, first);
-                    load_missing(st, ctx)
-                }
-                Err(e) => {
-                    st.tree.inflight.remove(&dir);
-                    st.notice = Some(format!(
-                        "Could not list {}: {e}",
-                        if dir.is_empty() { "the root" } else { &dir }
-                    ));
-                    Task::none()
-                }
-            }
-        }
-        Msg::ToggleDir(dir) => {
-            ide_tree::toggle(&mut st.tree, &dir);
-            load_missing(st, ctx)
-        }
-        Msg::MoreDir(dir) => {
-            let Some(cursor) = st.tree.more.get(&dir).cloned() else {
-                return Task::none();
-            };
-            list_dir(st, ctx, dir, Some(cursor))
-        }
         Msg::Open(_) => Task::none(),
-        Msg::RefreshAll => reload_all(st, ctx),
-        Msg::ChangedOnly => {
-            dispatch(st, Action::ToggleChangedFilter);
-            load_missing(st, ctx)
-        }
-        Msg::OpenPath(path) => open_path(st, path, ctx),
-        Msg::ShowDiff(path) => {
-            // A changed file's diff is shown in the centre's Diff view, beside the list of changes.
-            st.quick = None;
-            st.centre = Centre::Diff;
-            st.diff_file = Some(path);
-            Task::none()
-        }
-        Msg::CloseDiff => {
-            st.diff_file = None;
-            Task::none()
-        }
         Msg::ToggleLeft => {
-            st.layout.toggle(Edge::Left);
-            ide_chrome::save(&st.layout);
+            if st.left_is_drawer() {
+                st.left_drawer = !st.left_drawer;
+            } else {
+                st.layout.toggle(Edge::Left);
+                ide_chrome::save(&st.layout);
+            }
             Task::none()
         }
-        Msg::Centre(centre) => {
-            st.centre = centre;
-            st.diff_file = None;
-            ensure_terminals(st, ctx);
-            match (centre, st.ide.workspace.clone()) {
-                (Centre::Chat, Some(ws)) => {
-                    ide_panels::show(&mut st.panels, Panel::Agent, &ctx.client, &ws)
-                        .map(Msg::Panels)
-                }
-                (Centre::Diff, Some(_)) if st.changes.is_none() && !st.changes_busy => {
-                    changes_task(st, ctx)
-                }
-                _ => Task::none(),
-            }
-        }
-        Msg::Right(tab) => {
-            st.right = tab;
-            st.layout.right_open = true;
-            ide_chrome::save(&st.layout);
-            let Some(ws) = st.ide.workspace.clone() else {
-                return if tab == RightTab::Board {
-                    load_board(st, ctx)
-                } else {
-                    Task::none()
-                };
-            };
-            match tab {
-                RightTab::Board => load_board(st, ctx),
-                RightTab::Approvals => {
-                    ide_panels::show(&mut st.panels, Panel::Approvals, &ctx.client, &ws)
-                        .map(Msg::Panels)
-                }
-                RightTab::Files => {
-                    if st.tree.loaded.is_empty() {
-                        list_dir(st, ctx, String::new(), None)
-                    } else {
-                        Task::none()
-                    }
-                }
-                RightTab::Tasks | RightTab::Activity => Task::none(),
-            }
+        Msg::Resized(width) => {
+            st.width = width;
+            Task::none()
         }
         Msg::DrawerTab(tab) => {
             st.drawer_tab = tab;
@@ -1459,70 +1421,13 @@ pub fn update(st: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             ensure_terminals(st, ctx);
             Task::none()
         }
-        Msg::SidebarQuery(query) => {
-            st.sidebar_query = query;
-            Task::none()
-        }
-        Msg::ToggleGroup(key) => {
-            if !st.collapsed.remove(&key) {
-                st.collapsed.insert(key);
-            }
-            Task::none()
-        }
-        Msg::NewAgent => Task::none(),
-        Msg::Roster(res) => {
-            match res {
-                Ok(roster) => {
-                    st.roster = roster.agents;
-                    st.projects = roster.projects;
-                    st.tasks = roster.tasks;
-                    st.roster_loaded = true;
-                    st.roster_error = None;
-                }
-                Err(e) => st.roster_error = Some(e),
-            }
-            Task::none()
-        }
-        Msg::Board(msg) => board::update(&mut st.board, msg, ctx).map(Msg::Board),
-        Msg::BoardScope(project) => {
-            st.board_project = project;
-            Task::none()
-        }
-        Msg::Chat(msg) => chat_task(st, msg, ctx),
-        Msg::PaletteOpen => {
-            st.palette = Some(ide_palette::Palette::default());
-            iced::widget::operation::focus(ide_palette::ID.clone())
-        }
-        Msg::PaletteQuery(query) => {
-            if let Some(palette) = st.palette.as_mut() {
-                palette.query = query;
-                palette.cursor = 0;
-            }
-            Task::none()
-        }
-        Msg::PaletteMove(step) => {
-            let count = ide_palette::filtered(st).len();
-            if let Some(palette) = st.palette.as_mut() {
-                let next = palette.cursor as i64 + i64::from(step);
-                palette.cursor = next.clamp(0, count.saturating_sub(1) as i64) as usize;
-            }
-            Task::none()
-        }
-        Msg::PaletteRun(index) => {
-            let picked = ide_palette::filtered(st).into_iter().nth(index);
-            st.palette = None;
-            match picked {
-                Some(item) => update(st, item.run, ctx),
-                None => Task::none(),
-            }
-        }
-        Msg::PaletteClose => {
-            st.palette = None;
-            Task::none()
-        }
         Msg::ToggleRight => {
-            st.layout.toggle(Edge::Right);
-            ide_chrome::save(&st.layout);
+            if st.right_is_sheet() {
+                st.right_sheet = !st.right_sheet;
+            } else {
+                st.layout.toggle(Edge::Right);
+                ide_chrome::save(&st.layout);
+            }
             Task::none()
         }
         Msg::DragStart(edge) => {
@@ -1580,387 +1485,16 @@ pub fn update(st: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         }
         // The console hands these to the shell (see `console::update_app`); the IDE never sees them.
         Msg::Shell(_) => Task::none(),
-        Msg::Opened { ws, path, res } => {
-            if !is_current(st, &ws) {
-                return Task::none();
-            }
-            match res {
-                Ok(file) => match file.text {
-                    Some(text) => {
-                        st.tabs
-                            .insert(path.clone(), Tab::new(&path, file.hash, &text));
-                        dispatch(st, Action::Open(path.clone()));
-                        st.notice = None;
-                        apply_goto(st, &path);
-                    }
-                    None => st.notice = Some(format!("{path} is not a text file.")),
-                },
-                Err(e) => st.notice = Some(format!("{path}: {e}")),
-            }
-            Task::none()
-        }
-        Msg::Activate(path) => {
-            st.diff_file = None;
-            dispatch(st, Action::Activate(path));
-            Task::none()
-        }
-        Msg::Close(path) => {
-            if st.tabs.get(&path).is_some_and(|t| t.buffer.dirty) {
-                st.notice = Some(format!("Save {path} before closing it."));
-                return Task::none();
-            }
-            st.tabs.remove(&path);
-            dispatch(st, Action::Close(path));
-            Task::none()
-        }
-        Msg::Edit(path, action) => {
-            if writable(st)
-                && let Some(tab) = st.tabs.get_mut(&path)
-                && tab.edit(action)
-            {
-                st.saved = false;
-            }
-            Task::none()
-        }
-        Msg::Save => {
-            let Some(path) = st.ide.active.clone() else {
-                return Task::none();
-            };
-            let Some(ws) = st.ide.workspace.clone() else {
-                return Task::none();
-            };
-            let Some(tab) = st.tabs.get(&path) else {
-                return Task::none();
-            };
-            if !tab.buffer.dirty {
-                return Task::none();
-            }
-            if !writable(st) {
-                st.notice = Some("This workspace is read-only.".into());
-                return Task::none();
-            }
-            let sent = tab.buffer.text.clone();
-            let expected = tab.buffer.base_hash.clone();
-            st.notice = Some(format!("Saving {path}…"));
-            let c = ctx.client.clone();
-            let key = ws.to_string();
-            let p = path.clone();
-            let text = sent.clone();
-            // `client::task` is for `String` errors; a save carries its own (`SaveError`), so it runs as a plain task.
-            Task::perform(
-                async move { put_file(&c, &ws, &p, &text, expected.as_deref()) },
-                move |res| Msg::Saved {
-                    ws: key.clone(),
-                    path: path.clone(),
-                    sent: sent.clone(),
-                    res,
-                },
-            )
-        }
-        Msg::Saved {
-            ws,
-            path,
-            sent,
-            res,
-        } => {
-            if !is_current(st, &ws) {
-                return Task::none();
-            }
-            match res {
-                Ok(saved) => {
-                    if let Some(tab) = st.tabs.get_mut(&path) {
-                        tab.saved(&sent, saved.hash);
-                    }
-                    st.saved = true;
-                    st.notice = Some(format!("Saved {path}"));
-                    Task::batch([changes_throttled(st, ctx), checkpoints_task(st, ctx)])
-                }
-                Err(SaveError::Conflict(current)) => {
-                    if let Some(tab) = st.tabs.get_mut(&path) {
-                        tab.conflicted(current);
-                    }
-                    st.notice = Some(format!(
-                        "{path} changed on the hub since you opened it. Reload it or keep yours."
-                    ));
-                    Task::none()
-                }
-                Err(SaveError::Failed(e)) => {
-                    st.notice = Some(format!("Save failed: {e}"));
-                    Task::none()
-                }
-            }
-        }
-        Msg::Reload(path) => {
-            let Some(ws) = st.ide.workspace.clone() else {
-                return Task::none();
-            };
-            let c = ctx.client.clone();
-            let key = ws.to_string();
-            let p = path.clone();
-            client::task(
-                move || fetch_file(&c, &ws, &p),
-                move |res| Msg::Reloaded {
-                    ws: key.clone(),
-                    path: path.clone(),
-                    res,
-                },
-            )
-        }
-        Msg::Reloaded { ws, path, res } => {
-            if !is_current(st, &ws) {
-                return Task::none();
-            }
-            match res {
-                Ok(file) => match (file.text, st.tabs.get_mut(&path)) {
-                    (Some(text), Some(tab)) => {
-                        tab.reload(&path, file.hash, &text);
-                        st.notice = Some(format!("Reloaded {path}"));
-                    }
-                    (None, _) => st.notice = Some(format!("{path} is not a text file.")),
-                    (Some(_), None) => {}
-                },
-                Err(e) => st.notice = Some(format!("Reload failed: {e}")),
-            }
-            Task::none()
-        }
-        Msg::KeepMine(path) => {
-            if let Some(tab) = st.tabs.get_mut(&path) {
-                tab.keep_mine();
-                st.notice = Some(format!(
-                    "Kept your version of {path}. Saving replaces the hub's file."
-                ));
-            }
-            Task::none()
-        }
-        Msg::Remote { ws, path, res } => {
-            if is_current(st, &ws)
-                && let Ok(file) = res
-                && let Some(tab) = st.tabs.get_mut(&path)
-            {
-                match tab.remote(file.hash.as_deref()) {
-                    Remote::Reload => {
-                        if let Some(text) = &file.text {
-                            tab.reload(&path, file.hash.clone(), text);
-                        }
-                    }
-                    Remote::Same | Remote::Conflict => {}
-                }
-            }
-            Task::none()
-        }
-        Msg::Changed { ws, base, res } => {
-            st.changes_busy = false;
-            if is_current(st, &ws) && base == st.ide.base {
-                match res {
-                    Ok(set) => {
-                        st.changes = Some(set);
-                        st.changes_error = None;
-                    }
-                    Err(e) => st.changes_error = Some(e),
-                }
-            }
-            Task::none()
-        }
-        Msg::PickBase(choice) => match choice {
-            BaseChoice::WorkStart => {
-                dispatch(st, Action::SetBase(Base::WorkStart));
-                changes_task(st, ctx)
-            }
-            BaseChoice::Checkpoint => match st.checkpoints.iter().map(|c| c.n).max() {
-                Some(n) => {
-                    dispatch(st, Action::SetBase(Base::Checkpoint(n)));
-                    changes_task(st, ctx)
-                }
-                None => {
-                    st.notice = Some("There is no checkpoint to compare with yet.".into());
-                    Task::none()
-                }
-            },
-        },
-        Msg::CompareWith(n) => {
-            dispatch(st, Action::SetBase(Base::Checkpoint(n)));
-            changes_task(st, ctx)
-        }
         // Left: a poll's answer is dropped unread, so the run's polling stops until the IDE is entered (see `left`).
         Msg::Rich(_) => Task::none(),
-        Msg::Panels(ide_panels::Msg::Polled { .. }) if st.away => {
-            st.poll_inflight = false;
-            Task::none()
-        }
-        Msg::Panels(msg) => {
-            let answers_run = matches!(
-                msg,
-                ide_panels::Msg::Started { .. } | ide_panels::Msg::Polled { .. }
-            );
-            let transcript = matches!(msg, ide_panels::Msg::Transcript { .. });
-            let task = match st.ide.workspace.clone() {
-                Some(ws) => {
-                    ide_panels::update(&mut st.panels, msg, &ctx.client, &ws).map(Msg::Panels)
-                }
-                None => Task::none(),
-            };
-            if answers_run {
-                // The run's chain goes on from here: ide_panels asks for the next poll while the run is active.
-                st.poll_inflight = st.panels.run.active() && st.panels.run.run.is_some();
-            }
-            if transcript {
-                // A transcript that landed names its references: ask the hub for the ones it does not hold yet.
-                return Task::batch([task, prefetch_transcript(st, ctx)]);
-            }
-            task
-        }
-        Msg::Checkpoints { ws, res } => {
-            if is_current(st, &ws) {
-                match res {
-                    Ok(list) => st.checkpoints = list,
-                    Err(e) => st.notice = Some(format!("Checkpoints: {e}")),
-                }
-            }
-            Task::none()
-        }
-        Msg::AskRestore(n) => {
-            st.restore = Some(n);
-            Task::none()
-        }
-        Msg::CancelRestore => {
-            st.restore = None;
-            Task::none()
-        }
-        Msg::Restore(n) => {
-            let Some(ws) = st.ide.workspace.clone() else {
-                return Task::none();
-            };
-            st.notice = Some(format!("Restoring checkpoint #{n}…"));
-            let c = ctx.client.clone();
-            let key = ws.to_string();
-            client::task(
-                move || {
-                    c.post::<Value>(
-                        &route(&ws, &format!("/checkpoints/{n}/restore")),
-                        &json!({}),
-                    )
-                    .map(|_| ())
-                },
-                move |res| Msg::Restored {
-                    ws: key.clone(),
-                    res,
-                },
-            )
-        }
-        Msg::Restored { ws, res } => {
-            if !is_current(st, &ws) {
-                return Task::none();
-            }
-            st.restore = None;
-            match res {
-                Ok(()) => {
-                    st.notice = Some("Restored the checkpoint.".into());
-                    reload_all(st, ctx)
-                }
-                Err(e) => {
-                    st.notice = Some(format!("Restore failed: {e}"));
-                    Task::none()
-                }
-            }
-        }
-        Msg::ToggleQuick => {
-            if st.quick.is_some() {
-                st.quick = None;
-                Task::none()
-            } else {
-                st.quick = Some(String::new());
-                st.search = None;
-                st.centre = Centre::Editor;
-                iced::widget::operation::focus(QUICK_ID.clone())
-            }
-        }
-        Msg::QuickQuery(query) => {
-            st.quick = Some(query);
-            Task::none()
-        }
-        Msg::QuickFirst => match quick_hits(st).into_iter().next() {
-            Some(first) => open_path(st, first, ctx),
-            None => Task::none(),
-        },
-        Msg::ToggleSearch => {
-            if st.search.is_some() {
-                st.search = None;
-                Task::none()
-            } else {
-                // The search opens in the Files tab, in place of the tree.
-                st.right = RightTab::Files;
-                st.layout.right_open = true;
-                ide_chrome::save(&st.layout);
-                open_search(st)
-            }
-        }
-        Msg::SearchQuery(query) => {
-            if let Some(search) = st.search.as_mut() {
-                search.query = query;
-            }
-            Task::none()
-        }
-        Msg::SearchGlob(glob) => {
-            if let Some(search) = st.search.as_mut() {
-                search.glob = glob;
-            }
-            Task::none()
-        }
-        Msg::RunSearch => {
-            let Some(ws) = st.ide.workspace.clone() else {
-                return Task::none();
-            };
-            let Some(search) = st.search.as_mut() else {
-                return Task::none();
-            };
-            let query = search.query.trim().to_string();
-            if query.is_empty() {
-                return Task::none();
-            }
-            search.busy = true;
-            search.error = None;
-            let glob = search.glob.trim().to_string();
-            let c = ctx.client.clone();
-            let key = ws.to_string();
-            client::task(
-                move || fetch_search(&c, &ws, &query, &glob),
-                move |res| Msg::Searched {
-                    ws: key.clone(),
-                    res,
-                },
-            )
-        }
-        Msg::Searched { ws, res } => {
-            if is_current(st, &ws)
-                && let Some(search) = st.search.as_mut()
-            {
-                search.busy = false;
-                match res {
-                    Ok(reply) => {
-                        search.results = Some(reply);
-                        search.error = None;
-                    }
-                    Err(e) => search.error = Some(e),
-                }
-            }
-            Task::none()
-        }
-        Msg::OpenMatch(path, line) => {
-            st.diff_file = None;
-            if st.tabs.contains_key(&path) {
-                dispatch(st, Action::Activate(path.clone()));
-                if let Some(tab) = st.tabs.get_mut(&path) {
-                    goto_line(tab, line);
-                }
-                Task::none()
-            } else {
-                st.goto = Some((path.clone(), line));
-                open_path(st, path, ctx)
-            }
-        }
         Msg::Escape => {
             if st.palette.is_some() {
                 st.palette = None;
+                Task::none()
+            } else if st.right_sheet || st.left_drawer {
+                // A sheet or drawer over the centre closes before anything else goes back.
+                st.right_sheet = false;
+                st.left_drawer = false;
                 Task::none()
             } else if st.quick.is_some() {
                 st.quick = None;
@@ -1985,11 +1519,13 @@ pub fn update(st: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             tasks.push(event_task(st, event, ctx));
             Task::batch(tasks)
         }
+        // The areas' messages were handled above, by their `handles`.
+        _ => Task::none(),
     }
 }
 
 /// A hub event: a file of the workspace changed, or the agent moved on.
-fn event_task(st: &mut State, event: events::Event, ctx: &Ctx) -> Task<Msg> {
+pub(super) fn event_task(st: &mut State, event: events::Event, ctx: &Ctx) -> Task<Msg> {
     let Some(ws) = st.ide.workspace.clone() else {
         return Task::none();
     };
@@ -2055,7 +1591,12 @@ fn event_task(st: &mut State, event: events::Event, ctx: &Ctx) -> Task<Msg> {
 
 /// Opens the screen's workspace when the screen is asked to (the list is fetched first).
 pub fn load(st: &mut State, ctx: &Ctx) -> Task<Msg> {
-    let mut tasks = vec![load_roster(ctx), load_board(st, ctx)];
+    // The window's width is read now, so a narrow window opens with its drawer and sheet (later changes come by
+    // the resize events in `subscription`).
+    let width = iced::window::latest()
+        .and_then(iced::window::size)
+        .map(|size| Msg::Resized(size.width));
+    let mut tasks = vec![width, load_roster(ctx), load_board(st, ctx)];
     if !st.loaded {
         if !st.listing {
             st.listing = true;
@@ -2101,7 +1642,7 @@ pub fn entered(st: &mut State, ctx: &Ctx) -> Task<Msg> {
 
 /// Asks the hub for the run's output from where it was read to, unless a poll is already on its way. While
 /// the run is active each answer asks for the next one (`ide_panels`), so this restarts a chain that `left` ended.
-fn resume_poll(st: &mut State, ctx: &Ctx) -> Task<Msg> {
+pub(super) fn resume_poll(st: &mut State, ctx: &Ctx) -> Task<Msg> {
     if st.poll_inflight || !st.panels.run.active() {
         return Task::none();
     }
@@ -2131,6 +1672,9 @@ fn resume_poll(st: &mut State, ctx: &Ctx) -> Task<Msg> {
 /// The IDE's whole window: the top bar, the held strip, the sidebar (projects and agents), the centre (the chat,
 /// terminal, editor or diff of the selected agent, with the terminal drawer under it), the right panel, and the
 /// status bar. The palette lies over all of it. The console's sidebar and top bar are not drawn around it.
+///
+/// A narrow window keeps the side panels out of the row: below `LEFT_DRAWER_BELOW` the left sidebar is a drawer, and
+/// below `RIGHT_SHEET_BELOW` the right panel is a sheet, each laid over the centre (see `State::left_is_drawer`).
 pub fn view(st: &State, plaza: Plaza) -> Element<'_, Msg> {
     let mut page = column![ide_chrome::header(st, plaza)].height(Length::Fill);
     if plaza.held {
@@ -2140,19 +1684,8 @@ pub fn view(st: &State, plaza: Plaza) -> Element<'_, Msg> {
         page = page.push(container(line).padding([4, 16]).width(Length::Fill));
     }
     let mut body = row![].height(Length::Fill);
-    if st.layout.left_open {
-        body = body.push(
-            container(ide_sidebar::view(st))
-                .width(Length::Fixed(st.layout.left))
-                .height(Length::Fill)
-                .padding(Padding {
-                    top: 10.0,
-                    right: 10.0,
-                    bottom: 10.0,
-                    left: 12.0,
-                })
-                .style(ide_chrome::panel_style),
-        );
+    if st.layout.left_open && !st.left_is_drawer() {
+        body = body.push(left_panel(st, st.layout.left));
         body = body.push(ide_chrome::handle(Edge::Left));
     }
     body = body.push(
@@ -2166,20 +1699,9 @@ pub fn view(st: &State, plaza: Plaza) -> Element<'_, Msg> {
                 left: 14.0,
             }),
     );
-    if st.layout.right_open {
+    if st.layout.right_open && !st.right_is_sheet() {
         body = body.push(ide_chrome::handle(Edge::Right));
-        body = body.push(
-            container(ide_right::view(st))
-                .width(Length::Fixed(st.layout.right))
-                .height(Length::Fill)
-                .padding(Padding {
-                    top: 10.0,
-                    right: 12.0,
-                    bottom: 10.0,
-                    left: 10.0,
-                })
-                .style(ide_chrome::panel_style),
-        );
+        body = body.push(right_panel(st, st.layout.right));
     }
     page = page.push(body);
     page = page.push(ide_chrome::status_bar(st, plaza.live));
@@ -2187,16 +1709,58 @@ pub fn view(st: &State, plaza: Plaza) -> Element<'_, Msg> {
         .width(Length::Fill)
         .height(Length::Fill)
         .style(ui::paper);
-    if st.palette.is_some() {
-        Stack::new().push(base).push(ide_palette::view(st)).into()
-    } else {
-        base.into()
+    let mut stack = Stack::new().push(base);
+    if st.left_is_drawer() && st.left_drawer {
+        stack = stack.push(ide_chrome::overlay(
+            left_panel(st, st.layout.left.min(st.sheet_width())),
+            Edge::Left,
+        ));
     }
+    if st.right_is_sheet() && st.right_sheet {
+        stack = stack.push(ide_chrome::overlay(
+            right_panel(st, st.layout.right.min(st.sheet_width())),
+            Edge::Right,
+        ));
+    }
+    if st.palette.is_some() {
+        stack = stack.push(ide_palette::view(st));
+    }
+    stack.into()
+}
+
+/// The left side panel: the sidebar in its padding, on the panel's sheet.
+pub(super) fn left_panel(st: &State, width: f32) -> Element<'_, Msg> {
+    container(ide_sidebar::view(st))
+        .width(Length::Fixed(width))
+        .height(Length::Fill)
+        .padding(Padding {
+            top: 10.0,
+            right: 10.0,
+            bottom: 10.0,
+            left: 12.0,
+        })
+        .style(ide_chrome::panel_style)
+        .into()
+}
+
+/// The right side panel: its tabs and the shown tab, on the panel's sheet. Its tabs take the panel's width.
+pub(super) fn right_panel(st: &State, width: f32) -> Element<'_, Msg> {
+    container(ide_right::view(st, width))
+        .width(Length::Fixed(width))
+        .height(Length::Fill)
+        .padding(Padding {
+            top: 10.0,
+            right: 12.0,
+            bottom: 10.0,
+            left: 10.0,
+        })
+        .style(ide_chrome::panel_style)
+        .into()
 }
 
 /// The centre column: the selected agent's chat (or terminal, editor, diff), and under it the terminal drawer
 /// when it is open and the centre is not the terminal itself. The drawer is an agent's: repo workspaces have none.
-fn centre_column(st: &State) -> Element<'_, Msg> {
+pub(super) fn centre_column(st: &State) -> Element<'_, Msg> {
     let centre = container(ide_chat::centre(st))
         .width(Length::Fill)
         .height(Length::Fill);
@@ -2222,7 +1786,7 @@ fn centre_column(st: &State) -> Element<'_, Msg> {
 }
 
 /// The terminal drawer: its two tabs (Terminal, Run), its hide, and the tab's body.
-fn drawer(st: &State) -> Element<'_, Msg> {
+pub(super) fn drawer(st: &State) -> Element<'_, Msg> {
     let agent = matches!(st.ide.workspace, Some(WorkspaceId::Agent(_)));
     let tabs = ui::tabs(
         &[(Drawer::Terminal, "Terminal"), (Drawer::Run, "Run")],
@@ -2233,7 +1797,7 @@ fn drawer(st: &State) -> Element<'_, Msg> {
         tabs,
         Space::new().width(Length::Fill),
         ui::btn_sm(
-            "Hide  Ctrl+`",
+            "Hide Ctrl+`",
             Some("x"),
             Kind::Ghost,
             Some(Msg::ToggleDrawer)
@@ -2250,7 +1814,7 @@ fn drawer(st: &State) -> Element<'_, Msg> {
     column![head, body].spacing(8).height(Length::Fill).into()
 }
 
-fn status_line(st: &State) -> Option<Element<'_, Msg>> {
+pub(super) fn status_line(st: &State) -> Option<Element<'_, Msg>> {
     if let Some(error) = st.error.as_deref() {
         return Some(ui::error_line(error));
     }
@@ -2289,16 +1853,18 @@ pub fn subscription(st: &State, ctx: &Ctx) -> Subscription<Msg> {
         .map_or_else(Subscription::none, |tabs| {
             tabs.subscription().map(Msg::Terminals)
         });
+    let resized = iced::window::resize_events().map(|(_, size)| Msg::Resized(size.width));
     Subscription::batch([
         keys,
         drag,
         events::subscription(&ctx.client).map(Msg::Event),
         terminals,
+        resized,
     ])
 }
 
 /// The pointer while a panel edge is dragged: its moves, and the button coming up, from anywhere in the window.
-fn drag_event(event: iced::Event, _: Status, _: iced::window::Id) -> Option<Msg> {
+pub(super) fn drag_event(event: iced::Event, _: Status, _: iced::window::Id) -> Option<Msg> {
     match event {
         iced::Event::Mouse(mouse::Event::CursorMoved { position }) => {
             Some(Msg::DragMove(position.x, position.y))
@@ -2310,7 +1876,7 @@ fn drag_event(event: iced::Event, _: Status, _: iced::window::Id) -> Option<Msg>
 
 /// The IDE's keys. Ctrl+B and Ctrl+J are for the panels, so they are taken only when no focused field
 /// (the editor, a search box) took the key: typing does not fold a panel.
-fn shortcut(key: &Key, modifiers: Modifiers, status: Status) -> Option<Msg> {
+pub(super) fn shortcut(key: &Key, modifiers: Modifiers, status: Status) -> Option<Msg> {
     match key {
         Key::Named(Named::Escape) => Some(Msg::Escape),
         Key::Character(c) if modifiers.command() => {

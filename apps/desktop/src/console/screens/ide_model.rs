@@ -102,12 +102,13 @@ pub fn parse_project(v: &Value) -> Option<ProjectRow> {
     })
 }
 
-/// One task as the Tasks tab counts it (`GET /v1/tasks`).
+/// One task as the Tasks tab counts it (`GET /v1/tasks`), and the agent that claimed it, if one did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskRow {
     pub id: String,
     pub goal: String,
     pub state: String,
+    pub agent: Option<u64>,
 }
 
 pub fn parse_task(v: &Value) -> Option<TaskRow> {
@@ -115,7 +116,23 @@ pub fn parse_task(v: &Value) -> Option<TaskRow> {
         id: v.get("id")?.as_str()?.to_string(),
         goal: text(v, "goal"),
         state: text(v, "state"),
+        agent: v.get("agent_cid").and_then(Value::as_u64),
     })
+}
+
+/// The number in a task's id (`t12` is 12): tasks are numbered in the order they were made.
+fn task_number(id: &str) -> u64 {
+    id.trim_start_matches('t').parse().unwrap_or(0)
+}
+
+/// How an agent's last finished task ended (`done` or `failed`), from the roster's tasks: the one it claimed with the
+/// highest number. None while it has finished none. This is the agent's last work state for the sidebar's dot.
+pub fn last_task_outcome(tasks: &[TaskRow], cid: u64) -> Option<String> {
+    tasks
+        .iter()
+        .filter(|t| t.agent == Some(cid) && matches!(t.state.as_str(), "done" | "failed"))
+        .max_by_key(|t| task_number(&t.id))
+        .map(|t| t.state.clone())
 }
 
 /// A sidebar group: a project (with its agents and the repo workspaces it owns), or the agents that belong to

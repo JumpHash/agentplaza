@@ -14,7 +14,7 @@ use super::ide_editor;
 use crate::console::boot;
 use crate::console::shell;
 use crate::console::ui::{self, Kind};
-use crate::theme;
+use crate::theme::{self, TYPE_BADGE, TYPE_META, TYPE_UI};
 /// The grab strip on a panel's edge. Its line is one pixel of it.
 pub const HANDLE_W: f32 = 6.0;
 /// The setting that keeps the layout between runs.
@@ -77,20 +77,21 @@ pub struct Layout {
     pub right: f32,
     pub left_open: bool,
     pub right_open: bool,
-    /// The terminal drawer under the centre is open.
+    /// The terminal drawer under the centre is open. It is closed at each start: the owner opens it with Ctrl+`
+    /// or the Terminal view, and it stays as they left it for the rest of the run (it is not kept between runs).
     pub drawer: bool,
     pub terminal_height: f32,
 }
 
 impl Layout {
-    /// Both panels open at their default widths, the terminal on the side panel.
+    /// Both panels open at their default widths; the terminal drawer closed.
     pub fn fresh() -> Layout {
         Layout {
             left: LEFT.default,
             right: RIGHT.default,
             left_open: true,
             right_open: true,
-            drawer: true,
+            drawer: false,
             terminal_height: BOTTOM.default,
         }
     }
@@ -141,7 +142,6 @@ impl Layout {
             "right": self.right,
             "left_open": self.left_open,
             "right_open": self.right_open,
-            "terminal_drawer": self.drawer,
             "terminal_height": self.terminal_height,
         })
     }
@@ -167,10 +167,7 @@ impl Layout {
             .get("right_open")
             .and_then(Value::as_bool)
             .unwrap_or(true);
-        layout.drawer = value
-            .get("terminal_drawer")
-            .and_then(Value::as_bool)
-            .unwrap_or(true);
+        // The drawer is not kept between runs: it starts closed (see `Layout::drawer`).
         Some(layout)
     }
 }
@@ -277,6 +274,31 @@ pub fn panel_style(_theme: &Theme) -> container::Style {
     }
 }
 
+/// A panel laid over the centre in a narrow window (a drawer on the left, a sheet on the right): the panel at its edge,
+/// ruled off from the centre. The rest of the layer is clear, so the centre under it still takes its clicks.
+pub fn overlay<'a>(panel: Element<'a, Msg>, edge: Edge) -> Element<'a, Msg> {
+    let align = match edge {
+        Edge::Right => Alignment::End,
+        Edge::Left | Edge::Bottom => Alignment::Start,
+    };
+    container(
+        container(panel)
+            .height(Length::Fill)
+            .style(|_: &Theme| container::Style {
+                border: Border {
+                    color: theme::palette().rule,
+                    width: 1.0,
+                    radius: 0.0.into(),
+                },
+                ..Default::default()
+            }),
+    )
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .align_x(align)
+    .into()
+}
+
 /// The top bar: the mark, the breadcrumb (project / agent or repo / branch), the state badge and the changed count;
 /// then the git actions (Save; Commit and Open PR, drawn until the git flow is wired), the command palette's key,
 /// the right panel's fold, the theme switch and the way back to the console.
@@ -290,21 +312,22 @@ pub fn header(st: &State, plaza: Plaza) -> Element<'_, Msg> {
     ]
     .spacing(10)
     .align_y(Alignment::Center);
+    // The chrome is Inter in sentence case; only the branch name is code, so it alone is Martian Mono.
     if on_workspace {
         let (project, name, branch) = ide::crumbs(st);
-        start = start.push(ui::mono(project, 12.5, p.ink_2));
-        start = start.push(ui::mono("/", 12.5, p.ink_3));
-        start = start.push(ui::mono(name, 13.0, p.ink));
-        start = start.push(ui::mono("/", 12.5, p.ink_3));
-        start = start.push(ui::mono(branch, 12.5, p.ink_2));
+        start = start.push(ui::sans(project, TYPE_META, p.ink_2));
+        start = start.push(ui::sans("/", TYPE_META, p.ink_3));
+        start = start.push(ui::sans(name, TYPE_UI, p.ink));
+        start = start.push(ui::sans("/", TYPE_META, p.ink_3));
+        start = start.push(ui::mono(branch, TYPE_META, p.ink_2));
     } else {
-        start = start.push(ui::mono("IDE", 13.0, p.ink));
+        start = start.push(ui::sans("IDE", TYPE_UI, p.ink));
     }
     start = start.push(ui::badge(state_label, tone));
     if let Some(changes) = &st.changes {
-        start = start.push(ui::mono(
+        start = start.push(ui::sans(
             format!("{} changed", changes.files.len()),
-            11.5,
+            TYPE_BADGE,
             p.ink_2,
         ));
     }
@@ -325,7 +348,19 @@ pub fn header(st: &State, plaza: Plaza) -> Element<'_, Msg> {
     } else {
         ("Light theme", "sun")
     };
-    // Commit and Open PR are the hooks the git flow plugs into; until it does, they are drawn and not pressed.
+    // Commit and Open PR are the hooks the git flow plugs into; until it does, they are drawn and not pressed. In a
+    // narrow window they leave the bar, which has no room for them beside the Save and the panel toggles.
+    let narrow = st.width > 0.0 && st.width < ide::RIGHT_SHEET_BELOW;
+    let commit: Element<'_, Msg> = if narrow {
+        Space::new().width(Length::Fixed(0.0)).into()
+    } else {
+        ui::btn("Commit", Some("commit"), Kind::Secondary, None)
+    };
+    let open_pr: Element<'_, Msg> = if narrow {
+        Space::new().width(Length::Fixed(0.0)).into()
+    } else {
+        ui::btn("Open PR", Some("pull"), Kind::Secondary, None)
+    };
     let end = row![
         ui::btn(
             "Save",
@@ -333,10 +368,10 @@ pub fn header(st: &State, plaza: Plaza) -> Element<'_, Msg> {
             save_kind,
             (dirty && ide::writable(st)).then_some(Msg::Save)
         ),
-        ui::btn("Commit", Some("commit"), Kind::Secondary, None),
-        ui::btn("Open PR", Some("pull"), Kind::Secondary, None),
+        commit,
+        open_pr,
         ui::btn(
-            "Go to  Ctrl+K",
+            "Go to Ctrl+K",
             Some("search"),
             Kind::Ghost,
             Some(Msg::PaletteOpen)
@@ -467,13 +502,13 @@ pub fn status_bar(st: &State, live: bool) -> Element<'_, Msg> {
             background: Some(link_tone.into()),
             ..Default::default()
         }),
-        ui::mono(shell::live_word(live), 11.0, p.ink_2),
+        ui::sans(shell::live_word(live), TYPE_BADGE, p.ink_2),
     ]
     .spacing(6)
     .align_y(Alignment::Center);
     let mut bar = row![
-        ui::mono(workspace, 11.0, p.ink_2),
-        ui::mono(base_label(&st.ide.base), 11.0, p.ink_3),
+        ui::mono(workspace, TYPE_BADGE, p.ink_2),
+        ui::sans(base_label(&st.ide.base), TYPE_BADGE, p.ink_3),
         link,
         Space::new().width(Length::Fill),
     ]
@@ -485,10 +520,10 @@ pub fn status_bar(st: &State, live: bool) -> Element<'_, Msg> {
         let at = tab.content.cursor().position;
         bar = bar.push(ui::mono(
             format!("Ln {}, Col {}", at.line + 1, at.column + 1),
-            11.0,
+            TYPE_BADGE,
             p.ink_2,
         ));
-        bar = bar.push(ui::mono(language_of(path), 11.0, p.ink_2));
+        bar = bar.push(ui::sans(language_of(path), TYPE_BADGE, p.ink_2));
     }
     let dirty = st.tabs.values().filter(|tab| tab.buffer.dirty).count();
     let (dirty_text, dirty_ink) = if dirty == 0 {
@@ -496,7 +531,7 @@ pub fn status_bar(st: &State, live: bool) -> Element<'_, Msg> {
     } else {
         (format!("{dirty} unsaved"), p.signal)
     };
-    bar = bar.push(ui::mono(dirty_text, 11.0, dirty_ink));
+    bar = bar.push(ui::sans(dirty_text, TYPE_BADGE, dirty_ink));
     container(bar)
         .padding([4, 12])
         .width(Length::Fill)
@@ -582,7 +617,7 @@ mod tests {
     #[test]
     fn the_terminal_strip_drags_up_to_grow_the_dock() {
         let mut layout = Layout::fresh();
-        assert!(layout.drawer, "the drawer is open at the start");
+        assert!(!layout.drawer, "the drawer is closed at the start");
         let mut drag = Drag::begin(&layout, Edge::Bottom);
         drag_to(&mut layout, &mut drag, 700.0, 400.0);
         drag_to(&mut layout, &mut drag, 9.0, 350.0);
@@ -596,7 +631,9 @@ mod tests {
             "a long drag stops at the floor"
         );
         layout.toggle(Edge::Bottom);
-        assert!(!layout.drawer, "the bottom edge's toggle folds the drawer");
+        assert!(layout.drawer, "the bottom edge's toggle opens the drawer");
+        layout.toggle(Edge::Bottom);
+        assert!(!layout.drawer, "and a second toggle folds it");
     }
 
     #[test]
@@ -607,18 +644,19 @@ mod tests {
         layout.toggle(Edge::Bottom);
         layout.set_width(Edge::Bottom, 400.0);
         let back = Layout::from_json(&layout.to_json()).expect("a saved layout reads back");
-        assert_eq!(back, layout);
         assert_eq!(
             (back.drawer, back.terminal_height),
             (false, 400.0),
-            "the drawer's state and height are kept"
+            "the drawer starts closed in a new run; its height is kept"
         );
+        layout.drawer = false;
+        assert_eq!(back, layout, "everything else reads back as it was saved");
         let wild =
             json!({ "left": 5.0, "right": 5000.0, "left_open": false, "terminal_height": 9.0 });
         let read = Layout::from_json(&wild).expect("an object reads");
         assert_eq!((read.left, read.right), (200.0, 560.0));
         assert_eq!(read.terminal_height, 120.0);
-        assert!(read.drawer, "a missing drawer flag keeps the drawer open");
+        assert!(!read.drawer, "the drawer is closed at a start, whatever was kept");
         assert!(
             !read.left_open && read.right_open,
             "a missing flag keeps its default"

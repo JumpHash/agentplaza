@@ -3,11 +3,18 @@
 //! messages as right-aligned bubbles, board nudges as system bubbles, a run of tool calls as one "N steps · tools"
 //! line that opens, a working line while the agent works, and the composer that steers the agent.
 
+// The IDE's own helpers and state, for the messages this area takes (moved from `ide.rs`).
+use super::ide::*;
+use super::{ide_chrome, ide_chat};
+use apz_ide::state::Panel;
+use crate::console::Ctx;
 use std::collections::BTreeSet;
+use std::sync::LazyLock;
 
 use apz_ide::EntryKind;
-use iced::widget::{Space, column, container, row, text_editor};
-use iced::{Alignment, Element, Length, Padding};
+use iced::widget::scrollable::Viewport;
+use iced::widget::{Space, Stack, column, container, operation, row, text_editor};
+use iced::{Alignment, Element, Length, Padding, Task};
 use serde_json::Value;
 
 use super::ide::{self, Centre, Msg, State};
@@ -21,13 +28,119 @@ use crate::theme;
 /// The reading column's width, and the composer's height.
 const COLUMN_MAX: f32 = 760.0;
 const COMPOSER_H: f32 = 88.0;
+/// How far from the end the chat still counts as at the bottom, in px (a rounding margin).
+const BOTTOM_SLACK: f32 = 4.0;
 
-/// The chat's own messages: a run of tool steps opens or folds (by its first entry), and the agent's work stops.
+/// The chat's scroll area, by id: the chat follows the newest entry through it.
+pub static CHAT_ID: LazyLock<iced::widget::Id> = LazyLock::new(|| iced::widget::Id::new("ide-chat"));
+
+/// The chat's own messages: a run of tool steps opens or folds (by its first entry), the agent's work stops, the
+/// scroll area moved (its viewport), and the reader jumped to the newest entry from the "New messages" pill.
 #[derive(Debug, Clone)]
 pub enum ChatMsg {
     Steps(usize),
     Cancel,
     Cancelled(Result<(), String>),
+    Scrolled(Viewport),
+    JumpToNewest,
+}
+
+/// What the chat does when its transcript changes (see `decide`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Follow {
+    /// Scroll to the newest entry.
+    Snap,
+    /// Keep the reader's place and count these entries for the "New messages" pill.
+    Pill(usize),
+    /// Nothing to do: the reader is above the newest entries and none came.
+    Keep,
+}
+
+/// The chat's scroll state for the agent on screen: whether it has been shown yet, whether the reader is at the
+/// newest entry, how many entries the transcript had when it was last looked at, and how many came since while the
+/// reader was above them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Scroll {
+    pub shown: bool,
+    pub at_bottom: bool,
+    pub seen: usize,
+    pub unread: usize,
+}
+
+/// The auto-scroll decision: the first view of an agent's chat, and any change while the reader is at the bottom,
+/// follow the newest entry; while the reader is above it, new entries are counted for the pill instead.
+pub fn decide(shown: bool, at_bottom: bool, seen: usize, now: usize) -> Follow {
+    if !shown || at_bottom {
+        Follow::Snap
+    } else if now > seen {
+        Follow::Pill(now - seen)
+    } else {
+        Follow::Keep
+    }
+}
+
+/// Whether a viewport is scrolled to its end (within the rounding margin). A content that fits is at its end.
+pub fn at_end(viewport: &Viewport) -> bool {
+    let overflow = viewport.content_bounds().height - viewport.bounds().height;
+    overflow <= 0.0 || viewport.absolute_offset().y >= overflow - BOTTOM_SLACK
+}
+
+/// Scrolls the chat to its newest entry.
+fn snap() -> Task<Msg> {
+    operation::snap_to_end(CHAT_ID.clone())
+}
+
+/// The transcript landed: follows it, or counts what came for the pill (see `decide`). The entries are the
+/// agent's transcript as the panels hold it.
+pub fn transcript_landed(st: &mut State) -> Task<Msg> {
+    let now = st.panels.entries.len();
+    let scroll = &mut st.chat_scroll;
+    match decide(scroll.shown, scroll.at_bottom, scroll.seen, now) {
+        Follow::Snap => {
+            scroll.shown = true;
+            scroll.at_bottom = true;
+            scroll.unread = 0;
+            scroll.seen = now;
+            snap()
+        }
+        Follow::Pill(count) => {
+            scroll.unread += count;
+            scroll.seen = now;
+            Task::none()
+        }
+        Follow::Keep => {
+            scroll.seen = now;
+            Task::none()
+        }
+    }
+}
+
+/// The chat is shown again (its scroll area is new on screen, so it starts at the top): it goes to the newest entry.
+pub fn shown_again(st: &mut State) -> Task<Msg> {
+    st.chat_scroll.at_bottom = true;
+    st.chat_scroll.unread = 0;
+    st.chat_scroll.shown = true;
+    snap()
+}
+
+/// The chat's own messages (see `ChatMsg`): the reader's scroll is kept; the pill's press goes to the newest entry.
+pub fn update_scroll(st: &mut State, msg: ChatMsg) -> Option<Task<Msg>> {
+    match msg {
+        ChatMsg::Scrolled(viewport) => {
+            st.chat_scroll.at_bottom = at_end(&viewport);
+            if st.chat_scroll.at_bottom {
+                st.chat_scroll.unread = 0;
+            }
+            Some(Task::none())
+        }
+        ChatMsg::JumpToNewest => {
+            st.chat_scroll.at_bottom = true;
+            st.chat_scroll.unread = 0;
+            st.chat_scroll.seen = st.panels.entries.len();
+            Some(snap())
+        }
+        _ => None,
+    }
 }
 
 /// Agent text, drawn with its rich content (chips, cards, images: `console::rich`). Every place that shows agent prose
@@ -89,7 +202,7 @@ pub fn header(st: &State) -> Element<'_, Msg> {
     if let Some(dot) = dot {
         head = head.push(ide_sidebar::dot_mark(dot));
     }
-    head = head.push(ui::mono(name, 14.0, p.ink));
+    head = head.push(ui::sans(name, 14.0, p.ink));
     head = head.push(Space::new().width(Length::Fill));
     head = head.push(ui::tabs(
         &[
@@ -325,7 +438,7 @@ fn composer(st: &State) -> Element<'_, Msg> {
     let working = agent.is_some_and(|a| a.status == "working");
     let stop = working && !st.cancelling;
     let foot = row![
-        ui::mono(
+        ui::sans(
             format!("Sending to: {who}{on}"),
             11.5,
             theme::palette().ink_3
@@ -334,7 +447,7 @@ fn composer(st: &State) -> Element<'_, Msg> {
         ui::btn(
             "Stop",
             Some("stop"),
-            Kind::Danger,
+            Kind::DangerOutline,
             stop.then_some(Msg::Chat(ChatMsg::Cancel))
         ),
         ui::btn(
@@ -353,7 +466,8 @@ fn composer(st: &State) -> Element<'_, Msg> {
     col.into()
 }
 
-/// The chat: the transcript in a reading column that scrolls, and the composer under it.
+/// The chat: the transcript in a reading column that scrolls (and follows its newest entry, see `decide`), a
+/// "New messages" pill while the reader is above new entries, and the composer under it.
 pub fn chat(st: &State) -> Element<'_, Msg> {
     let reading = container(transcript(st))
         .max_width(COLUMN_MAX)
@@ -362,11 +476,35 @@ pub fn chat(st: &State) -> Element<'_, Msg> {
         .width(Length::Fill)
         .center_x(Length::Fill)
         .padding([12, 16]);
+    let scroll = ui::scroll(body)
+        .id(CHAT_ID.clone())
+        .on_scroll(|viewport| Msg::Chat(ChatMsg::Scrolled(viewport)))
+        .height(Length::Fill);
+    let transcript_area: Element<'_, Msg> = if st.chat_scroll.unread > 0 && !st.chat_scroll.at_bottom {
+        Stack::new()
+            .push(scroll)
+            .push(
+                container(pill())
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .align_x(Alignment::Center)
+                    .align_y(Alignment::End)
+                    .padding(Padding {
+                        top: 0.0,
+                        right: 0.0,
+                        bottom: 12.0,
+                        left: 0.0,
+                    }),
+            )
+            .into()
+    } else {
+        scroll.into()
+    };
     let base = container(composer(st))
         .max_width(COLUMN_MAX)
         .width(Length::Fill);
     column![
-        ui::scroll(body).height(Length::Fill),
+        transcript_area,
         container(base)
             .width(Length::Fill)
             .center_x(Length::Fill)
@@ -374,6 +512,27 @@ pub fn chat(st: &State) -> Element<'_, Msg> {
     ]
     .spacing(0)
     .height(Length::Fill)
+    .into()
+}
+
+/// The pill that jumps the reader to the newest entry.
+fn pill<'a>() -> Element<'a, Msg> {
+    let p = theme::palette();
+    container(ui::btn(
+        "New messages ↓",
+        None,
+        Kind::Secondary,
+        Some(Msg::Chat(ChatMsg::JumpToNewest)),
+    ))
+    .style(move |_| container::Style {
+        background: Some(p.sheet.into()),
+        border: iced::Border {
+            color: p.rule,
+            width: 1.0,
+            radius: 14.0.into(),
+        },
+        ..Default::default()
+    })
     .into()
 }
 
@@ -408,6 +567,46 @@ pub fn centre(st: &State) -> Element<'_, Msg> {
     .spacing(0)
     .height(Length::Fill)
     .into()
+}
+
+// ---- The messages the IDE hands to this area (moved from `ide.rs`'s `update`) ----------------------
+
+/// Whether a message is this area's: `update` below takes it, and `ide.rs` hands it over.
+pub(super) fn handles(msg: &Msg) -> bool {
+    matches!(msg, Msg::Centre(..) | Msg::Chat(..))
+}
+
+/// The area's messages: the state they change, and the tasks they start. See `handles`.
+pub(super) fn update(st: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
+    match msg {
+        Msg::Centre(centre) => {
+            st.centre = centre;
+            st.diff_file = None;
+            // The Terminal view opens the drawer too, so the terminal is docked under the chat when the owner goes back.
+            if centre == Centre::Terminal && !st.layout.drawer {
+                st.layout.drawer = true;
+                ide_chrome::save(&st.layout);
+            }
+            ensure_terminals(st, ctx);
+            match (centre, st.ide.workspace.clone()) {
+                (Centre::Chat, Some(ws)) => {
+                    // The chat's scroll area is new on screen: it opens at the newest entry.
+                    let to_newest = ide_chat::shown_again(st);
+                    Task::batch([
+                        ide_panels::show(&mut st.panels, Panel::Agent, &ctx.client, &ws)
+                            .map(Msg::Panels),
+                        to_newest,
+                    ])
+                }
+                (Centre::Diff, Some(_)) if st.changes.is_none() && !st.changes_busy => {
+                    changes_task(st, ctx)
+                }
+                _ => Task::none(),
+            }
+        }
+        Msg::Chat(msg) => chat_task(st, msg, ctx),
+        _ => Task::none(),
+    }
 }
 
 #[cfg(test)]

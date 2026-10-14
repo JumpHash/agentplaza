@@ -2,6 +2,13 @@
 //! filter and refresh, the search when one is open, and the checkpoints), the editor and the diff in the centre.
 //! The tree, search, checkpoint and diff pieces are the ones the IDE has always had; this module places them.
 
+// The IDE's own helpers and state, for the messages this area takes (moved from `ide.rs`).
+use super::ide::*;
+use super::ide_chrome;
+use apz_ide::state::Action;
+use serde_json::{json, Value};
+use crate::console::{client, Ctx};
+use iced::Task;
 use apz_ide::state::Base;
 use apz_ide::{ChangeSet, FileChange};
 use iced::widget::{Space, button, column, container, row, text_input};
@@ -302,4 +309,419 @@ fn checkpoints_panel(st: &State) -> Element<'_, Msg> {
         );
     }
     list.into()
+}
+
+// ---- The messages the IDE hands to this area (moved from `ide.rs`'s `update`) ----------------------
+
+/// Whether a message is this area's: `update` below takes it, and `ide.rs` hands it over.
+pub(super) fn handles(msg: &Msg) -> bool {
+    matches!(msg, Msg::Dir { .. } | Msg::ToggleDir(..) | Msg::MoreDir(..) | Msg::RefreshAll | Msg::ChangedOnly | Msg::OpenPath(..) | Msg::ShowDiff(..) | Msg::CloseDiff | Msg::Opened { .. } | Msg::Activate(..) | Msg::Close(..) | Msg::Edit(..) | Msg::Save | Msg::Saved { .. } | Msg::Reload(..) | Msg::Reloaded { .. } | Msg::KeepMine(..) | Msg::Remote { .. } | Msg::Changed { .. } | Msg::PickBase(..) | Msg::CompareWith(..) | Msg::Checkpoints { .. } | Msg::AskRestore(..) | Msg::CancelRestore | Msg::Restore(..) | Msg::Restored { .. } | Msg::ToggleQuick | Msg::QuickQuery(..) | Msg::QuickFirst | Msg::ToggleSearch | Msg::SearchQuery(..) | Msg::SearchGlob(..) | Msg::RunSearch | Msg::Searched { .. } | Msg::OpenMatch(..))
+}
+
+/// The area's messages: the state they change, and the tasks they start. See `handles`.
+pub(super) fn update(st: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
+    match msg {
+        Msg::Dir {
+            ws,
+            dir,
+            first,
+            res,
+        } => {
+            if !is_current(st, &ws) {
+                return Task::none();
+            }
+            match res {
+                Ok(page) => {
+                    ide_tree::apply_page(&mut st.tree, &dir, page, first);
+                    load_missing(st, ctx)
+                }
+                Err(e) => {
+                    st.tree.inflight.remove(&dir);
+                    st.notice = Some(format!(
+                        "Could not list {}: {e}",
+                        if dir.is_empty() { "the root" } else { &dir }
+                    ));
+                    Task::none()
+                }
+            }
+        }
+        Msg::ToggleDir(dir) => {
+            ide_tree::toggle(&mut st.tree, &dir);
+            load_missing(st, ctx)
+        }
+        Msg::MoreDir(dir) => {
+            let Some(cursor) = st.tree.more.get(&dir).cloned() else {
+                return Task::none();
+            };
+            list_dir(st, ctx, dir, Some(cursor))
+        }
+        Msg::RefreshAll => reload_all(st, ctx),
+        Msg::ChangedOnly => {
+            dispatch(st, Action::ToggleChangedFilter);
+            load_missing(st, ctx)
+        }
+        Msg::OpenPath(path) => open_path(st, path, ctx),
+        Msg::ShowDiff(path) => {
+            // A changed file's diff is shown in the centre's Diff view, beside the list of changes.
+            st.quick = None;
+            st.centre = Centre::Diff;
+            st.diff_file = Some(path);
+            Task::none()
+        }
+        Msg::CloseDiff => {
+            st.diff_file = None;
+            Task::none()
+        }
+        Msg::Opened { ws, path, res } => {
+            if !is_current(st, &ws) {
+                return Task::none();
+            }
+            match res {
+                Ok(file) => match file.text {
+                    Some(text) => {
+                        st.tabs
+                            .insert(path.clone(), Tab::new(&path, file.hash, &text));
+                        dispatch(st, Action::Open(path.clone()));
+                        st.notice = None;
+                        apply_goto(st, &path);
+                    }
+                    None => st.notice = Some(format!("{path} is not a text file.")),
+                },
+                Err(e) => st.notice = Some(format!("{path}: {e}")),
+            }
+            Task::none()
+        }
+        Msg::Activate(path) => {
+            st.diff_file = None;
+            dispatch(st, Action::Activate(path));
+            Task::none()
+        }
+        Msg::Close(path) => {
+            if st.tabs.get(&path).is_some_and(|t| t.buffer.dirty) {
+                st.notice = Some(format!("Save {path} before closing it."));
+                return Task::none();
+            }
+            st.tabs.remove(&path);
+            dispatch(st, Action::Close(path));
+            Task::none()
+        }
+        Msg::Edit(path, action) => {
+            if writable(st)
+                && let Some(tab) = st.tabs.get_mut(&path)
+                && tab.edit(action)
+            {
+                st.saved = false;
+            }
+            Task::none()
+        }
+        Msg::Save => {
+            let Some(path) = st.ide.active.clone() else {
+                return Task::none();
+            };
+            let Some(ws) = st.ide.workspace.clone() else {
+                return Task::none();
+            };
+            let Some(tab) = st.tabs.get(&path) else {
+                return Task::none();
+            };
+            if !tab.buffer.dirty {
+                return Task::none();
+            }
+            if !writable(st) {
+                st.notice = Some("This workspace is read-only.".into());
+                return Task::none();
+            }
+            let sent = tab.buffer.text.clone();
+            let expected = tab.buffer.base_hash.clone();
+            st.notice = Some(format!("Saving {path}…"));
+            let c = ctx.client.clone();
+            let key = ws.to_string();
+            let p = path.clone();
+            let text = sent.clone();
+            // `client::task` is for `String` errors; a save carries its own (`SaveError`), so it runs as a plain task.
+            Task::perform(
+                async move { put_file(&c, &ws, &p, &text, expected.as_deref()) },
+                move |res| Msg::Saved {
+                    ws: key.clone(),
+                    path: path.clone(),
+                    sent: sent.clone(),
+                    res,
+                },
+            )
+        }
+        Msg::Saved {
+            ws,
+            path,
+            sent,
+            res,
+        } => {
+            if !is_current(st, &ws) {
+                return Task::none();
+            }
+            match res {
+                Ok(saved) => {
+                    if let Some(tab) = st.tabs.get_mut(&path) {
+                        tab.saved(&sent, saved.hash);
+                    }
+                    st.saved = true;
+                    st.notice = Some(format!("Saved {path}"));
+                    Task::batch([changes_throttled(st, ctx), checkpoints_task(st, ctx)])
+                }
+                Err(SaveError::Conflict(current)) => {
+                    if let Some(tab) = st.tabs.get_mut(&path) {
+                        tab.conflicted(current);
+                    }
+                    st.notice = Some(format!(
+                        "{path} changed on the hub since you opened it. Reload it or keep yours."
+                    ));
+                    Task::none()
+                }
+                Err(SaveError::Failed(e)) => {
+                    st.notice = Some(format!("Save failed: {e}"));
+                    Task::none()
+                }
+            }
+        }
+        Msg::Reload(path) => {
+            let Some(ws) = st.ide.workspace.clone() else {
+                return Task::none();
+            };
+            let c = ctx.client.clone();
+            let key = ws.to_string();
+            let p = path.clone();
+            client::task(
+                move || fetch_file(&c, &ws, &p),
+                move |res| Msg::Reloaded {
+                    ws: key.clone(),
+                    path: path.clone(),
+                    res,
+                },
+            )
+        }
+        Msg::Reloaded { ws, path, res } => {
+            if !is_current(st, &ws) {
+                return Task::none();
+            }
+            match res {
+                Ok(file) => match (file.text, st.tabs.get_mut(&path)) {
+                    (Some(text), Some(tab)) => {
+                        tab.reload(&path, file.hash, &text);
+                        st.notice = Some(format!("Reloaded {path}"));
+                    }
+                    (None, _) => st.notice = Some(format!("{path} is not a text file.")),
+                    (Some(_), None) => {}
+                },
+                Err(e) => st.notice = Some(format!("Reload failed: {e}")),
+            }
+            Task::none()
+        }
+        Msg::KeepMine(path) => {
+            if let Some(tab) = st.tabs.get_mut(&path) {
+                tab.keep_mine();
+                st.notice = Some(format!(
+                    "Kept your version of {path}. Saving replaces the hub's file."
+                ));
+            }
+            Task::none()
+        }
+        Msg::Remote { ws, path, res } => {
+            if is_current(st, &ws)
+                && let Ok(file) = res
+                && let Some(tab) = st.tabs.get_mut(&path)
+            {
+                match tab.remote(file.hash.as_deref()) {
+                    Remote::Reload => {
+                        if let Some(text) = &file.text {
+                            tab.reload(&path, file.hash.clone(), text);
+                        }
+                    }
+                    Remote::Same | Remote::Conflict => {}
+                }
+            }
+            Task::none()
+        }
+        Msg::Changed { ws, base, res } => {
+            st.changes_busy = false;
+            if is_current(st, &ws) && base == st.ide.base {
+                match res {
+                    Ok(set) => {
+                        st.changes = Some(set);
+                        st.changes_error = None;
+                    }
+                    Err(e) => st.changes_error = Some(e),
+                }
+            }
+            Task::none()
+        }
+        Msg::PickBase(choice) => match choice {
+            BaseChoice::WorkStart => {
+                dispatch(st, Action::SetBase(Base::WorkStart));
+                changes_task(st, ctx)
+            }
+            BaseChoice::Checkpoint => match st.checkpoints.iter().map(|c| c.n).max() {
+                Some(n) => {
+                    dispatch(st, Action::SetBase(Base::Checkpoint(n)));
+                    changes_task(st, ctx)
+                }
+                None => {
+                    st.notice = Some("There is no checkpoint to compare with yet.".into());
+                    Task::none()
+                }
+            },
+        },
+        Msg::CompareWith(n) => {
+            dispatch(st, Action::SetBase(Base::Checkpoint(n)));
+            changes_task(st, ctx)
+        }
+        Msg::Checkpoints { ws, res } => {
+            if is_current(st, &ws) {
+                match res {
+                    Ok(list) => st.checkpoints = list,
+                    Err(e) => st.notice = Some(format!("Checkpoints: {e}")),
+                }
+            }
+            Task::none()
+        }
+        Msg::AskRestore(n) => {
+            st.restore = Some(n);
+            Task::none()
+        }
+        Msg::CancelRestore => {
+            st.restore = None;
+            Task::none()
+        }
+        Msg::Restore(n) => {
+            let Some(ws) = st.ide.workspace.clone() else {
+                return Task::none();
+            };
+            st.notice = Some(format!("Restoring checkpoint #{n}…"));
+            let c = ctx.client.clone();
+            let key = ws.to_string();
+            client::task(
+                move || {
+                    c.post::<Value>(
+                        &route(&ws, &format!("/checkpoints/{n}/restore")),
+                        &json!({}),
+                    )
+                    .map(|_| ())
+                },
+                move |res| Msg::Restored {
+                    ws: key.clone(),
+                    res,
+                },
+            )
+        }
+        Msg::Restored { ws, res } => {
+            if !is_current(st, &ws) {
+                return Task::none();
+            }
+            st.restore = None;
+            match res {
+                Ok(()) => {
+                    st.notice = Some("Restored the checkpoint.".into());
+                    reload_all(st, ctx)
+                }
+                Err(e) => {
+                    st.notice = Some(format!("Restore failed: {e}"));
+                    Task::none()
+                }
+            }
+        }
+        Msg::ToggleQuick => {
+            if st.quick.is_some() {
+                st.quick = None;
+                Task::none()
+            } else {
+                st.quick = Some(String::new());
+                st.search = None;
+                st.centre = Centre::Editor;
+                iced::widget::operation::focus(QUICK_ID.clone())
+            }
+        }
+        Msg::QuickQuery(query) => {
+            st.quick = Some(query);
+            Task::none()
+        }
+        Msg::QuickFirst => match quick_hits(st).into_iter().next() {
+            Some(first) => open_path(st, first, ctx),
+            None => Task::none(),
+        },
+        Msg::ToggleSearch => {
+            if st.search.is_some() {
+                st.search = None;
+                Task::none()
+            } else {
+                // The search opens in the Files tab, in place of the tree.
+                st.right = RightTab::Files;
+                st.layout.right_open = true;
+                ide_chrome::save(&st.layout);
+                open_search(st)
+            }
+        }
+        Msg::SearchQuery(query) => {
+            if let Some(search) = st.search.as_mut() {
+                search.query = query;
+            }
+            Task::none()
+        }
+        Msg::SearchGlob(glob) => {
+            if let Some(search) = st.search.as_mut() {
+                search.glob = glob;
+            }
+            Task::none()
+        }
+        Msg::RunSearch => {
+            let Some(ws) = st.ide.workspace.clone() else {
+                return Task::none();
+            };
+            let Some(search) = st.search.as_mut() else {
+                return Task::none();
+            };
+            let query = search.query.trim().to_string();
+            if query.is_empty() {
+                return Task::none();
+            }
+            search.busy = true;
+            search.error = None;
+            let glob = search.glob.trim().to_string();
+            let c = ctx.client.clone();
+            let key = ws.to_string();
+            client::task(
+                move || fetch_search(&c, &ws, &query, &glob),
+                move |res| Msg::Searched {
+                    ws: key.clone(),
+                    res,
+                },
+            )
+        }
+        Msg::Searched { ws, res } => {
+            if is_current(st, &ws)
+                && let Some(search) = st.search.as_mut()
+            {
+                search.busy = false;
+                match res {
+                    Ok(reply) => {
+                        search.results = Some(reply);
+                        search.error = None;
+                    }
+                    Err(e) => search.error = Some(e),
+                }
+            }
+            Task::none()
+        }
+        Msg::OpenMatch(path, line) => {
+            st.diff_file = None;
+            if st.tabs.contains_key(&path) {
+                dispatch(st, Action::Activate(path.clone()));
+                if let Some(tab) = st.tabs.get_mut(&path) {
+                    goto_line(tab, line);
+                }
+                Task::none()
+            } else {
+                st.goto = Some((path.clone(), line));
+                open_path(st, path, ctx)
+            }
+        }
+        _ => Task::none(),
+    }
 }

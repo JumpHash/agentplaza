@@ -2,6 +2,12 @@
 //! grouping), each agent's status dot, name, current task and unread count, a hover card with what the agent
 //! is, and "+ New agent" at the foot. Rows come from the roster `ide.rs` loads (`ide_model` groups and reads them).
 
+// The IDE's own helpers and state, for the messages this area takes (moved from `ide.rs`).
+use super::ide::*;
+use std::str::FromStr;
+use apz_ide::WorkspaceId;
+use crate::console::Ctx;
+use iced::Task;
 use iced::font::{Font, Style as FontStyle, Weight};
 use iced::widget::{Space, Stack, button, column, container, row, text, text_input, tooltip};
 use iced::{Alignment, Element, Length};
@@ -73,9 +79,7 @@ pub fn view(st: &State) -> Element<'_, Msg> {
         }
         for cid in &group.agents {
             if let Some(agent) = agents.iter().find(|a| a.cid == *cid) {
-                let last = (selected_cid == Some(*cid))
-                    .then(|| ide_model::last_outcome(&st.panels.entries))
-                    .flatten();
+                let last = last_of(st, *cid, selected_cid);
                 list = list.push(agent_row(
                     st,
                     agent,
@@ -94,7 +98,7 @@ pub fn view(st: &State) -> Element<'_, Msg> {
     let footer = button(
         row![
             ui::icon("plus", 14.0, theme::palette().ink_2),
-            ui::mono("New agent", 12.5, theme::palette().ink)
+            ui::sans("New agent", 12.5, theme::palette().ink)
         ]
         .spacing(8)
         .align_y(Alignment::Center),
@@ -108,6 +112,15 @@ pub fn view(st: &State) -> Element<'_, Msg> {
         .spacing(10)
         .height(Length::Fill)
         .into()
+}
+
+/// An agent's last finished work, for its status dot: the transcript's last outcome for the agent on screen (the
+/// fresher of the two), else the outcome of its last finished task on the roster. Every agent gets its dot this way.
+fn last_of(st: &State, cid: u64, selected: Option<u64>) -> Option<String> {
+    let on_screen = (selected == Some(cid))
+        .then(|| ide_model::last_outcome(&st.panels.entries))
+        .flatten();
+    on_screen.or_else(|| ide_model::last_task_outcome(&st.tasks, cid))
 }
 
 /// A group's header: its disclosure, its title and its count. A press folds the group.
@@ -170,14 +183,15 @@ pub fn dot_mark<'a>(dot: Dot) -> Element<'a, Msg> {
 
 /// A name with a rule through its middle (iced has no strikethrough): a finished agent's name.
 fn struck(name: String) -> Element<'static, Msg> {
-    let rule = container(Space::new().width(Length::Fill).height(Length::Fixed(1.0)))
+    // The rule is one pixel tall, centred on the name: only the line takes the colour, not the whole stacked row.
+    let line = container(Space::new().width(Length::Fill).height(Length::Fixed(1.0))).style(|_| container::Style {
+        background: Some(theme::palette().ink_3.into()),
+        ..Default::default()
+    });
+    let rule = container(line)
         .width(Length::Fill)
         .height(Length::Fill)
-        .align_y(Alignment::Center)
-        .style(|_| container::Style {
-            background: Some(theme::palette().ink_3.into()),
-            ..Default::default()
-        });
+        .align_y(Alignment::Center);
     Stack::new()
         .push(
             text(name)
@@ -322,6 +336,56 @@ fn hover_card(agent: &AgentRow, last: Option<&str>) -> Element<'static, Msg> {
         .padding(10)
         .style(ui::frame(Some(p.sheet), p.rule))
         .into()
+}
+
+// ---- The messages the IDE hands to this area (moved from `ide.rs`'s `update`) ----------------------
+
+/// Whether a message is this area's: `update` below takes it, and `ide.rs` hands it over.
+pub(super) fn handles(msg: &Msg) -> bool {
+    matches!(msg, Msg::Pick(..) | Msg::SidebarQuery(..) | Msg::ToggleGroup(..) | Msg::NewAgent | Msg::Roster(..))
+}
+
+/// The area's messages: the state they change, and the tasks they start. See `handles`.
+pub(super) fn update(st: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
+    match msg {
+        Msg::Pick(pick) => match WorkspaceId::from_str(&pick.id) {
+            Ok(id) => select(st, id, ctx),
+            Err(e) => {
+                st.notice = Some(e.to_string());
+                Task::none()
+            }
+        },
+        Msg::SidebarQuery(query) => {
+            st.sidebar_query = query;
+            Task::none()
+        }
+        Msg::ToggleGroup(key) => {
+            if !st.collapsed.remove(&key) {
+                st.collapsed.insert(key);
+            }
+            Task::none()
+        }
+        Msg::NewAgent => Task::none(),
+        Msg::Roster(res) => {
+            match res {
+                Ok(roster) => {
+                    st.roster = roster.agents;
+                    st.projects = roster.projects;
+                    st.tasks = roster.tasks;
+                    st.roster_loaded = true;
+                    st.roster_error = None;
+                    // The board names its authors from this roster, so a post reads by name, not by cid.
+                    st.board.adopt_names(st.roster.iter().map(|a| {
+                        let name = a.name.trim();
+                        (a.cid, if name.is_empty() { "Unnamed".to_string() } else { name.to_string() })
+                    }));
+                }
+                Err(e) => st.roster_error = Some(e),
+            }
+            Task::none()
+        }
+        _ => Task::none(),
+    }
 }
 
 #[cfg(test)]
