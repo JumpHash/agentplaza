@@ -19,6 +19,8 @@ pub enum Cmd {
     },
     /// Show whether this machine is joined, to which hub, and whether its node process runs.
     Status,
+    /// Start this machine's node process again, as joined (nothing rejoins; the identity stays).
+    Start,
     /// Stop this machine's node process. With --forget, also delete its identity (asks first).
     Leave {
         /// Delete the node identity: this machine can rejoin only with a new code.
@@ -36,6 +38,7 @@ pub fn run(cmd: Cmd, json: bool) -> Result<(), String> {
     match cmd {
         Cmd::Join { code } => join(&code),
         Cmd::Status => status(json),
+        Cmd::Start => start(),
         Cmd::Leave { forget, yes } => leave(forget, yes),
         Cmd::Run => {
             let status = Command::new(apz_link()).arg("run").status().map_err(|e| format!("apz-link run: {e}"))?;
@@ -84,6 +87,19 @@ fn join(code: &str) -> Result<(), String> {
         return Err(if err.is_empty() { "apz-link join failed".into() } else { err });
     }
     print!("{}", String::from_utf8_lossy(&out.stdout));
+    start_detached()
+}
+
+/// Starts the node of a machine that has joined and whose process is stopped, with the same
+/// detached `apz-link run` that `join` starts. Nothing is joined again.
+fn start() -> Result<(), String> {
+    if !node_dir().join("node.json").exists() {
+        return Err("this machine has not joined a network: join with `agentplaza node join <code>`".into());
+    }
+    if let Some(pid) = read_pid().filter(|pid| alive(*pid)) {
+        println!("this machine's node is already running (pid {pid})");
+        return Ok(());
+    }
     start_detached()
 }
 
@@ -136,7 +152,7 @@ fn status(json: bool) -> Result<(), String> {
     }
     let process = match (running, pid) {
         (true, Some(pid)) => format!("running (pid {pid})"),
-        _ => "not running (start it with: agentplaza node run, or join again)".to_string(),
+        _ => "not running (start it with: agentplaza node start)".to_string(),
     };
     let width = 8;
     println!("{:>width$}  {hub}", "hub");

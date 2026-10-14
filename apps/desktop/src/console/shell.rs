@@ -69,6 +69,8 @@ pub struct State {
     /// The top bar's node indicator (`noded` in `/v1/overview`).
     pub node_ok: bool,
     pub hub_ok: bool,
+    /// The hub's live event stream is connected: the top bar's "Live", else "Reconnecting…".
+    pub live: bool,
     /// The hub's address, shown faint in the sidebar footer.
     pub hub: String,
     /// The graphics adapter, when it is a software fallback (the 3D floor will crawl on it).
@@ -108,6 +110,7 @@ impl Default for State {
             idle: 0,
             node_ok: false,
             hub_ok: false,
+            live: false,
             hub: String::new(),
             software_gpu: None,
             target: None,
@@ -164,6 +167,8 @@ pub enum Msg {
     Done(Result<serde_json::Value, String>),
     /// A hub frame from the top bar's stream.
     Frame(events::Event),
+    /// The events socket came up (true) or went down (false), from the top bar's link stream.
+    Live(bool),
     /// Puts a toast up for `toast::LIFETIME`.
     Toast(toast::Kind, String),
     /// The toasts' clock: takes down the ones whose time is up. Ticks only while a toast is on screen.
@@ -315,6 +320,10 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> (Task<Msg>, Option<Id>)
             toast::expire(&mut state.toasts, now);
             (Task::none(), None)
         }
+        Msg::Live(up) => {
+            state.live = up;
+            (Task::none(), None)
+        }
         Msg::Frame(event) => {
             if apply_frame(state, &event.kind, &event.data) {
                 if state.loading {
@@ -429,6 +438,10 @@ pub fn subscription(state: &State) -> Subscription<Msg> {
         Some(target) => events::top_bar(target).map(Msg::Frame),
         None => Subscription::none(),
     };
+    let live = match &state.target {
+        Some(target) => events::link(target).map(Msg::Live),
+        None => Subscription::none(),
+    };
     // The toasts' clock runs only while a toast is on screen (a quarter-second step ends them within 4.25 s).
     let clock = if state.toasts.is_empty() { Subscription::none() } else { iced::time::every(Duration::from_millis(250)).map(Msg::ToastTick) };
     // The `[` key cycles the sidebar, as on the web. A key a focused text field takes is captured
@@ -444,7 +457,7 @@ pub fn subscription(state: &State) -> Subscription<Msg> {
     // While a resize drag runs, the pointer's moves and the button's release come from anywhere in
     // the window (the pointer can leave the handle), so they are listened to for the drag only.
     let drag = if state.drag.is_some() { event::listen_with(drag_event) } else { Subscription::none() };
-    Subscription::batch([frames, clock, keys, drag])
+    Subscription::batch([frames, live, clock, keys, drag])
 }
 
 fn drag_event(event: iced::Event, _: event::Status, _: iced::window::Id) -> Option<Msg> {
@@ -672,6 +685,7 @@ fn top_bar<'a, M: Clone + 'a>(state: &'a State, wrap: fn(Msg) -> M) -> Element<'
     let health = row![
         indicator(state.hub_ok, "HUB"),
         indicator(state.node_ok, "NODE"),
+        indicator(state.live, live_word(state.live)),
         row![hollow_mark(crate::theme::palette().ink_2), ui::mono(format!("{} WORKING · {} IDLE", state.working, state.idle), 11.5, crate::theme::palette().ink_2)]
             .spacing(7)
             .align_y(Alignment::Center),
@@ -749,6 +763,11 @@ fn top_btn<'a, M: Clone + 'a>(label: &str, icon_name: &str, fill: Color, msg: M)
 }
 
 /// A square status light and its label, as the web's top bar draws the hub and node.
+/// The top bar's word for the events socket, as the web's sidebar says it.
+fn live_word(up: bool) -> &'static str {
+    if up { "Live" } else { "Reconnecting…" }
+}
+
 fn indicator<'a, M: 'a>(up: bool, label: &'static str) -> Element<'a, M> {
     let tone = if up { crate::theme::palette().ok } else { crate::theme::palette().crit };
     row![
@@ -812,6 +831,13 @@ fn held_banner<'a, M: Clone + 'a>(state: &'a State, wrap: fn(Msg) -> M) -> Eleme
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_top_bar_says_live_or_reconnecting_as_the_web_does() {
+        assert_eq!(live_word(true), "Live");
+        assert_eq!(live_word(false), "Reconnecting…");
+        assert!(!State::default().live, "the stream is down until it connects");
+    }
 
     fn ctx() -> Ctx {
         Ctx { client: super::super::client::Client::new("http://127.0.0.1:1", None, None) }

@@ -23,6 +23,12 @@ pub enum Cmd {
         #[arg(long, default_value_t = 15)]
         ttl: u64,
     },
+    /// The join codes: state (active, used, expired, revoked), when made and when they end, and who used them.
+    /// `codes revoke ID` takes an unused code back.
+    Codes {
+        #[command(subcommand)]
+        action: Option<CodesCmd>,
+    },
     /// Stop new agents on a node (the ones running keep going).
     Drain {
         /// The node's id.
@@ -40,6 +46,15 @@ pub enum Cmd {
         /// Revoke without asking.
         #[arg(long)]
         yes: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum CodesCmd {
+    /// Revoke a join code nobody has used yet: it can no longer join a machine.
+    Revoke {
+        /// The code's id (from `agentplaza nodes codes`).
+        id: String,
     },
 }
 
@@ -92,6 +107,17 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                 println!("on the machine: agentplaza node join {token}");
             });
         }
+        Cmd::Codes { action: None } => {
+            let codes = ctx.client.get("/v1/nodes/codes")?;
+            ctx.out(&codes, |v| {
+                let rows: Vec<Vec<String>> = v.as_array().map(|a| a.iter().map(code_row).collect()).unwrap_or_default();
+                ctx::table(&["id", "label", "state", "created", "expires", "used"], &rows);
+            });
+        }
+        Cmd::Codes { action: Some(CodesCmd::Revoke { id }) } => {
+            let revoked = ctx.client.delete(&format!("/v1/nodes/codes/{}", ctx::seg(&id)))?;
+            ctx.out(&revoked, |_| println!("join code {id} revoked"));
+        }
         Cmd::Drain { id } => {
             let node = ctx.client.post(&format!("/v1/nodes/{}/drain", ctx::seg(&id)), &json!({ "on": true }))?;
             ctx.out(&node, |v| println!("{} is draining", name_or(v, &id)));
@@ -119,6 +145,23 @@ fn name_or(v: &Value, id: &str) -> String {
 
 fn row(n: &Value) -> Vec<String> {
     vec![ctx::s(n, "id").to_string(), host(n), state(n).to_string(), cids(n), ctx::text(n, "agents"), last_seen(n)]
+}
+
+fn code_row(c: &Value) -> Vec<String> {
+    vec![
+        ctx::s(c, "id").to_string(),
+        ctx::s(c, "label").to_string(),
+        ctx::s(c, "state").to_string(),
+        c.get("created_ms").map_or_else(|| "-".to_string(), ctx::when),
+        c.get("expires_ms").map_or_else(|| "-".to_string(), ctx::when),
+        used_by(c),
+    ]
+}
+
+/// Who used a join code: the machine's name, or "-" while it is unused.
+fn used_by(c: &Value) -> String {
+    let who = ctx::s(c, "used_by");
+    if who.is_empty() { "-".to_string() } else { who.to_string() }
 }
 
 /// The machine's host name as the node reports it, else the node's name.
@@ -152,5 +195,26 @@ fn last_seen(n: &Value) -> String {
     match n.get("last_seen_ms") {
         None | Some(Value::Null) => "never".to_string(),
         Some(seen) => ctx::ago(seen),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn a_code_shows_who_used_it_or_a_dash() {
+        assert_eq!(used_by(&json!({ "used_by": "pi-lab" })), "pi-lab");
+        assert_eq!(used_by(&json!({ "used_by": null })), "-");
+        assert_eq!(used_by(&json!({})), "-");
+    }
+
+    #[test]
+    fn a_code_row_keeps_the_hubs_state_word() {
+        let row = code_row(&json!({ "id": "c1", "label": "lab", "state": "used", "created_ms": 0, "expires_ms": 0, "used_by": "pi" }));
+        assert_eq!(row[0], "c1");
+        assert_eq!(row[2], "used");
+        assert_eq!(row[5], "pi");
     }
 }

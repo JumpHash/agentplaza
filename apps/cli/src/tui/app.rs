@@ -26,6 +26,10 @@ use super::onboarding::{self, DepsKey, Facts, Onboarding, Stage, Step, TOUR};
 use super::screens;
 use crate::ctx::{Client, Config, seg};
 
+// The Machines tab's module sits beside this file (the tui module lists its own modules).
+#[path = "machines.rs"]
+mod machines;
+
 const FRAME: Duration = Duration::from_millis(50);
 const POLL_EVERY: Duration = Duration::from_secs(3);
 const EVENT_LOG_LINES: usize = 200;
@@ -41,10 +45,11 @@ pub enum Tab {
     Board,
     Conversations,
     Nodes,
+    Machines,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 8] = [
+    pub const ALL: [Tab; 9] = [
         Tab::Floor,
         Tab::Overview,
         Tab::Agents,
@@ -53,6 +58,7 @@ impl Tab {
         Tab::Board,
         Tab::Conversations,
         Tab::Nodes,
+        Tab::Machines,
     ];
 
     pub fn label(self) -> &'static str {
@@ -65,6 +71,7 @@ impl Tab {
             Tab::Board => "Board",
             Tab::Conversations => "Conversations",
             Tab::Nodes => "Nodes",
+            Tab::Machines => "Machines",
         }
     }
 
@@ -78,6 +85,7 @@ impl Tab {
             Tab::Board => "/v1/board",
             Tab::Conversations => "/v1/conversations",
             Tab::Nodes => "/v1/nodes",
+            Tab::Machines => "/v1/machines",
         }
     }
 
@@ -371,6 +379,7 @@ impl App {
             Tab::Board => self.wrapped("/v1/board", "posts").len(),
             Tab::Conversations => self.wrapped("/v1/conversations", "conversations").len(),
             Tab::Nodes => self.array("/v1/nodes").len(),
+            Tab::Machines => self.array("/v1/machines").len(),
         }
     }
 
@@ -456,6 +465,7 @@ impl App {
             Tab::Board => screens::board(frame, body, self),
             Tab::Conversations => screens::conversations(frame, body, self),
             Tab::Nodes => screens::nodes(frame, body, self),
+            Tab::Machines => machines::render(frame, body, self),
         }
         if let Some(ob) = &self.onboarding {
             ob.draw(frame, body, self.palette, self.client.base());
@@ -494,7 +504,7 @@ impl App {
         }
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => return true,
-            KeyCode::Char(c @ '1'..='8') => self.select_tab(Tab::ALL[usize::from(c as u8 - b'1')]),
+            KeyCode::Char(c @ '1'..='9') => self.select_tab(Tab::ALL[usize::from(c as u8 - b'1')]),
             KeyCode::Tab => self.select_tab(self.tab.next()),
             KeyCode::BackTab => self.select_tab(self.tab.prev()),
             KeyCode::Down | KeyCode::Char('j') => self.move_selection(1),
@@ -799,9 +809,10 @@ mod tests {
 
     #[test]
     fn tabs_cycle_both_ways() {
-        assert_eq!(Tab::ALL.len(), 8);
-        assert_eq!(Tab::Floor.prev(), Tab::Nodes);
-        assert_eq!(Tab::Nodes.next(), Tab::Floor);
+        assert_eq!(Tab::ALL.len(), 9);
+        assert_eq!(Tab::Floor.prev(), Tab::Machines);
+        assert_eq!(Tab::Machines.next(), Tab::Floor);
+        assert_eq!(Tab::Nodes.next(), Tab::Machines);
         assert_eq!(Tab::Overview.next().next(), Tab::Tasks);
         assert_eq!(Tab::Floor.next().prev(), Tab::Floor);
     }

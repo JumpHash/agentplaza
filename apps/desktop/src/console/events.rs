@@ -32,6 +32,15 @@ const BUFFER: usize = 256;
 /// Each hub's subscribers: the channel of every live subscription, keyed by the hub's base URL. A hub with
 /// subscribers has one socket thread, which ends with the last of them.
 static HUBS: Mutex<Vec<(String, Vec<mpsc::Sender<Event>>)>> = Mutex::new(Vec::new());
+/// Each hub's connection: whether its socket is up, and the watchers (the top bar) told of each change.
+static LINKS: Mutex<Vec<Link>> = Mutex::new(Vec::new());
+
+/// One hub's connection state, by base URL.
+struct Link {
+    base: String,
+    up: bool,
+    watchers: Vec<mpsc::Sender<bool>>,
+}
 
 /// One event: its name (the bus kind: "transcript", "agent", "delta", …) and data.
 #[derive(Debug, Clone)]
@@ -48,6 +57,12 @@ pub fn subscription(client: &Client) -> Subscription<Event> {
 /// The same frames for the shell's top bar, whichever screen is shown.
 pub fn top_bar(target: &Target) -> Subscription<Event> {
     stream(target, "top-bar")
+}
+
+/// Whether the socket to `target`'s hub is connected, for the top bar's "Live" or "Reconnecting…":
+/// the state now, then each change. It is down until the first connection.
+pub fn link(target: &Target) -> Subscription<bool> {
+    Subscription::run_with(Feed(target.clone(), "link"), |feed: &Feed| watch(feed.0.clone()))
 }
 
 fn stream(target: &Target, tag: &'static str) -> Subscription<Event> {
@@ -96,23 +111,74 @@ fn hubs() -> MutexGuard<'static, Vec<(String, Vec<mpsc::Sender<Event>>)>> {
     HUBS.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+fn links() -> MutexGuard<'static, Vec<Link>> {
+    LINKS.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// `base`'s connection entry, made down when it is first asked for.
+fn link_of<'a>(links: &'a mut Vec<Link>, base: &str) -> &'a mut Link {
+    let i = match links.iter().position(|link| link.base == base) {
+        Some(i) => i,
+        None => {
+            links.push(Link { base: base.to_string(), up: false, watchers: Vec::new() });
+            links.len() - 1
+        }
+    };
+    &mut links[i]
+}
+
+/// Records whether `base`'s socket is up and tells each watcher; a watcher that is gone is dropped.
+fn set_link(base: &str, up: bool) {
+    let mut links = links();
+    let link = link_of(&mut links, base);
+    link.up = up;
+    link.watchers.retain_mut(|tx| match tx.try_send(up) {
+        Ok(()) => true,
+        Err(e) => !e.is_disconnected(),
+    });
+}
+
+/// The link's state as a stream: the current state first, then every change, for one watcher.
+fn watch(target: Target) -> impl Stream<Item = bool> {
+    iced::stream::channel(BUFFER, move |mut out: mpsc::Sender<bool>| async move {
+        let (tx, mut rx) = mpsc::channel::<bool>(BUFFER);
+        let up = {
+            let mut links = links();
+            let link = link_of(&mut links, &target.base);
+            link.watchers.push(tx);
+            link.up
+        };
+        if out.send(up).await.is_err() {
+            return;
+        }
+        while let Some(state) = rx.next().await {
+            if out.send(state).await.is_err() {
+                break;
+            }
+        }
+    })
+}
+
 /// The socket's thread: connects, reads frames, and reconnects with backoff until the stream ends.
 fn run(target: Target) {
     let base = target.base.clone();
     let mut backoff = MIN_BACKOFF;
     while wanted(&base) {
         if let Ok(mut socket) = ws::connect(&target, PATH, Some(PROTOCOL), CONNECT_TIMEOUT, Limits::default()) {
+            set_link(&base, true);
             let connected = Instant::now();
             read(&mut socket, &base);
+            set_link(&base, false);
             if connected.elapsed() >= RESET_AFTER {
                 backoff = MIN_BACKOFF;
             }
         }
         if !pause(jittered(backoff), &base) {
-            return;
+            break;
         }
         backoff = (backoff * 2).min(MAX_BACKOFF);
     }
+    set_link(&base, false);
 }
 
 /// Reads frames until the socket fails or the stream ends.
@@ -198,6 +264,29 @@ mod tests {
         assert_eq!(plaza.kind, "plaza");
         assert_eq!(plaza.data["paused"], true);
         assert!(parse(r#"{"data":{}}"#).is_none());
+    }
+
+    #[test]
+    fn the_link_watchers_hear_each_change_and_a_gone_one_is_dropped() {
+        let base = "https://link-watchers.test:7700";
+        let (tx, mut rx) = mpsc::channel::<bool>(4);
+        let (gone, gone_rx) = mpsc::channel::<bool>(4);
+        drop(gone_rx);
+        {
+            let mut links = links();
+            let link = link_of(&mut links, base);
+            assert!(!link.up, "a hub starts down");
+            link.watchers.push(tx);
+            link.watchers.push(gone);
+        }
+        set_link(base, true);
+        set_link(base, false);
+        assert!(rx.try_recv().unwrap());
+        assert!(!rx.try_recv().unwrap());
+        let links = links();
+        let link = links.iter().find(|link| link.base == base).unwrap();
+        assert_eq!(link.watchers.len(), 1, "the gone watcher is removed, the live one stays");
+        assert!(!link.up);
     }
 
     #[test]

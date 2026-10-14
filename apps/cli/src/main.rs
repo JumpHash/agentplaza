@@ -141,14 +141,14 @@ fn main() {
 fn run(cli: Cli) -> Result<(), String> {
     // Saved-hub commands work on the local configuration only.
     if let Command::Hub(cmd) = cli.command {
-        return cmd::hub::run(cmd, cli.json);
+        return cmd::hub::run(cmd, cli.json, cli.hub, cli.token, cli.pin);
     }
     if let Command::Node(cmd) = cli.command {
         return cmd::node::run(cmd, cli.json);
     }
-    // This machine's own setup: no hub is involved.
+    // This machine's own setup; `--hub` also checks the hub named by the global flags.
     if let Command::Setup(args) = cli.command {
-        return cmd::setup::run(args, cli.json);
+        return cmd::setup::run(args, cli.json, cli.hub, cli.token, cli.pin);
     }
     if let Command::Mcp(cmd) = cli.command {
         let globals = cmd::mcp::Globals { hub: cli.hub, token: cli.token, pin: cli.pin, json: cli.json };
