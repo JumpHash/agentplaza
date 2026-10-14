@@ -597,6 +597,8 @@ mod tests {
             .term
     }
 
+    /// Types `text` as keystrokes. Enter is a lone "\r", as a keyboard sends it: a "\n" after it reaches PowerShell as
+    /// Ctrl+J, which opens a continuation line (">>") instead of running the next command.
     fn type_text(terms: &Terminals, term: &str, text: &str) {
         terms
             .write(term, &STANDARD.encode(text))
@@ -670,7 +672,7 @@ mod tests {
         let term = open_at(&terms, &root, &env, "");
         // The typed line echoes as written, so the marker is the output: "hi2" never appears in "(1+1)".
         let typed = terms
-            .write(&term, &STANDARD.encode("Write-Output (\"hi\" + (1+1))\r\n"))
+            .write(&term, &STANDARD.encode("Write-Output (\"hi\" + (1+1))\r"))
             .expect("the write goes in");
         assert!(typed.ok);
         read_until(&terms, &term, "hi2");
@@ -687,7 +689,7 @@ mod tests {
         type_text(
             &terms,
             &term,
-            "Write-Output (\"CWD=\" + (Get-Location).Path)\r\n",
+            "Write-Output (\"CWD=\" + (Get-Location).Path)\r",
         );
         let expected = plain_path(&fs::canonicalize(root.dir().join("sub")).expect("canonical"));
         read_until(&terms, &term, &format!("CWD={}", expected.display()));
@@ -703,7 +705,7 @@ mod tests {
         type_text(
             &terms,
             &term,
-            "Write-Output (\"v=\" + $env:APZ_OPS_TEST + (1+1))\r\n",
+            "Write-Output (\"v=\" + $env:APZ_OPS_TEST + (1+1))\r",
         );
         read_until(&terms, &term, "v=seen2");
         terms.close(&term).expect("the close");
@@ -719,7 +721,7 @@ mod tests {
         type_text(
             &terms,
             &term,
-            "Write-Output (\"size=\" + [Console]::WindowWidth + \"x\" + [Console]::WindowHeight)\r\n",
+            "Write-Output (\"size=\" + [Console]::WindowWidth + \"x\" + [Console]::WindowHeight)\r",
         );
         read_until(&terms, &term, "size=100x30");
         terms.close(&term).expect("the close");
@@ -730,12 +732,13 @@ mod tests {
         let (root, env) = scratch("close");
         let terms = Terminals::new();
         let term = open_at(&terms, &root, &env, "");
-        type_text(&terms, &term, "Write-Output (\"pid:\" + $PID)\r\n");
-        // The typed line has "pid:" then "+ $PID"; the output has "pid:" then digits and a line end.
+        type_text(&terms, &term, "Write-Output (\"pid:\" + $PID)\r");
+        // The typed line has "pid:" then "+ $PID"; the output has "pid:" then the digits. Anything after them ends the
+        // number: a line end, or (on ConPTY) an escape sequence such as the cursor hide that follows the output.
         let pid: u32 = read_with(&terms, &term, |text| {
             text.split("pid:").skip(1).find_map(|rest| {
                 let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
-                (!digits.is_empty() && rest[digits.len()..].starts_with(['\r', '\n']))
+                (!digits.is_empty() && rest.len() > digits.len())
                     .then(|| digits.parse().expect("a pid"))
             })
         });
@@ -754,7 +757,7 @@ mod tests {
         let (root, env) = scratch("exit");
         let terms = Terminals::new();
         let term = open_at(&terms, &root, &env, "");
-        type_text(&terms, &term, "exit 3\r\n");
+        type_text(&terms, &term, "exit 3\r");
         let deadline = Instant::now() + Duration::from_secs(20);
         loop {
             let got = terms.read(&term, None).expect("the read");
@@ -779,7 +782,7 @@ mod tests {
         type_text(
             &terms,
             &term,
-            "Write-Output ('a' * 1200000); Write-Output (\"END\" + (1+2))\r\n",
+            "Write-Output ('a' * 1200000); Write-Output (\"END\" + (1+2))\r",
         );
         // Reads from 0 do not advance until the output has overflowed the ring; the first such read reports
         // the bytes it dropped, and the reads after it go on from where it stopped.
