@@ -9,9 +9,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use iced::widget::{button, column, container, row, text, text_input, Space};
 use iced::{font, Alignment, Border, Color, Element, Font, Length, Subscription, Task, Theme};
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{json, Value};
 
-use super::Id;
+use super::{ide, Id};
 use crate::console::{client, events, ui, Ctx};
 
 /// The document types a system viewer shows as plain content; any other file is not opened.
@@ -130,6 +130,10 @@ pub enum Msg {
     /// Open a document's file in the system viewer, by its hub file id.
     OpenFile(String),
     Opened(Result<(), String>),
+    /// Opens the project's repository in the IDE on its default branch (the branch is read first).
+    OpenRepo(String),
+    /// The repository's default branch, read for `OpenRepo`; the IDE opens on it when it is in.
+    RepoBranch(String, Result<Value, String>),
 }
 
 /// The navigation this message asks for, if any.
@@ -152,6 +156,25 @@ pub fn load(state: &mut State, ctx: &Ctx) -> Task<Msg> {
 pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
     match msg {
         Msg::Go(_) => Task::none(),
+        Msg::OpenRepo(repo) => {
+            let c = ctx.client.clone();
+            let path = format!("/v1/git/repos/{repo}");
+            client::task(move || c.get::<Value>(&path), move |res| Msg::RepoBranch(repo.clone(), res))
+        }
+        Msg::RepoBranch(repo, res) => match res {
+            Ok(info) => match info.get("default_branch").and_then(Value::as_str).filter(|b| !b.is_empty()) {
+                // The screen navigates through `Msg::Go`, the same as its other links.
+                Some(branch) => Task::done(Msg::Go(Id::Ide(Some(ide::target(&format!("repo:{repo}@{branch}"), false, None))))),
+                None => {
+                    state.error = Some(format!("{repo} has no default branch to open."));
+                    Task::none()
+                }
+            },
+            Err(e) => {
+                state.error = Some(format!("Could not open {repo} in the IDE: {e}"));
+                Task::none()
+            }
+        },
         Msg::List(res) => {
             match res {
                 Ok(list) => {
@@ -576,7 +599,13 @@ fn detail<'a>(state: &'a State, p: &'a Project) -> Element<'a, Msg> {
         ui::card("Tasks", tasks_body(p)),
     ];
     if let Some(repo) = &p.repo {
-        sections.push(ui::card("Repository", link(repo, Msg::Go(Id::Repo(repo.clone())))));
+        let repo_card: Element<'a, Msg> = column![
+            link(repo, Msg::Go(Id::Repo(repo.clone()))),
+            ui::btn_sm("Open repo", Some("square-code"), ui::Kind::Ghost, Some(Msg::OpenRepo(repo.clone()))),
+        ]
+        .spacing(8)
+        .into();
+        sections.push(ui::card("Repository", repo_card));
     }
     sections.push(ui::card("History", history_body(p)));
     body.push(column(sections).spacing(16).into());

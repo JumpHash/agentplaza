@@ -136,6 +136,8 @@ pub enum Confirm {
 #[derive(Debug, Clone)]
 pub enum Msg {
     Go(Id),
+    /// Opens the IDE on the workspace it last had (or its picker): the top bar's button and Ctrl+Shift+E.
+    OpenIde,
     ToggleSidebar,
     /// Width change in px (negative narrows); clamped to 200–420.
     Resize(f32),
@@ -200,6 +202,11 @@ fn post(ctx: &Ctx, path: &'static str, body: serde_json::Value) -> Task<Msg> {
 /// Returns a task and, when the user picked a screen, where to go.
 pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> (Task<Msg>, Option<Id>) {
     match msg {
+        Msg::OpenIde => {
+            let id = Id::Ide(super::screens::ide::remembered());
+            state.current = id.clone();
+            (Task::none(), Some(id))
+        }
         Msg::Go(id) => {
             state.current = id.clone();
             (Task::none(), Some(id))
@@ -452,6 +459,12 @@ pub fn subscription(state: &State) -> Subscription<Msg> {
         {
             Some(Msg::ToggleSidebar)
         }
+        // Ctrl+Shift+E (Cmd+Shift+E on macOS) opens the IDE; a focused text field that takes the key keeps it.
+        iced::Event::Keyboard(iced::keyboard::Event::KeyPressed { key, modifiers, .. })
+            if super::screens::ide::open_shortcut(&key, modifiers, status == iced::event::Status::Captured) =>
+        {
+            Some(Msg::OpenIde)
+        }
         _ => None,
     });
     // While a resize drag runs, the pointer's moves and the button's release come from anywhere in
@@ -693,6 +706,7 @@ fn top_bar<'a, M: Clone + 'a>(state: &'a State, wrap: fn(Msg) -> M) -> Element<'
     .spacing(14)
     .align_y(Alignment::Center);
     let mut right = row![health].spacing(16).align_y(Alignment::Center);
+    right = right.push(top_btn("Open IDE", "square-code", crate::theme::palette().signal, wrap(Msg::OpenIde)));
     let (theme_label, theme_icon) = if crate::theme::is_light() { ("Dark theme", "moon") } else { ("Light theme", "sun") };
     right = right.push(ui::btn(theme_label, Some(theme_icon), ui::Kind::Ghost, Some(wrap(Msg::ToggleTheme))));
     if state.paused {

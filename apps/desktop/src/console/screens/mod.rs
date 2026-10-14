@@ -49,6 +49,7 @@ pub mod lab_hf;
 pub mod ide;
 pub mod ide_diff;
 pub mod ide_editor;
+pub mod ide_panels;
 pub mod ide_tree;
 
 use iced::{Element, Task};

@@ -14,7 +14,7 @@ use apz_plaza::tasks::{DEFAULT_TASK_BUDGET, MIN_TASK_BUDGET};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use super::Id;
+use super::{ide, Id};
 use crate::console::ui::{self, Tone};
 use crate::console::{client, events, Ctx};
 use crate::theme::{self};
@@ -179,6 +179,8 @@ pub struct State {
 pub enum Msg {
     /// Navigate to another screen.
     Go(Id),
+    /// Opens the IDE on a target (a task's review opens the assignee's workspace in review mode).
+    OpenIde(String),
     Loaded(Result<Snapshot, String>),
     /// Open one task in full.
     Open(String),
@@ -212,6 +214,7 @@ pub enum Msg {
 pub fn go(msg: &Msg) -> Option<Id> {
     match msg {
         Msg::Go(id) => Some(id.clone()),
+        Msg::OpenIde(target) => Some(Id::Ide(Some(target.clone()))),
         _ => None,
     }
 }
@@ -229,7 +232,7 @@ pub fn load(state: &mut State, ctx: &Ctx) -> Task<Msg> {
 
 pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
     match msg {
-        Msg::Go(_) => Task::none(),
+        Msg::Go(_) | Msg::OpenIde(_) => Task::none(),
         Msg::Hover(id) => {
             state.hovered = Some(id);
             Task::none()
@@ -979,6 +982,11 @@ fn detail_page<'a>(state: &'a State) -> Element<'a, Msg> {
     ]
     .spacing(8);
     let mut side_parts: Vec<Element<'a, Msg>> = vec![facts.into()];
+    if let Some(cid) = t.agent_cid {
+        // The work's changes since it began, in review mode (the IDE's default base).
+        let review = ide::target(&format!("agent:{cid}"), true, None);
+        side_parts.push(ui::btn("Review changes", Some("square-code"), ui::Kind::Secondary, Some(Msg::OpenIde(review))));
+    }
     if open {
         side_parts.push(
             pick_list(assign_options, None::<Pick>, Msg::Assign)

@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::str::FromStr;
 use std::sync::LazyLock;
 
-use apz_ide::state::{self, Action, Base, IdeState};
+use apz_ide::state::{self, Action, Base, IdeState, Panel};
 use apz_ide::{Buffer, ChangeSet, EntryKind, TreePage, WorkspaceId, path as ide_path};
 use iced::keyboard::{self, Key, Modifiers, key::Named};
 use iced::widget::{Space, button, column, container, pick_list, row, text_editor, text_input};
@@ -21,12 +21,17 @@ use serde_json::{Value, json};
 use super::Id;
 use super::ide_diff;
 use super::ide_editor;
+use super::ide_panels;
 use super::ide_tree::{self, Tree};
 use crate::console::Ctx;
+use crate::console::boot;
 use crate::console::client::{self, Client};
 use crate::console::events;
 use crate::console::ui::{self, Kind, Tone};
 use crate::theme;
+
+/// The setting that keeps the last workspace the IDE opened (the top bar's button opens it).
+const REMEMBERED: &str = "ide_workspace";
 
 /// The quick-open box and the search box: focused when they open.
 static QUICK_ID: LazyLock<iced::widget::Id> = LazyLock::new(iced::widget::Id::unique);
@@ -112,14 +117,6 @@ impl std::fmt::Display for Choice {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.label)
     }
-}
-
-/// The right panel's tab.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Side {
-    #[default]
-    Changes,
-    Checkpoints,
 }
 
 /// The Changes base the segmented control offers: work start, or the latest checkpoint.
@@ -233,7 +230,7 @@ pub struct State {
     pub error: Option<String>,
     /// A line for the owner: a save, a refused action, a note from the hub.
     pub notice: Option<String>,
-    /// The workspace the screen's id names (`Id::Ide(Some(..))`), opened once the list is in.
+    /// The target the screen's id names (`Id::Ide(Some(..))`, see `Target`), opened once the list is in.
     pub preselect: Option<String>,
     /// The screen the IDE was opened from; Escape goes back there.
     pub origin: Option<Id>,
@@ -245,7 +242,8 @@ pub struct State {
     pub changes_error: Option<String>,
     pub changes_busy: bool,
     pub checkpoints: Vec<Checkpoint>,
-    pub side: Side,
+    /// The right panel's state beyond Changes (the agent, its approvals, the run).
+    pub panels: ide_panels::State,
     /// The checkpoint awaiting a confirmed restore.
     pub restore: Option<u64>,
     /// The last save of this workspace is in and nothing has been edited since.
@@ -316,7 +314,10 @@ pub enum Msg {
     PickBase(BaseChoice),
     CompareWith(u64),
     ToggleReview,
-    Side(Side),
+    /// Shows another panel of the right side (Changes, Agent, Approvals, Run, Terminal).
+    Panel(Panel),
+    /// The right panels' own messages (the agent, its approvals, the run).
+    Panels(ide_panels::Msg),
     Checkpoints {
         ws: String,
         res: Result<Vec<Checkpoint>, String>,
@@ -371,7 +372,7 @@ pub fn enc(s: &str) -> String {
 }
 
 /// A hub route under one workspace: `/v1/ide/workspaces/{id}{rest}`, the id percent-encoded.
-fn route(ws: &WorkspaceId, rest: &str) -> String {
+pub(super) fn route(ws: &WorkspaceId, rest: &str) -> String {
     format!("/v1/ide/workspaces/{}{rest}", enc(&ws.to_string()))
 }
 
@@ -387,7 +388,7 @@ fn fetch_tree(client: &Client, ws: &WorkspaceId, dir: &str, cursor: Option<&str>
     client.get(&route(ws, &rest))
 }
 
-fn fetch_file(client: &Client, ws: &WorkspaceId, path: &str) -> Result<FileView, String> {
+pub(super) fn fetch_file(client: &Client, ws: &WorkspaceId, path: &str) -> Result<FileView, String> {
     client.get(&route(ws, &format!("/file?path={}", enc(path))))
 }
 
@@ -445,6 +446,106 @@ fn fetch_search(client: &Client, ws: &WorkspaceId, query: &str, glob: &str) -> R
         rest.push_str(&format!("&glob={}", enc(glob)));
     }
     client.get(&route(ws, &rest))
+}
+
+// ---- Targets, the remembered workspace, the shortcut ------------------------------------------
+
+/// Where the IDE opens, as an entry point names it: a workspace id (`agent:<cid>` or `repo:<name>@<ref>`),
+/// then `?` and `&`-joined flags: `review` (review mode) and `open=<path>` (that file, percent-encoded).
+/// A branch name cannot hold `?`, so the first `?` ends the id.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Target {
+    pub workspace: String,
+    pub review: bool,
+    pub open: Option<String>,
+}
+
+impl Target {
+    pub fn parse(raw: &str) -> Target {
+        let (workspace, flags) = raw.split_once('?').unwrap_or((raw, ""));
+        let mut target = Target {
+            workspace: workspace.to_string(),
+            ..Target::default()
+        };
+        for flag in flags.split('&') {
+            if flag == "review" {
+                target.review = true;
+            } else if let Some(path) = flag.strip_prefix("open=") {
+                target.open = Some(dec(path));
+            }
+        }
+        target
+    }
+}
+
+/// The target string for `workspace`, in review mode or not, with a file to open (see `Target`).
+pub fn target(workspace: &str, review: bool, open: Option<&str>) -> String {
+    let mut flags = Vec::new();
+    if review {
+        flags.push("review".to_string());
+    }
+    if let Some(path) = open {
+        flags.push(format!("open={}", enc(path)));
+    }
+    if flags.is_empty() {
+        workspace.to_string()
+    } else {
+        format!("{workspace}?{}", flags.join("&"))
+    }
+}
+
+/// Reverses `enc`: `%XX` becomes its byte, anything else stays as it is.
+fn dec(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = bytes.get(i + 1..i + 3).and_then(|h| std::str::from_utf8(h).ok()).and_then(|h| u8::from_str_radix(h, 16).ok());
+        match (bytes[i], hex) {
+            (b'%', Some(byte)) => {
+                out.push(byte);
+                i += 3;
+            }
+            (byte, _) => {
+                out.push(byte);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// The workspace the IDE last opened, as the settings keep it (None before any, or when it does not parse).
+pub fn remembered() -> Option<String> {
+    if cfg!(test) {
+        return None;
+    }
+    boot::saved_setting(REMEMBERED)?.as_str().filter(|ws| WorkspaceId::from_str(ws).is_ok()).map(str::to_string)
+}
+
+/// Keeps `ws` as the last workspace (not from tests: they never write the owner's settings).
+fn remember(ws: &str) {
+    if !cfg!(test) {
+        let _ = boot::save_setting(REMEMBERED, json!(ws));
+    }
+}
+
+/// Ctrl+Shift+E (Cmd+Shift+E on macOS) opens the IDE from anywhere. `captured` is whether a focused text
+/// field took the key: then it is typing, and the shortcut stays out.
+pub fn open_shortcut(key: &Key, modifiers: Modifiers, captured: bool) -> bool {
+    !captured
+        && modifiers.command()
+        && modifiers.shift()
+        && !modifiers.alt()
+        && matches!(key, Key::Character(c) if c.as_str().eq_ignore_ascii_case("e"))
+}
+
+/// The line for a workspace the hub did not list.
+fn not_listed(id: &WorkspaceId) -> String {
+    match id {
+        WorkspaceId::Repo { .. } => format!("{id} is not served yet: the hub lists agent workspaces only for now."),
+        WorkspaceId::Agent(_) => format!("Workspace {id} is not listed."),
+    }
 }
 
 // ---- Helpers over the state -------------------------------------------------------------------
@@ -626,7 +727,16 @@ fn relist(st: &mut State, ctx: &Ctx) -> Task<Msg> {
 fn load_workspace(st: &mut State, ctx: &Ctx) -> Task<Msg> {
     let root = list_dir(st, ctx, String::new(), None);
     let changes = changes_task(st, ctx);
-    Task::batch([root, changes, checkpoints_task(st, ctx)])
+    let mut tasks = vec![root, changes, checkpoints_task(st, ctx)];
+    if let Some(ws) = st.ide.workspace.clone() {
+        // The agent's held calls count on the Approvals tab, so they load with the workspace; an Agent tab
+        // that stayed open across the switch loads its transcript too.
+        tasks.push(ide_panels::approvals_task(&ctx.client, &ws).map(Msg::Panels));
+        if st.ide.panel == Panel::Agent {
+            tasks.push(ide_panels::show(&mut st.panels, Panel::Agent, &ctx.client, &ws).map(Msg::Panels));
+        }
+    }
+    Task::batch(tasks)
 }
 
 /// Reloads everything the workspace on screen shows (after a restore).
@@ -648,7 +758,8 @@ fn select(st: &mut State, id: WorkspaceId, ctx: &Ctx) -> Task<Msg> {
         st.notice = Some("Save the edited files before you switch workspace.".into());
         return Task::none();
     }
-    dispatch(st, Action::SetWorkspace(id));
+    dispatch(st, Action::SetWorkspace(id.clone()));
+    remember(&id.to_string());
     st.tabs.clear();
     st.tree = Tree::default();
     st.changes = None;
@@ -661,20 +772,38 @@ fn select(st: &mut State, id: WorkspaceId, ctx: &Ctx) -> Task<Msg> {
     st.quick = None;
     st.search = None;
     st.notice = None;
+    st.panels = ide_panels::State::default();
     load_workspace(st, ctx)
 }
 
-/// Opens the workspace the screen's id named, once the list is in.
+/// Opens the target the screen's id named, once the list is in: its workspace, in review mode if asked,
+/// with its file open if one is named.
 fn apply_preselect(st: &mut State, ctx: &Ctx) -> Task<Msg> {
     let Some(raw) = st.preselect.take() else { return Task::none() };
-    match WorkspaceId::from_str(&raw) {
-        Ok(id) if st.workspaces.iter().any(|w| w.id == id.to_string()) => select(st, id, ctx),
+    let target = Target::parse(&raw);
+    match WorkspaceId::from_str(&target.workspace) {
+        Ok(id) if st.workspaces.iter().any(|w| w.id == id.to_string()) => {
+            let mut tasks = vec![select(st, id.clone(), ctx)];
+            // A select the owner's unsaved edits refused leaves the old workspace on screen: nothing more then.
+            if st.ide.workspace.as_ref() == Some(&id) {
+                if target.review && !st.ide.review {
+                    dispatch(st, Action::ToggleReview);
+                }
+                if st.ide.review && st.changes.is_none() && !st.changes_busy {
+                    tasks.push(changes_task(st, ctx));
+                }
+                if let Some(path) = target.open {
+                    tasks.push(open_path(st, path, ctx));
+                }
+            }
+            Task::batch(tasks)
+        }
         Ok(id) => {
-            st.notice = Some(format!("Workspace {id} is not listed."));
+            st.notice = Some(not_listed(&id));
             Task::none()
         }
         Err(e) => {
-            st.notice = Some(format!("Workspace id {raw}: {e}"));
+            st.notice = Some(format!("Workspace id {}: {e}", target.workspace));
             Task::none()
         }
     }
@@ -954,10 +1083,17 @@ pub fn update(st: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                 Task::none()
             }
         }
-        Msg::Side(side) => {
-            st.side = side;
-            Task::none()
+        Msg::Panel(panel) => {
+            dispatch(st, Action::SetPanel(panel));
+            match st.ide.workspace.clone() {
+                Some(ws) => ide_panels::show(&mut st.panels, panel, &ctx.client, &ws).map(Msg::Panels),
+                None => Task::none(),
+            }
         }
+        Msg::Panels(msg) => match st.ide.workspace.clone() {
+            Some(ws) => ide_panels::update(&mut st.panels, msg, &ctx.client, &ws).map(Msg::Panels),
+            None => Task::none(),
+        },
         Msg::Checkpoints { ws, res } => {
             if is_current(st, &ws) {
                 match res {
@@ -1138,7 +1274,11 @@ fn event_task(st: &mut State, event: events::Event, ctx: &Ctx) -> Task<Msg> {
             Task::batch(tasks)
         }
         "agent" => relist(st, ctx),
-        "transcript" if about_us && agent.is_some() => changes_throttled(st, ctx),
+        "transcript" if about_us && agent.is_some() => {
+            ide_panels::push_entry(&mut st.panels, event.data.clone());
+            changes_throttled(st, ctx)
+        }
+        "approval" if about_us && agent.is_some() => ide_panels::approvals_task(&ctx.client, &ws).map(Msg::Panels),
         _ => Task::none(),
     }
 }
@@ -1366,13 +1506,30 @@ fn centre(st: &State) -> Element<'_, Msg> {
     ui::empty("file", "No file open", "Pick a file in the tree, or press Ctrl+P to find one by name.")
 }
 
+/// The right side: the panel tabs, then the shown panel. Checkpoints sit under Changes, what they compare with.
 fn right(st: &State) -> Element<'_, Msg> {
-    let tabs = ui::tabs(&[(Side::Changes, "Changes"), (Side::Checkpoints, "Checkpoints")], st.side, Msg::Side);
-    let body = match st.side {
-        Side::Changes => changes_panel(st),
-        Side::Checkpoints => checkpoints_panel(st),
+    let agent = matches!(st.ide.workspace, Some(WorkspaceId::Agent(_)));
+    let pending = st.panels.held.len();
+    let approvals = if pending > 0 { format!("Approvals {pending}") } else { "Approvals".to_string() };
+    let tabs = ui::tabs(
+        &[
+            (Panel::Changes, "Changes"),
+            (Panel::Agent, "Agent"),
+            (Panel::Approvals, approvals.as_str()),
+            (Panel::Run, "Run"),
+            (Panel::Terminal, "Terminal"),
+        ],
+        st.ide.panel,
+        Msg::Panel,
+    );
+    let body: Element<'_, Msg> = match st.ide.panel {
+        Panel::Changes => column![changes_panel(st), ui::hairline(), ui::label("Checkpoints"), checkpoints_panel(st)].spacing(14).into(),
+        Panel::Agent => ide_panels::agent_view(&st.panels, agent).map(Msg::Panels),
+        Panel::Approvals => ide_panels::approvals_view(&st.panels, agent).map(Msg::Panels),
+        Panel::Run => ide_panels::run_view(&st.panels, agent).map(Msg::Panels),
+        Panel::Terminal => ide_panels::terminal_view().map(Msg::Panels),
     };
-    column![tabs, ui::scroll(body).height(Length::Fill)]
+    column![ui::scroll_x(tabs), ui::scroll(body).height(Length::Fill)]
         .spacing(12)
         .height(Length::Fill)
         .into()
@@ -1752,5 +1909,39 @@ mod tests {
         );
         assert!(st.tree.loaded.contains(""));
         assert_eq!(st.tree.entries.len(), 1);
+    }
+
+    #[test]
+    fn the_open_shortcut_is_command_shift_e_and_stays_out_of_text_fields() {
+        let cmd = if cfg!(target_os = "macos") { Modifiers::LOGO } else { Modifiers::CTRL };
+        let e = Key::Character("e".into());
+        assert!(open_shortcut(&e, cmd | Modifiers::SHIFT, false));
+        assert!(open_shortcut(&Key::Character("E".into()), cmd | Modifiers::SHIFT, false), "Shift makes the key read as E");
+        assert!(!open_shortcut(&e, cmd | Modifiers::SHIFT, true), "a focused text field keeps the key");
+        assert!(!open_shortcut(&e, cmd, false), "without Shift it is not this key");
+        assert!(!open_shortcut(&e, cmd | Modifiers::SHIFT | Modifiers::ALT, false));
+        assert!(!open_shortcut(&Key::Character("f".into()), cmd | Modifiers::SHIFT, false));
+        assert!(!open_shortcut(&e, Modifiers::SHIFT, false), "Shift and E alone type a letter");
+    }
+
+    #[test]
+    fn a_target_names_the_workspace_and_its_flags() {
+        assert_eq!(target("agent:7", false, None), "agent:7");
+        assert_eq!(target("repo:plaza@main", true, None), "repo:plaza@main?review");
+        let linked = target("repo:plaza@feat/x", false, Some("src/a b.rs"));
+        assert_eq!(linked, "repo:plaza@feat/x?open=src%2Fa%20b.rs");
+        assert_eq!(
+            Target::parse(&linked),
+            Target {
+                workspace: "repo:plaza@feat/x".into(),
+                review: false,
+                open: Some("src/a b.rs".into()),
+            }
+        );
+        let both = Target::parse(&target("agent:7", true, Some("x.rs")));
+        assert!(both.review);
+        assert_eq!(both.open.as_deref(), Some("x.rs"));
+        assert_eq!(Target::parse("agent:7"), Target { workspace: "agent:7".into(), ..Target::default() });
+        assert_eq!(dec("100%"), "100%", "a stray percent sign stays as it is");
     }
 }

@@ -11,7 +11,7 @@ use iced::{font, keyboard, Alignment, Border, Color, Element, Font, Length, Padd
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use super::Id;
+use super::{ide, Id};
 use crate::console::client::{self, Client};
 use crate::console::ui::{self, Kind, Tone, INK, INK_2, INK_3};
 use crate::console::Ctx;
@@ -312,6 +312,8 @@ pub struct State {
 pub enum Msg {
     /// Navigate to another screen.
     Go(Id),
+    /// Opens the IDE on a target (a file of a branch, or a pull request's head in review mode).
+    OpenIde(String),
     Loaded(Query, Result<Data, String>),
     Open(String),
     Home,
@@ -348,6 +350,7 @@ pub enum Msg {
 pub fn go(msg: &Msg) -> Option<Id> {
     match msg {
         Msg::Go(id) => Some(id.clone()),
+        Msg::OpenIde(target) => Some(Id::Ide(Some(target.clone()))),
         _ => None,
     }
 }
@@ -437,7 +440,7 @@ fn fix_ref(state: &State) -> Option<String> {
 
 pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
     match msg {
-        Msg::Go(_) => Task::none(),
+        Msg::Go(_) | Msg::OpenIde(_) => Task::none(),
         Msg::Loaded(q, res) => {
             if q != query(state) {
                 return Task::none();
@@ -821,6 +824,12 @@ fn code_view<'a>(state: &'a State) -> Element<'a, Msg> {
     }
     let mut items: Vec<Element<'a, Msg>> = vec![branch_picker(state), crumbs(state), dir_table(&state.data.tree)];
     if let Some(file) = &state.data.file {
+        // The file's branch: the one browsed, else the repository's default. No branch, no link.
+        let branch = if state.git_ref.is_empty() { state.data.repos.iter().find(|r| r.name == state.repo).map(|r| r.default_branch.clone()) } else { Some(state.git_ref.clone()) };
+        if let Some(branch) = branch.filter(|b| !b.is_empty()) {
+            let target = ide::target(&format!("repo:{}@{branch}", state.repo), false, Some(state.file_path.as_str()));
+            items.push(ui::btn_sm("Open in IDE", Some("square-code"), Kind::Ghost, Some(Msg::OpenIde(target))));
+        }
         items.push(file_block(&state.file_path, file));
     } else if let Some(readme) = &state.data.readme {
         if let Some(source) = &readme.text {
@@ -1103,10 +1112,12 @@ fn pull_page<'a>(state: &'a State) -> Element<'a, Msg> {
     if let (true, Some(at)) = (merged, &p.merged_at) {
         meta = meta.push(ui::faint(format!("merged {}", ago(at))));
     }
+    let review_in_ide = ide::target(&format!("repo:{}@{}", state.repo, p.head), true, None);
     let mut buttons = row![
         ui::btn("Approve", None, Kind::Primary, Some(Msg::Modal(Modal::Review(ReviewEvent::Approve)))),
         ui::btn("Request changes", None, Kind::Danger, Some(Msg::Modal(Modal::Review(ReviewEvent::RequestChanges)))),
         ui::btn("Comment", None, Kind::Ghost, Some(Msg::Modal(Modal::Review(ReviewEvent::Comment)))),
+        ui::btn("Open in IDE", Some("square-code"), Kind::Ghost, Some(Msg::OpenIde(review_in_ide))),
     ]
     .spacing(8);
     // A merged pull request is closed in Forgejo: it has no Merge, Close or Reopen.

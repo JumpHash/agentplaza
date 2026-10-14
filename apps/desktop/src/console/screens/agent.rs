@@ -12,7 +12,7 @@ use iced::widget::{button, checkbox, column, container, row, scrollable, text, t
 use iced::{Alignment, Border, Color, Element, Length, Task, Theme};
 use serde_json::{json, Value};
 
-use super::{agent_side, sanctions, Id};
+use super::{agent_side, ide, sanctions, Id};
 use crate::console::engine::world::layout::{agent_hue, role_hue};
 use crate::console::{client, events, ui, Ctx};
 use crate::theme::{SERIF};
@@ -111,6 +111,8 @@ pub struct Extras {
 #[derive(Debug, Clone)]
 pub enum Msg {
     Go(Id),
+    /// Opens the IDE on a target (the agent's workspace, see `ide::target`).
+    OpenIde(String),
     Tab(Tab),
     Polled(Result<Snapshot, String>),
     Edit(text_editor::Action),
@@ -137,6 +139,7 @@ pub enum Msg {
 pub fn go(msg: &Msg) -> Option<Id> {
     match msg {
         Msg::Go(id) => Some(id.clone()),
+        Msg::OpenIde(target) => Some(Id::Ide(Some(target.clone()))),
         _ => None,
     }
 }
@@ -262,7 +265,7 @@ fn fetch(client: &client::Client, cid: u64, after: u64, extras: bool) -> Result<
 
 pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
     match msg {
-        Msg::Go(_) => Task::none(),
+        Msg::Go(_) | Msg::OpenIde(_) => Task::none(),
         Msg::Tab(tab) => {
             state.tab = tab;
             Task::none()
@@ -476,6 +479,8 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
     let working = state.agent.as_ref().is_some_and(|a| s(a, "status") == "working");
     let mut actions: Vec<Element<'a, Msg>> = Vec::new();
     if state.agent.is_some() {
+        let workspace = ide::target(&format!("agent:{}", state.cid), false, None);
+        actions.push(ui::btn("Open workspace", Some("square-code"), ui::Kind::Ghost, pick(Msg::OpenIde(workspace))));
         if working {
             actions.push(ui::btn("Cancel work", Some("ban"), ui::Kind::Secondary, pick(Msg::Run(Act::Cancel))));
         }
