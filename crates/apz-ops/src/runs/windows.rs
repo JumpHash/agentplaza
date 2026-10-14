@@ -371,19 +371,18 @@ mod tests {
 
     #[test]
     fn a_run_keeps_the_tail_of_its_output_within_the_cap() {
-        let (_dir, root, env) = scratch("cap");
+        let (dir, root, env) = scratch("cap");
+        let total = 2_500_000u64;
+        // `type` is a shell builtin, so the run needs no program found on the PATH it is given (PowerShell is
+        // not on `C:\Windows\System32`, which is all the test PATH names).
+        fs::write(dir.join("big.txt"), "a".repeat(total as usize)).unwrap();
         let runs = Runs::new();
         let started = runs
-            .start(
-                &root,
-                &env,
-                "powershell -NoProfile -Command \"[Console]::Out.Write(('a' * 2500000))\"",
-                None,
-            )
+            .start(&root, &env, "type big.txt", None)
             .expect("the run starts");
         let reply = settle(&runs, &started.run);
+        assert_eq!(reply.exit_code, Some(0), "{:?}", reply.output);
         let kept = OUTPUT_CAP as u64;
-        let total = 2_500_000u64;
         assert!(
             reply.offset >= total - kept && reply.offset <= total - kept + 3,
             "offset {}",

@@ -14,6 +14,7 @@
 
 #![allow(unsafe_code)]
 
+use std::ffi::c_void;
 use std::io::{self, Read};
 use std::mem;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
@@ -427,10 +428,13 @@ fn spawn(env: &Env, dir: &Path, cols: u16, rows: u16) -> Result<Term, OpError> {
 
     let mut attributes = AttrList::new(1)
         .map_err(|err| OpError::internal(format!("cannot start the shell: {err}")))?;
+    // ConPTY passes the handle itself as the attribute's value (an input attribute: the list keeps `lpValue` as it
+    // is, not what it points to). A pointer to the handle is not a console, and the shell then dies at startup
+    // (0xC0000142 on the runner).
     attributes
         .set(
             PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE as usize,
-            (&console.0 as *const HPCON).cast(),
+            console.0 as usize as *const c_void,
             mem::size_of::<HPCON>(),
         )
         .map_err(|err| OpError::internal(format!("cannot start the shell: {err}")))?;
@@ -559,6 +563,10 @@ mod tests {
     /// Wide enough that a line the shell prints is not wrapped.
     const COLS: u64 = 200;
     const ROWS: u64 = 40;
+    /// How long output may still come after the shell has exited, before a wait gives up on it.
+    const EXIT_GRACE: Duration = Duration::from_secs(1);
+    /// `ERROR_PRIVILEGE_NOT_HELD`: a symlink needs SeCreateSymbolicLinkPrivilege, which the runner lacks.
+    const ERROR_PRIVILEGE_NOT_HELD: i32 = 1314;
 
     fn scratch(name: &str) -> (Root, Env) {
         let dir = std::env::temp_dir().join(format!("apz-ops-term-{name}-{}", std::process::id()));
@@ -584,11 +592,26 @@ mod tests {
         STANDARD.decode(&reply.data_b64).expect("base64")
     }
 
+    /// Fails the wait when the shell has exited and [`EXIT_GRACE`] has passed without what the wait wants. A shell
+    /// that exited will not print it, so the test ends at once with the exit code rather than at its timeout.
+    fn fail_if_exited(got: &TermRead, exited_at: &mut Option<Instant>, output: &str) {
+        if !got.exited {
+            return;
+        }
+        let since = *exited_at.get_or_insert_with(Instant::now);
+        assert!(
+            since.elapsed() < EXIT_GRACE,
+            "the shell exited with code {:?} before it printed what the test waits for; output so far: {output:?}",
+            got.exit_code
+        );
+    }
+
     /// Reads `term` from its start, following `next`, until `done` returns a value for the output so far.
     fn read_with<T>(terms: &Terminals, term: &str, done: impl Fn(&str) -> Option<T>) -> T {
         let deadline = Instant::now() + Duration::from_secs(20);
         let mut offset = 0;
         let mut output = Vec::new();
+        let mut exited_at = None;
         loop {
             let got = terms.read(term, Some(offset)).expect("the read");
             output.extend(decoded(&got));
@@ -597,6 +620,7 @@ mod tests {
             if let Some(found) = done(&text) {
                 return found;
             }
+            fail_if_exited(&got, &mut exited_at, &text);
             assert!(
                 Instant::now() < deadline,
                 "not done within 20 s; output so far: {text:?}"
@@ -748,6 +772,7 @@ mod tests {
         let mut offset = 0;
         let mut lost_seen = None;
         let mut output = Vec::new();
+        let mut exited_at = None;
         loop {
             let got = terms.read(&term, Some(offset)).expect("the read");
             let lost = got.lost;
@@ -764,6 +789,7 @@ mod tests {
             } else {
                 offset = 0;
             }
+            fail_if_exited(&got, &mut exited_at, &String::from_utf8_lossy(&output));
             assert!(
                 Instant::now() < deadline,
                 "no overflow and END3 within 60 s"
@@ -793,12 +819,30 @@ mod tests {
         }
     }
 
+    /// A cwd that climbs out of the root, and one that is a link out of it. A junction needs no privilege, so the
+    /// junction case always runs. A symlink needs SeCreateSymbolicLinkPrivilege, which the runner's service account
+    /// lacks, so that case runs only where the privilege is held and prints why it did not run otherwise.
     #[test]
     fn a_cwd_outside_the_root_is_refused() {
         let (root, env) = scratch("escape");
-        symlink_dir(r"C:\", root.dir().join("out")).expect("a link out");
+        let junction = root.dir().join("junction");
+        let made = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&junction)
+            .arg(r"C:\")
+            .status()
+            .expect("cmd runs");
+        assert!(made.success(), "mklink /J: {made}");
+        let mut cwds = vec!["..", "../..", "junction"];
+        match symlink_dir(r"C:\", root.dir().join("symlink")) {
+            Ok(()) => cwds.push("symlink"),
+            Err(err) if err.raw_os_error() == Some(ERROR_PRIVILEGE_NOT_HELD) => {
+                println!("skipping the symlink case: {err} (no SeCreateSymbolicLinkPrivilege)");
+            }
+            Err(err) => panic!("a symlink out of the root: {err}"),
+        }
         let terms = Terminals::new();
-        for cwd in ["..", "../..", "out"] {
+        for cwd in cwds {
             let refused = terms.open(&root, &env, COLS, ROWS, cwd);
             assert!(
                 matches!(refused, Err(OpError::Denied(_))),
@@ -806,6 +850,10 @@ mod tests {
             );
         }
         assert!(terms.list().expect("the list").terminals.is_empty());
+        // Removing a link removes only the link: its target, the drive root, stays.
+        fs::remove_dir(&junction).expect("the junction is removed");
+        let _ = fs::remove_dir(root.dir().join("symlink"));
+        assert!(Path::new(r"C:\").exists(), "the link's target survives");
     }
 
     #[test]

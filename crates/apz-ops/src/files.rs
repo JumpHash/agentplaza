@@ -31,7 +31,7 @@ use sha2::{Digest, Sha256};
 
 use crate::error::OpError;
 use crate::page::{OUTPUT_BUDGET, chunk_end};
-use crate::root::{Root, locate, shown};
+use crate::root::{Root, locate, native, shown};
 
 /// The largest file the operations read or write as text: 1 MiB.
 pub const MAX_FILE_BYTES: u64 = 1024 * 1024;
@@ -538,11 +538,7 @@ struct Scan {
 }
 
 fn walk_for_search(root: &Path, dir: &str, scan: &mut Scan) {
-    let Ok(items) = fs::read_dir(if dir.is_empty() {
-        root.to_path_buf()
-    } else {
-        root.join(dir)
-    }) else {
+    let Ok(items) = fs::read_dir(root.join(native(dir))) else {
         return;
     };
     let mut names: Vec<String> = items
@@ -565,7 +561,7 @@ fn walk_for_search(root: &Path, dir: &str, scan: &mut Scan) {
         if is_secret(&rel) {
             continue;
         }
-        let path = root.join(&rel);
+        let path = root.join(native(&rel));
         // Symlinks are neither followed nor searched.
         let Ok(metadata) = fs::symlink_metadata(&path) else {
             continue;

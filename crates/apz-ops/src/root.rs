@@ -42,6 +42,12 @@ pub(crate) struct Target {
     pub(crate) abs: PathBuf,
 }
 
+/// The native path for a `/`-separated wire path. A verbatim path (`\\?\`, which a canonical root is on Windows)
+/// takes no `/` as a separator, so the parts are joined with the OS separator here. Empty parts are dropped.
+pub(crate) fn native(rel: &str) -> PathBuf {
+    rel.split('/').filter(|part| !part.is_empty()).collect()
+}
+
 /// Checks `raw` with `lexical`, then the real filesystem: the deepest existing ancestor is
 /// canonicalized and must land inside the canonical root, and the place it lands is checked with
 /// `landed`.
@@ -53,7 +59,7 @@ pub(crate) fn locate(
 ) -> Result<Target, OpError> {
     let rel = lexical(raw).map_err(|err| path_refusal(raw, err))?;
     let canonical = root.canonical()?;
-    let mut ancestor = canonical.join(&rel);
+    let mut ancestor = canonical.join(native(&rel));
     let resolved = loop {
         match fs::canonicalize(&ancestor) {
             Ok(resolved) => break resolved,
@@ -70,12 +76,18 @@ pub(crate) fn locate(
             resolved.display()
         )));
     };
-    let inside = inside.to_string_lossy();
+    // The wire path is `/`-separated on every OS, so the components are joined with `/` rather
+    // than taking the OS separator (a backslash on Windows, which `check_*` refuses).
+    let inside = inside
+        .components()
+        .map(|part| part.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/");
     if !inside.is_empty() {
         landed(&inside).map_err(|err| path_refusal(raw, err))?;
     }
     Ok(Target {
-        abs: canonical.join(&rel),
+        abs: canonical.join(native(&rel)),
         rel,
     })
 }
