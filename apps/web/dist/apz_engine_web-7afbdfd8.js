@@ -3074,7 +3074,7 @@ async function __wbg_init(module_or_path) {
     }
 
     if (module_or_path === undefined) {
-        module_or_path = new URL('apz_engine_web-84416126_bg.wasm', import.meta.url);
+        module_or_path = new URL('apz_engine_web-7afbdfd8_bg.wasm', import.meta.url);
     }
     const imports = __wbg_get_imports();
 

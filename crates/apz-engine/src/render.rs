@@ -903,6 +903,9 @@ pub struct Pipeline {
     globals_group: wgpu::BindGroup,
     shadow_globals_group: wgpu::BindGroup,
     shadow_view: wgpu::TextureView,
+    /// Whether the shadow map holds casters from an earlier frame: a frame with none clears it once, so receivers do
+    /// not read a view's stale shadows (the board's on the Machines view after Back).
+    shadow_written: std::sync::atomic::AtomicBool,
     samplers: HashMap<(bool, bool), wgpu::Sampler>,
     linear_clamp: wgpu::Sampler,
     meshes: HashMap<u64, GpuMesh>,
@@ -1178,6 +1181,7 @@ impl Pipeline {
             globals_group,
             shadow_globals_group,
             shadow_view,
+            shadow_written: std::sync::atomic::AtomicBool::new(false),
             samplers: HashMap::new(),
             linear_clamp,
             meshes: HashMap::new(),
@@ -1682,11 +1686,14 @@ fn key_of(draw: &Draw, alpha: f32) -> Key {
     } else {
         Blend::Opaque
     };
-    // three.js writes depth for transparent materials too, unless told not to. A faded cutaway does not.
+    // three.js writes depth for transparent materials too, unless told not to. A faded cutaway writes it as well:
+    // its parts are merged by material (the PCB, the copper, the shroud of a card in a few draws), so without depth
+    // every inner layer would blend over the outer shell and tint it (a GPU card read brown); with it the nearest
+    // surface of the cutaway shows, as three.js's per-mesh sort did.
     let depth_write = match prog {
         Prog::Outline => true,
         Prog::Sky => false,
-        _ => m.depth_write && !m.additive && !(alpha < 1.0 && draw.fade != 0),
+        _ => m.depth_write && !m.additive,
     };
     Key { prog, cull, blend, depth_write, depth_test: m.depth_test, decal: m.decal, samples: SAMPLES }
 }
@@ -2061,8 +2068,10 @@ fn record(p: &Pipeline, device: &wgpu::Device, queue: &wgpu::Queue) {
         return;
     };
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("floor") });
-    // No shadow casters (light mode): the shadow map is not read, so its pass is skipped.
-    if !p.shadow_cmds.is_empty() {
+    // No shadow casters (light mode, the Machines view): the pass is skipped, after one that clears what an earlier
+    // frame's casters left in the map.
+    let casters = !p.shadow_cmds.is_empty();
+    if casters || p.shadow_written.swap(casters, std::sync::atomic::Ordering::Relaxed) {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("floor shadow"),
                 color_attachments: &[],
