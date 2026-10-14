@@ -1,0 +1,17 @@
+{
+  "ok": true,
+  "card": {
+    "kind": "github_pull",
+    "url": "https://github.com/o/r/pull/12",
+    "title": "Add the rich renderer",
+    "author": { "login": "zarathos", "avatar_url": null },
+    "state": "open",
+    "head": "feat/rich",
+    "base": "main",
+    "additions": 120,
+    "deletions": 4,
+    "comments": 2,
+    "created_ms": 1767225600000,
+    "body_excerpt": "See #528 and @Ada: the labels come from `apz-rich`."
+  }
+}

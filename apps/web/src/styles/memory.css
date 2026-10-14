@@ -14,16 +14,16 @@
 }
 
 .mem-count {
-  font-family: var(--mono);
+  font-family: var(--sans);
   font-size: var(--fs-xs);
   color: var(--text-3);
-  text-transform: uppercase;
+
   letter-spacing: 0.06em;
 }
 
 .mem-head .input { max-width: 260px; }
 
-.mem-hint { font: 400 11px var(--mono); color: var(--ink-3); flex: 1; text-align: center; }
+.mem-hint { font: 400 11px var(--sans); color: var(--ink-3); flex: 1; text-align: center; }
 
 .mem-body {
   display: grid;
@@ -54,7 +54,7 @@
 .memg-dot { stroke: #2b2420; stroke-width: 3.2; }
 .memg-shine { fill: rgba(255,255,255,0.55); }
 .memg-tag { fill: #fffaf0; stroke: #2b2420; stroke-width: 2; }
-.memg-text { font: 600 11.5px var(--mono); fill: #2b2420; pointer-events: none; }
+.memg-text { font: 600 12px var(--sans); fill: #2b2420; pointer-events: none; }
 .memg-node.sel .memg-dot { stroke-width: 5; }
 .memg-node.sel .memg-tag { fill: #2b2420; }
 .memg-node.sel .memg-text { fill: #fffaf0; }
@@ -70,14 +70,14 @@
 .memg-controls { position: absolute; top: 12px; right: 12px; display: flex; flex-direction: column; gap: 8px; }
 .memg-controls button {
   width: 36px; height: 36px; border-radius: 0; cursor: pointer;
-  font: 700 18px/1 var(--mono); color: #2b2420; background: #fffaf0;
+  font: 700 18px/1 var(--sans); color: #2b2420; background: #fffaf0;
   border: 2.5px solid #2b2420; box-shadow: 2px 2px 0 #2b2420;
 }
 .memg-controls button:hover { background: #f7d154; }
 .memg-controls button:active { transform: translate(2px, 2px); box-shadow: none; }
 .memg-legend {
   position: absolute; left: 12px; bottom: 12px; display: flex; gap: 12px; padding: 6px 12px;
-  font: 600 11px var(--mono); color: #2b2420; text-transform: uppercase; letter-spacing: .06em;
+  font: 600 11px var(--sans); color: #2b2420; letter-spacing: 0.01em;
   background: #fffaf0; border: 2px solid #2b2420; border-radius: 0; box-shadow: 2px 2px 0 #2b2420;
 }
 .memg-legend span { display: inline-flex; align-items: center; gap: 6px; }
@@ -98,7 +98,7 @@
 .mem-meta { display: flex; flex-wrap: wrap; gap: var(--s2); align-items: center; }
 
 .mem-title h1 {
-  font-family: var(--mono);
+  font-family: var(--sans);
   font-size: var(--fs-xl);
   font-weight: 600;
   line-height: 1.25;
@@ -107,22 +107,23 @@
 }
 
 .mem-stamp {
-  font-family: var(--mono);
+  font-family: var(--sans);
   font-size: var(--fs-xs);
   color: var(--text-3);
   margin: var(--s2) 0 var(--s4);
 }
 
 .mem-prose {
-  font-family: var(--serif);
+  font-family: var(--sans);
   font-size: var(--fs-md);
   line-height: 1.6;
+  max-width: 760px;
   color: var(--text);
   overflow-wrap: anywhere;
 }
 .mem-prose h1,
 .mem-prose h2,
-.mem-prose h3 { font-family: var(--mono); line-height: 1.3; margin: var(--s4) 0 var(--s2); }
+.mem-prose h3 { font-family: var(--sans); line-height: 1.3; margin: var(--s4) 0 var(--s2); }
 .mem-prose h1 { font-size: var(--fs-lg); }
 .mem-prose h2 { font-size: var(--fs-md); }
 .mem-prose h3 { font-size: var(--fs-sm); color: var(--text-2); }
@@ -153,7 +154,7 @@
 
 .mem-reader .chip {
   display: inline-block;
-  font-family: var(--mono);
+  font-family: var(--sans);
   font-size: var(--fs-xs);
   color: var(--text-2);
   background: var(--surface-2);
@@ -161,7 +162,7 @@
   padding: 1px 8px;
   line-height: 1.6;
 }
-.mem-reader button.chip.link { cursor: pointer; font: inherit; font-family: var(--mono); font-size: var(--fs-xs); }
+.mem-reader button.chip.link { cursor: pointer; font: inherit; font-family: var(--sans); font-size: var(--fs-xs); }
 .mem-reader button.chip.link:hover { color: var(--accent-2); border-color: var(--accent); }
 .mem-reader .chip.missing { border-style: dashed; opacity: 0.6; }
 

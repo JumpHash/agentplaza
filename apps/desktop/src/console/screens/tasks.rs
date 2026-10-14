@@ -16,15 +16,15 @@ use serde_json::{json, Value};
 
 use super::{ide, Id};
 use crate::console::ui::{self, Tone};
-use crate::console::{client, events, Ctx};
+use crate::console::{client, events, rich, Ctx};
 use crate::theme::{self};
 
 /// A card's goal: serif semibold, as the web's task title.
-const TITLE_FONT: Font = Font { weight: font::Weight::Semibold, ..theme::SERIF };
+const TITLE_FONT: Font = Font { weight: font::Weight::Semibold, ..theme::SANS };
 /// Bold mono, for lane counts and the elapsed time.
-const MONO_BOLD: Font = Font { weight: font::Weight::Bold, ..theme::MONO };
-/// Serif italic, for the line an empty lane shows.
-const ITALIC: Font = Font { style: font::Style::Italic, ..theme::SERIF };
+const SANS_BOLD: Font = Font { weight: font::Weight::Bold, ..theme::SANS };
+/// Inter italic, for the line an empty lane shows.
+const ITALIC: Font = Font { style: font::Style::Italic, ..theme::SANS };
 
 /// The four lanes: their label and the line an empty lane shows.
 const LANES: [(&str, &str); 4] = [
@@ -165,6 +165,8 @@ pub struct State {
     agents: Vec<AgentRecord>,
     activity: HashMap<u64, String>,
     detail: Option<Detail>,
+    /// The rich content of the open task's goal, acceptance and result: the hub's cards and images (`console::rich`).
+    cards: rich::Cards,
     draft: Option<Draft>,
     /// The card under the pointer last: Enter opens it (when no card is picked by the keyboard).
     hovered: Option<String>,
@@ -208,6 +210,8 @@ pub enum Msg {
     Step(bool),
     /// A hub event: a task, work or transcript frame.
     Event(events::Event),
+    /// A rich-content click (a chip, a link, an Open button) or a load of its cards and images.
+    Rich(rich::Ev),
 }
 
 /// The navigation this message asks for, if any.
@@ -215,8 +219,24 @@ pub fn go(msg: &Msg) -> Option<Id> {
     match msg {
         Msg::Go(id) => Some(id.clone()),
         Msg::OpenIde(target) => Some(Id::Ide(Some(target.clone()))),
+        Msg::Rich(rich::Ev::Action(action)) => action.route(),
         _ => None,
     }
+}
+
+/// A rich-content click or load, as this screen's message.
+fn on_rich(action: rich::RichAction) -> Msg {
+    Msg::Rich(rich::Ev::Action(action))
+}
+
+/// Asks the hub for the cards of the open task's references that it does not hold yet.
+fn prefetch(state: &mut State, ctx: &Ctx) -> Task<Msg> {
+    let texts: Vec<&str> = match state.detail.as_ref().and_then(|d| d.task.as_ref()) {
+        Some(t) => [Some(t.goal.as_str()), t.acceptance.as_deref(), t.note.as_deref()].into_iter().flatten().collect(),
+        None => Vec::new(),
+    };
+    let rctx = rich::context(&state.cards, None, None, None);
+    rich::prefetch(&mut state.cards, &ctx.client, &rctx, &texts).map(Msg::Rich)
 }
 
 /// The screen as it opens one task in full (the Projects screen's task links open it this way); the
@@ -233,6 +253,10 @@ pub fn load(state: &mut State, ctx: &Ctx) -> Task<Msg> {
 pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
     match msg {
         Msg::Go(_) | Msg::OpenIde(_) => Task::none(),
+        Msg::Rich(ev) => {
+            rich::apply(&mut state.cards, ev);
+            Task::none()
+        }
         Msg::Hover(id) => {
             state.hovered = Some(id);
             Task::none()
@@ -286,7 +310,8 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             }
             state.agents = snap.agents;
             state.detail = if state.selected.is_some() { snap.detail } else { None };
-            landed(state, ctx)
+            let landed = landed(state, ctx);
+            Task::batch([landed, prefetch(state, ctx)])
         }
         Msg::Loaded(Err(e)) => {
             state.error = Some(e);
@@ -748,7 +773,7 @@ fn summary<'a>(state: &'a State) -> Element<'a, Msg> {
 }
 
 fn fig<'a>(label: &str, value: usize) -> Element<'a, Msg> {
-    column![ui::mono(value.to_string(), 22.0, crate::theme::palette().ink), ui::label(label)].spacing(2).into()
+    column![ui::sans(value.to_string(), 22.0, crate::theme::palette().ink), ui::label(label)].spacing(2).into()
 }
 
 /// The four lanes, each full height, with a line when empty.
@@ -780,9 +805,9 @@ fn lane<'a>(i: usize, label: &str, count: usize, body: Element<'a, Msg>) -> Elem
     let mark = container(Space::new().width(10.0).height(10.0)).style(theme::swatch(lane_tone(i).color()));
     let head = row![
         mark,
-        text(label.to_uppercase()).font(MONO_BOLD).size(11.5).color(crate::theme::palette().ink),
+        text(label.to_string()).font(SANS_BOLD).size(11.5).color(crate::theme::palette().ink),
         Space::new().width(Length::Fill),
-        text(count.to_string()).font(MONO_BOLD).size(12.0).color(crate::theme::palette().ink_2),
+        text(count.to_string()).font(SANS_BOLD).size(12.0).color(crate::theme::palette().ink_2),
     ]
     .spacing(8)
     .align_y(Alignment::Center);
@@ -810,8 +835,8 @@ fn task_card<'a>(state: &'a State, t: &'a TaskRecord, picked: bool) -> Element<'
                 .unwrap_or_else(|| "waiting for the first step…".to_string());
             column![
                 stripe(),
-                container(mono_text(clip(&line, 36), 11.5, crate::theme::palette().ink_2)).width(Length::Fill).clip(true),
-                meta_row(meta_text("elapsed".to_string()), ui::mono(fmt_elapsed(now - t.updated_at), 12.0, crate::theme::palette().ink).into()),
+                container(sans_text(clip(&line, 36), 11.5, crate::theme::palette().ink_2)).width(Length::Fill).clip(true),
+                meta_row(meta_text("elapsed".to_string()), ui::sans(fmt_elapsed(now - t.updated_at), 12.0, crate::theme::palette().ink).into()),
             ]
             .spacing(8)
             .width(Length::Fill)
@@ -843,9 +868,9 @@ fn task_card<'a>(state: &'a State, t: &'a TaskRecord, picked: bool) -> Element<'
         ),
     };
     let top = row![
-        mono_text(t.id.clone(), 11.0, crate::theme::palette().ink_3),
+        sans_text(t.id.clone(), 11.0, crate::theme::palette().ink_3),
         Space::new().width(Length::Fill),
-        mono_text(clip(&role, 18).to_uppercase(), 10.5, crate::theme::palette().ink_2),
+        sans_text(clip(&role, 18), 10.5, crate::theme::palette().ink_2),
     ]
     .align_y(Alignment::Center)
     .width(Length::Fill);
@@ -894,20 +919,20 @@ fn stripe<'a>() -> Element<'a, Msg> {
 }
 
 /// Mono text, for the card's labels and figures.
-fn mono_text<'a>(s: String, size: f32, color: Color) -> Element<'a, Msg> {
-    text(s).font(theme::MONO).size(size).color(color).wrapping(Wrapping::None).into()
+fn sans_text<'a>(s: String, size: f32, color: Color) -> Element<'a, Msg> {
+    text(s).font(theme::SANS).size(size).color(color).wrapping(Wrapping::None).into()
 }
 
 
 /// The faint mono of a card's footer.
 fn meta_text<'a>(s: String) -> Element<'a, Msg> {
-    mono_text(s, 11.5, crate::theme::palette().ink_3)
+    sans_text(s, 11.5, crate::theme::palette().ink_3)
 }
 
-/// Serif text that wraps at word boundaries and, failing that, at glyphs, so a long token cannot
+/// Interface text that wraps at word boundaries and, failing that, at glyphs, so a long token cannot
 /// run past the card.
 fn serif_text<'a>(s: String, size: f32, color: Color) -> Element<'a, Msg> {
-    text(s).font(theme::SERIF).size(size).color(color).wrapping(Wrapping::WordOrGlyph).into()
+    text(s).font(theme::SANS).size(size).color(color).wrapping(Wrapping::WordOrGlyph).into()
 }
 
 /// A footer line: the left item at the left edge, the right item at the right edge.
@@ -919,7 +944,7 @@ fn meta_row<'a>(left: Element<'a, Msg>, right: Element<'a, Msg>) -> Element<'a, 
 fn assignee_link<'a>(state: &'a State, cid: Option<u64>) -> Element<'a, Msg> {
     match cid {
         None => ui::faint("Unassigned").into(),
-        Some(cid) => button(ui::mono(agent_name(&state.agents, cid), 11.5, crate::theme::palette().ink))
+        Some(cid) => button(ui::sans(agent_name(&state.agents, cid), 11.5, crate::theme::palette().ink))
             .padding(0.0)
             .style(button::text)
             .on_press(Msg::Go(Id::Agent(cid)))
@@ -958,6 +983,7 @@ fn draft_form<'a>(state: &'a State, d: &'a Draft) -> Element<'a, Msg> {
 /// One task in full: the goal, acceptance and result, the facts (with assign and withdraw while
 /// it is open), and the timeline of its assignee's work.
 fn detail_page<'a>(state: &'a State) -> Element<'a, Msg> {
+    let rctx = rich::context(&state.cards, None, None, None);
     let back: Element<'a, Msg> = ui::btn("Tasks", Some("chevronRight"), ui::Kind::Ghost, Some(Msg::Back));
     let Some(detail) = state.detail.as_ref() else {
         return column![back, ui::loading()].spacing(14).into();
@@ -976,7 +1002,7 @@ fn detail_page<'a>(state: &'a State) -> Element<'a, Msg> {
         kv("State", ui::badge(&label_of(&t.state), tone_of_state(&t.state))),
         kv("Role", ui::faint(role).into()),
         kv("Assignee", assignee_link(state, t.agent_cid)),
-        kv("Budget", ui::mono(fmt_num(t.budget), 12.0, crate::theme::palette().ink).into()),
+        kv("Budget", ui::sans(fmt_num(t.budget), 12.0, crate::theme::palette().ink).into()),
         kv("Created", ui::faint(ago(t.created_at)).into()),
         kv("Updated", ui::faint(ago(t.updated_at)).into()),
     ]
@@ -1011,15 +1037,15 @@ fn detail_page<'a>(state: &'a State) -> Element<'a, Msg> {
         column(detail.timeline.iter().map(timeline_row).collect::<Vec<_>>()).spacing(6).into()
     };
 
-    let mut main_parts: Vec<Element<'a, Msg>> = vec![section("Goal", ui::markdown(&t.goal))];
+    let mut main_parts: Vec<Element<'a, Msg>> = vec![section("Goal", rich::view(&t.goal, &rctx, &state.cards, &on_rich))];
     if let Some(a) = t.acceptance.as_deref().filter(|a| !a.is_empty()) {
-        main_parts.push(section("Acceptance", ui::markdown(a)));
+        main_parts.push(section("Acceptance", rich::view(a, &rctx, &state.cards, &on_rich)));
     }
     if let Some(n) = t.note.as_deref().filter(|n| !n.is_empty()) {
-        main_parts.push(section("Result", ui::markdown(n)));
+        main_parts.push(section("Result", rich::view(n, &rctx, &state.cards, &on_rich)));
     }
 
-    let head = column![ui::mono(t.id.clone(), 11.0, crate::theme::palette().ink_3), ui::mono(title_of(&t.goal), 22.0, crate::theme::palette().ink)].spacing(4);
+    let head = column![ui::mono(t.id.clone(), 11.0, crate::theme::palette().ink_3), ui::sans(title_of(&t.goal), 22.0, crate::theme::palette().ink)].spacing(4);
     let main = column(main_parts).spacing(22).width(Length::FillPortion(3));
     let side = column![section("Facts", column(side_parts).spacing(10).into()), section("Timeline", steps)]
         .spacing(22)
@@ -1029,7 +1055,7 @@ fn detail_page<'a>(state: &'a State) -> Element<'a, Msg> {
 
 fn timeline_row<'a>(e: &'a EntryRecord) -> Element<'a, Msg> {
     let color = if e.kind == "error" { crate::theme::palette().crit } else { crate::theme::palette().ink };
-    row![ui::mono(clock(e.at_ms), 11.0, crate::theme::palette().ink_3), ui::mono(describe(e), 12.0, color)]
+    row![ui::sans(clock(e.at_ms), 11.0, crate::theme::palette().ink_3), ui::sans(describe(e), 12.0, color)]
         .spacing(12)
         .into()
 }

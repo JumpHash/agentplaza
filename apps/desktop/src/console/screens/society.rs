@@ -1080,7 +1080,7 @@ fn draw_agent(frame: &mut canvas::Frame, n: &Node, c: Point, k: f32, alpha: f32,
         position: Point::new(c.x - tag_w / 2.0 + LABEL_PAD, tag_top + 4.0),
         color: ink,
         size: LABEL_SIZE.into(),
-        font: crate::theme::MONO,
+        font: crate::theme::SANS,
         ..canvas::Text::default()
     });
 }
@@ -1116,7 +1116,7 @@ fn draw_cluster(frame: &mut canvas::Frame, n: &Node, c: Point, k: f32, alpha: f3
         position: Point::new(x0 + LABEL_PAD, y0 + 7.0),
         color: ink,
         size: LABEL_SIZE.into(),
-        font: crate::theme::MONO,
+        font: crate::theme::SANS,
         ..canvas::Text::default()
     });
     frame.fill_text(canvas::Text {
@@ -1124,7 +1124,7 @@ fn draw_cluster(frame: &mut canvas::Frame, n: &Node, c: Point, k: f32, alpha: f3
         position: Point::new(x0 + LABEL_PAD, y0 + 26.0),
         color: crate::theme::palette().ink_2.scale_alpha(alpha),
         size: 12.0.into(),
-        font: crate::theme::MONO,
+        font: crate::theme::SANS,
         ..canvas::Text::default()
     });
     for (i, cid) in n.members.iter().take(3).enumerate() {
@@ -1141,7 +1141,7 @@ fn toolbar<'a>(grouped: bool, depth: usize) -> Element<'a, Msg> {
     let rule = ui::frame(None, crate::theme::palette().ink);
     let style = move |t: &Theme| if grouped { on_box(t) } else { rule(t) };
     let colour = if grouped { crate::theme::palette().paper } else { crate::theme::palette().ink };
-    let toggle = mouse_area(container(ui::mono("GROUP BY FAMILY", 11.0, colour)).padding([4.0, 8.0]).style(style)).on_press(Msg::Group);
+    let toggle = mouse_area(container(ui::sans("GROUP BY FAMILY", 11.0, colour)).padding([4.0, 8.0]).style(style)).on_press(Msg::Group);
     let mut bar = row![toggle].spacing(8);
     if grouped && depth > 0 {
         bar = bar.push(ui::btn("Back", None, Kind::Secondary, Some(Msg::Level(depth - 1))));
@@ -1169,7 +1169,7 @@ fn crumbs<'a>(nav: &[Key]) -> Element<'a, Msg> {
 }
 
 fn crumb<'a>(label: &str, level: usize, current: bool) -> Element<'a, Msg> {
-    let text = ui::mono(label.to_string(), 12.0, if current { crate::theme::palette().ink } else { crate::theme::palette().ink_2 });
+    let text = ui::sans(label.to_string(), 12.0, if current { crate::theme::palette().ink } else { crate::theme::palette().ink_2 });
     if current {
         text.into()
     } else {
@@ -1236,7 +1236,7 @@ fn detail<'a>(state: &'a State, d: &'a Society, me: &'a Agent) -> Element<'a, Ms
         .map(|b| peer_row(b.from, b))
         .collect();
 
-    let mut title = row![ui::mono(name.clone(), 18.0, crate::theme::palette().ink)].spacing(8).align_y(Alignment::Center);
+    let mut title = row![ui::sans(name.clone(), 18.0, crate::theme::palette().ink)].spacing(8).align_y(Alignment::Center);
     if state.suspended.contains(&me.cid) {
         title = title.push(ui::badge("suspended", Tone::Danger));
     }
@@ -1317,7 +1317,7 @@ fn group_panel<'a>(d: &'a Society, key: &Key) -> Element<'a, Msg> {
     };
 
     let panel = column![
-        column![ui::mono(title, 18.0, crate::theme::palette().ink), ui::faint(format!("{} agents", members.len()))].spacing(4),
+        column![ui::sans(title, 18.0, crate::theme::palette().ink), ui::faint(format!("{} agents", members.len()))].spacing(4),
         stat("Mean trust in", shown(trust_in)),
         stat("Mean trust out", shown(trust_out)),
         ui::label("Members"),
@@ -1330,7 +1330,7 @@ fn group_panel<'a>(d: &'a Society, key: &Key) -> Element<'a, Msg> {
 }
 
 fn stat<'a>(key: &'static str, value: String) -> Element<'a, Msg> {
-    row![ui::faint(key), Space::new().width(Length::Fill), ui::mono(value, 13.0, crate::theme::palette().ink)].into()
+    row![ui::faint(key), Space::new().width(Length::Fill), ui::sans(value, 13.0, crate::theme::palette().ink)].into()
 }
 
 /// Reputation as a bar, filled to `frac`.
@@ -1363,7 +1363,7 @@ fn bar<'a>(o: &Opinion) -> Element<'a, Msg> {
         parts.push(Space::new().width(Length::FillPortion(1000 - fill - tail_w)).height(Length::Fill).into());
     }
     let track = container(row(parts).height(Length::Fill)).width(Length::Fill).height(8.0).style(ui::frame(None, crate::theme::palette().ink));
-    row![track, ui::mono(format!("{e:.2}"), 12.0, crate::theme::palette().ink)].spacing(8).into()
+    row![track, ui::sans(format!("{e:.2}"), 12.0, crate::theme::palette().ink)].spacing(8).into()
 }
 
 /// The page with nothing selected: how to read the graph.
@@ -1376,7 +1376,7 @@ fn legend<'a>() -> Element<'a, Msg> {
         row![container(swatch).width(24.0).center_y(Length::Shrink), ui::prose(text)].spacing(10).into()
     };
     column![
-        column![ui::mono("Nothing selected", 18.0, crate::theme::palette().ink), ui::faint("Pick an agent to see how it sees the others, and how they see it.")].spacing(4),
+        column![ui::sans("Nothing selected", 18.0, crate::theme::palette().ink), ui::faint("Pick an agent to see how it sees the others, and how they see it.")].spacing(4),
         ui::label("Reading the graph"),
         entry(tint_sized(18.0, 10.0, RED), "trust below 0.4"),
         entry(tint_sized(18.0, 10.0, AMBER), "trust from 0.4 to 0.6"),

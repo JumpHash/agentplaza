@@ -20,6 +20,8 @@ pub mod icons;
 pub mod lab_api;
 pub mod onboard;
 pub mod picker;
+// The rich content of agent text: chips, hover cards, inline images (docs/design/workspace.md, section 3).
+pub mod rich;
 pub(crate) mod render_card;
 pub mod screens;
 pub mod services;
@@ -179,7 +181,14 @@ fn boot() -> (Console, Task<Msg>) {
 
 fn update(console: &mut Console, msg: Msg) -> Task<Msg> {
     let before = console.shell.current.clone();
-    let task = update_app(console, msg);
+    let mut task = update_app(console, msg);
+    // The screen changed: the IDE is told when it is left or entered (its terminals and polling follow).
+    if console.shell.current != before
+        && let Some(ctx) = console.ctx.clone()
+    {
+        let hook = screens::changed(&mut console.screens, &before, &console.shell.current, &ctx).map(Msg::Screen);
+        task = Task::batch([task, hook]);
+    }
     // The IDE remembers the screen it was opened from: its Escape goes back there.
     if matches!(console.shell.current, screens::Id::Ide(_)) && !matches!(before, screens::Id::Ide(_)) {
         console.screens.ide.origin = Some(before);
@@ -358,12 +367,16 @@ pub fn run() -> iced::Result {
         .theme(|_: &Console| crate::theme::theme())
         .subscription(subscription)
         // The register's faces (assets/fonts, SIL OFL 1.1): embedded, so the app needs no install.
+        // Inter is the interface and reading face, and the default font; Martian Mono is for code only.
+        .default_font(crate::theme::SANS)
+        .font(include_bytes!("../../../../assets/fonts/Inter-Regular.ttf").as_slice())
+        .font(include_bytes!("../../../../assets/fonts/Inter-Medium.ttf").as_slice())
+        .font(include_bytes!("../../../../assets/fonts/Inter-SemiBold.ttf").as_slice())
+        .font(include_bytes!("../../../../assets/fonts/Inter-Bold.ttf").as_slice())
+        .font(include_bytes!("../../../../assets/fonts/Inter-Italic.ttf").as_slice())
         .font(include_bytes!("../../../../assets/fonts/MartianMono-Regular.ttf").as_slice())
         .font(include_bytes!("../../../../assets/fonts/MartianMono-Medium.ttf").as_slice())
         .font(include_bytes!("../../../../assets/fonts/MartianMono-Bold.ttf").as_slice())
-        .font(include_bytes!("../../../../assets/fonts/SourceSerif4-Regular.ttf").as_slice())
-        .font(include_bytes!("../../../../assets/fonts/SourceSerif4-Semibold.ttf").as_slice())
-        .font(include_bytes!("../../../../assets/fonts/SourceSerif4-Italic.ttf").as_slice())
         // With `APZ_SNAPSHOT` the window stays hidden: the app captures its own frame.
         .window(iced::window::Settings {
             size: snapshot_size().unwrap_or(iced::Size::new(1360.0, 880.0)),

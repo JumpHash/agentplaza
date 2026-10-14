@@ -1,0 +1,428 @@
+/* Rich content in agent text (ui/embeds.ts): chips, hover cards, inline media and sandboxed HTML. Shared tokens only; the
+   corners are the 6px and 8px of the chips and cards. A state is a tone (ui/embed-model.ts) and the tone colours the
+   chip's border and icon, or a badge: the label of a chip is always the text colour. */
+
+/* A merged pull request has no token of its own in tokens.css; it is the one colour added here, light and dark. The
+   hover card's shadow is the one more depth the register needs on a sheet over a sheet (light) or a dark panel. */
+:root {
+  --merged: #7a4fd0;
+  --embed-shadow: 0 6px 18px rgb(21 25 22 / 0.16);
+}
+:root:not([data-theme="light"]) {
+  --merged: #b68cff;
+  --embed-shadow: 0 8px 24px rgb(0 0 0 / 0.6);
+}
+:root[data-theme="dark"] {
+  --merged: #b68cff;
+  --embed-shadow: 0 8px 24px rgb(0 0 0 / 0.6);
+}
+
+/* ---- Chips --------------------------------------------------------------------------------------------------------- */
+
+.embed-slot {
+  display: inline;
+}
+
+.embed-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font: 500 13px/1.4 var(--sans);
+  text-decoration: none;
+  white-space: nowrap;
+  vertical-align: baseline;
+  cursor: default;
+  -webkit-touch-callout: none;
+  --chip-state: var(--text-2);
+}
+/* The markdown rule for links (`.md a`) colours every link in the accent; a chip keeps its text colour whatever it is. */
+.md .embed-chip,
+.embed-chip,
+.embed-chip .embed-chip-label {
+  color: var(--text);
+}
+button.embed-chip,
+a.embed-chip {
+  cursor: pointer;
+}
+a.embed-chip:hover,
+button.embed-chip:hover {
+  background: var(--surface-2);
+}
+.embed-chip-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.embed-chip .embed-icon {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  color: var(--chip-state);
+}
+.embed-hash {
+  flex: none;
+  color: var(--text-2);
+  font-family: var(--mono);
+}
+
+/* The tone of a chip's state or status: its border and icon. Open is success, a draft is secondary, merged is purple,
+   closed is an error; in progress is information, and a task awaiting review is a warning. */
+.embed-chip[data-tone="ok"] {
+  --chip-state: var(--ok);
+}
+.embed-chip[data-tone="info"] {
+  --chip-state: var(--info);
+}
+.embed-chip[data-tone="warn"] {
+  --chip-state: var(--warn);
+}
+.embed-chip[data-tone="danger"] {
+  --chip-state: var(--danger);
+}
+.embed-chip[data-tone="merged"] {
+  --chip-state: var(--merged);
+}
+.embed-chip[data-tone="neutral"] {
+  --chip-state: var(--text-2);
+}
+.embed-chip[data-tone] {
+  border-color: color-mix(in srgb, var(--chip-state) 45%, var(--border));
+}
+
+/* An agent: its palette colour as a dot, and its status as a second, small dot in the status's tone. */
+.embed-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: hsl(var(--hue, 0) 60% 55%);
+}
+.embed-status {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--chip-state);
+}
+
+/* ---- Inline media ---------------------------------------------------------------------------------------------------- */
+
+.embed-block {
+  display: block;
+  max-width: 100%;
+  margin: 0.4em 0;
+}
+.embed-media-btn {
+  display: inline-block;
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  cursor: zoom-in;
+}
+.embed-img {
+  display: block;
+  box-sizing: border-box;
+  max-width: 100%;
+  max-height: 360px;
+  width: auto;
+  height: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  object-fit: contain;
+}
+.embed-video {
+  display: block;
+  box-sizing: border-box;
+  max-width: 100%;
+  max-height: 360px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-3);
+}
+
+.embed-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: color-mix(in srgb, var(--paper) 88%, transparent);
+}
+.embed-lightbox img {
+  max-width: 100%;
+  max-height: 100%;
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+}
+.embed-lightbox-close {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+}
+
+/* An HTML file: a card with a preview in a sandboxed frame. The frame's page may bring its own styles and images (the
+   sandbox's policy allows them, see deliverables.rs). */
+.embed-html {
+  box-sizing: border-box;
+  max-width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  overflow: hidden;
+}
+.embed-html-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  font: 500 13px/1.4 var(--sans);
+  color: var(--text);
+}
+.embed-html-head .embed-icon {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  color: var(--text-2);
+}
+.embed-html-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.embed-frame {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  height: 480px;
+  border: 0;
+  border-top: 1px solid var(--border);
+  background: var(--bg);
+}
+.embed-frame[hidden] {
+  display: none;
+}
+.embed-html.is-panel {
+  position: fixed;
+  inset: 16px;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  max-width: none;
+  box-shadow: var(--shadow);
+}
+.embed-html.is-panel .embed-frame {
+  flex: 1;
+  height: auto;
+  min-height: 0;
+}
+
+.embed-btn {
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-2);
+  color: var(--text);
+  font: 500 12px/1.3 var(--sans);
+  cursor: pointer;
+}
+.embed-btn:hover {
+  border-color: var(--border-strong);
+}
+.embed-btn[hidden] {
+  display: none;
+}
+
+/* ---- Hover cards ----------------------------------------------------------------------------------------------------- */
+
+/* The card has a visible edge in both themes (the strong border on the page's sheet) and a shadow; at a phone's 390px
+   it leaves a 16px gutter on each side. */
+.embed-pop {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 80;
+  box-sizing: border-box;
+  width: max-content;
+  max-width: min(360px, calc(100vw - 32px));
+  padding: 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--embed-shadow), var(--shadow);
+  font: 400 13px/1.45 var(--sans);
+  overflow-wrap: anywhere;
+  animation: embed-in 120ms ease-out;
+}
+@keyframes embed-in {
+  from {
+    opacity: 0;
+    transform: translateY(-2px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.embed-pop .embed-kicker {
+  margin-bottom: 4px;
+  color: var(--text-2);
+  font: 500 11px/1.3 var(--mono);
+  overflow-wrap: anywhere;
+}
+.embed-title {
+  margin-bottom: 6px;
+  color: var(--text);
+  font: 600 14px/1.4 var(--sans);
+  overflow-wrap: anywhere;
+}
+.embed-mono-title {
+  font: 500 12px/1.4 var(--mono);
+}
+.embed-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  margin: 4px 0;
+  color: var(--text-2);
+  font-size: 12px;
+}
+.embed-mono {
+  font-family: var(--mono);
+  font-size: 11.5px;
+}
+.embed-byline {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+/* An author's picture: 20px and round. Without one (or when it fails) the monogram sits in the same circle. */
+.embed-avatar {
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  box-sizing: border-box;
+  width: 20px;
+  height: 20px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--surface-2);
+  color: var(--text-2);
+  font: 600 10px/1 var(--sans);
+}
+.embed-avatar img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.embed-state {
+  padding: 0 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  color: var(--text-2);
+  font: 600 11px/1.5 var(--sans);
+}
+.embed-state[data-tone="ok"] {
+  color: var(--ok);
+  border-color: var(--ok);
+}
+.embed-state[data-tone="info"] {
+  color: var(--info);
+  border-color: var(--info);
+}
+.embed-state[data-tone="warn"] {
+  color: var(--warn);
+  border-color: var(--warn);
+}
+.embed-state[data-tone="danger"] {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+.embed-state[data-tone="merged"] {
+  color: var(--merged);
+  border-color: var(--merged);
+}
+.embed-add {
+  color: var(--ok);
+}
+.embed-del {
+  color: var(--danger);
+}
+.embed-label {
+  padding: 0 5px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-2);
+  font-size: 11px;
+}
+.embed-muted,
+.embed-muted-inline {
+  color: var(--text-2);
+}
+.embed-muted {
+  margin: 0;
+}
+.embed-status-text {
+  color: var(--text-2);
+}
+.embed-excerpt {
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  margin: 6px 0 0;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.embed-meta {
+  margin-top: 8px;
+  color: var(--text-2);
+  font-size: 11px;
+}
+.embed-code {
+  max-height: 180px;
+  margin: 6px 0 0;
+  padding: 6px 8px;
+  overflow: auto;
+  border-radius: 6px;
+  background: var(--surface-2);
+  color: var(--text);
+  font: 400 11.5px/1.45 var(--mono);
+  white-space: pre;
+}
+
+/* ---- Focus and motion ------------------------------------------------------------------------------------------------ */
+
+.embed-chip:focus-visible,
+.embed-btn:focus-visible,
+.embed-media-btn:focus-visible,
+.embed-lightbox-close:focus-visible {
+  outline: none;
+  box-shadow: var(--focus);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .embed-pop {
+    animation: none;
+  }
+  .embed-chip,
+  .embed-btn {
+    transition: none;
+  }
+}

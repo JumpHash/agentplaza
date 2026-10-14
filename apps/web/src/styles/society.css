@@ -38,13 +38,13 @@
   border: 2px solid var(--ink);
   background: var(--sheet);
   color: var(--ink);
-  font: 600 var(--fs-xs) var(--mono);
-  text-transform: uppercase;
+  font: 600 var(--fs-xs) var(--sans);
+
   letter-spacing: 0.06em;
   cursor: pointer;
 }
 .soc-toggle[aria-pressed=true] { background: var(--ink); color: var(--sheet); }
-.soc-crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; font: 500 var(--fs-xs) var(--mono); }
+.soc-crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; font: 500 var(--fs-xs) var(--sans); }
 .soc-crumb {
   padding: 0;
   border: 0;
@@ -82,11 +82,11 @@
 .soc-shadow { fill: #2b2420; }
 .soc-tag { fill: var(--sheet); stroke: #2b2420; stroke-width: 2; }
 .soc-sel .soc-tag { stroke-width: 3; }
-.soc-name { font: 600 11px var(--mono); fill: var(--ink); pointer-events: none; }
+.soc-name { font: 600 11px var(--sans); fill: var(--ink); pointer-events: none; }
 
 /* Groups: a box sized by its count, with the count in the middle. */
 .soc-group-box { fill: var(--surface-3); stroke: #2b2420; stroke-width: 3; }
-.soc-count { font: 600 20px var(--mono); fill: var(--ink); pointer-events: none; }
+.soc-count { font: 600 20px var(--sans); fill: var(--ink); pointer-events: none; }
 /* A line between two groups (or a group and an agent): summed contacts, coloured by mean trust. */
 .soc-agg { fill: none; transition: opacity 0.15s; }
 
@@ -102,14 +102,14 @@
 }
 
 .soc-detail { display: grid; gap: var(--s3); align-content: start; }
-.soc-head h2 { margin: 0; font: 600 var(--fs-xl) var(--mono); }
+.soc-head h2 { margin: 0; font: 600 var(--fs-xl) var(--sans); }
 .soc-role { margin: 2px 0 0; color: var(--ink-2); font-size: var(--fs-sm); }
 .soc-h {
   margin: var(--s2) 0 0;
   padding-top: var(--s2);
   border-top: 2px solid var(--ink);
-  font: 600 var(--fs-xs) var(--mono);
-  text-transform: uppercase;
+  font: 600 var(--fs-xs) var(--sans);
+
   letter-spacing: 0.06em;
   color: var(--ink-2);
 }
@@ -117,7 +117,7 @@
 .soc-stats { display: grid; gap: var(--s2); }
 .soc-stat { display: flex; justify-content: space-between; align-items: baseline; font-size: var(--fs-sm); }
 .soc-k { color: var(--ink-2); }
-.soc-v { font: 500 var(--fs-xs) var(--mono); }
+.soc-v { font: 500 var(--fs-xs) var(--sans); }
 
 .soc-meter { position: relative; height: 18px; border: 3px solid var(--ink); background: var(--surface-3); }
 .soc-meter-fill { position: absolute; top: 0; bottom: 0; left: 0; background: var(--ok); }
@@ -132,7 +132,7 @@
   padding: 0;
   border: 0;
   background: none;
-  font: 600 var(--fs-sm) var(--mono);
+  font: 600 var(--fs-sm) var(--sans);
   color: var(--ink);
   text-decoration: underline;
   text-underline-offset: 3px;
@@ -149,7 +149,7 @@
   background: repeating-linear-gradient(-45deg, var(--ink-3) 0 2px, transparent 2px 6px);
   opacity: 0.7;
 }
-.soc-bar-v { min-width: 36px; text-align: right; font: 500 var(--fs-xs) var(--mono); }
+.soc-bar-v { min-width: 36px; text-align: right; font: 500 var(--fs-xs) var(--sans); }
 
 .soc-note { margin: 0; font-style: italic; color: var(--ink-2); font-size: var(--fs-sm); }
 .soc-none { margin: 0; color: var(--ink-3); font-size: var(--fs-sm); }

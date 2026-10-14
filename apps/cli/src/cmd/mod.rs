@@ -30,6 +30,7 @@ pub mod society;
 pub mod tasks;
 pub mod tools;
 pub mod treasury;
+pub mod unfurl;
 pub mod usage;
 pub mod vault;
 pub mod workstation;

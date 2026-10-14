@@ -115,7 +115,7 @@ export function mount(root: HTMLElement): Cleanup {
 function mountLab(root: HTMLElement, roles: string[]): Cleanup {
   const s = readState(location.hash, roles);
   const bar = 'display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center;padding:8px 0';
-  const readout = h('div', { style: 'font-family:var(--mono);font-size:12px;color:var(--ink-2);padding:4px 0', 'aria-live': 'polite' });
+  const readout = h('div', { style: 'font-family:var(--sans);font-size:12px;color:var(--ink-2);padding:4px 0', 'aria-live': 'polite' });
   const list = h('pre', { style: 'font-family:var(--mono);font-size:12px;color:var(--ink-2);white-space:pre-wrap;margin:0' });
 
   const apply = (): void => {

@@ -552,9 +552,9 @@ fn upload_body<'a>(u: &'a Upload) -> Element<'a, Msg> {
         items.push(ui::prose(format!("Uploaded as {}.", made.id)).into());
         items.push(
             column![
-                fact("Name", ui::mono(made.name.clone(), 12.0, crate::theme::palette().ink)),
-                fact("Rows", ui::mono(lab_common::count(made.rows), 12.0, crate::theme::palette().ink)),
-                fact("Frozen rows", ui::mono(lab_common::count(made.frozen_rows), 12.0, crate::theme::palette().ink)),
+                fact("Name", ui::sans(made.name.clone(), 12.0, crate::theme::palette().ink)),
+                fact("Rows", ui::sans(lab_common::count(made.rows), 12.0, crate::theme::palette().ink)),
+                fact("Frozen rows", ui::sans(lab_common::count(made.frozen_rows), 12.0, crate::theme::palette().ink)),
                 fact("Balance", balance_cell(made)),
                 fact("Taint", taints_cell(made)),
             ]
@@ -637,7 +637,7 @@ fn table<'a>(rows: &[&'a Dataset], selected: Option<&str>) -> Element<'a, Msg> {
     let head_cells: Vec<Element<'a, Msg>> = heads
         .iter()
         .map(|(label, portion, right)| {
-            let content: Element<'a, Msg> = ui::mono(label.to_uppercase(), 11.0, crate::theme::palette().ink_3).into();
+            let content: Element<'a, Msg> = ui::sans(label.to_string(), 11.0, crate::theme::palette().ink_3).into();
             if *right { cell_right(*portion, content) } else { cell(*portion, content) }
         })
         .collect();
@@ -653,7 +653,7 @@ fn table_row<'a>(d: &'a Dataset, selected: bool) -> Element<'a, Msg> {
     let content = row![
         cell(3, name_cell(d)),
         cell(2, ui::badge(&d.kind, kind_tone(&d.kind))),
-        cell(2, ui::mono(source_of(d), 12.0, crate::theme::palette().ink_2)),
+        cell(2, ui::sans(source_of(d), 12.0, crate::theme::palette().ink_2)),
         cell(3, range_cell(d)),
         cell_right(2, rows_cell(d)),
         cell(3, balance_cell(d)),
@@ -673,7 +673,7 @@ fn table_row<'a>(d: &'a Dataset, selected: bool) -> Element<'a, Msg> {
 fn dataset_card<'a>(d: &'a Dataset, selected: bool) -> Element<'a, Msg> {
     let body = column![
         ui::mono(d.id.clone(), 11.5, crate::theme::palette().ink_3).wrapping(Wrapping::None),
-        fact("Source", ui::mono(source_of(d), 12.0, crate::theme::palette().ink_2)),
+        fact("Source", ui::sans(source_of(d), 12.0, crate::theme::palette().ink_2)),
         fact("Time range", range_cell(d)),
         fact("Rows", rows_cell(d)),
         fact("Balance", balance_cell(d)),
@@ -693,11 +693,11 @@ fn dataset_card<'a>(d: &'a Dataset, selected: bool) -> Element<'a, Msg> {
 fn detail<'a>(d: &'a Dataset, provenance_open: bool) -> Element<'a, Msg> {
     let facts = column![
         fact("Id", ui::mono(d.id.clone(), 12.0, crate::theme::palette().ink).wrapping(Wrapping::None)),
-        fact("Source", ui::mono(source_of(d), 12.0, crate::theme::palette().ink_2)),
-        fact("Created", ui::mono(lab_common::time(d.created_ms), 12.0, crate::theme::palette().ink_2)),
+        fact("Source", ui::sans(source_of(d), 12.0, crate::theme::palette().ink_2)),
+        fact("Created", ui::sans(lab_common::time(d.created_ms), 12.0, crate::theme::palette().ink_2)),
         fact("Time range", range_cell(d)),
-        fact("Rows", ui::mono(lab_common::count(d.rows), 12.0, crate::theme::palette().ink)),
-        fact("Frozen rows", ui::mono(lab_common::count(d.frozen_rows), 12.0, crate::theme::palette().ink)),
+        fact("Rows", ui::sans(lab_common::count(d.rows), 12.0, crate::theme::palette().ink)),
+        fact("Frozen rows", ui::sans(lab_common::count(d.frozen_rows), 12.0, crate::theme::palette().ink)),
         fact("Balance", balance_cell(d)),
         fact("Taint", taints_cell(d)),
         fact("SHA-256", ui::mono(or_none(&d.sha256), 11.0, crate::theme::palette().ink_2)),
@@ -745,7 +745,7 @@ fn rule<'a>() -> Element<'a, Msg> {
 /// The dataset's name over its id; the id stays on one line.
 fn name_cell<'a>(d: &'a Dataset) -> Element<'a, Msg> {
     column![
-        ui::mono(d.name.clone(), 12.5, crate::theme::palette().ink),
+        ui::sans(d.name.clone(), 12.5, crate::theme::palette().ink),
         ui::mono(d.id.clone(), 11.0, crate::theme::palette().ink_3).wrapping(Wrapping::None),
     ]
     .spacing(3)
@@ -755,8 +755,8 @@ fn name_cell<'a>(d: &'a Dataset) -> Element<'a, Msg> {
 /// The time span: from, then `to` and the end, in local time.
 fn range_cell<'a>(d: &'a Dataset) -> Element<'a, Msg> {
     column![
-        ui::mono(lab_common::time(d.from_ms), 11.5, crate::theme::palette().ink_2).wrapping(Wrapping::None),
-        ui::mono(format!("to {}", lab_common::time(d.to_ms)), 11.5, crate::theme::palette().ink_3).wrapping(Wrapping::None),
+        ui::sans(lab_common::time(d.from_ms), 11.5, crate::theme::palette().ink_2).wrapping(Wrapping::None),
+        ui::sans(format!("to {}", lab_common::time(d.to_ms)), 11.5, crate::theme::palette().ink_3).wrapping(Wrapping::None),
     ]
     .spacing(2)
     .into()
@@ -764,10 +764,10 @@ fn range_cell<'a>(d: &'a Dataset) -> Element<'a, Msg> {
 
 /// The row count, with the frozen set under it (a padlock and its count) when there is one.
 fn rows_cell<'a>(d: &'a Dataset) -> Element<'a, Msg> {
-    let mut lines: Vec<Element<'a, Msg>> = vec![ui::mono(lab_common::count(d.rows), 12.0, crate::theme::palette().ink).into()];
+    let mut lines: Vec<Element<'a, Msg>> = vec![ui::sans(lab_common::count(d.rows), 12.0, crate::theme::palette().ink).into()];
     if d.frozen_rows > 0 {
         lines.push(
-            row![lock_mark(crate::theme::palette().signal_ink), ui::mono(format!("{} frozen", lab_common::count(d.frozen_rows)), 11.0, crate::theme::palette().signal_ink)]
+            row![lock_mark(crate::theme::palette().signal_ink), ui::sans(format!("{} frozen", lab_common::count(d.frozen_rows)), 11.0, crate::theme::palette().signal_ink)]
                 .spacing(6)
                 .align_y(Alignment::Center)
                 .into(),
@@ -810,7 +810,7 @@ fn balance_cell<'a>(d: &'a Dataset) -> Element<'a, Msg> {
     let legend: Vec<Element<'a, Msg>> = entries
         .iter()
         .map(|(class, n)| {
-            row![swatch(class_color(class)), ui::mono(format!("{class} {}", lab_common::count(*n)), 11.0, crate::theme::palette().ink_2)]
+            row![swatch(class_color(class)), ui::sans(format!("{class} {}", lab_common::count(*n)), 11.0, crate::theme::palette().ink_2)]
                 .spacing(6)
                 .align_y(Alignment::Center)
                 .into()

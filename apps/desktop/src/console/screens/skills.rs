@@ -889,7 +889,7 @@ fn row_card(s: &Summary, selected: bool) -> Element<'_, Msg> {
         button(text(s.title.as_str()).size(16.0))
             .on_press(Msg::Open(s.id.clone()))
             .style(button::text),
-        ui::mono(s.name.as_str(), 12.0, muted),
+        ui::sans(s.name.as_str(), 12.0, muted),
         row(badges).spacing(6),
     ]
     .spacing(8);

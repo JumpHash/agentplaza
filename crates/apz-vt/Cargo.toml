@@ -1,0 +1,11 @@
+[package]
+name = "apz-vt"
+description = "AgentPlaza terminal emulator core: a VT screen driven by the vte parser, with scrollback, no UI and no I/O"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+# The VT parser (MIT or Apache-2.0). Default features only: `std` pulls memchr, nothing else.
+vte = "0.15"

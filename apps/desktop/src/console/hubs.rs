@@ -492,7 +492,7 @@ pub fn view(state: &State) -> Element<'_, Msg> {
             let status = if signed_in { "signed in" } else { "signed out" };
             page.push(
                 row![
-                    column![ui::mono(title, 15.0, ui::INK), ui::faint(format!("{} · {status}", hub.url))].spacing(4),
+                    column![ui::sans(title, 15.0, ui::INK), ui::faint(format!("{} · {status}", hub.url))].spacing(4),
                     Space::new().width(Length::Fill),
                     ui::btn("Use", None, Kind::Ghost, (!busy && signed_in && !active).then(|| Msg::Use(name.clone()))),
                 ]
@@ -568,7 +568,7 @@ fn identity_card(identity: &Identity, pinned: Option<&Pinned>, busy: bool) -> El
         None => "no certificate fingerprint".to_string(),
     };
     let mut card: Vec<Element<'static, Msg>> = vec![
-        ui::mono(name, 16.0, ui::INK).into(),
+        ui::sans(name, 16.0, ui::INK).into(),
         ui::faint(format!("{} · version {} · {} nodes", identity.url, identity.version, identity.nodes)).into(),
         ui::faint(certificate).into(),
     ];

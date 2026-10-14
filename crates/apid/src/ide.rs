@@ -1217,7 +1217,7 @@ pub fn repo_pull(host: &dyn Host, ws: &RepoWs, body: &Value) -> Reply {
 
 /// Milliseconds since the Unix epoch of an RFC 3339 instant, such as `2026-10-14T09:30:00Z` or one with
 /// fractional seconds and an offset. None when it does not parse.
-fn rfc3339_ms(text: &str) -> Option<u64> {
+pub(crate) fn rfc3339_ms(text: &str) -> Option<u64> {
     let field = |range: std::ops::Range<usize>| text.get(range).and_then(|raw| raw.parse::<i64>().ok());
     let (year, month, day) = (field(0..4)?, field(5..7)?, field(8..10)?);
     let (hour, minute, second) = (field(11..13)?, field(14..16)?, field(17..19)?);

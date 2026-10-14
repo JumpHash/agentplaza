@@ -133,7 +133,8 @@ fn now() -> u64 {
     apz_plaza::now_ms()
 }
 
-fn github_token(app: &App) -> Option<String> {
+/// The owner's GitHub token: the vault's `github_token` bound to the `github` consumer, else GITHUB_TOKEN.
+pub(crate) fn github_token(app: &App) -> Option<String> {
     app.vault.value_for(GITHUB_TOKEN, GITHUB_BINDING, &OnBehalf::Hub)
 }
 

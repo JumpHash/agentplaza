@@ -24,8 +24,8 @@
   border: 1px solid var(--rule);
   background: transparent;
   color: var(--text-2);
-  font: 500 var(--fs-xs)/1 var(--mono);
-  text-transform: uppercase;
+  font: 500 var(--fs-xs)/1 var(--sans);
+
   letter-spacing: 0.04em;
   cursor: pointer;
 }
@@ -59,7 +59,7 @@
   white-space: nowrap;
   vertical-align: bottom;
   color: var(--danger);
-  font: 400 var(--fs-sm)/1.4 var(--mono);
+  font: 400 var(--fs-sm)/1.4 var(--sans);
 }
 
 /* The table keeps its cells on one line (the lab's body breaks words anywhere, which would shred the
@@ -89,7 +89,7 @@
   font-size: var(--fs-sm);
   min-width: 0;
 }
-.lab-jobs-kv dt { color: var(--text-3); font: 500 var(--fs-xs)/1.8 var(--mono); text-transform: uppercase; letter-spacing: 0.04em; }
+.lab-jobs-kv dt { color: var(--text-3); font: 500 var(--fs-xs)/1.8 var(--sans); letter-spacing: 0.01em; }
 .lab-jobs-kv dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 
 .lab-jobs-empty { display: flex; flex-direction: column; gap: 14px; }
@@ -109,7 +109,7 @@
   gap: 6px;
   min-width: 0;
 }
-.lab-jobs-label { color: var(--text-2); font: 500 var(--fs-xs)/1.4 var(--mono); text-transform: uppercase; letter-spacing: 0.04em; }
+.lab-jobs-label { color: var(--text-2); font: 500 var(--fs-xs)/1.4 var(--sans); letter-spacing: 0.01em; }
 .lab-jobs-form .input, .lab-jobs-form .select, .lab-jobs-form .textarea { width: 100%; min-width: 0; box-sizing: border-box; }
 .lab-jobs-form .textarea { font-family: var(--mono); font-size: var(--fs-sm); }
 .lab-jobs-hint { margin-top: -10px; }
@@ -124,7 +124,7 @@
   border: 1px solid var(--rule);
   min-width: 0;
 }
-.lab-jobs-pin legend { padding: 0 6px; color: var(--text-2); font: 500 var(--fs-xs)/1.4 var(--mono); text-transform: uppercase; letter-spacing: 0.04em; }
+.lab-jobs-pin legend { padding: 0 6px; color: var(--text-2); font: 500 var(--fs-xs)/1.4 var(--sans); letter-spacing: 0.01em; }
 
 .lab-jobs-inline { display: flex; flex-wrap: wrap; gap: 8px 16px; min-width: 0; }
 .lab-jobs-checks {
@@ -149,7 +149,7 @@
 }
 .lab-jobs-checks .lab-jobs-check:last-child { border-bottom: 0; }
 .lab-jobs-check input { flex: none; margin: 0; }
-.lab-jobs-check-name { font-family: var(--mono); overflow-wrap: anywhere; min-width: 0; }
+.lab-jobs-check-name { font-family: var(--sans); overflow-wrap: anywhere; min-width: 0; }
 .lab-jobs-check .lab-muted { margin-left: auto; }
 .lab-jobs-check .lab-badge { margin-left: 0; }
 
@@ -195,7 +195,7 @@
   padding: 2px 6px;
   border: 1px solid var(--rule);
   color: var(--text-2);
-  font: 500 var(--fs-xs)/1.4 var(--mono);
+  font: 500 var(--fs-xs)/1.4 var(--sans);
   white-space: nowrap;
 }
 .lab-jobs-out { display: flex; flex-direction: column; gap: 4px; min-width: 0; overflow-wrap: anywhere; }

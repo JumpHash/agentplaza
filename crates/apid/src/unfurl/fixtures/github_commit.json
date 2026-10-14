@@ -1,0 +1,24 @@
+{
+  "sha": "abc1234def56789abc1234def56789abc1234de",
+  "commit": {
+    "author": {
+      "name": "Octo Cat",
+      "email": "octo@example.com",
+      "date": "2026-10-05T14:20:00Z"
+    },
+    "committer": {
+      "name": "Octo Cat",
+      "date": "2026-10-05T14:21:00Z"
+    },
+    "message": "Fix the parser\n\nThe lexer read past the end of the buffer."
+  },
+  "author": {
+    "login": "octocat",
+    "avatar_url": "https://avatars.githubusercontent.com/u/1?v=4"
+  },
+  "stats": { "additions": 21, "deletions": 3, "total": 24 },
+  "files": [
+    { "filename": "src/lexer.rs", "additions": 20, "deletions": 3, "status": "modified" },
+    { "filename": "src/lib.rs", "additions": 1, "deletions": 0, "status": "modified" }
+  ]
+}

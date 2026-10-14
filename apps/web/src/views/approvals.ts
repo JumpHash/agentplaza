@@ -9,7 +9,9 @@ import { href } from '../router';
 import { agentName } from '../roles';
 import { agents, on } from '../store';
 import { ago, attempt, badge, button, card, empty, textarea, type Tone } from '../ui/components';
+import { embedContextFromStore } from '../ui/embeds';
 import { h, replace } from '../ui/dom';
+import { renderMarkdown } from '../ui/markdown';
 import { openAgentWizard } from './agent-wizard';
 import type { Cleanup } from './index';
 
@@ -175,7 +177,8 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
           badge(`${p.count} ${p.count === 1 ? 'agent' : 'agents'}`, 'info'),
           h('time.approval-age', null, ago(p.created_ms)),
         ),
-        h('p', null, p.reason),
+        // The orchestrator's rationale is agent-written text: rich content applies.
+        renderMarkdown(p.reason, { embeds: embedContextFromStore() }),
         p.instruction ? h('blockquote.proposal-instruction', null, `“${p.instruction}”`) : null,
         h('p.faint', null, `Proposed by ${p.by}`),
         h('div.approval-buttons', null, reject, review),

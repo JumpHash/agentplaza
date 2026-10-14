@@ -2,6 +2,7 @@
 // The console is served by apid, so every path is same-origin.
 
 import type { FileChange, Stats, TreePage, WorkspaceKind } from './ide/types';
+import type { Ref } from './ui/rich';
 
 export class ApiError extends Error {
   /** The response's JSON body when it had one (a 409 carries the server's `current_hash`). */
@@ -79,6 +80,8 @@ export interface Overview {
   agents: { total: number; idle: number; working: number; offline: number };
   tasks: Record<string, number>;
   default_model: string; orchestrator_model: string; dev_models: boolean; hub: boolean; noded: boolean;
+  /** The plaza's git host's web origin, for the rich links in agent text (null when the forge is not configured). */
+  git_host: string | null;
 }
 
 export type Auth = 'none' | { env: string } | { secret: string } | { command: string };
@@ -243,7 +246,9 @@ export interface AgentProposal {
 }
 export interface PlazaState { paused: boolean; since_ms: number; by: string; reason: string; cancelled: number }
 export interface BoardComment { id: string; post: string; agent_cid: number | null; author: string; body: string; created_at: number; attachments: string[] }
-export interface BoardPost { id: string; agent_cid: number; role: string; subject: string; body: string; created_at: number; task: string | null; comments: BoardComment[]; attachments: string[] }
+export interface BoardPost { id: string; agent_cid: number; role: string; subject: string; body: string; created_at: number; task: string | null; comments: BoardComment[]; attachments: string[]; owner?: boolean; project?: string | null; mentions?: string[] }
+/** The board as the list endpoint answers it: the posts (newest first), and whether its deliveries are paused. */
+export interface BoardView { posts: BoardPost[]; total: number; limit: number; truncated: boolean; unread: { agent_cid: number; count: number }[]; project: string | null; paused: boolean; paused_all: boolean; paused_projects: string[] }
 export interface Conversation { id: string; from_cid: number; to_cid: number; from_role: string; to_role: string; text: string; created_at: number; delivered: boolean; attachments?: string[] }
 /** One pair's summary over the retained record: `last_at` and `count` are the whole record's, not the page's. */
 export interface ConversationPair { a: number; b: number; active: boolean; count: number; last_at: number }
@@ -356,6 +361,12 @@ export interface ConnectorProposal {
     actions: { name: string; description: string; risk: ConnectorRisk; method: string; path: string; input_schema: unknown }[];
   };
 }
+
+/** One unfurl answer: the card for a reference, or why there is none (the hub's `{ok, card}` or `{ok:false, error}`). */
+export type UnfurlAnswer = { ok: true; card: UnfurlCard } | { ok: false; error: string };
+/** A card as the hub's unfurl builds it (crates/apid/src/unfurl): `kind` names the reference, `url` is its web page
+ * when the hub knows one. The fields depend on the kind; the web reads them with type checks (ui/embeds.ts). */
+export type UnfurlCard = { kind: string; url?: string | null } & Record<string, unknown>;
 
 /** A deliverable in the Library: a file an agent handed in with deliver_file. */
 export interface Deliverable {
@@ -554,8 +565,17 @@ export const api = {
   withdrawTask: (id: string) => del<Task>(`/v1/tasks/${id}`),
 
   board: () => get<{ posts: BoardPost[] }>('/v1/board').then((r) => r.posts),
+  /** The board for one project (or the whole board), with its pause state. */
+  boardView: (project?: string) => get<BoardView>(`/v1/board${query({ project })}`),
   /** The owner comments on a board post. */
   commentOnPost: (postId: string, text: string) => post<BoardComment>(`/v1/board/${postId}/comments`, { text }),
+  /** The owner posts to the board. `mentions` are agent names or roles, and `all`. */
+  postToBoard: (body: { body: string; subject?: string; project?: string; mentions?: string[] }) => post<BoardPost>('/v1/board/posts', body),
+  /** Pauses (`on`) or resumes the deliveries of a project's board, or of the whole board when no project is given. */
+  setBoardPause: (on: boolean, project?: string) =>
+    post<{ project: string | null; on: boolean; changed: boolean; paused: boolean; paused_all: boolean; paused_projects: string[] }>('/v1/board/pause', { on, project }),
+  /** The thread as a download: Markdown or JSON, for a project or the whole board. */
+  boardExportUrl: (format: 'md' | 'json', project?: string) => `/v1/board/export${query({ format, project })}`,
   conversations: () => get<{ conversations: Conversation[] }>('/v1/conversations').then((r) => r.conversations),
   conversationsPage: (q: ConversationQuery = {}) => get<ConversationsPage>(`/v1/conversations${query({ limit: q.limit, before: q.before, q: q.q })}`),
   conversationThread: (a: number, b: number, q: ConversationQuery = {}) =>
@@ -643,6 +663,8 @@ export const api = {
   file: (id: string) => get<Deliverable>(`/v1/files/${id}`),
   /** The deliverable's bytes, inline (for previews) or as a download. */
   fileUrl: (id: string, download = false) => `/v1/files/${id}/content${download ? '?download=1' : ''}`,
+  /** Card data for up to 50 references in one call, answered in order (the hub's `POST /v1/unfurl`). */
+  unfurl: (refs: Ref[]) => post<{ cards: UnfurlAnswer[] }>('/v1/unfurl', { refs }),
   removeFile: (id: string) => del<unknown>(`/v1/files/${id}`),
   library: () => get<LibraryTool[]>('/v1/library'),
   libraryFile: (name: string, version: number, path: string) => get<{ path: string; content: string }>(`/v1/library/${name}/${version}/files?path=${encodeURIComponent(path)}`),

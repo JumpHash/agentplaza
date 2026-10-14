@@ -30,7 +30,7 @@
 .lab-job-stage.done { border-left-color: var(--ok); }
 .lab-job-stage.current { border-left-color: var(--accent); }
 .lab-job-stage.skipped { border-left-style: dashed; opacity: 0.7; }
-.lab-job-stage-label { font: 600 var(--fs-sm)/1.4 var(--mono); }
+.lab-job-stage-label { font: 600 var(--fs-sm)/1.4 var(--sans); }
 .lab-job-stage-sub { color: var(--text-2); font-size: var(--fs-sm); overflow-wrap: anywhere; }
 
 /* Plan: islands in a row that wraps; each island lists its machines, and each machine its devices. */
@@ -46,7 +46,7 @@
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
-  font: 600 var(--fs-sm)/1.4 var(--mono);
+  font: 600 var(--fs-sm)/1.4 var(--sans);
 }
 .lab-job-machine {
   display: flex;
@@ -61,7 +61,7 @@
 .lab-job-dev {
   padding: 1px 6px;
   border: 1px solid var(--rule);
-  font: 500 var(--fs-xs)/1.5 var(--mono);
+  font: 500 var(--fs-xs)/1.5 var(--sans);
 }
 .lab-job-kv {
   display: grid;
@@ -76,7 +76,7 @@
   flex-wrap: wrap;
   gap: 6px 18px;
   color: var(--text-3);
-  font: 500 var(--fs-xs)/1.5 var(--mono);
+  font: 500 var(--fs-xs)/1.5 var(--sans);
 }
 
 /* Charts: one per island and metric, two to a row from 640 px up. */
@@ -89,7 +89,7 @@
 .lab-job-chart-sum {
   margin-top: 6px;
   color: var(--text-2);
-  font: 500 var(--fs-xs)/1.4 var(--mono);
+  font: 500 var(--fs-xs)/1.4 var(--sans);
   overflow-wrap: anywhere;
 }
 .lab-job-tip {
@@ -99,7 +99,7 @@
   padding: 6px 8px;
   border: 1px solid var(--rule);
   background: var(--sheet, transparent);
-  font: 500 var(--fs-xs)/1.4 var(--mono);
+  font: 500 var(--fs-xs)/1.4 var(--sans);
 }
 
 /* Shares and budget: a thin track with its fill. */
@@ -126,13 +126,13 @@
   overflow: auto;
   padding: 8px 12px;
   border: 1px solid var(--rule);
-  font: 400 var(--fs-xs)/1.5 var(--mono);
+  font: 400 var(--fs-xs)/1.5 var(--sans);
   min-width: 0;
 }
 .lab-job-line { white-space: pre-wrap; overflow-wrap: anywhere; }
 
 .lab-job-back {
-  font: 500 var(--fs-sm)/1.4 var(--mono);
+  font: 500 var(--fs-sm)/1.4 var(--sans);
   color: var(--accent-2);
   text-decoration: underline;
 }

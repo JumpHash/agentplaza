@@ -21,7 +21,7 @@ use super::lab_common;
 use super::Id;
 use crate::console::lab_api::{self, Dataset, DeviceMachine, DeviceRequest, Island, JobDocument, JobPlan, JobSummary, JobView, Recipe, SubmitError};
 use crate::console::{client::{self, Client}, ui, Ctx};
-use crate::theme::{self, MONO};
+use crate::theme::{self, SANS};
 
 /// The backends a device pin may name, in the planner's order.
 const BACKENDS: [&str; 5] = ["cuda", "rocm", "xpu", "mps", "cpu"];
@@ -679,7 +679,7 @@ fn budget_bar<'a>(used: f64, budget: f64) -> Element<'a, Msg> {
 /// `used / budget` in GPU-hours, with its bar.
 fn used_cell<'a>(job: &JobSummary, alpha: f32) -> Element<'a, Msg> {
     let figure = format!("{} / {}", lab_common::number(job.gpu_hours, 2), lab_common::number(job.budget_gpu_hours, 2));
-    column![ui::mono(figure, 12.0, tinted(crate::theme::palette().ink, alpha)), budget_bar(job.gpu_hours, job.budget_gpu_hours)]
+    column![ui::sans(figure, 12.0, tinted(crate::theme::palette().ink, alpha)), budget_bar(job.gpu_hours, job.budget_gpu_hours)]
         .spacing(4)
         .align_x(Alignment::End)
         .into()
@@ -700,7 +700,7 @@ fn cell<'a>(portion: u16, right: bool, content: impl Into<Element<'a, Msg>>) -> 
 }
 
 fn head_cell<'a>(label: &str, portion: u16, right: bool) -> Element<'a, Msg> {
-    cell(portion, right, ui::mono(label.to_uppercase(), 11.0, crate::theme::palette().ink_3))
+    cell(portion, right, ui::sans(label.to_string(), 11.0, crate::theme::palette().ink_3))
 }
 
 /// `text` cut to `max` characters, the last of them an ellipsis when it had to be cut.
@@ -720,13 +720,13 @@ fn job_row<'a>(job: &JobSummary, alpha: f32, now: u64) -> Element<'a, Msg> {
     let content = row![
         cell(3, false, single_line(ui::mono(job.id.clone(), 12.0, tinted(crate::theme::palette().ink, alpha)))),
         cell(3, false, ui::badge::<Msg>(&job.status, tone_of(&job.status))),
-        cell(2, false, single_line(ui::mono(job.mode.clone(), 12.0, tinted(crate::theme::palette().ink_2, alpha)))),
-        cell(4, false, single_line(ui::mono(job.recipe.clone(), 12.0, tinted(crate::theme::palette().ink_2, alpha)))),
-        cell(2, true, single_line(ui::mono(job.datasets.len().to_string(), 12.0, tinted(crate::theme::palette().ink, alpha)))),
-        cell(4, false, single_line(ui::mono(lab_common::time(job.created_ms), 12.0, tinted(crate::theme::palette().ink_3, alpha)))),
-        cell(2, true, single_line(ui::mono(lab_common::duration(duration_of(job, now)), 12.0, tinted(crate::theme::palette().ink, alpha)))),
+        cell(2, false, single_line(ui::sans(job.mode.clone(), 12.0, tinted(crate::theme::palette().ink_2, alpha)))),
+        cell(4, false, single_line(ui::sans(job.recipe.clone(), 12.0, tinted(crate::theme::palette().ink_2, alpha)))),
+        cell(2, true, single_line(ui::sans(job.datasets.len().to_string(), 12.0, tinted(crate::theme::palette().ink, alpha)))),
+        cell(4, false, single_line(ui::sans(lab_common::time(job.created_ms), 12.0, tinted(crate::theme::palette().ink_3, alpha)))),
+        cell(2, true, single_line(ui::sans(lab_common::duration(duration_of(job, now)), 12.0, tinted(crate::theme::palette().ink, alpha)))),
         cell(3, true, used_cell(job, alpha)),
-        cell(4, false, single_line(ui::mono(clip(job.error.as_deref().unwrap_or("—"), 40), 12.0, tinted(crate::theme::palette().crit, alpha)))),
+        cell(4, false, single_line(ui::sans(clip(job.error.as_deref().unwrap_or("—"), 40), 12.0, tinted(crate::theme::palette().crit, alpha)))),
     ]
     .spacing(12)
     .align_y(Alignment::Center)
@@ -741,7 +741,7 @@ fn job_row<'a>(job: &JobSummary, alpha: f32, now: u64) -> Element<'a, Msg> {
 
 /// A label and its value on one line of a card; the label fades with the card.
 fn kv<'a>(label: &str, value: impl Into<Element<'a, Msg>>, alpha: f32) -> Element<'a, Msg> {
-    let name = ui::mono(label.to_uppercase(), 10.5, tinted(crate::theme::palette().ink_3, alpha));
+    let name = ui::sans(label.to_string(), 10.5, tinted(crate::theme::palette().ink_3, alpha));
     row![cell(1, false, name), cell(3, false, value)].spacing(12).align_y(Alignment::Center).into()
 }
 
@@ -749,13 +749,13 @@ fn kv<'a>(label: &str, value: impl Into<Element<'a, Msg>>, alpha: f32) -> Elemen
 fn job_card<'a>(job: &JobSummary, now: u64, alpha: f32) -> Element<'a, Msg> {
     let body = column![
         row![ui::mono(job.id.clone(), 13.0, tinted(crate::theme::palette().ink, alpha)), Space::new().width(Length::Fill), ui::badge::<Msg>(&job.status, tone_of(&job.status))].align_y(Alignment::Center),
-        kv("Recipe", ui::mono(job.recipe.clone(), 12.0, tinted(crate::theme::palette().ink_2, alpha)), alpha),
-        kv("Mode", ui::mono(job.mode.clone(), 12.0, tinted(crate::theme::palette().ink_2, alpha)), alpha),
-        kv("Datasets", ui::mono(job.datasets.len().to_string(), 12.0, tinted(crate::theme::palette().ink, alpha)), alpha),
-        kv("Created", ui::mono(lab_common::time(job.created_ms), 12.0, tinted(crate::theme::palette().ink_3, alpha)), alpha),
-        kv("Duration", ui::mono(lab_common::duration(duration_of(job, now)), 12.0, tinted(crate::theme::palette().ink, alpha)), alpha),
+        kv("Recipe", ui::sans(job.recipe.clone(), 12.0, tinted(crate::theme::palette().ink_2, alpha)), alpha),
+        kv("Mode", ui::sans(job.mode.clone(), 12.0, tinted(crate::theme::palette().ink_2, alpha)), alpha),
+        kv("Datasets", ui::sans(job.datasets.len().to_string(), 12.0, tinted(crate::theme::palette().ink, alpha)), alpha),
+        kv("Created", ui::sans(lab_common::time(job.created_ms), 12.0, tinted(crate::theme::palette().ink_3, alpha)), alpha),
+        kv("Duration", ui::sans(lab_common::duration(duration_of(job, now)), 12.0, tinted(crate::theme::palette().ink, alpha)), alpha),
         kv("GPU-h used", used_cell(job, alpha), alpha),
-        ui::mono(clip(job.error.as_deref().unwrap_or(""), 120), 12.0, tinted(crate::theme::palette().crit, alpha)),
+        ui::sans(clip(job.error.as_deref().unwrap_or(""), 120), 12.0, tinted(crate::theme::palette().crit, alpha)),
     ]
     .spacing(8);
     let boxed = move |_: &Theme| container::Style {
@@ -1016,7 +1016,7 @@ fn device_pin<'a>(state: &'a State) -> Element<'a, Msg> {
 /// A plan as a diagram: the facts, then one box per island with its leader and machines' device indexes.
 pub fn plan_view<'a>(plan: &JobPlan) -> Element<'a, Msg> {
     let fact = |label: &str, value: String| -> Element<'a, Msg> {
-        container(column![ui::label(label), ui::mono(value, 13.0, crate::theme::palette().ink).wrapping(text::Wrapping::Glyph)].spacing(4))
+        container(column![ui::label(label), ui::sans(value, 13.0, crate::theme::palette().ink).wrapping(text::Wrapping::Glyph)].spacing(4))
             .padding([10, 12])
             .width(Length::FillPortion(1))
             .style(theme::boxed)
@@ -1110,14 +1110,14 @@ fn form_card<'a>(state: &'a State) -> Element<'a, Msg> {
 
     let search = text_editor(&f.search)
         .placeholder("{\"lr\": [0.001, 0.01]}  or one key: value per line")
-        .font(MONO)
+        .font(SANS)
         .size(13.0)
         .height(Length::Fixed(120.0))
         .on_action(Msg::Search);
     let budget = text_input("e.g. 1.5", &f.budget).on_input(Msg::Budget).padding([8, 10]).size(13.0).width(Length::Fill).style(theme::input);
     let train = text_editor(&f.train)
         .placeholder("{\"steps\": 500}")
-        .font(MONO)
+        .font(SANS)
         .size(13.0)
         .height(Length::Fixed(90.0))
         .on_action(Msg::Train);
@@ -1127,7 +1127,7 @@ fn form_card<'a>(state: &'a State) -> Element<'a, Msg> {
     let fresh_now = fresh(state);
     let busy = state.previewing || state.submitting;
     let problem_list: Option<Element<'a, Msg>> = (state.attempted && !doc_ok).then(|| {
-        column(errors.iter().map(|e| ui::mono(e.clone(), 12.0, crate::theme::palette().warn).into()).collect::<Vec<Element<'a, Msg>>>())
+        column(errors.iter().map(|e| ui::sans(e.clone(), 12.0, crate::theme::palette().warn).into()).collect::<Vec<Element<'a, Msg>>>())
             .spacing(4)
             .into()
     });

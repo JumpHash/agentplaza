@@ -346,7 +346,7 @@ fn range<'a>(state: &State, label: &str, key: &'static str, lo: f32, hi: f32, st
         label,
         row![
             slider(lo..=hi, v, move |x| Msg::Set(key, format!("{}", (x / step).round() * step))).step(step).width(Length::Fixed(120.0)),
-            ui::mono(format!("{v:.2}"), 12.0, theme::palette().ink_2),
+            ui::sans(format!("{v:.2}"), 12.0, theme::palette().ink_2),
         ]
         .spacing(8)
         .align_y(Alignment::Center)
@@ -494,9 +494,9 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
     let bar = row(controls(state)).spacing(16).align_y(Alignment::End).wrap().vertical_spacing(10);
     let (summary, lines, bad) = readout(state);
     let p = theme::palette();
-    let mut body = column![bar, ui::mono(summary, 12.0, if bad { p.crit } else { p.ink_2 })].spacing(12);
+    let mut body = column![bar, ui::sans(summary, 12.0, if bad { p.crit } else { p.ink_2 })].spacing(12);
     for l in lines {
-        body = body.push(ui::mono(l, 12.0, p.ink));
+        body = body.push(ui::sans(l, 12.0, p.ink));
     }
     // The web lab's canvas heights: the field of view is vertical, so the same height frames the same.
     let tall = match state.kind {

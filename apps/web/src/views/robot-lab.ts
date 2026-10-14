@@ -151,7 +151,7 @@ export function mount(root: HTMLElement): Cleanup {
 function mountLab(root: HTMLElement, cat: LabCatalog): Cleanup {
   const s = readState(location.hash);
   const bar = 'display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center;padding:8px 0';
-  const stats = h('div', { style: 'font-family:var(--mono);font-size:12px;color:var(--ink-2);padding:4px 0', 'aria-live': 'polite' });
+  const stats = h('div', { style: 'font-family:var(--sans);font-size:12px;color:var(--ink-2);padding:4px 0', 'aria-live': 'polite' });
 
   const apply = (): void => {
     writeRoute(s);

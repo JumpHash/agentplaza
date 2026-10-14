@@ -19,8 +19,8 @@ use crate::console::ui::Kind;
 /// The web's `info` tone on the dark ground.
 const INFO: Color = Color::from_rgb8(0x6c, 0xc8, 0xff);
 /// The table's head labels and the badges: mono, semibold / medium.
-const MONO_MEDIUM: Font = Font { weight: Weight::Medium, ..theme::MONO };
-const SERIF_SEMIBOLD: Font = Font { weight: Weight::Semibold, ..theme::SERIF };
+const SANS_MEDIUM: Font = Font { weight: Weight::Medium, ..theme::SANS };
+const SANS_SEMIBOLD: Font = Font { weight: Weight::Semibold, ..theme::SANS };
 /// Table cells are 14px serif, as the web's `.table`.
 const CELL: f32 = 14.0;
 const ACTIONS_WIDTH: f32 = 120.0;
@@ -291,12 +291,12 @@ fn head<'a>(state: &'a State) -> Element<'a, Msg> {
             pick_list(role_options, selected_role, |c: RoleChoice| Msg::SetRole(c.id))
                 .style(select_style)
                 .text_size(CELL)
-                .font(theme::SERIF)
+                .font(theme::SANS)
                 .into(),
             pick_list(STATUS_CHOICES.to_vec(), Some(state.status_filter), Msg::SetStatus)
                 .style(select_style)
                 .text_size(CELL)
-                .font(theme::SERIF)
+                .font(theme::SANS)
                 .into(),
             spawn_button(),
         ],
@@ -371,7 +371,7 @@ fn table<'a>(rows: Vec<&'a AgentRow>) -> Element<'a, Msg> {
 }
 
 fn head_label<'a>(label: &str) -> Element<'a, Msg> {
-    text(label.to_uppercase()).font(ui::MONO_SEMIBOLD).size(10.5).color(crate::theme::palette().ink_3).wrapping(Wrapping::None).into()
+    text(label.to_string()).font(ui::SANS_SEMIBOLD).size(10.5).color(crate::theme::palette().ink_3).wrapping(Wrapping::None).into()
 }
 
 /// A table cell at `portion` of the row, its text at the web's 14px inset; `right` aligns it.
@@ -426,7 +426,7 @@ const AVATAR: f32 = 40.0;
 
 fn agent_cell<'a>(a: &'a AgentRow, slot: usize) -> Element<'a, Msg> {
     let initial = name(a).chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default();
-    let tile = container(text(initial).font(ui::MONO_SEMIBOLD).size(15.0).color(crate::theme::palette().ink))
+    let tile = container(text(initial).font(ui::SANS_SEMIBOLD).size(15.0).color(crate::theme::palette().ink))
         .width(Length::Fixed(AVATAR))
         .height(Length::Fixed(AVATAR))
         .align_x(Alignment::Center)
@@ -451,13 +451,13 @@ fn agent_cell<'a>(a: &'a AgentRow, slot: usize) -> Element<'a, Msg> {
     let portrait = iced::widget::stack(layers).width(Length::Fixed(AVATAR)).height(Length::Fixed(AVATAR));
     let name_line = row![
         dot(status_tone(&a.status)),
-        text(name(a)).font(SERIF_SEMIBOLD).size(15.0).color(crate::theme::palette().ink).wrapping(Wrapping::None),
+        text(name(a)).font(SANS_SEMIBOLD).size(15.0).color(crate::theme::palette().ink).wrapping(Wrapping::None),
     ]
     .spacing(8)
     .align_y(Alignment::Center);
     row![
         portrait,
-        column![name_line, text(a.role_label.clone()).font(theme::SERIF).size(CELL).color(crate::theme::palette().ink_3).wrapping(Wrapping::None)].spacing(2),
+        column![name_line, text(a.role_label.clone()).font(theme::SANS).size(CELL).color(crate::theme::palette().ink_3).wrapping(Wrapping::None)].spacing(2),
     ]
     .spacing(12)
     .align_y(Alignment::Center)
@@ -465,7 +465,7 @@ fn agent_cell<'a>(a: &'a AgentRow, slot: usize) -> Element<'a, Msg> {
 }
 
 fn model_cell<'a>(a: &'a AgentRow) -> Element<'a, Msg> {
-    let mut line = row![text(a.model.clone()).font(theme::MONO).size(12.5).color(crate::theme::palette().ink).wrapping(Wrapping::None)]
+    let mut line = row![text(a.model.clone()).font(theme::SANS).size(12.5).color(crate::theme::palette().ink).wrapping(Wrapping::None)]
         .spacing(8)
         .align_y(Alignment::Center);
     if a.orchestrator {
@@ -484,18 +484,18 @@ fn work_cell<'a>(a: &'a AgentRow) -> Element<'a, Msg> {
             let (color, mark) = work_tone(kind);
             row![
                 badge(kind, color, mark),
-                text(ui_clip(prompt, 56)).font(theme::SERIF).size(CELL).color(crate::theme::palette().ink).wrapping(Wrapping::None),
+                text(ui_clip(prompt, 56)).font(theme::SANS).size(CELL).color(crate::theme::palette().ink).wrapping(Wrapping::None),
             ]
             .spacing(8)
             .align_y(Alignment::Center)
             .into()
         }
-        None => text("—").font(theme::SERIF).size(CELL).color(crate::theme::palette().ink_3).into(),
+        None => text("—").font(theme::SANS).size(CELL).color(crate::theme::palette().ink_3).into(),
     }
 }
 
 fn tokens_cell<'a>(tokens: u64) -> Element<'a, Msg> {
-    text(compact(tokens)).font(MONO_MEDIUM).size(12.5).color(crate::theme::palette().ink).into()
+    text(compact(tokens)).font(SANS_MEDIUM).size(12.5).color(crate::theme::palette().ink).into()
 }
 
 /// The row's own actions: chat with the agent, cancel its work while it works, stop its session.
@@ -522,15 +522,15 @@ fn icon_button<'a>(icon_name: &str, tip: &str, on_press: Msg) -> Element<'a, Msg
             border: Border::default(),
             ..Default::default()
         });
-    tooltip(b, text(tip.to_string()).font(theme::MONO).size(11.0), tooltip::Position::Top).into()
+    tooltip(b, text(tip.to_string()).font(theme::SANS).size(11.0), tooltip::Position::Top).into()
 }
 
 /// The web's empty state: an icon, a bold mono line, a faint serif sentence, an optional action.
 fn empty<'a>(icon_name: &str, title: &str, sentence: &str, action: Option<Element<'a, Msg>>) -> Element<'a, Msg> {
     let mut body = column![
         ui::icon::<Msg>(icon_name, 16.0, crate::theme::palette().ink_3),
-        text(title.to_string()).font(Font { weight: Weight::Bold, ..theme::MONO }).size(13.0).color(crate::theme::palette().ink),
-        text(sentence.to_string()).font(theme::SERIF).size(14.0).color(crate::theme::palette().ink_3),
+        text(title.to_string()).font(Font { weight: Weight::Bold, ..theme::SANS }).size(13.0).color(crate::theme::palette().ink),
+        text(sentence.to_string()).font(theme::SANS).size(14.0).color(crate::theme::palette().ink_3),
     ]
     .spacing(10)
     .align_x(Alignment::Center);
@@ -564,7 +564,7 @@ fn badge<'a>(label: &str, color: Color, filled: bool) -> Element<'a, Msg> {
             border: Border { color, width: 1.0, radius: 0.0.into() },
             ..Default::default()
         });
-    row![mark, text(label.to_uppercase()).font(MONO_MEDIUM).size(10.5).color(color)]
+    row![mark, text(label.to_string()).font(SANS_MEDIUM).size(10.5).color(color)]
         .spacing(7)
         .align_y(Alignment::Center)
         .into()

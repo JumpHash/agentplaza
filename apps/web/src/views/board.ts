@@ -7,9 +7,11 @@ import { agentName, roleLabel } from '../roles';
 
 import '../styles/social.css';
 import { api, type BoardComment, type BoardPost, type Deliverable } from '../api';
+import { boardOwnerBar, composer as ownerComposer } from '../board/owner';
 import { href } from '../router';
 import { agents, on } from '../store';
 import { ago, attempt, button, empty } from '../ui/components';
+import { embedContextFromStore } from '../ui/embeds';
 import { h, replace } from '../ui/dom';
 import { renderMarkdown } from '../ui/markdown';
 import type { Cleanup } from './index';
@@ -44,9 +46,19 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
     'aria-label': 'Search the board',
   });
   const feed = h('div.board-feed');
+  // The owner's controls: Pause/Resume and Export, the paused banner, and the composer at the foot.
+  const owner = boardOwnerBar({ project: () => undefined, onChanged: () => void load() });
+  const post = ownerComposer({
+    placeholder: 'Message the team… (@ to mention)',
+    label: 'Message the team',
+    project: () => undefined,
+    onPosted: () => void load(),
+  });
   root.append(
-    h('div.view-head', null, h('h1', null, 'Board'), h('div.actions.board-actions', null, author, search)),
+    h('div.view-head', null, h('h1', null, 'Board'), h('div.actions.board-actions', null, author, search, owner.actions)),
+    owner.banner,
     feed,
+    h('div.board-owner-dock', null, post.el),
   );
 
   let posts: BoardPost[] = [];
@@ -58,8 +70,10 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
   let query = '';
   let pendingFocus: string | null = null;
 
-  const nameOf = (p: BoardPost): string =>
-    agents.get().filter((a) => a.cid === p.agent_cid).map(agentName)[0] ?? `agent ${p.agent_cid}`;
+  const nameOf = (p: BoardPost): string => {
+    if (p.owner) return 'Owner';
+    return agents.get().filter((a) => a.cid === p.agent_cid).map(agentName)[0] ?? `agent ${p.agent_cid}`;
+  };
 
   // A comment's author: the agent's name, or "You (owner)" for the owner's own.
   const commenter = (c: BoardComment): string => {
@@ -130,7 +144,9 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
 
   const load = async (): Promise<void> => {
     try {
-      posts = await api.board();
+      const view = await api.boardView();
+      posts = view.posts;
+      owner.setPaused(view.paused);
       failed = false;
     } catch {
       failed = true;
@@ -145,7 +161,7 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
   };
 
   // The board event brings new posts and comments; the redraw keeps open composers and expanded threads.
-  const offs: (() => void)[] = [on('board', refetch), agents.watch(() => render())];
+  const offs: (() => void)[] = [on('board', refetch), on('board_paused', refetch), agents.watch(() => render())];
   author.addEventListener('change', () => {
     authorCid = author.value;
     render();
@@ -165,7 +181,7 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
 
 function entry(p: BoardPost, no: number, name: string, ui: Ui): HTMLElement {
   const extra = p.body.trim();
-  const body = extra && extra !== p.subject.trim() ? h('div.board-body', null, renderMarkdown(extra)) : null;
+  const body = extra && extra !== p.subject.trim() ? h('div.board-body', null, renderMarkdown(extra, { embeds: embedContextFromStore({ project: p.project ?? null }) })) : null;
   const show = (open: boolean): void => {
     if (!body) return;
     body.classList.toggle('open', open);
@@ -198,8 +214,9 @@ function entry(p: BoardPost, no: number, name: string, ui: Ui): HTMLElement {
       h(
         'div.board-by',
         null,
-        h('a.board-author', { href: href('agents', p.agent_cid) }, name),
-        h('span.board-role', null, roleLabel(p.role)),
+        p.owner ? h('span.board-author', null, name) : h('a.board-author', { href: href('agents', p.agent_cid) }, name),
+        p.owner ? null : h('span.board-role', null, roleLabel(p.role)),
+        p.mentions?.length ? h('span.board-mentions', null, p.mentions.map((m) => `@${m}`).join(' ')) : null,
         h('span.board-count', null, countLabel(commentsOf(p).length)),
         p.task ? h('a.board-task', { href: href('tasks', p.task) }, `Task ${p.task}`) : null,
         replyLink(p, ui),
@@ -328,12 +345,12 @@ function thread(p: BoardPost, ui: Ui): HTMLElement | null {
           expanded ? 'Show fewer' : `Show all ${all.length} comments`,
         )
       : null,
-    all.length ? h('ol.board-comments', null, shown.map((c) => commentRow(c, ui))) : null,
+    all.length ? h('ol.board-comments', null, shown.map((c) => commentRow(c, ui, p.project ?? null))) : null,
     composing ? composer(p, ui) : null,
   );
 }
 
-function commentRow(c: BoardComment, ui: Ui): HTMLElement {
+function commentRow(c: BoardComment, ui: Ui, project: string | null): HTMLElement {
   const name = ui.commenter(c);
   return h(
     'li.board-comment',
@@ -343,7 +360,7 @@ function commentRow(c: BoardComment, ui: Ui): HTMLElement {
       'div.board-comment-main',
       null,
       h('div.board-comment-by', null, h('span.board-comment-author', null, name), h('time.board-comment-time', null, ago(c.created_at))),
-      h('div.board-comment-body', null, renderMarkdown(c.body)),
+      h('div.board-comment-body', null, renderMarkdown(c.body, { embeds: embedContextFromStore({ project }) })),
       attachmentsOf(c.id, c.attachments),
     ),
   );

@@ -1,0 +1,5 @@
+[
+  { "type": "file", "name": "lib.rs", "path": "crates/lib.rs", "size": 120 },
+  { "type": "file", "name": "main.rs", "path": "crates/main.rs", "size": 80 },
+  { "type": "dir", "name": "tests", "path": "crates/tests", "size": 0 }
+]

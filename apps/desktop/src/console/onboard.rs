@@ -431,7 +431,7 @@ pub fn update(state: &mut State, msg: Msg) -> (Task<Msg>, Effect) {
 }
 
 fn badge_row<'a>(r: &Row) -> Element<'a, Msg> {
-    row![ui::mono(r.label.clone(), 12.0, ui::INK_2), ui::badge(&r.detail, r.tone)].spacing(10).align_y(Alignment::Center).into()
+    row![ui::sans(r.label.clone(), 12.0, ui::INK_2), ui::badge(&r.detail, r.tone)].spacing(10).align_y(Alignment::Center).into()
 }
 
 fn step_dot<'a>(on: bool) -> Element<'a, Msg> {
@@ -479,7 +479,7 @@ fn deps_content<'a>(state: &State) -> Vec<Element<'a, Msg>> {
         };
         out.push(
             column![
-                row![ui::mono(check.label.to_string(), 12.0, ui::INK_2), ui::badge(word, tone), Space::new().width(Length::Fill), action]
+                row![ui::sans(check.label.to_string(), 12.0, ui::INK_2), ui::badge(word, tone), Space::new().width(Length::Fill), action]
                     .spacing(10)
                     .align_y(Alignment::Center),
                 ui::faint(check.detail.clone()),
@@ -526,7 +526,7 @@ pub fn wizard_view<'a>(state: &'a State, hub: &str) -> Element<'a, Msg> {
     let step = &steps[index];
     let checks = rows(state.status.as_ref(), state.local.as_deref());
     let mut content: Vec<Element<'a, Msg>> =
-        vec![ui::mono(field(step, "title").to_string(), 16.0, ui::INK).into(), ui::prose(field(step, "body")).into()];
+        vec![ui::sans(field(step, "title").to_string(), 16.0, ui::INK).into(), ui::prose(field(step, "body")).into()];
     match field(step, "id") {
         "hub" => {
             content.push(ui::prose(format!("{} {}", t("wizard.connected_to"), hub)).into());
@@ -588,8 +588,8 @@ fn tour_layer<'a>(index: usize, shell_width: f32, open: bool) -> Element<'a, Msg
     let count = fill(t("tour.count"), &[("n", (index + 1).to_string()), ("m", steps.len().to_string())]);
     let card = container(
         column![
-            ui::mono(count, 10.5, ui::INK_3),
-            ui::mono(field(step, "title").to_string(), 13.5, ui::INK),
+            ui::sans(count, 10.5, ui::INK_3),
+            ui::sans(field(step, "title").to_string(), 13.5, ui::INK),
             ui::prose(field(step, "body")),
             row![
                 ui::btn(t("tour.skip"), None, Kind::Ghost, Some(Msg::EndTour)),
@@ -618,7 +618,7 @@ fn tour_layer<'a>(index: usize, shell_width: f32, open: bool) -> Element<'a, Msg
 fn offer_layer<'a>() -> Element<'a, Msg> {
     let card = container(
         column![
-            ui::mono(t("offer.title").to_string(), 14.0, ui::INK),
+            ui::sans(t("offer.title").to_string(), 14.0, ui::INK),
             row![
                 ui::btn(t("offer.skip"), None, Kind::Ghost, Some(Msg::SkipOffer)),
                 Space::new().width(Length::Fill),

@@ -1,0 +1,284 @@
+/* Tasks and Activity panels of the IDE right column (views/ide-tasks.ts, views/ide-activity.ts).
+   Colours come from tokens.css only. Radii are 6px. */
+
+.ipt,
+.ipa {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+  box-sizing: border-box;
+  height: 100%;
+  min-height: 0;
+  padding: var(--s4);
+  color: var(--text);
+  background: var(--surface);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  line-height: 1.5;
+}
+
+.ipt-head,
+.ipa-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s2);
+  min-width: 0;
+}
+
+.ipt-title,
+.ipa-title {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.ipt-total,
+.ipa-agent,
+.ipa-note,
+.ipt-note,
+.ipa-ago,
+.ipt-meta,
+.ipt-state {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--text-2);
+}
+
+.ipa-note,
+.ipt-note {
+  margin: 0;
+}
+
+.ipa-agent {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ipt-total,
+.ipa-ms,
+.ipa-ago {
+  font-variant-numeric: tabular-nums;
+}
+
+.ipt-body,
+.ipa-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.ipt-body:focus-visible,
+.ipa-scroll:focus-visible {
+  outline: none;
+  box-shadow: var(--focus);
+  border-radius: 6px;
+}
+
+/* Tasks */
+
+.ipt-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ipt-row {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  gap: var(--s2);
+  align-items: start;
+  padding: var(--s2) var(--s3);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+}
+
+.ipt-glyph {
+  width: 16px;
+  text-align: center;
+  font-weight: 600;
+  color: var(--text-2);
+}
+
+.ipt-row[data-tone='done'] .ipt-glyph {
+  color: var(--ok);
+}
+
+.ipt-row[data-tone='failed'] .ipt-glyph {
+  color: var(--danger);
+}
+
+.ipt-row[data-tone='active'] .ipt-glyph {
+  color: var(--accent);
+}
+
+.ipt-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.ipt-line {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s2);
+  min-width: 0;
+}
+
+.ipt-id {
+  flex: none;
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--text-3);
+}
+
+.ipt-goal {
+  min-width: 0;
+  font-size: 14px;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.ipt-row[data-tone='done'] .ipt-goal {
+  color: var(--text-3);
+  text-decoration: line-through;
+}
+
+.ipt-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s2);
+}
+
+/* Activity */
+
+.ipa-summary {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+
+.ipa-bar {
+  display: flex;
+  height: 10px;
+  overflow: hidden;
+  border-radius: 6px;
+  background: var(--surface-3);
+}
+
+.ipa-seg {
+  display: block;
+  height: 100%;
+  min-width: 0;
+  transition: width 0.2s ease;
+}
+
+.ipa-think {
+  background: color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+.ipa-tool {
+  background: color-mix(in srgb, var(--info) 65%, transparent);
+}
+
+.ipa-other {
+  background: var(--rule);
+}
+
+.ipa-keys {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s1) var(--s3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.ipa-key {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s1);
+}
+
+.ipa-swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 6px;
+}
+
+.ipa-list {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ipa-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
+  gap: var(--s2);
+  align-items: baseline;
+  padding: var(--s1) var(--s2);
+  border-bottom: 1px solid var(--rule-faint);
+}
+
+.ipa-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.ipa-ms {
+  font-size: 13px;
+  font-weight: 500;
+  text-align: right;
+}
+
+.ipa-outcome {
+  min-width: 4.5em;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-2);
+}
+
+.ipa-row[data-outcome='ok'] .ipa-outcome {
+  color: var(--ok);
+}
+
+.ipa-row[data-outcome='failed'] .ipa-outcome,
+.ipa-row[data-outcome='denied'] .ipa-outcome {
+  color: var(--danger);
+}
+
+.ipa-row[data-outcome='running'] .ipa-outcome {
+  color: var(--warn);
+}
+
+.ipa-ago {
+  text-align: right;
+  white-space: nowrap;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ipa-seg {
+    transition: none;
+  }
+}

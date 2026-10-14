@@ -1,19 +1,25 @@
 // Markdown for what agents write: a safe renderer that builds DOM nodes (never innerHTML).
 // Headings, paragraphs, emphasis, inline code, fenced code, lists (nested, ordered, task
 // lists), blockquotes, tables, horizontal rules, http(s) links and [[wiki links]].
+// With `embeds`, references in the text (outside code) become chips and media (ui/rich.ts, ui/embeds.ts).
 
 import '../styles/markdown.css';
 import { h } from './dom';
+import { refNode, type EmbedContext } from './embeds';
+import { classify, codeText } from './rich';
 
 export interface MarkdownOptions {
   /** Called for `[[Wiki links]]` (the memory library); omit to render them as plain text. */
   wikiLink?: (title: string) => HTMLElement;
   /** Clamp to this many top-level blocks (a "Show more" is the caller's). */
   maxBlocks?: number;
+  /** Rich content: the classifier's context and the click handlers. Omit for plain markdown. */
+  embeds?: EmbedContext;
 }
 
 interface Ctx {
   wikiLink?: (title: string) => HTMLElement;
+  embeds?: EmbedContext;
 }
 
 interface Parsed {
@@ -39,7 +45,7 @@ const INLINE =
 
 /** Renders `text` as a `div.md` element. Only DOM APIs build it; markup in `text` stays text. */
 export function renderMarkdown(text: string, opts: MarkdownOptions = {}): HTMLElement {
-  const ctx: Ctx = opts.wikiLink ? { wikiLink: opts.wikiLink } : {};
+  const ctx: Ctx = { wikiLink: opts.wikiLink, embeds: opts.embeds };
   const { nodes, truncated } = parseBlocks(text.replace(/\r\n?/g, '\n').split('\n'), ctx, opts.maxBlocks ?? Infinity);
   const root = h('div.md', null, nodes);
   if (truncated) root.dataset.truncated = 'true';
@@ -225,6 +231,7 @@ function paragraphInline(lines: string[], ctx: Ctx): Inline[] {
 
 /** Inline spans: `code`, [[wiki]], [text](url), **bold**, *italic*, _italic_, bare http(s) URLs. */
 function inline(text: string, ctx: Ctx): Inline[] {
+  if (ctx.embeds) return embedInline(text, ctx.embeds, ctx.wikiLink);
   const out: Inline[] = [];
   let last = 0;
   for (const m of text.matchAll(INLINE)) {
@@ -247,6 +254,20 @@ function inline(text: string, ctx: Ctx): Inline[] {
     }
   }
   pushText(out, text.slice(last));
+  return out;
+}
+
+/** Inline text with rich content. Code stays code; references are classified and rendered by refNode; the plain text
+ * between them keeps its emphasis and wiki links (the ordinary inline rules). Emphasis that wraps a reference is not
+ * joined across it: the markers show. */
+function embedInline(text: string, embeds: EmbedContext, wikiLink?: (title: string) => HTMLElement): Inline[] {
+  const out: Inline[] = [];
+  const plain: Ctx = wikiLink ? { wikiLink } : {};
+  for (const span of classify(text, embeds)) {
+    if (span.kind === 'code') out.push(h('code', null, codeText(span.value)));
+    else if (span.kind === 'text') out.push(...inline(span.value, plain));
+    else out.push(refNode(span.value, embeds));
+  }
   return out;
 }
 

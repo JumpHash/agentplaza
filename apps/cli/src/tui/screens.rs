@@ -5,10 +5,11 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Paragraph, Row, Table};
+use ratatui::widgets::{Block, Cell, Paragraph, Row, Table};
 use serde_json::Value;
 
 use super::app::{App, Tab};
+use crate::rich;
 
 /// A value as text: strings bare, missing or null as "-", anything else as its JSON.
 pub fn show(value: Option<&Value>) -> String {
@@ -133,14 +134,13 @@ pub fn header(frame: &mut Frame, area: Rect, app: &App) {
 pub fn tab_bar(frame: &mut Frame, area: Rect, app: &App) {
     let palette = app.palette;
     let mut spans = Vec::new();
-    for (i, tab) in Tab::ALL.iter().enumerate() {
-        let style = if *tab == app.tab {
+    for tab in Tab::ALL {
+        let style = if tab == app.tab {
             Style::new().fg(palette.paper).bg(palette.accent).add_modifier(Modifier::BOLD)
         } else {
             Style::new().fg(palette.muted)
         };
-        spans.push(Span::styled(format!(" {} {} ", i + 1, tab.label()), style));
-        spans.push(Span::raw(" "));
+        spans.push(Span::styled(format!(" {} {} ", tab.key(), tab.label()), style));
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
@@ -182,9 +182,14 @@ pub fn footer(frame: &mut Frame, area: Rect, app: &App) {
         Line::from(Span::styled(format!(" hub unreachable: {error}"), Style::new().fg(palette.accent)))
     } else if let Some(notice) = &app.notice {
         Line::from(Span::styled(format!(" {notice}"), Style::new().fg(palette.ok)))
+    } else if app.tab == Tab::Workspace {
+        Line::from(Span::styled(
+            " Tab pane · ↑↓ move · / filter · i steer · p post · P pause · E export · o IDE · Enter expand · 0-9 tabs · q quit",
+            Style::new().fg(palette.muted),
+        ))
     } else {
         Line::from(Span::styled(
-            " 1-9, 0 tabs · Tab next · ↑↓ move · Enter details · t message · a/d approve/deny · s stop all · r refresh · ? tour · q quit",
+            " 1-9,0,w tabs · Tab next · ↑↓ move · Enter details · t message · a/d approve/deny · s stop all · r refresh · ? tour · q quit",
             Style::new().fg(palette.muted),
         ))
     };
@@ -306,16 +311,17 @@ pub fn agents(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 pub fn tasks(frame: &mut Frame, area: Rect, app: &App) {
-    let rows: Vec<Vec<String>> = app
+    let rich_ctx = app.rich_ctx();
+    let rows: Vec<Vec<Cell<'static>>> = app
         .wrapped("/v1/tasks", "tasks")
         .iter()
         .map(|t| {
             vec![
-                clip(&show(t.get("id")), 10),
-                show(t.get("state")),
-                show(t.get("role")),
-                show(t.get("agent_cid")),
-                show(t.get("goal")),
+                Cell::from(clip(&show(t.get("id")), 10)),
+                Cell::from(show(t.get("state"))),
+                Cell::from(show(t.get("role"))),
+                Cell::from(show(t.get("agent_cid"))),
+                Cell::from(Line::from(rich::spans(&show(t.get("goal")), &rich_ctx))),
             ]
         })
         .collect();
@@ -368,15 +374,16 @@ pub fn approvals(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 pub fn board(frame: &mut Frame, area: Rect, app: &App) {
-    let rows: Vec<Vec<String>> = app
+    let rich_ctx = app.rich_ctx();
+    let rows: Vec<Vec<Cell<'static>>> = app
         .wrapped("/v1/board", "posts")
         .iter()
         .map(|p| {
             let comments = p.get("comments").and_then(Value::as_array).map_or(0, Vec::len);
             vec![
-                format!("{} #{}", show(p.get("role")), show(p.get("agent_cid"))),
-                comments.to_string(),
-                show(p.get("subject")),
+                Cell::from(format!("{} #{}", show(p.get("role")), show(p.get("agent_cid")))),
+                Cell::from(comments.to_string()),
+                Cell::from(Line::from(rich::spans(&show(p.get("subject")), &rich_ctx))),
             ]
         })
         .collect();
@@ -392,15 +399,16 @@ pub fn board(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 pub fn conversations(frame: &mut Frame, area: Rect, app: &App) {
-    let rows: Vec<Vec<String>> = app
+    let rich_ctx = app.rich_ctx();
+    let rows: Vec<Vec<Cell<'static>>> = app
         .wrapped("/v1/conversations", "conversations")
         .iter()
         .map(|c| {
             vec![
-                format!("{} #{}", show(c.get("from_role")), show(c.get("from_cid"))),
-                format!("{} #{}", show(c.get("to_role")), show(c.get("to_cid"))),
-                if flag(c.get("delivered")) { "yes" } else { "no" }.to_string(),
-                show(c.get("text")),
+                Cell::from(format!("{} #{}", show(c.get("from_role")), show(c.get("from_cid")))),
+                Cell::from(format!("{} #{}", show(c.get("to_role")), show(c.get("to_cid")))),
+                Cell::from(if flag(c.get("delivered")) { "yes" } else { "no" }),
+                Cell::from(Line::from(rich::spans(&show(c.get("text")), &rich_ctx))),
             ]
         })
         .collect();
@@ -466,13 +474,14 @@ pub fn nodes(frame: &mut Frame, area: Rect, app: &App) {
     );
 }
 
-/// A table of rows under a header; the selected row is drawn in the accent colour.
-fn grid(
+/// A table of rows under a header; the selected row is drawn in the accent colour. Cells are text, or styled
+/// lines for agent text (`rich::spans`).
+fn grid<C: Into<Cell<'static>>>(
     frame: &mut Frame,
     area: Rect,
     title: &str,
     header: &[&str],
-    rows: Vec<Vec<String>>,
+    rows: Vec<Vec<C>>,
     widths: &[Constraint],
     app: &App,
 ) {

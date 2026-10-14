@@ -1239,7 +1239,7 @@ fn option<'a>(on: bool, title: &str, body: &str, note: &str, msg: Msg) -> Elemen
 
 /// A credential's name, required badge, help and format.
 fn spec_head<'a>(row: &Row) -> Element<'a, Msg> {
-    let mut items: Vec<Element<'a, Msg>> = vec![ui::mono(row.spec.name.clone(), 12.0, crate::theme::palette().ink).into()];
+    let mut items: Vec<Element<'a, Msg>> = vec![ui::sans(row.spec.name.clone(), 12.0, crate::theme::palette().ink).into()];
     if row.spec.required {
         items.push(ui::badge("Required", ui::Tone::Warn));
     }

@@ -3,14 +3,14 @@
    skeleton (cards, tables, badges, empty states) is lab.css; every class here is `lab-` prefixed. */
 
 .lab-model-actions { gap: 8px; flex-wrap: wrap; }
-.lab-back { font: 500 var(--fs-xs)/1.4 var(--mono); color: var(--text-3); text-decoration: none; text-transform: uppercase; letter-spacing: 0.04em; }
+.lab-back { font: 500 var(--fs-xs)/1.4 var(--sans); color: var(--text-3); text-decoration: none; letter-spacing: 0.01em; }
 .lab-back:hover { color: var(--ink); }
-.lab-section-title { margin: 0; font: 600 var(--fs-xs)/1.4 var(--mono); text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-3); }
+.lab-section-title { margin: 0; font: 600 var(--fs-xs)/1.4 var(--sans); letter-spacing: 0.01em; color: var(--text-3); }
 
 /* Definition lists: a mono label over its value, two columns from 640 px up. */
 .lab-kv { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px 16px; margin: 0; min-width: 0; }
-.lab-kv dt { font: 500 var(--fs-xs)/1.4 var(--mono); text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-3); }
-.lab-kv dd { margin: 0; min-width: 0; overflow-wrap: anywhere; font: 400 var(--fs-sm)/1.5 var(--mono); }
+.lab-kv dt { font: 500 var(--fs-xs)/1.4 var(--sans); letter-spacing: 0.01em; color: var(--text-3); }
+.lab-kv dd { margin: 0; min-width: 0; overflow-wrap: anywhere; font: 400 var(--fs-sm)/1.5 var(--sans); }
 .lab-kv dd a { color: var(--ink); }
 @media (min-width: 640px) {
   .lab-kv { grid-template-columns: minmax(120px, max-content) minmax(0, 1fr); align-items: baseline; }
@@ -19,7 +19,7 @@
 
 /* Chips: a role or a label, boxed in mono. */
 .lab-chips { display: flex; flex-wrap: wrap; gap: 6px; }
-.lab-chip { font: 500 var(--fs-xs)/1.4 var(--mono); padding: 2px 8px; border: 1px solid var(--rule); color: var(--text-2); overflow-wrap: anywhere; }
+.lab-chip { font: 500 var(--fs-xs)/1.4 var(--sans); padding: 2px 8px; border: 1px solid var(--rule); color: var(--text-2); overflow-wrap: anywhere; }
 
 /* A meter: a bar with its fill, for a share or a rate (0 to 1). */
 .lab-meter { position: relative; height: 8px; background: var(--rule-faint); min-width: 0; }
@@ -36,7 +36,7 @@
 /* Schema and metric tables sit inside a card: the wrapper keeps their width. */
 .lab-table td.lab-wrap { white-space: normal; overflow-wrap: anywhere; }
 
-.lab-note { font: italic 400 var(--fs-sm)/var(--lh) var(--serif); color: var(--text-3); margin: 0; }
+.lab-note { font: italic 400 var(--fs-sm)/var(--lh) var(--sans); color: var(--text-3); margin: 0; }
 .lab-stack-tight { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
 
 /* Tables keep a readable width and scroll in their wrapper on a phone. */

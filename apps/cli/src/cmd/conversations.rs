@@ -6,6 +6,7 @@ use clap::Subcommand;
 use serde_json::{json, Value};
 
 use crate::ctx::{self, Ctx};
+use crate::rich;
 
 /// The most exchanges one page holds (the hub's `CONVERSATIONS_LIMIT`).
 const PAGE_MAX: u64 = 256;
@@ -238,6 +239,7 @@ fn show(ctx: &Ctx, pair: &str, all: bool) -> Result<(), String> {
     let (a, b) = parse_pair(pair)?;
     let (messages, older) = thread(ctx, a, b, all)?;
     let value = Value::Array(messages);
+    let rich_ctx = rich::context_for(ctx);
     ctx.out(&value, |v| {
         if array(v).is_empty() {
             println!("(no messages between {a}-{b})");
@@ -251,7 +253,7 @@ fn show(ctx: &Ctx, pair: &str, all: bool) -> Result<(), String> {
                 ctx::text(m, "from_cid"),
                 ctx::s(m, "to_role"),
                 ctx::text(m, "to_cid"),
-                ctx::s(m, "text"),
+                rich::render(ctx::s(m, "text"), &rich_ctx, &ctx.rich),
             );
         }
         if older {

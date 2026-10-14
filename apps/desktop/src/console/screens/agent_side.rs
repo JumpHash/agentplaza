@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 
 use super::agent::ago;
 use crate::console::picker::{self, Choice, Picker, PickerMsg};
-use crate::console::{client, ui, Ctx};
+use crate::console::{client, rich, ui, Ctx};
 
 /// The reasoning efforts a model name can pin (`provider/model@effort`).
 const EFFORTS: [&str; 7] = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
@@ -62,6 +62,8 @@ pub struct Side {
     notes: Vec<Note>,
     search: String,
     reading: Option<Note>,
+    // The rich content of the note being read: the hub's cards and images (`console::rich`).
+    cards: rich::Cards,
     // The graph view of the same notes (a toggle beside the list).
     graph_on: bool,
     graph: super::memory_graph::Layout,
@@ -181,6 +183,8 @@ pub enum SideMsg {
     SearchSubmit,
     OpenNote(String),
     NoteRead(Result<Note, String>),
+    /// A rich-content click or load in the note being read.
+    Rich(rich::Ev),
     ToggleGraph,
     MemoryTick(Result<u64, String>),
     Graph(super::memory_graph::Msg),
@@ -504,6 +508,10 @@ pub fn update(side: &mut Side, msg: SideMsg, ctx: &Ctx) -> Task<SideMsg> {
         SideMsg::OpenNote(slug) => fetch_note(ctx, cid, slug),
         SideMsg::NoteRead(Ok(note)) => {
             side.reading = Some(note);
+            prefetch_reading(side, ctx)
+        }
+        SideMsg::Rich(ev) => {
+            rich::apply(&mut side.cards, ev);
             Task::none()
         }
         SideMsg::NoteRead(Err(e)) => {
@@ -543,9 +551,21 @@ pub fn update(side: &mut Side, msg: SideMsg, ctx: &Ctx) -> Task<SideMsg> {
     }
 }
 
+/// A rich-content click or load, as the side column's message.
+fn on_rich(action: rich::RichAction) -> SideMsg {
+    SideMsg::Rich(rich::Ev::Action(action))
+}
+
+/// Asks the hub for the cards of the note being read that it does not hold yet.
+fn prefetch_reading(side: &mut Side, ctx: &Ctx) -> Task<SideMsg> {
+    let Some(note) = side.reading.as_ref() else { return Task::none() };
+    let body = note.body.clone();
+    let rctx = rich::context(&side.cards, None, None, None);
+    rich::prefetch(&mut side.cards, &ctx.client, &rctx, &[body.as_str()]).map(SideMsg::Rich)
+}
+
 /// The side column.
-pub fn view<'a>(side: &'a Side, ctx: &'a Ctx) -> Element<'a, SideMsg> {
-    let _ = ctx;
+pub fn view<'a>(side: &'a Side, _ctx: &'a Ctx) -> Element<'a, SideMsg> {
     let mut parts: Vec<Element<'a, SideMsg>> = Vec::new();
     if let Some(e) = &side.error {
         parts.push(ui::error_line(e));
@@ -567,7 +587,7 @@ fn model_card<'a>(side: &'a Side) -> Element<'a, SideMsg> {
         "role" => "from role",
         _ => "default",
     };
-    let current = row![ui::mono(side.model.clone(), 12.0, crate::theme::palette().ink), ui::faint(source)].spacing(8);
+    let current = row![ui::sans(side.model.clone(), 12.0, crate::theme::palette().ink), ui::faint(source)].spacing(8);
     let choose = picker::view(&side.picker, &side.choices, side.choice.as_str(), Some(side.effort.as_str()), SideMsg::Picker);
     ui::card("Model", column![current, ui::label("Change model"), choose].spacing(8).into())
 }
@@ -663,7 +683,7 @@ fn permission_card<'a>(side: &'a Side) -> Element<'a, SideMsg> {
             .into_iter()
             .map(|(mode, label, hint)| {
                 let active = side.permission.as_deref() == Some(mode);
-                let body = column![ui::mono(label.to_uppercase(), 12.0, crate::theme::palette().ink), ui::faint(hint)].spacing(2).width(Length::Fill);
+                let body = column![ui::sans(label.to_string(), 12.0, crate::theme::palette().ink), ui::faint(hint)].spacing(2).width(Length::Fill);
                 button(body)
                     .padding([8, 10])
                     .width(Length::Fill)
@@ -750,7 +770,10 @@ pub fn memory_view<'a>(side: &'a Side) -> Element<'a, SideMsg> {
         .collect();
     let list = ui::scroll(column(rows).spacing(10).width(Length::Fill)).height(Length::Fixed(480.0));
     let reader: Element<'a, SideMsg> = match &side.reading {
-        Some(doc) => reader_view(doc, &side.notes),
+        Some(doc) => {
+            let rctx = rich::context(&side.cards, None, None, None);
+            reader_view(doc, &side.notes, &rctx, &side.cards)
+        }
         None => ui::faint("Choose a note to read it.").into(),
     };
     let panes = row![
@@ -780,7 +803,7 @@ fn loop_row<'a>(l: &'a Loop) -> Element<'a, SideMsg> {
     if l.state == "running" {
         meta = meta.push(ui::btn("Stop", None, ui::Kind::Danger, Some(SideMsg::StopLoop(l.id.clone()))));
     }
-    let mut items: Vec<Element<'a, SideMsg>> = vec![ui::mono(clip(&l.prompt, 80), 12.0, crate::theme::palette().ink).into(), meta.into()];
+    let mut items: Vec<Element<'a, SideMsg>> = vec![ui::sans(clip(&l.prompt, 80), 12.0, crate::theme::palette().ink).into(), meta.into()];
     if let Some(summary) = &l.last_summary {
         items.push(ui::faint(clip(summary, 120)).into());
     }
@@ -805,7 +828,7 @@ fn note_row<'a>(n: &'a Note, open: bool) -> Element<'a, SideMsg> {
 
 /// One note open: its kind and tags, its title, the stamp (when it was updated and by which work),
 /// its body, and the notes that link to it.
-fn reader_view<'a>(doc: &'a Note, notes: &'a [Note]) -> Element<'a, SideMsg> {
+fn reader_view<'a>(doc: &'a Note, notes: &'a [Note], rctx: &rich::RichCtx, cards: &rich::Cards) -> Element<'a, SideMsg> {
     let tone = match doc.kind.as_str() {
         "person" => ui::Tone::Signal,
         "journal" => ui::Tone::Warn,
@@ -823,9 +846,9 @@ fn reader_view<'a>(doc: &'a Note, notes: &'a [Note]) -> Element<'a, SideMsg> {
     }
     let mut items: Vec<Element<'a, SideMsg>> = vec![
         row![ui::badge(&doc.kind, tone), ui::faint(tags)].spacing(8).align_y(Alignment::Center).into(),
-        ui::mono(doc.title.clone(), 18.0, crate::theme::palette().ink).into(),
+        ui::sans(doc.title.clone(), 18.0, crate::theme::palette().ink).into(),
         ui::faint(stamp.join(" · ")).into(),
-        ui::markdown(&doc.body),
+        rich::view(&doc.body, rctx, cards, &on_rich),
     ];
     if !doc.backlinks.is_empty() {
         // Each backlink opens its note; one that names no note yet reads as a missing chip.

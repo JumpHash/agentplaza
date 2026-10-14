@@ -130,6 +130,8 @@ pub struct App {
     pub forge: crate::git::Forge,
     /// Postgres, the plaza's state of record (memory is the working copy).
     pub db: Arc<crate::db::Db>,
+    /// The unfurl answers for the references clients show as chips (unfurl/mod.rs); the memory fallback when there is no Postgres.
+    pub unfurl: crate::unfurl::Cache,
     /// STOP ALL / resume.
     pub control: crate::control::Control,
     /// Roles the owner defined or approved.
@@ -224,6 +226,7 @@ impl App {
             harness: crate::harness_control::Store::load(&config.state_dir),
             forge: crate::git::Forge::load(&config.state_dir, &env),
             db: Arc::clone(&db),
+            unfurl: crate::unfurl::Cache::default(),
             vault: Arc::clone(&vault),
             control: crate::control::Control::default(),
             custom_roles: crate::roles_custom::Store::default(),

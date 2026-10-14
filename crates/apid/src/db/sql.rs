@@ -45,6 +45,9 @@ pub const STATION_RECORDING_FRAMES_PAGE: &str = include_str!("../../sql/queries/
 // The work-folder sync's mirror (`station_sync_files`, migration 0012; stations/sync.rs).
 pub const STATION_SYNC_ROWS: &str = include_str!("../../sql/queries/station_sync_rows.sql");
 pub const STATION_SYNC_SAVE: &str = include_str!("../../sql/queries/station_sync_save.sql");
+// The unfurl cache (`unfurl_cache`, migration 0009; unfurl/mod.rs).
+pub const UNFURL_GET: &str = include_str!("../../sql/queries/unfurl_get.sql");
+pub const UNFURL_PUT: &str = include_str!("../../sql/queries/unfurl_put.sql");
 
 // The migration runner's bookkeeping (`schema_migrations`, the advisory lock).
 pub const MIGRATION_TABLE_ENSURE: &str = include_str!("../../sql/queries/migration_table_ensure.sql");

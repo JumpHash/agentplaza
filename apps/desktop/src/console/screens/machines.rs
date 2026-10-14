@@ -22,7 +22,7 @@ use crate::console::engine::fleet::FleetResponse;
 use crate::console::floor_engine::EngineProgram;
 use crate::console::ui::{Kind, Tone, INK, INK_2, INK_3, RULE, RULE_FAINT, SHEET, SIGNAL};
 use crate::console::{client, render_card, ui, Ctx};
-use crate::theme::{MONO};
+use crate::theme::{SANS};
 
 /// A machine's row in the topology, and the topology's fleet column.
 const ROW_H: f32 = 56.0;
@@ -520,7 +520,7 @@ impl canvas::Program<Msg> for Wires {
                 position: Point::new(w * 0.5, (hub.y + end.y) * 0.5 - 14.0),
                 color: INK_2,
                 size: Pixels(11.0),
-                font: MONO,
+                font: SANS,
                 ..canvas::Text::default()
             });
         }
@@ -550,7 +550,7 @@ fn block<'a>(state: &'a State, m: &'a Machine) -> Element<'a, Msg> {
     };
     let selected = state.selected.as_deref() == Some(m.id.as_str());
     let content = column![
-        row![swatch(tone.color(), 8.0), ui::mono(m.name.to_uppercase(), 13.0, INK)].spacing(8).align_y(Alignment::Center),
+        row![swatch(tone.color(), 8.0), ui::sans(m.name.to_string(), 13.0, INK)].spacing(8).align_y(Alignment::Center),
         ui::faint(format!("{} · {status}", kind_label(&m.kind))),
     ]
     .spacing(4);
@@ -917,7 +917,7 @@ fn section<'a>(state: &'a State, data: &'a Data, m: &'a Machine) -> Element<'a, 
     let open = state.stage.as_ref().filter(|s| s.id == m.id);
     let orbit_label = if open.is_some() { "Hide 3D view" } else { "Show 3D view" };
     let mut parts: Vec<Element<'a, Msg>> = vec![
-        ui::mono(m.name.to_uppercase(), 18.0, INK).into(),
+        ui::sans(m.name.to_string(), 18.0, INK).into(),
         ui::faint(sentence(m)).into(),
         ui::btn(orbit_label, None, ui::Kind::Secondary, Some(Msg::ToggleStage(m.id.clone()))),
         live_stats(m),
@@ -968,7 +968,7 @@ fn tally<'a>(label: &str, figure: String, caption: Option<String>, extra: Option
     // Labels, figures and captions are single lines: they never wrap.
     let figure = ui::ellipsize(&figure, 18);
     let size = if figure.chars().count() > 12 { 14.0 } else { 20.0 };
-    let mut parts: Vec<Element<'a, Msg>> = vec![ui::label(label).wrapping(Wrapping::None).into(), ui::mono(figure, size, INK).wrapping(Wrapping::None).into()];
+    let mut parts: Vec<Element<'a, Msg>> = vec![ui::label(label).wrapping(Wrapping::None).into(), ui::sans(figure, size, INK).wrapping(Wrapping::None).into()];
     if let Some(extra) = extra {
         parts.push(extra);
     }
@@ -1074,8 +1074,8 @@ fn resources<'a>(state: &'a State, data: &'a Data, m: &'a Machine) -> Element<'a
         service_lines.push(grid(vec![
             (4, false, ui::faint(p.name.clone()).into()),
             (2, true, ui::mono(p.pid.to_string(), 12.0, INK_2).into()),
-            (2, true, ui::mono(pct(p.cpu), 12.0, INK).into()),
-            (2, true, ui::mono(human(p.rss), 12.0, INK).into()),
+            (2, true, ui::sans(pct(p.cpu), 12.0, INK).into()),
+            (2, true, ui::sans(human(p.rss), 12.0, INK).into()),
         ]));
         service_lines.push(ui::hairline());
     }
@@ -1126,12 +1126,12 @@ fn resources<'a>(state: &'a State, data: &'a Data, m: &'a Machine) -> Element<'a
                 (None, Some(c)) => format!("CID {c}"),
             };
             let role = agent.map(|a| a.role_label.clone()).or_else(|| v.role.clone()).unwrap_or_else(|| "—".to_string());
-            let who: Element<'a, Msg> = column![ui::mono(name, 12.0, INK), ui::faint(role)].spacing(2).into();
+            let who: Element<'a, Msg> = column![ui::sans(name, 12.0, INK), ui::faint(role)].spacing(2).into();
             lines.push(grid(vec![
                 (3, false, who),
-                (2, false, ui::mono(format!("{}/{}", v.run, v.vm), 12.0, INK_2).into()),
-                (2, true, ui::mono(pct(v.cpu), 12.0, INK).into()),
-                (2, true, ui::mono(human(v.rss), 12.0, INK).into()),
+                (2, false, ui::sans(format!("{}/{}", v.run, v.vm), 12.0, INK_2).into()),
+                (2, true, ui::sans(pct(v.cpu), 12.0, INK).into()),
+                (2, true, ui::sans(human(v.rss), 12.0, INK).into()),
                 (3, true, guest_cell(v)),
             ]));
             lines.push(ui::hairline());
@@ -1146,11 +1146,11 @@ fn resources<'a>(state: &'a State, data: &'a Data, m: &'a Machine) -> Element<'a
             "—".to_string()
         };
         lines.push(grid(vec![
-            (3, false, ui::mono(format!("{} VMs", plaza.vms.len()), 12.0, INK).into()),
+            (3, false, ui::sans(format!("{} VMs", plaza.vms.len()), 12.0, INK).into()),
             (2, false, Space::new().into()),
-            (2, true, ui::mono(pct(sum_cpu), 12.0, INK).into()),
-            (2, true, ui::mono(human(sum_rss), 12.0, INK).into()),
-            (3, true, ui::mono(guest_total, 12.0, INK).into()),
+            (2, true, ui::sans(pct(sum_cpu), 12.0, INK).into()),
+            (2, true, ui::sans(human(sum_rss), 12.0, INK).into()),
+            (3, true, ui::sans(guest_total, 12.0, INK).into()),
         ]));
         column(lines).into()
     };
@@ -1176,7 +1176,7 @@ fn breakdown<'a>(title: &str, parts: &[(&str, f64, Color)], whole: f64, fmt: fn(
     let mut legend: Vec<Element<'a, Msg>> = Vec::new();
     for &(label, value, color) in parts {
         legend.push(
-            row![swatch(color, 8.0), ui::faint(label.to_string()), ui::mono(fmt(value), 11.0, INK)]
+            row![swatch(color, 8.0), ui::faint(label.to_string()), ui::sans(fmt(value), 11.0, INK)]
                 .spacing(8)
                 .align_y(Alignment::Center)
                 .into(),
@@ -1189,7 +1189,7 @@ fn breakdown<'a>(title: &str, parts: &[(&str, f64, Color)], whole: f64, fmt: fn(
 fn guest_cell<'a>(v: &VmUsage) -> Element<'a, Msg> {
     let used = v.guest_used.map_or("—".to_string(), human);
     let usable = v.usable.map_or("—".to_string(), human);
-    let mut parts: Vec<Element<'a, Msg>> = vec![ui::mono(format!("{used} / {usable}"), 12.0, INK).into()];
+    let mut parts: Vec<Element<'a, Msg>> = vec![ui::sans(format!("{used} / {usable}"), 12.0, INK).into()];
     if let (Some(used), Some(usable)) = (v.guest_used, v.usable) {
         if usable > 0.0 {
             parts.push(stacked(&[(used.min(usable), INK_2), ((usable - used).max(0.0), RULE_FAINT)], usable, 4.0));
@@ -1262,7 +1262,7 @@ fn vm_line<'a>(state: &'a State, run: &str, vm: &'a VmRow) -> Element<'a, Msg> {
     let key = format!("{run}/{}", vm.index);
     let guest = vm.guest_cid.map_or("—".to_string(), |c| c.to_string());
     let head: Element<'a, Msg> = row![
-        ui::mono(format!("VM {}", vm.index), 12.0, INK),
+        ui::sans(format!("VM {}", vm.index), 12.0, INK),
         ui::badge(&vm.state, state_tone(&vm.state)),
         ui::faint(format!("guest CID {guest}")),
     ]
@@ -1313,7 +1313,7 @@ fn technical<'a>(state: &'a State, m: &'a Machine) -> Element<'a, Msg> {
     let mut lines: Vec<Element<'a, Msg>> = vec![toggle];
     for (key, value) in rows {
         lines.push(
-            row![container(ui::faint(key.to_string())).width(Length::Fixed(160.0)), ui::mono(value, 12.0, INK)]
+            row![container(ui::faint(key.to_string())).width(Length::Fixed(160.0)), ui::sans(value, 12.0, INK)]
                 .spacing(12)
                 .into(),
         );

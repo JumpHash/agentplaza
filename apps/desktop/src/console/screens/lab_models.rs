@@ -17,7 +17,7 @@ use crate::console::client::{self, Client};
 use crate::console::lab_api::{self, ModelView};
 use crate::console::ui::{self, Kind, Tone};
 use crate::console::Ctx;
-use crate::theme::{MONO};
+use crate::theme::{MONO, SANS};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum View {
@@ -257,7 +257,7 @@ fn footer<'a, M: Clone + 'a>(c: &'a Controls, act: impl Fn(Act) -> M + Copy + 'a
 
 /// A text value in the table and card voice: mono, ink-2.
 pub fn value<'a, M: 'a>(s: String) -> Element<'a, M> {
-    text(s).font(MONO).size(12.0).color(crate::theme::palette().ink_2).width(Length::Fill).into()
+    text(s).font(SANS).size(12.0).color(crate::theme::palette().ink_2).width(Length::Fill).into()
 }
 
 #[derive(Debug, Default)]
@@ -434,7 +434,7 @@ fn cell<'a>(portion: u16, right: bool, content: impl Into<Element<'a, Msg>>) -> 
 }
 
 fn head_cell<'a>(portion: u16, right: bool, label: &str) -> Element<'a, Msg> {
-    cell(portion, right, text(label.to_uppercase()).font(MONO).size(11.0).color(crate::theme::palette().ink_3))
+    cell(portion, right, text(label.to_string()).font(SANS).size(11.0).color(crate::theme::palette().ink_3))
 }
 
 /// The registry as a table: name and id (linked), version, state, size, parameters, created,

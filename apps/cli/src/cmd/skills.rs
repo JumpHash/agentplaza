@@ -896,7 +896,7 @@ fn export(ctx: &Ctx, id: Option<&str>, ids: Option<&str>, version: Option<u32>, 
 }
 
 /// Writes the file; without --force it is created new, so an existing file is never replaced.
-fn write_out(out: &Path, bytes: &[u8], force: bool) -> Result<(), String> {
+pub(crate) fn write_out(out: &Path, bytes: &[u8], force: bool) -> Result<(), String> {
     let opened = if force {
         std::fs::File::create(out)
     } else {

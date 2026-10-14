@@ -1,8 +1,8 @@
 /* The first-run wizard (a modal), the tour offer, and the tour's callouts beside the sidebar. */
 
 .modal.onboard { width: min(560px, 100%); }
-.onboard-title { font-family: var(--mono); font-size: var(--fs-lg); margin: 0 0 8px; }
-.onboard-lead { font-family: var(--serif); font-size: var(--fs-md); line-height: var(--lh); margin: 0 0 12px; }
+.onboard-title { font-family: var(--sans); font-size: var(--fs-lg); margin: 0 0 8px; }
+.onboard-lead { font-family: var(--sans); font-size: var(--fs-md); line-height: var(--lh); margin: 0 0 12px; }
 .onboard-status { display: flex; align-items: center; gap: 8px; margin: 8px 0; }
 .onboard-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
 .onboard-dots { display: flex; gap: 6px; align-items: center; }
@@ -40,9 +40,9 @@
   transform: rotate(45deg);
 }
 .tour-card.centered::before { display: none; }
-.tour-card h3 { font-family: var(--mono); font-size: var(--fs-md); margin: 4px 0 6px; }
+.tour-card h3 { font-family: var(--sans); font-size: var(--fs-md); margin: 4px 0 6px; }
 .tour-card p { margin: 0 0 12px; line-height: var(--lh); }
-.tour-count { font-family: var(--mono); font-size: var(--fs-xs); color: var(--ink-3); }
+.tour-count { font-family: var(--sans); font-size: var(--fs-xs); color: var(--ink-3); }
 .tour-foot { display: flex; align-items: center; gap: 8px; }
 .tour-foot .spacer { flex: 1; }
 nav.nav a.tour-on { background: var(--hover); box-shadow: inset 3px 0 0 var(--signal); }

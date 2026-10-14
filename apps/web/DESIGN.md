@@ -5,7 +5,7 @@ One visual language for every screen, the 3D floor's overlays and the agent view
 ## Foundations (keep)
 - Palette and type come from `src/styles/tokens.css` only: paper `--paper`, sheet `--sheet`, rules `--rule`/`--rule-faint`, ink `--ink`/`--ink-2`/`--ink-3`, the orange `--signal` (the owner's hand: primary actions, the active item, focus), tones `--ok-ink`, `--warn-ink`, `--crit`, `--info-ink` and their `*-bg` tints.
 - Square corners everywhere (`border-radius: 0`). No pills, no rounded chips, no soft shadows; the one shadow is the printed `--print` / `--shadow` offset.
-- Type: `--mono` (Martian Mono) for titles, labels, figures, ids, buttons and navigation; `--serif` (Source Serif 4) for prose. Uppercase + letter-spacing only for small labels (≤ 12px).
+- Type: `--sans` (Inter) for the interface and everything that is read, at the role sizes `--type-page`, `--type-section`, `--type-item`, `--type-prose`, `--type-ui`, `--type-meta`, `--type-badge` (`font: var(--type-…)`), as in docs/design/workspace.md section 1. `--mono` (Martian Mono) is for code only: code, diffs, terminals, raw output, and ids, hashes and paths where alignment matters. Figures use `.num` (tabular numerals). Sentence case; prose is at most 760px wide.
 - Spacing from the `--s*` scale. Icons are the lucide set in `src/ui/icons.gen.ts` via `icon(name)` (15px, 1.75 stroke, square caps).
 
 ## Shell

@@ -1,0 +1,124 @@
+/* The owner's controls on the board (the main board and the IDE's Board panel): the composer with
+   @-suggestions, Pause/Resume and Export, and the banner a paused board shows. Colours and type come
+   from tokens.css; Inter (var(--sans)) throughout. */
+
+.board-owner-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.board-owner-export {
+  text-decoration: none;
+}
+
+.board-owner-paused {
+  margin: 0;
+  padding: 6px 10px;
+  font: 400 12px/1.4 var(--sans);
+  color: var(--warn);
+  background: var(--warn-bg);
+  border: 1px solid color-mix(in srgb, var(--warn) 35%, transparent);
+  border-radius: 6px;
+}
+
+.board-owner-paused[hidden] {
+  display: none;
+}
+
+.board-owner-composer {
+  display: grid;
+  gap: 6px;
+  font-family: var(--sans);
+}
+
+.board-owner-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font: 400 11px/1.4 var(--sans);
+  color: var(--text-3);
+}
+
+.board-owner-box {
+  position: relative;
+}
+
+.board-owner-text {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 48px;
+  padding: 6px 8px;
+  font: 400 13px/1.5 var(--sans);
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  resize: vertical;
+}
+
+.board-owner-text:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.board-owner-suggest {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 4px);
+  z-index: 5;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  max-height: 220px;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  box-shadow: 0 6px 18px rgb(0 0 0 / 12%);
+}
+
+.board-owner-suggest[hidden] {
+  display: none;
+}
+
+.board-owner-option {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 4px 8px;
+  font: 400 13px/1.4 var(--sans);
+  color: var(--text);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.board-owner-option.active {
+  background: var(--accent-bg);
+}
+
+.board-owner-option-detail {
+  font: 400 11px var(--sans);
+  color: var(--text-3);
+}
+
+.board-owner-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font: 400 11px var(--sans);
+  color: var(--text-3);
+}
+
+.board-owner-dock {
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.board-mentions {
+  font: 400 11px var(--sans);
+  color: var(--accent-2);
+}

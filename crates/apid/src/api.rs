@@ -30,6 +30,7 @@ pub fn router() -> Router<App> {
     let router = decisions::routes(router);
     let router = agents::routes(router);
     let router = plaza::routes(router);
+    let router = crate::owner_board::routes(router);
     let router = internal::routes(router);
     let router = crate::society::routes(router);
     let router = crate::connectors::routes(router);
@@ -45,6 +46,7 @@ pub fn router() -> Router<App> {
     let router = crate::projects::routes(router);
     let router = crate::harness_control::routes(router);
     let router = crate::git::routes(router);
+    let router = crate::unfurl::routes(router);
     let router = crate::ide::routes(router);
     let router = crate::ide_term::routes(router);
     let router = crate::rules::routes(router);
@@ -137,6 +139,8 @@ pub(crate) fn overview_value(app: &App) -> Value {
             "dev_models": app.settings.dev_models(),
             "noded": app.noded.get("/v1/machine").map(|(s, _)| s == 200).unwrap_or(false),
             "hub": app.hub.get("/healthz").map(|(s, _)| s == 200).unwrap_or(false),
+            // The plaza's git host's web origin (FORGEJO_URL), for the console's rich links; null when unset.
+            "git_host": app.forge.base_url(),
         })
 }
 

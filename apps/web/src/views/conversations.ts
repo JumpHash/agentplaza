@@ -8,6 +8,7 @@ import { api, type Conversation, type ConversationPair, type Retention } from '.
 import { go, href } from '../router';
 import { agents, on } from '../store';
 import { ago, attempt, badge, button, clip, empty, input, toast } from '../ui/components';
+import { embedContextFromStore } from '../ui/embeds';
 import { h, icon, replace } from '../ui/dom';
 import { renderMarkdown } from '../ui/markdown';
 import type { Cleanup } from './index';
@@ -527,7 +528,7 @@ function bubble(m: Conversation, side: 'left' | 'right', label: (cid: number) =>
         h('span.faint', null, ago(m.created_at)),
         m.delivered ? null : badge('undelivered', 'warn'),
       ),
-      h('div.bubble-text', null, renderMarkdown(m.text)),
+      h('div.bubble-text', null, renderMarkdown(m.text, { embeds: embedContextFromStore() })),
     ),
   );
 }

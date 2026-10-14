@@ -622,7 +622,7 @@ fn catalogue_section<'a>(state: &'a State) -> Element<'a, Msg> {
 fn preset_row<'a>(preset: &Preset) -> Element<'a, Msg> {
     let facts: Vec<String> = [preset.transport.clone(), preset.note.clone()].into_iter().filter(|s| !s.is_empty()).collect();
     let info: Vec<Element<'a, Msg>> = vec![
-        ui::mono(preset.name.clone(), 12.0, crate::theme::palette().ink).into(),
+        ui::sans(preset.name.clone(), 12.0, crate::theme::palette().ink).into(),
         ui::prose(preset.description.clone()).into(),
         ui::faint(facts.join(" · ")).into(),
     ];

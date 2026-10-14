@@ -50,6 +50,17 @@ pub struct Forge {
 
 /// How long one call to Forgejo may take; a large clone or push can run for minutes.
 const TIMEOUT: Duration = Duration::from_secs(600);
+/// How long one unfurl read may take.
+const QUICK_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// A response body as JSON: Null when empty, the text as a JSON string when it is not JSON.
+pub(crate) fn json_body(bytes: &[u8]) -> Value {
+    if bytes.is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_slice(bytes).unwrap_or_else(|_| Value::String(String::from_utf8_lossy(bytes).into_owned()))
+    }
+}
 
 impl Forge {
     pub fn load(state_dir: &Path, env: &BTreeMap<String, String>) -> Self {
@@ -104,6 +115,23 @@ impl Forge {
             serde_json::from_slice(&bytes).unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).into_owned()))
         };
         Ok((status, value))
+    }
+
+    /// The git host's web origin (FORGEJO_URL, without a trailing slash), for links to it. None when unset.
+    pub fn base_url(&self) -> Option<&str> {
+        self.base.as_deref().map(|base| base.trim_end_matches('/'))
+    }
+
+    /// A short GET as the admin (the unfurl's reads): the status and the JSON body, with a 15-second limit.
+    pub(crate) fn quick_get(&self, path: &str) -> Result<(u16, Value), String> {
+        let (base, token) = self.creds()?;
+        let headers = [
+            ("Authorization", format!("token {token}")),
+            ("Accept", "application/json".to_string()),
+        ];
+        let url = format!("{}{path}", base.trim_end_matches('/'));
+        let (status, _, bytes) = send_within("GET", &url, &headers, Vec::new(), QUICK_TIMEOUT)?;
+        Ok((status, json_body(&bytes)))
     }
 
     /// The org and the "agents" team (write to all repos), created when missing.
@@ -305,13 +333,18 @@ fn relay(app: &App, req: &Request, cid: u64, owner: &str, repo: &str, tail: &str
 
 /// One HTTP request: the status, the content type and the body bytes of the reply.
 fn send(method: &str, url: &str, headers: &[(&str, String)], body: Vec<u8>) -> Result<(u16, String, Vec<u8>), String> {
+    send_within(method, url, headers, body, TIMEOUT)
+}
+
+/// `send` with its own time limit (the unfurl's reads are short; a clone or a push is not).
+pub(crate) fn send_within(method: &str, url: &str, headers: &[(&str, String)], body: Vec<u8>, timeout: Duration) -> Result<(u16, String, Vec<u8>), String> {
     let mut builder = ureq::http::Request::builder().method(method).uri(url);
     for (key, value) in headers {
         builder = builder.header(*key, value.as_str());
     }
     let request = builder.body(body).map_err(|e| format!("bad request: {e}"))?;
     let config = ureq::Agent::config_builder()
-        .timeout_global(Some(TIMEOUT))
+        .timeout_global(Some(timeout))
         .http_status_as_error(false)
         .build();
     let agent = ureq::Agent::new_with_config(config);
@@ -526,7 +559,7 @@ fn hex(c: u8) -> Option<u8> {
     }
 }
 
-fn unescape(raw: &str) -> String {
+pub(crate) fn unescape(raw: &str) -> String {
     let b = raw.as_bytes();
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;

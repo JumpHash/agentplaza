@@ -16,7 +16,7 @@ use crate::console::{client, events, ui, Ctx};
 use crate::theme;
 
 /// Serif semibold: a card's title (the web's `.prov-title h3`).
-const SEMIBOLD: Font = Font { weight: font::Weight::Semibold, ..theme::SERIF };
+const SEMIBOLD: Font = Font { weight: font::Weight::Semibold, ..theme::SANS };
 
 /// Text files up to this size are read into the detail view; larger ones are save-only.
 const TEXT_LIMIT: usize = 200 * 1024;
@@ -730,7 +730,7 @@ fn card<'a>(d: &'a Deliverable, picked: bool) -> Element<'a, Msg> {
     let title = if d.title.is_empty() { d.name.as_str() } else { d.title.as_str() };
     let mut body: Vec<Element<'a, Msg>> = vec![
         container(ui::faint(d.store.as_str())).into(),
-        container(ui::mono(
+        container(ui::sans(
             if Group::of(&d.content_type) == Group::Video { "▶".to_string() } else { monogram(&d.name) },
             20.0,
             crate::theme::palette().ink_2,
@@ -739,14 +739,14 @@ fn card<'a>(d: &'a Deliverable, picked: bool) -> Element<'a, Msg> {
         .width(Fill)
         .into(),
         text(title).font(SEMIBOLD).size(15.0).color(crate::theme::palette().ink).into(),
-        ui::mono(d.name.as_str(), 11.0, crate::theme::palette().ink_3).into(),
+        ui::sans(d.name.as_str(), 11.0, crate::theme::palette().ink_3).into(),
         ui::faint(format!("by {} · {} · {}", d.author, ago(d.created_ms), human_size(d.size))).into(),
     ];
     if d.kind == "shared" && d.audience == "private" {
         body.push(ui::faint(format!("private · {} agents", d.allowed.len())).into());
     }
     if let Some(task) = &d.task {
-        body.push(ui::mono(task.as_str(), 11.0, crate::theme::palette().ink_3).into());
+        body.push(ui::sans(task.as_str(), 11.0, crate::theme::palette().ink_3).into());
     }
     button_card(body, Msg::Open(d.id.clone()), picked)
 }
@@ -767,17 +767,17 @@ fn detail<'a>(state: &'a State, d: &'a Deliverable) -> Element<'a, Msg> {
         Preview::Idle => ui::faint("").into(),
         Preview::Loading => ui::loading(),
         Preview::Image(handle) => image(handle.clone()).width(Fill).into(),
-        Preview::Text(s) => container(ui::mono(s.as_str(), 12.0, crate::theme::palette().ink)).padding(12).width(Fill).into(),
+        Preview::Text(s) => container(ui::sans(s.as_str(), 12.0, crate::theme::palette().ink)).padding(12).width(Fill).into(),
         Preview::Markdown(s) => ui::markdown(s),
         Preview::Note(s) => ui::faint(s.as_str()).into(),
         Preview::Video => column![
-            container(ui::mono("▶", 40.0, crate::theme::palette().ink_2)).padding(24).width(Fill),
+            container(ui::sans("▶", 40.0, crate::theme::palette().ink_2)).padding(24).width(Fill),
             ui::btn("Play", None, ui::Kind::Primary, Some(Msg::Play(d.id.clone()))),
         ]
         .spacing(12)
         .into(),
         Preview::Pdf => column![
-            container(ui::mono("PDF", 40.0, crate::theme::palette().ink_2)).padding(24).width(Fill),
+            container(ui::sans("PDF", 40.0, crate::theme::palette().ink_2)).padding(24).width(Fill),
             ui::btn("Open", None, ui::Kind::Primary, Some(Msg::Play(d.id.clone()))),
         ]
         .spacing(12)
@@ -838,7 +838,7 @@ fn facts<'a>(d: &'a Deliverable) -> Element<'a, Msg> {
 
 /// One fact: a faint label, then the value (mono for names, hashes and ids; serif otherwise).
 fn fact<'a>(label: &'static str, value: String, mono: bool) -> Element<'a, Msg> {
-    let value: Element<'a, Msg> = if mono { ui::mono(value, 12.0, crate::theme::palette().ink).into() } else { ui::prose(value).size(13.0).into() };
+    let value: Element<'a, Msg> = if mono { ui::sans(value, 12.0, crate::theme::palette().ink).into() } else { ui::prose(value).size(13.0).into() };
     row![container(ui::faint(label)).width(Length::Fixed(120.0)), value].spacing(8).into()
 }
 
@@ -902,7 +902,7 @@ fn tool_card<'a>(state: &'a State, t: &'a LibraryTool) -> Element<'a, Msg> {
         }
         if let Some(view) = state.tool_view.as_ref().filter(|v| v.tool == me) {
             body.push(ui::faint(view.path.as_str()).into());
-            body.push(container(ui::mono(view.content.as_str(), 12.0, crate::theme::palette().ink)).padding(12).width(Fill).into());
+            body.push(container(ui::sans(view.content.as_str(), 12.0, crate::theme::palette().ink)).padding(12).width(Fill).into());
         }
     }
 

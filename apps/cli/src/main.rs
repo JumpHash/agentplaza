@@ -4,6 +4,7 @@
 
 mod cmd;
 mod ctx;
+mod rich;
 mod tui;
 
 use clap::{Parser, Subcommand};
@@ -23,6 +24,9 @@ struct Cli {
     /// Print the hub's JSON instead of tables.
     #[arg(long, global = true)]
     json: bool,
+    /// Print agent text as written: no short labels, colour or links (JSON is always as the hub sends it).
+    #[arg(long, global = true)]
+    plain: bool,
     #[command(subcommand)]
     command: Command,
 }
@@ -116,6 +120,8 @@ enum Command {
     /// STOP ALL and resume: the plaza's master switch.
     #[command(subcommand)]
     Plaza(cmd::plaza::Cmd),
+    /// The hub's card for a link or a reference (a task `#N`, an agent `@Name`): what the hover card shows.
+    Unfurl(cmd::unfurl::Args),
     /// Ask the plaza's decision model a question.
     Decide(cmd::decide::Args),
     /// Stream the plaza's live events (the hub's WebSocket).
@@ -165,7 +171,9 @@ fn run(cli: Cli) -> Result<(), String> {
         let globals = cmd::mcp::Globals { hub: cli.hub, token: cli.token, pin: cli.pin, json: cli.json };
         return cmd::mcp::run(cmd, globals);
     }
-    let ctx = ctx::resolve(cli.hub, cli.token, cli.pin, cli.json)?;
+    let terminal = rich::Terminal::from_env(cli.plain);
+    let mut ctx = ctx::resolve(cli.hub, cli.token, cli.pin, cli.json)?;
+    ctx.rich = rich::Mode::decide(&terminal, Some(ctx.client.base()));
     match cli.command {
         Command::Overview => cmd::overview::run(&ctx),
         Command::Agents(c) => cmd::agents::run(&ctx, c),
@@ -193,6 +201,7 @@ fn run(cli: Cli) -> Result<(), String> {
         Command::Nodes(c) => cmd::nodes::run(&ctx, c),
         Command::Stations(c) => cmd::stations::run(&ctx, c),
         Command::Plaza(c) => cmd::plaza::run(&ctx, c),
+        Command::Unfurl(a) => cmd::unfurl::run(&ctx, a),
         Command::Decide(a) => cmd::decide::run(&ctx, a),
         Command::Events(a) => cmd::events::run(&ctx, a),
         Command::Tui(args) => tui::run(&ctx, args),

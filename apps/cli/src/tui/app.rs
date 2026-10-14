@@ -24,6 +24,9 @@ use serde_json::{Value, json};
 use super::floor::FloorView;
 use super::onboarding::{self, DepsKey, Facts, Onboarding, Stage, Step, TOUR};
 use super::screens;
+use super::workspace::{self, Effect, Got, Want, Workspace};
+use super::workspace_view;
+use crate::cmd;
 use crate::ctx::{Client, Config, seg};
 
 // The Machines and Workstations tabs' modules sit beside this file (the tui module lists its own modules).
@@ -51,10 +54,11 @@ pub enum Tab {
     Nodes,
     Machines,
     Workstations,
+    Workspace,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 10] = [
+    pub const ALL: [Tab; 11] = [
         Tab::Floor,
         Tab::Overview,
         Tab::Agents,
@@ -64,8 +68,28 @@ impl Tab {
         Tab::Conversations,
         Tab::Nodes,
         Tab::Machines,
+        Tab::Workspace,
         Tab::Workstations,
     ];
+
+    /// The tab a number key shows: 1 to 9, then 0 for the tenth.
+    pub fn from_key(key: char) -> Option<Tab> {
+        match key {
+            '1'..='9' => Tab::ALL.get(usize::from(key as u8 - b'1')).copied(),
+            '0' => Tab::ALL.get(9).copied(),
+            'w' => Some(Tab::Workstations),
+            _ => None,
+        }
+    }
+
+    /// The number key that shows this tab (see `from_key`).
+    pub fn key(self) -> char {
+        match self.index() {
+            i @ 0..=8 => char::from(b'1' + i as u8),
+            9 => '0',
+            _ => 'w',
+        }
+    }
 
     pub fn label(self) -> &'static str {
         match self {
@@ -79,6 +103,7 @@ impl Tab {
             Tab::Nodes => "Nodes",
             Tab::Machines => "Machines",
             Tab::Workstations => "Workstations",
+            Tab::Workspace => "Workspace",
         }
     }
 
@@ -94,6 +119,8 @@ impl Tab {
             Tab::Nodes => "/v1/nodes",
             Tab::Machines => "/v1/machines",
             Tab::Workstations => "/v1/stations",
+            // The workspace reads the roster on every poll; its other lists come on the events.
+            Tab::Workspace => "/v1/agents",
         }
     }
 
@@ -145,6 +172,8 @@ pub enum Confirm {
     Resume,
     Approve(String),
     Deny(String),
+    /// Stop the running work of an agent (the workspace's Ctrl+C in a note).
+    CancelWork(u64),
 }
 
 impl Confirm {
@@ -152,6 +181,7 @@ impl Confirm {
         match self {
             Confirm::StopAll => "Stop all agents now?".to_string(),
             Confirm::Resume => "Resume the plaza?".to_string(),
+            Confirm::CancelWork(cid) => format!("Stop agent {cid}'s work now?"),
             Confirm::Approve(id) => format!("Approve {}?", short(id)),
             Confirm::Deny(id) => format!("Deny {}?", short(id)),
         }
@@ -203,6 +233,8 @@ enum Msg {
     Link(bool),
     Event(String, Value),
     Done(String, Result<Value, String>),
+    /// An answer to a request of the workspace tab.
+    Workspace(Got),
 }
 
 pub struct App {
@@ -230,6 +262,8 @@ pub struct App {
     pub station_sync: HashMap<String, Value>,
     /// The recent recordings of each workstation the Workstations tab has read, by id.
     pub station_recent: HashMap<String, Value>,
+    /// The Workspace tab's state (the agents by project, the chat, the board).
+    pub ws: Workspace,
     rx: Receiver<Msg>,
     tx: Sender<Msg>,
     watch: Sender<&'static str>,
@@ -269,6 +303,7 @@ impl App {
             onboarding: None,
             station_sync: HashMap::new(),
             station_recent: HashMap::new(),
+            ws: Workspace::default(),
             rx,
             tx,
             watch,
@@ -380,6 +415,11 @@ impl App {
         self.data.get(path).and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[])
     }
 
+    /// The classifier's context for the agent text on screen: the agents the app has polled, so `@Name` is a chip.
+    pub fn rich_ctx(&self) -> apz_rich::Ctx {
+        crate::rich::from_agents(self.array("/v1/agents"), None)
+    }
+
     /// An endpoint's answer's array under `key` (`{"tasks": [...]}` and the like).
     pub fn wrapped(&self, path: &str, key: &str) -> &[Value] {
         self.data
@@ -406,16 +446,21 @@ impl App {
             Tab::Nodes => self.array("/v1/nodes").len(),
             Tab::Machines => self.array("/v1/machines").len(),
             Tab::Workstations => self.array("/v1/stations").len(),
+            Tab::Workspace => 0,
         }
     }
 
     /// Takes what the threads sent since the last frame.
     pub fn drain(&mut self) {
-        while let Ok(msg) = self.rx.try_recv() {
+        let messages: Vec<Msg> = self.rx.try_iter().collect();
+        let mut roster_changed = false;
+        for msg in messages {
             match msg {
                 Msg::Fetched(path, Ok(value)) => {
                     if path == "/v1/agents" {
                         self.floor.on_agents(&value);
+                        self.ws.set_agents(&value);
+                        roster_changed = true;
                     }
                     self.data.insert(path, value);
                     self.error = None;
@@ -453,7 +498,15 @@ impl App {
                         ob.push_log(done);
                     }
                 }
-                Msg::Link(up) => self.link = up,
+                Msg::Link(up) => {
+                    self.link = up;
+                    if up && self.tab == Tab::Workspace {
+                        // The events are back: what they carried while they were down is fetched again. Only on the
+                        // tab: its look marks what it asked for, so the asks must be made.
+                        let effects = self.ws.enter();
+                        self.execute(effects);
+                    }
+                }
                 Msg::Event(kind, data) => {
                     self.floor.on_event(&kind, &data);
                     if kind != "serial" {
@@ -465,6 +518,13 @@ impl App {
                         let _ = self.watch.send(Tab::Workstations.path());
                         let _ = self.station_watch.send(self.station_watched.clone());
                     }
+                    let effects = self.ws.on_event(&kind, &data);
+                    self.on_workspace(effects);
+                }
+                Msg::Workspace(got) => {
+                    roster_changed = true;
+                    let effects = self.ws.receive(got);
+                    self.on_workspace(effects);
                 }
                 Msg::Done(label, result) => {
                     self.notice = Some(match result {
@@ -472,10 +532,16 @@ impl App {
                         Err(e) => format!("{label}: {e}"),
                     });
                     let _ = self.watch.send(self.tab.path());
+                    let effects = self.ws.refresh_board();
+                    self.on_workspace(effects);
                 }
             }
         }
         self.follow_selected_station();
+        if roster_changed && self.tab == Tab::Workspace {
+            let effects = self.ws.sync();
+            self.execute(effects);
+        }
     }
 
     /// Points the detail poller at the workstation the Workstations tab selects (and at none, off that tab).
@@ -490,11 +556,19 @@ impl App {
         }
     }
 
+    /// Runs the workspace's effects while its tab is on screen. Off it the state is kept, and the next look at the tab
+    /// asks again (`Workspace::enter`).
+    fn on_workspace(&mut self, effects: Vec<Effect>) {
+        if self.tab == Tab::Workspace {
+            self.execute(effects);
+        }
+    }
+
     pub fn tick(&mut self, dt: f32) {
         self.floor.tick(dt);
     }
 
-    pub fn draw(&self, frame: &mut Frame) {
+    pub fn draw(&mut self, frame: &mut Frame) {
         let [header, tabs, body, footer] = Layout::vertical([
             Constraint::Length(1),
             Constraint::Length(1),
@@ -519,6 +593,7 @@ impl App {
             Tab::Nodes => screens::nodes(frame, body, self),
             Tab::Machines => machines::render(frame, body, self),
             Tab::Workstations => workstations::render(frame, body, self),
+            Tab::Workspace => workspace_view::render(frame, body, &mut self.ws, self.palette),
         }
         if let Some(ob) = &self.onboarding {
             ob.draw(frame, body, self.palette, self.client.base());
@@ -531,7 +606,8 @@ impl App {
         if key.kind != KeyEventKind::Press {
             return false;
         }
-        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+        let typing = self.tab == Tab::Workspace && self.ws.captures_keys();
+        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') && !typing {
             if self.draft.is_none() {
                 return true;
             }
@@ -555,10 +631,21 @@ impl App {
             }
             return false;
         }
+        if self.tab == Tab::Workspace
+            && let Some(ws_key) = workspace_key(key)
+            && let Some(effects) = self.ws.key(ws_key)
+        {
+            self.execute(effects);
+            return false;
+        }
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => return true,
-            KeyCode::Char(c @ '1'..='9') => self.select_tab(Tab::ALL[usize::from(c as u8 - b'1')]),
-            KeyCode::Char('0') => self.select_tab(Tab::Workstations),
+            KeyCode::Char(c @ '0'..='9') => {
+                if let Some(tab) = Tab::from_key(c) {
+                    self.select_tab(tab);
+                }
+            }
+            KeyCode::Char('w') => self.select_tab(Tab::Workstations),
             KeyCode::Tab => self.select_tab(self.tab.next()),
             KeyCode::BackTab => self.select_tab(self.tab.prev()),
             KeyCode::Down | KeyCode::Char('j') => self.move_selection(1),
@@ -577,6 +664,10 @@ impl App {
             }
             KeyCode::Char('r') => {
                 let _ = self.watch.send(self.tab.path());
+                if self.tab == Tab::Workspace {
+                    let effects = self.ws.enter();
+                    self.execute(effects);
+                }
                 self.notice = Some("refreshing".to_string());
             }
             _ => {}
@@ -589,6 +680,10 @@ impl App {
         self.selected = 0;
         self.detail = false;
         let _ = self.watch.send(tab.path());
+        if tab == Tab::Workspace {
+            let effects = self.ws.enter();
+            self.execute(effects);
+        }
     }
 
     fn move_selection(&mut self, delta: isize) {
@@ -659,7 +754,96 @@ impl App {
             Confirm::Resume => self.run_job("resume".to_string(), |c| c.post("/v1/plaza/resume", &json!({}))),
             Confirm::Approve(id) => self.decide(id, true),
             Confirm::Deny(id) => self.decide(id, false),
+            Confirm::CancelWork(cid) => self.run_job(format!("stop agent {cid}'s work"), move |c| {
+                c.post(&format!("/v1/agents/{cid}/cancel"), &json!({}))
+            }),
         }
+    }
+
+    /// Runs the workspace's effects: fetches on threads (their answers come back as `Msg::Workspace`), and the writes
+    /// as jobs (their results come back as notices).
+    fn execute(&mut self, effects: Vec<Effect>) {
+        for effect in effects {
+            match effect {
+                Effect::Fetch(want) => self.fetch(want),
+                Effect::Agents => self.fetch_agents(),
+                Effect::Steer { cid, text } => self.run_job(format!("message to agent {cid}"), move |c| {
+                    c.post(&format!("/v1/agents/{cid}/chat"), &json!({ "text": text }))
+                }),
+                Effect::Post { project, body } => {
+                    let mentions = cmd::board::mentions_in(&body);
+                    self.run_job("post to the board".to_string(), move |c| {
+                        c.post("/v1/board/posts", &json!({ "body": body, "project": project, "mentions": mentions }))
+                    });
+                }
+                Effect::Pause { project, on } => {
+                    let label = format!("{} the board", if on { "pause" } else { "resume" });
+                    self.run_job(label, move |c| c.post("/v1/board/pause", &json!({ "on": on, "project": project })));
+                }
+                Effect::Export { project } => self.export(project),
+                Effect::AskStop(cid) => self.confirm = Some(Confirm::CancelWork(cid)),
+                Effect::Notice(text) => self.notice = Some(text),
+            }
+        }
+    }
+
+    /// One answer-fetch of the workspace, on its own thread.
+    fn fetch(&self, want: Want) {
+        let client = self.client.clone();
+        let tx = self.tx.clone();
+        thread::spawn(move || {
+            let got = match want {
+                Want::Projects => Got::Projects(client.get("/v1/projects")),
+                Want::Tasks => Got::Tasks(client.get("/v1/tasks")),
+                Want::Board(project) => {
+                    let path = match &project {
+                        Some(id) => format!("/v1/board?project={}", seg(id)),
+                        None => "/v1/board".to_string(),
+                    };
+                    Got::Board { project, result: client.get(&path) }
+                }
+                Want::Transcript { cid, after } => {
+                    let path = match after {
+                        Some(seq) => format!("/v1/agents/{cid}/transcript?after={seq}&limit=1000"),
+                        None => format!("/v1/agents/{cid}/transcript?last={}", workspace::FIRST_LOAD),
+                    };
+                    Got::Transcript { cid, result: client.get(&path) }
+                }
+            };
+            let _ = tx.send(Msg::Workspace(got));
+        });
+    }
+
+    /// The agents roster again, as the poll reads it.
+    fn fetch_agents(&self) {
+        let client = self.client.clone();
+        let tx = self.tx.clone();
+        thread::spawn(move || {
+            let _ = tx.send(Msg::Fetched("/v1/agents", client.get("/v1/agents")));
+        });
+    }
+
+    /// The board (all of it, or the project's) as a Markdown file in the working directory: `E` in the workspace.
+    fn export(&mut self, project: Option<String>) {
+        let scope: String = match project.as_deref() {
+            Some(id) => id.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_').collect(),
+            None => "all".to_string(),
+        };
+        let name = format!("agentplaza-board-{scope}.md");
+        let path = std::env::current_dir().unwrap_or_default().join(&name);
+        self.run_job(format!("export to {name}"), move |c| {
+            let mut route = "/v1/board/export?format=md".to_string();
+            if let Some(id) = &project {
+                route.push_str(&format!("&project={}", seg(id)));
+            }
+            let reply = apz_http::client::request(&c.target, "GET", &route, None, c.timeout)
+                .map_err(|e| format!("{route}: {e}"))?;
+            if !(200..300).contains(&reply.status) {
+                return Err(format!("{route}: HTTP {}", reply.status));
+            }
+            cmd::skills::write_out(&path, &reply.body, false)?;
+            Ok(json!({ "file": path.display().to_string(), "bytes": reply.body.len() }))
+        });
     }
 
     fn decide(&mut self, id: String, approve: bool) {
@@ -680,6 +864,28 @@ impl App {
             let _ = tx.send(Msg::Done(label, result));
         });
     }
+}
+
+/// A terminal key as the workspace reads it; None for the keys it does not use (Ctrl+letters other than Ctrl+C).
+fn workspace_key(key: KeyEvent) -> Option<workspace::Key> {
+    use workspace::Key as W;
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    Some(match key.code {
+        KeyCode::Char('c') if ctrl => W::CtrlC,
+        KeyCode::Char(_) if ctrl => return None,
+        KeyCode::Char(c) => W::Char(c),
+        KeyCode::Up => W::Up,
+        KeyCode::Down => W::Down,
+        KeyCode::PageUp => W::PageUp,
+        KeyCode::PageDown => W::PageDown,
+        KeyCode::End => W::End,
+        KeyCode::Enter => W::Enter,
+        KeyCode::Tab => W::Tab,
+        KeyCode::BackTab => W::BackTab,
+        KeyCode::Esc => W::Esc,
+        KeyCode::Backspace => W::Backspace,
+        _ => return None,
+    })
 }
 
 /// The poller: the agents, the plaza's state and the visible tab's endpoint, every 3 s, or at once
@@ -878,8 +1084,7 @@ pub fn snapshot(client: Client, path: &std::path::Path, width: u16, height: u16,
     }
     let mut out = String::new();
     for (i, tab) in Tab::ALL.iter().enumerate() {
-        let key = char::from_digit(i as u32 + 1, 10).unwrap_or('1');
-        app.on_key(KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE));
+        app.on_key(KeyEvent::new(KeyCode::Char(tab.key()), KeyModifiers::NONE));
         // The tab's own data arrives with its first poll.
         let until = Instant::now() + Duration::from_millis(1500);
         while Instant::now() < until {
@@ -906,10 +1111,11 @@ mod tests {
 
     #[test]
     fn tabs_cycle_both_ways() {
-        assert_eq!(Tab::ALL.len(), 10);
+        assert_eq!(Tab::ALL.len(), 11);
         assert_eq!(Tab::Floor.prev(), Tab::Workstations);
+        assert_eq!(Tab::Workspace.next(), Tab::Workstations);
         assert_eq!(Tab::Workstations.next(), Tab::Floor);
-        assert_eq!(Tab::Machines.next(), Tab::Workstations);
+        assert_eq!(Tab::Machines.next(), Tab::Workspace);
         assert_eq!(Tab::Nodes.next(), Tab::Machines);
         assert_eq!(Tab::Workstations.path(), "/v1/stations");
         assert_eq!(Tab::Overview.next().next(), Tab::Tasks);
@@ -923,6 +1129,18 @@ mod tests {
         }
         assert!(!is_station_change("station_sync"), "a pass that moved files is read on the next poll");
         assert!(!is_station_change("owner_input"));
+    }
+
+    #[test]
+    fn number_keys_show_the_tabs_and_zero_shows_the_tenth() {
+        assert_eq!(Tab::from_key('1'), Some(Tab::Floor));
+        assert_eq!(Tab::from_key('9'), Some(Tab::Machines));
+        assert_eq!(Tab::from_key('0'), Some(Tab::Workspace));
+        assert_eq!(Tab::from_key('x'), None);
+        assert_eq!(Tab::from_key('w'), Some(Tab::Workstations));
+        for tab in Tab::ALL {
+            assert_eq!(Tab::from_key(tab.key()), Some(tab));
+        }
     }
 
     #[test]

@@ -21,7 +21,7 @@
   padding-bottom: 12px;
   border-bottom: 2px solid var(--ink);
 }
-.lab-page-head h2 { font: 600 var(--fs-xl)/1.2 var(--mono); margin: 0; flex: 1 1 auto; min-width: 0; }
+.lab-page-head h2 { font: 600 var(--fs-xl)/1.2 var(--sans); margin: 0; flex: 1 1 auto; min-width: 0; }
 .lab-page-head .lab-actions { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; margin-left: auto; }
 
 .lab-row { display: flex; gap: var(--s3); flex-wrap: wrap; align-items: center; min-width: 0; }
@@ -44,14 +44,14 @@
   border-bottom: 1px solid var(--rule);
   min-width: 0;
 }
-.lab-card-head h3 { flex: 1 1 auto; margin: 0; font: 600 var(--fs-sm)/1.4 var(--mono); min-width: 0; }
+.lab-card-head h3 { flex: 1 1 auto; margin: 0; font: 600 var(--fs-sm)/1.4 var(--sans); min-width: 0; }
 .lab-card-body { padding: 16px; min-width: 0; }
 .lab-card-body.flush { padding: 0; }
 
 /* Stat tiles: a figure over its label, for the headline numbers. */
 .lab-stat { display: flex; flex-direction: column; gap: 4px; padding: 12px 16px; border: 1px solid var(--rule); min-width: 0; }
-.lab-stat-value { font: 700 var(--fs-xl)/1.1 var(--mono); overflow-wrap: anywhere; }
-.lab-stat-label { color: var(--text-3); font: 500 var(--fs-xs)/1.4 var(--mono); text-transform: uppercase; letter-spacing: 0.04em; }
+.lab-stat-value { font: 700 var(--fs-xl)/1.1 var(--sans); overflow-wrap: anywhere; }
+.lab-stat-label { color: var(--text-3); font: 500 var(--fs-xs)/1.4 var(--sans); letter-spacing: 0.01em; }
 .lab-stat-sub { color: var(--text-2); font-size: var(--fs-sm); }
 
 /* Grids: one column on a phone, the named count from 640 px up. */
@@ -68,8 +68,8 @@
 .lab-table { width: 100%; border-collapse: collapse; font-size: 14px; }
 .lab-table th {
   text-align: left;
-  font: 500 var(--fs-xs)/1.4 var(--mono);
-  text-transform: uppercase;
+  font: 500 var(--fs-xs)/1.4 var(--sans);
+
   letter-spacing: 0.04em;
   color: var(--text-3);
   padding: 8px 12px;
@@ -86,8 +86,8 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font: 500 var(--fs-xs)/1.4 var(--mono);
-  text-transform: uppercase;
+  font: 500 var(--fs-xs)/1.4 var(--sans);
+
   letter-spacing: 0.04em;
   color: var(--text-2);
   white-space: nowrap;
@@ -114,10 +114,10 @@
   color: var(--text-3);
 }
 .lab-empty .icon { color: var(--text-3); }
-.lab-empty-title { font: 600 var(--fs-sm)/1.4 var(--mono); color: var(--text); }
-.lab-empty-text { font: 400 var(--fs-md)/var(--lh) var(--serif); color: var(--text-3); max-width: 46ch; }
+.lab-empty-title { font: 600 var(--fs-sm)/1.4 var(--sans); color: var(--text); }
+.lab-empty-text { font: 400 var(--fs-md)/var(--lh) var(--sans); color: var(--text-3); max-width: 46ch; }
 
-.lab-error { color: var(--danger); font: italic 400 var(--fs-md)/var(--lh) var(--serif); }
+.lab-error { color: var(--danger); font: italic 400 var(--fs-md)/var(--lh) var(--sans); }
 
 @media (max-width: 640px) {
   .lab-body { padding: 16px 16px 28px; gap: 18px; }

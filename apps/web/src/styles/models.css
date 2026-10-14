@@ -17,7 +17,7 @@
   font-size: var(--fs-xs);
   font-weight: 600;
   letter-spacing: 0.06em;
-  text-transform: uppercase;
+
   color: var(--text-3);
 }
 
@@ -162,7 +162,7 @@
 
 /* Register refinements */
 .prov-bar { display: flex; justify-content: flex-end; margin-top: -8px; }
-.prov-group-title { font-family: var(--mono); font-size: 11px; letter-spacing: 0.12em; padding-bottom: 6px; border-bottom: 1px solid var(--rule); }
+.prov-group-title { font-family: var(--sans); font-size: 11px; letter-spacing: 0.12em; padding-bottom: 6px; border-bottom: 1px solid var(--rule); }
 .prov-card { background: var(--paper); padding: 16px 16px 12px; gap: 12px; }
 .prov-card:hover { border-color: var(--ink-3); }
 .prov-title h3 { font-size: 16.5px; }

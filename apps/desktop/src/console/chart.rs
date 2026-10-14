@@ -8,7 +8,7 @@ use iced::mouse;
 use iced::widget::canvas::{self, Path, Stroke};
 use iced::{Color, Element, Event, Length, Point, Rectangle, Renderer, Size, Theme};
 
-use crate::theme::{MONO};
+use crate::theme::{SANS};
 
 /// One named series: `values[i]` is the value at bucket (or point) `i`.
 #[derive(Debug, Clone, PartialEq)]
@@ -137,7 +137,7 @@ fn label(frame: &mut canvas::Frame, content: String, at: Point, color: Color, si
         position: at,
         color,
         size: iced::Pixels(size),
-        font: MONO,
+        font: SANS,
         align_x: if right { alignment::Horizontal::Right.into() } else { alignment::Horizontal::Left.into() },
         ..canvas::Text::default()
     });

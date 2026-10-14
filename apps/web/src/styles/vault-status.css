@@ -21,9 +21,9 @@
 }
 .vault-fact { min-width: 0; }
 .vault-fact dt {
-  font: 600 11px var(--mono);
+  font: 600 11px var(--sans);
   letter-spacing: 0.06em;
-  text-transform: uppercase;
+
   color: var(--ink-2);
   margin: 0 0 4px;
 }

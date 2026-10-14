@@ -1,53 +1,10 @@
-// The IDE's own chrome: the activity rail, the edges that resize a side panel, the status bar and the keyboard help.
-// Pure rendering: the screen (views/ide.ts) owns the state and passes the callbacks, and these paint what it gives them.
+// The IDE's own chrome: the edges that resize a panel or the drawer, the status bar and the keyboard help. Pure rendering:
+// the screen (views/ide.ts) owns the state and passes the callbacks, and these paint what it gives them.
 
 import type { Lang } from '../ide/model';
-import type { LeftView } from '../ide/layout';
 import { dot } from '../ui/components';
-import { h, icon, replace } from '../ui/dom';
-import type { IconName } from '../ui/icons.gen';
+import { h, replace } from '../ui/dom';
 
-const RAIL: { key: LeftView; label: string; icon: IconName }[] = [
-  { key: 'files', label: 'Files', icon: 'file' },
-  { key: 'search', label: 'Search', icon: 'search' },
-  { key: 'changes', label: 'Changes', icon: 'git' },
-  { key: 'checkpoints', label: 'Checkpoints', icon: 'clock' },
-];
-
-export interface RailPaint {
-  /** The view the side panel shows, or null when the panel is closed. */
-  active: LeftView | null;
-  /** The count a rail item shows (changed files, checkpoints). */
-  counts: Partial<Record<LeftView, number>>;
-  /** The views the workspace has; the others' items are hidden. */
-  views: LeftView[];
-}
-
-/** The activity rail: the side panel's views. Clicking the open view's item closes the panel (the screen decides). */
-export function activityRail(onPick: (key: LeftView) => void): { el: HTMLElement; paint(p: RailPaint): void } {
-  const items = new Map<LeftView, { button: HTMLButtonElement; count: HTMLElement }>();
-  const el = h('nav.ide-rail', { 'aria-label': 'IDE views' });
-  for (const item of RAIL) {
-    const count = h('span.ide-rail-count');
-    const button = h('button.ide-rail-item', { type: 'button', title: item.label, 'aria-label': item.label }, icon(item.icon), count);
-    button.addEventListener('click', () => onPick(item.key));
-    items.set(item.key, { button, count });
-    el.appendChild(button);
-  }
-  return {
-    el,
-    paint(p) {
-      for (const [key, { button, count }] of items) {
-        const on = key === p.active;
-        button.classList.toggle('on', on);
-        button.setAttribute('aria-pressed', on ? 'true' : 'false');
-        const n = p.counts[key];
-        count.textContent = n ? String(n) : '';
-        button.hidden = !p.views.includes(key);
-      }
-    },
-  };
-}
 
 /**
  * The edge of a side panel: drag it to resize (`onDrag` gets the pointer's x while it is held, `onDone` when it is let
@@ -80,6 +37,44 @@ export function panelEdge(side: 'left' | 'right', onDrag: (clientX: number) => v
   el.addEventListener('dblclick', onReset);
   return el;
 }
+
+/**
+ * The top edge of the terminal dock: drag it to resize (`onDrag` gets the pointer's y while it is held, `onDone` when it is
+ * let go); an arrow key steps it by `onStep`. It sits on the dock's top border, inside the editor column.
+ */
+export function dockEdge(onDrag: (clientY: number) => void, onDone: () => void, onStep: (px: number) => void): HTMLElement {
+  const el = h('div.ide-bottom-edge', {
+    role: 'separator',
+    'aria-orientation': 'horizontal',
+    'aria-label': 'Resize the terminal',
+    title: 'Drag to resize',
+    tabindex: '0',
+  });
+  const move = (e: PointerEvent) => onDrag(e.clientY);
+  const end = () => {
+    el.removeEventListener('pointermove', move);
+    el.classList.remove('on');
+    el.closest('.ide')?.classList.remove('dragging-rows');
+    onDone();
+  };
+  el.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    el.setPointerCapture(e.pointerId);
+    el.classList.add('on');
+    el.closest('.ide')?.classList.add('dragging-rows');
+    el.addEventListener('pointermove', move);
+  });
+  el.addEventListener('pointerup', end);
+  el.addEventListener('pointercancel', end);
+  el.addEventListener('keydown', (e) => {
+    if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+    e.preventDefault();
+    onStep(e.key === 'ArrowUp' ? 24 : -24);
+  });
+  return el;
+}
+
 
 export interface StatusInfo {
   workspace: string;

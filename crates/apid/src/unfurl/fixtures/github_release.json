@@ -1,0 +1,11 @@
+{
+  "tag_name": "v1.2",
+  "name": "",
+  "draft": false,
+  "prerelease": true,
+  "author": { "login": "octocat", "avatar_url": "https://avatars.githubusercontent.com/u/1?v=4" },
+  "body": "Notes for **1.2**.",
+  "created_at": "2026-10-03T00:00:00Z",
+  "published_at": "2026-10-04T00:00:00Z",
+  "html_url": "https://github.com/o/r/releases/tag/v1.2"
+}

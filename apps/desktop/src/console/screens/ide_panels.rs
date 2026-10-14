@@ -1,7 +1,7 @@
 //! The IDE's right panels (Changes lives on the left): the agent's transcript with a steer box, the agent's held
-//! approvals (a write's diff against the file now), a bounded run with polled output, and the
-//! terminal's placeholder. The screen (`ide.rs`) owns the workspace and routes the messages; this
-//! module owns its panels' state, their hub calls and their views.
+//! approvals (a write's diff against the file now), a bounded run with polled output, and the terminal (a shell
+//! in the agent's VM, on the side or docked under the editor). The screen (`ide.rs`) owns the workspace and
+//! routes the messages; this module owns its panels' state, their hub calls and their views.
 //!
 //! The hub answers each call with the workspace it was asked for, so a late answer for a workspace
 //! the owner has left is dropped (the same rule as the screen's `is_current`).
@@ -11,15 +11,15 @@ use std::time::Duration;
 
 use apz_ide::WorkspaceId;
 use apz_ide::state::Panel;
-use iced::keyboard;
-use iced::widget::{Space, column, container, row, text_editor, text_input};
+use iced::widget::{Space, column, container, mouse_area, row, text_editor, text_input};
 use iced::{Alignment, Element, Length, Task};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::ide::{self, FileView};
+use super::ide_terminal::TerminalTabs;
 use crate::console::client::{self, Client};
-use crate::console::ui::{self, Kind, Tone};
+use crate::console::ui::{self, Kind};
 use crate::theme;
 
 /// The transcript keeps this many entries, the newest; the hub's `last=` asks for the same first.
@@ -93,7 +93,10 @@ pub fn is_write(tool: &str) -> bool {
 
 /// The file a held write changes, from its input.
 fn write_path(held: &Held) -> Option<String> {
-    held.input.get("path").and_then(Value::as_str).map(str::to_string)
+    held.input
+        .get("path")
+        .and_then(Value::as_str)
+        .map(str::to_string)
 }
 
 /// The text a held write leaves in its file, given the file's current text. None for a call that is not
@@ -101,8 +104,14 @@ fn write_path(held: &Held) -> Option<String> {
 pub fn proposed(tool: &str, input: &Value, current: &str) -> Option<Result<String, String>> {
     let text = |key: &str| input.get(key).and_then(Value::as_str).map(str::to_string);
     match tool {
-        "write_file" => Some(text("content").ok_or_else(|| "The write has no content.".to_string())),
-        "append_file" => Some(text("content").map(|add| format!("{current}{add}")).ok_or_else(|| "The append has no content.".to_string())),
+        "write_file" => {
+            Some(text("content").ok_or_else(|| "The write has no content.".to_string()))
+        }
+        "append_file" => Some(
+            text("content")
+                .map(|add| format!("{current}{add}"))
+                .ok_or_else(|| "The append has no content.".to_string()),
+        ),
         "edit_file" => Some(edit(current, text("old"), text("new"))),
         _ => None,
     }
@@ -119,7 +128,9 @@ fn edit(current: &str, old: Option<String>, new: Option<String>) -> Result<Strin
     match current.matches(&old).count() {
         0 => Err("The text to replace is not in the file.".to_string()),
         1 => Ok(current.replacen(&old, &new, 1)),
-        n => Err(format!("The text to replace occurs {n} times; an edit needs exactly one match.")),
+        n => Err(format!(
+            "The text to replace occurs {n} times; an edit needs exactly one match."
+        )),
     }
 }
 
@@ -130,13 +141,21 @@ pub fn line_diff(old: &str, new: &str) -> Vec<DiffLine> {
     let b: Vec<&str> = new.lines().collect();
     let (n, m) = (a.len(), b.len());
     if n.saturating_mul(m) > DIFF_MAX_CELLS {
-        return a.iter().map(|l| DiffLine::Del((*l).to_string())).chain(b.iter().map(|l| DiffLine::Add((*l).to_string()))).collect();
+        return a
+            .iter()
+            .map(|l| DiffLine::Del((*l).to_string()))
+            .chain(b.iter().map(|l| DiffLine::Add((*l).to_string())))
+            .collect();
     }
     // lcs[i][j]: the common lines of a[i..] and b[j..].
     let mut lcs = vec![vec![0u32; m + 1]; n + 1];
     for i in (0..n).rev() {
         for j in (0..m).rev() {
-            lcs[i][j] = if a[i] == b[j] { lcs[i + 1][j + 1] + 1 } else { lcs[i + 1][j].max(lcs[i][j + 1]) };
+            lcs[i][j] = if a[i] == b[j] {
+                lcs[i + 1][j + 1] + 1
+            } else {
+                lcs[i + 1][j].max(lcs[i][j + 1])
+            };
         }
     }
     let (mut i, mut j) = (0, 0);
@@ -187,9 +206,16 @@ fn preview_of(held: &Held, res: Result<FileView, String>) -> Preview {
     let (current, note) = match res {
         Ok(file) => match file.text {
             Some(text) => (text, None),
-            None => return Preview::Unavailable("The file is not text, so it has no diff.".to_string()),
+            None => {
+                return Preview::Unavailable("The file is not text, so it has no diff.".to_string());
+            }
         },
-        Err(e) => (String::new(), Some(format!("No readable copy of the file ({e}); the diff shows the whole text as new."))),
+        Err(e) => (
+            String::new(),
+            Some(format!(
+                "No readable copy of the file ({e}); the diff shows the whole text as new."
+            )),
+        ),
     };
     match proposed(&held.tool, &held.input, &current) {
         Some(Ok(text)) => Preview::Diff {
@@ -243,7 +269,10 @@ pub struct Run {
 impl Run {
     /// Whether a run is on its way (starting, running or being stopped).
     pub fn active(&self) -> bool {
-        matches!(self.phase, Phase::Starting | Phase::Running | Phase::Stopping)
+        matches!(
+            self.phase,
+            Phase::Starting | Phase::Running | Phase::Stopping
+        )
     }
 
     /// Begins a run of `command`, clearing the last one. Refused (false) while a run is active.
@@ -320,10 +349,17 @@ impl Run {
             Phase::Starting => "Starting…".to_string(),
             Phase::Running => "Running…".to_string(),
             Phase::Stopping => "Stopping…".to_string(),
-            Phase::Done { timed_out: true, .. } => "Timed out.".to_string(),
+            Phase::Done {
+                timed_out: true, ..
+            } => "Timed out.".to_string(),
             Phase::Done { stopped: true, .. } => "Stopped.".to_string(),
-            Phase::Done { exit_code: Some(code), .. } => format!("Exited with code {code}."),
-            Phase::Done { exit_code: None, .. } => "Finished.".to_string(),
+            Phase::Done {
+                exit_code: Some(code),
+                ..
+            } => format!("Exited with code {code}."),
+            Phase::Done {
+                exit_code: None, ..
+            } => "Finished.".to_string(),
         }
     }
 }
@@ -331,7 +367,9 @@ impl Run {
 /// The run's id in the hub's answer to a start (a string, or a number).
 fn run_id(value: &Value) -> Option<String> {
     let run = value.get("run")?;
-    run.as_str().map(str::to_string).or_else(|| run.as_u64().map(|n| n.to_string()))
+    run.as_str()
+        .map(str::to_string)
+        .or_else(|| run.as_u64().map(|n| n.to_string()))
 }
 
 /// The timeout box: empty for the hub's default, else whole seconds.
@@ -340,7 +378,9 @@ fn parse_timeout(text: &str) -> Result<Option<u64>, String> {
     if text.is_empty() {
         return Ok(None);
     }
-    text.parse::<u64>().map(Some).map_err(|_| "The timeout is a whole number of seconds.".to_string())
+    text.parse::<u64>()
+        .map(Some)
+        .map_err(|_| "The timeout is a whole number of seconds.".to_string())
 }
 
 /// The newest `SHOWN_CHARS` characters of a run's output.
@@ -349,7 +389,11 @@ pub fn shown(output: &str) -> &str {
     if count <= SHOWN_CHARS {
         return output;
     }
-    output.char_indices().nth(count - SHOWN_CHARS).map(|(i, _)| &output[i..]).unwrap_or(output)
+    output
+        .char_indices()
+        .nth(count - SHOWN_CHARS)
+        .map(|(i, _)| &output[i..])
+        .unwrap_or(output)
 }
 
 // ---- The panels' state ------------------------------------------------------------------------
@@ -457,8 +501,15 @@ fn transcript_task(client: &Client, ws: &WorkspaceId, cid: u64) -> Task<Msg> {
     let c = client.clone();
     let key = ws.to_string();
     client::task(
-        move || c.get::<Vec<Value>>(&format!("/v1/agents/{cid}/transcript?last={TRANSCRIPT_LAST}")),
-        move |res| Msg::Transcript { ws: key.clone(), res },
+        move || {
+            c.get::<Vec<Value>>(&format!(
+                "/v1/agents/{cid}/transcript?last={TRANSCRIPT_LAST}"
+            ))
+        },
+        move |res| Msg::Transcript {
+            ws: key.clone(),
+            res,
+        },
     )
 }
 
@@ -469,7 +520,13 @@ pub fn approvals_task(client: &Client, ws: &WorkspaceId) -> Task<Msg> {
     }
     let c = client.clone();
     let key = ws.to_string();
-    client::task(move || c.get::<Value>("/v1/approvals"), move |res| Msg::Held { ws: key.clone(), res })
+    client::task(
+        move || c.get::<Value>("/v1/approvals"),
+        move |res| Msg::Held {
+            ws: key.clone(),
+            res,
+        },
+    )
 }
 
 fn file_task(client: &Client, ws: &WorkspaceId, id: String, path: String) -> Task<Msg> {
@@ -477,11 +534,14 @@ fn file_task(client: &Client, ws: &WorkspaceId, id: String, path: String) -> Tas
     let w = ws.clone();
     let key = ws.to_string();
     let shown_id = id.clone();
-    client::task(move || ide::fetch_file(&c, &w, &path), move |res| Msg::Current {
-        ws: key.clone(),
-        id: shown_id.clone(),
-        res,
-    })
+    client::task(
+        move || ide::fetch_file(&c, &w, &path),
+        move |res| Msg::Current {
+            ws: key.clone(),
+            id: shown_id.clone(),
+            res,
+        },
+    )
 }
 
 /// One poll of a run, from `offset`. With `wait`, it first sleeps the poll interval.
@@ -496,13 +556,18 @@ fn poll_task(client: &Client, ws: &WorkspaceId, run: String, offset: u64, wait: 
             }
             c.get::<Poll>(&path)
         },
-        move |res| Msg::Polled { ws: key.clone(), res },
+        move |res| Msg::Polled {
+            ws: key.clone(),
+            res,
+        },
     )
 }
 
 /// Loads what an opened panel shows: the transcript once, the approvals each time they open.
 pub fn show(st: &mut State, panel: Panel, client: &Client, ws: &WorkspaceId) -> Task<Msg> {
-    let Some(cid) = agent_of(ws) else { return Task::none() };
+    let Some(cid) = agent_of(ws) else {
+        return Task::none();
+    };
     match panel {
         Panel::Agent if !st.entries_loaded => transcript_task(client, ws, cid),
         Panel::Approvals => approvals_task(client, ws),
@@ -517,7 +582,11 @@ pub fn push_entry(st: &mut State, entry: Value) {
         return;
     }
     let seq = entry.get("seq").and_then(Value::as_u64).unwrap_or(0);
-    let last = st.entries.last().and_then(|e| e.get("seq")).and_then(Value::as_u64);
+    let last = st
+        .entries
+        .last()
+        .and_then(|e| e.get("seq"))
+        .and_then(Value::as_u64);
     if last.is_some_and(|last| last >= seq) {
         return;
     }
@@ -550,14 +619,17 @@ pub fn update(st: &mut State, msg: Msg, client: &Client, ws: &WorkspaceId) -> Ta
         }
         _ => {}
     }
-    // The run, the transcript and the approvals are the agent's; a repo has none, and a station has no agent
-    // (its panels are not offered), so only the steer box and the held calls need one.
+    // Everything else talks to the workspace's agent; a repo workspace has none (its panels are not offered).
+    let Some(cid) = agent_of(ws) else {
+        return Task::none();
+    };
     match msg {
         Msg::Transcript { res, .. } => {
             match res {
                 Ok(list) => {
                     st.entries = list;
-                    st.entries.sort_by_key(|e| e.get("seq").and_then(Value::as_u64).unwrap_or(0));
+                    st.entries
+                        .sort_by_key(|e| e.get("seq").and_then(Value::as_u64).unwrap_or(0));
                     keep_newest(&mut st.entries);
                     st.entries_loaded = true;
                     st.entries_error = None;
@@ -571,7 +643,6 @@ pub fn update(st: &mut State, msg: Msg, client: &Client, ws: &WorkspaceId) -> Ta
             Task::none()
         }
         Msg::SteerSend => {
-            let Some(cid) = agent_of(ws) else { return Task::none() };
             let text = st.steer.text().trim().to_string();
             if st.steer_busy {
                 return Task::none();
@@ -589,27 +660,39 @@ pub fn update(st: &mut State, msg: Msg, client: &Client, ws: &WorkspaceId) -> Ta
             let c = client.clone();
             let path = format!("/v1/agents/{cid}/control");
             let body = json!({ "action": "steer", "text": text });
-            client::task(move || c.post::<Value>(&path, &body), move |res| Msg::Steered { ws: here.clone(), res })
+            client::task(
+                move || c.post::<Value>(&path, &body),
+                move |res| Msg::Steered {
+                    ws: here.clone(),
+                    res,
+                },
+            )
         }
         Msg::Steered { res, .. } => {
             st.steer_busy = false;
             match res {
                 Ok(answer) => {
                     st.steer = text_editor::Content::new();
-                    st.steer_notice = Some(answer.get("result").and_then(Value::as_str).unwrap_or("Note sent.").to_string());
+                    st.steer_notice = Some(
+                        answer
+                            .get("result")
+                            .and_then(Value::as_str)
+                            .unwrap_or("Note sent.")
+                            .to_string(),
+                    );
                 }
                 Err(e) => st.steer_notice = Some(format!("The note was not sent: {e}")),
             }
             Task::none()
         }
         Msg::Held { res, .. } => {
-            let Some(cid) = agent_of(ws) else { return Task::none() };
             st.approvals_loaded = true;
             match res {
                 Ok(list) => {
                     st.held = pending_for(&list, cid);
                     st.approvals_error = None;
-                    st.previews.retain(|id, _| st.held.iter().any(|h| &h.id == id));
+                    st.previews
+                        .retain(|id, _| st.held.iter().any(|h| &h.id == id));
                     // Each held write reads its file now, for its diff.
                     let jobs: Vec<(String, String)> = st
                         .held
@@ -646,17 +729,25 @@ pub fn update(st: &mut State, msg: Msg, client: &Client, ws: &WorkspaceId) -> Ta
             }
             st.busy.insert(id.clone());
             let mut body = json!({ "approve": approve });
-            if let Some(reason) = st.reasons.get(&id).map(|r| r.trim()).filter(|r| !r.is_empty()) {
+            if let Some(reason) = st
+                .reasons
+                .get(&id)
+                .map(|r| r.trim())
+                .filter(|r| !r.is_empty())
+            {
                 body["reason"] = json!(reason);
             }
             let c = client.clone();
             let path = format!("/v1/approvals/{id}");
             let shown_id = id.clone();
-            client::task(move || c.post::<Value>(&path, &body), move |res| Msg::Decided {
-                ws: here.clone(),
-                id: shown_id.clone(),
-                res,
-            })
+            client::task(
+                move || c.post::<Value>(&path, &body),
+                move |res| Msg::Decided {
+                    ws: here.clone(),
+                    id: shown_id.clone(),
+                    res,
+                },
+            )
         }
         Msg::Decided { id, res, .. } => {
             st.busy.remove(&id);
@@ -696,7 +787,13 @@ pub fn update(st: &mut State, msg: Msg, client: &Client, ws: &WorkspaceId) -> Ta
             }
             let c = client.clone();
             let path = ide::route(ws, "/runs");
-            client::task(move || c.post::<Value>(&path, &body), move |res| Msg::Started { ws: here.clone(), res })
+            client::task(
+                move || c.post::<Value>(&path, &body),
+                move |res| Msg::Started {
+                    ws: here.clone(),
+                    res,
+                },
+            )
         }
         Msg::Started { res, .. } => match res {
             Ok(answer) => match run_id(&answer) {
@@ -716,7 +813,9 @@ pub fn update(st: &mut State, msg: Msg, client: &Client, ws: &WorkspaceId) -> Ta
         },
         Msg::Polled { res, .. } => match res {
             Ok(poll) => {
-                let Some(run) = st.run.run.clone() else { return Task::none() };
+                let Some(run) = st.run.run.clone() else {
+                    return Task::none();
+                };
                 match st.run.apply(&poll) {
                     Step::Again => poll_task(client, ws, run, st.run.offset, true),
                     Step::Finished => Task::none(),
@@ -728,13 +827,21 @@ pub fn update(st: &mut State, msg: Msg, client: &Client, ws: &WorkspaceId) -> Ta
             }
         },
         Msg::RunStop => {
-            let Some(run) = st.run.run.clone() else { return Task::none() };
+            let Some(run) = st.run.run.clone() else {
+                return Task::none();
+            };
             if !st.run.stop_requested() {
                 return Task::none();
             }
             let c = client.clone();
             let path = ide::route(ws, &format!("/runs/{}/stop", ide::enc(&run)));
-            client::task(move || c.post::<Value>(&path, &json!({})), move |res| Msg::Stopped { ws: here.clone(), res })
+            client::task(
+                move || c.post::<Value>(&path, &json!({})),
+                move |res| Msg::Stopped {
+                    ws: here.clone(),
+                    res,
+                },
+            )
         }
         Msg::Stopped { res, .. } => {
             if let Err(e) = res {
@@ -746,79 +853,6 @@ pub fn update(st: &mut State, msg: Msg, client: &Client, ws: &WorkspaceId) -> Ta
 }
 
 // ---- Views ------------------------------------------------------------------------------------
-
-fn s<'a>(v: &'a Value, key: &str) -> &'a str {
-    v.get(key).and_then(Value::as_str).unwrap_or("")
-}
-
-/// One transcript entry as a line of the panel: the work's prompt, the agent's text and tool calls,
-/// results, errors. Other kinds (decisions, the bare bookkeeping) are not drawn here.
-fn entry_line<'a>(entry: &'a Value) -> Option<Element<'a, Msg>> {
-    let data = entry.get("data").unwrap_or(&Value::Null);
-    let p = theme::palette();
-    Some(match entry.get("kind").and_then(Value::as_str)? {
-        "work_start" => column![ui::badge("work", Tone::Info), ui::prose(s(data, "prompt"))].spacing(6).into(),
-        "model_response" => {
-            let mut col = column![].spacing(6);
-            for block in data.get("content").and_then(Value::as_array).into_iter().flatten() {
-                match s(block, "type") {
-                    "text" => col = col.push(ui::markdown(s(block, "text"))),
-                    "tool_use" => col = col.push(ui::mono(format!("→ {}", s(block, "name")), 11.5, p.ink_2)),
-                    _ => {}
-                }
-            }
-            col.into()
-        }
-        "tool_result" => {
-            let failed = data.get("is_error").and_then(Value::as_bool).unwrap_or(false);
-            let body = data.get("content").and_then(Value::as_str).or_else(|| data.get("output").and_then(Value::as_str)).unwrap_or("");
-            let label = if failed { "error" } else { "result" };
-            ui::faint(format!("{label}: {}", ui::ellipsize(body, 160))).into()
-        }
-        "error" => ui::error_line(s(data, "message")),
-        "control" => ui::faint("Note sent to the agent.").into(),
-        _ => return None,
-    })
-}
-
-/// The Agent panel: the steer box, then the transcript.
-pub fn agent_view<'a>(st: &'a State, agent: bool) -> Element<'a, Msg> {
-    if !agent {
-        return ui::empty("agents", "No agent here", "Repo workspaces have no agent. Choose an agent workspace.");
-    }
-    let editor = text_editor(&st.steer)
-        .placeholder("Steer the agent…")
-        .height(Length::Fixed(88.0))
-        .on_action(Msg::Steer)
-        .key_binding(|kp| {
-            if kp.key == keyboard::Key::Named(keyboard::key::Named::Enter) && kp.modifiers.control() {
-                Some(text_editor::Binding::Custom(Msg::SteerSend))
-            } else {
-                text_editor::Binding::from_key_press(kp)
-            }
-        });
-    let len = st.steer.text().trim().chars().count();
-    let can_send = !st.steer_busy && len > 0 && len <= STEER_MAX;
-    let send = ui::btn("Send", Some("send"), Kind::Primary, can_send.then_some(Msg::SteerSend));
-    let mut col = column![
-        editor,
-        row![ui::faint(format!("{len}/{STEER_MAX}")), Space::new().width(Length::Fill), send].spacing(8).align_y(Alignment::Center),
-    ]
-    .spacing(8);
-    if let Some(notice) = &st.steer_notice {
-        col = col.push(ui::faint(notice.as_str()));
-    }
-    if let Some(error) = &st.entries_error {
-        col = col.push(ui::error_line(error));
-    } else if !st.entries_loaded {
-        col = col.push(ui::faint("Loading the transcript…"));
-    } else if st.entries.is_empty() {
-        col = col.push(ui::faint("No transcript yet."));
-    }
-    let lines: Vec<Element<'a, Msg>> = st.entries.iter().filter_map(entry_line).collect();
-    col = col.push(column(lines).spacing(12));
-    col.into()
-}
 
 /// A line diff, drawn in mono: added lines in ok, removed in crit.
 fn diff_view<'a>(lines: &'a [DiffLine], note: Option<&'a str>) -> Element<'a, Msg> {
@@ -836,9 +870,16 @@ fn diff_view<'a>(lines: &'a [DiffLine], note: Option<&'a str>) -> Element<'a, Ms
         col = col.push(ui::mono(format!("{mark} {text}"), 11.5, tone));
     }
     if lines.len() > DIFF_SHOWN {
-        col = col.push(ui::faint(format!("{} more lines", lines.len() - DIFF_SHOWN)));
+        col = col.push(ui::faint(format!(
+            "{} more lines",
+            lines.len() - DIFF_SHOWN
+        )));
     }
-    container(col).padding(8).width(Length::Fill).style(ui::frame(None, p.rule)).into()
+    container(col)
+        .padding(8)
+        .width(Length::Fill)
+        .style(ui::frame(None, p.rule))
+        .into()
 }
 
 fn held_card<'a>(st: &'a State, held: &'a Held) -> Element<'a, Msg> {
@@ -846,7 +887,12 @@ fn held_card<'a>(st: &'a State, held: &'a Held) -> Element<'a, Msg> {
     let busy = st.busy.contains(&held.id);
     let detail: Element<'a, Msg> = match st.previews.get(&held.id) {
         Some(Preview::Loading) => ui::faint("Reading the file…").into(),
-        Some(Preview::Diff { path, lines, note }) => column![ui::mono(path.as_str(), 11.5, p.ink_2), diff_view(lines, note.as_deref())].spacing(6).into(),
+        Some(Preview::Diff { path, lines, note }) => column![
+            ui::mono(path.as_str(), 11.5, p.ink_2),
+            diff_view(lines, note.as_deref())
+        ]
+        .spacing(6)
+        .into(),
         Some(Preview::Unavailable(message)) => ui::faint(message.as_str()).into(),
         None => {
             let input = serde_json::to_string_pretty(&held.input).unwrap_or_default();
@@ -854,27 +900,56 @@ fn held_card<'a>(st: &'a State, held: &'a Held) -> Element<'a, Msg> {
         }
     };
     let id = held.id.clone();
-    let reason = text_input("Reason (optional)", st.reasons.get(&held.id).map(String::as_str).unwrap_or(""))
-        .on_input(move |text| Msg::Reason(id.clone(), text))
-        .size(13.0)
-        .style(theme::input)
-        .padding(6);
-    let deny = ui::btn("Deny", None, Kind::Danger, (!busy).then(|| Msg::Decide { id: held.id.clone(), approve: false }));
-    let approve = ui::btn("Approve", None, Kind::Primary, (!busy).then(|| Msg::Decide { id: held.id.clone(), approve: true }));
+    let reason = text_input(
+        "Reason (optional)",
+        st.reasons.get(&held.id).map(String::as_str).unwrap_or(""),
+    )
+    .on_input(move |text| Msg::Reason(id.clone(), text))
+    .size(13.0)
+    .style(theme::input)
+    .padding(6);
+    let deny = ui::btn(
+        "Deny",
+        None,
+        Kind::Danger,
+        (!busy).then(|| Msg::Decide {
+            id: held.id.clone(),
+            approve: false,
+        }),
+    );
+    let approve = ui::btn(
+        "Approve",
+        None,
+        Kind::Primary,
+        (!busy).then(|| Msg::Decide {
+            id: held.id.clone(),
+            approve: true,
+        }),
+    );
     let body = column![
         ui::mono(held.tool.as_str(), 12.0, p.ink),
         detail,
         reason,
-        row![Space::new().width(Length::Fill), deny, approve].spacing(8).align_y(Alignment::Center),
+        row![Space::new().width(Length::Fill), deny, approve]
+            .spacing(8)
+            .align_y(Alignment::Center),
     ]
     .spacing(10);
-    container(body).padding(12).width(Length::Fill).style(ui::frame(None, p.rule)).into()
+    container(body)
+        .padding(12)
+        .width(Length::Fill)
+        .style(ui::frame(None, p.rule))
+        .into()
 }
 
 /// The Approvals panel: the agent's held calls, each with its input or its diff, and Approve or Deny.
 pub fn approvals_view<'a>(st: &'a State, agent: bool) -> Element<'a, Msg> {
     if !agent {
-        return ui::empty("approval", "No approvals here", "Repo workspaces have no agent, so nothing is held for them.");
+        return ui::empty(
+            "approval",
+            "No approvals here",
+            "Repo workspaces have no agent, so nothing is held for them.",
+        );
     }
     let mut col = column![].spacing(12);
     if let Some(error) = &st.approvals_error {
@@ -892,9 +967,13 @@ pub fn approvals_view<'a>(st: &'a State, agent: bool) -> Element<'a, Msg> {
 }
 
 /// The Run panel: the command and its timeout, Run and Stop, the status, and the output so far.
-pub fn run_view<'a>(st: &'a State, runs: bool) -> Element<'a, Msg> {
-    if !runs {
-        return ui::empty("terminal", "Runs need an agent or a workstation", "Repo runs come when the hub serves repo workspaces.");
+pub fn run_view<'a>(st: &'a State, agent: bool) -> Element<'a, Msg> {
+    if !agent {
+        return ui::empty(
+            "terminal",
+            "Runs need an agent workspace",
+            "Repo runs come when the hub serves repo workspaces.",
+        );
     }
     let p = theme::palette();
     let active = st.run.active();
@@ -911,26 +990,59 @@ pub fn run_view<'a>(st: &'a State, runs: bool) -> Element<'a, Msg> {
     let can_run = !active && !st.command.trim().is_empty();
     let can_stop = st.run.phase == Phase::Running;
     let actions = row![
-        ui::btn("Run", Some("play"), Kind::Primary, can_run.then_some(Msg::RunStart)),
-        ui::btn("Stop", Some("stop"), Kind::Danger, can_stop.then_some(Msg::RunStop)),
+        ui::btn(
+            "Run",
+            Some("play"),
+            Kind::Primary,
+            can_run.then_some(Msg::RunStart)
+        ),
+        ui::btn(
+            "Stop",
+            Some("stop"),
+            Kind::Danger,
+            can_stop.then_some(Msg::RunStop)
+        ),
     ]
     .spacing(8);
-    let mut col = column![command, timeout, actions, ui::mono(st.run.status(), 11.5, p.ink_2)].spacing(10);
+    let mut col = column![
+        command,
+        timeout,
+        actions,
+        ui::mono(st.run.status(), 11.5, p.ink_2)
+    ]
+    .spacing(10);
     if let Some(error) = &st.run.error {
         col = col.push(ui::error_line(error));
     }
     if st.run.output.is_empty() {
-        col = col.push(ui::faint(if active { "Waiting for output…" } else { "No output yet." }));
+        col = col.push(ui::faint(if active {
+            "Waiting for output…"
+        } else {
+            "No output yet."
+        }));
     } else {
-        let output = container(ui::mono(shown(&st.run.output), 11.5, p.ink)).padding(8).width(Length::Fill).style(ui::frame(None, p.rule));
+        let output = container(ui::mono(shown(&st.run.output), 11.5, p.ink))
+            .padding(8)
+            .width(Length::Fill)
+            .style(ui::frame(None, p.rule));
         col = col.push(output);
     }
     col.into()
 }
 
-/// The Terminal panel's placeholder: a shell in the VM comes in a later phase.
-pub fn terminal_view<'a>() -> Element<'a, Msg> {
-    ui::faint("Terminal comes in the next phase").into()
+/// The terminal's tabs. Repo workspaces have no VM, so they have no shell. The mouse area reports the
+/// pointer, which is how the screen knows the terminal has the keys (see `ide::Msg::Pressed`).
+pub fn terminal_body<'a>(tabs: Option<&'a TerminalTabs>, agent: bool) -> Element<'a, ide::Msg> {
+    if !agent {
+        return ui::faint("Terminals run in agent workspaces.").into();
+    }
+    match tabs {
+        Some(tabs) => mouse_area(tabs.view().map(ide::Msg::Terminals))
+            .on_enter(ide::Msg::TerminalHover(true))
+            .on_exit(ide::Msg::TerminalHover(false))
+            .into(),
+        None => ui::faint("Starting the terminal…").into(),
+    }
 }
 
 #[cfg(test)]
@@ -1015,7 +1127,13 @@ mod tests {
         assert!(run.stop_requested());
         assert!(!run.stop_requested(), "a second stop is not sent");
         assert_eq!(run.phase, Phase::Stopping);
-        assert_eq!(run.apply(&Poll { exit_code: Some(-15), ..poll("", 0, true) }), Step::Finished);
+        assert_eq!(
+            run.apply(&Poll {
+                exit_code: Some(-15),
+                ..poll("", 0, true)
+            }),
+            Step::Finished
+        );
         assert_eq!(run.status(), "Stopped.");
     }
 
@@ -1026,7 +1144,11 @@ mod tests {
         run.stop_failed("no session".into());
         assert_eq!(run.phase, Phase::Running);
         assert_eq!(run.error.as_deref(), Some("no session"));
-        assert_eq!(run.apply(&poll("", 0, false)), Step::Again, "the run is still polled");
+        assert_eq!(
+            run.apply(&poll("", 0, false)),
+            Step::Again,
+            "the run is still polled"
+        );
     }
 
     #[test]
@@ -1052,7 +1174,10 @@ mod tests {
     #[test]
     fn a_late_poll_after_the_run_ended_changes_nothing() {
         let mut run = running();
-        run.apply(&Poll { exit_code: Some(0), ..poll("done\n", 5, true) });
+        run.apply(&Poll {
+            exit_code: Some(0),
+            ..poll("done\n", 5, true)
+        });
         assert_eq!(run.apply(&poll("late", 9, false)), Step::Finished);
         assert_eq!(run.output, "done\n");
         assert_eq!(run.offset, 5);
@@ -1085,14 +1210,39 @@ mod tests {
     #[test]
     fn a_write_previews_its_content_and_an_edit_needs_one_match() {
         let write = json!({"path": "a.txt", "content": "new\n"});
-        assert_eq!(proposed("write_file", &write, "old\n"), Some(Ok("new\n".to_string())));
+        assert_eq!(
+            proposed("write_file", &write, "old\n"),
+            Some(Ok("new\n".to_string()))
+        );
         let append = json!({"path": "a.txt", "content": "more\n"});
-        assert_eq!(proposed("append_file", &append, "one\n"), Some(Ok("one\nmore\n".to_string())));
+        assert_eq!(
+            proposed("append_file", &append, "one\n"),
+            Some(Ok("one\nmore\n".to_string()))
+        );
         let edit_ok = json!({"path": "a.txt", "old": "two", "new": "2"});
-        assert_eq!(proposed("edit_file", &edit_ok, "one two three\n"), Some(Ok("one 2 three\n".to_string())));
-        assert!(proposed("edit_file", &edit_ok, "nothing here\n").unwrap().is_err());
-        assert!(proposed("edit_file", &json!({"path": "a", "old": "a", "new": "b"}), "a a\n").unwrap().is_err());
-        assert_eq!(proposed("bash", &json!({}), ""), None, "a call that is not a write has no preview");
+        assert_eq!(
+            proposed("edit_file", &edit_ok, "one two three\n"),
+            Some(Ok("one 2 three\n".to_string()))
+        );
+        assert!(
+            proposed("edit_file", &edit_ok, "nothing here\n")
+                .unwrap()
+                .is_err()
+        );
+        assert!(
+            proposed(
+                "edit_file",
+                &json!({"path": "a", "old": "a", "new": "b"}),
+                "a a\n"
+            )
+            .unwrap()
+            .is_err()
+        );
+        assert_eq!(
+            proposed("bash", &json!({}), ""),
+            None,
+            "a call that is not a write has no preview"
+        );
     }
 
     #[test]
@@ -1146,7 +1296,10 @@ mod tests {
     fn push_entry_waits_for_the_load_and_skips_seen_entries() {
         let mut st = State::default();
         push_entry(&mut st, json!({"seq": 1, "kind": "work_start"}));
-        assert!(st.entries.is_empty(), "nothing is kept before the transcript loads");
+        assert!(
+            st.entries.is_empty(),
+            "nothing is kept before the transcript loads"
+        );
         st.entries_loaded = true;
         st.entries.push(json!({"seq": 2, "kind": "model_response"}));
         push_entry(&mut st, json!({"seq": 2, "kind": "model_response"}));

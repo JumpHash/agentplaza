@@ -705,7 +705,7 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
     replace(callFilters, h('label.us-filter', null, h('span', null, 'Model'), modelSel), h('label.us-filter', null, h('span', null, 'Agent'), agentSel));
 
     const columns: Column<UsageCall>[] = [
-      { label: 'Time', cell: (c) => h('span.mono', { title: new Date(c.at_ms).toLocaleString() }, new Date(c.at_ms).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' })) },
+      { label: 'Time', cell: (c) => h('span.num', { title: new Date(c.at_ms).toLocaleString() }, new Date(c.at_ms).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' })) },
       { label: 'Agent', cell: (c) => h('a', { href: href('agents', c.cid) }, nameOf(c.cid)) },
       { label: 'Model', cell: (c) => h('span.truncate', { title: c.model }, c.model, isTrainer(c.model) ? [' ', trainsBadge()] : null) },
       { label: 'In', num: true, cell: (c) => compact(c.input) },

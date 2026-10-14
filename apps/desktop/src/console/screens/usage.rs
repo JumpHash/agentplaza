@@ -14,10 +14,10 @@ use serde_json::json;
 
 use super::Id;
 use crate::console::{chart, client::{self, Client}, ui, Ctx};
-use crate::theme::{self, MONO};
+use crate::theme::{self, SANS};
 
-const VALUE: Font = Font { weight: font::Weight::Bold, ..theme::MONO };
-const ITALIC: Font = Font { style: font::Style::Italic, ..theme::SERIF };
+const VALUE: Font = Font { weight: font::Weight::Bold, ..theme::SANS };
+const ITALIC: Font = Font { style: font::Style::Italic, ..theme::SANS };
 /// How long a figure or a chart takes to settle after its data changes.
 const ANIM: Duration = Duration::from_millis(600);
 /// Groups drawn as their own band; the rest sum into "other".
@@ -1038,7 +1038,7 @@ fn chart_panel<'a>(state: &'a State, d: &'a Data, now: Instant) -> Element<'a, M
                     background: Some(color.into()),
                     ..Default::default()
                 });
-                line.push(row![swatch, text(name).font(MONO).size(11.0).color(crate::theme::palette().ink_2), text(format(total)).font(MONO).size(11.0).color(crate::theme::palette().ink)].spacing(6).align_y(Alignment::Center))
+                line.push(row![swatch, text(name).font(SANS).size(11.0).color(crate::theme::palette().ink_2), text(format(total)).font(SANS).size(11.0).color(crate::theme::palette().ink)].spacing(6).align_y(Alignment::Center))
             });
             let calls: Vec<f64> = d.timeline.points.iter().map(|p| p.totals.calls as f64).collect();
             column![
@@ -1059,7 +1059,7 @@ fn chart_panel<'a>(state: &'a State, d: &'a Data, now: Instant) -> Element<'a, M
 fn sort_head<'a>(label: &str, sort: Sort, state: &State, portion: u16) -> Element<'a, Msg> {
     let active = state.sort == sort;
     let arrow = if active { if state.asc { " ^" } else { " v" } } else { "" };
-    let content = button(text(format!("{}{arrow}", label.to_uppercase())).font(MONO).size(11.0).color(if active { crate::theme::palette().ink } else { crate::theme::palette().ink_3 }))
+    let content = button(text(format!("{label}{arrow}")).font(SANS).size(11.0).color(if active { crate::theme::palette().ink } else { crate::theme::palette().ink_3 }))
         .style(link)
         .padding(0)
         .on_press(Msg::Sort(sort));
@@ -1134,7 +1134,7 @@ fn table_row<'a>(name: String, trains: bool, t: &Totals, share: Option<f64>) -> 
                 container(Space::new().width(Length::Fill).height(6.0))
                     .width(Length::FillPortion((100 - pct).max(1)))
                     .style(|_: &Theme| container::Style { background: Some(crate::theme::palette().rule_faint.into()), ..Default::default() }),
-                text(format!("{:.0}%", s * 100.0)).font(MONO).size(11.0).color(crate::theme::palette().ink_2).width(Length::Fixed(40.0)),
+                text(format!("{:.0}%", s * 100.0)).font(SANS).size(11.0).color(crate::theme::palette().ink_2).width(Length::Fixed(40.0)),
             ]
             .spacing(8)
             .align_y(Alignment::Center)
@@ -1142,9 +1142,9 @@ fn table_row<'a>(name: String, trains: bool, t: &Totals, share: Option<f64>) -> 
         }
         None => text("").into(),
     };
-    let num = |v: String| cell(2, true, text(v).font(MONO).size(12.0).color(crate::theme::palette().ink_2));
+    let num = |v: String| cell(2, true, text(v).font(SANS).size(12.0).color(crate::theme::palette().ink_2));
     row![
-        cell(5, false, with_badge(text(name).font(MONO).size(12.0).color(crate::theme::palette().ink), trains)),
+        cell(5, false, with_badge(text(name).font(SANS).size(12.0).color(crate::theme::palette().ink), trains)),
         num(commas(&t.calls.to_string())),
         num(compact(t.input as f64)),
         num(compact(t.output as f64)),
@@ -1195,7 +1195,7 @@ fn calls_card<'a>(state: &'a State, d: &'a Data) -> Element<'a, Msg> {
         cell(3, false, ui::faint("Via")),
     ].spacing(10)]
     .spacing(6);
-    let txt = |s: String| text(s).font(MONO).size(12.0).color(crate::theme::palette().ink_2);
+    let txt = |s: String| text(s).font(SANS).size(12.0).color(crate::theme::palette().ink_2);
     for c in &d.calls {
         let agent = d.agents.get(&c.cid).cloned().unwrap_or_else(|| format!("#{}", c.cid));
         let cost = match c.cost_usd {
@@ -1253,7 +1253,7 @@ fn prices_card<'a>(d: &'a Data) -> Element<'a, Msg> {
     if models.is_empty() {
         lines = lines.push(ui::empty("models", "No models in use", "Models appear here once a model is called or set as a default."));
     }
-    let txt = |s: String| text(s).font(MONO).size(12.0).color(crate::theme::palette().ink_2);
+    let txt = |s: String| text(s).font(SANS).size(12.0).color(crate::theme::palette().ink_2);
     for model in &models {
         let calls = d.summary.by_model.iter().find(|g| &g.key == model).map_or(0, |g| g.totals.calls);
         let used = uses.get(model).map(|v| v.join(", ")).unwrap_or_default();
@@ -1269,7 +1269,7 @@ fn prices_card<'a>(d: &'a Data) -> Element<'a, Msg> {
         };
         lines = lines.push(
             row![
-                cell(5, false, text(model.clone()).font(MONO).size(12.0).color(crate::theme::palette().ink)),
+                cell(5, false, text(model.clone()).font(SANS).size(12.0).color(crate::theme::palette().ink)),
                 cell(3, false, txt(used)),
                 cell(2, true, txt(commas(&calls.to_string()))),
                 cell(2, true, txt(input)),

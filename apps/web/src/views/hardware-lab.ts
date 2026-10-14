@@ -148,10 +148,10 @@ function mountEngineLab(root: HTMLElement, s: LabState, cat: LabCatalog): Cleanu
   const gpuBtns = [0, 1, 2].map((n) => button(`${n} GPU${n === 1 ? '' : 's'}`, () => { s.gpus = n; apply(); }));
   const statusSel = h('select.select', { onchange: () => { s.status = statusSel.value as Status; apply(); } }, ...choices(STATUSES));
   // The sliders apply when let go: a restart per step of a drag would start the engine many times.
-  const workingOut = h('span', { style: 'font-family:var(--mono);font-size:12px;min-width:2ch' });
+  const workingOut = h('span', { style: 'font-family:var(--sans);font-size:12px;min-width:2ch' });
   const workingIn = h('input', { type: 'range', min: 0, max: 6, step: 1, onchange: () => { s.working = Number(workingIn.value); apply(); } });
   workingIn.addEventListener('input', () => (workingOut.textContent = workingIn.value));
-  const openOut = h('span', { style: 'font-family:var(--mono);font-size:12px;min-width:4ch' });
+  const openOut = h('span', { style: 'font-family:var(--sans);font-size:12px;min-width:4ch' });
   const openIn = h('input', { type: 'range', min: 0, max: 1, step: 0.01, onchange: () => { s.open = Number(openIn.value); apply(); } });
   openIn.addEventListener('input', () => (openOut.textContent = Number(openIn.value).toFixed(2)));
   const tracesIn = h('input', { type: 'checkbox', onchange: () => { s.traces = tracesIn.checked; apply(); } });
@@ -169,7 +169,7 @@ function mountEngineLab(root: HTMLElement, s: LabState, cat: LabCatalog): Cleanu
           type: 'number',
           step: 'any',
           'aria-label': `param ${k}`,
-          style: 'width:9ch;font-family:var(--mono);font-size:12px',
+          style: 'width:9ch;font-family:var(--sans);font-size:12px',
           // A half-typed value (empty, or "-") is not a param yet; the input keeps what was typed until it is one.
           onchange: () => {
             if (!Number.isFinite(input.valueAsNumber)) return;
@@ -184,7 +184,7 @@ function mountEngineLab(root: HTMLElement, s: LabState, cat: LabCatalog): Cleanu
     paramsBar.style.display = keys.length ? 'flex' : 'none';
   };
 
-  const readout = h('div', { style: 'font-family:var(--mono);font-size:12px;padding:4px 0', 'aria-live': 'polite' });
+  const readout = h('div', { style: 'font-family:var(--sans);font-size:12px;padding:4px 0', 'aria-live': 'polite' });
   const panel = h(
     'div',
     { style: 'padding:12px 16px' },

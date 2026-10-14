@@ -19,7 +19,7 @@ use super::Id;
 use crate::console::client::{self, Client};
 use crate::console::ui::{self, Tone};
 use crate::console::Ctx;
-use crate::theme::{MONO};
+use crate::theme::{SANS};
 
 /// The per-job GPU-hour cap when the laws cannot be read: S-006c permits a breeder's job up to
 /// 8 GPU-hours (S-006d refuses more).
@@ -319,9 +319,9 @@ fn breeder_card<'a>(b: &'a Breeder) -> Element<'a, Msg> {
     let name = if a.name.trim().is_empty() { format!("agent {}", a.cid) } else { a.name.clone() };
     let budget = column![
         row![
-            text("GPU-HOURS USED".to_string()).font(MONO).size(11.0).color(crate::theme::palette().ink_3),
+            text("GPU-HOURS USED".to_string()).font(SANS).size(11.0).color(crate::theme::palette().ink_3),
             Space::new().width(Length::Fill),
-            text(lab_common::gpu_hours(b.used)).font(MONO).size(12.0).color(crate::theme::palette().ink_2),
+            text(lab_common::gpu_hours(b.used)).font(SANS).size(12.0).color(crate::theme::palette().ink_2),
         ]
         .align_y(iced::Alignment::Center),
         ui::faint(format!("per-job cap {} GPU-h (S-006c)", lab_common::number(b.cap, 0))),
@@ -353,7 +353,7 @@ fn breeder_card<'a>(b: &'a Breeder) -> Element<'a, Msg> {
                 cell(lab_models::value(lab_common::time(c.at_ms))),
                 cell(lab_models::value(c.name.clone())),
                 cell(lab_models::value(if c.detail.is_empty() { "—".to_string() } else { clip(&c.detail, 48) })),
-                cell(text(result).font(MONO).size(12.0).width(Length::Fill).color(if c.refused { crate::theme::palette().crit } else { crate::theme::palette().ink_2 })),
+                cell(text(result).font(SANS).size(12.0).width(Length::Fill).color(if c.refused { crate::theme::palette().crit } else { crate::theme::palette().ink_2 })),
             ]
         })
         .collect();
@@ -375,7 +375,7 @@ fn breeder_card<'a>(b: &'a Breeder) -> Element<'a, Msg> {
 }
 
 fn section_title<'a>(label: &str) -> Element<'a, Msg> {
-    text(label.to_uppercase()).font(MONO).size(11.0).color(crate::theme::palette().ink_3).into()
+    text(label.to_string()).font(SANS).size(11.0).color(crate::theme::palette().ink_3).into()
 }
 
 
@@ -384,7 +384,7 @@ fn table<'a>(heads: &[&str], rows: Vec<Vec<Element<'a, Msg>>>, none: &str) -> El
     if rows.is_empty() {
         return ui::faint(none.to_string()).into();
     }
-    let head = row(heads.iter().map(|h| cell(text(h.to_uppercase()).font(MONO).size(11.0).color(crate::theme::palette().ink_3))).collect::<Vec<_>>()).spacing(10);
+    let head = row(heads.iter().map(|h| cell(text(h.to_string()).font(SANS).size(11.0).color(crate::theme::palette().ink_3))).collect::<Vec<_>>()).spacing(10);
     let mut lines = column![head].spacing(8);
     for cells in rows {
         lines = lines.push(row(cells).spacing(10));

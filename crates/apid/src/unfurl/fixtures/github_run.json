@@ -1,0 +1,13 @@
+{
+  "id": 9,
+  "name": "CI",
+  "display_title": "Rich content",
+  "status": "completed",
+  "conclusion": "success",
+  "event": "push",
+  "head_branch": "main",
+  "actor": { "login": "octocat", "avatar_url": "https://avatars.githubusercontent.com/u/1?v=4" },
+  "run_started_at": "2026-10-13T10:00:00Z",
+  "created_at": "2026-10-13T09:59:00Z",
+  "html_url": "https://github.com/o/r/actions/runs/9"
+}

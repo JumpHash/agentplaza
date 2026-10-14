@@ -1,5 +1,8 @@
 // Pure-logic tests: run with `npm test`.
 import { parse, href } from '../src/router';
+import { classify, label, type RichCtx, type Span } from '../src/ui/rich';
+import { monogramOf, personOf, toneOf } from '../src/ui/embed-model';
+import richVectors from '../../../crates/apz-rich/tests/vectors.json';
 import { TOUR_STEPS, WIZARD_STEPS, fill, keysSet, moveStep, readFlag, writeFlag } from '../src/onboarding/flow';
 import { ago, clip, compact } from '../src/ui/components';
 import { floorName, familyLabel, roleFamily } from '../src/roles';
@@ -18,16 +21,16 @@ import { agentTally, boardOf, gibText, machineFacts, machineSubtitle } from '../
 import { hubOrigin, setupSnippets } from '../src/views/hub-mcp-snippets';
 import { ENV_NAME_RE, limitsProblem, matchingPreset, ownRowProblem, specsOfBag } from '../src/views/mcp-common';
 import { wrapIde, type IdeGlue } from '../src/ide/wasm';
-import { applyBuffer, badgeOf, diffMark, dirsOf, fuzzyScore, groupWorkspaces, isViewed, languageFor, lineCounts, onRemote, openBuffer, osLabel, parentDir, parseViewed, pickerLabel, rankPaths, viewedKey, withViewed } from '../src/ide/model';
+import { activitySplit, authorHue, buildChat, currentTask, filterPalette, formatMs, matchScore, mentionsOf, rowStatus, stepLabel, type PaletteItem } from '../src/ide/view';
+import { groupByProject, projectOf, sharedNames, startAgent } from '../src/ide/groups';
+import type { Entry, Project, Task, StationFacts, StationLease, StationSettings, StationView, RecordingDefaults, MachineNode } from '../src/api';
+import { mentionAt, mentionOptions } from '../src/board/owner';
+import { applyBuffer, badgeOf, diffMark, dirsOf, fuzzyScore, isViewed, languageFor, lineCounts, onRemote, openBuffer, parentDir, parseViewed, rankPaths, viewedKey, withViewed, groupWorkspaces, osLabel, pickerLabel } from '../src/ide/model';
 import type { FileChange } from '../src/ide/types';
-import { CENTRE_MIN, clampSize, defaultLayout, fitSize, hasDiff, isNarrow, LEFT_SIZE, leftViewFor, leftViewsFor, originFallback, parseLayout, RIGHT_SIZE, rightTabFor, rightTabsFor, runsFor, serializeLayout } from '../src/ide/layout';
-import type { StationFacts, StationLease, StationSettings, StationView } from '../src/api';
-import { auditLabel, codeChip, countdown, displaysText, formLabel, gpuLine, gpuSummary, joinCommand, leaseCount, leaseStateChip, nameProblem, osText, ramText, readSettings, accountBadge, accountText, settingsForm, sortStations, stationSummary, statusChip, takeoverText, type SettingsForm } from '../src/views/workstations-model';
-import { actionFrame, activeAction, backoffMs, bytesText, buttonAction, clockText, controlSocketUrl, crumbsOf, dollarsPerHour, defaultsForm, frameAt, frameTime, frameTimes, framePoint, inputButton, joinPath, keyAction, moveAction, parentDir, parseControlText, parseFrame, parseScreenText, pendingPaths, rateText, readDefaults, readRate, recordingSpan, scrollNotches, screenSocketUrl, sessionChoices, takeoverBanner, treeOf, uploadProblem, wheelAction, actionText, type KeyEventLike } from '../src/views/workstations-model';
-import type { StationLease, RecordingDefaults } from '../src/api';
-import type { MachineNode } from '../src/api';
+import { CENTRE_MIN, clampSize, defaultLayout, fitSize, isNarrow, LEFT_SIZE, leftViewFor, originFallback, parseLayout, RIGHT_SIZE, rightTabFor, serializeLayout, hasDiff, leftViewsFor, rightTabsFor, runsFor } from '../src/ide/layout';
+import { MAX_TERMINALS, attachFrame, base64ToBytes, bytesToBase64, clearSession, inputFrame, killFrame, nextOffset, openFrame, parseServerFrame, plainText, readSession, reconnectDelay, resizeFrame, sessionKey, splitInput, storedTerminalCount, terminalSocketUrl, writeSession, type KeyValueStore } from '../src/views/ide-terminal-model';
+import { auditLabel, codeChip, countdown, displaysText, formLabel, gpuLine, gpuSummary, joinCommand, leaseCount, leaseStateChip, nameProblem, osText, ramText, readSettings, accountBadge, accountText, settingsForm, sortStations, stationSummary, statusChip, takeoverText, type SettingsForm, actionFrame, activeAction, backoffMs, bytesText, buttonAction, clockText, controlSocketUrl, crumbsOf, dollarsPerHour, defaultsForm, frameAt, frameTime, frameTimes, framePoint, inputButton, joinPath, keyAction, moveAction, parentDir, parseControlText, parseFrame, parseScreenText, pendingPaths, rateText, readDefaults, readRate, recordingSpan, scrollNotches, screenSocketUrl, sessionChoices, takeoverBanner, treeOf, uploadProblem, wheelAction, actionText, type KeyEventLike } from '../src/views/workstations-model';
 import { isStationNode, leaseCounts, stationBadge, stationLine, stationMachine, stationThumbnailPath } from '../src/views/station-machine';
-import { MAX_TERMINALS, attachFrame, base64ToBytes, bytesToBase64, clearSession, inputFrame, killFrame, nextOffset, openFrame, parseServerFrame, plainText, readSession, reconnectDelay, resizeFrame, sessionKey, splitInput, terminalSocketUrl, writeSession, type KeyValueStore } from '../src/views/ide-terminal-model';
 
 let failures = 0;
 // Each section checks its own failures and reports them, then the run goes on to the next section (so one failing
@@ -943,6 +946,233 @@ const plain: MachineNode = { id: 'p1', name: 'Rig', kind: 'laptop', arch: 'x86_6
 eq([isStationNode(mini), isStationNode(plain)], [true, false], 'isStationNode: true for a station row, false for a plain machine');
 eq(stationThumbnailPath('a/b c'), '/v1/stations/a%2Fb%20c/thumbnail', 'station thumbnail path: the id is encoded');
 sectionEnd('station machine tests: ok');
+
+// ---- IDE agent view model (src/ide/view.ts) ----
+{
+  const ag = (cid: number, name: string, over: Record<string, unknown> = {}): Agent => ({ cid, name, status: 'idle', work: null, ...over }) as unknown as Agent;
+  const en = (seq: number, at_ms: number, kind: Entry['kind'], data: Record<string, unknown> = {}, cid = 1, work = 7): Entry => ({ seq, at_ms, cid, work, kind, data });
+
+  eq(rowStatus({ status: 'working' }), 'working', 'rowStatus: working');
+  eq(rowStatus({ status: 'offline' }, { state: 'done' }), 'sleeping', 'rowStatus: offline is sleeping whatever the last task');
+  eq(rowStatus({ status: 'idle' }, { state: 'done' }), 'done', 'rowStatus: idle after a done task');
+  eq(rowStatus({ status: 'idle' }, { state: 'failed' }), 'failed', 'rowStatus: idle after a failed task');
+  eq(rowStatus({ status: 'idle' }, null), 'idle', 'rowStatus: idle with no task');
+
+  eq(currentTask(ag(1, 'a', { work: { prompt: '\n  Fix the login bug  \nmore' } })), 'Fix the login bug', 'currentTask: first non-empty line, trimmed');
+  eq(currentTask(ag(1, 'a')), null, 'currentTask: null with no work');
+  eq(currentTask(ag(1, 'a', { work: { prompt: 'x'.repeat(200) } }))?.length, 120, 'currentTask: cut to 120 characters');
+
+  const chat = buildChat([
+    en(1, 0, 'work_start', { kind: 'chat', prompt: 'hello' }),
+    en(2, 10, 'model_response', { content: [{ type: 'text', text: 'On it.' }, { type: 'tool_use', id: 'c1', name: 'read_file', input: { path: 'a.rs' } }] }),
+    en(3, 20, 'tool_request', { id: 'c1', name: 'read_file', input: { path: 'src/main.rs' } }),
+    en(4, 30, 'tool_result', { id: 'c1', is_error: false, content: 'fn main' }),
+    en(5, 40, 'tool_request', { id: 'c2', name: 'bash', input: { command: 'cargo test' } }),
+    en(6, 50, 'tool_result', { id: 'c2', is_error: true, content: 'boom' }),
+    en(7, 60, 'model_response', { content: [{ type: 'text', text: 'Done.' }] }),
+  ], true);
+  eq(chat.map((c) => c.kind).join(','), 'owner,agent,steps,agent,working', 'buildChat: owner, prose, one steps item, prose, working');
+  const stepsItem = chat[2];
+  eq(stepsItem.kind === 'steps' ? stepsItem.steps.length : -1, 2, 'buildChat: both tool calls collapse into one steps item');
+  eq(stepsItem.kind === 'steps' ? stepsItem.last : '', 'Ran command', 'buildChat: last is the label of the last call');
+  eq(stepsItem.kind === 'steps' ? stepsItem.outcome : '', 'mixed', 'buildChat: one ok and one failed is mixed');
+  eq(stepsItem.kind === 'steps' ? stepLabel(stepsItem.steps[0]) : '', 'Read src/main.rs', 'stepLabel: read names the path');
+
+  const act = activitySplit([
+    en(1, 0, 'model_request'),
+    en(2, 100, 'model_response'),
+    en(3, 110, 'tool_request', { id: 'c1', name: 'bash', input: { command: 'ls' } }),
+    en(4, 150, 'tool_result', { id: 'c1', is_error: false }),
+    en(5, 160, 'model_request'),
+    en(6, 300, 'model_response'),
+  ]);
+  eq(act.thinkingMs, 240, 'activitySplit: thinking is request to response, summed');
+  eq(act.toolMs, 40, 'activitySplit: tool time is request to result');
+  eq(act.totalMs, 300, 'activitySplit: total is last minus first');
+  eq(act.calls.length === 1 && act.calls[0].ms === 40 && act.calls[0].outcome === 'ok' && act.calls[0].name === 'bash', true, 'activitySplit: one call with name, ms and outcome');
+  eq(activitySplit([en(1, 5, 'work_start')]).totalMs, 0, 'activitySplit: no span with one entry');
+
+  const pal: PaletteItem[] = [
+    { id: 'a', group: 'command', label: 'Open agent Zed' },
+    { id: 'b', group: 'file', label: 'Read main.rs' },
+    { id: 'c', group: 'command', label: 'Toggle terminal' },
+  ];
+  eq(filterPalette(pal, '').map((i) => i.id).join(','), 'a,b,c', 'filterPalette: empty query keeps input order');
+  eq(filterPalette(pal, '', 2).length, 2, 'filterPalette: empty query is capped at the limit');
+  eq(filterPalette(pal, 'term').map((i) => i.id).join(','), 'c', 'filterPalette: only matching items remain');
+  const rank: PaletteItem[] = [
+    { id: 'x', group: 'file', label: 'xa' },
+    { id: 'y', group: 'file', label: 'ax' },
+  ];
+  eq(filterPalette(rank, 'a').map((i) => i.id).join(','), 'y,x', 'filterPalette: earlier match ranks first');
+  eq(matchScore('Open agent', ''), 0, 'matchScore: empty query scores 0');
+  eq(matchScore('abc', 'z'), null, 'matchScore: no match is null');
+  const sub = matchScore('Open agent', 'oa');
+  eq(sub !== null && sub > 0 && sub < 100, true, 'matchScore: a subsequence scores below any substring');
+  eq(matchScore('Open agent', 'AGENT') !== null, true, 'matchScore: case-insensitive');
+
+  eq(formatMs(340), '340 ms', 'formatMs: milliseconds');
+  eq(formatMs(1200), '1.2 s', 'formatMs: seconds');
+  eq(formatMs(125000), '2 min 5 s', 'formatMs: minutes');
+
+  eq(mentionsOf('ping @all and @ana, then @ana again and @dev-2_x.').join(','), 'all,ana,dev-2_x', 'mentionsOf: names in order, no duplicates, trailing dot dropped');
+  eq(mentionsOf('mail a@b.com now').length, 0, 'mentionsOf: an address is not a mention');
+
+  const hues = ['zed', 'amy', '', 'Long Name Here'].map(authorHue);
+  eq(hues.every((h) => Number.isInteger(h) && h >= 0 && h <= 5), true, 'authorHue: integers 0..5');
+  eq(authorHue('amy') === authorHue('amy'), true, 'authorHue: stable for one name');
+}
+sectionEnd('ide agent view model tests: ok');
+
+// ---- Rich content: the classifier against the shared vectors ----------------------------------------------------
+// crates/apz-rich/tests/vectors.json is the file the Rust crate tests too (tests/vectors.rs), so the two classifiers
+// cannot drift apart. The file's keys are sorted and the port's are not, so both sides are compared with sorted keys.
+{
+  const canon = (value: unknown): string =>
+    JSON.stringify(value, (_key, v: unknown) =>
+      v && typeof v === 'object' && !Array.isArray(v)
+        ? Object.fromEntries(Object.entries(v as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
+        : v,
+    );
+  const rawOf = (span: Span): string => (span.kind === 'ref' ? span.value.raw : span.value);
+  const cases = richVectors as unknown as { name: string; text: string; ctx: RichCtx; spans: Span[] }[];
+  eq(cases.length >= 60, true, `rich: the shared vectors have at least 60 cases (${cases.length})`);
+  for (const c of cases) {
+    const got = classify(c.text, c.ctx);
+    if (canon(got) !== canon(c.spans)) {
+      failures++;
+      console.error(`FAIL rich vector ${c.name}\n  got      ${canon(got)}\n  expected ${canon(c.spans)}`);
+    }
+    eq(got.map(rawOf).join(''), c.text, `rich vector ${c.name}: the spans join back to the text`);
+  }
+
+  // The chip labels (the Rust crate's label tests).
+  const repo = { owner: 'o', repo: 'r' };
+  eq(label({ kind: 'github_pull', number: 12, ...repo }), 'o/r #12', 'rich label: pull');
+  eq(label({ kind: 'github_commit', sha: 'abc1234def5678', ...repo }), 'o/r @abc1234', 'rich label: commit is seven characters');
+  eq(label({ kind: 'github_file', ref: 'main', path: 'src/a.rs', line: 10, dir: false, ...repo }), 'r: src/a.rs:10', 'rich label: file with a line');
+  eq(label({ kind: 'github_file', ref: 'main', path: 'crates', line: null, dir: true, ...repo }), 'r: crates/', 'rich label: folder gets its slash');
+  eq(label({ kind: 'task', number: 528 }), '#528', 'rich label: task');
+  eq(label({ kind: 'agent', name: 'Name', cid: null }), '@Name', 'rich label: agent by name');
+  eq(label({ kind: 'agent', name: null, cid: 7 }), 'agent:7', 'rich label: agent by cid');
+  eq(label({ kind: 'path', path: 'src/main.rs', line: 42, dir: false }), 'src/main.rs:42', 'rich label: path with a line');
+  eq(label({ kind: 'image', url: 'https://x.io/img/a.png?v=2' }), 'a.png', 'rich label: image is its file name');
+  eq(label({ kind: 'link', url: 'https://example.com/docs/x/?q=1#f' }), 'example.com/docs/x', 'rich label: link is domain and path');
+  eq(label({ kind: 'library_tool', name: 'search', version: 3 }), 'search v3', 'rich label: library tool');
+}
+sectionEnd('rich content tests: ok');
+
+// ---- Rich content chips and cards: the tone a state takes, an author's avatar and its monogram (src/ui/embed-model.ts) ----
+{
+  // A chip's border and icon take the tone of its state: open is success, a draft secondary, merged purple, closed an error.
+  eq(toneOf('change', 'open'), 'ok', 'chip tone: an open pull request is success');
+  eq(toneOf('change', 'draft'), 'neutral', 'chip tone: a draft is secondary');
+  eq(toneOf('change', 'merged'), 'merged', 'chip tone: a merged pull request is purple');
+  eq(toneOf('change', 'closed'), 'danger', 'chip tone: a closed pull request is an error');
+  eq(toneOf('task', 'open'), 'neutral', 'chip tone: an open task is neutral');
+  eq(toneOf('task', 'claimed'), 'info', 'chip tone: a claimed task is in progress');
+  eq(toneOf('task', 'awaiting_review'), 'warn', 'chip tone: a task awaiting review is a warning');
+  eq(toneOf('task', 'done'), 'ok', 'chip tone: a done task is success');
+  eq(toneOf('task', 'failed'), 'danger', 'chip tone: a failed task is an error');
+  eq(toneOf('agent', 'idle'), 'ok', 'chip tone: an idle agent is a green status dot');
+  eq(toneOf('agent', 'working'), 'info', 'chip tone: a working agent is blue, not the owner orange');
+  eq(toneOf('agent', 'offline'), 'neutral', 'chip tone: an offline agent is neutral');
+  eq(toneOf('run', 'success'), 'ok', 'chip tone: a successful run');
+  eq(toneOf('run', 'failure'), 'danger', 'chip tone: a failed run');
+  eq(toneOf('run', 'in_progress'), 'info', 'chip tone: a run in progress');
+  eq(toneOf('change', 'weird'), 'neutral', 'chip tone: an unknown state is neutral');
+  eq(toneOf('change', 'constructor'), 'neutral', 'chip tone: a prototype name is not a state');
+
+  // An author: a user object with an https avatar, a user object without one, or a plain name.
+  eq(personOf({ login: 'ada', avatar_url: 'https://avatars.example/ada.png' }), { name: 'ada', avatar: 'https://avatars.example/ada.png' }, 'card author: a picture over https');
+  eq(personOf({ login: 'ada', avatar_url: 'http://avatars.example/ada.png' }), { name: 'ada', avatar: null }, 'card author: an http picture is not shown');
+  eq(personOf({ login: 'ada' }), { name: 'ada', avatar: null }, 'card author: no picture falls back to the monogram');
+  eq(personOf({ name: 'Grace' }), { name: 'Grace', avatar: null }, 'card author: a name without a login');
+  eq(personOf('Bob'), { name: 'Bob', avatar: null }, 'card author: a plain name');
+  eq(personOf({ login: '' }), null, 'card author: an empty login is no author');
+  eq(personOf(null), null, 'card author: null is no author');
+
+  // The monogram: the first letter or digit of the name, upper case; a question mark when there is none.
+  eq(monogramOf('zarathos'), 'Z', 'avatar monogram: the first letter, upper case');
+  eq(monogramOf('@ada'), 'A', 'avatar monogram: a leading mark is skipped');
+  eq(monogramOf('9lives'), '9', 'avatar monogram: a digit counts');
+  eq(monogramOf('ünal'), 'Ü', 'avatar monogram: a letter outside ASCII');
+  eq(monogramOf(''), '?', 'avatar monogram: an empty name');
+  eq(monogramOf('  '), '?', 'avatar monogram: a blank name');
+}
+sectionEnd('rich card tests: ok');
+
+// ---- IDE grouping by project, duplicate names and the start choice (src/ide/groups.ts) ----
+{
+  const ag = (cid: number, name: string, over: Record<string, unknown> = {}): Agent => ({ cid, name, status: 'idle', work: null, ...over }) as unknown as Agent;
+  const pj = (id: string, title: string, lead_cid: number, tasks: string[] = [], updated_ms = 0): Project => ({ id, title, lead_cid, tasks, updated_ms, repo: null }) as unknown as Project;
+  const tk = (id: string, agent_cid: number | null): Task => ({ id, agent_cid, state: 'open' }) as unknown as Task;
+  const names = (g: { agents: Agent[] }): string => g.agents.map((a) => a.name).join(',');
+  const work = (task: string) => ({ prompt: 'x', origin: { task, motion: null, from_cid: null } });
+
+  // Alpha: led by zed (1), holds t1 which amy (2) claimed. Beta: led by amy (2), holds t2 which cy (4) is working on.
+  // Gamma: no agents. t3 is held by dee (5), but no project holds t3.
+  const projects = [pj('p1', 'Alpha', 1, ['t1'], 100), pj('p2', 'Beta', 2, ['t2'], 300), pj('p3', 'Gamma', 9, [], 900)];
+  const tasks = [tk('t1', 2), tk('t2', null), tk('t3', 5)];
+  const agents = [
+    ag(1, 'zed'),
+    ag(2, 'amy'),
+    ag(3, 'bob'),
+    ag(4, 'cy', { status: 'working', work: work('t2') }),
+    ag(5, 'dee', { work: work('nope') }),
+  ];
+  const groups = groupByProject(agents, projects, tasks);
+  eq(groups.map((g) => g.title).join(','), 'Beta,Alpha,No project', 'groupByProject: most recent project first, empty projects skipped, No project last');
+  eq(names(groups[0]), 'amy,cy', 'groupByProject: the lead and a work-origin assignee are in the project');
+  eq(names(groups[1]), 'amy,zed', 'groupByProject: an agent in two projects is listed in both (amy: lead of Beta, claimed t1 in Alpha)');
+  eq(groups[2].id, null, 'groupByProject: No project has a null id');
+  eq(names(groups[2]), 'bob,dee', 'groupByProject: agents in no project are sorted by name');
+  eq(groupByProject([ag(1, 'zed')], [pj('p1', 'Alpha', 1)], []).map((g) => g.title).join(','), 'Alpha', 'groupByProject: no No project group when every agent has a project');
+  eq(groupByProject([ag(2, 'amy')], [], []).map((g) => g.title).join(','), 'No project', 'groupByProject: with no projects every agent is in No project');
+  eq(groupByProject([ag(2, 'amy')], [pj('p1', 'Alpha', 1, [], 5)], [tk('t9', 2)])[0]?.title, 'No project', 'groupByProject: a claimed task outside every project does not place the agent');
+  eq(projectOf(agents[1], projects, tasks)?.id, 'p2', 'projectOf: the most recently active project of the agent');
+  eq(projectOf(agents[2], projects, tasks), null, 'projectOf: null for an agent in no project');
+
+  eq([...sharedNames([ag(1, 'Ada'), ag(2, 'ada'), ag(3, 'Bo')])].sort().join(','), '1,2', 'sharedNames: names that collide, case-insensitively');
+  eq(sharedNames([ag(1, 'Ada'), ag(2, 'Bo')]).size, 0, 'sharedNames: no collision, no cid shown');
+
+  // The sidebar order is Beta (amy, cy), Alpha (amy, zed), No project (bob, dee); the unique order is 2, 4, 1, 3, 5.
+  eq(startAgent(groups, 1), 1, 'startAgent: the agent selected last time, while it is listed');
+  eq(startAgent(groups, 99), 4, 'startAgent: a gone agent falls back to the first working one');
+  eq(startAgent(groups, null), 4, 'startAgent: with nothing stored, the first working agent');
+  const idle = groupByProject([ag(2, 'amy'), ag(1, 'zed')], [], []);
+  eq(startAgent(idle, null), 2, 'startAgent: no working agent, the first agent in the sidebar');
+  eq(startAgent([], null), null, 'startAgent: null when there are no agents');
+}
+sectionEnd('ide grouping tests: ok');
+
+// The stored terminals of a workspace: one per slot with a session, counted from the terminal module's storage.
+{
+  const store = new Map<string, string>();
+  const kv = { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => void store.set(k, v), removeItem: (k: string) => void store.delete(k) };
+  eq(storedTerminalCount(kv, 'agent:77'), 0, 'storedTerminalCount: none for a workspace with no sessions');
+  writeSession(kv, sessionKey('agent:77', '0'), { term: 't-a', offset: 0 });
+  writeSession(kv, sessionKey('agent:77', '2'), { term: 't-b', offset: 5 });
+  writeSession(kv, sessionKey('agent:78', '1'), { term: 't-c', offset: 0 });
+  eq(storedTerminalCount(kv, 'agent:77'), 2, 'storedTerminalCount: one per stored slot of that workspace');
+  clearSession(kv, sessionKey('agent:77', '0'));
+  eq(storedTerminalCount(kv, 'agent:77'), 1, 'storedTerminalCount: a cleared session is no longer counted');
+  eq(storedTerminalCount(undefined, 'agent:77'), 0, 'storedTerminalCount: no storage, no terminals');
+}
+sectionEnd('ide stored terminals tests: ok');
+
+{
+  // The owner's board composer: the @-token before the caret, and what a mention can name.
+  eq(mentionAt('ship it @bu', 11), { start: 8, query: 'bu' }, 'mentionAt: the partial name before the caret');
+  eq(mentionAt('ping @all', 9), { start: 5, query: 'all' }, 'mentionAt: @all is a partial too');
+  eq(mentionAt('mail a@b', 8), null, 'mentionAt: an address is not a mention');
+  eq(mentionAt('done. @', 7), { start: 6, query: '' }, 'mentionAt: a bare @ is a mention to finish');
+  eq(mentionAt('hi @ana later', 9), null, 'mentionAt: a word after a space ends the mention');
+  const agent = (cid: number, name: string, role: string) => ({ cid, name, role }) as unknown as Agent;
+  const names = mentionOptions([agent(3, 'Ana', 'builder'), agent(4, 'builder', 'builder'), agent(5, 'Dev', 'reviewer')]).map((o) => o.name);
+  eq(names, ['all', 'Ana', 'builder', 'Dev', 'reviewer'], 'mentionOptions: all, then names and roles, no repeats (case-insensitive)');
+}
+sectionEnd('board owner composer tests: ok');
 
 if (failedSections.length) {
   console.error(`${failedSections.length} section(s) failed: ${failedSections.join(', ')}`);

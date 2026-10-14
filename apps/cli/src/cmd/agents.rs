@@ -11,10 +11,12 @@ pub mod records;
 use std::thread;
 use std::time::Duration;
 
+use apz_rich::Ctx as RichCtx;
 use clap::Subcommand;
 use serde_json::{json, Value};
 
 use crate::ctx::{self, confirm, text_arg, Ctx};
+use crate::rich;
 
 use self::lifecycle::WipeWhat;
 
@@ -368,6 +370,7 @@ fn tell(ctx: &Ctx, cid: u64, text: &str) -> Result<(), String> {
 fn logs(ctx: &Ctx, cid: u64, follow: bool) -> Result<(), String> {
     const PAGE: usize = 1000;
     let mut after = 0u64;
+    let rich_ctx = rich::context_for(ctx);
     loop {
         let page = ctx.client.get(&format!("/v1/agents/{cid}/transcript?after={after}&limit={PAGE}"))?;
         let entries = page.as_array().cloned().unwrap_or_default();
@@ -375,7 +378,7 @@ fn logs(ctx: &Ctx, cid: u64, follow: bool) -> Result<(), String> {
             if let Some(seq) = e.get("seq").and_then(Value::as_u64) {
                 after = after.max(seq);
             }
-            print_entry(ctx, e);
+            print_entry(ctx, &rich_ctx, e);
         }
         if entries.len() >= PAGE {
             continue;
@@ -387,11 +390,12 @@ fn logs(ctx: &Ctx, cid: u64, follow: bool) -> Result<(), String> {
     }
 }
 
-fn print_entry(ctx: &Ctx, e: &Value) {
+fn print_entry(ctx: &Ctx, rich_ctx: &RichCtx, e: &Value) {
     if ctx.json {
         println!("{e}");
         return;
     }
     let data: String = e.get("data").map(|d| d.to_string()).unwrap_or_default().chars().take(160).collect();
+    let data = rich::render(&data, rich_ctx, &ctx.rich);
     println!("#{} work {} {:<14} {}", ctx::text(e, "seq"), ctx::text(e, "work"), ctx::s(e, "kind"), data);
 }

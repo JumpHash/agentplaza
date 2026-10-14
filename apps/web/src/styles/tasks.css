@@ -13,8 +13,8 @@
 .tasks-view .tk-fig { display: grid; gap: 6px; padding: 14px 18px 16px 0; border-right: 1px solid var(--rule-faint); }
 .tasks-view .tk-fig + .tk-fig { padding-left: 18px; }
 .tasks-view .tk-fig:last-child { border-right: 0; }
-.tasks-view .tk-fig b { font: 700 40px/1 var(--mono); font-stretch: 78%; font-variant-numeric: tabular-nums; color: var(--ink); }
-.tasks-view .tk-fig span { font: 500 10.5px var(--mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-3); }
+.tasks-view .tk-fig b { font: 700 40px/1 var(--sans); font-variant-numeric: tabular-nums; color: var(--ink); }
+.tasks-view .tk-fig span { font: 500 11px var(--sans); letter-spacing: 0.01em; color: var(--ink-3); }
 
 @media (max-width: 760px) {
   .tasks-view .tk-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -36,13 +36,13 @@
 }
 .tasks-view .tk-lane-head { display: flex; align-items: center; gap: 10px; padding-bottom: 10px; border-bottom: 1px solid var(--rule); }
 .tasks-view .tk-lane-head h2 { flex: 1; min-width: 0; }
-.tasks-view .tk-count { font: 600 12px var(--mono); font-variant-numeric: tabular-nums; color: var(--ink-2); }
+.tasks-view .tk-count { font: 600 12px var(--sans); font-variant-numeric: tabular-nums; color: var(--ink-2); }
 .tasks-view .tk-mark { width: 10px; height: 10px; flex: none; border: 1.5px solid var(--ink); }
 .tasks-view .tk-mark.mark-1 { background: var(--signal); border-color: var(--signal); }
 .tasks-view .tk-mark.mark-2 { background: var(--ok); border-color: var(--ok); }
 .tasks-view .tk-mark.mark-3 { background: var(--danger); border-color: var(--danger); }
 .tasks-view .tk-lane-body { display: flex; flex-direction: column; gap: 12px; }
-.tasks-view .tk-empty { font: italic 400 15px/1.5 var(--serif); color: var(--ink-3); }
+.tasks-view .tk-empty { font: italic 400 15px/1.5 var(--sans); color: var(--ink-3); }
 
 /* ---- Cards ------------------------------------------------------------------- */
 
@@ -56,12 +56,12 @@
 
 .tasks-view .task-top { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; min-width: 0; }
 .tasks-view .task-id { font: 400 11px var(--mono); color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-.tasks-view .task-role { font: 500 10.5px var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-2); white-space: nowrap; }
+.tasks-view .task-role { font: 500 11px var(--sans); letter-spacing: 0.01em; color: var(--ink-2); white-space: nowrap; }
 .tasks-view .task-title {
-  font: 600 15px/1.35 var(--serif); min-width: 0; overflow: hidden;
+  font: 600 15px/1.35 var(--sans); min-width: 0; overflow: hidden;
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
 }
-.tasks-view .task-who { display: flex; align-items: center; gap: 8px; min-width: 0; font: 12.5px var(--mono); }
+.tasks-view .task-who { display: flex; align-items: center; gap: 8px; min-width: 0; font: 13px var(--sans); }
 .tasks-view .task-who a { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tasks-view .task-who .faint { white-space: nowrap; }
 .tasks-view .task-dot { width: 8px; height: 8px; flex: none; background: var(--ink-3); }
@@ -69,7 +69,7 @@
 .tasks-view .task-dot.s-working { background: var(--signal); }
 .tasks-view .task-card.lane-1 .task-dot.s-working { animation: tk-pulse 1.6s ease-in-out infinite; }
 
-.tasks-view .task-meta { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; min-width: 0; font: 11.5px var(--mono); }
+.tasks-view .task-meta { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; min-width: 0; font: 12px var(--sans); }
 .tasks-view .task-meta span { white-space: nowrap; }
 
 .tasks-view .task-live { display: grid; gap: 8px; min-width: 0; }
@@ -78,20 +78,20 @@
   background-image: repeating-linear-gradient(90deg, var(--signal) 0 10px, transparent 10px 20px);
   background-size: 40px 100%; animation: tk-stripe 1s linear infinite;
 }
-.tasks-view .task-activity { font: 12px/1.4 var(--mono); color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
-.tasks-view .task-elapsed { font: 600 12px var(--mono); font-variant-numeric: tabular-nums; color: var(--ink); }
+.tasks-view .task-activity { font: 12px/1.4 var(--sans); color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.tasks-view .task-elapsed { font: 600 12px var(--sans); font-variant-numeric: tabular-nums; color: var(--ink); }
 
 .tasks-view .task-note {
-  font: 400 13.5px/1.45 var(--serif); color: var(--ink-2); min-width: 0; overflow-wrap: anywhere;
+  font: 400 14px/1.45 var(--sans); color: var(--ink-2); min-width: 0; overflow-wrap: anywhere;
   display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
 }
-.tasks-view .task-reason { font: 500 13px/1.4 var(--serif); color: var(--danger); min-width: 0; overflow-wrap: anywhere; }
+.tasks-view .task-reason { font: 500 13px/1.4 var(--sans); color: var(--danger); min-width: 0; overflow-wrap: anywhere; }
 
 /* ---- Task page ---------------------------------------------------------------- */
 
 .tasks-view .back {
   display: inline-flex; align-items: center; gap: 6px; width: max-content;
-  font: 500 11.5px var(--mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-3); text-decoration: none;
+  font: 500 12px var(--sans); letter-spacing: 0.01em; color: var(--ink-3); text-decoration: none;
 }
 .tasks-view .back svg { transform: rotate(180deg); }
 
@@ -104,24 +104,24 @@
 .tasks-view .tk-side { display: grid; gap: 26px; min-width: 0; }
 .tasks-view .tk-block { display: grid; gap: 10px; min-width: 0; }
 .tasks-view .tk-label {
-  font: 600 11px var(--mono); letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-3);
+  font: 600 11px var(--sans); letter-spacing: 0.01em; color: var(--ink-3);
   padding-bottom: 6px; border-bottom: 1px solid var(--rule);
 }
 .tasks-view .tk-goal,
-.tasks-view .tk-prose { font: 400 17px/1.6 var(--serif); white-space: pre-wrap; overflow-wrap: anywhere; }
+.tasks-view .tk-prose { font: var(--type-prose); max-width: 760px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .tasks-view .tk-result {
-  font: 400 16px/1.6 var(--serif); white-space: pre-wrap; overflow-wrap: anywhere;
+  font: var(--type-prose); max-width: 760px; white-space: pre-wrap; overflow-wrap: anywhere;
   padding: 16px 0; border-top: 1px solid var(--ink); border-bottom: 1px solid var(--ink);
 }
 
-.tasks-view .kv { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 9px 14px; margin: 0; font: 13px/1.4 var(--mono); }
-.tasks-view .kv dt { color: var(--ink-3); font-size: 10.5px; letter-spacing: 0.12em; text-transform: uppercase; padding-top: 2px; }
+.tasks-view .kv { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 9px 14px; margin: 0; font: 13px/1.4 var(--sans); }
+.tasks-view .kv dt { color: var(--ink-3); font-size: 10.5px; letter-spacing: 0.01em; padding-top: 2px; }
 .tasks-view .kv dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 
 .tasks-view .tk-tl { list-style: none; margin: 0; padding: 0; display: grid; }
 .tasks-view .tk-tl li {
   display: grid; grid-template-columns: 74px minmax(0, 1fr); gap: 10px; padding: 7px 0;
-  border-bottom: 1px dotted var(--rule); font: 12px/1.45 var(--mono); overflow-wrap: anywhere;
+  border-bottom: 1px dotted var(--rule); font: 12px/1.45 var(--sans); overflow-wrap: anywhere;
 }
 .tasks-view .tk-tl time { color: var(--ink-3); font-variant-numeric: tabular-nums; }
 .tasks-view .tk-tl li.k-error span { color: var(--danger); }

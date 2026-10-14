@@ -1,0 +1,18 @@
+{
+  "number": 7,
+  "state": "open",
+  "title": "Crash on empty input",
+  "user": {
+    "login": "hubot",
+    "avatar_url": "https://avatars.githubusercontent.com/u/9?v=4"
+  },
+  "labels": [
+    { "name": "bug", "color": "d73a4a" },
+    { "name": "good first issue", "color": "7057ff" }
+  ],
+  "body": "Steps:\n1. run `tool` with no args\n2. see the panic",
+  "comments": 2,
+  "created_at": "2026-10-01T00:00:00Z",
+  "updated_at": "2026-10-02T00:00:00Z",
+  "closed_at": null
+}

@@ -25,9 +25,12 @@ const dist = join(root, 'dist.next');
 rmSync(dist, { recursive: true, force: true });
 mkdirSync(dist, { recursive: true });
 
-// The fonts (assets/fonts, OFL) sit at the root of dist too: noded serves bare file names only.
+// The faces the console names (styles/tokens.css) sit at the root of dist too: noded serves bare file names only. Inter
+// (woff2, variable, upright and italic) is the interface and reading face; Martian Mono (ttf) is for code. The Source
+// Serif 4 and Inter TTF files in assets/fonts are the desktop's (it embeds them), so the web does not copy them.
 const fontsDir = join(root, '../../assets/fonts');
-for (const file of readdirSync(fontsDir).filter((f) => f.endsWith('.ttf'))) {
+const webFace = /^(MartianMono-.*\.ttf|InterVariable(-Italic)?\.woff2)$/;
+for (const file of readdirSync(fontsDir).filter((f) => webFace.test(f))) {
   copyFileSync(join(fontsDir, file), join(dist, file));
 }
 
@@ -101,7 +104,7 @@ if (existsSync(join(repoRoot, 'crates/apz-ide-web/Cargo.toml'))) {
 const ideStylesheetAsText = {
   name: 'ide-stylesheet-as-text',
   setup(b) {
-    b.onLoad({ filter: /([\\/]styles[\\/]ide(-terminal)?\.css|[\\/]@xterm[\\/]xterm[\\/]css[\\/]xterm\.css)$/ }, (args) => ({
+    b.onLoad({ filter: /([\\/]styles[\\/]ide(-[a-z]+)*\.css|[\\/]@xterm[\\/]xterm[\\/]css[\\/]xterm\.css)$/ }, (args) => ({
       contents: readFileSync(args.path, 'utf8'),
       loader: 'text',
     }));
@@ -121,7 +124,7 @@ const result = await esbuild.build({
   splitting: true,
   plugins: [ideStylesheetAsText],
   // The @font-face urls name the copied font files; leave them as written.
-  external: ['*.ttf'],
+  external: ['*.ttf', '*.woff2'],
   // The engine's fingerprinted glue and wasm names, for the app to import the engine by.
   define: {
     __APZ_ENGINE_JS__: JSON.stringify(engineJsName),
@@ -135,16 +138,16 @@ const result = await esbuild.build({
 });
 
 let jsFile = null;
-let cssFile = null;
 for (const [name, entry] of Object.entries(result.metafile.outputs)) {
   if (entry.entryPoint?.endsWith('main.ts')) jsFile = name;
-  // esbuild emits a sibling CSS bundle for the CSS imported by main.ts.
-  if (!entry.entryPoint && name.endsWith('.css') && entry.imports.length === 0) cssFile = cssFile ?? name;
 }
-// The CSS bundle is named after the importing entry; fall back to any css.
-if (!cssFile) cssFile = Object.keys(result.metafile.outputs).find((n) => n.endsWith('.css'));
-if (!jsFile || !cssFile) {
-  console.error('build: expected one js and one css bundle, got', Object.keys(result.metafile.outputs));
+// The start stylesheet is the main entry's own CSS bundle: esbuild names it on the entry's js output (`cssBundle`). Not the
+// first CSS output: a lazily loaded chunk that imports CSS (the IDE chunk, through ui/markdown.ts) gets a CSS file of its own,
+// and linking that one would leave the console unstyled. Fall back to the output named main-*.css; fail if neither exists.
+let cssFile = (jsFile && result.metafile.outputs[jsFile].cssBundle) || null;
+if (!cssFile) cssFile = Object.keys(result.metafile.outputs).find((n) => basename(n).startsWith('main-') && n.endsWith('.css')) ?? null;
+if (!jsFile || !cssFile || !result.metafile.outputs[cssFile]) {
+  console.error('build: expected the main entry js and its css bundle, got', Object.keys(result.metafile.outputs));
   process.exit(1);
 }
 
