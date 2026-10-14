@@ -134,14 +134,13 @@ pub fn header(frame: &mut Frame, area: Rect, app: &App) {
 pub fn tab_bar(frame: &mut Frame, area: Rect, app: &App) {
     let palette = app.palette;
     let mut spans = Vec::new();
-    for (i, tab) in Tab::ALL.iter().enumerate() {
-        let style = if *tab == app.tab {
+    for tab in Tab::ALL {
+        let style = if tab == app.tab {
             Style::new().fg(palette.paper).bg(palette.accent).add_modifier(Modifier::BOLD)
         } else {
             Style::new().fg(palette.muted)
         };
-        spans.push(Span::styled(format!(" {} {} ", i + 1, tab.label()), style));
-        spans.push(Span::raw(" "));
+        spans.push(Span::styled(format!(" {} {} ", tab.key(), tab.label()), style));
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
@@ -183,9 +182,14 @@ pub fn footer(frame: &mut Frame, area: Rect, app: &App) {
         Line::from(Span::styled(format!(" hub unreachable: {error}"), Style::new().fg(palette.accent)))
     } else if let Some(notice) = &app.notice {
         Line::from(Span::styled(format!(" {notice}"), Style::new().fg(palette.ok)))
+    } else if app.tab == Tab::Workspace {
+        Line::from(Span::styled(
+            " Tab pane · ↑↓ move · / filter · i steer · p post · P pause · E export · o IDE · Enter expand · 0-9 tabs · q quit",
+            Style::new().fg(palette.muted),
+        ))
     } else {
         Line::from(Span::styled(
-            " 1-9 tabs · Tab next · ↑↓ move · Enter details · t message · a/d approve/deny · s stop all · r refresh · ? tour · q quit",
+            " 1-9,0 tabs · Tab next · ↑↓ move · Enter details · t message · a/d approve/deny · s stop all · r refresh · ? tour · q quit",
             Style::new().fg(palette.muted),
         ))
     };

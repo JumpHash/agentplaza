@@ -179,7 +179,7 @@ fn project_arg(project: Option<String>) -> Result<Option<String>, String> {
 }
 
 /// The mentions in a post's text: each `@name` (letters, digits, dots, dashes, underscores), in order, once.
-fn mentions_in(text: &str) -> Vec<String> {
+pub(crate) fn mentions_in(text: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let chars: Vec<char> = text.chars().collect();
     for (i, c) in chars.iter().enumerate() {

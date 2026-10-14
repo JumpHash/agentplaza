@@ -7,6 +7,8 @@ pub mod floor;
 mod app;
 mod onboarding;
 mod screens;
+mod workspace;
+mod workspace_view;
 
 use crate::ctx::{Config, Ctx};
 use onboarding::Stage;
