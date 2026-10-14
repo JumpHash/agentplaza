@@ -3,7 +3,7 @@
 //! else is read. Figures count up, the charts ease between ranges, the flow's dashes run while the
 //! screen is shown, and the series, wallets and journal page through their own tables.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -82,6 +82,8 @@ pub struct State {
     mode: Mode,
     balances: Animated,
     flows: Animated,
+    /// The series (by legend key) turned off in the charts; they stay in the legend, struck through.
+    hidden: BTreeSet<String>,
     counters: Counters,
     series_sort: SeriesSort,
     series_asc: bool,
@@ -116,6 +118,8 @@ pub enum Msg {
     SeriesSort(SeriesSort),
     /// Moves the series table by this many pages.
     SeriesPage(i64),
+    /// Turns a chart series on or off, by its legend key.
+    ToggleKind(String),
     WalletSort(WalletSort),
     BalanceSort(BalanceSort),
     FlowSort(FlowSort),
@@ -409,6 +413,12 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         }
         Msg::SeriesPage(delta) => {
             state.series_page = (state.series_page as i64 + delta).max(0) as usize;
+            Task::none()
+        }
+        Msg::ToggleKind(key) => {
+            if !state.hidden.remove(&key) {
+                state.hidden.insert(key);
+            }
             Task::none()
         }
         Msg::BalanceSort(sort) => {
@@ -705,6 +715,11 @@ fn controls<'a>(state: &State) -> Element<'a, Msg> {
         .into()
 }
 
+/// The series the chart draws: those whose legend key is not turned off.
+fn visible(series: Vec<chart::Series>, hidden: &BTreeSet<String>) -> Vec<chart::Series> {
+    series.into_iter().filter(|s| !hidden.contains(&s.key)).collect()
+}
+
 /// The chart view: balances over time, and the flows per bucket stacked by kind.
 fn charts<'a>(d: &Data, state: &State, now: Instant) -> Vec<Element<'a, Msg>> {
     let labels: Vec<String> = d.points.iter().map(|p| point_label(p.at as i64, state.range.hourly())).collect();
@@ -712,13 +727,18 @@ fn charts<'a>(d: &Data, state: &State, now: Instant) -> Vec<Element<'a, Msg>> {
     let flows = state.flows.current(now);
     let balance_card = ui::card(
         "Balances over time",
-        column![legend(&balances, money, true), chart::stacked_area(balances, labels.clone(), money, "No balances in this range")].spacing(12).into(),
+        column![
+            legend(&balances, &state.hidden, money, true),
+            chart::stacked_area(visible(balances, &state.hidden), labels.clone(), money, "No balances in this range"),
+        ]
+        .spacing(12)
+        .into(),
     );
     let flow_card = ui::card(
         "Flows per bucket",
         column![
-            legend(&flows, money, false),
-            iced::widget::canvas(StackedBars { series: flows, labels }).width(Length::Fill).height(Length::Fixed(220.0)),
+            legend(&flows, &state.hidden, money, false),
+            iced::widget::canvas(StackedBars { series: visible(flows, &state.hidden), labels }).width(Length::Fill).height(Length::Fixed(220.0)),
         ]
         .spacing(12)
         .into(),
@@ -984,18 +1004,19 @@ impl canvas::Program<Msg> for StackedBars {
 }
 
 /// A row of swatches, each series' name and its value: the total over the range, or the last value
-/// when `last` (for balances, which are levels rather than flows).
-fn legend<'a>(series: &[chart::Series], format: fn(f64) -> String, last: bool) -> Element<'a, Msg> {
-    let items: Vec<(Color, String, String)> = series
+/// when `last` (for balances, which are levels rather than flows). Each entry is a toggle: a series in
+/// `hidden` is off in the charts and its entry shows dimmed; a click flips it.
+fn legend<'a>(series: &[chart::Series], hidden: &BTreeSet<String>, format: fn(f64) -> String, last: bool) -> Element<'a, Msg> {
+    let items: Vec<(Color, String, String, bool)> = series
         .iter()
         .map(|s| {
             let total: f64 = if last { s.values.last().copied().unwrap_or(0.0) } else { s.values.iter().sum() };
-            (s.color, s.key.clone(), format(total))
+            (s.color, s.key.clone(), format(total), hidden.contains(&s.key))
         })
         .collect();
     responsive(move |size| {
         // Entries fill a line left to right; an entry that would pass the width starts the next line.
-        let mut lines: Vec<Vec<&(Color, String, String)>> = vec![Vec::new()];
+        let mut lines: Vec<Vec<&(Color, String, String, bool)>> = vec![Vec::new()];
         let mut used = 0.0_f32;
         for item in &items {
             let width = LEGEND_SWATCH + (item.1.chars().count() + item.2.chars().count() + 1) as f32 * MONO11_CHAR;
@@ -1014,21 +1035,31 @@ fn legend<'a>(series: &[chart::Series], format: fn(f64) -> String, last: bool) -
             .filter(|line| !line.is_empty())
             .map(|line| {
                 let mut r = row![].spacing(LEGEND_GAP).align_y(Alignment::Center);
-                for (color, key, value) in line {
-                    let color = *color;
+                for (color, key, value, off) in line {
+                    let (color, off) = (*color, *off);
+                    let p = crate::theme::palette();
+                    // A series turned off shows dimmed: a faded swatch and ink-3 text (iced text has no strike-through).
                     let swatch = container(Space::new().width(10.0).height(10.0)).style(move |_: &Theme| container::Style {
-                        background: Some(color.into()),
+                        background: Some(if off { Color { a: 0.3, ..color } } else { color }.into()),
                         ..Default::default()
                     });
-                    r = r.push(
-                        row![
-                            swatch,
-                            iced::widget::text(key.clone()).font(MONO).size(11.0).color(crate::theme::palette().ink_2).wrapping(Wrapping::None),
-                            iced::widget::text(value.clone()).font(MONO).size(11.0).color(crate::theme::palette().ink).wrapping(Wrapping::None),
-                        ]
-                        .spacing(6)
-                        .align_y(Alignment::Center),
-                    );
+                    let (key_ink, value_ink) = if off { (p.ink_3, p.ink_3) } else { (p.ink_2, p.ink) };
+                    let entry = row![
+                        swatch,
+                        iced::widget::text(key.clone()).font(MONO).size(11.0).color(key_ink).wrapping(Wrapping::None),
+                        iced::widget::text(value.clone()).font(MONO).size(11.0).color(value_ink).wrapping(Wrapping::None),
+                    ]
+                    .spacing(6)
+                    .align_y(Alignment::Center);
+                    let toggle = button(entry)
+                        .padding(0.0)
+                        .style(move |_: &Theme, status: button::Status| button::Style {
+                            background: matches!(status, button::Status::Hovered | button::Status::Pressed).then_some(p.hover).map(Into::into),
+                            text_color: key_ink,
+                            ..Default::default()
+                        })
+                        .on_press(Msg::ToggleKind(key.clone()));
+                    r = r.push(toggle);
                 }
                 r.into()
             })

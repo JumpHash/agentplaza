@@ -244,11 +244,29 @@ const note = (el: HTMLElement, parts: (string | Node)[]): void =>
 const tipOf = (head: string, rows: [string, string][]): HTMLElement =>
   h('div.tr-tip', null, h('b', null, head), ...rows.map(([k, v]) => h('div.tr-tip-row', null, h('span', null, k), h('span.tr-tip-v', null, v))));
 
-/** A sortable table. Clicking a header sorts by it; `foot` is an optional totals row aligned to the columns. */
+/** Rows per page of a series table, as the desktop's. */
+const SERIES_PAGE = 25;
+
+/** Paging for a sortable table: the page shown (0-based), the rows per page, the noun for the count, and the Prev/Next handler. */
+interface Paging { page: number; size: number; unit: string; onPage: (page: number) => void }
+
+/** A sortable table. Clicking a header sorts by it; `foot` is an optional totals row aligned to the columns; `paging` pages the sorted rows under it. */
 interface Col<T> { key: string; label: string; num?: boolean; value: (r: T) => number | string; cell: (r: T) => Node | string }
-function sortable<T>(cols: Col<T>[], rows: T[], sort: Sort, onSort: (s: Sort) => void, foot?: string[]): HTMLElement {
+function sortable<T>(cols: Col<T>[], rows: T[], sort: Sort, onSort: (s: Sort) => void, foot?: string[], paging?: Paging): HTMLElement {
   const col = cols.find((c) => c.key === sort.key) ?? cols[0];
   const sorted = col ? sortRows(rows, (r) => col.value(r), sort.dir) : rows;
+  let shown = sorted;
+  let pager: HTMLElement | null = null;
+  if (paging) {
+    const pages = Math.max(1, Math.ceil(sorted.length / paging.size));
+    const page = Math.min(Math.max(0, paging.page), pages - 1);
+    shown = sorted.slice(page * paging.size, (page + 1) * paging.size);
+    pager = h('div.tr-pager', null,
+      h('span', null, `${sorted.length} ${paging.unit} · page ${page + 1} of ${pages}`),
+      button('Prev', () => paging.onPage(page - 1), { disabled: page === 0 }),
+      button('Next', () => paging.onPage(page + 1), { disabled: page + 1 >= pages }),
+    );
+  }
   const heads = cols.map((c) => {
     const active = c.key === sort.key;
     const th = h('th', { 'aria-sort': active ? (sort.dir > 0 ? 'ascending' : 'descending') : 'none' });
@@ -260,9 +278,10 @@ function sortable<T>(cols: Col<T>[], rows: T[], sort: Sort, onSort: (s: Sort) =>
     th.classList.toggle('num', !!c.num);
     return th;
   });
-  const body = sorted.map((r) => h('tr', null, ...cols.map((c) => h('td', { class: c.num ? 'num' : null }, c.cell(r)))));
+  const body = shown.map((r) => h('tr', null, ...cols.map((c) => h('td', { class: c.num ? 'num' : null }, c.cell(r)))));
   const tfoot = foot ? [h('tfoot', null, h('tr', null, ...foot.map((v, i) => h('td', { class: cols[i]?.num ? 'num' : null }, v))))] : [];
-  return h('table.tr-table', null, h('thead', null, h('tr', null, ...heads)), h('tbody', null, ...body), ...tfoot);
+  const table = h('table.tr-table', null, h('thead', null, h('tr', null, ...heads)), h('tbody', null, ...body), ...tfoot);
+  return pager ? h('div', null, table, pager) : table;
 }
 
 function shareBar(v: number): HTMLElement {
@@ -413,6 +432,8 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
   const hidden = new Set<string>();
   let balSort: Sort = { key: 'at', dir: -1 };
   let flowSort: Sort = { key: 'at', dir: -1 };
+  let balPage = 0;
+  let flowPage = 0;
   let wallSort: Sort = { key: 'balance', dir: -1 };
   const filters = { kind: '', wallet: 0, task: '' };
 
@@ -702,7 +723,10 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
     replace(balanceTable, sortable(cols, s.points, balSort, (next) => {
       balSort = next;
       renderBalanceTable();
-    }));
+    }, undefined, { page: balPage, size: SERIES_PAGE, unit: 'buckets', onPage: (p) => {
+      balPage = p;
+      renderBalanceTable();
+    } }));
   };
 
   const renderFlows = (): void => {
@@ -731,7 +755,10 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
     replace(flowTable, sortable(cols, s.points, flowSort, (next) => {
       flowSort = next;
       renderFlowTable();
-    }, foot));
+    }, foot, { page: flowPage, size: SERIES_PAGE, unit: 'buckets', onPage: (p) => {
+      flowPage = p;
+      renderFlowTable();
+    } }));
   };
 
   const renderDiagram = (): void => {
@@ -873,6 +900,8 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
       if (!alive || mine !== gen) return;
       t = overview;
       series = s;
+      balPage = 0;
+      flowPage = 0;
       usage = u;
       wallets = ws;
       roster = ros;

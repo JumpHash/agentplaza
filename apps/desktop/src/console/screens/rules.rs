@@ -227,6 +227,8 @@ pub enum Msg {
     /// Navigate to another screen.
     Go(Id),
     Loaded(Result<Snapshot, String>),
+    /// "Try again" after a failed load: fetches the screen's data once more.
+    Retry,
     /// An action finished: the line confirming it, or its error.
     Done(Result<String, String>),
     /// A rule was deleted: the editor clears.
@@ -323,6 +325,7 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             state.error = None;
         }
         Msg::Loaded(Err(e)) => state.error = Some(e),
+        Msg::Retry => return load(state, ctx),
         Msg::Done(result) => {
             state.busy = false;
             match result {
@@ -539,17 +542,25 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
     Task::none()
 }
 
+/// An error line beside a "Try again" button that reloads the screen, as the web's failure rows do.
+fn with_retry<'a>(line: Element<'a, Msg>) -> Element<'a, Msg> {
+    row![line, ui::btn("Try again", Some("refresh"), Kind::Secondary, Some(Msg::Retry))]
+        .spacing(12)
+        .align_y(Alignment::Center)
+        .into()
+}
+
 pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
     let now = now_ms();
     let mut body: Vec<Element<'a, Msg>> = vec![container(ui::prose(INTRO)).max_width(620).into()];
     if !state.loaded {
         body.push(match &state.error {
-            Some(e) => ui::error_line(&format!("The rules could not be loaded: {e}")),
+            Some(e) => with_retry(ui::error_line(&format!("The rules could not be loaded: {e}"))),
             None => ui::loading(),
         });
     } else {
         if let Some(e) = &state.error {
-            body.push(ui::error_line(&format!("The rules could not be refreshed: {e}")));
+            body.push(with_retry(ui::error_line(&format!("The rules could not be refreshed: {e}"))));
         }
         if let Some(e) = &state.action_error {
             body.push(ui::error_line(e));

@@ -240,6 +240,8 @@
 .tr-swatch { display: inline-block; width: 10px; height: 10px; }
 .tr-pane { min-width: 0; }
 .tr-tablewrap { overflow-x: auto; }
+.tr-pager { display: flex; align-items: center; gap: 8px; margin-top: 10px; font: 400 12px var(--mono); color: var(--ink-2); }
+.tr-pager > span { margin-right: auto; }
 .tr-table { width: 100%; border-collapse: collapse; font: 400 12.5px var(--mono); font-variant-numeric: tabular-nums; }
 .tr-table th, .tr-table td { padding: 7px 10px; border-bottom: 1px solid var(--rule-faint); text-align: left; white-space: nowrap; }
 .tr-table th.num, .tr-table td.num { text-align: right; }
