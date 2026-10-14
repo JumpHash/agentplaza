@@ -456,6 +456,10 @@ pub struct Node {
     pub hull: Option<Geo>,
     /// `userData.outline === false`: `outline()` leaves it alone.
     pub no_outline: bool,
+    /// A resting object (the web's `userData.rest`): it must stand on what is under it. The ground audit
+    /// (`world::ground_audit`) checks these; hardware parts that are not attached and not decals, the plates' bodies, their
+    /// columns and the rooms carry it.
+    pub rest: bool,
     /// `userData.walk`: robots walk over it (rugs, floor markings): it has no footprint.
     pub walk: bool,
     /// Camera-distance detail: 0 always shown, 1 medium, 2 fine (see [`Lod`]).
@@ -497,6 +501,7 @@ impl Obj {
             anim: None,
             hull: None,
             no_outline: false,
+            rest: false,
             walk: false,
             lod: 0,
             fade: 0,

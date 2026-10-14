@@ -117,6 +117,9 @@ pub struct Camera {
 pub struct Part {
     #[serde(default)]
     pub id: Option<String>,
+    /// Hung on something rather than standing on it (README: the grounding audit exempts it).
+    #[serde(default)]
+    pub attached: bool,
     #[serde(default)]
     pub geo: Option<Geo>,
     #[serde(rename = "use", default)]
@@ -840,6 +843,16 @@ const OUTLINE_MIN: f32 = 0.6;
 /// Parts at or over this bounding radius (in units, scaled) cast and take the sun's shadow (hardware.ts SHADOW_RADIUS).
 const SHADOW_RADIUS: f32 = 2.0;
 
+/// hardware.ts `markFlags`: the part's id is its node's name, and a part that is neither a decal (a plane or a ring) nor
+/// attached rests on what is under it (the ground audit's items).
+fn mark_rest(obj: &Obj, p: &Part) {
+    if let Some(id) = &p.id {
+        obj.set_name(id);
+    }
+    let decal = matches!(p.geo, Some(Geo::Plane { .. } | Geo::Ring { .. }));
+    obj.get().rest = !decal && !p.attached;
+}
+
 /// hardware.ts `shadowsFor`: only the big solids cast and take shadows (a decal, a plane or a ring, never does).
 fn shadows_for(obj: &Obj, part_geo: &Geo, geo: &scene::Geo, scale: Option<&Scale>) {
     if matches!(part_geo, Geo::Plane { .. } | Geo::Ring { .. }) {
@@ -1072,7 +1085,7 @@ impl Builder {
             && p.when.is_none();
         let state = matches!(p.tag.as_deref(), None | Some("status" | "activity" | "screen"));
         let moves = self.dynamic || p.tag.is_some();
-        (plain && state && moves).then(|| format!("{:?}|{:?}|{:?}|{:?}|{:?}", p.geo, p.mat, p.tag, p.detail, p.outline))
+        (plain && state && moves).then(|| format!("{:?}|{:?}|{:?}|{:?}|{:?}|{}", p.geo, p.mat, p.tag, p.detail, p.outline, p.attached))
     }
 
     /// One instanced draw for a run of parts with one key (see `merge_key`): each part's rest pose is its
@@ -1098,6 +1111,7 @@ impl Builder {
             .collect();
         let obj = Obj::instanced(&geo, &mat, instances);
         shadows_for(&obj, g, &geo, first.scale.as_ref());
+        mark_rest(&obj, first);
         obj.get().lod = self.lod_of(first);
         obj.get().fade = self.fade;
         if !first.outline.unwrap_or(!matches!(first.geo, Some(Geo::Plane { .. } | Geo::Ring { .. }))) {
@@ -1178,6 +1192,7 @@ impl Builder {
             .collect();
         let obj = Obj::instanced(&geo, &mat, instances);
         shadows_for(&obj, g, &geo, p.scale.as_ref());
+        mark_rest(&obj, p);
         obj.get().lod = self.lod_of(p);
         obj.get().fade = self.fade;
         if !p.outline.unwrap_or(!matches!(p.geo, Some(Geo::Plane { .. } | Geo::Ring { .. }))) {
@@ -1218,6 +1233,7 @@ impl Builder {
             }
             _ => Obj::group(),
         };
+        mark_rest(&obj, p);
         let rot = p.rot.unwrap_or([0.0; 3]);
         let rest_q = Quat::from_euler(EulerRot::XYZ, rot[0].to_radians(), rot[1].to_radians(), rot[2].to_radians());
         obj.set_position(at.x, at.y, at.z).set_quaternion(rest_q);
