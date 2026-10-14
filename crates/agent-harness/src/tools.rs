@@ -29,9 +29,10 @@ use serde_json::Value;
 use crate::egress;
 use crate::files::{self, Workspace};
 use crate::ide;
+use crate::term;
 
 /// The tools, by name. The `ide_*` tools are the owner's (see [`crate::ide`]); the model never gets them.
-const TOOLS: [Tool; 21] = [
+const TOOLS: [Tool; 27] = [
     Tool {
         name: "echo",
         run: echo,
@@ -115,6 +116,30 @@ const TOOLS: [Tool; 21] = [
     Tool {
         name: "ide_run_stop",
         run: ide::run_stop,
+    },
+    Tool {
+        name: "ide_term_open",
+        run: term::open,
+    },
+    Tool {
+        name: "ide_term_write",
+        run: term::write,
+    },
+    Tool {
+        name: "ide_term_read",
+        run: term::read,
+    },
+    Tool {
+        name: "ide_term_resize",
+        run: term::resize,
+    },
+    Tool {
+        name: "ide_term_close",
+        run: term::close,
+    },
+    Tool {
+        name: "ide_term_list",
+        run: term::list,
     },
 ];
 

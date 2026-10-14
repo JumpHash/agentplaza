@@ -37,7 +37,7 @@
 //! binary must still build, and there it refuses to run rather than pretend to
 //! be a guest harness.
 
-// Safe Rust except `vsock`, the AF_VSOCK syscall boundary `std` lacks.
+// Safe Rust except the two syscall boundaries `std` lacks: `vsock` (AF_VSOCK) and `term` (the PTY calls).
 #![deny(unsafe_code)]
 
 #[cfg(target_os = "linux")]
@@ -68,6 +68,8 @@ mod search_tools;
 mod shells;
 #[cfg(target_os = "linux")]
 mod session;
+#[cfg(target_os = "linux")]
+mod term;
 #[cfg(target_os = "linux")]
 mod tools;
 #[cfg(target_os = "linux")]

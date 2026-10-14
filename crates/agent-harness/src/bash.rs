@@ -119,8 +119,16 @@ pub(crate) enum Privilege {
 /// The caller sets stdout and stderr.
 pub(crate) fn command(program: &str, args: &[&str], dir: &std::path::Path, privilege: Privilege) -> Result<Command, String> {
     let mut builder = Command::new(program);
+    builder.args(args).stdin(Stdio::null()).process_group(0);
+    environment(&mut builder, dir, privilege)?;
+    Ok(builder)
+}
+
+/// The environment and working directory every guest command runs in (see [`command`]), set on
+/// a builder the caller has already made: the terminals ([`crate::term`]) use it too, but make
+/// their own session, so they cannot take the process group [`command`] gives.
+pub(crate) fn environment(builder: &mut Command, dir: &std::path::Path, privilege: Privilege) -> Result<(), String> {
     builder
-        .args(args)
         .current_dir(dir)
         .env_clear()
         .env("HOME", if privilege == Privilege::Root { std::path::Path::new("/root") } else { dir })
@@ -132,15 +140,13 @@ pub(crate) fn command(program: &str, args: &[&str], dir: &std::path::Path, privi
         .env("http_proxy", PROXY_URL)
         .env("https_proxy", PROXY_URL)
         .env("HTTP_PROXY", PROXY_URL)
-        .env("HTTPS_PROXY", PROXY_URL)
-        .stdin(Stdio::null())
-        .process_group(0);
+        .env("HTTPS_PROXY", PROXY_URL);
     // The agent is root in its own VM (the owner's choice): the VM is the boundary, so
     // nothing is dropped. Set `AGENT_RUNS_AS_ROOT` to false to run commands as uid 1000.
     if privilege == Privilege::Agent && !AGENT_RUNS_AS_ROOT && runs_as_root()? {
         builder.uid(UNPRIVILEGED).gid(UNPRIVILEGED);
     }
-    Ok(builder)
+    Ok(())
 }
 
 /// Runs `program args` in `dir` with a cleared environment (the proxy set), output captured

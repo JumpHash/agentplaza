@@ -49,6 +49,7 @@ version = "0.1.0"
 dependencies = [
  "apz-ide",
  "apz-proto",
+ "base64 0.22.1",
  "globset",
  "libc",
  "regex",

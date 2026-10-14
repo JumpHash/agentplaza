@@ -505,9 +505,9 @@ pub fn run_stop(_workspace: &Workspace, args: &Value) -> Result<String, ToolErro
 // ---------------------------------------------------------------------------------------------
 
 /// A path the owner's tools may touch: its cleaned name, and where it is.
-struct Target {
-    rel: String,
-    abs: PathBuf,
+pub(crate) struct Target {
+    pub(crate) rel: String,
+    pub(crate) abs: PathBuf,
 }
 
 /// The entry a listing sorts and pages by: its path, name and kind.
@@ -521,7 +521,7 @@ struct Listed {
 /// Checks `raw` with `lexical`, then the real filesystem: the deepest existing ancestor is
 /// canonicalized and must land inside the canonical workspace root, and the place it lands is
 /// checked with `landed`.
-fn locate(
+pub(crate) fn locate(
     workspace: &Workspace,
     raw: &str,
     lexical: fn(&str) -> Result<String, PathError>,
