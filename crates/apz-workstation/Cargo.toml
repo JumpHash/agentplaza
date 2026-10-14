@@ -46,6 +46,8 @@ windows = { version = "0.58", features = [
     "Win32_Security_Authorization",
     "Win32_System_Threading",
 ] }
+# WinSock for the AF_VSOCK provider a Windows VM reaches its node through (vsock.rs); the workspace already pins it.
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Networking_WinSock"] }
 
 # PipeWire screen capture for the Wayland backend. Building it needs the PipeWire headers and libclang.
 [features]

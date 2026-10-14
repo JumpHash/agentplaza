@@ -207,8 +207,9 @@ A Windows workstation VM runs under QEMU with UEFI, and its disk and network mus
 
 The daemon is installed as a logon task (not a Windows service), so it starts when the owner signs in, in that user's
 session. Windows has no kernel command line, so its daemon uses the node address
-`vsock://2:5101` directly. The Windows daemon has no AF_VSOCK connector yet (`apz-workstation`'s vsock is Linux-only), so
-a Windows VM cannot enrol until one lands; the node side is already the same for both backends.
+`vsock://2:5101` directly. The Windows daemon connects through the viosock provider (`apz-workstation`'s `vsock.rs`: a
+WinSock AF_VSOCK socket, family 40, with the same `SOCKADDR_VM` layout as Linux). A guest without the driver fails with
+a message that names it. The node side is the same for both backends.
 
 ## 11. Phases
 
