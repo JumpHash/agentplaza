@@ -10,7 +10,8 @@
 //!   GET    /v1/stations/link                  (WebSocket, subprotocol apz.station.v1, Bearer station token; public)
 //!   GET    /v1/stations/audit?station=&limit= → [audit row], newest first (every station's when `station` is absent)
 //!   GET    /v1/stations/recordings?station=&limit=&before= → [Recording], newest first (`before` is a start in ms)
-//!   GET    /v1/stations/recordings/{id}       → Recording + `events` (its newest actions, oldest first)
+//!   GET    /v1/stations/recordings/{id}       → Recording + `events` (its newest actions, oldest first) + `frame_times`
+//!                                               ([{seq, ts_ms}] in seq order, the first 20000; [] for a recording without)
 //!   GET    /v1/stations/recordings/{id}/frames/{seq} → the frame's JPEG (seq counts from 1)
 //!   DELETE /v1/stations/recordings/{id}       → {id, deleted} (not while its lease is open)
 //!   GET    /v1/stations/recording-defaults    → RecordingDefaults (for the stations that join from now on)

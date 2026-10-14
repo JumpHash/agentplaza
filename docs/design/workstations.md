@@ -131,7 +131,8 @@ through the hub with an owner token.
   tiles for the first version, H.264 through WebCodecs later. `WS /v1/stations/{id}/control` carries the owner's
   takeover input.
 - Recordings: per lease, screenshots and actions with timestamps, stored as blobs in Garage with an index row in
-  Postgres. Settings on the hub: on or off, retention days, frame rate, and whether to record the owner's takeovers.
+  Postgres, and each frame's capture time in `station_recording_frames`, which playback runs on. Settings on the hub: on or
+  off, retention days, frame rate (1 to 5 a second, the hub's sampler cap), and whether to record the owner's takeovers.
   Edited from the web, the desktop app and the CLI/TUI (`agentplaza stations recordings ...`).
 - Workstation setup on the hub (per workstation, edited from the web, the desktop app and the CLI/TUI): the agent OS
   account (chosen at enrollment), recording on or off and retention, the work folder, snapshot-and-reset for VMs, and

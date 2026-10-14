@@ -279,13 +279,22 @@ fn the_recordings_subcommands_parse() {
         (Some("w1"), Some(5), Some(1700))
     );
     let Cmd::Recordings {
-        action: Some(recordings::Action::Show { id }),
+        action: Some(recordings::Action::Show { id, frames }),
         ..
     } = parsed(&["recordings", "show", "r1"])
     else {
         panic!("show")
     };
     assert_eq!(id, "r1");
+    assert!(!frames, "the frames are listed on request");
+    let Cmd::Recordings {
+        action: Some(recordings::Action::Show { frames, .. }),
+        ..
+    } = parsed(&["recordings", "show", "r1", "--frames"])
+    else {
+        panic!("show --frames")
+    };
+    assert!(frames);
     let Cmd::Recordings {
         action: Some(recordings::Action::Frames { id, out }),
         ..
@@ -324,7 +333,7 @@ fn the_recordings_subcommands_parse() {
         "--retention-days",
         "7",
         "--fps",
-        "0",
+        "1",
         "--record-takeovers",
         "on",
     ])
@@ -336,10 +345,22 @@ fn the_recordings_subcommands_parse() {
         recordings::DefaultsArgs {
             record: Some(OnOff::Off),
             retention_days: Some(7),
-            fps: Some(0),
+            fps: Some(1),
             record_takeovers: Some(OnOff::On),
         }
     );
+    for fps in ["0", "6", "15"] {
+        assert!(
+            parse(&["recordings", "defaults", "set", "--fps", fps]).is_err(),
+            "--fps {fps} is refused: frames are from 1 to 5 a second"
+        );
+    }
+    for fps in ["0", "6"] {
+        assert!(
+            parse(&["settings", "w1", "set", "--fps", fps]).is_err(),
+            "a workstation's --fps {fps} is refused too"
+        );
+    }
     assert!(
         parse(&["recordings", "show"]).is_err(),
         "show names a recording"

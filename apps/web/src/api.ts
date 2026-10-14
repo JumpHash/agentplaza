@@ -483,7 +483,9 @@ export interface StationRecording {
 }
 /** One action of a recording: `summary` is the action as it was asked for. */
 export interface StationRecordingEvent { at_ms: number; kind: string; ok: boolean; summary: unknown }
-export interface StationRecordingDetail extends StationRecording { events: StationRecordingEvent[] }
+/** A frame's capture time: its seq (counts from 1) and when it was captured (epoch ms), in seq order, the first 20000. */
+export interface StationRecordingFrameTime { seq: number; ts_ms: number }
+export interface StationRecordingDetail extends StationRecording { events: StationRecordingEvent[]; frame_times: StationRecordingFrameTime[] }
 /** The hub-wide recording defaults, for the stations that join from now on. */
 export interface RecordingDefaults { record: boolean; retention_days: number; record_fps: number; record_takeovers: boolean }
 

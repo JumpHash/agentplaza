@@ -8,6 +8,7 @@
 //!   <state_dir>/station-audit.jsonl            (newest) and station-audit.1.jsonl, station-audit.2.jsonl
 //!   <state_dir>/station-recordings.jsonl       (newest) and .1, .2: the recordings' index, a put or a delete per line
 //!   <state_dir>/station-recording-events.jsonl (newest) and .1, .2: the recordings' actions
+//!   <state_dir>/station-recording-frames.jsonl (newest) and .1, .2: the capture time of each frame
 //!
 //! The recordings' index is not append-only in Postgres (rows are updated and deleted), so here a line is a write:
 //! the newest line of an id is its state, and a delete line ends it. Listing reads the whole index (it is small: a line
@@ -37,7 +38,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::Infraction;
-use crate::stations::recordings::{Event, Recording};
+use crate::stations::recordings::{Event, FrameTime, Recording};
 use crate::stations::sync::Row;
 
 /// The size at which a file rotates to its first generation.
@@ -50,6 +51,8 @@ pub const STATION_AUDIT_FILE: &str = "station-audit.jsonl";
 pub const STATION_RECORDINGS_FILE: &str = "station-recordings.jsonl";
 /// The recordings' actions in the state directory.
 pub const RECORDING_EVENTS_FILE: &str = "station-recording-events.jsonl";
+/// The capture times of the recordings' frames in the state directory.
+pub const RECORDING_FRAMES_FILE: &str = "station-recording-frames.jsonl";
 /// How much a backwards read takes from the file at a time.
 const CHUNK: u64 = 64 * 1024;
 
@@ -97,6 +100,22 @@ struct EventIn {
     event: Event,
 }
 
+/// One line of the recordings' frames: the recording's id, then the frame's seq, capture time and size.
+#[derive(Serialize)]
+struct FrameOut {
+    recording: String,
+    seq: u64,
+    ts_ms: u64,
+    bytes: u64,
+}
+
+#[derive(Deserialize)]
+struct FrameIn {
+    recording: String,
+    seq: u64,
+    ts_ms: u64,
+}
+
 #[derive(Serialize)]
 struct InfractionOut<'a> {
     id: u64,
@@ -128,6 +147,7 @@ struct Open {
     station_audit: Option<File>,
     station_recordings: Option<File>,
     recording_events: Option<File>,
+    recording_frames: Option<File>,
     /// The next infraction id (read lazily from the tail; ids start at 1, as a bigserial does).
     next_id: Option<u64>,
     /// Appended since the last `sync`.
@@ -178,6 +198,10 @@ impl Files {
 
     fn recording_events_path(&self) -> PathBuf {
         self.dir.join(RECORDING_EVENTS_FILE)
+    }
+
+    fn recording_frames_path(&self) -> PathBuf {
+        self.dir.join(RECORDING_FRAMES_FILE)
     }
 
     /// Appends one transcript record. `Ok(false)` when `seq` is already stored for `cid`.
@@ -428,6 +452,37 @@ impl Files {
         let mut guard = self.lock();
         let open = &mut *guard;
         self.append_audit(&mut open.recording_events, &self.recording_events_path(), &line)
+    }
+
+    /// Appends one frame's capture time to the recordings' frames, and fsyncs it.
+    pub fn put_recording_frame(&self, recording: &str, frame: FrameTime, bytes: u64) -> Result<(), String> {
+        let line = FrameOut { recording: recording.to_string(), seq: frame.seq, ts_ms: frame.ts_ms, bytes };
+        let mut guard = self.lock();
+        let open = &mut *guard;
+        self.append_audit(&mut open.recording_frames, &self.recording_frames_path(), &line)
+    }
+
+    /// The capture times of a recording's frames, in seq order: those with a seq up to `upto` (the frames its index
+    /// counts), at most `limit`. Nothing when the recording is not in the index. A seq written twice keeps its last
+    /// time, as the Postgres upsert does.
+    pub fn recording_frame_times(&self, recording: &str, upto: u64, limit: i64) -> Result<Vec<FrameTime>, String> {
+        let limit = limit.max(0) as usize;
+        let _guard = self.lock();
+        if self.recording_unlocked(recording).map_err(text)?.is_none() {
+            return Ok(Vec::new());
+        }
+        // Newest first, so the first line of a seq is its last write; the seq order then comes from the map.
+        let mut times: BTreeMap<u64, u64> = BTreeMap::new();
+        for file in generations(&self.recording_frames_path()) {
+            for_each_line_rev(&file, self.chunk, |line| {
+                if let Some(row) = serde_json::from_slice::<FrameIn>(line).ok().filter(|row| row.recording == recording && row.seq <= upto) {
+                    times.entry(row.seq).or_insert(row.ts_ms);
+                }
+                true
+            })
+            .map_err(text)?;
+        }
+        Ok(times.into_iter().take(limit).map(|(seq, ts_ms)| FrameTime { seq, ts_ms }).collect())
     }
 
     /// The newest `limit` actions of a recording, oldest first. Nothing when the recording is not in the index (a

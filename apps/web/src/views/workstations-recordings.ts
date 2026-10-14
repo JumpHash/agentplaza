@@ -1,7 +1,8 @@
 // Recordings of a workstation: the list on its page (paged, deletable), the playback of one recording (its frames on a
 // timeline, with the actions it holds marked along it), and the hub-wide recording defaults on the Workstations list.
-// A recording's frames are JPEGs the hub keeps per lease; the hub keeps no time per frame, so the timeline spreads them
-// evenly over the recording (see frameAt in workstations-model.ts).
+// A recording's frames are JPEGs the hub keeps per lease, each with the time it was captured, so the timeline runs on
+// those times (a takeover's gap shows); a recording kept before frames had times spreads them evenly (frameTimes in
+// workstations-model.ts).
 
 import { api, ApiError, type Agent, type RecordingDefaults, type StationRecording, type StationRecordingDetail, type StationRecordingEvent, type StationView } from '../api';
 import { go, href } from '../router';
@@ -16,6 +17,7 @@ import {
   DEFAULT_FPS,
   frameAt,
   frameTime,
+  frameTimes,
   PLAYBACK_SPEEDS,
   readDefaults,
   RETENTION_DAYS,
@@ -181,7 +183,7 @@ export function recordingDefaultsCard(): Section {
   const takeovers = h('input', { type: 'checkbox' });
   const retention = input({ type: 'number', min: RETENTION_DAYS.min, max: RETENTION_DAYS.max, step: 1, inputmode: 'numeric', 'aria-label': 'Keep recordings for, in days' });
   const fps = select(
-    Array.from({ length: DEFAULT_FPS.max - DEFAULT_FPS.min + 1 }, (_, i) => ({ value: String(DEFAULT_FPS.min + i), label: i === 0 ? '0 (actions only)' : String(DEFAULT_FPS.min + i) })),
+    Array.from({ length: DEFAULT_FPS.max - DEFAULT_FPS.min + 1 }, (_, i) => ({ value: String(DEFAULT_FPS.min + i), label: String(DEFAULT_FPS.min + i) })),
   );
   const problem = h('p.error-text');
   const saveButton = button('Save defaults', () => void save(), { kind: 'primary' });
@@ -229,7 +231,7 @@ export function recordingDefaultsCard(): Section {
         h('label.ws-check', null, record, h('span', null, 'Record screen sessions')),
         h('label.ws-check', null, takeovers, h('span', null, "Record the owner's takeovers too")),
         field('Keep recordings for (days)', retention, `${RETENTION_DAYS.min} to ${RETENTION_DAYS.max}. Older recordings are deleted.`),
-        field('Frames per second', fps, 'What a recording keeps. Zero keeps the actions only.'),
+        field('Frames per second', fps, `${DEFAULT_FPS.min} to ${DEFAULT_FPS.max}. What a recording keeps.`),
       ),
       h('div.ws-buttons', null, saveButton),
       problem,
@@ -269,6 +271,8 @@ export function playbackScreen(root: HTMLElement, stationId: string, recordingId
   let shownSeq = 0;
   let spanMs = 0;
   let startMs = 0;
+  // When each frame was kept, in ms into the recording (index seq - 1).
+  let times: number[] = [];
   let events: StationRecordingEvent[] = [];
   let tickTimer: ReturnType<typeof setInterval> | undefined;
   let reloadTimer: ReturnType<typeof setInterval> | undefined;
@@ -328,7 +332,7 @@ export function playbackScreen(root: HTMLElement, stationId: string, recordingId
     scrub.max = String(spanMs);
     scrub.value = String(Math.round(pos));
     const frames = detail?.frames ?? 0;
-    const seq = frameAt(pos, spanMs, frames);
+    const seq = frameAt(pos, times);
     clock.textContent = `${clockText(pos)} / ${clockText(spanMs)}`;
     play.textContent = playing ? 'Pause' : 'Play';
     play.disabled = spanMs === 0 && frames === 0;
@@ -339,7 +343,7 @@ export function playbackScreen(root: HTMLElement, stationId: string, recordingId
     frame.hidden = frames === 0;
     noFrames.hidden = frames > 0;
     noFrames.textContent = detail ? (detail.ended_ms === null && frames === 0 ? 'Waiting for the first frame.' : 'No frames were kept: the actions only.') : '';
-    frameLabel.textContent = frames > 0 ? `Frame ${seq} of ${frames}, at ${clockText(frameTime(seq, spanMs, frames))}` : '';
+    frameLabel.textContent = frames > 0 ? `Frame ${seq} of ${frames}, at ${clockText(frameTime(seq, times))}` : '';
     paintList();
   };
 
@@ -491,8 +495,12 @@ export function playbackScreen(root: HTMLElement, stationId: string, recordingId
     detail = d;
     startMs = d.started_ms;
     events = [...d.events].sort((a, b) => a.at_ms - b.at_ms);
-    const lastAt = events.length ? (events[events.length - 1]?.at_ms ?? null) : null;
+    // An open recording runs to its newest action or frame, whichever is later.
+    const lastFrame = d.frame_times.length ? (d.frame_times[d.frame_times.length - 1]?.ts_ms ?? null) : null;
+    const lastEvent = events.length ? (events[events.length - 1]?.at_ms ?? null) : null;
+    const lastAt = lastFrame === null ? lastEvent : Math.max(lastFrame, lastEvent ?? lastFrame);
     spanMs = recordingSpan(d, lastAt);
+    times = frameTimes(d.frames, spanMs, d.started_ms, d.frame_times);
     if (pos > spanMs) pos = spanMs;
     if (d.ended_ms !== null && reloadTimer !== undefined) {
       clearInterval(reloadTimer);

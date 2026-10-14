@@ -5,7 +5,7 @@
 use postgres::Row;
 
 use super::{Db, sql};
-use crate::stations::recordings::{Event, Recording};
+use crate::stations::recordings::{Event, FrameTime, Recording};
 
 const NO_STORE: &str = "no database and no state directory for the workstation recordings";
 
@@ -120,6 +120,32 @@ impl Db {
             .map(|_| ())
     }
 
+    /// Writes one frame's capture time (table `station_recording_frames`, or the file fallback).
+    pub fn put_recording_frame(&self, recording: &str, frame: FrameTime, bytes: u64) -> Result<(), String> {
+        if let Some(files) = self.file_store() {
+            return files.put_recording_frame(recording, frame, bytes);
+        }
+        if !self.enabled() {
+            return Err(NO_STORE.into());
+        }
+        let (seq, ts_ms, bytes) = (frame.seq as i64, frame.ts_ms as i64, bytes as i64);
+        self.run(|c| c.execute(sql::STATION_RECORDING_FRAME_PUT, &[&recording, &seq, &ts_ms, &bytes])).map(|_| ())
+    }
+
+    /// The capture times of a recording's frames in seq order: those with a seq up to `upto`, at most `limit`.
+    pub fn recording_frame_times(&self, recording: &str, upto: u64, limit: i64) -> Result<Vec<FrameTime>, String> {
+        if let Some(files) = self.file_store() {
+            return files.recording_frame_times(recording, upto, limit);
+        }
+        if !self.enabled() {
+            return Err(NO_STORE.into());
+        }
+        let upto = upto as i64;
+        self.run(|c| c.query(sql::STATION_RECORDING_FRAMES_PAGE, &[&recording, &upto, &limit]))
+            .map(|rows| rows.iter().map(|r| FrameTime { seq: r.get::<_, i64>(0) as u64, ts_ms: r.get::<_, i64>(1) as u64 }).collect())
+            .inspect_err(|e| eprintln!("db: recording frames read failed: {e}"))
+    }
+
     /// The newest `limit` actions of a recording, oldest first.
     pub fn recording_events(&self, recording: &str, limit: i64) -> Result<Vec<Event>, String> {
         if let Some(files) = self.file_store() {
@@ -210,7 +236,23 @@ mod tests {
         assert_eq!(expired("w1", 250), vec![ended.clone(), r2.clone()], "oldest start first");
         assert!(expired("w2", 300).is_empty(), "r3 ended at 300, not before it");
 
+        // Frame times: in seq order, the reads stop at the frames the index counts, a seq written again keeps its last
+        // time, and a recording with no rows has none.
+        let stamps = |rows: Vec<FrameTime>| rows.into_iter().map(|f| (f.seq, f.ts_ms)).collect::<Vec<_>>();
+        assert!(stamps(db.recording_frame_times("r1", 9, 10).unwrap()).is_empty(), "r1 has no frame times yet");
+        for (seq, ts_ms) in [(1, 120), (2, 260), (3, 900)] {
+            db.put_recording_frame("r2", FrameTime { seq, ts_ms }, 10).unwrap();
+        }
+        db.put_recording_frame("r2", FrameTime { seq: 2, ts_ms: 270 }, 11).unwrap();
+        assert_eq!(stamps(db.recording_frame_times("r2", 9, 10).unwrap()), vec![(1, 120), (2, 270), (3, 900)], "seq order, the last write");
+        assert_eq!(stamps(db.recording_frame_times("r2", 2, 10).unwrap()), vec![(1, 120), (2, 270)], "only the frames the index counts");
+        assert_eq!(stamps(db.recording_frame_times("r2", 9, 2).unwrap()), vec![(1, 120), (2, 270)], "the first ones, up to the limit");
+        assert!(db.recording_frame_times("nope", 9, 10).unwrap().is_empty());
+        db.put_recording_frame("r1", FrameTime { seq: 1, ts_ms: 130 }, 5).unwrap();
+        assert_eq!(stamps(db.recording_frame_times("r1", 9, 10).unwrap()), vec![(1, 130)]);
+
         db.delete_recording("r1").unwrap();
+        assert!(db.recording_frame_times("r1", 9, 10).unwrap().is_empty(), "a deleted recording's frame times go with it");
         assert_eq!(db.recording("r1").unwrap(), None);
         assert_eq!(db.recordings(None, None, 10).unwrap(), vec![r2.clone(), r3.clone()]);
         assert!(db.recording_events("r1", 10).unwrap().is_empty(), "a deleted recording's actions are gone");

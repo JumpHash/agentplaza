@@ -23,7 +23,7 @@ import type { FileChange } from '../src/ide/types';
 import { CENTRE_MIN, clampSize, defaultLayout, fitSize, hasDiff, isNarrow, LEFT_SIZE, leftViewFor, leftViewsFor, originFallback, parseLayout, RIGHT_SIZE, rightTabFor, rightTabsFor, runsFor, serializeLayout } from '../src/ide/layout';
 import type { StationFacts, StationLease, StationSettings, StationView } from '../src/api';
 import { auditLabel, codeChip, countdown, displaysText, formLabel, gpuLine, gpuSummary, joinCommand, leaseCount, leaseStateChip, nameProblem, osText, ramText, readSettings, accountBadge, accountText, settingsForm, sortStations, stationSummary, statusChip, takeoverText, type SettingsForm } from '../src/views/workstations-model';
-import { actionFrame, activeAction, backoffMs, bytesText, buttonAction, clockText, controlSocketUrl, crumbsOf, dollarsPerHour, defaultsForm, frameAt, frameTime, framePoint, inputButton, joinPath, keyAction, moveAction, parentDir, parseControlText, parseFrame, parseScreenText, pendingPaths, rateText, readDefaults, readRate, recordingSpan, scrollNotches, screenSocketUrl, sessionChoices, takeoverBanner, treeOf, uploadProblem, wheelAction, actionText, type KeyEventLike } from '../src/views/workstations-model';
+import { actionFrame, activeAction, backoffMs, bytesText, buttonAction, clockText, controlSocketUrl, crumbsOf, dollarsPerHour, defaultsForm, frameAt, frameTime, frameTimes, framePoint, inputButton, joinPath, keyAction, moveAction, parentDir, parseControlText, parseFrame, parseScreenText, pendingPaths, rateText, readDefaults, readRate, recordingSpan, scrollNotches, screenSocketUrl, sessionChoices, takeoverBanner, treeOf, uploadProblem, wheelAction, actionText, type KeyEventLike } from '../src/views/workstations-model';
 import type { StationLease, RecordingDefaults } from '../src/api';
 import type { MachineNode } from '../src/api';
 import { isStationNode, leaseCounts, stationBadge, stationLine, stationMachine, stationThumbnailPath } from '../src/views/station-machine';
@@ -760,14 +760,16 @@ const form = settingsForm(defaults);
 eq(form, { takeover: 'agent_waits', record: true, retention_days: '30', record_fps: '2', record_takeovers: true, work_folder: '~/AgentPlaza', snapshot_reset: false, rate_per_hour: '0' }, 'workstation settings form: the numbers as text');
 eq(readSettings(form), { ok: true, settings: defaults }, 'workstation settings form: the defaults round-trip');
 eq(readSettings({ ...form, work_folder: '  /srv/work  ', retention_days: ' 7 ', record_fps: '1' }), { ok: true, settings: { ...defaults, work_folder: '/srv/work', retention_days: 7, record_fps: 1 } }, 'workstation settings form: trimmed and parsed');
-const edited: SettingsForm = { takeover: 'keep_working_pointer_paused', record: false, retention_days: '365', record_fps: '30', record_takeovers: false, work_folder: 'D:\\work', snapshot_reset: true, rate_per_hour: '1000000' };
-eq(readSettings(edited), { ok: true, settings: { takeover: 'keep_working_pointer_paused', record: false, retention_days: 365, record_fps: 30, record_takeovers: false, work_folder: 'D:\\work', snapshot_reset: true, rate_per_hour: 1000000 } }, 'workstation settings form: every field, at the bounds');
+const edited: SettingsForm = { takeover: 'keep_working_pointer_paused', record: false, retention_days: '365', record_fps: '5', record_takeovers: false, work_folder: 'D:\\work', snapshot_reset: true, rate_per_hour: '1000000' };
+eq(readSettings(edited), { ok: true, settings: { takeover: 'keep_working_pointer_paused', record: false, retention_days: 365, record_fps: 5, record_takeovers: false, work_folder: 'D:\\work', snapshot_reset: true, rate_per_hour: 1000000 } }, 'workstation settings form: every field, at the bounds');
 const refused = (patch: Partial<SettingsForm>): boolean => readSettings({ ...form, ...patch }).ok;
 eq(
   [
     refused({ retention_days: '0' }),
     refused({ retention_days: '1.5' }),
     refused({ retention_days: '3651' }),
+    refused({ record_fps: '0' }),
+    refused({ record_fps: '6' }),
     refused({ record_fps: '31' }),
     refused({ record_fps: '' }),
     refused({ work_folder: '   ' }),
@@ -779,7 +781,7 @@ eq(
     refused({ rate_per_hour: '-1' }),
     refused({ rate_per_hour: '1000001' }),
   ],
-  [false, false, false, false, false, false, false, false, false, false, false, false, false],
+  [false, false, false, false, false, false, false, false, false, false, false, false, false, false, false],
   'workstation settings form: every out-of-bounds value is refused',
 );
 eq(readSettings({ ...form, rate_per_hour: ' 2500 ' }), { ok: true, settings: { ...defaults, rate_per_hour: 2500 } }, 'workstation rate: whole credits, trimmed');
@@ -888,8 +890,20 @@ eq(
 
 eq(recordingSpan({ started_ms: 1000, ended_ms: 5000 }, null), 4000, 'recording span: start to end');
 eq([recordingSpan({ started_ms: 1000, ended_ms: null }, 3000), recordingSpan({ started_ms: 1000, ended_ms: null }, null)], [2000, 0], 'recording span: an open one runs to its last action');
-eq([frameAt(0, 4000, 5), frameAt(4000, 4000, 5), frameAt(2000, 4000, 5), frameAt(-5, 4000, 5), frameAt(9000, 4000, 5), frameAt(10, 4000, 0), frameAt(3000, 0, 1)], [1, 5, 3, 1, 5, 0, 1], 'timeline: the frame on screen at a time, clamped');
-eq([frameTime(3, 4000, 5), frameTime(1, 4000, 5), frameTime(5, 4000, 5), frameTime(1, 4000, 1)], [2000, 0, 4000, 0], 'timeline: a frame\'s time, the inverse of the frame at a time');
+const evenlySpaced = [0, 1000, 2000, 3000, 4000];
+eq([frameAt(0, evenlySpaced), frameAt(4000, evenlySpaced), frameAt(2000, evenlySpaced), frameAt(-5, evenlySpaced), frameAt(9000, evenlySpaced), frameAt(10, []), frameAt(3000, [0])], [1, 5, 3, 1, 5, 0, 1], 'timeline: the frame on screen at a time, clamped');
+eq([frameAt(999, evenlySpaced), frameAt(1000, evenlySpaced)], [1, 2], 'timeline: a frame stays on screen until the next one is kept');
+eq([frameTime(3, evenlySpaced), frameTime(1, evenlySpaced), frameTime(5, evenlySpaced), frameTime(9, evenlySpaced), frameTime(1, [0]), frameTime(1, [])], [2000, 0, 4000, 4000, 0, 0], 'timeline: a frame\'s time, the inverse of the frame at a time');
+// The hub's times: a takeover holds the frames for a while, and the timeline shows the gap.
+eq(frameTimes(5, 8200, 1000, [{ seq: 1, ts_ms: 1000 }, { seq: 2, ts_ms: 1200 }, { seq: 3, ts_ms: 1400 }, { seq: 4, ts_ms: 9000 }, { seq: 5, ts_ms: 9200 }]), [0, 200, 400, 8000, 8200], 'timeline: each frame at its captured time, from the start');
+const gapped = frameTimes(5, 8200, 1000, [{ seq: 1, ts_ms: 1000 }, { seq: 2, ts_ms: 1200 }, { seq: 3, ts_ms: 1400 }, { seq: 4, ts_ms: 9000 }, { seq: 5, ts_ms: 9200 }]);
+eq([frameAt(300, gapped), frameAt(5000, gapped), frameAt(8000, gapped), frameTime(4, gapped)], [2, 3, 4, 8000], 'timeline: the frame kept through a gap is the last before it');
+eq(frameTimes(6, 5000, 0, [{ seq: 1, ts_ms: 0 }, { seq: 2, ts_ms: 1000 }, { seq: 3, ts_ms: 2000 }]), [0, 1000, 2000, 3000, 4000, 5000], 'timeline: frames past the known ones keep the known spacing, and end at the end');
+eq(frameTimes(3, 3000, 0, [{ seq: 3, ts_ms: 2000 }]), [0, 1000, 2000], 'timeline: frames before the first known one are placed back from it');
+eq(frameTimes(3, 1000, 0, [{ seq: 3, ts_ms: 500 }, { seq: 1, ts_ms: 0 }, { seq: 2, ts_ms: 400 }]), [0, 400, 500], 'timeline: the stamps in any order');
+eq(frameTimes(2, 1000, 0, [{ seq: 1, ts_ms: 300 }, { seq: 2, ts_ms: 100 }]), [300, 300], 'timeline: a time never goes back');
+eq([frameTimes(5, 4000, 1000, []), frameTimes(1, 0, 0, []), frameTimes(0, 4000, 0, [])], [[0, 1000, 2000, 3000, 4000], [0], []], 'timeline: without times the frames are spread evenly');
+eq(frameTimes(3, 1000, 0, [{ seq: 7, ts_ms: 1 }, { seq: 0, ts_ms: 1 }]), [0, 500, 1000], 'timeline: a stamp naming no frame of the recording is ignored');
 eq([activeAction([{ at_ms: 1100 }, { at_ms: 1500 }, { at_ms: 3000 }], 1000, 0), activeAction([{ at_ms: 1100 }, { at_ms: 1500 }, { at_ms: 3000 }], 1000, 100), activeAction([{ at_ms: 1100 }, { at_ms: 1500 }, { at_ms: 3000 }], 1000, 600), activeAction([{ at_ms: 1100 }, { at_ms: 1500 }, { at_ms: 3000 }], 1000, 5000)], [-1, 0, 1, 2], 'timeline: the newest action at or before a time');
 eq([clockText(0), clockText(65_000), clockText(3_725_000), clockText(-5)], ['0:00', '1:05', '1:02:05', '0:00'], 'timeline: m:ss, h:mm:ss, never negative');
 eq(actionText({ kind: 'owner_input', summary: { kind: 'type', text: 'hi' } }), 'owner input: text hi', 'actions: the kind, then the fields it was asked with');
@@ -906,9 +920,9 @@ eq([bytesText(0), bytesText(1536), bytesText(10 * 1024 * 1024), bytesText(512 * 
 
 eq([readRate(' 120 '), readRate('1.5'), readRate('1000001'), readRate(''), readRate('0')], [120, null, null, null, 0], 'rate: whole credits from 0 to the bound');
 eq([rateText(0), rateText(1500), dollarsPerHour(12)], ['Free', '$1.500 an hour', '0.012'], 'rate: free, or its dollars an hour');
-const recDefaults: RecordingDefaults = { record: true, retention_days: 30, record_fps: 0, record_takeovers: false };
+const recDefaults: RecordingDefaults = { record: true, retention_days: 30, record_fps: 1, record_takeovers: false };
 eq(readDefaults(defaultsForm(recDefaults)), { ok: true, defaults: recDefaults }, 'recording defaults: the form round-trips');
-eq([readDefaults({ ...defaultsForm(recDefaults), record_fps: '6' }).ok, readDefaults({ ...defaultsForm(recDefaults), retention_days: '0' }).ok], [false, false], 'recording defaults: out-of-bounds values are refused');
+eq([readDefaults({ ...defaultsForm(recDefaults), record_fps: '6' }).ok, readDefaults({ ...defaultsForm(recDefaults), record_fps: '0' }).ok, readDefaults({ ...defaultsForm(recDefaults), retention_days: '0' }).ok], [false, false, false], 'recording defaults: out-of-bounds values are refused, frames a second from 1 to 5');
 sectionEnd('workstation live, recordings and work folder tests: ok');
 
 

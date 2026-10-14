@@ -30,8 +30,8 @@ const MAX_NAME_CHARS: usize = 64;
 const TTL_CHOICES: [u64; 3] = [15, 30, 60];
 /// The bounds the settings form checks before it sends (the hub stores any whole number in them).
 const RETENTION_DAYS: (u64, u64) = (1, 3650);
-/// Frames a recording keeps a second: 0 keeps the actions only; the sampler keeps at most five.
-const RECORD_FPS: (u64, u64) = (0, 5);
+/// Frames a recording keeps a second: from one to five (the sampler keeps at most five).
+const RECORD_FPS: (u64, u64) = (1, 5);
 /// The hourly rate's bound, in plaza credits (1 credit is $0.001): $1000 an hour.
 const RATE_MAX: u64 = 1_000_000;
 /// How often the list's thumbnails are taken again, while the list is shown.

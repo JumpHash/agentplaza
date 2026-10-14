@@ -3,8 +3,9 @@
 //! A lease on a station that records (`StationSettings::record`) gets a recording when it starts (`begin`) and
 //! ends with it (`end`). Its actions are events of the index (`db::recordings`: Postgres, or the state directory
 //! without it). Its frames are JPEG objects in the object store (`deliverables::Store`: Garage, or the state folder
-//! without it) under `recordings/<station>/<recording>/<seq>.jpg`, seq counting from 1. The index row is written when
-//! the recording starts, every `PERSIST_EVERY` frames, and when it ends.
+//! without it) under `recordings/<station>/<recording>/<seq>.jpg`, seq counting from 1. Each frame's capture time is a row
+//! of its own (`db::recordings`: `station_recording_frames`, or the state directory's file), written with the frame.
+//! The index row is written when the recording starts, every `PERSIST_EVERY` frames, and when it ends.
 //!
 //! - The sampler (`spawn_sampler`) grabs a screen frame of each pixel lease that has a recording, at the station's
 //!   `record_fps` (at most `FPS_CAP`; 0 keeps the actions only). A shared lease is the owner's own session, so it is
@@ -45,6 +46,9 @@ pub const TAKEOVER_HOLD_MS: u64 = 15_000;
 const PERSIST_EVERY: u64 = 10;
 /// How many of a recording's actions its detail shows (the newest).
 pub const DETAIL_EVENTS: i64 = 1000;
+/// How many frames' times its detail shows (the first, in seq order). A longer recording's later frames play at the
+/// spacing of the known ones (see the clients' timelines).
+pub const DETAIL_FRAME_TIMES: i64 = 20_000;
 /// How often the sampler looks at the open recordings.
 const SAMPLE_TICK: Duration = Duration::from_millis(100);
 /// How long one frame may take to come back from the station.
@@ -107,6 +111,14 @@ pub struct Recording {
     pub height: Option<u64>,
 }
 
+/// A frame's time: its seq (counting from 1) and when it was captured (epoch ms). A frame kept before frame times were
+/// recorded has none.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FrameTime {
+    pub seq: u64,
+    pub ts_ms: u64,
+}
+
 /// One action of a recording: `kind` is the action's `kind`, and `summary` is the action as it was asked for.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Event {
@@ -116,12 +128,14 @@ pub struct Event {
     pub summary: Value,
 }
 
-/// A recording with its actions, for the owner's detail view.
+/// A recording with its actions and its frames' times, for the owner's detail view. `frame_times` is in seq order and
+/// empty for a recording whose frames have no times (kept before they were recorded).
 #[derive(Debug, Serialize)]
 pub struct Detail {
     #[serde(flatten)]
     pub recording: Recording,
     pub events: Vec<Event>,
+    pub frame_times: Vec<FrameTime>,
 }
 
 /// An open recording: its index row as it stands, and until when the owner drives its session.
@@ -216,10 +230,12 @@ impl Recordings {
         Ok(true)
     }
 
-    /// Stores a frame of the lease's recording, when one is open on `station`, as its next seq. False when none is.
-    /// The object is stored without the lock held (it is a network write); the sampler is the only writer of frames.
+    /// Stores a frame of the lease's recording, when one is open on `station`, as its next seq, captured at `ts_ms`.
+    /// False when none is open. The object and its time are written without the lock held (they are network writes);
+    /// the sampler is the only writer of frames. The time is written before the count moves, so every seq the index
+    /// counts has its row.
     #[allow(clippy::too_many_arguments)]
-    pub fn frame(&self, db: &Db, objects: &dyn Objects, station: &str, lease: &str, jpeg: &[u8], w: u32, h: u32) -> Result<bool, String> {
+    pub fn frame(&self, db: &Db, objects: &dyn Objects, station: &str, lease: &str, jpeg: &[u8], w: u32, h: u32, ts_ms: u64) -> Result<bool, String> {
         let (id, seq) = {
             let guard = self.guard();
             let Some(active) = guard.get(lease).filter(|a| a.rec.station == station) else {
@@ -227,11 +243,17 @@ impl Recordings {
             };
             (active.rec.id.clone(), active.rec.frames + 1)
         };
-        objects.put(&frame_key(station, &id, seq), jpeg)?;
+        let key = frame_key(station, &id, seq);
+        objects.put(&key, jpeg)?;
+        if let Err(reason) = db.put_recording_frame(&id, FrameTime { seq, ts_ms }, jpeg.len() as u64) {
+            let _ = objects.delete(&key);
+            return Err(reason);
+        }
         let mut guard = self.guard();
         let Some(active) = guard.get_mut(lease).filter(|a| a.rec.id == id) else {
-            // The lease ended while the frame was stored: the frame is not part of the recording.
-            let _ = objects.delete(&frame_key(station, &id, seq));
+            // The lease ended while the frame was stored: the frame is not part of the recording. Its time row stays
+            // past the index's count, which the reads do not return.
+            let _ = objects.delete(&key);
             return Ok(false);
         };
         active.rec.frames = seq;
@@ -380,12 +402,13 @@ pub fn on_action(app: &App, station: &str, lease: Option<&str>, summary: &Value,
     }
 }
 
-/// Stores a frame in the lease's recording, when one is open. `jpeg` is the whole image; `w` and `h` its size.
-pub fn on_frame(app: &App, station: &str, lease: Option<&str>, jpeg: &[u8], w: u32, h: u32) {
+/// Stores a frame in the lease's recording, when one is open, captured at `ts_ms`. `jpeg` is the whole image; `w` and
+/// `h` its size.
+pub fn on_frame(app: &App, station: &str, lease: Option<&str>, jpeg: &[u8], w: u32, h: u32, ts_ms: u64) {
     let Some(lease) = lease else {
         return;
     };
-    if let Err(reason) = app.stations.recordings.frame(&app.db, &*app.deliverables, station, lease, jpeg, w, h) {
+    if let Err(reason) = app.stations.recordings.frame(&app.db, &*app.deliverables, station, lease, jpeg, w, h, ts_ms) {
         eprintln!("apid: workstation {station}: a frame of lease {lease} was not recorded: {reason}");
     }
 }
@@ -406,13 +429,14 @@ fn recording(app: &App, id: &str) -> Result<Option<Recording>, String> {
     Ok(app.db.recording(id)?.map(|rec| app.stations.recordings.live(rec)))
 }
 
-/// One recording with its newest actions; None when there is no such recording.
+/// One recording with its newest actions and its frames' times; None when there is no such recording.
 pub fn detail(app: &App, id: &str) -> Result<Option<Detail>, String> {
     let Some(rec) = recording(app, id)? else {
         return Ok(None);
     };
     let events = app.db.recording_events(id, DETAIL_EVENTS)?;
-    Ok(Some(Detail { recording: rec, events }))
+    let frame_times = app.db.recording_frame_times(id, rec.frames, DETAIL_FRAME_TIMES)?;
+    Ok(Some(Detail { recording: rec, events, frame_times }))
 }
 
 /// One frame of a recording, as stored. None when the recording has no frame `seq` (they count from 1).
@@ -446,14 +470,21 @@ pub fn remove(app: &App, id: &str, actor: &str) -> Result<Recording, Failure> {
     Ok(rec)
 }
 
+/// A station's or the defaults' frames per second, refused above what the sampler keeps (`FPS_CAP`). 0 is valid: the
+/// actions only.
+pub fn check_fps(fps: u8) -> Result<(), Failure> {
+    if fps > FPS_CAP {
+        return Err((400, format!("record_fps is 0 to {FPS_CAP}: the hub samples a recording at most that often")));
+    }
+    Ok(())
+}
+
 /// Stores the hub's recording defaults, for the stations that join from now on. A value out of range is refused.
 pub fn set_defaults(app: &App, defaults: RecordingDefaults, actor: &str) -> Result<RecordingDefaults, Failure> {
     if defaults.retention_days > MAX_RETENTION_DAYS {
         return Err((400, format!("retention_days is 0 to {MAX_RETENTION_DAYS}")));
     }
-    if defaults.record_fps > FPS_CAP {
-        return Err((400, format!("record_fps is 0 to {FPS_CAP}")));
-    }
+    check_fps(defaults.record_fps)?;
     let mut settings = app.settings.get();
     settings.workstation_recordings = defaults;
     app.settings.put(settings).map_err(|reason| (400, reason))?;
@@ -501,8 +532,10 @@ fn sample_once(app: &App, last: &mut BTreeMap<String, u64>, now: u64) {
             }
             last.insert(lease.id.clone(), now);
             let grab = Op::Screenshot { session, scale: FRAME_SCALE, grid: false, format: ImageFormat::Jpeg };
+            // The frame's time is the moment its grab is asked for: the station answers at once.
+            let captured = apz_plaza::now_ms();
             match link.request(grab, FRAME_TIMEOUT).and_then(|answer| decode_frame(&answer)) {
-                Ok((jpeg, w, h)) => on_frame(app, &station.id, Some(&lease.id), &jpeg, w, h),
+                Ok((jpeg, w, h)) => on_frame(app, &station.id, Some(&lease.id), &jpeg, w, h, captured),
                 Err(reason) => eprintln!("apid: workstation {}: no frame of lease {}: {reason}", station.id, lease.id),
             }
         }
@@ -635,10 +668,15 @@ mod tests {
         assert!(!recs.action(&db, "w1", "l2", &json!({"kind": "click"}), true, 1100).unwrap(), "no recording for another lease");
         assert!(!recs.action(&db, "w2", "l1", &json!({"kind": "click"}), true, 1100).unwrap(), "not on another station");
 
-        assert!(recs.frame(&db, &objects, "w1", "l1", b"one", 1280, 720).unwrap());
-        assert!(recs.frame(&db, &objects, "w1", "l1", b"four", 1280, 720).unwrap());
+        assert!(recs.frame(&db, &objects, "w1", "l1", b"one", 1280, 720, 1200).unwrap());
+        assert!(recs.frame(&db, &objects, "w1", "l1", b"four", 1280, 720, 1400).unwrap());
         assert_eq!(objects.get(&frame_key("w1", &id, 1)), Ok(b"one".to_vec()), "seq counts from 1");
         assert_eq!(objects.get(&frame_key("w1", &id, 2)), Ok(b"four".to_vec()));
+        assert_eq!(
+            db.recording_frame_times(&id, 10, 10).unwrap(),
+            vec![FrameTime { seq: 1, ts_ms: 1200 }, FrameTime { seq: 2, ts_ms: 1400 }],
+            "each frame's time is kept with it"
+        );
 
         assert_eq!(recs.end(&db, "w2", "l1", 1400).unwrap(), None, "a station cannot end another's lease");
         assert!(recs.is_open("l1"));
@@ -662,7 +700,7 @@ mod tests {
             }
         );
         assert!(!recs.is_open("l1"));
-        assert!(!recs.frame(&db, &objects, "w1", "l1", b"late", 1, 1).unwrap(), "a frame after the end is not kept");
+        assert!(!recs.frame(&db, &objects, "w1", "l1", b"late", 1, 1, 1600).unwrap(), "a frame after the end is not kept");
         assert!(!objects.has(&frame_key("w1", &id, 3)));
 
         assert_eq!(db.recording(&id).unwrap(), Some(ended.clone()));
@@ -697,11 +735,11 @@ mod tests {
         let objects = MemObjects::default();
         let recs = Recordings::default();
         let id = recs.begin(&db, &StationSettings::default(), "w1", &view("l1", 7), 1000).unwrap().unwrap();
-        for _ in 0..PERSIST_EVERY {
-            recs.frame(&db, &objects, "w1", "l1", b"f", 2, 2).unwrap();
+        for n in 0..PERSIST_EVERY {
+            recs.frame(&db, &objects, "w1", "l1", b"f", 2, 2, 1000 + n).unwrap();
         }
         assert_eq!(db.recording(&id).unwrap().map(|r| r.frames), Some(PERSIST_EVERY), "the row has the tenth frame while open");
-        recs.frame(&db, &objects, "w1", "l1", b"f", 2, 2).unwrap();
+        recs.frame(&db, &objects, "w1", "l1", b"f", 2, 2, 2000).unwrap();
         assert_eq!(db.recording(&id).unwrap().map(|r| r.frames), Some(PERSIST_EVERY), "the eleventh is in memory until the next write");
         assert_eq!(recs.live(db.recording(&id).unwrap().unwrap()).frames, PERSIST_EVERY + 1, "the list shows the live count");
         let _ = std::fs::remove_dir_all(&dir);
@@ -724,6 +762,30 @@ mod tests {
     }
 
     #[test]
+    fn a_takeover_gap_shows_in_the_frame_times_and_a_recording_without_rows_has_none() {
+        let dir = state_dir("frame-times");
+        let db = Db::files_only(&dir);
+        let objects = MemObjects::default();
+        let recs = Recordings::default();
+        let id = recs.begin(&db, &StationSettings::default(), "w1", &view("l1", 7), 1000).unwrap().unwrap();
+        // Three frames, then the owner drives for a while (no frames), then two more.
+        for (n, at) in [1000u64, 1200, 1400, 9000, 9200].into_iter().enumerate() {
+            let jpeg = vec![n as u8; 3];
+            assert!(recs.frame(&db, &objects, "w1", "l1", &jpeg, 2, 2, at).unwrap());
+        }
+        recs.end(&db, "w1", "l1", 9500).unwrap();
+        let times = db.recording_frame_times(&id, 5, DETAIL_FRAME_TIMES).unwrap();
+        let stamps: Vec<(u64, u64)> = times.iter().map(|t| (t.seq, t.ts_ms)).collect();
+        assert_eq!(stamps, vec![(1, 1000), (2, 1200), (3, 1400), (4, 9000), (5, 9200)], "seq order, the real times");
+        assert_eq!(db.recording_frame_times(&id, 3, 10).unwrap().len(), 3, "only the frames the index counts");
+        assert_eq!(db.recording_frame_times(&id, 5, 2).unwrap().len(), 2, "the first ones, up to the limit");
+        assert!(db.recording_frame_times("r-without-rows", 5, 10).unwrap().is_empty());
+        db.delete_recording(&id).unwrap();
+        assert!(db.recording_frame_times(&id, 5, 10).unwrap().is_empty(), "a deleted recording has no times");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn decode_frame_reads_a_jpeg_answer_and_refuses_the_rest() {
         let answer = json!({"w": 4, "h": 2, "format": "jpeg", "data_b64": "YWJj"});
         assert_eq!(decode_frame(&answer), Ok((b"abc".to_vec(), 4, 2)));
@@ -738,8 +800,8 @@ mod tests {
         let objects = MemObjects::default();
         let recs = Recordings::default();
         let id = recs.begin(&db, &StationSettings::default(), "w1", &view("l1", 7), 1000).unwrap().unwrap();
-        recs.frame(&db, &objects, "w1", "l1", b"a", 1, 1).unwrap();
-        recs.frame(&db, &objects, "w1", "l1", b"b", 1, 1).unwrap();
+        recs.frame(&db, &objects, "w1", "l1", b"a", 1, 1, 1100).unwrap();
+        recs.frame(&db, &objects, "w1", "l1", b"b", 1, 1, 1200).unwrap();
         recs.action(&db, "w1", "l1", &json!({"kind": "wait"}), true, 1100).unwrap();
 
         assert_eq!(remove_index(&db, &recs, "nope").map_err(|e| e.0), Err(404));
@@ -768,7 +830,7 @@ mod tests {
 
         // a: ended on day 2, past w1's cutoff (day 9 of 10). It has a frame.
         let a = recs.begin(&db, &w1, "w1", &view("la", 1), day(1)).unwrap().unwrap();
-        recs.frame(&db, &objects, "w1", "la", b"frame", 1, 1).unwrap();
+        recs.frame(&db, &objects, "w1", "la", b"frame", 1, 1, day(1)).unwrap();
         recs.end(&db, "w1", "la", day(2)).unwrap();
         // b: ended on day 9.5, inside w1's window.
         let b = recs.begin(&db, &w1, "w1", &view("lb", 1), day(8)).unwrap().unwrap();
@@ -795,6 +857,16 @@ mod tests {
         assert!(db.recording(&d).unwrap().is_some(), "w2 keeps thirty days");
         assert_eq!(sweep_with(&db, &objects, &recs, &stations, day(10)), 0, "a second sweep finds nothing new");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_hub_refuses_a_sampling_rate_above_its_cap_with_a_400() {
+        assert!(check_fps(0).is_ok(), "0 keeps the actions only");
+        assert!(check_fps(FPS_CAP).is_ok());
+        let (status, message) = check_fps(FPS_CAP + 1).unwrap_err();
+        assert_eq!(status, 400);
+        assert!(message.starts_with("record_fps is 0 to 5"), "{message}");
+        assert!(check_fps(u8::MAX).is_err());
     }
 
     #[test]

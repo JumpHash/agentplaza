@@ -181,8 +181,8 @@ pub struct SetArgs {
     /// How many days recordings are kept.
     #[arg(long, value_name = "DAYS")]
     pub retention_days: Option<u32>,
-    /// Frames per second a recording keeps.
-    #[arg(long, value_name = "N")]
+    /// Frames per second a recording keeps, from 1 to 5.
+    #[arg(long, value_name = "N", value_parser = clap::value_parser!(u8).range(1..=5))]
     pub fps: Option<u8>,
     /// Whether the owner's takeovers are recorded too.
     #[arg(long, value_enum)]

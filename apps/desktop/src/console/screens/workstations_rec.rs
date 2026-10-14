@@ -3,7 +3,7 @@
 //! from now on.
 //!
 //!   GET    /v1/stations/recordings?station=&limit=     → [Recording], newest first
-//!   GET    /v1/stations/recordings/{id}                → Recording + `events` (oldest first)
+//!   GET    /v1/stations/recordings/{id}                → Recording + `events` (oldest first) + `frame_times`
 //!   GET    /v1/stations/recordings/{id}/frames/{seq}   → the frame's JPEG (seq counts from 1)
 //!   DELETE /v1/stations/recordings/{id}                → {id, deleted} (not while its lease is open)
 //!   GET    /v1/stations/recording-defaults             → RecordingDefaults
@@ -23,7 +23,8 @@ use super::workstations::{Load, cells, field, mono_text, settle_into, table};
 use crate::console::{Ctx, client, ui};
 use crate::theme;
 
-/// The frames a recording keeps a second at most (the hub's cap for its defaults).
+/// The frames a recording keeps a second: at least one, and at most the hub's sampler keeps (`FPS_CAP`).
+const FPS_MIN: u8 = 1;
 const FPS_CAP: u8 = 5;
 /// The most days a recording is kept: the hub's bounds.
 const RETENTION_DAYS: (u32, u32) = (1, 3650);
@@ -65,13 +66,22 @@ pub struct Event {
     pub summary: Value,
 }
 
-/// A recording with its actions (`GET /v1/stations/recordings/{id}`).
+/// A frame's capture time (`frame_times` of the detail): its seq (counting from 1) and when it was captured (epoch ms).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct FrameStamp {
+    pub seq: u64,
+    pub ts_ms: u64,
+}
+
+/// A recording with its actions and its frames' times (`GET /v1/stations/recordings/{id}`).
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct Detail {
     #[serde(flatten)]
     pub recording: Recording,
     pub events: Vec<Event>,
+    pub frame_times: Vec<FrameStamp>,
 }
 
 /// The recording settings the hub gives the stations that join from now on.
@@ -229,9 +239,10 @@ fn get_bytes(client: &client::Client, path: &str) -> Result<Vec<u8>, String> {
     }
 }
 
-/// The frames the playhead needs and does not have: the frame it is on and the few after it.
-fn fetch_task(ctx: &Ctx, open: &mut Open, frames: u64, duration: u64) -> Task<Msg> {
-    let seq = frame_at(open.pos, duration, frames);
+/// The frames the playhead needs and does not have: the frame it is on and the few after it. `times` is the timeline.
+fn fetch_task(ctx: &Ctx, open: &mut Open, times: &[u64]) -> Task<Msg> {
+    let frames = times.len() as u64;
+    let seq = frame_at(open.pos, times);
     let mut tasks = Vec::new();
     let last = seq.saturating_add(AHEAD).min(frames);
     for want in seq.max(1)..=last {
@@ -256,6 +267,16 @@ fn fetch_task(ctx: &Ctx, open: &mut Open, frames: u64, duration: u64) -> Task<Ms
 /// The recording's length as the page knows it: its frames' span when it is closed, or to now while it is open.
 fn length_of(detail: &Detail) -> u64 {
     duration_ms(&detail.recording, now_ms())
+}
+
+/// The recording's timeline: when each of its frames was kept (see `frame_times`).
+fn timeline(detail: &Detail) -> Vec<u64> {
+    frame_times(
+        detail.recording.frames,
+        length_of(detail),
+        detail.recording.started_ms,
+        &detail.frame_times,
+    )
 }
 
 pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
@@ -289,13 +310,11 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                 return Task::none();
             };
             settle_into(&mut open.detail, result);
-            match &open.detail {
-                Load::Ready(detail) => {
-                    let (frames, duration) = (detail.recording.frames, length_of(detail));
-                    fetch_task(ctx, open, frames, duration)
-                }
-                _ => Task::none(),
-            }
+            let times = match &open.detail {
+                Load::Ready(detail) => timeline(detail),
+                _ => return Task::none(),
+            };
+            fetch_task(ctx, open, &times)
         }
         Msg::Close => {
             state.open = None;
@@ -456,11 +475,11 @@ fn fetch_task_for(ctx: &Ctx, state: &mut State) -> Task<Msg> {
     let Some(open) = state.open.as_mut() else {
         return Task::none();
     };
-    let Load::Ready(detail) = &open.detail else {
-        return Task::none();
+    let times = match &open.detail {
+        Load::Ready(detail) => timeline(detail),
+        _ => return Task::none(),
     };
-    let (frames, duration) = (detail.recording.frames, length_of(detail));
-    fetch_task(ctx, open, frames, duration)
+    fetch_task(ctx, open, &times)
 }
 
 /// The playback's clock: only while a recording plays.
@@ -485,10 +504,8 @@ pub fn defaults_of(form: &DefaultsForm) -> Result<Defaults, String> {
             RETENTION_DAYS.0, RETENTION_DAYS.1
         )
     })?;
-    let fps = whole_in(&form.fps, (0, FPS_CAP as u64)).ok_or_else(|| {
-        format!(
-            "Frames per second is a whole number from 0 to {FPS_CAP}. 0 keeps the actions only."
-        )
+    let fps = whole_in(&form.fps, (FPS_MIN as u64, FPS_CAP as u64)).ok_or_else(|| {
+        format!("Frames per second is a whole number from {FPS_MIN} to {FPS_CAP}.")
     })?;
     Ok(Defaults {
         record: form.record,
@@ -514,22 +531,84 @@ pub fn duration_ms(rec: &Recording, now: u64) -> u64 {
     rec.ended_ms.unwrap_or(now).saturating_sub(rec.started_ms)
 }
 
-/// The frame (counting from 1) on screen at `pos` ms. Frame k is taken at `(k - 1) * duration / frames`, so the
-/// frames are spread evenly over the recording; the last frame holds to the end.
-pub fn frame_at(pos: u64, duration: u64, frames: u64) -> u64 {
+/// When each of `frames` frames was kept, in ms from the start: index `seq - 1` of the result. The hub keeps each
+/// frame's time (`stamps`, in any order), so those are the real times. A frame without one (the stamps stop at the
+/// hub's cap, or a recording kept before frames had times) is placed between the known ones, or past the last at their
+/// average spacing, and never after the end. With no stamps the frames are spread evenly over the duration. A time
+/// never goes back.
+pub fn frame_times(frames: u64, duration: u64, started_ms: u64, stamps: &[FrameStamp]) -> Vec<u64> {
     if frames == 0 {
-        return 0;
+        return Vec::new();
     }
-    let k = (u128::from(pos) * u128::from(frames) / u128::from(duration.max(1))) as u64 + 1;
-    k.min(frames)
+    let n = frames as usize;
+    // The known frames in seq order, as (seq, ms from the start); a seq named twice keeps its first.
+    let mut stamped: Vec<FrameStamp> = stamps
+        .iter()
+        .copied()
+        .filter(|s| (1..=frames).contains(&s.seq))
+        .collect();
+    stamped.sort_by_key(|s| s.seq);
+    let mut known: Vec<(u64, f64)> = Vec::new();
+    for s in stamped {
+        if known.last().is_none_or(|(seq, _)| *seq < s.seq) {
+            known.push((s.seq, s.ts_ms.saturating_sub(started_ms) as f64));
+        }
+    }
+    if known.is_empty() {
+        return (0..n as u64)
+            .map(|i| (u128::from(i) * u128::from(duration) / u128::from(frames)) as u64)
+            .collect();
+    }
+    let end = duration as f64;
+    let (first, last) = (known[0], known[known.len() - 1]);
+    // The spacing of the known frames, for the ones past their ends (or the even spacing when only one is known).
+    let step = if known.len() >= 2 {
+        (last.1 - first.1) / (last.0 - first.0) as f64
+    } else {
+        end / frames as f64
+    };
+    let cap = end.max(last.1);
+    let mut out = Vec::with_capacity(n);
+    let mut prev_time = 0.0_f64;
+    // `k` is the first known frame at or after `seq`: one pass over the frames.
+    let mut k = 0;
+    for seq in 1..=frames {
+        while k < known.len() && known[k].0 < seq {
+            k += 1;
+        }
+        let after = known.get(k).copied();
+        let before = k.checked_sub(1).map(|j| known[j]);
+        let at = match (after, before) {
+            (Some((s, at)), _) if s == seq => at,
+            (Some((s, at)), Some((p, pat))) => {
+                pat + (seq - p) as f64 * (at - pat) / (s - p) as f64
+            }
+            (None, Some((p, pat))) => pat + (seq - p) as f64 * step,
+            (Some((s, at)), None) => at - (s - seq) as f64 * step,
+            (None, None) => 0.0,
+        };
+        let time = at.clamp(0.0, cap).max(prev_time);
+        prev_time = time;
+        out.push(time.round() as u64);
+    }
+    out
 }
 
-/// When frame `seq` (counting from 1) was taken, in ms from the start.
-pub fn frame_time(seq: u64, duration: u64, frames: u64) -> u64 {
-    if frames == 0 {
+/// The frame (counting from 1) on screen at `pos` ms: the last one kept by then, the first before it. 0 with no frames.
+pub fn frame_at(pos: u64, times: &[u64]) -> u64 {
+    if times.is_empty() {
         return 0;
     }
-    (u128::from(seq.saturating_sub(1)) * u128::from(duration) / u128::from(frames)) as u64
+    times.partition_point(|t| *t <= pos).max(1) as u64
+}
+
+/// When frame `seq` (counting from 1) was kept, in ms from the start. 0 with no frames.
+pub fn frame_time(seq: u64, times: &[u64]) -> u64 {
+    if times.is_empty() {
+        return 0;
+    }
+    let index = seq.clamp(1, times.len() as u64) - 1;
+    times[index as usize]
 }
 
 /// The playhead after `elapsed_ms` of playing at `speed`, stopped at the end.
@@ -644,7 +723,7 @@ fn detail_view<'a>(
     } else {
         open.pos as f64 / duration as f64
     };
-    let seq = frame_at(open.pos, duration, rec.frames);
+    let seq = frame_at(open.pos, &timeline(detail));
     let agent = names
         .get(&rec.agent)
         .cloned()
@@ -818,7 +897,7 @@ fn form_view(state: &State) -> Element<'_, Msg> {
             field(
                 "Frames per second",
                 fps.into(),
-                &format!("0 to {FPS_CAP}. 0 keeps the actions only."),
+                &format!("{FPS_MIN} to {FPS_CAP}."),
             ),
         ]
         .spacing(16)
@@ -873,25 +952,105 @@ mod tests {
     }
 
     #[test]
-    fn frames_are_spread_evenly_and_the_playhead_finds_its_frame() {
-        // Ten frames over ten seconds: frame k is at (k - 1) seconds.
-        assert_eq!(frame_at(0, 10_000, 10), 1);
-        assert_eq!(frame_at(999, 10_000, 10), 1);
-        assert_eq!(frame_at(1_000, 10_000, 10), 2);
-        assert_eq!(frame_at(9_999, 10_000, 10), 10);
+    fn frames_without_hub_times_are_spread_evenly_and_the_playhead_finds_its_frame() {
+        // Ten frames over ten seconds, no times from the hub: frame k is at (k - 1) seconds.
+        let times = frame_times(10, 10_000, 0, &[]);
+        assert_eq!(times, (0..10).map(|k| k * 1_000).collect::<Vec<u64>>());
+        assert_eq!(frame_at(0, &times), 1);
+        assert_eq!(frame_at(999, &times), 1);
+        assert_eq!(frame_at(1_000, &times), 2);
+        assert_eq!(frame_at(9_999, &times), 10);
+        assert_eq!(frame_at(10_000, &times), 10, "the end holds the last frame");
+        assert_eq!(frame_time(1, &times), 0);
+        assert_eq!(frame_time(4, &times), 3_000);
         assert_eq!(
-            frame_at(10_000, 10_000, 10),
-            10,
-            "the end holds the last frame"
-        );
-        assert_eq!(frame_time(1, 10_000, 10), 0);
-        assert_eq!(frame_time(4, 10_000, 10), 3_000);
-        assert_eq!(
-            frame_at(frame_time(7, 10_000, 10), 10_000, 10),
+            frame_at(frame_time(7, &times), &times),
             7,
             "a frame's own time is that frame"
         );
-        assert_eq!(frame_at(500, 10_000, 0), 0, "no frames, no frame");
+        assert_eq!(frame_at(500, &[]), 0, "no frames, no frame");
+        assert_eq!(frame_time(3, &[]), 0);
+    }
+
+    #[test]
+    fn the_hubs_frame_times_place_each_frame_and_a_takeover_gap_shows() {
+        let stamps = [
+            FrameStamp { seq: 1, ts_ms: 1_000 },
+            FrameStamp { seq: 2, ts_ms: 1_200 },
+            FrameStamp { seq: 3, ts_ms: 1_400 },
+            // The owner drove the session from 1.4 s to 9 s: no frames then.
+            FrameStamp { seq: 4, ts_ms: 9_000 },
+            FrameStamp { seq: 5, ts_ms: 9_200 },
+        ];
+        let times = frame_times(5, 8_200, 1_000, &stamps);
+        assert_eq!(times, vec![0, 200, 400, 8_000, 8_200]);
+        assert_eq!(frame_at(300, &times), 2);
+        assert_eq!(
+            frame_at(5_000, &times),
+            3,
+            "the frame kept before the takeover holds through it"
+        );
+        assert_eq!(frame_at(8_000, &times), 4);
+        assert_eq!(frame_time(4, &times), 8_000);
+    }
+
+    #[test]
+    fn frames_without_their_own_time_keep_the_spacing_and_stay_in_the_recording() {
+        let stamps = [
+            FrameStamp { seq: 1, ts_ms: 0 },
+            FrameStamp { seq: 2, ts_ms: 1_000 },
+            FrameStamp { seq: 3, ts_ms: 2_000 },
+        ];
+        assert_eq!(
+            frame_times(6, 5_000, 0, &stamps),
+            vec![0, 1_000, 2_000, 3_000, 4_000, 5_000],
+            "past the known ones, at their spacing, to the end"
+        );
+        assert_eq!(
+            frame_times(3, 3_000, 0, &[FrameStamp { seq: 3, ts_ms: 2_000 }]),
+            vec![0, 1_000, 2_000],
+            "before the first known one, placed back from it"
+        );
+        assert_eq!(
+            frame_times(
+                3,
+                1_000,
+                0,
+                &[
+                    FrameStamp { seq: 3, ts_ms: 500 },
+                    FrameStamp { seq: 1, ts_ms: 0 },
+                    FrameStamp { seq: 2, ts_ms: 400 },
+                ]
+            ),
+            vec![0, 400, 500],
+            "the stamps in any order"
+        );
+        assert_eq!(
+            frame_times(
+                2,
+                1_000,
+                0,
+                &[
+                    FrameStamp { seq: 1, ts_ms: 300 },
+                    FrameStamp { seq: 2, ts_ms: 100 },
+                ]
+            ),
+            vec![300, 300],
+            "a time never goes back"
+        );
+        assert_eq!(
+            frame_times(
+                3,
+                1_000,
+                0,
+                &[
+                    FrameStamp { seq: 7, ts_ms: 1 },
+                    FrameStamp { seq: 0, ts_ms: 1 },
+                ]
+            ),
+            vec![0, 333, 666],
+            "a stamp naming no frame is ignored"
+        );
     }
 
     #[test]
@@ -943,6 +1102,14 @@ mod tests {
             defaults_of(&too_fast).is_err(),
             "the hub caps frames at five a second"
         );
+        let actions_only = DefaultsForm {
+            fps: "0".into(),
+            ..form.clone()
+        };
+        assert!(
+            defaults_of(&actions_only).is_err(),
+            "frames are from one a second"
+        );
         let no_days = DefaultsForm {
             retention: "".into(),
             ..form.clone()
@@ -965,5 +1132,25 @@ mod tests {
             serde_json::from_value(serde_json::json!({"id": "r2"})).expect("a partial one too");
         assert_eq!(partial.ended_ms, None);
         assert_eq!(partial.frames, 0);
+    }
+
+    #[test]
+    fn a_detail_parses_its_frame_times_and_an_older_one_has_none() {
+        let detail: Detail = serde_json::from_value(serde_json::json!({
+            "id": "r1", "frames": 2, "started_ms": 10,
+            "events": [], "frame_times": [{"seq": 1, "ts_ms": 15}, {"seq": 2, "ts_ms": 40}]
+        }))
+        .expect("a detail with times parses");
+        assert_eq!(detail.recording.frames, 2);
+        assert_eq!(
+            detail.frame_times,
+            vec![
+                FrameStamp { seq: 1, ts_ms: 15 },
+                FrameStamp { seq: 2, ts_ms: 40 }
+            ]
+        );
+        let older: Detail = serde_json::from_value(serde_json::json!({"id": "r0", "frames": 3}))
+            .expect("an older detail parses");
+        assert!(older.frame_times.is_empty());
     }
 }

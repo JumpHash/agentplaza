@@ -2,6 +2,7 @@
 //! one recording with its actions, its frames as numbered JPEGs, its deletion, and the defaults a station that joins
 //! from now on takes (`/v1/stations/recording-defaults`).
 
+use std::collections::BTreeMap;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
@@ -21,15 +22,20 @@ const LIST_HEAD: [&str; 9] = [
     "id", "station", "agent", "started", "ended", "frames", "actions", "size", "takeover",
 ];
 const EVENT_HEAD: [&str; 4] = ["at", "kind", "ok", "summary"];
+const FRAME_HEAD: [&str; 3] = ["seq", "at", "captured"];
 
 #[derive(Subcommand, Debug)]
 pub enum Action {
-    /// One recording: its details and its newest actions.
+    /// One recording: its details and its newest actions. --frames lists each frame's time too.
     Show {
         /// The recording's id (from `agentplaza stations recordings`).
         id: String,
+        /// List every frame with the time it was captured.
+        #[arg(long)]
+        frames: bool,
     },
-    /// Download every frame as a numbered JPEG (frame-00001.jpg, ...) into a folder.
+    /// Download every frame as a numbered JPEG into a folder: frame-00001-<ms>.jpg, the number and the time the frame
+    /// was captured (epoch ms), or frame-00001.jpg for a frame kept before frames had times.
     Frames {
         /// The recording's id.
         id: String,
@@ -67,8 +73,8 @@ pub struct DefaultsArgs {
     /// How many days ended recordings are kept.
     #[arg(long, value_name = "DAYS")]
     pub retention_days: Option<u32>,
-    /// Frames per second a pixel lease keeps (0: actions only; at most 5).
-    #[arg(long, value_name = "N")]
+    /// Frames per second a pixel lease keeps, from 1 to 5.
+    #[arg(long, value_name = "N", value_parser = clap::value_parser!(u8).range(1..=5))]
     pub fps: Option<u8>,
     /// Whether the owner's takeovers of a session are recorded too.
     #[arg(long, value_enum)]
@@ -119,7 +125,7 @@ pub fn run(
 
 fn act(ctx: &Ctx, action: Action) -> Result<(), String> {
     match action {
-        Action::Show { id } => show(ctx, &id),
+        Action::Show { id, frames } => show(ctx, &id, frames),
         Action::Frames { id, out } => frames(ctx, &id, &out),
         Action::Delete { id, yes } => delete(ctx, &id, yes),
         Action::Defaults { action: None } => defaults_show(ctx),
@@ -148,7 +154,7 @@ fn list(ctx: &Ctx, station: Option<&str>, limit: u32, before: Option<u64>) -> Re
     Ok(())
 }
 
-fn show(ctx: &Ctx, id: &str) -> Result<(), String> {
+fn show(ctx: &Ctx, id: &str, frames: bool) -> Result<(), String> {
     let detail = ctx
         .client
         .get(&format!("/v1/stations/recordings/{}", seg(id)))?;
@@ -157,6 +163,15 @@ fn show(ctx: &Ctx, id: &str) -> Result<(), String> {
         println!("\nactions");
         let rows: Vec<Vec<String>> = items(&d["events"]).iter().map(event_row).collect();
         ctx::table(&EVENT_HEAD, &rows);
+        if frames {
+            println!("\nframes");
+            let rows = frame_rows(d);
+            if rows.is_empty() {
+                println!("no frame times: none kept, or kept before frames had times");
+            } else {
+                ctx::table(&FRAME_HEAD, &rows);
+            }
+        }
     });
     Ok(())
 }
@@ -168,13 +183,14 @@ fn frames(ctx: &Ctx, id: &str, out: &Path) -> Result<(), String> {
     let total = detail["frames"].as_u64().unwrap_or(0);
     std::fs::create_dir_all(out).map_err(|e| format!("{}: {e}", out.display()))?;
     let width = frame_width(total);
+    let stamps = frame_stamps(&detail);
     let tty = std::io::stderr().is_terminal();
     for seq in 1..=total {
         let bytes = get_bytes(
             ctx,
             &format!("/v1/stations/recordings/{}/frames/{seq}", seg(id)),
         )?;
-        let path = out.join(frame_name(seq, width));
+        let path = out.join(frame_file_name(seq, width, stamps.get(&seq).copied()));
         std::fs::write(&path, &bytes).map_err(|e| format!("{}: {e}", path.display()))?;
         if tty {
             eprint!("\r  frame {seq}/{total}");
@@ -263,6 +279,49 @@ pub fn frame_width(total: u64) -> usize {
 /// The file name of frame `seq` (counted from 1), zero-padded to `width`.
 pub fn frame_name(seq: u64, width: usize) -> String {
     format!("frame-{seq:0width$}.jpg")
+}
+
+/// The file name of a frame with its capture time (epoch ms) when the hub has it, so the names say when each frame was
+/// kept; otherwise the plain numbered name.
+pub fn frame_file_name(seq: u64, width: usize, captured_ms: Option<u64>) -> String {
+    match captured_ms {
+        Some(ms) => format!("frame-{seq:0width$}-{ms}.jpg"),
+        None => frame_name(seq, width),
+    }
+}
+
+/// The capture time of each frame the detail carries (`frame_times`), by seq.
+pub fn frame_stamps(detail: &Value) -> BTreeMap<u64, u64> {
+    items(&detail["frame_times"])
+        .iter()
+        .filter_map(|f| Some((f["seq"].as_u64()?, f["ts_ms"].as_u64()?)))
+        .collect()
+}
+
+/// One frame's cells: its seq, its time into the recording, and when it was captured.
+pub fn frame_rows(detail: &Value) -> Vec<Vec<String>> {
+    let started = detail["started_ms"].as_u64().unwrap_or(0);
+    items(&detail["frame_times"])
+        .iter()
+        .map(|f| {
+            let ts = f["ts_ms"].as_u64().unwrap_or(0);
+            vec![
+                ctx::text(f, "seq"),
+                offset_text(ts.saturating_sub(started)),
+                ctx::when(&f["ts_ms"]),
+            ]
+        })
+        .collect()
+}
+
+/// A time into a recording as `m:ss.mmm`, or `h:mm:ss.mmm` past an hour.
+pub fn offset_text(ms: u64) -> String {
+    let (h, m, s, milli) = (ms / 3_600_000, ms % 3_600_000 / 60_000, ms % 60_000 / 1000, ms % 1000);
+    if h > 0 {
+        format!("{h}:{m:02}:{s:02}.{milli:03}")
+    } else {
+        format!("{m}:{s:02}.{milli:03}")
+    }
 }
 
 /// One recording's cells: id, station, agent, start, end (or "open"), frames, actions, size and takeover.
@@ -366,6 +425,35 @@ mod tests {
     }
 
     #[test]
+    fn a_frame_file_names_its_capture_time_when_the_hub_has_it() {
+        assert_eq!(frame_file_name(3, 5, Some(1_700_000_000_123)), "frame-00003-1700000000123.jpg");
+        assert_eq!(frame_file_name(3, 5, None), "frame-00003.jpg", "a frame without a time keeps the plain name");
+    }
+
+    #[test]
+    fn the_frame_times_read_as_offsets_into_the_recording() {
+        let detail = json!({
+            "started_ms": 1000,
+            "frame_times": [{"seq": 1, "ts_ms": 1000}, {"seq": 2, "ts_ms": 1500}, {"seq": 3, "ts_ms": 66_250}]
+        });
+        let stamps = frame_stamps(&detail);
+        assert_eq!(stamps.get(&2), Some(&1500));
+        assert_eq!(stamps.len(), 3);
+        let rows = frame_rows(&detail);
+        assert_eq!(rows[0][0], "1");
+        assert_eq!(rows[1][1], "0:00.500");
+        assert_eq!(rows[2][1], "1:05.250");
+        assert!(frame_stamps(&json!({"frame_times": []})).is_empty(), "an older recording has none");
+        assert!(frame_rows(&json!({})).is_empty());
+    }
+
+    #[test]
+    fn an_offset_reads_in_minutes_then_hours() {
+        assert_eq!(offset_text(0), "0:00.000");
+        assert_eq!(offset_text(3_725_004), "1:02:05.004");
+    }
+
+    #[test]
     fn the_list_limit_is_the_hubs_range() {
         assert!(check_limit(1).is_ok());
         assert!(check_limit(200).is_ok());
@@ -383,12 +471,12 @@ mod tests {
         };
         let set = DefaultsArgs {
             record: Some(OnOff::Off),
-            fps: Some(0),
+            fps: Some(4),
             ..DefaultsArgs::default()
         };
         let merged = merged_defaults(current, &set);
         assert!(!merged.record);
-        assert_eq!(merged.record_fps, 0, "0 keeps actions only");
+        assert_eq!(merged.record_fps, 4, "the frames a second the flag names");
         assert_eq!(merged.retention_days, 30);
         assert!(merged.record_takeovers);
         let takeovers_off = DefaultsArgs {

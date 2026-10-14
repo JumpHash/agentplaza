@@ -114,7 +114,7 @@ fn settings_of_trims_the_folder_and_checks_each_bound() {
         );
     }
     form.retention_days = "30".to_string();
-    for bad in ["6", "31", "x", ""] {
+    for bad in ["0", "6", "31", "x", ""] {
         form.record_fps = bad.to_string();
         assert!(
             settings_of(&form)
@@ -123,8 +123,8 @@ fn settings_of_trims_the_folder_and_checks_each_bound() {
             "accepted fps {bad:?}"
         );
     }
-    form.record_fps = "0".to_string();
-    assert!(settings_of(&form).is_ok(), "0 keeps the actions only");
+    form.record_fps = "1".to_string();
+    assert!(settings_of(&form).is_ok(), "one frame a second is the least");
 }
 
 #[test]

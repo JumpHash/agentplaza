@@ -168,6 +168,7 @@ pub fn rename(app: &App, id: &str, name: &str, actor: &str) -> Result<Station, F
 /// Stores a station's settings and pushes them to its live link. The answer says whether the push landed: a
 /// station that is not linked gets them when it links.
 pub fn put_settings(app: &App, id: &str, settings: StationSettings, actor: &str) -> Result<Value, Failure> {
+    recordings::check_fps(settings.record_fps)?;
     app.stations.set_settings(id, settings.clone()).map_err(|e| (404, e))?;
     let (pushed, push_error) = push_settings(app, id, &settings);
     audit(app, Some(id), None, "settings", actor, json!({"settings": settings})).map_err(server_error)?;

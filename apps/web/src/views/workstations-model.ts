@@ -32,9 +32,10 @@ export const MAX_NAME_CHARS = 64;
 export const TTL_OPTIONS = [15, 30, 60] as const;
 /** The bounds the settings form checks before it sends (the hub stores any u8 and u32). */
 export const RETENTION_DAYS = { min: 1, max: 3650 } as const;
-export const RECORD_FPS = { min: 1, max: 30 } as const;
-/** The frames a recording keeps a second, for the hub-wide defaults (the hub's sampler keeps at most 5). */
-export const DEFAULT_FPS = { min: 0, max: 5 } as const;
+/** The frames a recording keeps a second, for a workstation and the hub-wide defaults: the hub's sampler keeps at most 5. */
+export const RECORD_FPS = { min: 1, max: 5 } as const;
+/** The hub-wide defaults' frames a second: the same bounds as a workstation's. */
+export const DEFAULT_FPS = RECORD_FPS;
 export const WORK_FOLDER_MAX = 512;
 /** The most credits an hour a workstation may cost (a bound of the form: 1,000,000 credits is $1,000 an hour). */
 export const RATE_MAX = 1_000_000;
@@ -428,21 +429,71 @@ export function recordingSpan(rec: { started_ms: number; ended_ms: number | null
   return Math.max(0, end - rec.started_ms);
 }
 
-/**
- * The frame on screen (1-based) at `rel` ms into a recording of `span` ms that kept `frames` frames. The hub keeps no
- * time per frame, so the frames are taken to be spread evenly from the start to the end. 0 with no frames.
- */
-export function frameAt(rel: number, span: number, frames: number): number {
-  if (frames <= 0) return 0;
-  if (frames === 1 || span <= 0) return 1;
-  const k = Math.round((clamp(rel, 0, span) / span) * (frames - 1)) + 1;
-  return clamp(k, 1, frames);
+/** A frame's capture time as the hub keeps it: its seq (1-based) and when it was captured (epoch ms). */
+export interface FrameStamp {
+  seq: number;
+  ts_ms: number;
 }
 
-/** When frame `seq` (1-based) was kept, in ms into the recording: the inverse of `frameAt`. */
-export function frameTime(seq: number, span: number, frames: number): number {
-  if (frames <= 1 || span <= 0) return 0;
-  return ((clamp(seq, 1, frames) - 1) / (frames - 1)) * span;
+/**
+ * When each frame of a recording was kept, in ms into the recording: index `seq - 1` of the result, for `frames` frames.
+ * The hub keeps each frame's time (`stamps`, in any order), so those are the real times. A frame without one (the
+ * stamps stop at the hub's cap, or a recording kept before frames had times) is placed between the known ones, or past
+ * the last at their average spacing, and never after the end. With no stamps the frames are spread evenly from the
+ * start to the end. Times never go back.
+ */
+export function frameTimes(frames: number, span: number, startMs: number, stamps: FrameStamp[]): number[] {
+  if (frames <= 0) return [];
+  const end = Math.max(0, span);
+  const known = stamps
+    .filter((s) => Number.isInteger(s.seq) && s.seq >= 1 && s.seq <= frames)
+    .sort((a, b) => a.seq - b.seq)
+    .map((s) => ({ seq: s.seq, at: Math.max(0, s.ts_ms - startMs) }))
+    .filter((s, i, all) => i === 0 || s.seq > (all[i - 1]?.seq ?? 0));
+  if (known.length === 0) {
+    return Array.from({ length: frames }, (_, i) => (frames <= 1 || end <= 0 ? 0 : (i / (frames - 1)) * end));
+  }
+  const first = known[0];
+  const last = known[known.length - 1];
+  if (!first || !last) return [];
+  // The spacing of the known frames, for the ones past their ends (or the even spacing when only one is known).
+  const step = known.length >= 2 ? (last.at - first.at) / (last.seq - first.seq) : end / frames;
+  const cap = Math.max(end, last.at);
+  const out: number[] = [];
+  // `k` is the first known frame at or after `seq`: one pass over the frames.
+  let k = 0;
+  for (let seq = 1; seq <= frames; seq++) {
+    while (k < known.length && (known[k]?.seq ?? Infinity) < seq) k++;
+    const next = known[k];
+    const prev = k > 0 ? known[k - 1] : undefined;
+    let t: number;
+    if (next && next.seq === seq) t = next.at;
+    else if (prev && next) t = prev.at + ((seq - prev.seq) * (next.at - prev.at)) / (next.seq - prev.seq);
+    else if (prev) t = prev.at + (seq - prev.seq) * step;
+    else t = first.at - (first.seq - seq) * step;
+    out.push(Math.max(clamp(t, 0, cap), out[seq - 2] ?? 0));
+  }
+  return out;
+}
+
+/** The frame on screen (1-based) at `rel` ms: the last one kept by then, the first before it. 0 with no frames. */
+export function frameAt(rel: number, times: number[]): number {
+  if (times.length === 0) return 0;
+  if (rel < (times[0] ?? 0)) return 1;
+  let lo = 0;
+  let hi = times.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if ((times[mid] ?? 0) <= rel) lo = mid;
+    else hi = mid - 1;
+  }
+  return lo + 1;
+}
+
+/** When frame `seq` (1-based) was kept, in ms into the recording: the inverse of `frameAt`. 0 with no frames. */
+export function frameTime(seq: number, times: number[]): number {
+  if (times.length === 0) return 0;
+  return times[clamp(seq, 1, times.length) - 1] ?? 0;
 }
 
 /** The index of the newest action at or before `rel` ms (`events` in time order), or -1 before the first. */

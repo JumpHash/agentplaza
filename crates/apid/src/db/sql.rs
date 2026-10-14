@@ -38,6 +38,9 @@ pub const STATION_RECORDING_EXPIRED: &str = include_str!("../../sql/queries/stat
 pub const STATION_RECORDING_DELETE: &str = include_str!("../../sql/queries/station_recording_delete.sql");
 pub const STATION_RECORDING_EVENT_APPEND: &str = include_str!("../../sql/queries/station_recording_event_append.sql");
 pub const STATION_RECORDING_EVENTS_PAGE: &str = include_str!("../../sql/queries/station_recording_events_page.sql");
+// The frames' capture times (`station_recording_frames`, migration 0012; stations/recordings.rs).
+pub const STATION_RECORDING_FRAME_PUT: &str = include_str!("../../sql/queries/station_recording_frame_put.sql");
+pub const STATION_RECORDING_FRAMES_PAGE: &str = include_str!("../../sql/queries/station_recording_frames_page.sql");
 
 // The work-folder sync's mirror (`station_sync_files`, migration 0011; stations/sync.rs).
 pub const STATION_SYNC_ROWS: &str = include_str!("../../sql/queries/station_sync_rows.sql");
