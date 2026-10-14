@@ -23,8 +23,10 @@ Decisions taken with the owner (2026-10-14):
 | Owner and agent at the same time | Allowed. The agent works while the owner works. |
 | Agents per machine | Any number the machine supports. |
 | Which agents | Like any other tool: granted by role and by the tool policy, used per task. |
-| Node and workstation on one machine | Assumed yes (the proposal; the owner did not object): one install, both roles, the GPU shared. Confirm. |
-| Results | Both: deliverables are copied into the Library, and a work folder syncs automatically. |
+| Node and workstation on one machine | Yes: one install, both roles, the GPU shared. |
+| Results | Both: deliverables are copied into the Library, and a work folder syncs both ways. |
+| Owner takeover | Configurable per workstation in its setup on the hub (section 7). |
+| App support | One full, general adapter: the agents can work on anything installed, not only apps with a dedicated adapter (section 6). |
 | In the apps | A new machine kind on Machines and the Floor with a live screen thumbnail, and a Workstations page. |
 | Recordings | Configurable on the hub, from the web, the desktop app and the CLI/TUI. |
 
@@ -80,8 +82,8 @@ The owner chose "let the agent work while the user is working". The design makes
 off the owner's pointer whenever it can:
 
 1. **APIs and command lines first.** Blender headless (`blender -b file.blend --python job.py`) renders on the GPU with
-   no window at all; the same for ffmpeg, builds and test runners. For deeper work an app adapter (an MCP server on
-   the workstation, e.g. Blender's Python API) gives the agent real operations.
+   no window at all; the same for ffmpeg, builds and test runners. For deeper work the general adapter (section 6)
+   reaches any app's own automation interface.
 2. **The UI tree second.** Accessibility actions (Invoke, SetValue, Select, AXPress) operate a control without moving
    the owner's mouse or stealing focus.
 3. **Pixels last.** A real click or keystroke takes the pointer. Where the platform allows it, pixel work happens in a
@@ -105,7 +107,17 @@ Workstation tools join the agent's tool set like any other tool (granted by role
 - `screenshot` (scaled, with an optional coordinate grid), `click`, `type`, `key`, `scroll`, `drag`, `wait`.
 - `ui_tree`, `ui_act` (find a control by role and name, then act on it).
 - `shell` (a terminal), `run`, `files_*`, `app_launch`, `app_list`.
-- App adapters exposed as MCP tools when installed (Blender first).
+- `app_script`: the general adapter. The owner chose one full adapter so the agents can work on anything, not a list
+  of per-app adapters. It gives an agent every automation surface the OS and its apps already offer, so any installed
+  program is reachable:
+  - the program's command line and its embedded scripting (Blender's `--python`, GIMP's Script-Fu, LibreOffice's
+    headless macros, Office through COM), discovered from `app_list` (each app's binary, its CLI help, its scripting
+    entry points);
+  - the OS scripting bridges: AppleScript and JXA on macOS, PowerShell and COM/UI Automation on Windows, D-Bus and
+    AT-SPI on Linux;
+  - the UI tree and pixels (above) for anything with no scripting surface.
+  An agent that works an app often can save what it learned as a skill (the skill library), so the next agent
+  starts from a working script rather than from pixels.
 
 The tools are offered over the hub MCP surface as well, so Claude Code and other MCP clients can drive a workstation
 through the hub with an owner token.
@@ -121,6 +133,11 @@ through the hub with an owner token.
 - Recordings: per lease, screenshots and actions with timestamps, stored as blobs in Garage with an index row in
   Postgres. Settings on the hub: on or off, retention days, frame rate, and whether to record the owner's takeovers.
   Edited from the web, the desktop app and the CLI/TUI (`agentplaza stations recordings ...`).
+- Workstation setup on the hub (per workstation, edited from the web, the desktop app and the CLI/TUI): the agent OS
+  account (chosen at enrollment), recording on or off and retention, the work folder, snapshot-and-reset for VMs, and
+  the **takeover policy**: when the owner takes over a pixel session, either the agent waits and resumes when the
+  owner gives the session back, or the agent's lease is released and its task goes back to the queue, or the agent
+  keeps working through APIs, shells and the UI tree while only its pointer is paused.
 - STOP ALL: the daemon freezes input and ends pixel sessions at once; shells and runs are stopped.
 - Treasury: lease time and GPU time are charged to the task, so they show in Usage.
 
@@ -130,8 +147,11 @@ Both paths the owner chose:
 
 - **Deliverables:** an agent marks a file as a deliverable and it is copied into the plaza Library (Garage), exactly
   as files from agent VMs are today.
-- **Work folder sync:** each workstation has a work folder (per agent user, or per agent in the owner's account) that
-  syncs to the hub continuously, content-addressed, so outputs land in the plaza even if nobody marks them.
+- **Work folder sync, both ways:** each workstation has a work folder (default `~/AgentPlaza` under the agent's OS
+  user, changeable in the workstation's setup) that syncs with the hub continuously in both directions,
+  content-addressed, so outputs land in the plaza even if nobody marks them, and files the owner or other agents put
+  there on the hub appear on the machine. A conflicting edit on both sides keeps both copies and reports the conflict
+  on the Workstations page.
 
 ## 9. In the apps (web, desktop, CLI/TUI)
 
@@ -159,7 +179,8 @@ A workstation VM runs the same daemon. The plaza can also make them:
    IDE opening `station:<id>`. Most of the value (Blender headless, GPU jobs, builds) for the least new code.
 2. **GUI on Linux and Windows.** Screen, input, UI tree, pixel sessions (virtual displays on Linux, the shared session
    on Windows), live view, takeover, recordings and their settings.
-3. **macOS** and the third OS's polish; app adapters (Blender's Python API as an MCP server).
+3. **macOS** and the third OS's polish; the general adapter's scripting bridges (`app_script`), the two-way work
+   folder sync, and the takeover policies.
 4. **Plaza-made VMs:** snapshots, reset per lease, GPU passthrough.
 
 Each phase ships on web, desktop and CLI together (the parity rule).
@@ -174,10 +195,9 @@ Each phase ships on web, desktop and CLI together (the parity rule).
   and charged like the Lab's devices.
 - **Platform permissions** (macOS TCC, the Wayland portal) need the owner once per machine; setup walks through them.
 
-## 13. Open questions
+## 13. Answered questions (2026-10-14)
 
-1. Node and workstation on one machine: the proposal is yes; confirm.
-2. Work folder sync: which folder by default (`~/AgentPlaza` under the agent user, or a folder the owner picks), and
-   is it two-way (owner edits flow back) or one-way to the hub?
-3. Takeover: when the owner takes over a pixel session, does the agent wait, or is its lease released?
-4. App adapters: Blender first; which apps next?
+1. Node and workstation on one machine: yes.
+2. Work folder sync: both ways (default folder `~/AgentPlaza`, changeable per workstation).
+3. Takeover: configurable per workstation in its setup on the hub (section 7).
+4. App adapters: one full, general adapter, so the agents can work on anything (section 6).
