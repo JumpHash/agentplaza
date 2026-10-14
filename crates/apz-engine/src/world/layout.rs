@@ -366,6 +366,7 @@ fn district_mesh(floor: &mut Floor, d: &District, y: f32, base: f32, site: &Room
     let top = Obj::mesh(&top_geo, &built.floor);
     top.set_rotation(-FRAC_PI_2, 0.0, turn).set_position(d.cx, top_y + 0.004, d.cy).set_shadows(false, true);
     g.add(&top);
+    floor.last_room = Some((turn, built.spots.clone(), built.layout.items.clone()));
     let room = built.group;
     room.set_position(d.cx, top_y, d.cy).set_rotation(0.0, turn, 0.0);
     g.add(&room);
@@ -585,6 +586,20 @@ impl Floor {
         self.nav = Some(nav);
     }
 
+    /// The work for the board's layout: its board spots, the rooms' stations as the rooms build (`step_rooms`), and the
+    /// nav's reach when the board has a nav.
+    fn reset_work(&mut self) {
+        let Some(board) = self.board.as_ref() else { return };
+        let params = board.params.clone();
+        let (model, graph, layout) = (board.model, board.graph.clone(), board.layout.clone());
+        self.work = super::work::RobotWork::new();
+        self.work.set_board(model, &params, &graph, &layout);
+        self.work.begin_rooms();
+        if let Some(nav) = self.nav.as_ref() {
+            self.work.set_reach(nav.reach());
+        }
+    }
+
     /// Takes the board, its robots and rooms out of the scene.
     fn clear_board(&mut self) {
         self.rooms_job = None;
@@ -652,6 +667,9 @@ impl Floor {
             let bd = &job.items[index];
             let site = RoomSite { plan: bd.plan, machine: &job.machine, index, agents: job.desks[index].max(1), graph: &job.graph };
             let g = district_mesh(self, &bd.district, bd.y, job.base, &site);
+            if let Some((turn, spots, items)) = self.last_room.take() {
+                self.work.add_room(bd, turn, &spots, &items);
+            }
             self.district_group.add(&g);
             self.statics_dirty = true;
             job.next += 1;
@@ -763,6 +781,7 @@ impl Floor {
         if changed {
             self.start_rooms();
             self.rebuild_nav();
+            self.reset_work();
         }
 
         let mut seen = HashSet::new();

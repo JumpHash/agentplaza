@@ -241,7 +241,7 @@ impl Floor {
     /// One event from the console's stream. `kind` is the event channel the web subscribes to:
     /// "transcript" (`data` is an entry `{cid, kind, data}`: tool calls set activities and send
     /// packets, work start/end too), "delta" (`{cid}`: thinking) or "conversation" (`{from_cid,
-    /// to_cid}`: an ok packet). Other channels are ignored.
+    /// to_cid}`: an ok packet), and "project", "file" and "work" (the work's bus frames). Other channels are ignored.
     pub fn on_event(&mut self, kind: &str, data: &Value) {
         match kind {
             "transcript" => self.on_transcript(data),
@@ -257,6 +257,8 @@ impl Floor {
                     self.send_packet(from, to, true);
                 }
             }
+            // The bus frames that give robots their stand-ups, deliveries and responses (robot-work.ts busFrame).
+            "project" | "file" | "work" => self.work.bus_frame(kind, data),
             _ => {}
         }
     }
@@ -322,6 +324,8 @@ impl Floor {
                     tool = "tool".to_string();
                 }
                 let inp = field(&data, "input").cloned().unwrap_or(Value::Null);
+                // The work hears every tool call (robot-work.ts noteTool): a delivery or a response may follow.
+                self.work.note_tool(cid as i64, &tool, &inp);
                 if let Some(i) = bot {
                     let line = self.tool_activity(&tool, &inp);
                     self.set_activity(i, line);
@@ -435,11 +439,30 @@ impl Floor {
             Some(nav) => {
                 let list: Vec<(u64, f32, f32)> = self.bots.iter().map(|b| (b.agent.cid, b.x, b.y)).collect();
                 nav.sync(&list);
-                nav.step(dt);
+                // A walk the nav gave up: the work puts its spot on the robot's avoid list and picks another.
+                for cid in nav.step(dt) {
+                    if let Some(b) = self.bots.iter_mut().find(|b| b.agent.cid == cid) {
+                        self.work.unreachable(cid as i64, Some(&mut b.robot));
+                    }
+                }
                 true
             }
             None => false,
         };
+        // With a nav, the robots' work decides where each robot goes and what it does there (robot-work.ts), as the
+        // web's floor does; the engine's own layout keeps the wander and the visits below.
+        let work_bot = |b: &Bot| super::work::WorkBot {
+            agent: b.agent.clone(),
+            x: b.x,
+            y: b.y,
+            heading: b.heading,
+            moving: b.moving,
+            species: b.robot.species(),
+        };
+        if walked {
+            let list: Vec<super::work::WorkBot> = self.bots.iter().map(work_bot).collect();
+            self.work.frame(dt, &list, false);
+        }
         for i in 0..self.bots.len() {
             let status = self.bots[i].agent.status.clone();
             let cid = self.bots[i].agent.cid;
@@ -477,6 +500,11 @@ impl Floor {
             if roaming {
                 gx = s.as_ref().map_or(self.bots[i].tx, |sc| sc.gx);
                 gy = s.as_ref().map_or(self.bots[i].ty, |sc| sc.gy);
+            }
+            if walked {
+                if let Some(g) = self.work.goal_for(&work_bot(&self.bots[i])) {
+                    (gx, gy) = (g.goal.0, g.goal.1);
+                }
             }
             let pose = match self.nav.as_mut() {
                 Some(nav) if walked => {
@@ -553,10 +581,16 @@ impl Floor {
                 None if moving => Some(travel.unwrap_or_else(|| ex.atan2(ey))),
                 None => None,
             };
+            // The work's station or partner sets the heading where it has one (robot-work.ts facing).
+            let want = if walked { self.work.facing(&work_bot(&self.bots[i])).or(want) } else { want };
             if let Some(want) = want {
                 let d = want - self.bots[i].heading;
                 let diff = d.sin().atan2(d.cos());
                 self.bots[i].heading += diff * (dt * 8.0).min(1.0);
+            }
+            if walked {
+                let wb = work_bot(&self.bots[i]);
+                self.work.arrived(&wb, &mut self.bots[i].robot);
             }
             let state = match status.as_str() {
                 "working" => RobotState::Working,
@@ -797,6 +831,11 @@ mod tests {
         }
         let moved = floor.bots.iter().zip(&start).filter(|(b, s)| (b.x - s.0).hypot(b.y - s.1) > 0.5).count();
         assert!(moved > 0, "the idle robots wander on the grid");
+        // The robots act on the work's decisions (robot-work.ts): each has an activity.
+        for b in &floor.bots {
+            let d = floor.work.debug_of(b.agent.cid as i64);
+            assert!(d.pointer("/dec/activity").is_some_and(|a| a.is_string()), "robot {} has no work decision: {d}", b.agent.cid);
+        }
     }
 
     #[test]

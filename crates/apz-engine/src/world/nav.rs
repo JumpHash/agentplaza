@@ -108,12 +108,16 @@ impl BoardNav {
     }
 
     /// One step of the robots and the cabs; the lifts' meshes follow their cabs. A robot the world gave up on drops its
-    /// goal, so the floor's next goal is sent again.
-    pub fn step(&mut self, dt: f32) {
+    /// goal, so the floor's next goal is sent again; their cids are returned (the work picks another spot for them).
+    pub fn step(&mut self, dt: f32) -> Vec<u64> {
         self.world.step(f64::from(dt));
+        let mut gave_up = Vec::new();
         for e in self.world.take_events() {
             let (NavEvent::Unreachable(id) | NavEvent::Respawn(id)) = e;
             self.goals.remove(&id);
+            if let (NavEvent::Unreachable(_), Some((&cid, _))) = (e, self.ids.iter().find(|(_, v)| **v == id)) {
+                gave_up.push(cid);
+            }
         }
         for (id, mesh) in &mut self.lifts {
             if let Some(cab) = self.world.lift_mut(*id) {
@@ -121,12 +125,20 @@ impl BoardNav {
                 mesh.set_state(s.cab_y, s.door_t, s.stop, s.phase == LiftPhase::Travel, s.calls);
             }
         }
+        gave_up
     }
 
     /// The pose of an agent's robot.
     pub fn pose(&self, cid: u64) -> Option<NavPose> {
         let id = *self.ids.get(&cid)?;
         self.world.has(id).then(|| self.world.pose(id))
+    }
+
+    /// The nav component of the walk cell at (x, z), -1 off the walk (the work's reach: a robot goes only to spots in its
+    /// own component).
+    pub fn reach(&self) -> Box<dyn Fn(f32, f32) -> i64> {
+        let grid = self.world.grid().clone();
+        Box::new(move |x, z| grid.cell_at(f64::from(x), f64::from(z)).map_or(-1, |c| i64::from(grid.component[c])))
     }
 
     /// The robot id of an agent (for the debug hooks).

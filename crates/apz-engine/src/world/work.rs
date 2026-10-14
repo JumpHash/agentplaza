@@ -25,6 +25,7 @@ use super::spots::{board_spots, desk_spots, district_key, region_of, room_spots,
 use super::AgentInfo;
 use crate::hardware::{Model, Params};
 use crate::robot::Robot;
+use crate::robots::types::Species;
 use crate::robots::types::Personality as SpeciesPersonality;
 
 static CONFIG: OnceLock<BehaviourConfig> = OnceLock::new();
@@ -54,7 +55,8 @@ pub struct WorkBot {
     pub y: f32,
     pub heading: f32,
     pub moving: bool,
-    pub robot: Robot,
+    /// The robot's species (its gait, its own spots): the floor's robot drives the clips (`arrived`, `unreachable`).
+    pub species: &'static Species,
 }
 
 /// Where a robot should walk now: the goal (x, z, and the yaw on arrival or None), and a key that changes exactly when
@@ -401,7 +403,7 @@ impl RobotWork {
 
     /// Called every frame after the robot's pose is read. Walking shows the walk clip and puts down the last activity's
     /// tool and item; once the robot has reached its goal, the decision's activity starts (its clip, tool and carried item).
-    pub fn arrived(&mut self, b: &mut WorkBot) {
+    pub fn arrived(&mut self, b: &WorkBot, robot: &mut Robot) {
         let cid = cid_of(b);
         let tr = track_entry(&mut self.tracks, cid);
         let Some(d) = tr.dec.clone() else { return };
@@ -411,23 +413,23 @@ impl RobotWork {
         let reached = tr.has_target && !b.moving && (b.x - tr.target.0).hypot(b.y - tr.target.1) < ARRIVE;
         if !reached {
             if tr.shown.take().is_some() {
-                b.robot.play(None, None);
+                robot.play(None, None);
             }
             if tr.hand.take().is_some() {
-                b.robot.hold(None);
+                robot.hold(None);
             }
             if tr.carried.take().is_some() {
-                b.robot.carry(None);
+                robot.carry(None);
             }
             return;
         }
         tr.started = tr.seq;
         let clip = if d.clip == "@walk" { None } else { Some(d.clip.clone()) };
-        b.robot.play(clip.as_deref(), Some(true));
+        robot.play(clip.as_deref(), Some(true));
         tr.shown = clip;
-        b.robot.hold(d.tool.as_deref());
+        robot.hold(d.tool.as_deref());
         tr.hand = d.tool;
-        b.robot.carry(d.carry.as_deref());
+        robot.carry(d.carry.as_deref());
         tr.carried = d.carry;
     }
 
@@ -463,7 +465,7 @@ impl RobotWork {
     /// avoid list until its next changed decision, so the engine picks another spot. The decision counts as arrived where
     /// the robot stands, so a new decision's clock starts when the robot reaches its new goal. Its tool and item are put
     /// down. `bot` is the robot, when the floor has it (the put-down needs it).
-    pub fn unreachable(&mut self, cid: i64, bot: Option<&mut WorkBot>) {
+    pub fn unreachable(&mut self, cid: i64, robot: Option<&mut Robot>) {
         let Some(tr) = self.tracks.get_mut(&cid) else { return };
         let Some(spot) = tr.dec.as_ref().map(|d| d.spot.clone()) else { return };
         if let Some(s) = spot {
@@ -471,20 +473,20 @@ impl RobotWork {
         }
         tr.has_target = false;
         tr.started = tr.seq;
-        let mut bot = bot;
+        let mut robot = robot;
         if tr.shown.take().is_some() {
-            if let Some(b) = bot.as_mut() {
-                b.robot.play(None, None);
+            if let Some(r) = robot.as_mut() {
+                r.play(None, None);
             }
         }
         if tr.hand.take().is_some() {
-            if let Some(b) = bot.as_mut() {
-                b.robot.hold(None);
+            if let Some(r) = robot.as_mut() {
+                r.hold(None);
             }
         }
         if tr.carried.take().is_some() {
-            if let Some(b) = bot.as_mut() {
-                b.robot.carry(None);
+            if let Some(r) = robot.as_mut() {
+                r.carry(None);
             }
         }
     }
@@ -552,7 +554,7 @@ impl RobotWork {
             let talking_to = tr.talking_to.filter(|_| self.clock < tr.talk_until);
             let arrived = tr.started == tr.seq || !tr.has_target;
             let unreach = tr.unreach.clone();
-            let sp = b.robot.species();
+            let sp = b.species;
             let desk = format!("desk:{cid}");
             let avoid = self.avoid_for(b, &unreach);
             robots.push(BotIn {
@@ -655,7 +657,7 @@ mod tests {
             y,
             heading: 0.0,
             moving: false,
-            robot: Robot::new(0.0, false, &robot_palette(), 0.0),
+            species: Robot::new(0.0, false, &robot_palette(), 0.0).species(),
         }
     }
 
@@ -687,7 +689,8 @@ mod tests {
         bots[0].x = gx;
         bots[0].y = gz;
         bots[0].moving = false;
-        work.arrived(&mut bots[0]);
+        let mut robot = Robot::new(0.0, false, &robot_palette(), 0.0);
+        work.arrived(&bots[0], &mut robot);
         let again = work.goal_for(&bots[0]).expect("the goal is kept");
         assert_eq!(again.key, goals[0].key);
     }

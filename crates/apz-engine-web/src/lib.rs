@@ -323,6 +323,16 @@ impl WebEngine {
         backend_name(self.shared.borrow().backend).to_string()
     }
 
+    /// One event from the console's stream, as the desktop forwards it (`Floor::on_event`): `kind` is the channel
+    /// ("transcript", "delta", "conversation", "project", "file", "work") and `json` its data. A parse error is thrown.
+    pub fn event(&self, kind: &str, json: &str) -> Result<(), JsValue> {
+        let data: serde_json::Value = serde_json::from_str(json).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let mut inner = self.shared.borrow_mut();
+        inner.engine.stage.floor.on_event(kind, &data);
+        inner.engine.touch();
+        Ok(())
+    }
+
     /// The shared board layouts the floors asked for since the last call, as a JSON array of keys: the page computes
     /// each in its worker (`shared_layout`) and hands it back with `provide_layout`.
     pub fn layout_requests(&self) -> String {

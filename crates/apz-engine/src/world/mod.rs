@@ -256,6 +256,10 @@ pub struct Floor {
     layout_cache: Option<(String, board_layout::BoardLayout)>,
     /// The board's navigation (nav.rs) when its layout is the shared one: the robots walk its grid.
     pub nav: Option<nav::BoardNav>,
+    /// The robots' work (robot-work.ts): what each robot does on the board, and where it walks for it.
+    pub work: work::RobotWork,
+    /// The last room built: its turn, spots and items, for the work's stations (step_rooms hands them on).
+    last_room: Option<(f32, Vec<crate::rooms::generate::LayoutSpot>, Vec<crate::rooms::generate::LayoutItem>)>,
     statics: Arc<Vec<Draw>>,
     statics_version: u64,
     /// The GPU-animated batches of the statics (`bake_split`), versioned with them.
@@ -308,6 +312,8 @@ impl Floor {
             rooms_job: None,
             layout_cache: None,
             nav: None,
+            work: work::RobotWork::new(),
+            last_room: None,
             deep_dynamic: Vec::new(),
         };
         layout::base(&mut floor);

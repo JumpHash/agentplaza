@@ -1,5 +1,6 @@
 import { api, type Agent, type FleetResponse } from '../api';
 import { floorName } from '../roles';
+import { on } from '../store';
 import { button } from '../ui/components';
 import type { Cleanup } from './index';
 import { agentCardChildren, machineCard } from './floor-popup';
@@ -27,6 +28,8 @@ interface WebEngine {
   entry_time: () => number | undefined;
   backend(): string;
   set_feed(json: string): void;
+  /** One event from the console's stream: its channel and its data as JSON (the desktop forwards the same). */
+  event(kind: string, json: string): void;
   /** The shared board layouts the engine asked for since the last call (a JSON array of keys), for the layout worker. */
   layout_requests(): string;
   /** A shared board layout the layout worker computed: its key and the worker's answer, both JSON. */
@@ -687,9 +690,21 @@ export function mountEngine(root: HTMLElement, initialId: string | null = null):
   pollFleet();
   pollAgents();
   timers.push(window.setInterval(pollFleet, FLEET_POLL_MS), window.setInterval(pollAgents, AGENTS_POLL_MS));
+  // The console's stream into the engine, as the desktop forwards it (Floor::on_event): tool calls and work set the
+  // robots' activities and packets, and the bus frames give the robots' work its stand-ups, deliveries and responses.
+  const offEvents = (['transcript', 'delta', 'conversation', 'project', 'file', 'work'] as const).map((kind) =>
+    on(kind, (data) => {
+      try {
+        engine?.event(kind, JSON.stringify(data));
+      } catch {
+        // An event the engine cannot read: the floor carries on without it.
+      }
+    }),
+  );
 
   return () => {
     closed = true;
+    for (const off of offEvents) off();
     root.classList.remove('floor-view');
     document.body.classList.remove('floor-mode');
     for (const t of timers) window.clearInterval(t);
