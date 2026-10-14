@@ -15,6 +15,7 @@ import { engineWanted, startThumbEngine, type EngineStage } from './engine-mount
 let portraitEngine: EngineStage | null = null;
 let portraitWaiting = 0;
 let portraitIdle = 0;
+let portraitWarned = false;
 const pending = new Map<string, Promise<string | null>>();
 /** The portrait's size in pixels, as the engine draws it. */
 const PORTRAIT_PX = 384;
@@ -45,7 +46,14 @@ function enginePortrait(spec: PortraitSpec): Promise<string | null> {
       if (url) rememberPortrait(key, url);
       return url;
     })
-    .catch(() => null)
+    .catch((e: unknown) => {
+      // The letter stays; say why once per page, so a broken portrait path is not silent.
+      if (!portraitWarned) {
+        portraitWarned = true;
+        console.warn('agent portrait: the engine did not draw it', e);
+      }
+      return null;
+    })
     .finally(() => {
       pending.delete(key);
       portraitWaiting--;

@@ -54,6 +54,9 @@ struct Gpu {
     /// The instance the surface came from. It must outlive the surface: a dropped instance leaves the canvas with
     /// no live context ("A valid external Instance reference no longer exists") and the frames never reach it.
     instance: wgpu::Instance,
+    /// The adapter the device came from, kept for the same reason: with it dropped, Chrome rejects every buffer map
+    /// with that error, so no thumbnail or portrait ever read back (the Machines list and the agents' portraits).
+    adapter: wgpu::Adapter,
 }
 
 /// The state the closures share. The JS callbacks are kept here as plain JS functions and are called only after
@@ -65,6 +68,8 @@ struct Inner {
     device: wgpu::Device,
     /// Kept alive for the surface (see [`Gpu::instance`]).
     _instance: wgpu::Instance,
+    /// Kept alive for the buffer maps (see [`Gpu::adapter`]).
+    _adapter: wgpu::Adapter,
     /// None once destroyed (the surface is dropped then).
     surface: Option<wgpu::Surface<'static>>,
     config: wgpu::SurfaceConfiguration,
@@ -175,6 +180,7 @@ pub async fn start(canvas: HtmlCanvasElement, opts: JsValue) -> Result<WebEngine
         canvas: canvas.clone(),
         device: gpu.device,
         _instance: gpu.instance,
+        _adapter: gpu.adapter,
         surface: Some(gpu.surface),
         config,
         backend: gpu.backend,
@@ -609,11 +615,17 @@ async fn open_gpu(canvas: &HtmlCanvasElement, window: &Window, mode: Mode) -> Re
     }
 }
 
-/// Whether the browser gives a WebGPU adapter. Asked without a surface, so a no answer touches no canvas.
+/// Whether the browser gives a WebGPU adapter. Asked without a surface, so a no answer touches no canvas; and asked of
+/// `navigator.gpu` itself, not through a second wgpu instance: dropping one left Chrome's WebGPU without "a valid
+/// external Instance reference", and every buffer map after it failed (no thumbnail or portrait read back).
 async fn webgpu_adapter_exists() -> bool {
-    let instance =
-        wgpu::Instance::new(&wgpu::InstanceDescriptor { backends: wgpu::Backends::BROWSER_WEBGPU, ..Default::default() });
-    instance.request_adapter(&wgpu::RequestAdapterOptions::default()).await.is_ok()
+    let Some(window) = web_sys::window() else { return false };
+    let Ok(gpu) = Reflect::get(&window.navigator(), &JsValue::from_str("gpu")) else { return false };
+    let Ok(request) = Reflect::get(&gpu, &JsValue::from_str("requestAdapter")).and_then(|f| f.dyn_into::<Function>()) else {
+        return false;
+    };
+    let Ok(promise) = request.call0(&gpu).and_then(|p| p.dyn_into::<Promise>()) else { return false };
+    matches!(wasm_bindgen_futures::JsFuture::from(promise).await, Ok(adapter) if !adapter.is_null() && !adapter.is_undefined())
 }
 
 /// One backend: an instance, the canvas surface, an adapter compatible with it, and a device. None when the
@@ -661,7 +673,7 @@ async fn open_backend(canvas: &HtmlCanvasElement, backends: wgpu::Backends) -> R
     } else {
         caps.alpha_modes.first().copied().unwrap_or(wgpu::CompositeAlphaMode::Auto)
     };
-    Ok(Some(Gpu { backend, device, queue, surface, format, alpha_mode, instance }))
+    Ok(Some(Gpu { backend, device, queue, surface, format, alpha_mode, instance, adapter }))
 }
 
 /// The canvas's backing size: its CSS size times the device pixel ratio, rounded, at least 1 by 1.
