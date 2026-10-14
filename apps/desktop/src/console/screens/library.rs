@@ -219,6 +219,8 @@ pub struct State {
     reject_note: String,
     /// The file last picked (opened by a click or by Enter): Enter opens it again from the list.
     selected: Option<String>,
+    /// The file the arrow keys picked, as its index in the list the screen shows (see `visible`).
+    kbd: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -247,8 +249,10 @@ pub enum Msg {
     ToolConfirm,
     RejectNote(String),
     Done(Result<String, String>),
-    /// Enter pressed while no text field has the key: opens the selected file.
+    /// Enter pressed while no text field has the key: opens the file the arrows picked, else the selected one.
     OpenSelected,
+    /// An arrow key pressed: true for down, false for up. Moves the pick; opens nothing.
+    Step(bool),
     /// Play a video: save it and hand it to the system's player.
     Play(String),
     Played(Result<String, String>),
@@ -279,6 +283,7 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             files.sort_by(|a, b| b.created_ms.cmp(&a.created_ms));
             state.files = files;
             state.error = None;
+            clamp_kbd(state);
             Task::none()
         }
         Msg::Files(Err(e)) => {
@@ -299,20 +304,37 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             state.open = None;
             state.preview = Preview::Idle;
             state.confirm_delete = false;
+            state.kbd = None;
             load(state, ctx)
         }
         Msg::Query(query) => {
             state.query = query;
+            state.kbd = None;
             Task::none()
         }
         Msg::Filter(filter) => {
             state.filter = filter;
+            state.kbd = None;
             Task::none()
         }
-        Msg::OpenSelected => match state.selected.clone() {
-            Some(id) if state.open.is_none() => open(state, id, ctx),
-            _ => Task::none(),
-        },
+        Msg::OpenSelected => {
+            // The list is hidden while a file is open: Enter does nothing then.
+            if state.open.is_some() {
+                return Task::none();
+            }
+            let picked = state.kbd.and_then(|i| visible(state).get(i).map(|d| d.id.clone()));
+            match picked.or_else(|| state.selected.clone()) {
+                Some(id) => open(state, id, ctx),
+                None => Task::none(),
+            }
+        }
+        Msg::Step(down) => {
+            if state.open.is_none() {
+                let len = visible(state).len();
+                state.kbd = step(state.kbd, len, down);
+            }
+            Task::none()
+        }
         Msg::Play(id) => play(state, &id, ctx),
         Msg::Played(Ok(path)) => {
             state.notice = Some(format!("Opened {path}"));
@@ -353,6 +375,7 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         Msg::Delete(id) => delete(id, ctx),
         Msg::Deleted(Ok(id)) => {
             state.files.retain(|d| d.id != id);
+            clamp_kbd(state);
             if state.open.as_deref() == Some(id.as_str()) {
                 state.open = None;
                 state.preview = Preview::Idle;
@@ -416,16 +439,26 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
     }
 }
 
-/// Enter opens the selected file, but only when no widget (the search field) captured the key.
+/// Enter opens the picked file (else the selected one), and the arrows move the pick, but only when no
+/// widget captured the key. iced's text input captures Enter only with a submit handler and never the
+/// arrows, so the arrows still reach here while the search field has focus; they do not edit its text.
 pub fn subscription(_ctx: &Ctx) -> iced::Subscription<Msg> {
+    use iced::keyboard::key::Named;
     iced::event::listen_with(|event, status, _window| match (event, status) {
         (
             iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
-                key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Enter),
+                key: iced::keyboard::Key::Named(Named::Enter),
                 ..
             }),
             iced::event::Status::Ignored,
         ) => Some(Msg::OpenSelected),
+        (
+            iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                key: iced::keyboard::Key::Named(key @ (Named::ArrowDown | Named::ArrowUp)),
+                ..
+            }),
+            iced::event::Status::Ignored,
+        ) => Some(Msg::Step(key == Named::ArrowDown)),
         _ => None,
     })
 }
@@ -581,12 +614,13 @@ fn list<'a>(state: &'a State, items: &mut Vec<Element<'a, Msg>>) {
     if state.files.is_empty() {
         items.push(ui::empty("board", "Nothing handed in yet", "Agents deliver finished work with deliver_file."));
     } else {
-        let shown_files: Vec<&'a Deliverable> = state.files.iter().filter(|d| matches(state, d)).collect();
+        let shown_files = visible(state);
         if shown_files.is_empty() {
             items.push(ui::faint("Nothing matches that search.").into());
         }
-        for chunk in shown_files.chunks(3) {
-            let mut cells: Vec<Element<'a, Msg>> = chunk.iter().map(|d| card(*d)).collect();
+        for (row_no, chunk) in shown_files.chunks(3).enumerate() {
+            let mut cells: Vec<Element<'a, Msg>> =
+                chunk.iter().enumerate().map(|(col, d)| card(d, state.kbd == Some(row_no * 3 + col))).collect();
             while cells.len() < 3 {
                 cells.push(Space::new().width(Fill).into());
             }
@@ -628,8 +662,20 @@ fn matches(state: &State, d: &Deliverable) -> bool {
         && (q.is_empty() || d.title.to_lowercase().contains(&q) || d.name.to_lowercase().contains(&q))
 }
 
-/// One file's card: its tile (the monogram of its extension), title, name, and who and when.
-fn card<'a>(d: &'a Deliverable) -> Element<'a, Msg> {
+/// The files the list shows, in its order: the type filter and the search applied.
+fn visible(state: &State) -> Vec<&Deliverable> {
+    state.files.iter().filter(|d| matches(state, d)).collect()
+}
+
+/// Holds the keyboard's pick to the files the list shows now.
+fn clamp_kbd(state: &mut State) {
+    let len = visible(state).len();
+    state.kbd = clamp(state.kbd, len);
+}
+
+/// One file's card: its tile (the monogram of its extension), title, name, and who and when. A card the
+/// keyboard has picked takes the same selected-row style as a picked row.
+fn card<'a>(d: &'a Deliverable, picked: bool) -> Element<'a, Msg> {
     let title = if d.title.is_empty() { d.name.as_str() } else { d.title.as_str() };
     let mut body: Vec<Element<'a, Msg>> = vec![
         container(ui::faint(d.store.as_str())).into(),
@@ -651,13 +697,13 @@ fn card<'a>(d: &'a Deliverable) -> Element<'a, Msg> {
     if let Some(task) = &d.task {
         body.push(ui::mono(task.as_str(), 11.0, crate::theme::palette().ink_3).into());
     }
-    button_card(body, Msg::Open(d.id.clone()))
+    button_card(body, Msg::Open(d.id.clone()), picked)
 }
 
-fn button_card<'a>(body: Vec<Element<'a, Msg>>, on_press: Msg) -> Element<'a, Msg> {
+fn button_card<'a>(body: Vec<Element<'a, Msg>>, on_press: Msg, picked: bool) -> Element<'a, Msg> {
     iced::widget::button(column(body).spacing(6).width(Fill))
         .on_press(on_press)
-        .style(theme::register_row(false))
+        .style(theme::register_row(picked))
         .padding(12)
         .width(Fill)
         .into()
@@ -873,6 +919,23 @@ fn kind_for(on: bool) -> ui::Kind {
     }
 }
 
+/// The row an arrow key picks: the first row on a press with none picked, else one row down or up,
+/// held to the first and the last. None when there are no rows.
+fn step(cur: Option<usize>, len: usize, down: bool) -> Option<usize> {
+    let last = len.checked_sub(1)?;
+    Some(match cur {
+        None => 0,
+        Some(i) if down => (i.min(last) + 1).min(last),
+        Some(i) => i.min(last).saturating_sub(1),
+    })
+}
+
+/// A pick held to a list of `len` rows: None once the list is empty, else at most its last row.
+fn clamp(cur: Option<usize>, len: usize) -> Option<usize> {
+    let last = len.checked_sub(1)?;
+    cur.map(|i| i.min(last))
+}
+
 fn textual(content_type: &str) -> bool {
     let t = content_type.to_lowercase();
     t.starts_with("text/") || t.contains("json") || t.contains("xml")
@@ -1001,4 +1064,29 @@ fn save_download(name: &str, bytes: &[u8]) -> Result<String, String> {
     let target = dir.join(file);
     std::fs::write(&target, bytes).map_err(|e| e.to_string())?;
     Ok(target.display().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{clamp, step};
+
+    #[test]
+    fn step_picks_the_first_row_then_moves_and_holds_at_the_ends() {
+        assert_eq!(step(None, 3, true), Some(0));
+        assert_eq!(step(None, 3, false), Some(0));
+        assert_eq!(step(Some(0), 3, true), Some(1));
+        assert_eq!(step(Some(2), 3, true), Some(2));
+        assert_eq!(step(Some(2), 3, false), Some(1));
+        assert_eq!(step(Some(0), 3, false), Some(0));
+        assert_eq!(step(None, 0, true), None);
+        assert_eq!(step(Some(7), 3, true), Some(2));
+    }
+
+    #[test]
+    fn clamp_keeps_a_pick_inside_the_list() {
+        assert_eq!(clamp(Some(4), 2), Some(1));
+        assert_eq!(clamp(Some(1), 2), Some(1));
+        assert_eq!(clamp(Some(0), 0), None);
+        assert_eq!(clamp(None, 2), None);
+    }
 }

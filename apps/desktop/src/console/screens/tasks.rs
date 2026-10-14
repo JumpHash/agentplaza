@@ -166,8 +166,10 @@ pub struct State {
     activity: HashMap<u64, String>,
     detail: Option<Detail>,
     draft: Option<Draft>,
-    /// The card under the pointer last: Enter opens it.
+    /// The card under the pointer last: Enter opens it (when no card is picked by the keyboard).
     hovered: Option<String>,
+    /// The card the arrow keys picked, as its index in the board's order (see `board_order`).
+    kbd: Option<usize>,
     /// A reload from a hub event is in flight, and whether another one was asked for meanwhile.
     reloading: bool,
     again: bool,
@@ -200,6 +202,8 @@ pub enum Msg {
     Hover(String),
     /// Enter was pressed.
     EnterKey,
+    /// An arrow key was pressed: true for down, false for up.
+    Step(bool),
     /// A hub event: a task, work or transcript frame.
     Event(events::Event),
 }
@@ -226,9 +230,17 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         }
         Msg::EnterKey => {
             if state.selected.is_none() && state.draft.is_none() {
-                if let Some(id) = state.hovered.clone() {
+                // The card the arrow keys picked, else the card under the pointer.
+                let picked = state.kbd.and_then(|i| board_order(&state.tasks).get(i).map(|t| t.id.clone()));
+                if let Some(id) = picked.or_else(|| state.hovered.clone()) {
                     return update(state, Msg::Open(id), ctx);
                 }
+            }
+            Task::none()
+        }
+        Msg::Step(down) => {
+            if state.selected.is_none() && state.draft.is_none() {
+                state.kbd = step(state.kbd, state.tasks.len(), down);
             }
             Task::none()
         }
@@ -260,6 +272,8 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             if snap.detail.is_none() {
                 state.tasks = snap.tasks;
                 state.activity = snap.activity.into_iter().collect();
+                // A poll may shrink the board: the keyboard's pick stays on a card that is there.
+                state.kbd = clamp(state.kbd, state.tasks.len());
             }
             state.agents = snap.agents;
             state.detail = if state.selected.is_some() { snap.detail } else { None };
@@ -464,6 +478,30 @@ fn lane_of(state: &str) -> usize {
         "failed" | "withdrawn" | "cancelled" => 3,
         _ => 1,
     }
+}
+
+/// The board's cards in the order the lanes show them: lane by lane, each lane newest first.
+fn board_order(tasks: &[TaskRecord]) -> Vec<&TaskRecord> {
+    let mut sorted: Vec<&TaskRecord> = tasks.iter().collect();
+    sorted.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    (0..LANES.len()).flat_map(|lane| sorted.iter().copied().filter(move |t| lane_of(&t.state) == lane)).collect()
+}
+
+/// The row an arrow key picks: the first row on a press with none picked, else one row down or
+/// up, held to the first and the last. None when there are no rows.
+fn step(cur: Option<usize>, len: usize, down: bool) -> Option<usize> {
+    let last = len.checked_sub(1)?;
+    Some(match cur {
+        None => 0,
+        Some(i) if down => (i.min(last) + 1).min(last),
+        Some(i) => i.min(last).saturating_sub(1),
+    })
+}
+
+/// A pick held to a list of `len` rows: None once the list is empty, else at most its last row.
+fn clamp(cur: Option<usize>, len: usize) -> Option<usize> {
+    let last = len.checked_sub(1)?;
+    cur.map(|i| i.min(last))
 }
 
 fn lane_tone(lane: usize) -> Tone {
@@ -705,13 +743,17 @@ fn fig<'a>(label: &str, value: usize) -> Element<'a, Msg> {
 
 /// The four lanes, each full height, with a line when empty.
 fn board<'a>(state: &'a State) -> Element<'a, Msg> {
-    let mut sorted: Vec<&'a TaskRecord> = state.tasks.iter().collect();
-    sorted.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    let order = board_order(&state.tasks);
+    let picked: Option<&'a str> = state.kbd.and_then(|i| order.get(i).copied()).map(|t| t.id.as_str());
     let lanes: Vec<Element<'a, Msg>> = LANES
         .iter()
         .enumerate()
         .map(|(i, (label, idle))| {
-            let items: Vec<Element<'a, Msg>> = sorted.iter().filter(|t| lane_of(&t.state) == i).map(|t| task_card(state, *t)).collect();
+            let items: Vec<Element<'a, Msg>> = order
+                .iter()
+                .filter(|t| lane_of(&t.state) == i)
+                .map(|t| task_card(state, t, picked == Some(t.id.as_str())))
+                .collect();
             let count = items.len();
             let body: Element<'a, Msg> = if items.is_empty() {
                 text(*idle).font(ITALIC).size(15.0).color(crate::theme::palette().ink_3).into()
@@ -744,7 +786,7 @@ fn lane<'a>(i: usize, label: &str, count: usize, body: Element<'a, Msg>) -> Elem
 /// One card, drawn as the web draws it: the id and role on top, the goal in serif semibold
 /// held to two lines, the assignee, then a footer that depends on the lane. Every line is
 /// clipped or wrapped to the card, so no text pushes past its edge.
-fn task_card<'a>(state: &'a State, t: &'a TaskRecord) -> Element<'a, Msg> {
+fn task_card<'a>(state: &'a State, t: &'a TaskRecord, picked: bool) -> Element<'a, Msg> {
     let now = now_ms();
     let status = status_of(&state.agents, t.agent_cid);
     let dot = container(Space::new().width(8.0).height(8.0)).style(theme::swatch(status_color(&status)));
@@ -809,17 +851,18 @@ fn task_card<'a>(state: &'a State, t: &'a TaskRecord) -> Element<'a, Msg> {
     .height(Length::Fixed(41.0))
     .clip(true);
     let body = column![top, title, who, container(detail).width(Length::Fill)].spacing(10).width(Length::Fill);
-    mouse_area(container(body).padding(12.0).width(Length::Fill).style(card_box))
+    mouse_area(container(body).padding(12.0).width(Length::Fill).style(card_box(picked)))
         .on_press(Msg::Open(t.id.clone()))
         .on_enter(Msg::Hover(t.id.clone()))
         .into()
 }
 
-/// The card's box: the paper colour under a rule, as the web's task card.
-fn card_box(_theme: &Theme) -> container::Style {
-    container::Style {
+/// The card's box: the paper colour under a rule, as the web's task card. A card the keyboard
+/// has picked takes the register's selected-row fill (the one `theme::register_row(true)` uses).
+fn card_box(picked: bool) -> impl Fn(&Theme) -> container::Style {
+    move |_theme: &Theme| container::Style {
         text_color: Some(crate::theme::palette().ink),
-        background: Some(crate::theme::palette().paper.into()),
+        background: Some(if picked { crate::theme::palette().taint } else { crate::theme::palette().paper }.into()),
         border: Border { color: crate::theme::palette().rule, width: 1.0, radius: 0.0.into() },
         ..container::Style::default()
     }
@@ -991,7 +1034,27 @@ fn kv<'a>(key: &str, value: Element<'a, Msg>) -> Element<'a, Msg> {
 
 #[cfg(test)]
 mod tests {
-    use super::clip;
+    use super::{clamp, clip, step};
+
+    #[test]
+    fn step_picks_the_first_row_then_moves_and_holds_at_the_ends() {
+        assert_eq!(step(None, 3, true), Some(0));
+        assert_eq!(step(None, 3, false), Some(0));
+        assert_eq!(step(Some(0), 3, true), Some(1));
+        assert_eq!(step(Some(2), 3, true), Some(2));
+        assert_eq!(step(Some(2), 3, false), Some(1));
+        assert_eq!(step(Some(0), 3, false), Some(0));
+        assert_eq!(step(None, 0, true), None);
+        assert_eq!(step(Some(7), 3, true), Some(2));
+    }
+
+    #[test]
+    fn clamp_keeps_a_pick_inside_the_list() {
+        assert_eq!(clamp(Some(4), 2), Some(1));
+        assert_eq!(clamp(Some(1), 2), Some(1));
+        assert_eq!(clamp(Some(0), 0), None);
+        assert_eq!(clamp(None, 2), None);
+    }
 
     #[test]
     fn clip_keeps_short_text_and_flattens_whitespace() {
@@ -1007,16 +1070,26 @@ mod tests {
 
 /// The hub events this screen follows live (the web refreshes on the same topics). None yet: see docs/design/parity.md.
 pub fn subscription(ctx: &Ctx) -> Subscription<Msg> {
-    Subscription::batch([events::subscription(&ctx.client).map(Msg::Event), iced::event::listen_with(enter_key)])
+    Subscription::batch([events::subscription(&ctx.client).map(Msg::Event), iced::event::listen_with(keys)])
 }
 
-/// Enter, for the card under the pointer (the web's focused card opens on Enter).
-fn enter_key(event: iced::Event, _status: iced::event::Status, _window: iced::window::Id) -> Option<Msg> {
+/// Enter opens the card the arrow keys picked, else the card under the pointer (the web's focused
+/// card opens on Enter). The arrows move the pick; a key a focused widget captured is left alone.
+fn keys(event: iced::Event, status: iced::event::Status, _window: iced::window::Id) -> Option<Msg> {
+    use iced::keyboard::key::Named;
     match event {
-        iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
-            key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Enter),
-            ..
-        }) => Some(Msg::EnterKey),
+        iced::Event::Keyboard(iced::keyboard::Event::KeyPressed { key: iced::keyboard::Key::Named(Named::Enter), .. }) => {
+            Some(Msg::EnterKey)
+        }
+        iced::Event::Keyboard(iced::keyboard::Event::KeyPressed { key: iced::keyboard::Key::Named(key), .. })
+            if status == iced::event::Status::Ignored =>
+        {
+            match key {
+                Named::ArrowDown => Some(Msg::Step(true)),
+                Named::ArrowUp => Some(Msg::Step(false)),
+                _ => None,
+            }
+        }
         _ => None,
     }
 }
