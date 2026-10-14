@@ -1,0 +1,116 @@
+//! The rules for listing applications: their names, their scripting bridges, and the order and uniqueness of the list.
+//!
+//! The macOS code reads each bundle's `Info.plist` and folder into plain values and hands them here.
+
+use apz_desktop::AppInfo;
+use apz_station::Bridge;
+
+/// The scripting bridges an app offers. JXA (JavaScript for Automation) works with any app that can be scripted at
+/// all, so it is always offered. AppleScript needs the app to enable it (`NSAppleScriptEnabled`) or to publish a
+/// scripting dictionary (an `.sdef` file).
+pub fn scripting_bridges(applescript_enabled: bool, has_scripting_dictionary: bool) -> Vec<Bridge> {
+    let mut bridges = Vec::new();
+    if applescript_enabled || has_scripting_dictionary {
+        bridges.push(Bridge::AppleScript);
+    }
+    bridges.push(Bridge::Jxa);
+    bridges
+}
+
+/// The name people see: the display name, else the bundle name, else the file name without `.app`. Empty names do
+/// not count.
+pub fn app_name(display_name: Option<&str>, bundle_name: Option<&str>, file_stem: &str) -> String {
+    [display_name, bundle_name]
+        .into_iter()
+        .flatten()
+        .find(|name| !name.is_empty())
+        .unwrap_or(file_stem)
+        .to_string()
+}
+
+/// The stable id: the bundle identifier, else the file name without `.app`.
+pub fn app_id(bundle_identifier: Option<&str>, file_stem: &str) -> String {
+    bundle_identifier
+        .filter(|id| !id.is_empty())
+        .unwrap_or(file_stem)
+        .to_string()
+}
+
+/// Sorts apps by name (then id) and keeps the first of each id, so an app in two folders is listed once.
+pub fn sort_and_dedupe(mut apps: Vec<AppInfo>) -> Vec<AppInfo> {
+    apps.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.id.cmp(&b.id)));
+    let mut seen = std::collections::BTreeSet::new();
+    apps.retain(|app| seen.insert(app.id.clone()));
+    apps
+}
+
+/// The app with this name, the one `launch` and `ui_tree` take.
+pub fn find_app<'a>(apps: &'a [AppInfo], name: &str) -> Option<&'a AppInfo> {
+    apps.iter().find(|app| app.name == name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn app(id: &str, name: &str) -> AppInfo {
+        AppInfo {
+            id: id.into(),
+            name: name.into(),
+            path: format!("/Applications/{name}.app"),
+            scripting: vec![Bridge::Jxa],
+        }
+    }
+
+    #[test]
+    fn jxa_is_always_offered_and_applescript_needs_the_app_to_allow_it() {
+        assert_eq!(scripting_bridges(false, false), vec![Bridge::Jxa]);
+        assert_eq!(
+            scripting_bridges(true, false),
+            vec![Bridge::AppleScript, Bridge::Jxa]
+        );
+        assert_eq!(
+            scripting_bridges(false, true),
+            vec![Bridge::AppleScript, Bridge::Jxa]
+        );
+    }
+
+    #[test]
+    fn the_name_falls_back_from_display_to_bundle_to_file_name() {
+        assert_eq!(
+            app_name(Some("Notes"), Some("NotesBundle"), "Notes"),
+            "Notes"
+        );
+        assert_eq!(app_name(Some(""), Some("Calc"), "Calculator"), "Calc");
+        assert_eq!(app_name(None, None, "Blender"), "Blender");
+    }
+
+    #[test]
+    fn the_id_is_the_bundle_identifier_or_the_file_name() {
+        assert_eq!(
+            app_id(Some("org.blender.Blender"), "Blender"),
+            "org.blender.Blender"
+        );
+        assert_eq!(app_id(Some(""), "Blender"), "Blender");
+        assert_eq!(app_id(None, "Blender"), "Blender");
+    }
+
+    #[test]
+    fn the_list_is_sorted_by_name_and_each_id_is_listed_once() {
+        let listed = sort_and_dedupe(vec![
+            app("com.example.calc", "Calc"),
+            app("com.example.notes", "Notes"),
+            app("com.example.calc", "Calc (copy)"),
+            app("com.example.blender", "Blender"),
+        ]);
+        let names: Vec<&str> = listed.iter().map(|app| app.name.as_str()).collect();
+        assert_eq!(names, vec!["Blender", "Calc", "Notes"]);
+    }
+
+    #[test]
+    fn an_app_is_found_by_its_name() {
+        let apps = vec![app("com.example.notes", "Notes")];
+        assert!(find_app(&apps, "Notes").is_some());
+        assert!(find_app(&apps, "notes").is_none(), "names match exactly");
+    }
+}

@@ -1,0 +1,19 @@
+[package]
+name = "apz-desktop-macos"
+description = "The macOS backend of the workstation desktop interface: CoreGraphics capture and events, the Accessibility tree and actions, and app listing"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+apz-desktop = { path = "../apz-desktop" }
+apz-station = { path = "../apz-station" }
+
+# The platform code only builds for macOS. The pure parts (key codes, the input plan, pixel layout, attribute
+# decoding, owner detection) build and test on every host.
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.9"
+core-graphics = { version = "0.23", features = ["highsierra"] }
+foreign-types = "0.5"
+objc2-app-kit = { version = "0.3", features = ["NSRunningApplication", "NSWorkspace"] }
