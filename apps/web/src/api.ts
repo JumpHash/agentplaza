@@ -92,8 +92,11 @@ export interface ConnectorAction { name: string; description: string; risk: Conn
 /** One credential a connector needs: in the vault, or read from apid's environment (`env`). */
 export interface ConnectorField {
   name: string; label: string; env: string; hint: string; secret: boolean; required: boolean;
-  /** Whether a value is available, and where from (the vault wins over the environment). */
-  set: boolean; source: 'vault' | 'env' | null;
+  /**
+   * Whether a value is available, and where from: the vault or the environment; `missing` when neither
+   * holds it; `sealed` when the vault is sealed so it cannot tell; `out_of_scope` when only other nodes hold it.
+   */
+  set: boolean; source: 'vault' | 'env' | 'missing' | 'sealed' | 'out_of_scope' | null;
 }
 export interface Connector {
   id: string; label: string; brand: string; kind: 'api' | 'cli'; category: ConnectorCategory;

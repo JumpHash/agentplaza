@@ -13,7 +13,7 @@ import { tierChoices } from './agent-detail';
 type Tier = 'orchestrator' | 'worker';
 type Price = { input: number; output: number };
 
-const EFFORTS = ['default', 'low', 'medium', 'high', 'xhigh', 'max'];
+const EFFORTS = ['default', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
 const LIST_ID = 'models-policy-known';
 
 export function mountModelPolicy(root: HTMLElement): Cleanup {

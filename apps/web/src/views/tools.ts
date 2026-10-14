@@ -59,6 +59,8 @@ function sectionOf(c: Connector): Section {
 function sourceLine(f: ConnectorField): string {
   if (f.source === 'vault') return 'Set in the vault';
   if (f.source === 'env') return `Read from $${f.env}`;
+  if (f.source === 'sealed') return 'Vault sealed';
+  if (f.source === 'out_of_scope') return 'Not available on this node';
   return `Not set — or set $${f.env} in apid's keys file`;
 }
 

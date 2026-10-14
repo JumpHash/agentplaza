@@ -27,7 +27,7 @@ const MONO_SEMIBOLD: Font = Font { weight: Weight::Semibold, ..MONO };
 const SERIF_SEMIBOLD: Font = Font { weight: Weight::Semibold, ..SERIF };
 
 const GROUPS: [&str; 3] = ["Configured with a key", "Needs a key", "Local"];
-const EFFORTS: [&str; 6] = ["default", "low", "medium", "high", "xhigh", "max"];
+const EFFORTS: [&str; 8] = ["default", "none", "minimal", "low", "medium", "high", "xhigh", "max"];
 const DECISIONS_LEDE: &str = "Models that answer typed questions with calibrated probabilities instead of writing text. The plaza uses them to decide; agents never chat with them.";
 
 /// The model group a provider view belongs to when the hub does not say ("chat" or "decisions").
@@ -214,10 +214,19 @@ pub struct ModelInfo {
     pub trains_on_data: bool,
 }
 
+/// A provider whose models the hub could not list (`/v1/models`' `errors`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct ListingError {
+    pub provider: String,
+    pub error: String,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct ModelsView {
     #[serde(default)]
     pub models: Vec<ModelInfo>,
+    #[serde(default)]
+    pub errors: Vec<ListingError>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -309,6 +318,8 @@ impl std::fmt::Display for Opt {
 pub enum Target {
     Edit(Provider),
     Add(ProviderKind),
+    /// A provider of any kind the owner names, as `agentplaza models add --id --kind` makes one.
+    Custom,
 }
 
 #[derive(Debug, Clone)]
@@ -319,6 +330,8 @@ pub struct Form {
     base_url: String,
     /// The auth env var, when the provider authenticates from one.
     env: Option<String>,
+    /// The provider kind a custom provider takes (empty for the others).
+    kind: String,
     /// Comma-separated models; None hides the field.
     models: Option<String>,
     /// The optional key, add only.
@@ -415,6 +428,8 @@ pub struct State {
     tab: Tab,
     kinds: Vec<ProviderKind>,
     providers: Vec<Provider>,
+    /// Providers whose models the hub could not list, with why.
+    listing_errors: Vec<ListingError>,
     expanded: BTreeSet<String>,
     listed: BTreeMap<String, Vec<ListedModel>>,
     dialog: Dialog,
@@ -434,7 +449,7 @@ pub enum Msg {
     /// Navigate to another screen.
     Go(Id),
     Tab(Tab),
-    Loaded(Result<(Vec<ProviderKind>, Vec<Provider>), String>),
+    Loaded(Result<ProvidersLoad, String>),
     Test(String),
     Tested(Result<TestReport, String>),
     ToggleModels(String),
@@ -450,6 +465,9 @@ pub enum Msg {
     OpenCatalogue,
     CatalogueSearch(String),
     PickKind(String),
+    /// The custom provider form, from the catalogue's Custom tile.
+    OpenCustom,
+    FormKind(String),
     FormId(String),
     FormUrl(String),
     FormEnv(String),
@@ -518,9 +536,10 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             state.tab = tab;
             load(state, ctx)
         }
-        Msg::Loaded(Ok((kinds, providers))) => {
+        Msg::Loaded(Ok((kinds, providers, listing_errors))) => {
             state.kinds = kinds;
             state.providers = providers;
+            state.listing_errors = listing_errors;
             state.error = None;
             Task::none()
         }
@@ -610,6 +629,7 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                     id_editable: false,
                     base_url: p.base_url.clone().unwrap_or_default(),
                     env: auth_env(&p.auth),
+                    kind: String::new(),
                     models: Some(p.models.join(", ")),
                     key: None,
                     saving: false,
@@ -650,11 +670,32 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                     id_editable: true,
                     base_url: k.base_url.clone().unwrap_or_default(),
                     env: auth_env(&k.auth),
+                    kind: String::new(),
                     models: None,
                     key: Some(String::new()),
                     saving: false,
                     target: Target::Add(k),
                 });
+            }
+            Task::none()
+        }
+        Msg::OpenCustom => {
+            state.dialog = Dialog::Form(Form {
+                id: String::new(),
+                id_editable: true,
+                base_url: String::new(),
+                env: Some(String::new()),
+                kind: distinct_kinds(&state.kinds).into_iter().next().unwrap_or_default(),
+                models: None,
+                key: None,
+                saving: false,
+                target: Target::Custom,
+            });
+            Task::none()
+        }
+        Msg::FormKind(s) => {
+            if let Dialog::Form(f) = &mut state.dialog {
+                f.kind = s;
             }
             Task::none()
         }
@@ -698,14 +739,25 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                 state.error = Some("Give the provider an id".to_string());
                 return Task::none();
             }
+            if matches!(form.target, Target::Custom) && form.kind.trim().is_empty() {
+                state.error = Some("Pick a kind".to_string());
+                return Task::none();
+            }
             form.saving = true;
             let base = Some(form.base_url.trim().to_string()).filter(|s| !s.is_empty());
             let auth = form.env.as_ref().map(|e| json!({ "env": e.trim() }));
             let models = form.models.as_ref().map(|m| split_list(m));
             let key = form.key.as_deref().unwrap_or("").trim().to_string();
+            let kind = form.kind.trim().to_string();
+            let env = form.env.clone().unwrap_or_default();
             let target = form.target.clone();
             let c = ctx.client.clone();
             match target {
+                Target::Custom => {
+                    let body = custom_body(&id, &kind, base.as_deref().unwrap_or_default(), &env);
+                    let note = format!("Added {id}");
+                    client::task(move || c.post::<Value>("/v1/providers", &body).map(|_| note), Msg::Done)
+                }
                 Target::Edit(p) => {
                     let mut body = json!({
                         "id": p.id.clone(),
@@ -1040,16 +1092,51 @@ fn tabs_strip<'a>(state: &'a State) -> Element<'a, Msg> {
     column(vec![strip.into(), ui::hairline()]).into()
 }
 
+/// What the providers tab loads: the provider kinds, the providers, and the providers whose models could not be listed.
+type ProvidersLoad = (Vec<ProviderKind>, Vec<Provider>, Vec<ListingError>);
+
 fn providers_task(ctx: &Ctx) -> Task<Msg> {
     let c = ctx.client.clone();
     client::task(
-        move || -> Result<(Vec<ProviderKind>, Vec<Provider>), String> {
+        move || -> Result<ProvidersLoad, String> {
             let kinds = c.get::<Vec<ProviderKind>>("/v1/provider-kinds")?;
             let providers = c.get::<Vec<Provider>>("/v1/providers")?;
-            Ok((kinds, providers))
+            let listing = c.get::<ModelsView>("/v1/models")?;
+            Ok((kinds, providers, listing.errors))
         },
         Msg::Loaded,
     )
+}
+
+/// The kinds a custom provider can take: each kind once, in the catalogue's order.
+fn distinct_kinds(kinds: &[ProviderKind]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for k in kinds {
+        if !out.contains(&k.kind) {
+            out.push(k.kind.clone());
+        }
+    }
+    out
+}
+
+/// The body a custom provider is added with, as `agentplaza models add --id --kind` sends it: its id,
+/// kind and endpoint, the env var its key is read from (`none` when that is blank), and no models.
+/// A blank endpoint is sent as null.
+fn custom_body(id: &str, kind: &str, base_url: &str, env: &str) -> Value {
+    let base = Some(base_url.trim()).filter(|s| !s.is_empty());
+    let env = Some(env.trim()).filter(|s| !s.is_empty());
+    json!({
+        "id": id,
+        "kind": kind,
+        "base_url": base,
+        "auth": env.map_or_else(|| json!("none"), |e| json!({ "env": e })),
+        "models": [],
+    })
+}
+
+/// A provider whose models could not be listed, as the warning line names it.
+fn listing_warning(e: &ListingError) -> String {
+    format!("{}: {}", e.provider, e.error)
 }
 
 fn policy_task(ctx: &Ctx) -> Task<Msg> {
@@ -1234,6 +1321,9 @@ fn picker<'a>(options: Vec<Opt>, current: &str, slot: Slot) -> Element<'a, Msg> 
 
 fn providers_view<'a>(state: &'a State) -> Element<'a, Msg> {
     let mut parts: Vec<Element<'a, Msg>> = vec![row(vec![spacer(), ui::btn("Add provider", None, Kind::Primary, Some(Msg::OpenCatalogue))]).into()];
+    for e in &state.listing_errors {
+        parts.push(text(listing_warning(e)).font(theme::SERIF).size(13.0).color(Tone::Warn.color()).into());
+    }
     if let Some(d) = dialog_view(state) {
         parts.push(d);
     }
@@ -1540,18 +1630,22 @@ fn dialog_view<'a>(state: &'a State) -> Option<Element<'a, Msg>> {
                 .copied()
                 .filter(|k| q.is_empty() || format!("{} {} {}", k.label, k.id, k.kind).to_lowercase().contains(&q))
                 .collect();
-            let catalogue: Element<'a, Msg> = if shown.is_empty() {
+            let mut parts: Vec<Element<'a, Msg>> = Vec::new();
+            for (title, decisions) in [("Chat", false), ("Decisions", true)] {
+                let tiles: Vec<Element<'a, Msg>> = shown.iter().copied().filter(|k| is_decision_kind(&k.kind) == decisions).map(kind_tile).collect();
+                if !tiles.is_empty() {
+                    parts.push(group_title(title));
+                    parts.push(ui::card_grid(tiles));
+                }
+            }
+            if q.is_empty() || "custom provider".contains(q.as_str()) {
+                parts.push(group_title("Custom"));
+                parts.push(ui::card_grid(vec![custom_tile()]));
+            }
+            let catalogue: Element<'a, Msg> = if parts.is_empty() {
                 let none = if free.is_empty() { "Every provider is already configured" } else { "No matches" };
                 ui::faint(none).into()
             } else {
-                let mut parts: Vec<Element<'a, Msg>> = Vec::new();
-                for (title, decisions) in [("Chat", false), ("Decisions", true)] {
-                    let tiles: Vec<Element<'a, Msg>> = shown.iter().copied().filter(|k| is_decision_kind(&k.kind) == decisions).map(kind_tile).collect();
-                    if !tiles.is_empty() {
-                        parts.push(group_title(title));
-                        parts.push(ui::card_grid(tiles));
-                    }
-                }
                 column(parts).spacing(12).into()
             };
             let items: Vec<Element<'a, Msg>> = vec![text_input("Search providers", search).on_input(Msg::CatalogueSearch).padding(8).into(), catalogue];
@@ -1567,8 +1661,20 @@ fn kind_tile<'a>(k: &'a ProviderKind) -> Element<'a, Msg> {
         ui::brand_logo::<Msg>(&k.brand, 18.0),
         text(k.label.as_str()).font(theme::SERIF).size(14.0).color(crate::theme::palette().ink).wrapping(Wrapping::None).width(Length::Fill).into(),
     ];
+    tile(content, Msg::PickKind(k.id.clone()))
+}
+
+/// The catalogue's Custom tile: a provider of any kind, with its own id.
+fn custom_tile<'a>() -> Element<'a, Msg> {
+    let content: Vec<Element<'a, Msg>> =
+        vec![text("Custom provider").font(theme::SERIF).size(14.0).color(crate::theme::palette().ink).wrapping(Wrapping::None).width(Length::Fill).into()];
+    tile(content, Msg::OpenCustom)
+}
+
+/// A ruled catalogue tile that sends `on_press` when pressed.
+fn tile<'a>(content: Vec<Element<'a, Msg>>, on_press: Msg) -> Element<'a, Msg> {
     button(row(content).spacing(8).align_y(Alignment::Center))
-        .on_press(Msg::PickKind(k.id.clone()))
+        .on_press(on_press)
         .padding(12)
         .width(Length::Fill)
         .style(|_: &Theme, status: button::Status| {
@@ -1588,6 +1694,7 @@ fn form_view<'a>(state: &'a State, form: &'a Form) -> Element<'a, Msg> {
     let (title, submit, notes) = match &form.target {
         Target::Edit(p) => (format!("Edit {}", p.id), "Save", kind_of(state, p).map(|k| k.notes.clone())),
         Target::Add(k) => (k.label.clone(), "Add provider", Some(k.notes.clone())),
+        Target::Custom => ("Custom provider".to_string(), "Add provider", None),
     };
     let mut fields: Vec<Element<'a, Msg>> = Vec::new();
     if let Some(n) = notes.filter(|n| !n.is_empty()) {
@@ -1598,6 +1705,11 @@ fn form_view<'a>(state: &'a State, form: &'a Form) -> Element<'a, Msg> {
         id_input = id_input.on_input(Msg::FormId);
     }
     fields.push(labelled("Provider id", id_input.into()));
+    if matches!(form.target, Target::Custom) {
+        let selected = Some(form.kind.clone()).filter(|k| !k.is_empty());
+        let kind_picker: Element<'a, Msg> = pick_list(distinct_kinds(&state.kinds), selected, Msg::FormKind).width(Length::Fill).into();
+        fields.push(labelled("Kind", kind_picker));
+    }
     fields.push(labelled("Base URL", text_input("https://", &form.base_url).on_input(Msg::FormUrl).padding(8).into()));
     if let Some(env) = &form.env {
         fields.push(labelled("Auth env var", text_input("ENV_VAR_NAME", env).on_input(Msg::FormEnv).padding(8).into()));
@@ -1829,5 +1941,48 @@ mod tests {
     #[test]
     fn price_path_encodes_the_provider_model_key() {
         assert_eq!(price_path("anthropic/claude-opus-5-5"), "/v1/prices/anthropic%2Fclaude-opus-5-5");
+    }
+
+    #[test]
+    fn the_effort_list_is_the_hubs_levels_after_default() {
+        assert_eq!(EFFORTS, ["default", "none", "minimal", "low", "medium", "high", "xhigh", "max"]);
+    }
+
+    #[test]
+    fn a_custom_provider_is_added_with_the_clis_body() {
+        let body = custom_body("local", "openai-compatible", " http://127.0.0.1:8080 ", " LOCAL_KEY ");
+        assert_eq!(
+            body,
+            json!({ "id": "local", "kind": "openai-compatible", "base_url": "http://127.0.0.1:8080", "auth": { "env": "LOCAL_KEY" }, "models": [] })
+        );
+    }
+
+    #[test]
+    fn a_blank_endpoint_and_env_var_are_null_and_none() {
+        let body = custom_body("local", "openai", "  ", "");
+        assert_eq!(body, json!({ "id": "local", "kind": "openai", "base_url": null, "auth": "none", "models": [] }));
+    }
+
+    #[test]
+    fn the_kinds_a_custom_provider_takes_are_each_kind_once() {
+        let kind = |id: &str, kind: &str| ProviderKind {
+            id: id.into(),
+            kind: kind.into(),
+            label: id.into(),
+            brand: String::new(),
+            base_url: None,
+            auth: json!("none"),
+            notes: String::new(),
+            models: Vec::new(),
+            options: None,
+        };
+        let kinds = [kind("openai", "openai"), kind("openrouter", "openai"), kind("anthropic", "anthropic")];
+        assert_eq!(distinct_kinds(&kinds), vec!["openai".to_string(), "anthropic".to_string()]);
+    }
+
+    #[test]
+    fn a_listing_error_reads_as_the_provider_and_its_error() {
+        let e = ListingError { provider: "ollama".into(), error: "connection refused".into() };
+        assert_eq!(listing_warning(&e), "ollama: connection refused");
     }
 }

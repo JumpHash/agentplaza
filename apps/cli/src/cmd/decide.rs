@@ -106,14 +106,7 @@ fn print_answer(a: &Value) {
             }
         }
         "score" => {
-            let score = &a["score"];
-            let label = a["probabilities"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .find(|p| p["value"] == *score)
-                .map(|p| ctx::s(p, "label").to_string())
-                .unwrap_or_default();
+            let label = score_label(a);
             println!("score: {} ({label}) (confidence {:.0}%)", ctx::text(a, "score"), prob(a, "confidence") * 100.0);
             for p in a["probabilities"].as_array().into_iter().flatten() {
                 row(&format!("{} {}", ctx::text(p, "value"), ctx::s(p, "label")), prob(p, "probability"));
@@ -121,6 +114,21 @@ fn print_answer(a: &Value) {
         }
         _ => println!("the model refused to answer"),
     }
+}
+
+/// The label of the level a score answer names: the score rounded to a whole level, matched by value.
+/// The hub sends the levels' values as integers and the score as a float, so they compare as numbers.
+fn score_label(a: &Value) -> String {
+    let Some(score) = a["score"].as_f64().map(f64::round) else {
+        return String::new();
+    };
+    a["probabilities"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|p| p["value"].as_f64() == Some(score))
+        .map(|p| ctx::s(p, "label").to_string())
+        .unwrap_or_default()
 }
 
 fn prob(v: &Value, key: &str) -> f64 {
@@ -132,4 +140,28 @@ fn row(label: &str, p: f64) {
     let p = p.clamp(0.0, 1.0);
     let filled = (p * 20.0).round() as usize;
     println!("  {:>5.1}%  {}{}  {label}", p * 100.0, "█".repeat(filled), "░".repeat(20 - filled));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn levels() -> Value {
+        json!([{ "value": 1, "label": "low", "probability": 0.2 }, { "value": 2, "label": "mid", "probability": 0.5 }, { "value": 3, "label": "high", "probability": 0.3 }])
+    }
+
+    #[test]
+    fn score_label_names_the_level_the_rounded_score_lands_on() {
+        assert_eq!(score_label(&json!({ "score": 2.4, "probabilities": levels() })), "mid");
+        assert_eq!(score_label(&json!({ "score": 2.6, "probabilities": levels() })), "high");
+        assert_eq!(score_label(&json!({ "score": 3.0, "probabilities": levels() })), "high");
+        assert_eq!(score_label(&json!({ "score": 1, "probabilities": levels() })), "low");
+    }
+
+    #[test]
+    fn score_label_is_empty_when_no_level_matches_or_there_is_no_score() {
+        assert_eq!(score_label(&json!({ "score": 9.0, "probabilities": levels() })), "");
+        assert_eq!(score_label(&json!({ "probabilities": levels() })), "");
+        assert_eq!(score_label(&json!({ "score": null, "probabilities": [{ "label": "x" }] })), "");
+    }
 }

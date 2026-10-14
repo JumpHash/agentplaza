@@ -111,6 +111,22 @@ pub enum Cmd {
         #[command(subcommand)]
         action: DecisionsCmd,
     },
+    /// One model's price, in USD per million tokens (`usage prices` lists them all).
+    Price {
+        /// The model, e.g. anthropic/claude-x.
+        model: String,
+    },
+    /// The model price sources.
+    Prices {
+        #[command(subcommand)]
+        action: PricesCmd,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum PricesCmd {
+    /// Fetches the price sources again now.
+    Refresh,
 }
 
 #[derive(Subcommand, Debug)]
@@ -152,6 +168,9 @@ pub enum PolicyCmd {
         /// One model's price in credits per 1M tokens, MODEL=INPUT:OUTPUT. Repeatable.
         #[arg(long = "price", value_name = "MODEL=IN:OUT")]
         prices: Vec<String>,
+        /// Whether contributor models (their vendor trains on the data sent to them) may be defaults, role models and policy entries.
+        #[arg(long, value_name = "true|false")]
+        allow_training_models: Option<bool>,
     },
 }
 
@@ -335,9 +354,17 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             });
             ctx.out(&shown, |v| {
                 let rows: Vec<Vec<String>> = items(&v["models"])
-                    .map(|m| vec![ctx::s(m, "provider").to_string(), ctx::s(m, "id").to_string(), ctx::text(m, "name"), model_group(m).to_string()])
+                    .map(|m| {
+                        vec![
+                            ctx::s(m, "provider").to_string(),
+                            ctx::s(m, "id").to_string(),
+                            ctx::text(m, "name"),
+                            model_group(m).to_string(),
+                            trains_marker(m).to_string(),
+                        ]
+                    })
                     .collect();
-                ctx::table(&["provider", "id", "name", "group"], &rows);
+                ctx::table(&["provider", "id", "name", "group", "trains on data"], &rows);
                 for e in items(&v["errors"]) {
                     println!("could not list {}: {}", ctx::s(e, "provider"), ctx::s(e, "error"));
                 }
@@ -362,6 +389,7 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                 orchestrator_model,
                 role_models,
                 prices,
+                allow_training_models,
             } => {
                 let mut settings = ctx.client.get("/v1/settings")?;
                 let root = settings.as_object_mut().ok_or("the hub's settings are not an object")?;
@@ -407,11 +435,24 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                     let output: f64 = output.parse().map_err(|_| format!("the output price in {pair} is not a number"))?;
                     nested(root, "prices")?.insert(model.to_string(), json!({ "input": input, "output": output }));
                 }
+                if let Some(allow) = allow_training_models {
+                    root.insert("allow_training_models".into(), json!(allow));
+                }
                 let saved = ctx.client.put("/v1/settings", &settings)?;
                 ctx.out(&saved, print_policy);
                 Ok(())
             }
         },
+        Cmd::Price { model } => {
+            let v = ctx.client.get(&price_path(&model))?;
+            ctx.out(&v, print_price);
+            Ok(())
+        }
+        Cmd::Prices { action: PricesCmd::Refresh } => {
+            let v = ctx.client.call("POST", "/v1/prices/refresh", None)?;
+            ctx.out(&v, |_| println!("refreshed the price sources; list them with `agentplaza usage prices`"));
+            Ok(())
+        }
         Cmd::Decisions { action: DecisionsCmd::Current { provider, model } } => match (provider, model) {
             (None, None) => {
                 let current = ctx.client.get("/v1/decisions/default")?;
@@ -514,6 +555,15 @@ fn model_group(m: &Value) -> &'static str {
         "decisions"
     } else {
         "chat"
+    }
+}
+
+/// `yes` when the hub marks the model as one whose vendor trains on the data sent to it; else empty.
+fn trains_marker(m: &Value) -> &'static str {
+    if m.get("trains_on_data").and_then(Value::as_bool) == Some(true) {
+        "yes"
+    } else {
+        ""
     }
 }
 
@@ -641,6 +691,7 @@ fn print_policy(s: &Value) {
         ("max turns", ctx::text(s, "max_turns")),
         ("max tokens", ctx::text(s, "max_tokens")),
         ("fetch block", none_if_empty(joined(s.get("fetch_block")))),
+        ("training models", if s.get("allow_training_models").and_then(Value::as_bool) == Some(true) { "allowed" } else { "not allowed" }.to_string()),
     ]);
     for (role, model) in s.get("role_models").and_then(Value::as_object).into_iter().flatten() {
         println!("role {role}: {}", model.as_str().unwrap_or(""));
@@ -648,6 +699,30 @@ fn print_policy(s: &Value) {
     for (model, rate) in s.get("prices").and_then(Value::as_object).into_iter().flatten() {
         println!("price {model}: in {} out {} per 1M", ctx::text(rate, "input"), ctx::text(rate, "output"));
     }
+}
+
+/// The path of one model's price: the model id is one path segment, so its `/` is encoded.
+fn price_path(model: &str) -> String {
+    format!("/v1/prices/{}", ctx::seg(model))
+}
+
+/// One model's price, as `usage prices` shows it: a rate the source does not give reads as a dash.
+fn print_price(v: &Value) {
+    let price = v.get("price").unwrap_or(&Value::Null);
+    let rate = |key: &str| match ctx::text(price, key) {
+        text if text.is_empty() => "—".to_string(),
+        text => text,
+    };
+    ctx::fields(&[
+        ("model", ctx::text(v, "model")),
+        ("input", rate("input")),
+        ("output", rate("output")),
+        ("cache read", rate("cache_read")),
+        ("cache write", rate("cache_write")),
+        ("source", ctx::s(price, "source").to_string()),
+    ]);
+    println!();
+    println!("USD per million tokens");
 }
 
 /// The decision model, as the decisions screen names it.
@@ -753,5 +828,38 @@ mod tests {
         assert!(help.contains("none, minimal, low, medium, high, xhigh, max"), "{help}");
         assert!(help.contains("`default` clears it"), "{help}");
         assert!(!help.contains("default, low"), "the old list is gone: {help}");
+    }
+
+    #[test]
+    fn a_price_path_is_one_encoded_segment() {
+        assert_eq!(price_path("anthropic/claude-x"), "/v1/prices/anthropic%2Fclaude-x");
+        assert_eq!(price_path("glm-5.3"), "/v1/prices/glm-5.3");
+    }
+
+    #[test]
+    fn the_trains_marker_shows_only_for_contributor_models() {
+        assert_eq!(trains_marker(&json!({ "id": "m", "trains_on_data": true })), "yes");
+        assert_eq!(trains_marker(&json!({ "id": "m", "trains_on_data": false })), "");
+        assert_eq!(trains_marker(&json!({ "id": "m" })), "");
+    }
+
+    #[test]
+    fn allow_training_models_takes_true_or_false() {
+        let PolicyCmd::Set { allow_training_models, .. } = policy_set(&["--allow-training-models", "true"]).expect("true parses") else {
+            panic!("expected set");
+        };
+        assert_eq!(allow_training_models, Some(true));
+        let PolicyCmd::Set { allow_training_models, .. } = policy_set(&["--allow-training-models", "false"]).expect("false parses") else {
+            panic!("expected set");
+        };
+        assert_eq!(allow_training_models, Some(false));
+        assert!(policy_set(&["--allow-training-models", "maybe"]).is_err());
+    }
+
+    #[test]
+    fn price_takes_a_model_and_prices_takes_refresh() {
+        assert!(matches!(Probe::try_parse_from(["models", "price", "anthropic/claude-x"]).map(|p| p.cmd), Ok(Cmd::Price { model }) if model == "anthropic/claude-x"));
+        assert!(matches!(Probe::try_parse_from(["models", "prices", "refresh"]).map(|p| p.cmd), Ok(Cmd::Prices { action: PricesCmd::Refresh })));
+        assert!(Probe::try_parse_from(["models", "prices"]).is_err(), "prices needs its action");
     }
 }

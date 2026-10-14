@@ -2,8 +2,8 @@
 // A grid of provider cards, grouped by how each one is credentialed.
 
 import '../styles/models.css';
-import { api, contributorIds, isDecisionKind, type Auth, type Provider, type ProviderKind, type TestReport } from '../api';
-import { attempt, badge, brandLogo, button, empty, field, input, modal, toast, TRAINS_NOTE, trainsBadge, type Tone } from '../ui/components';
+import { api, contributorIds, isDecisionKind, type Auth, type ModelsView, type Provider, type ProviderKind, type TestReport } from '../api';
+import { attempt, badge, brandLogo, button, empty, field, input, modal, select, toast, TRAINS_NOTE, trainsBadge, type Tone } from '../ui/components';
 import { h, replace } from '../ui/dom';
 import type { Cleanup } from './index';
 import { decisionPanel } from './models-decisions';
@@ -50,6 +50,16 @@ function splitList(text: string): string[] {
   return text.split(',').map((s) => s.trim()).filter(Boolean);
 }
 
+/** One kind entry per provider kind (several presets can share a kind), in the kind list's order. */
+function distinctKinds(kinds: ProviderKind[]): ProviderKind[] {
+  return kinds.filter((k, i) => kinds.findIndex((other) => other.kind === k.kind) === i);
+}
+
+/** The auth a custom provider takes: its env var when one is named, else none (as the CLI sends it). */
+function customAuth(auth: Auth): Auth {
+  return typeof auth === 'object' && 'env' in auth && auth.env ? auth : 'none';
+}
+
 interface Draft {
   id: string;
   base_url: string;
@@ -59,10 +69,14 @@ interface Draft {
   idEditable: boolean;
   keyField: boolean;
   notes?: string;
+  /** When set, the form shows a kind choice among these, starting at `kind`. */
+  kinds?: ProviderKind[];
+  kind?: string;
 }
 
 interface Values {
   id: string;
+  kind: string;
   base_url: string | null;
   auth: Auth;
   models: string[] | null;
@@ -72,6 +86,8 @@ interface Values {
 export function mountProviders(root: HTMLElement): Cleanup {
   let kinds: ProviderKind[] = [];
   let providers: Provider[] = [];
+  /** Providers whose models could not be listed, with why (the hub's `/v1/models` errors). */
+  let listingErrors: ModelsView['errors'] = [];
 
   const body = h('div.prov-body', null, h('p.faint', null, 'Loading providers…'));
   const add = button('Add provider', () => openAdd(), { kind: 'primary' });
@@ -81,16 +97,18 @@ export function mountProviders(root: HTMLElement): Cleanup {
   const panel = decisionPanel();
 
   const refresh = async (): Promise<void> => {
-    const [k, p] = await Promise.all([attempt(() => api.providerKinds()), attempt(() => api.providers())]);
+    const [k, p, m] = await Promise.all([attempt(() => api.providerKinds()), attempt(() => api.providers()), attempt(() => api.models())]);
     if (k) kinds = k;
     if (p) providers = p;
+    if (m) listingErrors = m.errors;
     render();
     void panel.reload();
   };
 
   const render = (): void => {
+    const warnings = listingErrors.map((e) => h('div.banner.warn', { role: 'status', 'data-key': `listing-${e.provider}` }, `${e.provider}: ${e.error}`));
     if (!providers.length) {
-      replace(body, empty('models', 'No providers yet'));
+      replace(body, ...warnings, empty('models', 'No providers yet'));
       return;
     }
     const groups: Record<Group, Provider[]> = { 'Configured with a key': [], 'Needs a key': [], Local: [] };
@@ -107,6 +125,7 @@ export function mountProviders(root: HTMLElement): Cleanup {
     const decisionCards = providers.filter(isDecision);
     replace(
       body,
+      ...warnings,
       h('section.prov-section', { 'data-key': 'chat-models' }, h('h2.prov-section-title', null, 'Chat models'), ...chatSections),
       h(
         'section.prov-section',
@@ -251,8 +270,11 @@ export function mountProviders(root: HTMLElement): Cleanup {
     const envInput = envName === null ? null : input({ value: envName, placeholder: 'ENV_VAR_NAME', autocomplete: 'off' });
     const modelsInput = draft.models === null ? null : input({ value: draft.models.join(', '), autocomplete: 'off' });
     const keyInput = draft.keyField ? input({ type: 'password', autocomplete: 'new-password', placeholder: 'Optional' }) : null;
+    const kindSelect = draft.kinds ? select(draft.kinds.map((k) => ({ value: k.kind, label: k.kind })), draft.kind) : null;
 
-    const fields: Node[] = [field('Provider id', idInput), field('Base URL', urlInput)];
+    const fields: Node[] = [field('Provider id', idInput)];
+    if (kindSelect) fields.push(field('Kind', kindSelect));
+    fields.push(field('Base URL', urlInput));
     if (envInput) fields.push(field('Auth env var', envInput));
     if (modelsInput) fields.push(field('Models', modelsInput, 'Comma-separated'));
     if (keyInput) fields.push(field('API key', keyInput, 'Optional'));
@@ -268,6 +290,7 @@ export function mountProviders(root: HTMLElement): Cleanup {
         submit.disabled = true;
         const done = await save({
           id,
+          kind: kindSelect?.value ?? draft.kind ?? '',
           base_url: urlInput.value.trim() || null,
           auth: envInput ? { env: envInput.value.trim() } : draft.auth,
           models: modelsInput ? splitList(modelsInput.value) : null,
@@ -360,6 +383,38 @@ export function mountProviders(root: HTMLElement): Cleanup {
     );
   };
 
+  /** A custom provider: its own id and kind, a base URL and an auth env var; sent as the CLI sends it. */
+  const openCustom = (): void => {
+    const choices = distinctKinds(kinds);
+    openForm(
+      'Custom provider',
+      {
+        id: '',
+        base_url: '',
+        auth: { env: '' },
+        models: null,
+        idEditable: true,
+        keyField: false,
+        kinds: choices,
+        kind: choices[0]?.kind ?? '',
+      },
+      'Add provider',
+      async (v) => {
+        if (!v.kind) {
+          toast('Pick a kind', 'error');
+          return false;
+        }
+        const created = await attempt(
+          () => api.addProvider({ id: v.id, kind: v.kind, base_url: v.base_url, auth: customAuth(v.auth), models: [] }),
+          `Added ${v.id}`,
+        );
+        if (created === undefined) return false;
+        await refresh();
+        return true;
+      },
+    );
+  };
+
   const openAdd = (): void => {
     let close = () => {};
     const taken = new Set(providers.map((p) => p.id));
@@ -370,6 +425,11 @@ export function mountProviders(root: HTMLElement): Cleanup {
     const pick = (k: ProviderKind): void => {
       close();
       openKindForm(k);
+    };
+
+    const pickCustom = (): void => {
+      close();
+      openCustom();
     };
 
     const draw = (): void => {
@@ -384,12 +444,13 @@ export function mountProviders(root: HTMLElement): Cleanup {
         list.length ? [h('h3.prov-kind-title', null, title), h('div.prov-kind-grid', null, list.map(tile))] : [];
       const chatKinds = shown.filter((k) => !isDecisionKind(k.kind));
       const decisionKinds = shown.filter((k) => isDecisionKind(k.kind));
-      replace(
-        grid,
-        ...(shown.length
-          ? [...section('Chat', chatKinds), ...section('Decisions', decisionKinds)]
-          : [h('p.faint', null, free.length ? 'No matches' : 'Every provider is already configured')]),
-      );
+      const parts: HTMLElement[] = [...section('Chat', chatKinds), ...section('Decisions', decisionKinds)];
+      if (!q || 'custom provider'.includes(q)) {
+        const custom = h('button.prov-kind', { type: 'button', 'data-key': 'kind-custom' }, h('span.truncate', null, 'Custom provider'));
+        custom.addEventListener('click', pickCustom);
+        parts.push(h('h3.prov-kind-title', null, 'Custom'), h('div.prov-kind-grid', null, custom));
+      }
+      replace(grid, ...(parts.length ? parts : [h('p.faint', null, free.length ? 'No matches' : 'Every provider is already configured')]));
     };
 
     search.addEventListener('input', draw);
