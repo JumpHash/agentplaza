@@ -51,6 +51,9 @@
     "mask-black": { "color": "#15181a" },
     "nickel": { "color": "#c4c1b8" },
     "plastic-matte": { "color": "#24272b" },
-    "rgb": { "color": "#ffffff", "emissive": "#ff5fd2", "glow": 1.8, "flat": true }
+    "rgb": { "color": "#ffffff", "emissive": "#ff5fd2", "glow": 1.8, "flat": true },
+    "station-off":   { "color": "#07090f" },
+    "station-idle":  { "color": "#0f1a33", "emissive": "#2a4a8f", "glow": 0.7, "flat": true },
+    "station-active": { "color": "#2a1408", "emissive": "#e8590c", "glow": 1.8, "flat": true }
   }
 }

@@ -54,14 +54,15 @@ fn collect_json(root: &Path, dir: &Path, out: &mut Vec<(String, PathBuf)>) {
     }
 }
 
-/// Lists the hardware model files: `exterior/*` and `board/*` as models, `parts/*` as part files.
-/// The keys are the file names with their folder (`parts/gpu-pcie`).
+/// Lists the hardware model files: `exterior/*`, `board/*` and `workstation/*` (the workstations' exteriors, one per
+/// OS family and form) as models, `parts/*` as part files. The keys are the file names with their folder
+/// (`parts/gpu-pcie`, `workstation/mac-mini`).
 fn hardware_models(manifest_dir: &Path) {
     let assets = manifest_dir.join("../../assets/hardware");
     println!("cargo:rerun-if-changed={}", assets.display());
     let mut models = String::new();
     let mut parts = String::new();
-    for folder in ["exterior", "board", "parts"] {
+    for folder in ["exterior", "board", "parts", "workstation"] {
         let dir = assets.join(folder);
         println!("cargo:rerun-if-changed={}", dir.display());
         let mut files: Vec<PathBuf> = match fs::read_dir(&dir) {

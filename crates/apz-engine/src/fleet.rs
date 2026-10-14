@@ -77,6 +77,26 @@ pub struct Machine {
     pub stats: Option<Stats>,
     #[serde(default)]
     pub last_seen_ms: u64,
+    /// A workstation's facts (the fleet's `station` field); `None` for the hub and the nodes.
+    #[serde(default)]
+    pub station: Option<Station>,
+}
+
+/// A workstation on the Floor: its OS family and form pick its model, and its active leases light its screen.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+pub struct Station {
+    /// `macos`, `windows` or `linux`.
+    #[serde(default)]
+    pub os: String,
+    /// `laptop`, `desktop`, `mini`, `server` or `vm`.
+    #[serde(default)]
+    pub form: String,
+    /// Every lease, queued ones included.
+    #[serde(default)]
+    pub leases: u32,
+    /// The leases that are active (the agent works on the machine now).
+    #[serde(default)]
+    pub active: u32,
 }
 
 /// A Mac's chip and core counts (only on Macs).
@@ -376,7 +396,10 @@ pub fn status_led(s: Status) -> Color {
 /// A machine's exterior model and its parameters: the GPU count, the Apple core counts and
 /// memory, and `studio` when the model name says Studio.
 fn model_and_params(m: &Machine) -> Option<(&'static hardware::Model, Params)> {
-    let (exterior, _) = hardware::models_for(&m.kind, m.vendor.as_deref());
+    let exterior = match &m.station {
+        Some(s) => hardware::station_model(&s.os, &s.form),
+        None => hardware::models_for(&m.kind, m.vendor.as_deref()).0,
+    };
     let model = hardware::model(exterior).or_else(|| hardware::model("exterior/workstation"))?;
     let studio = m
         .model
@@ -385,6 +408,9 @@ fn model_and_params(m: &Machine) -> Option<(&'static hardware::Model, Params)> {
     let mut params = Params::default()
         .with("gpus", m.gpus.len() as f64)
         .with("studio", if studio { 1.0 } else { 0.0 });
+    if m.station.is_some() {
+        params = params.with("screen_state", f64::from(screen_state(m)));
+    }
     if let Some(a) = &m.apple {
         params = params
             .with("p_cores", a.p_cores as f64)
@@ -395,7 +421,20 @@ fn model_and_params(m: &Machine) -> Option<(&'static hardware::Model, Params)> {
     Some((model, params))
 }
 
-/// What the scene's layout depends on. A change rebuilds the scene; status, load and names do not.
+/// A workstation's screen state, the build param `screen_state` of its model: 0 dark (offline), 1 dim (up, no
+/// active lease), 2 lit (a lease is active). A draining station is still up.
+pub fn screen_state(m: &Machine) -> u8 {
+    let up = matches!(m.status.as_str(), "online" | "draining");
+    let active = m.station.as_ref().map_or(0, |s| s.active);
+    match (up, active) {
+        (false, _) => 0,
+        (true, 0) => 1,
+        (true, _) => 2,
+    }
+}
+
+/// What the scene's layout depends on. A change rebuilds the scene; status, load and names do not, except a
+/// workstation's screen state, which is a build param of its model.
 #[derive(Debug, Clone, PartialEq)]
 struct Shape {
     id: String,
@@ -405,6 +444,8 @@ struct Shape {
     model: Option<String>,
     apple: Option<Apple>,
     gpus: usize,
+    /// A workstation's OS, form and screen state (`None` for a node or the hub).
+    station: Option<(String, String, u8)>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -426,6 +467,7 @@ fn layout_of(fleet: &FleetResponse) -> Layout {
                 model: m.model.clone(),
                 apple: m.apple.clone(),
                 gpus: m.gpus.len(),
+                station: m.station.as_ref().map(|s| (s.os.clone(), s.form.clone(), screen_state(m))),
             })
             .collect(),
         pairs: fleet
@@ -1079,6 +1121,40 @@ mod tests {
         let node = &scene.machines[&id];
         assert_eq!(node.root.position(), rest, "the baked root moved (a re-bake would be needed)");
         assert_eq!(node.root.get().lift_y, lift, "the rigs do not follow the lift");
+    }
+
+    /// A workstation takes its model from its OS family and form, and its screen from its state; a node keeps its
+    /// kind's model and has no screen. The scene rebuilds when the screen changes, not when the load does.
+    #[test]
+    fn a_workstation_takes_its_model_and_its_screen_state() {
+        let station = |os: &str, form: &str, status: &str, active: u32| Machine {
+            id: "w1".into(),
+            name: "w1".into(),
+            role: "station".into(),
+            kind: "workstation".into(),
+            status: status.into(),
+            os: os.into(),
+            station: Some(Station { os: os.into(), form: form.into(), leases: active, active }),
+            ..Machine::default()
+        };
+        let (mini, params) = model_and_params(&station("macos", "mini", "online", 0)).expect("a model");
+        assert!(std::ptr::eq(mini, hardware::model("workstation/mac-mini").unwrap()));
+        assert_eq!(params.values.get("screen_state"), Some(&1.0));
+        let (tower, params) = model_and_params(&station("linux", "desktop", "online", 2)).expect("a model");
+        assert!(std::ptr::eq(tower, hardware::model("workstation/linux-tower").unwrap()));
+        assert_eq!(params.values.get("screen_state"), Some(&2.0));
+        let (_, params) = model_and_params(&station("windows", "vm", "offline", 0)).expect("a model");
+        assert_eq!(params.values.get("screen_state"), Some(&0.0));
+        assert_eq!(screen_state(&station("linux", "vm", "draining", 0)), 1);
+
+        let node = Machine { id: "n1".into(), kind: "server".into(), status: "online".into(), ..Machine::default() };
+        let (server, params) = model_and_params(&node).expect("a model");
+        assert!(std::ptr::eq(server, hardware::model("exterior/server").unwrap()));
+        assert!(!params.values.contains_key("screen_state"));
+
+        let layout = |active: u32| layout_of(&FleetResponse { machines: vec![station("macos", "mini", "online", active)], links: vec![] });
+        assert_ne!(layout(0), layout(1), "an idle screen lights up: the scene is rebuilt");
+        assert_eq!(layout(1), layout(2), "a second active lease keeps the lit screen");
     }
 
     #[test]

@@ -14,9 +14,13 @@ specified in `docs/design/hardware-plazas.md` ("Schema"). This guide is the work
 | `board/<kind>.json` | its inside, the plaza's board (`view: "board"`) |
 | `exterior/apple-laptop.json`, `exterior/apple-desktop.json`, `board/apple-soc.json` | Apple Silicon family (`vendor: "apple"`) |
 | `parts/<name>.json` | a reusable piece (`view: "part"`), placed with `"use": "parts/<name>"` |
+| `workstation/<name>.json` | a workstation (a station the agents operate) as an exterior, by OS family and form: `mac-mini`, `windows-laptop`, `linux-tower`, `vm-rack` (`hardware::station_model`). Key: `workstation/mac-mini` |
 | `palette.json` | named materials (`{ "schema": 1, "colors": { name: material } }`) |
 
 Kinds: `workstation`, `laptop`, `edge`, `phone`, `server`.
+
+A workstation's model reads the build param `screen_state` (0 dark: offline, 1 dim: up with no active lease, 2 lit:
+a lease is active). Its screen is three parts, one per state, each shown by `"when": "screen_state == N"`.
 
 ## Adding a model
 

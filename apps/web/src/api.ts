@@ -388,7 +388,7 @@ export interface FleetApple { chip: string; p_cores: number; e_cores: number; gp
 export interface FleetMachine {
   id: string;
   name: string;
-  role: 'hub' | 'node';
+  role: 'hub' | 'node' | 'station';
   kind: FleetKind;
   /** The maker in lower case (apple, dell, lenovo, raspberrypi, samsung, ...); null when unknown. */
   vendor: string | null;
@@ -410,7 +410,10 @@ export interface FleetMachine {
   /** Live load; null when unknown. */
   stats: { cpu_pct: number; mem_used_mib: number } | null;
   last_seen_ms: number;
+  /** Only on a workstation: the station's own summary. */
+  station?: FleetStation | null;
 }
+export interface FleetStation { form: StationForm; os: StationOs; leases: number; active: number; account: 'agent_user' | 'owner'; account_name: string }
 export interface FleetLink { a: string; b: string; online: boolean }
 export interface FleetResponse { machines: FleetMachine[]; links: FleetLink[] }
 
@@ -693,6 +696,17 @@ export const api = {
   stationCodes: () => get<StationCode[]>('/v1/stations/codes'),
   revokeStationCode: (id: string) => del<unknown>(`/v1/stations/codes/${encodeURIComponent(id)}`),
   stations: () => get<StationView[]>('/v1/stations'),
+  /** A workstation's latest picture as an object URL (the caller revokes it), or null when it cannot be had. */
+  stationThumbnailUrl: async (id: string): Promise<string | null> => {
+    try {
+      const res = await fetch(`/v1/stations/${encodeURIComponent(id)}/thumbnail`);
+      if (res.status === 401) window.dispatchEvent(new CustomEvent('apz-auth-required'));
+      if (!res.ok) return null;
+      return URL.createObjectURL(await res.blob());
+    } catch {
+      return null;
+    }
+  },
   station: (id: string) => get<StationView>(`/v1/stations/${encodeURIComponent(id)}`),
   renameStation: (id: string, name: string) => patch<StationView>(`/v1/stations/${encodeURIComponent(id)}`, { name }),
   drainStation: (id: string, on: boolean) => post<StationView>(`/v1/stations/${encodeURIComponent(id)}/${on ? 'drain' : 'undrain'}`),

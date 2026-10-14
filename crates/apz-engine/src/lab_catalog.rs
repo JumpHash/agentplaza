@@ -86,6 +86,9 @@ mod tests {
             models.contains(&"board/workstation") && models.contains(&"exterior/workstation"),
             "{models:?}"
         );
+        for station in ["workstation/mac-mini", "workstation/windows-laptop", "workstation/linux-tower", "workstation/vm-rack"] {
+            assert!(models.contains(&station), "the lab lists {station}: {models:?}");
+        }
         assert!(cat["params"]["board/workstation"].as_object().is_some());
         assert!(cat["speciesClips"]["rover"].as_array().is_some());
         assert!(cat["clips"].as_array().unwrap().iter().any(|c| c == "type"));

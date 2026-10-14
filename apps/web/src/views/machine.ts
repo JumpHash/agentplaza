@@ -4,11 +4,12 @@
 // details. The topology's machine blocks open their row.
 
 import '../styles/ops.css';
-import { api, type Agent, type MachineNode, type Overview } from '../api';
+import { api, type Agent, type MachineNode, type Overview, type StationView } from '../api';
 import { on } from '../store';
 import { attempt, badge, empty } from '../ui/components';
 import { h, replace } from '../ui/dom';
 import { agentCount, isLive, KIND_LABEL, machineList, machineRow, machineVms, newRunState, normalizeMachines } from './machine-list';
+import { stationMachine } from './station-machine';
 import type { Cleanup } from './index';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -101,14 +102,16 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
 
   const refresh = async (): Promise<void> => {
     try {
-      const [o, fetched, agentList] = await Promise.all([
+      const [o, fetched, agentList, stations] = await Promise.all([
         api.overview().catch(() => null),
         api.machines(),
         api.agents().catch((): Agent[] => []),
+        api.stations().catch((): StationView[] => []),
       ]);
       if (!alive) return;
       // A partial reply (a machine without its gpus, runs or vms) renders as empty, never as an error.
-      const nodes = normalizeMachines(fetched);
+      // The workstations follow the nodes, in the order the hub returned them.
+      const nodes = [...normalizeMachines(fetched), ...(stations ?? []).map(stationMachine)];
       overview = o;
       machines = nodes;
       agentsByCid = new Map<number, Agent>((agentList ?? []).map((a): [number, Agent] => [a.cid, a]));

@@ -147,6 +147,19 @@ struct Machine {
     agents: u64,
     reachable: Option<bool>,
     stats: Option<Stats>,
+    /// The workstation's part, when the machine is a station (`GET /v1/stations`).
+    station: Option<Station>,
+}
+
+/// A workstation's part of its machine: its status, OS and form, its leases and the badge for the owner's account.
+#[derive(Debug, Clone)]
+struct Station {
+    status: String,
+    os: String,
+    form: String,
+    leases: u64,
+    active: u64,
+    badge: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -251,7 +264,9 @@ pub fn load(state: &mut State, ctx: &Ctx) -> Task<Msg> {
             let overview = client.get::<Value>("/v1/overview").ok();
             let machines = client.get::<Value>("/v1/machines")?;
             let agents = client.get::<Value>("/v1/agents").ok();
-            Ok(serde_json::json!({ "overview": overview, "machines": machines, "agents": agents }))
+            // The stations are optional: a failure reads as none.
+            let stations = client.call("GET", "/v1/stations", None).ok();
+            Ok(serde_json::json!({ "overview": overview, "machines": machines, "agents": agents, "stations": stations }))
         },
         Msg::Loaded,
     );
@@ -524,7 +539,9 @@ fn block<'a>(state: &'a State, m: &'a Machine) -> Element<'a, Msg> {
     } else {
         Tone::Muted
     };
-    let status = if down {
+    let status = if let Some(st) = &m.station {
+        st.status.as_str()
+    } else if down {
         "unreachable"
     } else if live {
         "running"
@@ -911,6 +928,9 @@ fn section<'a>(state: &'a State, data: &'a Data, m: &'a Machine) -> Element<'a, 
     ];
     if let Some(s) = open {
         parts.insert(3, stage_view(s));
+    }
+    if let Some(st) = &m.station {
+        parts.insert(2, station_facts(st));
     }
     container(row![figure, column(parts).spacing(16).width(Length::Fill)].spacing(24))
         .id(section_id(&m.id))
@@ -1355,7 +1375,36 @@ fn apple_line(a: &Apple) -> String {
     )
 }
 
+/// "macOS mini", "Windows laptop": the station's OS and form, as the hub reports them.
+fn station_name_line(st: &Station) -> String {
+    let os = match st.os.as_str() {
+        "macos" => "macOS",
+        "windows" => "Windows",
+        "linux" => "Linux",
+        other => other,
+    };
+    let form = if st.form == "vm" { "VM" } else { st.form.as_str() };
+    [os, form].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" ")
+}
+
+/// The station's status, its leases (and how many are active) and the badge for the owner's account.
+fn station_facts<'a>(st: &'a Station) -> Element<'a, Msg> {
+    let mut lines: Vec<Element<'a, Msg>> = vec![ui::faint(format!("{} · {} leases, {} active", st.status, st.leases, st.active)).into()];
+    if let Some(badge) = &st.badge {
+        lines.push(ui::faint(badge.clone()).into());
+    }
+    column(lines).spacing(4).into()
+}
+
 fn sentence(m: &Machine) -> String {
+    if let Some(st) = &m.station {
+        let spec = format!("{}-core {} · {} GiB memory", m.cpus, m.arch, (m.memory_mib / 1024.0).round());
+        let mut parts = vec![kind_label(&m.kind).to_string(), station_name_line(st), spec];
+        if !m.gpus.is_empty() {
+            parts.push(m.gpus.join(", "));
+        }
+        return parts.join(" · ");
+    }
     let chip = match &m.apple {
         Some(a) => apple_line(a),
         None => format!(
@@ -1469,7 +1518,11 @@ fn items<'a>(v: &'a Value, key: &str) -> &'a [Value] {
 fn parse_data(v: &Value) -> Data {
     Data {
         overview: v.get("overview").filter(|o| o.is_object()).map(parse_overview),
-        machines: items(v, "machines").iter().filter_map(parse_machine).collect(),
+        machines: items(v, "machines")
+            .iter()
+            .filter_map(parse_machine)
+            .chain(items(v, "stations").iter().filter_map(parse_station))
+            .collect(),
         agents: items(v, "agents").iter().filter_map(parse_agent).collect(),
     }
 }
@@ -1520,6 +1573,60 @@ fn parse_machine(m: &Value) -> Option<Machine> {
         agents: count(m, "agents"),
         reachable: m.get("reachable").and_then(Value::as_bool),
         stats: m.get("stats").filter(|s| s.is_object()).map(parse_stats),
+        station: None,
+        id,
+    })
+}
+
+/// A workstation from `GET /v1/stations`, as a machine: its facts, its GPUs with their VRAM, its leases (the active and
+/// the opening ones are its agents) and the "agents act as" badge when the owner's account is used.
+fn parse_station(s: &Value) -> Option<Machine> {
+    let id = text(s, "id");
+    if id.is_empty() {
+        return None;
+    }
+    let facts = s.get("facts").filter(|f| f.is_object()).unwrap_or(s);
+    let leases = items(s, "leases");
+    let state_count = |state: &str| leases.iter().filter(|l| text(l, "state") == state).count() as u64;
+    let active = state_count("active");
+    let badge = match facts.get("account") {
+        Some(a) if text(a, "mode") == "owner" => Some(format!("agents act as {}", text(a, "name"))),
+        _ => None,
+    };
+    let gpus: Vec<String> = items(facts, "gpus")
+        .iter()
+        .map(|g| match count(g, "vram_mb") {
+            0 => text(g, "name"),
+            mib => format!("{} ({} GiB VRAM)", text(g, "name"), (mib as f64 / 1024.0).round()),
+        })
+        .collect();
+    Some(Machine {
+        name: text(s, "name"),
+        kind: "workstation".to_string(),
+        vendor: String::new(),
+        model: None,
+        apple: None,
+        class: String::new(),
+        arch: text(facts, "arch"),
+        backend: String::new(),
+        irqchip: String::new(),
+        vsock_mode: String::new(),
+        noded_port: None,
+        cpus: count(facts, "cpus"),
+        memory_mib: num(facts, "ram_mb"),
+        gpus,
+        runs: Vec::new(),
+        agents: active + state_count("opening"),
+        reachable: Some(s.get("online").and_then(Value::as_bool).unwrap_or(false)),
+        stats: None,
+        station: Some(Station {
+            status: text(s, "status"),
+            os: text(facts, "os"),
+            form: text(facts, "form"),
+            leases: leases.len() as u64,
+            active,
+            badge,
+        }),
         id,
     })
 }
@@ -1643,5 +1750,36 @@ mod tests {
         let pc = parse_machine(&json!({"id": "n0", "kind": "phone", "arch": "arm64", "backend": "kvm", "cpus": 8, "memory_mib": 4096}))
             .expect("a machine with an id");
         assert_eq!(sentence(&pc), "Phone · 8-core arm64 on KVM · 4 GiB memory");
+    }
+
+    #[test]
+    fn machines_show_a_station_as_a_workstation_with_its_leases_and_account() {
+        let station = |mode: &str| {
+            json!({
+                "id": "s1", "name": "studio-mini", "status": "online", "online": true,
+                "facts": {
+                    "os": "macos", "os_version": "15.1", "arch": "arm64", "hostname": "studio", "form": "mini",
+                    "cpus": 10, "ram_mb": 32768,
+                    "gpus": [{"vendor": "apple", "name": "Apple M4 Pro GPU", "vram_mb": 0}],
+                    "account": {"mode": mode, "name": "zarathos"}
+                },
+                "leases": [
+                    {"id": "l1", "agent": "a1", "state": "active", "kind": "pixel", "task": "t1"},
+                    {"id": "l2", "agent": "a2", "state": "queued", "kind": "pixel", "task": "t2"}
+                ]
+            })
+        };
+        let owned = parse_station(&station("owner")).expect("a station with an id");
+        assert_eq!(owned.kind, "workstation");
+        assert_eq!(owned.agents, 1);
+        assert_eq!(owned.reachable, Some(true));
+        let line = sentence(&owned);
+        assert!(line.starts_with("Workstation · macOS mini · 10-core arm64"), "{line}");
+        assert!(line.contains("Apple M4 Pro GPU"), "{line}");
+        let st = owned.station.as_ref().expect("a station");
+        assert_eq!((st.leases, st.active), (2, 1));
+        assert_eq!(st.badge.as_deref(), Some("agents act as zarathos"));
+        let agent_user = parse_station(&station("agent_user")).expect("a station with an id");
+        assert_eq!(agent_user.station.as_ref().and_then(|s| s.badge.clone()), None);
     }
 }

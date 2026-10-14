@@ -124,7 +124,91 @@ pub fn fleet(app: &App) -> Value {
         .filter(|agent| agent.status != Status::Offline)
         .map(|agent| Placed { cid: agent.cid, node: node_of(app, agent.cid), working: agent.status == Status::Working })
         .collect();
-    assemble(apz_plaza::now_ms(), &hub, &app.nodes.list(), &placed)
+    let now = apz_plaza::now_ms();
+    let mut view = assemble(now, &hub, &app.nodes.list(), &placed);
+    // The enrolled workstations, from their views as the registry serialises them.
+    let stations = serde_json::to_value(app.stations.views(now)).unwrap_or(Value::Null);
+    let (machines, links) = station_rows(now, &stations);
+    if let Some(list) = view["machines"].as_array_mut() {
+        list.extend(machines);
+    }
+    if let Some(list) = view["links"].as_array_mut() {
+        list.extend(links);
+    }
+    view
+}
+
+/// The enrolled workstations as fleet machines and links (pure), from `stations`: the station views as
+/// the registry serialises them (a JSON array, `StationView` in `stations::registry`, not nameable here).
+/// A revoked station is left out. Each station is one `kind: "workstation"` row whose `agents` are the
+/// agents of its opening or active leases, and one link to `n0`, online when its link is.
+pub fn station_rows(_now_ms: u64, stations: &Value) -> (Vec<Value>, Vec<Value>) {
+    let mut machines = Vec::new();
+    let mut links = Vec::new();
+    for station in stations.as_array().into_iter().flatten() {
+        if station["status"] == "revoked" {
+            continue;
+        }
+        let facts = &station["facts"];
+        let os = facts["os"].clone();
+        let form = facts["form"].clone();
+        let cpus = facts["cpus"].clone();
+        let vendor = (os == "macos").then_some("apple");
+        let leases = station["leases"].as_array().cloned().unwrap_or_default();
+        let mut agents: Vec<Value> = Vec::new();
+        let mut active = 0_usize;
+        for lease in &leases {
+            let state = lease["state"].as_str();
+            if state == Some("active") {
+                active += 1;
+            }
+            if matches!(state, Some("opening" | "active")) && !agents.contains(&lease["agent"]) {
+                agents.push(lease["agent"].clone());
+            }
+        }
+        let gpus: Vec<Value> = facts["gpus"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|gpu| {
+                let vram = gpu["vram_mb"].as_u64().unwrap_or(0);
+                let memory = (vram > 0).then_some(vram);
+                json!({ "name": gpu["name"], "vendor": gpu["vendor"], "memory_mib": memory })
+            })
+            .collect();
+        let account = &facts["account"];
+        machines.push(json!({
+            "id": station["id"],
+            "name": station["name"],
+            "role": "station",
+            "kind": "workstation",
+            "vendor": vendor,
+            "model": null,
+            "apple": null,
+            "status": station["status"],
+            "arch": facts["arch"],
+            "os": os,
+            "backend": "",
+            "cpu": { "model": "", "cores": cpus, "threads": cpus },
+            "memory_mib": facts["ram_mb"],
+            "gpus": gpus,
+            "storage_gib": 0,
+            "agents": agents,
+            "working": active,
+            "stats": null,
+            "last_seen_ms": station["last_seen_ms"],
+            "station": {
+                "form": form,
+                "os": os,
+                "leases": leases.len(),
+                "active": active,
+                "account": account["mode"],
+                "account_name": account["name"],
+            },
+        }));
+        links.push(json!({ "a": LOCAL, "b": station["id"], "online": station["online"] }));
+    }
+    (machines, links)
 }
 
 /// The fleet JSON from its facts (pure): `machines` (the hub first, then every node in order)
@@ -370,5 +454,68 @@ mod tests {
         assert_eq!(hub_row["apple"]["gpu_cores"], 76);
         assert_eq!(hub_row["apple"]["unified_memory_gib"], 192);
         assert_eq!(hub_row["stats"], Value::Null);
+    }
+
+    /// A station's view as the registry serialises it, with the given leases (JSON).
+    fn station_json(id: &str, status: &str, leases: Value) -> Value {
+        let online = status == "online";
+        json!({
+            "id": id, "name": "front", "status": status, "online": online, "draining": false,
+            "revoked": status == "revoked", "version": "0.1.0", "code": "j1", "joined_ms": 0,
+            "last_seen_ms": NOW - 2_000, "address": "",
+            "facts": {
+                "os": "macos", "os_version": "15.0", "arch": "arm64", "hostname": "front",
+                "form": "laptop", "cpus": 10, "ram_mb": 32768,
+                "gpus": [{ "vendor": "apple", "name": "Apple M3", "vram_mb": 0 }],
+                "displays": [], "account": { "mode": "owner", "name": "zarathos" },
+                "apps": 12, "virtual_displays": false, "ui_tree": true, "machine_id": null,
+            },
+            "settings": {}, "leases": leases,
+        })
+    }
+
+    /// A lease view as the registry serialises it (its lease fields, flattened, and its queue position).
+    fn lease_json(agent: u64, state: &str) -> Value {
+        json!({
+            "id": format!("l{agent}"), "station": "w1", "agent": agent, "task": null, "kind": "pixel",
+            "session": null, "started_ms": NOW, "state": state, "paused": false, "active_ms": null,
+            "position": null,
+        })
+    }
+
+    #[test]
+    fn a_station_is_a_workstation_row_with_its_active_agents_and_a_link() {
+        let stations = json!([
+            station_json("w1", "online", json!([lease_json(300, "active"), lease_json(301, "queued")])),
+            station_json("w2", "revoked", json!([])),
+        ]);
+        let (machines, links) = station_rows(NOW, &stations);
+        assert_eq!(machines.len(), 1, "a revoked station is left out");
+        let row = &machines[0];
+        assert_eq!(row["id"], "w1");
+        assert_eq!(row["role"], "station");
+        assert_eq!(row["kind"], "workstation");
+        assert_eq!(row["vendor"], "apple");
+        assert_eq!(row["os"], "macos");
+        assert_eq!(row["status"], "online");
+        assert_eq!(row["working"], 1);
+        assert_eq!(row["agents"], json!([300]), "the queued lease's agent is not running");
+        assert_eq!(row["memory_mib"], 32768);
+        assert_eq!(row["gpus"], json!([{ "name": "Apple M3", "vendor": "apple", "memory_mib": null }]));
+        assert_eq!(row["station"]["form"], "laptop");
+        assert_eq!(row["station"]["leases"], 2);
+        assert_eq!(row["station"]["active"], 1);
+        assert_eq!(row["station"]["account"], "owner");
+        assert_eq!(row["station"]["account_name"], "zarathos");
+        assert_eq!(Value::Array(links), json!([{ "a": "n0", "b": "w1", "online": true }]));
+    }
+
+    #[test]
+    fn a_station_without_leases_is_idle_and_offline_in_its_link() {
+        let stations = json!([station_json("w3", "offline", json!([]))]);
+        let (machines, links) = station_rows(NOW, &stations);
+        assert_eq!(machines[0]["agents"], json!([]));
+        assert_eq!(machines[0]["working"], 0);
+        assert_eq!(links[0]["online"], false);
     }
 }

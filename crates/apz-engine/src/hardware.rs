@@ -44,6 +44,21 @@ pub fn models_for(kind: &str, vendor: Option<&str>) -> (&'static str, &'static s
     }
 }
 
+/// The exterior of a workstation (a station the agents operate through the hub) by its OS family and form
+/// (`os`: `macos`, `windows`, `linux`; `form`: `laptop`, `desktop`, `mini`, `server`, `vm`). A VM is a rack unit
+/// whatever its guest OS. A MacBook-class laptop is the Apple laptop; other Macs are the Mac mini; a Windows or
+/// Linux laptop is the open laptop; every other desktop is the tower with its monitor. Its board is the
+/// workstation's (the station's insides are not drawn).
+pub fn station_model(os: &str, form: &str) -> &'static str {
+    match (os, form) {
+        (_, "vm") => "workstation/vm-rack",
+        ("macos", "laptop") => "exterior/apple-laptop",
+        ("macos", _) => "workstation/mac-mini",
+        (_, "laptop") => "workstation/windows-laptop",
+        _ => "workstation/linux-tower",
+    }
+}
+
 /// The shared palette (`palette.json`): `{"schema": 1, "colors": {name: material}}`, each entry an
 /// inline material (colour, emissive, glow, opacity, flat).
 const PALETTE_SRC: &str = include_str!("../../../assets/hardware/palette.json");
@@ -2237,6 +2252,44 @@ mod tests {
         assert!(model(e).is_some() && model(b).is_some());
         let (e, b) = models_for("workstation", Some("apple"));
         assert!(model(e).is_some() && model(b).is_some());
+    }
+
+    #[test]
+    fn station_models_pick_the_os_family_and_form() {
+        assert_eq!(station_model("macos", "mini"), "workstation/mac-mini");
+        assert_eq!(station_model("macos", "desktop"), "workstation/mac-mini");
+        assert_eq!(station_model("macos", "laptop"), "exterior/apple-laptop");
+        assert_eq!(station_model("windows", "laptop"), "workstation/windows-laptop");
+        assert_eq!(station_model("linux", "laptop"), "workstation/windows-laptop");
+        assert_eq!(station_model("linux", "desktop"), "workstation/linux-tower");
+        assert_eq!(station_model("windows", "desktop"), "workstation/linux-tower");
+        assert_eq!(station_model("linux", "vm"), "workstation/vm-rack");
+        assert_eq!(station_model("macos", "vm"), "workstation/vm-rack");
+        assert_eq!(station_model("plan9", "server"), "workstation/linux-tower");
+        for os in ["macos", "windows", "linux"] {
+            for form in ["laptop", "desktop", "mini", "server", "vm"] {
+                let name = station_model(os, form);
+                assert!(model(name).is_some(), "{os}/{form} -> {name} is not embedded");
+            }
+        }
+    }
+
+    #[test]
+    fn station_screens_show_one_state_at_a_time() {
+        const STATION_MODELS: [&str; 4] =
+            ["workstation/mac-mini", "workstation/windows-laptop", "workstation/linux-tower", "workstation/vm-rack"];
+        for name in STATION_MODELS {
+            let m = model(name).unwrap_or_else(|| panic!("{name} is embedded"));
+            for (state, id) in [(0.0, "screen-off"), (1.0, "screen-idle"), (2.0, "screen-active")] {
+                let params = Params::default().with("screen_state", state);
+                let ids: Vec<String> =
+                    part_boxes(m, &params).into_iter().map(|b| b.id).filter(|i| i.starts_with("screen-")).collect();
+                assert!(
+                    !ids.is_empty() && ids.iter().all(|i| i.starts_with(id)),
+                    "{name} at screen_state {state}: {ids:?}"
+                );
+            }
+        }
     }
 
     #[test]

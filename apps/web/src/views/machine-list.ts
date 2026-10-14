@@ -6,12 +6,13 @@
 
 import '../styles/ops.css';
 import '../styles/machine-list.css';
-import { api, type Agent, type FleetApple, type MachineNode, type ProcessUsage, type Run, type Vm, type VmUsage } from '../api';
+import { api, type Agent, type FleetApple, type MachineNode, type ProcessUsage, type Run, type StationView, type Vm, type VmUsage } from '../api';
 import { agentName, roleLabel } from '../roles';
 import { ago, badge, button, type Tone } from '../ui/components';
 import { deviceVisual } from '../ui/devices';
 import { h, icon, replace } from '../ui/dom';
 import { lookOf } from './machine-look';
+import { isStationNode, leaseCounts, stationBadge, stationLine } from './station-machine';
 import { specKey, THUMB_H, THUMB_W, type PictureSpec } from './machine-picture';
 import { engineWanted, isEngineStopped, startEngineStage, startThumbEngine, type EngineStage } from './engine-mount';
 
@@ -422,8 +423,135 @@ function runsTable(runs: Run[], rs: RunState): HTMLElement {
   );
 }
 
+// ---- Workstations: the detail's live picture, and the timers that keep it ----
+
+const STATION_PIC_MS = 10_000;
+const STATION_OS: Record<StationView['facts']['os'], string> = { macos: 'macOS', windows: 'Windows', linux: 'Linux' };
+const STATION_FORM: Record<StationView['facts']['form'], string> = { laptop: 'Laptop', desktop: 'Desktop', mini: 'Mini', server: 'Server', vm: 'VM' };
+// A workstation's last picture by station id (null: the request failed). A detail rebuilt by a refresh shows it at once.
+const stationPics = new Map<string, { url: string | null; at: number }>();
+// A detail's stop function, by its root element: run when the panel is rebuilt, closed or the list ends.
+const detailStops = new WeakMap<Element, () => void>();
+
+/** Stops the timers of the detail panels inside `scope`. */
+function stopDetailTimers(scope: Element): void {
+  for (const el of Array.from(scope.querySelectorAll<HTMLElement>('.mlist-machine'))) {
+    detailStops.get(el)?.();
+    detailStops.delete(el);
+  }
+}
+
+/** A workstation's live picture: fetched now and then every 10 seconds, until the detail stops. */
+function stationPicture(id: string): { el: HTMLElement; stop: () => void } {
+  const img = h('img', { alt: '', draggable: 'false' }) as HTMLImageElement;
+  img.style.maxWidth = '100%';
+  img.hidden = true;
+  const note = h('p.faint', null, 'Loading the picture...');
+  const el = h('div.mlist-station-pic', null, img, note);
+  let alive = true;
+  let timer: number | undefined;
+
+  const show = (url: string | null): void => {
+    img.hidden = url === null;
+    note.hidden = url !== null;
+    note.textContent = 'No picture from the workstation.';
+    if (url) img.src = url;
+    else img.removeAttribute('src');
+  };
+  const load = async (): Promise<void> => {
+    const url = await api.stationThumbnailUrl(id);
+    if (!alive) {
+      if (url) URL.revokeObjectURL(url);
+      return;
+    }
+    const old = stationPics.get(id);
+    if (old?.url) URL.revokeObjectURL(old.url);
+    stationPics.set(id, { url, at: Date.now() });
+    show(url);
+  };
+  // Waits until the cached picture is 10 seconds old, then fetches and waits again.
+  const arm = (): void => {
+    const c = stationPics.get(id);
+    const wait = c ? Math.max(0, c.at + STATION_PIC_MS - Date.now()) : 0;
+    timer = window.setTimeout(async () => {
+      if (!alive) return;
+      if (!el.isConnected) {
+        alive = false; // the panel left the page without a stop: end here
+        return;
+      }
+      await load();
+      if (alive) arm();
+    }, wait);
+  };
+
+  const cached = stationPics.get(id);
+  if (cached) show(cached.url);
+  arm();
+  return {
+    el,
+    stop: () => {
+      alive = false;
+      window.clearTimeout(timer);
+    },
+  };
+}
+
+/** A workstation's detail: its sentence, facts, GPUs, the account the agents work in, its leases and its live picture. */
+function stationDetail(s: StationView): HTMLElement {
+  const f = s.facts;
+  const pic = stationPicture(s.id);
+  const pairs: [string, string][] = [
+    ['Hostname', f.hostname || '—'],
+    ['OS', `${STATION_OS[f.os]}${f.os_version ? ` ${f.os_version}` : ''}`],
+    ['Form', STATION_FORM[f.form]],
+    ['Arch', f.arch || '—'],
+    ['CPUs', f.cpus > 0 ? `${f.cpus} cores` : '—'],
+    ['RAM', f.ram_mb > 0 ? `${gib(f.ram_mb)} GiB` : '—'],
+    ['Account', `${f.account.name} (${f.account.mode === 'owner' ? 'the owner’s account' : 'agent account'})`],
+    ['Status', s.draining ? `${s.status}, draining` : s.status],
+    ['Version', s.version || '—'],
+    ['Address', s.address || '—'],
+  ];
+  const gpus = f.gpus.length
+    ? h(
+        'div.mlist-facts',
+        null,
+        f.gpus.map((g) => h('div.mlist-fact', null, h('span', null, `${g.vendor} ${g.name}`), h('span', null, g.vram_mb > 0 ? `${gib(g.vram_mb)} GiB VRAM` : 'VRAM not reported'))),
+      )
+    : h('p.faint', null, 'No GPUs.');
+  const leases = s.leases.length
+    ? h(
+        'ul.mlist-leases',
+        null,
+        s.leases.map((l) =>
+          h(
+            'li',
+            null,
+            [`Agent ${l.agent}`, l.state, l.task, l.state === 'queued' && l.position !== null ? `queue position ${l.position}` : null].filter(Boolean).join(' · '),
+          ),
+        ),
+      )
+    : h('p.faint', null, 'No leases.');
+  const root = h(
+    'div.mlist-machine',
+    null,
+    h('p.mach-sentence', null, stationLine(s)),
+    h('dl.kv', null, pairs.flatMap(([k, v]) => [h('dt', null, k), h('dd', null, v)])),
+    h('div.mach-caps', null, 'GPUs'),
+    gpus,
+    h('div.mach-caps', null, 'Leases'),
+    leases,
+    h('div.mach-caps', null, 'Live picture'),
+    pic.el,
+    h('p', null, h('a', { href: '#/workstations' }, 'Open in Workstations')),
+  );
+  detailStops.set(root, pic.stop);
+  return root;
+}
+
 /** A machine's detail: its sentence, live tallies, where the resources go, runs and technical details. */
 export function machineDetail(m: MachineNode, byCid: Map<number, Agent>, rs: RunState): HTMLElement {
+  if (isStationNode(m)) return stationDetail(m.station);
   const runs = m.runs ?? [];
   const s = m.stats;
   const live = s
@@ -481,7 +609,16 @@ export function machineRow(m: MachineNode, byCid: Map<number, Agent>, rs: RunSta
   const runs = m.runs ?? [];
   const live = isLive(runs);
   const s = m.stats;
-  const status: ListRow['status'] = m.reachable === false ? { label: 'unreachable', tone: 'danger' } : live ? { label: 'running', tone: 'ok' } : { label: 'idle', tone: 'muted' };
+  const station = isStationNode(m) ? m.station : null;
+  const status: ListRow['status'] = station
+    ? station.online
+      ? { label: 'online', tone: 'ok' }
+      : { label: 'offline', tone: 'muted' }
+    : m.reachable === false
+      ? { label: 'unreachable', tone: 'danger' }
+      : live
+        ? { label: 'running', tone: 'ok' }
+        : { label: 'idle', tone: 'muted' };
   const bars: ListBar[] = [];
   if (s) {
     bars.push({ label: 'CPU', pct: clamp(s.cpu_percent, 0, 100), text: pct(s.cpu_percent) });
@@ -492,24 +629,34 @@ export function machineRow(m: MachineNode, byCid: Map<number, Agent>, rs: RunSta
     });
     bars.push({ label: 'Load', pct: clamp(((s.load?.[0] ?? 0) / Math.max(m.cpus, 1)) * 100, 0, 100), text: (s.load ?? []).map(fx1).join(' · ') });
   }
-  const facts: [string, string][] = [
-    ['Platform', m.apple ? `macOS · ${m.arch}` : m.arch],
-    ['CPU', m.apple ? `${m.apple.chip} · ${m.cpus} cores` : `${m.cpus} cores`],
-    ['Memory', `${gib(m.memory_mib)} GiB`],
-    ['GPUs', gpuText(m.gpus)],
-    ['Agents', `${agentCount(m.agents)} · ${machineVms(m)} VMs`],
-  ];
+  const counts = station ? leaseCounts(station) : null;
+  const facts: [string, string][] = station && counts
+    ? [
+        ['Leases', `${counts.leases} leases, ${counts.active} active${counts.queued ? `, ${counts.queued} queued` : ''}`],
+        ['Address', station.address || '—'],
+        ['Last seen', ago(station.last_seen_ms)],
+      ]
+    : [
+        ['Platform', m.apple ? `macOS · ${m.arch}` : m.arch],
+        ['CPU', m.apple ? `${m.apple.chip} · ${m.cpus} cores` : `${m.cpus} cores`],
+        ['Memory', `${gib(m.memory_mib)} GiB`],
+        ['GPUs', gpuText(m.gpus)],
+        ['Agents', `${agentCount(m.agents)} · ${machineVms(m)} VMs`],
+      ];
+  const badgeText = station ? stationBadge(station) : null;
   return {
     key: m.id,
-    machineId: m.id,
+    // A workstation is not in the engine's fleet: its row has no orbit and no 3D view.
+    machineId: station ? null : m.id,
     name: m.name,
-    subtitle: [KIND_LABEL[m.kind], m.model].filter(Boolean).join(' · '),
+    subtitle: station ? stationLine(station) : [KIND_LABEL[m.kind], m.model].filter(Boolean).join(' · '),
     status,
     facts,
     bars,
     spec: specOf(m),
     active: live,
     actions: null,
+    tags: badgeText ? [badgeText] : [],
     detail: () => machineDetail(m, byCid, rs),
   };
 }
@@ -536,6 +683,8 @@ export interface ListRow {
   active: boolean;
   /** Inline actions under the row (nodes: Drain and Revoke). */
   actions: Node | null;
+  /** Small badges beside the name (a workstation's "agents act as ..."). */
+  tags?: string[];
   /** The expanded panel's right column; rebuilt on every refresh while the row is open. */
   detail: () => Node;
 }
@@ -636,7 +785,13 @@ function placeCanvas(c: HTMLCanvasElement, x: number, y: number, w: number, h: n
 
 function bodyOf(row: ListRow): (Node | null)[] {
   return [
-    h('div.mlist-head', null, h('strong.mlist-name', null, row.name), badge(row.status.label, row.status.tone, true)),
+    h(
+      'div.mlist-head',
+      null,
+      h('strong.mlist-name', null, row.name),
+      badge(row.status.label, row.status.tone, true),
+      (row.tags ?? []).map((t) => badge(t, 'info', true)),
+    ),
     row.subtitle ? h('div.mlist-sub', null, row.subtitle) : null,
     h(
       'div.mlist-facts',
@@ -795,6 +950,7 @@ export function machineList(): MachineList {
   // ---- rows ----
 
   const paintDetail = (it: Item): void => {
+    stopDetailTimers(it.inner);
     const slot = h('div.mlist-stage-slot', null, it.onStage ? null : fallbackPicture(it.row));
     const caption = it.onStage ? h('p.mlist-caption', null, 'Drag to rotate, scroll to zoom') : null;
     // The desktop's labelled toggle: closes the open row's 3D view (the row's picture comes back).
@@ -997,6 +1153,7 @@ export function machineList(): MachineList {
     it.summary.setAttribute('aria-expanded', 'false');
     it.panel.style.height = '0px';
     it.panel.hidden = true;
+    stopDetailTimers(it.inner);
     it.inner.replaceChildren();
     it.onStage = false;
     openKey = null;
@@ -1088,6 +1245,7 @@ export function machineList(): MachineList {
       io.disconnect();
       ro.disconnect();
       queue.length = 0;
+      for (const it of items.values()) stopDetailTimers(it.inner);
       items.clear();
       root.remove();
     },

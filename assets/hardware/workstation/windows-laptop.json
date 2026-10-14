@@ -1,0 +1,39 @@
+{
+  "schema": 1,
+  "kind": "workstation",
+  "view": "exterior",
+  "size": [4.8, 3.4, 4.2],
+  "params": { "gpus": 0, "screen_state": 1 },
+  "parts": [
+    { "id": "base", "geo": { "type": "rbox", "w": 4.6, "h": 0.22, "d": 3.1, "r": 0.06 }, "at": [0, 0.11, 0], "mat": "case" },
+    { "id": "keyboard-deck", "geo": { "type": "box", "w": 3.9, "h": 0.02, "d": 1.5 }, "at": [0, 0.23, -0.35], "mat": "plastic" },
+    { "id": "keys-column", "geo": { "type": "box", "w": 0.3, "h": 0.03, "d": 0.25 }, "at": [-1.75, 0.255, -0.9], "mat": "plastic-matte", "repeat": { "count": 4, "step": [0, 0, 0.35] } },
+    { "id": "keys-row", "geo": { "type": "box", "w": 0.3, "h": 0.03, "d": 0.25 }, "at": [-1.4, 0.255, -0.9], "mat": "plastic-matte", "repeat": { "count": 9, "step": [0.35, 0, 0] } },
+    { "id": "trackpad", "geo": { "type": "box", "w": 1.4, "h": 0.02, "d": 0.9 }, "at": [0, 0.235, 1.0], "mat": "aluminium" },
+
+    {
+      "id": "lid-pivot", "attached": true,
+      "geo": { "type": "box", "w": 0.05, "h": 0.05, "d": 0.05 }, "at": [0, 0.22, -1.55], "rot": [-20, 0, 0], "mat": "case",
+      "children": [
+        {
+          "id": "lid", "attached": true,
+          "geo": { "type": "rbox", "w": 4.6, "h": 3.0, "d": 0.12, "r": 0.06 }, "at": [0, 1.5, 0], "mat": "case",
+          "children": [
+            { "id": "screen-off", "when": "screen_state == 0", "attached": true, "geo": { "type": "box", "w": 4.2, "h": 2.7, "d": 0.02 }, "at": [0, 0, 0.07], "mat": "station-off", "outline": false },
+            { "id": "screen-idle", "when": "screen_state == 1", "attached": true, "geo": { "type": "box", "w": 4.2, "h": 2.7, "d": 0.02 }, "at": [0, 0, 0.07], "mat": "station-idle", "outline": false },
+            { "id": "screen-active", "when": "screen_state == 2", "attached": true, "geo": { "type": "box", "w": 4.2, "h": 2.7, "d": 0.02 }, "at": [0, 0, 0.07], "mat": "station-active", "outline": false }
+          ]
+        }
+      ]
+    },
+
+    { "id": "status-led", "tag": "status", "attached": true, "geo": { "type": "cyl", "rt": 0.06, "rb": 0.06, "h": 0.04 }, "at": [-2.0, 0.23, 1.52], "rot": [90, 0, 0], "mat": { "color": "#ffffff", "emissive": "#ffffff", "glow": 2.0, "flat": true }, "outline": false },
+    { "id": "port-left", "attached": true, "geo": { "type": "rbox", "w": 0.06, "h": 0.1, "d": 0.3, "r": 0.02 }, "at": [-2.32, 0.11, -0.6], "mat": "port-hole", "repeat": { "count": 3, "step": [0, 0, 0.35] } },
+    { "id": "port-right", "attached": true, "geo": { "type": "rbox", "w": 0.06, "h": 0.1, "d": 0.3, "r": 0.02 }, "at": [2.32, 0.11, -0.6], "mat": "port-hole", "repeat": { "count": 3, "step": [0, 0, 0.35] } }
+  ],
+  "anchors": {
+    "camera": { "at": [7, 6, 7], "look": [0, 1.6, 0] },
+    "label": [0, 3.6, 0],
+    "port": [2.3, 0.2, -1.5]
+  }
+}

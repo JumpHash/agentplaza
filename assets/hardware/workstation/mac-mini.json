@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "kind": "workstation",
+  "view": "exterior",
+  "size": [8, 3.6, 4.4],
+  "params": { "gpus": 0, "screen_state": 1 },
+  "parts": [
+    { "id": "mini-body", "geo": { "type": "rbox", "w": 2.4, "h": 0.6, "d": 2.4, "r": 0.12 }, "at": [-1.6, 0.3, 0], "mat": "aluminium" },
+    { "id": "mini-foot", "geo": { "type": "box", "w": 2.6, "h": 0.04, "d": 2.6 }, "at": [-1.6, 0.02, 0], "mat": "rubber" },
+    { "id": "mini-vents", "geo": { "type": "box", "w": 0.25, "h": 0.02, "d": 1.4 }, "at": [-2.35, 0.605, 0], "mat": "port-hole", "repeat": { "count": 6, "step": [0.3, 0, 0] } },
+    { "id": "mini-led", "tag": "status", "geo": { "type": "cyl", "rt": 0.05, "rb": 0.05, "h": 0.03 }, "at": [-0.8, 0.3, 1.22], "rot": [90, 0, 0], "mat": { "color": "#ffffff", "emissive": "#ffffff", "glow": 2.0, "flat": true }, "outline": false, "attached": true },
+    { "id": "mini-front-port", "geo": { "type": "rbox", "w": 0.32, "h": 0.14, "d": 0.1, "r": 0.03 }, "at": [-2.2, 0.3, 1.22], "mat": "port-hole", "repeat": { "count": 2, "step": [0.4, 0, 0] }, "attached": true },
+    { "id": "mini-headphone", "geo": { "type": "cyl", "rt": 0.07, "rb": 0.07, "h": 0.1 }, "at": [-1.4, 0.3, 1.22], "rot": [90, 0, 0], "mat": "port-hole", "attached": true },
+    { "id": "mini-rear-hdmi", "geo": { "type": "rbox", "w": 0.4, "h": 0.2, "d": 0.1, "r": 0.02 }, "at": [-2.5, 0.3, -1.22], "mat": "port-hole", "attached": true },
+    { "id": "mini-rear-thunderbolt", "geo": { "type": "rbox", "w": 0.2, "h": 0.12, "d": 0.1, "r": 0.02 }, "at": [-1.9, 0.3, -1.22], "mat": "port-hole", "repeat": { "count": 2, "step": [0.35, 0, 0] }, "attached": true },
+    { "id": "mini-rear-ethernet", "geo": { "type": "rbox", "w": 0.3, "h": 0.2, "d": 0.1, "r": 0.02 }, "at": [-1.0, 0.3, -1.22], "mat": "port", "attached": true },
+    { "id": "mini-rear-power", "geo": { "type": "cyl", "rt": 0.08, "rb": 0.08, "h": 0.06 }, "at": [-0.6, 0.3, -1.22], "rot": [90, 0, 0], "mat": "port-hole", "attached": true },
+
+    { "id": "monitor-foot", "geo": { "type": "rbox", "w": 1.6, "h": 0.1, "d": 1.0, "r": 0.03 }, "at": [2.4, 0.05, 0.0], "mat": "plastic" },
+    { "id": "monitor-neck", "geo": { "type": "box", "w": 0.3, "h": 1.2, "d": 0.2 }, "at": [2.4, 0.7, -0.2], "mat": "plastic" },
+    { "id": "monitor-panel", "geo": { "type": "rbox", "w": 4.4, "h": 2.7, "d": 0.2, "r": 0.06 }, "at": [2.4, 2.25, -0.25], "mat": "plastic" },
+    { "id": "monitor-led", "tag": "status", "geo": { "type": "cyl", "rt": 0.04, "rb": 0.04, "h": 0.02 }, "at": [2.4, 1.0, -0.14], "rot": [90, 0, 0], "mat": { "color": "#ffffff", "emissive": "#ffffff", "glow": 2.0, "flat": true }, "outline": false, "attached": true },
+    { "id": "screen-off", "when": "screen_state == 0", "geo": { "type": "box", "w": 4.0, "h": 2.3, "d": 0.02 }, "at": [2.4, 2.25, -0.14], "mat": "station-off", "outline": false, "attached": true },
+    { "id": "screen-idle", "when": "screen_state == 1", "geo": { "type": "box", "w": 4.0, "h": 2.3, "d": 0.02 }, "at": [2.4, 2.25, -0.14], "mat": "station-idle", "outline": false, "attached": true },
+    { "id": "screen-active", "when": "screen_state == 2", "geo": { "type": "box", "w": 4.0, "h": 2.3, "d": 0.02 }, "at": [2.4, 2.25, -0.14], "mat": "station-active", "outline": false, "attached": true }
+  ],
+  "anchors": {
+    "camera": { "at": [9, 6, 9], "look": [0.6, 1.8, 0] },
+    "label": [0, 3.2, 0],
+    "port": [0, 0.5, -1.4]
+  }
+}

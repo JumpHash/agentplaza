@@ -25,6 +25,8 @@ import type { StationFacts, StationLease, StationSettings, StationView } from '.
 import { auditLabel, codeChip, countdown, displaysText, formLabel, gpuLine, gpuSummary, joinCommand, leaseCount, leaseStateChip, nameProblem, osText, ramText, readSettings, accountBadge, accountText, settingsForm, sortStations, stationSummary, statusChip, takeoverText, type SettingsForm } from '../src/views/workstations-model';
 import { actionFrame, activeAction, backoffMs, bytesText, buttonAction, clockText, controlSocketUrl, crumbsOf, dollarsPerHour, defaultsForm, frameAt, frameTime, framePoint, inputButton, joinPath, keyAction, moveAction, parentDir, parseControlText, parseFrame, parseScreenText, pendingPaths, rateText, readDefaults, readRate, recordingSpan, scrollNotches, screenSocketUrl, sessionChoices, takeoverBanner, treeOf, uploadProblem, wheelAction, actionText, type KeyEventLike } from '../src/views/workstations-model';
 import type { StationLease, RecordingDefaults } from '../src/api';
+import type { MachineNode } from '../src/api';
+import { isStationNode, leaseCounts, stationBadge, stationLine, stationMachine, stationThumbnailPath } from '../src/views/station-machine';
 import { MAX_TERMINALS, attachFrame, base64ToBytes, bytesToBase64, clearSession, inputFrame, killFrame, nextOffset, openFrame, parseServerFrame, plainText, readSession, reconnectDelay, resizeFrame, sessionKey, splitInput, terminalSocketUrl, writeSession, type KeyValueStore } from '../src/views/ide-terminal-model';
 
 let failures = 0;
@@ -875,6 +877,24 @@ eq(readDefaults(defaultsForm(recDefaults)), { ok: true, defaults: recDefaults },
 eq([readDefaults({ ...defaultsForm(recDefaults), record_fps: '6' }).ok, readDefaults({ ...defaultsForm(recDefaults), retention_days: '0' }).ok], [false, false], 'recording defaults: out-of-bounds values are refused');
 sectionEnd('workstation live, recordings and work folder tests: ok');
 
+
+// ---- Workstations: the Machines list's row for a station (views/station-machine.ts) ----
+const stationFacts = (over: Partial<StationFacts> = {}): StationFacts => ({ os: 'macos', os_version: '15.1', arch: 'arm64', hostname: 'mini', form: 'mini', cpus: 10, ram_mb: 16384, gpus: [], displays: [], account: { mode: 'agent_user', name: 'apz-agent' }, apps: 0, virtual_displays: false, ui_tree: false, ...over });
+const station = (over: Partial<StationView> = {}): StationView => ({ id: 'st1', name: 'Studio', status: 'online', online: true, draining: false, revoked: false, version: '1', code: '', joined_ms: 0, last_seen_ms: 0, address: '', facts: stationFacts(), settings: defaults, leases: [], ...over });
+const lease2 = (state: StationLease['state']): StationLease => ({ id: state, station: 'st1', agent: 1, task: null, kind: 'pixel', session: null, started_ms: 0, state, position: null });
+const miniView = station({ facts: stationFacts({ gpus: [{ vendor: 'apple', name: 'M4', vram_mb: 0 }] }), leases: [lease2('active'), lease2('opening'), lease2('queued')] });
+const mini = stationMachine(miniView);
+eq([mini.kind, mini.vendor, mini.agents, mini.id, mini.gpus], ['workstation', 'apple', 2, 'st1', [{ vendor: 'apple', name: 'M4', memory_mib: null }]], 'station machine: kind, apple vendor on macOS, agents holding the station, gpu memory null at 0 VRAM');
+const pc = stationMachine(station({ facts: stationFacts({ os: 'linux', form: 'desktop', gpus: [{ vendor: 'nvidia', name: 'RTX 4090', vram_mb: 24576 }] }) }));
+eq([pc.vendor, pc.gpus[0]?.memory_mib, pc.agents], [null, 24576, 0], 'station machine: no vendor off macOS, known VRAM kept, no agents without leases');
+eq(stationLine(miniView),'Workstation · Mac mini · macOS 15.1 · arm64 · 10 cores · 16 GiB · apple M4', 'station line: a macOS mini, with its GPU');
+eq(stationLine(station({ facts: stationFacts({ os: 'windows', os_version: '11', arch: 'x64', form: 'laptop', cpus: 1, ram_mb: 8192, gpus: [{ vendor: 'NVIDIA', name: 'RTX 4090', vram_mb: 24576 }] }) })), 'Workstation · Laptop · Windows 11 · x64 · 1 core · 8 GiB · NVIDIA RTX 4090', 'station line: a laptop, singular core, the GPU vendor kept once');
+eq([stationBadge(station()), stationBadge(station({ facts: stationFacts({ account: { mode: 'owner', name: 'studio-owner' } }) }))], [null, 'agents act as studio-owner'], 'station badge: only when the agents act as the owner');
+eq(leaseCounts(station({ leases: [lease2('active'), lease2('opening'), lease2('queued'), lease2('queued')] })), { leases: 4, active: 2, queued: 2 }, 'lease counts: all, holding, and queued');
+const plain: MachineNode = { id: 'p1', name: 'Rig', kind: 'laptop', arch: 'x86_64', backend: 'kvm', irqchip: '', class: '', cpus: 4, memory_mib: 8192, vsock_mode: '', started_at_ms: 0, gpus: [], stats: null };
+eq([isStationNode(mini), isStationNode(plain)], [true, false], 'isStationNode: true for a station row, false for a plain machine');
+eq(stationThumbnailPath('a/b c'), '/v1/stations/a%2Fb%20c/thumbnail', 'station thumbnail path: the id is encoded');
+sectionEnd('station machine tests: ok');
 
 if (failedSections.length) {
   console.error(`${failedSections.length} section(s) failed: ${failedSections.join(', ')}`);
