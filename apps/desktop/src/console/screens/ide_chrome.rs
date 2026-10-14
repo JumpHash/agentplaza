@@ -47,12 +47,27 @@ const RIGHT: Bounds = Bounds {
     min: 280.0,
     max: 480.0,
 };
+/// The terminal docked under the editor: its height.
+const BOTTOM: Bounds = Bounds {
+    default: 260.0,
+    min: 120.0,
+    max: 560.0,
+};
 
-/// One of the two side panels, by the edge its grab strip sits on.
+/// Where the terminal sits: a tab of the right panel, or a dock under the editor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Dock {
+    #[default]
+    Side,
+    Bottom,
+}
+
+/// A panel's grab strip, by the edge it sits on: the two side panels', and the terminal's under the editor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Edge {
     Left,
     Right,
+    Bottom,
 }
 
 impl Edge {
@@ -60,41 +75,51 @@ impl Edge {
         match self {
             Edge::Left => LEFT,
             Edge::Right => RIGHT,
+            Edge::Bottom => BOTTOM,
         }
     }
 }
 
-/// The side panels' sizes and folds. Sizes are kept within their ranges whatever sets them.
+/// The side panels' sizes and folds, and the terminal's dock and height. Sizes are kept within their ranges
+/// whatever sets them.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Layout {
     pub left: f32,
     pub right: f32,
     pub left_open: bool,
     pub right_open: bool,
+    pub dock: Dock,
+    pub terminal_height: f32,
 }
 
 impl Layout {
-    /// Both panels open at their default widths.
+    /// Both panels open at their default widths, the terminal on the side panel.
     pub fn fresh() -> Layout {
         Layout {
             left: LEFT.default,
             right: RIGHT.default,
             left_open: true,
             right_open: true,
+            dock: Dock::Side,
+            terminal_height: BOTTOM.default,
         }
     }
 
+    /// The panel's size along its edge's axis: a width, or the terminal's height on the bottom edge.
     pub fn width(&self, edge: Edge) -> f32 {
         match edge {
             Edge::Left => self.left,
             Edge::Right => self.right,
+            Edge::Bottom => self.terminal_height,
         }
     }
 
+    /// Whether the panel on the edge shows. The bottom edge's panel is the terminal, when it is docked there.
     pub fn is_open(&self, edge: Edge) -> bool {
         match edge {
             Edge::Left => self.left_open,
             Edge::Right => self.right_open,
+            Edge::Bottom => self.dock == Dock::Bottom,
         }
     }
 
@@ -103,6 +128,7 @@ impl Layout {
         match edge {
             Edge::Left => self.left = width,
             Edge::Right => self.right = width,
+            Edge::Bottom => self.terminal_height = width,
         }
     }
 
@@ -110,15 +136,30 @@ impl Layout {
         self.set_width(edge, edge.bounds().default);
     }
 
+    /// Folds or unfolds a side panel. On the bottom edge it moves the terminal between the dock and the side panel.
     pub fn toggle(&mut self, edge: Edge) {
         match edge {
             Edge::Left => self.left_open = !self.left_open,
             Edge::Right => self.right_open = !self.right_open,
+            Edge::Bottom => {
+                self.dock = if self.dock == Dock::Bottom { Dock::Side } else { Dock::Bottom };
+            }
         }
     }
 
     fn to_json(self) -> Value {
-        json!({ "left": self.left, "right": self.right, "left_open": self.left_open, "right_open": self.right_open })
+        let dock = match self.dock {
+            Dock::Side => "side",
+            Dock::Bottom => "bottom",
+        };
+        json!({
+            "left": self.left,
+            "right": self.right,
+            "left_open": self.left_open,
+            "right_open": self.right_open,
+            "terminal_dock": dock,
+            "terminal_height": self.terminal_height,
+        })
     }
 
     /// The layout a saved value names. Missing fields keep their defaults; widths are clamped.
@@ -131,8 +172,15 @@ impl Layout {
         if let Some(width) = value.get("right").and_then(Value::as_f64) {
             layout.set_width(Edge::Right, width as f32);
         }
+        if let Some(height) = value.get("terminal_height").and_then(Value::as_f64) {
+            layout.set_width(Edge::Bottom, height as f32);
+        }
         layout.left_open = value.get("left_open").and_then(Value::as_bool).unwrap_or(true);
         layout.right_open = value.get("right_open").and_then(Value::as_bool).unwrap_or(true);
+        layout.dock = match value.get("terminal_dock").and_then(Value::as_str) {
+            Some("bottom") => Dock::Bottom,
+            _ => Dock::Side,
+        };
         Some(layout)
     }
 }
@@ -176,16 +224,17 @@ impl Drag {
     }
 }
 
-/// Applies the pointer at window `x` to a drag. A left panel grows as the pointer moves right, a right
-/// panel as it moves left; the result is clamped by the layout.
-pub fn drag_to(layout: &mut Layout, drag: &mut Drag, x: f32) {
-    let origin = *drag.origin.get_or_insert(x);
-    let delta = x - origin;
-    let width = match drag.edge {
+/// Applies the pointer at window `(x, y)` to a drag. A left panel grows as the pointer moves right, a right
+/// panel as it moves left, and the terminal as it moves up; the result is clamped by the layout.
+pub fn drag_to(layout: &mut Layout, drag: &mut Drag, x: f32, y: f32) {
+    let pointer = if drag.edge == Edge::Bottom { y } else { x };
+    let origin = *drag.origin.get_or_insert(pointer);
+    let delta = pointer - origin;
+    let size = match drag.edge {
         Edge::Left => drag.start + delta,
-        Edge::Right => drag.start - delta,
+        Edge::Right | Edge::Bottom => drag.start - delta,
     };
-    layout.set_width(drag.edge, width);
+    layout.set_width(drag.edge, size);
 }
 
 // ---- Words -------------------------------------------------------------------------------------
@@ -382,21 +431,39 @@ fn rail_item(label: &'static str, icon_name: &'static str, active: bool, msg: Ms
 }
 
 /// The grab strip on a panel's edge: a resize cursor, a press starts the drag, a double press resets the
-/// width. The drag itself is followed by the screen's subscription until the button comes up.
+/// size. The side panels' strips run down their edge; the terminal's runs across the top of its dock.
+/// The drag itself is followed by the screen's subscription until the button comes up.
 pub fn handle<'a>(edge: Edge) -> Element<'a, Msg> {
-    let line = container(Space::new().width(Length::Fixed(1.0)).height(Length::Fill))
-        .height(Length::Fill)
-        .style(|_: &Theme| container::Style {
-            background: Some(theme::palette().rule.into()),
-            ..Default::default()
-        });
-    let strip = container(line).width(Length::Fixed(HANDLE_W)).height(Length::Fill).align_x(Alignment::Center);
+    let (strip, cursor): (Element<'a, Msg>, mouse::Interaction) = match edge {
+        Edge::Bottom => {
+            let line = container(Space::new().width(Length::Fill).height(Length::Fixed(1.0)))
+                .width(Length::Fill)
+                .style(rule_line);
+            let strip = container(line).width(Length::Fill).height(Length::Fixed(HANDLE_W)).align_y(Alignment::Center);
+            (strip.into(), mouse::Interaction::ResizingVertically)
+        }
+        Edge::Left | Edge::Right => {
+            let line = container(Space::new().width(Length::Fixed(1.0)).height(Length::Fill))
+                .height(Length::Fill)
+                .style(rule_line);
+            let strip = container(line).width(Length::Fixed(HANDLE_W)).height(Length::Fill).align_x(Alignment::Center);
+            (strip.into(), mouse::Interaction::ResizingHorizontally)
+        }
+    };
     mouse_area(strip)
-        .interaction(mouse::Interaction::ResizingHorizontally)
+        .interaction(cursor)
         .on_press(Msg::DragStart(edge))
         .on_release(Msg::DragEnd)
         .on_double_click(Msg::ResetWidth(edge))
         .into()
+}
+
+/// A grab strip's one-pixel rule.
+fn rule_line(_: &Theme) -> container::Style {
+    container::Style {
+        background: Some(theme::palette().rule.into()),
+        ..Default::default()
+    }
 }
 
 /// The status bar: the workspace and its base, the live link, then the active editor's cursor and
@@ -471,6 +538,10 @@ mod tests {
         assert_eq!(layout.right, 480.0, "the right panel's ceiling");
         layout.reset_width(Edge::Right);
         assert_eq!(layout.right, 340.0);
+        layout.set_width(Edge::Bottom, 9000.0);
+        assert_eq!(layout.terminal_height, 560.0, "the terminal's ceiling");
+        layout.reset_width(Edge::Bottom);
+        assert_eq!(layout.terminal_height, 260.0);
     }
 
     #[test]
@@ -487,18 +558,33 @@ mod tests {
     fn a_drag_grows_the_left_panel_to_the_right_and_the_right_one_to_the_left() {
         let mut layout = Layout::fresh();
         let mut drag = Drag::begin(&layout, Edge::Left);
-        drag_to(&mut layout, &mut drag, 500.0);
+        drag_to(&mut layout, &mut drag, 500.0, 0.0);
         assert_eq!(layout.left, 264.0, "the first pointer position is where the drag is measured from");
-        drag_to(&mut layout, &mut drag, 540.0);
+        drag_to(&mut layout, &mut drag, 540.0, 0.0);
         assert_eq!(layout.left, 304.0);
 
         let mut layout = Layout::fresh();
         let mut drag = Drag::begin(&layout, Edge::Right);
-        drag_to(&mut layout, &mut drag, 900.0);
-        drag_to(&mut layout, &mut drag, 870.0);
+        drag_to(&mut layout, &mut drag, 900.0, 0.0);
+        drag_to(&mut layout, &mut drag, 870.0, 0.0);
         assert_eq!(layout.right, 370.0, "moving left by 30 widens the right panel by 30");
-        drag_to(&mut layout, &mut drag, 9000.0);
+        drag_to(&mut layout, &mut drag, 9000.0, 0.0);
         assert_eq!(layout.right, 280.0, "a long drag stops at the floor");
+    }
+
+    #[test]
+    fn the_terminal_strip_drags_up_to_grow_the_dock() {
+        let mut layout = Layout::fresh();
+        layout.toggle(Edge::Bottom);
+        assert_eq!(layout.dock, Dock::Bottom);
+        let mut drag = Drag::begin(&layout, Edge::Bottom);
+        drag_to(&mut layout, &mut drag, 700.0, 400.0);
+        drag_to(&mut layout, &mut drag, 9.0, 350.0);
+        assert_eq!(layout.terminal_height, 310.0, "moving up by 50 grows the dock by 50, whatever x does");
+        drag_to(&mut layout, &mut drag, 9.0, 9000.0);
+        assert_eq!(layout.terminal_height, 120.0, "a long drag stops at the floor");
+        layout.toggle(Edge::Bottom);
+        assert_eq!(layout.dock, Dock::Side, "the bottom edge's toggle moves the terminal back to the side");
     }
 
     #[test]
@@ -506,11 +592,16 @@ mod tests {
         let mut layout = Layout::fresh();
         layout.set_width(Edge::Left, 300.0);
         layout.toggle(Edge::Right);
+        layout.toggle(Edge::Bottom);
+        layout.set_width(Edge::Bottom, 400.0);
         let back = Layout::from_json(&layout.to_json()).expect("a saved layout reads back");
         assert_eq!(back, layout);
-        let wild = json!({ "left": 5.0, "right": 5000.0, "left_open": false });
+        assert_eq!((back.dock, back.terminal_height), (Dock::Bottom, 400.0), "the terminal's dock and height are kept");
+        let wild = json!({ "left": 5.0, "right": 5000.0, "left_open": false, "terminal_height": 9.0 });
         let read = Layout::from_json(&wild).expect("an object reads");
         assert_eq!((read.left, read.right), (200.0, 480.0));
+        assert_eq!(read.terminal_height, 120.0);
+        assert_eq!(read.dock, Dock::Side, "a missing dock is the side panel");
         assert!(!read.left_open && read.right_open, "a missing flag keeps its default");
         assert_eq!(Layout::from_json(&json!("not a layout")), None);
     }

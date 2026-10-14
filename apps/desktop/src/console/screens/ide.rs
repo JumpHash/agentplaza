@@ -6,7 +6,7 @@
 //! Saves send the base hash, so the hub refuses a write over a newer one (409): the tab then shows a
 //! conflict, and the owner reloads or keeps theirs. Changes come from the hub as a unified diff.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::str::FromStr;
 use std::sync::LazyLock;
 
@@ -20,10 +20,11 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::Id;
-use super::ide_chrome::{self, Drag, Edge, Layout};
+use super::ide_chrome::{self, Dock, Drag, Edge, Layout};
 use super::ide_diff;
 use super::ide_editor;
 use super::ide_panels;
+use super::ide_terminal::{self, TabsMsg, TerminalTabs};
 use super::ide_tree::{self, Tree};
 use crate::console::Ctx;
 use crate::console::boot;
@@ -282,6 +283,22 @@ pub struct State {
     pub layout: Layout,
     /// A panel edge being dragged.
     pub drag: Option<Drag>,
+    /// The terminal tabs of the agent workspace on screen, made on first need (see `ide_terminal`).
+    pub terminals: Option<TerminalTabs>,
+    /// The terminal tabs whose socket thread has started since they were made: a second start for one means the
+    /// IDE was left and came back (see `terminal_task`).
+    pub terminal_links: BTreeSet<usize>,
+    /// The pointer is over the terminal.
+    pub terminal_hover: bool,
+    /// The terminal has the keys: its last press landed on it, so the IDE's shortcuts stay out.
+    pub terminal_focus: bool,
+}
+
+// The terminal tabs hold a socket and an emulator, which have no Debug of their own; the screen's state derives it.
+impl std::fmt::Debug for TerminalTabs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("TerminalTabs")
+    }
 }
 
 /// The IDE's messages. Hub answers carry the workspace they were asked for, so a late answer for a
@@ -315,7 +332,7 @@ pub enum Msg {
     ToggleRight,
     /// A press on a panel's grab strip starts a drag; the screen follows the pointer until the button comes up.
     DragStart(Edge),
-    DragMove(f32),
+    DragMove(f32, f32),
     DragEnd,
     /// A double press on a grab strip: the panel goes back to its default width.
     ResetWidth(Edge),
@@ -388,6 +405,21 @@ pub enum Msg {
     /// Handled by the console: back to the screen the IDE was opened from.
     Back,
     Event(events::Event),
+    /// The terminal tabs' messages (see `ide_terminal`).
+    Terminals(TabsMsg),
+    /// The pointer came into (true) or left the terminal.
+    TerminalHover(bool),
+    /// A left press anywhere in the window: the terminal keeps the keys only when the press landed on it.
+    Pressed,
+    /// A key press the window's listener saw, and whether a focused widget took it. The shortcuts are decided
+    /// in `update`, where the terminal's focus is known.
+    Shortcut {
+        key: Key,
+        modifiers: Modifiers,
+        status: Status,
+    },
+    /// Moves the terminal between the side panel and the dock under the editor.
+    ToggleTerminalDock,
 }
 
 /// The screen's navigation. `Msg::Open` opens the IDE on a workspace (`Some(id)`) or on the picker (`None`);
@@ -795,7 +827,57 @@ fn load_workspace(st: &mut State, ctx: &Ctx) -> Task<Msg> {
             tasks.push(ide_panels::show(&mut st.panels, Panel::Agent, &ctx.client, &ws).map(Msg::Panels));
         }
     }
+    ensure_terminals(st, ctx);
     Task::batch(tasks)
+}
+
+/// Whether the workspace on screen is an agent's: its terminal runs in the agent's VM.
+fn on_agent(st: &State) -> bool {
+    matches!(st.ide.workspace, Some(WorkspaceId::Agent(_)))
+}
+
+/// Makes the terminal tabs of an agent workspace on first need: when the Terminal tab is shown or the terminal
+/// is docked under the editor. Nothing is made for a repo workspace, or before the terminal is wanted.
+fn ensure_terminals(st: &mut State, ctx: &Ctx) {
+    let wanted = right_panel(st.ide.panel) == Panel::Terminal || st.layout.dock == Dock::Bottom;
+    if st.terminals.is_some() || !wanted || !on_agent(st) {
+        return;
+    }
+    if let Some(ws) = st.ide.workspace.as_ref() {
+        st.terminals = Some(TerminalTabs::new(ctx.client.target.clone(), ws.to_string()));
+    }
+}
+
+/// Makes the terminal tabs again with as many tabs as they had. The hub keeps each shell, and a fresh emulator
+/// re-attaches to it from the shell's oldest output.
+fn reopen_terminals(st: &mut State, ctx: &Ctx) {
+    let count = st.terminals.as_ref().map_or(1, TerminalTabs::len).max(1);
+    st.terminals = None;
+    st.terminal_links.clear();
+    ensure_terminals(st, ctx);
+    if let Some(tabs) = st.terminals.as_mut() {
+        for _ in 1..count {
+            tabs.add();
+        }
+    }
+}
+
+/// A terminal message. A socket thread that starts a second time for one tab means the IDE was left and came
+/// back: the subscriptions stop when the screen is left, and the emulators would then replay the shell's output
+/// on top of themselves. So the tabs are made again. Otherwise the tabs take the message, and the slots that
+/// are gone are forgotten.
+fn terminal_task(st: &mut State, msg: TabsMsg, ctx: &Ctx) -> Task<Msg> {
+    if let TabsMsg::Tab(slot, ide_terminal::Msg::Link(ide_terminal::Link::Ready(_))) = &msg
+        && !st.terminal_links.insert(*slot)
+    {
+        reopen_terminals(st, ctx);
+        return Task::none();
+    }
+    let Some(tabs) = st.terminals.as_mut() else { return Task::none() };
+    let task = tabs.update(msg).map(Msg::Terminals);
+    let open: BTreeSet<usize> = (0..tabs.len()).filter_map(|index| tabs.get(index)).map(|tab| tab.slot()).collect();
+    st.terminal_links.retain(|slot| open.contains(slot));
+    task
 }
 
 /// Reloads everything the workspace on screen shows (after a restore).
@@ -833,6 +915,9 @@ fn select(st: &mut State, id: WorkspaceId, ctx: &Ctx) -> Task<Msg> {
     st.diff_file = None;
     st.notice = None;
     st.panels = ide_panels::State::default();
+    st.terminals = None;
+    st.terminal_links.clear();
+    st.terminal_focus = false;
     load_workspace(st, ctx)
 }
 
@@ -913,7 +998,9 @@ pub fn update(st: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                     st.workspaces = list;
                     st.loaded = true;
                     st.error = None;
-                    apply_preselect(st, ctx)
+                    let task = apply_preselect(st, ctx);
+                    ensure_terminals(st, ctx);
+                    task
                 }
                 Err(e) => {
                     st.error = Some(e);
@@ -1002,11 +1089,50 @@ pub fn update(st: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             st.drag = Some(Drag::begin(&st.layout, edge));
             Task::none()
         }
-        Msg::DragMove(x) => {
+        Msg::DragMove(x, y) => {
             if let Some(drag) = st.drag.as_mut() {
-                ide_chrome::drag_to(&mut st.layout, drag, x);
+                ide_chrome::drag_to(&mut st.layout, drag, x, y);
             }
             Task::none()
+        }
+        Msg::ToggleTerminalDock => {
+            st.layout.toggle(Edge::Bottom);
+            let mut tasks = Vec::new();
+            match st.layout.dock {
+                Dock::Side => {
+                    // Back on the side, the side panel shows, on its Terminal tab.
+                    st.layout.right_open = true;
+                    dispatch(st, Action::SetPanel(Panel::Terminal));
+                }
+                Dock::Bottom if right_panel(st.ide.panel) == Panel::Terminal => {
+                    // Docked, the side panel's Terminal tab would only say where it went: the Agent shows instead.
+                    dispatch(st, Action::SetPanel(Panel::Agent));
+                    if let Some(ws) = st.ide.workspace.clone() {
+                        tasks.push(ide_panels::show(&mut st.panels, Panel::Agent, &ctx.client, &ws).map(Msg::Panels));
+                    }
+                }
+                Dock::Bottom => {}
+            }
+            ide_chrome::save(&st.layout);
+            ensure_terminals(st, ctx);
+            Task::batch(tasks)
+        }
+        Msg::Terminals(msg) => terminal_task(st, msg, ctx),
+        Msg::TerminalHover(over) => {
+            st.terminal_hover = over;
+            Task::none()
+        }
+        Msg::Pressed => {
+            // A press on the terminal gives it the keys; a press anywhere else takes them back.
+            st.terminal_focus = st.terminal_hover;
+            Task::none()
+        }
+        Msg::Shortcut { key, modifiers, status } => {
+            // While the terminal has the keys, its keys are its own: the IDE's shortcuts stay out.
+            if st.terminal_focus {
+                return Task::none();
+            }
+            shortcut(&key, modifiers, status).map_or_else(Task::none, Task::done)
         }
         Msg::DragEnd => {
             if st.drag.take().is_some() {
@@ -1212,6 +1338,7 @@ pub fn update(st: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         }
         Msg::Panel(panel) => {
             dispatch(st, Action::SetPanel(panel));
+            ensure_terminals(st, ctx);
             match st.ide.workspace.clone() {
                 Some(ws) => ide_panels::show(&mut st.panels, panel, &ctx.client, &ws).map(Msg::Panels),
                 None => Task::none(),
@@ -1424,7 +1551,9 @@ pub fn load(st: &mut State, ctx: &Ctx) -> Task<Msg> {
         let c = ctx.client.clone();
         return client::task(move || fetch_workspaces(&c), Msg::Listed);
     }
-    apply_preselect(st, ctx)
+    let task = apply_preselect(st, ctx);
+    ensure_terminals(st, ctx);
+    task
 }
 
 // ---- Views ------------------------------------------------------------------------------------
@@ -1456,7 +1585,7 @@ pub fn view(st: &State, plaza: Plaza) -> Element<'_, Msg> {
         body = body.push(ide_chrome::handle(Edge::Left));
     }
     body = body.push(
-        container(centre(st))
+        container(centre_column(st))
             .width(Length::Fill)
             .height(Length::Fill)
             .padding(Padding {
@@ -1615,6 +1744,25 @@ fn search_panel(search: &Search) -> Element<'_, Msg> {
         .into()
 }
 
+/// The centre column: the editor (or what replaces it), with the terminal under it when it is docked there.
+fn centre_column(st: &State) -> Element<'_, Msg> {
+    if st.layout.dock != Dock::Bottom {
+        return centre(st);
+    }
+    let dock = container(ide_panels::terminal_bottom(st.terminals.as_ref(), on_agent(st)))
+        .width(Length::Fill)
+        .height(Length::Fixed(st.layout.terminal_height))
+        .padding(Padding {
+            top: 6.0,
+            right: 0.0,
+            bottom: 0.0,
+            left: 0.0,
+        });
+    column![container(centre(st)).width(Length::Fill).height(Length::Fill), ide_chrome::handle(Edge::Bottom), dock]
+        .height(Length::Fill)
+        .into()
+}
+
 fn centre(st: &State) -> Element<'_, Msg> {
     if st.ide.workspace.is_none() {
         if st.loaded && st.workspaces.is_empty() {
@@ -1683,12 +1831,15 @@ fn right(st: &State) -> Element<'_, Msg> {
         Panel::Changes | Panel::Agent => ide_panels::agent_view(&st.panels, agent).map(Msg::Panels),
         Panel::Approvals => ide_panels::approvals_view(&st.panels, agent).map(Msg::Panels),
         Panel::Run => ide_panels::run_view(&st.panels, agent).map(Msg::Panels),
-        Panel::Terminal => ide_panels::terminal_view().map(Msg::Panels),
+        Panel::Terminal => ide_panels::terminal_side(st.terminals.as_ref(), st.layout.dock, agent),
     };
-    column![ui::scroll_x(tabs), ui::scroll(body).height(Length::Fill)]
-        .spacing(12)
-        .height(Length::Fill)
-        .into()
+    // The terminal fills its panel (a scroll would give its grid no height); the other panels scroll.
+    let body: Element<'_, Msg> = if shown == Panel::Terminal {
+        body
+    } else {
+        ui::scroll(body).height(Length::Fill).into()
+    };
+    column![ui::scroll_x(tabs), body].spacing(12).height(Length::Fill).into()
 }
 
 /// One changed file's diff in the centre: its path, Open in editor and Close, then its rows.
@@ -1788,18 +1939,22 @@ fn checkpoints_panel(st: &State) -> Element<'_, Msg> {
 /// Ctrl+P opens quick open, Ctrl+Shift+F searches, Ctrl+B and Ctrl+J fold the side panels, Escape closes
 /// what is open here or goes back.
 pub fn subscription(st: &State, ctx: &Ctx) -> Subscription<Msg> {
+    // Every key and every left press reaches `update` with whether a widget took it: the shortcuts are decided
+    // there, where the terminal's focus is known.
     let keys = iced::event::listen_with(|event, status, _window| match event {
-        iced::Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => shortcut(&key, modifiers, status),
+        iced::Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => Some(Msg::Shortcut { key, modifiers, status }),
+        iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => Some(Msg::Pressed),
         _ => None,
     });
     let drag = if st.drag.is_some() { iced::event::listen_with(drag_event) } else { Subscription::none() };
-    Subscription::batch([keys, drag, events::subscription(&ctx.client).map(Msg::Event)])
+    let terminals = st.terminals.as_ref().map_or_else(Subscription::none, |tabs| tabs.subscription().map(Msg::Terminals));
+    Subscription::batch([keys, drag, events::subscription(&ctx.client).map(Msg::Event), terminals])
 }
 
 /// The pointer while a panel edge is dragged: its moves, and the button coming up, from anywhere in the window.
 fn drag_event(event: iced::Event, _: Status, _: iced::window::Id) -> Option<Msg> {
     match event {
-        iced::Event::Mouse(mouse::Event::CursorMoved { position }) => Some(Msg::DragMove(position.x)),
+        iced::Event::Mouse(mouse::Event::CursorMoved { position }) => Some(Msg::DragMove(position.x, position.y)),
         iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => Some(Msg::DragEnd),
         _ => None,
     }
@@ -2118,13 +2273,85 @@ mod tests {
     fn a_drag_on_an_edge_changes_its_width_and_a_double_press_resets_it() {
         let mut st = screen_with_a_tab();
         let _ = update(&mut st, Msg::DragStart(Edge::Left), &ctx());
-        let _ = update(&mut st, Msg::DragMove(100.0), &ctx());
-        let _ = update(&mut st, Msg::DragMove(160.0), &ctx());
+        let _ = update(&mut st, Msg::DragMove(100.0, 0.0), &ctx());
+        let _ = update(&mut st, Msg::DragMove(160.0, 0.0), &ctx());
         assert_eq!(st.layout.left, 264.0 + 60.0);
         let _ = update(&mut st, Msg::DragEnd, &ctx());
         assert!(st.drag.is_none(), "the button came up: the drag ends");
         let _ = update(&mut st, Msg::ResetWidth(Edge::Left), &ctx());
         assert_eq!(st.layout.left, 264.0);
+    }
+
+    #[test]
+    fn the_terminal_takes_the_keys_while_it_has_focus() {
+        let mut st = screen_with_a_tab();
+        type_into(&mut st, "a.txt", "two\n");
+        st.saved = false;
+        let save_key = |st: &mut State| {
+            let key = Key::Character("s".into());
+            let _ = update(
+                st,
+                Msg::Shortcut {
+                    key,
+                    modifiers: Modifiers::CTRL,
+                    status: Status::Ignored,
+                },
+                &ctx(),
+            );
+        };
+        // The terminal has the keys: Ctrl+S is the shell's, so nothing is saved.
+        st.terminal_hover = true;
+        let _ = update(&mut st, Msg::Pressed, &ctx());
+        assert!(st.terminal_focus);
+        save_key(&mut st);
+        assert_eq!(st.notice, None, "the terminal's Ctrl+S is not the IDE's save");
+        // A press elsewhere (the editor) gives the keys back: Ctrl+S is the IDE's save again.
+        st.terminal_hover = false;
+        let _ = update(&mut st, Msg::Pressed, &ctx());
+        assert!(!st.terminal_focus);
+        assert!(matches!(shortcut(&Key::Character("s".into()), Modifiers::CTRL, Status::Ignored), Some(Msg::Save)));
+    }
+
+    #[test]
+    fn the_terminal_dock_moves_the_terminal_and_makes_its_tabs_once() {
+        let mut st = screen_with_a_tab();
+        assert_eq!(st.layout.dock, Dock::Side);
+        assert!(st.terminals.is_none(), "no shell until the terminal is wanted");
+        let _ = update(&mut st, Msg::ToggleTerminalDock, &ctx());
+        assert_eq!(st.layout.dock, Dock::Bottom);
+        assert_eq!(st.terminals.as_ref().map(TerminalTabs::len), Some(1), "docking makes the first tab");
+        let _ = update(&mut st, Msg::ToggleTerminalDock, &ctx());
+        assert_eq!(st.layout.dock, Dock::Side);
+        assert_eq!(st.ide.panel, Panel::Terminal, "back on the side, the side panel shows the terminal");
+        assert!(st.layout.right_open);
+        assert_eq!(st.terminals.as_ref().map(TerminalTabs::len), Some(1), "the same tabs go on");
+    }
+
+    #[test]
+    fn a_repo_workspace_makes_no_terminal() {
+        let mut st = State {
+            loaded: true,
+            ..State::default()
+        };
+        dispatch(&mut st, Action::SetWorkspace(WorkspaceId::Repo {
+            name: "plaza".into(),
+            git_ref: "main".into(),
+        }));
+        let _ = update(&mut st, Msg::Panel(Panel::Terminal), &ctx());
+        let _ = update(&mut st, Msg::ToggleTerminalDock, &ctx());
+        assert!(st.terminals.is_none(), "repo workspaces run no shell");
+    }
+
+    #[test]
+    fn remaking_the_terminal_tabs_keeps_their_count_and_forgets_their_starts() {
+        let mut st = screen_with_a_tab();
+        let _ = update(&mut st, Msg::Panel(Panel::Terminal), &ctx());
+        let _ = update(&mut st, Msg::Terminals(TabsMsg::Add), &ctx());
+        assert_eq!(st.terminals.as_ref().map(TerminalTabs::len), Some(2));
+        st.terminal_links.insert(0);
+        reopen_terminals(&mut st, &ctx());
+        assert_eq!(st.terminals.as_ref().map(TerminalTabs::len), Some(2), "the same two tabs are made again");
+        assert!(st.terminal_links.is_empty(), "the new tabs have not started yet");
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! The IDE's right panels (Changes lives on the left): the agent's transcript with a steer box, the agent's held
-//! approvals (a write's diff against the file now), a bounded run with polled output, and the
-//! terminal's placeholder. The screen (`ide.rs`) owns the workspace and routes the messages; this
-//! module owns its panels' state, their hub calls and their views.
+//! approvals (a write's diff against the file now), a bounded run with polled output, and the terminal (a shell
+//! in the agent's VM, on the side or docked under the editor). The screen (`ide.rs`) owns the workspace and
+//! routes the messages; this module owns its panels' state, their hub calls and their views.
 //!
 //! The hub answers each call with the workspace it was asked for, so a late answer for a workspace
 //! the owner has left is dropped (the same rule as the screen's `is_current`).
@@ -12,12 +12,14 @@ use std::time::Duration;
 use apz_ide::WorkspaceId;
 use apz_ide::state::Panel;
 use iced::keyboard;
-use iced::widget::{Space, column, container, row, text_editor, text_input};
+use iced::widget::{Space, column, container, mouse_area, row, text_editor, text_input};
 use iced::{Alignment, Element, Length, Task};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::ide::{self, FileView};
+use super::ide_chrome::Dock;
+use super::ide_terminal::TerminalTabs;
 use crate::console::client::{self, Client};
 use crate::console::ui::{self, Kind, Tone};
 use crate::theme;
@@ -926,9 +928,45 @@ pub fn run_view<'a>(st: &'a State, agent: bool) -> Element<'a, Msg> {
     col.into()
 }
 
-/// The Terminal panel's placeholder: a shell in the VM comes in a later phase.
-pub fn terminal_view<'a>() -> Element<'a, Msg> {
-    ui::faint("Terminal comes in the next phase").into()
+/// The terminal's header: its name, and the toggle that moves it between the side panel and the dock under the editor.
+fn terminal_header<'a>(dock: Dock) -> Element<'a, ide::Msg> {
+    let label = match dock {
+        Dock::Side => "Move terminal to bottom",
+        Dock::Bottom => "Move to side panel",
+    };
+    row![ui::label("Terminal"), Space::new().width(Length::Fill), ui::btn_sm(label, None, Kind::Ghost, Some(ide::Msg::ToggleTerminalDock))]
+        .spacing(8)
+        .align_y(Alignment::Center)
+        .into()
+}
+
+/// The terminal's tabs. Repo workspaces have no VM, so they have no shell. The mouse area reports the
+/// pointer, which is how the screen knows the terminal has the keys (see `ide::Msg::Pressed`).
+fn terminal_body<'a>(tabs: Option<&'a TerminalTabs>, agent: bool) -> Element<'a, ide::Msg> {
+    if !agent {
+        return ui::faint("Terminals run in agent workspaces.").into();
+    }
+    match tabs {
+        Some(tabs) => mouse_area(tabs.view().map(ide::Msg::Terminals))
+            .on_enter(ide::Msg::TerminalHover(true))
+            .on_exit(ide::Msg::TerminalHover(false))
+            .into(),
+        None => ui::faint("Starting the terminal…").into(),
+    }
+}
+
+/// The Terminal tab of the right panel: the terminal on the side, or a note that it is docked under the editor.
+pub fn terminal_side<'a>(tabs: Option<&'a TerminalTabs>, dock: Dock, agent: bool) -> Element<'a, ide::Msg> {
+    let body: Element<'a, ide::Msg> = match dock {
+        Dock::Side => terminal_body(tabs, agent),
+        Dock::Bottom => ui::faint("The terminal is docked under the editor.").into(),
+    };
+    column![terminal_header(dock), body].spacing(10).height(Length::Fill).into()
+}
+
+/// The terminal docked under the editor.
+pub fn terminal_bottom<'a>(tabs: Option<&'a TerminalTabs>, agent: bool) -> Element<'a, ide::Msg> {
+    column![terminal_header(Dock::Bottom), terminal_body(tabs, agent)].spacing(6).height(Length::Fill).into()
 }
 
 #[cfg(test)]
