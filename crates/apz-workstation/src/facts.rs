@@ -91,7 +91,9 @@ impl Raw {
 
 /// The machine's facts now: collected on this machine, shaped with `extras`.
 pub fn gather(extras: &Extras) -> Facts {
-    build(&collect(), extras)
+    let mut facts = build(&collect(), extras);
+    facts.machine_id = apz_os::machine::id();
+    facts
 }
 
 /// The facts for collected `raw` and `extras`. Pure.
@@ -113,6 +115,8 @@ pub fn build(raw: &Raw, extras: &Extras) -> Facts {
         apps: extras.apps,
         virtual_displays: extras.virtual_displays,
         ui_tree: extras.ui_tree,
+        // Set by `gather`, which reads the machine's own identifier; `build` is pure.
+        machine_id: None,
     }
 }
 

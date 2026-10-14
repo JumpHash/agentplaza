@@ -200,8 +200,11 @@ pub enum AppsOp {
     Focus {
         app: String,
     },
+    /// Asks the app to quit. `force` ends it without a chance to save, where the platform can do that.
     Quit {
         app: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        force: bool,
     },
 }
 
@@ -454,8 +457,16 @@ mod tests {
             (
                 Op::Apps(AppsOp::Quit {
                     app: "Notes".into(),
+                    force: false,
                 }),
                 r#"{"op":"apps","cmd":"quit","app":"Notes"}"#,
+            ),
+            (
+                Op::Apps(AppsOp::Quit {
+                    app: "Notes".into(),
+                    force: true,
+                }),
+                r#"{"op":"apps","cmd":"quit","app":"Notes","force":true}"#,
             ),
             (
                 Op::Script {

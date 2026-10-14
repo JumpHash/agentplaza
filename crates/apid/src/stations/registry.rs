@@ -122,6 +122,20 @@ pub fn may_join(reported: &str, hub: &str) -> bool {
     !reported.is_empty() && !hub.is_empty() && reported != hub
 }
 
+/// Whether a workstation's `facts` may join a hub named `hub` on the machine whose identifier is `hub_machine`:
+/// [`may_join`] by name, and not the hub's own machine by identifier. A machine that reports no identifier is judged
+/// by its name alone.
+pub fn may_join_facts(facts: &Facts, hub: &str, hub_machine: Option<&str>) -> bool {
+    may_join(&facts.hostname, hub) && !same_machine(facts.machine_id.as_deref(), hub_machine)
+}
+
+fn same_machine(reported: Option<&str>, hub: Option<&str>) -> bool {
+    match (reported.map(str::trim), hub.map(str::trim)) {
+        (Some(reported), Some(hub)) => !reported.is_empty() && reported.eq_ignore_ascii_case(hub),
+        _ => false,
+    }
+}
+
 /// A usable name: 1 to [`MAX_NAME_CHARS`] characters, none of them control characters.
 pub fn valid_name(name: &str) -> bool {
     let name = name.trim();
@@ -243,7 +257,7 @@ impl Store {
             return Err(Refusal::Invalid(INVALID_CODE.into()));
         }
         // Containment, before the code is spent: the hub's own machine is never a workstation.
-        if !may_join(&facts.hostname, hub_host) {
+        if !may_join_facts(&facts, hub_host, apz_os::machine::id().as_deref()) {
             return Err(Refusal::OwnHost(
                 "this machine is the hub's own host, or its hostname cannot be told apart from the hub's: a workstation is another machine".into(),
             ));
@@ -454,6 +468,7 @@ mod tests {
             apps: 3,
             virtual_displays: true,
             ui_tree: true,
+            machine_id: None,
         }
     }
 
@@ -545,6 +560,28 @@ mod tests {
         assert!(!may_join("hub.local", "HUB"));
         assert!(!may_join("", "hub"));
         assert!(!may_join("desk", ""));
+    }
+
+    #[test]
+    fn the_hubs_own_machine_may_not_join_under_another_name() {
+        let with_id = |host: &str, id: Option<&str>| Facts {
+            machine_id: id.map(str::to_string),
+            ..facts(host)
+        };
+        assert!(may_join_facts(&with_id("desk", Some("abc")), "hub", Some("def")));
+        assert!(
+            !may_join_facts(&with_id("desk", Some("ABC")), "hub", Some("abc")),
+            "the same machine, renamed, is still the hub's"
+        );
+        assert!(
+            may_join_facts(&with_id("desk", None), "hub", Some("abc")),
+            "no identifier: judged by name"
+        );
+        assert!(
+            !may_join_facts(&with_id("hub", Some("def")), "hub", Some("abc")),
+            "the name check still applies"
+        );
+        assert!(may_join_facts(&with_id("desk", Some("abc")), "hub", None));
     }
 
     #[test]

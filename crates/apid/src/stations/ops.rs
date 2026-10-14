@@ -381,7 +381,7 @@ impl Hooks for Live<'_> {
         if station.revoked {
             return Err("this workstation was revoked".into());
         }
-        if !registry::may_join(&facts.hostname, &hub_host()) {
+        if !registry::may_join_facts(&facts, &hub_host(), apz_os::machine::id().as_deref()) {
             return Err("this machine is the hub's own host, or its hostname cannot be told apart from the hub's".into());
         }
         app.stations.hello(id, version, facts, now())?;
@@ -411,7 +411,7 @@ impl Hooks for Live<'_> {
         let id = link.station();
         match event {
             Event::Facts(facts) => {
-                if !registry::may_join(&facts.hostname, &hub_host()) {
+                if !registry::may_join_facts(&facts, &hub_host(), apz_os::machine::id().as_deref()) {
                     link.kill(1008, "this machine is the hub's own host, or its hostname cannot be told apart from the hub's");
                     return;
                 }

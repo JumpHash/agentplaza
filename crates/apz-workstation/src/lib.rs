@@ -11,18 +11,23 @@
 //! - [`work`]: the worker pool for files, terminals, runs, settings and facts.
 //! - [`script`]: the scripting bridges. The `cli` bridge is built; the app bridges are not yet.
 //! - [`link`]: the hub connection: connect, hello, serve, reconnect with backoff.
-//! - [`join`], [`state`], [`facts`], [`backend`], [`uplink`], [`log`], [`cli`]: enrolment, the state
-//!   directory, the machine's facts, the desktop backend choice, the outgoing queue, the log file and the
-//!   command line.
+//! - [`join`], [`state`], [`facts`], [`backend`], [`route`], [`access`], [`uplink`], [`log`], [`cli`]: enrolment,
+//!   the state directory, the machine's facts, the desktop backend choice, the desktop the lanes serve (owner's
+//!   screen and virtual displays), the Linux accessibility tree, the outgoing queue, the log file and the command
+//!   line.
 
+pub mod acl;
 pub mod backend;
 pub mod cli;
 pub mod daemon;
 pub mod desk;
 pub mod facts;
+#[cfg(target_os = "linux")]
+pub mod access;
 pub mod join;
 pub mod link;
 pub mod log;
+pub mod route;
 pub mod script;
 pub mod state;
 pub mod uplink;

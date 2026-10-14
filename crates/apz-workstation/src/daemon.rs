@@ -212,14 +212,28 @@ pub fn work_folder(raw: &str, home: &Path) -> Result<PathBuf, String> {
 }
 
 /// The environment the daemon's processes get on this machine: the user's home, and the PATH it was started with.
+/// On Windows, the variables a process needs to run at all come along too (see [`WINDOWS_VARS`]).
 pub fn host_env() -> Env {
     let home = apz_os::dirs::home().unwrap_or_else(|| PathBuf::from("/"));
     let path = std::env::var("PATH")
         .ok()
         .filter(|p| !p.is_empty())
         .unwrap_or_else(|| "/usr/local/bin:/usr/bin:/bin".to_string());
-    Env::new(home, path)
+    let mut env = Env::new(home, path);
+    if cfg!(windows) {
+        for name in WINDOWS_VARS {
+            if let Some(value) = std::env::var(name).ok().filter(|v| !v.is_empty()) {
+                env = env.with_var(name, value);
+            }
+        }
+    }
+    env
 }
+
+/// The Windows variables a run or a terminal needs from the daemon's own environment: the system directory, the
+/// command interpreter, the Windows directory and the executable extensions. Without them most programs fail to
+/// start, because a process's environment starts empty.
+pub const WINDOWS_VARS: [&str; 4] = ["SYSTEMROOT", "COMSPEC", "WINDIR", "PATHEXT"];
 
 #[cfg(test)]
 mod tests {
@@ -245,5 +259,10 @@ mod tests {
             PathBuf::from("/srv/work")
         );
         assert!(work_folder("  ", home).is_err());
+    }
+
+    #[test]
+    fn windows_runs_get_the_system_variables_from_the_daemon() {
+        assert_eq!(WINDOWS_VARS, ["SYSTEMROOT", "COMSPEC", "WINDIR", "PATHEXT"]);
     }
 }

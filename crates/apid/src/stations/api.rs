@@ -193,10 +193,11 @@ fn link_route(app: &App, req: &Request) -> Response {
     };
     let weak = app.handle();
     let id = station.id;
-    // A screen frame is one message, so a message may be large; the link pings every 10 s and ends after 45 s of silence.
+    // A screenshot answer is one message of up to 32 MiB (the daemon's own limit), so this socket accepts frames and
+    // messages that size. The link pings every 10 s and ends after 45 s of silence. Other sockets keep their limits.
     let limits = Limits {
-        max_frame: 16 << 20,
-        max_message: 16 << 20,
+        max_frame: 32 << 20,
+        max_message: 32 << 20,
         ping_every: Duration::from_secs(10),
         dead_after: Duration::from_secs(45),
     };

@@ -248,8 +248,15 @@ impl Lane {
                 self.desktop.launch(session, &app, &args).map_err(text)?;
                 Ok(None)
             }
-            AppsOp::Focus { .. } | AppsOp::Quit { .. } => {
-                Err("focus and quit are not in this build's desktop interface yet".to_string())
+            AppsOp::Focus { app } => {
+                self.refuse_frozen()?;
+                self.desktop.focus(&app).map_err(text)?;
+                Ok(None)
+            }
+            AppsOp::Quit { app, force } => {
+                self.refuse_frozen()?;
+                self.desktop.quit(&app, force).map_err(text)?;
+                Ok(None)
             }
         }
     }

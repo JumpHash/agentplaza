@@ -68,6 +68,11 @@ pub struct Facts {
     pub virtual_displays: bool,
     /// Whether the OS accessibility tree is available (the UI tree and `UiAct` work).
     pub ui_tree: bool,
+    /// The machine's own identifier (`/etc/machine-id`, the macOS `IOPlatformUUID`, the Windows `MachineGuid`), when
+    /// it has one. The hub refuses a workstation that reports the hub's own identifier: the hub's machine is never a
+    /// workstation. Absent from older daemons' facts, so it defaults to none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machine_id: Option<String>,
 }
 
 #[cfg(test)]
@@ -129,6 +134,38 @@ mod tests {
                 scale: 1.0,
             },
             r#"{"id":2,"w":2560,"h":1440,"scale":1.0}"#,
+        );
+    }
+
+    #[test]
+    fn the_machine_id_is_sent_only_when_the_machine_has_one() {
+        let mut facts = Facts {
+            os: Os::Linux,
+            os_version: "6.8".into(),
+            arch: "x86_64".into(),
+            hostname: "desk".into(),
+            form: Form::Desktop,
+            cpus: 4,
+            ram_mb: 8192,
+            gpus: Vec::new(),
+            displays: Vec::new(),
+            account: AccountMode::AgentUser {
+                name: "agent".into(),
+            },
+            apps: 0,
+            virtual_displays: false,
+            ui_tree: false,
+            machine_id: None,
+        };
+        let without = serde_json::to_value(&facts).unwrap();
+        assert!(without.get("machine_id").is_none(), "absent when unknown");
+        facts.machine_id = Some("81a4e467".into());
+        let with = serde_json::to_value(&facts).unwrap();
+        assert_eq!(with["machine_id"], "81a4e467");
+        let back: Facts = serde_json::from_value(without).unwrap();
+        assert_eq!(
+            back.machine_id, None,
+            "an older daemon's facts still decode"
         );
     }
 }

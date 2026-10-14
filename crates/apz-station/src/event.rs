@@ -102,6 +102,7 @@ mod tests {
                 apps: 0,
                 virtual_displays: false,
                 ui_tree: false,
+                machine_id: None,
             }),
             r#"{"event":"facts","os":"linux","os_version":"6.8","arch":"x86_64","hostname":"desk-1","form":"desktop","cpus":16,"ram_mb":65536,"gpus":[],"displays":[],"account":{"mode":"owner","name":"irfan"},"apps":0,"virtual_displays":false,"ui_tree":false}"#,
         );

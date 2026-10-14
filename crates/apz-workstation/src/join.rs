@@ -113,6 +113,7 @@ mod tests {
             apps: 0,
             virtual_displays: false,
             ui_tree: false,
+            machine_id: None,
         }
     }
 

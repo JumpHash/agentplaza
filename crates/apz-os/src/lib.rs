@@ -222,6 +222,103 @@ pub mod private {
     }
 }
 
+pub mod machine {
+    //! The machine's own identifier: the same on every run of the machine, set by the OS and not by a user. The hub
+    //! and a workstation daemon on the same machine read the same value, which is how the hub refuses a workstation
+    //! that is its own machine.
+
+    use std::sync::OnceLock;
+
+    /// The machine's identifier, read once: `/etc/machine-id` on Linux, `IOPlatformUUID` on macOS, and the
+    /// `MachineGuid` of the Cryptography key on Windows. `None` when the OS gives none.
+    pub fn id() -> Option<String> {
+        static ID: OnceLock<Option<String>> = OnceLock::new();
+        ID.get_or_init(read).clone()
+    }
+
+    /// The `IOPlatformUUID` in `ioreg -rd1 -c IOPlatformExpertDevice` output: the line `"IOPlatformUUID" = "<id>"`.
+    pub fn parse_ioreg(text: &str) -> Option<String> {
+        text.lines()
+            .find(|line| line.contains("\"IOPlatformUUID\""))
+            .and_then(|line| line.split_once('='))
+            .map(|(_, value)| value.trim().trim_matches('"').trim().to_string())
+            .filter(|value| !value.is_empty())
+    }
+
+    #[cfg(target_os = "linux")]
+    fn read() -> Option<String> {
+        std::fs::read_to_string("/etc/machine-id")
+            .ok()
+            .map(|text| text.trim().to_string())
+            .filter(|text| !text.is_empty())
+    }
+
+    #[cfg(target_os = "macos")]
+    fn read() -> Option<String> {
+        let output = std::process::Command::new("/usr/sbin/ioreg")
+            .args(["-rd1", "-c", "IOPlatformExpertDevice"])
+            .output()
+            .ok()?;
+        parse_ioreg(&String::from_utf8_lossy(&output.stdout))
+    }
+
+    #[cfg(windows)]
+    fn read() -> Option<String> {
+        use windows::Win32::System::Registry::{HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ, RegGetValueW};
+        use windows::core::w;
+        let key = w!("SOFTWARE\\Microsoft\\Cryptography");
+        let value = w!("MachineGuid");
+        let mut bytes = 0u32;
+        // SAFETY: the key and value names are static, NUL-terminated strings; the first call only asks for the size.
+        unsafe {
+            RegGetValueW(HKEY_LOCAL_MACHINE, key, value, RRF_RT_REG_SZ, None, None, Some(&mut bytes))
+                .ok()
+                .ok()?;
+        }
+        let mut units = vec![0u16; (bytes as usize).div_ceil(2).max(1)];
+        let mut len = (units.len() * 2) as u32;
+        // SAFETY: `units` holds `len` bytes, the size the registry is asked to fill.
+        unsafe {
+            RegGetValueW(
+                HKEY_LOCAL_MACHINE,
+                key,
+                value,
+                RRF_RT_REG_SZ,
+                None,
+                Some(units.as_mut_ptr().cast()),
+                Some(&mut len),
+            )
+            .ok()
+            .ok()?;
+        }
+        let text = String::from_utf16_lossy(&units[..(len as usize / 2).min(units.len())]);
+        let text = text.trim_end_matches('\0').trim().to_string();
+        (!text.is_empty()).then_some(text)
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+    fn read() -> Option<String> {
+        None
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn the_ioreg_uuid_is_read_from_its_line() {
+            let text = "+-o Root  <class IORegistryEntry>\n    |   \"IOPlatformSerialNumber\" = \"C02X\"\n    |   \"IOPlatformUUID\" = \"4C2F1E0A-1234-5678-9ABC-DEF012345678\"\n";
+            assert_eq!(parse_ioreg(text).as_deref(), Some("4C2F1E0A-1234-5678-9ABC-DEF012345678"));
+            assert_eq!(parse_ioreg("nothing here"), None);
+        }
+
+        #[test]
+        fn the_id_is_the_same_on_every_read() {
+            assert_eq!(id(), id());
+        }
+    }
+}
+
 pub mod random {
     //! Bytes from the operating system's CSPRNG (`getrandom(2)`, `getentropy`, `ProcessPrng`).
 

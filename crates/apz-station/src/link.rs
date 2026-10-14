@@ -87,6 +87,7 @@ mod tests {
             apps: 142,
             virtual_displays: true,
             ui_tree: true,
+            machine_id: None,
         }
     }
 

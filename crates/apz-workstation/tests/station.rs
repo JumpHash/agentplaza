@@ -252,6 +252,7 @@ fn fixture_facts(apps: u32) -> Facts {
         apps,
         virtual_displays: true,
         ui_tree: false,
+        machine_id: None,
     }
 }
 
@@ -400,7 +401,16 @@ fn hello_comes_first_and_requests_are_answered_by_their_id() {
             app: "Notes".into(),
         }),
     );
-    assert!(refused(&refusal).contains("not in this build"));
+    // The fake desktop has no focus or quit, so the lane asks it and passes its refusal on.
+    assert!(refused(&refusal).contains("cannot focus"));
+    let quit = link.request(
+        43,
+        Op::Apps(AppsOp::Quit {
+            app: "Notes".into(),
+            force: true,
+        }),
+    );
+    assert!(refused(&quit).contains("cannot quit"));
     assert!(rig.finish().is_ok());
 }
 

@@ -113,9 +113,11 @@ pub fn load_record(dir: &Path) -> Result<Option<Record>, String> {
     read_json(&dir.join(RECORD_FILE))
 }
 
-/// Writes the enrolment record privately.
+/// Writes the enrolment record privately: mode 0600 on Unix, and on Windows an owner-only ACL (the record holds the
+/// station token).
 pub fn save_record(dir: &Path, record: &Record) -> Result<(), String> {
-    write_json(dir, RECORD_FILE, record)
+    write_json(dir, RECORD_FILE, record)?;
+    crate::acl::restrict_to_owner(&dir.join(RECORD_FILE))
 }
 
 /// The saved settings, or the defaults when none were saved yet.

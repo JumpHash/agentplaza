@@ -12,7 +12,7 @@ use std::path::PathBuf;
 /// The usage text.
 pub const USAGE: &str = "\
 usage: apz-workstation join --hub URL --code CODE [--name N] [--account agent:<user>|owner] [--pin PIN] [--state-dir DIR]
-       apz-workstation run [--state-dir DIR]
+       apz-workstation run [--state-dir DIR] [--fake-desktop]
        apz-workstation status [--state-dir DIR]
        apz-workstation leave [--state-dir DIR]";
 
@@ -20,9 +20,17 @@ usage: apz-workstation join --hub URL --code CODE [--name N] [--account agent:<u
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
     Join(JoinArgs),
-    Run { state: Option<PathBuf> },
-    Status { state: Option<PathBuf> },
-    Leave { state: Option<PathBuf> },
+    /// `fake_desktop`: serve the in-memory desktop (`--fake-desktop`), for the daemon's own tests.
+    Run {
+        state: Option<PathBuf>,
+        fake_desktop: bool,
+    },
+    Status {
+        state: Option<PathBuf>,
+    },
+    Leave {
+        state: Option<PathBuf>,
+    },
     Help,
     Version,
 }
@@ -57,7 +65,16 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
     let Some(command) = words.next() else {
         return Ok(Command::Help);
     };
-    let flags = Flags::collect(words.as_slice())?;
+    // `--fake-desktop` is a bare flag, so it is taken out before the name-value flags are read.
+    let fake_desktop = words.clone().any(|w| w.as_str() == "--fake-desktop");
+    if fake_desktop && command.as_str() != "run" {
+        return Err("--fake-desktop is an option of run".to_string());
+    }
+    let rest: Vec<String> = words
+        .filter(|w| w.as_str() != "--fake-desktop")
+        .cloned()
+        .collect();
+    let flags = Flags::collect(&rest)?;
     match command.as_str() {
         "join" => {
             flags.only(&[
@@ -98,6 +115,7 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
             flags.only(&["--state-dir"])?;
             Ok(Command::Run {
                 state: flags.state(),
+                fake_desktop,
             })
         }
         "status" => {
@@ -261,9 +279,18 @@ mod tests {
         assert_eq!(
             parse(&words("run --state-dir /x")).unwrap(),
             Command::Run {
-                state: Some(PathBuf::from("/x"))
+                state: Some(PathBuf::from("/x")),
+                fake_desktop: false,
             }
         );
+        assert_eq!(
+            parse(&words("run --fake-desktop")).unwrap(),
+            Command::Run {
+                state: None,
+                fake_desktop: true,
+            }
+        );
+        assert!(parse(&words("status --fake-desktop")).is_err());
         assert_eq!(
             parse(&words("status")).unwrap(),
             Command::Status { state: None }

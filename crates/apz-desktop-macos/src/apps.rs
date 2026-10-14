@@ -45,6 +45,19 @@ pub fn sort_and_dedupe(mut apps: Vec<AppInfo>) -> Vec<AppInfo> {
 }
 
 /// The app with this name, the one `launch` and `ui_tree` take.
+/// The AppleScript that runs `verb` (`activate`, `quit`) on the app `name` only when it is running, so a
+/// focus or quit never launches an app. The name is quoted as an AppleScript string.
+pub fn running_app_script(name: &str, verb: &str) -> String {
+    let quoted = applescript_string(name);
+    format!("if application {quoted} is running then\ntell application {quoted} to {verb}\nend if")
+}
+
+/// `text` as an AppleScript string literal. Names with a line break or other control character are refused by the
+/// caller, so only the quote and the backslash need escaping here.
+pub fn applescript_string(text: &str) -> String {
+    format!("\"{}\"", text.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
 pub fn find_app<'a>(apps: &'a [AppInfo], name: &str) -> Option<&'a AppInfo> {
     apps.iter().find(|app| app.name == name)
 }
@@ -112,5 +125,18 @@ mod tests {
         let apps = vec![app("com.example.notes", "Notes")];
         assert!(find_app(&apps, "Notes").is_some());
         assert!(find_app(&apps, "notes").is_none(), "names match exactly");
+    }
+
+    #[test]
+    fn a_focus_or_quit_only_runs_on_a_running_app() {
+        assert_eq!(
+            running_app_script("Notes", "activate"),
+            "if application \"Notes\" is running then\ntell application \"Notes\" to activate\nend if"
+        );
+    }
+
+    #[test]
+    fn names_are_quoted_so_they_cannot_end_the_string() {
+        assert_eq!(applescript_string(r#"a"b\c"#), r#""a\"b\\c""#);
     }
 }

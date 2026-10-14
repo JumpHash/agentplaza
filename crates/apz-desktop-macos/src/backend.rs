@@ -59,6 +59,32 @@ impl Default for MacDesktop {
 }
 
 impl MacDesktop {
+    /// Runs `verb` on the app `id` names (its name, else its id), through AppleScript.
+    fn script_for_app(&mut self, id: &str, verb: &str) -> Result<()> {
+        if id.chars().any(char::is_control) {
+            return Err(DesktopError::Invalid(
+                "an app name has no control characters".into(),
+            ));
+        }
+        let installed = workspace::installed_apps();
+        let info = apps::find_app(&installed, id)
+            .or_else(|| installed.iter().find(|app| app.id == id))
+            .ok_or_else(|| DesktopError::NotFound(format!("no installed app named {id}")))?;
+        let script = apps::running_app_script(&info.name, verb);
+        let output = Command::new("/usr/bin/osascript")
+            .arg("-e")
+            .arg(&script)
+            .output()
+            .map_err(|e| DesktopError::Platform(format!("cannot run osascript: {e}")))?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            Err(DesktopError::Platform(
+                String::from_utf8_lossy(&output.stderr).trim().to_string(),
+            ))
+        }
+    }
+
     pub fn new() -> Self {
         Self {
             sessions: BTreeMap::new(),
@@ -152,6 +178,23 @@ impl Desktop for MacDesktop {
 
     fn apps(&mut self) -> Result<Vec<AppInfo>> {
         Ok(workspace::installed_apps())
+    }
+
+    /// Brings a running app to the front (`activate`). The app is named by its name or its id. An app that is not
+    /// running is left alone: the script never launches it.
+    fn focus(&mut self, id: &str) -> Result<()> {
+        self.script_for_app(id, "activate")
+    }
+
+    /// Quits a running app with `quit`, which lets it save. A forced quit is not built: the owner's app gets the
+    /// chance to ask about unsaved work, so `force` is refused rather than faked.
+    fn quit(&mut self, id: &str, force: bool) -> Result<()> {
+        if force {
+            return Err(DesktopError::Unsupported(
+                "a forced quit is not built on macOS; quit the app without force".into(),
+            ));
+        }
+        self.script_for_app(id, "quit")
     }
 
     fn launch(&mut self, id: SessionId, app: &str, args: &[String]) -> Result<()> {

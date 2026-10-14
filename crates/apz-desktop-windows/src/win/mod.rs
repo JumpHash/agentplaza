@@ -152,14 +152,6 @@ impl WindowsDesktop {
         unsafe { self.uia.ElementFromHandle(hwnd) }.map_err(platform_error)
     }
 
-    /// Focuses an app's main window, for a caller that wants the app in front before it types. Not part of the
-    /// trait: the trait's operations do not focus, so the caller decides.
-    pub fn focus(&mut self, id: SessionId, app: &str) -> Result<()> {
-        self.require(id)?;
-        let info = self.find_app(app)?;
-        let hwnd = window::main_window_of(&info.id)?;
-        window::bring_to_front(hwnd)
-    }
 }
 
 impl Desktop for WindowsDesktop {
@@ -227,6 +219,15 @@ impl Desktop for WindowsDesktop {
 
     fn apps(&mut self) -> Result<Vec<AppInfo>> {
         Ok(self.catalogue().to_vec())
+    }
+
+    /// Brings the app's main window to the front (SetForegroundWindow). The app is named by its catalogue id or
+    /// name. Windows lets a process take the foreground only from the foreground process, so this can be
+    /// refused; the refusal comes back as the platform's error.
+    fn focus(&mut self, id: &str) -> Result<()> {
+        let info = self.find_app(id)?;
+        let hwnd = window::main_window_of(&info.id)?;
+        window::bring_to_front(hwnd)
     }
 
     fn launch(&mut self, id: SessionId, app: &str, args: &[String]) -> Result<()> {

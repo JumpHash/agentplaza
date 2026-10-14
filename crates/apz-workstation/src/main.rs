@@ -43,7 +43,10 @@ fn main() -> ExitCode {
 fn execute(command: Command) -> Result<(), String> {
     match command {
         Command::Join(args) => join_command(args),
-        Command::Run { state } => run_command(&state_dir(state)?),
+        Command::Run {
+            state,
+            fake_desktop,
+        } => run_command(&state_dir(state)?, fake_desktop),
         Command::Status { state } => status_command(&state_dir(state)?),
         Command::Leave { state } => {
             let dir = state_dir(state)?;
@@ -90,13 +93,13 @@ fn join_command(args: JoinArgs) -> Result<(), String> {
     let probe = Probe::here();
     let built = Built::here();
     let choice = backend::choose(&probe, built);
-    let mut desktop = backend::open(choice);
+    let mut desktop = backend::open(choice, &probe, built, &dir);
     let account = account_for(args.account);
     let apps = backend::apps_count(choice, desktop.as_mut());
     let extras = Extras {
         account: account.clone(),
         apps,
-        virtual_displays: backend::virtual_displays(&probe, choice),
+        virtual_displays: backend::virtual_displays(&probe, built),
         ui_tree: backend::ui_tree(&probe, choice, built),
     };
     let facts = facts::gather(&extras);
@@ -121,16 +124,16 @@ fn join_command(args: JoinArgs) -> Result<(), String> {
     Ok(())
 }
 
-fn run_command(dir: &Path) -> Result<(), String> {
+fn run_command(dir: &Path, fake_desktop: bool) -> Result<(), String> {
     let record = state::load_record(dir)?.ok_or_else(|| {
         "this machine is not joined: run `apz-workstation join` first".to_string()
     })?;
     let probe = Probe::here();
     let built = Built::here();
-    let choice = backend::choose(&probe, built);
-    let desktop = backend::open(choice);
+    let choice = backend::select(fake_desktop || backend::fake_requested(), &probe, built);
+    let desktop = backend::open(choice, &probe, built, dir);
     let account = record.account.clone();
-    let virtual_displays = backend::virtual_displays(&probe, choice);
+    let virtual_displays = backend::virtual_displays(&probe, built);
     let ui_tree = backend::ui_tree(&probe, choice, built);
     let gather: Gather = Arc::new(move |apps| {
         facts::gather(&Extras {
@@ -153,10 +156,15 @@ fn run_command(dir: &Path) -> Result<(), String> {
         apz_os::version(),
         choice.name()
     ));
-    if choice == backend::Backend::Fake {
-        daemon.shared.log.warn(
-            "no desktop backend is built in: screen operations run on the fake desktop, not this machine's screen",
-        );
+    match choice {
+        backend::Backend::Fake => daemon.shared.log.warn(
+            "--fake-desktop: screen operations run on the fake desktop, not this machine's screen",
+        ),
+        backend::Backend::Unavailable => daemon.shared.log.warn(format!(
+            "no desktop backend: {}; screen operations are refused with this reason",
+            backend::unavailable_reason(&probe, built)
+        )),
+        _ => {}
     }
     let stop = AtomicBool::new(false);
     link::run(&daemon, &record, &stop)

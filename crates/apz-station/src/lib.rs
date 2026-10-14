@@ -28,8 +28,14 @@
 //! - `id` is chosen by the hub and is unique per link. The daemon answers every request exactly once,
 //!   with the same `id`: `ok: true` and `result` (the shape is documented on each [`Op`] variant), or
 //!   `ok: false` and `error` (a human-readable reason; the hub shows it and audits it).
-//! - Requests are served one at a time in arrival order. A request that cannot start (a closed session,
-//!   a frozen station) is answered with `ok: false`, never left unanswered.
+//! - Requests may be served concurrently. The daemon runs a worker pool for files, terminals, runs, settings
+//!   and facts, and one desktop lane for the screen operations (sessions, screenshots, input, UI trees, apps,
+//!   streams), which serves them in arrival order because a desktop takes one caller at a time. So responses
+//!   can arrive out of order: each answer is matched to its request by `id` alone, never by its position on the
+//!   link. A request that cannot start (a closed session, a frozen station) is answered with `ok: false`, never
+//!   left unanswered.
+//! - Screenshot and stream coordinates are the pixels of the image last sent for the session (see
+//!   [`InputAction`]); the daemon maps them to screen points.
 //! - `Event` frames are unsolicited: screen frames for live views, facts changes, sync changes, the
 //!   owner's input (a takeover), a session that ended, and log lines.
 //! - `Notify` tells the daemon something the hub decided: `revoked` (end the link and stop),

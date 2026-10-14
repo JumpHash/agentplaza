@@ -208,6 +208,7 @@ mod tests {
             apps: 0,
             virtual_displays,
             ui_tree: true,
+            machine_id: None,
         }
     }
 

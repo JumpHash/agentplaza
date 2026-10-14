@@ -11,8 +11,15 @@ pub enum Button {
     Middle,
 }
 
-/// One pointer or keyboard action. Coordinates are screen points (what the OS uses), not screenshot
-/// pixels: the hub maps a point through the screenshot's `scale` before it sends it.
+/// One pointer or keyboard action.
+///
+/// Coordinates (`x`, `y`, `from`, `to`) are in the pixels of the session's most recent screenshot or stream frame,
+/// as the hub last saw them. The daemon maps each point to screen points with the scale of that image, so the hub
+/// never needs the display's own size. Before any image has been sent for a session, points are screen points.
+///
+/// Scroll amounts (`dx`, `dy`) are notches (line counts), not pixels, so the daemon passes them unchanged. Their
+/// sign is the content's direction: `dy > 0` scrolls the content down (the wheel turned down, toward the user),
+/// `dy < 0` scrolls up; `dx > 0` scrolls right, `dx < 0` left. Every backend follows this.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum InputAction {
@@ -33,6 +40,8 @@ pub enum InputAction {
     Up {
         button: Button,
     },
+    /// Moves to `(x, y)` and scrolls there by `dx` and `dy` notches. `dy > 0` scrolls content down, `dx > 0`
+    /// scrolls content right (see the type's docs for the signs).
     Scroll {
         x: i32,
         y: i32,

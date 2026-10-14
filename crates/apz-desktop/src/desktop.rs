@@ -124,6 +124,22 @@ pub trait Desktop: Send {
     fn ui_act(&mut self, id: SessionId, selector: &Selector, action: &UiAction) -> Result<()>;
     fn apps(&mut self) -> Result<Vec<AppInfo>>;
     fn launch(&mut self, id: SessionId, app: &str, args: &[String]) -> Result<()>;
+    /// Brings the app `id` (its [`AppInfo::id`], or its name) to the front. Unsupported unless the platform
+    /// can do it without a window the daemon cannot name.
+    fn focus(&mut self, id: &str) -> Result<()> {
+        let _ = id;
+        Err(DesktopError::Unsupported(
+            "this backend cannot focus an app".into(),
+        ))
+    }
+    /// Asks the app `id` to quit. `force` ends it without giving it a chance to save. Unsupported unless the
+    /// platform can do it.
+    fn quit(&mut self, id: &str, force: bool) -> Result<()> {
+        let _ = (id, force);
+        Err(DesktopError::Unsupported(
+            "this backend cannot quit an app".into(),
+        ))
+    }
     /// Whether the owner is using this session right now (their input moved it recently).
     fn owner_active(&self, id: SessionId) -> bool;
 }

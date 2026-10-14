@@ -24,13 +24,27 @@ base64.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 
-# Platform backends. Each is off until its crate lands: the integrator adds the crate as an optional
-# dependency and turns the feature on, and `backend::open` then constructs it. With every feature off,
-# `backend::choose` picks the fake desktop.
+# The platform desktop backends are always built for their own platform: Linux has the X11, Wayland and AT-SPI
+# backends, macOS its backend, Windows its backend. Which one serves a run is chosen at run time (`backend`).
+[target.'cfg(target_os = "linux")'.dependencies]
+apz-desktop-atspi = { path = "../apz-desktop-atspi" }
+apz-desktop-wayland = { path = "../apz-desktop-wayland" }
+apz-desktop-x11 = { path = "../apz-desktop-x11" }
+zbus = "5"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+apz-desktop-macos = { path = "../apz-desktop-macos" }
+
+[target.'cfg(windows)'.dependencies]
+apz-desktop-windows = { path = "../apz-desktop-windows" }
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_Threading",
+] }
+
+# PipeWire screen capture for the Wayland backend. Building it needs the PipeWire headers and libclang.
 [features]
 default = []
-x11 = []
-wayland = []
-macos = []
-windows = []
-atspi = []
+pipewire = ["apz-desktop-wayland/pipewire"]

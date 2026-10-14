@@ -37,7 +37,8 @@ pub enum Step {
     },
     /// The pointer moves to `(x, y)` with `button` held.
     Dragged { button: Button, x: i32, y: i32 },
-    /// A wheel scroll at `(x, y)`. `dy` is positive for up and `dx` for right, as the wheel reports them.
+    /// A wheel scroll at `(x, y)`, in the wheel's own signs: `dy` positive scrolls up, `dx` positive scrolls
+    /// left. The planner turns the protocol's signs (`dy > 0` down, `dx > 0` right) into these.
     Scroll { x: i32, y: i32, dx: i32, dy: i32 },
     /// A virtual key goes down or up, with the flags the chord holds.
     Key { code: u16, flags: u64, down: bool },
@@ -95,14 +96,16 @@ pub fn plan(action: &InputAction, pointer: (i32, i32)) -> Result<(Vec<Step>, (i3
             }],
             pointer,
         )),
+        // The protocol's `dy > 0` scrolls content down, which is a negative wheel1 (CoreGraphics counts up as
+        // positive); `dx > 0` scrolls right, which is a negative wheel2.
         InputAction::Scroll { x, y, dx, dy } => Ok((
             vec![
                 Step::Move { x: *x, y: *y },
                 Step::Scroll {
                     x: *x,
                     y: *y,
-                    dx: *dx,
-                    dy: *dy,
+                    dx: dx.saturating_neg(),
+                    dy: dy.saturating_neg(),
                 },
             ],
             (*x, *y),
@@ -319,11 +322,29 @@ mod tests {
                     x: 100,
                     y: 200,
                     dx: 0,
-                    dy: -3,
+                    dy: 3,
                 },
             ]
         );
         assert_eq!(pointer, (100, 200));
+    }
+
+    #[test]
+    fn a_scroll_down_and_right_is_a_negative_wheel() {
+        let (steps, _) = plan(
+            &InputAction::Scroll {
+                x: 1,
+                y: 2,
+                dx: 4,
+                dy: 5,
+            },
+            (0, 0),
+        )
+        .expect("plans");
+        assert!(matches!(
+            steps.last(),
+            Some(Step::Scroll { dx: -4, dy: -5, .. })
+        ));
     }
 
     #[test]

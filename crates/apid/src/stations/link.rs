@@ -395,6 +395,7 @@ pub(crate) mod tests {
             apps: 3,
             virtual_displays: true,
             ui_tree: true,
+            machine_id: None,
         }
     }
 
