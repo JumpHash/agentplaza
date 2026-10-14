@@ -350,162 +350,68 @@ fn kernel_enforces() -> bool {
     probe_child("canary", "canary", &[]).0.signal() == Some(libc::SIGSYS)
 }
 
-/// A syscall the allowlist does not name is refused: the child dies by
-/// `SIGSYS`. This is the red test. A platform that cannot install a filter —
-/// or cannot apply one it installed — skips instead (the enforcement canary and
-/// the child's own `Seccomp:` report tell a real regression from a platform
-/// that only pretends), and the filter is not a blanket deny either, which
-/// `an_allowlisted_syscall_runs` shows.
+/// A syscall the allowlist does not name is refused: the child dies by `SIGSYS`.
+/// `getcwd(2)` is not on the allowlist at all; `socket(AF_INET)` is allowlisted for
+/// `AF_UNIX` only, so the argument filter refuses it. These are the red tests. A
+/// platform that cannot install a filter, or cannot apply one it installed, skips
+/// instead (the enforcement canary and the child's own `Seccomp:` report tell a real
+/// regression from a platform that only pretends). The filter is not a blanket deny
+/// either: `the_fixed_allowlist_admits_what_the_vmm_does_after_arming` runs the calls
+/// it names.
 #[test]
-fn a_syscall_outside_the_allowlist_is_killed() {
-    let Some(()) = probe("getcwd", Expect::Killed) else {
-        return;
-    };
+fn the_shipped_allowlist_kills_what_it_does_not_name() {
+    for what in ["getcwd", "inet"] {
+        probe(what, Expect::Killed);
+    }
 }
 
-/// `socket(2)` is allowlisted, but only for `AF_UNIX`: an `AF_INET` socket is
-/// refused by the argument filter, not the number filter.
+/// The shipped allowlist admits what the VMM does after arming, each probed in its own
+/// child: `getpid(2)` (an allowlisted call runs and the child exits cleanly), the
+/// muxer's `recv` and `send` (the two calls the live fleet was killed on), a buffer
+/// growing past glibc's 128 KiB mmap threshold (`mremap`, the serial capture's shape),
+/// and a thread spawned after arming, whose whole libc and Rust bootstrap runs under the
+/// filter (`clone`, `sched_getaffinity`, `set_robust_list`, `rseq`, `sigaltstack`, the
+/// allocator's `mprotect`, `prctl(PR_SET_NAME)` and the join). `witness` is the read-back
+/// alone: every armed child also checks `Seccomp: 2` before it probes.
 #[test]
-fn an_inet_socket_is_killed() {
-    let Some(()) = probe("inet", Expect::Killed) else {
-        return;
-    };
+fn the_fixed_allowlist_admits_what_the_vmm_does_after_arming() {
+    for what in ["witness", "getpid", "recv", "send", "grow", "thread"] {
+        probe(what, Expect::Allowed);
+    }
 }
 
-/// The filter is not a blanket deny: an allowlisted syscall runs and the child
-/// exits cleanly.
+/// **The deaths the live fleet died**, each probed under the pre-fix list the port
+/// shipped in `6ce364b` so the kill is shown. The fixed-allowlist test above admits the
+/// same calls.
+///
+/// * `recv`: the muxer's `read_local_stream_port` reads a host-initiated `connect <port>`
+///   command with std's `UnixStream` read, which is glibc's `recv` → `recvfrom`. The
+///   armed `apz_vm0_vsock` thread was killed by `SIGSYS`, taking the node daemon with it.
+/// * `send`: `send_bytes_raw`'s write is glibc's `send` → `sendto`.
+/// * `grow`: a buffer growing past 128 KiB is reallocated with `mremap` (syscall 25); the
+///   VMM's serial capture is such a buffer. The armed `apz_vcpu_0` thread died, and the
+///   acceptance matrix saw a run lose both its VMs (`sig=31 code=0x80000000`).
+/// * `thread`: a thread created after arming runs its bootstrap under the filter. The
+///   pre-fix list names neither `mprotect`, `sched_getaffinity` nor `prctl`, so the new
+///   thread's startup kills the process, where the live fleet's vCPU thread died.
 #[test]
-fn an_allowlisted_syscall_runs() {
-    let Some(()) = probe("getpid", Expect::Allowed) else {
-        return;
-    };
+fn the_pre_fix_allowlist_killed_the_fleet_paths() {
+    for what in ["recv", "send", "grow", "thread"] {
+        probe_expect(what, "pre-fix", &[], Expect::Killed);
+    }
 }
 
-/// The filter really is installed: after arming, the kernel reports the
-/// calling thread in filter mode (`Seccomp: 2`), which every probe that arms
-/// reads back and reports before it does anything else.
+/// The logged arm (`SECCOMP_RET_LOG`) audits a call the allowlist does not name and
+/// **allows** it, so a child the kill arm kills lives. Two cases: `getcwd` under the
+/// shipped list (the kill arm's refusal of it is checked above), and the muxer's `recv`
+/// under the *pre-fix* list, the field-diagnosis arm. A deployment that has not yet found
+/// its missing entry runs the pre-fix list with LOG, so the daemon survives while the
+/// operator reads the entry from the kernel log (`journalctl -k | grep type=1326` shows
+/// `code=0x7ffc0000`; the audit record itself is a privileged reader's).
 #[test]
-fn the_jail_installs_seccomp_filter_mode() {
-    let Some(()) = probe("witness", Expect::Allowed) else {
-        return;
-    };
-}
-
-/// **The death the live fleet died.** The muxer's `read_local_stream_port`
-/// reads a host-initiated connection's `connect <port>` command with std's
-/// `UnixStream` read — the C library's `recv`, which is the `recvfrom` syscall
-/// on x86_64 — and the allowlist this port shipped in `6ce364b` did not name
-/// it: the armed `apz_vm0_vsock` thread was killed by `SIGSYS`, taking the
-/// whole node daemon with it. The pre-fix list is armed deliberately here to
-/// show the kill, and the next test shows the fix.
-#[test]
-fn the_pre_fix_allowlist_killed_the_muxers_read() {
-    let Some(()) = probe_expect("recv", "pre-fix", &[], Expect::Killed) else {
-        return;
-    };
-}
-
-/// The same read under the shipped allowlist: the syscall is named, so the
-/// thread runs. This is the green half of the pair above.
-#[test]
-fn the_muxers_read_runs_under_the_fixed_allowlist() {
-    let Some(()) = probe("recv", Expect::Allowed) else {
-        return;
-    };
-}
-
-/// The write half of the same stream: `send_bytes_raw`'s std `UnixStream`
-/// write is the C library's `send`, which is `sendto` on x86_64.
-#[test]
-fn the_pre_fix_allowlist_killed_the_muxers_write() {
-    let Some(()) = probe_expect("send", "pre-fix", &[], Expect::Killed) else {
-        return;
-    };
-}
-
-/// **The second death the live fleet and the acceptance matrix found.** A
-/// buffer growing past glibc's 128 KiB mmap threshold is reallocated with
-/// `mremap` (`syscall=25`) — the VMM's serial capture is exactly such a buffer,
-/// and the allowlist the port shipped in `6ce364b` (and `63aee0d`) did not name
-/// it: the armed `apz_vcpu_0` thread was killed by `SIGSYS`, taking the node
-/// daemon with it. The acceptance matrix observed a run lose both its VMs to it
-/// (`sig=31 code=0x80000000`, capture ~131 KiB). The pre-fix list is armed here
-/// to show the kill; the next test shows the fix.
-#[test]
-fn the_pre_fix_allowlist_killed_a_growing_buffer() {
-    let Some(()) = probe_expect("grow", "pre-fix", &[], Expect::Killed) else {
-        return;
-    };
-}
-
-/// The same growth under the shipped allowlist: `mremap` is named, so the
-/// thread that feeds the capture runs. This is the green half of the pair
-/// above, and the reason a long-running VM's console can keep growing.
-#[test]
-fn a_growing_buffer_runs_under_the_fixed_allowlist() {
-    let Some(()) = probe("grow", Expect::Allowed) else {
-        return;
-    };
-}
-
-/// The same write under the shipped allowlist.
-#[test]
-fn the_muxers_write_runs_under_the_fixed_allowlist() {
-    let Some(()) = probe("send", Expect::Allowed) else {
-        return;
-    };
-}
-
-/// **The whole bootstrap of a thread created by an armed thread** — where the
-/// allocator's `mprotect` is, and where the live fleet's vCPU thread was killed
-/// (the first allocation a thread makes can create a glibc arena, long after it
-/// armed). The pre-fix list names neither `mprotect` nor `sched_getaffinity`
-/// nor `prctl`, so the new thread's own startup kills the process.
-#[test]
-fn the_pre_fix_allowlist_killed_a_thread_spawned_after_arming() {
-    let Some(()) = probe_expect("thread", "pre-fix", &[], Expect::Killed) else {
-        return;
-    };
-}
-
-/// The same thread under the shipped allowlist: `clone`, the libc bootstrap
-/// (`sched_getaffinity`, `set_robust_list`, `rseq`, `sigaltstack`), the
-/// allocator's `mprotect`, Rust's `prctl(PR_SET_NAME)` and the join all run.
-#[test]
-fn a_thread_spawned_after_arming_survives_the_fixed_allowlist() {
-    let Some(()) = probe("thread", Expect::Allowed) else {
-        return;
-    };
-}
-
-/// The logged arm: `SECCOMP_RET_LOG` audits a syscall the allowlist does not
-/// name and **allows** it, so the child that would be killed under the shipped
-/// `kill` arm lives. (The kernel's audit record itself is a privileged
-/// reader's: `journalctl -k | grep type=1326` shows `code=0x7ffc0000` for it.)
-#[test]
-fn the_logged_arm_audits_an_unlisted_call_and_the_child_lives() {
-    // What the kill arm does to the same call, for contrast.
-    let Some(()) = probe("getcwd", Expect::Killed) else {
-        return;
-    };
-    let Some(()) = probe_expect("getcwd", "logged", &[], Expect::Allowed) else {
-        return;
-    };
-}
-
-/// **The field-diagnosis arm, over the list that was killing the fleet.** A
-/// deployment that has not yet found its missing entry can run the *pre-fix*
-/// allowlist with `SECCOMP_RET_LOG`: the muxer's `recvfrom` — the syscall that
-/// killed the live `noded` — is audited and allowed, so the daemon lives while
-/// the operator reads the entry out of the kernel log.
-#[test]
-fn the_logged_arm_keeps_a_daemon_alive_on_the_pre_fix_allowlist() {
-    let Some(()) = probe_expect("recv", "pre-fix", &[], Expect::Killed) else {
-        return;
-    };
-    let Some(()) = probe_expect("recv", "pre-fix-logged", &[], Expect::Allowed) else {
-        return;
-    };
+fn the_logged_arm_admits_the_calls_the_kill_arm_refuses() {
+    probe_expect("getcwd", "logged", &[], Expect::Allowed);
+    probe_expect("recv", "pre-fix-logged", &[], Expect::Allowed);
 }
 
 /// An allowlist the port cannot resolve is refused, not silently dropped from

@@ -1270,51 +1270,74 @@ mod tests {
         );
     }
 
+    /// RFC 6455 section 5: a frame, or a run of frames, that a conforming peer never sends is
+    /// refused with the close code its rule names. Each case gets its own socket, so it is
+    /// judged alone.
     #[test]
-    fn an_unmasked_client_frame_is_1002() {
-        let (mut socket, pipe) = server_socket(Limits::default());
-        feed(&pipe, &[0x81, 0x02, b'h', b'i']);
-        assert_refused(&mut socket, &pipe, 1002);
-    }
-
-    #[test]
-    fn a_reserved_bit_is_1002() {
-        let (mut socket, pipe) = server_socket(Limits::default());
-        let mut frame = client_frame(true, OP_TEXT, b"x");
-        frame[0] |= 0x40;
-        feed(&pipe, &frame);
-        assert_refused(&mut socket, &pipe, 1002);
-    }
-
-    #[test]
-    fn an_unknown_opcode_is_1002() {
-        let (mut socket, pipe) = server_socket(Limits::default());
-        feed(&pipe, &client_frame(true, 0x3, b"x"));
-        assert_refused(&mut socket, &pipe, 1002);
-    }
-
-    #[test]
-    fn a_control_frame_over_125_bytes_is_1002() {
-        let (mut socket, pipe) = server_socket(Limits::default());
-        feed(&pipe, &client_frame(true, OP_PING, &[0u8; 126]));
-        assert_refused(&mut socket, &pipe, 1002);
-    }
-
-    #[test]
-    fn a_fragmented_control_frame_is_1002() {
-        let (mut socket, pipe) = server_socket(Limits::default());
-        feed(&pipe, &client_frame(false, OP_PING, b""));
-        assert_refused(&mut socket, &pipe, 1002);
-    }
-
-    #[test]
-    fn a_64_bit_length_with_its_top_bit_set_is_1002() {
-        let (mut socket, pipe) = server_socket(Limits::default());
-        let mut frame = vec![0x82, 0x80 | 127];
-        frame.extend_from_slice(&(1u64 << 63).to_be_bytes());
-        frame.extend_from_slice(&KEY);
-        feed(&pipe, &frame);
-        assert_refused(&mut socket, &pipe, 1002);
+    fn a_frame_that_breaks_the_protocol_is_refused_with_its_close_code() {
+        let mut reserved = client_frame(true, OP_TEXT, b"x");
+        reserved[0] |= 0x40;
+        let mut top_bit_length = vec![0x82, 0x80 | 127];
+        top_bit_length.extend_from_slice(&(1u64 << 63).to_be_bytes());
+        top_bit_length.extend_from_slice(&KEY);
+        let cases: [(&str, u16, Vec<Vec<u8>>); 9] = [
+            (
+                "an unmasked client frame",
+                1002,
+                vec![vec![0x81, 0x02, b'h', b'i']],
+            ),
+            ("a reserved bit", 1002, vec![reserved]),
+            (
+                "an unknown opcode",
+                1002,
+                vec![client_frame(true, 0x3, b"x")],
+            ),
+            (
+                "a control frame over 125 bytes",
+                1002,
+                vec![client_frame(true, OP_PING, &[0u8; 126])],
+            ),
+            (
+                "a fragmented control frame",
+                1002,
+                vec![client_frame(false, OP_PING, b"")],
+            ),
+            (
+                "a 64-bit length with its top bit set",
+                1002,
+                vec![top_bit_length],
+            ),
+            (
+                "a new message in the middle of a fragment",
+                1002,
+                vec![
+                    client_frame(false, OP_TEXT, b"a"),
+                    client_frame(true, OP_TEXT, b"b"),
+                ],
+            ),
+            (
+                "a close code that may not be sent",
+                1002,
+                vec![client_frame(true, OP_CLOSE, &1005u16.to_be_bytes())],
+            ),
+            (
+                "a text message that is not UTF-8",
+                1007,
+                vec![client_frame(true, OP_TEXT, &[0xff])],
+            ),
+        ];
+        for (case, code, frames) in cases {
+            let (mut socket, pipe) = server_socket(Limits::default());
+            for frame in &frames {
+                feed(&pipe, frame);
+            }
+            let result = socket.recv(Duration::from_secs(1));
+            assert!(
+                result.is_err(),
+                "{case}: a frame that breaks the rules must fail, got {result:?}"
+            );
+            assert_eq!(close_code(&pipe), Some(code), "{case}");
+        }
     }
 
     #[test]
@@ -1353,14 +1376,6 @@ mod tests {
     }
 
     #[test]
-    fn a_new_message_in_the_middle_of_a_fragment_is_1002() {
-        let (mut socket, pipe) = server_socket(Limits::default());
-        feed(&pipe, &client_frame(false, OP_TEXT, b"a"));
-        feed(&pipe, &client_frame(true, OP_TEXT, b"b"));
-        assert_refused(&mut socket, &pipe, 1002);
-    }
-
-    #[test]
     fn a_message_over_max_message_is_1009_and_sending_one_is_refused() {
         let limits = Limits {
             max_frame: 8,
@@ -1372,13 +1387,6 @@ mod tests {
         feed(&pipe, &client_frame(true, OP_CONTINUATION, b"bbbbbb"));
         assert_refused(&mut socket, &pipe, 1009);
         assert!(socket.send(&Message::Binary(vec![0; 11])).is_err());
-    }
-
-    #[test]
-    fn a_text_message_that_is_not_utf8_is_1007() {
-        let (mut socket, pipe) = server_socket(Limits::default());
-        feed(&pipe, &client_frame(true, OP_TEXT, &[0xff]));
-        assert_refused(&mut socket, &pipe, 1007);
     }
 
     #[test]
@@ -1396,13 +1404,6 @@ mod tests {
             socket.recv(Duration::from_secs(1)).is_err(),
             "nothing more is received after a close"
         );
-    }
-
-    #[test]
-    fn a_close_code_that_may_not_be_sent_is_1002() {
-        let (mut socket, pipe) = server_socket(Limits::default());
-        feed(&pipe, &client_frame(true, OP_CLOSE, &1005u16.to_be_bytes()));
-        assert_refused(&mut socket, &pipe, 1002);
     }
 
     #[test]
