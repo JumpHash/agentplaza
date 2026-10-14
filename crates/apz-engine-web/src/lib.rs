@@ -269,6 +269,31 @@ pub async fn start_room_lab(canvas: HtmlCanvasElement, opts: JsValue) -> Result<
     started
 }
 
+/// The hardware lab's options, as the route names them; each maps to its APZ_HW_* name in the engine.
+const HARDWARE_LAB_OPTIONS: [(&str, &str); 6] = [
+    ("model", "APZ_HW_LAB"),
+    ("gpus", "APZ_HW_GPUS"),
+    ("status", "APZ_HW_STATUS"),
+    ("working", "APZ_HW_WORKING"),
+    ("open", "APZ_HW_OPEN"),
+    ("traces", "APZ_HW_TRACES"),
+];
+
+/// Starts the engine as the hardware lab: `opts` is `{ backend?, model?, gpus?, status?, working?, open?, traces? }`
+/// (a missing model is `board/workstation`; a boolean `traces` is 1 or 0). The options are set as env names only while
+/// the stage builds, as `start_lab` does.
+#[wasm_bindgen]
+pub async fn start_hardware_lab(canvas: HtmlCanvasElement, opts: JsValue) -> Result<WebEngine, JsValue> {
+    let mut vars = lab_env(&opts, &HARDWARE_LAB_OPTIONS);
+    vars.entry("APZ_HW_LAB".to_string()).or_insert_with(|| "board/workstation".to_string());
+    apz_engine::set_env_overrides(vars);
+    let started = start(canvas, opts).await;
+    if started.is_err() {
+        apz_engine::set_env_overrides(BTreeMap::new());
+    }
+    started
+}
+
 #[wasm_bindgen]
 impl WebEngine {
     /// One machine's stage pose rendered offscreen at `w` by `h` (each at most 512), as RGBA8 bytes. A Promise, since the

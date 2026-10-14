@@ -18,6 +18,7 @@ import { buildModel, currentPulses, placeAtom, traceStrips, validate, type Built
 import { buildFleet, type FleetScene } from './floor3d/fleet';
 import { sky, toonMat } from './floor3d/toon';
 import { createMeter, startPixelRatio } from './floor3d/perf';
+import { engineWanted, startHardwareLabEngine, type HardwareLabOptions } from './engine-mount';
 
 const STATUSES: string[] = ['online', 'draining', 'offline', 'revoked'];
 const CAMS = ['iso', 'top', 'front', 'side', 'anchor'] as const;
@@ -148,8 +149,34 @@ function newRenderer(): THREE.WebGLRenderer | null {
   }
 }
 
+/** `?engine=wasm` on the page's query: the same model on the wasm engine, its canvas filling the root. The state is read once. */
+function mountEngineLab(root: HTMLElement, state: LabState): Cleanup {
+  const canvas = document.createElement('canvas');
+  canvas.style.cssText = 'display:block;width:100%;height:70vh;min-height:420px;touch-action:none';
+  root.append(canvas);
+  const lab: HardwareLabOptions = { model: state.model, gpus: state.gpus, status: state.status, working: state.working, open: state.open, traces: state.traces };
+  let engine: { destroy: () => void } | null = null;
+  let closed = false;
+  startHardwareLabEngine(canvas, lab).then(
+    (started) => {
+      if (closed) started.destroy();
+      else engine = started;
+    },
+    (err: unknown) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      canvas.replaceWith(h('p', { style: 'color:var(--ink-2)' }, `The engine did not start: ${msg}`));
+    },
+  );
+  return () => {
+    closed = true;
+    engine?.destroy();
+    canvas.remove();
+  };
+}
+
 export function mount(root: HTMLElement): Cleanup {
   let state = readState(location.hash);
+  if (engineWanted()) return mountEngineLab(root, state);
 
   // ---- Controls -------------------------------------------------------------------------------
   const bar = { style: 'display:flex;flex-wrap:wrap;gap:12px 18px;align-items:center;padding:8px 0' };

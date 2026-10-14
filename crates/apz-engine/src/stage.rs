@@ -12,6 +12,7 @@ use crate::controls::{Orbit, FOV_DEG};
 use crate::entry_scene::{Entry, Handoff, Parts, Phase, Pose};
 use crate::fleet::{self, FleetResponse, FleetScene, Machine};
 use crate::hardware::{self, Params, Status};
+use crate::hardware_lab as hw_lab;
 use crate::robots::lab;
 use crate::rooms::lab as room_lab;
 use crate::scene::Frame;
@@ -79,6 +80,8 @@ pub struct Stage {
     pub lab: Option<lab::Lab>,
     /// `APZ_ROOM_LAB`: the room lab, rooms on the machines' ground (see `rooms::lab`).
     pub room_lab: Option<room_lab::Lab>,
+    /// `APZ_HW_LAB`: one hardware model on the machines' ground (see `hardware_lab`).
+    pub hardware_lab: Option<hw_lab::Lab>,
     /// The ENTER sequence (`floor3d/entry_scene.rs`) while it plays or reverses.
     pub entry: Option<Entry>,
     /// A direct load's build wave has been started (once per screen; an ENTER counts too).
@@ -124,7 +127,8 @@ impl Default for Stage {
         let mut machines = Floor::machines();
         let lab = lab::build(&mut machines);
         let room_lab = room_lab::build(&mut machines);
-        let lab_mode = lab.is_some() || room_lab.is_some();
+        let hardware_lab = hw_lab::build(&mut machines);
+        let lab_mode = lab.is_some() || room_lab.is_some() || hardware_lab.is_some();
         let view = match crate::env_var("APZ_FLOOR_MACHINE").filter(|id| !id.is_empty()) {
             Some(id) => View::Machine(id),
             None => View::Machines,
@@ -137,6 +141,7 @@ impl Default for Stage {
             machines,
             lab,
             room_lab,
+            hardware_lab,
             fleet: None,
             fleet_data: None,
             fleet_error: None,
@@ -333,8 +338,8 @@ pub fn refresh_board(&mut self) {
 /// Frames the fleet's bounding sphere for the stage's size. Nothing happens until both are there.
 pub fn fit_machines(&mut self) {
     let (w, h) = self.size;
-    // A robot lab keeps the camera its options set (`cam`), not the fleet's framing.
-    if w <= 0.0 || h <= 0.0 || self.lab.is_some() {
+    // A robot lab keeps the camera its options set (`cam`), and a hardware lab its own framing, not the fleet's.
+    if w <= 0.0 || h <= 0.0 || self.lab.is_some() || self.hardware_lab.is_some() {
         return;
     }
     if let Some(fleet) = &self.fleet {
@@ -611,6 +616,10 @@ pub fn tick(&mut self, now: Instant) -> Motion {
                 lab.step(ambient);
                 motion = motion.max(Motion::Ambient); // the rooms' screens glow on the clock
             }
+            if let Some(lab) = self.hardware_lab.as_mut() {
+                lab.step(ambient_dt, ambient);
+                motion = motion.max(Motion::Ambient); // the model's fans, LEDs and pulses run on the clock
+            }
             if let (Some(fleet), Some(data)) = (self.fleet.as_mut(), self.fleet_data.as_ref()) {
                 if fleet.update(dt, ambient, ambient_dt, data) {
                     self.machines.statics_dirty = true; // a machine is lifting: its pose is baked
@@ -719,7 +728,7 @@ pub fn apply_fleet(&mut self, data: FleetResponse) {
     self.fleet_error = None;
     self.fleet_seen = true;
     // A lab shows its robots alone: no machines join the line-up.
-    if self.fleet.is_none() && self.lab.is_none() && self.room_lab.is_none() {
+    if self.fleet.is_none() && self.lab.is_none() && self.room_lab.is_none() && self.hardware_lab.is_none() {
         let fleet = fleet::build_fleet(&data, &self.machines.fleet_palette());
         self.machines.root.add(&fleet.group);
         self.machines.statics_dirty = true; // the fleet's static parts are baked

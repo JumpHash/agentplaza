@@ -81,11 +81,22 @@ export interface RoomLabOptions {
   grid?: boolean;
 }
 
+/** The hardware lab's options, as the route names them; each maps to its APZ_HW_* name in the engine. Unset ones take the lab's defaults. */
+export interface HardwareLabOptions {
+  model?: string;
+  gpus?: number;
+  status?: string;
+  working?: number;
+  open?: number;
+  traces?: boolean;
+}
+
 interface EngineGlue {
   default: () => Promise<unknown>;
   start: (canvas: HTMLCanvasElement, opts: { backend?: 'auto' | 'webgl2' }) => Promise<WebEngine>;
   start_lab: (canvas: HTMLCanvasElement, opts: LabOptions & { backend?: 'auto' | 'webgl2' }) => Promise<WebEngine>;
   start_room_lab: (canvas: HTMLCanvasElement, opts: RoomLabOptions & { backend?: 'auto' | 'webgl2' }) => Promise<WebEngine>;
+  start_hardware_lab: (canvas: HTMLCanvasElement, opts: HardwareLabOptions & { backend?: 'auto' | 'webgl2' }) => Promise<WebEngine>;
 }
 
 /** The same cadence as the DOM Machines view and the desktop. */
@@ -201,6 +212,11 @@ export async function startLabEngine(canvas: HTMLCanvasElement, lab: LabOptions)
 /** The room lab on the wasm engine: the route's options under the engine's APZ_ROOM_* names. Throws without a glue. */
 export async function startRoomLabEngine(canvas: HTMLCanvasElement, lab: RoomLabOptions): Promise<WebEngine> {
   return (await loadGlue()).start_room_lab(canvas, { ...lab, backend: backendOf() });
+}
+
+/** The hardware lab on the wasm engine: the route's options under the engine's APZ_HW_* names. Throws without a glue. */
+export async function startHardwareLabEngine(canvas: HTMLCanvasElement, lab: HardwareLabOptions): Promise<WebEngine> {
+  return (await loadGlue()).start_hardware_lab(canvas, { ...lab, backend: backendOf() });
 }
 
 /** A thumbnail request a destroyed engine never answered: the caller asks again on the engine that replaces it. */

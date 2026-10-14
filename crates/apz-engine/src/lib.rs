@@ -22,6 +22,7 @@ pub mod fleet;
 pub mod gpus;
 pub mod geometry;
 pub mod hardware;
+pub mod hardware_lab;
 pub mod input;
 pub use apz_board::nav::lift as lift_ctrl;
 pub mod machine_stage;
