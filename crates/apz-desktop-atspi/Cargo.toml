@@ -1,0 +1,15 @@
+[package]
+name = "apz-desktop-atspi"
+description = "AgentPlaza Linux accessibility layer: a session's AT-SPI UI tree and accessibility actions, and logind idle time for owner-activity detection"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# AT-SPI and logind are D-Bus services of a Linux desktop. Other targets compile this crate empty.
+[target.'cfg(target_os = "linux")'.dependencies]
+apz-desktop = { path = "../apz-desktop" }
+apz-station = { path = "../apz-station" }
+async-io = "2"
+atspi = { version = "0.30", default-features = false, features = ["connection", "proxies"] }
+zbus = "5"
