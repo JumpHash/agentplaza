@@ -155,6 +155,11 @@ Both paths the owner chose:
   content-addressed, so outputs land in the plaza even if nobody marks them, and files the owner or other agents put
   there on the hub appear on the machine. A conflicting edit on both sides keeps both copies and reports the conflict
   on the Workstations page.
+  - A work folder that is missing or cannot be listed is reported as such, never as empty, and a pass that would
+    delete more than 20 files and a quarter of the mirror pauses the station's sync instead: nothing moves, the
+    station shows its reason and the deletions it holds, and the owner resumes it, applying the deletions or restoring
+    the files from the hub.
+  - An agent's `station_files` call with `deliver` puts a mirrored file into the Library, credited to the agent.
 
 ## 9. In the apps (web, desktop, CLI/TUI)
 

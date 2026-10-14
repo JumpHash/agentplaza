@@ -8,24 +8,31 @@
 //! - only the station changed: the hub pulls the file (or records its deletion);
 //! - only the hub changed: the hub pushes its copy (or the deletion) against `base`, so the station refuses if it moved;
 //! - both changed: a conflict. The hub's copy stays at the path on both sides, and the station's copy is kept as a
-//!   conflict copy `<name> (conflict <station> <yyyy-mm-dd hhmm>).<ext>` on both sides. It is audited (`sync_conflict`)
-//!   and announced on the bus (`station_sync_conflict`);
+//!   conflict copy `<name> (conflict <station> <yyyy-mm-dd hhmm> UTC).<ext>` on both sides. It is audited
+//!   (`sync_conflict`) and announced on the bus (`station_sync_conflict`);
 //! - deleted on one side, edited on the other: the edit survives.
+//!
+//! A deletion is the station losing a file the hub holds unchanged. A station whose folder is missing (or cannot be
+//! listed) reports it so, and a pass that would delete more than [`MASS_DELETE_FILES`] files and a quarter of the
+//! mirror is the same kind of hazard (an unmounted drive, a renamed or wiped folder). Such a pass moves nothing: the
+//! station is paused with its reason and the deletions it would make (`SyncPause`, kept on the station's record, and
+//! `station_sync_paused` on the bus). The owner resumes with `apply_deletions` (the deletions go through) or without it
+//! (the hub's copies go back to the station, see [`Guard`]). A pass that finds no such hazard clears a pause.
 //!
 //! A pass runs when the station reports a change (`Event::SyncChanged`), when its link comes up, and when the owner
 //! writes a file here (`kick`). A pass moves at most [`Limits`] and asks for another when it stops short. Owner writes
 //! go straight to the rows: a pass saves only the rows no owner write changed under it, and the write asks for a pass.
 //!
-//! Routes (api.rs): `GET .../sync` (state), `GET .../files?prefix=` (the mirror), `GET|PUT|DELETE .../files/{path}`,
-//! and `POST .../files/{path}/deliver` (the file into the Library).
+//! Routes (api.rs): `GET .../sync` (state, with the pause), `POST .../sync/resume`, `GET .../files?prefix=`,
+//! `GET|PUT|DELETE .../files/{path}`, and `POST .../files/{path}/deliver` (the file into the Library).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use apz_station::{
-    Op, SYNC_CHUNK, SYNC_FILE_CAP, SyncEntry, SyncManifest, SyncOp, SyncPull, SyncPushed,
-    valid_path,
+    FolderState, Op, SYNC_CHUNK, SYNC_FILE_CAP, SyncEntry, SyncManifest, SyncOp, SyncPull,
+    SyncPushed, valid_path,
 };
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
@@ -78,23 +85,54 @@ pub struct Conflict {
     pub copy: String,
 }
 
+/// The most deletions a pass applies on its own: more than this many, and more than a quarter of the mirror, pause the
+/// station instead (see the module's rules).
+pub const MASS_DELETE_FILES: usize = 20;
+
+/// Why a station's sync is paused: what the pass found, the deletions it would have made, and when the pause began
+/// (kept on the station's record, see `registry::Station::sync_pause`).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct SyncPause {
+    pub reason: String,
+    pub deletions: Vec<String>,
+    #[serde(default)]
+    pub since_ms: u64,
+}
+
+/// What the owner decided about a paused station's deletions, for the next pass to act on. `Check` is every pass
+/// without a decision: it pauses when the deletions are too many or the folder is missing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Guard {
+    #[default]
+    Check,
+    /// The owner resumed with `apply_deletions`: the deletions go through (a missing folder still pauses).
+    ApplyDeletions,
+    /// The owner resumed without it: the station's missing files are restored from the hub's copies.
+    RestoreDeletions,
+}
+
 /// What a pass did.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Outcome {
     pub pulled: u64,
     pub pushed: u64,
     pub deleted: u64,
+    /// Files the hub's copy put back on the station, where the station had lost them (`RestoreDeletions`).
+    pub restored: u64,
     pub bytes: u64,
     pub conflicts: Vec<Conflict>,
     /// Paths that could not be settled this pass, with the reason; they are tried again next time.
     pub errors: Vec<(String, String)>,
     /// Work was left: the limits stopped the pass, or an owner's write raced one of its rows.
     pub more: bool,
+    /// The guard held the pass back: nothing moved, and this is why (set by the pass).
+    pub paused: Option<SyncPause>,
 }
 
 /// The station's side of a pass.
 pub trait Remote {
-    fn manifest(&self) -> Result<Vec<SyncEntry>, String>;
+    /// The station's files, or `Missing` with none when its folder cannot be read.
+    fn manifest(&self) -> Result<SyncManifest, String>;
     /// The content of `path` at `hash`, verified by the caller.
     fn pull(&self, path: &str, hash: &str) -> Result<Vec<u8>, String>;
     /// Writes `bytes` as `path`; `base` is the version the hub last saw (None for a new file).
@@ -114,7 +152,10 @@ pub trait Ledger {
     fn save(&self, station: &str, rows: &[Row]) -> Result<(), String>;
 }
 
-/// Runs one pass for `station`: the reconcile of its manifest with the rows, moving at most `limits`.
+/// Runs one pass for `station`: the reconcile of its manifest with the rows, moving at most `limits`, under the owner's
+/// decision about deletions (`guard`; `Guard::Check` when there is none). A pass the guard holds back returns with
+/// `paused` set, and moves nothing.
+#[allow(clippy::too_many_arguments)]
 pub fn reconcile(
     station: &str,
     station_name: &str,
@@ -123,9 +164,12 @@ pub fn reconcile(
     ledger: &dyn Ledger,
     now: u64,
     limits: Limits,
+    guard: Guard,
 ) -> Result<Outcome, String> {
-    let theirs: BTreeMap<String, SyncEntry> = remote
-        .manifest()?
+    let manifest = remote.manifest()?;
+    let missing = manifest.state == FolderState::Missing;
+    let theirs: BTreeMap<String, SyncEntry> = manifest
+        .entries
         .into_iter()
         .filter(|entry| valid_path(&entry.path))
         .map(|entry| (entry.path.clone(), entry))
@@ -135,6 +179,29 @@ pub fn reconcile(
         .into_iter()
         .map(|row| (row.path.clone(), row))
         .collect();
+    // The deletions this pass would make: files the hub holds unchanged that the station no longer has.
+    let mirrored = snapshot.values().filter(|row| row.hash.is_some()).count();
+    let deletions: Vec<String> = snapshot
+        .values()
+        .filter(|row| row.hash.is_some() && row.hash == row.base && !theirs.contains_key(&row.path))
+        .map(|row| row.path.clone())
+        .collect();
+    let mass = deletions.len() > MASS_DELETE_FILES && deletions.len() * 4 > mirrored;
+    if (missing && mirrored > 0) || (mass && guard == Guard::Check) {
+        let reason = if missing {
+            "the work folder is missing on the station".to_string()
+        } else {
+            format!("{} of {mirrored} mirrored files would be deleted", deletions.len())
+        };
+        return Ok(Outcome {
+            paused: Some(SyncPause {
+                reason,
+                deletions,
+                since_ms: 0,
+            }),
+            ..Outcome::default()
+        });
+    }
     let mut names: BTreeSet<String> = theirs.keys().cloned().collect();
     names.extend(snapshot.keys().cloned());
     let mut pass = Pass {
@@ -146,6 +213,7 @@ pub fn reconcile(
         changed: BTreeMap::new(),
         names,
         transfers: 0,
+        restore: guard == Guard::RestoreDeletions,
         out: Outcome::default(),
     };
     let paths: Vec<String> = pass.names.iter().cloned().collect();
@@ -179,6 +247,8 @@ struct Pass<'a> {
     /// Every path the station or the hub has, conflict copies included: a copy's name must be free.
     names: BTreeSet<String>,
     transfers: usize,
+    /// Whether the station's deletions are restored from the hub, not applied (`Guard::RestoreDeletions`).
+    restore: bool,
     out: Outcome,
 }
 
@@ -219,6 +289,7 @@ impl Pass<'_> {
         match (hub_changed, station_changed) {
             (false, true) => match station_side {
                 Some(entry) => self.adopt(path, entry, row, None),
+                None if self.restore => self.restore_file(path, row),
                 None => self.forget_on_hub(row),
             },
             (true, false) => self.send(path, hub, base, row),
@@ -259,6 +330,19 @@ impl Pass<'_> {
             conflict_of: conflict_of.or(kept_conflict),
             synced_ms: self.now,
         });
+        Ok(())
+    }
+
+    /// The station lost a file the hub holds unchanged, and the owner chose to restore it: the hub's copy goes back.
+    fn restore_file(&mut self, path: &str, row: Option<Row>) -> Result<(), String> {
+        let mut row = row.ok_or("the hub has no row for the file it restores")?;
+        let hash = row.hash.clone().ok_or("the hub has no copy of the file it restores")?;
+        let bytes = self.blobs.get(&hash)?;
+        self.remote.push(path, &hash, &bytes, None)?;
+        self.out.restored += 1;
+        self.out.bytes += bytes.len() as u64;
+        row.synced_ms = self.now;
+        self.put_row(row);
         Ok(())
     }
 
@@ -395,8 +479,9 @@ impl Pass<'_> {
     }
 }
 
-/// The name a conflict copy takes: `<stem> (conflict <station> <yyyy-mm-dd hhmm>).<ext>` in the file's folder, UTC.
-/// `n` above 1 adds the count, for a second copy in the same minute.
+/// The name a conflict copy takes: `<stem> (conflict <station> <yyyy-mm-dd hhmm> UTC).<ext>` in the file's folder. The
+/// hub has no timezone setting, so the time is UTC and the name says so. `n` above 1 adds the count, for a second copy
+/// in the same minute.
 pub fn conflict_name(path: &str, station: &str, now_ms: u64, n: u32) -> String {
     let (dir, file) = match path.rsplit_once('/') {
         Some((dir, file)) => (Some(dir), file),
@@ -426,10 +511,7 @@ pub fn conflict_name(path: &str, station: &str, now_ms: u64, n: u32) -> String {
     } else {
         String::new()
     };
-    let name = format!(
-        "{stem} (conflict {station} {}{count}){ext}",
-        utc_stamp(now_ms)
-    );
+    let name = format!("{stem} (conflict {station} {} UTC{count}){ext}", utc_stamp(now_ms));
     match dir {
         Some(dir) => format!("{dir}/{name}"),
         None => name,
@@ -472,9 +554,8 @@ fn parse<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, String> {
 }
 
 impl Remote for LinkRemote<'_> {
-    fn manifest(&self) -> Result<Vec<SyncEntry>, String> {
-        let manifest: SyncManifest = parse(self.0.request(Op::Sync(SyncOp::Manifest), TIMEOUT)?)?;
-        Ok(manifest.entries)
+    fn manifest(&self) -> Result<SyncManifest, String> {
+        parse(self.0.request(Op::Sync(SyncOp::Manifest), TIMEOUT)?)
     }
 
     fn pull(&self, path: &str, hash: &str) -> Result<Vec<u8>, String> {
@@ -601,11 +682,23 @@ impl Ledger for DbLedger<'_> {
 #[derive(Default)]
 pub struct Gate {
     passes: Mutex<BTreeMap<String, bool>>,
+    /// The owner's decision for a paused station, taken by the next pass of it (`resume`).
+    guards: Mutex<BTreeMap<String, Guard>>,
 }
 
 impl Gate {
     fn lock(&self) -> MutexGuard<'_, BTreeMap<String, bool>> {
         self.passes.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Records the owner's decision for the next pass of `station`.
+    pub fn decide(&self, station: &str, guard: Guard) {
+        self.guards.lock().unwrap_or_else(PoisonError::into_inner).insert(station.to_string(), guard);
+    }
+
+    /// Takes the decision for the pass starting now: `Check` when the owner has decided nothing since the last pass.
+    fn take_guard(&self, station: &str) -> Guard {
+        self.guards.lock().unwrap_or_else(PoisonError::into_inner).remove(station).unwrap_or_default()
     }
 
     /// Claims a pass for `station`. False when one runs already: it is asked to run once more.
@@ -662,7 +755,8 @@ fn run(app: &App, station: &str) -> Result<Outcome, String> {
     else {
         return Ok(Outcome::default());
     };
-    let outcome = reconcile(
+    let guard = app.stations.sync.take_guard(station);
+    let mut outcome = reconcile(
         station,
         &record.name,
         &LinkRemote(&link),
@@ -670,7 +764,9 @@ fn run(app: &App, station: &str) -> Result<Outcome, String> {
         &DbLedger(&app.db),
         apz_plaza::now_ms(),
         Limits::default(),
+        guard,
     )?;
+    settle_pause(app, station, outcome.paused.take());
     for conflict in &outcome.conflicts {
         let _ = ops::audit(
             app,
@@ -688,13 +784,70 @@ fn run(app: &App, station: &str) -> Result<Outcome, String> {
     for (path, reason) in &outcome.errors {
         eprintln!("apid: workstation {station}: sync of {path} failed: {reason}");
     }
-    if outcome.pulled + outcome.pushed + outcome.deleted > 0 {
+    if outcome.pulled + outcome.pushed + outcome.deleted + outcome.restored > 0 {
         app.bus.publish(
             "station_sync",
-            &json!({"station": station, "pulled": outcome.pulled, "pushed": outcome.pushed, "deleted": outcome.deleted}),
+            &json!({"station": station, "pulled": outcome.pulled, "pushed": outcome.pushed, "deleted": outcome.deleted, "restored": outcome.restored}),
         );
     }
     Ok(outcome)
+}
+
+/// Records a station's pause as its pass found it, or clears a pause the pass no longer finds. The audit row and the
+/// bus event come when a pause begins (or its reason changes), not on each pass that finds it still there.
+fn settle_pause(app: &App, station: &str, found: Option<SyncPause>) {
+    let before = app.stations.sync_pause(station);
+    let now = apz_plaza::now_ms();
+    match found {
+        Some(mut pause) => {
+            let began = before.as_ref().is_none_or(|held| held.reason != pause.reason);
+            pause.since_ms = match &before {
+                Some(held) if !began => held.since_ms,
+                _ => now,
+            };
+            let (reason, count) = (pause.reason.clone(), pause.deletions.len());
+            app.stations.set_sync_pause(station, Some(pause));
+            if began {
+                if let Err(e) = ops::audit(app, Some(station), None, "sync_paused", "station", json!({"reason": reason, "deletions": count})) {
+                    eprintln!("apid: workstation {station}: sync pause not audited: {e}");
+                }
+                app.bus.publish("station_sync_paused", &json!({"station": station, "reason": reason, "deletions": count}));
+            }
+        }
+        None if before.is_some() => {
+            app.stations.set_sync_pause(station, None);
+            if let Err(e) = ops::audit(app, Some(station), None, "sync_resumed", "station", json!({"by": "pass"})) {
+                eprintln!("apid: workstation {station}: sync resume not audited: {e}");
+            }
+        }
+        None => {}
+    }
+}
+
+/// The owner resumes a paused station's sync. `apply_deletions` lets the held deletions through; without it, the hub's
+/// copies go back to the station. The pass runs now, over the station's live link, so the answer is the state before
+/// it. A pass that finds the cause still there pauses again.
+pub fn resume(app: &App, station: &str, apply_deletions: bool, actor: &str) -> Result<Value, Failure> {
+    station_or_404(app, station)?;
+    let Some(pause) = app.stations.sync_pause(station) else {
+        return Err((409, "the work-folder sync is not paused".into()));
+    };
+    if app.stations.live(station).is_none() {
+        return Err((409, "this workstation is not linked; its sync resumes when it links".into()));
+    }
+    ops::audit(
+        app,
+        Some(station),
+        None,
+        "sync_resume",
+        actor,
+        json!({"apply_deletions": apply_deletions, "reason": pause.reason, "deletions": pause.deletions.len()}),
+    )
+    .map_err(server_error)?;
+    let guard = if apply_deletions { Guard::ApplyDeletions } else { Guard::RestoreDeletions };
+    app.stations.sync.decide(station, guard);
+    kick(app, station);
+    state(app, station)
 }
 
 /// A file of the mirror as the routes show it.
@@ -736,24 +889,30 @@ fn rows_of(app: &App, station: &str) -> Result<Vec<Row>, Failure> {
     app.db.station_sync_rows(station).map_err(server_error)
 }
 
-/// The sync's state for the Workstations page: the files, their bytes, the last sync, and the conflict copies.
+/// The sync's state for the Workstations page: the files, their bytes, the last sync, the conflict copies, and whether
+/// the sync is paused (and why, with the deletions it holds).
 pub fn state(app: &App, station: &str) -> Result<Value, Failure> {
     station_or_404(app, station)?;
     let rows = rows_of(app, station)?;
+    let pause = app.stations.sync_pause(station);
+    Ok(state_json(station, app.stations.live(station).is_some(), &rows, pause.as_ref()))
+}
+
+/// The body of `GET .../sync`, built from the station's rows and its pause.
+fn state_json(station: &str, linked: bool, rows: &[Row], pause: Option<&SyncPause>) -> Value {
     let live: Vec<&Row> = rows.iter().filter(|r| r.hash.is_some()).collect();
-    let conflicts: Vec<FileView> = live
-        .iter()
-        .filter(|r| r.conflict_of.is_some())
-        .map(|r| view(r))
-        .collect();
-    Ok(json!({
+    let conflicts: Vec<FileView> = live.iter().filter(|r| r.conflict_of.is_some()).map(|r| view(r)).collect();
+    json!({
         "station": station,
-        "linked": app.stations.live(station).is_some(),
+        "linked": linked,
         "files": live.len(),
         "bytes": live.iter().map(|r| r.size).sum::<u64>(),
         "last_sync_ms": rows.iter().map(|r| r.synced_ms).max().unwrap_or(0),
         "conflicts": conflicts,
-    }))
+        "paused": pause.is_some(),
+        "reason": pause.map(|p| p.reason.as_str()),
+        "pending_deletions": pause.map_or_else(Vec::new, |p| p.deletions.clone()),
+    })
 }
 
 /// The mirror's live files under `prefix`, by path.
@@ -854,7 +1013,8 @@ pub fn remove(app: &App, station: &str, path: &str, actor: &str) -> Result<FileV
     Ok(view(&row))
 }
 
-/// Copies a mirrored file into the Library as a deliverable (the same entry an agent's deliver makes).
+/// Copies a mirrored file into the Library as a deliverable (the same entry an agent's deliver makes). `by` is who it is
+/// credited to: the agent's cid and name, or `(0, "owner")` for the owner's own route.
 pub fn deliver(
     app: &App,
     station: &str,
@@ -862,8 +1022,9 @@ pub fn deliver(
     title: Option<String>,
     description: Option<String>,
     task: Option<String>,
-    actor: &str,
+    by: (u64, &str),
 ) -> Result<Deliverable, Failure> {
+    let (author_cid, actor) = by;
     station_or_404(app, station)?;
     let row = live_row(app, station, path)?;
     let bytes = Objects(&app.deliverables)
@@ -877,7 +1038,7 @@ pub fn deliver(
         name,
         description,
         task,
-        author_cid: 0,
+        author_cid,
         author: actor.to_string(),
         kind: "deliverable".to_string(),
         audience: "public".to_string(),
@@ -912,10 +1073,12 @@ mod tests {
         sha256_hex(bytes)
     }
 
-    /// The station in memory: its files by path, and the calls the hub made.
+    /// The station in memory: its files by path, whether its folder is there, and the calls the hub made.
     #[derive(Default)]
     struct Station {
         files: RefCell<BTreeMap<String, Vec<u8>>>,
+        /// The folder cannot be read: the manifest says so, with no files.
+        missing: RefCell<bool>,
         pulls: RefCell<usize>,
         fail_pull: RefCell<Option<String>>,
     }
@@ -937,11 +1100,21 @@ mod tests {
                 .borrow_mut()
                 .insert(path.to_string(), bytes.to_vec());
         }
+
+        fn set_missing(&self, missing: bool) {
+            *self.missing.borrow_mut() = missing;
+        }
     }
 
     impl Remote for Station {
-        fn manifest(&self) -> Result<Vec<SyncEntry>, String> {
-            Ok(self
+        fn manifest(&self) -> Result<SyncManifest, String> {
+            if *self.missing.borrow() {
+                return Ok(SyncManifest {
+                    entries: Vec::new(),
+                    state: FolderState::Missing,
+                });
+            }
+            let entries = self
                 .files
                 .borrow()
                 .iter()
@@ -950,7 +1123,11 @@ mod tests {
                     hash: sha(b),
                     size: b.len() as u64,
                 })
-                .collect())
+                .collect();
+            Ok(SyncManifest {
+                entries,
+                state: FolderState::Present,
+            })
         }
 
         fn pull(&self, path: &str, hash: &str) -> Result<Vec<u8>, String> {
@@ -1053,6 +1230,19 @@ mod tests {
         );
     }
 
+    /// A pass with no owner decision, as the scanner and the link run them.
+    fn reconcile(
+        station: &str,
+        station_name: &str,
+        remote: &dyn Remote,
+        blobs: &dyn Blobs,
+        ledger: &dyn Ledger,
+        now: u64,
+        limits: Limits,
+    ) -> Result<Outcome, String> {
+        super::reconcile(station, station_name, remote, blobs, ledger, now, limits, Guard::Check)
+    }
+
     fn pass(station: &Station, hub: &Hub) -> Outcome {
         reconcile("ws-7", "desk-1", station, hub, hub, NOW, Limits::default()).unwrap()
     }
@@ -1153,7 +1343,7 @@ mod tests {
         hub_write(&hub, "plan.md", b"the hub's text");
 
         let out = pass(&station, &hub);
-        let copy = "plan (conflict desk-1 2026-10-14 1532).md";
+        let copy = "plan (conflict desk-1 2026-10-14 1532 UTC).md";
         assert_eq!(
             out.conflicts,
             vec![Conflict {
@@ -1191,19 +1381,19 @@ mod tests {
     fn a_second_conflict_in_the_same_minute_takes_a_numbered_name() {
         assert_eq!(
             conflict_name("a/b.txt", "desk-1", NOW, 1),
-            "a/b (conflict desk-1 2026-10-14 1532).txt"
+            "a/b (conflict desk-1 2026-10-14 1532 UTC).txt"
         );
         assert_eq!(
             conflict_name("a/b.txt", "desk-1", NOW, 2),
-            "a/b (conflict desk-1 2026-10-14 1532 2).txt"
+            "a/b (conflict desk-1 2026-10-14 1532 UTC 2).txt"
         );
         assert_eq!(
             conflict_name("README", "", NOW, 1),
-            "README (conflict station 2026-10-14 1532)"
+            "README (conflict station 2026-10-14 1532 UTC)"
         );
         assert_eq!(
             conflict_name(".env", "a b/c", NOW, 1),
-            ".env (conflict a-b-c 2026-10-14 1532)"
+            ".env (conflict a-b-c 2026-10-14 1532 UTC)"
         );
     }
 
@@ -1294,12 +1484,15 @@ mod tests {
     fn a_station_that_answers_the_wrong_hash_is_not_trusted() {
         struct Liar;
         impl Remote for Liar {
-            fn manifest(&self) -> Result<Vec<SyncEntry>, String> {
-                Ok(vec![SyncEntry {
-                    path: "x.txt".into(),
-                    hash: sha(b"claimed"),
-                    size: 7,
-                }])
+            fn manifest(&self) -> Result<SyncManifest, String> {
+                Ok(SyncManifest {
+                    entries: vec![SyncEntry {
+                        path: "x.txt".into(),
+                        hash: sha(b"claimed"),
+                        size: 7,
+                    }],
+                    state: FolderState::Present,
+                })
             }
             fn pull(&self, _: &str, _: &str) -> Result<Vec<u8>, String> {
                 Ok(b"other bytes".to_vec())
@@ -1315,6 +1508,144 @@ mod tests {
         let out = reconcile("ws-7", "desk-1", &Liar, &hub, &hub, NOW, Limits::default()).unwrap();
         assert_eq!(out.errors.len(), 1);
         assert!(hub.rows.borrow().is_empty());
+    }
+
+    /// A station with `total` files, all mirrored and agreed on the hub.
+    fn mirror_of(total: usize) -> (Station, Hub) {
+        let files: Vec<(String, Vec<u8>)> = (0..total).map(|i| (format!("f{i:03}.txt"), format!("content {i}").into_bytes())).collect();
+        let refs: Vec<(&str, &[u8])> = files.iter().map(|(p, b)| (p.as_str(), b.as_slice())).collect();
+        let station = Station::with(&refs);
+        let hub = Hub::default();
+        pass(&station, &hub);
+        (station, hub)
+    }
+
+    fn live_rows(hub: &Hub) -> usize {
+        hub.rows.borrow().values().filter(|r| r.hash.is_some()).count()
+    }
+
+    fn decide(station: &Station, hub: &Hub, guard: Guard) -> Outcome {
+        super::reconcile("ws-7", "desk-1", station, hub, hub, NOW, Limits::default(), guard).unwrap()
+    }
+
+    #[test]
+    fn a_missing_work_folder_pauses_the_sync_and_deletes_nothing() {
+        let (station, hub) = mirror_of(40);
+        station.set_missing(true);
+        let out = pass(&station, &hub);
+        let pause = out.paused.expect("the sync pauses");
+        assert_eq!(pause.reason, "the work folder is missing on the station");
+        assert_eq!(pause.deletions.len(), 40, "every file it would delete is held");
+        assert_eq!((out.deleted, out.pulled, out.pushed), (0, 0, 0), "nothing moves while paused");
+        assert_eq!(live_rows(&hub), 40, "the hub keeps every file");
+
+        assert!(decide(&station, &hub, Guard::ApplyDeletions).paused.is_some(), "a missing folder never loses files to a decision");
+        assert!(decide(&station, &hub, Guard::RestoreDeletions).paused.is_some(), "nor is anything restored into it");
+        assert_eq!(live_rows(&hub), 40);
+
+        station.set_missing(false);
+        let back = pass(&station, &hub);
+        assert!(back.paused.is_none(), "the folder is back: nothing is held any more");
+        assert_eq!(back, Outcome::default());
+    }
+
+    #[test]
+    fn a_folder_missing_with_nothing_mirrored_is_not_a_pause() {
+        let station = Station::with(&[]);
+        station.set_missing(true);
+        let hub = Hub::default();
+        assert!(pass(&station, &hub).paused.is_none());
+    }
+
+    #[test]
+    fn a_wiped_folder_pauses_until_the_owner_applies_the_deletions() {
+        let (station, hub) = mirror_of(40);
+        station.files.borrow_mut().clear();
+        let out = pass(&station, &hub);
+        let pause = out.paused.expect("the wiped folder pauses the sync");
+        assert_eq!(pause.reason, "40 of 40 mirrored files would be deleted");
+        assert_eq!(pause.deletions.len(), 40);
+        assert_eq!(live_rows(&hub), 40, "no deletion reached the hub");
+
+        let applied = decide(&station, &hub, Guard::ApplyDeletions);
+        assert!(applied.paused.is_none(), "the owner's decision lets the pass through");
+        assert_eq!(applied.deleted, 40);
+        assert_eq!(live_rows(&hub), 0);
+    }
+
+    #[test]
+    fn restoring_a_wiped_folder_puts_the_hubs_copies_back_on_the_station() {
+        let (station, hub) = mirror_of(40);
+        station.files.borrow_mut().clear();
+        assert!(pass(&station, &hub).paused.is_some());
+
+        let restored = decide(&station, &hub, Guard::RestoreDeletions);
+        assert!(restored.paused.is_none());
+        assert_eq!((restored.restored, restored.deleted), (40, 0));
+        assert_eq!(station.files.borrow().len(), 40);
+        assert_eq!(station.files.borrow()["f003.txt"], b"content 3");
+        assert_eq!(live_rows(&hub), 40, "the hub's copies stay live");
+        assert_eq!(pass(&station, &hub), Outcome::default(), "the next pass has nothing to move");
+    }
+
+    #[test]
+    fn a_pass_pauses_only_for_more_than_twenty_files_and_a_quarter_of_the_mirror() {
+        // The outcome of a pass after `removed` of `total` mirrored files are gone from the station.
+        let after = |total: usize, removed: usize| {
+            let (station, hub) = mirror_of(total);
+            for i in 0..removed {
+                station.files.borrow_mut().remove(&format!("f{i:03}.txt"));
+            }
+            pass(&station, &hub)
+        };
+        assert!(after(40, 20).paused.is_none(), "twenty is not more than twenty");
+        assert!(after(100, 21).paused.is_none(), "21 is less than a quarter of 100");
+        assert!(after(40, 21).paused.is_some(), "21 of 40 is more than a quarter");
+        assert!(after(21, 21).paused.is_some());
+        let few = after(100, 5);
+        assert!(few.paused.is_none());
+        assert_eq!(few.deleted, 5, "a few deletions go through as they always did");
+    }
+
+    #[test]
+    fn the_sync_state_says_when_it_is_paused_and_what_it_holds() {
+        let row = |path: &str| Row {
+            path: path.into(),
+            hash: Some(sha(path.as_bytes())),
+            size: 1,
+            mtime_ms: 0,
+            version: 1,
+            base: Some(sha(path.as_bytes())),
+            conflict_of: None,
+            synced_ms: NOW,
+        };
+        let rows = vec![row("a.txt"), row("b.txt")];
+        let calm = state_json("w7", true, &rows, None);
+        assert_eq!(calm["paused"], false);
+        assert!(calm["reason"].is_null());
+        assert_eq!(calm["pending_deletions"], json!([]));
+        assert_eq!(calm["files"], 2);
+
+        let pause = SyncPause {
+            reason: "2 of 2 mirrored files would be deleted".into(),
+            deletions: vec!["a.txt".into(), "b.txt".into()],
+            since_ms: NOW,
+        };
+        let held = state_json("w7", true, &rows, Some(&pause));
+        assert_eq!(held["paused"], true);
+        assert_eq!(held["reason"], "2 of 2 mirrored files would be deleted");
+        assert_eq!(held["pending_deletions"], json!(["a.txt", "b.txt"]));
+    }
+
+    #[test]
+    fn the_owners_decision_is_taken_once_by_the_next_pass() {
+        let gate = Gate::default();
+        assert_eq!(gate.take_guard("ws-7"), Guard::Check, "no decision: a check");
+        gate.decide("ws-7", Guard::RestoreDeletions);
+        assert_eq!(gate.take_guard("ws-7"), Guard::RestoreDeletions);
+        assert_eq!(gate.take_guard("ws-7"), Guard::Check, "a later pass checks again");
+        gate.decide("ws-7", Guard::ApplyDeletions);
+        assert_eq!(gate.take_guard("ws-8"), Guard::Check, "a decision is for its own station");
     }
 
     #[test]
@@ -1353,7 +1684,11 @@ mod tests {
                         size: b.len() as u64,
                     })
                     .collect();
-                Ok(serde_json::to_value(SyncManifest { entries }).unwrap())
+                Ok(serde_json::to_value(SyncManifest {
+                    entries,
+                    state: FolderState::Present,
+                })
+                .unwrap())
             }
             SyncOp::Pull { path, hash, offset } => {
                 let bytes = files.get(&path).ok_or("no such file")?;

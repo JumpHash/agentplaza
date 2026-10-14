@@ -25,7 +25,10 @@
 //!   PUT    /v1/stations/{id}/settings         StationSettings (a partial object takes the defaults) → {settings, pushed, push_error}
 //!   POST   /v1/stations/{id}/leases           {agent, task?, kind: "shared"|"pixel"} → 201 LeaseView
 //!   GET    /v1/stations/{id}/leases           → [LeaseView] (queued leases carry their position)
-//!   GET    /v1/stations/{id}/sync             → the work-folder sync's state: files, bytes, last_sync_ms, linked, conflicts
+//!   GET    /v1/stations/{id}/sync             → the work-folder sync's state: files, bytes, last_sync_ms, linked, conflicts,
+//!                                               paused, reason, pending_deletions (sync.rs)
+//!   POST   /v1/stations/{id}/sync/resume      {apply_deletions?: bool} → 202 the state; the held deletions go through
+//!                                               (true) or the hub's copies go back to the station (false, the default)
 //!   GET    /v1/stations/{id}/files?prefix=    → [FileView] of the mirrored work folder (sync.rs)
 //!   GET    /v1/stations/{id}/files/{path}     → the file's content (its last version the hub holds)
 //!   PUT    /v1/stations/{id}/files/{path}     raw bytes → 201 FileView (the next pass pushes it to the station)
@@ -85,6 +88,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .get("/v1/stations/{id}/leases", |app, _, p| leases_route(app, p.get("id")))
         .delete("/v1/stations/{id}/leases/{lease}", |app, _, p| release_route(app, p.get("id"), p.get("lease"), None, OWNER))
         .get("/v1/stations/{id}/sync", |app, _, p| sync_state_route(app, p.get("id")))
+        .post("/v1/stations/{id}/sync/resume", |app, req, p| sync_resume_route(app, req, p.get("id")))
         .get("/v1/stations/{id}/files", |app, req, p| sync_files_route(app, req, p.get("id")))
         .get("/v1/stations/{id}/files/{path..}", |app, _, p| sync_read_route(app, p.get("id"), p.get("path")))
         .route("PUT", "/v1/stations/{id}/files/{path..}", |app, req, p| sync_put_route(app, req, p.get("id"), p.get("path")))
@@ -107,9 +111,27 @@ struct DeliverBody {
     task: Option<String>,
 }
 
+#[derive(Default, Deserialize)]
+struct ResumeBody {
+    #[serde(default)]
+    apply_deletions: bool,
+}
+
 fn sync_state_route(app: &App, id: &str) -> Response {
     match sync::state(app, id) {
         Ok(state) => Response::json(200, &state),
+        Err(failure) => fail(failure),
+    }
+}
+
+/// `POST .../sync/resume`: the owner's answer to a paused sync. Without a body, the deletions are not applied.
+fn sync_resume_route(app: &App, req: &Request, id: &str) -> Response {
+    let body: ResumeBody = match parse_or_default(req) {
+        Ok(body) => body,
+        Err(refusal) => return refusal,
+    };
+    match sync::resume(app, id, body.apply_deletions, OWNER) {
+        Ok(state) => Response::json(202, &state),
         Err(failure) => fail(failure),
     }
 }
@@ -152,7 +174,7 @@ fn sync_post_route(app: &App, req: &Request, id: &str, path: &str) -> Response {
         Ok(body) => body,
         Err(refusal) => return refusal,
     };
-    match sync::deliver(app, id, file, body.title, body.description, body.task, OWNER) {
+    match sync::deliver(app, id, file, body.title, body.description, body.task, (0, OWNER)) {
         Ok(item) => Response::json(201, &json!({"id": item.id, "name": item.name, "size": item.size, "kind": item.kind, "audience": item.audience})),
         Err(failure) => fail(failure),
     }

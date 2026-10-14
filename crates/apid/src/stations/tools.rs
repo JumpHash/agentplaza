@@ -141,10 +141,10 @@ pub fn spec(name: &str) -> Option<(&'static str, Value)> {
             ),
         ),
         "station_files" => (
-            "Reads and writes files in the workstation's work folder; no pixel lease needed. cmd: list (path, cursor), read (path, offset), write (path, text, expected_hash: refused when the file changed since you read it), search (q, glob, max).",
+            "Reads and writes files in the workstation's work folder; no pixel lease needed. cmd: list (path, cursor), read (path, offset), write (path, text, expected_hash: refused when the file changed since you read it), search (q, glob, max). deliver: true with path copies that file into the Library as a deliverable credited to you and your task on this workstation, and answers with its id.",
             obj(
-                json!({"station": station, "cmd": {"type": "string", "enum": ["list", "read", "write", "search"]}, "path": text, "cursor": text, "offset": number, "text": text, "expected_hash": text, "q": text, "glob": text, "max": number}),
-                &["station", "cmd"],
+                json!({"station": station, "cmd": {"type": "string", "enum": ["list", "read", "write", "search"]}, "deliver": {"type": "boolean"}, "path": text, "cursor": text, "offset": number, "text": text, "expected_hash": text, "q": text, "glob": text, "max": number}),
+                &["station"],
             ),
         ),
         "station_app_list" => (
@@ -187,6 +187,11 @@ pub(crate) enum Call {
         station: String,
         lease: String,
     },
+    /// A mirrored file of the station copied into the Library (`station_files` with `deliver`).
+    Deliver {
+        station: String,
+        path: String,
+    },
     Wait(Duration),
     List,
 }
@@ -204,6 +209,12 @@ pub(crate) fn parse(tool: &str, input: &Value) -> Result<Call, String> {
     }
     let station = str_arg(input, "station")?;
     let lease = optional(input, "lease", str_of, "a string")?;
+    if tool == "station_files" && optional(input, "deliver", Value::as_bool, "true or false")?.unwrap_or(false) {
+        return Ok(Call::Deliver {
+            station,
+            path: str_arg(input, "path")?,
+        });
+    }
     let op = match tool {
         "station_lease" => {
             let kind = match str_arg(input, "kind")?.as_str() {
@@ -349,6 +360,7 @@ pub fn call(app: &App, cid: u64, tool: &str, input: &Value) -> Result<Value, Str
         }
         Call::Lease { station, kind, task } => act::lease_open(app, cid, &station, kind, task).map(|view| json!(view)).map_err(message),
         Call::Release { station, lease } => act::lease_release(app, cid, &station, &lease).map(|released| json!(released)).map_err(message),
+        Call::Deliver { station, path } => act::agent_deliver(app, cid, &station, &path).map_err(message),
         Call::Op { station, lease, mut op } => {
             fill_session(app, lease.as_deref(), &mut op);
             act::agent_op(app, cid, &station, lease.as_deref(), op).map_err(message)
@@ -545,6 +557,27 @@ mod tests {
                 lease: "l4".into()
             }
         );
+    }
+
+    #[test]
+    fn a_file_delivery_is_a_call_of_its_own_and_a_file_operation_is_not() {
+        assert_eq!(
+            parse("station_files", &json!({"station": "w1", "deliver": true, "path": "out/render.png"})).unwrap(),
+            Call::Deliver {
+                station: "w1".into(),
+                path: "out/render.png".into()
+            }
+        );
+        assert!(parse("station_files", &json!({"station": "w1", "deliver": true})).is_err(), "a delivery names its path");
+        assert!(
+            matches!(
+                parse("station_files", &json!({"station": "w1", "deliver": false, "cmd": "list", "path": "."})).unwrap(),
+                Call::Op { op: Op::Files(_), .. }
+            ),
+            "deliver false is an ordinary file operation"
+        );
+        assert!(parse("station_files", &json!({"station": "w1", "path": "."})).is_err(), "a file operation needs its cmd");
+        assert!(parse("station_files", &json!({"station": "w1", "deliver": "yes", "path": "a"})).is_err());
     }
 
     #[test]

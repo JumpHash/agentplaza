@@ -18,6 +18,7 @@ use super::leases::{Kind, Lease, LeaseView, State};
 use super::link::StationLink;
 use super::ops::{self, Failure, RPC_TIMEOUT};
 use super::registry::Station;
+use super::sync;
 use super::takeover;
 use crate::laws::OWNER;
 use crate::state::App;
@@ -252,6 +253,57 @@ pub fn agent_op(app: &App, cid: u64, station: &str, lease: Option<&str>, op: Op)
     result
 }
 
+/// An agent puts a mirrored file of `station` into the Library (`station_files` with `deliver`): credited to the agent,
+/// and to the task of its lease on the station when it holds one. Through `run_deliver`, so the laws and the audit apply.
+pub fn agent_deliver(app: &App, cid: u64, station: &str, path: &str) -> Result<Value, Failure> {
+    let role = role_of(app, cid)?;
+    let name = match cid {
+        0 => OWNER.to_string(),
+        _ => app.agents.get(cid).map(|agent| agent.name).filter(|name| !name.is_empty()).unwrap_or_else(|| format!("agent {cid}")),
+    };
+    let task = app.stations.leases.views(station).into_iter().find(|view| view.lease.agent == cid).and_then(|view| view.lease.task);
+    run_deliver(&AppHub(app), cid, &role, station, path, || {
+        let item = sync::deliver(app, station, path, None, None, task.clone(), (cid, name.as_str()))?;
+        Ok(json!({"id": item.id, "name": item.name, "size": item.size, "kind": item.kind, "audience": item.audience, "task": item.task}))
+    })
+}
+
+/// The checks and the copy of a delivery, audited like an operation: `perform` does the copy once the laws allow it.
+pub(crate) fn run_deliver(
+    hub: &dyn Hub,
+    cid: u64,
+    role: &str,
+    station: &str,
+    path: &str,
+    perform: impl FnOnce() -> Result<Value, Failure>,
+) -> Result<Value, Failure> {
+    let outcome = deliver_checks(hub, cid, role, station, path).and_then(|()| perform());
+    let row = json!({
+        "op": {"op": "deliver", "path": path},
+        "ok": outcome.is_ok(),
+        "error": outcome.as_ref().err().map(|(_, message)| message),
+    });
+    match hub.audit(station, cid, "agent_op", &actor_of(cid), row) {
+        Ok(()) => outcome,
+        Err(e) if outcome.is_ok() => Err((500, format!("the action ran, but the station audit could not be written: {e}"))),
+        Err(e) => Err((500, format!("the station audit could not be written: {e}"))),
+    }
+}
+
+/// The station is known and not revoked, and the laws allow the file tool's call with `deliver` (the laws name it
+/// `station_files`, as they do the file operations).
+fn deliver_checks(hub: &dyn Hub, cid: u64, role: &str, station: &str, path: &str) -> Result<(), Failure> {
+    let target = hub.station(station).ok_or((404, "no such workstation".to_string()))?;
+    if target.revoked {
+        return Err((409, "this workstation was revoked".into()));
+    }
+    let input = json!({"station": station, "deliver": true, "path": path});
+    match hub.refusal(cid, role, "station_files", &input) {
+        Some(why) => Err((403, why)),
+        None => Ok(()),
+    }
+}
+
 /// Opens a lease of `kind` on `station` for `cid`: the laws decide, then the station's rules (`ops::open_lease`).
 /// A pixel lease that is queued waits up to `GRANT_WAIT` for its session; the answer is the lease as it stands then.
 pub fn lease_open(app: &App, cid: u64, station: &str, kind: Kind, task: Option<String>) -> Result<LeaseView, Failure> {
@@ -324,6 +376,19 @@ mod tests {
   principal is Agent
   resource is Tool
   when resource.name == "station_click"
+}
+"#;
+
+    /// A rule against the file tool, deliveries included.
+    const NO_FILES: &str = r#"law "O-002" "No files" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "Test rule: no agent may use the file tool."
+  forbid tool.call
+  principal is Agent
+  resource is Tool
+  when resource.name == "station_files"
 }
 "#;
 
@@ -402,6 +467,7 @@ mod tests {
             draining,
             revoked,
             address: String::new(),
+            sync_pause: None,
         }
     }
 
@@ -613,6 +679,66 @@ mod tests {
         assert_eq!(row["data"]["op"]["path"], "notes.md");
         assert_eq!(row["data"]["op"]["text"]["bytes"], 15);
         assert!(!row.to_string().contains("the secret body"), "{row}");
+    }
+
+    #[test]
+    fn a_delivery_runs_its_copy_once_and_is_audited_as_an_operation() {
+        let hub = hub(None);
+        let copies = Mutex::new(0);
+        let out = run_deliver(&hub, 7, "builder", "w1", "out/render.png", || {
+            *copies.lock().unwrap() += 1;
+            Ok(json!({"id": "f1"}))
+        })
+        .expect("delivered");
+        assert_eq!(out["id"], "f1");
+        assert_eq!(*copies.lock().unwrap(), 1);
+        let row = last_audit(&hub);
+        assert_eq!(row["kind"], "agent_op");
+        assert_eq!(row["actor"], "agent:7");
+        assert_eq!(row["data"]["op"], json!({"op": "deliver", "path": "out/render.png"}));
+        assert_eq!(row["data"]["ok"], true);
+    }
+
+    #[test]
+    fn a_delivery_the_laws_refuse_copies_nothing_and_is_audited_as_refused() {
+        let hub = hub(None);
+        let copies = Mutex::new(0);
+        let copy = || {
+            *copies.lock().unwrap() += 1;
+            Ok(json!({}))
+        };
+        assert!(run_deliver(&hub, 7, "builder", "w1", "a.txt", copy).is_ok(), "allowed without a rule");
+        hub.laws.add_rule("No files", NO_FILES, true, 0).expect("the rule compiles");
+        let (status, message) = run_deliver(&hub, 7, "builder", "w1", "a.txt", copy).unwrap_err();
+        assert_eq!(status, 403);
+        assert!(message.starts_with("refused by law O-002"), "{message}");
+        assert_eq!(*copies.lock().unwrap(), 1, "the refused delivery copied nothing");
+        assert_eq!(last_audit(&hub)["data"]["ok"], false);
+        assert!(last_audit(&hub)["data"]["error"].as_str().unwrap().contains("O-002"));
+    }
+
+    #[test]
+    fn a_delivery_that_fails_is_audited_and_a_revoked_station_is_refused() {
+        let known = hub(None);
+        let (status, message) = run_deliver(&known, 7, "builder", "w1", "gone.txt", || Err((404, "no file gone.txt in the work folder".into()))).unwrap_err();
+        assert_eq!((status, message.as_str()), (404, "no file gone.txt in the work folder"));
+        assert_eq!(last_audit(&known)["data"]["ok"], false);
+
+        let mut revoked = hub(None);
+        revoked.station = station(false, true);
+        let (status, _) = run_deliver(&revoked, 7, "builder", "w1", "a.txt", || Ok(json!({}))).unwrap_err();
+        assert_eq!(status, 409);
+        let (status, _) = run_deliver(&known, 7, "builder", "w9", "a.txt", || Ok(json!({}))).unwrap_err();
+        assert_eq!(status, 404);
+    }
+
+    #[test]
+    fn a_failed_audit_of_a_delivery_is_a_500_that_says_the_copy_ran() {
+        let mut hub = hub(None);
+        hub.audit_broken = true;
+        let (status, message) = run_deliver(&hub, 7, "builder", "w1", "a.txt", || Ok(json!({}))).unwrap_err();
+        assert_eq!(status, 500);
+        assert!(message.starts_with("the action ran"), "{message}");
     }
 
     #[test]

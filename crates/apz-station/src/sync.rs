@@ -45,10 +45,25 @@ pub struct SyncEntry {
     pub size: u64,
 }
 
-/// The reply to `SyncOp::Manifest`: every synced file of the work folder.
+/// Whether the work folder could be read when the daemon looked. A folder that is `Missing` (it does not exist, or
+/// cannot be listed: an unmounted drive, a renamed folder) has no entries that mean anything; the hub must not read
+/// its files as deleted.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FolderState {
+    #[default]
+    Present,
+    Missing,
+}
+
+/// The reply to `SyncOp::Manifest`: every synced file of the work folder, and whether the folder was there to list.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct SyncManifest {
     pub entries: Vec<SyncEntry>,
+    /// `Missing` with no entries when the folder could not be read. A daemon older than this field sends none, which
+    /// reads as `Present`.
+    #[serde(default)]
+    pub state: FolderState,
 }
 
 /// The reply to `SyncOp::Pull`: one chunk of the file, from `offset`. `eof` is set on the last chunk.
@@ -93,9 +108,23 @@ mod tests {
                     hash: "ab".into(),
                     size: 12,
                 }],
+                state: FolderState::Present,
             },
-            r#"{"entries":[{"path":"reports/q3.csv","hash":"ab","size":12}]}"#,
+            r#"{"entries":[{"path":"reports/q3.csv","hash":"ab","size":12}],"state":"present"}"#,
         );
+    }
+
+    #[test]
+    fn a_missing_folder_is_a_manifest_with_no_entries_and_says_so() {
+        assert_wire(
+            &SyncManifest {
+                entries: vec![],
+                state: FolderState::Missing,
+            },
+            r#"{"entries":[],"state":"missing"}"#,
+        );
+        let older: SyncManifest = serde_json::from_str(r#"{"entries":[]}"#).unwrap();
+        assert_eq!(older.state, FolderState::Present, "a daemon without the field reads as present");
     }
 
     #[test]

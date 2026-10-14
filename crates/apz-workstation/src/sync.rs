@@ -21,7 +21,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, UNIX_EPOCH};
 
 use apz_station::{
-    Event, SYNC_CHUNK, SYNC_FILE_CAP, SYNC_PART_PREFIX, SyncEntry, SyncManifest, SyncOp, SyncPull,
+    Event, FolderState, SYNC_CHUNK, SYNC_FILE_CAP, SYNC_PART_PREFIX, SyncEntry, SyncManifest, SyncOp, SyncPull,
     SyncPushed, SyncStatus, ignored_name, valid_path,
 };
 use base64::Engine;
@@ -68,6 +68,18 @@ pub struct Walk {
     pub files: BTreeMap<String, Known>,
     pub changed: Vec<String>,
     pub skipped: Vec<String>,
+    /// The files and folders that are there but could not be read this time (or whose metadata could not be had). Their
+    /// entries stand: a file that cannot be read is never reported as deleted.
+    pub unreadable: Vec<String>,
+}
+
+impl Walk {
+    /// Whether `path` lies under a folder, or is a file, that could not be read.
+    fn is_unreadable(&self, path: &str) -> bool {
+        self.unreadable
+            .iter()
+            .any(|at| path == at || path.strip_prefix(at.as_str()).is_some_and(|rest| rest.starts_with('/')))
+    }
 }
 
 impl Mirror {
@@ -144,12 +156,16 @@ impl Mirror {
                 size: known.size,
             })
             .collect();
-        SyncManifest { entries }
+        SyncManifest {
+            entries,
+            state: FolderState::Present,
+        }
     }
 }
 
 /// Walks `root`. `previous` is the walk before (its hashes are reused for unchanged files); `cap` is the largest file
-/// hashed and synced. Symbolic links and ignored names are left out.
+/// hashed and synced. Symbolic links and ignored names are left out. An error means the folder itself is missing or
+/// cannot be listed; a folder or file below it that cannot be read is named in `unreadable` instead.
 pub fn walk(root: &Path, previous: &BTreeMap<String, Known>, cap: u64) -> io::Result<Walk> {
     if !fs::metadata(root)?.is_dir() {
         return Err(io::Error::new(
@@ -160,20 +176,21 @@ pub fn walk(root: &Path, previous: &BTreeMap<String, Known>, cap: u64) -> io::Re
     let mut out = Walk::default();
     let mut stack: Vec<(PathBuf, String)> = vec![(root.to_path_buf(), String::new())];
     while let Some((dir, prefix)) = stack.pop() {
-        let Ok(entries) = fs::read_dir(&dir) else {
-            continue;
+        let listed = fs::read_dir(&dir).and_then(|reader| reader.collect::<io::Result<Vec<_>>>());
+        let entries = match listed {
+            Ok(entries) => entries,
+            // The folder must list: an empty walk of it would read every file as deleted.
+            Err(err) if prefix.is_empty() => return Err(err),
+            Err(_) => {
+                out.unreadable.push(prefix);
+                continue;
+            }
         };
-        for entry in entries.flatten() {
+        for entry in entries {
             let Ok(name) = entry.file_name().into_string() else {
                 continue;
             };
             if ignored_name(&name) {
-                continue;
-            }
-            let Ok(file_type) = entry.file_type() else {
-                continue;
-            };
-            if file_type.is_symlink() {
                 continue;
             }
             let rel = if prefix.is_empty() {
@@ -181,6 +198,13 @@ pub fn walk(root: &Path, previous: &BTreeMap<String, Known>, cap: u64) -> io::Re
             } else {
                 format!("{prefix}/{name}")
             };
+            let Ok(file_type) = entry.file_type() else {
+                out.unreadable.push(rel);
+                continue;
+            };
+            if file_type.is_symlink() {
+                continue;
+            }
             if file_type.is_dir() {
                 stack.push((entry.path(), rel));
                 continue;
@@ -188,7 +212,10 @@ pub fn walk(root: &Path, previous: &BTreeMap<String, Known>, cap: u64) -> io::Re
             if !file_type.is_file() || !valid_path(&rel) {
                 continue;
             }
-            let Ok(meta) = entry.metadata() else { continue };
+            let Ok(meta) = entry.metadata() else {
+                out.unreadable.push(rel);
+                continue;
+            };
             if meta.len() > cap {
                 out.skipped.push(rel);
                 continue;
@@ -202,7 +229,10 @@ pub fn walk(root: &Path, previous: &BTreeMap<String, Known>, cap: u64) -> io::Re
                         size: meta.len(),
                         mtime_ms,
                     },
-                    Err(_) => continue,
+                    Err(_) => {
+                        out.unreadable.push(rel);
+                        continue;
+                    }
                 },
             };
             out.files.insert(rel, known);
@@ -213,7 +243,7 @@ pub fn walk(root: &Path, previous: &BTreeMap<String, Known>, cap: u64) -> io::Re
             continue;
         }
         // Gone from the walk: a deletion, unless the file is still there (too big now, or unreadable this time).
-        if fs::symlink_metadata(root.join(path)).is_ok_and(|m| m.is_file()) {
+        if out.is_unreadable(path) || fs::symlink_metadata(root.join(path)).is_ok_and(|m| m.is_file()) {
             out.files.insert(path.clone(), old.clone());
         }
     }
@@ -296,10 +326,16 @@ pub fn handle(mirror: &Mirror, root: &Path, op: SyncOp) -> Result<Option<Value>,
     match op {
         SyncOp::Status => to_value(&mirror.status()).map(Some),
         SyncOp::Manifest => {
-            mirror
-                .scan(root)
-                .map_err(|e| format!("cannot scan the work folder: {e}"))?;
-            to_value(&mirror.manifest()).map(Some)
+            // A folder that is gone or cannot be listed is reported as missing, never as an empty manifest: the hub
+            // reads an empty manifest as every file deleted. The mirror keeps its entries for when the folder is back.
+            let manifest = match mirror.scan(root) {
+                Ok(_) => mirror.manifest(),
+                Err(_) => SyncManifest {
+                    entries: Vec::new(),
+                    state: FolderState::Missing,
+                },
+            };
+            to_value(&manifest).map(Some)
         }
         SyncOp::Pull { path, hash, offset } => {
             let chunk = pull(mirror, root, &path, &hash, offset.unwrap_or(0))?;
@@ -673,6 +709,88 @@ mod tests {
             "the last entry stands"
         );
         assert!(second.changed.is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// The manifest the hub gets for `root` from `mirror`.
+    fn manifest_of(mirror: &Mirror, root: &Path) -> SyncManifest {
+        serde_json::from_value(handle(mirror, root, SyncOp::Manifest).unwrap().unwrap()).unwrap()
+    }
+
+    #[cfg(unix)]
+    fn set_mode(path: &Path, mode: u32) {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
+    }
+
+    #[test]
+    fn a_missing_folder_is_reported_missing_not_as_an_empty_manifest() {
+        let root = scratch("missing");
+        write(&root, "keep.txt", b"kept");
+        let mirror = Mirror::default();
+        let present = manifest_of(&mirror, &root);
+        assert_eq!((present.state, present.entries.len()), (FolderState::Present, 1));
+
+        fs::remove_dir_all(&root).unwrap();
+        let gone = manifest_of(&mirror, &root);
+        assert_eq!((gone.state, gone.entries.len()), (FolderState::Missing, 0));
+        assert_eq!(mirror.status().files, 1, "the mirror keeps its entries for when the folder is back");
+
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("keep.txt"), b"kept").unwrap();
+        let back = manifest_of(&mirror, &root);
+        assert_eq!((back.state, back.entries.len()), (FolderState::Present, 1));
+        assert!(mirror.status().pending == 0, "the same file is not a change");
+
+        fs::remove_file(root.join("keep.txt")).unwrap();
+        let wiped = manifest_of(&mirror, &root);
+        assert_eq!(wiped.state, FolderState::Present, "an emptied folder is present; the hub's threshold guards it");
+        assert!(wiped.entries.is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_that_cannot_be_listed_is_missing_and_its_files_are_not_deletions() {
+        let root = scratch("unlistable");
+        write(&root, "a.txt", b"a");
+        let mirror = Mirror::default();
+        assert_eq!(manifest_of(&mirror, &root).entries.len(), 1);
+
+        set_mode(&root, 0o000);
+        let locked = manifest_of(&mirror, &root);
+        set_mode(&root, 0o755);
+        if locked.state == FolderState::Present {
+            // Running with rights that ignore the mode (root): there is nothing to test here.
+            fs::remove_dir_all(root).unwrap();
+            return;
+        }
+        assert_eq!((locked.state, locked.entries.len()), (FolderState::Missing, 0));
+
+        let back = manifest_of(&mirror, &root);
+        assert_eq!((back.state, back.entries.len()), (FolderState::Present, 1));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_subfolder_that_cannot_be_read_keeps_its_files_in_the_manifest() {
+        let root = scratch("unreadable");
+        write(&root, "a.txt", b"a");
+        write(&root, "locked/b.txt", b"bee");
+        let mirror = Mirror::default();
+        assert_eq!(manifest_of(&mirror, &root).entries.len(), 2);
+
+        set_mode(&root.join("locked"), 0o000);
+        let walked = walk(&root, &mirror.lock().files.clone(), SYNC_FILE_CAP);
+        let second = manifest_of(&mirror, &root);
+        set_mode(&root.join("locked"), 0o755);
+        let walked = walked.unwrap();
+        assert_eq!(walked.unreadable, ["locked"], "the folder is named as unreadable");
+        assert!(walked.changed.is_empty(), "nothing in it is a change");
+        assert_eq!(second.state, FolderState::Present);
+        let paths: Vec<&str> = second.entries.iter().map(|e| e.path.as_str()).collect();
+        assert_eq!(paths, ["a.txt", "locked/b.txt"], "the unreadable folder's file stands, not deleted");
         fs::remove_dir_all(root).unwrap();
     }
 

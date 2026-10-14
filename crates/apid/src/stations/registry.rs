@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use super::leases::{LeaseView, Leases};
 use super::link::StationLink;
+use super::sync::SyncPause;
 use crate::nodes::{self, Code, CodeView, DEFAULT_TTL_MINUTES, JOIN_TRIES_PER_CODE, MAX_CODE_MINUTES};
 
 /// A station is offline when its link has been silent this long.
@@ -55,6 +56,9 @@ pub struct Station {
     /// Where it joined from (for the owner's eyes only).
     #[serde(default)]
     pub address: String,
+    /// The work-folder sync's pause, while it holds (sync.rs): why, and the deletions it holds back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync_pause: Option<SyncPause>,
 }
 
 /// A station as the console lists it.
@@ -285,6 +289,7 @@ impl Store {
             draining: false,
             revoked: false,
             address: source.to_string(),
+            sync_pause: None,
         };
         code.used_by = Some(station.id.clone());
         stations.push(station.clone());
@@ -356,6 +361,16 @@ impl Store {
 
     pub fn set_settings(&self, id: &str, settings: StationSettings) -> Result<Station, String> {
         self.update(id, |s| s.settings = settings.clone())
+    }
+
+    /// The work-folder sync's pause on a station, while it holds.
+    pub fn sync_pause(&self, id: &str) -> Option<SyncPause> {
+        self.station(id).and_then(|s| s.sync_pause)
+    }
+
+    /// Sets or clears a station's work-folder sync pause. A station that is gone has none to set.
+    pub fn set_sync_pause(&self, id: &str, pause: Option<SyncPause>) {
+        let _ = self.update(id, |s| s.sync_pause = pause);
     }
 
     fn update(&self, id: &str, change: impl FnOnce(&mut Station)) -> Result<Station, String> {
