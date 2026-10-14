@@ -13,6 +13,7 @@ path = "src/main.rs"
 [dependencies]
 apz-http = { path = "../../crates/apz-http" }
 apz-os = { path = "../../crates/apz-os" }
+apz-setup = { path = "../../crates/apz-setup" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 clap = { version = "4.6", features = ["derive", "env", "wrap_help"] }

@@ -11,13 +11,18 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
+use apz_setup::{Check, Need, State};
 use serde_json::Value;
 
 use super::app::{Palette, Tab};
 use crate::ctx::{self, Client, Config};
 
-/// The wizard's screens: welcome, hub, model keys, checks.
-pub const SETUP_SCREENS: usize = 4;
+/// The wizard's screens: welcome, hub, dependencies, model keys, summary.
+pub const SETUP_SCREENS: usize = 5;
+/// The screen that checks this machine's dependencies, and fixes the missing ones on `f`.
+pub const DEPS_SCREEN: usize = 2;
+/// The most lines of a running fix's output the screen keeps.
+const LOG_LINES: usize = 200;
 
 /// One tour panel: the tab it switches to (none for the screens without one) and its lines.
 pub struct TourStep {
@@ -115,6 +120,8 @@ pub enum Input {
     Skip,
     Yes,
     No,
+    /// `f`: fix the missing dependencies (on the Dependencies screen, after a confirmation).
+    Fix,
 }
 
 /// What finishing (or skipping) a part saves.
@@ -139,6 +146,7 @@ pub fn input_for(code: KeyCode) -> Option<Input> {
         KeyCode::Esc | KeyCode::Char('s') => Some(Input::Skip),
         KeyCode::Char('y' | 'Y') => Some(Input::Yes),
         KeyCode::Char('n' | 'N') => Some(Input::No),
+        KeyCode::Char('f' | 'F') => Some(Input::Fix),
         _ => None,
     }
 }
@@ -260,16 +268,99 @@ pub fn gather(client: &Client) -> Facts {
 pub struct Onboarding {
     pub stage: Stage,
     pub facts: Option<Facts>,
+    pub deps: Deps,
+}
+
+/// The Dependencies screen: this machine's checks (once read), a fix waiting for `y`, and the
+/// messages and output of the fixes that ran.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Deps {
+    /// The checks; `None` until they are read.
+    pub checks: Option<Vec<Check>>,
+    /// The fixes are on screen for a `y` (`n`, Esc or any other key cancels them).
+    pub confirming: bool,
+    /// The fixes are running: the screen takes no keys until they end.
+    pub running: bool,
+    /// The last messages and lines of output, oldest first.
+    pub log: Vec<String>,
+}
+
+/// What a key does on the Dependencies screen, before the wizard's own flow.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DepsKey {
+    /// Not the Dependencies screen, or a key that means navigation there: the flow takes it.
+    Pass,
+    /// The screen took the key.
+    Handled,
+    /// The confirmed fixes start, for these requirements in this order.
+    Run(Vec<Need>),
+}
+
+/// The requirements a fix run would change, in the checklist's order.
+pub fn fixable_needs(checks: &[Check]) -> Vec<Need> {
+    apz_setup::fixable(checks).into_iter().map(|check| check.need).collect()
 }
 
 impl Onboarding {
     pub fn new(stage: Stage) -> Onboarding {
-        Onboarding { stage, facts: None }
+        Onboarding {
+            stage,
+            facts: None,
+            deps: Deps::default(),
+        }
+    }
+
+    /// Routes a key on the Dependencies screen: `f` asks for a confirmation, `y` runs the fixes,
+    /// and while they run the screen takes no keys. Other keys go on to the flow.
+    pub fn deps_key(&mut self, input: Input) -> DepsKey {
+        if self.stage != Stage::Setup(DEPS_SCREEN) {
+            return DepsKey::Pass;
+        }
+        let deps = &mut self.deps;
+        if deps.running {
+            return DepsKey::Handled;
+        }
+        if deps.confirming {
+            deps.confirming = false;
+            if input != Input::Yes {
+                return DepsKey::Handled;
+            }
+            let needs = deps.checks.as_deref().map(fixable_needs).unwrap_or_default();
+            if needs.is_empty() {
+                return DepsKey::Handled;
+            }
+            deps.running = true;
+            deps.log.clear();
+            return DepsKey::Run(needs);
+        }
+        if input != Input::Fix {
+            return DepsKey::Pass;
+        }
+        match deps.checks.as_deref() {
+            None => deps.log = vec!["the checks are still being read".to_string()],
+            Some(checks) if fixable_needs(checks).is_empty() => {
+                deps.log = vec!["nothing here needs a fix".to_string()];
+            }
+            Some(_) => deps.confirming = true,
+        }
+        DepsKey::Handled
+    }
+
+    /// Keeps a line of a running fix's output, the last `LOG_LINES`.
+    pub fn push_log(&mut self, line: String) {
+        self.deps.log.push(line);
+        if self.deps.log.len() > LOG_LINES {
+            let extra = self.deps.log.len() - LOG_LINES;
+            self.deps.log.drain(..extra);
+        }
     }
 
     /// The footer's hint for the stage.
     pub fn hint(&self) -> &'static str {
         match self.stage {
+            Stage::Setup(DEPS_SCREEN) if self.deps.running => " the fixes are running · Ctrl-C quits",
+            Stage::Setup(DEPS_SCREEN) if self.deps.confirming => " y runs the fixes · any other key cancels · Ctrl-C quits",
+            Stage::Setup(DEPS_SCREEN) => " f fixes missing · Enter/→ next · ← back · Esc skips setup · Ctrl-C quits",
             Stage::Setup(i) if i + 1 == SETUP_SCREENS => " Enter finishes setup · ← back · Esc skips it · Ctrl-C quits",
             Stage::Setup(_) => " Enter/→ next · ← back · Esc skips setup · Ctrl-C quits",
             Stage::Ask => " y starts the tour · n or Enter skips it · Ctrl-C quits",
@@ -285,7 +376,8 @@ impl Onboarding {
         match self.stage {
             Stage::Setup(i) => {
                 let lines = self.setup_lines(i, palette, base);
-                let area = centred(body, 74, 17);
+                let height = if i == DEPS_SCREEN { 21 } else { 17 };
+                let area = centred(body, 74, height);
                 panel(frame, area, palette, " AgentPlaza setup ", lines);
             }
             Stage::Ask => {
@@ -369,7 +461,8 @@ impl Onboarding {
                     false,
                 ));
             }
-            2 => {
+            DEPS_SCREEN => lines.extend(self.deps_lines(palette)),
+            3 => {
                 lines.push(line(&self.keys_text(), palette.paper, true));
                 if let Some(Ok(keys)) = self.facts.as_ref().map(|f| &f.keys) {
                     if !keys.missing.is_empty() {
@@ -392,13 +485,9 @@ impl Onboarding {
                 lines.push(line(&self.hub_summary(), self.hub_color(palette), true));
                 lines.push(line(&self.keys_summary(), palette.paper, false));
                 lines.push(Line::from(""));
+                lines.push(line(&self.deps_summary(), self.deps_color(palette), false));
                 lines.push(line(
-                    "The machine's own checks (services, Docker, ports) are in the",
-                    palette.muted,
-                    false,
-                ));
-                lines.push(line(
-                    "desktop app: open it to see what this machine still needs.",
+                    "`agentplaza setup` lists the same checks and fixes them from the shell.",
                     palette.muted,
                     false,
                 ));
@@ -434,6 +523,70 @@ impl Onboarding {
         }
     }
 
+    /// The Dependencies screen: each check with its state, the confirmation of a fix or the way to
+    /// ask for one, and the last messages and output.
+    fn deps_lines(&self, palette: Palette) -> Vec<Line<'static>> {
+        let deps = &self.deps;
+        let mut lines = vec![line("This machine: what a local plaza needs.", palette.paper, true)];
+        let fixable: Vec<Check> = deps.checks.as_deref().map(apz_setup::fixable).unwrap_or_default();
+        match &deps.checks {
+            None => lines.push(line("Checking this machine...", palette.muted, false)),
+            Some(checks) => {
+                for check in checks {
+                    let (word, color) = match check.state {
+                        State::Ok => ("OK", palette.ok),
+                        State::Missing => ("MISSING", palette.accent),
+                        State::Blocked => ("BLOCKED", palette.accent),
+                        State::Warning => ("WARNING", palette.muted),
+                    };
+                    let optional = if check.required { "" } else { " (optional)" };
+                    lines.push(line(
+                        &format!("{:<11} {:<8} {}{optional}", check.label, word, clip(&check.detail, 36)),
+                        color,
+                        false,
+                    ));
+                }
+            }
+        }
+        lines.push(Line::from(""));
+        if deps.confirming {
+            let labels: Vec<&str> = fixable.iter().map(|check| check.label).collect();
+            lines.push(line(&format!("Run the fixes for {}? [y/N]", labels.join(", ")), palette.accent, true));
+            lines.push(line("The steps are the ones `agentplaza setup --fix` shows.", palette.muted, false));
+        } else if deps.running {
+            lines.push(line("Fixing: this takes a while.", palette.accent, true));
+        } else if !fixable.is_empty() {
+            lines.push(line("Press f to fix the missing ones: you confirm first.", palette.muted, false));
+        }
+        let start = deps.log.len().saturating_sub(3);
+        for text in &deps.log[start..] {
+            lines.push(line(&clip(text, 70), palette.muted, false));
+        }
+        lines
+    }
+
+    fn deps_summary(&self) -> String {
+        match self.deps.checks.as_deref() {
+            None => "Dependencies: checking...".to_string(),
+            Some(checks) => {
+                let open = checks.iter().filter(|c| matches!(c.state, State::Missing | State::Blocked)).count();
+                if open == 0 {
+                    "Dependencies: all set.".to_string()
+                } else {
+                    format!("Dependencies: {open} to do (the Dependencies step).")
+                }
+            }
+        }
+    }
+
+    fn deps_color(&self, palette: Palette) -> ratatui::style::Color {
+        match self.deps.checks.as_deref() {
+            None => palette.muted,
+            Some(checks) if checks.iter().any(|c| matches!(c.state, State::Missing | State::Blocked)) => palette.accent,
+            Some(_) => palette.ok,
+        }
+    }
+
     fn keys_text(&self) -> String {
         match self.facts.as_ref().map(|f| &f.keys) {
             None => "Checking the model providers...".to_string(),
@@ -459,6 +612,15 @@ impl Onboarding {
             ),
         }
     }
+}
+
+/// `text`, cut to `max` characters (ending in "..." when it was longer).
+fn clip(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let head: String = text.chars().take(max.saturating_sub(3)).collect();
+    format!("{head}...")
 }
 
 /// A one-line paragraph in a colour, optionally bold.
@@ -510,7 +672,7 @@ mod tests {
     fn wizard_walks_forward_and_back_and_finishes_with_the_tour_question() {
         let mut stage = Stage::Setup(0);
         let mut marks = Vec::new();
-        for expected in [Stage::Setup(1), Stage::Setup(2), Stage::Setup(3), Stage::Ask] {
+        for expected in [Stage::Setup(1), Stage::Setup(2), Stage::Setup(3), Stage::Setup(4), Stage::Ask] {
             let step = advance(stage, Input::Next);
             assert_eq!(step.next, Some(expected));
             marks.push(step.mark);
@@ -518,7 +680,7 @@ mod tests {
         }
         assert_eq!(
             marks,
-            [None, None, None, Some(Mark::Setup)],
+            [None, None, None, None, Some(Mark::Setup)],
             "the wizard is saved on its last screen"
         );
 
@@ -528,7 +690,7 @@ mod tests {
             "back on the first screen stays"
         );
         assert_eq!(advance(Stage::Setup(2), Input::Back).next, Some(Stage::Setup(1)));
-        assert_eq!(advance(Stage::Ask, Input::Back).next, Some(Stage::Setup(3)));
+        assert_eq!(advance(Stage::Ask, Input::Back).next, Some(Stage::Setup(SETUP_SCREENS - 1)));
     }
 
     #[test]
@@ -615,7 +777,132 @@ mod tests {
         assert_eq!(input_for(KeyCode::Char('s')), Some(Input::Skip));
         assert_eq!(input_for(KeyCode::Char('y')), Some(Input::Yes));
         assert_eq!(input_for(KeyCode::Char('N')), Some(Input::No));
+        assert_eq!(input_for(KeyCode::Char('f')), Some(Input::Fix));
         assert_eq!(input_for(KeyCode::Char('x')), None);
+    }
+
+    fn check(need: Need, state: State, fix: Option<&str>) -> Check {
+        Check {
+            need,
+            label: need.name(),
+            state,
+            detail: format!("{} detail", need.name()),
+            fix: fix.map(str::to_string),
+            required: true,
+        }
+    }
+
+    /// The Dependencies screen, with `checks` read.
+    fn on_deps(checks: Vec<Check>) -> Onboarding {
+        let mut ob = Onboarding::new(Stage::Setup(DEPS_SCREEN));
+        ob.deps.checks = Some(checks);
+        ob
+    }
+
+    #[test]
+    fn f_asks_for_a_confirmation_and_no_cancels_it_without_running_anything() {
+        let mut ob = on_deps(vec![check(Need::Postgres, State::Missing, Some("Create it"))]);
+        assert_eq!(ob.deps_key(Input::Fix), DepsKey::Handled);
+        assert!(ob.deps.confirming);
+        assert!(!ob.deps.running);
+        assert_eq!(ob.deps_key(Input::No), DepsKey::Handled);
+        assert!(!ob.deps.confirming && !ob.deps.running);
+    }
+
+    #[test]
+    fn y_after_the_question_runs_the_missing_fixable_needs_in_order_and_nothing_else() {
+        let mut ob = on_deps(vec![
+            check(Need::Docker, State::Ok, None),
+            check(Need::Services, State::Blocked, None),
+            check(Need::Postgres, State::Missing, Some("Create it")),
+            check(Need::Garage, State::Missing, Some("Create Garage")),
+        ]);
+        ob.deps.log.push("left over".into());
+        assert_eq!(ob.deps_key(Input::Fix), DepsKey::Handled);
+        assert_eq!(ob.deps_key(Input::Yes), DepsKey::Run(vec![Need::Postgres, Need::Garage]));
+        assert!(ob.deps.running && !ob.deps.confirming);
+        assert!(ob.deps.log.is_empty(), "the log starts clean for the run");
+    }
+
+    #[test]
+    fn a_running_fix_takes_no_keys_until_it_ends() {
+        let mut ob = on_deps(vec![check(Need::Postgres, State::Missing, Some("Create it"))]);
+        ob.deps.running = true;
+        for input in [Input::Next, Input::Skip, Input::Back, Input::Fix, Input::Yes] {
+            assert_eq!(ob.deps_key(input), DepsKey::Handled, "{input:?}");
+        }
+        assert_eq!(ob.stage, Stage::Setup(DEPS_SCREEN), "Esc does not leave it either");
+    }
+
+    #[test]
+    fn other_keys_and_other_screens_go_on_to_the_flow() {
+        let mut ob = on_deps(vec![]);
+        assert_eq!(ob.deps_key(Input::Next), DepsKey::Pass);
+        assert_eq!(ob.deps_key(Input::Skip), DepsKey::Pass);
+        let mut elsewhere = Onboarding::new(Stage::Setup(0));
+        assert_eq!(elsewhere.deps_key(Input::Fix), DepsKey::Pass);
+    }
+
+    #[test]
+    fn f_with_nothing_to_fix_says_so_and_asks_for_nothing() {
+        let mut ob = on_deps(vec![check(Need::Docker, State::Ok, None)]);
+        assert_eq!(ob.deps_key(Input::Fix), DepsKey::Handled);
+        assert!(!ob.deps.confirming);
+        assert_eq!(ob.deps.log, vec!["nothing here needs a fix".to_string()]);
+
+        let mut unread = Onboarding::new(Stage::Setup(DEPS_SCREEN));
+        assert_eq!(unread.deps_key(Input::Fix), DepsKey::Handled);
+        assert!(!unread.deps.confirming);
+    }
+
+    #[test]
+    fn yes_with_nothing_fixable_runs_nothing() {
+        let mut ob = on_deps(vec![check(Need::Docker, State::Ok, None)]);
+        ob.deps.confirming = true;
+        assert_eq!(ob.deps_key(Input::Yes), DepsKey::Handled);
+        assert!(!ob.deps.running);
+    }
+
+    #[test]
+    fn the_output_of_a_fix_keeps_only_its_last_lines() {
+        let mut ob = Onboarding::new(Stage::Setup(DEPS_SCREEN));
+        for i in 0..LOG_LINES + 5 {
+            ob.push_log(format!("line {i}"));
+        }
+        assert_eq!(ob.deps.log.len(), LOG_LINES);
+        assert_eq!(ob.deps.log.first().map(String::as_str), Some("line 5"));
+    }
+
+    #[test]
+    fn the_dependencies_step_lists_each_check_with_its_state_and_the_fix_key() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut ob = on_deps(vec![
+            check(Need::Docker, State::Ok, None),
+            check(Need::Postgres, State::Missing, Some("Create it")),
+        ]);
+        let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        term.draw(|frame| ob.draw(frame, frame.area(), Palette::detect(), "http://127.0.0.1:7791"))
+            .unwrap();
+        let text: String = term.backend().buffer().content().iter().map(|cell| cell.symbol()).collect();
+        assert!(text.contains("Step 3 of 5"), "{text}");
+        assert!(text.contains("MISSING"), "{text}");
+        assert!(text.contains("postgres"), "{text}");
+        assert!(text.contains("Press f"), "{text}");
+
+        ob.deps.confirming = true;
+        term.draw(|frame| ob.draw(frame, frame.area(), Palette::detect(), "http://127.0.0.1:7791"))
+            .unwrap();
+        let text: String = term.backend().buffer().content().iter().map(|cell| cell.symbol()).collect();
+        assert!(text.contains("Run the fixes for postgres? [y/N]"), "{text}");
+    }
+
+    #[test]
+    fn clip_cuts_long_text_with_dots() {
+        assert_eq!(clip("short", 10), "short");
+        assert_eq!(clip("abcdefghij", 6), "abc...");
+        assert_eq!(clip("abcdef", 6), "abcdef");
     }
 
     #[test]
@@ -718,7 +1005,7 @@ mod tests {
         }
 
         let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
-        let mut ob = Onboarding::new(Stage::Setup(2));
+        let mut ob = Onboarding::new(Stage::Setup(3));
         ob.facts = Some(facts);
         term.draw(|frame| ob.draw(frame, frame.area(), palette, "http://127.0.0.1:7791"))
             .unwrap();
@@ -729,7 +1016,7 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect();
-        assert!(text.contains("Step 3 of 4"), "{text}");
+        assert!(text.contains("Step 4 of 5"), "{text}");
         assert!(text.contains("anthropic"), "the missing key's provider id is named");
         assert!(text.contains("agentplaza models key"), "the way to add a key is shown");
     }

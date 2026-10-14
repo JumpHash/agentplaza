@@ -22,7 +22,7 @@ use ratatui::style::Color;
 use serde_json::{Value, json};
 
 use super::floor::FloorView;
-use super::onboarding::{self, Facts, Onboarding, Stage, Step, TOUR};
+use super::onboarding::{self, DepsKey, Facts, Onboarding, Stage, Step, TOUR};
 use super::screens;
 use crate::ctx::{Client, Config, seg};
 
@@ -175,6 +175,12 @@ impl EventLog {
 /// What the background threads send the UI.
 enum Msg {
     Facts(Facts),
+    /// This machine's checks, read or read again after a fix.
+    Deps(Vec<apz_setup::Check>),
+    /// A line of a running fix's output.
+    FixLine(String),
+    /// The fixes ended: nothing more to run, or the one that stopped them.
+    FixDone(Result<(), String>),
     Fetched(&'static str, Result<Value, String>),
     Link(bool),
     Event(String, Value),
@@ -242,7 +248,10 @@ impl App {
     pub fn begin(&mut self, stage: Stage) {
         self.onboarding = Some(Onboarding::new(stage));
         match stage {
-            Stage::Setup(_) => self.gather_facts(),
+            Stage::Setup(_) => {
+                self.gather_facts();
+                self.gather_deps();
+            }
             Stage::Tour(_) => self.show_tour_step(),
             Stage::Ask => {}
         }
@@ -257,6 +266,35 @@ impl App {
         });
     }
 
+    /// Reads this machine's checks on a thread; the answer arrives as `Msg::Deps`.
+    fn gather_deps(&self) {
+        let tx = self.tx.clone();
+        thread::spawn(move || {
+            let _ = tx.send(Msg::Deps(apz_setup::check_all(apz_setup::Mode::Local)));
+        });
+    }
+
+    /// Runs the confirmed fixes in order on a thread: their output arrives as `Msg::FixLine`, the
+    /// checks again as `Msg::Deps`, and the end as `Msg::FixDone`. A fix that fails stops the rest.
+    fn run_fixes(&self, needs: Vec<apz_setup::Need>) {
+        let tx = self.tx.clone();
+        thread::spawn(move || {
+            let mut result = Ok(());
+            for need in needs {
+                let lines = tx.clone();
+                let fixed = apz_setup::fix(need, &mut |line| {
+                    let _ = lines.send(Msg::FixLine(line));
+                });
+                if let Err(e) = fixed {
+                    result = Err(format!("{}: {e}", need.name()));
+                    break;
+                }
+            }
+            let _ = tx.send(Msg::Deps(apz_setup::check_all(apz_setup::Mode::Local)));
+            let _ = tx.send(Msg::FixDone(result));
+        });
+    }
+
     /// Switches to the tab the tour's current step shows (a step without one keeps the current tab).
     fn show_tour_step(&mut self) {
         if let Some(Stage::Tour(i)) = self.onboarding.as_ref().map(|ob| ob.stage) {
@@ -268,6 +306,15 @@ impl App {
 
     fn on_onboarding_key(&mut self, code: KeyCode) {
         let Some(input) = onboarding::input_for(code) else { return };
+        let Some(ob) = self.onboarding.as_mut() else { return };
+        match ob.deps_key(input) {
+            DepsKey::Handled => return,
+            DepsKey::Run(needs) => {
+                self.run_fixes(needs);
+                return;
+            }
+            DepsKey::Pass => {}
+        }
         let Some(stage) = self.onboarding.as_ref().map(|ob| ob.stage) else { return };
         let Step { next, mark } = onboarding::advance(stage, input);
         match next {
@@ -342,6 +389,26 @@ impl App {
                 Msg::Facts(facts) => {
                     if let Some(ob) = self.onboarding.as_mut() {
                         ob.facts = Some(facts);
+                    }
+                }
+                Msg::Deps(checks) => {
+                    if let Some(ob) = self.onboarding.as_mut() {
+                        ob.deps.checks = Some(checks);
+                    }
+                }
+                Msg::FixLine(line) => {
+                    if let Some(ob) = self.onboarding.as_mut() {
+                        ob.push_log(line);
+                    }
+                }
+                Msg::FixDone(result) => {
+                    if let Some(ob) = self.onboarding.as_mut() {
+                        ob.deps.running = false;
+                        let done = match result {
+                            Ok(()) => "the fixes are done".to_string(),
+                            Err(e) => format!("the fixes stopped: {e}"),
+                        };
+                        ob.push_log(done);
                     }
                 }
                 Msg::Link(up) => self.link = up,

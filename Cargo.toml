@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/*", "apps/desktop", "apps/cli", "tools/apz-pack"]
+members = ["crates/*", "crates/apz-setup", "apps/desktop", "apps/cli", "tools/apz-pack"]
 # `cargo build` / `cargo test` without -p skip the desktop app (iced + wgpu is
 # a heavy build); build it with `cargo build -p agentplaza-desktop`.
 default-members = ["crates/*", "apps/cli", "tools/apz-pack"]

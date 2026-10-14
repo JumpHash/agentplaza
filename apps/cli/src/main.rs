@@ -85,6 +85,9 @@ enum Command {
     /// This machine as a node of a network: join with a code, status, leave.
     #[command(subcommand)]
     Node(cmd::node::Cmd),
+    /// What a local plaza needs on this machine (Docker, Postgres, Forgejo, Garage, the ports): check it,
+    /// and fix the missing parts after you confirm what the fix runs.
+    Setup(cmd::setup::Args),
     /// STOP ALL and resume: the plaza's master switch.
     #[command(subcommand)]
     Plaza(cmd::plaza::Cmd),
@@ -125,6 +128,10 @@ fn run(cli: Cli) -> Result<(), String> {
     if let Command::Node(cmd) = cli.command {
         return cmd::node::run(cmd, cli.json);
     }
+    // This machine's own setup: no hub is involved.
+    if let Command::Setup(args) = cli.command {
+        return cmd::setup::run(args, cli.json);
+    }
     if let Command::Mcp(cmd) = cli.command {
         let globals = cmd::mcp::Globals { hub: cli.hub, token: cli.token, pin: cli.pin, json: cli.json };
         return cmd::mcp::run(cmd, globals);
@@ -153,6 +160,6 @@ fn run(cli: Cli) -> Result<(), String> {
         Command::Decide(a) => cmd::decide::run(&ctx, a),
         Command::Events(a) => cmd::events::run(&ctx, a),
         Command::Tui(args) => tui::run(&ctx, args),
-        Command::Hub(_) | Command::Node(_) | Command::Mcp(_) => unreachable!("handled above"),
+        Command::Hub(_) | Command::Node(_) | Command::Mcp(_) | Command::Setup(_) => unreachable!("handled above"),
     }
 }

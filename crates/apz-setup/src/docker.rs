@@ -1,91 +1,84 @@
-//! Docker: installing it and starting its daemon, per platform (see `super`).
-//!
-//! Each command runs with stdin closed and its output captured: every line goes to the log as it
-//! arrives, and a non-zero exit is an error naming the command and its last stderr line. On Linux,
-//! root is asked for through `pkexec` (the desktop's own password prompt); nothing here reads a
-//! password.
+//! Installing Docker and starting its daemon, per platform (see `lib.rs`). Every command goes
+//! through the [`Runner`](crate::Runner) of the [`Env`](crate::Env).
 
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-use std::io::{BufRead, BufReader, Read};
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-use std::process::Stdio;
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-use std::sync::mpsc;
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-use std::thread;
+use crate::Env;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use std::time::{Duration, Instant};
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+use std::thread;
 #[cfg(target_os = "macos")]
 use std::path::Path;
 
 /// Installs Docker for this platform, logging each step through `log`. Blocking.
 #[cfg(target_os = "linux")]
-pub fn install(log: &mut dyn FnMut(String)) -> Result<(), String> {
-    if !on_path("pkexec") {
+pub fn install(env: &Env, log: &mut dyn FnMut(String)) -> Result<(), String> {
+    if !env.runner.on_path("pkexec") {
         return Err(
             "needs pkexec to ask for your password: install Docker with your package manager"
                 .into(),
         );
     }
-    let release = std::fs::read_to_string("/etc/os-release").unwrap_or_default();
+    let release = env.runner.read_file("/etc/os-release").unwrap_or_default();
     let manager = manager_for(&release).ok_or_else(|| {
         "no known package manager: install Docker from https://docs.docker.com/engine/install/"
             .to_string()
     })?;
     match manager {
         "apt" => {
-            run(log, "pkexec", &["apt-get", "update"])?;
+            run(env, log, "pkexec", &["apt-get", "update"])?;
             run(
+                env,
                 log,
                 "pkexec",
                 &["env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "install", "-y", "docker.io"],
             )?;
         }
         "dnf" => {
-            run(log, "pkexec", &["dnf", "install", "-y", "moby-engine"])?;
+            run(env, log, "pkexec", &["dnf", "install", "-y", "moby-engine"])?;
         }
         "pacman" => {
-            run(log, "pkexec", &["pacman", "-S", "--noconfirm", "docker"])?;
+            run(env, log, "pkexec", &["pacman", "-S", "--noconfirm", "docker"])?;
         }
         // zypper: the only other manager `manager_for` returns.
         _ => {
-            run(log, "pkexec", &["zypper", "--non-interactive", "install", "docker"])?;
+            run(env, log, "pkexec", &["zypper", "--non-interactive", "install", "docker"])?;
         }
     }
-    run(log, "pkexec", &["systemctl", "enable", "--now", "docker"])?;
-    let user = match std::env::var("USER") {
-        Ok(user) if !user.is_empty() => user,
-        _ => run(log, "id", &["-un"])?.trim().to_string(),
+    run(env, log, "pkexec", &["systemctl", "enable", "--now", "docker"])?;
+    let user = match &env.user {
+        Some(user) => user.clone(),
+        None => run(env, log, "id", &["-un"])?.trim().to_string(),
     };
-    run(log, "pkexec", &["usermod", "-aG", "docker", user.as_str()])?;
+    run(env, log, "pkexec", &["usermod", "-aG", "docker", user.as_str()])?;
     log("Docker is installed. Log out and back in once so your user can use it.".into());
     Ok(())
 }
 
 /// Installs Docker Desktop with Homebrew when present, else from Docker's DMG, then opens it.
 #[cfg(target_os = "macos")]
-pub fn install(log: &mut dyn FnMut(String)) -> Result<(), String> {
-    match brew() {
+pub fn install(env: &Env, log: &mut dyn FnMut(String)) -> Result<(), String> {
+    match brew(env) {
         Some(program) => {
-            run(log, program, &["install", "--cask", "docker"])?;
+            run(env, log, program, &["install", "--cask", "docker"])?;
         }
-        None => install_dmg(log)?,
+        None => install_dmg(env, log)?,
     }
-    run(log, "open", &["-a", "Docker"])?;
+    run(env, log, "open", &["-a", "Docker"])?;
     log("Docker Desktop is installed and opening: finish its setup window, then come back here.".into());
     Ok(())
 }
 
 /// Installs Docker Desktop with winget (Windows asks for its own permission), then opens it.
 #[cfg(target_os = "windows")]
-pub fn install(log: &mut dyn FnMut(String)) -> Result<(), String> {
-    if !on_path("winget") {
+pub fn install(env: &Env, log: &mut dyn FnMut(String)) -> Result<(), String> {
+    if !env.runner.on_path("winget") {
         return Err(
             "needs winget (App Installer from the Microsoft Store), or install Docker Desktop from https://www.docker.com/products/docker-desktop/"
                 .into(),
         );
     }
     run(
+        env,
         log,
         "winget",
         &[
@@ -97,41 +90,41 @@ pub fn install(log: &mut dyn FnMut(String)) -> Result<(), String> {
             "--accept-source-agreements",
         ],
     )?;
-    start_desktop(log)?;
+    start_desktop(env, log)?;
     log("Docker Desktop is installed and opening: finish its setup window (it may ask to restart Windows), then come back here.".into());
     Ok(())
 }
 
 /// Installs Docker: not known on this platform.
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-pub fn install(_log: &mut dyn FnMut(String)) -> Result<(), String> {
+pub fn install(_env: &Env, _log: &mut dyn FnMut(String)) -> Result<(), String> {
     Err("install Docker by hand".into())
 }
 
 /// Starts Docker's daemon (the desktop app on macOS and Windows) and waits until it answers.
 #[cfg(target_os = "linux")]
-pub fn start(log: &mut dyn FnMut(String)) -> Result<(), String> {
-    run(log, "pkexec", &["systemctl", "start", "docker"])?;
-    wait_for_daemon(log)
+pub fn start(env: &Env, log: &mut dyn FnMut(String)) -> Result<(), String> {
+    run(env, log, "pkexec", &["systemctl", "start", "docker"])?;
+    wait_for_daemon(env, log)
 }
 
 /// Starts Docker Desktop and waits until its daemon answers.
 #[cfg(target_os = "macos")]
-pub fn start(log: &mut dyn FnMut(String)) -> Result<(), String> {
-    run(log, "open", &["-a", "Docker"])?;
-    wait_for_daemon(log)
+pub fn start(env: &Env, log: &mut dyn FnMut(String)) -> Result<(), String> {
+    run(env, log, "open", &["-a", "Docker"])?;
+    wait_for_daemon(env, log)
 }
 
 /// Starts Docker Desktop and waits until its daemon answers.
 #[cfg(target_os = "windows")]
-pub fn start(log: &mut dyn FnMut(String)) -> Result<(), String> {
-    start_desktop(log)?;
-    wait_for_daemon(log)
+pub fn start(env: &Env, log: &mut dyn FnMut(String)) -> Result<(), String> {
+    start_desktop(env, log)?;
+    wait_for_daemon(env, log)
 }
 
 /// Starts Docker's daemon: not known on this platform.
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-pub fn start(_log: &mut dyn FnMut(String)) -> Result<(), String> {
+pub fn start(_env: &Env, _log: &mut dyn FnMut(String)) -> Result<(), String> {
     Err("start Docker by hand".into())
 }
 
@@ -163,86 +156,46 @@ fn manager_for(os_release: &str) -> Option<&'static str> {
     }
 }
 
-/// Runs `program args` with stdin closed, logging `$ program args` first and then every output
-/// line as it arrives (stdout and stderr). Returns the captured stdout on success; on a non-zero
-/// exit, the error names the command and the last line it printed to stderr.
+/// Runs `program args` through the runner, logging `$ program args` first and then every output
+/// line as it arrives. Returns the captured stdout on success; on a non-zero exit, the error names
+/// the command and the last line it printed to stderr.
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-fn run(log: &mut dyn FnMut(String), program: &str, args: &[&str]) -> Result<String, String> {
+fn run(env: &Env, log: &mut dyn FnMut(String), program: &str, args: &[&str]) -> Result<String, String> {
     let line = std::iter::once(program)
         .chain(args.iter().copied())
         .collect::<Vec<_>>()
         .join(" ");
     log(format!("$ {line}"));
-    let mut child = super::command(program)
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
+    let out = env
+        .runner
+        .stream(program, args, log)
         .map_err(|e| format!("{line} failed: {e}"))?;
-    // Both pipes are drained on their own threads (so neither can fill and block the child); the
-    // lines reach `log` in the order they arrive.
-    let (tx, rx) = mpsc::channel();
-    let out = pump(child.stdout.take(), tx.clone());
-    let err = pump(child.stderr.take(), tx);
-    for text in rx {
-        log(text);
-    }
-    let stdout = out.join().unwrap_or_default();
-    let stderr = err.join().unwrap_or_default();
-    let status = child.wait().map_err(|e| format!("{line} failed: {e}"))?;
-    if status.success() {
-        Ok(stdout.join("\n"))
+    if out.success {
+        Ok(String::from_utf8_lossy(&out.stdout).to_string())
     } else {
+        let stderr = String::from_utf8_lossy(&out.stderr);
         let last = stderr
-            .iter()
+            .lines()
             .rev()
             .find(|l| !l.trim().is_empty())
-            .cloned()
-            .unwrap_or_else(|| status.to_string());
+            .map(str::to_string)
+            .unwrap_or_else(|| match out.code {
+                Some(code) => format!("exit status {code}"),
+                None => "exit status unknown".to_string(),
+            });
         Err(format!("{line} failed: {last}"))
     }
-}
-
-/// Reads `reader` line by line, sending each line to `tx` as it comes; the thread returns all
-/// the lines when the stream ends.
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-fn pump<R: Read + Send + 'static>(
-    reader: Option<R>,
-    tx: mpsc::Sender<String>,
-) -> thread::JoinHandle<Vec<String>> {
-    thread::spawn(move || {
-        let mut lines = Vec::new();
-        if let Some(reader) = reader {
-            for line in BufReader::new(reader).lines().map_while(Result::ok) {
-                let _ = tx.send(line.clone());
-                lines.push(line);
-            }
-        }
-        lines
-    })
-}
-
-/// Whether `program` is on PATH (nothing is run).
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-fn on_path(program: &str) -> bool {
-    let Some(paths) = std::env::var_os("PATH") else {
-        return false;
-    };
-    std::env::split_paths(&paths).any(|dir| {
-        dir.join(program).is_file() || dir.join(format!("{program}.exe")).is_file()
-    })
 }
 
 /// Polls `docker info` every 2 seconds for up to 2 minutes, logging "waiting for Docker…" every
 /// 10 seconds. Ends early when this user has no access to the daemon (it was just added to the
 /// docker group, which only a new login picks up).
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-fn wait_for_daemon(log: &mut dyn FnMut(String)) -> Result<(), String> {
+fn wait_for_daemon(env: &Env, log: &mut dyn FnMut(String)) -> Result<(), String> {
     let deadline = Instant::now() + Duration::from_secs(120);
     let mut next_note = Instant::now() + Duration::from_secs(10);
     loop {
-        match docker_version() {
+        match docker_version(env) {
             Ok(version) => {
                 log(format!("Docker {version} is running"));
                 return Ok(());
@@ -270,13 +223,12 @@ fn wait_for_daemon(log: &mut dyn FnMut(String)) -> Result<(), String> {
 /// The daemon's version from `docker info`, or what `docker info` printed to stderr when it does
 /// not answer. Nothing is logged for these probes.
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-fn docker_version() -> Result<String, String> {
-    let out = super::command("docker")
-        .args(["info", "--format", "{{.ServerVersion}}"])
-        .stdin(Stdio::null())
-        .output()
+fn docker_version(env: &Env) -> Result<String, String> {
+    let out = env
+        .runner
+        .output("docker", &["info", "--format", "{{.ServerVersion}}"])
         .map_err(|e| e.to_string())?;
-    if out.status.success() {
+    if out.success {
         let version = String::from_utf8_lossy(&out.stdout).trim().to_string();
         if !version.is_empty() {
             return Ok(version);
@@ -287,8 +239,9 @@ fn docker_version() -> Result<String, String> {
 
 /// Opens Docker Desktop with `cmd /C start` (Windows), as the desktop app would.
 #[cfg(target_os = "windows")]
-fn start_desktop(log: &mut dyn FnMut(String)) -> Result<(), String> {
+fn start_desktop(env: &Env, log: &mut dyn FnMut(String)) -> Result<(), String> {
     run(
+        env,
         log,
         "cmd",
         &["/C", "start", "", r"C:\Program Files\Docker\Docker\Docker Desktop.exe"],
@@ -298,8 +251,8 @@ fn start_desktop(log: &mut dyn FnMut(String)) -> Result<(), String> {
 
 /// Homebrew's `brew` program: on PATH, or in its usual install folders.
 #[cfg(target_os = "macos")]
-fn brew() -> Option<&'static str> {
-    if on_path("brew") {
+fn brew(env: &Env) -> Option<&'static str> {
+    if env.runner.on_path("brew") {
         return Some("brew");
     }
     ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"]
@@ -311,7 +264,7 @@ fn brew() -> Option<&'static str> {
 /// Downloads Docker Desktop's DMG for this CPU, mounts it, copies Docker.app to /Applications
 /// and unmounts it again.
 #[cfg(target_os = "macos")]
-fn install_dmg(log: &mut dyn FnMut(String)) -> Result<(), String> {
+fn install_dmg(env: &Env, log: &mut dyn FnMut(String)) -> Result<(), String> {
     let url = if cfg!(target_arch = "aarch64") {
         "https://desktop.docker.com/mac/main/arm64/Docker.dmg"
     } else {
@@ -322,15 +275,16 @@ fn install_dmg(log: &mut dyn FnMut(String)) -> Result<(), String> {
         .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
     let dmg = dir.join("Docker.dmg").display().to_string();
     let mnt = dir.join("mnt").display().to_string();
-    run(log, "curl", &["-fL", "-o", dmg.as_str(), url])?;
+    run(env, log, "curl", &["-fL", "-o", dmg.as_str(), url])?;
     run(
+        env,
         log,
         "hdiutil",
         &["attach", "-nobrowse", "-readonly", "-mountpoint", mnt.as_str(), dmg.as_str()],
     )?;
     let app = format!("{mnt}/Docker.app");
-    let copied = run(log, "ditto", &[app.as_str(), "/Applications/Docker.app"]);
-    let detached = run(log, "hdiutil", &["detach", mnt.as_str()]);
+    let copied = run(env, log, "ditto", &[app.as_str(), "/Applications/Docker.app"]);
+    let detached = run(env, log, "hdiutil", &["detach", mnt.as_str()]);
     let _ = std::fs::remove_dir_all(&dir);
     copied?;
     detached?;
@@ -340,6 +294,14 @@ fn install_dmg(log: &mut dyn FnMut(String)) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::manager_for;
+    #[cfg(target_os = "linux")]
+    use super::{install, start};
+    #[cfg(target_os = "linux")]
+    use crate::runner::mock::Mock;
+    #[cfg(target_os = "linux")]
+    use crate::runner::Output;
+    #[cfg(target_os = "linux")]
+    use crate::Env;
 
     const UBUNTU: &str = "PRETTY_NAME=\"Ubuntu 24.04 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"24.04\"\nID=ubuntu\nID_LIKE=debian\n";
     const RASPBIAN: &str = "PRETTY_NAME=\"Raspbian GNU/Linux 12 (bookworm)\"\nNAME=\"Raspbian GNU/Linux\"\nID=raspbian\nID_LIKE=debian\n";
@@ -383,5 +345,100 @@ mod tests {
     fn unknown_distro_has_no_manager() {
         assert_eq!(manager_for(GENTOO), None);
         assert_eq!(manager_for(""), None);
+    }
+
+    /// Every command succeeds; `docker info` answers with a version.
+    #[cfg(target_os = "linux")]
+    fn all_succeed(program: &str, _args: &[&str]) -> Output {
+        match program {
+            "docker" => Output::ok("27.1.1\n"),
+            _ => Output::ok(""),
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn apt_install_runs_the_steps_in_order_as_root_and_adds_the_user_to_docker() {
+        let mut mock = Mock::new(all_succeed);
+        mock.paths = vec!["pkexec"];
+        mock.files = vec![("/etc/os-release", UBUNTU.to_string())];
+        let env = Env { runner: &mock, keys: None, user: Some("tester".into()) };
+        let mut lines = Vec::new();
+        install(&env, &mut |l| lines.push(l)).unwrap();
+        assert_eq!(
+            mock.calls(),
+            vec![
+                "pkexec apt-get update",
+                "pkexec env DEBIAN_FRONTEND=noninteractive apt-get install -y docker.io",
+                "pkexec systemctl enable --now docker",
+                "pkexec usermod -aG docker tester",
+            ]
+        );
+        assert!(lines.last().unwrap().starts_with("Docker is installed"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn install_asks_for_pkexec_first_and_runs_nothing_without_it() {
+        let mock = Mock::new(all_succeed);
+        let env = Env { runner: &mock, keys: None, user: Some("tester".into()) };
+        assert!(install(&env, &mut |_| {}).is_err());
+        assert!(mock.calls().is_empty());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_failed_step_stops_the_install_with_its_last_error_line() {
+        let mut mock = Mock::new(|program, args| {
+            if args.contains(&"DEBIAN_FRONTEND=noninteractive") {
+                Output::failed("E: Unable to locate package docker.io\n")
+            } else {
+                all_succeed(program, args)
+            }
+        });
+        mock.paths = vec!["pkexec"];
+        mock.files = vec![("/etc/os-release", UBUNTU.to_string())];
+        let env = Env { runner: &mock, keys: None, user: Some("tester".into()) };
+        let err = install(&env, &mut |_| {}).unwrap_err();
+        assert!(err.contains("E: Unable to locate package docker.io"), "{err}");
+        assert_eq!(mock.calls().len(), 2, "the install stops at the failed step");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn start_restarts_the_daemon_and_waits_until_it_answers() {
+        let mock = Mock::new(all_succeed);
+        let env = Env { runner: &mock, keys: None, user: None };
+        let mut lines = Vec::new();
+        start(&env, &mut |l| lines.push(l)).unwrap();
+        assert_eq!(mock.calls(), vec!["pkexec systemctl start docker", "docker info --format {{.ServerVersion}}"]);
+        assert!(lines.contains(&"Docker 27.1.1 is running".to_string()));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn install_reads_the_login_name_when_the_environment_has_none() {
+        let mut mock = Mock::new(|program, args| match (program, args.first()) {
+            ("id", _) => Output::ok("carol\n"),
+            _ => all_succeed(program, args),
+        });
+        mock.paths = vec!["pkexec"];
+        mock.files = vec![("/etc/os-release", FEDORA.to_string())];
+        let env = Env { runner: &mock, keys: None, user: None };
+        install(&env, &mut |_| {}).unwrap();
+        let calls = mock.calls();
+        assert!(calls.contains(&"id -un".to_string()));
+        assert_eq!(calls.last().unwrap(), "pkexec usermod -aG docker carol");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn install_stops_on_an_unknown_distro_before_running_anything() {
+        let mut mock = Mock::new(all_succeed);
+        mock.paths = vec!["pkexec"];
+        mock.files = vec![("/etc/os-release", GENTOO.to_string())];
+        let env = Env { runner: &mock, keys: None, user: Some("tester".into()) };
+        assert!(install(&env, &mut |_| {}).is_err());
+        assert!(mock.calls().is_empty());
     }
 }

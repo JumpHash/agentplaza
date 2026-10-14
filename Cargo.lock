@@ -63,6 +63,7 @@ version = "0.1.0"
 dependencies = [
  "apz-http",
  "apz-os",
+ "apz-setup",
  "clap",
  "crossterm",
  "libc",
@@ -83,6 +84,7 @@ dependencies = [
  "apz-os",
  "apz-plaza",
  "apz-prompt",
+ "apz-setup",
  "apz-skill",
  "apz-trust",
  "base64 0.22.1",
@@ -419,6 +421,13 @@ dependencies = [
  "apz-uds",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "apz-setup"
+version = "0.1.0"
+dependencies = [
+ "apz-os",
 ]
 
 [[package]]

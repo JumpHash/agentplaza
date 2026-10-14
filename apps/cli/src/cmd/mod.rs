@@ -18,6 +18,7 @@ pub mod nodes;
 pub mod overview;
 pub mod plaza;
 pub mod projects;
+pub mod setup;
 pub mod rules;
 pub mod society;
 pub mod tasks;
