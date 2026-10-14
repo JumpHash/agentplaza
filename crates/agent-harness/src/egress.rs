@@ -516,24 +516,10 @@ mod tests {
     }
 
     #[test]
-    fn headings_become_hash_lines() {
-        assert_eq!(html_to_text("<h1>Top</h1><p>Body</p>"), "# Top\n\nBody");
-        assert!(html_to_text("<h3>Deep</h3>").contains("### Deep"));
-    }
-
-    #[test]
     fn links_keep_their_address() {
         let text =
             html_to_text(r#"<p>See <a href="https://x.test/a?b=1&amp;c=2">the docs</a>.</p>"#);
         assert_eq!(text, "See the docs (https://x.test/a?b=1&c=2).");
-    }
-
-    #[test]
-    fn list_items_become_dash_lines() {
-        assert_eq!(
-            html_to_text("<ul><li>one</li><li>two</li></ul>"),
-            "- one\n- two"
-        );
     }
 
     #[test]
@@ -567,7 +553,19 @@ mod tests {
     }
 
     #[test]
-    fn blank_runs_collapse_to_one_blank_line() {
-        assert_eq!(html_to_text("<p>a</p><p></p><p></p><p>b</p>"), "a\n\nb");
+    fn structure_becomes_plain_text_lines() {
+        let cases = [
+            ("headings", "<h1>Top</h1><p>Body</p>", "# Top\n\nBody"),
+            ("a deep heading", "<h3>Deep</h3>", "### Deep"),
+            (
+                "list items",
+                "<ul><li>one</li><li>two</li></ul>",
+                "- one\n- two",
+            ),
+            ("blank runs", "<p>a</p><p></p><p></p><p>b</p>", "a\n\nb"),
+        ];
+        for (case, html, want) in cases {
+            assert_eq!(html_to_text(html), want, "{case}");
+        }
     }
 }

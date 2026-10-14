@@ -604,24 +604,15 @@ mod tests {
     }
 
     #[test]
-    fn a_shell_starts_in_the_directory_it_is_given() {
+    fn a_shell_starts_in_the_directory_and_with_the_environment_it_is_given() {
         let (root, env) = scratch("cwd");
         fs::create_dir_all(root.dir().join("sub")).expect("a subdirectory");
-        let terms = Terminals::new();
-        let term = open_at(&terms, &root, &env, "sub");
-        type_text(&terms, &term, "pwd\n");
-        let expected = fs::canonicalize(root.dir().join("sub")).expect("canonical");
-        read_until(&terms, &term, &format!("{}\r\n", expected.display()));
-        terms.close(&term).expect("the close");
-    }
-
-    #[test]
-    fn the_shell_sees_the_environment_it_is_given() {
-        let (root, env) = scratch("env");
         let env = env.with_var("APZ_OPS_TEST", "seen");
         let terms = Terminals::new();
-        let term = open_at(&terms, &root, &env, "");
-        type_text(&terms, &term, "echo v=$APZ_OPS_TEST$((1+1))\n");
+        let term = open_at(&terms, &root, &env, "sub");
+        type_text(&terms, &term, "pwd; echo v=$APZ_OPS_TEST$((1+1))\n");
+        let expected = fs::canonicalize(root.dir().join("sub")).expect("canonical");
+        read_until(&terms, &term, &format!("{}\r\n", expected.display()));
         read_until(&terms, &term, "v=seen2\r\n");
         terms.close(&term).expect("the close");
     }

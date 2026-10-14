@@ -784,66 +784,39 @@ mod tests {
     }
 
     #[test]
-    fn opencode_gives_each_model_the_block_whose_api_shape_serves_it() {
-        let opencode_base = "http://plaza.gateway/opencode/v1";
-        let (id, npm, base) = opencode_provider_for("opencode", "gpt-5.6-terra");
-        assert_eq!(
-            (id.as_str(), npm, base.as_str()),
-            ("plaza-opencode-responses", "@ai-sdk/openai", opencode_base)
-        );
-        let (id, npm, base) = opencode_provider_for("opencode", "claude-sonnet-5-5");
-        assert_eq!(
-            (id.as_str(), npm, base.as_str()),
-            (
-                "plaza-opencode-anthropic",
-                "@ai-sdk/anthropic",
-                opencode_base
-            )
-        );
-        let (id, npm, base) = opencode_provider_for("opencode", "deepseek-v4-pro");
-        assert_eq!(
-            (id.as_str(), npm, base.as_str()),
-            ("plaza-opencode", "@ai-sdk/openai-compatible", opencode_base)
-        );
-        let (id, npm, base) = opencode_provider_for("openai", "gpt-5.6-terra");
-        assert_eq!(
-            (id.as_str(), npm, base.as_str()),
-            (
-                "plaza-openai",
-                "@ai-sdk/openai",
-                "http://plaza.gateway/openai/v1"
-            )
-        );
-        let (id, npm, base) = opencode_provider_for("openrouter", "anthropic/claude-x");
-        assert_eq!(
-            (id.as_str(), npm, base.as_str()),
-            (
-                "plaza-openrouter",
-                "@ai-sdk/openai-compatible",
-                "http://plaza.gateway/openrouter/v1"
-            )
-        );
-    }
-
-    #[test]
-    fn opencode_config_parses_and_its_model_names_the_block_that_serves_it() {
-        for (model, block, npm) in [
+    fn opencode_config_parses_and_each_model_names_the_block_whose_api_shape_serves_it() {
+        let opencode = "http://plaza.gateway/opencode/v1";
+        for (model, block, npm, base) in [
             (
                 "opencode/gpt-5.6-terra",
                 "plaza-opencode-responses",
                 "@ai-sdk/openai",
+                opencode,
             ),
             (
                 "opencode/claude-sonnet-5-5",
                 "plaza-opencode-anthropic",
                 "@ai-sdk/anthropic",
+                opencode,
             ),
             (
                 "opencode/deepseek-v4-pro",
                 "plaza-opencode",
                 "@ai-sdk/openai-compatible",
+                opencode,
             ),
-            ("openai/gpt-5.6-terra", "plaza-openai", "@ai-sdk/openai"),
+            (
+                "openai/gpt-5.6-terra",
+                "plaza-openai",
+                "@ai-sdk/openai",
+                "http://plaza.gateway/openai/v1",
+            ),
+            (
+                "openrouter/anthropic/claude-x",
+                "plaza-openrouter",
+                "@ai-sdk/openai-compatible",
+                "http://plaza.gateway/openrouter/v1",
+            ),
         ] {
             let route = model_route(Engine::OpenCode, Some(model)).expect("a route");
             let config: Value = serde_json::from_str(&route.env[0].1).expect("JSON");
@@ -851,6 +824,10 @@ mod tests {
             let (selected_block, served) = selected.split_once('/').expect("<block>/<model>");
             assert_eq!(selected_block, block, "{model}: {config}");
             assert_eq!(config["provider"][block]["npm"], npm, "{model}: {config}");
+            assert_eq!(
+                config["provider"][block]["options"]["baseURL"], base,
+                "{model}: {config}"
+            );
             assert!(
                 config["provider"][block]["models"].get(served).is_some(),
                 "{model}: {config}"

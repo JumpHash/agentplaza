@@ -952,7 +952,7 @@ mod tests {
     }
 
     #[test]
-    fn packaging_refuses_more_than_fifty_files() {
+    fn packaging_refuses_a_tool_over_its_file_or_size_limit_or_with_no_files() {
         let ws = scratch("count");
         for index in 0..=MAX_FILES {
             write(
@@ -962,14 +962,16 @@ mod tests {
         }
         let err = package(&ws, &input("tool")).expect_err("too many files");
         assert!(err.contains("more than 50 files"), "{err}");
-    }
 
-    #[test]
-    fn packaging_refuses_more_than_512_kib() {
         let ws = scratch("size");
         write(&ws.dir().join("tool/big.bin"), &vec![7u8; 512 * 1024 + 1]);
         let err = package(&ws, &input("tool")).expect_err("too big");
         assert!(err.contains("512 KiB"), "{err}");
+
+        let ws = scratch("empty");
+        write(&ws.dir().join("tool/.git/config"), b"x");
+        let err = package(&ws, &input("tool")).expect_err("no files");
+        assert!(err.contains("no files"), "{err}");
     }
 
     #[test]
@@ -1025,14 +1027,6 @@ mod tests {
                 .expect_err("schema")
                 .contains("input_schema")
         );
-    }
-
-    #[test]
-    fn packaging_refuses_a_directory_with_no_files() {
-        let ws = scratch("empty");
-        write(&ws.dir().join("tool/.git/config"), b"x");
-        let err = package(&ws, &input("tool")).expect_err("no files");
-        assert!(err.contains("no files"), "{err}");
     }
 
     #[test]

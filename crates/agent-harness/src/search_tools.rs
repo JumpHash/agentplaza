@@ -593,7 +593,7 @@ mod tests {
     }
 
     #[test]
-    fn grep_content_prints_path_line_and_text() {
+    fn grep_content_prints_path_line_and_text_and_marks_context_lines() {
         let ws = scratch("grep-content");
         file(&ws, "f.txt", b"alpha\nneedle here\nbeta\n", 1_000);
         assert_eq!(
@@ -604,11 +604,6 @@ mod tests {
             .unwrap(),
             "f.txt:2:needle here"
         );
-    }
-
-    #[test]
-    fn grep_context_marks_context_lines_and_separates_groups() {
-        let ws = scratch("grep-context");
         file(&ws, "f.txt", b"needle\na\nb\nc\nneedle\n", 1_000);
         let out = grep(
             &ws,
