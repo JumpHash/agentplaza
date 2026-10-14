@@ -974,6 +974,11 @@ mod tests {
             s.tick(now);
             slowest = slowest.max(ms_since(t));
         }
+        assert_eq!(
+            s.popup.as_deref(),
+            Some("m0"),
+            "{kind}: the popup opened on its machine"
+        );
         slowest
     }
 
@@ -983,9 +988,17 @@ mod tests {
     /// A shared runner is loaded: one descheduled slice can make a single call slow with the code
     /// unchanged. So each kind is run [`PERF_RUNS`] times on a fresh stage and the test checks the
     /// median of those runs' slowest calls, which one bad run cannot fail.
+    ///
+    /// Under an emulator (cross-compiled tests run under qemu in CI) the runs and their popup check
+    /// still happen, and the timings are printed, but the budget is not asserted: an emulated call
+    /// is tens of times slower than the same call natively, so a wall-clock budget says nothing.
     #[test]
     fn opening_a_machine_keeps_every_call_under_50_ms_per_kind() {
         let budget = PERF_BUDGET_MS * perf_slack();
+        let emulator = apz_os::runner::emulated();
+        if let Some(runner) = &emulator {
+            println!("timing not asserted under an emulator: {runner}");
+        }
         for kind in [
             "workstation",
             "server",
@@ -1002,7 +1015,7 @@ mod tests {
             println!(
                 "{kind}: slowest call per run {runs:.1?} ms, median {median:.1} ms, budget {budget:.1} ms"
             );
-            if !cfg!(debug_assertions) {
+            if emulator.is_none() && !cfg!(debug_assertions) {
                 assert!(
                     median < budget,
                     "{kind}: the median slowest call took {median:.1} ms on the page's thread \

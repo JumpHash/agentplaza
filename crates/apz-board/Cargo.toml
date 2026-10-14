@@ -9,3 +9,7 @@ publish = false
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
+
+# The layout timing tests ask `apz_os::runner::emulated` whether their timings are meaningful.
+[dev-dependencies]
+apz-os = { path = "../apz-os" }

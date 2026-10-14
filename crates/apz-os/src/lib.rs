@@ -444,6 +444,20 @@ pub mod runner {
         .unwrap_or_default()
     }
 
+    /// The emulator this build's tests run under, as cargo configured it (the runner for this
+    /// build's architecture, joined back into one command line such as `qemu-aarch64 -L
+    /// /usr/aarch64-linux-gnu`), or `None` on a native run. Wall-clock timings mean nothing under an
+    /// emulator, so a test that asserts one checks this first.
+    pub fn emulated() -> Option<String> {
+        emulated_in(std::env::consts::ARCH, std::env::vars())
+    }
+
+    /// [`emulated`] for `arch` and the environment `vars`.
+    fn emulated_in(arch: &str, vars: impl Iterator<Item = (String, String)>) -> Option<String> {
+        let launch = runner_in(arch, vars);
+        (!launch.is_empty()).then(|| launch.join(" "))
+    }
+
     /// A command that runs `program` the way cargo ran this test binary: under [`runner`] when one
     /// is configured, directly otherwise.
     pub fn command(program: &Path) -> Command {
@@ -478,6 +492,31 @@ pub mod runner {
                 vec!["qemu-aarch64", "-L", "/usr/aarch64-linux-gnu"]
             );
             assert!(runner_in("x86_64", vars()).is_empty());
+        }
+
+        #[test]
+        fn an_emulator_is_named_only_when_one_is_configured() {
+            let configured = || {
+                [(
+                    "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER".to_string(),
+                    "qemu-aarch64  -L /usr/aarch64-linux-gnu".to_string(),
+                )]
+                .into_iter()
+            };
+            assert_eq!(
+                emulated_in("aarch64", configured()).as_deref(),
+                Some("qemu-aarch64 -L /usr/aarch64-linux-gnu")
+            );
+            assert_eq!(emulated_in("x86_64", configured()), None);
+            let blank = [(
+                "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER".to_string(),
+                "  ".to_string(),
+            )];
+            assert_eq!(emulated_in("aarch64", blank.into_iter()), None);
+            assert_eq!(
+                emulated_in("aarch64", std::iter::empty::<(String, String)>()),
+                None
+            );
         }
     }
 }

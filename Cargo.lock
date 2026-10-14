@@ -329,6 +329,7 @@ dependencies = [
 name = "apz-board"
 version = "0.1.0"
 dependencies = [
+ "apz-os",
  "serde",
  "serde_json",
 ]
@@ -402,6 +403,7 @@ version = "0.1.0"
 dependencies = [
  "ab_glyph",
  "apz-board",
+ "apz-os",
  "bevy_ecs",
  "bytemuck",
  "fancy-regex 0.14.0",

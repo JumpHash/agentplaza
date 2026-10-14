@@ -31,5 +31,7 @@ wgpu = { version = "27.0.1", features = ["webgpu", "webgl"] }
 # The WebGL2 shader test (tests/webgl2_shaders.rs) parses and writes GLSL ES with the same naga wgpu 27 uses.
 [dev-dependencies]
 naga = { version = "27", features = ["wgsl-in", "glsl-out"] }
+# The timing tests ask `apz_os::runner::emulated` whether their budgets mean anything on this run.
+apz-os = { path = "../apz-os" }
 
 

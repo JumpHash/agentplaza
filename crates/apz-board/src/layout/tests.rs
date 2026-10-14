@@ -390,9 +390,9 @@ fn plate_rests_on_highest_support() {
 fn every_layout_seats_and_stays_under_the_measured_ceiling() {
     let (failed, slow) = timed_layouts(LAYOUT_CEILING_S);
     assert!(failed.is_empty(), "agents do not seat: {failed:?}");
-    assert!(
-        slow.is_empty(),
-        "over the measured ceiling of {LAYOUT_CEILING_S} s (it only ratchets down): {slow:?}"
+    assert_timing_within_budget(
+        &slow,
+        &format!("over the measured ceiling of {LAYOUT_CEILING_S} s (it only ratchets down)"),
     );
 }
 
@@ -403,7 +403,18 @@ fn every_layout_seats_and_stays_under_the_measured_ceiling() {
 fn every_layout_returns_within_two_seconds() {
     let (failed, slow) = timed_layouts(2.0);
     assert!(failed.is_empty(), "agents do not seat: {failed:?}");
-    assert!(slow.is_empty(), "over the 2 s budget: {slow:?}");
+    assert_timing_within_budget(&slow, "over the 2 s budget");
+}
+
+/// Asserts that no layout ran over its budget, unless the tests run under an emulator (cross-compiled CI runs them under
+/// qemu, where every layout is many times slower): then the over-budget cases are printed with the reason instead.
+fn assert_timing_within_budget(slow: &[String], what: &str) {
+    match apz_os::runner::emulated() {
+        Some(runner) => {
+            println!("timing not asserted under an emulator: {runner} ({what}: {slow:?})");
+        }
+        None => assert!(slow.is_empty(), "{what}: {slow:?}"),
+    }
 }
 
 /// The worst layout time measured on 2026-10-13 (laptop: 4.0 s with the suite's other layout tests in parallel, 4.6 s
