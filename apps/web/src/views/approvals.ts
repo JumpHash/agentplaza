@@ -207,10 +207,15 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
     );
   };
 
+  // A rejection needs a reason, as the wizard requires: a blank answer asks the same question again,
+  // and Cancel gives up without sending anything.
   const rejectProposal = async (p: AgentProposal): Promise<void> => {
-    const reason = window.prompt(`Reject ${p.role.title || p.role.id}? Give a reason.`);
+    const question = `Reject ${p.role.title || p.role.id}? Give a reason.`;
+    let reason = window.prompt(question);
+    while (reason !== null && reason.trim() === '') reason = window.prompt(question);
     if (reason === null) return;
-    await attempt(() => api.rejectAgentProposal(p.id, reason.trim()), 'Rejected');
+    const note = reason.trim();
+    await attempt(() => api.rejectAgentProposal(p.id, note), 'Rejected');
     void loadProposals();
   };
 

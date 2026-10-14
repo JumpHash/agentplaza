@@ -296,6 +296,10 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         }
         Msg::RejectConfirm(id) => {
             let reason = state.drafts.get(&format!("pp-{id}")).map(|r| r.trim().to_string()).unwrap_or_default();
+            // A proposal's rejection needs a reason (the wizard's rule): with none, nothing is sent and the box stays open.
+            if reason.is_empty() {
+                return Task::none();
+            }
             state.rejecting = None;
             let client = ctx.client.clone();
             let path = format!("/v1/agent-proposals/{id}/reject");
@@ -501,6 +505,8 @@ fn proposal_card<'a>(state: &'a State, p: &'a Proposal) -> Element<'a, Msg> {
     if state.rejecting.as_deref() == Some(p.id.as_str()) {
         let key = format!("pp-{}", p.id);
         let draft = state.drafts.get(&key).map(String::as_str).unwrap_or("").to_string();
+        // The reject button stays off until a reason is typed, as in the wizard.
+        let ready = !draft.trim().is_empty();
         let reason = text_input("Why reject?", &draft)
             .on_input(move |s| Msg::Draft(key.clone(), s))
             .on_submit(Msg::RejectConfirm(p.id.clone()))
@@ -512,7 +518,7 @@ fn proposal_card<'a>(state: &'a State, p: &'a Proposal) -> Element<'a, Msg> {
                 row![
                     Space::new().width(Length::Fill),
                     ui::btn("Cancel", None, ui::Kind::Ghost, Some(Msg::RejectCancel)),
-                    ui::btn("Confirm reject", None, ui::Kind::Danger, Some(Msg::RejectConfirm(p.id.clone()))),
+                    ui::btn("Confirm reject", None, ui::Kind::Danger, ready.then(|| Msg::RejectConfirm(p.id.clone()))),
                 ]
                 .spacing(8)
                 .align_y(Alignment::Center),
