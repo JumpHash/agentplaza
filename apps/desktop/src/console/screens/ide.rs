@@ -35,6 +35,7 @@ use crate::console::Ctx;
 use crate::console::boot;
 use crate::console::client::{self, Client};
 use crate::console::events;
+use crate::console::rich;
 use crate::console::shell;
 use crate::console::ui::{self, Kind, Tone};
 
@@ -298,6 +299,8 @@ pub struct State {
     pub checkpoints: Vec<Checkpoint>,
     /// The right panel's state beyond Changes (the agent, its approvals, the run).
     pub panels: ide_panels::State,
+    /// The rich content of the transcript: the hub's cards and images for its references (`console::rich`).
+    pub cards: rich::Cards,
     /// The checkpoint awaiting a confirmed restore.
     pub restore: Option<u64>,
     /// The last save of this workspace is in and nothing has been edited since.
@@ -457,6 +460,8 @@ pub enum Msg {
     CompareWith(u64),
     /// The panels' own messages (the chat's composer, the approvals, the run).
     Panels(ide_panels::Msg),
+    /// A rich-content click (a chip, a link, an Open button) or a load of its cards and images.
+    Rich(rich::Ev),
     Checkpoints {
         ws: String,
         res: Result<Vec<Checkpoint>, String>,
@@ -506,8 +511,16 @@ pub fn go(msg: &Msg) -> Option<Id> {
         Msg::Open(workspace) => Some(Id::Ide(workspace.clone())),
         // "+ New agent" opens the Agents screen, whose wizard spawns one.
         Msg::NewAgent => Some(Id::Agents),
+        Msg::Rich(rich::Ev::Action(action)) => action.route(),
         _ => None,
     }
+}
+
+/// Asks the hub for the cards of the transcript's references that it does not hold yet.
+fn prefetch_transcript(st: &mut State, ctx: &Ctx) -> Task<Msg> {
+    let texts = ide_chat::transcript_texts(&st.panels.entries);
+    let rctx = ide_chat::rich_ctx(st);
+    rich::prefetch(&mut st.cards, &ctx.client, &rctx, &texts).map(Msg::Rich)
 }
 
 /// Where the IDE's Back (its Console button, and Escape with nothing open) goes: the screen it was opened
@@ -1302,6 +1315,16 @@ fn chat_task(st: &mut State, msg: ChatMsg, ctx: &Ctx) -> Task<Msg> {
 }
 
 pub fn update(st: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
+    if let Msg::Rich(ev) = msg {
+        return match ev {
+            // A file of the workspace opens in the editor at its line, as a search hit does.
+            rich::Ev::Action(rich::RichAction::OpenPath { path, line }) => update(st, Msg::OpenMatch(path, line.map_or(1, |l| l as usize)), ctx),
+            ev => {
+                rich::apply(&mut st.cards, ev);
+                Task::none()
+            }
+        };
+    }
     match msg {
         Msg::Listed(res) => {
             st.listing = false;
@@ -1759,6 +1782,7 @@ pub fn update(st: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             changes_task(st, ctx)
         }
         // Left: a poll's answer is dropped unread, so the run's polling stops until the IDE is entered (see `left`).
+        Msg::Rich(_) => Task::none(),
         Msg::Panels(ide_panels::Msg::Polled { .. }) if st.away => {
             st.poll_inflight = false;
             Task::none()
@@ -1768,6 +1792,7 @@ pub fn update(st: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                 msg,
                 ide_panels::Msg::Started { .. } | ide_panels::Msg::Polled { .. }
             );
+            let transcript = matches!(msg, ide_panels::Msg::Transcript { .. });
             let task = match st.ide.workspace.clone() {
                 Some(ws) => {
                     ide_panels::update(&mut st.panels, msg, &ctx.client, &ws).map(Msg::Panels)
@@ -1777,6 +1802,10 @@ pub fn update(st: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             if answers_run {
                 // The run's chain goes on from here: ide_panels asks for the next poll while the run is active.
                 st.poll_inflight = st.panels.run.active() && st.panels.run.run.is_some();
+            }
+            if transcript {
+                // A transcript that landed names its references: ask the hub for the ones it does not hold yet.
+                return Task::batch([task, prefetch_transcript(st, ctx)]);
             }
             task
         }

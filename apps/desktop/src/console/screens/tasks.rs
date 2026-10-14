@@ -16,7 +16,7 @@ use serde_json::{json, Value};
 
 use super::{ide, Id};
 use crate::console::ui::{self, Tone};
-use crate::console::{client, events, Ctx};
+use crate::console::{client, events, rich, Ctx};
 use crate::theme::{self};
 
 /// A card's goal: serif semibold, as the web's task title.
@@ -165,6 +165,8 @@ pub struct State {
     agents: Vec<AgentRecord>,
     activity: HashMap<u64, String>,
     detail: Option<Detail>,
+    /// The rich content of the open task's goal, acceptance and result: the hub's cards and images (`console::rich`).
+    cards: rich::Cards,
     draft: Option<Draft>,
     /// The card under the pointer last: Enter opens it (when no card is picked by the keyboard).
     hovered: Option<String>,
@@ -208,6 +210,8 @@ pub enum Msg {
     Step(bool),
     /// A hub event: a task, work or transcript frame.
     Event(events::Event),
+    /// A rich-content click (a chip, a link, an Open button) or a load of its cards and images.
+    Rich(rich::Ev),
 }
 
 /// The navigation this message asks for, if any.
@@ -215,8 +219,24 @@ pub fn go(msg: &Msg) -> Option<Id> {
     match msg {
         Msg::Go(id) => Some(id.clone()),
         Msg::OpenIde(target) => Some(Id::Ide(Some(target.clone()))),
+        Msg::Rich(rich::Ev::Action(action)) => action.route(),
         _ => None,
     }
+}
+
+/// A rich-content click or load, as this screen's message.
+fn on_rich(action: rich::RichAction) -> Msg {
+    Msg::Rich(rich::Ev::Action(action))
+}
+
+/// Asks the hub for the cards of the open task's references that it does not hold yet.
+fn prefetch(state: &mut State, ctx: &Ctx) -> Task<Msg> {
+    let texts: Vec<&str> = match state.detail.as_ref().and_then(|d| d.task.as_ref()) {
+        Some(t) => [Some(t.goal.as_str()), t.acceptance.as_deref(), t.note.as_deref()].into_iter().flatten().collect(),
+        None => Vec::new(),
+    };
+    let rctx = rich::context(&state.cards, None, None, None);
+    rich::prefetch(&mut state.cards, &ctx.client, &rctx, &texts).map(Msg::Rich)
 }
 
 /// The screen as it opens one task in full (the Projects screen's task links open it this way); the
@@ -233,6 +253,10 @@ pub fn load(state: &mut State, ctx: &Ctx) -> Task<Msg> {
 pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
     match msg {
         Msg::Go(_) | Msg::OpenIde(_) => Task::none(),
+        Msg::Rich(ev) => {
+            rich::apply(&mut state.cards, ev);
+            Task::none()
+        }
         Msg::Hover(id) => {
             state.hovered = Some(id);
             Task::none()
@@ -286,7 +310,8 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             }
             state.agents = snap.agents;
             state.detail = if state.selected.is_some() { snap.detail } else { None };
-            landed(state, ctx)
+            let landed = landed(state, ctx);
+            Task::batch([landed, prefetch(state, ctx)])
         }
         Msg::Loaded(Err(e)) => {
             state.error = Some(e);
@@ -958,6 +983,7 @@ fn draft_form<'a>(state: &'a State, d: &'a Draft) -> Element<'a, Msg> {
 /// One task in full: the goal, acceptance and result, the facts (with assign and withdraw while
 /// it is open), and the timeline of its assignee's work.
 fn detail_page<'a>(state: &'a State) -> Element<'a, Msg> {
+    let rctx = rich::context(&state.cards, None, None, None);
     let back: Element<'a, Msg> = ui::btn("Tasks", Some("chevronRight"), ui::Kind::Ghost, Some(Msg::Back));
     let Some(detail) = state.detail.as_ref() else {
         return column![back, ui::loading()].spacing(14).into();
@@ -1011,12 +1037,12 @@ fn detail_page<'a>(state: &'a State) -> Element<'a, Msg> {
         column(detail.timeline.iter().map(timeline_row).collect::<Vec<_>>()).spacing(6).into()
     };
 
-    let mut main_parts: Vec<Element<'a, Msg>> = vec![section("Goal", ui::markdown(&t.goal))];
+    let mut main_parts: Vec<Element<'a, Msg>> = vec![section("Goal", rich::view(&t.goal, &rctx, &state.cards, &on_rich))];
     if let Some(a) = t.acceptance.as_deref().filter(|a| !a.is_empty()) {
-        main_parts.push(section("Acceptance", ui::markdown(a)));
+        main_parts.push(section("Acceptance", rich::view(a, &rctx, &state.cards, &on_rich)));
     }
     if let Some(n) = t.note.as_deref().filter(|n| !n.is_empty()) {
-        main_parts.push(section("Result", ui::markdown(n)));
+        main_parts.push(section("Result", rich::view(n, &rctx, &state.cards, &on_rich)));
     }
 
     let head = column![ui::mono(t.id.clone(), 11.0, crate::theme::palette().ink_3), ui::sans(title_of(&t.goal), 22.0, crate::theme::palette().ink)].spacing(4);

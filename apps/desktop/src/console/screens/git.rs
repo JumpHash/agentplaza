@@ -14,7 +14,7 @@ use serde_json::{json, Value};
 use super::{ide, Id};
 use crate::console::client::{self, Client};
 use crate::console::ui::{self, Kind, Tone, INK, INK_2, INK_3};
-use crate::console::Ctx;
+use crate::console::{rich, Ctx};
 use crate::theme::{self};
 
 /// Serif semibold: a pull request's title.
@@ -284,6 +284,8 @@ pub struct State {
     pub error: Option<String>,
     pub notice: Option<String>,
     pub data: Data,
+    /// The rich content of the open pull request's description and discussion: the hub's cards and images.
+    pub cards: rich::Cards,
     /// The open repository ("" for the repository list).
     pub repo: String,
     pub tab: Tab,
@@ -344,6 +346,8 @@ pub enum Msg {
     SendReview(ReviewEvent),
     Merge,
     Acted(Result<String, String>),
+    /// A rich-content click (a chip, a link, an Open button) or a load of its cards and images.
+    Rich(rich::Ev),
 }
 
 /// The navigation this message asks for, if any.
@@ -351,8 +355,30 @@ pub fn go(msg: &Msg) -> Option<Id> {
     match msg {
         Msg::Go(id) => Some(id.clone()),
         Msg::OpenIde(target) => Some(Id::Ide(Some(target.clone()))),
+        Msg::Rich(rich::Ev::Action(action)) => action.route(),
         _ => None,
     }
+}
+
+/// A rich-content click or load, as this screen's message.
+fn on_rich(action: rich::RichAction) -> Msg {
+    Msg::Rich(rich::Ev::Action(action))
+}
+
+/// The rich context of the open repository: its name is "owner/repo" for a plaza repository, which makes `PR #N` a
+/// pull of it.
+fn rich_ctx(state: &State) -> rich::RichCtx {
+    rich::context(&state.cards, None, state.repo.contains('/').then_some(state.repo.as_str()), None)
+}
+
+/// Asks the hub for the cards of the open pull request's description and discussion that it does not hold yet.
+fn prefetch(state: &mut State, ctx: &Ctx) -> Task<Msg> {
+    let texts: Vec<&str> = match state.data.pull.as_ref() {
+        Some(d) => std::iter::once(d.body.as_str()).chain(d.discussion.iter().map(|c| c.body.as_str())).collect(),
+        None => Vec::new(),
+    };
+    let rctx = rich_ctx(state);
+    rich::prefetch(&mut state.cards, &ctx.client, &rctx, &texts).map(Msg::Rich)
 }
 
 fn query(state: &State) -> Query {
@@ -439,8 +465,23 @@ fn fix_ref(state: &State) -> Option<String> {
 }
 
 pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
+    if let Msg::Rich(ev) = msg {
+        rich::apply(&mut state.cards, ev);
+        return Task::none();
+    }
+    let loaded = matches!(msg, Msg::Loaded(_, Ok(_)));
+    let task = apply(state, msg, ctx);
+    if loaded {
+        Task::batch([task, prefetch(state, ctx)])
+    } else {
+        task
+    }
+}
+
+/// The screen's messages. `update` wraps it to read the rich content of a loaded pull request.
+fn apply(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
     match msg {
-        Msg::Go(_) | Msg::OpenIde(_) => Task::none(),
+        Msg::Go(_) | Msg::OpenIde(_) | Msg::Rich(_) => Task::none(),
         Msg::Loaded(q, res) => {
             if q != query(state) {
                 return Task::none();
@@ -1085,6 +1126,7 @@ fn pull_page<'a>(state: &'a State) -> Element<'a, Msg> {
     let Some(d) = state.data.pull.as_ref() else {
         return sheet(state, ui::view_head(&state.repo, vec![]), ui::loading());
     };
+    let rctx = rich_ctx(state);
     let p = &d.pull;
     let open = p.state == "open";
     let merged = p.merged;
@@ -1138,7 +1180,7 @@ fn pull_page<'a>(state: &'a State) -> Element<'a, Msg> {
     let description: Element<'a, Msg> = if d.body.is_empty() {
         ui::faint("No description provided.").into()
     } else {
-        container(ui::prose(d.body.clone()).size(14.0)).max_width(620).into()
+        container(rich::view(&d.body, &rctx, &state.cards, &on_rich)).max_width(620).into()
     };
     let files: Element<'a, Msg> = if d.files.is_empty() {
         ui::faint("No files.").into()
@@ -1157,7 +1199,7 @@ fn pull_page<'a>(state: &'a State) -> Element<'a, Msg> {
         ui::card(&format!("Files changed ({})", d.files.len()), files),
         ui::card("Diff", diff_view(&d.diff)),
         ui::card(&format!("Reviews ({})", d.reviews.len()), reviews),
-        ui::card(&format!("Discussion ({})", d.discussion.len()), discussion_view(state, d)),
+        ui::card(&format!("Discussion ({})", d.discussion.len()), discussion_view(state, d, &rctx)),
     ]
     .spacing(16);
     let head = column![container(trail).padding(Padding { top: 24.0, right: 0.0, bottom: 0.0, left: 0.0 }), ui::view_head(&p.title, vec![])];
@@ -1165,11 +1207,11 @@ fn pull_page<'a>(state: &'a State) -> Element<'a, Msg> {
 }
 
 /// The discussion: its comments in order, then the comment box. Ctrl/Cmd+Enter posts the comment.
-fn discussion_view<'a>(state: &'a State, d: &'a PullDetail) -> Element<'a, Msg> {
+fn discussion_view<'a>(state: &'a State, d: &'a PullDetail, rctx: &rich::RichCtx) -> Element<'a, Msg> {
     let comments: Element<'a, Msg> = if d.discussion.is_empty() {
         ui::faint("No comments yet.").into()
     } else {
-        column(d.discussion.iter().map(comment_row).collect::<Vec<Element<'a, Msg>>>()).spacing(12).into()
+        column(d.discussion.iter().map(|c| comment_row(c, rctx, &state.cards)).collect::<Vec<Element<'a, Msg>>>()).spacing(12).into()
     };
     let editor = text_editor(&state.comment)
         .placeholder("Write a comment (Ctrl+Enter posts)")
@@ -1188,11 +1230,11 @@ fn discussion_view<'a>(state: &'a State, d: &'a PullDetail) -> Element<'a, Msg> 
 }
 
 /// One comment: its author and age, then its text.
-fn comment_row<'a>(c: &Comment) -> Element<'a, Msg> {
+fn comment_row<'a>(c: &Comment, rctx: &rich::RichCtx, cards: &rich::Cards) -> Element<'a, Msg> {
     let head = row![text(c.author.clone()).font(SANS_BOLD).size(14.0).color(INK), ui::faint(ago(&c.at))]
         .spacing(10)
         .align_y(Alignment::Center);
-    column![head, ui::prose(c.body.clone()).size(14.0)].spacing(6).into()
+    column![head, rich::view(&c.body, rctx, cards, &on_rich)].spacing(6).into()
 }
 
 fn file_row<'a>(f: &PullFile) -> Element<'a, Msg> {

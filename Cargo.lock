@@ -91,6 +91,7 @@ dependencies = [
  "apz-os",
  "apz-plaza",
  "apz-prompt",
+ "apz-rich",
  "apz-setup",
  "apz-skill",
  "apz-trust",

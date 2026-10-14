@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 
 use super::wizard::{self, ProposalView, WizardMsg};
 use super::{sanctions, Id};
-use crate::console::{client, ui, Ctx};
+use crate::console::{client, rich, ui, Ctx};
 use crate::theme::{SANS};
 
 const STRONG: Font = Font { weight: font::Weight::Semibold, ..SANS };
@@ -50,6 +50,8 @@ pub struct State {
     again: bool,
     /// The new-agent wizard, opened on a proposal's Review (it approves or rejects the proposal).
     wizard: wizard::Wizard,
+    /// The rich content of the subjects, reasons and instructions the cards show: the hub's cards and images.
+    cards: rich::Cards,
 }
 
 #[derive(Debug, Clone)]
@@ -75,6 +77,8 @@ pub enum Msg {
     ToggleDecided,
     /// The proposal wizard's messages (Review opens it; Done(Ok) reloads the list).
     Wizard(WizardMsg),
+    /// A rich-content click (a chip, a link, an Open button) or a load of its cards and images.
+    Rich(rich::Ev),
 }
 
 #[derive(Debug, Clone)]
@@ -192,8 +196,26 @@ fn ago(ms: i64) -> String {
 pub fn go(msg: &Msg) -> Option<Id> {
     match msg {
         Msg::Go(id) => Some(id.clone()),
+        Msg::Rich(rich::Ev::Action(action)) => action.route(),
         _ => None,
     }
+}
+
+/// A rich-content click or load, as this screen's message.
+fn on_rich(action: rich::RichAction) -> Msg {
+    Msg::Rich(rich::Ev::Action(action))
+}
+
+/// Asks the hub for the cards of the subjects, reasons and instructions on the screen that it does not hold yet.
+fn prefetch(state: &mut State, ctx: &Ctx) -> Task<Msg> {
+    let mut texts: Vec<String> = state.approvals.iter().filter(|a| a.kind == "sanction" || a.kind == "payment").map(|a| a.subject.clone()).collect();
+    for p in &state.proposals {
+        texts.push(p.reason.clone());
+        texts.push(p.instruction.clone());
+    }
+    let refs: Vec<&str> = texts.iter().filter(|t| !t.is_empty()).map(String::as_str).collect();
+    let rctx = rich::context(&state.cards, None, None, None);
+    rich::prefetch(&mut state.cards, &ctx.client, &rctx, &refs).map(Msg::Rich)
 }
 
 /// Loads the screen's data (called when it opens and on every poll tick).
@@ -216,16 +238,17 @@ pub fn load(state: &mut State, ctx: &Ctx) -> Task<Msg> {
 /// One of the four load answers arrived; the last one starts a reload that was asked for meanwhile.
 fn settled(state: &mut State, ctx: &Ctx) -> Task<Msg> {
     state.pending = state.pending.saturating_sub(1);
-    if state.pending == 0 && std::mem::take(&mut state.again) {
-        load(state, ctx)
-    } else {
-        Task::none()
-    }
+    let next = if state.pending == 0 && std::mem::take(&mut state.again) { load(state, ctx) } else { Task::none() };
+    Task::batch([next, prefetch(state, ctx)])
 }
 
 pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
     match msg {
         Msg::Go(_) => Task::none(),
+        Msg::Rich(ev) => {
+            rich::apply(&mut state.cards, ev);
+            Task::none()
+        }
         Msg::Approvals(res) => {
             match res {
                 Ok(v) => {
@@ -334,7 +357,8 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
 }
 
 pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
-    let page = page(state);
+    let rctx = rich::context(&state.cards, None, None, None);
+    let page = page(state, &rctx);
     if state.wizard.open {
         Stack::new().push(page).push(wizard::view(&state.wizard, ctx).map(Msg::Wizard)).into()
     } else {
@@ -342,22 +366,22 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
     }
 }
 
-fn page<'a>(state: &'a State) -> Element<'a, Msg> {
+fn page<'a>(state: &'a State, rctx: &rich::RichCtx) -> Element<'a, Msg> {
     let mut parts: Vec<Element<'a, Msg>> = Vec::new();
     if let Some(error) = &state.error {
         parts.push(ui::error_line(error));
     }
     if !state.proposals.is_empty() {
-        parts.push(proposals_view(state));
+        parts.push(proposals_view(state, rctx));
     }
-    parts.push(pending_view(state));
+    parts.push(pending_view(state, rctx));
     parts.push(subhead("Decided"));
     parts.push(history_view(state));
     ui::sheet(ui::view_head("Approvals", vec![]), column(parts).spacing(22).width(Length::Fill).into())
 }
 
 /// The waiting approvals, longest wait first, each a card with the owner's call.
-fn pending_view<'a>(state: &'a State) -> Element<'a, Msg> {
+fn pending_view<'a>(state: &'a State, rctx: &rich::RichCtx) -> Element<'a, Msg> {
     if !state.loaded {
         return Space::new().into();
     }
@@ -373,11 +397,11 @@ fn pending_view<'a>(state: &'a State) -> Element<'a, Msg> {
             "Agents ask here before acts that need your approval, and the orchestrator proposes new agents here.",
         );
     }
-    column(waiting.into_iter().map(|a| entry(state, a))).spacing(12).into()
+    column(waiting.into_iter().map(|a| entry(state, a, rctx))).spacing(12).into()
 }
 
 /// One waiting approval: who, what, the input, and the owner's reason and call.
-fn entry<'a>(state: &'a State, a: &'a Approval) -> Element<'a, Msg> {
+fn entry<'a>(state: &'a State, a: &'a Approval, rctx: &rich::RichCtx) -> Element<'a, Msg> {
     let busy = state.busy.contains(&a.id);
     let key = format!("ap-{}", a.id);
     let draft = state.drafts.get(&key).map(String::as_str).unwrap_or("").to_string();
@@ -401,8 +425,8 @@ fn entry<'a>(state: &'a State, a: &'a Approval) -> Element<'a, Msg> {
         _ => vec![ui::btn("Deny", None, ui::Kind::Danger, decide(false, None)), ui::btn("Approve", None, ui::Kind::Primary, decide(true, None))],
     };
     let title: Element<'a, Msg> = match a.kind.as_str() {
-        "sanction" => ui::prose(format!("Escalation: {}", a.subject)).into(),
-        "payment" => ui::prose(format!("Payment awaiting approval: {}", a.subject)).into(),
+        "sanction" => rich::view(&format!("Escalation: {}", a.subject), rctx, &state.cards, &on_rich),
+        "payment" => rich::view(&format!("Payment awaiting approval: {}", a.subject), rctx, &state.cards, &on_rich),
         _ => ui::mono(a.tool.clone(), 12.0, crate::theme::palette().ink).into(),
     };
     let head = row![
@@ -462,7 +486,7 @@ fn history_view<'a>(state: &'a State) -> Element<'a, Msg> {
 }
 
 /// The agents the orchestrator proposes to spawn: waiting ones as cards, decided ones collapsed.
-fn proposals_view<'a>(state: &'a State) -> Element<'a, Msg> {
+fn proposals_view<'a>(state: &'a State, rctx: &rich::RichCtx) -> Element<'a, Msg> {
     let mut waiting: Vec<&Proposal> = state.proposals.iter().filter(|p| p.state == "pending").collect();
     waiting.sort_by_key(|p| p.created_ms);
     let mut past: Vec<&Proposal> = state.proposals.iter().filter(|p| p.state != "pending").collect();
@@ -472,7 +496,7 @@ fn proposals_view<'a>(state: &'a State) -> Element<'a, Msg> {
     if waiting.is_empty() {
         items.push(ui::faint("No proposals waiting.").into());
     } else {
-        items.extend(waiting.into_iter().map(|p| proposal_card(state, p)));
+        items.extend(waiting.into_iter().map(|p| proposal_card(state, p, rctx)));
     }
     if !past.is_empty() {
         items.push(ui::disclosure(format!("Decided ({})", past.len()), crate::theme::palette().ink_2, state.proposals_open, Msg::ToggleDecided));
@@ -484,7 +508,7 @@ fn proposals_view<'a>(state: &'a State) -> Element<'a, Msg> {
 }
 
 /// One proposed agent, waiting: what it is for, why the orchestrator wants it, and the owner's call.
-fn proposal_card<'a>(state: &'a State, p: &'a Proposal) -> Element<'a, Msg> {
+fn proposal_card<'a>(state: &'a State, p: &'a Proposal, rctx: &rich::RichCtx) -> Element<'a, Msg> {
     let mut head = row![text(p.title.clone()).font(STRONG).size(15.0).color(crate::theme::palette().ink)].spacing(10).align_y(Alignment::Center);
     if p.new_role {
         head = head.push(ui::badge("new role", ui::Tone::Signal));
@@ -493,9 +517,9 @@ fn proposal_card<'a>(state: &'a State, p: &'a Proposal) -> Element<'a, Msg> {
     head = head.push(Space::new().width(Length::Fill));
     head = head.push(ui::faint(ago(p.created_ms)));
 
-    let mut body = column![head, ui::prose(p.reason.clone())].spacing(8);
+    let mut body = column![head, rich::view(&p.reason, rctx, &state.cards, &on_rich)].spacing(8);
     if !p.instruction.is_empty() {
-        body = body.push(ui::prose(format!("“{}”", p.instruction)));
+        body = body.push(rich::view(&format!("“{}”", p.instruction), rctx, &state.cards, &on_rich));
     }
     body = body.push(ui::faint(format!("Proposed by {}", p.by)));
     // The review opens the new-agent wizard on this proposal (approve or reject there).

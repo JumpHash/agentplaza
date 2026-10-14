@@ -415,7 +415,21 @@ pub fn loading<'a, M: 'a>() -> Element<'a, M> {
 /// serif prose, inline spans, sheet code blocks, ruled quotes and grid tables. Unknown syntax
 /// renders as plain text; nothing is dropped.
 pub fn markdown<'a, M: 'a>(source: &str) -> Element<'a, M> {
-    blocks_view(parse_blocks(source))
+    markdown_with(source, &plain_para)
+}
+
+/// The paragraph renderer the blocks share: a body of text, its base font, size and colour.
+pub(crate) type Para<'p, 'a, M> = &'p dyn Fn(&str, Font, f32, Color) -> Element<'a, M>;
+
+/// The same blocks as `markdown`, with each paragraph, list item and table cell drawn by `para` (the rich renderer
+/// draws references in them as chips and cards; see `console::rich`).
+pub(crate) fn markdown_with<'a, M: 'a>(source: &str, para: Para<'_, 'a, M>) -> Element<'a, M> {
+    blocks_view(parse_blocks(source), para)
+}
+
+/// The plain paragraph: inline spans as one wrapping rich text.
+fn plain_para<'a, M: 'a>(body: &str, base: Font, size: f32, color: Color) -> Element<'a, M> {
+    rich_para(inline(body), base, size, color)
 }
 
 /// A parsed block, before layout.
@@ -440,7 +454,7 @@ struct Item {
 
 /// An inline span of a paragraph, heading or cell.
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum Inline {
+pub(crate) enum Inline {
     Text(String),
     Bold(String),
     Italic(String),
@@ -575,7 +589,7 @@ fn split_row(line: &str) -> Vec<String> {
 }
 
 /// Inline spans: `code`, **bold**, *italic*, [label](target). Anything else is text.
-fn inline(source: &str) -> Vec<Inline> {
+pub(crate) fn inline(source: &str) -> Vec<Inline> {
     let mut out = Vec::new();
     let mut plain = String::new();
     let mut rest = source;
@@ -621,11 +635,11 @@ fn inline_token(s: &str) -> Option<(Inline, usize)> {
     }
 }
 
-fn blocks_view<'a, M: 'a>(blocks: Vec<Block>) -> Element<'a, M> {
-    column(blocks.into_iter().map(block_view).collect::<Vec<_>>()).spacing(12).width(Length::Fill).into()
+fn blocks_view<'a, M: 'a>(blocks: Vec<Block>, para: Para<'_, 'a, M>) -> Element<'a, M> {
+    column(blocks.into_iter().map(|b| block_view(b, para)).collect::<Vec<_>>()).spacing(12).width(Length::Fill).into()
 }
 
-fn block_view<'a, M: 'a>(block: Block) -> Element<'a, M> {
+fn block_view<'a, M: 'a>(block: Block, para: Para<'_, 'a, M>) -> Element<'a, M> {
     match block {
         Block::Heading(level, title) => {
             let size = match level {
@@ -640,8 +654,8 @@ fn block_view<'a, M: 'a>(block: Block) -> Element<'a, M> {
                 head.into()
             }
         }
-        Block::Para(body) => rich_para(inline(&body), SANS, TYPE_PROSE, crate::theme::palette().ink),
-        Block::List(items) => column(items.into_iter().map(item_view).collect::<Vec<_>>()).spacing(4).width(Length::Fill).into(),
+        Block::Para(body) => para(&body, SANS, TYPE_PROSE, crate::theme::palette().ink),
+        Block::List(items) => column(items.into_iter().map(|i| item_view(i, para)).collect::<Vec<_>>()).spacing(4).width(Length::Fill).into(),
         Block::Code(code) => container(
             scroll_x(text(code).font(MONO).size(TYPE_CODE).color(crate::theme::palette().ink)),
         )
@@ -658,25 +672,25 @@ fn block_view<'a, M: 'a>(block: Block) -> Element<'a, M> {
                 background: Some(crate::theme::palette().ink_3.into()),
                 ..Default::default()
             });
-            row![bar, blocks_view(inner)].spacing(14).width(Length::Fill).into()
+            row![bar, blocks_view(inner, para)].spacing(14).width(Length::Fill).into()
         }
         Block::Table { head, rows } => {
             let cols = rows.iter().map(Vec::len).chain(std::iter::once(head.len())).max().unwrap_or(1).max(1);
-            let mut grid = vec![table_row(&head, cols, true)];
-            grid.extend(rows.iter().map(|r| table_row(r, cols, false)));
+            let mut grid = vec![table_row(&head, cols, true, para)];
+            grid.extend(rows.iter().map(|r| table_row(r, cols, false, para)));
             column(grid).width(Length::Fill).into()
         }
         Block::Rule => hairline(),
     }
 }
 
-fn item_view<'a, M: 'a>(item: Item) -> Element<'a, M> {
+fn item_view<'a, M: 'a>(item: Item, para: Para<'_, 'a, M>) -> Element<'a, M> {
     let marker = item.marker.map_or_else(|| "•".to_string(), |n| format!("{n}."));
     let indent = if item.depth > 0 { 24.0 } else { 0.0 };
     row![
         Space::new().width(Length::Fixed(indent)),
         sans(marker, TYPE_UI, crate::theme::palette().ink_2).width(Length::Fixed(22.0)),
-        rich_para(inline(&item.text), SANS, TYPE_PROSE, crate::theme::palette().ink),
+        para(&item.text, SANS, TYPE_PROSE, crate::theme::palette().ink),
     ]
     .spacing(6)
     .width(Length::Fill)
@@ -684,11 +698,11 @@ fn item_view<'a, M: 'a>(item: Item) -> Element<'a, M> {
 }
 
 /// A table row over `cols` equal cells; the header's cells are mono.
-fn table_row<'a, M: 'a>(cells: &[String], cols: usize, header: bool) -> Element<'a, M> {
+fn table_row<'a, M: 'a>(cells: &[String], cols: usize, header: bool, para: Para<'_, 'a, M>) -> Element<'a, M> {
     let row_cells = (0..cols)
         .map(|k| -> Element<'a, M> {
             let cell = cells.get(k).map_or("", String::as_str);
-            let content = if header { rich_para(inline(cell), SANS_SEMIBOLD, TYPE_META, crate::theme::palette().ink) } else { rich_para(inline(cell), SANS, TYPE_UI, crate::theme::palette().ink) };
+            let content = if header { para(cell, SANS_SEMIBOLD, TYPE_META, crate::theme::palette().ink) } else { para(cell, SANS, TYPE_UI, crate::theme::palette().ink) };
             container(content)
                 .padding([5, 8])
                 .width(Length::FillPortion(1))
@@ -703,7 +717,7 @@ fn table_row<'a, M: 'a>(cells: &[String], cols: usize, header: bool) -> Element<
 }
 
 /// A run of inline spans as one wrapping rich text.
-fn rich_para<'a, M: 'a>(parts: Vec<Inline>, base: Font, size: f32, color: Color) -> Element<'a, M> {
+pub(crate) fn rich_para<'a, M: 'a>(parts: Vec<Inline>, base: Font, size: f32, color: Color) -> Element<'a, M> {
     let spans: Vec<text::Span<'a>> = parts.into_iter().map(|part| part_span(part, base)).collect();
     rich_text(spans).font(base).size(size).line_height(READING).color(color).width(Length::Fill).into()
 }

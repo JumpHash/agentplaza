@@ -20,6 +20,8 @@ pub mod icons;
 pub mod lab_api;
 pub mod onboard;
 pub mod picker;
+// The rich content of agent text: chips, hover cards, inline images (docs/design/workspace.md, section 3).
+pub mod rich;
 pub(crate) mod render_card;
 pub mod screens;
 pub mod services;

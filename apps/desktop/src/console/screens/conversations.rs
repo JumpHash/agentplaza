@@ -14,7 +14,7 @@ use iced::{Alignment, Border, Element, Length, Task, Theme};
 use serde_json::{json, Value};
 
 use super::Id;
-use crate::console::{client, ui, Ctx};
+use crate::console::{client, rich, ui, Ctx};
 use crate::theme::{SANS};
 
 /// The thread's scrollable, so a newly opened thread can start at its newest message.
@@ -45,6 +45,8 @@ pub struct State {
     list_error: Option<String>,
     /// `(cid, display name)` from `GET /v1/agents`.
     agents: Vec<(u64, String)>,
+    /// The rich content of the open thread: the hub's cards and images for its references (`console::rich`).
+    cards: rich::Cards,
     /// The key (`a-b`, ordered) of the pair the reader picked; the newest pair when unset.
     selected: Option<String>,
     /// The key of the thread that is shown, to tell a newly opened thread from a redraw.
@@ -98,6 +100,8 @@ pub enum Msg {
     Loaded { q: String, result: Result<(Value, Value, Value), String> },
     /// The selected thread's first page for `q` (or, with `earlier`, the page before it).
     ThreadLoaded { key: String, q: String, earlier: bool, result: Result<Value, String> },
+    /// A rich-content click (a chip, a link, an Open button) or a load of its cards and images.
+    Rich(rich::Ev),
     /// Load the next older page of the list.
     LoadOlder,
     /// The next older page of the list, for `q`, or the failure.
@@ -138,8 +142,21 @@ struct Pair {
 pub fn go(msg: &Msg) -> Option<Id> {
     match msg {
         Msg::Go(id) => Some(id.clone()),
+        Msg::Rich(rich::Ev::Action(action)) => action.route(),
         _ => None,
     }
+}
+
+/// A rich-content click or load, as this screen's message.
+fn on_rich(action: rich::RichAction) -> Msg {
+    Msg::Rich(rich::Ev::Action(action))
+}
+
+/// Asks the hub for the cards of the open thread's references that it does not hold yet.
+fn prefetch(state: &mut State, ctx: &Ctx) -> Task<Msg> {
+    let texts: Vec<&str> = state.thread.as_ref().map(|t| t.messages.iter().map(|m| m.text.as_str()).collect()).unwrap_or_default();
+    let rctx = rich::context(&state.cards, None, None, None);
+    rich::prefetch(&mut state.cards, &ctx.client, &rctx, &texts).map(Msg::Rich)
 }
 
 /// Loads the first page of the list, the agents and the settings, and the selected thread (called
@@ -165,8 +182,14 @@ pub fn load(state: &mut State, ctx: &Ctx) -> Task<Msg> {
 }
 
 pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
+    if let Msg::Rich(ev) = msg {
+        rich::apply(&mut state.cards, ev);
+        return Task::none();
+    }
     let landed = matches!(msg, Msg::Loaded { .. });
+    let thread_landed = matches!(msg, Msg::Loaded { .. } | Msg::ThreadLoaded { .. });
     let task = apply(state, msg, ctx);
+    let task = if thread_landed { Task::batch([task, prefetch(state, ctx)]) } else { task };
     if !landed {
         return task;
     }
@@ -193,7 +216,7 @@ fn apply(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                 load(state, ctx)
             }
         }
-        Msg::Go(_) => Task::none(),
+        Msg::Go(_) | Msg::Rich(_) => Task::none(),
         Msg::Select(key) => {
             state.selected = Some(key);
             match missing_thread(state) {
@@ -394,6 +417,7 @@ fn apply(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
 }
 
 pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
+    let rctx = rich::context(&state.cards, None, None, None);
     let pairs = group_pairs(&state.conversations);
     let current = current_index(&pairs, state.selected.as_deref());
 
@@ -436,7 +460,7 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
     let shown = pairs.get(current).and_then(|p| state.thread.as_ref().filter(|t| t.key == p.key));
     let thread: Element<'a, Msg> = match (pairs.get(current), shown) {
         (None, _) => Space::new().width(Length::Fill).into(),
-        (Some(_), Some(t)) => thread_view(t, &state.agents, state.thread_error.as_deref()),
+        (Some(_), Some(t)) => thread_view(t, &state.agents, state.thread_error.as_deref(), &rctx, &state.cards),
         (Some(_), None) => match &state.thread_error {
             Some(err) => ui::error_line(err),
             None => ui::loading(),
@@ -556,7 +580,7 @@ fn pair_item<'a>(p: &Pair, exchanges: usize, active: bool, agents: &[(u64, Strin
 
 /// The open thread: its pair as the head, the earlier-messages button, then every message as one
 /// readable column (speaker and time in mono, the text in serif).
-fn thread_view<'a>(t: &Thread, agents: &[(u64, String)], error: Option<&str>) -> Element<'a, Msg> {
+fn thread_view<'a>(t: &Thread, agents: &[(u64, String)], error: Option<&str>, rctx: &rich::RichCtx, cards: &rich::Cards) -> Element<'a, Msg> {
     let head = row![name_link(t.a, agents), ui::faint(" · "), name_link(t.b, agents)].spacing(6).align_y(Alignment::Center);
     let mut items: Vec<Element<'a, Msg>> = vec![head.into(), ui::hairline()];
     if let Some(err) = error {
@@ -566,7 +590,7 @@ fn thread_view<'a>(t: &Thread, agents: &[(u64, String)], error: Option<&str>) ->
         items.push(page_button("Load earlier messages", t.busy, Msg::LoadEarlier));
     }
     // The messages are held newest first; the thread reads oldest first.
-    items.extend(t.messages.iter().rev().map(|m| message(m, agents)));
+    items.extend(t.messages.iter().rev().map(|m| message(m, agents, rctx, cards)));
     ui::scroll(column(items).spacing(18).padding(16).max_width(720.0).width(Length::Fill))
         .id(WidgetId::new(THREAD))
         .width(Length::Fill)
@@ -574,14 +598,14 @@ fn thread_view<'a>(t: &Thread, agents: &[(u64, String)], error: Option<&str>) ->
         .into()
 }
 
-fn message<'a>(m: &Conversation, agents: &[(u64, String)]) -> Element<'a, Msg> {
+fn message<'a>(m: &Conversation, agents: &[(u64, String)], rctx: &rich::RichCtx, cards: &rich::Cards) -> Element<'a, Msg> {
     let mut meta = row![name_link(m.from_cid, agents), ui::sans(ago(m.created_at, now_ms()), 11.0, crate::theme::palette().ink_3)]
         .spacing(10)
         .align_y(Alignment::Center);
     if !m.delivered {
         meta = meta.push(ui::badge("undelivered", ui::Tone::Warn));
     }
-    column![meta, ui::markdown(&m.text)].spacing(6).width(Length::Fill).into()
+    column![meta, rich::view(&m.text, rctx, cards, &on_rich)].spacing(6).width(Length::Fill).into()
 }
 
 /// A mono button for paging; it reads "Loading…" and is inert while its page is in flight.

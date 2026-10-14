@@ -48,6 +48,8 @@ apz-http = { path = "../../crates/apz-http" }
 # The IDE terminal's emulator (the VT screen over vte; no UI, so it stays testable here).
 apz-vt = { path = "../../crates/apz-vt" }
 apz-plaza = { path = "../../crates/apz-plaza" }
+# The rich-content classifier: which references in agent text become chips and hover cards (console/rich.rs).
+apz-rich = { path = "../../crates/apz-rich" }
 apz-os = { path = "../../crates/apz-os" }
 apz-setup = { path = "../../crates/apz-setup" }
 apz-trust = { path = "../../crates/apz-trust" }
