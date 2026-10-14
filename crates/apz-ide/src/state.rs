@@ -1,0 +1,250 @@
+//! The IDE's tab, panel and diff-base state, as a pure reducer. The desktop app and
+//! the web console run the same transitions, so they behave the same.
+
+use serde::{Deserialize, Serialize};
+
+use crate::workspace::WorkspaceId;
+
+/// The panel on the right (bottom on narrow widths).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Panel {
+    #[default]
+    Changes,
+    Agent,
+    Approvals,
+    Run,
+    Terminal,
+}
+
+/// What the Changes panel compares the workspace against.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Base {
+    /// An agent checkpoint, by its number.
+    Checkpoint(u64),
+    /// The checkpoint taken when the current work began. The default.
+    #[default]
+    WorkStart,
+    /// A branch of a repo workspace.
+    Branch(String),
+}
+
+/// The IDE's state for one screen.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct IdeState {
+    pub workspace: Option<WorkspaceId>,
+    /// Open editor tabs, in tab order. Paths are workspace-relative.
+    pub open: Vec<String>,
+    /// The tab shown, always one of `open` (or `None` when no tab is open).
+    pub active: Option<String>,
+    pub panel: Panel,
+    pub base: Base,
+    /// Review mode: the centre shows the diff instead of the editor.
+    pub review: bool,
+    /// The file tree shows only changed files.
+    pub filter_changed: bool,
+}
+
+/// A user action on the IDE.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Action {
+    /// Opens a tab (or shows it, if it is already open), and makes it active.
+    Open(String),
+    /// Closes a tab. Closing the active tab activates its right neighbour, else its left.
+    Close(String),
+    /// Shows an open tab. A path that is not open does nothing.
+    Activate(String),
+    SetPanel(Panel),
+    SetBase(Base),
+    ToggleReview,
+    ToggleChangedFilter,
+    /// Switches workspace. Clears the tabs, since they belong to the old one.
+    SetWorkspace(WorkspaceId),
+}
+
+/// The next state after `action`. Pure: the same inputs always give the same state.
+pub fn reduce(mut state: IdeState, action: Action) -> IdeState {
+    match action {
+        Action::Open(path) => {
+            if !state.open.contains(&path) {
+                state.open.push(path.clone());
+            }
+            state.active = Some(path);
+        }
+        Action::Close(path) => {
+            if let Some(i) = state.open.iter().position(|p| *p == path) {
+                state.open.remove(i);
+                if state.active.as_deref() == Some(path.as_str()) {
+                    // The tab that moved into slot `i` is the right neighbour; else the one before it.
+                    state.active = state
+                        .open
+                        .get(i)
+                        .or_else(|| i.checked_sub(1).and_then(|j| state.open.get(j)))
+                        .cloned();
+                }
+            }
+        }
+        Action::Activate(path) => {
+            if state.open.contains(&path) {
+                state.active = Some(path);
+            }
+        }
+        Action::SetPanel(panel) => state.panel = panel,
+        Action::SetBase(base) => state.base = base,
+        Action::ToggleReview => state.review = !state.review,
+        Action::ToggleChangedFilter => state.filter_changed = !state.filter_changed,
+        Action::SetWorkspace(id) => {
+            state.workspace = Some(id);
+            state.open.clear();
+            state.active = None;
+        }
+    }
+    state
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tabs(names: &[&str], active: &str) -> IdeState {
+        let mut s = IdeState::default();
+        for n in names {
+            s = reduce(s, Action::Open((*n).to_string()));
+        }
+        reduce(s, Action::Activate(active.to_string()))
+    }
+
+    #[test]
+    fn default_state_is_changes_since_work_start() {
+        let s = IdeState::default();
+        assert_eq!(s.panel, Panel::Changes);
+        assert_eq!(s.base, Base::WorkStart);
+        assert!(s.workspace.is_none() && s.open.is_empty() && s.active.is_none());
+        assert!(!s.review && !s.filter_changed);
+    }
+
+    #[test]
+    fn open_adds_a_tab_and_activates_it() {
+        let s = reduce(IdeState::default(), Action::Open("a.txt".into()));
+        assert_eq!(s.open, ["a.txt"]);
+        assert_eq!(s.active.as_deref(), Some("a.txt"));
+        let s = reduce(s, Action::Open("b.txt".into()));
+        assert_eq!(s.open, ["a.txt", "b.txt"]);
+        assert_eq!(s.active.as_deref(), Some("b.txt"));
+    }
+
+    #[test]
+    fn open_of_an_open_tab_only_activates_it() {
+        let s = tabs(&["a.txt", "b.txt"], "b.txt");
+        let s = reduce(s, Action::Open("a.txt".into()));
+        assert_eq!(s.open, ["a.txt", "b.txt"]);
+        assert_eq!(s.active.as_deref(), Some("a.txt"));
+    }
+
+    #[test]
+    fn closing_the_active_tab_activates_the_right_neighbour() {
+        let s = tabs(&["a", "b", "c"], "b");
+        let s = reduce(s, Action::Close("b".into()));
+        assert_eq!(s.open, ["a", "c"]);
+        assert_eq!(s.active.as_deref(), Some("c"));
+    }
+
+    #[test]
+    fn closing_the_last_tab_activates_the_left_neighbour() {
+        let s = tabs(&["a", "b", "c"], "c");
+        let s = reduce(s, Action::Close("c".into()));
+        assert_eq!(s.open, ["a", "b"]);
+        assert_eq!(s.active.as_deref(), Some("b"));
+    }
+
+    #[test]
+    fn closing_the_only_tab_leaves_no_active_tab() {
+        let s = tabs(&["a"], "a");
+        let s = reduce(s, Action::Close("a".into()));
+        assert!(s.open.is_empty());
+        assert_eq!(s.active, None);
+    }
+
+    #[test]
+    fn closing_an_inactive_tab_keeps_the_active_one() {
+        let s = tabs(&["a", "b", "c"], "b");
+        let s = reduce(s, Action::Close("a".into()));
+        assert_eq!(s.open, ["b", "c"]);
+        assert_eq!(s.active.as_deref(), Some("b"));
+    }
+
+    #[test]
+    fn closing_an_unknown_tab_changes_nothing() {
+        let before = tabs(&["a", "b"], "a");
+        let after = reduce(before.clone(), Action::Close("zzz".into()));
+        assert_eq!(after, before);
+    }
+
+    #[test]
+    fn activating_a_tab_that_is_not_open_does_nothing() {
+        let before = tabs(&["a"], "a");
+        let after = reduce(before.clone(), Action::Activate("zzz".into()));
+        assert_eq!(after, before);
+        let after = reduce(before, Action::Activate("a".into()));
+        assert_eq!(after.active.as_deref(), Some("a"));
+    }
+
+    #[test]
+    fn switching_workspace_clears_the_tabs() {
+        let s = tabs(&["a", "b"], "b");
+        let s = reduce(s, Action::SetWorkspace(WorkspaceId::Agent(7)));
+        assert_eq!(s.workspace, Some(WorkspaceId::Agent(7)));
+        assert!(s.open.is_empty());
+        assert_eq!(s.active, None);
+    }
+
+    #[test]
+    fn panel_base_and_toggles() {
+        let s = IdeState::default();
+        let s = reduce(s, Action::SetPanel(Panel::Approvals));
+        assert_eq!(s.panel, Panel::Approvals);
+        let s = reduce(s, Action::SetBase(Base::Checkpoint(3)));
+        assert_eq!(s.base, Base::Checkpoint(3));
+        let s = reduce(s, Action::SetBase(Base::Branch("main".into())));
+        assert_eq!(s.base, Base::Branch("main".into()));
+        let s = reduce(s, Action::ToggleReview);
+        assert!(s.review);
+        let s = reduce(s, Action::ToggleReview);
+        assert!(!s.review);
+        let s = reduce(s, Action::ToggleChangedFilter);
+        assert!(s.filter_changed);
+    }
+
+    #[test]
+    fn reduce_is_deterministic() {
+        let actions = [
+            Action::Open("a".into()),
+            Action::Open("b".into()),
+            Action::Close("a".into()),
+            Action::SetPanel(Panel::Run),
+        ];
+        let run = || actions.iter().cloned().fold(IdeState::default(), reduce);
+        assert_eq!(run(), run());
+    }
+
+    #[test]
+    fn state_round_trips_through_json() {
+        let s = reduce(
+            tabs(&["src/main.rs"], "src/main.rs"),
+            Action::SetWorkspace(WorkspaceId::Repo {
+                name: "plaza-web".into(),
+                git_ref: "main".into(),
+            }),
+        );
+        let s = reduce(s, Action::SetBase(Base::Checkpoint(4)));
+        let v = serde_json::to_value(&s).unwrap();
+        assert_eq!(v["workspace"], "repo:plaza-web@main");
+        assert_eq!(v["base"]["checkpoint"], 4);
+        assert_eq!(v["panel"], "changes");
+        let back: IdeState = serde_json::from_value(v).unwrap();
+        assert_eq!(back, s);
+    }
+}

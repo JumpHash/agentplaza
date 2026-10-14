@@ -1,0 +1,7 @@
+diff --git a/with space.txt b/with space.txt
+index bd4269f..c90ac6e 100644
+--- a/with space.txt	
++++ b/with space.txt	
+@@ -1 +1 @@
+-spaced
++spaced changed

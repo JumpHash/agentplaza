@@ -1,0 +1,17 @@
+diff --git a/long.txt b/long.txt
+index 2878bb6..f2b2f08 100644
+--- a/long.txt
++++ b/long.txt
+@@ -3 +3 @@ row 2
+-row 3
++row THREE
+@@ -27 +27 @@ row 26
+-row 27
++row TWENTY-SEVEN
+diff --git a/one.txt b/one.txt
+index e3c0674..f719efd 100644
+--- a/one.txt
++++ b/one.txt
+@@ -1 +1 @@
+-one line
++two

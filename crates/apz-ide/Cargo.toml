@@ -1,0 +1,11 @@
+[package]
+name = "apz-ide"
+description = "AgentPlaza IDE model: workspaces, entries, buffers, the unified diff parser, path rules and the state reducer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true

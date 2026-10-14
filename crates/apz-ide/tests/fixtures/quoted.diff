@@ -1,0 +1,7 @@
+diff --git "a/caf\303\251.txt" "b/caf\303\251.txt"
+index 572eb43..015d5f5 100644
+--- "a/caf\303\251.txt"
++++ "b/caf\303\251.txt"
+@@ -1 +1 @@
+-café
++café changed
