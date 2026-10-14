@@ -839,22 +839,6 @@ mod tests {
     }
 
     #[test]
-    fn html_is_served_inline_under_the_sandbox_policy() {
-        let (kind, headers) = served("text/html; charset=utf-8", "page.html", false);
-        assert_eq!(kind, "text/html; charset=utf-8");
-        let get = |name: &str| {
-            headers
-                .iter()
-                .find(|(k, _)| *k == name)
-                .map(|(_, v)| v.clone())
-        };
-        assert_eq!(get("content-security-policy").as_deref(), Some(HTML_CSP));
-        assert_eq!(get("x-content-type-options").as_deref(), Some("nosniff"));
-        assert_eq!(get("content-disposition"), None);
-        assert!(HTML_CSP.starts_with("sandbox allow-scripts;"));
-    }
-
-    #[test]
     fn html_reports_may_style_and_show_images_but_stay_sandboxed() {
         let policy = HTML_CSP;
         // The sandbox stays first and without allow-same-origin: the page is an opaque origin.
@@ -882,13 +866,18 @@ mod tests {
             directive("script-src").as_deref(),
             Some("script-src 'unsafe-inline' 'self' https:")
         );
-        // The policy is served with HTML, and nothing else gets it.
-        let (_, headers) = served("text/html", "report.html", false);
-        assert!(
+        // The policy is served with HTML, inline, with nosniff and no download header; nothing else gets it.
+        let (kind, headers) = served("text/html; charset=utf-8", "report.html", false);
+        assert_eq!(kind, "text/html; charset=utf-8");
+        let get = |name: &str| {
             headers
                 .iter()
-                .any(|(k, v)| *k == "content-security-policy" && v == policy)
-        );
+                .find(|(k, _)| *k == name)
+                .map(|(_, v)| v.clone())
+        };
+        assert_eq!(get("content-security-policy").as_deref(), Some(policy));
+        assert_eq!(get("x-content-type-options").as_deref(), Some("nosniff"));
+        assert_eq!(get("content-disposition"), None);
     }
 
     #[test]

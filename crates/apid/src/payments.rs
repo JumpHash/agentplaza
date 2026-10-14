@@ -316,14 +316,27 @@ mod tests {
     }
 
     #[test]
-    fn the_agent_loop_charges_nothing_when_charging_is_off() {
+    fn with_charging_off_neither_a_task_call_nor_a_wallet_call_is_charged() {
         let treasury = task_funded();
         assert_eq!(
             charge_model_call(&treasury, false, |_, _| {}, 7, Some("t1"), 40, "model m"),
-            None
+            None,
+            "the agent loop call"
         );
         assert_eq!(treasury.escrow_balance("t1"), 300);
         assert_eq!(treasury.view().spent, 0);
+
+        treasury
+            .charge_spend(Some("t1"), 100, "real cost")
+            .expect("the cost is spent");
+        treasury.pay_agent("t1", 7, 20).expect("the agent is paid");
+        assert_eq!(
+            charge_model_call(&treasury, false, |_, _| {}, 7, None, 15, "model m"),
+            None,
+            "the gateway call from a wallet"
+        );
+        assert_eq!(treasury.wallet(7), 20);
+        assert_eq!(treasury.view().spent, 100);
     }
 
     #[test]
@@ -352,21 +365,6 @@ mod tests {
             115,
             "the 100 spent plus the 15 from the wallet"
         );
-    }
-
-    #[test]
-    fn a_gateway_call_charges_nothing_when_charging_is_off() {
-        let treasury = task_funded();
-        treasury
-            .charge_spend(Some("t1"), 100, "real cost")
-            .expect("the cost is spent");
-        treasury.pay_agent("t1", 7, 20).expect("the agent is paid");
-        assert_eq!(
-            charge_model_call(&treasury, false, |_, _| {}, 7, None, 15, "model m"),
-            None
-        );
-        assert_eq!(treasury.wallet(7), 20);
-        assert_eq!(treasury.view().spent, 100);
     }
 
     #[test]

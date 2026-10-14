@@ -546,7 +546,7 @@ mod tests {
     }
 
     #[test]
-    fn read_class_passes_in_every_mode() {
+    fn reads_pass_in_every_mode_and_autonomous_lets_writes_run() {
         let dir = scratch("read");
         let store = Store::load(&dir);
         for (cid, mode) in [(1, Mode::Autonomous), (2, Mode::Ask), (3, Mode::ReadOnly)] {
@@ -558,6 +558,12 @@ mod tests {
             );
         }
         assert!(store.list().is_empty());
+        // An autonomous agent's write passes straight through, nothing queued.
+        let (refusal, created) = store.gate(1, "write_thing", "write", &json!({}));
+        assert!(
+            refusal.is_none() && created.is_none(),
+            "autonomous writes run"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -578,15 +584,6 @@ mod tests {
         assert_eq!(Store::load(&other_dir).mode(5), Mode::Ask);
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&other_dir);
-    }
-
-    #[test]
-    fn autonomous_lets_writes_run() {
-        let dir = scratch("auto");
-        let store = Store::load(&dir);
-        let (refusal, created) = store.gate(4, "write_thing", "write", &json!({}));
-        assert!(refusal.is_none() && created.is_none());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
