@@ -1,8 +1,11 @@
 // The apid client: one function per endpoint, typed by what apid returns.
 // The console is served by apid, so every path is same-origin.
 
+import type { FileChange, Stats, TreePage } from './ide/types';
+
 export class ApiError extends Error {
-  constructor(public status: number, message: string, public diagnostics: Diagnostic[] = []) {
+  /** The response's JSON body when it had one (a 409 carries the server's `current_hash`). */
+  constructor(public status: number, message: string, public diagnostics: Diagnostic[] = [], public body: unknown = null) {
     super(message);
   }
 }
@@ -19,7 +22,7 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
     // Off loopback the hub wants the owner's sign-in; the shell shows the sign-in screen.
     if (res.status === 401 && path !== '/v1/auth/session') window.dispatchEvent(new CustomEvent('apz-auth-required'));
     const message = (data as { error?: string } | null)?.error ?? `${method} ${path}: ${res.status}`;
-    throw new ApiError(res.status, message, (data as { diagnostics?: Diagnostic[] } | null)?.diagnostics ?? []);
+    throw new ApiError(res.status, message, (data as { diagnostics?: Diagnostic[] } | null)?.diagnostics ?? [], data);
   }
   return data as T;
 }
@@ -1161,4 +1164,35 @@ export const skillsApi = {
   /** Zip downloads. */
   exportUrl: (id: string, v: number) => `${skillPath(id)}/versions/${v}/export`,
   exportManyUrl: (ids: string[]) => `/v1/skills/export${query({ ids: ids.join(',') })}`,
+};
+
+// ---- IDE -------------------------------------------------------------------
+// The IDE's owner-only routes (docs/design/ide.md §6.3). A workspace id (`agent:7`) goes in the path, encoded. The tree
+// and diff shapes are apz-ide's (ide/types.ts).
+
+export interface IdeWorkspaceInfo { id: string; kind: 'agent' | 'repo'; owner: string; name: string; writable: boolean; status: string }
+export interface IdeFile { path: string; size: number; hash: string; text: string }
+export interface IdeSaved { path: string; hash: string; checkpoint: number | null }
+/** `changes`: the files since `base` and the unified diff. `files` and `stats` are parsed from `diff` when absent. */
+export interface IdeChanges { base: unknown; checkpoint: number | null; diff: string; files?: FileChange[]; stats?: Stats }
+export interface IdeCheckpoint { n: number; label: string; created_ms: number; files: number }
+export interface IdeMatch { path: string; line: number; text: string }
+
+const ideWs = (id: string) => `/v1/ide/workspaces/${encodeURIComponent(id)}`;
+
+export const ideApi = {
+  workspaces: () => get<IdeWorkspaceInfo[]>('/v1/ide/workspaces'),
+  /** One page of a directory's entries (`path` `''` is the root); `next` is the cursor for the following page. */
+  tree: (id: string, path: string, cursor?: string | null) => get<TreePage>(`${ideWs(id)}/tree${query({ path, cursor: cursor ?? undefined })}`),
+  file: (id: string, path: string) => get<IdeFile>(`${ideWs(id)}/file${query({ path })}`),
+  /** `expected_hash` is the hash the buffer was read at. 409 (`ApiError.status`) when the file has moved on: `body.current_hash`. */
+  save: (id: string, body: { path: string; text: string; expected_hash: string | null }) => put<IdeSaved>(`${ideWs(id)}/file`, body),
+  /** `base` is `work_start` or `checkpoint:<n>`. */
+  changes: (id: string, base: string) => get<IdeChanges>(`${ideWs(id)}/changes${query({ base })}`),
+  checkpoints: async (id: string): Promise<IdeCheckpoint[]> => {
+    const r = await get<IdeCheckpoint[] | { checkpoints: IdeCheckpoint[] }>(`${ideWs(id)}/checkpoints`);
+    return Array.isArray(r) ? r : r.checkpoints;
+  },
+  restore: (id: string, n: number) => post<{ restored: unknown; checkpoint: number | null }>(`${ideWs(id)}/checkpoints/${n}/restore`),
+  search: (id: string, q: string, glob?: string) => get<{ matches: IdeMatch[]; truncated: boolean }>(`${ideWs(id)}/search${query({ q, glob })}`),
 };

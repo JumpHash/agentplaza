@@ -17,6 +17,8 @@ import type { Agent, FleetApple, FleetKind, FleetMachine, FleetResponse, FleetSt
 import { agentTally, boardOf, gibText, machineFacts, machineSubtitle } from '../src/views/floor';
 import { hubOrigin, setupSnippets } from '../src/views/hub-mcp-snippets';
 import { wrapIde, type IdeGlue } from '../src/ide/wasm';
+import { applyBuffer, badgeOf, diffMark, dirsOf, fuzzyScore, isViewed, languageFor, lineCounts, onRemote, openBuffer, parentDir, parseViewed, rankPaths, viewedKey, withViewed } from '../src/ide/model';
+import type { FileChange } from '../src/ide/types';
 
 let failures = 0;
 // Each section checks its own failures and reports them, then the run goes on to the next section (so one failing
@@ -411,6 +413,100 @@ sectionEnd('onboarding tests: ok');
   eq(ide.children([{ path: 'a', kind: 'file', size: 1, hash: 'h', binary: false }], '')[0]?.path, 'a', 'ide: children parses the entries');
 }
 sectionEnd('ide wrapper tests: ok');
+
+// The IDE view's pure helpers (ide/model.ts): the language by extension, the buffer and conflict transitions, the
+// workspace's state badge, the viewed marks' storage, the diff marks, quick open's ranking and the tree's paths.
+{
+  eq(languageFor('src/a.ts'), 'typescript', 'ide model: .ts is TypeScript');
+  eq(languageFor('ui/App.TSX'), 'tsx', 'ide model: the extension is matched in any case');
+  eq(languageFor('build.mjs'), 'javascript', 'ide model: .mjs is JavaScript');
+  eq(languageFor('src/lib.rs'), 'rust', 'ide model: .rs is Rust');
+  eq(languageFor('tool.py'), 'python', 'ide model: .py is Python');
+  eq(languageFor('README.md'), 'markdown', 'ide model: .md is Markdown');
+  eq(languageFor('x/data.json'), 'json', 'ide model: .json is JSON');
+  eq(languageFor('site/index.htm'), 'html', 'ide model: .htm is HTML');
+  eq(languageFor('s.css'), 'css', 'ide model: .css is CSS');
+  eq(languageFor('Makefile'), 'plain', 'ide model: an extensionless file is plain');
+  eq(languageFor('.gitignore'), 'plain', 'ide model: a dotfile is plain');
+  eq(languageFor('dir.ts/readme'), 'plain', 'ide model: a dot in a directory name is not an extension');
+  eq(languageFor('notes.txt'), 'plain', 'ide model: an unknown extension is plain');
+
+  // Save, conflict, keep mine, reload.
+  let b = openBuffer('a.txt', 'h1');
+  eq([b.dirty, b.conflict], [false, null], 'ide buffer: a fresh buffer is clean');
+  b = applyBuffer(b, { kind: 'edit' });
+  eq(b.dirty, true, 'ide buffer: an edit makes it dirty');
+  b = applyBuffer(b, { kind: 'save' });
+  eq(b.saving, true, 'ide buffer: a save in flight is saving');
+  b = applyBuffer(b, { kind: 'conflict', current: 'h2' });
+  eq([b.base, b.conflict, b.dirty, b.saving], ['h1', 'h2', true, false], 'ide buffer: a 409 keeps the edits and records the hub hash');
+  b = applyBuffer(b, { kind: 'keep_mine', current: 'h2' });
+  eq([b.base, b.conflict, b.dirty], ['h2', null, true], 'ide buffer: keep mine re-bases on the hub copy and keeps the edits');
+  b = applyBuffer(b, { kind: 'saved', hash: 'h3', edited: false });
+  eq([b.base, b.dirty, b.conflict], ['h3', false, null], 'ide buffer: a clean save takes the new hash');
+
+  let c = applyBuffer(openBuffer('a.txt', 'h1'), { kind: 'edit' });
+  c = applyBuffer(c, { kind: 'conflict', current: 'h2' });
+  c = applyBuffer(c, { kind: 'reload', hash: 'h2' });
+  eq([c.base, c.dirty, c.conflict], ['h2', false, null], 'ide buffer: reload takes the hub copy and drops the edits');
+  const typedDuringSave = applyBuffer(applyBuffer(openBuffer('a.txt', 'h1'), { kind: 'edit' }), { kind: 'saved', hash: 'h2', edited: true });
+  eq(typedDuringSave.dirty, true, 'ide buffer: an edit made during a save stays dirty');
+
+  // A remote change: clean reloads, edited conflicts, the same hash is nothing.
+  const clean = openBuffer('a.txt', 'h1');
+  eq(onRemote(clean, 'h1').action, 'none', 'ide remote: the hash already read is nothing to do');
+  eq(onRemote(clean, 'h2').action, 'reload', 'ide remote: a clean buffer reloads');
+  const dirty = applyBuffer(clean, { kind: 'edit' });
+  const clash = onRemote(dirty, 'h2');
+  eq([clash.action, clash.buffer.conflict, clash.buffer.dirty], ['conflict', 'h2', true], 'ide remote: an edited buffer goes to the conflict state');
+  eq(onRemote(clash.buffer, 'h1').buffer.conflict, null, 'ide remote: the hub back at the read hash clears the conflict');
+
+  eq([badgeOf({ conflict: true, agentWorking: true, saved: true }), badgeOf({ conflict: false, agentWorking: true, saved: true })], ['conflict', 'agent working'], 'ide badge: conflict, then agent working');
+  eq([badgeOf({ conflict: false, agentWorking: false, saved: true }), badgeOf({ conflict: false, agentWorking: false, saved: false })], ['saved', 'idle'], 'ide badge: saved, then idle');
+
+  // Viewed marks: per workspace, malformed storage reads as none, a changed diff is no longer viewed.
+  eq(viewedKey('agent:7'), 'apz.ide.viewed.agent:7', 'ide viewed: the key names the workspace');
+  eq([parseViewed(null), parseViewed('not json'), parseViewed('[1]')], [{}, {}, {}], 'ide viewed: missing or malformed storage reads as no marks');
+  eq(parseViewed('{"a.ts":"m1","b":2}'), { 'a.ts': 'm1' }, 'ide viewed: only string marks are kept');
+  const marked = withViewed({}, 'a.ts', 'm1', true);
+  eq([isViewed(marked, 'a.ts', 'm1'), isViewed(marked, 'a.ts', 'm2')], [true, false], 'ide viewed: a mark counts only for its own diff');
+  eq(withViewed(marked, 'a.ts', 'm1', false), {}, 'ide viewed: unmarking removes the path');
+
+  const hunkOf = (text: string): FileChange => ({
+    path: 'a.ts',
+    old_path: null,
+    status: 'modified',
+    binary: false,
+    hunks: [
+      {
+        old_start: 1,
+        old_lines: 1,
+        new_start: 1,
+        new_lines: 1,
+        header: '@@ -1 +1 @@',
+        lines: [
+          { kind: 'remove', old_no: 1, new_no: null, text: 'a' },
+          { kind: 'add', old_no: null, new_no: 1, text },
+        ],
+      },
+    ],
+  });
+  eq(diffMark(hunkOf('b')) === diffMark(hunkOf('b')), true, 'ide diff mark: the same diff has the same mark');
+  eq(diffMark(hunkOf('b')) === diffMark(hunkOf('c')), false, 'ide diff mark: a changed diff has a new mark');
+  eq(lineCounts(hunkOf('b')), { add: 1, del: 1 }, 'ide diff: the line counts of a file');
+
+  // Quick open: every character in order; the file name and word starts rank first.
+  eq([fuzzyScore('', 'x.ts'), fuzzyScore('zz', 'src/a.ts')], [0, null], 'ide quick open: the empty query matches, a missing character does not');
+  eq(rankPaths(['src/app/main.ts', 'src/main.ts', 'docs/readme.md'], 'main'), ['src/main.ts', 'src/app/main.ts'], 'ide quick open: the shorter name ranks first and a miss is dropped');
+  eq(rankPaths(['b.ts', 'a.ts'], ''), ['a.ts', 'b.ts'], 'ide quick open: ties sort by path');
+  eq(rankPaths(['a/b/c.ts', 'abc.ts'], 'abc')[0], 'abc.ts', 'ide quick open: a run in the file name beats a scattered match');
+
+  // The tree's paths.
+  eq(dirsOf('a/b/c.txt'), ['', 'a', 'a/b'], 'ide tree: the directories above a file, root first');
+  eq(dirsOf('x.ts'), [''], 'ide tree: a top-level file sits in the root');
+  eq([parentDir('a/b/c.txt'), parentDir('x.ts')], ['a/b', ''], 'ide tree: a file’s directory');
+}
+sectionEnd('ide view model tests: ok');
 
 if (failedSections.length) {
   console.error(`${failedSections.length} section(s) failed: ${failedSections.join(', ')}`);

@@ -94,6 +94,16 @@ if (existsSync(join(repoRoot, 'crates/apz-ide-web/Cargo.toml'))) {
   console.log('ide: crates/apz-ide-web is not there yet, skipped');
 }
 
+// The IDE screen (views/ide.ts) is loaded on first visit, with CodeMirror: esbuild splits it into a chunk beside main
+// (`splitting`, esm). Its stylesheet is not in the start CSS either: this plugin makes `styles/ide.css` a string the view
+// inserts when it first opens.
+const ideStylesheetAsText = {
+  name: 'ide-stylesheet-as-text',
+  setup(b) {
+    b.onLoad({ filter: /[\\/]styles[\\/]ide\.css$/ }, (args) => ({ contents: readFileSync(args.path, 'utf8'), loader: 'text' }));
+  },
+};
+
 const result = await esbuild.build({
   // Output paths in the metafile are relative to this, so the build works from any working directory.
   absWorkingDir: root,
@@ -104,6 +114,8 @@ const result = await esbuild.build({
   target: ['es2022'],
   format: 'esm',
   outdir: dist,
+  splitting: true,
+  plugins: [ideStylesheetAsText],
   // The @font-face urls name the copied font files; leave them as written.
   external: ['*.ttf'],
   // The engine's fingerprinted glue and wasm names, for the app to import the engine by.
@@ -167,6 +179,20 @@ const kb = (n) => (n / 1024).toFixed(1) + ' KiB';
 console.log(`dist/index.html  ${kb(html.length)}`);
 console.log(`dist/${jsBase}  ${kb(readFileSync(join(live, jsBase)).length)}`);
 console.log(`dist/${cssBase}  ${kb(readFileSync(join(live, cssBase)).length)}`);
+// The chunks: the ones main imports load with the start payload (modules the console and the IDE share); the rest load on
+// the IDE's first visit (CodeMirror and the IDE screen).
+const startChunks = new Set(result.metafile.outputs[jsFile].imports.filter((i) => i.kind === 'import-statement').map((i) => basename(i.path)));
+let startBytes = readFileSync(join(live, jsBase)).length;
+for (const name of Object.keys(result.metafile.outputs)) {
+  const base = basename(name);
+  if (!name.endsWith('.js') || base === jsBase) continue;
+  const size = readFileSync(join(live, base)).length;
+  if (startChunks.has(base)) {
+    startBytes += size;
+    console.log(`dist/${base}  ${kb(size)}  (start payload)`);
+  } else console.log(`dist/${base}  ${kb(size)}  (on first visit)`);
+}
+console.log(`start payload js  ${kb(startBytes)}`);
 console.log(`bundle sha256:${bundleHash.slice(0, 12)}…`);
 if (engineSizes) {
   const opt = { kept: 'wasm-opt -Oz', larger: 'wasm-opt dropped: it compressed larger', off: 'no wasm-opt' }[engineSizes.wasmOpt];

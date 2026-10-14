@@ -30,6 +30,7 @@ import { mount as treasury } from './treasury';
 import { mount as tools } from './tools';
 import { mount as usage } from './usage';
 import { mount as vault } from './vault';
+import { lazyMount } from './lazy';
 
 export type Cleanup = () => void;
 export type Mount = (root: HTMLElement, params: string[]) => Cleanup;
@@ -73,4 +74,6 @@ export const SCREENS: Screen[] = [
   { key: 'hardware-lab', label: 'Hardware lab', icon: 'wrench', section: 'Setup', mount: hardwareLab, hidden: true },
   { key: 'robot-lab', label: 'Robot lab', icon: 'wrench', section: 'Setup', mount: robotLab, hidden: true },
   { key: 'room-lab', label: 'Room lab', icon: 'wrench', section: 'Setup', mount: roomLab, hidden: true },
+  // The IDE is reached by its route and openIde (ide/open.ts), not the sidebar; its code loads on the first visit.
+  { key: 'ide', label: 'IDE', icon: 'file', section: 'Plaza', mount: lazyMount(() => import('./ide'), (m) => m.mount), hidden: true },
 ];

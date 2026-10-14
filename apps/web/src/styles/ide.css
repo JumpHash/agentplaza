@@ -1,0 +1,589 @@
+/* The IDE screen. Tokens only (styles/tokens.css): the editor surface is --sheet, its gutters --rule, the diff's add and
+   remove --ok-ink and --crit, and the dark theme comes with the tokens. Square corners; code in --mono. This sheet is
+   inserted on the first visit (views/ide.ts), so every rule is scoped under .ide or .ide-host. */
+
+.view.ide-host {
+  margin: 0;
+  padding: 0;
+  max-width: none;
+  border: 0;
+  background: var(--paper);
+  gap: 0;
+}
+
+.ide {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - var(--topbar-h));
+  min-height: 480px;
+  color: var(--ink);
+  background: var(--paper);
+  font: 400 var(--fs-sm) / 1.45 var(--serif);
+}
+
+.ide [hidden] {
+  display: none !important;
+}
+
+/* The top strip */
+.ide-top {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--s3);
+  padding: var(--s2) var(--s4);
+  border-bottom: 1px solid var(--rule);
+  background: var(--paper);
+}
+
+.ide-picker {
+  min-width: 260px;
+  max-width: 380px;
+  font: 400 var(--fs-xs) / 1.4 var(--mono);
+}
+
+.ide-count,
+.ide-totals {
+  font: 400 var(--fs-xs) / 1.4 var(--mono);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
+/* Three columns: tree, editor, changes */
+.ide-body {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr) 380px;
+  grid-template-rows: minmax(0, 1fr);
+}
+
+.ide-tree,
+.ide-side {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--sheet);
+}
+
+.ide-tree {
+  border-right: 1px solid var(--rule);
+}
+
+.ide-side {
+  border-left: 1px solid var(--rule);
+}
+
+.ide-tree-tools {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s2);
+  padding: var(--s2);
+  border-bottom: 1px solid var(--rule-faint);
+}
+
+.ide-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--s1);
+  font: 400 var(--fs-xs) / 1.3 var(--mono);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+  cursor: pointer;
+}
+
+.ide-tree-list {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--s1) 0;
+  font: 400 12.5px / 1.6 var(--mono);
+}
+
+.ide-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 1px 8px;
+  white-space: nowrap;
+  color: var(--ink-2);
+  cursor: pointer;
+}
+
+.ide-row:hover {
+  background: var(--hover);
+  color: var(--ink);
+}
+
+.ide-row.dir {
+  color: var(--ink);
+}
+
+.ide-row.on {
+  background: var(--accent-bg);
+  color: var(--ink);
+  box-shadow: inset 2px 0 0 var(--signal);
+}
+
+.ide-row.loading {
+  color: var(--ink-3);
+  cursor: default;
+}
+
+.ide-row.loading:hover {
+  background: transparent;
+}
+
+.ide-caret {
+  width: 10px;
+  flex: none;
+  color: var(--ink-3);
+}
+
+.ide-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ide-row.changed .ide-name {
+  color: var(--signal-ink);
+}
+
+.ide-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  margin-left: auto;
+  background: var(--signal);
+}
+
+.ide-tag {
+  flex: none;
+  padding: 0 3px;
+  border: 1px solid var(--rule);
+  font-size: 10px;
+  color: var(--ink-3);
+}
+
+/* The editor column: tabs, banners, the editor */
+.ide-centre {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--sheet);
+}
+
+.ide-tabbar {
+  display: flex;
+  align-items: stretch;
+  min-height: 34px;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--rule);
+  background: var(--paper);
+}
+
+.ide-tab {
+  display: flex;
+  align-items: center;
+  flex: none;
+  border-right: 1px solid var(--rule);
+  color: var(--ink-3);
+  font: 400 12px / 1 var(--mono);
+}
+
+.ide-tab.on {
+  background: var(--sheet);
+  color: var(--ink);
+  box-shadow: inset 0 2px 0 var(--signal);
+}
+
+.ide-tab-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 9px 4px 9px 10px;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.ide-tab-x {
+  padding: 9px 8px 9px 4px;
+  border: 0;
+  background: none;
+  color: var(--ink-3);
+  font: inherit;
+  cursor: pointer;
+}
+
+.ide-tab-x:hover {
+  color: var(--ink);
+}
+
+.ide-dirty {
+  color: var(--signal);
+}
+
+.ide-conflict-mark {
+  color: var(--crit);
+  font-weight: 700;
+}
+
+.ide-banners {
+  display: flex;
+  flex-direction: column;
+}
+
+.ide-banners:empty {
+  display: none;
+}
+
+.ide-banner {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--s2);
+  padding: var(--s2) var(--s3);
+  border-bottom: 1px solid var(--rule);
+  background: var(--paper);
+  color: var(--ink-2);
+  font: 400 var(--fs-sm) / 1.4 var(--serif);
+}
+
+.ide-banner.conflict {
+  background: var(--danger-bg);
+  border-bottom-color: var(--crit);
+  color: var(--ink);
+}
+
+.ide-banner .spacer {
+  flex: 1;
+}
+
+.ide-cm {
+  flex: 1;
+  min-height: 0;
+}
+
+.ide-cm .cm-editor {
+  height: 100%;
+}
+
+.ide-empty-centre {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* The right panel: changes and checkpoints */
+.ide-side-tabs {
+  border-bottom: 1px solid var(--rule);
+  background: var(--paper);
+}
+
+.ide-side-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.ide-changes {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+  padding: var(--s3);
+}
+
+.ide-changes-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--s2);
+}
+
+.ide-changes-head .select {
+  max-width: 100%;
+}
+
+.ide-files {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+
+.ide-file {
+  border: 1px solid var(--rule);
+  background: var(--paper);
+}
+
+.ide-file > summary {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  padding: 6px 8px;
+  list-style: none;
+  font: 400 12px / 1.4 var(--mono);
+  cursor: pointer;
+}
+
+.ide-file > summary::-webkit-details-marker {
+  display: none;
+}
+
+.ide-file-name {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-decoration: underline;
+  text-decoration-color: var(--rule);
+  text-underline-offset: 3px;
+}
+
+.ide-file-name:hover {
+  text-decoration-color: var(--signal);
+}
+
+.ide-counts {
+  display: flex;
+  gap: 6px;
+  font: 400 11px / 1.4 var(--mono);
+}
+
+.ide-counts .add {
+  color: var(--ok-ink);
+}
+
+.ide-counts .del {
+  color: var(--crit);
+}
+
+.ide-file-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  padding: var(--s2);
+  border-top: 1px solid var(--rule-faint);
+}
+
+.ide-viewed {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font: 400 11px / 1.4 var(--mono);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+  cursor: pointer;
+}
+
+.ide-hunk > summary {
+  padding: 2px 0;
+  color: var(--info-ink);
+  font: 400 11px / 1.6 var(--mono);
+  cursor: pointer;
+}
+
+.ide-lines {
+  overflow-x: auto;
+  border: 1px solid var(--rule-faint);
+}
+
+.ide-line {
+  display: grid;
+  grid-template-columns: 44px 44px 16px minmax(0, 1fr);
+  width: max-content;
+  min-width: 100%;
+  font: 400 12px / 1.5 var(--mono);
+  white-space: pre;
+}
+
+.ide-line .ln {
+  padding-right: 6px;
+  background: var(--sheet);
+  color: var(--ink-3);
+  text-align: right;
+  user-select: none;
+}
+
+.ide-line .sign {
+  color: var(--ink-3);
+  text-align: center;
+  user-select: none;
+}
+
+.ide-line .code {
+  padding-right: 8px;
+}
+
+.ide-line.add {
+  background: color-mix(in srgb, var(--ok-ink) 14%, transparent);
+}
+
+.ide-line.add .sign {
+  color: var(--ok-ink);
+}
+
+.ide-line.remove {
+  background: color-mix(in srgb, var(--crit) 14%, transparent);
+}
+
+.ide-line.remove .sign {
+  color: var(--crit);
+}
+
+.ide-line.no_newline {
+  color: var(--ink-3);
+}
+
+.ide-note {
+  margin: 0;
+  color: var(--ink-3);
+  font: 400 var(--fs-xs) / 1.4 var(--mono);
+}
+
+.ide-note.error {
+  color: var(--crit);
+}
+
+.ide-cps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ide-cp {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s2);
+  padding: var(--s2);
+  border: 1px solid var(--rule);
+  background: var(--paper);
+}
+
+.ide-cp-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+/* The overlays: quick open and search */
+.ide-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 12vh;
+  background: color-mix(in srgb, var(--paper) 55%, transparent);
+}
+
+.ide-palette {
+  display: flex;
+  flex-direction: column;
+  width: min(640px, 92%);
+  max-height: 70vh;
+  border: 1px solid var(--ink);
+  background: var(--sheet);
+  box-shadow: var(--shadow);
+}
+
+.ide-palette .input {
+  width: 100%;
+  border: 0;
+  border-bottom: 1px solid var(--rule);
+  font: 400 13px / 1.4 var(--mono);
+}
+
+.ide-palette .ide-note {
+  padding: var(--s2) var(--s3) 0;
+}
+
+.ide-hits {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  list-style: none;
+}
+
+.ide-hits li {
+  display: flex;
+  gap: var(--s3);
+  padding: 6px 10px;
+  color: var(--ink-2);
+  font: 400 12.5px / 1.5 var(--mono);
+  cursor: pointer;
+}
+
+.ide-hits li.on,
+.ide-hits li:hover {
+  background: var(--accent-bg);
+  color: var(--ink);
+}
+
+.ide-hit-where {
+  flex: none;
+  color: var(--info-ink);
+  white-space: nowrap;
+}
+
+.ide-hit-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: pre;
+}
+
+/* Narrower windows: the changes panel moves under the editor, then the tree goes above it */
+@media (max-width: 1100px) {
+  .ide-body {
+    grid-template-columns: 220px minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) minmax(220px, 40%);
+  }
+
+  .ide-side {
+    grid-column: 1 / -1;
+    border-left: 0;
+    border-top: 1px solid var(--rule);
+  }
+}
+
+@media (max-width: 680px) {
+  .ide-body {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: 180px minmax(260px, 1fr) minmax(260px, auto);
+  }
+
+  .ide-tree {
+    border-right: 0;
+    border-bottom: 1px solid var(--rule);
+  }
+
+  .ide-top {
+    padding: var(--s2) var(--s3);
+  }
+
+  .ide-picker {
+    min-width: 0;
+    flex: 1 1 100%;
+  }
+}
