@@ -132,7 +132,7 @@
   background: var(--paper);
   color: var(--ink-3);
   font-size: 11px;
-  text-transform: uppercase;
+
   letter-spacing: 0.06em;
   border-bottom: 1px solid var(--rule);
 }

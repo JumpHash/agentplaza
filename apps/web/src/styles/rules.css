@@ -14,7 +14,7 @@
 /* A tier group's head (the built-in statutes): the label and count, the description, then the rule */
 .rules-group-head { display: flex; flex-direction: column; gap: 6px; border-bottom: 1px solid var(--ink); padding-bottom: 8px; min-width: 0; }
 .rules-group-title { display: flex; align-items: baseline; gap: 10px; }
-.rules-group-title h3 { margin: 0; font-size: 20px; text-transform: uppercase; }
+.rules-group-title h3 { margin: 0; font-size: 20px; }
 .rules-tabs { min-width: 0; max-width: 100%; overflow-x: auto; }
 .rules-list { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
 
@@ -22,7 +22,7 @@
 .rules-strip { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border: 1px solid var(--rule); background: var(--sheet); }
 .rules-stat { display: flex; flex-direction: column; gap: 4px; padding: 14px 18px; border-right: 1px solid var(--rule); min-width: 0; }
 .rules-stat:last-child { border-right: 0; }
-.rules-stat-label { font-size: 12px; color: var(--ink-3); text-transform: uppercase; letter-spacing: 0.06em; }
+.rules-stat-label { font-size: 12px; color: var(--ink-3); letter-spacing: 0.01em; }
 .rules-stat-value { font-size: 26px; font-weight: 600; color: var(--ink); font-variant-numeric: tabular-nums; }
 
 /* Statutes toolbar: search and severity, then the effect chips and the tier tabs */
@@ -91,7 +91,7 @@
 .law-short, .law-why { margin: 0; max-width: 72ch; color: var(--ink-2); line-height: 1.6; }
 .law-short strong, .law-why strong { color: var(--ink); font-weight: 600; }
 .law-applies { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font-size: 13px; color: var(--ink-2); }
-.law-label { font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-3); }
+.law-label { font-size: 12px; letter-spacing: 0.01em; color: var(--ink-3); }
 .law-scope { font-family: var(--mono); font-size: 12.5px; color: var(--ink); }
 .law-ops { display: inline-flex; flex-wrap: wrap; gap: 6px; }
 .op { font-family: var(--mono); font-size: 12px; border: 1px solid var(--rule); background: var(--paper); color: var(--ink-2); padding: 1px 6px; }
@@ -160,14 +160,14 @@
 /* Check results: the compile errors (each one jumps to its line) and the dry run */
 .rules-check { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
 .rules-check:empty { display: none; }
-.rules-check h4 { margin: 6px 0 2px; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-3); }
+.rules-check h4 { margin: 6px 0 2px; font-size: 12px; font-weight: 600; letter-spacing: 0.01em; color: var(--ink-3); }
 .rules-check-bad h4 { color: var(--crit); }
 .rules-check-ok p { margin: 0; font-size: 14px; color: var(--ink-2); overflow-wrap: anywhere; }
 .rules-diags { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 .rules-diags li { font-size: 14px; line-height: 1.5; color: var(--ink); overflow-wrap: anywhere; }
 .rules-diag {
   appearance: none; border: 0; padding: 0; margin: 0 6px 0 0; background: none; cursor: pointer;
-  font: 600 13px var(--mono); color: var(--crit); text-decoration: underline; text-underline-offset: 3px;
+  font: 600 13px var(--sans); color: var(--crit); text-decoration: underline; text-underline-offset: 3px;
 }
 .rules-diag:focus-visible { outline: 2px solid var(--signal); outline-offset: 2px; }
 .rules-scroll { overflow-x: auto; max-width: 100%; }
@@ -176,7 +176,7 @@
 .rules-ref { font-size: 13px; color: var(--ink-2); min-width: 0; }
 .rules-ref summary { cursor: pointer; color: var(--ink-2); }
 .rules-ref[open] summary { color: var(--ink); margin-bottom: 8px; }
-.rules-ref ul { margin: 0 0 12px; padding-left: 20px; line-height: 1.6; font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
+.rules-ref ul { margin: 0 0 12px; padding-left: 20px; line-height: 1.6; font-family: var(--sans); font-size: 12px; overflow-wrap: anywhere; }
 .rules-ref .law-source { font-size: 12px; }
 
 /* Phones and narrow tablets: one column, tighter cards and a shorter editor */

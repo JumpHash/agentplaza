@@ -17,8 +17,8 @@
 .lab-dev { display: flex; flex-direction: column; gap: 6px; min-width: 0; padding-bottom: 14px; border-bottom: 1px solid var(--rule-faint); }
 .lab-dev:last-child { padding-bottom: 0; border-bottom: 0; }
 .lab-dev-top { display: flex; align-items: center; gap: 8px 10px; flex-wrap: wrap; min-width: 0; }
-.lab-dev-name { font: 600 var(--fs-sm)/1.4 var(--mono); min-width: 0; overflow-wrap: anywhere; }
-.lab-dev-mem, .lab-dev-run { font: 400 var(--fs-xs)/1.4 var(--mono); color: var(--text-2); overflow-wrap: anywhere; }
+.lab-dev-name { font: 600 var(--fs-sm)/1.4 var(--sans); min-width: 0; overflow-wrap: anywhere; }
+.lab-dev-mem, .lab-dev-run { font: 400 var(--fs-xs)/1.4 var(--sans); color: var(--text-2); overflow-wrap: anywhere; }
 .lab-dev-util { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .lab-dev-util .lab-mono { min-width: 3.5em; text-align: right; }
 

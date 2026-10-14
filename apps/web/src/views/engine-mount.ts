@@ -675,7 +675,7 @@ export function mountEngine(root: HTMLElement, initialId: string | null = null, 
   // touch-action none: the pointer drives the orbit on touch screens too, so the page does not pan or zoom under it.
   canvas.style.cssText = 'touch-action:none';
   const status = document.createElement('div');
-  status.style.cssText = 'position:absolute;left:16px;bottom:16px;font:13px/1.4 system-ui,sans-serif;color:#ddd;pointer-events:none';
+  status.style.cssText = 'position:absolute;left:16px;bottom:16px;font:13px/1.4 var(--sans);color:#ddd;pointer-events:none';
   status.textContent = 'Starting the engine';
   const card = document.createElement('div');
   card.className = 'floor-card machine-card';

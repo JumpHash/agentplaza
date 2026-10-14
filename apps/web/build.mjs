@@ -25,9 +25,12 @@ const dist = join(root, 'dist.next');
 rmSync(dist, { recursive: true, force: true });
 mkdirSync(dist, { recursive: true });
 
-// The fonts (assets/fonts, OFL) sit at the root of dist too: noded serves bare file names only.
+// The faces the console names (styles/tokens.css) sit at the root of dist too: noded serves bare file names only. Inter
+// (woff2, variable, upright and italic) is the interface and reading face; Martian Mono (ttf) is for code. The Source
+// Serif 4 and Inter TTF files in assets/fonts are the desktop's (it embeds them), so the web does not copy them.
 const fontsDir = join(root, '../../assets/fonts');
-for (const file of readdirSync(fontsDir).filter((f) => f.endsWith('.ttf'))) {
+const webFace = /^(MartianMono-.*\.ttf|InterVariable(-Italic)?\.woff2)$/;
+for (const file of readdirSync(fontsDir).filter((f) => webFace.test(f))) {
   copyFileSync(join(fontsDir, file), join(dist, file));
 }
 
@@ -121,7 +124,7 @@ const result = await esbuild.build({
   splitting: true,
   plugins: [ideStylesheetAsText],
   // The @font-face urls name the copied font files; leave them as written.
-  external: ['*.ttf'],
+  external: ['*.ttf', '*.woff2'],
   // The engine's fingerprinted glue and wasm names, for the app to import the engine by.
   define: {
     __APZ_ENGINE_JS__: JSON.stringify(engineJsName),

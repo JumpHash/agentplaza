@@ -216,7 +216,7 @@ p.se-error {
 .se-label {
   color: var(--ink-3);
   font-size: 0.75rem;
-  text-transform: uppercase;
+
   letter-spacing: 0.04em;
 }
 
@@ -308,7 +308,7 @@ p.se-error {
 
 .se-group h3 {
   margin: 8px 0 4px;
-  font-family: var(--mono);
+  font-family: var(--sans);
   font-size: 0.875rem;
 }
 

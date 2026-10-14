@@ -4,7 +4,7 @@
 
 *, *::before, *::after { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; }
-body { background: var(--paper); color: var(--ink); font: var(--fs-md) / var(--lh) var(--serif); -webkit-font-smoothing: antialiased; }
+body { background: var(--paper); color: var(--ink); font: var(--type-prose); font-feature-settings: "cv11", "ss01"; -webkit-font-smoothing: antialiased; }
 /* Every scroll area takes one thin scrollbar in the app palette: a rounded thumb in the rule colour
    that lightens on hover. Chromium and Safari take the -webkit- pseudo-elements; Firefox, which has
    no such selector, takes the standard properties. */
@@ -17,12 +17,12 @@ body { background: var(--paper); color: var(--ink); font: var(--fs-md) / var(--l
 }
 
 h1, h2, h3, h4, p { margin: 0; }
-h1 { font: 700 30px/1.05 var(--mono); font-stretch: 78%; letter-spacing: -0.02em; text-transform: uppercase; text-wrap: balance; }
-h2 { font: 600 11.5px var(--mono); letter-spacing: 0.14em; text-transform: uppercase; }
-h3 { font: 600 16px/1.35 var(--serif); }
+h1 { font: var(--type-page); letter-spacing: -0.01em; text-wrap: balance; }
+h2 { font: var(--type-section); }
+h3 { font: var(--type-item); }
 a { color: var(--ink); text-decoration: underline; text-decoration-color: var(--ink-3); text-underline-offset: 3px; }
 a:hover { color: var(--signal-ink); }
-code, pre, .mono { font-family: var(--mono); font-size: 12.5px; }
+code, pre, .mono { font-family: var(--mono); font-size: 13px; }
 :focus-visible { outline: 2px solid var(--signal); outline-offset: -2px; }
 [hidden] { display: none !important; }
 .muted { color: var(--ink-2); }
@@ -38,13 +38,13 @@ code, pre, .mono { font-family: var(--mono); font-size: 12.5px; }
   position: sticky; top: 0; z-index: 10; min-height: var(--topbar-h);
   display: flex; align-items: center; gap: var(--s4); flex-wrap: wrap;
   padding: 10px 34px; background: var(--paper); border-bottom: 1px solid var(--rule);
-  font: 400 11.5px var(--mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-3);
+  font: 400 12px var(--sans); letter-spacing: 0.01em; color: var(--ink-3);
 }
 .topbar .title { color: var(--ink-2); }
 .topbar .spacer { flex: 1; }
 .health { display: flex; gap: 18px; }
 .health span { display: inline-flex; align-items: center; gap: 7px; }
-.banner { display: flex; align-items: center; gap: 10px; margin: 18px 34px 0; padding: 10px 16px; font: 600 11.5px var(--mono); letter-spacing: 0.06em; text-transform: uppercase; border: 1px solid currentColor; }
+.banner { display: flex; align-items: center; gap: 10px; margin: 18px 34px 0; padding: 10px 16px; font: 600 12px var(--sans); letter-spacing: 0.01em; border: 1px solid currentColor; }
 .banner.danger { color: var(--crit); background: color-mix(in srgb, var(--crit) 7%, var(--sheet)); }
 .banner.warn { color: var(--warn); background: color-mix(in srgb, var(--warn) 7%, var(--sheet)); }
 
@@ -83,16 +83,16 @@ code, pre, .mono { font-family: var(--mono); font-size: 12.5px; }
 
 /* Tallies: the register's big mono figures. */
 .stat { padding: 14px 16px 16px; display: flex; flex-direction: column; gap: 2px; border: 1px solid var(--rule); }
-.stat .label { order: 2; font: 500 10.5px var(--mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-3); }
-.stat .value { order: 1; font: 700 34px/1 var(--mono); font-stretch: 78%; letter-spacing: -0.03em; font-variant-numeric: tabular-nums; margin: 2px 0 8px; overflow-wrap: anywhere; }
-.stat .sub { order: 3; font: italic 13px var(--serif); color: var(--ink-2); }
+.stat .label { order: 2; font: 500 11px var(--sans); letter-spacing: 0.01em; color: var(--ink-3); }
+.stat .value { order: 1; font: 700 34px/1 var(--sans); letter-spacing: -0.03em; font-variant-numeric: tabular-nums; margin: 2px 0 8px; overflow-wrap: anywhere; }
+.stat .sub { order: 3; font: italic 13px var(--sans); color: var(--ink-2); }
 
 /* Printed buttons: square, ink-bordered, a hard offset shadow. */
 .btn {
   display: inline-flex; align-items: center; justify-content: center; gap: 7px;
   min-height: 36px; padding: 0 14px; border: 1px solid var(--ink); border-radius: 0;
   background: var(--sheet); color: var(--ink); box-shadow: var(--print);
-  font: 600 11.5px var(--mono); letter-spacing: 0.08em; text-transform: uppercase; cursor: pointer; white-space: nowrap;
+  font: 600 13px/1.2 var(--sans); cursor: pointer; white-space: nowrap;
 }
 .btn:hover { background: var(--ink); color: var(--sheet); }
 .btn:active { transform: translate(2px, 2px); box-shadow: none; }
@@ -103,7 +103,7 @@ code, pre, .mono { font-family: var(--mono); font-size: 12.5px; }
 .btn.ghost { border-color: transparent; box-shadow: none; background: transparent; color: var(--ink-2); }
 .btn.ghost:hover { color: var(--ink); background: var(--hover); }
 .btn:disabled, .btn:disabled:hover { opacity: 0.4; cursor: default; transform: none; background: var(--sheet); color: var(--ink); }
-.btn.sm { min-height: 28px; padding: 0 10px; font-size: 10.5px; }
+.btn.sm { min-height: 28px; padding: 0 10px; font-size: 12px; }
 .btn.icon-only { width: 34px; padding: 0; }
 .btn.sm.icon-only { width: 28px; }
 .btn:not(.icon-only) .icon { width: 13px; height: 13px; }
@@ -112,7 +112,7 @@ code, pre, .mono { font-family: var(--mono); font-size: 12.5px; }
    the owner's (accent) a filled orange square. */
 .badge {
   display: inline-flex; align-items: center; gap: 7px; white-space: nowrap;
-  font: 500 11px var(--mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-2);
+  font: var(--type-badge); letter-spacing: 0.01em; color: var(--ink-2);
 }
 .badge::before { content: ""; width: 8px; height: 8px; border: 1px solid currentColor; flex: none; }
 .badge > .dot { display: none; }
@@ -136,22 +136,22 @@ code, pre, .mono { font-family: var(--mono); font-size: 12.5px; }
 .table { width: 100%; border-collapse: collapse; font-size: 14px; }
 .table th {
   text-align: left; padding: 12px 14px 8px; border-bottom: 1px solid var(--ink);
-  font: 600 10.5px var(--mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-3); white-space: nowrap;
+  font: 600 11px var(--sans); letter-spacing: 0.01em; color: var(--ink-3); white-space: nowrap;
 }
 .table td { padding: 11px 14px; border-bottom: 1px solid var(--rule-faint); vertical-align: baseline; }
-.table td strong, .table td b { font: 600 15px/1.35 var(--serif); }
+.table td strong, .table td b { font: var(--type-item); }
 .table tr:last-child td { border-bottom: 0; }
 .table tr.clickable { cursor: pointer; }
 .table tr.clickable:hover td { background: var(--hover); }
-.table .num { text-align: right; font: 500 12.5px var(--mono); font-variant-numeric: tabular-nums; }
+.table .num { text-align: right; font: 500 13px var(--sans); font-variant-numeric: tabular-nums; }
 
 /* Fields: mono labels, underlined inputs. */
 .field { display: flex; flex-direction: column; gap: 4px; }
-.field > span { font: 400 11px var(--mono); color: var(--ink-3); text-transform: uppercase; letter-spacing: 0.06em; }
-.field .hint { font: italic 13px var(--serif); color: var(--ink-3); text-transform: none; letter-spacing: 0; }
+.field > span { font: 400 11px var(--sans); color: var(--ink-3); letter-spacing: 0.01em; }
+.field .hint { font: italic 13px var(--sans); color: var(--ink-3); text-transform: none; letter-spacing: 0; }
 .input, .select, .textarea {
   width: 100%; padding: 6px 0 7px; border: 0; border-bottom: 1px solid var(--ink); border-radius: 0;
-  background: transparent; color: var(--ink); font: 15px/1.5 var(--serif);
+  background: transparent; color: var(--ink); font: var(--type-ui); font-weight: 400;
 }
 .select { cursor: pointer; }
 .select option { background: var(--sheet); color: var(--ink); }
@@ -161,18 +161,18 @@ input[type="checkbox"] { accent-color: var(--signal); }
 .form { display: flex; flex-direction: column; gap: 18px; }
 .form-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 14px 26px; }
 .form-actions { display: flex; justify-content: flex-end; gap: 12px; padding-top: 4px; }
-.error-text { font: italic 14px var(--serif); color: var(--crit); }
+.error-text { font: italic 14px var(--sans); color: var(--crit); }
 
 /* Empty state: icon, bold mono line, faint serif sentence, centred. */
 .empty { padding: 40px 16px; text-align: center; display: flex; flex-direction: column; align-items: center; gap: 10px; }
 .empty .icon { display: block; width: 16px; height: 16px; color: var(--ink-3); }
-.empty h3 { font: 700 13px var(--mono); color: var(--ink); margin: 0; }
-.empty p { font: 14px var(--serif); color: var(--ink-3); margin: 0; }
+.empty h3 { font: 700 13px var(--sans); color: var(--ink); margin: 0; }
+.empty p { font: 14px var(--sans); color: var(--ink-3); margin: 0; }
 
 .tabs { display: flex; gap: 22px; border-bottom: 1px solid var(--rule); }
 .tabs button {
   background: none; border: 0; border-bottom: 2px solid transparent; color: var(--ink-3); cursor: pointer;
-  padding: 10px 0 8px; margin-bottom: -1px; font: 600 11.5px var(--mono); letter-spacing: 0.1em; text-transform: uppercase;
+  padding: 10px 0 8px; margin-bottom: -1px; font: 600 12px var(--sans); letter-spacing: 0.01em;
 }
 .tabs button:hover { color: var(--ink); }
 .tabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--signal); }
@@ -182,23 +182,25 @@ input[type="checkbox"] { accent-color: var(--signal); }
 .logo svg { width: 18px; height: 18px; fill: currentColor; }
 .logo.lg { width: 48px; height: 48px; }
 .logo.lg svg { width: 26px; height: 26px; }
-.logo .mono-mark { font: 700 13px var(--mono); letter-spacing: -0.02em; }
+.logo .mono-mark { font: 700 13px var(--sans); letter-spacing: -0.02em; }
 
 .modal-backdrop { position: fixed; inset: 0; z-index: 50; background: color-mix(in srgb, var(--paper) 70%, transparent); display: grid; place-items: center; padding: 24px; }
 .modal { width: min(620px, 100%); max-height: calc(100vh - 48px); overflow: auto; background: var(--sheet); border: 1px solid var(--ink); box-shadow: 6px 6px 0 var(--ink); }
 .modal .card-head { position: sticky; top: 0; background: var(--sheet); border-bottom: 2px solid var(--ink); padding: 16px 18px 12px; }
-.modal .card-head h2 { font: 700 18px/1.1 var(--mono); font-stretch: 80%; letter-spacing: -0.01em; }
+.modal .card-head h2 { font: 700 18px/1.1 var(--sans); letter-spacing: -0.01em; }
 .modal .card-body { padding: 18px; }
 
 .toast-host { position: fixed; right: 24px; bottom: 24px; z-index: 60; display: flex; flex-direction: column; gap: 10px; }
-.toast { padding: 10px 14px; background: var(--sheet); border: 1px solid var(--ink); box-shadow: var(--print); font: 12.5px var(--mono); max-width: 420px; }
+.toast { padding: 10px 14px; background: var(--sheet); border: 1px solid var(--ink); box-shadow: var(--print); font: 13px var(--sans); max-width: 420px; }
 .toast.error { border-color: var(--crit); color: var(--crit); box-shadow: 2px 2px 0 var(--crit); }
 
 /* Particulars: label ........ value. */
 .kv { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 7px 16px; }
-.kv dt { font: 400 11px var(--mono); color: var(--ink-3); text-transform: uppercase; letter-spacing: 0.06em; padding-top: 2px; }
-.kv dd { margin: 0; overflow-wrap: anywhere; font-size: 14.5px; }
-.pre { margin: 0; padding: 12px 14px; background: var(--paper); border: 1px solid var(--rule); font: 12.5px/1.55 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 380px; overflow: auto; }
+.kv dt { font: 400 11px var(--sans); color: var(--ink-3); letter-spacing: 0.01em; padding-top: 2px; }
+.kv dd { margin: 0; overflow-wrap: anywhere; font-size: 14px; }
+.pre { margin: 0; padding: 12px 14px; background: var(--paper); border: 1px solid var(--rule); font: var(--type-code); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 380px; overflow: auto; }
 .truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-details > summary { cursor: pointer; font: 500 11px var(--mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-3); }
+/* Figures in tables, counters and timestamps: Inter with even digit widths, so columns line up. */
+.num { font-variant-numeric: tabular-nums; }
+details > summary { cursor: pointer; font: 500 11px var(--sans); letter-spacing: 0.01em; color: var(--ink-3); }
 details > summary:hover { color: var(--ink); }

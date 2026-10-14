@@ -41,12 +41,12 @@
   padding: 14px;
   border: 1px solid var(--ink);
   background: var(--paper);
-  font: 400 12px/1.5 var(--mono);
+  font: 400 12px/1.5 var(--sans);
 }
 .mach-caps {
-  font: 500 10.5px var(--mono);
+  font: 500 11px var(--sans);
   letter-spacing: 0.12em;
-  text-transform: uppercase;
+
   color: var(--ink-3);
 }
 .mach-plane .mach-caps { color: var(--ink); }
@@ -64,9 +64,9 @@
   transform: translate(-50%, -50%);
   padding: 0 8px;
   background: var(--sheet);
-  font: 400 11px var(--mono);
+  font: 400 11px var(--sans);
   letter-spacing: 0.04em;
-  text-transform: uppercase;
+
   color: var(--ink-2);
   white-space: nowrap;
 }
@@ -90,9 +90,9 @@
 .mach-mark.live { background: var(--ok); border-color: var(--ok); }
 .mach-mark.down { background: var(--danger); border-color: var(--danger); }
 .mach-name {
-  font: 700 13px/1.2 var(--mono);
+  font: 700 13px/1.2 var(--sans);
   letter-spacing: 0.04em;
-  text-transform: uppercase;
+
 }
 
 .mach-section {
@@ -104,10 +104,10 @@
 }
 .mach-dev { display: block; width: 160px; height: auto; }
 .mach-heading {
-  font: 700 30px/1 var(--mono);
+  font: 700 30px/1 var(--sans);
   font-stretch: 78%;
   letter-spacing: -0.02em;
-  text-transform: uppercase;
+
   margin-bottom: 8px;
 }
 .mach-sentence { color: var(--ink-2); margin-bottom: 20px; }
@@ -122,32 +122,32 @@
   border-top: 1px solid var(--ink);
 }
 .mach-tally-label {
-  font: 500 10.5px var(--mono);
+  font: 500 11px var(--sans);
   letter-spacing: 0.12em;
-  text-transform: uppercase;
+
   color: var(--ink-3);
 }
 .mach-figure {
-  font: 700 30px/1 var(--mono);
+  font: 700 30px/1 var(--sans);
   font-stretch: 78%;
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.02em;
 }
 .mach-figure.long { font-size: 19px; }
-.mach-caption { font: 400 11.5px/1.4 var(--mono); color: var(--ink-3); }
+.mach-caption { font: 400 12px/1.4 var(--sans); color: var(--ink-3); }
 .mach-spark { display: block; width: 100%; height: 36px; }
 .mach-bar { height: 6px; border: 1px solid var(--rule); }
 .mach-bar-fill { height: 100%; background: var(--ink); }
-.mach-live > .faint { font: 400 11.5px var(--mono); }
+.mach-live > .faint { font: 400 12px var(--sans); }
 .mach-none { font-style: italic; color: var(--ink-3); margin-bottom: 24px; }
 .mach-runs { margin-bottom: 20px; }
 .mach-section .mach-caps { margin: 0 0 8px; }
-.mach-tech { margin-top: 20px; font: 400 12px var(--mono); color: var(--ink-2); }
+.mach-tech { margin-top: 20px; font: 400 12px var(--sans); color: var(--ink-2); }
 .mach-tech summary {
   cursor: pointer;
-  font: 500 10.5px var(--mono);
+  font: 500 11px var(--sans);
   letter-spacing: 0.12em;
-  text-transform: uppercase;
+
   color: var(--ink-3);
 }
 
@@ -167,9 +167,9 @@
 .res-sub { margin: 12px 0 0; }
 .res-row { display: grid; gap: 6px; min-width: 0; }
 .res-title {
-  font: 500 10.5px var(--mono);
+  font: 500 11px var(--sans);
   letter-spacing: 0.12em;
-  text-transform: uppercase;
+
   color: var(--ink-3);
 }
 .res-bar { display: flex; height: 14px; border: 1px solid var(--rule); background: var(--paper); overflow: hidden; }
@@ -181,7 +181,7 @@
   margin: 0;
   padding: 0;
   list-style: none;
-  font: 400 11.5px/1.4 var(--mono);
+  font: 400 12px/1.4 var(--sans);
   color: var(--ink-2);
 }
 .res-legend li { display: flex; align-items: center; gap: 6px; }
@@ -217,9 +217,9 @@
 @media (max-width: 1280px) { .tr-tallies { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 @media (max-width: 960px) { .tr-tallies { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .tr-tile { display: grid; gap: 6px; padding: 14px 16px; background: var(--sheet); border: 1px solid var(--rule-faint); min-width: 0; }
-.tr-figure { font: 700 22px var(--mono); color: var(--ink); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.tr-figure { font: 700 22px var(--sans); color: var(--ink); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 /* A note wraps only between its parts (each part is a nowrap span). */
-.tr-sub { display: flex; flex-wrap: wrap; column-gap: 4px; font: 400 12px/1.4 var(--mono); color: var(--ink-3); min-width: 0; }
+.tr-sub { display: flex; flex-wrap: wrap; column-gap: 4px; font: 400 12px/1.4 var(--sans); color: var(--ink-3); min-width: 0; }
 .tr-sub > span { white-space: nowrap; }
 .tr-sub a { color: var(--ink-2); }
 .tr-bar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; margin: 0; }
@@ -229,55 +229,55 @@
 .tr-bars svg, .chart-svg { display: block; width: 100%; height: auto; }
 .tr-grid { stroke: var(--chart-grid, rgba(128, 128, 128, 0.25)); stroke-width: 1px; }
 .tr-axis { stroke: var(--ink-3); stroke-width: 1px; }
-.tr-tick { font: 400 11px var(--mono); fill: var(--ink-3); }
+.tr-tick { font: 400 11px var(--sans); fill: var(--ink-3); }
 .tr-hover { fill: var(--ink); fill-opacity: 0.06; }
 .tr-legend { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-bottom: 10px; }
 .tr-key {
   display: inline-flex; align-items: center; gap: 6px; padding: 2px 4px; border: 0; background: none;
-  font: 500 11.5px var(--mono); letter-spacing: 0.02em; color: var(--ink-2); cursor: pointer; white-space: nowrap;
+  font: 500 12px var(--sans); letter-spacing: 0.02em; color: var(--ink-2); cursor: pointer; white-space: nowrap;
 }
 .tr-key[aria-pressed="false"] { color: var(--ink-3); text-decoration: line-through; }
 .tr-swatch { display: inline-block; width: 10px; height: 10px; }
 .tr-pane { min-width: 0; }
 .tr-tablewrap { overflow-x: auto; }
-.tr-pager { display: flex; align-items: center; gap: 8px; margin-top: 10px; font: 400 12px var(--mono); color: var(--ink-2); }
+.tr-pager { display: flex; align-items: center; gap: 8px; margin-top: 10px; font: 400 12px var(--sans); color: var(--ink-2); }
 .tr-pager > span { margin-right: auto; }
-.tr-table { width: 100%; border-collapse: collapse; font: 400 12.5px var(--mono); font-variant-numeric: tabular-nums; }
+.tr-table { width: 100%; border-collapse: collapse; font: 400 13px var(--sans); font-variant-numeric: tabular-nums; }
 .tr-table th, .tr-table td { padding: 7px 10px; border-bottom: 1px solid var(--rule-faint); text-align: left; white-space: nowrap; }
 .tr-table th.num, .tr-table td.num { text-align: right; }
 .tr-table tfoot td { border-top: 1px solid var(--ink); border-bottom: 0; font-weight: 600; }
-.tr-sort { border: 0; background: none; padding: 0; font: inherit; color: var(--ink-3); letter-spacing: 0.08em; text-transform: uppercase; cursor: pointer; }
+.tr-sort { border: 0; background: none; padding: 0; font: inherit; color: var(--ink-3); letter-spacing: 0.01em; cursor: pointer; }
 .tr-sort:hover { color: var(--ink); }
 .tr-share-wrap { display: inline-flex; align-items: center; gap: 8px; justify-content: flex-end; min-width: 140px; }
 .tr-share { position: relative; display: inline-block; width: 80px; height: 6px; background: var(--rule-faint); }
 .tr-share i { position: absolute; inset: 0 auto 0 0; background: var(--ink-2); transform-origin: left; animation: tr-grow 0.5s ease-out both; }
 .tr-pct { color: var(--ink-3); font-size: 11.5px; }
-.tr-tip { position: absolute; min-width: 160px; padding: 8px 10px; background: var(--sheet); border: 1px solid var(--ink); font: 400 12px/1.5 var(--mono); }
+.tr-tip { position: absolute; min-width: 160px; padding: 8px 10px; background: var(--sheet); border: 1px solid var(--ink); font: 400 12px/1.5 var(--sans); }
 .tr-tip-row { display: flex; justify-content: space-between; gap: 14px; }
 .tr-tip-v { font-variant-numeric: tabular-nums; }
 .tr-flow-wrap { padding: 18px 16px; overflow-x: auto; }
 .tr-flow { display: block; width: 100%; min-width: 640px; height: auto; }
 .tr-box { fill: var(--sheet); stroke: var(--ink); stroke-width: 1; }
-.tr-label { font: 500 10.5px var(--mono); letter-spacing: 0.12em; text-transform: uppercase; fill: var(--ink-3); }
-.tr-fig { font: 700 24px var(--mono); fill: var(--ink); font-variant-numeric: tabular-nums; }
-.tr-flowv { font: 500 11px var(--mono); fill: var(--ink-2); font-variant-numeric: tabular-nums; paint-order: stroke; stroke: var(--sheet); stroke-width: 3px; }
+.tr-label { font: 500 11px var(--sans); letter-spacing: 0.01em; fill: var(--ink-3); }
+.tr-fig { font: 700 24px var(--sans); fill: var(--ink); font-variant-numeric: tabular-nums; }
+.tr-flowv { font: 500 11px var(--sans); fill: var(--ink-2); font-variant-numeric: tabular-nums; paint-order: stroke; stroke: var(--sheet); stroke-width: 3px; }
 .tr-line { fill: none; stroke: var(--ink-2); stroke-opacity: 0.45; }
 .tr-run { fill: none; stroke: var(--ink); stroke-dasharray: 2 14; stroke-linecap: round; animation: tr-travel var(--tr-dur, 2s) linear infinite; }
 .tr-head { fill: var(--ink-2); }
 .tr-ledger { display: grid; }
 .tr-row {
   display: grid; grid-template-columns: 84px 104px 96px minmax(0, 1fr) 120px minmax(0, 1.4fr); gap: 14px; align-items: baseline;
-  padding: 9px 14px; border-bottom: 1px solid var(--rule-faint); font: 400 13px var(--mono);
+  padding: 9px 14px; border-bottom: 1px solid var(--rule-faint); font: 400 13px var(--sans);
 }
 .tr-row:last-child { border-bottom: 0; }
 .tr-at { color: var(--ink-3); font-size: 11.5px; }
 .tr-move { min-width: 0; overflow-wrap: anywhere; color: var(--ink-2); font-size: 12px; }
 .tr-task { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
-.tr-memo { font: 400 15px/1.35 var(--serif); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tr-amt { text-align: right; font: 600 14px var(--mono); font-variant-numeric: tabular-nums; }
+.tr-memo { font: 400 15px/1.35 var(--sans); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tr-amt { text-align: right; font: 600 14px var(--sans); font-variant-numeric: tabular-nums; }
 .tr-enter { animation: tr-in 0.45s ease-out both; }
-.tr-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 14px; color: var(--ink-3); font: 400 12px var(--mono); }
-.tr-error { padding: 10px 14px; border: 1px solid var(--danger); color: var(--danger); font: 400 13px var(--mono); }
+.tr-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 14px; color: var(--ink-3); font: 400 12px var(--sans); }
+.tr-error { padding: 10px 14px; border: 1px solid var(--danger); color: var(--danger); font: 400 13px var(--sans); }
 @keyframes tr-travel { to { stroke-dashoffset: -32; } }
 @keyframes tr-in { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
 @keyframes tr-grow { from { transform: scaleX(0); } to { transform: scaleX(1); } }

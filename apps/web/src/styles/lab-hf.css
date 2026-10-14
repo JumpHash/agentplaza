@@ -25,5 +25,5 @@
 .lab-linkbtn:hover { color: var(--accent-2); }
 
 .lab-hf-drawer .lab-card-head h3 { overflow-wrap: anywhere; font-size: var(--fs-sm); }
-.lab-hf-table th .lab-linkbtn { font: 500 var(--fs-xs)/1.4 var(--mono); text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-3); }
+.lab-hf-table th .lab-linkbtn { font: 500 var(--fs-xs)/1.4 var(--sans); letter-spacing: 0.01em; color: var(--text-3); }
 .lab-hf-table th .lab-linkbtn:hover { color: var(--ink); }

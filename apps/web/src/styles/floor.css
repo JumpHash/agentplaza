@@ -21,14 +21,14 @@ body.floor-mode .view { flex: 1 1 0; min-height: 0; max-width: none; margin-bott
 /* Role tag: square, mono caps, the role colour as a 3px left stripe (set inline by floor.ts). */
 .floor-tag {
   display: inline-block; margin-left: 6px; padding: 1px 6px; vertical-align: 1px; border-radius: 0;
-  font: 500 9.5px/1.4 var(--mono); letter-spacing: .05em; text-transform: uppercase;
+  font: 500 11px/1.4 var(--sans); letter-spacing: 0.01em;
   color: var(--ink); background: var(--sheet);
   border: 1px solid var(--ink); border-left: 3px solid var(--ink);
 }
 .floor-legend {
   position: absolute; left: var(--s4); bottom: var(--s4); display: flex; gap: var(--s4);
   padding: 6px var(--s3); border-radius: 0; background: var(--sheet);
-  border: 1px solid var(--ink); font: 400 10px/1.4 var(--mono); text-transform: uppercase; letter-spacing: .05em;
+  border: 1px solid var(--ink); font: 400 11px/1.4 var(--sans); letter-spacing: 0.01em;
   color: var(--ink-2);
 }
 .floor-legend span { display: inline-flex; align-items: center; gap: 6px; }
@@ -43,13 +43,13 @@ body.floor-mode .view { flex: 1 1 0; min-height: 0; max-width: none; margin-bott
 .floor-key.draining { background: var(--warn); }
 .floor-key.revoked { background: var(--crit); }
 /* The plaza's breadcrumb in the header: Machines › name. */
-.floor-crumb { display: inline-flex; align-items: center; gap: 6px; font: 400 11px/1.4 var(--mono); color: var(--ink-3); }
+.floor-crumb { display: inline-flex; align-items: center; gap: 6px; font: 400 11px/1.4 var(--sans); color: var(--ink-3); }
 .floor-crumb a { color: var(--ink-2); }
 /* The loading card of an arrival that waits for its build (floor.ts updateLoading): a thin bar fed by the build's progress. */
 .floor-loading {
   position: absolute; z-index: 3; top: 14px; left: 50%; transform: translateX(-50%); width: 300px; max-width: calc(100% - 28px);
   padding: 12px 14px; box-sizing: border-box; background: var(--sheet); border: 1px solid var(--ink); box-shadow: var(--print);
-  font: 600 11.5px/1.35 var(--mono); pointer-events: none;
+  font: 600 12px/1.35 var(--sans); pointer-events: none;
 }
 .floor-loading[hidden] { display: none; }
 .floor-loading-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--s2); margin-bottom: 9px; }
@@ -63,14 +63,14 @@ body.floor-mode .view { flex: 1 1 0; min-height: 0; max-width: none; margin-bott
 }
 .floor-card[hidden] { display: none; }
 .floor-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--s2); }
-.floor-card-head strong { font: 600 11.5px/1.35 var(--mono); }
+.floor-card-head strong { font: 600 12px/1.35 var(--sans); }
 .floor-card-activity { font: 400 10px/1.5 var(--mono); color: var(--ink-3); white-space: pre-wrap; overflow-wrap: anywhere; }
 /* The Machines popup: the facts as a two-column list, the agents' names as links, ENTER at the foot. */
-.machine-facts { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 3px 12px; margin: 0; font: 400 10px/1.5 var(--mono); }
-.machine-facts dt { color: var(--ink-3); text-transform: uppercase; letter-spacing: .05em; }
+.machine-facts { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 3px 12px; margin: 0; font: 400 11px/1.5 var(--sans); }
+.machine-facts dt { color: var(--ink-3); letter-spacing: 0.01em; }
 .machine-facts dd { margin: 0; white-space: pre-line; overflow-wrap: anywhere; }
 .machine-agents { display: flex; flex-direction: column; gap: 4px; }
-.machine-agent-names { display: flex; flex-wrap: wrap; gap: 4px 10px; font: 400 10.5px/1.5 var(--mono); }
+.machine-agent-names { display: flex; flex-wrap: wrap; gap: 4px 10px; font: 400 11px/1.5 var(--sans); }
 .machine-agent-names a { color: var(--ink); text-decoration: underline; text-underline-offset: 2px; }
 /* The popup fits its stage: at most the stage less a margin, scrolling inside itself. Its ENTER footer sticks to the foot
    of the card (over the card's 14px padding), so the button stays in view while the facts scroll. */

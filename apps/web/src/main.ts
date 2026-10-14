@@ -58,7 +58,7 @@ function signOutControl(): HTMLElement | null {
 
 /** OPEN IDE: the IDE on the workspace it used last (its picker when there is none). Narrow windows show the icon only. */
 function openIdeButton(): HTMLElement {
-  const label = h('span', { style: 'font-family: var(--mono); text-transform: uppercase; letter-spacing: 0.06em' }, 'Open IDE');
+  const label = h('span', { style: 'font-family: var(--sans); letter-spacing: 0.01em' }, 'Open IDE');
   const b = button('', () => openIde(''), { kind: 'ghost', size: 'sm', icon: 'square-code', title: 'Open IDE (Ctrl+Shift+E)' });
   b.classList.remove('icon-only');
   b.append(label);

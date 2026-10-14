@@ -26,12 +26,12 @@
 .git-url,
 .git code,
 .git-flow {
-  font-family: var(--mono);
+  font-family: var(--sans);
 }
 .git-label {
   color: var(--ink-3);
   font-size: 12px;
-  text-transform: uppercase;
+
   letter-spacing: 0.06em;
 }
 .git-sep {
@@ -51,13 +51,13 @@
 }
 .git-add {
   color: var(--ok);
-  font-family: var(--mono);
+  font-family: var(--sans);
   font-size: 13px;
   white-space: nowrap;
 }
 .git-del {
   color: var(--danger);
-  font-family: var(--mono);
+  font-family: var(--sans);
   font-size: 13px;
   white-space: nowrap;
 }
@@ -106,7 +106,7 @@
   color: var(--ink-3);
   font-weight: 600;
   font-size: 12px;
-  text-transform: uppercase;
+
   letter-spacing: 0.05em;
 }
 .git-table tr:last-child td {
@@ -136,7 +136,7 @@
   text-decoration: none;
 }
 .git-row-main strong {
-  font-family: var(--mono);
+  font-family: var(--sans);
   font-weight: 600;
 }
 .git-row-main:hover strong {
@@ -167,7 +167,7 @@
   border: 0;
   padding: 0;
   font: inherit;
-  font-family: var(--mono);
+  font-family: var(--sans);
   font-size: 13px;
   color: var(--ink);
   cursor: pointer;
@@ -182,7 +182,7 @@
   gap: 6px;
   align-items: center;
   flex-wrap: wrap;
-  font-family: var(--mono);
+  font-family: var(--sans);
   font-size: 13px;
   color: var(--ink-2);
 }
