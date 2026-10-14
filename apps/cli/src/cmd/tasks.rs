@@ -4,6 +4,7 @@ use clap::Subcommand;
 use serde_json::{json, Value};
 
 use crate::ctx::{self, confirm, Ctx};
+use crate::rich;
 
 /// The board's lanes (the Tasks screen): open, in progress, done, failed or withdrawn.
 const LANES: [&str; 4] = ["open", "in-progress", "done", "failed"];
@@ -164,6 +165,7 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
         }
         Cmd::Show { id } => {
             let t = ctx.client.get(&format!("/v1/tasks/{}", ctx::seg(&id)))?;
+            let rich_ctx = rich::context_for(ctx);
             ctx.out(&t, |t| {
                 ctx::fields(&[
                     ("id", ctx::text(t, "id")),
@@ -175,11 +177,11 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                     ("created", ctx::when(&t["created_at"])),
                     ("updated", ctx::when(&t["updated_at"])),
                 ]);
-                println!("\n{}", ctx::s(t, "goal"));
+                println!("\n{}", rich::render(ctx::s(t, "goal"), &rich_ctx, &ctx.rich));
                 for (heading, key) in [("Acceptance", "acceptance"), ("Note", "note"), ("Outcome", "outcome")] {
                     let text = ctx::s(t, key);
                     if !text.is_empty() {
-                        println!("\n{heading}\n{text}");
+                        println!("\n{heading}\n{}", rich::render(text, &rich_ctx, &ctx.rich));
                     }
                 }
             });
@@ -194,9 +196,11 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             // The newest 1000 entries (the hub's `last`), not the oldest.
             let entries = ctx.client.get(&format!("/v1/agents/{cid}/transcript?last=1000"))?;
             let kept = timeline_of(&id, array(&entries));
+            let rich_ctx = rich::context_for(ctx);
             ctx.out(&json!(kept), |_| {
                 for e in &kept {
                     let data: String = e.get("data").map(|d| d.to_string()).unwrap_or_default().chars().take(120).collect();
+                    let data = rich::render(&data, &rich_ctx, &ctx.rich);
                     println!("{:>5}  {:<14}  {}", ctx::text(e, "seq"), ctx::s(e, "kind"), data);
                 }
             });

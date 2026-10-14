@@ -6,6 +6,7 @@ use clap::Subcommand;
 use serde_json::{json, Value};
 
 use crate::ctx::{self, Ctx};
+use crate::rich;
 
 #[derive(Subcommand, Debug)]
 pub enum Cmd {
@@ -92,6 +93,7 @@ fn list(ctx: &Ctx, author: Option<u64>, search: Option<String>) -> Result<(), St
 fn show(ctx: &Ctx, id: &str) -> Result<(), String> {
     let value = ctx.client.get("/v1/board")?;
     let post = posts(&value).iter().find(|p| ctx::s(p, "id") == id).ok_or_else(|| format!("no board post {id}"))?;
+    let rich_ctx = rich::context_for(ctx);
     ctx.out(post, |p| {
         ctx::fields(&[
             ("id", ctx::text(p, "id")),
@@ -102,9 +104,10 @@ fn show(ctx: &Ctx, id: &str) -> Result<(), String> {
             ("created", ctx::when(&p["created_at"])),
             ("attachments", ctx::text(p, "attachments")),
         ]);
-        println!("\n{}", ctx::s(p, "body"));
+        println!("\n{}", rich::render(ctx::s(p, "body"), &rich_ctx, &ctx.rich));
         for c in p.get("comments").map(array).unwrap_or_default() {
-            println!("\n[{}] {}: {}", ctx::when(&c["created_at"]), ctx::s(c, "author"), ctx::s(c, "body"));
+            let body = rich::render(ctx::s(c, "body"), &rich_ctx, &ctx.rich);
+            println!("\n[{}] {}: {body}", ctx::when(&c["created_at"]), ctx::s(c, "author"));
         }
     });
     Ok(())

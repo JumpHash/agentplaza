@@ -19,6 +19,8 @@ pub struct Ctx {
     pub client: Client,
     /// `--json`: print the hub's JSON instead of tables.
     pub json: bool,
+    /// How agent text is drawn (`--plain`, the terminal): see `rich`.
+    pub rich: crate::rich::Mode,
 }
 
 impl Ctx {
@@ -207,7 +209,7 @@ pub fn resolve(hub: Option<String>, token: Option<String>, pin: Option<String>, 
     if let Some((name, pinned)) = pinned {
         check_pinned_identity(name, &url, &pinned)?;
     }
-    Ok(Ctx { client: Client::new(&url, pin, token), json })
+    Ok(Ctx { client: Client::new(&url, pin, token), json, rich: crate::rich::Mode::default() })
 }
 
 /// The fingerprint pinned for the saved hub `name` in the config file at `path` (`pinned.fingerprint`,

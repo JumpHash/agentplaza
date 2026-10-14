@@ -6,6 +6,7 @@ use clap::Subcommand;
 use serde_json::{json, Value};
 
 use crate::ctx::{self, confirm, Ctx};
+use crate::rich;
 
 #[derive(Subcommand, Debug)]
 pub enum Cmd {
@@ -431,6 +432,7 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
         }
         Cmd::Pull { repo, number } => {
             let p = ctx.client.get(&pull_path(&repo, number, ""))?;
+            let rich_ctx = rich::context_for(ctx);
             ctx.out(&p, |p| {
                 ctx::fields(&[
                     ("number", format!("#{}", ctx::text(p, "number"))),
@@ -444,14 +446,16 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                     ("updated", ctx::text(p, "updated_at")),
                 ]);
                 let body = ctx::s(p, "body");
-                println!("\n{}", if body.is_empty() { "No description provided." } else { body });
+                let body = rich::render(body, &rich_ctx, &ctx.rich);
+                println!("\n{}", if body.is_empty() { "No description provided.".to_string() } else { body });
                 println!("\nFiles changed ({})", array_at(p, "files").len());
                 for f in array_at(p, "files") {
                     println!("  +{} -{}  {}", ctx::text(f, "additions"), ctx::text(f, "deletions"), ctx::s(f, "path"));
                 }
                 println!("\nReviews ({})", array_at(p, "reviews").len());
                 for r in array_at(p, "reviews") {
-                    println!("  {} {}: {}", ctx::s(r, "author"), ctx::s(r, "state"), ctx::s(r, "body"));
+                    let text = rich::render(ctx::s(r, "body"), &rich_ctx, &ctx.rich);
+                    println!("  {} {}: {text}", ctx::s(r, "author"), ctx::s(r, "state"));
                 }
                 let discussion = array_at(p, "discussion");
                 println!("\nDiscussion ({})", discussion.len());
@@ -459,7 +463,7 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                     println!("  No comments yet.");
                 }
                 for c in discussion {
-                    println!("\n{}", comment_text(c));
+                    println!("\n{}", rich::render(&comment_text(c), &rich_ctx, &ctx.rich));
                 }
             });
             Ok(())

@@ -4,6 +4,7 @@ use clap::Subcommand;
 use serde_json::{json, Value};
 
 use crate::ctx::{self, Ctx};
+use crate::rich;
 
 #[derive(Subcommand, Debug)]
 pub enum Cmd {
@@ -100,6 +101,7 @@ fn list(ctx: &Ctx, pending: bool) -> Result<(), String> {
 fn show(ctx: &Ctx, id: &str) -> Result<(), String> {
     let value = ctx.client.get("/v1/approvals")?;
     let approval = array(&value).iter().find(|a| ctx::s(a, "id") == id).ok_or_else(|| format!("no approval {id}"))?;
+    let rich_ctx = rich::context_for(ctx);
     ctx.out(approval, |a| {
         ctx::fields(&[
             ("id", ctx::text(a, "id")),
@@ -107,7 +109,7 @@ fn show(ctx: &Ctx, id: &str) -> Result<(), String> {
             ("tool", ctx::text(a, "tool")),
             ("state", ctx::text(a, "state")),
             ("created", ctx::when(&a["created_ms"])),
-            ("reason", ctx::text(a, "reason")),
+            ("reason", rich::render(&ctx::text(a, "reason"), &rich_ctx, &ctx.rich)),
             ("input", serde_json::to_string_pretty(a.get("input").unwrap_or(&Value::Null)).unwrap_or_default()),
         ]);
     });

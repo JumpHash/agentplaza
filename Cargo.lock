@@ -66,6 +66,7 @@ dependencies = [
  "apz-http",
  "apz-ide",
  "apz-os",
+ "apz-rich",
  "apz-setup",
  "apz-skill",
  "base64 0.22.1",

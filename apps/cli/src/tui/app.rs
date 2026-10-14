@@ -355,6 +355,11 @@ impl App {
         self.data.get(path).and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[])
     }
 
+    /// The classifier's context for the agent text on screen: the agents the app has polled, so `@Name` is a chip.
+    pub fn rich_ctx(&self) -> apz_rich::Ctx {
+        crate::rich::from_agents(self.array("/v1/agents"), None)
+    }
+
     /// An endpoint's answer's array under `key` (`{"tasks": [...]}` and the like).
     pub fn wrapped(&self, path: &str, key: &str) -> &[Value] {
         self.data
