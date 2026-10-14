@@ -1,4 +1,4 @@
-import { machineImage, type Look } from '../views/floor3d/machine-model';
+import type { Look } from '../views/floor3d/machine-model';
 // Small SVG illustrations of the plaza's machines: what each one is.
 // Built with createElementNS only (no innerHTML). Line art: strokes follow
 // currentColor, fills come from the civic-register tokens on :root.
@@ -190,13 +190,10 @@ export function deviceSvg(look: Look, opts: DeviceOpts): SVGSVGElement {
   return svg;
 }
 
-/** The machine's picture on the Machines screen: a 3D toon model, or the line drawing without WebGL. */
-export function deviceVisual(look: Look, opts: DeviceOpts): HTMLElement | SVGSVGElement {
-  const picture = machineImage(look, opts);
-  if (!picture) return deviceSvg(look, opts);
-  const img = document.createElement('img');
-  img.className = 'device-model';
-  img.src = picture;
-  img.alt = look;
-  return img;
+/**
+ * The machine's line drawing, the fallback picture on the Machines screen. A machine's real picture is the engine's
+ * thumbnail, keyed by its fleet id (machine-list.ts requestThumb); this drawing shows only when that has none.
+ */
+export function deviceVisual(look: Look, opts: DeviceOpts): SVGSVGElement {
+  return deviceSvg(look, opts);
 }
