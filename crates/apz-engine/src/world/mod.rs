@@ -11,6 +11,7 @@ pub mod layout;
 pub mod lift_mesh;
 pub mod motion;
 pub mod nav;
+pub mod spots;
 pub mod walkway_mesh;
 pub mod view;
 
