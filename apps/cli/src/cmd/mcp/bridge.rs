@@ -290,44 +290,7 @@ mod tests {
     }
 
     #[test]
-    fn the_session_is_captured_and_sent_on_later_requests() {
-        let mut bridge = Bridge::new(Fake::scripted(vec![
-            answer(200, Some("s1"), r#"{"jsonrpc":"2.0","id":1,"result":{}}"#),
-            ok(ANSWER),
-        ]));
-        assert!(bridge.relay(INIT).is_some());
-        assert!(bridge.relay(LIST).is_some());
-        assert_eq!(
-            bridge.transport.posts[0],
-            (INIT.to_string(), None),
-            "initialize carries no session"
-        );
-        assert_eq!(
-            bridge.transport.posts[1],
-            (LIST.to_string(), Some("s1".to_string()))
-        );
-    }
-
-    #[test]
-    fn a_notification_gets_no_output_line() {
-        let mut out = Vec::new();
-        serve(
-            Fake::scripted(vec![answer(202, None, "")]),
-            Cursor::new(format!("{NOTE}\n")),
-            &mut out,
-        )
-        .unwrap();
-        assert!(
-            out.is_empty(),
-            "a 202 to a notification writes nothing: {out:?}"
-        );
-
-        let mut bridge = Bridge::new(Fake::scripted(vec![answer(202, None, "")]));
-        assert_eq!(bridge.relay(NOTE), None);
-    }
-
-    #[test]
-    fn a_404_triggers_one_reinitialize_and_a_retry() {
+    fn the_session_rides_later_requests_and_a_404_reinitializes_once() {
         let mut bridge = Bridge::new(Fake::scripted(vec![
             answer(200, Some("s1"), r#"{"jsonrpc":"2.0","id":1,"result":{}}"#),
             answer(202, None, ""),

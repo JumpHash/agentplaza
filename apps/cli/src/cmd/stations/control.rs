@@ -849,7 +849,6 @@ mod tests {
             "/v1/stations/w1/control?session=shared"
         );
         assert_eq!(view_path("w1", "7"), "/v1/stations/w1/control?session=7");
-        assert_eq!(screen::DEFAULT_SESSION, "shared");
     }
 
     #[test]

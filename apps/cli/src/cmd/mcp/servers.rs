@@ -1133,10 +1133,6 @@ mod tests {
             parse_assign("X=@vault:").is_err(),
             "@vault: needs a secret name"
         );
-    }
-
-    #[test]
-    fn a_format_goes_with_a_header_only() {
         let env = parse_assign("TOKEN=@vault:GH|Bearer {}").unwrap();
         let Assign::Set(name, reference) = env else {
             panic!("a set")
@@ -1146,7 +1142,7 @@ mod tests {
             setting(&reference, false, None).is_err(),
             "an env var takes no format"
         );
-        assert!(setting(&reference, true, None).is_ok());
+        assert!(setting(&reference, true, None).is_ok(), "a header may");
     }
 
     #[test]
@@ -1193,7 +1189,7 @@ mod tests {
     }
 
     #[test]
-    fn a_preset_refuses_a_missing_required_secret_and_names_the_flag() {
+    fn a_preset_refuses_a_missing_secret_no_image_or_a_transport_flag_and_names_the_fix() {
         let err = new_config(
             &catalog(),
             Some("github"),
@@ -1211,32 +1207,6 @@ mod tests {
             err.contains("--env GITHUB_PERSONAL_ACCESS_TOKEN=@vault:SECRET"),
             "{err}"
         );
-    }
-
-    #[test]
-    fn a_preset_header_keeps_its_format_unless_the_flag_names_one() {
-        let body = new_config(
-            &catalog(),
-            Some("linear"),
-            false,
-            Some("lin"),
-            None,
-            &fields(|f| f.header = strings(&["Authorization=@vault:LINEAR_KEY"])),
-        )
-        .unwrap();
-        assert_eq!(body["id"], "lin");
-        assert_eq!(
-            body["headers"]["Authorization"],
-            json!({ "secret": "LINEAR_KEY", "format": "Bearer {}" })
-        );
-        assert_eq!(
-            body["transport"],
-            json!({ "kind": "http", "url": "https://mcp.linear.app/mcp" })
-        );
-    }
-
-    #[test]
-    fn a_preset_without_an_image_says_to_go_custom() {
         let err = new_config(
             &catalog(),
             Some("custom-only"),
@@ -1260,6 +1230,53 @@ mod tests {
                 &Fields::default()
             )
             .is_err()
+        );
+        let err = new_config(
+            &catalog(),
+            Some("github"),
+            false,
+            None,
+            None,
+            &fields(|f| f.image = Some("x".into())),
+        )
+        .unwrap_err();
+        assert!(err.contains("--custom"), "{err}");
+        assert!(
+            new_config(
+                &catalog(),
+                Some("github"),
+                false,
+                None,
+                Some("container"),
+                &Fields::default()
+            )
+            .is_err()
+        );
+        assert!(
+            new_config(&catalog(), None, false, None, None, &Fields::default()).is_err(),
+            "a server is a preset or custom"
+        );
+    }
+
+    #[test]
+    fn a_preset_header_keeps_its_format_unless_the_flag_names_one() {
+        let body = new_config(
+            &catalog(),
+            Some("linear"),
+            false,
+            Some("lin"),
+            None,
+            &fields(|f| f.header = strings(&["Authorization=@vault:LINEAR_KEY"])),
+        )
+        .unwrap();
+        assert_eq!(body["id"], "lin");
+        assert_eq!(
+            body["headers"]["Authorization"],
+            json!({ "secret": "LINEAR_KEY", "format": "Bearer {}" })
+        );
+        assert_eq!(
+            body["transport"],
+            json!({ "kind": "http", "url": "https://mcp.linear.app/mcp" })
         );
     }
 
@@ -1287,35 +1304,6 @@ mod tests {
         assert_eq!(body["tools"]["risk"], json!({ "remember": "write" }));
         assert_eq!(body["limits"]["timeout_s"], 30);
         assert_eq!(body["transport"]["command"], json!(["serve"]));
-    }
-
-    #[test]
-    fn a_preset_does_not_take_a_transport_or_an_image_flag() {
-        let err = new_config(
-            &catalog(),
-            Some("github"),
-            false,
-            None,
-            None,
-            &fields(|f| f.image = Some("x".into())),
-        )
-        .unwrap_err();
-        assert!(err.contains("--custom"), "{err}");
-        assert!(
-            new_config(
-                &catalog(),
-                Some("github"),
-                false,
-                None,
-                Some("container"),
-                &Fields::default()
-            )
-            .is_err()
-        );
-        assert!(
-            new_config(&catalog(), None, false, None, None, &Fields::default()).is_err(),
-            "a server is a preset or custom"
-        );
     }
 
     #[test]

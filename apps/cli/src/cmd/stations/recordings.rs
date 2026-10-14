@@ -417,7 +417,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn frames_are_numbered_from_one_and_padded_to_the_last_one() {
+    fn frame_files_are_numbered_from_one_padded_and_name_their_capture_time() {
         assert_eq!(frame_width(3), 5);
         assert_eq!(frame_width(123_456), 6);
         assert_eq!(frame_name(1, 5), "frame-00001.jpg");
@@ -427,10 +427,6 @@ mod tests {
             .collect();
         assert_eq!(names.first().unwrap(), "frame-00001.jpg");
         assert_eq!(names.last().unwrap(), "frame-00010.jpg");
-    }
-
-    #[test]
-    fn a_frame_file_names_its_capture_time_when_the_hub_has_it() {
         assert_eq!(
             frame_file_name(3, 5, Some(1_700_000_000_123)),
             "frame-00003-1700000000123.jpg"
@@ -460,12 +456,12 @@ mod tests {
             "an older recording has none"
         );
         assert!(frame_rows(&json!({})).is_empty());
-    }
-
-    #[test]
-    fn an_offset_reads_in_minutes_then_hours() {
         assert_eq!(offset_text(0), "0:00.000");
-        assert_eq!(offset_text(3_725_004), "1:02:05.004");
+        assert_eq!(
+            offset_text(3_725_004),
+            "1:02:05.004",
+            "hours appear past an hour"
+        );
     }
 
     #[test]

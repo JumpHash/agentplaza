@@ -1843,24 +1843,22 @@ mod term {
                     detach: true
                 }
             );
-        }
-
-        #[test]
-        fn the_detach_sequence_can_be_split_across_reads() {
             let mut escape = Escape::default();
             assert_eq!(
                 escape.feed(&[ESCAPE]),
                 Keys {
                     send: vec![],
                     detach: false
-                }
+                },
+                "the escape waits for the next read"
             );
             assert_eq!(
                 escape.feed(b"d"),
                 Keys {
                     send: vec![],
                     detach: true
-                }
+                },
+                "and detaches when the sequence is split across reads"
             );
         }
 
@@ -1958,30 +1956,31 @@ mod tests {
     }
 
     #[test]
-    fn workspace_ids_are_encoded_as_one_segment() {
-        assert_eq!(workspace_seg("agent:12").unwrap(), "agent%3A12");
-        assert_eq!(
-            workspace_seg("repo:demo@feature/x").unwrap(),
-            "repo%3Ademo%40feature%2Fx"
-        );
+    fn workspace_ids_are_encoded_as_one_segment_and_bad_ones_fail() {
+        for (id, want) in [
+            ("agent:12", "agent%3A12"),
+            ("repo:demo@feature/x", "repo%3Ademo%40feature%2Fx"),
+            ("station:w3", "station%3Aw3"),
+        ] {
+            assert_eq!(workspace_seg(id).unwrap(), want, "{id}");
+        }
         assert_eq!(
             ws_path("agent:0", "/tree").unwrap(),
             "/v1/ide/workspaces/agent%3A0/tree"
         );
-    }
-
-    #[test]
-    fn a_station_id_parses_as_one_segment_and_a_bad_one_fails() {
-        assert_eq!(workspace_seg("station:w3").unwrap(), "station%3Aw3");
         assert_eq!(
             ws_path("station:w3", "/tree").unwrap(),
             "/v1/ide/workspaces/station%3Aw3/tree"
         );
-        assert!(
-            workspace_seg("station:3").is_err(),
-            "a station id is w and a number"
-        );
-        assert!(workspace_seg("station:w03").is_err(), "no leading zeros");
+        for id in [
+            "station:3",
+            "station:w03",
+            "agent:012",
+            "repo:demo",
+            "home:1",
+        ] {
+            assert!(workspace_seg(id).is_err(), "{id} is not a workspace id");
+        }
     }
 
     #[test]
@@ -2012,35 +2011,31 @@ mod tests {
     }
 
     #[test]
-    fn a_bad_workspace_id_fails_before_any_call() {
-        assert!(workspace_seg("agent:012").is_err(), "no leading zeros");
-        assert!(workspace_seg("repo:demo").is_err(), "a repo needs @ref");
-        assert!(workspace_seg("home:1").is_err());
-    }
-
-    #[test]
-    fn a_409_is_a_conflict_with_the_current_hash() {
-        let body = json!({"error": "conflict", "current_hash": "h2"});
+    fn save_replies_read_as_saved_conflict_or_error() {
         assert_eq!(
-            classify_save("/x", 409, body).unwrap(),
+            classify_save("/x", 200, json!({"hash": "h3"})).unwrap(),
+            Save::Saved(json!({"hash": "h3"}))
+        );
+        assert_eq!(
+            classify_save(
+                "/x",
+                409,
+                json!({"error": "conflict", "current_hash": "h2"})
+            )
+            .unwrap(),
             Save::Conflict(Some("h2".into()))
         );
         assert_eq!(
             classify_save("/x", 409, json!({"error": "conflict"})).unwrap(),
             Save::Conflict(None)
         );
-    }
-
-    #[test]
-    fn other_failures_are_errors_and_a_2xx_is_saved() {
+        assert!(
+            classify_save("/x", 409, json!({"error": "locked"})).is_err(),
+            "a 409 that is not a conflict is an error"
+        );
         assert_eq!(
             classify_save("/x", 500, json!({"error": "boom"})).unwrap_err(),
             "boom"
-        );
-        assert!(classify_save("/x", 409, json!({"error": "locked"})).is_err());
-        assert_eq!(
-            classify_save("/x", 200, json!({"hash": "h3"})).unwrap(),
-            Save::Saved(json!({"hash": "h3"}))
         );
     }
 
@@ -2121,12 +2116,15 @@ mod tests {
     }
 
     #[test]
-    fn checkpoints_come_as_an_object_or_a_bare_array() {
+    fn checkpoints_and_items_read_both_the_wrapped_and_the_bare_list() {
         let wrapped = json!({"checkpoints": [{"n": 1}, {"n": 2}]});
         let bare = json!([{"n": 1}]);
         assert_eq!(checkpoints_of(&wrapped).len(), 2);
         assert_eq!(checkpoints_of(&bare).len(), 1);
         assert!(checkpoints_of(&json!({})).is_empty());
+        assert_eq!(items(&json!([1, 2]), "entries").len(), 2);
+        assert_eq!(items(&json!({"entries": [1]}), "entries").len(), 1);
+        assert!(items(&json!({"other": 1}), "entries").is_empty());
     }
 
     #[test]
@@ -2171,75 +2169,67 @@ mod tests {
     }
 
     #[test]
-    fn items_read_both_list_shapes() {
-        assert_eq!(items(&json!([1, 2]), "entries").len(), 2);
-        assert_eq!(items(&json!({"entries": [1]}), "entries").len(), 1);
-        assert!(items(&json!({"other": 1}), "entries").is_empty());
-    }
-
-    #[test]
-    fn the_commands_parse_their_arguments() {
-        assert!(parse(&["workspaces"]).is_ok());
-        assert!(parse(&["ls", "agent:1"]).is_ok());
-        assert!(parse(&["ls", "station:w3", "src", "-r"]).is_ok());
-        assert!(parse(&["cat", "station:w3", "a.txt"]).is_ok());
-        assert!(parse(&["ls", "repo:demo@main", "src", "-r"]).is_ok());
-        assert!(parse(&["cat", "agent:1", "a.txt", "--hash"]).is_ok());
-        assert!(parse(&["put", "agent:1", "a.txt", "--file", "-", "--expected", "h"]).is_ok());
-        assert!(parse(&["put", "agent:1", "a.txt", "--file", "-", "--new"]).is_ok());
-        assert!(
-            parse(&["put", "agent:1", "a.txt"]).is_err(),
-            "--file is required"
-        );
-        assert!(
-            parse(&[
-                "put",
-                "agent:1",
-                "a.txt",
-                "--file",
-                "-",
-                "--expected",
-                "h",
-                "--new"
-            ])
-            .is_err(),
-            "one or the other"
-        );
-        assert!(parse(&["diff", "agent:1", "--base", "checkpoint:2", "--stat"]).is_ok());
-        assert!(
-            parse(&["restore", "agent:1"]).is_err(),
-            "a restore needs its checkpoint number"
-        );
-        assert!(parse(&["restore", "agent:1", "4", "--yes"]).is_ok());
-        assert!(parse(&["search", "agent:1", "todo", "--glob", "*.rs"]).is_ok());
-        assert!(parse(&["run", "agent:1", "--", "cargo", "test"]).is_ok());
-        assert!(parse(&["run", "agent:1", "--timeout", "5", "--", "ls"]).is_ok());
-        assert!(
-            parse(&["run", "agent:1"]).is_err(),
-            "a run needs its command after --"
-        );
-        assert!(parse(&["audit", "--workspace", "agent:1", "--limit", "10"]).is_ok());
-    }
-
-    #[test]
-    fn the_term_command_parses_its_forms() {
-        assert!(parse(&["term", "agent:1"]).is_ok());
-        assert!(parse(&["term", "station:w3"]).is_ok());
-        assert!(parse(&["term", "agent:1", "--cwd", "src", "--no-tty"]).is_ok());
-        assert!(parse(&["term", "agent:1", "--attach", "term-1", "--offset", "4"]).is_ok());
-        assert!(parse(&["term", "agent:1", "--kill", "term-1"]).is_ok());
-        assert!(parse(&["term"]).is_err(), "a workspace is required");
-        assert!(
-            parse(&["term", "agent:1", "--offset", "4"]).is_err(),
-            "an offset needs --attach"
-        );
-        assert!(
-            parse(&["term", "agent:1", "--kill", "t", "--attach", "t"]).is_err(),
-            "kill and attach conflict"
-        );
-        assert!(
-            parse(&["term", "agent:1", "--kill", "t", "--cwd", "src"]).is_err(),
-            "kill takes no folder"
-        );
+    fn the_commands_and_the_term_form_parse_their_arguments() {
+        let accepted: &[&[&str]] = &[
+            &["workspaces"],
+            &["ls", "agent:1"],
+            &["ls", "station:w3", "src", "-r"],
+            &["cat", "station:w3", "a.txt"],
+            &["ls", "repo:demo@main", "src", "-r"],
+            &["cat", "agent:1", "a.txt", "--hash"],
+            &["put", "agent:1", "a.txt", "--file", "-", "--expected", "h"],
+            &["put", "agent:1", "a.txt", "--file", "-", "--new"],
+            &["diff", "agent:1", "--base", "checkpoint:2", "--stat"],
+            &["restore", "agent:1", "4", "--yes"],
+            &["search", "agent:1", "todo", "--glob", "*.rs"],
+            &["run", "agent:1", "--", "cargo", "test"],
+            &["run", "agent:1", "--timeout", "5", "--", "ls"],
+            &["audit", "--workspace", "agent:1", "--limit", "10"],
+            &["term", "agent:1"],
+            &["term", "station:w3"],
+            &["term", "agent:1", "--cwd", "src", "--no-tty"],
+            &["term", "agent:1", "--attach", "term-1", "--offset", "4"],
+            &["term", "agent:1", "--kill", "term-1"],
+        ];
+        for args in accepted {
+            assert!(parse(args).is_ok(), "{args:?} should parse");
+        }
+        let refused: &[(&[&str], &str)] = &[
+            (&["put", "agent:1", "a.txt"], "--file is required"),
+            (
+                &[
+                    "put",
+                    "agent:1",
+                    "a.txt",
+                    "--file",
+                    "-",
+                    "--expected",
+                    "h",
+                    "--new",
+                ],
+                "--expected and --new are one or the other",
+            ),
+            (
+                &["restore", "agent:1"],
+                "a restore needs its checkpoint number",
+            ),
+            (&["run", "agent:1"], "a run needs its command after --"),
+            (&["term"], "a workspace is required"),
+            (
+                &["term", "agent:1", "--offset", "4"],
+                "an offset needs --attach",
+            ),
+            (
+                &["term", "agent:1", "--kill", "t", "--attach", "t"],
+                "kill and attach conflict",
+            ),
+            (
+                &["term", "agent:1", "--kill", "t", "--cwd", "src"],
+                "kill takes no folder",
+            ),
+        ];
+        for (args, why) in refused {
+            assert!(parse(args).is_err(), "{why}: {args:?}");
+        }
     }
 }

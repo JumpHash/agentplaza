@@ -663,7 +663,7 @@ mod tests {
     }
 
     #[test]
-    fn enabling_remote_does_not_open_a_local_secure_hub_without_a_confirmation() {
+    fn enabling_remote_confirms_an_open_remote_hub_only_when_flagged() {
         let now = json!({ "enabled": false, "bind": "local", "auth_mode": "secure", "open_scope": "observe", "allowed_origins": [] });
         let body = switch_body(
             &now,
@@ -676,6 +676,28 @@ mod tests {
         assert_eq!(body["bind"], "remote");
         assert_eq!(body["auth_mode"], "secure");
         assert_eq!(body["confirm_open_remote"], false);
+        let flagged = Switch {
+            enabled: true,
+            remote: true,
+            auth: Some("open".into()),
+            confirm_open_remote: true,
+            ..Switch::default()
+        };
+        let body = switch_body(&now, &flagged);
+        assert_eq!(body["bind"], "remote");
+        assert_eq!(body["auth_mode"], "open");
+        assert_eq!(body["confirm_open_remote"], true);
+        let unflagged = Switch {
+            enabled: true,
+            remote: true,
+            auth: Some("open".into()),
+            ..Switch::default()
+        };
+        assert_eq!(
+            switch_body(&now, &unflagged)["confirm_open_remote"],
+            false,
+            "without the flag the hub refuses"
+        );
     }
 
     #[test]
@@ -715,33 +737,6 @@ mod tests {
             "no origin flag keeps the list"
         );
         assert_eq!(untouched["auth_mode"], "secure");
-    }
-
-    #[test]
-    fn the_open_remote_confirmation_is_sent_when_the_flag_says_so() {
-        let now = json!({ "enabled": false, "bind": "local", "auth_mode": "secure", "open_scope": "observe", "allowed_origins": [] });
-        let flagged = Switch {
-            enabled: true,
-            remote: true,
-            auth: Some("open".into()),
-            confirm_open_remote: true,
-            ..Switch::default()
-        };
-        let body = switch_body(&now, &flagged);
-        assert_eq!(body["bind"], "remote");
-        assert_eq!(body["auth_mode"], "open");
-        assert_eq!(body["confirm_open_remote"], true);
-        let unflagged = Switch {
-            enabled: true,
-            remote: true,
-            auth: Some("open".into()),
-            ..Switch::default()
-        };
-        assert_eq!(
-            switch_body(&now, &unflagged)["confirm_open_remote"],
-            false,
-            "without the flag the hub refuses"
-        );
     }
 
     #[test]
@@ -821,10 +816,6 @@ mod tests {
             .is_ok()
         );
         assert!(TestCli::try_parse_from(["agentplaza", "calls", "--limit", "501"]).is_err());
-    }
-
-    #[test]
-    fn calls_filters_by_token_id_and_never_takes_the_owner_token_flag() {
         // `--token` is the global owner flag (main.rs): on `calls` it must not filter, or it would shadow authentication.
         let filtered = TestCli::try_parse_from(["agentplaza", "calls", "--token-id", "mcp_1"]);
         assert!(

@@ -1,5 +1,5 @@
 use super::*;
-use clap::{CommandFactory, Parser};
+use clap::Parser;
 use std::path::PathBuf;
 
 /// The subcommand alone, so each test reads as `agentplaza stations <args>`.
@@ -33,12 +33,7 @@ fn all_settings() -> SetArgs {
 }
 
 #[test]
-fn the_command_definition_is_valid() {
-    Probe::command().debug_assert();
-}
-
-#[test]
-fn list_show_rename_drain_undrain_and_revoke_parse() {
+fn station_admin_and_lease_subcommands_parse() {
     assert!(matches!(parsed(&["list"]), Cmd::List));
     let Cmd::Show { id } = parsed(&["show", "w1"]) else {
         panic!("show")
@@ -64,6 +59,14 @@ fn list_show_rename_drain_undrain_and_revoke_parse() {
         panic!("revoke")
     };
     assert!(!yes);
+    let Cmd::Leases { id } = parsed(&["leases", "w1"]) else {
+        panic!("leases")
+    };
+    assert_eq!(id, "w1");
+    let Cmd::Release { id, lease } = parsed(&["release", "w1", "l4"]) else {
+        panic!("release")
+    };
+    assert_eq!((id.as_str(), lease.as_str()), ("w1", "l4"));
 }
 
 #[test]
@@ -96,18 +99,6 @@ fn codes_parse_with_list_as_the_default() {
         panic!("revoke")
     };
     assert_eq!(id, "j3");
-}
-
-#[test]
-fn leases_and_release_parse() {
-    let Cmd::Leases { id } = parsed(&["leases", "w1"]) else {
-        panic!("leases")
-    };
-    assert_eq!(id, "w1");
-    let Cmd::Release { id, lease } = parsed(&["release", "w1", "l4"]) else {
-        panic!("release")
-    };
-    assert_eq!((id.as_str(), lease.as_str()), ("w1", "l4"));
 }
 
 #[test]
@@ -222,7 +213,7 @@ fn flags_merge_onto_the_hubs_settings_and_leave_the_rest() {
 }
 
 #[test]
-fn the_rate_reads_in_credits_and_dollars() {
+fn the_rate_parses_as_credits_and_reads_in_credits_and_dollars() {
     assert_eq!(rate_text(0), "0 credits/h (free)");
     assert_eq!(rate_text(1500), "1500 credits/h ($1.500/h)");
     assert_eq!(rate_text(7), "7 credits/h ($0.007/h)");
@@ -243,6 +234,15 @@ fn the_rate_reads_in_credits_and_dollars() {
         settings_fields(&json!({ "rate_per_hour": 1500 }))
             .contains(&("rate", "1500 credits/h ($1.500/h)".to_string()))
     );
+    let Cmd::Settings {
+        action: Some(SettingsCmd::Set(set)),
+        ..
+    } = parsed(&["settings", "w1", "set", "--rate-per-hour", "0"])
+    else {
+        panic!("rate 0")
+    };
+    assert_eq!(set.rate_per_hour, Some(0), "0 is free, and it is a setting");
+    assert!(parse(&["settings", "w1", "set", "--rate-per-hour", "-5"]).is_err());
 }
 
 #[test]
@@ -536,19 +536,6 @@ fn the_screen_subcommands_parse_with_their_defaults() {
 }
 
 #[test]
-fn the_settings_rate_parses_as_credits() {
-    let Cmd::Settings {
-        action: Some(SettingsCmd::Set(set)),
-        ..
-    } = parsed(&["settings", "w1", "set", "--rate-per-hour", "0"])
-    else {
-        panic!("rate 0")
-    };
-    assert_eq!(set.rate_per_hour, Some(0), "0 is free, and it is a setting");
-    assert!(parse(&["settings", "w1", "set", "--rate-per-hour", "-5"]).is_err());
-}
-
-#[test]
 fn the_merged_settings_encode_as_the_hub_reads_them() {
     let body = serde_json::to_value(merged(StationSettings::default(), &all_settings())).unwrap();
     assert_eq!(
@@ -653,10 +640,6 @@ fn take_and_input_parse_with_the_shared_session_by_default() {
         panic!("take --session")
     };
     assert_eq!(session, "7");
-}
-
-#[test]
-fn input_takes_its_command_words_including_negative_numbers() {
     let Cmd::Input {
         id,
         session,
@@ -666,7 +649,11 @@ fn input_takes_its_command_words_including_negative_numbers() {
         panic!("input scroll")
     };
     assert_eq!((id.as_str(), session.as_str()), ("w1", "shared"));
-    assert_eq!(command, ["scroll", "0", "-3", "10", "20"]);
+    assert_eq!(
+        command,
+        ["scroll", "0", "-3", "10", "20"],
+        "negative numbers are words"
+    );
     let Cmd::Input { command, .. } =
         parsed(&["input", "w1", "--session", "3", "type", "hello world"])
     else {

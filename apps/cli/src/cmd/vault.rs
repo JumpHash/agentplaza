@@ -1105,7 +1105,7 @@ mod tests {
     }
 
     #[test]
-    fn set_takes_a_name_and_defaults_to_a_plaza_api_key() {
+    fn set_takes_a_name_with_defaults_and_its_options() {
         match parse(&["set", "ANTHROPIC_API_KEY"]) {
             Ok(Cmd::Set {
                 name,
@@ -1116,17 +1116,13 @@ mod tests {
                 bind,
             }) => {
                 assert_eq!(name, "ANTHROPIC_API_KEY");
-                assert_eq!(kind, Kind::ApiKey);
+                assert_eq!(kind, Kind::ApiKey, "a plaza API key by default");
                 assert_eq!(label, "");
                 assert!(scope.is_none() && nodes.is_none());
                 assert!(bind.is_empty());
             }
             other => panic!("set did not parse: {other:?}"),
         }
-    }
-
-    #[test]
-    fn set_takes_its_options() {
         match parse(&[
             "set",
             "GITHUB_TOKEN",
@@ -1153,15 +1149,12 @@ mod tests {
     }
 
     #[test]
-    fn set_rejects_a_value_given_as_an_argument() {
+    fn no_command_takes_a_secret_value_as_an_argument() {
+        // A secret is typed at a prompt or read from stdin, never passed on the command line.
         assert!(parse(&["set", "ANTHROPIC_API_KEY", "--value", "x"]).is_err());
         assert!(parse(&["set", "ANTHROPIC_API_KEY", "sk-ant-secret"]).is_err());
         assert!(parse(&["set", "ANTHROPIC_API_KEY", "--value=x"]).is_err());
         assert!(parse(&["set", "ANTHROPIC_API_KEY", "--passphrase", "x"]).is_err());
-    }
-
-    #[test]
-    fn no_flag_accepts_a_secret_value() {
         assert!(parse(&["unseal", "--passphrase", "x"]).is_err());
         assert!(parse(&["unseal", "--recovery-code", "x"]).is_err());
         assert!(parse(&["unseal", "--recovery", "--keyfile"]).is_err());
@@ -1169,6 +1162,19 @@ mod tests {
         assert!(parse(&["recovery", "--value", "x"]).is_err());
         assert!(parse(&["import", "keys.env", "--value", "x"]).is_err());
         assert!(parse(&["rm", "sec_abc", "--value", "x"]).is_err());
+        assert!(parse(&["rotate", "ANTHROPIC_API_KEY", "sk-ant-secret"]).is_err());
+        assert!(parse(&["rotate", "ANTHROPIC_API_KEY", "--value", "x"]).is_err());
+        assert!(parse(&["edit", "KEY", "--value", "x"]).is_err());
+        assert!(parse(&["slot", "add", "--passphrase", "hunter2"]).is_err());
+        assert!(
+            parse(&["slot", "add", "--keyfile", "/tmp/key"]).is_err(),
+            "the hub makes the key file: no path"
+        );
+        assert!(
+            parse(&["slot", "add", "--passphrase", "--keyfile"]).is_err(),
+            "one kind of slot"
+        );
+        assert!(parse(&["edit", "KEY", "--scope", "plaza", "--nodes", "n0"]).is_err());
     }
 
     #[test]
@@ -1386,23 +1392,6 @@ mod tests {
     }
 
     #[test]
-    fn the_new_commands_take_no_secret_value_as_an_argument() {
-        assert!(parse(&["rotate", "ANTHROPIC_API_KEY", "sk-ant-secret"]).is_err());
-        assert!(parse(&["rotate", "ANTHROPIC_API_KEY", "--value", "x"]).is_err());
-        assert!(parse(&["edit", "KEY", "--value", "x"]).is_err());
-        assert!(parse(&["slot", "add", "--passphrase", "hunter2"]).is_err());
-        assert!(
-            parse(&["slot", "add", "--keyfile", "/tmp/key"]).is_err(),
-            "the hub makes the key file: no path"
-        );
-        assert!(
-            parse(&["slot", "add", "--passphrase", "--keyfile"]).is_err(),
-            "one kind of slot"
-        );
-        assert!(parse(&["edit", "KEY", "--scope", "plaza", "--nodes", "n0"]).is_err());
-    }
-
-    #[test]
     fn an_entry_is_picked_by_name_or_by_id() {
         let entries = vec![
             json!({ "id": "sec_a", "name": "KEY", "scope": { "kind": "nodes", "nodes": ["n0"] } }),
@@ -1450,7 +1439,7 @@ mod tests {
     }
 
     #[test]
-    fn an_edit_body_holds_only_the_fields_given() {
+    fn request_bodies_carry_only_what_the_hub_takes() {
         assert_eq!(
             edit_body(Some("ci"), None, None).unwrap(),
             json!({ "label": "ci" })
@@ -1464,10 +1453,6 @@ mod tests {
             json!({ "label": "", "bindings": ["hf"] })
         );
         assert!(edit_body(None, None, None).is_err());
-    }
-
-    #[test]
-    fn the_test_and_slot_bodies_carry_only_what_the_hub_takes() {
         assert_eq!(test_body(Some("n3")), json!({ "node": "n3" }));
         assert_eq!(test_body(None), json!({ "node": null }));
         assert_eq!(
