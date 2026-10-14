@@ -10,6 +10,11 @@
 .rules-section-action { margin-left: auto; }
 .rules-section-desc { margin: 0; max-width: 72ch; color: var(--ink-2); font-size: 14px; line-height: 1.55; }
 .rules-count { margin: 0; font-size: 13px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+
+/* A tier group's head (the built-in statutes): the label and count, the description, then the rule */
+.rules-group-head { display: flex; flex-direction: column; gap: 6px; border-bottom: 1px solid var(--ink); padding-bottom: 8px; min-width: 0; }
+.rules-group-title { display: flex; align-items: baseline; gap: 10px; }
+.rules-group-title h3 { margin: 0; font-size: 20px; text-transform: uppercase; }
 .rules-tabs { min-width: 0; max-width: 100%; overflow-x: auto; }
 .rules-list { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
 

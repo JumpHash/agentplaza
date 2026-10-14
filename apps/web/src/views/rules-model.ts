@@ -6,13 +6,22 @@ import type { Tone } from '../ui/components';
 
 export type TierKey = 'constitution' | 'statute' | 'tools' | 'operations' | 'other';
 
+/** What each tier is called, as the desktop's tabs and group heads say it. */
+export const TIER_LABELS: Record<TierKey, string> = {
+  constitution: 'Constitution',
+  statute: 'Statutes',
+  tools: 'Tools',
+  operations: 'Operations',
+  other: 'Other',
+};
+
+/** The tiers in the order the desktop groups the built-in statutes. */
+export const TIER_ORDER: TierKey[] = ['constitution', 'statute', 'tools', 'operations', 'other'];
+
 /** The tab filters of the built-in statutes, as the desktop's tabs; Other is a group with no tab. */
 export const TIER_FILTERS: { key: 'all' | TierKey; label: string }[] = [
   { key: 'all', label: 'All' },
-  { key: 'constitution', label: 'Constitution' },
-  { key: 'statute', label: 'Statutes' },
-  { key: 'tools', label: 'Tools' },
-  { key: 'operations', label: 'Operations' },
+  ...TIER_ORDER.filter((key) => key !== 'other').map((key) => ({ key, label: TIER_LABELS[key] })),
 ];
 
 /** What each tier group holds, as the desktop's group heads say. */

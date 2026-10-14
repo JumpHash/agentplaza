@@ -15,6 +15,8 @@ import {
   STRICT_HELP,
   TIER_DESCRIPTIONS,
   TIER_FILTERS,
+  TIER_LABELS,
+  TIER_ORDER,
   builtinLaws,
   cap,
   matchesFilter,
@@ -29,6 +31,7 @@ import {
   lawsOfRule,
   lineSpan,
   severityTone,
+  tierKey,
   withStrictPermits,
   type TierKey,
 } from './rules-model';
@@ -100,7 +103,6 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
 
   // Built-in statutes.
   const tierTabs = h('div.rules-tabs');
-  const tierDesc = h('p.rules-section-desc');
   const builtinCount = h('p.rules-count');
   const builtinBox = h('div.rules-list');
 
@@ -129,7 +131,6 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
         renderBuiltin();
       }),
     );
-    tierDesc.textContent = filter.tier === 'all' ? '' : TIER_DESCRIPTIONS[filter.tier];
   }
 
   function renderChips(): void {
@@ -181,7 +182,14 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
         all.length ? button('Clear filters', () => resetFilters(), { size: 'sm' }) : null,
       )
       : null;
-    replace(builtinBox, failure(lawsStatus, lawsError, 'The statutes could not be loaded'), shown.map(lawRow), empty);
+    // The statutes in their tiers' groups, each group under its head; the order is the desktop's.
+    const rows: HTMLElement[] = [];
+    for (const key of TIER_ORDER) {
+      const items = shown.filter((l) => tierKey(l) === key);
+      if (items.length === 0) continue;
+      rows.push(groupHead(key, items.length), ...items.map(lawRow));
+    }
+    replace(builtinBox, failure(lawsStatus, lawsError, 'The statutes could not be loaded'), rows, empty);
   }
 
   function renderStrip(): void {
@@ -347,6 +355,16 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
   }
 
   // ---- Statutes and owner laws ------------------------------------------
+
+  /** A tier group's head, as the desktop's group head: the label, its count, its description, then a rule. */
+  function groupHead(key: TierKey, n: number): HTMLElement {
+    return h(
+      'header.rules-group-head',
+      null,
+      h('div.rules-group-title', null, h('h3', null, TIER_LABELS[key]), h('span.rules-count', null, String(n))),
+      TIER_DESCRIPTIONS[key] ? h('p.rules-section-desc', null, TIER_DESCRIPTIONS[key]) : null,
+    );
+  }
 
   /** One law as a card. Built-in statutes carry their override; owner laws follow their rule. */
   function lawRow(l: LawInfo): HTMLElement {
@@ -731,7 +749,6 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
               null,
               h('div.rules-row', null, search, field('Severity', sevSel)),
               h('div.rules-row', null, chipBox, tierTabs),
-              tierDesc,
             ),
             builtinCount,
             builtinBox,
