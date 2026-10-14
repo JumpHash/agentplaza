@@ -393,6 +393,31 @@ impl WebEngine {
         self.shared.borrow().engine.draw_stats().to_json()
     }
 
+    /// The floor's robots as the web's `__apzBots` reads them, JSON (see `apz_engine::debug`).
+    pub fn bots_json(&self) -> String {
+        self.shared.borrow().engine.stage.bots_json()
+    }
+
+    /// The nav grid's cell at (x, z), JSON or "null" (`__apzNavCell`).
+    pub fn nav_cell(&self, x: f64, z: f64) -> String {
+        self.shared.borrow().engine.stage.nav_cell_json(x, z)
+    }
+
+    /// The board's ground audit, JSON or "null" (`__apzNavAudit`).
+    pub fn nav_audit(&self) -> String {
+        self.shared.borrow().engine.stage.nav_audit_json()
+    }
+
+    /// The board's lifts, JSON (`__apzLifts`). Takes the lift controllers mutably to read their state.
+    pub fn lifts(&self) -> String {
+        self.shared.borrow_mut().engine.stage.lifts_json()
+    }
+
+    /// Moves an agent's robot to (x, z) on the board (`__apzShove`). False without a board or a robot for the agent.
+    pub fn shove(&self, cid: f64, x: f64, z: f64) -> bool {
+        self.shared.borrow_mut().engine.stage.shove(cid as u64, x, z)
+    }
+
     /// Stops the loop, disconnects the observers, removes every listener and drops the surface.
     pub fn destroy(&self) {
         self.teardown();

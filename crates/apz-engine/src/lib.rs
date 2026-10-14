@@ -14,6 +14,7 @@ pub mod assets;
 pub mod canvas;
 pub mod controls;
 pub mod core;
+pub mod debug;
 pub mod engine;
 pub mod entry;
 pub mod entry_scene;

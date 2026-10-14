@@ -41,6 +41,16 @@ interface WebEngine {
   draw_calls(): number;
   draw_breakdown(): Uint32Array;
   draw_stats(): string;
+  /** The floor's robots, JSON (see the engine's debug hooks). */
+  bots_json(): string;
+  /** The nav grid's cell at (x, z), JSON or "null". */
+  nav_cell(x: number, z: number): string;
+  /** The board's ground audit, JSON or "null". */
+  nav_audit(): string;
+  /** The board's lifts, JSON. */
+  lifts(): string;
+  /** Moves an agent's robot on the board; false without a robot for it. */
+  shove(cid: number, x: number, z: number): boolean;
   look_at(x: number, y: number, z: number, dist: number, polar: number, azimuth: number): void;
   thumbnail(id: string, w: number, h: number): Promise<Uint8Array>;
   portrait(json: string, w: number, h: number): Promise<Uint8Array>;
@@ -527,8 +537,7 @@ export function mountEngine(root: HTMLElement, initialId: string | null = null):
   };
 
   // Debug hooks (window.__apz*) for tests and developers: the same names and return shapes as the three.js Floor,
-  // backed by the engine. The engine has no nav world (cells, lifts, shoves, the ground audit) yet, so those hooks answer
-  // null and log once. The camera is WebEngine.look_at (no hook names it yet); the robot list is not exposed either.
+  // backed by the engine. The camera is WebEngine.look_at (no hook names it yet).
   const installDebugHooks = (started: WebEngine): (() => void) => {
     const w = window as unknown as Record<string, unknown>;
     const logged = new Set<string>();
@@ -569,14 +578,15 @@ export function mountEngine(root: HTMLElement, initialId: string | null = null):
       __apzEnter: (id: string) => started.command('enter', id),
       __apzBack: () => started.command('back'),
       __apzEntryTime: () => started.entry_time() ?? null,
-      __apzBots: () => [],
+      __apzBots: () => JSON.parse(started.bots_json()) as unknown[],
       __apzTrace: () => ({ frames: started.frames_drawn(), draws: started.draw_calls() }),
-      __apzNavCell: stub('__apzNavCell'),
-      __apzNavAudit: stub('__apzNavAudit'),
-      __apzLifts: stub('__apzLifts'),
+      __apzNavCell: (x: number, z: number) => JSON.parse(started.nav_cell(x, z)) as Record<string, unknown> | null,
+      __apzNavAudit: () => JSON.parse(started.nav_audit()) as Record<string, unknown> | null,
+      __apzLifts: () => JSON.parse(started.lifts()) as unknown[],
+      // The lift rides are the floor.ts's logic (the three.js Floor); the engine has no counterpart, so this stays a stub.
       __apzLiftRide: stub('__apzLiftRide'),
-      __apzShove: stub('__apzShove'),
-      __apzGroundAudit: stub('__apzGroundAudit'),
+      __apzShove: (cid: number, x: number, z: number) => started.shove(cid, x, z),
+      __apzGroundAudit: () => JSON.parse(started.nav_audit()) as Record<string, unknown> | null,
     };
     for (const [name, fn] of Object.entries(hooks)) w[name] = fn;
     return () => {
