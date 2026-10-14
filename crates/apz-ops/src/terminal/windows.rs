@@ -572,7 +572,15 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("apz-ops-term-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).expect("a scratch root");
-        (Root::new(&dir), Env::new(&dir, PATH))
+        // A process's environment starts empty, and PowerShell cannot load without SYSTEMROOT (error 8009001d): the
+        // test gives the shell what the workstation daemon gives it (apz_workstation::daemon::WINDOWS_VARS).
+        let mut env = Env::new(&dir, PATH);
+        for name in ["SYSTEMROOT", "COMSPEC", "WINDIR", "PATHEXT"] {
+            if let Some(value) = std::env::var(name).ok().filter(|v| !v.is_empty()) {
+                env = env.with_var(name, value);
+            }
+        }
+        (Root::new(&dir), env)
     }
 
     fn open_at(terms: &Terminals, root: &Root, env: &Env, cwd: &str) -> String {
