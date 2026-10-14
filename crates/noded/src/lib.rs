@@ -25,6 +25,7 @@ pub mod stats;
 pub mod train;
 pub mod workstation;
 pub mod ws_qemu;
+pub mod ws_relay;
 
 use std::io::Read;
 use std::net::IpAddr;
@@ -173,6 +174,8 @@ impl Node {
         if guest.qemu.is_none() {
             guest.qemu = ws_qemu::detect();
         }
+        // A workstation VM's vsock sockets live with the agents' (`--uds-dir`), under its own CID range.
+        guest.vsock_dir = config.uds_dir.clone();
         let images = VmImages { kernel: config.kernel, initrd: config.initrd, workspace: config.workspace };
         Self {
             registry: Registry::new(images, config.uds_dir, events::EventBus::new())

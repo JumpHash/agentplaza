@@ -13,6 +13,8 @@ use rustls::{ClientConfig, ClientConnection, RootCertStore};
 
 use serde_json::Value;
 
+use crate::ws::Duplex;
+
 /// The most a status line and headers may occupy.
 const MAX_HEAD: usize = 16 << 10;
 /// The most a reply body may occupy.
@@ -311,31 +313,14 @@ struct Timed<R> {
     deadline: Instant,
 }
 
-/// The TCP socket under a stream, plain or TLS.
-trait Socket {
-    fn tcp(&self) -> &TcpStream;
-}
-
-impl Socket for TcpStream {
-    fn tcp(&self) -> &TcpStream {
-        self
-    }
-}
-
-impl<C> Socket for rustls::StreamOwned<C, TcpStream> {
-    fn tcp(&self) -> &TcpStream {
-        &self.sock
-    }
-}
-
-impl<R: Read + Socket> Read for Timed<R> {
+impl<R: Read + Duplex> Read for Timed<R> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let timed_out = || io::Error::new(io::ErrorKind::TimedOut, "the server did not answer in time");
         let left = self.deadline.saturating_duration_since(Instant::now());
         if left.is_zero() {
             return Err(timed_out());
         }
-        self.stream.tcp().set_read_timeout(Some(left))?;
+        self.stream.set_read_timeout(Some(left))?;
         self.stream.read(buf).map_err(|err| match err.kind() {
             io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut => timed_out(),
             _ => err,
@@ -540,9 +525,59 @@ pub fn request_json(target: &Target, method: &str, path: &str, body: Option<&Val
     Ok((reply.status, value))
 }
 
+/// [`request`] over a stream the caller already connected, such as a vsock stream to a node's relay. TLS runs on it
+/// when `tls` names the server (the name is the SNI and the Host header), pinned by `target.pin`, which is then
+/// required: a stream with no host name cannot be verified any other way. With `tls: None` the bytes go over the
+/// stream as they are. `target.base` is not dialled. The stream's own read timeout is replaced by `timeout`'s
+/// deadline while the reply is read.
+pub fn request_over<S: Read + Write + Duplex + 'static>(
+    stream: S,
+    tls: Option<&str>,
+    target: &Target,
+    method: &str,
+    path: &str,
+    body: Option<&[u8]>,
+    timeout: Duration,
+) -> io::Result<Reply> {
+    let deadline = Instant::now() + timeout;
+    let bearer = target.bearer.as_ref().map(|token| format!("Bearer {token}"));
+    let mut headers: Vec<(&str, &str)> = Vec::new();
+    if let Some(bearer) = &bearer {
+        headers.push(("Authorization", bearer.as_str()));
+    }
+    headers.extend(target.headers.iter().map(|(name, value)| (name.as_str(), value.as_str())));
+    let wire = request_bytes(method, path, tls.unwrap_or("localhost"), &headers, body)?;
+    match tls {
+        None => exchange(stream, deadline, &wire),
+        Some(name) => {
+            let pin = target.pin.ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "a stream with no host name needs the hub's certificate pin")
+            })?;
+            let session = tls_session(Some(pin), name)?;
+            exchange(rustls::StreamOwned::new(session, stream), deadline, &wire)
+        }
+    }
+}
+
+/// [`request_over`] with a JSON body and a JSON answer (Null when empty).
+pub fn request_json_over<S: Read + Write + Duplex + 'static>(
+    stream: S,
+    tls: Option<&str>,
+    target: &Target,
+    method: &str,
+    path: &str,
+    body: Option<&Value>,
+    timeout: Duration,
+) -> io::Result<(u16, Value)> {
+    let bytes = body.map(|body| body.to_string().into_bytes());
+    let reply = request_over(stream, tls, target, method, path, bytes.as_deref(), timeout)?;
+    let value = if reply.body.is_empty() { Value::Null } else { reply.json()? };
+    Ok((reply.status, value))
+}
+
 /// Splits `http://host:port` or `https://host:port` (no path) into (is https, host without
 /// brackets, port). A missing port is 80 or 443.
-pub(crate) fn split_base(base: &str) -> io::Result<(bool, String, u16)> {
+pub fn split_base(base: &str) -> io::Result<(bool, String, u16)> {
     let bad = || io::Error::new(io::ErrorKind::InvalidInput, format!("{base:?} is not an http:// or https:// base of host:port"));
     let (tls, rest) = match (base.strip_prefix("https://"), base.strip_prefix("http://")) {
         (Some(rest), _) => (true, rest),
@@ -617,8 +652,101 @@ fn public_client_config() -> Arc<ClientConfig> {
 }
 
 /// Writes the request, then reads the answer through [`Timed`], bounded by `deadline`.
-fn exchange<S: Read + Write + Socket>(mut stream: S, deadline: Instant, wire: &[u8]) -> io::Result<Reply> {
+fn exchange<S: Read + Write + Duplex>(mut stream: S, deadline: Instant, wire: &[u8]) -> io::Result<Reply> {
     stream.write_all(wire)?;
     stream.flush()?;
     read_reply(BufReader::new(Timed { stream, deadline }))
+}
+
+/// Requests over a stream the caller holds, not a TCP socket: a Unix-socket pair stands in for a vsock relay.
+#[cfg(all(test, unix))]
+mod over_stream_tests {
+    use super::*;
+    use std::os::unix::net::UnixStream;
+    use std::thread;
+
+    /// A Unix stream the client hands to `request_json_over`.
+    struct Wire(UnixStream);
+
+    impl Read for Wire {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            self.0.read(buf)
+        }
+    }
+
+    impl Write for Wire {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0.write(buf)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            self.0.flush()
+        }
+    }
+
+    impl Duplex for Wire {
+        fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
+            self.0.set_read_timeout(timeout)
+        }
+    }
+
+    #[test]
+    fn a_json_request_is_sent_over_pinned_tls_on_a_stream_the_caller_holds() {
+        let pair = apz_trust::tls::self_signed(&["hub".to_string()]).expect("a certificate");
+        let config = apz_trust::tls::server_config(&pair).expect("a server config");
+        let pin = apz_trust::tls::fingerprint(&pair.cert_pem).expect("a pin");
+        let (client, server) = UnixStream::pair().expect("a stream pair");
+
+        let serving = thread::spawn(move || {
+            let connection = rustls::ServerConnection::new(config).expect("a server connection");
+            let mut tls = rustls::StreamOwned::new(connection, server);
+            let mut seen = Vec::new();
+            let mut chunk = [0u8; 512];
+            while !seen.windows(4).any(|w| w == b"\r\n\r\n") {
+                let n = tls.read(&mut chunk).expect("the request");
+                assert!(n > 0, "the client closed before its head");
+                seen.extend_from_slice(&chunk[..n]);
+            }
+            let body = br#"{"station":"ws-9"}"#;
+            let reply = format!(
+                "HTTP/1.1 201 Created\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            tls.write_all(reply.as_bytes()).expect("the head");
+            tls.write_all(body).expect("the body");
+            tls.flush().expect("flush");
+            String::from_utf8_lossy(&seen).to_string()
+        });
+
+        let target = Target {
+            base: String::new(),
+            pin: Some(pin),
+            bearer: Some("tok".into()),
+            headers: Vec::new(),
+        };
+        let (status, value) = request_json_over(
+            Wire(client),
+            Some("hub"),
+            &target,
+            "POST",
+            "/v1/stations/join",
+            Some(&serde_json::json!({"code": "c"})),
+            Duration::from_secs(5),
+        )
+        .expect("the reply");
+        assert_eq!((status, value), (201, serde_json::json!({"station": "ws-9"})));
+
+        let seen = serving.join().expect("the server");
+        assert!(seen.starts_with("POST /v1/stations/join HTTP/1.1\r\n"), "{seen}");
+        assert!(seen.contains("Host: hub\r\n"), "{seen}");
+        assert!(seen.contains("Authorization: Bearer tok\r\n"), "{seen}");
+    }
+
+    #[test]
+    fn a_stream_with_no_host_name_is_refused_without_a_pin() {
+        let (client, _server) = UnixStream::pair().expect("a stream pair");
+        let target = Target::default();
+        let err = request_over(Wire(client), Some("hub"), &target, "GET", "/", None, Duration::from_secs(1)).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput, "{err}");
+    }
 }

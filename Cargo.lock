@@ -607,6 +607,7 @@ dependencies = [
  "apz-station",
  "apz-trust",
  "base64 0.22.1",
+ "libc",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -4624,6 +4625,8 @@ version = "0.1.0"
 dependencies = [
  "apz-http",
  "apz-os",
+ "apz-station",
+ "apz-uds",
  "serde",
  "serde_json",
  "vmm",

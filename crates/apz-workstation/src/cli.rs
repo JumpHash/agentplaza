@@ -12,6 +12,7 @@ use std::path::PathBuf;
 /// The usage text.
 pub const USAGE: &str = "\
 usage: apz-workstation join --hub URL --code CODE [--name N] [--account agent:<user>|owner] [--pin PIN] [--state-dir DIR]
+       apz-workstation join --from-node vsock://2:5101 [--name N] [--account agent:<user>|owner] [--state-dir DIR]
        apz-workstation run [--state-dir DIR] [--fake-desktop]
        apz-workstation status [--state-dir DIR]
        apz-workstation leave [--state-dir DIR]";
@@ -35,11 +36,13 @@ pub enum Command {
     Version,
 }
 
-/// The arguments of `join`.
+/// The arguments of `join`: either a hub and its code, or `--from-node`, the `vsock://` address of the node's config
+/// port, which serves the hub, the pin and the code (then `hub` and `code` are empty).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JoinArgs {
     pub hub: String,
     pub code: String,
+    pub from_node: Option<String>,
     pub name: Option<String>,
     pub account: Option<AccountArg>,
     pub pin: Option<String>,
@@ -80,19 +83,12 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
             flags.only(&[
                 "--hub",
                 "--code",
+                "--from-node",
                 "--name",
                 "--account",
                 "--pin",
                 "--state-dir",
             ])?;
-            let hub = flags.require("--hub")?;
-            if !(hub.starts_with("https://") || hub.starts_with("http://")) {
-                return Err("--hub is an https:// URL".to_string());
-            }
-            let code = flags.require("--code")?;
-            if code.is_empty() || code.chars().any(|c| c.is_whitespace() || c.is_control()) {
-                return Err("--code is one word with no spaces".to_string());
-            }
             let name = flags.get("--name").map(str::to_string);
             if name
                 .as_deref()
@@ -101,10 +97,36 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
                 return Err("--name is 1 to 64 characters".to_string());
             }
             let account = flags.get("--account").map(parse_account).transpose()?;
+            if let Some(node) = flags.get("--from-node") {
+                if flags.get("--hub").is_some() || flags.get("--code").is_some() || flags.get("--pin").is_some() {
+                    return Err("--from-node takes the hub, its pin and the code from the node: give it alone".to_string());
+                }
+                if !node.starts_with("vsock://") {
+                    return Err("--from-node is a vsock:// address of the node's config port".to_string());
+                }
+                return Ok(Command::Join(JoinArgs {
+                    hub: String::new(),
+                    code: String::new(),
+                    from_node: Some(node.to_string()),
+                    name,
+                    account,
+                    pin: None,
+                    state: flags.state(),
+                }));
+            }
+            let hub = flags.require("--hub")?;
+            if !(hub.starts_with("https://") || hub.starts_with("http://") || hub.starts_with("vsock://")) {
+                return Err("--hub is an https:// URL, or a vsock:// address through the node".to_string());
+            }
+            let code = flags.require("--code")?;
+            if code.is_empty() || code.chars().any(|c| c.is_whitespace() || c.is_control()) {
+                return Err("--code is one word with no spaces".to_string());
+            }
             let pin = flags.get("--pin").map(str::to_string);
             Ok(Command::Join(JoinArgs {
                 hub: hub.trim_end_matches('/').to_string(),
                 code: code.to_string(),
+                from_node: None,
                 name,
                 account,
                 pin,
@@ -231,6 +253,7 @@ mod tests {
             Command::Join(JoinArgs {
                 hub: "https://hub.example:7443".into(),
                 code: "ABC-123".into(),
+                from_node: None,
                 name: Some("studio".into()),
                 account: Some(AccountArg::Agent("agentws".into())),
                 pin: None,
@@ -252,6 +275,37 @@ mod tests {
             }
             other => panic!("not a join: {other:?}"),
         }
+    }
+
+    #[test]
+    fn join_takes_a_vsock_hub_with_its_pin_or_the_node_alone() {
+        let parsed = parse(&words(
+            "join --hub vsock://2:5100 --code ABC --pin cGlu --state-dir /tmp/s",
+        ))
+        .unwrap();
+        match parsed {
+            Command::Join(args) => {
+                assert_eq!(args.hub, "vsock://2:5100");
+                assert_eq!(args.pin.as_deref(), Some("cGlu"));
+                assert_eq!(args.from_node, None);
+            }
+            other => panic!("not a join: {other:?}"),
+        }
+
+        let parsed = parse(&words("join --from-node vsock://2:5101 --name studio")).unwrap();
+        match parsed {
+            Command::Join(args) => {
+                assert_eq!(args.from_node.as_deref(), Some("vsock://2:5101"));
+                assert!(args.hub.is_empty() && args.code.is_empty());
+                assert_eq!(args.name.as_deref(), Some("studio"));
+            }
+            other => panic!("not a join: {other:?}"),
+        }
+        // The node's config carries the code, so no code or hub may come with --from-node.
+        assert!(parse(&words("join --from-node vsock://2:5101 --code X")).is_err());
+        assert!(parse(&words("join --from-node vsock://2:5101 --hub https://h")).is_err());
+        assert!(parse(&words("join --from-node https://h")).is_err());
+        assert!(parse(&words("join --hub ftp://h --code X")).is_err());
     }
 
     #[test]

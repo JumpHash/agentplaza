@@ -109,14 +109,19 @@ fn join_command(args: JoinArgs) -> Result<(), String> {
     } else {
         name
     };
-    let request = JoinRequest {
-        hub: args.hub,
-        code: args.code,
-        name,
-        account,
-        pin: args.pin,
+    let record = match args.from_node {
+        Some(node) => join::join_from_node(&dir, &node, name, account, &facts)?,
+        None => {
+            let request = JoinRequest {
+                hub: args.hub,
+                code: args.code,
+                name,
+                account,
+                pin: args.pin,
+            };
+            join::join(&dir, &request, &facts)?
+        }
     };
-    let record = join::join(&dir, &request, &facts)?;
     println!(
         "joined {} as station {} ({}); run `apz-workstation run` to connect",
         record.hub, record.station, record.name

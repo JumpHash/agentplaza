@@ -54,6 +54,7 @@ mod link;
 mod op;
 mod settings;
 mod sync;
+pub mod vsock;
 
 pub use event::{Event, Level};
 pub use facts::{AccountMode, Display, Facts, Form, Gpu, Os};

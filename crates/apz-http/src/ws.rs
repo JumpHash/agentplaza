@@ -50,7 +50,8 @@ impl Duplex for StreamOwned<ServerConnection, TcpStream> {
     }
 }
 
-impl Duplex for StreamOwned<ClientConnection, TcpStream> {
+/// A TLS client over any stream the caller connected (TCP, or a vsock relay's stream).
+impl<S: Duplex> Duplex for StreamOwned<ClientConnection, S> {
     fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
         self.sock.set_read_timeout(timeout)
     }
@@ -581,6 +582,45 @@ pub fn connect(target: &Target, path: &str, protocol: Option<&str>, timeout: Dur
     let (tls, host, port) = split_base(&target.base)?;
     let host_header = if host.contains(':') { format!("[{host}]:{port}") } else { format!("{host}:{port}") };
     let key = STANDARD.encode(apz_trust::random::<16>());
+    let head = handshake_head(&host_header, &key, target, path, protocol)?;
+    let tcp = dial(&host, port, timeout)?;
+    let io: Box<dyn Duplex> = if tls {
+        Box::new(StreamOwned::new(tls_session(target.pin, &host)?, tcp))
+    } else {
+        Box::new(tcp)
+    };
+    finish(io, &head, &key, protocol, limits)
+}
+
+/// [`connect`] over a stream the caller already connected, such as a vsock stream to a node's relay. TLS runs on it
+/// when `tls` names the server, pinned by `target.pin` (required: a stream with no host name cannot be verified any
+/// other way); the name is the SNI and the Host header. With `tls: None` the handshake goes over the stream as it is.
+/// The stream's read timeout bounds the handshake, so the caller sets one. `target.base` is not dialled.
+pub fn connect_over<S: Duplex + 'static>(
+    stream: S,
+    tls: Option<&str>,
+    target: &Target,
+    path: &str,
+    protocol: Option<&str>,
+    limits: Limits,
+) -> io::Result<Socket> {
+    let host_header = tls.unwrap_or("localhost").to_string();
+    let key = STANDARD.encode(apz_trust::random::<16>());
+    let head = handshake_head(&host_header, &key, target, path, protocol)?;
+    let io: Box<dyn Duplex> = match tls {
+        Some(name) => {
+            let pin = target
+                .pin
+                .ok_or_else(|| refused("a stream with no host name needs the hub's certificate pin"))?;
+            Box::new(StreamOwned::new(tls_session(Some(pin), name)?, stream))
+        }
+        None => Box::new(stream),
+    };
+    finish(io, &head, &key, protocol, limits)
+}
+
+/// The opening handshake's request text, checked before anything is dialled or sent.
+fn handshake_head(host_header: &str, key: &str, target: &Target, path: &str, protocol: Option<&str>) -> io::Result<String> {
     let mut head = format!(
         "GET {path} HTTP/1.1\r\nHost: {host_header}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\
          Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: {key}\r\n"
@@ -606,17 +646,15 @@ pub fn connect(target: &Target, path: &str, protocol: Option<&str>, timeout: Dur
         head.push_str(&format!("{name}: {value}\r\n"));
     }
     head.push_str("\r\n");
+    Ok(head)
+}
 
-    let mut stream: Box<dyn Duplex> = if tls {
-        let session = tls_session(target.pin, &host)?;
-        Box::new(StreamOwned::new(session, dial(&host, port, timeout)?))
-    } else {
-        Box::new(dial(&host, port, timeout)?)
-    };
-    stream.write_all(head.as_bytes())?;
-    stream.flush()?;
+/// Sends the handshake over `io`, then checks the server's `101` and returns the socket.
+fn finish(mut io: Box<dyn Duplex>, head: &str, key: &str, protocol: Option<&str>, limits: Limits) -> io::Result<Socket> {
+    io.write_all(head.as_bytes())?;
+    io.flush()?;
 
-    let mut reader = BufReader::new(stream);
+    let mut reader = BufReader::new(io);
     let (status, headers) = read_head(&mut reader)?;
     let header = |name: &str| headers.iter().find(|(found, _)| found == name).map(|(_, value)| value.as_str());
     if status != 101 {
@@ -628,7 +666,7 @@ pub fn connect(target: &Target, path: &str, protocol: Option<&str>, timeout: Dur
     if !upgrades || !connection {
         return Err(refused("the server's 101 is not a WebSocket upgrade"));
     }
-    if header("sec-websocket-accept") != Some(accept_key(&key).as_str()) {
+    if header("sec-websocket-accept") != Some(accept_key(key).as_str()) {
         return Err(refused("Sec-WebSocket-Accept does not match the key"));
     }
     if header("sec-websocket-extensions").is_some() {
@@ -1153,5 +1191,60 @@ mod tests {
         let closes = frames_written(&pipe).iter().filter(|(opcode, _)| *opcode == OP_CLOSE).count();
         assert_eq!(closes, 1);
         assert!(socket.send(&Message::Text("late".to_string())).is_err());
+    }
+}
+
+/// The WebSocket client over a stream the caller dialled itself, the way a vsock relay's stream is handed in.
+#[cfg(test)]
+mod connect_over_tests {
+    use super::*;
+    use crate::Server;
+    use crate::client::Target;
+    use std::net::{TcpListener, TcpStream};
+
+    fn echo_session(mut socket: Socket) {
+        while let Ok(message) = socket.recv(Duration::from_secs(5)) {
+            if let Some(message) = message
+                && socket.send(&message).is_err()
+            {
+                return;
+            }
+        }
+    }
+
+    #[test]
+    fn a_message_round_trips_over_pinned_tls_on_a_stream_the_caller_dialled() {
+        let pair = apz_trust::tls::self_signed(&["localhost".to_string()]).expect("a certificate");
+        let config = apz_trust::tls::server_config(&pair).expect("a server config");
+        let pin = apz_trust::tls::fingerprint(&pair.cert_pem).expect("a pin");
+        let server = Server::bind(0)
+            .expect("bind")
+            .tls(config)
+            .spawn(|request: &crate::Request| {
+                accept(request, Origins::None, None, Limits::default(), echo_session)
+            })
+            .expect("spawn");
+        let tcp = TcpStream::connect(("127.0.0.1", server.port())).expect("dial");
+        tcp.set_read_timeout(Some(Duration::from_secs(5))).expect("a read timeout");
+        let target = Target {
+            pin: Some(pin),
+            ..Target::default()
+        };
+        let mut socket = connect_over(tcp, Some("localhost"), &target, "/ws", None, Limits::default())
+            .expect("the handshake");
+        socket.send(&Message::Text("hello".to_string())).expect("send");
+        let reply = socket.recv(Duration::from_secs(5)).expect("a read").expect("a message in time");
+        assert_eq!(reply, Message::Text("hello".to_string()));
+        socket.close(1000, "bye");
+    }
+
+    #[test]
+    fn a_stream_with_no_host_name_is_refused_before_anything_is_sent() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let tcp = TcpStream::connect(listener.local_addr().expect("addr")).expect("dial");
+        let Err(err) = connect_over(tcp, Some("hub"), &Target::default(), "/ws", None, Limits::default()) else {
+            panic!("a stream with no pin must be refused");
+        };
+        assert!(err.to_string().contains("pin"), "{err}");
     }
 }

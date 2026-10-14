@@ -180,6 +180,36 @@ A workstation VM runs the same daemon. The plaza can also make them:
 - Snapshots before a lease and reset after, when the owner wants clean machines (a per-workstation setting).
 - macOS VMs only on Apple hardware (Apple's Virtualization framework), at most two per Mac by Apple's licence.
 
+A Linux VM has no NIC (rule 0010), so its daemon reaches the hub over vsock through its node. The node relays the
+station link to the hub byte for byte (`noded`'s `ws_relay`, at most four connections per VM), and the daemon's pinned
+TLS runs end to end with the hub; the relay never reads it. The hub is `vsock://2:5100` as the VM dials it. The join
+config (that address, the hub's pin and the join code) is served once on `vsock://2:5101` and never rides on the kernel
+command line. The guest recipe is `scripts/mk-workstation-guest.sh`, which also builds the initramfs that mounts the
+desktop disk.
+
+Both backends join the same way. Every workstation VM has a CID, `4096` plus its sequence number (`cid_for`), and a VM
+with a hub gets a vsock device with it. A plaza VM's connections reach the relay through the VMM's muxer, as unix sockets
+`{vsock_dir}/vm{cid}_{port}`. A QEMU VM's connections reach it through the host's own `AF_VSOCK` listeners on ports 5100
+and 5101 (`vmm::host_vsock`, started with the first QEMU VM and closed with the last). Those listeners serve a connection
+only when its peer's CID belongs to a running QEMU workstation VM of this node. A VM's relay runs while the VM does.
+The kernel command line carries only the workstation's name and `plaza.workstation_node=vsock://2:5101`, never the hub's
+address or the code. A QEMU VM left running by a previous noded is taken back as running, with its relay restarted, when
+its pidfile names a live QEMU and its QMP socket answers; otherwise it shows as stopped.
+
+A Windows workstation VM runs under QEMU with UEFI, and its disk and network must come from the virtio-win drivers:
+
+- `viostor`, the virtio-blk storage driver. The launch attaches the disk over AHCI (SATA), which Windows boots without a
+  driver, so `viostor` is not needed for the current launch; the image carries it so a switch to virtio-blk needs no
+  rebuild.
+- `viosock`, the virtio-vsock driver, for the daemon's AF_VSOCK link to the relay. Without it the guest has no vsock and
+  cannot join.
+- `netkvm` is not needed: a workstation VM has no NIC (rule 0010).
+
+The daemon is installed as a logon task (not a Windows service), so it starts when the owner signs in, in that user's
+session. Windows has no kernel command line, so its daemon uses the node address
+`vsock://2:5101` directly. The Windows daemon has no AF_VSOCK connector yet (`apz-workstation`'s vsock is Linux-only), so
+a Windows VM cannot enrol until one lands; the node side is already the same for both backends.
+
 ## 11. Phases
 
 1. **Enroll and headless work.** `apz-workstation` with join codes and setup's new option, shells, files and runs (the

@@ -38,4 +38,5 @@ pub mod service;
 pub mod state;
 pub mod sync;
 pub mod uplink;
+pub mod vsock;
 pub mod work;

@@ -27,10 +27,12 @@ sha2.workspace = true
 
 # The platform desktop backends are always built for their own platform: Linux has the X11, Wayland and AT-SPI
 # backends, macOS its backend, Windows its backend. Which one serves a run is chosen at run time (`backend`).
+# libc is here for AF_VSOCK, a workstation VM's way to its hub (vsock.rs); the lock already has it.
 [target.'cfg(target_os = "linux")'.dependencies]
 apz-desktop-atspi = { path = "../apz-desktop-atspi" }
 apz-desktop-wayland = { path = "../apz-desktop-wayland" }
 apz-desktop-x11 = { path = "../apz-desktop-x11" }
+libc.workspace = true
 zbus = "5"
 
 [target.'cfg(target_os = "macos")'.dependencies]

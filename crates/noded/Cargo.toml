@@ -8,6 +8,8 @@ license.workspace = true
 [dependencies]
 apz-http.workspace = true
 apz-os = { path = "../apz-os" }
+apz-station = { path = "../apz-station" }
+apz-uds = { path = "../apz-uds" }
 serde.workspace = true
 serde_json.workspace = true
 vmm = { path = "../vmm" }

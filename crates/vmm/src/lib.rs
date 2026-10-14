@@ -34,6 +34,10 @@
 // next to the code, and every `unsafe` block has its own `// SAFETY:` note):
 //   * `sys` — `poll(2)`, `uname(2)` and the non-blocking `socket(2)`/`connect(2)`
 //     pair behind the vsock muxer's guest-initiated connects.
+//   * `host_vsock` — the host end of a vhost-vsock guest (Linux): `socket(2)`,
+//     `bind(2)`, `listen(2)`, `accept4(2)`, `setsockopt(2)`, `shutdown(2)`,
+//     `fcntl(2)` and the `read`/`write` of an accepted `AF_VSOCK` stream, for a
+//     QEMU workstation VM's relay (noded `ws_relay`).
 //   * `vstate::memory` — `mmap`/`munmap`/`sysconf` and the raw-pointer guest
 //     region builder (`unsafe impl Send/Sync` for the owned mapping).
 //   * `vstate::vcpu` — `dup(2)` of the KVM fd and `create_vcpu_from_rawfd`.
@@ -81,6 +85,10 @@ mod sys;
 pub mod jail;
 pub mod devices;
 pub mod spawner;
+/// The host end of a vhost-vsock guest's connections (Linux): the `AF_VSOCK` listeners a QEMU workstation VM's relay
+/// serves. See the allowlist above.
+#[cfg(target_os = "linux")]
+pub mod host_vsock;
 
 /// ACPI table generation (`x86_64` guests only; aarch64 uses FDT).
 #[cfg(all(any(target_os = "linux", windows), target_arch = "x86_64"))]

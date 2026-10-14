@@ -445,7 +445,9 @@ pub fn create(app: &App, request: &CreateVm, actor: &str) -> Result<VmView, Fail
         .is_some_and(|backends| backends.iter().any(|b| b.as_str() == Some("qemu")));
     let backend = backend_for(request, node_has_qemu).map_err(|reason| (400, reason))?;
 
-    let (hub, _) = ops::hub_pin(app)?;
+    // The hub's address and its certificate pin: the node relays the VM's link to the hub and hands the VM the pin,
+    // so the VM's TLS to the hub is verified although the VM reaches it only through the node's vsock relay.
+    let (hub, cert) = ops::hub_pin(app)?;
     let (code, join_code, _) = ops::issue_code(
         app,
         &format!("vm {}", request.name),
@@ -461,6 +463,7 @@ pub fn create(app: &App, request: &CreateVm, actor: &str) -> Result<VmView, Fail
         "gpu": request.gpu.clone().unwrap_or_else(|| "none".into()),
         "image": request.image,
         "hub": hub,
+        "pin": apz_trust::b64(&cert),
         "join_code": join_code,
         "backend": backend,
     });

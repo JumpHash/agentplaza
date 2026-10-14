@@ -20,6 +20,8 @@ use serde_json::{Value, json};
 
 /// The longest a unix socket path may be, in bytes: `sun_path` holds 108 bytes with its terminator.
 const SOCKET_PATH_MAX: usize = 107;
+/// The lowest guest CID a vsock device may have: 0 to 2 are the reserved CIDs (hypervisor, local, host).
+const VSOCK_FIRST_GUEST_CID: u32 = 3;
 /// How long a stopping VM has to power itself down before QEMU is told to quit.
 pub const POWERDOWN_GRACE: Duration = Duration::from_secs(60);
 /// How long QEMU has to exit after `quit`, before it is killed.
@@ -184,13 +186,9 @@ pub fn detect() -> Option<Available> {
 /// How a VM boots.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Boot<'a> {
-    /// UEFI: the read-only code, and this VM's own variable store. `join` is the join code file, which the guest reads
-    /// once through fw_cfg at its first boot.
-    Uefi {
-        code: &'a Path,
-        vars: &'a Path,
-        join: Option<&'a Path>,
-    },
+    /// UEFI: the read-only code, and this VM's own variable store. The join config is not here: the guest reads it over its
+    /// vsock from the node's relay, as a Linux guest does.
+    Uefi { code: &'a Path, vars: &'a Path },
     /// Direct boot of the desktop guest's kernel and initramfs, with the command line its daemon reads.
     Direct {
         kernel: &'a Path,
@@ -214,8 +212,8 @@ pub struct Plan<'a> {
     pub disk: &'a Path,
     /// The VM's directory: the QMP socket, the pidfile and the logs go here.
     pub dir: &'a Path,
-    /// The guest CID of the vsock device.
-    pub cid: u32,
+    /// The guest CID of the vsock device, for a VM with a hub (the relay reaches it there); `None` attaches no vsock device.
+    pub cid: Option<u32>,
     /// A PCI address (`DDDD:BB:DD.F`) passed through with VFIO; already checked against sysfs.
     pub vfio: Option<&'a str>,
 }
@@ -236,12 +234,16 @@ pub fn argv(plan: &Plan) -> Result<Vec<String>, String> {
             plan.dir.display()
         ));
     }
+    if let Some(cid) = plan.cid
+        && cid < VSOCK_FIRST_GUEST_CID
+    {
+        return Err(format!(
+            "a workstation's guest CID must be at least {VSOCK_FIRST_GUEST_CID}, not {cid}"
+        ));
+    }
     let mut paths: Vec<&Path> = vec![plan.disk, plan.dir];
     match plan.boot {
-        Boot::Uefi { code, vars, join } => {
-            paths.extend([code, vars]);
-            paths.extend(join);
-        }
+        Boot::Uefi { code, vars } => paths.extend([code, vars]),
         Boot::Direct { kernel, initrd, .. } => paths.extend([kernel, initrd]),
     }
     if let Some(bad) = paths
@@ -291,7 +293,7 @@ pub fn argv(plan: &Plan) -> Result<Vec<String>, String> {
     args.extend(display.iter().map(|arg| arg.to_string()));
 
     match plan.boot {
-        Boot::Uefi { code, vars, join } => {
+        Boot::Uefi { code, vars } => {
             pair(
                 &mut args,
                 "-drive",
@@ -305,13 +307,6 @@ pub fn argv(plan: &Plan) -> Result<Vec<String>, String> {
                 "-drive",
                 format!("if=pflash,format=raw,unit=1,file={}", vars.display()),
             );
-            if let Some(join) = join {
-                pair(
-                    &mut args,
-                    "-fw_cfg",
-                    format!("name=opt/plaza/join,file={}", join.display()),
-                );
-            }
         }
         Boot::Direct {
             kernel,
@@ -342,11 +337,13 @@ pub fn argv(plan: &Plan) -> Result<Vec<String>, String> {
         pair(&mut args, "-device", "virtio-blk-pci,drive=disk0");
     }
 
-    pair(
-        &mut args,
-        "-device",
-        format!("vhost-vsock-pci,guest-cid={}", plan.cid),
-    );
+    if let Some(cid) = plan.cid {
+        pair(
+            &mut args,
+            "-device",
+            format!("vhost-vsock-pci,guest-cid={cid}"),
+        );
+    }
     if let Some(pci) = plan.vfio {
         pair(&mut args, "-device", format!("vfio-pci,host={pci}"));
     }
@@ -598,6 +595,84 @@ pub fn running_pid(dir: &Path) -> Option<u32> {
         .then_some(pid)
 }
 
+/// The pid a QEMU VM left running by a previous noded can be taken back by, from what the node reads: its pidfile's text, its
+/// `/proc` command line (`None` when there is no such process), and whether its QMP socket answers. A VM is taken back only
+/// when all three say it is a running QEMU that this node can still reach.
+pub fn reattach_pid(pidfile: Option<&str>, cmdline: Option<&[u8]>, qmp_answers: bool) -> Option<u32> {
+    let pid = parse_pid(pidfile?)?;
+    (is_qemu_cmdline(cmdline?) && qmp_answers).then_some(pid)
+}
+
+fn parse_pid(text: &str) -> Option<u32> {
+    text.trim().parse().ok()
+}
+
+/// Whether a `/proc/<pid>/cmdline` names a QEMU system emulator.
+fn is_qemu_cmdline(cmdline: &[u8]) -> bool {
+    String::from_utf8_lossy(cmdline).contains("qemu-system")
+}
+
+/// A QEMU VM this node did not start, found running after a restart of noded. It is not this process's child, so it is
+/// watched by its pid and stopped through QMP.
+#[derive(Debug)]
+pub struct Attached {
+    pid: u32,
+    socket: PathBuf,
+}
+
+/// Takes back the QEMU VM in `dir` if a previous noded left it running (see [`reattach_pid`]). Nothing is signalled.
+pub fn reattach(dir: &Path) -> Option<Attached> {
+    let pidfile = fs::read_to_string(dir.join(PID_FILE)).ok();
+    let pid = pidfile.as_deref().and_then(parse_pid);
+    let cmdline = pid.and_then(|pid| fs::read(format!("/proc/{pid}/cmdline")).ok());
+    let socket = dir.join(QMP_SOCKET);
+    let qmp_answers = cmdline.is_some() && send(&socket, "query-status").is_ok();
+    reattach_pid(pidfile.as_deref(), cmdline.as_deref(), qmp_answers)
+        .map(|pid| Attached { pid, socket })
+}
+
+impl Attached {
+    pub fn pid(&self) -> u32 {
+        self.pid
+    }
+
+    /// Whether the VM's QEMU has gone. Its pid is only checked, never signalled.
+    pub fn exited(&self) -> bool {
+        let cmdline = fs::read(format!("/proc/{}/cmdline", self.pid)).ok();
+        !cmdline.is_some_and(|text| is_qemu_cmdline(&text))
+    }
+
+    /// Powers the guest down through QMP and waits `grace` for QEMU to exit, then quits it and waits briefly. An error when
+    /// QEMU is still there: the VM stays recorded as running, and nothing is killed.
+    pub fn shut_down(&mut self, grace: Duration) -> Result<(), String> {
+        if self.exited() {
+            return Ok(());
+        }
+        let _ = send(&self.socket, "system_powerdown");
+        if self.wait_gone(grace) {
+            return Ok(());
+        }
+        let _ = send(&self.socket, "quit");
+        if self.wait_gone(QUIT_GRACE) {
+            return Ok(());
+        }
+        Err(format!("QEMU (pid {}) did not exit after quit", self.pid))
+    }
+
+    fn wait_gone(&self, limit: Duration) -> bool {
+        let deadline = Instant::now() + limit;
+        loop {
+            if self.exited() {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(POLL);
+        }
+    }
+}
+
 /// A running QEMU process for one VM.
 pub struct Process {
     child: Child,
@@ -724,7 +799,7 @@ mod tests {
             },
             disk,
             dir,
-            cid: 4099,
+            cid: Some(4099),
             vfio: None,
         }
     }
@@ -783,7 +858,6 @@ mod tests {
         let dir = dir_plan();
         let disk = dir.join("disk.qcow2");
         let vars = dir.join("vars.fd");
-        let join = dir.join("join");
         let plan = Plan {
             name: "win-1",
             arch: Arch::X86_64,
@@ -793,11 +867,10 @@ mod tests {
             boot: Boot::Uefi {
                 code: Path::new("/usr/share/OVMF/OVMF_CODE_4M.fd"),
                 vars: &vars,
-                join: Some(&join),
             },
             disk: &disk,
             dir: &dir,
-            cid: 4100,
+            cid: Some(4100),
             vfio: None,
         };
         let args = argv(&plan).expect("a Windows VM launches");
@@ -812,11 +885,11 @@ mod tests {
             "-drive",
             &format!("if=pflash,format=raw,unit=1,file={}", vars.display())
         ));
-        assert!(has_pair(
-            &args,
-            "-fw_cfg",
-            &format!("name=opt/plaza/join,file={}", join.display())
-        ));
+        assert!(
+            !args.iter().any(|a| a == "-fw_cfg"),
+            "the join config comes over vsock, never through fw_cfg"
+        );
+        assert!(has_pair(&args, "-device", "vhost-vsock-pci,guest-cid=4100"));
         assert!(has_pair(&args, "-device", "ide-hd,drive=disk0,bus=ahci.0"));
         assert!(has_pair(&args, "-device", "ahci,id=ahci"));
         assert!(has_pair(&args, "-vga", "std"));
@@ -850,11 +923,10 @@ mod tests {
             boot: Boot::Uefi {
                 code: Path::new("/c.fd"),
                 vars: &vars,
-                join: None,
             },
             disk: &disk,
             dir: &dir,
-            cid: 4100,
+            cid: Some(4100),
             vfio: Some("0000:01:00.0"),
         };
         let arm = Plan {
@@ -923,7 +995,6 @@ mod tests {
             boot: Boot::Uefi {
                 code: Path::new("/c.fd"),
                 vars: &vars,
-                join: None,
             },
             ..linux_plan(&dir, &disk, "x")
         };
@@ -1138,6 +1209,51 @@ mod tests {
         assert!(base_format(&vhdx).unwrap_err().contains("convert"));
         assert!(base_format(&dir.join("missing.img")).is_err());
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_vm_with_no_vsock_device_attaches_none_and_a_reserved_cid_is_refused() {
+        let dir = dir_plan();
+        let disk = dir.join("disk.qcow2");
+        let no_hub = Plan {
+            cid: None,
+            ..linux_plan(&dir, &disk, "x")
+        };
+        let args = argv(&no_hub).expect("a VM with no hub launches");
+        assert!(!args.iter().any(|a| a.contains("vhost-vsock")), "{args:?}");
+        assert!(args.contains(&"-nic".to_string()) && args.contains(&"none".to_string()));
+
+        for reserved in [0, 1, 2] {
+            let plan = Plan {
+                cid: Some(reserved),
+                ..linux_plan(&dir, &disk, "x")
+            };
+            assert!(
+                argv(&plan).unwrap_err().contains("at least 3"),
+                "CID {reserved} is reserved"
+            );
+        }
+    }
+
+    #[test]
+    fn a_qemu_left_running_is_taken_back_only_when_its_pid_is_qemu_and_qmp_answers() {
+        let qemu = b"/usr/bin/qemu-system-x86_64\0-name\0desk-1\0-nic\0none\0";
+        assert_eq!(reattach_pid(Some("4242\n"), Some(qemu), true), Some(4242));
+        assert_eq!(
+            reattach_pid(Some("4242"), Some(qemu), false),
+            None,
+            "a QEMU whose QMP does not answer is not taken back"
+        );
+        let sleep = b"/usr/bin/sleep\x00600\x00";
+        assert_eq!(
+            reattach_pid(Some("4242"), Some(sleep), true),
+            None,
+            "a pid reused by another process is not a VM"
+        );
+        assert_eq!(reattach_pid(Some("4242"), None, true), None, "no such process");
+        assert_eq!(reattach_pid(None, Some(qemu), true), None, "no pidfile");
+        assert_eq!(reattach_pid(Some("not a pid"), Some(qemu), true), None);
+        assert_eq!(reattach_pid(Some(""), Some(qemu), true), None);
     }
 
     #[test]

@@ -12,12 +12,16 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use std::io;
+
 use apz_http::client::Target;
-use apz_http::ws::{self, Limits, Message, Socket};
+use apz_http::ws::{self, Duplex, Limits, Message, Socket};
+use apz_station::vsock::{self, TLS_NAME};
 use apz_station::{HubFrame, LINK_PATH, Notice, SUBPROTOCOL, StationFrame};
 
 use crate::daemon::Daemon;
 use crate::state::{self, Record, Status};
+use crate::vsock::VsockStream;
 
 /// How long one dial may take.
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -57,13 +61,7 @@ pub fn run(daemon: &Daemon, record: &Record, stop: &AtomicBool) -> Result<(), St
         if stop.load(Ordering::SeqCst) {
             return Ok(());
         }
-        match ws::connect(
-            &target,
-            LINK_PATH,
-            Some(SUBPROTOCOL),
-            CONNECT_TIMEOUT,
-            limits(),
-        ) {
+        match connect_link(record, &target) {
             Ok(socket) => {
                 backoff = BACKOFF_MIN;
                 match serve(daemon, record, socket, stop) {
@@ -92,6 +90,19 @@ pub fn run(daemon: &Daemon, record: &Record, stop: &AtomicBool) -> Result<(), St
         }
         sleep_unless_stopped(backoff, stop);
         backoff = (backoff * 2).min(BACKOFF_MAX);
+    }
+}
+
+/// Opens the station link: over TCP to an http or https hub, or, for a vsock hub, through the node's relay with the
+/// hub's pinned TLS running inside the stream.
+fn connect_link(record: &Record, target: &Target) -> io::Result<Socket> {
+    match vsock::parse_vsock(&record.hub) {
+        None => ws::connect(target, LINK_PATH, Some(SUBPROTOCOL), CONNECT_TIMEOUT, limits()),
+        Some((cid, port)) => {
+            let stream = VsockStream::connect(cid, port)?;
+            stream.set_read_timeout(Some(CONNECT_TIMEOUT))?;
+            ws::connect_over(stream, Some(TLS_NAME), target, LINK_PATH, Some(SUBPROTOCOL), limits())
+        }
     }
 }
 

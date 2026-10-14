@@ -1,10 +1,11 @@
 //! Workstation VMs: the desktop guests a node makes for the hub (docs/design/workstations.md, section 10).
 //!
 //! A workstation VM is one disk (its own sparse copy of the guest image, grown to the requested size), the
-//! desktop guest's kernel and initramfs, and the VMM's vCPUs and memory. The guest runs the workstation daemon,
-//! started with the join code the hub issued for it: the code rides on the command line as
-//! `plaza.workstation_join=`, so the daemon can enrol. The guest's display is the daemon's own virtual display (the
-//! guest recipe runs Xvfb), so the node's screen is never touched.
+//! desktop guest's kernel and initramfs, and the VMM's vCPUs and memory. The guest runs the workstation daemon. It has
+//! no NIC, so it reaches its hub only through this node's relay (`ws_relay`) over its vsock. The relay serves the join
+//! config (the hub's link address, its pin and the join code) once, so the join code is never on the kernel command line,
+//! and that holds on both backends. The guest's display is the daemon's own virtual display (the guest recipe runs
+//! Xvfb), so the node's screen is never touched.
 //!
 //! Snapshot and revert work on the disk. The VMM takes no live snapshots, so the VM is stopped, its disk is copied
 //! to (or back from) a snapshot file, and the VM starts again. The hub sequences those calls around a lease.
@@ -21,7 +22,8 @@
 //!
 //! The directory layout is `<dir>/<id>/vm.json` (the record, never the join code). A plaza VM keeps `disk.img` and,
 //! after a snapshot, `snapshot.img`. A QEMU VM keeps `disk.qcow2`, an overlay, and `snapshot.qcow2`, plus `vars.fd`
-//! (its UEFI variables, Windows only). A record found at start is loaded as a stopped VM.
+//! (its UEFI variables, Windows only). A record found at start is loaded as a stopped VM, except a QEMU VM that a previous
+//! noded left running: its pidfile and QMP socket answer, so it is taken back as running and its relay is restarted.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -29,10 +31,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
 
+use apz_station::vsock::{NodeConfig, config_address, link_address};
 use serde::{Deserialize, Serialize};
-use vmm::spawner::{self, VmHandle, VmSpec};
+use vmm::spawner::{self, VmHandle, VmSpec, VsockConfig};
 
 use crate::ws_qemu::{self, Available};
+use crate::ws_relay::{self, Destination, Relay};
 
 /// The longest workstation name, in characters (a DNS label, so it can be the guest's hostname).
 pub const MAX_NAME_LEN: usize = 63;
@@ -55,8 +59,8 @@ pub const VMM_BOOTS_WINDOWS: bool = false;
 /// Whether apz-vmm can attach a PCI device for `vfio:` passthrough. It cannot yet, so this is false.
 pub const VMM_ATTACHES_VFIO: bool = false;
 
-/// The first guest CID a QEMU workstation VM may have. Plaza VMs have none. Agents use 100 and up, and runs 20..=99 by
-/// default, so this base sits clear of both. A VM's CID is `CID_BASE` plus its sequence number ([`cid_for`]).
+/// The first guest CID a workstation VM may have, on either backend. Agents use 100 and up, and runs 20..=99 by default,
+/// so this base sits clear of both. A VM's CID is `CID_BASE` plus its sequence number ([`cid_for`]).
 pub const CID_BASE: u32 = 4096;
 
 const GIB: u64 = 1 << 30;
@@ -67,11 +71,10 @@ const NO_UEFI: &str = "this node has no UEFI firmware (OVMF) for a Windows guest
 /// The plaza VM's disk, and its snapshot.
 const PLAZA_DISK: &str = "disk.img";
 const PLAZA_SNAPSHOT: &str = "snapshot.img";
-/// The QEMU VM's lease overlay, its snapshot, its UEFI variables, and the join code file read once at first boot.
+/// The QEMU VM's lease overlay, its snapshot, and its UEFI variables.
 const QEMU_DISK: &str = "disk.qcow2";
 const QEMU_SNAPSHOT: &str = "snapshot.qcow2";
 const QEMU_VARS: &str = "vars.fd";
-const JOIN_FILE: &str = "join";
 
 /// A refusal: the HTTP status and the message.
 pub type Refusal = (u16, String);
@@ -198,9 +201,12 @@ pub struct CreateWorkstation {
     /// A Linux VM uses the node's desktop image unless this names another one.
     #[serde(default)]
     pub image: Option<String>,
-    /// The hub's URL the daemon joins (`https://...`); the guest's join command takes it beside the code.
+    /// The hub's URL the daemon joins (`https://...`). The guest reaches it through this node's relay.
     #[serde(default)]
     pub hub: Option<String>,
+    /// The hub's certificate pin (base64url). The guest's TLS is verified against it, so a VM with a hub needs one.
+    #[serde(default)]
+    pub pin: Option<String>,
     pub join_code: String,
     /// `auto` (the default), `plaza` or `qemu`.
     #[serde(default)]
@@ -218,6 +224,7 @@ pub struct Shape {
     pub gpu: Gpu,
     pub image: Option<PathBuf>,
     pub hub: Option<String>,
+    pub pin: Option<String>,
     pub join_code: String,
     pub backend: Choice,
 }
@@ -249,6 +256,13 @@ impl CreateWorkstation {
             Some(url) => Some(checked_hub(url)?),
             None => None,
         };
+        let pin = match (&hub, &self.pin) {
+            (Some(_), None) => {
+                return Err("a workstation with a hub needs the hub's certificate pin: pin".into());
+            }
+            (_, Some(pin)) => Some(checked_pin(pin)?),
+            (None, None) => None,
+        };
         checked_join_code(&self.join_code)?;
         let backend = Choice::parse(self.backend.as_deref())?;
         Ok(Shape {
@@ -260,6 +274,7 @@ impl CreateWorkstation {
             gpu: self.gpu.clone(),
             image,
             hub,
+            pin,
             join_code: self.join_code.clone(),
             backend,
         })
@@ -310,6 +325,17 @@ fn checked_hub(url: &str) -> Result<String, String> {
         ));
     }
     Ok(url.trim_end_matches('/').to_string())
+}
+
+/// A certificate pin: base64url text of 1 to 64 characters. The daemon decodes it and checks it is 32 bytes.
+fn checked_pin(pin: &str) -> Result<String, String> {
+    let valid = (1..=64).contains(&pin.len())
+        && pin.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
+    if valid {
+        Ok(pin.to_string())
+    } else {
+        Err("pin is not a base64url certificate pin".into())
+    }
 }
 
 fn checked_join_code(code: &str) -> Result<(), String> {
@@ -399,7 +425,7 @@ pub fn cid_for(id: &str) -> u32 {
         .saturating_add(CID_BASE)
 }
 
-/// The record a workstation VM is kept as on disk. It never holds the join code, which is used once, at the first boot.
+/// The record a workstation VM is kept as on disk. It never holds the join code, which the relay serves once.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Record {
     pub id: String,
@@ -421,7 +447,8 @@ pub struct Record {
     /// The launch backend the VM runs under. A record from before QEMU is a plaza VM.
     #[serde(default)]
     pub backend: Backend,
-    /// The guest CID of the vsock device of a QEMU VM; 0 for a plaza VM, which has none.
+    /// The guest CID of this VM's vsock device (see [`cid_for`]), on either backend. A record from before the relay has 0
+    /// until the node loads it, which assigns its CID.
     #[serde(default)]
     pub cid: u32,
 }
@@ -437,6 +464,8 @@ pub struct Guest {
     pub sysfs: PathBuf,
     /// This node's QEMU, when it has one (see `ws_qemu::detect`). `None` leaves only the plaza backend.
     pub qemu: Option<Available>,
+    /// Where a plaza VM's vsock sockets are (`--uds-dir`): its relay listens there, as `vm{cid}_{port}`.
+    pub vsock_dir: PathBuf,
 }
 
 impl Default for Guest {
@@ -448,69 +477,84 @@ impl Default for Guest {
             dir: apz_os::dirs::state().join("workstations"),
             sysfs: PathBuf::from("/sys"),
             qemu: None,
+            vsock_dir: apz_os::dirs::vsock_sockets(),
         }
     }
 }
 
-/// The kernel command line of a workstation guest: the workstation, its name and its hub, and on the first boot the
-/// join code. The guest's daemon reads these from the command line, on either backend.
-pub fn command_line(record: &Record, join_code: Option<&str>) -> String {
+/// The kernel command line of a workstation guest, on either backend. It carries only what is not secret: the workstation's
+/// name and, for a VM with a hub, the node address its join config is read from. The join code and the hub's address are
+/// never on it (`/proc/cmdline` is readable in the guest).
+pub fn command_line(record: &Record) -> String {
     let mut cmdline = format!(
         "console=ttyS0 plaza.workstation=1 plaza.workstation_name={}",
         record.name
     );
-    if let Some(hub) = &record.hub {
-        cmdline.push_str(" plaza.workstation_hub=");
-        cmdline.push_str(hub);
-    }
-    if let Some(code) = join_code {
-        cmdline.push_str(" plaza.workstation_join=");
-        cmdline.push_str(code);
+    if record.hub.is_some() {
+        cmdline.push_str(" plaza.workstation_node=");
+        cmdline.push_str(&config_address());
     }
     cmdline
 }
 
-/// The VMM spec for one plaza workstation VM: the guest's kernel and initramfs, the record's vCPUs and memory, its disk
-/// as the writable block device. The command line names the workstation, its hub, and, on the first boot only, the join
-/// code. No balloon. No vsock device: the guest has no NIC (rule 0010), and the way its daemon reaches the hub is not
-/// built yet (docs/design/workstations.md, section 10), so the device is added with that path, not before.
-pub fn boot_spec(
-    record: &Record,
-    guest: &Guest,
-    join_code: Option<&str>,
-    disk: &Path,
-) -> Result<VmSpec, String> {
+/// The join config the node serves a new VM once: the link address the VM dials, the hub's pin and the join code. The same
+/// config on either backend. `None` for a VM with no hub, which has no relay.
+pub fn join_config(shape: &Shape) -> Result<Option<Vec<u8>>, String> {
+    let (Some(_), Some(pin)) = (&shape.hub, &shape.pin) else {
+        return Ok(None);
+    };
+    let config = NodeConfig {
+        hub: link_address(),
+        pin: pin.clone(),
+        code: shape.join_code.clone(),
+    };
+    serde_json::to_vec(&config)
+        .map(Some)
+        .map_err(|err| format!("the join config: {err}"))
+}
+
+/// The VMM spec for one plaza workstation VM: the guest's kernel and initramfs, the record's vCPUs and memory, its disk as
+/// the writable block device, and, for a VM with a hub, its vsock device. The guest has no NIC (rule 0010): its daemon
+/// reaches the hub only through this node's relay, which is why a hub means a vsock device. The device's muxer sockets
+/// are `{vsock_dir}/vm{cid}_{port}`, which the relay listens on. No balloon.
+pub fn boot_spec(record: &Record, guest: &Guest, disk: &Path) -> Result<VmSpec, String> {
     let kernel = guest.kernel.clone().ok_or_else(|| NO_KERNEL.to_string())?;
     let initrd = guest.initrd.clone().ok_or_else(|| NO_KERNEL.to_string())?;
-    let cmdline = command_line(record, join_code);
+    let vsock = vsock_of(record, guest);
     Ok(VmSpec {
         kernel,
-        cmdline,
+        cmdline: command_line(record),
         vcpus: record.cpus,
         memory_mib: usize::try_from(record.ram_mb)
             .map_err(|_| "ram_mb is too large for this host".to_string())?,
         initrd: Some(initrd),
         gic: None,
-        vsock: None,
+        vsock,
         workspace: Some(disk.to_path_buf()),
         balloon: None,
     })
 }
 
-/// The QEMU argv of one workstation VM. A Windows guest boots its own disk with UEFI, from its variable store and, at
-/// first boot, the join file. A Linux guest boots the node's desktop kernel directly, as plaza does, from the overlay.
-/// The disk and state live in `dir`.
+/// The vsock device a plaza VM gets: its CID, and the muxer's socket base under the node's vsock directory.
+fn vsock_of(record: &Record, guest: &Guest) -> Option<VsockConfig> {
+    record.hub.as_ref().map(|_| VsockConfig {
+        guest_cid: u64::from(record.cid),
+        uds_path: guest.vsock_dir.join(format!("vm{}", record.cid)),
+    })
+}
+
+/// The QEMU argv of one workstation VM. A Windows guest boots its own disk with UEFI, from its variable store. A Linux guest
+/// boots the node's desktop kernel directly, as plaza does, from the overlay. Either reaches its hub over its vsock, with
+/// the same command line and join config as a plaza VM. The disk and state live in `dir`.
 fn qemu_argv(
     record: &Record,
     guest: &Guest,
     available: &Available,
-    join: Option<&str>,
     dir: &Path,
 ) -> Result<Vec<String>, String> {
     let disk = dir.join(QEMU_DISK);
     let vars = dir.join(QEMU_VARS);
-    let join_file = dir.join(JOIN_FILE);
-    let cmdline = command_line(record, join);
+    let cmdline = command_line(record);
     let windows = record.os == Os::Windows;
     let boot = if windows {
         let firmware = available
@@ -520,7 +564,6 @@ fn qemu_argv(
         ws_qemu::Boot::Uefi {
             code: &firmware.code,
             vars: &vars,
-            join: join.map(|_| join_file.as_path()),
         }
     } else {
         let kernel = guest.kernel.as_deref().ok_or_else(|| NO_KERNEL.to_string())?;
@@ -544,9 +587,14 @@ fn qemu_argv(
         boot,
         disk: &disk,
         dir,
-        cid: record.cid,
+        cid: vsock_cid(record),
         vfio,
     })
+}
+
+/// The vsock CID a QEMU VM's device is given: its own, for a VM with a hub (the relay reaches it there), else none.
+fn vsock_cid(record: &Record) -> Option<u32> {
+    record.hub.as_ref().map(|_| record.cid)
 }
 
 /// A workstation VM as the API shows it.
@@ -567,10 +615,12 @@ pub struct View {
     pub backend: Backend,
 }
 
-/// A running workstation VM: a plaza VMM, or a QEMU process.
+/// A running workstation VM: a plaza VMM, a QEMU process this node started, or a QEMU process a previous noded started and
+/// this one took back ([`ws_qemu::reattach`]).
 enum Handle {
     Plaza(VmHandle),
     Qemu(ws_qemu::Process),
+    Attached(ws_qemu::Attached),
 }
 
 impl Handle {
@@ -578,6 +628,7 @@ impl Handle {
         match self {
             Self::Plaza(handle) => handle.process_id(),
             Self::Qemu(process) => Some(process.pid()),
+            Self::Attached(attached) => Some(attached.pid()),
         }
     }
 
@@ -586,21 +637,33 @@ impl Handle {
         match self {
             Self::Plaza(handle) => !matches!(handle.wait_timeout(Duration::from_millis(1)), Ok(None)),
             Self::Qemu(process) => process.exited(),
+            Self::Attached(attached) => attached.exited(),
         }
     }
 
-    /// Stops the VMM: a plaza VM is killed; a QEMU VM is powered down, then quit, then killed.
+    /// Stops the VMM: a plaza VM is killed; a QEMU VM is powered down, then quit, then killed. An attached QEMU VM is
+    /// powered down and quit through QMP only, since it is not this process's child.
     fn halt(&mut self) -> Result<(), String> {
         match self {
             Self::Plaza(handle) => handle.kill().map_err(|err| err.to_string()),
             Self::Qemu(process) => process.shut_down(ws_qemu::POWERDOWN_GRACE),
+            Self::Attached(attached) => attached.shut_down(ws_qemu::POWERDOWN_GRACE),
         }
     }
+}
+
+/// A running VM's hub link: a plaza VM's unix-socket relay, or a QEMU VM's route on the node's AF_VSOCK relay. It is held
+/// while the VM runs, and dropping it ends the link. Nothing reads its fields: they are held for their `Drop`.
+#[allow(dead_code)]
+enum Link {
+    Plaza(Relay),
+    Qemu(ws_relay::Attachment),
 }
 
 struct Slot {
     record: Record,
     handle: Option<Handle>,
+    link: Option<Link>,
 }
 
 #[derive(Default)]
@@ -613,28 +676,75 @@ struct Inner {
 pub struct Store {
     guest: Guest,
     inner: Mutex<Inner>,
+    /// The node's AF_VSOCK relay for its QEMU VMs, shared by all of them.
+    host: ws_relay::Host,
+}
+
+/// Opens a VM's hub link: a plaza VM's unix-socket relay under `vsock_dir`, or a QEMU VM's route on `host`. A VM with no
+/// hub has no link. `config` is the join config the link serves once (`None` when the VM is already enrolled).
+fn open_link(
+    host: &ws_relay::Host,
+    vsock_dir: &Path,
+    record: &Record,
+    config: Option<Vec<u8>>,
+) -> Result<Option<Link>, String> {
+    let Some(hub) = &record.hub else {
+        return Ok(None);
+    };
+    let destination = Destination::of_hub(hub)?;
+    let link = match record.backend {
+        Backend::Plaza => Relay::start(vsock_dir, record.cid, destination, config)
+            .map(Link::Plaza)
+            .map_err(|err| format!("the workstation's relay did not start: {err}"))?,
+        Backend::Qemu => host
+            .register(record.cid, destination, config)
+            .map(Link::Qemu)
+            .map_err(|err| format!("the workstation's relay did not start: {err}"))?,
+    };
+    Ok(Some(link))
 }
 
 impl Store {
-    /// Opens the store over `guest.dir`, loading every record found there as a stopped VM. A directory that cannot
-    /// be read starts the store empty, and a record that cannot be read is skipped, both with a line on stderr.
+    /// Opens the store over `guest.dir`, loading every record found there as a stopped VM, except a QEMU VM that a previous
+    /// noded left running, which is taken back as running with its relay restarted. A record with no CID is given one. A
+    /// directory that cannot be read starts the store empty, and a record that cannot be read is skipped, both with a line
+    /// on stderr.
     pub fn open(guest: Guest) -> Self {
         let mut inner = Inner::default();
+        let host = ws_relay::Host::new();
         match fs::read_dir(&guest.dir) {
             Ok(entries) => {
                 for entry in entries.flatten() {
-                    let path = entry.path().join("vm.json");
+                    let dir = entry.path();
+                    let path = dir.join("vm.json");
                     let Ok(text) = fs::read(&path) else { continue };
                     match serde_json::from_slice::<Record>(&text) {
-                        Ok(record) => {
+                        Ok(mut record) => {
                             inner.next = inner.next.max(seq_of(&record.id) + 1);
-                            inner.slots.insert(
-                                record.id.clone(),
-                                Slot {
-                                    record,
-                                    handle: None,
-                                },
-                            );
+                            if record.cid == 0 {
+                                record.cid = cid_for(&record.id);
+                                if let Err(err) = write_record(&dir, &record) {
+                                    eprintln!("noded: workstation {}: {err}", record.id);
+                                }
+                            }
+                            let mut slot = Slot {
+                                record,
+                                handle: None,
+                                link: None,
+                            };
+                            if slot.record.backend == Backend::Qemu
+                                && let Some(attached) = ws_qemu::reattach(&dir)
+                            {
+                                match open_link(&host, &guest.vsock_dir, &slot.record, None) {
+                                    Ok(link) => slot.link = link,
+                                    Err(err) => eprintln!(
+                                        "noded: workstation {} is running, but its relay did not restart: {err}",
+                                        slot.record.id
+                                    ),
+                                }
+                                slot.handle = Some(Handle::Attached(attached));
+                            }
+                            inner.slots.insert(slot.record.id.clone(), slot);
                         }
                         Err(err) => eprintln!(
                             "noded: workstation record {} is not readable: {err}",
@@ -652,6 +762,7 @@ impl Store {
         Self {
             guest,
             inner: Mutex::new(inner),
+            host,
         }
     }
 
@@ -671,7 +782,7 @@ impl Store {
             .ok_or_else(|| not_found(id))
     }
 
-    /// Makes a workstation VM from `request` and boots it, with its join code, once. Every check that needs no
+    /// Makes a workstation VM from `request` and boots it, its join config served once by its relay. Every check that needs no
     /// device or file runs before the directory is made, so a refused request leaves nothing behind.
     pub fn create(&self, request: &CreateWorkstation, now: u64) -> Result<View, Refusal> {
         let shape = request.checked().map_err(bad)?;
@@ -705,16 +816,17 @@ impl Store {
             created_ms: now,
             snapshot: false,
             backend,
-            cid: if backend == Backend::Qemu {
-                cid_for(&id)
-            } else {
-                0
-            },
+            cid: cid_for(&id),
         };
         let dir = self.guest.dir.join(&id);
         // The launch is checked before anything is copied: a missing kernel is refused with no directory made.
-        self.check_launch(&record, &dir, Some(&shape.join_code))?;
-        let handle = match self.provision(&record, &base, &dir, Some(&shape.join_code)) {
+        self.check_launch(&record, &dir)?;
+        // The relay listens before the VM boots, so the guest's first connection finds it. The join config is served once,
+        // on either backend, and the join code is held by the relay until then.
+        let config = join_config(&shape).map_err(|err| (500, err))?;
+        let link = open_link(&self.host, &self.guest.vsock_dir, &record, config)
+            .map_err(|err| (500, err))?;
+        let handle = match self.provision(&record, &base, &dir) {
             Ok(handle) => handle,
             Err(refusal) => {
                 let _ = fs::remove_dir_all(&dir);
@@ -726,6 +838,7 @@ impl Store {
             Slot {
                 record,
                 handle: Some(handle),
+                link,
             },
         );
         inner
@@ -735,7 +848,7 @@ impl Store {
             .ok_or_else(|| not_found(&id))
     }
 
-    /// Boots a stopped VM from its disk. No join code: the daemon on its disk is already enrolled.
+    /// Boots a stopped VM from its disk, with its hub link. No join config: the daemon on its disk is already enrolled.
     pub fn start(&self, id: &str) -> Result<View, Refusal> {
         let mut inner = self.lock();
         let slot = inner.slots.get_mut(id).ok_or_else(|| not_found(id))?;
@@ -744,13 +857,17 @@ impl Store {
             return Err((409, format!("workstation {id} is already running")));
         }
         let dir = self.dir_of(id);
-        let handle = match slot.record.backend {
+        // The link is opened before the VM boots, and dropped with a VM that does not.
+        let (handle, link) = match slot.record.backend {
             Backend::Plaza => {
-                let spec = boot_spec(&slot.record, &self.guest, None, &dir.join(PLAZA_DISK))
+                let link = open_link(&self.host, &self.guest.vsock_dir, &slot.record, None)
+                    .map_err(|e| (500, e))?;
+                let spec = boot_spec(&slot.record, &self.guest, &dir.join(PLAZA_DISK))
                     .map_err(|e| (503, e))?;
-                spawner::spawn(spec)
+                let handle = spawner::spawn(spec)
                     .map(Handle::Plaza)
-                    .map_err(|err| (500, format!("the workstation VM did not boot: {err}")))?
+                    .map_err(|err| (500, format!("the workstation VM did not boot: {err}")))?;
+                (handle, link)
             }
             Backend::Qemu => {
                 let available = self.qemu()?;
@@ -762,17 +879,20 @@ impl Store {
                         ),
                     ));
                 }
-                let argv = qemu_argv(&slot.record, &self.guest, available, None, &dir)
+                let link = open_link(&self.host, &self.guest.vsock_dir, &slot.record, None)
+                    .map_err(|e| (500, e))?;
+                let argv = qemu_argv(&slot.record, &self.guest, available, &dir)
                     .map_err(|e| (503, e))?;
                 let mut process = start_qemu(available, &argv, &dir)?;
                 if !process.wait_ready(ws_qemu::READY_WAIT) {
                     let _ = process.shut_down(Duration::ZERO);
                     return Err((500, "the workstation VM did not boot".into()));
                 }
-                Handle::Qemu(process)
+                (Handle::Qemu(process), link)
             }
         };
         slot.handle = Some(handle);
+        slot.link = link;
         Ok(view_of(slot))
     }
 
@@ -787,6 +907,7 @@ impl Store {
             slot.handle = Some(handle);
             return Err((500, format!("workstation {id} did not stop: {err}")));
         }
+        slot.link = None;
         Ok(view_of(slot))
     }
 
@@ -870,6 +991,7 @@ impl Store {
             inner.slots.insert(id.to_string(), slot);
             return Err((500, message));
         }
+        slot.link = None;
         let view = view_of(&mut slot);
         let dir = self.dir_of(id);
         if let Err(err) = fs::remove_dir_all(&dir)
@@ -899,14 +1021,14 @@ impl Store {
     }
 
     /// Checks that a VM of this record can launch: its backend's launch builds. Writes nothing.
-    fn check_launch(&self, record: &Record, dir: &Path, join: Option<&str>) -> Result<(), Refusal> {
+    fn check_launch(&self, record: &Record, dir: &Path) -> Result<(), Refusal> {
         match record.backend {
-            Backend::Plaza => boot_spec(record, &self.guest, join, &dir.join(PLAZA_DISK))
+            Backend::Plaza => boot_spec(record, &self.guest, &dir.join(PLAZA_DISK))
                 .map(drop)
                 .map_err(|e| (503, e)),
             Backend::Qemu => {
                 let available = self.qemu()?;
-                qemu_argv(record, &self.guest, available, join, dir)
+                qemu_argv(record, &self.guest, available, dir)
                     .map(drop)
                     .map_err(|e| (503, e))
             }
@@ -914,13 +1036,7 @@ impl Store {
     }
 
     /// Makes a new VM's disk and launches it once. The caller removes the directory when this refuses.
-    fn provision(
-        &self,
-        record: &Record,
-        base: &Path,
-        dir: &Path,
-        join: Option<&str>,
-    ) -> Result<Handle, Refusal> {
+    fn provision(&self, record: &Record, base: &Path, dir: &Path) -> Result<Handle, Refusal> {
         match record.backend {
             Backend::Plaza => {
                 let disk = dir.join(PLAZA_DISK);
@@ -933,7 +1049,7 @@ impl Store {
                 self.make_disk(base, dir, &disk, record.disk_gb)
                     .map_err(|e| (500, e))?;
                 write_record(dir, record).map_err(|e| (500, e))?;
-                let spec = boot_spec(record, &self.guest, join, &disk).map_err(|e| (503, e))?;
+                let spec = boot_spec(record, &self.guest, &disk).map_err(|e| (503, e))?;
                 spawner::spawn(spec)
                     .map(Handle::Plaza)
                     .map_err(|err| (500, format!("the workstation VM did not boot: {err}")))
@@ -960,18 +1076,9 @@ impl Store {
                         .map_err(|e| (500, format!("cannot copy the UEFI variables: {e}")))?;
                 }
                 write_record(dir, record).map_err(|e| (500, e))?;
-                let argv = qemu_argv(record, &self.guest, available, join, dir).map_err(|e| (503, e))?;
-                if let Some(code) = join {
-                    fs::write(dir.join(JOIN_FILE), code)
-                        .map_err(|e| (500, format!("cannot write the join file: {e}")))?;
-                }
+                let argv = qemu_argv(record, &self.guest, available, dir).map_err(|e| (503, e))?;
                 let mut process = start_qemu(available, &argv, dir)?;
-                // The join file is read by QEMU while the machine is set up, and QMP answers only once that is done.
-                let ready = process.wait_ready(ws_qemu::READY_WAIT);
-                if join.is_some() {
-                    let _ = fs::remove_file(dir.join(JOIN_FILE));
-                }
-                if !ready {
+                if !process.wait_ready(ws_qemu::READY_WAIT) {
                     let _ = process.shut_down(Duration::ZERO);
                     return Err((500, "the workstation VM did not boot".into()));
                 }
@@ -1050,6 +1157,7 @@ fn refresh(slot: &mut Slot) {
         && handle.exited()
     {
         slot.handle = None;
+        slot.link = None;
     }
 }
 
@@ -1136,6 +1244,7 @@ mod tests {
                 None
             },
             hub: Some("https://hub.example:7443/".into()),
+            pin: Some("cGlu".into()),
             join_code: "abc.def-ghi_123".into(),
             backend: None,
         }
@@ -1155,7 +1264,7 @@ mod tests {
             created_ms: 1,
             snapshot: false,
             backend: Backend::Plaza,
-            cid: 0,
+            cid: cid_for(id),
         }
     }
 
@@ -1338,47 +1447,118 @@ mod tests {
     }
 
     #[test]
-    fn the_boot_spec_carries_the_join_code_once_and_no_vsock_device() {
+    fn the_boot_spec_names_its_node_and_its_vsock_and_never_the_join_code_or_the_hub() {
         let guest = Guest {
             kernel: Some(PathBuf::from("/g/vmlinux")),
             initrd: Some(PathBuf::from("/g/initrd.gz")),
+            vsock_dir: PathBuf::from("/run/vsock"),
             ..Guest::default()
         };
         let disk = Path::new("/d/disk.img");
-        let first = boot_spec(&record("wv1"), &guest, Some("CODE"), disk).expect("a spec");
+        let spec = boot_spec(&record("wv1"), &guest, disk).expect("a spec");
         assert!(
-            first
-                .cmdline
+            spec.cmdline
                 .contains("plaza.workstation=1 plaza.workstation_name=desk-1"),
             "{}",
-            first.cmdline
+            spec.cmdline
         );
         assert!(
-            first
-                .cmdline
-                .contains("plaza.workstation_hub=https://hub.example:7443")
-        );
-        assert!(
-            first.cmdline.ends_with("plaza.workstation_join=CODE"),
+            spec.cmdline.ends_with("plaza.workstation_node=vsock://2:5101"),
             "{}",
-            first.cmdline
-        );
-        assert!(first.vsock.is_none() && first.balloon.is_none());
-        assert_eq!(first.workspace.as_deref(), Some(disk));
-        assert_eq!((first.vcpus, first.memory_mib), (2, 4096));
-
-        let later = boot_spec(&record("wv1"), &guest, None, disk).expect("a spec");
-        assert!(
-            !later.cmdline.contains("join"),
-            "a later boot carries no join code"
+            spec.cmdline
         );
         assert!(
-            later.cmdline.contains("plaza.workstation_hub="),
-            "a later boot still names its hub"
+            !spec.cmdline.contains("join") && !spec.cmdline.contains("hub.example") && !spec.cmdline.contains("CODE"),
+            "{}",
+            spec.cmdline
         );
+        let vsock = spec.vsock.expect("a hub means a vsock device");
+        assert_eq!(vsock.guest_cid, u64::from(cid_for("wv1")));
+        assert_eq!(vsock.uds_path, PathBuf::from("/run/vsock/vm4097"));
+        assert!(spec.balloon.is_none());
+        assert_eq!(spec.workspace.as_deref(), Some(disk));
+        assert_eq!((spec.vcpus, spec.memory_mib), (2, 4096));
 
-        let missing = boot_spec(&record("wv1"), &Guest::default(), None, disk).unwrap_err();
+        let mut no_hub = record("wv2");
+        no_hub.hub = None;
+        let spec = boot_spec(&no_hub, &guest, disk).expect("a spec");
+        assert!(spec.vsock.is_none(), "no hub, no relay, no vsock device");
+        assert!(!spec.cmdline.contains("plaza.workstation_node"));
+
+        let missing = boot_spec(&record("wv1"), &Guest::default(), disk).unwrap_err();
         assert!(missing.contains("scripts/mk-workstation-guest.sh"));
+    }
+
+    #[test]
+    fn the_join_config_carries_the_link_address_the_pin_and_the_code() {
+        let shape = request(Os::Linux).checked().expect("a shape");
+        let bytes = join_config(&shape).expect("a config").expect("a hub has one");
+        let config: NodeConfig = serde_json::from_slice(&bytes).expect("the config");
+        assert_eq!(config.hub, "vsock://2:5100");
+        assert_eq!(config.pin, "cGlu");
+        assert_eq!(config.code, "abc.def-ghi_123");
+        assert_eq!(apz_station::vsock::LINK_PORT, 5100);
+        assert_eq!(apz_station::vsock::CONFIG_PORT, 5101);
+
+        let mut no_hub = request(Os::Linux);
+        no_hub.hub = None;
+        no_hub.pin = None;
+        let shape = no_hub.checked().expect("a shape with no hub");
+        assert_eq!(join_config(&shape).expect("no error"), None);
+    }
+
+    #[test]
+    fn a_hub_needs_a_pin_and_a_pin_must_be_base64url() {
+        let mut unpinned = request(Os::Linux);
+        unpinned.pin = None;
+        assert!(unpinned.checked().unwrap_err().contains("pin"));
+
+        let mut spaced = request(Os::Linux);
+        spaced.pin = Some("two words".into());
+        assert!(spaced.checked().unwrap_err().contains("base64url"));
+
+        let mut long = request(Os::Linux);
+        long.pin = Some("x".repeat(65));
+        assert!(long.checked().is_err());
+    }
+
+    #[test]
+    fn both_backends_hand_the_same_join_config_by_the_same_node_address() {
+        let shape = request(Os::Linux).checked().expect("a shape");
+        let config = join_config(&shape).expect("a config").expect("a hub has one");
+        let config: NodeConfig = serde_json::from_slice(&config).expect("the config");
+        assert_eq!(config.code, shape.join_code);
+
+        let guest = Guest {
+            kernel: Some(PathBuf::from("/g/vmlinux")),
+            initrd: Some(PathBuf::from("/g/initrd.gz")),
+            vsock_dir: PathBuf::from("/run/vsock"),
+            ..Guest::default()
+        };
+        let plaza = boot_spec(&record("wv1"), &guest, Path::new("/d/disk.img")).expect("a plaza spec");
+        let mut qemu_record = record("wv1");
+        qemu_record.backend = Backend::Qemu;
+        let qemu_available = Available {
+            program: PathBuf::from("/usr/bin/qemu-system-x86_64"),
+            img: PathBuf::from("/usr/bin/qemu-img"),
+            arch: ws_qemu::Arch::X86_64,
+            firmware: None,
+        };
+        let qemu = qemu_argv(&qemu_record, &guest, &qemu_available, Path::new("/d/vms/wv1")).expect("a QEMU argv");
+        let append = qemu
+            .windows(2)
+            .find(|w| w[0] == "-append")
+            .map(|w| w[1].clone())
+            .expect("a Linux guest is booted with its command line");
+
+        for cmdline in [plaza.cmdline.as_str(), append.as_str()] {
+            assert!(cmdline.ends_with("plaza.workstation_node=vsock://2:5101"), "{cmdline}");
+            assert!(!cmdline.contains(&config.code), "the join code is never on the command line");
+            assert!(!cmdline.contains("hub.example"), "the hub's address is never on the command line");
+        }
+        assert_eq!(plaza.cmdline, append, "one command line on either backend");
+        assert!(plaza.vsock.is_some(), "the plaza VM has its vsock device");
+        assert!(qemu.windows(2).any(|w| w == ["-device", "vhost-vsock-pci,guest-cid=4097"]));
     }
 
     #[test]
@@ -1633,17 +1813,18 @@ mod tests {
                 vars: PathBuf::from("/fw/vars.fd"),
             }),
         };
-        let args = qemu_argv(&record, &guest, &linux_qemu, Some("CODE"), &vm).expect("a Linux VM");
+        let args = qemu_argv(&record, &guest, &linux_qemu, &vm).expect("a Linux VM");
         assert!(args.windows(2).any(|w| w == ["-kernel", "/g/vmlinux"]));
         assert!(args.windows(2).any(|w| w == ["-device", "vfio-pci,host=0000:01:00.0"]));
-        assert!(args.windows(2).any(|w| w[0] == "-append" && w[1].ends_with("plaza.workstation_join=CODE")));
+        assert!(args.windows(2).any(|w| w[0] == "-append" && w[1].ends_with("plaza.workstation_node=vsock://2:5101")));
         assert!(args.windows(2).any(|w| w == ["-device", "vhost-vsock-pci,guest-cid=4097"]));
         assert!(!args.iter().any(|a| a.contains("if=pflash")), "a Linux guest boots directly");
 
         record.os = Os::Windows;
-        let windows = qemu_argv(&record, &guest, &linux_qemu, Some("CODE"), &vm).expect("a Windows VM");
+        let windows = qemu_argv(&record, &guest, &linux_qemu, &vm).expect("a Windows VM");
         assert!(windows.iter().any(|a| a.contains("if=pflash,format=raw,unit=0,readonly=on,file=/fw/code.fd")));
-        assert!(windows.windows(2).any(|w| w[0] == "-fw_cfg" && w[1].contains("name=opt/plaza/join")));
+        assert!(!windows.iter().any(|a| a == "-fw_cfg"), "the join config comes over vsock, never fw_cfg");
+        assert!(windows.windows(2).any(|w| w == ["-device", "vhost-vsock-pci,guest-cid=4097"]));
         assert!(!windows.iter().any(|a| a == "-kernel"));
         assert!(windows.windows(2).any(|w| w == ["-nic", "none"]));
         let _ = fs::remove_dir_all(&dir);
@@ -1658,9 +1839,51 @@ mod tests {
     }
 
     #[test]
-    fn a_qemu_vm_gets_a_cid_above_the_agent_and_run_ranges() {
+    fn a_vm_gets_a_cid_above_the_agent_and_run_ranges_on_either_backend() {
         assert_eq!(cid_for("wv1"), CID_BASE + 1);
         assert!(cid_for("wv1") > 100 && cid_for("wv1") > 1099);
         assert_eq!(cid_for("nonsense"), CID_BASE);
+    }
+
+    #[test]
+    fn a_record_from_before_the_relay_gets_its_cid_when_the_node_loads_it() {
+        let dir = scratch("old-cid");
+        let vms = dir.join("vms");
+        let vm = vms.join("wv3");
+        fs::create_dir_all(&vm).unwrap();
+        let mut old = record("wv3");
+        old.cid = 0;
+        write_record(&vm, &old).unwrap();
+
+        let store = Store::open(Guest {
+            dir: vms,
+            ..Guest::default()
+        });
+        assert_eq!(store.inner.lock().unwrap().slots["wv3"].record.cid, cid_for("wv3"));
+        let saved: Record = serde_json::from_slice(&fs::read(vm.join("vm.json")).unwrap()).unwrap();
+        assert_eq!(saved.cid, cid_for("wv3"), "the CID is kept, so the next load keeps it");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_qemu_vm_whose_pidfile_is_not_a_qemu_loads_stopped_and_is_not_taken_back() {
+        let dir = scratch("not-qemu");
+        let vms = dir.join("vms");
+        let vm = vms.join("wv1");
+        fs::create_dir_all(&vm).unwrap();
+        let mut qemu = record("wv1");
+        qemu.backend = Backend::Qemu;
+        write_record(&vm, &qemu).unwrap();
+        // This test process is not QEMU, so the pidfile names nothing to take back.
+        fs::write(vm.join(ws_qemu::PID_FILE), std::process::id().to_string()).unwrap();
+
+        let store = Store::open(Guest {
+            dir: vms,
+            ..Guest::default()
+        });
+        let view = store.view("wv1").expect("the VM is listed");
+        assert_eq!(view.state, "stopped");
+        assert!(store.inner.lock().unwrap().slots["wv1"].link.is_none());
+        let _ = fs::remove_dir_all(&dir);
     }
 }
