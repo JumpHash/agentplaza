@@ -1,5 +1,7 @@
 // Pure-logic tests: run with `npm test`.
 import { parse, href } from '../src/router';
+import { classify, label, type RichCtx, type Span } from '../src/ui/rich';
+import richVectors from '../../../crates/apz-rich/tests/vectors.json';
 import { TOUR_STEPS, WIZARD_STEPS, fill, keysSet, moveStep, readFlag, writeFlag } from '../src/onboarding/flow';
 import { ago, clip, compact } from '../src/ui/components';
 import { floorName, familyLabel, roleFamily } from '../src/roles';
@@ -764,6 +766,44 @@ sectionEnd('ide terminal tests: ok');
   eq(authorHue('amy') === authorHue('amy'), true, 'authorHue: stable for one name');
 }
 sectionEnd('ide agent view model tests: ok');
+
+// ---- Rich content: the classifier against the shared vectors ----------------------------------------------------
+// crates/apz-rich/tests/vectors.json is the file the Rust crate tests too (tests/vectors.rs), so the two classifiers
+// cannot drift apart. The file's keys are sorted and the port's are not, so both sides are compared with sorted keys.
+{
+  const canon = (value: unknown): string =>
+    JSON.stringify(value, (_key, v: unknown) =>
+      v && typeof v === 'object' && !Array.isArray(v)
+        ? Object.fromEntries(Object.entries(v as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
+        : v,
+    );
+  const rawOf = (span: Span): string => (span.kind === 'ref' ? span.value.raw : span.value);
+  const cases = richVectors as unknown as { name: string; text: string; ctx: RichCtx; spans: Span[] }[];
+  eq(cases.length >= 60, true, `rich: the shared vectors have at least 60 cases (${cases.length})`);
+  for (const c of cases) {
+    const got = classify(c.text, c.ctx);
+    if (canon(got) !== canon(c.spans)) {
+      failures++;
+      console.error(`FAIL rich vector ${c.name}\n  got      ${canon(got)}\n  expected ${canon(c.spans)}`);
+    }
+    eq(got.map(rawOf).join(''), c.text, `rich vector ${c.name}: the spans join back to the text`);
+  }
+
+  // The chip labels (the Rust crate's label tests).
+  const repo = { owner: 'o', repo: 'r' };
+  eq(label({ kind: 'github_pull', number: 12, ...repo }), 'o/r #12', 'rich label: pull');
+  eq(label({ kind: 'github_commit', sha: 'abc1234def5678', ...repo }), 'o/r @abc1234', 'rich label: commit is seven characters');
+  eq(label({ kind: 'github_file', ref: 'main', path: 'src/a.rs', line: 10, dir: false, ...repo }), 'r: src/a.rs:10', 'rich label: file with a line');
+  eq(label({ kind: 'github_file', ref: 'main', path: 'crates', line: null, dir: true, ...repo }), 'r: crates/', 'rich label: folder gets its slash');
+  eq(label({ kind: 'task', number: 528 }), '#528', 'rich label: task');
+  eq(label({ kind: 'agent', name: 'Name', cid: null }), '@Name', 'rich label: agent by name');
+  eq(label({ kind: 'agent', name: null, cid: 7 }), 'agent:7', 'rich label: agent by cid');
+  eq(label({ kind: 'path', path: 'src/main.rs', line: 42, dir: false }), 'src/main.rs:42', 'rich label: path with a line');
+  eq(label({ kind: 'image', url: 'https://x.io/img/a.png?v=2' }), 'a.png', 'rich label: image is its file name');
+  eq(label({ kind: 'link', url: 'https://example.com/docs/x/?q=1#f' }), 'example.com/docs/x', 'rich label: link is domain and path');
+  eq(label({ kind: 'library_tool', name: 'search', version: 3 }), 'search v3', 'rich label: library tool');
+}
+sectionEnd('rich content tests: ok');
 
 if (failedSections.length) {
   console.error(`${failedSections.length} section(s) failed: ${failedSections.join(', ')}`);

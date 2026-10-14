@@ -2,6 +2,7 @@
 // The console is served by apid, so every path is same-origin.
 
 import type { FileChange, Stats, TreePage } from './ide/types';
+import type { Ref } from './ui/rich';
 
 export class ApiError extends Error {
   /** The response's JSON body when it had one (a 409 carries the server's `current_hash`). */
@@ -343,6 +344,12 @@ export interface ConnectorProposal {
   };
 }
 
+/** One unfurl answer: the card for a reference, or why there is none (the hub's `{ok, card}` or `{ok:false, error}`). */
+export type UnfurlAnswer = { ok: true; card: UnfurlCard } | { ok: false; error: string };
+/** A card as the hub's unfurl builds it (crates/apid/src/unfurl): `kind` names the reference, `url` is its web page
+ * when the hub knows one. The fields depend on the kind; the web reads them with type checks (ui/embeds.ts). */
+export type UnfurlCard = { kind: string; url?: string | null } & Record<string, unknown>;
+
 /** A deliverable in the Library: a file an agent handed in with deliver_file. */
 export interface Deliverable {
   id: string; name: string; title: string; description: string | null; content_type: string; size: number;
@@ -536,6 +543,8 @@ export const api = {
   file: (id: string) => get<Deliverable>(`/v1/files/${id}`),
   /** The deliverable's bytes, inline (for previews) or as a download. */
   fileUrl: (id: string, download = false) => `/v1/files/${id}/content${download ? '?download=1' : ''}`,
+  /** Card data for up to 50 references in one call, answered in order (the hub's `POST /v1/unfurl`). */
+  unfurl: (refs: Ref[]) => post<{ cards: UnfurlAnswer[] }>('/v1/unfurl', { refs }),
   removeFile: (id: string) => del<unknown>(`/v1/files/${id}`),
   library: () => get<LibraryTool[]>('/v1/library'),
   libraryFile: (name: string, version: number, path: string) => get<{ path: string; content: string }>(`/v1/library/${name}/${version}/files?path=${encodeURIComponent(path)}`),
