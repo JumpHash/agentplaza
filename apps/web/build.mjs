@@ -138,16 +138,16 @@ const result = await esbuild.build({
 });
 
 let jsFile = null;
-let cssFile = null;
 for (const [name, entry] of Object.entries(result.metafile.outputs)) {
   if (entry.entryPoint?.endsWith('main.ts')) jsFile = name;
-  // esbuild emits a sibling CSS bundle for the CSS imported by main.ts.
-  if (!entry.entryPoint && name.endsWith('.css') && entry.imports.length === 0) cssFile = cssFile ?? name;
 }
-// The CSS bundle is named after the importing entry; fall back to any css.
-if (!cssFile) cssFile = Object.keys(result.metafile.outputs).find((n) => n.endsWith('.css'));
-if (!jsFile || !cssFile) {
-  console.error('build: expected one js and one css bundle, got', Object.keys(result.metafile.outputs));
+// The start stylesheet is the main entry's own CSS bundle: esbuild names it on the entry's js output (`cssBundle`). Not the
+// first CSS output: a lazily loaded chunk that imports CSS (the IDE chunk, through ui/markdown.ts) gets a CSS file of its own,
+// and linking that one would leave the console unstyled. Fall back to the output named main-*.css; fail if neither exists.
+let cssFile = (jsFile && result.metafile.outputs[jsFile].cssBundle) || null;
+if (!cssFile) cssFile = Object.keys(result.metafile.outputs).find((n) => basename(n).startsWith('main-') && n.endsWith('.css')) ?? null;
+if (!jsFile || !cssFile || !result.metafile.outputs[cssFile]) {
+  console.error('build: expected the main entry js and its css bundle, got', Object.keys(result.metafile.outputs));
   process.exit(1);
 }
 
