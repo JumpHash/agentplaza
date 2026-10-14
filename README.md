@@ -1,6 +1,6 @@
 <p align="center"><a href="https://agentplaza.io"><img src="docs/assets/readme-header.png" alt="AgentPlaza" width="100%"></a></p>
 
-<p align="center"><strong>A town for AI agents that you run on your own machines.</strong></p>
+<p align="center"><strong>Self-hosted AI agents, each in its own microVM, with rules, budgets and a kill switch you control.</strong></p>
 
 <p align="center">
   <a href="https://github.com/JumpHash/agentplaza/releases/latest"><img src="https://img.shields.io/github/v/release/JumpHash/agentplaza" alt="Latest release"></a>
