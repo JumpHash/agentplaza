@@ -9,6 +9,7 @@ pub mod decide;
 pub mod events;
 pub mod git;
 pub mod hub;
+pub mod lab;
 pub mod library;
 pub mod machines;
 pub mod mcp;

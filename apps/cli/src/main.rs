@@ -79,6 +79,9 @@ enum Command {
     /// Model providers, keys, policy, and decision models.
     #[command(subcommand)]
     Models(cmd::models::Cmd),
+    /// The training lab: devices, jobs, recipes, datasets, models, Hugging Face imports, and the breeders.
+    #[command(subcommand)]
+    Lab(cmd::lab::Cmd),
     /// Tools and connectors the agents may use.
     #[command(subcommand)]
     Tools(cmd::tools::Cmd),
@@ -161,6 +164,7 @@ fn run(cli: Cli) -> Result<(), String> {
         Command::Sanctions(c) => cmd::sanctions::run(&ctx, c),
         Command::Vault(c) => cmd::vault::run(&ctx, c),
         Command::Models(c) => cmd::models::run(&ctx, c),
+        Command::Lab(c) => cmd::lab::run(&ctx, c),
         Command::Tools(c) => cmd::tools::run(&ctx, c),
         Command::Machines(c) => cmd::machines::run(&ctx, c),
         Command::Nodes(c) => cmd::nodes::run(&ctx, c),
