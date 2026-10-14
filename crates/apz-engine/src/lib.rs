@@ -45,20 +45,38 @@ pub use engine::{agent_list, feed_from_json, Cmd, Engine, Feed, FrameOut, Pick, 
 pub use stage::Motion;
 
 /// The env overrides a host sets (the web's robot lab passes its options as `APZ_ROBOT_*`). They read before the real env.
+#[cfg(not(test))]
 static ENV_OVERRIDES: std::sync::Mutex<std::collections::BTreeMap<String, String>> =
     std::sync::Mutex::new(std::collections::BTreeMap::new());
 
+// In tests the overrides are per thread: a test that sets them (a lab's) runs beside tests that build a Stage.
+#[cfg(test)]
+thread_local! {
+    static TEST_OVERRIDES: std::cell::RefCell<std::collections::BTreeMap<String, String>> = Default::default();
+}
+
 /// Replaces the env overrides; an empty map clears them. A browser has no environment, so this is how the web sets knobs.
 pub fn set_env_overrides(map: std::collections::BTreeMap<String, String>) {
+    #[cfg(not(test))]
     if let Ok(mut m) = ENV_OVERRIDES.lock() {
         *m = map;
     }
+    #[cfg(test)]
+    TEST_OVERRIDES.with(|m| *m.borrow_mut() = map);
+}
+
+/// The override for `name`, if the host set one.
+fn env_override(name: &str) -> Option<String> {
+    #[cfg(not(test))]
+    return ENV_OVERRIDES.lock().ok().and_then(|m| m.get(name).cloned());
+    #[cfg(test)]
+    return TEST_OVERRIDES.with(|m| m.borrow().get(name).cloned());
 }
 
 /// An `APZ_*` capture or debug knob from the environment. A browser has no environment, so every knob reads as
 /// unset there (the defaults apply), unless the host set it with `set_env_overrides`.
 pub(crate) fn env_var(name: &str) -> Option<String> {
-    if let Some(v) = ENV_OVERRIDES.lock().ok().and_then(|m| m.get(name).cloned()) {
+    if let Some(v) = env_override(name) {
         return Some(v);
     }
     #[cfg(not(target_arch = "wasm32"))]
