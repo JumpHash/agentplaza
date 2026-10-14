@@ -1,4 +1,12 @@
-//! `agentplaza agents`: Agents: list, inspect, create, talk to, stop, restart, set models.
+//! `agentplaza agents`: Agents: list, inspect, create, talk to, stop, restart, set models; cancel
+//! their work, retire or wipe them, drive their harness and loops, set permissions, read their
+//! infractions, sanctions and memory, and decide the proposals they make. The submodules hold the
+//! larger areas: `lifecycle`, `harness`, `oversight` and `records`.
+
+pub mod harness;
+pub mod lifecycle;
+pub mod oversight;
+pub mod records;
 
 use std::thread;
 use std::time::Duration;
@@ -7,6 +15,8 @@ use clap::Subcommand;
 use serde_json::{json, Value};
 
 use crate::ctx::{self, confirm, text_arg, Ctx};
+
+use self::lifecycle::WipeWhat;
 
 #[derive(Subcommand, Debug)]
 pub enum Cmd {
@@ -83,10 +93,110 @@ pub enum Cmd {
         #[arg(long)]
         follow: bool,
     },
+    /// Stop the agent's running work. The agent stays on the roster.
+    Cancel {
+        /// The agent's cid.
+        cid: u64,
+    },
+    /// Retire an agent for good: its VM stops and it leaves the roster. Asks to confirm unless --yes.
+    Retire {
+        /// The agent's cid.
+        cid: u64,
+        /// Skip the confirmation.
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Wipe an agent's workspace, and as asked its memory, transcript or identity. Asks to confirm
+    /// unless --yes.
+    Wipe {
+        /// The agent's cid.
+        cid: u64,
+        /// Also clear its memory notes.
+        #[arg(long)]
+        memory: bool,
+        /// Also clear its transcript.
+        #[arg(long)]
+        transcript: bool,
+        /// Also forget its name, contacts and reputation.
+        #[arg(long)]
+        identity: bool,
+        /// Skip the confirmation.
+        #[arg(long)]
+        yes: bool,
+    },
+    /// An agent's harness limits. Add `set`, `compress`, `extend` or `steer` to change them or its
+    /// running work.
+    Harness {
+        /// The agent's cid.
+        cid: u64,
+        #[command(subcommand)]
+        action: Option<harness::Action>,
+    },
+    /// The loops (prompts run on an agent every so many minutes). Add `start` or `stop` to change them.
+    Loops {
+        /// Only the loops of this agent.
+        #[arg(long)]
+        cid: Option<u64>,
+        #[command(subcommand)]
+        action: Option<harness::LoopAction>,
+    },
+    /// An agent's permission mode. Add `set` to change it.
+    Permissions {
+        /// The agent's cid.
+        cid: u64,
+        #[command(subcommand)]
+        action: Option<oversight::PermissionAction>,
+    },
+    /// The laws an agent has broken, newest first.
+    Infractions {
+        /// The agent's cid.
+        cid: u64,
+    },
+    /// The sanctions on an agent, and the suspensions they set.
+    Sanctions {
+        /// The agent's cid.
+        cid: u64,
+    },
+    /// Lift an active suspension, by its sanction id (see `agents sanctions`). The reason is required.
+    Lift {
+        /// The sanction's id.
+        id: u64,
+        /// Why it is lifted; kept on the record.
+        #[arg(long)]
+        reason: String,
+    },
+    /// An agent's memory notes. `--search` narrows them; add `show SLUG` to read one.
+    Memory {
+        /// The agent's cid.
+        cid: u64,
+        /// Only the notes whose slug, title, kind or tag contains this (ignoring case).
+        #[arg(long)]
+        search: Option<String>,
+        #[command(subcommand)]
+        action: Option<records::MemoryAction>,
+    },
+    /// The agent proposals waiting for you. Add `approve` or `reject` to decide one.
+    Proposals {
+        #[command(subcommand)]
+        action: Option<records::ProposalAction>,
+    },
 }
 
 pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
     match cmd {
+        Cmd::Cancel { cid } => lifecycle::cancel(ctx, cid),
+        Cmd::Retire { cid, yes } => lifecycle::retire(ctx, cid, yes),
+        Cmd::Wipe { cid, memory, transcript, identity, yes } => {
+            lifecycle::wipe(ctx, cid, WipeWhat { memory, transcript, identity }, yes)
+        }
+        Cmd::Harness { cid, action } => harness::harness(ctx, cid, action),
+        Cmd::Loops { cid, action } => harness::loops(ctx, cid, action),
+        Cmd::Permissions { cid, action } => oversight::permissions(ctx, cid, action),
+        Cmd::Infractions { cid } => oversight::infractions(ctx, cid),
+        Cmd::Sanctions { cid } => oversight::sanctions(ctx, cid),
+        Cmd::Lift { id, reason } => oversight::lift(ctx, id, &reason),
+        Cmd::Memory { cid, search, action } => records::memory(ctx, cid, search.as_deref(), action),
+        Cmd::Proposals { action } => records::proposals(ctx, action),
         Cmd::List { role, status } => list(ctx, role.as_deref(), status.as_deref()),
         Cmd::Show { cid } => show(ctx, cid),
         Cmd::Create { role, count, model } => create(ctx, &role, count, model.as_deref()),
@@ -134,6 +244,21 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
 fn cancelled() -> Result<(), String> {
     println!("cancelled");
     Ok(())
+}
+
+/// The items of a hub array (none when the value is not one).
+fn items(v: &Value) -> &[Value] {
+    v.as_array().map(Vec::as_slice).unwrap_or_default()
+}
+
+/// A reason, trimmed. Blank is refused: a lift or a rejection needs one on the record.
+fn required_reason(reason: &str) -> Result<String, String> {
+    let reason = reason.trim();
+    if reason.is_empty() {
+        Err("a reason is required: say why".into())
+    } else {
+        Ok(reason.to_string())
+    }
 }
 
 fn name_of(a: &Value) -> String {
