@@ -51,10 +51,13 @@ fn walk_rides(kind: &str, n: usize, seconds: f64) -> ((usize, usize, usize), usi
     }
     let arrived = (0..homes.len())
         .filter(|&i| {
-            // A goal on a desk snaps to the nearest walk cell: arrived is the path walked to its end, near the goal.
+            // A goal on a desk snaps to the nearest walk cell: arrived is the path walked to its end, near that cell (a
+            // desk can stand more than a metre from the nearest free cell).
             let p = world.pose(i as u32);
             let g = homes[(i + 1) % homes.len()];
-            world.path(i as u32).is_none_or(|left| left.is_empty()) && (p.x - g[0]).hypot(p.z - g[1]) < 1.0
+            let grid = world.grid();
+            let [sx, sz] = crate::nav::plan::snap_walk(grid, g[0], g[1]).map_or(g, |c| grid.centre(c));
+            world.path(i as u32).is_none_or(|left| left.is_empty()) && (p.x - sx).hypot(p.z - sz) < 1.0
         })
         .count();
     ((arrived, homes.len(), unreachable), rides)
