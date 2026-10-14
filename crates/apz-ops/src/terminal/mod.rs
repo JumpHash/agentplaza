@@ -10,8 +10,9 @@
 //! [`IDLE`] is closed in the background. Closing hangs the master up, gives the shell a grace period to
 //! exit, then kills the session's process group.
 //!
-//! Unix only. Elsewhere [`Terminals`] refuses every call as unavailable: a Windows terminal needs ConPTY,
-//! which is not built yet.
+//! Unix uses a PTY and Windows a ConPTY (`powershell.exe -NoLogo`, else `cmd.exe`, in a job object). The
+//! ring, the table, the idle janitor and the argument rules are shared in the private `table` module. Elsewhere [`Terminals`]
+//! refuses every call as unavailable.
 
 use serde::Serialize;
 
@@ -73,12 +74,20 @@ pub struct TermList {
     pub terminals: Vec<TermInfo>,
 }
 
+#[cfg(any(unix, windows))]
+mod table;
+
 #[cfg(unix)]
 mod unix;
 #[cfg(unix)]
 pub use unix::Terminals;
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+mod windows;
+#[cfg(windows)]
+pub use windows::Terminals;
+
+#[cfg(not(any(unix, windows)))]
 mod other;
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 pub use other::Terminals;

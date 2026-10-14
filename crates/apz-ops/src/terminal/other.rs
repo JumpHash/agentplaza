@@ -1,5 +1,4 @@
-//! Terminals on a platform without a PTY backend yet. Every call is refused as unavailable; a Windows
-//! backend (ConPTY) is a later change.
+//! Terminals on a platform without a PTY or ConPTY backend. Every call is refused as unavailable.
 
 use super::{TermClosed, TermList, TermOpened, TermRead, TermResized, TermWritten};
 use crate::env::Env;

@@ -1,70 +1,33 @@
 //! The unix runs. A run is `/bin/sh -c <command>` in the root, with a cleared environment, in its own
 //! process group (its pid is the group id), its output on one pipe read by a supervisor thread.
 //!
+//! The run table (the registry, the output tail, the start, poll and stop rules) is shared with the other
+//! platforms in [`super::table`]. This module starts the shell, ends its group, and reports into a [`Run`].
+//!
 //! This module calls libc for the group kill. Each `unsafe` block says what it relies on.
 
 #![allow(unsafe_code)]
 
-use std::collections::BTreeMap;
 use std::io::{self, Read};
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use super::{DEFAULT_TIMEOUT_S, MAX_RUNS, MAX_TIMEOUT_S, OUTPUT_CAP, RunPoll, RunStarted, RunStopped};
+use super::table::{RUN_DRAIN, RUN_POLL, Registry, Run, locked, poll_run, stop_run, timeout_secs};
+use super::{RunPoll, RunStarted, RunStopped};
 use crate::env::Env;
 use crate::error::OpError;
-use crate::page::{OUTPUT_BUDGET, byte_chunk_end, is_continuation};
 use crate::root::Root;
 
 const SHELL: &str = "/bin/sh";
-/// How long a finished run stays to be polled.
-const RUN_KEEP: Duration = Duration::from_secs(10 * 60);
-const RUN_POLL: Duration = Duration::from_millis(20);
-/// How long the output is awaited once the shell and its group are gone.
-const RUN_DRAIN: Duration = Duration::from_millis(500);
-/// How long a stop waits for the run to end before it answers.
-const RUN_STOP_WAIT: Duration = Duration::from_secs(2);
 
 /// The runs one table holds. A table is cheap, so a caller that wants one global set makes a `static`.
 pub struct Runs {
     registry: Mutex<Registry>,
-}
-
-#[derive(Default)]
-struct Registry {
-    next: u64,
-    runs: BTreeMap<String, Arc<Run>>,
-}
-
-/// One run: its output tail, how it ended, and whether a stop was asked for.
-#[derive(Default)]
-struct Run {
-    output: Mutex<Tail>,
-    state: Mutex<RunState>,
-    stop: AtomicBool,
-}
-
-/// The last [`OUTPUT_CAP`] bytes of a run's output, and the offset of the first.
-#[derive(Default)]
-struct Tail {
-    bytes: Vec<u8>,
-    base: u64,
-}
-
-#[derive(Default)]
-enum RunState {
-    #[default]
-    Running,
-    Done {
-        exit_code: Option<i32>,
-        timed_out: bool,
-        at: Instant,
-    },
 }
 
 impl Default for Runs {
@@ -77,17 +40,14 @@ impl Runs {
     /// A run table with no runs.
     pub const fn new() -> Self {
         Self {
-            registry: Mutex::new(Registry {
-                next: 0,
-                runs: BTreeMap::new(),
-            }),
+            registry: Mutex::new(Registry::new()),
         }
     }
 
     /// Starts `command` in the root and returns at once.
     ///
-    /// `timeout_s` defaults to [`DEFAULT_TIMEOUT_S`] and is capped at [`MAX_TIMEOUT_S`]. When [`MAX_RUNS`]
-    /// runs are held, a finished one is made room for; when all are running the start is refused.
+    /// `timeout_s` defaults to 120 seconds and is capped at 600. When four runs are held, a finished one is
+    /// made room for; when all are running the start is refused.
     pub fn start(
         &self,
         root: &Root,
@@ -95,46 +55,13 @@ impl Runs {
         command: &str,
         timeout_s: Option<u64>,
     ) -> Result<RunStarted, OpError> {
-        if command.trim().is_empty() {
-            return Err(OpError::invalid("\"command\" must be a non-empty string"));
-        }
-        let timeout_s = match timeout_s {
-            None => DEFAULT_TIMEOUT_S,
-            Some(0) => return Err(OpError::invalid("\"timeout_s\" must be at least 1")),
-            Some(secs) if secs > MAX_TIMEOUT_S => {
-                return Err(OpError::limit(format!(
-                    "\"timeout_s\" is {secs}, over the {MAX_TIMEOUT_S}-second cap"
-                )));
-            }
-            Some(secs) => secs,
-        };
-
+        let timeout_s = timeout_secs(command, timeout_s)?;
         let mut registry = locked(&self.registry);
         let now = Instant::now();
-        registry.runs.retain(|_, run| !run.expired(now));
-        if registry.runs.len() >= MAX_RUNS {
-            let oldest_finished = registry
-                .runs
-                .iter()
-                .filter_map(|(id, run)| run.finished_at().map(|at| (at, id.clone())))
-                .min();
-            match oldest_finished {
-                Some((_, id)) => {
-                    registry.runs.remove(&id);
-                }
-                None => {
-                    return Err(OpError::limit(format!(
-                        "{MAX_RUNS} runs are running; stop one first"
-                    )));
-                }
-            }
-        }
-
+        registry.admit(now)?;
         let (child, reader) = spawn(root, env, command)?;
-        registry.next += 1;
-        let id = format!("run-{}", registry.next);
         let run = Arc::new(Run::default());
-        registry.runs.insert(id.clone(), Arc::clone(&run));
+        let id = registry.insert(Arc::clone(&run));
         supervise(run, child, reader, now + Duration::from_secs(timeout_s));
         Ok(RunStarted { run: id })
     }
@@ -144,103 +71,13 @@ impl Runs {
     /// `offset` is where the output starts, which is later than asked when the tail has dropped earlier
     /// bytes; `next` is the offset to poll from next.
     pub fn poll(&self, run: &str, offset: Option<u64>) -> Result<RunPoll, OpError> {
-        let found = lookup(&self.registry, run)?;
-        let offset = offset.unwrap_or(0);
-        let (done, exit_code, timed_out) = match *locked(&found.state) {
-            RunState::Running => (false, None, false),
-            RunState::Done {
-                exit_code,
-                timed_out,
-                ..
-            } => (true, exit_code, timed_out),
-        };
-        let tail = locked(&found.output);
-        let total = tail.base + tail.bytes.len() as u64;
-        if offset > total {
-            return Err(OpError::invalid(format!(
-                "offset {offset} is past the end of the output ({total} bytes)"
-            )));
-        }
-        // Where the output starts: the offset, or the oldest byte still kept. A start inside a
-        // character (a cut in the tail, or an offset given mid-character) moves on to the next one.
-        let mut skip = (offset.max(tail.base) - tail.base) as usize;
-        let limit = skip + 3;
-        while skip < tail.bytes.len() && skip < limit && is_continuation(tail.bytes[skip]) {
-            skip += 1;
-        }
-        let available = &tail.bytes[skip..];
-        let start = tail.base + skip as u64;
-        let reply = |chunk: &[u8]| RunPoll {
-            done,
-            exit_code,
-            next: start + chunk.len() as u64,
-            offset: start,
-            output: String::from_utf8_lossy(chunk).into_owned(),
-            run: run.to_string(),
-            timed_out,
-        };
-        let end = byte_chunk_end(available, |end| {
-            serde_json::to_string(&reply(&available[..end]))
-                .is_ok_and(|json| json.len() <= OUTPUT_BUDGET)
-        });
-        Ok(reply(&available[..end]))
+        poll_run(&self.registry, run, offset)
     }
 
     /// Kills the run's process group and waits briefly for the run to end.
     pub fn stop(&self, run: &str) -> Result<RunStopped, OpError> {
-        let found = lookup(&self.registry, run)?;
-        let was_running = found.is_running();
-        found.stop.store(true, Ordering::SeqCst);
-        let deadline = Instant::now() + RUN_STOP_WAIT;
-        while found.is_running() && Instant::now() < deadline {
-            thread::sleep(RUN_POLL);
-        }
-        Ok(RunStopped {
-            done: !found.is_running(),
-            run: run.to_string(),
-            stopped: was_running,
-        })
+        stop_run(&self.registry, run)
     }
-}
-
-impl Run {
-    fn append(&self, bytes: &[u8]) {
-        let mut tail = locked(&self.output);
-        tail.bytes.extend_from_slice(bytes);
-        if tail.bytes.len() > OUTPUT_CAP {
-            let dropped = tail.bytes.len() - OUTPUT_CAP;
-            tail.bytes.drain(..dropped);
-            tail.base += dropped as u64;
-        }
-    }
-
-    fn finish(&self, exit_code: Option<i32>, timed_out: bool) {
-        *locked(&self.state) = RunState::Done {
-            exit_code,
-            timed_out,
-            at: Instant::now(),
-        };
-    }
-
-    fn is_running(&self) -> bool {
-        matches!(*locked(&self.state), RunState::Running)
-    }
-
-    /// Finished, and longer ago than [`RUN_KEEP`].
-    fn expired(&self, now: Instant) -> bool {
-        matches!(*locked(&self.state), RunState::Done { at, .. } if now.duration_since(at) >= RUN_KEEP)
-    }
-
-    fn finished_at(&self) -> Option<Instant> {
-        match *locked(&self.state) {
-            RunState::Running => None,
-            RunState::Done { at, .. } => Some(at),
-        }
-    }
-}
-
-fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// Starts `command` in the root, its output on one pipe. The builder is dropped after the spawn, so
@@ -319,17 +156,11 @@ fn kill_group(child: &mut Child) {
     let _ = child.kill();
 }
 
-fn lookup(registry: &Mutex<Registry>, id: &str) -> Result<Arc<Run>, OpError> {
-    locked(registry)
-        .runs
-        .get(id)
-        .cloned()
-        .ok_or_else(|| OpError::not_found(format!("no run {id}")))
-}
-
 #[cfg(test)]
 mod tests {
+    use super::super::table::lookup;
     use super::*;
+    use crate::runs::{MAX_RUNS, OUTPUT_CAP};
     use serde_json::{Value, json};
     use std::fs;
     use std::path::PathBuf;

@@ -32,7 +32,7 @@ fn floor_boundary(text: &str, mut at: usize) -> usize {
 
 /// The byte-level twin of [`chunk_end`], for output that is not yet known to be text: a cut never
 /// splits a UTF-8 character, so the chunk is a whole number of characters.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub(crate) fn byte_chunk_end(bytes: &[u8], fits: impl Fn(usize) -> bool) -> usize {
     let mut end = bytes.len().min(CHUNK);
     loop {
@@ -47,7 +47,7 @@ pub(crate) fn byte_chunk_end(bytes: &[u8], fits: impl Fn(usize) -> bool) -> usiz
 }
 
 /// Whether `byte` continues a multi-byte UTF-8 character rather than starting one.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub(crate) fn is_continuation(byte: u8) -> bool {
     byte & 0xC0 == 0x80
 }

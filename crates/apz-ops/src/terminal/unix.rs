@@ -10,7 +10,6 @@
 
 #![allow(unsafe_code)]
 
-use std::collections::{BTreeMap, VecDeque};
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
@@ -19,14 +18,16 @@ use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::ptr;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use apz_ide::path::check_dir;
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD;
 
+use super::table::{
+    Idle, MAX_TERMS, Ring, Table, decode_write, encode_read, locked, now_ms, remove_term, size,
+    spawn_janitor, sweep, term_name, with_term,
+};
 use super::{
     TermClosed, TermInfo, TermList, TermOpened, TermRead, TermResized, TermWritten,
 };
@@ -36,19 +37,6 @@ use crate::root::{Root, locate};
 
 const BASH: &str = "/bin/bash";
 const SHELL: &str = "/bin/sh";
-/// Terminals open at once, the exited ones included until they are closed.
-const MAX_TERMS: usize = 4;
-/// How long a terminal may go without a read, write or resize before it is closed.
-const IDLE: Duration = Duration::from_secs(30 * 60);
-/// How often the janitor looks for idle terminals when no call does.
-const JANITOR_EVERY: Duration = Duration::from_secs(60);
-/// The most output a terminal keeps; older bytes are dropped.
-const RING_CAP: usize = 1 << 20;
-/// The most a read returns, in raw bytes. Base64 makes it 4/3 of that, so 48 KiB would not fit the
-/// operator's output cap with the reply around it; 47 KiB does.
-const READ_MAX: usize = 47 * 1024;
-/// The most a write takes, in raw bytes.
-const WRITE_MAX: usize = 64 * 1024;
 /// How long a write waits for the shell to read before it returns what went in.
 const WRITE_WAIT: Duration = Duration::from_secs(2);
 /// How long a closing shell has to exit on its own before its group is SIGKILLed.
@@ -57,19 +45,11 @@ const CLOSE_GRACE: Duration = Duration::from_secs(2);
 const TICK: Duration = Duration::from_millis(50);
 const TICK_MS: libc::c_int = 50;
 const POLL: Duration = Duration::from_millis(20);
-/// The largest number of columns or rows.
-const MAX_SIZE: u64 = 1000;
 
 /// The terminals one table holds. A table starts a janitor thread that closes idle terminals, and
 /// closes every terminal it holds when it is dropped.
 pub struct Terminals {
-    table: Arc<Mutex<Table>>,
-}
-
-#[derive(Default)]
-struct Table {
-    next: u64,
-    terms: BTreeMap<u64, Term>,
+    table: Arc<Mutex<Table<Term>>>,
 }
 
 /// One terminal: its master, its shell's pid, and the state the reader shares with it.
@@ -96,32 +76,19 @@ struct Shared {
     child: Mutex<Child>,
 }
 
-/// The last [`RING_CAP`] bytes of output, and how many bytes have ever been written.
-#[derive(Default)]
-struct Ring {
-    bytes: VecDeque<u8>,
-    total: u64,
-}
-
-impl Ring {
-    fn append(&mut self, data: &[u8]) {
-        self.total += data.len() as u64;
-        self.bytes.extend(data);
-        if self.bytes.len() > RING_CAP {
-            let excess = self.bytes.len() - RING_CAP;
-            self.bytes.drain(..excess);
-        }
-    }
-
-    /// The offset of the oldest byte kept.
-    fn oldest(&self) -> u64 {
-        self.total - self.bytes.len() as u64
-    }
-}
-
 impl Shared {
     fn exit_code(&self) -> Option<i32> {
         *locked(&self.exit)
+    }
+}
+
+impl Idle for Term {
+    fn last_active(&self) -> Instant {
+        self.last_active
+    }
+
+    fn touch(&mut self) {
+        self.last_active = Instant::now();
     }
 }
 
@@ -135,16 +102,7 @@ impl Terminals {
     /// A terminal table with no terminals. Its janitor starts now.
     pub fn new() -> Self {
         let table = Arc::new(Mutex::new(Table::default()));
-        let watch = Arc::downgrade(&table);
-        thread::spawn(move || {
-            loop {
-                thread::sleep(JANITOR_EVERY);
-                match watch.upgrade() {
-                    Some(table) => sweep(&table),
-                    None => break,
-                }
-            }
-        });
+        spawn_janitor(&table, retire);
         Self { table }
     }
 
@@ -169,7 +127,7 @@ impl Terminals {
             return Err(OpError::invalid(format!("{cwd:?} is not a directory")));
         }
 
-        sweep(&self.table);
+        sweep(&self.table, retire);
         let mut table = locked(&self.table);
         if table.terms.len() >= MAX_TERMS {
             return Err(OpError::limit(format!(
@@ -187,16 +145,8 @@ impl Terminals {
 
     /// Writes base64 `data_b64` to the terminal, at most [`WRITE_MAX`] bytes of it.
     pub fn write(&self, term: &str, data_b64: &str) -> Result<TermWritten, OpError> {
-        sweep(&self.table);
-        let data = STANDARD
-            .decode(data_b64)
-            .map_err(|err| OpError::invalid(format!("\"data_b64\" is not base64: {err}")))?;
-        if data.len() > WRITE_MAX {
-            return Err(OpError::limit(format!(
-                "{} bytes is over the {WRITE_MAX}-byte write cap",
-                data.len()
-            )));
-        }
+        sweep(&self.table, retire);
+        let data = decode_write(data_b64)?;
         let master = with_term(&self.table, term, |term| Arc::clone(&term.master))?;
         let written = write_master(&master, &data)?;
         Ok(TermWritten {
@@ -207,38 +157,25 @@ impl Terminals {
 
     /// The terminal's output from `offset` (the start when `None`), at most [`READ_MAX`] bytes.
     pub fn read(&self, term: &str, offset: Option<u64>) -> Result<TermRead, OpError> {
-        sweep(&self.table);
+        sweep(&self.table, retire);
         let offset = offset.unwrap_or(0);
         let shared = with_term(&self.table, term, |term| Arc::clone(&term.shared))?;
-        let ring = locked(&shared.ring);
-        let total = ring.total;
-        if offset > total {
-            return Err(OpError::invalid(format!(
-                "offset {offset} is past the end of the output ({total} bytes)"
-            )));
-        }
-        let oldest = ring.oldest();
-        let lost = oldest.saturating_sub(offset);
-        let start = offset.max(oldest);
-        let len = (total - start).min(READ_MAX as u64) as usize;
-        let from = (start - oldest) as usize;
-        let data: Vec<u8> = ring.bytes.range(from..from + len).copied().collect();
-        drop(ring);
+        let slice = locked(&shared.ring).read(offset)?;
         let exit_code = shared.exit_code();
         Ok(TermRead {
-            data_b64: STANDARD.encode(&data),
+            data_b64: encode_read(&slice.data),
             exit_code,
             exited: exit_code.is_some(),
-            lost,
-            next: start + len as u64,
-            offset: start,
+            lost: slice.lost,
+            next: slice.next,
+            offset: slice.offset,
             term: term.to_string(),
         })
     }
 
     /// Sets the terminal's size. The kernel sends SIGWINCH to the terminal's foreground group.
     pub fn resize(&self, term: &str, cols: u64, rows: u64) -> Result<TermResized, OpError> {
-        sweep(&self.table);
+        sweep(&self.table, retire);
         let cols = size(cols, "cols")?;
         let rows = size(rows, "rows")?;
         let master = with_term(&self.table, term, |term| {
@@ -271,13 +208,8 @@ impl Terminals {
 
     /// Closes the terminal and ends its shell and its process group. Returns once the shell is gone.
     pub fn close(&self, term: &str) -> Result<TermClosed, OpError> {
-        sweep(&self.table);
-        let id = parse_term(term)?;
-        let closed = locked(&self.table)
-            .terms
-            .remove(&id)
-            .ok_or_else(|| OpError::not_found(format!("no terminal {term:?}")))?;
-        retire(closed);
+        sweep(&self.table, retire);
+        retire(remove_term(&self.table, term)?);
         Ok(TermClosed {
             closed: true,
             term: term.to_string(),
@@ -286,7 +218,7 @@ impl Terminals {
 
     /// The open terminals.
     pub fn list(&self) -> Result<TermList, OpError> {
-        sweep(&self.table);
+        sweep(&self.table, retire);
         let table = locked(&self.table);
         let terminals = table
             .terms
@@ -312,43 +244,6 @@ impl Drop for Terminals {
             retire(term);
         }
     }
-}
-
-/// Runs `act` on the terminal `name` names, and counts the call as activity on it.
-fn with_term<T>(
-    table: &Mutex<Table>,
-    name: &str,
-    act: impl FnOnce(&mut Term) -> T,
-) -> Result<T, OpError> {
-    let id = parse_term(name)?;
-    let mut table = locked(table);
-    let term = table
-        .terms
-        .get_mut(&id)
-        .ok_or_else(|| OpError::not_found(format!("no terminal {name:?}")))?;
-    term.last_active = Instant::now();
-    Ok(act(term))
-}
-
-/// Closes, in the background, every terminal idle for [`IDLE`].
-fn sweep(table: &Mutex<Table>) {
-    for term in take_idle(table, Instant::now()) {
-        thread::spawn(move || retire(term));
-    }
-}
-
-/// Removes and returns the terminals idle at `now`.
-fn take_idle(table: &Mutex<Table>, now: Instant) -> Vec<Term> {
-    let mut table = locked(table);
-    let idle: Vec<u64> = table
-        .terms
-        .iter()
-        .filter(|(_, term)| now.duration_since(term.last_active) >= IDLE)
-        .map(|(id, _)| *id)
-        .collect();
-    idle.into_iter()
-        .filter_map(|id| table.terms.remove(&id))
-        .collect()
 }
 
 /// Ends a terminal. The master is dropped (the reader drops its own duplicate within [`TICK`]), which
@@ -635,43 +530,12 @@ fn winsize(cols: u16, rows: u16) -> libc::winsize {
     }
 }
 
-/// A size argument: a whole number from 1 to [`MAX_SIZE`].
-fn size(value: u64, key: &str) -> Result<u16, OpError> {
-    if (1..=MAX_SIZE).contains(&value) {
-        Ok(value as u16)
-    } else {
-        Err(OpError::invalid(format!(
-            "{key:?} must be a whole number from 1 to {MAX_SIZE}"
-        )))
-    }
-}
-
-fn term_name(id: u64) -> String {
-    format!("term-{id}")
-}
-
-/// The id a terminal name stands for. Only the canonical spelling is accepted, so one terminal has one
-/// name.
-fn parse_term(name: &str) -> Result<u64, OpError> {
-    name.strip_prefix("term-")
-        .and_then(|digits| digits.parse::<u64>().ok())
-        .filter(|id| term_name(*id) == name)
-        .ok_or_else(|| OpError::invalid(format!("{name:?} is not a terminal name")))
-}
-
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |since| since.as_millis() as u64)
-}
-
-fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
 #[cfg(test)]
 mod tests {
+    use super::super::table::{IDLE, WRITE_MAX, take_idle};
     use super::*;
+    use base64::Engine;
+    use base64::engine::general_purpose::STANDARD;
     use std::os::unix::fs::symlink;
 
     const PATH: &str = "/usr/local/bin:/usr/bin:/bin";

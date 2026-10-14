@@ -634,6 +634,7 @@ fn scan_file(path: &Path, rel: &str, scan: &mut Scan) {
 mod tests {
     use super::*;
     use crate::page::CHUNK;
+    #[cfg(unix)]
     use std::os::unix::fs::symlink;
 
     fn scratch(name: &str) -> (PathBuf, Root) {
@@ -644,6 +645,7 @@ mod tests {
         (dir, root)
     }
 
+    #[cfg(unix)]
     fn denied<T: std::fmt::Debug>(result: Result<T, OpError>) -> String {
         match result.expect_err("the operation refuses") {
             OpError::Denied(reason) => reason,
@@ -651,6 +653,8 @@ mod tests {
         }
     }
 
+    // The test makes symlinks with the unix call, so it runs on unix only.
+    #[cfg(unix)]
     #[test]
     fn refused_paths_are_refused_by_the_rules_and_by_the_real_filesystem() {
         let (dir, root) = scratch("paths");

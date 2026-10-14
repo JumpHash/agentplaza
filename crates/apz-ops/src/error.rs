@@ -55,7 +55,7 @@ impl OpError {
     }
 
     /// The refusal for an operation this platform has no backend for.
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     pub(crate) fn unsupported(what: &str) -> Self {
         Self::Unavailable(format!("{what}: unsupported on this platform"))
     }

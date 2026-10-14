@@ -44,6 +44,30 @@ impl Env {
         &self.home
     }
 
+    /// The variables a started Windows process gets, each name once, sorted by name: `HOME` and `PATH`, then
+    /// the rest, the last value given for a name winning. The Windows backends build their block from it.
+    #[cfg(windows)]
+    pub(crate) fn pairs(
+        &self,
+    ) -> std::collections::BTreeMap<std::ffi::OsString, std::ffi::OsString> {
+        let mut pairs = std::collections::BTreeMap::new();
+        pairs.insert(
+            std::ffi::OsString::from("HOME"),
+            self.home.clone().into_os_string(),
+        );
+        pairs.insert(
+            std::ffi::OsString::from("PATH"),
+            std::ffi::OsString::from(self.path.as_str()),
+        );
+        for (key, value) in &self.vars {
+            pairs.insert(
+                std::ffi::OsString::from(key.as_str()),
+                std::ffi::OsString::from(value.as_str()),
+            );
+        }
+        pairs
+    }
+
     /// Clears `builder`'s environment and sets this one on it. The working directory is the caller's
     /// to set.
     pub fn apply(&self, builder: &mut Command) {
