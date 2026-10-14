@@ -2,6 +2,7 @@ import { api, type Agent, type FleetResponse } from '../api';
 import { floorName } from '../roles';
 import { on } from '../store';
 import { button } from '../ui/components';
+import { h } from '../ui/dom';
 import type { Cleanup } from './index';
 import { machineCard } from './floor-popup';
 
@@ -402,6 +403,19 @@ export function startThumbEngine(): EngineStage {
   };
 }
 
+/** The legend's keys: the Machines view's statuses, and a board's robot states (the floor.css swatch colours). */
+const FLEET_KEYS: [string, string][] = [
+  ['online', 'Online'],
+  ['draining', 'Draining'],
+  ['offline', 'Offline'],
+  ['revoked', 'Revoked'],
+];
+const BOARD_KEYS: [string, string][] = [
+  ['working', 'Working'],
+  ['idle', 'Idle'],
+  ['offline', 'Offline'],
+];
+
 /**
  * The Floor on the wasm engine: the Machines view, or with `initialId` (`#/floor/<id>`) that machine's board, entered
  * on mount. A pick opens the machine popup (floor-popup.ts's card); its ENTER flies the engine into the board.
@@ -420,17 +434,41 @@ export function mountEngine(root: HTMLElement, initialId: string | null = null, 
   const status = document.createElement('div');
   status.style.cssText = 'position:absolute;left:16px;bottom:16px;font:13px/1.4 system-ui,sans-serif;color:#ddd;pointer-events:none';
   status.textContent = 'Starting the engine';
-  const crumb = document.createElement('div');
-  crumb.className = 'floor-crumb';
-  crumb.style.cssText = 'position:absolute;left:16px;top:16px;display:none;align-items:center;gap:10px';
-  const crumbName = document.createElement('span');
-  crumb.append(button('Back to machines', () => backToMachines()), crumbName);
   const card = document.createElement('div');
   card.className = 'floor-card machine-card';
   card.style.cssText = 'right:16px;top:16px;left:auto';
   card.hidden = true;
-  wrap.append(canvas, status, crumb, card);
-  root.append(wrap);
+  // The legend, bottom-left of the stage: the machines' statuses, or a board's robot states (setLegend swaps them).
+  const legend = h('div.floor-legend');
+  const setLegend = (machines: boolean): void => {
+    legend.replaceChildren(
+      ...(machines ? FLEET_KEYS : BOARD_KEYS).map(([key, label]) => {
+        const swatch = document.createElement('i');
+        swatch.className = `floor-key ${key}`;
+        return h('span', null, swatch, label);
+      }),
+    );
+  };
+  setLegend(true);
+  wrap.append(canvas, status, legend, card);
+  // The page header (the old Floor's): the title, inside a board the breadcrumb "Machines › name" (Machines goes back),
+  // and on the right BACK TO MACHINES (a board only) and RESET VIEW.
+  const crumbName = document.createElement('span');
+  const crumbLink = h('a', {
+    href: '#/floor',
+    onclick: (ev: Event) => {
+      ev.preventDefault();
+      backToMachines();
+    },
+  });
+  crumbLink.textContent = 'Machines';
+  const crumb = h('nav.floor-crumb', { 'aria-label': 'Breadcrumb' }, crumbLink, ' › ', crumbName);
+  crumb.hidden = true;
+  const backBtn = button('Back to machines', () => backToMachines());
+  backBtn.hidden = true;
+  const resetBtn = button('Reset view', () => engine?.command('reset'), { icon: 'refresh' });
+  const viewHead = h('div.view-head', null, h('h1', null, 'Floor'), crumb, h('div.actions', null, backBtn, resetBtn));
+  root.append(viewHead, wrap);
   // The Floor fills the window (floor.css): the view and the page take the floor mode.
   root.classList.add('floor-view');
   document.body.classList.add('floor-mode');
@@ -526,7 +564,9 @@ export function mountEngine(root: HTMLElement, initialId: string | null = null, 
   /** The board's crumb, and the hash: `#/floor/<id>` while a board is shown, `#/floor` otherwise. */
   const setEntered = (id: string | null): void => {
     entered = id;
-    crumb.style.display = id === null ? 'none' : 'flex';
+    crumb.hidden = id === null;
+    backBtn.hidden = id === null;
+    setLegend(id === null);
     crumbName.textContent = id === null ? '' : machineName(id);
     const target = id === null ? '#/floor' : `#/floor/${encodeURIComponent(id)}`;
     // A pushed entry, not a hashchange: the router would remount the Floor and its engine with it.
