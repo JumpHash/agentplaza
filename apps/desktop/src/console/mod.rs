@@ -178,7 +178,14 @@ fn boot() -> (Console, Task<Msg>) {
 
 fn update(console: &mut Console, msg: Msg) -> Task<Msg> {
     let before = console.shell.current.clone();
-    let task = update_app(console, msg);
+    let mut task = update_app(console, msg);
+    // The screen changed: the IDE is told when it is left or entered (its terminals and polling follow).
+    if console.shell.current != before
+        && let Some(ctx) = console.ctx.clone()
+    {
+        let hook = screens::changed(&mut console.screens, &before, &console.shell.current, &ctx).map(Msg::Screen);
+        task = Task::batch([task, hook]);
+    }
     // The IDE remembers the screen it was opened from: its Escape goes back there.
     if matches!(console.shell.current, screens::Id::Ide(_)) && !matches!(before, screens::Id::Ide(_)) {
         console.screens.ide.origin = Some(before);

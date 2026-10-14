@@ -276,6 +276,20 @@ pub fn open(screens: &mut Screens, id: Id, ctx: &Ctx) -> Task<Msg> {
     refresh(screens, &id, ctx)
 }
 
+/// The shown screen changed from `from` to `to`. The console calls this once per change, after the new screen
+/// was opened. The IDE is told when it is left and when it is entered: its terminals and its run's polling stop
+/// and resume there. Entering replaces any tabs the open made, so the kept ones are made again once.
+pub fn changed(screens: &mut Screens, from: &Id, to: &Id, ctx: &Ctx) -> Task<Msg> {
+    match (matches!(from, Id::Ide(_)), matches!(to, Id::Ide(_))) {
+        (true, false) => {
+            ide::left(&mut screens.ide);
+            Task::none()
+        }
+        (false, true) => ide::entered(&mut screens.ide, ctx).map(Msg::Ide),
+        _ => Task::none(),
+    }
+}
+
 /// Reloads the shown screen.
 pub fn refresh(screens: &mut Screens, id: &Id, ctx: &Ctx) -> Task<Msg> {
     match id {

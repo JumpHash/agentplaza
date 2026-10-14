@@ -24,7 +24,7 @@ use super::ide_chrome::{self, Dock, Drag, Edge, Layout};
 use super::ide_diff;
 use super::ide_editor;
 use super::ide_panels;
-use super::ide_terminal::{self, TabsMsg, TerminalTabs};
+use super::ide_terminal::{self, KeptTabs, TabsMsg, TerminalTabs};
 use super::ide_tree::{self, Tree};
 use crate::console::Ctx;
 use crate::console::boot;
@@ -292,6 +292,12 @@ pub struct State {
     pub terminal_hover: bool,
     /// The terminal has the keys: its last press landed on it, so the IDE's shortcuts stay out.
     pub terminal_focus: bool,
+    /// The terminal tabs the IDE was left with, to attach to again when it is entered (see `left`).
+    pub parked: Option<KeptTabs>,
+    /// The IDE was left and not entered again: a run's answers are not read on meanwhile (see `left`).
+    pub away: bool,
+    /// A poll of the run is on its way to the hub, so the run has a poll asking for its output.
+    pub poll_inflight: bool,
 }
 
 // The terminal tabs hold a socket and an emulator, which have no Debug of their own; the screen's state derives it.
@@ -867,6 +873,10 @@ fn reopen_terminals(st: &mut State, ctx: &Ctx) {
 /// on top of themselves. So the tabs are made again. Otherwise the tabs take the message, and the slots that
 /// are gone are forgotten.
 fn terminal_task(st: &mut State, msg: TabsMsg, ctx: &Ctx) -> Task<Msg> {
+    // No tabs on screen (the IDE was left): a message from a socket that is still ending takes no part.
+    if st.terminals.is_none() {
+        return Task::none();
+    }
     if let TabsMsg::Tab(slot, ide_terminal::Msg::Link(ide_terminal::Link::Ready(_))) = &msg
         && !st.terminal_links.insert(*slot)
     {
@@ -918,6 +928,9 @@ fn select(st: &mut State, id: WorkspaceId, ctx: &Ctx) -> Task<Msg> {
     st.terminals = None;
     st.terminal_links.clear();
     st.terminal_focus = false;
+    // The shells the IDE kept were the old workspace's; they keep running at the hub, and their tabs are not made again.
+    st.parked = None;
+    st.poll_inflight = false;
     load_workspace(st, ctx)
 }
 
@@ -1344,10 +1357,23 @@ pub fn update(st: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                 None => Task::none(),
             }
         }
-        Msg::Panels(msg) => match st.ide.workspace.clone() {
-            Some(ws) => ide_panels::update(&mut st.panels, msg, &ctx.client, &ws).map(Msg::Panels),
-            None => Task::none(),
-        },
+        // Left: a poll's answer is dropped unread, so the run's polling stops until the IDE is entered (see `left`).
+        Msg::Panels(ide_panels::Msg::Polled { .. }) if st.away => {
+            st.poll_inflight = false;
+            Task::none()
+        }
+        Msg::Panels(msg) => {
+            let answers_run = matches!(msg, ide_panels::Msg::Started { .. } | ide_panels::Msg::Polled { .. });
+            let task = match st.ide.workspace.clone() {
+                Some(ws) => ide_panels::update(&mut st.panels, msg, &ctx.client, &ws).map(Msg::Panels),
+                None => Task::none(),
+            };
+            if answers_run {
+                // The run's chain goes on from here: ide_panels asks for the next poll while the run is active.
+                st.poll_inflight = st.panels.run.active() && st.panels.run.run.is_some();
+            }
+            task
+        }
         Msg::Checkpoints { ws, res } => {
             if is_current(st, &ws) {
                 match res {
@@ -1556,6 +1582,48 @@ pub fn load(st: &mut State, ctx: &Ctx) -> Task<Msg> {
     task
 }
 
+/// The screen is left for another one. The terminals detach, keeping each tab's shell, offset and screen for
+/// `entered`; no shell ends. The run's polling stops with the IDE: its answers are dropped until it is entered.
+pub fn left(st: &mut State) {
+    st.away = true;
+    st.terminal_hover = false;
+    st.terminal_focus = false;
+    st.terminal_links.clear();
+    if let Some(tabs) = st.terminals.take() {
+        st.parked = Some(tabs.detach());
+    }
+}
+
+/// The screen is entered from another one. The terminals are made again once from what `left` kept, each
+/// attaching to its shell at its offset; kept tabs of a workspace that is no longer on screen are dropped. A run
+/// that was being polled is polled again, unless its poll is still on its way.
+pub fn entered(st: &mut State, ctx: &Ctx) -> Task<Msg> {
+    st.away = false;
+    if let Some(kept) = st.parked.take()
+        && st.ide.workspace.as_ref().is_some_and(|ws| ws.to_string() == kept.workspace())
+    {
+        st.terminals = Some(TerminalTabs::restore(ctx.client.target.clone(), kept));
+        st.terminal_links.clear();
+    }
+    resume_poll(st, ctx)
+}
+
+/// Asks the hub for the run's output from where it was read to, unless a poll is already on its way. While
+/// the run is active each answer asks for the next one (`ide_panels`), so this restarts a chain that `left` ended.
+fn resume_poll(st: &mut State, ctx: &Ctx) -> Task<Msg> {
+    if st.poll_inflight || !st.panels.run.active() {
+        return Task::none();
+    }
+    let (Some(run), Some(ws)) = (st.panels.run.run.clone(), st.ide.workspace.clone()) else {
+        return Task::none();
+    };
+    st.poll_inflight = true;
+    let path = route(&ws, &format!("/runs/{}?offset={}", enc(&run), st.panels.run.offset));
+    let c = ctx.client.clone();
+    let key = ws.to_string();
+    client::task(move || c.get::<ide_panels::Poll>(&path), move |res| Msg::Panels(ide_panels::Msg::Polled { ws: key.clone(), res }))
+}
+
 // ---- Views ------------------------------------------------------------------------------------
 
 /// The IDE's whole window: the header, the held strip, the activity rail, the left panel, the centre,
@@ -1571,7 +1639,7 @@ pub fn view(st: &State, plaza: Plaza) -> Element<'_, Msg> {
     let mut body = row![ide_chrome::rail(st)].height(Length::Fill);
     if st.layout.left_open {
         body = body.push(
-            container(left(st))
+            container(left_panel(st))
                 .width(Length::Fixed(st.layout.left))
                 .height(Length::Fill)
                 .padding(Padding {
@@ -1639,7 +1707,7 @@ fn status_line(st: &State) -> Option<Element<'_, Msg>> {
 }
 
 /// The left panel: the view the activity rail picked.
-fn left(st: &State) -> Element<'_, Msg> {
+fn left_panel(st: &State) -> Element<'_, Msg> {
     match (st.side, &st.search) {
         (Side::Search, Some(search)) => search_panel(search),
         (Side::Changes, _) => changes_side(st),
@@ -2431,5 +2499,80 @@ mod tests {
         assert_eq!(both.open.as_deref(), Some("x.rs"));
         assert_eq!(Target::parse("agent:7"), Target { workspace: "agent:7".into(), ..Target::default() });
         assert_eq!(dec("100%"), "100%", "a stray percent sign stays as it is");
+    }
+
+    /// The terminals on screen: each tab's slot, shell, offset and identity.
+    fn tabs_held(st: &State) -> Vec<(usize, Option<String>, u64, u64)> {
+        let Some(tabs) = st.terminals.as_ref() else { return Vec::new() };
+        (0..tabs.len())
+            .filter_map(|index| tabs.get(index))
+            .map(|tab| (tab.slot(), tab.term().map(str::to_string), tab.offset(), tab.id()))
+            .collect()
+    }
+
+    /// A tab's message from the socket, by its slot.
+    fn from_tab(slot: usize, link: ide_terminal::Link) -> Msg {
+        Msg::Terminals(TabsMsg::Tab(slot, ide_terminal::Msg::Link(link)))
+    }
+
+    #[test]
+    fn leaving_and_entering_makes_the_terminals_once_at_their_offsets() {
+        let mut st = screen_with_a_tab();
+        let _ = update(&mut st, Msg::Panel(Panel::Terminal), &ctx());
+        let _ = update(&mut st, Msg::Terminals(TabsMsg::Add), &ctx());
+        let _ = update(&mut st, from_tab(0, ide_terminal::Link::Opened("term-a".into())), &ctx());
+        let _ = update(&mut st, from_tab(0, ide_terminal::Link::Output(b"hello".to_vec(), 5)), &ctx());
+        let _ = update(&mut st, from_tab(1, ide_terminal::Link::Opened("term-b".into())), &ctx());
+        let _ = update(&mut st, from_tab(1, ide_terminal::Link::Output(b"world!".to_vec(), 6)), &ctx());
+        let shown = tabs_held(&st);
+        let kept = |held: &[(usize, Option<String>, u64, u64)]| held.iter().map(|t| (t.0, t.1.clone(), t.2)).collect::<Vec<_>>();
+        assert_eq!(kept(&shown), vec![(0, Some("term-a".to_string()), 5), (1, Some("term-b".to_string()), 6)]);
+
+        left(&mut st);
+        assert!(st.terminals.is_none(), "the tabs leave the screen");
+        assert!(st.parked.is_some(), "the shells and their offsets are kept");
+        // A message from a socket that is still ending takes no part while the IDE is away.
+        let _ = update(&mut st, from_tab(0, ide_terminal::Link::Output(b"late".to_vec(), 9)), &ctx());
+        assert!(st.terminals.is_none());
+
+        let _ = entered(&mut st, &ctx());
+        let back = tabs_held(&st);
+        assert_eq!(kept(&back), kept(&shown), "the same shells at the same offsets");
+        assert!(back.iter().zip(&shown).all(|(new, old)| new.3 != old.3), "the tabs are made again, once");
+        assert!(st.parked.is_none(), "what was kept is used");
+
+        // Entered again with no leave in between, and loaded again: nothing is made again.
+        let _ = entered(&mut st, &ctx());
+        let _ = load(&mut st, &ctx());
+        assert_eq!(tabs_held(&st), back);
+    }
+
+    #[test]
+    fn a_run_is_not_read_on_while_the_ide_is_away_and_is_polled_again_on_entry() {
+        let mut st = screen_with_a_tab();
+        st.panels.run = ide_panels::Run {
+            phase: ide_panels::Phase::Running,
+            run: Some("run-1".into()),
+            ..ide_panels::Run::default()
+        };
+        st.poll_inflight = true;
+        left(&mut st);
+        let answer = Msg::Panels(ide_panels::Msg::Polled {
+            ws: "agent:7".into(),
+            res: Ok(ide_panels::Poll {
+                output: "late\n".into(),
+                next: 5,
+                done: false,
+                exit_code: None,
+                timed_out: false,
+            }),
+        });
+        let _ = update(&mut st, answer, &ctx());
+        assert!(!st.poll_inflight, "the answer ends the poll while the IDE is away");
+        assert!(st.panels.run.output.is_empty(), "the run is not read on while the IDE is away");
+        assert_eq!(st.panels.run.offset, 0);
+        let _ = entered(&mut st, &ctx());
+        assert!(st.poll_inflight, "entering asks the run for its output again");
+        assert!(st.panels.run.output.is_empty(), "the output comes with that poll's answer");
     }
 }

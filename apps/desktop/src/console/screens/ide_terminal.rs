@@ -320,8 +320,8 @@ pub enum Link {
     Connected,
     /// The shell is open or attached, under this term id.
     Opened(String),
-    /// Output from the shell, in order.
-    Output(Vec<u8>),
+    /// Output from the shell, in order, and the offset the output reaches (the shell's, after these bytes).
+    Output(Vec<u8>, u64),
     /// Output the hub dropped before the client's offset.
     Lost(u64),
     /// The shell ended, with its exit code when it gave one.
@@ -345,15 +345,19 @@ pub enum Status {
     Killed,
 }
 
-/// The data the socket thread is started with: the hub, the workspace and the tab's slot.
+/// The data the socket thread is started with: the hub, the workspace, the tab's slot, and the shell and
+/// offset the tab holds when it was made from the kept state (see [`Terminal::resumed`]).
 #[derive(Clone)]
 struct Feed {
     id: u64,
     target: Target,
     workspace: String,
     slot: usize,
+    term: Option<String>,
+    offset: u64,
 }
 
+// The identity is the terminal's own; the shell and the offset move with the output and are not part of it.
 impl Hash for Feed {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.id.hash(state);
@@ -389,12 +393,16 @@ struct Session {
 impl Session {
     fn new(feed: &Feed, commands: std_mpsc::Receiver<Command>) -> Session {
         let key = resume_key(feed);
-        // A fresh emulator starts from the shell's oldest retained output, so the offset starts at 0.
-        let term = resumes().get(&key).map(|resume| resume.term.clone());
+        // A terminal that holds its shell re-attaches at the offset its screen has reached. Any other starts a
+        // fresh emulator, which takes the shell's oldest retained output, so its offset starts at 0.
+        let (term, offset) = match &feed.term {
+            Some(term) => (Some(term.clone()), feed.offset),
+            None => (resumes().get(&key).map(|resume| resume.term.clone()), 0),
+        };
         Session {
             key,
             term,
-            offset: 0,
+            offset,
             size: None,
             sent_size: None,
             want_open: true,
@@ -599,7 +607,7 @@ fn on_frame(frame: Server, st: &mut Session, out: &mut mpsc::Sender<Msg>) -> Opt
             if let Some(resume) = resumes().get_mut(&st.key) {
                 resume.offset = st.offset;
             }
-            deliver(out, Msg::Link(Link::Output(data)))
+            deliver(out, Msg::Link(Link::Output(data, st.offset)))
         }
         Server::Lost(bytes) => deliver(out, Msg::Link(Link::Lost(bytes))),
         Server::Exit(code) => {
@@ -738,7 +746,8 @@ pub enum Msg {
     Restart,
 }
 
-/// One terminal: its emulator, the socket thread's commands, its status and its selection.
+/// One terminal: its emulator, the socket thread's commands, its status and its selection. It also holds
+/// its shell's term id and the offset its emulator has reached, which is what the IDE keeps when it is left.
 pub struct Terminal {
     id: u64,
     target: Target,
@@ -750,6 +759,8 @@ pub struct Terminal {
     notice: Option<String>,
     size: Option<(usize, usize)>,
     selection: Option<Selection>,
+    term: Option<String>,
+    offset: u64,
 }
 
 impl Terminal {
@@ -767,12 +778,43 @@ impl Terminal {
             notice: None,
             size: None,
             selection: None,
+            term: None,
+            offset: 0,
+        }
+    }
+
+    /// A terminal made again from the state it was kept with: its shell and its emulator, which has drawn
+    /// the output up to `kept.offset`. Its socket attaches there, so nothing is drawn twice or left out.
+    fn resumed(target: Target, workspace: String, kept: KeptTab) -> Terminal {
+        Terminal {
+            term: kept.term,
+            offset: kept.offset,
+            emu: kept.emu,
+            ..Terminal::new(target, workspace, kept.slot)
         }
     }
 
     /// The tab's slot.
     pub fn slot(&self) -> usize {
         self.slot
+    }
+
+    /// The terminal's identity in the process: a terminal made again (see [`TerminalTabs::restore`]) has a new one.
+    #[cfg(test)]
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+
+    /// The shell this terminal holds, once the hub has opened or attached it.
+    #[cfg(test)]
+    pub fn term(&self) -> Option<&str> {
+        self.term.as_deref()
+    }
+
+    /// The offset in the shell's output that this terminal's emulator has reached.
+    #[cfg(test)]
+    pub fn offset(&self) -> u64 {
+        self.offset
     }
 
     /// What the terminal is doing.
@@ -869,11 +911,17 @@ impl Terminal {
                     self.status = Status::Connecting;
                 }
             }
-            Link::Opened(_) => {
+            Link::Opened(term) => {
+                // Another shell than the one held starts its output at 0, so the offset starts there too.
+                if self.term.as_deref() != Some(term.as_str()) {
+                    self.offset = 0;
+                }
+                self.term = Some(term);
                 self.status = Status::Live;
                 self.notice = None;
             }
-            Link::Output(bytes) => {
+            Link::Output(bytes, offset) => {
+                self.offset = offset;
                 let was_alt = self.emu.screen().alt_screen();
                 self.emu.feed(&bytes);
                 if self.emu.screen().alt_screen() != was_alt {
@@ -887,8 +935,14 @@ impl Terminal {
                 let _ = self.emu.screen_mut().take_bell();
             }
             Link::Lost(bytes) => self.notice = Some(format!("{bytes} bytes of output were dropped")),
-            Link::Exited(code) => self.status = Status::Ended(code),
-            Link::Killed => self.status = Status::Killed,
+            Link::Exited(code) => {
+                self.term = None;
+                self.status = Status::Ended(code);
+            }
+            Link::Killed => {
+                self.term = None;
+                self.status = Status::Killed;
+            }
             Link::Disconnected(reason) => {
                 if !finished {
                     self.status = Status::Reconnecting;
@@ -922,6 +976,8 @@ impl Terminal {
             target: self.target.clone(),
             workspace: self.workspace.clone(),
             slot: self.slot,
+            term: self.term.clone(),
+            offset: self.offset,
         };
         Subscription::run_with(feed, |feed: &Feed| link(feed.clone()))
     }
@@ -937,6 +993,37 @@ impl Terminal {
             bar = bar.push(button(text("RESTART").font(MONO).size(11)).on_press(Msg::Restart));
         }
         column![surface, bar].spacing(4).into()
+    }
+}
+
+/// One tab's hold on its shell, kept when the IDE is left: the term id (none while the shell is not open),
+/// the offset its emulator has reached, and the emulator itself.
+struct KeptTab {
+    slot: usize,
+    term: Option<String>,
+    offset: u64,
+    emu: vt::Emulator,
+}
+
+/// A workspace's terminal tabs, kept when the IDE is left (see [`TerminalTabs::detach`]). Nothing in it ends a
+/// shell: each one keeps running at the hub until [`TerminalTabs::restore`] attaches to it again.
+pub struct KeptTabs {
+    workspace: String,
+    tabs: Vec<KeptTab>,
+    active: usize,
+}
+
+impl KeptTabs {
+    /// The workspace whose shells these are.
+    pub fn workspace(&self) -> &str {
+        &self.workspace
+    }
+}
+
+// The emulators have no Debug of their own; the state that holds them derives it.
+impl std::fmt::Debug for KeptTabs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("KeptTabs")
     }
 }
 
@@ -1040,6 +1127,31 @@ impl TerminalTabs {
         if self.active >= self.tabs.len() {
             self.active = self.tabs.len().saturating_sub(1);
         }
+    }
+
+    /// Takes the tabs apart for the IDE's leave. Each tab's socket thread stops when its command channel goes
+    /// with the tab; no shell is ended, so each keeps its term id and the offset its screen has reached.
+    pub fn detach(self) -> KeptTabs {
+        let TerminalTabs { workspace, tabs, active, .. } = self;
+        let tabs = tabs
+            .into_iter()
+            .map(|tab| KeptTab {
+                slot: tab.slot,
+                term: tab.term,
+                offset: tab.offset,
+                emu: tab.emu,
+            })
+            .collect();
+        KeptTabs { workspace, tabs, active }
+    }
+
+    /// The tabs again, as [`TerminalTabs::detach`] kept them: the same slots, shells, offsets and screens, each
+    /// with a new socket that attaches to its shell at its offset.
+    pub fn restore(target: Target, kept: KeptTabs) -> TerminalTabs {
+        let KeptTabs { workspace, tabs, active } = kept;
+        let active = active.min(tabs.len().saturating_sub(1));
+        let tabs = tabs.into_iter().map(|tab| Terminal::resumed(target.clone(), workspace.clone(), tab)).collect();
+        TerminalTabs { target, workspace, tabs, active }
     }
 
     /// The subscriptions of every terminal.
@@ -1535,7 +1647,7 @@ mod tests {
     fn a_terminal_takes_its_hub_frames_into_the_screen() {
         let target = Target { base: "http://127.0.0.1:1".into(), ..Target::default() };
         let mut term = Terminal::new(target, "agent:1", 0);
-        let _ = term.update(Msg::Link(Link::Output(b"ls\r\n".to_vec())));
+        let _ = term.update(Msg::Link(Link::Output(b"ls\r\n".to_vec(), 4)));
         assert_eq!(term.screen().line_text(0), "ls");
         assert_eq!(term.status(), &Status::Starting);
         let _ = term.update(Msg::Link(Link::Opened("term-1".into())));
@@ -1639,7 +1751,14 @@ mod tests {
         let (frames_tx, frames_rx) = std_mpsc::channel::<String>();
         let hub = fake_hub(frames_tx);
         let target = Target { base: format!("http://127.0.0.1:{}", hub.port()), ..Target::default() };
-        let feed = Feed { id: 9_001, target, workspace: "agent:7".into(), slot: 0 };
+        let feed = Feed {
+            id: 9_001,
+            target,
+            workspace: "agent:7".into(),
+            slot: 0,
+            term: None,
+            offset: 0,
+        };
         let (commands, command_rx) = std_mpsc::channel::<Command>();
         let (out_tx, mut out_rx) = mpsc::channel::<Msg>(256);
         let thread = std::thread::spawn(move || supervise(feed, command_rx, out_tx));
@@ -1647,11 +1766,11 @@ mod tests {
         commands.send(Command::Size(80, 24)).unwrap();
         let mut seen = Vec::new();
         until(&mut out_rx, &mut seen, |link| matches!(link, Link::Opened(term) if term == "term-1"));
-        until(&mut out_rx, &mut seen, |link| matches!(link, Link::Output(bytes) if bytes == b"hello"));
+        until(&mut out_rx, &mut seen, |link| matches!(link, Link::Output(bytes, _) if bytes == b"hello"));
         until(&mut out_rx, &mut seen, |link| matches!(link, Link::Disconnected(_)));
         until(&mut out_rx, &mut seen, |link| matches!(link, Link::Opened(term) if term == "term-1"));
         commands.send(Command::Input(b"ls".to_vec())).unwrap();
-        until(&mut out_rx, &mut seen, |link| matches!(link, Link::Output(bytes) if bytes == b"ls"));
+        until(&mut out_rx, &mut seen, |link| matches!(link, Link::Output(bytes, _) if bytes == b"ls"));
         commands.send(Command::Kill).unwrap();
         until(&mut out_rx, &mut seen, |link| matches!(link, Link::Killed));
 
@@ -1683,5 +1802,30 @@ mod tests {
         tabs.remove(1);
         assert!(tabs.add());
         assert_eq!(tabs.get(tabs.active()).unwrap().slot(), 1, "the freed slot comes back");
+    }
+
+    #[test]
+    fn a_kept_terminal_keeps_its_screen_and_its_offset() {
+        let target = Target { base: "http://127.0.0.1:1".into(), ..Target::default() };
+        let mut tabs = TerminalTabs::new(target.clone(), "agent:1");
+        let _ = tabs.update(TabsMsg::Tab(0, Msg::Link(Link::Opened("term-1".into()))));
+        let _ = tabs.update(TabsMsg::Tab(0, Msg::Link(Link::Output(b"hello".to_vec(), 5))));
+        let kept = tabs.detach();
+        assert_eq!(kept.workspace(), "agent:1");
+        let back = TerminalTabs::restore(target, kept);
+        let tab = back.get(0).unwrap();
+        assert_eq!((tab.term(), tab.offset()), (Some("term-1"), 5), "the shell and its offset come back");
+        assert!(tab.screen().line_text(0).starts_with("hello"), "the screen it drew comes back with it");
+    }
+
+    #[test]
+    fn another_shell_than_the_one_held_starts_its_offset_at_zero() {
+        let mut term = Terminal::new(Target::default(), "agent:7", 0);
+        let _ = term.update(Msg::Link(Link::Opened("term-1".into())));
+        let _ = term.update(Msg::Link(Link::Output(b"abc".to_vec(), 3)));
+        let _ = term.update(Msg::Link(Link::Opened("term-1".into())));
+        assert_eq!(term.offset(), 3, "the same shell, attached again, keeps its offset");
+        let _ = term.update(Msg::Link(Link::Opened("term-2".into())));
+        assert_eq!((term.term(), term.offset()), (Some("term-2"), 0));
     }
 }
