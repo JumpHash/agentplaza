@@ -368,6 +368,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "apz-desktop-x11"
+version = "0.1.0"
+dependencies = [
+ "apz-desktop",
+ "apz-station",
+ "libc",
+ "x11rb",
+]
+
+[[package]]
 name = "apz-engine"
 version = "0.1.0"
 dependencies = [

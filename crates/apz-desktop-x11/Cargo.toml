@@ -1,0 +1,15 @@
+[package]
+name = "apz-desktop-x11"
+description = "AgentPlaza X11 desktop backend: a private Xvfb display per agent, the shared owner display, XShm capture, XTest input and app launch (Linux only)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The backend is Linux-only. On other platforms the crate compiles to nothing (lib.rs is cfg-gated), so the
+# workspace still checks there; the dependencies are target-specific for the same reason.
+[target.'cfg(target_os = "linux")'.dependencies]
+apz-desktop = { path = "../apz-desktop" }
+apz-station = { path = "../apz-station" }
+libc.workspace = true
+x11rb = { version = "0.13", features = ["shm", "xtest", "screensaver"] }
