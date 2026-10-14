@@ -137,12 +137,14 @@ impl TaskState {
     /// Whether `self -> next` is one of the transitions v0 allows: a task is
     /// claimed from `open`, a claim the agent reports done waits in
     /// `awaiting_review`, a claim or a waiting task is finished (done or
-    /// failed), and a task is withdrawn from any state before it ends. Every
-    /// other pair is refused.
+    /// failed), and a task is withdrawn from any state before it ends. A claim
+    /// goes back to `open` when the owner takes the workstation its worker was
+    /// using ([`Task::requeue`]). Every other pair is refused.
     pub fn can_transition_to(self, next: TaskState) -> bool {
         matches!(
             (self, next),
             (TaskState::Open, TaskState::Claimed)
+                | (TaskState::Claimed, TaskState::Open)
                 | (TaskState::Claimed, TaskState::AwaitingReview)
                 | (TaskState::Claimed, TaskState::Done)
                 | (TaskState::Claimed, TaskState::Failed)
@@ -643,6 +645,31 @@ impl Task {
         Ok(())
     }
 
+    /// Puts a claimed task back in the queue: the owner took the workstation its
+    /// worker was using, so the claim is released and the task is `open` to be
+    /// claimed again. The assignee and the claiming CID are cleared, and `note`
+    /// (why it was requeued) is kept as the task's note. Nothing is refunded:
+    /// the escrow stays with the task, which is still going to be done.
+    pub fn requeue(&self, note: &str) -> Result<(), RefusedTransition> {
+        let to = TaskState::Open;
+        let mut inner = self.lock();
+        let from = inner.state;
+        if !from.can_transition_to(to) {
+            return Err(RefusedTransition { from, to });
+        }
+        inner.state = to;
+        inner.assignee_id = None;
+        inner.agent_cid = None;
+        inner.note = Some(note.to_string());
+        inner.updated_at = now_ms();
+        self.events.publish(Event::Task {
+            id: self.id.clone(),
+            state: to.as_str(),
+            assignee: None,
+        });
+        Ok(())
+    }
+
     /// Moves a claimed task to `awaiting_review`: the claiming agent reports the
     /// work done, and it waits for a reviewer's verdict. `note` is the agent's
     /// report; the reviewer reads it from the task.
@@ -1047,9 +1074,11 @@ mod tests {
 
 
     /// `core.task_transitions`, restricted to the states noded v0 implements
-    /// (`awaiting_review` is the schema's `verifying`).
-    const ALLOWED: [(TaskState, TaskState); 9] = [
+    /// (`awaiting_review` is the schema's `verifying`), and the v0 requeue
+    /// (`claimed` -> `open`), which the schema has no row for.
+    const ALLOWED: [(TaskState, TaskState); 10] = [
         (TaskState::Open, TaskState::Claimed),
+        (TaskState::Claimed, TaskState::Open),
         (TaskState::Claimed, TaskState::AwaitingReview),
         (TaskState::Claimed, TaskState::Done),
         (TaskState::Claimed, TaskState::Failed),
@@ -1122,6 +1151,40 @@ mod tests {
         assert_eq!(view.assignee_id.as_deref(), Some("builder"));
         assert_eq!(view.agent_cid, Some(100));
         assert_eq!(view.updated_at, updated_at);
+    }
+
+    #[test]
+    fn a_requeue_puts_a_claimed_task_back_in_the_queue_and_only_a_claimed_one() {
+        let ledger = TaskLedger::new(EventBus::new());
+        let task = create(&ledger, "render the reel");
+        assert!(task.requeue("owner took the workstation").is_err(), "an open task has no claim to release");
+
+        task.claim(&ConnectedAgent {
+            cid: 100,
+            role: Some("builder".to_string()),
+            run: "r1".to_string(),
+            vm: 2,
+        })
+        .expect("open -> claimed");
+        task.requeue("owner took the workstation").expect("claimed -> open");
+        let view = task.view();
+        assert_eq!(view.state, "open");
+        assert_eq!(view.assignee_id, None);
+        assert_eq!(view.agent_cid, None);
+        assert_eq!(view.note.as_deref(), Some("owner took the workstation"));
+        assert_eq!(view.outcome, None, "a requeued task has not ended");
+        assert!(task.is_open(), "and it can be claimed again");
+
+        task.claim(&ConnectedAgent {
+            cid: 101,
+            role: Some("builder".to_string()),
+            run: "r2".to_string(),
+            vm: 3,
+        })
+        .expect("claimed again by another agent");
+        assert_eq!(task.view().agent_cid, Some(101));
+        task.finish(FinishOutcome::Done, None).expect("and it finishes");
+        assert!(task.requeue("late").is_err(), "a finished task is not requeued");
     }
 
     #[test]

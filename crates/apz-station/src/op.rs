@@ -39,7 +39,8 @@ pub enum Op {
     /// Runs: a command with a timeout and a capped output, started, polled and stopped.
     Run(RunOp),
     /// Opens a screen session for an agent. A pixel session takes the screen; a shared one is the
-    /// owner's own session, used with the takeover rules.
+    /// owner's own session, used with the takeover rules. A shared session the hub opens for the owner's live
+    /// view names no agent: `agent` is [`OWNER_VIEW`] (0).
     SessionOpen {
         agent: u64,
         kind: SessionKind,
@@ -251,6 +252,10 @@ pub enum SessionKind {
     Pixel,
     Shared,
 }
+
+/// The `agent` of a shared session that is the owner's live view: no agent. A shared session is the owner's own
+/// screen, so the daemon accepts it with this agent and passes it on as given.
+pub const OWNER_VIEW: u64 = 0;
 
 /// An image format for screenshots and frames.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -535,7 +540,7 @@ mod tests {
             ),
             (
                 Op::Settings(settings_example()),
-                r#"{"op":"settings","takeover":"agent_waits","record":true,"retention_days":30,"record_fps":2,"record_takeovers":true,"work_folder":"~/AgentPlaza","snapshot_reset":false}"#,
+                r#"{"op":"settings","takeover":"agent_waits","record":true,"retention_days":30,"record_fps":2,"record_takeovers":true,"work_folder":"~/AgentPlaza","snapshot_reset":false,"rate_per_hour":0}"#,
             ),
         ]
     }

@@ -18,6 +18,7 @@ use super::leases::{Kind, Lease, LeaseView, State};
 use super::link::StationLink;
 use super::ops::{self, Failure, RPC_TIMEOUT};
 use super::registry::Station;
+use super::takeover;
 use crate::laws::OWNER;
 use crate::state::App;
 
@@ -27,6 +28,8 @@ const GRANT_WAIT: Duration = Duration::from_secs(25);
 const GRANT_POLL: Duration = Duration::from_millis(250);
 /// The longest a command or script in an audit row may be before it is cut.
 const AUDIT_TEXT_CHARS: usize = 500;
+/// The refusal of a screenshot or an input while the owner holds the screen (takeover.rs).
+const OWNER_HAS_SCREEN: &str = "the owner has the screen; wait";
 
 /// What the checks need from the hub. `AppHub` is the real one; the tests use a fake.
 pub(crate) trait Hub {
@@ -34,6 +37,10 @@ pub(crate) trait Hub {
     /// The station's live link, when it is online.
     fn link(&self, id: &str) -> Option<Arc<StationLink>>;
     fn lease(&self, id: &str) -> Option<Lease>;
+    /// Whether the owner's takeover refuses the agent's screenshots on `session` (`agent_waits`, `release_lease`).
+    fn pixel_paused(&self, station: &str, session: u64) -> bool;
+    /// Whether the owner's takeover refuses the agent's pointer and keyboard on `session` (every policy).
+    fn pointer_paused(&self, station: &str, session: u64) -> bool;
     /// The laws' refusal of a call (`Laws::refusal`), `None` when it may run.
     fn refusal(&self, cid: u64, role: &str, tool: &str, input: &Value) -> Option<String>;
     /// Writes one row to the station audit.
@@ -57,6 +64,14 @@ impl Hub for AppHub<'_> {
 
     fn lease(&self, id: &str) -> Option<Lease> {
         self.0.stations.leases.get(id)
+    }
+
+    fn pixel_paused(&self, station: &str, session: u64) -> bool {
+        takeover::pixel_paused(self.0, station, session)
+    }
+
+    fn pointer_paused(&self, station: &str, session: u64) -> bool {
+        takeover::pointer_paused(self.0, station, session)
     }
 
     fn refusal(&self, cid: u64, role: &str, tool: &str, input: &Value) -> Option<String> {
@@ -123,6 +138,16 @@ fn send(hub: &dyn Hub, cid: u64, role: &str, station: &str, lease: Option<&str>,
                 "a screen operation needs your active pixel lease on this workstation (station_lease), and its session".into(),
             ));
         }
+        // The owner has the screen: the screenshots and the pointer and keyboard wait (takeover.rs). An accessibility
+        // operation (the UI tree, a UI action) is not a pixel one, so it goes on under every policy.
+        let blocked = match &op {
+            Op::Screenshot { .. } => hub.pixel_paused(station, session),
+            Op::Input { .. } => hub.pixel_paused(station, session) || hub.pointer_paused(station, session),
+            _ => false,
+        };
+        if blocked {
+            return Err((409, OWNER_HAS_SCREEN.into()));
+        }
     }
     let input = json!({"station": station, "op": &op});
     if let Some(why) = hub.refusal(cid, role, tool, &input) {
@@ -135,7 +160,7 @@ fn send(hub: &dyn Hub, cid: u64, role: &str, station: &str, lease: Option<&str>,
 /// The laws' name for an operation: the workstation tool it belongs to (`tools.jhrl` permits these names). `None` for
 /// the operations no agent sends: the freeze, settings, sync, the live stream, the session plumbing that
 /// `station_lease` does, and the app focus and quit that no tool offers.
-fn law_name(op: &Op) -> Option<&'static str> {
+pub(super) fn law_name(op: &Op) -> Option<&'static str> {
     use apz_station::InputAction;
     Some(match op {
         Op::Screenshot { .. } => "station_screenshot",
@@ -191,7 +216,7 @@ fn tag(op: &Op) -> String {
 
 /// The operation as the audit keeps it: its fields, with the typed text, the file contents and the values replaced by
 /// their sizes, and long commands and script code cut short.
-fn summary(op: &Op) -> Value {
+pub(super) fn summary(op: &Op) -> Value {
     let mut value = serde_json::to_value(op).unwrap_or(Value::Null);
     redact(&mut value);
     value
@@ -311,6 +336,10 @@ mod tests {
         laws: Laws,
         audit: Mutex<Vec<Value>>,
         audit_broken: bool,
+        /// The owner holds the screen under `agent_waits` or `release_lease`: the agent's pixels are refused.
+        screen_taken: bool,
+        /// The owner holds the session under any policy: the agent's pointer and keyboard are refused.
+        pointer_taken: bool,
     }
 
     impl Hub for FakeHub {
@@ -324,6 +353,14 @@ mod tests {
 
         fn lease(&self, id: &str) -> Option<Lease> {
             self.leases.get(id)
+        }
+
+        fn pixel_paused(&self, _station: &str, _session: u64) -> bool {
+            self.screen_taken
+        }
+
+        fn pointer_paused(&self, _station: &str, _session: u64) -> bool {
+            self.pointer_taken
         }
 
         fn refusal(&self, cid: u64, role: &str, tool: &str, input: &Value) -> Option<String> {
@@ -376,6 +413,8 @@ mod tests {
             laws: laws(),
             audit: Mutex::new(Vec::new()),
             audit_broken: false,
+            screen_taken: false,
+            pointer_taken: false,
         }
     }
 
@@ -405,7 +444,7 @@ mod tests {
     fn pixel_lease(hub: &FakeHub, cid: u64, session: u64) -> String {
         let lease = hub.leases.open("w1", cid, None, Kind::Pixel, 0).unwrap();
         assert_eq!(hub.leases.grant_next("w1", None).expect("a session is free").id, lease.id);
-        assert!(hub.leases.granted(&lease.id, session));
+        assert!(hub.leases.granted(&lease.id, session, 0));
         lease.id
     }
 
@@ -474,6 +513,39 @@ mod tests {
         let (op, _) = asked.join().unwrap();
         assert!(matches!(op, Op::Screenshot { session: 9, .. }));
         assert_eq!(last_audit(&hub)["data"]["ok"], true);
+    }
+
+    #[test]
+    fn while_the_owner_has_the_screen_the_agents_screenshots_and_pointer_wait_and_the_refusal_is_audited() {
+        let (link, daemon) = online();
+        let mut hub = hub(Some(link));
+        let lease = pixel_lease(&hub, 7, 9);
+        hub.screen_taken = true;
+        let (status, message) = run_op(&hub, 7, "builder", "w1", Some(&lease), screenshot(9)).unwrap_err();
+        assert_eq!((status, message.as_str()), (409, "the owner has the screen; wait"));
+        let (status, message) = run_op(&hub, 7, "builder", "w1", Some(&lease), click(9)).unwrap_err();
+        assert_eq!((status, message.as_str()), (409, "the owner has the screen; wait"));
+        assert!(daemon.hears.try_recv().is_err(), "nothing reached the station");
+        assert_eq!(last_audit(&hub)["data"]["ok"], false, "the refused click is audited");
+        assert!(last_audit(&hub)["data"]["error"].as_str().unwrap().contains("the owner has the screen"));
+
+        hub.screen_taken = false;
+        let asked = answer(daemon, json!({"w": 1, "h": 1, "format": "png", "data_b64": "AA=="}));
+        assert!(run_op(&hub, 7, "builder", "w1", Some(&lease), screenshot(9)).is_ok(), "back when the owner gives it back");
+        asked.join().unwrap();
+    }
+
+    #[test]
+    fn under_a_pointer_pause_the_screenshots_go_on_and_only_the_pointer_waits() {
+        let (link, daemon) = online();
+        let mut hub = hub(Some(link));
+        let lease = pixel_lease(&hub, 7, 9);
+        hub.pointer_taken = true;
+        let asked = answer(daemon, json!({"w": 1, "h": 1, "format": "png", "data_b64": "AA=="}));
+        assert!(run_op(&hub, 7, "builder", "w1", Some(&lease), screenshot(9)).is_ok(), "screenshots continue");
+        asked.join().unwrap();
+        let (status, message) = run_op(&hub, 7, "builder", "w1", Some(&lease), click(9)).unwrap_err();
+        assert_eq!((status, message.as_str()), (409, "the owner has the screen; wait"), "the pointer waits");
     }
 
     #[test]

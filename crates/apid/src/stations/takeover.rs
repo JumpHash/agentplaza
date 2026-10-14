@@ -3,10 +3,14 @@
 //!
 //! - `agent_waits`: the agent's pixel work on the session (screenshots, clicks, keys) is refused with "the owner has
 //!   the screen; wait", and its lease is marked paused, until the owner gives the session back.
-//! - `release_lease`: the session's pixel lease is released (its session closed, the next queued lease granted), and
-//!   `lease_released` is published with reason `owner_takeover`, so the task can go back to the queue.
+//! - `release_lease`: the session's pixel lease is released (its session closed), `lease_released` is published with
+//!   reason `owner_takeover`, and the lease's task goes back to the queue (`scheduler::requeue_task`). The queued
+//!   leases of the machine wait while the owner holds it: the next one is granted at the owner's give back.
 //! - `keep_working_pointer_paused`: only the agent's pointer and keyboard are refused; screenshots, the UI tree,
 //!   shells, runs and files continue.
+//!
+//! A machine with one pixel session (`ops::grant_next`) grants no queued pixel lease while the owner holds a pixel
+//! session there ([`pixel_held`]); the give back, and the end of an input take, grant the queue again.
 //!
 //! A session is taken two ways. The owner's `/control` socket takes it and holds it until the owner gives it back or
 //! the socket closes. The station's `OwnerInput` event (the owner touched a session the agent is using) takes it too,
@@ -217,14 +221,16 @@ impl Sessions {
         fx.publish("station_takeover", json!({"station": station, "session": session, "by": "owner", "policy": policy, "source": "input"}));
     }
 
-    /// Ends the input takes the owner has been quiet on for [`QUIET`].
-    pub fn sweep(&self, fx: &dyn Effects, now: u64) {
+    /// Ends the input takes the owner has been quiet on for [`QUIET`]. Returns the stations they ended on, so the
+    /// caller grants their queues.
+    pub fn sweep(&self, fx: &dyn Effects, now: u64) -> Vec<String> {
         let mut taken = self.guard();
         let quiet: Vec<Key> = taken
             .iter()
             .filter(|(_, t)| !t.stands(now))
             .map(|(key, _)| key.clone())
             .collect();
+        let mut ended_on = Vec::new();
         for key in quiet {
             if let Some(ended) = taken.remove(&key) {
                 if let Err(reason) = fx.audit(
@@ -239,8 +245,10 @@ impl Sessions {
                     );
                 }
                 finish(fx, &key.0, key.1, ended.policy, "owner", "quiet");
+                ended_on.push(key.0.clone());
             }
         }
+        ended_on
     }
 
     /// The session ended on the machine: its takeover ends with it.
@@ -271,6 +279,15 @@ impl Sessions {
         self.guard()
             .get(&(station.to_string(), session))
             .is_some_and(|t| t.stands(now))
+    }
+
+    /// The sessions of `station` the owner holds now.
+    pub fn standing_on(&self, now: u64, station: &str) -> Vec<SessionId> {
+        self.guard()
+            .iter()
+            .filter(|((s, _), t)| s == station && t.stands(now))
+            .map(|((_, session), _)| *session)
+            .collect()
     }
 }
 
@@ -339,9 +356,19 @@ impl Effects for Hub<'_> {
         let Some(lease) = self.0.stations.leases.by_session(station, session) else {
             return Ok(());
         };
-        ops::release_for_takeover(self.0, station, &lease.id)
-            .map(|_| ())
-            .map_err(|(_, message)| message)
+        let released = ops::release_for_takeover(self.0, station, &lease.id).map_err(|(_, message)| message)?;
+        // The task goes back to the queue on its own thread: it may wait on the worker's link, and this runs under
+        // the takeover table's lock.
+        if let Some(task) = released.task {
+            let weak = self.0.handle();
+            std::thread::spawn(move || {
+                let Some(app) = weak.upgrade() else { return };
+                if let Err(reason) = crate::scheduler::requeue_task(&app, &task, "owner took the workstation") {
+                    eprintln!("apid: the owner's takeover did not requeue task {task}: {reason}");
+                }
+            });
+        }
+        Ok(())
     }
 }
 
@@ -362,11 +389,13 @@ pub fn take(app: &App, station: &str, session: SessionId, holder: u64) -> Result
         .take(&Hub(app), now(), station, session, holder, policy)
 }
 
-/// The control socket's give back of `session`.
+/// The control socket's give back of `session`. The machine's queue is granted again: the owner no longer holds it.
 pub fn give_back(app: &App, station: &str, session: SessionId, holder: u64) -> Result<(), String> {
     app.stations
         .taken
-        .give_back(&Hub(app), now(), station, session, holder)
+        .give_back(&Hub(app), now(), station, session, holder)?;
+    ops::schedule_grant(app, station);
+    Ok(())
 }
 
 /// Whether the control socket `holder` holds `session` now.
@@ -404,23 +433,36 @@ pub fn session_ended(app: &App, station: &str, session: SessionId) {
     });
 }
 
-/// Ends the input takes whose owner has gone quiet. The ticker calls it.
+/// Ends the input takes whose owner has gone quiet, and grants the queues of the machines they ended on. The ticker
+/// calls it.
 pub fn sweep(app: &App) {
-    app.stations.taken.sweep(&Hub(app), now());
+    for station in app.stations.taken.sweep(&Hub(app), now()) {
+        ops::schedule_grant(app, &station);
+    }
 }
 
 /// Whether the agent's pixel work on `session` of `station` is refused: the owner has the screen (`agent_waits`
 /// and `release_lease`). The agent's screenshots call it.
-#[allow(dead_code)]
 pub fn pixel_paused(app: &App, station: &str, session: SessionId) -> bool {
     app.stations.taken.pixel_paused(now(), station, session)
 }
 
 /// Whether the agent's pointer and keyboard on `session` of `station` are refused: the owner has the session under
 /// any policy, including `keep_working_pointer_paused`, where screenshots still go through. Input calls it.
-#[allow(dead_code)]
 pub fn pointer_paused(app: &App, station: &str, session: SessionId) -> bool {
     app.stations.taken.pointer_paused(now(), station, session)
+}
+
+/// Whether the owner holds a pixel session of `station` now: a take that stands on a session other than the owner's
+/// live view. `ops::grant_next` asks it before it grants a queued pixel lease on a machine with one session.
+pub fn pixel_held(app: &App, station: &str) -> bool {
+    let shared = app.stations.screen.shared_session(station);
+    holds_pixel(&app.stations.taken.standing_on(now(), station), shared)
+}
+
+/// The pure part of [`pixel_held`]: whether any of `sessions` is not the shared live view `shared`.
+fn holds_pixel(sessions: &[SessionId], shared: Option<SessionId>) -> bool {
+    sessions.iter().any(|session| Some(*session) != shared)
 }
 
 #[cfg(test)]
@@ -737,5 +779,35 @@ mod tests {
             .unwrap();
         assert!(!sessions.pixel_paused(T0, "w2", 9), "another station");
         assert!(!sessions.pixel_paused(T0, "w1", 10), "another session");
+    }
+
+    #[test]
+    fn the_owner_holds_a_pixel_session_while_a_take_stands_on_one_that_is_not_the_live_view() {
+        let fx = Fake::default();
+        let sessions = Sessions::default();
+        sessions
+            .take(&fx, T0, "w1", 9, 1, Takeover::AgentWaits)
+            .unwrap();
+        assert_eq!(sessions.standing_on(T0, "w1"), vec![9]);
+        assert!(holds_pixel(&sessions.standing_on(T0, "w1"), Some(4)), "session 9 is not the live view 4");
+        assert!(!holds_pixel(&sessions.standing_on(T0, "w1"), Some(9)), "the live view itself is not a pixel session");
+        assert!(!holds_pixel(&[], None), "nothing taken, nothing held");
+
+        sessions.give_back(&fx, T0 + 1, "w1", 9, 1).unwrap();
+        assert!(sessions.standing_on(T0 + 1, "w1").is_empty(), "given back: the queue may be granted");
+    }
+
+    #[test]
+    fn a_quiet_input_take_ends_on_the_sweep_and_the_sweep_names_its_station() {
+        let fx = Fake::default();
+        let sessions = Sessions::default();
+        sessions.owner_input(&fx, T0, "w1", 9, Takeover::KeepWorkingPointerPaused);
+        sessions.owner_input(&fx, T0 + 1_000, "w2", 3, Takeover::KeepWorkingPointerPaused);
+        sessions
+            .take(&fx, T0, "w2", 5, 1, Takeover::AgentWaits)
+            .unwrap();
+        let ended = sessions.sweep(&fx, T0 + QUIET);
+        assert_eq!(ended, vec!["w1".to_string()], "only the input take went quiet; a control take holds");
+        assert!(sessions.standing_on(T0 + QUIET, "w1").is_empty());
     }
 }

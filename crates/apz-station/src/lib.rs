@@ -58,7 +58,7 @@ pub use event::{Event, Level};
 pub use facts::{AccountMode, Display, Facts, Form, Gpu, Os};
 pub use input::{Button, InputAction, Selector, UiAction};
 pub use link::{HubFrame, Notice, StationFrame};
-pub use op::{AppsOp, Bridge, FilesOp, ImageFormat, Keep, Op, RunOp, SessionKind, SyncOp, TermOp};
+pub use op::{AppsOp, Bridge, FilesOp, ImageFormat, Keep, OWNER_VIEW, Op, RunOp, SessionKind, SyncOp, TermOp};
 pub use settings::{StationSettings, Takeover};
 
 /// The WebSocket subprotocol the link is opened with.

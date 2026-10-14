@@ -370,8 +370,7 @@ pub fn end(app: &App, station: &str, lease: &str) {
 }
 
 /// Appends an action to the lease's recording, when one is open. A lease with no recording (or none given) is a no-op.
-/// The action path calls it; until that lands, nothing does.
-#[allow(dead_code)]
+/// The action path calls it (`hooks::after_agent_op`), with every attempt, refused or not.
 pub fn on_action(app: &App, station: &str, lease: Option<&str>, summary: &Value, ok: bool) {
     let Some(lease) = lease else {
         return;
@@ -596,6 +595,7 @@ mod tests {
                 started_ms: 1000,
                 state: State::Active,
                 paused: false,
+                active_ms: Some(1000),
             },
             position: None,
         }

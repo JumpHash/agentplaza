@@ -130,6 +130,16 @@ impl Lanes {
                 .any(|item| item.origin.task.as_deref() == Some(task))
         })
     }
+
+    /// Drops the waiting items of plaza task `task` from `cid`'s lane. Returns whether its item is in flight: the
+    /// caller cancels that one (the in-flight item is not dropped here, it ends when the agent says so).
+    fn drop_task(&mut self, cid: u64, task: &str) -> bool {
+        let Some(lane) = self.lanes.get_mut(&cid) else {
+            return false;
+        };
+        lane.queue.retain(|item| item.origin.task.as_deref() != Some(task));
+        lane.current.as_ref().is_some_and(|item| item.origin.task.as_deref() == Some(task))
+    }
 }
 
 /// The work queues: one lane per agent, one item in flight per lane.
@@ -223,7 +233,10 @@ impl Queues {
                 && self.await_review(app, task, summary);
             if !waiting {
                 settle_task(app, task, status, summary);
-                self.tell_poster(app, task, cid, state, summary);
+                // A task the owner's takeover requeued is open again, so its end is not news for the poster yet.
+                if app.plaza.tasks.find(task).is_none_or(|record| record.state() != "open") {
+                    self.tell_poster(app, task, cid, state, summary);
+                }
             }
         }
         self.review_lost(app, item.id, "reviewer ended without a verdict");
@@ -263,6 +276,15 @@ impl Queues {
             crate::fleet::send(app, cid, &json!({ "message": message })),
             Ok((code, _)) if (200..300).contains(&code)
         )
+    }
+
+    /// Takes plaza task `task` off agent `cid`'s lane: its waiting items are dropped, and its item in flight is
+    /// cancelled (`cancel`), so the agent stops working on it.
+    fn drop_task(&self, app: &App, cid: u64, task: &str, reason: &str) {
+        let in_flight = self.locked().drop_task(cid, task);
+        if in_flight {
+            self.cancel(app, cid, reason);
+        }
     }
 
     /// Drops the agent's queued items, not the one in flight; returns how many.
@@ -541,6 +563,24 @@ fn settle_task(app: &App, task: &str, status: WorkStatus, summary: &str) {
     };
     // A task that already ended refuses the finish; that is not an error here.
     let _ = task.finish(outcome, Some(summary.to_string()));
+}
+
+/// Puts a task back in the queue when the owner takes the workstation its worker was using (the lease is released
+/// with reason `owner_takeover`, takeover.rs): the task is `open` again with `reason` as its note, the worker's work
+/// on it is cancelled, and `assign_tasks` gives it to an idle worker of its role. A task that is not claimed (it
+/// ended, or it waits for a review) is left alone, and the error says so.
+pub fn requeue_task(app: &App, task: &str, reason: &str) -> Result<(), String> {
+    let record = app.plaza.tasks.find(task).ok_or_else(|| format!("no task {task}"))?;
+    let view = record.view();
+    if view.state != "claimed" {
+        return Err(format!("task {task} is {}, not claimed", view.state));
+    }
+    let worker = view.agent_cid;
+    record.requeue(reason).map_err(|e| e.to_string())?;
+    if let Some(cid) = worker {
+        app.work.drop_task(app, cid, task, reason);
+    }
+    Ok(())
 }
 
 /// The kind of owner approval that rules on a done task no reviewer took in time.
@@ -984,6 +1024,21 @@ mod tests {
         let ids: Vec<u64> = lanes.drain(7).into_iter().map(|i| i.id).collect();
         assert_eq!(ids, vec![1, 2]);
         assert!(!lanes.holds_task("t1"));
+    }
+
+    #[test]
+    fn a_requeued_task_drops_its_waiting_items_and_says_whether_its_item_is_in_flight() {
+        let mut lanes = Lanes::default();
+        lanes.push(item(1, 7, Some("t1")));
+        lanes.push(item(2, 7, Some("t2")));
+        lanes.push(item(3, 7, Some("t1")));
+        lanes.start_next(7, 0); // item 1 (t1) is in flight
+        assert!(lanes.drop_task(7, "t1"), "t1's item is in flight: the caller cancels it");
+        assert_eq!(lanes.queued(7).iter().map(|i| i.id).collect::<Vec<_>>(), vec![2], "t1's waiting item 3 is gone, t2's stays");
+        assert_eq!(lanes.current(7).map(|i| i.id), Some(1), "the in-flight item is left for its end");
+        assert!(!lanes.drop_task(7, "t2"), "t2 has nothing in flight; its waiting item goes");
+        assert!(lanes.queued(7).is_empty());
+        assert!(!lanes.drop_task(9, "t1"), "an agent with no lane has nothing to drop");
     }
 
     #[test]

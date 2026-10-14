@@ -820,6 +820,88 @@ fn a_stream_sends_jpeg_frames_until_it_is_stopped() {
 }
 
 #[test]
+fn a_stream_is_scaled_by_the_hubs_factor_before_it_is_encoded() {
+    let rig = Rig::start("stream-scale");
+    let mut link = rig.connect();
+    assert_hello(link.next());
+    let session = ok(&link.request(
+        1,
+        Op::SessionOpen {
+            agent: 3,
+            kind: SessionKind::Pixel,
+        },
+    ))["session"]
+        .as_u64()
+        .expect("a session");
+
+    // Half scale: the 1280x800 screen comes as 640x400.
+    let refused_factor = link.request(
+        2,
+        Op::Stream {
+            session,
+            fps: 10,
+            on: true,
+            scale: Some(1.5),
+        },
+    );
+    refused(&refused_factor);
+    ok(&link.request(
+        3,
+        Op::Stream {
+            session,
+            fps: 10,
+            on: true,
+            scale: Some(0.5),
+        },
+    ));
+    match link.event(|e| matches!(e, Event::Frame { .. })) {
+        Event::Frame { session: s, w, h, format, data_b64, .. } => {
+            assert_eq!(s, session);
+            assert_eq!((w, h), (640, 400), "scaled before it was encoded");
+            assert_eq!(format, ImageFormat::Jpeg);
+            let bytes = STANDARD.decode(data_b64).expect("base64");
+            assert_eq!(&bytes[..3], &[0xFF, 0xD8, 0xFF], "a JPEG");
+        }
+        other => panic!("not a frame: {other:?}"),
+    }
+    ok(&link.request(
+        4,
+        Op::Stream {
+            session,
+            fps: 10,
+            on: false,
+            scale: None,
+        },
+    ));
+    assert!(rig.finish().is_ok());
+}
+
+#[test]
+fn a_shared_session_the_hub_opens_for_the_owners_live_view_names_no_agent_and_is_accepted() {
+    let rig = Rig::start("owner-view");
+    let mut link = rig.connect();
+    assert_hello(link.next());
+    let view = ok(&link.request(
+        1,
+        Op::SessionOpen {
+            agent: apz_station::OWNER_VIEW,
+            kind: SessionKind::Shared,
+        },
+    ))["session"]
+        .as_u64()
+        .expect("the owner's live view opens");
+    ok(&link.request(
+        2,
+        Op::Input {
+            session: view,
+            action: InputAction::Move { x: 5, y: 5 },
+        },
+    ));
+    assert_eq!(rig.inputs.lock().expect("the recorder").len(), 1, "the view is a live session");
+    assert!(rig.finish().is_ok());
+}
+
+#[test]
 fn freeze_stops_input_ends_pixel_sessions_and_lifts_cleanly() {
     let rig = Rig::start("freeze");
     let mut link = rig.connect();

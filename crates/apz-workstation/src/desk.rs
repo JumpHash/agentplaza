@@ -83,6 +83,8 @@ struct Session {
 struct Stream {
     interval: Duration,
     next: Instant,
+    /// The factor a frame is scaled by, on top of the longest-side cap (1.0 when the hub asked for full size).
+    scale: f32,
 }
 
 impl Session {
@@ -163,11 +165,19 @@ impl Lane {
                 Ok(None)
             }
             Op::Apps(apps) => self.apps(apps),
-            Op::Stream { session, fps, on, scale: _ } => self.stream(session, fps, on),
+            Op::Stream {
+                session,
+                fps,
+                on,
+                scale,
+            } => self.stream(session, fps, on, scale),
             other => Err(format!("{:?} is not a screen operation", op_kind(&other))),
         }
     }
 
+    /// Opens a session. A shared session is the owner's own screen, the owner's live view when the hub opens it
+    /// with [`apz_station::OWNER_VIEW`] (no agent): it is accepted with that agent and passed on as given. A pixel
+    /// session is for `agent`.
     fn open(&mut self, agent: u64, kind: SessionKind) -> Result<Option<Value>, String> {
         self.refuse_frozen()?;
         let (width, height) = self.primary_size();
@@ -261,8 +271,18 @@ impl Lane {
         }
     }
 
-    fn stream(&mut self, session: SessionId, fps: u8, on: bool) -> Result<Option<Value>, String> {
+    fn stream(
+        &mut self,
+        session: SessionId,
+        fps: u8,
+        on: bool,
+        scale: Option<f32>,
+    ) -> Result<Option<Value>, String> {
         self.live(session)?;
+        let factor = scale.unwrap_or(1.0);
+        if !(factor.is_finite() && factor > 0.0 && factor <= 1.0) {
+            return Err(format!("a stream's scale is in (0, 1], not {factor}"));
+        }
         let entry = self
             .sessions
             .get_mut(&session)
@@ -274,6 +294,7 @@ impl Lane {
             entry.stream = Some(Stream {
                 interval: Duration::from_secs_f64(1.0 / f64::from(fps)),
                 next: Instant::now(),
+                scale: factor,
             });
         } else {
             entry.stream = None;
@@ -332,7 +353,13 @@ impl Lane {
 
     fn stream_frame(&mut self, id: SessionId) -> Result<(), String> {
         let frame = self.desktop.capture(id).map_err(text)?;
-        let factor = fit_factor(&frame, STREAM_SIDE);
+        // The hub's scale (a live view's, 1.0 at full size) applies on top of the longest-side cap.
+        let requested = self
+            .sessions
+            .get(&id)
+            .and_then(|s| s.stream.as_ref())
+            .map_or(1.0, |stream| stream.scale);
+        let factor = fit_factor(&frame, STREAM_SIDE).min(requested);
         let small = if factor < 1.0 {
             scale(&frame, factor).map_err(text)?
         } else {

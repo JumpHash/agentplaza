@@ -14,6 +14,7 @@ use apz_http::ws::Socket;
 use apz_station::{Event, Facts, Notice, Op, SessionKind, StationSettings};
 use serde_json::{Value, json};
 
+use super::hooks;
 use super::leases::{self, Kind, Lease, LeaseView, State};
 use super::link::{self, Hooks, StationLink};
 use super::recordings;
@@ -123,6 +124,7 @@ pub fn revoke(app: &App, id: &str, actor: &str) -> Result<Station, Failure> {
     }
     for lease in app.stations.leases.drop_station(id) {
         recordings::end(app, id, &lease.id);
+        hooks::lease_ended(app, id, &lease, now());
         let _ = audit(app, Some(id), Some(lease.agent), "lease_ended", actor, json!({"lease": lease.id, "reason": "revoked"}));
         app.bus.publish("lease_ended", &lease);
     }
@@ -227,8 +229,11 @@ pub fn release_lease(app: &App, station_id: &str, lease_id: &str, agent: Option<
 /// Releases the lease of a session the owner took under the `release_lease` policy (takeover.rs). The bus says why
 /// (`lease_released` with reason `owner_takeover`), so the scheduler can put the task back in the queue.
 pub fn release_for_takeover(app: &App, station_id: &str, lease_id: &str) -> Result<Lease, Failure> {
-    release_with(app, station_id, lease_id, None, "owner", "owner_takeover")
+    release_with(app, station_id, lease_id, None, "owner", OWNER_TAKEOVER)
 }
+
+/// The reason a takeover gives for a lease's release (`lease_released`).
+pub const OWNER_TAKEOVER: &str = "owner_takeover";
 
 fn release_with(app: &App, station_id: &str, lease_id: &str, agent: Option<u64>, actor: &str, reason: &str) -> Result<Lease, Failure> {
     let lease = app.stations.leases.get(lease_id).filter(|l| l.station == station_id).ok_or((404, "no such lease".to_string()))?;
@@ -237,6 +242,7 @@ fn release_with(app: &App, station_id: &str, lease_id: &str, agent: Option<u64>,
     }
     app.stations.leases.remove(lease_id).ok_or((404, "no such lease".to_string()))?;
     recordings::end(app, station_id, lease_id);
+    hooks::lease_ended(app, station_id, &lease, now());
     let close_error = match (lease.kind, lease.session, app.stations.live(station_id)) {
         (Kind::Pixel, Some(session), Some(link)) => link.request(Op::SessionClose { session }, RPC_TIMEOUT).err(),
         _ => None,
@@ -248,19 +254,27 @@ fn release_with(app: &App, station_id: &str, lease_id: &str, agent: Option<u64>,
         map.insert("reason".into(), json!(reason));
     }
     app.bus.publish("lease_released", &data);
-    grant_next(app, station_id);
+    // The owner holds the screen after a takeover, so the queue waits for the give back (takeover.rs grants it then).
+    if reason != OWNER_TAKEOVER {
+        grant_next(app, station_id);
+    }
     Ok(lease)
 }
 
 /// Grants queued pixel leases of `station` while the machine has room: each opens its session on the daemon.
-/// Stops at STOP ALL, at a station with no link (the leases wait), and at a failed open (its lease is dropped).
+/// Stops at STOP ALL, at a station with no link (the leases wait), at a failed open (its lease is dropped), and on a
+/// machine with one session while the owner holds a pixel session there (takeover.rs `pixel_held`).
 pub fn grant_next(app: &App, station_id: &str) {
     loop {
         if app.control.paused() {
             return;
         }
         let Some(station) = app.stations.station(station_id) else { return };
-        let Some(lease) = app.stations.leases.grant_next(station_id, leases::pixel_capacity(&station.facts)) else { return };
+        let capacity = leases::pixel_capacity(&station.facts);
+        if capacity == Some(1) && takeover::pixel_held(app, station_id) {
+            return;
+        }
+        let Some(lease) = app.stations.leases.grant_next(station_id, capacity) else { return };
         let Some(link) = app.stations.live(station_id) else {
             app.stations.leases.requeue(&lease.id);
             return;
@@ -270,7 +284,7 @@ pub fn grant_next(app: &App, station_id: &str) {
             .and_then(|answer| answer["session"].as_u64().ok_or_else(|| "the station's answer names no session".to_string()));
         match opened {
             Ok(session) => {
-                if app.stations.leases.granted(&lease.id, session) {
+                if app.stations.leases.granted(&lease.id, session, now()) {
                     let _ = audit(app, Some(station_id), Some(lease.agent), "lease_granted", "station", json!({"lease": lease.id, "session": session}));
                     if let Some(view) = lease_view(app, &lease.id) {
                         recordings::begin(app, station_id, &view);
@@ -290,8 +304,8 @@ pub fn grant_next(app: &App, station_id: &str) {
     }
 }
 
-/// `grant_next` on its own thread, for a caller that holds a link's thread.
-fn schedule_grant(app: &App, station_id: &str) {
+/// `grant_next` on its own thread, for a caller that holds a link's thread or a takeover's lock.
+pub fn schedule_grant(app: &App, station_id: &str) {
     let weak = app.handle();
     let station_id = station_id.to_string();
     std::thread::spawn(move || {
@@ -422,6 +436,7 @@ impl Hooks for Live<'_> {
                 if let Some(lease) = app.stations.leases.by_session(id, session) {
                     app.stations.leases.remove(&lease.id);
                     recordings::end(app, id, &lease.id);
+                    hooks::lease_ended(app, id, &lease, now());
                     let _ = audit(app, Some(id), Some(lease.agent), "lease_ended", "station", json!({"lease": lease.id, "session": session, "reason": reason}));
                     app.bus.publish("lease_ended", &lease);
                     schedule_grant(app, id);

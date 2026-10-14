@@ -47,6 +47,10 @@ pub struct Lease {
     /// The owner has taken the session and the agent waits for it to be given back (`agent_waits`, takeover.rs).
     #[serde(default)]
     pub paused: bool,
+    /// When the lease became active: at once for a shared lease, when its session was granted for a pixel lease.
+    /// The lease's time charged to its task runs from here (hooks.rs). None while it waits.
+    #[serde(default)]
+    pub active_ms: Option<u64>,
 }
 
 /// A lease as the console and the agents see it: its position in the queue while it waits (1 is next).
@@ -97,6 +101,7 @@ impl Leases {
             started_ms: now,
             state,
             paused: false,
+            active_ms: (state == State::Active).then_some(now),
         };
         list.push(lease.clone());
         Ok(lease)
@@ -115,14 +120,15 @@ impl Leases {
         Some(next.clone())
     }
 
-    /// Makes an opening lease active on `session`. False when the lease was released while it opened: the caller
-    /// then gives the session back.
-    pub fn granted(&self, id: &str, session: u64) -> bool {
+    /// Makes an opening lease active on `session`, from `now`. False when the lease was released while it opened: the
+    /// caller then gives the session back.
+    pub fn granted(&self, id: &str, session: u64, now: u64) -> bool {
         let mut list = self.guard();
         match list.iter_mut().find(|l| l.id == id) {
             Some(lease) if lease.state == State::Opening => {
                 lease.state = State::Active;
                 lease.session = Some(session);
+                lease.active_ms = Some(now);
                 true
             }
             _ => false,
@@ -246,8 +252,10 @@ mod tests {
         assert_eq!(granted.id, first.id, "FIFO");
         assert_eq!(granted.state, State::Opening);
         assert!(leases.grant_next("w1", Some(1)).is_none(), "one session is open and the second waits");
-        assert!(leases.granted(&first.id, 9));
+        assert!(leases.granted(&first.id, 9, 20));
         assert_eq!(leases.by_session("w1", 9).map(|l| l.id), Some(first.id.clone()));
+        assert_eq!(leases.get(&first.id).and_then(|l| l.active_ms), Some(20), "active from its grant, not its queueing");
+        assert_eq!(leases.get(&second.id).and_then(|l| l.active_ms), None, "a waiting lease is not active");
 
         let positions: Vec<Option<usize>> = leases.views("w1").iter().map(|v| v.position).collect();
         assert_eq!(positions, vec![None, Some(1), Some(2)]);
@@ -265,7 +273,7 @@ mod tests {
         }
         let mut granted = 0;
         while let Some(lease) = leases.grant_next("w2", None) {
-            assert!(leases.granted(&lease.id, 100 + granted));
+            assert!(leases.granted(&lease.id, 100 + granted, 20));
             granted += 1;
         }
         assert_eq!(granted, 4);
@@ -286,7 +294,7 @@ mod tests {
         let lease = leases.open("w1", 1, None, Kind::Pixel, 1).unwrap();
         leases.grant_next("w1", None).unwrap();
         leases.remove(&lease.id);
-        assert!(!leases.granted(&lease.id, 5), "the grant learns the lease is gone");
+        assert!(!leases.granted(&lease.id, 5, 20), "the grant learns the lease is gone");
 
         let again = leases.open("w1", 2, None, Kind::Pixel, 2).unwrap();
         leases.grant_next("w1", Some(1)).unwrap();
