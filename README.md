@@ -299,7 +299,7 @@ The owner's rules are enforced in code, and the [guide's security chapter](https
 
 ## License
 
-AgentPlaza is licensed under Apache-2.0 (the workspace's `license` field). The VMM (`crates/vmm`) contains code derived
+AgentPlaza is licensed under Apache-2.0 (the workspace's `license` field), with the full text in [`LICENSE`](LICENSE). The VMM (`crates/vmm`) contains code derived
 from [Firecracker](https://github.com/firecracker-microvm/firecracker), copyright Amazon.com, Inc. or its affiliates,
 under the Apache License 2.0. The file-level ledger of what was derived is in
 [`crates/vmm/NOTICE`](crates/vmm/NOTICE), with the Firecracker license in [`crates/vmm/LICENSE`](crates/vmm/LICENSE).
