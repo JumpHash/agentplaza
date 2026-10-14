@@ -1,7 +1,8 @@
 //! One model (`LabModelDetail(id)`): its card (identity, source job, state, size, parameters), the
 //! metrics per split, the calibration, the shadow totals and agreement, the input and output
 //! schemas, the features, and the data provenance per split. Its actions are the registry's
-//! (shadow, promote, retire), shared with `LabModels`. A promoted model links to its model agent.
+//! (shadow, promote, retire), shared with `LabModels`, and an imported model's rederive. A promoted
+//! model links to its model agent.
 //! The web's `lab-model-detail.ts` is the twin.
 
 use iced::widget::{column, container, row, text, text_input, Space};
@@ -31,6 +32,10 @@ pub struct State {
     /// True once apid says the id names no model.
     pub missing: bool,
     pub controls: Controls,
+    /// The rederive confirm (an imported model only): open, its last refusal, and whether a call is in flight.
+    pub rederive_open: bool,
+    pub rederive_problem: Option<String>,
+    pub rederiving: bool,
     /// The Try it box: its text, the last answer (or refusal), and whether a run is in flight.
     pub try_text: String,
     pub try_answer: Option<Result<Value, String>>,
@@ -46,6 +51,11 @@ pub enum Msg {
     Loaded(Result<ModelView, String>),
     /// A started request's answer.
     Done(Result<ModelView, String>),
+    /// The rederive confirm: open, dismissed, confirmed, and the answer.
+    AskRederive,
+    DismissRederive,
+    ConfirmRederive,
+    Rederived(Result<ModelView, String>),
     TryText(String),
     TryRun,
     Tried(Result<Value, String>),
@@ -87,6 +97,38 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             Some(request) => lab_models::run(&ctx.client, request, Msg::Done),
             None => Task::none(),
         },
+        Msg::AskRederive => {
+            state.rederive_open = true;
+            state.rederive_problem = None;
+            Task::none()
+        }
+        Msg::DismissRederive => {
+            state.rederive_open = false;
+            state.rederive_problem = None;
+            Task::none()
+        }
+        Msg::ConfirmRederive => {
+            if state.rederiving {
+                return Task::none();
+            }
+            state.rederiving = true;
+            state.rederive_problem = None;
+            let c = ctx.client.clone();
+            let id = state.model.clone();
+            client::task(move || lab_api::rederive_model(&c, &id), Msg::Rederived)
+        }
+        Msg::Rederived(Ok(model)) => {
+            state.rederiving = false;
+            state.rederive_open = false;
+            state.data = Some(model);
+            state.error = None;
+            load(state, ctx)
+        }
+        Msg::Rederived(Err(err)) => {
+            state.rederiving = false;
+            state.rederive_problem = Some(err);
+            Task::none()
+        }
         Msg::TryText(text) => {
             state.try_text = text;
             Task::none()
@@ -149,12 +191,17 @@ fn detail<'a>(m: &'a ModelView, state: &'a State) -> Element<'a, Msg> {
     let back = ui::link("Back to Models", Msg::Go(Id::LabModels), true);
     // The state and the actions sit on their own line: a long model name would push them off the head.
     let head = ui::view_head(&m.card.name, vec![]);
-    let controls = row![ui::badge(&m.state, lab_models::tone(&m.state)), lab_models::actions(m, state.controls.busy, Msg::Act)]
-        .spacing(14)
-        .align_y(iced::Alignment::Center);
+    // An imported model can be rederived (apid reads its download again); no other state has that action.
+    let rederive = (m.state == "imported")
+        .then(|| ui::btn("Rederive", Some("refresh"), Kind::Secondary, (!state.rederiving).then_some(Msg::AskRederive)));
+    let mut items: Vec<Element<'a, Msg>> = vec![ui::badge(&m.state, lab_models::tone(&m.state)), lab_models::actions(m, state.controls.busy, Msg::Act)];
+    items.extend(rederive);
+    let controls = row(items).spacing(14).align_y(iced::Alignment::Center);
     let mut parts: Vec<Element<'a, Msg>> = vec![back, head, lab_models::value(m.id.clone()), controls.into()];
     if let Some(dialog) = lab_models::dialog(&state.controls, Msg::Act) {
         parts.push(dialog);
+    } else if state.rederive_open {
+        parts.push(rederive_dialog(state));
     } else if let Some(problem) = state.controls.problem.as_deref() {
         parts.push(ui::error_line(problem));
     }
@@ -184,6 +231,28 @@ fn detail<'a>(m: &'a ModelView, state: &'a State) -> Element<'a, Msg> {
         });
     }
     column(parts).spacing(22).into()
+}
+
+/// The rederive confirm: what it does, the last refusal, then Cancel and the confirm.
+fn rederive_dialog<'a>(state: &'a State) -> Element<'a, Msg> {
+    let mut lines: Vec<Element<'a, Msg>> = vec![
+        ui::faint(format!("Rederive {}?", state.model)).into(),
+        ui::faint("The download is registered again: a model that now checks as servable is registered as one, otherwise it stays imported. If that fails, the record stays as it was.").into(),
+    ];
+    if let Some(problem) = state.rederive_problem.as_deref() {
+        lines.push(ui::error_line(problem));
+    }
+    lines.push(
+        row![
+            Space::new().width(Length::Fill),
+            ui::btn("Cancel", None, Kind::Ghost, Some(Msg::DismissRederive)),
+            ui::btn("Rederive", Some("refresh"), Kind::Primary, (!state.rederiving).then_some(Msg::ConfirmRederive)),
+        ]
+        .spacing(8)
+        .align_y(iced::Alignment::Center)
+        .into(),
+    );
+    ui::card("Rederive model", column(lines).spacing(12).into())
 }
 
 /// A "Try it" card for a text model: in shadow or promoted, its text goes to invoke and the answer

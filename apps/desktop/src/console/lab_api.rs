@@ -320,12 +320,20 @@ pub fn submit_job(client: &Client, doc: &JobDocument) -> Result<JobView, SubmitE
     let body = serde_json::to_value(doc).map_err(|e| SubmitError::Refused(e.to_string()))?;
     let (status, value) = apz_http::client::request_json(&client.target, "POST", "/v1/foundry/jobs", Some(&body), client.timeout)
         .map_err(|e| SubmitError::Refused(e.to_string()))?;
+    submit_answer(status, value)
+}
+
+/// The submit answer. A 2xx is the recorded job. A 422 that carries a `job` is a recorded job whose dispatch
+/// failed. Every other refusal, the planner's 422 included (it records no job), keeps the hub's message.
+fn submit_answer(status: u16, value: Value) -> Result<JobView, SubmitError> {
     match status {
         200..=299 => serde_json::from_value(value).map_err(|e| SubmitError::Refused(e.to_string())),
         422 => {
             let message = failure(status, &value);
-            let job: JobView = serde_json::from_value(value.get("job").cloned().unwrap_or(Value::Null)).map_err(|e| SubmitError::Refused(e.to_string()))?;
-            Err(SubmitError::Dispatch { message, job: Box::new(job) })
+            match value.get("job").filter(|job| !job.is_null()).map(|job| serde_json::from_value::<JobView>(job.clone())) {
+                Some(Ok(job)) => Err(SubmitError::Dispatch { message, job: Box::new(job) }),
+                _ => Err(SubmitError::Refused(message)),
+            }
         }
         _ => Err(SubmitError::Refused(failure(status, &value))),
     }
@@ -431,6 +439,18 @@ pub fn retire_model(client: &Client, id: &str) -> Result<ModelView, String> {
     client.post(&format!("/v1/foundry/models/{}/retire", enc(id)), &json!({}))
 }
 
+/// The rederive's answer: the model, re-registered from its download, and its state.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct Rederived {
+    model: ModelView,
+}
+
+/// Re-registers an imported model from its download (`POST .../rederive`); only an imported model has one.
+pub fn rederive_model(client: &Client, id: &str) -> Result<ModelView, String> {
+    client.post::<Rederived>(&format!("/v1/foundry/models/{}/rederive", enc(id)), &json!({})).map(|answer| answer.model)
+}
+
 // ---- Shared ----------------------------------------------------------------
 
 /// The answer of a call that must succeed: its JSON, or the hub's `error` text.
@@ -456,4 +476,33 @@ fn enc(text: &str) -> String {
             _ => format!("%{b:02X}"),
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_planner_refusal_keeps_its_message() {
+        // The planner's 422 has only `{error}`: no job was recorded, so the message is the answer.
+        let refused = submit_answer(422, json!({ "error": "no machine fits 8 devices" }));
+        assert!(matches!(refused, Err(SubmitError::Refused(ref m)) if m == "no machine fits 8 devices"), "{refused:?}");
+    }
+
+    #[test]
+    fn a_dispatch_failure_carries_the_recorded_job() {
+        let job = json!({ "id": "job-7", "status": "failed", "error": "ssh refused" });
+        match submit_answer(422, json!({ "error": "dispatch failed", "job": job })) {
+            Err(SubmitError::Dispatch { message, job }) => {
+                assert_eq!(message, "dispatch failed");
+                assert_eq!(job.id, "job-7");
+            }
+            other => panic!("expected a dispatch failure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_refusal_without_a_status_text_names_the_status() {
+        assert!(matches!(submit_answer(403, json!({})), Err(SubmitError::Refused(ref m)) if m == "HTTP 403"));
+    }
 }

@@ -1,12 +1,13 @@
 // One model (`#/lab/models/<id>`): its card (identity, source job, state, size, parameters), the
 // metrics per split, the calibration, the shadow totals and agreement, the input and output schemas,
 // the features, and the data provenance per split. Its actions are the registry's (shadow, promote,
-// retire), shared with the list. A promoted model links to its model agent's page.
+// retire), shared with the list, and an imported model's rederive. A promoted model links to its model
+// agent's page.
 
 import '../styles/lab-models.css';
 import { ApiError, getModel, type ModelView } from '../api';
 import { href } from '../router';
-import { ago, button, textarea } from '../ui/components';
+import { ago, button, modal, textarea, toast } from '../ui/components';
 import { h, icon, replace } from '../ui/dom';
 import type { Cleanup } from './index';
 import { errorText, fmtNumber, fmtPercent, fmtSize, fmtTime, labRequest, pollEvery } from './lab-common';
@@ -155,6 +156,45 @@ function renderOutput(output: unknown, ms: number): HTMLElement {
   return h('pre.lab-mono', null, JSON.stringify(output));
 }
 
+/** The Rederive button of an imported model: it opens a confirm, then re-registers the model from its download. */
+function rederiveButton(model: ModelView, changed: (next: ModelView) => void, failed: (message: string) => void): HTMLElement {
+  return button('Rederive', () => confirmRederive(model, changed, failed), { size: 'sm', icon: 'refresh' });
+}
+
+/** Opens the rederive confirm: apid reads the model's Hugging Face download again and registers it afresh. */
+function confirmRederive(model: ModelView, changed: (next: ModelView) => void, failed: (message: string) => void): void {
+  const problem = h('div.lab-error', { role: 'alert' });
+  let close: () => void = () => undefined;
+  const confirm = button('Rederive', () => {
+    confirm.disabled = true;
+    problem.textContent = '';
+    labRequest<{ model: ModelView }>('POST', `/v1/foundry/models/${encodeURIComponent(model.id)}/rederive`)
+      .then((answer) => {
+        close();
+        toast(`${model.id} is rederived`);
+        changed(answer.model);
+      })
+      .catch((err: unknown) => {
+        confirm.disabled = false;
+        problem.textContent = errorText(err);
+        failed(errorText(err));
+      });
+  }, { kind: 'primary' });
+  const body = h(
+    'div.lab-stack',
+    null,
+    h('p', null, `Rederive ${model.card.name} (${model.id}) from its Hugging Face download?`),
+    h(
+      'p.lab-muted',
+      null,
+      'The download is registered again: a model that now checks as servable is registered as one, otherwise it stays imported. If that fails, the record stays as it was.',
+    ),
+    problem,
+    h('div.lab-row', null, button('Cancel', () => close(), { kind: 'ghost' }), confirm),
+  );
+  close = modal('Rederive model', body);
+}
+
 export function render(root: HTMLElement, params: string[]): Cleanup {
   const id = params[0] ?? '';
   let model: ModelView | null = null;
@@ -229,12 +269,9 @@ export function render(root: HTMLElement, params: string[]): Cleanup {
       draw();
       void load();
     };
-    const head = h(
-      'div.lab-page-head',
-      null,
-      h('h2', null, m.card.name),
-      h('div.lab-actions', null, stateBadge(m.state), modelActions(m, changed, failed)),
-    );
+    const actions = modelActions(m, changed, failed);
+    if ((m.state as string) === 'imported') actions.append(rederiveButton(m, changed, failed));
+    const head = h('div.lab-page-head', null, h('h2', null, m.card.name), h('div.lab-actions', null, stateBadge(m.state), actions));
     const metrics = leaves(m.card.metrics).map((l) => {
       const split = l.path.length > 1 ? (l.path[0] ?? '—') : '—';
       const metric = (l.path.length > 1 ? l.path.slice(1) : l.path).join(' ') || '—';

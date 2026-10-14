@@ -19,11 +19,6 @@ const SORTS: { value: string; label: string }[] = [
   { value: 'lastModified', label: 'Updated' },
   { value: 'trending', label: 'Trending' },
 ];
-/** The default file sets, as the contract names them (the hub checks the real files at import). */
-const BASE_FILES = ['config.json', 'tokenizer.json', 'tokenizer_config.json', 'vocab.json', 'vocab.txt', 'merges.txt', 'special_tokens_map.json', 'sentencepiece.bpe.model', 'generation_config.json', 'pytorch_model.bin'];
-const BASE_SUFFIXES = ['.safetensors', '.safetensors.index.json'];
-const SERVABLE_FILES = ['config.json', 'model_card.json', 'onnx/model.onnx', 'model.onnx', 'tokenizer.json'];
-
 export interface HfStatus { hf_token_set: boolean; hf_max_gb: number; free_bytes: number | null; downloads_dir: string }
 export interface HfItem {
   id: string; author: string; task: string | null; library: string | null; tags: string[]; downloads: number; likes: number;
@@ -36,6 +31,8 @@ interface HfDetail {
   license: string | null; gated: boolean | string; private: boolean; downloads: number; likes: number; last_modified: string | null;
   summary: string; files: HfFile[];
   importable: { servable: boolean; servable_reason: string | null; base: boolean; base_reason: string | null };
+  /** The default file sets the hub imports for each kind, by path. */
+  import_files: { base: string[]; servable: string[] };
 }
 interface ImportFile { path: string; size: number; sha256: string | null; bytes: number; state: string }
 export interface ImportRecord {
@@ -57,10 +54,9 @@ const modelPath = (id: string): string => id.split('/').map(encodeURIComponent).
 /** Whether a gated field is set: the hub says `false`, or a gate kind such as `auto` or `manual`. */
 export const isGated = (gated: boolean | string): boolean => gated !== false && gated !== '' && gated !== null && gated !== undefined;
 
-/** The files an import of this kind takes by default (the contract's default sets). */
-export function defaultFiles(files: HfFile[], as: 'base' | 'servable'): HfFile[] {
-  if (as === 'servable') return files.filter((f) => SERVABLE_FILES.includes(f.path));
-  return files.filter((f) => BASE_FILES.includes(f.path) || BASE_SUFFIXES.some((s) => f.path.endsWith(s)));
+/** The files an import takes by default: the hub's default set for that kind (`import_files`), out of the repo's files. */
+export function defaultFiles(files: HfFile[], paths: string[]): HfFile[] {
+  return files.filter((f) => paths.includes(f.path));
 }
 
 const sum = (files: HfFile[]): number => files.reduce((n, f) => n + f.size, 0);
@@ -304,8 +300,8 @@ export function hfPanel(changed: () => void): { el: HTMLElement; stop: () => voi
     }, { kind: 'ghost', icon: 'x', title: 'Close' });
     const capGb = status?.hf_max_gb ?? 0;
     const cap = capGb * GIB;
-    const baseSize = sum(defaultFiles(d.files, 'base'));
-    const servableSize = sum(defaultFiles(d.files, 'servable'));
+    const baseSize = sum(defaultFiles(d.files, d.import_files.base));
+    const servableSize = sum(defaultFiles(d.files, d.import_files.servable));
     const gated = isGated(d.gated);
     const sizes = [
       ['Base set', fmtSize(baseSize), baseSize > cap],

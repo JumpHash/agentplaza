@@ -449,7 +449,8 @@ export function jobForm(onSubmitted: (id: string) => void): JobForm {
     } catch (err) {
       if (!alive) return;
       submitError =
-        err instanceof JobDispatchError ? { message: err.message, jobId: err.job.id } : { message: errorText(err), jobId: null };
+        // A planner refusal is a 422 with only `{error}`: no job was recorded, so there is no id to show.
+        err instanceof JobDispatchError ? { message: err.message, jobId: err.job?.id ?? null } : { message: errorText(err), jobId: null };
     }
     submitting = false;
     confirming = false;

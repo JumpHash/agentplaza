@@ -762,7 +762,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 Ok(body) => body,
                 Err(resp) => return resp,
             };
-            match app.models.import(Path::new(&body.path)) {
+            match absolute(&body.path).and_then(|dir| app.models.import(dir)) {
                 Ok(record) => Response::json(200, &view(&record)),
                 Err(e) => Response::error(400, &e),
             }
@@ -786,6 +786,16 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .post("/v1/foundry/models/{id}/retire", |app, _req, p| {
             outcome(app.models.retire(&app.agents, &app.looks, &p.get("id").to_string()))
         })
+}
+
+/// An import's directory: an absolute path only (the upload route's rule, in its words).
+fn absolute(path: &str) -> Result<&Path, String> {
+    let dir = Path::new(path);
+    if dir.is_absolute() {
+        Ok(dir)
+    } else {
+        Err("path is absolute".into())
+    }
 }
 
 fn outcome(result: Result<ModelRecord, String>) -> Response {
@@ -890,6 +900,13 @@ mod tests {
         assert_eq!(record.provenance["train"]["rows"], 10);
         assert_eq!(reopened.list().len(), 1);
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_import_takes_an_absolute_directory_only() {
+        assert_eq!(absolute("relative/job-1").unwrap_err(), "path is absolute");
+        assert_eq!(absolute("").unwrap_err(), "path is absolute");
+        assert_eq!(absolute("/srv/jobs/job-1").unwrap(), Path::new("/srv/jobs/job-1"));
     }
 
     #[test]

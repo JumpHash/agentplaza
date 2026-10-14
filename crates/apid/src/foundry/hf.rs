@@ -358,6 +358,13 @@ pub fn default_files(kind: &str, files: &[TreeFile]) -> Result<Vec<String>, Stri
     Ok(picked)
 }
 
+/// The default file sets of both kinds, as the detail offers them: what an import of each kind takes
+/// (`default_files`), or an empty list where that import would be refused.
+pub fn import_files(files: &[TreeFile]) -> Value {
+    let set = |kind: &str| default_files(kind, files).unwrap_or_default();
+    json!({ "base": set("base"), "servable": set("servable") })
+}
+
 fn is_base_file(path: &str) -> bool {
     !path.contains('/')
         && (path == "config.json"
@@ -600,6 +607,7 @@ pub fn detail(id: &str, revision: &str, token: Option<&str>, block: &[String]) -
         map.insert("summary".into(), json!(summary));
         map.insert("files".into(), Value::Array(files.iter().map(file_json).collect()));
         map.insert("importable".into(), importable(&files, task.as_deref()));
+        map.insert("import_files".into(), import_files(&files));
     }
     Ok(card)
 }
@@ -751,6 +759,15 @@ mod tests {
         assert!(!base.iter().any(|p| p.starts_with("onnx/")), "{base:?}");
         assert!(default_files("tensors", &files).is_err());
         assert!(default_files("servable", &[]).is_err());
+    }
+
+    #[test]
+    fn import_files_are_the_two_default_sets_and_empty_where_an_import_is_refused() {
+        let files = files();
+        let sets = import_files(&files);
+        assert_eq!(sets["servable"], json!(default_files("servable", &files).unwrap()));
+        assert_eq!(sets["base"], json!(default_files("base", &files).unwrap()));
+        assert_eq!(import_files(&[]), json!({ "base": [], "servable": [] }));
     }
 
     #[test]
