@@ -1,6 +1,7 @@
 //! The prompt editor (docs/design/prompt-library.md, "Screens", the web's prompt editor at 1:1): the markdown source beside
-//! a live preview, the findings, score and token estimate checked locally with `apz_prompt` as you type, Save version,
-//! Publish, Unpublish and Archive, and the Versions (view, compare, publish, restore), History and Rules tabs. `prompts`
+//! a live preview, the findings, score and token estimate checked locally with `apz_prompt` as you type (each finding with
+//! a line jumps the source to it), Save version, Publish, Unpublish and Archive, the Details form (title, description, tags
+//! and binding, edited in place), and the Versions (view, compare, publish, restore), History and Rules tabs. `prompts`
 //! owns it: `open` starts it for one prompt and `Msg::Back` returns to the list. The hub's JSON is read through
 //! `apz_http` with the status kept, so a 409 (a newer version was saved) is told apart from other failures.
 
@@ -9,7 +10,8 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use apz_prompt::{Finding, Kind, Report, Severity};
-use iced::widget::{column, container, row, text_editor, text_input};
+use iced::widget::text_editor::{Cursor, Position};
+use iced::widget::{checkbox, column, container, operation, row, text_editor, text_input};
 use iced::{Alignment, Element, Font, Length, Task};
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
@@ -18,7 +20,7 @@ use serde_json::{json, Value};
 use crate::console::{client, ui, Ctx};
 use crate::theme::palette;
 
-use super::mcp_hub;
+use super::{mcp_hub, prompts};
 
 // ---- The hub's JSON (apps/web/src/api.ts, "The prompt library") --------------------------------------------------
 
@@ -157,6 +159,54 @@ pub enum Msg {
     Download,
     DownloadPicked(Option<PathBuf>),
     Downloaded(Result<(PromptVersion, PathBuf), String>),
+    /// Move the source to a finding's line (1-based; 0 is the whole document and moves nothing).
+    Jump(u32),
+    /// Open the Details form with the prompt's current metadata, or close it without saving.
+    OpenDetails,
+    CloseDetails,
+    DetailText(Field, String),
+    DetailEvery(bool),
+    /// Save the Details form: a PUT of the metadata, then the prompt reloads.
+    SaveDetails,
+    DetailsSaved(Result<(), String>),
+}
+
+/// A Details form field that takes text.
+#[derive(Debug, Clone, Copy)]
+pub enum Field {
+    Title,
+    Description,
+    Tags,
+    Role,
+}
+
+/// The Details form's draft, as the create form takes the same fields: tags typed comma separated, and the binding as
+/// a role (system prompts) or the every-agent box (AGENTS.md).
+#[derive(Debug, Clone, Default)]
+pub struct Details {
+    title: String,
+    description: String,
+    tags: String,
+    role: String,
+    every: bool,
+}
+
+impl Details {
+    /// The form's draft from the prompt's current metadata.
+    fn of(summary: &PromptSummary) -> Self {
+        let (role, every) = match summary.binding.as_deref() {
+            Some("plaza") => (String::new(), true),
+            Some(binding) => (binding.strip_prefix("role:").unwrap_or_default().to_string(), false),
+            None => (String::new(), false),
+        };
+        Details {
+            title: summary.title.clone(),
+            description: summary.description.clone(),
+            tags: summary.tags.join(", "),
+            role,
+            every,
+        }
+    }
 }
 
 /// The prompt as loaded: the editor's draft, the checks on it, and the versions' tabs' state.
@@ -179,6 +229,8 @@ struct Loaded {
     compare: Option<PromptDiff>,
     /// None until the History tab was opened.
     events: Option<Vec<PromptEvent>>,
+    /// The Details form's draft while the form is open.
+    details: Option<Details>,
 }
 
 #[derive(Debug)]
@@ -193,12 +245,14 @@ pub struct State {
     conflict: bool,
     /// Back was pressed with unsaved changes: asking whether to discard them.
     leaving: bool,
+    /// The hub changed this prompt while the draft had unsaved edits: offer a reload instead of replacing the draft.
+    changed: bool,
 }
 
 /// The editor for prompt `id`, and the task that loads it.
 pub fn open(id: String, ctx: &Ctx) -> (State, Task<Msg>) {
     let task = load(&id, ctx);
-    (State { id, tab: Tab::Edit, loaded: None, error: None, notice: None, conflict: false, leaving: false }, task)
+    (State { id, tab: Tab::Edit, loaded: None, error: None, notice: None, conflict: false, leaving: false, changed: false }, task)
 }
 
 /// Whether the draft differs from the body last loaded or saved.
@@ -209,6 +263,18 @@ pub fn is_dirty(state: &State) -> bool {
 /// Ask before leaving: the view shows Discard and Keep editing until one is chosen.
 pub fn ask_leave(state: &mut State) {
     state.leaving = true;
+}
+
+/// The hub changed this prompt: reload it when the draft has no unsaved edits, otherwise say so and keep the draft. An
+/// open Details form counts as unsaved, since a reload would close it.
+pub fn hub_changed(state: &mut State, ctx: &Ctx) -> Task<Msg> {
+    let details_open = state.loaded.as_ref().is_some_and(|l| l.details.is_some());
+    if is_dirty(state) || details_open {
+        state.changed = true;
+        Task::none()
+    } else {
+        load(&state.id, ctx)
+    }
 }
 
 pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
@@ -234,6 +300,7 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         }
         Msg::Loaded(Ok((detail, latest))) => {
             let kind = Kind::parse(&detail.prompt.kind).unwrap_or(Kind::Fragment);
+            state.changed = false;
             state.loaded = Some(Loaded {
                 report: apz_prompt::check(kind, &latest.body),
                 source: text_editor::Content::with_text(&latest.body),
@@ -247,6 +314,7 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                 picked: Vec::new(),
                 compare: None,
                 events: None,
+                details: None,
             });
             state.error = None;
             Task::none()
@@ -288,6 +356,7 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         },
         Msg::Saved(Ok(added)) => {
             state.conflict = false;
+            state.changed = false;
             state.notice = Some(if added.created {
                 (format!("Saved as v{}", added.version.version), false)
             } else {
@@ -312,6 +381,7 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         }
         Msg::Acted(Ok(text)) => {
             state.notice = Some((text, false));
+            state.changed = false;
             refresh(&state.id, ctx)
         }
         Msg::Acted(Err(e)) => {
@@ -445,6 +515,68 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             state.notice = Some((e, true));
             Task::none()
         }
+        Msg::Jump(line) => {
+            let cursor = state.loaded.as_ref().and_then(|l| finding_cursor(&source_text(&l.source), line));
+            if let (Some(l), Some(cursor)) = (state.loaded.as_mut(), cursor) {
+                l.source.move_to(cursor);
+            }
+            operation::focus(source_id())
+        }
+        Msg::OpenDetails => {
+            if let Some(l) = state.loaded.as_mut() {
+                l.details = Some(Details::of(&l.summary));
+            }
+            Task::none()
+        }
+        Msg::CloseDetails => {
+            if let Some(l) = state.loaded.as_mut() {
+                l.details = None;
+            }
+            Task::none()
+        }
+        Msg::DetailText(field, text) => {
+            if let Some(d) = state.loaded.as_mut().and_then(|l| l.details.as_mut()) {
+                match field {
+                    Field::Title => d.title = text,
+                    Field::Description => d.description = text,
+                    Field::Tags => d.tags = text,
+                    Field::Role => d.role = text,
+                }
+            }
+            Task::none()
+        }
+        Msg::DetailEvery(on) => {
+            if let Some(d) = state.loaded.as_mut().and_then(|l| l.details.as_mut()) {
+                d.every = on;
+            }
+            Task::none()
+        }
+        Msg::SaveDetails => {
+            let body = state.loaded.as_ref().and_then(|l| l.details.as_ref().map(|d| meta_body(l.kind, d)));
+            match body {
+                Some(Ok(body)) => {
+                    let (c, id) = (ctx.client.clone(), state.id.clone());
+                    client::task(move || send(&c, "PUT", &prompt_path(&id), Some(&body)).and_then(expect::<Value>).map(|_| ()), Msg::DetailsSaved)
+                }
+                Some(Err(e)) => {
+                    state.notice = Some((e, true));
+                    Task::none()
+                }
+                None => Task::none(),
+            }
+        }
+        Msg::DetailsSaved(Ok(())) => {
+            state.notice = Some(("Details saved".to_string(), false));
+            state.changed = false;
+            if let Some(l) = state.loaded.as_mut() {
+                l.details = None;
+            }
+            refresh(&state.id, ctx)
+        }
+        Msg::DetailsSaved(Err(e)) => {
+            state.notice = Some((e, true));
+            Task::none()
+        }
     }
 }
 
@@ -463,6 +595,9 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
     if state.conflict {
         parts.push(ui::btn_sm("Reload latest", None, ui::Kind::Secondary, Some(Msg::ReloadLatest)));
     }
+    if state.changed && !state.conflict {
+        parts.push(changed_notice());
+    }
     if state.leaving {
         parts.push(
             row![
@@ -474,6 +609,9 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
             .align_y(Alignment::Center)
             .into(),
         );
+    }
+    if let Some(d) = l.details.as_ref() {
+        parts.push(details_form(l.kind, d));
     }
     parts.push(ui::tabs(&TABS, state.tab, Msg::Tab));
     parts.push(match state.tab {
@@ -604,14 +742,158 @@ fn num(n: Option<u32>) -> String {
     n.map_or_else(String::new, |n| n.to_string())
 }
 
+/// The id of the source editor, so a finding's jump can focus it.
+fn source_id() -> iced::widget::Id {
+    iced::widget::Id::new("prompt-source")
+}
+
+/// The cursor that selects a finding's line (1-based) in `text`, from the line's start to its end. A line past the end
+/// selects the last line. Line 0 is the whole document, which has no line to select.
+pub fn finding_cursor(text: &str, line: u32) -> Option<Cursor> {
+    if line == 0 {
+        return None;
+    }
+    let lines: Vec<&str> = text.split('\n').collect();
+    let at = (line as usize).min(lines.len()) - 1;
+    let end = lines[at].len();
+    Some(Cursor { position: Position { line: at, column: end }, selection: Some(Position { line: at, column: 0 }) })
+}
+
+/// The tags typed comma separated: each trimmed, the empty ones dropped (the create form's rule).
+pub fn parse_tags(text: &str) -> Vec<String> {
+    text.split(',').map(str::trim).filter(|t| !t.is_empty()).map(String::from).collect()
+}
+
+/// The binding a prompt of `kind` takes from its form: a role for a system prompt, every agent for AGENTS.md, none for a
+/// fragment (the hub binds no fragment).
+pub fn binding_for(kind: Kind, role: &str, every: bool) -> Option<String> {
+    match kind {
+        Kind::System => {
+            let role = role.trim();
+            (!role.is_empty()).then(|| format!("role:{role}"))
+        }
+        Kind::AgentsMd => every.then(|| "plaza".to_string()),
+        Kind::Fragment => None,
+    }
+}
+
+/// The PUT body for a prompt's metadata, from the Details form. A blank title is refused here, as the hub would.
+pub fn meta_body(kind: Kind, d: &Details) -> Result<Value, String> {
+    if d.title.trim().is_empty() {
+        return Err("Give the prompt a title.".to_string());
+    }
+    Ok(json!({
+        "title": d.title.trim(),
+        "description": d.description.trim(),
+        "tags": parse_tags(&d.tags),
+        "binding": binding_for(kind, &d.role, d.every),
+    }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_finding_on_a_line_selects_that_line() {
+        let text = "# Title\nfirst line\nsecond";
+        let c = finding_cursor(text, 2).expect("line 2 has a cursor");
+        assert_eq!(c.position, Position { line: 1, column: "first line".len() });
+        assert_eq!(c.selection, Some(Position { line: 1, column: 0 }));
+    }
+
+    #[test]
+    fn a_finding_past_the_end_selects_the_last_line() {
+        let c = finding_cursor("a\nbb", 9).expect("clamped to the last line");
+        assert_eq!(c.position, Position { line: 1, column: 2 });
+    }
+
+    #[test]
+    fn a_document_finding_has_no_line_to_jump_to() {
+        assert_eq!(finding_cursor("anything", 0), None);
+    }
+
+    #[test]
+    fn the_tags_are_trimmed_and_the_empty_ones_dropped() {
+        assert_eq!(parse_tags(" review, , safety ,"), vec!["review".to_string(), "safety".to_string()]);
+        assert!(parse_tags("").is_empty());
+    }
+
+    #[test]
+    fn the_binding_follows_the_kind() {
+        assert_eq!(binding_for(Kind::System, " builder ", false), Some("role:builder".to_string()));
+        assert_eq!(binding_for(Kind::System, "  ", true), None);
+        assert_eq!(binding_for(Kind::AgentsMd, "", true), Some("plaza".to_string()));
+        assert_eq!(binding_for(Kind::AgentsMd, "builder", false), None);
+        assert_eq!(binding_for(Kind::Fragment, "builder", true), None);
+    }
+
+    #[test]
+    fn the_meta_body_carries_the_form_fields_trimmed() {
+        let d = Details {
+            title: "  Builder  ".to_string(),
+            description: " Builds things ".to_string(),
+            tags: "review, safety".to_string(),
+            role: "builder".to_string(),
+            every: false,
+        };
+        assert_eq!(
+            meta_body(Kind::System, &d).unwrap(),
+            json!({ "title": "Builder", "description": "Builds things", "tags": ["review", "safety"], "binding": "role:builder" })
+        );
+    }
+
+    #[test]
+    fn the_meta_body_refuses_a_blank_title() {
+        let d = Details { title: "   ".to_string(), ..Details::default() };
+        assert_eq!(meta_body(Kind::Fragment, &d), Err("Give the prompt a title.".to_string()));
+    }
+
+    #[test]
+    fn a_fragment_sends_no_binding() {
+        let d = Details { title: "Note".to_string(), role: "builder".to_string(), every: true, ..Details::default() };
+        let body = meta_body(Kind::Fragment, &d).unwrap();
+        assert_eq!(body["binding"], Value::Null);
+    }
+
+    #[test]
+    fn the_form_reads_the_binding_back_from_the_prompt() {
+        let summary = PromptSummary {
+            title: "Plaza rules".to_string(),
+            kind: "agents_md".to_string(),
+            description: String::new(),
+            tags: vec!["a".to_string(), "b".to_string()],
+            binding: Some("plaza".to_string()),
+            active_version: None,
+            latest_version: 1,
+            best_version: None,
+            score: None,
+            archived_ms: None,
+        };
+        let d = Details::of(&summary);
+        assert!(d.every);
+        assert_eq!(d.tags, "a, b");
+        let role_summary = PromptSummary { binding: Some("role:builder".to_string()), kind: "system".to_string(), ..summary };
+        let d = Details::of(&role_summary);
+        assert_eq!((d.role.as_str(), d.every), ("builder", false));
+    }
+}
+
 // ---- Views ---------------------------------------------------------------------------------------------------------
 
 fn header(l: &Loaded) -> Element<'_, Msg> {
     let s = &l.summary;
     let archived = s.archived_ms.is_some();
+    let editing = l.details.is_some();
     let actions: Vec<Element<'_, Msg>> = vec![
         ui::btn_sm("Back", None, ui::Kind::Ghost, Some(Msg::Back)),
         ui::btn_sm("Save version", None, ui::Kind::Primary, Some(Msg::Save)),
+        ui::btn_sm(
+            if editing { "Close details" } else { "Details" },
+            None,
+            ui::Kind::Secondary,
+            Some(if editing { Msg::CloseDetails } else { Msg::OpenDetails }),
+        ),
         ui::btn_sm("Download .md", None, ui::Kind::Secondary, Some(Msg::Download)),
         ui::btn_sm("Publish", None, ui::Kind::Secondary, Some(Msg::Publish(s.latest_version))),
         ui::btn_sm("Unpublish", None, ui::Kind::Secondary, s.active_version.map(|_| Msg::Unpublish)),
@@ -645,11 +927,17 @@ fn header(l: &Loaded) -> Element<'_, Msg> {
     column(parts).spacing(8).into()
 }
 
-fn finding_row(f: &Finding) -> Element<'static, Msg> {
+/// One finding. With `jump`, a finding that has a line is a link that moves the source to that line.
+fn finding_row(f: &Finding, jump: bool) -> Element<'static, Msg> {
     let place = if f.line == 0 { "document".to_string() } else { format!("line {}", f.line) };
+    let place: Element<'static, Msg> = if jump && f.line > 0 {
+        ui::link(&place, Msg::Jump(f.line), true)
+    } else {
+        ui::mono(place, 12.0, palette().ink_3).into()
+    };
     row![
         ui::badge(f.severity.as_str(), severity_tone(f.severity)),
-        ui::mono(place, 12.0, palette().ink_3),
+        place,
         ui::prose(f.message.clone()),
         ui::mono(f.rule.clone(), 11.0, palette().ink_3),
     ]
@@ -658,9 +946,67 @@ fn finding_row(f: &Finding) -> Element<'static, Msg> {
     .into()
 }
 
+/// The notice when the hub changed the prompt while the draft had unsaved edits.
+fn changed_notice<'a>() -> Element<'a, Msg> {
+    row![
+        ui::faint("Changed on the hub — reload. Reloading replaces the draft."),
+        ui::btn_sm("Reload latest", None, ui::Kind::Secondary, Some(Msg::ReloadLatest)),
+    ]
+    .spacing(12)
+    .align_y(Alignment::Center)
+    .into()
+}
+
+/// The Details form: the create form's fields for the prompt's metadata (its kind does not change).
+fn details_form(kind: Kind, d: &Details) -> Element<'_, Msg> {
+    let binding: Element<'_, Msg> = match kind {
+        Kind::System => text_input("Role, for example builder", &d.role)
+            .on_input(|v| Msg::DetailText(Field::Role, v))
+            .padding(8)
+            .style(crate::theme::input)
+            .into(),
+        Kind::AgentsMd => checkbox(d.every).label("Apply to every agent").on_toggle(Msg::DetailEvery).into(),
+        Kind::Fragment => ui::faint("Fragments are not bound to an agent.").into(),
+    };
+    let body = column![
+        prompts::field(
+            "Title",
+            text_input("Title", &d.title)
+                .on_input(|v| Msg::DetailText(Field::Title, v))
+                .padding(8)
+                .style(crate::theme::input)
+                .into(),
+        ),
+        prompts::field(
+            "Description",
+            text_input("What this prompt is for", &d.description)
+                .on_input(|v| Msg::DetailText(Field::Description, v))
+                .padding(8)
+                .style(crate::theme::input)
+                .into(),
+        ),
+        prompts::field(
+            "Tags (comma separated)",
+            text_input("review, safety", &d.tags)
+                .on_input(|v| Msg::DetailText(Field::Tags, v))
+                .padding(8)
+                .style(crate::theme::input)
+                .into(),
+        ),
+        prompts::field("Binding", binding),
+        row![
+            ui::btn("Save details", None, ui::Kind::Primary, Some(Msg::SaveDetails)),
+            ui::btn("Cancel", None, ui::Kind::Ghost, Some(Msg::CloseDetails)),
+        ]
+        .spacing(8),
+    ]
+    .spacing(12);
+    ui::card("Details", body.into())
+}
+
 fn edit_tab(l: &Loaded) -> Element<'_, Msg> {
     let body = source_text(&l.source);
-    let editor = text_editor(&l.source).on_action(Msg::Edit).font(Font::MONOSPACE).height(Length::Fixed(420.0));
+    let editor = text_editor(&l.source).id(source_id()).on_action(Msg::Edit).font(Font::MONOSPACE).height(Length::Fixed(420.0));
     let preview = ui::scroll(ui::markdown::<Msg>(&body)).height(Length::Fixed(420.0));
     let panes = row![container(editor).width(Length::FillPortion(1)), container(preview).width(Length::FillPortion(1))].spacing(16);
 
@@ -669,7 +1015,7 @@ fn edit_tab(l: &Loaded) -> Element<'_, Msg> {
     if r.findings.is_empty() {
         findings.push(ui::faint("No findings: every check passes.").into());
     }
-    findings.extend(r.findings.iter().map(finding_row));
+    findings.extend(r.findings.iter().map(|f| finding_row(f, true)));
 
     let counts = ui::faint(format!("{} errors · {} warnings · {} infos · score {}", r.errors, r.warnings, r.infos, r.score));
     let stats = ui::faint(format!(
@@ -774,7 +1120,7 @@ fn viewing(v: &PromptVersion) -> Element<'_, Msg> {
         .align_y(Alignment::Center)
         .into(),
     ];
-    parts.extend(v.findings.iter().map(finding_row));
+    parts.extend(v.findings.iter().map(|f| finding_row(f, false)));
     parts.push(ui::markdown::<Msg>(&v.body));
     column(parts).spacing(10).into()
 }

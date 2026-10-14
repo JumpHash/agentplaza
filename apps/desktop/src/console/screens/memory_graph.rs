@@ -4,7 +4,8 @@
 //! once per note set with a seeded generator, so a given set of notes always lands in the same place. Hovering a note
 //! lights it and its neighbours, a click selects it and opens it in the host's reader, dragging pans, dragging a note
 //! moves it while it is held (the rest settle around it, and it floats back on release, as the web does), the wheel
-//! zooms around the pointer, and a right click fits the view again. Tab and Shift+Tab walk the notes in a stable order
+//! zooms around the pointer, a right click fits the view again, and the buttons in the top-right corner zoom in, zoom out
+//! and fit (as the web's +, − and Fit do). Tab and Shift+Tab walk the notes in a stable order
 //! (by slug), the focused one is ringed, and Enter or Space opens it. The find text dims the notes whose titles miss it.
 
 use std::collections::{HashMap, HashSet};
@@ -355,6 +356,58 @@ fn fit(lay: &Layout, bounds: Rectangle) -> Cam {
     Cam { k, x: w / 2.0 - (x0 + x1) / 2.0 * k, y: h / 2.0 - (y0 + y1) / 2.0 * k }
 }
 
+/// The zoom limits and the step one click of + or − takes.
+const ZOOM_MIN: f32 = 0.2;
+const ZOOM_MAX: f32 = 3.0;
+const ZOOM_STEP: f32 = 1.25;
+
+/// The camera zoomed by `factor` around `p` (canvas-relative): the point under `p` stays under it.
+fn zoom_about(cam: Cam, p: Point, factor: f32) -> Cam {
+    let k = (cam.k * factor).clamp(ZOOM_MIN, ZOOM_MAX);
+    let s = k / cam.k;
+    Cam { k, x: p.x - (p.x - cam.x) * s, y: p.y - (p.y - cam.y) * s }
+}
+
+/// The buttons in the canvas's top-right corner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Button {
+    ZoomIn,
+    ZoomOut,
+    Fit,
+}
+
+impl Button {
+    fn label(self) -> &'static str {
+        match self {
+            Button::ZoomIn => "+",
+            Button::ZoomOut => "−",
+            Button::Fit => "Fit",
+        }
+    }
+}
+
+const BUTTON_H: f32 = 26.0;
+const BUTTON_W: f32 = 30.0;
+const FIT_W: f32 = 44.0;
+const BUTTON_GAP: f32 = 6.0;
+const BUTTON_MARGIN: f32 = 10.0;
+
+/// Where each button sits: a row along the top-right corner, zoom in leftmost and fit rightmost.
+fn buttons(bounds: Rectangle) -> [(Button, Rectangle); 3] {
+    let mut right = bounds.width - BUTTON_MARGIN;
+    [Button::Fit, Button::ZoomOut, Button::ZoomIn].map(|b| {
+        let w = if b == Button::Fit { FIT_W } else { BUTTON_W };
+        let rect = Rectangle { x: right - w, y: BUTTON_MARGIN, width: w, height: BUTTON_H };
+        right = rect.x - BUTTON_GAP;
+        (b, rect)
+    })
+}
+
+/// The button under a point (canvas-relative), if one is.
+fn button_at(bounds: Rectangle, p: Point) -> Option<Button> {
+    buttons(bounds).into_iter().find(|(_, r)| r.contains(p)).map(|(b, _)| b)
+}
+
 /// The node under a point (canvas-relative), the nearest one when several overlap.
 fn hit(lay: &Layout, cam: Cam, p: Point) -> Option<usize> {
     let mut best: Option<(f32, usize)> = None;
@@ -428,6 +481,16 @@ impl canvas::Program<Msg> for GraphView<'_> {
             }
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
                 let p = cursor.position_in(bounds)?;
+                if let Some(b) = button_at(bounds, p).filter(|_| !self.layout.nodes.is_empty()) {
+                    let cam = self.cam(st, bounds);
+                    let centre = Point::new(bounds.width / 2.0, bounds.height / 2.0);
+                    match b {
+                        Button::ZoomIn => st.cam = Some(zoom_about(cam, centre, ZOOM_STEP)),
+                        Button::ZoomOut => st.cam = Some(zoom_about(cam, centre, 1.0 / ZOOM_STEP)),
+                        Button::Fit => st.cam = None,
+                    }
+                    return Some(canvas::Action::request_redraw());
+                }
                 st.press = Some(p);
                 st.drag = Some(p);
                 st.moved = false;
@@ -457,11 +520,9 @@ impl canvas::Program<Msg> for GraphView<'_> {
                     mouse::ScrollDelta::Lines { y, .. } => *y * 60.0,
                     mouse::ScrollDelta::Pixels { y, .. } => *y,
                 };
-                let cam = self.cam(st, bounds);
                 // Zoom around the pointer, as the web does.
-                let k = (cam.k * (-dy * 0.0015).exp()).clamp(0.2, 3.0);
-                let s = k / cam.k;
-                st.cam = Some(Cam { k, x: p.x - (p.x - cam.x) * s, y: p.y - (p.y - cam.y) * s });
+                let cam = self.cam(st, bounds);
+                st.cam = Some(zoom_about(cam, p, (-dy * 0.0015).exp()));
                 Some(canvas::Action::request_redraw())
             }
             _ => None,
@@ -542,6 +603,19 @@ impl canvas::Program<Msg> for GraphView<'_> {
             });
         }
 
+        for (b, r) in buttons(bounds) {
+            frame.fill(&Path::rectangle(r.position(), r.size()), fade(pal.sheet, 0.95));
+            frame.stroke(&Path::rectangle(r.position(), r.size()), Stroke::default().with_color(pal.ink_3).with_width(1.0));
+            frame.fill_text(Text {
+                content: b.label().to_string(),
+                position: Point::new(r.x + r.width / 2.0, r.y + 5.0),
+                color: pal.ink,
+                size: Pixels(13.0),
+                align_x: iced::advanced::text::Alignment::Center,
+                ..Text::default()
+            });
+        }
+
         if let Some(s) = st.selected {
             frame.fill_text(Text {
                 content: lay.nodes[s].title.clone(),
@@ -554,10 +628,11 @@ impl canvas::Program<Msg> for GraphView<'_> {
         vec![frame.into_geometry()]
     }
 
-    fn mouse_interaction(&self, st: &View, _bounds: Rectangle, _cursor: mouse::Cursor) -> mouse::Interaction {
+    fn mouse_interaction(&self, st: &View, bounds: Rectangle, cursor: mouse::Cursor) -> mouse::Interaction {
+        let on_button = cursor.position_in(bounds).is_some_and(|p| button_at(bounds, p).is_some());
         if st.moved {
             mouse::Interaction::Grabbing
-        } else if st.hover.is_some() {
+        } else if on_button || st.hover.is_some() {
             mouse::Interaction::Pointer
         } else {
             mouse::Interaction::default()
@@ -570,4 +645,49 @@ impl canvas::Program<Msg> for GraphView<'_> {
 pub fn view<'a>(layout: &'a Layout, query: String, kb: Option<&'a str>) -> Element<'a, Msg> {
     let query = query.trim().to_lowercase();
     Canvas::new(GraphView { layout, query, kb }).width(Length::Fill).height(Length::Fixed(480.0)).into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn canvas() -> Rectangle {
+        Rectangle { x: 0.0, y: 0.0, width: 400.0, height: 300.0 }
+    }
+
+    #[test]
+    fn a_zoom_keeps_the_point_under_the_pointer_in_place() {
+        let cam = Cam { k: 1.0, x: 0.0, y: 0.0 };
+        let p = Point::new(100.0, 50.0);
+        let z = zoom_about(cam, p, 2.0);
+        assert_eq!(z.k, 2.0);
+        // The graph point under the pointer is (p - cam) / k before the zoom and after it.
+        assert_eq!(((p.x - z.x) / z.k, (p.y - z.y) / z.k), (100.0, 50.0));
+    }
+
+    #[test]
+    fn a_zoom_stops_at_the_limits() {
+        let cam = Cam { k: 1.0, x: 0.0, y: 0.0 };
+        assert_eq!(zoom_about(cam, Point::ORIGIN, 100.0).k, ZOOM_MAX);
+        assert_eq!(zoom_about(cam, Point::ORIGIN, 0.001).k, ZOOM_MIN);
+    }
+
+    #[test]
+    fn the_buttons_sit_in_the_top_right_corner_and_a_click_finds_them() {
+        for (button, rect) in buttons(canvas()) {
+            assert!(rect.x > canvas().width / 2.0, "{button:?} sits in the right half");
+            assert!(rect.y < canvas().height / 4.0, "{button:?} sits along the top");
+            let centre = Point::new(rect.x + rect.width / 2.0, rect.y + rect.height / 2.0);
+            assert_eq!(button_at(canvas(), centre), Some(button));
+        }
+        assert_eq!(button_at(canvas(), Point::new(200.0, 150.0)), None);
+    }
+
+    #[test]
+    fn zoom_in_is_leftmost_and_fit_is_rightmost() {
+        let rects = buttons(canvas());
+        let x_of = |b: Button| rects.iter().find(|(k, _)| *k == b).unwrap().1.x;
+        assert!(x_of(Button::ZoomIn) < x_of(Button::ZoomOut));
+        assert!(x_of(Button::ZoomOut) < x_of(Button::Fit));
+    }
 }

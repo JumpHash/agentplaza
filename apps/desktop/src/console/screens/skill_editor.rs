@@ -1,9 +1,10 @@
 //! The skill editor (docs/design/skill-library.md, "Screens"): the file tree, SKILL.md and the text files in editors with a
 //! live markdown preview, findings checked locally with `apz_skill` as you type (each one jumps to its file and line),
-//! Save version, Publish, Unpublish and Archive, Export, Bindings, the GitHub source with Check for updates and Update, and
-//! the Versions (view, compare, publish, restore as new), History and Rules tabs. `skills` owns it: `open` starts it for one skill
-//! and `Msg::Back` returns to the list. Hub answers go through `apz_http` with the status kept, so a 409 (a newer version
-//! was saved) is told apart from other failures.
+//! Save version, Publish, Unpublish and Archive, Export, Details (title and tags), Bindings, the GitHub source with Check
+//! for updates and Update, and the Versions (view, compare, publish, restore as new), History and Rules tabs. Every file
+//! can be saved as a file on this computer. `skills` owns it: `open` starts it for one skill and `Msg::Back` returns to
+//! the list. Hub answers go through `apz_http` with the status kept, so a 409 (a newer version was saved) is told apart
+//! from other failures.
 
 use std::cmp::Reverse;
 use std::path::PathBuf;
@@ -22,7 +23,8 @@ use crate::console::{client, ui, Ctx};
 use crate::theme::palette;
 
 use super::mcp_hub;
-use super::skills::Role;
+use super::prompt_editor;
+use super::skills::{field, Role};
 
 const SKILL_MD: &str = "SKILL.md";
 /// The binding that means every agent on the plaza.
@@ -31,6 +33,10 @@ const EVERY_AGENT: &str = "plaza";
 const TEXT_LIMIT: usize = 1 << 20;
 /// The save's error text when the hub answers 409: a newer version was saved first.
 const CONFLICT: &str = "a newer version was saved; reload";
+/// The hub's limits on a skill's title and tags (apid's skills module).
+const MAX_TITLE: usize = 120;
+const MAX_TAGS: usize = 16;
+const MAX_TAG: usize = 32;
 
 // ---- The hub's JSON (apps/web/src/api.ts, "The skill library") ----------------------------------------------------
 
@@ -197,8 +203,19 @@ pub enum Msg {
     Rename,
     Remove,
     ToggleExec,
+    /// Save the selected file as a file on this computer: the save dialog, then the bytes.
     SaveAs,
+    /// A saved text file's bytes, fetched for its save: its name and bytes, or the error that stopped it.
+    SaveFetched(Result<(String, Vec<u8>), String>),
     SaveAsPicked(Option<(PathBuf, Vec<u8>)>),
+    /// Open the Details form (title and tags) with the skill's current values, or close it without saving.
+    OpenDetails,
+    CloseDetails,
+    DetailTitle(String),
+    DetailTags(String),
+    /// Save the Details form: a PUT of the title and tags, then the skill reloads.
+    SaveDetails,
+    DetailsSaved(Result<(), String>),
     /// A text outcome from an export or a GitHub check (its notice).
     Notice(Result<String, String>),
     Save,
@@ -282,6 +299,19 @@ impl Entry {
     }
 }
 
+/// The Details form's draft: the title, and the tags typed comma separated.
+#[derive(Debug, Clone, Default)]
+pub struct SkillDetails {
+    title: String,
+    tags: String,
+}
+
+impl SkillDetails {
+    fn of(summary: &Summary) -> Self {
+        SkillDetails { title: summary.title.clone(), tags: summary.tags.join(", ") }
+    }
+}
+
 /// The skill as loaded: the draft, the checks on it, and the versions' tabs' state.
 #[derive(Debug)]
 pub struct Loaded {
@@ -311,6 +341,8 @@ pub struct Loaded {
     compare: Option<Diff>,
     /// None until the History tab was opened.
     events: Option<Vec<SkillEvent>>,
+    /// The Details form's draft while the form is open.
+    details: Option<SkillDetails>,
 }
 
 #[derive(Debug)]
@@ -327,12 +359,26 @@ pub struct State {
     leaving: bool,
     /// The roles for the bindings picker, from GET /v1/roles.
     roles: Vec<Role>,
+    /// The hub changed this skill while the draft had unsaved edits: offer a reload instead of replacing the draft.
+    changed: bool,
 }
 
 /// The editor for skill `id`, and the task that loads it.
 pub fn open(id: String, ctx: &Ctx) -> (State, Task<Msg>) {
     let task = Task::batch([load(&id, ctx), roles_task(ctx)]);
-    (State { id, tab: Tab::Edit, loaded: None, error: None, notice: None, conflict: false, leaving: false, roles: Vec::new() }, task)
+    (State { id, tab: Tab::Edit, loaded: None, error: None, notice: None, conflict: false, leaving: false, roles: Vec::new(), changed: false }, task)
+}
+
+/// The hub changed this skill: reload it when the draft has no unsaved edits, otherwise say so and keep the draft. An
+/// open Details form counts as unsaved, since a reload would close it.
+pub fn hub_changed(state: &mut State, ctx: &Ctx) -> Task<Msg> {
+    let details_open = state.loaded.as_ref().is_some_and(|l| l.details.is_some());
+    if is_dirty(state) || details_open {
+        state.changed = true;
+        Task::none()
+    } else {
+        load(&state.id, ctx)
+    }
 }
 
 /// The roles list for the bindings picker.
@@ -371,6 +417,7 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             }
         }
         Msg::Loaded(Ok((detail, version, files))) => {
+            state.changed = false;
             let keep = state.loaded.as_ref().map(|l| l.selected.clone());
             let mut loaded = build(detail, version, files);
             if let Some(sel) = keep.filter(|s| loaded.has_path(s)) {
@@ -523,23 +570,29 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             }
             Task::none()
         }
-        Msg::SaveAs => match state.loaded.as_ref().and_then(|l| l.selected_entry()) {
-            Some(e) => {
-                let (name, bytes) = (file_name(&e.path), e.bytes());
-                Task::perform(
-                    async move {
-                        rfd::AsyncFileDialog::new()
-                            .set_title("Save the file")
-                            .set_file_name(name)
-                            .save_file()
-                            .await
-                            .map(|file| (file.path().to_path_buf(), bytes))
-                    },
-                    Msg::SaveAsPicked,
-                )
+        Msg::SaveAs => {
+            let Some(l) = state.loaded.as_ref() else {
+                return Task::none();
+            };
+            if l.selected == SKILL_MD {
+                return save_dialog(file_name(SKILL_MD), source_text(&l.skill_md).into_bytes());
             }
-            None => Task::none(),
-        },
+            match l.selected_entry() {
+                // A saved text file is written as its saved version, from the hub.
+                Some(e) if e.saved.is_some() && matches!(e.body, Body::Text { .. }) => {
+                    let (c, id, version, path) = (ctx.client.clone(), state.id.clone(), l.summary.latest_version, e.path.clone());
+                    let name = file_name(&path);
+                    client::task(move || raw(&c, "GET", &file_path(&id, version, &path), None).map(|bytes| (name, bytes)), Msg::SaveFetched)
+                }
+                Some(e) => save_dialog(file_name(&e.path), e.bytes()),
+                None => Task::none(),
+            }
+        }
+        Msg::SaveFetched(Ok((name, bytes))) => save_dialog(name, bytes),
+        Msg::SaveFetched(Err(e)) => {
+            state.notice = Some((e, true));
+            Task::none()
+        }
         Msg::SaveAsPicked(None) => Task::none(),
         Msg::SaveAsPicked(Some((path, bytes))) => {
             state.notice = Some(match std::fs::write(&path, &bytes) {
@@ -562,6 +615,7 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         },
         Msg::Saved(Ok(added)) => {
             state.conflict = false;
+            state.changed = false;
             state.notice = Some(if added.created {
                 (format!("Saved as v{}", added.version.version), false)
             } else {
@@ -611,6 +665,7 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         },
         Msg::Acted(Ok(text)) => {
             state.notice = Some((text, false));
+            state.changed = false;
             if let Some(l) = state.loaded.as_mut() {
                 l.events = None;
             }
@@ -795,7 +850,72 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             state.notice = Some((e, true));
             Task::none()
         }
+        Msg::OpenDetails => {
+            if let Some(l) = state.loaded.as_mut() {
+                l.details = Some(SkillDetails::of(&l.summary));
+            }
+            Task::none()
+        }
+        Msg::CloseDetails => {
+            if let Some(l) = state.loaded.as_mut() {
+                l.details = None;
+            }
+            Task::none()
+        }
+        Msg::DetailTitle(title) => {
+            if let Some(d) = state.loaded.as_mut().and_then(|l| l.details.as_mut()) {
+                d.title = title;
+            }
+            Task::none()
+        }
+        Msg::DetailTags(tags) => {
+            if let Some(d) = state.loaded.as_mut().and_then(|l| l.details.as_mut()) {
+                d.tags = tags;
+            }
+            Task::none()
+        }
+        Msg::SaveDetails => {
+            let body = state.loaded.as_ref().and_then(|l| l.details.as_ref().map(meta_body));
+            match body {
+                Some(Ok(body)) => {
+                    let (c, id) = (ctx.client.clone(), state.id.clone());
+                    client::task(move || send(&c, "PUT", &skill_path(&id), Some(&body)).and_then(expect::<Value>).map(|_| ()), Msg::DetailsSaved)
+                }
+                Some(Err(e)) => {
+                    state.notice = Some((e, true));
+                    Task::none()
+                }
+                None => Task::none(),
+            }
+        }
+        Msg::DetailsSaved(Ok(())) => {
+            state.notice = Some(("Details saved".to_string(), false));
+            state.changed = false;
+            if let Some(l) = state.loaded.as_mut() {
+                l.details = None;
+            }
+            refresh(&state.id, ctx)
+        }
+        Msg::DetailsSaved(Err(e)) => {
+            state.notice = Some((e, true));
+            Task::none()
+        }
     }
+}
+
+/// Save one file's bytes as a file on this computer: the save dialog, then the write (SaveAsPicked).
+fn save_dialog(name: String, bytes: Vec<u8>) -> Task<Msg> {
+    Task::perform(
+        async move {
+            rfd::AsyncFileDialog::new()
+                .set_title("Save the file")
+                .set_file_name(name)
+                .save_file()
+                .await
+                .map(|file| (file.path().to_path_buf(), bytes))
+        },
+        Msg::SaveAsPicked,
+    )
 }
 
 pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
@@ -813,6 +933,9 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
     if state.conflict {
         parts.push(ui::btn_sm("Reload latest", None, ui::Kind::Secondary, Some(Msg::ReloadLatest)));
     }
+    if state.changed && !state.conflict {
+        parts.push(changed_notice());
+    }
     if state.leaving {
         parts.push(
             row![
@@ -824,6 +947,9 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
             .align_y(Alignment::Center)
             .into(),
         );
+    }
+    if let Some(d) = l.details.as_ref() {
+        parts.push(details_form(d));
     }
     parts.push(ui::tabs(&TABS, state.tab, Msg::Tab));
     parts.push(match state.tab {
@@ -881,10 +1007,14 @@ fn fetch_version(c: &client::Client, id: &str, version: u32) -> Result<(Version,
     let v: Version = get(c, &format!("{}/versions/{version}", skill_path(id)))?;
     let mut files = Vec::with_capacity(v.files.len());
     for f in &v.files {
-        let path = format!("{}/versions/{version}/files/{}", skill_path(id), f.path.split('/').map(percent).collect::<Vec<_>>().join("/"));
-        files.push(raw(c, "GET", &path, None)?);
+        files.push(raw(c, "GET", &file_path(id, version, &f.path), None)?);
     }
     Ok((v, files))
+}
+
+/// The path of one file of a version: each segment percent-encoded, the slashes kept.
+fn file_path(id: &str, version: u32, path: &str) -> String {
+    format!("{}/versions/{version}/files/{}", skill_path(id), path.split('/').map(percent).collect::<Vec<_>>().join("/"))
 }
 
 fn load(id: &str, ctx: &Ctx) -> Task<Msg> {
@@ -1003,6 +1133,7 @@ fn build(detail: Detail, version: Version, files: Vec<Vec<u8>>) -> Loaded {
         picked: Vec::new(),
         compare: None,
         events: None,
+        details: None,
     };
     l.recheck();
     l
@@ -1085,6 +1216,19 @@ fn normalised(text: &str) -> String {
     source_text(&text_editor::Content::with_text(text))
 }
 
+/// The PUT body for a skill's title and tags from the Details form, checked against the hub's limits first.
+fn meta_body(d: &SkillDetails) -> Result<Value, String> {
+    let title = d.title.trim();
+    if title.is_empty() || title.chars().count() > MAX_TITLE {
+        return Err(format!("The title must be 1 to {MAX_TITLE} characters."));
+    }
+    let tags = prompt_editor::parse_tags(&d.tags);
+    if tags.len() > MAX_TAGS || tags.iter().any(|t| t.chars().count() > MAX_TAG) {
+        return Err(format!("At most {MAX_TAGS} tags of 1 to {MAX_TAG} characters."));
+    }
+    Ok(json!({ "title": title, "tags": tags }))
+}
+
 fn sorted(mut versions: Vec<VersionMeta>) -> Vec<VersionMeta> {
     versions.sort_by_key(|v| Reverse(v.version));
     versions
@@ -1151,9 +1295,16 @@ fn names(list: &[String]) -> String {
 fn header(l: &Loaded) -> Element<'_, Msg> {
     let s = &l.summary;
     let archived = s.archived_ms.is_some();
+    let editing = l.details.is_some();
     let actions: Vec<Element<'_, Msg>> = vec![
         ui::btn_sm("Back", None, ui::Kind::Ghost, Some(Msg::Back)),
         ui::btn_sm("Save version", None, ui::Kind::Primary, Some(Msg::Save)),
+        ui::btn_sm(
+            if editing { "Close details" } else { "Details" },
+            None,
+            ui::Kind::Secondary,
+            Some(if editing { Msg::CloseDetails } else { Msg::OpenDetails }),
+        ),
         ui::btn_sm("Export", None, ui::Kind::Secondary, Some(Msg::Export)),
         ui::btn_sm("Publish", None, ui::Kind::Secondary, Some(Msg::Publish(s.latest_version))),
         ui::btn_sm("Unpublish", None, ui::Kind::Secondary, s.active_version.map(|_| Msg::Unpublish)),
@@ -1182,6 +1333,38 @@ fn header(l: &Loaded) -> Element<'_, Msg> {
         parts.push(ui::faint(s.tags.join(" · ")).into());
     }
     column(parts).spacing(8).into()
+}
+
+/// The notice when the hub changed the skill while the draft had unsaved edits.
+fn changed_notice<'a>() -> Element<'a, Msg> {
+    row![
+        ui::faint("Changed on the hub — reload. Reloading replaces the draft."),
+        ui::btn_sm("Reload latest", None, ui::Kind::Secondary, Some(Msg::ReloadLatest)),
+    ]
+    .spacing(12)
+    .align_y(Alignment::Center)
+    .into()
+}
+
+/// The Details form: the title and the tags, saved as the skill's metadata (its files and versions do not change).
+fn details_form(d: &SkillDetails) -> Element<'_, Msg> {
+    let body = column![
+        field(
+            "Title",
+            text_input("Title", &d.title).on_input(Msg::DetailTitle).padding(8).style(crate::theme::input).into(),
+        ),
+        field(
+            "Tags (comma separated)",
+            text_input("review, safety", &d.tags).on_input(Msg::DetailTags).padding(8).style(crate::theme::input).into(),
+        ),
+        row![
+            ui::btn("Save details", None, ui::Kind::Primary, Some(Msg::SaveDetails)),
+            ui::btn("Cancel", None, ui::Kind::Ghost, Some(Msg::CloseDetails)),
+        ]
+        .spacing(8),
+    ]
+    .spacing(12);
+    ui::card("Details", body.into())
 }
 
 fn edit_tab<'a>(l: &'a Loaded, roles: &'a [Role]) -> Element<'a, Msg> {
@@ -1227,16 +1410,17 @@ fn tree_row<'a>(l: &'a Loaded, path: &str, changed: bool) -> Element<'a, Msg> {
     ui::btn_sm(&label, None, kind, Some(Msg::Select(path.to_string())))
 }
 
-/// The selected file: its header (size, executable, remove, rename), then the editor or the binary's Save as.
+/// The selected file: its header (size, executable, remove, rename, save as), then the editor or the binary's size.
 fn selected_pane(l: &Loaded) -> Element<'_, Msg> {
     let mut parts: Vec<Element<'_, Msg>> = Vec::new();
     if l.selected == SKILL_MD {
-        parts.push(ui::mono(SKILL_MD, 13.0, palette().ink).into());
+        parts.push(row![ui::mono(SKILL_MD, 13.0, palette().ink), ui::btn_sm("Save as", None, ui::Kind::Secondary, Some(Msg::SaveAs))].spacing(12).align_y(Alignment::Center).into());
         parts.push(text_pane(&l.skill_md, true, Msg::EditSkill));
     } else if let Some(e) = l.selected_entry() {
         let mut head: Vec<Element<'_, Msg>> = vec![ui::mono(e.path.clone(), 13.0, palette().ink).into(), ui::faint(format!("{} bytes", e.size())).into()];
         head.push(ui::btn_sm(if e.executable { "Executable: yes" } else { "Executable: no" }, None, ui::Kind::Secondary, Some(Msg::ToggleExec)));
         head.push(ui::btn_sm("Remove", None, ui::Kind::Ghost, Some(Msg::Remove)));
+        head.push(ui::btn_sm("Save as", None, ui::Kind::Secondary, Some(Msg::SaveAs)));
         parts.push(row(head).spacing(12).align_y(Alignment::Center).into());
         parts.push(
             row![
@@ -1248,15 +1432,13 @@ fn selected_pane(l: &Loaded) -> Element<'_, Msg> {
             .into(),
         );
         match &e.body {
-            Body::Text { content, .. } => parts.push(text_pane(content, is_markdown(&e.path), Msg::EditFile)),
-            Body::Binary(bytes) => parts.push(
-                column![
-                    ui::faint(format!("{} bytes · a binary file, not shown here", bytes.len())),
-                    ui::btn_sm("Save as", None, ui::Kind::Secondary, Some(Msg::SaveAs)),
-                ]
-                .spacing(8)
-                .into(),
-            ),
+            Body::Text { content, .. } => {
+                if e.saved.is_some() && e.text_changed() {
+                    parts.push(ui::faint("Save as writes the saved version: unsaved edits are not in it.").into());
+                }
+                parts.push(text_pane(content, is_markdown(&e.path), Msg::EditFile));
+            }
+            Body::Binary(bytes) => parts.push(ui::faint(format!("{} bytes · a binary file, not shown here", bytes.len())).into()),
         }
     } else {
         parts.push(ui::faint("Pick a file in the tree.").into());
@@ -1535,4 +1717,39 @@ fn rules_tab() -> Element<'static, Msg> {
         }
     }
     column(parts).spacing(14).into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn details(title: &str, tags: &str) -> SkillDetails {
+        SkillDetails { title: title.to_string(), tags: tags.to_string() }
+    }
+
+    #[test]
+    fn the_meta_body_carries_the_title_and_the_tags() {
+        let body = meta_body(&details("  Review  ", " code, , safety ")).unwrap();
+        assert_eq!(body, json!({ "title": "Review", "tags": ["code", "safety"] }));
+    }
+
+    #[test]
+    fn the_meta_body_refuses_a_blank_or_long_title() {
+        assert!(meta_body(&details("   ", "")).is_err());
+        let long = "x".repeat(MAX_TITLE + 1);
+        assert_eq!(meta_body(&details(&long, "")), Err(format!("The title must be 1 to {MAX_TITLE} characters.")));
+    }
+
+    #[test]
+    fn the_meta_body_refuses_too_many_or_too_long_tags() {
+        let many: Vec<String> = (0..=MAX_TAGS).map(|i| format!("t{i}")).collect();
+        assert!(meta_body(&details("Skill", &many.join(","))).is_err());
+        let long = "y".repeat(MAX_TAG + 1);
+        assert!(meta_body(&details("Skill", &long)).is_err());
+    }
+
+    #[test]
+    fn a_file_path_keeps_its_slashes_and_encodes_each_segment() {
+        assert_eq!(file_path("demo", 3, "scripts/run me.py"), "/v1/skills/demo/versions/3/files/scripts/run%20me.py");
+    }
 }

@@ -9,13 +9,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use apz_skill::{find_skills, write_zip, Entry};
 use iced::widget::{button, checkbox, column, container, pick_list, row, text, text_editor, text_input};
-use iced::{Element, Length, Task};
+use iced::{Element, Length, Subscription, Task};
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
 use super::{skill_editor, Id};
-use crate::console::{client, ui, Ctx};
+use crate::console::{client, events, ui, Ctx};
 
 /// The binding filter's first two choices.
 const ANY: &str = "Any binding";
@@ -193,6 +193,8 @@ pub enum Msg {
     ExportSelected,
     ExportPicked(Option<(PathBuf, Vec<String>)>),
     Exported(Result<String, String>),
+    /// A hub event: a skill that changed reloads the list, or the editor when it is the one open.
+    Event(events::Event),
 }
 
 #[derive(Debug, Default)]
@@ -528,7 +530,24 @@ pub fn update(st: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             st.notice = Some((e, true));
             Task::none()
         }
+        Msg::Event(event) => {
+            if event.kind != "skill" {
+                return Task::none();
+            }
+            let id = event.data.get("id").and_then(Value::as_str).unwrap_or_default();
+            match st.editor.as_mut() {
+                Some(ed) if ed.id == id => skill_editor::hub_changed(ed, ctx).map(Msg::Editor),
+                Some(_) => Task::none(),
+                None if st.loading => Task::none(),
+                None => load(st, ctx),
+            }
+        }
     }
+}
+
+/// The hub's events while the Skills screen is shown.
+pub fn subscription(ctx: &Ctx) -> Subscription<Msg> {
+    events::subscription(&ctx.client).map(Msg::Event)
 }
 
 /// Close the editor and reload the list.
@@ -891,7 +910,8 @@ fn row_card(s: &Summary, selected: bool) -> Element<'_, Msg> {
     .into()
 }
 
-fn field<'a>(label: &str, input: Element<'a, Msg>) -> Element<'a, Msg> {
+/// A form field: its label above its input.
+pub(super) fn field<'a, M: 'a>(label: &str, input: Element<'a, M>) -> Element<'a, M> {
     column![text(label.to_string()).size(12.0).color(crate::theme::palette().ink_3), input]
         .spacing(4)
         .into()

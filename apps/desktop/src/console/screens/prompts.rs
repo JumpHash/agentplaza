@@ -6,12 +6,12 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use iced::widget::{button, checkbox, column, row, text, text_editor, text_input};
-use iced::{Element, Length, Task};
+use iced::{Element, Length, Subscription, Task};
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{json, Value};
 
 use super::{prompt_editor, Id};
-use crate::console::{client, ui, Ctx};
+use crate::console::{client, events, ui, Ctx};
 
 
 #[derive(Debug, Clone, Deserialize)]
@@ -113,6 +113,8 @@ pub enum Msg {
     /// Clear the kind filter and the search.
     ClearFilters,
     Editor(prompt_editor::Msg),
+    /// A hub event: a prompt that changed reloads the list, or the editor when it is the one open.
+    Event(events::Event),
 }
 
 #[derive(Debug, Default)]
@@ -263,7 +265,24 @@ pub fn update(st: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             Some(ed) => prompt_editor::update(ed, m, ctx).map(Msg::Editor),
             None => Task::none(),
         },
+        Msg::Event(event) => {
+            if event.kind != "prompt" {
+                return Task::none();
+            }
+            let id = event.data.get("id").and_then(Value::as_str).unwrap_or_default();
+            match st.editor.as_mut() {
+                Some(ed) if ed.id == id => prompt_editor::hub_changed(ed, ctx).map(Msg::Editor),
+                Some(_) => Task::none(),
+                None if st.loading => Task::none(),
+                None => load(st, ctx),
+            }
+        }
     }
+}
+
+/// The hub's events while the Prompts screen is shown.
+pub fn subscription(ctx: &Ctx) -> Subscription<Msg> {
+    events::subscription(&ctx.client).map(Msg::Event)
 }
 
 /// Close the editor and reload the list.
@@ -302,26 +321,12 @@ fn create(st: &mut State, ctx: &Ctx) -> Task<Msg> {
         st.form_error = Some("Give the prompt a title.".to_string());
         return Task::none();
     }
-    let binding: Option<String> = match st.new_kind {
-        PKind::System => {
-            let role = st.new_role.trim();
-            (!role.is_empty()).then(|| format!("role:{role}"))
-        }
-        PKind::AgentsMd => st.new_all.then(|| "plaza".to_string()),
-        PKind::Fragment => None,
-    };
-    let tags: Vec<String> = st
-        .new_tags
-        .split(',')
-        .map(str::trim)
-        .filter(|t| !t.is_empty())
-        .map(String::from)
-        .collect();
+    let binding = prompt_editor::binding_for(api_kind(st.new_kind), &st.new_role, st.new_all);
     let mut payload = json!({
         "kind": wire(st.new_kind),
         "title": title,
         "description": st.new_description.trim(),
-        "tags": tags,
+        "tags": prompt_editor::parse_tags(&st.new_tags),
         "body": st.new_body.text(),
     });
     let id = st.new_id.trim().to_string();
@@ -515,7 +520,8 @@ fn row_card(p: &Summary) -> Element<'_, Msg> {
     ui::card(&p.id, body.into())
 }
 
-fn field<'a>(label: &str, input: Element<'a, Msg>) -> Element<'a, Msg> {
+/// A form field: its label above its input.
+pub(super) fn field<'a, M: 'a>(label: &str, input: Element<'a, M>) -> Element<'a, M> {
     column![text(label.to_string()).size(12.0).color(crate::theme::palette().ink_3), input]
         .spacing(4)
         .into()
