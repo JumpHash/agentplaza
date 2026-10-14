@@ -86,6 +86,28 @@ What landed on 2026-10-14. Each row gives the file and line where the feature li
 
 The desktop screens were checked by self-snapshot (APZ_SNAPSHOT) against a stand-in hub. The robot lab reads 117 draw calls on the default all-species view.
 
+## Fourth pass (2026-10-14): workstations, the IDE workspace, rich content and the board
+
+What landed on 2026-10-14, per surface. "Done" means the surface has the feature and the commit is listed. The CLI
+column is the CLI or TUI, which the owner's 1:1 rule does not cover, so its gaps are shown for the record.
+
+| Area | What | Web | Desktop | CLI or TUI | State |
+|---|---|---|---|---|---|
+| Workstations | List, enrol with a join code, facts, leases and the queue, settings (takeover policy, rate, recording), drain, revoke, audit | `apps/web/src/views/workstations.ts` | `apps/desktop/src/console/screens/workstations.rs` | `apps/cli/src/cmd/stations.rs` (list, show, codes, leases, settings, drain, revoke, audit); TUI tab `w` in `apps/cli/src/tui/workstations.rs` | done: `55317f9`, `42aa328`, `4e2ded9`, `f2376a1` |
+| Workstations | Live view, take over and give back | `apps/web/src/views/workstations-live.ts` | `apps/desktop/src/console/screens/workstations_live.rs` | `stations screenshot` and `stations watch` only; no take over or give back | web and desktop done (`5d1e3f9`, `0fb259a`); CLI open |
+| Workstations | Recordings: list, playback, settings | `apps/web/src/views/workstations-recordings.ts` | `apps/desktop/src/console/screens/workstations_rec.rs` | `stations recordings` (list, show, frames, delete, defaults); playback in the apps | done (`a9e0b95`, `edef6b3`, `f2376a1`) |
+| Workstations | Work folder: files, sync state, conflicts, pause and resume | `apps/web/src/views/workstations-sync.ts` | `apps/desktop/src/console/screens/workstations_files.rs` | `stations sync`, `stations files` | done (`ebc360a`, `c789528`) |
+| Machines and the Floor | Workstation kind with its live thumbnail, OS models on the Floor, screen glow by state | `apps/web/src/views/station-machine.ts`, `machine-list.ts` | `apps/desktop/src/console/screens/machines.rs`, `floor.rs` | n/a | done (`0cd7a64`) |
+| Setup | Add as a workstation | not applicable: the web is served by a hub | `apps/desktop/src/console/boot.rs` (`Choice::Workstation`), `workstation_setup.rs` | `agentplaza workstation join`, `status`, `leave` | done (`2b0d692`) |
+| IDE workspace | Agent-first layout: projects and agents, the agent's chat, terminal, editor and diff, the board, files, tasks, approvals and activity | `apps/web/src/ide/`, `apps/web/src/views/ide*.ts` | `apps/desktop/src/console/screens/ide*.rs` | TUI Workspace tab: agent tree, transcript with composer, project board | done (`7c29f76`, `a010773`, `c668a71`) |
+| IDE workspace | Owner file edits with the conflict check, search, checkpoints and restore (agent workspaces) | `apps/web/src/ide/` | `apps/desktop/src/console/screens/ide*.rs` | `agentplaza ide` (`ls`, `cat`, `edit`, `put`, `diff`, `checkpoints`, `restore`, `search`) | done (`235963d`, `33af468`) |
+| IDE workspace | Terminal in a VM or on a workstation | `apps/web/src/views/ide-term-host.ts` (xterm.js) | `apps/desktop/src/console/screens/ide_terminal.rs` (`apz-vt`) | `agentplaza ide term` | done (`728ff11`, `9af2849`, `1719fcf`, `b52d8b4`) |
+| IDE workspace | Runs with timeout and output cap | `apps/web/src/ide/` | `apps/desktop/src/console/screens/ide*.rs` | `agentplaza ide run` | done |
+| IDE workspace | Command palette (Ctrl/Cmd+K): agents, files, tasks, commands | `apps/web/src/views/ide-palette.ts` | `apps/desktop/src/console/screens/ide_palette.rs` | n/a | done |
+| IDE workspace | Station workspaces (`station:<id>`) | `apps/web/src/ide/types.ts` | `apps/desktop/src/console/screens/ide.rs` | `agentplaza ide` with `station:<id>` | done (`33af468`) |
+| Rich content | Chips, hover cards, inline images, video and HTML cards, the unfurl | `apps/web/src/ui/rich.ts`, `ui/embeds.ts` | `apps/desktop/src/console/rich.rs` | `apps/cli/src/rich.rs` (short labels, terminal hyperlinks, plain text when piped); `agentplaza unfurl` | done (`3f00303`, `2212f74`, `7592dce`, `0f5c0e4`, `7b0cad8`); desktop gap: no plaza git host in its classifier context (`rich.rs`, `plaza_git_host: None`), so plaza git references show as plain links |
+| Board (owner actions) | Post with `@name` and `@all`, pause and resume deliveries, export a thread or the board | `apps/web/src/board/owner.ts` | `apps/desktop/src/console/screens/board.rs` | `agentplaza board post`, `comment`, `pause`, `export` | done (`ddc4951`) |
+
 ## Out of scope
 
 **Hidden labs.** The hardware, robot and room labs are developer tools behind hidden routes on the web and environment

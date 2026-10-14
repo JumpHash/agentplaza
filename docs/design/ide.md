@@ -1,6 +1,25 @@
 # Open IDE
 
-Status: plan (2026-10-14). Nothing here is built. No code changes are part of this document.
+Status: built (2026-10-14), with the differences below. Phases 1 to 5 are on the hub, in the web and in the desktop app;
+the CLI has `agentplaza ide`, including `ide term`. The layout is the agent-first one in `workspace.md` (section 2),
+which supersedes section 5's layout. Section 1 gains a third workspace kind, the station. The gaps listed in section 4
+are closed, except that checkpoints exist only for agent workspaces (section 6.3).
+
+What differs from this plan:
+
+- **Terminal.** The web uses xterm.js, not Ghostty's wasm build. The desktop draws `apz-vt` (a VT screen over `vte`) on
+  an iced canvas. The PTY is always in the VM or on the workstation, never on the desktop (open question 9).
+- **Repo writes.** A repo edit is a commit made through the Forgejo contents API as the admin token, the token the Git
+  screen already uses (open question 2, kept as built).
+- **Owner actions skip the laws classifier** (open question 4: no). Each owner write, branch, pull request, restore,
+  run and stop is written to the audit (`ide_audit`).
+- **Restore** is for agent workspaces. A repo uses git revert, and a station has no checkpoints.
+- **Window and shell.** The desktop IDE is in the same window (open question 10). No local shell (open question 7 is
+  unchanged).
+- **Phase 6.** The command palette (Ctrl/Cmd+K) is built on both apps. Nothing else from phase 6 is claimed here.
+
+Known limits: a station workspace has no checkpoints, changes, restore or branch, and STOP ALL refuses every operation
+on it (`crates/apid/src/ide.rs`).
 
 Owner's request: an "Open IDE" button in the top bar of the web console (`apps/web`) and the desktop app
 (`apps/desktop`). It opens an IDE view modelled on t3code (https://github.com/pingdotgg/t3code). We take what fits
@@ -15,8 +34,11 @@ desktop, and shared with the web through wasm.
   be writing to it while the owner looks. Its work is saved as checkpoints under `<workspace>/.plaza/checkpoints/`.
 - **Project repo.** The Forgejo repo of a project (org `agentplaza`), at one branch. Edits become commits and pull
   requests.
+- **Station.** An online workstation's work folder (`station:<id>`, see `docs/design/workstations.md`). Its files,
+  runs and terminals go to the workstation's daemon. It has no checkpoints, so no changes, restore or branch.
 
-Per-agent and per-project both work. The IDE state is keyed by the workspace id: `agent:<cid>` or `repo:<name>@<ref>`.
+Per-agent and per-project both work. The IDE state is keyed by the workspace id: `agent:<cid>`, `repo:<name>@<ref>` or
+`station:<id>`.
 
 Agents work in VMs. The IDE never reaches the host. It goes through the hub to the VM (section 6.4).
 
@@ -100,6 +122,9 @@ Reuse these. Do not build a second copy.
 6. **No shortcut layer** in either app. The desktop binds one key (`[`, the sidebar).
 
 ## 5. UX
+
+Superseded: the layout below is the first plan. The built layout is the agent-first one in `workspace.md`, section 2.
+The button and the entry points below still hold.
 
 **The button.**
 

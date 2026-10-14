@@ -1,10 +1,50 @@
 # Workstations
 
-Status: plan (2026-10-14). Nothing here is built. No code changes are part of this document.
+Status: built (2026-10-14). The map of what is built, and the known limits, come first. The plan sections below are
+kept as the design the build follows; where the build differs, the limits say so.
 
 Owner's request: agents that work through the hub should be able to use real machines (a Mac mini, a Linux desktop,
 a Windows laptop) and full VMs, with complete control: the GUI, the shell, the files, the GPUs, and every program
 installed there (Blender, compilers, browsers, anything).
+
+## What is built
+
+| Part (plan section) | Crates and files |
+|---|---|
+| Protocol (3, 6) | `crates/apz-station`: the station link's operations and events, input, facts, settings, the sync protocol, and the vsock ports (5100 link, 5101 config). |
+| Desktop control (4, 5) | `crates/apz-desktop`: the `Desktop` trait, frames, keys and a fake for tests. Backends: `apz-desktop-x11` (a private Xvfb display per agent, the owner's display shared, XShm capture, XTest input), `apz-desktop-wayland` (ScreenCast and RemoteDesktop portals in one dialog; PipeWire capture behind the opt-in `pipewire` feature), `apz-desktop-macos` (CoreGraphics capture and events, Accessibility), `apz-desktop-windows` (DXGI Desktop Duplication with a GDI fallback, SendInput, UI Automation, app catalogue), `apz-desktop-atspi` (AT-SPI tree and actions, logind idle time). |
+| Shared operations (3) | `crates/apz-ops`: files, runs and terminals, shared by the agent harness and the daemon. Windows runs sit in a job object and Windows terminals run on ConPTY. |
+| Daemon (3, 4, 8, 10) | `crates/apz-workstation`: join and enrolment (`enrol.rs`, `join.rs`, `cli.rs`), the hub link (`link.rs`, `uplink.rs`), the backend choice per platform (`backend.rs`), session routing with the pixel lane (`route.rs`), the work folder and its sync (`work.rs`, `sync.rs`), the OS account (`account.rs`), the service install (`service.rs`), and vsock (`vsock.rs`: AF_VSOCK on Linux, the viosock provider on Windows). The binary is `src/main.rs`. |
+| Hub: stations (6, 7, 8, 10) | `crates/apid/src/stations/`: `registry` (stations and join codes), `link` (a station's socket), `leases` (the pixel queue and `pixel_capacity`), `act` (the choke point: checks, laws, audit, deliver), `tools` (the agents' tools and the hub MCP tools), `screen` (live view and thumbnails), `control` and `takeover` (the owner's takeover and its three policies), `recordings` (frames with their capture times), `sync` (the mirror, the pause and conflicts), `ops` (audit, STOP ALL), `hooks` (recordings and charges), `vms` (VMs on nodes), `api` (routes). Migrations `0010` to `0013` are in `crates/apid/sql/migrations/`. |
+| Nodes and VMs (10) | `crates/noded/src/workstation.rs` (records, `cid_for`, the backend choice), `ws_qemu.rs` (QEMU/KVM), `ws_relay.rs` (the vsock relay, four connections per VM), `crates/vmm/src/host_vsock.rs` (the QEMU host's AF_VSOCK listeners), `scripts/mk-workstation-guest.sh` (the guest recipe). |
+| Apps (9) | Web: `apps/web/src/views/workstations*.ts` (list, live view, recordings, work folder), `station-machine.ts` and `machine-list.ts` (Machines), `apps/web/src/ide/` (`station:` workspaces). Desktop: `apps/desktop/src/console/screens/workstations*.rs`, `machines.rs`, `floor.rs`, `ide*.rs`. The Floor's models and screen state: `crates/apz-engine/src/fleet.rs` and `hardware.rs`. CLI: `apps/cli/src/cmd/stations.rs` and `stations/` (list, show, codes, leases, drain, revoke, settings, audit, recordings, sync, files, screenshot, watch), `cmd/workstation.rs` (join, status, leave), and the TUI's Workstations tab on `w` (`apps/cli/src/tui/workstations.rs`). |
+| Setup (1) | **Add as a workstation** in `apps/desktop/src/console/boot.rs` and `workstation_setup.rs`; `agentplaza workstation join` uses `crates/apz-workstation/src/enrol.rs`. A station is never the hub's own machine: it is refused at join and at every hello. |
+
+## Known limits
+
+- Not yet run on real macOS, Windows or Wayland hardware. The tests use fakes and the hosts the code runs on.
+- The vsock and QEMU paths are not tested on a real node.
+- GPU time is not charged. Only the lease's wall time is charged (`stations/hooks.rs`), and a rate of 0 is free.
+- The Floor shows a workstation's state as its screen's glow: dark when offline, dim when up, lit while a lease is
+  active. It does not show the live picture. The live thumbnail is on Machines and in the Workstations list.
+- Pixel sessions: only Linux with Xvfb gives each agent a private session. On macOS and Windows the daemon refuses a
+  pixel session (there is no virtual display yet), so a pixel lease there gets no screen. Screen work there runs in
+  the owner's session under a shared lease. Section 5's second-user session on macOS and the shared Windows pixel
+  session are not built. Linux pixel sessions use Xvfb, not a headless Wayland compositor.
+- A Windows client edition has one shared session, so the hub queues its pixel leases one at a time.
+- X11 and Wayland have no focus and no quit. Windows has focus but no quit. macOS has both.
+- Wayland screen capture needs the opt-in `pipewire` feature. Without it a Wayland session takes input but cannot
+  capture.
+- Windows guests need the virtio-win `viosock` driver. Without it the guest has no vsock and cannot join.
+- macOS VMs: the hub accepts them only on Apple hardware, two per Mac, but a node refuses macOS guests
+  (`noded/src/workstation.rs`), so none run.
+- Conflict copy names use UTC, because the hub has no timezone setting for the owner's session.
+- The backends differ from section 4's table: Windows captures with DXGI Desktop Duplication (GDI fallback), not
+  Windows.Graphics.Capture; macOS captures with `CGDisplayCreateImage`, not ScreenCaptureKit; Linux input is XTest on
+  X11 and the RemoteDesktop portal on Wayland, not libei or uinput.
+- The CLI cannot take over or give back a session. Its live view is `stations screenshot` and `stations watch`. Take
+  over and give back are on the web and the desktop.
+- Windows' secure desktop (UAC prompts, the lock screen) cannot be driven, as planned.
 
 ## 1. Goal and the owner's decisions
 

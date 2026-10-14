@@ -1,7 +1,7 @@
 # IDE workspace, typography and rich content
 
-Status: plan and build (2026-10-14). This extends `docs/design/ide.md`; the IDE stays a full-window view of its own
-(no console sidebar or top bar).
+Status: built (2026-10-14). This extends `docs/design/ide.md`; the IDE stays a full-window view of its own (no console
+sidebar or top bar). What landed, per section, is in the next table; the known limits are at the end.
 
 Owner's request (2026-10-14):
 
@@ -12,6 +12,17 @@ Owner's request (2026-10-14):
   A GitHub PR link shows the GitHub icon and the PR number, and hovering it opens a preview with the title, author and
   the start of the text.
 - Desktop: videos and HTML show a preview and open outside the app when clicked (owner's choice; no webview).
+
+## What landed
+
+| Section | What landed | Commits |
+|---|---|---|
+| 1 Typography | Inter is the interface and reading face on web and desktop, Martian Mono is for code only, the type roles are tokens, and Source Serif is gone from the apps. | `3756a99` (the Inter assets), `1468dbe` (web), `745953f` (desktop) |
+| 2 IDE layout | The agent-first layout on web and desktop: projects and agents on the left; the selected agent's chat, terminal, editor and diff in the centre; the board, files, tasks, approvals and activity on the right. The command palette (Ctrl/Cmd+K) is in both. The TUI has a Workspace tab with the agent tree, the selected agent's transcript with a composer, and the project board. | `7c29f76` (web), `a010773` (desktop), `c668a71` (TUI), `5c37945` (web project groups), `baaa655` (desktop polish) |
+| 3 Rich content | `crates/apz-rich` with the shared vectors in `crates/apz-rich/tests/vectors.json`, and the web's TypeScript port. The hub's unfurl (`POST /v1/unfurl`, `GET /v1/unfurl?url=`, in `crates/apid/src/unfurl/`) with its cache. The renderers: web (`apps/web/src/ui/rich.ts`, `embeds.ts`), desktop (`apps/desktop/src/console/rich.rs`), CLI and TUI (`apps/cli/src/rich.rs`, and `agentplaza unfurl`). | `3f00303` (classifier and unfurl), `2212f74` (web), `7592dce` (desktop), `0f5c0e4` and `7b0cad8` (CLI) |
+| 3.4 Every surface | Web: approvals, tasks, conversations and board views, and the other screens agents write to. Desktop: the agent screen, conversations, tasks, approvals, board, git (PR discussions) and the IDE chat. | `18c6c3f` (web), `7592dce` (desktop) |
+| 4 Build order | The steps of the plan's section 4 are all in: fonts, the classifier and unfurl, the renderers, the IDE layouts, the TUI tab, and the switch of every surface to the renderer. | the commits above |
+| Board (owner actions) | The owner posts to a board with `@name` and `@all`, pauses and resumes deliveries, and exports a project's thread or the whole board. Routes: `/v1/board/posts`, `/v1/board/pause`, `/v1/board/export` (`crates/apid/src/owner_board.rs`). Web: `apps/web/src/board/owner.ts`. Desktop: `apps/desktop/src/console/screens/board.rs`. CLI: `agentplaza board post`, `comment`, `pause`, `export`. | `ddc4951` |
 
 ## 1. Typography
 
@@ -157,3 +168,11 @@ context to expected spans), so the three apps recognise the same things.
 5. Every surface switched to the rich renderer (transcripts, boards, conversations, approvals, tasks, git).
 6. Checks: headless web screenshots of each surface in both themes and at phone width, desktop self-snapshots
    (`APZ_SNAPSHOT`), CLI output, then `docs/design/parity.md` updated.
+
+## Known limits
+
+- Desktop videos and HTML files show a card whose Open button leaves the app, by design (no webview). The web plays
+  video inline and runs HTML in a sandboxed frame.
+- External images load from their own hosts, with no referrer. The hub does not proxy them.
+- The desktop's classifier context has no plaza git host (`apps/desktop/src/console/rich.rs`, `plaza_git_host: None`),
+  so plaza git references show as plain links there. The web takes the host from the hub's overview.
