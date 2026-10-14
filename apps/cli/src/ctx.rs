@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 use std::io::{IsTerminal, Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -177,13 +177,17 @@ pub fn local_owner_token() -> Option<String> {
 }
 
 /// Resolves the hub from the flags (already merged with the environment by clap), then the saved
-/// default, then the local hub.
+/// default, then the local hub. A saved hub with a pinned identity (`hub trust`, or the desktop's
+/// trust on first use) is refused when the hub presents another one, before the owner token is
+/// sent; a hex pin (`--pin`, or the saved one) is checked by TLS instead.
 pub fn resolve(hub: Option<String>, token: Option<String>, pin: Option<String>, json: bool) -> Result<Ctx, String> {
     let config = Config::load();
-    let saved = match &hub {
-        Some(name_or_url) => config.hubs.get(name_or_url).cloned(),
-        None => config.default.as_ref().and_then(|name| config.hubs.get(name).cloned()),
+    // The saved hub's name: the one `--hub` names, else the default.
+    let name = match &hub {
+        Some(name_or_url) => config.hubs.contains_key(name_or_url).then(|| name_or_url.clone()),
+        None => config.default.clone().filter(|name| config.hubs.contains_key(name)),
     };
+    let saved = name.as_ref().and_then(|name| config.hubs.get(name)).cloned();
     let url = match (&hub, &saved) {
         (_, Some(saved)) => saved.url.clone(),
         (Some(url), None) => url.clone(),
@@ -196,7 +200,42 @@ pub fn resolve(hub: Option<String>, token: Option<String>, pin: Option<String>, 
         Some(hex) => Some(parse_pin(&hex)?),
         None => None,
     };
+    let pinned = name
+        .as_deref()
+        .filter(|_| pin.is_none())
+        .and_then(|name| pinned_identity(&Config::path(), name).map(|pinned| (name, pinned)));
+    if let Some((name, pinned)) = pinned {
+        check_pinned_identity(name, &url, &pinned)?;
+    }
     Ok(Ctx { client: Client::new(&url, pin, token), json })
+}
+
+/// The fingerprint pinned for the saved hub `name` in the config file at `path` (`pinned.fingerprint`,
+/// written by `hub trust` and by the desktop app). None when the hub has no pinned identity.
+pub fn pinned_identity(path: &Path, name: &str) -> Option<String> {
+    let doc: Value = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
+    doc.get("hubs")?.get(name)?.get("pinned")?.get("fingerprint")?.as_str().filter(|f| !f.is_empty()).map(str::to_string)
+}
+
+/// Asks the hub at `url` which identity it presents (`GET /v1/hub/identity`, unauthenticated and
+/// without a pin, as the desktop app checks it before it sends the owner token) and holds it to
+/// `pinned`. The owner token is not sent by this call.
+fn check_pinned_identity(name: &str, url: &str, pinned: &str) -> Result<(), String> {
+    let identity = Client::new(url, None, None).get("/v1/hub/identity")?;
+    let presented = identity.get("fingerprint").and_then(Value::as_str).filter(|f| !f.is_empty());
+    compare_identity(name, pinned, presented)
+}
+
+/// The identity check: the fingerprint the hub presents must be the pinned one. A hub that presents
+/// no certificate is a different identity too.
+pub fn compare_identity(name: &str, pinned: &str, presented: Option<&str>) -> Result<(), String> {
+    if presented == Some(pinned) {
+        return Ok(());
+    }
+    Err(format!(
+        "the hub's identity changed: pinned {pinned}, presented {}; run `agentplaza hub forget-pin {name}` if you expect this",
+        presented.unwrap_or("no certificate")
+    ))
 }
 
 // ---- Output helpers ---------------------------------------------------------------------------
@@ -442,6 +481,38 @@ mod tests {
         assert_eq!(parse_pin(&hex).unwrap(), [0xab; 32]);
         assert_eq!(parse_pin(&format!("sha256:{hex}")).unwrap(), [0xab; 32]);
         assert!(parse_pin("abc").is_err());
+    }
+
+    #[test]
+    fn a_pinned_identity_is_accepted_only_when_it_is_presented() {
+        assert!(compare_identity("home", "fp-a", Some("fp-a")).is_ok());
+        let other = compare_identity("home", "fp-a", Some("fp-b")).unwrap_err();
+        assert_eq!(
+            other,
+            "the hub's identity changed: pinned fp-a, presented fp-b; run `agentplaza hub forget-pin home` if you expect this"
+        );
+        let none = compare_identity("home", "fp-a", None).unwrap_err();
+        assert_eq!(
+            none,
+            "the hub's identity changed: pinned fp-a, presented no certificate; run `agentplaza hub forget-pin home` if you expect this"
+        );
+    }
+
+    #[test]
+    fn the_pin_of_the_named_hub_is_read_from_cli_json() {
+        let dir = std::env::temp_dir().join(format!("apz-cli-identity-{}", std::process::id()));
+        let path = dir.join("cli.json");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            &path,
+            r#"{"default":"home","hubs":{"home":{"url":"https://home.example:7700","pinned":{"fingerprint":"fp-a","since":"2026-10-13"}},"work":{"url":"https://work.example:7700"}}}"#,
+        )
+        .unwrap();
+        assert_eq!(pinned_identity(&path, "home").as_deref(), Some("fp-a"));
+        assert_eq!(pinned_identity(&path, "work"), None);
+        assert_eq!(pinned_identity(&path, "missing"), None);
+        assert_eq!(pinned_identity(&dir.join("absent.json"), "home"), None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
