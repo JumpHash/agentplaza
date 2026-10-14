@@ -24,4 +24,5 @@ pub mod society;
 pub mod tasks;
 pub mod tools;
 pub mod treasury;
+pub mod usage;
 pub mod vault;

@@ -64,6 +64,9 @@ enum Command {
     /// The treasury: budgets, balances, spend.
     #[command(subcommand)]
     Treasury(cmd::treasury::Cmd),
+    /// Model usage: what the calls cost over a window, the series, the call log, and the prices.
+    #[command(subcommand)]
+    Usage(cmd::usage::Cmd),
     /// The plaza's laws.
     #[command(subcommand)]
     Rules(cmd::rules::Cmd),
@@ -150,6 +153,7 @@ fn run(cli: Cli) -> Result<(), String> {
         Command::Board(c) => cmd::board::run(&ctx, c),
         Command::Council(c) => cmd::council::run(&ctx, c),
         Command::Treasury(c) => cmd::treasury::run(&ctx, c),
+        Command::Usage(c) => cmd::usage::run(&ctx, c),
         Command::Rules(c) => cmd::rules::run(&ctx, c),
         Command::Vault(c) => cmd::vault::run(&ctx, c),
         Command::Models(c) => cmd::models::run(&ctx, c),

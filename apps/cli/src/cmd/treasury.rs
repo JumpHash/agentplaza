@@ -1,5 +1,5 @@
 //! `agentplaza treasury`: The treasury: the plaza budget and its accounts, the wallets, the journal,
-//! minting and fines.
+//! the treasury over time, minting and fines.
 
 use clap::Subcommand;
 use serde_json::{json, Value};
@@ -12,8 +12,36 @@ pub enum Cmd {
     Balances,
     /// Every agent's wallet.
     Wallets,
-    /// The journal: every money movement.
-    Journal,
+    /// The journal: every money movement, newest first.
+    Journal {
+        /// How many entries to fetch (1 to 256).
+        #[arg(long, value_parser = clap::value_parser!(u32).range(1..=256))]
+        limit: Option<u32>,
+        /// Only the entries older than this entry id (the previous page's next id).
+        #[arg(long)]
+        before: Option<u64>,
+        /// Only the entries of this kind (mint, spend, fine, model, ...).
+        #[arg(long)]
+        kind: Option<String>,
+        /// Only the entries posting to this agent's wallet (its cid).
+        #[arg(long)]
+        wallet: Option<u64>,
+        /// Only the entries of this task.
+        #[arg(long)]
+        task: Option<String>,
+    },
+    /// The treasury over time: what flowed in and out in each bucket.
+    Series {
+        /// Start, in milliseconds since the Unix epoch (default: 30 days before --to).
+        #[arg(long)]
+        from: Option<u64>,
+        /// End, in milliseconds since the Unix epoch (default: now).
+        #[arg(long)]
+        to: Option<u64>,
+        /// Bucket size, in UTC: hour or day (default: day).
+        #[arg(long, value_parser = ["hour", "day"])]
+        bucket: Option<String>,
+    },
     /// Add whole units to the plaza budget.
     Mint {
         /// Whole units to add.
@@ -25,7 +53,7 @@ pub enum Cmd {
         cid: u64,
         /// Whole units to take.
         amount: u64,
-        /// What the fine is for.
+        /// What the fine is for (required).
         #[arg(long, default_value = "")]
         memo: String,
     },
@@ -40,9 +68,58 @@ fn array(v: &Value) -> &[Value] {
 fn postings(e: &Value) -> String {
     array(e.get("postings").unwrap_or(&Value::Null))
         .iter()
-        .map(|p| format!("{} {}", ctx::s(p, "account"), ctx::text(p, "amount")))
+        .map(|p| format!("{} {}", ctx::text(p, "account"), ctx::text(p, "amount")))
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+/// `?key=value&…` for the parameters that are set (values percent-encoded); "" when none are.
+/// A parameter with an empty value names no filter, so it is left out.
+fn query(params: &[(&str, Option<String>)]) -> String {
+    let parts: Vec<String> = params
+        .iter()
+        .filter_map(|(key, value)| value.as_ref().filter(|v| !v.is_empty()).map(|v| format!("{key}={}", ctx::seg(v))))
+        .collect();
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!("?{}", parts.join("&"))
+    }
+}
+
+/// The journal's path with its paging and filters.
+fn journal_path(limit: Option<u32>, before: Option<u64>, kind: Option<&str>, wallet: Option<u64>, task: Option<&str>) -> String {
+    format!(
+        "/v1/treasury/journal{}",
+        query(&[
+            ("limit", limit.map(|n| n.to_string())),
+            ("before", before.map(|id| id.to_string())),
+            ("kind", kind.map(str::to_string)),
+            ("wallet", wallet.map(|cid| cid.to_string())),
+            ("task", task.map(str::to_string)),
+        ])
+    )
+}
+
+/// The series' path: the range and bucket the request names (the hub defaults the rest).
+fn series_path(from: Option<u64>, to: Option<u64>, bucket: Option<&str>) -> String {
+    format!(
+        "/v1/treasury/series{}",
+        query(&[
+            ("from", from.map(|ms| ms.to_string())),
+            ("to", to.map(|ms| ms.to_string())),
+            ("bucket", bucket.map(str::to_string)),
+        ])
+    )
+}
+
+/// A fine's memo, trimmed. The web refuses a blank memo, so the CLI refuses it before the POST.
+fn fine_memo(memo: &str) -> Result<String, String> {
+    let text = memo.trim();
+    if text.is_empty() {
+        return Err("A fine needs a memo.".into());
+    }
+    Ok(text.to_string())
 }
 
 pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
@@ -82,10 +159,10 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                 ctx::table(&["cid", "name", "balance"], &rows);
             });
         }
-        Cmd::Journal => {
-            let v = ctx.client.get("/v1/treasury/journal")?;
+        Cmd::Journal { limit, before, kind, wallet, task } => {
+            let v = ctx.client.get(&journal_path(limit, before, kind.as_deref(), wallet, task.as_deref()))?;
             ctx.out(&v, |v| {
-                // The hub answers with the entries as a bare array or as {entries}.
+                // The hub answers with the entries in a page: {entries, total, next_before, ...}.
                 let entries = v.get("entries").unwrap_or(v);
                 let rows: Vec<Vec<String>> = array(entries)
                     .iter()
@@ -93,14 +170,41 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                         vec![
                             ctx::text(e, "id"),
                             ctx::s(e, "kind").to_string(),
-                            ctx::when(&e["at"]),
+                            ctx::when(&e["created_at"]),
                             postings(e),
                             ctx::s(e, "memo").to_string(),
-                            ctx::text(e, "task"),
+                            ctx::text(e, "task_id"),
                         ]
                     })
                     .collect();
                 ctx::table(&["id", "kind", "at", "postings", "memo", "task"], &rows);
+                if let Some(next) = v.get("next_before").and_then(Value::as_u64) {
+                    let total = ctx::text(v, "total");
+                    println!();
+                    println!("next page: --before {next} ({total} entries match)");
+                }
+            });
+        }
+        Cmd::Series { from, to, bucket } => {
+            let v = ctx.client.get(&series_path(from, to, bucket.as_deref()))?;
+            ctx.out(&v, |v| {
+                let rows: Vec<Vec<String>> = array(v.get("points").unwrap_or(&Value::Null))
+                    .iter()
+                    .map(|p| {
+                        vec![
+                            ctx::when(&p["at_ms"]),
+                            ctx::text(p, "entries"),
+                            ctx::text(p, "minted"),
+                            ctx::text(p, "escrowed"),
+                            ctx::text(p, "paid"),
+                            ctx::text(p, "refunded"),
+                            ctx::text(p, "fined"),
+                            ctx::text(p, "spent"),
+                            ctx::text(p, "treasury_end"),
+                        ]
+                    })
+                    .collect();
+                ctx::table(&["at", "entries", "minted", "escrowed", "paid", "refunded", "fined", "spent", "treasury end"], &rows);
             });
         }
         Cmd::Mint { amount } => {
@@ -108,9 +212,52 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             ctx.out(&v, |_| println!("minted {amount} into the plaza budget"));
         }
         Cmd::Fine { cid, amount, memo } => {
+            let memo = fine_memo(&memo)?;
             let v = ctx.client.post("/v1/treasury/fine", &json!({ "cid": cid, "amount": amount, "memo": memo }))?;
             ctx.out(&v, |_| println!("fined agent {cid} {amount}"));
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_blank_fine_memo_is_refused_and_a_memo_is_trimmed() {
+        assert_eq!(fine_memo(""), Err("A fine needs a memo.".to_string()));
+        assert_eq!(fine_memo("  \t "), Err("A fine needs a memo.".to_string()));
+        assert_eq!(fine_memo("  late delivery  "), Ok("late delivery".to_string()));
+    }
+
+    #[test]
+    fn the_journal_path_carries_only_the_filters_it_is_given() {
+        assert_eq!(journal_path(None, None, None, None, None), "/v1/treasury/journal");
+        assert_eq!(journal_path(Some(10), None, Some(""), None, Some("")), "/v1/treasury/journal?limit=10");
+        assert_eq!(
+            journal_path(Some(25), Some(42), Some("fine"), Some(7), Some("t/1 x")),
+            "/v1/treasury/journal?limit=25&before=42&kind=fine&wallet=7&task=t%2F1%20x"
+        );
+    }
+
+    #[test]
+    fn the_series_path_names_the_range_and_bucket_given() {
+        assert_eq!(series_path(None, None, None), "/v1/treasury/series");
+        assert_eq!(series_path(Some(1000), Some(5000), Some("hour")), "/v1/treasury/series?from=1000&to=5000&bucket=hour");
+    }
+
+    #[test]
+    fn postings_read_the_account_number_and_the_amount() {
+        let entry = json!({ "postings": [ { "account": 3, "amount": -5 }, { "account": 9, "amount": 5 } ] });
+        assert_eq!(postings(&entry), "3 -5, 9 5");
+        assert_eq!(postings(&json!({})), "");
+    }
+
+    #[test]
+    fn the_journal_entry_fields_are_the_hub_s() {
+        let entry = json!({ "id": 4, "kind": "fine", "created_at": 1_791_811_353_718u64, "task_id": "t-1", "memo": "late" });
+        assert_eq!(ctx::text(&entry, "task_id"), "t-1");
+        assert_ne!(ctx::when(&entry["created_at"]), "—", "created_at is the time the hub sends");
+    }
 }
