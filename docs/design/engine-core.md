@@ -4,6 +4,11 @@ Owner's question (2026-10-13): "Can't you build a rendering/game engine and make
 document turns `crates/apz-engine` from a renderer with a few hand-wired scenes into a small game engine. It
 keeps the host contract from `engine.md`, the same as before: `Engine::new`, `set_data`, `input`, `frame`, `command`.
 
+Status (2026-10-14): step 1 is started, not finished. `920a8d3` added the `bevy_ecs` World with startup, fixed (30 Hz),
+update and render-prep schedules, Motion from marker components and the typed asset registry (`crates/apz-engine/src/core/`,
+`assets/`). The scenes are not entities yet, and there is no compute: no `@compute` shader, no culling, flow fields or
+particles. Steps 2 to 4 are open. Step 5's three.js removal is done (`987394f`); its portrait and lab states are not.
+
 ## Why
 
 Today:

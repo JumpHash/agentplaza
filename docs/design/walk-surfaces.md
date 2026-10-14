@@ -1,5 +1,9 @@
 # Walk surfaces: one model for what robots stand on
 
+Status (2026-10-14): built. The surfaces and links are `crates/apz-board/src/walk.rs`; the layout emits them
+(`layout/surfaces.rs`); the grid is rasterised from them (`grid.rs`). The drawn-support and z-fight checks are the
+audit (`audit.rs`) and the z-fight lint (`zfight.rs`).
+
 ## The problem this fixes
 
 Robots walk a grid graph: cells with a surface height, edges between neighbours within a step, one-way drops,
@@ -61,5 +65,5 @@ WalkLink { from, to, kind: "step" | "ramp" | "drop" (one way) | "lift" (via cab)
 
 ## The desktop port
 
-The desktop renderer (Rust) reads the same layout output. It mirrors the walk-surface list and the
-rasterisation exactly, and the shared nav fixtures cover both.
+There is no separate desktop mirror any more. The desktop and the web both draw through `apz-engine`, which reads
+the one walk-surface list and rasterisation in `apz-board`. The shared nav fixtures (`assets/nav/fixtures.json`) are not yet read by a Rust test.

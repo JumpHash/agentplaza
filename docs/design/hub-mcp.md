@@ -1,5 +1,10 @@
 # The hub as an MCP server
 
+Status (2026-10-14): built in `crates/apid/src/hub_mcp/` (core, auth, sessions, audit, the owner API, the tables
+`hub_mcp_tokens` and `hub_mcp_calls` in migrations `0004` and `0005`), with the web and desktop tabs, and the CLI under
+`agentplaza mcp`. Differences from the tables below: `station_list` (observe) is built and not listed here; `post_board`,
+`propose_agent` and `propose_law_change` are listed below but have no code in `tools/` yet.
+
 Owner's request (2026-10-13): any MCP client can drive a plaza through the hub. That covers Claude Code, Claude
 Desktop, Cursor, or another agent stack. The feature includes a configuration flow, a defined set of tools, and
 documentation.

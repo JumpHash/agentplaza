@@ -5,6 +5,10 @@ hold a key; they ask the hub, and the hub decides. The vault is where those keys
 `secrets.json`, `connector-secrets.json`, the Hugging Face token file and the `--env-file` keys, which were
 plaintext on disk.
 
+Status (2026-10-14): built. The code is `crates/apid/src/vault/` (`crypto.rs`, `disk.rs`, `audit.rs` (the audit log
+`vault-audit.jsonl`), `slots.rs`, `model.rs`, `routes.rs`, `migrate.rs`, `dotenv.rs`, `process.rs`), and the routes
+below are the ones it serves. The tests named at the end are in `vault/tests.rs`.
+
 ## Goals
 
 - **Encrypted at rest.** A copy of the state directory, a Postgres dump or a backup holds only ciphertext.

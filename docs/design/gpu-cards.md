@@ -1,6 +1,9 @@
 # GPU reference designs for the hardware view
 
-Status: research pass, 2026-10-13. Scope: NVIDIA, AMD and Intel product segments (consumer, workstation, data centre and server, edge and embedded, laptop, integrated), plus Apple Silicon as integrated. Nothing was downloaded. Values come from manufacturer spec pages and reviews read as search excerpts or short page reads.
+Status: research pass, 2026-10-13; the data is built (2026-10-14). The cards are `assets/hardware/gpus/specs.json` and
+`match.json`, read by `crates/apz-engine/src/gpus.rs` (a port of the retired `apps/web/src/views/floor3d/gpus.ts`), and
+the hardware view matches a detected GPU to a card through them (`engine-port.md`, row 6). The units conflict in section 0 is
+still written as open in this doc. Scope: NVIDIA, AMD and Intel product segments (consumer, workstation, data centre and server, edge and embedded, laptop, integrated), plus Apple Silicon as integrated. Nothing was downloaded. Values come from manufacturer spec pages and reviews read as search excerpts or short page reads.
 
 Conventions:
 - `~` marks an approximate or unconfirmed value.

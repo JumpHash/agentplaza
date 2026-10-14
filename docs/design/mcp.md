@@ -1,5 +1,9 @@
 # MCP servers: outside tools for agents, run by the hub
 
+Status (2026-10-14): built. The hub side is `crates/apid/src/mcp/` (config, client, runtime, stdio, http, egress, catalog,
+relay, routes), the relay is `crates/mcp-relay/`, and the console flow is `apps/web/src/views/mcp.ts` and
+`apps/desktop/src/console/screens/mcp.rs`. The tests named at the end are in `mcp/tests.rs`, and the fixture server is `mcp/fixture.rs`.
+
 The owner adds Model Context Protocol servers. Agents then get their tools as ordinary plaza tools. As with
 connectors, every call is made by the hub: agents never hold a server's credentials, and no server runs on
 the host itself.

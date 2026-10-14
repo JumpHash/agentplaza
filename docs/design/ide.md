@@ -248,7 +248,7 @@ Use the existing tokens. Add no new colours.
 - Web (`apps/web/src/styles/tokens.css`): `--paper` and `--sheet` for the editor surface, `--ink` for text, `--ink-3`
   for line numbers, `--rule` for gutters, `--signal` for the active line, `--ok-ink` and `--crit` for add and remove.
   Syntax: keyword `--signal-ink`, string `--ok-ink`, number `--warn-ink`, type `--info-ink`, comment `--ink-3`. Dark
-  theme follows the existing `[data-theme]` blocks. Code in `--mono`, prose in `--serif`, square corners.
+  theme follows the existing `[data-theme]` blocks. Code in `--mono` (Martian Mono), prose in `--sans` (Inter; Source Serif is gone from the apps, `workspace.md` section 1), square corners.
 - Desktop (`apps/desktop/src/theme.rs` `Palette`, `console/ui.rs` helpers): the same roles from `Palette`. Chrome from
   `view_head`, `tabs`, `seg`, `btn`, `card`, `sheet`, `empty`, `badge`. Icons from the lucide set; check
   `console/icons.rs` for `square-code`.

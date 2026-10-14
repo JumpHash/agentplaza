@@ -1,5 +1,9 @@
 # Skill library
 
+Status (2026-10-14): built. The hub is `crates/apid/src/skills/` (routes, import, blobs, agent tools, store in the
+database and in memory, tests), the checks are `crates/apz-skill`, the storage is migration `0007_skills.sql`, and the screens
+are `apps/web/src/views/skills.ts` and `skill-editor.ts`, and `apps/desktop/src/console/screens/skills.rs` and `skill_editor.rs`.
+
 Owner's request (2026-10-14): a skill library, like the prompt library. Skills can be imported, exported, built in
 the app, and imported from GitHub.
 

@@ -1,6 +1,6 @@
 # Rooms: a seeded generator of furniture groups, a verifier, one catalogue
 
-Status: v2 (2026-10-13). v1 placed items one by one: they floated, sat at odd angles and chairs stood alone in the
+Status: v2, built (2026-10-14; the algorithm was written on 2026-10-13). v1 placed items one by one: they floated, sat at odd angles and chairs stood alone in the
 middle of the floor. v2 places **groups**: furniture compositions with a purpose (a desk and its chair and screen,
 a reading nook, a meeting, a station with its stool, a storage wall, a door flank, wall art). Every item belongs to
 exactly one group. Rooms are **generated** from the catalogue and per-role templates by a deterministic algorithm,
@@ -18,7 +18,7 @@ assets/rooms/
   minsize.json     per role and desk count (1..6): the smallest room side at which the required groups always place
 docs/design/rooms.md
 generator: crates/apz-board/src/rooms/generate.rs; verifier: crates/apz-board/src/rooms/verify.rs
-engine:    crates/apz-engine/src/rooms/ (build.rs: layout -> meshes, kit.rs, lab.rs); web room lab at #/room-lab
+engine:    crates/apz-engine/src/rooms/ (build.rs: layout -> meshes, kit.rs, lab.rs, overlay.rs); web room lab at #/room-lab
 (The TypeScript files `gen.ts`, `verify.ts`, `build.ts`, `kit.ts` and `rooms/index.ts` named in the text below were
 retired in `987394f`; the Rust files above replace them.)
 desktop: the same crates, no copy of its own; APZ_ROOM_LAB (the room lab's switch)
@@ -182,14 +182,16 @@ the check is a follow-up).
   the role's minSize. A failure prints its input as a lab URL. The run reports, per role and size, how often a
   preferred group was skipped.
 - **Fixtures** (`cargo test -p apz-board`, `fixtures.json`, 200 cases): the generator computes the layout hash and must
-  match. Regenerate only when the algorithm or the catalogue changes on purpose.- **Room lab**: `#/room-lab?role=<role>&w=4&d=3.5&door=s&seed=7` (one room; `debug=1` overlays the grid, solids,
+  match. Regenerate only when the algorithm or the catalogue changes on purpose.
+- **Room lab**: `#/room-lab?role=<role>&w=4&d=3.5&door=s&seed=7` (one room; `debug=1` overlays the grid, solids,
   reservations, spots and violations), `&grid=1` (12 seeds side by side), `&role=all` (every role).
   Desktop: `APZ_ROOM_LAB=<role>` with `APZ_ROOM_SEED`, `APZ_ROOM_SIZE=4x3.5`, `APZ_ROOM_DOOR`.
 
 ## On the board
 
-`board-layout` gives each room its cell; the floor computes `door` (the side nearest the room's trace walkway) and
-the seed, calls the generator and builds the layout with the kit and the props. The behaviour engine (robots.md)
+The board layout (`crates/apz-board/src/layout/rooms.rs`) gives each room its cell; the engine computes `door` (the side
+nearest the room's trace walkway) and the seed, calls the generator and builds the layout with the kit and the props
+(`crates/apz-engine/src/rooms/`). The behaviour engine (robots.md)
 reads `spots` as the room's stations; `g` is available to group-aware behaviour (a seat is a group member).
 
 ## Appendix: v2 algorithm details (binding; both apps match bit for bit)

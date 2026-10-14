@@ -1,11 +1,14 @@
 # Navigation: robots that walk around things
 
-Status: design (2026-10-13). The owner: "the robots walk towards walls, items, props, etc and look clunky walking into
+Status: built (2026-10-14); written as a design on 2026-10-13. The owner: "the robots walk towards walls, items, props, etc and look clunky walking into
 those. We need path mapping/tracing for them." Today a robot walks straight at its goal (or along the trace graph between
 rooms) and slides through furniture and walls. This adds a navigation grid, path planning, path following and local
 avoidance — one algorithm, in Rust, for the engine on both hosts (`crates/apz-board/src/nav/`, `crates/apz-engine/src/world/nav.rs`), proven by Rust tests.
 
-**Note (2026-10-14):** the TypeScript sources and tests named in this doc (`floor3d/*.ts`, `nav-*.ts`, `lift*.ts`, `board-layout.ts`, `test/tests.ts`) were deleted in `987394f`. Their Rust ports are named where each rule is stated. The rule numbers still refer to the retired TS. The tests are `cargo test -p apz-board -p apz-engine`.
+**Note (2026-10-14):** the TypeScript sources and tests named in this doc (`floor3d/*.ts`, `nav-*.ts`, `lift*.ts`, `board-layout.ts`, `test/tests.ts`) were deleted in `987394f`. Their Rust ports are named where each rule is stated. The rule numbers still refer to the retired TS. The tests are `cargo test -p apz-board -p apz-engine`. The walk checks in **Verification** below come from that TS
+suite; the Rust tests that carry them now are `robots_walk_between_homes_on_every_board`, `a_crowd_of_eight_arrives_and_rides_the_lifts`
+and `a_two_gpu_workstation_keeps_its_board_walk_and_its_lifts` (`crates/apz-board/src/nav/world/tests.rs`). The
+`assets/nav/fixtures.json` golden set is not yet read by a Rust test.
 
 ## The nav grid
 
@@ -62,7 +65,7 @@ districts + i + 1), so no two regions share an id.
 
 The grid is rebuilt when the board, its params or any room layout changes (cheap: ~60k cells for a large board).
 
-## Layout notes (board-layout.ts)
+## Layout notes (board-layout.ts; the Rust port is `crates/apz-board/src/layout/`)
 
 - **Exits**: a slot's aisle leaves by its nearer aisle end, else by a spur (a 1.0 gap through a row, centred on a sample
   column, clear of tall parts, and leaving no room span narrower than one aisle width), else by a gangway. Each candidate
@@ -356,13 +359,14 @@ served within a bound, two robots from opposite ends, idle when nothing is queue
   - `openAtEnd`, `openMaxSeconds`: events still open at the end; the longest must be under 3.
   - `overlapPct`: robot–robot overlap (distance < 0.5) as a share of robot-seconds. Must be under 0.5 %.
   - `goalsReached`, `goalsIssued`, `unreachable`: arrivals, goals given, and goals cleared by the give-up in 2.
-  A board passes when all four criteria hold and its property checks pass. The suite (`test/tests.ts`) runs a 15 s
-  variant on three boards (workstation, server, apple-soc) with the same criteria.
-- **Gravity** (`test/tests.ts`, "Gravity and heights" and "Lift riders"): the body's modes on flat surfaces (a walked step, a jump of 0.8 with
+  A board passes when all four criteria hold and its property checks pass. The suite (`test/tests.ts`, deleted in `987394f`)
+  ran a 15 s variant on three boards (workstation, server, apple-soc) with the same criteria. The record of the
+  criteria stays here; no Rust test prints these counters yet.
+- **Gravity** (the TS suite, `test/tests.ts`, "Gravity and heights" and "Lift riders"; Rust: `nav/world/tests.rs`): the body's modes on flat surfaces (a walked step, a jump of 0.8 with
   its crouch and landing, a fall of 1.5, a fall over NAV_DROP_DOWN, no floor, a glide), the fade, a forced push off a 2.5 drop
   (respawn within 1.5 s), a 1.5 drop (lands), and 60 s with 8 agents on every board: no respawn, no air frame stuck for more
   than 2 s, no grounded robot off a walk cell, no robot in a blocked cell, no floating or sunk frame (the audit). Six lift trips on the
   server board arrive within 150 s, and a rider's y is its cab floor.
 - **Fixtures** (`assets/nav/fixtures.json`): (board, params, seeds, start, goal) → path hash; both apps match.
-- **Debug overlay**: `?nav=1` on the web floor (desktop `APZ_NAV=1`): walkable/blocked/inflated cells, portals, each
+- **Debug overlay**: `?nav=1` on the web floor (desktop and engine `APZ_NAV_OVERLAY=1`): walkable/blocked/inflated cells, portals, each
   robot's current path and its yield state.

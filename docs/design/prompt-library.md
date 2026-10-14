@@ -1,5 +1,9 @@
 # Prompt library: system prompts and AGENTS.md
 
+Status (2026-10-14): built. The hub is `crates/apid/src/prompts/` (routes, store in the database and in memory, seed,
+tests), the checks are `crates/apz-prompt`, the storage is migration `0006_prompts.sql`, and the screens are
+`apps/web/src/views/prompts.ts` and `prompt-editor.ts`, and `apps/desktop/src/console/screens/prompts.rs` and `prompt_editor.rs`.
+
 Owner's request (2026-10-13): a library for system prompts and AGENTS.md files. Prompts are written in markdown, with
 best-practice checks, a way to compare versions and see which is best, validation, a markdown preview, and versioning.
 Everything is stored in the database and managed properly.

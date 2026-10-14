@@ -1,6 +1,7 @@
 # OpenRouter and OpenCode (Zen) as first-class providers
 
-Status: research for the provider work. Facts are marked **confirmed** (read on the cited page or
+Status (2026-10-14): both providers are in the code, as provider ids `openrouter` and `opencode` in
+`crates/apid/src/providers.rs` (with prices in `prices.rs`). This doc is the research record for that work. Facts are marked **confirmed** (read on the cited page or
 in this repo) or **unconfirmed** (not stated on any page read; the code must not rely on them
 without a check).
 

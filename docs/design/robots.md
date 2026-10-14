@@ -1,6 +1,7 @@
 # Robots: 30 species, role tools, and a life on the board
 
-Status: design (2026-10-13). Replaces the five hard-coded robot variants (`robot.ts` / `robot.rs`) with
+Status: built (2026-10-14); written as a design on 2026-10-13. The phases below are built through phase 3 (see
+**Phases**). Replaces the five hard-coded robot variants (`robot.ts` / `robot.rs`) with
 data-driven species shared by the web console and the desktop app, and the floor's ad-hoc wander/chat code
 with a behaviour engine. Builds on the board plazas (`hardware-plazas.md`): agents live in rooms on a
 machine's chips and now also work *on* the chips.
@@ -32,8 +33,8 @@ assets/robots/
 ```
 
 Code: `crates/apz-engine/src/robots/` (loader `files.rs`, `rig.rs`, `clips.rs`, `audit.rs`, `lab.rs`), one copy for
-the web and the desktop. The web lab is `#/robot-lab`. (The TypeScript modules under `apps/web/src/views/floor3d/robots/`
-were retired in `987394f`.)
+the web and the desktop. The web lab is `#/robot-lab`; the desktop lab is `APZ_ROBOT_LAB` (`apps/desktop/src/console/screens/engine_lab.rs`).
+(The TypeScript modules under `apps/web/src/views/floor3d/robots/` were retired in `987394f`.)
 Hub: `crates/apid/src/looks.rs` (dealing and keeping species).
 
 ## Species format (`species/<id>.json`, schema 1)
@@ -351,6 +352,9 @@ determinism, fixtures).
   frame. 100 robots must hold 60 fps on the board view.
 
 ## Phases
+
+Status (2026-10-14): phases 1 to 3 are built (the web lab, the desktop lab and the hub's dealing, and the behaviour
+engine in both apps). Phase 4 (polish) is not checked against this doc's list.
 
 1. **Rig and lab (web)**: the loader, bones, clips, eyes, tools at grips, carry, effects; the five
    current designs ported to JSON so they look exactly as today; `#/robot-lab` (one species or a

@@ -1,7 +1,15 @@
 # AgentPlaza hub: relational database design
 
-Status: design only. No code changed. Written against the tree as it stands: `crates/apid/sql/`
-has `migrations/0001_init.sql` and the query/test layout described in `docs/dev/sql.md`.
+Status (2026-10-14): partly built. The design was written on 2026-10-13 against a tree that had only `0001_init.sql`.
+Landed since, on disk in `crates/apid/sql/migrations/`: `0002_common.sql` (the data-migration bookkeeping and
+`forbid_mutation()`), `0003_agents.sql` (agents, roles, proposals), `0004_hub_mcp.sql` and `0005_hub_mcp_modes.sql`
+(the hub as an MCP server), `0006_prompts.sql`, `0007_skills.sql`, `0008_ide_audit.sql`, `0009_unfurl_cache.sql` and
+`0010` to `0013` (the station tables). The runner is `crates/apid/src/db/migrate.rs` and the data-migration step is
+`crates/apid/src/db/data_migrate.rs`. Not landed: the rest of section 2 (nodes, vault, treasury, tasks and the board,
+and the other domains after them), the repository layer of section 5 (there is no `crates/apid/src/store/` yet), and
+the `plaza_state` drop (`0023` is not on disk). Most domains still live in the `plaza_state` document (`0001_init.sql`,
+`queries/state_upsert.sql`), as section 1 describes. Section 3's numbers are the plan; where a file on disk has a
+different number, the file on disk is the record. The query and test layout is in `docs/dev/sql.md`.
 
 ## 0. Rules this design follows
 
@@ -1079,11 +1087,11 @@ Must land first. No other wave starts coding until it is merged.
 | `crates/apid/sql/migrations/0002_common.sql` | `data_migrations`, `forbid_mutation()` |
 | `crates/apid/sql/migrations/0003_agents.sql` to `0022_transcript_infraction.sql` | schema for every domain, per section 3. Each owner reviews their domain's file |
 | `crates/apid/sql/migrations/migrations.lock` | updated once, by the integrator, with `scripts/migrations.sh lock` |
-| `crates/apid/src/db/data_migrate/mod.rs` | the data-migration framework: `data_migrations` rows, the advisory lock, the per-domain runner, the domain registry (empty in Wave 0) |
-| `crates/apid/src/store/mod.rs`, `store/tx.rs`, `store/error.rs` | `Stores`, `Tx`, `StoreError`, the repository traits' shared pieces |
+| `crates/apid/src/db/data_migrate.rs` (built as one file, not `data_migrate/mod.rs`) | the data-migration framework: `data_migrations` rows, the advisory lock, the per-domain runner, the domain registry (empty in Wave 0) |
+| `crates/apid/src/store/mod.rs`, `store/tx.rs`, `store/error.rs` (not built yet) | `Stores`, `Tx`, `StoreError`, the repository traits' shared pieces |
 | `crates/apid/src/db/sql.rs` | consts for the common and migration queries |
 | `crates/apid/src/state.rs` | wire `Stores` into `App` |
-| `crates/apid/tests/store_contract.rs` (new) | the contract-suite helper, run against file and Postgres backends |
+| `crates/apid/tests/store_contract.rs` (new; not built yet) | the contract-suite helper, run against file and Postgres backends |
 | `docs/dev/sql.md` | the pool, the startup rule, the data-migration framework |
 
 Exit: `scripts/test-db.sh` passes, the migrations apply on an empty database and on a

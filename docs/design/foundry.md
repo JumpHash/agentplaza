@@ -1,6 +1,9 @@
 # The Foundry and the Lab: breeders, training on any GPUs, model agents
 
-Status: design (2026-10-13). Builds on the codex draft (`docs/codex-draft/playbooks/breeding-guide.md`,
+Status: built (2026-10-14), with the Hugging Face and text-model parts (below) added after the design. The hub is
+`crates/apid/src/foundry/` (jobs, devices, plan, recipes, datasets, the registry with shadow, promote and retire, model
+agents on tract), the trainer is `trainer/` (`apz_train`), the Lab is in both apps (`apps/web/src/views/lab*.ts`,
+`apps/desktop/src/console/screens/lab*.rs`), and the shadow runs are `crates/apid/src/usage.rs`. Builds on the codex draft (`docs/codex-draft/playbooks/breeding-guide.md`,
 `schemas/training-job.schema.json`, statute S-006, the Lab town in `docs/towns-draft/towns/lab.yaml`).
 
 ## What it is
@@ -168,7 +171,7 @@ differed or did not run); agreement and cost saved go to the model's shadow stat
 
 ## Hugging Face: search, import, base models (the hub side)
 
-Status: contract (2026-10-13), built in `crates/apid/src/foundry/hf.rs` (the HF client, the search and
+Status: built (2026-10-14; the contract was written 2026-10-13), in `crates/apid/src/foundry/hf.rs` (the HF client, the search and
 detail mapping, the importable hints, the egress rules) and `foundry/hf_import.rs` (the import queue, the
 resumable downloads, the verification, the registration). Owner only: the gate in front of `/v1` admits
 the owner, so these routes are never reachable from a VM. Every change is a bus frame, never SSE.

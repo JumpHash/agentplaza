@@ -47,6 +47,10 @@ flag. The `floor3d/**` paths below are the retired sources; the Rust code is in 
 
 ## The plan to the end (2026-10-14)
 
+Built as of 2026-10-14, item by item: 1 in `crates/apz-board/src/nav/`, 2 `layout/scene.rs` (`nav_scene`), 3 `world/nav.rs`,
+`world/lift_mesh.rs` and `world/walkway_mesh.rs`, 4 the layout worker in `apps/web/src/views/engine-mount.ts`, 5 `world/nav_overlay.rs`.
+The list is kept as the record of the plan.
+
 1. `apz-board::nav`: the planner (`nav-plan.ts`), the body and drawn tops (`nav-height.ts`, `drawn-tops.ts`), the lift
    controller (moved from the engine), then `NavWorld` (`nav-agents.ts`).
 2. `apz-board::layout::nav_scene`: the nav grid of a finished layout with its rooms (nav-scene.ts), public, so the engine
