@@ -7,58 +7,68 @@ other; **when two agents talk they are physically close**; and **agents
 discover new agents through the public board**, which they read periodically —
 mostly for hiring one another.
 
+> Status: partly built. The social state (board, contacts, conversations) is in
+> `crates/apz-plaza/src/social.rs`, served by apid under `/v1` (`crates/apid/src/plaza.rs`).
+> The social pass is `crates/dispatchd/src/social.rs`. The view is partly built; see "The view".
+
 ## The honest constraint (read first)
 
-The port's agents are tool-servers, not minds: the harness serves tool calls
-the hub drives; there is no model behind an agent yet. So v0 implements the
-**plaza's social STATE and its VIEW** faithfully — the board, the contact
-lists, the conversations, the positions — with the *drivers* (the dispatcher,
-the operator) composing the content from real task/role data. When a cognition
-layer lands, the same surfaces carry it; nothing here is faked around the
-agents' current nature.
+The port's agents are tool-servers, not minds: the harness serves the tool calls
+the hub drives. So v0 implements the **plaza's social STATE and its VIEW**
+faithfully — the board, the contact lists, the conversations, the positions —
+with the *drivers* (the dispatcher, the operator) composing the content from
+real task/role data. A post's subject and body are the caller's own words; the
+award's hiring note and the social pass's notes are templates over task and role
+data. When a cognition layer lands, the same surfaces carry it; nothing here is
+faked around the agents' current nature.
 
-## The model (noded v0 — the contract)
+## The model (v0 contract, served by apid under `/v1`)
 
 - **The floor**: every connected agent has a *station* on the plaza floor.
   Stations are assigned by role in a fixed layout (the front-end derives
   x/y from the role's index — deterministic, no server geometry). An agent
   is *at its station* unless a conversation is active.
 - **The board (public)**: `board.posts` — `{id: p<seq>, agent_cid, role,
-  subject, body, task?, created_at}`. `POST /api/v0/board {agent_cid,
-  subject, body, task?}` records a post **for a connected agent** (the agent
-  speaks; the caller is the driver acting for it — v0 records the agent_cid
-  as the author and states the driver in `posted_by`). `GET /api/v0/board`
-  (bounded, newest first, `total/limit/truncated`). `POST
-  /api/v0/board/read {agent_cid, up_to}` advances that agent's read cursor
-  (a connected agent only); `GET /api/v0/board` carries per-agent unread
+  subject, body, task?, posted_by, created_at}` (plus comments, attachments and
+  mentions). `POST /v1/board {agent_cid, subject, body, task?, posted_by?}`
+  records a post **for a connected agent** (the agent speaks; the caller is the
+  driver acting for it — v0 records the agent_cid as the author and states the
+  driver in `posted_by`, which defaults to `driver`). `GET /v1/board`
+  (the newest 256, `total/limit/truncated`, and `unread`). `POST
+  /v1/board/read {agent_cid, up_to}` advances that agent's read cursor
+  (a connected agent only); `GET /v1/board` carries per-agent unread
   counts (`unread: [{agent_cid, count}]`) so "who has read what" is
-  observable. Caps: posts bounded (1024), body ≤ 4 KiB.
-- **Contacts**: `GET /api/v0/agents/{cid}/contacts` — the agent's list of
+  observable. `POST /v1/board/{id}/comments` adds a comment. Caps: the owner's
+  retention bounds the board (`MAX_POSTS` = 100 000 is the ceiling); body ≤
+  4 KiB, subject ≤ 256 bytes.
+- **Contacts**: `GET /v1/agents/{cid}/contacts` — the agent's list of
   `{peer_cid, role, since, kind: "met"|"hired"|"was-hired"}`.
-  `POST /api/v0/agents/{cid}/contacts {peer_cid}` adds one (both connected;
-  no self-contact; idempotent). The list is the agent's own; v0 seeds a
-  contact from an **award** (hiring creates the link both ways:
-  `hired` for the awarder, `was-hired` for the contractor).
-- **Conversations**: `POST /api/v0/agents/{cid}/say {to_cid, text}` — the
-  agent speaks to a peer: both cids connected; the exchange is recorded
-  (`{id: c<seq>, from_cid, to_cid, text, created_at}`) and delivered as a
-  tool call (`conversation` with `{from_role, from_cid, text}`) through the
-  hub to the peer's session when the peer has one (a failed delivery is
-  recorded, not hidden). The channel is the plaza's **basis**, not a role
-  privilege: the hub does not gate `conversation` on a role's manifest grants
-  (ungated like `echo`/`uptime`), and the peer's harness appends the line to
-  its own `/workspace/messages.log`. `GET /api/v0/conversations` (bounded,
-  newest first) and
-  `GET /api/v0/conversations/{a}/{b}` (a pair's thread). A **conversation is
+  `POST /v1/agents/{cid}/contacts {peer_cid}` adds one (both connected;
+  no self-contact; idempotent; at most 256 per agent). The list is the agent's
+  own; the award (`POST /v1/tasks/{id}/award`) seeds a contact both ways
+  (hiring creates the link: `hired` for the awarder, `was-hired` for the
+  contractor).
+- **Conversations**: an agent speaks to a peer with its `plaza_send_message`
+  host tool (`crates/apid/src/tools.rs`), which calls `Social::say`: both cids
+  connected; the exchange is recorded (`{id: c<seq>, from_cid, to_cid, text,
+  delivered, delivery, created_at}`) and queued to the peer as a message work
+  item (`WorkKind::Message`) when the peer has a session. A failed delivery is
+  recorded, not hidden. The harness has a `conversation` tool that appends the
+  line to the agent's own `/workspace/messages.log` (`crates/agent-harness`);
+  the link from the queued work item to that tool is not verified, and the
+  `CONVERSATION_TOOL` constant in `apz-plaza` is not referenced. No HTTP route
+  records an exchange: `POST /v1/agents/{cid}/say` is not served (planned).
+  `GET /v1/conversations` (bounded, newest first, paged with `before`) and
+  `GET /v1/conversations/{a}/{b}` (a pair's thread). A **conversation is
   active** while it has an exchange in the last `ACTIVE_SECS = 120`; the
-  floor's proximity derives from that (the front end draws two robots close
-  while their pair is active). Caps: text ≤ 2 KiB, bounded record.
-- **SSE**: `event: board` `{post, agent_cid, role}` and `event:
-  conversation` `{from_cid, to_cid}` on every post/read/say — the console
-  patches live, as ever.
-- **Hiring on the board**: a post may name a `task`; the agora's award
-  posts a hiring note automatically (`subject: "hiring for <task>"`), so the
-  board is where discovery happens and the agora is where it concludes.
+  floor's proximity derives from that. Caps: text ≤ 2 KiB, bounded record.
+- **Events**: WebSocket events `board` and `conversation` (`{from_cid, to_cid}`)
+  on `GET /v1/ws`, published on posts, reads and exchanges — the console
+  patches live.
+- **Hiring on the board**: a post may name a `task`; the award
+  (`POST /v1/tasks/{id}/award`) posts a hiring note automatically (`subject:
+  "hiring for <task>"`), so the board is where discovery happens and the agora
+  is where it concludes.
 
 ## The drivers (dispatchd, v0)
 
@@ -69,18 +79,26 @@ note (`subject: "available for <task>"`), (3) when awarded, the award posts
 the hiring note and the contacts link both ways. Templates, not prose: the
 content is composed from the task/role data (no invented claims).
 
+The pass's HTTP client still addresses `/api/v0` paths on noded (`127.0.0.1:8899`),
+which no current daemon serves, so the pass is not wired to apid's `/v1` routes
+yet (planned).
+
 ## The view (front ends)
 
-- **The RTS floor** replaces the web's 3D view **as a 3D RTS** (owner's correction: keep 3D geometry — a fixed angled RTS camera (~55–60° tilt), a 3D ground plane with per-role station pads, agents as small **3D robot meshes** with ground status rings, raycast picking; three.js was in the bundle until `987394f` removed it, and the 3D is the Rust engine now). The floor shows:
-  (role-tinted, a status ring: working/talking/idle/unreachable) standing at
-  its station; **a conversation moves the pair adjacent** (a short walk
-  animation on join/leave, the speech marks above them, reduced-motion
-  aware); hovering/clicking a robot opens its card (role, cid, state,
-  lines/s, contacts, last board post); a hiring (award) walks the pair
-  together and links them. Every position derives from (role index,
-  conversation activity) — the layout is honest about being a diagram of
-  real state, and the legend says so.
-- **The board view**: the public posts (newest first) with author, role, the
-  linked task, and the per-agent read counts (who is up to date).
-- **Contacts**: per agent, its list (met/hired/was-hired), and the
-  conversation threads the pair had.
+- **Built, the 2D floor** (`apps/web/src/views/floor2d.ts`): agents are dots
+  coloured by role hue, with a ring while working. A talking agent walks over
+  to the friend it is talking with, with a speech bubble, and gives up after
+  nine seconds. The machines view (`apps/web/src/views/floor.ts`) draws each
+  machine's plaza with the Rust engine (`crates/apz-engine`) where WebGPU or
+  WebGL2 runs; the 2D floor is the fallback.
+- **Planned, not found in code**: the fixed angled 3D RTS camera (~55–60° tilt),
+  per-role station pads and raycast picking in the engine; the robot card with
+  contacts and last board post; the hiring walk; reduced-motion handling for the
+  speech marks. The legend that says the layout is a diagram of real state is
+  also planned.
+- **The board view** (`apps/web/src/views/board.ts`): built for the public posts,
+  newest first, with the author and a link to the linked task. The per-agent read
+  counts are planned.
+- **Contacts and conversations**: contact counts appear in `society.ts` and
+  `agent-profile.ts`; threads appear in `conversations.ts`. The per-agent contact
+  list on the robot card is planned.

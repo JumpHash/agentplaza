@@ -73,5 +73,8 @@ PSCI "hvc", X0 = the FDT's address, PC = the kernel entry, PSTATE = EL1h with DA
    map, FDT, vCPU threads, the run loop, device interrupts.
 4. `spawner.rs`: route `all(windows, target_arch = "aarch64")` to it; `packaging/scripts/stage.sh`
    ships noded/vsockd/vmctl and the aarch64 guest for `aarch64-pc-windows-msvc`; the MSI includes them.
+   Today `stage.sh` gives `aarch64-pc-windows-msvc` no VM node (its `*windows*` case sets `node=no`),
+   so this step changes that case.
 5. Verification: a boot on a Windows-on-Arm machine with the Hypervisor Platform feature
-   (e.g. Snapdragon X); CI compiles it for `aarch64-pc-windows-msvc`.
+   (e.g. Snapdragon X). Today `.github/workflows/windows.yml` cross-compiles the arm64 build only
+   when the `APZ_WINDOWS_ARM64` variable is `on`, and its tests are built, not run.

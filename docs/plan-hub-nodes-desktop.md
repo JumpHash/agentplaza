@@ -6,6 +6,10 @@ running noded (VMs) and its own agent gateway (vsockd), dialling out to the hub.
 stays native (iced) and is ported to full parity with the web console. Join codes are the only way
 a node enters a hub, and they are hardened.
 
+> Status (checked against the code): built, with the gaps noted under each section. Crates: apid (the
+> hub), apz-link (the node link), apz-trust (tokens, keys, signatures), noded and vsockd (the node's own
+> daemons), apps/desktop (the iced app).
+
 ## Topology
 
 ```
@@ -28,6 +32,10 @@ a node enters a hub, and they are hardened.
 
 ## Node identity and join codes (hardening)
 
+Status: built (`crates/apz-trust/src/token.rs`, `crates/apid/src/nodes.rs`). Codes are `apzj1.` tokens that
+last at most 60 minutes (default 15). Redemption is limited to 5 a minute per source address and 3 tries per
+code, and the hub stores only the secret's SHA-256.
+
 - **Join token**: `apzj1.<base64url(json)>` with `{u: hub URL, f: SHA-256 of the hub's TLS
   certificate (base64url), s: 128-bit random secret (base64url), x: expiry (unix s)}`.
   - Issued only by the owner, shown once.
@@ -45,20 +53,30 @@ a node enters a hub, and they are hardened.
   `x-apz-sig = Ed25519(method \n path \n ts \n nonce \n hex(SHA-256(body)))`.
   - The timestamp must be within ±60 s.
   - Nonces are remembered for 5 minutes (no replay).
-  - The node must not be revoked, and an agent route only accepts cids in the node's range.
-- **Revocation**: the owner revokes a node in the console; its signatures stop working at once,
-  and its agents go offline.
+  - The node must not be revoked, and an agent route only accepts cids in the node's range (the range
+    check on agent routes is not verified here).
+  - Built: the headers are `x-apz-node`, `x-apz-ts`, `x-apz-nonce` and `x-apz-sig` (`apz-trust/src/node.rs`).
+- **Revocation**: the owner revokes a node in the console (`POST /v1/nodes/{id}/revoke`); its signatures
+  stop working at once, and its agents go offline. Built.
 - **Owner auth**:
-  - Off loopback, every owner route needs `Authorization: Bearer <owner token>`.
-  - The token is generated at the hub's first start, stored hashed, and shown once.
-  - The web console has a sign-in screen and keeps the token in sessionStorage.
-  - Tokens can be rotated.
+  - Off loopback, every owner route needs `Authorization: Bearer <owner token>` or the session cookie a
+    sign-in gave (built, `crates/apid/src/hub_auth.rs`).
+  - The token is made at the hub's first start and written to `<state>/owner-token` (mode 0600); the hub
+    stores only its hash.
+  - The web console has a sign-in screen. It trades the token for an HttpOnly, Secure, SameSite=Strict
+    session cookie and does not keep the token (this replaces the sessionStorage design).
+  - Tokens can be rotated (`POST /v1/hub/owner-token/rotate`).
 - **TLS**:
-  - The hub generates a self-signed certificate on first start (or uses one the owner gives) and
-    serves HTTPS with rustls when not on loopback.
-  - `GET /v1/hub/identity` gives its name, version and certificate fingerprint.
+  - Built as `apid --tls`: the hub serves HTTPS with a self-signed certificate made on first start
+    (`<state>/tls/cert.pem`, `key.pem`). The option to use a certificate the owner gives is not verified.
+  - `GET /v1/hub/identity` gives its name, version and certificate fingerprint (built).
 
 ## The node link (apz-link)
+
+Status: built. `join.rs` checks the pin and redeems the token, `run.rs` long-polls the command queue and posts
+results and heartbeats, and `forward.rs` carries agent traffic to the hub's `/internal/…` routes. A node's
+commands and results go through `GET /v1/nodes/{id}/commands`, `POST /v1/nodes/{id}/results` and
+`POST /v1/nodes/{id}/heartbeat` (`crates/apid/src/nodes.rs`).
 
 One small daemon per node:
 - `apz-link join <token>`: checks the pin, generates the key, redeems the token, stores identity.
@@ -72,6 +90,11 @@ One small daemon per node:
 
 ## The hub's fleet routing
 
+Status: built. `crates/apid/src/fleet.rs` maps a CID to its node (the hub's own machine is `n0`, reached over
+loopback; a joined node gets a 100-CID range from 1000 up) and routes remote calls through the node's command
+queue, with a 30 s answer limit. Per-node routes are under `/v1/nodes/{id}/…`. The fleet module's header says
+every agent-gateway and noded call goes through it; the call-site coverage is not checked here.
+
 apid no longer assumes one local noded / vsockd:
 - **`fleet` module:** maps cid → node (by CID range) and node → transport. Local node:
   direct HTTP as today. Remote node: its command queue.
@@ -80,14 +103,20 @@ apid no longer assumes one local noded / vsockd:
 
 ## Desktop app at parity
 
+Status: built as an iced 0.14 app (`apps/desktop`, sources in `apps/desktop/src/console/`). The startup
+chooser is `console/boot.rs`, and the remembered choice is kept in `~/.config/agentplaza/desktop.json`.
+Service start and stop is in `console/services.rs`. Feature-level parity with the web console is not
+checked here.
+
 Native iced, same design language as the web console (`apps/web/DESIGN.md`).
 - **Startup chooser:** *Start locally* (starts Postgres/Forgejo/Garage if present, apid, vsockd,
   noded on this machine), *Host a hub*, *Join a hub* (paste a token; starts apz-link, noded,
   vsockd), *Connect to a hub* (URL + owner token, console only).
   - The choice is remembered.
   - Running local services are listed, with start/stop.
-- **Screens:** one module per screen (`src/screens/<name>.rs`) with its own state, messages,
-  load, update and view, registered in one table. The shell is the sidebar (icons, resizable,
+- **Screens:** one module per screen (`apps/desktop/src/console/screens/<name>.rs`) with its own state,
+  messages, load, update and view, registered in one table (`NAV` in `screens/mod.rs`). The modules for the
+  parity list below exist. The shell is the sidebar (icons, resizable,
   rail, hidden), the top bar (STOP ALL) and the held banner.
 - **Parity list:**
   - Overview, Agents (+ agent detail: transcript, chat, model + effort, harness, permissions,

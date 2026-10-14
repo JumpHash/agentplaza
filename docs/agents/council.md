@@ -4,6 +4,10 @@ Source of truth: `docs/codex-draft/statutes/S-008-council-seats.cedar` and
 `docs/codex-draft/playbooks/council-procedure.md`. This file pins **v0** for the
 port, and every narrowing is stated rather than smoothed over.
 
+> Status: built. The council is `crates/apz-plaza/src/council.rs`; apid serves it at the `/v1/motions`
+> routes below (`crates/apid/src/plaza.rs`). The `/v1` paths are the ones apid serves. The dispatcher pass
+> that votes is not yet wired to apid (see Surfaces).
+
 ## Seats (the doctrine, mapped to this fleet's roles)
 
 Four seats: the heads of **Finance**, **Legal (Agents)** (the legislative
@@ -11,21 +15,26 @@ counsel), **Incident response**, and **Mayor Office**. **Legal (Governance)
 never sits** — judges and prosecutors are excluded so courts stay independent
 of rule-making.
 
-| seat | role in `docs/agents/initial-roles.json` |
-|---|---|
-| finance | `finance` |
-| legal (agents) | `legal-agents-counsel` |
-| incident | `incident` |
-| mayor office | `mayor-office` |
+| seat | role (`crates/apid/src/role.rs`) | in `docs/agents/initial-roles.json` |
+|---|---|---|
+| finance | `finance` | yes |
+| legal (agents) | `legal-agents-counsel` | no |
+| incident | `incident` | yes |
+| mayor office | `mayor-office` | yes |
+
+A seat is filled when a live agent holds its role. `legal-agents-counsel` is
+not one of the 17 roles in the manifest, so that seat stays empty until an
+agent holds that role name.
 
 Excluded by doctrine: `legal-gov-judge`, `legal-gov-prosecutor`. Every other
 role holds no seat.
 
 ## The motion (the schema, as this daemon stores it)
 
-`POST /api/v0/motions {proposer_cid, kind, text, needs_owner?}` →
-`201 {id: m<seq>, proposer_cid, proposer_role, kind, text, needs_owner,
-state, votes[], tally, created_at, updated_at}`.
+`POST /v1/motions {proposer_cid, kind, text, amount?, needs_owner?}` →
+`201 {id: m<seq>, proposer_cid, proposer_role, kind, text, amount, needs_owner,
+state, votes[], tally, quorum, owner, created_at, updated_at}`. `amount` (credits)
+is the figure the 10% rule reads for a `budget_move`.
 
 - **proposer_cid must be a connected agent holding a seat** (`403` with the
   role named when it does not: proposing is a seat action, S-008a).
@@ -44,7 +53,7 @@ state, votes[], tally, created_at, updated_at}`.
 
 ## The vote
 
-`POST /api/v0/motions/{id}/vote {agent_cid, vote, reason}` →
+`POST /v1/motions/{id}/vote {agent_cid, vote, reason}` →
 `200` the motion.
 
 - **Only the four seats vote** (a connected agent whose role holds a seat);
@@ -56,7 +65,7 @@ state, votes[], tally, created_at, updated_at}`.
 
 ## The owner's decision
 
-`POST /api/v0/motions/{id}/decide {approve: bool, note?}` → `200` the motion.
+`POST /v1/motions/{id}/decide {approve: bool, note?}` → `200` the motion.
 
 **The owner is the operator, not an agent** — the same modelling choice the
 agora makes for the operator's award: the request names **no agent CID** and
@@ -111,18 +120,23 @@ counted under.
 
 ## Surfaces
 
-- `GET /api/v0/motions` (bounded 256, newest first, `total/limit/truncated`)
-  and `GET /api/v0/motions/{id}`.
-- SSE `event: motion` `{id, kind, state}` on propose/vote/decide (a frame
-  carries no text — the log is the only source, as with conversations).
-- The dispatcher drives votes for the seats (template reasons over the
-  motion's own text + the role, never invented prose) and may propose
-  (`priority`-kind) motions from open tasks. The owner's decision is the
-  operator's hand, never the dispatcher's.
+- `GET /v1/motions` (bounded 256, newest first, `total/limit/truncated`)
+  and `GET /v1/motions/{id}`.
+- WebSocket event `motion` `{id, kind, state}` on `GET /v1/ws`, for propose,
+  vote and decide (a frame carries no text — the log is the only source, as
+  with conversations).
+- Seated agents act through the `plaza_propose` and `plaza_vote` host tools
+  (`crates/apid/src/tools.rs`).
+- The dispatcher's pass (`crates/dispatchd/src/council.rs`) drives votes for
+  the seats (template reasons over the motion's own text + the role, never
+  invented prose) and may propose (`priority`-kind) motions from open tasks.
+  Its HTTP client still addresses `/api/v0` paths on noded, which no current
+  daemon serves, so this pass is not wired to apid's `/v1` routes yet. The
+  owner's decision is the operator's hand, never the dispatcher's.
 
 ## What v0 does NOT do (stated)
 
 - No session windows (any filled seat may vote while `open`) and no
-  deadlines. The owner's decision **is** here (`POST /api/v0/motions/{id}/decide`);
+  deadlines. The owner's decision **is** here (`POST /v1/motions/{id}/decide`);
   no `per-case grants` (0079) and no law signing (0049) — each is its own
   slice.

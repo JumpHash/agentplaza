@@ -2,6 +2,10 @@
 
 Run with the design-critique skill after the owner said the second restyle "looks too much AI".
 
+Status (current tree): the direction below is drawn in the draft mockup `owner-console.html`, not
+built. The live console still follows `apps/web/DESIGN.md`: Inter for the interface, Martian Mono
+for code only, sentence case, and `card()` sections.
+
 ## Overall impression
 
 Version 1 (Jumphash restyle) had character but was a copy: same paper, orange, uppercase mono, key buttons and slabs. Version 2 swapped that for a generic admin template and lost all identity.

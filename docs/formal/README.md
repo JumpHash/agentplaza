@@ -3,6 +3,8 @@
 Five specs: AgentSession, Approval, Economy, TaskLifecycle, RestoreMerge; 28 mutants and 16 witnesses. Model-checked with TLC (tla2tools 1.8.0). Run: `TLA2TOOLS=/path/to/tla2tools.jar ./check.sh`.
 `check.sh` checks each spec, then regenerates the **mutants** (deliberately broken copies, `make_mutants.py`) and requires TLC to catch every one. A spec whose mutants survive has invariants that are too weak.
 
+No CI workflow runs `check.sh` yet. The state counts below are the figures recorded with the specs; `tla2tools.jar` is not in the tree, so they were not re-run for this page.
+
 ## AgentSession.tla: one agent across VMs and machines
 
 Covers tool calls authorised and recorded by the orchestrator (0084), snapshots at tool boundaries and background upload (0043, 0091), machine failure and return, the owner's `MoveRun` (0102), restore after a kill (0027), the Hello/resume handshake (0084) and fencing (0102).
@@ -25,6 +27,7 @@ Bounds: 2 machines, 2 tool calls, 3 VMs. **4,144,576 distinct states, no violati
 | `DecidedByChain` | Only the authority at the current step can decide; late or out-of-turn answers are rejected |
 | `C004OnlyOwner` | C-004 requests are only ever approved by the owner |
 | `ExpiredIsNotApproved` | Silence never means yes |
+| `PosInChain` | The current step is always a position in the chain |
 | `FinalStays` (temporal) | Once decided or expired, a request never changes |
 
 ## Economy.tla: escrow, subcontracts, payment, clawback, fines (0039, 0109–0112)
@@ -60,7 +63,21 @@ An invariant that can never be tested proves nothing, so `check.sh` also checks 
 
 ## TaskLifecycle.tla: tasks, dependencies, rework, re-plans (0123)
 
-See [design/task-lifecycle.md](../design/task-lifecycle.md) § What the model checks. **469,502 distinct states**, deadlock checking on.
+The header cites `design/task-lifecycle.md`, which is not in this tree. **469,502 distinct states**, deadlock checking on.
+
+| Invariant | Meaning |
+|---|---|
+| `DepsAcceptedBeforeWork` | A task is assigned, running, verifying or accepted only after its dependencies are accepted |
+| `VerifierNotWorker` | A task is never verified by the agent that worked on it |
+| `NoRunOnDeadTask` | A live run belongs only to a running or blocked task |
+| `PaidOnlyIfAccepted` | Payment happens only for accepted work |
+| `PaidAtMostOnce` | No task is paid more than once |
+| `ReleasedExactlyOnce` | A task's escrow is released once, when it closes, and never before |
+| `AcceptedIsPaidAtClose` | A task closed as accepted has been paid |
+| `AttemptsBounded` | Rework attempts never exceed `MaxAttempts` |
+| `NoDependencyOnSuperseded` | No open task waits on a superseded task |
+| `NoSelfDependency` | No task depends on itself |
+| `AcceptedStays` (temporal) | Accepted work is never undone |
 
 | Witness | Shows |
 |---|---|

@@ -10,7 +10,7 @@ machine, and what is not done yet.
 | piece | Windows x64 | Windows arm64 |
 |---|---|---|
 | hub (`apid`), desktop app, CLI, node link (`apz-link`) | yes | yes |
-| `noded`, `vsockd`, `vmctl` (the VM node) | yes (shipped in the MSI) | builds, not shipped: no VM backend yet |
+| `noded`, `vsockd`, `vmctl` (the VM node) | yes (shipped in the MSI) | built in CI only when the `APZ_WINDOWS_ARM64` variable is `on`; not shipped: no VM backend yet |
 | agent VMs | x86_64 guests through WHP | not yet |
 
 The guest is the one the Linux packages ship (`share\agentplaza\guest\x86_64\vmlinux` and
@@ -46,9 +46,10 @@ because only the xAPIC is emulated.
 - The pure half — I/O APIC model, boot state, zero page, kernel loader, command line — has unit
   tests that run on every host (`cargo test -p vmm --lib whp::`).
 - The FFI half and the rest of the node compile for `x86_64-pc-windows-msvc` and
-  `aarch64-pc-windows-msvc`; `.github/workflows/windows.yml` builds and tests the workspace on
-  `windows-2025` (x64) and `windows-11-arm` (arm64), which also runs the WinSock event shim's and
-  `apz-uds`'s tests for real.
+  `aarch64-pc-windows-msvc`. `.github/workflows/windows.yml` runs the workspace tests on the org's
+  self-hosted Windows x64 runner, on pushes to main (called by `release.yml`) and by hand. The arm64 leg
+  runs only when the `APZ_WINDOWS_ARM64` variable is `on`: there the tests are built, not run. The
+  x64 run executes the WinSock event shim's and `apz-uds`'s tests for real.
 - A guest boot needs a Windows machine with the hypervisor: the procedure below.
 
 ## Manual boot
@@ -135,12 +136,12 @@ connection to `vsockd` → interrupts back through the I/O APIC.
 |---|---|
 | `WinHvPlatform.dll could not be loaded` | the feature is not enabled (step 1), or no restart since |
 | `the Windows Hypervisor Platform reports no hypervisor` | virtualization off in the firmware, or a VM without nested virtualization |
-| `WHvSetupPartition failed` / `WHvCreatePartition failed` with an HRESULT | another hypervisor holds VT-x/AMD-V, or an old Windows build |
+| `WHvSetupPartition failed: HRESULT …` / `WHvCreatePartition failed: HRESULT …` | another hypervisor holds VT-x/AMD-V, or an old Windows build |
 | no console output at all | `console=ttyS0` missing from `--cmdline` |
 | boot stops around TSC or APIC timer calibration | the host clock rate was not readable: add `tsc_early_khz=<kHz of your CPU>` to `--cmdline` |
 | `MMIO … could not be emulated` | report it with the address: a device access the instruction emulator could not decode |
 | `this VM asked for a workspace volume` | workspace volumes are not available on Windows yet (below) |
-| `vsockd` exits with `address in use` | a stale socket file under `%LOCALAPPDATA%\AgentPlaza\state\vsock`, from a crashed run, owned by another process: stop it, delete the file |
+| `vsockd` exits with `another listener is already serving …` | a live listener already holds that socket path (another `vsockd`, or another process): stop it. A leftover socket file from a crashed run is removed by `vsockd` itself |
 
 ## Not done yet
 

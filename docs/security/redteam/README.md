@@ -2,7 +2,7 @@
 
 - **Status:** draft
 - **Files:** [catalog.yaml](catalog.yaml) (60 attacks), [check_catalog.py](check_catalog.py) (validator)
-- **Sources:** [threat model](../../design/threat-model.md); decisions 0105–0108, 0070, 0010, 0028, 0072, 0096, 0102, 0116; the Codex, the Cedar checks, role evals, the TLA+ models and the protocol and ledger tests.
+- **Sources:** threat model (`design/threat-model.md`, planning repo); decisions 0105–0108, 0070, 0010, 0028, 0072, 0096, 0102, 0116 (planning repo); the Codex (`docs/codex-draft`), the Cedar checks, role evals, the TLA+ models (`docs/formal`) and the protocol and ledger tests (`docs/protocol-draft`, `docs/treasury-draft`).
 
 ## Purpose
 
@@ -52,33 +52,56 @@ python3 -I docs/security/redteam/check_catalog.py
 
 It locates the repo from its own path, needs only `pyyaml`, and exits non-zero on any failure.
 
+**Not runnable in this tree.** The validator reads `decisions/` (decision records, e.g. `0072` for the
+tripwire names) and the design files named in the catalog's `design` defences
+(`design/threat-model.md`, `design/network.md`, `design/shared-data.md`, `design/treasury-agora.md`).
+None of these exist under `docs/` in this repository, so the run stops at load with an `IndexError`
+on `decisions/0072-*.md`, and the decision and design references cannot be checked here. The catalog
+header says these refs resolve against the planning repo. Until that copy is available beside this
+one, the `0 failure(s)` target can only be met there. The catalog and validator are unchanged.
+
 ## Coverage
 
 ```
 | attacker   |      covered | planned-only |          gap |        total |
 |------------|--------------|--------------|--------------|--------------|
-| injected   |           22 |            3 |            1 |           26 |
-| machine    |            4 |            0 |            1 |            5 |
-| supply     |            5 |            0 |            1 |            6 |
-| relay      |            0 |            1 |            2 |            3 |
-| device     |            1 |            0 |            1 |            2 |
-| insider    |           17 |            0 |            1 |           18 |
+| injected   |           22 |            4 |            0 |           26 |
+| machine    |            4 |            1 |            0 |            5 |
+| supply     |            5 |            1 |            0 |            6 |
+| relay      |            0 |            3 |            0 |            3 |
+| device     |            1 |            1 |            0 |            2 |
+| insider    |           17 |            1 |            0 |           18 |
 | all        |           49 |           11 |            0 |           60 |
 ```
-The strongest coverage is where real tests already exist: Cedar authorisation, the TLA+ session,
+The counts were recomputed from `catalog.yaml` on the current tree. The strongest coverage is where real tests already exist: Cedar authorisation, the TLA+ session,
 approval and economy models, and the protocol and ledger test suites. The relay class has no
-`covered` entries because the relay (M2) and its end-to-end encryption are not built yet.
+`covered` entries because the relay (M2) and its end-to-end encryption are not built yet; no Noise
+handshake is in the tree.
 
 ## Gaps (no decided defence)
 
-None. The seven gaps found when the catalog was first written (RT-009, RT-017, RT-034, RT-036, RT-037, RT-038, RT-042) were decided by the owner in round 35 ([0128](../../decisions/0128-red-team-gaps-closed.md)) and are now planned-only.
+None. The seven gaps found when the catalog was first written (RT-009, RT-017, RT-034, RT-036, RT-037, RT-038, RT-042) were decided by the owner in round 35 (decision 0128, in the planning repo) and are now planned-only.
 
 ## Planned-only (defence decided, test still to write)
 
 - **RT-008 egress shim bypass** — *write a test asserting the booted guest has no network device or route.*
+- **RT-009 covert channel over allowed egress** — *write the budget, wildcard and anomaly tests when the egress proxy exists.*
 - **RT-012 vsock stream exhaustion** — *implement and test per-VM stream concurrency caps in the node daemon.*
+- **RT-017 co-located agents on a compromised machine** — *write the placement and at-rest tests with the scheduler and VMM.*
+- **RT-034 reputation gaming** — *write the reputation tests with the Agora implementation; calibrate weights on real data.*
 - **RT-035 relay MITM** — *implement the Noise handshake (0106) and test that the relay cannot read or alter frames.*
+- **RT-036 relay serves tampered interface code** — *write the loader and signature tests when the relay and web client exist.*
+- **RT-037 relay metadata leakage** — *write the retention test with the relay; padding stays out of scope.*
+- **RT-038 stolen owner device** — *write the idle-lock and step-up tests with the daemon API.*
+- **RT-042 malicious dependency** — *set up cargo-vet and signing in the code repo's CI.*
 - **RT-045 VMM escape via a virtio bug** — *stand up cargo-fuzz targets for each virtio parser and gate releases on them.*
+
+The `fuzz/` crate has three targets today (`block_request`, `vsock_csm`, `vsock_packet`); there is no
+release gate on them yet.
+
+Note: `tests/acceptance/suite_redteam.py` already checks a booted guest for network-interface
+signatures and that the vsock is the only wire (the RT-008 idea). The catalog still lists RT-008 as
+planned-only; linking that check as a test would be a catalog change, and it is not made here.
 
 ## What building the catalog found
 
@@ -87,11 +110,16 @@ None. The seven gaps found when the catalog was first written (RT-009, RT-017, R
 
 ## Red-team cadence (0108)
 
-- **Every release:** the fixed credential red-team and injection suite (0027, 0040) runs on all three
-  platforms. Zero leaks are required, with no tolerance (0070).
-- **Weekly:** a run against the live setup with fresh scenarios, generated by an agent and reviewed by
-  the owner before they run. Any new scenario that finds something joins the fixed suite.
-- Red-team spend is metered like any task and reported weekly.
+Policy from decision 0108 (in the planning repo). What the repository provides today:
+
+- **Every release (policy):** the fixed credential red-team and injection suite (0027, 0040) runs on
+  all three platforms, with zero leaks required (0070). In the tree, the suite is
+  `tests/acceptance/suite_redteam.py`, run through `scripts/acceptance.sh redteam`. Its only recorded
+  PASS is on the server host (`tests/acceptance/results/acceptance-server-redteam-2026-10-11.json`).
+  No workflow under `.github/workflows` runs it, so the all-platform run is not automated here.
+- **Weekly (policy):** a run against the live setup with fresh scenarios, generated by an agent and
+  reviewed by the owner before they run. No schedule for it exists in `.github/workflows`.
+- Red-team spend metering and weekly reporting (0108) are not implemented in this tree.
 
 When a weekly run finds a new attack, add it here as an RT-NNN entry (status `gap` or `planned-only`
-until a defence and a test exist), and keep the validator at `0 failure(s)`.
+until a defence and a test exist), and keep the validator at `0 failure(s)` once it can run.

@@ -2,33 +2,28 @@
 
 apid keeps its state in Postgres (`APZ_DATABASE_URL`) and falls back to files without it. All SQL
 lives in `crates/apid/sql/`, as `.sql` files embedded at compile time. No Rust file holds a SQL
-statement as a string literal, except the test-only `CREATE DATABASE` template, which is also a file.
+statement to run as a string literal; the test-only `CREATE DATABASE` template is a file too.
 
 ## Layout
 
 ```
 crates/apid/sql/
   migrations/
-    0001_init.sql            one migration per file, numbered from 0001, never edited once applied
+    0001_init.sql … 0013_station_recording_frames.sql
+                             one migration per file, numbered from 0001, never edited once applied
     migrations.lock          one line per migration: NNNN name sha256
-  queries/
-    state_get.sql            one statement per file; the first comment names the parameters
-    state_upsert.sql
-    state_delete.sql         (test-only const, see below)
-    transcript_append.sql
-    transcript_page.sql
-    transcript_cids.sql
-    transcript_delete.sql
-    infraction_append.sql
-    infraction_page_by_cid.sql
-    infraction_page.sql
-    migration_table_ensure.sql, migration_applied.sql, migration_record.sql,
-    migration_lock.sql, migration_unlock.sql
-  test/                      SQL used only by tests (legacy schema, schema description, CREATE DATABASE)
-crates/apid/src/db.rs        the Db: connection, dispatch, component snapshots, the restore at start
+  queries/                   92 files, one statement each; the first comment names the parameters
+    <area>_<verb>.sql        areas: state_, transcript_, infraction_, agents_, prompt_, skill_,
+                             hub_mcp_, ide_audit_, station_audit_, station_recording_, station_sync_,
+                             unfurl_, migration_, data_migration_
+  test/                      SQL used only by tests (legacy schema, schema description, forbid probes,
+                             CREATE DATABASE)
+crates/apid/src/db.rs        the Db: connection, dispatch, component snapshots, the restore at start, the writer
 crates/apid/src/db/sql.rs    one `pub const` per query file, each `include_str!`
 crates/apid/src/db/migrate.rs  MIGRATIONS (the embedded list) and the runner
+crates/apid/src/db/data_migrate.rs  data migrations, run once the schema is current
 crates/apid/src/db/files.rs  the file fallback (see "Without Postgres")
+crates/apid/src/db/        hub_mcp.rs, recordings.rs, roster.rs, sync.rs: the per-area store modules
 scripts/test-db.sh           runs the db tests against a throwaway Postgres 17 container
 scripts/migrations.sh        lock | check, for migrations.lock
 scripts/check-migrations.sh  the immutability check (CI, and the pre-commit hook)
@@ -77,6 +72,9 @@ nothing behind. Do not put `BEGIN`/`COMMIT` inside a migration file.
   (a later migration applied while an earlier one is not);
 - releases the lock.
 
+Then `data_migrate::run` runs the data migrations (`crates/apid/src/db/data_migrate.rs`); a failure there
+also exits with status 1.
+
 A refusal prints `db: refusing to start: …` naming the file and exits with status 1. A database
 that is not reachable at start is not a refusal: apid logs `db: connect failed` and runs on files.
 
@@ -98,7 +96,7 @@ applied migrations unchanged:
 
 CI runs the check in `.github/workflows/migrations.yml`: on a pull request against its base, and on
 a push to main against `github.event.before` (nothing to compare on a new branch). The job runs on
-the org's self-hosted runner, like the other workflows.
+the org's self-hosted runner (`runs-on: [self-hosted, Linux, X64, hetzner]`).
 
 The pre-commit hook is `.githooks/pre-commit`. It does nothing until the clone points git at it.
 Run this once per clone, if you want the hook (the owner decides whether to install it):
@@ -107,9 +105,9 @@ Run this once per clone, if you want the hook (the owner decides whether to inst
 scripts/install-hooks.sh     # sets: git config core.hooksPath .githooks
 ```
 
-Check the tooling: `scripts/test-check-migrations.sh` (15 cases in throwaway repositories: modify,
-delete, rename, a new migration, a gap, reuse, lock edit, lock removal, lock append, the lock tool
-refusing an edited file, and the three staged cases). Set `TMPDIR` to choose where its repositories go.
+Check the tooling: `scripts/test-check-migrations.sh` (14 cases in throwaway repositories: modify,
+delete, rename, a new migration, a gap (two cases), reuse, lock edit, lock removal, lock append, the lock
+tool refusing an edited file, and the three staged cases). Set `TMPDIR` to choose where its repositories go.
 
 ## Running the database tests
 
@@ -136,19 +134,26 @@ pass without checking anything, so a passing run without the script proves nothi
 
 ## Without Postgres: the file fallback
 
-With no `APZ_DATABASE_URL` (or when the connection fails), apid keeps every component in its own
-files, as before. Transcripts and infractions, which have no file of their own, go to files under the
-state directory (`db::files`). The same operations and orders as the Postgres queries apply.
+With no `APZ_DATABASE_URL` (or when the connection fails), apid keeps the plaza's component snapshots in
+their own files, as before. The rows that have no file of their own go to files under the state directory
+(`db::files`): transcripts, infractions, the IDE audit, the station audit and the station recordings. The
+same operations and orders as the Postgres queries apply.
 
 ```
 <state_dir>/transcripts/<cid>.jsonl          the live file, one record per line
 <state_dir>/transcripts/<cid>.1.jsonl        the previous generation
 <state_dir>/transcripts/<cid>.2.jsonl        the one before (older ones are dropped)
 <state_dir>/infractions.jsonl (.1, .2)       the same, for infractions
+<state_dir>/ide-audit.jsonl (.1, .2)         the same, for the IDE audit
+<state_dir>/station-audit.jsonl (.1, .2)     the same, for the station audit
+<state_dir>/station-recordings.jsonl (.1, .2)          the recordings' index: a put or a delete per line
+<state_dir>/station-recording-events.jsonl (.1, .2)    the recordings' actions
+<state_dir>/station-recording-frames.jsonl (.1, .2)    the capture time of each frame
 ```
 
 - **Records.** A transcript line is `{"seq","work","kind","at_ms","data"}`; an infraction line is
-  `{"id","cid","law","at_ms","tool","detail"}`, with `id` counting from 1 as a bigserial does.
+  `{"id","cid","law","at_ms","tool","detail"}`, with `id` counting from 1 as a bigserial does. The other
+  files hold one row per line, in the shape of their table.
 - **Writes.** Each record is written when it is appended (a `write` to an open file; no buffer).
   The periodic writer (every two seconds) fsyncs what was written since its last run.
 - **Rotation.** A file rotates once it reaches 32 MiB: `.1` moves to `.2` (the old `.2` is dropped)
