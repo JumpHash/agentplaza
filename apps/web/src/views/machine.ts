@@ -54,7 +54,7 @@ function topology(o: Overview | null, machines: MachineNode[], selectedId: strin
       'div.mach-block',
       { role: 'button', tabindex: '0', 'data-key': `block-${m.id}` },
       h('div.mach-row', null, mark, h('span.mach-name', null, m.name)),
-      h('div.faint', null, `${KIND_LABEL[m.kind]} · ${state}`),
+      h('div.faint', null, `${KIND_LABEL[m.kind] ?? 'Machine'} · ${state}`),
     );
     block.classList.toggle('selected', m.id === selectedId);
     block.addEventListener('click', () => onPick(m.id));

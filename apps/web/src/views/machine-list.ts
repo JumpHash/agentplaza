@@ -77,11 +77,14 @@ function chipLine(a: FleetApple): string {
 }
 
 export function sentence(m: MachineNode): string {
-  const chip = m.apple
-    ? chipLine(m.apple)
-    : `${m.cpus}-core ${m.arch} on ${m.backend.toUpperCase()} · ${Math.round(m.memory_mib / 1024)} GiB memory`;
+  // A machine that did not answer (the unreachable row) reports few facts: each part shows only what it has.
+  const cores = m.cpus ? `${m.cpus}-core${m.arch ? ` ${m.arch}` : ''}` : (m.arch ?? '');
+  const where = m.backend ? ` on ${m.backend.toUpperCase()}` : '';
+  const memory = m.memory_mib ? ` · ${Math.round(m.memory_mib / 1024)} GiB memory` : '';
+  const chip = m.apple ? chipLine(m.apple) : `${cores}${where}${memory}`;
   const head = [KIND_LABEL[m.kind], m.model, chip].filter(Boolean).join(' · ');
-  return m.gpus.length ? `${head} · ${m.gpus.map((g) => g.name).join(', ')}` : head;
+  const gpus = m.gpus ?? [];
+  return gpus.length ? `${head} · ${gpus.map((g) => g.name).join(', ')}` : head;
 }
 
 /** Fills the partial replies (a machine without its gpus, runs or vms) as empty lists, never as errors. */

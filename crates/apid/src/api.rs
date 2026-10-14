@@ -76,10 +76,17 @@ pub fn router() -> Router<App> {
         })
 }
 
+/// The hub's machine id in `/v1/machines` and in `/v1/nodes` (`n0`, see `nodes::views`), so a client
+/// joins a node to its machine by id.
+const HUB_MACHINE_ID: &str = "n0";
+
 /// `GET /v1/machines`: the machines this plaza runs on. Today the one local
 /// node: its facts from noded, the runs on it and how many agents are in them.
 fn machines(app: &App) -> Response {
-    let unreachable = || Response::json(200, &json!([{"id": "local", "reachable": false}]));
+    // Without noded the hub's kind is unknown (noded probes it), so it is null and a client labels it generically.
+    let unreachable = || {
+        Response::json(200, &json!([{"id": HUB_MACHINE_ID, "name": "local", "kind": null, "reachable": false}]))
+    };
     let Ok((200, machine)) = app.noded.get("/v1/machine") else {
         return unreachable();
     };
@@ -92,7 +99,7 @@ fn machines(app: &App) -> Response {
         app.agents.list().iter().filter(|a| a.run.as_deref().is_some_and(|id| run_ids.contains(id))).count()
     };
     let mut entry: Map<String, Value> = machine.as_object().cloned().unwrap_or_default();
-    entry.insert("id".into(), json!("local"));
+    entry.insert("id".into(), json!(HUB_MACHINE_ID));
     entry.insert("noded_port".into(), json!(app.noded.port));
     entry.insert("runs".into(), runs);
     entry.insert("agents".into(), json!(agents));

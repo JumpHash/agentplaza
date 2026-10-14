@@ -22,6 +22,10 @@ use crate::vault::{name_for, Consumer, OnBehalf, VaultError};
 /// The actor of the vault's events for a provider key the owner set.
 const OWNER: &str = "owner";
 
+/// What the view shows in place of a value it keeps back: a header's value, a command's text, a key an
+/// error echoed. An Edit that sends it back means "keep the stored value" (see [`restore_redacted`]).
+pub(crate) const REDACTED: &str = "•••";
+
 /// The providers a fresh state directory starts with.
 const SEED_IDS: [&str; 16] = [
     "anthropic", "openai", "xai", "deepseek", "gemini", "zai", "moonshot", "ollama", "llamacpp", "mock",
@@ -235,10 +239,10 @@ impl Store {
         let credential = self.credential(p);
         let auth = match &p.auth {
             // A command may embed a literal token, so only its presence shows.
-            Auth::Command(_) => json!({ "command": "•••" }),
+            Auth::Command(_) => json!({ "command": REDACTED }),
             other => serde_json::to_value(other).unwrap_or(Value::Null),
         };
-        let headers: BTreeMap<&str, &str> = p.extra_headers.keys().map(|k| (k.as_str(), "•••")).collect();
+        let headers: BTreeMap<&str, &str> = p.extra_headers.keys().map(|k| (k.as_str(), REDACTED)).collect();
         json!({
             "id": p.id,
             "kind": p.kind.as_str(),
@@ -248,6 +252,8 @@ impl Store {
             "models": p.models,
             "options": p.options,
             "extra_headers": headers,
+            // Not secret: `snapshot` keeps it as it is, where it blanks the command and the header values.
+            "extra_body": p.extra_body,
             "credential": credential,
         })
     }
@@ -381,6 +387,7 @@ impl Store {
             .iter_mut()
             .find(|p| p.id == id)
             .ok_or_else(|| (404, format!("no provider `{id}`")))?;
+        let cfg = restore_redacted(slot, cfg)?;
         *slot = cfg;
         let view = self.view(slot);
         self.commit(providers)?;
@@ -568,12 +575,41 @@ fn model_entry(p: &ProviderConfig, m: ModelInfo) -> Value {
     json!({ "provider": p.id, "group": p.kind.group(), "id": m.id, "name": m.name, "trains_on_data": trains_on_data })
 }
 
-/// `text` with `key` replaced by `•••` when it carries it: an upstream error may echo a key.
+/// `text` with `key` replaced by [`REDACTED`] when it carries it: an upstream error may echo a key.
 fn redact(text: String, key: Option<&str>) -> String {
     match key {
-        Some(key) if !key.is_empty() && text.contains(key) => text.replace(key, "•••"),
+        Some(key) if !key.is_empty() && text.contains(key) => text.replace(key, REDACTED),
         _ => text,
     }
+}
+
+/// The body of an Edit with the values the view redacted put back from `stored`: a header whose value
+/// is [`REDACTED`] keeps the stored value, a command equal to it keeps the stored command, and an
+/// `extra_body` the body omits (null) keeps the stored one. A redacted value with nothing stored to
+/// keep is refused, so the marker never becomes a live header or command.
+fn restore_redacted(stored: &ProviderConfig, mut body: ProviderConfig) -> Result<ProviderConfig, Failure> {
+    for (name, value) in body.extra_headers.iter_mut() {
+        if value.as_str() == REDACTED {
+            *value = stored
+                .extra_headers
+                .get(name)
+                .cloned()
+                .ok_or_else(|| (400, format!("header `{name}` has no stored value to keep: send its value")))?;
+        }
+    }
+    match (&mut body.auth, &stored.auth) {
+        (Auth::Command(command), Auth::Command(stored_command)) if command.as_str() == REDACTED => {
+            command.clone_from(stored_command);
+        }
+        (Auth::Command(command), _) if command.as_str() == REDACTED => {
+            return Err((400, "the command is redacted but the provider has none stored: send the command".into()));
+        }
+        _ => {}
+    }
+    if body.extra_body.is_null() {
+        body.extra_body = stored.extra_body.clone();
+    }
+    Ok(body)
 }
 
 pub(crate) fn failure((status, message): Failure) -> Response {
@@ -1276,5 +1312,74 @@ mod tests {
         assert_eq!(store.insert(ProviderConfig::new("openai", ProviderKind::OpenAi)).unwrap_err().0, 409);
         assert_eq!(store.insert(ProviderConfig::new("Bad_ID", ProviderKind::Mock)).unwrap_err().0, 400);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A provider with a command, two headers and an extra body, as the owner saved it.
+    fn stored_gateway() -> ProviderConfig {
+        let mut gw = ProviderConfig::new("gw", ProviderKind::OpenAiCompatible);
+        gw.base_url = Some("http://127.0.0.1:9/v1".to_string());
+        gw.auth = Auth::Command(format!("echo {SENTINEL}"));
+        gw.extra_headers.insert("HTTP-Referer".to_string(), format!("https://{SENTINEL}.test"));
+        gw.extra_headers.insert("X-Title".to_string(), "AgentPlaza".to_string());
+        gw.extra_body = json!({ "reasoning": { "effort": "low" } });
+        gw
+    }
+
+    #[test]
+    fn an_edit_of_the_view_keeps_the_redacted_values_and_extra_body() {
+        let dir = scratch("edit-redacted");
+        let store = Store::load(&dir, vault_in(&dir)).unwrap();
+        let stored = stored_gateway();
+        store.insert(stored.clone()).unwrap();
+
+        // The view shows the markers and the extra body, never the command or the header values.
+        let view = store.views().into_iter().find(|v| v["id"] == "gw").unwrap();
+        assert_eq!(view["auth"], json!({ "command": REDACTED }));
+        assert_eq!(view["extra_headers"], json!({ "HTTP-Referer": REDACTED, "X-Title": REDACTED }));
+        assert_eq!(view["extra_body"], stored.extra_body);
+        assert!(!view.to_string().contains(SENTINEL));
+
+        // An Edit that sends the view back as it is changes nothing it redacted.
+        let mut body = stored.clone();
+        body.auth = Auth::Command(REDACTED.to_string());
+        body.extra_headers = stored.extra_headers.keys().map(|k| (k.clone(), REDACTED.to_string())).collect();
+        body.extra_body = Value::Null;
+        store.replace("gw", body).unwrap();
+        assert_eq!(store.find("gw").unwrap(), stored);
+
+        // A real value replaces the stored one; the other redacted header and the command keep theirs.
+        let mut edited = stored.clone();
+        edited.extra_headers.insert("X-Title".to_string(), "Renamed".to_string());
+        edited.auth = Auth::Command(REDACTED.to_string());
+        edited.extra_body = json!({ "reasoning": { "effort": "high" } });
+        store.replace("gw", edited).unwrap();
+        let after = store.find("gw").unwrap();
+        assert_eq!(after.auth, stored.auth);
+        assert_eq!(after.extra_headers.get("HTTP-Referer"), stored.extra_headers.get("HTTP-Referer"));
+        assert_eq!(after.extra_headers.get("X-Title").map(String::as_str), Some("Renamed"));
+        assert_eq!(after.extra_body, json!({ "reasoning": { "effort": "high" } }));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_redacted_value_with_nothing_stored_is_refused() {
+        let stored = stored_gateway();
+        let mut header = stored.clone();
+        header.extra_headers.insert("X-New".to_string(), REDACTED.to_string());
+        assert_eq!(restore_redacted(&stored, header).unwrap_err().0, 400);
+
+        let mut plain = stored.clone();
+        plain.auth = Auth::None;
+        let mut command = plain.clone();
+        command.auth = Auth::Command(REDACTED.to_string());
+        assert_eq!(restore_redacted(&plain, command).unwrap_err().0, 400);
+
+        // A body that omits extra_body keeps the stored one; a real command is taken as it is.
+        let mut body = stored.clone();
+        body.auth = Auth::Command("echo fresh".to_string());
+        body.extra_body = Value::Null;
+        let merged = restore_redacted(&stored, body).unwrap();
+        assert_eq!(merged.auth, Auth::Command("echo fresh".to_string()));
+        assert_eq!(merged.extra_body, stored.extra_body);
     }
 }
