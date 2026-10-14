@@ -39,6 +39,9 @@ pub trait Plaza: Sync {
     fn prompts(&self) -> &Prompts;
     /// The skill library the skill tools read and write.
     fn skills(&self) -> &crate::skills::Skills;
+    /// Publishes a library change on the event stream: the kind (`prompt` or `skill`), the id and the action taken.
+    /// Only the app has a bus; a plaza without one (a test fake) publishes nothing.
+    fn announce(&self, _kind: &str, _id: &str, _action: &str) {}
 
     /// The live skills, by id. Their live version's score; the skill tools never publish.
     fn skills_list(&self) -> Result<Vec<Value>, String> {
@@ -81,12 +84,14 @@ pub trait Plaza: Sync {
         let skills = self.skills();
         let next = skills.prepare(skill_md.to_string(), inputs, note.to_string(), None).map_err(skill_store_text)?;
         let meta = skills.store().add_version(id, base_version, &next, MCP_ACTOR, now_ms()).map_err(skill_store_text)?;
+        self.announce("skill", id, "version");
         Ok(json!({ "id": id, "version": meta.version, "score": meta.score, "errors": meta.errors, "warnings": meta.warnings }))
     }
 
     /// Publishes one skill version as the live one; refused while it has error-level findings.
     fn skill_publish(&self, id: &str, version: u32) -> Result<Value, String> {
         let skill = self.skills().publish(id, version, MCP_ACTOR, now_ms()).map_err(skill_store_text)?;
+        self.announce("skill", id, "publish");
         Ok(json!({ "id": id, "active_version": skill.active_version, "latest_version": skill.latest_version }))
     }
 
@@ -133,12 +138,16 @@ pub trait Plaza: Sync {
             .prompts()
             .add_version(id, base_version, body.to_string(), note.to_string(), MCP_ACTOR, now_ms())
             .map_err(store_text)?;
+        if created {
+            self.announce("prompt", id, "version");
+        }
         Ok(json!({ "id": id, "version": meta.version, "created": created, "score": meta.score, "errors": meta.errors }))
     }
 
     /// Publishes one version as the live one; refused while it has error-level findings.
     fn prompt_publish(&self, id: &str, version: u32) -> Result<Value, String> {
         let prompt = self.prompts().publish(id, version, MCP_ACTOR, now_ms()).map_err(store_text)?;
+        self.announce("prompt", id, "publish");
         Ok(json!({ "id": id, "active_version": prompt.active_version, "latest_version": prompt.latest_version }))
     }
 }

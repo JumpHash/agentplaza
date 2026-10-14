@@ -10,6 +10,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use crate::events::Bus;
 use crate::prompts::{Meta, NewPrompt, Prompt, Prompts, StoreError, Version, VersionMeta};
 use crate::state::App;
 
@@ -24,22 +25,22 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .get("/v1/prompts", |app, req, _| {
             reply(list(&app.prompts, req.query_param("kind"), req.query_param("archived") == Some("true")))
         })
-        .post("/v1/prompts", |app, req, _| with_body(req, |b: CreateBody| create(&app.prompts, b)))
+        .post("/v1/prompts", |app, req, _| with_body(req, |b: CreateBody| create(&app.prompts, &app.bus, b)))
         .get("/v1/prompts/{id}", |app, _, p| reply(detail(&app.prompts, p.get("id"))))
         .route("PUT", "/v1/prompts/{id}", |app, req, p| {
-            with_body(req, |b: MetaBody| set_meta(&app.prompts, p.get("id"), b))
+            with_body(req, |b: MetaBody| set_meta(&app.prompts, &app.bus, p.get("id"), b))
         })
         .get("/v1/prompts/{id}/versions/{v}", |app, _, p| reply(version(&app.prompts, p.get("id"), p.get("v"))))
         .get("/v1/prompts/{id}/versions/{v}/raw", |app, _, p| reply(raw(&app.prompts, p.get("id"), p.get("v"))))
         .post("/v1/prompts/{id}/versions", |app, req, p| {
-            with_body(req, |b: VersionBody| add_version(&app.prompts, p.get("id"), b))
+            with_body(req, |b: VersionBody| add_version(&app.prompts, &app.bus, p.get("id"), b))
         })
         .post("/v1/prompts/{id}/publish", |app, req, p| {
-            with_body(req, |b: PublishBody| publish(&app.prompts, p.get("id"), b))
+            with_body(req, |b: PublishBody| publish(&app.prompts, &app.bus, p.get("id"), b))
         })
-        .post("/v1/prompts/{id}/unpublish", |app, _, p| reply(unpublish(&app.prompts, p.get("id"))))
-        .post("/v1/prompts/{id}/archive", |app, _, p| reply(archive(&app.prompts, p.get("id"), true)))
-        .post("/v1/prompts/{id}/restore", |app, _, p| reply(archive(&app.prompts, p.get("id"), false)))
+        .post("/v1/prompts/{id}/unpublish", |app, _, p| reply(unpublish(&app.prompts, &app.bus, p.get("id"))))
+        .post("/v1/prompts/{id}/archive", |app, _, p| reply(archive(&app.prompts, &app.bus, p.get("id"), true)))
+        .post("/v1/prompts/{id}/restore", |app, _, p| reply(archive(&app.prompts, &app.bus, p.get("id"), false)))
         .get("/v1/prompts/{id}/diff", |app, req, p| {
             reply(diff_versions(&app.prompts, p.get("id"), req.query_param("from"), req.query_param("to")))
         })
@@ -194,7 +195,12 @@ fn list(prompts: &Prompts, kind: Option<&str>, archived: bool) -> Result<Respons
     Ok(Response::json(200, &json!({ "prompts": out })))
 }
 
-fn create(prompts: &Prompts, b: CreateBody) -> Result<Response, StoreError> {
+/// Publishes the change on the event bus: a `prompt` event with the prompt's id and the action taken.
+fn announce(bus: &Bus, id: &str, action: &str) {
+    bus.publish("prompt", &json!({ "id": id, "action": action }));
+}
+
+fn create(prompts: &Prompts, bus: &Bus, b: CreateBody) -> Result<Response, StoreError> {
     let kind = parse_kind(&b.kind)?;
     let id = match b.id {
         Some(id) => id,
@@ -202,12 +208,14 @@ fn create(prompts: &Prompts, b: CreateBody) -> Result<Response, StoreError> {
     };
     let new = NewPrompt { id, kind, title: b.title, description: b.description, tags: b.tags, binding: b.binding };
     let prompt = prompts.create(&new, b.body, b.note, OWNER, now())?;
+    announce(bus, &prompt.id, "create");
     prompt_reply(prompts, prompt, 201)
 }
 
-fn set_meta(prompts: &Prompts, id: &str, b: MetaBody) -> Result<Response, StoreError> {
+fn set_meta(prompts: &Prompts, bus: &Bus, id: &str, b: MetaBody) -> Result<Response, StoreError> {
     let meta = Meta { title: b.title, description: b.description, tags: b.tags, binding: b.binding };
     let prompt = prompts.set_meta(id, &meta, OWNER, now())?;
+    announce(bus, id, "update");
     prompt_reply(prompts, prompt, 200)
 }
 
@@ -241,24 +249,30 @@ fn raw(prompts: &Prompts, id: &str, v: &str) -> Result<Response, StoreError> {
         .with_header("content-disposition", &format!("attachment; filename=\"{name}\"")))
 }
 
-fn add_version(prompts: &Prompts, id: &str, b: VersionBody) -> Result<Response, StoreError> {
+fn add_version(prompts: &Prompts, bus: &Bus, id: &str, b: VersionBody) -> Result<Response, StoreError> {
     let (version, created) = prompts.add_version(id, b.base_version, b.body, b.note, OWNER, now())?;
+    if created {
+        announce(bus, id, "version");
+    }
     let status = if created { 201 } else { 200 };
     Ok(Response::json(status, &json!({ "version": version, "created": created })))
 }
 
-fn publish(prompts: &Prompts, id: &str, b: PublishBody) -> Result<Response, StoreError> {
+fn publish(prompts: &Prompts, bus: &Bus, id: &str, b: PublishBody) -> Result<Response, StoreError> {
     let prompt = prompts.publish(id, b.version, OWNER, now())?;
+    announce(bus, id, "publish");
     prompt_reply(prompts, prompt, 200)
 }
 
-fn unpublish(prompts: &Prompts, id: &str) -> Result<Response, StoreError> {
+fn unpublish(prompts: &Prompts, bus: &Bus, id: &str) -> Result<Response, StoreError> {
     let prompt = prompts.unpublish(id, OWNER, now())?;
+    announce(bus, id, "unpublish");
     prompt_reply(prompts, prompt, 200)
 }
 
-fn archive(prompts: &Prompts, id: &str, archived: bool) -> Result<Response, StoreError> {
+fn archive(prompts: &Prompts, bus: &Bus, id: &str, archived: bool) -> Result<Response, StoreError> {
     let prompt = prompts.set_archived(id, archived, OWNER, now())?;
+    announce(bus, id, if archived { "archive" } else { "restore" });
     prompt_reply(prompts, prompt, 200)
 }
 
@@ -328,9 +342,10 @@ mod tests {
     #[test]
     fn owner_round_trip() {
         let lib = library();
+        let bus = Bus::default();
         let base = apz_prompt::template(Kind::System).to_string();
 
-        let created = create(&lib, new_prompt("Planner", base.clone())).expect("create");
+        let created = create(&lib, &bus, new_prompt("Planner", base.clone())).expect("create");
         assert_eq!(created.status, 201);
         assert_eq!(json_of(&created)["prompt"]["id"], "planner");
 
@@ -342,6 +357,7 @@ mod tests {
         let v2_body = format!("{base}\n## Notes\n\nKeep answers short.\n");
         let added = add_version(
             &lib,
+            &bus,
             "planner",
             VersionBody { body: v2_body.clone(), note: "shorter".into(), base_version: 1 },
         )
@@ -349,13 +365,14 @@ mod tests {
         assert_eq!(added.status, 201);
         let unchanged = add_version(
             &lib,
+            &bus,
             "planner",
             VersionBody { body: v2_body.clone(), note: String::new(), base_version: 2 },
         )
         .expect("unchanged body");
         assert_eq!(unchanged.status, 200);
         assert!(matches!(
-            add_version(&lib, "planner", VersionBody { body: "other".into(), note: String::new(), base_version: 1 }),
+            add_version(&lib, &bus, "planner", VersionBody { body: "other".into(), note: String::new(), base_version: 1 }),
             Err(StoreError::Conflict(_))
         ));
 
@@ -364,10 +381,10 @@ mod tests {
         assert!(json_of(&diff)["lines"].as_array().is_some_and(|l| !l.is_empty()));
         assert!(matches!(diff_versions(&lib, "planner", Some("1"), None), Err(StoreError::Invalid(_))));
 
-        let live = publish(&lib, "planner", PublishBody { version: 2 }).expect("publish");
+        let live = publish(&lib, &bus, "planner", PublishBody { version: 2 }).expect("publish");
         assert_eq!(live.status, 200);
         assert_eq!(json_of(&live)["prompt"]["active_version"].as_u64(), Some(2));
-        assert!(matches!(publish(&lib, "planner", PublishBody { version: 99 }), Err(StoreError::Invalid(_))));
+        assert!(matches!(publish(&lib, &bus, "planner", PublishBody { version: 99 }), Err(StoreError::Invalid(_))));
 
         let events = history(&lib, "planner").expect("history");
         assert!(json_of(&events)["events"].as_array().is_some_and(|e| e.len() >= 4));
@@ -387,12 +404,46 @@ mod tests {
     #[test]
     fn missing_and_duplicate_cases() {
         let lib = library();
+        let bus = Bus::default();
         let base = apz_prompt::template(Kind::System).to_string();
-        create(&lib, new_prompt("Planner", base.clone())).expect("create");
+        create(&lib, &bus, new_prompt("Planner", base.clone())).expect("create");
 
-        assert!(matches!(create(&lib, new_prompt("Planner", base)), Err(StoreError::Conflict(_))));
+        assert!(matches!(create(&lib, &bus, new_prompt("Planner", base)), Err(StoreError::Conflict(_))));
         assert!(matches!(detail(&lib, "missing"), Err(StoreError::NotFound)));
         assert!(matches!(version(&lib, "planner", "9"), Err(StoreError::NotFound)));
         assert!(matches!(history(&lib, "missing"), Err(StoreError::NotFound)));
+    }
+
+    #[test]
+    fn changes_publish_prompt_events() {
+        let lib = library();
+        let bus = Bus::default();
+        let events = bus.subscribe();
+        let base = apz_prompt::template(Kind::System).to_string();
+
+        create(&lib, &bus, new_prompt("Planner", base.clone())).expect("create");
+        let v2 = format!("{base}\n## Notes\n\nKeep answers short.\n");
+        add_version(&lib, &bus, "planner", VersionBody { body: v2.clone(), note: "shorter".into(), base_version: 1 }).expect("version");
+        // The same body again is not a new version, so it publishes nothing.
+        add_version(&lib, &bus, "planner", VersionBody { body: v2, note: String::new(), base_version: 2 }).expect("unchanged");
+        publish(&lib, &bus, "planner", PublishBody { version: 2 }).expect("publish");
+        // A refused publish changes nothing, so it publishes nothing.
+        assert!(publish(&lib, &bus, "planner", PublishBody { version: 99 }).is_err());
+        let meta = MetaBody { title: "Planner v2".into(), description: String::new(), tags: vec![], binding: Some("role:planner".into()) };
+        set_meta(&lib, &bus, "planner", meta).expect("meta");
+        unpublish(&lib, &bus, "planner").expect("unpublish");
+        archive(&lib, &bus, "planner", true).expect("archive");
+        archive(&lib, &bus, "planner", false).expect("restore");
+
+        let got: Vec<(String, String, String)> = events
+            .try_iter()
+            .map(|f| {
+                let data: Value = serde_json::from_str(&f.data).expect("JSON data");
+                (f.kind, data["id"].as_str().unwrap_or_default().to_string(), data["action"].as_str().unwrap_or_default().to_string())
+            })
+            .collect();
+        let actions: Vec<&str> = got.iter().map(|(_, _, action)| action.as_str()).collect();
+        assert_eq!(actions, ["create", "version", "publish", "update", "unpublish", "archive", "restore"]);
+        assert!(got.iter().all(|(kind, id, _)| kind == "prompt" && id == "planner"));
     }
 }

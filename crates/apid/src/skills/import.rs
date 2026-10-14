@@ -16,6 +16,7 @@ use apz_skill::{check, FileInfo};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use crate::events::Bus;
 use crate::skills::{
     valid_binding, valid_id, FileBody, FileIn, NewSkill, Skill, SkillStore, Skills, Source, StoreError, MAX_TITLE,
 };
@@ -53,14 +54,14 @@ pub fn routes(router: Router<App>) -> Router<App> {
             Err(_) => Response::error(400, "the body is not {\"url\": \"...\"}"),
         })
         .post("/v1/skills/import/commit", |app, req, _| match req.json::<CommitBody>() {
-            Ok(body) => respond(commit(&app.skills, previews(), body, now())),
+            Ok(body) => respond(commit(&app.skills, &app.bus, previews(), body, now())),
             Err(_) => Response::error(400, "the body is not valid JSON for this route"),
         })
         .post("/v1/skills/{id}/github/check", |app, _, p| {
             respond(github_check(&app.skills, &Net, github_token(app).as_deref(), p.get("id")))
         })
         .post("/v1/skills/{id}/github/update", |app, _, p| {
-            respond(github_update(&app.skills, &Net, github_token(app).as_deref(), p.get("id"), now()))
+            respond(github_update(&app.skills, &app.bus, &Net, github_token(app).as_deref(), p.get("id"), now()))
         })
         .get("/v1/skills/export", |app, req, _| {
             respond_zip(export_many(&app.skills, req.query_param("ids").unwrap_or("")))
@@ -269,7 +270,7 @@ fn github_preview(
 // ---- commit ----
 
 /// Creates the picked skills, all or none: every pick is checked and its name is free before anything is written.
-fn commit(skills: &Skills, previews: &Previews, body: CommitBody, now: u64) -> Result<Value, Fail> {
+fn commit(skills: &Skills, bus: &Bus, previews: &Previews, body: CommitBody, now: u64) -> Result<Value, Fail> {
     let preview = previews
         .get(&body.preview_id, now)
         .ok_or_else(|| Fail::Status(404, "no such preview, or it has expired".into()))?;
@@ -330,6 +331,7 @@ fn commit(skills: &Skills, previews: &Previews, body: CommitBody, now: u64) -> R
         let id = unique_id(skills.store(), &title)?;
         let new = NewSkill { id, title, tags: Vec::new(), bindings: bindings.clone(), source };
         let skill = skills.store().create(&new, &nv, OWNER, now)?;
+        bus.publish("skill", &json!({ "id": skill.id, "action": "import" }));
         out.push(summary(skills.store(), &skill)?);
     }
     Ok(json!({"skills": out}))
@@ -392,7 +394,7 @@ fn github_check(skills: &Skills, fetch: &dyn Fetch, token: Option<&str>, id: &st
 }
 
 /// Imports the skill at its path in the latest commit as a new version (author `github`). Unchanged: created false.
-fn github_update(skills: &Skills, fetch: &dyn Fetch, token: Option<&str>, id: &str, now: u64) -> Result<Value, Fail> {
+fn github_update(skills: &Skills, bus: &Bus, fetch: &dyn Fetch, token: Option<&str>, id: &str, now: u64) -> Result<Value, Fail> {
     let store = skills.store();
     let skill = store.get(id)?.ok_or(StoreError::NotFound)?;
     let Source::Github { repo, git_ref, path, commit } = &skill.source else {
@@ -416,6 +418,7 @@ fn github_update(skills: &Skills, fetch: &dyn Fetch, token: Option<&str>, id: &s
         Some(latest.clone()),
     )?;
     let meta = store.add_version(id, skill.latest_version, &nv, GITHUB_ACTOR, now)?;
+    bus.publish("skill", &json!({ "id": id, "action": "import" }));
     Ok(json!({"version": meta, "created": true}))
 }
 
@@ -679,6 +682,7 @@ mod tests {
     #[test]
     fn zip_preview_commit_and_export_round_trip() {
         let lib = library();
+        let bus = Bus::default();
         let previews = Previews::new();
         let now = 1_000;
         let md = apz_skill::template().to_string();
@@ -689,7 +693,7 @@ mod tests {
         let preview_id = preview["preview_id"].as_str().unwrap().to_string();
 
         let body = CommitBody { preview_id: preview_id.clone(), picks: vec!["folder".into()], bindings: vec!["plaza".into()] };
-        let made = commit(&lib, &previews, body, now).unwrap();
+        let made = commit(&lib, &bus, &previews, body, now).unwrap();
         let id = made["skills"][0]["id"].as_str().unwrap().to_string();
         assert_eq!(made["skills"][0]["bindings"], json!(["plaza"]));
 
@@ -705,15 +709,16 @@ mod tests {
 
         // The name is live now: the same pick again is refused, and nothing is created.
         let again = CommitBody { preview_id, picks: vec!["folder".into()], bindings: vec![] };
-        assert!(matches!(commit(&lib, &previews, again, now), Err(Fail::Store(StoreError::Conflict(_)))));
+        assert!(matches!(commit(&lib, &bus, &previews, again, now), Err(Fail::Store(StoreError::Conflict(_)))));
         // An unknown preview is a 404.
         let unknown = CommitBody { preview_id: "nope".into(), picks: vec!["folder".into()], bindings: vec![] };
-        assert!(matches!(commit(&lib, &previews, unknown, now), Err(Fail::Status(404, _))));
+        assert!(matches!(commit(&lib, &bus, &previews, unknown, now), Err(Fail::Status(404, _))));
     }
 
     #[test]
     fn github_preview_check_and_update_follow_the_ref() {
         let lib = library();
+        let bus = Bus::default();
         let previews = Previews::new();
         let now = 1_000;
         let md_a = apz_skill::template().to_string();
@@ -733,7 +738,7 @@ mod tests {
             picks: vec!["skills/foo".into()],
             bindings: vec![],
         };
-        let made = commit(&lib, &previews, body, now).unwrap();
+        let made = commit(&lib, &bus, &previews, body, now).unwrap();
         let id = made["skills"][0]["id"].as_str().unwrap().to_string();
 
         let check_now = github_check(&lib, &fake, None, &id).unwrap();
@@ -744,11 +749,11 @@ mod tests {
         assert_eq!(check_later["update_available"], true);
         assert_eq!(check_later["latest"], sha_b.as_str());
 
-        let updated = github_update(&lib, &fake, None, &id, now).unwrap();
+        let updated = github_update(&lib, &bus, &fake, None, &id, now).unwrap();
         assert_eq!(updated["created"], true);
         assert_eq!(lib.store().versions(&id).unwrap().len(), 2);
 
-        let unchanged = github_update(&lib, &fake, None, &id, now).unwrap();
+        let unchanged = github_update(&lib, &bus, &fake, None, &id, now).unwrap();
         assert_eq!(unchanged["created"], false);
     }
 

@@ -48,6 +48,10 @@ impl Plaza for App {
         &self.skills
     }
 
+    fn announce(&self, kind: &str, id: &str, action: &str) {
+        self.bus.publish(kind, &json!({ "id": id, "action": action }));
+    }
+
     fn search_library(&self, query: &str, limit: usize) -> Vec<Value> {
         self.library.search(query, limit).iter().filter_map(|entry| serde_json::to_value(entry).ok()).collect()
     }

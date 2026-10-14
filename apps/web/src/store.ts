@@ -35,7 +35,7 @@ export function onConnection(fn: (up: boolean) => void): () => void {
   return () => connectionListeners.delete(fn);
 }
 
-const KINDS = new Set(['agent', 'work', 'transcript', 'delta', 'task', 'treasury', 'agora', 'board', 'conversation', 'motion', 'provider', 'run', 'vm', 'serial', 'memory', 'approval', 'library', 'connector', 'file', 'toolbox', 'project', 'loop', 'plaza', 'agent_proposal', 'role', 'usage', 'training', 'vault.changed', 'vault.audit_broken', 'mcp.changed', 'mcp.status', 'ide']);
+const KINDS = new Set(['agent', 'work', 'transcript', 'delta', 'task', 'treasury', 'agora', 'board', 'conversation', 'motion', 'provider', 'run', 'vm', 'serial', 'memory', 'approval', 'library', 'connector', 'file', 'toolbox', 'project', 'loop', 'plaza', 'agent_proposal', 'role', 'usage', 'training', 'vault.changed', 'vault.audit_broken', 'mcp.changed', 'mcp.status', 'ide', 'prompt', 'skill']);
 
 /** Opens the live layer (idempotent). It reconnects on its own until the page leaves. */
 export function connect(): void {
