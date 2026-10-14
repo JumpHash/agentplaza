@@ -1,8 +1,9 @@
 // The Workstations screen: the machines agents operate through the hub. The list enrolls new ones
-// with a join code (its token shown once, with the command to run on the machine) and shows each one's
-// state. `#/workstations/<id>` is one workstation: its facts, leases, settings (the takeover policy and
-// recording), its actions and its audit. The live view and the recordings come in a later pass.
-// Refreshes on the station and lease frames, and every few seconds.
+// with a join code (its token shown once, with the command to run on the machine), shows each one's
+// state and a picture of its screen, and holds the hub-wide recording defaults. `#/workstations/<id>` is one
+// workstation: its facts, the live view (and takeover), its leases, its work folder, its recordings, its
+// settings (the takeover policy, recording and rate) and its audit. `#/workstations/<id>/recordings/<rid>` plays
+// one recording. Refreshes on the station, lease and sync frames, and every few seconds.
 
 import '../styles/workstations.css';
 import { api, ApiError, type Agent, type StationAuditRow, type StationCode, type StationLease, type StationView, type Takeover } from '../api';
@@ -27,9 +28,13 @@ import {
   nameProblem,
   osText,
   ramText,
+  RATE_MAX,
   RECORD_FPS,
+  rateText,
+  readRate,
   readSettings,
   RETENTION_DAYS,
+  type Section,
   settingsForm,
   sortStations,
   stationSummary,
@@ -40,11 +45,28 @@ import {
   WORK_FOLDER_MAX,
   type SettingsForm,
 } from './workstations-model';
+import { liveView, type LiveHandle } from './workstations-live';
+import { playbackScreen, recordingDefaultsCard, recordingsCard } from './workstations-recordings';
+import { syncCard } from './workstations-sync';
 import type { Cleanup } from './index';
 
 const POLL_MS = 10_000;
-/** The frames that change a workstation or its leases. */
-const EVENTS = ['station', 'lease_waiting', 'lease_granted', 'lease_released', 'lease_ended', 'lease_failed', 'lease_owner_input'];
+/** How often the list's pictures are asked for again, while the page is in view. */
+const THUMB_MS = 10_000;
+/** The frames that change a workstation, its leases, its work folder or its recordings. */
+const EVENTS = [
+  'station',
+  'lease_waiting',
+  'lease_granted',
+  'lease_released',
+  'lease_ended',
+  'lease_failed',
+  'lease_owner_input',
+  'station_takeover',
+  'station_give_back',
+  'station_sync_conflict',
+  'station_sync_paused',
+];
 
 /** Calls `fn` a moment after the last change frame, so a burst of them is one refresh. Returns the unsubscribe. */
 function onChanges(fn: () => void): () => void {
@@ -74,7 +96,8 @@ function copyBox(value: string): HTMLElement {
 }
 
 export function mount(root: HTMLElement, params: string[]): Cleanup {
-  const id = params[0];
+  const [id, part, recording] = params;
+  if (id && part === 'recordings' && recording) return playbackScreen(root, id, recording);
   return id ? detailScreen(root, id) : listScreen(root);
 }
 
@@ -89,15 +112,56 @@ function listScreen(root: HTMLElement): Cleanup {
   // The open dialog and the countdown it runs, closed on leaving the screen.
   let closeDialog: (() => void) | null = null;
   let stopTick: (() => void) | null = null;
+  // The last picture of each online workstation, as an object URL, and when the pictures were last asked for.
+  const pictures = new Map<string, string>();
+  let picturesAt = 0;
 
   const listBody = h('div');
   const codesBody = h('div');
+  const defaults: Section = recordingDefaultsCard();
   root.append(
     h('div.view-head.ws-head', null, h('h1', null, 'Workstations'), button('Add workstation', () => openAdd(), { kind: 'primary' })),
     h('p.ws-lede', null, 'Machines that agents operate through the hub: their screen, shell, files and every program installed there.'),
     card('Workstations', listBody, { flush: true }),
     card('Join codes', codesBody, { flush: true }),
+    defaults.el,
   );
+
+  /** A row's picture: the screen as it was last asked for, or a note when no session is open. Offline machines have none. */
+  const thumb = (s: StationView): HTMLElement | null => {
+    if (!s.online || s.revoked) return null;
+    const url = pictures.get(s.id);
+    return h(
+      'span.ws-row-thumb',
+      null,
+      h('img', { 'data-thumb': s.id, alt: `Screen of ${s.name}`, src: url ?? null, hidden: url === undefined }),
+      h('span.ws-thumb-empty', null, 'No screen open'),
+    );
+  };
+
+  /** Each online workstation's picture: asked for again every few seconds while the page is in view. */
+  const refreshPictures = async (): Promise<void> => {
+    picturesAt = Date.now();
+    if (!stations) return;
+    await Promise.all(
+      stations
+        .filter((s) => s.online && !s.revoked)
+        .map(async (s) => {
+          const picture = await api.stationThumbnail(s.id);
+          if (!alive) return;
+          const previous = pictures.get(s.id);
+          if (picture) pictures.set(s.id, URL.createObjectURL(picture));
+          else pictures.delete(s.id);
+          if (previous) URL.revokeObjectURL(previous);
+          const url = pictures.get(s.id);
+          listBody.querySelectorAll<HTMLImageElement>('img[data-thumb]').forEach((img) => {
+            if (img.dataset.thumb !== s.id) return;
+            if (url) img.src = url;
+            img.hidden = !url;
+          });
+        }),
+    );
+  };
 
   const row = (s: StationView): HTMLElement => {
     const chip = statusChip(s.status);
@@ -109,6 +173,7 @@ function listScreen(root: HTMLElement): Cleanup {
       h(
         'a.ws-row-link',
         { href: href('workstations', s.id) },
+        thumb(s),
         h(
           'span.ws-row-main',
           null,
@@ -218,17 +283,26 @@ function listScreen(root: HTMLElement): Cleanup {
     ready = true;
     renderList();
     renderCodes();
+    void defaults.refresh();
+    if (!picturesAt) void refreshPictures();
   };
 
   void load();
   const poll = setInterval(() => void load(), POLL_MS);
+  const pictureTimer = setInterval(() => {
+    if (document.visibilityState === 'visible') void refreshPictures();
+  }, THUMB_MS);
   const offChanges = onChanges(() => void load());
   return () => {
     alive = false;
     clearInterval(poll);
+    clearInterval(pictureTimer);
     offChanges();
     stopTick?.();
     closeDialog?.();
+    defaults.dispose();
+    for (const url of pictures.values()) URL.revokeObjectURL(url);
+    pictures.clear();
   };
 }
 
@@ -253,6 +327,12 @@ function detailScreen(root: HTMLElement, id: string): Cleanup {
   const factsBody = h('div');
   const leasesBody = h('div');
   const auditBody = h('div');
+  const liveBody = h('div', null, empty('machine', 'Loading…'));
+  // The live view starts with the first load: it needs the workstation's sessions.
+  let live: LiveHandle | null = null;
+  const nameOf = (cid: number): string => names.get(cid) ?? `agent ${cid}`;
+  const sync: Section = syncCard(id);
+  const recordings: Section = recordingsCard(id, nameOf);
 
   // ---- settings: built once, filled from the station on each refresh unless the owner is editing ----
   const takeover = select(TAKEOVER_OPTIONS.map((o) => ({ value: o.value, label: o.label })));
@@ -262,6 +342,8 @@ function detailScreen(root: HTMLElement, id: string): Cleanup {
   const snapshot = h('input', { type: 'checkbox' });
   const retention = input({ type: 'number', min: RETENTION_DAYS.min, max: RETENTION_DAYS.max, step: 1, inputmode: 'numeric', 'aria-label': 'Keep recordings for, in days' });
   const fps = input({ type: 'number', min: RECORD_FPS.min, max: RECORD_FPS.max, step: 1, inputmode: 'numeric', 'aria-label': 'Frames per second' });
+  const rate = input({ type: 'number', min: 0, max: RATE_MAX, step: 1, inputmode: 'numeric', 'aria-label': 'Rate, in credits an hour' });
+  const rateHint = h('span.hint');
   const folder = input({ maxlength: WORK_FOLDER_MAX, placeholder: '~/AgentPlaza', 'aria-label': 'Work folder', autocomplete: 'off', spellcheck: 'false' });
   const settingsError = h('p.error-text');
   const saveButton = button('Save settings', () => void save(), { kind: 'primary' });
@@ -282,6 +364,7 @@ function detailScreen(root: HTMLElement, id: string): Cleanup {
       h('label.ws-check', null, takeovers, h('span', null, "Record the owner's takeovers too")),
       field('Keep recordings for (days)', retention, `${RETENTION_DAYS.min} to ${RETENTION_DAYS.max}. Older recordings are deleted.`),
       field('Frames per second', fps, `${RECORD_FPS.min} to ${RECORD_FPS.max}. What a recording keeps.`),
+      h('label.field', null, h('span', null, 'Rate, credits an hour'), rate, rateHint),
     ),
     field('Work folder', folder, "Under the agent's OS account. It syncs with the hub both ways."),
     h('label.ws-check', null, snapshot, h('span', null, 'Snapshot and reset (VMs)'), h('span.hint', null, 'Restore a clean snapshot after each lease.')),
@@ -293,10 +376,20 @@ function detailScreen(root: HTMLElement, id: string): Cleanup {
   root.append(
     h('div.view-head.ws-head', null, h('div.ws-heading', null, back, h('div.ws-title', null, title, chipBox)), actionsBox),
     card('Facts', factsBody),
+    card('Live view', liveBody),
     card('Leases', leasesBody, { flush: true }),
+    sync.el,
+    recordings.el,
     card('Settings', settingsBody),
     card('Audit', auditBody, { flush: true }),
   );
+
+  /** The rate's hint: what the credits come to in dollars an hour, as the owner types them. */
+  const syncRateHint = (): void => {
+    const credits = readRate(rate.value);
+    rateHint.textContent = credits === null ? 'Whole credits an hour. 0 is free.' : `${rateText(credits)}. One credit is $0.001; 0 is free.`;
+  };
+  rate.addEventListener('input', syncRateHint);
 
   const syncHint = (): void => {
     takeoverHint.textContent = takeoverText(takeover.value as Takeover);
@@ -311,6 +404,7 @@ function detailScreen(root: HTMLElement, id: string): Cleanup {
     record_takeovers: takeovers.checked,
     work_folder: folder.value,
     snapshot_reset: snapshot.checked,
+    rate_per_hour: rate.value,
   });
 
   const showForm = (f: SettingsForm): void => {
@@ -321,7 +415,9 @@ function detailScreen(root: HTMLElement, id: string): Cleanup {
     takeovers.checked = f.record_takeovers;
     folder.value = f.work_folder;
     snapshot.checked = f.snapshot_reset;
+    rate.value = f.rate_per_hour;
     syncHint();
+    syncRateHint();
   };
 
   const dirty = (): boolean => JSON.stringify(readForm()) !== baseline;
@@ -515,6 +611,11 @@ function detailScreen(root: HTMLElement, id: string): Cleanup {
   const renderAll = (s: StationView): void => {
     renderHeader(s);
     renderFacts(s);
+    if (live) live.update(s);
+    else {
+      live = liveView(s, nameOf);
+      replace(liveBody, live.el);
+    }
     renderLeases(s);
     settingsFields.disabled = s.revoked;
     syncSettings(s);
@@ -543,6 +644,8 @@ function detailScreen(root: HTMLElement, id: string): Cleanup {
     if (!alive) return;
     names = new Map((ag ?? []).map((a): [number, string] => [a.cid, a.name]));
     audit = au;
+    void sync.refresh();
+    void recordings.refresh();
     if (fetched) {
       station = fetched;
       renderAll(fetched);
@@ -564,5 +667,8 @@ function detailScreen(root: HTMLElement, id: string): Cleanup {
     clearInterval(poll);
     offChanges();
     closeDialog?.();
+    live?.dispose();
+    sync.dispose();
+    recordings.dispose();
   };
 }

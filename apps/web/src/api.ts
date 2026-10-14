@@ -27,6 +27,20 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
   return data as T;
 }
 
+/**
+ * A request whose answer is not JSON (a picture, a file's bytes) or whose body is raw bytes. Errors are thrown as
+ * `call` throws them, so the callers see the same `ApiError`.
+ */
+async function raw(method: string, path: string, body?: BodyInit, contentType?: string): Promise<Response> {
+  const res = await fetch(path, { method, headers: contentType ? { 'content-type': contentType } : {}, body });
+  if (!res.ok) {
+    if (res.status === 401) window.dispatchEvent(new CustomEvent('apz-auth-required'));
+    const data: { error?: string } | null = await res.json().catch(() => null);
+    throw new ApiError(res.status, data?.error ?? `${method} ${path}: ${res.status}`, [], data);
+  }
+  return res;
+}
+
 const get = <T>(path: string) => call<T>('GET', path);
 const post = <T>(path: string, body: unknown = {}) => call<T>('POST', path, body);
 const put = <T>(path: string, body: unknown) => call<T>('PUT', path, body);
@@ -419,6 +433,8 @@ export type Takeover = 'agent_waits' | 'release_lease' | 'keep_working_pointer_p
 export interface StationSettings {
   takeover: Takeover; record: boolean; retention_days: number; record_fps: number;
   record_takeovers: boolean; work_folder: string; snapshot_reset: boolean;
+  /** What an hour of a lease costs the lease's task, in plaza credits (1 credit is $0.001); 0 is free. */
+  rate_per_hour: number;
 }
 export type LeaseKind = 'shared' | 'pixel';
 export type LeaseState = 'queued' | 'opening' | 'active';
@@ -440,6 +456,51 @@ export interface StationAuditRow {
   [detail: string]: unknown;
 }
 export interface StationSettingsAnswer { settings: StationSettings; pushed: boolean; push_error: string | null }
+
+/** A mouse button, as the daemon names it. */
+export type InputButton = 'left' | 'right' | 'middle';
+/**
+ * One owner action on a screen session (apz-station's `InputAction`). Points are in the pixels of the frame the
+ * owner sees; scroll amounts are notches, positive `dy` scrolls the content down.
+ */
+export type InputAction =
+  | { action: 'move'; x: number; y: number }
+  | { action: 'click'; x: number; y: number; button: InputButton; count: number }
+  | { action: 'down'; button: InputButton }
+  | { action: 'up'; button: InputButton }
+  | { action: 'scroll'; x: number; y: number; dx: number; dy: number }
+  | { action: 'type'; text: string }
+  | { action: 'key'; combo: string }
+  | { action: 'drag'; from: [number, number]; to: [number, number] };
+
+/** A recorded lease (`recordings::Recording` on the hub). `ended_ms` is null while the lease is open. */
+export interface StationRecording {
+  id: string; station: string; lease: string; agent: number; task: string | null; started_ms: number; ended_ms: number | null;
+  frames: number; actions: number; bytes: number; takeover: boolean; width: number | null; height: number | null;
+}
+/** One action of a recording: `summary` is the action as it was asked for. */
+export interface StationRecordingEvent { at_ms: number; kind: string; ok: boolean; summary: unknown }
+export interface StationRecordingDetail extends StationRecording { events: StationRecordingEvent[] }
+/** The hub-wide recording defaults, for the stations that join from now on. */
+export interface RecordingDefaults { record: boolean; retention_days: number; record_fps: number; record_takeovers: boolean }
+
+/** A file of a work folder's mirror on the hub. */
+export interface SyncFile { path: string; hash: string | null; size: number; mtime_ms: number; version: number; conflict_of: string | null; deleted: boolean }
+/**
+ * The work-folder sync's state. `paused`, `reason` and `pending_deletions` come when the sync holds its deletions for the
+ * owner to decide (the hub adds them); `pending_deletions` lists paths, as strings or as `{path}` objects.
+ */
+export interface StationSync {
+  station: string; linked: boolean; files: number; bytes: number; last_sync_ms: number; conflicts: SyncFile[];
+  paused?: boolean; reason?: string | null; pending_deletions?: unknown[];
+}
+/** What the Library answers when a file is delivered into it. */
+export interface StationDelivery { id: string; name: string; size: number; kind: string; audience: string }
+
+/** One path segment, encoded. */
+const seg = (text: string): string => encodeURIComponent(text);
+/** A work-folder file's URL: each segment of its path encoded, the slashes kept. */
+const filesUrl = (station: string, path: string): string => `/v1/stations/${seg(station)}/files/${path.split('/').map(seg).join('/')}`;
 
 export const api = {
   overview: () => get<Overview>('/v1/overview'),
@@ -641,6 +702,31 @@ export const api = {
   releaseStationLease: (id: string, lease: string) => del<unknown>(`/v1/stations/${encodeURIComponent(id)}/leases/${encodeURIComponent(lease)}`),
   /** The newest rows first; with `station` only that workstation's. */
   stationAudit: (station: string, limit = 100) => get<StationAuditRow[]>(`/v1/stations/audit${query({ station, limit })}`),
+
+  /** One picture of a station's screen (its session, or the lease's when `session` is left out); null when none is open. */
+  stationThumbnail: (id: string, session?: string) =>
+    raw('GET', `/v1/stations/${seg(id)}/thumbnail${session ? `?session=${encodeURIComponent(session)}` : ''}`).then((r) => r.blob()).catch((): null => null),
+  /** The work folder's state, and the mirror's files under `prefix` (a directory with its trailing slash, or none for all). */
+  stationSync: (id: string) => get<StationSync>(`/v1/stations/${seg(id)}/sync`),
+  stationSyncFiles: (id: string, prefix = '') => get<SyncFile[]>(`/v1/stations/${seg(id)}/files${query({ prefix: prefix || undefined })}`),
+  /** The file's bytes, for a download (the page's cookie signs the request). */
+  stationFileUrl: (id: string, path: string) => filesUrl(id, path),
+  /** Writes a file into the mirror; the next pass pushes it to the station. */
+  putStationFile: (id: string, path: string, body: Blob) => raw('PUT', filesUrl(id, path), body, 'application/octet-stream').then((r) => r.json() as Promise<SyncFile>),
+  deleteStationFile: (id: string, path: string) => del<SyncFile>(filesUrl(id, path)),
+  /** Copies a mirrored file into the Library as a deliverable. */
+  deliverStationFile: (id: string, path: string, body: { title?: string; description?: string }) => post<StationDelivery>(`${filesUrl(id, path)}/deliver`, body),
+  /** Resumes a paused sync; `applyDeletions` carries out the deletions it held. */
+  resumeStationSync: (id: string, applyDeletions: boolean) => post<StationSync>(`/v1/stations/${seg(id)}/sync/resume`, { apply_deletions: applyDeletions }),
+  /** The newest recordings first; `station` narrows them to one workstation, `before` pages back from a start in ms. */
+  stationRecordings: (q: { station?: string; limit?: number; before?: number } = {}) =>
+    get<StationRecording[]>(`/v1/stations/recordings${query({ station: q.station, limit: q.limit, before: q.before })}`),
+  stationRecording: (id: string) => get<StationRecordingDetail>(`/v1/stations/recordings/${seg(id)}`),
+  /** One frame's JPEG, seq counting from 1. */
+  stationRecordingFrameUrl: (id: string, seq: number) => `/v1/stations/recordings/${seg(id)}/frames/${seq}`,
+  deleteStationRecording: (id: string) => del<{ id: string; deleted: boolean }>(`/v1/stations/recordings/${seg(id)}`),
+  stationRecordingDefaults: () => get<RecordingDefaults>('/v1/stations/recording-defaults'),
+  saveStationRecordingDefaults: (d: RecordingDefaults) => put<RecordingDefaults>('/v1/stations/recording-defaults', d),
 
   /** The model-call ledger, totalled per model, agent, role and provider over [from, to) unix ms (default: the last 30 days). */
   usageSummary: (from?: number, to?: number) => get<UsageSummary>(`/v1/usage/summary${query({ from, to })}`),

@@ -23,6 +23,8 @@ import type { FileChange } from '../src/ide/types';
 import { CENTRE_MIN, clampSize, defaultLayout, fitSize, isNarrow, LEFT_SIZE, leftViewFor, originFallback, parseLayout, RIGHT_SIZE, rightTabFor, serializeLayout } from '../src/ide/layout';
 import type { StationFacts, StationLease, StationSettings, StationView } from '../src/api';
 import { auditLabel, codeChip, countdown, displaysText, formLabel, gpuLine, gpuSummary, joinCommand, leaseCount, leaseStateChip, nameProblem, osText, ramText, readSettings, accountBadge, accountText, settingsForm, sortStations, stationSummary, statusChip, takeoverText, type SettingsForm } from '../src/views/workstations-model';
+import { actionFrame, activeAction, backoffMs, bytesText, buttonAction, clockText, controlSocketUrl, crumbsOf, dollarsPerHour, defaultsForm, frameAt, frameTime, framePoint, inputButton, joinPath, keyAction, moveAction, parentDir, parseControlText, parseFrame, parseScreenText, pendingPaths, rateText, readDefaults, readRate, recordingSpan, scrollNotches, screenSocketUrl, sessionChoices, takeoverBanner, treeOf, uploadProblem, wheelAction, actionText, type KeyEventLike } from '../src/views/workstations-model';
+import type { StationLease, RecordingDefaults } from '../src/api';
 import { MAX_TERMINALS, attachFrame, base64ToBytes, bytesToBase64, clearSession, inputFrame, killFrame, nextOffset, openFrame, parseServerFrame, plainText, readSession, reconnectDelay, resizeFrame, sessionKey, splitInput, terminalSocketUrl, writeSession, type KeyValueStore } from '../src/views/ide-terminal-model';
 
 let failures = 0;
@@ -717,13 +719,13 @@ const named = (name: string) => ({ name }) as StationView;
 const input = [named('studio'), named('Alpha'), named('beta')];
 eq([sortStations(input).map((s) => s.name), input.map((s) => s.name)], [['Alpha', 'beta', 'studio'], ['studio', 'Alpha', 'beta']], 'workstation list: name order, input untouched');
 
-const defaults: StationSettings = { takeover: 'agent_waits', record: true, retention_days: 30, record_fps: 2, record_takeovers: true, work_folder: '~/AgentPlaza', snapshot_reset: false };
+const defaults: StationSettings = { takeover: 'agent_waits', record: true, retention_days: 30, record_fps: 2, record_takeovers: true, work_folder: '~/AgentPlaza', snapshot_reset: false, rate_per_hour: 0 };
 const form = settingsForm(defaults);
-eq(form, { takeover: 'agent_waits', record: true, retention_days: '30', record_fps: '2', record_takeovers: true, work_folder: '~/AgentPlaza', snapshot_reset: false }, 'workstation settings form: the numbers as text');
+eq(form, { takeover: 'agent_waits', record: true, retention_days: '30', record_fps: '2', record_takeovers: true, work_folder: '~/AgentPlaza', snapshot_reset: false, rate_per_hour: '0' }, 'workstation settings form: the numbers as text');
 eq(readSettings(form), { ok: true, settings: defaults }, 'workstation settings form: the defaults round-trip');
 eq(readSettings({ ...form, work_folder: '  /srv/work  ', retention_days: ' 7 ', record_fps: '1' }), { ok: true, settings: { ...defaults, work_folder: '/srv/work', retention_days: 7, record_fps: 1 } }, 'workstation settings form: trimmed and parsed');
-const edited: SettingsForm = { takeover: 'keep_working_pointer_paused', record: false, retention_days: '365', record_fps: '30', record_takeovers: false, work_folder: 'D:\\work', snapshot_reset: true };
-eq(readSettings(edited), { ok: true, settings: { takeover: 'keep_working_pointer_paused', record: false, retention_days: 365, record_fps: 30, record_takeovers: false, work_folder: 'D:\\work', snapshot_reset: true } }, 'workstation settings form: every field, at the bounds');
+const edited: SettingsForm = { takeover: 'keep_working_pointer_paused', record: false, retention_days: '365', record_fps: '30', record_takeovers: false, work_folder: 'D:\\work', snapshot_reset: true, rate_per_hour: '1000000' };
+eq(readSettings(edited), { ok: true, settings: { takeover: 'keep_working_pointer_paused', record: false, retention_days: 365, record_fps: 30, record_takeovers: false, work_folder: 'D:\\work', snapshot_reset: true, rate_per_hour: 1000000 } }, 'workstation settings form: every field, at the bounds');
 const refused = (patch: Partial<SettingsForm>): boolean => readSettings({ ...form, ...patch }).ok;
 eq(
   [
@@ -736,12 +738,142 @@ eq(
     refused({ work_folder: 'a'.repeat(513) }),
     refused({ work_folder: 'a\tb' }),
     refused({ takeover: 'nope' as SettingsForm['takeover'] }),
+    refused({ rate_per_hour: '' }),
+    refused({ rate_per_hour: '1.5' }),
+    refused({ rate_per_hour: '-1' }),
+    refused({ rate_per_hour: '1000001' }),
   ],
-  [false, false, false, false, false, false, false, false, false],
+  [false, false, false, false, false, false, false, false, false, false, false, false, false],
   'workstation settings form: every out-of-bounds value is refused',
 );
+eq(readSettings({ ...form, rate_per_hour: ' 2500 ' }), { ok: true, settings: { ...defaults, rate_per_hour: 2500 } }, 'workstation rate: whole credits, trimmed');
 eq(readSettings({ ...form, retention_days: '0' }), { ok: false, error: 'Keep recordings for whole days, from 1 to 3650.' }, 'workstation settings form: the retention message');
 sectionEnd('workstation tests: ok');
+
+// Workstations, live view and takeover, recordings and the work folder: the wire shapes and the mappings the pages draw from.
+const frameBytes = (header: Record<string, unknown>, image: number[]): ArrayBuffer => {
+  const head = new TextEncoder().encode(JSON.stringify(header));
+  const out = new Uint8Array(4 + head.length + image.length);
+  new DataView(out.buffer).setUint32(0, head.length, false);
+  out.set(head, 4);
+  out.set(image, 4 + head.length);
+  return out.buffer;
+};
+const parsed = parseFrame(frameBytes({ w: 4, h: 2, format: 'jpeg', ts: 9, seq: 3 }, [1, 2, 3]));
+eq(parsed && { ...parsed, image: Array.from(parsed.image) }, { w: 4, h: 2, format: 'jpeg', ts: 9, seq: 3, image: [1, 2, 3] }, 'live frame: the header and the image after it');
+eq(
+  [
+    parseFrame(new ArrayBuffer(2)),
+    parseFrame(frameBytes({ w: 4, h: 2, format: 'gif', ts: 9, seq: 3 }, [])),
+    parseFrame(frameBytes({ w: 0, h: 2, format: 'png', ts: 9, seq: 3 }, [])),
+    parseFrame(frameBytes({ w: 4, h: 2, format: 'png', ts: 9 }, [])),
+    parseFrame(frameBytes({ w: 4, h: 2, format: 'png', ts: 9, seq: 1.5 }, [])),
+  ].map((f) => f === null),
+  [true, true, true, true, true],
+  'live frame: anything that is not a frame of the shape is refused',
+);
+{
+  // A header longer than the message is refused, not read past its end.
+  const buf = new Uint8Array([0, 0, 1, 0, 123]).buffer;
+  eq(parseFrame(buf), null, 'live frame: a header longer than the message is refused');
+}
+eq(parseScreenText('{"t":"started","session":4}'), { t: 'started', session: 4 }, 'live text: started names the session');
+eq([parseScreenText('{"t":"ended","reason":"done"}'), parseScreenText('{"t":"pong"}'), parseScreenText('{"t":"nope"}'), parseScreenText('not json')], [{ t: 'ended', reason: 'done' }, { t: 'pong' }, null, null], 'live text: ended and pong, and anything else is null');
+eq(parseControlText('{"t":"taken","session":4,"policy":"release_lease"}'), { t: 'taken', session: 4, policy: 'release_lease' }, 'takeover text: taken names the session and the policy');
+eq([parseControlText('{"t":"taken","session":4,"policy":"whatever"}'), parseControlText('{"t":"given_back"}'), parseControlText('{"t":"error","error":"no"}')], [null, { t: 'given_back' }, { t: 'error', error: 'no' }], 'takeover text: an unknown policy is refused');
+eq(screenSocketUrl('w1', { session: 'shared', fps: 5, scale: 0.5 }, { protocol: 'https:', host: 'hub.local:7443' }), 'wss://hub.local:7443/v1/stations/w1/screen?session=shared&fps=5&scale=0.5', 'live socket: wss on https, the view in the query');
+eq(controlSocketUrl('a b', 12, { protocol: 'http:', host: 'localhost:7443' }), 'ws://localhost:7443/v1/stations/a%20b/control?session=12', 'takeover socket: ws on http, the id encoded');
+eq([0, 1, 2, 3, 9].map(backoffMs), [1000, 2000, 5000, 10000, 10000], 'sockets: the reconnect waits, the last one repeats');
+eq(framePoint(150, 75, { left: 50, top: 25, width: 200, height: 100 }, { w: 400, h: 200 }), { x: 200, y: 100 }, 'pointer: a client point is a point of the frame');
+eq([framePoint(1000, -50, { left: 50, top: 25, width: 200, height: 100 }, { w: 400, h: 200 }), framePoint(1, 1, { left: 0, top: 0, width: 0, height: 0 }, { w: 4, h: 4 })], [{ x: 399, y: 0 }, null], 'pointer: clamped to the frame, and none before it has a size');
+eq([inputButton(0), inputButton(1), inputButton(2), inputButton(3)], ['left', 'middle', 'right', null], 'pointer: the DOM buttons as the daemon names them');
+eq([buttonAction('right', true), buttonAction('right', false), moveAction({ x: 3, y: 4 })], [{ action: 'down', button: 'right' }, { action: 'up', button: 'right' }, { action: 'move', x: 3, y: 4 }], 'pointer: press, release and move');
+eq(
+  [scrollNotches(120, 0), scrollNotches(-120, 0), scrollNotches(-1, 0), scrollNotches(0, 0), scrollNotches(5000, 0), scrollNotches(3, 1), scrollNotches(1, 2)],
+  [2, -2, -1, 0, 20, 3, 10],
+  'wheel: notches keep the sign (positive scrolls down), clamped to 20',
+);
+eq(wheelAction({ x: 5, y: 6 }, 0, 120, 0), { action: 'scroll', x: 5, y: 6, dx: 0, dy: 2 }, 'wheel: a turn down is dy above zero');
+eq(wheelAction({ x: 5, y: 6 }, -240, -120, 0), { action: 'scroll', x: 5, y: 6, dx: -5, dy: -2 }, 'wheel: a turn up and left is negative');
+const keyOf = (key: string, mods = ''): KeyEventLike => ({ key, ctrlKey: mods.includes('c'), altKey: mods.includes('a'), shiftKey: mods.includes('s'), metaKey: mods.includes('m') });
+eq(
+  [
+    keyAction(keyOf('a')),
+    keyAction(keyOf('S', 'cs')),
+    keyAction(keyOf('Tab', 's')),
+    keyAction(keyOf('Enter')),
+    keyAction(keyOf(' ')),
+    keyAction(keyOf(' ', 'c')),
+    keyAction(keyOf('F5')),
+    keyAction(keyOf('+', 'c')),
+    keyAction(keyOf('k', 'm')),
+    keyAction(keyOf('ArrowLeft', 'a')),
+    keyAction(keyOf('Shift', 's')),
+    keyAction(keyOf('Dead')),
+    keyAction(keyOf('é', 'a')),
+    keyAction(keyOf('é')),
+    keyAction(keyOf('Escape')),
+  ],
+  [
+    { action: 'type', text: 'a' },
+    { action: 'key', combo: 'ctrl+shift+s' },
+    { action: 'key', combo: 'shift+tab' },
+    { action: 'key', combo: 'enter' },
+    { action: 'type', text: ' ' },
+    { action: 'key', combo: 'ctrl+space' },
+    { action: 'key', combo: 'f5' },
+    { action: 'key', combo: 'ctrl+plus' },
+    { action: 'key', combo: 'meta+k' },
+    { action: 'key', combo: 'alt+left' },
+    null,
+    null,
+    null,
+    { action: 'type', text: 'é' },
+    { action: 'key', combo: 'escape' },
+  ],
+  'keys: printable text is typed, chords carry their modifiers in order, and an unnamed key is nothing',
+);
+eq(actionFrame({ action: 'key', combo: 'enter' }), '{"t":"input","action":{"action":"key","combo":"enter"}}', 'takeover: an input frame carries the action');
+eq(takeoverBanner('agent_waits').includes('wait until you give it back'), true, 'takeover banner: the wait policy');
+eq(takeoverBanner('release_lease').includes('back to the queue'), true, 'takeover banner: the release policy');
+
+const leaseOf = (session: number | null, state: StationLease['state'], kind: StationLease['kind'] = 'pixel', task: string | null = null): StationLease => ({
+  id: `l${session ?? 0}`, station: 'ws-1', agent: 7, task, kind, session, started_ms: 1, state, position: state === 'queued' ? 1 : null,
+});
+eq(
+  sessionChoices([leaseOf(3, "active", "pixel", "render"), leaseOf(null, "queued"), leaseOf(null, "active", "shared"), leaseOf(5, "opening")], (cid) => `Ada${cid}`),
+  [
+    { value: 'shared', label: "Shared: the owner's screen" },
+    { value: '3', label: 'Session 3: Ada7 · render' },
+    { value: '5', label: 'Session 5: Ada7' },
+  ],
+  'sessions: the shared one, then each pixel lease that has a session and is not waiting',
+);
+
+eq(recordingSpan({ started_ms: 1000, ended_ms: 5000 }, null), 4000, 'recording span: start to end');
+eq([recordingSpan({ started_ms: 1000, ended_ms: null }, 3000), recordingSpan({ started_ms: 1000, ended_ms: null }, null)], [2000, 0], 'recording span: an open one runs to its last action');
+eq([frameAt(0, 4000, 5), frameAt(4000, 4000, 5), frameAt(2000, 4000, 5), frameAt(-5, 4000, 5), frameAt(9000, 4000, 5), frameAt(10, 4000, 0), frameAt(3000, 0, 1)], [1, 5, 3, 1, 5, 0, 1], 'timeline: the frame on screen at a time, clamped');
+eq([frameTime(3, 4000, 5), frameTime(1, 4000, 5), frameTime(5, 4000, 5), frameTime(1, 4000, 1)], [2000, 0, 4000, 0], 'timeline: a frame\'s time, the inverse of the frame at a time');
+eq([activeAction([{ at_ms: 1100 }, { at_ms: 1500 }, { at_ms: 3000 }], 1000, 0), activeAction([{ at_ms: 1100 }, { at_ms: 1500 }, { at_ms: 3000 }], 1000, 100), activeAction([{ at_ms: 1100 }, { at_ms: 1500 }, { at_ms: 3000 }], 1000, 600), activeAction([{ at_ms: 1100 }, { at_ms: 1500 }, { at_ms: 3000 }], 1000, 5000)], [-1, 0, 1, 2], 'timeline: the newest action at or before a time');
+eq([clockText(0), clockText(65_000), clockText(3_725_000), clockText(-5)], ['0:00', '1:05', '1:02:05', '0:00'], 'timeline: m:ss, h:mm:ss, never negative');
+eq(actionText({ kind: 'owner_input', summary: { kind: 'type', text: 'hi' } }), 'owner input: text hi', 'actions: the kind, then the fields it was asked with');
+eq(actionText({ kind: 'click', summary: { kind: 'click', x: 3, y: 4, button: 'left' } }), 'click: x 3, y 4, button left', 'actions: the fields in words');
+
+const files = [{ path: 'a.md' }, { path: 'docs/x.md' }, { path: 'docs/sub/y.md' }, { path: 'zz/q.txt' }];
+eq(treeOf(files, ''), { folders: [{ name: 'docs', path: 'docs' }, { name: 'zz', path: 'zz' }], files: [{ path: 'a.md' }] }, 'work folder: the root has its folders and its own files');
+eq(treeOf(files, 'docs'), { folders: [{ name: 'sub', path: 'docs/sub' }], files: [{ path: 'docs/x.md' }] }, 'work folder: a folder has its folders and files, and no others');
+eq([parentDir('docs/sub'), parentDir('a'), joinPath('', 'a'), joinPath('docs', 'x')], ['docs', '', 'a', 'docs/x'], 'work folder: parents and joined paths');
+eq(crumbsOf('docs/sub'), [{ name: 'Work folder', path: '' }, { name: 'docs', path: 'docs' }, { name: 'sub', path: 'docs/sub' }], 'work folder: the trail to a folder');
+eq([pendingPaths(['a', 'b']), pendingPaths([{ path: 'c' }, 5, { x: 1 }]), pendingPaths(null)], [['a', 'b'], ['c'], []], 'work folder: a paused sync\'s deletions, as strings or as objects');
+eq([uploadProblem('a.txt', 10), uploadProblem('../x', 1), uploadProblem('a/b', 1), uploadProblem('', 1), uploadProblem('big', 512 * 1024 * 1024 + 1)].map((p) => p !== null), [false, true, true, true, true], 'work folder: upload names and sizes that cannot be kept');
+eq([bytesText(0), bytesText(1536), bytesText(10 * 1024 * 1024), bytesText(512 * 1024 * 1024)], ['0 B', '1.5 KB', '10 MB', '512 MB'], 'work folder: sizes in words');
+
+eq([readRate(' 120 '), readRate('1.5'), readRate('1000001'), readRate(''), readRate('0')], [120, null, null, null, 0], 'rate: whole credits from 0 to the bound');
+eq([rateText(0), rateText(1500), dollarsPerHour(12)], ['Free', '$1.500 an hour', '0.012'], 'rate: free, or its dollars an hour');
+const recDefaults: RecordingDefaults = { record: true, retention_days: 30, record_fps: 0, record_takeovers: false };
+eq(readDefaults(defaultsForm(recDefaults)), { ok: true, defaults: recDefaults }, 'recording defaults: the form round-trips');
+eq([readDefaults({ ...defaultsForm(recDefaults), record_fps: '6' }).ok, readDefaults({ ...defaultsForm(recDefaults), retention_days: '0' }).ok], [false, false], 'recording defaults: out-of-bounds values are refused');
+sectionEnd('workstation live, recordings and work folder tests: ok');
 
 
 if (failedSections.length) {

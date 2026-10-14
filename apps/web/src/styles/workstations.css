@@ -52,3 +52,94 @@
 .ws-check { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); font-size: var(--fs-sm); cursor: pointer; }
 .ws-check input { width: 16px; height: 16px; margin: 0; accent-color: var(--signal); }
 .ws-check .hint { flex-basis: 100%; padding-left: 24px; font: italic 13px var(--serif); color: var(--ink-3); }
+
+/* The list's picture of each screen: a thumbnail, or a note when no session is open */
+.ws-row-thumb {
+  position: relative; flex: none; width: 160px; aspect-ratio: 16 / 10; overflow: hidden;
+  border: 1px solid var(--border); background: var(--surface-2);
+}
+.ws-row-thumb img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.ws-row-thumb img:not([hidden]) + .ws-thumb-empty { display: none; }
+.ws-thumb-empty {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: var(--s2);
+  font: 500 11px var(--mono); letter-spacing: 0.04em; text-transform: uppercase; color: var(--ink-3); text-align: center;
+}
+@media (max-width: 560px) {
+  .ws-row-thumb { width: 100%; }
+}
+
+/* The live view: the bar of controls, the banner while the owner has the screen, the picture */
+.ws-live { display: flex; flex-direction: column; gap: var(--s3); min-width: 0; }
+.ws-live-bar { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: var(--s3); }
+.ws-live-controls { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--s3); min-width: 0; }
+.ws-live-controls .field { min-width: 0; }
+.ws-live-controls .select, .ws-live-controls select { min-width: 140px; }
+.ws-live-buttons { display: flex; flex-wrap: wrap; gap: var(--s2); }
+.ws-live-hint { margin: 0; font-size: var(--fs-sm); }
+.ws-banner {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s3);
+  padding: var(--s3) var(--s4); border: 1px solid var(--warn); background: var(--warn-bg); color: var(--warn-ink);
+  font-size: var(--fs-sm); overflow-wrap: anywhere;
+}
+.ws-banner[hidden] { display: none; }
+.ws-banner.is-paused { flex-direction: column; align-items: flex-start; }
+.ws-banner.is-paused p { margin: 0; }
+.ws-pending { margin: 0; padding-left: var(--s4); max-height: 160px; overflow: auto; font-size: var(--fs-sm); }
+.ws-pending code { overflow-wrap: anywhere; }
+.ws-stage { position: relative; min-width: 0; }
+.ws-canvas {
+  display: block; width: 100%; height: auto; max-height: 72vh; object-fit: contain;
+  background: var(--paper); border: 1px solid var(--border); cursor: default;
+}
+.ws-canvas[hidden] { display: none; }
+.ws-live.is-taken .ws-canvas { cursor: none; border: 2px solid var(--signal); }
+.ws-placeholder {
+  margin: 0; padding: var(--s6) var(--s4); text-align: center; border: 1px dashed var(--border);
+  font-family: var(--serif); color: var(--ink-3); background: var(--surface-2);
+}
+.ws-placeholder[hidden] { display: none; }
+
+/* Conflicts: the copies the sync kept beside the original */
+.ws-conflicts { display: flex; flex-direction: column; gap: var(--s2); padding: var(--s3); border-left: 3px solid var(--warn); background: var(--warn-bg); }
+.ws-conflicts p { margin: 0; font-size: var(--fs-sm); }
+.ws-conflicts .table td:first-child strong { color: var(--warn-ink); overflow-wrap: anywhere; }
+
+/* The mirror's browser: the trail, the rows' actions */
+.ws-crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s1); font: 500 12px var(--mono); color: var(--ink-3); overflow-wrap: anywhere; }
+.ws-crumb {
+  padding: 0; border: 0; background: none; font: inherit; color: var(--signal-ink); cursor: pointer; text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.ws-crumb + .ws-crumb::before, .ws-crumbs .is-here::before { content: '/'; margin-right: var(--s1); color: var(--ink-3); }
+.ws-crumbs .is-here { color: var(--ink); }
+.ws-row-actions { display: inline-flex; flex-wrap: wrap; gap: var(--s2); }
+
+/* Playback: the frame and its timeline beside the actions, one column on a phone */
+.ws-playback { display: grid; grid-template-columns: minmax(0, 2fr) minmax(240px, 1fr); gap: var(--s4); align-items: start; min-width: 0; }
+.ws-playback > .card { min-width: 0; }
+@media (max-width: 860px) {
+  .ws-playback { grid-template-columns: minmax(0, 1fr); }
+}
+.ws-frame-box { position: relative; min-height: 160px; background: var(--paper); border: 1px solid var(--border); }
+.ws-frame { display: block; width: 100%; height: auto; max-height: 64vh; object-fit: contain; }
+.ws-frame[hidden] { display: none; }
+.ws-frame-box > .faint { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; margin: 0; padding: var(--s4); text-align: center; }
+.ws-play { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s3); margin-top: var(--s3); }
+.ws-play input[type='range'] { flex: 1 1 200px; min-width: 120px; accent-color: var(--signal); }
+.ws-clock { font: 500 12px var(--mono); color: var(--ink-2); white-space: nowrap; }
+.ws-playback .card > .card-body > .faint { display: block; margin-top: var(--s2); font-size: var(--fs-sm); }
+.ws-actions-list { position: relative; max-height: 60vh; overflow: auto; min-width: 0; }
+.ws-action {
+  display: grid; grid-template-columns: 56px minmax(0, 1fr) auto; align-items: start; gap: var(--s2) var(--s3); width: 100%;
+  padding: var(--s2) var(--s4); border: 0; border-top: 1px solid var(--rule-faint); background: none; color: var(--text);
+  font-size: var(--fs-sm); text-align: left; cursor: pointer;
+}
+.ws-action:first-child { border-top: 0; }
+.ws-action:hover { background: var(--hover); }
+.ws-action.is-current { background: var(--accent-bg); box-shadow: inset 3px 0 0 var(--signal); }
+.ws-action.is-refused .ws-action-text { color: var(--ink-3); text-decoration: line-through; }
+.ws-action-time { font: 500 11px var(--mono); color: var(--ink-3); white-space: nowrap; }
+.ws-action-text { overflow-wrap: anywhere; }
+
+/* The Workstations list's recording defaults and the rate's hint */
+.ws-settings .field .hint, .ws-form .field .hint { font: italic 13px var(--serif); color: var(--ink-3); }
