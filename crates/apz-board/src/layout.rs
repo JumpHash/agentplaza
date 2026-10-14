@@ -358,8 +358,10 @@ pub fn layout(board_kind: &str, input: &LayoutInput) -> Layout {
                 }
             }
         }
-        if pass.layout.homes.len() == input.agents.len() && partial.is_none() {
-            partial = Some((pass.layout.clone(), 0));
+        // Of the passes that seat everyone in parts, the one with the most lifts (the most plates the walk reaches).
+        if pass.layout.homes.len() == input.agents.len() && partial.as_ref().is_none_or(|(l, _)| pass.layout.lifts.len() > l.lifts.len()) {
+            let tried = partial.as_ref().map_or(0, |(_, t)| *t);
+            partial = Some((pass.layout.clone(), tried));
         }
         // A plate whose exits the walk still does not reach after the landing rounds (a GPU card hemmed in by the next
         // one): its slot is dropped, and the agents seat on the other plates and the board, rather than the board
