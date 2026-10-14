@@ -2,6 +2,8 @@
 
 The workflows live in `.github/workflows`. Workflows run on main only, never on pull requests or other branches. Most platform builds run on the organisation's self-hosted runners.
 
+`main` is protected: every change reaches it through a pull request (no direct pushes, no force pushes, no deletion, administrators included). A pull request runs no workflow; merging it is the push to `main` that tests, packages and releases it.
+
 | Workflow | Runs on | What it does |
 |---|---|---|
 | `linux.yml` | main (from `release.yml`), or by hand | Tests with nextest and builds the packages for x86_64 and arm64 (arm64 tests run under qemu); installs and runs them in Ubuntu, Debian, Fedora and Arch containers |

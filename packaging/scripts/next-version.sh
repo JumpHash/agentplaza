@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
 # Prints the next release version (no "v"), the previous release tag, and where the version came
-# from (packaging/README.md, "Versions"). The repository's VERSION file holds the current release;
-# releases are tagged v<major>.<minor>.<patch>.
+# from (packaging/README.md, "Versions"). Releases are tagged v<major>.<minor>.<patch>, and the last
+# tag is the last release; the repository's VERSION file only matters when a change raises it.
 #
 #   manual  $OVERRIDE (a manual run's `version` input), if set
-#   file    VERSION holds a version above the last release: a merged change raised it (the release
-#           job writes each released version back to VERSION, so otherwise it equals the last one)
+#   file    VERSION holds a version above the last release: a merged change raised it
 #   auto    otherwise: the last release plus one, each place rolling over past 9 into the next:
 #           0.0.1 → 0.0.2 … 0.0.9 → 0.1.0 … 0.9.9 → 1.0.0 … 9.9.9 → 10.0.0 (major never rolls)
 #

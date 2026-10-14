@@ -1,9 +1,9 @@
 # The release pipeline: every push to main is a release. It picks the next version
 # (packaging/scripts/next-version.sh: automatic, 0.0.9 → 0.1.0 … 0.9.9 → 1.0.0, unless a merged
 # change raised the VERSION file or a manual run names one), runs the four platform workflows with
-# packaging on (their tests gate everything), publishes GitHub Release v<version> — the tag, the
-# changelog and every deliverable (packaging/README.md lists them) with SHA256SUMS — and writes the
-# version back to main's VERSION file.
+# packaging on (their tests gate everything), and publishes GitHub Release v<version>: the tag, the
+# changelog and every deliverable (packaging/README.md lists them) with SHA256SUMS. The tags record
+# the released versions; main is protected (pull requests only), so nothing is written back to it.
 name: release
 
 on:
@@ -149,24 +149,6 @@ jobs:
             --title "AgentPlaza $VERSION" \
             --notes-file notes.md \
             --latest'
-      # The released version becomes main's VERSION (unless a later change already raised it), so
-      # the next automatic release counts on from it. GITHUB_TOKEN's push starts no workflow.
-      - name: Write v${{ needs.version.outputs.version }} back to main
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          for attempt in 1 2 3; do
-            git fetch -q origin main
-            git checkout -q -B version origin/main
-            current=$(tr -d '[:space:]' < VERSION 2>/dev/null || true)
-            if [ "$(printf '%s\n%s\n' "$current" "$VERSION" | sort -V | tail -1)" != "$VERSION" ] || [ "$current" = "$VERSION" ]; then
-              echo "main's VERSION is $current: nothing to write"; break
-            fi
-            echo "$VERSION" > VERSION
-            git commit -q -m "release: v$VERSION [skip ci]" -- VERSION
-            git push -q origin HEAD:main && { echo "main's VERSION is now $VERSION"; break; }
-            echo "main moved; trying again ($attempt)"; sleep 5
-          done
       - name: Drop this run's handoff caches
         if: always()
         run: |
