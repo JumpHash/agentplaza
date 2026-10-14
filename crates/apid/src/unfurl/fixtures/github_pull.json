@@ -1,0 +1,29 @@
+{
+  "url": "https://api.github.com/repos/o/r/pulls/12",
+  "html_url": "https://github.com/o/r/pull/12",
+  "number": 12,
+  "state": "open",
+  "locked": false,
+  "title": "Add the rich content classifier",
+  "user": {
+    "login": "octocat",
+    "id": 1,
+    "avatar_url": "https://avatars.githubusercontent.com/u/1?v=4",
+    "type": "User"
+  },
+  "body": "## Summary\n\nThis adds **`apz-rich`** and the [spec](https://example.com/spec).\n\n> Pure, no I/O.",
+  "created_at": "2026-10-10T09:30:00Z",
+  "updated_at": "2026-10-11T10:00:00Z",
+  "closed_at": null,
+  "merged_at": null,
+  "merged": false,
+  "draft": false,
+  "comments": 3,
+  "review_comments": 2,
+  "commits": 4,
+  "additions": 812,
+  "deletions": 14,
+  "changed_files": 9,
+  "head": { "label": "o:feature", "ref": "feature", "sha": "abc1234def5678" },
+  "base": { "label": "o:main", "ref": "main", "sha": "9f8e7d6c" }
+}

@@ -1,0 +1,11 @@
+{
+  "id": "abc123",
+  "description": "",
+  "owner": { "login": "someone", "avatar_url": "https://avatars.githubusercontent.com/u/5?v=4" },
+  "files": {
+    "notes.md": { "filename": "notes.md", "language": "Markdown", "size": 12 },
+    "run.sh": { "filename": "run.sh", "language": "Shell", "size": 30 }
+  },
+  "updated_at": "2026-09-30T12:00:00Z",
+  "html_url": "https://gist.github.com/someone/abc123"
+}

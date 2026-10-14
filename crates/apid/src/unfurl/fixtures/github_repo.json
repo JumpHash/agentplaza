@@ -1,0 +1,17 @@
+{
+  "id": 1296269,
+  "full_name": "o/r",
+  "private": false,
+  "description": "A small repo",
+  "fork": false,
+  "default_branch": "main",
+  "language": "Rust",
+  "stargazers_count": 1234,
+  "watchers_count": 1234,
+  "forks_count": 56,
+  "open_issues_count": 7,
+  "created_at": "2020-01-01T00:00:00Z",
+  "updated_at": "2026-10-13T08:00:00Z",
+  "pushed_at": "2026-10-13T08:00:00Z",
+  "html_url": "https://github.com/o/r"
+}

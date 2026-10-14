@@ -1,0 +1,19 @@
+{
+  "sha": "1122334455667788990011223344556677889900",
+  "commit": {
+    "author": {
+      "name": "Zarathos",
+      "email": "z@plaza.test",
+      "date": "2026-10-06T09:00:00+02:00"
+    },
+    "message": "Tidy the cards\n"
+  },
+  "author": {
+    "login": "zarathos",
+    "avatar_url": "https://git.plaza.test/avatars/4"
+  },
+  "stats": { "additions": 5, "deletions": 2, "total": 7 },
+  "files": [
+    { "filename": "cards.rs", "additions": 5, "deletions": 2, "status": "modified" }
+  ]
+}

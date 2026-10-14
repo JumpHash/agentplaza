@@ -276,6 +276,7 @@ dependencies = [
  "apz-plaza",
  "apz-prompt",
  "apz-proto",
+ "apz-rich",
  "apz-skill",
  "apz-trust",
  "argon2",
@@ -445,6 +446,14 @@ name = "apz-proto"
 version = "0.1.0"
 dependencies = [
  "apz-uds",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "apz-rich"
+version = "0.1.0"
+dependencies = [
  "serde",
  "serde_json",
 ]

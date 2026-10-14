@@ -57,6 +57,7 @@ mod hub_auth;
 mod hub_mcp;
 mod ide;
 mod ide_term;
+mod unfurl;
 mod prompts;
 mod skills;
 mod transcript;

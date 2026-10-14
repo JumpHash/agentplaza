@@ -531,6 +531,25 @@ impl Db {
     }
 }
 
+/// The unfurl cache (`unfurl_cache`, migration 0009): one answer per reference, upserted. Without Postgres the
+/// unfurl keeps its own memory copy (unfurl/mod.rs), so these answer nothing when the database is not enabled.
+impl Db {
+    /// The cached answer for `key`: its data, whether it is ok, and when it was fetched (ms). None when none is stored.
+    pub fn unfurl_get(&self, key: &str) -> Result<Option<(Value, bool, u64)>, String> {
+        if !self.enabled() {
+            return Ok(None);
+        }
+        let row = self.run(|c| c.query_opt(sql::UNFURL_GET, &[&key]))?;
+        Ok(row.map(|row| (row.get::<_, Value>(0), row.get::<_, bool>(1), row.get::<_, i64>(2) as u64)))
+    }
+
+    /// Stores `data` as the answer for `key`, replacing the one stored.
+    pub fn unfurl_put(&self, key: &str, data: &Value, ok: bool, fetched_ms: u64) -> Result<(), String> {
+        let fetched = fetched_ms as i64;
+        self.run(|c| c.execute(sql::UNFURL_PUT, &[&key, data, &ok, &fetched])).map(|_| ())
+    }
+}
+
 /// At start: restore every component that Postgres holds; a component Postgres does not
 /// hold yet keeps what its own files loaded (the first run imports them). Logs each outcome.
 pub fn restore_all(app: &App) {
@@ -713,6 +732,27 @@ mod tests {
     #[test]
     fn models_is_a_component() {
         assert!(COMPONENTS.contains(&"models"));
+    }
+
+    /// The unfurl cache on Postgres: a miss, a store, a read back, and an upsert that replaces the row. A database
+    /// that is not enabled answers a miss and stores nothing (the unfurl's memory copy covers that case).
+    #[test]
+    fn unfurl_cache_round_trips_and_an_upsert_replaces() {
+        use serde_json::json;
+        let disabled = Db::with(String::new(), None);
+        assert_eq!(disabled.unfurl_get("k"), Ok(None));
+        assert!(disabled.unfurl_put("k", &json!({}), true, 1).is_err());
+
+        let Some(url) = test_database("unfurl_cache") else { return };
+        let env = BTreeMap::from([("APZ_DATABASE_URL".to_string(), url)]);
+        let db = Db::connect(&env);
+        assert!(db.enabled());
+        let key = format!("test-key-{}", std::process::id());
+        assert_eq!(db.unfurl_get(&key), Ok(None));
+        db.unfurl_put(&key, &json!({"ok": true, "card": {"title": "a"}}), true, 1_000).expect("stored");
+        assert_eq!(db.unfurl_get(&key), Ok(Some((json!({"ok": true, "card": {"title": "a"}}), true, 1_000))));
+        db.unfurl_put(&key, &json!({"ok": false, "error": "rate_limited"}), false, 2_000).expect("replaced");
+        assert_eq!(db.unfurl_get(&key), Ok(Some((json!({"ok": false, "error": "rate_limited"}), false, 2_000))));
     }
 
     /// Runs on a fresh database of the test server (skipped without APZ_TEST_DATABASE_URL); uses a

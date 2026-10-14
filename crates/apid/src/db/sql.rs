@@ -25,6 +25,10 @@ pub const IDE_AUDIT_APPEND: &str = include_str!("../../sql/queries/ide_audit_app
 pub const IDE_AUDIT_PAGE: &str = include_str!("../../sql/queries/ide_audit_page.sql");
 pub const IDE_AUDIT_PAGE_BY_WORKSPACE: &str = include_str!("../../sql/queries/ide_audit_page_by_workspace.sql");
 
+// The unfurl cache (`unfurl_cache`, migration 0009; unfurl/mod.rs).
+pub const UNFURL_GET: &str = include_str!("../../sql/queries/unfurl_get.sql");
+pub const UNFURL_PUT: &str = include_str!("../../sql/queries/unfurl_put.sql");
+
 // The migration runner's bookkeeping (`schema_migrations`, the advisory lock).
 pub const MIGRATION_TABLE_ENSURE: &str = include_str!("../../sql/queries/migration_table_ensure.sql");
 pub const MIGRATION_APPLIED: &str = include_str!("../../sql/queries/migration_applied.sql");
