@@ -355,7 +355,7 @@ fn district_mesh(floor: &mut Floor, bd: &BoardDistrict, support: &Support, site:
     // The room's seed (machine, role, district index) and walkway side: the trace point nearest the room, in the
     // room's turned frame. Its inner size is the cell less the wall margin. A cell below the role's minimum is built
     // at its size and warned (`rooms::build_room`), not enlarged: the board's slot sizes need raising for those roles.
-    // TODO: room.spots (where each robot stands in this room) are not stored on the district yet; the behaviour engine reads them.
+    // The room's spots (where each robot stands in it) go to the robot work with the room (`step_rooms` → `add_room`).
     let seed = room_seed(site.machine, &d.role, site.index);
     let door = site.plan.map_or_else(|| door_side(d.cx, d.cy, turn, site.graph), |(_, door)| door);
     let inner = 2.0 * f64::from(d.r) - WALL_MARGIN;

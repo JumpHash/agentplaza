@@ -254,6 +254,12 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
     task
 }
 
+/// The engine's picture alone (the shader the Floor draws in, with its pointer input): the labs draw it under their
+/// own controls.
+pub fn stage<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
+    shader(EngineProgram { primitive: Arc::clone(&state.frame), wrap: floor_msg }).width(Length::Fill).height(Length::Fill).into()
+}
+
 /// The floor's engine actions as its messages.
 fn floor_msg(action: Action) -> Msg {
     match action {

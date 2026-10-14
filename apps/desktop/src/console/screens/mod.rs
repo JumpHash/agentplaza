@@ -17,6 +17,7 @@ pub mod git;
 pub mod library;
 pub mod approvals;
 pub mod floor;
+pub mod engine_lab;
 pub mod society;
 pub mod conversations;
 pub mod board;
@@ -90,6 +91,10 @@ pub enum Id {
     /// One model's page, by its id.
     LabModelDetail(String),
     LabBreeders,
+    /// The engine's labs (the web's hidden `#/robot-lab`, `#/room-lab`, `#/hardware-lab`): not in the sidebar.
+    RobotLab,
+    RoomLab,
+    HardwareLab,
 }
 
 /// The sidebar's entries: (screen, label, section, icon), in order.
@@ -133,6 +138,7 @@ pub struct Screens {
     pub library: library::State,
     pub approvals: approvals::State,
     pub floor: floor::State,
+    pub engine_lab: engine_lab::State,
     pub society: society::State,
     pub conversations: conversations::State,
     pub board: board::State,
@@ -170,6 +176,7 @@ pub enum Msg {
     Library(library::Msg),
     Approvals(approvals::Msg),
     Floor(floor::Msg),
+    EngineLab(engine_lab::Msg),
     Society(society::Msg),
     Conversations(conversations::Msg),
     Board(board::Msg),
@@ -208,6 +215,7 @@ pub fn navigation(msg: &Msg) -> Option<Id> {
         Msg::Library(m) => library::go(m),
         Msg::Approvals(m) => approvals::go(m),
         Msg::Floor(m) => floor::go(m),
+        Msg::EngineLab(_) => None,
         Msg::Society(m) => society::go(m),
         Msg::Conversations(m) => conversations::go(m),
         Msg::Board(m) => board::go(m),
@@ -262,6 +270,9 @@ pub fn refresh(screens: &mut Screens, id: &Id, ctx: &Ctx) -> Task<Msg> {
         Id::Library => library::load(&mut screens.library, ctx).map(Msg::Library),
         Id::Approvals => approvals::load(&mut screens.approvals, ctx).map(Msg::Approvals),
         Id::Floor => floor::load(&mut screens.floor, ctx).map(Msg::Floor),
+        Id::RobotLab => engine_lab::open(&mut screens.engine_lab, engine_lab::Kind::Robot).map(Msg::EngineLab),
+        Id::RoomLab => engine_lab::open(&mut screens.engine_lab, engine_lab::Kind::Room).map(Msg::EngineLab),
+        Id::HardwareLab => engine_lab::open(&mut screens.engine_lab, engine_lab::Kind::Hardware).map(Msg::EngineLab),
         Id::Society => society::load(&mut screens.society, ctx).map(Msg::Society),
         Id::Conversations => conversations::load(&mut screens.conversations, ctx).map(Msg::Conversations),
         Id::Board => board::load(&mut screens.board, ctx).map(Msg::Board),
@@ -300,6 +311,7 @@ pub fn update(screens: &mut Screens, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         Msg::Library(m) => library::update(&mut screens.library, m, ctx).map(Msg::Library),
         Msg::Approvals(m) => approvals::update(&mut screens.approvals, m, ctx).map(Msg::Approvals),
         Msg::Floor(m) => floor::update(&mut screens.floor, m, ctx).map(Msg::Floor),
+        Msg::EngineLab(m) => engine_lab::update(&mut screens.engine_lab, m, ctx).map(Msg::EngineLab),
         Msg::Society(m) => society::update(&mut screens.society, m, ctx).map(Msg::Society),
         Msg::Conversations(m) => conversations::update(&mut screens.conversations, m, ctx).map(Msg::Conversations),
         Msg::Board(m) => board::update(&mut screens.board, m, ctx).map(Msg::Board),
@@ -330,6 +342,7 @@ pub fn update(screens: &mut Screens, msg: Msg, ctx: &Ctx) -> Task<Msg> {
 pub fn subscription(screens: &Screens, id: &Id, ctx: &Ctx) -> iced::Subscription<Msg> {
     match id {
         Id::Floor => iced::Subscription::batch([floor::subscription(&screens.floor), floor::events(ctx)]).map(Msg::Floor),
+        Id::RobotLab | Id::RoomLab | Id::HardwareLab => engine_lab::subscription(&screens.engine_lab).map(Msg::EngineLab),
         Id::Machines => machines::subscription(&screens.machines).map(Msg::Machines),
         Id::Usage => usage::subscription(&screens.usage).map(Msg::Usage),
         Id::Agent(_) => agent::stream(ctx).map(Msg::Agent),
@@ -365,6 +378,7 @@ pub fn view<'a>(screens: &'a Screens, id: &Id, ctx: &'a Ctx) -> Element<'a, Msg>
         Id::Library => library::view(&screens.library, ctx).map(Msg::Library),
         Id::Approvals => approvals::view(&screens.approvals, ctx).map(Msg::Approvals),
         Id::Floor => floor::view(&screens.floor, ctx).map(Msg::Floor),
+        Id::RobotLab | Id::RoomLab | Id::HardwareLab => engine_lab::view(&screens.engine_lab, ctx).map(Msg::EngineLab),
         Id::Society => society::view(&screens.society, ctx).map(Msg::Society),
         Id::Conversations => conversations::view(&screens.conversations, ctx).map(Msg::Conversations),
         Id::Board => board::view(&screens.board, ctx).map(Msg::Board),

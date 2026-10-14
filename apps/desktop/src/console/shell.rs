@@ -400,6 +400,9 @@ fn manages_scroll(id: &super::screens::Id) -> bool {
             | Id::Git
             | Id::Library
             | Id::Floor
+            | Id::RobotLab
+            | Id::RoomLab
+            | Id::HardwareLab
             | Id::Society
             | Id::Conversations
             | Id::Board
@@ -645,6 +648,12 @@ fn top_bar<'a, M: Clone + 'a>(state: &'a State, wrap: fn(Msg) -> M) -> Element<'
         .find(|e| e.0 == state.current)
         .map(|e| e.1)
         .or_else(|| super::screens::lab::Section::of(&state.current).map(|_| "Lab"))
+        .or_else(|| match state.current {
+            super::screens::Id::RobotLab => Some("Robot lab"),
+            super::screens::Id::RoomLab => Some("Room lab"),
+            super::screens::Id::HardwareLab => Some("Hardware lab"),
+            _ => None,
+        })
         .unwrap_or("Agent");
     let health = row![
         indicator(state.hub_ok, "HUB"),
