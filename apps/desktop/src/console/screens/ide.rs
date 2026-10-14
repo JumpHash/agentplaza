@@ -1,5 +1,5 @@
-//! The IDE screen (`Id::Ide`): one workspace at a time, an agent's `/workspace` or a project repo as
-//! the hub serves it. This module holds the state, the hub calls and the reducer; the tree, the
+//! The IDE screen (`Id::Ide`): one workspace at a time, an agent's `/workspace`, a workstation's work
+//! folder or a project repo as the hub serves it. This module holds the state, the hub calls and the reducer; the tree, the
 //! editor, the diff and the search are the sibling modules' views. Shared rules (paths, workspace
 //! ids, the diff parser, the tab and base reducer) come from `apz-ide`, the same code the web runs.
 //!
@@ -42,7 +42,7 @@ static SEARCH_ID: LazyLock<iced::widget::Id> = LazyLock::new(iced::widget::Id::u
 
 // ---- The hub's shapes (`/v1/ide/...`) ---------------------------------------------------------
 
-/// A workspace as the hub lists it (`GET /v1/ide/workspaces`).
+/// A workspace as the hub lists it (`GET /v1/ide/workspaces`). A station also says its OS.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct WorkspaceInfo {
     pub id: String,
@@ -51,6 +51,8 @@ pub struct WorkspaceInfo {
     pub owner: String,
     #[serde(default)]
     pub name: String,
+    #[serde(default)]
+    pub os: String,
     #[serde(default)]
     pub writable: bool,
     #[serde(default)]
@@ -502,7 +504,7 @@ fn fetch_search(client: &Client, ws: &WorkspaceId, query: &str, glob: &str) -> R
 
 // ---- Targets, the remembered workspace, the shortcut ------------------------------------------
 
-/// Where the IDE opens, as an entry point names it: a workspace id (`agent:<cid>` or `repo:<name>@<ref>`),
+/// Where the IDE opens, as an entry point names it: a workspace id (`agent:<cid>`, `repo:<name>@<ref>` or `station:<id>`),
 /// then `?` and `&`-joined flags: `review` (review mode) and `open=<path>` (that file, percent-encoded).
 /// A branch name cannot hold `?`, so the first `?` ends the id.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -597,7 +599,34 @@ fn not_listed(id: &WorkspaceId) -> String {
     match id {
         WorkspaceId::Repo { .. } => format!("{id} is not served yet: the hub lists agent workspaces only for now."),
         WorkspaceId::Agent(_) => format!("Workspace {id} is not listed."),
+        WorkspaceId::Station(_) => format!("Workstation {id} is not listed."),
     }
+}
+
+/// Whether the hub serves a workspace's changes and checkpoints. A station's are not (its `changes` is 501 and
+/// its checkpoints are empty), so a station has no Changes, Checkpoints or Review, and none is requested for it.
+pub(super) fn serves_changes(ws: Option<&WorkspaceId>) -> bool {
+    !matches!(ws, Some(WorkspaceId::Station(_)))
+}
+
+/// Whether a workspace offers a left side on the rail. A station has no changes and no checkpoints.
+pub(super) fn side_offered(side: Side, ws: Option<&WorkspaceId>) -> bool {
+    !matches!(side, Side::Changes | Side::Checkpoints) || serves_changes(ws)
+}
+
+/// Whether a workspace offers a right panel. A station has no agent, so no Agent (its chat) and no Approvals.
+pub(super) fn panel_offered(panel: Panel, ws: Option<&WorkspaceId>) -> bool {
+    !matches!((panel, ws), (Panel::Agent | Panel::Approvals, Some(WorkspaceId::Station(_))))
+}
+
+/// The right panel the screen shows for `panel` on `ws`: the Changes panel is the agent's now (the changes moved
+/// to the left), and a panel the workspace does not offer falls back to Run.
+pub(super) fn right_panel(panel: Panel, ws: Option<&WorkspaceId>) -> Panel {
+    let shown = match panel {
+        Panel::Changes => Panel::Agent,
+        other => other,
+    };
+    if panel_offered(shown, ws) { shown } else { Panel::Run }
 }
 
 // ---- Helpers over the state -------------------------------------------------------------------
@@ -628,18 +657,48 @@ fn working(st: &State) -> bool {
     current_info(st).is_some_and(|w| w.status.contains("work"))
 }
 
+/// The OS a workstation reports, as the picker names it.
+fn os_label(os: &str) -> &str {
+    match os {
+        "macos" => "macOS",
+        "windows" => "Windows",
+        "linux" => "Linux",
+        other => other,
+    }
+}
+
 fn choice(w: &WorkspaceInfo) -> Choice {
     let mut name = if w.name.is_empty() { w.id.clone() } else { w.name.clone() };
     // A repo workspace is shown on the branch it serves.
     if let Ok(WorkspaceId::Repo { git_ref, .. }) = WorkspaceId::from_str(&w.id) {
         name = format!("{name} @{git_ref}");
     }
-    let kind = if w.kind == "agent" { "agent" } else { "repo" };
-    let mut label = format!("{kind} · {name}");
+    // A workstation sits under the Workstations heading, so its row is its name, its OS and its status.
+    let mut label = match w.kind.as_str() {
+        "station" if w.os.is_empty() => name,
+        "station" => format!("{name} · {}", os_label(&w.os)),
+        "agent" => format!("agent · {name}"),
+        _ => format!("repo · {name}"),
+    };
     if !w.status.is_empty() {
         label.push_str(&format!(" · {}", w.status));
     }
     Choice { id: w.id.clone(), label }
+}
+
+/// The picker's rows: the agents, then the workstations under a "Workstations" heading, then the repos. The
+/// heading is a choice with no id, which picking does nothing for (see `Msg::Pick`).
+fn choices(list: &[WorkspaceInfo]) -> Vec<Choice> {
+    let mut rows: Vec<Choice> = list.iter().filter(|w| w.kind == "agent").map(choice).collect();
+    if list.iter().any(|w| w.kind == "station") {
+        rows.push(Choice {
+            id: String::new(),
+            label: "Workstations".into(),
+        });
+        rows.extend(list.iter().filter(|w| w.kind == "station").map(choice));
+    }
+    rows.extend(list.iter().filter(|w| w.kind != "agent" && w.kind != "station").map(choice));
+    rows
 }
 
 /// The badge's state: conflict beats a held plaza, which beats an agent working, which beats saved, which
@@ -725,6 +784,9 @@ fn load_missing(st: &mut State, ctx: &Ctx) -> Task<Msg> {
 
 fn changes_task(st: &mut State, ctx: &Ctx) -> Task<Msg> {
     let Some(ws) = st.ide.workspace.clone() else { return Task::none() };
+    if !serves_changes(Some(&ws)) {
+        return Task::none();
+    }
     st.changes_busy = true;
     let c = ctx.client.clone();
     let base = st.ide.base.clone();
@@ -747,6 +809,9 @@ fn changes_throttled(st: &mut State, ctx: &Ctx) -> Task<Msg> {
 
 fn checkpoints_task(st: &State, ctx: &Ctx) -> Task<Msg> {
     let Some(ws) = st.ide.workspace.clone() else { return Task::none() };
+    if !serves_changes(Some(&ws)) {
+        return Task::none();
+    }
     let c = ctx.client.clone();
     let key = ws.to_string();
     client::task(move || fetch_checkpoints(&c, &ws), move |res| Msg::Checkpoints { ws: key.clone(), res })
@@ -791,7 +856,7 @@ fn load_workspace(st: &mut State, ctx: &Ctx) -> Task<Msg> {
         // The agent's held calls count on the Approvals tab, so they load with the workspace; an Agent tab
         // that stayed open across the switch loads its transcript too.
         tasks.push(ide_panels::approvals_task(&ctx.client, &ws).map(Msg::Panels));
-        if right_panel(st.ide.panel) == Panel::Agent {
+        if right_panel(st.ide.panel, Some(&ws)) == Panel::Agent {
             tasks.push(ide_panels::show(&mut st.panels, Panel::Agent, &ctx.client, &ws).map(Msg::Panels));
         }
     }
@@ -833,6 +898,20 @@ fn select(st: &mut State, id: WorkspaceId, ctx: &Ctx) -> Task<Msg> {
     st.diff_file = None;
     st.notice = None;
     st.panels = ide_panels::State::default();
+    // A station has no changes, checkpoints or review, and no agent: the rail, the panels and the filter follow.
+    if !serves_changes(Some(&id)) {
+        if matches!(st.side, Side::Changes | Side::Checkpoints) {
+            st.side = Side::Files;
+        }
+        if st.ide.review {
+            dispatch(st, Action::ToggleReview);
+        }
+        if st.ide.filter_changed {
+            dispatch(st, Action::ToggleChangedFilter);
+        }
+    }
+    let panel = right_panel(st.ide.panel, Some(&id));
+    dispatch(st, Action::SetPanel(panel));
     load_workspace(st, ctx)
 }
 
@@ -853,7 +932,7 @@ fn apply_preselect(st: &mut State, ctx: &Ctx) -> Task<Msg> {
             let mut tasks = vec![select(st, id.clone(), ctx)];
             // A select the owner's unsaved edits refused leaves the old workspace on screen: nothing more then.
             if st.ide.workspace.as_ref() == Some(&id) {
-                if target.review && !st.ide.review {
+                if target.review && !st.ide.review && serves_changes(Some(&id)) {
                     dispatch(st, Action::ToggleReview);
                 }
                 if st.ide.review && st.changes.is_none() && !st.changes_busy {
@@ -921,6 +1000,8 @@ pub fn update(st: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                 }
             }
         }
+        // A group heading in the picker has no id: picking it changes nothing.
+        Msg::Pick(pick) if pick.id.is_empty() => Task::none(),
         Msg::Pick(pick) => match WorkspaceId::from_str(&pick.id) {
             Ok(id) => select(st, id, ctx),
             Err(e) => {
@@ -1373,7 +1454,7 @@ fn event_task(st: &mut State, event: events::Event, ctx: &Ctx) -> Task<Msg> {
     let Some(ws) = st.ide.workspace.clone() else { return Task::none() };
     let agent = match ws {
         WorkspaceId::Agent(cid) => Some(cid),
-        WorkspaceId::Repo { .. } => None,
+        WorkspaceId::Repo { .. } | WorkspaceId::Station(_) => None,
     };
     let about_us = agent.is_some_and(|cid| event.data.get("cid").and_then(Value::as_u64).is_none_or(|c| c == cid));
     match event.kind.as_str() {
@@ -1488,7 +1569,7 @@ pub fn view(st: &State, plaza: Plaza) -> Element<'_, Msg> {
 
 /// The workspace picker: the workspaces the hub lists, the one on screen selected.
 pub(super) fn picker(st: &State) -> Element<'_, Msg> {
-    let choices: Vec<Choice> = st.workspaces.iter().map(choice).collect();
+    let choices = choices(&st.workspaces);
     let selected = st
         .ide
         .workspace
@@ -1523,6 +1604,7 @@ fn left(st: &State) -> Element<'_, Msg> {
 fn files_side(st: &State) -> Element<'_, Msg> {
     let filter = st.ide.filter_changed;
     let on_workspace = st.ide.workspace.is_some();
+    let changes = on_workspace && serves_changes(st.ide.workspace.as_ref());
     let header = row![
         ui::label("Files"),
         Space::new().width(Length::Fill),
@@ -1530,7 +1612,7 @@ fn files_side(st: &State) -> Element<'_, Msg> {
             "Changed",
             None,
             if filter { Kind::Primary } else { Kind::Secondary },
-            on_workspace.then_some(Msg::ChangedOnly)
+            changes.then_some(Msg::ChangedOnly)
         ),
         ui::btn_sm("", Some("refresh"), Kind::Ghost, on_workspace.then_some(Msg::RefreshAll)),
     ]
@@ -1621,7 +1703,7 @@ fn centre(st: &State) -> Element<'_, Msg> {
             return ui::empty(
                 "projects",
                 "Nothing to open yet",
-                "Agents with a VM and projects with a repo show up here.",
+                "Agents with a VM, workstations and projects with a repo show up here.",
             );
         }
         return ui::empty("projects", "No workspace open", "Choose an agent workspace or a project repo above.");
@@ -1655,34 +1737,24 @@ fn centre(st: &State) -> Element<'_, Msg> {
     ui::empty("file", "No file open", "Pick a file in the tree, or press Ctrl+P to find one by name.")
 }
 
-/// The right panel's own view. Changes live on the left now, so a Changes panel shows the Agent.
-pub(super) fn right_panel(panel: Panel) -> Panel {
-    match panel {
-        Panel::Changes => Panel::Agent,
-        other => other,
-    }
-}
-
 /// The right side: the panel tabs, then the shown panel (the agent, its approvals, the run, the terminal).
 fn right(st: &State) -> Element<'_, Msg> {
-    let agent = matches!(st.ide.workspace, Some(WorkspaceId::Agent(_)));
+    let ws = st.ide.workspace.as_ref();
+    let agent = matches!(ws, Some(WorkspaceId::Agent(_)));
+    // Runs go through the hub's run routes, which an agent's and a station's both serve.
+    let runs = matches!(ws, Some(WorkspaceId::Agent(_) | WorkspaceId::Station(_)));
     let pending = st.panels.held.len();
     let approvals = if pending > 0 { format!("Approvals {pending}") } else { "Approvals".to_string() };
-    let shown = right_panel(st.ide.panel);
-    let tabs = ui::tabs(
-        &[
-            (Panel::Agent, "Agent"),
-            (Panel::Approvals, approvals.as_str()),
-            (Panel::Run, "Run"),
-            (Panel::Terminal, "Terminal"),
-        ],
-        shown,
-        Msg::Panel,
-    );
+    let shown = right_panel(st.ide.panel, ws);
+    let offered: Vec<(Panel, &str)> = [(Panel::Agent, "Agent"), (Panel::Approvals, approvals.as_str()), (Panel::Run, "Run"), (Panel::Terminal, "Terminal")]
+        .into_iter()
+        .filter(|(panel, _)| panel_offered(*panel, ws))
+        .collect();
+    let tabs = ui::tabs(&offered, shown, Msg::Panel);
     let body: Element<'_, Msg> = match shown {
         Panel::Changes | Panel::Agent => ide_panels::agent_view(&st.panels, agent).map(Msg::Panels),
         Panel::Approvals => ide_panels::approvals_view(&st.panels, agent).map(Msg::Panels),
-        Panel::Run => ide_panels::run_view(&st.panels, agent).map(Msg::Panels),
+        Panel::Run => ide_panels::run_view(&st.panels, runs).map(Msg::Panels),
         Panel::Terminal => ide_panels::terminal_view().map(Msg::Panels),
     };
     column![ui::scroll_x(tabs), ui::scroll(body).height(Length::Fill)]
@@ -1838,6 +1910,7 @@ mod tests {
             kind: "agent".into(),
             owner: cid.to_string(),
             name: "scout".into(),
+            os: String::new(),
             writable,
             status: status.into(),
         }
@@ -2068,11 +2141,96 @@ mod tests {
             kind: "repo".into(),
             owner: String::new(),
             name: "plaza".into(),
+            os: String::new(),
             writable: true,
             status: String::new(),
         };
         assert_eq!(choice(&repo).label, "repo · plaza @feat/x");
         assert_eq!(choice(&info(7, true, "idle")).label, "agent · scout · idle");
+    }
+
+    fn station(id: &str, name: &str, os: &str, status: &str) -> WorkspaceInfo {
+        WorkspaceInfo {
+            id: format!("station:{id}"),
+            kind: "station".into(),
+            owner: id.into(),
+            name: name.into(),
+            os: os.into(),
+            writable: true,
+            status: status.into(),
+        }
+    }
+
+    #[test]
+    fn a_station_row_parses_with_its_os_and_reads_as_a_workstation() {
+        let row: WorkspaceInfo = serde_json::from_value(json!({
+            "id": "station:w3", "kind": "station", "owner": "w3", "name": "studio", "os": "macos", "writable": true, "status": "online"
+        }))
+        .unwrap();
+        assert_eq!(row.os, "macos");
+        assert_eq!(WorkspaceId::from_str(&row.id), Ok(WorkspaceId::Station("w3".into())));
+        assert_eq!(choice(&row).label, "studio · macOS · online");
+        let unnamed: WorkspaceInfo = serde_json::from_value(json!({"id": "station:w4", "kind": "station"})).unwrap();
+        assert_eq!(choice(&unnamed).label, "station:w4", "a station with no name shows its id, and no status");
+    }
+
+    #[test]
+    fn the_picker_lists_agents_then_the_workstations_under_a_heading_then_repos() {
+        let repo = WorkspaceInfo {
+            id: "repo:plaza@main".into(),
+            kind: "repo".into(),
+            owner: String::new(),
+            name: "plaza".into(),
+            os: String::new(),
+            writable: true,
+            status: String::new(),
+        };
+        let list = vec![repo, station("w3", "studio", "linux", "online"), info(7, true, "idle")];
+        let rows: Vec<(String, String)> = choices(&list).into_iter().map(|c| (c.id, c.label)).collect();
+        assert_eq!(
+            rows,
+            vec![
+                ("agent:7".to_string(), "agent · scout · idle".to_string()),
+                (String::new(), "Workstations".to_string()),
+                ("station:w3".to_string(), "studio · Linux · online".to_string()),
+                ("repo:plaza@main".to_string(), "repo · plaza @main".to_string()),
+            ]
+        );
+        assert_eq!(choices(&[info(7, true, "idle")]).len(), 1, "no stations, no heading");
+    }
+
+    #[test]
+    fn a_station_offers_its_files_editor_run_and_terminal_but_no_chat_or_diff() {
+        let station = WorkspaceId::Station("w3".into());
+        let ws = Some(&station);
+        assert!(side_offered(Side::Files, ws) && side_offered(Side::Search, ws));
+        assert!(!side_offered(Side::Changes, ws) && !side_offered(Side::Checkpoints, ws));
+        assert!(!panel_offered(Panel::Agent, ws) && !panel_offered(Panel::Approvals, ws));
+        assert!(panel_offered(Panel::Run, ws) && panel_offered(Panel::Terminal, ws));
+        assert_eq!(right_panel(Panel::Changes, ws), Panel::Run, "the diff's panel is the agent's, and a station has none");
+        assert_eq!(right_panel(Panel::Agent, ws), Panel::Run, "a station's chat is not shown");
+        assert!(!serves_changes(ws));
+    }
+
+    #[test]
+    fn an_agent_and_a_repo_keep_every_panel_and_the_changes() {
+        let agent = WorkspaceId::Agent(7);
+        let repo = WorkspaceId::Repo {
+            name: "plaza".into(),
+            git_ref: "main".into(),
+        };
+        for ws in [Some(&agent), Some(&repo), None] {
+            assert!(side_offered(Side::Changes, ws) && side_offered(Side::Checkpoints, ws));
+            assert!(panel_offered(Panel::Agent, ws) && panel_offered(Panel::Approvals, ws));
+        }
+        assert_eq!(right_panel(Panel::Changes, Some(&agent)), Panel::Agent);
+        assert_eq!(right_panel(Panel::Approvals, Some(&repo)), Panel::Approvals);
+        assert!(serves_changes(Some(&agent)) && serves_changes(Some(&repo)));
+    }
+
+    #[test]
+    fn a_station_the_hub_does_not_list_is_named_as_a_workstation() {
+        assert_eq!(not_listed(&WorkspaceId::Station("w3".into())), "Workstation station:w3 is not listed.");
     }
 
     #[test]

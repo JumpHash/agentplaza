@@ -1,7 +1,7 @@
 // The apid client: one function per endpoint, typed by what apid returns.
 // The console is served by apid, so every path is same-origin.
 
-import type { FileChange, Stats, TreePage } from './ide/types';
+import type { FileChange, Stats, TreePage, WorkspaceKind } from './ide/types';
 
 export class ApiError extends Error {
   /** The response's JSON body when it had one (a 409 carries the server's `current_hash`). */
@@ -1333,7 +1333,8 @@ export const skillsApi = {
 // The IDE's owner-only routes (docs/design/ide.md §6.3). A workspace id (`agent:7`) goes in the path, encoded. The tree
 // and diff shapes are apz-ide's (ide/types.ts).
 
-export interface IdeWorkspaceInfo { id: string; kind: 'agent' | 'repo'; owner: string; name: string; writable: boolean; status: string }
+/** One row of the workspace list. A station row carries its machine's OS and its status (only online stations are listed). */
+export interface IdeWorkspaceInfo { id: string; kind: WorkspaceKind; owner: string; name: string; writable: boolean; status: string; os?: StationOs | null }
 export interface IdeFile { path: string; size: number; hash: string; text: string }
 export interface IdeSaved { path: string; hash: string; checkpoint: number | null }
 /** `changes`: the files since `base` and the unified diff. `files` and `stats` are parsed from `diff` when absent. */

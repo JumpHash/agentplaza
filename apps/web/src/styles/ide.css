@@ -80,6 +80,12 @@
   white-space: nowrap;
 }
 
+/* A station's status dot in the header, beside its OS */
+.ide-meta .dot {
+  vertical-align: middle;
+  margin-right: var(--s1);
+}
+
 .ide-actions {
   display: flex;
   align-items: center;

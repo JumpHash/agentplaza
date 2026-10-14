@@ -1,6 +1,42 @@
 // The IDE view's pure helpers: no DOM, no CodeMirror, no I/O. The view drives them and the tests check them.
 
-import type { FileChange } from './types';
+import type { FileChange, WorkspaceKind } from './types';
+
+// ---- Workspaces in the picker ----------------------------------------------
+
+/** The picker's groups, in the hub's order: agents, workstations, repositories. */
+export const KIND_GROUPS: { kind: WorkspaceKind; label: string }[] = [
+  { kind: 'agent', label: 'Agents' },
+  { kind: 'station', label: 'Workstations' },
+  { kind: 'repo', label: 'Repos' },
+];
+
+/** The workspaces by kind, in KIND_GROUPS order, each group keeping the list's order. A kind with none has no group. */
+export function groupWorkspaces<T extends { kind: WorkspaceKind }>(list: T[]): { kind: WorkspaceKind; label: string; items: T[] }[] {
+  return KIND_GROUPS.map(({ kind, label }) => ({ kind, label, items: list.filter((w) => w.kind === kind) })).filter((g) => g.items.length > 0);
+}
+
+const OS_NAME: Record<string, string> = { macos: 'macOS', windows: 'Windows', linux: 'Linux' };
+
+/** A station's OS as a short label. A missing OS reads as unknown; an OS this build does not name is shown as it came. */
+export const osLabel = (os: string | null | undefined): string => (os ? (OS_NAME[os] ?? os) : 'Unknown OS');
+
+/** The fields the picker's label reads: a workspace row. */
+export interface PickedWorkspace {
+  kind: WorkspaceKind;
+  name: string;
+  owner: string;
+  writable: boolean;
+  status: string;
+  os?: string | null;
+}
+
+/** A workspace's label in the picker. A station shows its OS and whether it is online (a dot, as text, since an option cannot take a dot). */
+export function pickerLabel(w: PickedWorkspace): string {
+  const name = w.name || w.owner;
+  if (w.kind === 'station') return `Workstation · ${name} · ${osLabel(w.os)} · ${w.status === 'online' ? '● online' : w.status}`;
+  return `${w.kind === 'agent' ? 'Agent' : 'Repo'} · ${name}${w.writable ? '' : ' (read-only)'}`;
+}
 
 // ---- Languages -------------------------------------------------------------
 

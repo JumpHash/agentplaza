@@ -19,6 +19,8 @@ export interface RailPaint {
   active: LeftView | null;
   /** The count a rail item shows (changed files, checkpoints). */
   counts: Partial<Record<LeftView, number>>;
+  /** The views the workspace has; the others' items are hidden. */
+  views: LeftView[];
 }
 
 /** The activity rail: the side panel's views. Clicking the open view's item closes the panel (the screen decides). */
@@ -41,6 +43,7 @@ export function activityRail(onPick: (key: LeftView) => void): { el: HTMLElement
         button.setAttribute('aria-pressed', on ? 'true' : 'false');
         const n = p.counts[key];
         count.textContent = n ? String(n) : '';
+        button.hidden = !p.views.includes(key);
       }
     },
   };

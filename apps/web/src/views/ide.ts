@@ -15,23 +15,26 @@ import {
   badgeOf,
   type Buffer,
   dirsOf,
+  groupWorkspaces,
   languageFor,
   lineCounts,
   LAST_WORKSPACE_KEY,
   onRemote,
   openBuffer,
+  osLabel,
   parentDir,
   parseViewed,
+  pickerLabel,
   viewedKey,
   withViewed,
   type Viewed,
 } from '../ide/model';
-import { fitSize, LEFT_SIZE, leftViewFor, type LeftView, NARROW_QUERY, parseLayout, rightTabFor, RIGHT_SIZE, RAIL_WIDTH, type RightTab, serializeLayout, type Layout } from '../ide/layout';
+import { fitSize, hasDiff, LEFT_SIZE, leftViewFor, leftViewsFor, type LeftView, NARROW_QUERY, parseLayout, rightTabFor, rightTabsFor, RIGHT_SIZE, RAIL_WIDTH, type RightTab, serializeLayout, type Layout } from '../ide/layout';
 import { loadIde, type Ide } from '../ide/wasm';
-import type { Base, Entry, FileChange, IdeState, Panel, Stats } from '../ide/types';
+import type { Base, Entry, FileChange, IdeState, Panel, Stats, WorkspaceKind } from '../ide/types';
 import { agents, on, onConnection } from '../store';
 import { brandMark } from '../ui/brand';
-import { badge, button, empty, modal, tabs, toast, type Tone } from '../ui/components';
+import { badge, button, dot, empty, modal, tabs, toast, type Tone } from '../ui/components';
 import { h, icon, replace } from '../ui/dom';
 import { heldBanner, onPlazaHeld } from '../ui/plaza-control';
 import { themeSwitch } from '../ui/theme';
@@ -96,6 +99,12 @@ function toBase(v: string): Base {
 
 /** A repository workspace's branch (the ref after the @), else ''. */
 const refOf = (w: IdeWorkspaceInfo): string => (w.kind === 'repo' ? w.id.slice(w.id.lastIndexOf('@') + 1) : '');
+
+/** The header's icon for a kind: agents, a workstation's machine, a repository's branch. */
+const kindIcon = (k: WorkspaceKind): 'agents' | 'machine' | 'git' => (k === 'agent' ? 'agents' : k === 'station' ? 'machine' : 'git');
+
+/** Whether the open workspace has a diff (with no workspace open, the screen keeps its diff controls). */
+const diffHere = (w: IdeWorkspaceInfo | null): boolean => hasDiff(w?.kind ?? null);
 
 function totalsOf(files: FileChange[]): Stats {
   let additions = 0;
@@ -292,7 +301,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     rightPanel.hidden = !layout.rightOpen;
     leftToggle.setAttribute('aria-pressed', String(layout.leftOpen));
     rightToggle.setAttribute('aria-pressed', String(layout.rightOpen));
-    rail.paint({ active: layout.leftOpen ? leftView : null, counts: { changes: files.length, checkpoints: checkpoints.length } });
+    rail.paint({ active: layout.leftOpen ? leftView : null, counts: { changes: files.length, checkpoints: checkpoints.length }, views: leftViewsFor(ws?.kind ?? null) });
   }
 
   function saveLayout(): void {
@@ -371,8 +380,9 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     if (alive) renderAll();
   }
 
+  /** The changes since the base. A station has no diff, so it is never asked (the hub answers 501 for it). */
   async function refreshChanges(): Promise<void> {
-    if (!ws || !ide) return;
+    if (!ws || !ide || !hasDiff(ws.kind)) return;
     const id = ws.id;
     const base = baseValue();
     try {
@@ -391,7 +401,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
   }
 
   async function refreshCheckpoints(): Promise<void> {
-    if (!ws) return;
+    if (!ws || !hasDiff(ws.kind)) return;
     const id = ws.id;
     try {
       const list = await ideApi.checkpoints(id);
@@ -464,11 +474,12 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
       toast(message(err), 'error');
       state = ide.initialState();
     }
-    // The agent tabs exist for agent workspaces only; a repo keeps the Run tab.
-    if ((rightTab === 'agent' || rightTab === 'approvals') && cidOf(info.id) === null) rightTab = 'run';
+    // A workspace keeps only its own views: the agent's tabs for an agent, no Changes for a station (the Run tab stays).
+    if (!leftViewsFor(info.kind).includes(leftView)) leftView = 'files';
+    if (!rightTabsFor(info.kind).includes(rightTab)) rightTab = 'run';
     if (reviewPending) {
       reviewPending = false;
-      state = ide.reduce(state, 'toggle_review');
+      if (hasDiff(info.kind)) state = ide.reduce(state, 'toggle_review');
     }
     setRight(rightTab);
     if (cidOf(info.id) !== null) void panelFor('approvals');
@@ -828,7 +839,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
   }
 
   function toggleReview(): void {
-    if (!ide || !state) return;
+    if (!ide || !state || !diffHere(ws)) return;
     state = ide.reduce(state, 'toggle_review');
     renderAll();
   }
@@ -899,10 +910,18 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     applyLayout();
   }
 
+  /** The picker: the workspaces in groups (agents, workstations, repositories), each option labelled by its kind. */
   function renderPicker(): void {
-    const opts = wsList.map((w) => h('option', { value: w.id, selected: w.id === ws?.id }, `${w.kind === 'agent' ? 'Agent' : 'Repo'} · ${w.name || w.owner}${w.writable ? '' : ' (read-only)'}`));
-    replace(picker, ws ? [] : h('option', { value: '', selected: true }, 'Choose a workspace'), opts);
-    replace(kindHost, ws ? icon(ws.kind === 'agent' ? 'agents' : 'git') : null);
+    const groups = groupWorkspaces(wsList).map((g) =>
+      h('optgroup', { label: g.label }, g.items.map((w) => h('option', { value: w.id, selected: w.id === ws?.id }, pickerLabel(w)))),
+    );
+    replace(picker, ws ? [] : h('option', { value: '', selected: true }, 'Choose a workspace'), groups);
+    replace(kindHost, ws ? icon(kindIcon(ws.kind)) : null);
+    if (ws?.kind === 'station') {
+      // A station has no branch and no diff: its OS and its status (a green dot when online) stand in for them.
+      replace(metaHost, [ws.status === 'online' ? dot('ok') : dot('warn'), ` ${osLabel(ws.os)} · ${ws.status}`]);
+      return;
+    }
     const ref = ws ? refOf(ws) : '';
     const vs = state?.base !== undefined && typeof state.base === 'object' && 'checkpoint' in state.base ? `vs #${state.base.checkpoint}` : 'vs work start';
     replace(metaHost, ws ? [ref ? `${ref} · ` : '', vs] : null);
@@ -917,6 +936,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     const t = active !== null ? tabsByPath.get(active) : undefined;
     saveBtn.disabled = !(ws?.writable && t?.buf.dirty && !t.buf.saving);
     const reviewing = !!state?.review;
+    reviewBtn.hidden = !diffHere(ws);
     reviewBtn.textContent = reviewing ? 'Editor' : 'Review';
     reviewBtn.setAttribute('aria-pressed', reviewing ? 'true' : 'false');
   }
@@ -942,6 +962,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     if (!ide) return;
     const filter = !!state?.filter_changed;
     changedBox.checked = filter;
+    changedToggle.hidden = !diffHere(ws);
     const all = [...entries.values()];
     const changedPaths = new Set(files.map((f) => f.path));
     const keep = filter ? new Set(ide.changedFilter(all, { files }).map((e) => e.path)) : null;
@@ -1075,17 +1096,20 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
         emptyHost,
         ws
           ? empty('file', 'No file open', 'Pick a file in the tree, or press Ctrl/Cmd+P to find one by name.')
-          : empty('file', 'Choose a workspace', 'Agent workspaces and project repositories are listed above.'),
+          : empty('file', 'Choose a workspace', 'Agent workspaces, workstations and project repositories are listed above.'),
       );
     }
   }
 
   function renderRightTabs(): void {
-    const agentWs = ws !== null && cidOf(ws.id) !== null;
-    const items: { key: string; label: string }[] = [];
-    if (agentWs) items.push({ key: 'agent', label: 'Agent' }, { key: 'approvals', label: `Approvals${approvalCount ? ` (${approvalCount})` : ''}` });
-    items.push({ key: 'run', label: 'Run' }, { key: 'terminal', label: 'Terminal' });
-    replace(rightTabs, tabs(items, rightTab, (k) => setRight(k as RightTab)));
+    const allowed = rightTabsFor(ws?.kind ?? null);
+    const items: { key: RightTab; label: string }[] = [
+      { key: 'agent', label: 'Agent' },
+      { key: 'approvals', label: `Approvals${approvalCount ? ` (${approvalCount})` : ''}` },
+      { key: 'run', label: 'Run' },
+      { key: 'terminal', label: 'Terminal' },
+    ];
+    replace(rightTabs, tabs(items.filter((i) => allowed.includes(i.key)), rightTab, (k) => setRight(k as RightTab)));
   }
 
   function renderRight(): void {
@@ -1116,7 +1140,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     const vs = base !== undefined && typeof base === 'object' && 'checkpoint' in base ? `vs checkpoint #${base.checkpoint}` : 'vs work start';
     status.paint({
       workspace: ws?.id ?? '',
-      base: ws ? vs : '',
+      base: ws && diffHere(ws) ? vs : '',
       live: connected,
       cursor,
       lang: active !== null ? LANG_LABEL[languageFor(active)] : '',
@@ -1140,7 +1164,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
   }
 
   async function restore(cp: IdeCheckpoint): Promise<void> {
-    if (!ws) return;
+    if (!ws || !hasDiff(ws.kind)) return;
     const id = ws.id;
     try {
       await ideApi.restore(id, cp.n);

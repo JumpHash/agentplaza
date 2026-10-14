@@ -260,7 +260,7 @@ pub fn header(st: &State, plaza: Plaza) -> Element<'_, Msg> {
     let (theme_label, theme_icon) = if theme::is_light() { ("Dark theme", "moon") } else { ("Light theme", "sun") };
     // Commit and Open PR are the hooks the git flow plugs into; until it does, they are drawn and not pressed.
     let end = row![
-        ui::btn("Review", None, review_kind, on_workspace.then_some(Msg::ToggleReview)),
+        ui::btn("Review", None, review_kind, (on_workspace && ide::serves_changes(st.ide.workspace.as_ref())).then_some(Msg::ToggleReview)),
         ui::btn("Save", Some("check"), save_kind, (dirty && ide::writable(st)).then_some(Msg::Save)),
         ui::btn("Commit", Some("commit"), Kind::Secondary, None),
         ui::btn("Open PR", Some("pull"), Kind::Secondary, None),
@@ -309,7 +309,7 @@ pub fn held_strip<'a>() -> Element<'a, Msg> {
 pub fn rail(st: &State) -> Element<'_, Msg> {
     let items = [(Side::Files, "Files", "file"), (Side::Search, "Search", "search"), (Side::Changes, "Changes", "git"), (Side::Checkpoints, "Checkpoints", "clock")];
     let mut col = column![].spacing(4);
-    for (side, label, icon) in items {
+    for (side, label, icon) in items.into_iter().filter(|(side, _, _)| ide::side_offered(*side, st.ide.workspace.as_ref())) {
         let active = st.layout.left_open && st.side == side;
         col = col.push(rail_item(label, icon, active, Msg::Side(side)));
     }

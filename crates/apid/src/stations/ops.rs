@@ -45,11 +45,16 @@ fn server_error(message: impl ToString) -> Failure {
 /// Writes one row to the station audit: `kind` by `actor`, on `station` (None: the registry as a whole) and
 /// for `agent` (a CID) when one is involved. `data` is merged into the row.
 pub fn audit(app: &App, station: Option<&str>, agent: Option<u64>, kind: &str, actor: &str, data: Value) -> Result<(), String> {
+    app.db.append_station_audit(&audit_row(station, agent, kind, actor, data))
+}
+
+/// The station audit row [`audit`] writes, for a caller that writes it to its own database handle.
+pub fn audit_row(station: Option<&str>, agent: Option<u64>, kind: &str, actor: &str, data: Value) -> Value {
     let mut row = json!({"at_ms": now(), "actor": actor, "station": station, "agent": agent, "kind": kind});
     if let (Some(map), Value::Object(extra)) = (row.as_object_mut(), data) {
         map.extend(extra);
     }
-    app.db.append_station_audit(&row)
+    row
 }
 
 fn announce(app: &App, id: &str, action: &str) {

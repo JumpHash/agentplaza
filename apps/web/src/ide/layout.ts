@@ -3,6 +3,7 @@
 // check it directly.
 
 import { parse } from '../router';
+import type { WorkspaceKind } from './types';
 
 export type LeftView = 'files' | 'search' | 'changes' | 'checkpoints';
 export type RightTab = 'agent' | 'approvals' | 'run' | 'terminal';
@@ -85,3 +86,23 @@ export function leftViewFor(panel: string | null): LeftView | null {
 export function rightTabFor(panel: string | null): RightTab | null {
   return panel === 'agent' || panel === 'approvals' || panel === 'run' || panel === 'terminal' ? panel : null;
 }
+
+// ---- What each workspace kind has -------------------------------------------
+// A workstation has no checkpoints and no diff, so no Changes view and no Review; its Chat is not there either. Null (no
+// workspace yet) has everything, as the agent and repository do.
+
+/** Whether a kind has a diff: the Changes view, the checkpoints and the Review. Only a station has none. */
+export const hasDiff = (kind: WorkspaceKind | null): boolean => kind !== 'station';
+
+/** The side panel's views a workspace kind has. */
+export function leftViewsFor(kind: WorkspaceKind | null): LeftView[] {
+  return hasDiff(kind) ? ['files', 'search', 'changes', 'checkpoints'] : ['files', 'search'];
+}
+
+/** The right panel's tabs a workspace kind has: the Agent and Approvals tabs are the agent's. */
+export function rightTabsFor(kind: WorkspaceKind | null): RightTab[] {
+  return kind === 'agent' ? ['agent', 'approvals', 'run', 'terminal'] : ['run', 'terminal'];
+}
+
+/** Whether a kind runs commands: an agent's and a station's do; a repository's runs come in a later phase. */
+export const runsFor = (kind: WorkspaceKind | null): boolean => kind === 'agent' || kind === 'station';

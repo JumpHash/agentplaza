@@ -447,7 +447,7 @@ impl Msg {
 fn agent_of(ws: &WorkspaceId) -> Option<u64> {
     match ws {
         WorkspaceId::Agent(cid) => Some(*cid),
-        WorkspaceId::Repo { .. } => None,
+        WorkspaceId::Repo { .. } | WorkspaceId::Station(_) => None,
     }
 }
 
@@ -550,8 +550,8 @@ pub fn update(st: &mut State, msg: Msg, client: &Client, ws: &WorkspaceId) -> Ta
         }
         _ => {}
     }
-    // Everything else talks to the workspace's agent; a repo workspace has none (its panels are not offered).
-    let Some(cid) = agent_of(ws) else { return Task::none() };
+    // The run, the transcript and the approvals are the agent's; a repo has none, and a station has no agent
+    // (its panels are not offered), so only the steer box and the held calls need one.
     match msg {
         Msg::Transcript { res, .. } => {
             match res {
@@ -571,6 +571,7 @@ pub fn update(st: &mut State, msg: Msg, client: &Client, ws: &WorkspaceId) -> Ta
             Task::none()
         }
         Msg::SteerSend => {
+            let Some(cid) = agent_of(ws) else { return Task::none() };
             let text = st.steer.text().trim().to_string();
             if st.steer_busy {
                 return Task::none();
@@ -602,6 +603,7 @@ pub fn update(st: &mut State, msg: Msg, client: &Client, ws: &WorkspaceId) -> Ta
             Task::none()
         }
         Msg::Held { res, .. } => {
+            let Some(cid) = agent_of(ws) else { return Task::none() };
             st.approvals_loaded = true;
             match res {
                 Ok(list) => {
@@ -890,9 +892,9 @@ pub fn approvals_view<'a>(st: &'a State, agent: bool) -> Element<'a, Msg> {
 }
 
 /// The Run panel: the command and its timeout, Run and Stop, the status, and the output so far.
-pub fn run_view<'a>(st: &'a State, agent: bool) -> Element<'a, Msg> {
-    if !agent {
-        return ui::empty("terminal", "Runs need an agent workspace", "Repo runs come when the hub serves repo workspaces.");
+pub fn run_view<'a>(st: &'a State, runs: bool) -> Element<'a, Msg> {
+    if !runs {
+        return ui::empty("terminal", "Runs need an agent or a workstation", "Repo runs come when the hub serves repo workspaces.");
     }
     let p = theme::palette();
     let active = st.run.active();

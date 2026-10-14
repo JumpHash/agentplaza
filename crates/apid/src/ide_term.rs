@@ -1,6 +1,7 @@
 //! The IDE's terminal socket: `WS /v1/ide/terminal/{workspace}` (docs/design/ide.md sections 6.3, 6.5
 //! and 8, phase 5). An owner's shell in an agent's VM, reached through the agent's `ide_term_*` tools
-//! (`crates/agent-harness/src/term.rs`). Agent workspaces only: a repo workspace is refused with 400.
+//! (`crates/agent-harness/src/term.rs`), or in a workstation's work folder, reached through the daemon's
+//! terminal operations (`Op::Term`, docs/design/workstations.md section 3). A repo workspace is refused with 400.
 //!
 //! The socket speaks JSON text frames, each one object with a `t` field. It asks for the subprotocol
 //! [`PROTOCOL`] (`Sec-WebSocket-Protocol: apz.ide.terminal.v1`), and only browsers from this host are
@@ -42,12 +43,13 @@ use std::time::{Duration, Instant};
 use apz_http::ws::{self, Limits, Message, Origins, Socket};
 use apz_http::{Request, Response, Router};
 use apz_ide::workspace::WorkspaceId;
+use apz_station::{Op, TermOp};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use serde_json::{Value, json};
 
 use crate::events::Slots;
-use crate::ide::TELL_TIMEOUT_MS;
+use crate::ide::{TELL_TIMEOUT_MS, is_unreachable, station_gate, station_op};
 use crate::state::App;
 
 /// The subprotocol a terminal socket must be asked for.
@@ -90,6 +92,23 @@ pub fn poll_delay(had_data: bool, quiet: Duration) -> Duration {
 /// Whether a socket that last heard from its client at `last_client` is closed by now.
 pub fn idle_expired(last_client: Instant, now: Instant) -> bool {
     now.saturating_duration_since(last_client) >= IDLE
+}
+
+/// What a terminal socket is attached to: an agent's VM, or a workstation's work folder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Target {
+    Agent(u64),
+    Station(String),
+}
+
+impl Target {
+    /// The workspace id text of the target: `agent:<cid>` or `station:<id>`.
+    fn workspace(&self) -> String {
+        match self {
+            Target::Agent(cid) => WorkspaceId::Agent(*cid).to_string(),
+            Target::Station(id) => WorkspaceId::Station(id.clone()).to_string(),
+        }
+    }
 }
 
 /// A frame from the client.
@@ -275,8 +294,12 @@ impl Wire for Socket {
 pub trait TermHost {
     /// One tool call on agent `cid`: the gateway's status and body (the same call `ide.rs` makes).
     fn tell(&self, cid: u64, name: &str, args: &Value) -> Result<(u16, Value), String>;
+    /// One terminal operation on workstation `station`: the daemon's answer, or the reason it gave none.
+    fn request(&self, station: &str, op: Op) -> Result<Value, String>;
     /// Appends one row to the IDE audit.
     fn append_audit(&self, row: &Value) -> Result<(), String>;
+    /// Appends one row to the station audit.
+    fn append_station_audit(&self, row: &Value) -> Result<(), String>;
     /// Publishes one `ide` bus event.
     fn publish(&self, data: &Value);
 }
@@ -290,8 +313,16 @@ impl TermHost for Live {
         crate::fleet::gateway(&self.0, cid, "POST", &format!("/v1/agents/{cid}/tell"), Some(&body))
     }
 
+    fn request(&self, station: &str, op: Op) -> Result<Value, String> {
+        station_op(&self.0, station, op)
+    }
+
     fn append_audit(&self, row: &Value) -> Result<(), String> {
         self.0.db.append_ide_audit(row)
+    }
+
+    fn append_station_audit(&self, row: &Value) -> Result<(), String> {
+        self.0.db.append_station_audit(row)
     }
 
     fn publish(&self, data: &Value) {
@@ -316,8 +347,38 @@ impl Failure {
     }
 }
 
+/// One tool call on the target, answered with its JSON output. A workstation takes the same call as its terminal
+/// operation: `ide_term_open` is `Op::Term(TermOp::Open)`, and so on.
+fn call(host: &dyn TermHost, target: &Target, name: &str, args: &Value) -> Result<Value, Failure> {
+    match target {
+        Target::Agent(cid) => call_agent(host, *cid, name, args),
+        Target::Station(id) => {
+            let op = station_term_op(name, args)
+                .ok_or_else(|| Failure::Refused(format!("{name} is not a terminal operation")))?;
+            host.request(id, Op::Term(op)).map_err(|message| {
+                if is_unreachable(&message) { Failure::Unreachable(message) } else { Failure::Refused(message) }
+            })
+        }
+    }
+}
+
+/// The terminal operation a terminal tool call means, for a workstation.
+fn station_term_op(name: &str, args: &Value) -> Option<TermOp> {
+    let text = |key: &str| args.get(key).and_then(Value::as_str).map(str::to_string);
+    let number = |key: &str| args.get(key).and_then(Value::as_u64);
+    let size = |key: &str| number(key).and_then(|n| u16::try_from(n).ok());
+    Some(match name {
+        "ide_term_open" => TermOp::Open { cols: size("cols")?, rows: size("rows")?, cwd: text("cwd") },
+        "ide_term_write" => TermOp::Write { term: text("term")?, data_b64: text("data_b64")? },
+        "ide_term_read" => TermOp::Read { term: text("term")?, offset: number("offset") },
+        "ide_term_resize" => TermOp::Resize { term: text("term")?, cols: size("cols")?, rows: size("rows")? },
+        "ide_term_close" => TermOp::Close { term: text("term")? },
+        _ => return None,
+    })
+}
+
 /// One tool call on agent `cid`, answered with its JSON output.
-fn call(host: &dyn TermHost, cid: u64, name: &str, args: &Value) -> Result<Value, Failure> {
+fn call_agent(host: &dyn TermHost, cid: u64, name: &str, args: &Value) -> Result<Value, Failure> {
     let (status, body) = host
         .tell(cid, name, args)
         .map_err(|err| Failure::Unreachable(format!("the agent's node did not answer: {err}")))?;
@@ -370,10 +431,10 @@ fn parse_chunk(value: &Value) -> Result<Chunk, Failure> {
 
 /// Sends `data` to the shell. The harness takes what fits in its wait and says how much it took; the
 /// rest goes out again until all of it is in.
-fn write_all(host: &dyn TermHost, cid: u64, term: &str, mut rest: &[u8]) -> Result<(), Failure> {
+fn write_all(host: &dyn TermHost, target: &Target, term: &str, mut rest: &[u8]) -> Result<(), Failure> {
     let mut stalls = 0;
     while !rest.is_empty() {
-        let answer = call(host, cid, "ide_term_write", &json!({ "term": term, "data_b64": STANDARD.encode(rest) }))?;
+        let answer = call(host, target, "ide_term_write", &json!({ "term": term, "data_b64": STANDARD.encode(rest) }))?;
         let written = answer
             .get("written")
             .and_then(Value::as_u64)
@@ -398,7 +459,7 @@ type Flow = Result<(), Ended>;
 /// One socket's bridge: its guest terminal (once it has one), where its output stands, and its clocks.
 struct Session<'a> {
     host: &'a dyn TermHost,
-    cid: u64,
+    target: Target,
     socket: &'a mut dyn Wire,
     term: Option<String>,
     /// The next offset to read from the guest.
@@ -425,10 +486,11 @@ impl Session<'_> {
     }
 
     fn workspace(&self) -> String {
-        WorkspaceId::Agent(self.cid).to_string()
+        self.target.workspace()
     }
 
-    /// The audit row for one owner action on a terminal, then the bus event for it.
+    /// The audit row for one owner action on a terminal, then the bus event for it. On a workstation the action
+    /// is also a row of the station audit.
     fn audit(&self, kind: &str, term: &str, detail: Value) -> Result<(), String> {
         let mut row = json!({
             "at_ms": apz_plaza::now_ms(),
@@ -438,10 +500,18 @@ impl Session<'_> {
             "path": null,
             "term": term,
         });
-        if let (Some(map), Value::Object(detail)) = (row.as_object_mut(), detail) {
+        if let (Some(map), Value::Object(detail)) = (row.as_object_mut(), detail.clone()) {
             map.extend(detail);
         }
-        self.host.append_audit(&row)
+        self.host.append_audit(&row)?;
+        if let Target::Station(id) = &self.target {
+            let mut data = json!({ "action": kind, "term": term });
+            if let (Some(map), Value::Object(detail)) = (data.as_object_mut(), detail) {
+                map.extend(detail);
+            }
+            self.host.append_station_audit(&crate::stations::audit_row(Some(id), None, "owner_ide", "owner", data))?;
+        }
+        Ok(())
     }
 
     fn publish(&self, kind: &str) {
@@ -478,7 +548,7 @@ impl Session<'_> {
         if let Some(cwd) = &cwd {
             args["cwd"] = json!(cwd);
         }
-        let answer = match call(self.host, self.cid, "ide_term_open", &args) {
+        let answer = match call(self.host, &self.target, "ide_term_open", &args) {
             Ok(answer) => answer,
             Err(failure) => return self.error(failure.into_message()),
         };
@@ -487,7 +557,7 @@ impl Session<'_> {
         };
         // A shell that is not in the audit is closed again: every terminal the owner opens is recorded.
         if let Err(err) = self.audit("term_open", &term, json!({ "cols": cols, "rows": rows, "cwd": cwd })) {
-            let _ = call(self.host, self.cid, "ide_term_close", &json!({ "term": term }));
+            let _ = call(self.host, &self.target, "ide_term_close", &json!({ "term": term }));
             self.error(format!("the terminal was closed: its audit row could not be written ({err})"))?;
             return self.end(1011, "the audit log is unavailable");
         }
@@ -522,7 +592,7 @@ impl Session<'_> {
         let Some(term) = self.term.clone() else {
             return self.error("there is no terminal yet: open or attach one first");
         };
-        match call(self.host, self.cid, "ide_term_resize", &json!({ "term": term, "cols": cols, "rows": rows })) {
+        match call(self.host, &self.target, "ide_term_resize", &json!({ "term": term, "cols": cols, "rows": rows })) {
             Ok(_) => Ok(()),
             Err(failure) => self.error(failure.into_message()),
         }
@@ -532,7 +602,7 @@ impl Session<'_> {
         let Some(term) = self.term.clone() else {
             return self.error("there is no terminal to kill");
         };
-        match call(self.host, self.cid, "ide_term_close", &json!({ "term": term })) {
+        match call(self.host, &self.target, "ide_term_close", &json!({ "term": term })) {
             Ok(_) => {
                 if let Err(err) = self.audit("term_kill", &term, json!({})) {
                     self.error(format!("the terminal was closed, but its audit row could not be written ({err})"))?;
@@ -545,7 +615,7 @@ impl Session<'_> {
     }
 
     fn read(&self, term: &str) -> Result<Chunk, Failure> {
-        let answer = call(self.host, self.cid, "ide_term_read", &json!({ "term": term, "offset": self.offset }))?;
+        let answer = call(self.host, &self.target, "ide_term_read", &json!({ "term": term, "offset": self.offset }))?;
         parse_chunk(&answer)
     }
 
@@ -614,7 +684,7 @@ impl Session<'_> {
             return Ok(());
         };
         for chunk in chunks {
-            if let Err(failure) = write_all(self.host, self.cid, &term, &chunk) {
+            if let Err(failure) = write_all(self.host, &self.target, &term, &chunk) {
                 self.error(failure.into_message())?;
                 break;
             }
@@ -635,13 +705,13 @@ impl Session<'_> {
     }
 }
 
-/// Bridges one socket to one guest terminal until either ends: agent `cid`'s terminals, reached through
+/// Bridges one socket to one guest terminal until either ends: the target's terminals, reached through
 /// `host`, and the socket `socket`.
-pub fn serve(host: &dyn TermHost, cid: u64, socket: &mut dyn Wire) {
+pub fn serve(host: &dyn TermHost, target: Target, socket: &mut dyn Wire) {
     let now = Instant::now();
     let mut session = Session {
         host,
-        cid,
+        target,
         socket,
         term: None,
         offset: 0,
@@ -681,13 +751,24 @@ pub fn serve(host: &dyn TermHost, cid: u64, socket: &mut dyn Wire) {
     }
 }
 
-/// The agent a terminal route names. A repo workspace has no VM, so it is refused.
-fn agent_of(id: &str) -> Result<u64, Response> {
+/// The target a terminal route names: an agent with a VM, or an online workstation (not while STOP ALL holds).
+/// A repo workspace has neither a VM nor a work folder, so it is refused.
+fn target_of(app: &App, id: &str) -> Result<Target, Response> {
     match id.parse::<WorkspaceId>() {
-        Ok(WorkspaceId::Agent(cid)) => Ok(cid),
-        Ok(WorkspaceId::Repo { .. }) => {
-            Err(Response::error(400, "a terminal is for agent workspaces; a repo has no VM to open a shell in"))
+        Ok(WorkspaceId::Agent(cid)) => {
+            if !app.agents.get(cid).is_some_and(|agent| agent.run.is_some() && agent.vm.is_some()) {
+                return Err(Response::error(404, &format!("no workspace {}", WorkspaceId::Agent(cid))));
+            }
+            Ok(Target::Agent(cid))
         }
+        Ok(WorkspaceId::Station(station)) => {
+            station_gate(app, &station)?;
+            Ok(Target::Station(station))
+        }
+        Ok(WorkspaceId::Repo { .. }) => Err(Response::error(
+            400,
+            "a terminal is for agent and station workspaces; a repo has no VM or work folder to open a shell in",
+        )),
         Err(err) => Err(Response::error(400, &err.to_string())),
     }
 }
@@ -700,9 +781,9 @@ fn upgrade(req: &Request, run: impl FnOnce(Socket) + Send + 'static) -> Response
 /// The terminal sockets open now, per peer and in all (the event socket's caps, its own pool).
 static SOCKETS: Slots = Slots::new();
 
-/// The terminal sockets open now, per workspace.
+/// The terminal sockets open now, per workspace (by its id text).
 pub struct Places {
-    open: Mutex<BTreeMap<u64, usize>>,
+    open: Mutex<BTreeMap<String, usize>>,
 }
 
 impl Places {
@@ -710,42 +791,42 @@ impl Places {
         Places { open: Mutex::new(BTreeMap::new()) }
     }
 
-    /// A place for a socket on agent `cid`, or `None` when the workspace is at [`PER_WORKSPACE`].
-    pub fn take(&'static self, cid: u64) -> Option<Place> {
+    /// A place for a socket on `workspace`, or `None` when the workspace is at [`PER_WORKSPACE`].
+    pub fn take(&'static self, workspace: &str) -> Option<Place> {
         let mut open = self.open.lock().unwrap_or_else(PoisonError::into_inner);
-        let held = open.get(&cid).copied().unwrap_or(0);
+        let held = open.get(workspace).copied().unwrap_or(0);
         if held >= PER_WORKSPACE {
             return None;
         }
-        open.insert(cid, held + 1);
-        Some(Place { places: self, cid })
+        open.insert(workspace.to_string(), held + 1);
+        Some(Place { places: self, workspace: workspace.to_string() })
     }
 
-    fn release(&self, cid: u64) {
+    fn release(&self, workspace: &str) {
         let mut open = self.open.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(held) = open.get_mut(&cid) {
+        if let Some(held) = open.get_mut(workspace) {
             *held = held.saturating_sub(1);
             if *held == 0 {
-                open.remove(&cid);
+                open.remove(workspace);
             }
         }
     }
 
     #[cfg(test)]
-    fn held(&self, cid: u64) -> usize {
-        self.open.lock().unwrap_or_else(PoisonError::into_inner).get(&cid).copied().unwrap_or(0)
+    fn held(&self, workspace: &str) -> usize {
+        self.open.lock().unwrap_or_else(PoisonError::into_inner).get(workspace).copied().unwrap_or(0)
     }
 }
 
 /// One terminal socket's place on its workspace; it frees the place when it drops.
 pub struct Place {
     places: &'static Places,
-    cid: u64,
+    workspace: String,
 }
 
 impl Drop for Place {
     fn drop(&mut self) {
-        self.places.release(self.cid);
+        self.places.release(&self.workspace);
     }
 }
 
@@ -753,17 +834,14 @@ static PLACES: Places = Places::new();
 
 pub fn routes(router: Router<App>) -> Router<App> {
     router.get("/v1/ide/terminal/{workspace}", |app, req, p| {
-        let cid = match agent_of(p.get("workspace")) {
-            Ok(cid) => cid,
+        let target = match target_of(app, p.get("workspace")) {
+            Ok(target) => target,
             Err(refused) => return refused,
         };
-        if !app.agents.get(cid).is_some_and(|agent| agent.run.is_some() && agent.vm.is_some()) {
-            return Response::error(404, &format!("no workspace {}", WorkspaceId::Agent(cid)));
-        }
         let Some(slot) = SOCKETS.take(req.peer) else {
             return Response::error(429, "too many open terminal sockets; close one first");
         };
-        let Some(place) = PLACES.take(cid) else {
+        let Some(place) = PLACES.take(&target.workspace()) else {
             return Response::error(429, &format!("{PER_WORKSPACE} terminal sockets are open on this workspace; close one first"));
         };
         let weak = app.handle();
@@ -774,7 +852,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 socket.close(1001, "the hub is shutting down");
                 return;
             };
-            serve(&Live(app), cid, &mut socket);
+            serve(&Live(app), target, &mut socket);
         })
     })
 }
@@ -907,23 +985,28 @@ mod tests {
     // The refusals and the caps.
 
     #[test]
-    fn a_repo_workspace_is_refused_and_so_is_a_bad_id() {
-        assert_eq!(agent_of("agent:12").ok(), Some(12));
-        for refused in ["repo:p1-plaza@main", "agent:x", "agent:012", "nope"] {
-            let response = agent_of(refused).expect_err(refused);
-            assert_eq!(response.status, 400, "{refused}");
+    fn the_terminal_targets_are_agents_and_stations_and_a_bad_id_is_refused() {
+        assert_eq!("agent:12".parse::<WorkspaceId>().ok(), Some(WorkspaceId::Agent(12)));
+        assert_eq!("station:w3".parse::<WorkspaceId>().ok(), Some(WorkspaceId::Station("w3".into())));
+        assert_eq!(Target::Station("w3".into()).workspace(), "station:w3");
+        assert_eq!(Target::Agent(12).workspace(), "agent:12");
+        for refused in ["repo:p1-plaza@main", "agent:x", "agent:012", "station:3", "nope"] {
+            assert!(
+                refused.parse::<WorkspaceId>().map_or(true, |id| matches!(id, WorkspaceId::Repo { .. })),
+                "{refused} is not a terminal target"
+            );
         }
     }
 
     #[test]
     fn a_workspace_holds_four_terminal_sockets_and_a_closed_one_frees_its_place() {
         let places = leaked_places();
-        let held: Vec<Place> = (0..PER_WORKSPACE).map(|_| places.take(12).expect("under the cap")).collect();
-        assert!(places.take(12).is_none(), "a fifth socket on the workspace is refused");
-        assert!(places.take(13).is_some(), "another workspace still gets one");
+        let held: Vec<Place> = (0..PER_WORKSPACE).map(|_| places.take("agent:12").expect("under the cap")).collect();
+        assert!(places.take("agent:12").is_none(), "a fifth socket on the workspace is refused");
+        assert!(places.take("station:w12").is_some(), "another workspace still gets one");
         drop(held);
-        assert_eq!(places.held(12), 0);
-        assert!(places.take(12).is_some(), "a closed socket frees its place");
+        assert_eq!(places.held("agent:12"), 0);
+        assert!(places.take("agent:12").is_some(), "a closed socket frees its place");
     }
 
     fn upgrade_request(origin: Option<&str>, protocol: &str) -> Request {
@@ -973,6 +1056,7 @@ mod tests {
         audit_fails: bool,
         calls: Vec<(String, Value)>,
         audit: Vec<Value>,
+        station_audit: Vec<Value>,
         published: Vec<Value>,
     }
 
@@ -998,6 +1082,29 @@ mod tests {
     }
 
     impl TermHost for Fake {
+        fn request(&self, _station: &str, op: Op) -> Result<Value, String> {
+            // The inverse of the production mapping: a workstation's terminal operation as the agent's tool call.
+            let (name, args) = match op {
+                Op::Term(TermOp::Open { cols, rows, cwd }) => ("ide_term_open", json!({ "cols": cols, "rows": rows, "cwd": cwd })),
+                Op::Term(TermOp::Write { term, data_b64 }) => ("ide_term_write", json!({ "term": term, "data_b64": data_b64 })),
+                Op::Term(TermOp::Read { term, offset }) => ("ide_term_read", json!({ "term": term, "offset": offset.unwrap_or(0) })),
+                Op::Term(TermOp::Resize { term, cols, rows }) => ("ide_term_resize", json!({ "term": term, "cols": cols, "rows": rows })),
+                Op::Term(TermOp::Close { term }) => ("ide_term_close", json!({ "term": term })),
+                other => return Err(format!("the fake has no answer for {other:?}")),
+            };
+            let (status, body) = self.tell(0, name, &args)?;
+            let output = body["output"].as_str().unwrap_or_default().to_string();
+            if status != 200 || body["ok"] != json!(true) {
+                return Err(output);
+            }
+            serde_json::from_str(&output).map_err(|err| err.to_string())
+        }
+
+        fn append_station_audit(&self, row: &Value) -> Result<(), String> {
+            self.guest().station_audit.push(row.clone());
+            Ok(())
+        }
+
         fn tell(&self, _cid: u64, name: &str, args: &Value) -> Result<(u16, Value), String> {
             let mut guest = self.guest();
             guest.calls.push((name.to_string(), args.clone()));
@@ -1165,7 +1272,7 @@ mod tests {
             (Gate::Received("echo hi"), text(json!({ "t": "resize", "cols": 100, "rows": 30 }))),
             (Gate::Received("echo hi"), input(b"exit\n")),
         ]);
-        serve(&host, 12, &mut client);
+        serve(&host, Target::Agent(12), &mut client);
 
         assert_eq!(client.closed, Some((1000, "the shell exited".to_string())));
         assert_eq!(client.sent.first(), Some(&ServerFrame::Opened { term: "term-1".into() }));
@@ -1188,13 +1295,47 @@ mod tests {
     }
 
     #[test]
+    fn a_workstation_shell_is_audited_in_both_logs_and_takes_keys() {
+        let host = Fake::default();
+        let mut client = Client::new(vec![
+            (Gate::Now, text(json!({ "t": "open", "cols": 80, "rows": 24 }))),
+            (Gate::Sent("opened"), input(b"exit\n")),
+        ]);
+        serve(&host, Target::Station("w3".into()), &mut client);
+
+        assert_eq!(client.sent.first(), Some(&ServerFrame::Opened { term: "term-1".into() }));
+        assert_eq!(client.closed, Some((1000, "the shell exited".to_string())));
+        let guest = host.guest();
+        assert_eq!(guest.written, b"exit\n");
+        assert_eq!(guest.audit.len(), 1);
+        assert_eq!(guest.audit[0]["workspace"], "station:w3");
+        assert_eq!(guest.audit[0]["kind"], "term_open");
+        assert_eq!(guest.station_audit.len(), 1, "a workstation's shell is also a station audit row");
+        assert_eq!(guest.station_audit[0]["kind"], "owner_ide");
+        assert_eq!(guest.station_audit[0]["station"], "w3");
+        assert_eq!(guest.station_audit[0]["action"], "term_open");
+        assert_eq!(guest.station_audit[0]["term"], "term-1");
+    }
+
+    #[test]
+    fn a_workstation_operation_that_is_not_linked_is_unreachable_and_a_refusal_is_not() {
+        assert!(matches!(
+            call(&Fake::default(), &Target::Station("w3".into()), "ide_term_close", &json!({ "term": "term-9" })),
+            Err(Failure::Refused(_))
+        ));
+        assert_eq!(station_term_op("ide_term_open", &json!({ "cols": 80_000, "rows": 24 })), None, "an oversized size is no operation");
+        assert!(is_unreachable("the workstation is not linked"));
+        assert!(!is_unreachable("no such terminal"));
+    }
+
+    #[test]
     fn a_reattach_resumes_at_the_offset_the_client_holds_and_kill_ends_the_shell() {
         let host = Fake::with_output(b"abcdefgh", 0);
         let mut client = Client::new(vec![
             (Gate::Now, text(json!({ "t": "attach", "term": "term-1", "offset": 4 }))),
             (Gate::Received("efgh"), text(json!({ "t": "kill" }))),
         ]);
-        serve(&host, 12, &mut client);
+        serve(&host, Target::Agent(12), &mut client);
 
         assert_eq!(client.sent[0], ServerFrame::Opened { term: "term-1".into() });
         assert_eq!(client.sent[1], ServerFrame::Out { data: b"efgh".to_vec(), offset: 4 });
@@ -1215,7 +1356,7 @@ mod tests {
             (Gate::Now, text(json!({ "t": "attach", "term": "term-1" }))),
             (Gate::Received("cdefgh"), text(json!({ "t": "kill" }))),
         ]);
-        serve(&host, 12, &mut client);
+        serve(&host, Target::Agent(12), &mut client);
 
         assert_eq!(client.sent[1], ServerFrame::Lost { bytes: 2 });
         assert_eq!(client.sent[2], ServerFrame::Out { data: b"cdefgh".to_vec(), offset: 2 });
@@ -1225,7 +1366,7 @@ mod tests {
     fn a_closed_socket_leaves_the_shell_running() {
         let host = Fake::default();
         let mut client = Client::new(vec![(Gate::Now, text(json!({ "t": "open", "cols": 80, "rows": 24 })))]);
-        serve(&host, 12, &mut client);
+        serve(&host, Target::Agent(12), &mut client);
 
         assert_eq!(client.sent, vec![ServerFrame::Opened { term: "term-1".into() }]);
         assert!(host.guest().calls.iter().all(|(name, _)| name != "ide_term_close"), "the socket's end kills nothing");
@@ -1239,7 +1380,7 @@ mod tests {
             (Gate::Now, input(b"x")),
             (Gate::Now, text(json!({ "t": "ping" }))),
         ]);
-        serve(&host, 12, &mut client);
+        serve(&host, Target::Agent(12), &mut client);
 
         let kinds: Vec<&ServerFrame> = client.sent.iter().collect();
         assert!(matches!(kinds[0], ServerFrame::Error { .. }), "a frame that is not JSON is an error");
@@ -1252,7 +1393,7 @@ mod tests {
     fn a_binary_frame_closes_the_socket() {
         let host = Fake::default();
         let mut client = Client::new(vec![(Gate::Now, Message::Binary(vec![1, 2]))]);
-        serve(&host, 12, &mut client);
+        serve(&host, Target::Agent(12), &mut client);
         assert_eq!(client.closed.map(|(code, _)| code), Some(1003));
     }
 
@@ -1261,7 +1402,7 @@ mod tests {
         let host = Fake::default();
         host.guest().audit_fails = true;
         let mut client = Client::new(vec![(Gate::Now, text(json!({ "t": "open", "cols": 80, "rows": 24 })))]);
-        serve(&host, 12, &mut client);
+        serve(&host, Target::Agent(12), &mut client);
 
         assert!(!client.sent.iter().any(|frame| matches!(frame, ServerFrame::Opened { .. })), "nothing is opened");
         assert!(matches!(client.sent.first(), Some(ServerFrame::Error { .. })));
@@ -1274,7 +1415,7 @@ mod tests {
         let host = Fake::default();
         host.guest().unreachable_reads = true;
         let mut client = Client::new(vec![(Gate::Now, text(json!({ "t": "open", "cols": 80, "rows": 24 })))]);
-        serve(&host, 12, &mut client);
+        serve(&host, Target::Agent(12), &mut client);
 
         let errors = client.sent.iter().filter(|frame| matches!(frame, ServerFrame::Error { .. })).count();
         assert_eq!(errors, 3, "each failed read is reported");

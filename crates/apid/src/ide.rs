@@ -1,4 +1,4 @@
-//! The IDE's routes (docs/design/ide.md sections 6.3 to 6.5). A workspace is one of two kinds:
+//! The IDE's routes (docs/design/ide.md sections 6.3 to 6.5). A workspace is one of three kinds:
 //!
 //! - `agent:<cid>`: the owner's view of an agent's `/workspace`, reached through the agent's own `ide_*` tools
 //!   (`crates/agent-harness/src/ide.rs`). The harness takes the checkpoints and checks the real filesystem.
@@ -6,6 +6,10 @@
 //!   API, and an edit is a commit on that branch through the contents API, as the admin (the token the Git
 //!   screen uses). A checkpoint is a commit. Only project repos are offered; the platform's own source repo
 //!   never is (`PLATFORM_REPOS`).
+//! - `station:<id>`: an online workstation's work folder (docs/design/workstations.md section 3). Its files, runs
+//!   and terminals go to the workstation's daemon over its live link, which scopes them to its work folder. A
+//!   workstation has no checkpoints, so it has no changes, no restore and no branch. STOP ALL refuses every
+//!   operation on it.
 //!
 //! Every route checks its paths with `apz_ide::path` before anything is sent. This module logs each owner
 //! action (a write, a branch, a pull request, a restore, a run and its stop) to the append-only audit (the
@@ -16,33 +20,36 @@
 //! Routes (owner-only: the hub's gate in `hub_auth` covers every `/v1` path). The agent kind answers through
 //! the agent's tools, the repo kind through Forgejo:
 //!
-//! | route | agent | repo |
-//! |---|---|---|
-//! | `GET /v1/ide/workspaces` | agents with a VM | project repos at their default branch |
-//! | `GET /v1/ide/workspaces/{id}/tree?path=&cursor=` | `ide_list` | contents API, 500 per page |
-//! | `GET /v1/ide/workspaces/{id}/file?path=` | `ide_read` (chunks) | contents API, text only, 1 MiB |
-//! | `PUT /v1/ide/workspaces/{id}/file` `{path, text, expected_hash}` | `ide_write` | commit `owner edit: <path>` on the branch |
-//! | `GET /v1/ide/workspaces/{id}/changes?base=` | `ide_changes` (chunks) | compare `<base>...<head>`: its file list, then each file at both refs, diffed here |
-//! | `GET /v1/ide/workspaces/{id}/checkpoints` | `ide_checkpoints` | the branch's recent commits |
-//! | `POST /v1/ide/workspaces/{id}/checkpoints/{n}/restore` | `ide_restore` | 501 (use git revert) |
-//! | `GET /v1/ide/workspaces/{id}/search?q=&glob=&max=` | `ide_search` | 501 |
-//! | `POST /v1/ide/workspaces/{id}/runs`, `GET .../runs/{run}`, `POST .../runs/{run}/stop` | `ide_run_*` | 501 |
-//! | `POST /v1/ide/workspaces/{id}/pulls` `{title, body?, base?}` | 400 | opens a pull request from the branch (201, its row) |
-//! | `POST /v1/ide/workspaces/{id}/branch` `{name}` | 400 | a new branch from the ref (201, `{id}`) |
-//! | `GET /v1/ide/audit?workspace=&limit=` | (audit log) | (audit log) |
+//! | route | agent | repo | station |
+//! |---|---|---|---|
+//! | `GET /v1/ide/workspaces` | agents with a VM | project repos at their default branch | online workstations |
+//! | `GET /v1/ide/workspaces/{id}/tree?path=&cursor=` | `ide_list` | contents API, 500 per page | `files list` |
+//! | `GET /v1/ide/workspaces/{id}/file?path=` | `ide_read` (chunks) | contents API, text only, 1 MiB | `files read` (chunks) |
+//! | `PUT /v1/ide/workspaces/{id}/file` `{path, text, expected_hash}` | `ide_write` | commit `owner edit: <path>` on the branch | `files write`, audited in both logs |
+//! | `GET /v1/ide/workspaces/{id}/changes?base=` | `ide_changes` (chunks) | compare `<base>...<head>`: its file list, then each file at both refs, diffed here | 501 (no checkpoints) |
+//! | `GET /v1/ide/workspaces/{id}/checkpoints` | `ide_checkpoints` | the branch's recent commits | `{checkpoints: [], reason}` |
+//! | `POST /v1/ide/workspaces/{id}/checkpoints/{n}/restore` | `ide_restore` | 501 (use git revert) | 501 |
+//! | `GET /v1/ide/workspaces/{id}/search?q=&glob=&max=` | `ide_search` | 501 | `files search` |
+//! | `POST /v1/ide/workspaces/{id}/runs`, `GET .../runs/{run}`, `POST .../runs/{run}/stop` | `ide_run_*` | 501 | `run start/poll/stop` |
+//! | `POST /v1/ide/workspaces/{id}/pulls` `{title, body?, base?}` | 400 | opens a pull request from the branch (201, its row) | 400 |
+//! | `POST /v1/ide/workspaces/{id}/branch` `{name}` | 400 | a new branch from the ref (201, `{id}`) | 400 |
+//! | `GET /v1/ide/audit?workspace=&limit=` | (audit log) | (audit log) | (audit log) |
 //!
 //! A tell that fails maps to: 404 unknown agent, 409 no session, 504 no answer in time, 403 a tool the
 //! agent's role does not grant, 400 a refusal (`ok: false`) with the agent's text, and 502 anything else. A
-//! forge answer keeps its status and message. A write that finds the file moved answers 409
-//! `{error: "conflict", current_hash}` in both kinds.
+//! forge answer keeps its status and message. A station answer maps to: 409 STOP ALL, not linked or draining,
+//! 504 no answer in time, 400 a refusal. A write that finds the file moved answers 409
+//! `{error: "conflict", current_hash}` in every kind.
 
 use std::collections::BTreeSet;
+use std::time::Duration;
 
 use apz_http::{Request, Response, Router};
 use apz_ide::diff::{parse_unified, write_binary, write_unified};
 use apz_ide::path::{PathError, check_dir, check_read, check_write};
 use apz_ide::tree::PAGE_SIZE;
 use apz_ide::workspace::WorkspaceId;
+use apz_station::{FilesOp, Op, Os, RunOp};
 use serde_json::{Value, json};
 
 use crate::agents::{Agent, Status};
@@ -50,6 +57,7 @@ use crate::db::Db;
 use crate::git::{self, ForgeApi, ORG};
 use crate::plaza::percent_decode;
 use crate::state::App;
+use crate::stations::link::LINK_CLOSED;
 
 /// How long a tell waits for the agent: the harness's own cap (vsockd's `MAX_TELL_TIMEOUT_MS`).
 pub const TELL_TIMEOUT_MS: u64 = 5_000;
@@ -71,6 +79,12 @@ const CHANGE_CONTEXT: usize = 3;
 const BINARY_PROBE: usize = 8 * 1024;
 /// Repo names the IDE never offers: the platform's own source repository, under the names it has.
 const PLATFORM_REPOS: &[&str] = &["agentplaza", "agentplaza-mvp"];
+/// How long a workstation gets to answer one IDE operation (its daemon's own cap for a run is shorter).
+pub const STATION_TIMEOUT: Duration = Duration::from_secs(15);
+/// The refusal of every IDE operation while STOP ALL holds the plaza.
+const STOP_ALL_MESSAGE: &str = "STOP ALL holds the plaza: resume it before IDE work on a workstation";
+/// Why a workstation has no checkpoints, changes or restore.
+const NO_CHECKPOINTS: &str = "a workstation has no checkpoints: its work folder is not versioned by the hub";
 
 type Reply = Result<Value, Response>;
 
@@ -88,6 +102,12 @@ pub trait Host {
     fn forge(&self) -> &dyn ForgeApi;
     /// The repo name (without the org) of every project that has one.
     fn project_repos(&self) -> Vec<String>;
+    /// The workstations the IDE can open now: online, not revoked and not draining.
+    fn stations(&self) -> Vec<StationSpace>;
+    /// One operation on workstation `id` through its live link: the daemon's answer, or the reason it gave none.
+    fn station_request(&self, id: &str, op: Op) -> Result<Value, String>;
+    /// Whether STOP ALL holds the plaza. Every IDE operation on a workstation is refused while it does.
+    fn frozen(&self) -> bool;
 }
 
 /// The live hub: tells go through the fleet, and the database, the bus, the forge and the projects are the app's.
@@ -122,6 +142,80 @@ impl Host for Live<'_> {
             })
             .collect()
     }
+
+    fn stations(&self) -> Vec<StationSpace> {
+        station_spaces(self.0)
+    }
+
+    fn station_request(&self, id: &str, op: Op) -> Result<Value, String> {
+        station_op(self.0, id, op)
+    }
+
+    fn frozen(&self) -> bool {
+        self.0.control.paused()
+    }
+}
+
+/// An online workstation the IDE opens: its id (`w<seq>`), its name, and its OS.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StationSpace {
+    pub id: String,
+    pub name: String,
+    pub os: &'static str,
+}
+
+/// The workstations the IDE opens now: enrolled, linked, not revoked and not draining.
+fn station_spaces(app: &App) -> Vec<StationSpace> {
+    let now = apz_plaza::now_ms();
+    app.stations
+        .list()
+        .into_iter()
+        .filter(|station| !station.revoked && !station.draining && app.stations.is_online(&station.id, now))
+        .map(|station| StationSpace { os: os_name(station.facts.os), id: station.id, name: station.name })
+        .collect()
+}
+
+fn os_name(os: Os) -> &'static str {
+    match os {
+        Os::Macos => "macos",
+        Os::Windows => "windows",
+        Os::Linux => "linux",
+    }
+}
+
+/// One operation on workstation `id` through its live link, waiting up to [`STATION_TIMEOUT`]. A workstation
+/// with no live link is "not linked".
+pub fn station_op(app: &App, id: &str, op: Op) -> Result<Value, String> {
+    match app.stations.live(id) {
+        Some(link) => link.request(op, STATION_TIMEOUT),
+        None => Err("the workstation is not linked".into()),
+    }
+}
+
+/// Whether an IDE operation may reach workstation `id` now: STOP ALL holds nothing, and the station is one the
+/// IDE opens. The terminal socket asks this before it upgrades.
+pub fn station_gate(app: &App, id: &str) -> Result<(), Response> {
+    check_station(&Live(app), id)
+}
+
+fn check_station(host: &dyn Host, id: &str) -> Result<(), Response> {
+    if host.frozen() {
+        return Err(Response::error(409, STOP_ALL_MESSAGE));
+    }
+    if host.stations().iter().any(|station| station.id == id) {
+        Ok(())
+    } else {
+        Err(Response::error(404, &format!("no workspace {}", WorkspaceId::Station(id.to_string()))))
+    }
+}
+
+/// Whether a station's error means no answer came back at all: its link is down, it is draining, or it did not
+/// answer in time. The terminal socket reads these as "unreachable" (the socket may retry), a refusal as "refused".
+pub fn is_unreachable(message: &str) -> bool {
+    message == LINK_CLOSED
+        || message.contains("not linked")
+        || message.contains("draining")
+        || message.contains("did not answer in time")
 }
 
 /// A repo workspace the IDE opens: a project repo at one branch.
@@ -333,8 +427,9 @@ pub fn open_repos(host: &dyn Host) -> Vec<RepoSpace> {
         .collect()
 }
 
-/// The workspace list: the agent workspaces (every agent that has a VM, in CID order), then the repo ones.
-pub fn workspaces(agents: &[Agent], repos: &[RepoSpace]) -> Value {
+/// The workspace list: the agent workspaces (every agent that has a VM, in CID order), then the station ones,
+/// then the repo ones.
+pub fn workspaces(agents: &[Agent], stations: &[StationSpace], repos: &[RepoSpace]) -> Value {
     let mut rows: Vec<&Agent> = agents.iter().filter(|agent| agent.run.is_some() && agent.vm.is_some()).collect();
     rows.sort_by_key(|agent| agent.cid);
     let mut out: Vec<Value> = rows
@@ -350,6 +445,17 @@ pub fn workspaces(agents: &[Agent], repos: &[RepoSpace]) -> Value {
             })
         })
         .collect();
+    out.extend(stations.iter().map(|station| {
+        json!({
+            "id": format!("station:{}", station.id),
+            "kind": "station",
+            "owner": station.id,
+            "name": station.name,
+            "os": station.os,
+            "writable": true,
+            "status": "online",
+        })
+    }));
     out.extend(repos.iter().map(|repo| {
         json!({
             "id": format!("repo:{}@{}", repo.name, repo.default_branch),
@@ -364,12 +470,13 @@ pub fn workspaces(agents: &[Agent], repos: &[RepoSpace]) -> Value {
 }
 
 /// The workspace an id names, checked to be one the IDE serves, then the core call on it: an agent with a VM,
-/// or a project repo that is not the platform's own.
+/// a project repo that is not the platform's own, or an online workstation (not while STOP ALL holds).
 fn with_workspace(
     app: &App,
     id: &str,
     on_agent: impl FnOnce(&dyn Host, u64) -> Reply,
     on_repo: impl FnOnce(&dyn Host, &RepoWs) -> Reply,
+    on_station: impl FnOnce(&dyn Host, &str) -> Reply,
 ) -> Reply {
     let host = Live(app);
     match parse_id(id)? {
@@ -385,6 +492,10 @@ fn with_workspace(
                 return Err(Response::error(404, &format!("no workspace repo:{name}@{git_ref}")));
             }
             on_repo(&host, &RepoWs { name, git_ref })
+        }
+        WorkspaceId::Station(station) => {
+            check_station(&host, &station)?;
+            on_station(&host, &station)
         }
     }
 }
@@ -413,11 +524,17 @@ pub fn tree(host: &dyn Host, cid: u64, path: Option<&str>, cursor: Option<&str>)
 /// it is read is 409, since the chunks would not add up to one version.
 pub fn read_file(host: &dyn Host, cid: u64, path: Option<&str>) -> Reply {
     let path = checked(path, check_read)?;
+    assemble_read(&path, |offset| tool(host, cid, "ide_read", &json!({ "path": path, "offset": offset })))
+}
+
+/// A text file read in chunks: `next(offset)` gives each chunk (`hash`, `text`, `done`) until the last. The
+/// whole text and its hash come back. A file that changes while it is read is 409.
+fn assemble_read(path: &str, next: impl Fn(usize) -> Reply) -> Reply {
     let mut text = String::new();
     let mut hash: Option<String> = None;
     let mut offset = 0usize;
     for _ in 0..MAX_CHUNKS {
-        let chunk = tool(host, cid, "ide_read", &json!({ "path": path, "offset": offset }))?;
+        let chunk = next(offset)?;
         let got = text_field(&chunk, "hash")?;
         if hash.is_none() {
             hash = Some(got.to_string());
@@ -594,6 +711,166 @@ pub fn run_stop(host: &dyn Host, cid: u64, run: &str) -> Reply {
     let done = tool(host, cid, "ide_run_stop", &json!({ "run": run }))?;
     let ws = workspace_of(cid);
     record(host, audit_row(&ws, "run_stop", None, json!({ "run": run })), event(&ws, None, "run"))?;
+    Ok(done)
+}
+
+// The station kind. Every call goes to the workstation's daemon, which serves it inside the work folder with the
+// IDE's own file, run and terminal code (`apz-ops`). The hub checks the paths first, as for the other kinds. A
+// workstation has no checkpoints, so it has no changes, no restore and no branch.
+
+/// The workspace id text of workstation `id`.
+fn station_ws(id: &str) -> String {
+    WorkspaceId::Station(id.to_string()).to_string()
+}
+
+/// A route of the station kind that is not served: the workstation has no checkpoints.
+fn not_for_stations(message: &str) -> Reply {
+    Err(Response::error(501, message))
+}
+
+/// The response for a station that gave no answer or refused: STOP ALL, a station that is not linked or is
+/// draining, and no answer in time are 409 and 504; a refusal from the daemon is 400.
+fn station_failure(message: String) -> Response {
+    if message.contains("frozen by STOP ALL") {
+        Response::error(409, STOP_ALL_MESSAGE)
+    } else if message.contains("did not answer in time") {
+        Response::error(504, &message)
+    } else if is_unreachable(&message) {
+        Response::error(409, &message)
+    } else {
+        Response::error(400, &message)
+    }
+}
+
+/// One operation on station `id`: the daemon's answer, or the response for why there is none.
+fn station_call(host: &dyn Host, id: &str, op: Op) -> Reply {
+    host.station_request(id, op).map_err(station_failure)
+}
+
+/// The station audit row for one owner action on a workstation: kind `owner_ide`, with the action and its fields.
+fn station_row(id: &str, action: &str, detail: Value) -> Value {
+    let mut data = json!({ "action": action });
+    if let (Some(map), Value::Object(detail)) = (data.as_object_mut(), detail) {
+        map.extend(detail);
+    }
+    crate::stations::audit_row(Some(id), None, "owner_ide", "owner", data)
+}
+
+/// Writes the station audit row. A row that cannot be written is a 500, as for the IDE audit in [`record`].
+fn record_station(host: &dyn Host, id: &str, action: &str, detail: Value) -> Result<(), Response> {
+    host.db().append_station_audit(&station_row(id, action, detail)).map_err(|err| {
+        Response::error(500, &format!("the action happened but the station audit log could not be written: {err}"))
+    })
+}
+
+/// `GET .../tree` of a station: one page of a folder in its work folder. A missing `path` is the work folder.
+pub fn station_tree(host: &dyn Host, id: &str, path: Option<&str>, cursor: Option<&str>) -> Reply {
+    let path = checked(path, check_dir)?;
+    station_call(host, id, Op::Files(FilesOp::List { path, cursor: cursor.map(str::to_string) }))
+}
+
+/// `GET .../file` of a station: the whole text file, assembled from the daemon's chunks.
+pub fn station_read(host: &dyn Host, id: &str, path: Option<&str>) -> Reply {
+    let path = checked(path, check_read)?;
+    assemble_read(&path, |offset| {
+        station_call(host, id, Op::Files(FilesOp::Read { path: path.clone(), offset: Some(offset as u64) }))
+    })
+}
+
+/// `PUT .../file` of a station: the file is written in the work folder, atomically. A stale `expected_hash` is 409
+/// with the hash the file has now, and nothing is written. A write is logged in the IDE audit and the station audit.
+pub fn station_write(host: &dyn Host, id: &str, body: &Value) -> Reply {
+    let WriteArgs { path, text, expected } = write_args(body)?;
+    let op = Op::Files(FilesOp::Write {
+        path: path.clone(),
+        text,
+        expected_hash: expected.as_str().map(str::to_string),
+    });
+    let done = match host.station_request(id, op) {
+        Ok(done) => done,
+        Err(message) => {
+            if let Some(now) = message.strip_prefix("conflict: ") {
+                let current = if now == "missing" { Value::Null } else { json!(now) };
+                return Err(Response::json(409, &json!({ "error": "conflict", "current_hash": current })));
+            }
+            return Err(station_failure(message));
+        }
+    };
+    let ws = station_ws(id);
+    let row = audit_row(
+        &ws,
+        "write",
+        Some(path.as_str()),
+        json!({ "hash_before": expected, "hash_after": done["hash"], "checkpoint": null }),
+    );
+    record(host, row, event(&ws, Some(path.as_str()), "write"))?;
+    record_station(host, id, "write", json!({ "path": path, "hash_before": expected, "hash_after": done["hash"] }))?;
+    Ok(done)
+}
+
+/// `GET .../search?q=&glob=&max=` of a station. `q` is required.
+pub fn station_search(host: &dyn Host, id: &str, q: Option<&str>, glob: Option<&str>, max: Option<&str>) -> Reply {
+    let q = q
+        .filter(|q| !q.is_empty())
+        .ok_or_else(|| Response::error(400, "\"q\" is required"))?;
+    let max = match max {
+        None => None,
+        Some(raw) => Some(
+            u32::try_from(parse_u64(raw, "max")?)
+                .map_err(|_| Response::error(400, "\"max\" is too large"))?,
+        ),
+    };
+    station_call(
+        host,
+        id,
+        Op::Files(FilesOp::Search { q: q.to_string(), glob: glob.map(str::to_string), max }),
+    )
+}
+
+/// `GET .../checkpoints` of a station: none, with the reason.
+pub fn station_checkpoints(_host: &dyn Host, _id: &str) -> Reply {
+    Ok(json!({ "checkpoints": [], "reason": NO_CHECKPOINTS }))
+}
+
+/// `POST .../runs` of a station with `{command, timeout_s?}`. The run starts in the work folder and returns at once.
+pub fn station_run_start(host: &dyn Host, id: &str, body: &Value) -> Reply {
+    let command = arg_str(body, "command")?;
+    if command.trim().is_empty() {
+        return Err(Response::error(400, "\"command\" is empty"));
+    }
+    let timeout = match body.get("timeout_s") {
+        None | Some(Value::Null) => None,
+        Some(value) => Some(
+            value
+                .as_u64()
+                .and_then(|n| u32::try_from(n).ok())
+                .ok_or_else(|| Response::error(400, "\"timeout_s\" must be a whole number of seconds"))?,
+        ),
+    };
+    let done = station_call(
+        host,
+        id,
+        Op::Run(RunOp::Start { command: command.to_string(), timeout_s: timeout }),
+    )?;
+    let ws = station_ws(id);
+    let detail = json!({ "run": done["run"], "command": command, "timeout_s": timeout });
+    record(host, audit_row(&ws, "run", None, detail.clone()), event(&ws, None, "run"))?;
+    record_station(host, id, "run", detail)?;
+    Ok(done)
+}
+
+/// `GET .../runs/{run}?offset=` of a station: the run's output from an offset, and its state.
+pub fn station_run_poll(host: &dyn Host, id: &str, run: &str, offset: Option<&str>) -> Reply {
+    let offset = offset.map(|raw| parse_u64(raw, "offset")).transpose()?;
+    station_call(host, id, Op::Run(RunOp::Poll { run: run.to_string(), offset }))
+}
+
+/// `POST .../runs/{run}/stop` of a station.
+pub fn station_run_stop(host: &dyn Host, id: &str, run: &str) -> Reply {
+    let done = station_call(host, id, Op::Run(RunOp::Stop { run: run.to_string() }))?;
+    let ws = station_ws(id);
+    record(host, audit_row(&ws, "run_stop", None, json!({ "run": run })), event(&ws, None, "run"))?;
+    record_station(host, id, "run_stop", json!({ "run": run }))?;
     Ok(done)
 }
 
@@ -1027,7 +1304,7 @@ fn body(req: &Request) -> Result<Value, Response> {
 pub fn routes(router: Router<App>) -> Router<App> {
     router
         .get("/v1/ide/workspaces", |app, _, _| {
-            Response::json(200, &workspaces(&app.agents.list(), &open_repos(&Live(app))))
+            Response::json(200, &workspaces(&app.agents.list(), &Live(app).stations(), &open_repos(&Live(app))))
         })
         .get("/v1/ide/workspaces/{id}/tree", |app, req, p| {
             let (path, cursor) = (query(req, "path"), query(req, "cursor"));
@@ -1036,6 +1313,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 p.get("id"),
                 |host, cid| tree(host, cid, path.as_deref(), cursor.as_deref()),
                 |host, ws| repo_tree(host, ws, path.as_deref(), cursor.as_deref()),
+                |host, id| station_tree(host, id, path.as_deref(), cursor.as_deref()),
             ))
         })
         .get("/v1/ide/workspaces/{id}/file", |app, req, p| {
@@ -1045,6 +1323,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 p.get("id"),
                 |host, cid| read_file(host, cid, path.as_deref()),
                 |host, ws| repo_read(host, ws, path.as_deref()),
+                |host, id| station_read(host, id, path.as_deref()),
             ))
         })
         .route("PUT", "/v1/ide/workspaces/{id}/file", |app, req, p| {
@@ -1054,6 +1333,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
                     p.get("id"),
                     |host, cid| write_file(host, cid, &body),
                     |host, ws| repo_write(host, ws, &body),
+                    |host, id| station_write(host, id, &body),
                 )
             }))
         })
@@ -1064,16 +1344,21 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 p.get("id"),
                 |host, cid| changes(host, cid, base.as_deref()),
                 |host, ws| repo_changes(host, ws, base.as_deref()),
+                |_, _| not_for_stations(NO_CHECKPOINTS),
             ))
         })
         .get("/v1/ide/workspaces/{id}/checkpoints", |app, _, p| {
-            respond(with_workspace(app, p.get("id"), checkpoints, repo_checkpoints))
+            respond(with_workspace(app, p.get("id"), checkpoints, repo_checkpoints, station_checkpoints))
         })
         .post("/v1/ide/workspaces/{id}/checkpoints/{n}/restore", |app, _, p| {
             respond(parse_u64(p.get("n"), "n").and_then(|n| {
-                with_workspace(app, p.get("id"), |host, cid| restore(host, cid, n), |_, _| {
-                    not_for_repos("restore is not served for repo workspaces: use git revert")
-                })
+                with_workspace(
+                    app,
+                    p.get("id"),
+                    |host, cid| restore(host, cid, n),
+                    |_, _| not_for_repos("restore is not served for repo workspaces: use git revert"),
+                    |_, _| not_for_stations(NO_CHECKPOINTS),
+                )
             }))
         })
         .get("/v1/ide/workspaces/{id}/search", |app, req, p| {
@@ -1083,13 +1368,18 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 p.get("id"),
                 |host, cid| search(host, cid, q.as_deref(), glob.as_deref(), max.as_deref()),
                 |_, _| not_for_repos("search is not served for repo workspaces yet"),
+                |host, id| station_search(host, id, q.as_deref(), glob.as_deref(), max.as_deref()),
             ))
         })
         .post("/v1/ide/workspaces/{id}/runs", |app, req, p| {
             respond(body(req).and_then(|body| {
-                with_workspace(app, p.get("id"), |host, cid| run_start(host, cid, &body), |_, _| {
-                    not_for_repos("runs are not served for repo workspaces yet")
-                })
+                with_workspace(
+                    app,
+                    p.get("id"),
+                    |host, cid| run_start(host, cid, &body),
+                    |_, _| not_for_repos("runs are not served for repo workspaces yet"),
+                    |host, id| station_run_start(host, id, &body),
+                )
             }))
         })
         .get("/v1/ide/workspaces/{id}/runs/{run}", |app, req, p| {
@@ -1099,6 +1389,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 p.get("id"),
                 |host, cid| run_poll(host, cid, p.get("run"), offset.as_deref()),
                 |_, _| not_for_repos("runs are not served for repo workspaces yet"),
+                |host, id| station_run_poll(host, id, p.get("run"), offset.as_deref()),
             ))
         })
         .post("/v1/ide/workspaces/{id}/runs/{run}/stop", |app, _, p| {
@@ -1107,16 +1398,29 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 p.get("id"),
                 |host, cid| run_stop(host, cid, p.get("run")),
                 |_, _| not_for_repos("runs are not served for repo workspaces yet"),
+                |host, id| station_run_stop(host, id, p.get("run")),
             ))
         })
         .post("/v1/ide/workspaces/{id}/pulls", |app, req, p| {
             created(body(req).and_then(|body| {
-                with_workspace(app, p.get("id"), |_, _| repo_only(), |host, ws| repo_pull(host, ws, &body))
+                with_workspace(
+                    app,
+                    p.get("id"),
+                    |_, _| repo_only(),
+                    |host, ws| repo_pull(host, ws, &body),
+                    |_, _| repo_only(),
+                )
             }))
         })
         .post("/v1/ide/workspaces/{id}/branch", |app, req, p| {
             created(body(req).and_then(|body| {
-                with_workspace(app, p.get("id"), |_, _| repo_only(), |host, ws| repo_branch(host, ws, &body))
+                with_workspace(
+                    app,
+                    p.get("id"),
+                    |_, _| repo_only(),
+                    |host, ws| repo_branch(host, ws, &body),
+                    |_, _| repo_only(),
+                )
             }))
         })
         .get("/v1/ide/audit", |app, req, _| {
@@ -1127,11 +1431,16 @@ pub fn routes(router: Router<App>) -> Router<App> {
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
+    use std::sync::{Arc, Mutex};
+    use std::thread;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use apz_proto::chat::Usage;
+    use apz_station::{HubFrame, StationFrame};
 
     use super::*;
+    use crate::stations::link::tests as link_tests;
+    use crate::stations::link::StationLink;
 
     type Answerer = Box<dyn Fn(&str, &Value) -> Result<(u16, Value), String>>;
     type ForgeAnswerer = Box<dyn Fn(&str, &str, Option<&Value>) -> Result<(u16, Value), String>>;
@@ -1145,6 +1454,11 @@ mod tests {
         /// (method, path, body or null) of each forge call.
         forge_log: RefCell<Vec<(String, String, Value)>>,
         projects: Vec<String>,
+        /// The workstations the IDE opens, and the live link each one answers through.
+        stations: Vec<StationSpace>,
+        links: Vec<(String, Arc<StationLink>)>,
+        /// STOP ALL holds the plaza.
+        stop_all: bool,
         /// No database: the audit is the state directory's file (`dir`).
         db: Db,
         dir: std::path::PathBuf,
@@ -1162,6 +1476,9 @@ mod tests {
                 forge_answer: Box::new(|_, path, _| Ok((404, json!({ "message": format!("no forge answer for {path}") })))),
                 forge_log: RefCell::default(),
                 projects: Vec::new(),
+                stations: Vec::new(),
+                links: Vec::new(),
+                stop_all: false,
                 db: Db::files_only(&dir),
                 dir,
             }
@@ -1176,6 +1493,19 @@ mod tests {
         /// The projects that have these repos (names without the org).
         fn with_projects(mut self, names: &[&str]) -> Self {
             self.projects = names.iter().map(|name| name.to_string()).collect();
+            self
+        }
+
+        /// Workstation `id` is online and answers through `link`.
+        fn with_station(mut self, id: &str, link: Arc<StationLink>) -> Self {
+            self.stations.push(StationSpace { id: id.to_string(), name: "office".into(), os: "linux" });
+            self.links.push((id.to_string(), link));
+            self
+        }
+
+        /// STOP ALL holds the plaza.
+        fn with_stop_all(mut self) -> Self {
+            self.stop_all = true;
             self
         }
 
@@ -1200,6 +1530,21 @@ mod tests {
     }
 
     impl Host for Fake {
+        fn stations(&self) -> Vec<StationSpace> {
+            self.stations.clone()
+        }
+
+        fn station_request(&self, id: &str, op: Op) -> Result<Value, String> {
+            match self.links.iter().find(|(station, _)| station == id) {
+                Some((_, link)) => link.request(op, Duration::from_secs(5)),
+                None => Err("the workstation is not linked".into()),
+            }
+        }
+
+        fn frozen(&self) -> bool {
+            self.stop_all
+        }
+
         fn tell(&self, _cid: u64, name: &str, args: &Value) -> Result<(u16, Value), String> {
             self.log.borrow_mut().push((name.to_string(), args.clone()));
             (self.answer)(name, args)
@@ -1231,6 +1576,29 @@ mod tests {
             self.forge_log.borrow_mut().push((method.to_string(), path.to_string(), body.cloned().unwrap_or(Value::Null)));
             (self.forge_answer)(method, path, body)
         }
+    }
+
+    /// A workstation whose daemon is a script: `answer` gives each operation's result (an error is a refusal, and
+    /// any other operation answers `null`). The operations the daemon was sent are kept in the returned log.
+    fn scripted_station(answer: impl Fn(&Op) -> Result<Value, String> + Send + 'static) -> (Arc<StationLink>, Arc<Mutex<Vec<Op>>>) {
+        let (link, daemon, _served) = link_tests::start("w3", Arc::new(link_tests::Accept));
+        link_tests::greet(&link, &daemon);
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let log = Arc::clone(&seen);
+        thread::spawn(move || {
+            while let Ok(text) = daemon.hears.recv() {
+                let Ok(HubFrame::Request { id, op }) = serde_json::from_str::<HubFrame>(&text) else { continue };
+                let (ok, result, error) = match answer(&op) {
+                    Ok(value) => (true, Some(value), None),
+                    Err(message) => (false, None, Some(message)),
+                };
+                if op != Op::Facts {
+                    log.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).push(op);
+                }
+                daemon.say(&StationFrame::Response { id, ok, result, error });
+            }
+        });
+        (link, seen)
     }
 
     /// A harness answer that succeeded, with `output` as its JSON text.
@@ -1300,7 +1668,7 @@ mod tests {
             agent(9, Some("run-a"), Some(1), Status::Idle),
         ];
         let repos = vec![RepoSpace { name: "p1-plaza".into(), default_branch: "main".into() }];
-        let rows = workspaces(&agents, &repos);
+        let rows = workspaces(&agents, &[], &repos);
         let rows = rows.as_array().unwrap();
         assert_eq!(rows.len(), 3);
         assert_eq!(rows[0]["id"], json!("agent:9"));
@@ -2038,5 +2406,145 @@ index 0000000..3333333
         assert!(checkpoints(&fake, 12).is_ok());
         assert_eq!(status_of(parse_u64("3x", "n")), 400);
         assert_eq!(parse_u64("3", "n").ok(), Some(3));
+    }
+
+    // The station kind: a workstation's work folder, its runs and its audit, through its daemon.
+
+    #[test]
+    fn online_stations_are_listed_between_the_agents_and_the_repos() {
+        let agents = vec![agent(3, Some("r"), Some(7), Status::Idle)];
+        let stations = vec![StationSpace { id: "w3".into(), name: "office".into(), os: "linux" }];
+        let repos = vec![RepoSpace { name: "plaza-web".into(), default_branch: "main".into() }];
+        let rows = workspaces(&agents, &stations, &repos);
+        let ids: Vec<&str> = rows.as_array().expect("a list").iter().filter_map(|row| row["id"].as_str()).collect();
+        assert_eq!(ids, ["agent:3", "station:w3", "repo:plaza-web@main"]);
+        assert_eq!(rows[1]["kind"], "station");
+        assert_eq!(rows[1]["owner"], "w3");
+        assert_eq!(rows[1]["name"], "office");
+        assert_eq!(rows[1]["os"], "linux");
+        assert_eq!(rows[1]["status"], "online");
+    }
+
+    #[test]
+    fn a_station_lists_and_reads_its_work_folder_through_its_daemon() {
+        let (link, seen) = scripted_station(|op| match op {
+            Op::Files(FilesOp::List { .. }) => Ok(json!({ "entries": [{ "path": "docs", "kind": "dir" }], "next": null })),
+            Op::Files(FilesOp::Read { .. }) => Ok(json!({ "path": "docs/a.txt", "hash": "h1", "text": "hi", "done": true })),
+            _ => Ok(Value::Null),
+        });
+        let host = Fake::new("station-read", |_, _| Err("no tool".into())).with_station("w3", link);
+
+        let tree = station_tree(&host, "w3", Some("docs"), Some("0")).ok().expect("listed");
+        assert_eq!(tree["entries"][0]["path"], "docs");
+        let text = station_read(&host, "w3", Some("docs/a.txt")).ok().expect("read");
+        assert_eq!((text["text"].as_str(), text["hash"].as_str()), (Some("hi"), Some("h1")));
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![
+                Op::Files(FilesOp::List { path: "docs".into(), cursor: Some("0".into()) }),
+                Op::Files(FilesOp::Read { path: "docs/a.txt".into(), offset: Some(0) }),
+            ]
+        );
+        assert_eq!(status_of(station_read(&host, "w3", Some("../secret"))), 400);
+        assert_eq!(seen.lock().unwrap().len(), 2, "a refused path never reaches the daemon");
+    }
+
+    #[test]
+    fn a_station_write_is_audited_in_both_logs_and_a_stale_one_is_a_conflict() {
+        let (link, seen) = scripted_station(|op| match op {
+            Op::Files(FilesOp::Write { expected_hash, .. }) if expected_hash.as_deref() == Some("h1") => {
+                Ok(json!({ "path": "a.txt", "hash": "h2" }))
+            }
+            Op::Files(FilesOp::Write { .. }) => Err("conflict: h9".into()),
+            _ => Ok(Value::Null),
+        });
+        let host = Fake::new("station-write", |_, _| Err("no tool".into())).with_station("w3", link);
+
+        let saved = station_write(&host, "w3", &json!({ "path": "a.txt", "text": "new", "expected_hash": "h1" }))
+            .ok()
+            .expect("saved");
+        assert_eq!(saved["hash"], "h2");
+        let Err(stale) = station_write(&host, "w3", &json!({ "path": "a.txt", "text": "newer", "expected_hash": "h0" }))
+        else {
+            panic!("a stale write is refused");
+        };
+        assert_eq!(stale.status, 409);
+        assert_eq!(body_of(stale)["current_hash"], "h9");
+
+        assert_eq!(seen.lock().unwrap().len(), 2, "both writes reached the daemon");
+        let rows = host.db.ide_audit(Some("station:w3"), 10).expect("the audit reads");
+        assert_eq!(rows.len(), 1, "only the write that happened is audited");
+        assert_eq!(rows[0]["kind"], "write");
+        assert_eq!(rows[0]["path"], "a.txt");
+        assert_eq!(rows[0]["hash_before"], "h1");
+        assert_eq!(rows[0]["hash_after"], "h2");
+        let station = host.db.station_audit(Some("w3"), 10).expect("the station audit reads");
+        assert_eq!(station.len(), 1);
+        assert_eq!(station[0]["kind"], "owner_ide");
+        assert_eq!(station[0]["action"], "write");
+        assert_eq!(station[0]["path"], "a.txt");
+        assert_eq!(host.events.borrow()[0]["workspace"], "station:w3");
+    }
+
+    #[test]
+    fn a_station_run_starts_polls_and_stops_on_its_daemon_and_is_audited() {
+        let (link, seen) = scripted_station(|op| match op {
+            Op::Run(RunOp::Start { .. }) => Ok(json!({ "run": "run-1" })),
+            Op::Run(RunOp::Poll { .. }) => Ok(json!({ "run": "run-1", "output": "hi\n", "next": 3, "done": true, "exit_code": 0, "timed_out": false })),
+            Op::Run(RunOp::Stop { .. }) => Ok(json!({ "run": "run-1", "stopped": true })),
+            _ => Ok(Value::Null),
+        });
+        let host = Fake::new("station-run", |_, _| Err("no tool".into())).with_station("w3", link);
+
+        assert_eq!(status_of(station_run_start(&host, "w3", &json!({ "command": "  " }))), 400, "an empty command is refused");
+        let started = station_run_start(&host, "w3", &json!({ "command": "ls", "timeout_s": 30 })).ok().expect("started");
+        assert_eq!(started["run"], "run-1");
+        let polled = station_run_poll(&host, "w3", "run-1", Some("0")).ok().expect("polled");
+        assert_eq!(polled["output"], "hi\n");
+        station_run_stop(&host, "w3", "run-1").ok().expect("stopped");
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![
+                Op::Run(RunOp::Start { command: "ls".into(), timeout_s: Some(30) }),
+                Op::Run(RunOp::Poll { run: "run-1".into(), offset: Some(0) }),
+                Op::Run(RunOp::Stop { run: "run-1".into() }),
+            ]
+        );
+        let rows = host.db.ide_audit(Some("station:w3"), 10).expect("the audit reads");
+        let kinds: Vec<&str> = rows.iter().filter_map(|row| row["kind"].as_str()).collect();
+        assert_eq!(kinds, ["run_stop", "run"], "newest first, and a poll is not audited");
+        assert_eq!(host.db.station_audit(Some("w3"), 10).expect("the station audit reads").len(), 2);
+    }
+
+    #[test]
+    fn a_station_has_no_checkpoints_and_says_why() {
+        let (link, _) = scripted_station(|_| Ok(Value::Null));
+        let host = Fake::new("station-checkpoints", |_, _| Err("no tool".into())).with_station("w3", link);
+        let answer = station_checkpoints(&host, "w3").ok().expect("answers");
+        assert_eq!(answer["checkpoints"], json!([]));
+        assert!(answer["reason"].as_str().is_some_and(|reason| reason.contains("no checkpoints")));
+        assert_eq!(status_of(not_for_stations(NO_CHECKPOINTS)), 501, "changes and restore are not served");
+    }
+
+    #[test]
+    fn a_station_is_refused_while_stop_all_holds_and_when_it_is_not_online() {
+        let (link, seen) = scripted_station(|_| Ok(Value::Null));
+        let frozen = Fake::new("station-frozen", |_, _| Err("no tool".into()))
+            .with_station("w3", link.clone())
+            .with_stop_all();
+        assert_eq!(check_station(&frozen, "w3").expect_err("STOP ALL refuses").status, 409);
+        let online = Fake::new("station-online", |_, _| Err("no tool".into())).with_station("w3", link);
+        assert!(check_station(&online, "w3").is_ok());
+        assert_eq!(check_station(&online, "w9").expect_err("not an online station").status, 404);
+        assert!(seen.lock().unwrap().is_empty(), "no refused check reaches the daemon");
+    }
+
+    #[test]
+    fn a_station_answer_maps_to_a_status_by_why_it_failed() {
+        assert_eq!(status_of::<Value>(Err(station_failure("frozen by STOP ALL".into()))), 409);
+        assert_eq!(status_of::<Value>(Err(station_failure("the workstation is not linked".into()))), 409);
+        assert_eq!(status_of::<Value>(Err(station_failure("the workstation is draining".into()))), 409);
+        assert_eq!(status_of::<Value>(Err(station_failure("the workstation did not answer in time".into()))), 504);
+        assert_eq!(status_of::<Value>(Err(station_failure("no such file".into()))), 400);
     }
 }

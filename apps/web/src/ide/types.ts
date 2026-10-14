@@ -2,11 +2,14 @@
 // single-key objects, as serde writes them: a unit variant is its name, a tuple or struct variant is `{ name: payload }`.
 // Keep in step with crates/apz-ide (workspace.rs, tree.rs, diff.rs, buffer.rs, state.rs).
 
-/** `agent:<cid>` for an agent's /workspace, `repo:<name>@<ref>` for a project repo at one branch (apz-ide's canonical form). */
-export type WorkspaceId = `agent:${number}` | `repo:${string}@${string}`;
+/**
+ * `agent:<cid>` for an agent's /workspace, `station:w<seq>` for a workstation's work folder, `repo:<name>@<ref>` for a
+ * project repo at one branch (apz-ide's canonical form).
+ */
+export type WorkspaceId = `agent:${number}` | `station:w${number}` | `repo:${string}@${string}`;
 
 /** workspace.rs `Kind`. */
-export type WorkspaceKind = 'agent' | 'repo';
+export type WorkspaceKind = 'agent' | 'repo' | 'station';
 
 /** workspace.rs `Workspace`. `ref` is null for an agent. */
 export interface Workspace {

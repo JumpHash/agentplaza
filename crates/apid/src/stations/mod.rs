@@ -26,7 +26,7 @@ mod api;
 mod control;
 mod hooks;
 mod leases;
-mod link;
+pub(crate) mod link;
 mod ops;
 pub mod recordings;
 mod registry;
@@ -37,7 +37,7 @@ pub mod tools;
 mod vms;
 
 pub use api::routes;
-pub use ops::{freeze_all, spawn};
+pub use ops::{audit_row, freeze_all, spawn};
 pub use registry::Store;
 // The agents' pixel path (stations/act.rs) asks these before a screenshot or an input.
 #[allow(unused_imports)]

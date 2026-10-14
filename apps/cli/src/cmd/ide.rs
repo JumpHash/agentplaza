@@ -1,6 +1,7 @@
 //! `agentplaza ide`: the IDE's workspaces from the terminal. A workspace is an agent's `/workspace`
-//! (`agent:<cid>`) or a project repository at one branch (`repo:<name>@<ref>`). Paths are relative
-//! to the workspace root. Secret files are never read or written, and `.plaza/` is read-only.
+//! (`agent:<cid>`), a project repository at one branch (`repo:<name>@<ref>`) or a workstation's work
+//! folder (`station:<id>`). Paths are relative to the workspace root. Secret files are never read or
+//! written, and `.plaza/` is read-only.
 
 use std::collections::VecDeque;
 use std::io::{IsTerminal, Read, Write};
@@ -24,11 +25,11 @@ const POLL: Duration = Duration::from_millis(500);
 
 #[derive(Subcommand, Debug)]
 pub enum Cmd {
-    /// The workspaces the IDE can open: agents' VMs and project repositories.
+    /// The workspaces the IDE can open: agents' VMs, workstations and project repositories.
     Workspaces,
     /// The files and folders at a path. `-r` lists every folder below it too (capped).
     Ls {
-        /// The workspace: agent:<cid> or repo:<name>@<ref>.
+        /// The workspace: agent:<cid>, repo:<name>@<ref> or station:<id>.
         workspace: String,
         /// The folder, relative to the root (default: the root).
         #[arg(default_value = "")]
@@ -39,7 +40,7 @@ pub enum Cmd {
     },
     /// Print a text file. `--hash` prints its content hash instead.
     Cat {
-        /// The workspace: agent:<cid> or repo:<name>@<ref>.
+        /// The workspace: agent:<cid>, repo:<name>@<ref> or station:<id>.
         workspace: String,
         /// The file's path, relative to the root.
         path: String,
@@ -49,7 +50,7 @@ pub enum Cmd {
     },
     /// Edit a file in $VISUAL or $EDITOR, then save it. A version changed on the hub asks what to do.
     Edit {
-        /// The workspace: agent:<cid> or repo:<name>@<ref>.
+        /// The workspace: agent:<cid>, repo:<name>@<ref> or station:<id>.
         workspace: String,
         /// The file's path, relative to the root.
         path: String,
@@ -59,7 +60,7 @@ pub enum Cmd {
     },
     /// Write a file's text from `--file` (`-` reads stdin).
     Put {
-        /// The workspace: agent:<cid> or repo:<name>@<ref>.
+        /// The workspace: agent:<cid>, repo:<name>@<ref> or station:<id>.
         workspace: String,
         /// The file's path, relative to the root.
         path: String,
@@ -75,7 +76,7 @@ pub enum Cmd {
     },
     /// What changed: since the work started (default), or since a checkpoint.
     Diff {
-        /// The workspace: agent:<cid> or repo:<name>@<ref>.
+        /// The workspace: agent:<cid>, repo:<name>@<ref> or station:<id>.
         workspace: String,
         /// `work_start` or `checkpoint:N`.
         #[arg(long, default_value = "work_start")]
@@ -86,12 +87,12 @@ pub enum Cmd {
     },
     /// The checkpoints of a workspace.
     Checkpoints {
-        /// The workspace: agent:<cid> or repo:<name>@<ref>.
+        /// The workspace: agent:<cid>, repo:<name>@<ref> or station:<id>.
         workspace: String,
     },
     /// Put the files back to a checkpoint.
     Restore {
-        /// The workspace: agent:<cid> or repo:<name>@<ref>.
+        /// The workspace: agent:<cid>, repo:<name>@<ref> or station:<id>.
         workspace: String,
         /// The checkpoint's number.
         n: u64,
@@ -101,7 +102,7 @@ pub enum Cmd {
     },
     /// Search the text of the files in a workspace.
     Search {
-        /// The workspace: agent:<cid> or repo:<name>@<ref>.
+        /// The workspace: agent:<cid>, repo:<name>@<ref> or station:<id>.
         workspace: String,
         /// The text to find.
         query: String,
@@ -111,7 +112,7 @@ pub enum Cmd {
     },
     /// Run one command in a workspace and stream its output. Ctrl+C stops it.
     Run {
-        /// The workspace: agent:<cid> or repo:<name>@<ref>.
+        /// The workspace: agent:<cid>, repo:<name>@<ref> or station:<id>.
         workspace: String,
         /// Stop the command after this many seconds (default 300).
         #[arg(long, default_value_t = 300)]
@@ -132,7 +133,7 @@ pub enum Cmd {
     /// An interactive shell in an agent's VM, over the hub's terminal socket. Ctrl+] then d detaches and
     /// keeps the shell running; `--attach` picks it up again and `--kill` ends it. Unix terminals only.
     Term {
-        /// The workspace: agent:<cid>. A repo has no VM, so it has no shell.
+        /// The workspace: agent:<cid> or station:<id>. A repo has no VM, so it has no shell.
         workspace: String,
         /// The folder to start the shell in, relative to the workspace root.
         #[arg(long, conflicts_with_all = ["attach", "kill"])]
@@ -153,6 +154,25 @@ pub enum Cmd {
 }
 
 // ---- Paths and requests -----------------------------------------------------------------------
+
+/// One row of `ide workspaces`: the id, kind, owner, name, OS (a workstation reports one), writable and status.
+fn workspace_row(w: &Value) -> Vec<String> {
+    vec![
+        ctx::s(w, "id").to_string(),
+        ctx::s(w, "kind").to_string(),
+        ctx::s(w, "owner").to_string(),
+        ctx::s(w, "name").to_string(),
+        ctx::s(w, "os").to_string(),
+        ctx::text(w, "writable"),
+        ctx::s(w, "status").to_string(),
+    ]
+}
+
+/// Whether a workspace has a shell: an agent's VM and a workstation's machine do, a repo has no VM.
+#[cfg_attr(not(unix), allow(dead_code))]
+fn has_shell(id: &WorkspaceId) -> bool {
+    !matches!(id, WorkspaceId::Repo { .. })
+}
 
 /// The workspace id as one path segment: parsed here (so a bad id fails before any call), then encoded.
 fn workspace_seg(workspace: &str) -> Result<String, String> {
@@ -737,20 +757,8 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
         Cmd::Workspaces => {
             let list = ctx.client.get("/v1/ide/workspaces")?;
             ctx.out(&list, |v| {
-                let rows: Vec<Vec<String>> = items(v, "workspaces")
-                    .iter()
-                    .map(|w| {
-                        vec![
-                            ctx::s(w, "id").to_string(),
-                            ctx::s(w, "kind").to_string(),
-                            ctx::s(w, "owner").to_string(),
-                            ctx::s(w, "name").to_string(),
-                            ctx::text(w, "writable"),
-                            ctx::s(w, "status").to_string(),
-                        ]
-                    })
-                    .collect();
-                ctx::table(&["id", "kind", "owner", "name", "writable", "status"], &rows);
+                let rows: Vec<Vec<String>> = items(v, "workspaces").iter().map(workspace_row).collect();
+                ctx::table(&["id", "kind", "owner", "name", "os", "writable", "status"], &rows);
             });
             Ok(())
         }
@@ -933,6 +941,8 @@ fn term_command(
 mod term {
     use std::io::{self, BufRead, IsTerminal, Read, Write};
     use std::str::FromStr;
+
+    use super::has_shell;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::mpsc::{self, Receiver, TryRecvError};
     use std::sync::{Mutex, PoisonError, TryLockError};
@@ -984,8 +994,8 @@ mod term {
         no_tty: bool,
     ) -> Result<i32, String> {
         let id = WorkspaceId::from_str(workspace).map_err(|e| format!("{workspace}: {e}"))?;
-        if !matches!(id, WorkspaceId::Agent(_)) {
-            return Err(format!("{workspace}: a terminal is for agent workspaces; a repo has no VM to open a shell in"));
+        if !has_shell(&id) {
+            return Err(format!("{workspace}: a terminal is for agent and station workspaces; a repo has no VM to open a shell in"));
         }
         let path = format!("/v1/ide/terminal/{}", workspace_seg(workspace)?);
         if let Some(term) = kill {
@@ -1613,6 +1623,30 @@ mod tests {
     }
 
     #[test]
+    fn a_station_id_parses_as_one_segment_and_a_bad_one_fails() {
+        assert_eq!(workspace_seg("station:w3").unwrap(), "station%3Aw3");
+        assert_eq!(ws_path("station:w3", "/tree").unwrap(), "/v1/ide/workspaces/station%3Aw3/tree");
+        assert!(workspace_seg("station:3").is_err(), "a station id is w and a number");
+        assert!(workspace_seg("station:w03").is_err(), "no leading zeros");
+    }
+
+    #[test]
+    fn a_station_has_a_shell_and_a_repo_does_not() {
+        let station: WorkspaceId = "station:w3".parse().unwrap();
+        assert!(has_shell(&station));
+        assert!(has_shell(&"agent:3".parse().unwrap()));
+        assert!(!has_shell(&"repo:demo@main".parse().unwrap()));
+    }
+
+    #[test]
+    fn a_station_row_shows_its_kind_and_os() {
+        let station = json!({"id": "station:w3", "kind": "station", "owner": "w3", "name": "studio mac", "os": "macos", "writable": true, "status": "online"});
+        assert_eq!(workspace_row(&station), ["station:w3", "station", "w3", "studio mac", "macos", "true", "online"]);
+        let agent = json!({"id": "agent:7", "kind": "agent", "owner": "7", "name": "scout", "writable": true, "status": "idle"});
+        assert_eq!(workspace_row(&agent)[4], "", "an agent has no OS to show");
+    }
+
+    #[test]
     fn a_bad_workspace_id_fails_before_any_call() {
         assert!(workspace_seg("agent:012").is_err(), "no leading zeros");
         assert!(workspace_seg("repo:demo").is_err(), "a repo needs @ref");
@@ -1743,6 +1777,8 @@ mod tests {
     fn the_commands_parse_their_arguments() {
         assert!(parse(&["workspaces"]).is_ok());
         assert!(parse(&["ls", "agent:1"]).is_ok());
+        assert!(parse(&["ls", "station:w3", "src", "-r"]).is_ok());
+        assert!(parse(&["cat", "station:w3", "a.txt"]).is_ok());
         assert!(parse(&["ls", "repo:demo@main", "src", "-r"]).is_ok());
         assert!(parse(&["cat", "agent:1", "a.txt", "--hash"]).is_ok());
         assert!(parse(&["put", "agent:1", "a.txt", "--file", "-", "--expected", "h"]).is_ok());
@@ -1762,6 +1798,7 @@ mod tests {
     #[test]
     fn the_term_command_parses_its_forms() {
         assert!(parse(&["term", "agent:1"]).is_ok());
+        assert!(parse(&["term", "station:w3"]).is_ok());
         assert!(parse(&["term", "agent:1", "--cwd", "src", "--no-tty"]).is_ok());
         assert!(parse(&["term", "agent:1", "--attach", "term-1", "--offset", "4"]).is_ok());
         assert!(parse(&["term", "agent:1", "--kill", "term-1"]).is_ok());

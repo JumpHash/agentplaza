@@ -1,5 +1,5 @@
-//! Workspace identities: `agent:<cid>` for an agent's `/workspace`, and
-//! `repo:<name>@<ref>` for a project's Forgejo repo at one branch.
+//! Workspace identities: `agent:<cid>` for an agent's `/workspace`, `repo:<name>@<ref>` for a project's
+//! Forgejo repo at one branch, and `station:<id>` for a workstation's work folder (`<id>` is `w<seq>`).
 
 use std::fmt;
 use std::str::FromStr;
@@ -12,6 +12,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 pub enum Kind {
     Agent,
     Repo,
+    Station,
 }
 
 /// The key of the IDE state. Its text form is the wire form.
@@ -21,6 +22,8 @@ pub enum WorkspaceId {
     Agent(u64),
     /// Project repo `name` at branch or ref `git_ref` (which may contain `/`).
     Repo { name: String, git_ref: String },
+    /// The work folder of workstation `id` (`w<seq>`).
+    Station(String),
 }
 
 /// Why a workspace id did not parse.
@@ -34,15 +37,18 @@ pub enum IdError {
     Name,
     /// A missing `@ref`, or a ref git would refuse.
     Ref,
+    /// A station id that is not `w` and a canonical decimal number.
+    Station,
 }
 
 impl fmt::Display for IdError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
-            IdError::Prefix => "workspace id must start with agent: or repo:",
+            IdError::Prefix => "workspace id must start with agent:, repo: or station:",
             IdError::Cid => "agent cid must be a decimal number without leading zeros",
             IdError::Name => "repo name must be [A-Za-z0-9._-]+ and not . or ..",
             IdError::Ref => "repo id needs @<ref>, and the ref must be a valid git ref",
+            IdError::Station => "station id must be w followed by a decimal number without leading zeros",
         })
     }
 }
@@ -74,6 +80,14 @@ impl FromStr for WorkspaceId {
                 git_ref: git_ref.to_string(),
             });
         }
+        if let Some(id) = s.strip_prefix("station:") {
+            let digits = id.strip_prefix('w').unwrap_or_default();
+            let canonical = digits == "0" || (!digits.is_empty() && !digits.starts_with('0'));
+            if !canonical || !digits.bytes().all(|b| b.is_ascii_digit()) {
+                return Err(IdError::Station);
+            }
+            return Ok(WorkspaceId::Station(id.to_string()));
+        }
         Err(IdError::Prefix)
     }
 }
@@ -83,6 +97,7 @@ impl fmt::Display for WorkspaceId {
         match self {
             WorkspaceId::Agent(cid) => write!(f, "agent:{cid}"),
             WorkspaceId::Repo { name, git_ref } => write!(f, "repo:{name}@{git_ref}"),
+            WorkspaceId::Station(id) => write!(f, "station:{id}"),
         }
     }
 }
@@ -131,7 +146,7 @@ fn check_ref(r: &str) -> Result<(), IdError> {
 pub struct Workspace {
     pub id: WorkspaceId,
     pub kind: Kind,
-    /// The agent's cid, or the repo name.
+    /// The agent's cid, the repo name, or the station id.
     pub owner: String,
     /// The branch of a repo workspace; `None` for an agent.
     pub r#ref: Option<String>,
@@ -148,6 +163,7 @@ impl Workspace {
             WorkspaceId::Repo { name, git_ref } => {
                 (Kind::Repo, name.clone(), Some(git_ref.clone()))
             }
+            WorkspaceId::Station(id) => (Kind::Station, id.clone(), None),
         };
         Workspace {
             id,
@@ -250,6 +266,22 @@ mod tests {
         for (s, want) in cases {
             assert_eq!(s.parse::<WorkspaceId>(), Err(want), "{s}");
         }
+    }
+
+    #[test]
+    fn station_id_round_trips_and_must_be_w_then_a_canonical_number() {
+        let id: WorkspaceId = "station:w12".parse().unwrap();
+        assert_eq!(id, WorkspaceId::Station("w12".into()));
+        assert_eq!(id.to_string(), "station:w12");
+        assert_eq!("station:w0".parse::<WorkspaceId>().unwrap().to_string(), "station:w0");
+        for s in ["station:", "station:w", "station:12", "station:w01", "station:wx", "station:w1/..", "station:w 1"] {
+            assert_eq!(s.parse::<WorkspaceId>(), Err(IdError::Station), "{s}");
+        }
+        let ws = Workspace::new(id, "~/AgentPlaza", true);
+        assert_eq!(ws.kind, Kind::Station);
+        assert_eq!(ws.owner, "w12");
+        assert_eq!(ws.r#ref, None);
+        assert_eq!(serde_json::to_value(&ws).unwrap()["kind"], "station");
     }
 
     #[test]

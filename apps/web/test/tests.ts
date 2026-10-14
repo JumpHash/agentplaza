@@ -13,14 +13,14 @@ import { cacheSaving, fixtureCalls, ledgerSeries, ledgerSummary, mergeCalls, pag
 import { balanceData, barData, creditsOf, creditsUsd, flowsOf, mergeJournal, movesOf, partyOf, sortRows, windowOf as treasuryWindow } from '../src/views/treasury';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import type { Agent, FleetApple, FleetKind, FleetMachine, FleetResponse, FleetStatus } from '../src/api';
+import type { Agent, FleetApple, FleetKind, FleetMachine, FleetResponse, FleetStatus, IdeWorkspaceInfo } from '../src/api';
 import { agentTally, boardOf, gibText, machineFacts, machineSubtitle } from '../src/views/floor';
 import { hubOrigin, setupSnippets } from '../src/views/hub-mcp-snippets';
 import { ENV_NAME_RE, limitsProblem, matchingPreset, ownRowProblem, specsOfBag } from '../src/views/mcp-common';
 import { wrapIde, type IdeGlue } from '../src/ide/wasm';
-import { applyBuffer, badgeOf, diffMark, dirsOf, fuzzyScore, isViewed, languageFor, lineCounts, onRemote, openBuffer, parentDir, parseViewed, rankPaths, viewedKey, withViewed } from '../src/ide/model';
+import { applyBuffer, badgeOf, diffMark, dirsOf, fuzzyScore, groupWorkspaces, isViewed, languageFor, lineCounts, onRemote, openBuffer, osLabel, parentDir, parseViewed, pickerLabel, rankPaths, viewedKey, withViewed } from '../src/ide/model';
 import type { FileChange } from '../src/ide/types';
-import { CENTRE_MIN, clampSize, defaultLayout, fitSize, isNarrow, LEFT_SIZE, leftViewFor, originFallback, parseLayout, RIGHT_SIZE, rightTabFor, serializeLayout } from '../src/ide/layout';
+import { CENTRE_MIN, clampSize, defaultLayout, fitSize, hasDiff, isNarrow, LEFT_SIZE, leftViewFor, leftViewsFor, originFallback, parseLayout, RIGHT_SIZE, rightTabFor, rightTabsFor, runsFor, serializeLayout } from '../src/ide/layout';
 import type { StationFacts, StationLease, StationSettings, StationView } from '../src/api';
 import { auditLabel, codeChip, countdown, displaysText, formLabel, gpuLine, gpuSummary, joinCommand, leaseCount, leaseStateChip, nameProblem, osText, ramText, readSettings, accountBadge, accountText, settingsForm, sortStations, stationSummary, statusChip, takeoverText, type SettingsForm } from '../src/views/workstations-model';
 import { actionFrame, activeAction, backoffMs, bytesText, buttonAction, clockText, controlSocketUrl, crumbsOf, dollarsPerHour, defaultsForm, frameAt, frameTime, framePoint, inputButton, joinPath, keyAction, moveAction, parentDir, parseControlText, parseFrame, parseScreenText, pendingPaths, rateText, readDefaults, readRate, recordingSpan, scrollNotches, screenSocketUrl, sessionChoices, takeoverBanner, treeOf, uploadProblem, wheelAction, actionText, type KeyEventLike } from '../src/views/workstations-model';
@@ -450,6 +450,7 @@ sectionEnd('onboarding tests: ok');
   }
   eq(refusal, 'path may not contain ..', 'ide: a refusal reaches the caller with its message');
   eq(ide.formatWorkspaceId(ide.parseWorkspaceId('agent:7')), 'agent:7', 'ide: a workspace id round trips');
+  eq(ide.formatWorkspaceId(ide.parseWorkspaceId('station:w3')), 'station:w3', 'ide: a station id round trips');
   eq(ide.children([{ path: 'a', kind: 'file', size: 1, hash: 'h', binary: false }], '')[0]?.path, 'a', 'ide: children parses the entries');
 }
 sectionEnd('ide wrapper tests: ok');
@@ -571,6 +572,39 @@ sectionEnd('ide view model tests: ok');
   eq([leftViewFor('changes'), leftViewFor('agent'), rightTabFor('agent'), rightTabFor('changes')], ['changes', null, 'agent', null], 'ide layout: a link’s panel is a left view or a right tab');
 }
 sectionEnd('ide layout tests: ok');
+
+{
+  // The workspace kinds: the picker's groups in order (an empty group is left out), the labels, and the views a kind has.
+  const listed: IdeWorkspaceInfo[] = [
+    { id: 'repo:api@main', kind: 'repo', owner: 'api', name: 'api', writable: true, status: 'ok' },
+    { id: 'station:w3', kind: 'station', owner: 'w3', name: 'studio', writable: true, status: 'online', os: 'macos' },
+    { id: 'agent:7', kind: 'agent', owner: '7', name: 'Ada', writable: true, status: 'working' },
+    { id: 'station:w4', kind: 'station', owner: 'w4', name: '', writable: true, status: 'online', os: 'linux' },
+  ];
+  eq(
+    groupWorkspaces(listed).map((g) => [g.kind, g.label, g.items.map((w) => w.id)]),
+    [
+      ['agent', 'Agents', ['agent:7']],
+      ['station', 'Workstations', ['station:w3', 'station:w4']],
+      ['repo', 'Repos', ['repo:api@main']],
+    ],
+    'ide picker: the workspaces group as agents, workstations, repos, each keeping the list order',
+  );
+  eq(groupWorkspaces(listed.filter((w) => w.kind === 'repo')).map((g) => g.label), ['Repos'], 'ide picker: a kind with no workspaces has no group');
+  eq([osLabel('macos'), osLabel('windows'), osLabel('linux'), osLabel(undefined), osLabel('plan9')], ['macOS', 'Windows', 'Linux', 'Unknown OS', 'plan9'], 'ide picker: a station OS reads as a short label');
+  eq(
+    [pickerLabel(listed[1]!), pickerLabel(listed[2]!), pickerLabel(listed[3]!), pickerLabel({ ...listed[0]!, writable: false })],
+    ['Workstation · studio · macOS · ● online', 'Agent · Ada', 'Workstation · w4 · Linux · ● online', 'Repo · api (read-only)'],
+    'ide picker: each kind labels its option, and a station shows its OS and status',
+  );
+  eq([leftViewsFor('agent'), leftViewsFor(null)], [['files', 'search', 'changes', 'checkpoints'], ['files', 'search', 'changes', 'checkpoints']], 'ide views: an agent and no workspace have every side view');
+  eq(leftViewsFor('station'), ['files', 'search'], 'ide views: a station has no Changes and no Checkpoints');
+  eq(rightTabsFor('agent'), ['agent', 'approvals', 'run', 'terminal'], 'ide views: an agent has the Agent and Approvals tabs');
+  eq([rightTabsFor('repo'), rightTabsFor('station')], [['run', 'terminal'], ['run', 'terminal']], 'ide views: a repo and a station have no Agent or Approvals tab');
+  eq([hasDiff('agent'), hasDiff('repo'), hasDiff('station'), hasDiff(null)], [true, true, false, true], 'ide views: only a station has no diff');
+  eq([runsFor('agent'), runsFor('station'), runsFor('repo')], [true, true, false], 'ide views: runs are for agents and stations, not repositories yet');
+}
+sectionEnd('ide workspace kind tests: ok');
 // The IDE terminal's logic (views/ide-terminal-model.ts): base64 over bytes, the socket's frames, the offset a re-attach
 // resumes from, the reconnect schedule and the session storage. The view itself needs a DOM and runs in the browser.
 {
