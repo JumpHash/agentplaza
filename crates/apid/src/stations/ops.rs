@@ -70,7 +70,7 @@ fn hub_host() -> String {
 }
 
 /// The public URL and the certificate pin a join code names.
-fn hub_pin(app: &App) -> Result<(String, [u8; 32]), Failure> {
+pub(super) fn hub_pin(app: &App) -> Result<(String, [u8; 32]), Failure> {
     let url = app.hub_auth.config.lock().map_err(|_| server_error("hub config unavailable"))?.public_url.clone();
     Ok((url, app.hub_auth.cert_sha256))
 }
@@ -93,6 +93,7 @@ pub fn revoke_code(app: &App, id: &str, actor: &str) -> Result<(), Failure> {
 pub fn join(app: &App, source: &str, code: &str, facts: Facts, name: Option<&str>) -> Result<(String, String), Failure> {
     match app.stations.redeem(source, code, facts, name, &hub_host(), now()) {
         Ok((station, token)) => {
+            let station = super::vms::adopt(app, station);
             let defaults = app.settings.get().workstation_recordings;
             if let Err(reason) = app.stations.set_settings(&station.id, recordings::join_settings(&defaults)) {
                 app.stations.undo_join(&station.id);
@@ -195,6 +196,7 @@ pub fn open_lease(app: &App, station_id: &str, agent: u64, task: Option<String>,
     if !app.stations.is_online(station_id, now()) {
         return Err((409, "this workstation is offline".into()));
     }
+    super::vms::before_lease(app, station_id)?;
     let lease = app.stations.leases.open(station_id, agent, task.clone(), kind, now()).map_err(|e| (409, e))?;
     if let Err(e) = audit(app, Some(station_id), Some(agent), "lease_open", actor, json!({"lease": lease.id, "kind": kind, "task": task})) {
         app.stations.leases.remove(&lease.id);
@@ -266,7 +268,7 @@ fn release_with(app: &App, station_id: &str, lease_id: &str, agent: Option<u64>,
 /// machine with one session while the owner holds a pixel session there (takeover.rs `pixel_held`).
 pub fn grant_next(app: &App, station_id: &str) {
     loop {
-        if app.control.paused() {
+        if app.control.paused() || app.stations.is_resetting(station_id) {
             return;
         }
         let Some(station) = app.stations.station(station_id) else { return };
@@ -398,6 +400,7 @@ impl Hooks for Live<'_> {
         if !registry::may_join_facts(&facts, &hub_host(), apz_os::machine::id().as_deref()) {
             return Err("this machine is the hub's own host, or its hostname cannot be told apart from the hub's".into());
         }
+        let facts = super::vms::stamp_form(app, id, facts);
         app.stations.hello(id, version, facts, now())?;
         if let Some(old) = app.stations.attach(Arc::clone(link)) {
             old.kill(1000, "replaced by a newer link");

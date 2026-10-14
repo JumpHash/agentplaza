@@ -47,6 +47,11 @@ usage: noded [--port PORT] [--kernel PATH] [--initrd PATH] [--uds-dir DIR]
   --agents-memory-mib N guest memory per agent VM, in MiB (default 1024)
   --agents-vcpus N      vCPUs per agent VM (default 1)
   --run-cids A-B   guest CIDs runs draw from, inclusive (default 20-99; A >= 3)
+  --workstation-dir DIR     where workstation VMs keep their disks (default
+                        <state>/workstations)
+  --workstation-kernel F    the desktop guest's kernel, for workstation VMs
+  --workstation-initrd F    the desktop guest's initramfs (with --workstation-kernel)
+  --workstation-image F     the desktop guest's disk image; each VM copies it
   --agents-balloon-mib N  MiB of each agent VM's memory usable at boot; the rest
                         of --agents-memory-mib is a balloon it grows into
                         (default 32; 0, or at least the memory: no balloon)
@@ -216,6 +221,10 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
                     .map_err(|err| format!("--agents-balloon-mib: {err}"))?;
             }
             "--run-cids" => config.run_cids = parse_run_cids(&value("--run-cids")?)?,
+            "--workstation-dir" => config.workstation.dir = PathBuf::from(value("--workstation-dir")?),
+            "--workstation-kernel" => config.workstation.kernel = Some(PathBuf::from(value("--workstation-kernel")?)),
+            "--workstation-initrd" => config.workstation.initrd = Some(PathBuf::from(value("--workstation-initrd")?)),
+            "--workstation-image" => config.workstation.image = Some(PathBuf::from(value("--workstation-image")?)),
             other => return Err(format!("unknown argument: {other}")),
         }
     }

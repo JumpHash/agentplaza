@@ -13,6 +13,8 @@
 //! - `takeover`: the takeover policies (agent waits, release the lease, keep working with the pointer paused).
 //! - `act`: the choke point every workstation action passes (the checks, the laws, the audit), and `hooks` after it.
 //! - `tools`: the workstation tools agents and the owner's MCP client are offered, parsed into operations for `act`.
+//! - `vms`: the workstation VMs the hub makes on its nodes (a VM enrols with its join code; its leases snapshot and
+//!   revert its disk through the node).
 //! - `sync`: the work folder's two-way sync: the hub's mirror (rows in `station_sync_files`, content in the object
 //!   store), the reconcile pass with a station's manifest, conflicts (kept on both sides), and the owner's file routes.
 //!
@@ -32,6 +34,7 @@ mod screen;
 pub mod sync;
 mod takeover;
 pub mod tools;
+mod vms;
 
 pub use api::routes;
 pub use ops::{freeze_all, spawn};

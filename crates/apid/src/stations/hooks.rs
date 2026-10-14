@@ -45,6 +45,8 @@ pub(super) fn action_summary(op: &Op) -> Value {
 
 /// Called when a lease ends on `station`, with the lease as it was. `now` is when it ends (ms).
 pub fn lease_ended(app: &App, station: &str, lease: &Lease, now: u64) {
+    // A workstation VM with snapshot_reset is reverted once its last active lease has ended (vms.rs).
+    super::vms::after_lease(app, station);
     let Some(rate) = app.stations.station(station).map(|s| s.settings.rate_per_hour) else {
         return;
     };

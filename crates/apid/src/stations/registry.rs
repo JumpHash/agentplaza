@@ -7,7 +7,7 @@
 //! own hostname, or whose hostname cannot be told apart from it, is refused before the code is used
 //! (containment: a workstation is never the machine that runs apid).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
 use apz_station::{Facts, StationSettings};
@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use super::leases::{LeaseView, Leases};
 use super::link::StationLink;
 use super::sync::SyncPause;
+use super::vms::VmRecord;
 use crate::nodes::{self, Code, CodeView, DEFAULT_TTL_MINUTES, JOIN_TRIES_PER_CODE, MAX_CODE_MINUTES};
 
 /// A station is offline when its link has been silent this long.
@@ -96,6 +97,9 @@ pub enum Refusal {
 struct Persisted {
     stations: Vec<Station>,
     codes: Vec<Code>,
+    /// The workstation VMs the hub makes on its nodes (vms.rs).
+    #[serde(default)]
+    vms: Vec<VmRecord>,
 }
 
 #[derive(Default)]
@@ -118,6 +122,8 @@ pub struct Store {
     takeovers: Mutex<BTreeMap<u64, u64>>,
     /// The last link generation handed out.
     link_seq: std::sync::atomic::AtomicU64,
+    /// The stations whose VM is being snapshotted or reverted: their leases wait (vms.rs).
+    resetting: Mutex<BTreeSet<String>>,
 }
 
 /// Whether a machine reporting `reported` may be enrolled or linked by a hub whose hostname is `hub`:
@@ -177,6 +183,65 @@ impl Store {
 
     pub fn station(&self, id: &str) -> Option<Station> {
         self.list().into_iter().find(|s| s.id == id)
+    }
+
+    /// The workstation VMs the hub knows.
+    pub fn vms(&self) -> Vec<VmRecord> {
+        self.inner.lock().map(|p| p.vms.clone()).unwrap_or_default()
+    }
+
+    pub fn vm(&self, id: &str) -> Option<VmRecord> {
+        self.vms().into_iter().find(|v| v.id == id)
+    }
+
+    /// The VM whose station is `station`, when it enrolled from one.
+    pub fn vm_of_station(&self, station: &str) -> Option<VmRecord> {
+        self.vms().into_iter().find(|v| v.station.as_deref() == Some(station))
+    }
+
+    /// The VM a join code was issued for (`j<seq>`).
+    pub fn vm_of_code(&self, code: &str) -> Option<VmRecord> {
+        self.vms().into_iter().find(|v| v.code == code)
+    }
+
+    /// The next VM id (`v<seq>`).
+    pub fn new_vm_id(&self) -> Result<String, String> {
+        let p = self.guard()?;
+        Ok(format!("v{}", nodes::next_seq(p.vms.iter().map(|v| v.id.as_str()), 'v')))
+    }
+
+    pub fn add_vm(&self, record: VmRecord) -> Result<(), String> {
+        self.guard()?.vms.push(record);
+        Ok(())
+    }
+
+    /// Records that the station enrolled with the VM whose join code is `code`.
+    pub fn link_vm(&self, code: &str, station: &str) {
+        let Ok(mut p) = self.guard() else { return };
+        if let Some(vm) = p.vms.iter_mut().find(|v| v.code == code) {
+            vm.station = Some(station.to_string());
+        }
+    }
+
+    pub fn remove_vm(&self, id: &str) -> Option<VmRecord> {
+        let mut p = self.guard().ok()?;
+        let at = p.vms.iter().position(|v| v.id == id)?;
+        Some(p.vms.remove(at))
+    }
+
+    /// Marks a station as resetting. False when it already is, or the marks cannot be read.
+    pub fn begin_reset(&self, station: &str) -> bool {
+        self.resetting.lock().map(|mut set| set.insert(station.to_string())).unwrap_or(false)
+    }
+
+    pub fn end_reset(&self, station: &str) {
+        if let Ok(mut set) = self.resetting.lock() {
+            set.remove(station);
+        }
+    }
+
+    pub fn is_resetting(&self, station: &str) -> bool {
+        self.resetting.lock().map(|set| set.contains(station)).unwrap_or(false)
     }
 
     /// Issues a join code for `hub_url` pinned to the hub's certificate: its id, its text (shown once) and
@@ -248,7 +313,7 @@ impl Store {
         let token = apz_trust::token::JoinToken::decode(code_text).map_err(|_| Refusal::Invalid(INVALID_CODE.into()))?;
         let hash = nodes::hex(&token.secret_hash());
         let mut p = self.guard().map_err(Refusal::Invalid)?;
-        let Persisted { stations, codes } = &mut *p;
+        let Persisted { stations, codes, .. } = &mut *p;
         let mut found = None;
         for (i, code) in codes.iter().enumerate() {
             if apz_trust::ct_eq(code.secret_sha256.as_bytes(), hash.as_bytes()) {

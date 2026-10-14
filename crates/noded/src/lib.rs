@@ -23,6 +23,7 @@ pub mod fleet;
 pub mod registry;
 pub mod stats;
 pub mod train;
+pub mod workstation;
 
 use std::io::Read;
 use std::net::IpAddr;
@@ -94,6 +95,9 @@ pub struct Config {
     /// The guest CIDs runs draw from when their create request names no
     /// `vsock_cid` (inclusive; `--run-cids`).
     pub run_cids: std::ops::RangeInclusive<u64>,
+    /// The desktop guest workstation VMs boot (`--workstation-kernel`, `--workstation-initrd`,
+    /// `--workstation-image`), and where their directories live (`--workstation-dir`).
+    pub workstation: workstation::Guest,
 }
 
 impl Default for Config {
@@ -111,6 +115,7 @@ impl Default for Config {
             agents_vcpus: DEFAULT_AGENTS_VCPUS,
             agents_balloon_mib: DEFAULT_AGENTS_BALLOON_MIB,
             run_cids: registry::RUN_CID_BASE..=registry::RUN_CID_END,
+            workstation: workstation::Guest::default(),
         }
     }
 }
@@ -123,6 +128,8 @@ pub struct Node {
     probed: Probed,
     /// The fabric addresses and when they were read (see `cached_fabric`).
     fabric: Mutex<Option<(Instant, Vec<String>)>>,
+    /// The workstation VMs this node makes for the hub (workstation.rs).
+    workstations: workstation::Store,
 }
 
 /// `GET /v1/machine`.
@@ -168,6 +175,7 @@ impl Node {
             stats: Arc::new(stats::Stats::new()),
             probed: probe_host(&apz_os::dirs::state()),
             fabric: Mutex::new(None),
+            workstations: workstation::Store::open(config.workstation),
         }
     }
 
@@ -1441,6 +1449,14 @@ fn router() -> Router<Node> {
         .get("/v1/machine/stats", |node, _, _| machine_stats(node))
         .get("/v1/runs", |node, _, _| list_runs(node))
         .post("/v1/runs", |node, request, _| create_run(node, &request.body))
+        .get("/v1/workstations", |node, _, _| Response::json(200, &node.workstations.list()))
+        .post("/v1/workstations", |node, request, _| workstation_create(node, &request.body))
+        .get("/v1/workstations/{id}", |node, _, params| workstation_answer(node.workstations.view(params.get("id"))))
+        .delete("/v1/workstations/{id}", |node, _, params| workstation_answer(node.workstations.delete(params.get("id"))))
+        .post("/v1/workstations/{id}/start", |node, _, params| workstation_answer(node.workstations.start(params.get("id"))))
+        .post("/v1/workstations/{id}/stop", |node, _, params| workstation_answer(node.workstations.stop(params.get("id"))))
+        .post("/v1/workstations/{id}/snapshot", |node, _, params| workstation_answer(node.workstations.snapshot(params.get("id"))))
+        .post("/v1/workstations/{id}/revert", |node, _, params| workstation_answer(node.workstations.revert(params.get("id"))))
         .get("/v1/runs/{id}", |node, _, params| get_run(node, params.get("id")))
         .delete("/v1/runs/{id}", |node, _, params| delete_run(node, params.get("id")))
         .post("/v1/runs/{id}/input", |node, request, params| send_input(node, params.get("id"), &request.body))
@@ -1553,6 +1569,26 @@ fn create_run(node: &Node, body: &[u8]) -> Response {
     match node.registry().create_run(&request) {
         Ok(run) => Response::json(201, &run.view(Detail::Summary)),
         Err(reason) => Response::error(400, &reason),
+    }
+}
+
+/// `POST /v1/workstations`: makes a workstation VM and boots it with the join code the hub issued (201 with its view).
+fn workstation_create(node: &Node, body: &[u8]) -> Response {
+    let request: workstation::CreateWorkstation = match serde_json::from_slice(body) {
+        Ok(request) => request,
+        Err(err) => return Response::error(400, &format!("invalid workstation request: {err}")),
+    };
+    match node.workstations.create(&request, epoch_ms()) {
+        Ok(view) => Response::json(201, &view),
+        Err((status, message)) => Response::error(status, &message),
+    }
+}
+
+/// A workstation VM's answer: its view, or the refusal's status and message.
+fn workstation_answer(result: Result<workstation::View, workstation::Refusal>) -> Response {
+    match result {
+        Ok(view) => Response::json(200, &view),
+        Err((status, message)) => Response::error(status, &message),
     }
 }
 

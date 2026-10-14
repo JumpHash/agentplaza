@@ -60,10 +60,10 @@ use crate::settings::RecordingDefaults;
 use crate::state::App;
 
 /// Who the owner's routes record as the actor of an action.
-const OWNER: &str = "owner";
+pub(super) const OWNER: &str = "owner";
 
 pub fn routes(router: Router<App>) -> Router<App> {
-    let router = router
+    let router = super::vms::routes(router)
         .post("/v1/stations/codes", |app, req, _| issue_code_route(app, req))
         .get("/v1/stations/codes", |app, _, _| Response::json(200, &app.stations.codes(apz_plaza::now_ms())))
         .delete("/v1/stations/codes/{id}", |app, _, p| code_revoke_route(app, p.get("id")))
