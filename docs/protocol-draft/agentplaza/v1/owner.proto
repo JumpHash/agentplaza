@@ -1,6 +1,6 @@
 // Owner API, M2/M3 (0127): one gRPC service per section of the owner console, served by the orchestrator
 // beside the MVP service `AgentPlaza` (daemon.proto), and like it also as JSON + SSE for the browser (0100).
-// Draft. Design notes: docs/design/daemon-api.md, "M2/M3 surface (owner.proto)".
+// Draft. Design notes: docs/design/daemon-api.md (not in the repo), "M2/M3 surface (owner.proto)".
 //
 // Conventions (same as daemon.proto, 0116):
 // - Every request that changes state carries `idempotency_key`. A retry with the same key gets the first
@@ -249,7 +249,7 @@ message CancelTaskRequest {
   bool cascade = 4;                      // also cancel dependents no re-plan replaces (rule 7)
 }
 
-// ================================================================ Agents (identity.md, 0045, 0046)
+// ================================================================ Agents (identity.md (not in the repo), 0045, 0046)
 service Agents {
   rpc ListAgents(ListAgentsRequest) returns (ListAgentsResponse);
   rpc GetAgent(GetAgentRequest) returns (AgentCard);

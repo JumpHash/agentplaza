@@ -14,8 +14,8 @@ All three live in `fuzz/src/lib.rs` (`drive_packet`, `drive_csm`,
 few thousand deterministic pseudo-random inputs on any toolchain; the binaries
 in `fuzz_targets/` are thin LibFuzzer wrappers.
 
-`drive_block_request` returns a `BlockOutcome` (`Parsed`, `Rejected(path)`, or
-`Unbuilt`) and `tests/smoke.rs` tallies those into a `BlockCoverage`: the smoke
+`drive_block_request` returns a `BlockOutcome` (`Parsed`, `Rejected` with the gate that refused
+it and the request type the header declared, or `Unbuilt`) and `tests/smoke.rs` tallies those into a `BlockCoverage`: the smoke
 run prints how many of its 5120 inputs reached a real parse, which parser gate
 rejected the rest, and how many inputs the parser saw of each request type.
 That is the coverage measure for this target — an input the parser accepted is
@@ -52,7 +52,7 @@ the `fuzzing` feature adds the `libfuzzer-sys` dependency that entry point needs
 
 A corpus grows from real runs under `fuzz/corpus/<target>/` (not committed);
 seed it from a live VM's traffic if a regression needs replaying. Per-target time
-budgets belong in CI, not here.
+budgets belong in CI, not here; no workflow in `.github/` runs the targets yet.
 
 ## Without cargo-fuzz
 

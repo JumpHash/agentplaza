@@ -1,4 +1,4 @@
-// Machine ↔ orchestrator control (0019, 0101–0104; design/orchestrator.md). Accepted in 0114 (with metrics, logs, evidence and per-VM caps).
+// Machine ↔ orchestrator control (0019, 0101–0104; design/orchestrator.md (not in the repo)). Accepted in 0114 (with metrics, logs, evidence and per-VM caps).
 // Carried on a NODE stream that the machine's daemon opens itself over its mTLS QUIC connection
 // (no RelayHeader: the machine is the principal, identified by its certificate).
 syntax = "proto3";

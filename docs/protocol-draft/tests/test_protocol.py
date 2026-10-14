@@ -149,7 +149,7 @@ check("Capabilities: clients can ask the orchestrator (GetInfo RPC)",
 
 def negotiate(a, b):
     ma, mb = int(a.proto_version.split(".")[1]), int(b.proto_version.split(".")[1])
-    if abs(ma - mb) > 1: return None                      # only current and previous minor (protocol.md)
+    if abs(ma - mb) > 1: return None                      # only current and previous minor (docs/design/protocol.md (not in the repo))
     return min(ma, mb), sorted(set(a.features) & set(b.features))
 h = c.Capabilities(proto_version="1.4", features=["fs.v1", "bus.v1", "token.rotate"])
 o = c.Capabilities(proto_version="1.5", features=["fs.v1", "blob.resume", "token.rotate"])

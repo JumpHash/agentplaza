@@ -1,4 +1,4 @@
-// FS stream (M3): FUSE operations for /plaza (0022; design/shared-data.md, design/protocol.md § FS).
+// FS stream (M3): FUSE operations for /plaza (0022; docs/design/shared-data.md (not in the repo), docs/design/protocol.md (not in the repo) § FS).
 // The harness's FUSE server forwards every operation; the orchestrator enforces ACLs per path and per
 // agent, records provenance and taint, and pushes cache invalidations. Proposed in 0114.
 //
@@ -70,7 +70,7 @@ message FsLock { string path = 1; uint32 ttl_s = 2; bool exclusive = 3; bool wai
 message FsRenewLease { string lease_id = 1; uint32 ttl_s = 2; }
 message FsUnlock { string lease_id = 1; }
 
-// `plaza` CLI operations that aren't file I/O (design/shared-data.md § Operations).
+// `plaza` CLI operations that aren't file I/O (docs/design/shared-data.md (not in the repo) § Operations).
 message PlazaCommand {
   oneof cmd {
     PlazaPublish publish = 1;       // turn a path into an immutable artifact

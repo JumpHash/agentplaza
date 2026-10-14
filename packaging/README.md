@@ -10,9 +10,11 @@ out the same way, which each platform's packager maps into its own format.
 | Linux x86_64, arm64 | `agentplaza_<v>_<amd64\|arm64>.deb` (Ubuntu, Debian), `agentplaza-<v>-1.<x86_64\|aarch64>.rpm` (Fedora), `agentplaza-<v>-1-<x86_64\|aarch64>.pkg.tar.zst` (Arch, Arch Linux ARM), `agentplaza-<v>-linux-<x86_64\|aarch64>.tar.gz` | `.github/workflows/linux.yml` → `packaging/linux/build.sh` |
 | Raspberry Pi 4/5 (Raspberry Pi OS 64-bit) | `agentplaza_<v>_arm64-raspberrypi.deb`, `agentplaza-<v>-raspberrypi-arm64.tar.gz` | `.github/workflows/raspberry-pi.yml` → `packaging/raspberry-pi/build.sh` |
 
-`.github/workflows/release.yml` runs on every push to `main`: it picks the next version
-(semantic versioning, see below), runs the four platform workflows with packaging on, and
-publishes a GitHub Release `v<version>` (tag + changelog + all deliverables).
+`.github/workflows/release.yml` runs on every push to `main` except one that touches only `docs/`,
+Markdown files or `VERSION`. It builds the guest (`guest.yml`) and the relay (`relay.yml`),
+picks the next version (semantic versioning, see below), runs the four platform workflows with
+packaging on, and publishes a GitHub Release `v<version>` (tag + changelog + all deliverables with
+`SHA256SUMS`), then writes the version back to `main`'s `VERSION` file.
 
 ## The stage (`packaging/scripts/stage.sh`)
 
@@ -27,17 +29,23 @@ stage.sh <target-triple> <cargo-out-dir> <stage-dir> <version>
                     Linux, Apple Silicon: noded, vsockd, apz-vmm, vmctl
                     Windows x64: noded, vsockd, vmctl
                     (+ .exe on Windows; Windows arm64 and Intel Macs: none, hub/desktop/link only)
+                    every bundle: mcp_relay-x86_64, mcp_relay-aarch64 (the container relay, static musl)
 <stage>/share/agentplaza/
     console/        the web console (apps/web/dist), served by apid
     roles/initial-roles.json
     prompts/        the roles' prompts (docs/codex-draft/roles)
     icons/          agentplaza-<n>.png, agentplaza.ico, agentplaza.icns
     guest/<arch>/       vmlinux, initrd.gz, guest.json — the agents' VM kernel and initrd, found by noded
+                        (stages with the VM node only)
     VERSION         the version, one line
 ```
 
+The stage refuses a console `dist` without the wasm engine and the IDE's wasm: rebuild it with
+`apps/web/build.mjs` first.
+
 The guest comes from `scripts/mk-guest.sh` (built per architecture by `.github/workflows/guest.yml`,
-cached) and is read from `target/guest` (or `APZ_GUEST_DIR`).
+cached) and is read from `target/guest` (or `APZ_GUEST_DIR`). The relay binaries are read from
+`APZ_RELAY_DIR` (the relay job's artifact) or from the dev tree's musl builds.
 
 At run time `apz_os::dirs::resources()` finds `share/agentplaza` next to the binaries
 (`<bin>/../share/agentplaza`; inside a macOS bundle `Contents/Resources/share/agentplaza`), so
@@ -64,7 +72,7 @@ open `http://127.0.0.1:7700`; the desktop app starts against that same local hub
 
 ## Versions
 
-Every merge to `main` is a release `v<major>.<minor>.<patch>`, tagged on the merged commit; the
+Every push to `main` that changes code is a release `v<major>.<minor>.<patch>`, tagged on the merged commit; the
 repository's `VERSION` file holds the last released version (`release.yml` writes it back to
 `main` after each release). The version is chosen by `packaging/scripts/next-version.sh`:
 
@@ -84,6 +92,8 @@ compiled in, so a release changes no compiled code and CI's caches stay warm.
 
 ## Signing
 
-Not yet: the DMG is ad-hoc signed (the VMM carries the `com.apple.security.hypervisor`
-entitlement it needs), the MSI is unsigned. Developer ID notarization and an Authenticode
-certificate are wired in by adding their secrets (see the workflows' `sign` steps).
+Signing is optional and switches on with secrets. Without them the DMG is ad-hoc signed (the VMM
+carries the `com.apple.security.hypervisor` entitlement it needs) and the MSI is unsigned. Setting
+`APPLE_SIGNING_IDENTITY` and `APPLE_NOTARY_PROFILE` (`macos.yml`) adds Developer ID signing and
+notarization; `WINDOWS_CERT_PFX_BASE64` and `WINDOWS_CERT_PASSWORD` (`windows.yml`) add Authenticode
+signing of the exes and the MSI. See `packaging/macos/README.md` and `packaging/windows/README.md`.

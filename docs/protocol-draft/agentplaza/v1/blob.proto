@@ -1,4 +1,4 @@
-// BLOB stream: upload or download large payloads by content hash (0021, 0026; design/protocol.md § BLOB).
+// BLOB stream: upload or download large payloads by content hash (0021, 0026; docs/design/protocol.md (not in the repo) § BLOB).
 // Proposed in 0114.
 //
 // Chunks are the same as snapshot chunks (0091): content split into 256 KiB pieces (last one shorter),

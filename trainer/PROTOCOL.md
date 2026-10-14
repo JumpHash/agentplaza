@@ -1,12 +1,14 @@
 # Trainer protocol
 
 Three contracts: the hub protocol (loose mode, HTTP), the event stream (stdout JSON lines), and the
-job and plan files the runtime reads. The hub in this directory (`apz_train.hub`) is a stand-in; in the
-plaza apid implements the same hub protocol.
+job and plan files the runtime reads. The hub in this directory (`apz_train.hub`) is a stand-in; the
+plaza apid (`crates/apid/src/foundry/`) implements the same hub protocol, with the paths under
+`/v1/foundry/jobs/{id}/hub/`.
 
 ## 1. Hub protocol (loose mode)
 
-Transport: HTTP/1.1, `application/octet-stream` bodies, no auth here (the plaza's node link provides it).
+Transport: HTTP/1.1, `application/octet-stream` bodies, no auth here. The plaza's apid takes hub calls from
+loopback peers only (403 otherwise), so remote loose islands are not wired yet.
 
 Payload (`apz_train.wire`), used for every request and response body:
 

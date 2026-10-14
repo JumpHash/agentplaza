@@ -59,7 +59,7 @@ async function rejects(promise, pattern) {
 }
 const eq = (a, b, what) => { if (a !== b) throw new Error(`${what}: expected ${b}, got ${a}`); };
 
-// The worked example from design/treasury-agora.md ("Settlement"): root budget 1000, one subcontract of 400.
+// The worked example from design/treasury-agora.md (not in the repo) ("Settlement"): root budget 1000, one subcontract of 400.
 async function happyPath(db) {
   await post(db, 'mint', 'root', 'root', [['mint', 'mint', -1000], ['task_escrow', 'root', 1000]]);
   await post(db, 'spend', 'root', 'root', [['task_escrow', 'root', -200], ['external_spend', 'providers', 200]]);

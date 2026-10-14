@@ -68,7 +68,7 @@ CREATE TABLE core.towns (                           -- logical units (0031); con
   created_at  timestamptz NOT NULL DEFAULT now()
 );
 
--- Town lifecycle (design/towns.md): proposed -> active (owner ratifies; the Mayor is spawned) | rejected;
+-- Town lifecycle (design/towns.md (not in the repo)): proposed -> active (owner ratifies; the Mayor is spawned) | rejected;
 -- active <-> paused; active | paused -> archived. Archived and rejected are final.
 CREATE FUNCTION core.check_town() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
@@ -82,7 +82,7 @@ BEGIN
       ('active', 'archived'), ('paused', 'archived')) THEN
     RAISE EXCEPTION 'town % may not go from % to %', OLD.id, OLD.state, NEW.state;
   END IF;
-  -- Archiving retires the town's agents; their keys stay until the audit retention period (identity.md).
+  -- Archiving retires the town's agents; their keys stay until the audit retention period (identity.md (not in the repo)).
   IF NEW.state = 'archived' THEN
     UPDATE core.agents SET status = 'retired', retired_at = now() WHERE town_id = NEW.id AND status <> 'retired';
   END IF;
@@ -90,7 +90,7 @@ BEGIN
 END $$;
 CREATE TRIGGER towns_lifecycle BEFORE INSERT OR UPDATE ON core.towns FOR EACH ROW EXECUTE FUNCTION core.check_town();
 
-CREATE TABLE core.agents (                          -- the registry card (identity.md); keys live in the vault
+CREATE TABLE core.agents (                          -- the registry card (identity.md (not in the repo)); keys live in the vault
   id           text PRIMARY KEY CHECK (id ~ '^[0-9A-HJKMNP-TV-Z]{26}$'),   -- ULID
   name         text,                                -- self-chosen after first boot (0045)
   role         text NOT NULL,
@@ -161,7 +161,7 @@ CREATE TABLE core.task_deps (
   CHECK (task_id <> depends_on)
 );
 
--- The task state machine (design/task-lifecycle.md). Anything not listed is refused.
+-- The task state machine (design/task-lifecycle.md (not in the repo)). Anything not listed is refused.
 CREATE TABLE core.task_transitions (from_state text, to_state text, PRIMARY KEY (from_state, to_state));
 INSERT INTO core.task_transitions VALUES
   ('draft', 'ready'), ('draft', 'cancelled'), ('draft', 'superseded'),
@@ -428,7 +428,7 @@ CREATE TRIGGER snapshots_chain BEFORE INSERT ON core.snapshots FOR EACH ROW EXEC
 CREATE VIEW core.restorable_snapshots AS
   SELECT DISTINCT ON (run_id) * FROM core.snapshots WHERE uploaded_at IS NOT NULL ORDER BY run_id, seq DESC, created_at DESC;
 
--- Chunk GC: chunks no snapshot of a live run refers to (closes the vmm.md open point on chunk GC).
+-- Chunk GC: chunks no snapshot of a live run refers to (closes the vmm.md (not in the repo) open point on chunk GC).
 CREATE VIEW core.collectable_chunks AS
   SELECT c.hash, c.size FROM core.chunks c
   WHERE NOT EXISTS (

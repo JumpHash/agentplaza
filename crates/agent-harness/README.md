@@ -2,7 +2,8 @@
 
 The in-guest agent harness: static Rust, one AF_VSOCK connection to the
 orchestrator, no policy of its own. It speaks the frozen one-shot session (v1,
-the demo task) or the long-lived keepalive agent session (v2, the fleet). The
+the demo task) or the long-lived keepalive agent session (v2, the fleet), and
+inside a keepalive session the model-driven agent loop (v3, `src/agent.rs`). The
 transcript, the sessions and the wire protocol are documented at the top of
 `src/main.rs` and in `docs/agents/fleet.md` (the hub-side contract).
 
@@ -13,10 +14,12 @@ the harness owns the tools.
 
 ## The served tools
 
-Nine tools: `echo`, `uptime`, the social channel (`conversation`), and the file
-tools over the guest's writable `/workspace` volume. The guest's init mounts
-that volume (ext4, from the image
-the VMM was given with `--workspace`) before it starts the harness, so a
+The table in `src/tools.rs` has 27 tools: `echo`, `uptime`, the social channel
+(`conversation`), the file tools over the guest's writable `/workspace` volume,
+`fetch_url` and `download` (the network, through the egress proxy), and the
+owner's operator tools `ide_*` and `ide_term_*` (`src/ide.rs`, `src/term.rs`;
+the model never gets these). The guest's init mounts that volume (ext4, from the
+image the VMM was given with `--workspace`) before it starts the harness, so a
 keepalive agent has a real filesystem to work on. A guest without the volume
 answers every file tool `ok:false`, "unavailable: the workspace /workspace is
 not mounted: …".
@@ -35,6 +38,7 @@ invalid input: <why>          the arguments are not the tool's schema
 denied: <why>                 a path that leaves /workspace, a permission
 not found: <why>              the file, directory or text is not there
 limit exceeded: <why>         the call or its result is over a cap
+conflict: <current hash>      an owner write named a stale hash (or "missing")
 unavailable: <why>            the guest has no workspace (or no /proc/uptime)
 internal: <why>               a filesystem failure that is this side's own
 ```
@@ -56,15 +60,18 @@ The escape check is on the resolved path: the deepest existing ancestor of the
 target is canonicalized (following every link) and must be inside the canonical
 workspace root. `search` never follows a symlink at all, so a link cannot walk a
 scan out of the volume. No absolute path is ever echoed back: results name paths
-relative to `/workspace`. A missing `/workspace` is `unavailable`.
+relative to `/workspace`. A missing `/workspace` is `unavailable`. The harness's
+own state folder, `.plaza`, is refused by name (`denied`), and `list` at the root
+does not show it.
 
 ### Caps
 
 | cap | value |
 |-----|-------|
-| `read_file` default `max_bytes` | 64 KiB |
+| `read_file` default `limit` | 2000 lines (a line over 2000 characters is cut) |
 | any file the tools read or grow | 1 MiB |
 | one write/append payload, one edit replacement | 256 KiB |
+| a `conversation` message's `text` | 2 KiB |
 | a `search` pattern or `edit_file` needle | 4 KiB |
 | `list` entries returned / read | 1024 / 65536 |
 | `search` matches / files / bytes / depth | 256 / 4096 / 8 MiB / 16 |
@@ -82,12 +89,14 @@ Each tool's `output` is one JSON object (as a string):
 | `echo` | `text` (string) | the text itself (not JSON) |
 | `uptime` | — | `/proc/uptime`'s first two fields (not JSON) |
 | `conversation` | `from_role`, `text`, `from_cid`? | `received`, `log`, `lines`, `size` |
-| `read_file` | `path`, `max_bytes`? | `path`, `size`, `bytes`, `truncated`, `content` |
+| `read_file` | `path`, `offset`?, `limit`?, `max_bytes`? | `path`, `size`, `bytes`, `truncated`, `content` |
 | `write_file` | `path`, `content` | `path`, `bytes`, `created` |
-| `edit_file` | `path`, `find`, `replace` | `path`, `matches`, `size` |
+| `edit_file` | `path`, `old` (or `find`), `new` (or `replace`), `replace_all`? | `path`, `replacements`, `size`, `snippet` |
 | `append_file` | `path`, `content` | `path`, `bytes`, `size` |
 | `list` | `path`? (default the root) | `path`, `entries[{name,kind,size}]`, `truncated`, `skipped` |
 | `search` | `pattern`, `path`? | `pattern`, `path`, `matches[{file,line,text}]`, `files_scanned`, `bytes_scanned`, `skipped`, `truncated` |
+| `fetch_url` | `url` | the page's text, prefixed `Fetched <url>:` (not JSON) |
+| `download` | `url`, `path` | `path`, `bytes`, `created` |
 
 * **`conversation`** is the plaza's social channel, and it is **not a file
   tool**: a peer's message arrives as a `conversation` call and the harness
@@ -101,17 +110,18 @@ Each tool's `output` is one JSON object (as a string):
   `{"received":true,"log":"messages.log","lines":N,"size":M}` — the log's line
   count and size after the append. The agent never touches the peer: the hub
   delivered the message, and the harness only writes it down.
-* **`read_file`** returns the file's text. A file that is not UTF-8 is refused
-  ("is not UTF-8 text") rather than returned as mojibake. A `max_bytes` cut that
+* **`read_file`** returns the file's lines, numbered like `cat -n`; `offset` and
+  `limit` take a window of lines, and a read that is cut says so. A file that is
+  not UTF-8 is refused ("is not UTF-8 text") rather than returned as mojibake. A `max_bytes` cut that
   lands inside a multi-byte character drops that character and sets
   `truncated` (a whole-file read of a valid file stays valid).
 * **`write_file`** creates or replaces, atomically (a sibling temp file, flushed,
-  renamed over the target). The parent directory is never created: a path whose
-  directory does not exist is `not found`.
-* **`edit_file`** is a one-shot literal replacement requiring **exactly one**
-  match. Zero occurrences is `not found`; more than one is `invalid input` ("the
-  text to replace appears N times …; edit_file needs exactly one match"). It
-  never guesses which occurrence was meant. `replace` may be empty (a deletion).
+  renamed over the target). Missing parent folders are created.
+* **`edit_file`** replaces the literal `old` with `new`. Without `replace_all` it
+  requires **exactly one** match. Zero occurrences is `not found`; more than one
+  is `invalid input` ("the text to replace appears N times …; add surrounding
+  context … or set \"replace_all\""). It never guesses which occurrence was meant;
+  `replace_all: true` replaces every match. `new` may be empty (a deletion).
 * **`append_file`** appends, creating the file if needed, and refuses an append
   that would grow the file past 1 MiB rather than truncating it.
 * **`list`** is one directory, sorted by name, with `kind` one of `file`, `dir`,
@@ -124,12 +134,13 @@ Each tool's `output` is one JSON object (as a string):
 
 ## Notes for the hub side
 
-* The harness holds no secrets and opens no socket but the one to the hub; the
-  file tools are plain `std::fs` calls in the harness process (no shell, no
-  subprocess), confined to `/workspace` by the rules above.
-* `conversation` is a **basis** tool, like `echo` and `uptime`: the hub's grant
-  table (`crates/vsockd/src/roles.rs`) gives it no grant source, so a role
-  cannot be refused the social channel by the manifest. A role that can be
+* The harness holds no secrets. Its sockets are the one to the hub and the egress
+  shim's loopback proxy (`src/egress.rs`), which `fetch_url` and `download` go
+  through. The file tools are plain `std::fs` calls in the harness process (no
+  shell, no subprocess), confined to `/workspace` by the rules above.
+* `conversation` is a **basis** tool, like `echo` and `uptime`: the grant table
+  (`TOOL_GRANTS` in `crates/dispatchd/src/roles.rs`) gives it no grant source,
+  so a role cannot be refused the social channel by the manifest. A role that can be
   spoken to is the plaza's basis, not a privilege.
 * `/workspace` is the only writable place in the guest; the root filesystem is
   the read-only initramfs.

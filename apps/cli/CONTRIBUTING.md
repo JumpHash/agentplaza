@@ -1,7 +1,8 @@
 # Writing `agentplaza` commands
 
 `agentplaza` (apps/cli) does everything the web console and the desktop app do, over the same hub
-API. One module per console area in `src/cmd/<area>.rs`; `src/main.rs` lists them.
+API. One module per console area in `src/cmd/<area>.rs`; `src/cmd/mod.rs` lists them and `src/main.rs`
+dispatches to them.
 
 ## A command module
 

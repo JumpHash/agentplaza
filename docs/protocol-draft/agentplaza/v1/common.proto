@@ -1,6 +1,6 @@
 // AgentPlaza protocol v1: shared types. Draft (decision 0083).
 // Evolution rules: never renumber or reuse field numbers; mark removed fields `reserved`;
-// new fields must be optional-in-meaning (peers ignore unknown fields). See docs/design/protocol.md.
+// new fields must be optional-in-meaning (peers ignore unknown fields). See docs/design/protocol.md (not in the repo).
 syntax = "proto3";
 package agentplaza.v1;
 

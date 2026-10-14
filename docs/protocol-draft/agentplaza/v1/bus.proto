@@ -1,4 +1,4 @@
-// BUS stream (M3): agent messaging through the orchestrator's broker (0023, 0024; design/comms.md).
+// BUS stream (M3): agent messaging through the orchestrator's broker (0023, 0024; design/comms.md (not in the repo)).
 // Proposed in 0114.
 //
 // Delivery: at least once. Order is FIFO per (sender, thread). Receivers dedupe by envelope id.
@@ -63,7 +63,7 @@ message Envelope {
   int64 sent_unix_ms = 15;
 }
 
-// ---- Groups (comms.md § Groups) ----
+// ---- Groups (comms.md (not in the repo) § Groups) ----
 message GroupPropose {
   string client_id = 1;
   string purpose = 2;

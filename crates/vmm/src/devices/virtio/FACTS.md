@@ -3,14 +3,18 @@
 What this port's vsock device was built on, and what was measured rather than
 assumed. Everything under "measured" was run on the development host; the
 probes are in-tree (see below), so the numbers can be re-checked with
-`cargo test -p vmm --lib devices::virtio`.
+`cargo test -p vmm --lib` (the probes span `devices::virtio`, `arch::aarch64::fdt`
+and `builder`).
 
 Host: Linux 7.2.8-arch1-2, x86_64 (i9-12900K), 4 KiB pages, KVM. The VMM runs
 as an unprivileged user (uid 1000): `/dev/vhost-vsock` is `crw-rw-rw- root kvm`,
 and the ioctl sequence below needs no capability beyond that. The guest is the
 same kernel, booted from `/boot/vmlinuz-linux` with an initramfs that loads
 `vsock.ko`, `vmw_vsock_virtio_transport_common.ko`,
-`vmw_vsock_virtio_transport.ko` and `virtio_mmio.ko`.
+`vmw_vsock_virtio_transport.ko` and `virtio_mmio.ko`. That is the measurement
+setup (`scripts/mk-initrd.sh` with its default `APZ_GUEST_MODULES=host`);
+`scripts/mk-guest.sh` now builds a guest kernel with the drivers built in
+(`APZ_GUEST_MODULES=builtin`).
 
 ## Probes in the tree
 
@@ -21,7 +25,7 @@ same kernel, booted from `/boot/vmlinuz-linux` with an initramfs that loads
 | queue count | same test | the kernel answers `ENOBUFS` for a queue index past the end of its array |
 | CID ownership | `vhost.rs` test `a_guest_cid_cannot_be_claimed_twice` | a CID another backend holds cannot be claimed; it is released when the fd closes |
 | FDT node (aarch64) | `arch/aarch64/fdt.rs` test `create_fdt_describes_the_vsock_transport` | the node's window and interrupt properties are the layout's |
-| guest command line (x86_64) | `builder.rs` test `guest_cmdline_registers_the_x86_64_vsock_transport` | the `virtio_mmio.device=` entry the guest needs is what the layout says |
+| guest command line (x86_64) | `builder.rs` test `guest_cmdline_registers_the_x86_64_virtio_transports` | the `virtio_mmio.device=` entry the guest needs is what the layout says |
 
 The probes that need the device skip themselves when `/dev/vhost-vsock` is not
 openable, so they are safe on a host without the module.
@@ -97,13 +101,15 @@ openable, so they are safe on a host without the module.
 ## End-to-end evidence
 
 `vmctl` boots the guest with a vsock device, the guest's harness opens the loop
-and the host's orchestrator stand-in (`vsockd`) answers it:
+and the host's orchestrator stand-in (`vsockd`) answers it. The transcripts were
+captured from an earlier build: some of their lines have since changed wording,
+and they are kept as the record of that run.
 
 ```console
 $ target/debug/vsockd --port 5001 &      # in a supervised shell
 $ target/debug/vmctl --kernel /boot/vmlinuz-linux \
       --initrd target/guest/initrd.x86_64.gz -n 1 --mem-mib 512 \
-      --cmdline 'console=ttyS0 plaza.harness=1 plaza.cid=3 plaza.port=5001' \
+      --cmdline 'console=ttyS0 plaza.harness=1 plaza.port=5001' \
       --vsock-cid 3 --timeout-secs 60
 [vm 0] plaza guest: virtio_mmio took 1 command-line parameter(s)
 [vm 0] agent-harness: guest CID 3 vm 0 -> host CID 2 port 5001
@@ -131,10 +137,10 @@ vsockd: session with guest 3 vm 0 ended cleanly after 2 tool calls
 
 `-n 2 --vsock-cid 3` runs two VMs at once with distinct CIDs (3 and 4, the
 listener's `accepted a connection from cid N` lines) and both sessions end
-cleanly. The guest's own `plaza.cid` command-line flag is the harness's
-cosmetic label — the CID the transport stamps into packets comes from the
-device's configuration space, which is what `vmctl`'s per-VM `VsockConfig`
-sets.
+cleanly. The harness no longer reads a `plaza.cid` command-line flag (the run's
+command line above carried one, and it is dropped from the command here): the
+CID the transport stamps into packets comes from the device's configuration
+space, which is what `vmctl`'s per-VM `VsockConfig` sets.
 
 ## Not verified here
 

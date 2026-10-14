@@ -16,6 +16,7 @@ apz_train/
   search.py     grid, optuna (TPE), pbt
   export.py     ONNX export (opset 17) and the onnxruntime check
   backend.py    cuda / rocm / xpu / mps / cpu, process group (nccl on GPUs, gloo otherwise)
+  recipes.py    recipe loader: <recipes>/<name>/recipe.json and recipe.py
   wire.py       the binary payload (JSON header + float32 bytes)
   events.py     JSON-line events on stdout (rank 0)
   synthetic.py  synthetic rung data for tests and smoke runs

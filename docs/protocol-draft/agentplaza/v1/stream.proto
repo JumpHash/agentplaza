@@ -21,7 +21,7 @@ message StreamOpen {
   string session_token = 2;  // per-boot token from HelloAck; empty only on the first CONTROL stream
   uint64 stream_id = 3;      // chosen by opener, unique per session; for logs and correlation
   Priority priority = 4;     // scheduling class (0116); default from kind
-  uint32 deadline_ms = 5;    // give up after this long (0 = per-kind default, see protocol.md § Timeouts)
+  uint32 deadline_ms = 5;    // give up after this long (0 = per-kind default, see docs/design/protocol.md (not in the repo) § Timeouts)
   TraceContext trace = 6;    // 0116
   uint32 token_epoch = 7;    // which rotation of the session token is presented (0116)
 }

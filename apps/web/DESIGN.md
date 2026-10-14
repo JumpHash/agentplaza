@@ -6,7 +6,7 @@ One visual language for every screen, the 3D floor's overlays and the agent view
 - Palette and type come from `src/styles/tokens.css` only: paper `--paper`, sheet `--sheet`, rules `--rule`/`--rule-faint`, ink `--ink`/`--ink-2`/`--ink-3`, the orange `--signal` (the owner's hand: primary actions, the active item, focus), tones `--ok-ink`, `--warn-ink`, `--crit`, `--info-ink` and their `*-bg` tints.
 - Square corners everywhere (`border-radius: 0`). No pills, no rounded chips, no soft shadows; the one shadow is the printed `--print` / `--shadow` offset.
 - Type: `--sans` (Inter) for the interface and everything that is read, at the role sizes `--type-page`, `--type-section`, `--type-item`, `--type-prose`, `--type-ui`, `--type-meta`, `--type-badge` (`font: var(--type-…)`), as in docs/design/workspace.md section 1. `--mono` (Martian Mono) is for code only: code, diffs, terminals, raw output, and ids, hashes and paths where alignment matters. Figures use `.num` (tabular numerals). Sentence case; prose is at most 760px wide.
-- Spacing from the `--s*` scale. Icons are the lucide set in `src/ui/icons.gen.ts` via `icon(name)` (15px, 1.75 stroke, square caps).
+- Spacing from the `--s*` scale. Icons are the lucide set in `src/ui/icons.gen.ts`, drawn by `icon(name)` in `src/ui/dom.ts` (15px, 1.75 stroke, square caps).
 
 ## Shell
 - Sidebar: icon + label per screen, grouped by section; no numbers, no dotted leaders. Counts are small mono badges on the right. Active item: `--hover` background, a 3px `--signal` bar on the left, ink text, icon in `--signal`.
@@ -20,6 +20,7 @@ One visual language for every screen, the 3D floor's overlays and the agent view
 - Long prose stays readable: at most ~72ch per line.
 
 ## 3D floor and agent views
-- The 3D world keeps its toon art. Everything drawn over it (name labels, the agent card, the legend, buttons) uses the console's language: square `--sheet` boxes, 1px `--ink` border, mono name, the role as a square tag with the role colour as a 3px left stripe — never a rounded pill. Buttons are the console's `button()`.
+- The 3D world is drawn by `crates/apz-engine`, the same engine on the web (wasm, mounted by `src/views/engine-mount.ts`) and in the desktop app. It keeps its toon art (`crates/apz-engine/src/toon.rs`). Without WebGPU or WebGL2 the Floor falls back to the 2D floor (`src/views/floor2d.ts`).
+- Everything drawn over it (name labels, the agent card, the legend, buttons; `src/views/floor-popup.ts`) uses the console's language: square `--sheet` boxes, 1px `--ink` border, mono name, the role as a square tag with the role colour as a 3px left stripe — never a rounded pill. Buttons are the console's `button()`.
 - The floor canvas sits in a card like any other section (1px `--rule` border, no rounded corners).
 - Agent portraits and avatars: square frames (1px `--ink` border, `--sheet` background), no rounded frames.

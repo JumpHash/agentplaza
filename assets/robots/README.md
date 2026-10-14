@@ -9,27 +9,35 @@ working version for the species authors: what to write, what the renderer does w
 assets/robots/
   index.json        the lists, in order: species, tools, props (the species order is the deal, see below)
   palette.json      the eight fixed robot colours (ink, paper, rule, signal, ok, info, inkMuted, sheet)
-  clips.json        the shared clips (idle, type, walk.<locomotion>, offline, blink, wave, proud, think, cheer)
+  clips.json        the shared clips (idle, type, offline, blink, wave, proud, think, cheer, the walk.<locomotion>
+                    clips, and the work and gesture clips)
   species/<id>.json one per species, schema 1
   tools/<id>.json   held tools and carried items (grip one | two | carry)
+  props/<id>.json   station props: furniture a robot works at, with its spots (schema 1)
+  behaviour.json    the behaviour engine's config (read by `world/work.rs`)
 ```
 
 Code: `crates/apz-engine/src/robots/` (`types.rs` the formats, `validate.rs` the checks, `files.rs` the embedded
-files and the registry, `geometry.rs` the part geometry, `rig.rs` the baked geometry and the per-robot meshes, `fx.rs`
-the effects pool, `audit.rs` the design audit). The API is `crates/apz-engine/src/robot.rs`.
+files and the registry, `geometry.rs` the part geometry, `clips.rs` the clip evaluation, `rig.rs` the baked geometry and
+the per-robot meshes, `props.rs` the station props, `fx.rs` the effects pool, `audit.rs` the design audit, `lab.rs` the
+robot lab). The API is `crates/apz-engine/src/robot.rs`.
 
 ## Registering a species
 
 1. Write `species/<id>.json` (copy `rover.json` or `can.json`; `"id"` must equal the file name).
-2. Add `<id>` to `index.json` `species`. The client's fallback deal is `species[cid % n]` (the hub deals species in
-   phase 2): appending changes who gets what, so add species in batches.
-3. Nothing to import: the build embeds every file under this folder. Tools are the same: `tools/<id>.json` and
-   `index.json` `tools`.
+2. Add `<id>` to `index.json` `species`. A cid's fallback species is the list in order without `oracle`, dealt by
+   `cid % n` (`robot_variant` in `crates/apz-engine/src/robot.rs`); a hub record that names a species takes it instead.
+   Appending changes who gets what, so add species in batches.
+3. Nothing to import: the build embeds every file under this folder (`crates/apz-engine/build.rs` lists them). Tools
+   are the same: `tools/<id>.json` and `index.json` `tools`.
 4. `cargo test -p apz-engine --release --lib` (the registry and audit tests). The registry lists every error by file
    path; a species with errors is left out of the floor, and the rover stands in for it.
 
 ## Species (`species/<id>.json`)
 
+- **Identity**: `id` (the file name), `name` (the nickname on the agent card), `blurb`, `accent` (the species' colour),
+  `height`, `label_top` (the label's height above the root), and `locomotion`, which picks the walk clip
+  (`walk.<locomotion>`).
 - **Bones**: `{ "parent": "root" | <bone>, "at": [x, y, z] }`. Required: `base`, `body`, `head`, `armL`, `armR`,
   `gripL`, `gripR`, `carry`. A species without arms still has the arm bones (tentacles, stalks, a beam). Add
   extra bones freely (a rotor, a tail, feet). A tool shows in `gripR`, a crate at `carry`.
@@ -42,7 +50,7 @@ the effects pool, `audit.rs` the design audit). The API is `crates/apz-engine/sr
   `trim`, `ink`, `signal`, `glass` (dark, never glows), `accent` (the species' own colour, `accent`), `eye` (state
   colour, glows), `light` (signal glow), `thruster` (unlit, info or offline colour), `clear` (translucent). An inline
   material `{ "color": "#hex", "emissive", "glow", "opacity", "flat" }` also works. The highlight glow
-  (`setHighlighted`) applies to shell, shell2, paper, trim, ink, signal and accent, not to glass, eye, light,
+  (`set_highlighted`) applies to shell, shell2, paper, trim, ink, signal and accent, not to glass, eye, light,
   thruster or clear.
 - **Ink**: the cartoon line is a hull per bone over its inked parts. Parts of material `ink` are not inked (they
   already are the ink colour); parts smaller than 0.03 radius are not inked; `"outline": false` drops it for any
@@ -63,7 +71,7 @@ the effects pool, `audit.rs` the design audit). The API is `crates/apz-engine/sr
 - **orchestrator**: `{ "parts": [...] }` extra parts only the orchestrator wears (the rover's antenna and trim).
   The orchestrator is always the rover, so the extras go in `rover.json`.
 
-Validation (`validate.ts`) names the path of every error: an unknown field, a bone that is not on the species, a
+Validation (`crates/apz-engine/src/robots/validate.rs`) names the path of every error: an unknown field, a bone that is not on the species, a
 material name that is not in the list, a missing required bone, a parent cycle, a clip that names a missing bone.
 
 ## Clips (`clips.json`, and a species' own)
@@ -86,21 +94,22 @@ A clip is a list of channels, evaluated every frame and blended toward its targe
 - `rate` (rad/s) accumulates instead of blending: a rolling wheel that is not a species spin.
 - `env: "in-out"` with `dur`: a one-shot's amplitude follows a sine envelope.
 - `loop: false` with `dur`: a one-shot that returns to the state's clip.
-- `fx`: `[{ "kind", "at", "every" }]` spawns effects while the clip plays. Built now: `sparks`, `zzz`, `dots`,
-  `hearts`, `keys`. The others (`steam`, `bubbles`, `notes`, `ink`, `glow`, `trail`, `confetti`) are logged as no-ops.
+- `fx`: `[{ "kind", "at", "every" }]` spawns effects while the clip plays. Built: `sparks`, `zzz`, `dots`,
+  `hearts`, `keys`, `steam`, `ink`, `glow`, `notes`, `bubbles`, `confetti`, `trail` (`robots/fx.rs`). Any other kind is not built.
 
 Shared clips may name only the required bones. A species' own clips may name its bones. A species that has no
-`walk.<locomotion>` falls back to `walk.treads` (with one warning). Walk clips exist for `treads`, `wheels`, `ball`,
-`walk4` and `hover`; the other locomotions (`hop`, `waddle`, `bounce`, …) are phase-2 content.
+`walk.<locomotion>` falls back to `walk.treads` (with one warning). Every `walk.<locomotion>` in `clips.json` is a shared
+walk clip (`treads`, `wheels`, `ball`, `walk4`, `hover`, `hop`, `waddle`, `bounce`, and the others listed there).
 
 The state's clip: idle → `idle`, working → `type`, walking → `walk.<locomotion>`, offline → `offline`. A held clip
 (`play(id, {loop: true})`, `pose`) replaces it until `play(null)`.
 
 ## Tools (`tools/<id>.json`)
 
-`{ "schema": 1, "id", "name", "grip": "one" | "two" | "carry", "parts": [...], "tip": [x, y, z] }`. The parts have
+`{ "schema": 1, "id", "name", "grip": "one" | "two" | "carry", "aim"?, "parts": [...], "tip": [x, y, z] }`. The parts have
 no `bone`; they are built at the tool's origin, which is the grip (`one`: `gripR`; `two`: `gripR`, aimed at
-`gripL`; `carry`: the `carry` bone). A held tool adds two draw calls (its fill and its ink).
+`gripL`; `carry`: the `carry` bone). `aim` sets how a one-hand tool sits in the fist: `forward` (the default), `down` or
+`up`. A held tool adds two draw calls (its fill and its ink).
 
 ## The lab
 
@@ -111,11 +120,14 @@ no `bone`; they are built at the tool's origin, which is the grip (`one`: `gripR
   species   a species id, or all (the line-up)        clip    a shared or own clip (empty: the state's)
   tool      a tool id, held in the grip                carry   an item id, carried
   state     idle | working | walking | offline         hue     0–360 (shell and panel)
-  orch=1    the rover as the orchestrator              cam     front | iso | side
+  orch=1    the rover as the orchestrator              cam     front | iso | side | q34 | top
+  prop      a station prop id, or all (each at its spots)  t      seconds: a frozen clock
+  bg        dark | light (the scene background)
   fx        an effect, spawned every 0.7 s
 ```
 
-The line shows the draw calls per robot (the main pass, shadows off, the floor hidden). Target: 12 or fewer.
+The line shows the draw calls per robot (the main pass, shadows off, the floor hidden). The budget test allows 14
+(`each_species_builds_within_the_draw_budget`).
 
 ## Budget
 
@@ -126,13 +138,13 @@ that needs its own bone or its own material adds a draw: keep parts on the bone 
 
 ## Checks
 
-- `cd apps/web && npm run check`: the types, the build, and the tests. The tests load every listed file, check the
-  required bones, the clips' bones, the draw budget (as a count of meshes), the floor's API, and the blink.
-  The eye checks are strict: an eye error (`eye-fit`, `eye-occluded`, `eye-pair`, `eye-overlap`, `eye-silhouette`) in
-  any species fails the suite, in every pose. The rest of the audit is a report.
-- `cd apps/web && node scripts/robot-audit.mjs --issues`: every audit issue with its JSON path, including the eye
-  checks. `node scripts/robot-audit.mjs --species a,b` limits it to some species.
-- `cd apps/web && node test/run.mjs`: the tests alone.
+- `cargo test -p apz-engine --release --lib`: the robot tests (`robots/tests.rs`) load every listed file, check the
+  required bones, the clip evaluation, the validation paths, and the draw budget (as a count of meshes). The design
+  audit (`robots/audit.rs`) runs on every species in its own tests. The eye checks are strict: an eye error
+  (`eye-fit`, `eye-occluded`, `eye-pair`, `eye-overlap`, `eye-silhouette`) in any species fails the suite, in every
+  pose (`eyes_are_strict_in_every_pose`). The rest of the audit is a report.
+- `cd apps/web && npm run check`: the types, the build and the web tests. The web tests do not cover robots.
+- `cd apps/web && node test/run.mjs`: the web tests alone.
 - Look at it: `#/robot-lab?species=<id>` in the console (`npm run build` first, or the dev server).
 
 ## Style (the rules a species is judged against)
@@ -160,13 +172,13 @@ Where the two disagree, the rule wins and the species is fixed. Units are robot 
   covers an eye names itself. A clear (`clear`) part does not hide. The rim stays on the head silhouette
   (`eye-silhouette`). Two eyes never overlap (`eye-pair`), and no face feature lies under a socket's footprint
   (`eye-overlap`).
-- **Seat tool**: `node apps/web/scripts/robot-seat-eyes.mjs --species a,b` (or `--all`; `--dry-run` prints without
-  writing) seats the eyes of a species. It places each socket on the head front in the style's band (spacing 0.35–0.45
-  of head width, height 45–60%, kept where the eye already is inside it), tries the flattest spots in the band when
-  the current one sags, and lifts the socket the least that leaves the pupil and rim visible in every pose. A mirror
-  partner copies its twin's seat. It changes only the `at` of the eye entries (a span replace: the rest of the file is
-  byte-for-byte). A part that hides an eye, or a rim that sags past the float limit, is reported as blocked and the eye
-  is left as it was: shrink or move the named part by hand, then run the audit again.
+- **Seat**: `seat_eyes` in `crates/apz-engine/src/robots/audit.rs` computes where a species' eyes go. It is pure: it
+  returns the eyes and notes, and writes no file. It places each socket
+  on the head front in the style's band (spacing 0.35–0.45 of head width, height 45–60%, kept where the eye already is
+  inside it), tries the flattest spots in the band when the current one sags, and lifts the socket the least that leaves
+  the pupil and rim visible in every pose. A mirror partner copies its twin's seat. A part that hides an eye, or a rim
+  that sags past the float limit, is reported as blocked and the eye is left as it was: shrink or move the named part
+  by hand, then run the tests again.
 - **Style**: one shape per species, the same on both sides. A cyclops or a one-eyed sprout sets `"asym": true`.
 
 **Face features (noses, beaks, cheeks, mouths, antennae, plates)**

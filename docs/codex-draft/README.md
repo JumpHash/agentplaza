@@ -1,5 +1,7 @@
 # Codex draft
 
+> Draft doctrine; the built system is described in docs/architecture.md and docs/design/.
+
 A planning-time draft of the Codex. The real Codex is its own git repository on the hub, where only owner-signed commits take effect (0049).
 
 - `schema.cedarschema`: the hub's policy schema, v0
@@ -13,7 +15,7 @@ A planning-time draft of the Codex. The real Codex is its own git repository on 
 - `schemas/`: output contracts (JSON Schema) for everything roles hand in
 - `tools/catalog.yaml`: every tool, its risk class and Cedar action
 - `contracts/`: example per-case grant (contract tier)
-- `tests/`: `check.sh` (113 ALLOW/DENY decisions), `check_codex.py` (law metadata, flags, sanctions), `check_roles.py` (roles, tools, statutes, schemas, evals)
+- `tests/`: `check.sh` (131 ALLOW/DENY decisions), `check_codex.py` (law metadata, flags, sanctions), `check_roles.py` (roles, tools, statutes, schemas, evals)
 
 Check it with the Cedar CLI:
 
