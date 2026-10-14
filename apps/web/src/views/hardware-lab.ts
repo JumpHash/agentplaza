@@ -16,6 +16,7 @@ import {
   engineWanted,
   loadLabCatalog,
   mountLabEngine,
+  perfProbe,
   startHardwareLabEngine,
   type HardwareLabOptions,
   type LabCatalog,
@@ -105,13 +106,7 @@ function installHooks(started: WebEngine): () => void {
   };
   const hooks: Record<string, unknown> = {
     __apzScene: () => ({ frames: started.frames_drawn(), draws: started.draw_calls(), stats: stats() }),
-    __apzPerf: () => ({
-      frames: started.frames_drawn(),
-      draws: started.draw_calls(),
-      backend: started.backend(),
-      breakdown: Array.from(started.draw_breakdown()),
-      stats: stats(),
-    }),
+    __apzPerf: perfProbe(started, () => 'hardware-lab'),
   };
   for (const [name, fn] of Object.entries(hooks)) w[name] = fn;
   return () => {

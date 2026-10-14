@@ -1,9 +1,7 @@
-//! The robots' name labels, drawn by the floor's renderer as overlays (`LABEL_CSS` and `roleTag`
-//! in `floor.ts`): each label is painted once per content with the canvas (a square sheet box,
-//! 1px ink border, the 2px print shadow) and cached. A working or offline agent gets a compact tag:
-//! its name and a status square. The selected agent gets the full box: the mono name, the role as
-//! a square tag with the district colour's 3px stripe, what it is doing on the second line. An
-//! idle agent that is not selected gets no label.
+//! The robots' and the machines' name tags, drawn by the floor's renderer as overlays: floor.ts's `LABEL_CSS` tag (a
+//! sheet box with a 1px ink border and the 2px print shadow, a 6px status square, then the name in Martian Mono 600
+//! 10.5px), painted once per content with the canvas and cached. A working or offline agent carries one, and so do the
+//! selected and the hovered agent; an idle agent that is neither carries none. The card holds the rest.
 
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
@@ -11,22 +9,23 @@ use std::sync::{Mutex, OnceLock};
 use super::view::Label;
 use super::Floor;
 use crate::canvas::Canvas;
-use crate::scene::{Color, Overlay, Tex};
+use crate::scene::{Overlay, Tex};
 
-// The console's dark theme (tokens.css): a night-navy sheet, pale ink, a black print shadow.
+// The console's dark theme (tokens.css): a night-navy sheet, pale ink, a black print shadow, the status squares.
 const SHEET: &str = "#111726";
 const INK: &str = "#e3e8f4";
 const SHADOW: &str = "#000000";
 const SIGNAL: &str = "#ff7a2e";
+const OK: &str = "#5fe0a0";
 const MUTED: &str = "#6c7790";
-const NAME_FONT: &str = "500 10px monospace";
-const ROLE_FONT: &str = "9.5px monospace";
-const LINE_FONT: &str = "10px monospace";
-const COMPACT_FONT: &str = "500 9.5px monospace";
-/// The full box's height: padding 5, the name row 18, the gap 2, the second line 12, padding 5, border 2.
-const BOX_H: f32 = 44.0;
-/// The compact tag's height: the border 1 and the padding 5 each side around a 6px status square.
-const COMPACT_H: f32 = 18.0;
+/// `LABEL_CSS`: font 600 10.5px/1.35 var(--mono), padding 3px 7px, gap 6px, max-width 200px.
+const TAG_FONT: &str = "600 10.5px \"Martian Mono\", monospace";
+const PAD_X: f32 = 7.0;
+const SQUARE: f32 = 6.0;
+const TAG_GAP_X: f32 = 6.0;
+const TAG_MAX_W: f32 = 200.0;
+/// The tag's height: the border 1 and the padding 3 each side around a 10.5 × 1.35 line.
+pub(crate) const TAG_H: f32 = 22.0;
 /// Entries kept in the texture cache before it starts again.
 const CACHE_LIMIT: usize = 256;
 /// Logical px between a label's bottom and the robot's anchor.
@@ -76,10 +75,7 @@ impl Floor {
 
 /// The label's texture and box size, from the cache or painted now.
 fn painted(label: &Label, scale: f32) -> Painted {
-    let key = format!(
-        "{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{:.2}\u{1f}{}\u{1f}{}",
-        label.name, label.role, label.line, label.working, label.highlighted, label.hue, label.selected, scale
-    );
+    let key = format!("{}\u{1f}{}\u{1f}{:.2}", label.name, square_of(label), scale);
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     if let Some(hit) = cache.lock().unwrap_or_else(|p| p.into_inner()).get(&key) {
         return hit.clone();
@@ -101,89 +97,53 @@ fn text_width(font: &str, text: &str) -> f32 {
     measure.measure_text(text)
 }
 
-/// Paints the label at `scale`; returns the canvas and the sheet box's size in logical px.
-fn draw(label: &Label, scale: f32) -> (Canvas, f32, f32) {
-    if label.selected {
-        draw_full(label, scale)
+/// The status square's colour (`.floor-key`): signal orange while working, green idle, grey offline.
+fn square_of(label: &Label) -> &'static str {
+    if label.working {
+        SIGNAL
+    } else if label.idle {
+        OK
     } else {
-        draw_compact(label, scale)
+        MUTED
     }
 }
 
-/// The compact tag: the sheet box with the name and a status square (signal orange while working,
-/// grey when offline).
-fn draw_compact(label: &Label, scale: f32) -> (Canvas, f32, f32) {
-    let name_w = text_width(COMPACT_FONT, &label.name);
-    // Border 1, padding 5, the 6px square, a gap of 5, the name, padding 5, border 1.
-    let box_w = name_w + 23.0;
-
-    let device = |v: f32| (v * scale).ceil().max(1.0) as u32;
-    let mut c = Canvas::new(device(box_w + 2.0), device(COMPACT_H + 2.0));
-    c.scale(scale, scale);
-
-    c.set_fill(SHADOW);
-    c.fill_rect(2.0, 2.0, box_w, COMPACT_H);
-    c.set_fill(SHEET);
-    c.fill_rect(0.0, 0.0, box_w, COMPACT_H);
-    c.set_stroke(if label.highlighted { SIGNAL } else { INK });
-    c.set_line_width(1.0);
-    c.stroke_rect(0.5, 0.5, box_w - 1.0, COMPACT_H - 1.0);
-
-    c.set_fill(if label.working { SIGNAL } else { MUTED });
-    c.fill_rect(6.0, 6.0, 6.0, 6.0);
-    c.set_fill(INK);
-    c.set_text_baseline("middle");
-    c.set_font(COMPACT_FONT);
-    c.fill_text(&label.name, 17.0, 9.0);
-
-    (c, box_w, COMPACT_H)
+/// Paints the label at `scale`; returns the canvas and the sheet box's size in logical px.
+fn draw(label: &Label, scale: f32) -> (Canvas, f32, f32) {
+    paint_tag(&label.name, square_of(label), scale)
 }
 
-/// The full box: the name, the role tag and the second line.
-fn draw_full(label: &Label, scale: f32) -> (Canvas, f32, f32) {
-    let role = label.role.replace('_', " ").to_uppercase();
-    let name_w = text_width(NAME_FONT, &label.name);
-    // Stripe 3, gap 4, padding 5 on the right, the border 1 and 1 on the left.
-    let tag_w = text_width(ROLE_FONT, &role) + 14.0;
-    let line_w = text_width(LINE_FONT, &label.line);
-    // Padding 8 and the border on each side.
-    let box_w = (name_w + 6.0 + tag_w).max(line_w) + 18.0;
-    let box_h = BOX_H;
-
+/// floor.ts's `LABEL_CSS` tag at `scale`: the sheet box, the status square in `square` (a CSS colour), then `name`,
+/// cut with an ellipsis past the 200px box. Returns the canvas (2px larger for the print shadow) and the box's size in
+/// logical px.
+pub(crate) fn paint_tag(name: &str, square: &str, scale: f32) -> (Canvas, f32, f32) {
+    let room = TAG_MAX_W - 2.0 - 2.0 * PAD_X - SQUARE - TAG_GAP_X;
+    let mut shown = name.to_string();
+    if text_width(TAG_FONT, &shown) > room {
+        while !shown.is_empty() && text_width(TAG_FONT, &format!("{shown}…")) > room {
+            shown.pop();
+        }
+        shown.push('…');
+    }
+    let box_w = 2.0 + 2.0 * PAD_X + SQUARE + TAG_GAP_X + text_width(TAG_FONT, &shown);
     let device = |v: f32| (v * scale).ceil().max(1.0) as u32;
-    let mut c = Canvas::new(device(box_w + 2.0), device(box_h + 2.0));
+    let mut c = Canvas::new(device(box_w + 2.0), device(TAG_H + 2.0));
     c.scale(scale, scale);
-
-    // The print shadow, then the sheet with its 1px border (highlighted: signal orange).
     c.set_fill(SHADOW);
-    c.fill_rect(2.0, 2.0, box_w, box_h);
+    c.fill_rect(2.0, 2.0, box_w, TAG_H);
     c.set_fill(SHEET);
-    c.fill_rect(0.0, 0.0, box_w, box_h);
-    c.set_stroke(if label.highlighted { SIGNAL } else { INK });
+    c.fill_rect(0.0, 0.0, box_w, TAG_H);
+    c.set_stroke(INK);
     c.set_line_width(1.0);
-    c.stroke_rect(0.5, 0.5, box_w - 1.0, box_h - 1.0);
-
-    // The name row: the name, then the role tag with the district colour's stripe.
+    c.stroke_rect(0.5, 0.5, box_w - 1.0, TAG_H - 1.0);
+    let mid = TAG_H / 2.0;
+    c.set_fill(square);
+    c.fill_rect(1.0 + PAD_X, mid - SQUARE / 2.0, SQUARE, SQUARE);
     c.set_fill(INK);
     c.set_text_baseline("middle");
-    c.set_font(NAME_FONT);
-    c.fill_text(&label.name, 9.0, 15.0);
-    let tag_x = 9.0 + name_w + 6.0;
-    c.set_stroke(INK);
-    c.stroke_rect(tag_x + 0.5, 6.5, tag_w - 1.0, 17.0);
-    let [r, g, b] = Color::hsl(label.hue / 360.0, 0.75, 0.6).to_srgb_u8();
-    c.set_fill(&format!("#{r:02x}{g:02x}{b:02x}"));
-    c.fill_rect(tag_x + 1.0, 7.0, 3.0, 16.0);
-    c.set_fill(INK);
-    c.set_font(ROLE_FONT);
-    c.fill_text(&role, tag_x + 8.0, 15.0);
-
-    // The second line: what the agent is doing, signal orange while it works.
-    c.set_fill(if label.working { SIGNAL } else { MUTED });
-    c.set_font(LINE_FONT);
-    c.fill_text(&label.line, 9.0, 32.0);
-
-    (c, box_w, box_h)
+    c.set_font(TAG_FONT);
+    c.fill_text(&shown, 1.0 + PAD_X + SQUARE + TAG_GAP_X, mid);
+    (c, box_w, TAG_H)
 }
 
 #[cfg(test)]
@@ -237,28 +197,38 @@ mod tests {
     }
 
     #[test]
-    fn idle_unselected_agent_has_no_label_and_selected_idle_agent_gets_the_full_one() {
+    fn idle_agent_has_a_tag_only_when_selected_or_hovered() {
         let mut floor = floor_with("idle");
         assert!(floor.label_overlays(640.0, 480.0, 2.0).is_empty());
 
         floor.selected = Some(1);
         let overlays = floor.label_overlays(640.0, 480.0, 2.0);
         assert_eq!(overlays.len(), 1);
-        assert_eq!(overlays[0].h, BOX_H + 2.0);
+        assert_eq!(overlays[0].h, TAG_H + 2.0);
+
+        floor.selected = None;
+        floor.hovered = Some(1);
+        assert_eq!(floor.label_overlays(640.0, 480.0, 2.0).len(), 1, "a hovered idle agent shows its tag");
     }
 
     #[test]
-    fn working_and_offline_agents_get_the_compact_tag_unless_selected() {
+    fn working_and_offline_agents_get_the_one_tag_selected_or_not() {
         for status in ["working", "offline"] {
             let mut floor = floor_with(status);
             let overlays = floor.label_overlays(640.0, 480.0, 2.0);
             assert_eq!(overlays.len(), 1, "{status}");
-            assert_eq!(overlays[0].h, COMPACT_H + 2.0, "{status}");
+            assert_eq!(overlays[0].h, TAG_H + 2.0, "{status}");
 
             floor.selected = Some(1);
             let overlays = floor.label_overlays(640.0, 480.0, 2.0);
-            assert_eq!(overlays[0].h, BOX_H + 2.0, "{status} selected");
+            assert_eq!(overlays[0].h, TAG_H + 2.0, "{status} selected");
         }
+    }
+
+    #[test]
+    fn a_long_name_is_cut_to_the_200px_box() {
+        let (_, w, _) = paint_tag(&"x".repeat(80), OK, 1.0);
+        assert!(w <= TAG_MAX_W + 0.5, "the box is {w} wide");
     }
 
     #[test]
@@ -272,7 +242,7 @@ mod tests {
 
         let overlays = floor.label_overlays(640.0, 480.0, 2.0);
         assert_eq!(overlays.len(), 3, "one overlay per bot");
-        assert_eq!(overlays.iter().filter(|o| o.h == BOX_H + 2.0).count(), 1, "one full box, for the selected agent");
+        assert!(overlays.iter().all(|o| o.h == TAG_H + 2.0), "every agent carries the one tag");
 
         let labels = floor.labels(640.0, 480.0);
         assert_eq!(labels.iter().filter(|l| l.selected).count(), 1);

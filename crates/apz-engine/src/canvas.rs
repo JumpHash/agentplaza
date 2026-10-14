@@ -75,11 +75,13 @@ struct FontSpec {
     size: f32,
     mono: bool,
     bold: bool,
+    /// The family names Martian Mono (the app's `--mono`): the bundled face, on the desktop too.
+    martian: bool,
 }
 
 impl Default for FontSpec {
     fn default() -> Self {
-        FontSpec { size: 10.0, mono: false, bold: false }
+        FontSpec { size: 10.0, mono: false, bold: false, martian: false }
     }
 }
 
@@ -771,7 +773,7 @@ fn parse_font(css: &str) -> Option<FontSpec> {
     });
     let family = tokens[idx + 1..].join(" ");
     let mono = family.contains("mono") || family.contains("courier");
-    Some(FontSpec { size, mono, bold })
+    Some(FontSpec { size, mono, bold, martian: family.contains("martian") })
 }
 
 /// The faces, indexed by `mono * 2 + bold`: the first system font found (DejaVu where Linux keeps
@@ -816,14 +818,16 @@ const BUNDLED: [&[u8]; 2] = [
 ];
 
 const UNLOADED: OnceLock<Option<FontVec>> = OnceLock::new();
-static FONTS: [OnceLock<Option<FontVec>>; 4] = [UNLOADED; 4];
+static FONTS: [OnceLock<Option<FontVec>>; 6] = [UNLOADED; 6];
 
-/// The face for a font spec, loaded once.
+/// The face for a font spec, loaded once: Martian Mono when the family names it (slots 4 and 5), else the system's.
 fn font_for(spec: &FontSpec) -> Option<&'static FontVec> {
+    let bundled = || FontVec::try_from_vec(BUNDLED[spec.bold as usize].to_vec()).ok();
+    if spec.martian {
+        return FONTS[4 + spec.bold as usize].get_or_init(bundled).as_ref();
+    }
     let i = (spec.mono as usize) * 2 + spec.bold as usize;
-    FONTS[i]
-        .get_or_init(|| system_face(i).or_else(|| FontVec::try_from_vec(BUNDLED[spec.bold as usize].to_vec()).ok()))
-        .as_ref()
+    FONTS[i].get_or_init(|| system_face(i).or_else(bundled)).as_ref()
 }
 
 /// The desktop's own face for slot `i`, the first of its files that reads. A browser has no file system: the

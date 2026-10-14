@@ -168,19 +168,29 @@ pub const PACKET_SLOTS: usize = 10;
 const PACKET_RADIUS: f32 = 0.14;
 pub const WRAP_PERIOD: f32 = 3600.0;
 
-/// The bounding-sphere radius of a model of `size`.
+/// The radius of a model's footprint, `size`'s half diagonal across x and z (fleet.ts `footOf`).
 pub fn bounding_radius(size: [f32; 3]) -> f32 {
-    0.5 * (size[0] * size[0] + size[1] * size[1] + size[2] * size[2]).sqrt()
+    size[0].hypot(size[2]) / 2.0
 }
 
-/// The ring for nodes of the given radii, in id order. Each node takes an arc of its diameter plus
-/// `RING_GAP`; the radius is the larger of `RING_MIN_RADIUS` and the total arc over 2π; the nodes
-/// are spread over the whole circle in proportion to their arcs. Returns the radius and each
-/// node's angle from +z.
-pub fn ring_layout(radii: &[f32]) -> (f32, Vec<f32>) {
+/// fleet.ts `ringLayout`: the ring for nodes of the given footprint radii, in order, around a hub of `hub_radius`. Each
+/// node takes an arc of its diameter plus `RING_GAP`, and the arcs cover the whole ring. The radius is at least
+/// `RING_MIN_RADIUS`, the arcs' length over 2π, the hub's radius plus the largest node plus the gap, and the radius at
+/// which each pair of neighbours' chord keeps them apart (a chord is shorter than its arc). Returns the radius and each
+/// node's angle (`ring_point` places it).
+pub fn ring_layout(radii: &[f32], hub_radius: f32) -> (f32, Vec<f32>) {
     let spans: Vec<f32> = radii.iter().map(|r| 2.0 * r + RING_GAP).collect();
     let total: f32 = spans.iter().sum();
-    let radius = RING_MIN_RADIUS.max(total / TAU);
+    let biggest = radii.iter().copied().fold(0.0_f32, f32::max);
+    let mut radius = RING_MIN_RADIUS.max(total / TAU).max(hub_radius + biggest + RING_GAP);
+    for i in 0..spans.len() {
+        let j = (i + 1) % spans.len();
+        if j == i {
+            continue;
+        }
+        let pair = spans[i] + spans[j];
+        radius = radius.max(pair / (4.0 * (PI * pair / (2.0 * total)).sin()));
+    }
     let mut at = 0.0;
     let angles = spans
         .iter()
@@ -193,9 +203,46 @@ pub fn ring_layout(radii: &[f32]) -> (f32, Vec<f32>) {
     (radius, angles)
 }
 
-/// A ring point at `angle` from +z, on the ground plane.
+/// A ring point at `angle` on the ground plane, as fleet.ts places a slot: x = r cos, z = r sin.
 pub fn ring_point(radius: f32, angle: f32) -> [f32; 3] {
-    [radius * angle.sin(), 0.0, radius * angle.cos()]
+    [radius * angle.cos(), 0.0, radius * angle.sin()]
+}
+
+/// fleet.ts `facingAngle`: the y rotation that turns a model's port (its local xz offset from the centre) to face the
+/// hub at the origin, for a machine at (x, z).
+pub fn facing_angle(x: f32, z: f32, port: [f32; 3]) -> f32 {
+    let to_hub = (-x).atan2(-z);
+    let local = if port[0].hypot(port[2]) < 1e-6 { 0.0 } else { port[0].atan2(port[2]) };
+    to_hub - local
+}
+
+/// fleet.ts `byId`: ids compared as `localeCompare(…, { numeric: true })` does, a run of digits by its value (n2
+/// before n10), the rest ignoring case.
+pub fn by_id(a: &str, b: &str) -> std::cmp::Ordering {
+    fn chunks(s: &str) -> Vec<(bool, String)> {
+        let mut out: Vec<(bool, String)> = Vec::new();
+        for c in s.chars() {
+            let digit = c.is_ascii_digit();
+            match out.last_mut() {
+                Some((d, run)) if *d == digit => run.push(c),
+                _ => out.push((digit, c.to_string())),
+            }
+        }
+        out
+    }
+    let (ca, cb) = (chunks(a), chunks(b));
+    for ((da, ra), (db, rb)) in ca.iter().zip(cb.iter()) {
+        let ord = if *da && *db {
+            let (ta, tb) = (ra.trim_start_matches('0'), rb.trim_start_matches('0'));
+            ta.len().cmp(&tb.len()).then_with(|| ta.cmp(tb))
+        } else {
+            ra.to_lowercase().cmp(&rb.to_lowercase())
+        };
+        if ord != std::cmp::Ordering::Equal {
+            return ord;
+        }
+    }
+    ca.len().cmp(&cb.len()).then_with(|| a.cmp(b))
 }
 
 /// The cable from `from` to `to`: a quadratic Bézier whose middle sags `CABLE_SAG` below the
@@ -518,7 +565,8 @@ fn place_machine(
     MachineScene {
         root,
         center: world([0.0, size[1] / 2.0, 0.0]),
-        radius: bounding_radius(size),
+        // fleet.ts: the camera's fit holds each machine's bounding sphere (its whole size, not its footprint).
+        radius: 0.5 * (size[0] * size[0] + size[1] * size[1] + size[2] * size[2]).sqrt(),
         label: world(anchors.label.unwrap_or([0.0, size[1], 0.0])),
         port: world(anchors.port.unwrap_or([0.0, size[1] / 2.0, 0.0])),
         hub,
@@ -693,17 +741,11 @@ impl FleetScene {
         self.links.clear();
         self.layout = Some(layout);
 
-        let hub = fleet
-            .machines
-            .iter()
-            .filter(|m| m.role == "hub")
-            .min_by(|a, b| a.id.cmp(&b.id));
-        let mut nodes: Vec<&Machine> = fleet
-            .machines
-            .iter()
-            .filter(|m| hub.map_or(true, |h| h.id != m.id))
-            .collect();
-        nodes.sort_by(|a, b| a.id.cmp(&b.id));
+        // fleet.ts: the machines by id (numeric runs by value); the hub is the first with the hub role, else the first.
+        let mut ordered: Vec<&Machine> = fleet.machines.iter().collect();
+        ordered.sort_by(|a, b| by_id(&a.id, &b.id));
+        let hub = ordered.iter().find(|m| m.role == "hub").or_else(|| ordered.first()).copied();
+        let nodes: Vec<&Machine> = ordered.iter().filter(|m| hub.is_none_or(|h| h.id != m.id)).copied().collect();
 
         let hub_prepared = hub.and_then(|h| prepare(h).map(|p| (h, p)));
         let node_prepared: Vec<(&Machine, (&'static hardware::Model, Built))> = nodes
@@ -714,7 +756,8 @@ impl FleetScene {
             .iter()
             .map(|(_, (model, _))| bounding_radius(model.size))
             .collect();
-        let (radius, angles) = ring_layout(&radii);
+        let hub_radius = hub_prepared.as_ref().map_or(0.0, |(_, (model, _))| bounding_radius(model.size));
+        let (radius, angles) = ring_layout(&radii, hub_radius);
 
         if let Some((h, (model, mut built))) = hub_prepared {
             if self.machines.len() < MACHINE_SLOTS {
@@ -733,6 +776,9 @@ impl FleetScene {
         }
         for ((m, (model, mut built)), angle) in node_prepared.into_iter().zip(angles) {
             let base = ring_point(radius, angle);
+            // fleet.ts portOf: the model's port anchor, else its centre at half its height.
+            let port = model.anchors.port.unwrap_or([0.0, model.size[1] / 2.0, 0.0]);
+            let turn = facing_angle(base[0], base[2], port);
             if self.machines.len() < MACHINE_SLOTS {
                 built.set_machine(self.machines.len());
             }
@@ -743,7 +789,7 @@ impl FleetScene {
                 false,
                 model,
                 built,
-                (base, angle + PI),
+                (base, turn),
             );
             self.machines.insert(m.id.clone(), node);
         }
@@ -849,7 +895,7 @@ impl FleetScene {
             out.packets.extend(direction_slots(from, to, live, false, rgba(named("copper-live"))));
             out.packets.extend(direction_slots(from, to, live, true, rgba(named("led-info"))));
         }
-        for m in self.machines.values() {
+        for (id, m) in &self.machines {
             if let Some(i) = m.built.machine().filter(|&i| i < MACHINE_SLOTS) {
                 out.machine_angles[i] = m.built.fan_angle();
                 out.machine_states[i] = m.built.machine_state();
@@ -857,9 +903,12 @@ impl FleetScene {
                 out.machine_statuses[i] = rgba(m.built.led_status());
             }
             let online = m.status == Status::Online;
+            // fleet.ts paintRing: the LED colour, at 0.6 to 0.9 opacity pulsing at 2 radians a second (online, each
+            // machine at its own phase: its id's char codes times 0.7) or 0.85 held; the band is foot + 0.8 to 1.2.
+            let phase = id.chars().map(|c| c as u32 as f32).sum::<f32>() * 0.7;
             out.rings.push(RingInstance {
-                centre: [m.base[0], 0.05, m.base[2], m.footprint * 1.3],
-                pulse: [1.0 / PULSE_PERIOD, 0.0, if online { 1.0 } else { 0.0 }, 0.2],
+                centre: [m.base[0], 0.04, m.base[2], m.footprint],
+                pulse: [2.0 / TAU, phase / TAU, if online { 1.0 } else { 0.0 }, 0.85],
                 color: rgba(status_led(m.status)),
             });
         }
@@ -1033,40 +1082,47 @@ mod tests {
 
     #[test]
     fn ring_of_one_hub_and_five_nodes() {
-        // Five nodes of radius 3 take 10 units of arc each, 50 in all: the ring is the 14-unit
-        // minimum, and the nodes sit at 36, 108, 180, 252 and 324 degrees from +z.
-        let (radius, angles) = ring_layout(&[3.0; 5]);
+        // Five nodes of radius 3 take 10 units of arc each, 50 in all, at 36, 108, 180, 252 and 324 degrees. Neighbours'
+        // chord needs 20 / (4 sin(π 20 / 100)) = 8.51, under the 14-unit minimum, which holds.
+        let (radius, angles) = ring_layout(&[3.0; 5], 0.0);
         assert!(close(radius, 14.0));
         let deg: Vec<f32> = angles.iter().map(|a| a.to_degrees()).collect();
         for (got, want) in deg.iter().zip([36.0, 108.0, 180.0, 252.0, 324.0]) {
             assert!(close(*got, want), "{got} != {want}");
         }
-        assert!(close3(
-            ring_point(radius, angles[0]),
-            [8.22899, 0.0, 11.32624]
-        ));
-        assert!(close3(
-            ring_point(radius, angles[1]),
-            [13.31480, 0.0, -4.32624]
-        ));
-        assert!(close3(ring_point(radius, angles[2]), [0.0, 0.0, -14.0]));
-        // Neighbours never overlap: their centres are 2 * 14 * sin(36 deg) = 16.45 apart, at
-        // least the two radii plus the gap (10).
+        // fleet.ts places a slot at x = r cos, z = r sin.
+        assert!(close3(ring_point(radius, angles[0]), [11.32624, 0.0, 8.22899]));
+        assert!(close3(ring_point(radius, angles[2]), [-14.0, 0.0, 0.0]));
         let (p0, p1) = (ring_point(radius, angles[0]), ring_point(radius, angles[1]));
         assert!(Vec3::from(p0).distance(Vec3::from(p1)) >= 10.0);
     }
 
     #[test]
-    fn ring_grows_past_the_minimum_when_the_arcs_do_not_fit() {
-        // Five nodes of radius 10 take 24 units each: 120 in all, so the radius is 120 / 2π = 60 / π.
-        let (radius, angles) = ring_layout(&[10.0; 5]);
-        assert!(close(radius, 60.0 / PI));
+    fn ring_grows_past_the_minimum_when_the_arcs_or_the_hub_do_not_fit() {
+        // Five nodes of radius 10 take 24 units each, 120 in all: the chord of two neighbours (48 of arc) needs
+        // 48 / (4 sin(π 48 / 240)) = 20.42, past the arcs' 120 / 2π.
+        let (radius, angles) = ring_layout(&[10.0; 5], 0.0);
+        assert!(close(radius, 48.0 / (4.0 * (PI * 48.0 / 240.0).sin())));
         assert!(close(angles[0].to_degrees(), 36.0));
+        // A hub of radius 30 pushes the ring out to its radius plus the largest node plus the gap.
+        let (radius, _) = ring_layout(&[3.0; 5], 30.0);
+        assert!(close(radius, 37.0));
     }
 
     #[test]
     fn footprint_radius_is_the_half_diagonal() {
-        assert!(close(bounding_radius([6.0, 0.0, 8.0]), 5.0));
+        assert!(close(bounding_radius([6.0, 9.0, 8.0]), 5.0));
+    }
+
+    #[test]
+    fn a_machine_turns_its_port_to_the_hub_and_ids_sort_by_number() {
+        // A port on the model's +z side, at +x of the hub: turned so +z points at -x.
+        let turn = facing_angle(10.0, 0.0, [0.0, 1.0, 1.0]);
+        let (s, c) = turn.sin_cos();
+        assert!(close(s * 0.0 + c * 0.0, 0.0) && close(s, -1.0), "turn {turn}");
+        let mut ids = vec!["n10", "n2", "n1", "N3", "hub"];
+        ids.sort_by(|a, b| by_id(a, b));
+        assert_eq!(ids, ["hub", "n1", "n2", "N3", "n10"]);
     }
 
     #[test]

@@ -17,7 +17,7 @@ use super::nav_overlay::NavOverlay;
 use super::walkway_mesh::{build_gangway, build_ramp, ramp_between, GangwaySpec};
 use super::Colors;
 use crate::robot::BodyMode;
-use crate::scene::Obj;
+use crate::scene::{Kind, Obj};
 
 /// The robots' gait on the board (floor.ts's nav robot spec): units per second, radians per second.
 const SPEED: f64 = 1.6;
@@ -155,6 +155,18 @@ impl BoardNav {
     pub fn robot_of(&self, cid: u64) -> Option<u32> {
         self.ids.get(&cid).copied()
     }
+
+    /// The mesh nodes under the lift `id`'s mesh group (for the debug hooks); 0 for an unknown lift.
+    pub fn lift_meshes(&self, id: usize) -> usize {
+        self.lifts.iter().find(|(lift, _)| *lift == id).map_or(0, |(_, mesh)| count_meshes(&mesh.root))
+    }
+}
+
+/// The mesh nodes (plain or instanced) in a node's subtree, the node itself included.
+fn count_meshes(node: &Obj) -> usize {
+    let n = node.get();
+    let own = usize::from(matches!(n.kind, Kind::Mesh { .. } | Kind::Instanced { .. }));
+    own + n.children.iter().map(count_meshes).sum::<usize>()
 }
 
 /// The rig's body layer for a nav body (floor.ts maps the same): the air modes show the jump or the fall.

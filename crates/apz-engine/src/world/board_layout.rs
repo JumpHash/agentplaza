@@ -88,6 +88,9 @@ pub struct BoardLayout {
     /// The shared layout this one came from and its GPU count (None for the engine's own layout): the board's
     /// navigation (nav.rs) is built from it.
     pub shared: Option<(std::sync::Arc<apz_board::layout::Layout>, u32)>,
+    /// The board's world scale (layout.boardScale): the shared layout grows a crowded board, and its rooms, plates and
+    /// homes are in the grown units. 1 for the engine's own layout.
+    pub scale: f32,
 }
 
 /// The board's copper: nodes are the distinct trace points, edges join consecutive points.
@@ -536,7 +539,7 @@ pub fn layout_on_board_with(
         }
     }
 
-    BoardLayout { districts, homes, atom, bounds, pcb_top, plates, shared: None }
+    BoardLayout { districts, homes, atom, bounds, pcb_top, plates, shared: None, scale: 1.0 }
 }
 
 /// The world scale the shared board core may grow a layout to (the apz-board tests' cap).
@@ -775,6 +778,7 @@ pub fn board_layout_of(shared: &apz_board::layout::Layout) -> BoardLayout {
         pcb_top: shared.pcb_top as f32,
         plates: shared.plates.iter().map(|p| (p.rect.map(|v| v as f32), p.y as f32)).collect(),
         shared: None,
+        scale: shared.board_scale as f32,
     }
 }
 

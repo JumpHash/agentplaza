@@ -289,7 +289,12 @@ impl Entry {
         let end = entry::end_at(rooms, robots);
         let min = if self.direct { KEY.direct[0] } else { 0.0 };
         if self.default.is_none() && p.floor.board.is_some() && p.aspect > 0.0 {
-            self.default = Some(default_pose(p.floor, p.aspect));
+            let pose = default_pose(p.floor, p.aspect);
+            // floor.ts defaultPose: the haze the sequence eases to is the default view's (near 0.8, far 3 times its
+            // distance), as resetView sets it.
+            let dist = pose.eye.distance(pose.target);
+            self.board_fog = (dist * 0.8, dist * 3.0);
+            self.default = Some(pose);
         }
         let before = self.t;
         let mut t = match self.pinned {
@@ -615,10 +620,11 @@ fn attach(root: &Obj, node: &Obj, on: bool) {
 
 /// The plaza's default view: the view the Floor's reset frames, read without moving the orbit.
 fn default_pose(floor: &mut Floor, aspect: f32) -> Pose {
-    let saved = floor.orbit.clone();
+    let (saved, fog) = (floor.orbit.clone(), (floor.world.fog_near, floor.world.fog_far));
     floor.reset_view(aspect);
     let cam: Camera = floor.orbit.camera(aspect);
     floor.orbit = saved;
+    (floor.world.fog_near, floor.world.fog_far) = fog;
     Pose { eye: cam.eye, target: cam.target }
 }
 

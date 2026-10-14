@@ -136,6 +136,14 @@ pub struct DrawStats {
     pub outline: u32,
     pub sprite_label: u32,
     pub other: u32,
+    /// The triangles drawn this frame by the mesh and shadow passes.
+    pub triangles: u64,
+    /// The mesh buffers the renderer holds.
+    pub geometries: u32,
+    /// The textures the renderer holds.
+    pub textures: u32,
+    /// The render pipelines the renderer has built.
+    pub pipelines: u32,
     pub programs: ProgramStats,
 }
 
@@ -173,6 +181,7 @@ impl DrawStats {
                 sky: programs[program_index(Prog::Sky)],
                 points: programs[program_index(Prog::Points)],
             },
+            ..Default::default()
         }
     }
 
@@ -186,6 +195,11 @@ impl Pipeline {
     /// Counts one draw call of pass `pass` (an index of [`DRAW_PASSES`]).
     fn count(&self, pass: usize) {
         self.draws[pass].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Counts the triangles of one mesh draw (its index count over three, times its instances).
+    fn count_tris(&self, n: u64) {
+        self.tris.fetch_add(n, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// The draw calls of the frame so far, by pass (the order of [`DRAW_PASSES`]).
@@ -206,7 +220,13 @@ impl Pipeline {
     /// The draw calls of the frame so far by category (see [`DrawStats`]).
     pub fn draw_stats(&self) -> DrawStats {
         let programs = std::array::from_fn(|i| self.programs[i].load(std::sync::atomic::Ordering::Relaxed));
-        DrawStats::from_counts(self.draw_breakdown(), programs)
+        DrawStats {
+            triangles: self.tris.load(std::sync::atomic::Ordering::Relaxed),
+            geometries: self.meshes.len() as u32,
+            textures: self.textures.len() as u32,
+            pipelines: self.pipelines.len() as u32,
+            ..DrawStats::from_counts(self.draw_breakdown(), programs)
+        }
     }
 }
 
@@ -472,7 +492,7 @@ impl FleetGpu {
             entries: &[wgpu::BindGroupEntry { binding: 0, resource: globals.as_entire_binding() }],
         });
         let packet = unit_sphere(8, 6);
-        let ring = unit_ring(48, 1.1 / 1.3);
+        let ring = unit_ring(64);
         FleetGpu {
             packet_mesh: vertex_buffer(device, queue, "fleet packet mesh", bytemuck::cast_slice(&packet[..])),
             packet_verts: packet.len() as u32,
@@ -540,13 +560,14 @@ impl FleetGpu {
             layout: Some(&layout),
             vertex: wgpu::VertexState { module: &self.module, entry_point: Some("vs_ring"), compilation_options: Default::default(), buffers: &[fleet_base_layout(), fleet_ring_layout()] },
             primitive: Default::default(),
-            depth_stencil: Some(fleet_depth(true)),
+            // fleet.ts's rings are transparent (their opacity pulses) and write no depth.
+            depth_stencil: Some(fleet_depth(false)),
             multisample: wgpu::MultisampleState { count: samples, mask: !0, alpha_to_coverage_enabled: false },
             fragment: Some(wgpu::FragmentState {
                 module: &self.module,
                 entry_point: Some("fs_color"),
                 compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState { format, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+                targets: &[Some(wgpu::ColorTargetState { format, blend: Some(wgpu::BlendState::ALPHA_BLENDING), write_mask: wgpu::ColorWrites::ALL })],
             }),
             multiview: None,
             cache: None,
@@ -849,16 +870,17 @@ fn unit_sphere(slices: u32, stacks: u32) -> Vec<[f32; 3]> {
     out
 }
 
-/// A unit status ring in the ground plane (outer radius 1, inner `inner`) as a triangle list of `segments` quads.
-fn unit_ring(segments: u32, inner: f32) -> Vec<[f32; 3]> {
+/// A status ring in the ground plane as a triangle list of `segments` quads: each vertex is its direction (x, z on the
+/// unit circle) and y 0 on the inner edge, 1 on the outer (`vs_ring` lays the band out from the machine's footprint).
+fn unit_ring(segments: u32) -> Vec<[f32; 3]> {
     use std::f32::consts::TAU;
-    let at = |i: u32, r: f32| {
+    let at = |i: u32, edge: f32| {
         let a = TAU * i as f32 / segments as f32;
-        [r * a.cos(), 0.0, r * a.sin()]
+        [a.cos(), edge, a.sin()]
     };
     let mut out = Vec::new();
     for i in 0..segments {
-        let (o0, o1, n0, n1) = (at(i, 1.0), at(i + 1, 1.0), at(i, inner), at(i + 1, inner));
+        let (o0, o1, n0, n1) = (at(i, 1.0), at(i + 1, 1.0), at(i, 0.0), at(i + 1, 0.0));
         out.extend([o0, n0, o1, o1, n0, n1]);
     }
     out
@@ -947,6 +969,8 @@ pub struct Pipeline {
     pub draws: [std::sync::atomic::AtomicU32; 5],
     /// This frame's mesh and sprite draws by program (see [`program_index`]).
     pub programs: [std::sync::atomic::AtomicU32; PROGRAM_COUNT],
+    /// This frame's triangles drawn by the mesh passes (see [`DrawStats::triangles`]).
+    pub tris: std::sync::atomic::AtomicU64,
 }
 
 impl Pipeline {
@@ -1210,6 +1234,7 @@ impl Pipeline {
             clear_alpha: 1.0,
             draws: Default::default(),
             programs: Default::default(),
+            tris: std::sync::atomic::AtomicU64::new(0),
             probe_corner: false,
         };
         // The white 1x1 map that unmapped materials sample (texture id 0).
@@ -1763,6 +1788,7 @@ impl Primitive {
         for count in &p.programs {
             count.store(0, std::sync::atomic::Ordering::Relaxed);
         }
+        p.tris.store(0, std::sync::atomic::Ordering::Relaxed);
         let started = web_time::Instant::now();
         let full = (((bounds.width * scale).round() as u32).max(1), ((bounds.height * scale).round() as u32).max(1));
         let light = light();
@@ -2104,6 +2130,7 @@ fn record(p: &Pipeline, device: &wgpu::Device, queue: &wgpu::Queue) {
                     pass.set_vertex_buffer(0, mesh.vertices.slice(..));
                     pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
                     p.count(PASS_SHADOW);
+                    p.count_tris(u64::from(mesh.count / 3) * u64::from(range.end - range.start));
                     pass.draw_indexed(0..mesh.count, 0, range.clone());
                 }
             }
@@ -2152,6 +2179,7 @@ fn record(p: &Pipeline, device: &wgpu::Device, queue: &wgpu::Queue) {
                         pass.set_vertex_buffer(1, rows.slice(..));
                         pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
                         p.count(PASS_MESH);
+                        p.count_tris(u64::from(mesh.count / 3) * u64::from(cmd.rows.end - cmd.rows.start));
                         p.count_program(cmd.key.prog);
                         pass.draw_indexed(0..mesh.count, 0, cmd.rows.clone());
                     }

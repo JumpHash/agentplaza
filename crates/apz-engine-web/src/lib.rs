@@ -483,6 +483,17 @@ impl WebEngine {
         self.shared.borrow().engine.busy()
     }
 
+    /// The shown view's name (`machines` or `floor`), as `__apzPerf` reports it.
+    pub fn view_name(&self) -> String {
+        self.shared.borrow().engine.stage.view_name()
+    }
+
+    /// The shown view's camera as JSON (`__apzCamera`): `{ view, eye, target, fov, roomsTop }` (the board's built rooms'
+    /// top, which the default view frames up to). For developers and the parity checks.
+    pub fn camera_json(&self) -> String {
+        self.shared.borrow_mut().engine.stage.camera_json()
+    }
+
     /// Seconds since the ENTER sequence began, or undefined when none runs (the debug hook's entry clock).
     pub fn entry_time(&self) -> Option<f64> {
         self.shared.borrow().engine.entry_time()

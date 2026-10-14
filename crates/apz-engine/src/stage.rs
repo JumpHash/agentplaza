@@ -691,6 +691,11 @@ pub fn tick(&mut self, now: Instant) -> Motion {
                 self.floor.step_rooms(BOARD_STEP);
                 motion = motion.max(if self.floor.rooms_pending() { Motion::Active } else { Motion::Ambient });
             }
+            // floor.ts: the built rooms' new top refits the default view, unless the view was moved (ENTER's flight
+            // holds the camera itself: reset_plaza waits for it).
+            if !self.floor.fitted && !self.moved && w > 0.0 && h > 0.0 {
+                self.fit_plaza();
+            }
             // A direct load (no ENTER) plays the build wave once its board is built and the stage has a size.
             if self.entry.is_none() && !self.direct_waved && self.floor.board.is_some() && w > 0.0 && h > 0.0 {
                 self.direct_waved = true;

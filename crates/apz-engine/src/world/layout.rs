@@ -42,6 +42,12 @@ pub const POLAR: f32 = 0.95; // camera angle from vertical, about 55 degrees: is
 pub const AZIMUTH: f32 = FRAC_PI_4;
 
 const FIT_FILL: f32 = 0.85;
+/// A board this many units across (the server's 88) is big: its default view is higher (`view_dir`).
+const BIG_BOARD: f32 = 72.0;
+/// A big board's default view, from vertical: about 24 degrees, near top-down (`POLAR` is 55).
+const BIG_POLAR: f32 = 0.42;
+/// The default view frames at least this share of the board's width and depth (`fit_points`).
+const FRAME_MIN_SHARE: f32 = 0.3;
 
 pub const SOCIAL_NEAR: f32 = 9.5; // rooms this close count as neighbours for a visit or a chat
 pub const STROLL_R: f32 = 3.1; // the stroll ring just outside the centre
@@ -571,6 +577,7 @@ impl Floor {
             pcb_top: 0.0,
             plates: Vec::new(),
             shared: None,
+            scale: 1.0,
         };
 
         self.root.remove(&self.ground);
@@ -700,6 +707,12 @@ impl Floor {
             self.statics_dirty = true;
             job.next += 1;
             if job.next == job.items.len() {
+                // floor.ts: the rooms' top is the built rooms' box (2 with none), and a new top refits the view.
+                let top = super::max_y(&self.district_group).unwrap_or(2.0);
+                if (top - self.rooms_top).abs() > 1e-3 {
+                    self.rooms_top = top;
+                    self.fitted = false;
+                }
                 return self.rooms_pending();
             }
             if t0.elapsed() >= budget {
@@ -871,108 +884,115 @@ impl Floor {
         }
     }
 
-    /// The points the fit frames, world units: the board's footprint on the PCB and at the tallest
-    /// room's top; each room's footprint with its ramp, on the PCB and at its top; the atom; and each
-    /// robot's home up to the height of its label.
-    pub(super) fn fit_points(&self) -> Vec<Vec3> {
-        let Some(board) = &self.board else { return vec![Vec3::ZERO] };
-        let pcb = board.layout.pcb_top;
-        let bounds = board.layout.bounds;
-        let mut top = pcb;
-        let mut pts = Vec::new();
-        for bd in &board.layout.districts {
-            let t = bd.y + SLAB_H;
-            top = top.max(t);
-            for (x, z) in footprint(&bd.district) {
-                pts.push(Vec3::new(x, pcb, z));
-                pts.push(Vec3::new(x, t, z));
+    /// `viewDir()`: the direction the default view looks from, target to eye: the board's own camera anchor (from its
+    /// look point), else the isometric default (`POLAR`, `AZIMUTH`). A big board (`BIG_BOARD` across or more) keeps the
+    /// heading but is seen from higher, `BIG_POLAR` from vertical: its tall GPU shrouds hide the plates from the
+    /// anchor's oblique angle.
+    pub(super) fn view_dir(&self) -> Vec3 {
+        let mut d = Vec3::new(POLAR.sin() * AZIMUTH.sin(), POLAR.cos(), POLAR.sin() * AZIMUTH.cos());
+        let Some(board) = &self.board else { return d };
+        if let Some(cam) = board.model.anchors.camera.as_ref() {
+            let v = Vec3::from(cam.at) - Vec3::from(cam.look);
+            if v.length_squared() > 1e-6 {
+                d = v.normalize();
             }
         }
-        let (x0, x1) = (bounds.cx - bounds.w / 2.0, bounds.cx + bounds.w / 2.0);
-        let (z0, z1) = (bounds.cz - bounds.d / 2.0, bounds.cz + bounds.d / 2.0);
-        for (x, z) in [(x0, z0), (x1, z0), (x1, z1), (x0, z1)] {
-            pts.push(Vec3::new(x, pcb, z));
-            pts.push(Vec3::new(x, top, z));
+        let size = board.model.size;
+        if size[0].max(size[2]) >= BIG_BOARD {
+            let h = d.x.hypot(d.z);
+            let h = if h > 0.0 { h } else { 1.0 };
+            d = Vec3::new(d.x / h * BIG_POLAR.sin(), BIG_POLAR.cos(), d.z / h * BIG_POLAR.sin());
         }
-        let [ax, ay, az] = board.layout.atom;
-        pts.push(Vec3::new(ax, ay + 1.0, az));
-        // A robot stands about 1.5 units tall, its label just above it.
-        const ROBOT_AND_LABEL: f32 = 2.0;
-        for bot in &self.bots {
-            let (x, z) = bot.home;
-            pts.push(Vec3::new(x, self.top_at(bot.district) + ROBOT_AND_LABEL, z));
-        }
-        pts
+        d
     }
 
-    /// `resetView()`: the isometric-ish view that frames the board in an `aspect` (width / height)
-    /// stage. The eye keeps its angles (`POLAR`, `AZIMUTH`) and the distance is solved so that each
-    /// fit point sits within `FIT_FILL` of the stage's half-width and half-height. A point `v` from
-    /// the target is `dist - v·dir` deep, so it needs `dist >= v·dir + max(|across| / (FIT_FILL ·
-    /// tan_h), |up| / (FIT_FILL · tan_v))`; the nearest distance is the largest such bound.
+    /// `fitBox(true)`: the corners of the box the default view frames, world units. With rooms that seat someone: their
+    /// footprints (a room's cell, or its built room where that is larger), at least `FRAME_MIN_SHARE` of the board's
+    /// width and depth, from the PCB top to the rooms' top, grown by 15% each way. Without: the board's footprint from
+    /// the ground to that top. The top is the built rooms' (`rooms_top`) or one above the atom, the higher.
+    pub(super) fn fit_points(&self) -> Vec<Vec3> {
+        let Some(board) = &self.board else { return vec![Vec3::ZERO] };
+        let lay = &board.layout;
+        let b = if lay.bounds.w > 0.0 { lay.bounds } else { Bounds { cx: 0.0, cz: 0.0, w: 64.0, d: 56.0 } };
+        let atom_y = board.model.anchors.atom.map_or(0.0, |a| a[1]) * lay.scale;
+        let top = self.rooms_top.max(atom_y + 1.0);
+        let mut lo = Vec3::new(b.cx - b.w / 2.0, 0.0, b.cz - b.d / 2.0);
+        let mut hi = Vec3::new(b.cx + b.w / 2.0, top, b.cz + b.d / 2.0);
+        let seated: HashSet<usize> = lay.homes.values().map(|&(idx, _, _)| idx).collect();
+        let rooms: Vec<&BoardDistrict> = lay.districts.iter().enumerate().filter(|(i, _)| seated.contains(i)).map(|(_, r)| r).collect();
+        if !rooms.is_empty() {
+            lo = Vec3::new(f32::INFINITY, lay.pcb_top, f32::INFINITY);
+            hi = Vec3::new(f32::NEG_INFINITY, top, f32::NEG_INFINITY);
+            for r in rooms {
+                let (hx, hz) = (r.district.r.max(r.w / 2.0), r.district.r.max(r.d / 2.0));
+                lo.x = lo.x.min(r.district.cx - hx);
+                hi.x = hi.x.max(r.district.cx + hx);
+                lo.z = lo.z.min(r.district.cy - hz);
+                hi.z = hi.z.max(r.district.cy + hz);
+            }
+            // A few rooms on a big board still frame a share of its footprint: one room alone does not fill the stage.
+            for (lo_a, hi_a, size) in [(&mut lo.x, &mut hi.x, b.w), (&mut lo.z, &mut hi.z, b.d)] {
+                let mid = (*lo_a + *hi_a) / 2.0;
+                let half = (size * FRAME_MIN_SHARE).max(*hi_a - *lo_a) / 2.0;
+                *lo_a = mid - half;
+                *hi_a = mid + half;
+            }
+            let margin = (hi - lo) * 0.15;
+            lo -= margin;
+            hi += margin;
+        }
+        let mut ring = Vec::with_capacity(8);
+        for x in [lo.x, hi.x] {
+            for z in [lo.z, hi.z] {
+                for y in [lo.y, hi.y] {
+                    ring.push(Vec3::new(x, y, z));
+                }
+            }
+        }
+        ring
+    }
+
+    /// `resetView()` / `fitView()`: the default view of the board in an `aspect` (width / height) stage. The eye looks
+    /// along `view_dir` at the middle of `fit_points`, at the nearest distance where every point sits within
+    /// `FIT_FILL` of the stage's half-width and half-height (a point `v` from the target is `dist - v·dir` deep, so it
+    /// needs `dist >= v·dir + max(|across| / (FIT_FILL · tan_h), |up| / (FIT_FILL · tan_v))`, and at least 1). Two
+    /// passes then move the aim up the screen's vertical to centre the points' extent, and solve the distance again.
     pub fn reset_view(&mut self, aspect: f32) {
-        // three's setFromSphericalCoords(1, POLAR, AZIMUTH): the unit direction from target to eye.
-        let dir = Vec3::new(POLAR.sin() * AZIMUTH.sin(), POLAR.cos(), POLAR.sin() * AZIMUTH.cos());
-        let right = Vec3::Y.cross(dir).normalize();
+        let dir = self.view_dir();
+        let right = Vec3::Y.cross(dir).normalize_or(Vec3::X);
         let up = dir.cross(right);
         let tan_v = (FOV_DEG / 2.0).to_radians().tan();
         let tan_h = tan_v * aspect.max(1e-3);
         let points = self.fit_points();
-        let min_dist = self.orbit.min_distance;
         let solve = |target: Vec3| {
-            points.iter().fold(min_dist, |far, p| {
+            points.iter().fold(1.0_f32, |far, p| {
                 let v = *p - target;
                 let across = v.dot(right).abs() / (FIT_FILL * tan_h);
                 let lift = v.dot(up).abs() / (FIT_FILL * tan_v);
                 far.max(v.dot(dir) + across.max(lift))
             })
         };
-        // The near side of the board projects larger, so a target at the origin leaves it low on the
-        // stage. Each pass solves the distance, then moves the target across and up to the middle of
-        // the points' extent on the stage; a few passes settle it.
-        let mut target = Vec3::new(0.0, 0.4, 0.0);
-        for _ in 0..4 {
-            let dist = solve(target);
-            let (mut x0, mut x1, mut y0, mut y1) = (f32::MAX, f32::MIN, f32::MAX, f32::MIN);
+        let (lo, hi) = points.iter().fold((Vec3::splat(f32::MAX), Vec3::splat(f32::MIN)), |(lo, hi), p| (lo.min(*p), hi.max(*p)));
+        let mut target = (lo + hi) / 2.0;
+        let mut dist = solve(target);
+        for _ in 0..2 {
+            let (mut y0, mut y1) = (f32::MAX, f32::MIN);
             for p in &points {
                 let v = *p - target;
                 let depth = dist - v.dot(dir);
-                let nx = v.dot(right) / (depth * tan_h);
                 let ny = v.dot(up) / (depth * tan_v);
-                x0 = x0.min(nx);
-                x1 = x1.max(nx);
                 y0 = y0.min(ny);
                 y1 = y1.max(ny);
             }
-            target += right * ((x0 + x1) / 2.0 * dist * tan_h) + up * ((y0 + y1) / 2.0 * dist * tan_v);
+            // Moving the aim up the screen's own vertical moves the plaza down the frame by the same share of the view.
+            target += up * ((y0 + y1) / 2.0 * dist * tan_v);
+            dist = solve(target);
         }
-        let dist = solve(target);
         self.orbit.look(target + dir * dist, target);
+        // The haze keeps its look at the fitted distance: the plaza stays clear and the far horizon still fades.
+        self.world.fog_near = dist * 0.8;
+        self.world.fog_far = dist * 3.0;
     }
-}
-
-/// Ground points around a room's footprint, its ramp included: a square's corners, or a round
-/// room's rim.
-fn footprint(d: &District) -> Vec<(f32, f32)> {
-    let reach = d.r + RAMP;
-    if d.round {
-        rim(d.cx, d.cy, reach)
-    } else {
-        vec![(d.cx - reach, d.cy - reach), (d.cx + reach, d.cy - reach), (d.cx + reach, d.cy + reach), (d.cx - reach, d.cy + reach)]
-    }
-}
-
-/// Points on a circle of `reach` about (`cx`, `cy`): the vertices of a polygon that circumscribes the
-/// circle, so framing them frames the whole circle.
-fn rim(cx: f32, cy: f32, reach: f32) -> Vec<(f32, f32)> {
-    const N: usize = 24;
-    let r = reach / (PI / N as f32).cos();
-    (0..N)
-        .map(|i| {
-            let a = TAU * i as f32 / N as f32;
-            (cx + r * a.cos(), cy + r * a.sin())
-        })
-        .collect()
 }
 
 #[cfg(test)]

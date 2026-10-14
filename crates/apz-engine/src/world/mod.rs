@@ -258,6 +258,8 @@ pub struct Floor {
     pub reacted: Option<u64>,
     /// The view has been fitted to the districts once.
     pub fitted: bool,
+    /// The built rooms' top (floor.ts roomsTop): the default view frames up to it. 2 until the rooms are built.
+    pub rooms_top: f32,
     /// Seconds since the floor opened, and the wall clock (ms) of the last step.
     pub time: f32,
     pub now_ms: f64,
@@ -318,6 +320,7 @@ impl Floor {
             selected: None,
             reacted: None,
             fitted: false,
+            rooms_top: 2.0,
             time: 0.0,
             now_ms: 0.0,
             statics_dirty: true,
@@ -484,4 +487,32 @@ mod tests {
         assert_eq!(display_name(7, "Ada"), "Ada");
         assert_eq!(display_name(7, " Ada "), " Ada ");
     }
+}
+
+/// The top of what `obj` holds, in `obj`'s own frame (three's `Box3.setFromObject(obj).max.y` for a group at rest): each
+/// mesh's local box, its corners carried by its matrix under `obj`. The group's own transform is left out: the build wave
+/// scales and lowers the rooms' group while it plays, and the rooms' top is where they stand. None without meshes.
+pub(crate) fn max_y(obj: &Obj) -> Option<f32> {
+    let roots: Vec<(Obj, glam::Mat4)> = obj.get().children.iter().map(|c| (c.clone(), glam::Mat4::IDENTITY)).collect();
+    let (draws, _) = scene::flatten_roots(&roots);
+    let mut top: Option<f32> = None;
+    for d in &draws {
+        let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
+        for p in &d.geo.positions {
+            lo = lo.min(Vec3::from(*p));
+            hi = hi.max(Vec3::from(*p));
+        }
+        if lo.x > hi.x {
+            continue;
+        }
+        for x in [lo.x, hi.x] {
+            for y in [lo.y, hi.y] {
+                for z in [lo.z, hi.z] {
+                    let w = d.model.transform_point3(Vec3::new(x, y, z));
+                    top = Some(top.map_or(w.y, |t: f32| t.max(w.y)));
+                }
+            }
+        }
+    }
+    top
 }

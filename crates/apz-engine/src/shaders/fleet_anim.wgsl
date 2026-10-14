@@ -88,12 +88,15 @@ struct RingIn {
 
 @vertex
 fn vs_ring(v: RingIn) -> Out {
-    let wave = 1.0 + 0.5 * sin(TAU * (g.time.x * v.pulse.x + v.pulse.y));
-    let intensity = select(v.pulse.w, wave, v.pulse.z > 0.5);
-    let world = v.centre.xyz + vec3<f32>(v.pos.x, 0.0, v.pos.z) * v.centre.w;
+    // fleet.ts paintRing: online, the opacity pulses 0.6 to 0.9; otherwise it holds at pulse.w.
+    let wave = 0.6 + 0.3 * (0.5 + 0.5 * sin(TAU * (g.time.x * v.pulse.x + v.pulse.y)));
+    let alpha = select(v.pulse.w, wave, v.pulse.z > 0.5);
+    // The band runs from the footprint (centre.w) plus 0.8 to plus 1.2: pos.y is 0 on its inner edge, 1 on its outer.
+    let radius = v.centre.w + 0.8 + 0.4 * v.pos.y;
+    let world = v.centre.xyz + vec3<f32>(v.pos.x, 0.0, v.pos.z) * radius;
     var o: Out;
     o.clip = g.view_proj * vec4<f32>(world, 1.0);
-    o.color = vec4<f32>(v.color.rgb * intensity, v.color.a);
+    o.color = vec4<f32>(v.color.rgb, alpha);
     return o;
 }
 

@@ -47,6 +47,10 @@ export interface WebEngine {
   draw_stats(): string;
   /** The lab's readout, JSON: the room lab's violations or the hardware lab's model validation; `{}` when no lab runs. */
   lab_info(): string;
+  /** The shown view: `machines` or `floor` (as the three.js build's __apzPerf named it). */
+  view_name(): string;
+  /** The shown view's camera, JSON: { view, eye, target, fov, roomsTop }. */
+  camera_json(): string;
   /** The floor's robots, JSON (see the engine's debug hooks). */
   bots_json(): string;
   /** The nav grid's cell at (x, z), JSON or "null". */
@@ -533,6 +537,49 @@ const BOARD_KEYS: [string, string][] = [
   ['offline', 'Offline'],
 ];
 
+/** A PerfSnapshot of a running engine (the three.js build's window.__apzPerf shape), plus the engine's own counts. */
+export function perfProbe(engine: WebEngine, view: () => string): () => Record<string, unknown> {
+  const round2 = (v: number): number => Math.round(v * 100) / 100;
+  let sample = { at: performance.now(), frames: engine.frames_drawn() }; // the last fps sample
+  let seen = sample.frames; // the frames drawn at the previous call
+  let fps = 0;
+  return () => {
+    const now = performance.now();
+    const frames = engine.frames_drawn();
+    const drawing = frames > seen;
+    seen = frames;
+    const elapsed = now - sample.at;
+    if (elapsed >= 250) {
+      fps = (frames - sample.frames) / (elapsed / 1000); // under 250 ms the previous fps stands
+      sample = { at: now, frames };
+    }
+    const frameMs = fps > 0 ? 1000 / fps : 0;
+    let s: Record<string, unknown>;
+    try {
+      s = JSON.parse(engine.draw_stats()) as Record<string, unknown>;
+    } catch {
+      s = {};
+    }
+    return {
+      view: view(),
+      fps: round2(fps),
+      frameMs: round2(frameMs),
+      calls: engine.draw_calls(),
+      triangles: (s.triangles as number | undefined) ?? 0,
+      geometries: (s.geometries as number | undefined) ?? 0,
+      textures: (s.textures as number | undefined) ?? 0,
+      programs: (s.pipelines as number | undefined) ?? 0,
+      pixelRatio: window.devicePixelRatio || 1,
+      drawing,
+      frames,
+      draws: engine.draw_calls(),
+      backend: engine.backend(),
+      breakdown: Array.from(engine.draw_breakdown()),
+      stats: s,
+    };
+  };
+}
+
 /**
  * The Floor on the wasm engine: the Machines view, or with `initialId` (`#/floor/<id>`) that machine's board, entered
  * on mount. A pick opens the machine popup (floor-popup.ts's card); its ENTER flies the engine into the board.
@@ -749,17 +796,13 @@ export function mountEngine(root: HTMLElement, initialId: string | null = null, 
         return {};
       }
     };
+    const perf = perfProbe(started, () => started.view_name());
     const hooks: Record<string, unknown> = {
       __apzLookAt: (x: number, y: number, z: number, dist: number, polar: number, azimuth: number): void =>
         started.look_at(x, y, z, dist, polar, azimuth),
       __apzScene: () => ({ frames: started.frames_drawn(), draws: started.draw_calls(), stats: stats() }),
-      __apzPerf: () => ({
-        frames: started.frames_drawn(),
-        draws: started.draw_calls(),
-        backend: started.backend(),
-        breakdown: Array.from(started.draw_breakdown()),
-        stats: stats(),
-      }),
+      __apzPerf: perf,
+      __apzCamera: () => JSON.parse(started.camera_json()) as Record<string, unknown>,
       __apzPrograms: () => {
         const p = stats().programs;
         if (Array.isArray(p)) return p;
@@ -772,7 +815,7 @@ export function mountEngine(root: HTMLElement, initialId: string | null = null, 
       __apzEnter: (id: string) => started.command('enter', id),
       __apzBack: () => started.command('back'),
       __apzEntryTime: () => started.entry_time() ?? null,
-      __apzBots: () => JSON.parse(started.bots_json()) as unknown[],
+      __apzBots: () => JSON.parse(started.bots_json()) as Record<string, unknown>,
       __apzTrace: () => ({ frames: started.frames_drawn(), draws: started.draw_calls() }),
       __apzNavCell: (x: number, z: number) => JSON.parse(started.nav_cell(x, z)) as Record<string, unknown> | null,
       __apzNavAudit: () => JSON.parse(started.nav_audit()) as Record<string, unknown> | null,
