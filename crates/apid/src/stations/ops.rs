@@ -17,6 +17,7 @@ use serde_json::{Value, json};
 use super::leases::{self, Kind, Lease, LeaseView, State};
 use super::link::{self, Hooks, StationLink};
 use super::registry::{self, Refusal, Station};
+use super::takeover;
 use crate::state::App;
 
 /// How long a daemon has to answer a settings, freeze or close request.
@@ -26,7 +27,7 @@ pub const OPEN_TIMEOUT: Duration = Duration::from_secs(20);
 /// How often the ticker looks for stations that came online or went offline.
 const TICK: Duration = Duration::from_secs(5);
 /// A takeover is audited once per session in this window; the owner's typing is not a row per key.
-const TAKEOVER_AUDIT_MS: u64 = 30_000;
+pub const TAKEOVER_AUDIT_MS: u64 = 30_000;
 
 /// An action's failure: the HTTP status and the message.
 pub type Failure = (u16, String);
@@ -211,6 +212,16 @@ fn lease_view(app: &App, lease_id: &str) -> Option<LeaseView> {
 /// Releases a lease: a pixel session it holds is closed, and the next queued lease is granted. `agent` is
 /// set on the internal route, where a lease may only be released by the agent that holds it.
 pub fn release_lease(app: &App, station_id: &str, lease_id: &str, agent: Option<u64>, actor: &str) -> Result<Lease, Failure> {
+    release_with(app, station_id, lease_id, agent, actor, "released")
+}
+
+/// Releases the lease of a session the owner took under the `release_lease` policy (takeover.rs). The bus says why
+/// (`lease_released` with reason `owner_takeover`), so the scheduler can put the task back in the queue.
+pub fn release_for_takeover(app: &App, station_id: &str, lease_id: &str) -> Result<Lease, Failure> {
+    release_with(app, station_id, lease_id, None, "owner", "owner_takeover")
+}
+
+fn release_with(app: &App, station_id: &str, lease_id: &str, agent: Option<u64>, actor: &str, reason: &str) -> Result<Lease, Failure> {
     let lease = app.stations.leases.get(lease_id).filter(|l| l.station == station_id).ok_or((404, "no such lease".to_string()))?;
     if agent.is_some_and(|cid| cid != lease.agent) {
         return Err((403, "that lease belongs to another agent".into()));
@@ -220,9 +231,13 @@ pub fn release_lease(app: &App, station_id: &str, lease_id: &str, agent: Option<
         (Kind::Pixel, Some(session), Some(link)) => link.request(Op::SessionClose { session }, RPC_TIMEOUT).err(),
         _ => None,
     };
-    audit(app, Some(station_id), Some(lease.agent), "lease_released", actor, json!({"lease": lease.id, "session": lease.session, "close_error": close_error}))
+    audit(app, Some(station_id), Some(lease.agent), "lease_released", actor, json!({"lease": lease.id, "session": lease.session, "close_error": close_error, "reason": reason}))
         .map_err(server_error)?;
-    app.bus.publish("lease_released", &lease);
+    let mut data = serde_json::to_value(&lease).unwrap_or(Value::Null);
+    if let Value::Object(map) = &mut data {
+        map.insert("reason".into(), json!(reason));
+    }
+    app.bus.publish("lease_released", &data);
     grant_next(app, station_id);
     Ok(lease)
 }
@@ -309,6 +324,8 @@ pub fn spawn(app: Arc<App>) {
                     announce(&app, &station.id, if online { "online" } else { "offline" });
                 }
             }
+            // The owner's input takes whose owner has gone quiet end here (takeover.rs).
+            takeover::sweep(&app);
         }
     });
 }
@@ -388,6 +405,7 @@ impl Hooks for Live<'_> {
                 app.stations.set_facts(id, facts);
             }
             Event::SessionEnded { session, reason } => {
+                takeover::session_ended(app, id, session);
                 if let Some(lease) = app.stations.leases.by_session(id, session) {
                     app.stations.leases.remove(&lease.id);
                     let _ = audit(app, Some(id), Some(lease.agent), "lease_ended", "station", json!({"lease": lease.id, "session": session, "reason": reason}));
@@ -396,6 +414,7 @@ impl Hooks for Live<'_> {
                 }
             }
             Event::OwnerInput { session } => {
+                takeover::owner_input(app, id, session);
                 let Some(lease) = app.stations.leases.by_session(id, session) else { return };
                 if app.stations.takeover_due(session, now(), TAKEOVER_AUDIT_MS) {
                     let _ = audit(app, Some(id), Some(lease.agent), "owner_input", "owner", json!({"lease": lease.id, "session": session}));

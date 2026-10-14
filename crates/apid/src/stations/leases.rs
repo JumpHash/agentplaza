@@ -44,6 +44,9 @@ pub struct Lease {
     pub session: Option<u64>,
     pub started_ms: u64,
     pub state: State,
+    /// The owner has taken the session and the agent waits for it to be given back (`agent_waits`, takeover.rs).
+    #[serde(default)]
+    pub paused: bool,
 }
 
 /// A lease as the console and the agents see it: its position in the queue while it waits (1 is next).
@@ -93,6 +96,7 @@ impl Leases {
             session: None,
             started_ms: now,
             state,
+            paused: false,
         };
         list.push(lease.clone());
         Ok(lease)
@@ -146,6 +150,17 @@ impl Leases {
     /// The lease whose pixel session is `session` on `station`.
     pub fn by_session(&self, station: &str, session: u64) -> Option<Lease> {
         self.guard().iter().find(|l| l.station == station && l.session == Some(session)).cloned()
+    }
+
+    /// Marks the lease of `session` on `station` paused (or not). False when no lease holds that session.
+    pub fn set_paused(&self, station: &str, session: u64, paused: bool) -> bool {
+        match self.guard().iter_mut().find(|l| l.station == station && l.session == Some(session)) {
+            Some(lease) => {
+                lease.paused = paused;
+                true
+            }
+            None => false,
+        }
     }
 
     /// Every lease of a station, in order, with each queued lease's position.

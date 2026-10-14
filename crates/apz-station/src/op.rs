@@ -82,11 +82,14 @@ pub enum Op {
         code: String,
         timeout_s: u32,
     },
-    /// Starts or stops the live frame stream of a session at `fps`.
+    /// Starts or stops the live frame stream of a session at `fps`. `scale` (in (0, 1]) sizes each frame as a
+    /// screenshot's is; absent, frames are at full size.
     Stream {
         session: SessionId,
         fps: u8,
         on: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scale: Option<f32>,
     },
     /// STOP ALL when `on` is true: input stops, pixel sessions end, shells and runs stop. `on: false` lifts it.
     Freeze {
@@ -477,8 +480,18 @@ mod tests {
                     session: 9,
                     fps: 2,
                     on: true,
+                    scale: None,
                 },
                 r#"{"op":"stream","session":9,"fps":2,"on":true}"#,
+            ),
+            (
+                Op::Stream {
+                    session: 9,
+                    fps: 5,
+                    on: true,
+                    scale: Some(0.5),
+                },
+                r#"{"op":"stream","session":9,"fps":5,"on":true,"scale":0.5}"#,
             ),
             (Op::Freeze { on: true }, r#"{"op":"freeze","on":true}"#),
             (Op::Sync(SyncOp::Status), r#"{"op":"sync","cmd":"status"}"#),

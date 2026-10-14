@@ -22,6 +22,9 @@
 //!   DELETE /v1/stations/{id}/leases/{lease}   → the released lease
 //!   POST   /internal/v1/agents/{cid}/stations/{id}/leases           {task?, kind} → 201 LeaseView (the agent's own)
 //!   DELETE /internal/v1/agents/{cid}/stations/{id}/leases/{lease}   → the lease, when it is that agent's
+//!   WS     /v1/stations/{id}/screen?session=&fps=&scale=            (live view, apz.station.screen.v1; screen.rs)
+//!   GET    /v1/stations/{id}/thumbnail?session=                     → one JPEG, cached 5 s (screen.rs)
+//!   WS     /v1/stations/{id}/control?session=                       (takeover and input, apz.station.control.v1; control.rs)
 
 use std::time::Duration;
 
@@ -40,7 +43,7 @@ use crate::state::App;
 const OWNER: &str = "owner";
 
 pub fn routes(router: Router<App>) -> Router<App> {
-    router
+    let router = router
         .post("/v1/stations/codes", |app, req, _| issue_code_route(app, req))
         .get("/v1/stations/codes", |app, _, _| Response::json(200, &app.stations.codes(apz_plaza::now_ms())))
         .delete("/v1/stations/codes/{id}", |app, _, p| code_revoke_route(app, p.get("id")))
@@ -67,7 +70,9 @@ pub fn routes(router: Router<App>) -> Router<App> {
             crate::internal::authorized(app, req, p.get("cid"), |cid| {
                 Ok(release_route(app, p.get("id"), p.get("lease"), Some(cid), &format!("agent:{cid}")))
             })
-        })
+        });
+    // The live views and the takeover socket (screen.rs, control.rs).
+    super::control::routes(super::screen::routes(router))
 }
 
 fn fail((status, message): Failure) -> Response {
