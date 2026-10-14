@@ -53,21 +53,21 @@ pub const MIGRATIONS: &[Migration] = &[Migration {
     name: "ide_audit",
     sql: include_str!("../../sql/migrations/0008_ide_audit.sql"),
 }, Migration {
-    version: 9,
-    name: "station_audit",
-    sql: include_str!("../../sql/migrations/0009_station_audit.sql"),
-}, Migration {
     version: 10,
-    name: "station_recordings",
-    sql: include_str!("../../sql/migrations/0010_station_recordings.sql"),
+    name: "station_audit",
+    sql: include_str!("../../sql/migrations/0010_station_audit.sql"),
 }, Migration {
     version: 11,
-    name: "station_sync",
-    sql: include_str!("../../sql/migrations/0011_station_sync.sql"),
+    name: "station_recordings",
+    sql: include_str!("../../sql/migrations/0011_station_recordings.sql"),
 }, Migration {
     version: 12,
+    name: "station_sync",
+    sql: include_str!("../../sql/migrations/0012_station_sync.sql"),
+}, Migration {
+    version: 13,
     name: "station_recording_frames",
-    sql: include_str!("../../sql/migrations/0012_station_recording_frames.sql"),
+    sql: include_str!("../../sql/migrations/0013_station_recording_frames.sql"),
 }];
 
 /// The advisory lock every runner takes: "APZMIG" in ASCII. Fixed for the life of the schema.

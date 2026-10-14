@@ -1,5 +1,5 @@
 //! The workstation recordings' index and their actions (stations/recordings.rs): `station_recordings` and
-//! `station_recording_events` (migration 0010), or the state directory's files without a database (`db::files`).
+//! `station_recording_events` (migration 0011), or the state directory's files without a database (`db::files`).
 //! The frames are not here: they are objects in the object store.
 
 use postgres::Row;

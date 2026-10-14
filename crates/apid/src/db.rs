@@ -19,7 +19,7 @@
 //!   ide_audit(seq bigserial, at_ms bigint, workspace text, kind text, data jsonb)
 //!              (append-only: the owner's IDE actions, migration 0008)
 //!   station_audit(seq bigserial, at_ms bigint, station text, agent bigint, kind text, data jsonb)
-//!              (append-only: the owner's workstation actions and lease changes, migration 0009)
+//!              (append-only: the owner's workstation actions and lease changes, migration 0010)
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, PoisonError};

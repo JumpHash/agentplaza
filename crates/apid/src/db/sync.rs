@@ -1,4 +1,4 @@
-//! The work-folder sync's mirror rows (stations/sync.rs): `station_sync_files` (migration 0011), or with no database
+//! The work-folder sync's mirror rows (stations/sync.rs): `station_sync_files` (migration 0012), or with no database
 //! one JSON file per workstation under `<state-dir>/station-sync/` (see `db::files`).
 //!
 //! A pass writes its changed rows in one transaction. The rows are not append-only: a path's row is replaced.
