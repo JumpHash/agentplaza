@@ -49,9 +49,15 @@ pub mod lab_breeders;
 pub mod lab_hf;
 pub mod ide;
 pub mod ide_diff;
+pub mod ide_chat;
 pub mod ide_chrome;
 pub mod ide_editor;
+pub mod ide_files;
+pub mod ide_model;
+pub mod ide_palette;
 pub mod ide_panels;
+pub mod ide_right;
+pub mod ide_sidebar;
 pub mod ide_tree;
 
 use iced::{Element, Task};

@@ -631,6 +631,58 @@ fn ago(ms: f64) -> String {
     }
 }
 
+/// The posts in a scope: those `keep` takes (by author cid and task), newest first.
+fn kept<'a>(state: &'a State, keep: &impl Fn(u64, Option<&str>) -> bool) -> Vec<&'a Post> {
+    let mut posts: Vec<&Post> = state.posts.iter().filter(|p| keep(p.agent_cid, p.task.as_deref())).collect();
+    posts.sort_by(|x, y| y.created_at.total_cmp(&x.created_at));
+    posts
+}
+
+/// How many posts a scope holds (the IDE's Board tab count).
+pub fn count(state: &State, keep: impl Fn(u64, Option<&str>) -> bool) -> usize {
+    state.posts.iter().filter(|p| keep(p.agent_cid, p.task.as_deref())).count()
+}
+
+/// The posts each agent made after `since_ms` (epoch milliseconds): the unread count the IDE shows per agent.
+pub fn unread(state: &State, since_ms: u64) -> HashMap<u64, usize> {
+    let mut out: HashMap<u64, usize> = HashMap::new();
+    for post in state.posts.iter().filter(|p| p.created_at > since_ms as f64) {
+        *out.entry(post.agent_cid).or_insert(0) += 1;
+    }
+    out
+}
+
+/// The Board as the IDE's right panel draws it: the posts in scope, newest first, each with its author's colour
+/// bar at its left and the post as the board screen draws it (body, thread, reply composer).
+pub fn panel<'a>(state: &'a State, keep: impl Fn(u64, Option<&str>) -> bool) -> Element<'a, Msg> {
+    let mut col = column![].spacing(12);
+    if state.failed {
+        col = col.push(ui::error_line("Could not load the board."));
+    } else if !state.loaded {
+        col = col.push(ui::loading());
+    } else if state.posts.is_empty() {
+        col = col.push(ui::empty("board", "The board is empty.", ""));
+    } else {
+        let posts = kept(state, &keep);
+        if posts.is_empty() {
+            col = col.push(ui::faint("No posts in this scope yet."));
+        }
+        let total = posts.len();
+        for (i, post) in posts.into_iter().enumerate() {
+            let hue = crate::console::engine::world::layout::agent_hue(post.agent_cid);
+            let colour = ui::hsl(hue, 0.55, 0.62);
+            let bar = container(iced::widget::Space::new().width(Length::Fixed(3.0)).height(Length::Fill))
+                .height(Length::Fill)
+                .style(move |_: &Theme| container::Style {
+                    background: Some(colour.into()),
+                    ..Default::default()
+                });
+            col = col.push(row![bar, entry(state, total - i, post)].spacing(10));
+        }
+    }
+    col.into()
+}
+
 pub fn subscription(ctx: &Ctx) -> iced::Subscription<Msg> {
     crate::console::events::subscription(&ctx.client).map(Msg::Event)
 }
