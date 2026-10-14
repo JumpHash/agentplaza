@@ -27,6 +27,7 @@ pub mod setup;
 pub mod shell;
 pub mod toast;
 pub mod ui;
+pub mod workstation_setup;
 
 use iced::{Element, Subscription, Task};
 

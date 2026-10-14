@@ -768,6 +768,7 @@ fn a_stream_sends_jpeg_frames_until_it_is_stopped() {
             session,
             fps: 10,
             on: true,
+            scale: None,
         },
     ));
     let mut seqs = Vec::new();
@@ -802,6 +803,7 @@ fn a_stream_sends_jpeg_frames_until_it_is_stopped() {
             session,
             fps: 60,
             on: true,
+            scale: None,
         },
     );
     refused(&too_fast);
@@ -811,6 +813,7 @@ fn a_stream_sends_jpeg_frames_until_it_is_stopped() {
             session,
             fps: 10,
             on: false,
+            scale: None,
         },
     ));
     assert!(rig.finish().is_ok());

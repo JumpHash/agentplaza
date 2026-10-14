@@ -32,3 +32,4 @@ pub mod tools;
 pub mod treasury;
 pub mod usage;
 pub mod vault;
+pub mod workstation;

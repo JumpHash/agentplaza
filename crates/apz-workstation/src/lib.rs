@@ -17,10 +17,12 @@
 //!   line.
 
 pub mod acl;
+pub mod account;
 pub mod backend;
 pub mod cli;
 pub mod daemon;
 pub mod desk;
+pub mod enrol;
 pub mod facts;
 #[cfg(target_os = "linux")]
 pub mod access;
@@ -28,7 +30,9 @@ pub mod join;
 pub mod link;
 pub mod log;
 pub mod route;
+pub mod plan;
 pub mod script;
+pub mod service;
 pub mod state;
 pub mod uplink;
 pub mod work;

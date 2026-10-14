@@ -106,6 +106,10 @@ enum Command {
     /// This machine as a node of a network: join with a code, status, leave.
     #[command(subcommand)]
     Node(cmd::node::Cmd),
+    /// This machine as a workstation the agents work through the hub: join with a code (and its account and service),
+    /// status, leave.
+    #[command(subcommand)]
+    Workstation(cmd::workstation::Cmd),
     /// What a local plaza needs on this machine (Docker, Postgres, Forgejo, Garage, the ports): check it,
     /// and fix the missing parts after you confirm what the fix runs.
     Setup(cmd::setup::Args),
@@ -149,6 +153,10 @@ fn run(cli: Cli) -> Result<(), String> {
     if let Command::Node(cmd) = cli.command {
         return cmd::node::run(cmd, cli.json);
     }
+    // This machine as a workstation: the hub's address and pin come from the global flags, not a saved hub.
+    if let Command::Workstation(cmd) = cli.command {
+        return cmd::workstation::run(cmd, cli.json, cli.hub, cli.pin);
+    }
     // This machine's own setup; `--hub` also checks the hub named by the global flags.
     if let Command::Setup(args) = cli.command {
         return cmd::setup::run(args, cli.json, cli.hub, cli.token, cli.pin);
@@ -188,6 +196,8 @@ fn run(cli: Cli) -> Result<(), String> {
         Command::Decide(a) => cmd::decide::run(&ctx, a),
         Command::Events(a) => cmd::events::run(&ctx, a),
         Command::Tui(args) => tui::run(&ctx, args),
-        Command::Hub(_) | Command::Node(_) | Command::Mcp(_) | Command::Setup(_) => unreachable!("handled above"),
+        Command::Hub(_) | Command::Node(_) | Command::Workstation(_) | Command::Mcp(_) | Command::Setup(_) => {
+            unreachable!("handled above")
+        }
     }
 }

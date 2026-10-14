@@ -163,7 +163,7 @@ impl Lane {
                 Ok(None)
             }
             Op::Apps(apps) => self.apps(apps),
-            Op::Stream { session, fps, on } => self.stream(session, fps, on),
+            Op::Stream { session, fps, on, scale: _ } => self.stream(session, fps, on),
             other => Err(format!("{:?} is not a screen operation", op_kind(&other))),
         }
     }

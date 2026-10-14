@@ -48,6 +48,7 @@ apz-http = { path = "../../crates/apz-http" }
 apz-plaza = { path = "../../crates/apz-plaza" }
 apz-os = { path = "../../crates/apz-os" }
 apz-setup = { path = "../../crates/apz-setup" }
+apz-workstation = { path = "../../crates/apz-workstation" }
 apz-trust = { path = "../../crates/apz-trust" }
 serde.workspace = true
 serde_json.workspace = true

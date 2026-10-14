@@ -22,6 +22,7 @@ use super::hubs;
 use super::services::{self, Mode};
 use super::setup;
 use super::ui::{self, Kind, Tone};
+use super::workstation_setup;
 
 /// The hub the local services run; the chooser polls it until it answers.
 pub const LOCAL_HUB: &str = "http://127.0.0.1:7700";
@@ -31,6 +32,7 @@ pub enum Choice {
     Local,
     Host,
     Join,
+    Workstation,
     Connect,
 }
 
@@ -40,6 +42,7 @@ impl Choice {
             Choice::Local => "Start locally",
             Choice::Host => "Host a hub",
             Choice::Join => "Join a hub",
+            Choice::Workstation => "Add as a workstation",
             Choice::Connect => "Connect to a hub",
         }
     }
@@ -49,6 +52,7 @@ impl Choice {
             Choice::Local => "The hub and one node on this machine. Nothing leaves it.",
             Choice::Host => "Other machines join this one as nodes with one-time codes.",
             Choice::Join => "This machine becomes a node of a hub elsewhere, with a one-time code from that hub.",
+            Choice::Workstation => "The agents work this machine's screen, shell, files and programs through a hub, with a join code from it.",
             Choice::Connect => "Open the console of a hub elsewhere.",
         }
     }
@@ -58,6 +62,7 @@ impl Choice {
             Choice::Local => "play",
             Choice::Host => "machine",
             Choice::Join => "link",
+            Choice::Workstation => "terminal",
             Choice::Connect => "external",
         }
     }
@@ -91,6 +96,8 @@ pub struct State {
     pub cli: CliLink,
     /// The outcome of the last "Add" press, shown under the command row.
     pub cli_note: Option<String>,
+    /// Add as a workstation: its form, its plan, its join and its result.
+    pub ws: workstation_setup::State,
 }
 
 #[derive(Debug, Clone)]
@@ -122,6 +129,8 @@ pub enum Msg {
     LinkCli,
     /// The command was linked (or not).
     CliLinked(Result<(), String>),
+    /// Add as a workstation: its form, plan, join and result.
+    Workstation(workstation_setup::Msg),
 }
 
 /// The remembered choice, as stored in `desktop.json`.
@@ -153,6 +162,9 @@ pub fn update(state: &mut State, msg: Msg) -> (Task<Msg>, Option<Client>) {
             state.choice = Some(choice);
             state.error = None;
             state.confirm = None;
+            if choice == Choice::Workstation {
+                state.ws = workstation_setup::State::default();
+            }
             match setup_mode(Some(choice)) {
                 Some(mode) => {
                     state.checks.clear();
@@ -163,7 +175,7 @@ pub fn update(state: &mut State, msg: Msg) -> (Task<Msg>, Option<Client>) {
             }
         }
         Msg::Back => {
-            if !state.busy && state.fixing.is_none() {
+            if !state.busy && state.fixing.is_none() && !state.ws.busy {
                 state.choice = None;
                 state.error = None;
                 state.log.clear();
@@ -217,6 +229,7 @@ pub fn update(state: &mut State, msg: Msg) -> (Task<Msg>, Option<Client>) {
             state.cli = cli_link::status();
             (Task::none(), None)
         }
+        Msg::Workstation(msg) => (workstation_setup::update(&mut state.ws, msg).map(Msg::Workstation), None),
         Msg::Started(result) => started(state, result),
         Msg::Connected(result) => match result {
             Ok(client) => {
@@ -291,8 +304,8 @@ fn go(state: &mut State) -> (Task<Msg>, Option<Client>) {
             state.busy = true;
             Task::perform(async move { join_node(&code) }, Msg::Started)
         }
-        // The Connect screen (`hubs`) verifies its own sign-in.
-        Choice::Connect => return (Task::none(), None),
+        // The Connect screen (`hubs`) verifies its own sign-in; Add as a workstation has its own Join button.
+        Choice::Connect | Choice::Workstation => return (Task::none(), None),
     };
     (task, None)
 }
@@ -447,7 +460,8 @@ fn chooser(state: &State) -> Element<'_, Msg> {
     page.push(
         column![
             row![option_card(Choice::Local, busy), option_card(Choice::Host, busy)].spacing(12),
-            row![option_card(Choice::Join, busy), option_card(Choice::Connect, busy)].spacing(12),
+            row![option_card(Choice::Join, busy), option_card(Choice::Workstation, busy)].spacing(12),
+            row![option_card(Choice::Connect, busy), Space::new().width(Length::Fill)].spacing(12),
         ]
         .spacing(12)
         .into(),
@@ -498,10 +512,11 @@ fn option_card(choice: Choice, busy: bool) -> Element<'static, Msg> {
 /// The chosen option's form, with its progress log and errors.
 fn form(state: &State, choice: Choice) -> Element<'_, Msg> {
     let busy = state.busy;
+    let ws_busy = choice == Choice::Workstation && state.ws.busy;
     let head = row![
         column![ui::mono(choice.title(), 26.0, crate::theme::palette().ink), ui::faint(choice.sentence())].spacing(4),
         Space::new().width(Length::Fill),
-        ui::btn("Back", None, Kind::Ghost, (!busy && state.fixing.is_none()).then_some(Msg::Back)),
+        ui::btn("Back", None, Kind::Ghost, (!busy && !ws_busy && state.fixing.is_none()).then_some(Msg::Back)),
     ]
     .align_y(Alignment::Center);
     let mut page: Vec<Element<'_, Msg>> = vec![head.into()];
@@ -522,16 +537,21 @@ fn form(state: &State, choice: Choice) -> Element<'_, Msg> {
             }
         }
         Choice::Connect => page.push(hubs::view(&state.hubs).map(Msg::Hubs)),
+        Choice::Workstation => {
+            page.push(workstation_setup::view(&state.ws).map(Msg::Workstation));
+            return column(page).spacing(14).into();
+        }
     }
     let action = match choice {
         Choice::Local => "Start",
         Choice::Host => "Start hub",
         Choice::Join => "Join",
+        Choice::Workstation => "Join",
         Choice::Connect => "Connect",
     };
     let gated = setup_mode(Some(choice)).is_some();
     let ready = !gated || can_start(state);
-    if choice != Choice::Connect {
+    if !matches!(choice, Choice::Connect | Choice::Workstation) {
         page.push(ui::btn(action, Some(choice.icon()), Kind::Primary, (!busy && ready).then_some(Msg::Go)));
     }
     if gated && !ready && !state.checking {
@@ -684,7 +704,7 @@ mod tests {
 
     #[test]
     fn remembered_choice_round_trips() {
-        for choice in [Choice::Local, Choice::Host, Choice::Join, Choice::Connect] {
+        for choice in [Choice::Local, Choice::Host, Choice::Join, Choice::Workstation, Choice::Connect] {
             assert_eq!(decode_remembered(&encode_remembered(choice)), Some(choice));
         }
         assert_eq!(decode_remembered("not json"), None);
