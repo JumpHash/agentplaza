@@ -21,6 +21,8 @@ import { wrapIde, type IdeGlue } from '../src/ide/wasm';
 import { applyBuffer, badgeOf, diffMark, dirsOf, fuzzyScore, isViewed, languageFor, lineCounts, onRemote, openBuffer, parentDir, parseViewed, rankPaths, viewedKey, withViewed } from '../src/ide/model';
 import type { FileChange } from '../src/ide/types';
 import { CENTRE_MIN, clampSize, defaultLayout, fitSize, isNarrow, LEFT_SIZE, leftViewFor, originFallback, parseLayout, RIGHT_SIZE, rightTabFor, serializeLayout } from '../src/ide/layout';
+import type { StationFacts, StationLease, StationSettings, StationView } from '../src/api';
+import { auditLabel, codeChip, countdown, displaysText, formLabel, gpuLine, gpuSummary, joinCommand, leaseCount, leaseStateChip, nameProblem, osText, ramText, readSettings, accountBadge, accountText, settingsForm, sortStations, stationSummary, statusChip, takeoverText, type SettingsForm } from '../src/views/workstations-model';
 import { MAX_TERMINALS, attachFrame, base64ToBytes, bytesToBase64, clearSession, inputFrame, killFrame, nextOffset, openFrame, parseServerFrame, plainText, readSession, reconnectDelay, resizeFrame, sessionKey, splitInput, terminalSocketUrl, writeSession, type KeyValueStore } from '../src/views/ide-terminal-model';
 
 let failures = 0;
@@ -670,6 +672,77 @@ sectionEnd('ide layout tests: ok');
   eq(plainText('\u001b[31mred\u0007\n'), '[31mred', 'ide terminal notices: control characters are dropped');
 }
 sectionEnd('ide terminal tests: ok');
+
+// Workstations: the labels, chips and the settings form's serialization the screen draws from.
+const linuxFacts: StationFacts = {
+  os: 'linux', os_version: '6.8', arch: 'x86_64', hostname: 'studio', form: 'desktop', cpus: 16, ram_mb: 65536,
+  gpus: [{ vendor: 'nvidia', name: 'RTX 4090', vram_mb: 24576 }], displays: [{ id: 1, w: 2560, h: 1440, scale: 1 }],
+  account: { mode: 'agent_user', name: 'agentplaza' }, apps: 120, virtual_displays: false, ui_tree: true,
+};
+const macFacts: StationFacts = {
+  ...linuxFacts, os: 'macos', os_version: '15.2', form: 'mini', ram_mb: 16384, gpus: [], displays: [], account: { mode: 'owner', name: 'Zarathos' },
+};
+eq(osText(linuxFacts), 'Linux 6.8', 'workstation os: the label and the version');
+eq(osText(macFacts), 'macOS 15.2', 'workstation os: macOS');
+eq(formLabel('vm'), 'VM', 'workstation form: a VM');
+eq([ramText(16384), ramText(8192), ramText(0)], ['16 GB RAM', '8.0 GB RAM', '—'], 'workstation memory: whole GiB from 10, one decimal below, none');
+eq(gpuLine({ vendor: 'nvidia', name: 'RTX 4090', vram_mb: 24576 }), 'RTX 4090 · 24 GB', 'workstation gpu: its memory in GB');
+eq(gpuLine({ vendor: 'apple', name: 'Apple M4', vram_mb: 0 }), 'Apple M4 · shared memory', 'workstation gpu: shared memory');
+eq(gpuLine({ vendor: 'x', name: 'Small', vram_mb: 512 }), 'Small · 512 MB', 'workstation gpu: under a GB in MB');
+eq([gpuSummary([]), gpuSummary(linuxFacts.gpus)], ['no GPU', 'RTX 4090'], 'workstation gpu summary');
+eq([displaysText([]), displaysText(linuxFacts.displays)], ['none', '2560×1440'], 'workstation displays');
+eq(stationSummary(linuxFacts), 'Linux 6.8 · Desktop · 64 GB RAM · RTX 4090', 'workstation row summary: OS, form, memory, GPUs');
+eq(stationSummary(macFacts), 'macOS 15.2 · Mini · 16 GB RAM · no GPU', 'workstation row summary: no GPU in words');
+eq(statusChip('draining'), { label: 'draining', tone: 'warn' }, 'workstation status chip: draining is a warning');
+eq(statusChip('revoked'), { label: 'revoked', tone: 'danger' }, 'workstation status chip: revoked is a danger');
+eq(accountBadge(macFacts.account), { text: 'agents act as Zarathos', tone: 'warn' }, 'workstation account badge: the owner\'s own account is flagged');
+eq(accountBadge(linuxFacts.account), null, 'workstation account badge: a separate agent account is not flagged');
+eq(accountText(linuxFacts.account), 'a separate agent account (agentplaza)', 'workstation account in words: the agent account');
+
+const lease = (state: StationLease['state'], position: number | null = null): StationLease => ({
+  id: 'l1', station: 'ws-1', agent: 7, task: null, kind: 'pixel', session: null, started_ms: 1, state, position,
+});
+eq(leaseCount([lease('queued', 1), lease('opening'), lease('active')]), { holding: 2, waiting: 1 }, 'workstation leases: holding and waiting');
+eq([leaseStateChip(lease('queued', 2)), leaseStateChip(lease('queued'))], [{ label: 'queued #2', tone: 'warn' }, { label: 'queued', tone: 'warn' }], 'workstation lease chip: queued shows its place');
+eq(leaseStateChip(lease('active')), { label: 'active', tone: 'ok' }, 'workstation lease chip: active');
+eq(takeoverText('release_lease').includes('back to the queue'), true, 'workstation takeover: the release policy is explained');
+eq(takeoverText('agent_waits').includes('resumes when you give the session back'), true, 'workstation takeover: the wait policy is explained');
+eq(joinCommand('abc.def'), 'agentplaza workstation join abc.def', 'workstation join: the command for the machine');
+eq(codeChip('used'), { label: 'Used', tone: 'info' }, 'workstation join code chip: used');
+eq([countdown(754_000), countdown(-5)], ['12:34', '00:00'], 'workstation join code countdown: mm:ss, never negative');
+eq([nameProblem('  '), nameProblem('a'.repeat(65)), nameProblem('ab\u0007'), nameProblem(' studio ')], ['Give the workstation a name.', 'The name is up to 64 characters.', 'The name has no control characters.', null], 'workstation name: the hub\'s rules');
+eq(nameProblem('a'.repeat(64)), null, 'workstation name: 64 characters is the most');
+eq([auditLabel('lease_granted'), auditLabel('something_new')], ['Lease granted', 'something new'], 'workstation audit: known kinds have words, unknown ones show as text');
+const named = (name: string) => ({ name }) as StationView;
+const input = [named('studio'), named('Alpha'), named('beta')];
+eq([sortStations(input).map((s) => s.name), input.map((s) => s.name)], [['Alpha', 'beta', 'studio'], ['studio', 'Alpha', 'beta']], 'workstation list: name order, input untouched');
+
+const defaults: StationSettings = { takeover: 'agent_waits', record: true, retention_days: 30, record_fps: 2, record_takeovers: true, work_folder: '~/AgentPlaza', snapshot_reset: false };
+const form = settingsForm(defaults);
+eq(form, { takeover: 'agent_waits', record: true, retention_days: '30', record_fps: '2', record_takeovers: true, work_folder: '~/AgentPlaza', snapshot_reset: false }, 'workstation settings form: the numbers as text');
+eq(readSettings(form), { ok: true, settings: defaults }, 'workstation settings form: the defaults round-trip');
+eq(readSettings({ ...form, work_folder: '  /srv/work  ', retention_days: ' 7 ', record_fps: '1' }), { ok: true, settings: { ...defaults, work_folder: '/srv/work', retention_days: 7, record_fps: 1 } }, 'workstation settings form: trimmed and parsed');
+const edited: SettingsForm = { takeover: 'keep_working_pointer_paused', record: false, retention_days: '365', record_fps: '30', record_takeovers: false, work_folder: 'D:\\work', snapshot_reset: true };
+eq(readSettings(edited), { ok: true, settings: { takeover: 'keep_working_pointer_paused', record: false, retention_days: 365, record_fps: 30, record_takeovers: false, work_folder: 'D:\\work', snapshot_reset: true } }, 'workstation settings form: every field, at the bounds');
+const refused = (patch: Partial<SettingsForm>): boolean => readSettings({ ...form, ...patch }).ok;
+eq(
+  [
+    refused({ retention_days: '0' }),
+    refused({ retention_days: '1.5' }),
+    refused({ retention_days: '3651' }),
+    refused({ record_fps: '31' }),
+    refused({ record_fps: '' }),
+    refused({ work_folder: '   ' }),
+    refused({ work_folder: 'a'.repeat(513) }),
+    refused({ work_folder: 'a\tb' }),
+    refused({ takeover: 'nope' as SettingsForm['takeover'] }),
+  ],
+  [false, false, false, false, false, false, false, false, false],
+  'workstation settings form: every out-of-bounds value is refused',
+);
+eq(readSettings({ ...form, retention_days: '0' }), { ok: false, error: 'Keep recordings for whole days, from 1 to 3650.' }, 'workstation settings form: the retention message');
+sectionEnd('workstation tests: ok');
+
 
 if (failedSections.length) {
   console.error(`${failedSections.length} section(s) failed: ${failedSections.join(', ')}`);

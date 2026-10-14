@@ -400,6 +400,47 @@ export interface FleetMachine {
 export interface FleetLink { a: string; b: string; online: boolean }
 export interface FleetResponse { machines: FleetMachine[]; links: FleetLink[] }
 
+// ---- Workstations: machines agents operate through the hub (docs/design/workstations.md) ----
+export type StationStatus = 'online' | 'offline' | 'draining' | 'revoked';
+export type StationOs = 'macos' | 'windows' | 'linux';
+export type StationForm = 'laptop' | 'desktop' | 'mini' | 'server' | 'vm';
+/** The OS account the agents work in: a separate account made for them, or the owner's own (the hub shows that). */
+export type StationAccount = { mode: 'agent_user'; name: string } | { mode: 'owner'; name: string };
+export interface StationGpu { vendor: string; name: string; vram_mb: number }
+export interface StationDisplay { id: number; w: number; h: number; scale: number }
+/** What the daemon reports about its machine (`apz-station` facts). */
+export interface StationFacts {
+  os: StationOs; os_version: string; arch: string; hostname: string; form: StationForm;
+  cpus: number; ram_mb: number; gpus: StationGpu[]; displays: StationDisplay[]; account: StationAccount;
+  apps: number; virtual_displays: boolean; ui_tree: boolean;
+}
+/** What happens when the owner takes over a pixel session. */
+export type Takeover = 'agent_waits' | 'release_lease' | 'keep_working_pointer_paused';
+export interface StationSettings {
+  takeover: Takeover; record: boolean; retention_days: number; record_fps: number;
+  record_takeovers: boolean; work_folder: string; snapshot_reset: boolean;
+}
+export type LeaseKind = 'shared' | 'pixel';
+export type LeaseState = 'queued' | 'opening' | 'active';
+/** A lease with its place in the queue while it waits (1 is next). */
+export interface StationLease {
+  id: string; station: string; agent: number; task: string | null; kind: LeaseKind;
+  session: number | null; started_ms: number; state: LeaseState; position: number | null;
+}
+export interface StationView {
+  id: string; name: string; status: StationStatus; online: boolean; draining: boolean; revoked: boolean;
+  version: string; code: string; joined_ms: number; last_seen_ms: number; address: string;
+  facts: StationFacts; settings: StationSettings; leases: StationLease[];
+}
+export type StationCodeState = 'active' | 'used' | 'expired' | 'revoked';
+export interface StationCode { id: string; label: string; created_ms: number; expires_ms: number; state: StationCodeState; used_by: string | null }
+/** One audit row: the common fields, then whatever the action recorded (a lease, a reason, the settings). */
+export interface StationAuditRow {
+  at_ms: number; actor: string; station: string | null; agent: number | null; kind: string;
+  [detail: string]: unknown;
+}
+export interface StationSettingsAnswer { settings: StationSettings; pushed: boolean; push_error: string | null }
+
 export const api = {
   overview: () => get<Overview>('/v1/overview'),
 
@@ -585,6 +626,21 @@ export const api = {
   joinNodeLink: (code: string) => post<NodeLink>('/v1/node-link/join', { code }),
   /** Leaves that network; `forget` also drops its saved hub details. */
   leaveNodeLink: (forget: boolean) => post<NodeLink>('/v1/node-link/leave', { forget }),
+
+  /** A join code for a workstation: its token is in this answer only. `ttl_minutes` ≤ 60 (0: the default 15). */
+  issueStationCode: (label: string, ttl_minutes: number) => post<{ id: string; token: string; expires_ms: number }>('/v1/stations/codes', { label, ttl_minutes }),
+  stationCodes: () => get<StationCode[]>('/v1/stations/codes'),
+  revokeStationCode: (id: string) => del<unknown>(`/v1/stations/codes/${encodeURIComponent(id)}`),
+  stations: () => get<StationView[]>('/v1/stations'),
+  station: (id: string) => get<StationView>(`/v1/stations/${encodeURIComponent(id)}`),
+  renameStation: (id: string, name: string) => patch<StationView>(`/v1/stations/${encodeURIComponent(id)}`, { name }),
+  drainStation: (id: string, on: boolean) => post<StationView>(`/v1/stations/${encodeURIComponent(id)}/${on ? 'drain' : 'undrain'}`),
+  revokeStation: (id: string) => post<StationView>(`/v1/stations/${encodeURIComponent(id)}/revoke`),
+  /** Stores the settings and pushes them to the workstation when it is linked (`pushed`, `push_error`). */
+  saveStationSettings: (id: string, settings: StationSettings) => put<StationSettingsAnswer>(`/v1/stations/${encodeURIComponent(id)}/settings`, settings),
+  releaseStationLease: (id: string, lease: string) => del<unknown>(`/v1/stations/${encodeURIComponent(id)}/leases/${encodeURIComponent(lease)}`),
+  /** The newest rows first; with `station` only that workstation's. */
+  stationAudit: (station: string, limit = 100) => get<StationAuditRow[]>(`/v1/stations/audit${query({ station, limit })}`),
 
   /** The model-call ledger, totalled per model, agent, role and provider over [from, to) unix ms (default: the last 30 days). */
   usageSummary: (from?: number, to?: number) => get<UsageSummary>(`/v1/usage/summary${query({ from, to })}`),

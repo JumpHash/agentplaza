@@ -1,0 +1,54 @@
+/* Workstations: the list, one workstation's sections and the settings form. Colours and spacing come from the
+   tokens only, so the dark and light registers both follow. Narrow screens stack the rows and the facts. */
+
+/* Heading and actions */
+.ws-head { align-items: center; }
+.ws-heading { display: flex; flex-direction: column; gap: var(--s1); min-width: 0; }
+.ws-back { font: 500 11px var(--mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-3); text-decoration: none; }
+.ws-back:hover { color: var(--ink); }
+.ws-title { display: flex; align-items: center; flex-wrap: wrap; gap: var(--s2) var(--s3); min-width: 0; }
+.ws-title h1 { overflow-wrap: anywhere; }
+.ws-chips { display: flex; flex-wrap: wrap; gap: var(--s2); }
+.ws-actions { display: flex; flex-wrap: wrap; gap: var(--s2); align-items: center; }
+.ws-lede { margin: 0; max-width: 72ch; font-family: var(--serif); font-size: 16px; line-height: 1.55; color: var(--ink-2); }
+.ws-warn { margin: 0; font-size: var(--fs-sm); color: var(--warn); }
+.ws-buttons { display: flex; flex-wrap: wrap; gap: var(--s2); margin-top: var(--s3); }
+
+/* A value to copy: the token or the join command */
+.ws-copy {
+  display: flex; align-items: center; gap: var(--s2); padding: var(--s3);
+  border: 1px solid var(--border); background: var(--surface-2); font-family: var(--mono);
+}
+.ws-copy code { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: var(--fs-sm); }
+
+/* Tables keep their columns; on a phone they scroll inside their card, not the page */
+.ws-scroll { overflow-x: auto; }
+
+/* The list of workstations */
+.ws-list { list-style: none; margin: 0; padding: 0; }
+.ws-row + .ws-row { border-top: 1px solid var(--rule-faint); }
+.ws-row-link {
+  display: flex; justify-content: space-between; align-items: flex-start; gap: var(--s3);
+  min-width: 0; padding: var(--s3) var(--s4); color: var(--text); text-decoration: none;
+}
+.ws-row-link:hover { background: var(--hover); }
+.ws-row-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ws-row-main strong { font: 600 15px/1.35 var(--serif); overflow-wrap: anywhere; }
+.ws-row-main .faint { font-size: var(--fs-sm); overflow-wrap: anywhere; }
+.ws-row-meta { font-family: var(--mono); font-size: var(--fs-xs); color: var(--ink-3); overflow-wrap: anywhere; }
+.ws-row-side { display: flex; flex-direction: column; align-items: flex-end; gap: var(--s1); flex: none; }
+
+@media (max-width: 560px) {
+  .ws-row-link { flex-direction: column; }
+  .ws-row-side { flex-direction: row; flex-wrap: wrap; align-items: center; }
+}
+
+/* Settings: one fieldset, disabled for a revoked workstation */
+.ws-settings { display: flex; flex-direction: column; gap: var(--s3); min-width: 0; margin: 0; padding: 0; border: 0; }
+.ws-settings:disabled { opacity: 0.6; }
+.ws-settings .error-text { margin: 0; overflow-wrap: anywhere; }
+.ws-settings .error-text:empty { display: none; }
+.ws-form { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: var(--s3) var(--s4); }
+.ws-check { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); font-size: var(--fs-sm); cursor: pointer; }
+.ws-check input { width: 16px; height: 16px; margin: 0; accent-color: var(--signal); }
+.ws-check .hint { flex-basis: 100%; padding-left: 24px; font: italic 13px var(--serif); color: var(--ink-3); }

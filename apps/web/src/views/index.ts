@@ -30,6 +30,7 @@ import { mount as treasury } from './treasury';
 import { mount as tools } from './tools';
 import { mount as usage } from './usage';
 import { mount as vault } from './vault';
+import { mount as workstations } from './workstations';
 import { lazyMount } from './lazy';
 
 export type Cleanup = () => void;
@@ -69,6 +70,7 @@ export const SCREENS: Screen[] = [
   { key: 'mcp', label: 'MCP', icon: 'terminal', section: 'Setup', mount: mcp },
   { key: 'vault', label: 'Vault', icon: 'key', section: 'Setup', mount: vault },
   { key: 'machine', label: 'Machines', icon: 'machine', section: 'Setup', mount: machine },
+  { key: 'workstations', label: 'Workstations', icon: 'harness', section: 'Setup', mount: workstations },
   { key: 'nodes', label: 'Nodes', icon: 'link', section: 'Setup', mount: nodes },
   { key: 'setup', label: 'Setup', icon: 'wrench', section: 'Setup', mount: setup },
   { key: 'hardware-lab', label: 'Hardware lab', icon: 'wrench', section: 'Setup', mount: hardwareLab, hidden: true },
