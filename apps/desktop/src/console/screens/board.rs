@@ -1,10 +1,17 @@
 //! The Board screen (parity with the web console's `board` view): the agents' shared feed of
 //! posts, newest first, with an author filter and a search. Each post shows its role, time,
 //! subject and body (clamped behind "Show more"), its files, and its thread of comments with
-//! the owner's reply composer under it.
+//! the owner's reply composer under it. The owner also posts to the board from the foot of the
+//! screen (with `@name` mentions and `@all`), pauses and resumes its deliveries, and exports the
+//! thread as Markdown.
+//!
+//! The owner's pieces are public so the IDE's board panel can reuse them: `Composer` (the post
+//! box's text and posting state), `composer_view`, `pause_bar` and `paused_banner`. They emit this
+//! screen's `Msg`, which the embedding screen forwards to `update`.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
+use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use iced::font::{self, Font};
@@ -22,6 +29,10 @@ const SANS_SEMIBOLD: Font = Font { weight: font::Weight::Semibold, ..SANS };
 /// A thread shows its last comments; the rest on request.
 const THREAD_PREVIEW: usize = 3;
 const REPLY_MAX: usize = 1000;
+/// The longest post the board takes (the hub's body cap is 4 KiB; a post is shown in characters here).
+const POST_MAX: usize = 4000;
+/// The most `@name` suggestions a composer offers at once.
+const SUGGESTIONS: usize = 6;
 /// A body longer than this many lines or characters is clamped behind "Show more".
 const CLAMP_LINES: usize = 3;
 const CLAMP_CHARS: usize = 280;
@@ -53,11 +64,28 @@ struct Post {
     /// The task the post is about, or null.
     #[serde(default)]
     task: Option<String>,
+    /// Whether the owner wrote the post (its `agent_cid` is then 0).
+    #[serde(default)]
+    owner: bool,
+    /// The names the owner mentioned (`all` for everyone).
+    #[serde(default)]
+    mentions: Vec<String>,
+}
+
+/// The owner's post box: its text and whether a post is on its way. It owns its state, so the IDE's
+/// board panel can embed it with its own copy.
+#[derive(Debug, Default)]
+pub struct Composer {
+    content: text_editor::Content,
+    posting: bool,
 }
 
 #[derive(Debug, Deserialize)]
 struct Board {
     posts: Vec<Post>,
+    /// Whether the whole board's deliveries are paused.
+    #[serde(default)]
+    paused: bool,
 }
 
 /// A file's metadata (`GET /v1/files/{id}`).
@@ -101,6 +129,12 @@ pub struct State {
     /// The author filter (an agent cid), and the search text.
     author: Option<u64>,
     query: String,
+    /// Whether the whole board's deliveries are paused (the hub's answer).
+    paused: bool,
+    /// The owner's post box, the names an `@` can complete to (`all` first), and a line of confirmation.
+    compose: Composer,
+    mentionable: Vec<String>,
+    notice: Option<String>,
     /// Posts whose whole body is open, and whose whole thread is showing.
     body_open: HashSet<String>,
     thread_open: HashSet<String>,
@@ -142,6 +176,23 @@ pub enum Msg {
     Cancel(String),
     /// A hub event: a board change reloads the screen.
     Event(crate::console::events::Event),
+    /// An edit in the post box.
+    Compose(text_editor::Action),
+    /// The `@all` chip: adds `@all` to the post.
+    ComposeAll,
+    /// A suggestion picked: it completes the `@name` being typed.
+    ComposePick(String),
+    /// Posts the box's text to the board.
+    ComposeSend,
+    /// A post went out (or did not): the text sent, and the result.
+    Posted(String, Result<Value, String>),
+    /// Pauses the board's deliveries, or resumes them.
+    Pause,
+    Paused(Result<Value, String>),
+    /// Saves the board's thread as Markdown: the save dialog, then the file.
+    Export,
+    ExportPicked(Option<PathBuf>),
+    Exported(Result<String, String>),
 }
 
 /// The navigation this message asks for, if any.
@@ -180,7 +231,7 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
 fn apply(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
     match msg {
         Msg::Event(event) => {
-            if !matches!(event.kind.as_str(), "board") {
+            if !matches!(event.kind.as_str(), "board" | "board_paused") {
                 return Task::none();
             }
             if state.refreshing {
@@ -196,6 +247,7 @@ fn apply(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             match res.and_then(|v| serde_json::from_value::<Board>(v).map_err(|e| e.to_string())) {
                 Ok(board) => {
                     state.posts = board.posts;
+                    state.paused = board.paused;
                     state.failed = false;
                 }
                 Err(_) => state.failed = true,
@@ -211,6 +263,7 @@ fn apply(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         }
         Msg::Agents(Ok(list)) => {
             state.names = agent_names(&list);
+            state.mentionable = mention_names(&list);
             Task::none()
         }
         Msg::Agents(Err(_)) => Task::none(),
@@ -280,6 +333,103 @@ fn apply(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             let key = id.clone();
             client::task(move || client.post::<Value>(&path, &body), move |r| Msg::Sent(key.clone(), text.clone(), r))
         }
+        Msg::Compose(action) => {
+            state.compose.content.perform(action);
+            Task::none()
+        }
+        Msg::ComposeAll => {
+            let text = state.compose.content.text();
+            let mut text = text.trim_end_matches('\n').to_string();
+            if !text.is_empty() && !text.ends_with(char::is_whitespace) {
+                text.push(' ');
+            }
+            text.push_str("@all ");
+            state.compose.content = text_editor::Content::with_text(&text);
+            Task::none()
+        }
+        Msg::ComposePick(name) => {
+            let text = state.compose.content.text();
+            let text = text.trim_end_matches('\n');
+            // The word being typed starts after the last whitespace; it is replaced by the name.
+            let start = text.char_indices().rev().find(|(_, c)| c.is_whitespace()).map_or(0, |(i, c)| i + c.len_utf8());
+            let next = format!("{}@{name} ", &text[..start]);
+            state.compose.content = text_editor::Content::with_text(&next);
+            Task::none()
+        }
+        Msg::ComposeSend => {
+            let text = state.compose.content.text().trim().to_string();
+            if text.is_empty() || text.chars().count() > POST_MAX || state.compose.posting {
+                return Task::none();
+            }
+            state.compose.posting = true;
+            let client = ctx.client.clone();
+            let body = json!({ "body": &text, "mentions": mentions_in(&text) });
+            let sent = text.clone();
+            client::task(move || client.post::<Value>("/v1/board/posts", &body), move |r| Msg::Posted(sent.clone(), r))
+        }
+        Msg::Posted(sent, res) => {
+            state.compose.posting = false;
+            match res {
+                Ok(_) => {
+                    // The box clears only if nothing was typed while the post went out.
+                    if state.compose.content.text().trim() == sent {
+                        state.compose.content = text_editor::Content::new();
+                    }
+                    load(state, ctx)
+                }
+                Err(e) => {
+                    state.error = Some(e);
+                    Task::none()
+                }
+            }
+        }
+        Msg::Pause => {
+            let client = ctx.client.clone();
+            let body = json!({ "on": !state.paused });
+            client::task(move || client.post::<Value>("/v1/board/pause", &body), Msg::Paused)
+        }
+        Msg::Paused(res) => match res {
+            Ok(v) => {
+                state.paused = v.get("paused").and_then(Value::as_bool).unwrap_or(state.paused);
+                load(state, ctx)
+            }
+            Err(e) => {
+                state.error = Some(e);
+                Task::none()
+            }
+        },
+        Msg::Export => Task::perform(
+            async {
+                rfd::AsyncFileDialog::new()
+                    .set_title("Save the board as Markdown")
+                    .set_file_name("agentplaza-board-all.md")
+                    .add_filter("Markdown", &["md"])
+                    .save_file()
+                    .await
+                    .map(|file| file.path().to_path_buf())
+            },
+            Msg::ExportPicked,
+        ),
+        Msg::ExportPicked(None) => Task::none(),
+        Msg::ExportPicked(Some(path)) => {
+            let c = ctx.client.clone();
+            client::task(
+                move || {
+                    let bytes = raw_get(&c, "/v1/board/export?format=md")?;
+                    std::fs::write(&path, &bytes).map_err(|e| format!("The file could not be written: {e}"))?;
+                    Ok(path.display().to_string())
+                },
+                Msg::Exported,
+            )
+        }
+        Msg::Exported(Ok(path)) => {
+            state.notice = Some(format!("Saved the board to {path}"));
+            Task::none()
+        }
+        Msg::Exported(Err(e)) => {
+            state.error = Some(e);
+            Task::none()
+        }
         Msg::Sent(id, sent, res) => {
             state.sending.remove(&id);
             match res {
@@ -325,6 +475,33 @@ fn fetch_files(state: &mut State, ctx: &Ctx) -> Task<Msg> {
     Task::batch(tasks)
 }
 
+/// The names an `@` can complete to, from the agent list: `all`, then each agent's name and role, once each.
+fn mention_names(list: &Value) -> Vec<String> {
+    let agents = list.as_array().or_else(|| list.get("agents").and_then(Value::as_array));
+    let mut out: Vec<String> = vec!["all".to_string()];
+    for a in agents.into_iter().flatten() {
+        for key in ["name", "role"] {
+            let name = a.get(key).and_then(Value::as_str).unwrap_or("").trim();
+            if !name.is_empty() && !out.iter().any(|seen| seen.eq_ignore_ascii_case(name)) {
+                out.push(name.to_string());
+            }
+        }
+    }
+    out
+}
+
+/// The bytes of a GET (the export's Markdown); a non-2xx answer becomes `Err` with the hub's `error` text.
+fn raw_get(c: &client::Client, path: &str) -> Result<Vec<u8>, String> {
+    let reply = apz_http::client::request(&c.target, "GET", path, None, c.timeout).map_err(|e| e.to_string())?;
+    if (200..300).contains(&reply.status) {
+        return Ok(reply.body);
+    }
+    let error = serde_json::from_slice::<Value>(&reply.body)
+        .ok()
+        .and_then(|v| v.get("error").and_then(Value::as_str).map(str::to_string));
+    Err(error.unwrap_or_else(|| format!("HTTP {}", reply.status)))
+}
+
 /// The agent names from the agent list, keyed by cid (an empty name shows as "Unnamed").
 fn agent_names(list: &Value) -> HashMap<u64, String> {
     let agents = list.as_array().or_else(|| list.get("agents").and_then(Value::as_array));
@@ -347,7 +524,7 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
         .on_input(Msg::Query)
         .padding(6.0)
         .width(Length::Fixed(260.0));
-    let head = ui::view_head("Board", vec![picker.into(), search.into()]);
+    let head = ui::view_head("Board", vec![picker.into(), search.into(), pause_bar(state.paused)]);
 
     let mut feed: Vec<Element<'a, Msg>> = Vec::new();
     if let Some(e) = &state.error {
@@ -380,14 +557,118 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
             feed.push(ui::hairline());
         }
     }
-    let body = ui::scroll(column(feed).width(Length::Fill).max_width(760.0)).height(Length::Fill);
-    ui::sheet(head, body.into())
+    let mut parts: Vec<Element<'a, Msg>> = Vec::new();
+    if state.paused {
+        parts.push(paused_banner());
+    }
+    if let Some(notice) = &state.notice {
+        parts.push(ui::faint(notice.clone()).into());
+    }
+    parts.push(ui::scroll(column(feed).width(Length::Fill).max_width(760.0)).height(Length::Fill).into());
+    parts.push(container(composer_view(&state.compose, &state.mentionable)).width(Length::Fill).padding(Padding { top: 8.0, right: 10.0, bottom: 10.0, left: 10.0 }).into());
+    ui::sheet(head, column(parts).height(Length::Fill).into())
+}
+
+/// Pause/Resume and Export for the board. Reusable: the IDE's board panel shows the same bar.
+pub fn pause_bar<'a>(paused: bool) -> Element<'a, Msg> {
+    let pause = ui::btn(if paused { "Resume board" } else { "Pause board" }, None, ui::Kind::Secondary, Some(Msg::Pause));
+    let export = ui::btn("Export", None, ui::Kind::Secondary, Some(Msg::Export));
+    row![pause, export].spacing(8).align_y(Alignment::Center).into()
+}
+
+/// The banner a paused board shows: posts are kept, their mentions wait for the resume.
+pub fn paused_banner<'a>() -> Element<'a, Msg> {
+    let warn = crate::theme::palette().warn;
+    container(text("Paused. Posts are saved, but their mentions are not delivered to agents until the board resumes.").size(13.0).color(warn))
+        .width(Length::Fill)
+        .padding(Padding { top: 6.0, right: 10.0, bottom: 6.0, left: 10.0 })
+        .style(move |_: &Theme| container::Style { border: Border { color: warn, width: 1.0, radius: 0.0.into() }, ..Default::default() })
+        .into()
+}
+
+/// The owner's post box: the `@name` suggestions for the word being typed, an `@all` chip, the text
+/// (Ctrl/Cmd+Enter sends), and Send. `mentionable` is the names an `@` can complete to.
+pub fn composer_view<'a>(compose: &'a Composer, mentionable: &[String]) -> Element<'a, Msg> {
+    let text = compose.content.text();
+    let suggestions: Vec<Element<'a, Msg>> = match trailing_mention(&text) {
+        Some(query) => suggestions_for(query, mentionable)
+            .into_iter()
+            .map(|name| {
+                let label = format!("@{name}");
+                ui::btn(&label, None, ui::Kind::Ghost, Some(Msg::ComposePick(name)))
+            })
+            .collect(),
+        None => Vec::new(),
+    };
+    let input = text_editor(&compose.content)
+        .placeholder("Message the team… (@ to mention)")
+        .padding(6.0)
+        .height(Length::Fixed(96.0))
+        .key_binding(|kp| {
+            let enter = kp.key == iced::keyboard::Key::Named(iced::keyboard::key::Named::Enter);
+            if enter && (kp.modifiers.control() || kp.modifiers.command()) {
+                Some(text_editor::Binding::Custom(Msg::ComposeSend))
+            } else {
+                text_editor::Binding::from_key_press(kp)
+            }
+        })
+        .on_action(Msg::Compose);
+    let len = text.chars().count();
+    let can_send = !text.trim().is_empty() && len <= POST_MAX && !compose.posting;
+    let all = ui::btn("@all", None, ui::Kind::Secondary, Some(Msg::ComposeAll));
+    let send = ui::btn("Send", None, ui::Kind::Primary, can_send.then_some(Msg::ComposeSend));
+    column![
+        row![all, ui::chip_row(suggestions)].spacing(8).align_y(Alignment::Center),
+        input,
+        row![container(ui::faint(format!("{len}/{POST_MAX}"))).width(Length::Fill), send].spacing(8).align_y(Alignment::Center),
+    ]
+    .spacing(8)
+    .into()
+}
+
+/// The `@partial` the text ends with, without its `@`, when the last word is one.
+fn trailing_mention(text: &str) -> Option<&str> {
+    let word = text.rsplit(char::is_whitespace).next()?;
+    let query = word.strip_prefix('@')?;
+    query.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_')).then_some(query)
+}
+
+/// The names an `@partial` can complete to: `all` first, then the names and roles that contain it.
+fn suggestions_for(query: &str, mentionable: &[String]) -> Vec<String> {
+    let needle = query.to_lowercase();
+    std::iter::once("all")
+        .chain(mentionable.iter().map(String::as_str).filter(|name| *name != "all"))
+        .filter(|name| name.to_lowercase().contains(&needle))
+        .take(SUGGESTIONS)
+        .map(str::to_string)
+        .collect()
+}
+
+/// The mentions in a post's text: each `@name` (letters, digits, dots, dashes, underscores), in order, once.
+fn mentions_in(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let chars: Vec<char> = text.chars().collect();
+    for (i, c) in chars.iter().enumerate() {
+        let after_word = i > 0 && (chars[i - 1].is_ascii_alphanumeric() || chars[i - 1] == '_');
+        if *c != '@' || after_word {
+            continue;
+        }
+        let name: String = chars[i + 1..]
+            .iter()
+            .take_while(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_'))
+            .collect();
+        let name = name.trim_end_matches('.').to_string();
+        if !name.is_empty() && !out.contains(&name) {
+            out.push(name);
+        }
+    }
+    out
 }
 
 /// The author filter's options: "All authors", then the agents that have posted, by name.
 fn author_options(state: &State) -> Vec<Author> {
     let mut seen: Vec<(u64, String)> = Vec::new();
-    for p in &state.posts {
+    for p in state.posts.iter().filter(|p| !p.owner) {
         if !seen.iter().any(|(cid, _)| *cid == p.agent_cid) {
             seen.push((p.agent_cid, state.name_of(p.agent_cid)));
         }
@@ -400,17 +681,30 @@ fn author_options(state: &State) -> Vec<Author> {
 
 /// One post: its number, the by-line (author link, role, count, Reply), subject, body, files, thread, time.
 fn entry<'a>(state: &'a State, no: usize, p: &'a Post) -> Element<'a, Msg> {
-    let name = button(text(state.name_of(p.agent_cid)).font(SANS_SEMIBOLD).size(14.5).color(crate::theme::palette().ink))
-        .padding(0.0)
-        .style(|_: &Theme, _| button::Style { text_color: crate::theme::palette().ink, ..Default::default() })
-        .on_press(Msg::Go(Id::Agent(p.agent_cid)));
-    let mut by = row![name, ui::label(&role_label(&p.role)), ui::label(&count_label(p.comments.len()))]
-        .spacing(10)
-        .align_y(Alignment::Center);
-    if let Some(task) = p.task.as_deref().filter(|t| !t.is_empty()) {
-        by = by.push(task_link(task));
+    // The owner's own post names the owner (it has no agent to open); an agent's opens the agent.
+    let name: Element<'a, Msg> = if p.owner {
+        text("Owner").font(SANS_SEMIBOLD).size(14.5).color(crate::theme::palette().ink).into()
+    } else {
+        button(text(state.name_of(p.agent_cid)).font(SANS_SEMIBOLD).size(14.5).color(crate::theme::palette().ink))
+            .padding(0.0)
+            .style(|_: &Theme, _| button::Style { text_color: crate::theme::palette().ink, ..Default::default() })
+            .on_press(Msg::Go(Id::Agent(p.agent_cid)))
+            .into()
+    };
+    let mut by_parts: Vec<Element<'a, Msg>> = vec![name];
+    if !p.owner {
+        by_parts.push(ui::label(&role_label(&p.role)).into());
     }
-    by = by.push(ui::btn("Reply", None, ui::Kind::Ghost, Some(Msg::ToggleReply(p.id.clone()))));
+    by_parts.push(ui::label(&count_label(p.comments.len())).into());
+    if !p.mentions.is_empty() {
+        let names = p.mentions.iter().map(|m| format!("@{m}")).collect::<Vec<_>>().join(" ");
+        by_parts.push(ui::mono(names, 11.0, crate::theme::palette().signal).into());
+    }
+    if let Some(task) = p.task.as_deref().filter(|t| !t.is_empty()) {
+        by_parts.push(task_link(task));
+    }
+    by_parts.push(ui::btn("Reply", None, ui::Kind::Ghost, Some(Msg::ToggleReply(p.id.clone()))));
+    let by = row(by_parts).spacing(10).align_y(Alignment::Center);
 
     let mut matter: Vec<Element<'a, Msg>> = vec![
         by.into(),
@@ -685,4 +979,59 @@ pub fn panel<'a>(state: &'a State, keep: impl Fn(u64, Option<&str>) -> bool) -> 
 
 pub fn subscription(ctx: &Ctx) -> iced::Subscription<Msg> {
     crate::console::events::subscription(&ctx.client).map(Msg::Event)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_word_being_typed_is_the_trailing_mention() {
+        assert_eq!(trailing_mention("ship it @bu"), Some("bu"));
+        assert_eq!(trailing_mention("ship it @"), Some(""));
+        assert_eq!(trailing_mention("ship it @bu "), None, "a space after the word ends it");
+        assert_eq!(trailing_mention("mail a@b"), None, "an address is not a mention");
+        assert_eq!(trailing_mention("plain"), None);
+    }
+
+    #[test]
+    fn suggestions_offer_all_then_the_names_and_roles_that_match() {
+        let names: Vec<String> = ["all", "Ana", "builder", "Dev"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(suggestions_for("", &names), vec!["all", "Ana", "builder", "Dev"]);
+        assert_eq!(suggestions_for("AN", &names), vec!["Ana"], "matches without case");
+        assert_eq!(suggestions_for("ev", &names), vec!["Dev"]);
+        assert_eq!(suggestions_for("zz", &names), Vec::<String>::new());
+    }
+
+    #[test]
+    fn the_mentions_of_a_post_are_its_at_names_once_in_order() {
+        assert_eq!(mentions_in("ping @all and @ana, then @ana again and @dev-2_x."), vec!["all", "ana", "dev-2_x"]);
+        assert!(mentions_in("mail a@b.com now").is_empty());
+    }
+
+    #[test]
+    fn the_mention_names_are_the_agents_names_and_roles_once_each() {
+        let list = json!([
+            { "cid": 3, "name": "Ana", "role": "builder" },
+            { "cid": 4, "name": "ana", "role": "builder" },
+            { "cid": 5, "name": "", "role": "reviewer" }
+        ]);
+        assert_eq!(mention_names(&list), vec!["all", "Ana", "builder", "reviewer"]);
+    }
+
+    #[test]
+    fn an_owner_post_carries_its_mentions_and_no_agent() {
+        let post: Post = serde_json::from_value(json!({
+            "id": "p9", "agent_cid": 0, "role": "owner", "subject": "ship", "body": "ship it",
+            "created_at": 1.0, "owner": true, "mentions": ["all"], "project": "pr1"
+        }))
+        .expect("an owner post parses");
+        assert!(post.owner);
+        assert_eq!(post.mentions, vec!["all"]);
+        let agent: Post = serde_json::from_value(json!({
+            "id": "p8", "agent_cid": 3, "role": "builder", "subject": "hi", "created_at": 1.0
+        }))
+        .expect("an agent post parses without the owner fields");
+        assert!(!agent.owner && agent.mentions.is_empty());
+    }
 }

@@ -30,6 +30,7 @@ pub fn router() -> Router<App> {
     let router = decisions::routes(router);
     let router = agents::routes(router);
     let router = plaza::routes(router);
+    let router = crate::owner_board::routes(router);
     let router = internal::routes(router);
     let router = crate::society::routes(router);
     let router = crate::connectors::routes(router);

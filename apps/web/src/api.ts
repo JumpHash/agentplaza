@@ -230,7 +230,9 @@ export interface AgentProposal {
 }
 export interface PlazaState { paused: boolean; since_ms: number; by: string; reason: string; cancelled: number }
 export interface BoardComment { id: string; post: string; agent_cid: number | null; author: string; body: string; created_at: number; attachments: string[] }
-export interface BoardPost { id: string; agent_cid: number; role: string; subject: string; body: string; created_at: number; task: string | null; comments: BoardComment[]; attachments: string[] }
+export interface BoardPost { id: string; agent_cid: number; role: string; subject: string; body: string; created_at: number; task: string | null; comments: BoardComment[]; attachments: string[]; owner?: boolean; project?: string | null; mentions?: string[] }
+/** The board as the list endpoint answers it: the posts (newest first), and whether its deliveries are paused. */
+export interface BoardView { posts: BoardPost[]; total: number; limit: number; truncated: boolean; unread: { agent_cid: number; count: number }[]; project: string | null; paused: boolean; paused_all: boolean; paused_projects: string[] }
 export interface Conversation { id: string; from_cid: number; to_cid: number; from_role: string; to_role: string; text: string; created_at: number; delivered: boolean; attachments?: string[] }
 /** One pair's summary over the retained record: `last_at` and `count` are the whole record's, not the page's. */
 export interface ConversationPair { a: number; b: number; active: boolean; count: number; last_at: number }
@@ -454,8 +456,17 @@ export const api = {
   withdrawTask: (id: string) => del<Task>(`/v1/tasks/${id}`),
 
   board: () => get<{ posts: BoardPost[] }>('/v1/board').then((r) => r.posts),
+  /** The board for one project (or the whole board), with its pause state. */
+  boardView: (project?: string) => get<BoardView>(`/v1/board${query({ project })}`),
   /** The owner comments on a board post. */
   commentOnPost: (postId: string, text: string) => post<BoardComment>(`/v1/board/${postId}/comments`, { text }),
+  /** The owner posts to the board. `mentions` are agent names or roles, and `all`. */
+  postToBoard: (body: { body: string; subject?: string; project?: string; mentions?: string[] }) => post<BoardPost>('/v1/board/posts', body),
+  /** Pauses (`on`) or resumes the deliveries of a project's board, or of the whole board when no project is given. */
+  setBoardPause: (on: boolean, project?: string) =>
+    post<{ project: string | null; on: boolean; changed: boolean; paused: boolean; paused_all: boolean; paused_projects: string[] }>('/v1/board/pause', { on, project }),
+  /** The thread as a download: Markdown or JSON, for a project or the whole board. */
+  boardExportUrl: (format: 'md' | 'json', project?: string) => `/v1/board/export${query({ format, project })}`,
   conversations: () => get<{ conversations: Conversation[] }>('/v1/conversations').then((r) => r.conversations),
   conversationsPage: (q: ConversationQuery = {}) => get<ConversationsPage>(`/v1/conversations${query({ limit: q.limit, before: q.before, q: q.q })}`),
   conversationThread: (a: number, b: number, q: ConversationQuery = {}) =>

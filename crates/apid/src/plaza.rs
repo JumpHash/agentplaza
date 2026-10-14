@@ -21,6 +21,7 @@ use serde::de::DeserializeOwned;
 use serde::Deserialize;
 
 use crate::agents::{self, Status};
+use crate::owner_board::ProjectIndex;
 use crate::scheduler::Origin;
 use crate::state::App;
 
@@ -90,7 +91,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .post("/v1/treasury/fine", |app, req, _| treasury_fine(app, &req.body))
         .get("/v1/treasury/wallets", |app, _, _| treasury_wallets(app))
         .get("/v1/agora", |app, _, _| agora_view(app))
-        .get("/v1/board", |app, _, _| board_view(app))
+        .get("/v1/board", |app, req, _| board_view(app, req))
         .post("/v1/board", |app, req, _| board_post(app, &req.body))
         .post("/v1/board/{id}/comments", |app, req, p| board_comment(app, p.get("id"), &req.body))
         .post("/v1/board/read", |app, req, _| board_read(app, &req.body))
@@ -110,7 +111,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
 }
 
 /// Parses a JSON body into `T`, or answers 400 naming the request kind.
-fn parse<T: DeserializeOwned>(body: &[u8], what: &str) -> Result<T, Response> {
+pub(crate) fn parse<T: DeserializeOwned>(body: &[u8], what: &str) -> Result<T, Response> {
     serde_json::from_slice(body)
         .map_err(|err| Response::error(400, &format!("invalid {what} request: {err}")))
 }
@@ -553,8 +554,16 @@ fn agora_view(app: &App) -> Response {
     Response::json(200, &app.plaza.agora.calls(&tasks, agora::AGORA_LIMIT))
 }
 
-/// `GET /v1/board`: the board, with presence taken from the roster.
-fn board_view(app: &App) -> Response {
+/// `GET /v1/board?project=`: the board, with presence taken from the roster. A project names one
+/// project's posts; `paused` says whether that board's deliveries are held (and `paused_all` whether
+/// the whole board is).
+fn board_view(app: &App, req: &Request) -> Response {
+    let project = req.query_param("project").map(str::trim).filter(|p| !p.is_empty()).map(str::to_string);
+    if let Some(id) = &project
+        && app.projects.get(id).is_none()
+    {
+        return Response::error(400, &format!("no project {id}"));
+    }
     let connected: Vec<u64> = app
         .agents
         .list()
@@ -562,7 +571,25 @@ fn board_view(app: &App) -> Response {
         .filter(|agent| agent.status != Status::Offline)
         .map(|agent| agent.cid)
         .collect();
-    Response::json(200, &app.plaza.social.board(&connected, social::BOARD_LIMIT))
+    let index = ProjectIndex::new(app);
+    let view = app.plaza.social.board_for(&connected, social::BOARD_LIMIT, |post| {
+        project.as_deref().is_none_or(|id| index.of(post).as_deref() == Some(id))
+    });
+    let pauses = app.settings.get().board_pauses;
+    Response::json(
+        200,
+        &serde_json::json!({
+            "posts": view.posts,
+            "total": view.total,
+            "limit": view.limit,
+            "truncated": view.truncated,
+            "unread": view.unread,
+            "project": project,
+            "paused": pauses.holds(project.as_deref()),
+            "paused_all": pauses.all,
+            "paused_projects": pauses.projects,
+        }),
+    )
 }
 
 /// `POST /v1/board`: a connected agent posts. The author is always an agent;
@@ -617,6 +644,11 @@ pub(crate) fn notify_post_author(app: &App, post: &str, commenter: Option<u64>, 
     let Some(found) = app.plaza.social.board(&[], 200).posts.into_iter().find(|p| p.id == post) else {
         return;
     };
+    // The owner's own posts have no agent to tell, and a paused board is not nudged: the comment is
+    // stored on the post, where the author sees it when it reads the board (no replay on resume).
+    if found.owner || app.settings.get().board_pauses.holds(ProjectIndex::new(app).of(&found).as_deref()) {
+        return;
+    }
     let (author_cid, subject) = (found.agent_cid, found.subject);
     if Some(author_cid) == commenter {
         return;

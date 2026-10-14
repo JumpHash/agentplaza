@@ -25,6 +25,7 @@ mod library;
 mod memory;
 mod decisions;
 mod payments;
+mod owner_board;
 mod plaza;
 mod prices;
 mod providers;

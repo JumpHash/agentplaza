@@ -864,4 +864,53 @@ mod tests {
         check_queries(&db, cid);
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// The board's pauses are a setting, saved in `settings.json` on every backend: a store loaded from
+    /// the same state directory holds them again, and a save keeps them.
+    #[test]
+    fn board_pauses_are_saved_in_settings_json() {
+        let dir = std::env::temp_dir().join(format!("apid-pauses-files-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = crate::settings::Store::load(&dir, false).unwrap();
+        assert_eq!(store.set_board_pause(Some("pr4"), true).map(|(changed, _)| changed), Ok(true));
+        assert_eq!(store.set_board_pause(Some("pr4"), true).map(|(changed, _)| changed), Ok(false));
+        let reloaded = crate::settings::Store::load(&dir, false).unwrap();
+        let pauses = reloaded.get().board_pauses;
+        assert!(pauses.holds(Some("pr4")) && !pauses.holds(Some("pr5")) && !pauses.holds(None));
+        // A save that names no pauses keeps the ones in force.
+        let saved = crate::settings::Settings { board_pauses: Default::default(), ..reloaded.get() };
+        reloaded.put(saved).unwrap();
+        assert!(reloaded.get().board_pauses.holds(Some("pr4")), "a save keeps the pauses in force");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// On Postgres the `settings` component carries the pauses: stored, loaded and restored, they hold
+    /// the same boards. Skipped without a test server.
+    #[test]
+    fn board_pauses_survive_in_postgres() {
+        let Some(url) = test_database("board_pauses") else { return };
+        let env = BTreeMap::from([("APZ_DATABASE_URL".to_string(), url)]);
+        let db = Db::connect(&env);
+        assert!(db.enabled());
+        let dir = std::env::temp_dir().join(format!("apid-pauses-pg-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = crate::settings::Store::load(&dir, false).unwrap();
+        store.set_board_pause(Some("pr4"), true).unwrap();
+        store.set_board_pause(None, true).unwrap();
+        assert!(db.store("settings", &store.snapshot()).is_ok(), "the settings are stored");
+
+        let loaded = db.load("settings").expect("the stored settings");
+        let other = std::env::temp_dir().join(format!("apid-pauses-pg-b-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&other);
+        std::fs::create_dir_all(&other).unwrap();
+        let restored = crate::settings::Store::load(&other, false).unwrap();
+        restored.restore(&loaded).expect("the stored settings restore");
+        let pauses = restored.get().board_pauses;
+        assert!(pauses.all && pauses.holds(Some("pr9")), "the whole board's pause came back");
+        assert!(pauses.projects.contains("pr4"));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&other);
+    }
 }

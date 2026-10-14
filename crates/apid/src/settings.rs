@@ -3,7 +3,7 @@
 //! OWNER: slice "providers". Signatures used by other modules are marked
 //! `// contract` — keep them.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -105,6 +105,27 @@ pub struct Settings {
     /// Minutes a done task waits for a reviewer before the owner is asked to rule on it (an
     /// approval of kind `review`). 0 asks at the scheduler's next tick. See `scheduler.rs`.
     pub review_timeout_minutes: u32,
+    /// The owner's pauses of the board's deliveries (`owner_board.rs`). The pause route sets them;
+    /// a settings save keeps the ones in force.
+    pub board_pauses: BoardPauses,
+}
+
+/// The owner's pauses of the board's deliveries: the whole board, and the projects whose boards are
+/// paused. A paused board's posts are stored, and their mentions are not delivered until it resumes.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BoardPauses {
+    /// Whether the whole board is paused.
+    pub all: bool,
+    /// The projects whose boards are paused.
+    pub projects: BTreeSet<String>,
+}
+
+impl BoardPauses {
+    /// Whether the deliveries for `project`'s board (`None` for the whole board) are held.
+    pub fn holds(&self, project: Option<&str>) -> bool {
+        self.all || project.is_some_and(|id| self.projects.contains(id))
+    }
 }
 
 /// The default for `review_timeout_minutes`: half an hour.
@@ -144,6 +165,7 @@ impl Default for Settings {
             foundry: FoundrySettings::default(),
             allow_training_models: false,
             review_timeout_minutes: DEFAULT_REVIEW_TIMEOUT_MINUTES,
+            board_pauses: BoardPauses::default(),
         }
     }
 }
@@ -327,9 +349,35 @@ impl Store {
 
     /// Validates `new`, writes `settings.json` atomically and replaces the
     /// in-memory settings. Returns the saved value.
-    pub fn put(&self, new: Settings) -> Result<Settings, String> {
+    pub fn put(&self, mut new: Settings) -> Result<Settings, String> {
         self.check(&new)?;
-        self.replace(new)
+        let mut guard = self.lock();
+        new.board_pauses = guard.board_pauses.clone();
+        self.write(&mut guard, new)
+    }
+
+    /// Pauses (`on`) or resumes the deliveries of one project's board, or of the whole board (`project`
+    /// `None`), and saves it. Returns whether the pauses changed, and the pauses now in force.
+    pub fn set_board_pause(&self, project: Option<&str>, on: bool) -> Result<(bool, BoardPauses), String> {
+        let mut guard = self.lock();
+        let mut next = guard.clone();
+        let before = next.board_pauses.clone();
+        match project {
+            None => next.board_pauses.all = on,
+            Some(project) if on => {
+                next.board_pauses.projects.insert(project.to_string());
+            }
+            Some(project) => {
+                next.board_pauses.projects.remove(project);
+            }
+        }
+        let changed = next.board_pauses != before;
+        let saved = self.write(&mut guard, next)?;
+        Ok((changed, saved.board_pauses))
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Settings> {
+        self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// The checks every saved settings value passes (`put` and `restore`).
@@ -339,7 +387,12 @@ impl Store {
 
     /// Writes `settings.json` atomically and swaps the in-memory settings.
     fn replace(&self, new: Settings) -> Result<Settings, String> {
-        let mut guard = self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut guard = self.lock();
+        self.write(&mut guard, new)
+    }
+
+    /// [`Store::replace`] with the lock already held: `guard` is the in-memory settings.
+    fn write(&self, guard: &mut Settings, new: Settings) -> Result<Settings, String> {
         let bytes = serde_json::to_vec_pretty(&new).map_err(|e| e.to_string())?;
         let tmp = self.path.with_file_name("settings.json.tmp");
         std::fs::write(&tmp, &bytes).map_err(|e| format!("write settings: {e}"))?;

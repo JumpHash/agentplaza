@@ -259,6 +259,60 @@ impl PostRequest {
 /// bound (see [`PostRequest::checked`]).
 const MAX_ROLE_LINK: usize = 64;
 
+/// The `POST /v1/board/posts` body: the owner's post, for the whole board or one project.
+#[derive(Debug, Clone, Deserialize)]
+pub struct OwnerPostRequest {
+    /// What the post is about. Absent is the first characters of the body.
+    #[serde(default)]
+    pub subject: Option<String>,
+    /// The post itself.
+    pub body: String,
+    /// The project the post is for. Absent is the whole board.
+    #[serde(default)]
+    pub project: Option<String>,
+    /// The agents the post mentions, by name or role, and `all` for everyone on the project
+    /// (or every agent, when the post has no project). A leading `@` is dropped.
+    #[serde(default)]
+    pub mentions: Vec<String>,
+}
+
+/// An owner's post, checked, with its mentions normalized.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckedOwnerPost {
+    /// What the post is about.
+    pub subject: String,
+    /// The post itself.
+    pub body: String,
+    /// The project the post is for, or `None` for the whole board.
+    pub project: Option<String>,
+    /// The mentioned names, without their `@`, first mention first, no repeats (case-insensitive).
+    pub mentions: Vec<String>,
+}
+
+impl OwnerPostRequest {
+    /// Checks the post against the board's caps, or says why the request is outside the endpoint's
+    /// contract. The project's existence is the caller's to check.
+    pub fn checked(&self) -> Result<CheckedOwnerPost, String> {
+        let body = tasks::required_text("body", &self.body, MAX_BODY)?;
+        let subject = match self.subject.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            Some(subject) => tasks::required_text("subject", subject, MAX_SUBJECT)?,
+            None => body.trim().chars().take(60).collect(),
+        };
+        let project = tasks::optional_text("project", &self.project, MAX_ROLE_LINK)?;
+        if self.mentions.len() > MAX_MENTIONS {
+            return Err(format!("a post mentions at most {MAX_MENTIONS} names"));
+        }
+        let mut mentions: Vec<String> = Vec::new();
+        for raw in &self.mentions {
+            let name = tasks::required_text("mention", raw.trim().trim_start_matches('@'), MAX_MENTION)?;
+            if !mentions.iter().any(|seen| seen.eq_ignore_ascii_case(&name)) {
+                mentions.push(name);
+            }
+        }
+        Ok(CheckedOwnerPost { subject, body, project, mentions })
+    }
+}
+
 /// The `POST /v1/board/read` body.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ReadRequest {
@@ -378,7 +432,25 @@ pub struct PostView {
     /// Ids of the files shown with the post (the plaza's file store). Always present.
     #[serde(default)]
     pub attachments: Vec<String>,
+    /// Whether the owner wrote the post. Its `agent_cid` is `0` and its `role` is [`OWNER_ROLE`].
+    #[serde(default)]
+    pub owner: bool,
+    /// The project the post is for, or `null` for the whole board.
+    #[serde(default)]
+    pub project: Option<String>,
+    /// The names the owner mentioned (`all` for everyone), as written. Empty for an agent's post.
+    #[serde(default)]
+    pub mentions: Vec<String>,
 }
+
+/// The role and driver an owner's post carries.
+pub const OWNER_ROLE: &str = "owner";
+
+/// The most names one owner post may mention.
+pub const MAX_MENTIONS: usize = 16;
+
+/// The most bytes one mentioned name may occupy.
+pub const MAX_MENTION: usize = 64;
 
 /// One comment on a board post's thread, as the API reports it: the contract's
 /// `{id: c<seq>, post, agent_cid, author, body, created_at}`.
@@ -685,9 +757,16 @@ impl Social {
     /// dropping it when an agent stops would make the count depend on liveness
     /// it has nothing to do with.
     pub fn board(&self, connected: &[u64], limit: usize) -> BoardView {
+        self.board_for(connected, limit, |_| true)
+    }
+
+    /// [`Social::board`] over the posts `keep` accepts: the newest `limit` of them, and their count.
+    /// The unread counts are the board's own: a cursor counts every post, kept or not.
+    pub fn board_for(&self, connected: &[u64], limit: usize, keep: impl Fn(&PostView) -> bool) -> BoardView {
         let inner = self.lock();
-        let total = inner.posts.len();
-        let posts = inner.posts.iter().rev().take(limit).cloned().collect();
+        let kept: Vec<&PostView> = inner.posts.iter().filter(|post| keep(post)).collect();
+        let total = kept.len();
+        let posts = kept.iter().rev().take(limit).map(|post| (*post).clone()).collect();
         let mut agents: Vec<u64> = connected.to_vec();
         for cid in inner.cursors.keys() {
             if !agents.contains(cid) {
@@ -739,12 +818,53 @@ impl Social {
             created_at: now_ms(),
             comments: Vec::new(),
             attachments: Vec::new(),
+            owner: false,
+            project: None,
+            mentions: Vec::new(),
         };
         inner.posts.push(post.clone());
         // Published under the lock, so a stream sees the board in post order —
         // the ledger and the agora publish their transitions the same way.
         self.publish_board("post", Some(&post), author, None);
         Ok(post)
+    }
+
+    /// Records the owner's post on the board. Like [`Social::post`], past the ceiling the oldest post
+    /// is dropped; the post is never refused for room. Whether it is delivered to the agents it
+    /// mentions is the caller's to decide (see [`Social::paused_for`]).
+    pub fn post_as_owner(&self, post: CheckedOwnerPost) -> PostView {
+        let mut inner = self.lock();
+        drop_oldest(&mut inner.posts, MAX_POSTS - 1, None, |_| 0);
+        inner.posts_seq += 1;
+        let view = PostView {
+            id: format!("p{}", inner.posts_seq),
+            agent_cid: 0,
+            role: OWNER_ROLE.to_string(),
+            subject: post.subject,
+            body: post.body,
+            task: None,
+            posted_by: OWNER_ROLE.to_string(),
+            created_at: now_ms(),
+            comments: Vec::new(),
+            attachments: Vec::new(),
+            owner: true,
+            project: post.project,
+            mentions: post.mentions,
+        };
+        inner.posts.push(view.clone());
+        self.events.publish(Event::Board {
+            kind: "post",
+            post: serde_json::to_string(&view).ok(),
+            agent_cid: 0,
+            role: OWNER_ROLE.to_string(),
+            read_up_to: None,
+        });
+        view
+    }
+
+    /// Every post `keep` accepts, oldest first: a whole thread, for an export.
+    pub fn posts_matching(&self, keep: impl Fn(&PostView) -> bool) -> Vec<PostView> {
+        self.lock().posts.iter().filter(|post| keep(post)).cloned().collect()
     }
 
     /// The most comments a post keeps; the oldest is dropped past it.
@@ -2462,11 +2582,14 @@ mod tests {
             created_at: 7,
             comments: Vec::new(),
             attachments: Vec::new(),
+            owner: false,
+            project: None,
+            mentions: Vec::new(),
         };
         let encoded = serde_json::to_string(&post).expect("a serializable post");
         assert_eq!(
             encoded,
-            r#"{"id":"p1","agent_cid":100,"role":"builder","subject":"a \"quoted\" subject\nwith a newline","body":"the body","task":null,"posted_by":"driver","created_at":7,"comments":[],"attachments":[]}"#
+            r#"{"id":"p1","agent_cid":100,"role":"builder","subject":"a \"quoted\" subject\nwith a newline","body":"the body","task":null,"posted_by":"driver","created_at":7,"comments":[],"attachments":[],"owner":false,"project":null,"mentions":[]}"#
         );
         let frame = Event::Board {
             kind: "post",
@@ -2477,5 +2600,70 @@ mod tests {
         }
         .frame();
         assert_eq!(frame.matches("data: ").count(), 1, "one data line: {frame}");
+    }
+}
+
+#[cfg(test)]
+mod owner_post_tests {
+    use super::*;
+
+    fn request(subject: Option<&str>, body: &str, project: Option<&str>, mentions: &[&str]) -> OwnerPostRequest {
+        OwnerPostRequest {
+            subject: subject.map(str::to_string),
+            body: body.to_string(),
+            project: project.map(str::to_string),
+            mentions: mentions.iter().map(|m| m.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn an_owner_post_is_checked_and_its_mentions_normalized() {
+        let checked = request(None, "  ship the release  ", Some("pr1"), &["@builder", "BUILDER", " all "])
+            .checked()
+            .expect("a valid owner post");
+        assert_eq!(checked.subject, "ship the release", "the subject defaults to the body's start, trimmed");
+        assert_eq!(checked.body, "  ship the release  ");
+        assert_eq!(checked.project.as_deref(), Some("pr1"));
+        assert_eq!(checked.mentions, vec!["builder".to_string(), "all".to_string()]);
+
+        assert!(request(None, "   ", None, &[]).checked().is_err(), "an empty body is refused");
+        assert!(request(Some("  "), "x", None, &[]).checked().is_ok(), "a blank subject takes the default");
+        assert!(request(None, "x", None, &["@"]).checked().is_err(), "an empty mention is refused");
+        let many: Vec<String> = (0..=MAX_MENTIONS).map(|i| format!("a{i}")).collect();
+        let refused = OwnerPostRequest { mentions: many, ..request(None, "x", None, &[]) };
+        assert!(refused.checked().is_err(), "more than the cap of mentions is refused");
+        let long = "x".repeat(MAX_MENTION + 1);
+        assert!(request(None, "x", None, &[&long]).checked().is_err());
+    }
+
+    #[test]
+    fn an_owner_post_is_stored_as_the_owner_and_published() {
+        let events = EventBus::new();
+        let notes = events.subscribe();
+        let social = Social::new(events);
+        let checked = request(Some("hello"), "all hands", Some("pr2"), &["all"]).checked().unwrap();
+        let view = social.post_as_owner(checked);
+        assert_eq!(view.id, "p1");
+        assert_eq!((view.agent_cid, view.role.as_str(), view.owner), (0, OWNER_ROLE, true));
+        assert_eq!(view.project.as_deref(), Some("pr2"));
+        assert_eq!(view.mentions, vec!["all".to_string()]);
+        let frame = notes.try_recv().expect("the post is published");
+        assert!(matches!(frame, Event::Board { kind: "post", .. }));
+        assert_eq!(social.board(&[], 10).posts, vec![view]);
+    }
+
+    #[test]
+    fn the_board_can_be_filtered_and_the_export_is_the_whole_thread_oldest_first() {
+        let social = Social::new(EventBus::new());
+        for (subject, project) in [("one", Some("pr1")), ("two", None), ("three", Some("pr1"))] {
+            let checked = request(Some(subject), "body", project, &[]).checked().unwrap();
+            social.post_as_owner(checked);
+        }
+        let kept = social.board_for(&[], 10, |post| post.project.as_deref() == Some("pr1"));
+        assert_eq!(kept.total, 2);
+        assert_eq!(kept.posts.iter().map(|p| p.subject.as_str()).collect::<Vec<_>>(), vec!["three", "one"]);
+        let thread = social.posts_matching(|post| post.project.as_deref() == Some("pr1"));
+        assert_eq!(thread.iter().map(|p| p.subject.as_str()).collect::<Vec<_>>(), vec!["one", "three"]);
+        assert_eq!(social.board(&[], 10).total, 3);
     }
 }

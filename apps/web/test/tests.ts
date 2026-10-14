@@ -23,6 +23,7 @@ import { wrapIde, type IdeGlue } from '../src/ide/wasm';
 import { activitySplit, authorHue, buildChat, currentTask, filterPalette, formatMs, matchScore, mentionsOf, rowStatus, stepLabel, type PaletteItem } from '../src/ide/view';
 import { groupByProject, projectOf, sharedNames, startAgent } from '../src/ide/groups';
 import type { Entry, Project, Task } from '../src/api';
+import { mentionAt, mentionOptions } from '../src/board/owner';
 import { applyBuffer, badgeOf, diffMark, dirsOf, fuzzyScore, isViewed, languageFor, lineCounts, onRemote, openBuffer, parentDir, parseViewed, rankPaths, viewedKey, withViewed } from '../src/ide/model';
 import type { FileChange } from '../src/ide/types';
 import { CENTRE_MIN, clampSize, defaultLayout, fitSize, isNarrow, LEFT_SIZE, leftViewFor, originFallback, parseLayout, RIGHT_SIZE, rightTabFor, serializeLayout } from '../src/ide/layout';
@@ -849,6 +850,19 @@ sectionEnd('ide grouping tests: ok');
   eq(storedTerminalCount(undefined, 'agent:77'), 0, 'storedTerminalCount: no storage, no terminals');
 }
 sectionEnd('ide stored terminals tests: ok');
+
+{
+  // The owner's board composer: the @-token before the caret, and what a mention can name.
+  eq(mentionAt('ship it @bu', 11), { start: 8, query: 'bu' }, 'mentionAt: the partial name before the caret');
+  eq(mentionAt('ping @all', 9), { start: 5, query: 'all' }, 'mentionAt: @all is a partial too');
+  eq(mentionAt('mail a@b', 8), null, 'mentionAt: an address is not a mention');
+  eq(mentionAt('done. @', 7), { start: 6, query: '' }, 'mentionAt: a bare @ is a mention to finish');
+  eq(mentionAt('hi @ana later', 9), null, 'mentionAt: a word after a space ends the mention');
+  const agent = (cid: number, name: string, role: string) => ({ cid, name, role }) as unknown as Agent;
+  const names = mentionOptions([agent(3, 'Ana', 'builder'), agent(4, 'builder', 'builder'), agent(5, 'Dev', 'reviewer')]).map((o) => o.name);
+  eq(names, ['all', 'Ana', 'builder', 'Dev', 'reviewer'], 'mentionOptions: all, then names and roles, no repeats (case-insensitive)');
+}
+sectionEnd('board owner composer tests: ok');
 
 if (failedSections.length) {
   console.error(`${failedSections.length} section(s) failed: ${failedSections.join(', ')}`);

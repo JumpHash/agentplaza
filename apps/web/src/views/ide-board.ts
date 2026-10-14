@@ -12,6 +12,7 @@ import { ago, button, empty, toast } from '../ui/components';
 import { h, replace } from '../ui/dom';
 import { renderMarkdown } from '../ui/markdown';
 import { authorHue, mentionsOf } from '../ide/view';
+import { boardOwnerBar, composer as ownerComposer } from '../board/owner';
 
 const STYLE_ID = 'apz-ide-board-style';
 const REFRESH_MS = 15_000;
@@ -26,9 +27,17 @@ export interface BoardPanel {
 
 export function boardPanel(opts: { project: Project | null; onCount(n: number): void }): BoardPanel {
   injectStyle();
-  const taskIds = opts.project ? new Set(opts.project.tasks) : null;
   const count = h('span.ide-board-count', null);
   const feed = h('div.ide-board-feed', null);
+  // The owner's controls: Pause/Resume and Export for this project's board, the paused banner, and the
+  // composer at the foot. A project's board is the hub's view of its posts (its own, and its tasks').
+  const owner = boardOwnerBar({ project: () => opts.project?.id, onChanged: () => void load() });
+  const post = ownerComposer({
+    placeholder: 'Message the team… (@ to mention)',
+    label: 'Message the team',
+    project: () => opts.project?.id,
+    onPosted: () => void load(),
+  });
   const el = h(
     'section.ide-board',
     { 'aria-label': 'Board' },
@@ -38,8 +47,11 @@ export function boardPanel(opts: { project: Project | null; onCount(n: number): 
       h('div.ide-board-title', null, h('h2', null, 'Board'), count),
       h('p.ide-board-project', null, opts.project?.title ?? 'All projects'),
       h('p.ide-board-note', null, 'Replies are comments on a post.'),
+      owner.actions,
     ),
+    owner.banner,
     feed,
+    h('div.board-owner-dock', null, post.el),
   );
 
   let posts: BoardPost[] = [];
@@ -57,11 +69,8 @@ export function boardPanel(opts: { project: Project | null; onCount(n: number): 
   const names = new Map<string, string>();
   const pending = new Set<string>();
 
-  // The posts this panel shows, newest first.
-  const visible = (): BoardPost[] =>
-    posts
-      .filter((p) => !taskIds || (p.task !== null && taskIds.has(p.task)))
-      .sort((x, y) => y.created_at - x.created_at);
+  // The posts this panel shows, newest first: the hub already filtered them to the project.
+  const visible = (): BoardPost[] => [...posts].sort((x, y) => y.created_at - x.created_at);
 
   const render = (): void => {
     if (!alive || !loaded) return;
@@ -89,7 +98,9 @@ export function boardPanel(opts: { project: Project | null; onCount(n: number): 
 
   const load = async (): Promise<void> => {
     try {
-      posts = await api.board();
+      const view = await api.boardView(opts.project?.id);
+      posts = view.posts;
+      owner.setPaused(view.paused);
       failed = false;
     } catch {
       failed = true;
@@ -106,7 +117,7 @@ export function boardPanel(opts: { project: Project | null; onCount(n: number): 
     window.clearTimeout(debounce);
     debounce = window.setTimeout(() => void load(), DEBOUNCE_MS);
   };
-  const off = on('board', refetch);
+  const offs = [on('board', refetch), on('board_paused', refetch)];
 
   // An attachment's name: its title or file name, else its id. Each id is looked up once,
   // and the chips already on screen are filled in when the name arrives.
@@ -219,7 +230,7 @@ export function boardPanel(opts: { project: Project | null; onCount(n: number): 
   };
 
   const postCard = (p: BoardPost): HTMLElement => {
-    const author = `${roleLabel(p.role)} #${p.agent_cid}`;
+    const author = p.owner ? 'Owner' : `${roleLabel(p.role)} #${p.agent_cid}`;
     const subject = p.subject.trim();
     const body = p.body.trim();
     const bar = h('span.ide-board-bar', { 'aria-hidden': 'true' });
@@ -236,6 +247,7 @@ export function boardPanel(opts: { project: Project | null; onCount(n: number): 
           'div.ide-board-by',
           null,
           h('span.ide-board-author', null, author),
+          p.mentions?.length ? h('span.board-mentions', null, p.mentions.map((m) => `@${m}`).join(' ')) : null,
           h('time.ide-board-time', null, ago(p.created_at)),
         ),
         h('h3.ide-board-subject', null, p.subject),
@@ -261,7 +273,7 @@ export function boardPanel(opts: { project: Project | null; onCount(n: number): 
     alive = false;
     window.clearInterval(timer);
     window.clearTimeout(debounce);
-    off();
+    offs.forEach((off) => off());
   };
 
   return { el, show, dispose };
