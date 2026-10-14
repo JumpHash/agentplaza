@@ -228,4 +228,16 @@ mod tests {
         assert_eq!(get("/v1/recipes/%FF").status, 400);
         assert_eq!(get("/v1/hf/models/org/%FF").status, 400);
     }
+
+    #[test]
+    fn an_encoded_slash_stays_in_one_segment() {
+        let router: Router<u32> = Router::new()
+            .get("/v1/prices/{model}", |_, _, params| Response::text(200, params.get("model")));
+        // The web sends the provider/model key encoded, so it is one segment whose value holds the slash.
+        let encoded = router.handle(&0, &request("GET", "/v1/prices/anthropic%2Fclaude-opus-5-5"));
+        assert_eq!((encoded.status, encoded.bytes()), (200, &b"anthropic/claude-opus-5-5"[..]));
+        // Unescaped, the slash is a path separator and the one-segment pattern no longer matches.
+        let split = router.handle(&0, &request("GET", "/v1/prices/anthropic/claude-opus-5-5"));
+        assert_eq!(split.status, 404);
+    }
 }
