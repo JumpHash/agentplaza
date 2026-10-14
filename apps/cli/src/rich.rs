@@ -1,10 +1,13 @@
 //! Rich text for the terminal (docs/design/workspace.md, section 3.4). The references in agent-written text
 //! (GitHub and plaza git links, `@Name`, `#528`, `src/main.rs:42`, library files) become their short labels
 //! (`GH o/r #12`, `@Name`, `task #528` shown as `#528`), styled per kind and, where the terminal supports them,
-//! wrapped in OSC 8 hyperlinks. `--plain` prints the text unchanged. JSON output never passes through here.
+//! wrapped in OSC 8 hyperlinks. Labels, colour and links are for a terminal only: when stdout is piped or
+//! redirected, or `--plain` is given, the text prints unchanged, so a script gets the URLs and names as the agent
+//! wrote them. JSON output never passes through here.
 //!
 //! The classifier is `apz-rich`; the same vectors run in the web and the desktop app. Agent names come from the
-//! hub, so `@Name` is recognised; without the hub's list the names stay text.
+//! hub, so `@Name` is recognised; without the hub's list the names stay text. Raw text needs no names, so the
+//! printers skip the `GET /v1/agents` call unless they will draw labels.
 
 use apz_rich::{AgentName, Ctx as RichCtx, Ref, Span, classify, label};
 use ratatui::style::{Color, Modifier, Style};
@@ -13,8 +16,8 @@ use serde_json::Value;
 
 use crate::ctx::{Client, Ctx};
 
-/// How agent text is drawn. `plain` prints the raw text; otherwise references become labels, styled when
-/// `colour` is on and linked when `hyperlinks` is on.
+/// How agent text is drawn. `plain` prints the raw text (a pipe, a file, or `--plain`); otherwise references become
+/// labels, styled when `colour` is on and linked when `hyperlinks` is on.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Mode {
     pub plain: bool,
@@ -60,20 +63,19 @@ impl Terminal {
 }
 
 impl Mode {
-    /// The mode for a terminal and a hub base URL. Colour is for a terminal without `NO_COLOR`; links need a
-    /// terminal that is not `dumb` and not a legacy Windows console, unless `APZ_HYPERLINKS` says otherwise.
+    /// The mode for a terminal and a hub base URL. Labels, colour and links are for a terminal only: a pipe, a
+    /// file or `--plain` gets the raw text. On a terminal, colour is off with `NO_COLOR`; links need a terminal
+    /// that is not `dumb` and not a legacy Windows console, unless `APZ_HYPERLINKS` says otherwise.
     pub fn decide(terminal: &Terminal, hub: Option<&str>) -> Mode {
         let hub = hub.map(|h| h.trim_end_matches('/').to_string());
-        if terminal.plain {
+        if terminal.plain || !terminal.stdout_is_terminal {
             return Mode {
                 plain: true,
                 hub,
                 ..Mode::default()
             };
         }
-        let capable = terminal.stdout_is_terminal
-            && terminal.term.as_deref() != Some("dumb")
-            && !terminal.legacy_windows;
+        let capable = terminal.term.as_deref() != Some("dumb") && !terminal.legacy_windows;
         let hyperlinks = match terminal.hyperlinks_env.as_deref() {
             Some("1") => true,
             Some("0") => false,
@@ -81,7 +83,7 @@ impl Mode {
         };
         Mode {
             plain: false,
-            colour: terminal.stdout_is_terminal && !terminal.no_color,
+            colour: !terminal.no_color,
             hyperlinks,
             hub,
         }
@@ -116,13 +118,18 @@ pub fn from_agents(agents: &[Value], hub: Option<&str>) -> RichCtx {
     }
 }
 
-/// The context for a printer: the hub's agents, or nothing for `--json` (which prints the hub's text as it is and
-/// needs no extra call).
+/// Whether a printer draws labels, and so needs the hub's agents to resolve `@Name`. `--json` prints the hub's text
+/// as it is, and raw text (a pipe, a file, `--plain`) is printed as written: neither needs the call.
+pub fn needs_agents(json: bool, mode: &Mode) -> bool {
+    !json && !mode.plain
+}
+
+/// The context for a printer: the hub's agents when labels are drawn, else nothing (no request is made).
 pub fn context_for(ctx: &Ctx) -> RichCtx {
-    if ctx.json {
-        RichCtx::default()
-    } else {
+    if needs_agents(ctx.json, &ctx.rich) {
         context(&ctx.client)
+    } else {
+        RichCtx::default()
     }
 }
 
@@ -446,7 +453,7 @@ mod tests {
     }
 
     #[test]
-    fn the_terminal_decides_colour_and_links() {
+    fn a_terminal_gets_labels_colour_and_links() {
         let tty = Mode::decide(&term(true), Some("https://hub.test/"));
         assert_eq!(
             tty,
@@ -457,11 +464,6 @@ mod tests {
                 hub: Some("https://hub.test".into())
             }
         );
-        let pipe = Mode::decide(&term(false), None);
-        assert!(
-            !pipe.colour && !pipe.hyperlinks,
-            "a pipe gets labels, no escapes"
-        );
         let no_colour = Mode::decide(
             &Terminal {
                 no_color: true,
@@ -469,7 +471,7 @@ mod tests {
             },
             None,
         );
-        assert!(!no_colour.colour && no_colour.hyperlinks);
+        assert!(!no_colour.colour && no_colour.hyperlinks && !no_colour.plain);
         let dumb = Mode::decide(
             &Terminal {
                 term: Some("dumb".into()),
@@ -477,7 +479,7 @@ mod tests {
             },
             None,
         );
-        assert!(!dumb.hyperlinks);
+        assert!(!dumb.hyperlinks && !dumb.plain);
         let legacy = Mode::decide(
             &Terminal {
                 legacy_windows: true,
@@ -485,15 +487,7 @@ mod tests {
             },
             None,
         );
-        assert!(!legacy.hyperlinks);
-        let forced_on = Mode::decide(
-            &Terminal {
-                hyperlinks_env: Some("1".into()),
-                ..term(false)
-            },
-            None,
-        );
-        assert!(forced_on.hyperlinks);
+        assert!(!legacy.hyperlinks && !legacy.plain);
         let forced_off = Mode::decide(
             &Terminal {
                 hyperlinks_env: Some("0".into()),
@@ -501,8 +495,34 @@ mod tests {
             },
             None,
         );
-        assert!(!forced_off.hyperlinks);
-        let plain = Mode::decide(
+        assert!(!forced_off.hyperlinks && forced_off.colour && !forced_off.plain);
+        let forced_on = Mode::decide(
+            &Terminal {
+                hyperlinks_env: Some("1".into()),
+                ..term(true)
+            },
+            None,
+        );
+        assert!(forced_on.hyperlinks && !forced_on.plain);
+    }
+
+    #[test]
+    fn a_pipe_or_a_file_gets_the_raw_text_whatever_the_environment_says() {
+        // Stdout is not a terminal: no labels, colour or escapes, even when links are forced on.
+        for env in [None, Some("1"), Some("0")] {
+            let pipe = Mode::decide(
+                &Terminal {
+                    hyperlinks_env: env.map(String::from),
+                    ..term(false)
+                },
+                Some("https://hub.test"),
+            );
+            assert!(pipe.plain, "{env:?}: a pipe is plain");
+            assert!(!pipe.colour && !pipe.hyperlinks, "{env:?}: no escapes");
+            assert_eq!(pipe.hub.as_deref(), Some("https://hub.test"));
+        }
+        // `--plain` on a terminal is the same as a pipe.
+        let flag = Mode::decide(
             &Terminal {
                 plain: true,
                 hyperlinks_env: Some("1".into()),
@@ -510,10 +530,48 @@ mod tests {
             },
             None,
         );
-        assert!(
-            plain.plain && !plain.colour && !plain.hyperlinks,
-            "--plain wins over everything"
+        assert!(flag.plain && !flag.colour && !flag.hyperlinks);
+    }
+
+    #[test]
+    fn a_pipe_prints_every_kind_of_reference_as_written() {
+        let pipe = Mode::decide(&term(false), None);
+        for name in [
+            "github_pull",
+            "github_issue",
+            "github_commit",
+            "github_repo",
+            "github_run",
+            "gist",
+            "link_bare",
+            "markdown_link_to_pull",
+            "mention_all",
+            "path_exact",
+            "path_line_colon_and_trailing_period",
+            "hash_number_in_project_is_task",
+            "agent_known",
+            "code_span_hides_refs",
+        ] {
+            let (text, ctx) = vector(name);
+            assert_eq!(render(&text, &ctx, &pipe), text, "{name}");
+        }
+    }
+
+    #[test]
+    fn only_a_terminal_that_draws_labels_asks_the_hub_for_agents() {
+        let tty = Mode::decide(&term(true), None);
+        let pipe = Mode::decide(&term(false), None);
+        let flag = Mode::decide(
+            &Terminal {
+                plain: true,
+                ..term(true)
+            },
+            None,
         );
+        assert!(needs_agents(false, &tty), "a terminal resolves @Name");
+        assert!(!needs_agents(false, &pipe), "a pipe needs no names");
+        assert!(!needs_agents(false, &flag), "--plain needs no names");
+        assert!(!needs_agents(true, &tty), "--json needs no names");
     }
 
     #[test]

@@ -145,7 +145,8 @@ context to expected spans), so the three apps recognise the same things.
   icons, hover cards with iced `tooltip` holding the card, images inline through the image widget, videos and HTML
   as cards that open outside (`open::that`).
 - **CLI**: chips become short labels (`GH o/r#12`, `@Name`, `#528`, `src/main.rs:42`) wrapped in OSC 8 hyperlinks
-  when the terminal supports them; `--plain` prints the raw text. The TUI uses the same labels.
+  when the terminal supports them. A pipe, a file or `--plain` prints the raw text, so scripts get the URLs as the
+  agent wrote them. The TUI uses the same labels.
 
 ## 4. Build order
 
