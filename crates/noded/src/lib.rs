@@ -24,6 +24,7 @@ pub mod registry;
 pub mod stats;
 pub mod train;
 pub mod workstation;
+pub mod ws_qemu;
 
 use std::io::Read;
 use std::net::IpAddr;
@@ -161,11 +162,17 @@ pub struct MachineView {
     /// The size of the state directory's filesystem, in GiB; null when unknown.
     pub storage_gib: Option<u64>,
     pub vsock_mode: &'static str,
+    /// The launch backends this node can run a workstation VM under: `plaza`, and `qemu` when QEMU and its firmware are here.
+    pub workstation_backends: Vec<&'static str>,
     pub started_at_ms: u64,
 }
 
 impl Node {
     pub fn new(config: Config) -> Self {
+        let mut guest = config.workstation;
+        if guest.qemu.is_none() {
+            guest.qemu = ws_qemu::detect();
+        }
         let images = VmImages { kernel: config.kernel, initrd: config.initrd, workspace: config.workspace };
         Self {
             registry: Registry::new(images, config.uds_dir, events::EventBus::new())
@@ -175,7 +182,7 @@ impl Node {
             stats: Arc::new(stats::Stats::new()),
             probed: probe_host(&apz_os::dirs::state()),
             fabric: Mutex::new(None),
-            workstations: workstation::Store::open(config.workstation),
+            workstations: workstation::Store::open(guest),
         }
     }
 
@@ -201,6 +208,7 @@ impl Node {
             memory_mib: self.probed.memory_mib,
             storage_gib: self.probed.storage_gib,
             vsock_mode: "uds-muxer",
+            workstation_backends: self.workstations.backends(),
             started_at_ms: self.started_at_ms,
         }
     }

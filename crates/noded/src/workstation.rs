@@ -13,13 +13,15 @@
 //! checked against sysfs and refused unless the device is bound to `vfio-pci` with an IOMMU group. The node never
 //! rebinds a device itself.
 //!
-//! Refused rather than faked, until the VMM can do them: apz-vmm attaches no PCI device (`VMM_ATTACHES_VFIO`), and
-//! it boots Linux kernels by direct boot only, with no firmware path for Windows (`VMM_BOOTS_WINDOWS`). Both are
-//! validated first, so the refusal names the cause. macOS guests are refused everywhere on this node; the hub only
-//! places them on Apple hardware, capped at two per Mac.
+//! Two launch backends (ws_qemu.rs). `plaza` is apz-vmm: Linux by direct boot, no PCI device, so it refuses a Windows
+//! guest and a vfio GPU, validated first, so the refusal names the cause (`VMM_BOOTS_WINDOWS`, `VMM_ATTACHES_VFIO`).
+//! `qemu` is QEMU/KVM: UEFI for a Windows guest, the node's desktop kernel for a Linux one, and VFIO. It is chosen for
+//! a Windows guest or a vfio GPU, or when asked for, and only on a node that reports QEMU and its firmware. macOS guests
+//! are refused everywhere on this node; the hub only places them on Apple hardware, capped at two per Mac.
 //!
-//! The directory layout is `<dir>/<id>/vm.json` (the record, never the join code), `disk.img`, and, after a
-//! snapshot, `snapshot.img`. A record found at start is loaded as a stopped VM.
+//! The directory layout is `<dir>/<id>/vm.json` (the record, never the join code). A plaza VM keeps `disk.img` and,
+//! after a snapshot, `snapshot.img`. A QEMU VM keeps `disk.qcow2`, an overlay, and `snapshot.qcow2`, plus `vars.fd`
+//! (its UEFI variables, Windows only). A record found at start is loaded as a stopped VM.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -29,6 +31,8 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use vmm::spawner::{self, VmHandle, VmSpec};
+
+use crate::ws_qemu::{self, Available};
 
 /// The longest workstation name, in characters (a DNS label, so it can be the guest's hostname).
 pub const MAX_NAME_LEN: usize = 63;
@@ -51,12 +55,57 @@ pub const VMM_BOOTS_WINDOWS: bool = false;
 /// Whether apz-vmm can attach a PCI device for `vfio:` passthrough. It cannot yet, so this is false.
 pub const VMM_ATTACHES_VFIO: bool = false;
 
+/// The first guest CID a QEMU workstation VM may have. Plaza VMs have none. Agents use 100 and up, and runs 20..=99 by
+/// default, so this base sits clear of both. A VM's CID is `CID_BASE` plus its sequence number ([`cid_for`]).
+pub const CID_BASE: u32 = 4096;
+
 const GIB: u64 = 1 << 30;
 const NO_KERNEL: &str = "no workstation kernel is configured: build the desktop guest with scripts/mk-workstation-guest.sh and start noded with --workstation-kernel and --workstation-initrd";
 const NO_IMAGE: &str = "no workstation disk image is configured: build it with scripts/mk-workstation-guest.sh and start noded with --workstation-image";
+const NO_QEMU: &str = "this node has no QEMU/OVMF; install qemu and edk2-ovmf";
+const NO_UEFI: &str = "this node has no UEFI firmware (OVMF) for a Windows guest; install edk2-ovmf";
+/// The plaza VM's disk, and its snapshot.
+const PLAZA_DISK: &str = "disk.img";
+const PLAZA_SNAPSHOT: &str = "snapshot.img";
+/// The QEMU VM's lease overlay, its snapshot, its UEFI variables, and the join code file read once at first boot.
+const QEMU_DISK: &str = "disk.qcow2";
+const QEMU_SNAPSHOT: &str = "snapshot.qcow2";
+const QEMU_VARS: &str = "vars.fd";
+const JOIN_FILE: &str = "join";
 
 /// A refusal: the HTTP status and the message.
 pub type Refusal = (u16, String);
+
+/// The launch backend a workstation VM runs under.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Backend {
+    /// apz-vmm, the plaza's own VMM.
+    #[default]
+    Plaza,
+    /// QEMU/KVM (ws_qemu.rs).
+    Qemu,
+}
+
+/// What a request asks for: a backend, or `auto`, the node's choice ([`choose`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Choice {
+    Auto,
+    Plaza,
+    Qemu,
+}
+
+impl Choice {
+    /// Reads `auto` (or nothing), `plaza` or `qemu`.
+    pub fn parse(text: Option<&str>) -> Result<Self, String> {
+        match text {
+            None | Some("auto") => Ok(Self::Auto),
+            Some("plaza") => Ok(Self::Plaza),
+            Some("qemu") => Ok(Self::Qemu),
+            Some(other) => Err(format!("backend must be auto, plaza or qemu, not {other:?}")),
+        }
+    }
+}
 
 /// The guest operating systems a workstation VM may run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -153,6 +202,9 @@ pub struct CreateWorkstation {
     #[serde(default)]
     pub hub: Option<String>,
     pub join_code: String,
+    /// `auto` (the default), `plaza` or `qemu`.
+    #[serde(default)]
+    pub backend: Option<String>,
 }
 
 /// A request that passed every check that needs no file system or device.
@@ -167,6 +219,7 @@ pub struct Shape {
     pub image: Option<PathBuf>,
     pub hub: Option<String>,
     pub join_code: String,
+    pub backend: Choice,
 }
 
 impl CreateWorkstation {
@@ -197,6 +250,7 @@ impl CreateWorkstation {
             None => None,
         };
         checked_join_code(&self.join_code)?;
+        let backend = Choice::parse(self.backend.as_deref())?;
         Ok(Shape {
             name: self.name.clone(),
             os: self.os,
@@ -207,6 +261,7 @@ impl CreateWorkstation {
             image,
             hub,
             join_code: self.join_code.clone(),
+            backend,
         })
     }
 }
@@ -300,15 +355,48 @@ pub fn check_vfio(sysfs: &Path, pci: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Why this node cannot boot a VM of this shape yet, or `None` when it can.
+/// Why plaza cannot boot a VM of this shape, or `None` when it can. QEMU runs what plaza refuses.
 pub fn boot_refusal(os: Os, gpu: &Gpu) -> Option<String> {
     if os == Os::Windows && !VMM_BOOTS_WINDOWS {
-        return Some("Windows workstation VMs cannot boot yet: apz-vmm boots Linux kernels by direct boot and has no firmware path for Windows".into());
+        return Some("Windows workstation VMs cannot boot on plaza: apz-vmm boots Linux kernels by direct boot and has no firmware path for Windows; they run under QEMU".into());
     }
     if matches!(gpu, Gpu::Vfio(_)) && !VMM_ATTACHES_VFIO {
-        return Some("GPU passthrough (vfio) cannot boot yet: apz-vmm cannot attach a PCI device; the device was checked, nothing was bound".into());
+        return Some("GPU passthrough (vfio) cannot boot on plaza: apz-vmm cannot attach a PCI device; the device was checked, nothing was bound. It runs under QEMU".into());
     }
     None
+}
+
+/// The backend a VM of this shape runs under. `auto` takes QEMU for a Windows guest or a vfio GPU, which plaza cannot
+/// run, and plaza otherwise. A request for QEMU, or an `auto` that needs it, is refused when the node has none.
+pub fn choose(
+    choice: Choice,
+    os: Os,
+    gpu: &Gpu,
+    qemu: Option<&Available>,
+) -> Result<Backend, Refusal> {
+    let wants_qemu = match choice {
+        Choice::Plaza => return Ok(Backend::Plaza),
+        Choice::Qemu => true,
+        Choice::Auto => os == Os::Windows || matches!(gpu, Gpu::Vfio(_)),
+    };
+    if !wants_qemu {
+        return Ok(Backend::Plaza);
+    }
+    let available = qemu.ok_or((503, NO_QEMU.to_string()))?;
+    if os == Os::Windows && available.firmware.is_none() {
+        return Err((
+            501,
+            "a Windows workstation VM under QEMU needs UEFI firmware (OVMF), which this node's architecture does not have".into(),
+        ));
+    }
+    Ok(Backend::Qemu)
+}
+
+/// The guest CID of a QEMU workstation VM: its sequence number above [`CID_BASE`].
+pub fn cid_for(id: &str) -> u32 {
+    u32::try_from(seq_of(id))
+        .unwrap_or(u32::MAX - CID_BASE)
+        .saturating_add(CID_BASE)
 }
 
 /// The record a workstation VM is kept as on disk. It never holds the join code, which is used once, at the first boot.
@@ -330,6 +418,12 @@ pub struct Record {
     /// Whether a snapshot of the disk exists.
     #[serde(default)]
     pub snapshot: bool,
+    /// The launch backend the VM runs under. A record from before QEMU is a plaza VM.
+    #[serde(default)]
+    pub backend: Backend,
+    /// The guest CID of the vsock device of a QEMU VM; 0 for a plaza VM, which has none.
+    #[serde(default)]
+    pub cid: u32,
 }
 
 /// The node's desktop guest: the kernel and initramfs every Linux workstation VM boots, the disk image each VM
@@ -341,6 +435,8 @@ pub struct Guest {
     pub image: Option<PathBuf>,
     pub dir: PathBuf,
     pub sysfs: PathBuf,
+    /// This node's QEMU, when it has one (see `ws_qemu::detect`). `None` leaves only the plaza backend.
+    pub qemu: Option<Available>,
 }
 
 impl Default for Guest {
@@ -351,22 +447,14 @@ impl Default for Guest {
             image: None,
             dir: apz_os::dirs::state().join("workstations"),
             sysfs: PathBuf::from("/sys"),
+            qemu: None,
         }
     }
 }
 
-/// The VMM spec for one workstation VM: the guest's kernel and initramfs, the record's vCPUs and memory, its disk as
-/// the writable block device. The command line names the workstation, its hub, and, on the first boot only, the join
-/// code. No balloon. No vsock device: the guest has no NIC (rule 0010), and the way its daemon reaches the hub is not
-/// built yet (docs/design/workstations.md, section 10), so the device is added with that path, not before.
-pub fn boot_spec(
-    record: &Record,
-    guest: &Guest,
-    join_code: Option<&str>,
-    disk: &Path,
-) -> Result<VmSpec, String> {
-    let kernel = guest.kernel.clone().ok_or_else(|| NO_KERNEL.to_string())?;
-    let initrd = guest.initrd.clone().ok_or_else(|| NO_KERNEL.to_string())?;
+/// The kernel command line of a workstation guest: the workstation, its name and its hub, and on the first boot the
+/// join code. The guest's daemon reads these from the command line, on either backend.
+pub fn command_line(record: &Record, join_code: Option<&str>) -> String {
     let mut cmdline = format!(
         "console=ttyS0 plaza.workstation=1 plaza.workstation_name={}",
         record.name
@@ -379,6 +467,22 @@ pub fn boot_spec(
         cmdline.push_str(" plaza.workstation_join=");
         cmdline.push_str(code);
     }
+    cmdline
+}
+
+/// The VMM spec for one plaza workstation VM: the guest's kernel and initramfs, the record's vCPUs and memory, its disk
+/// as the writable block device. The command line names the workstation, its hub, and, on the first boot only, the join
+/// code. No balloon. No vsock device: the guest has no NIC (rule 0010), and the way its daemon reaches the hub is not
+/// built yet (docs/design/workstations.md, section 10), so the device is added with that path, not before.
+pub fn boot_spec(
+    record: &Record,
+    guest: &Guest,
+    join_code: Option<&str>,
+    disk: &Path,
+) -> Result<VmSpec, String> {
+    let kernel = guest.kernel.clone().ok_or_else(|| NO_KERNEL.to_string())?;
+    let initrd = guest.initrd.clone().ok_or_else(|| NO_KERNEL.to_string())?;
+    let cmdline = command_line(record, join_code);
     Ok(VmSpec {
         kernel,
         cmdline,
@@ -390,6 +494,58 @@ pub fn boot_spec(
         vsock: None,
         workspace: Some(disk.to_path_buf()),
         balloon: None,
+    })
+}
+
+/// The QEMU argv of one workstation VM. A Windows guest boots its own disk with UEFI, from its variable store and, at
+/// first boot, the join file. A Linux guest boots the node's desktop kernel directly, as plaza does, from the overlay.
+/// The disk and state live in `dir`.
+fn qemu_argv(
+    record: &Record,
+    guest: &Guest,
+    available: &Available,
+    join: Option<&str>,
+    dir: &Path,
+) -> Result<Vec<String>, String> {
+    let disk = dir.join(QEMU_DISK);
+    let vars = dir.join(QEMU_VARS);
+    let join_file = dir.join(JOIN_FILE);
+    let cmdline = command_line(record, join);
+    let windows = record.os == Os::Windows;
+    let boot = if windows {
+        let firmware = available
+            .firmware
+            .as_ref()
+            .ok_or_else(|| "this node has no UEFI firmware for a Windows guest".to_string())?;
+        ws_qemu::Boot::Uefi {
+            code: &firmware.code,
+            vars: &vars,
+            join: join.map(|_| join_file.as_path()),
+        }
+    } else {
+        let kernel = guest.kernel.as_deref().ok_or_else(|| NO_KERNEL.to_string())?;
+        let initrd = guest.initrd.as_deref().ok_or_else(|| NO_KERNEL.to_string())?;
+        ws_qemu::Boot::Direct {
+            kernel,
+            initrd,
+            cmdline: &cmdline,
+        }
+    };
+    let vfio = match &record.gpu {
+        Gpu::Vfio(pci) => Some(pci.as_str()),
+        Gpu::None | Gpu::Virtual => None,
+    };
+    ws_qemu::argv(&ws_qemu::Plan {
+        name: &record.name,
+        arch: available.arch,
+        cpus: record.cpus,
+        ram_mb: record.ram_mb,
+        windows,
+        boot,
+        disk: &disk,
+        dir,
+        cid: record.cid,
+        vfio,
     })
 }
 
@@ -408,11 +564,43 @@ pub struct View {
     pub pid: Option<u32>,
     pub snapshot: bool,
     pub created_ms: u64,
+    pub backend: Backend,
+}
+
+/// A running workstation VM: a plaza VMM, or a QEMU process.
+enum Handle {
+    Plaza(VmHandle),
+    Qemu(ws_qemu::Process),
+}
+
+impl Handle {
+    fn pid(&self) -> Option<u32> {
+        match self {
+            Self::Plaza(handle) => handle.process_id(),
+            Self::Qemu(process) => Some(process.pid()),
+        }
+    }
+
+    /// Whether the VMM has exited.
+    fn exited(&mut self) -> bool {
+        match self {
+            Self::Plaza(handle) => !matches!(handle.wait_timeout(Duration::from_millis(1)), Ok(None)),
+            Self::Qemu(process) => process.exited(),
+        }
+    }
+
+    /// Stops the VMM: a plaza VM is killed; a QEMU VM is powered down, then quit, then killed.
+    fn halt(&mut self) -> Result<(), String> {
+        match self {
+            Self::Plaza(handle) => handle.kill().map_err(|err| err.to_string()),
+            Self::Qemu(process) => process.shut_down(ws_qemu::POWERDOWN_GRACE),
+        }
+    }
 }
 
 struct Slot {
     record: Record,
-    handle: Option<VmHandle>,
+    handle: Option<Handle>,
 }
 
 #[derive(Default)]
@@ -490,7 +678,10 @@ impl Store {
         if let Gpu::Vfio(pci) = &shape.gpu {
             check_vfio(&self.guest.sysfs, pci).map_err(bad)?;
         }
-        if let Some(refusal) = boot_refusal(shape.os, &shape.gpu) {
+        let backend = choose(shape.backend, shape.os, &shape.gpu, self.guest.qemu.as_ref())?;
+        if backend == Backend::Plaza
+            && let Some(refusal) = boot_refusal(shape.os, &shape.gpu)
+        {
             return Err((501, refusal));
         }
         let base = shape
@@ -513,37 +704,21 @@ impl Store {
             hub: shape.hub.clone(),
             created_ms: now,
             snapshot: false,
+            backend,
+            cid: if backend == Backend::Qemu {
+                cid_for(&id)
+            } else {
+                0
+            },
         };
         let dir = self.guest.dir.join(&id);
-        let disk = dir.join("disk.img");
-        // The spec is built before anything is copied: a missing kernel is refused with no directory made.
-        boot_spec(&record, &self.guest, Some(&shape.join_code), &disk).map_err(|e| (503, e))?;
-        if shape.os == Os::Windows && !base.is_file() {
-            return Err(bad(format!(
-                "the Windows image {} is not a file on this node",
-                base.display()
-            )));
-        }
-        if let Err(err) = self.make_disk(&base, &dir, &disk, shape.disk_gb) {
-            let _ = fs::remove_dir_all(&dir);
-            return Err((500, err));
-        }
-        if let Err(err) = write_record(&dir, &record) {
-            let _ = fs::remove_dir_all(&dir);
-            return Err((500, err));
-        }
-        let spec = match boot_spec(&record, &self.guest, Some(&shape.join_code), &disk) {
-            Ok(spec) => spec,
-            Err(err) => {
-                let _ = fs::remove_dir_all(&dir);
-                return Err((503, err));
-            }
-        };
-        let handle = match spawner::spawn(spec) {
+        // The launch is checked before anything is copied: a missing kernel is refused with no directory made.
+        self.check_launch(&record, &dir, Some(&shape.join_code))?;
+        let handle = match self.provision(&record, &base, &dir, Some(&shape.join_code)) {
             Ok(handle) => handle,
-            Err(err) => {
+            Err(refusal) => {
                 let _ = fs::remove_dir_all(&dir);
-                return Err((500, format!("the workstation VM did not boot: {err}")));
+                return Err(refusal);
             }
         };
         inner.slots.insert(
@@ -568,21 +743,46 @@ impl Store {
         if slot.handle.is_some() {
             return Err((409, format!("workstation {id} is already running")));
         }
-        let disk = self.disk_of(&slot.record.id);
-        let spec = boot_spec(&slot.record, &self.guest, None, &disk).map_err(|e| (503, e))?;
-        let handle = spawner::spawn(spec)
-            .map_err(|err| (500, format!("the workstation VM did not boot: {err}")))?;
+        let dir = self.dir_of(id);
+        let handle = match slot.record.backend {
+            Backend::Plaza => {
+                let spec = boot_spec(&slot.record, &self.guest, None, &dir.join(PLAZA_DISK))
+                    .map_err(|e| (503, e))?;
+                spawner::spawn(spec)
+                    .map(Handle::Plaza)
+                    .map_err(|err| (500, format!("the workstation VM did not boot: {err}")))?
+            }
+            Backend::Qemu => {
+                let available = self.qemu()?;
+                if let Some(pid) = ws_qemu::running_pid(&dir) {
+                    return Err((
+                        409,
+                        format!(
+                            "workstation {id} is still running as pid {pid}, from before this node restarted"
+                        ),
+                    ));
+                }
+                let argv = qemu_argv(&slot.record, &self.guest, available, None, &dir)
+                    .map_err(|e| (503, e))?;
+                let mut process = start_qemu(available, &argv, &dir)?;
+                if !process.wait_ready(ws_qemu::READY_WAIT) {
+                    let _ = process.shut_down(Duration::ZERO);
+                    return Err((500, "the workstation VM did not boot".into()));
+                }
+                Handle::Qemu(process)
+            }
+        };
         slot.handle = Some(handle);
         Ok(view_of(slot))
     }
 
-    /// Stops a VM: its VMM process is killed (the VMM has no guest shutdown the node can wait on).
+    /// Stops a VM. A plaza VM's VMM is killed. A QEMU VM is powered down, given its grace, then quit, then killed.
     pub fn stop(&self, id: &str) -> Result<View, Refusal> {
         let mut inner = self.lock();
         let slot = inner.slots.get_mut(id).ok_or_else(|| not_found(id))?;
         refresh(slot);
         if let Some(mut handle) = slot.handle.take()
-            && let Err(err) = handle.kill()
+            && let Err(err) = handle.halt()
         {
             slot.handle = Some(handle);
             return Err((500, format!("workstation {id} did not stop: {err}")));
@@ -602,12 +802,23 @@ impl Store {
             ));
         }
         let dir = self.dir_of(id);
-        replace_file(
-            &self.disk_of(id),
-            &dir.join("snapshot.tmp"),
-            &dir.join("snapshot.img"),
-        )
-        .map_err(|e| (500, e))?;
+        match slot.record.backend {
+            Backend::Plaza => replace_file(
+                &dir.join(PLAZA_DISK),
+                &dir.join("snapshot.tmp"),
+                &dir.join(PLAZA_SNAPSHOT),
+            )
+            .map_err(|e| (500, e))?,
+            Backend::Qemu => {
+                let available = self.qemu()?;
+                ws_qemu::snapshot(
+                    &available.img,
+                    &dir.join(QEMU_DISK),
+                    &dir.join(QEMU_SNAPSHOT),
+                )
+                .map_err(|e| (500, e))?;
+            }
+        }
         slot.record.snapshot = true;
         write_record(&dir, &slot.record).map_err(|e| (500, e))?;
         Ok(view_of(slot))
@@ -625,14 +836,25 @@ impl Store {
             ));
         }
         let dir = self.dir_of(id);
-        let snapshot = dir.join("snapshot.img");
+        let snapshot = match slot.record.backend {
+            Backend::Plaza => dir.join(PLAZA_SNAPSHOT),
+            Backend::Qemu => dir.join(QEMU_SNAPSHOT),
+        };
         if !snapshot.is_file() {
             return Err((
                 409,
                 format!("workstation {id} has no snapshot to revert to"),
             ));
         }
-        replace_file(&snapshot, &dir.join("disk.tmp"), &self.disk_of(id)).map_err(|e| (500, e))?;
+        match slot.record.backend {
+            Backend::Plaza => replace_file(&snapshot, &dir.join("disk.tmp"), &dir.join(PLAZA_DISK))
+                .map_err(|e| (500, e))?,
+            Backend::Qemu => {
+                let available = self.qemu()?;
+                ws_qemu::revert(&available.img, &dir.join(QEMU_DISK), &snapshot)
+                    .map_err(|e| (500, e))?;
+            }
+        }
         Ok(view_of(slot))
     }
 
@@ -641,8 +863,9 @@ impl Store {
         let mut inner = self.lock();
         let mut slot = inner.slots.remove(id).ok_or_else(|| not_found(id))?;
         if let Some(mut handle) = slot.handle.take()
-            && let Err(err) = handle.kill()
+            && let Err(err) = handle.halt()
         {
+            slot.handle = Some(handle);
             let message = format!("workstation {id} did not stop, so it was not removed: {err}");
             inner.slots.insert(id.to_string(), slot);
             return Err((500, message));
@@ -660,6 +883,101 @@ impl Store {
             pid: None,
             ..view
         })
+    }
+
+    /// The backends this node can launch a workstation VM under, for its facts.
+    pub fn backends(&self) -> Vec<&'static str> {
+        let mut backends = vec!["plaza"];
+        if self.guest.qemu.is_some() {
+            backends.push("qemu");
+        }
+        backends
+    }
+
+    fn qemu(&self) -> Result<&Available, Refusal> {
+        self.guest.qemu.as_ref().ok_or((503, NO_QEMU.to_string()))
+    }
+
+    /// Checks that a VM of this record can launch: its backend's launch builds. Writes nothing.
+    fn check_launch(&self, record: &Record, dir: &Path, join: Option<&str>) -> Result<(), Refusal> {
+        match record.backend {
+            Backend::Plaza => boot_spec(record, &self.guest, join, &dir.join(PLAZA_DISK))
+                .map(drop)
+                .map_err(|e| (503, e)),
+            Backend::Qemu => {
+                let available = self.qemu()?;
+                qemu_argv(record, &self.guest, available, join, dir)
+                    .map(drop)
+                    .map_err(|e| (503, e))
+            }
+        }
+    }
+
+    /// Makes a new VM's disk and launches it once. The caller removes the directory when this refuses.
+    fn provision(
+        &self,
+        record: &Record,
+        base: &Path,
+        dir: &Path,
+        join: Option<&str>,
+    ) -> Result<Handle, Refusal> {
+        match record.backend {
+            Backend::Plaza => {
+                let disk = dir.join(PLAZA_DISK);
+                if record.os == Os::Windows && !base.is_file() {
+                    return Err(bad(format!(
+                        "the Windows image {} is not a file on this node",
+                        base.display()
+                    )));
+                }
+                self.make_disk(base, dir, &disk, record.disk_gb)
+                    .map_err(|e| (500, e))?;
+                write_record(dir, record).map_err(|e| (500, e))?;
+                let spec = boot_spec(record, &self.guest, join, &disk).map_err(|e| (503, e))?;
+                spawner::spawn(spec)
+                    .map(Handle::Plaza)
+                    .map_err(|err| (500, format!("the workstation VM did not boot: {err}")))
+            }
+            Backend::Qemu => {
+                let available = self.qemu()?;
+                if !base.is_file() {
+                    return Err((
+                        503,
+                        format!("the disk image {} is not a file on this node", base.display()),
+                    ));
+                }
+                let format = ws_qemu::base_format(base).map_err(|e| (400, e))?;
+                private_dir(dir).map_err(|e| (500, format!("cannot make {}: {e}", dir.display())))?;
+                let overlay_args =
+                    ws_qemu::overlay_args(&dir.join(QEMU_DISK), base, format, Some(record.disk_gb));
+                ws_qemu::run_qemu_img(&available.img, &overlay_args).map_err(|e| (500, e))?;
+                if record.os == Os::Windows {
+                    let firmware = available
+                        .firmware
+                        .as_ref()
+                        .ok_or((501, NO_UEFI.to_string()))?;
+                    fs::copy(&firmware.vars, dir.join(QEMU_VARS))
+                        .map_err(|e| (500, format!("cannot copy the UEFI variables: {e}")))?;
+                }
+                write_record(dir, record).map_err(|e| (500, e))?;
+                let argv = qemu_argv(record, &self.guest, available, join, dir).map_err(|e| (503, e))?;
+                if let Some(code) = join {
+                    fs::write(dir.join(JOIN_FILE), code)
+                        .map_err(|e| (500, format!("cannot write the join file: {e}")))?;
+                }
+                let mut process = start_qemu(available, &argv, dir)?;
+                // The join file is read by QEMU while the machine is set up, and QMP answers only once that is done.
+                let ready = process.wait_ready(ws_qemu::READY_WAIT);
+                if join.is_some() {
+                    let _ = fs::remove_file(dir.join(JOIN_FILE));
+                }
+                if !ready {
+                    let _ = process.shut_down(Duration::ZERO);
+                    return Err((500, "the workstation VM did not boot".into()));
+                }
+                Ok(Handle::Qemu(process))
+            }
+        }
     }
 
     fn make_disk(&self, base: &Path, dir: &Path, disk: &Path, disk_gb: u32) -> Result<(), String> {
@@ -687,10 +1005,6 @@ impl Store {
         self.guest.dir.join(id)
     }
 
-    fn disk_of(&self, id: &str) -> PathBuf {
-        self.dir_of(id).join("disk.img")
-    }
-
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
         self.inner
             .lock()
@@ -713,10 +1027,27 @@ fn seq_of(id: &str) -> u64 {
         .unwrap_or(0)
 }
 
+/// Starts QEMU for a VM, its stderr appended to the VM's log. A socket a previous run left behind is removed first.
+fn start_qemu(
+    available: &Available,
+    argv: &[String],
+    dir: &Path,
+) -> Result<ws_qemu::Process, Refusal> {
+    let log = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join(ws_qemu::LOG))
+        .map_err(|e| (500, format!("cannot open the VM's log: {e}")))?;
+    let socket = dir.join(ws_qemu::QMP_SOCKET);
+    let _ = fs::remove_file(&socket);
+    ws_qemu::Process::start(&available.program, argv, log, socket)
+        .map_err(|err| (500, format!("the workstation VM did not boot: {err}")))
+}
+
 /// Notices an exited VMM: its handle is dropped, so the VM reads as stopped.
 fn refresh(slot: &mut Slot) {
     if let Some(handle) = slot.handle.as_mut()
-        && !matches!(handle.wait_timeout(Duration::from_millis(1)), Ok(None))
+        && handle.exited()
     {
         slot.handle = None;
     }
@@ -738,9 +1069,10 @@ fn view_of(slot: &mut Slot) -> View {
         } else {
             "stopped"
         },
-        pid: slot.handle.as_ref().and_then(VmHandle::process_id),
+        pid: slot.handle.as_ref().and_then(Handle::pid),
         snapshot: record.snapshot,
         created_ms: record.created_ms,
+        backend: record.backend,
     }
 }
 
@@ -805,6 +1137,7 @@ mod tests {
             },
             hub: Some("https://hub.example:7443/".into()),
             join_code: "abc.def-ghi_123".into(),
+            backend: None,
         }
     }
 
@@ -821,6 +1154,8 @@ mod tests {
             hub: Some("https://hub.example:7443".into()),
             created_ms: 1,
             snapshot: false,
+            backend: Backend::Plaza,
+            cid: 0,
         }
     }
 
@@ -1168,8 +1503,16 @@ mod tests {
             sysfs: dir.join("sysfs"),
             ..Guest::default()
         });
+        // A node with no QEMU cannot take a Windows guest, and says so: nothing it has can run one.
         let windows = store.create(&request(Os::Windows), 1).unwrap_err();
-        assert_eq!(windows.0, 501);
+        assert_eq!(windows.0, 503);
+        assert!(windows.1.contains("no QEMU/OVMF"), "{}", windows.1);
+        // Asking plaza for it names plaza's own refusal.
+        let mut plaza_windows = request(Os::Windows);
+        plaza_windows.backend = Some("plaza".into());
+        let refused = store.create(&plaza_windows, 1).unwrap_err();
+        assert_eq!(refused.0, 501);
+        assert!(refused.1.contains("plaza"), "{}", refused.1);
         let mut vfio = request(Os::Linux);
         vfio.gpu = Gpu::Vfio("0000:01:00.0".into());
         assert_eq!(
@@ -1179,5 +1522,145 @@ mod tests {
         );
         assert!(!dir.join("vms").exists());
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_backend_is_chosen_per_shape_and_refused_when_the_node_has_no_qemu() {
+        let qemu = Available {
+            program: PathBuf::from("/usr/bin/qemu-system-x86_64"),
+            img: PathBuf::from("/usr/bin/qemu-img"),
+            arch: ws_qemu::Arch::X86_64,
+            firmware: Some(ws_qemu::Firmware {
+                code: PathBuf::from("/fw/code.fd"),
+                vars: PathBuf::from("/fw/vars.fd"),
+            }),
+        };
+        let vfio = Gpu::Vfio("0000:01:00.0".into());
+        let with = Some(&qemu);
+        // auto: QEMU only for what plaza cannot run.
+        assert_eq!(choose(Choice::Auto, Os::Linux, &Gpu::None, with), Ok(Backend::Plaza));
+        assert_eq!(choose(Choice::Auto, Os::Windows, &Gpu::None, with), Ok(Backend::Qemu));
+        assert_eq!(choose(Choice::Auto, Os::Linux, &vfio, with), Ok(Backend::Qemu));
+        // plaza: never QEMU, even when asked for a Windows guest (boot_refusal names why).
+        assert_eq!(choose(Choice::Plaza, Os::Windows, &Gpu::None, with), Ok(Backend::Plaza));
+        // qemu: a Linux guest may be asked for too.
+        assert_eq!(choose(Choice::Qemu, Os::Linux, &Gpu::None, with), Ok(Backend::Qemu));
+        // No QEMU: auto needing it, and an explicit qemu, are refused with the install hint.
+        for (choice, os, gpu) in [
+            (Choice::Auto, Os::Windows, Gpu::None),
+            (Choice::Auto, Os::Linux, vfio.clone()),
+            (Choice::Qemu, Os::Linux, Gpu::None),
+        ] {
+            let (status, message) = choose(choice, os, &gpu, None).unwrap_err();
+            assert_eq!(status, 503);
+            assert_eq!(message, NO_QEMU);
+        }
+        assert_eq!(choose(Choice::Auto, Os::Linux, &Gpu::None, None), Ok(Backend::Plaza));
+        // An x86 firmware-less node cannot take a Windows guest under QEMU.
+        let arm = Available {
+            firmware: None,
+            arch: ws_qemu::Arch::Aarch64,
+            ..qemu.clone()
+        };
+        assert_eq!(choose(Choice::Auto, Os::Windows, &Gpu::None, Some(&arm)).unwrap_err().0, 501);
+    }
+
+    #[test]
+    fn the_facts_name_qemu_only_when_the_node_has_it() {
+        let dir = scratch("facts");
+        let plain = Store::open(Guest {
+            dir: dir.join("vms"),
+            ..Guest::default()
+        });
+        assert_eq!(plain.backends(), ["plaza"]);
+        let with = Store::open(Guest {
+            dir: dir.join("vms"),
+            qemu: Some(Available {
+                program: PathBuf::from("/usr/bin/qemu-system-x86_64"),
+                img: PathBuf::from("/usr/bin/qemu-img"),
+                arch: ws_qemu::Arch::X86_64,
+                firmware: None,
+            }),
+            ..Guest::default()
+        });
+        assert_eq!(with.backends(), ["plaza", "qemu"]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_qemu_vm_without_a_kernel_is_refused_before_a_directory_is_made() {
+        let dir = scratch("qemu-nokernel");
+        let vms = dir.join("vms");
+        let store = Store::open(Guest {
+            dir: vms.clone(),
+            image: Some(dir.join("base.img")),
+            qemu: Some(Available {
+                program: PathBuf::from("/usr/bin/qemu-system-x86_64"),
+                img: PathBuf::from("/usr/bin/qemu-img"),
+                arch: ws_qemu::Arch::X86_64,
+                firmware: None,
+            }),
+            ..Guest::default()
+        });
+        let mut linux = request(Os::Linux);
+        linux.backend = Some("qemu".into());
+        let err = store.create(&linux, 1).unwrap_err();
+        assert_eq!(err.0, 503);
+        assert!(err.1.contains("kernel"), "{}", err.1);
+        assert!(!vms.exists(), "nothing is written for a refused request");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_qemu_argv_boots_a_linux_guest_directly_and_a_windows_one_with_uefi() {
+        let dir = scratch("qemu-argv");
+        let vm = dir.join("vms/wv1");
+        let mut record = record("wv1");
+        record.backend = Backend::Qemu;
+        record.cid = cid_for("wv1");
+        record.gpu = Gpu::Vfio("0000:01:00.0".into());
+        let guest = Guest {
+            kernel: Some(PathBuf::from("/g/vmlinux")),
+            initrd: Some(PathBuf::from("/g/initrd.gz")),
+            ..Guest::default()
+        };
+        let linux_qemu = Available {
+            program: PathBuf::from("/usr/bin/qemu-system-x86_64"),
+            img: PathBuf::from("/usr/bin/qemu-img"),
+            arch: ws_qemu::Arch::X86_64,
+            firmware: Some(ws_qemu::Firmware {
+                code: PathBuf::from("/fw/code.fd"),
+                vars: PathBuf::from("/fw/vars.fd"),
+            }),
+        };
+        let args = qemu_argv(&record, &guest, &linux_qemu, Some("CODE"), &vm).expect("a Linux VM");
+        assert!(args.windows(2).any(|w| w == ["-kernel", "/g/vmlinux"]));
+        assert!(args.windows(2).any(|w| w == ["-device", "vfio-pci,host=0000:01:00.0"]));
+        assert!(args.windows(2).any(|w| w[0] == "-append" && w[1].ends_with("plaza.workstation_join=CODE")));
+        assert!(args.windows(2).any(|w| w == ["-device", "vhost-vsock-pci,guest-cid=4097"]));
+        assert!(!args.iter().any(|a| a.contains("if=pflash")), "a Linux guest boots directly");
+
+        record.os = Os::Windows;
+        let windows = qemu_argv(&record, &guest, &linux_qemu, Some("CODE"), &vm).expect("a Windows VM");
+        assert!(windows.iter().any(|a| a.contains("if=pflash,format=raw,unit=0,readonly=on,file=/fw/code.fd")));
+        assert!(windows.windows(2).any(|w| w[0] == "-fw_cfg" && w[1].contains("name=opt/plaza/join")));
+        assert!(!windows.iter().any(|a| a == "-kernel"));
+        assert!(windows.windows(2).any(|w| w == ["-nic", "none"]));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_record_from_before_qemu_is_a_plaza_vm_with_no_cid() {
+        let text = r#"{"id":"wv2","name":"desk","os":"linux","cpus":2,"ram_mb":4096,"disk_gb":16,
+            "gpu":"none","image":null,"created_ms":1}"#;
+        let record: Record = serde_json::from_str(text).expect("an older record");
+        assert_eq!((record.backend, record.cid), (Backend::Plaza, 0));
+    }
+
+    #[test]
+    fn a_qemu_vm_gets_a_cid_above_the_agent_and_run_ranges() {
+        assert_eq!(cid_for("wv1"), CID_BASE + 1);
+        assert!(cid_for("wv1") > 100 && cid_for("wv1") > 1099);
+        assert_eq!(cid_for("nonsense"), CID_BASE);
     }
 }

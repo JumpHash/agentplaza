@@ -1,7 +1,7 @@
 //! Workstation VMs the plaza makes on a node (docs/design/workstations.md, section 10).
 //!
 //! Owner routes (the owner gate applies, as to every `/v1/stations` route):
-//!   POST   /v1/stations/vms       {node, os: linux|windows|macos, name, cpus, ram_mb, disk_gb, gpu?, image?} → 201 VmView
+//!   POST   /v1/stations/vms       {node, os: linux|windows|macos, name, cpus, ram_mb, disk_gb, gpu?, image?, backend?} → 201 VmView
 //!   GET    /v1/stations/vms       → [VmView]
 //!   DELETE /v1/stations/vms/{id}  → the removed VmView (its VM is removed from the node first)
 //!
@@ -11,7 +11,9 @@
 //!
 //! Checked here, before any node is asked: macOS VMs only on a node that reports Apple hardware, at most
 //! [`MAX_MACOS_PER_NODE`] per node; Windows VMs need an `image` (an owner-provided image on the node, copied per VM,
-//! nothing downloaded); and the sizes and GPU options, as noded checks them too.
+//! nothing downloaded); the sizes and GPU options, as noded checks them too; and the backend. `backend` is `auto`
+//! (the default), `plaza` or `qemu`. `auto` takes QEMU for a Windows guest or a vfio GPU, which plaza cannot run, and
+//! refuses when the node does not report QEMU (its facts list `qemu` in `workstation_backends`).
 //!
 //! The lease hooks (`hooks.rs`) run the snapshot before a lease on a workstation VM with `snapshot_reset` is opened,
 //! and the revert after the last active lease ends. Each is stop, then the disk step, then start, through the node,
@@ -64,12 +66,19 @@ pub struct VmRecord {
     pub disk_gb: u32,
     pub gpu: String,
     pub image: Option<String>,
+    /// The launch backend the node runs the VM under: `plaza` or `qemu`. A record from before QEMU is plaza.
+    #[serde(default = "plaza_backend")]
+    pub backend: String,
     /// The join code it was issued (`j<seq>`).
     pub code: String,
     /// The station that enrolled from its code (`w<seq>`), once one has.
     #[serde(default)]
     pub station: Option<String>,
     pub created_ms: u64,
+}
+
+fn plaza_backend() -> String {
+    "plaza".into()
 }
 
 /// The `POST /v1/stations/vms` body.
@@ -85,6 +94,35 @@ pub struct CreateVm {
     pub gpu: Option<String>,
     #[serde(default)]
     pub image: Option<String>,
+    /// `auto` (the default), `plaza` or `qemu`.
+    #[serde(default)]
+    pub backend: Option<String>,
+}
+
+/// The launch backend a create request gets: `plaza` or `qemu`. `auto` takes QEMU for a Windows guest or a vfio GPU,
+/// and plaza otherwise. QEMU is refused, with the install hint, on a node that does not report it.
+pub fn backend_for(request: &CreateVm, node_has_qemu: bool) -> Result<&'static str, String> {
+    let vfio = request
+        .gpu
+        .as_deref()
+        .is_some_and(|gpu| gpu.starts_with("vfio:"));
+    let needs_qemu = request.os == "windows" || vfio;
+    let want_qemu = match request.backend.as_deref().unwrap_or("auto") {
+        "auto" => needs_qemu,
+        "plaza" => return Ok("plaza"),
+        "qemu" => true,
+        other => return Err(format!("backend must be auto, plaza or qemu, not {other:?}")),
+    };
+    if !want_qemu {
+        return Ok("plaza");
+    }
+    if request.os == "macos" {
+        return Err("a macOS VM runs on Apple's Virtualization framework, not QEMU".into());
+    }
+    if !node_has_qemu {
+        return Err("this node has no QEMU/OVMF; install qemu and edk2-ovmf".into());
+    }
+    Ok("qemu")
 }
 
 /// A VM as the console lists it: its record, and whether its station is enrolled and online.
@@ -400,6 +438,12 @@ pub fn create(app: &App, request: &CreateVm, actor: &str) -> Result<VmView, Fail
         .filter(|vm| vm.node == node.id && vm.os == "macos")
         .count();
     check(request, apple, macos).map_err(|reason| (400, reason))?;
+    let node_has_qemu = node
+        .machine
+        .get("workstation_backends")
+        .and_then(Value::as_array)
+        .is_some_and(|backends| backends.iter().any(|b| b.as_str() == Some("qemu")));
+    let backend = backend_for(request, node_has_qemu).map_err(|reason| (400, reason))?;
 
     let (hub, _) = ops::hub_pin(app)?;
     let (code, join_code, _) = ops::issue_code(
@@ -418,6 +462,7 @@ pub fn create(app: &App, request: &CreateVm, actor: &str) -> Result<VmView, Fail
         "image": request.image,
         "hub": hub,
         "join_code": join_code,
+        "backend": backend,
     });
     let reply = fleet::noded(app, &node.id, "POST", "/v1/workstations", Some(&body));
     let node_vm = match reply {
@@ -442,6 +487,7 @@ pub fn create(app: &App, request: &CreateVm, actor: &str) -> Result<VmView, Fail
         disk_gb: request.disk_gb,
         gpu: request.gpu.clone().unwrap_or_else(|| "none".into()),
         image: request.image.clone(),
+        backend: backend.into(),
         code: code.clone(),
         station: None,
         created_ms: apz_plaza::now_ms(),
@@ -595,6 +641,7 @@ mod tests {
             } else {
                 None
             },
+            backend: None,
         }
     }
 
@@ -797,6 +844,7 @@ mod tests {
             disk_gb: 16,
             gpu: "none".into(),
             image: None,
+            backend: "plaza".into(),
             code: "j1".into(),
             station: None,
             created_ms: 1,
@@ -804,5 +852,39 @@ mod tests {
         let text = serde_json::to_string(&record).unwrap();
         let back: VmRecord = serde_json::from_str(&text).unwrap();
         assert_eq!(back, record);
+    }
+
+    #[test]
+    fn auto_takes_qemu_for_windows_or_vfio_and_plaza_otherwise() {
+        let mut vfio = request("linux");
+        vfio.gpu = Some("vfio:0000:01:00.0".into());
+        assert_eq!(backend_for(&request("linux"), false), Ok("plaza"));
+        assert_eq!(backend_for(&request("linux"), true), Ok("plaza"));
+        assert_eq!(backend_for(&vfio, true), Ok("qemu"));
+        assert_eq!(backend_for(&request("windows"), true), Ok("qemu"));
+        // A Windows guest on a node with no QEMU is refused with the install hint, not sent to plaza to fail there.
+        let err = backend_for(&request("windows"), false).unwrap_err();
+        assert_eq!(err, "this node has no QEMU/OVMF; install qemu and edk2-ovmf");
+        assert!(backend_for(&vfio, false).unwrap_err().contains("no QEMU"));
+    }
+
+    #[test]
+    fn an_explicit_backend_is_honored_and_checked() {
+        let mut plaza = request("windows");
+        plaza.backend = Some("plaza".into());
+        assert_eq!(backend_for(&plaza, true), Ok("plaza"), "noded refuses it with the cause");
+
+        let mut qemu = request("linux");
+        qemu.backend = Some("qemu".into());
+        assert_eq!(backend_for(&qemu, true), Ok("qemu"));
+        assert!(backend_for(&qemu, false).unwrap_err().contains("no QEMU"));
+
+        let mut bogus = request("linux");
+        bogus.backend = Some("hyperv".into());
+        assert!(backend_for(&bogus, true).unwrap_err().contains("backend must be"));
+
+        let mut mac = request("macos");
+        mac.backend = Some("qemu".into());
+        assert!(backend_for(&mac, true).unwrap_err().contains("Apple"));
     }
 }
