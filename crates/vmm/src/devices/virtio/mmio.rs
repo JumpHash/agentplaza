@@ -732,12 +732,6 @@ mod tests {
         assert_eq!(read_u32(&mut transport, 0x0c), 0);
         assert_eq!(read_u32(&mut transport, 0x70), 0);
         assert_eq!(read_u32(&mut transport, 0xfc), 0);
-        // The configuration space belongs to the device, not to the register
-        // file: this mock's reads answer with its own pattern (see
-        // `the_configuration_space_is_read_from_the_device`).
-        let mut data = [0u8; 4];
-        transport.read(0, 0x100, &mut data);
-        assert_eq!(data, [0, 1, 2, 3]);
     }
 
     /// A read of the device configuration space reaches the device with the

@@ -542,11 +542,12 @@ mod tests {
         );
     }
 
-    /// A write request stores the driver's bytes in the volume, and a later
-    /// read of the same sectors returns them — the two directions agree.
+    /// A write request stores the driver's bytes in the image file itself (what
+    /// the next VM booted on the same copy reads back), and a later read of the
+    /// same sectors through the device returns them — the two directions agree.
     #[test]
     fn a_write_request_stores_the_guests_bytes() {
-        let (_file, mut block) = volume(&[0u8; 4096]);
+        let (file, mut block) = volume(&[0u8; 4096]);
         let mem = default_mem();
         let vq = VirtQueue::new(GuestAddress(0), &mem, 16);
         block.queue = vq.create_queue();
@@ -565,6 +566,17 @@ mod tests {
             vq.used_elem(0),
             (0, 1),
             "a write reports only the status byte as written back to the guest"
+        );
+
+        let mut stored = [0u8; 512];
+        file.as_file()
+            .read_exact_at(&mut stored, 1024)
+            .expect("a read of the volume");
+        assert_eq!(stored, written[..], "the bytes are in the image file");
+        assert_eq!(
+            file.as_file().metadata().expect("metadata").len(),
+            4096,
+            "the volume's size is the file's size"
         );
 
         // Read the same sector back through the device.
@@ -632,50 +644,41 @@ mod tests {
         );
     }
 
-    /// An unknown request type is answered `VIRTIO_BLK_S_UNSUPP` — the device
-    /// telling the driver "not implemented" — and the descriptor is still
-    /// consumed, so the driver can make progress.
+    /// A request type the device does not implement is answered
+    /// `VIRTIO_BLK_S_UNSUPP` — the device telling the driver "not implemented" —
+    /// and its descriptor is still consumed, so the driver can make progress.
+    /// A discard is one such type: the device never offers
+    /// `VIRTIO_BLK_F_DISCARD`, so even a well-formed discard range (sector 0, one
+    /// sector, no flags) is refused rather than silently ignored.
     #[test]
-    fn an_unknown_request_type_is_answered_unsupported() {
-        let (_file, mut block) = volume(&[0u8; 4096]);
-        let mem = default_mem();
-        let vq = VirtQueue::new(GuestAddress(0), &mem, 16);
-        block.queue = vq.create_queue();
-        activate(&mut block, &mem);
+    fn unimplemented_request_types_are_answered_unsupported() {
+        // (request type, whether a discard range follows the header)
+        for (request_type, with_discard_range) in [(42, false), (VIRTIO_BLK_T_DISCARD, true)] {
+            let (_file, mut block) = volume(&[0u8; 4096]);
+            let mem = default_mem();
+            let vq = VirtQueue::new(GuestAddress(0), &mem, 16);
+            block.queue = vq.create_queue();
+            activate(&mut block, &mem);
 
-        let chain = RequestDescriptorChain::new(&vq);
-        chain.set_header(RequestHeader::new(42, 0));
-        chain.publish();
+            let chain = RequestDescriptorChain::new(&vq);
+            chain.set_header(RequestHeader::new(request_type, 0));
+            if with_discard_range {
+                chain.set_data_flags(VIRTQ_DESC_F_NEXT);
+                chain.set_data_len(16);
+                let mut range = [0u8; 16];
+                range[8..12].copy_from_slice(&1u32.to_le_bytes());
+                chain.write_data(&range);
+            }
+            chain.publish();
 
-        block.process_queue().expect("a well-formed ring drains");
-        assert_eq!(chain.status(), VIRTIO_BLK_S_UNSUPP);
-        assert_eq!(vq.used_elem(0), (0, 1));
-    }
-
-    /// A discard request is refused: the device never offers
-    /// `VIRTIO_BLK_F_DISCARD`, and a driver that sends one anyway gets
-    /// `VIRTIO_BLK_S_UNSUPP` rather than a silently ignored trim.
-    #[test]
-    fn a_discard_request_is_refused() {
-        let (_file, mut block) = volume(&[0u8; 4096]);
-        let mem = default_mem();
-        let vq = VirtQueue::new(GuestAddress(0), &mem, 16);
-        block.queue = vq.create_queue();
-        activate(&mut block, &mem);
-
-        let chain = RequestDescriptorChain::new(&vq);
-        chain.set_header(RequestHeader::new(VIRTIO_BLK_T_DISCARD, 0));
-        chain.set_data_flags(VIRTQ_DESC_F_NEXT);
-        chain.set_data_len(16);
-        // A well-formed discard range (sector 0, one sector, no flags): the
-        // request parses, and only then is it refused as unsupported.
-        let mut range = [0u8; 16];
-        range[8..12].copy_from_slice(&1u32.to_le_bytes());
-        chain.write_data(&range);
-        chain.publish();
-
-        block.process_queue().expect("a well-formed ring drains");
-        assert_eq!(chain.status(), VIRTIO_BLK_S_UNSUPP);
+            block.process_queue().expect("a well-formed ring drains");
+            assert_eq!(
+                chain.status(),
+                VIRTIO_BLK_S_UNSUPP,
+                "request type {request_type}"
+            );
+            assert_eq!(vq.used_elem(0), (0, 1), "request type {request_type}");
+        }
     }
 
     /// A chain that does not parse is consumed with a zero-length used entry
@@ -767,38 +770,5 @@ mod tests {
         block
             .process_queue()
             .expect("an inactive device ignores the queue");
-    }
-
-    /// What the device writes is in the image file itself — which is what the
-    /// next VM booted on the same copy reads back.
-    #[test]
-    fn what_the_device_writes_is_in_the_image_file() {
-        let file = TempFile::new().expect("a temporary file");
-        file.as_file().set_len(4096).expect("a sized volume");
-        let mut block = VirtioBlock::new(file.as_path()).expect("a device over the volume");
-        let mem = default_mem();
-        let vq = VirtQueue::new(GuestAddress(0), &mem, 16);
-        block.queue = vq.create_queue();
-        activate(&mut block, &mem);
-
-        let chain = RequestDescriptorChain::new(&vq);
-        chain.set_header(RequestHeader::new(VIRTIO_BLK_T_OUT, 1));
-        chain.set_data_flags(VIRTQ_DESC_F_NEXT);
-        chain.set_data_len(512);
-        chain.write_data(&[7u8; 512]);
-        chain.publish();
-        block.process_queue().expect("a well-formed ring drains");
-        assert_eq!(chain.status(), VIRTIO_BLK_S_OK);
-
-        let mut stored = [0u8; 512];
-        file.as_file()
-            .read_exact_at(&mut stored, 512)
-            .expect("a read of the volume");
-        assert_eq!(stored, [7u8; 512]);
-        assert_eq!(
-            file.as_file().metadata().expect("metadata").len(),
-            4096,
-            "the volume's size is the file's size"
-        );
     }
 }

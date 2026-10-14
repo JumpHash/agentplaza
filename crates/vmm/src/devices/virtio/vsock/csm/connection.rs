@@ -1089,6 +1089,15 @@ mod tests {
         ctx.conn.recv_pkt(&mut ctx.rx_pkt).unwrap_err();
         assert!(!ctx.conn.has_pending_rx());
         assert!(ctx.conn.get_polled_evset().contains(EventSet::IN));
+
+        // A host EOF (closed read side) queues the same undeliverable RW indication, so
+        // IN must be suppressed there too.
+        let mut ctx = CsmTestContext::new_established();
+        let mut stream = TestStream::new();
+        stream.read_state = StreamState::Closed;
+        ctx.set_stream(stream);
+        ctx.notify_epollin();
+        assert!(!ctx.conn.get_polled_evset().contains(EventSet::IN));
     }
 
     #[test]
@@ -1120,21 +1129,6 @@ mod tests {
         ctx.conn.recv_pkt(&mut ctx.rx_pkt).unwrap_err();
         assert!(!ctx.conn.has_pending_rx());
         assert!(ctx.conn.get_polled_evset().contains(EventSet::IN));
-    }
-
-    #[test]
-    fn test_polled_evset_drops_in_on_host_eof() {
-        // Same as `test_polled_evset_drops_in_while_rw_pending`, but the host closed its
-        // end (EOF) instead of writing data. The resulting undeliverable RW indication must
-        // still suppress EPOLLIN so the muxer epoll fd does not busy-spin the event thread.
-        let mut ctx = CsmTestContext::new_established();
-        assert!(ctx.conn.get_polled_evset().contains(EventSet::IN));
-
-        let mut stream = TestStream::new();
-        stream.read_state = StreamState::Closed;
-        ctx.set_stream(stream);
-        ctx.notify_epollin(); // sets PendingRx::Rw
-        assert!(!ctx.conn.get_polled_evset().contains(EventSet::IN));
     }
 
     #[test]
