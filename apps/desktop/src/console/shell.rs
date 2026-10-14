@@ -411,6 +411,7 @@ fn manages_scroll(id: &super::screens::Id) -> bool {
             | Id::RobotLab
             | Id::RoomLab
             | Id::HardwareLab
+            | Id::Ide(_)
             | Id::Society
             | Id::Conversations
             | Id::Board
@@ -659,6 +660,7 @@ fn top_bar_title(current: &Id) -> &'static str {
             super::screens::Id::RobotLab => Some("Robot lab"),
             super::screens::Id::RoomLab => Some("Room lab"),
             super::screens::Id::HardwareLab => Some("Hardware lab"),
+            super::screens::Id::Ide(_) => Some("IDE"),
             _ => None,
         })
         .unwrap_or("Agent")

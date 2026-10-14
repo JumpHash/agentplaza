@@ -93,6 +93,9 @@ fn boot() -> (Console, Task<Msg>) {
         {
             // The engine's labs are hidden from the sidebar, as the web's lab routes are.
             console.shell.current = id;
+        } else if name.eq_ignore_ascii_case("Ide") {
+            // The IDE is not in the sidebar; `APZ_IDE_WS=<workspace id>` opens that workspace on it.
+            console.shell.current = screens::Id::Ide(std::env::var("APZ_IDE_WS").ok().filter(|ws| !ws.trim().is_empty()));
         }
     }
     // `APZ_AGENT=<cid>` opens that agent's page: its `Id::Agent` is the current screen, which `screens::open` loads below.
@@ -174,6 +177,16 @@ fn boot() -> (Console, Task<Msg>) {
 }
 
 fn update(console: &mut Console, msg: Msg) -> Task<Msg> {
+    let before = console.shell.current.clone();
+    let task = update_app(console, msg);
+    // The IDE remembers the screen it was opened from: its Escape goes back there.
+    if matches!(console.shell.current, screens::Id::Ide(_)) && !matches!(before, screens::Id::Ide(_)) {
+        console.screens.ide.origin = Some(before);
+    }
+    task
+}
+
+fn update_app(console: &mut Console, msg: Msg) -> Task<Msg> {
     match msg {
         Msg::Boot(msg) => {
             let (task, connected) = boot::update(&mut console.boot, msg);
@@ -214,6 +227,13 @@ fn update(console: &mut Console, msg: Msg) -> Task<Msg> {
                 }
             }
             Task::batch(tasks)
+        }
+        // The IDE's Escape: back to the screen it was opened from (the console owns navigation).
+        Msg::Screen(screens::Msg::Ide(screens::ide::Msg::Back)) => {
+            let Some(ctx) = console.ctx.clone() else { return Task::none() };
+            let target = console.screens.ide.origin.clone().unwrap_or(screens::Id::Overview);
+            console.shell.current = target.clone();
+            screens::open(&mut console.screens, target, &ctx).map(Msg::Screen)
         }
         // The Setup screen replays the wizard or the tour (the console owns both).
         Msg::Screen(screens::Msg::Setup(screens::setup::Msg::Wizard)) => {

@@ -11,6 +11,8 @@ apz-prompt = { path = "../../crates/apz-prompt" }
 apz-skill = { path = "../../crates/apz-skill" }
 # The board core: one Rust crate for the board, shared with the web (WASM). See docs/design/apz-board.md.
 apz-board = { path = "../../crates/apz-board" }
+# The IDE's shared model (workspaces, entries, buffers, the diff parser, path rules, the state reducer); the web runs it too.
+apz-ide = { path = "../../crates/apz-ide" }
 # The wgpu renderer is the WebGPU-compatible backend; tiny-skia is the software
 # fallback the renderer stack drops to when wgpu cannot get a device.
 # `smol` (not `thread-pool`) is the executor: it provides `time::every` for the
@@ -26,6 +28,8 @@ iced = { version = "0.14", default-features = false, features = [
     "x11",
     "wayland",
     "canvas",
+    # The IDE's editor: syntax highlighting in `text_editor` (iced_highlighter, syntect).
+    "highlighter",
     # The console's icons (the web console's lucide set) and agent portraits.
     "svg",
     "image",

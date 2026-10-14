@@ -46,6 +46,10 @@ pub mod lab_models;
 pub mod lab_model_detail;
 pub mod lab_breeders;
 pub mod lab_hf;
+pub mod ide;
+pub mod ide_diff;
+pub mod ide_editor;
+pub mod ide_tree;
 
 use iced::{Element, Task};
 
@@ -99,6 +103,8 @@ pub enum Id {
     RobotLab,
     RoomLab,
     HardwareLab,
+    /// The IDE, not in the sidebar: one workspace by its id (`agent:<cid>` or `repo:<name>@<ref>`), or the picker when none.
+    Ide(Option<String>),
 }
 
 /// The sidebar's entries: (screen, label, section, icon), in order.
@@ -166,6 +172,7 @@ pub struct Screens {
     pub lab_models: lab_models::State,
     pub lab_model_detail: lab_model_detail::State,
     pub lab_breeders: lab_breeders::State,
+    pub ide: ide::State,
 }
 
 #[derive(Debug, Clone)]
@@ -204,6 +211,7 @@ pub enum Msg {
     LabModels(lab_models::Msg),
     LabModelDetail(lab_model_detail::Msg),
     LabBreeders(lab_breeders::Msg),
+    Ide(ide::Msg),
 }
 
 /// The navigation a screen's message asks for.
@@ -243,6 +251,7 @@ pub fn navigation(msg: &Msg) -> Option<Id> {
         Msg::LabModels(m) => lab_models::go(m),
         Msg::LabModelDetail(m) => lab_model_detail::go(m),
         Msg::LabBreeders(m) => lab_breeders::go(m),
+        Msg::Ide(m) => ide::go(m),
     }
 }
 
@@ -257,6 +266,7 @@ pub fn open(screens: &mut Screens, id: Id, ctx: &Ctx) -> Task<Msg> {
         Id::LabJobDetail(job) => screens.lab_job_detail = lab_job_detail::State { job: job.clone(), ..Default::default() },
         Id::LabModelDetail(model) => screens.lab_model_detail = lab_model_detail::State { model: model.clone(), ..Default::default() },
         Id::Task(task) => screens.tasks = tasks::opened(task.clone()),
+        Id::Ide(Some(workspace)) => screens.ide.preselect = Some(workspace.clone()),
         Id::Repo(repo) => screens.git = git::State { repo: repo.clone(), tab: git::Tab::Code, ..Default::default() },
         _ => {}
     }
@@ -302,6 +312,7 @@ pub fn refresh(screens: &mut Screens, id: &Id, ctx: &Ctx) -> Task<Msg> {
         Id::LabModels => lab_models::load(&mut screens.lab_models, ctx).map(Msg::LabModels),
         Id::LabModelDetail(_) => lab_model_detail::load(&mut screens.lab_model_detail, ctx).map(Msg::LabModelDetail),
         Id::LabBreeders => lab_breeders::load(&mut screens.lab_breeders, ctx).map(Msg::LabBreeders),
+        Id::Ide(_) => ide::load(&mut screens.ide, ctx).map(Msg::Ide),
     }
 }
 
@@ -341,6 +352,7 @@ pub fn update(screens: &mut Screens, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         Msg::LabModels(m) => lab_models::update(&mut screens.lab_models, m, ctx).map(Msg::LabModels),
         Msg::LabModelDetail(m) => lab_model_detail::update(&mut screens.lab_model_detail, m, ctx).map(Msg::LabModelDetail),
         Msg::LabBreeders(m) => lab_breeders::update(&mut screens.lab_breeders, m, ctx).map(Msg::LabBreeders),
+        Msg::Ide(m) => ide::update(&mut screens.ide, m, ctx).map(Msg::Ide),
     }
 }
 
@@ -369,6 +381,7 @@ pub fn subscription(screens: &Screens, id: &Id, ctx: &Ctx) -> iced::Subscription
         Id::Council => council::subscription(ctx).map(Msg::Council),
         Id::LabDatasets => lab_datasets::subscription(ctx).map(Msg::LabDatasets),
         Id::LabRecipes => lab_recipes::subscription(ctx).map(Msg::LabRecipes),
+        Id::Ide(_) => ide::subscription(ctx).map(Msg::Ide),
         Id::LabJobDetail(_) => lab_common::live(&ctx.client).filter_map(|e| lab_common::training_frame(&e)).map(lab_job_detail::Msg::Live).map(Msg::LabJobDetail),
         _ => iced::Subscription::none(),
     }
@@ -410,5 +423,6 @@ pub fn view<'a>(screens: &'a Screens, id: &Id, ctx: &'a Ctx) -> Element<'a, Msg>
         Id::LabModels => lab_models::view(&screens.lab_models, ctx).map(Msg::LabModels),
         Id::LabModelDetail(_) => lab_model_detail::view(&screens.lab_model_detail, ctx).map(Msg::LabModelDetail),
         Id::LabBreeders => lab_breeders::view(&screens.lab_breeders, ctx).map(Msg::LabBreeders),
+        Id::Ide(_) => ide::view(&screens.ide).map(Msg::Ide),
     }
 }
