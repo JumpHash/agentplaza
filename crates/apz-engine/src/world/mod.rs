@@ -14,6 +14,7 @@ pub mod nav;
 pub mod spots;
 pub mod walkway_mesh;
 pub mod view;
+pub mod work;
 
 use std::collections::HashMap;
 use std::sync::Arc;

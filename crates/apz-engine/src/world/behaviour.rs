@@ -143,6 +143,8 @@ pub struct DeliverDef {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Scoring {
+    /// Simulation seconds between decision ticks.
+    pub decision_s: f64,
     pub trait_floor: f64,
     pub novelty: f64,
     pub distance_scale: f64,

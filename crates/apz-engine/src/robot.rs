@@ -320,6 +320,11 @@ impl Robot {
         robot
     }
 
+    /// The species this robot was built from (its registry entry; the rover when the requested one is not valid).
+    pub fn species(&self) -> &'static Species {
+        self.sp
+    }
+
     /// The world point at the species' label height above the root (the status label's anchor).
     pub fn label_anchor(&self) -> Vec3 {
         let to_world = self.group.world_matrix_of(&self.group).unwrap_or(Mat4::IDENTITY);
