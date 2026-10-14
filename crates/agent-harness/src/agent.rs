@@ -8,18 +8,20 @@
 //! or denied). The conversation only grows. A chat thread keeps its conversation
 //! across work items until it passes [`THREAD_CLOSE_BYTES`].
 //!
-//! Every wait is one loop ([`Agent::await_message`]) that keeps beating, serves
-//! operator `tool_call`s, queues work and records cancels while it waits. A
-//! local tool runs on its own thread that the same beat runs beside, so a slow
-//! tool does not silence the session.
+//! Every wait is one loop ([`Agent::await_message`]) that keeps beating, queues
+//! work and records cancels while it waits. The host's lines arrive through the
+//! reader lane ([`crate::lane`]), which also answers the owner's operator
+//! `tool_call`s on a lane of their own. A local tool runs on its own thread that
+//! the same beat runs beside, so a slow tool does not silence the session.
 
 use std::collections::{HashMap, VecDeque};
-use std::io::{Read, Write};
+use std::io::Write;
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use apz_proto::chat::{Block, ChatRequest, ChatResponse, Message, Role, StopReason, blocks_text};
-use apz_proto::line::{Lines, ReadTimeout, Recv};
+use apz_proto::line::Lines;
 use apz_proto::wire::{
     AgentProfile, Control, Decision, GuestMessage, HostMessage, MAX_TOOL_OUTPUT, WorkKind, WorkStatus, cap_output,
 };
@@ -27,8 +29,9 @@ use serde_json::{Value, json};
 
 use crate::bash;
 use crate::files::{self, Workspace};
+use crate::lane::{Duplex, Inbound, OPERATOR_EXPIRY, Shared, read_host, serve_operators};
 use crate::{checkpoints, engines, library, plan, search_tools, shells};
-use crate::session::{SessionError, escape_for_transcript, kind_of, note, send};
+use crate::session::{SessionError, escape_for_transcript, kind_of};
 use crate::tools;
 
 /// A chat thread whose history serializes past this is closed: its next work
@@ -66,7 +69,7 @@ struct Thread {
 enum Incoming {
     /// The beat came due before a line; a heartbeat went out.
     Beat,
-    /// A line the loop acted on itself (operator call, queued work, cancel, profile).
+    /// A line the loop acted on itself (queued work, cancel, profile, control).
     Handled,
     /// The host stopped the agent.
     Stop(String),
@@ -87,15 +90,14 @@ impl From<SessionError> for Halt {
 }
 
 /// The agent's state for one keepalive connection.
-struct Agent<'a, S, W> {
-    lines: &'a mut Lines<S>,
-    log: &'a mut W,
+struct Agent<'a, 'l, S, W> {
+    shared: &'a Shared<'l, S, W>,
+    /// The host's messages the reader lane passes on.
+    inbox: Receiver<Inbound>,
     workspace: &'a Workspace,
     heartbeat: Duration,
     next_beat: Instant,
     seq: u64,
-    /// Operator tool calls served.
-    calls: u64,
     /// The last model call's request id.
     req: u64,
     profile: Option<AgentProfile>,
@@ -119,64 +121,91 @@ struct Agent<'a, S, W> {
     extra_turns: u32,
 }
 
-/// Serves one keepalive connection's agent loop until the host's `stop`;
-/// returns how many operator tool calls were served.
-pub fn serve<S: Read + Write + ReadTimeout, W: Write>(
+/// Serves one keepalive connection's agent loop until the host's `stop`, then
+/// sends the `bye`; returns how many operator tool calls were answered.
+///
+/// The reader lane owns the connection's read half for the whole session, and the
+/// operator worker answers the owner's calls beside the loop. The `bye` goes out
+/// only after both have finished, so every answer precedes it and the count is final.
+pub fn serve<S: Duplex, W: Write + Send>(
     lines: &mut Lines<S>,
     log: &mut W,
     workspace: &Workspace,
     profile: Option<AgentProfile>,
     heartbeat: Duration,
 ) -> Result<u64, SessionError> {
-    let mut agent = Agent {
-        lines,
-        log,
-        workspace,
-        heartbeat,
-        next_beat: Instant::now() + heartbeat,
-        seq: 0,
-        calls: 0,
-        req: 0,
-        profile,
-        queue: VecDeque::new(),
-        threads: load_threads(workspace),
-        clock: 0,
-        current: None,
-        cancelled: None,
-        steers: Vec::new(),
-        compress_requested: false,
-        compressed_size: 0,
-        extra_turns: 0,
-    };
-    agent.clock = agent.threads.values().map(|thread| thread.at).max().unwrap_or(0);
-    loop {
-        let halt = match agent.queue.pop_front() {
-            Some(job) => agent.run_job(job).err(),
-            None => match agent.pump() {
-                Ok(Incoming::Stop(reason)) => Some(Halt::Stop(reason)),
-                Ok(_) => None,
-                Err(error) => Some(Halt::Failed(error)),
-            },
+    let writer = Lines::new(lines.get_ref().duplicate()?);
+    let shared = Shared::new(writer, log);
+    let (inbox_tx, inbox_rx) = mpsc::channel();
+    let (operator_tx, operator_rx) = mpsc::channel();
+    let shared_ref = &shared;
+    let outcome = thread::scope(|scope| {
+        scope.spawn(move || read_host(lines, shared_ref, inbox_tx, operator_tx));
+        scope.spawn(move || {
+            let exec = |name: &str, args: &Value| tools::serve(workspace, name, args).map_err(|err| err.to_string());
+            serve_operators(operator_rx, shared_ref, exec, OPERATOR_EXPIRY)
+        });
+        let mut agent = Agent {
+            shared: shared_ref,
+            inbox: inbox_rx,
+            workspace,
+            heartbeat,
+            next_beat: Instant::now() + heartbeat,
+            seq: 0,
+            req: 0,
+            profile,
+            queue: VecDeque::new(),
+            threads: load_threads(workspace),
+            clock: 0,
+            current: None,
+            cancelled: None,
+            steers: Vec::new(),
+            compress_requested: false,
+            compressed_size: 0,
+            extra_turns: 0,
         };
-        match halt {
-            None => {}
-            Some(Halt::Stop(reason)) => return agent.end(&reason),
-            Some(Halt::Failed(error)) => return Err(error),
-        }
-    }
+        agent.clock = agent.threads.values().map(|thread| thread.at).max().unwrap_or(0);
+        let outcome = agent.run();
+        shared_ref.stop();
+        outcome
+    });
+    outcome?;
+    let calls = shared.calls();
+    shared.say(&GuestMessage::Bye { calls })?;
+    Ok(calls)
 }
 
-impl<S: Read + Write + ReadTimeout, W: Write> Agent<'_, S, W> {
-    /// Ends the session the host asked for, with the `bye`.
-    fn end(&mut self, reason: &str) -> Result<u64, SessionError> {
-        let reason = if reason.is_empty() { "no reason given" } else { reason };
-        note(self.log, &format!("agent-harness: the hub stopped the agent ({})", escape_for_transcript(reason)));
-        self.say(&GuestMessage::Bye { calls: self.calls })?;
-        Ok(self.calls)
+impl<S: Write, W: Write> Agent<'_, '_, S, W> {
+    /// The agent loop: runs queued work and waits for the host, until the host stops it.
+    fn run(&mut self) -> Result<(), SessionError> {
+        loop {
+            let halt = match self.queue.pop_front() {
+                Some(job) => self.run_job(job).err(),
+                None => match self.pump() {
+                    Ok(Incoming::Stop(reason)) => Some(Halt::Stop(reason)),
+                    Ok(_) => None,
+                    Err(error) => Some(Halt::Failed(error)),
+                },
+            };
+            match halt {
+                None => {}
+                Some(Halt::Stop(reason)) => {
+                    self.end(&reason);
+                    return Ok(());
+                }
+                Some(Halt::Failed(error)) => return Err(error),
+            }
+        }
     }
 
-    fn say(&mut self, message: &GuestMessage) -> Result<(), SessionError> {
-        send(self.lines, self.log, message)
+    /// Records the host's stop; the `bye` follows once the lanes have drained.
+    fn end(&self, reason: &str) {
+        let reason = if reason.is_empty() { "no reason given" } else { reason };
+        self.shared.note(&format!("agent-harness: the hub stopped the agent ({})", escape_for_transcript(reason)));
+    }
+
+    fn say(&self, message: &GuestMessage) -> Result<(), SessionError> {
+        self.shared.say(message)
     }
 
     /// Sends a heartbeat, saying whether a work item is in progress.
@@ -185,37 +214,26 @@ impl<S: Read + Write + ReadTimeout, W: Write> Agent<'_, S, W> {
         let seq = self.seq;
         let busy = self.current.is_some();
         self.say(&GuestMessage::Heartbeat { seq, busy: Some(busy) })?;
-        note(self.log, &format!("agent-harness: heartbeat {seq}"));
+        self.shared.note(&format!("agent-harness: heartbeat {seq}"));
         self.next_beat = Instant::now() + self.heartbeat;
         Ok(())
     }
 
-    /// Reads one line, or beats when the beat came due. The lines the loop owns
-    /// are acted on here; anything else is returned for a waiting caller.
+    /// Takes the next message from the reader lane, or beats when the beat came
+    /// due. The messages the loop owns are acted on here; anything else is returned
+    /// for a waiting caller.
     fn pump(&mut self) -> Result<Incoming, SessionError> {
         let wait = self.next_beat.saturating_duration_since(Instant::now());
-        self.lines.get_ref().set_read_timeout(Some(wait.max(Duration::from_millis(1))))?;
-        let line = match self.lines.recv()? {
-            Recv::Idle => {
+        let message = match self.inbox.recv_timeout(wait) {
+            Ok(Inbound::Message(message)) => message,
+            Ok(Inbound::Closed) | Err(RecvTimeoutError::Disconnected) => return Err(SessionError::HostClosed),
+            Ok(Inbound::Failed(err)) => return Err(SessionError::Io(err)),
+            Err(RecvTimeoutError::Timeout) => {
                 self.beat()?;
                 return Ok(Incoming::Beat);
             }
-            Recv::Closed => return Err(SessionError::HostClosed),
-            Recv::Line(line) => line,
-        };
-        note(self.log, &format!("[vsock<-] {}", escape_for_transcript(&line)));
-        let message = match HostMessage::from_line(&line) {
-            Ok(message) => message,
-            Err(err) => {
-                note(self.log, &format!("agent-harness: ignoring malformed host line ({err})"));
-                return Ok(Incoming::Handled);
-            }
         };
         Ok(match message {
-            HostMessage::ToolCall { call, name, args } => {
-                self.serve_operator(call, &name, &args)?;
-                Incoming::Handled
-            }
             HostMessage::Stop { reason } => Incoming::Stop(reason),
             HostMessage::Work { work, kind, thread, prompt } => {
                 self.queue.push_back(Job { work, kind, thread, prompt });
@@ -237,7 +255,7 @@ impl<S: Read + Write + ReadTimeout, W: Write> Agent<'_, S, W> {
                         Control::ExtendTurns { turns } => self.extra_turns = self.extra_turns.saturating_add(turns),
                     }
                 } else {
-                    note(self.log, &format!("agent-harness: ignoring control for work {work}, which is not running"));
+                    self.shared.note(&format!("agent-harness: ignoring control for work {work}, which is not running"));
                 }
                 Incoming::Handled
             }
@@ -258,7 +276,7 @@ impl<S: Read + Write + ReadTimeout, W: Write> Agent<'_, S, W> {
                     Ok(picked) => return Ok(picked),
                     Err(other) => {
                         let kind = kind_of(&other);
-                        note(self.log, &format!("agent-harness: ignoring {kind} while waiting for {awaited}"));
+                        self.shared.note(&format!("agent-harness: ignoring {kind} while waiting for {awaited}"));
                     }
                 },
                 Incoming::Stop(reason) => return Err(Halt::Stop(reason)),
@@ -282,22 +300,6 @@ impl<S: Read + Write + ReadTimeout, W: Write> Agent<'_, S, W> {
         })
     }
 
-    /// Serves one operator `tool_call`: the hub drives the tool directly.
-    fn serve_operator(&mut self, call: u64, name: &str, args: &Value) -> Result<(), SessionError> {
-        self.calls += 1;
-        let workspace = self.workspace;
-        let outcome = self.run_local(move || tools::serve(workspace, name, args).map_err(|err| err.to_string()))?;
-        let (ok, output) = match outcome {
-            Ok(output) => (true, output),
-            Err(err) => {
-                let name = escape_for_transcript(name);
-                note(self.log, &format!("agent-harness: tool {name} call {call} refused: {err}"));
-                (false, err)
-            }
-        };
-        self.say(&GuestMessage::ToolResult { call, ok, output: cap_output(&output, MAX_TOOL_OUTPUT) })
-    }
-
     /// `cancel`: the work item in progress stops after its current step; a
     /// queued one is finished as stopped without running.
     fn cancel(&mut self, work: u64, reason: String) -> Result<(), SessionError> {
@@ -307,13 +309,13 @@ impl<S: Read + Write + ReadTimeout, W: Write> Agent<'_, S, W> {
             self.queue.remove(at);
             self.finish(work, WorkStatus::Stopped, &reason)?;
         } else {
-            note(self.log, &format!("agent-harness: ignoring cancel for work {work}, which is not queued"));
+            self.shared.note(&format!("agent-harness: ignoring cancel for work {work}, which is not queued"));
         }
         Ok(())
     }
 
     fn finish(&mut self, work: u64, status: WorkStatus, summary: &str) -> Result<(), SessionError> {
-        note(self.log, &format!("agent-harness: work {work} {status:?}: {}", escape_for_transcript(summary)));
+        self.shared.note(&format!("agent-harness: work {work} {status:?}: {}", escape_for_transcript(summary)));
         self.say(&GuestMessage::WorkDone { work, status, summary: summary.to_string() })
     }
 
@@ -357,7 +359,7 @@ impl<S: Read + Write + ReadTimeout, W: Write> Agent<'_, S, W> {
             let at = self.clock;
             self.threads.insert(job.thread, Thread { messages, summary: summary.clone(), at });
             if let Err(err) = save_threads(self.workspace, &self.threads) {
-                note(self.log, &format!("agent-harness: chat threads not saved: {err}"));
+                self.shared.note(&format!("agent-harness: chat threads not saved: {err}"));
             }
         }
         self.finish(job.work, status, &summary)?;
@@ -513,7 +515,8 @@ impl<S: Read + Write + ReadTimeout, W: Write> Agent<'_, S, W> {
         let response = match self.model_call(work, &summary_profile, &summary_msgs)? {
             Ok(response) => response,
             Err(reason) => {
-                note(self.log, &format!("agent-harness: work {work} not compressed: {}", escape_for_transcript(&reason)));
+                let reason = escape_for_transcript(&reason);
+                self.shared.note(&format!("agent-harness: work {work} not compressed: {reason}"));
                 return Ok(());
             }
         };
@@ -523,7 +526,7 @@ impl<S: Read + Write + ReadTimeout, W: Write> Agent<'_, S, W> {
         clip_old_results(messages);
         let after = serialized_len(messages.as_slice()) as u64;
         self.compressed_size = after;
-        note(self.log, &format!("agent-harness: work {work} compressed ({reason}): {before} -> {after} bytes"));
+        self.shared.note(&format!("agent-harness: work {work} compressed ({reason}): {before} -> {after} bytes"));
         self.say(&GuestMessage::Compressed {
             work,
             before,
@@ -1257,6 +1260,57 @@ mod tests {
             assert_eq!(messages[0]["content"][0]["text"], "Earlier in this conversation: summary one\n\nsecond");
             host.send(&answer(2, json!([text("ok")]), "end_turn")).unwrap();
             expect_type(host, "work_done");
+            stop(host);
+        });
+    }
+
+    #[test]
+    fn an_operator_call_is_answered_while_the_agent_runs_a_local_tool() {
+        let workspace = scratch("lane");
+        run_hub(&workspace, |host| {
+            host.send(&welcome(10)).unwrap();
+            host.send(&work(1, "task", "t", "wait")).unwrap();
+            expect_type(host, "model_call");
+            host.send(&answer(1, json!([tool_use("slow", "bash", json!({"command": "sleep 1"}))]), "tool_use"))
+                .unwrap();
+            expect_type(host, "tool_request");
+            host.send(&decision("slow", "allow", "", false)).unwrap();
+            // The local tool is sleeping now; the owner's call must not wait for it.
+            host.send(r#"{"type":"tool_call","call":77,"name":"echo","args":{"text":"owner"}}"#).unwrap();
+            let first = next_msg(host);
+            assert_eq!(
+                (first["type"].clone(), first["call"].clone(), first["output"].clone()),
+                (json!("tool_result"), json!(77), json!("owner")),
+                "{first}"
+            );
+            expect_type(host, "tool_report");
+            expect_type(host, "model_call");
+            host.send(&answer(2, json!([text("done")]), "end_turn")).unwrap();
+            expect_type(host, "work_done");
+            stop(host);
+        });
+    }
+
+    #[test]
+    fn operator_answers_and_heartbeats_never_interleave_on_the_wire() {
+        let workspace = scratch("interleave");
+        let padding = "x".repeat(400);
+        run_hub(&workspace, move |host| {
+            host.send(&welcome(10)).unwrap();
+            for call in 1..=200u64 {
+                let text = format!("{call}-{padding}");
+                let line = json!({"type": "tool_call", "call": call, "name": "echo", "args": {"text": text}});
+                host.send(&line.to_string()).unwrap();
+            }
+            // Every answer arrives whole and in order: a torn line would fail to parse in `next_msg`.
+            for call in 1..=200u64 {
+                let answer = next_msg(host);
+                assert_eq!(
+                    (answer["type"].clone(), answer["call"].clone(), answer["ok"].clone()),
+                    (json!("tool_result"), json!(call), json!(true)),
+                    "{answer}"
+                );
+            }
             stop(host);
         });
     }

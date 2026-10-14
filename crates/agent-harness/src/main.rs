@@ -53,6 +53,8 @@ mod ide;
 #[cfg(target_os = "linux")]
 mod keepalive;
 #[cfg(target_os = "linux")]
+mod lane;
+#[cfg(target_os = "linux")]
 mod checkpoints;
 #[cfg(target_os = "linux")]
 mod engines;
@@ -173,7 +175,9 @@ fn run() -> Result<(), HarnessError> {
     let cmdline = fs::read_to_string(CMDLINE_PATH).map_err(HarnessError::Cmdline)?;
     let config = Config::parse(&cmdline).map_err(HarnessError::Flags)?;
 
-    let mut out = io::stdout().lock();
+    // Not the locked handle: the session's lanes write the transcript from other threads, and a
+    // lock guard is not `Send`. Each write takes stdout's own lock, so lines stay whole.
+    let mut out = io::stdout();
     let _ = writeln!(
         out,
         "agent-harness: vm {} -> host CID {} port {}",
@@ -216,7 +220,7 @@ fn one_shot(config: &Config, out: &mut impl Write) -> Result<(), HarnessError> {
 /// speak protocol v2 — is printed and retried with a jittered backoff. The
 /// agent stays up and tries again; it never decides that its work is done.
 #[cfg(target_os = "linux")]
-fn keepalive(config: &Config, out: &mut impl Write) -> Result<(), HarnessError> {
+fn keepalive(config: &Config, out: &mut (impl Write + Send)) -> Result<(), HarnessError> {
     // The egress shim serves the guest's outbound HTTP for as long as the agent
     // runs; a bind failure is printed there, never fatal here.
     egress::spawn_shim();
@@ -260,7 +264,7 @@ fn keepalive(config: &Config, out: &mut impl Write) -> Result<(), HarnessError> 
 /// setup steps' or the session's own) — the reconnect loop is the only caller,
 /// and what it needs from a failure is those two things.
 #[cfg(target_os = "linux")]
-fn keepalive_once(config: &Config, out: &mut impl Write) -> Result<u64, (bool, String)> {
+fn keepalive_once(config: &Config, out: &mut (impl Write + Send)) -> Result<u64, (bool, String)> {
     let guest_cid = guest_cid(out).map_err(|err| (false, err.to_string()))?;
     let stream = VsockStream::connect(HOST_CID, config.port)
         .map_err(|err| (false, format!("cannot reach the orchestrator: {err}")))?;

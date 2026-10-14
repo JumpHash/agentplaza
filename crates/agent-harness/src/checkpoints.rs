@@ -9,6 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
@@ -60,8 +61,23 @@ struct Change {
     text: String,
 }
 
+/// The store's lock. The agent loop (a `work-*` checkpoint at a work item's start, the
+/// `checkpoint_*` tools) and the operator worker (the owner's edits and restores) both use the
+/// store from their own threads, and a snapshot picks its number from the snapshots on disk. Each
+/// public operation holds this lock for its whole run; the store keeps no state in memory.
+static STORE: Mutex<()> = Mutex::new(());
+
+fn store() -> MutexGuard<'static, ()> {
+    STORE.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
 /// Snapshots the workspace under `label`, returning the new checkpoint's id.
 pub fn snapshot(workspace: &Workspace, label: &str) -> Result<String, String> {
+    let _store = store();
+    snapshot_locked(workspace, label)
+}
+
+fn snapshot_locked(workspace: &Workspace, label: &str) -> Result<String, String> {
     let base = base_dir(workspace);
     let objects = base.join("objects");
     let snaps_dir = base.join("snaps");
@@ -90,6 +106,7 @@ pub fn snapshot(workspace: &Workspace, label: &str) -> Result<String, String> {
 
 /// The workspace's changes since a checkpoint, as summary lines and a unified diff.
 pub fn diff(workspace: &Workspace, input: &Value) -> Result<String, String> {
+    let _store = store();
     let base = base_dir(workspace);
     let snaps = load_snaps(&base);
     let since = match input.get("since").and_then(Value::as_str) {
@@ -156,6 +173,7 @@ fn changed_files(workspace: &Workspace, base: &Path, since: &Snap, scope: Option
 /// Every change since checkpoint `n` as one git-style unified diff, with no cap: the owner's diff.
 /// Files for which `keep` is false are left out.
 pub fn unified_since(workspace: &Workspace, n: u64, keep: impl Fn(&str) -> bool) -> Result<String, String> {
+    let _store = store();
     let base = base_dir(workspace);
     let snaps = load_snaps(&base);
     let since = snaps.iter().find(|s| s.n == n).ok_or_else(|| format!("no checkpoint {n}"))?;
@@ -210,6 +228,7 @@ pub struct Summary {
 
 /// Every checkpoint, oldest first.
 pub fn summaries(workspace: &Workspace) -> Vec<Summary> {
+    let _store = store();
     load_snaps(&base_dir(workspace))
         .into_iter()
         .map(|snap| Summary {
@@ -224,6 +243,7 @@ pub fn summaries(workspace: &Workspace) -> Vec<Summary> {
 
 /// Rolls the workspace or a path back to a checkpoint. A `before-restore` checkpoint is taken first.
 pub fn restore(workspace: &Workspace, input: &Value) -> Result<String, String> {
+    let _store = store();
     let id = input.get("id").and_then(Value::as_str).ok_or("checkpoint_restore needs an id")?;
     let base = base_dir(workspace);
     let snap = find(&load_snaps(&base), id)?.clone();
@@ -250,7 +270,7 @@ pub fn restore(workspace: &Workspace, input: &Value) -> Result<String, String> {
     if plan.is_empty() && !removing {
         return Ok(format!("nothing to restore: {what} already matches {}", snap.id));
     }
-    let before = snapshot(workspace, "before-restore")?;
+    let before = snapshot_locked(workspace, "before-restore")?;
     let mut lines = Vec::new();
     for (key, bytes, mode) in &plan {
         let path = abs_path(&root, key)?;
@@ -278,6 +298,7 @@ pub fn restore(workspace: &Workspace, input: &Value) -> Result<String, String> {
 
 /// The checkpoints, newest first.
 pub fn list(workspace: &Workspace, _input: &Value) -> Result<String, String> {
+    let _store = store();
     let snaps = load_snaps(&base_dir(workspace));
     if snaps.is_empty() {
         return Ok("no checkpoints yet".to_string());
@@ -715,5 +736,26 @@ mod tests {
         let keys: Vec<String> = snap.files.keys().cloned().collect();
         assert_eq!(keys, vec!["ok.txt".to_string()]);
         assert_eq!(snap.skipped, vec!["huge.bin".to_string()]);
+    }
+
+    #[test]
+    fn snapshots_taken_from_two_threads_get_distinct_numbers() {
+        let (dir, ws) = scratch("concurrent");
+        fs::write(dir.join("f.txt"), "shared\n").unwrap();
+        std::thread::scope(|scope| {
+            for thread in 0..4 {
+                let ws = &ws;
+                scope.spawn(move || {
+                    for i in 0..5 {
+                        snapshot(ws, &format!("work-{thread}-{i}")).expect("a snapshot");
+                    }
+                });
+            }
+        });
+        let mut numbers: Vec<u64> = summaries(&ws).iter().map(|s| s.n).collect();
+        assert_eq!(numbers.len(), 20);
+        numbers.sort_unstable();
+        numbers.dedup();
+        assert_eq!(numbers.len(), 20, "no two snapshots share a number");
     }
 }

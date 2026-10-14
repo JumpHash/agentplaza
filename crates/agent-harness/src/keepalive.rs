@@ -12,10 +12,11 @@ use std::fmt;
 use std::io::{Read, Write};
 use std::time::Duration;
 
-use apz_proto::line::{Lines, ReadTimeout};
+use apz_proto::line::Lines;
 use apz_proto::wire::{AgentProfile, GuestMessage, HostMessage, WELCOME_ECHO};
 
 use crate::files::Workspace;
+use crate::lane::Duplex;
 use crate::session::{
     Identity, SessionError, await_host, escape_for_transcript, note, send, wrong_echo,
 };
@@ -55,7 +56,7 @@ impl From<SessionError> for KeepaliveError {
 
 /// Serves one keepalive connection until the hub's `stop`; returns how many
 /// tool calls were served.
-pub fn session<S: Read + Write + ReadTimeout, W: Write>(
+pub fn session<S: Duplex, W: Write + Send>(
     lines: &mut Lines<S>,
     log: &mut W,
     identity: &Identity,
