@@ -23,10 +23,7 @@
 //! * **drive** — run the planned workflow ([`crate::workflow`]) through
 //!   the hub's `POST /tell`, one tool call at a time, and finish the task
 //!   `done` with its artifacts (or, for a read-only run, with the line the
-//!   script read out) — or `failed` with the reason. A **confirmed** finish is
-//!   also the talk step ([`crate::social`]): the agent that did the work says
-//!   so to the task's awarder, when the board names one, in one line composed
-//!   from the task's own facts.
+//!   script read out) — or `failed` with the reason.
 //! * **retry** — the agent could not be reached: leave the task claimed and
 //!   try again on later passes, up to [`MAX_ATTEMPTS`], then finish it
 //!   `failed` with the evidence.
@@ -48,16 +45,11 @@
 //! work it can find is bounded by the ledger's own cap (1024 tasks) and the
 //! hub's session caps. `--once` is exactly one pass.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::council::CouncilPass;
 use crate::roles::Manifest;
-use crate::social::SocialPass;
-use crate::views::{
-    Agent, Board, CastVote, Contact, Motion, Motions, NewMotion, NewPost, Outcome, Post, ReadAck,
-    Task, Tell,
-};
+use crate::views::{Agent, Outcome, Task, Tell};
 use crate::workflow::{self, DriveError, Driver, Plan};
 
 /// How many passes a task whose agent could not be reached is retried for
@@ -101,57 +93,6 @@ pub trait Operator {
         args: &serde_json::Value,
         timeout_ms: u64,
     ) -> Result<Tell, String>;
-}
-
-/// The plaza's social surface: the node's board, its read cursors, the contact
-/// lists and the peer conversations (`docs/agents/social.md`).
-///
-/// It is one trait because it is one daemon's answer to one question — what is
-/// the plaza saying — and because the social pass reads and writes it through
-/// this seam alone. The pass itself uses the board and the read cursor (the
-/// interest note is a post); the contact and conversation calls are the rest of
-/// the contract, kept here so the client is the whole surface rather than the
-/// half the first driver happens to need. `move` and `hibernate` are the
-/// dispatcher's business nowhere: an award seeds a contact itself, in the node
-/// ([`crate::social`] says so), so the driver never duplicates it.
-pub trait Social {
-    /// The board: the newest posts, and every agent's unread count.
-    fn board(&self) -> Result<Board, String>;
-    /// Advances `cid`'s read cursor to `up_to`, and answers what it left
-    /// unread. The cursor is monotonic: a cursor at or behind the one the agent
-    /// already holds is refused rather than rolled back.
-    fn read_board(&self, cid: u64, up_to: &str) -> Result<ReadAck, String>;
-    /// Records `post` for a connected agent and answers the post the board now
-    /// holds.
-    fn post(&self, post: &NewPost) -> Result<Post, String>;
-    /// The agent's own contact list.
-    fn contacts(&self, cid: u64) -> Result<Vec<Contact>, String>;
-    /// Adds one peer to the agent's list. Idempotent: a peer already on the
-    /// list keeps the kind it was first recorded with.
-    fn add_contact(&self, cid: u64, peer_cid: u64) -> Result<(), String>;
-    /// The agent speaks to a peer: the exchange is recorded and delivered to
-    /// the peer's session when it has one.
-    fn say(&self, cid: u64, to_cid: u64, text: &str) -> Result<(), String>;
-}
-
-/// The plaza's council surface: the node's motions and the seats' votes
-/// (`docs/agents/council.md`).
-///
-/// It is one trait because it is one daemon's answer to one question — what is
-/// the council deciding — and because the council pass reads and writes it
-/// through this seam alone. The state and the count are the node's
-/// (`crates/noded/src/council.rs`); the driver proposes and votes, and the
-/// four seats are `crate::council`'s table. A vote that the node refuses — a
-/// role that holds no seat (403), a motion that is no longer open (409) — is a
-/// refusal carrying the node's own words, never a silently swallowed one.
-pub trait Council {
-    /// The council's motions, newest first and bounded by the endpoint's own
-    /// window.
-    fn motions(&self) -> Result<Motions, String>;
-    /// Records one seat's motion and answers the motion the council now holds.
-    fn propose(&self, motion: &NewMotion) -> Result<Motion, String>;
-    /// Casts one seat's vote on motion `id` and answers the motion's new view.
-    fn vote(&self, id: &str, cast: &CastVote) -> Result<Motion, String>;
 }
 
 /// Where the dispatcher's own voice goes.
@@ -221,14 +162,6 @@ pub struct Dispatcher<L: Ledger, O: Operator> {
     /// tasks and their states, and this only bounds how many passes a task
     /// whose agent is unreachable is tried for.
     retries: HashMap<String, Attempt>,
-    /// The social pass ([`crate::social`]), when the dispatcher was given the
-    /// node's social surface. `None` is a dispatcher that only claims and
-    /// drives: a test, or a run for which the board is off.
-    social: Option<SocialPass>,
-    /// The council pass ([`crate::council`]), when the dispatcher was given the
-    /// node's council surface. `None` is a dispatcher that does not speak for
-    /// the seats.
-    council: Option<CouncilPass>,
     passes: u64,
 }
 
@@ -252,38 +185,8 @@ impl<L: Ledger, O: Operator> Dispatcher<L, O> {
             log,
             roles,
             retries: HashMap::new(),
-            social: None,
-            council: None,
             passes: 0,
         }
-    }
-
-    /// Gives the dispatcher the plaza's social surface, so its pass also runs
-    /// the social pass ([`crate::social`]).
-    ///
-    /// The social pass is the dispatcher's social behaviour: one idle connected
-    /// agent per social pass reads the board and, when the board names work its
-    /// role can serve, says so. It is wired here rather than required by
-    /// [`Dispatcher::new`] so a dispatcher built for driving alone — every test
-    /// that only cares about claims — stays exactly what it was.
-    pub fn with_social(mut self, node: Arc<dyn Social + Send + Sync>) -> Self {
-        let log = Arc::clone(&self.log);
-        self.social = Some(SocialPass::new(node, log));
-        self
-    }
-
-    /// Gives the dispatcher the plaza's council surface, so its pass also runs
-    /// the council pass ([`crate::council`]).
-    ///
-    /// The council pass is the dispatcher's council behaviour: the seats vote
-    /// on the council's open motions, and the plaza proposes a priority motion
-    /// for an open, unnamed task. It is wired here rather than required by
-    /// [`Dispatcher::new`] so a dispatcher built for driving alone keeps
-    /// exactly what it was.
-    pub fn with_council(mut self, node: Arc<dyn Council + Send + Sync>) -> Self {
-        let log = Arc::clone(&self.log);
-        self.council = Some(CouncilPass::new(node, log));
-        self
     }
 
     /// How many passes have been run: the number the log's lines carry.
@@ -309,30 +212,6 @@ impl<L: Ledger, O: Operator> Dispatcher<L, O> {
             tasks.len(),
             agents.len()
         ));
-
-        // The social pass runs first, and on the pass's own cadence but slower
-        // ([`crate::social::SOCIAL_EVERY`]): over the same snapshot the claim
-        // walk is about to work from, before any claim is taken — so the agent
-        // it acts for is one the register shows idle, never one this pass is
-        // mid-claim with. Every social failure is logged inside and swallowed
-        // here: the claim walk is untouched by it.
-        if let Some(social) = &mut self.social
-            && self.passes % crate::social::SOCIAL_EVERY == 1
-        {
-            let busy = busy_agents(&self.retries, &tasks);
-            social.run(&tasks, &agents, &busy, self.roles.as_ref());
-        }
-
-        // The council pass runs next, also over the same snapshot and before
-        // any claim, on its own slower cadence ([`crate::council::COUNCIL_EVERY`]):
-        // the seats vote on the council's open motions and the plaza proposes a
-        // priority motion for an open, unnamed task. Every council failure is
-        // logged inside and swallowed here: the claim walk is untouched by it.
-        if let Some(council) = &mut self.council
-            && self.passes % crate::council::COUNCIL_EVERY == 1
-        {
-            council.run(&tasks, &agents);
-        }
 
         for task in &tasks {
             if task.is_terminal() {
@@ -536,10 +415,6 @@ impl<L: Ledger, O: Operator> Dispatcher<L, O> {
                 // line its script read out, and that line is the note. Either
                 // way the note is what the run actually did.
                 let note = workflow::done_note(&report, calls);
-                // The talk step's `done` line names the run's first artifact, so
-                // the report is read for it before the finish consumes nothing
-                // of it — a run that left none (the read-only script) says so.
-                let artifact = report.artifacts().first().cloned();
                 let finished = self.ledger.finish(&task.id, Outcome::Done, &note);
                 match finished {
                     Ok(()) => {
@@ -548,9 +423,6 @@ impl<L: Ledger, O: Operator> Dispatcher<L, O> {
                             "dispatchd: task {} (role {role}) -> agent cid {cid} finished done: {note}",
                             task.id
                         ));
-                        // The transition is durable: now the finisher tells its
-                        // awarder (the talk step, bounded and logged).
-                        self.announce(task, cid, Outcome::Done, artifact.as_deref(), &note);
                     }
                     Err(reason) => {
                         tally.failed += 1;
@@ -586,7 +458,6 @@ impl<L: Ledger, O: Operator> Dispatcher<L, O> {
                                 "dispatchd: task {} (role {role}) -> agent cid {cid} finished failed: {note}",
                                 task.id
                             ));
-                            self.announce(task, cid, Outcome::Failed, None, &note);
                         }
                         Err(reason) => {
                             log.line(&format!(
@@ -597,27 +468,6 @@ impl<L: Ledger, O: Operator> Dispatcher<L, O> {
                     }
                 }
             }
-        }
-    }
-
-    /// The talk step: the agent that finished `task` says so to the task's
-    /// awarder, when the board names one ([`crate::social::SocialPass::talk`]).
-    ///
-    /// A dispatcher without the social surface says nothing: it holds no seam
-    /// to say it through, and it is exactly the claim-and-drive dispatcher it
-    /// was. With the surface, every failure inside the step is logged there and
-    /// swallowed — the claim loop does not see it, and never waits past the
-    /// step's own bounded calls.
-    fn announce(
-        &mut self,
-        task: &Task,
-        cid: u64,
-        outcome: Outcome,
-        artifact: Option<&str>,
-        note: &str,
-    ) {
-        if let Some(social) = &mut self.social {
-            social.talk(task, cid, outcome, artifact, note);
         }
     }
 
@@ -646,27 +496,6 @@ pub fn pick_agent<'a>(agents: &'a [Agent], role: &str) -> Option<&'a Agent> {
         .iter()
         .filter(|agent| agent.role == role)
         .min_by_key(|agent| agent.cid)
-}
-
-/// The guest CIDs that are **busy** — an agent with a claim in hand — as the
-/// social pass must read that.
-///
-/// Two sources, and both are facts the dispatcher already holds: the ledger
-/// rows this pass read whose claimant has not ended (a claim left by an earlier
-/// pass, a deferred retry, or another dispatcher's), and this dispatcher's own
-/// retry state (the claim it took and is still driving). An agent in this set
-/// is skipped by the social pass, so the board is never spoken to for an agent
-/// that is mid-claim.
-fn busy_agents(retries: &HashMap<String, Attempt>, tasks: &[Task]) -> BTreeSet<u64> {
-    let mut busy: BTreeSet<u64> = retries.values().map(|attempt| attempt.cid).collect();
-    for task in tasks {
-        if !task.is_terminal()
-            && let Some(cid) = task.agent_cid
-        {
-            busy.insert(cid);
-        }
-    }
-    busy
 }
 
 /// The agent at `cid` connected as *exactly* `role`, when the register lists
@@ -773,7 +602,7 @@ mod tests {
 
     use std::rc::Rc;
 
-    use crate::testing::{FakeAgent, FakeLedger, FakeOperator, FakeSocial, Recording, agent, task};
+    use crate::testing::{FakeAgent, FakeLedger, FakeOperator, Recording, agent, task};
     use crate::views::Tell;
 
     /// A dispatcher over the fakes, with its log kept for assertions.
@@ -1738,304 +1567,6 @@ mod tests {
         assert_eq!(
             Reporter::default().summary(),
             "0 considered, 0 claimed, 0 done, 0 failed, 0 deferred, 0 skipped"
-        );
-    }
-
-    /// The busy set the social pass skips: the ledger's un-ended claims and the
-    /// dispatcher's own in-memory retries — the agents that hold a claim.
-    #[test]
-    fn the_busy_set_is_the_ledgers_claims_and_the_dispatchers_retries() {
-        let mut claimed = task("t2", "claimed", Some("builder"));
-        claimed.agent_cid = Some(300);
-        let mut other = task("t4", "claimed", Some("librarian"));
-        other.agent_cid = Some(310);
-        let tasks = vec![
-            task("t1", "open", Some("builder")),
-            claimed,
-            task("t3", "done", Some("builder")),
-            other,
-        ];
-        let retries = HashMap::from([(
-            "t9".to_string(),
-            Attempt {
-                cid: 320,
-                attempts: 1,
-            },
-        )]);
-        assert_eq!(
-            busy_agents(&retries, &tasks)
-                .into_iter()
-                .collect::<Vec<_>>(),
-            vec![300, 310, 320]
-        );
-
-        // A terminal task's claimant is not busy: its claim is over.
-        assert!(busy_agents(&HashMap::new(), &[task("t3", "done", Some("builder"))]).is_empty());
-        // And an open task has no claimant to be busy.
-        assert!(busy_agents(&HashMap::new(), &[task("t1", "open", Some("builder"))]).is_empty());
-    }
-
-    // ------------------------------------------------------------ the talk step
-
-    /// A dispatcher holding the plaza's social surface, so its confirmed
-    /// finishes also run the talk step. Generic over the ledger and operator so
-    /// a test that restarts the dispatcher shares the fakes through an `Rc`.
-    fn dispatcher_with_social<L: Ledger, O: Operator>(
-        ledger: L,
-        operator: O,
-        social: &Arc<FakeSocial>,
-    ) -> (Dispatcher<L, O>, Arc<Recording>) {
-        let log = Arc::new(Recording::default());
-        let dispatcher = Dispatcher::new(
-            ledger,
-            operator,
-            Arc::clone(&log) as Arc<dyn Logger + Send + Sync>,
-        )
-        .with_social(Arc::clone(social) as Arc<dyn Social + Send + Sync>);
-        (dispatcher, log)
-    }
-
-    /// A board carrying the award's hiring note for `task`, authored by `cid`.
-    fn hired(social: FakeSocial, cid: u64, task: &str) -> FakeSocial {
-        social.with_post(
-            cid,
-            "mayor",
-            &format!("hiring for {task}"),
-            "go",
-            Some(task),
-        )
-    }
-
-    /// The talk step, end to end: the builder the dispatcher drives to `done`
-    /// says the task's own facts to the author of the board's hiring note for
-    /// it — once, and never again on a later pass.
-    #[test]
-    fn a_task_driven_to_done_is_announced_to_its_awarder() {
-        let ledger =
-            FakeLedger::with_task(task("t1", "open", Some("builder"))).with_agent(300, "builder");
-        let operator = FakeOperator::default().with_agent(300, FakeAgent::default());
-        let social = Arc::new(hired(FakeSocial::new(), 320, "t1"));
-        let (mut dispatcher, log) = dispatcher_with_social(ledger, operator, &social);
-
-        let report = dispatcher.pass().expect("the pass runs");
-        assert_eq!((report.claimed, report.done), (1, 1));
-        assert_eq!(
-            social.said(),
-            vec![(300, 320, "done: t1 — build-notes.txt".to_string())],
-            "the builder told the awarder the task's own artifact"
-        );
-        assert!(
-            log.text().contains(
-                "dispatchd: social: agent cid 300 said to its awarder cid 320 about task t1 \
-                 (done): done: t1 — build-notes.txt (the node's conversation row carries the \
-                 delivery)"
-            ),
-            "{}",
-            log.text()
-        );
-
-        // The task is terminal now: a later pass reads it as such, skips it, and
-        // never reaches a transition to announce. One say per task, and the
-        // ledger's own terminal row is what bounds a restarted dispatcher.
-        dispatcher.pass().expect("the pass runs");
-        assert_eq!(social.said().len(), 1, "one say per task");
-    }
-
-    /// A task the dispatcher drives to `failed` says the dispatcher's own
-    /// failure note — the same line the ledger recorded, not a paraphrase.
-    #[test]
-    fn a_task_driven_to_failure_is_announced_with_the_failure_note() {
-        let ledger =
-            FakeLedger::with_task(task("t1", "open", Some("builder"))).with_agent(300, "builder");
-        let operator = FakeOperator::default().with_agent(
-            300,
-            FakeAgent::failing(DriveError::Refused {
-                name: "write_file".to_string(),
-                output: "the disk is full".to_string(),
-            }),
-        );
-        let social = Arc::new(hired(FakeSocial::new(), 320, "t1"));
-        let (mut dispatcher, _log) = dispatcher_with_social(ledger, operator, &social);
-
-        let report = dispatcher.pass().expect("the pass runs");
-        assert_eq!((report.done, report.failed), (0, 1));
-        assert_eq!(
-            social.said(),
-            vec![(
-                300,
-                320,
-                "failed: t1 — tool write_file refused: the disk is full".to_string()
-            )]
-        );
-        // The record and the word are the same note.
-        let finishes = dispatcher.ledger.finishes.borrow();
-        assert_eq!(finishes[0].2, "tool write_file refused: the disk is full");
-    }
-
-    /// A task finished `failed` after the retry bound is spent says the note it
-    /// was finished with, suffix and all.
-    #[test]
-    fn a_failure_after_the_retry_bound_says_the_whole_note() {
-        let ledger =
-            FakeLedger::with_task(task("t1", "open", Some("builder"))).with_agent(300, "builder");
-        let operator = FakeOperator::unreachable("cannot connect: refused");
-        let social = Arc::new(hired(FakeSocial::new(), 320, "t1"));
-        let (mut dispatcher, _log) = dispatcher_with_social(ledger, operator, &social);
-
-        for _ in 0..MAX_ATTEMPTS {
-            dispatcher.pass().expect("the pass runs");
-        }
-        assert_eq!(
-            social.said(),
-            vec![(
-                300,
-                320,
-                "failed: t1 — tool write_file unavailable: cannot connect: refused \
-                 (after 3 attempt(s))"
-                    .to_string()
-            )]
-        );
-    }
-
-    /// A `say` the node refuses changes nothing the pass reports: the task was
-    /// finished, the word was attempted once, and the refusal is a log line —
-    /// never a claim loop that stopped.
-    #[test]
-    fn a_refused_say_does_not_affect_the_pass() {
-        let ledger =
-            FakeLedger::with_task(task("t1", "open", Some("builder"))).with_agent(300, "builder");
-        let operator = FakeOperator::default().with_agent(300, FakeAgent::default());
-        let social = Arc::new(
-            hired(FakeSocial::new(), 320, "t1")
-                .say_failing("the say answered 409: no live agent has guest CID 320"),
-        );
-        let (mut dispatcher, log) = dispatcher_with_social(ledger, operator, &social);
-
-        let report = dispatcher.pass().expect("the pass runs");
-        assert_eq!((report.claimed, report.done, report.failed), (1, 1, 0));
-        assert_eq!(dispatcher.ledger.task("t1").state, "done");
-        assert!(social.said().is_empty(), "the node took nothing");
-        assert!(
-            log.text().contains(
-                "dispatchd: social: agent cid 300: the word to awarder cid 320 about task t1 was \
-                 refused: the say answered 409: no live agent has guest CID 320; moving on"
-            ),
-            "{}",
-            log.text()
-        );
-    }
-
-    /// A board with no hiring note for the task: the finish is untouched and
-    /// nothing is said — the skip is logged once.
-    #[test]
-    fn a_finish_with_no_awarder_on_the_board_is_silent() {
-        let ledger =
-            FakeLedger::with_task(task("t1", "open", Some("builder"))).with_agent(300, "builder");
-        let operator = FakeOperator::default().with_agent(300, FakeAgent::default());
-        let social = Arc::new(FakeSocial::new());
-        let (mut dispatcher, log) = dispatcher_with_social(ledger, operator, &social);
-
-        let report = dispatcher.pass().expect("the pass runs");
-        assert_eq!((report.claimed, report.done), (1, 1));
-        assert!(social.said().is_empty());
-        assert!(
-            log.text().contains(
-                "dispatchd: social: agent cid 300 finished task t1 (done) but the board names no \
-                 awarder for it; nothing said"
-            ),
-            "{}",
-            log.text()
-        );
-    }
-
-    /// A dispatcher without the social surface says nothing: the claim-and-drive
-    /// dispatcher is exactly what it was, and not one social call is made.
-    #[test]
-    fn a_dispatcher_without_the_social_surface_says_nothing() {
-        let ledger =
-            FakeLedger::with_task(task("t1", "open", Some("builder"))).with_agent(300, "builder");
-        let operator = FakeOperator::default().with_agent(300, FakeAgent::default());
-        let social = Arc::new(hired(FakeSocial::new(), 320, "t1"));
-        let (mut dispatcher, log) = dispatcher(ledger, operator);
-
-        let report = dispatcher.pass().expect("the pass runs");
-        assert_eq!((report.claimed, report.done), (1, 1));
-        assert!(social.said().is_empty());
-        assert_eq!(social.boards(), 0, "not even the awarder's board is read");
-        assert!(!log.text().contains("dispatchd: social:"));
-    }
-
-    /// A re-adoption speaks once, not twice. The first dispatcher claims the
-    /// task and is stopped mid-drive (its retry state is in memory and dies
-    /// with it); the second adopts the stranded claim, drives it to done, and
-    /// says the one word — and the passes after that read the task as terminal
-    /// and say nothing, because the ledger's own row is the durable dedup.
-    #[test]
-    fn a_re_adopted_claim_is_announced_once() {
-        let ledger = Rc::new(
-            FakeLedger::with_task(task("t1", "open", Some("builder"))).with_agent(300, "builder"),
-        );
-        let operator = Rc::new(
-            FakeOperator::unreachable("cannot connect: refused")
-                .with_agent(300, FakeAgent::default()),
-        );
-        let social = Arc::new(hired(FakeSocial::new(), 320, "t1"));
-
-        // The first dispatcher claims t1 and cannot reach the agent: the claim
-        // is left behind, nothing is said.
-        let (mut first, _log) =
-            dispatcher_with_social(Rc::clone(&ledger), Rc::clone(&operator), &social);
-        assert_eq!(first.pass().expect("the pass runs").deferred, 1);
-        assert_eq!(ledger.task("t1").state, "claimed");
-        assert!(social.said().is_empty(), "nothing was finished");
-
-        // The agent comes back; a second dispatcher adopts the stranded claim.
-        operator.recover();
-        let (mut second, _log) =
-            dispatcher_with_social(Rc::clone(&ledger), Rc::clone(&operator), &social);
-        let report = second.pass().expect("the pass runs");
-        assert_eq!(
-            (report.claimed, report.done),
-            (0, 1),
-            "adopted, not re-claimed"
-        );
-        assert_eq!(
-            social.said(),
-            vec![(300, 320, "done: t1 — build-notes.txt".to_string())]
-        );
-        assert!(ledger.claims.borrow().len() == 1, "the claim was made once");
-
-        // And the passes after it: the task is terminal, so no second word.
-        for _ in 0..2 {
-            second.pass().expect("the pass runs");
-        }
-        assert_eq!(social.said().len(), 1);
-    }
-
-    /// A finish the ledger refuses is not a transition: nothing is said about a
-    /// task that is not (yet) over.
-    #[test]
-    fn a_refused_finish_says_nothing() {
-        let ledger =
-            FakeLedger::with_task(task("t1", "open", Some("builder"))).with_agent(300, "builder");
-        let operator = FakeOperator::default().with_agent(300, FakeAgent::default());
-        let social = Arc::new(hired(FakeSocial::new(), 320, "t1"));
-        let (mut dispatcher, log) = dispatcher_with_social(ledger, operator, &social);
-        dispatcher.ledger.finish_refusal = Some("a task may not go from done to done".to_string());
-
-        let report = dispatcher.pass().expect("the pass runs");
-        assert_eq!((report.done, report.failed), (0, 1));
-        assert!(
-            social.said().is_empty(),
-            "a task the ledger did not finish has nothing to say"
-        );
-        // The pass's one board read is the social pass's own (this is pass 1);
-        // the refused finish asks for none.
-        assert_eq!(social.boards(), 1);
-        assert!(
-            log.text().contains("the ledger refused to finish it done"),
-            "{}",
-            log.text()
         );
     }
 }

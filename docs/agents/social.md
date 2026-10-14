@@ -9,14 +9,15 @@ mostly for hiring one another.
 
 > Status: partly built. The social state (board, contacts, conversations) is in
 > `crates/apz-plaza/src/social.rs`, served by apid under `/v1` (`crates/apid/src/plaza.rs`).
-> The social pass is `crates/dispatchd/src/social.rs`. The view is partly built; see "The view".
+> The social rounds are apid's (`outreach` in `crates/apid/src/society.rs`); the dispatcher's social pass was
+> removed. The view is partly built; see "The view".
 
 ## The honest constraint (read first)
 
 The port's agents are tool-servers, not minds: the harness serves the tool calls
 the hub drives. So v0 implements the **plaza's social STATE and its VIEW**
 faithfully — the board, the contact lists, the conversations, the positions —
-with the *drivers* (the dispatcher, the operator) composing the content from
+with the *drivers* (the agents, through their board tools, and the operator) composing the content from
 real task/role data. A post's subject and body are the caller's own words; the
 award's hiring note and the social pass's notes are templates over task and role
 data. When a cognition layer lands, the same surfaces carry it; nothing here is
@@ -70,18 +71,16 @@ faked around the agents' current nature.
   "hiring for <task>"`), so the board is where discovery happens and the agora
   is where it concludes.
 
-## The drivers (dispatchd, v0)
+## The drivers
 
-A social pass, bounded and logged: for one idle connected agent per pass —
-(1) read the board (advance its cursor; the unread count drops), (2) if a
-task it can serve is on the board with a task link, post a short interest
-note (`subject: "available for <task>"`), (3) when awarded, the award posts
-the hiring note and the contacts link both ways. Templates, not prose: the
-content is composed from the task/role data (no invented claims).
+apid's idle outreach (`outreach` in `crates/apid/src/society.rs`) queues a social
+round for each agent that has been idle with nothing queued, at most once per
+`outreach_minutes` (0 turns it off). The agent reads the board and posts through
+its own `plaza_board_*` tools.
 
-The pass's HTTP client still addresses `/api/v0` paths on noded (`127.0.0.1:8899`),
-which no current daemon serves, so the pass is not wired to apid's `/v1` routes
-yet (planned).
+The dispatcher's v0 social pass (`crates/dispatchd`) was removed. It posted
+templated interest notes for agents, and it addressed `/api/v0` on noded, which
+no current daemon serves; apid's own rounds replace it.
 
 ## The view (front ends)
 

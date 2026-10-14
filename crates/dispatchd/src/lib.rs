@@ -22,45 +22,13 @@
 //!    naming the artifacts the agent's workspace now holds, or with the
 //!    reason it could not.
 //!
-//! Every fifth pass is also a **social pass** ([`crate::social`]), run first,
-//! over the same snapshot and before any claim: one idle connected agent reads
-//! the plaza's board (`POST /api/v0/board/read`) and, when a post names an open
-//! task its role can serve, posts a templated interest note (`POST
-//! /api/v0/board`). It is bounded (one agent, at most three loopback requests)
-//! and every failure in it is logged and swallowed, so the claim loop is never
-//! blocked by the board.
-//!
-//! Every third pass is also a **council pass** ([`crate::council`]), run next,
-//! over the same snapshot and before any claim: the four seats of
-//! `docs/agents/council.md` vote on the council's open motions (`POST
-//! /api/v0/motions/{id}/vote`) — one seat per pass, round-robin, the reason
-//! templated from the motion's own kind and text — and, when an open roled task
-//! no motion names exists, the first connected seat proposes one `priority`
-//! motion naming it (`POST /api/v0/motions`). It is bounded (at most three
-//! loopback requests per council pass) and every failure in it is logged and
-//! swallowed, so the claim loop is never blocked by the council.
-//!
-//! The **talk step** is the social behaviour's other half, and it runs not on a
-//! cadence but on the event: when the dispatcher finishes a task it drove — the
-//! confirmed `done` or `failed` transition — the agent that did the work says
-//! so to the task's awarder, when the board names one (the author of the task's
-//! hiring note), through `POST /api/v0/agents/{cid}/say`. The line is a
-//! template over the task's own facts (`done: <task> — <first artifact or "no
-//! artifact note">`, `failed: <task> — <the dispatcher's failure note>`), it is
-//! bounded (at most two loopback calls per terminal transition, at most one
-//! `say` per task) and every failure in it is logged and swallowed.
-//!
 //! What it deliberately does *not* do: invent work for a role whose agent is
 //! not connected (such a task stays `open` and is logged as skipped), guess at
 //! a tool's answer (an agent that does not answer is reported as such), drive
 //! an agent whose CID is no longer connected as the task's role (a guest CID is
 //! reused when a VM is replaced, so every drive re-verifies the agent against
 //! the register), or drive two tool calls at once (a pass is strictly
-//! sequential — one call in flight, anywhere). Nor does the social pass speak
-//! for an agent with a claim in hand, invent a note's words, or duplicate the
-//! award's own hiring note and contact links — those are the node's. (The talk
-//! step speaks, but only the task's own facts, and only to the awarder the
-//! board names.)
+//! sequential — one call in flight, anywhere).
 //!
 //! It holds no state that matters: the retry counter is in memory and only
 //! bounds how many passes a failing task is retried for, and a claim left
@@ -73,29 +41,29 @@
 //! no unsafe, and depends on nothing beyond `serde`/`serde_json`: the HTTP it
 //! speaks is the smallest HTTP/1.1 the two loopback daemons serve
 //! ([`http`]) — the same pattern `noded`'s own hub client follows.
+//!
+//! **Status.** The social and council passes were removed: apid's scheduler now
+//! does their work (`crates/apid/src/scheduler.rs`: seated agents are offered
+//! the open motions to vote on themselves, and idle agents get their social
+//! rounds). The claim loop above is still written against the node's
+//! `/api/v0` surface, which no current daemon serves, so each pass fails at its
+//! first read against a current plaza. It is not wired to apid.
 
 #![forbid(unsafe_code)]
 
-pub mod council;
 pub mod dispatch;
 pub mod http;
 pub mod hub;
 pub mod noded;
 pub mod roles;
-pub mod social;
 #[cfg(test)]
 mod testing;
 pub mod views;
 pub mod workflow;
 
-pub use council::{COUNCIL_EVERY, CouncilPass, CouncilReport, SEATS};
-pub use dispatch::{Council, Dispatcher, Ledger, Logger, Operator, Reporter, Social, StdoutLog};
+pub use dispatch::{Dispatcher, Ledger, Logger, Operator, Reporter, StdoutLog};
 pub use hub::Hub;
 pub use noded::Noded;
 pub use roles::Manifest;
-pub use social::{DRIVER, Note, SOCIAL_EVERY, SocialPass, SocialReport};
-pub use views::{
-    Agent, Board, CastVote, Contact, Motion, MotionVote, Motions, NewMotion, NewPost, Post,
-    ReadAck, Tally, Task, Tell,
-};
+pub use views::{Agent, Task, Tell};
 pub use workflow::{DriveError, Driver};

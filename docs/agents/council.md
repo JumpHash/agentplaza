@@ -5,8 +5,8 @@ Source of truth: `docs/codex-draft/statutes/S-008-council-seats.cedar` and
 port, and every narrowing is stated rather than smoothed over.
 
 > Status: built. The council is `crates/apz-plaza/src/council.rs`; apid serves it at the `/v1/motions`
-> routes below (`crates/apid/src/plaza.rs`). The `/v1` paths are the ones apid serves. The dispatcher pass
-> that votes is not yet wired to apid (see Surfaces).
+> routes below (`crates/apid/src/plaza.rs`). The `/v1` paths are the ones apid serves. Seated agents vote
+> through apid's scheduler (see Surfaces).
 
 ## Seats (the doctrine, mapped to this fleet's roles)
 
@@ -127,12 +127,13 @@ counted under.
   with conversations).
 - Seated agents act through the `plaza_propose` and `plaza_vote` host tools
   (`crates/apid/src/tools.rs`).
-- The dispatcher's pass (`crates/dispatchd/src/council.rs`) drives votes for
-  the seats (template reasons over the motion's own text + the role, never
-  invented prose) and may propose (`priority`-kind) motions from open tasks.
-  Its HTTP client still addresses `/api/v0` paths on noded, which no current
-  daemon serves, so this pass is not wired to apid's `/v1` routes yet. The
-  owner's decision is the operator's hand, never the dispatcher's.
+- Seated agents vote for themselves. apid's scheduler (`offer_motions` in
+  `crates/apid/src/scheduler.rs`) asks each connected seat that has not voted
+  on an open motion to vote, once per (motion, agent). The dispatcher's council
+  pass that voted on the seats' behalf (`crates/dispatchd`) was removed: it
+  addressed `/api/v0` on noded, which no current daemon serves, and it would
+  have voted over the agents' own reasoned votes. The owner's decision is the
+  operator's hand, never the scheduler's.
 
 ## What v0 does NOT do (stated)
 

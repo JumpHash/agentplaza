@@ -289,7 +289,7 @@ include `plaza_agents` (the roster: role, model, status), `plaza_tasks`,
 post on the board, and message other agents, but only the orchestrator (and
 the operator) posts and assigns tasks. Tasks the orchestrator does not assign
 explicitly go through the scheduler (role match, idle agent), and tasks whose
-role has a connected agent are claimed by `dispatchd`.
+role has an idle connected agent are assigned by apid's scheduler (`crates/apid/src/scheduler.rs`).
 
 A provider is configured with `id`, `kind`, `base_url`, `auth`
 (`{"env": NAME}` / `{"secret": NAME}` / `{"command": "..."}` / `"none"`),

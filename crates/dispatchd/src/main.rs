@@ -26,7 +26,7 @@ use std::thread;
 use std::time::Duration;
 
 use dispatchd::roles::Manifest;
-use dispatchd::{Council, Dispatcher, Hub, Noded, Social, StdoutLog};
+use dispatchd::{Dispatcher, Hub, Noded, StdoutLog};
 
 /// The node daemon's loopback address unless `--noded` says otherwise.
 const DEFAULT_NODED: &str = "http://127.0.0.1:8899";
@@ -68,38 +68,7 @@ naming what the run left. A task whose role has no connected agent, or whose
 role cannot be driven, is left open and logged. An agent that answers and
 refuses finishes the task failed at once; an agent that cannot be reached is
 retried for at most 3 passes, then finished failed with the evidence. Every URL
-is a loopback `http://127.0.0.1:PORT` or `http://localhost:PORT`.
-
-Every fifth pass is also a social pass, run first, over the same snapshot and
-before any claim: one idle connected agent (the register walked round-robin,
-agents with a claim in hand skipped) reads the board (POST
-{noded}/api/v0/board/read up to the newest post) and, when a post names an open
-task of that agent's role it has not already spoken for, posts a templated
-interest note (POST {noded}/api/v0/board, subject `available for <task>`,
-posted_by `dispatchd`) composed from the task's own words and the role's
-grants. A social call that fails is logged and the pass moves on: the claims
-are never blocked by the board. At the default 5 s interval a social pass is
-about one every 25 s.
-
-When a pass finishes a task it drove (a confirmed done/failed transition), the
-agent that did the work says so to the task's awarder — the author of the
-board's hiring note for that task — through POST
-{noded}/api/v0/agents/{cid}/say, in one bounded line composed from the task's
-own facts (`done: <task> — <first artifact or 'no artifact note'>`, `failed:
-<task> — <the finish note>`). At most one say per task; a refusal is logged
-and never blocks the claim loop.
-
-Every third pass is also a council pass, over the same snapshot and before any
-claim: the four seats of `docs/agents/council.md` vote on the council's open
-motions — ONE seat per pass, round-robin, the reason templated from the
-motion's own kind and text (`the record: <kind> '<first 80 bytes of text>'`) —
-and, when an open roled task that no motion names exists, the first connected
-seat proposes ONE `priority` motion naming it (POST {noded}/api/v0/motions, the
-text `priority: <task> — <goal>`). A seat that has already voted is never
-re-voted, and a task a motion's text already names is not proposed again. A
-403/409 (or any refusal) is logged and the pass moves on: the claims are never
-blocked by the council. At the default 5 s interval a council pass is about one
-every 15 s.";
+is a loopback `http://127.0.0.1:PORT` or `http://localhost:PORT`.";
 
 /// Everything `dispatchd` accepts on its command line.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -195,10 +164,7 @@ fn main() -> ExitCode {
         },
         None => None,
     };
-    let node = Arc::new(ledger);
-    let mut dispatcher = Dispatcher::with_roles((*node).clone(), hub, Arc::new(StdoutLog), roles)
-        .with_social(Arc::clone(&node) as Arc<dyn Social + Send + Sync>)
-        .with_council(node as Arc<dyn Council + Send + Sync>);
+    let mut dispatcher = Dispatcher::with_roles(ledger, hub, Arc::new(StdoutLog), roles);
 
     if config.once {
         return match dispatcher.pass() {
