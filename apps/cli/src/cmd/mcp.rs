@@ -3,6 +3,7 @@
 //! The bridge itself lives in `mcp/bridge.rs`.
 
 pub mod bridge;
+pub mod servers;
 
 use std::io::{self, IsTerminal, Read};
 use std::time::Duration;
@@ -20,9 +21,24 @@ pub enum Cmd {
     /// The hub's MCP server: its status, and on and off.
     #[command(subcommand)]
     Server(ServerCmd),
+    /// The MCP servers the hub runs for agents: list, add, edit, delete, start, stop, test, tools and logs.
+    #[command(subcommand)]
+    Servers(Box<servers::ServersCmd>),
     /// MCP tokens: the keys clients use to reach the server.
     #[command(subcommand)]
     Token(TokenCmd),
+    /// The call log of the hub's MCP server: which token called which tool, and whether it worked.
+    Calls {
+        /// Only the calls of this token (its id, from `mcp token list`).
+        #[arg(long)]
+        token: Option<String>,
+        /// Only the calls of this tool.
+        #[arg(long)]
+        tool: Option<String>,
+        /// How many calls (1 to 500, default 100).
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..=500))]
+        limit: Option<u64>,
+    },
     /// Save an MCP token for a hub (--hub). The token is read from stdin, never from the command line.
     Login,
     /// The stdio bridge: JSON-RPC on stdin and stdout, forwarded to the hub's /mcp with the saved token.
@@ -34,10 +50,23 @@ pub enum ServerCmd {
     /// Whether the server is on, its bind, its origins and its URL.
     Status,
     /// Turn the server on. By default it answers on loopback only; --remote answers on the public listener, over TLS.
+    /// The other flags set the auth mode, the open scope and the origins; unset ones keep the hub's current settings.
     Enable {
         /// Answer on the hub's public listener, over TLS.
         #[arg(long)]
         remote: bool,
+        /// secure (a call needs an MCP token) or open (a call with no token gets the open scope).
+        #[arg(long, value_parser = ["secure", "open"])]
+        auth: Option<String>,
+        /// What a call with no token may do in open mode: observe, operate or govern.
+        #[arg(long = "open-scope", value_parser = ["observe", "operate", "govern"])]
+        open_scope: Option<String>,
+        /// An origin a browser may call from (repeatable: a scheme and a host, no path). Replaces the list; none clears it.
+        #[arg(long = "origin", value_name = "URL")]
+        origin: Vec<String>,
+        /// Confirm open over remote: anyone who reaches the hub may call what the open scope allows.
+        #[arg(long = "confirm-open-remote")]
+        confirm_open_remote: bool,
     },
     /// Turn the server off. Its bind and origins are kept.
     Disable,
@@ -83,9 +112,17 @@ pub fn run(cmd: Cmd, globals: Globals) -> Result<(), String> {
             let api = ctx::resolve(globals.hub, globals.token, globals.pin, globals.json)?;
             server(&api, sub)
         }
+        Cmd::Servers(sub) => {
+            let api = ctx::resolve(globals.hub, globals.token, globals.pin, globals.json)?;
+            servers::run(&api, *sub)
+        }
         Cmd::Token(sub) => {
             let api = ctx::resolve(globals.hub, globals.token, globals.pin, globals.json)?;
             token(&api, sub)
+        }
+        Cmd::Calls { token, tool, limit } => {
+            let api = ctx::resolve(globals.hub, globals.token, globals.pin, globals.json)?;
+            calls(&api, token.as_deref(), tool.as_deref(), limit)
         }
         Cmd::Login => login(globals.hub.as_deref(), io::stdin().lock()),
         Cmd::Serve => serve(globals.hub.as_deref(), globals.pin.as_deref()),
@@ -99,16 +136,41 @@ fn server(api: &Ctx, sub: ServerCmd) -> Result<(), String> {
             api.out(&status, print_status);
             Ok(())
         }
-        ServerCmd::Enable { remote } => set_enabled(api, true, remote),
-        ServerCmd::Disable => set_enabled(api, false, false),
+        ServerCmd::Enable { remote, auth, open_scope, origin, confirm_open_remote } => {
+            let switch = Switch { enabled: true, remote, auth, open_scope, origins: origins_of(&origin)?, confirm_open_remote };
+            set_enabled(api, &switch)
+        }
+        ServerCmd::Disable => set_enabled(api, &Switch { enabled: false, ..Switch::default() }),
+    }
+}
+
+/// What `mcp server enable` and `disable` change. An unset field keeps the hub's current setting.
+#[derive(Debug, Default, PartialEq)]
+struct Switch {
+    enabled: bool,
+    /// The bind is remote when turning on (and kept when turning off).
+    remote: bool,
+    auth: Option<String>,
+    open_scope: Option<String>,
+    origins: Option<Vec<String>>,
+    confirm_open_remote: bool,
+}
+
+/// `--origin`: the list the flags give (`none` clears it), or None when no flag is given.
+fn origins_of(words: &[String]) -> Result<Option<Vec<String>>, String> {
+    match words {
+        [] => Ok(None),
+        [word] if word == "none" => Ok(Some(Vec::new())),
+        _ if words.iter().any(|word| word == "none") => Err("--origin none clears the list: it stands alone".to_string()),
+        _ => Ok(Some(words.to_vec())),
     }
 }
 
 /// Saves the switch. The PUT replaces every setting, so it carries the rest of what the hub has now: the auth mode,
-/// the open scope and the origins. The bind is local or remote when turning on, and kept when turning off.
-fn set_enabled(api: &Ctx, enabled: bool, remote: bool) -> Result<(), String> {
+/// the open scope and the origins, unless the flags change them.
+fn set_enabled(api: &Ctx, switch: &Switch) -> Result<(), String> {
     let now = api.client.get("/v1/hub-mcp")?;
-    let body = switch_body(&now, enabled, remote);
+    let body = switch_body(&now, switch);
     let saved = api.client.put("/v1/hub-mcp", &body)?;
     api.out(&saved, print_status);
     Ok(())
@@ -116,24 +178,33 @@ fn set_enabled(api: &Ctx, enabled: bool, remote: bool) -> Result<(), String> {
 
 /// The PUT body that flips the switch and keeps the rest of the hub's settings as `now` (the GET) reports them.
 /// An open hub that is already on remote keeps its confirmed setting, so the hub does not refuse the save; a change
-/// that newly opens a hub to the network still gets the hub's refusal.
-fn switch_body(now: &Value, enabled: bool, remote: bool) -> Value {
-    let bind = match (enabled, remote) {
+/// that newly opens a hub to the network still gets the hub's refusal, unless --confirm-open-remote is given.
+fn switch_body(now: &Value, switch: &Switch) -> Value {
+    let bind = match (switch.enabled, switch.remote) {
         (true, true) => "remote",
         (true, false) => "local",
         (false, _) => now["bind"].as_str().unwrap_or("local"),
     };
-    let auth_mode = now.get("auth_mode").cloned().unwrap_or_else(|| json!("secure"));
-    let open_scope = now.get("open_scope").cloned().unwrap_or_else(|| json!("observe"));
-    let origins = now.get("allowed_origins").cloned().unwrap_or_else(|| json!([]));
+    let auth_mode = match &switch.auth {
+        Some(auth) => json!(auth),
+        None => now.get("auth_mode").cloned().unwrap_or_else(|| json!("secure")),
+    };
+    let open_scope = match &switch.open_scope {
+        Some(scope) => json!(scope),
+        None => now.get("open_scope").cloned().unwrap_or_else(|| json!("observe")),
+    };
+    let origins = match &switch.origins {
+        Some(list) => json!(list),
+        None => now.get("allowed_origins").cloned().unwrap_or_else(|| json!([])),
+    };
     let kept_open_remote = now["auth_mode"].as_str() == Some("open") && now["bind"].as_str() == Some("remote");
     json!({
-        "enabled": enabled,
+        "enabled": switch.enabled,
         "bind": bind,
         "auth_mode": auth_mode,
         "open_scope": open_scope,
         "allowed_origins": origins,
-        "confirm_open_remote": kept_open_remote && bind == "remote",
+        "confirm_open_remote": switch.confirm_open_remote || (kept_open_remote && bind == "remote"),
     })
 }
 
@@ -197,6 +268,42 @@ fn tools_text(token: &Value) -> String {
         .filter(|tools| !tools.is_empty())
         .map(|tools| tools.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(","))
         .unwrap_or_else(|| "all in scope".to_string())
+}
+
+/// `mcp calls`: the call log, newest first, with the filters the flags give.
+fn calls(api: &Ctx, token: Option<&str>, tool: Option<&str>, limit: Option<u64>) -> Result<(), String> {
+    let mut query = Vec::new();
+    if let Some(token) = token {
+        query.push(format!("token={}", ctx::seg(token)));
+    }
+    if let Some(tool) = tool {
+        query.push(format!("tool={}", ctx::seg(tool)));
+    }
+    if let Some(limit) = limit {
+        query.push(format!("limit={limit}"));
+    }
+    let path = if query.is_empty() { "/v1/hub-mcp/calls".to_string() } else { format!("/v1/hub-mcp/calls?{}", query.join("&")) };
+    let log = api.client.get(&path)?;
+    api.out(&log, |v| {
+        let rows: Vec<Vec<String>> = v["calls"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|c| {
+                vec![
+                    ctx::when(c.get("at_ms").unwrap_or(&Value::Null)),
+                    ctx::text(c, "token_id"),
+                    ctx::text(c, "tool"),
+                    if c["ok"].as_bool() == Some(true) { "ok" } else { "error" }.to_string(),
+                    ctx::text(c, "duration_ms"),
+                    ctx::text(c, "client_ip"),
+                    ctx::text(c, "error"),
+                ]
+            })
+            .collect();
+        ctx::table(&["when", "token", "tool", "result", "ms", "from", "error"], &rows);
+    });
+    Ok(())
 }
 
 /// `--expires`: days, as `30d` or `30`.
@@ -343,7 +450,7 @@ mod tests {
             "enabled": false, "bind": "local", "auth_mode": "open", "open_scope": "operate",
             "allowed_origins": ["https://console.test"],
         });
-        let body = switch_body(&now, true, false);
+        let body = switch_body(&now, &Switch { enabled: true, ..Switch::default() });
         assert_eq!(body["auth_mode"], "open");
         assert_eq!(body["open_scope"], "operate");
         assert_eq!(body["allowed_origins"], json!(["https://console.test"]));
@@ -354,7 +461,7 @@ mod tests {
     #[test]
     fn switching_an_open_remote_hub_off_keeps_it_open_and_remote() {
         let now = json!({ "enabled": true, "bind": "remote", "auth_mode": "open", "open_scope": "observe", "allowed_origins": [] });
-        let body = switch_body(&now, false, false);
+        let body = switch_body(&now, &Switch::default());
         assert_eq!(body["enabled"], false);
         assert_eq!(body["bind"], "remote");
         assert_eq!(body["auth_mode"], "open");
@@ -364,15 +471,60 @@ mod tests {
     #[test]
     fn enabling_remote_does_not_open_a_local_secure_hub_without_a_confirmation() {
         let now = json!({ "enabled": false, "bind": "local", "auth_mode": "secure", "open_scope": "observe", "allowed_origins": [] });
-        let body = switch_body(&now, true, true);
+        let body = switch_body(&now, &Switch { enabled: true, remote: true, ..Switch::default() });
         assert_eq!(body["bind"], "remote");
         assert_eq!(body["auth_mode"], "secure");
         assert_eq!(body["confirm_open_remote"], false);
     }
 
     #[test]
+    fn enabling_takes_the_auth_mode_scope_and_origins_the_flags_give() {
+        let now = json!({
+            "enabled": false, "bind": "local", "auth_mode": "secure", "open_scope": "observe",
+            "allowed_origins": ["https://old.test"],
+        });
+        let body = switch_body(
+            &now,
+            &Switch {
+                enabled: true,
+                auth: Some("open".into()),
+                open_scope: Some("operate".into()),
+                origins: Some(vec!["https://a.test".into(), "https://b.test".into()]),
+                ..Switch::default()
+            },
+        );
+        assert_eq!(body["auth_mode"], "open");
+        assert_eq!(body["open_scope"], "operate");
+        assert_eq!(body["allowed_origins"], json!(["https://a.test", "https://b.test"]), "the origins replace the list");
+        assert_eq!(body["confirm_open_remote"], false);
+        let untouched = switch_body(&now, &Switch { enabled: true, ..Switch::default() });
+        assert_eq!(untouched["allowed_origins"], json!(["https://old.test"]), "no origin flag keeps the list");
+        assert_eq!(untouched["auth_mode"], "secure");
+    }
+
+    #[test]
+    fn the_open_remote_confirmation_is_sent_when_the_flag_says_so() {
+        let now = json!({ "enabled": false, "bind": "local", "auth_mode": "secure", "open_scope": "observe", "allowed_origins": [] });
+        let flagged = Switch { enabled: true, remote: true, auth: Some("open".into()), confirm_open_remote: true, ..Switch::default() };
+        let body = switch_body(&now, &flagged);
+        assert_eq!(body["bind"], "remote");
+        assert_eq!(body["auth_mode"], "open");
+        assert_eq!(body["confirm_open_remote"], true);
+        let unflagged = Switch { enabled: true, remote: true, auth: Some("open".into()), ..Switch::default() };
+        assert_eq!(switch_body(&now, &unflagged)["confirm_open_remote"], false, "without the flag the hub refuses");
+    }
+
+    #[test]
+    fn origin_none_clears_the_list_and_stands_alone() {
+        assert_eq!(origins_of(&[]).unwrap(), None);
+        assert_eq!(origins_of(&["none".to_string()]).unwrap(), Some(Vec::new()));
+        assert!(origins_of(&["none".to_string(), "https://a.test".to_string()]).is_err());
+        assert_eq!(origins_of(&["https://a.test".to_string()]).unwrap(), Some(vec!["https://a.test".to_string()]));
+    }
+
+    #[test]
     fn a_hub_without_an_auth_mode_in_its_status_is_saved_secure() {
-        let body = switch_body(&json!({ "bind": "local" }), true, false);
+        let body = switch_body(&json!({ "bind": "local" }), &Switch { enabled: true, ..Switch::default() });
         assert_eq!(body["auth_mode"], "secure");
         assert_eq!(body["open_scope"], "observe");
         assert_eq!(body["allowed_origins"], json!([]));
@@ -384,5 +536,18 @@ mod tests {
         assert_eq!(expiry_days("7"), Ok(7));
         assert!(expiry_days("0d").is_err());
         assert!(expiry_days("soon").is_err());
+    }
+
+    #[test]
+    fn the_switch_flags_and_the_call_log_flags_parse() {
+        let enable = TestCli::try_parse_from([
+            "agentplaza", "server", "enable", "--auth", "open", "--open-scope", "operate", "--origin", "https://a.test",
+            "--origin", "https://b.test", "--confirm-open-remote",
+        ]);
+        assert!(matches!(enable.map(|cli| cli.cmd), Ok(Cmd::Server(ServerCmd::Enable { confirm_open_remote: true, .. }))));
+        assert!(TestCli::try_parse_from(["agentplaza", "server", "enable", "--auth", "bogus"]).is_err());
+        assert!(TestCli::try_parse_from(["agentplaza", "server", "enable", "--open-scope", "root"]).is_err());
+        assert!(TestCli::try_parse_from(["agentplaza", "calls", "--token", "mcp_1", "--tool", "hub_status", "--limit", "20"]).is_ok());
+        assert!(TestCli::try_parse_from(["agentplaza", "calls", "--limit", "501"]).is_err());
     }
 }
