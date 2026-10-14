@@ -15,6 +15,8 @@ apz-http = { path = "../apz-http" }
 apz-gateway = { path = "../apz-gateway" }
 apz-plaza = { path = "../apz-plaza" }
 apz-ide = { path = "../apz-ide" }
+# The workstation link protocol (docs/design/workstations.md; crates/apz-station): frames, operations, facts, settings.
+apz-station = { path = "../apz-station" }
 serde.workspace = true
 serde_json.workspace = true
 ureq.workspace = true

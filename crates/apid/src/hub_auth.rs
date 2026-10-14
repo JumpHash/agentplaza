@@ -127,7 +127,14 @@ impl Hub {
 
 /// Routes anyone may call without the owner token.
 pub fn is_public(method: &str, path: &str) -> bool {
-    matches!((method, path), ("GET", "/v1/hub/identity") | ("POST", "/v1/nodes/join") | ("POST" | "DELETE", "/v1/auth/session"))
+    matches!(
+        (method, path),
+        ("GET", "/v1/hub/identity")
+            | ("POST", "/v1/nodes/join")
+            | ("POST", "/v1/stations/join")
+            | ("GET", "/v1/stations/link")
+            | ("POST" | "DELETE", "/v1/auth/session")
+    )
         || (path.starts_with("/v1/nodes/n") && (path.ends_with("/commands") || path.ends_with("/results") || path.ends_with("/heartbeat")))
         || path.starts_with("/internal/")
         || !path.starts_with("/v1/")
@@ -414,6 +421,10 @@ mod tests {
         assert!(is_public("GET", "/v1/hub/identity"));
         assert!(is_public("POST", "/v1/nodes/join"));
         assert!(is_public("POST", "/v1/nodes/n3/heartbeat"));
+        assert!(is_public("POST", "/v1/stations/join"), "a workstation joins with a code");
+        assert!(is_public("GET", "/v1/stations/link"), "a station's link checks its own token");
+        assert!(!is_public("GET", "/v1/stations"), "the registry is the owner's");
+        assert!(!is_public("POST", "/v1/stations/codes"), "a join code is the owner's");
         assert!(is_public("GET", "/internal/anything"));
         assert!(is_public("GET", "/index.html"));
         assert!(!is_public("GET", "/v1/auth/check"));

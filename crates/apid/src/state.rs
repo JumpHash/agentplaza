@@ -138,6 +138,8 @@ pub struct App {
     pub agent_proposals: crate::agent_proposals::Store,
     /// The hub's nodes, join codes and command queues.
     pub nodes: crate::nodes::Store,
+    /// The workstations: their join codes, registry, live links and leases (docs/design/workstations.md).
+    pub stations: crate::stations::Store,
     /// Model prices (OpenRouter, LiteLLM and the owner's own), for usage costs.
     pub prices: crate::prices::Catalog,
     /// Every model call's tokens, cache hits and cost.
@@ -227,6 +229,7 @@ impl App {
             custom_roles: crate::roles_custom::Store::default(),
             agent_proposals: crate::agent_proposals::Store::default(),
             nodes: crate::nodes::Store::default(),
+            stations: crate::stations::Store::default(),
             prices: crate::prices::Catalog::default(),
             usage: crate::usage::Ledger::default(),
             looks: crate::looks::Looks::open(config.state_dir.join("looks.json")),
@@ -312,6 +315,7 @@ impl App {
         crate::db::spawn_writer(Arc::clone(&app));
         spawn_treasury_saver(Arc::clone(&app));
         spawn_component_savers(Arc::clone(&app));
+        crate::stations::spawn(Arc::clone(&app));
         crate::harness_control::spawn_ticker(Arc::clone(&app));
         // Deliverables (videos, images) arrive as request bodies: allow up to 512 MiB.
         // On loopback the hub serves plain HTTP as before. Bound anywhere else it is a hub other

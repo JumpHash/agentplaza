@@ -287,6 +287,7 @@ dependencies = [
  "apz-prompt",
  "apz-proto",
  "apz-skill",
+ "apz-station",
  "apz-trust",
  "argon2",
  "base64 0.22.1",

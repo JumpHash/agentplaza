@@ -18,6 +18,8 @@
 //!   infraction(id bigserial, cid bigint, law text, at_ms bigint, tool text, detail text)
 //!   ide_audit(seq bigserial, at_ms bigint, workspace text, kind text, data jsonb)
 //!              (append-only: the owner's IDE actions, migration 0008)
+//!   station_audit(seq bigserial, at_ms bigint, station text, agent bigint, kind text, data jsonb)
+//!              (append-only: the owner's workstation actions and lease changes, migration 0009)
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -33,7 +35,7 @@ pub const COMPONENTS: &[&str] = &[
     "treasury", "tasks", "agora", "social", "council", "bonds",
     "projects", "toolbox", "harness", "approvals", "library", "deliverables", "connectors",
     "names", "settings", "providers", "spawned", "laws", "rules", "society", "work",
-    "control", "custom_roles", "agent_proposals", "nodes", "prices", "usage", "looks", "foundry",
+    "control", "custom_roles", "agent_proposals", "nodes", "stations", "prices", "usage", "looks", "foundry",
     "models", "sanctions", "vault", "mcp",
 ];
 
@@ -74,6 +76,7 @@ pub fn snapshot_of(app: &App, component: &str) -> String {
         "custom_roles" => app.custom_roles.snapshot(),
         "agent_proposals" => app.agent_proposals.snapshot(),
         "nodes" => app.nodes.snapshot(),
+        "stations" => app.stations.snapshot(),
         "prices" => app.prices.snapshot(),
         "usage" => app.usage.snapshot(),
         "looks" => app.looks.snapshot(),
@@ -114,6 +117,7 @@ pub fn restore_into(app: &App, component: &str, json: &str) -> Result<(), String
         "custom_roles" => app.custom_roles.restore(json),
         "agent_proposals" => app.agent_proposals.restore(json),
         "nodes" => app.nodes.restore(json),
+        "stations" => app.stations.restore(json),
         "prices" => app.prices.restore(json),
         "usage" => app.usage.restore(json),
         "looks" => app.looks.restore(json),
@@ -158,6 +162,7 @@ pub struct Db {
     append_logged: Mutex<Option<Instant>>,
     infraction_logged: Mutex<Option<Instant>>,
     ide_audit_logged: Mutex<Option<Instant>>,
+    station_audit_logged: Mutex<Option<Instant>>,
     /// The file fallback for transcripts, infractions and the IDE audit (see `attach_files`).
     files: std::sync::OnceLock<files::Files>,
 }
@@ -172,6 +177,7 @@ impl Db {
             append_logged: Mutex::new(None),
             infraction_logged: Mutex::new(None),
             ide_audit_logged: Mutex::new(None),
+            station_audit_logged: Mutex::new(None),
             files: std::sync::OnceLock::new(),
         }
     }
@@ -531,6 +537,55 @@ impl Db {
     }
 }
 
+/// The station audit (stations/): one owner action on a workstation, or one lease change. Its row is the
+/// table's data; `at_ms`, `kind` are required, `station` (null for the registry as a whole) and `agent` (a
+/// CID, or null) are its columns. Like the IDE audit, a failed append is an error the caller answers with.
+impl Db {
+    /// Appends one station audit row (table `station_audit`, or the file fallback).
+    pub fn append_station_audit(&self, row: &Value) -> Result<(), String> {
+        let written = self.write_station_audit(row);
+        if let Err(e) = &written {
+            let mut logged = self.station_audit_logged.lock().unwrap_or_else(PoisonError::into_inner);
+            if due(*logged) {
+                *logged = Some(Instant::now());
+                eprintln!("db: station audit append failed: {e} (answered to the owner; logged once a minute)");
+            }
+        }
+        written
+    }
+
+    fn write_station_audit(&self, row: &Value) -> Result<(), String> {
+        let at_ms = row["at_ms"].as_u64().ok_or("the audit row has no at_ms")? as i64;
+        let kind = row["kind"].as_str().ok_or("the audit row has no kind")?;
+        if let Some(files) = self.file_store() {
+            return files.append_station_audit(row);
+        }
+        if !self.enabled() {
+            return Err("no database and no state directory for the station audit".to_string());
+        }
+        let station = row["station"].as_str();
+        let agent = row["agent"].as_u64().map(|cid| cid as i64);
+        self.run(|c| c.execute(sql::STATION_AUDIT_APPEND, &[&at_ms, &station, &agent, &kind, row])).map(|_| ())
+    }
+
+    /// Station audit rows, newest first, of one workstation when `station` is given. A failed read is an error.
+    pub fn station_audit(&self, station: Option<&str>, limit: i64) -> Result<Vec<Value>, String> {
+        if let Some(files) = self.file_store() {
+            return files.station_audit(station, limit);
+        }
+        if !self.enabled() {
+            return Err("no database and no state directory for the station audit".to_string());
+        }
+        let rows = match station {
+            Some(station) => self.run(|c| c.query(sql::STATION_AUDIT_PAGE_BY_STATION, &[&station, &limit])),
+            None => self.run(|c| c.query(sql::STATION_AUDIT_PAGE, &[&limit])),
+        };
+        rows.map(|rows| rows.iter().map(|r| r.get::<_, Value>(0)).collect()).inspect_err(|e| {
+            eprintln!("db: station audit read failed: {e}");
+        })
+    }
+}
+
 /// At start: restore every component that Postgres holds; a component Postgres does not
 /// hold yet keeps what its own files loaded (the first run imports them). Logs each outcome.
 pub fn restore_all(app: &App) {
@@ -800,6 +855,22 @@ mod tests {
         assert_eq!(db.ide_audit(Some(&other), 10).unwrap(), vec![w2.clone()]);
         assert!(db.ide_audit(Some("agent:0"), 10).unwrap().is_empty());
         assert!(db.append_ide_audit(&serde_json::json!({ "kind": "write" })).is_err(), "a row with no at_ms is refused");
+
+        // The station audit: newest first by at_ms (a tie goes to the later row), filtered by station; the
+        // registry-wide rows (station null) appear only in the whole list.
+        let (st, st_other) = (format!("ws-{cid}"), format!("ws-{}", cid + 1));
+        let station_row = |at_ms: u64, station: Option<&str>, kind: &str| {
+            serde_json::json!({ "at_ms": at_ms, "actor": "owner", "station": station, "agent": null, "kind": kind })
+        };
+        let (s1, s2, s3) = (station_row(10, Some(&st), "join"), station_row(20, Some(&st_other), "join"), station_row(20, None, "code_issue"));
+        for row in [&s1, &s2, &s3] {
+            db.append_station_audit(row).unwrap();
+        }
+        assert_eq!(db.station_audit(None, 10).unwrap(), vec![s3.clone(), s2.clone(), s1.clone()]);
+        assert_eq!(db.station_audit(Some(&st), 10).unwrap(), vec![s1.clone()]);
+        assert_eq!(db.station_audit(Some(&st_other), 10).unwrap(), vec![s2.clone()]);
+        assert!(db.station_audit(Some("ws-0"), 10).unwrap().is_empty());
+        assert!(db.append_station_audit(&serde_json::json!({ "kind": "join" })).is_err(), "a row with no at_ms is refused");
 
         db.delete_transcript(cid);
         assert!(db.transcript(cid, 500).is_empty());

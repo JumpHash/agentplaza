@@ -50,6 +50,7 @@ mod mcp;
 mod roles_custom;
 mod agent_proposals;
 mod nodes;
+mod stations;
 mod fleet;
 mod foundry;
 mod node_link;

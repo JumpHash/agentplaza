@@ -46,14 +46,14 @@ pub const JOIN_TRIES_PER_CODE: u32 = 3;
 pub const OFFLINE_AFTER_MS: u64 = 60_000;
 
 /// The one message every failed redemption gets, so a caller learns nothing about the code.
-const INVALID_CODE: &str = "this join code is not valid";
-const RATE_LIMITED: &str = "too many attempts; wait a minute";
+pub(crate) const INVALID_CODE: &str = "this join code is not valid";
+pub(crate) const RATE_LIMITED: &str = "too many attempts; wait a minute";
 /// The rate-limit key of a request: its peer address (every caller without one shares a bucket).
-fn source_of(req: &Request) -> String {
+pub(crate) fn source_of(req: &Request) -> String {
     req.peer.map(|ip| ip.to_string()).unwrap_or_else(|| "unknown".into())
 }
-const JOIN_WINDOW_MS: u64 = 60_000;
-const DEFAULT_TTL_MINUTES: u64 = 15;
+pub(crate) const JOIN_WINDOW_MS: u64 = 60_000;
+pub(crate) const DEFAULT_TTL_MINUTES: u64 = 15;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Node {
@@ -332,18 +332,7 @@ impl Store {
 
     /// Join attempts per source in the last minute; a refused attempt is not recorded.
     fn admit(&self, source: &str, now_ms: u64) -> Result<(), String> {
-        let mut attempts = self.join_attempts.lock().map_err(|e| e.to_string())?;
-        let cutoff = now_ms.saturating_sub(JOIN_WINDOW_MS);
-        attempts.retain(|_, times| {
-            times.retain(|t| *t > cutoff);
-            !times.is_empty()
-        });
-        let times = attempts.entry(source.to_string()).or_default();
-        if times.len() >= JOIN_RATE_PER_MINUTE as usize {
-            return Err(RATE_LIMITED.into());
-        }
-        times.push(now_ms);
-        Ok(())
+        admit_join(&self.join_attempts, source, now_ms)
     }
 
     pub fn enqueue(&self, node: &str, target: &str, method: &str, path: &str, body: Value) -> String {
@@ -425,7 +414,24 @@ impl Store {
     }
 }
 
-fn code_state(code: &Code, now_ms: u64) -> &'static str {
+/// Join attempts per source in the last minute, shared with the workstation codes (stations/): an attempt past
+/// [`JOIN_RATE_PER_MINUTE`] is refused, and a refused attempt is not recorded.
+pub(crate) fn admit_join(attempts: &Mutex<BTreeMap<String, Vec<u64>>>, source: &str, now_ms: u64) -> Result<(), String> {
+    let mut attempts = attempts.lock().map_err(|e| e.to_string())?;
+    let cutoff = now_ms.saturating_sub(JOIN_WINDOW_MS);
+    attempts.retain(|_, times| {
+        times.retain(|t| *t > cutoff);
+        !times.is_empty()
+    });
+    let times = attempts.entry(source.to_string()).or_default();
+    if times.len() >= JOIN_RATE_PER_MINUTE as usize {
+        return Err(RATE_LIMITED.into());
+    }
+    times.push(now_ms);
+    Ok(())
+}
+
+pub(crate) fn code_state(code: &Code, now_ms: u64) -> &'static str {
     if code.revoked {
         "revoked"
     } else if code.used_by.is_some() {
@@ -456,11 +462,11 @@ fn record_nonce(nonces: &mut BTreeMap<(String, String), u64>, key: (String, Stri
 }
 
 /// The next sequence number after the ids that start with `prefix` (`n3` → 4; none → 1).
-fn next_seq<'a>(ids: impl Iterator<Item = &'a str>, prefix: char) -> u64 {
+pub(crate) fn next_seq<'a>(ids: impl Iterator<Item = &'a str>, prefix: char) -> u64 {
     ids.filter_map(|id| id.strip_prefix(prefix)?.parse::<u64>().ok()).max().unwrap_or(0) + 1
 }
 
-fn hex(bytes: &[u8]) -> String {
+pub(crate) fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
@@ -513,7 +519,7 @@ fn views(app: &App) -> Vec<NodeView> {
 
 /// This machine's summary, as a joined node reports its own: cpus, memory_mib, host, version.
 /// `memory_mib` comes from /proc on Linux; elsewhere it is the text "not available on this platform".
-fn local_summary() -> Value {
+pub(crate) fn local_summary() -> Value {
     let cpus = std::thread::available_parallelism().map_or(0, |n| n.get());
     let host = std::fs::read_to_string("/etc/hostname")
         .ok()

@@ -1,0 +1,270 @@
+//! The workstation routes. The owner's routes are behind the owner gate (`hub_auth::gate`: the console and the
+//! local machine pass). `POST /v1/stations/join` and `GET /v1/stations/link` are public by design: each checks
+//! its own credential (the join code, the station's bearer token). The lease routes under `/internal/` are
+//! for the agents, checked by `internal::authorized` as every agent route is.
+//!
+//!   POST   /v1/stations/codes                 {label?, ttl_minutes?} → 201 {id, token, expires_ms} (the token is shown once)
+//!   GET    /v1/stations/codes                 → [CodeView]
+//!   DELETE /v1/stations/codes/{id}            → revokes an unused code
+//!   POST   /v1/stations/join                  {code, facts, name?} → 201 {station, token}   (public; another machine only)
+//!   GET    /v1/stations/link                  (WebSocket, subprotocol apz.station.v1, Bearer station token; public)
+//!   GET    /v1/stations/audit?station=&limit= → [audit row], newest first (every station's when `station` is absent)
+//!   GET    /v1/stations                       → [StationView]
+//!   GET    /v1/stations/{id}                  → StationView
+//!   POST   /v1/stations/{id}/drain            → StationView (no new work; the link closes once its answers are in)
+//!   POST   /v1/stations/{id}/undrain          → StationView
+//!   POST   /v1/stations/{id}/revoke           → StationView (the token stops working; the link is ended)
+//!   PATCH  /v1/stations/{id}                  {name} → StationView
+//!   GET    /v1/stations/{id}/settings         → StationSettings
+//!   PUT    /v1/stations/{id}/settings         StationSettings (a partial object takes the defaults) → {settings, pushed, push_error}
+//!   POST   /v1/stations/{id}/leases           {agent, task?, kind: "shared"|"pixel"} → 201 LeaseView
+//!   GET    /v1/stations/{id}/leases           → [LeaseView] (queued leases carry their position)
+//!   DELETE /v1/stations/{id}/leases/{lease}   → the released lease
+//!   POST   /internal/v1/agents/{cid}/stations/{id}/leases           {task?, kind} → 201 LeaseView (the agent's own)
+//!   DELETE /internal/v1/agents/{cid}/stations/{id}/leases/{lease}   → the lease, when it is that agent's
+
+use std::time::Duration;
+
+use apz_http::ws::{self, Limits, Origins};
+use apz_http::{Request, Response, Router};
+use apz_station::{Facts, StationSettings};
+use serde::Deserialize;
+use serde::de::DeserializeOwned;
+use serde_json::json;
+
+use super::leases::Kind;
+use super::ops::{self, Failure};
+use crate::state::App;
+
+/// Who the owner's routes record as the actor of an action.
+const OWNER: &str = "owner";
+
+pub fn routes(router: Router<App>) -> Router<App> {
+    router
+        .post("/v1/stations/codes", |app, req, _| issue_code_route(app, req))
+        .get("/v1/stations/codes", |app, _, _| Response::json(200, &app.stations.codes(apz_plaza::now_ms())))
+        .delete("/v1/stations/codes/{id}", |app, _, p| code_revoke_route(app, p.get("id")))
+        .post("/v1/stations/join", |app, req, _| join_route(app, req))
+        .get("/v1/stations/link", |app, req, _| link_route(app, req))
+        .get("/v1/stations/audit", |app, req, _| audit_route(app, req))
+        .get("/v1/stations", |app, _, _| Response::json(200, &app.stations.views(apz_plaza::now_ms())))
+        .get("/v1/stations/{id}", |app, _, p| show_route(app, p.get("id")))
+        .post("/v1/stations/{id}/drain", |app, _, p| drain_route(app, p.get("id"), true))
+        .post("/v1/stations/{id}/undrain", |app, _, p| drain_route(app, p.get("id"), false))
+        .post("/v1/stations/{id}/revoke", |app, _, p| revoke_route(app, p.get("id")))
+        .route("PATCH", "/v1/stations/{id}", |app, req, p| rename_route(app, req, p.get("id")))
+        .get("/v1/stations/{id}/settings", |app, _, p| settings_route(app, p.get("id")))
+        .route("PUT", "/v1/stations/{id}/settings", |app, req, p| put_settings_route(app, req, p.get("id")))
+        .post("/v1/stations/{id}/leases", |app, req, p| open_lease_route(app, req, p.get("id"), None, OWNER))
+        .get("/v1/stations/{id}/leases", |app, _, p| leases_route(app, p.get("id")))
+        .delete("/v1/stations/{id}/leases/{lease}", |app, _, p| release_route(app, p.get("id"), p.get("lease"), None, OWNER))
+        .post("/internal/v1/agents/{cid}/stations/{id}/leases", |app, req, p| {
+            crate::internal::authorized(app, req, p.get("cid"), |cid| {
+                Ok(open_lease_route(app, req, p.get("id"), Some(cid), &format!("agent:{cid}")))
+            })
+        })
+        .delete("/internal/v1/agents/{cid}/stations/{id}/leases/{lease}", |app, req, p| {
+            crate::internal::authorized(app, req, p.get("cid"), |cid| {
+                Ok(release_route(app, p.get("id"), p.get("lease"), Some(cid), &format!("agent:{cid}")))
+            })
+        })
+}
+
+fn fail((status, message): Failure) -> Response {
+    Response::error(status, &message)
+}
+
+fn parse<T: DeserializeOwned>(req: &Request) -> Result<T, Response> {
+    req.json::<T>().map_err(|e| Response::error(400, &format!("bad body: {e}")))
+}
+
+fn parse_or_default<T: DeserializeOwned + Default>(req: &Request) -> Result<T, Response> {
+    if req.body.is_empty() { Ok(T::default()) } else { parse(req) }
+}
+
+/// The view of a station as it stands now, or a 404.
+fn view_or_404(app: &App, id: &str) -> Response {
+    match app.stations.station(id) {
+        Some(station) => Response::json(200, &app.stations.view(station, apz_plaza::now_ms())),
+        None => Response::error(404, "no such workstation"),
+    }
+}
+
+#[derive(Default, Deserialize)]
+struct IssueBody {
+    label: Option<String>,
+    ttl_minutes: Option<u64>,
+}
+
+fn issue_code_route(app: &App, req: &Request) -> Response {
+    let body: IssueBody = match parse_or_default(req) {
+        Ok(body) => body,
+        Err(refusal) => return refusal,
+    };
+    match ops::issue_code(app, &body.label.unwrap_or_default(), body.ttl_minutes.unwrap_or(0), OWNER) {
+        Ok((id, token, expires_ms)) => Response::json(201, &json!({"id": id, "token": token, "expires_ms": expires_ms})),
+        Err(failure) => fail(failure),
+    }
+}
+
+fn code_revoke_route(app: &App, id: &str) -> Response {
+    match ops::revoke_code(app, id, OWNER) {
+        Ok(()) => Response::json(200, &json!({"id": id, "revoked": true})),
+        Err(failure) => fail(failure),
+    }
+}
+
+#[derive(Deserialize)]
+struct JoinBody {
+    code: String,
+    facts: Facts,
+    #[serde(default)]
+    name: Option<String>,
+}
+
+fn join_route(app: &App, req: &Request) -> Response {
+    let body: JoinBody = match parse(req) {
+        Ok(body) => body,
+        Err(refusal) => return refusal,
+    };
+    // A workstation is another machine. A request from this host (loopback, or a peer nobody can name) is refused
+    // before the code is looked at, so a join from the hub's own machine never spends one.
+    if req.peer.is_none_or(|peer| peer.is_loopback()) {
+        return Response::error(403, "a workstation joins from another machine; this request came from the hub's own host");
+    }
+    let source = crate::nodes::source_of(req);
+    match ops::join(app, &source, &body.code, body.facts, body.name.as_deref()) {
+        Ok((station, token)) => Response::json(201, &json!({"station": station, "token": token})),
+        Err(failure) => fail(failure),
+    }
+}
+
+/// The daemon's link: its bearer token is checked before the upgrade, then the socket runs on its own thread.
+fn link_route(app: &App, req: &Request) -> Response {
+    let bearer = req.header("authorization").and_then(|value| {
+        let (scheme, token) = value.split_once(' ')?;
+        scheme.eq_ignore_ascii_case("bearer").then_some(token.trim())
+    });
+    let Some(bearer) = bearer else {
+        return Response::error(401, "the workstation's token is sent as a Bearer token").with_header("www-authenticate", "Bearer");
+    };
+    let station = match ops::accept_link(app, bearer) {
+        Ok(station) => station,
+        Err(failure) => return fail(failure),
+    };
+    let weak = app.handle();
+    let id = station.id;
+    // A screen frame is one message, so a message may be large; the link pings every 10 s and ends after 45 s of silence.
+    let limits = Limits {
+        max_frame: 16 << 20,
+        max_message: 16 << 20,
+        ping_every: Duration::from_secs(10),
+        dead_after: Duration::from_secs(45),
+    };
+    ws::accept(req, Origins::None, Some(apz_station::SUBPROTOCOL), limits, move |socket| ops::run_link(weak, id, socket))
+}
+
+fn show_route(app: &App, id: &str) -> Response {
+    view_or_404(app, id)
+}
+
+/// `GET /v1/stations/audit?station=<id>&limit=<n>`: the station audit, newest first; every station's when `station`
+/// is absent. `limit` is 100 by default and at most 1000.
+fn audit_route(app: &App, req: &Request) -> Response {
+    let limit = req.query_param("limit").and_then(|l| l.parse::<i64>().ok()).unwrap_or(100).clamp(0, 1000);
+    let station = req.query_param("station").filter(|s| !s.is_empty());
+    match app.db.station_audit(station, limit) {
+        Ok(rows) => Response::json(200, &rows),
+        Err(reason) => Response::error(500, &reason),
+    }
+}
+
+fn drain_route(app: &App, id: &str, on: bool) -> Response {
+    match ops::drain(app, id, on, OWNER) {
+        Ok(_) => view_or_404(app, id),
+        Err(failure) => fail(failure),
+    }
+}
+
+fn revoke_route(app: &App, id: &str) -> Response {
+    match ops::revoke(app, id, OWNER) {
+        Ok(_) => view_or_404(app, id),
+        Err(failure) => fail(failure),
+    }
+}
+
+#[derive(Deserialize)]
+struct RenameBody {
+    name: String,
+}
+
+fn rename_route(app: &App, req: &Request, id: &str) -> Response {
+    let body: RenameBody = match parse(req) {
+        Ok(body) => body,
+        Err(refusal) => return refusal,
+    };
+    match ops::rename(app, id, &body.name, OWNER) {
+        Ok(_) => view_or_404(app, id),
+        Err(failure) => fail(failure),
+    }
+}
+
+fn settings_route(app: &App, id: &str) -> Response {
+    match app.stations.station(id) {
+        Some(station) => Response::json(200, &station.settings),
+        None => Response::error(404, "no such workstation"),
+    }
+}
+
+fn put_settings_route(app: &App, req: &Request, id: &str) -> Response {
+    let settings: StationSettings = match parse(req) {
+        Ok(settings) => settings,
+        Err(refusal) => return refusal,
+    };
+    match ops::put_settings(app, id, settings, OWNER) {
+        Ok(answer) => Response::json(200, &answer),
+        Err(failure) => fail(failure),
+    }
+}
+
+#[derive(Deserialize)]
+struct OpenBody {
+    agent: Option<u64>,
+    task: Option<String>,
+    kind: Kind,
+}
+
+/// Opens a lease. On the internal route `cid` is the agent making the call and must match the body's, if any; on
+/// the owner's route the body names the agent.
+fn open_lease_route(app: &App, req: &Request, id: &str, cid: Option<u64>, actor: &str) -> Response {
+    let body: OpenBody = match parse(req) {
+        Ok(body) => body,
+        Err(refusal) => return refusal,
+    };
+    let agent = match (cid, body.agent) {
+        (Some(cid), Some(named)) if named != cid => {
+            return Response::error(400, "the agent in the body is not the agent in the path");
+        }
+        (Some(cid), _) => cid,
+        (None, Some(agent)) => agent,
+        (None, None) => return Response::error(400, "name the agent: {\"agent\": <cid>, \"kind\": \"pixel\" | \"shared\"}"),
+    };
+    match ops::open_lease(app, id, agent, body.task, body.kind, actor) {
+        Ok(view) => Response::json(201, &view),
+        Err(failure) => fail(failure),
+    }
+}
+
+fn leases_route(app: &App, id: &str) -> Response {
+    if app.stations.station(id).is_none() {
+        return Response::error(404, "no such workstation");
+    }
+    Response::json(200, &app.stations.leases.views(id))
+}
+
+fn release_route(app: &App, id: &str, lease: &str, cid: Option<u64>, actor: &str) -> Response {
+    match ops::release_lease(app, id, lease, cid, actor) {
+        Ok(released) => Response::json(200, &released),
+        Err(failure) => fail(failure),
+    }
+}

@@ -67,15 +67,18 @@ pub fn stop_all(app: &App, by: &str, reason: &str) -> PlazaState {
         }
     }
     app.control.set(state.clone());
+    // Every workstation freezes: input stops, pixel sessions end, shells and runs stop (docs/design/workstations.md).
+    crate::stations::freeze_all(app, true, by);
     app.bus.publish("plaza", &state);
     state
 }
 
-/// Releases the hold; queued work dispatches again.
+/// Releases the hold; queued work dispatches again, and the workstations thaw and grant their queues.
 pub fn resume(app: &App, by: &str) -> PlazaState {
     let previous = app.control.state();
     let state = PlazaState { paused: false, since_ms: apz_plaza::now_ms(), by: by.into(), reason: String::new(), cancelled: previous.cancelled };
     app.control.set(state.clone());
+    crate::stations::freeze_all(app, false, by);
     app.bus.publish("plaza", &state);
     app.work.dispatch_idle(app);
     state
