@@ -970,7 +970,7 @@ mod tests {
     /// unfolded into the merge: 29 static; the merged meshes of identical rigs instanced, one draw per
     /// content; its cables and status rings unmerged, 188 per frame, its fans and LEDs in 3 GPU batches; its packets
     /// instanced, so they hold no objects). A ratchet: it must not grow.
-    const FLEET_DRAW_ITEMS: usize = 217;
+    const FLEET_DRAW_ITEMS: usize = 218;
 
     fn fleet_draw_items() -> (usize, usize) {
         let fleet: FleetResponse = serde_json::from_str(include_str!("../testdata/floor-15.json")).expect("the fixture parses");

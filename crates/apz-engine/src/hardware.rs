@@ -209,8 +209,9 @@ pub struct InlineMat {
     pub color: Option<String>,
     #[serde(default)]
     pub emissive: Option<String>,
+    /// The glow; absent, the web's default (see `lit_of`).
     #[serde(default)]
-    pub glow: f32,
+    pub glow: Option<f32>,
     #[serde(default = "one")]
     pub opacity: f32,
     #[serde(default)]
@@ -752,30 +753,55 @@ fn resolve(spec: Option<&MatSpec>) -> Option<&InlineMat> {
     }
 }
 
-fn material(spec: Option<&MatSpec>, decal: bool) -> Mat {
-    let fallback = Color::hex(0x8a8f98);
-    let m = match resolve(spec) {
-        None => Material { color: fallback, ..Material::default() },
-        Some(i) => {
-            let opacity = i.opacity.clamp(0.0, 1.0);
-            Material {
-                shading: if i.flat { Shading::Basic } else { Shading::Toon },
-                color: i.color.as_deref().and_then(Color::css).unwrap_or(fallback),
-                emissive: i.emissive.as_deref().and_then(Color::css).unwrap_or(Color::BLACK),
-                emissive_intensity: i.glow,
-                opacity,
-                transparent: opacity < 1.0 || i.additive,
-                additive: i.additive,
-                depth_write: !i.additive,
-                ..Material::default()
-            }
-        }
+/// The web's `DEFAULT_MAT` (hardware.ts): what a part with no material, or an unknown palette name, is drawn with.
+fn default_mat() -> InlineMat {
+    InlineMat { color: Some("#9aa3b8".into()), emissive: None, glow: None, opacity: 1.0, additive: false, flat: false }
+}
+
+/// The material a part draws with: its spec resolved (a copy), or the default.
+fn resolved(spec: Option<&MatSpec>) -> InlineMat {
+    resolve(spec).cloned().unwrap_or_else(default_mat)
+}
+
+/// The emissive colour and glow of a material, as the web's `makeMaterial` (hardware.ts): the emissive is the material's
+/// own, else its colour for an animated or tagged part (`own`), else none; the glow is the material's own, else 1 with an
+/// emissive of its own, 0.5 with the colour's, and 0 without an emissive.
+fn lit_of(i: &InlineMat, own: bool) -> (Option<String>, f32) {
+    let emissive = i.emissive.clone().or_else(|| own.then(|| i.color.clone()).flatten());
+    let glow = i.glow.unwrap_or(match (&emissive, &i.emissive) {
+        (None, _) => 0.0,
+        (Some(_), Some(_)) => 1.0,
+        (Some(_), None) => 0.5,
+    });
+    (emissive, glow)
+}
+
+fn material(spec: Option<&MatSpec>, decal: bool, own: bool) -> Mat {
+    let i = resolved(spec);
+    let (emissive, glow) = lit_of(&i, own);
+    let opacity = i.opacity.clamp(0.0, 1.0);
+    let m = Material {
+        shading: if i.flat { Shading::Basic } else { Shading::Toon },
+        color: i.color.as_deref().and_then(Color::css).unwrap_or(Color::hex(0x9aa3b8)),
+        emissive: emissive.as_deref().and_then(Color::css).unwrap_or(Color::BLACK),
+        emissive_intensity: glow,
+        opacity,
+        transparent: opacity < 1.0 || i.additive,
+        additive: i.additive,
+        depth_write: !i.additive,
+        ..Material::default()
     };
     Mat::new(Material { decal, ..m })
 }
 
-fn glow_of(spec: Option<&MatSpec>) -> f32 {
-    resolve(spec).map_or(0.0, |i| i.glow)
+/// A part's material glow, as `material` draws it.
+fn glow_of(spec: Option<&MatSpec>, own: bool) -> f32 {
+    lit_of(&resolved(spec), own).1
+}
+
+/// Whether a part is tagged or pulses or blinks, so it gets its own material (the web's `own` in `materialFor`).
+fn own_of(p: &Part) -> bool {
+    p.tag.is_some() || p.anim.as_ref().is_some_and(|a| a.pulse.is_some() || a.blink.is_some())
 }
 
 /// Silkscreen text: a flat plane on the part's top, its texture drawn on the canvas.
@@ -1071,7 +1097,7 @@ impl Builder {
                 obj: obj.clone(),
                 mat: Some(mat),
                 tag: Some(tag),
-                glow: glow_of(first.mat.as_ref()),
+                glow: glow_of(first.mat.as_ref(), own_of(first)),
                 rest: Vec3::ZERO,
                 rest_q: Quat::IDENTITY,
                 spin_axis: Vec3::Y,
@@ -1154,10 +1180,10 @@ impl Builder {
         let lit = p.tag.is_some() || p.anim.is_some() || matches!(resolve(p.mat.as_ref()), Some(i) if i.emissive.is_some());
         let decal = matches!(p.geo, Some(Geo::Plane { .. } | Geo::Ring { .. }));
         if lit {
-            return material(p.mat.as_ref(), decal);
+            return material(p.mat.as_ref(), decal, own_of(p));
         }
         let key = format!("{:?}|{decal}", p.mat);
-        self.mats.entry(key).or_insert_with(|| material(p.mat.as_ref(), decal)).clone()
+        self.mats.entry(key).or_insert_with(|| material(p.mat.as_ref(), decal, false)).clone()
     }
 
     /// One copy of a part at `at`: its geometry, transform, outline, children, label, and its
@@ -1221,7 +1247,7 @@ impl Builder {
                 tag,
                 spin.map(|s| (axis_of(&s.axis), s.rps)),
                 blink,
-                glow_of(p.mat.as_ref()),
+                glow_of(p.mat.as_ref(), own_of(p)),
                 anim.is_some_and(|a| a.pulse.is_some() || a.slide.is_some() || a.swing.is_some()),
             );
             // Its pose or colour changes every frame, unless the GPU animates it (scene::GPU_HW_ANIM).
@@ -1234,7 +1260,7 @@ impl Builder {
                 obj: obj.clone(),
                 mat,
                 tag,
-                glow: glow_of(p.mat.as_ref()),
+                glow: glow_of(p.mat.as_ref(), own_of(p)),
                 rest: at,
                 rest_q,
                 spin_axis: spin.map(|s| axis_of(&s.axis)).unwrap_or(Vec3::Y),
@@ -1331,7 +1357,7 @@ fn tint_cards(model: &Model, tints: &[Option<u32>]) -> Model {
     let cards: Vec<usize> = out.parts.iter().enumerate().filter(|(_, p)| is_card(p)).map(|(i, _)| i).collect();
     for (&card, tint) in cards.iter().zip(tints) {
         if let Some(t) = tint {
-            let spec = MatSpec::Inline(InlineMat { color: Some(format!("#{t:06x}")), emissive: None, glow: 0.0, opacity: 1.0, additive: false, flat: false });
+            let spec = MatSpec::Inline(InlineMat { color: Some(format!("#{t:06x}")), emissive: None, glow: None, opacity: 1.0, additive: false, flat: false });
             retint(&mut out.parts[card], &spec, true);
         }
     }
@@ -2076,6 +2102,36 @@ mod tests {
             assert_eq!(plain[i], Color::hex(0x2a2d31), "a tinted draw was not the palette's shroud");
             assert_eq!(on[i], Color::hex(0x76b900));
         }
+    }
+
+    /// The web's GPU colours (machine-stage.ts CARD_TINT, hardware.ts makeMaterial and DEFAULT_MAT). The fleet builds a
+    /// machine with `build` and no tint (fleet.ts addMachine), so its shroud is the palette's, unlit; the single-machine
+    /// stage tints each vendor's card, unlit; an animated or tagged part with no emissive glows with its own colour at 0.5.
+    #[test]
+    fn gpu_colours_follow_the_web() {
+        let m = model("exterior/workstation").unwrap();
+        let params = Params::default().with("gpus", 1.0);
+        let draws = |b: &Built| {
+            crate::scene::flatten(&b.root, crate::scene::Filter::Static)
+                .0
+                .iter()
+                .map(|d| (d.material.color, d.material.emissive, d.material.emissive_intensity))
+                .collect::<Vec<_>>()
+        };
+        let fleet = draws(&build(m, &params));
+        assert!(fleet.contains(&(Color::hex(0x2a2d31), Color::BLACK, 0.0)), "the fleet's shroud is not the palette's");
+        for t in [0x76b900u32, 0xc8102e, 0x0068b5] {
+            let stage = draws(&build_tinted(m, &params, &[Some(t)]));
+            assert!(stage.contains(&(Color::hex(t), Color::BLACK, 0.0)), "tint {t:06x} is not the shroud's colour, unlit");
+        }
+
+        let fan = InlineMat { color: Some("#3c4249".into()), emissive: None, glow: None, opacity: 1.0, additive: false, flat: false };
+        assert_eq!(lit_of(&fan, true), (Some(String::from("#3c4249")), 0.5));
+        assert_eq!(lit_of(&fan, false), (None, 0.0));
+        let led = InlineMat { emissive: Some("#ff0000".into()), ..fan.clone() };
+        assert_eq!(lit_of(&led, false), (Some(String::from("#ff0000")), 1.0));
+        let set = InlineMat { glow: Some(2.0), ..fan.clone() };
+        assert_eq!(lit_of(&set, false), (None, 2.0));
     }
 
     /// The copies a repeated part built: its instances when it is one instanced mesh, else its children.
