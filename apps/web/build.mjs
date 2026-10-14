@@ -37,19 +37,23 @@ for (const file of readdirSync(fontsDir).filter((f) => f.endsWith('.ttf'))) {
 // when it compresses smaller), and writes the glue and the wasm to dist.next under content-hashed names. It prints one
 // JSON line with those names and the sizes.
 const repoRoot = join(root, '../..');
-let engineJsName = null;
-let engineWasmName = null;
-let engineSizes = null;
-let layoutWorkerName = null;
-if (existsSync(join(repoRoot, 'crates/apz-engine-web/Cargo.toml'))) {
-  const out = execFileSync('cargo', ['run', '-q', '-p', 'apz-pack', '--release', '--', 'web-engine', '--out', dist], {
+// apz-pack <subcommand> --out dist: builds one browser crate for wasm, binds it and writes its files; returns its JSON line.
+function packWeb(subcommand) {
+  const out = execFileSync('cargo', ['run', '-q', '-p', 'apz-pack', '--release', '--', subcommand, '--out', dist], {
     cwd: repoRoot,
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'inherit'],
   });
   const line = out.split('\n').map((l) => l.trim()).filter((l) => l.startsWith('{')).pop();
-  if (!line) throw new Error('build: apz-pack printed no JSON line');
-  const engine = JSON.parse(line);
+  if (!line) throw new Error(`build: apz-pack ${subcommand} printed no JSON line`);
+  return JSON.parse(line);
+}
+let engineJsName = null;
+let engineWasmName = null;
+let engineSizes = null;
+let layoutWorkerName = null;
+if (existsSync(join(repoRoot, 'crates/apz-engine-web/Cargo.toml'))) {
+  const engine = packWeb('web-engine');
   engineJsName = engine.js;
   engineWasmName = engine.wasm;
   engineSizes = { bytes: engine.bytes, gzip: engine.gzip, brotli: engine.brotli, wasmOpt: engine.wasm_opt };
@@ -76,6 +80,20 @@ if (process.env.APZ_REQUIRE_ENGINE === '1' && !(engineJsName && engineWasmName &
   throw new Error('build: APZ_REQUIRE_ENGINE=1 but the wasm engine is not in dist (crates/apz-engine-web missing or not built)');
 }
 
+// The IDE model's bindings (crates/apz-ide-web), packed the same way and kept beside the engine in dist. Nothing loads
+// them with the console: the loader (src/ide/wasm.ts) imports the glue on first use, so only its name is defined here.
+let ideJsName = null;
+let ideWasmName = null;
+let ideSizes = null;
+if (existsSync(join(repoRoot, 'crates/apz-ide-web/Cargo.toml'))) {
+  const ide = packWeb('web-ide');
+  ideJsName = ide.js;
+  ideWasmName = ide.wasm;
+  ideSizes = { bytes: ide.bytes, gzip: ide.gzip, brotli: ide.brotli, wasmOpt: ide.wasm_opt };
+} else {
+  console.log('ide: crates/apz-ide-web is not there yet, skipped');
+}
+
 const result = await esbuild.build({
   // Output paths in the metafile are relative to this, so the build works from any working directory.
   absWorkingDir: root,
@@ -93,6 +111,7 @@ const result = await esbuild.build({
     __APZ_ENGINE_JS__: JSON.stringify(engineJsName),
     __APZ_ENGINE_WASM__: JSON.stringify(engineWasmName),
     __APZ_LAYOUT_WORKER__: JSON.stringify(layoutWorkerName),
+    __APZ_IDE_JS__: JSON.stringify(ideJsName),
   },
   entryNames: '[name]-[hash]',
   metafile: true,
@@ -152,4 +171,8 @@ console.log(`bundle sha256:${bundleHash.slice(0, 12)}…`);
 if (engineSizes) {
   const opt = { kept: 'wasm-opt -Oz', larger: 'wasm-opt dropped: it compressed larger', off: 'no wasm-opt' }[engineSizes.wasmOpt];
   console.log(`dist/${engineWasmName}  ${kb(engineSizes.bytes)}  br ${kb(engineSizes.brotli)}  gzip -9 ${kb(engineSizes.gzip)}  (${opt})`);
+}
+if (ideSizes) {
+  const opt = { kept: 'wasm-opt -Oz', larger: 'wasm-opt dropped: it compressed larger', off: 'no wasm-opt' }[ideSizes.wasmOpt];
+  console.log(`dist/${ideWasmName}  ${kb(ideSizes.bytes)}  br ${kb(ideSizes.brotli)}  gzip -9 ${kb(ideSizes.gzip)}  (${opt})`);
 }

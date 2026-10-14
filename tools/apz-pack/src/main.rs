@@ -3,9 +3,10 @@
 //! `apz-pack web-engine --out <dir>` builds crates/apz-engine-web for wasm32 with the
 //! wasm-release profile, binds it with wasm-bindgen (web target, as a library at the version
 //! Cargo.lock pins), and writes the glue and the wasm into <dir> under content-hashed names, with
-//! `.br` and `.gz` siblings. Built with `--features wasm-opt` it also runs wasm-opt -Oz and keeps
+//! `.br` and `.gz` siblings. `apz-pack web-ide --out <dir>` does the same for crates/apz-ide-web,
+//! the IDE model's bindings. Built with `--features wasm-opt` it also runs wasm-opt -Oz and keeps
 //! that output only when it is smaller over the wire (brotli): an LTO'd opt-level z build can come
-//! out of -Oz smaller raw but larger compressed. It prints one JSON line with the names and sizes.
+//! out of -Oz smaller raw but larger compressed. Each prints one JSON line with the names and sizes.
 //!
 //! `apz-pack compress <dir>` writes `.br` and `.gz` siblings for every js, css, wasm, html and svg
 //! file in <dir>, for the hub to serve to browsers that accept them.
@@ -20,7 +21,14 @@ use flate2::write::GzEncoder;
 use sha2::{Digest, Sha256};
 use wasm_bindgen_cli_support::Bindgen;
 
-const ENGINE_LIB: &str = "apz_engine_web";
+/// A browser crate the packer builds: its package name, and its library name (the stem of its glue and wasm files).
+struct WebCrate {
+    package: &'static str,
+    lib: &'static str,
+}
+
+const ENGINE: WebCrate = WebCrate { package: "apz-engine-web", lib: "apz_engine_web" };
+const IDE: WebCrate = WebCrate { package: "apz-ide-web", lib: "apz_ide_web" };
 
 /// Extensions that get precompressed siblings. Fonts and images are already compressed.
 const COMPRESSIBLE: [&str; 5] = ["js", "css", "wasm", "html", "svg"];
@@ -38,9 +46,10 @@ fn main() {
 
 fn run(args: &[String]) -> Result<String, String> {
     match args {
-        [cmd, flag, out] if cmd == "web-engine" && flag == "--out" => web_engine(Path::new(out)),
+        [cmd, flag, out] if cmd == "web-engine" && flag == "--out" => web_crate(Path::new(out), &ENGINE),
+        [cmd, flag, out] if cmd == "web-ide" && flag == "--out" => web_crate(Path::new(out), &IDE),
         [cmd, dir] if cmd == "compress" => compress_dir(Path::new(dir)),
-        _ => Err("usage: apz-pack web-engine --out <dir> | apz-pack compress <dir>".to_string()),
+        _ => Err("usage: apz-pack web-engine|web-ide --out <dir> | apz-pack compress <dir>".to_string()),
     }
 }
 
@@ -56,27 +65,28 @@ fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
-fn web_engine(out: &Path) -> Result<String, String> {
+fn web_crate(out: &Path, krate: &WebCrate) -> Result<String, String> {
+    let lib = krate.lib;
     let root = repo_root();
-    build_wasm(&root)?;
+    build_wasm(&root, krate.package)?;
 
     let target = std::env::var_os("CARGO_TARGET_DIR").map_or_else(|| root.join("target"), |t| root.join(t));
-    let wasm_in = target.join("wasm32-unknown-unknown/wasm-release").join(format!("{ENGINE_LIB}.wasm"));
-    let scratch = target.join("apz-pack/web-engine");
+    let wasm_in = target.join("wasm32-unknown-unknown/wasm-release").join(format!("{lib}.wasm"));
+    let scratch = target.join("apz-pack").join(lib);
     let _ = fs::remove_dir_all(&scratch);
     fs::create_dir_all(&scratch).map_err(|e| format!("scratch dir: {e}"))?;
 
     // wasm-bindgen as a library, with the options of `wasm-bindgen --target web` (which keeps the
     // default module path: the glue fetches its wasm by file name next to itself).
     let mut bindgen = Bindgen::new();
-    bindgen.input_path(&wasm_in).out_name(ENGINE_LIB).typescript(false).omit_default_module_path(false);
+    bindgen.input_path(&wasm_in).out_name(lib).typescript(false).omit_default_module_path(false);
     bindgen.web(true).map_err(|e| format!("wasm-bindgen: {e:#}"))?;
     bindgen.generate(&scratch).map_err(|e| format!("wasm-bindgen: {e:#}"))?;
 
-    let bindgen_wasm = scratch.join(format!("{ENGINE_LIB}_bg.wasm"));
+    let bindgen_wasm = scratch.join(format!("{lib}_bg.wasm"));
     let plain = fs::read(&bindgen_wasm).map_err(|e| format!("read {}: {e}", bindgen_wasm.display()))?;
     let plain_br = brotli_bytes(&plain)?;
-    let (wasm, wasm_br, wasm_opt) = match optimise(&scratch, &bindgen_wasm)? {
+    let (wasm, wasm_br, wasm_opt) = match optimise(&scratch, lib, &bindgen_wasm)? {
         Some(opt) => {
             let opt_br = brotli_bytes(&opt)?;
             if opt_br.len() < plain_br.len() { (opt, opt_br, "kept") } else { (plain, plain_br, "larger") }
@@ -86,10 +96,10 @@ fn web_engine(out: &Path) -> Result<String, String> {
 
     // Content-hashed names: the glue points at the fingerprinted wasm, rewritten exactly once.
     let hash = fingerprint(&wasm);
-    let (js_name, wasm_name) = engine_names(&hash);
-    let glue_path = scratch.join(format!("{ENGINE_LIB}.js"));
+    let (js_name, wasm_name) = names(lib, &hash);
+    let glue_path = scratch.join(format!("{lib}.js"));
     let glue_raw = fs::read_to_string(&glue_path).map_err(|e| format!("read {}: {e}", glue_path.display()))?;
-    let glue = rewrite_glue(&glue_raw, &format!("'{ENGINE_LIB}_bg.wasm'"), &format!("'{wasm_name}'"))?;
+    let glue = rewrite_glue(&glue_raw, &format!("'{lib}_bg.wasm'"), &format!("'{wasm_name}'"))?;
 
     fs::create_dir_all(out).map_err(|e| format!("out dir: {e}"))?;
     let wasm_gz = gzip_bytes(&wasm)?;
@@ -112,8 +122,8 @@ fn web_engine(out: &Path) -> Result<String, String> {
 
 // wasm-opt -Oz on the wasm-bindgen output (the bytes the glue loads); `None` without the feature.
 #[cfg(feature = "wasm-opt")]
-fn optimise(scratch: &Path, bindgen_wasm: &Path) -> Result<Option<Vec<u8>>, String> {
-    let opt_wasm = scratch.join(format!("{ENGINE_LIB}_opt.wasm"));
+fn optimise(scratch: &Path, lib: &str, bindgen_wasm: &Path) -> Result<Option<Vec<u8>>, String> {
+    let opt_wasm = scratch.join(format!("{lib}_opt.wasm"));
     let mut opts = wasm_opt::OptimizationOptions::new_optimize_for_size_aggressively();
     opts.all_features().debug_info(false);
     opts.run(bindgen_wasm, &opt_wasm).map_err(|e| format!("wasm-opt: {e}"))?;
@@ -121,20 +131,20 @@ fn optimise(scratch: &Path, bindgen_wasm: &Path) -> Result<Option<Vec<u8>>, Stri
 }
 
 #[cfg(not(feature = "wasm-opt"))]
-fn optimise(_scratch: &Path, _bindgen_wasm: &Path) -> Result<Option<Vec<u8>>, String> {
+fn optimise(_scratch: &Path, _lib: &str, _bindgen_wasm: &Path) -> Result<Option<Vec<u8>>, String> {
     Ok(None)
 }
 
-// Runs cargo for the engine. Its stdout goes to our stderr so the JSON line is the only stdout.
-fn build_wasm(root: &Path) -> Result<(), String> {
+// Runs cargo for the crate. Its stdout goes to our stderr so the JSON line is the only stdout.
+fn build_wasm(root: &Path, package: &str) -> Result<(), String> {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let status = Command::new(cargo)
-        .args(["build", "-p", "apz-engine-web", "--target", "wasm32-unknown-unknown", "--profile", "wasm-release"])
+        .args(["build", "-p", package, "--target", "wasm32-unknown-unknown", "--profile", "wasm-release"])
         .current_dir(root)
         .stdout(Stdio::from(std::io::stderr()))
         .status()
         .map_err(|e| format!("cargo: {e}"))?;
-    if status.success() { Ok(()) } else { Err(format!("cargo build of apz-engine-web failed: {status}")) }
+    if status.success() { Ok(()) } else { Err(format!("cargo build of {package} failed: {status}")) }
 }
 
 // Writes `.br` and `.gz` next to each compressible file in `dir` (not recursive), dropping stale
@@ -189,8 +199,9 @@ fn fingerprint(bytes: &[u8]) -> String {
     Sha256::digest(bytes).iter().take(4).map(|b| format!("{b:02x}")).collect()
 }
 
-fn engine_names(hash: &str) -> (String, String) {
-    (format!("{ENGINE_LIB}-{hash}.js"), format!("{ENGINE_LIB}-{hash}_bg.wasm"))
+/// The glue and wasm file names for a library and its content hash.
+fn names(lib: &str, hash: &str) -> (String, String) {
+    (format!("{lib}-{hash}.js"), format!("{lib}-{hash}_bg.wasm"))
 }
 
 // Replaces the one reference to the wasm file in the glue. Zero or several references is an error.
@@ -244,7 +255,7 @@ mod tests {
     fn fingerprint_names_carry_eight_hex_digits_of_sha256() {
         // sha256 of the empty input starts with e3b0c442.
         assert_eq!(fingerprint(b""), "e3b0c442");
-        let (js, wasm) = engine_names("e3b0c442");
+        let (js, wasm) = names("apz_engine_web", "e3b0c442");
         assert_eq!(js, "apz_engine_web-e3b0c442.js");
         assert_eq!(wasm, "apz_engine_web-e3b0c442_bg.wasm");
     }

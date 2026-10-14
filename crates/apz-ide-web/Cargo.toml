@@ -1,0 +1,22 @@
+[package]
+name = "apz-ide-web"
+description = "The browser shell of the AgentPlaza IDE model: a wasm-bindgen crate of JSON-in, JSON-out bindings over apz-ide (the diff parser, path rules, tree helpers, workspace ids and the state reducer)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+name = "apz_ide_web"
+path = "src/lib.rs"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+apz-ide = { path = "../apz-ide" }
+serde.workspace = true
+serde_json.workspace = true
+
+# The browser only: the bindings exist on the wasm target alone (see src/lib.rs). Native tests run the JSON layer in model.rs.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# The same wasm-bindgen as apz-engine-web and apz-pack (Cargo.lock pins it).
+wasm-bindgen = "=0.2.129"

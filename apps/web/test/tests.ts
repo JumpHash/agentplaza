@@ -16,6 +16,7 @@ import { join } from 'node:path';
 import type { Agent, FleetApple, FleetKind, FleetMachine, FleetResponse, FleetStatus } from '../src/api';
 import { agentTally, boardOf, gibText, machineFacts, machineSubtitle } from '../src/views/floor';
 import { hubOrigin, setupSnippets } from '../src/views/hub-mcp-snippets';
+import { wrapIde, type IdeGlue } from '../src/ide/wasm';
 
 let failures = 0;
 // Each section checks its own failures and reports them, then the run goes on to the next section (so one failing
@@ -363,6 +364,53 @@ eq(readFlag(refusing, 'setup'), false, 'flags: a refused read is not set');
 writeFlag(refusing, 'setup'); // must not throw
 eq(readFlag(null, 'tour'), false, 'flags: no store at all is not set');
 sectionEnd('onboarding tests: ok');
+
+// The IDE model's typed wrapper: the JSON in and out, over a glue that records what it is given. The harness cannot load
+// the built wasm; apz-ide-web's own tests cover the JSON layer, and the wasm was checked by loading the built glue.
+{
+  const seen: string[] = [];
+  const glue: IdeGlue = {
+    default: async () => undefined,
+    parse_unified: () => JSON.stringify({ files: [], stats: { files: 1, additions: 2, deletions: 0 } }),
+    check_path: (p) => {
+      if (p.includes('..')) throw new Error('path may not contain ..');
+      return p;
+    },
+    check_read: (p) => p,
+    check_write: (p) => p,
+    check_dir: (p) => p,
+    is_secret: (p) => p.endsWith('.pem'),
+    initial_state: () => JSON.stringify({ workspace: null, open: [], active: null, panel: 'changes', base: 'work_start', review: false, filter_changed: false }),
+    reduce: (state, action) => {
+      seen.push(action);
+      const next = JSON.parse(state) as { open: string[] };
+      const a = JSON.parse(action) as { open?: string };
+      if (a.open) next.open = [...next.open, a.open];
+      return JSON.stringify(next);
+    },
+    children: (entries) => entries,
+    changed_filter: () => '[]',
+    parse_workspace_id: (s) => JSON.stringify(s),
+    format_workspace_id: (json) => JSON.parse(json) as string,
+  };
+  const ide = wrapIde(glue);
+  eq(ide.initialState().base, 'work_start', 'ide: the initial state is the default');
+  eq(ide.reduce(ide.initialState(), { open: 'a.txt' }).open, ['a.txt'], 'ide: reduce parses the state it returns');
+  eq(seen, ['{"open":"a.txt"}'], 'ide: reduce sends the action as JSON');
+  eq(ide.parseUnified('x').stats, { files: 1, additions: 2, deletions: 0 }, 'ide: parseUnified returns the totals');
+  eq(ide.isSecret('keys/a.pem'), true, 'ide: isSecret passes through');
+  eq(ide.checkPath('src/a.ts'), 'src/a.ts', 'ide: checkPath returns the cleaned path');
+  let refusal = '';
+  try {
+    ide.checkPath('../x');
+  } catch (e) {
+    refusal = (e as Error).message;
+  }
+  eq(refusal, 'path may not contain ..', 'ide: a refusal reaches the caller with its message');
+  eq(ide.formatWorkspaceId(ide.parseWorkspaceId('agent:7')), 'agent:7', 'ide: a workspace id round trips');
+  eq(ide.children([{ path: 'a', kind: 'file', size: 1, hash: 'h', binary: false }], '')[0]?.path, 'a', 'ide: children parses the entries');
+}
+sectionEnd('ide wrapper tests: ok');
 
 if (failedSections.length) {
   console.error(`${failedSections.length} section(s) failed: ${failedSections.join(', ')}`);
