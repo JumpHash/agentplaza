@@ -133,6 +133,8 @@ pub struct Wizard {
     loaded: bool,
     load_error: Option<String>,
     roles: Vec<RoleView>,
+    /// The custom role whose delete is waiting for the owner's confirm.
+    deleting_role: Option<String>,
     worker_policy: Vec<String>,
     models: Value,
     choices: Vec<Choice>,
@@ -176,6 +178,11 @@ pub enum WizardMsg {
     Go(usize),
     SetMode(Mode),
     PickRole(String),
+    /// Opens (Some) or closes (None) the delete confirm on a custom role.
+    AskDeleteRole(Option<String>),
+    DeleteRole,
+    /// The role is deleted and the list reloaded, or the hub refused (a role in use) and said why.
+    RoleDeleted(Result<Vec<RoleView>, String>),
     Picker(PickerMsg),
     Field(Field, String),
     Area(Area, text_editor::Action),
@@ -466,6 +473,35 @@ pub fn update(wizard: &mut Wizard, msg: WizardMsg, ctx: &Ctx) -> Task<WizardMsg>
                 }
             }
         }
+        WizardMsg::AskDeleteRole(id) => wizard.deleting_role = id,
+        WizardMsg::DeleteRole => {
+            let Some(id) = wizard.deleting_role.clone().filter(|_| !wizard.busy) else {
+                return Task::none();
+            };
+            wizard.busy = true;
+            wizard.error = None;
+            let client = ctx.client.clone();
+            return client::task(
+                move || {
+                    client.delete(&format!("/v1/roles/{id}"))?;
+                    client.get::<Vec<RoleView>>("/v1/roles")
+                },
+                WizardMsg::RoleDeleted,
+            );
+        }
+        WizardMsg::RoleDeleted(result) => {
+            wizard.busy = false;
+            wizard.deleting_role = None;
+            match result {
+                Ok(roles) => {
+                    wizard.roles = roles;
+                    if !wizard.roles.iter().any(|r| r.id == wizard.role_id) {
+                        wizard.role_id.clear();
+                    }
+                }
+                Err(e) => wizard.error = Some(e),
+            }
+        }
         WizardMsg::Picker(m) => {
             picker::update(&mut wizard.picker, &m);
             match m {
@@ -681,16 +717,34 @@ fn purpose_step<'a>(w: &'a Wizard) -> Element<'a, WizardMsg> {
         for r in &w.roles {
             let source = if r.source == "builtin" { "built-in" } else { "custom" };
             let kind = if w.role_id == r.id { Kind::Primary } else { Kind::Secondary };
-            col = col.push(
-                column![
-                    ui::btn(&format!("{} · {}", r.title, r.id), None, kind, Some(WizardMsg::PickRole(r.id.clone()))),
-                    ui::faint(format!("{source} · {} · {}", clip(&r.def.purpose, 180), plural(r.agents, "agent"))).size(11.0),
-                ]
-                .spacing(4),
-            );
+            let mut cell = column![
+                ui::btn(&format!("{} · {}", r.title, r.id), None, kind, Some(WizardMsg::PickRole(r.id.clone()))),
+                ui::faint(format!("{source} · {} · {}", clip(&r.def.purpose, 180), plural(r.agents, "agent"))).size(11.0),
+            ]
+            .spacing(4);
+            if r.source != "builtin" {
+                cell = cell.push(delete_role_panel(w, r));
+            }
+            col = col.push(cell);
         }
     }
     col.into()
+}
+
+/// A custom role's delete: the first click asks, the second confirms. The hub's refusal (a role in use) shows at the top.
+fn delete_role_panel<'a>(w: &'a Wizard, r: &'a RoleView) -> Element<'a, WizardMsg> {
+    if w.deleting_role.as_deref() == Some(r.id.as_str()) {
+        row![
+            ui::faint(format!("Delete {}? Its definition is removed for good.", r.id)),
+            ui::btn("Cancel", None, Kind::Ghost, (!w.busy).then_some(WizardMsg::AskDeleteRole(None))),
+            ui::btn("Delete role", None, Kind::Danger, (!w.busy).then_some(WizardMsg::DeleteRole)),
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center)
+        .into()
+    } else {
+        ui::btn("Delete role", None, Kind::Ghost, (!w.busy).then(|| WizardMsg::AskDeleteRole(Some(r.id.clone()))))
+    }
 }
 
 fn choice<'a>(on: bool, name: &str, hint: &str, msg: WizardMsg) -> Element<'a, WizardMsg> {

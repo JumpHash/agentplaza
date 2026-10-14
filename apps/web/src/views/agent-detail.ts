@@ -580,6 +580,9 @@ function conductCard(cid: number): { el: HTMLElement; destroy: () => void } {
         h('time', null, ago(r.at_ms)),
       ),
       r.lifted ? h('p.conduct-lifted', null, `lifted by owner: ${r.lifted.why}`) : null,
+      r.owner_action
+        ? h('p.conduct-lifted', null, `${r.owner_action.action === 'retire' ? 'Retired' : 'Acknowledged'} by the owner, ${ago(r.owner_action.at_ms)}`)
+        : null,
     );
 
   const suspensionRow = (s: Suspension, now: number): HTMLElement =>

@@ -267,6 +267,23 @@ export function openAgentWizard(opts: WizardOptions = {}): void {
     renderNav();
   };
 
+  /** Deletes a custom role after a confirm, then reloads the list. The hub's refusal (a role in use) shows as the toast. */
+  const removeRole = async (r: RoleView): Promise<void> => {
+    if (busy || !window.confirm(`Delete the role ${r.title} (${r.id})? Its definition is removed for good.`)) return;
+    busy = true;
+    renderNav();
+    const gone = await attempt(async () => {
+      await api.deleteRole(r.id);
+      return true;
+    }, `Deleted ${r.title}`);
+    if (gone) {
+      if (d.roleId === r.id) d.roleId = '';
+      roles = (await attempt(() => api.roles())) ?? roles.filter((x) => x.id !== r.id);
+    }
+    busy = false;
+    render();
+  };
+
   const spawn = (): void => {
     const model = modelValue(d);
     const n = d.count;
@@ -340,7 +357,8 @@ export function openAgentWizard(opts: WizardOptions = {}): void {
     return h(
       'div.wiz-roles',
       { role: 'radiogroup', 'aria-label': 'Roles' },
-      roles.map((r) =>
+      // A custom role gets a Delete button right after its card; the grid keeps both full width.
+      roles.flatMap((r) => [
         h(
           'button.wiz-role',
           {
@@ -366,7 +384,8 @@ export function openAgentWizard(opts: WizardOptions = {}): void {
           h('span', null, clip(r.def.purpose, 180)),
           h('span.wiz-muted', null, `${plural(r.agents, 'agent')} run this role`),
         ),
-      ),
+        ...(r.source === 'builtin' ? [] : [button('Delete role', () => void removeRole(r), { kind: 'ghost', size: 'sm', disabled: busy, title: `Delete ${r.title}` })]),
+      ]),
     );
   }
 
