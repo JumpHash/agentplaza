@@ -3,6 +3,7 @@
 import '../styles/agent.css';
 import { api, ApiError, isContributor, type Agent, type Block, type Delta, type Entry, type ModelInfo, type Sanction, type SanctionsView, type Settings, type Suspension } from '../api';
 import { go, href } from '../router';
+import { openIde } from '../ide/open';
 import { agentName } from '../roles';
 import { agents, on } from '../store';
 import { ago, attempt, badge, button, card, clip, compact, empty, field, modal, tabs, textarea, toast, type Tone } from '../ui/components';
@@ -345,6 +346,7 @@ export function mountAgentDetail(root: HTMLElement, cid: number): Cleanup {
       h(
         'div.row.agent-actions',
         null,
+        button('Open workspace', () => openIde(`agent:${cid}`), { icon: 'square-code', title: "Open this agent's workspace in the IDE" }),
         a.status === 'working' ? button('Cancel work', () => void act(() => attempt(() => api.cancel(cid), 'Cancelled')), { icon: 'ban', disabled: busy }) : null,
         button('Restart', () => restart(a), { disabled: busy }),
         button('Stop', () => void act(() => attempt(() => api.stop(cid), 'Stopped')), { kind: 'danger', icon: 'stop', disabled: busy }),

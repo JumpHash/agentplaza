@@ -5,6 +5,7 @@
 import '../styles/projects.css';
 import { api, PROJECT_STAGES, type Project, type ProjectCritique, type ProjectDoc, type ProjectStage } from '../api';
 import { href } from '../router';
+import { openIde } from '../ide/open';
 import { on } from '../store';
 import { ago, attempt, badge, button, card, empty, field, modal, select, textarea, toast, type Tone } from '../ui/components';
 import { h, replace } from '../ui/dom';
@@ -203,6 +204,18 @@ function openSendBack(p: Project, done: () => void): void {
   );
 }
 
+/** Opens a project's repository in the IDE at its default branch (the branch the repo list reports). */
+async function openRepo(name: string): Promise<void> {
+  const repos = await attempt(() => api.gitRepos());
+  if (!repos) return;
+  const repo = repos.find((r) => r.name === name);
+  if (!repo) {
+    toast(`The repository ${name} was not found`, 'error');
+    return;
+  }
+  openIde(`repo:${name}@${repo.default_branch}`);
+}
+
 export function mount(root: HTMLElement, params: string[]): Cleanup {
   const id = params[0] || '';
   const screen = h('div.projects', null);
@@ -244,7 +257,12 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     const sections: Node[] = [card('Documents', docsBody(p)), card('Critiques', critiquesBody(p)), card('Tasks', tasksBody(p))];
     if (p.repo) {
       const name = p.repo.slice(p.repo.lastIndexOf('/') + 1);
-      sections.push(card('Repository', h('a.pj-link', { href: href('git', name) }, p.repo)));
+      sections.push(
+        card(
+          'Repository',
+          h('div', { style: 'display: flex; gap: 12px; align-items: center; flex-wrap: wrap' }, h('a.pj-link', { href: href('git', name) }, p.repo), button('Open repo', () => void openRepo(name), { size: 'sm', icon: 'square-code', title: 'Open the repository in the IDE, at its default branch' })),
+        ),
+      );
     }
     sections.push(card('History', historyBody(p)));
     return [

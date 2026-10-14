@@ -24,7 +24,7 @@ import {
   type Viewed,
 } from '../ide/model';
 import { loadIde, type Ide } from '../ide/wasm';
-import type { Base, Entry, FileChange, IdeState, Stats } from '../ide/types';
+import type { Base, Entry, FileChange, IdeState, Panel, Stats } from '../ide/types';
 import { agents, on } from '../store';
 import { badge, button, empty, modal, tabs, toast, type Tone } from '../ui/components';
 import { h, replace } from '../ui/dom';
@@ -32,9 +32,16 @@ import type { Cleanup } from './index';
 import { Editor, stateFor } from './ide-editor';
 import { quickOpen, searchPanel } from './ide-find';
 import { changesPanel, checkpointsPanel } from './ide-side';
+import { agentPanel, approvalsPanel, runPanel, terminalPanel, type Panel as TabPanel } from './ide-tabs';
 
 const STYLE_ID = 'apz-ide-style';
 const REFRESH_MS = 400;
+
+/** The right-hand tabs. Checkpoints is the screen's own; the others are the reducer's panels (`Panel`). */
+type SideTab = 'changes' | 'checkpoints' | 'agent' | 'approvals' | 'run' | 'terminal';
+const SIDE_TABS: readonly SideTab[] = ['changes', 'checkpoints', 'agent', 'approvals', 'run', 'terminal'];
+/** The tabs the reducer keeps as its active panel (`set_panel`). */
+const REDUCER_PANELS = new Set<string>(['changes', 'agent', 'approvals', 'run', 'terminal']);
 
 /** One open file: its buffer, and its editor state while another tab is shown (the shown tab's state is the view's). */
 interface Tab {
@@ -115,7 +122,13 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
   let stats: Stats = { files: 0, additions: 0, deletions: 0 };
   let checkpoints: IdeCheckpoint[] = [];
   let marks: Viewed = {};
-  let side: 'changes' | 'checkpoints' = startPanel === 'checkpoints' ? 'checkpoints' : 'changes';
+  let side: SideTab = SIDE_TABS.find((t) => t === startPanel) ?? 'changes';
+  /** Review mode from openIde: applied once, to the first workspace this screen opens. */
+  let reviewPending = query.get('review') === '1';
+  /** The Agent, Approvals and Run tabs' controllers, per workspace: a tab switch keeps a draft or a running command. */
+  let panels: { agent: TabPanel | null; approvals: TabPanel | null; run: TabPanel | null } = { agent: null, approvals: null, run: null };
+  let approvalCount = 0;
+  const terminal = terminalPanel();
   let saved = false;
   let agentWorking = false;
   let wasWorking = false;
@@ -136,7 +149,8 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
   const countEl = h('span.ide-count');
   const badgeHost = h('span.ide-badge-host');
   const saveBtn = button('Save', () => void save(), { kind: 'primary', size: 'sm', title: 'Save (Ctrl+S)' });
-  const top = h('div.ide-top', null, picker, countEl, badgeHost, h('span.spacer'), saveBtn);
+  const reviewBtn = button('Review', () => toggleReview(), { size: 'sm', title: 'Show the diff in the centre instead of the editor' });
+  const top = h('div.ide-top', null, picker, countEl, badgeHost, h('span.spacer'), reviewBtn, saveBtn);
 
   const changedBox = h('input', { type: 'checkbox' });
   const changedToggle = h('label.ide-toggle', null, changedBox, h('span', null, 'Changed only'));
@@ -158,7 +172,9 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
   const banners = h('div.ide-banners');
   const cmHost = h('div.ide-cm');
   const emptyHost = h('div.ide-empty-centre');
-  const centre = h('section.ide-centre', { 'aria-label': 'Editor' }, tabBar, banners, cmHost, emptyHost);
+  /** Review mode: the changes since the base, in place of the editor. */
+  const reviewHost = h('div.ide-review');
+  const centre = h('section.ide-centre', { 'aria-label': 'Editor' }, tabBar, banners, cmHost, emptyHost, reviewHost);
   const editor = new Editor(cmHost);
 
   const sideTabs = h('div.ide-side-tabs');
@@ -263,6 +279,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     stats = { files: 0, additions: 0, deletions: 0 };
     checkpoints = [];
     saved = false;
+    resetPanels();
     try {
       const canonical = ide.parseWorkspaceId(info.id);
       state = ide.reduce(ide.initialState(), { set_workspace: canonical });
@@ -270,6 +287,14 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
       toast(message(err), 'error');
       state = ide.initialState();
     }
+    // The agent tabs exist for agent workspaces only; a repo keeps the Changes tab.
+    if ((side === 'agent' || side === 'approvals') && cidOf(info.id) === null) side = 'changes';
+    if (reviewPending) {
+      reviewPending = false;
+      state = ide.reduce(state, 'toggle_review');
+    }
+    setSide(side);
+    if (cidOf(info.id) !== null) void panelFor('approvals');
     renderAll();
     try {
       await loadDir('');
@@ -531,6 +556,98 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
   };
   document.addEventListener('keydown', onKey);
 
+  // ---- Side tabs and review -------------------------------------------------
+  function resetPanels(): void {
+    panels.agent?.dispose();
+    panels.approvals?.dispose();
+    panels.run?.dispose();
+    panels = { agent: null, approvals: null, run: null };
+    approvalCount = 0;
+  }
+
+  /** The controller of an agent-only or run tab, made on first use for this workspace. Null when the tab does not apply. */
+  function panelFor(k: 'agent' | 'approvals' | 'run'): TabPanel | null {
+    if (!ws) return null;
+    if (k === 'run') {
+      if (!panels.run) panels.run = runPanel(ws);
+      return panels.run;
+    }
+    const cid = cidOf(ws.id);
+    if (cid === null) return null;
+    if (k === 'agent') {
+      if (!panels.agent) panels.agent = agentPanel(cid);
+      return panels.agent;
+    }
+    if (!panels.approvals) {
+      panels.approvals = approvalsPanel({
+        wsId: ws.id,
+        cid,
+        onCount: (n) => {
+          approvalCount = n;
+          renderSideTabs();
+        },
+        onDecided: () => scheduleRefresh(),
+      });
+    }
+    return panels.approvals;
+  }
+
+  /** Shows a right-hand tab, and tells the reducer which panel it is (for the reducer's tabs). */
+  function setSide(next: SideTab): void {
+    side = next;
+    if (ide && state && REDUCER_PANELS.has(next)) state = ide.reduce(state, { set_panel: next as Panel });
+    if (next === 'agent' || next === 'approvals' || next === 'run') panelFor(next)?.show?.();
+    renderSide();
+  }
+
+  function toggleReview(): void {
+    if (!ide || !state) return;
+    state = ide.reduce(state, 'toggle_review');
+    renderAll();
+  }
+
+  function renderSideTabs(): void {
+    const agentWs = ws !== null && cidOf(ws.id) !== null;
+    const items: { key: string; label: string }[] = [
+      { key: 'changes', label: `Changes${files.length ? ` (${files.length})` : ''}` },
+      { key: 'checkpoints', label: `Checkpoints${checkpoints.length ? ` (${checkpoints.length})` : ''}` },
+    ];
+    if (agentWs) {
+      items.push({ key: 'agent', label: 'Agent' }, { key: 'approvals', label: `Approvals${approvalCount ? ` (${approvalCount})` : ''}` });
+    }
+    items.push({ key: 'run', label: 'Run' }, { key: 'terminal', label: 'Terminal' });
+    replace(sideTabs, tabs(items, side, (k) => setSide(k as SideTab)));
+  }
+
+  /** The changes since the base, with the base picker and the viewed marks. The side tab and the review centre share it. */
+  function changesView(onOpen: (path: string) => void): HTMLElement {
+    const bases = [{ value: 'work_start', label: 'Since work started' }, ...checkpoints.map((cp) => ({ value: `checkpoint:${cp.n}`, label: `#${cp.n} ${cp.label || 'checkpoint'}` }))];
+    return h(
+      'div.ide-review-body',
+      null,
+      changesError ? h('p.ide-note.error', null, changesError) : null,
+      changesPanel({
+        files,
+        stats,
+        base: baseValue(),
+        bases,
+        marks,
+        onBase: (value) => {
+          if (!ide || !state) return;
+          state = ide.reduce(state, { set_base: toBase(value) });
+          void refreshChanges().then(() => alive && renderAll());
+        },
+        onOpen,
+        onMark: (path, mark, on) => {
+          if (!ws) return;
+          marks = withViewed(marks, path, mark, on);
+          writeStore(viewedKey(ws.id), JSON.stringify(marks));
+          renderAll();
+        },
+      }),
+    );
+  }
+
   // ---- Rendering ------------------------------------------------------------
   function renderAll(): void {
     if (!alive) return;
@@ -556,6 +673,9 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     const active = state?.active ?? null;
     const t = active !== null ? tabsByPath.get(active) : undefined;
     saveBtn.disabled = !(ws?.writable && t?.buf.dirty && !t.buf.saving);
+    const reviewing = !!state?.review;
+    reviewBtn.textContent = reviewing ? 'Editor' : 'Review';
+    reviewBtn.setAttribute('aria-pressed', reviewing ? 'true' : 'false');
   }
 
   function renderTree(): void {
@@ -670,9 +790,19 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
   }
 
   function renderCentre(): void {
+    const review = !!state?.review && !!ws;
     const has = !!state?.active;
-    cmHost.hidden = !has;
-    emptyHost.hidden = has;
+    cmHost.hidden = review || !has;
+    emptyHost.hidden = review || has;
+    reviewHost.hidden = !review;
+    if (review) {
+      // Opening a file from the review leaves review: the editor is what the owner asked for.
+      replace(reviewHost, changesView((path) => {
+        if (ide && state?.review) state = ide.reduce(state, 'toggle_review');
+        void openTab(path);
+      }));
+      return;
+    }
     if (!has) {
       replace(
         emptyHost,
@@ -684,48 +814,21 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
   }
 
   function renderSide(): void {
-    replace(
-      sideTabs,
-      tabs(
-        [
-          { key: 'changes', label: `Changes${files.length ? ` (${files.length})` : ''}` },
-          { key: 'checkpoints', label: `Checkpoints${checkpoints.length ? ` (${checkpoints.length})` : ''}` },
-        ],
-        side,
-        (k) => {
-          side = k === 'checkpoints' ? 'checkpoints' : 'changes';
-          renderSide();
-        },
-      ),
-    );
+    renderSideTabs();
     if (side === 'checkpoints') {
       replace(sideBody, checkpointsPanel({ checkpoints, canRestore: !!ws, onRestore: confirmRestore }));
       return;
     }
-    const bases = [{ value: 'work_start', label: 'Since work started' }, ...checkpoints.map((cp) => ({ value: `checkpoint:${cp.n}`, label: `#${cp.n} ${cp.label || 'checkpoint'}` }))];
-    replace(
-      sideBody,
-      changesError ? h('p.ide-note.error', null, changesError) : null,
-      changesPanel({
-        files,
-        stats,
-        base: baseValue(),
-        bases,
-        marks,
-        onBase: (value) => {
-          if (!ide || !state) return;
-          state = ide.reduce(state, { set_base: toBase(value) });
-          void refreshChanges().then(() => alive && renderAll());
-        },
-        onOpen: (path) => void openTab(path),
-        onMark: (path, mark, on) => {
-          if (!ws) return;
-          marks = withViewed(marks, path, mark, on);
-          writeStore(viewedKey(ws.id), JSON.stringify(marks));
-          renderSide();
-        },
-      }),
-    );
+    if (side === 'changes') {
+      replace(sideBody, changesView((path) => void openTab(path)));
+      return;
+    }
+    if (side === 'terminal') {
+      replace(sideBody, terminal);
+      return;
+    }
+    const p = panelFor(side);
+    replace(sideBody, p ? p.el : empty('file', 'Not for this workspace', 'The Agent and Approvals tabs are for agent workspaces.'));
   }
 
   function confirmRestore(cp: IdeCheckpoint): void {
@@ -792,6 +895,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     document.removeEventListener('keydown', onKey);
     for (const u of unsub) u();
     unwatch();
+    resetPanels();
     closeOverlay();
     editor.destroy();
   };

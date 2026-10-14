@@ -587,3 +587,239 @@
     flex: 1 1 100%;
   }
 }
+
+/* The right panel's tabs: the strip scrolls when the panel is narrow */
+.ide-side-tabs .tabs {
+  overflow-x: auto;
+  padding: 0 12px;
+  gap: 16px;
+}
+
+.ide-side-tabs .tabs button {
+  flex: none;
+}
+
+/* Review mode: the changes since the base, in place of the editor */
+.ide-review {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  background: var(--sheet);
+}
+
+.ide-review-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+}
+
+/* Agent: the transcript, followed live, and the steer box */
+.ide-agent {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.ide-ag-log {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+}
+
+.ide-ag-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.ide-ag-kind {
+  font: 400 11px / 1 var(--mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
+.ide-ag-text {
+  margin: 0;
+  font: 400 13px / 1.5 var(--serif);
+  color: var(--ink);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.ide-ag-chip {
+  font: 400 11px / 1 var(--mono);
+  color: var(--info-ink);
+  border: 1px solid var(--rule);
+  padding: 4px 6px;
+}
+
+.ide-ag-error {
+  margin: 0;
+  font: 400 12px / 1.5 var(--mono);
+  color: var(--crit);
+}
+
+.ide-ag-result {
+  max-width: 100%;
+}
+
+.ide-ag-result summary {
+  font: 400 11px var(--mono);
+  color: var(--ink-3);
+  cursor: pointer;
+}
+
+.ide-ag-result summary.danger {
+  color: var(--crit);
+}
+
+.ide-ag-result summary.ok {
+  color: var(--ok-ink);
+}
+
+.ide-steer {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--rule);
+  background: var(--paper);
+}
+
+.ide-steer textarea {
+  width: 100%;
+}
+
+.ide-steer-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Approvals: each held call, with its change as a diff */
+.ide-appr-panel {
+  padding: 12px;
+}
+
+.ide-appr-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.ide-appr {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--rule);
+  background: var(--paper);
+}
+
+.ide-appr-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.ide-appr-head code {
+  font: 400 12px var(--mono);
+  overflow-wrap: anywhere;
+}
+
+.ide-appr-body {
+  min-width: 0;
+}
+
+.ide-appr-body .ide-lines,
+.ide-appr-body .ide-pre {
+  max-height: 360px;
+  overflow: auto;
+}
+
+.ide-appr textarea {
+  width: 100%;
+}
+
+.ide-appr-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.ide-pre {
+  margin: 0;
+  padding: 8px;
+  border: 1px solid var(--rule-faint);
+  background: var(--sheet);
+  font: 400 12px / 1.5 var(--mono);
+  color: var(--ink);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Run: one bounded command, its output polled from the hub */
+.ide-run {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  padding: 12px;
+}
+
+.ide-run-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.ide-run-form .input:first-child {
+  flex: 1 1 180px;
+  min-width: 0;
+}
+
+.ide-run-form .input[type="number"] {
+  width: 84px;
+}
+
+.ide-run-status {
+  margin: 0;
+  font: 400 11.5px var(--mono);
+  letter-spacing: 0.04em;
+  color: var(--ink-3);
+}
+
+.ide-run-status.error {
+  color: var(--crit);
+}
+
+.ide-run-out {
+  flex: 1;
+  min-height: 160px;
+  margin: 0;
+  padding: 8px;
+  overflow: auto;
+  border: 1px solid var(--rule);
+  background: var(--sheet);
+  font: 400 12px / 1.5 var(--mono);
+  color: var(--ink);
+  white-space: pre-wrap;
+}
+
+.ide-term {
+  padding: 12px;
+}

@@ -6,6 +6,7 @@ import { agentName, roleLabel } from '../roles';
 import '../styles/tasks.css';
 import { api, type Agent, type Entry, type Task } from '../api';
 import { go, href } from '../router';
+import { openIde } from '../ide/open';
 import { agents, on } from '../store';
 import { ago, attempt, badge, button, clip, field, input, modal, select, textarea, type Tone } from '../ui/components';
 import { h, icon, replace } from '../ui/dom';
@@ -470,7 +471,15 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
       'div.tasks-view',
       null,
       back,
-      h('div.view-head', null, h('div.tk-head', null, h('span.task-id', null, t.id), h('h1', null, titleOf(t.goal)))),
+      h(
+        'div.view-head',
+        null,
+        h('div.tk-head', null, h('span.task-id', null, t.id), h('h1', null, titleOf(t.goal))),
+        // The assignee's workspace, in review mode: what the work changed since it began.
+        t.agent_cid !== null
+          ? h('div.actions', null, button('Review changes', () => openIde(`agent:${t.agent_cid}`, { review: true }), { icon: 'square-code', title: "Review the assignee's changes since the work began" }))
+          : null,
+      ),
       h('div.tk-cols', null, main, side),
     );
   }

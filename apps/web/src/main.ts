@@ -9,6 +9,7 @@ import './styles/views.css';
 import { applySidebar, sidebar, sidebarToggle } from './ui/sidebar';
 
 import { onRoute, type Route } from './router';
+import { openIde } from './ide/open';
 import { agents, overview, startShared } from './store';
 import { button, dot, modal } from './ui/components';
 import { h, icon, replace } from './ui/dom';
@@ -52,6 +53,21 @@ function signOutControl(): HTMLElement | null {
   );
 }
 
+/** OPEN IDE: the IDE on the workspace it used last (its picker when there is none). Narrow windows show the icon only. */
+function openIdeButton(): HTMLElement {
+  const label = h('span', { style: 'font-family: var(--mono); text-transform: uppercase; letter-spacing: 0.06em' }, 'Open IDE');
+  const b = button('', () => openIde(''), { kind: 'ghost', size: 'sm', icon: 'square-code', title: 'Open IDE (Ctrl+Shift+E)' });
+  b.classList.remove('icon-only');
+  b.append(label);
+  const narrow = window.matchMedia('(max-width: 900px)');
+  const fit = (): void => {
+    label.hidden = narrow.matches;
+  };
+  fit();
+  narrow.addEventListener('change', fit);
+  return b;
+}
+
 function topbar(title: HTMLElement): HTMLElement {
   const health = h('div.health');
   overview.watch((o) => {
@@ -63,7 +79,7 @@ function topbar(title: HTMLElement): HTMLElement {
       h('span', null, dot(o.agents.working ? 'info' : 'muted'), `${o.agents.working} working · ${o.agents.idle} idle`),
     );
   });
-  return h('header.topbar', null, sidebarToggle(), title, h('span.spacer'), health, plazaControl(), signOutControl());
+  return h('header.topbar', null, sidebarToggle(), title, h('span.spacer'), openIdeButton(), health, plazaControl(), signOutControl());
 }
 
 function banner(): HTMLElement {
@@ -83,6 +99,14 @@ function main(): void {
   const app = h('div.app', null, sidebar({ counts, navLinks }), h('div.main', null, topbar(title), heldBanner(), banner(), content));
   document.body.replaceChildren(app);
   applySidebar();
+  // Ctrl+Shift+E (Cmd+Shift+E on a Mac) opens the IDE. Not while the owner types in a field or in the editor.
+  document.addEventListener('keydown', (e) => {
+    if (!(e.ctrlKey || e.metaKey) || !e.shiftKey || e.altKey || e.key.toLowerCase() !== 'e') return;
+    const target = e.target as Element | null;
+    if (target?.closest?.('input, textarea, select, [contenteditable]:not([contenteditable="false"]), .cm-editor')) return;
+    e.preventDefault();
+    openIde('');
+  });
   // A 401 from a later call (the session expired or was revoked) swaps the console for the sign-in screen, once.
   window.addEventListener('apz-auth-required', showSignIn, { once: true });
 

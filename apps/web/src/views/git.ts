@@ -4,6 +4,7 @@
 import '../styles/git.css';
 import { api, type GitBranch, type GitComment, type GitCommit, type GitEntry, type GitFile, type GitPull, type GitPullDetail, type GitRepo } from '../api';
 import { href } from '../router';
+import { openIde } from '../ide/open';
 import { ago, attempt, badge, button, card, empty, field, input, modal, select, tabs, textarea, toast } from '../ui/components';
 import { append, h, replace } from '../ui/dom';
 import type { Cleanup } from './index';
@@ -208,7 +209,9 @@ function codeView(c: Ctx, info: GitRepo, branches: GitBranch[]): Node {
       const below: Node[] = [];
       if (st.file) {
         const f = await api.gitFile(c.repo, st.ref, st.file);
-        below.push(fileBlock(st.file, f));
+        const file = st.file;
+        // The file at this branch, in the IDE: the repo workspace at the branch, opened on the file.
+        below.push(fileBlock(file, f, () => openIde(`repo:${c.repo}@${st.ref}`, { path: file })));
       } else {
         const readme = tree.find((e) => e.kind === 'file' && e.name === 'README.md');
         if (readme) {
@@ -262,7 +265,7 @@ function dirTable(tree: GitEntry[], open: (e: GitEntry) => void): HTMLElement {
   ));
 }
 
-function fileBlock(path: string, f: GitFile): HTMLElement {
+function fileBlock(path: string, f: GitFile, onIde?: () => void): HTMLElement {
   let body: Node;
   if (f.binary) body = h('p.git-note', null, `Binary file (${f.size} bytes)`);
   else if (f.text === null) body = h('p.git-note', null, 'No preview for this file.');
@@ -274,7 +277,7 @@ function fileBlock(path: string, f: GitFile): HTMLElement {
     ));
   }
   return h('section.git-filebox', null,
-    h('div.git-filehead', null, h('code', null, path), h('span.git-when', null, fmtSize(f.size))),
+    h('div.git-filehead', null, h('code', null, path), h('span.git-when', null, fmtSize(f.size)), onIde ? button('Open in IDE', onIde, { size: 'sm', icon: 'square-code', title: 'Open this file in the IDE, at this branch' }) : null),
     body,
   );
 }
@@ -404,6 +407,7 @@ async function pullView(c: Ctx, n: number): Promise<void> {
   const merged = d.merged === true;
   const mergeable = d.state === 'open' && d.review === 'approved' && d.mergeable;
   const actions = h('div.git-actions', null,
+    button('Open in IDE', () => openIde(`repo:${c.repo}@${d.head}`, { review: true }), { icon: 'square-code', title: 'Open the pull request head in the IDE, in review mode' }),
     button('Approve', () => reviewModal(c, d, 'APPROVE', 'Approve'), { kind: 'primary' }),
     button('Request changes', () => reviewModal(c, d, 'REQUEST_CHANGES', 'Request changes'), { kind: 'danger' }),
     button('Comment', () => reviewModal(c, d, 'COMMENT', 'Comment'), { kind: 'ghost' }),

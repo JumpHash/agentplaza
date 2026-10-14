@@ -1184,6 +1184,10 @@ export interface IdeSaved { path: string; hash: string; checkpoint: number | nul
 export interface IdeChanges { base: unknown; checkpoint: number | null; diff: string; files?: FileChange[]; stats?: Stats }
 export interface IdeCheckpoint { n: number; label: string; created_ms: number; files: number }
 export interface IdeMatch { path: string; line: number; text: string }
+/** A run's id (the hub's `{run}`), then one poll's answer: the output from `offset` up to `next`, and the run's state. */
+export interface IdeRunStarted { run: string }
+export interface IdeRunPoll { run: string; offset: number; output: string; next: number; done: boolean; exit_code: number | null; timed_out: boolean }
+export interface IdeRunStop { run: string; stopped: boolean; done: boolean }
 
 const ideWs = (id: string) => `/v1/ide/workspaces/${encodeURIComponent(id)}`;
 
@@ -1202,4 +1206,9 @@ export const ideApi = {
   },
   restore: (id: string, n: number) => post<{ restored: unknown; checkpoint: number | null }>(`${ideWs(id)}/checkpoints/${n}/restore`),
   search: (id: string, q: string, glob?: string) => get<{ matches: IdeMatch[]; truncated: boolean }>(`${ideWs(id)}/search${query({ q, glob })}`),
+  /** A bounded command in the workspace (agent workspaces). `timeout_s` is the hub's bound; the run answers at once with its id. */
+  runStart: (id: string, command: string, timeout_s?: number) => post<IdeRunStarted>(`${ideWs(id)}/runs`, { command, timeout_s }),
+  /** The output from `offset`; poll again from `next` until `done`. */
+  runPoll: (id: string, run: string, offset: number) => get<IdeRunPoll>(`${ideWs(id)}/runs/${encodeURIComponent(run)}${query({ offset })}`),
+  runStop: (id: string, run: string) => post<IdeRunStop>(`${ideWs(id)}/runs/${encodeURIComponent(run)}/stop`),
 };
