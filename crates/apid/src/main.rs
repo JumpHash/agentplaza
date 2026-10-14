@@ -55,6 +55,7 @@ mod foundry;
 mod node_link;
 mod hub_auth;
 mod hub_mcp;
+mod ide;
 mod prompts;
 mod skills;
 mod transcript;
