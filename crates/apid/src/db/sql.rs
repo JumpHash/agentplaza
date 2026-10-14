@@ -141,8 +141,28 @@ mod tests {
     use std::collections::BTreeSet;
     use std::path::Path;
 
-    /// This file's own source: every `pub const` line must include a file of the queries folder.
+    /// This file's own source: every `pub const` declaration must include a file of the queries folder.
     const SOURCE: &str = include_str!("sql.rs");
+
+    /// The declarations of `SOURCE`, each joined into one line. rustfmt may break a long
+    /// `include_str!` declaration after its `=`, so a declaration runs from its `pub const` line to
+    /// the line that ends with `;`.
+    fn declarations() -> Vec<String> {
+        let mut found = Vec::new();
+        let mut open = String::new();
+        for line in SOURCE.lines() {
+            if open.is_empty() && !line.starts_with("pub const ") {
+                continue;
+            }
+            open.push_str(line.trim());
+            open.push(' ');
+            if line.trim_end().ends_with(';') {
+                found.push(std::mem::take(&mut open).trim_end().to_string());
+            }
+        }
+        assert!(open.is_empty(), "a const declaration never ends: {open}");
+        found
+    }
 
     /// Every file in `sql/queries` has exactly one const, every const includes a file of that
     /// folder, and every file is a non-empty statement that opens with a `--` comment.
@@ -163,15 +183,17 @@ mod tests {
             .filter(|name| name.ends_with(".sql"))
             .collect();
 
-        let mut consts = 0;
+        let declarations = declarations();
+        let consts = declarations.len();
         let mut included = BTreeSet::new();
-        for line in SOURCE.lines().filter(|line| line.starts_with("pub const ")) {
-            consts += 1;
-            let file = line
+        for declaration in &declarations {
+            let file = declaration
                 .split("sql/queries/")
                 .nth(1)
                 .and_then(|rest| rest.split('"').next())
-                .unwrap_or_else(|| panic!("const is not an include of a queries file: {line}"));
+                .unwrap_or_else(|| {
+                    panic!("const is not an include of a queries file: {declaration}")
+                });
             assert!(
                 included.insert(file.to_string()),
                 "two consts include {file}"

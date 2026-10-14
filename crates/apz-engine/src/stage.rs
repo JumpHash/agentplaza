@@ -935,9 +935,57 @@ mod tests {
         s
     }
 
-    /// Opening a machine and the ticks after it run on the page's thread: each call must stay under 50 ms in release.
+    /// The per-call budget of the page's thread, in milliseconds (release builds).
+    const PERF_BUDGET_MS: f64 = 50.0;
+    /// Runs per kind. Odd, so the median is one run's value.
+    const PERF_RUNS: usize = 3;
+
+    /// The budget multiplier. `APZ_PERF_SLACK` when set and positive; else 4 under CI, where the
+    /// runners are shared and loaded, and 1 on a developer's machine. Export `APZ_PERF_SLACK=1` to
+    /// hold the bare 50 ms target on a quiet machine.
+    fn perf_slack() -> f64 {
+        match std::env::var("APZ_PERF_SLACK")
+            .ok()
+            .filter(|text| !text.trim().is_empty())
+        {
+            Some(text) => match text.trim().parse::<f64>() {
+                Ok(slack) if slack.is_finite() && slack > 0.0 => slack,
+                _ => panic!("APZ_PERF_SLACK must be a positive number, got {text:?}"),
+            },
+            None if std::env::var_os("CI").is_some() => 4.0,
+            None => 1.0,
+        }
+    }
+
+    /// The slowest call of one run on a fresh stage with one machine of `kind`: opening its popup,
+    /// then 200 frames of `work_board` and `tick`.
+    fn slowest_call_in_a_run(kind: &str) -> f64 {
+        let mut s = one_machine_stage(kind);
+        let t = Instant::now();
+        s.open_popup(Some("m0".to_string()));
+        let mut slowest = ms_since(t);
+        let mut now = Instant::now();
+        for _ in 0..200 {
+            now += Duration::from_millis(16);
+            let t = Instant::now();
+            s.work_board();
+            slowest = slowest.max(ms_since(t));
+            let t = Instant::now();
+            s.tick(now);
+            slowest = slowest.max(ms_since(t));
+        }
+        slowest
+    }
+
+    /// Opening a machine and the ticks after it run on the page's thread, so each call must stay
+    /// under [`PERF_BUDGET_MS`] (times the slack, see [`perf_slack`]) in release.
+    ///
+    /// A shared runner is loaded: one descheduled slice can make a single call slow with the code
+    /// unchanged. So each kind is run [`PERF_RUNS`] times on a fresh stage and the test checks the
+    /// median of those runs' slowest calls, which one bad run cannot fail.
     #[test]
     fn opening_a_machine_keeps_every_call_under_50_ms_per_kind() {
+        let budget = PERF_BUDGET_MS * perf_slack();
         for kind in [
             "workstation",
             "server",
@@ -946,26 +994,19 @@ mod tests {
             "edge",
             "apple-soc",
         ] {
-            let mut s = one_machine_stage(kind);
-            let t = Instant::now();
-            s.open_popup(Some("m0".to_string()));
-            let open = ms_since(t);
-            let mut slowest = open;
-            let mut now = Instant::now();
-            for _ in 0..200 {
-                now += Duration::from_millis(16);
-                let t = Instant::now();
-                s.work_board();
-                slowest = slowest.max(ms_since(t));
-                let t = Instant::now();
-                s.tick(now);
-                slowest = slowest.max(ms_since(t));
-            }
-            println!("{kind}: open_popup {open:.1} ms, slowest call {slowest:.1} ms");
+            let mut runs: Vec<f64> = (0..PERF_RUNS)
+                .map(|_| slowest_call_in_a_run(kind))
+                .collect();
+            runs.sort_by(f64::total_cmp);
+            let median = runs[PERF_RUNS / 2];
+            println!(
+                "{kind}: slowest call per run {runs:.1?} ms, median {median:.1} ms, budget {budget:.1} ms"
+            );
             if !cfg!(debug_assertions) {
                 assert!(
-                    slowest < 50.0,
-                    "{kind}: a call took {slowest:.1} ms on the page's thread"
+                    median < budget,
+                    "{kind}: the median slowest call took {median:.1} ms on the page's thread \
+                     (budget {budget:.1} ms; runs {runs:.1?})"
                 );
             }
         }

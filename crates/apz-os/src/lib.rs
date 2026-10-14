@@ -6,6 +6,7 @@
 //! - [`private`]: files and directories only the current user may read (keys, tokens, secrets).
 //! - [`random`]: bytes from the operating system's CSPRNG.
 //! - [`process`]: starting a service that outlives the app that started it.
+//! - [`runner`]: starting a workspace binary from a test, under the target's runner when it has one.
 
 /// The version of this installation: the `VERSION` file the packages ship in the resources
 /// directory (`share/agentplaza/VERSION`, written by packaging/scripts/stage.sh), else the crate's
@@ -409,6 +410,74 @@ pub mod process {
             format!("{name}.exe")
         } else {
             name.to_string()
+        }
+    }
+}
+
+pub mod runner {
+    //! Starting a workspace binary from a test. Cargo starts a test binary through
+    //! `CARGO_TARGET_<TRIPLE>_RUNNER` when its target needs one (the arm64 CI gate runs its tests
+    //! under `qemu-aarch64 -L <sysroot>`), but a binary a test spawns is started by the kernel, so an
+    //! arm64 child on an x86_64 host dies in the dynamic loader before it runs a line. Nothing here
+    //! is set on a native run, and no product code calls it.
+
+    use std::path::Path;
+    use std::process::Command;
+
+    /// The runner cargo configured for this build's architecture (`CARGO_TARGET_<TRIPLE>_RUNNER`,
+    /// split on whitespace the way cargo splits it), or empty on a native run.
+    pub fn runner() -> Vec<String> {
+        runner_in(std::env::consts::ARCH, std::env::vars())
+    }
+
+    /// The runner among `vars` whose triple begins with `arch`. Matching the architecture keeps a
+    /// runner for a different target, which cargo lets sit in the same environment, from applying.
+    fn runner_in(arch: &str, mut vars: impl Iterator<Item = (String, String)>) -> Vec<String> {
+        let arch = arch.to_ascii_uppercase();
+        vars.find_map(|(name, value)| {
+            let triple = name
+                .strip_prefix("CARGO_TARGET_")?
+                .strip_suffix("_RUNNER")?;
+            triple.starts_with(&arch).then_some(value)
+        })
+        .map(|value| value.split_whitespace().map(str::to_owned).collect())
+        .unwrap_or_default()
+    }
+
+    /// A command that runs `program` the way cargo ran this test binary: under [`runner`] when one
+    /// is configured, directly otherwise.
+    pub fn command(program: &Path) -> Command {
+        let mut launch = runner();
+        if launch.is_empty() {
+            return Command::new(program);
+        }
+        let launcher = launch.remove(0);
+        let mut command = Command::new(launcher);
+        command.args(launch).arg(program);
+        command
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn a_runner_applies_only_to_its_own_architecture() {
+            let vars = || {
+                [
+                    (
+                        "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER".to_string(),
+                        "qemu-aarch64 -L /usr/aarch64-linux-gnu".to_string(),
+                    ),
+                    ("PATH".to_string(), "/usr/bin".to_string()),
+                ]
+                .into_iter()
+            };
+            assert_eq!(
+                runner_in("aarch64", vars()),
+                vec!["qemu-aarch64", "-L", "/usr/aarch64-linux-gnu"]
+            );
+            assert!(runner_in("x86_64", vars()).is_empty());
         }
     }
 }

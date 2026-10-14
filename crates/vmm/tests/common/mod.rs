@@ -22,42 +22,9 @@
 #![allow(dead_code)]
 
 use std::fmt;
-use std::path::Path;
-use std::process::Command;
 
-/// The launcher cargo used for this test binary, if any
-/// (`CARGO_TARGET_<TRIPLE>_RUNNER`), split on whitespace the way cargo splits a
-/// runner string. Empty on a native run.
-///
-/// The variable is matched to this binary's architecture (the triple begins
-/// with `std::env::consts::ARCH`), so a runner configured for a *different*
-/// target — cargo lets several sit in one environment — cannot be applied to
-/// this one.
-pub fn runner() -> Vec<String> {
-    let arch = std::env::consts::ARCH.to_ascii_uppercase();
-    std::env::vars()
-        .find_map(|(name, value)| {
-            let triple = name
-                .strip_prefix("CARGO_TARGET_")?
-                .strip_suffix("_RUNNER")?;
-            triple.starts_with(&arch).then_some(value)
-        })
-        .map(|value| value.split_whitespace().map(str::to_owned).collect())
-        .unwrap_or_default()
-}
-
-/// A [`Command`] that runs `program` the way cargo ran this test binary: under
-/// [`runner`] when one is configured, directly otherwise.
-pub fn command(program: &Path) -> Command {
-    let mut runner = runner();
-    if runner.is_empty() {
-        return Command::new(program);
-    }
-    let launcher = runner.remove(0);
-    let mut command = Command::new(launcher);
-    command.args(runner).arg(program);
-    command
-}
+// The runner logic lives in `apz_os::runner`, shared with apid's tests: one implementation.
+pub use apz_os::runner::command;
 
 /// Writes `message` as a line to the run's stderr, where it shows **even on a
 /// passing test**: `libtest` captures `println!`/`eprintln!` for tests that

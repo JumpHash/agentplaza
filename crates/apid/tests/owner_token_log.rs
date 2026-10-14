@@ -5,7 +5,7 @@
 use std::io::{BufRead, BufReader, Read};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, ExitStatus, Stdio};
+use std::process::{Child, ExitStatus, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -114,7 +114,7 @@ fn boot(dir: &Path, ports: [u16; 3]) -> std::io::Result<Hub> {
     std::fs::create_dir_all(&config).expect("create the config directory");
     let env_file = dir.join("keys.env");
     std::fs::write(&env_file, format!("{FAKE_ENV_LINE}\n")).expect("write the fake env file");
-    let mut command = Command::new(APID);
+    let mut command = apz_os::runner::command(Path::new(APID));
     command
         .arg("--port")
         .arg(ports[0].to_string())

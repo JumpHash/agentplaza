@@ -444,7 +444,7 @@ struct HttpFixture {
 
 impl HttpFixture {
     fn start() -> HttpFixture {
-        let mut child = Command::new(fixture())
+        let mut child = apz_os::runner::command(std::path::Path::new(&fixture()))
             .args(["http", "0"])
             .stdout(Stdio::piped())
             .spawn()

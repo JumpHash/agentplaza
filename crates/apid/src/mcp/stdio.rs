@@ -323,7 +323,8 @@ pub struct PlainLauncher;
 #[cfg(test)]
 impl Launcher for PlainLauncher {
     fn launch(&self, spec: &LaunchSpec) -> Result<Child, String> {
-        Command::new(&spec.image)
+        // Under the target's runner when cargo has one (an arm64 fixture on the x86_64 CI host).
+        apz_os::runner::command(std::path::Path::new(&spec.image))
             .args(&spec.command)
             .env_clear()
             .envs(spec.env.iter().cloned())

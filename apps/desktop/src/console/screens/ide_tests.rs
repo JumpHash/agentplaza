@@ -490,29 +490,29 @@ fn the_terminal_takes_the_keys_while_it_has_focus() {
             st,
             Msg::Shortcut {
                 key,
-                modifiers: Modifiers::CTRL,
+                modifiers: Modifiers::COMMAND,
                 status: Status::Ignored,
             },
             &ctx(),
         );
     };
-    // The terminal has the keys: Ctrl+S is the shell's, so nothing is saved.
+    // The terminal has the keys: the command key's S (Ctrl+S, Cmd+S on macOS) is the shell's, so nothing is saved.
     st.terminal_hover = true;
     let _ = update(&mut st, Msg::Pressed, &ctx());
     assert!(st.terminal_focus);
     save_key(&mut st);
     assert_eq!(
         st.notice, None,
-        "the terminal's Ctrl+S is not the IDE's save"
+        "the terminal's command+S is not the IDE's save"
     );
-    // A press elsewhere (the editor) gives the keys back: Ctrl+S is the IDE's save again.
+    // A press elsewhere (the editor) gives the keys back: the command key's S is the IDE's save again.
     st.terminal_hover = false;
     let _ = update(&mut st, Msg::Pressed, &ctx());
     assert!(!st.terminal_focus);
     assert!(matches!(
         shortcut(
             &Key::Character("s".into()),
-            Modifiers::CTRL,
+            Modifiers::COMMAND,
             Status::Ignored
         ),
         Some(Msg::Save)
@@ -582,11 +582,7 @@ fn remaking_the_terminal_tabs_keeps_their_count_and_forgets_their_starts() {
 
 #[test]
 fn the_panel_keys_fold_the_side_panels_only_when_no_field_took_them() {
-    let cmd = if cfg!(target_os = "macos") {
-        Modifiers::LOGO
-    } else {
-        Modifiers::CTRL
-    };
+    let cmd = Modifiers::COMMAND;
     let b = Key::Character("b".into());
     let j = Key::Character("j".into());
     assert!(matches!(
@@ -646,11 +642,7 @@ fn a_tree_listing_for_the_current_workspace_fills_the_tree() {
 
 #[test]
 fn the_open_shortcut_is_command_shift_e_and_stays_out_of_text_fields() {
-    let cmd = if cfg!(target_os = "macos") {
-        Modifiers::LOGO
-    } else {
-        Modifiers::CTRL
-    };
+    let cmd = Modifiers::COMMAND;
     let e = Key::Character("e".into());
     assert!(open_shortcut(&e, cmd | Modifiers::SHIFT, false));
     assert!(
