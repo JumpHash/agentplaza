@@ -367,7 +367,10 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .get("/v1/git/repos/{repo}/tree", tree_route)
         .get("/v1/git/repos/{repo}/file", file_route)
         .get("/v1/git/repos/{repo}/pulls", pulls_route)
+        .post("/v1/git/repos/{repo}/pulls", open_pr_route)
         .get("/v1/git/repos/{repo}/pulls/{n}", pull_route)
+        .post("/v1/git/repos/{repo}/pulls/{n}/comments", comment_route)
+        .post("/v1/git/repos/{repo}/pulls/{n}/state", state_route)
         .post("/v1/git/repos/{repo}/pulls/{n}/review", review_route)
         .post("/v1/git/repos/{repo}/pulls/{n}/merge", merge_route)
 }
@@ -397,9 +400,12 @@ fn internal(app: &App, req: &Request, p: &Params<'_>, tail: &str) -> Response {
 // commits:  [{id, short, message, author, at, additions, deletions}]   (?ref=&limit=, default 30)
 // tree:     [{name, path, kind: "file"|"dir", size}]                  (?ref=&path=)
 // file:     {path, ref, size, text: Option<String>, binary: bool}     (?ref=&path=; text ≤ 512 KiB)
-// pulls:    [{number, title, state, author, head, base, created_at, updated_at, comments, review: "approved"|"changes_requested"|"pending", mergeable}] (?state=open|closed|all)
-// pull:     the row above + {body, diff (≤ 1 MiB unified diff), reviews: [{author, state, body, at}], comments: [{author, body, at, path?, line?}], files: [{path, additions, deletions}]}
-// review:   body {event: "APPROVE"|"REQUEST_CHANGES"|"COMMENT", body} — as the owner (admin)
+// pulls:    [{number, title, state, author, head, base, created_at, updated_at, comments: number, review: "approved"|"changes_requested"|"pending", mergeable}] (?state=open|closed|all&page=1&limit=50, limit 1..=50)
+// pull:     the row above + {body, diff (≤ 1 MiB unified diff), reviews: [{author, state, body, at}], discussion: [{author, body, at}], files: [{path, additions, deletions}]}
+// open_pr:  POST pulls, body {title, head, base, body?} -> the row above (201)
+// comment:  POST pulls/{n}/comments, body {body} -> {author, body, at} (201)
+// state:    POST pulls/{n}/state, body {state: "open"|"closed"} -> the row above
+// review:   body {event: "APPROVE"|"APPROVED"|"REQUEST_CHANGES"|"COMMENT", body} -> {number, event: the event sent to the forge} — as the owner (admin)
 // merge:    body {style?: "merge"|"squash"|"rebase"}
 // create:   body {name, description}
 /// A failed forge call: the status to answer with and the message.
@@ -739,32 +745,37 @@ fn file(app: &App, sudo: Option<&str>, repo: &str, path: &str, reference: Option
     }))
 }
 
-fn pulls(app: &App, sudo: Option<&str>, repo: &str, state: &str) -> Result<Value, Failure> {
-    let raw = forge(app, "GET", &format!("/api/v1/repos/{ORG}/{}/pulls?state={}&limit=50", seg(repo), seg(state)), None, sudo)?;
-    let rows = arr(&raw);
-    let mut out = Vec::with_capacity(rows.len());
-    for p in rows {
-        // The review state costs one call per pull request, so it is computed for up to 20 only.
-        let review = if rows.len() <= 20 {
-            let path = format!("/api/v1/repos/{ORG}/{}/pulls/{}/reviews", seg(repo), num(p, "number"));
-            review_state(&forge(app, "GET", &path, None, sudo)?)
-        } else {
-            "pending"
-        };
-        out.push(pr_row(p, review));
-    }
-    Ok(Value::Array(out))
+/// A pull request's row with its review state, which costs one Forgejo call for its reviews.
+fn pull_row(app: &App, sudo: Option<&str>, repo: &str, p: &Value) -> Result<Value, Failure> {
+    let path = format!("/api/v1/repos/{ORG}/{}/pulls/{}/reviews", seg(repo), num(p, "number"));
+    Ok(pr_row(p, review_state(&forge(app, "GET", &path, None, sudo)?)))
 }
 
-fn pull(app: &App, sudo: Option<&str>, repo: &str, n: u64) -> Result<Value, Failure> {
-    let base = format!("/api/v1/repos/{ORG}/{}/pulls/{n}", seg(repo));
-    let p = forge(app, "GET", &base, None, sudo)?;
-    let reviews = forge(app, "GET", &format!("{base}/reviews"), None, sudo)?;
-    let comments = forge(app, "GET", &format!("/api/v1/repos/{ORG}/{}/issues/{n}/comments", seg(repo)), None, sudo)?;
-    let files = forge(app, "GET", &format!("{base}/files"), None, sudo)?;
+/// The page and page size of a pull request list: the page from 1, the limit from 1 to 50 (default 50).
+fn page_args(page: Option<&str>, limit: Option<&str>) -> (u64, u64) {
+    let page = page.and_then(|v| v.parse::<u64>().ok()).unwrap_or(1).max(1);
+    let limit = limit.and_then(|v| v.parse::<u64>().ok()).unwrap_or(50).clamp(1, 50);
+    (page, limit)
+}
+
+fn pulls(app: &App, sudo: Option<&str>, repo: &str, state: &str, page: u64, limit: u64) -> Result<Value, Failure> {
+    let path = format!("/api/v1/repos/{ORG}/{}/pulls?state={}&page={page}&limit={limit}", seg(repo), seg(state));
+    let raw = forge(app, "GET", &path, None, sudo)?;
+    let rows = arr(&raw).iter().map(|p| pull_row(app, sudo, repo, p)).collect::<Result<Vec<Value>, Failure>>()?;
+    Ok(Value::Array(rows))
+}
+
+/// One issue comment as the console shows it: `{author, body, at}`.
+fn comment_shape(c: &Value) -> Value {
+    json!({"author": at(&c["user"], "login"), "body": at(c, "body"), "at": at(c, "created_at")})
+}
+
+/// A pull request's detail: its row (`comments` stays the count), the body, the clipped diff, the reviews,
+/// the discussion (its issue comments, as an array) and the files.
+fn pull_detail(p: &Value, reviews: &Value, comments: &Value, files: &Value) -> Value {
     let mut diff = String::new();
     let mut file_rows = Vec::new();
-    for f in arr(&files) {
+    for f in arr(files) {
         file_rows.push(json!({"path": at(f, "filename"), "additions": num(f, "additions"), "deletions": num(f, "deletions")}));
         if let Some(patch) = f["patch"].as_str() {
             diff.push_str(patch);
@@ -773,42 +784,84 @@ fn pull(app: &App, sudo: Option<&str>, repo: &str, n: u64) -> Result<Value, Fail
             }
         }
     }
-    let mut row = pr_row(&p, review_state(&reviews));
-    row["body"] = json!(at(&p, "body"));
+    let mut row = pr_row(p, review_state(reviews));
+    row["body"] = json!(at(p, "body"));
     row["diff"] = json!(clip(diff, ROUTE_DIFF));
     row["reviews"] = Value::Array(
-        arr(&reviews)
+        arr(reviews)
             .iter()
             .map(|r| json!({"author": at(&r["user"], "login"), "state": at(r, "state"), "body": at(r, "body"), "at": at(r, "submitted_at")}))
             .collect(),
     );
-    row["comments"] = Value::Array(
-        arr(&comments)
-            .iter()
-            .map(|c| json!({"author": at(&c["user"], "login"), "body": at(c, "body"), "at": at(c, "created_at")}))
-            .collect(),
-    );
+    row["discussion"] = Value::Array(arr(comments).iter().map(comment_shape).collect());
     row["files"] = Value::Array(file_rows);
-    Ok(row)
+    row
+}
+
+fn pull(app: &App, sudo: Option<&str>, repo: &str, n: u64) -> Result<Value, Failure> {
+    let base = format!("/api/v1/repos/{ORG}/{}/pulls/{n}", seg(repo));
+    let p = forge(app, "GET", &base, None, sudo)?;
+    let reviews = forge(app, "GET", &format!("{base}/reviews"), None, sudo)?;
+    let comments = forge(app, "GET", &format!("/api/v1/repos/{ORG}/{}/issues/{n}/comments", seg(repo)), None, sudo)?;
+    let files = forge(app, "GET", &format!("{base}/files"), None, sudo)?;
+    Ok(pull_detail(&p, &reviews, &comments, &files))
+}
+
+/// The Forgejo ReviewStateType for a client's review event: APPROVE (or APPROVED) is sent as APPROVED, and
+/// REQUEST_CHANGES and COMMENT pass through. Anything else is refused before the forge is called.
+fn review_event(event: &str) -> Result<&'static str, Failure> {
+    match event {
+        "APPROVE" | "APPROVED" => Ok("APPROVED"),
+        "REQUEST_CHANGES" => Ok("REQUEST_CHANGES"),
+        "COMMENT" => Ok("COMMENT"),
+        _ => Err(Failure::new(400, "event must be APPROVE, REQUEST_CHANGES or COMMENT")),
+    }
 }
 
 fn review(app: &App, sudo: Option<&str>, repo: &str, n: u64, event: &str, body: &str) -> Result<Value, Failure> {
+    let event = review_event(event)?;
     let path = format!("/api/v1/repos/{ORG}/{}/pulls/{n}/reviews", seg(repo));
     forge(app, "POST", &path, Some(&json!({"event": event, "body": body})), sudo)?;
     Ok(json!({"number": n, "event": event}))
 }
 
+/// The body of a comment: required and non-empty.
+fn comment_input(input: &Value) -> Result<&str, Failure> {
+    need(input, "body")
+}
+
 fn comment(app: &App, sudo: Option<&str>, repo: &str, n: u64, body: &str) -> Result<Value, Failure> {
     let path = format!("/api/v1/repos/{ORG}/{}/issues/{n}/comments", seg(repo));
-    forge(app, "POST", &path, Some(&json!({"body": body})), sudo)?;
-    Ok(json!({"number": n}))
+    let c = forge(app, "POST", &path, Some(&json!({"body": body})), sudo)?;
+    Ok(comment_shape(&c))
+}
+
+/// The body of a new pull request: a non-empty title, head and base; the body is optional.
+fn new_pull_input(input: &Value) -> Result<(&str, &str, &str, &str), Failure> {
+    Ok((need(input, "title")?, need(input, "head")?, need(input, "base")?, at(input, "body")))
 }
 
 fn open_pr(app: &App, sudo: Option<&str>, repo: &str, head: &str, base: &str, title: &str, body: &str) -> Result<Value, Failure> {
     let base = if base.is_empty() { "main" } else { base };
     let path = format!("/api/v1/repos/{ORG}/{}/pulls", seg(repo));
     let v = forge(app, "POST", &path, Some(&json!({"head": head, "base": base, "title": title, "body": body})), sudo)?;
-    Ok(json!({"number": num(&v, "number"), "title": at(&v, "title")}))
+    pull_row(app, sudo, repo, &v)
+}
+
+/// The body of a state change: `open` or `closed`.
+fn state_input(input: &Value) -> Result<&'static str, Failure> {
+    match at(input, "state") {
+        "open" => Ok("open"),
+        "closed" => Ok("closed"),
+        _ => Err(Failure::new(400, "state must be open or closed")),
+    }
+}
+
+/// Closes or reopens a pull request; answers its row.
+fn set_state(app: &App, sudo: Option<&str>, repo: &str, n: u64, state: &str) -> Result<Value, Failure> {
+    let path = format!("/api/v1/repos/{ORG}/{}/pulls/{n}", seg(repo));
+    let v = forge(app, "PATCH", &path, Some(&json!({"state": state})), sudo)?;
+    pull_row(app, sudo, repo, &v)
 }
 
 fn merge_pr(app: &App, sudo: Option<&str>, repo: &str, n: u64, style: &str) -> Result<Value, Failure> {
@@ -868,24 +921,47 @@ fn file_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
 
 fn pulls_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
     let state = q(req, "state").unwrap_or_else(|| "open".to_string());
-    reply(pulls(app, None, p.get("repo"), &state), 200)
+    let (page, limit) = page_args(req.query_param("page"), req.query_param("limit"));
+    reply(pulls(app, None, p.get("repo"), &state, page, limit), 200)
+}
+
+fn open_pr_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
+    let Ok(body) = req.json::<Value>() else {
+        return Response::error(400, "the body must be JSON: {title, head, base, body?}");
+    };
+    reply(
+        new_pull_input(&body).and_then(|(title, head, base, text)| open_pr(app, None, p.get("repo"), head, base, title, text)),
+        201,
+    )
 }
 
 fn pull_route(app: &App, _req: &Request, p: &Params<'_>) -> Response {
     reply(number(p.get("n")).and_then(|n| pull(app, None, p.get("repo"), n)), 200)
 }
 
+fn comment_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
+    let Ok(body) = req.json::<Value>() else {
+        return Response::error(400, "the body must be JSON: {body}");
+    };
+    reply(comment_input(&body).and_then(|text| number(p.get("n")).and_then(|n| comment(app, None, p.get("repo"), n, text))), 201)
+}
+
+fn state_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
+    let Ok(body) = req.json::<Value>() else {
+        return Response::error(400, "the body must be JSON: {state: open|closed}");
+    };
+    reply(state_input(&body).and_then(|state| number(p.get("n")).and_then(|n| set_state(app, None, p.get("repo"), n, state))), 200)
+}
+
 fn review_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
     let Ok(body) = req.json::<Value>() else {
         return Response::error(400, "the body must be JSON: {event, body}");
     };
-    let event = at(&body, "event");
-    if !matches!(event, "APPROVE" | "REQUEST_CHANGES" | "COMMENT") {
-        return Response::error(400, "event must be APPROVE, REQUEST_CHANGES or COMMENT");
-    }
-    reply(number(p.get("n")).and_then(|n| review(app, None, p.get("repo"), n, event, at(&body, "body"))), 200)
+    reply(number(p.get("n")).and_then(|n| review(app, None, p.get("repo"), n, at(&body, "event"), at(&body, "body"))), 200)
 }
 
+/// `POST .../merge`. The owner may merge without an approval; the clients gate the button. (The agents'
+/// `plaza_git` merge still needs an approving review by another agent: see `act`.)
 fn merge_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
     let style = req.json::<Value>().ok().map(|b| at(&b, "style").to_string()).unwrap_or_default();
     let style = if style.is_empty() { "merge".to_string() } else { style };
@@ -950,7 +1026,7 @@ fn act(app: &App, sudo: Option<&str>, input: &Value) -> Result<String, Failure> 
         }
         "prs" => {
             let state = input["state"].as_str().unwrap_or("open");
-            let rows = pulls(app, sudo, need(input, "repo")?, state)?;
+            let rows = pulls(app, sudo, need(input, "repo")?, state, 1, 50)?;
             Ok(lines(
                 arr(&rows)
                     .iter()
@@ -984,13 +1060,9 @@ fn act(app: &App, sudo: Option<&str>, input: &Value) -> Result<String, Failure> 
             Ok(format!("opened #{} {}", num(&v, "number"), at(&v, "title")))
         }
         "review" => {
-            let event = need(input, "event")?;
-            if !matches!(event, "APPROVE" | "REQUEST_CHANGES" | "COMMENT") {
-                return Err(Failure::new(400, "event must be APPROVE, REQUEST_CHANGES or COMMENT"));
-            }
             let n = number_arg(input)?;
-            review(app, sudo, need(input, "repo")?, n, event, at(input, "body"))?;
-            Ok(format!("review {event} posted on #{n}"))
+            let v = review(app, sudo, need(input, "repo")?, n, need(input, "event")?, at(input, "body"))?;
+            Ok(format!("review {} posted on #{n}", at(&v, "event")))
         }
         "comment" => {
             let n = number_arg(input)?;
@@ -1040,4 +1112,117 @@ pub fn run(app: &App, agent: &Agent, input: &Value) -> Result<String, String> {
     }
     let user = app.forge.identity(agent.cid, &agent.name)?.user;
     act(app, Some(user.as_str()), input).map_err(|f| f.message)
+}
+
+#[cfg(test)]
+mod tests {
+    //! The pure parts of the git routes: no Forgejo is called. A pull request is built from the JSON shapes
+    //! Forgejo answers with.
+
+    use super::*;
+
+    fn pull_fixture() -> Value {
+        json!({
+            "number": 7,
+            "title": "Add the thing",
+            "state": "open",
+            "user": {"login": "agent-3"},
+            "head": {"ref": "feature"},
+            "base": {"ref": "main"},
+            "created_at": "2026-10-01T10:00:00Z",
+            "updated_at": "2026-10-02T10:00:00Z",
+            "comments": 2,
+            "mergeable": true,
+            "body": "Details"
+        })
+    }
+
+    fn status(result: Result<impl Sized, Failure>) -> Option<u16> {
+        result.err().map(|f| f.status)
+    }
+
+    #[test]
+    fn review_event_maps_the_client_events_to_forgejo_states() {
+        assert_eq!(review_event("APPROVE").ok(), Some("APPROVED"));
+        assert_eq!(review_event("APPROVED").ok(), Some("APPROVED"));
+        assert_eq!(review_event("REQUEST_CHANGES").ok(), Some("REQUEST_CHANGES"));
+        assert_eq!(review_event("COMMENT").ok(), Some("COMMENT"));
+    }
+
+    #[test]
+    fn review_event_refuses_anything_else_with_400() {
+        for bad in ["", "approve", "PENDING", "DISMISS", "LGTM", "REQUEST_CHANGE"] {
+            assert_eq!(status(review_event(bad)), Some(400), "event {bad:?} must be refused");
+        }
+    }
+
+    #[test]
+    fn pull_detail_keeps_comments_a_count_and_gives_the_discussion_apart() {
+        let reviews = json!([{"user": {"login": "agent-5"}, "state": "APPROVED", "body": "", "submitted_at": "2026-10-02T11:00:00Z"}]);
+        let comments = json!([
+            {"user": {"login": "agent-5"}, "body": "first", "created_at": "2026-10-02T09:00:00Z"},
+            {"user": {"login": "agent-3"}, "body": "second", "created_at": "2026-10-02T09:30:00Z"}
+        ]);
+        let files = json!([{"filename": "src/a.rs", "additions": 3, "deletions": 1, "patch": "@@ -1 +1 @@\n-a\n+b"}]);
+        let row = pull_detail(&pull_fixture(), &reviews, &comments, &files);
+
+        assert_eq!(row["comments"], json!(2), "comments stays the count");
+        assert_eq!(row["discussion"].as_array().map(Vec::len), Some(2));
+        assert_eq!(row["discussion"][0], json!({"author": "agent-5", "body": "first", "at": "2026-10-02T09:00:00Z"}));
+        assert_eq!(row["discussion"][1], json!({"author": "agent-3", "body": "second", "at": "2026-10-02T09:30:00Z"}));
+        assert_eq!(row["review"], json!("approved"));
+        assert_eq!(row["reviews"][0]["author"], json!("agent-5"));
+        assert_eq!(row["files"][0], json!({"path": "src/a.rs", "additions": 3, "deletions": 1}));
+        assert_eq!(row["diff"], json!("@@ -1 +1 @@\n-a\n+b\n"));
+        assert_eq!(row["body"], json!("Details"));
+        assert_eq!(row["number"], json!(7));
+    }
+
+    #[test]
+    fn pull_detail_with_no_discussion_still_has_an_empty_array() {
+        let row = pull_detail(&pull_fixture(), &json!([]), &json!([]), &json!([]));
+        assert_eq!(row["comments"], json!(2));
+        assert_eq!(row["discussion"], json!([]));
+        assert_eq!(row["review"], json!("pending"));
+    }
+
+    #[test]
+    fn new_pull_input_needs_a_title_and_branches_and_takes_an_optional_body() {
+        let ok = json!({"title": "T", "head": "feature", "base": "main"});
+        assert_eq!(new_pull_input(&ok).ok(), Some(("T", "feature", "main", "")));
+        let with_body = json!({"title": "T", "head": "feature", "base": "main", "body": "text"});
+        assert_eq!(new_pull_input(&with_body).ok().map(|(_, _, _, body)| body), Some("text"));
+
+        assert_eq!(status(new_pull_input(&json!({"head": "feature", "base": "main"}))), Some(400));
+        assert_eq!(status(new_pull_input(&json!({"title": "  ", "head": "feature", "base": "main"}))), Some(400));
+        assert_eq!(status(new_pull_input(&json!({"title": "T", "head": "", "base": "main"}))), Some(400));
+        assert_eq!(status(new_pull_input(&json!({"title": "T", "head": "feature"}))), Some(400));
+        assert_eq!(status(new_pull_input(&json!({"title": "T", "head": "feature", "base": " "}))), Some(400));
+    }
+
+    #[test]
+    fn comment_input_needs_a_body() {
+        assert_eq!(comment_input(&json!({"body": "hi"})).ok(), Some("hi"));
+        assert_eq!(status(comment_input(&json!({"body": ""}))), Some(400));
+        assert_eq!(status(comment_input(&json!({"body": "   "}))), Some(400));
+        assert_eq!(status(comment_input(&json!({}))), Some(400));
+    }
+
+    #[test]
+    fn state_input_accepts_open_and_closed_only() {
+        assert_eq!(state_input(&json!({"state": "open"})).ok(), Some("open"));
+        assert_eq!(state_input(&json!({"state": "closed"})).ok(), Some("closed"));
+        for bad in [json!({"state": "merged"}), json!({"state": "Closed"}), json!({"state": ""}), json!({})] {
+            assert_eq!(status(state_input(&bad)), Some(400), "{bad} must be refused");
+        }
+    }
+
+    #[test]
+    fn page_args_default_to_the_first_page_of_fifty_and_clamp_the_limit() {
+        assert_eq!(page_args(None, None), (1, 50));
+        assert_eq!(page_args(Some("3"), Some("20")), (3, 20));
+        assert_eq!(page_args(Some("0"), Some("500")), (1, 50));
+        assert_eq!(page_args(Some("x"), Some("-1")), (1, 50));
+        assert_eq!(page_args(None, Some("0")), (1, 1));
+    }
 }
