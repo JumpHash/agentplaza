@@ -87,21 +87,35 @@ export function rightTabFor(panel: string | null): RightTab | null {
   return panel === 'agent' || panel === 'approvals' || panel === 'run' || panel === 'terminal' ? panel : null;
 }
 
-// ---- What each workspace kind has -------------------------------------------
-// A workstation has no checkpoints and no diff, so no Changes view and no Review; its Chat is not there either. Null (no
-// workspace yet) has everything, as the agent and repository do.
+// ---- What each selection has ------------------------------------------------
+// A workstation (`station:<id>`) has its work folder, its editor, its terminal and its runs. It has no diff (so no Diff
+// view, no changed-only filter and no checkpoints), no chat, and no project (so no Board, Tasks, Approvals or Activity).
+// A selection with no workspace yet (no agent, or an agent with no VM) has what a repository has.
 
-/** Whether a kind has a diff: the Changes view, the checkpoints and the Review. Only a station has none. */
+export type CentreKey = 'chat' | 'terminal' | 'editor' | 'diff';
+export type RightKey = 'board' | 'files' | 'tasks' | 'approvals' | 'activity';
+
+/** Whether a kind has a diff: the Diff view, the changed-only filter and the checkpoints. Only a workstation has none. */
 export const hasDiff = (kind: WorkspaceKind | null): boolean => kind !== 'station';
 
-/** The side panel's views a workspace kind has. */
-export function leftViewsFor(kind: WorkspaceKind | null): LeftView[] {
-  return hasDiff(kind) ? ['files', 'search', 'changes', 'checkpoints'] : ['files', 'search'];
+/** Whether a selection has a terminal: an agent's, or a workstation's own shell. A repository has none. */
+export const hasTerminal = (kind: WorkspaceKind | null, agent: boolean): boolean => agent || kind === 'station';
+
+/** The centre's views a selection has. Chat is an agent's; the editor is every workspace's; the diff is any kind with one. */
+export function centreViewsFor(kind: WorkspaceKind | null, agent: boolean): CentreKey[] {
+  const views: CentreKey[] = [];
+  if (agent) views.push('chat');
+  if (hasTerminal(kind, agent)) views.push('terminal');
+  views.push('editor');
+  if (hasDiff(kind)) views.push('diff');
+  return views;
 }
 
-/** The right panel's tabs a workspace kind has: the Agent and Approvals tabs are the agent's. */
-export function rightTabsFor(kind: WorkspaceKind | null): RightTab[] {
-  return kind === 'agent' ? ['agent', 'approvals', 'run', 'terminal'] : ['run', 'terminal'];
+/** The right panel's tabs a selection has: an agent's are all five; a workstation has its files; else the project's three. */
+export function rightViewsFor(kind: WorkspaceKind | null, agent: boolean): RightKey[] {
+  if (agent) return ['board', 'files', 'tasks', 'approvals', 'activity'];
+  if (kind === 'station') return ['files'];
+  return ['board', 'files', 'tasks'];
 }
 
 /** Whether a kind runs commands: an agent's and a station's do; a repository's runs come in a later phase. */

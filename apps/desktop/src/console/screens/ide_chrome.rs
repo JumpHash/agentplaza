@@ -9,7 +9,7 @@ use iced::widget::{Space, container, mouse_area, row};
 use iced::{Alignment, Border, Element, Length, Theme, mouse};
 use serde_json::{Value, json};
 
-use super::ide::{self, Msg, Plaza, State};
+use super::ide::{self, Msg, Plaza, State, has_diff};
 use super::ide_editor;
 use crate::console::boot;
 use crate::console::shell;
@@ -506,9 +506,15 @@ pub fn status_bar(st: &State, live: bool) -> Element<'_, Msg> {
     ]
     .spacing(6)
     .align_y(Alignment::Center);
+    // A workstation has no diff, so no base to compare with.
+    let base = if has_diff(st.ide.workspace.as_ref()) {
+        base_label(&st.ide.base)
+    } else {
+        String::new()
+    };
     let mut bar = row![
         ui::mono(workspace, TYPE_BADGE, p.ink_2),
-        ui::sans(base_label(&st.ide.base), TYPE_BADGE, p.ink_3),
+        ui::sans(base, TYPE_BADGE, p.ink_3),
         link,
         Space::new().width(Length::Fill),
     ]
@@ -656,7 +662,10 @@ mod tests {
         let read = Layout::from_json(&wild).expect("an object reads");
         assert_eq!((read.left, read.right), (200.0, 560.0));
         assert_eq!(read.terminal_height, 120.0);
-        assert!(!read.drawer, "the drawer is closed at a start, whatever was kept");
+        assert!(
+            !read.drawer,
+            "the drawer is closed at a start, whatever was kept"
+        );
         assert!(
             !read.left_open && read.right_open,
             "a missing flag keeps its default"

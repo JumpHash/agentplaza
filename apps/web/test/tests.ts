@@ -22,12 +22,12 @@ import { hubOrigin, setupSnippets } from '../src/views/hub-mcp-snippets';
 import { ENV_NAME_RE, limitsProblem, matchingPreset, ownRowProblem, specsOfBag } from '../src/views/mcp-common';
 import { wrapIde, type IdeGlue } from '../src/ide/wasm';
 import { activitySplit, authorHue, buildChat, currentTask, filterPalette, formatMs, matchScore, mentionsOf, rowStatus, stepLabel, type PaletteItem } from '../src/ide/view';
-import { groupByProject, projectOf, sharedNames, startAgent } from '../src/ide/groups';
+import { groupByProject, matchingRows, projectOf, sharedNames, sidebarGroups, startAgent } from '../src/ide/groups';
 import type { Entry, Project, Task, StationFacts, StationLease, StationSettings, StationView, RecordingDefaults, MachineNode } from '../src/api';
 import { mentionAt, mentionOptions } from '../src/board/owner';
-import { applyBuffer, badgeOf, diffMark, dirsOf, fuzzyScore, isViewed, languageFor, lineCounts, onRemote, openBuffer, parentDir, parseViewed, rankPaths, viewedKey, withViewed, groupWorkspaces, osLabel, pickerLabel } from '../src/ide/model';
+import { applyBuffer, badgeOf, diffMark, dirsOf, fuzzyScore, isViewed, languageFor, lineCounts, onRemote, openBuffer, parentDir, parseViewed, rankPaths, viewedKey, withViewed, groupWorkspaces, osLabel, pickerLabel, stationCrumb } from '../src/ide/model';
 import type { FileChange } from '../src/ide/types';
-import { CENTRE_MIN, clampSize, defaultLayout, fitSize, isNarrow, LEFT_SIZE, leftViewFor, originFallback, parseLayout, RIGHT_SIZE, rightTabFor, serializeLayout, hasDiff, leftViewsFor, rightTabsFor, runsFor } from '../src/ide/layout';
+import { CENTRE_MIN, clampSize, defaultLayout, fitSize, isNarrow, LEFT_SIZE, leftViewFor, originFallback, parseLayout, RIGHT_SIZE, rightTabFor, serializeLayout, hasDiff, hasTerminal, centreViewsFor, rightViewsFor, runsFor } from '../src/ide/layout';
 import { MAX_TERMINALS, attachFrame, base64ToBytes, bytesToBase64, clearSession, inputFrame, killFrame, nextOffset, openFrame, parseServerFrame, plainText, readSession, reconnectDelay, resizeFrame, sessionKey, splitInput, storedTerminalCount, terminalSocketUrl, writeSession, type KeyValueStore } from '../src/views/ide-terminal-model';
 import { auditLabel, codeChip, countdown, displaysText, formLabel, gpuLine, gpuSummary, joinCommand, leaseCount, leaseStateChip, nameProblem, osText, pictureNote, ramText, readSettings, accountBadge, accountText, settingsForm, sortStations, stationSummary, statusChip, takeoverText, type SettingsForm, actionFrame, activeAction, backoffMs, bytesText, buttonAction, clockText, controlSocketUrl, crumbsOf, dollarsPerHour, defaultsForm, frameAt, frameTime, frameTimes, framePoint, inputButton, joinPath, keyAction, moveAction, parentDir, parseControlText, parseFrame, parseScreenText, pendingPaths, rateText, readDefaults, readRate, recordingSpan, scrollNotches, screenSocketUrl, sessionChoices, takeoverBanner, treeOf, uploadProblem, wheelAction, actionText, type KeyEventLike } from '../src/views/workstations-model';
 import { isStationNode, leaseCounts, stationBadge, stationLine, stationLook, stationMachine, stationThumbnailPath } from '../src/views/station-machine';
@@ -608,12 +608,21 @@ sectionEnd('ide layout tests: ok');
     ['Workstation · studio · macOS · ● online', 'Agent · Ada', 'Workstation · w4 · Linux · ● online', 'Repo · api (read-only)'],
     'ide picker: each kind labels its option, and a station shows its OS and status',
   );
-  eq([leftViewsFor('agent'), leftViewsFor(null)], [['files', 'search', 'changes', 'checkpoints'], ['files', 'search', 'changes', 'checkpoints']], 'ide views: an agent and no workspace have every side view');
-  eq(leftViewsFor('station'), ['files', 'search'], 'ide views: a station has no Changes and no Checkpoints');
-  eq(rightTabsFor('agent'), ['agent', 'approvals', 'run', 'terminal'], 'ide views: an agent has the Agent and Approvals tabs');
-  eq([rightTabsFor('repo'), rightTabsFor('station')], [['run', 'terminal'], ['run', 'terminal']], 'ide views: a repo and a station have no Agent or Approvals tab');
+  // What a selection has: an agent its chat, terminal, editor and diff; a workstation its terminal and editor (no chat, no
+  // diff); a repository or no workspace the editor and diff. The right panel: an agent all five tabs; a workstation its files;
+  // a repository or none the project's three.
+  eq(centreViewsFor('agent', true), ['chat', 'terminal', 'editor', 'diff'], 'ide views: an agent has chat, terminal, editor and diff');
+  eq(centreViewsFor('station', false), ['terminal', 'editor'], 'ide views: a workstation has its terminal and editor, no chat and no diff');
+  eq([centreViewsFor('repo', false), centreViewsFor(null, false)], [['editor', 'diff'], ['editor', 'diff']], 'ide views: a repository and no selection have the editor and the diff');
+  eq(centreViewsFor(null, true), ['chat', 'terminal', 'editor', 'diff'], 'ide views: an agent with no VM has every view');
+  eq(rightViewsFor('agent', true), ['board', 'files', 'tasks', 'approvals', 'activity'], 'ide views: an agent has every right tab');
+  eq(rightViewsFor('station', false), ['files'], 'ide views: a workstation has its files, with no project, transcript or approvals');
+  eq([rightViewsFor('repo', false), rightViewsFor(null, false)], [['board', 'files', 'tasks'], ['board', 'files', 'tasks']], 'ide views: a repository and no selection have the board, files and tasks');
+  eq([hasTerminal('agent', true), hasTerminal('station', false), hasTerminal('repo', false), hasTerminal(null, false)], [true, true, false, false], 'ide views: an agent and a workstation have a terminal, a repository has none');
   eq([hasDiff('agent'), hasDiff('repo'), hasDiff('station'), hasDiff(null)], [true, true, false, true], 'ide views: only a station has no diff');
   eq([runsFor('agent'), runsFor('station'), runsFor('repo')], [true, true, false], 'ide views: runs are for agents and stations, not repositories yet');
+  eq(stationCrumb({ name: 'studio', owner: 'w3' }), ['Workstations', 'studio', 'work folder'], 'ide breadcrumb: a workstation is its group, its name and its work folder');
+  eq(stationCrumb({ name: '', owner: 'w4' }), ['Workstations', 'w4', 'work folder'], 'ide breadcrumb: a workstation with no name shows its id');
 }
 sectionEnd('ide workspace kind tests: ok');
 // The IDE terminal's logic (views/ide-terminal-model.ts): base64 over bytes, the socket's frames, the offset a re-attach
@@ -1180,6 +1189,30 @@ sectionEnd('rich card tests: ok');
   const idle = groupByProject([ag(2, 'amy'), ag(1, 'zed')], [], []);
   eq(startAgent(idle, null), 2, 'startAgent: no working agent, the first agent in the sidebar');
   eq(startAgent([], null), null, 'startAgent: null when there are no agents');
+
+  // The sidebar's groups with the workstations: Alpha (its repo, and the agent it leads), Repositories (a repo no project holds),
+  // Workstations (two, one with no name), No project (bob). A workstation is never filed under a project.
+  const repoAlpha = { ...pj('p1', 'Alpha', 1, ['t1'], 100), repo: 'alpha' } as Project;
+  const wsOf = (id: string, kind: IdeWorkspaceInfo['kind'], name: string, extra: Partial<IdeWorkspaceInfo> = {}): IdeWorkspaceInfo =>
+    ({ id, kind, owner: id.slice(id.indexOf(':') + 1).split('@')[0], name, writable: true, status: kind === 'station' ? 'online' : 'idle', ...extra }) as IdeWorkspaceInfo;
+  const wsList: IdeWorkspaceInfo[] = [
+    wsOf('repo:alpha@main', 'repo', 'alpha'),
+    wsOf('repo:orphan@main', 'repo', 'orphan'),
+    wsOf('station:w3', 'station', 'studio', { os: 'macos' }),
+    wsOf('station:w4', 'station', '', { os: 'linux' }),
+    wsOf('agent:1', 'agent', 'zed'),
+  ];
+  const sg = sidebarGroups([ag(1, 'zed'), ag(3, 'bob')], [repoAlpha], [tk('t1', null)], wsList);
+  eq(sg.map((g) => g.title), ['Alpha', 'Repositories', 'Workstations', 'No project'], 'sidebar groups: projects, then repositories no project holds, then workstations, then No project last');
+  const wsGroup = sg.find((g) => g.gid === 'workstations');
+  eq([wsGroup?.count, wsGroup?.stations.map((w) => w.id).join(',')], [2, 'station:w3,station:w4'], 'sidebar groups: the workstations of the list, in the list order');
+  eq(sg.find((g) => g.title === 'Alpha')?.repos.map((w) => w.id), ['repo:alpha@main'], 'sidebar groups: a repo sits under the project that names it');
+  eq(sidebarGroups([ag(1, 'zed')], [], [], wsList.filter((w) => w.kind !== 'station')).map((g) => g.title), ['Repositories', 'No project'], 'sidebar groups: no workstations, no Workstations group');
+  eq(sidebarGroups([ag(3, 'bob')], [], [], [wsList[2]!]).map((g) => g.title), ['Workstations', 'No project'], 'sidebar groups: with no project, workstations sit above No project');
+  eq(matchingRows(wsGroup!, '')?.stations.length, 2, 'sidebar search: an empty query keeps every workstation');
+  eq(matchingRows(wsGroup!, 'stud')?.stations.map((w) => w.id), ['station:w3'], 'sidebar search: a workstation matches by its name');
+  eq(matchingRows(wsGroup!, 'workstations')?.stations.length, 2, 'sidebar search: a query that names the group keeps its workstations');
+  eq(matchingRows(wsGroup!, 'zzz'), null, 'sidebar search: no match is no row');
 }
 sectionEnd('ide grouping tests: ok');
 

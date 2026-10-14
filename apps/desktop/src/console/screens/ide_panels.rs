@@ -207,7 +207,9 @@ fn preview_of(held: &Held, res: Result<FileView, String>) -> Preview {
         Ok(file) => match file.text {
             Some(text) => (text, None),
             None => {
-                return Preview::Unavailable("The file is not text, so it has no diff.".to_string());
+                return Preview::Unavailable(
+                    "The file is not text, so it has no diff.".to_string(),
+                );
             }
         },
         Err(e) => (
@@ -966,12 +968,13 @@ pub fn approvals_view<'a>(st: &'a State, agent: bool) -> Element<'a, Msg> {
     col.into()
 }
 
-/// The Run panel: the command and its timeout, Run and Stop, the status, and the output so far.
-pub fn run_view<'a>(st: &'a State, agent: bool) -> Element<'a, Msg> {
-    if !agent {
+/// The Run panel: the command and its timeout, Run and Stop, the status, and the output so far. `shell` is whether the
+/// workspace has a shell (an agent's or a workstation's); a repository's runs come when the hub serves them.
+pub fn run_view<'a>(st: &'a State, shell: bool) -> Element<'a, Msg> {
+    if !shell {
         return ui::empty(
             "terminal",
-            "Runs need an agent workspace",
+            "Runs need an agent or a workstation",
             "Repo runs come when the hub serves repo workspaces.",
         );
     }
@@ -1030,11 +1033,12 @@ pub fn run_view<'a>(st: &'a State, agent: bool) -> Element<'a, Msg> {
     col.into()
 }
 
-/// The terminal's tabs. Repo workspaces have no VM, so they have no shell. The mouse area reports the
-/// pointer, which is how the screen knows the terminal has the keys (see `ide::Msg::Pressed`).
-pub fn terminal_body<'a>(tabs: Option<&'a TerminalTabs>, agent: bool) -> Element<'a, ide::Msg> {
-    if !agent {
-        return ui::faint("Terminals run in agent workspaces.").into();
+/// The terminal's tabs. A repo workspace has no shell (its VM is the agent's, and a workstation's is the station's).
+/// The mouse area reports the pointer, which is how the screen knows the terminal has the keys (see
+/// `ide::Msg::Pressed`).
+pub fn terminal_body<'a>(tabs: Option<&'a TerminalTabs>, shell: bool) -> Element<'a, ide::Msg> {
+    if !shell {
+        return ui::faint("Terminals run in agent and workstation workspaces.").into();
     }
     match tabs {
         Some(tabs) => mouse_area(tabs.view().map(ide::Msg::Terminals))

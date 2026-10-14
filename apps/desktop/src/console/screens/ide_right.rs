@@ -6,8 +6,8 @@
 // The IDE's own helpers and state, for the messages this area takes (moved from `ide.rs`).
 use super::ide::*;
 use super::{ide_chat, ide_chrome};
-use apz_ide::state::Panel;
 use crate::console::Ctx;
+use apz_ide::state::Panel;
 use iced::Task;
 use iced::widget::text::Wrapping;
 use iced::widget::{Space, button, column, container, row, text, tooltip};
@@ -105,13 +105,14 @@ fn badge_width(count: &str) -> f32 {
     count.chars().count() as f32 * BADGE_CHAR + BADGE_PAD
 }
 
-/// The tabs in tab order, each with its icon, its name and its count.
+/// The tabs in tab order, each with its icon, its name and its count: the ones the workspace has (see `right_tabs`).
 fn tab_infos(st: &State) -> Vec<TabInfo> {
     let (_, tasks) = scope(st);
     let done = tasks.iter().filter(|t| t.state == "done").count();
     let changed = ide_files::changed_count(st.changes.as_ref());
     let posts = board::count(&st.board, in_scope(st));
-    vec![
+    let shown = right_tabs(st.ide.workspace.as_ref());
+    let all = vec![
         TabInfo {
             tab: RightTab::Board,
             icon: "board",
@@ -147,7 +148,10 @@ fn tab_infos(st: &State) -> Vec<TabInfo> {
                     .to_string(),
             ),
         },
-    ]
+    ];
+    all.into_iter()
+        .filter(|info| shown.contains(&info.tab))
+        .collect()
 }
 
 /// The right panel: the tabs, then the shown tab. `width` is the panel's width, which decides the tabs' form.
@@ -281,14 +285,12 @@ fn board_tab(st: &State) -> Element<'_, Msg> {
     column![
         head,
         ui::scroll(posts).height(Length::Fill),
-        container(composer)
-            .width(Length::Fill)
-            .padding(Padding {
-                top: 8.0,
-                right: 0.0,
-                bottom: 0.0,
-                left: 0.0,
-            }),
+        container(composer).width(Length::Fill).padding(Padding {
+            top: 8.0,
+            right: 0.0,
+            bottom: 0.0,
+            left: 0.0,
+        }),
     ]
     .spacing(10)
     .height(Length::Fill)
@@ -413,12 +415,17 @@ pub fn fmt_ms(ms: u64) -> String {
 
 /// Whether a message is this area's: `update` below takes it, and `ide.rs` hands it over.
 pub(super) fn handles(msg: &Msg) -> bool {
-    matches!(msg, Msg::Right(..) | Msg::Board(..) | Msg::BoardScope(..) | Msg::Panels(..))
+    matches!(
+        msg,
+        Msg::Right(..) | Msg::Board(..) | Msg::BoardScope(..) | Msg::Panels(..)
+    )
 }
 
 /// The area's messages: the state they change, and the tasks they start. See `handles`.
 pub(super) fn update(st: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
     match msg {
+        // A tab the workspace does not have (a workstation's board, approvals or activity) is not shown.
+        Msg::Right(tab) if !right_tabs(st.ide.workspace.as_ref()).contains(&tab) => Task::none(),
         Msg::Right(tab) => {
             st.right = tab;
             st.layout.right_open = true;
@@ -512,7 +519,11 @@ mod tests {
         // The gaps count: 250 of tabs plus two gaps of 8 is 266.
         assert_eq!(tab_form(&labelled, 8.0, 266.0), TabForm::Labelled);
         assert_eq!(tab_form(&labelled, 8.0, 265.0), TabForm::Compact);
-        assert_eq!(tab_form(&[], 8.0, 0.0), TabForm::Labelled, "no tabs fit anywhere");
+        assert_eq!(
+            tab_form(&[], 8.0, 0.0),
+            TabForm::Labelled,
+            "no tabs fit anywhere"
+        );
     }
 
     #[test]
@@ -528,7 +539,13 @@ mod tests {
             ..with
         };
         assert!(with.labelled_width() > without.labelled_width());
-        assert!(with.labelled_width() > 9.0 * LABEL_CHAR, "the label is counted in full");
-        assert!(badge_width("2/4") > badge_width("2"), "a longer count takes more room");
+        assert!(
+            with.labelled_width() > 9.0 * LABEL_CHAR,
+            "the label is counted in full"
+        );
+        assert!(
+            badge_width("2/4") > badge_width("2"),
+            "a longer count takes more room"
+        );
     }
 }

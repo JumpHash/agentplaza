@@ -45,6 +45,8 @@ export interface IdeDom {
   narrowMq: MediaQueryList;
   midMq: MediaQueryList;
   changedBox: HTMLInputElement;
+  /** The "Changed only" label around the box: hidden for a workstation, which has no diff. */
+  changedToggle: HTMLElement;
   treeList: HTMLElement;
   searchHost: HTMLElement;
   cpHost: HTMLElement;

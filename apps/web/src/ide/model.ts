@@ -1,5 +1,6 @@
 // The IDE view's pure helpers: no DOM, no CodeMirror, no I/O. The view drives them and the tests check them.
 
+import { WORKSTATIONS } from './groups';
 import type { FileChange, WorkspaceKind } from './types';
 
 // ---- Workspaces in the picker ----------------------------------------------
@@ -36,6 +37,11 @@ export function pickerLabel(w: PickedWorkspace): string {
   const name = w.name || w.owner;
   if (w.kind === 'station') return `Workstation · ${name} · ${osLabel(w.os)} · ${w.status === 'online' ? '● online' : w.status}`;
   return `${w.kind === 'agent' ? 'Agent' : 'Repo'} · ${name}${w.writable ? '' : ' (read-only)'}`;
+}
+
+/** A workstation's breadcrumb in the top bar: its group, its name, and the work folder it shows. */
+export function stationCrumb(w: { name: string; owner: string }): string[] {
+  return [WORKSTATIONS, w.name || w.owner, 'work folder'];
 }
 
 // ---- Languages -------------------------------------------------------------

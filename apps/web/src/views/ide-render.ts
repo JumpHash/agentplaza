@@ -2,7 +2,8 @@
 // DOM the controller built; none of them changes the state, except the review's scroll target, which is taken once.
 import { badge, empty, type Tone } from '../ui/components';
 import { h, replace } from '../ui/dom';
-import { badgeOf, languageFor } from '../ide/model';
+import { badgeOf, languageFor, stationCrumb } from '../ide/model';
+import { centreViewsFor, hasDiff, hasTerminal, rightViewsFor } from '../ide/layout';
 import { rowStatus } from '../ide/view';
 import { VIEWS, refOf, repoNameOf, type IdeCtx } from './ide-ctx';
 import { CENTRE_LABEL, paintTabs, setCrumb, type RightView } from './ide-frame';
@@ -40,13 +41,16 @@ export function renderAll(c: IdeCtx): void {
 export function renderSelection(c: IdeCtx): void {
   const { frame } = c.dom;
   const agent = c.cid !== null ? c.agentList.find((a) => a.cid === c.cid) : undefined;
-  const title = agent?.name ?? (c.ws?.kind === 'repo' ? repoNameOf(c.ws) : c.cid !== null ? `agent ${c.cid}` : 'No selection');
+  const title =
+    agent?.name ??
+    (c.ws?.kind === 'repo' ? repoNameOf(c.ws) : c.ws?.kind === 'station' ? c.ws.name || c.ws.owner : c.cid !== null ? `agent ${c.cid}` : 'No selection');
   frame.centre.title.textContent = title;
   frame.centre.dot.className = `iw-dot ${agent ? rowStatus(agent, null) : 'idle'}`;
   frame.centre.popout.hidden = c.cid === null;
+  const views = centreViewsFor(c.ws?.kind ?? null, c.cid !== null);
   for (const v of VIEWS) {
     const btn = frame.centre.seg[v];
-    btn.hidden = (v === 'chat' || v === 'terminal') && c.cid === null;
+    btn.hidden = !views.includes(v);
     btn.querySelector('.iw-seg-label')?.replaceChildren(CENTRE_LABEL[v]);
   }
   paintTabs(frame.centre.seg, c.centreView, {});
@@ -60,9 +64,11 @@ export function renderTop(c: IdeCtx): void {
   const label: string = c.held ? 'held' : badgeOf({ conflict, agentWorking: c.agentWorking, saved: c.saved });
   const project = currentProject(c);
   const ws = c.ws;
-  const parts = ws
-    ? [project?.title ?? (c.cid !== null ? 'No project' : 'Repositories'), ws.kind === 'agent' ? (c.agentList.find((a) => a.cid === c.cid)?.name ?? `agent ${c.cid}`) : repoNameOf(ws), refOf(ws) || 'work'].filter(Boolean)
-    : ['IDE'];
+  const parts = !ws
+    ? ['IDE']
+    : ws.kind === 'station'
+      ? stationCrumb(ws)
+      : [project?.title ?? (c.cid !== null ? 'No project' : 'Repositories'), ws.kind === 'agent' ? (c.agentList.find((a) => a.cid === c.cid)?.name ?? `agent ${c.cid}`) : repoNameOf(ws), refOf(ws) || 'work'].filter(Boolean);
   setCrumb(c.dom.frame.crumb, parts);
   c.dom.frame.state.replaceChildren(badge(label, TONE[label] ?? 'muted'));
   const active = c.state?.active ?? null;
@@ -127,13 +133,13 @@ function reviewView(c: IdeCtx): HTMLElement {
 
 /** The Files tab's and the centre's note when no workspace shows: an agent with no VM has no files; else it is not ready. */
 function noWorkspaceNote(c: IdeCtx): HTMLElement {
-  if (c.cid === null) return empty('file', 'No workspace', 'Pick an agent or a repository to see its files.');
+  if (c.cid === null) return empty('file', 'No workspace', 'Pick an agent, a workstation or a repository to see its files.');
   const agent = c.agentList.find((a) => a.cid === c.cid);
   if (agent?.vm === null) return empty('file', 'No files for this agent', 'This agent has no VM, so it has no files.');
   return empty('file', 'Files are not ready yet', 'This agent has a VM, and its workspace shows once the list has it.');
 }
 
-/** The right panel's count of each tab; Approvals and Activity are hidden for a repository. */
+/** The right panel's count of each tab; the tabs the selection's kind does not have are hidden (see rightViewsFor). */
 export function renderRightTabs(c: IdeCtx): void {
   const counts: Partial<Record<RightView, string | null>> = {
     board: c.boardCount !== null && c.boardCount > 0 ? String(c.boardCount) : null,
@@ -144,8 +150,8 @@ export function renderRightTabs(c: IdeCtx): void {
   };
   const tabs = c.dom.frame.right.tabs;
   paintTabs(tabs, c.rightView, counts);
-  tabs.approvals.hidden = c.cid === null;
-  tabs.activity.hidden = c.cid === null;
+  const shown = rightViewsFor(c.ws?.kind ?? null, c.cid !== null);
+  for (const k of Object.keys(tabs) as RightView[]) tabs[k].hidden = !shown.includes(k);
 }
 
 /** The right panel's body: the current tab's panel (made and shown on first use), or a note. */
@@ -183,7 +189,10 @@ export function renderRight(c: IdeCtx): void {
 export function renderFiles(c: IdeCtx): void {
   const { dom } = c;
   if (!c.ide) return;
-  const filter = !!c.state?.filter_changed;
+  // A workstation has no diff: no changed-only filter and no checkpoints.
+  const diff = hasDiff(c.ws?.kind ?? null);
+  dom.changedToggle.hidden = !diff;
+  const filter = diff && !!c.state?.filter_changed;
   dom.changedBox.checked = filter;
   const all = [...c.entries.values()];
   const keep = filter ? new Set(c.ide.changedFilter(all, { files: c.files }).map((e) => e.path)) : null;
@@ -209,7 +218,7 @@ export function renderFiles(c: IdeCtx): void {
     const s = searchUi(c);
     replace(dom.searchHost, s ? s.el : h('p.ide-note', null, 'Search runs in a workspace.'));
   }
-  replace(dom.cpHost, c.ws ? checkpointsPanel({ checkpoints: c.checkpoints, canRestore: true, onRestore: (cp) => confirmRestore(c, cp) }) : null);
+  replace(dom.cpHost, c.ws && diff ? checkpointsPanel({ checkpoints: c.checkpoints, canRestore: true, onRestore: (cp) => confirmRestore(c, cp) }) : null);
 }
 
 /** The bottom drawer: its tab strip, and the run panel while the Run tab shows. */
@@ -223,8 +232,8 @@ export function renderDrawer(c: IdeCtx): void {
     const p = runFor(c);
     if (p && body.firstElementChild !== p.el) replace(body, p.el);
     p?.show?.();
-  } else if (c.cid === null) {
-    replace(body, empty('terminal', 'Terminals run in agent workspaces', 'Pick an agent to open its terminal.'));
+  } else if (!hasTerminal(c.ws?.kind ?? null, c.cid !== null)) {
+    replace(body, empty('terminal', 'Terminals run in agent and workstation workspaces', 'Pick an agent or a workstation to open its terminal.'));
   } else if (body.firstElementChild !== c.dom.termHost) {
     // The Run panel leaves the drawer; the terminal (if it belongs here) is placed by renderTerminal.
     body.replaceChildren();
@@ -244,7 +253,7 @@ export function renderStatus(c: IdeCtx): void {
   const vs = base !== undefined && typeof base === 'object' && 'checkpoint' in base ? `vs checkpoint #${base.checkpoint}` : 'vs work start';
   c.dom.status.paint({
     workspace: c.ws?.id ?? '',
-    base: c.ws ? vs : '',
+    base: c.ws && hasDiff(c.ws.kind) ? vs : '',
     live: c.connected,
     cursor,
     lang: active !== null ? LANG_LABEL[languageFor(active)] : '',

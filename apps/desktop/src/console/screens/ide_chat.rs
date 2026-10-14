@@ -5,9 +5,9 @@
 
 // The IDE's own helpers and state, for the messages this area takes (moved from `ide.rs`).
 use super::ide::*;
-use super::{ide_chrome, ide_chat};
-use apz_ide::state::Panel;
+use super::{ide_chat, ide_chrome};
 use crate::console::Ctx;
+use apz_ide::state::Panel;
 use std::collections::BTreeSet;
 use std::sync::LazyLock;
 
@@ -32,7 +32,8 @@ const COMPOSER_H: f32 = 88.0;
 const BOTTOM_SLACK: f32 = 4.0;
 
 /// The chat's scroll area, by id: the chat follows the newest entry through it.
-pub static CHAT_ID: LazyLock<iced::widget::Id> = LazyLock::new(|| iced::widget::Id::new("ide-chat"));
+pub static CHAT_ID: LazyLock<iced::widget::Id> =
+    LazyLock::new(|| iced::widget::Id::new("ide-chat"));
 
 /// The chat's own messages: a run of tool steps opens or folds (by its first entry), the agent's work stops, the
 /// scroll area moved (its viewport), and the reader jumped to the newest entry from the "New messages" pill.
@@ -161,10 +162,21 @@ pub fn rich_ctx(st: &State) -> rich::RichCtx {
         .tree
         .entries
         .iter()
-        .map(|e| if e.kind == EntryKind::Dir { format!("{}/", e.path) } else { e.path.clone() })
+        .map(|e| {
+            if e.kind == EntryKind::Dir {
+                format!("{}/", e.path)
+            } else {
+                e.path.clone()
+            }
+        })
         .collect();
     let project = ide::selected_project(st);
-    rich::context(&st.cards, project.map(|p| p.id.as_str()), project.and_then(|p| p.repo.as_deref()), Some(&paths))
+    rich::context(
+        &st.cards,
+        project.map(|p| p.id.as_str()),
+        project.and_then(|p| p.repo.as_deref()),
+        Some(&paths),
+    )
 }
 
 /// The texts of the transcript that rich content reads: the prompts and the text blocks of the replies.
@@ -175,7 +187,12 @@ pub fn transcript_texts(entries: &[Value]) -> Vec<&str> {
         match entry.get("kind").and_then(Value::as_str).unwrap_or("") {
             "work_start" => texts.push(s(data, "prompt")),
             "model_response" => {
-                for block in data.get("content").and_then(Value::as_array).into_iter().flatten() {
+                for block in data
+                    .get("content")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                {
                     if s(block, "type") == "text" {
                         texts.push(s(block, "text"));
                     }
@@ -204,16 +221,22 @@ pub fn header(st: &State) -> Element<'_, Msg> {
     }
     head = head.push(ui::sans(name, 14.0, p.ink));
     head = head.push(Space::new().width(Length::Fill));
-    head = head.push(ui::tabs(
-        &[
-            (Centre::Chat, "Chat"),
-            (Centre::Terminal, "Terminal"),
-            (Centre::Editor, "Editor"),
-            (Centre::Diff, "Diff"),
-        ],
-        st.centre,
-        Msg::Centre,
-    ));
+    // Only the views the workspace has: a workstation has its terminal and its editor, no chat and no diff.
+    let views: Vec<(Centre, &str)> = centre_views(st.ide.workspace.as_ref())
+        .into_iter()
+        .map(|view| {
+            (
+                view,
+                match view {
+                    Centre::Chat => "Chat",
+                    Centre::Terminal => "Terminal",
+                    Centre::Editor => "Editor",
+                    Centre::Diff => "Diff",
+                },
+            )
+        })
+        .collect();
+    head = head.push(ui::tabs(&views, st.centre, Msg::Centre));
     head.into()
 }
 
@@ -257,7 +280,11 @@ fn s<'a>(v: &'a Value, key: &str) -> &'a str {
 }
 
 /// One transcript entry as the chat draws it. Entries that are only bookkeeping draw nothing.
-fn entry_view<'a>(entry: &'a Value, rctx: &rich::RichCtx, cards: &rich::Cards) -> Option<Element<'a, Msg>> {
+fn entry_view<'a>(
+    entry: &'a Value,
+    rctx: &rich::RichCtx,
+    cards: &rich::Cards,
+) -> Option<Element<'a, Msg>> {
     let data = entry.get("data").unwrap_or(&Value::Null);
     let p = theme::palette();
     Some(match entry.get("kind").and_then(Value::as_str)? {
@@ -480,26 +507,27 @@ pub fn chat(st: &State) -> Element<'_, Msg> {
         .id(CHAT_ID.clone())
         .on_scroll(|viewport| Msg::Chat(ChatMsg::Scrolled(viewport)))
         .height(Length::Fill);
-    let transcript_area: Element<'_, Msg> = if st.chat_scroll.unread > 0 && !st.chat_scroll.at_bottom {
-        Stack::new()
-            .push(scroll)
-            .push(
-                container(pill())
-                    .width(Length::Fill)
-                    .height(Length::Fill)
-                    .align_x(Alignment::Center)
-                    .align_y(Alignment::End)
-                    .padding(Padding {
-                        top: 0.0,
-                        right: 0.0,
-                        bottom: 12.0,
-                        left: 0.0,
-                    }),
-            )
-            .into()
-    } else {
-        scroll.into()
-    };
+    let transcript_area: Element<'_, Msg> =
+        if st.chat_scroll.unread > 0 && !st.chat_scroll.at_bottom {
+            Stack::new()
+                .push(scroll)
+                .push(
+                    container(pill())
+                        .width(Length::Fill)
+                        .height(Length::Fill)
+                        .align_x(Alignment::Center)
+                        .align_y(Alignment::End)
+                        .padding(Padding {
+                            top: 0.0,
+                            right: 0.0,
+                            bottom: 12.0,
+                            left: 0.0,
+                        }),
+                )
+                .into()
+        } else {
+            scroll.into()
+        };
     let base = container(composer(st))
         .max_width(COLUMN_MAX)
         .width(Length::Fill);
@@ -546,7 +574,9 @@ pub fn body(st: &State) -> Element<'_, Msg> {
             "Repo workspaces have no chat",
             "Pick an agent in the sidebar to talk to it.",
         ),
-        Centre::Terminal => ide_panels::terminal_body(st.terminals.as_ref(), agent),
+        Centre::Terminal => {
+            ide_panels::terminal_body(st.terminals.as_ref(), has_shell(st.ide.workspace.as_ref()))
+        }
         Centre::Editor => super::ide_files::editor_centre(st),
         Centre::Diff => super::ide_files::diff_centre(st),
     }
@@ -579,6 +609,10 @@ pub(super) fn handles(msg: &Msg) -> bool {
 /// The area's messages: the state they change, and the tasks they start. See `handles`.
 pub(super) fn update(st: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
     match msg {
+        // A view the workspace does not have (a workstation's chat or diff) is not shown.
+        Msg::Centre(centre) if !centre_views(st.ide.workspace.as_ref()).contains(&centre) => {
+            Task::none()
+        }
         Msg::Centre(centre) => {
             st.centre = centre;
             st.diff_file = None;
@@ -633,7 +667,10 @@ mod tests {
             json!({"kind": "work_start", "data": {"kind": "chat", "prompt": "Check the tests"}});
         let nudge = json!({"kind": "work_start", "data": {"kind": "message", "origin": "board", "prompt": "New post"}});
         let book = json!({"kind": "work_start", "data": {}});
-        let (rctx, cards) = (rich::context(&rich::Cards::default(), None, None, None), rich::Cards::default());
+        let (rctx, cards) = (
+            rich::context(&rich::Cards::default(), None, None, None),
+            rich::Cards::default(),
+        );
         assert!(entry_view(&note, &rctx, &cards).is_some());
         assert!(entry_view(&nudge, &rctx, &cards).is_some());
         assert!(

@@ -50,6 +50,18 @@ pub fn items(st: &State) -> Vec<Item> {
             });
         }
     }
+    for info in st.workspaces.iter().filter(|w| w.kind == "station") {
+        let name = if info.name.is_empty() {
+            info.owner.as_str()
+        } else {
+            info.name.as_str()
+        };
+        out.push(Item {
+            label: format!("Workstation {name}"),
+            detail: format!("{} · online", ide_model::os_label(info.os.as_deref())),
+            run: Msg::Pick(ide::choice(info)),
+        });
+    }
     for entry in st
         .tree
         .entries
@@ -172,7 +184,14 @@ pub fn view(st: &State) -> Element<'_, Msg> {
 
 /// Whether a message is this area's: `update` below takes it, and `ide.rs` hands it over.
 pub(super) fn handles(msg: &Msg) -> bool {
-    matches!(msg, Msg::PaletteOpen | Msg::PaletteQuery(..) | Msg::PaletteMove(..) | Msg::PaletteRun(..) | Msg::PaletteClose)
+    matches!(
+        msg,
+        Msg::PaletteOpen
+            | Msg::PaletteQuery(..)
+            | Msg::PaletteMove(..)
+            | Msg::PaletteRun(..)
+            | Msg::PaletteClose
+    )
 }
 
 /// The area's messages: the state they change, and the tasks they start. See `handles`.

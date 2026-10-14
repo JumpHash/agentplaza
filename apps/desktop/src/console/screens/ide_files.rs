@@ -5,14 +5,14 @@
 // The IDE's own helpers and state, for the messages this area takes (moved from `ide.rs`).
 use super::ide::*;
 use super::ide_chrome;
+use crate::console::{Ctx, client};
 use apz_ide::state::Action;
-use serde_json::{json, Value};
-use crate::console::{client, Ctx};
-use iced::Task;
 use apz_ide::state::Base;
 use apz_ide::{ChangeSet, FileChange};
+use iced::Task;
 use iced::widget::{Space, button, column, container, row, text_input};
 use iced::{Alignment, Element, Length};
+use serde_json::{Value, json};
 
 use super::ide::{self, BaseChoice, Checkpoint, Msg, QUICK_ID, SEARCH_ID, Search, State};
 use super::ide_diff;
@@ -22,14 +22,20 @@ use crate::console::ui::{self, Kind};
 use crate::theme;
 
 /// The Files tab: the tree (or the search, when one is open) above the checkpoints. The tree takes most of the
-/// height; the checkpoints keep the rest.
+/// height; the checkpoints keep the rest. A workstation has no diff, so no Changed filter and no checkpoints: the
+/// tree takes the whole tab.
 pub fn files_tab(st: &State) -> Element<'_, Msg> {
     let on_workspace = st.ide.workspace.is_some();
-    let filter = st.ide.filter_changed;
-    let head = row![
+    let diff = has_diff(st.ide.workspace.as_ref());
+    let filter = diff && st.ide.filter_changed;
+    let mut head = row![
         ui::mono("Files", 13.0, theme::palette().ink),
-        Space::new().width(Length::Fill),
-        ui::btn_sm(
+        Space::new().width(Length::Fill)
+    ]
+    .spacing(8)
+    .align_y(Alignment::Center);
+    if diff {
+        head = head.push(ui::btn_sm(
             "Changed",
             None,
             if filter {
@@ -37,23 +43,22 @@ pub fn files_tab(st: &State) -> Element<'_, Msg> {
             } else {
                 Kind::Secondary
             },
-            on_workspace.then_some(Msg::ChangedOnly)
-        ),
-        ui::btn_sm(
+            on_workspace.then_some(Msg::ChangedOnly),
+        ));
+    }
+    let head = head
+        .push(ui::btn_sm(
             "",
             Some("search"),
             Kind::Ghost,
-            on_workspace.then_some(Msg::ToggleSearch)
-        ),
-        ui::btn_sm(
+            on_workspace.then_some(Msg::ToggleSearch),
+        ))
+        .push(ui::btn_sm(
             "",
             Some("refresh"),
             Kind::Ghost,
-            on_workspace.then_some(Msg::RefreshAll)
-        ),
-    ]
-    .spacing(8)
-    .align_y(Alignment::Center);
+            on_workspace.then_some(Msg::RefreshAll),
+        ));
     let main: Element<'_, Msg> = match (&st.search, filter, &st.changes) {
         (Some(search), _, _) => search_panel(search),
         (None, true, Some(changes)) => ui::scroll(ide_tree::view(
@@ -67,6 +72,10 @@ pub fn files_tab(st: &State) -> Element<'_, Msg> {
         ))
         .into(),
     };
+    if !diff {
+        let tree = container(main).height(Length::Fill);
+        return column![head, tree].spacing(10).height(Length::Fill).into();
+    }
     let tree = container(main).height(Length::FillPortion(3));
     let checkpoints = column![
         ui::label("Checkpoints"),
@@ -315,7 +324,44 @@ fn checkpoints_panel(st: &State) -> Element<'_, Msg> {
 
 /// Whether a message is this area's: `update` below takes it, and `ide.rs` hands it over.
 pub(super) fn handles(msg: &Msg) -> bool {
-    matches!(msg, Msg::Dir { .. } | Msg::ToggleDir(..) | Msg::MoreDir(..) | Msg::RefreshAll | Msg::ChangedOnly | Msg::OpenPath(..) | Msg::ShowDiff(..) | Msg::CloseDiff | Msg::Opened { .. } | Msg::Activate(..) | Msg::Close(..) | Msg::Edit(..) | Msg::Save | Msg::Saved { .. } | Msg::Reload(..) | Msg::Reloaded { .. } | Msg::KeepMine(..) | Msg::Remote { .. } | Msg::Changed { .. } | Msg::PickBase(..) | Msg::CompareWith(..) | Msg::Checkpoints { .. } | Msg::AskRestore(..) | Msg::CancelRestore | Msg::Restore(..) | Msg::Restored { .. } | Msg::ToggleQuick | Msg::QuickQuery(..) | Msg::QuickFirst | Msg::ToggleSearch | Msg::SearchQuery(..) | Msg::SearchGlob(..) | Msg::RunSearch | Msg::Searched { .. } | Msg::OpenMatch(..))
+    matches!(
+        msg,
+        Msg::Dir { .. }
+            | Msg::ToggleDir(..)
+            | Msg::MoreDir(..)
+            | Msg::RefreshAll
+            | Msg::ChangedOnly
+            | Msg::OpenPath(..)
+            | Msg::ShowDiff(..)
+            | Msg::CloseDiff
+            | Msg::Opened { .. }
+            | Msg::Activate(..)
+            | Msg::Close(..)
+            | Msg::Edit(..)
+            | Msg::Save
+            | Msg::Saved { .. }
+            | Msg::Reload(..)
+            | Msg::Reloaded { .. }
+            | Msg::KeepMine(..)
+            | Msg::Remote { .. }
+            | Msg::Changed { .. }
+            | Msg::PickBase(..)
+            | Msg::CompareWith(..)
+            | Msg::Checkpoints { .. }
+            | Msg::AskRestore(..)
+            | Msg::CancelRestore
+            | Msg::Restore(..)
+            | Msg::Restored { .. }
+            | Msg::ToggleQuick
+            | Msg::QuickQuery(..)
+            | Msg::QuickFirst
+            | Msg::ToggleSearch
+            | Msg::SearchQuery(..)
+            | Msg::SearchGlob(..)
+            | Msg::RunSearch
+            | Msg::Searched { .. }
+            | Msg::OpenMatch(..)
+    )
 }
 
 /// The area's messages: the state they change, and the tasks they start. See `handles`.
@@ -356,6 +402,8 @@ pub(super) fn update(st: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             list_dir(st, ctx, dir, Some(cursor))
         }
         Msg::RefreshAll => reload_all(st, ctx),
+        // A workstation has no diff, so nothing to filter to.
+        Msg::ChangedOnly if !has_diff(st.ide.workspace.as_ref()) => Task::none(),
         Msg::ChangedOnly => {
             dispatch(st, Action::ToggleChangedFilter);
             load_missing(st, ctx)

@@ -2,6 +2,7 @@
 // plaza's writes; and the restore of a checkpoint. The controller's state is on the context (ide-ctx.ts).
 import { api, ideApi, type IdeCheckpoint, type IdeWorkspaceInfo } from '../api';
 import { dirsOf, lineCounts, LAST_WORKSPACE_KEY, onRemote, parentDir, parseViewed, viewedKey, withViewed } from '../ide/model';
+import { hasDiff } from '../ide/layout';
 import type { Base, Entry, FileChange, Stats } from '../ide/types';
 import { toast } from '../ui/components';
 import { disposeTerminal } from './ide-term-host';
@@ -59,7 +60,8 @@ export async function loadChangedDirs(c: IdeCtx): Promise<void> {
 }
 
 export async function refreshChanges(c: IdeCtx): Promise<void> {
-  if (!c.ws || !c.ide) return;
+  // A workstation has no diff: the hub answers its changes with 501, so they are not asked for.
+  if (!c.ws || !c.ide || !hasDiff(c.ws.kind)) return;
   const id = c.ws.id;
   const base = baseValue(c);
   try {
@@ -77,7 +79,7 @@ export async function refreshChanges(c: IdeCtx): Promise<void> {
 }
 
 export async function refreshCheckpoints(c: IdeCtx): Promise<void> {
-  if (!c.ws) return;
+  if (!c.ws || !hasDiff(c.ws.kind)) return;
   const id = c.ws.id;
   try {
     const list = await ideApi.checkpoints(id);

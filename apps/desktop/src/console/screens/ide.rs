@@ -62,6 +62,9 @@ pub struct WorkspaceInfo {
     pub writable: bool,
     #[serde(default)]
     pub status: String,
+    /// A workstation's OS (`macos`, `windows`, `linux`); absent for the other kinds.
+    #[serde(default)]
+    pub os: Option<String>,
 }
 
 /// A checkpoint of a workspace (`GET .../checkpoints`).
@@ -257,13 +260,14 @@ pub enum Drawer {
     Run,
 }
 
-/// The roster the sidebar, the chat and the palette read: the agents, the projects and the tasks, as the hub
-/// lists them.
+/// The roster the sidebar, the chat and the palette read: the agents, the projects, the tasks and the workstations'
+/// accounts, as the hub lists them.
 #[derive(Debug, Clone, Default)]
 pub struct Roster {
     pub agents: Vec<AgentRow>,
     pub projects: Vec<ProjectRow>,
     pub tasks: Vec<TaskRow>,
+    pub stations: Vec<ide_model::StationRow>,
 }
 
 /// What the console knows of the plaza, for the IDE's chrome: whether it is held (STOP ALL) and whether
@@ -323,6 +327,8 @@ pub struct State {
     pub roster: Vec<AgentRow>,
     pub projects: Vec<ProjectRow>,
     pub tasks: Vec<TaskRow>,
+    /// The workstations' accounts, for the warning on a workstation's row.
+    pub stations: Vec<ide_model::StationRow>,
     pub roster_loaded: bool,
     pub roster_error: Option<String>,
     /// The sidebar's search field, and the groups folded away.
@@ -593,6 +599,8 @@ pub(super) fn fetch_roster(client: &Client) -> Result<Roster, String> {
     let agents = client.get::<Value>("/v1/agents")?;
     let projects = client.get::<Value>("/v1/projects")?;
     let tasks = client.get::<Value>("/v1/tasks")?;
+    // The workstations' accounts only decorate their rows: a failed list leaves the rows without the warning.
+    let stations = client.get::<Value>("/v1/stations").unwrap_or(Value::Null);
     let list = |v: &Value, key: Option<&str>| -> Vec<Value> {
         let items = match key {
             Some(key) => v.get(key).cloned().unwrap_or(Value::Null),
@@ -613,7 +621,61 @@ pub(super) fn fetch_roster(client: &Client) -> Result<Roster, String> {
             .iter()
             .filter_map(ide_model::parse_task)
             .collect(),
+        stations: list(&stations, None)
+            .iter()
+            .filter_map(ide_model::parse_station)
+            .collect(),
     })
+}
+
+// ---- What each workspace kind has --------------------------------------------------------------
+// The same rules the web IDE keeps (ide/layout.ts). A workstation has no diff (so no Diff view, no changed-only filter and
+// no checkpoints), no chat, and no project (so no Board, Tasks, Approvals or Activity): its files, its terminal and its runs
+// are its own. An agent's and a repository's views are unchanged.
+
+/// Whether a workspace has a diff: the Diff view, the changed-only filter and the checkpoints. Only a workstation has none.
+pub(super) fn has_diff(ws: Option<&WorkspaceId>) -> bool {
+    !matches!(ws, Some(WorkspaceId::Station(_)))
+}
+
+/// Whether a workspace has a shell: its terminal and its runs. An agent's and a workstation's do.
+pub(super) fn has_shell(ws: Option<&WorkspaceId>) -> bool {
+    matches!(ws, Some(WorkspaceId::Agent(_) | WorkspaceId::Station(_)))
+}
+
+/// The centre's views a workspace has: a workstation's terminal and editor; every other kind's four (no workspace
+/// yet included, as before).
+pub(super) fn centre_views(ws: Option<&WorkspaceId>) -> Vec<Centre> {
+    match ws {
+        Some(WorkspaceId::Station(_)) => vec![Centre::Terminal, Centre::Editor],
+        _ => vec![Centre::Chat, Centre::Terminal, Centre::Editor, Centre::Diff],
+    }
+}
+
+/// The right panel's tabs a workspace has: a workstation's files; every other kind's five.
+pub(super) fn right_tabs(ws: Option<&WorkspaceId>) -> Vec<RightTab> {
+    match ws {
+        Some(WorkspaceId::Station(_)) => vec![RightTab::Files],
+        _ => vec![
+            RightTab::Board,
+            RightTab::Files,
+            RightTab::Tasks,
+            RightTab::Approvals,
+            RightTab::Activity,
+        ],
+    }
+}
+
+/// Moves the centre and the right panel off a view the workspace on screen does not have: Chat or Diff to the editor,
+/// a tab to the files.
+pub(super) fn settle_views(st: &mut State) {
+    let ws = st.ide.workspace.as_ref();
+    if !centre_views(ws).contains(&st.centre) {
+        st.centre = Centre::Editor;
+    }
+    if !right_tabs(ws).contains(&st.right) {
+        st.right = RightTab::Files;
+    }
 }
 
 /// The agent the workspace on screen is, read from the roster.
@@ -658,7 +720,16 @@ pub(super) fn crumbs(st: &State) -> (String, String, String) {
             (project, name, "workspace".to_string())
         }
         Some(WorkspaceId::Repo { name, git_ref }) => (project, name.clone(), git_ref.clone()),
-        Some(WorkspaceId::Station(id)) => ("Workstations".to_string(), id.clone(), "work folder".to_string()),
+        Some(WorkspaceId::Station(id)) => {
+            // A workstation is named as the hub lists it; its id stands in when it has no name.
+            let key = WorkspaceId::Station(id.clone()).to_string();
+            let listed = st.workspaces.iter().find(|w| w.id == key);
+            let name = listed
+                .map(|w| w.name.clone())
+                .filter(|n| !n.is_empty())
+                .unwrap_or_else(|| id.clone());
+            ("Workstations".to_string(), name, "work folder".to_string())
+        }
         None => (project, "No workspace".to_string(), String::new()),
     }
 }
@@ -739,7 +810,11 @@ pub(super) fn base_param(base: &Base) -> String {
     }
 }
 
-pub(super) fn fetch_changes(client: &Client, ws: &WorkspaceId, base: &Base) -> Result<ChangeSet, String> {
+pub(super) fn fetch_changes(
+    client: &Client,
+    ws: &WorkspaceId,
+    base: &Base,
+) -> Result<ChangeSet, String> {
     let value: Value = client.get(&route(
         ws,
         &format!("/changes?base={}", enc(&base_param(base))),
@@ -764,7 +839,10 @@ pub(super) fn parse_checkpoints(value: Value) -> Result<Vec<Checkpoint>, String>
     serde_json::from_value(list).map_err(|e| e.to_string())
 }
 
-pub(super) fn fetch_checkpoints(client: &Client, ws: &WorkspaceId) -> Result<Vec<Checkpoint>, String> {
+pub(super) fn fetch_checkpoints(
+    client: &Client,
+    ws: &WorkspaceId,
+) -> Result<Vec<Checkpoint>, String> {
     let value: Value = client.get(&route(ws, "/checkpoints"))?;
     parse_checkpoints(value)
 }
@@ -932,7 +1010,11 @@ pub(super) fn choice(w: &WorkspaceInfo) -> Choice {
     if let Ok(WorkspaceId::Repo { git_ref, .. }) = WorkspaceId::from_str(&w.id) {
         name = format!("{name} @{git_ref}");
     }
-    let kind = if w.kind == "agent" { "agent" } else { "repo" };
+    let kind = match w.kind.as_str() {
+        "agent" => "agent",
+        "station" => "workstation",
+        _ => "repo",
+    };
     let mut label = format!("{kind} · {name}");
     if !w.status.is_empty() {
         label.push_str(&format!(" · {}", w.status));
@@ -995,7 +1077,12 @@ pub(super) fn apply_goto(st: &mut State, path: &str) {
 
 // ---- Tasks ------------------------------------------------------------------------------------
 
-pub(super) fn tree_task(client: &Client, ws: WorkspaceId, dir: String, cursor: Option<String>) -> Task<Msg> {
+pub(super) fn tree_task(
+    client: &Client,
+    ws: WorkspaceId,
+    dir: String,
+    cursor: Option<String>,
+) -> Task<Msg> {
     let first = cursor.is_none();
     let key = ws.to_string();
     let c = client.clone();
@@ -1012,7 +1099,12 @@ pub(super) fn tree_task(client: &Client, ws: WorkspaceId, dir: String, cursor: O
 }
 
 /// Lists one folder (marking it on its way).
-pub(super) fn list_dir(st: &mut State, ctx: &Ctx, dir: String, cursor: Option<String>) -> Task<Msg> {
+pub(super) fn list_dir(
+    st: &mut State,
+    ctx: &Ctx,
+    dir: String,
+    cursor: Option<String>,
+) -> Task<Msg> {
     let Some(ws) = st.ide.workspace.clone() else {
         return Task::none();
     };
@@ -1034,7 +1126,8 @@ pub(super) fn load_missing(st: &mut State, ctx: &Ctx) -> Task<Msg> {
 }
 
 pub(super) fn changes_task(st: &mut State, ctx: &Ctx) -> Task<Msg> {
-    let Some(ws) = st.ide.workspace.clone() else {
+    // A workstation has no diff: the hub answers its changes with 501, so they are not asked for.
+    let Some(ws) = st.ide.workspace.clone().filter(|ws| has_diff(Some(ws))) else {
         return Task::none();
     };
     st.changes_busy = true;
@@ -1062,7 +1155,8 @@ pub(super) fn changes_throttled(st: &mut State, ctx: &Ctx) -> Task<Msg> {
 }
 
 pub(super) fn checkpoints_task(st: &State, ctx: &Ctx) -> Task<Msg> {
-    let Some(ws) = st.ide.workspace.clone() else {
+    // A workstation has no checkpoints: its work folder is not versioned by the hub.
+    let Some(ws) = st.ide.workspace.clone().filter(|ws| has_diff(Some(ws))) else {
         return Task::none();
     };
     let c = ctx.client.clone();
@@ -1141,16 +1235,11 @@ pub(super) fn load_board(st: &mut State, ctx: &Ctx) -> Task<Msg> {
     board::load(&mut st.board, ctx).map(Msg::Board)
 }
 
-/// Whether the workspace on screen is an agent's: its terminal runs in the agent's VM.
-pub(super) fn on_agent(st: &State) -> bool {
-    matches!(st.ide.workspace, Some(WorkspaceId::Agent(_)))
-}
-
-/// Makes the terminal tabs of an agent workspace on first need: when the Terminal tab is shown or the terminal
-/// is docked under the editor. Nothing is made for a repo workspace, or before the terminal is wanted.
+/// Makes the terminal tabs of an agent's or a workstation's workspace on first need: when the Terminal tab is shown or
+/// the terminal is docked under the editor. Nothing is made for a repo workspace, or before the terminal is wanted.
 pub(super) fn ensure_terminals(st: &mut State, ctx: &Ctx) {
     let wanted = st.centre == Centre::Terminal || st.layout.drawer;
-    if st.terminals.is_some() || !wanted || !on_agent(st) {
+    if st.terminals.is_some() || !wanted || !has_shell(st.ide.workspace.as_ref()) {
         return;
     }
     if let Some(ws) = st.ide.workspace.as_ref() {
@@ -1219,6 +1308,7 @@ pub(super) fn select(st: &mut State, id: WorkspaceId, ctx: &Ctx) -> Task<Msg> {
         return Task::none();
     }
     dispatch(st, Action::SetWorkspace(id.clone()));
+    settle_views(st);
     remember(&id.to_string());
     st.tabs.clear();
     st.tree = Tree::default();
@@ -1265,7 +1355,8 @@ pub(super) fn apply_preselect(st: &mut State, ctx: &Ctx) -> Task<Msg> {
             let mut tasks = vec![select(st, id.clone(), ctx)];
             // A select the owner's unsaved edits refused leaves the old workspace on screen: nothing more then.
             if st.ide.workspace.as_ref() == Some(&id) {
-                if target.review {
+                // A review is the Diff view, which a workstation does not have: the editor shows instead.
+                if target.review && has_diff(Some(&id)) {
                     st.centre = Centre::Diff;
                 }
                 if st.centre == Centre::Diff && st.changes.is_none() && !st.changes_busy {
@@ -1361,7 +1452,11 @@ pub fn update(st: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
     if let Msg::Rich(ev) = msg {
         return match ev {
             // A file of the workspace opens in the editor at its line, as a search hit does.
-            rich::Ev::Action(rich::RichAction::OpenPath { path, line }) => update(st, Msg::OpenMatch(path, line.map_or(1, |l| l as usize)), ctx),
+            rich::Ev::Action(rich::RichAction::OpenPath { path, line }) => update(
+                st,
+                Msg::OpenMatch(path, line.map_or(1, |l| l as usize)),
+                ctx,
+            ),
             ev => {
                 rich::apply(&mut st.cards, ev);
                 Task::none()
@@ -1763,13 +1858,13 @@ pub(super) fn right_panel(st: &State, width: f32) -> Element<'_, Msg> {
 }
 
 /// The centre column: the selected agent's chat (or terminal, editor, diff), and under it the terminal drawer
-/// when it is open and the centre is not the terminal itself. The drawer is an agent's: repo workspaces have none.
+/// when it is open and the centre is not the terminal itself. The drawer is an agent's or a workstation's: repo
+/// workspaces have none.
 pub(super) fn centre_column(st: &State) -> Element<'_, Msg> {
     let centre = container(ide_chat::centre(st))
         .width(Length::Fill)
         .height(Length::Fill);
-    let agent = matches!(st.ide.workspace, Some(WorkspaceId::Agent(_)));
-    if !st.layout.drawer || !agent || st.centre == Centre::Terminal {
+    if !st.layout.drawer || !has_shell(st.ide.workspace.as_ref()) || st.centre == Centre::Terminal {
         return centre.into();
     }
     column![
@@ -1791,7 +1886,7 @@ pub(super) fn centre_column(st: &State) -> Element<'_, Msg> {
 
 /// The terminal drawer: its two tabs (Terminal, Run), its hide, and the tab's body.
 pub(super) fn drawer(st: &State) -> Element<'_, Msg> {
-    let agent = matches!(st.ide.workspace, Some(WorkspaceId::Agent(_)));
+    let shell = has_shell(st.ide.workspace.as_ref());
     let tabs = ui::tabs(
         &[(Drawer::Terminal, "Terminal"), (Drawer::Run, "Run")],
         st.drawer_tab,
@@ -1810,8 +1905,8 @@ pub(super) fn drawer(st: &State) -> Element<'_, Msg> {
     .spacing(8)
     .align_y(Alignment::Center);
     let body: Element<'_, Msg> = match st.drawer_tab {
-        Drawer::Terminal => ide_panels::terminal_body(st.terminals.as_ref(), agent),
-        Drawer::Run => ui::scroll(ide_panels::run_view(&st.panels, agent).map(Msg::Panels))
+        Drawer::Terminal => ide_panels::terminal_body(st.terminals.as_ref(), shell),
+        Drawer::Run => ui::scroll(ide_panels::run_view(&st.panels, shell).map(Msg::Panels))
             .height(Length::Fill)
             .into(),
     };

@@ -4,6 +4,7 @@
 // the selection changes. Pure rendering over the hub's routes.
 
 import { api, ApiError, ideApi, type Approval, type IdeWorkspaceInfo } from '../api';
+import { runsFor } from '../ide/layout';
 import { on } from '../store';
 import { ago, attempt, badge, button, empty, input, textarea, toast } from '../ui/components';
 import { h, replace } from '../ui/dom';
@@ -218,9 +219,9 @@ export function approvalsPanel(opts: { wsId: string; cid: number; onCount(n: num
 
 // ---- Run --------------------------------------------------------------------
 
-/** The Run tab: one bounded command in an agent workspace, its output polled from the hub, and a stop. */
+/** The Run tab: one bounded command in an agent's or a workstation's workspace, its output polled from the hub, and a stop. */
 export function runPanel(ws: IdeWorkspaceInfo): Panel {
-  const enabled = ws.kind === 'agent';
+  const enabled = runsFor(ws.kind);
   let alive = true;
   let run: string | null = null;
   let offset = 0;
@@ -229,7 +230,7 @@ export function runPanel(ws: IdeWorkspaceInfo): Panel {
   const seconds = input({ type: 'number', min: 1, max: 600, value: 60, 'aria-label': 'Timeout in seconds', disabled: !enabled });
   const go = button('Run', () => void start(), { kind: 'primary', size: 'sm', icon: 'play', disabled: !enabled });
   const stop = button('Stop', () => void stopRun(), { kind: 'danger', size: 'sm', icon: 'stop', disabled: true });
-  const status = h('p.ide-run-status', { 'aria-live': 'polite' }, enabled ? 'Not run yet.' : 'Runs are for agent workspaces. Repository runs come in phase 3.');
+  const status = h('p.ide-run-status', { 'aria-live': 'polite' }, enabled ? 'Not run yet.' : 'Runs are for agent and workstation workspaces. Repository runs come in phase 3.');
   const out = h('pre.ide-run-out', { 'aria-label': 'Output' });
   const el = h(
     'div.ide-run',

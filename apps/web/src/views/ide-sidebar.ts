@@ -1,16 +1,20 @@
-// The IDE's left sidebar: search, the projects with their agents and repo workspaces, a hover card, keyboard movement and
-// the pinned New agent button. The agents are grouped by project (an agent is listed under every project it leads or holds
-// a task of); the agents in no project sit last in "No project", collapsed while any project exists. A terminal row shows
-// under its agent only when a terminal exists for that workspace. It loads its own data: the agents Cell from the store,
-// and projects, tasks and IDE workspaces polled every 20 s. Nothing here is shared with the shell.
+// The IDE's left sidebar: search, the projects with their agents and repo workspaces, the workstations, a hover card, keyboard
+// movement and the pinned New agent button. The agents are grouped by project (an agent is listed under every project it leads
+// or holds a task of); the agents in no project sit last in "No project", collapsed while any project exists. The workstations
+// form their own group, after the projects and before No project: an online workstation's row shows its OS and, when its agents
+// act as the owner, a warning. A terminal row shows under its agent only when a terminal exists for that workspace. It loads its
+// own data: the agents Cell from the store, projects, tasks and IDE workspaces polled every 20 s, and the workstations' accounts.
+// Nothing here is shared with the shell.
 
 import css from '../styles/ide-sidebar.css';
-import { api, ideApi, type Agent, type IdeWorkspaceInfo, type Project, type Task } from '../api';
+import { api, ideApi, type Agent, type IdeWorkspaceInfo, type Project, type StationView, type Task } from '../api';
 import { agents } from '../store';
 import { ago } from '../ui/components';
 import { h, icon } from '../ui/dom';
-import { byRecent, groupByProject, NO_PROJECT, sharedNames } from '../ide/groups';
+import { matchingRows, NONE_GID, sharedNames, sidebarGroups, type SidebarGroup } from '../ide/groups';
+import { osLabel } from '../ide/model';
 import { currentTask, rowStatus, type RowStatus } from '../ide/view';
+import { stationBadge } from './station-machine';
 import { browserSession, storedTerminalCount } from './ide-terminal-model';
 
 export interface SidebarOpts {
@@ -33,9 +37,6 @@ const GROUPS_KEY = 'apz.ide.groups';
 const POLL_MS = 20000;
 const HOVER_MS = 300;
 const LEAVE_MS = 100;
-/** The group of the agents in no project, and the group of the repositories no project holds. */
-const NONE_GID = 'none';
-const REPOSITORIES = 'repositories';
 
 const STATUS_WORD: Record<RowStatus, string> = {
   working: 'Working',
@@ -44,15 +45,6 @@ const STATUS_WORD: Record<RowStatus, string> = {
   done: 'Done',
   failed: 'Failed',
 };
-
-/** A group as the sidebar shows it: its agents, and the repo workspaces filed under its project. */
-interface GroupView {
-  gid: string;
-  title: string;
-  agents: Agent[];
-  repos: IdeWorkspaceInfo[];
-  count: number;
-}
 
 function injectStyle(): void {
   if (document.getElementById(STYLE_ID)) return;
@@ -81,60 +73,6 @@ function saveOpen(open: Record<string, boolean>): void {
   } catch {
     // Storage is blocked (a private window): the state lasts for this page only.
   }
-}
-
-/** The names a repo workspace answers to: its name, and the name inside its id `repo:<name>@<ref>`. */
-function repoNames(ws: IdeWorkspaceInfo): string[] {
-  const fromId = /^repo:([^@]+)/.exec(ws.id)?.[1] ?? '';
-  return [ws.name, fromId].filter(Boolean).map((s) => s.toLowerCase());
-}
-
-/**
- * The sidebar's groups: the projects with agents (most recently active first), each with the repo workspaces of its repo;
- * then the repositories no project holds; then No project, last.
- */
-function groupsFor(agentList: Agent[], projects: Project[], tasks: Task[], workspaces: IdeWorkspaceInfo[]): GroupView[] {
-  const grouped = groupByProject(agentList, projects, tasks);
-  const byProject = new Map<string, GroupView>();
-  for (const g of grouped) {
-    if (g.id === null) continue;
-    byProject.set(g.id, { gid: `p:${g.id}`, title: g.title, agents: g.agents, repos: [], count: g.agents.length });
-  }
-  const orphans: IdeWorkspaceInfo[] = [];
-  for (const ws of workspaces) {
-    if (ws.kind !== 'repo') continue;
-    const names = repoNames(ws);
-    const proj = projects.find((p) => p.repo && names.includes(p.repo.toLowerCase()));
-    if (!proj) {
-      orphans.push(ws);
-      continue;
-    }
-    let group = byProject.get(proj.id);
-    if (!group) {
-      group = { gid: `p:${proj.id}`, title: proj.title, agents: [], repos: [], count: 0 };
-      byProject.set(proj.id, group);
-    }
-    group.repos.push(ws);
-  }
-  const out: GroupView[] = [];
-  for (const p of byRecent(projects)) {
-    const g = byProject.get(p.id);
-    if (g) out.push(g);
-  }
-  if (orphans.length) out.push({ gid: REPOSITORIES, title: 'Repositories', agents: [], repos: orphans, count: orphans.length });
-  const none = grouped.find((g) => g.id === null);
-  if (none) out.push({ gid: NONE_GID, title: NO_PROJECT, agents: none.agents, repos: [], count: none.agents.length });
-  return out;
-}
-
-/** The rows of a group that match the lower-cased query (name, project title, current task); an empty query keeps all. */
-function matching(g: GroupView, q: string): { agents: Agent[]; repos: IdeWorkspaceInfo[] } | null {
-  if (!q) return { agents: g.agents, repos: g.repos };
-  const hit = (s: string | null | undefined) => (s ?? '').toLowerCase().includes(q);
-  const whole = hit(g.title);
-  const agentsHit = g.agents.filter((a) => whole || hit(a.name) || hit(currentTask(a)));
-  const reposHit = g.repos.filter((ws) => whole || hit(ws.name));
-  return agentsHit.length || reposHit.length ? { agents: agentsHit, repos: reposHit } : null;
 }
 
 function isEditable(t: EventTarget | null): boolean {
@@ -171,6 +109,8 @@ export function sidebar(opts: SidebarOpts): Sidebar {
   let projects: Project[] = [];
   let tasks: Task[] = [];
   let workspaces: IdeWorkspaceInfo[] = [];
+  /** The workstations' own records: the account each one's agents act as, which the workspace list does not carry. */
+  let stationViews: StationView[] = [];
   let selected: string | null = null;
   let query = '';
   let disposed = false;
@@ -191,7 +131,7 @@ export function sidebar(opts: SidebarOpts): Sidebar {
   const search = h('input.ide-side-search', {
     type: 'search',
     placeholder: 'Search',
-    'aria-label': 'Search agents, projects and repos',
+    'aria-label': 'Search agents, projects, repos and workstations',
     autocomplete: 'off',
     spellcheck: false,
     oninput: () => {
@@ -361,20 +301,20 @@ export function sidebar(opts: SidebarOpts): Sidebar {
   }
 
   /** A group is open unless the owner closed it. No project is closed by default while any project exists. */
-  function isOpen(g: GroupView, q: string, hasProjects: boolean): boolean {
+  function isOpen(g: SidebarGroup, q: string, hasProjects: boolean): boolean {
     if (q !== '') return true;
     const saved = openGroups[g.gid];
     if (saved !== undefined) return saved;
     return g.gid !== NONE_GID || !hasProjects;
   }
 
-  function toggleGroup(g: GroupView): void {
+  function toggleGroup(g: SidebarGroup): void {
     openGroups[g.gid] = !isOpen(g, query.toLowerCase(), projects.length > 0);
     saveOpen(openGroups);
     render();
   }
 
-  function groupHead(g: GroupView, open: boolean): HTMLElement {
+  function groupHead(g: SidebarGroup, open: boolean): HTMLElement {
     return h('button.ide-side-group', {
       type: 'button',
       'data-key': `g:${g.gid}`,
@@ -443,6 +383,31 @@ export function sidebar(opts: SidebarOpts): Sidebar {
         h('span.ide-side-meta', null, ws.writable ? 'Writable repo' : 'Read only repo')));
   }
 
+  /**
+   * A workstation's row: a dot (green while it is online), its name, its OS, and the warning when its agents act as the
+   * owner. The account comes from the station's record; a station the record does not show has no warning.
+   */
+  function stationRow(ws: IdeWorkspaceInfo): HTMLElement {
+    const key = `ws:${ws.id}`;
+    const name = ws.name || ws.owner;
+    const badge = stationViews.find((s) => s.id === ws.owner);
+    const warn = badge ? stationBadge(badge) : null;
+    const online = ws.status === 'online';
+    return h('button.ide-side-row', {
+      type: 'button',
+      'data-key': key,
+      'data-status': online ? 'online' : 'offline',
+      'aria-current': selected === key ? 'true' : null,
+      title: `Workstation ${name}`,
+      onclick: () => choose(key),
+    },
+      h('span.ide-side-mark', { role: 'img', 'aria-label': online ? 'Online' : 'Offline', title: online ? 'Online' : 'Offline' }, h('span.ide-side-dot')),
+      h('span.ide-side-body', null,
+        h('span.ide-side-name', null, name),
+        h('span.ide-side-meta', null, osLabel(ws.os)),
+        warn ? h('span.ide-side-warn', { title: 'The agents work in the owner’s own account on this machine' }, warn) : null));
+  }
+
   /** Rebuilds the list, keeping the focused row focused by its key. */
   function render(): void {
     const active = document.activeElement;
@@ -450,8 +415,8 @@ export function sidebar(opts: SidebarOpts): Sidebar {
     const q = query.toLowerCase();
     const hasProjects = projects.length > 0;
     const nodes: HTMLElement[] = [];
-    for (const g of groupsFor(agents.get(), projects, tasks, workspaces)) {
-      const v = matching(g, q);
+    for (const g of sidebarGroups(agents.get(), projects, tasks, workspaces)) {
+      const v = matchingRows(g, q);
       if (!v) continue;
       const open = isOpen(g, q, hasProjects);
       nodes.push(groupHead(g, open));
@@ -463,6 +428,7 @@ export function sidebar(opts: SidebarOpts): Sidebar {
         if (terminals > 0) nodes.push(termRow(a, terminals));
       }
       for (const ws of v.repos) nodes.push(repoRow(ws));
+      for (const ws of v.stations) nodes.push(stationRow(ws));
     }
     if (!nodes.length) {
       nodes.push(h('div.ide-side-empty', null,
@@ -476,15 +442,17 @@ export function sidebar(opts: SidebarOpts): Sidebar {
   }
 
   async function load(): Promise<void> {
-    const [p, w, t] = await Promise.all([
+    const [p, w, t, s] = await Promise.all([
       api.projects().catch(() => null),
       ideApi.workspaces().catch(() => null),
       api.tasks().catch(() => null),
+      api.stations().catch(() => null),
     ]);
     if (disposed) return;
     if (p) projects = p;
     if (w) workspaces = w;
     if (t) tasks = t;
+    if (s) stationViews = s;
     schedule();
   }
 

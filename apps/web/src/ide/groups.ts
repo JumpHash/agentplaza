@@ -1,6 +1,7 @@
 // The IDE sidebar's grouping and the start choice. Pure: no DOM, no fetch, no store. An agent belongs to every project it
 // leads and every project with a task it is an assignee of; the agents in none sit in "No project".
-import type { Agent, Project, Task } from '../api';
+import type { Agent, IdeWorkspaceInfo, Project, Task } from '../api';
+import { currentTask } from './view';
 
 export interface ProjectGroup {
   id: string | null;
@@ -10,6 +11,23 @@ export interface ProjectGroup {
 
 /** The title of the group for the agents in no project. It sorts last. */
 export const NO_PROJECT = 'No project';
+/** The titles of the groups that are not a project: the repositories no project holds, and the workstations. */
+export const REPOSITORIES = 'Repositories';
+export const WORKSTATIONS = 'Workstations';
+/** The ids of the groups that are not a project: the repositories, the workstations, and the agents in no project. */
+export const REPOSITORIES_GID = 'repositories';
+export const WORKSTATIONS_GID = 'workstations';
+export const NONE_GID = 'none';
+
+/** One group as the sidebar shows it: its agents, the repo workspaces filed under its project, and the workstations. */
+export interface SidebarGroup {
+  gid: string;
+  title: string;
+  agents: Agent[];
+  repos: IdeWorkspaceInfo[];
+  stations: IdeWorkspaceInfo[];
+  count: number;
+}
 
 /** Projects, most recently active first. */
 export function byRecent(projects: Project[]): Project[] {
@@ -82,4 +100,65 @@ export function startAgent(groups: ProjectGroup[], last: number | null): number 
   }
   if (last !== null && seen.has(last)) return last;
   return (order.find((a) => a.status === 'working') ?? order[0])?.cid ?? null;
+}
+
+/** The names a repo workspace answers to: its name, and the name inside its id `repo:<name>@<ref>`. */
+function repoNames(ws: IdeWorkspaceInfo): string[] {
+  const fromId = /^repo:([^@]+)/.exec(ws.id)?.[1] ?? '';
+  return [ws.name, fromId].filter(Boolean).map((s) => s.toLowerCase());
+}
+
+/**
+ * The sidebar's groups: the projects with agents (most recently active first), each with the repo workspaces of its repo;
+ * then the repositories no project holds; then the workstations; then No project, last. A workstation is never filed under
+ * a project: a station is not linked to one.
+ */
+export function sidebarGroups(agents: Agent[], projects: Project[], tasks: Task[], workspaces: IdeWorkspaceInfo[]): SidebarGroup[] {
+  const grouped = groupByProject(agents, projects, tasks);
+  const byProject = new Map<string, SidebarGroup>();
+  for (const g of grouped) {
+    if (g.id === null) continue;
+    byProject.set(g.id, { gid: `p:${g.id}`, title: g.title, agents: g.agents, repos: [], stations: [], count: g.agents.length });
+  }
+  const orphans: IdeWorkspaceInfo[] = [];
+  for (const ws of workspaces) {
+    if (ws.kind !== 'repo') continue;
+    const names = repoNames(ws);
+    const proj = projects.find((p) => p.repo && names.includes(p.repo.toLowerCase()));
+    if (!proj) {
+      orphans.push(ws);
+      continue;
+    }
+    let group = byProject.get(proj.id);
+    if (!group) {
+      group = { gid: `p:${proj.id}`, title: proj.title, agents: [], repos: [], stations: [], count: 0 };
+      byProject.set(proj.id, group);
+    }
+    group.repos.push(ws);
+  }
+  const stations = workspaces.filter((ws) => ws.kind === 'station');
+  const out: SidebarGroup[] = [];
+  for (const p of byRecent(projects)) {
+    const g = byProject.get(p.id);
+    if (g) out.push(g);
+  }
+  if (orphans.length) out.push({ gid: REPOSITORIES_GID, title: REPOSITORIES, agents: [], repos: orphans, stations: [], count: orphans.length });
+  if (stations.length) out.push({ gid: WORKSTATIONS_GID, title: WORKSTATIONS, agents: [], repos: [], stations, count: stations.length });
+  const none = grouped.find((g) => g.id === null);
+  if (none) out.push({ gid: NONE_GID, title: NO_PROJECT, agents: none.agents, repos: [], stations: [], count: none.agents.length });
+  return out;
+}
+
+/**
+ * The rows of a group that match the lower-cased query (name, group title, current task; a workstation by its name); an
+ * empty query keeps all. Null when no row matches.
+ */
+export function matchingRows(g: SidebarGroup, q: string): { agents: Agent[]; repos: IdeWorkspaceInfo[]; stations: IdeWorkspaceInfo[] } | null {
+  if (!q) return { agents: g.agents, repos: g.repos, stations: g.stations };
+  const hit = (s: string | null | undefined) => (s ?? '').toLowerCase().includes(q);
+  const whole = hit(g.title);
+  const agents = g.agents.filter((a) => whole || hit(a.name) || hit(currentTask(a)));
+  const repos = g.repos.filter((ws) => whole || hit(ws.name));
+  const stations = g.stations.filter((ws) => whole || hit(ws.name));
+  return agents.length || repos.length || stations.length ? { agents, repos, stations } : null;
 }

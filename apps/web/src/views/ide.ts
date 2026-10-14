@@ -25,7 +25,7 @@ import { sidebar } from './ide-sidebar';
 import { palette, type Palette } from './ide-palette';
 import { cidOf, closeOverlay, message, newCtx, readStore, VIEWS, type IdeCtx } from './ide-ctx';
 import { applyLayout, layoutEdges, MID_QUERY, onBreakpoint, readDrawerPrefs, readLayout, setDrawer, setLeft, setRightOpen } from './ide-layout';
-import { autoSelect, newAgent, openKey, selectAgent, selectRepo, setCentre, setRight } from './ide-select';
+import { autoSelect, newAgent, openKey, selectAgent, selectWorkspace, setCentre, setRight } from './ide-select';
 import { lastAgentCid, loadChangedDirs, refreshProjects, scheduleRefresh } from './ide-data';
 import { openTab, reloadTab, save } from './ide-editing';
 import { openQuick, toggleSearch } from './ide-panels';
@@ -143,6 +143,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     narrowMq,
     midMq,
     changedBox,
+    changedToggle,
     treeList,
     searchHost,
     cpHost,
@@ -262,7 +263,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     c.started = true;
     renderAll(c);
     if (chosen?.kind === 'agent') selectAgent(c, cidOf(chosen.id) as number, c.centreView);
-    else if (chosen) selectRepo(c, chosen);
+    else if (chosen) selectWorkspace(c, chosen);
     else autoSelect(c, lastAgentCid());
   })();
 

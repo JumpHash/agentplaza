@@ -3,10 +3,12 @@
 import { api } from '../api';
 import { consoleOrigin } from '../ide/open';
 import { projectOf } from '../ide/groups';
+import { hasTerminal } from '../ide/layout';
+import { osLabel } from '../ide/model';
 import { rowStatus, type PaletteItem } from '../ide/view';
 import { closeOverlay, inField, inTerminal, inTyping, refOf, repoNameOf, type IdeCtx } from './ide-ctx';
 import { closeDrawerIfNarrow, setDrawer, setLeft, setRightOpen } from './ide-layout';
-import { centreAllowed, selectAgent, selectRepo, setCentre, setRight } from './ide-select';
+import { centreAllowed, selectAgent, selectWorkspace, setCentre, setRight } from './ide-select';
 import { openQuick, openSearch } from './ide-panels';
 import { openTab, save } from './ide-editing';
 import type { CentreView, RightView } from './ide-frame';
@@ -24,7 +26,10 @@ export function paletteItems(c: IdeCtx): PaletteItem[] {
     const project = projectOf(a, c.projects, c.tasks);
     items.push({ id: `agent:${a.cid}`, group: 'agent', label: a.name, hint: `${rowStatus(a, null)}${project ? ` · ${project.title}` : ''}` });
   }
-  for (const w of c.wsList) if (w.kind === 'repo') items.push({ id: `ws:${w.id}`, group: 'agent', label: repoNameOf(w), hint: `repository ${refOf(w)}` });
+  for (const w of c.wsList) {
+    if (w.kind === 'repo') items.push({ id: `ws:${w.id}`, group: 'agent', label: repoNameOf(w), hint: `repository ${refOf(w)}` });
+    else if (w.kind === 'station') items.push({ id: `ws:${w.id}`, group: 'agent', label: w.name || w.owner, hint: `workstation · ${osLabel(w.os)}` });
+  }
   for (const e of c.entries.values()) if (e.kind === 'file') items.push({ id: `file:${e.path}`, group: 'file', label: e.path.slice(e.path.lastIndexOf('/') + 1), hint: e.path });
   for (const t of c.tasks) items.push({ id: `task:${t.id}`, group: 'task', label: t.goal, hint: t.state });
   const commands: [string, string][] = [
@@ -69,7 +74,7 @@ export function runPaletteItem(c: IdeCtx, item: PaletteItem): void {
   if (kind === 'agent') selectAgent(c, Number(value), 'chat');
   else if (kind === 'ws') {
     const w = c.wsList.find((x) => x.id === value);
-    if (w) selectRepo(c, w);
+    if (w) selectWorkspace(c, w);
   } else if (kind === 'file') void openTab(c, value);
   else if (kind === 'task') setRight(c, 'tasks');
   else if (kind === 'cmd') runCommand(c, value);
@@ -94,6 +99,8 @@ export function onKey(c: IdeCtx, e: KeyboardEvent): void {
   if (!c.alive) return;
   const mod = e.metaKey || e.ctrlKey;
   const { layout } = c;
+  /** The drawer's terminal: an agent's or a workstation's (a repository has none). */
+  const termOk = hasTerminal(c.ws?.kind ?? null, c.cid !== null);
   if (mod && e.altKey && !e.shiftKey && e.code === 'KeyB') {
     e.preventDefault();
     setLeft(c, !layout.leftOpen);
@@ -103,10 +110,10 @@ export function onKey(c: IdeCtx, e: KeyboardEvent): void {
   } else if (mod && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'k') {
     e.preventDefault();
     void openPalette(c);
-  } else if (!mod && !e.altKey && !e.shiftKey && e.code === 'Backquote' && !inTyping(e.target) && c.cid !== null) {
+  } else if (!mod && !e.altKey && !e.shiftKey && e.code === 'Backquote' && !inTyping(e.target) && termOk) {
     e.preventDefault();
     setDrawer(c, !c.drawerOpen);
-  } else if (mod && !e.altKey && !e.shiftKey && e.code === 'Backquote' && !inTerminal(e.target) && c.cid !== null) {
+  } else if (mod && !e.altKey && !e.shiftKey && e.code === 'Backquote' && !inTerminal(e.target) && termOk) {
     e.preventDefault();
     setDrawer(c, !c.drawerOpen);
   } else if (mod && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 's' && !inTerminal(e.target)) {

@@ -135,8 +135,8 @@ pub fn last_task_outcome(tasks: &[TaskRow], cid: u64) -> Option<String> {
         .map(|t| t.state.clone())
 }
 
-/// A sidebar group: a project (with its agents and the repo workspaces it owns), or the agents that belong to
-/// no project. An agent is listed once, under the first project that names it.
+/// A sidebar group: a project (with its agents and the repo workspaces it owns), the workstations, or the agents that
+/// belong to no project. An agent is listed once, under the first project that names it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Group {
     pub key: String,
@@ -145,22 +145,26 @@ pub struct Group {
     pub agents: Vec<u64>,
     /// The repo workspaces' ids (`repo:<name>@<ref>`) the group owns.
     pub repos: Vec<String>,
+    /// The workstations' ids (`station:<id>`) the group lists.
+    pub stations: Vec<String>,
 }
 
 impl Group {
-    /// The count the group's header shows: its agents and repos.
+    /// The count the group's header shows: its agents, repos and workstations.
     pub fn count(&self) -> usize {
-        self.agents.len() + self.repos.len()
+        self.agents.len() + self.repos.len() + self.stations.len()
     }
 }
 
-/// The sidebar's groups: each project that has an agent or a repo, in the order given; then the agents no
-/// project names, under "Other agents". `repos` are (workspace id, repo name) pairs; a repo no project owns
-/// goes under "Repositories".
+/// The sidebar's groups: each project that has an agent or a repo, in the order given; then the workstations (after
+/// the projects, as the web IDE has them); then the agents no project names, under "Other agents". `repos` are
+/// (workspace id, repo name) pairs; a repo no project owns goes under "Repositories", last. `stations` are the
+/// workstations' workspace ids.
 pub fn groups(
     agents: &[AgentRow],
     projects: &[ProjectRow],
     repos: &[(String, String)],
+    stations: &[String],
 ) -> Vec<Group> {
     let mut placed: BTreeSet<u64> = BTreeSet::new();
     let mut placed_repos: BTreeSet<String> = BTreeSet::new();
@@ -192,6 +196,17 @@ pub fn groups(
             project: Some(project.id.clone()),
             agents: members,
             repos: owned,
+            stations: Vec::new(),
+        });
+    }
+    if !stations.is_empty() {
+        out.push(Group {
+            key: "workstations".into(),
+            title: "Workstations".into(),
+            project: None,
+            agents: Vec::new(),
+            repos: Vec::new(),
+            stations: stations.to_vec(),
         });
     }
     let loose: Vec<u64> = agents
@@ -206,6 +221,7 @@ pub fn groups(
             project: None,
             agents: loose,
             repos: Vec::new(),
+            stations: Vec::new(),
         });
     }
     let stray: Vec<String> = repos
@@ -220,9 +236,43 @@ pub fn groups(
             project: None,
             agents: Vec::new(),
             repos: stray,
+            stations: Vec::new(),
         });
     }
     out
+}
+
+// ---- Workstations -----------------------------------------------------------------------------
+
+/// One workstation's account, as the sidebar's row needs it (`GET /v1/stations`): when its agents act as the owner in
+/// the owner's own account, that account's name (the row warns); a separate agent account has none.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StationRow {
+    pub id: String,
+    pub owner_account: Option<String>,
+}
+
+/// Reads one station record. A record without an id is not a station.
+pub fn parse_station(v: &Value) -> Option<StationRow> {
+    let id = v.get("id")?.as_str()?.to_string();
+    let owner_account = v
+        .get("facts")
+        .and_then(|f| f.get("account"))
+        .filter(|a| text(a, "mode") == "owner")
+        .map(|a| text(a, "name"));
+    Some(StationRow { id, owner_account })
+}
+
+/// A workstation's OS as a short label, as the web IDE shows it. A missing OS reads as unknown; an OS this build does
+/// not name is shown as it came.
+pub fn os_label(os: Option<&str>) -> String {
+    match os {
+        Some("macos") => "macOS".into(),
+        Some("windows") => "Windows".into(),
+        Some("linux") => "Linux".into(),
+        Some(other) if !other.is_empty() => other.into(),
+        _ => "Unknown OS".into(),
+    }
 }
 
 // ---- Status ----------------------------------------------------------------------------------
@@ -508,7 +558,7 @@ mod tests {
     fn an_agent_joins_the_first_project_that_names_it_and_the_rest_are_other_agents() {
         let agents = vec![agent(1, "idle"), agent(2, "idle"), agent(3, "idle")];
         let projects = vec![project("a", &[1, 2], None), project("b", &[2, 3], None)];
-        let groups = groups(&agents, &projects, &[]);
+        let groups = groups(&agents, &projects, &[], &[]);
         assert_eq!(
             groups.len(),
             2,
@@ -523,7 +573,7 @@ mod tests {
     fn agents_no_project_names_go_under_other_agents_and_empty_projects_are_left_out() {
         let agents = vec![agent(1, "idle"), agent(9, "working")];
         let projects = vec![project("a", &[1], None), project("empty", &[], None)];
-        let groups = groups(&agents, &projects, &[]);
+        let groups = groups(&agents, &projects, &[], &[]);
         assert_eq!(
             groups.iter().map(|g| g.key.as_str()).collect::<Vec<_>>(),
             vec!["project:a", "other"]
@@ -539,11 +589,58 @@ mod tests {
             ("repo:tools@main".to_string(), "tools".to_string()),
         ];
         let projects = vec![project("p", &[], Some("web"))];
-        let groups = groups(&[], &projects, &repos);
+        let groups = groups(&[], &projects, &repos, &[]);
         assert_eq!(groups.len(), 2);
         assert_eq!(groups[0].repos, vec!["repo:web@main".to_string()]);
         assert_eq!(groups[1].key, "repos");
         assert_eq!(groups[1].repos, vec!["repo:tools@main".to_string()]);
+    }
+
+    #[test]
+    fn the_workstations_come_after_the_projects_and_before_other_agents() {
+        let agents = vec![agent(1, "idle"), agent(9, "working")];
+        let projects = vec![project("a", &[1], None)];
+        let stations = vec!["station:w3".to_string(), "station:w4".to_string()];
+        let groups = groups(&agents, &projects, &[], &stations);
+        assert_eq!(
+            groups.iter().map(|g| g.key.as_str()).collect::<Vec<_>>(),
+            vec!["project:a", "workstations", "other"]
+        );
+        assert_eq!(groups[1].title, "Workstations");
+        assert_eq!(groups[1].stations, stations);
+        assert_eq!(groups[1].count(), 2, "a workstation counts in its header");
+        assert!(
+            groups[1].agents.is_empty(),
+            "no agent is filed under a workstation"
+        );
+    }
+
+    #[test]
+    fn a_station_record_reads_its_account_and_only_the_owners_gets_a_warning() {
+        let owner = serde_json::json!({ "id": "w3", "facts": { "account": { "mode": "owner", "name": "ana" } } });
+        let separate = serde_json::json!({ "id": "w4", "facts": { "account": { "mode": "agent_user", "name": "agent" } } });
+        assert_eq!(
+            parse_station(&owner),
+            Some(StationRow {
+                id: "w3".into(),
+                owner_account: Some("ana".into())
+            })
+        );
+        assert_eq!(parse_station(&separate).and_then(|s| s.owner_account), None);
+        assert_eq!(
+            parse_station(&serde_json::json!({ "facts": {} })),
+            None,
+            "a record without an id is no station"
+        );
+    }
+
+    #[test]
+    fn a_station_os_reads_as_a_short_label() {
+        assert_eq!(os_label(Some("macos")), "macOS");
+        assert_eq!(os_label(Some("windows")), "Windows");
+        assert_eq!(os_label(Some("linux")), "Linux");
+        assert_eq!(os_label(None), "Unknown OS");
+        assert_eq!(os_label(Some("plan9")), "plan9");
     }
 
     #[test]

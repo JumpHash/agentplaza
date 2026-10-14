@@ -202,6 +202,25 @@
   background: var(--text-3);
 }
 
+/* A workstation: a round dot, green while it is online (the hub lists only online ones). */
+.ide-side-row[data-status="online"] .ide-side-dot {
+  background: var(--ok);
+}
+
+.ide-side-row[data-status="offline"] .ide-side-dot {
+  background: var(--text-3);
+}
+
+/* The warning under a workstation whose agents act as the owner. */
+.ide-side-warn {
+  overflow: hidden;
+  color: var(--warn);
+  font-size: 12px;
+  line-height: 16px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 @keyframes ide-side-pulse {
   0%,
   100% {

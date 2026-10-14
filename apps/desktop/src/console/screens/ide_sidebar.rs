@@ -4,13 +4,13 @@
 
 // The IDE's own helpers and state, for the messages this area takes (moved from `ide.rs`).
 use super::ide::*;
-use std::str::FromStr;
-use apz_ide::WorkspaceId;
 use crate::console::Ctx;
+use apz_ide::WorkspaceId;
 use iced::Task;
 use iced::font::{Font, Style as FontStyle, Weight};
 use iced::widget::{Space, Stack, button, column, container, row, text, text_input, tooltip};
 use iced::{Alignment, Element, Length};
+use std::str::FromStr;
 
 use super::ide::{self, Msg, State};
 use super::ide_model::{self, AgentRow, Dot, Group};
@@ -57,7 +57,13 @@ pub fn view(st: &State) -> Element<'_, Msg> {
         .filter(|w| w.kind == "repo")
         .map(|w| (w.id.clone(), w.name.clone()))
         .collect();
-    let groups = ide_model::groups(&agents, &st.projects, &repos);
+    let stations: Vec<String> = st
+        .workspaces
+        .iter()
+        .filter(|w| w.kind == "station")
+        .map(|w| w.id.clone())
+        .collect();
+    let groups = ide_model::groups(&agents, &st.projects, &repos, &stations);
     let unread = super::board::unread(&st.board, st.board_seen_ms);
 
     let mut list = column![].spacing(6);
@@ -91,6 +97,11 @@ pub fn view(st: &State) -> Element<'_, Msg> {
         for id in &group.repos {
             if let Some(w) = st.workspaces.iter().find(|w| &w.id == id) {
                 list = list.push(repo_row(st, w));
+            }
+        }
+        for id in &group.stations {
+            if let Some(w) = st.workspaces.iter().find(|w| &w.id == id) {
+                list = list.push(station_row(st, w));
             }
         }
     }
@@ -184,9 +195,11 @@ pub fn dot_mark<'a>(dot: Dot) -> Element<'a, Msg> {
 /// A name with a rule through its middle (iced has no strikethrough): a finished agent's name.
 fn struck(name: String) -> Element<'static, Msg> {
     // The rule is one pixel tall, centred on the name: only the line takes the colour, not the whole stacked row.
-    let line = container(Space::new().width(Length::Fill).height(Length::Fixed(1.0))).style(|_| container::Style {
-        background: Some(theme::palette().ink_3.into()),
-        ..Default::default()
+    let line = container(Space::new().width(Length::Fill).height(Length::Fixed(1.0))).style(|_| {
+        container::Style {
+            background: Some(theme::palette().ink_3.into()),
+            ..Default::default()
+        }
     });
     let rule = container(line)
         .width(Length::Fill)
@@ -305,6 +318,46 @@ fn repo_row(st: &State, w: &super::ide::WorkspaceInfo) -> Element<'static, Msg> 
     .into()
 }
 
+/// A workstation's row: a machine glyph and its name, its OS, and a warning when its agents act as the owner. Opened on
+/// press. The hub lists only online workstations, so a row is always online.
+fn station_row(st: &State, w: &super::ide::WorkspaceInfo) -> Element<'static, Msg> {
+    let p = theme::palette();
+    let selected = st
+        .ide
+        .workspace
+        .as_ref()
+        .is_some_and(|ws| ws.to_string() == w.id);
+    let name = if w.name.is_empty() {
+        w.owner.clone()
+    } else {
+        w.name.clone()
+    };
+    let warn = st
+        .stations
+        .iter()
+        .find(|s| s.id == w.owner)
+        .and_then(|s| s.owner_account.clone());
+    let mut lines = column![
+        row![
+            ui::icon("machine", 13.0, p.ink_2),
+            ui::mono(name, 12.5, p.ink)
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center),
+        ui::faint(ide_model::os_label(w.os.as_deref())),
+    ]
+    .spacing(2);
+    if let Some(account) = warn {
+        lines = lines.push(ui::mono(format!("agents act as {account}"), 11.0, p.warn));
+    }
+    button(lines)
+        .width(Length::Fill)
+        .padding([6, 8])
+        .style(theme::register_row(selected))
+        .on_press(Msg::Pick(ide::choice(w)))
+        .into()
+}
+
 /// The hover card: the agent's role, model, what it is doing, when it was last seen, and what it has spent.
 fn hover_card(agent: &AgentRow, last: Option<&str>) -> Element<'static, Msg> {
     let p = theme::palette();
@@ -342,7 +395,14 @@ fn hover_card(agent: &AgentRow, last: Option<&str>) -> Element<'static, Msg> {
 
 /// Whether a message is this area's: `update` below takes it, and `ide.rs` hands it over.
 pub(super) fn handles(msg: &Msg) -> bool {
-    matches!(msg, Msg::Pick(..) | Msg::SidebarQuery(..) | Msg::ToggleGroup(..) | Msg::NewAgent | Msg::Roster(..))
+    matches!(
+        msg,
+        Msg::Pick(..)
+            | Msg::SidebarQuery(..)
+            | Msg::ToggleGroup(..)
+            | Msg::NewAgent
+            | Msg::Roster(..)
+    )
 }
 
 /// The area's messages: the state they change, and the tasks they start. See `handles`.
@@ -372,12 +432,20 @@ pub(super) fn update(st: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                     st.roster = roster.agents;
                     st.projects = roster.projects;
                     st.tasks = roster.tasks;
+                    st.stations = roster.stations;
                     st.roster_loaded = true;
                     st.roster_error = None;
                     // The board names its authors from this roster, so a post reads by name, not by cid.
                     st.board.adopt_names(st.roster.iter().map(|a| {
                         let name = a.name.trim();
-                        (a.cid, if name.is_empty() { "Unnamed".to_string() } else { name.to_string() })
+                        (
+                            a.cid,
+                            if name.is_empty() {
+                                "Unnamed".to_string()
+                            } else {
+                                name.to_string()
+                            },
+                        )
                     }));
                 }
                 Err(e) => st.roster_error = Some(e),

@@ -16,6 +16,20 @@ fn info(cid: u64, writable: bool, status: &str) -> WorkspaceInfo {
         name: "scout".into(),
         writable,
         status: status.into(),
+        os: None,
+    }
+}
+
+/// A workstation `w3` named `studio`, on macOS, as the hub lists an online one.
+fn station() -> WorkspaceInfo {
+    WorkspaceInfo {
+        id: "station:w3".into(),
+        kind: "station".into(),
+        owner: "w3".into(),
+        name: "studio".into(),
+        writable: true,
+        status: "online".into(),
+        os: Some("macos".into()),
     }
 }
 
@@ -270,9 +284,114 @@ fn the_picker_names_a_repo_by_its_branch_and_an_agent_by_its_status() {
         name: "plaza".into(),
         writable: true,
         status: String::new(),
+        os: None,
     };
     assert_eq!(choice(&repo).label, "repo · plaza @feat/x");
     assert_eq!(choice(&info(7, true, "idle")).label, "agent · scout · idle");
+    assert_eq!(choice(&station()).label, "workstation · studio · online");
+}
+
+#[test]
+fn a_workstation_has_its_files_editor_and_terminal_and_no_diff_chat_or_project_tabs() {
+    let ws = WorkspaceId::Station("w3".into());
+    assert!(!has_diff(Some(&ws)), "a workstation has no diff");
+    assert!(
+        has_shell(Some(&ws)),
+        "a workstation has a shell: its terminal and runs"
+    );
+    assert_eq!(
+        centre_views(Some(&ws)),
+        vec![Centre::Terminal, Centre::Editor]
+    );
+    assert_eq!(right_tabs(Some(&ws)), vec![RightTab::Files]);
+    // The other kinds keep what they had.
+    let agent = WorkspaceId::Agent(7);
+    let repo = WorkspaceId::Repo {
+        name: "plaza".into(),
+        git_ref: "main".into(),
+    };
+    assert!(has_diff(Some(&agent)) && has_diff(Some(&repo)) && has_diff(None));
+    assert!(has_shell(Some(&agent)) && !has_shell(Some(&repo)) && !has_shell(None));
+    assert_eq!(centre_views(Some(&agent)).len(), 4);
+    assert_eq!(centre_views(Some(&repo)).len(), 4);
+    assert_eq!(right_tabs(Some(&agent)).len(), 5);
+    assert_eq!(right_tabs(Some(&repo)).len(), 5);
+}
+
+#[test]
+fn selecting_a_workstation_moves_the_centre_and_the_panel_off_the_views_it_lacks() {
+    let mut st = State {
+        loaded: true,
+        workspaces: vec![station()],
+        ..State::default()
+    };
+    st.centre = Centre::Chat;
+    st.right = RightTab::Board;
+    let _ = update(&mut st, Msg::Pick(choice(&station())), &ctx());
+    assert_eq!(st.ide.workspace, Some(WorkspaceId::Station("w3".into())));
+    assert_eq!(
+        st.centre,
+        Centre::Editor,
+        "the chat gives way to the editor"
+    );
+    assert_eq!(
+        st.right,
+        RightTab::Files,
+        "the board gives way to the files"
+    );
+    let _ = update(&mut st, Msg::Centre(Centre::Chat), &ctx());
+    let _ = update(&mut st, Msg::Centre(Centre::Diff), &ctx());
+    assert_eq!(
+        st.centre,
+        Centre::Editor,
+        "a workstation has no chat and no diff"
+    );
+    let _ = update(&mut st, Msg::Right(RightTab::Activity), &ctx());
+    assert_eq!(st.right, RightTab::Files, "a workstation has no activity");
+    let _ = update(&mut st, Msg::Centre(Centre::Terminal), &ctx());
+    assert_eq!(st.centre, Centre::Terminal, "the terminal is its own view");
+    assert!(st.terminals.is_some(), "and its shell's tabs are made");
+}
+
+#[test]
+fn a_workstation_is_named_in_the_breadcrumb_by_its_name_and_its_work_folder() {
+    let mut st = State {
+        workspaces: vec![station()],
+        ..State::default()
+    };
+    dispatch(
+        &mut st,
+        Action::SetWorkspace(WorkspaceId::Station("w3".into())),
+    );
+    assert_eq!(
+        crumbs(&st),
+        ("Workstations".into(), "studio".into(), "work folder".into())
+    );
+    // Not listed under a name yet: its id stands in.
+    st.workspaces[0].name = String::new();
+    assert_eq!(crumbs(&st).1, "w3");
+}
+
+#[test]
+fn a_changed_filter_and_a_checkpoint_ask_the_hub_nothing_for_a_workstation() {
+    let mut st = State {
+        loaded: true,
+        workspaces: vec![station()],
+        ..State::default()
+    };
+    dispatch(
+        &mut st,
+        Action::SetWorkspace(WorkspaceId::Station("w3".into())),
+    );
+    let _ = update(&mut st, Msg::ChangedOnly, &ctx());
+    assert!(!st.ide.filter_changed, "the changed-only filter is not set");
+    let _ = changes_task(&mut st, &ctx());
+    assert!(
+        !st.changes_busy,
+        "no changes are asked for: the hub has none for a workstation"
+    );
+    let _ = checkpoints_task(&st, &ctx());
+    assert!(st.checkpoints.is_empty());
 }
 
 #[test]
@@ -727,7 +846,7 @@ fn a_run_is_not_read_on_while_the_ide_is_away_and_is_polled_again_on_entry() {
 
 #[test]
 fn the_chat_opens_at_its_newest_entry_and_follows_it_only_from_the_bottom() {
-    use super::ide_chat::{decide, Follow};
+    use super::ide_chat::{Follow, decide};
     assert_eq!(
         decide(false, false, 0, 5),
         Follow::Snap,
