@@ -22,8 +22,9 @@ use ratatui::style::Color;
 use serde_json::{Value, json};
 
 use super::floor::FloorView;
+use super::onboarding::{self, Facts, Onboarding, Stage, Step, TOUR};
 use super::screens;
-use crate::ctx::{Client, seg};
+use crate::ctx::{Client, Config, seg};
 
 const FRAME: Duration = Duration::from_millis(50);
 const POLL_EVERY: Duration = Duration::from_secs(3);
@@ -173,6 +174,7 @@ impl EventLog {
 
 /// What the background threads send the UI.
 enum Msg {
+    Facts(Facts),
     Fetched(&'static str, Result<Value, String>),
     Link(bool),
     Event(String, Value),
@@ -198,6 +200,8 @@ pub struct App {
     /// A message being typed to an agent: its cid and the text so far.
     pub draft: Option<(i64, String)>,
     pub confirm: Option<Confirm>,
+    /// The first-start setup or the tour, while it runs (it takes every key).
+    pub onboarding: Option<Onboarding>,
     rx: Receiver<Msg>,
     tx: Sender<Msg>,
     watch: Sender<&'static str>,
@@ -227,9 +231,62 @@ impl App {
             detail: false,
             draft: None,
             confirm: None,
+            onboarding: None,
             rx,
             tx,
             watch,
+        }
+    }
+
+    /// Starts the setup or the tour.
+    pub fn begin(&mut self, stage: Stage) {
+        self.onboarding = Some(Onboarding::new(stage));
+        match stage {
+            Stage::Setup(_) => self.gather_facts(),
+            Stage::Tour(_) => self.show_tour_step(),
+            Stage::Ask => {}
+        }
+    }
+
+    /// Reads the hub and the model keys on a thread; the answer arrives as `Msg::Facts`.
+    fn gather_facts(&self) {
+        let client = self.client.clone();
+        let tx = self.tx.clone();
+        thread::spawn(move || {
+            let _ = tx.send(Msg::Facts(onboarding::gather(&client)));
+        });
+    }
+
+    /// Switches to the tab the tour's current step shows (a step without one keeps the current tab).
+    fn show_tour_step(&mut self) {
+        if let Some(Stage::Tour(i)) = self.onboarding.as_ref().map(|ob| ob.stage) {
+            if let Some(tab) = TOUR[i].tab {
+                self.select_tab(tab);
+            }
+        }
+    }
+
+    fn on_onboarding_key(&mut self, code: KeyCode) {
+        let Some(input) = onboarding::input_for(code) else { return };
+        let Some(stage) = self.onboarding.as_ref().map(|ob| ob.stage) else { return };
+        let Step { next, mark } = onboarding::advance(stage, input);
+        match next {
+            Some(to) => {
+                if let Some(ob) = self.onboarding.as_mut() {
+                    ob.stage = to;
+                }
+            }
+            None => self.onboarding = None,
+        }
+        if let Some(mark) = mark {
+            if let Err(e) = onboarding::persist(&Config::path(), mark) {
+                self.notice = Some(format!("could not save the setup: {e}"));
+            }
+        }
+        if let Some(to @ Stage::Tour(_)) = next {
+            if to != stage {
+                self.show_tour_step();
+            }
         }
     }
 
@@ -282,6 +339,11 @@ impl App {
                     self.error = None;
                 }
                 Msg::Fetched(path, Err(e)) => self.error = Some(format!("{path}: {e}")),
+                Msg::Facts(facts) => {
+                    if let Some(ob) = self.onboarding.as_mut() {
+                        ob.facts = Some(facts);
+                    }
+                }
                 Msg::Link(up) => self.link = up,
                 Msg::Event(kind, data) => {
                     self.floor.on_event(&kind, &data);
@@ -328,6 +390,9 @@ impl App {
             Tab::Conversations => screens::conversations(frame, body, self),
             Tab::Nodes => screens::nodes(frame, body, self),
         }
+        if let Some(ob) = &self.onboarding {
+            ob.draw(frame, body, self.palette, self.client.base());
+        }
         screens::footer(frame, footer, self);
     }
 
@@ -344,6 +409,10 @@ impl App {
             return false;
         }
         self.notice = None;
+        if self.onboarding.is_some() {
+            self.on_onboarding_key(key.code);
+            return false;
+        }
         if self.draft.is_some() {
             self.on_draft_key(key.code);
             return false;
@@ -369,6 +438,7 @@ impl App {
                 }
             }
             KeyCode::Char('t') => self.start_draft(),
+            KeyCode::Char('?') => self.begin(Stage::Tour(0)),
             KeyCode::Char('a') => self.ask_decision(true),
             KeyCode::Char('d') => self.ask_decision(false),
             KeyCode::Char('s') => {
@@ -594,10 +664,13 @@ fn restore() {
 }
 
 /// The terminal UI until the user quits.
-pub fn run(client: Client) -> Result<(), String> {
+pub fn run(client: Client, start: Option<Stage>) -> Result<(), String> {
     let _screen = Screen::enter()?;
     let mut term = Terminal::new(CrosstermBackend::new(io::stdout())).map_err(|e| e.to_string())?;
     let mut app = App::new(client);
+    if let Some(stage) = start {
+        app.begin(stage);
+    }
     let mut last = Instant::now();
     loop {
         app.drain();

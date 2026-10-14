@@ -101,6 +101,12 @@ pub struct Config {
     pub hubs: BTreeMap<String, SavedHub>,
     #[serde(default)]
     pub default: Option<String>,
+    /// The terminal UI's first-start setup wizard was finished or skipped (it is not shown again).
+    #[serde(default)]
+    pub setup_done: bool,
+    /// The terminal UI's tour was finished, skipped or declined.
+    #[serde(default)]
+    pub tour_done: bool,
 }
 
 impl Config {
@@ -109,7 +115,12 @@ impl Config {
     }
 
     pub fn load() -> Config {
-        std::fs::read_to_string(Self::path()).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+        Self::load_from(&Self::path())
+    }
+
+    /// The config at `path`; a missing or unreadable file reads as the empty config.
+    pub fn load_from(path: &std::path::Path) -> Config {
+        std::fs::read_to_string(path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
     }
 
     pub fn save(&self) -> Result<(), String> {

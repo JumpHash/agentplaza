@@ -162,7 +162,12 @@ pub fn event_log(frame: &mut Frame, area: Rect, app: &App) {
 
 pub fn footer(frame: &mut Frame, area: Rect, app: &App) {
     let palette = app.palette;
-    let line = if let Some(confirm) = &app.confirm {
+    let line = if let Some(ob) = &app.onboarding {
+        match &app.notice {
+            Some(notice) => Line::from(Span::styled(format!(" {notice}"), Style::new().fg(palette.accent))),
+            None => Line::from(Span::styled(ob.hint(), Style::new().fg(palette.muted))),
+        }
+    } else if let Some(confirm) = &app.confirm {
         Line::from(Span::styled(
             format!(" {}  [y] yes   [n] no ", confirm.question()),
             Style::new().fg(palette.paper).bg(palette.accent),
@@ -179,7 +184,7 @@ pub fn footer(frame: &mut Frame, area: Rect, app: &App) {
         Line::from(Span::styled(format!(" {notice}"), Style::new().fg(palette.ok)))
     } else {
         Line::from(Span::styled(
-            " 1-8 tabs · Tab next · ↑↓ move · Enter details · t message · a/d approve/deny · s stop all · r refresh · q quit",
+            " 1-8 tabs · Tab next · ↑↓ move · Enter details · t message · a/d approve/deny · s stop all · r refresh · ? tour · q quit",
             Style::new().fg(palette.muted),
         ))
     };

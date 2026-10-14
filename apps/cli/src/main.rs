@@ -92,8 +92,8 @@ enum Command {
     Decide(cmd::decide::Args),
     /// Stream the plaza's live events (the hub's WebSocket).
     Events(cmd::events::Args),
-    /// The terminal UI: every screen, and the plaza drawn live.
-    Tui,
+    /// The terminal UI: every screen, and the plaza drawn live (a setup and a tour on first start).
+    Tui(tui::Args),
     /// Hubs: sign in to one, list and pick the saved ones.
     #[command(subcommand)]
     Hub(cmd::hub::Cmd),
@@ -152,7 +152,7 @@ fn run(cli: Cli) -> Result<(), String> {
         Command::Plaza(c) => cmd::plaza::run(&ctx, c),
         Command::Decide(a) => cmd::decide::run(&ctx, a),
         Command::Events(a) => cmd::events::run(&ctx, a),
-        Command::Tui => tui::run(&ctx),
+        Command::Tui(args) => tui::run(&ctx, args),
         Command::Hub(_) | Command::Node(_) | Command::Mcp(_) => unreachable!("handled above"),
     }
 }
