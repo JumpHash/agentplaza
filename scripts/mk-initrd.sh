@@ -464,9 +464,27 @@ static int poweroff_is_acpi(void)
     return 1;
 }
 
+// Writes all of `buf`, retrying short writes and EINTR. 1 on success. A write
+// that stops short for any other reason (the console is gone) gives up: there
+// is nowhere left to report it.
+static int write_all(int fd, const void *buf, size_t len)
+{
+    const char *p = buf;
+    while (len > 0) {
+        ssize_t n = write(fd, p, len);
+        if (n < 0 && errno == EINTR)
+            continue;
+        if (n <= 0)
+            return 0;
+        p += n;
+        len -= (size_t)n;
+    }
+    return 1;
+}
+
 static void put(const char *s)
 {
-    write(1, s, strlen(s));
+    write_all(1, s, strlen(s));
 }
 
 static void read_file_head(const char *path, unsigned lines)
@@ -574,7 +592,7 @@ static void do_cpu(void)
     }
     char out[192];
     int len = snprintf(out, sizeof out, "cpus: %u (%s)\n", cpus, model);
-    write(1, out, (size_t)len);
+    write_all(1, out, (size_t)len);
 }
 
 // Defined with the rest of the workspace code, below; the serial command loop
@@ -750,7 +768,7 @@ static void load_guest_modules(int verbose)
     int len = snprintf(msg, sizeof msg,
                        "plaza guest: virtio_mmio took %d command-line parameter(s)\n",
                        published);
-    write(1, msg, (size_t)len);
+    write_all(1, msg, (size_t)len);
 }
 
 // --- workspace: the writable volume the block device carries -----------------
@@ -790,7 +808,7 @@ static void mount_workspace(void)
         int len = snprintf(msg, sizeof msg,
                            "plaza guest: cannot mount /dev/vda on /workspace: %s\n",
                            strerror(errno));
-        write(1, msg, (size_t)len);
+        write_all(1, msg, (size_t)len);
         return;
     }
     workspace_mounted = 1;
@@ -800,7 +818,7 @@ static void mount_workspace(void)
         mib = (unsigned long)(((unsigned long long)vfs.f_blocks * vfs.f_frsize) >> 20);
     char msg[128];
     int len = snprintf(msg, sizeof msg, "plaza guest: /workspace mounted (ext4, %lu MiB)\n", mib);
-    write(1, msg, (size_t)len);
+    write_all(1, msg, (size_t)len);
 }
 
 // The agent's shell runs as uid 1000 in /workspace, so that directory must
@@ -838,7 +856,7 @@ static int put_file(const char *path, const char *text, int append)
     if (fd < 0)
         return 0;
     size_t len = strlen(text);
-    int ok = write(fd, text, len) == (ssize_t)len;
+    int ok = write_all(fd, text, len);
     close(fd);
     return ok;
 }
@@ -858,7 +876,7 @@ static int copy_file(const char *from, const char *to, mode_t mode)
     ssize_t n;
     int ok = 1;
     while ((n = read(in, buf, sizeof buf)) > 0)
-        if (write(out, buf, (size_t)n) != n) {
+        if (!write_all(out, buf, (size_t)n)) {
             ok = 0;
             break;
         }
@@ -950,7 +968,7 @@ static void workspace_show(void)
     if (n < 0)
         n = 0;
     buf[n] = '\0';
-    write(1, buf, (size_t)n);
+    write_all(1, buf, (size_t)n);
     if (n > 0 && buf[n - 1] != '\n')
         put("\n");
 }
@@ -971,8 +989,8 @@ static void workspace_append(const char *text)
         put("\n");
         return;
     }
-    write(fd, text, strlen(text));
-    write(fd, "\n", 1);
+    write_all(fd, text, strlen(text));
+    write_all(fd, "\n", 1);
     close(fd);
     put("plaza guest: appended to /workspace/notes.txt; contents:\n");
     workspace_show();
@@ -998,7 +1016,7 @@ static pid_t start_harness(int sysroot)
     }
     char msg[96];
     int len = snprintf(msg, sizeof msg, "plaza guest: agent harness running as pid %d\n", (int)pid);
-    write(1, msg, (size_t)len);
+    write_all(1, msg, (size_t)len);
     return pid;
 }
 
@@ -1046,7 +1064,7 @@ static void reap_harness(pid_t *harness, int keepalive)
     } else {
         len = snprintf(msg, sizeof msg, "plaza guest: agent harness ended (status %d); staying up\n", status);
     }
-    write(1, msg, (size_t)len);
+    write_all(1, msg, (size_t)len);
 }
 
 // Brings the loopback interface up, so a proxy on 127.0.0.1 inside the guest
@@ -1112,11 +1130,11 @@ int main(void)
         int len = snprintf(line, sizeof line,
                            "plaza guest alive: heartbeat %lu uptime~%lus\n",
                            beat, (beat - 1) * 5);
-        write(1, line, (size_t)len);
+        write_all(1, line, (size_t)len);
         if (beats > 0 && beat >= beats) {
             len = snprintf(line, sizeof line,
                            "plaza guest: %lu beats done, rebooting\n", beats);
-            write(1, line, (size_t)len);
+            write_all(1, line, (size_t)len);
             do_sync();
             reboot(RB_AUTOBOOT);
         }

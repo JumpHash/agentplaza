@@ -39,6 +39,12 @@
 
 // Safe Rust except the two syscall boundaries `std` lacks: `vsock` (AF_VSOCK) and `term` (the PTY calls).
 #![deny(unsafe_code)]
+// Static glibc warns that getaddrinfo/getpwuid_r need its NSS libraries at runtime. The guest never
+// resolves a name: the proxy is the literal 127.0.0.1:3128 and ureq sends every host through it.
+#![cfg_attr(
+    all(target_os = "linux", target_feature = "crt-static"),
+    allow(linker_messages)
+)]
 
 #[cfg(target_os = "linux")]
 mod agent;
