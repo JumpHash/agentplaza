@@ -6,9 +6,15 @@
 //!   APZ_HW_WORKING  how many agents are busy, 0..6 (default 0): the activity is min(1, working / 4)
 //!   APZ_HW_OPEN     how far it is opened, 0..1 (default 0)
 //!   APZ_HW_TRACES   1 shows the copper traces and their pulses (default 0)
+//!   APZ_HW_CAM      iso (default) | top | front | side | anchor (the model's own anchor view, when it has one)
+//!   APZ_HW_PARAMS   the model's params, `name=value` pairs joined by commas (any numeric key the model reads; gpus
+//!                   is APZ_HW_GPUS)
+//! The readout (`Lab::info`) is the model's validation: its errors, or "<model>: no errors".
 
 use glam::Vec3;
+use serde_json::{json, Value};
 
+use super::controls::FOV_DEG;
 use super::hardware::{self, Params, State, Status};
 use super::world::Floor;
 
@@ -17,6 +23,7 @@ pub struct Lab {
     built: hardware::Built,
     pulses: Option<hardware::Pulses>,
     state: State,
+    info: Value,
 }
 
 fn var(name: &str) -> Option<String> {
@@ -37,23 +44,55 @@ fn status(s: Option<String>) -> Status {
     }
 }
 
-/// The model's box in its own frame: the union of its solid parts' boxes, or its size when it has none.
-fn bounds(model: &hardware::Model, params: &Params) -> (Vec3, Vec3) {
-    let boxes = hardware::part_boxes(model, params);
-    if boxes.is_empty() {
-        let s = Vec3::from(model.size);
-        return (Vec3::new(-s.x / 2.0, 0.0, -s.z / 2.0), Vec3::new(s.x / 2.0, s.y, s.z / 2.0));
+/// The model's params: the GPUs (APZ_HW_GPUS), then each `name=value` of APZ_HW_PARAMS. A pair that does not read as a
+/// finite number is left out, and `gpus` is the GPUs' own.
+fn params_of(gpus: f32, extra: Option<&str>) -> Params {
+    let mut params = Params::default().with("gpus", f64::from(gpus));
+    for pair in extra.unwrap_or("").split(',') {
+        let Some((name, value)) = pair.split_once('=') else { continue };
+        let name = name.trim();
+        if name.is_empty() || name == "gpus" {
+            continue;
+        }
+        if let Some(v) = value.trim().parse::<f64>().ok().filter(|v| v.is_finite()) {
+            params = params.with(name, v);
+        }
     }
-    boxes.iter().fold((Vec3::splat(f32::MAX), Vec3::splat(f32::MIN)), |(lo, hi), b| {
-        (lo.min(Vec3::from(b.lo)), hi.max(Vec3::from(b.hi)))
-    })
+    params
+}
+
+/// The camera's direction from the model's centre, as the web's frameSphere names it (iso is the default).
+fn direction(cam: &str) -> Vec3 {
+    match cam {
+        "top" => Vec3::new(0.0, 1.0, 0.0001),
+        "front" => Vec3::Z,
+        "side" => Vec3::X,
+        _ => Vec3::new(0.8, 0.6, 1.0),
+    }
+}
+
+/// The camera's eye and target for `cam`: the model's anchor view when `anchor` names one, else the preset framed on the
+/// model's size (its half-diagonal, 40 degrees of field, 0.9 of the frame).
+fn view(model: &hardware::Model, cam: &str) -> ([f32; 3], [f32; 3]) {
+    if cam == "anchor" {
+        if let Some(c) = model.anchors.camera {
+            return (c.at, c.look);
+        }
+    }
+    let [w, h, d] = model.size;
+    let centre = Vec3::new(0.0, h / 2.0, 0.0);
+    let radius = Vec3::new(w, h, d).length() / 2.0;
+    let dist = radius.max(1.0) / (FOV_DEG / 2.0).to_radians().sin() * 0.9;
+    let eye = centre + direction(cam).normalize() * dist;
+    (eye.to_array(), centre.to_array())
 }
 
 /// The model, when `APZ_HW_LAB` names one: it joins the floor's root at the origin, and the camera frames it. None
 /// otherwise (or for an unknown model), so the floor is then the machines' own view.
 pub fn build(floor: &mut Floor) -> Option<Lab> {
-    let model = hardware::model(&var("APZ_HW_LAB")?)?;
-    let params = Params::default().with("gpus", f64::from(number("APZ_HW_GPUS", 0.0, 2.0, 0.0).round()));
+    let name = var("APZ_HW_LAB")?;
+    let model = hardware::model(&name)?;
+    let params = params_of(number("APZ_HW_GPUS", 0.0, 2.0, 0.0).round(), var("APZ_HW_PARAMS").as_deref());
     let state = State {
         status: status(var("APZ_HW_STATUS")),
         activity: (number("APZ_HW_WORKING", 0.0, 6.0, 0.0) / 4.0).min(1.0),
@@ -72,9 +111,12 @@ pub fn build(floor: &mut Floor) -> Option<Lab> {
         None
     };
     floor.statics_dirty = true; // the model's static parts are baked
-    let (lo, hi) = bounds(model, &params);
-    floor.fit_sphere(((lo + hi) / 2.0).to_array(), (hi - lo).length() / 2.0 + 0.5, 1.5);
-    let mut lab = Lab { built, pulses, state };
+    let (eye, target) = view(model, &var("APZ_HW_CAM").unwrap_or_else(|| "iso".to_string()));
+    floor.orbit.look(eye.into(), target.into());
+    let errors = hardware::validate(model, &name);
+    let summary = if errors.is_empty() { format!("{name}: no errors") } else { errors.join("\n") };
+    let info = json!({ "kind": "hardware", "model": name, "errors": errors, "summary": summary });
+    let mut lab = Lab { built, pulses, state, info };
     lab.step(0.0, 0.0);
     Some(lab)
 }
@@ -117,6 +159,11 @@ fn night_stage(floor: &mut Floor) {
 }
 
 impl Lab {
+    /// The readout the page shows: the model's validation (its errors, or "no errors"), as JSON.
+    pub fn info(&self) -> &Value {
+        &self.info
+    }
+
     /// Advances the model by `dt` seconds (the fans turn by it) at the ambient clock `clock` in seconds (the LEDs and
     /// the pulses read it).
     pub fn step(&mut self, dt: f32, clock: f32) {
@@ -129,6 +176,7 @@ impl Lab {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::stage::Stage;
     use std::collections::BTreeMap;
 
@@ -141,5 +189,44 @@ mod tests {
         let stage = Stage::default();
         crate::set_env_overrides(BTreeMap::new());
         assert!(stage.hardware_lab.is_some());
+    }
+
+    #[test]
+    fn the_params_read_as_name_value_pairs_and_the_gpus_are_their_own() {
+        let p = params_of(1.0, Some("amd=1,studio=0.5,gpus=2,bad,x=NaN, pcb_top = 0.336"));
+        assert_eq!(p.values.get("gpus"), Some(&1.0));
+        assert_eq!(p.values.get("amd"), Some(&1.0));
+        assert_eq!(p.values.get("studio"), Some(&0.5));
+        assert_eq!(p.values.get("pcb_top"), Some(&0.336));
+        assert!(!p.values.contains_key("x") && !p.values.contains_key("bad"));
+    }
+
+    #[test]
+    fn the_camera_presets_look_at_the_model_from_their_side() {
+        let model = hardware::model("exterior/workstation").expect("the model is embedded");
+        let (front, target) = view(model, "front");
+        assert!(front[2] > 0.0 && front[0].abs() < 1e-4, "front looks from +z: {front:?}");
+        assert!((target[1] - model.size[1] / 2.0).abs() < 1e-4);
+        let (iso, _) = view(model, "iso");
+        assert!(iso[0] > 0.0 && iso[1] > target[1] && iso[2] > 0.0, "iso is up and to the front-right: {iso:?}");
+        let (top, _) = view(model, "top");
+        assert!(top[1] > front[1], "top is above the front view");
+    }
+
+    #[test]
+    fn the_readout_is_the_models_validation() {
+        let name = "board/workstation";
+        let mut floor = Floor::new();
+        let mut vars = std::collections::BTreeMap::new();
+        vars.insert("APZ_HW_LAB".to_string(), name.to_string());
+        vars.insert("APZ_HW_CAM".to_string(), "anchor".to_string());
+        vars.insert("APZ_HW_PARAMS".to_string(), "amd=1,studio=0".to_string());
+        crate::set_env_overrides(vars);
+        let lab = build(&mut floor);
+        crate::set_env_overrides(std::collections::BTreeMap::new());
+        let lab = lab.expect("the lab builds");
+        let want = hardware::validate(hardware::model(name).expect("embedded"), name);
+        assert_eq!(lab.info()["errors"], json!(want));
+        assert_eq!(lab.info()["kind"], "hardware");
     }
 }

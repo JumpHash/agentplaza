@@ -232,6 +232,18 @@ fn now_ms(at: Instant) -> f64 {
 }
 
 impl Stage {
+    /// The lab's readout as JSON (the room lab's or the hardware lab's; `{}` when no lab runs): what the page shows of
+    /// the lab's options (the violations, the model's validation).
+    pub fn lab_info(&self) -> String {
+        if let Some(lab) = self.room_lab.as_ref() {
+            return lab.info().to_string();
+        }
+        if let Some(lab) = self.hardware_lab.as_ref() {
+            return lab.info().to_string();
+        }
+        "{}".to_string()
+    }
+
 pub fn active(&mut self) -> &mut Floor {
     match self.view {
         View::Machines => &mut self.machines,

@@ -1,20 +1,20 @@
 // The robot lab: a developer screen for the robot species under assets/robots/. The wasm engine draws it on
 // its canvas: one species (or a line-up of all of them) under the Floor's lighting, with any clip, tool,
-// carried item and state.
-// Route: #/robot-lab?species=rover&clip=type&tool=wrench&carry=crate&state=working&hue=200&orch=1&cam=iso
+// carried item and state. The options are listed from the engine's catalog (loadLabCatalog).
+// Route: #/robot-lab?species=rover&clip=type&tool=wrench&carry=crate&state=working&hue=200&orch=1&cam=iso&prop=all&fx=hearts
 //   species: a species id, or all (the line-up). clip: a shared or species clip (empty: the state's own).
 //   tool: a tool id for the grip; carry: an item id for the carry bone. state: idle | working | walking | offline.
 //   hue: 0–360. orch=1: the rover as the orchestrator. cam: front | iso | side | q34 (a 3/4 view) | top.
 //   t: seconds, a frozen clock (each robot takes its pose at that time). bg: dark | light (the scene background).
+//   prop: a station prop id, or all (the line-up of props): a robot at each of its spots, playing the spot's clip.
+//   fx: an effect kind, spawned on the robot(s) every 0.7 s.
 // The engine validates these options itself: an unknown value falls back to the engine's default.
-// A control change writes the route and restarts the engine with the new options. The engine has no option for
-// the prop screen or the effects, so the lab has no controls for them.
+// A control change writes the route and restarts the engine with the new options.
 
 import { button, field } from '../ui/components';
 import { h } from '../ui/dom';
-import { mountLabEngine, startLabEngine, type LabOptions } from './engine-mount';
+import { loadLabCatalog, mountLabEngine, startLabEngine, type LabCatalog, type LabOptions } from './engine-mount';
 import type { Cleanup } from './index';
-import { ROBOT_SPECIES, ROBOT_TOOLS, robotCarryTools, robotClipOptions } from './lab-assets';
 
 const STATES = ['idle', 'working', 'walking', 'offline'];
 const CAMS = ['front', 'iso', 'side', 'q34', 'top'];
@@ -28,6 +28,10 @@ interface LabState {
   hue: number;
   orch: boolean;
   cam: string;
+  /** A prop id, or all (the line-up of every prop). Empty: the species screen. */
+  prop: string;
+  /** An effect kind, spawned on the robot(s) on an interval. Empty: none. */
+  fx: string;
   /** A frozen clock, in seconds; undefined for the live clock. */
   t: number | undefined;
   /** The scene background (dark | light), or '' for the engine's default. */
@@ -45,6 +49,8 @@ function readState(hash: string): LabState {
     clip: q.get('clip') ?? '',
     tool: q.get('tool') ?? '',
     carry: q.get('carry') ?? '',
+    prop: q.get('prop') ?? '',
+    fx: q.get('fx') ?? '',
     state: STATES.includes(state) ? state : 'idle',
     hue: Number.isFinite(hue) ? ((hue % 360) + 360) % 360 : 200,
     orch: q.get('orch') === '1',
@@ -60,6 +66,8 @@ function writeRoute(s: LabState): void {
   if (s.clip) q.set('clip', s.clip);
   if (s.tool) q.set('tool', s.tool);
   if (s.carry) q.set('carry', s.carry);
+  if (s.prop) q.set('prop', s.prop);
+  if (s.fx) q.set('fx', s.fx);
   q.set('state', s.state);
   q.set('hue', String(Math.round(s.hue)));
   if (s.orch) q.set('orch', '1');
@@ -70,7 +78,20 @@ function writeRoute(s: LabState): void {
 }
 
 function toOptions(s: LabState): LabOptions {
-  return { species: s.species, clip: s.clip, tool: s.tool, carry: s.carry, state: s.state, hue: s.hue, orch: s.orch, cam: s.cam, t: s.t, bg: s.bg };
+  return {
+    species: s.species,
+    clip: s.clip,
+    tool: s.tool,
+    carry: s.carry,
+    state: s.state,
+    hue: s.hue,
+    orch: s.orch,
+    cam: s.cam,
+    t: s.t,
+    bg: s.bg,
+    prop: s.prop,
+    fx: s.fx,
+  };
 }
 
 /** A list with the current value in it when the list does not name it (a route can name anything; the engine decides). */
@@ -81,8 +102,33 @@ function choices(values: string[], none?: string): HTMLOptionElement[] {
   return [...(none === undefined ? [] : [h('option', { value: '' }, none)]), ...values.map((v) => h('option', { value: v }, v))];
 }
 
+/** The clips a species plays: the shared ones and its own (sorted); `all` (the line-up) has only the shared ones. */
+const clipsOf = (cat: LabCatalog, species: string): string[] => [...new Set([...cat.clips, ...(cat.speciesClips[species] ?? [])])].sort();
+
 /** The lab: the controls over the engine's canvas. The route is read once, when the lab mounts. */
 export function mount(root: HTMLElement): Cleanup {
+  const loading = h('p', { style: 'padding:12px 16px;color:var(--ink-2)' }, 'Loading the lab…');
+  root.append(loading);
+  let close: Cleanup = () => {};
+  let closed = false;
+  loadLabCatalog().then(
+    (cat) => {
+      if (closed) return;
+      loading.remove();
+      close = mountLab(root, cat);
+    },
+    (err: unknown) => {
+      loading.textContent = `The lab did not load: ${err instanceof Error ? err.message : String(err)}`;
+    },
+  );
+  return () => {
+    closed = true;
+    close();
+    loading.remove();
+  };
+}
+
+function mountLab(root: HTMLElement, cat: LabCatalog): Cleanup {
   const s = readState(location.hash);
   const bar = 'display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center;padding:8px 0';
   const stats = h('div', { style: 'font-family:var(--mono);font-size:12px;color:var(--ink-2);padding:4px 0', 'aria-live': 'polite' });
@@ -95,7 +141,7 @@ export function mount(root: HTMLElement): Cleanup {
   const paint = (): void => {
     camBtns.forEach((b, i) => (b.style.outline = CAMS[i] === s.cam ? '2px solid var(--accent)' : ''));
   };
-  const clipChoices = (): HTMLOptionElement[] => choices(withCurrent(robotClipOptions(s.species), s.clip), '(state clip)');
+  const clipChoices = (): HTMLOptionElement[] => choices(withCurrent(clipsOf(cat, s.species), s.clip), '(state clip)');
 
   const speciesSel = h(
     'select.select',
@@ -107,15 +153,19 @@ export function mount(root: HTMLElement): Cleanup {
         apply();
       },
     },
-    ...choices(withCurrent(['all', ...ROBOT_SPECIES], s.species)),
+    ...choices(withCurrent(['all', ...cat.species], s.species)),
   );
   speciesSel.value = s.species;
   const clipSel = h('select.select', { onchange: () => { s.clip = clipSel.value; apply(); } }, ...clipChoices());
   clipSel.value = s.clip;
-  const toolSel = h('select.select', { onchange: () => { s.tool = toolSel.value; apply(); } }, ...choices(withCurrent(ROBOT_TOOLS, s.tool), '(no tool)'));
+  const propSel = h('select.select', { onchange: () => { s.prop = propSel.value; apply(); } }, ...choices(withCurrent(['all', ...cat.props], s.prop), '(no prop)'));
+  propSel.value = s.prop;
+  const toolSel = h('select.select', { onchange: () => { s.tool = toolSel.value; apply(); } }, ...choices(withCurrent(cat.tools, s.tool), '(no tool)'));
   toolSel.value = s.tool;
-  const carrySel = h('select.select', { onchange: () => { s.carry = carrySel.value; apply(); } }, ...choices(withCurrent(robotCarryTools(), s.carry), '(nothing)'));
+  const carrySel = h('select.select', { onchange: () => { s.carry = carrySel.value; apply(); } }, ...choices(withCurrent(cat.carry, s.carry), '(nothing)'));
   carrySel.value = s.carry;
+  const fxSel = h('select.select', { onchange: () => { s.fx = fxSel.value; apply(); } }, ...choices(withCurrent(cat.fx, s.fx), '(no effect)'));
+  fxSel.value = s.fx;
   const stateSel = h('select.select', { onchange: () => { s.state = stateSel.value; apply(); } }, ...choices(STATES));
   stateSel.value = s.state;
   // The hue applies when the slider is let go: a restart per pixel of drag would start the engine many times.
@@ -131,9 +181,11 @@ export function mount(root: HTMLElement): Cleanup {
       'div',
       { style: bar },
       field('Species', speciesSel),
+      field('Prop', propSel),
       field('Clip', clipSel),
       field('Tool', toolSel),
       field('Carry', carrySel),
+      field('Effect', fxSel),
       field('State', stateSel),
       field('Hue', hueIn),
       field('Orchestrator', orchIn),

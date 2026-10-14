@@ -24,6 +24,7 @@ pub mod geometry;
 pub mod hardware;
 pub mod hardware_lab;
 pub mod input;
+pub mod lab_catalog;
 pub use apz_board::nav::lift as lift_ctrl;
 pub mod machine_stage;
 pub mod outskirts;

@@ -4,6 +4,9 @@
 //!   APZ_ROBOT_STATE    idle | working | walking | offline (default idle)
 //!   APZ_ROBOT_CLIP     a shared or own clip id (empty: the state's clip)
 //!   APZ_ROBOT_POSE     wave | proud | think | cheer (a still pose, after the clip)
+//!   APZ_ROBOT_PROP     a station prop id, or all (the line-up of every prop): a robot at each of its spots, facing
+//!                      it and playing the spot's clip (APZ_ROBOT_CLIP wins when set); APZ_ROBOT_LAB names the species
+//!                      (all: the species in turn). A prop screen replaces the species line-up.
 //!   APZ_ROBOT_TOOL     a tool id, held in the grip
 //!   APZ_ROBOT_CARRY    an item id, carried
 //!   APZ_ROBOT_FX       sparks | zzz | dots | hearts | keys, spawned every 0.7 s
@@ -13,17 +16,22 @@
 //!   APZ_ROBOT_T        seconds: a frozen clock (each robot takes its pose at that time, then stops)
 //!   APZ_ROBOT_BG       dark | light (the scene background, see `Lab::background`; unset: the engine's)
 
-use super::super::robot::{robot_palette, Robot, RobotPose, RobotState};
+use super::super::robot::{robot_palette, Robot, RobotPalette, RobotPose, RobotState};
 use super::super::scene::Color;
 use super::super::world::layout::AZIMUTH;
 use super::super::world::Floor;
 use super::files::registry;
+use super::props::{build_prop, prop_registry};
 
 /// The distance between two robots of the line-up, along x.
 const SPACING: f32 = 1.6;
 const FX_EVERY: f32 = 0.7;
 /// The web's default hue (the lab's pale blue).
 const DEFAULT_HUE: f32 = 200.0;
+/// The prop line-up's spacing along x and z, and its columns (web: 2.6, 2.4 and 6).
+const PROP_SPACING_X: f32 = 2.6;
+const PROP_SPACING_Z: f32 = 2.4;
+const PROP_COLS: usize = 6;
 
 /// The robots of a line-up, and their clock.
 pub struct Lab {
@@ -77,6 +85,25 @@ impl Cam {
             (Cam::Top, false) => [0.0, 5.0, 0.8],
         };
         let y = if lineup { 0.75 } else { 0.7 };
+        (eye, [0.0, y, 0.0])
+    }
+
+    /// The eye and the target of the prop screen's preset (the web's PROP_CAM): a line-up of every prop is wider than
+    /// a species line-up, and its target is lower.
+    pub fn view_prop(self, lineup: bool) -> ([f32; 3], [f32; 3]) {
+        let eye = match (self, lineup) {
+            (Cam::Front, true) => [0.0, 8.0, 17.0],
+            (Cam::Front, false) => [0.0, 1.7, 5.4],
+            (Cam::Iso, true) => [11.0, 9.0, 13.0],
+            (Cam::Iso, false) => [3.4, 2.7, 4.8],
+            (Cam::Side, true) => [17.0, 5.0, 0.0],
+            (Cam::Side, false) => [5.6, 1.5, 0.0],
+            (Cam::Q34, true) => [-8.9, 7.8, 12.8],
+            (Cam::Q34, false) => [-2.5, 2.6, 3.56],
+            (Cam::Top, true) => [0.0, 18.0, 0.5],
+            (Cam::Top, false) => [0.0, 5.6, 0.9],
+        };
+        let y = if lineup { 0.5 } else { 0.6 };
         (eye, [0.0, y, 0.0])
     }
 }
@@ -142,12 +169,73 @@ fn is_orchestrator(orch: bool, id: &str, index: usize, lineup: bool) -> bool {
     orch && id == "rover" && (!lineup || index == 0)
 }
 
+/// What every robot of the lab shares: its state, its tool, its carried item, its clip (APZ_ROBOT_CLIP), a still pose
+/// after the clip, and the frozen clock.
+struct Look {
+    state: RobotState,
+    tool: Option<String>,
+    carry: Option<String>,
+    clip: Option<String>,
+    pose: Option<RobotPose>,
+    frozen: Option<f32>,
+}
+
+/// Sets one robot up as the lab's look says, `clip` (the state's when None) played, and adds it to the floor's root.
+fn dress(floor: &Floor, robot: &mut Robot, look: &Look, clip: Option<&str>) {
+    robot.set_state(look.state);
+    robot.hold(look.tool.as_deref());
+    robot.carry(look.carry.as_deref());
+    robot.play(clip, None);
+    if let Some(p) = look.pose {
+        robot.pose(p);
+    }
+    if let Some(t) = look.frozen {
+        // A blend of 1 snaps each joint to its target at time t (the web's frozen clock).
+        robot.update(1.0, t);
+    }
+    floor.root.add(&robot.group);
+}
+
+/// The prop screen (the web's buildProps): one prop, or every prop in a line-up. Each prop stands on the floor, and
+/// each spot gets a robot facing it, playing the spot's clip. `species` is APZ_ROBOT_LAB: `all` deals the species in
+/// turn, one to each spot; a named species is every robot.
+fn build_props(floor: &mut Floor, prop: &str, species: &str, look: &Look, hue: f32, palette: &RobotPalette, robots: &mut Vec<Robot>) {
+    let reg = prop_registry();
+    let lineup = prop == "all";
+    let ids: Vec<String> = if lineup { reg.order.clone() } else { vec![prop.to_string()] };
+    let cols = if lineup { PROP_COLS } else { 1 };
+    let rows = ids.len().div_ceil(cols);
+    let species_ids = &registry().index.species;
+    let mut dealt = 0usize;
+    for (i, pid) in ids.iter().enumerate() {
+        let Some(p) = reg.props.get(pid) else { continue };
+        let (col, row) = ((i % cols) as f32, (i / cols) as f32);
+        let ox = if lineup { (col - (cols as f32 - 1.0) / 2.0) * PROP_SPACING_X } else { 0.0 };
+        let oz = if lineup { ((rows as f32 - 1.0) / 2.0 - row) * PROP_SPACING_Z } else { 0.0 };
+        let built = build_prop(p, palette, hue);
+        built.group.set_position(ox, 0.0, oz);
+        floor.root.add(&built.group);
+        for s in &built.spots {
+            let id = if species == "all" && !species_ids.is_empty() {
+                species_ids[dealt % species_ids.len()].as_str()
+            } else {
+                species
+            };
+            dealt += 1;
+            let mut robot = Robot::with_variant(hue, false, palette, hue, id);
+            robot.group.set_position(ox + s.at[0], s.at[1], oz + s.at[2]).set_rotation(0.0, s.face.to_radians(), 0.0);
+            dress(floor, &mut robot, look, look.clip.as_deref().or(Some(s.clip.as_str())));
+            robots.push(robot);
+        }
+    }
+}
+
 /// The line-up, when `APZ_ROBOT_LAB` asks for one: its robots join the floor's root, and the camera
-/// frames them. None otherwise (the floor is then the plaza).
+/// frames them. None otherwise (the floor is then the plaza). APZ_ROBOT_PROP puts the prop screen in its place.
 pub fn build(floor: &mut Floor) -> Option<Lab> {
     let want = var("APZ_ROBOT_LAB")?;
     let lineup = want == "all";
-    let ids: Vec<String> = if lineup { registry().index.species.clone() } else { vec![want] };
+    let ids: Vec<String> = if lineup { registry().index.species.clone() } else { vec![want.clone()] };
     let palette = robot_palette();
     let state = match var("APZ_ROBOT_STATE").as_deref() {
         Some("working") => RobotState::Working,
@@ -172,29 +260,28 @@ pub fn build(floor: &mut Floor) -> Option<Lab> {
     let bg = background_or_default(var("APZ_ROBOT_BG").as_deref());
     pale_stage(floor, bg);
 
-    let n = ids.len();
-    let mut robots = Vec::with_capacity(n);
-    for (i, id) in ids.iter().enumerate() {
-        let as_orch = is_orchestrator(orch, id, i, lineup);
-        let mut robot = Robot::with_variant(hue, as_orch, &palette, hue, id);
-        let x = (i as f32 - (n as f32 - 1.0) / 2.0) * SPACING;
-        robot.group.set_position(x, 0.0, 0.0).set_rotation(0.0, AZIMUTH, 0.0);
-        robot.set_state(state);
-        robot.hold(tool.as_deref());
-        robot.carry(carry.as_deref());
-        robot.play(clip.as_deref(), None);
-        if let Some(p) = pose {
-            robot.pose(p);
+    let look = Look { state, tool, carry, clip, pose, frozen };
+    let mut robots = Vec::new();
+    let (eye, target) = match var("APZ_ROBOT_PROP") {
+        Some(prop) => {
+            let prop_lineup = prop == "all";
+            build_props(floor, &prop, &want, &look, hue, &palette, &mut robots);
+            cam.view_prop(prop_lineup)
         }
-        if let Some(t) = frozen {
-            // A blend of 1 snaps each joint to its target at time t (the web's frozen clock).
-            robot.update(1.0, t);
+        None => {
+            let n = ids.len();
+            for (i, id) in ids.iter().enumerate() {
+                let as_orch = is_orchestrator(orch, id, i, lineup);
+                let mut robot = Robot::with_variant(hue, as_orch, &palette, hue, id);
+                let x = (i as f32 - (n as f32 - 1.0) / 2.0) * SPACING;
+                robot.group.set_position(x, 0.0, 0.0).set_rotation(0.0, AZIMUTH, 0.0);
+                dress(floor, &mut robot, &look, look.clip.as_deref());
+                robots.push(robot);
+            }
+            // The camera: the web's preset for a line-up or one robot.
+            cam.view(lineup)
         }
-        floor.root.add(&robot.group);
-        robots.push(robot);
-    }
-    // The camera: the web's preset for a line-up or one robot.
-    let (eye, target) = cam.view(lineup);
+    };
     floor.orbit.look(eye.into(), target.into());
     Some(Lab {
         robots,
@@ -317,5 +404,50 @@ mod tests {
         assert!(!is_orchestrator(true, "crab", 0, true));
         assert!(!is_orchestrator(true, "crab", 0, false));
         assert!(!is_orchestrator(false, "rover", 0, false));
+    }
+
+    #[test]
+    fn prop_camera_presets_are_the_webs_numbers() {
+        assert_eq!(Cam::Front.view_prop(true), ([0.0, 8.0, 17.0], [0.0, 0.5, 0.0]));
+        assert_eq!(Cam::Top.view_prop(false), ([0.0, 5.6, 0.9], [0.0, 0.6, 0.0]));
+        assert_eq!(Cam::Side.view_prop(true), ([17.0, 5.0, 0.0], [0.0, 0.5, 0.0]));
+    }
+
+    /// Builds the lab with the given options, on the test thread's own overrides.
+    fn build_with(options: &[(&str, &str)]) -> Option<Lab> {
+        let vars = options.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        crate::set_env_overrides(vars);
+        let mut floor = Floor::new();
+        let lab = build(&mut floor);
+        crate::set_env_overrides(Default::default());
+        lab
+    }
+
+    #[test]
+    fn a_prop_puts_a_robot_at_each_of_its_spots() {
+        let reg = prop_registry();
+        let prop = reg.order.first().expect("the index lists a prop").clone();
+        let spots = reg.props[&prop].spots.len();
+        let lab = build_with(&[("APZ_ROBOT_LAB", "rover"), ("APZ_ROBOT_PROP", prop.as_str())]).expect("the lab builds");
+        assert_eq!(lab.robots.len(), spots, "{prop}: one robot per spot");
+    }
+
+    #[test]
+    fn the_prop_line_up_deals_every_spot_of_every_prop() {
+        let reg = prop_registry();
+        let all: usize = reg.order.iter().map(|p| reg.props[p].spots.len()).sum();
+        let lab = build_with(&[("APZ_ROBOT_LAB", "all"), ("APZ_ROBOT_PROP", "all")]).expect("the lab builds");
+        assert_eq!(lab.robots.len(), all);
+        assert!(all > 0, "the index lists props with spots");
+    }
+
+    #[test]
+    fn an_effect_option_is_kept_for_the_lab_to_spawn() {
+        let lab = build_with(&[("APZ_ROBOT_LAB", "rover"), ("APZ_ROBOT_FX", "hearts")]).expect("the lab builds");
+        assert_eq!(lab.fx.as_deref(), Some("hearts"));
+        let mut lab = lab;
+        // The first step's timer is spent at once: the effect spawns on every robot, and the timer rearms.
+        lab.step(1.0);
+        assert_eq!(lab.fx_timer, FX_EVERY);
     }
 }

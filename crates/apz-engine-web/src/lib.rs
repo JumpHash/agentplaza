@@ -141,6 +141,14 @@ pub fn shared_layout(key_json: &str) -> String {
 }
 
 /// The option that shows the navigation overlay (`APZ_NAV_OVERLAY`), read when the board's nav is built.
+/// The labs' option lists as JSON, from what the engine embeds (`apz_engine::lab_catalog`): the robot species, clips,
+/// tools, carried items, props and effects; the room roles; the hardware models and each model's params. The labs list
+/// their controls from it, so the page loads none of the asset files.
+#[wasm_bindgen]
+pub fn lab_catalog() -> String {
+    apz_engine::lab_catalog::catalog_json()
+}
+
 const NAV_OPTIONS: [(&str, &str); 1] = [("nav", "APZ_NAV_OVERLAY")];
 
 /// Starts the engine on `canvas`. `opts` is `{ backend?: 'auto' | 'webgl2', nav?: boolean }`; a missing backend is 'auto'.
@@ -210,7 +218,7 @@ pub async fn start(canvas: HtmlCanvasElement, opts: JsValue) -> Result<WebEngine
 }
 
 /// The robot lab's options and the `APZ_ROBOT_*` name each one sets (read by `robots::lab` when the stage builds).
-const LAB_OPTIONS: [(&str, &str); 10] = [
+const LAB_OPTIONS: [(&str, &str); 12] = [
     ("species", "APZ_ROBOT_LAB"),
     ("clip", "APZ_ROBOT_CLIP"),
     ("tool", "APZ_ROBOT_TOOL"),
@@ -221,6 +229,8 @@ const LAB_OPTIONS: [(&str, &str); 10] = [
     ("cam", "APZ_ROBOT_CAM"),
     ("t", "APZ_ROBOT_T"),
     ("bg", "APZ_ROBOT_BG"),
+    ("prop", "APZ_ROBOT_PROP"),
+    ("fx", "APZ_ROBOT_FX"),
 ];
 
 /// The env name each of a lab's route options sets (`names`): a string as it is, a boolean as 1 or 0, a number as text.
@@ -245,12 +255,14 @@ fn lab_env(opts: &JsValue, names: &[(&str, &str)]) -> BTreeMap<String, String> {
 
 /// The room lab's options and the `APZ_ROOM_*` name each one sets (read by `rooms::lab` when the stage builds). `role` is
 /// the APZ_ROOM_LAB (a role id or `all`); `size` is `WxD` in units (APZ_ROOM_SIZE).
-const ROOM_LAB_OPTIONS: [(&str, &str); 5] = [
+const ROOM_LAB_OPTIONS: [(&str, &str); 7] = [
     ("role", "APZ_ROOM_LAB"),
     ("size", "APZ_ROOM_SIZE"),
     ("seed", "APZ_ROOM_SEED"),
     ("door", "APZ_ROOM_DOOR"),
     ("grid", "APZ_ROOM_GRID"),
+    ("cam", "APZ_ROOM_CAM"),
+    ("debug", "APZ_ROOM_DEBUG"),
 ];
 
 /// Starts the engine as the robot lab: `opts` is `{ backend?, species?, clip?, tool?, carry?, state?, hue?, orch?, cam?, t?, bg? }`
@@ -285,21 +297,43 @@ pub async fn start_room_lab(canvas: HtmlCanvasElement, opts: JsValue) -> Result<
 }
 
 /// The hardware lab's options, as the route names them; each maps to its APZ_HW_* name in the engine.
-const HARDWARE_LAB_OPTIONS: [(&str, &str); 6] = [
+const HARDWARE_LAB_OPTIONS: [(&str, &str); 7] = [
     ("model", "APZ_HW_LAB"),
     ("gpus", "APZ_HW_GPUS"),
     ("status", "APZ_HW_STATUS"),
     ("working", "APZ_HW_WORKING"),
     ("open", "APZ_HW_OPEN"),
     ("traces", "APZ_HW_TRACES"),
+    ("cam", "APZ_HW_CAM"),
 ];
 
-/// Starts the engine as the hardware lab: `opts` is `{ backend?, model?, gpus?, status?, working?, open?, traces? }`
-/// (a missing model is `board/workstation`; a boolean `traces` is 1 or 0). The options are set as env names only while
-/// the stage builds, as `start_lab` does.
+/// The model's own params, as `name=value` pairs joined by commas (APZ_HW_PARAMS): `opts.params` is an object of numbers;
+/// a value that is not a number is left out. None when the options name no params.
+fn hardware_params(opts: &JsValue) -> Option<String> {
+    let params = Reflect::get(opts, &JsValue::from_str("params")).ok()?;
+    if !params.is_object() {
+        return None;
+    }
+    let pairs: Vec<String> = Object::keys(&Object::from(params.clone()))
+        .iter()
+        .filter_map(|key| {
+            let name = key.as_string()?;
+            let value = Reflect::get(&params, &key).ok()?.as_f64()?;
+            Some(format!("{name}={value}"))
+        })
+        .collect();
+    Some(pairs.join(","))
+}
+
+/// Starts the engine as the hardware lab: `opts` is `{ backend?, model?, gpus?, status?, working?, open?, traces?, cam?,
+/// params? }` (a missing model is `board/workstation`; a boolean `traces` is 1 or 0; `params` is the model's own numbers,
+/// by name). The options are set as env names only while the stage builds, as `start_lab` does.
 #[wasm_bindgen]
 pub async fn start_hardware_lab(canvas: HtmlCanvasElement, opts: JsValue) -> Result<WebEngine, JsValue> {
     let mut vars = lab_env(&opts, &HARDWARE_LAB_OPTIONS);
+    if let Some(params) = hardware_params(&opts) {
+        vars.insert("APZ_HW_PARAMS".to_string(), params);
+    }
     vars.entry("APZ_HW_LAB".to_string()).or_insert_with(|| "board/workstation".to_string());
     apz_engine::set_env_overrides(vars);
     let started = start(canvas, opts).await;
@@ -468,6 +502,12 @@ impl WebEngine {
     /// `apz_engine::render::DRAW_PASSES`).
     pub fn draw_breakdown(&self) -> Uint32Array {
         Uint32Array::from(&self.shared.borrow().engine.draw_breakdown()[..])
+    }
+
+    /// The lab's readout as JSON (`Stage::lab_info`): the room lab's violations and rooms, or the hardware lab's model
+    /// validation; `{}` when no lab runs. Read by the page after the engine starts.
+    pub fn lab_info(&self) -> String {
+        self.shared.borrow().engine.stage.lab_info()
     }
 
     /// The last drawn frame's draw calls by category, as JSON: `total`, `shadow`, `main`, `outline`, `sprite_label`,

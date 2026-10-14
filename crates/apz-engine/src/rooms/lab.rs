@@ -6,14 +6,19 @@
 //!   APZ_ROOM_SIZE   the inner size WxD in units (default 4x3.5)
 //!   APZ_ROOM_DOOR   the walkway side: n | e | s | w (default s)
 //!   APZ_ROOM_GRID   1: the twelve seeds side by side (`all` ignores it)
+//!   APZ_ROOM_CAM    obl (default, an oblique view) | top (looking straight down, the rooms fitted)
+//!   APZ_ROOM_DEBUG  1: the debug overlay (the grid, the solid and walk cells, the reservations, the spots and the
+//!                   violations' markers; see `overlay`)
 //! Each room is reported on stderr: its items, spots, dropped and skipped items, and the verifier's violations.
-
+//! `Lab::info` is the readout the page shows (the violations, the size, the door, and each room's line).
 
 use super::super::props::Anim;
-use super::super::world::Floor;
+use super::super::world::{fit_distance, Floor};
 use super::generate::{self, Door, Input};
+use super::overlay::{overlay, Overlay};
 use super::verify::verify;
 use super::{build_room, default_agents, kit_palette, BuiltRoom, RoomOptions};
+use serde_json::{json, Value};
 
 /// The rooms of `all` per row, and the seeds' columns (web: ALL_COLS, SEED_COLS).
 const ALL_COLS: usize = 6;
@@ -31,6 +36,7 @@ const FOCUS_Y: f32 = 0.7;
 pub struct Lab {
     anims: Vec<Anim>,
     t: f32,
+    info: Value,
 }
 
 /// One room on the ground: its role, seed and where it stands.
@@ -96,6 +102,8 @@ pub fn build(floor: &mut Floor) -> Option<Lab> {
     let seed = var("APZ_ROOM_SEED").and_then(|s| s.parse::<u32>().ok()).unwrap_or(7);
     let door = var("APZ_ROOM_DOOR").and_then(|s| Door::parse(&s)).unwrap_or(Door::S);
     let grid = var("APZ_ROOM_GRID").is_some_and(|g| g == "1");
+    let top = var("APZ_ROOM_CAM").as_deref() == Some("top");
+    let debug = var("APZ_ROOM_DEBUG").is_some_and(|g| g == "1");
 
     // The web room lab's stage: the pale blue, its lights, no plaza scenery.
     crate::robots::lab::pale_stage(floor, crate::scene::Color::hex(crate::robots::lab::DEFAULT_BACKGROUND));
@@ -105,7 +113,11 @@ pub fn build(floor: &mut Floor) -> Option<Lab> {
     let data = generate::data();
     let mut anims: Vec<Anim> = Vec::new();
     let (mut reach_x, mut reach_z) = (0.0_f32, 0.0_f32);
-    for p in placements(&want, w as f32, d as f32, seed, grid) {
+    let (mut total, mut warnings) = (0usize, 0usize);
+    let mut lines: Vec<String> = Vec::new();
+    let placed = placements(&want, w as f32, d as f32, seed, grid);
+    let count = placed.len();
+    for p in &placed {
         let opts = RoomOptions { seed: p.seed, door, w, d, agents: None };
         let built: BuiltRoom = build_room(&p.role, half, HUE, &palette, &opts);
         let input = Input { role: p.role.clone(), w: built.w, d: built.d, door, seed: p.seed, agents: Some(default_agents(w, d)) };
@@ -124,20 +136,62 @@ pub fn build(floor: &mut Floor) -> Option<Lab> {
         for v in &violations {
             eprintln!("agentplaza-desktop: room lab:   {v}");
         }
+        total += violations.len();
+        warnings += usize::from(built.warned);
+        lines.push(room_line(&label_of(&want, p), &built.layout, violations.len()));
+        lines.extend(violations.iter().map(|v| format!("    {v}")));
         built.group.set_position(p.x, 0.0, p.z);
         floor.root.add(&built.group);
+        if debug {
+            let o = Overlay { layout: &built.layout, violations: &violations, catalog: &data.catalog, w: built.w, d: built.d, door };
+            let g = overlay(&o);
+            g.set_position(p.x, 0.0, p.z);
+            floor.root.add(&g);
+        }
         reach_x = reach_x.max(p.x.abs() + built.w as f32 / 2.0 + 1.0);
         reach_z = reach_z.max(p.z.abs() + built.d as f32 / 2.0 + 1.0);
         anims.push(built.animate);
     }
     floor.statics_dirty = true; // the rooms' static parts are baked
-    // The whole lab in view, from the floor's own camera angle.
+    // The whole lab in view, from the floor's own camera angle, or straight down.
     let radius = (reach_x * reach_x + reach_z * reach_z).sqrt() + 0.5;
-    floor.fit_sphere([0.0, FOCUS_Y, 0.0], radius, 1.5);
-    Some(Lab { anims, t: 0.0 })
+    if top {
+        let dist = fit_distance(radius, 1.5);
+        floor.orbit.look([0.0, dist, 0.001].into(), [0.0, 0.0, 0.0].into());
+    } else {
+        floor.fit_sphere([0.0, FOCUS_Y, 0.0], radius, 1.5);
+    }
+    let counts = if count == 1 { String::new() } else { format!("{count} rooms · ") };
+    let small = if warnings > 0 { format!(" · {warnings} below minimum") } else { String::new() };
+    let debug_tag = if debug { " · debug" } else { "" };
+    let summary = format!("{counts}violations {total}{small} · {w} × {d} · door {}{debug_tag}", door.as_str());
+    let info = json!({ "kind": "rooms", "summary": summary, "violations": total, "rooms": count, "below_minimum": warnings, "lines": lines });
+    Some(Lab { anims, t: 0.0, info })
+}
+
+/// A room's name in the readout: its role for the `all` lab, else its role and seed.
+fn label_of(want: &str, p: &Placement) -> String {
+    if want == "all" {
+        p.role.clone()
+    } else {
+        format!("{} seed {}", p.role, p.seed)
+    }
+}
+
+/// One room's line of the readout: its items, spots, the skipped and dropped preferred and required groups, and its
+/// violations (the count).
+fn room_line(label: &str, layout: &generate::Layout, violations: usize) -> String {
+    let dropped = if layout.dropped.is_empty() { String::new() } else { format!(" dropped {}", layout.dropped.join(", ")) };
+    let skipped = if layout.skipped.is_empty() { String::new() } else { format!(" skipped {}", layout.skipped.join(", ")) };
+    format!("{label}: items {}, spots {}{skipped}{dropped}, violations {violations}", layout.items.len(), layout.spots.len())
 }
 
 impl Lab {
+    /// The readout the page shows: the summary line, the violations, the rooms and each room's line (JSON).
+    pub fn info(&self) -> &Value {
+        &self.info
+    }
+
     /// Sets the rooms' animation to the ambient clock in seconds: the screens' glow is a function of it.
     pub fn step(&mut self, clock: f32) {
         self.t = clock;
@@ -177,5 +231,33 @@ mod tests {
             assert!(!built.layout.items.is_empty(), "{role} has items");
             assert_eq!((built.w, built.d), (4.0, 3.5));
         }
+    }
+
+    /// Builds the lab with the given options, on the test thread's own overrides; its readout.
+    fn info_with(options: &[(&str, &str)]) -> Value {
+        crate::set_env_overrides(options.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect());
+        let mut floor = Floor::new();
+        let lab = build(&mut floor);
+        crate::set_env_overrides(Default::default());
+        lab.expect("the lab builds").info().clone()
+    }
+
+    #[test]
+    fn the_debug_overlay_and_the_top_camera_are_options() {
+        let plain = info_with(&[("APZ_ROOM_LAB", "architect"), ("APZ_ROOM_CAM", "top")]);
+        assert!(plain["summary"].as_str().unwrap().ends_with("· 4 × 3.5 · door s"), "{plain}");
+        let debug = info_with(&[("APZ_ROOM_LAB", "architect"), ("APZ_ROOM_DEBUG", "1")]);
+        assert!(debug["summary"].as_str().unwrap().ends_with("· 4 × 3.5 · door s · debug"), "{debug}");
+    }
+
+    #[test]
+    fn the_readout_counts_the_grid_and_each_room() {
+        let info = info_with(&[("APZ_ROOM_LAB", "architect"), ("APZ_ROOM_GRID", "1"), ("APZ_ROOM_SIZE", "5x4"), ("APZ_ROOM_DOOR", "e")]);
+        assert_eq!(info["rooms"], 12);
+        let summary = info["summary"].as_str().unwrap();
+        assert!(summary.starts_with("12 rooms · violations "), "{summary}");
+        assert!(summary.ends_with("· 5 × 4 · door e"), "{summary}");
+        let lines = info["lines"].as_array().unwrap();
+        assert!(lines.iter().any(|l| l.as_str().unwrap().starts_with("architect seed 7: items ")));
     }
 }

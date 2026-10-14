@@ -7,6 +7,7 @@ pub use apz_board::rooms::{generate, verify};
 pub mod build;
 pub mod kit;
 pub mod lab;
+pub mod overlay;
 
 use super::props::Anim;
 use super::scene::{Color, Mat, Obj};

@@ -45,6 +45,8 @@ export interface WebEngine {
   draw_calls(): number;
   draw_breakdown(): Uint32Array;
   draw_stats(): string;
+  /** The lab's readout, JSON: the room lab's violations or the hardware lab's model validation; `{}` when no lab runs. */
+  lab_info(): string;
   /** The floor's robots, JSON (see the engine's debug hooks). */
   bots_json(): string;
   /** The nav grid's cell at (x, z), JSON or "null". */
@@ -76,6 +78,8 @@ export interface LabOptions {
   cam?: string;
   t?: number;
   bg?: string;
+  prop?: string;
+  fx?: string;
 }
 
 /** The room lab's options, as the room lab reads its route; each maps to its APZ_ROOM_* name in the engine (`size` is WxD in units). Unset ones take the lab's defaults. */
@@ -85,9 +89,12 @@ export interface RoomLabOptions {
   seed?: number;
   door?: string;
   grid?: boolean;
+  cam?: string;
+  debug?: boolean;
 }
 
-/** The hardware lab's options, as the route names them; each maps to its APZ_HW_* name in the engine. Unset ones take the lab's defaults. */
+/** The hardware lab's options, as the route names them; each maps to its APZ_HW_* name in the engine. `params` are the
+ *  model's own numbers (APZ_HW_PARAMS). Unset ones take the lab's defaults. */
 export interface HardwareLabOptions {
   model?: string;
   gpus?: number;
@@ -95,10 +102,31 @@ export interface HardwareLabOptions {
   working?: number;
   open?: number;
   traces?: boolean;
+  cam?: string;
+  params?: Record<string, number>;
+}
+
+/** The labs' option lists, from the engine (`lab_catalog`): the robot species and their clips, tools, carried items,
+ *  props and effects; the room roles; the hardware models, with each model's params (their defaults, without the GPUs). */
+export interface LabCatalog {
+  species: string[];
+  /** The shared clip ids. */
+  clips: string[];
+  /** Each species' own clip ids. */
+  speciesClips: Record<string, string[]>;
+  tools: string[];
+  /** The tools whose grip is carry. */
+  carry: string[];
+  props: string[];
+  fx: string[];
+  roles: string[];
+  models: string[];
+  params: Record<string, Record<string, number>>;
 }
 
 interface EngineGlue {
   default: () => Promise<unknown>;
+  lab_catalog: () => string;
   start: (canvas: HTMLCanvasElement, opts: { backend?: 'auto' | 'webgl2'; nav?: boolean }) => Promise<WebEngine>;
   start_lab: (canvas: HTMLCanvasElement, opts: LabOptions & { backend?: 'auto' | 'webgl2' }) => Promise<WebEngine>;
   start_room_lab: (canvas: HTMLCanvasElement, opts: RoomLabOptions & { backend?: 'auto' | 'webgl2' }) => Promise<WebEngine>;
@@ -122,6 +150,19 @@ async function loadGlue(): Promise<EngineGlue> {
   const glue = (await import(/* @vite-ignore */ glueUrl)) as EngineGlue;
   await glue.default();
   return glue;
+}
+
+let catalog: Promise<LabCatalog> | null = null;
+
+/** The labs' option lists, read once from the engine's glue. Rejects without a glue (this build has no engine). */
+export function loadLabCatalog(): Promise<LabCatalog> {
+  if (!catalog) {
+    catalog = loadGlue().then((glue) => JSON.parse(glue.lab_catalog()) as LabCatalog);
+    catalog.catch(() => {
+      catalog = null;
+    });
+  }
+  return catalog;
 }
 
 /** The backend the page asks for: webgl2 with ?gl=1, else auto. */
