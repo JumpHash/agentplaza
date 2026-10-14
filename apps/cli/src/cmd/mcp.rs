@@ -104,18 +104,37 @@ fn server(api: &Ctx, sub: ServerCmd) -> Result<(), String> {
     }
 }
 
-/// Saves the switch, keeping the origins. The bind is local or remote when turning on, and kept when turning off.
+/// Saves the switch. The PUT replaces every setting, so it carries the rest of what the hub has now: the auth mode,
+/// the open scope and the origins. The bind is local or remote when turning on, and kept when turning off.
 fn set_enabled(api: &Ctx, enabled: bool, remote: bool) -> Result<(), String> {
     let now = api.client.get("/v1/hub-mcp")?;
+    let body = switch_body(&now, enabled, remote);
+    let saved = api.client.put("/v1/hub-mcp", &body)?;
+    api.out(&saved, print_status);
+    Ok(())
+}
+
+/// The PUT body that flips the switch and keeps the rest of the hub's settings as `now` (the GET) reports them.
+/// An open hub that is already on remote keeps its confirmed setting, so the hub does not refuse the save; a change
+/// that newly opens a hub to the network still gets the hub's refusal.
+fn switch_body(now: &Value, enabled: bool, remote: bool) -> Value {
     let bind = match (enabled, remote) {
         (true, true) => "remote",
         (true, false) => "local",
         (false, _) => now["bind"].as_str().unwrap_or("local"),
     };
+    let auth_mode = now.get("auth_mode").cloned().unwrap_or_else(|| json!("secure"));
+    let open_scope = now.get("open_scope").cloned().unwrap_or_else(|| json!("observe"));
     let origins = now.get("allowed_origins").cloned().unwrap_or_else(|| json!([]));
-    let saved = api.client.put("/v1/hub-mcp", &json!({ "enabled": enabled, "bind": bind, "allowed_origins": origins }))?;
-    api.out(&saved, print_status);
-    Ok(())
+    let kept_open_remote = now["auth_mode"].as_str() == Some("open") && now["bind"].as_str() == Some("remote");
+    json!({
+        "enabled": enabled,
+        "bind": bind,
+        "auth_mode": auth_mode,
+        "open_scope": open_scope,
+        "allowed_origins": origins,
+        "confirm_open_remote": kept_open_remote && bind == "remote",
+    })
 }
 
 fn print_status(status: &Value) {
@@ -316,6 +335,47 @@ mod tests {
         assert_eq!(saved_hub(&config, None).unwrap().url, "https://plaza.test");
         assert_eq!(saved_hub(&config, Some("https://plaza.test/")).unwrap().mcp_token.as_deref(), Some("apz_mcp_z"));
         assert!(saved_hub(&config, Some("nowhere")).is_err());
+    }
+
+    #[test]
+    fn switching_the_server_keeps_the_auth_mode_open_scope_and_origins() {
+        let now = json!({
+            "enabled": false, "bind": "local", "auth_mode": "open", "open_scope": "operate",
+            "allowed_origins": ["https://console.test"],
+        });
+        let body = switch_body(&now, true, false);
+        assert_eq!(body["auth_mode"], "open");
+        assert_eq!(body["open_scope"], "operate");
+        assert_eq!(body["allowed_origins"], json!(["https://console.test"]));
+        assert_eq!(body["bind"], "local");
+        assert_eq!(body["confirm_open_remote"], false, "a local open hub needs no confirmation");
+    }
+
+    #[test]
+    fn switching_an_open_remote_hub_off_keeps_it_open_and_remote() {
+        let now = json!({ "enabled": true, "bind": "remote", "auth_mode": "open", "open_scope": "observe", "allowed_origins": [] });
+        let body = switch_body(&now, false, false);
+        assert_eq!(body["enabled"], false);
+        assert_eq!(body["bind"], "remote");
+        assert_eq!(body["auth_mode"], "open");
+        assert_eq!(body["confirm_open_remote"], true, "the open remote setting was confirmed when it was set");
+    }
+
+    #[test]
+    fn enabling_remote_does_not_open_a_local_secure_hub_without_a_confirmation() {
+        let now = json!({ "enabled": false, "bind": "local", "auth_mode": "secure", "open_scope": "observe", "allowed_origins": [] });
+        let body = switch_body(&now, true, true);
+        assert_eq!(body["bind"], "remote");
+        assert_eq!(body["auth_mode"], "secure");
+        assert_eq!(body["confirm_open_remote"], false);
+    }
+
+    #[test]
+    fn a_hub_without_an_auth_mode_in_its_status_is_saved_secure() {
+        let body = switch_body(&json!({ "bind": "local" }), true, false);
+        assert_eq!(body["auth_mode"], "secure");
+        assert_eq!(body["open_scope"], "observe");
+        assert_eq!(body["allowed_origins"], json!([]));
     }
 
     #[test]

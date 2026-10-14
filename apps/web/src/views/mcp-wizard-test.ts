@@ -138,8 +138,8 @@ export function step3Test(ctx: WizardCtx): HTMLElement {
 /** The risk the hub derives from a tool's hints. Only used when the hub's own auto value is not known. */
 function autoRiskOf(row: McpToolRow): McpRisk {
   const a = (row.annotations ?? {}) as { readOnlyHint?: unknown; destructiveHint?: unknown };
-  if (a.readOnlyHint === true) return 'read';
   if (a.destructiveHint === true) return 'irreversible';
+  if (a.readOnlyHint === true) return 'read';
   return 'write';
 }
 

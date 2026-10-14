@@ -320,14 +320,16 @@ pub struct ProbeTool {
     pub auto_risk: String,
 }
 
-/// A tool row in step 4: from a passing test, or the hub's list of a saved server (`risk` there is its auto value).
+/// A tool row in step 4: from a passing test, or the hub's list of a saved server. The route sends `risk` (the
+/// effective risk, after the owner's override) and `auto_risk` (the hub's own); `auto` is the latter, the value the
+/// Auto choice shows.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct ToolRow {
     pub name: String,
     pub tool: String,
     pub description: String,
-    #[serde(rename = "risk")]
+    #[serde(rename = "auto_risk")]
     pub auto: String,
 }
 
@@ -1502,6 +1504,18 @@ mod tests {
         d.command = "serve  /data".into();
         d.env.insert("ROOT".into(), Setting::Value("/data".into()));
         d
+    }
+
+    #[test]
+    fn mcp_wizard_tool_auto_risk_is_the_hub_auto_value_not_the_effective_one() {
+        // The route's row for a tool with an owner override: `risk` is the effective value, `auto_risk` the hub's own.
+        let row: ToolRow = serde_json::from_value(json!({
+            "name": "read_file", "tool": "fs_read_file", "agent_name": "fs_read_file", "description": "Reads a file",
+            "auto_risk": "irreversible", "risk": "read", "allowed": true,
+        }))
+        .expect("row parses");
+        assert_eq!(row.auto, "irreversible");
+        assert_eq!(row.tool, "fs_read_file");
     }
 
     #[test]

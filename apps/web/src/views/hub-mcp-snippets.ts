@@ -1,6 +1,6 @@
 // The hub-as-a-server tab's pure helpers (mcp-hub.ts): the scopes with their plain-words lines, the tool checklist
 // grouped by scope, and the setup text an owner copies after a token is made. No DOM here, so the builders are
-// unit-tested (test/tests.ts). The lists follow docs/design/hub-mcp.md.
+// unit-tested (test/tests.ts). The tool lists follow the hub's registry, and the desktop's mcp_hub.rs mirrors them.
 
 export type HubScope = 'observe' | 'operate' | 'govern';
 
@@ -12,12 +12,12 @@ export const HUB_SCOPES: { value: HubScope; label: string; plain: string }[] = [
   {
     value: 'operate',
     label: 'Operate',
-    plain: "acts within the plaza's rules: tasks, messages, stopping or restarting an agent, proposing agents",
+    plain: "acts within the plaza's rules: tasks, messages, stopping or restarting an agent, proposing prompts and skills",
   },
-  { value: 'govern', label: 'Govern', plain: 'files approvals and law proposals for you to decide' },
+  { value: 'govern', label: 'Govern', plain: 'records recommendations on approvals, and publishes prompts and skills' },
 ];
 
-/** The tools by their own scope, as docs/design/hub-mcp.md lists them. */
+/** The tools by their own scope: the hub's registry (crates/apid/src/hub_mcp/tools/mod.rs), in its order. */
 export const HUB_TOOLS: Record<HubScope, string[]> = {
   observe: [
     'plaza_status',
@@ -33,19 +33,23 @@ export const HUB_TOOLS: Record<HubScope, string[]> = {
     'list_machines',
     'treasury_summary',
     'usage_summary',
-    'search_library',
     'list_laws',
+    'search_library',
+    'prompts_list',
+    'prompt_get',
+    'skills_list',
+    'skill_get',
   ],
   operate: [
-    'create_task',
     'message_orchestrator',
     'tell_agent',
-    'post_board',
     'stop_agent',
     'restart_agent',
-    'propose_agent',
+    'create_task',
+    'prompt_propose',
+    'skill_propose',
   ],
-  govern: ['request_decision', 'propose_law_change'],
+  govern: ['request_decision', 'prompt_publish', 'skill_publish'],
 };
 
 /** Whether a token of `scope` may hold a tool of scope `tool` (apid's `Scope::permits`). */

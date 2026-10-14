@@ -53,8 +53,8 @@ impl Scope {
     pub fn plain(self) -> &'static str {
         match self {
             Scope::Observe => "read only",
-            Scope::Operate => "acts within the plaza's rules: tasks, messages, stopping or restarting an agent, proposing agents",
-            Scope::Govern => "files approvals and law proposals for you to decide",
+            Scope::Operate => "acts within the plaza's rules: tasks, messages, stopping or restarting an agent, proposing prompts and skills",
+            Scope::Govern => "records recommendations on approvals, and publishes prompts and skills",
         }
     }
 
@@ -138,6 +138,8 @@ impl Auth {
 
 const AUTH_OPTIONS: [(Auth, &str); 2] = [(Auth::Secure, "Secure"), (Auth::Open, "Open")];
 
+/// The hub's registry (crates/apid/src/hub_mcp/tools/mod.rs), by each tool's own scope. This crate does not depend on
+/// apid, so the test below pins the same list; a tool added to the hub must be added here and to the web's list.
 const OBSERVE_TOOLS: &[&str] = &[
     "plaza_status",
     "list_agents",
@@ -152,19 +154,23 @@ const OBSERVE_TOOLS: &[&str] = &[
     "list_machines",
     "treasury_summary",
     "usage_summary",
-    "search_library",
     "list_laws",
+    "search_library",
+    "prompts_list",
+    "prompt_get",
+    "skills_list",
+    "skill_get",
 ];
 const OPERATE_TOOLS: &[&str] = &[
-    "create_task",
     "message_orchestrator",
     "tell_agent",
-    "post_board",
     "stop_agent",
     "restart_agent",
-    "propose_agent",
+    "create_task",
+    "prompt_propose",
+    "skill_propose",
 ];
-const GOVERN_TOOLS: &[&str] = &["request_decision", "propose_law_change"];
+const GOVERN_TOOLS: &[&str] = &["request_decision", "prompt_publish", "skill_publish"];
 
 /// The tools of one scope, by their own scope.
 pub fn tools_of(scope: Scope) -> &'static [&'static str] {
@@ -1057,10 +1063,58 @@ mod tests {
         assert!(!Scope::Operate.permits(Scope::Govern));
         assert!(Scope::Govern.permits(Scope::Operate));
         assert_eq!(tool_scope("create_task"), Some(Scope::Operate));
-        assert_eq!(tool_scope("propose_law_change"), Some(Scope::Govern));
+        assert_eq!(tool_scope("skill_publish"), Some(Scope::Govern));
         assert_eq!(tool_scope("no_such_tool"), None);
         let total: usize = Scope::ALL.iter().map(|scope| tools_of(*scope).len()).sum();
-        assert_eq!(total, 24);
+        assert_eq!(total, 29);
+    }
+
+    #[test]
+    fn mcp_hub_tool_lists_are_the_hub_registry() {
+        // The hub's registry, in its order (crates/apid/src/hub_mcp/tools/mod.rs). This crate does not depend on apid,
+        // so this pins the same names and scopes; a change to the registry must change this list too.
+        let registry: [(&str, Scope); 29] = [
+            ("plaza_status", Scope::Observe),
+            ("list_agents", Scope::Observe),
+            ("get_agent", Scope::Observe),
+            ("get_transcript", Scope::Observe),
+            ("list_tasks", Scope::Observe),
+            ("get_task", Scope::Observe),
+            ("list_board", Scope::Observe),
+            ("list_projects", Scope::Observe),
+            ("get_project", Scope::Observe),
+            ("list_approvals", Scope::Observe),
+            ("list_machines", Scope::Observe),
+            ("treasury_summary", Scope::Observe),
+            ("usage_summary", Scope::Observe),
+            ("list_laws", Scope::Observe),
+            ("search_library", Scope::Observe),
+            ("prompts_list", Scope::Observe),
+            ("prompt_get", Scope::Observe),
+            ("skills_list", Scope::Observe),
+            ("skill_get", Scope::Observe),
+            ("message_orchestrator", Scope::Operate),
+            ("tell_agent", Scope::Operate),
+            ("stop_agent", Scope::Operate),
+            ("restart_agent", Scope::Operate),
+            ("create_task", Scope::Operate),
+            ("prompt_propose", Scope::Operate),
+            ("skill_propose", Scope::Operate),
+            ("request_decision", Scope::Govern),
+            ("prompt_publish", Scope::Govern),
+            ("skill_publish", Scope::Govern),
+        ];
+        let mut listed: Vec<&str> = Scope::ALL.into_iter().flat_map(|scope| tools_of(scope).iter().copied()).collect();
+        let mut pinned: Vec<&str> = registry.iter().map(|(name, _)| *name).collect();
+        listed.sort_unstable();
+        pinned.sort_unstable();
+        assert_eq!(listed, pinned);
+        for (name, scope) in registry {
+            assert_eq!(tool_scope(name), Some(scope), "{name}");
+        }
+        for gone in ["post_board", "propose_agent", "propose_law_change"] {
+            assert_eq!(tool_scope(gone), None, "{gone} is not a tool of the hub");
+        }
     }
 
     #[test]
