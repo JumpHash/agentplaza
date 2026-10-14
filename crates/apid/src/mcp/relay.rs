@@ -73,7 +73,7 @@ pub fn docker_arch(docker: &dyn Docker) -> Result<&'static str, String> {
 
 /// Where the relay binary is found for a Docker architecture: the musl build in a development tree
 /// (`target/<musl>/release/mcp_relay`), then `APZ_MCP_RELAY`, then the bundle beside apid (`mcp_relay-<arch>`, or
-/// `mcp_relay`).
+/// `mcp_relay`), then a macOS app's `Contents/Resources/relay/mcp_relay-<arch>` (apid is in `Contents/MacOS`).
 pub fn find_source(arch: &str) -> PathBuf {
     let exe = std::env::current_exe().ok();
     if let Some(target) = exe
@@ -95,8 +95,13 @@ pub fn find_source(arch: &str) -> PathBuf {
     match exe.and_then(|e| e.parent().map(Path::to_path_buf)) {
         Some(dir) => {
             let named = dir.join(format!("mcp_relay-{arch}"));
+            let in_app = dir
+                .join("../Resources/relay")
+                .join(format!("mcp_relay-{arch}"));
             if named.is_file() {
                 named
+            } else if in_app.is_file() {
+                in_app
             } else {
                 dir.join("mcp_relay")
             }

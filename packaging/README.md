@@ -29,7 +29,8 @@ stage.sh <target-triple> <cargo-out-dir> <stage-dir> <version>
                     Linux, Apple Silicon: noded, vsockd, apz-vmm, vmctl
                     Windows x64: noded, vsockd, vmctl
                     (+ .exe on Windows; Windows arm64 and Intel Macs: none, hub/desktop/link only)
-                    every bundle: mcp_relay-x86_64, mcp_relay-aarch64 (the container relay, static musl)
+                    every bundle: mcp_relay-x86_64, mcp_relay-aarch64 (the container relay, static musl;
+                    the macOS app keeps them in Contents/Resources/relay)
 <stage>/share/agentplaza/
     console/        the web console (apps/web/dist), served by apid
     roles/initial-roles.json

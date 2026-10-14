@@ -121,10 +121,11 @@ McpServer {
   macOS and Windows. apid asks `docker info --format '{{.Architecture}}'` at each start and uses the relay for that
   architecture: `x86_64` or `aarch64`. Anything else is an error, and the remote servers keep working.
 - **Packaging.** Every bundle that can run container servers carries both relays beside apid, as `mcp_relay-x86_64`
-  and `mcp_relay-aarch64`. These are the static musl builds from the relay job (`.github/workflows/relay.yml`),
-  which builds both for every release. Linux, macOS, Windows and Raspberry Pi packages all take that artifact, so
-  each platform's container servers have a relay for both architectures. `packaging/scripts/stage.sh` copies them
-  from `APZ_RELAY_DIR` (the artifact), or from `target/<musl>/release/` in a dev tree.
+  and `mcp_relay-aarch64` (in the macOS app, in `Contents/Resources/relay/`: `Contents/MacOS` holds only signed
+  Mach-O code). These are the static musl builds from the relay job (`.github/workflows/relay.yml`), which builds
+  both for every release and hands them to the platform jobs through the Actions cache. Linux, macOS, Windows and
+  Raspberry Pi packages all carry them, so each platform's container servers have a relay for both architectures.
+  `packaging/scripts/stage.sh` copies them from `APZ_RELAY_DIR`, or from `target/<musl>/release/` in a dev tree.
   apid finds the relay in this order: the musl build in a development tree (`target/<musl>/release/mcp_relay`), then
   `APZ_MCP_RELAY`, then the bundle beside apid (`mcp_relay-<arch>`, or `mcp_relay`).
 - **Environment notes (Docker Desktop 29.8.2, where the end-to-end runs were done).**
