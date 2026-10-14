@@ -9,6 +9,12 @@
 
 // The vault's prctl call is the one `unsafe` block, allowed in vault/process.rs only.
 #![deny(unsafe_code)]
+// tract-linalg's x86_64 kernels say `.align 16` meaning 16 bytes; Mach-O reads it as 2^16, so ld64 on an
+// Intel Mac prints that it reduced the alignment. The kernels are fine at 4 KiB; the note is not ours.
+#![cfg_attr(
+    all(target_os = "macos", target_arch = "x86_64"),
+    allow(linker_messages)
+)]
 
 mod agent_proposals;
 mod agents;

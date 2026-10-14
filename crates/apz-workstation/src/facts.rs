@@ -5,7 +5,7 @@
 //! a command or file gave, so the tests run on any host with fixtures. [`build`] turns the collected [`Raw`]
 //! into [`Facts`] and holds no I/O.
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(target_os = "linux")]
 use std::fs;
 use std::io::Read;
 #[cfg(target_os = "linux")]
@@ -564,8 +564,8 @@ fn read_text(path: impl AsRef<Path>) -> Option<String> {
     fs::read_to_string(path).ok()
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-fn read_trim(path: impl AsRef<std::path::Path>) -> Option<String> {
+#[cfg(target_os = "linux")]
+fn read_trim(path: impl AsRef<Path>) -> Option<String> {
     fs::read_to_string(path)
         .ok()
         .map(|text| text.trim().to_string())
