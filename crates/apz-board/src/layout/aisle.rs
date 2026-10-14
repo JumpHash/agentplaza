@@ -14,8 +14,9 @@ use super::geom::Frame;
 use super::rooms::{Config, AISLE};
 use crate::grid::{Grid, DIRS8, NAV_CELL};
 
-/// How far an exit's search may walk, in grid cells (board-layout.ts LANDING_REACH).
-pub const LANDING_REACH: usize = 40;
+/// How far an exit's search may walk, in grid cells (board-layout.ts used 40, which left a 4-GPU server with no slot
+/// that reaches the main walk).
+pub const LANDING_REACH: usize = 120;
 /// A plate this far above the PCB (or less) exits by a ramp; higher, by a lift (nav-types.ts NAV_LIFT_RISE).
 pub const NAV_LIFT_RISE: f64 = 1.5;
 /// Half a grid cell: the distance from an edge to its first outward sample (board-layout.ts EDGE).

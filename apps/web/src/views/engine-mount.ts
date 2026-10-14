@@ -3,7 +3,7 @@ import { floorName } from '../roles';
 import { on } from '../store';
 import { button } from '../ui/components';
 import type { Cleanup } from './index';
-import { agentCardChildren, machineCard } from './floor-popup';
+import { machineCard } from './floor-popup';
 
 /** The wasm glue's file name at the dist root: esbuild replaces this at build time (null when the wasm crate is missing). */
 declare const __APZ_ENGINE_JS__: string | null;
@@ -437,11 +437,12 @@ export function mountEngine(root: HTMLElement, initialId: string | null = null, 
   let agents: Agent[] | null = null;
   let agentNames = new Map<number, string>();
   let popupId: string | null = null; // the machine the popup shows, or null
-  let pickedRobot: number | null = null; // the robot whose agent card shows (in a board), or null
+  // The robot selected in the board: the engine draws its full label (labels.rs), the same box the desktop shows, so the
+  // page adds no card of its own.
+  let pickedRobot: number | null = null;
   let cardKey = ''; // what the popup last rendered, so a poll that changes nothing does not rebuild it
   let entered: string | null = null; // the machine whose board is shown, or null for the Machines view
   let pendingEnter: string | null = initialId; // a direct load's machine, entered once the fleet is in the engine
-  let labels: LabelMeta[] = [];
   let raf = 0;
   const timers: number[] = [];
 
@@ -454,7 +455,6 @@ export function mountEngine(root: HTMLElement, initialId: string | null = null, 
 
   const hideCard = (): void => {
     popupId = null;
-    pickedRobot = null;
     cardKey = '';
     card.hidden = true;
     card.replaceChildren();
@@ -491,27 +491,10 @@ export function mountEngine(root: HTMLElement, initialId: string | null = null, 
     card.replaceChildren(bar, ...built.children);
   };
 
-  /** A robot's agent card (floor-popup.ts): its floor name and role, and its activity line from the engine's label. */
-  const renderRobot = (): void => {
-    const cid = pickedRobot;
-    if (cid === null) return;
-    const meta = labels.find((l) => l.cid === cid);
-    const a = agents?.find((x) => x.cid === cid);
-    const name = a ? floorName(a) : (meta?.name ?? `agent ${cid}`);
-    const role = a?.role ?? meta?.role ?? '';
-    const line = meta?.line ?? '';
-    const hue = meta?.hue ?? 0;
-    card.hidden = false;
-    const key = JSON.stringify([name, role, line, hue]);
-    if (key === cardKey) return;
-    cardKey = key;
-    card.replaceChildren(...agentCardChildren(name, role, hue, line));
-  };
-
   /** The popup or the robot's card beside its point on the stage, kept on the stage. */
   const anchorCard = (): void => {
     if (engine === null || card.hidden) return;
-    const at = popupId !== null ? engine.screen_of('machine', popupId) : pickedRobot !== null ? engine.screen_of('robot', String(pickedRobot)) : null;
+    const at = popupId !== null ? engine.screen_of('machine', popupId) : null;
     if (at === null || at.length < 2) return;
     const left = Math.min(Math.max(at[0]! + 24, 8), Math.max(8, wrap.clientWidth - 308));
     const top = Math.min(Math.max(at[1]! - 120, 8), Math.max(8, wrap.clientHeight - card.offsetHeight - 8));
@@ -530,6 +513,7 @@ export function mountEngine(root: HTMLElement, initialId: string | null = null, 
   const backToMachines = (): void => {
     if (entered === null) return;
     hideCard();
+    pickedRobot = null;
     engine?.command('back');
     setEntered(null);
   };
@@ -576,7 +560,6 @@ export function mountEngine(root: HTMLElement, initialId: string | null = null, 
     api.agents().then(
       (list) => {
         agents = list;
-        if (pickedRobot !== null) renderRobot();
         agentNames = new Map(list.map((a) => [a.cid, floorName(a)] as [number, string]));
         pushFeed();
       },
@@ -584,13 +567,6 @@ export function mountEngine(root: HTMLElement, initialId: string | null = null, 
     );
   };
 
-  /** The engine's label text changed (`on_labels`): the names and the status squares, in the engine's order. */
-  const setLabels = (list: LabelMeta[]): void => {
-    labels = list;
-    if (pickedRobot !== null) renderRobot();
-    // The names are not drawn here: the engine paints each label as its own overlay (labels.rs), so a
-    // DOM label on top would give the same agent a second box.
-  };
 
   /** One display frame: the picked card follows its anchor (the engine paints the labels itself). */
   const frame = (): void => {
@@ -664,7 +640,10 @@ export function mountEngine(root: HTMLElement, initialId: string | null = null, 
     if (ev.key !== 'Escape' || closed) return;
     ev.stopImmediatePropagation();
     if (popupId !== null) closePopup();
-    else if (pickedRobot !== null) hideCard();
+    else if (pickedRobot !== null) {
+      pickedRobot = null;
+      engine?.command('robot');
+    }
     else if (entered !== null) backToMachines();
   };
   window.addEventListener('keydown', onKey, true);
@@ -693,16 +672,12 @@ export function mountEngine(root: HTMLElement, initialId: string | null = null, 
           renderPopup();
         }
       } else if (kind === 'robot') {
-        if (entered !== null) {
-          popupId = null;
-          cardKey = '';
-          pickedRobot = Number(id);
-          renderRobot();
-        }
-      } else if (kind === 'none') hideCard();
-    });
-    started.on_labels((list) => {
-      if (!closed) setLabels(list);
+        // The engine selected it and draws its full label; the page shows no second card.
+        if (entered !== null) pickedRobot = Number(id);
+      } else if (kind === 'none') {
+        pickedRobot = null;
+        hideCard();
+      }
     });
     engine = started;
     // The engine's counters for the browser checks (this mount only: the flag is on the page's URL).

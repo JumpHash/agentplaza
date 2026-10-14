@@ -372,6 +372,7 @@ impl WebEngine {
             ("popup", arg) => Cmd::OpenPopup(arg.filter(|id| !id.is_empty())),
             ("show_machine", Some(id)) => Cmd::ShowMachine { id },
             ("leave_machine", _) => Cmd::LeaveMachine,
+            ("robot", arg) => Cmd::SelectRobot(arg.and_then(|cid| cid.parse().ok())),
             _ => return,
         };
         self.shared.borrow_mut().engine.command(cmd);

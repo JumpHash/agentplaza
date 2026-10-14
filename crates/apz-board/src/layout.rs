@@ -291,6 +291,17 @@ const LANDING_ROUNDS: usize = 64;
 /// Rounds in a row that may pass without another seat or a smaller bad-key count before a scale is given up. An
 /// infeasible scale otherwise spends every LANDING_ROUNDS round, since its excluded set grows by about one key a round.
 const STALE_ROUNDS: usize = 20;
+/// Scales tried past the first one that seats everyone in parts (see `layout`'s `partial`) before that one is taken.
+const PARTIAL_SCALES: usize = 3;
+/// At most this many slots are dropped at one scale (their plates' exits unreachable) before the scale is given up.
+const MAX_DROPPED_SLOTS: usize = 4;
+
+/// The `slot|<id>` exclusion key of a rejected key: an exit's key starts with its slot's id (`slot_gpu2|D9.686|…`), a
+/// room's is already one.
+fn slot_key_of(key: &str) -> String {
+    let id = key.strip_prefix("slot|").unwrap_or(key);
+    format!("slot|{}", id.split('|').next().unwrap_or(id))
+}
 
 /// The layout of a board for the given agents, at the smallest world scale (1, then BOARD_SCALE_STEP steps up to the
 /// input's `scale_cap`) that the acceptance test accepts. `board_kind` is the kind's name ("edge", "laptop", ...).
@@ -314,6 +325,10 @@ pub fn layout(board_kind: &str, input: &LayoutInput) -> Layout {
     let ctx = Ctx { board: &board, model, kind: board_kind, params: merged, table: rooms::min_table(), ground };
     let mut s = 1.0;
     let mut last = String::new();
+    // The smallest scale's layout that seats everyone but leaves some plate's exit off the main walk, and the scales tried
+    // since: a board whose cards wall each other in (a 2-GPU workstation) never passes, and is better walked in parts
+    // (each robot keeps to its own component) than not walked at all.
+    let mut partial: Option<(Layout, usize)> = None;
     // The scale grows by BOARD_SCALE_STEP (> 1), so this loop ends after a few steps at any finite cap.
     while s <= input.scale_cap + 1e-9 {
         let setup = scale_setup(&ctx, s);
@@ -343,8 +358,31 @@ pub fn layout(board_kind: &str, input: &LayoutInput) -> Layout {
                 }
             }
         }
+        if pass.layout.homes.len() == input.agents.len() && partial.is_none() {
+            partial = Some((pass.layout.clone(), 0));
+        }
+        // A plate whose exits the walk still does not reach after the landing rounds (a GPU card hemmed in by the next
+        // one): its slot is dropped, and the agents seat on the other plates and the board, rather than the board
+        // having no layout (and so no walk) at all.
+        for _ in 0..MAX_DROPPED_SLOTS {
+            if pass.rejected.is_empty() {
+                break;
+            }
+            let before = excluded.len();
+            excluded.extend(pass.rejected.iter().map(|key| slot_key_of(key)));
+            if excluded.len() == before {
+                break;
+            }
+            pass = at_scale(&ctx, input, &setup, &excluded);
+        }
         if pass.rejected.is_empty() && pass.layout.homes.len() == input.agents.len() {
             return pass.layout;
+        }
+        if let Some((layout, tried)) = partial.as_mut() {
+            *tried += 1;
+            if *tried > PARTIAL_SCALES {
+                return layout.clone();
+            }
         }
         last = format!(
             "last try at scale {s:.3}: {} plates, {} homes, rejected {:?}, unusable: {:?}",
@@ -354,6 +392,9 @@ pub fn layout(board_kind: &str, input: &LayoutInput) -> Layout {
             pass.layout.unusable.iter().map(|u| u.reason.as_str()).collect::<Vec<_>>()
         );
         s *= BOARD_SCALE_STEP;
+    }
+    if let Some((layout, _)) = partial {
+        return layout;
     }
     panic!(
         "apz-board: {} agents do not seat on {board_kind} within the world scale cap {} ({last})",

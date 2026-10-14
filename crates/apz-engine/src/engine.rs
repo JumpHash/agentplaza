@@ -33,6 +33,8 @@ pub struct Feed {
 pub enum Cmd {
     /// Show the fleet's Machines view.
     ShowMachines,
+    /// Selects the robot of agent `cid` in the shown board (its full label), or none.
+    SelectRobot(Option<u64>),
     /// Show one machine's view by its id.
     SelectMachine(String),
     /// ENTER: fly into the machine with this id.
@@ -421,6 +423,7 @@ impl Engine {
                 self.stage.show_machine(&id);
             }
             Cmd::LeaveMachine => self.stage.leave_machine(),
+            Cmd::SelectRobot(cid) => self.stage.floor.selected = cid,
         }
         self.dirty = true;
     }

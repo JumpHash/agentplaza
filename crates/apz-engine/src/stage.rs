@@ -657,6 +657,12 @@ pub fn tick(&mut self, now: Instant) -> Motion {
             }
             self.floor.step(dt, now_ms(now), ambient, ambient_dt);
             motion = motion.max(self.floor.motion());
+            // The shared layout lands after ENTER (it computes off the frame): poll for it here too, and build the rooms
+            // it queues, or the board keeps the engine's own layout and its robots never get the navigation.
+            if self.floor.rooms_pending() || self.floor.shared_waiting() {
+                self.floor.step_rooms(BOARD_STEP);
+                motion = motion.max(if self.floor.rooms_pending() { Motion::Active } else { Motion::Ambient });
+            }
             // A direct load (no ENTER) plays the build wave once its board is built and the stage has a size.
             if self.entry.is_none() && !self.direct_waved && self.floor.board.is_some() && w > 0.0 && h > 0.0 {
                 self.direct_waved = true;

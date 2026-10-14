@@ -810,6 +810,18 @@ impl Floor {
             bot.district = idx;
             bot.home = (hx, hy);
             bot.pad.set_position(hx, top + 0.02, hy);
+            if changed {
+                // A new layout (the shared one replacing the engine's own): the robot starts at its new home, as the
+                // new navigation adds it where it stands. Its old spot may be off the new walk, where it would fall into
+                // the board.
+                bot.x = hx;
+                bot.y = hy;
+                bot.tx = hx;
+                bot.ty = hy;
+                bot.py = 0.0; // as `create_bot`: the first step puts it on the surface under it
+                bot.vy = 0.0;
+                bot.moving = false;
+            }
         }
 
         let mut k = 0;
