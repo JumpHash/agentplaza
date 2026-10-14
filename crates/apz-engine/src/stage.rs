@@ -357,6 +357,11 @@ pub fn fit_machines(&mut self) {
     if let Some(fleet) = &self.fleet {
         let f = fleet.frame();
         self.machines.fit_sphere(f.center, f.radius, w / h);
+        // floor.ts resetView: the haze keeps its look at the fitted distance (near 0.8, far 3 times it), so the skyline
+        // and the mesas on the horizon read as they did, whatever the fleet's size.
+        let dist = crate::world::fit_distance(f.radius, w / h);
+        self.machines.world.fog_near = dist * 0.8;
+        self.machines.world.fog_far = dist * 3.0;
         if !self.machines.orbit.drifting() {
             self.machines.orbit.start_drift(); // the framed view starts the idle sway
         }

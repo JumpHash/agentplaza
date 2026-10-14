@@ -15,6 +15,9 @@ use super::super::textures::Rng;
 use super::board_layout::{board_height_at, path_on_traces, BoardLayout};
 use super::{display_name, Bot, District, Floor, Packet, Phase, Ride, Social};
 
+/// A working slot's glow plate at full strength (floor.ts GLOW_OPACITY).
+const GLOW_OPACITY: f32 = 0.4;
+
 const PACKET_MS: f64 = 1500.0;
 const SPEED: f32 = 1.6; // grid units per second; one grid cell is one world unit
 const MAX_PACKETS: usize = 60;
@@ -236,7 +239,7 @@ impl Floor {
         }
     }
 
-    /// The board's frame: a slot whose rooms have working agents glows brighter, its traces carry
+    /// The board's frame: a slot whose rooms have working agents glows brighter (its glow plate too), its traces carry
     /// more pulses, and the built parts and the atom animate. A machine without a board does nothing.
     fn step_board(&mut self, dt: f32, ambient: f32, ambient_dt: f32) {
         let time = ambient;
@@ -257,6 +260,11 @@ impl Floor {
             let target = if busy.contains(&bd.slot) { 1.0 } else { 0.0 };
             let level = board.level.entry(bd.slot.clone()).or_insert(0.0);
             *level += (target - *level) * ease;
+        }
+        for (slot, (mesh, mat)) in &board.glow_plates {
+            let level = board.level.get(slot).copied().unwrap_or(0.0);
+            mat.get().opacity = GLOW_OPACITY * level;
+            mesh.set_visible(level > 0.01);
         }
         for (slot, mats) in &board.glow {
             let level = board.level.get(slot).copied().unwrap_or(0.0);
@@ -896,6 +904,23 @@ mod tests {
             .collect();
         floor.sync(&list);
         floor
+    }
+
+    /// floor.ts's glow plates: a slot whose rooms have a working agent lights its plate (additive, GLOW_OPACITY at full
+    /// level), and an idle board shows none.
+    #[test]
+    fn a_working_slot_lights_its_glow_plate() {
+        let lit = |status: &str| {
+            let mut floor = board_floor(&["builder", "librarian", "reviewer"], status);
+            for k in 0..240 {
+                floor.step(1.0 / 60.0, f64::from(k) * 1000.0 / 60.0 + 10_000.0, 0.0, 0.0);
+            }
+            let board = floor.board.as_ref().expect("a board");
+            assert!(!board.glow_plates.is_empty(), "the board has glow plates");
+            board.glow_plates.values().filter(|(mesh, mat)| mesh.get().visible && mat.get().opacity > 0.3).count()
+        };
+        assert!(lit("working") > 0, "no glow plate lit over a working slot");
+        assert_eq!(lit("idle"), 0, "a glow plate lit on an idle board");
     }
 
     #[test]

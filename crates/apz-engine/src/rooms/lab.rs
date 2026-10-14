@@ -13,7 +13,7 @@
 //! `Lab::info` is the readout the page shows (the violations, the size, the door, and each room's line).
 
 use super::super::props::Anim;
-use super::super::world::{fit_distance, Floor};
+use super::super::world::Floor;
 use super::generate::{self, Door, Input};
 use super::overlay::{overlay, Overlay};
 use super::verify::verify;
@@ -29,8 +29,6 @@ const GAP_X: f32 = 2.2;
 const GAP_Z: f32 = 2.4;
 /// The lab's hue (the web's default).
 const HUE: f32 = 200.0;
-/// The focus of the camera: the rooms' middle, a little above the ground.
-const FOCUS_Y: f32 = 0.7;
 
 /// The rooms on the lab's ground, and their clock.
 pub struct Lab {
@@ -142,6 +140,7 @@ pub fn build(floor: &mut Floor) -> Option<Lab> {
         lines.extend(violations.iter().map(|v| format!("    {v}")));
         built.group.set_position(p.x, 0.0, p.z);
         floor.root.add(&built.group);
+        floor.root.add(&caption(&label_of(&want, p), built.w as f32, built.d as f32, p.x, p.z));
         if debug {
             let o = Overlay { layout: &built.layout, violations: &violations, catalog: &data.catalog, w: built.w, d: built.d, door };
             let g = overlay(&o);
@@ -153,14 +152,14 @@ pub fn build(floor: &mut Floor) -> Option<Lab> {
         anims.push(built.animate);
     }
     floor.statics_dirty = true; // the rooms' static parts are baked
-    // The whole lab in view, from the floor's own camera angle, or straight down.
-    let radius = (reach_x * reach_x + reach_z * reach_z).sqrt() + 0.5;
-    if top {
-        let dist = fit_distance(radius, 1.5);
-        floor.orbit.look([0.0, dist, 0.001].into(), [0.0, 0.0, 0.0].into());
-    } else {
-        floor.fit_sphere([0.0, FOCUS_Y, 0.0], radius, 1.5);
-    }
+    // room-lab.ts frame: the span (the larger of the lab's width and depth) times 1.45 plus 4, from (0.55, 0.85, 0.9)
+    // or straight down, at the origin. Its camera's field was 30 degrees and the orbit's is FOV_DEG, so the distance
+    // is scaled by tan 15 / tan(FOV_DEG / 2) to frame the same.
+    let span = (2.0 * reach_x).max(2.0 * reach_z);
+    let field = 15f32.to_radians().tan() / (crate::controls::FOV_DEG / 2.0).to_radians().tan();
+    let dist = (span * 1.45 + 4.0) * field;
+    let eye = if top { glam::Vec3::new(0.0, dist, 0.001) } else { glam::Vec3::new(0.55, 0.85, 0.9).normalize() * dist };
+    floor.orbit.look(eye, glam::Vec3::ZERO);
     let counts = if count == 1 { String::new() } else { format!("{count} rooms · ") };
     let small = if warnings > 0 { format!(" · {warnings} below minimum") } else { String::new() };
     let debug_tag = if debug { " · debug" } else { "" };
@@ -180,6 +179,22 @@ fn label_of(want: &str, p: &Placement) -> String {
 
 /// One room's line of the readout: its items, spots, the skipped and dropped preferred and required groups, and its
 /// violations (the count).
+/// room-lab.ts caption: the room's label in dark text on the ground in front of it (+z, the side the oblique camera
+/// looks from), as wide as the room (at least 2.4 units).
+fn caption(text: &str, w: f32, d: f32, x: f32, z: f32) -> crate::scene::Obj {
+    use crate::scene::{Material, Mat, Obj};
+    let mut cv = crate::canvas::Canvas::new(768, 80);
+    cv.set_fill("#1f2937");
+    cv.set_font("600 40px system-ui, sans-serif");
+    cv.set_text_baseline("middle");
+    cv.fill_text(text, 8.0, 42.0);
+    let width = w.max(2.4);
+    let mat = Mat::new(Material { map: Some(cv.to_texture()), transparent: true, depth_write: false, shading: crate::scene::Shading::Basic, ..Material::default() });
+    let mesh = Obj::mesh(&crate::geometry::plane(width, width * 80.0 / 768.0, 1, 1), &mat);
+    mesh.set_rotation(-std::f32::consts::FRAC_PI_2, 0.0, 0.0).set_position(x, 0.02, z + d / 2.0 + 0.55);
+    mesh
+}
+
 fn room_line(label: &str, layout: &generate::Layout, violations: usize) -> String {
     let dropped = if layout.dropped.is_empty() { String::new() } else { format!(" dropped {}", layout.dropped.join(", ")) };
     let skipped = if layout.skipped.is_empty() { String::new() } else { format!(" skipped {}", layout.skipped.join(", ")) };

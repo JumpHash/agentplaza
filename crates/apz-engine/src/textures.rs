@@ -76,8 +76,9 @@ pub fn canvas_texture(key: &str, w: u32, h: u32, repeat: f32, draw: impl FnOnce(
     let base = canvas.to_texture();
     // repeat-wrapped, repeat × repeat, sRGB, as the TS sets on the CanvasTexture.
     let tex: Tex = Arc::new(Texture { id: next_id(), repeat: [repeat, repeat], wrap: true, srgb: true, ..(*base).clone() });
-    lock(texture_cache()).insert(key.to_string(), tex.clone());
-    tex
+    // The first texture stored for the key wins: a caller that drew it at the same time (another thread missed the
+    // cache too) takes the stored one, so every user of the key shares one texture and their draws merge.
+    lock(texture_cache()).entry(key.to_string()).or_insert(tex).clone()
 }
 
 /// Rounded rectangle path.
@@ -267,8 +268,7 @@ pub fn slab_side(hue: f32) -> Mat {
         return hit;
     }
     let m = Mat::toon(Color::hsl(hue / 360.0, 0.3, 0.2));
-    lock(material_cache()).insert(key, m.clone());
-    m
+    lock(material_cache()).entry(key).or_insert(m).clone() // the first stored wins (see canvas_texture)
 }
 
 /// The cache `canvas_texture` keeps (exposed for tests).

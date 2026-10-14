@@ -536,6 +536,31 @@ impl Floor {
         // Only the parts that move are dynamic (the built model's animated parts, the pulses and the
         // atom, set in `hardware`): the rest of the board is baked with the statics.
         let glow = glowing_parts(&built, model);
+        // floor.ts buildBoard: a glow plate over each slot whose part is there, lit (additive, the info colour) while
+        // its rooms have a working agent; `step_board` eases its opacity to GLOW_OPACITY times the slot's level.
+        let mut glow_plates = HashMap::new();
+        for slot in model.slots.iter() {
+            if !built.parts.contains_key(&slot.on) {
+                continue;
+            }
+            let [x0, z0, w, d] = slot.rect.map(|v| v as f32);
+            let mat = crate::scene::Mat::new(crate::scene::Material {
+                color: self.colors.info,
+                shading: crate::scene::Shading::Basic,
+                transparent: true,
+                additive: true,
+                depth_write: false,
+                opacity: 0.0,
+                ..crate::scene::Material::default()
+            });
+            let mesh = Obj::mesh(&geometry::plane(w, d, 1, 1), &mat);
+            mesh.set_rotation(-FRAC_PI_2, 0.0, 0.0).set_position(x0 + w / 2.0, slot.top as f32 + 0.012, z0 + d / 2.0);
+            mesh.get().no_outline = true;
+            mesh.set_dynamic(true); // its opacity and visibility follow the work every frame
+            mesh.set_visible(false);
+            obj.add(&mesh);
+            glow_plates.insert(slot.id.clone(), (mesh, mat));
+        }
         let graph = trace_graph(model);
         // Empty until `sync` lays out the roster (it always follows, so the empty layout is never read).
         let layout = BoardLayout {
@@ -563,6 +588,7 @@ impl Floor {
             atom_node,
             pulses,
             glow,
+            glow_plates,
             level: HashMap::new(),
             layout,
             graph,

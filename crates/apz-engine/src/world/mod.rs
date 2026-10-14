@@ -148,6 +148,8 @@ pub struct Board {
     pub pulses: Vec<TracePulses>,
     /// Each slot's glowing materials with their rest intensity.
     pub glow: HashMap<String, Vec<(Mat, f32)>>,
+    /// Each slot's glow plate (floor.ts buildBoard) and its material, by slot id.
+    pub glow_plates: HashMap<String, (Obj, Mat)>,
     /// Each slot's activity (0..1, eased toward its rooms' work).
     pub level: HashMap<String, f32>,
     pub layout: BoardLayout,

@@ -66,8 +66,8 @@ fn painted_tag(name: &str, status: Status, lit: bool, scale: f32) -> PaintedTag 
     if map.len() > TAG_CACHE_LIMIT {
         map.clear();
     }
-    map.insert(key, painted.clone());
-    painted
+    // The first tag painted for the key wins, so concurrent callers share one texture.
+    map.entry(key).or_insert(painted).clone()
 }
 
 /// The advance width of `text` in `font`, in logical px.

@@ -333,8 +333,8 @@ pub fn weld_smooth(geo: &Geo, tolerance: f32) -> Geo {
         return hit;
     }
     let welded = weld(geo, tolerance);
-    cache.lock().expect("weld cache").insert(geo.id, Arc::clone(&welded));
-    welded
+    // The first hull stored for the geometry wins, so concurrent callers share one (and one geometry id).
+    Arc::clone(cache.lock().expect("weld cache").entry(geo.id).or_insert(welded))
 }
 
 /// `mergeVertices` on positions (quantised to round(v / tolerance)), then `computeVertexNormals`.

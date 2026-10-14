@@ -90,8 +90,8 @@ fn painted(label: &Label, scale: f32) -> Painted {
     if map.len() > CACHE_LIMIT {
         map.clear();
     }
-    map.insert(key, painted.clone());
-    painted
+    // The first label painted for the key wins, so concurrent callers share one texture.
+    map.entry(key).or_insert(painted).clone()
 }
 
 /// The advance width of `text` in `font`, in logical px.
