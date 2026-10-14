@@ -296,6 +296,8 @@ fn encode(value: &str) -> String {
 pub struct HubStatus {
     pub enabled: bool,
     pub bind: String,
+    /// Whether the endpoint serves TLS. A remote bind needs it.
+    pub tls: bool,
     pub auth_mode: String,
     pub open_scope: String,
     pub warning: Option<String>,
@@ -758,6 +760,10 @@ fn enable_card(state: &State) -> Element<'_, Msg> {
         ui::seg(&AUTH_OPTIONS, state.auth, Msg::SetAuth),
         ui::faint(if matches!(state.auth, Auth::Open) { "no token" } else { "token required" }).into(),
     ];
+    // The TLS line sits right after the bind: a remote bind needs TLS.
+    if let Some(line) = tls_line(state) {
+        parts.insert(3, line);
+    }
     if open {
         parts.push(ui::error_line("Anyone who can reach this address can use these tools without a token."));
         if let Some(warning) = state.status.as_ref().and_then(|s| s.warning.as_deref()) {
@@ -817,6 +823,17 @@ fn enable_card(state: &State) -> Element<'_, Msg> {
     parts.push(status_line(state));
     parts.push(ui::btn("Save", None, ui::Kind::Primary, gate(state.busy, Msg::Save)));
     ui::card("Enable", column(parts).spacing(12).width(Length::Fill).into())
+}
+
+/// Whether the endpoint serves TLS, next to the bind: a remote bind needs it, and the hub refuses it without.
+fn tls_line(state: &State) -> Option<Element<'_, Msg>> {
+    let status = state.status.as_ref()?;
+    let (label, tone, text) = if status.tls {
+        ("TLS on", ui::Tone::Ok, "This endpoint serves TLS, so remote bind is available.")
+    } else {
+        ("TLS off", ui::Tone::Warn, "Remote bind needs TLS. This endpoint has none, so the hub refuses remote bind until it serves TLS.")
+    };
+    Some(row![ui::badge(label, tone), ui::faint(text)].spacing(10).align_y(Alignment::Center).into())
 }
 
 fn status_line(state: &State) -> Element<'_, Msg> {
@@ -1135,6 +1152,7 @@ mod tests {
         assert!(status.enabled);
         assert_eq!(Auth::from_wire(&status.auth_mode), Auth::Open);
         assert_eq!(Bind::from_wire(&status.bind), Bind::Remote);
+        assert!(status.tls, "the status says whether the endpoint serves TLS");
         assert_eq!(status.allowed_origins, vec!["https://console.test".to_string()]);
         assert!(!status.stored);
         let list: TokenList = serde_json::from_str(

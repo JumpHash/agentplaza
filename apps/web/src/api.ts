@@ -967,8 +967,8 @@ export const mcpApi = {
   /** 400 names the bad field (`{error, field}`); 409 on a duplicate id. */
   createServer: (config: McpServerConfig) => post<McpServerView>('/v1/mcp/servers', config),
   patchServer: (id: string, partial: Partial<McpServerConfig>) => patch<McpServerView>(`/v1/mcp/servers/${encodeURIComponent(id)}`, partial),
-  /** Also removes the vault bindings `mcp:<id>`. */
-  deleteServer: (id: string) => del<unknown>(`/v1/mcp/servers/${encodeURIComponent(id)}`),
+  /** Also removes the vault bindings `mcp:<id>`. `purge` also deletes the server's storage volume (?purge=1). */
+  deleteServer: (id: string, purge = false) => del<unknown>(`/v1/mcp/servers/${encodeURIComponent(id)}${purge ? '?purge=1' : ''}`),
   testServer: (id: string, node?: string) => post<McpTestResult>(`/v1/mcp/servers/${encodeURIComponent(id)}/test`, node ? { node } : {}),
   startServer: (id: string) => post<McpServerView>(`/v1/mcp/servers/${encodeURIComponent(id)}/start`),
   stopServer: (id: string) => post<McpServerView>(`/v1/mcp/servers/${encodeURIComponent(id)}/stop`),
@@ -982,6 +982,10 @@ export type HubScope = 'observe' | 'operate' | 'govern';
 export type HubAuthMode = 'secure' | 'open';
 export interface HubMcpStatus {
   enabled: boolean; bind: HubBind; allowed_origins: string[]; url: string; tokens: number; stored: boolean;
+  /** Whether the endpoint serves TLS. A remote bind needs it. */
+  tls: boolean;
+  /** The origins the hub accepts in practice (the allowed ones, plus those it adds itself). Read-only. */
+  effective_origins: string[];
   auth_mode: HubAuthMode; open_scope: HubScope;
   /** Set while open mode is on: the server's own warning. */
   warning?: string | null;

@@ -9,7 +9,7 @@ import { brandLogo, button, field, input, modal } from '../ui/components';
 import { h, icon, replace } from '../ui/dom';
 import type { IconName } from '../ui/icons.gen';
 import { Role, roleLabel } from '../roles';
-import { MCP_ID_RE, blankConfig, pickText, transportText } from './mcp-common';
+import { LIMIT_BOUNDS, MCP_ID_RE, blankConfig, limitsProblem, matchingPreset, pickText, specsOfBag, transportText } from './mcp-common';
 import { THIS_HUB, errorText } from './vault-common';
 import { step2Credentials } from './mcp-wizard-secrets';
 import { step3Test, step4Tools } from './mcp-wizard-test';
@@ -29,8 +29,13 @@ export interface WizardState {
   probe: McpProbeTool[] | null;
   /** The step the owner is on. */
   step: WizardStep;
-  /** The credential and setting specs of the preset chosen in step 1 (edit mode: from the catalog by id, else empty). */
+  /** The credential and setting specs of the preset chosen in step 1 (edit mode: from the catalog by transport, else the server's own settings). */
   specs: { env: McpSpec[]; headers: McpSpec[] };
+  /**
+   * True for a custom or remote server: its env or header rows are the owner's own, added and removed in step 2
+   * (env for a container, headers for a remote URL). False for a preset, whose rows come from the catalogue.
+   */
+  ownRows: boolean;
 }
 
 export interface WizardCtx {
@@ -72,8 +77,8 @@ interface Local {
 /** Opens the wizard. `existing` null means Add server; a view means Edit (the same steps, prefilled). */
 export function openWizard(existing: McpServerView | null, onDone: () => void, presetId: string | null = null): void {
   const state: WizardState = existing
-    ? { mode: 'edit', draft: copyConfig(existing), saved: true, server: existing, probe: null, step: 1, specs: { env: [], headers: [] } }
-    : { mode: 'create', draft: blankConfig('', '', { kind: 'stdio', image: '' }), saved: false, server: null, probe: null, step: 1, specs: { env: [], headers: [] } };
+    ? { mode: 'edit', draft: copyConfig(existing), saved: true, server: existing, probe: null, step: 1, specs: { env: [], headers: [] }, ownRows: false }
+    : { mode: 'create', draft: blankConfig('', '', { kind: 'stdio', image: '' }), saved: false, server: null, probe: null, step: 1, specs: { env: [], headers: [] }, ownRows: false };
   const local: Local = {
     catalog: [], catalogError: '', nodes: [], source: null, loaded: false, reached: 1,
     baseline: JSON.stringify(state.draft), persisted: false, error: '', busy: false, confirming: false,
@@ -194,6 +199,13 @@ export function openWizard(existing: McpServerView | null, onDone: () => void, p
   }
 
   async function persist(): Promise<McpServerView | undefined> {
+    // Step 6 can be reached with a bad limit typed in step 1, so the check runs here too.
+    const problem = limitsProblem(state.draft.limits);
+    if (problem) {
+      local.error = problem;
+      renderFoot();
+      return undefined;
+    }
     const d = { ...state.draft, env: unsetRefsDropped(state.draft.env), headers: unsetRefsDropped(state.draft.headers) };
     try {
       if (!state.saved) {
@@ -290,8 +302,10 @@ export function openWizard(existing: McpServerView | null, onDone: () => void, p
       ...(nodes ?? []).filter((n) => !n.revoked).map((n) => ({ id: n.id, name: n.name })),
     ];
     if (existing) {
-      const match = catalog.find((p) => p.id === state.draft.id);
-      state.specs = match ? { env: match.env, headers: match.headers } : { env: [], headers: [] };
+      // By transport, not by id: an id can be typed by hand, and a custom server can carry a preset's id.
+      const match = matchingPreset(state.draft.transport, catalog);
+      state.specs = match ? { env: match.env, headers: match.headers } : { env: specsOfBag(state.draft.env), headers: specsOfBag(state.draft.headers) };
+      state.ownRows = !match;
       local.source = matchSource(state.draft.transport, catalog);
     }
     if (!existing && presetId) {
@@ -315,7 +329,7 @@ function copyConfig(v: McpServerView): McpServerConfig {
 
 /** Which step-1 option an existing server's transport belongs to. */
 function matchSource(t: McpTransport, catalog: McpPreset[]): string {
-  const hit = catalog.find((p) => (t.kind === 'stdio' ? p.transport === 'stdio' && p.image === t.image : p.transport === 'http' && p.url === t.url));
+  const hit = matchingPreset(t, catalog);
   if (hit) return `preset:${hit.id}`;
   return t.kind === 'stdio' ? 'custom' : 'remote';
 }
@@ -348,7 +362,7 @@ function sourceProblem(ctx: WizardCtx, local: Local): string {
     return 'The ID must be 2 to 32 characters: lower-case letters, digits and hyphens, starting with a letter.';
   }
   if (!d.name.trim()) return 'Enter a display name.';
-  return '';
+  return limitsProblem(d.limits);
 }
 
 // ---- Step 1: source ----------------------------------------------------------
@@ -365,6 +379,7 @@ function step1(ctx: WizardCtx, local: Local): HTMLElement {
   if (local.source === 'custom') root.appendChild(customFields(ctx));
   if (local.source === 'remote') root.appendChild(remoteFields(ctx));
   root.appendChild(serverFields(ctx));
+  root.appendChild(advancedFields(ctx));
   return root;
 }
 
@@ -391,14 +406,18 @@ function sourceOption(ctx: WizardCtx, local: Local, key: 'custom' | 'remote', ti
   return optionButton(local.source === key, icon(iconName), title, text, null, () => {
     if (local.source === key) return;
     const d = ctx.state.draft;
-    if (local.source?.startsWith('preset:')) {
-      // Leaving a preset drops the settings it seeded.
-      ctx.state.specs = { env: [], headers: [] };
-      d.env = {};
-      d.headers = {};
+    // Changing the source drops the settings the old one seeded or the owner added: a container takes env, a URL headers.
+    ctx.state.specs = { env: [], headers: [] };
+    d.env = {};
+    d.headers = {};
+    if (key === 'custom') {
+      d.transport = d.transport.kind === 'stdio' ? d.transport : { kind: 'stdio', image: '' };
+    } else {
+      d.transport = d.transport.kind === 'http' ? d.transport : { kind: 'http', url: '' };
+      // A volume applies to container servers only.
+      d.storage = { volume: false };
     }
-    if (key === 'custom') d.transport = d.transport.kind === 'stdio' ? d.transport : { kind: 'stdio', image: '' };
-    else d.transport = d.transport.kind === 'http' ? d.transport : { kind: 'http', url: '' };
+    ctx.state.ownRows = true;
     local.source = key;
     ctx.redraw();
   });
@@ -414,6 +433,8 @@ function choosePreset(ctx: WizardCtx, local: Local, p: McpPreset): void {
       ? { kind: 'stdio', image: p.image ?? '', ...(p.command.length ? { command: p.command } : {}) }
       : { kind: 'http', url: p.url ?? '' };
   ctx.state.specs = { env: p.env, headers: p.headers };
+  ctx.state.ownRows = false;
+  if (p.transport === 'http') d.storage = { volume: false };
   d.env = seed(p.env);
   d.headers = seed(p.headers);
   if (!d.id) d.id = p.id;
@@ -475,6 +496,48 @@ function serverFields(ctx: WizardCtx): HTMLElement {
     field('ID', idIn, isEdit ? 'The ID cannot change.' : '2 to 32 characters: lower-case letters, digits and hyphens.'),
     field('Display name', nameIn),
   );
+}
+
+/**
+ * The Advanced part of step 1: the limits, private hosts and the storage volume. Closed until opened; the hub's
+ * defaults are what a new server gets. A number that is not a whole number in range is named by sourceProblem.
+ */
+function advancedFields(ctx: WizardCtx): HTMLElement {
+  const d = ctx.state.draft;
+  const limitIn = (key: keyof McpServerConfig['limits']): HTMLInputElement => {
+    const { lo, hi } = LIMIT_BOUNDS[key];
+    const el = input({ type: 'number', min: lo, max: hi, step: 1, value: d.limits[key], inputmode: 'numeric' });
+    el.addEventListener('input', () => {
+      d.limits[key] = el.valueAsNumber;
+    });
+    return el;
+  };
+  const privateBox = h('input', { type: 'checkbox' });
+  privateBox.checked = d.allow_private;
+  privateBox.addEventListener('change', () => {
+    d.allow_private = privateBox.checked;
+  });
+  const volumeBox = h('input', { type: 'checkbox' });
+  volumeBox.checked = d.storage.volume;
+  volumeBox.addEventListener('change', () => {
+    d.storage = { volume: volumeBox.checked };
+  });
+  const items: (HTMLElement | null)[] = [
+    field('Timeout (seconds)', limitIn('timeout_s'), `Between ${LIMIT_BOUNDS.timeout_s.lo} and ${LIMIT_BOUNDS.timeout_s.hi}.`),
+    field('Output size (KB)', limitIn('max_output_kb'), `Between ${LIMIT_BOUNDS.max_output_kb.lo} and ${LIMIT_BOUNDS.max_output_kb.hi}.`),
+    field('Idle stop (minutes)', limitIn('idle_stop_min'), `Between ${LIMIT_BOUNDS.idle_stop_min.lo} and ${LIMIT_BOUNDS.idle_stop_min.hi}. The server stops after this long unused.`),
+    h('label.mcpw-check', null, privateBox, h('span', null, 'Allow private network hosts')),
+    h('p.mcpw-warn', null, 'This lets the server reach private network hosts and loopback addresses. Turn it on only for a host you run.'),
+    d.transport.kind === 'stdio'
+      ? h(
+          'div',
+          null,
+          h('label.mcpw-check', null, volumeBox, h('span', null, 'Keep storage between runs (a volume)')),
+          h('p.mcpw-lede', null, 'The volume is mounted at /data. Deleting the server keeps it unless you choose to delete it too.'),
+        )
+      : null,
+  ];
+  return h('details.mcpw-advanced', null, h('summary', null, 'Advanced'), h('div.mcpw-fields', null, items));
 }
 
 // ---- Step 5: access ----------------------------------------------------------

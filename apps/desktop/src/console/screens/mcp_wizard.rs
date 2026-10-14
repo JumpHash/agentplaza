@@ -11,15 +11,13 @@ use std::collections::BTreeMap;
 use iced::widget::{checkbox, column, row, text_input};
 use iced::{Element, Length, Task};
 use serde::Deserialize;
-use serde_json::{json, Map, Value};
+use serde_json::{json, Value};
 
-use super::mcp::Preset;
+use super::mcp::{LogLine, Preset};
 use crate::console::{client, ui, Ctx};
 
 const STEP_LABELS: [&str; 6] = ["Source", "Credentials", "Test", "Tools", "Access", "Enable"];
 const SECRET_WORDS: [&str; 4] = ["TOKEN", "KEY", "SECRET", "PASSWORD"];
-/// The fields this wizard does not edit; they go back to the hub as the hub had them.
-const KEPT: [&str; 3] = ["limits", "allow_private", "storage"];
 /// The risk levels a tool can be given; the empty value means auto (the hub's own).
 const RISKS: [&str; 3] = ["read", "write", "irreversible"];
 const TOOL_MODE: [(bool, &str); 2] = [(true, "Allow all tools"), (false, "Pick tools")];
@@ -27,6 +25,8 @@ const ROLE_MODE: [(bool, &str); 2] = [(true, "All roles"), (false, "Pick roles")
 const NODE_MODE: [(bool, &str); 2] = [(true, "All nodes"), (false, "Pick nodes")];
 const ID_HINT: &str = "The ID must be 2 to 32 characters: lower-case letters, digits and hyphens, starting with a letter.";
 const NAME_HINT: &str = "Use 2 to 64 characters: a capital letter, then capitals, digits or underscores.";
+const ENV_HINT: &str = "Capitals, digits and underscores, starting with a letter or underscore.";
+const HEADER_HINT: &str = "Letters, digits and hyphens.";
 
 // ---- Shapes -----------------------------------------------------------------------------------
 
@@ -160,17 +160,18 @@ pub struct Draft {
     pub roles: Pick,
     /// The nodes the server runs on (step 5).
     pub nodes: Pick,
-    /// Limits, allow_private and storage as the hub has them.
-    pub kept: Map<String, Value>,
+    /// The limits as typed (advanced, step 1); `limits_problem` checks them before a save.
+    pub timeout_s: String,
+    pub max_output_kb: String,
+    pub idle_stop_min: String,
+    pub allow_private: bool,
+    /// A container's storage volume. Never sent for a remote URL.
+    pub volume: bool,
 }
 
 impl Draft {
     /// A new server: disabled, nobody can use it until the owner says so (the web's blankConfig).
     pub fn blank() -> Draft {
-        let mut kept = Map::new();
-        kept.insert("limits".into(), json!({ "timeout_s": 60, "max_output_kb": 256, "idle_stop_min": 10 }));
-        kept.insert("allow_private".into(), json!(false));
-        kept.insert("storage".into(), json!({ "volume": false }));
         Draft {
             id: String::new(),
             name: String::new(),
@@ -186,7 +187,11 @@ impl Draft {
             tool_risk: BTreeMap::new(),
             roles: Pick::Only(Vec::new()),
             nodes: Pick::Only(Vec::new()),
-            kept,
+            timeout_s: "60".into(),
+            max_output_kb: "256".into(),
+            idle_stop_min: "10".into(),
+            allow_private: false,
+            volume: false,
         }
     }
 
@@ -200,12 +205,6 @@ impl Draft {
                 .map(|o| o.iter().filter_map(|(k, s)| Setting::from_json(s).map(|x| (k.clone(), x))).collect())
                 .unwrap_or_default()
         };
-        let mut kept = Map::new();
-        for key in KEPT {
-            if let Some(x) = v.get(key) {
-                kept.insert(key.to_string(), x.clone());
-            }
-        }
         let tools = v.get("tools");
         let access = v.get("access");
         Draft {
@@ -231,7 +230,11 @@ impl Draft {
                 .unwrap_or_default(),
             roles: Pick::from_json(access.and_then(|x| x.get("roles"))),
             nodes: Pick::from_json(access.and_then(|x| x.get("nodes"))),
-            kept,
+            timeout_s: limit(v, "timeout_s", 60),
+            max_output_kb: limit(v, "max_output_kb", 256),
+            idle_stop_min: limit(v, "idle_stop_min", 10),
+            allow_private: v.get("allow_private").and_then(Value::as_bool).unwrap_or(false),
+            volume: v.get("storage").and_then(|x| x.get("volume")).and_then(Value::as_bool).unwrap_or(false),
         }
     }
 
@@ -271,10 +274,30 @@ impl Draft {
             "tools": { "allow": self.tools.to_json(), "risk": self.tool_risk },
             "access": { "roles": self.roles.to_json(), "nodes": self.nodes.to_json() },
         });
-        for (key, value) in &self.kept {
-            body[key.as_str()] = value.clone();
-        }
+        body["limits"] = json!({
+            "timeout_s": num(&self.timeout_s),
+            "max_output_kb": num(&self.max_output_kb),
+            "idle_stop_min": num(&self.idle_stop_min),
+        });
+        body["allow_private"] = json!(self.allow_private);
+        body["storage"] = json!({ "volume": self.volume && !self.http });
         body
+    }
+
+    /// The first problem with the limits, or "" when each is a whole number inside the hub's bounds (config.rs).
+    pub fn limits_problem(&self) -> String {
+        let checks: [(&str, &str, u64, u64); 3] = [
+            ("Timeout", self.timeout_s.as_str(), 1, 600),
+            ("Output size", self.max_output_kb.as_str(), 1, 4096),
+            ("Idle stop", self.idle_stop_min.as_str(), 1, 1440),
+        ];
+        for (label, text, lo, hi) in checks {
+            match text.trim().parse::<u64>() {
+                Ok(n) if (lo..=hi).contains(&n) => {}
+                _ => return format!("{label}: enter a whole number from {lo} to {hi}."),
+            }
+        }
+        String::new()
     }
 
     /// The body of POST /v1/mcp/servers: the whole config, created disabled.
@@ -284,6 +307,48 @@ impl Draft {
         body["enabled"] = json!(false);
         body
     }
+}
+
+/// A limit as the hub reads it from a view (the default when absent).
+fn limit(v: &Value, key: &str, fallback: u64) -> String {
+    v.get("limits").and_then(|l| l.get(key)).and_then(Value::as_u64).unwrap_or(fallback).to_string()
+}
+
+/// A limit as the hub takes it. Only read after `limits_problem` has passed.
+fn num(text: &str) -> u64 {
+    text.trim().parse().unwrap_or(0)
+}
+
+/// The rows of a custom or remote server: its own settings, one per name (env for a container, headers for a URL).
+fn own_rows(d: &Draft) -> Vec<Row> {
+    let (header, bag) = if d.http { (true, &d.headers) } else { (false, &d.env) };
+    bag.iter()
+        .map(|(name, setting)| Row {
+            header,
+            spec: Spec {
+                name: name.clone(),
+                secret: matches!(setting, Setting::Secret { .. }),
+                required: false,
+                help: String::new(),
+                format: match setting {
+                    Setting::Secret { format, .. } => format.clone(),
+                    Setting::Value(_) => None,
+                },
+            },
+        })
+        .collect()
+}
+
+/// A name the owner types for a row of its own: an env var name (capitals, digits, underscores) or a header name.
+pub fn valid_own_name(name: &str, header: bool) -> bool {
+    if header {
+        return !name.is_empty() && name.len() <= 64 && name.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-');
+    }
+    let b = name.as_bytes();
+    !b.is_empty()
+        && b.len() <= 64
+        && (b[0].is_ascii_uppercase() || b[0] == b'_')
+        && b.iter().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || *c == b'_')
 }
 
 #[derive(Debug, Clone)]
@@ -364,6 +429,8 @@ pub struct TestResult {
     pub error: Option<String>,
     pub server_info: Value,
     pub tools: Vec<ProbeTool>,
+    /// The stderr tail of a failed test, shown under its error.
+    pub stderr: Vec<LogLine>,
 }
 
 /// What a save continues with.
@@ -410,6 +477,11 @@ pub struct State {
     pub confirming: bool,
     pub error: String,
     pub busy: bool,
+    /// The Advanced part of step 1 is open.
+    pub advanced: bool,
+    /// The name and format typed for a row of the owner's own (custom or remote servers, step 2).
+    pub new_row_name: String,
+    pub new_row_format: String,
 }
 
 #[derive(Debug, Clone)]
@@ -456,6 +528,16 @@ pub enum Msg {
     Cancel,
     Discard,
     KeepEditing,
+    ToggleAdvanced,
+    Timeout(String),
+    MaxOutput(String),
+    IdleStop(String),
+    AllowPrivate(bool),
+    Volume(bool),
+    RowName(String),
+    RowFormat(String),
+    AddRow,
+    RemoveRow(usize),
 }
 
 /// What an update leaves for the screen: keep the wizard open with a task, or close it after a save.
@@ -602,7 +684,11 @@ fn source_problem(st: &State) -> String {
         _ if d.name.trim().is_empty() => "Enter a display name.",
         _ => "",
     };
-    problem.to_string()
+    if problem.is_empty() {
+        d.limits_problem()
+    } else {
+        problem.to_string()
+    }
 }
 
 fn gate(busy: bool, msg: Msg) -> Option<Msg> {
@@ -657,6 +743,9 @@ impl State {
             confirming: false,
             error: String::new(),
             busy: false,
+            advanced: false,
+            new_row_name: String::new(),
+            new_row_format: String::new(),
         };
         match existing {
             Some(view) => {
@@ -664,7 +753,11 @@ impl State {
                 st.draft = Draft::from_view(view);
                 st.saved = true;
                 st.source = Some(source_for(&st.draft, catalog));
-                st.rows = preset_by_id(catalog, &st.draft.id).map(rows_of).unwrap_or_default();
+                // By the source, not the id: a custom server can carry a preset's id.
+                st.rows = match &st.source {
+                    Some(Source::Preset(id)) => preset_by_id(catalog, id).map(rows_of).unwrap_or_default(),
+                    _ => own_rows(&st.draft),
+                };
             }
             None => {
                 if let Some(id) = preset {
@@ -687,8 +780,8 @@ impl State {
         if self.source.as_ref() == Some(&source) {
             return;
         }
-        if matches!(self.source, Some(Source::Preset(_))) {
-            // Leaving a preset drops the settings it seeded.
+        if self.source.is_some() {
+            // Changing the source drops the settings the old one seeded or the owner added: a container takes env, a URL headers.
             self.draft.env.clear();
             self.draft.headers.clear();
             self.rows.clear();
@@ -723,6 +816,8 @@ impl State {
                     self.draft.http = true;
                     self.draft.url.clear();
                 }
+                // A volume applies to container servers only.
+                self.draft.volume = false;
             }
         }
         self.source = Some(source);
@@ -769,6 +864,12 @@ fn write(client: &client::Client, draft: &Draft, saved: bool) -> (bool, Result<(
 }
 
 fn save(st: &mut State, ctx: &Ctx, then: Then) -> Outcome {
+    // Step 6 can be reached with a bad limit typed in step 1, so the check runs here too.
+    let problem = st.draft.limits_problem();
+    if !problem.is_empty() {
+        st.error = problem;
+        return idle();
+    }
     st.error.clear();
     st.busy = true;
     let client = ctx.client.clone();
@@ -852,6 +953,49 @@ fn picked_entry(st: &State, row: usize) -> Option<VaultEntry> {
         Vault::Ready(list) => list.get(idx).cloned(),
         _ => None,
     }
+}
+
+/// Adds a row of the owner's own: an env var for a container, a header for a remote URL. Its value is a vault
+/// secret, picked or created in the row once it is there.
+fn add_row(st: &mut State) -> Outcome {
+    let name = st.new_row_name.trim().to_string();
+    let header = st.draft.http;
+    let format = Some(st.new_row_format.trim().to_string()).filter(|f| header && !f.is_empty());
+    let problem = if !valid_own_name(&name, header) {
+        if header {
+            HEADER_HINT
+        } else {
+            ENV_HINT
+        }
+    } else if st.rows.iter().any(|r| r.header == header && r.spec.name == name) {
+        "That name is already listed."
+    } else if format.as_deref().is_some_and(|f| !f.contains("{}")) {
+        "A format needs {} where the secret goes, such as Bearer {}."
+    } else {
+        ""
+    };
+    if !problem.is_empty() {
+        st.error = problem.to_string();
+        return idle();
+    }
+    bag_mut(&mut st.draft, header).insert(name.clone(), Setting::Secret { secret: String::new(), format: format.clone() });
+    st.rows.push(Row { header, spec: Spec { name, secret: true, required: false, help: String::new(), format } });
+    st.new_row_name.clear();
+    st.new_row_format.clear();
+    st.error.clear();
+    idle()
+}
+
+/// Removes a row of the owner's own, with its draft setting. The picks and the open create form are by row index,
+/// so they are reset.
+fn remove_row(st: &mut State, row: usize) {
+    let Some(r) = st.rows.get(row).cloned() else { return };
+    bag_mut(&mut st.draft, r.header).remove(&r.spec.name);
+    st.rows.remove(row);
+    st.picked.clear();
+    st.creating = None;
+    st.create_name.clear();
+    st.create_value.clear();
 }
 
 fn create(st: &mut State, ctx: &Ctx) -> Outcome {
@@ -1014,6 +1158,16 @@ pub fn update(st: &mut State, msg: Msg, ctx: &Ctx) -> Outcome {
             st.create_value.clear();
         }
         Msg::CreateSubmit => return create(st, ctx),
+        Msg::ToggleAdvanced => st.advanced = !st.advanced,
+        Msg::Timeout(v) => st.draft.timeout_s = v,
+        Msg::MaxOutput(v) => st.draft.max_output_kb = v,
+        Msg::IdleStop(v) => st.draft.idle_stop_min = v,
+        Msg::AllowPrivate(on) => st.draft.allow_private = on,
+        Msg::Volume(on) => st.draft.volume = on,
+        Msg::RowName(v) => st.new_row_name = v,
+        Msg::RowFormat(v) => st.new_row_format = v,
+        Msg::AddRow => return add_row(st),
+        Msg::RemoveRow(row) => remove_row(st, row),
         Msg::Cancel => return cancel(st),
         Msg::Discard => return Outcome::Closed(String::new()),
         Msg::KeepEditing => st.confirming = false,
@@ -1255,7 +1409,55 @@ fn step1(st: &State) -> Element<'_, Msg> {
     };
     items.push(field("ID", id_control, id_hint));
     items.push(field("Display name", field_input("", st.draft.name.as_str(), Msg::Name), ""));
+    items.push(ui::btn_sm(if st.advanced { "Hide advanced" } else { "Advanced" }, None, ui::Kind::Ghost, Some(Msg::ToggleAdvanced)));
+    if st.advanced {
+        items.push(advanced(st));
+    }
     column(items).spacing(16).width(Length::Fill).into()
+}
+
+/// The Advanced part of step 1: the limits, private hosts and a container's storage volume.
+fn advanced(st: &State) -> Element<'_, Msg> {
+    let d = &st.draft;
+    let mut items: Vec<Element<'_, Msg>> = vec![
+        field("Timeout (seconds)", field_input("60", d.timeout_s.as_str(), Msg::Timeout), "Between 1 and 600."),
+        field("Output size (KB)", field_input("256", d.max_output_kb.as_str(), Msg::MaxOutput), "Between 1 and 4096."),
+        field(
+            "Idle stop (minutes)",
+            field_input("10", d.idle_stop_min.as_str(), Msg::IdleStop),
+            "Between 1 and 1440. The server stops after this long unused.",
+        ),
+        checkbox(d.allow_private).label("Allow private network hosts").on_toggle(Msg::AllowPrivate).into(),
+        ui::error_line("This lets the server reach private network hosts and loopback addresses. Turn it on only for a host you run."),
+    ];
+    if !d.http {
+        items.push(checkbox(d.volume).label("Keep storage between runs (a volume)").on_toggle(Msg::Volume).into());
+        items.push(ui::faint("The volume is mounted at /data. Deleting the server keeps it unless you also delete the volume.").into());
+    }
+    column(items).spacing(12).width(Length::Fill).into()
+}
+
+/// The form that adds a row of the owner's own: an env var for a container, a header for a remote URL.
+fn own_row_form(st: &State) -> Element<'_, Msg> {
+    let header = st.draft.http;
+    let (title, placeholder, hint) = if header {
+        ("Add a header", "Authorization", HEADER_HINT)
+    } else {
+        ("Add an environment variable", "GITHUB_TOKEN", ENV_HINT)
+    };
+    let mut items: Vec<Element<'_, Msg>> = vec![
+        ui::label(title).into(),
+        field("Name", field_input(placeholder, st.new_row_name.as_str(), Msg::RowName), hint),
+    ];
+    if header {
+        items.push(field(
+            "Format",
+            field_input("Bearer {}", st.new_row_format.as_str(), Msg::RowFormat),
+            "Optional. Use {} where the secret goes.",
+        ));
+    }
+    items.push(ui::btn_sm("Add", None, ui::Kind::Primary, gate(st.busy, Msg::AddRow)));
+    column(items).spacing(10).width(Length::Fill).into()
 }
 
 fn step2(st: &State) -> Element<'_, Msg> {
@@ -1263,8 +1465,19 @@ fn step2(st: &State) -> Element<'_, Msg> {
     if st.rows.is_empty() {
         items.push(ui::faint("This server needs no credentials.").into());
     }
+    // A custom or remote server's rows are the owner's own: each can be removed, and more added below.
+    let own = matches!(st.source, Some(Source::Custom) | Some(Source::Remote));
     for (i, row) in st.rows.iter().enumerate() {
-        items.push(if row.spec.secret { secret_card(st, i, row) } else { plain_card(st, i, row) });
+        let card = if row.spec.secret { secret_card(st, i, row) } else { plain_card(st, i, row) };
+        if own {
+            let remove = ui::btn_sm("Remove", None, ui::Kind::Ghost, gate(st.busy, Msg::RemoveRow(i)));
+            items.push(column(vec![card, remove]).spacing(8).width(Length::Fill).into());
+        } else {
+            items.push(card);
+        }
+    }
+    if own {
+        items.push(own_row_form(st));
     }
     let missing: Vec<&str> = st
         .rows
@@ -1309,6 +1522,9 @@ fn step3(st: &State) -> Element<'_, Msg> {
         } else {
             items.push(ui::badge("Test failed", ui::Tone::Danger));
             items.push(ui::error_line(t.error.as_deref().unwrap_or("The server did not start.")));
+            for line in &t.stderr {
+                items.push(ui::mono(line.line.clone(), 11.0, crate::theme::palette().ink_2).into());
+            }
         }
     }
     column(items).spacing(12).width(Length::Fill).into()
@@ -1631,6 +1847,105 @@ mod tests {
         st.draft.http = true;
         st.draft.url = "http://example.com".into();
         assert_eq!(source_problem(&st), "Enter a remote URL that starts with https://.");
+    }
+
+    #[test]
+    fn mcp_wizard_advanced_fields_round_trip_and_are_bounded() {
+        let view: Value = serde_json::from_str(VIEW).unwrap();
+        let mut draft = Draft::from_view(&view);
+        assert_eq!((draft.timeout_s.as_str(), draft.max_output_kb.as_str(), draft.idle_stop_min.as_str()), ("30", "128", "5"));
+        assert!(draft.volume);
+        assert!(!draft.allow_private);
+        assert_eq!(draft.limits_problem(), "");
+        draft.timeout_s = "0".into();
+        assert_eq!(draft.limits_problem(), "Timeout: enter a whole number from 1 to 600.");
+        draft.timeout_s = "30".into();
+        draft.idle_stop_min = "1.5".into();
+        assert_eq!(draft.limits_problem(), "Idle stop: enter a whole number from 1 to 1440.");
+        draft.idle_stop_min = "5".into();
+        draft.allow_private = true;
+        let body = draft.patch_body();
+        assert_eq!(body["limits"], json!({ "timeout_s": 30, "max_output_kb": 128, "idle_stop_min": 5 }));
+        assert_eq!(body["allow_private"], true);
+        assert_eq!(body["storage"], json!({ "volume": true }));
+    }
+
+    #[test]
+    fn mcp_wizard_a_remote_url_never_sends_a_volume() {
+        let mut d = Draft::blank();
+        d.http = true;
+        d.volume = true;
+        assert_eq!(d.patch_body()["storage"], json!({ "volume": false }));
+    }
+
+    #[test]
+    fn mcp_wizard_own_rows_come_from_a_custom_servers_env() {
+        let view: Value = serde_json::from_str(VIEW).unwrap();
+        let st = State::new(Some(&view), None, &[]);
+        assert_eq!(st.source, Some(Source::Custom));
+        let rows: Vec<(&str, bool)> = st.rows.iter().map(|r| (r.spec.name.as_str(), r.spec.secret)).collect();
+        assert_eq!(rows, vec![("ROOT", false), ("TOKEN", true)]);
+    }
+
+    #[test]
+    fn mcp_wizard_own_row_names_follow_the_hub_rules() {
+        assert!(valid_own_name("GITHUB_TOKEN", false));
+        assert!(valid_own_name("_X", false));
+        assert!(!valid_own_name("github_token", false));
+        assert!(!valid_own_name("1TOKEN", false));
+        assert!(valid_own_name("Authorization", true));
+        assert!(valid_own_name("X-Api-Key", true));
+        assert!(!valid_own_name("Auth_Header", true));
+        assert!(!valid_own_name("", true));
+    }
+
+    #[test]
+    fn mcp_wizard_adding_and_removing_an_own_env_row() {
+        let mut st = State::new(None, None, &[]);
+        st.source = Some(Source::Custom);
+        st.new_row_name = "GITHUB_TOKEN".into();
+        let _ = add_row(&mut st);
+        assert_eq!(st.rows.len(), 1);
+        assert_eq!(st.draft.env.get("GITHUB_TOKEN"), Some(&Setting::Secret { secret: String::new(), format: None }));
+        assert!(st.error.is_empty());
+        st.new_row_name = "GITHUB_TOKEN".into();
+        let _ = add_row(&mut st);
+        assert_eq!(st.rows.len(), 1, "a name is listed once");
+        assert_eq!(st.error, "That name is already listed.");
+        remove_row(&mut st, 0);
+        assert!(st.rows.is_empty());
+        assert!(st.draft.env.is_empty());
+    }
+
+    #[test]
+    fn mcp_wizard_a_header_row_takes_a_format_with_the_placeholder() {
+        let mut st = State::new(None, None, &[]);
+        st.source = Some(Source::Remote);
+        st.draft.http = true;
+        st.new_row_name = "Authorization".into();
+        st.new_row_format = "Bearer".into();
+        let _ = add_row(&mut st);
+        assert_eq!(st.error, "A format needs {} where the secret goes, such as Bearer {}.");
+        st.new_row_format = "Bearer {}".into();
+        let _ = add_row(&mut st);
+        assert_eq!(
+            st.draft.headers.get("Authorization"),
+            Some(&Setting::Secret { secret: String::new(), format: Some("Bearer {}".into()) })
+        );
+        assert!(st.rows[0].header);
+    }
+
+    #[test]
+    fn mcp_wizard_a_failed_test_keeps_the_stderr_tail() {
+        let res: TestResult = serde_json::from_value(json!({
+            "ok": false, "ms": 3.0, "error": "exit 1",
+            "stderr": [{ "ts_ms": 1, "stream": "stderr", "line": "no such file" }],
+        }))
+        .expect("result parses");
+        assert!(!res.ok);
+        assert_eq!(res.stderr[0].line, "no such file");
+        let bare: TestResult = serde_json::from_value(json!({ "ok": false, "error": "exit 1" })).expect("bare result parses");
+        assert!(bare.stderr.is_empty());
     }
 
     #[test]

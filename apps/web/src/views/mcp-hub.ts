@@ -172,6 +172,38 @@ export function mountHubTab(root: HTMLElement): Cleanup {
     }
   });
 
+  // Whether the endpoint serves TLS: a remote bind needs it, so the bind names it.
+  const tlsSlot = h('div.hub-tls');
+  const drawTls = (): void => {
+    if (!status) {
+      replace(tlsSlot);
+      return;
+    }
+    replace(
+      tlsSlot,
+      h(
+        'p',
+        null,
+        badge(status.tls ? 'TLS on' : 'TLS off', status.tls ? 'ok' : 'warn'),
+        ' ',
+        h(
+          'span.mcp-muted',
+          null,
+          status.tls
+            ? 'This endpoint serves TLS, so remote bind is available.'
+            : 'Remote bind needs TLS. This endpoint has none, so the hub refuses remote bind until it serves TLS.',
+        ),
+      ),
+    );
+  };
+
+  // The origins the endpoint accepts in practice, read-only: the hub's own, then the owner's.
+  const effectiveSlot = h('ul.hub-origins');
+  const drawEffective = (): void => {
+    const list = status?.effective_origins ?? [];
+    replace(effectiveSlot, list.length ? list.map((o) => h('li', null, h('span.mcp-mono', null, o))) : h('li.mcp-muted', null, 'None.'));
+  };
+
   const drawStatus = (): void => {
     if (statusError) {
       replace(
@@ -214,6 +246,8 @@ export function mountHubTab(root: HTMLElement): Cleanup {
     warning = next.warning ?? null;
     syncControls();
     drawOrigins();
+    drawEffective();
+    drawTls();
     drawStatus();
     drawAuth();
   };
@@ -309,7 +343,7 @@ export function mountHubTab(root: HTMLElement): Cleanup {
     'Enable',
     [
       h('label.hub-switch', null, enabledBox, h('span', null, 'Serve this hub over MCP')),
-      h('fieldset.hub-group', null, h('legend', null, 'Bind'), bindRows.map((b) => b.row)),
+      h('fieldset.hub-group', null, h('legend', null, 'Bind'), bindRows.map((b) => b.row), tlsSlot),
       authBox,
       h(
         'div.hub-group',
@@ -318,6 +352,7 @@ export function mountHubTab(root: HTMLElement): Cleanup {
         originsSlot,
         h('div.hub-row', null, originInput, button('Add', addOrigin, { kind: 'ghost', size: 'sm', icon: 'plus' })),
       ),
+      h('div.hub-group', null, h('span.hub-label', null, 'Effective origins (read-only)'), h('span.mcp-muted', null, 'The hub\'s own origins, then the allowed origins above.'), effectiveSlot),
       statusSlot,
     ],
     { actions: [button('Save', save, { kind: 'primary' })] },
@@ -448,6 +483,11 @@ export function mountHubTab(root: HTMLElement): Cleanup {
       null,
       h('td', { 'data-label': 'Name' }, h('strong.mcp-name', null, t.name), h('span.mcp-id', null, t.id)),
       h('td', { 'data-label': 'Scope' }, badge(t.scope, 'info')),
+      h(
+        'td',
+        { 'data-label': 'Tools' },
+        t.tools.length ? h('span.mcp-mono', null, clip(t.tools.join(', '), 80)) : h('span.mcp-muted', null, "All the scope's tools"),
+      ),
       h('td', { 'data-label': 'Last used' }, t.last_used_ms ? ago(t.last_used_ms) : 'never'),
       h('td', { 'data-label': 'Calls' }, String(t.calls)),
       h('td', { 'data-label': 'Expires' }, t.expires_ms ? new Date(t.expires_ms).toLocaleDateString() : 'never'),
@@ -491,6 +531,7 @@ export function mountHubTab(root: HTMLElement): Cleanup {
                   null,
                   h('th', null, 'Name'),
                   h('th', null, 'Scope'),
+                  h('th', null, 'Tools'),
                   h('th', null, 'Last used'),
                   h('th', null, 'Calls'),
                   h('th', null, 'Expires'),
@@ -621,6 +662,8 @@ export function mountHubTab(root: HTMLElement): Cleanup {
 
   replace(root, h('div.hub-page', null, enableCard, formCard, tokensCard, callsCard));
   drawOrigins();
+  drawEffective();
+  drawTls();
   drawTools();
   drawAuth();
   void loadStatus();

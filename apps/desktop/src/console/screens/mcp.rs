@@ -6,7 +6,7 @@
 
 use std::collections::BTreeMap;
 
-use iced::widget::{column, row};
+use iced::widget::{checkbox, column, row};
 use iced::{Alignment, Element, Length, Task};
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
@@ -33,6 +33,15 @@ pub struct Server {
     pub status: String,
     pub tools_count: u64,
     pub last_error: Option<String>,
+    /// Persistent storage: a container server may keep a volume between runs.
+    pub storage: Storage,
+}
+
+/// The storage a server keeps between runs (the hub's `storage`).
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct Storage {
+    pub volume: bool,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -75,7 +84,7 @@ pub struct Preset {
     pub note: String,
 }
 
-/// The hub's answer to a test: `ok: false` comes back as a 200 with `error`.
+/// The hub's answer to a test: `ok: false` comes back as a 200 with `error` and the stderr tail.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct TestOutcome {
@@ -83,6 +92,16 @@ pub struct TestOutcome {
     pub ms: f64,
     pub error: Option<String>,
     pub tools: Vec<Value>,
+    pub stderr: Vec<LogLine>,
+}
+
+/// The path a server's delete takes. `purge` also deletes its storage volume (`?purge=1`).
+pub fn delete_path(id: &str, purge: bool) -> String {
+    if purge {
+        format!("/v1/mcp/servers/{id}?purge=1")
+    } else {
+        format!("/v1/mcp/servers/{id}")
+    }
 }
 
 /// A server's status word, as the hub reports it.
@@ -167,8 +186,12 @@ pub struct State {
     pub logs: Option<Vec<LogLine>>,
     /// The open detail's error.
     pub detail_error: Option<String>,
+    /// The stderr tail of the last failed test, shown under its error.
+    pub test_stderr: Vec<LogLine>,
     /// The server waiting for its remove confirmation.
     pub confirm_remove: Option<String>,
+    /// The remove confirmation's box: also delete the server's storage volume.
+    pub purge: bool,
     /// A write is on its way to the hub.
     pub busy: bool,
     /// The tab open: the servers, or this hub as a server.
@@ -205,6 +228,7 @@ pub enum Msg {
     Done(Result<String, String>),
     AskRemove(String),
     CancelRemove,
+    SetPurge(bool),
     Remove(String),
     OpenAdd(Option<String>),
     OpenEdit(String),
@@ -334,6 +358,7 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         }
         Msg::Test(id) => {
             state.busy = true;
+            state.test_stderr.clear();
             let client = ctx.client.clone();
             client::task(move || client.post::<TestOutcome>(&format!("/v1/mcp/servers/{id}/test"), &json!({})), Msg::Tested)
         }
@@ -342,8 +367,9 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             state.notice = Some(if outcome.ok {
                 (format!("Test passed: {} tools in {:.0} ms.", outcome.tools.len(), outcome.ms), false)
             } else {
-                (outcome.error.unwrap_or_else(|| "Test failed.".to_string()), true)
+                (outcome.error.clone().unwrap_or_else(|| "Test failed.".to_string()), true)
             });
+            state.test_stderr = if outcome.ok { Vec::new() } else { outcome.stderr };
             Task::batch([servers_task(ctx), detail_tasks(state, ctx)])
         }
         Msg::Tested(Err(e)) => {
@@ -354,23 +380,33 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         Msg::Done(Ok(label)) => {
             state.busy = false;
             state.notice = Some((label, false));
+            // The stderr of an earlier failed test belongs to that test's notice, not to this one.
+            state.test_stderr.clear();
             Task::batch([servers_task(ctx), detail_tasks(state, ctx)])
         }
         Msg::Done(Err(e)) => {
             state.busy = false;
             state.notice = Some((e, true));
+            state.test_stderr.clear();
             Task::none()
         }
         Msg::AskRemove(id) => {
             state.confirm_remove = Some(id);
+            state.purge = false;
             Task::none()
         }
         Msg::CancelRemove => {
             state.confirm_remove = None;
+            state.purge = false;
+            Task::none()
+        }
+        Msg::SetPurge(on) => {
+            state.purge = on;
             Task::none()
         }
         Msg::Remove(id) => {
             state.confirm_remove = None;
+            let purge = std::mem::take(&mut state.purge);
             if state.selected.as_deref() == Some(id.as_str()) {
                 state.selected = None;
                 state.tools = None;
@@ -379,7 +415,7 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             }
             state.busy = true;
             let done = format!("Removed {id}.");
-            act(ctx, done, move |c| c.delete(&format!("/v1/mcp/servers/{id}")).map(|_| ()))
+            act(ctx, done, move |c| c.delete(&delete_path(&id, purge)).map(|_| ()))
         }
         Msg::OpenAdd(preset) => {
             state.wizard = Some(mcp_wizard::State::new(None, preset.as_deref(), &state.catalogue));
@@ -447,6 +483,10 @@ fn servers_view(state: &State) -> Element<'_, Msg> {
     let mut parts: Vec<Element<'_, Msg>> = vec![ui::faint("Servers the plaza runs for agents. Keys stay in the vault; only the names of a server's env settings are shown here.").into()];
     if let Some((text, is_error)) = &state.notice {
         parts.push(if *is_error { ui::error_line(text) } else { ui::faint(text.clone()).into() });
+    }
+    if !state.test_stderr.is_empty() {
+        let tail: Vec<Element<'_, Msg>> = state.test_stderr.iter().map(|l| ui::mono(l.line.clone(), 11.0, crate::theme::palette().ink_2).into()).collect();
+        parts.push(column(tail).spacing(2).into());
     }
     if let (Some(error), Some(_)) = (&state.error, &state.servers) {
         parts.push(ui::error_line(error));
@@ -545,12 +585,21 @@ fn detail_section<'a>(state: &'a State, id: &'a str) -> Element<'a, Msg> {
     ];
     parts.push(row(actions).spacing(12).align_y(Alignment::Center).into());
     if state.confirm_remove.as_deref() == Some(id) {
-        let confirm: Vec<Element<'a, Msg>> = vec![
-            ui::faint(format!("Remove {}? Its config is deleted and agents lose its tools.", server.name)).into(),
-            ui::btn_sm("Cancel", None, ui::Kind::Ghost, Some(Msg::CancelRemove)),
-            ui::btn_sm("Remove", None, ui::Kind::Danger, gate(state.busy, Msg::Remove(id.to_string()))),
-        ];
-        parts.push(row(confirm).spacing(10).align_y(Alignment::Center).into());
+        let mut confirm: Vec<Element<'a, Msg>> = vec![ui::faint(format!("Remove {}? Its config is deleted and agents lose its tools.", server.name)).into()];
+        if server.storage.volume {
+            confirm.push(checkbox(state.purge).label("Also delete its storage volume").on_toggle(Msg::SetPurge).into());
+            confirm.push(ui::faint("The volume keeps what the server stored between runs. It is deleted only when this is ticked.").into());
+        }
+        confirm.push(
+            row![
+                ui::btn_sm("Cancel", None, ui::Kind::Ghost, Some(Msg::CancelRemove)),
+                ui::btn_sm("Remove", None, ui::Kind::Danger, gate(state.busy, Msg::Remove(id.to_string()))),
+            ]
+            .spacing(10)
+            .align_y(Alignment::Center)
+            .into(),
+        );
+        parts.push(column(confirm).spacing(8).into());
     }
     ui::card(&format!("Server · {}", server.name), column(parts).spacing(14).width(Length::Fill).into())
 }
@@ -602,7 +651,7 @@ mod tests {
 
     const LOGS: &str = r#"[{"ts_ms":1,"stream":"stderr","line":"boom"}]"#;
 
-    const TEST_FAILED: &str = r#"{"ok":false,"ms":12.5,"error":"exit 1","stderr":[]}"#;
+    const TEST_FAILED: &str = r#"{"ok":false,"ms":12.5,"error":"exit 1","stderr":[{"ts_ms":1,"stream":"stderr","line":"no such file"}]}"#;
 
     const CATALOGUE: &str = r#"[{"id":"fs","name":"Files","description":"Read and write files","transport":"stdio","image":"x","command":[],"url":null,"env":[],"headers":[],"docs":"","status":"","note":"Needs a volume"}]"#;
 
@@ -659,6 +708,28 @@ mod tests {
         assert!(!outcome.ok);
         assert_eq!(outcome.error.as_deref(), Some("exit 1"));
         assert!(outcome.tools.is_empty());
+        assert_eq!(outcome.stderr.len(), 1);
+        assert_eq!((outcome.stderr[0].stream.as_str(), outcome.stderr[0].line.as_str()), ("stderr", "no such file"));
+    }
+
+    #[test]
+    fn mcp_test_failure_without_stderr_parses_empty() {
+        let outcome: TestOutcome = serde_json::from_str(r#"{"ok":false,"ms":1.0,"error":"exit 1"}"#).unwrap();
+        assert!(outcome.stderr.is_empty());
+    }
+
+    #[test]
+    fn mcp_server_storage_parses_and_defaults_off() {
+        let list: Vec<Server> = serde_json::from_str(SERVERS).unwrap();
+        assert!(!list[0].storage.volume, "no storage key means no volume");
+        let with: Server = serde_json::from_str(r#"{"id":"fs","name":"Files","storage":{"volume":true}}"#).unwrap();
+        assert!(with.storage.volume);
+    }
+
+    #[test]
+    fn mcp_delete_path_purges_only_when_asked() {
+        assert_eq!(delete_path("fs", false), "/v1/mcp/servers/fs");
+        assert_eq!(delete_path("fs", true), "/v1/mcp/servers/fs?purge=1");
     }
 
     #[test]

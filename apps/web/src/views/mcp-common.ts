@@ -1,8 +1,54 @@
 // Shared by the MCP screen (mcp.ts, mcp-logs.ts, mcp-wizard.ts, mcp-wizard-secrets.ts). Pure helpers.
-import type { McpPick, McpRisk, McpServerConfig, McpServerView, McpStatus, McpTransport } from '../api';
+import type { McpPick, McpPreset, McpRisk, McpServerConfig, McpServerView, McpSetting, McpSpec, McpStatus, McpTransport } from '../api';
 
 /** A server id: lower-case, starts with a letter, 2 to 32 characters. */
 export const MCP_ID_RE = /^[a-z][a-z0-9-]{1,31}$/;
+
+/** An env var name the hub takes: upper-case, as a shell variable is written. */
+export const ENV_NAME_RE = /^[A-Z_][A-Z0-9_]{0,63}$/;
+
+/** A header name the hub takes: letters, digits and hyphens. */
+export const HEADER_NAME_RE = /^[A-Za-z0-9-]{1,64}$/;
+
+/** The bounds of a server's limits, as the hub checks them (crates/apid/src/mcp/config.rs). */
+export const LIMIT_BOUNDS: Record<keyof McpServerConfig['limits'], { label: string; lo: number; hi: number }> = {
+  timeout_s: { label: 'Timeout', lo: 1, hi: 600 },
+  max_output_kb: { label: 'Output size', lo: 1, hi: 4096 },
+  idle_stop_min: { label: 'Idle stop', lo: 1, hi: 1440 },
+};
+
+/** The first problem with a server's limits, or '' when each is a whole number inside its bounds. */
+export function limitsProblem(limits: McpServerConfig['limits']): string {
+  for (const key of Object.keys(LIMIT_BOUNDS) as (keyof McpServerConfig['limits'])[]) {
+    const { label, lo, hi } = LIMIT_BOUNDS[key];
+    const v = limits[key];
+    if (!Number.isInteger(v) || v < lo || v > hi) return `${label}: enter a whole number from ${lo} to ${hi}.`;
+  }
+  return '';
+}
+
+/** The first problem with a name typed for a row of the server's own settings (a custom or remote server), or ''. */
+export function ownRowProblem(name: string, header: boolean): string {
+  const n = name.trim();
+  if (header) return HEADER_NAME_RE.test(n) ? '' : 'A header name uses letters, digits and hyphens.';
+  return ENV_NAME_RE.test(n) ? '' : 'An env var name uses capitals, digits and underscores, and starts with a letter or underscore.';
+}
+
+/** The preset a server's transport belongs to (its image or its URL), if any. */
+export function matchingPreset(t: McpTransport, catalog: McpPreset[]): McpPreset | undefined {
+  return catalog.find((p) => (t.kind === 'stdio' ? p.transport === 'stdio' && p.image === t.image : p.transport === 'http' && p.url === t.url));
+}
+
+/** The specs of a server's own settings, for a server with no preset: one per name, secret when it is a vault reference. */
+export function specsOfBag(bag: Record<string, McpSetting>): McpSpec[] {
+  return Object.entries(bag).map(([name, s]) => ({
+    name,
+    secret: 'secret' in s,
+    required: false,
+    help: '',
+    format: 'secret' in s && s.format ? s.format : null,
+  }));
+}
 
 /** The vault binding a server's secrets carry. */
 export const mcpBinding = (id: string): string => `mcp:${id}`;

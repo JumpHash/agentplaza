@@ -4,7 +4,7 @@
 // table that turns into stacked cards on narrow screens.
 
 import '../styles/mcp.css';
-import { mcpApi, type McpPreset, type McpServerView, type McpTestResult } from '../api';
+import { mcpApi, type McpPreset, type McpServerView, type McpTestResult, type McpToolRow } from '../api';
 import { ago, attempt, badge, button, clip, empty, modal, tabs, type Tone } from '../ui/components';
 import { h, replace } from '../ui/dom';
 import { on } from '../store';
@@ -25,15 +25,59 @@ function annotationChips(a: unknown): HTMLElement[] {
     .map(([k]) => badge(k, 'muted'));
 }
 
-/** A small confirm dialog: a message, Cancel, and the action in the danger tone. */
-function confirmDialog(title: string, text: string, label: string, onConfirm: () => void): void {
+/**
+ * The delete dialog. A server with a storage volume gets a box that also deletes the volume; the volume is kept
+ * unless the box is ticked. `onConfirm` gets whether to purge.
+ */
+function deleteDialog(s: McpServerView, onConfirm: (purge: boolean) => void): void {
+  const purgeBox = h('input', { type: 'checkbox' });
   const close = modal(
-    title,
+    `Delete ${s.name}`,
     h(
       'div.mcp-confirm',
       null,
-      h('p', null, text),
-      h('div.mcp-actions', null, button('Cancel', () => close()), button(label, () => { close(); onConfirm(); }, { kind: 'danger' })),
+      h('p', null, `This stops ${s.name} and removes it. Its vault secrets stay, but lose the mcp:${s.id} binding.`),
+      s.storage.volume
+        ? h(
+            'div',
+            null,
+            h('label.mcpw-check', null, purgeBox, h('span', null, 'Also delete its storage volume')),
+            h('p.mcp-muted', null, 'The volume keeps what the server stored between runs. It is deleted only when this is ticked.'),
+          )
+        : null,
+      h(
+        'div.mcp-actions',
+        null,
+        button('Cancel', () => close()),
+        button(
+          'Delete',
+          () => {
+            const purge = purgeBox.checked;
+            close();
+            onConfirm(purge);
+          },
+          { kind: 'danger' },
+        ),
+      ),
+    ),
+  );
+}
+
+/** A server's tools as the owner reads them: the name, its risk, whether the allow list offers it, and the description. */
+function toolsBody(rows: McpToolRow[] | undefined): HTMLElement {
+  if (!rows) return h('p.mcp-danger', null, 'The tools could not load.');
+  if (!rows.length) return h('p.mcp-muted', null, 'This server offers no tools.');
+  return h(
+    'ul.mcp-tools',
+    null,
+    rows.map((t) =>
+      h(
+        'li',
+        null,
+        h('strong', null, t.name.replace(/_/g, '_\u200b')),
+        h('span.mcp-chips', null, badge(t.risk, RISK_TONE[t.risk] ?? 'muted'), t.allowed ? null : badge('Not offered', 'muted')),
+        t.description ? h('span.mcp-muted', null, clip(t.description, 160)) : null,
+      ),
     ),
   );
 }
@@ -114,6 +158,16 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
 
   const openAdd = (presetId: string | null = null): void => openWizard(null, () => void reload(), presetId);
 
+  /** One server's tools, loaded when the dialog opens: the hub's own list, the same one the wizard's step 4 reads. */
+  const openTools = (s: McpServerView): void => {
+    const box = h('div.mcp-test', null, h('p.mcp-muted', null, 'Loading the tools'));
+    modal(`Tools of ${s.name}`, box);
+    void attempt(() => mcpApi.serverTools(s.id)).then((rows) => {
+      if (!alive) return;
+      replace(box, toolsBody(rows));
+    });
+  };
+
   const addButton = (): HTMLElement => button('Add server', () => openAdd(), { kind: 'primary', icon: 'plus' });
 
   /** The hub's presets: each opens the wizard with that preset chosen; the custom button opens it empty. */
@@ -184,17 +238,12 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
       button('', () => { openLogsDrawer(s); }, { kind: 'ghost', size: 'sm', icon: 'file', title: `Logs for ${s.name}` }),
       button('', () => runTest(s), { kind: 'ghost', size: 'sm', icon: 'check', title: `Test ${s.name}` }),
       button('', () => openWizard(s, () => void reload()), { kind: 'ghost', size: 'sm', icon: 'edit', title: `Edit ${s.name}` }),
-      button(
-        '',
-        () =>
-          confirmDialog(
-            `Delete ${s.name}`,
-            `This stops ${s.name} and removes it. Its vault secrets stay, but lose the mcp:${s.id} binding.`,
-            'Delete',
-            () => act(() => mcpApi.deleteServer(s.id), `${s.name} deleted`),
-          ),
-        { kind: 'danger', size: 'sm', icon: 'trash', title: `Delete ${s.name}` },
-      ),
+      button('', () => deleteDialog(s, (purge) => act(() => mcpApi.deleteServer(s.id, purge), `${s.name} deleted`)), {
+        kind: 'danger',
+        size: 'sm',
+        icon: 'trash',
+        title: `Delete ${s.name}`,
+      }),
     );
   }
 
@@ -233,7 +282,7 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
             )
           : null,
       ),
-      h('td', { 'data-label': 'Tools' }, String(s.tools_count)),
+      h('td', { 'data-label': 'Tools' }, button(String(s.tools_count), () => openTools(s), { kind: 'ghost', size: 'sm', title: `Tools of ${s.name}` })),
       h('td', { 'data-label': 'Last used' }, s.last_used_ms ? ago(s.last_used_ms) : 'never'),
       h('td', { 'data-label': 'Actions', class: 'mcp-actions-cell' }, actionsFor(s)),
     );

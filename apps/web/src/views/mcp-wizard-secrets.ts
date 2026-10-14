@@ -5,7 +5,7 @@ import '../styles/mcp-wizard-secrets.css';
 import { vaultApi, type McpSetting, type McpSpec, type VaultEntry } from '../api';
 import { h, replace } from '../ui/dom';
 import { attempt, badge, button, field, input } from '../ui/components';
-import { mcpBinding } from './mcp-common';
+import { mcpBinding, ownRowProblem } from './mcp-common';
 import { addSecretDialog } from './vault-form';
 import { errorText } from './vault-common';
 import type { WizardCtx } from './mcp-wizard';
@@ -32,9 +32,66 @@ export function step2Credentials(ctx: WizardCtx): HTMLElement {
         : null,
     );
   };
-  const cards = rows.map(({ kind, spec }) => (spec.secret ? secretCard(ctx, kind, spec, refreshWarn) : plainCard(ctx, kind, spec, refreshWarn)));
+  // A custom or remote server's rows are the owner's own, so each can be removed.
+  const own = ctx.state.ownRows;
+  const cards = rows.map(({ kind, spec }) => {
+    const card = spec.secret ? secretCard(ctx, kind, spec, refreshWarn) : plainCard(ctx, kind, spec, refreshWarn);
+    return own ? h('div.wsec-own', null, card, button('Remove', () => removeOwn(ctx, kind, spec.name), { kind: 'ghost', size: 'sm' })) : card;
+  });
   refreshWarn();
-  return h('div.wsec.stack', null, cards.length ? cards : h('p.muted', null, 'This server needs no credentials.'), warn);
+  return h(
+    'div.wsec.stack',
+    null,
+    cards.length ? cards : h('p.muted', null, 'This server needs no credentials.'),
+    own ? ownRowForm(ctx) : null,
+    warn,
+  );
+}
+
+// ---- The owner's own rows (custom and remote servers) ------------------------
+
+/** Drops a row the owner added: its spec and its draft setting. */
+function removeOwn(ctx: WizardCtx, kind: Kind, name: string): void {
+  ctx.state.specs[kind] = ctx.state.specs[kind].filter((spec) => spec.name !== name);
+  store(ctx, kind, name, null);
+  ctx.redraw();
+}
+
+/**
+ * The form that adds a row: an env var for a container (its value a vault secret), a header for a remote URL
+ * (its value a vault secret, optionally wrapped in a format such as "Bearer {}").
+ */
+function ownRowForm(ctx: WizardCtx): HTMLElement {
+  const remote = ctx.state.draft.transport.kind === 'http';
+  const kind: Kind = remote ? 'headers' : 'env';
+  const nameIn = input({ type: 'text', placeholder: remote ? 'Authorization' : 'GITHUB_TOKEN', autocomplete: 'off', spellcheck: 'false' });
+  const formatIn = input({ type: 'text', placeholder: 'Bearer {}', autocomplete: 'off', spellcheck: 'false' });
+  const problem = h('p.mcpw-warn', { role: 'alert' });
+  const add = (): void => {
+    const name = nameIn.value.trim();
+    const format = remote && formatIn.value.trim() ? formatIn.value.trim() : null;
+    const error =
+      ownRowProblem(name, remote) ||
+      (ctx.state.specs[kind].some((spec) => spec.name === name) ? `${name} is already listed.` : '') ||
+      (format && !format.includes('{}') ? 'A format needs {} where the secret goes, such as Bearer {}.' : '');
+    if (error) {
+      replace(problem, error);
+      return;
+    }
+    ctx.state.specs[kind] = [...ctx.state.specs[kind], { name, secret: true, required: false, help: '', format }];
+    store(ctx, kind, name, { secret: '' });
+    ctx.redraw();
+  };
+  return h(
+    'div.wsec-spec',
+    null,
+    h('strong', null, remote ? 'Add a header' : 'Add an environment variable'),
+    h('p.muted', null, remote ? 'Its value comes from the vault.' : 'Its value comes from the vault, and the hub sets it in the container.'),
+    field('Name', nameIn, remote ? 'Letters, digits and hyphens.' : 'Capitals, digits and underscores.'),
+    remote ? field('Format', formatIn, 'Optional. Use {} where the secret goes.') : null,
+    problem,
+    button('Add', add, { kind: 'primary', size: 'sm' }),
+  );
 }
 
 // ---- Draft access -----------------------------------------------------------

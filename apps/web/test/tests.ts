@@ -16,6 +16,7 @@ import { join } from 'node:path';
 import type { Agent, FleetApple, FleetKind, FleetMachine, FleetResponse, FleetStatus } from '../src/api';
 import { agentTally, boardOf, gibText, machineFacts, machineSubtitle } from '../src/views/floor';
 import { hubOrigin, setupSnippets } from '../src/views/hub-mcp-snippets';
+import { ENV_NAME_RE, limitsProblem, matchingPreset, ownRowProblem, specsOfBag } from '../src/views/mcp-common';
 import { wrapIde, type IdeGlue } from '../src/ide/wasm';
 import { applyBuffer, badgeOf, diffMark, dirsOf, fuzzyScore, isViewed, languageFor, lineCounts, onRemote, openBuffer, parentDir, parseViewed, rankPaths, viewedKey, withViewed } from '../src/ide/model';
 import type { FileChange } from '../src/ide/types';
@@ -343,6 +344,37 @@ sectionEnd('web tests: ok');
   eq(o.generic, 'URL: https://hub.example.test/mcp', 'hub mcp: open mode generic setup is the URL alone');
 }
 sectionEnd('hub mcp tests: ok');
+
+// The MCP wizard's pure helpers: the limit bounds the hub checks, the own-row names, and matching a server to its
+// preset by transport (not by id).
+{
+  const ok = { timeout_s: 60, max_output_kb: 256, idle_stop_min: 10 };
+  eq(limitsProblem(ok), '', 'mcp limits: the defaults are in bounds');
+  eq(limitsProblem({ ...ok, timeout_s: 0 }), 'Timeout: enter a whole number from 1 to 600.', 'mcp limits: a timeout below 1 is named');
+  eq(limitsProblem({ ...ok, max_output_kb: 4097 }), 'Output size: enter a whole number from 1 to 4096.', 'mcp limits: an output size above 4096 is named');
+  eq(limitsProblem({ ...ok, idle_stop_min: 1.5 }), 'Idle stop: enter a whole number from 1 to 1440.', 'mcp limits: a fraction is refused');
+  eq(limitsProblem({ ...ok, timeout_s: NaN }), 'Timeout: enter a whole number from 1 to 600.', 'mcp limits: an empty number (NaN) is refused');
+  eq(limitsProblem({ timeout_s: 600, max_output_kb: 4096, idle_stop_min: 1440 }), '', 'mcp limits: the bounds themselves are allowed');
+  eq(ENV_NAME_RE.test('GITHUB_TOKEN'), true, 'mcp own rows: an upper-case env name is accepted');
+  eq(ENV_NAME_RE.test('github_token'), false, 'mcp own rows: a lower-case env name is refused');
+  eq(ownRowProblem('GITHUB_TOKEN', false), '', 'mcp own rows: a valid env name has no problem');
+  eq(ownRowProblem('1TOKEN', false) !== '', true, 'mcp own rows: an env name starting with a digit is refused');
+  eq(ownRowProblem('Authorization', true), '', 'mcp own rows: a header name is accepted');
+  eq(ownRowProblem('Auth_Header', true) !== '', true, 'mcp own rows: an underscore in a header name is refused');
+  const catalog = [
+    { id: 'files', name: 'Files', description: '', transport: 'stdio' as const, image: 'ghcr.io/x/fs:1', command: [], url: null, env: [], headers: [], docs: '', status: '', note: '' },
+    { id: 'search', name: 'Search', description: '', transport: 'http' as const, image: null, command: [], url: 'https://mcp.example.test/sse', env: [], headers: [], docs: '', status: '', note: '' },
+  ];
+  eq(matchingPreset({ kind: 'stdio', image: 'ghcr.io/x/fs:1' }, catalog)?.id, 'files', 'mcp match: a container matches its preset by image');
+  eq(matchingPreset({ kind: 'http', url: 'https://mcp.example.test/sse' }, catalog)?.id, 'search', 'mcp match: a URL matches its preset by URL');
+  eq(matchingPreset({ kind: 'stdio', image: 'ghcr.io/other/fs:1' }, catalog), undefined, 'mcp match: another image matches nothing');
+  eq(specsOfBag({ TOKEN: { secret: 'GH_TOKEN' }, ROOT: { value: '/data' } }), [
+    { name: 'TOKEN', secret: true, required: false, help: '', format: null },
+    { name: 'ROOT', secret: false, required: false, help: '', format: null },
+  ], 'mcp own specs: a bag becomes one spec per name, secret when it is a vault reference');
+  eq(specsOfBag({ Authorization: { secret: 'WEB_KEY', format: 'Bearer {}' } })[0]?.format, 'Bearer {}', 'mcp own specs: a header format is kept');
+}
+sectionEnd('mcp wizard helper tests: ok');
 
 
 // The first-run wizard and the tour: steps, copy filling, flags that survive a refused store.
