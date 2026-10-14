@@ -219,3 +219,15 @@ fn run(cli: Cli) -> Result<(), String> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use clap::CommandFactory;
+
+    /// Clap checks a command definition (clashing flags, bad defaults) only in debug builds; CI tests in release, so
+    /// this asks for the check on the whole command tree, every subcommand included.
+    #[test]
+    fn the_command_tree_is_valid() {
+        super::Cli::command().debug_assert();
+    }
+}

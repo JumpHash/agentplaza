@@ -80,6 +80,7 @@ pub enum Cmd {
         name: String,
     },
     /// Make an earlier version the current one. Without --version, the newest one before the current.
+    #[command(disable_version_flag = true)]
     Rollback {
         /// The entry's name, or its id (sec_...).
         name: String,

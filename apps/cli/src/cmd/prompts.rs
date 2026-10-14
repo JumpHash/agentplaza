@@ -29,6 +29,7 @@ pub enum Cmd {
         archived: bool,
     },
     /// One prompt: its fields and its versions. With --version, that version's findings and stats.
+    #[command(disable_version_flag = true)]
     Show {
         /// The prompt's id.
         id: String,
@@ -37,6 +38,7 @@ pub enum Cmd {
         version: Option<u32>,
     },
     /// A version's markdown, exactly as it is stored (for a file or a pipe).
+    #[command(disable_version_flag = true)]
     Raw {
         /// The prompt's id.
         id: String,
@@ -98,6 +100,7 @@ pub enum Cmd {
         base: Option<u32>,
     },
     /// Make a version the live one (default: the latest). A version with errors is refused.
+    #[command(disable_version_flag = true)]
     Publish {
         /// The prompt's id.
         id: String,

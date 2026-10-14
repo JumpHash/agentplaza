@@ -44,6 +44,7 @@ pub enum Cmd {
         archived: bool,
     },
     /// One skill: its fields and versions. With --version, that version's findings.
+    #[command(disable_version_flag = true)]
     Show {
         /// The skill's id.
         id: String,
@@ -52,6 +53,7 @@ pub enum Cmd {
         version: Option<u32>,
     },
     /// One file of a version, to stdout (its bytes as they are).
+    #[command(disable_version_flag = true)]
     File {
         /// The skill's id.
         id: String,
@@ -120,6 +122,7 @@ pub enum Cmd {
         clear: bool,
     },
     /// Make a version the live one (default: the latest). A version with errors is refused.
+    #[command(disable_version_flag = true)]
     Publish {
         /// The skill's id.
         id: String,
@@ -214,6 +217,7 @@ pub enum Cmd {
         yes: bool,
     },
     /// Export a skill's version (default: the live one, else the latest) as a zip, or several skills with --ids.
+    #[command(disable_version_flag = true)]
     Export {
         /// The skill's id.
         #[arg(required_unless_present = "ids", conflicts_with = "ids")]

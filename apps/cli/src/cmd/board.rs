@@ -346,7 +346,7 @@ fn export(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap::{CommandFactory, Parser};
+    use clap::Parser;
 
     /// The `board` command alone, so its subcommands parse the way the CLI parses them.
     #[derive(Parser, Debug)]
@@ -364,7 +364,6 @@ mod tests {
 
     #[test]
     fn the_owner_posts_pauses_and_exports_with_their_flags() {
-        Probe::command().debug_assert();
         match parse(&["post", "--project", "pr1", "@all ship it"]).unwrap() {
             Cmd::Post { project, text } => assert_eq!(
                 (project.as_deref(), text.as_str()),
