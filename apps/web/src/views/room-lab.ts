@@ -18,6 +18,7 @@ import { fnv1a32, type Catalog, type Door, type Input, type Layout, type Roles }
 import { verify } from './floor3d/rooms/verify';
 import catalogFile from '../../../../assets/rooms/catalog.json';
 import rolesFile from '../../../../assets/rooms/roles.json';
+import { startRoomLabEngine, type RoomLabOptions } from './engine-mount';
 
 const CATALOG = catalogFile as unknown as Catalog;
 const ROLES = rolesFile as unknown as Roles;
@@ -331,7 +332,34 @@ function caption(text: string, w: number, d: number, x: number, z: number): THRE
   return mesh;
 }
 
+/** `engine=wasm` on the route: the room lab on the wasm engine, its canvas filling the root. The options are read once. */
+function mountEngineRoomLab(root: HTMLElement): Cleanup {
+  const canvas = document.createElement('canvas');
+  canvas.style.cssText = 'display:block;width:100%;height:70vh;min-height:420px;touch-action:none';
+  root.append(canvas);
+  const s = readState(location.hash);
+  const lab: RoomLabOptions = { role: s.role, size: `${s.w}x${s.d}`, seed: s.seed, door: s.door, grid: s.grid };
+  let engine: { destroy: () => void } | null = null;
+  let closed = false;
+  startRoomLabEngine(canvas, lab).then(
+    (started) => {
+      if (closed) started.destroy();
+      else engine = started;
+    },
+    (err: unknown) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      canvas.replaceWith(h('p', { style: 'color:var(--ink-2)' }, `The engine did not start: ${msg}`));
+    },
+  );
+  return () => {
+    closed = true;
+    engine?.destroy();
+    canvas.remove();
+  };
+}
+
 export function mount(root: HTMLElement): Cleanup {
+  if (new URLSearchParams(location.hash.split('?')[1] ?? '').get('engine') === 'wasm') return mountEngineRoomLab(root);
   let state = readState(location.hash);
 
   // ---- Controls ------------------------------------------------------------------------------

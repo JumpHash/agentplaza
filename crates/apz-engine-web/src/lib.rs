@@ -208,13 +208,12 @@ const LAB_OPTIONS: [(&str, &str); 10] = [
     ("bg", "APZ_ROBOT_BG"),
 ];
 
-/// Starts the engine as the robot lab: `opts` is `{ backend?, species?, clip?, tool?, carry?, state?, hue?, orch?, cam?, t?, bg? }`
-/// (a missing species is `all`; a boolean `orch` is 1 or 0). The options are set as env names only while the stage builds.
-#[wasm_bindgen]
-pub async fn start_lab(canvas: HtmlCanvasElement, opts: JsValue) -> Result<WebEngine, JsValue> {
+/// The env name each of a lab's route options sets (`names`): a string as it is, a boolean as 1 or 0, a number as text.
+/// An option that is absent or of another type is left out.
+fn lab_env(opts: &JsValue, names: &[(&str, &str)]) -> BTreeMap<String, String> {
     let mut vars = BTreeMap::new();
-    for (key, env) in LAB_OPTIONS {
-        let v = Reflect::get(&opts, &JsValue::from_str(key)).unwrap_or(JsValue::UNDEFINED);
+    for &(key, env) in names {
+        let v = Reflect::get(opts, &JsValue::from_str(key)).unwrap_or(JsValue::UNDEFINED);
         let value = if let Some(s) = v.as_string() {
             s
         } else if let Some(b) = v.as_bool() {
@@ -226,9 +225,42 @@ pub async fn start_lab(canvas: HtmlCanvasElement, opts: JsValue) -> Result<WebEn
         };
         vars.insert(env.to_string(), value);
     }
+    vars
+}
+
+/// The room lab's options and the `APZ_ROOM_*` name each one sets (read by `rooms::lab` when the stage builds). `role` is
+/// the APZ_ROOM_LAB (a role id or `all`); `size` is `WxD` in units (APZ_ROOM_SIZE).
+const ROOM_LAB_OPTIONS: [(&str, &str); 5] = [
+    ("role", "APZ_ROOM_LAB"),
+    ("size", "APZ_ROOM_SIZE"),
+    ("seed", "APZ_ROOM_SEED"),
+    ("door", "APZ_ROOM_DOOR"),
+    ("grid", "APZ_ROOM_GRID"),
+];
+
+/// Starts the engine as the robot lab: `opts` is `{ backend?, species?, clip?, tool?, carry?, state?, hue?, orch?, cam?, t?, bg? }`
+/// (a missing species is `all`; a boolean `orch` is 1 or 0). The options are set as env names only while the stage builds.
+#[wasm_bindgen]
+pub async fn start_lab(canvas: HtmlCanvasElement, opts: JsValue) -> Result<WebEngine, JsValue> {
+    let mut vars = lab_env(&opts, &LAB_OPTIONS);
     vars.entry("APZ_ROBOT_LAB".to_string()).or_insert_with(|| "all".to_string());
     // The lab is built when the first fleet arrives (Stage::apply_fleet), after `start` resolves, so the options stay
     // set for the lab engine's life; `destroy` clears them. One engine per page, so nothing else reads them meanwhile.
+    apz_engine::set_env_overrides(vars);
+    let started = start(canvas, opts).await;
+    if started.is_err() {
+        apz_engine::set_env_overrides(BTreeMap::new());
+    }
+    started
+}
+
+/// Starts the engine as the room lab: `opts` is `{ backend?, role?, size?, seed?, door?, grid? }`, the room lab's route
+/// options as the web reads them: `role` a role id or `all` (APZ_ROOM_LAB, default `orchestrator`), `size` `WxD` in units
+/// (APZ_ROOM_SIZE), `seed` a u32, `door` n | e | s | w, `grid` 1 or 0 (a boolean is 1 or 0). Set as `start_lab` sets its own.
+#[wasm_bindgen]
+pub async fn start_room_lab(canvas: HtmlCanvasElement, opts: JsValue) -> Result<WebEngine, JsValue> {
+    let mut vars = lab_env(&opts, &ROOM_LAB_OPTIONS);
+    vars.entry("APZ_ROOM_LAB".to_string()).or_insert_with(|| "orchestrator".to_string());
     apz_engine::set_env_overrides(vars);
     let started = start(canvas, opts).await;
     if started.is_err() {

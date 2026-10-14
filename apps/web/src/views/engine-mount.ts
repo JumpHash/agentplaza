@@ -72,10 +72,20 @@ export interface LabOptions {
   bg?: string;
 }
 
+/** The room lab's options, as the room lab reads its route; each maps to its APZ_ROOM_* name in the engine (`size` is WxD in units). Unset ones take the lab's defaults. */
+export interface RoomLabOptions {
+  role?: string;
+  size?: string;
+  seed?: number;
+  door?: string;
+  grid?: boolean;
+}
+
 interface EngineGlue {
   default: () => Promise<unknown>;
   start: (canvas: HTMLCanvasElement, opts: { backend?: 'auto' | 'webgl2' }) => Promise<WebEngine>;
   start_lab: (canvas: HTMLCanvasElement, opts: LabOptions & { backend?: 'auto' | 'webgl2' }) => Promise<WebEngine>;
+  start_room_lab: (canvas: HTMLCanvasElement, opts: RoomLabOptions & { backend?: 'auto' | 'webgl2' }) => Promise<WebEngine>;
 }
 
 /** The same cadence as the DOM Machines view and the desktop. */
@@ -186,6 +196,11 @@ export async function startEngine(canvas: HTMLCanvasElement): Promise<WebEngine>
 /** The robot lab on the wasm engine: the route's options under the engine's APZ_ROBOT_* names. Throws without a glue. */
 export async function startLabEngine(canvas: HTMLCanvasElement, lab: LabOptions): Promise<WebEngine> {
   return (await loadGlue()).start_lab(canvas, { ...lab, backend: backendOf() });
+}
+
+/** The room lab on the wasm engine: the route's options under the engine's APZ_ROOM_* names. Throws without a glue. */
+export async function startRoomLabEngine(canvas: HTMLCanvasElement, lab: RoomLabOptions): Promise<WebEngine> {
+  return (await loadGlue()).start_room_lab(canvas, { ...lab, backend: backendOf() });
 }
 
 /** A thumbnail request a destroyed engine never answered: the caller asks again on the engine that replaces it. */
