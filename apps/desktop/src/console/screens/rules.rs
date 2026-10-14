@@ -1391,11 +1391,16 @@ fn rule_row<'a>(state: &'a State, r: &'a Rule, now: i64) -> Element<'a, Msg> {
     ]
     .spacing(6);
     let selected = state.editing.as_deref() == Some(r.id.as_str());
-    button(body)
+    let row_press: Element<'a, Msg> = button(body)
         .on_press(Msg::SelectRule(r.id.clone()))
         .width(Length::Fill)
         .padding([10, 12])
         .style(pick_style(selected))
+        .into();
+    // Every row here is the owner's own rule (`state.rules`), so each one gets the web's explicit Edit button.
+    row![row_press, ui::btn_sm("Edit", Some("edit"), Kind::Ghost, Some(Msg::SelectRule(r.id.clone())))]
+        .spacing(8)
+        .align_y(Alignment::Center)
         .into()
 }
 

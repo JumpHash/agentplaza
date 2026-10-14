@@ -680,12 +680,12 @@ fn sections<'a>(d: &Data, state: &State, now: Instant) -> Vec<Element<'a, Msg>> 
 fn tallies<'a>(d: &Data, state: &State, now: Instant) -> Element<'a, Msg> {
     let c = &state.counters;
     let cost = c.usd.at(now);
-    let stats: Vec<(&'static str, String, String)> = vec![
-        ("Plaza budget", money(c.budget.at(now)), String::new()),
-        ("In circulation", money(c.circulating.at(now)), "held in agents’ wallets".to_string()),
-        ("Paid out", money(c.paid.at(now)), "margins for verified work".to_string()),
-        ("Real model cost", usd(cost), format!("≈ {} credits metered", money(cost / CREDIT_USD))),
-        ("Treasury", money(c.treasury.at(now)), format!("{} fined in range", money(d.fined()))),
+    let stats: Vec<(&'static str, String, String, Option<Msg>)> = vec![
+        ("Plaza budget", money(c.budget.at(now)), String::new(), None),
+        ("In circulation", money(c.circulating.at(now)), "held in agents’ wallets".to_string(), None),
+        ("Paid out", money(c.paid.at(now)), "margins for verified work".to_string(), None),
+        ("Real model cost", usd(cost), format!("≈ {} credits metered", money(cost / CREDIT_USD)), Some(Msg::Go(Id::Usage))),
+        ("Treasury", money(c.treasury.at(now)), format!("{} fined in range", money(d.fined())), None),
     ];
     responsive(move |size| {
         let per_row = if size.width >= 5.0 * TILE_MIN + 4.0 * GAP { 5 } else { 3 };
@@ -693,8 +693,8 @@ fn tallies<'a>(d: &Data, state: &State, now: Instant) -> Element<'a, Msg> {
             .chunks(per_row)
             .map(|chunk| {
                 let mut line = row![].spacing(GAP);
-                for (title, value, note) in chunk {
-                    line = line.push(tile(title, value.clone(), note.clone()));
+                for (title, value, note, link) in chunk {
+                    line = line.push(tile(title, value.clone(), note.clone(), link.clone()));
                 }
                 // A short last row keeps the grid's columns: the empty slots take the same share.
                 for _ in chunk.len()..per_row {
@@ -746,8 +746,9 @@ fn charts<'a>(d: &Data, state: &State, now: Instant) -> Vec<Element<'a, Msg>> {
     vec![balance_card, flow_card]
 }
 
-/// A tally tile (the web's `.stat`): the figure, its label, then an italic note when there is one.
-fn tile<'a>(title: &str, value: String, note: String) -> Element<'a, Msg> {
+/// A tally tile (the web's `.stat`): the figure, its label, then an italic note when there is one, and
+/// a link under it when there is one (the model cost's "see usage").
+fn tile<'a>(title: &str, value: String, note: String, link: Option<Msg>) -> Element<'a, Msg> {
     // Long figures step down a size so they stay inside the tile.
     let size = if value.chars().count() > 8 { 22.0 } else { 28.0 };
     let mut stack = column![iced::widget::text(value).font(VALUE).size(size).color(crate::theme::palette().ink).wrapping(Wrapping::None), ui::label(title).wrapping(Wrapping::None)]
@@ -756,6 +757,9 @@ fn tile<'a>(title: &str, value: String, note: String) -> Element<'a, Msg> {
     // a blank line, so the tiles beside it stay the same height.
     let note = if note.is_empty() { "\u{a0}".to_string() } else { note };
     stack = stack.push(iced::widget::text(note).font(ITALIC).size(13.0).color(crate::theme::palette().ink_2));
+    if let Some(msg) = link {
+        stack = stack.push(ui::link("see usage", msg, false));
+    }
     container(stack)
         .padding(Padding::from(16.0))
         .width(Length::FillPortion(1))

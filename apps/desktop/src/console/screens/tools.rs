@@ -262,6 +262,8 @@ pub enum Msg {
     OpenRemoveFound(String, String),
     RemoveFound,
     Close,
+    /// Opens a connector's or proposal's docs link in the browser.
+    OpenDocs(String),
 }
 
 /// The navigation this message asks for, if any.
@@ -609,6 +611,12 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             let path = format!("/v1/toolbox/{id}");
             act(ctx, outcome, move |client| client.delete(&path).map(|_| ()))
         }
+        Msg::OpenDocs(url) => {
+            if let Err(e) = ui::open_url(&url) {
+                state.error = Some(e);
+            }
+            Task::none()
+        }
         Msg::Close => {
             state.modal = None;
             state.modal_error = None;
@@ -924,7 +932,7 @@ fn configure_body<'a>(state: &State, id: &str, values: &BTreeMap<String, String>
         Some(Msg::CfgToggle),
     ));
     if !c.docs_url.is_empty() {
-        col = col.push(ui::mono(c.docs_url.clone(), 11.0, crate::theme::palette().ink_2));
+        col = col.push(ui::link("Docs", Msg::OpenDocs(c.docs_url.clone()), false));
     }
     col = col.push(gated_row(vec![
         ui::btn("Close", None, ui::Kind::Ghost, Some(Msg::Close)),
@@ -1041,8 +1049,8 @@ fn review_body<'a>(state: &State, id: &str, note: &str) -> Element<'a, Msg> {
     ]
     .spacing(10)
     .width(Length::Fill);
-    if !s.docs_url.is_empty() {
-        col = col.push(ui::mono(s.docs_url.clone(), 11.0, crate::theme::palette().ink_2));
+    if s.docs_url.starts_with("http://") || s.docs_url.starts_with("https://") {
+        col = col.push(ui::link("Docs", Msg::OpenDocs(s.docs_url.clone()), false));
     }
     if !s.fields.is_empty() {
         let summary = s

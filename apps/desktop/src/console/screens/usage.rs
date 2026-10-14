@@ -1232,8 +1232,8 @@ fn prices_card<'a>(d: &'a Data) -> Element<'a, Msg> {
         let used = uses.get(model).map(|v| v.join(", ")).unwrap_or_default();
         let (input, output, cache_read, cache_write, source, flag) = match d.prices.get(model) {
             Some(Some(p)) => (per_million(Some(p.input)), per_million(Some(p.output)), per_million(p.cache_read), per_million(p.cache_write), p.source.clone(), None),
-            Some(None) => ("—".into(), "—".into(), "—".into(), "—".into(), String::new(), Some(ui::badge::<Msg>("Unpriced", ui::Tone::Warn))),
-            None => ("…".into(), "…".into(), "…".into(), "…".into(), String::new(), None),
+            Some(None) => ("—".into(), "—".into(), "—".into(), "—".into(), String::new(), Some(Element::from(row![ui::badge::<Msg>("Unpriced", ui::Tone::Warn), ui::link("set a price under Models", Msg::Go(Id::Models), false)].spacing(6).align_y(Alignment::Center)))),
+            None =>("…".into(), "…".into(), "…".into(), "…".into(), String::new(), None),
         };
         let flagged = flag.or_else(|| d.summary.unpriced.contains(model).then(|| ui::badge::<Msg>("Unpriced", ui::Tone::Warn)));
         let source_cell: Element<'_, Msg> = match flagged {

@@ -408,6 +408,18 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
     if (!settings) return [];
     return [settings.default_model, settings.orchestrator_model, ...Object.values(settings.role_models)].filter(Boolean);
   };
+  // Where each model is used, listed as the desktop lists it: the default, the orchestrator, then each role.
+  const settingsUses = (): Map<string, string[]> => {
+    const uses = new Map<string, string[]>();
+    if (fixture || !settings) return uses;
+    const add = (model: string, label: string): void => {
+      if (model) uses.set(model, [...(uses.get(model) ?? []), label]);
+    };
+    add(settings.default_model, 'default');
+    add(settings.orchestrator_model, 'orchestrator');
+    for (const [role, model] of Object.entries(settings.role_models)) add(model, `role ${role}`);
+    return uses;
+  };
   const loadPricesMeta = async (): Promise<void> => {
     if (fixture) {
       pricesMeta = { fetched_at_ms: Date.now() - 3 * HOUR, sources: [{ name: 'openrouter', url: '', models: 3400, ok: true }, { name: 'litellm', url: '', models: 3300, ok: true }], models: [] };
@@ -651,6 +663,7 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
         : 'Prices unavailable · ',
       refresh,
     );
+    const uses = settingsUses();
     const columns: Column<string>[] = [
       {
         label: 'Model',
@@ -659,6 +672,7 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
           return h('span.truncate', { title: m }, h('strong', null, model), ' ', h('span.faint', null, provider), isTrainer(m) ? [' ', trainsBadge()] : null);
         },
       },
+      { label: 'Used by', cell: (m) => (uses.get(m) ?? []).join(', ') || '—' },
       { label: 'Source', cell: (m) => (prices.get(m)?.source ? SOURCE_LABEL[prices.get(m)?.source ?? ''] ?? prices.get(m)?.source ?? '—' : '—') },
       { label: 'Input', num: true, cell: (m) => (prices.get(m) ? usd(prices.get(m)?.input ?? 0) : '—') },
       { label: 'Output', num: true, cell: (m) => (prices.get(m) ? usd(prices.get(m)?.output ?? 0) : '—') },

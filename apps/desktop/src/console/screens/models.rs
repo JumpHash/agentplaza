@@ -419,6 +419,8 @@ pub struct State {
     dialog: Dialog,
     policy: Option<Policy>,
     prices_open: bool,
+    /// Each listed model's price per 1M tokens (input, output), keyed `provider/model`; absent when none is published.
+    model_prices: std::collections::HashMap<String, (f64, f64)>,
     /// The plaza's decision model as `provider/model`, as the poll last read it.
     decision_default: Option<String>,
     /// A decision model just picked, while its save is in flight.
@@ -436,6 +438,8 @@ pub enum Msg {
     Tested(Result<TestReport, String>),
     ToggleModels(String),
     Listed(String, Result<Vec<ListedModel>, String>),
+    /// A model's price (`GET /v1/prices/<provider>/<model>`), keyed `provider/model`.
+    Price(String, Result<Value, String>),
     OpenKey(String),
     KeyInput(String),
     SaveKey,
@@ -552,9 +556,27 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             }
         }
         Msg::Listed(id, Ok(list)) => {
+            let tasks: Vec<Task<Msg>> = list
+                .iter()
+                .map(|m| {
+                    let c = ctx.client.clone();
+                    let key = format!("{id}/{}", m.id);
+                    let path = format!("/v1/prices/{key}");
+                    client::task(move || c.get::<Value>(&path), move |r| Msg::Price(key.clone(), r))
+                })
+                .collect();
             state.listed.insert(id, list);
+            Task::batch(tasks)
+        }
+        Msg::Price(key, Ok(v)) => {
+            let input = v.pointer("/price/input").and_then(Value::as_f64);
+            let output = v.pointer("/price/output").and_then(Value::as_f64);
+            if let (Some(i), Some(o)) = (input, output) {
+                state.model_prices.insert(key, (i, o));
+            }
             Task::none()
         }
+        Msg::Price(_, Err(_)) => Task::none(),
         Msg::Listed(_, Err(e)) => {
             state.error = Some(e);
             Task::none()
@@ -1467,6 +1489,9 @@ fn model_list<'a>(state: &'a State, p: &'a Provider) -> Element<'a, Msg> {
                     let mut line: Vec<Element<'a, Msg>> = vec![ui::mono(m.id.clone(), 12.0, crate::theme::palette().ink).into()];
                     if trains(&m.id) {
                         line.push(ui::trains_badge());
+                    }
+                    if let Some((i, o)) = state.model_prices.get(&format!("{}/{}", p.id, m.id)) {
+                        line.push(ui::faint(format!("${i} in · ${o} out per 1M")).into());
                     }
                     row(line).spacing(8).align_y(Alignment::Center).into()
                 })

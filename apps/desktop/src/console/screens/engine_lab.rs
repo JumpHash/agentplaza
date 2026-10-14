@@ -84,6 +84,10 @@ pub struct State {
     kind: Kind,
     values: BTreeMap<&'static str, String>,
     params: BTreeMap<String, String>,
+    /// The typed text of the number fields, not yet applied (applied on Enter).
+    drafts: BTreeMap<&'static str, String>,
+    /// The typed text of the model params, not yet applied (applied on Enter).
+    param_drafts: BTreeMap<String, String>,
     stage: floor::State,
     catalog: Value,
     /// The kind the stage was last started for (None: not yet).
@@ -93,7 +97,16 @@ pub struct State {
 impl Default for State {
     fn default() -> State {
         let catalog = serde_json::from_str(&apz_engine::lab_catalog::catalog_json()).unwrap_or(Value::Null);
-        State { kind: Kind::Robot, values: Kind::Robot.defaults(), params: BTreeMap::new(), stage: floor::State::default(), catalog, started: None }
+        State {
+            kind: Kind::Robot,
+            values: Kind::Robot.defaults(),
+            params: BTreeMap::new(),
+            drafts: BTreeMap::new(),
+            param_drafts: BTreeMap::new(),
+            stage: floor::State::default(),
+            catalog,
+            started: None,
+        }
     }
 }
 
@@ -109,8 +122,14 @@ pub enum Msg {
     Stage(floor::Msg),
     /// An option changed: the stage starts again with it.
     Set(&'static str, String),
-    /// A model param changed (the hardware lab).
-    Param(String, String),
+    /// A number field's text changed: kept as a draft until Enter applies it.
+    Draft(&'static str, String),
+    /// A number field was submitted: its draft is applied (or reverted when it is not a number).
+    Commit(&'static str),
+    /// A model param's text changed (the hardware lab): kept as a draft until Enter applies it.
+    ParamDraft(String, String),
+    /// A model param was submitted: applied when it is a number, else reverted.
+    ParamCommit(String),
 }
 
 /// The env names the engine's labs read (apz-engine-web's `LAB_OPTIONS`, `ROOM_LAB_OPTIONS`, `HARDWARE_LAB_OPTIONS`).
@@ -177,9 +196,23 @@ pub fn open(state: &mut State, kind: Kind) -> Task<Msg> {
         state.kind = kind;
         state.values = kind.defaults();
         state.params.clear();
+        state.drafts.clear();
+        state.param_drafts.clear();
         restart(state);
     }
     Task::none()
+}
+
+/// The stored value of a number field's typed text, as the web's lab reads it: a seed a whole number from 0 to
+/// 4294967295; a width or depth a number rounded to halves from 1 to 12. None when the text is not a number.
+fn number_value(key: &str, text: &str) -> Option<String> {
+    let text = text.trim();
+    if key == "seed" {
+        let n = text.parse::<u64>().ok()?;
+        return Some(n.min(4_294_967_295).to_string());
+    }
+    let x = text.parse::<f64>().ok().filter(|x| x.is_finite())?;
+    Some(format!("{}", ((x * 2.0).round() / 2.0).clamp(1.0, 12.0)))
 }
 
 pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
@@ -188,6 +221,7 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         Msg::Set(key, value) => {
             if key == "model" {
                 state.params.clear(); // another model has its own params
+                state.param_drafts.clear();
             }
             if key == "species" && state.kind == Kind::Robot {
                 state.values.insert("clip", String::new()); // the clip list follows the species
@@ -196,9 +230,29 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             restart(state);
             Task::none()
         }
-        Msg::Param(key, value) => {
-            state.params.insert(key, value);
-            restart(state);
+        Msg::Draft(key, text) => {
+            state.drafts.insert(key, text);
+            Task::none()
+        }
+        Msg::Commit(key) => {
+            if let Some(value) = state.drafts.remove(key).and_then(|text| number_value(key, &text)) {
+                state.values.insert(key, value);
+                restart(state);
+            }
+            Task::none()
+        }
+        Msg::ParamDraft(key, text) => {
+            state.param_drafts.insert(key, text);
+            Task::none()
+        }
+        Msg::ParamCommit(key) => {
+            if let Some(text) = state.param_drafts.remove(&key) {
+                let text = text.trim().to_string();
+                if text.parse::<f64>().is_ok() {
+                    state.params.insert(key, text);
+                    restart(state);
+                }
+            }
             Task::none()
         }
     }
@@ -236,13 +290,14 @@ fn select<'a>(state: &State, label: &str, key: &'static str, none: Option<&str>,
     field(label, pick_list(choices, selected, move |c: Choice| Msg::Set(key, c.value)).style(theme::pick_list).text_size(13.0).into())
 }
 
-/// A labelled number field (applied on every edit that reads as a number).
+/// A labelled number field: the typed text is a draft until Enter applies it (see [`number_value`]).
 fn number<'a>(state: &State, label: &str, key: &'static str) -> Element<'a, Msg> {
-    let value = state.values.get(key).cloned().unwrap_or_default();
+    let value = state.drafts.get(key).or_else(|| state.values.get(key)).cloned().unwrap_or_default();
     field(
         label,
         text_input("", &value)
-            .on_input(move |v| Msg::Set(key, v))
+            .on_input(move |v| Msg::Draft(key, v))
+            .on_submit(Msg::Commit(key))
             .style(theme::input)
             .padding(6.0)
             .width(Length::Fixed(72.0))
@@ -271,13 +326,14 @@ fn range<'a>(state: &State, label: &str, key: &'static str, lo: f32, hi: f32, st
     )
 }
 
-/// The camera (or GPU count) buttons: the selected one in signal orange, as the web's segmented buttons.
-fn buttons<'a>(state: &State, key: &'static str, options: &[&'static str]) -> Element<'a, Msg> {
+/// The option buttons (the camera, the GPU count): each a (value, label), the selected one in signal orange, as the
+/// web's segmented buttons.
+fn buttons<'a>(state: &State, key: &'static str, options: &[(&'static str, &'static str)]) -> Element<'a, Msg> {
     let current = state.values.get(key).cloned().unwrap_or_default();
     let mut r = row![].spacing(4);
-    for &o in options {
-        let kind = if current == o { ui::Kind::Primary } else { ui::Kind::Secondary };
-        r = r.push(ui::btn_sm(&o.to_uppercase(), None, kind, Some(Msg::Set(key, o.to_string()))));
+    for &(value, label) in options {
+        let kind = if current == value { ui::Kind::Primary } else { ui::Kind::Secondary };
+        r = r.push(ui::btn_sm(label, None, kind, Some(Msg::Set(key, value.to_string()))));
     }
     r.into()
 }
@@ -292,10 +348,13 @@ fn controls<'a>(state: &State) -> Vec<Element<'a, Msg>> {
     match state.kind {
         Kind::Robot => {
             let species = state.values.get("species").cloned().unwrap_or_default();
-            let clips = match c["speciesClips"].get(&species).and_then(Value::as_array) {
-                Some(a) => a.iter().filter_map(|v| v.as_str().map(String::from)).collect(),
-                None => list(c, "clips"),
-            };
+            // The clips: the shared ones and the species' own, de-duplicated and sorted as the web's list.
+            let mut clips = list(c, "clips");
+            clips.extend(
+                c["speciesClips"].get(&species).and_then(Value::as_array).into_iter().flatten().filter_map(|v| v.as_str().map(String::from)),
+            );
+            clips.sort();
+            clips.dedup();
             let mut all = vec!["all".to_string()];
             all.extend(list(c, "species"));
             let mut props = vec!["all".to_string()];
@@ -310,7 +369,7 @@ fn controls<'a>(state: &State) -> Vec<Element<'a, Msg>> {
                 select(state, "State", "state", None, ["idle", "working", "walking", "offline"].map(String::from).to_vec()),
                 range(state, "Hue", "hue", 0.0, 360.0, 1.0),
                 toggle(state, "Orchestrator", "orch"),
-                buttons(state, "cam", &["front", "iso", "side", "q34", "top"]),
+                buttons(state, "cam", &[("front", "FRONT"), ("iso", "ISO"), ("side", "SIDE"), ("q34", "Q34"), ("top", "TOP")]),
             ]
         }
         Kind::Room => {
@@ -331,20 +390,24 @@ fn controls<'a>(state: &State) -> Vec<Element<'a, Msg>> {
             let model = state.values.get("model").cloned().unwrap_or_default();
             let mut out = vec![
                 select(state, "Model", "model", None, list(c, "models")),
-                buttons(state, "gpus", &["0", "1", "2"]),
+                buttons(state, "gpus", &[("0", "0 GPUs"), ("1", "1 GPU"), ("2", "2 GPUs")]),
                 select(state, "Status", "status", None, ["online", "draining", "offline", "revoked"].map(String::from).to_vec()),
                 range(state, "Working", "working", 0.0, 6.0, 1.0),
-                range(state, "Open", "open", 0.0, 1.0, 0.05),
+                range(state, "Open", "open", 0.0, 1.0, 0.01),
                 toggle(state, "Traces (boards)", "traces"),
             ];
             if let Some(defaults) = c["params"].get(&model).and_then(Value::as_object) {
-                for (k, v) in defaults {
-                    let shown = state.params.get(k).cloned().unwrap_or_else(|| v.to_string());
-                    let key = k.clone();
+                // The model's params by name, as the web's lab lists them.
+                let mut names: Vec<&String> = defaults.keys().collect();
+                names.sort();
+                for k in names {
+                    let shown = state.param_drafts.get(k).or_else(|| state.params.get(k)).cloned().unwrap_or_else(|| defaults[k].to_string());
+                    let (draft, commit) = (k.clone(), k.clone());
                     out.push(field(
                         k,
                         text_input("", &shown)
-                            .on_input(move |x| Msg::Param(key.clone(), x))
+                            .on_input(move |x| Msg::ParamDraft(draft.clone(), x))
+                            .on_submit(Msg::ParamCommit(commit))
                             .style(theme::input)
                             .padding(6.0)
                             .width(Length::Fixed(72.0))
@@ -352,25 +415,26 @@ fn controls<'a>(state: &State) -> Vec<Element<'a, Msg>> {
                     ));
                 }
             }
-            out.push(buttons(state, "cam", &["iso", "top", "front", "side", "anchor"]));
+            out.push(buttons(state, "cam", &[("iso", "ISO"), ("top", "TOP"), ("front", "FRONT"), ("side", "SIDE"), ("anchor", "ANCHOR")]));
             out
         }
     }
 }
 
-/// The lab's readout: the room lab's violations and rooms, the hardware lab's validation, the robot lab's robots.
+/// The lab's readout: the room lab's violations and rooms, the hardware lab's summary (red on errors), the robot lab's
+/// draw calls of the last frame.
 fn readout(state: &State) -> (String, Vec<String>, bool) {
     let info: Value = serde_json::from_str(&state.stage.lab_info()).unwrap_or(Value::Null);
     let lines = |key: &str| info[key].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default();
     match state.kind {
-        Kind::Robot => (format!("robots: {}", info["robots"].as_u64().unwrap_or(0)), Vec::new(), false),
+        Kind::Robot => (format!("draw calls (last frame): {}", state.stage.0.draw_calls()), Vec::new(), false),
         Kind::Room => {
             let debug = state.values.get("debug").is_some_and(|v| v == "1");
             (info["summary"].as_str().unwrap_or_default().to_string(), if debug { lines("lines") } else { Vec::new() }, false)
         }
         Kind::Hardware => {
             let errors: Vec<String> = lines("errors");
-            (info["summary"].as_str().unwrap_or_default().to_string(), errors.clone(), !errors.is_empty())
+            (info["summary"].as_str().unwrap_or_default().to_string(), Vec::new(), !errors.is_empty())
         }
     }
 }
