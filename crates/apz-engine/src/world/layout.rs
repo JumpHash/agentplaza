@@ -14,7 +14,10 @@ use super::board_layout::{
     SharedKey, TraceGraph,
 };
 use std::cell::RefCell;
-use super::{AgentInfo, Board, Bot, Colors, District, DistrictLight, Floor, Shared, TracePulses};
+use super::slab::{resting_slab, Slab};
+use super::support::support_field;
+use super::{AgentInfo, Board, Bot, Colors, DistrictLight, Floor, Shared, TracePulses};
+use apz_board::nav::drawn::Support;
 use crate::canvas::Canvas;
 use crate::entry_scene::{board_key, release_board, take_board};
 use crate::controls::FOV_DEG;
@@ -285,9 +288,6 @@ fn door_side(cx: f32, cz: f32, turn: f32, graph: &TraceGraph) -> Door {
     }
 }
 
-/// `districtMesh(d)` on a board: a room's terrace, its flat top at `y` (the slot's top) and its sloped
-/// band running down to the PCB at `base`, so it stands on the chip; its floor, room, plaque and
-/// outline. Adds the room's footprints, monitors and animation to `floor`.
 /// A roster whose shared layout is computing, for the Floor that asked: `poll_shared_layout` adopts it once the cache
 /// has it. The Floor struct (mod.rs) has no field for it, so it lives per thread here; `owner` is the Floor's address,
 /// so another Floor on the thread never adopts it.
@@ -308,7 +308,13 @@ fn queue_shared(pending: Option<PendingShared>) {
 
 /// The rooms of a board still to build: `step_rooms` builds one district per step.
 pub(super) struct RoomsJob {
-    base: f32,
+    /// The board's support field at its world scale: each room's plate rests on it (`slab::resting_slab`).
+    support: Support,
+    /// The drawn tops so far, the board's first, then each room's (floor.ts buildWorld's `drawn`): the nav's walk heights
+    /// bake from them once the last room is built.
+    drawn: Vec<Support>,
+    /// The built rooms' top so far, measured as each room is built (the build wave hides and lowers rooms later).
+    top: Option<f32>,
     items: Vec<BoardDistrict>,
     desks: Vec<usize>,
     graph: TraceGraph,
@@ -316,34 +322,27 @@ pub(super) struct RoomsJob {
     next: usize,
 }
 
-fn district_mesh(floor: &mut Floor, d: &District, y: f32, base: f32, site: &RoomSite) -> Obj {
+/// floor.ts `districtMesh(d)` on a board: the room's terrace plate resting on the board under it (`support`), its top at
+/// the slot's top, with its neon edge; its floor, room, plaque and outline. Adds the room's footprints, monitors and
+/// animation to `floor`.
+fn district_mesh(floor: &mut Floor, bd: &BoardDistrict, support: &Support, site: &RoomSite) -> Obj {
     let c = floor.colors;
     let g = Obj::group();
+    let d = &bd.district;
+    let y = bd.y;
     let orch = d.role == "orchestrator";
-    let top_y = y + SLAB_H;
-    let height = (top_y - base).max(SLAB_H);
-    let body = if d.round {
-        geometry::cylinder(d.r, d.r + RAMP, height, 48)
-    } else {
-        let square = geometry::cylinder(d.r * SQRT_2, (d.r + RAMP) * SQRT_2, height, 4);
-        geometry::transformed(&square, Mat4::from_rotation_y(FRAC_PI_4))
-    };
-    let slab = Obj::mesh(&body, &textures::slab_side(d.hue));
-    slab.set_position(d.cx, base + height / 2.0, d.cy).set_shadows(true, true);
-    g.add(&slab);
-    // Neon in the district's hue along the top edge and round the foot on the PCB.
+    // floor.ts districtMesh: the terrace plate rests on what is under it, its flat top the cell's half-size at the slot's
+    // top, with columns where it stands over lower ground (board-rooms.ts platePieces).
+    let hs = bd.w.min(bd.d) / 2.0;
+    let slab = Slab { cx: d.cx, cz: d.cy, hw: hs, hd: hs, round: d.round, top: y, role: d.role.clone() };
+    g.add(&resting_slab(&slab, Some(support), &textures::slab_side(d.hue)));
+    // Neon in the district's hue along the terrace's top edge.
     let neon = Mat::basic(Color::hsl(d.hue / 360.0, 0.95, 0.62));
-    for (rr, ny) in [(d.r, top_y + 0.01), (d.r + RAMP, base + 0.03)] {
-        let ring = if d.round {
-            geometry::torus(rr, 0.045, 6, 72, TAU)
-        } else {
-            geometry::torus(rr * SQRT_2, 0.045, 6, 4, TAU)
-        };
-        let edge = Obj::mesh(&ring, &neon);
-        edge.set_rotation(FRAC_PI_2, 0.0, if d.round { 0.0 } else { FRAC_PI_4 }).set_position(d.cx, ny, d.cy);
-        edge.get().no_outline = true;
-        g.add(&edge);
-    }
+    let ring = if d.round { geometry::torus(hs, 0.045, 6, 72, TAU) } else { geometry::torus(hs * SQRT_2, 0.045, 6, 4, TAU) };
+    let edge = Obj::mesh(&ring, &neon);
+    edge.set_rotation(FRAC_PI_2, 0.0, if d.round { 0.0 } else { FRAC_PI_4 }).set_position(d.cx, y + 0.01, d.cy);
+    edge.get().no_outline = true;
+    g.add(&edge);
 
     // The room faces the centre: square rooms turn in quarter turns so they stay square to their slab.
     // The shared layout gives the turn and the door (its aisle side); the engine's own layout faces the centre.
@@ -370,11 +369,14 @@ fn district_mesh(floor: &mut Floor, d: &District, y: f32, base: f32, site: &Room
         geometry::plane(cell.max(built.w + WALL_MARGIN) as f32, cell.max(built.d + WALL_MARGIN) as f32, 1, 1)
     };
     let top = Obj::mesh(&top_geo, &built.floor);
-    top.set_rotation(-FRAC_PI_2, 0.0, turn).set_position(d.cx, top_y + 0.004, d.cy).set_shadows(false, true);
+    top.set_rotation(-FRAC_PI_2, 0.0, turn).set_position(d.cx, y + 0.004, d.cy).set_shadows(false, true);
     g.add(&top);
     floor.last_room = Some((turn, built.spots.clone(), built.layout.items.clone()));
     let room = built.group;
-    room.set_position(d.cx, top_y, d.cy).set_rotation(0.0, turn, 0.0);
+    room.set_position(d.cx, y, d.cy).set_rotation(0.0, turn, 0.0);
+    // The room stands on its plate: the ground audit's item.
+    room.set_name(&format!("room {}", d.role));
+    room.get().rest = true;
     g.add(&room);
     for part in children(&room) {
         // Rugs and floor markings (`userData.walk`) do not block the floor.
@@ -400,7 +402,7 @@ fn district_mesh(floor: &mut Floor, d: &District, y: f32, base: f32, site: &Room
     });
     let plaque = Obj::mesh(&geometry::plane(2.6, 0.65, 1, 1), &plaque_mat);
     let holder = Obj::group();
-    holder.set_position(d.cx, top_y + 0.012, d.cy).set_rotation(0.0, (-d.cx).atan2(-d.cy), 0.0);
+    holder.set_position(d.cx, y + 0.012, d.cy).set_rotation(0.0, (-d.cx).atan2(-d.cy), 0.0);
     plaque.set_rotation(-FRAC_PI_2, 0.0, 0.0).set_position(0.0, 0.0, d.r - 0.5);
     holder.add(&plaque);
     g.add(&holder);
@@ -517,7 +519,7 @@ fn remove_bot(root: &Obj, bot: &Bot) {
 impl Floor {
     /// The height of the surface a robot in district `idx` stands on: its room's top.
     pub fn top_at(&self, idx: usize) -> f32 {
-        self.board.as_ref().and_then(|b| b.layout.districts.get(idx)).map_or(0.0, |bd| bd.y + SLAB_H)
+        self.board.as_ref().and_then(|b| b.layout.districts.get(idx)).map_or(0.0, |bd| bd.y)
     }
 
     /// Shows a machine's board in the Machine view: its model built at the origin with `params`, the
@@ -613,7 +615,8 @@ impl Floor {
         }
         let Some(board) = self.board.as_ref() else { return };
         let Some((shared, gpus)) = board.layout.shared.clone() else { return };
-        let nav = super::nav::BoardNav::new(&shared, gpus, &self.machine_id, &self.colors);
+        let mut nav = super::nav::BoardNav::new(&shared, gpus, &self.machine_id, &self.colors);
+        nav.world.set_drawn(self.drawn.clone());
         board.obj.add(&nav.root);
         self.statics_dirty = true;
         self.nav = Some(nav);
@@ -669,8 +672,16 @@ impl Floor {
                 *n += 1;
             }
         }
+        // floor.ts: the board's drawn tops (its model's upward faces, at the layout's world scale) hold the plates up.
+        let support = Support { field: support_field(&board.built.root), scale: f64::from(board.layout.scale) };
+        if let Some(nav) = self.nav.as_mut() {
+            nav.world.set_drawn(None); // the walk heights wait for the new rooms (the grid's heights until then)
+        }
+        self.drawn = None;
         let job = RoomsJob {
-            base: board.layout.pcb_top,
+            drawn: vec![support.clone()],
+            top: None,
+            support,
             items: board.layout.districts.clone(),
             desks,
             graph: board.graph.clone(),
@@ -699,7 +710,12 @@ impl Floor {
             let index = job.next;
             let bd = &job.items[index];
             let site = RoomSite { plan: bd.plan, machine: &job.machine, index, agents: job.desks[index].max(1), graph: &job.graph };
-            let g = district_mesh(self, &bd.district, bd.y, job.base, &site);
+            let g = district_mesh(self, bd, &job.support, &site);
+            // The room's drawn tops, read before the bake merges its meshes.
+            job.drawn.push(Support { field: support_field(&g), scale: 1.0 });
+            if let Some(t) = super::max_y(&g) {
+                job.top = Some(job.top.map_or(t, |top| top.max(t)));
+            }
             if let Some((turn, spots, items)) = self.last_room.take() {
                 self.work.add_room(bd, turn, &spots, &items);
             }
@@ -708,7 +724,12 @@ impl Floor {
             job.next += 1;
             if job.next == job.items.len() {
                 // floor.ts: the rooms' top is the built rooms' box (2 with none), and a new top refits the view.
-                let top = super::max_y(&self.district_group).unwrap_or(2.0);
+                // floor.ts stepWorld's end: the nav's walk heights follow the drawn tops of the board and every room.
+                self.drawn = Some(std::mem::take(&mut job.drawn));
+                if let Some(nav) = self.nav.as_mut() {
+                    nav.world.set_drawn(self.drawn.clone());
+                }
+                let top = job.top.unwrap_or(2.0);
                 if (top - self.rooms_top).abs() > 1e-3 {
                     self.rooms_top = top;
                     self.fitted = false;

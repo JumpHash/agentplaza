@@ -12,7 +12,9 @@ pub mod lift_mesh;
 pub mod motion;
 pub mod nav;
 pub mod nav_overlay;
+pub mod slab;
 pub mod spots;
+pub mod support;
 pub mod walkway_mesh;
 pub mod view;
 pub mod work;
@@ -260,6 +262,9 @@ pub struct Floor {
     pub fitted: bool,
     /// The built rooms' top (floor.ts roomsTop): the default view frames up to it. 2 until the rooms are built.
     pub rooms_top: f32,
+    /// The drawn tops of the board and its built rooms (floor.ts drawnSups): the nav's walk heights bake from them. None
+    /// while the rooms build.
+    pub drawn: Option<Vec<apz_board::nav::drawn::Support>>,
     /// Seconds since the floor opened, and the wall clock (ms) of the last step.
     pub time: f32,
     pub now_ms: f64,
@@ -321,6 +326,7 @@ impl Floor {
             reacted: None,
             fitted: false,
             rooms_top: 2.0,
+            drawn: None,
             time: 0.0,
             now_ms: 0.0,
             statics_dirty: true,
@@ -490,8 +496,8 @@ mod tests {
 }
 
 /// The top of what `obj` holds, in `obj`'s own frame (three's `Box3.setFromObject(obj).max.y` for a group at rest): each
-/// mesh's local box, its corners carried by its matrix under `obj`. The group's own transform is left out: the build wave
-/// scales and lowers the rooms' group while it plays, and the rooms' top is where they stand. None without meshes.
+/// mesh's local box, its corners carried by its matrix under `obj`. The group's own transform is left out. Read on a room
+/// as it is built, before the build wave hides or lowers it. None without meshes.
 pub(crate) fn max_y(obj: &Obj) -> Option<f32> {
     let roots: Vec<(Obj, glam::Mat4)> = obj.get().children.iter().map(|c| (c.clone(), glam::Mat4::IDENTITY)).collect();
     let (draws, _) = scene::flatten_roots(&roots);
