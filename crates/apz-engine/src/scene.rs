@@ -1097,12 +1097,17 @@ fn emit(node: &Obj, world: Mat4, draws: &mut Vec<Draw>, lights: &mut Vec<PointLi
 pub fn dynamic_roots(node: &Obj, parent: Mat4) -> Vec<(Obj, Mat4)> {
     let mut found = Vec::new();
     fn visit(node: &Obj, parent: Mat4, found: &mut Vec<(Obj, Mat4)>) {
-        let (dynamic, world, children) = {
+        let (dynamic, visible, world, children) = {
             let n = node.get();
-            (n.dynamic, parent * local_of(&n), n.children.clone())
+            (n.dynamic, n.visible, parent * local_of(&n), n.children.clone())
         };
         if dynamic {
             found.push((node.clone(), parent));
+            return;
+        }
+        // A hidden static node hides its dynamic descendants too (their rigs check only their own visibility each
+        // frame): the other machines' screens and fans inside an entered machine. Changing it re-bakes the statics.
+        if !visible {
             return;
         }
         for child in &children {
