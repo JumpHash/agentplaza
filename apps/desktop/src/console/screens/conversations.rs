@@ -27,6 +27,8 @@ const DEBOUNCE: Duration = Duration::from_millis(300);
 const KEEP_MIN: u64 = 100;
 const KEEP_MAX: u64 = 100_000;
 const DAYS_MAX: u64 = 3650;
+/// The longest search the hub takes, in bytes.
+const QUERY_BYTES: usize = 200;
 
 #[derive(Debug, Default)]
 pub struct State {
@@ -35,6 +37,8 @@ pub struct State {
     loaded: bool,
     /// The messages loaded so far, newest first.
     conversations: Vec<Conversation>,
+    /// The hub's exchange count per pair key (`a-b`), from the same page as the list.
+    pair_counts: HashMap<String, usize>,
     /// The cursor for the next older page of the list; `None` when the list reaches the start.
     older: Option<u64>,
     busy_older: bool,
@@ -214,7 +218,7 @@ fn apply(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             )
         }
         Msg::Debounced(seq) => {
-            let q = state.draft.trim().to_string();
+            let q = clamp_query(&state.draft);
             if seq != state.seq || q == state.query {
                 return Task::none();
             }
@@ -237,6 +241,7 @@ fn apply(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             match result {
                 Ok((conversations, agents, settings)) => {
                     state.error = None;
+                    state.pair_counts = parse_pair_counts(&conversations);
                     let (list, older) = merge_head(
                         parse_conversations(&conversations),
                         next_of(&conversations),
@@ -409,7 +414,7 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
         let title = if state.query.is_empty() { "No conversations yet." } else { "No conversations match." };
         ui::empty("conversations", title, "")
     } else {
-        column(pairs.iter().enumerate().map(|(i, p)| pair_item(p, i == current, &state.agents)))
+        column(pairs.iter().enumerate().map(|(i, p)| pair_item(p, exchange_count(state, p), i == current, &state.agents)))
             .width(Length::Fill)
             .into()
     };
@@ -523,9 +528,18 @@ fn name_link<'a>(cid: u64, agents: &[(u64, String)]) -> Element<'a, Msg> {
     ui::btn(&label(agents, cid), None, ui::Kind::Ghost, Some(Msg::Go(Id::Agent(cid))))
 }
 
-fn pair_item<'a>(p: &Pair, active: bool, agents: &[(u64, String)]) -> Element<'a, Msg> {
+/// The exchanges a pair shows, as the web does: the hub's whole-record count, unless a search is on
+/// (the count is not searched) or the hub gave none; then the messages loaded for the pair.
+fn exchange_count(state: &State, p: &Pair) -> usize {
+    match state.pair_counts.get(&p.key) {
+        Some(&n) if state.query.is_empty() && n > 0 => n,
+        _ => p.messages.len(),
+    }
+}
+
+fn pair_item<'a>(p: &Pair, exchanges: usize, active: bool, agents: &[(u64, String)]) -> Element<'a, Msg> {
     let names = format!("{} · {}", label(agents, p.a), label(agents, p.b));
-    let meta = format!("{} · {} messages", ago(p.last.created_at, now_ms()), p.messages.len());
+    let meta = format!("{} · {} exchanges", ago(p.last.created_at, now_ms()), exchanges);
     let (background, edge) = if active { (crate::theme::palette().paper, crate::theme::palette().signal) } else { (crate::theme::palette().sheet, crate::theme::palette().rule) };
     button(column![ui::mono(names, 12.0, crate::theme::palette().ink), ui::prose(clip(&p.last.text, 90)), ui::faint(meta)].spacing(4))
         .width(Length::Fill)
@@ -684,6 +698,31 @@ fn parse_conversations(v: &Value) -> Vec<Conversation> {
     parse_messages(items(v, "conversations"))
 }
 
+/// The hub's `pairs` on `GET /v1/conversations`: each pair's exchange count, keyed `a-b`.
+fn parse_pair_counts(v: &Value) -> HashMap<String, usize> {
+    let pairs = v.get("pairs").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]);
+    pairs
+        .iter()
+        .filter_map(|p| {
+            let a = p.get("a").and_then(Value::as_u64)?;
+            let b = p.get("b").and_then(Value::as_u64)?;
+            let count = usize::try_from(p.get("count").and_then(Value::as_u64)?).ok()?;
+            Some((format!("{a}-{b}"), count))
+        })
+        .collect()
+}
+
+/// The search as the hub takes it: trimmed, and cut to the longest prefix that fits its byte cap on a
+/// character boundary (as the web's `clampQuery`).
+fn clamp_query(text: &str) -> String {
+    let trimmed = text.trim();
+    let mut end = trimmed.len().min(QUERY_BYTES);
+    while !trimmed.is_char_boundary(end) {
+        end -= 1;
+    }
+    trimmed[..end].to_string()
+}
+
 /// Parses `GET /v1/conversations/{a}/{b}`: the page is oldest first, so it is reversed to newest first.
 fn parse_thread(v: &Value) -> Vec<Conversation> {
     let mut messages = parse_messages(items(v, "messages"));
@@ -827,6 +866,32 @@ mod tests {
         let (all, cursor) = merge_head(vec![msg(12)], None, vec![msg(10), msg(9)], Some(3));
         assert_eq!(times(&all), vec![12]);
         assert_eq!(cursor, None);
+    }
+
+    #[test]
+    fn conversations_pair_counts_are_the_hubs_whole_record_count() {
+        let page = json!({
+            "conversations": [{"from_cid": 2, "to_cid": 1, "text": "a", "created_at": 1, "delivered": true}],
+            "pairs": [{"a": 1, "b": 2, "active": true, "count": 7, "last_at": 1}, {"a": 3, "b": 4, "active": false, "count": 1, "last_at": 0}],
+        });
+        let counts = parse_pair_counts(&page);
+        assert_eq!(counts.get("1-2"), Some(&7));
+        assert_eq!(counts.get("3-4"), Some(&1));
+        assert_eq!(counts.get("2-1"), None);
+        assert!(parse_pair_counts(&json!([])).is_empty());
+        assert!(parse_pair_counts(&json!({"pairs": [{"a": 1, "b": 2}]})).is_empty());
+    }
+
+    #[test]
+    fn conversations_search_is_clamped_to_the_hubs_200_bytes() {
+        assert_eq!(clamp_query("  hello  "), "hello");
+        assert_eq!(clamp_query(&"a".repeat(250)).len(), 200);
+        // 150 two-byte characters are 300 bytes: the cut keeps the 100 that fit exactly.
+        assert_eq!(clamp_query(&"é".repeat(150)), "é".repeat(100));
+        // A cut at byte 200 would split the 100th character, so it steps back to a boundary.
+        let mixed = format!("a{}", "é".repeat(150));
+        assert_eq!(clamp_query(&mixed), format!("a{}", "é".repeat(99)));
+        assert_eq!(clamp_query(&"x".repeat(200)), "x".repeat(200));
     }
 
     #[test]

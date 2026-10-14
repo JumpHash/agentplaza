@@ -260,10 +260,14 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             refresh(state)
         }
         Msg::Up => {
-            if state.nav.pop().is_none() {
-                return Task::none();
+            if state.nav.pop().is_some() {
+                return refresh(state);
             }
-            refresh(state)
+            // At the top level Esc clears the selection, as the web's does.
+            if state.selected.take().is_some() {
+                state.open_notes.clear();
+            }
+            Task::none()
         }
         Msg::Group => {
             let on = is_grouped(state);

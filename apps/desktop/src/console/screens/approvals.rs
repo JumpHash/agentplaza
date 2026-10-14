@@ -437,6 +437,7 @@ fn history_row<'a>(state: &'a State, a: &'a Approval) -> Element<'a, Msg> {
         "approved" => ("Approved", ui::Tone::Ok),
         "denied" => ("Denied", ui::Tone::Danger),
         "used" => ("Used", ui::Tone::Info),
+        "withdrawn" => ("Withdrawn", ui::Tone::Muted),
         _ => ("Waiting", ui::Tone::Warn),
     };
     let line = row![

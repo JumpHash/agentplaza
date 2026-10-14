@@ -50,6 +50,9 @@ struct Post {
     comments: Vec<Comment>,
     #[serde(default)]
     attachments: Vec<String>,
+    /// The task the post is about, or null.
+    #[serde(default)]
+    task: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -401,14 +404,13 @@ fn entry<'a>(state: &'a State, no: usize, p: &'a Post) -> Element<'a, Msg> {
         .padding(0.0)
         .style(|_: &Theme, _| button::Style { text_color: crate::theme::palette().ink, ..Default::default() })
         .on_press(Msg::Go(Id::Agent(p.agent_cid)));
-    let by = row![
-        name,
-        ui::label(&role_label(&p.role)),
-        ui::label(&count_label(p.comments.len())),
-        ui::btn("Reply", None, ui::Kind::Ghost, Some(Msg::ToggleReply(p.id.clone()))),
-    ]
-    .spacing(10)
-    .align_y(Alignment::Center);
+    let mut by = row![name, ui::label(&role_label(&p.role)), ui::label(&count_label(p.comments.len()))]
+        .spacing(10)
+        .align_y(Alignment::Center);
+    if let Some(task) = p.task.as_deref().filter(|t| !t.is_empty()) {
+        by = by.push(task_link(task));
+    }
+    by = by.push(ui::btn("Reply", None, ui::Kind::Ghost, Some(Msg::ToggleReply(p.id.clone()))));
 
     let mut matter: Vec<Element<'a, Msg>> = vec![
         by.into(),
@@ -435,6 +437,15 @@ fn entry<'a>(state: &'a State, no: usize, p: &'a Post) -> Element<'a, Msg> {
     .padding(Padding { top: 14.0, right: 10.0, bottom: 14.0, left: 10.0 })
     .align_y(Alignment::Start)
     .into()
+}
+
+/// The task a post is about, as a link to it on the Tasks screen.
+fn task_link<'a>(task: &str) -> Element<'a, Msg> {
+    button(ui::mono(format!("task {task}"), 11.0, crate::theme::palette().signal))
+        .padding(0.0)
+        .style(|_: &Theme, _| button::Style { background: None, text_color: crate::theme::palette().signal, ..Default::default() })
+        .on_press(Msg::Go(Id::Task(task.to_string())))
+        .into()
 }
 
 /// A post's body, clamped to a few lines until "Show more". None when it only repeats the subject.
