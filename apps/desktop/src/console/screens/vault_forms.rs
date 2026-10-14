@@ -8,8 +8,11 @@ use serde_json::{json, Map, Value};
 use iced::widget::{checkbox, pick_list, row, text, text_input};
 use iced::{Element, Length};
 
-use super::{ago, gate, node_name, now_ms, slot_kind_label, stack, Msg, Pending, State};
+use super::{ago, gate, node_name, now_ms, slot_kind_label, stack, ConsumerRef, Msg, Pending, State};
 use crate::console::ui;
+
+/// The hint under the key-file button: the hub writes the file on its own disk, and a file that can be read unseals.
+pub const KEYFILE_NOTE: &str = "A key file is written on this hub's disk. Anyone who can read it can unseal the vault without a passphrase.";
 
 /// The hint under the name field, as on the web console.
 pub const NAME_HINT: &str = "Use 2 to 64 characters: a capital letter, then capitals, digits or underscores.";
@@ -235,6 +238,36 @@ pub fn rotate_body(value: &mut String) -> Result<Value, String> {
     }
 }
 
+/// The edit form: one entry's label, scope and bindings, as the web's edit dialog sets them. No value.
+#[derive(Debug, Clone, Default)]
+pub struct EditForm {
+    pub id: String,
+    pub name: String,
+    pub label: String,
+    pub scope: ScopeMode,
+    /// (node id, ticked), for the nodes the scope can name.
+    pub nodes: Vec<(String, bool)>,
+    /// (binding, ticked), the consumers plus any binding the entry has that no consumer lists.
+    pub bindings: Vec<(String, bool)>,
+}
+
+/// The body of `PATCH /v1/vault/secrets/{id}`: the label, the scope and the bindings the form sets.
+/// The same rules as the web's: a specific scope needs at least one node.
+pub fn edit_body(form: &EditForm) -> Result<Value, String> {
+    let scope = scope_json(form.scope, &form.nodes)?;
+    let bindings: Vec<&str> = form.bindings.iter().filter(|(_, on)| *on).map(|(b, _)| b.as_str()).collect();
+    Ok(json!({ "label": form.label.trim(), "scope": scope, "bindings": bindings }))
+}
+
+/// A binding's label in a pick list: the consumer's label and what it wants, when it is known; else the name.
+pub fn binding_label(binding: &str, consumers: &[ConsumerRef]) -> String {
+    match consumers.iter().find(|c| c.binding == binding) {
+        Some(c) if !c.wants.is_empty() => format!("{}  ·  {}", c.label, c.wants),
+        Some(c) => c.label.clone(),
+        None => binding.to_string(),
+    }
+}
+
 /// The body of `POST /v1/vault/secrets/{id}/rollback`.
 pub fn rollback_body(v: u64) -> Value {
     json!({ "v": v })
@@ -317,7 +350,7 @@ pub(super) fn pending_card<'a>(pending: &Pending, busy: bool) -> Element<'a, Msg
         ),
         Pending::Rekey => (
             "Rekey the vault",
-            "Rekey re-encrypts the vault under a new root key. Secret values do not change. Every passphrase and recovery slot is rewritten, so each one must be given now.".to_string(),
+            "Rekey re-encrypts the vault under a new root key. Secret values do not change. Every passphrase and recovery slot is rewritten. The slot this session unlocked with needs no secret, so each other one must be given now.".to_string(),
             "Rekey",
         ),
         Pending::RemoveEntry { name, .. } => (
@@ -404,23 +437,31 @@ pub(super) fn slots_card<'a>(state: &'a State) -> Element<'a, Msg> {
             .padding(8)
             .into(),
     );
-    items.push(ui::faint("A recovery code replaces the old one. Rekey rewrites every passphrase and recovery slot.").into());
     items.push(
-        row(vec![
-            ui::btn("Add passphrase", None, ui::Kind::Secondary, gate(state.busy, Msg::AddPassphrase)),
-            ui::btn("Make recovery code", None, ui::Kind::Secondary, gate(state.busy, Msg::MakeRecovery)),
-            ui::btn("Rekey", None, ui::Kind::Secondary, gate(state.busy, Msg::OpenRekey)),
-        ])
-        .spacing(12)
-        .into(),
+        ui::faint("A recovery code replaces the old one. Rekey rewrites every passphrase and recovery slot, except the one this session unlocked with.")
+            .into(),
     );
+    let has_keyfile = status.slots.iter().any(|slot| slot.kind == "keyfile");
+    let mut actions: Vec<Element<'a, Msg>> = vec![
+        ui::btn("Add passphrase", None, ui::Kind::Secondary, gate(state.busy, Msg::AddPassphrase)),
+        ui::btn("Make recovery code", None, ui::Kind::Secondary, gate(state.busy, Msg::MakeRecovery)),
+        ui::btn("Rekey", None, ui::Kind::Secondary, gate(state.busy, Msg::OpenRekey)),
+    ];
+    // One key-file slot at most: the hub refuses a second, so the button is shown only without one.
+    if !has_keyfile {
+        items.push(ui::faint(KEYFILE_NOTE).into());
+        actions.push(ui::btn("Add key file", None, ui::Kind::Secondary, gate(state.busy, Msg::AddKeyfile)));
+    }
+    items.push(row(actions).spacing(12).into());
     ui::card("Key slots", stack(items))
 }
 
 /// The rekey form: each passphrase or recovery slot's secret, then the review that confirms it.
 pub(super) fn rekey_card<'a>(fields: &'a [RekeyField], busy: bool) -> Element<'a, Msg> {
-    let mut items: Vec<Element<'a, Msg>> =
-        vec![ui::faint("Give the passphrase or recovery code of every slot. Each one is rewritten under the new key.").into()];
+    let mut items: Vec<Element<'a, Msg>> = vec![
+        ui::faint("Give the passphrase or recovery code of each slot except the one this session unlocked with. Each one is rewritten under the new key.")
+            .into(),
+    ];
     for (i, field) in fields.iter().enumerate() {
         items.push(ui::label(&slot_kind_label(&field.kind)).into());
         items.push(
@@ -483,13 +524,7 @@ pub(super) fn create_card<'a>(state: &'a State, form: &'a SecretForm) -> Element
         items.push(ui::faint("Nothing asks for a secret yet. You can bind it later.").into());
     }
     for (i, (binding, on)) in form.bindings.iter().enumerate() {
-        let consumer = state.consumers.iter().find(|c| &c.binding == binding);
-        let label = match consumer {
-            Some(c) if !c.wants.is_empty() => format!("{}  ·  {}", c.label, c.wants),
-            Some(c) => c.label.clone(),
-            None => binding.clone(),
-        };
-        items.push(checkbox(*on).label(label).on_toggle(move |v| Msg::CBinding(i, v)).into());
+        items.push(checkbox(*on).label(binding_label(binding, &state.consumers)).on_toggle(move |v| Msg::CBinding(i, v)).into());
     }
     items.push(
         row(vec![
@@ -500,6 +535,41 @@ pub(super) fn create_card<'a>(state: &'a State, form: &'a SecretForm) -> Element
         .into(),
     );
     ui::card("New secret", stack(items))
+}
+
+/// The edit form: one entry's label, scope and bindings. The value is not part of it, so rotate sets a new one.
+pub(super) fn edit_card<'a>(state: &'a State, form: &'a EditForm) -> Element<'a, Msg> {
+    let mut items: Vec<Element<'a, Msg>> = vec![
+        ui::faint("The value does not change here. Rotate it to set a new one.").into(),
+        text_input("Label (optional)", &form.label).on_input(Msg::EditLabel).padding(8).into(),
+        row(vec![
+            ui::label("Scope").into(),
+            pick_list(vec![ScopeMode::Plaza, ScopeMode::Nodes], Some(form.scope), Msg::EditScope).into(),
+        ])
+        .spacing(12)
+        .into(),
+    ];
+    if form.scope == ScopeMode::Nodes {
+        for (i, (id, on)) in form.nodes.iter().enumerate() {
+            items.push(checkbox(*on).label(node_name(&state.nodes, id)).on_toggle(move |v| Msg::EditNode(i, v)).into());
+        }
+    }
+    items.push(ui::label("Bindings").into());
+    if form.bindings.is_empty() {
+        items.push(ui::faint("Nothing asks for a secret yet.").into());
+    }
+    for (i, (binding, on)) in form.bindings.iter().enumerate() {
+        items.push(checkbox(*on).label(binding_label(binding, &state.consumers)).on_toggle(move |v| Msg::EditBinding(i, v)).into());
+    }
+    items.push(
+        row(vec![
+            ui::btn("Cancel", None, ui::Kind::Ghost, Some(Msg::CloseEdit)),
+            ui::btn("Save changes", None, ui::Kind::Primary, gate(state.busy, Msg::EditSubmit)),
+        ])
+        .spacing(12)
+        .into(),
+    );
+    ui::card(&format!("Edit {}", form.name), stack(items))
 }
 
 /// The rotate form: a new value for one entry, typed once and cleared on submit.
@@ -613,6 +683,34 @@ mod tests {
         assert!(!valid_name("A") && !valid_name("api_key") && !valid_name("1KEY") && !valid_name(&"A".repeat(65)));
         assert_eq!(secret_path("id/1", "/test"), "/v1/vault/secrets/id%2F1/test");
         assert_eq!(slot_path("s-1"), "/v1/vault/slots/s-1");
+    }
+
+    #[test]
+    fn vault_edit_body_sends_label_scope_and_the_ticked_bindings() {
+        let mut form = EditForm {
+            id: "id1".into(),
+            name: "GITHUB_TOKEN".into(),
+            label: " GH ".into(),
+            scope: ScopeMode::Nodes,
+            nodes: vec![("n0".into(), true), ("n1".into(), false)],
+            bindings: vec![("mcp:github".into(), true), ("tool:x".into(), false)],
+        };
+        assert_eq!(
+            edit_body(&form).unwrap(),
+            json!({
+                "label": "GH",
+                "scope": { "kind": "nodes", "nodes": ["n0"] },
+                "bindings": ["mcp:github"],
+            })
+        );
+        form.scope = ScopeMode::Plaza;
+        assert_eq!(edit_body(&form).unwrap()["scope"], json!({ "kind": "plaza" }));
+    }
+
+    #[test]
+    fn vault_edit_body_refuses_a_specific_scope_with_no_node() {
+        let form = EditForm { scope: ScopeMode::Nodes, nodes: vec![("n0".into(), false)], ..Default::default() };
+        assert_eq!(edit_body(&form).unwrap_err(), "Pick at least one node, or choose Plaza.");
     }
 
     #[test]

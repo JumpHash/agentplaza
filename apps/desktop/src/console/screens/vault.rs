@@ -18,9 +18,9 @@ mod audit;
 use audit::{AuditPage, AuditState, ImportForm, ImportResult};
 
 use forms::{
-    add_passphrase_body, create_body, create_card, pending_card, recovery_card, rekey_body, rekey_card, rollback_body, rotate_body,
-    rotate_card, sealed_card, secret_path, slot_path, slots_card, test_body, unseal_body, PassForm, RekeyField, Rotate, ScopeMode,
-    SecretForm, SecretKind, UnsealForm, UnsealMethod,
+    add_passphrase_body, create_body, create_card, edit_body, edit_card, pending_card, recovery_card, rekey_body, rekey_card, rollback_body,
+    rotate_body, rotate_card, sealed_card, secret_path, slot_path, slots_card, test_body, unseal_body, EditForm, PassForm, RekeyField,
+    Rotate, ScopeMode, SecretForm, SecretKind, UnsealForm, UnsealMethod,
 };
 use iced::widget::{column, pick_list, row, text, text_input};
 use iced::{Element, Length, Task};
@@ -40,7 +40,12 @@ pub struct VaultStatus {
     pub state: String,
     pub slots: Vec<VaultSlot>,
     pub entries: u64,
-    pub audit_ok: bool,
+    /// The audit chain's last known state: None until the first unlock or audit check ("not checked").
+    pub audit_ok: Option<bool>,
+    /// When the vault was last rekeyed; None when never.
+    pub rekeyed_ms: Option<f64>,
+    /// How many variables the env file still holds; the banner shows while it is more than zero.
+    pub env_file_keys: u64,
     /// The reason the vault is tampered, when it is.
     pub tampered: Option<String>,
     /// The nodes the vault can scope to; `n0` is this hub.
@@ -55,6 +60,8 @@ pub struct VaultSlot {
     /// `passphrase`, `keyfile` or `recovery`.
     pub kind: String,
     pub created_ms: f64,
+    /// True for the one slot that unlocked this session: a rekey does not ask for its secret.
+    pub unsealed_with: bool,
 }
 
 /// The scope of an entry: the whole plaza, or the listed nodes.
@@ -192,6 +199,26 @@ fn slot_kind_label(kind: &str) -> String {
     }
 }
 
+/// The rekey form's fields: one per passphrase or recovery slot, except the slot this session unlocked
+/// with (the hub re-wraps that one from the session's own key). A key-file slot needs no secret either.
+pub fn rekey_fields(status: &VaultStatus) -> Vec<RekeyField> {
+    status
+        .slots
+        .iter()
+        .filter(|slot| slot.kind != "keyfile" && !slot.unsealed_with)
+        .map(|slot| RekeyField { slot: slot.id.clone(), kind: slot.kind.clone(), secret: String::new() })
+        .collect()
+}
+
+/// The audit chain's line, in the web console's words. None is "not checked", not "broken".
+fn audit_line(audit_ok: Option<bool>) -> &'static str {
+    match audit_ok {
+        None => "Audit chain not checked until unsealed",
+        Some(true) => "Audit chain intact",
+        Some(false) => "Audit chain broken, see the Audit log tab",
+    }
+}
+
 /// "never", or how long ago, from epoch milliseconds.
 fn ago(ms: f64, now_ms: f64) -> String {
     if ms <= 0.0 {
@@ -268,6 +295,8 @@ pub struct State {
     pub create: Option<SecretForm>,
     /// The rotate form, open for one entry.
     pub rotate: Option<Rotate>,
+    /// The edit form, open for one entry: its label, scope and bindings (no value).
+    pub edit: Option<EditForm>,
     /// The last test's answer.
     pub test_note: Option<String>,
     /// The unsealed section on show.
@@ -287,6 +316,7 @@ impl State {
         self.rekey = None;
         self.create = None;
         self.rotate = None;
+        self.edit = None;
         self.import = ImportForm::default();
     }
 }
@@ -352,6 +382,16 @@ pub enum Msg {
     ImportSubmit,
     ImportDone(Result<ImportResult, String>),
     OpenCreateFor(String, String, String),
+    /// Adds the key-file slot (the hub writes the key file on its own disk).
+    AddKeyfile,
+    OpenEdit(String),
+    EditLabel(String),
+    EditScope(ScopeMode),
+    EditNode(usize, bool),
+    EditBinding(usize, bool),
+    EditSubmit,
+    CloseEdit,
+    Edited(Result<String, String>),
 }
 
 pub fn go(_msg: &Msg) -> Option<Id> {
@@ -407,6 +447,13 @@ fn recovery_code(v: &Value) -> Result<String, String> {
 /// Applies an edit to the open create form, if there is one.
 fn edit(state: &mut State, change: impl FnOnce(&mut SecretForm)) {
     if let Some(form) = state.create.as_mut() {
+        change(form);
+    }
+}
+
+/// Applies an edit to the open edit form, if there is one.
+fn amend(state: &mut State, change: impl FnOnce(&mut EditForm)) {
+    if let Some(form) = state.edit.as_mut() {
         change(form);
     }
 }
@@ -574,6 +621,14 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                 Task::none()
             }
         },
+        Msg::AddKeyfile => call(
+            state,
+            ctx,
+            "POST",
+            "/v1/vault/slots".into(),
+            Some(json!({ "kind": "keyfile" })),
+            "Key file slot added".into(),
+        ),
         Msg::MakeRecovery => {
             state.busy = true;
             state.copy_failed = false;
@@ -607,13 +662,7 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         // Rekey.
         Msg::OpenRekey => {
             if state.rekey.is_none() {
-                state.rekey = state.status.as_ref().map(|s| {
-                    s.slots
-                        .iter()
-                        .filter(|slot| slot.kind != "keyfile")
-                        .map(|slot| RekeyField { slot: slot.id.clone(), kind: slot.kind.clone(), secret: String::new() })
-                        .collect()
-                });
+                state.rekey = state.status.as_ref().map(rekey_fields);
             }
             Task::none()
         }
@@ -728,6 +777,92 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                     Task::none()
                 }
             }
+        }
+
+        // Edit: the label, scope and bindings (PATCH); the value is not part of it.
+        Msg::OpenEdit(id) => {
+            let Some(entry) = state.entries.iter().find(|e| e.id == id) else { return Task::none() };
+            let scoped: Vec<String> = match &entry.scope {
+                VaultScope::Nodes { nodes } => nodes.clone(),
+                VaultScope::Plaza => Vec::new(),
+            };
+            // The entry's current bindings stay ticked even when no consumer lists them.
+            let mut bindings: Vec<(String, bool)> =
+                state.consumers.iter().map(|c| (c.binding.clone(), entry.bindings.contains(&c.binding))).collect();
+            bindings.extend(
+                entry
+                    .bindings
+                    .iter()
+                    .filter(|b| !state.consumers.iter().any(|c| &c.binding == *b))
+                    .map(|b| (b.clone(), true)),
+            );
+            state.edit = Some(EditForm {
+                id: entry.id.clone(),
+                name: entry.name.clone(),
+                label: entry.label.clone(),
+                scope: if matches!(entry.scope, VaultScope::Nodes { .. }) { ScopeMode::Nodes } else { ScopeMode::Plaza },
+                nodes: state.nodes.iter().map(|n| (n.id.clone(), scoped.contains(&n.id))).collect(),
+                bindings,
+            });
+            Task::none()
+        }
+        Msg::EditLabel(v) => {
+            amend(state, |f| f.label = v);
+            Task::none()
+        }
+        Msg::EditScope(mode) => {
+            amend(state, |f| f.scope = mode);
+            Task::none()
+        }
+        Msg::EditNode(i, on) => {
+            amend(state, |f| {
+                if let Some(node) = f.nodes.get_mut(i) {
+                    node.1 = on;
+                }
+            });
+            Task::none()
+        }
+        Msg::EditBinding(i, on) => {
+            amend(state, |f| {
+                if let Some(binding) = f.bindings.get_mut(i) {
+                    binding.1 = on;
+                }
+            });
+            Task::none()
+        }
+        Msg::CloseEdit => {
+            state.edit = None;
+            Task::none()
+        }
+        Msg::EditSubmit => {
+            let Some(form) = state.edit.as_ref() else { return Task::none() };
+            match edit_body(form) {
+                Ok(body) => {
+                    let path = secret_path(&form.id, "");
+                    let note = format!("Saved {}", form.name);
+                    state.busy = true;
+                    state.failure = None;
+                    state.notice = None;
+                    let c = ctx.client.clone();
+                    client::task(move || c.call("PATCH", &path, Some(&body)).map(|_| note), Msg::Edited)
+                }
+                Err(e) => {
+                    state.failure = Some(e);
+                    Task::none()
+                }
+            }
+        }
+        // The form stays open on a refusal, so the ticks are not lost.
+        Msg::Edited(Ok(note)) => {
+            state.busy = false;
+            state.edit = None;
+            state.notice = Some(note);
+            load(state, ctx)
+        }
+        Msg::Edited(Err(error)) => {
+            state.busy = false;
+            state.failure = Some(error);
+            Task::none()
         }
 
         // Test.
@@ -931,6 +1066,9 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
     match &state.status {
         None => parts.push(ui::loading()),
         Some(status) => {
+            if status.env_file_keys > 0 {
+                parts.push(env_banner());
+            }
             parts.push(header(status));
             match status.state.as_str() {
                 "unsealed" => {
@@ -951,6 +1089,7 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
     ui::sheet(ui::view_head("Vault", actions), column(parts).spacing(16).into())
 }
 
+/// The status card: the state, the counts and the audit chain's line, then when the vault was last rekeyed.
 fn header<'a>(status: &VaultStatus) -> Element<'a, Msg> {
     let state = match status.state.as_str() {
         "unsealed" => "Unsealed",
@@ -959,9 +1098,24 @@ fn header<'a>(status: &VaultStatus) -> Element<'a, Msg> {
         "tampered" => "Tampered",
         other => other,
     };
-    let audit = if status.audit_ok { "audit ok" } else { "audit failed" };
-    let line = format!("{state}  ·  {} key slots  ·  {} entries  ·  {audit}", status.slots.len(), status.entries);
-    ui::card("Status", text(line).into())
+    let line = format!("{state}  ·  {} key slots  ·  {} entries  ·  {}", status.slots.len(), status.entries, audit_line(status.audit_ok));
+    let rekeyed = match status.rekeyed_ms {
+        Some(ms) => format!("Rekeyed: {}", ago(ms, now_ms())),
+        None => "Rekeyed: never".to_string(),
+    };
+    ui::card("Status", stack(vec![text(line).into(), ui::faint(rekeyed).into()]))
+}
+
+/// The env-file banner, in the web console's words: keys that were in an env file now live in the vault.
+fn env_banner<'a>() -> Element<'a, Msg> {
+    let warn = crate::theme::palette().warn;
+    ui::card(
+        "Env file",
+        stack(vec![
+            ui::faint("Keys were found in an env file. They now live in the vault. Delete the file.").color(warn).into(),
+            ui::faint("To move what is left and remove the file in one step, run apz vault import FILE.env --shred.").into(),
+        ]),
+    )
 }
 
 /// The unsealed screen's cards, top to bottom: the confirmation, the recovery reveal, the key slots,
@@ -983,6 +1137,9 @@ fn unsealed_parts<'a>(state: &'a State) -> Vec<Element<'a, Msg>> {
     }
     if let Some(rotate) = &state.rotate {
         parts.push(rotate_card(rotate, state.busy));
+    }
+    if let Some(edit) = &state.edit {
+        parts.push(edit_card(state, edit));
     }
     parts.push(secrets_card(state));
     parts
@@ -1043,6 +1200,7 @@ fn entry_row<'a>(entry: &VaultEntry, state: &'a State, now: f64) -> Element<'a, 
     .into();
     let detail = ui::faint(format!("Bindings: {bindings}  ·  used {} times, last {}", entry.use_count, ago(entry.last_used_ms, now)));
     let mut actions: Vec<Element<'a, Msg>> = vec![
+        ui::btn_sm("Edit", None, ui::Kind::Secondary, gate(state.busy, Msg::OpenEdit(entry.id.clone()))),
         ui::btn_sm("Rotate", None, ui::Kind::Secondary, gate(state.busy, Msg::OpenRotate(entry.id.clone(), entry.name.clone()))),
         ui::btn_sm("Test", None, ui::Kind::Secondary, gate(state.busy, Msg::RunTest(entry.id.clone()))),
     ];
@@ -1089,6 +1247,39 @@ mod tests {
         assert_eq!(previous_version(&e), Some(2));
         e.versions = vec![VersionRef { v: 3 }];
         assert_eq!(previous_version(&e), None);
+    }
+
+    #[test]
+    fn vault_status_parses_a_null_audit_chain() {
+        // A fresh or restarted hub sends `audit_ok: null` until its first unlock or audit check.
+        let fresh: VaultStatus = serde_json::from_str(
+            r#"{"state":"unsealed","slots":[{"id":"s1","kind":"passphrase","created_ms":1.0,"unsealed_with":true},{"id":"s2","kind":"recovery","created_ms":2.0,"unsealed_with":false}],"entries":2,"audit_ok":null,"rekeyed_ms":null,"tampered":null,"env_file_keys":3,"nodes":[]}"#,
+        )
+        .expect("a status with a null audit chain parses");
+        assert_eq!(fresh.audit_ok, None);
+        assert_eq!(audit_line(fresh.audit_ok), "Audit chain not checked until unsealed");
+        assert!(fresh.rekeyed_ms.is_none());
+        assert_eq!(fresh.env_file_keys, 3);
+        assert!(fresh.slots[0].unsealed_with && !fresh.slots[1].unsealed_with);
+
+        let intact: VaultStatus = serde_json::from_str(r#"{"state":"unsealed","audit_ok":true,"rekeyed_ms":5.0}"#).unwrap();
+        assert_eq!(audit_line(intact.audit_ok), "Audit chain intact");
+        assert_eq!(intact.rekeyed_ms, Some(5.0));
+        let broken: VaultStatus = serde_json::from_str(r#"{"state":"unsealed","audit_ok":false}"#).unwrap();
+        assert_eq!(audit_line(broken.audit_ok), "Audit chain broken, see the Audit log tab");
+    }
+
+    #[test]
+    fn vault_rekey_asks_for_no_secret_of_the_unlock_slot_or_the_key_file() {
+        let status: VaultStatus = serde_json::from_str(
+            r#"{"state":"unsealed","slots":[
+                {"id":"pass","kind":"passphrase","created_ms":1.0,"unsealed_with":true},
+                {"id":"rec","kind":"recovery","created_ms":2.0,"unsealed_with":false},
+                {"id":"key","kind":"keyfile","created_ms":3.0,"unsealed_with":false}]}"#,
+        )
+        .unwrap();
+        let fields = rekey_fields(&status);
+        assert_eq!(fields.iter().map(|f| f.slot.as_str()).collect::<Vec<_>>(), vec!["rec"]);
     }
 
     #[test]
