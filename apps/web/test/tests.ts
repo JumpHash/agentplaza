@@ -20,12 +20,13 @@ import { agentTally, boardOf, gibText, machineFacts, machineSubtitle } from '../
 import { hubOrigin, setupSnippets } from '../src/views/hub-mcp-snippets';
 import { ENV_NAME_RE, limitsProblem, matchingPreset, ownRowProblem, specsOfBag } from '../src/views/mcp-common';
 import { wrapIde, type IdeGlue } from '../src/ide/wasm';
-import { activitySplit, authorHue, buildChat, currentTask, filterPalette, formatMs, groupByProject, matchScore, mentionsOf, rowStatus, stepLabel, type PaletteItem } from '../src/ide/view';
-import type { Entry, Project } from '../src/api';
+import { activitySplit, authorHue, buildChat, currentTask, filterPalette, formatMs, matchScore, mentionsOf, rowStatus, stepLabel, type PaletteItem } from '../src/ide/view';
+import { groupByProject, projectOf, sharedNames, startAgent } from '../src/ide/groups';
+import type { Entry, Project, Task } from '../src/api';
 import { applyBuffer, badgeOf, diffMark, dirsOf, fuzzyScore, isViewed, languageFor, lineCounts, onRemote, openBuffer, parentDir, parseViewed, rankPaths, viewedKey, withViewed } from '../src/ide/model';
 import type { FileChange } from '../src/ide/types';
 import { CENTRE_MIN, clampSize, defaultLayout, fitSize, isNarrow, LEFT_SIZE, leftViewFor, originFallback, parseLayout, RIGHT_SIZE, rightTabFor, serializeLayout } from '../src/ide/layout';
-import { MAX_TERMINALS, attachFrame, base64ToBytes, bytesToBase64, clearSession, inputFrame, killFrame, nextOffset, openFrame, parseServerFrame, plainText, readSession, reconnectDelay, resizeFrame, sessionKey, splitInput, terminalSocketUrl, writeSession, type KeyValueStore } from '../src/views/ide-terminal-model';
+import { MAX_TERMINALS, attachFrame, base64ToBytes, bytesToBase64, clearSession, inputFrame, killFrame, nextOffset, openFrame, parseServerFrame, plainText, readSession, reconnectDelay, resizeFrame, sessionKey, splitInput, storedTerminalCount, terminalSocketUrl, writeSession, type KeyValueStore } from '../src/views/ide-terminal-model';
 
 let failures = 0;
 // Each section checks its own failures and reports them, then the run goes on to the next section (so one failing
@@ -678,22 +679,7 @@ sectionEnd('ide terminal tests: ok');
 // ---- IDE agent view model (src/ide/view.ts) ----
 {
   const ag = (cid: number, name: string, over: Record<string, unknown> = {}): Agent => ({ cid, name, status: 'idle', work: null, ...over }) as unknown as Agent;
-  const pj = (id: string, title: string, lead_cid: number, tasks: string[] = []): Project => ({ id, title, lead_cid, tasks }) as unknown as Project;
   const en = (seq: number, at_ms: number, kind: Entry['kind'], data: Record<string, unknown> = {}, cid = 1, work = 7): Entry => ({ seq, at_ms, cid, work, kind, data });
-
-  const projects = [pj('p1', 'Alpha', 1, ['t1']), pj('p2', 'Beta', 2), pj('p3', 'Empty', 9)];
-  const agents = [
-    ag(1, 'zed'),
-    ag(2, 'amy'),
-    ag(3, 'bob'),
-    ag(4, 'cy', { work: { prompt: 'x', origin: { task: 't1', motion: null, from_cid: null } } }),
-    ag(5, 'dee', { work: { prompt: 'x', origin: { task: 'nope', motion: null, from_cid: null } } }),
-  ];
-  const groups = groupByProject(agents, projects);
-  eq(groups.map((g) => g.title).join(','), 'Alpha,Beta,Unassigned', 'groupByProject: project order, empty projects skipped, Unassigned last');
-  eq(groups[0].agents.map((a) => a.name).join(','), 'cy,zed', 'groupByProject: agents sorted by name, task-held agents join the project');
-  eq(groups[2].id, null, 'groupByProject: Unassigned has a null id');
-  eq(groups[2].agents.map((a) => a.name).join(','), 'bob,dee', 'groupByProject: unassigned agents sorted');
 
   eq(rowStatus({ status: 'working' }), 'working', 'rowStatus: working');
   eq(rowStatus({ status: 'offline' }, { state: 'done' }), 'sleeping', 'rowStatus: offline is sleeping whatever the last task');
@@ -804,6 +790,65 @@ sectionEnd('ide agent view model tests: ok');
   eq(label({ kind: 'library_tool', name: 'search', version: 3 }), 'search v3', 'rich label: library tool');
 }
 sectionEnd('rich content tests: ok');
+
+// ---- IDE grouping by project, duplicate names and the start choice (src/ide/groups.ts) ----
+{
+  const ag = (cid: number, name: string, over: Record<string, unknown> = {}): Agent => ({ cid, name, status: 'idle', work: null, ...over }) as unknown as Agent;
+  const pj = (id: string, title: string, lead_cid: number, tasks: string[] = [], updated_ms = 0): Project => ({ id, title, lead_cid, tasks, updated_ms, repo: null }) as unknown as Project;
+  const tk = (id: string, agent_cid: number | null): Task => ({ id, agent_cid, state: 'open' }) as unknown as Task;
+  const names = (g: { agents: Agent[] }): string => g.agents.map((a) => a.name).join(',');
+  const work = (task: string) => ({ prompt: 'x', origin: { task, motion: null, from_cid: null } });
+
+  // Alpha: led by zed (1), holds t1 which amy (2) claimed. Beta: led by amy (2), holds t2 which cy (4) is working on.
+  // Gamma: no agents. t3 is held by dee (5), but no project holds t3.
+  const projects = [pj('p1', 'Alpha', 1, ['t1'], 100), pj('p2', 'Beta', 2, ['t2'], 300), pj('p3', 'Gamma', 9, [], 900)];
+  const tasks = [tk('t1', 2), tk('t2', null), tk('t3', 5)];
+  const agents = [
+    ag(1, 'zed'),
+    ag(2, 'amy'),
+    ag(3, 'bob'),
+    ag(4, 'cy', { status: 'working', work: work('t2') }),
+    ag(5, 'dee', { work: work('nope') }),
+  ];
+  const groups = groupByProject(agents, projects, tasks);
+  eq(groups.map((g) => g.title).join(','), 'Beta,Alpha,No project', 'groupByProject: most recent project first, empty projects skipped, No project last');
+  eq(names(groups[0]), 'amy,cy', 'groupByProject: the lead and a work-origin assignee are in the project');
+  eq(names(groups[1]), 'amy,zed', 'groupByProject: an agent in two projects is listed in both (amy: lead of Beta, claimed t1 in Alpha)');
+  eq(groups[2].id, null, 'groupByProject: No project has a null id');
+  eq(names(groups[2]), 'bob,dee', 'groupByProject: agents in no project are sorted by name');
+  eq(groupByProject([ag(1, 'zed')], [pj('p1', 'Alpha', 1)], []).map((g) => g.title).join(','), 'Alpha', 'groupByProject: no No project group when every agent has a project');
+  eq(groupByProject([ag(2, 'amy')], [], []).map((g) => g.title).join(','), 'No project', 'groupByProject: with no projects every agent is in No project');
+  eq(groupByProject([ag(2, 'amy')], [pj('p1', 'Alpha', 1, [], 5)], [tk('t9', 2)])[0]?.title, 'No project', 'groupByProject: a claimed task outside every project does not place the agent');
+  eq(projectOf(agents[1], projects, tasks)?.id, 'p2', 'projectOf: the most recently active project of the agent');
+  eq(projectOf(agents[2], projects, tasks), null, 'projectOf: null for an agent in no project');
+
+  eq([...sharedNames([ag(1, 'Ada'), ag(2, 'ada'), ag(3, 'Bo')])].sort().join(','), '1,2', 'sharedNames: names that collide, case-insensitively');
+  eq(sharedNames([ag(1, 'Ada'), ag(2, 'Bo')]).size, 0, 'sharedNames: no collision, no cid shown');
+
+  // The sidebar order is Beta (amy, cy), Alpha (amy, zed), No project (bob, dee); the unique order is 2, 4, 1, 3, 5.
+  eq(startAgent(groups, 1), 1, 'startAgent: the agent selected last time, while it is listed');
+  eq(startAgent(groups, 99), 4, 'startAgent: a gone agent falls back to the first working one');
+  eq(startAgent(groups, null), 4, 'startAgent: with nothing stored, the first working agent');
+  const idle = groupByProject([ag(2, 'amy'), ag(1, 'zed')], [], []);
+  eq(startAgent(idle, null), 2, 'startAgent: no working agent, the first agent in the sidebar');
+  eq(startAgent([], null), null, 'startAgent: null when there are no agents');
+}
+sectionEnd('ide grouping tests: ok');
+
+// The stored terminals of a workspace: one per slot with a session, counted from the terminal module's storage.
+{
+  const store = new Map<string, string>();
+  const kv = { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => void store.set(k, v), removeItem: (k: string) => void store.delete(k) };
+  eq(storedTerminalCount(kv, 'agent:77'), 0, 'storedTerminalCount: none for a workspace with no sessions');
+  writeSession(kv, sessionKey('agent:77', '0'), { term: 't-a', offset: 0 });
+  writeSession(kv, sessionKey('agent:77', '2'), { term: 't-b', offset: 5 });
+  writeSession(kv, sessionKey('agent:78', '1'), { term: 't-c', offset: 0 });
+  eq(storedTerminalCount(kv, 'agent:77'), 2, 'storedTerminalCount: one per stored slot of that workspace');
+  clearSession(kv, sessionKey('agent:77', '0'));
+  eq(storedTerminalCount(kv, 'agent:77'), 1, 'storedTerminalCount: a cleared session is no longer counted');
+  eq(storedTerminalCount(undefined, 'agent:77'), 0, 'storedTerminalCount: no storage, no terminals');
+}
+sectionEnd('ide stored terminals tests: ok');
 
 if (failedSections.length) {
   console.error(`${failedSections.length} section(s) failed: ${failedSections.join(', ')}`);

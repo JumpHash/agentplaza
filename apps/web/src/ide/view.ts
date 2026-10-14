@@ -1,6 +1,6 @@
 // Pure view model for the IDE's agent views. No DOM, no fetch, no store:
 // every function takes plain data from api.ts and returns plain data.
-import type { Agent, Block, Entry, Project, Task } from '../api';
+import type { Agent, Block, Entry, Task } from '../api';
 
 // ---- Agent rows -------------------------------------------------------------
 
@@ -23,44 +23,6 @@ export function currentTask(agent: Agent): string | null {
   const prompt = agent.work?.prompt ?? '';
   const line = prompt.split('\n').map((s) => s.trim()).find((s) => s.length > 0);
   return line ? line.slice(0, 120) : null;
-}
-
-/**
- * The project an agent belongs to. Rule: the project the agent leads (lead_cid); otherwise
- * the project whose task ids include the task the agent is working on (work.origin.task).
- */
-export function projectFor(agent: Pick<Agent, 'cid'> & Partial<Pick<Agent, 'work'>>, projects: Project[]): Project | null {
-  const led = projects.find((p) => p.lead_cid === agent.cid);
-  if (led) return led;
-  const task = agent.work?.origin.task;
-  if (!task) return null;
-  return projects.find((p) => p.tasks.includes(task)) ?? null;
-}
-
-export interface ProjectGroup { id: string | null; title: string; agents: Agent[] }
-
-/** One group per project that has agents, in project order; agents sorted by name; Unassigned last. */
-export function groupByProject(agents: Agent[], projects: Project[]): ProjectGroup[] {
-  const byProject = new Map<string, Agent[]>();
-  const unassigned: Agent[] = [];
-  for (const agent of agents) {
-    const project = projectFor(agent, projects);
-    if (!project) {
-      unassigned.push(agent);
-      continue;
-    }
-    const list = byProject.get(project.id) ?? [];
-    list.push(agent);
-    byProject.set(project.id, list);
-  }
-  const byName = (xs: Agent[]): Agent[] => [...xs].sort((a, b) => a.name.localeCompare(b.name));
-  const groups: ProjectGroup[] = [];
-  for (const project of projects) {
-    const list = byProject.get(project.id);
-    if (list && list.length > 0) groups.push({ id: project.id, title: project.title, agents: byName(list) });
-  }
-  if (unassigned.length > 0) groups.push({ id: null, title: 'Unassigned', agents: byName(unassigned) });
-  return groups;
 }
 
 // ---- Chat transcript --------------------------------------------------------

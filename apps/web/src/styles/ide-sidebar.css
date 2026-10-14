@@ -71,8 +71,7 @@
   border-radius: 6px;
   background: transparent;
   color: var(--text-2);
-  font-family: var(--mono);
-  font-size: var(--fs-xs);
+  font: 600 var(--fs-sm) / 1.4 var(--sans);
   text-align: left;
   cursor: pointer;
 }
@@ -103,9 +102,8 @@
   border-radius: 6px;
   background: var(--surface-3);
   color: var(--text-2);
-  font-size: var(--fs-xs);
+  font: 600 11px / 18px var(--sans);
   font-variant-numeric: tabular-nums;
-  line-height: 18px;
   text-align: center;
 }
 
@@ -185,9 +183,10 @@
   border: 1.5px solid var(--text-2);
 }
 
+/* Working: the success colour, breathing slowly. Failed: the error colour. Done: a check in success, the name struck through. */
 .ide-side-row[data-status="working"] .ide-side-dot {
-  background: var(--accent);
-  animation: ide-side-pulse 1.4s ease-in-out infinite;
+  background: var(--ok);
+  animation: ide-side-pulse 2.4s ease-in-out infinite;
 }
 
 .ide-side-row[data-status="failed"] .ide-side-dot {
@@ -209,7 +208,7 @@
     opacity: 1;
   }
   50% {
-    opacity: 0.35;
+    opacity: 0.45;
   }
 }
 
@@ -240,6 +239,25 @@
   text-decoration: line-through;
 }
 
+/* The name and, when another agent in the group has the same name, the cid after it. */
+.ide-side-line {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s2);
+  min-width: 0;
+}
+
+.ide-side-line .ide-side-name {
+  min-width: 0;
+}
+
+.ide-side-cid {
+  flex: none;
+  color: var(--text-3);
+  font: 400 12px / 1.4 var(--sans);
+  font-variant-numeric: tabular-nums;
+}
+
 .ide-side-task {
   overflow: hidden;
   color: var(--text-2);
@@ -259,9 +277,11 @@
   white-space: nowrap;
 }
 
-/* Terminal rows sit under their agent row. */
+/* A terminal row sits under its agent row, and shows only while a terminal exists for that workspace. */
 .ide-side-term {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
   box-sizing: border-box;
   width: calc(100% - 34px);
   min-height: 26px;
@@ -272,11 +292,15 @@
   border-radius: 6px;
   background: transparent;
   color: var(--text-2);
-  font-family: var(--mono);
-  font-size: var(--fs-xs);
-  line-height: 26px;
+  font: 400 12px / 1.4 var(--sans);
   text-align: left;
   cursor: pointer;
+}
+
+.ide-side-term svg {
+  flex: none;
+  width: 12px;
+  height: 12px;
 }
 
 .ide-side-term:hover {
@@ -287,16 +311,6 @@
 .ide-side-term[aria-current="true"] {
   background: var(--accent-bg);
   color: var(--text);
-}
-
-/* Visually hidden status word for screen readers. */
-.ide-side-sr {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  clip: rect(0 0 0 0);
-  white-space: nowrap;
 }
 
 /* Pinned footer. */
@@ -319,8 +333,7 @@
   border-radius: 6px;
   background: transparent;
   color: var(--text);
-  font-family: var(--mono);
-  font-size: var(--fs-sm);
+  font: 500 var(--fs-sm) / 1.4 var(--sans);
   cursor: pointer;
 }
 
@@ -366,8 +379,7 @@
 .ide-side-card-k {
   flex: 0 0 84px;
   color: var(--text-3);
-  font-family: var(--mono);
-  font-size: var(--fs-xs);
+  font-size: 12px;
 }
 
 .ide-side-card-v {

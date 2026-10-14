@@ -81,6 +81,13 @@ export function chatPane(opts: ChatPaneOpts): ChatPane {
       void send();
     }
   });
+  // Image paste is off: the hub has no owner upload route to store a pasted image in, so the image is not taken. Text pastes.
+  input.addEventListener('paste', (ev) => {
+    const images = [...(ev.clipboardData?.files ?? [])].some((f) => f.type.startsWith('image/'));
+    if (!images) return;
+    ev.preventDefault();
+    toast('Pasting images is not available yet: the hub has no upload route for them.', 'error');
+  });
 
   const sendBtn = button('Send', () => void send(), { kind: 'primary' });
   const stopBtn = button('Stop', () => void stop(), { kind: 'danger' });

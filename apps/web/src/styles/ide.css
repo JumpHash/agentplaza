@@ -17,7 +17,7 @@
   overflow: hidden;
   color: var(--ink);
   background: var(--paper);
-  font: 400 var(--fs-sm) / 1.45 var(--serif);
+  font: 400 var(--fs-sm) / 1.45 var(--sans);
 }
 
 .ide [hidden] {
@@ -57,9 +57,7 @@
 }
 
 .ide-brand-name {
-  font: 600 13px / 1 var(--mono);
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  font: 600 13px / 1.3 var(--sans);
 }
 
 .ide-ws {
@@ -75,7 +73,7 @@
 }
 
 .ide-meta {
-  font: 400 var(--fs-xs) / 1.4 var(--mono);
+  font: 400 12px / 1.4 var(--sans);
   color: var(--ink-3);
   white-space: nowrap;
 }
@@ -104,14 +102,13 @@
 .ide-picker {
   min-width: 200px;
   max-width: 340px;
-  font: 400 var(--fs-xs) / 1.4 var(--mono);
+  font: 400 12px / 1.4 var(--sans);
 }
 
 .ide-count,
 .ide-totals {
-  font: 400 var(--fs-xs) / 1.4 var(--mono);
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+  font: 400 12px / 1.4 var(--sans);
+  font-variant-numeric: tabular-nums;
   color: var(--ink-3);
 }
 
@@ -170,7 +167,7 @@
   padding: 0 3px;
   border: 1px solid var(--rule);
   background: var(--sheet);
-  font: 600 9px / 12px var(--mono);
+  font: 600 11px / 1 var(--sans);
   color: var(--ink-2);
   text-align: center;
 }
@@ -210,9 +207,7 @@
 }
 
 .ide-left-title {
-  font: 600 11px / 1 var(--mono);
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
+  font: 600 12px / 1.4 var(--sans);
   color: var(--ink-2);
 }
 
@@ -274,8 +269,7 @@
   padding: 0 var(--s2);
   border-top: 1px solid var(--rule);
   background: var(--paper);
-  font: 400 11px / 1.4 var(--mono);
-  letter-spacing: 0.03em;
+  font: 400 12px / 1.4 var(--sans);
   color: var(--ink-3);
   white-space: nowrap;
   overflow: hidden;
@@ -335,9 +329,7 @@
 
 .ide-help h2 {
   margin: 0 0 var(--s2);
-  font: 600 11px / 1.3 var(--mono);
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
+  font: 600 14px / 1.4 var(--sans);
   color: var(--ink-2);
 }
 
@@ -346,7 +338,7 @@
   grid-template-columns: auto minmax(0, 1fr);
   gap: 6px 14px;
   margin: 0;
-  font: 400 12px / 1.4 var(--mono);
+  font: 400 13px / 1.5 var(--sans);
 }
 
 .ide-help dt {
@@ -356,7 +348,7 @@
 .ide-help dd {
   margin: 0;
   color: var(--ink-2);
-  font-family: var(--serif);
+  font-family: var(--sans);
   font-size: var(--fs-sm);
 }
 
@@ -365,7 +357,7 @@
   border: 1px solid var(--rule);
   background: var(--paper);
   color: var(--ink);
-  font: 400 11px var(--mono);
+  font: 500 12px / 1.4 var(--sans);
 }
 
 .ide-tree-tools {
@@ -381,9 +373,7 @@
   display: flex;
   align-items: center;
   gap: var(--s1);
-  font: 400 var(--fs-xs) / 1.3 var(--mono);
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+  font: 500 13px / 1.3 var(--sans);
   color: var(--ink-2);
   cursor: pointer;
 }
@@ -548,7 +538,7 @@
   border-bottom: 1px solid var(--rule);
   background: var(--paper);
   color: var(--ink-2);
-  font: 400 var(--fs-sm) / 1.4 var(--serif);
+  font: 400 var(--fs-sm) / 1.4 var(--sans);
 }
 
 .ide-banner.conflict {
@@ -673,9 +663,7 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  font: 400 11px / 1.4 var(--mono);
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
+  font: 500 11px / 1.4 var(--sans);
   color: var(--ink-2);
   cursor: pointer;
 }
@@ -742,7 +730,7 @@
 .ide-note {
   margin: 0;
   color: var(--ink-3);
-  font: 400 var(--fs-xs) / 1.4 var(--mono);
+  font: 400 12px / 1.4 var(--sans);
 }
 
 .ide-note.error {
@@ -801,7 +789,7 @@
   width: 100%;
   border: 0;
   border-bottom: 1px solid var(--rule);
-  font: 400 13px / 1.4 var(--mono);
+  font: 400 13px / 1.4 var(--sans);
 }
 
 .ide-palette .ide-note {
@@ -924,7 +912,7 @@
   border-bottom: 2px solid transparent;
   background: none;
   color: var(--ink-3);
-  font: 400 11px / 1 var(--mono);
+  font: 500 13px / 1 var(--sans);
   white-space: nowrap;
   cursor: pointer;
 }
@@ -963,7 +951,7 @@
   padding: 0 3px;
   border: 1px solid var(--rule);
   background: var(--sheet);
-  font: 600 9px / 12px var(--mono);
+  font: 600 11px / 1 var(--sans);
   color: var(--ink-2);
   text-align: center;
 }
@@ -1094,9 +1082,7 @@
 }
 
 .ide-bottom-title {
-  font: 600 11px / 1 var(--mono);
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
+  font: 600 12px / 1.4 var(--sans);
   color: var(--ink-2);
 }
 
@@ -1157,22 +1143,20 @@
 }
 
 .ide-ag-kind {
-  font: 400 11px / 1 var(--mono);
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
+  font: 500 11px / 1.4 var(--sans);
   color: var(--ink-3);
 }
 
 .ide-ag-text {
   margin: 0;
-  font: 400 13px / 1.5 var(--serif);
+  font: 400 13px / 1.5 var(--sans);
   color: var(--ink);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
 .ide-ag-chip {
-  font: 400 11px / 1 var(--mono);
+  font: 500 11px / 1.4 var(--sans);
   color: var(--info-ink);
   border: 1px solid var(--rule);
   padding: 4px 6px;
@@ -1313,8 +1297,7 @@
 
 .ide-run-status {
   margin: 0;
-  font: 400 11.5px var(--mono);
-  letter-spacing: 0.04em;
+  font: 400 12px / 1.4 var(--sans);
   color: var(--ink-3);
 }
 
@@ -1360,7 +1343,7 @@
 
 .ide-chg-base {
   max-width: 100%;
-  font: 400 var(--fs-xs) / 1.4 var(--mono);
+  font: 400 12px / 1.4 var(--sans);
 }
 
 .ide-chg-list {
@@ -1395,7 +1378,7 @@
 }
 
 .ide-chg-status {
-  font: 600 11px / 1 var(--mono);
+  font: 600 11px / 1 var(--sans);
   text-align: center;
   color: var(--ink-3);
 }
@@ -1475,7 +1458,7 @@
 
 .ide-search-fields .input {
   width: 100%;
-  font: 400 12px / 1.4 var(--mono);
+  font: 400 13px / 1.4 var(--sans);
 }
 
 .ide-search .ide-note {

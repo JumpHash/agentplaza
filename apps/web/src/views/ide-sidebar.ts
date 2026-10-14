@@ -1,14 +1,17 @@
-// The IDE's left sidebar: search, the projects with their agents and repo
-// workspaces, a hover card, keyboard movement and the pinned New agent button.
-// It loads its own data: the agents Cell from the store, and projects and IDE
-// workspaces polled every 20 s. Nothing here is shared with the shell.
+// The IDE's left sidebar: search, the projects with their agents and repo workspaces, a hover card, keyboard movement and
+// the pinned New agent button. The agents are grouped by project (an agent is listed under every project it leads or holds
+// a task of); the agents in no project sit last in "No project", collapsed while any project exists. A terminal row shows
+// under its agent only when a terminal exists for that workspace. It loads its own data: the agents Cell from the store,
+// and projects, tasks and IDE workspaces polled every 20 s. Nothing here is shared with the shell.
 
 import css from '../styles/ide-sidebar.css';
-import { api, ideApi, type Agent, type IdeWorkspaceInfo, type Project } from '../api';
+import { api, ideApi, type Agent, type IdeWorkspaceInfo, type Project, type Task } from '../api';
 import { agents } from '../store';
 import { ago } from '../ui/components';
 import { h, icon } from '../ui/dom';
-import { currentTask, groupByProject, rowStatus, type RowStatus } from '../ide/view';
+import { byRecent, groupByProject, NO_PROJECT, sharedNames } from '../ide/groups';
+import { currentTask, rowStatus, type RowStatus } from '../ide/view';
+import { browserSession, storedTerminalCount } from './ide-terminal-model';
 
 export interface SidebarOpts {
   onOpen(key: string): void;
@@ -18,16 +21,20 @@ export interface SidebarOpts {
 export interface Sidebar {
   el: HTMLElement;
   setSelected(key: string | null): void;
+  /** Repaints the list now (the terminals that exist, or the selection, changed). */
+  refresh(): void;
   focusSearch(): void;
   dispose(): void;
 }
 
 const STYLE_ID = 'apz-ide-sidebar-style';
+/** The groups the owner opened or closed: `gid` → open. Only the choices made are kept. */
 const GROUPS_KEY = 'apz.ide.groups';
 const POLL_MS = 20000;
 const HOVER_MS = 300;
 const LEAVE_MS = 100;
-const UNASSIGNED = 'unassigned';
+/** The group of the agents in no project, and the group of the repositories no project holds. */
+const NONE_GID = 'none';
 const REPOSITORIES = 'repositories';
 
 const STATUS_WORD: Record<RowStatus, string> = {
@@ -55,18 +62,22 @@ function injectStyle(): void {
   document.head.append(style);
 }
 
-function loadCollapsed(): Set<string> {
+/** The groups the owner has opened or closed. An old or malformed value is ignored. */
+function loadOpen(): Record<string, boolean> {
   try {
-    const list: unknown = JSON.parse(localStorage.getItem(GROUPS_KEY) ?? '[]');
-    return new Set(Array.isArray(list) ? list.filter((x): x is string => typeof x === 'string') : []);
+    const v: unknown = JSON.parse(localStorage.getItem(GROUPS_KEY) ?? '{}');
+    if (!v || typeof v !== 'object' || Array.isArray(v)) return {};
+    const out: Record<string, boolean> = {};
+    for (const [gid, open] of Object.entries(v)) if (typeof open === 'boolean') out[gid] = open;
+    return out;
   } catch {
-    return new Set();
+    return {};
   }
 }
 
-function saveCollapsed(collapsed: Set<string>): void {
+function saveOpen(open: Record<string, boolean>): void {
   try {
-    localStorage.setItem(GROUPS_KEY, JSON.stringify([...collapsed]));
+    localStorage.setItem(GROUPS_KEY, JSON.stringify(open));
   } catch {
     // Storage is blocked (a private window): the state lasts for this page only.
   }
@@ -78,15 +89,17 @@ function repoNames(ws: IdeWorkspaceInfo): string[] {
   return [ws.name, fromId].filter(Boolean).map((s) => s.toLowerCase());
 }
 
-/** Groups the agents by project, then files each repo workspace under the project whose repo it is. */
-function groupsFor(agentList: Agent[], projects: Project[], workspaces: IdeWorkspaceInfo[]): GroupView[] {
-  const groups: GroupView[] = groupByProject(agentList, projects).map((g) => ({
-    gid: g.id ? `p:${g.id}` : UNASSIGNED,
-    title: g.title,
-    agents: g.agents,
-    repos: [],
-    count: g.agents.length,
-  }));
+/**
+ * The sidebar's groups: the projects with agents (most recently active first), each with the repo workspaces of its repo;
+ * then the repositories no project holds; then No project, last.
+ */
+function groupsFor(agentList: Agent[], projects: Project[], tasks: Task[], workspaces: IdeWorkspaceInfo[]): GroupView[] {
+  const grouped = groupByProject(agentList, projects, tasks);
+  const byProject = new Map<string, GroupView>();
+  for (const g of grouped) {
+    if (g.id === null) continue;
+    byProject.set(g.id, { gid: `p:${g.id}`, title: g.title, agents: g.agents, repos: [], count: g.agents.length });
+  }
   const orphans: IdeWorkspaceInfo[] = [];
   for (const ws of workspaces) {
     if (ws.kind !== 'repo') continue;
@@ -96,18 +109,22 @@ function groupsFor(agentList: Agent[], projects: Project[], workspaces: IdeWorks
       orphans.push(ws);
       continue;
     }
-    const gid = `p:${proj.id}`;
-    let group = groups.find((g) => g.gid === gid);
+    let group = byProject.get(proj.id);
     if (!group) {
-      group = { gid, title: proj.title, agents: [], repos: [], count: 0 };
-      groups.push(group);
+      group = { gid: `p:${proj.id}`, title: proj.title, agents: [], repos: [], count: 0 };
+      byProject.set(proj.id, group);
     }
     group.repos.push(ws);
   }
-  if (orphans.length) {
-    groups.push({ gid: REPOSITORIES, title: 'Repositories', agents: [], repos: orphans, count: orphans.length });
+  const out: GroupView[] = [];
+  for (const p of byRecent(projects)) {
+    const g = byProject.get(p.id);
+    if (g) out.push(g);
   }
-  return groups;
+  if (orphans.length) out.push({ gid: REPOSITORIES, title: 'Repositories', agents: [], repos: orphans, count: orphans.length });
+  const none = grouped.find((g) => g.id === null);
+  if (none) out.push({ gid: NONE_GID, title: NO_PROJECT, agents: none.agents, repos: [], count: none.agents.length });
+  return out;
 }
 
 /** The rows of a group that match the lower-cased query (name, project title, current task); an empty query keeps all. */
@@ -124,9 +141,11 @@ function isEditable(t: EventTarget | null): boolean {
   return t instanceof HTMLElement && (t.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(t.tagName));
 }
 
+/** The status mark: a pulsing dot (working), a hollow ring (idle), a moon (sleeping), a check (done), a dot (failed). */
 function mark(st: RowStatus): HTMLElement {
+  const word = STATUS_WORD[st];
   const inner = st === 'sleeping' ? icon('moon') : st === 'done' ? icon('check') : h('span.ide-side-dot');
-  return h('span.ide-side-mark', null, inner);
+  return h('span.ide-side-mark', { role: 'img', 'aria-label': word, title: word }, inner);
 }
 
 function cardLine(label: string, value: string): HTMLElement {
@@ -150,12 +169,13 @@ export function sidebar(opts: SidebarOpts): Sidebar {
   injectStyle();
 
   let projects: Project[] = [];
+  let tasks: Task[] = [];
   let workspaces: IdeWorkspaceInfo[] = [];
   let selected: string | null = null;
   let query = '';
   let disposed = false;
   let queued = false;
-  const collapsed = loadCollapsed();
+  const openGroups = loadOpen();
   /** The focusable elements of the last render, by their data-key. */
   const els = new Map<string, HTMLElement>();
 
@@ -340,17 +360,18 @@ export function sidebar(opts: SidebarOpts): Sidebar {
     opts.onOpen(key);
   }
 
-  function toggleGroup(gid: string): void {
-    if (collapsed.has(gid)) collapsed.delete(gid);
-    else collapsed.add(gid);
-    saveCollapsed(collapsed);
-    render();
+  /** A group is open unless the owner closed it. No project is closed by default while any project exists. */
+  function isOpen(g: GroupView, q: string, hasProjects: boolean): boolean {
+    if (q !== '') return true;
+    const saved = openGroups[g.gid];
+    if (saved !== undefined) return saved;
+    return g.gid !== NONE_GID || !hasProjects;
   }
 
-  function showsTerminal(a: Agent): boolean {
-    return rowStatus(a, null) === 'working'
-      || selected === `agent:${a.cid}`
-      || selected === `term:${a.cid}`;
+  function toggleGroup(g: GroupView): void {
+    openGroups[g.gid] = !isOpen(g, query.toLowerCase(), projects.length > 0);
+    saveOpen(openGroups);
+    render();
   }
 
   function groupHead(g: GroupView, open: boolean): HTMLElement {
@@ -358,14 +379,15 @@ export function sidebar(opts: SidebarOpts): Sidebar {
       type: 'button',
       'data-key': `g:${g.gid}`,
       'aria-expanded': String(open),
-      onclick: () => toggleGroup(g.gid),
+      onclick: () => toggleGroup(g),
     },
       h('span.ide-side-caret', { 'aria-hidden': 'true' }, open ? '▾' : '▸'),
       h('span.ide-side-gtitle', null, g.title),
       h('span.ide-side-count', null, String(g.count)));
   }
 
-  function agentRow(a: Agent): HTMLElement {
+  /** An agent's row. The cid shows next to the name when another agent in the group has the same name. */
+  function agentRow(a: Agent, shared: Set<number>): HTMLElement {
     const key = `agent:${a.cid}`;
     const st = rowStatus(a, null);
     const task = currentTask(a);
@@ -385,20 +407,25 @@ export function sidebar(opts: SidebarOpts): Sidebar {
     },
       mark(st),
       h('span.ide-side-body', null,
-        h('span.ide-side-name', null, name),
-        task ? h('span.ide-side-task', { title: task }, task) : null),
-      h('span.ide-side-sr', null, `, ${STATUS_WORD[st]}`));
+        h('span.ide-side-line', null,
+          h('span.ide-side-name', null, name),
+          shared.has(a.cid) ? h('span.ide-side-cid', { title: `Agent ${a.cid}` }, `#${a.cid}`) : null),
+        task ? h('span.ide-side-task', { title: task }, task) : null));
   }
 
-  function termRow(a: Agent): HTMLElement {
+  /** The agent's terminal row, under the agent: shown only while a terminal exists for its workspace. */
+  function termRow(a: Agent, count: number): HTMLElement {
     const key = `term:${a.cid}`;
+    const name = a.name || `Agent ${a.cid}`;
     return h('button.ide-side-term', {
       type: 'button',
       'data-key': key,
       'aria-current': selected === key ? 'true' : null,
-      title: `Terminal of ${a.name || `Agent ${a.cid}`}`,
+      title: `Terminal of ${name}`,
       onclick: () => choose(key),
-    }, 'Terminal');
+    },
+      icon('terminal'),
+      h('span', null, count > 1 ? `${count} terminals` : 'Terminal'));
   }
 
   function repoRow(ws: IdeWorkspaceInfo): HTMLElement {
@@ -416,21 +443,24 @@ export function sidebar(opts: SidebarOpts): Sidebar {
         h('span.ide-side-meta', null, ws.writable ? 'Writable repo' : 'Read only repo')));
   }
 
-  /** Rebuilds the list, keeping the focused row focused by its key and the open groups open. */
+  /** Rebuilds the list, keeping the focused row focused by its key. */
   function render(): void {
     const active = document.activeElement;
     const focusKey = active instanceof HTMLElement && list.contains(active) ? active.dataset.key : undefined;
     const q = query.toLowerCase();
+    const hasProjects = projects.length > 0;
     const nodes: HTMLElement[] = [];
-    for (const g of groupsFor(agents.get(), projects, workspaces)) {
+    for (const g of groupsFor(agents.get(), projects, tasks, workspaces)) {
       const v = matching(g, q);
       if (!v) continue;
-      const open = q !== '' || !collapsed.has(g.gid);
+      const open = isOpen(g, q, hasProjects);
       nodes.push(groupHead(g, open));
       if (!open) continue;
+      const shared = sharedNames(g.agents);
       for (const a of v.agents) {
-        nodes.push(agentRow(a));
-        if (showsTerminal(a)) nodes.push(termRow(a));
+        nodes.push(agentRow(a, shared));
+        const terminals = storedTerminalCount(browserSession(), `agent:${a.cid}`);
+        if (terminals > 0) nodes.push(termRow(a, terminals));
       }
       for (const ws of v.repos) nodes.push(repoRow(ws));
     }
@@ -446,13 +476,15 @@ export function sidebar(opts: SidebarOpts): Sidebar {
   }
 
   async function load(): Promise<void> {
-    const [p, w] = await Promise.all([
+    const [p, w, t] = await Promise.all([
       api.projects().catch(() => null),
       ideApi.workspaces().catch(() => null),
+      api.tasks().catch(() => null),
     ]);
     if (disposed) return;
     if (p) projects = p;
     if (w) workspaces = w;
+    if (t) tasks = t;
     schedule();
   }
 
@@ -465,6 +497,9 @@ export function sidebar(opts: SidebarOpts): Sidebar {
     el,
     setSelected(key) {
       selected = key;
+      schedule();
+    },
+    refresh() {
       schedule();
     },
     focusSearch() {

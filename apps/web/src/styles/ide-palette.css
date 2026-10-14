@@ -80,10 +80,7 @@
 .ide-pal-heading {
   padding: var(--s2) var(--s3) var(--s1);
   color: var(--text-3);
-  font-family: var(--mono);
-  font-size: var(--fs-xs);
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+  font: 600 12px / 1.4 var(--sans);
 }
 
 .ide-pal-opt {

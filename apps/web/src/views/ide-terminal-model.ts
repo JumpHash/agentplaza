@@ -194,3 +194,15 @@ export function clearSession(store: KeyValueStore | undefined, key: string): voi
     // Nothing stored, or storage is blocked: nothing to clear.
   }
 }
+
+/**
+ * The terminals the stored sessions hold for one workspace: one per slot that has a session. This is the list the
+ * terminal module keeps (a session is stored while its shell lives, and cleared when the shell ends or is killed).
+ */
+export function storedTerminalCount(store: KeyValueStore | undefined, workspace: string): number {
+  let count = 0;
+  for (let slot = 0; slot < MAX_TERMINALS; slot++) {
+    if (readSession(store, sessionKey(workspace, String(slot)))) count++;
+  }
+  return count;
+}
