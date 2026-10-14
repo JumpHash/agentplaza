@@ -14,7 +14,7 @@ out the same way, which each platform's packager maps into its own format.
 Markdown files or `VERSION`. It builds the guest (`guest.yml`) and the relay (`relay.yml`),
 picks the next version (semantic versioning, see below), runs the four platform workflows with
 packaging on, and publishes a GitHub Release `v<version>` (tag + changelog + all deliverables with
-`SHA256SUMS`), then writes the version back to `main`'s `VERSION` file.
+`SHA256SUMS`). `main` is protected (pull requests only), so the release writes nothing back to it.
 
 ## The stage (`packaging/scripts/stage.sh`)
 
@@ -73,9 +73,9 @@ open `http://127.0.0.1:7700`; the desktop app starts against that same local hub
 
 ## Versions
 
-Every push to `main` that changes code is a release `v<major>.<minor>.<patch>`, tagged on the merged commit; the
-repository's `VERSION` file holds the last released version (`release.yml` writes it back to
-`main` after each release). The version is chosen by `packaging/scripts/next-version.sh`:
+Every push to `main` that changes code is a release `v<major>.<minor>.<patch>`, tagged on the merged commit. The
+tags record the released versions; the repository's `VERSION` file is a floor that a change can raise. The version
+is chosen by `packaging/scripts/next-version.sh`:
 
 - **Automatic** (the default): the last release plus one, each place rolling over past 9 into the
   next one: 0.0.1 → 0.0.2 … 0.0.9 → 0.1.0 … 0.1.9 → 0.2.0 … 0.9.9 → 1.0.0 … 9.9.9 → 10.0.0.
