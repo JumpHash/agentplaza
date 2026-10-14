@@ -1302,8 +1302,9 @@ mod tests {
         );
     }
 
+    /// The measured draw count may not grow, and the Machines view stays under its 300-item budget.
     #[test]
-    fn the_fifteen_machine_fleet_draws_do_not_grow() {
+    fn the_fifteen_machine_fleet_draws_do_not_grow_and_stay_in_budget() {
         let (statics, dynamic) = fleet_draw_items();
         eprintln!(
             "fleet draws: {statics} static + {dynamic} dynamic = {}",
@@ -1314,11 +1315,6 @@ mod tests {
             "the fleet draws {} items, over the measured {FLEET_DRAW_ITEMS}",
             statics + dynamic
         );
-    }
-
-    #[test]
-    fn the_fifteen_machine_fleet_draws_within_budget() {
-        let (statics, dynamic) = fleet_draw_items();
         assert!(
             statics + dynamic <= 300,
             "the Machines view draws {} items, over the 300 budget",

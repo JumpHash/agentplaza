@@ -2689,17 +2689,13 @@ mod tests {
         assert!(parse_when("gpus >> 1").is_err());
         assert!(parse_when("").is_err());
         assert!(parse_when("1x").is_err());
-    }
-
-    #[test]
-    fn when_accepts_any_numeric_param() {
+        // Any numeric param compares, not just the one above.
         let vals = BTreeMap::from([
             ("gpu_cores".to_string(), 32.0),
             ("memory_gib".to_string(), 16.0),
         ]);
-        let eval = |s: &str| eval_when(&parse_when(s).unwrap(), &vals);
-        assert!(eval("gpu_cores >= 30"));
-        assert!(!eval("memory_gib >= 32"));
+        assert!(eval_when(&parse_when("gpu_cores >= 30").unwrap(), &vals));
+        assert!(!eval_when(&parse_when("memory_gib >= 32").unwrap(), &vals));
     }
 
     #[test]

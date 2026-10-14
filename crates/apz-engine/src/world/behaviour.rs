@@ -2105,53 +2105,36 @@ mod tests {
     }
 
     #[test]
-    fn behaviour_high_energy_robots_wander_more() {
+    fn behaviour_energy_moves_the_wander_and_nap_mix() {
         let cfg = cfg();
-        let hi = count_first(
-            &cfg,
-            "wander",
-            Personality {
-                energy: 9.0,
-                ..five()
-            },
-        );
-        let lo = count_first(
-            &cfg,
-            "wander",
-            Personality {
-                energy: 0.0,
-                ..five()
-            },
-        );
-        assert!(
-            hi > lo,
-            "high-energy robots wander more ({hi} vs {lo} of 300)"
-        );
-    }
-
-    #[test]
-    fn behaviour_tired_robots_nap_more() {
-        let cfg = cfg();
-        let lo_energy = count_first(
-            &cfg,
-            "nap",
-            Personality {
-                energy: 9.0,
-                ..five()
-            },
-        );
-        let hi_energy = count_first(
-            &cfg,
-            "nap",
-            Personality {
-                energy: 0.0,
-                ..five()
-            },
-        );
-        assert!(
-            hi_energy > lo_energy,
-            "tired robots nap more ({hi_energy} vs {lo_energy} of 300)"
-        );
+        // (activity, the robot with more energy does it more)
+        for (act, high_energy_more) in [("wander", true), ("nap", false)] {
+            let high = count_first(
+                &cfg,
+                act,
+                Personality {
+                    energy: 9.0,
+                    ..five()
+                },
+            );
+            let low = count_first(
+                &cfg,
+                act,
+                Personality {
+                    energy: 0.0,
+                    ..five()
+                },
+            );
+            let ok = if high_energy_more {
+                high > low
+            } else {
+                low > high
+            };
+            assert!(
+                ok,
+                "{act}: energy moves the mix the right way ({high} high vs {low} low of 300)"
+            );
+        }
     }
 
     #[test]
@@ -2226,7 +2209,7 @@ mod tests {
     }
 
     #[test]
-    fn behaviour_a_celebration_gets_three_cheers() {
+    fn behaviour_a_celebration_gets_three_cheers_in_groups_of_at_most_4() {
         let cfg = cfg();
         let crowd = crowd();
         let mut e = Behaviour::new(&cfg);
@@ -2244,27 +2227,11 @@ mod tests {
             3,
             "a celebration gets three cheers"
         );
-    }
-
-    #[test]
-    fn behaviour_a_cheer_group_is_at_most_4() {
-        let cfg = cfg();
-        let crowd = crowd();
-        let mut e = Behaviour::new(&cfg);
-        let spots = board(&crowd);
-        let cheer = step_full(
-            &mut e,
-            0.0,
-            &crowd,
-            spots,
-            false,
-            vec![EventIn::Celebrate { cid: 1 }],
-        );
         assert!(largest_group(&cheer) <= 4, "a cheer group is at most 4");
     }
 
     #[test]
-    fn behaviour_a_standup_takes_three_members() {
+    fn behaviour_a_standup_takes_three_members_in_groups_of_at_most_4() {
         let cfg = cfg();
         let crowd = crowd();
         let mut e = Behaviour::new(&cfg);
@@ -2279,19 +2246,6 @@ mod tests {
             3,
             "a standup takes three members"
         );
-    }
-
-    #[test]
-    fn behaviour_a_standup_group_is_at_most_4() {
-        let cfg = cfg();
-        let crowd = crowd();
-        let mut e = Behaviour::new(&cfg);
-        let spots = board(&crowd);
-        let events = vec![EventIn::Standup {
-            conductor: 2,
-            members: vec![1, 3, 4, 5, 6, 7, 8],
-        }];
-        let stand = step_full(&mut e, 0.0, &crowd, spots, false, events);
         assert!(largest_group(&stand) <= 4, "a standup group is at most 4");
     }
 
@@ -2680,19 +2634,14 @@ mod tests {
     }
 
     #[test]
-    fn behaviour_fixtures_100_scenarios() {
+    fn behaviour_fixtures_every_scenario_recomputes_its_hash() {
+        let cfg = cfg();
         let fixtures: Fixtures = serde_json::from_str(FIXTURES_JSON).expect("fixtures parse");
         assert_eq!(
             fixtures.hashes.len(),
             SCENARIO_COUNT,
             "behaviour fixtures: 100 scenarios"
         );
-    }
-
-    #[test]
-    fn behaviour_fixtures_every_scenario_recomputes_its_hash() {
-        let cfg = cfg();
-        let fixtures: Fixtures = serde_json::from_str(FIXTURES_JSON).expect("fixtures parse");
         let mut bad: Vec<String> = Vec::new();
         for s in 0..SCENARIO_COUNT {
             let got = run_scenario(&cfg, s as u32).hash;
