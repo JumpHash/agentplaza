@@ -332,13 +332,6 @@ impl Entry {
             fleet.group.set_visible(false);
         }
         self.unprepare(p);
-        for (i, c) in p.floor.root.get().children.iter().enumerate() {
-            let n = c.get();
-            if n.visible && n.children.len() > 3 {
-                let names: Vec<String> = n.children.iter().take(8).map(|k| { let kn = k.get(); format!("{}:{}:{:.0},{:.0}", kn.name, kn.visible, kn.position.x, kn.position.z) }).collect();
-                eprintln!("DBGGRP {i} kids={} {:?}", n.children.len(), names);
-            }
-        }
         // The robots are whole from here on: one that has not yet popped in gets no pop left to run.
         for bot in &p.floor.bots {
             bot.robot.group.set_visible(true).set_scalar(1.0);
