@@ -4,7 +4,7 @@ import { classify, label, type RichCtx, type Span } from '../src/ui/rich';
 import { monogramOf, personOf, toneOf } from '../src/ui/embed-model';
 import richVectors from '../../../crates/apz-rich/tests/vectors.json';
 import { TOUR_STEPS, WIZARD_STEPS, fill, keysSet, moveStep, readFlag, writeFlag } from '../src/onboarding/flow';
-import { ago, clip, compact } from '../src/ui/components';
+import { ago, clip, compact, isTextValue } from '../src/ui/components';
 import { floorName, familyLabel, roleFamily } from '../src/roles';
 import { builtinLaws, diagnosticText, diagnosticsByLine, errorText, isBlank, isOwnerLaw, lawsOfRule, lineSpan, matchesFilter, tierKey, withStrictPermits, type LawFilter } from '../src/views/rules-model';
 import type { LawInfo, Settings } from '../src/api';
@@ -69,6 +69,11 @@ eq(href('tasks', 't 1'), '#/tasks/t%201', 'href encodes params');
 eq(ago(1000, 31_000), '30s ago', 'ago seconds');
 eq(clip('abcdef', 4), 'abc…', 'clip');
 eq(compact(12_345), '12k', 'compact thousands');
+// A stat value with letters is text (a model id keeps its size class); figures and the dash placeholder are not.
+eq(isTextValue('claude-sonnet-5'), true, 'a model id is a text stat value');
+eq(isTextValue(12), false, 'a numeric stat value is a figure');
+eq(isTextValue('1,204'), false, 'a formatted figure is a figure');
+eq(isTextValue('—'), false, 'the dash placeholder keeps the figure size');
 eq(floorName({ cid: 7, name: '' }), 'agent 7', 'floor name falls back to the cid');
 eq(floorName({ cid: 7, name: '  ' }), 'agent 7', 'floor name: whitespace counts as empty');
 

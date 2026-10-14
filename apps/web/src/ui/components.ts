@@ -41,8 +41,21 @@ export function card(title: string | Node | null, body: Node | Node[], opts: { a
   );
 }
 
+/** A stat value is a figure unless it has letters: a model id or a name is text, and takes the smaller text size. */
+export function isTextValue(value: string | number): boolean {
+  return typeof value === 'string' && /\p{L}/u.test(value);
+}
+
 export function stat(label: string, value: string | number, sub?: string): HTMLElement {
-  return h('div.card.stat', null, h('span.label', null, label), h('span.value', null, String(value)), sub ? h('span.sub', null, sub) : null);
+  const text = isTextValue(value);
+  const shown = String(value);
+  return h(
+    'div.card.stat',
+    null,
+    h('span.label', null, label),
+    h(text ? 'span.value.value-text' : 'span.value', text ? { title: shown } : null, shown),
+    sub ? h('span.sub', null, sub) : null,
+  );
 }
 
 export function empty(iconName: IconName, title: string, text?: string, action?: Node): HTMLElement {

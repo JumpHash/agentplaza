@@ -82,9 +82,13 @@ code, pre, .mono { font-family: var(--mono); font-size: 13px; }
 .stack { display: flex; flex-direction: column; gap: 14px; }
 
 /* Tallies: the register's big mono figures. */
-.stat { padding: 14px 16px 16px; display: flex; flex-direction: column; gap: 2px; border: 1px solid var(--rule); }
+.stat { min-width: 0; padding: 14px 16px 16px; display: flex; flex-direction: column; gap: 2px; border: 1px solid var(--rule); }
 .stat .label { order: 2; font: 500 11px var(--sans); letter-spacing: 0.01em; color: var(--ink-3); }
 .stat .value { order: 1; font: 700 34px/1 var(--sans); letter-spacing: -0.03em; font-variant-numeric: tabular-nums; margin: 2px 0 8px; overflow-wrap: anywhere; }
+/* A text value (a model id, a name) is not a figure. It takes the section role, and keeps proportional figures:
+   tabular-nums (tnum) swaps the hyphen for a wider tabular hyphen, which left gaps around every hyphen in an id.
+   It stays on one line and ends in an ellipsis; the full text is in the title tooltip. */
+.stat .value.value-text { font: var(--type-section); letter-spacing: 0; font-variant-numeric: normal; margin: 4px 0 6px; overflow-wrap: normal; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; max-width: 100%; }
 .stat .sub { order: 3; font: italic 13px var(--sans); color: var(--ink-2); }
 
 /* Printed buttons: square, ink-bordered, a hard offset shadow. */
