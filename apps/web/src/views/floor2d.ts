@@ -9,11 +9,35 @@ import { go } from '../router';
 import { agents, on } from '../store';
 import { button, clip } from '../ui/components';
 import { h } from '../ui/dom';
-import { boardOf } from './floor';
-import { layoutOnBoard, type BoardDistrict, type BoardLayout } from './floor3d/board-layout';
-import type { Model, Params } from './floor3d/hardware';
-import { MODELS } from './floor3d/hardware-index';
+import { requestLayout } from './engine-mount';
+import { boardOf, type BoardParams as Params } from './floor-common';
 import type { Cleanup } from './index';
+
+/** A room as the 2D floor draws it: its role, centre (cx, cy), cell size (w by d), hue and shape. */
+interface BoardDistrict {
+  role: string;
+  cx: number;
+  cy: number;
+  w: number;
+  d: number;
+  hue: number;
+  shape: 'round' | 'square';
+}
+
+/** The board's footprint, for framing. */
+interface Bounds {
+  cx: number;
+  cz: number;
+  w: number;
+  d: number;
+}
+
+/** The shared layout's JSON (apz-board's Layout): the parts the 2D floor reads. */
+interface SharedLayout {
+  bounds: Bounds;
+  rooms: { role: string; round: boolean; hue: number; centre: [number, number]; half: [number, number] }[];
+  homes: { agent: string; room: number; at: [number, number] }[];
+}
 
 const BUBBLE_MS = 4000;
 const PACKET_MS = 1500;
@@ -123,8 +147,10 @@ export function mountFloor2d(root: HTMLElement): Cleanup {
   let lastList: Agent[] = [];
   let members = new Set<number>(); // the machine's agents (the fleet's); empty until a fleet read names them: no dots before
   let fleetRead = false;
-  let board: { key: string; model: Model; params: Params } | null = null;
-  let bounds: BoardLayout['bounds'] | null = null;
+  let board: { key: string; kind: string; params: Params } | null = null;
+  let bounds: Bounds | null = null;
+  let laying = 0; // the latest layout request: an older answer is dropped
+  let refit = false; // a new board frames itself once its layout lands
   let districts: BoardDistrict[] = [];
   let bots: Bot[] = [];
   const byCid = new Map<number, Bot>();
@@ -143,19 +169,46 @@ export function mountFloor2d(root: HTMLElement): Cleanup {
   let last = performance.now();
   const palette = readPalette();
 
-  /** Lays the agents on the board and places their dots: homes follow the layout, robots keep their positions. */
+  /**
+   * Lays the agents on the board and places their dots: homes follow the layout, robots keep their positions. The layout
+   * is the engine's (apz-board's, from the layout worker), so the 2D and the 3D floors seat everyone alike.
+   */
   function sync(list: Agent[]): void {
     lastList = list;
     if (!board) return; // the board comes with the machine; until then there is nothing to lay out
     const mine = list.filter((a) => members.has(a.cid));
-    const laid = layoutOnBoard(mine, board.model, board.params);
-    districts = laid.districts;
+    const agents = mine
+      .map((a): [number, string] => [a.cid, a.tier === 'orchestrator' ? 'orchestrator' : a.role])
+      .sort((x, y) => x[0] - y[0]);
+    const seq = ++laying;
+    void requestLayout({ kind: board.kind, gpus: board.params.gpus ?? 0, agents }).then((json) => {
+      if (alive && seq === laying && json) place(mine, json as SharedLayout);
+    });
+  }
+
+  /** The shared layout's rooms and homes as the dots and rooms the 2D floor draws. */
+  function place(mine: Agent[], laid: SharedLayout): void {
+    districts = laid.rooms.map((r) => ({
+      role: r.role || 'other',
+      cx: r.centre[0],
+      cy: r.centre[1],
+      w: r.half[0] * 2,
+      d: r.half[1] * 2,
+      hue: r.hue,
+      shape: r.round ? 'round' : 'square',
+    }));
     bounds = laid.bounds;
+    if (refit) {
+      refit = false;
+      fit();
+    }
+    const homes = new Map(laid.homes.map((h) => [Number(h.agent), h] as const));
     const next: Bot[] = [];
     for (const agent of mine) {
-      const slot = laid.homes.get(agent.cid);
-      if (!slot) continue;
-      const [district, hx, hy] = slot as [BoardDistrict, number, number];
+      const home = homes.get(agent.cid);
+      const district = home ? districts[home.room] : undefined;
+      if (!home || !district) continue;
+      const [hx, hy] = home.at;
       const old = byCid.get(agent.cid);
       next.push(
         old
@@ -563,9 +616,9 @@ export function mountFloor2d(root: HTMLElement): Cleanup {
   function showBoard(name: string, params: Params): void {
     const key = `${name}|${JSON.stringify(params)}`;
     const changed = board?.key !== key;
-    if (changed) board = { key, model: MODELS[name] ?? MODELS[DEFAULT_BOARD.name]!, params };
+    if (changed) board = { key, kind: name.replace(/^board\//, ''), params };
+    if (changed) refit = true;
     sync(lastList);
-    if (changed) fit();
   }
 
   /** The machine the Floor shows: the hub, with its agents and board; the workstation board when the fleet cannot be read. */

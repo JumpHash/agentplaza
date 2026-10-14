@@ -1,4 +1,4 @@
-import type { Look } from '../views/floor3d/machine-model';
+import type { Look } from '../views/machine-look';
 // Small SVG illustrations of the plaza's machines: what each one is.
 // Built with createElementNS only (no innerHTML). Line art: strokes follow
 // currentColor, fills come from the civic-register tokens on :root.

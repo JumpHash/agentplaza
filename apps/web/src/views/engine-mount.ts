@@ -106,9 +106,9 @@ interface EngineGlue {
 const FLEET_POLL_MS = 5000;
 const AGENTS_POLL_MS = 4000;
 
-/** True when the page's query (not the hash) asks for the wasm engine (`/?engine=wasm#/floor`) and this build has the glue. */
+/** True when this build has the engine's glue: the Rust engine draws every 3D view (there is no other renderer). */
 export function engineWanted(): boolean {
-  return new URLSearchParams(location.search).get('engine') === 'wasm' && glueName() !== '';
+  return glueName() !== '';
 }
 
 /** The glue, loaded and initialised. Throws without a glue (this build has no engine). */
@@ -130,7 +130,52 @@ const backendOf = (): 'auto' | 'webgl2' => (new URLSearchParams(location.search)
  * layouts it wants, the pump posts each key here, and the answer goes back to the engine that asked.
  */
 let layoutWorker: Worker | null = null;
-const layoutAsks = new Map<string, WebEngine>();
+/** The open requests by key: each answer goes to every waiter (an engine's cache, or a page's promise). */
+const layoutAsks = new Map<string, ((answer: string) => void)[]>();
+
+/** Hands an answer to a key's waiters. */
+function answerLayout(key: string, answer: string): void {
+  const waiters = layoutAsks.get(key) ?? [];
+  layoutAsks.delete(key);
+  for (const w of waiters) {
+    try {
+      w(answer);
+    } catch {
+      // A destroyed engine: the next engine asks again.
+    }
+  }
+}
+
+/** Posts a key to the worker (started on the first request), or fails it when the build has none. */
+function postLayout(key: string, waiter: (answer: string) => void): void {
+  const waiters = layoutAsks.get(key);
+  if (waiters) {
+    waiters.push(waiter);
+    return;
+  }
+  layoutAsks.set(key, [waiter]);
+  layoutWorker ??= startLayoutWorker();
+  if (layoutWorker) layoutWorker.postMessage(key);
+  else failLayout(key, 'this build has no layout worker');
+}
+
+/**
+ * The shared board layout (apz-board's, the one the engine lays its boards out with) of a key `{kind, gpus, agents:
+ * [[cid, role], ...]}` (the engine's SharedKey; agents sorted by cid, the orchestrator's role `orchestrator`), computed
+ * in the layout worker. Resolves to the layout's JSON, or null when it fails.
+ */
+export function requestLayout(key: { kind: string; gpus: number; agents: [number, string][] }): Promise<unknown> {
+  return new Promise((resolve) => {
+    postLayout(JSON.stringify(key), (answer) => {
+      try {
+        const parsed = JSON.parse(answer) as { ok?: unknown };
+        resolve(parsed.ok ?? null);
+      } catch {
+        resolve(null);
+      }
+    });
+  });
+}
 
 /** The layout worker's file name at the dist root (build.mjs writes it next to the glue); '' without an engine. */
 declare const __APZ_LAYOUT_WORKER__: string | null;
@@ -138,28 +183,14 @@ const layoutWorkerName = (): string => (typeof __APZ_LAYOUT_WORKER__ === 'string
 
 /** Answers a request with an error: the engine keeps its own layout for that board rather than waiting on it. */
 function failLayout(key: string, reason: string): void {
-  const engine = layoutAsks.get(key);
-  layoutAsks.delete(key);
-  try {
-    engine?.provide_layout(key, JSON.stringify({ err: reason }));
-  } catch {
-    // A destroyed engine.
-  }
+  answerLayout(key, JSON.stringify({ err: reason }));
 }
 
 function startLayoutWorker(): Worker | null {
   const name = layoutWorkerName();
   if (name === '') return null;
   const worker = new Worker(new URL('./' + name, document.baseURI).href, { type: 'module' });
-  worker.onmessage = (e: MessageEvent<{ key: string; answer: string }>) => {
-    const engine = layoutAsks.get(e.data.key);
-    layoutAsks.delete(e.data.key);
-    try {
-      engine?.provide_layout(e.data.key, e.data.answer);
-    } catch {
-      // A destroyed engine: the next engine asks again.
-    }
-  };
+  worker.onmessage = (e: MessageEvent<{ key: string; answer: string }>) => answerLayout(e.data.key, e.data.answer);
   // A worker that cannot start (or dies) answers every open request with an error, and the next request starts another.
   worker.onerror = (e) => {
     e.preventDefault();
@@ -173,6 +204,7 @@ function startLayoutWorker(): Worker | null {
 /** Posts an engine's layout requests to the layout worker every LAYOUT_PUMP_MS until the returned stop is called. */
 const LAYOUT_PUMP_MS = 200;
 function pumpLayouts(engine: WebEngine): () => void {
+  let stopped = false;
   const timer = window.setInterval(() => {
     let keys: unknown[];
     try {
@@ -182,16 +214,14 @@ function pumpLayouts(engine: WebEngine): () => void {
     }
     for (const k of keys) {
       const key = JSON.stringify(k);
-      if (layoutAsks.has(key)) continue;
-      layoutAsks.set(key, engine);
-      layoutWorker ??= startLayoutWorker();
-      if (layoutWorker) layoutWorker.postMessage(key);
-      else failLayout(key, 'this build has no layout worker');
+      postLayout(key, (answer) => {
+        if (!stopped) engine.provide_layout(key, answer);
+      });
     }
   }, LAYOUT_PUMP_MS);
   return () => {
     window.clearInterval(timer);
-    for (const [key, asker] of layoutAsks) if (asker === engine) layoutAsks.delete(key);
+    stopped = true;
   };
 }
 
@@ -371,7 +401,7 @@ export function startThumbEngine(): EngineStage {
  * The Floor on the wasm engine: the Machines view, or with `initialId` (`#/floor/<id>`) that machine's board, entered
  * on mount. A pick opens the machine popup (the three.js Floor's card); its ENTER flies the engine into the board.
  */
-export function mountEngine(root: HTMLElement, initialId: string | null = null): Cleanup {
+export function mountEngine(root: HTMLElement, initialId: string | null = null, onFail?: (reason: string) => void): Cleanup {
   const name = glueName();
   if (name === '') return () => undefined; // no engine in this build: show nothing
   const wrap = document.createElement('div');
@@ -683,8 +713,12 @@ export function mountEngine(root: HTMLElement, initialId: string | null = null):
     tryPendingEnter();
     raf = requestAnimationFrame(frame);
   };
+  // An engine that cannot start (no WebGPU or WebGL2 here): the caller's fallback, else the reason in the status line.
   boot().catch((e: unknown) => {
-    if (!closed) status.textContent = e instanceof Error ? e.message : String(e);
+    if (closed) return;
+    const reason = e instanceof Error ? e.message : String(e);
+    if (onFail) onFail(reason);
+    else status.textContent = reason;
   });
 
   pollFleet();

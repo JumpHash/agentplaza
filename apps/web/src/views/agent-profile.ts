@@ -8,7 +8,7 @@ import { agentName, roleLabel } from '../roles';
 import { ago, badge, compact } from '../ui/components';
 import { h, replace } from '../ui/dom';
 import { agentHue, roleHue } from './floor';
-import { cachedPortrait, portrait, portraitKey, portraitSpecJson, rememberPortrait, type PortraitSpec } from './floor3d/portrait';
+import { cachedPortrait, portraitKey, portraitSpecJson, rememberPortrait, type PortraitSpec } from './portrait-spec';
 import { engineWanted, startThumbEngine, type EngineStage } from './engine-mount';
 
 /** The page's portrait engine: one per page, made when a portrait waits and destroyed a second after none waits. */
@@ -74,15 +74,12 @@ export function avatar(a: Agent, size = 40): HTMLElement {
   const frame = h('span.avatar', { style: `width:${size}px;height:${size}px;--hue:${hue}` });
   const picture = (url: string): HTMLElement => h('img', { src: url, alt: '', width: String(size), height: String(size) });
   const letter = (): HTMLElement => h('span.avatar-initial', null, agentName(a).slice(0, 1).toUpperCase());
-  if (!engineWanted()) {
-    const url = portrait(spec);
-    frame.append(url ? picture(url) : letter());
-  } else {
-    // The engine draws the portrait (?engine=wasm): the letter shows until its picture comes back.
-    const hit = cachedPortrait(portraitKey(spec));
-    if (hit) frame.append(picture(hit));
-    else {
-      frame.append(letter());
+  // The engine draws the portrait: the letter shows until its picture comes back (and stays without an engine).
+  const hit = cachedPortrait(portraitKey(spec));
+  if (hit) frame.append(picture(hit));
+  else {
+    frame.append(letter());
+    if (engineWanted()) {
       void enginePortrait(spec).then((url) => {
         if (url) frame.replaceChildren(picture(url));
       });
