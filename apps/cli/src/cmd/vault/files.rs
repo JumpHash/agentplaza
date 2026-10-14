@@ -231,6 +231,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn shred_overwrites_with_zeros_of_the_same_length_then_removes_the_file() {
         let scratch = Scratch::new("shred");
@@ -242,6 +243,20 @@ mod tests {
         assert!(after.iter().all(|b| *b == 0), "every byte is zero");
         shred(&path).expect("shred");
         assert!(!path.exists(), "the file is gone");
+    }
+
+    /// Off Unix the product refuses `--shred` on purpose: the file must be left exactly as it was.
+    #[cfg(not(unix))]
+    #[test]
+    fn shred_refuses_off_unix_and_leaves_the_file_alone() {
+        let scratch = Scratch::new("refuse");
+        let path = scratch.file("secrets.env", b"KEEP=me\n");
+        let err = shred(&path).unwrap_err();
+        assert!(err.contains("needs Unix"), "{err}");
+        assert_eq!(
+            std::fs::read(&path).expect("file still there"),
+            b"KEEP=me\n"
+        );
     }
 
     #[test]

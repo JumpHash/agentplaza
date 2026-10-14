@@ -20,11 +20,12 @@ use super::{
 
 const T0: u64 = 1_000_000;
 
-/// The fixture binary, next to the test binary (target/debug/mcp_fixture).
+/// The fixture binary, next to the test binary (target/debug/mcp_fixture, or mcp_fixture.exe on Windows).
 fn fixture() -> String {
     let exe = std::env::current_exe().expect("the test binary");
     let debug = exe.parent().and_then(|p| p.parent()).expect("target/debug");
-    debug.join("mcp_fixture").to_string_lossy().into_owned()
+    let name = format!("mcp_fixture{}", std::env::consts::EXE_SUFFIX);
+    debug.join(name).to_string_lossy().into_owned()
 }
 
 /// A vault for tests: entries by name, each bound to one server, optionally scoped to one node. Agents

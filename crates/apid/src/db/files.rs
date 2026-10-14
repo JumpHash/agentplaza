@@ -841,17 +841,37 @@ fn private_mode(options: &mut OpenOptions) {
 fn private_mode(_options: &mut OpenOptions) {}
 
 /// Retires `path` to `.1` (and `.1` to `.2`, dropping the old `.2`), fsyncing it and the folder.
+/// The caller has closed its handle to `path` (`append_line` takes and drops it first), so the
+/// renames do not meet a file that Windows holds open.
 fn rotate(path: &Path) -> io::Result<()> {
-    File::open(path)?.sync_all()?;
+    sync_file(path)?;
     remove_if_exists(&generation(path, 2))?;
     let first = generation(path, 1);
     if first.exists() {
         fs::rename(&first, generation(path, 2))?;
     }
     fs::rename(path, &first)?;
-    if let Some(dir) = path.parent() {
+    sync_folder(path.parent())
+}
+
+/// Flushes `path` to disk. Windows flushes a handle only if it can write, so the file is opened
+/// for append (as the writers open it) rather than read-only.
+fn sync_file(path: &Path) -> io::Result<()> {
+    OpenOptions::new().append(true).open(path)?.sync_all()
+}
+
+/// Flushes a folder's entries to disk. Unix only: Windows cannot open a folder as a file (the open
+/// is refused), and it has no folder fsync to make a rename durable.
+#[cfg(unix)]
+fn sync_folder(dir: Option<&Path>) -> io::Result<()> {
+    if let Some(dir) = dir {
         File::open(dir)?.sync_all()?;
     }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn sync_folder(_dir: Option<&Path>) -> io::Result<()> {
     Ok(())
 }
 

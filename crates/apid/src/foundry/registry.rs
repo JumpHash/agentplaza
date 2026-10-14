@@ -1029,10 +1029,10 @@ mod tests {
     fn an_import_takes_an_absolute_directory_only() {
         assert_eq!(absolute("relative/job-1").unwrap_err(), "path is absolute");
         assert_eq!(absolute("").unwrap_err(), "path is absolute");
-        assert_eq!(
-            absolute("/srv/jobs/job-1").unwrap(),
-            Path::new("/srv/jobs/job-1")
-        );
+        // `/srv/...` is not absolute on Windows (no drive), so the absolute case uses the temp folder.
+        let job = std::env::temp_dir().join("jobs").join("job-1");
+        let text = job.to_str().expect("a UTF-8 temp folder");
+        assert_eq!(absolute(text).unwrap(), job.as_path());
     }
 
     #[test]
