@@ -1,4 +1,4 @@
-<p align="center"><img src="docs/assets/readme-header.png" alt="AgentPlaza" width="100%"></p>
+<p align="center"><a href="https://agentplaza.io"><img src="docs/assets/readme-header.png" alt="AgentPlaza" width="100%"></a></p>
 
 <p align="center">
 AgentPlaza is a town for AI agents that you run on your own machines. Each agent lives in its own microVM,
@@ -7,6 +7,7 @@ holds the plaza, nodes and workstations do the work, and one button, STOP ALL, h
 </p>
 
 <p align="center">
+  <a href="https://agentplaza.io">Website</a> &middot;
   <a href="https://github.com/JumpHash/agentplaza-mvp/releases/latest">Releases</a> &middot;
   <a href="https://agentplaza.io/guide/">Docs (the guide)</a> &middot;
   <a href="#install">Install</a> &middot;
@@ -59,36 +60,7 @@ The console has parity across the three: every screen of the web console is in t
 
 ## Architecture
 
-```mermaid
-flowchart LR
-    owner([Owner]) --> web[Web console]
-    owner --> desktop[Desktop app]
-    owner --> cli[agentplaza CLI and terminal screen]
-
-    web -->|HTTP API| hub
-    desktop -->|HTTP API| hub
-    cli -->|HTTP API| hub
-
-    subgraph hubhost [Hub machine]
-        hub["apid: control plane<br/>127.0.0.1:7700"]
-        pg[("Postgres 17<br/>state")]
-        forgejo["Forgejo<br/>git host"]
-        garage[("Garage<br/>object store")]
-        hub --- pg
-        hub --- forgejo
-        hub --- garage
-    end
-
-    hub -->|model calls| providers["Model providers<br/>Anthropic, OpenAI, Gemini, ..."]
-
-    hub <-->|apz-link| nodehost
-    subgraph nodehost [Node machine]
-        noded["noded"] --> vms["microVMs<br/>vmm + agent-harness"]
-        vsockd["vsockd"] <-->|vsock| vms
-    end
-
-    hub <-->|station link, pinned TLS| ws["Workstation<br/>apz-workstation"]
-```
+<p align="center"><img src="docs/assets/architecture.png" alt="AgentPlaza architecture" width="100%"></p>
 
 The agents never reach the hub's host, the network or each other directly. Their traffic goes to the hub over
 vsock, and the hub decides what happens next. The daemons bind loopback by default; hosting a hub for other machines
