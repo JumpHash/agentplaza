@@ -47,6 +47,7 @@ dependencies = [
 name = "agent-harness"
 version = "0.1.0"
 dependencies = [
+ "apz-ide",
  "apz-proto",
  "globset",
  "libc",

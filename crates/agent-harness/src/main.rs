@@ -49,6 +49,8 @@ mod egress;
 #[cfg(target_os = "linux")]
 mod files;
 #[cfg(target_os = "linux")]
+mod ide;
+#[cfg(target_os = "linux")]
 mod keepalive;
 #[cfg(target_os = "linux")]
 mod checkpoints;

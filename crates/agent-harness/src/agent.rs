@@ -660,6 +660,8 @@ fn run_guest_tool(workspace: &Workspace, name: &str, input: &Value) -> Outcome {
             let args = edit_args(input)?;
             tools::serve(workspace, name, &args).map_err(|err| err.to_string())
         }
+        // The owner's IDE tools come from the hub's operator, never from the model's own calls.
+        name if name.starts_with("ide_") => Err(format!("denied: {name} is an owner tool; the model is not offered it")),
         _ => tools::serve(workspace, name, input).map_err(|err| err.to_string()),
     }
 }
@@ -838,6 +840,15 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("a scratch workspace");
         Workspace::at(dir)
+    }
+
+    #[test]
+    fn the_owners_ide_tools_are_refused_when_the_model_asks_for_them() {
+        let workspace = scratch("ide-guard");
+        let err = run_guest_tool(&workspace, "ide_write", &json!({"path": "a.txt", "text": "x", "expected_hash": null}))
+            .expect_err("the model may not write through the owner's tools");
+        assert!(err.starts_with("denied: ide_write"), "{err}");
+        assert!(!workspace.dir().join("a.txt").exists());
     }
 
     fn welcome(max_turns: u32) -> String {

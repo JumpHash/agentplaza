@@ -182,7 +182,7 @@ impl Workspace {
     /// escape check below meaningful: the comparison is between two resolved
     /// paths, so a root that is itself a symlink cannot make the check say
     /// "inside" for something that is not.
-    fn canonical_root(&self) -> Result<PathBuf, ToolError> {
+    pub(crate) fn canonical_root(&self) -> Result<PathBuf, ToolError> {
         fs::canonicalize(&self.root).map_err(|err| ToolError::Unavailable {
             reason: format!(
                 "the workspace {} is not mounted: {err}",
@@ -291,7 +291,7 @@ fn label_of(parts: &[String]) -> String {
 }
 
 /// A required string argument.
-fn string_arg(args: &Value, key: &str) -> Result<String, ToolError> {
+pub(crate) fn string_arg(args: &Value, key: &str) -> Result<String, ToolError> {
     match args.get(key) {
         Some(Value::String(text)) => Ok(text.clone()),
         Some(_) => Err(invalid(format!("{key:?} must be a string"))),
@@ -337,25 +337,25 @@ fn line_arg(args: &Value, key: &str, default: usize) -> Result<usize, ToolError>
     }
 }
 
-fn invalid(reason: impl Into<String>) -> ToolError {
+pub(crate) fn invalid(reason: impl Into<String>) -> ToolError {
     ToolError::InvalidInput {
         reason: reason.into(),
     }
 }
 
-fn denied(reason: impl Into<String>) -> ToolError {
+pub(crate) fn denied(reason: impl Into<String>) -> ToolError {
     ToolError::Denied {
         reason: reason.into(),
     }
 }
 
-fn not_found(reason: impl Into<String>) -> ToolError {
+pub(crate) fn not_found(reason: impl Into<String>) -> ToolError {
     ToolError::NotFound {
         reason: reason.into(),
     }
 }
 
-fn limit(reason: impl Into<String>) -> ToolError {
+pub(crate) fn limit(reason: impl Into<String>) -> ToolError {
     ToolError::LimitExceeded {
         reason: reason.into(),
     }
@@ -367,7 +367,7 @@ fn limit(reason: impl Into<String>) -> ToolError {
 /// create the target outside the workspace; a live link would make the write
 /// land wherever it points. Reads may follow links that resolve inside; a
 /// write never follows one.
-fn refuse_symlink_target(path: &std::path::Path, label: &str) -> Result<(), ToolError> {
+pub(crate) fn refuse_symlink_target(path: &std::path::Path, label: &str) -> Result<(), ToolError> {
     if let Ok(metadata) = fs::symlink_metadata(path)
         && metadata.file_type().is_symlink()
     {
@@ -380,7 +380,7 @@ fn refuse_symlink_target(path: &std::path::Path, label: &str) -> Result<(), Tool
 
 /// A filesystem error in the tool taxonomy, with `what` naming the operation
 /// and the path it failed on.
-fn io_tool_error(err: io::Error, what: impl fmt::Display) -> ToolError {
+pub(crate) fn io_tool_error(err: io::Error, what: impl fmt::Display) -> ToolError {
     match err.kind() {
         io::ErrorKind::NotFound => not_found(format!("{what}: {err}")),
         io::ErrorKind::PermissionDenied => denied(format!("{what}: {err}")),
@@ -446,7 +446,7 @@ fn give_to_agent(path: &Path) {
 }
 
 /// `create_dir_all`, handing every folder it creates to the agent user.
-fn create_dirs(dir: &Path) -> io::Result<()> {
+pub(crate) fn create_dirs(dir: &Path) -> io::Result<()> {
     let missing: Vec<PathBuf> = dir.ancestors().take_while(|a| !a.exists()).map(Path::to_path_buf).collect();
     fs::create_dir_all(dir)?;
     for made in missing {
@@ -455,7 +455,7 @@ fn create_dirs(dir: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
+pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
     let temp = dir.join(format!(
         ".{}.plaza-tmp-{}",

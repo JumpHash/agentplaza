@@ -101,29 +101,13 @@ pub fn diff(workspace: &Workspace, input: &Value) -> Result<String, String> {
             .ok_or("no work checkpoint yet; pass since")?,
     };
     let scope = scope_of(input);
-    let now = walk(&workspace.dir(), None)?;
-    let keys: BTreeSet<&String> = since
-        .files
-        .keys()
-        .chain(now.files.keys())
-        .filter(|k| within(k.as_str(), scope.as_deref()))
-        .collect();
+    let changes = changed_files(workspace, &base, since, scope.as_deref())?;
     let mut summary = Vec::new();
     let mut body = String::new();
-    for key in keys {
-        let old = since.files.get(key.as_str());
-        let new = now.files.get(key.as_str());
-        if old.map(|e| (e.hash.as_str(), e.mode)) == new.map(|e| (e.hash.as_str(), e.mode)) {
-            continue;
-        }
-        let old_bytes = old.map(|e| read_object(&base, &e.hash)).transpose()?;
-        let new_bytes = match now.paths.get(key.as_str()) {
-            Some(path) => Some(fs::read(path).map_err(|e| e.to_string())?),
-            None => None,
-        };
-        let change = file_change(key.as_str(), old_bytes.as_deref(), new_bytes.as_deref());
-        summary.push(change.summary);
-        body.push_str(&change.text);
+    for change in &changes {
+        let rendered = file_change(&change.key, change.old.as_deref(), change.new.as_deref());
+        summary.push(rendered.summary);
+        body.push_str(&rendered.text);
     }
     if summary.is_empty() {
         return Ok(format!("no changes since {} ({} ago)", since.id, age(since.at_ms)));
@@ -133,6 +117,109 @@ pub fn diff(workspace: &Workspace, input: &Value) -> Result<String, String> {
     out.push_str("\n\n");
     out.push_str(&cap(body));
     Ok(out)
+}
+
+/// One file that differs between a checkpoint and the workspace now, with its bytes on each side
+/// (`None` where the file is absent).
+struct Changed {
+    key: String,
+    old: Option<Vec<u8>>,
+    new: Option<Vec<u8>>,
+}
+
+/// The files under `scope` whose hash or mode differs between `since` and the workspace now, in path order.
+fn changed_files(workspace: &Workspace, base: &Path, since: &Snap, scope: Option<&str>) -> Result<Vec<Changed>, String> {
+    let now = walk(workspace.dir(), None)?;
+    let keys: BTreeSet<&String> = since
+        .files
+        .keys()
+        .chain(now.files.keys())
+        .filter(|k| within(k.as_str(), scope))
+        .collect();
+    let mut changed = Vec::new();
+    for key in keys {
+        let old = since.files.get(key.as_str());
+        let new = now.files.get(key.as_str());
+        if old.map(|e| (e.hash.as_str(), e.mode)) == new.map(|e| (e.hash.as_str(), e.mode)) {
+            continue;
+        }
+        let old = old.map(|e| read_object(base, &e.hash)).transpose()?;
+        let new = match now.paths.get(key.as_str()) {
+            Some(path) => Some(fs::read(path).map_err(|e| e.to_string())?),
+            None => None,
+        };
+        changed.push(Changed { key: key.clone(), old, new });
+    }
+    Ok(changed)
+}
+
+/// Every change since checkpoint `n` as one git-style unified diff, with no cap: the owner's diff.
+/// Files for which `keep` is false are left out.
+pub fn unified_since(workspace: &Workspace, n: u64, keep: impl Fn(&str) -> bool) -> Result<String, String> {
+    let base = base_dir(workspace);
+    let snaps = load_snaps(&base);
+    let since = snaps.iter().find(|s| s.n == n).ok_or_else(|| format!("no checkpoint {n}"))?;
+    let changes = changed_files(workspace, &base, since, None)?;
+    Ok(changes
+        .iter()
+        .filter(|change| keep(&change.key))
+        .map(|change| git_change(&change.key, change.old.as_deref(), change.new.as_deref()))
+        .collect())
+}
+
+/// One file as git writes it: a `diff --git` header, the new or deleted marker, then the
+/// `---`/`+++` names and the hunks. A binary file has no hunks.
+fn git_change(key: &str, old: Option<&[u8]>, new: Option<&[u8]>) -> String {
+    let mut out = format!("diff --git a/{key} b/{key}\n");
+    if old.is_none() {
+        out.push_str("new file mode 100644\n");
+    }
+    if new.is_none() {
+        out.push_str("deleted file mode 100644\n");
+    }
+    let (a_name, b_name) = (side('a', key, old.is_some()), side('b', key, new.is_some()));
+    let a = old.unwrap_or_default();
+    let b = new.unwrap_or_default();
+    let binary = a.contains(&0)
+        || b.contains(&0)
+        || std::str::from_utf8(a).is_err()
+        || std::str::from_utf8(b).is_err();
+    if binary {
+        out.push_str(&format!("Binary files {a_name} and {b_name} differ\n"));
+        return out;
+    }
+    out.push_str(&format!("--- {a_name}\n+++ {b_name}\n"));
+    let a_lines: Vec<&str> = std::str::from_utf8(a).unwrap_or_default().lines().collect();
+    let b_lines: Vec<&str> = std::str::from_utf8(b).unwrap_or_default().lines().collect();
+    let ops = line_diff(&a_lines, &b_lines);
+    if !ops.is_empty() {
+        out.push_str(&hunks(&ops));
+    }
+    out
+}
+
+/// A checkpoint as the owner's list shows it.
+pub struct Summary {
+    pub n: u64,
+    pub id: String,
+    pub label: String,
+    pub at_ms: u64,
+    /// How many files the checkpoint holds.
+    pub files: usize,
+}
+
+/// Every checkpoint, oldest first.
+pub fn summaries(workspace: &Workspace) -> Vec<Summary> {
+    load_snaps(&base_dir(workspace))
+        .into_iter()
+        .map(|snap| Summary {
+            n: snap.n,
+            id: snap.id,
+            label: snap.label,
+            at_ms: snap.at_ms,
+            files: snap.files.len(),
+        })
+        .collect()
 }
 
 /// Rolls the workspace or a path back to a checkpoint. A `before-restore` checkpoint is taken first.
@@ -226,7 +313,7 @@ fn age(at_ms: u64) -> String {
     }
 }
 
-fn sha_hex(bytes: &[u8]) -> String {
+pub(crate) fn sha_hex(bytes: &[u8]) -> String {
     Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
 }
 

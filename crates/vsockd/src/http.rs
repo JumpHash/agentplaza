@@ -279,6 +279,29 @@ mod tests {
     }
 
     #[test]
+    fn the_owners_ide_tools_pass_the_hub_whatever_the_role() {
+        // The owner's `ide_*` tools go to the agent as any operator tool does, with their arguments.
+        let surface = surface(hub_with(None).1);
+        let (_token, steering) = surface.hub.connect(10, "librarian", Instant::now());
+        let agent = thread::spawn(move || {
+            let mut dispatched = Vec::new();
+            while let Ok(Command::Call { name, args, reply }) = steering.recv_timeout(Duration::from_millis(500)) {
+                if let Some(reply) = reply {
+                    let _ = reply.send(ToolReply { ok: true, output: format!("ran {name} {args}") });
+                }
+                dispatched.push(name);
+            }
+            dispatched
+        });
+        assert_eq!(
+            post(&surface, "/v1/agents/10/tell", r#"{"name":"ide_list","args":{"path":"src"}}"#),
+            (200, serde_json::json!({ "ok": true, "output": r#"ran ide_list {"path":"src"}"# }))
+        );
+        assert_eq!(post(&surface, "/v1/agents/10/tell", r#"{"name":"ide_run_poll","args":{"run":"run-1"}}"#).0, 200);
+        assert_eq!(agent.join().unwrap(), ["ide_list", "ide_run_poll"]);
+    }
+
+    #[test]
     fn the_surface_serves_over_loopback() {
         let handle = serve(0, Arc::new(hub_with(None).1), surface(hub_with(None).1).facts).expect("binds");
         let reply = apz_http::client::send(handle.port(), "GET", "/healthz", None, Duration::from_secs(5)).unwrap();

@@ -28,9 +28,10 @@ use serde_json::Value;
 
 use crate::egress;
 use crate::files::{self, Workspace};
+use crate::ide;
 
-/// The tools, by name.
-const TOOLS: [Tool; 11] = [
+/// The tools, by name. The `ide_*` tools are the owner's (see [`crate::ide`]); the model never gets them.
+const TOOLS: [Tool; 21] = [
     Tool {
         name: "echo",
         run: echo,
@@ -74,6 +75,46 @@ const TOOLS: [Tool; 11] = [
     Tool {
         name: "download",
         run: files::download,
+    },
+    Tool {
+        name: "ide_list",
+        run: ide::list,
+    },
+    Tool {
+        name: "ide_read",
+        run: ide::read,
+    },
+    Tool {
+        name: "ide_write",
+        run: ide::write,
+    },
+    Tool {
+        name: "ide_changes",
+        run: ide::changes,
+    },
+    Tool {
+        name: "ide_checkpoints",
+        run: ide::list_checkpoints,
+    },
+    Tool {
+        name: "ide_restore",
+        run: ide::restore,
+    },
+    Tool {
+        name: "ide_search",
+        run: ide::search,
+    },
+    Tool {
+        name: "ide_run_start",
+        run: ide::run_start,
+    },
+    Tool {
+        name: "ide_run_poll",
+        run: ide::run_poll,
+    },
+    Tool {
+        name: "ide_run_stop",
+        run: ide::run_stop,
     },
 ];
 
@@ -124,6 +165,11 @@ pub enum ToolError {
         /// Which cap, and by how much.
         reason: String,
     },
+    /// The file changed since the caller read it: {reason} is its current hash, or `missing`
+    Conflict {
+        /// The file's current hash, or `missing` when there is no file.
+        reason: String,
+    },
     /// The tool failed in a way that is this side's own: {reason}
     Internal {
         /// What failed.
@@ -140,6 +186,7 @@ impl fmt::Display for ToolError {
             Self::Denied { reason } => write!(formatter, "denied: {reason}"),
             Self::NotFound { reason } => write!(formatter, "not found: {reason}"),
             Self::LimitExceeded { reason } => write!(formatter, "limit exceeded: {reason}"),
+            Self::Conflict { reason } => write!(formatter, "conflict: {reason}"),
             Self::Internal { reason } => write!(formatter, "internal: {reason}"),
         }
     }
