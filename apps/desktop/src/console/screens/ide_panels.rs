@@ -1,4 +1,4 @@
-//! The IDE's right panel beyond Changes: the agent's transcript with a steer box, the agent's held
+//! The IDE's right panels (Changes lives on the left): the agent's transcript with a steer box, the agent's held
 //! approvals (a write's diff against the file now), a bounded run with polled output, and the
 //! terminal's placeholder. The screen (`ide.rs`) owns the workspace and routes the messages; this
 //! module owns its panels' state, their hub calls and their views.

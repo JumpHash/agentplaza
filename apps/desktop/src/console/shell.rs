@@ -367,24 +367,34 @@ fn apply_frame(state: &mut State, kind: &str, data: &serde_json::Value) -> bool 
     }
 }
 
+/// Whether `current` is drawn over the whole window, without the console's sidebar, top bar or banners.
+/// The IDE is a view of its own: it draws its own header, and the console's chrome stays off it.
+pub fn full_window(current: &Id) -> bool {
+    matches!(current, Id::Ide(_))
+}
+
 /// The shell around `screen`; the shell's own messages are lifted into the app's with `wrap`.
 pub fn view<'a, M: Clone + 'a>(state: &'a State, screen: Element<'a, M>, wrap: fn(Msg) -> M) -> Element<'a, M> {
-    let mut main = column![top_bar(state, wrap)];
-    if state.paused {
-        main = main.push(held_banner(state, wrap));
-    }
-    if let Some(adapter) = &state.software_gpu {
-        main = main.push(gpu_banner(adapter));
-    }
-    // A screen that does not scroll its own page is wrapped in one, so a squeezed screen scrolls instead of clipping.
-    let screen = if manages_scroll(&state.current) {
-        screen
+    let base: Element<'a, M> = if full_window(&state.current) {
+        container(screen).width(Length::Fill).height(Length::Fill).style(ui::paper).into()
     } else {
-        ui::scroll(screen).id(SCREEN_SCROLL.clone()).width(Length::Fill).height(Length::Fill).into()
+        let mut main = column![top_bar(state, wrap)];
+        if state.paused {
+            main = main.push(held_banner(state, wrap));
+        }
+        if let Some(adapter) = &state.software_gpu {
+            main = main.push(gpu_banner(adapter));
+        }
+        // A screen that does not scroll its own page is wrapped in one, so a squeezed screen scrolls instead of clipping.
+        let screen = if manages_scroll(&state.current) {
+            screen
+        } else {
+            ui::scroll(screen).id(SCREEN_SCROLL.clone()).width(Length::Fill).height(Length::Fill).into()
+        };
+        main = main.push(container(screen).padding(16).width(Length::Fill).height(Length::Fill));
+        let main = container(main).width(Length::Fill).height(Length::Fill).style(ui::paper);
+        row![sidebar(state, wrap), main].height(Length::Fill).into()
     };
-    main = main.push(container(screen).padding(16).width(Length::Fill).height(Length::Fill));
-    let main = container(main).width(Length::Fill).height(Length::Fill).style(ui::paper);
-    let base: Element<'a, M> = row![sidebar(state, wrap), main].height(Length::Fill).into();
     let mut layers = Stack::new().push(base);
     if let Some(which) = &state.confirm {
         layers = layers.push(confirm_view(which, wrap));
@@ -778,7 +788,7 @@ fn top_btn<'a, M: Clone + 'a>(label: &str, icon_name: &str, fill: Color, msg: M)
 
 /// A square status light and its label, as the web's top bar draws the hub and node.
 /// The top bar's word for the events socket, as the web's sidebar says it.
-fn live_word(up: bool) -> &'static str {
+pub fn live_word(up: bool) -> &'static str {
     if up { "Live" } else { "Reconnecting…" }
 }
 
@@ -855,6 +865,15 @@ mod tests {
 
     fn ctx() -> Ctx {
         Ctx { client: super::super::client::Client::new("http://127.0.0.1:1", None, None) }
+    }
+
+    #[test]
+    fn the_ide_is_the_full_window_and_the_other_screens_keep_the_shell() {
+        assert!(full_window(&Id::Ide(None)));
+        assert!(full_window(&Id::Ide(Some("agent:7".into()))));
+        assert!(!full_window(&Id::Overview));
+        assert!(!full_window(&Id::Agents));
+        assert!(!full_window(&Id::Agent(3)));
     }
 
     #[test]

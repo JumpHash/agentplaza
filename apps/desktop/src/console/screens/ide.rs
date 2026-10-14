@@ -11,14 +11,16 @@ use std::str::FromStr;
 use std::sync::LazyLock;
 
 use apz_ide::state::{self, Action, Base, IdeState, Panel};
-use apz_ide::{Buffer, ChangeSet, EntryKind, TreePage, WorkspaceId, path as ide_path};
+use apz_ide::{Buffer, ChangeSet, EntryKind, FileChange, TreePage, WorkspaceId, path as ide_path};
+use iced::event::Status;
 use iced::keyboard::{self, Key, Modifiers, key::Named};
 use iced::widget::{Space, button, column, container, pick_list, row, text_editor, text_input};
-use iced::{Alignment, Border, Element, Length, Padding, Subscription, Task, Theme};
+use iced::{Alignment, Element, Length, Padding, Subscription, Task, mouse};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::Id;
+use super::ide_chrome::{self, Drag, Edge, Layout};
 use super::ide_diff;
 use super::ide_editor;
 use super::ide_panels;
@@ -27,10 +29,11 @@ use crate::console::Ctx;
 use crate::console::boot;
 use crate::console::client::{self, Client};
 use crate::console::events;
+use crate::console::shell;
 use crate::console::ui::{self, Kind, Tone};
 use crate::theme;
 
-/// The setting that keeps the last workspace the IDE opened (the top bar's button opens it).
+/// The setting that keeps the last workspace the IDE opened (the console's Ctrl+Shift+E opens it).
 const REMEMBERED: &str = "ide_workspace";
 
 /// The quick-open box and the search box: focused when they open.
@@ -218,6 +221,24 @@ pub struct Search {
     pub busy: bool,
 }
 
+/// The left panel's view, picked on the activity rail.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Side {
+    #[default]
+    Files,
+    Search,
+    Changes,
+    Checkpoints,
+}
+
+/// What the console knows of the plaza, for the IDE's chrome: whether it is held (STOP ALL) and whether
+/// the events link is up. The console passes it in; the IDE reads nothing else from the shell.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Plaza {
+    pub held: bool,
+    pub live: bool,
+}
+
 /// The IDE's state for its one screen.
 #[derive(Debug, Default)]
 pub struct State {
@@ -253,8 +274,14 @@ pub struct State {
     /// Quick open's query, while it is open.
     pub quick: Option<String>,
     pub search: Option<Search>,
-    /// The changed file whose diff the Changes panel shows.
+    /// The changed file whose diff the centre shows (in place of the editor), if any.
     pub diff_file: Option<String>,
+    /// The left panel's view, and whether the panel is folded (in `layout`).
+    pub side: Side,
+    /// The side panels' sizes and folds, kept between runs.
+    pub layout: Layout,
+    /// A panel edge being dragged.
+    pub drag: Option<Drag>,
 }
 
 /// The IDE's messages. Hub answers carry the workspace they were asked for, so a late answer for a
@@ -277,8 +304,24 @@ pub enum Msg {
     /// Lists the workspace again: its tree, changes, checkpoints and open files.
     RefreshAll,
     OpenPath(String),
-    /// Shows a changed file's diff in the Changes panel.
+    /// Shows a changed file's diff in the centre.
     ShowDiff(String),
+    /// Puts the editor back in the centre, in place of a diff.
+    CloseDiff,
+    /// Shows a left panel on the activity rail; a press on the open one folds the panel.
+    Side(Side),
+    /// Folds or unfolds a side panel (the header's toggles, Ctrl+B and Ctrl+J).
+    ToggleLeft,
+    ToggleRight,
+    /// A press on a panel's grab strip starts a drag; the screen follows the pointer until the button comes up.
+    DragStart(Edge),
+    DragMove(f32),
+    DragEnd,
+    /// A double press on a grab strip: the panel goes back to its default width.
+    ResetWidth(Edge),
+    /// The shell's own actions the IDE's chrome offers (the theme switch, the held strip's Resume). The
+    /// console hands them to the shell.
+    Shell(shell::Msg),
     Opened {
         ws: String,
         path: String,
@@ -353,6 +396,15 @@ pub fn go(msg: &Msg) -> Option<Id> {
     match msg {
         Msg::Open(workspace) => Some(Id::Ide(workspace.clone())),
         _ => None,
+    }
+}
+
+/// Where the IDE's Back (its Console button, and Escape with nothing open) goes: the screen it was opened
+/// from. No origin, or an origin that is the IDE itself, goes to the Overview.
+pub fn back_target(origin: Option<Id>) -> Id {
+    match origin {
+        Some(Id::Ide(_)) | None => Id::Overview,
+        Some(id) => id,
     }
 }
 
@@ -567,7 +619,7 @@ fn current_info(st: &State) -> Option<&WorkspaceInfo> {
     st.workspaces.iter().find(|w| w.id == id)
 }
 
-fn writable(st: &State) -> bool {
+pub(super) fn writable(st: &State) -> bool {
     current_info(st).is_some_and(|w| w.writable)
 }
 
@@ -577,7 +629,11 @@ fn working(st: &State) -> bool {
 }
 
 fn choice(w: &WorkspaceInfo) -> Choice {
-    let name = if w.name.is_empty() { w.id.clone() } else { w.name.clone() };
+    let mut name = if w.name.is_empty() { w.id.clone() } else { w.name.clone() };
+    // A repo workspace is shown on the branch it serves.
+    if let Ok(WorkspaceId::Repo { git_ref, .. }) = WorkspaceId::from_str(&w.id) {
+        name = format!("{name} @{git_ref}");
+    }
     let kind = if w.kind == "agent" { "agent" } else { "repo" };
     let mut label = format!("{kind} · {name}");
     if !w.status.is_empty() {
@@ -586,10 +642,13 @@ fn choice(w: &WorkspaceInfo) -> Choice {
     Choice { id: w.id.clone(), label }
 }
 
-/// The badge's state: conflict beats an agent working, which beats saved, which beats idle.
-pub fn state_badge(st: &State) -> (&'static str, Tone) {
+/// The badge's state: conflict beats a held plaza, which beats an agent working, which beats saved, which
+/// beats idle.
+pub fn state_badge(st: &State, held: bool) -> (&'static str, Tone) {
     if st.tabs.values().any(|t| t.conflict.is_some()) {
         ("conflict", Tone::Danger)
+    } else if held {
+        ("held", Tone::Danger)
     } else if working(st) {
         ("agent working", Tone::Signal)
     } else if st.saved && !st.tabs.values().any(|t| t.buffer.dirty) {
@@ -732,7 +791,7 @@ fn load_workspace(st: &mut State, ctx: &Ctx) -> Task<Msg> {
         // The agent's held calls count on the Approvals tab, so they load with the workspace; an Agent tab
         // that stayed open across the switch loads its transcript too.
         tasks.push(ide_panels::approvals_task(&ctx.client, &ws).map(Msg::Panels));
-        if st.ide.panel == Panel::Agent {
+        if right_panel(st.ide.panel) == Panel::Agent {
             tasks.push(ide_panels::show(&mut st.panels, Panel::Agent, &ctx.client, &ws).map(Msg::Panels));
         }
     }
@@ -771,9 +830,17 @@ fn select(st: &mut State, id: WorkspaceId, ctx: &Ctx) -> Task<Msg> {
     st.goto = None;
     st.quick = None;
     st.search = None;
+    st.diff_file = None;
     st.notice = None;
     st.panels = ide_panels::State::default();
     load_workspace(st, ctx)
+}
+
+/// Shows the search panel on the left, with its box focused. A quick open gives way to it.
+fn open_search(st: &mut State) -> Task<Msg> {
+    st.quick = None;
+    st.search.get_or_insert_with(Search::default);
+    iced::widget::operation::focus(SEARCH_ID.clone())
 }
 
 /// Opens the target the screen's id named, once the list is in: its workspace, in review mode if asked,
@@ -812,6 +879,8 @@ fn apply_preselect(st: &mut State, ctx: &Ctx) -> Task<Msg> {
 /// Opens a file in a tab (or shows its tab). The hub's copy is read once; later changes come as events.
 fn open_path(st: &mut State, path: String, ctx: &Ctx) -> Task<Msg> {
     st.quick = None;
+    // A file opened for the editor puts the editor back in the centre, in place of a diff.
+    st.diff_file = None;
     if let Err(e) = ide_path::check_read(&path) {
         st.notice = Some(format!("{path}: {e}"));
         return Task::none();
@@ -893,9 +962,66 @@ pub fn update(st: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         }
         Msg::OpenPath(path) => open_path(st, path, ctx),
         Msg::ShowDiff(path) => {
+            // A diff is shown in the centre, where the review would be: the review gives way.
+            if st.ide.review {
+                dispatch(st, Action::ToggleReview);
+            }
+            st.quick = None;
             st.diff_file = Some(path);
             Task::none()
         }
+        Msg::CloseDiff => {
+            st.diff_file = None;
+            Task::none()
+        }
+        Msg::Side(side) => {
+            // A press on the open panel's icon folds it; another side opens its panel.
+            let folds = st.side == side && st.layout.left_open;
+            st.layout.left_open = !folds;
+            st.side = side;
+            if side != Side::Search {
+                st.search = None;
+            }
+            ide_chrome::save(&st.layout);
+            if side == Side::Search && !folds { open_search(st) } else { Task::none() }
+        }
+        Msg::ToggleLeft => {
+            st.layout.toggle(Edge::Left);
+            if st.layout.left_open && st.side == Side::Search {
+                st.search.get_or_insert_with(Search::default);
+            }
+            ide_chrome::save(&st.layout);
+            Task::none()
+        }
+        Msg::ToggleRight => {
+            st.layout.toggle(Edge::Right);
+            ide_chrome::save(&st.layout);
+            Task::none()
+        }
+        Msg::DragStart(edge) => {
+            st.drag = Some(Drag::begin(&st.layout, edge));
+            Task::none()
+        }
+        Msg::DragMove(x) => {
+            if let Some(drag) = st.drag.as_mut() {
+                ide_chrome::drag_to(&mut st.layout, drag, x);
+            }
+            Task::none()
+        }
+        Msg::DragEnd => {
+            if st.drag.take().is_some() {
+                ide_chrome::save(&st.layout);
+            }
+            Task::none()
+        }
+        Msg::ResetWidth(edge) => {
+            st.drag = None;
+            st.layout.reset_width(edge);
+            ide_chrome::save(&st.layout);
+            Task::none()
+        }
+        // The console hands these to the shell (see `console::update_app`); the IDE never sees them.
+        Msg::Shell(_) => Task::none(),
         Msg::Opened { ws, path, res } => {
             if !is_current(st, &ws) {
                 return Task::none();
@@ -915,6 +1041,7 @@ pub fn update(st: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             Task::none()
         }
         Msg::Activate(path) => {
+            st.diff_file = None;
             dispatch(st, Action::Activate(path));
             Task::none()
         }
@@ -1156,13 +1283,15 @@ pub fn update(st: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             None => Task::none(),
         },
         Msg::ToggleSearch => {
-            if st.search.is_some() {
+            if st.side == Side::Search && st.search.is_some() {
+                st.side = Side::Files;
                 st.search = None;
                 Task::none()
             } else {
-                st.search = Some(Search::default());
-                st.quick = None;
-                iced::widget::operation::focus(SEARCH_ID.clone())
+                st.side = Side::Search;
+                st.layout.left_open = true;
+                ide_chrome::save(&st.layout);
+                open_search(st)
             }
         }
         Msg::SearchQuery(query) => {
@@ -1210,6 +1339,7 @@ pub fn update(st: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             Task::none()
         }
         Msg::OpenMatch(path, line) => {
+            st.diff_file = None;
             if st.tabs.contains_key(&path) {
                 dispatch(st, Action::Activate(path.clone()));
                 if let Some(tab) = st.tabs.get_mut(&path) {
@@ -1226,6 +1356,7 @@ pub fn update(st: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                 st.quick = None;
                 Task::none()
             } else if st.search.is_some() {
+                st.side = Side::Files;
                 st.search = None;
                 Task::none()
             } else {
@@ -1298,64 +1429,65 @@ pub fn load(st: &mut State, ctx: &Ctx) -> Task<Msg> {
 
 // ---- Views ------------------------------------------------------------------------------------
 
-fn frame_style(_theme: &Theme) -> container::Style {
-    container::Style {
-        background: Some(theme::palette().sheet.into()),
-        border: Border {
-            color: theme::palette().rule,
-            width: 1.0,
-            radius: 0.0.into(),
-        },
-        ..Default::default()
+/// The IDE's whole window: the header, the held strip, the activity rail, the left panel, the centre,
+/// the right panel and the status bar. The console's sidebar and top bar are not drawn around it.
+pub fn view(st: &State, plaza: Plaza) -> Element<'_, Msg> {
+    let mut page = column![ide_chrome::header(st, plaza)].height(Length::Fill);
+    if plaza.held {
+        page = page.push(ide_chrome::held_strip());
     }
-}
-
-fn vrule() -> Element<'static, Msg> {
-    container(Space::new())
-        .width(Length::Fixed(1.0))
-        .height(Length::Fill)
-        .style(|_: &Theme| container::Style {
-            background: Some(theme::palette().rule.into()),
-            ..Default::default()
-        })
-        .into()
-}
-
-/// The whole screen: the head with the top strip, then the tree, the centre and the right panel.
-pub fn view(st: &State) -> Element<'_, Msg> {
-    let head = ui::view_head("IDE", head_actions(st));
-    let mut page = column![head].spacing(12).height(Length::Fill);
     if let Some(line) = status_line(st) {
-        page = page.push(line);
+        page = page.push(container(line).padding([4, 16]).width(Length::Fill));
     }
-    let body = row![
-        container(left(st)).width(Length::Fixed(264.0)).height(Length::Fill),
-        vrule(),
-        container(centre(st)).width(Length::Fill).height(Length::Fill).padding(Padding {
-            top: 0.0,
-            right: 14.0,
-            bottom: 0.0,
-            left: 14.0
-        }),
-        vrule(),
-        container(right(st)).width(Length::Fixed(340.0)).height(Length::Fill),
-    ]
-    .height(Length::Fill);
-    container(page.push(body))
-        .padding(Padding {
-            top: 0.0,
-            right: 28.0,
-            bottom: 28.0,
-            left: 28.0,
-        })
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .style(frame_style)
-        .into()
+    let mut body = row![ide_chrome::rail(st)].height(Length::Fill);
+    if st.layout.left_open {
+        body = body.push(
+            container(left(st))
+                .width(Length::Fixed(st.layout.left))
+                .height(Length::Fill)
+                .padding(Padding {
+                    top: 10.0,
+                    right: 10.0,
+                    bottom: 10.0,
+                    left: 12.0,
+                })
+                .style(ide_chrome::panel_style),
+        );
+        body = body.push(ide_chrome::handle(Edge::Left));
+    }
+    body = body.push(
+        container(centre(st))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .padding(Padding {
+                top: 10.0,
+                right: 14.0,
+                bottom: 10.0,
+                left: 14.0,
+            }),
+    );
+    if st.layout.right_open {
+        body = body.push(ide_chrome::handle(Edge::Right));
+        body = body.push(
+            container(right(st))
+                .width(Length::Fixed(st.layout.right))
+                .height(Length::Fill)
+                .padding(Padding {
+                    top: 10.0,
+                    right: 12.0,
+                    bottom: 10.0,
+                    left: 10.0,
+                })
+                .style(ide_chrome::panel_style),
+        );
+    }
+    page = page.push(body);
+    page = page.push(ide_chrome::status_bar(st, plaza.live));
+    container(page).width(Length::Fill).height(Length::Fill).style(ui::paper).into()
 }
 
-/// The top strip: the workspace picker, the changed count, the state badge, Review and Save.
-fn head_actions(st: &State) -> Vec<Element<'_, Msg>> {
+/// The workspace picker: the workspaces the hub lists, the one on screen selected.
+pub(super) fn picker(st: &State) -> Element<'_, Msg> {
     let choices: Vec<Choice> = st.workspaces.iter().map(choice).collect();
     let selected = st
         .ide
@@ -1363,23 +1495,11 @@ fn head_actions(st: &State) -> Vec<Element<'_, Msg>> {
         .as_ref()
         .map(WorkspaceId::to_string)
         .and_then(|id| choices.iter().find(|c| c.id == id).cloned());
-    let picker = pick_list(choices, selected, Msg::Pick)
+    pick_list(choices, selected, Msg::Pick)
         .placeholder("Choose a workspace")
-        .width(Length::Fixed(280.0))
-        .style(theme::pick_list);
-    let mut actions: Vec<Element<'_, Msg>> = vec![picker.into()];
-    if let Some(changes) = &st.changes {
-        actions.push(ui::mono(format!("{} changed", changes.files.len()), 11.5, theme::palette().ink_2).into());
-    }
-    let (label, tone) = state_badge(st);
-    actions.push(ui::badge(label, tone));
-    let on_workspace = st.ide.workspace.is_some();
-    let review_kind = if st.ide.review { Kind::Primary } else { Kind::Secondary };
-    actions.push(ui::btn("Review", None, review_kind, on_workspace.then_some(Msg::ToggleReview)));
-    let dirty = st.ide.active.as_ref().and_then(|p| st.tabs.get(p)).is_some_and(|t| t.buffer.dirty);
-    let save_kind = if dirty { Kind::Primary } else { Kind::Secondary };
-    actions.push(ui::btn("Save", Some("check"), save_kind, (dirty && writable(st)).then_some(Msg::Save)));
-    actions
+        .width(Length::Fixed(260.0))
+        .style(theme::pick_list)
+        .into()
 }
 
 fn status_line(st: &State) -> Option<Element<'_, Msg>> {
@@ -1389,10 +1509,18 @@ fn status_line(st: &State) -> Option<Element<'_, Msg>> {
     st.notice.as_deref().map(|notice| ui::faint(notice.to_string()).into())
 }
 
+/// The left panel: the view the activity rail picked.
 fn left(st: &State) -> Element<'_, Msg> {
-    if let Some(search) = &st.search {
-        return search_panel(search);
+    match (st.side, &st.search) {
+        (Side::Search, Some(search)) => search_panel(search),
+        (Side::Changes, _) => changes_side(st),
+        (Side::Checkpoints, _) => checkpoints_side(st),
+        _ => files_side(st),
     }
+}
+
+/// The Files view: the tree, its changed-only filter and its refresh.
+fn files_side(st: &State) -> Element<'_, Msg> {
     let filter = st.ide.filter_changed;
     let on_workspace = st.ide.workspace.is_some();
     let header = row![
@@ -1405,7 +1533,6 @@ fn left(st: &State) -> Element<'_, Msg> {
             on_workspace.then_some(Msg::ChangedOnly)
         ),
         ui::btn_sm("", Some("refresh"), Kind::Ghost, on_workspace.then_some(Msg::RefreshAll)),
-        ui::btn_sm("", Some("search"), Kind::Ghost, on_workspace.then_some(Msg::ToggleSearch)),
     ]
     .spacing(8)
     .align_y(Alignment::Center);
@@ -1414,6 +1541,22 @@ fn left(st: &State) -> Element<'_, Msg> {
         _ => ide_tree::rows(&st.tree, false),
     };
     column![header, ui::scroll(ide_tree::view(rows, st.ide.active.clone())).height(Length::Fill)]
+        .spacing(10)
+        .height(Length::Fill)
+        .into()
+}
+
+/// The Changes view: what has changed since the base, with each file a press away from its diff.
+fn changes_side(st: &State) -> Element<'_, Msg> {
+    column![ui::label("Changes"), ui::scroll(changes_panel(st)).height(Length::Fill)]
+        .spacing(10)
+        .height(Length::Fill)
+        .into()
+}
+
+/// The Checkpoints view: the workspace's checkpoints, with Compare and Restore.
+fn checkpoints_side(st: &State) -> Element<'_, Msg> {
+    column![ui::label("Checkpoints"), ui::scroll(checkpoints_panel(st)).height(Length::Fill)]
         .spacing(10)
         .height(Length::Fill)
         .into()
@@ -1492,6 +1635,12 @@ fn centre(st: &State) -> Element<'_, Msg> {
             None => ui::empty("git", "Nothing to review yet", "The changes are still loading."),
         };
     }
+    // A changed file the rail's Changes list picked: its diff, in place of the editor.
+    if let (Some(path), Some(changes)) = (st.diff_file.as_deref(), st.changes.as_ref())
+        && let Some(file) = changes.files.iter().find(|f| f.path == path)
+    {
+        return diff_view(file);
+    }
     if let Some(path) = st.ide.active.as_deref()
         && let Some(tab) = st.tabs.get(path)
     {
@@ -1506,31 +1655,55 @@ fn centre(st: &State) -> Element<'_, Msg> {
     ui::empty("file", "No file open", "Pick a file in the tree, or press Ctrl+P to find one by name.")
 }
 
-/// The right side: the panel tabs, then the shown panel. Checkpoints sit under Changes, what they compare with.
+/// The right panel's own view. Changes live on the left now, so a Changes panel shows the Agent.
+pub(super) fn right_panel(panel: Panel) -> Panel {
+    match panel {
+        Panel::Changes => Panel::Agent,
+        other => other,
+    }
+}
+
+/// The right side: the panel tabs, then the shown panel (the agent, its approvals, the run, the terminal).
 fn right(st: &State) -> Element<'_, Msg> {
     let agent = matches!(st.ide.workspace, Some(WorkspaceId::Agent(_)));
     let pending = st.panels.held.len();
     let approvals = if pending > 0 { format!("Approvals {pending}") } else { "Approvals".to_string() };
+    let shown = right_panel(st.ide.panel);
     let tabs = ui::tabs(
         &[
-            (Panel::Changes, "Changes"),
             (Panel::Agent, "Agent"),
             (Panel::Approvals, approvals.as_str()),
             (Panel::Run, "Run"),
             (Panel::Terminal, "Terminal"),
         ],
-        st.ide.panel,
+        shown,
         Msg::Panel,
     );
-    let body: Element<'_, Msg> = match st.ide.panel {
-        Panel::Changes => column![changes_panel(st), ui::hairline(), ui::label("Checkpoints"), checkpoints_panel(st)].spacing(14).into(),
-        Panel::Agent => ide_panels::agent_view(&st.panels, agent).map(Msg::Panels),
+    let body: Element<'_, Msg> = match shown {
+        Panel::Changes | Panel::Agent => ide_panels::agent_view(&st.panels, agent).map(Msg::Panels),
         Panel::Approvals => ide_panels::approvals_view(&st.panels, agent).map(Msg::Panels),
         Panel::Run => ide_panels::run_view(&st.panels, agent).map(Msg::Panels),
         Panel::Terminal => ide_panels::terminal_view().map(Msg::Panels),
     };
     column![ui::scroll_x(tabs), ui::scroll(body).height(Length::Fill)]
         .spacing(12)
+        .height(Length::Fill)
+        .into()
+}
+
+/// One changed file's diff in the centre: its path, Open in editor and Close, then its rows.
+fn diff_view(file: &FileChange) -> Element<'static, Msg> {
+    let open = (file.status != apz_ide::Status::Deleted).then(|| Msg::OpenPath(file.path.clone()));
+    let head = row![
+        ui::mono(file.path.clone(), 12.0, theme::palette().ink),
+        Space::new().width(Length::Fill),
+        ui::btn_sm("Open in editor", None, Kind::Ghost, open),
+        ui::btn_sm("Close", Some("x"), Kind::Ghost, Some(Msg::CloseDiff)),
+    ]
+    .spacing(8)
+    .align_y(Alignment::Center);
+    column![head, ui::scroll(ide_diff::file_block(file)).height(Length::Fill)]
+        .spacing(10)
         .height(Length::Fill)
         .into()
 }
@@ -1553,11 +1726,6 @@ fn changes_panel(st: &State) -> Element<'_, Msg> {
         Some(changes) => {
             col = col.push(ui::mono(ide_diff::summary(changes), 11.0, theme::palette().ink_2));
             col = col.push(ide_diff::file_list(changes, st.diff_file.as_deref()));
-            if let Some(file) = st.diff_file.as_deref().and_then(|path| changes.files.iter().find(|f| f.path == path)) {
-                let open = (file.status != apz_ide::Status::Deleted).then(|| Msg::OpenPath(file.path.clone()));
-                col = col.push(ui::btn_sm("Open in editor", None, Kind::Ghost, open));
-                col = col.push(ide_diff::file_block(file));
-            }
         }
         None if st.changes_error.is_none() => col = col.push(ui::faint("Loading changes…")),
         None => {}
@@ -1616,23 +1784,38 @@ fn checkpoints_panel(st: &State) -> Element<'_, Msg> {
 
 // ---- Subscription -----------------------------------------------------------------------------
 
-/// The screen's keys and the hub's events. Ctrl+S saves, Ctrl+P opens quick open, Ctrl+Shift+F searches,
-/// Escape closes what is open here or goes back.
-pub fn subscription(ctx: &Ctx) -> Subscription<Msg> {
-    let keys = iced::event::listen_with(|event, _status, _window| match event {
-        iced::Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => shortcut(&key, modifiers),
+/// The screen's keys, the hub's events, and while a panel edge is dragged, the pointer. Ctrl+S saves,
+/// Ctrl+P opens quick open, Ctrl+Shift+F searches, Ctrl+B and Ctrl+J fold the side panels, Escape closes
+/// what is open here or goes back.
+pub fn subscription(st: &State, ctx: &Ctx) -> Subscription<Msg> {
+    let keys = iced::event::listen_with(|event, status, _window| match event {
+        iced::Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => shortcut(&key, modifiers, status),
         _ => None,
     });
-    Subscription::batch([keys, events::subscription(&ctx.client).map(Msg::Event)])
+    let drag = if st.drag.is_some() { iced::event::listen_with(drag_event) } else { Subscription::none() };
+    Subscription::batch([keys, drag, events::subscription(&ctx.client).map(Msg::Event)])
 }
 
-fn shortcut(key: &Key, modifiers: Modifiers) -> Option<Msg> {
+/// The pointer while a panel edge is dragged: its moves, and the button coming up, from anywhere in the window.
+fn drag_event(event: iced::Event, _: Status, _: iced::window::Id) -> Option<Msg> {
+    match event {
+        iced::Event::Mouse(mouse::Event::CursorMoved { position }) => Some(Msg::DragMove(position.x)),
+        iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => Some(Msg::DragEnd),
+        _ => None,
+    }
+}
+
+/// The IDE's keys. Ctrl+B and Ctrl+J are for the panels, so they are taken only when no focused field
+/// (the editor, a search box) took the key: typing does not fold a panel.
+fn shortcut(key: &Key, modifiers: Modifiers, status: Status) -> Option<Msg> {
     match key {
         Key::Named(Named::Escape) => Some(Msg::Escape),
         Key::Character(c) if modifiers.command() => match (c.to_lowercase().as_str(), modifiers.shift()) {
             ("s", false) => Some(Msg::Save),
             ("p", false) => Some(Msg::ToggleQuick),
             ("f", true) => Some(Msg::ToggleSearch),
+            ("b", false) if status == Status::Ignored => Some(Msg::ToggleLeft),
+            ("j", false) if status == Status::Ignored => Some(Msg::ToggleRight),
             _ => None,
         },
         _ => None,
@@ -1754,7 +1937,7 @@ mod tests {
             })
         );
         assert!(tab.buffer.dirty, "a refused save keeps the owner's edits");
-        assert_eq!(state_badge(&st).0, "conflict");
+        assert_eq!(state_badge(&st, false).0, "conflict");
 
         let _ = update(&mut st, Msg::KeepMine("a.txt".into()), &ctx());
         let tab = &st.tabs["a.txt"];
@@ -1866,15 +2049,93 @@ mod tests {
     }
 
     #[test]
-    fn the_badge_reads_conflict_then_agent_then_saved_then_idle() {
+    fn the_badge_reads_conflict_then_held_then_agent_then_saved_then_idle() {
         let mut st = screen_with_a_tab();
-        assert_eq!(state_badge(&st).0, "idle");
+        assert_eq!(state_badge(&st, false).0, "idle");
         st.saved = true;
-        assert_eq!(state_badge(&st).0, "saved");
+        assert_eq!(state_badge(&st, false).0, "saved");
         st.workspaces[0].status = "working".into();
-        assert_eq!(state_badge(&st).0, "agent working");
+        assert_eq!(state_badge(&st, false).0, "agent working");
+        assert_eq!(state_badge(&st, true).0, "held", "a held plaza shows before the agent's work");
         st.tabs.get_mut("a.txt").expect("open").conflicted(Some("h2".into()));
-        assert_eq!(state_badge(&st).0, "conflict");
+        assert_eq!(state_badge(&st, true).0, "conflict");
+    }
+
+    #[test]
+    fn the_picker_names_a_repo_by_its_branch_and_an_agent_by_its_status() {
+        let repo = WorkspaceInfo {
+            id: "repo:plaza@feat/x".into(),
+            kind: "repo".into(),
+            owner: String::new(),
+            name: "plaza".into(),
+            writable: true,
+            status: String::new(),
+        };
+        assert_eq!(choice(&repo).label, "repo · plaza @feat/x");
+        assert_eq!(choice(&info(7, true, "idle")).label, "agent · scout · idle");
+    }
+
+    #[test]
+    fn back_goes_to_the_screen_the_ide_was_opened_from_and_never_to_the_ide() {
+        assert_eq!(back_target(None), Id::Overview, "no origin: the Overview");
+        assert_eq!(back_target(Some(Id::Agents)), Id::Agents);
+        assert_eq!(back_target(Some(Id::Ide(Some("agent:7".into())))), Id::Overview, "an IDE origin would loop");
+    }
+
+    #[test]
+    fn escape_closes_the_search_panel_before_it_goes_back() {
+        let mut st = screen_with_a_tab();
+        let _ = update(&mut st, Msg::Side(Side::Search), &ctx());
+        assert_eq!(st.side, Side::Search);
+        assert!(st.search.is_some());
+        let _ = update(&mut st, Msg::Escape, &ctx());
+        assert_eq!((st.side, st.search.is_none()), (Side::Files, true), "the first Escape closes the search");
+    }
+
+    #[test]
+    fn a_press_on_the_open_rail_icon_folds_its_panel_and_another_side_opens_it() {
+        let mut st = screen_with_a_tab();
+        assert!(st.layout.left_open);
+        let _ = update(&mut st, Msg::Side(Side::Files), &ctx());
+        assert!(!st.layout.left_open, "the open side folds");
+        let _ = update(&mut st, Msg::Side(Side::Changes), &ctx());
+        assert!(st.layout.left_open && st.side == Side::Changes, "another side opens the panel on it");
+    }
+
+    #[test]
+    fn a_changed_file_shows_its_diff_in_the_centre_and_opening_the_editor_clears_it() {
+        let mut st = screen_with_a_tab();
+        st.diff_file = Some("a.txt".into());
+        let _ = update(&mut st, Msg::Activate("a.txt".into()), &ctx());
+        assert_eq!(st.diff_file, None, "a tab shown puts the editor back");
+        let _ = update(&mut st, Msg::ShowDiff("a.txt".into()), &ctx());
+        assert_eq!(st.diff_file.as_deref(), Some("a.txt"));
+        let _ = update(&mut st, Msg::CloseDiff, &ctx());
+        assert_eq!(st.diff_file, None);
+    }
+
+    #[test]
+    fn a_drag_on_an_edge_changes_its_width_and_a_double_press_resets_it() {
+        let mut st = screen_with_a_tab();
+        let _ = update(&mut st, Msg::DragStart(Edge::Left), &ctx());
+        let _ = update(&mut st, Msg::DragMove(100.0), &ctx());
+        let _ = update(&mut st, Msg::DragMove(160.0), &ctx());
+        assert_eq!(st.layout.left, 264.0 + 60.0);
+        let _ = update(&mut st, Msg::DragEnd, &ctx());
+        assert!(st.drag.is_none(), "the button came up: the drag ends");
+        let _ = update(&mut st, Msg::ResetWidth(Edge::Left), &ctx());
+        assert_eq!(st.layout.left, 264.0);
+    }
+
+    #[test]
+    fn the_panel_keys_fold_the_side_panels_only_when_no_field_took_them() {
+        let cmd = if cfg!(target_os = "macos") { Modifiers::LOGO } else { Modifiers::CTRL };
+        let b = Key::Character("b".into());
+        let j = Key::Character("j".into());
+        assert!(matches!(shortcut(&b, cmd, Status::Ignored), Some(Msg::ToggleLeft)));
+        assert!(matches!(shortcut(&j, cmd, Status::Ignored), Some(Msg::ToggleRight)));
+        assert!(shortcut(&b, cmd, Status::Captured).is_none(), "a focused field keeps the key");
+        assert!(shortcut(&b, cmd | Modifiers::SHIFT, Status::Ignored).is_none(), "Shift+B is not this key");
     }
 
     #[test]

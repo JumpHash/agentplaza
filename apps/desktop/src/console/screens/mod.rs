@@ -48,6 +48,7 @@ pub mod lab_breeders;
 pub mod lab_hf;
 pub mod ide;
 pub mod ide_diff;
+pub mod ide_chrome;
 pub mod ide_editor;
 pub mod ide_panels;
 pub mod ide_tree;
@@ -384,13 +385,13 @@ pub fn subscription(screens: &Screens, id: &Id, ctx: &Ctx) -> iced::Subscription
         Id::Council => council::subscription(ctx).map(Msg::Council),
         Id::LabDatasets => lab_datasets::subscription(ctx).map(Msg::LabDatasets),
         Id::LabRecipes => lab_recipes::subscription(ctx).map(Msg::LabRecipes),
-        Id::Ide(_) => ide::subscription(ctx).map(Msg::Ide),
+        Id::Ide(_) => ide::subscription(&screens.ide, ctx).map(Msg::Ide),
         Id::LabJobDetail(_) => lab_common::live(&ctx.client).filter_map(|e| lab_common::training_frame(&e)).map(lab_job_detail::Msg::Live).map(Msg::LabJobDetail),
         _ => iced::Subscription::none(),
     }
 }
 
-pub fn view<'a>(screens: &'a Screens, id: &Id, ctx: &'a Ctx) -> Element<'a, Msg> {
+pub fn view<'a>(screens: &'a Screens, id: &Id, ctx: &'a Ctx, plaza: ide::Plaza) -> Element<'a, Msg> {
     match id {
         Id::Overview => overview::view(&screens.overview, ctx).map(Msg::Overview),
         Id::Agents => agents::view(&screens.agents, ctx).map(Msg::Agents),
@@ -426,6 +427,6 @@ pub fn view<'a>(screens: &'a Screens, id: &Id, ctx: &'a Ctx) -> Element<'a, Msg>
         Id::LabModels => lab_models::view(&screens.lab_models, ctx).map(Msg::LabModels),
         Id::LabModelDetail(_) => lab_model_detail::view(&screens.lab_model_detail, ctx).map(Msg::LabModelDetail),
         Id::LabBreeders => lab_breeders::view(&screens.lab_breeders, ctx).map(Msg::LabBreeders),
-        Id::Ide(_) => ide::view(&screens.ide).map(Msg::Ide),
+        Id::Ide(_) => ide::view(&screens.ide, plaza).map(Msg::Ide),
     }
 }

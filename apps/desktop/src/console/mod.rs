@@ -228,13 +228,15 @@ fn update_app(console: &mut Console, msg: Msg) -> Task<Msg> {
             }
             Task::batch(tasks)
         }
-        // The IDE's Escape: back to the screen it was opened from (the console owns navigation).
+        // The IDE's Escape and Console button: back to the screen it was opened from (the console owns navigation).
         Msg::Screen(screens::Msg::Ide(screens::ide::Msg::Back)) => {
             let Some(ctx) = console.ctx.clone() else { return Task::none() };
-            let target = console.screens.ide.origin.clone().unwrap_or(screens::Id::Overview);
+            let target = screens::ide::back_target(console.screens.ide.origin.clone());
             console.shell.current = target.clone();
             screens::open(&mut console.screens, target, &ctx).map(Msg::Screen)
         }
+        // The IDE's chrome offers the theme switch and the held strip's Resume: the shell owns both.
+        Msg::Screen(screens::Msg::Ide(screens::ide::Msg::Shell(msg))) => update_app(console, Msg::Shell(msg)),
         // The Setup screen replays the wizard or the tour (the console owns both).
         Msg::Screen(screens::Msg::Setup(screens::setup::Msg::Wizard)) => {
             let Some(ctx) = console.ctx.clone() else { return Task::none() };
@@ -310,9 +312,14 @@ fn view(console: &Console) -> Element<'_, Msg> {
             if console.onboard.wizard.is_some() {
                 return onboard::wizard_view(&console.onboard, ctx.client.base()).map(Msg::Onboard);
             }
+            // The IDE's header shows the plaza's hold and the events link, which the shell keeps.
+            let plaza = screens::ide::Plaza {
+                held: console.shell.paused,
+                live: console.shell.live,
+            };
             let base = shell::view(
                 &console.shell,
-                screens::view(&console.screens, &console.shell.current, ctx).map(Msg::Screen),
+                screens::view(&console.screens, &console.shell.current, ctx, plaza).map(Msg::Screen),
                 Msg::Shell,
             );
             let open = console.shell.mode == shell::Mode::Open;
