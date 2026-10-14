@@ -262,6 +262,25 @@ mod tests {
     }
 
     #[test]
+    fn selected_agent_has_one_label_among_three_bots() {
+        let mut floor = Floor::new();
+        let model = crate::hardware::model("board/workstation").expect("the workstation board parses");
+        floor.show_board("test".into(), model, crate::hardware::Params::default(), crate::hardware::Status::Online);
+        floor.sync(&[info(1, "working"), info(2, "working"), info(3, "working")]);
+        floor.reset_view(640.0 / 480.0);
+        floor.selected = Some(2);
+
+        let overlays = floor.label_overlays(640.0, 480.0, 2.0);
+        assert_eq!(overlays.len(), 3, "one overlay per bot");
+        assert_eq!(overlays.iter().filter(|o| o.h == BOX_H + 2.0).count(), 1, "one full box, for the selected agent");
+
+        let labels = floor.labels(640.0, 480.0);
+        assert_eq!(labels.iter().filter(|l| l.selected).count(), 1);
+        assert_eq!(labels.iter().filter(|l| l.cid == 2).count(), 1, "the selected cid appears once");
+        assert_eq!(labels.len(), 3, "labels: {:?}", labels.iter().map(|l| l.cid).collect::<Vec<_>>());
+    }
+
+    #[test]
     fn plaza_fits_the_stage_for_its_aspect() {
         // Every point the fit frames (rooms, dais, robots and their labels) projects inside the
         // stage, within the fill margin, and the plaza uses most of the tighter axis.

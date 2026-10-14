@@ -2,7 +2,7 @@ import { api, type Agent, type FleetResponse } from '../api';
 import { floorName } from '../roles';
 import { button } from '../ui/components';
 import type { Cleanup } from './index';
-import { agentCardChildren, LABEL_CSS, machineCard } from './floor-popup';
+import { agentCardChildren, machineCard } from './floor-popup';
 
 /** The wasm glue's file name at the dist root: esbuild replaces this at build time (null when the wasm crate is missing). */
 declare const __APZ_ENGINE_JS__: string | null;
@@ -524,33 +524,12 @@ export function mountEngine(root: HTMLElement, initialId: string | null = null):
     );
   };
 
-  /** The label at index i of the pool, made the first time it is needed. */
-  const labelAt = (i: number): LabelEntry => {
-    let entry = pool[i];
-    if (entry === undefined) {
-      const el = document.createElement('div');
-      el.style.cssText = LABEL_CSS;
-      const key = document.createElement('i');
-      key.className = 'floor-key';
-      const text = document.createElement('span');
-      text.style.cssText = 'overflow:hidden;text-overflow:ellipsis;min-width:0';
-      el.append(key, text);
-      labelLayer.append(el);
-      entry = { el, key, name: text, x: NaN, y: NaN, shown: false };
-      pool.push(entry);
-    }
-    return entry;
-  };
-
   /** The engine's label text changed (`on_labels`): the names and the status squares, in the engine's order. */
   const setLabels = (list: LabelMeta[]): void => {
     labels = list;
     if (pickedRobot !== null) renderRobot();
-    list.forEach((meta, i) => {
-      const p = labelAt(i);
-      if (p.name.textContent !== meta.name) p.name.textContent = meta.name;
-      p.key.style.background = `hsl(${meta.hue} 60% 50%)`;
-    });
+    // The names are not drawn here: the engine paints each label as its own overlay (labels.rs), so a
+    // DOM label on top would give the same agent a second box.
   };
 
   /** Places the labels from the last drawn frame (`label_positions`: flat [cid, x, y, visible] per label). */
