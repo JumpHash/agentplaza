@@ -765,6 +765,54 @@ mod tests {
         s
     }
 
+    /// A stage whose fleet is one machine of `kind` (its popup opens on it), with the GPUs or Apple chip its kind has.
+    fn one_machine_stage(kind: &str) -> Stage {
+        let gpus = match kind {
+            "workstation" => 4,
+            "server" => 8,
+            _ => 0,
+        };
+        let gpu_json = (0..gpus).map(|_| r#"{"name":"GPU","vendor":"nvidia"}"#).collect::<Vec<_>>().join(",");
+        let apple = if kind == "apple-soc" {
+            r#","apple":{"chip":"M4 Max","p_cores":12,"e_cores":4,"gpu_cores":40,"unified_memory_gib":64}"#
+        } else {
+            ""
+        };
+        let json = format!(
+            r#"{{"machines":[{{"id":"m0","role":"hub","kind":"{kind}","status":"online","gpus":[{gpu_json}]{apple}}}]}}"#
+        );
+        let mut s = Stage::default();
+        s.size = (800.0, 600.0);
+        s.apply_fleet(serde_json::from_str(&json).unwrap());
+        s
+    }
+
+    /// Opening a machine and the ticks after it run on the page's thread: each call must stay under 50 ms in release.
+    #[test]
+    fn opening_a_machine_keeps_every_call_under_50_ms_per_kind() {
+        for kind in ["workstation", "server", "laptop", "phone", "edge", "apple-soc"] {
+            let mut s = one_machine_stage(kind);
+            let t = Instant::now();
+            s.open_popup(Some("m0".to_string()));
+            let open = ms_since(t);
+            let mut slowest = open;
+            let mut now = Instant::now();
+            for _ in 0..200 {
+                now += Duration::from_millis(16);
+                let t = Instant::now();
+                s.work_board();
+                slowest = slowest.max(ms_since(t));
+                let t = Instant::now();
+                s.tick(now);
+                slowest = slowest.max(ms_since(t));
+            }
+            println!("{kind}: open_popup {open:.1} ms, slowest call {slowest:.1} ms");
+            if !cfg!(debug_assertions) {
+                assert!(slowest < 50.0, "{kind}: a call took {slowest:.1} ms on the page's thread");
+            }
+        }
+    }
+
     #[test]
     fn an_online_fleet_at_rest_is_ambient_once_300_ms_pass() {
         let mut s = online_fleet_stage();
