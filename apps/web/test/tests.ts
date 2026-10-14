@@ -21,6 +21,7 @@ import { wrapIde, type IdeGlue } from '../src/ide/wasm';
 import { applyBuffer, badgeOf, diffMark, dirsOf, fuzzyScore, isViewed, languageFor, lineCounts, onRemote, openBuffer, parentDir, parseViewed, rankPaths, viewedKey, withViewed } from '../src/ide/model';
 import type { FileChange } from '../src/ide/types';
 import { CENTRE_MIN, clampSize, defaultLayout, fitSize, isNarrow, LEFT_SIZE, leftViewFor, originFallback, parseLayout, RIGHT_SIZE, rightTabFor, serializeLayout } from '../src/ide/layout';
+import { MAX_TERMINALS, attachFrame, base64ToBytes, bytesToBase64, clearSession, inputFrame, killFrame, nextOffset, openFrame, parseServerFrame, plainText, readSession, reconnectDelay, resizeFrame, sessionKey, splitInput, terminalSocketUrl, writeSession, type KeyValueStore } from '../src/views/ide-terminal-model';
 
 let failures = 0;
 // Each section checks its own failures and reports them, then the run goes on to the next section (so one failing
@@ -564,6 +565,111 @@ sectionEnd('ide view model tests: ok');
   eq([leftViewFor('changes'), leftViewFor('agent'), rightTabFor('agent'), rightTabFor('changes')], ['changes', null, 'agent', null], 'ide layout: a link’s panel is a left view or a right tab');
 }
 sectionEnd('ide layout tests: ok');
+// The IDE terminal's logic (views/ide-terminal-model.ts): base64 over bytes, the socket's frames, the offset a re-attach
+// resumes from, the reconnect schedule and the session storage. The view itself needs a DOM and runs in the browser.
+{
+  const encoder = new TextEncoder();
+  const decoder = new TextDecoder();
+
+  // Base64 of bytes: multi-byte UTF-8 survives, and a long buffer crosses the internal chunks.
+  const text = 'héllo — 日本語 🙂 é';
+  eq(decoder.decode(base64ToBytes(bytesToBase64(encoder.encode(text)))), text, 'ide terminal base64: multi-byte UTF-8 survives the round trip');
+  eq(bytesToBase64(encoder.encode('é')), 'w6k=', 'ide terminal base64: the UTF-8 bytes are encoded, not the code units');
+  const big = new Uint8Array(100_000).map((_, i) => (i * 31) & 0xff);
+  const back = base64ToBytes(bytesToBase64(big));
+  eq(back.length === big.length && back.every((b, i) => b === big[i]), true, 'ide terminal base64: a long buffer round-trips');
+  eq(splitInput(new Uint8Array(40_000), 16_384).map((chunk) => chunk.length), [16_384, 16_384, 7_232], 'ide terminal input: frames of at most one chunk');
+
+  // The client frames.
+  eq(JSON.parse(openFrame(80, 24)), { t: 'open', cols: 80, rows: 24 }, 'ide terminal frame: open without a cwd');
+  eq(JSON.parse(openFrame(80, 24, 'src')), { t: 'open', cols: 80, rows: 24, cwd: 'src' }, 'ide terminal frame: open with a cwd');
+  eq(JSON.parse(openFrame(80, 24, '')), { t: 'open', cols: 80, rows: 24 }, 'ide terminal frame: an empty cwd is left out');
+  eq(JSON.parse(attachFrame('term-1', 12)), { t: 'attach', term: 'term-1', offset: 12 }, 'ide terminal frame: attach');
+  eq(JSON.parse(inputFrame(encoder.encode('é'))), { t: 'in', data: 'w6k=' }, 'ide terminal frame: input is base64 of its bytes');
+  eq(JSON.parse(resizeFrame(100, 30)), { t: 'resize', cols: 100, rows: 30 }, 'ide terminal frame: resize');
+  eq(JSON.parse(killFrame()), { t: 'kill' }, 'ide terminal frame: kill');
+
+  // The hub's frames.
+  const out = parseServerFrame(JSON.stringify({ t: 'out', data: bytesToBase64(encoder.encode('日本')), offset: 5 }));
+  eq(out && out.t === 'out' ? [decoder.decode(out.data), out.offset] : null, ['日本', 5], 'ide terminal frame: out carries its bytes and offset');
+  eq(parseServerFrame('{"t":"opened","term":"term-3"}'), { t: 'opened', term: 'term-3' }, 'ide terminal frame: opened');
+  eq(parseServerFrame('{"t":"lost","bytes":9}'), { t: 'lost', bytes: 9 }, 'ide terminal frame: lost');
+  eq(parseServerFrame('{"t":"exit","code":null}'), { t: 'exit', code: null }, 'ide terminal frame: exit without a code');
+  eq(parseServerFrame('{"t":"exit","code":2}'), { t: 'exit', code: 2 }, 'ide terminal frame: exit with a code');
+  eq(parseServerFrame('{"t":"error","message":"no such terminal"}'), { t: 'error', message: 'no such terminal' }, 'ide terminal frame: error');
+  eq(parseServerFrame('{"t":"pong"}'), { t: 'pong' }, 'ide terminal frame: pong');
+  eq(
+    [parseServerFrame('not json'), parseServerFrame('{"t":"nope"}'), parseServerFrame('{"t":"out","data":"!!","offset":0}'), parseServerFrame('{"t":"out","data":"","offset":-1}'), parseServerFrame('{"t":"opened"}')],
+    [null, null, null, null, null],
+    'ide terminal frame: a frame that is not of the protocol is ignored',
+  );
+
+  // Offset tracking: a re-attach resumes one past the last byte the view holds (a count of bytes, not characters).
+  const wire = [
+    { t: 'out', data: bytesToBase64(encoder.encode('héllo')), offset: 0 },
+    { t: 'out', data: bytesToBase64(encoder.encode(' wörld')), offset: 6 },
+  ].map((frame) => parseServerFrame(JSON.stringify(frame)));
+  const last = wire[1];
+  eq(last && last.t === 'out' ? nextOffset(last) : -1, 13, 'ide terminal offset: one past the last byte held');
+
+  // The reconnect schedule: 1 s, 2 s, 5 s, then 10 s for good.
+  eq([0, 1, 2, 3, 4, 50].map(reconnectDelay), [1_000, 2_000, 5_000, 10_000, 10_000, 10_000], 'ide terminal reconnect: 1 s, 2 s, 5 s, then 10 s');
+  eq([reconnectDelay(-1), reconnectDelay(0.5)], [1_000, 1_000], 'ide terminal reconnect: a negative or fractional attempt is the first wait');
+  eq(MAX_TERMINALS, 4, 'ide terminal: four terminals per workspace, the hub cap');
+
+  // Session storage: one key per workspace and slot, and a storage that refuses is no session.
+  const memory = new Map<string, string>();
+  const store: KeyValueStore = {
+    getItem: (key) => memory.get(key) ?? null,
+    setItem: (key, value) => {
+      memory.set(key, value);
+    },
+    removeItem: (key) => {
+      memory.delete(key);
+    },
+  };
+  const key = sessionKey('agent-1', '0');
+  eq(new Set([sessionKey('agent-1', '0'), sessionKey('agent-2', '0'), sessionKey('agent-1', '1')]).size, 3, 'ide terminal session keys: one per workspace and slot');
+  eq(sessionKey('a/b', '0').includes('/'), false, 'ide terminal session keys: the workspace name is encoded');
+  eq(readSession(store, key), null, 'ide terminal session: nothing stored reads as null');
+  writeSession(store, key, { term: 'term-1', offset: 42 });
+  eq(readSession(store, key), { term: 'term-1', offset: 42 }, 'ide terminal session: a stored session reads back');
+  eq(readSession(store, sessionKey('agent-1', '1')), null, 'ide terminal session: slots do not share a session');
+  store.setItem(key, '{"term":"","offset":1}');
+  eq(readSession(store, key), null, 'ide terminal session: an empty term is no session');
+  store.setItem(key, 'not json');
+  eq(readSession(store, key), null, 'ide terminal session: a malformed value is no session');
+  clearSession(store, key);
+  eq(readSession(store, key), null, 'ide terminal session: a cleared session reads as null');
+  eq(readSession(undefined, key), null, 'ide terminal session: no storage at all is no session');
+  const blocked: KeyValueStore = {
+    getItem: () => {
+      throw new Error('storage is blocked');
+    },
+    setItem: () => {
+      throw new Error('storage is blocked');
+    },
+    removeItem: () => {
+      throw new Error('storage is blocked');
+    },
+  };
+  let threw = false;
+  try {
+    writeSession(blocked, key, { term: 'term-1', offset: 0 });
+    clearSession(blocked, key);
+  } catch {
+    threw = true;
+  }
+  eq([readSession(blocked, key), threw], [null, false], 'ide terminal session: blocked storage is no session and no error');
+
+  // The socket's address: wss on https, ws on http, and the workspace encoded.
+  eq(terminalSocketUrl('agent 1/x', { protocol: 'https:', host: 'console.example' }), 'wss://console.example/v1/ide/terminal/agent%201%2Fx', 'ide terminal socket: wss on https, the workspace encoded');
+  eq(terminalSocketUrl('agent-7', { protocol: 'http:', host: 'localhost:8080' }), 'ws://localhost:8080/v1/ide/terminal/agent-7', 'ide terminal socket: ws on http');
+
+  // Notices: no control characters from the hub reach the terminal.
+  eq(plainText('\u001b[31mred\u0007\n'), '[31mred', 'ide terminal notices: control characters are dropped');
+}
+sectionEnd('ide terminal tests: ok');
 
 if (failedSections.length) {
   console.error(`${failedSections.length} section(s) failed: ${failedSections.join(', ')}`);

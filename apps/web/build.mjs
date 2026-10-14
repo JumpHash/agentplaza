@@ -96,11 +96,15 @@ if (existsSync(join(repoRoot, 'crates/apz-ide-web/Cargo.toml'))) {
 
 // The IDE screen (views/ide.ts) is loaded on first visit, with CodeMirror: esbuild splits it into a chunk beside main
 // (`splitting`, esm). Its stylesheet is not in the start CSS either: this plugin makes `styles/ide.css` a string the view
-// inserts when it first opens.
+// inserts when it first opens. The IDE terminal (views/ide-terminal.ts) is in that chunk too, so its stylesheet and
+// xterm's own are text the same way.
 const ideStylesheetAsText = {
   name: 'ide-stylesheet-as-text',
   setup(b) {
-    b.onLoad({ filter: /[\\/]styles[\\/]ide\.css$/ }, (args) => ({ contents: readFileSync(args.path, 'utf8'), loader: 'text' }));
+    b.onLoad({ filter: /([\\/]styles[\\/]ide(-terminal)?\.css|[\\/]@xterm[\\/]xterm[\\/]css[\\/]xterm\.css)$/ }, (args) => ({
+      contents: readFileSync(args.path, 'utf8'),
+      loader: 'text',
+    }));
   },
 };
 
