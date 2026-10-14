@@ -1,6 +1,7 @@
 //! `agentplaza society`: The society: roles, bonds, reputation, and the agent proposals waiting for
 //! the owner.
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use clap::Subcommand;
@@ -75,16 +76,40 @@ fn num(v: &Value, key: &str) -> f64 {
     v.get(key).and_then(Value::as_f64).unwrap_or(0.0)
 }
 
+/// The cids with a suspension in force, read from a sanctions register (`GET /v1/sanctions`).
+fn suspended_cids(register: &Value) -> BTreeSet<u64> {
+    items(register, "suspensions")
+        .iter()
+        .filter(|s| s.get("active").and_then(Value::as_bool) == Some(true))
+        .filter_map(|s| s.get("cid").and_then(Value::as_u64))
+        .collect()
+}
+
+/// The suspended agents now. The register is read whole (its newest 10000 records) so an old suspension is not
+/// missed; a register that cannot be read is said so, and no one is marked.
+fn suspended_now(ctx: &Ctx) -> BTreeSet<u64> {
+    match ctx.client.get("/v1/sanctions?limit=10000") {
+        Ok(register) => suspended_cids(&register),
+        Err(e) => {
+            eprintln!("warning: the sanctions register could not be read ({e}), so no agent is marked suspended");
+            BTreeSet::new()
+        }
+    }
+}
+
 pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
     match cmd {
         Cmd::List => {
             let v = ctx.client.get("/v1/society")?;
+            // The mark is for people reading the table; the JSON is the hub's view as it is.
+            let suspended = if ctx.json { BTreeSet::new() } else { suspended_now(ctx) };
             ctx.out(&v, |v| {
                 let mut agents: Vec<&Value> = items(v, "agents").iter().collect();
                 agents.sort_by(|a, b| num(b, "reputation").total_cmp(&num(a, "reputation")));
                 let rows: Vec<Vec<String>> = agents
                     .iter()
                     .map(|a| {
+                        let cid = a.get("cid").and_then(Value::as_u64);
                         vec![
                             ctx::text(a, "cid"),
                             ctx::s(a, "name").to_string(),
@@ -92,10 +117,11 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                             format!("{:.2}", num(a, "reputation")),
                             format!("{:.2}", num(a, "confidence")),
                             ctx::text(a, "wallet"),
+                            if cid.is_some_and(|c| suspended.contains(&c)) { "suspended".to_string() } else { String::new() },
                         ]
                     })
                     .collect();
-                ctx::table(&["cid", "name", "role", "reputation", "confidence", "wallet"], &rows);
+                ctx::table(&["cid", "name", "role", "reputation", "confidence", "wallet", "status"], &rows);
             });
         }
         Cmd::Bonds => {
@@ -199,4 +225,24 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_the_active_suspensions_mark_their_agents() {
+        let register = json!({
+            "sanctions": [{ "cid": 9 }],
+            "suspensions": [
+                { "id": 1, "cid": 3, "active": true },
+                { "id": 2, "cid": 4, "active": false },
+                { "id": 3, "cid": 5 },
+                { "id": 4, "cid": 3, "active": true }
+            ]
+        });
+        assert_eq!(suspended_cids(&register), BTreeSet::from([3]));
+        assert!(suspended_cids(&json!({})).is_empty());
+    }
 }

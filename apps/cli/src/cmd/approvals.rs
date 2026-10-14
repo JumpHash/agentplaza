@@ -18,21 +18,28 @@ pub enum Cmd {
         /// The approval's id.
         id: String,
     },
-    /// Approve a request, optionally with a reason.
+    /// Approve a request, optionally with a reason. A sanction escalation takes `--action acknowledge`.
     Approve {
         /// The approval's id.
         id: String,
         /// Why (optional).
         #[arg(long)]
         reason: Option<String>,
+        /// For a sanction escalation: `acknowledge` (the default); `lift` and `retire` are denials, so the hub refuses them here.
+        #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(SANCTION_ACTIONS))]
+        action: Option<String>,
     },
-    /// Deny a request, optionally with a reason.
+    /// Deny a request, optionally with a reason. A sanction escalation takes `--action lift` or `retire`.
     Deny {
         /// The approval's id.
         id: String,
         /// Why (optional).
         #[arg(long)]
         reason: Option<String>,
+        /// For a sanction escalation: `lift` lifts an active suspension, `retire` records a retirement (apid does
+        /// not retire agents). A bare deny lifts an active suspension and does nothing to any other sanction.
+        #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(SANCTION_ACTIONS))]
+        action: Option<String>,
     },
     /// List the agent proposals waiting for you.
     Proposals,
@@ -57,12 +64,15 @@ pub enum Cmd {
     },
 }
 
+/// The decisions a sanction escalation takes (the hub's `sanctions::settle`).
+const SANCTION_ACTIONS: [&str; 3] = ["acknowledge", "lift", "retire"];
+
 pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
     match cmd {
         Cmd::List { pending } => list(ctx, pending),
         Cmd::Show { id } => show(ctx, &id),
-        Cmd::Approve { id, reason } => decide(ctx, &id, true, reason),
-        Cmd::Deny { id, reason } => decide(ctx, &id, false, reason),
+        Cmd::Approve { id, reason, action } => decide(ctx, &id, true, reason, action),
+        Cmd::Deny { id, reason, action } => decide(ctx, &id, false, reason, action),
         Cmd::Proposals => proposals(ctx),
         Cmd::ApproveProposal { id, count, model } => approve_proposal(ctx, &id, count, model),
         Cmd::RejectProposal { id, reason } => reject_proposal(ctx, &id, reason),
@@ -75,9 +85,10 @@ fn array(v: &Value) -> &[Value] {
 
 fn list(ctx: &Ctx, pending: bool) -> Result<(), String> {
     let value = ctx.client.get("/v1/approvals")?;
-    let shown: Vec<&Value> = array(&value).iter().filter(|a| !pending || ctx::s(a, "state") == "pending").collect();
-    ctx.out(&value, |_| {
-        let rows: Vec<Vec<String>> = shown
+    let shown: Vec<Value> = array(&value).iter().filter(|a| !pending || ctx::s(a, "state") == "pending").cloned().collect();
+    let shown = Value::Array(shown);
+    ctx.out(&shown, |shown| {
+        let rows: Vec<Vec<String>> = array(shown)
             .iter()
             .map(|a| vec![ctx::text(a, "id"), ctx::text(a, "cid"), ctx::text(a, "tool"), ctx::text(a, "state"), ctx::text(a, "reason")])
             .collect();
@@ -103,14 +114,31 @@ fn show(ctx: &Ctx, id: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn decide(ctx: &Ctx, id: &str, approve: bool, reason: Option<String>) -> Result<(), String> {
+fn decide(ctx: &Ctx, id: &str, approve: bool, reason: Option<String>, action: Option<String>) -> Result<(), String> {
     let mut body = json!({ "approve": approve });
     if let Some(reason) = reason.map(|r| r.trim().to_string()).filter(|r| !r.is_empty()) {
         body["reason"] = json!(reason);
     }
+    if let Some(action) = action {
+        body["action"] = json!(action);
+    }
     let value = ctx.client.post(&format!("/v1/approvals/{}", ctx::seg(id)), &body)?;
     ctx.out(&value, |_| println!("{} approval {id}", if approve { "approved" } else { "denied" }));
+    // A bare deny lifts an active suspension and does nothing to any other sanction.
+    if !approve && body.get("action").is_none() && is_sanction(ctx, id) {
+        eprintln!(
+            "note: approval {id} is a sanction escalation. A bare deny lifts it only when it is an active suspension; \
+             on any other sanction it has no effect. Use --action lift for a suspension, or --action retire to record a retirement."
+        );
+    }
     Ok(())
+}
+
+/// Whether the approval `id` is a sanction escalation (best effort: false when the queue cannot be read).
+fn is_sanction(ctx: &Ctx, id: &str) -> bool {
+    ctx.client.get("/v1/approvals").ok().is_some_and(|value| {
+        array(&value).iter().any(|a| ctx::s(a, "id") == id && ctx::s(a, "kind") == "sanction")
+    })
 }
 
 /// The role's title, or its id when it has none.
@@ -153,4 +181,27 @@ fn reject_proposal(ctx: &Ctx, id: &str, reason: String) -> Result<(), String> {
     let value = ctx.client.post(&format!("/v1/agent-proposals/{}/reject", ctx::seg(id)), &json!({ "reason": reason }))?;
     ctx.out(&value, |_| println!("rejected proposal {id}"));
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    /// Just the `approvals` command, so the flags parse the way the CLI parses them.
+    #[derive(Parser, Debug)]
+    struct Probe {
+        #[command(subcommand)]
+        cmd: Cmd,
+    }
+
+    #[test]
+    fn a_sanction_action_is_one_of_the_three_decisions() {
+        for action in SANCTION_ACTIONS {
+            for verb in ["approve", "deny"] {
+                assert!(Probe::try_parse_from(["approvals", verb, "4", "--action", action]).is_ok(), "{verb} {action}");
+            }
+        }
+        assert!(Probe::try_parse_from(["approvals", "deny", "4", "--action", "fire"]).is_err());
+    }
 }
