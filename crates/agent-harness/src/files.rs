@@ -198,7 +198,7 @@ impl Workspace {
     /// outside the workspace (see the module docs). The returned path is the
     /// joined one — inside the workspace by construction — and the label is
     /// always relative, so no absolute (host or guest) path crosses the wire.
-    fn resolve(&self, raw: &str) -> Result<(PathBuf, String), ToolError> {
+    pub(crate) fn resolve(&self, raw: &str) -> Result<(PathBuf, String), ToolError> {
         let parts = relative_parts(raw)?;
         let root = self.canonical_root()?;
         let mut path = root.clone();
