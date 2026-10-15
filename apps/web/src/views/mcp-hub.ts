@@ -667,24 +667,48 @@ export function mountHubTab(root: HTMLElement): Cleanup {
 
   // ---- Editors (ACP) ---------------------------------------------------------------------------------------------
 
-  // The switch saves at once, as the strict permits switch does: the whole settings document is read, the one
-  // field changed, and saved back. A failed save puts the switch back where it was.
+  // The switches save at once, as the strict permits switch does: the whole settings document is read, the one
+  // field changed, and saved back. A failed save puts the switch back where it was. Both wait while either save is
+  // on its way, since each save reads the whole document and two at once could overwrite each other.
   const acpBox = input({ type: 'checkbox' });
-  const setAcp = async (on: boolean): Promise<void> => {
-    acpBox.disabled = true;
+  const writeBackBox = input({ type: 'checkbox' });
+  let acpSaving = false;
+  // The write-back switch stays greyed out while Editors (ACP) is off: no editor is there to offer the pull request.
+  const drawAcpSwitches = (): void => {
+    acpBox.disabled = acpSaving;
+    writeBackBox.disabled = acpSaving || !acpBox.checked;
+  };
+  const saveAcpFlag = async (field: 'acp_enabled' | 'acp_write_back', on: boolean, success: string): Promise<void> => {
+    const box = field === 'acp_enabled' ? acpBox : writeBackBox;
+    acpSaving = true;
+    drawAcpSwitches();
     const saved = await attempt(async () => {
       const current = await api.settings();
-      return api.saveSettings({ ...current, acp_enabled: on });
-    }, on ? 'Editors may prompt agents' : 'Editors are off');
-    if (!saved && alive) acpBox.checked = !on;
-    if (alive) acpBox.disabled = false;
+      return api.saveSettings({ ...current, [field]: on });
+    }, success);
+    if (!saved && alive) box.checked = !on;
+    acpSaving = false;
+    if (alive) drawAcpSwitches();
   };
-  acpBox.addEventListener('change', () => void setAcp(acpBox.checked));
+  acpBox.addEventListener('change', () =>
+    void saveAcpFlag('acp_enabled', acpBox.checked, acpBox.checked ? 'Editors may prompt agents' : 'Editors are off'),
+  );
+  writeBackBox.addEventListener('change', () =>
+    void saveAcpFlag(
+      'acp_write_back',
+      writeBackBox.checked,
+      writeBackBox.checked ? 'The editor will offer to apply pull requests' : 'The editor will not offer to apply pull requests',
+    ),
+  );
+  drawAcpSwitches();
 
   const loadAcpSwitch = async (): Promise<void> => {
     try {
       const current = await api.settings();
-      if (alive) acpBox.checked = current.acp_enabled === true;
+      if (!alive) return;
+      acpBox.checked = current.acp_enabled === true;
+      writeBackBox.checked = current.acp_write_back === true;
+      drawAcpSwitches();
     } catch (err) {
       if (alive) toast(errorText(err), 'error');
     }
@@ -764,6 +788,12 @@ export function mountHubTab(root: HTMLElement): Cleanup {
         'p.mcp-muted',
         null,
         "Zed, JetBrains IDEs, Neovim and other ACP clients prompt a plaza agent from the editor; its approvals are asked in the editor. Agents never reach your machine: the editor's MCP servers and files stay local.",
+      ),
+      h('label.hub-switch', null, writeBackBox, h('span', null, "Offer to apply an agent's pull request to the editor's project")),
+      h(
+        'p.mcp-muted',
+        null,
+        'With `agentplaza acp --repo`, the agent works on a branch of the mirrored repository. When this is on, the editor asks you whether to apply its pull request; the editor writes the files, the agent never does.',
       ),
       snippet('Zed', ACP_SNIPPETS.zed, 'Add this to the settings.json of Zed. It runs the default plaza agent.'),
       snippet('Zed, one agent', ACP_SNIPPETS.zedAgent, "The same, pinned to one plaza agent. Replace <name> with the agent's name."),

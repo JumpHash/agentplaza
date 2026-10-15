@@ -175,6 +175,8 @@ export interface Settings {
   allow_training_models?: boolean;
   /** ACP: editors (Zed, JetBrains, Neovim) may prompt a plaza agent from the editor. */
   acp_enabled: boolean;
+  /** ACP: the editor offers to apply an agent's pull request to the editor's project (`agentplaza acp --repo`). */
+  acp_write_back?: boolean;
   /** The coding engines an agent may run (`claude`, `codex`, `opencode`); at least one stays on. */
   engines_enabled: string[];
   /** How an engine runs: `acp` is the live stream the laws check at every action; `headless` is the earlier one-shot run. */

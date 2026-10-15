@@ -532,6 +532,8 @@ pub struct State {
     pub filter_tool: String,
     // The editors section: the ACP switch as the hub holds it (None until the first read), and the sessions.
     pub acp_enabled: Option<bool>,
+    /// The write-back switch (`acp_write_back`) as the hub holds it (None until the first read).
+    pub acp_write_back: Option<bool>,
     /// A switch save is on its way to the hub.
     pub acp_busy: bool,
     pub acp_error: Option<String>,
@@ -542,6 +544,36 @@ pub struct State {
 /// Drops the new token from the page. Called when the owner leaves the tab or the screen.
 pub fn leave(state: &mut State) {
     state.reveal = None;
+}
+
+/// The two switches of the Editors (ACP) section. Both are saved on the same settings document.
+#[derive(Debug, Clone, Copy)]
+pub enum AcpSwitch {
+    Enabled,
+    WriteBack,
+}
+
+impl AcpSwitch {
+    fn read(self, s: &Settings) -> bool {
+        match self {
+            Self::Enabled => s.acp_enabled,
+            Self::WriteBack => s.acp_write_back,
+        }
+    }
+
+    fn write(self, s: &mut Settings, on: bool) {
+        match self {
+            Self::Enabled => s.acp_enabled = on,
+            Self::WriteBack => s.acp_write_back = on,
+        }
+    }
+
+    fn slot(self, state: &mut State) -> &mut Option<bool> {
+        match self {
+            Self::Enabled => &mut state.acp_enabled,
+            Self::WriteBack => &mut state.acp_write_back,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -576,9 +608,10 @@ pub enum Msg {
     Revoked(Result<String, String>),
     FilterToken(Choice),
     FilterTool(Choice),
-    AcpSettingsLoaded(Result<bool, String>),
+    AcpSettingsLoaded(Result<(bool, bool), String>),
     SetAcp(bool),
-    AcpSaved(Result<bool, String>),
+    SetAcpWriteBack(bool),
+    AcpSaved(AcpSwitch, Result<bool, String>),
     RefreshAcpSessions,
     AcpSessionsLoaded(Result<Vec<AcpSession>, String>),
 }
@@ -624,7 +657,10 @@ fn calls_task(state: &State, ctx: &Ctx) -> Task<Msg> {
 fn acp_settings_task(ctx: &Ctx) -> Task<Msg> {
     let c = ctx.client.clone();
     client::task(
-        move || c.get::<Settings>("/v1/settings").map(|s| s.acp_enabled),
+        move || {
+            c.get::<Settings>("/v1/settings")
+                .map(|s| (s.acp_enabled, s.acp_write_back))
+        },
         Msg::AcpSettingsLoaded,
     )
 }
@@ -637,18 +673,28 @@ fn acp_sessions_task(ctx: &Ctx) -> Task<Msg> {
     )
 }
 
-/// Turns the ACP switch on or off. The settings are read again first, so the save carries the hub's current
+/// Turns one of the ACP switches on or off. The settings are read again first, so the save carries the hub's current
 /// values and not the ones this tab loaded earlier.
-fn acp_save_task(on: bool, ctx: &Ctx) -> Task<Msg> {
+fn acp_save_task(switch: AcpSwitch, on: bool, ctx: &Ctx) -> Task<Msg> {
     let c = ctx.client.clone();
     client::task(
         move || {
             let mut settings = c.get::<Settings>("/v1/settings")?;
-            settings.acp_enabled = on;
-            save_settings(&c, &settings).map(|saved| saved.acp_enabled)
+            switch.write(&mut settings, on);
+            save_settings(&c, &settings).map(|saved| switch.read(&saved))
         },
-        Msg::AcpSaved,
+        move |result| Msg::AcpSaved(switch, result),
     )
+}
+
+/// Starts a save of one ACP switch, unless a save is already on its way or the hub's values are not read yet.
+fn save_acp_switch(state: &mut State, ctx: &Ctx, switch: AcpSwitch, on: bool) -> Task<Msg> {
+    if state.acp_busy || state.acp_enabled.is_none() {
+        return Task::none();
+    }
+    state.acp_busy = true;
+    state.acp_error = None;
+    acp_save_task(switch, on, ctx)
 }
 
 /// Loads the hub's settings, tokens, calls and editor sessions (called when the tab opens and on every poll tick).
@@ -754,10 +800,11 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             state.notice = Some((e, true));
             Task::none()
         }
-        Msg::AcpSettingsLoaded(Ok(on)) => {
+        Msg::AcpSettingsLoaded(Ok((on, write_back))) => {
             // A save in flight wins over a read that was taken before it.
             if !state.acp_busy {
                 state.acp_enabled = Some(on);
+                state.acp_write_back = Some(write_back);
             }
             state.acp_error = None;
             Task::none()
@@ -766,26 +813,25 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             state.acp_error = Some(e);
             Task::none()
         }
-        Msg::SetAcp(on) => {
-            if state.acp_busy || state.acp_enabled.is_none() {
-                return Task::none();
-            }
-            state.acp_busy = true;
-            state.acp_error = None;
-            acp_save_task(on, ctx)
-        }
-        Msg::AcpSaved(Ok(on)) => {
+        Msg::SetAcp(on) => save_acp_switch(state, ctx, AcpSwitch::Enabled, on),
+        Msg::SetAcpWriteBack(on) => save_acp_switch(state, ctx, AcpSwitch::WriteBack, on),
+        Msg::AcpSaved(switch, Ok(on)) => {
             state.acp_busy = false;
-            state.acp_enabled = Some(on);
-            let text = if on {
-                "Editors can connect to this hub."
-            } else {
-                "Editors can no longer connect to this hub."
+            *switch.slot(state) = Some(on);
+            let text = match (switch, on) {
+                (AcpSwitch::Enabled, true) => "Editors can connect to this hub.",
+                (AcpSwitch::Enabled, false) => "Editors can no longer connect to this hub.",
+                (AcpSwitch::WriteBack, true) => {
+                    "Editors will offer to apply an agent's pull request."
+                }
+                (AcpSwitch::WriteBack, false) => {
+                    "Editors will no longer offer to apply pull requests."
+                }
             };
             state.notice = Some((text.to_string(), false));
             Task::none()
         }
-        Msg::AcpSaved(Err(e)) => {
+        Msg::AcpSaved(_, Err(e)) => {
             state.acp_busy = false;
             state.acp_error = Some(e);
             Task::none()
@@ -1356,12 +1402,21 @@ fn token_row<'a>(state: &State, token: &HubToken) -> Element<'a, Msg> {
 
 /// The Editors (ACP) section: the switch, the setup text for each editor, and the sessions the hub holds.
 fn editors_card(state: &State) -> Element<'_, Msg> {
+    let enabled = state.acp_enabled.unwrap_or(false);
+    // Without an on_toggle the checkbox is greyed out: the write-back switch waits for editors to be on.
+    let mut write_back = checkbox(state.acp_write_back.unwrap_or(false))
+        .label("Offer to apply an agent's pull request to the editor's project");
+    if enabled {
+        write_back = write_back.on_toggle(Msg::SetAcpWriteBack);
+    }
     let mut parts: Vec<Element<'_, Msg>> = vec![
-        checkbox(state.acp_enabled.unwrap_or(false))
+        checkbox(enabled)
             .label("Let editors connect to this hub")
             .on_toggle(Msg::SetAcp)
             .into(),
         ui::faint("Zed, JetBrains IDEs, Neovim and other ACP clients prompt a plaza agent from the editor; its approvals are asked in the editor. Agents never reach your machine.").into(),
+        write_back.into(),
+        ui::faint("With `agentplaza acp --repo`, the agent works on a branch of the mirrored repository. When this is on, the editor asks you whether to apply its pull request; the editor writes the files, the agent never does.").into(),
     ];
     if let Some(error) = &state.acp_error {
         parts.push(ui::error_line(error));

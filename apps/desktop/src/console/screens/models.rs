@@ -283,8 +283,17 @@ pub struct Settings {
     /// Whether editors may connect to the hub's ACP server. Off until the owner turns it on.
     #[serde(default)]
     pub acp_enabled: bool,
+    /// Whether an editor offers to apply an agent's pull request to the editor's project. Off until the owner turns it on.
+    #[serde(default)]
+    pub acp_write_back: bool,
     #[serde(flatten)]
     pub rest: Map<String, Value>,
+}
+
+/// Carries the hub's ACP switches over to a save from the Models tab, which does not own them: the MCP hub tab does.
+fn keep_acp_switches(copy: &mut Settings, hub: &Settings) {
+    copy.acp_enabled = hub.acp_enabled;
+    copy.acp_write_back = hub.acp_write_back;
 }
 
 /// The coding engines a `code_engine` call may name, in the hub's order (`ENGINE_IDS` in apid's settings).
@@ -1111,7 +1120,7 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                 move || {
                     // The ACP switch lives on the MCP hub tab, so this save keeps the hub's current value
                     // rather than the one this copy was loaded with.
-                    s.acp_enabled = c.get::<Settings>("/v1/settings")?.acp_enabled;
+                    keep_acp_switches(&mut s, &c.get::<Settings>("/v1/settings")?);
                     save_settings(&c, &s)
                 },
                 Msg::PolicySaved,
@@ -2751,6 +2760,34 @@ mod tests {
         assert_eq!(s.engines_enabled, ["claude", "codex", "opencode"]);
         assert_eq!(s.engines_mode, "acp");
         assert!(!s.acp_enabled);
+    }
+
+    #[test]
+    fn policy_save_keeps_the_hubs_acp_switches() {
+        let hub: Settings = serde_json::from_value(json!({
+            "default_model": "a",
+            "orchestrator_model": "b",
+            "acp_enabled": true,
+            "acp_write_back": true
+        }))
+        .expect("settings parse");
+        let mut copy: Settings = serde_json::from_value(json!({
+            "default_model": "a",
+            "orchestrator_model": "b",
+            "acp_enabled": false,
+            "acp_write_back": false
+        }))
+        .expect("settings parse");
+        keep_acp_switches(&mut copy, &hub);
+        assert!(copy.acp_enabled);
+        assert!(copy.acp_write_back);
+    }
+
+    #[test]
+    fn write_back_is_off_until_the_owner_turns_it_on() {
+        let bare = json!({ "default_model": "a", "orchestrator_model": "b" });
+        let s: Settings = serde_json::from_value(bare).expect("settings parse");
+        assert!(!s.acp_write_back);
     }
 
     #[test]
