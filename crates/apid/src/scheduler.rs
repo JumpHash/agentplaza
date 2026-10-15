@@ -7,9 +7,9 @@
 
 use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use apz_plaza::council::is_seated;
 use apz_plaza::tasks::{FinishOutcome, TaskState};
@@ -735,7 +735,7 @@ impl Queues {
         let sent = crate::fleet::send(app, cid, &json!({ "message": message }));
         if !matches!(sent, Ok((code, _)) if (200..300).contains(&code)) {
             self.locked().requeue_front(item);
-            app.agents.update(cid, |a| a.status = Status::Idle);
+            app.agents.update_quietly(cid, |a| a.status = Status::Idle);
             return;
         }
         app.transcripts.record(
@@ -949,6 +949,28 @@ pub fn review_decided(app: &App, item: &Approval, approve: bool) -> Result<(), S
         .map(|_| ())
 }
 
+/// Set when work may be able to start now (an agent turned idle); see `kick`.
+static KICK: (Mutex<bool>, Condvar) = (Mutex::new(false), Condvar::new());
+
+/// Asks the scheduler to start queued work now, rather than at its next full pass: an agent turned idle, so
+/// it may take its next item. A kick runs only `Queues::dispatch_idle`; the full pass still runs every 2 s.
+/// Kicks that arrive before the scheduler looks coalesce into one.
+pub fn kick() {
+    let (kicked, wake) = &KICK;
+    *kicked.lock().unwrap_or_else(PoisonError::into_inner) = true;
+    wake.notify_one();
+}
+
+/// Waits at most `timeout` for a kick; true when one came (it is consumed).
+fn await_kick(timeout: Duration) -> bool {
+    let (kicked, wake) = &KICK;
+    let guard = kicked.lock().unwrap_or_else(PoisonError::into_inner);
+    let (mut guard, _) = wake
+        .wait_timeout_while(guard, timeout, |kicked| !*kicked)
+        .unwrap_or_else(PoisonError::into_inner);
+    std::mem::take(&mut *guard)
+}
+
 /// The scheduler thread (every 2 s).
 pub fn spawn(app: Arc<App>) {
     // contract
@@ -969,7 +991,15 @@ pub fn spawn(app: Arc<App>) {
                 crate::llm_proxy::drain_usage(&app);
                 crate::plaza::retain(&app);
                 crate::usage::retain(&app);
-                thread::sleep(Duration::from_secs(2));
+                // The 2 s until the next pass: each kick in it starts the queued work of the idle agents.
+                let next_pass = Instant::now() + Duration::from_secs(2);
+                loop {
+                    let left = next_pass.saturating_duration_since(Instant::now());
+                    if left.is_zero() || !await_kick(left) {
+                        break;
+                    }
+                    app.work.dispatch_idle(&app);
+                }
             }
         });
     if let Err(err) = spawned {
@@ -1496,5 +1526,17 @@ mod tests {
         assert!(fresh.restore("not json").is_err());
         assert_eq!(fresh.queued(7).len(), 2);
         assert_eq!(fresh.queued(8).len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod kick_tests {
+    use super::*;
+
+    #[test]
+    fn a_kick_wakes_the_wait_once() {
+        // Other tests kick too (a roster change to Idle), so only the kick made here is asserted on.
+        kick();
+        assert!(await_kick(Duration::ZERO));
     }
 }

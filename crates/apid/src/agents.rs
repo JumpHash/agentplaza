@@ -160,10 +160,20 @@ impl Roster {
     }
 
     /// Applies `f` to the agent, if it exists; returns whether it did. A change to a durable field is
-    /// written through.
+    /// written through. A change to Idle kicks the scheduler (see `scheduler::kick`).
     pub fn update(&self, cid: u64, f: impl FnOnce(&mut Agent)) -> bool {
         // contract
-        let written = {
+        self.change(cid, f, true)
+    }
+
+    /// As `update`, but a change to Idle does not kick the scheduler. For a dispatch that could not send its
+    /// item and puts the agent back to Idle: a kick there would retry at once, over and over.
+    pub fn update_quietly(&self, cid: u64, f: impl FnOnce(&mut Agent)) -> bool {
+        self.change(cid, f, false)
+    }
+
+    fn change(&self, cid: u64, f: impl FnOnce(&mut Agent), kick: bool) -> bool {
+        let (written, became_idle) = {
             let mut ledger = self.lock();
             let Some(agent) = ledger.agents.get_mut(&cid) else {
                 return false;
@@ -176,19 +186,31 @@ impl Roster {
             if from != to {
                 ledger.reindex(cid, from, to);
             }
-            written
+            (written, kick && to == Status::Idle && from != Status::Idle)
         };
         self.changed.notify_all();
         self.persist(written.as_ref());
+        if became_idle {
+            crate::scheduler::kick();
+        }
         true
     }
 
-    /// Inserts or replaces an agent, and writes it through.
+    /// Inserts or replaces an agent, and writes it through. An agent that arrives Idle, or turns Idle, kicks
+    /// the scheduler.
     pub fn upsert(&self, agent: Agent) {
         // contract
         self.persist(Some(&agent));
-        self.lock().put(agent);
+        let became_idle = {
+            let mut ledger = self.lock();
+            let idle = agent.status == Status::Idle;
+            let replaced = ledger.put(agent);
+            idle && replaced != Some(Status::Idle)
+        };
         self.changed.notify_all();
+        if became_idle {
+            crate::scheduler::kick();
+        }
     }
 
     /// Takes the agent off the roster (a soft delete in the database); returns whether it was there.
@@ -1563,7 +1585,7 @@ mod roster_index_tests {
                     roster.update(cid, |a| a.name = format!("n{step}"));
                 }
                 _ => {
-                    roster.update(cid, |a| a.status = status);
+                    roster.update_quietly(cid, |a| a.status = status);
                 }
             }
             assert_index_matches(&roster);
