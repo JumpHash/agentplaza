@@ -57,6 +57,8 @@ mod egress;
 #[cfg(target_os = "linux")]
 mod engines;
 #[cfg(target_os = "linux")]
+mod envd;
+#[cfg(target_os = "linux")]
 mod files;
 #[cfg(target_os = "linux")]
 mod ide;
