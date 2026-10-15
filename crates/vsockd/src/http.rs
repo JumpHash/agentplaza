@@ -130,6 +130,11 @@ fn router() -> Router<Surface> {
                 stop(surface, cid, request)
             })
         })
+        .post("/v1/agents/{cid}/quiet", |surface, request, params| {
+            with_cid(surface, params.get("cid"), |cid| {
+                quiet(surface, cid, request)
+            })
+        })
 }
 
 #[derive(Serialize)]
@@ -339,6 +344,25 @@ fn stop(surface: &Surface, cid: u32, request: &Request) -> Response {
     }
 }
 
+#[derive(Deserialize)]
+struct QuietRequest {
+    quiet: bool,
+}
+
+/// Marks a connected agent quiet (a dozing VM, not reaped for its silence) or loud again. Only a
+/// connected session can be quiet: the flag ends with the session.
+fn quiet(surface: &Surface, cid: u32, request: &Request) -> Response {
+    let QuietRequest { quiet } = match request.json() {
+        Ok(quiet) => quiet,
+        Err(err) => return Response::error(400, &format!("invalid quiet request: {err}")),
+    };
+    if surface.hub.set_quiet(cid, quiet) {
+        Response::json(200, &serde_json::json!({ "cid": cid, "quiet": quiet }))
+    } else {
+        not_connected(cid)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -464,6 +488,33 @@ mod tests {
         ] {
             assert_eq!(post(&surface, path, body).0, status, "{path} {body:.60}");
         }
+    }
+
+    #[test]
+    fn quiet_is_set_on_a_connected_agent_and_refused_otherwise() {
+        let surface = surface(hub_with(None).1);
+        for (path, body, status) in [
+            ("/v1/agents/12/quiet", r#"{"quiet":true}"#, 404),
+            ("/v1/agents/10/quiet", r#"{"quiet":true}"#, 409),
+            ("/v1/agents/10/quiet", "", 400),
+            ("/v1/agents/10/quiet", "{}", 400),
+            ("/v1/agents/10/quiet", r#"{"quiet":"yes"}"#, 400),
+            ("/v1/agents/10/quiet", "not json", 400),
+        ] {
+            assert_eq!(post(&surface, path, body).0, status, "{path} {body:.60}");
+        }
+        let (token, _steering, _waker) =
+            surface.hub.connect(10, "builder", Instant::now()).unwrap();
+        assert_eq!(
+            post(&surface, "/v1/agents/10/quiet", r#"{"quiet":true}"#),
+            (200, serde_json::json!({ "cid": 10, "quiet": true }))
+        );
+        assert!(surface.hub.is_quiet(10, token));
+        assert_eq!(
+            post(&surface, "/v1/agents/10/quiet", r#"{"quiet":false}"#),
+            (200, serde_json::json!({ "cid": 10, "quiet": false }))
+        );
+        assert!(!surface.hub.is_quiet(10, token));
     }
 
     #[test]

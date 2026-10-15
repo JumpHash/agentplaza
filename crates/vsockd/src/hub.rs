@@ -149,6 +149,9 @@ struct Live {
     token: u64,
     steering: Steering,
     ended: Arc<SessionEnd>,
+    /// A quiet agent (a dozing VM) is not reaped for its silence. Lives on the row, so
+    /// it ends with the session and a new session starts loud.
+    quiet: bool,
 }
 
 /// Fired once, by whichever path ends the session; [`Hub::stop`] waits on it.
@@ -251,6 +254,7 @@ impl Hub {
                     waker: Arc::clone(&waker),
                 },
                 ended: Arc::default(),
+                quiet: false,
             },
         );
         let agent = Agent {
@@ -344,6 +348,28 @@ impl Hub {
 
     fn live(&self, cid: u32) -> Option<Live> {
         self.steering().get(&cid).cloned()
+    }
+
+    /// Whether the session `token` on `cid` is quiet. A predecessor's token never
+    /// matches, so it cannot quiet its successor.
+    pub fn is_quiet(&self, cid: u32, token: u64) -> bool {
+        self.steering()
+            .get(&cid)
+            .is_some_and(|live| live.token == token && live.quiet)
+    }
+
+    /// Makes the session on `cid` quiet or loud. A quiet agent (its VM paused, so it
+    /// sends no heartbeats) is not reaped for its silence; a loud one is reaped `idle`
+    /// after its last heartbeat. Returns `false` when no session is connected on `cid`.
+    pub fn set_quiet(&self, cid: u32, quiet: bool) -> bool {
+        let mut steering = self.steering();
+        let Some(live) = steering.get_mut(&cid) else {
+            return false;
+        };
+        live.quiet = quiet;
+        // The session restarts its idle window on its next pass, which this wake makes now.
+        live.steering.waker.wake();
+        true
     }
 
     /// Runs one tool call on `cid` and waits up to `wait` for its answer. The
@@ -503,6 +529,23 @@ pub(crate) mod tests {
         hub.hangup(10, first);
         assert_eq!(hub.agent_count(), 1, "the predecessor's token owns nothing");
         assert!(hub.steer(10).is_some());
+    }
+
+    #[test]
+    fn a_quiet_flag_lasts_as_long_as_its_session() {
+        let (_log, hub) = hub_with(None);
+        assert!(!hub.set_quiet(10, true), "no session, no flag");
+        let (first, _steering, _waker) = hub.connect(10, "builder", Instant::now()).unwrap();
+        assert!(hub.set_quiet(10, true));
+        assert!(hub.is_quiet(10, first));
+        // A reconnect is a new session: it starts loud, and the predecessor's token never matches.
+        let (second, _steering, _waker) = hub.connect(10, "builder", Instant::now()).unwrap();
+        assert!(!hub.is_quiet(10, second));
+        assert!(!hub.is_quiet(10, first));
+        assert!(hub.set_quiet(10, true));
+        hub.hangup(10, second);
+        assert!(!hub.is_quiet(10, second));
+        assert!(!hub.set_quiet(10, true), "the session ended");
     }
 
     #[test]

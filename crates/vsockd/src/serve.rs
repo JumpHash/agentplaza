@@ -354,8 +354,18 @@ impl Session<'_> {
         // Dispatched tool calls not yet answered, and who waits on each.
         let mut outstanding: Vec<(u64, Option<Sender<ToolReply>>)> = Vec::new();
         let mut stopping = false;
+        // Whether the previous pass found the session quiet.
+        let mut was_quiet = false;
         loop {
-            if clock.now().saturating_duration_since(last_heartbeat) > idle {
+            // A quiet agent (a dozing VM, paused, so it sends no heartbeats) is not reaped for its
+            // silence: while it is quiet its idle window restarts on every pass, and a full `idle`
+            // window starts the pass it stops being quiet.
+            let quiet = hub.is_quiet(cid, token);
+            if quiet || was_quiet {
+                last_heartbeat = clock.now();
+            }
+            was_quiet = quiet;
+            if !quiet && clock.now().saturating_duration_since(last_heartbeat) > idle {
                 hub.reap_idle(cid, token, idle);
                 return Err(HostError::Reaped);
             }
@@ -1358,6 +1368,72 @@ mod tests {
         let (result, log, _) = scripted(&[KEEPALIVE_HELLO], false, keepalive_limits(), &clock);
         assert!(matches!(result, Err(HostError::Reaped)), "{result:?}");
         assert!(log.contains("vsockd: agent 3 reaped idle > 300s"), "{log}");
+    }
+
+    /// A clock the test moves by hand.
+    struct ManualClock(Mutex<Instant>);
+
+    impl ManualClock {
+        fn advance(&self, by: Duration) {
+            *self.0.lock().unwrap() += by;
+        }
+    }
+
+    impl Clock for ManualClock {
+        fn now(&self) -> Instant {
+            *self.0.lock().unwrap()
+        }
+    }
+
+    #[test]
+    fn a_quiet_keepalive_is_not_reaped_and_a_loud_one_gets_a_full_idle_window() {
+        let (guest, host) = UnixStream::pair().unwrap();
+        guest
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let (log, hub) = hub_with(None);
+        let hub = Arc::new(hub);
+        let clock = Arc::new(ManualClock(Mutex::new(Instant::now())));
+        let session = {
+            let (hub, log, clock) = (Arc::clone(&hub), Arc::clone(&log), Arc::clone(&clock));
+            thread::spawn(move || {
+                handle_session(
+                    &mut Lines::new(host),
+                    3,
+                    keepalive_limits(),
+                    &*log,
+                    &hub,
+                    &*clock,
+                )
+            })
+        };
+        let settle = || thread::sleep(Duration::from_millis(200));
+        let mut guest = Lines::new(guest);
+        guest.send(KEEPALIVE_HELLO).unwrap();
+        recv(&mut guest);
+
+        // Silent far past the idle window, but quiet: still connected.
+        assert!(hub.set_quiet(3, true));
+        clock.advance(Duration::from_secs(1000));
+        settle();
+        assert!(!session.is_finished(), "a quiet agent is not reaped");
+
+        // Loud again: the window starts now, so 299 s of silence is still inside it.
+        assert!(hub.set_quiet(3, false));
+        settle();
+        clock.advance(Duration::from_secs(299));
+        settle();
+        assert!(!session.is_finished(), "inside the idle window");
+
+        clock.advance(Duration::from_secs(2));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !session.is_finished() {
+            assert!(Instant::now() < deadline, "the loud agent was not reaped");
+            thread::sleep(Duration::from_millis(10));
+        }
+        let result = session.join().unwrap();
+        assert!(matches!(result, Err(HostError::Reaped)), "{result:?}");
+        assert!(log.text().contains("vsockd: agent 3 reaped idle > 300s"));
     }
 
     /// The whole keepalive exchange over a real socket, steered through the
