@@ -202,7 +202,7 @@ fn run() -> Result<(), HarnessError> {
     );
 
     if config.sandbox {
-        sandbox(&mut out)
+        sandbox(&mut out, config.template)
     } else if config.keepalive {
         keepalive(&config, &mut out)
     } else {
@@ -220,7 +220,7 @@ const SANDBOX_USER: u32 = bash::UNPRIVILEGED;
 /// shim runs as it does for an agent, so the sandbox's processes reach the internet the same way.
 /// `/home/user` is the workspace volume, linked in when the image does not have it.
 #[cfg(target_os = "linux")]
-fn sandbox(out: &mut (impl Write + Send)) -> Result<(), HarnessError> {
+fn sandbox(out: &mut (impl Write + Send), template: bool) -> Result<(), HarnessError> {
     egress::spawn_shim();
     // Best effort: a home that cannot be linked is reported by the first command that needs it
     // (its working directory is then refused), not by the daemon failing to start.
@@ -242,7 +242,7 @@ fn sandbox(out: &mut (impl Write + Send)) -> Result<(), HarnessError> {
         gid: SANDBOX_USER,
         env: Vec::new(),
     };
-    envd::serve(envd::PORT, ctx).map_err(HarnessError::Sandbox)
+    envd::serve(envd::PORT, ctx, template).map_err(HarnessError::Sandbox)
 }
 
 /// Runs the frozen v1 session once and returns when it completed.

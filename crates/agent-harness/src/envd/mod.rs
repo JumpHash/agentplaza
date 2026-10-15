@@ -159,10 +159,15 @@ impl Reply {
 /// Serves the daemon on vsock `port` forever, one thread per connection.
 ///
 /// Returns only when the listener cannot be bound; a failed accept is printed and retried.
-pub fn serve(port: u32, ctx: Ctx) -> io::Result<()> {
+pub fn serve(port: u32, ctx: Ctx, template: bool) -> io::Result<()> {
     let listener = VsockListener::bind(port)?;
     let shared: Shared = Arc::new(RwLock::new(ctx));
     println!("agent-harness: envd: serving on vsock port {port}");
+    // A warm template is snapshotted once its listener is up: the listener survives the restore
+    // (only connected sockets are reset), so a sandbox restored from it serves at once.
+    if template {
+        println!("agent-harness: template ready");
+    }
     loop {
         match listener.accept() {
             Ok(stream) => {
