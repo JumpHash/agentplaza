@@ -34,7 +34,6 @@ use super::catalog::{Entry, ModelVia};
 use super::link::{EngineLink, Verdict};
 use super::stream::{Stream, Turn};
 use super::terminal::Terminals;
-#[allow(unused_imports)]
 use super::{fs, gate};
 use crate::bash::{self, Privilege};
 use crate::checkpoints::snapshot;
@@ -805,7 +804,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs the integrated acp modules"]
     fn the_turn_keeps_the_engines_text() {
         let dir = scratch("text");
         let script = write_script(
@@ -828,7 +826,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs the integrated acp modules"]
     fn a_permission_request_asks_the_hub_and_answers_the_engine() {
         let dir = scratch("permission");
         let log = dir.join("log.json");
@@ -862,7 +859,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs the integrated acp modules"]
     fn a_terminal_command_runs_through_the_client() {
         let dir = scratch("terminal");
         let log = dir.join("log.json");
