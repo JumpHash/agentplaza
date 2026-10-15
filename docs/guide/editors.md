@@ -15,6 +15,29 @@ hub on your machine.
 3. Run `agentplaza acp sessions`. It lists the editor sessions the hub holds, and is
    empty until you start one.
 
+## Using a token
+
+An editor can connect with a hub MCP token instead of the owner token. On Setup › MCP › This
+hub as a server, mint a token with the **operate** or **govern** scope:
+
+- **operate** drives the agents: it starts and resumes sessions, prompts, and cancels or steers
+  the work. The approvals stay with you in the console, and the approval mode and the model do
+  not change from the editor.
+- **govern** does the same and also answers the agent's approvals from the editor and changes
+  the approval mode and the model.
+
+An observe token cannot connect. Connect with the token:
+
+```
+agentplaza acp --hub https://<your hub> --token apz_mcp_…
+```
+
+To limit which agents the token drives, add `acp:<agent>` entries to its allowlist, naming the
+agent by its name or its CID. With no `acp:` entry the token may drive every agent. The same
+allowlist limits the token's MCP tools, so a token meant only for editors has `acp:` entries and
+nothing else. Each message the token sends counts against its rate limit (20 a minute, shared
+with its MCP calls), and each one is written to the audit log as `acp/<method>`.
+
 ## Zed
 
 Add the agent to Zed's `settings.json`:

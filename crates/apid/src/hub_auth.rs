@@ -163,6 +163,8 @@ pub fn is_public(method: &str, path: &str) -> bool {
             | ("POST", "/v1/stations/join")
             | ("GET", "/v1/stations/link")
             | ("POST" | "DELETE", "/v1/auth/session")
+            // The editors' socket checks its own caller (`acp::authenticate`): the owner, or a hub MCP token.
+            | ("GET", "/v1/acp")
     ) || (path.starts_with("/v1/nodes/n")
         && (path.ends_with("/commands")
             || path.ends_with("/results")
@@ -173,23 +175,7 @@ pub fn is_public(method: &str, path: &str) -> bool {
 
 /// The gate in front of the router: `Some(response)` refuses the request.
 pub fn gate(app: &App, req: &Request) -> Option<Response> {
-    if is_public(&req.method, &req.path) {
-        return None;
-    }
-    // A request whose peer is unknown or loopback is the machine's own (console, local gateway).
-    if req.peer.is_none_or(|peer| peer.is_loopback()) {
-        return None;
-    }
-    let presented = req.header("authorization").and_then(|value| {
-        let (scheme, token) = value.split_once(' ')?;
-        scheme
-            .eq_ignore_ascii_case("bearer")
-            .then_some(token.trim())
-    });
-    if presented.is_some_and(|token| app.hub_auth.owner_ok(token)) {
-        return None;
-    }
-    if session_of(req).is_some_and(|id| app.hub_auth.session_ok(id, apz_plaza::now_ms())) {
+    if is_public(&req.method, &req.path) || is_owner(app, req) {
         return None;
     }
     Some(
@@ -199,6 +185,29 @@ pub fn gate(app: &App, req: &Request) -> Option<Response> {
         )
         .with_header("www-authenticate", "Bearer"),
     )
+}
+
+/// Whether a request is the owner's: the machine's own (a loopback or unknown peer), the owner token as a bearer,
+/// or a live console session. Owner routes and the editors' socket both ask this first.
+pub fn is_owner(app: &App, req: &Request) -> bool {
+    is_owner_of(&app.hub_auth, req, apz_plaza::now_ms())
+}
+
+fn is_owner_of(hub: &Hub, req: &Request, now_ms: u64) -> bool {
+    // A request whose peer is unknown or loopback is the machine's own (console, local gateway).
+    if req.peer.is_none_or(|peer| peer.is_loopback()) {
+        return true;
+    }
+    let presented = req.header("authorization").and_then(|value| {
+        let (scheme, token) = value.split_once(' ')?;
+        scheme
+            .eq_ignore_ascii_case("bearer")
+            .then_some(token.trim())
+    });
+    if presented.is_some_and(|token| hub.owner_ok(token)) {
+        return true;
+    }
+    session_of(req).is_some_and(|id| hub.session_ok(id, now_ms))
 }
 
 pub fn routes(router: Router<App>) -> Router<App> {
@@ -365,6 +374,7 @@ fn hex_decode(text: &str) -> Option<[u8; 32]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::{IpAddr, Ipv4Addr};
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
@@ -421,6 +431,51 @@ mod tests {
         assert!(is_public("DELETE", "/v1/auth/session"));
         assert!(!is_public("GET", "/v1/auth/check"));
         assert!(!is_public("GET", "/v1/nodes/n1/runs"));
+    }
+
+    #[test]
+    fn the_owner_is_the_machine_the_owner_token_or_a_console_session() {
+        let dir = scratch("owner-of");
+        let hub = Hub::load(&dir, "http://127.0.0.1:7700", false).unwrap();
+        let token = token_of(&dir);
+        let now = 1_000_000;
+        let remote: IpAddr = Ipv4Addr::new(192, 0, 2, 1).into();
+        let from = |peer: Option<IpAddr>, headers: Vec<(String, String)>| Request {
+            method: "GET".into(),
+            path: "/v1/acp".into(),
+            headers,
+            peer,
+            ..Request::default()
+        };
+        assert!(is_owner_of(&hub, &from(None, vec![]), now));
+        assert!(is_owner_of(
+            &hub,
+            &from(Some(Ipv4Addr::LOCALHOST.into()), vec![]),
+            now
+        ));
+        assert!(!is_owner_of(&hub, &from(Some(remote), vec![]), now));
+        let owner = vec![("authorization".into(), format!("Bearer {token}"))];
+        assert!(is_owner_of(&hub, &from(Some(remote), owner), now));
+        let wrong = vec![(
+            "authorization".into(),
+            "Bearer apz_mcp_not-the-owner".into(),
+        )];
+        assert!(!is_owner_of(&hub, &from(Some(remote), wrong), now));
+        let session = hub.open_session(now);
+        let cookie = vec![("cookie".into(), format!("{SESSION_COOKIE}={session}"))];
+        assert!(is_owner_of(&hub, &from(Some(remote), cookie.clone()), now));
+        assert!(!is_owner_of(
+            &hub,
+            &from(Some(remote), cookie),
+            now + SESSION_MS
+        ));
+    }
+
+    #[test]
+    fn the_editors_socket_is_public_and_the_session_list_is_not() {
+        assert!(is_public("GET", "/v1/acp"));
+        assert!(!is_public("POST", "/v1/acp"));
+        assert!(!is_public("GET", "/v1/acp/sessions"));
     }
 
     #[test]

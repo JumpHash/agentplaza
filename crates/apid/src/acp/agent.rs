@@ -24,6 +24,7 @@ use serde_json::{Value, json};
 use super::feed::{self, End, Feed};
 use super::store::{Session, Sessions};
 use crate::events::Frame;
+use crate::hub_mcp::auth::Scope;
 use crate::transcript::Entry;
 
 /// What the ACP methods need from the plaza. [`super::app_hub`] gives the hub's; the tests give a
@@ -67,6 +68,45 @@ pub trait Hub: Sync {
     fn now_ms(&self) -> u64;
 }
 
+/// Who an editor connection acts for: the owner, or a hub MCP token of operate or govern scope and the
+/// agents its allowlist names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Caller {
+    Owner,
+    Token {
+        id: String,
+        scope: Scope,
+        /// The agents the token's `acp:<name or cid>` entries name, without the prefix. Empty means every agent.
+        agents: Vec<String>,
+    },
+}
+
+impl Caller {
+    /// Whether the caller may drive agent `cid`: its sessions, its work, and its settings. An entry is
+    /// the agent's CID when it is a number, else its name, which the hub resolves.
+    pub fn may_drive(&self, hub: &dyn Hub, cid: u64) -> bool {
+        match self {
+            Caller::Owner => true,
+            Caller::Token { agents, .. } => {
+                agents.is_empty()
+                    || agents.iter().any(|agent| match agent.parse::<u64>() {
+                        Ok(named) => named == cid,
+                        Err(_) => hub.agent(Some(agent)) == Ok(cid),
+                    })
+            }
+        }
+    }
+
+    /// Whether the caller may change what the agent does (its approval mode and model) and answer its
+    /// approvals for the owner. An operate token drives the agent; the owner's decisions stay the owner's.
+    pub fn may_govern(&self) -> bool {
+        match self {
+            Caller::Owner => true,
+            Caller::Token { scope, .. } => *scope >= Scope::Govern,
+        }
+    }
+}
+
 /// One editor connection: who it is and the agent it asked for.
 pub struct Conn<'h> {
     pub hub: &'h dyn Hub,
@@ -76,6 +116,7 @@ pub struct Conn<'h> {
     /// The editor's `clientInfo`, once `initialize` named it. The connection owns it; each call
     /// borrows it (the socket's handlers build a `Conn` per message over the connection's state).
     pub client: &'h Mutex<String>,
+    pub caller: Caller,
 }
 
 /// How often the stream checks the editor and the approvals when no transcript frame came.
@@ -174,6 +215,9 @@ fn new_session(conn: &Conn<'_>, peer: &Peer, params: &Value) -> Result<Value, ty
             .map(str::to_string)
     });
     let cid = conn.hub.agent(name.as_deref()).map_err(invalid)?;
+    if !conn.caller.may_drive(conn.hub, cid) {
+        return Err(invalid("this token may not drive that agent"));
+    }
     let cwd = params["cwd"].as_str().unwrap_or_default();
     let client = lock(conn.client).clone();
     let session = conn.sessions.open(cid, cwd, &client, conn.hub.now_ms());
@@ -235,7 +279,14 @@ fn prompt(conn: &Conn<'_>, peer: &Peer, params: &Value) -> Result<Value, types::
             );
         }
     }
-    let result = stream(conn.hub, peer, &session, work, &frames);
+    let result = stream(
+        conn.hub,
+        peer,
+        &session,
+        work,
+        &frames,
+        conn.caller.may_govern(),
+    );
     // The turn's tokens are reported whatever its end: a failed work spent them too.
     report_usage(conn.hub, peer, &session.id, session.cid, work);
     result
@@ -296,13 +347,15 @@ fn report_usage(hub: &dyn Hub, peer: &Peer, session_id: &str, cid: u64, work: u6
 }
 
 /// Sends the work item's updates as they come, asks the approvals it waits on, and returns the
-/// turn's outcome when the item ends.
+/// turn's outcome when the item ends. The approvals are asked only when `govern` is set: otherwise
+/// they stay pending for the owner to decide in the console.
 fn stream(
     hub: &dyn Hub,
     peer: &Peer,
     session: &Session,
     work: u64,
     frames: &Receiver<Frame>,
+    govern: bool,
 ) -> Result<Value, types::Error> {
     let mut feed = Feed::new(session.cid, work);
     let mut asked = HashSet::new();
@@ -316,7 +369,9 @@ fn stream(
                         notify_update(peer, &session.id, update);
                     }
                     if frame.kind == "transcript" {
-                        ask_approvals(scope, peer, hub, session.cid, &session.id, &mut asked);
+                        if govern {
+                            ask_approvals(scope, peer, hub, session.cid, &session.id, &mut asked);
+                        }
                         checked = Instant::now();
                     }
                     if let Some(end) = feed.end(&frame.kind, &data) {
@@ -332,7 +387,7 @@ fn stream(
             if peer.is_closed() {
                 return Err(internal("the editor disconnected"));
             }
-            if checked.elapsed() >= APPROVALS_EVERY {
+            if govern && checked.elapsed() >= APPROVALS_EVERY {
                 ask_approvals(scope, peer, hub, session.cid, &session.id, &mut asked);
                 checked = Instant::now();
             }
@@ -437,6 +492,7 @@ fn list(conn: &Conn<'_>, params: &Value) -> Result<Value, types::Error> {
         .sessions
         .list(params["cwd"].as_str())
         .iter()
+        .filter(|s| conn.caller.may_drive(conn.hub, s.cid))
         .map(|s| {
             json!({
                 "sessionId": s.id,
@@ -451,6 +507,7 @@ fn list(conn: &Conn<'_>, params: &Value) -> Result<Value, types::Error> {
 
 fn close(conn: &Conn<'_>, params: &Value) -> Result<Value, types::Error> {
     let id = params["sessionId"].as_str().unwrap_or_default();
+    session_of(conn, params)?;
     if conn.sessions.close(id, conn.hub.now_ms()) {
         Ok(json!({}))
     } else {
@@ -460,6 +517,7 @@ fn close(conn: &Conn<'_>, params: &Value) -> Result<Value, types::Error> {
 
 fn set_mode(conn: &Conn<'_>, peer: &Peer, params: &Value) -> Result<Value, types::Error> {
     let session = open_session_of(conn, params)?;
+    require_govern(conn, "modes")?;
     let mode = params["modeId"].as_str().unwrap_or_default();
     conn.hub.set_mode(session.cid, mode).map_err(invalid)?;
     notify_update(
@@ -476,6 +534,7 @@ fn set_mode(conn: &Conn<'_>, peer: &Peer, params: &Value) -> Result<Value, types
 /// `session/set_config_option`: the agent's model. The reply carries every config option again.
 fn set_config_option(conn: &Conn<'_>, params: &Value) -> Result<Value, types::Error> {
     let session = open_session_of(conn, params)?;
+    require_govern(conn, "the model")?;
     let config = params["configId"].as_str().unwrap_or_default();
     if config != "model" {
         return Err(invalid(format!("no config option {config}")));
@@ -517,12 +576,30 @@ fn commands_update() -> Value {
     json!({"sessionUpdate": "available_commands_update", "availableCommands": commands})
 }
 
-/// The session `params` name, open or closed.
+/// The session `params` name, open or closed, when the caller may drive its agent.
 fn session_of(conn: &Conn<'_>, params: &Value) -> Result<Session, types::Error> {
     let id = params["sessionId"].as_str().unwrap_or_default();
-    conn.sessions
+    let session = conn
+        .sessions
         .get(id)
-        .ok_or_else(|| invalid(format!("no session {id}")))
+        .ok_or_else(|| invalid(format!("no session {id}")))?;
+    if conn.caller.may_drive(conn.hub, session.cid) {
+        Ok(session)
+    } else {
+        Err(invalid("this token may not drive that session's agent"))
+    }
+}
+
+/// Changing what the agent does (its approval mode, its model) needs govern. An operate token drives
+/// the agent; it does not change the owner's settings.
+fn require_govern(conn: &Conn<'_>, what: &str) -> Result<(), types::Error> {
+    if conn.caller.may_govern() {
+        Ok(())
+    } else {
+        Err(invalid(format!(
+            "this token's scope is operate; changing {what} needs govern"
+        )))
+    }
 }
 
 /// The session `params` name, when it is still open.
@@ -650,6 +727,7 @@ mod tests {
         sessions: Sessions,
         client: Mutex<String>,
         agent: Option<String>,
+        caller: Caller,
     }
 
     struct FakeHub {
@@ -661,6 +739,8 @@ mod tests {
         usage: Mutex<Option<Value>>,
         /// What `models` reports: the current model and the tier's list.
         models: Mutex<(String, Vec<String>)>,
+        /// The approvals the session's thread holds (each as the approvals API shows it).
+        approvals: Mutex<Vec<Value>>,
     }
 
     impl FakeHub {
@@ -678,6 +758,7 @@ mod tests {
             self.record(format!("agent {name:?}"));
             match name {
                 Some("missing") => Err("no agent named missing".to_string()),
+                Some("other") => Ok(8),
                 _ => Ok(7),
             }
         }
@@ -703,7 +784,7 @@ mod tests {
         }
 
         fn pending_approvals(&self, _cid: u64, _thread: &str) -> Vec<Value> {
-            Vec::new()
+            lock(&self.approvals).clone()
         }
 
         fn decide(&self, id: &str, approve: bool, reason: &str) -> Result<(), String> {
@@ -770,6 +851,11 @@ mod tests {
     }
 
     fn harness(agent: Option<&str>) -> Harness {
+        harness_with(agent, Caller::Owner, ClientConfig::default())
+    }
+
+    /// An editor connection as `caller`, whose client answers as `config` says.
+    fn harness_with(agent: Option<&str>, caller: Caller, config: ClientConfig) -> Harness {
         let (frames, rx) = mpsc::channel();
         let plaza = Arc::new(Plaza {
             hub: FakeHub {
@@ -784,10 +870,12 @@ mod tests {
                         "anthropic/claude-opus-5-5".to_string(),
                     ],
                 )),
+                approvals: Mutex::default(),
             },
             sessions: Sessions::default(),
             client: Mutex::default(),
             agent: agent.map(str::to_string),
+            caller,
         });
         // Pipes, not a socket pair: the hub builds and tests on Windows too.
         let (server_in, client_out) = std::io::pipe().expect("a pipe");
@@ -800,7 +888,7 @@ mod tests {
             move |peer, method, params| request(&conn_of(&for_requests), peer, method, params),
             move |_peer, method, params| notification(&conn_of(&for_notes), method, params),
         );
-        let client = FakeClient::spawn(client_in, client_out, ClientConfig::default());
+        let client = FakeClient::spawn(client_in, client_out, config);
         Harness {
             client,
             plaza,
@@ -815,10 +903,165 @@ mod tests {
             sessions: &plaza.sessions,
             agent: plaza.agent.clone(),
             client: &plaza.client,
+            caller: plaza.caller.clone(),
         }
     }
 
     const WAIT: Duration = Duration::from_secs(5);
+
+    /// An operate token with no allowlist: it may drive every agent.
+    fn operate() -> Caller {
+        Caller::Token {
+            id: "mcp_test".into(),
+            scope: Scope::Operate,
+            agents: Vec::new(),
+        }
+    }
+
+    /// The work's end on the bus, as the agent's transcript sends it.
+    fn work_end() -> Frame {
+        Frame {
+            kind: "transcript".to_string(),
+            data: json!({
+                "cid": 7,
+                "work": 42,
+                "kind": "work_end",
+                "data": {"status": "done", "summary": ""},
+            })
+            .to_string(),
+        }
+    }
+
+    #[test]
+    fn an_operate_token_cannot_change_the_mode_or_the_model_and_is_not_asked_approvals() {
+        let h = harness_with(None, operate(), ClientConfig::default());
+        *lock(&h.plaza.hub.approvals) = vec![json!({"id": "ap1", "subject": "Write a file"})];
+        let session = h.client.new_session("/work/app").expect("session/new");
+        let mode = h
+            .client
+            .peer()
+            .call(
+                "session/set_mode",
+                json!({"sessionId": session, "modeId": "ask"}),
+                WAIT,
+            )
+            .expect_err("an operate token does not set the mode");
+        assert!(matches!(mode, rpc::Error::Remote(_)), "{mode:?}");
+        assert!(format!("{mode:?}").contains("changing modes needs govern"));
+        let model = h
+            .client
+            .peer()
+            .call(
+                "session/set_config_option",
+                json!({"sessionId": session, "configId": "model", "value": "anthropic/claude-opus-5-5"}),
+                WAIT,
+            )
+            .expect_err("an operate token does not set the model");
+        assert!(format!("{model:?}").contains("changing the model needs govern"));
+        // The work ends with an approval pending: the owner decides it in the console, not the editor.
+        h.frames.send(work_end()).expect("the bus is open");
+        h.client
+            .prompt(&session, "write it")
+            .expect("session/prompt");
+        let calls = h.plaza.hub.calls();
+        assert!(
+            !calls.iter().any(|c| c.starts_with("set_mode")),
+            "{calls:?}"
+        );
+        assert!(
+            !calls.iter().any(|c| c.starts_with("set_model")),
+            "{calls:?}"
+        );
+        assert!(!calls.iter().any(|c| c.starts_with("decide")), "{calls:?}");
+    }
+
+    #[test]
+    fn the_owner_is_asked_the_approval_and_the_answer_decides_it() {
+        // The control for the test above: the same approval, asked when the caller may govern.
+        let h = harness_with(None, Caller::Owner, ClientConfig::default());
+        *lock(&h.plaza.hub.approvals) = vec![json!({"id": "ap1", "subject": "Write a file"})];
+        let session = h.client.new_session("/work/app").expect("session/new");
+        h.frames.send(work_end()).expect("the bus is open");
+        h.client
+            .prompt(&session, "write it")
+            .expect("session/prompt");
+        assert!(
+            h.plaza
+                .hub
+                .calls()
+                .contains(&"decide ap1 true from the editor".to_string())
+        );
+    }
+
+    #[test]
+    fn a_govern_token_is_asked_the_approval_and_changes_the_mode() {
+        let govern = Caller::Token {
+            id: "mcp_test".into(),
+            scope: Scope::Govern,
+            agents: Vec::new(),
+        };
+        let h = harness_with(None, govern, ClientConfig::default());
+        *lock(&h.plaza.hub.approvals) = vec![json!({"id": "ap1", "subject": "Write a file"})];
+        let session = h.client.new_session("/work/app").expect("session/new");
+        h.client
+            .peer()
+            .call(
+                "session/set_mode",
+                json!({"sessionId": session, "modeId": "ask"}),
+                WAIT,
+            )
+            .expect("a govern token sets the mode");
+        assert!(h.plaza.hub.calls().contains(&"set_mode 7 ask".to_string()));
+        h.frames.send(work_end()).expect("the bus is open");
+        h.client
+            .prompt(&session, "write it")
+            .expect("session/prompt");
+        assert!(
+            h.plaza
+                .hub
+                .calls()
+                .contains(&"decide ap1 true from the editor".to_string())
+        );
+    }
+
+    #[test]
+    fn an_allowlist_names_the_agents_a_token_may_drive_by_name_or_cid() {
+        let h = harness(None);
+        let named = Caller::Token {
+            id: "mcp_test".into(),
+            scope: Scope::Operate,
+            agents: vec!["research".into()],
+        };
+        let by_cid = Caller::Token {
+            id: "mcp_test".into(),
+            scope: Scope::Operate,
+            agents: vec!["8".into()],
+        };
+        assert!(named.may_drive(&h.plaza.hub, 7));
+        assert!(!named.may_drive(&h.plaza.hub, 8));
+        assert!(by_cid.may_drive(&h.plaza.hub, 8));
+        assert!(!by_cid.may_drive(&h.plaza.hub, 7));
+        assert!(operate().may_drive(&h.plaza.hub, 8));
+        assert!(Caller::Owner.may_drive(&h.plaza.hub, 8));
+    }
+
+    #[test]
+    fn a_token_is_refused_a_session_on_an_agent_its_allowlist_does_not_name() {
+        let allowed = Caller::Token {
+            id: "mcp_test".into(),
+            scope: Scope::Operate,
+            agents: vec!["research".into()],
+        };
+        // The editor asks for agent "other" (CID 8); the token names "research" (CID 7).
+        let h = harness_with(Some("other"), allowed, ClientConfig::default());
+        let refused = h
+            .client
+            .peer()
+            .call("session/new", json!({"cwd": "/work/app"}), WAIT)
+            .expect_err("agent other is not on the allowlist");
+        assert!(matches!(refused, rpc::Error::Remote(_)), "{refused:?}");
+        assert!(format!("{refused:?}").contains("may not drive that agent"));
+    }
 
     #[test]
     fn initialize_answers_protocol_one_and_keeps_the_editor() {
