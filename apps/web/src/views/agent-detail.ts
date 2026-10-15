@@ -4,6 +4,7 @@ import '../styles/agent.css';
 import { api, ApiError, isContributor, type Agent, type AgentStatus, type Block, type Delta, type Entry, type ModelInfo, type MoveResult, type NodeView, type Sanction, type SanctionsView, type Settings, type Suspension, type VmCheckpoint } from '../api';
 import { go, href } from '../router';
 import { openIde } from '../ide/open';
+import { prewake } from '../prewake';
 import { agentName } from '../roles';
 import { agents, on, refreshAgents } from '../store';
 import { ago, attempt, badge, button, card, clip, compact, empty, field, input, modal, tabs, textarea, toast, type Tone } from '../ui/components';
@@ -563,7 +564,7 @@ export function mountAgentDetail(root: HTMLElement, cid: number): Cleanup {
       h(
         'div.row.agent-actions',
         null,
-        button('Open workspace', () => openIde(`agent:${cid}`), { icon: 'square-code', title: "Open this agent's workspace in the IDE" }),
+        button('Open workspace', () => { prewake(cid, a.status); openIde(`agent:${cid}`); }, { icon: 'square-code', title: "Open this agent's workspace in the IDE" }),
         a.status === 'working' ? button('Cancel work', () => void act(() => attempt(() => api.cancel(cid), 'Cancelled')), { icon: 'ban', disabled: busy }) : null,
         a.status === 'asleep'
           ? button('Wake', () => wakeAgent(), { icon: 'sun', disabled: busy })

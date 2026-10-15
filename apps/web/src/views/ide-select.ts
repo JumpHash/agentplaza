@@ -9,6 +9,7 @@ import { closeDrawerIfNarrow, openRightPanel } from './ide-layout';
 import { setWorkspace, showAgentWorkspace } from './ide-data';
 import { type IdeCtx } from './ide-ctx';
 import { chatPane } from './ide-chat';
+import { prewake } from '../prewake';
 import { ideEmbeds } from './ide-rich';
 import { openAgentWizard } from './agent-wizard';
 import type { CentreView, RightView } from './ide-frame';
@@ -69,6 +70,7 @@ export function selectAgent(c: IdeCtx, next: number, view: CentreView): void {
   }
   c.centreView = view;
   const agent = c.agentList.find((a) => a.cid === next);
+  prewake(next, agent?.status);
   if (!c.chat) {
     const project = agent ? projectOf(agent, c.projects, c.tasks) : null;
     // The project is read at each render: the agent's project can arrive after the chat is made.
