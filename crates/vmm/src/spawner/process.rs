@@ -580,6 +580,11 @@ pub fn child_args(spec: &VmSpec) -> Vec<String> {
         args.push("--workspace".to_string());
         args.push(workspace.display().to_string());
     }
+    // One `--volume NAME=IMAGE` per shared data volume, in the spec's order.
+    for volume in &spec.volumes {
+        args.push("--volume".to_string());
+        args.push(format!("{}={}", volume.name, volume.image.display()));
+    }
     if let Some(usable) = spec.balloon {
         args.push("--balloon-usable-mib".to_string());
         args.push(usable.to_string());
@@ -954,7 +959,7 @@ fn fail_start(child: &mut Child, source: std::io::Error) -> Result<(), SpawnErro
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::spawner::{GicVersion, VsockConfig};
+    use crate::spawner::{DataVolume, GicVersion, VsockConfig};
     use std::io::BufRead;
     use std::os::unix::net::UnixListener;
 
@@ -977,7 +982,16 @@ mod tests {
             workspace: Some(PathBuf::from("/tmp/run/workspace-0.ext4")),
             balloon: Some(32),
             restore: None,
-            volumes: Vec::new(),
+            volumes: vec![
+                DataVolume {
+                    name: "data-a".to_string(),
+                    image: PathBuf::from("/tmp/data/a.ext4"),
+                },
+                DataVolume {
+                    name: "data-b".to_string(),
+                    image: PathBuf::from("/tmp/data/b.ext4"),
+                },
+            ],
         };
         let args = child_args(&spec);
         let pairs: Vec<(&str, &str)> = args
@@ -999,6 +1013,8 @@ mod tests {
             ("--control", "/tmp/plaza-vsock/vm42.ctl"),
             ("--workspace", "/tmp/run/workspace-0.ext4"),
             ("--balloon-usable-mib", "32"),
+            ("--volume", "data-a=/tmp/data/a.ext4"),
+            ("--volume", "data-b=/tmp/data/b.ext4"),
         ] {
             assert!(
                 pairs.contains(&(flag, value)),
@@ -1015,6 +1031,7 @@ mod tests {
             "--control",
             "--workspace",
             "--balloon-usable-mib",
+            "--volume",
         ] {
             assert!(!bare.iter().any(|arg| arg == absent), "{absent} leaked");
         }

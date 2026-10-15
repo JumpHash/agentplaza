@@ -74,7 +74,7 @@ use vmm::spawner::{
 
 const USAGE: &str = "\
 usage: apz-vmm --kernel PATH --cmdline STR [--initrd PATH] [--workspace IMAGE]
-               [--memory-mib M] [--vcpus V] [--cid N] [--uds PATH]
+               [--volume NAME=IMAGE]... [--memory-mib M] [--vcpus V] [--cid N] [--uds PATH]
                [--gic v2|v3] [--balloon-usable-mib N] [--control PATH]
                [--restore DIR] [--snapshot-root DIR]
 
@@ -89,6 +89,9 @@ serves it:
   --initrd PATH      optional initrd image
   --workspace IMAGE  optional writable virtio-blk volume (the guest's only
                      writable device)
+  --volume NAME=IMAGE
+                     shared read-only data volume, repeatable (at most 4); the
+                     guest mounts it at /data/NAME
   --memory-mib M     guest memory in MiB (default 512)
   --vcpus V          vCPUs (default 1)
   --cid N            vsock guest CID; --uds names the host socket it uses
@@ -260,6 +263,7 @@ fn parse(args: &[String]) -> Result<Launch, String> {
     let mut control: Option<PathBuf> = None;
     let mut restore: Option<PathBuf> = None;
     let mut snapshot_root: Option<PathBuf> = None;
+    let mut volumes: Vec<vmm::spawner::DataVolume> = Vec::new();
 
     let mut index = 0;
     while index < args.len() {
@@ -269,6 +273,7 @@ fn parse(args: &[String]) -> Result<Launch, String> {
             "--cmdline" => cmdline = Some(value(args, &mut index, flag)?.to_string()),
             "--initrd" => initrd = Some(PathBuf::from(value(args, &mut index, flag)?)),
             "--workspace" => workspace = Some(PathBuf::from(value(args, &mut index, flag)?)),
+            "--volume" => volumes.push(parse_volume(value(args, &mut index, flag)?)?),
             "--memory-mib" => {
                 let text = value(args, &mut index, flag)?;
                 memory_mib = Some(
@@ -325,6 +330,8 @@ fn parse(args: &[String]) -> Result<Launch, String> {
         index += 1;
     }
 
+    vmm::spawner::check_volumes(&volumes)?;
+
     // The vsock device is one thing named by two flags: a CID without a socket
     // path would leave the guest unreachable and a path without a CID would
     // boot a device whose config space says nothing.
@@ -352,13 +359,27 @@ fn parse(args: &[String]) -> Result<Launch, String> {
         workspace,
         balloon,
         restore,
-        volumes: Vec::new(),
+        volumes,
     };
     Ok(Launch {
         spec,
         control,
         snapshot_root,
     })
+}
+
+/// A `--volume NAME=IMAGE` value: the name is everything before the first `=`, the image is
+/// everything after it. Both parts must be present; the name is checked by `check_volumes`.
+fn parse_volume(text: &str) -> Result<vmm::spawner::DataVolume, String> {
+    match text.split_once('=') {
+        Some((name, image)) if !name.is_empty() && !image.is_empty() => {
+            Ok(vmm::spawner::DataVolume {
+                name: name.to_string(),
+                image: PathBuf::from(image),
+            })
+        }
+        _ => Err(format!("--volume {text:?} is not NAME=IMAGE")),
+    }
 }
 
 /// The value of `flag`: the argument after it, or why it is missing.
@@ -745,7 +766,16 @@ mod tests {
             workspace: Some(PathBuf::from("/tmp/run/workspace-0.ext4")),
             balloon: Some(32),
             restore: None,
-            volumes: Vec::new(),
+            volumes: vec![
+                vmm::spawner::DataVolume {
+                    name: "data-a".to_string(),
+                    image: PathBuf::from("/tmp/data/a.ext4"),
+                },
+                vmm::spawner::DataVolume {
+                    name: "data-b".to_string(),
+                    image: PathBuf::from("/tmp/data/b.ext4"),
+                },
+            ],
         };
         let args = vmm::spawner::process::child_args(&spec);
         let Launch {
@@ -762,6 +792,8 @@ mod tests {
         assert_eq!(parsed.vsock, spec.vsock);
         assert_eq!(parsed.workspace, spec.workspace);
         assert_eq!(parsed.balloon, spec.balloon);
+        assert_eq!(parsed.volumes, spec.volumes);
+        assert_eq!(parsed.volumes.len(), 2);
         assert_eq!(parsed.restore, None);
         assert_eq!(control, Some(PathBuf::from("/tmp/plaza-vsock/vm42.ctl")));
         assert_eq!(snapshot_root, Some(PathBuf::from("/tmp/plaza-vsock")));

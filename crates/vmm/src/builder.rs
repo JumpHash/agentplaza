@@ -109,6 +109,10 @@ fn jail_the_vm(spec: &VmSpec, id: u32) -> Result<(), crate::jail::jailer::Jailer
         // The one writable source in the whole jail (invariant 3).
         plan.bind(workspace, Access::ReadWrite);
     }
+    // Shared data volumes are read-only: one image may back several VMs, and the jail never writes it.
+    for volume in &spec.volumes {
+        plan.bind(&volume.image, Access::ReadOnly);
+    }
     for dev in ["/dev/kvm", "/dev/null", "/dev/urandom"] {
         plan.bind(dev, Access::ReadOnly);
     }
