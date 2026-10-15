@@ -495,31 +495,63 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_pair_is_the_auth_error_even_when_the_environment_holds_one() {
-        let server = FakeServer::start(vec![]);
-        let mut p = provider("bedrock", ProviderKind::Bedrock, &server, Auth::None);
-        p.options = json!({"region": "eu-west-1"});
-        let (gw, _) = gateway_with_secrets(
-            vec![p],
-            &[("bedrock", "AWS_ACCESS_KEY_ID", AWS_KEY)],
-            &[("AWS_SECRET_ACCESS_KEY", AWS_SECRET)],
-        );
-        match gw.complete(
-            &ChatRequest {
-                model: "bedrock/amazon.nova-pro-v1:0".into(),
-                ..request("hi")
-            },
-            &mut |_| {},
-        ) {
-            Err(GatewayError::Auth(message)) => {
-                assert!(message.contains("AWS_ACCESS_KEY_ID"), "{message}")
+    fn a_missing_bedrock_pair_is_the_auth_error_for_its_own_provider() {
+        // A missing key pair is the auth error, even when the environment holds one.
+        {
+            let server = FakeServer::start(vec![]);
+            let mut p = provider("bedrock", ProviderKind::Bedrock, &server, Auth::None);
+            p.options = json!({"region": "eu-west-1"});
+            let (gw, _) = gateway_with_secrets(
+                vec![p],
+                &[("bedrock", "AWS_ACCESS_KEY_ID", AWS_KEY)],
+                &[("AWS_SECRET_ACCESS_KEY", AWS_SECRET)],
+            );
+            match gw.complete(
+                &ChatRequest {
+                    model: "bedrock/amazon.nova-pro-v1:0".into(),
+                    ..request("hi")
+                },
+                &mut |_| {},
+            ) {
+                Err(GatewayError::Auth(message)) => {
+                    assert!(message.contains("AWS_ACCESS_KEY_ID"), "{message}")
+                }
+                other => panic!("expected an auth error, got {:?}", other.map(|r| r.model)),
             }
-            other => panic!("expected an auth error, got {:?}", other.map(|r| r.model)),
+            assert!(
+                server.requests().is_empty(),
+                "no request is sent without the pair"
+            );
         }
-        assert!(
-            server.requests().is_empty(),
-            "no request is sent without the pair"
-        );
+
+        // A Bedrock provider does not borrow the key pair of another provider.
+        {
+            let server = FakeServer::start(vec![]);
+            let mut other = provider("aws-b", ProviderKind::Bedrock, &server, Auth::None);
+            other.options = json!({"region": "eu-west-1"});
+            let (gw, _) = gateway_with_secrets(
+                vec![other],
+                &[
+                    ("aws", "AWS_ACCESS_KEY_ID", AWS_KEY),
+                    ("aws", "AWS_SECRET_ACCESS_KEY", AWS_SECRET),
+                ],
+                &[],
+            );
+            match gw.complete(
+                &ChatRequest {
+                    model: "aws-b/amazon.nova-pro-v1:0".into(),
+                    ..request("hi")
+                },
+                &mut |_| {},
+            ) {
+                Err(GatewayError::Auth(message)) => assert!(
+                    message.contains("AWS_ACCESS_KEY_ID") && message.contains("`aws-b`"),
+                    "{message}"
+                ),
+                other => panic!("expected an auth error, got {:?}", other.map(|r| r.model)),
+            }
+            assert!(server.requests().is_empty());
+        }
     }
 
     fn converse_ok() -> Reply {
@@ -577,35 +609,6 @@ mod tests {
                 && us_auth.contains("/us-east-1/"),
             "{us_auth}"
         );
-    }
-
-    #[test]
-    fn a_bedrock_provider_does_not_borrow_the_pair_of_another_provider() {
-        let server = FakeServer::start(vec![]);
-        let mut other = provider("aws-b", ProviderKind::Bedrock, &server, Auth::None);
-        other.options = json!({"region": "eu-west-1"});
-        let (gw, _) = gateway_with_secrets(
-            vec![other],
-            &[
-                ("aws", "AWS_ACCESS_KEY_ID", AWS_KEY),
-                ("aws", "AWS_SECRET_ACCESS_KEY", AWS_SECRET),
-            ],
-            &[],
-        );
-        match gw.complete(
-            &ChatRequest {
-                model: "aws-b/amazon.nova-pro-v1:0".into(),
-                ..request("hi")
-            },
-            &mut |_| {},
-        ) {
-            Err(GatewayError::Auth(message)) => assert!(
-                message.contains("AWS_ACCESS_KEY_ID") && message.contains("`aws-b`"),
-                "{message}"
-            ),
-            other => panic!("expected an auth error, got {:?}", other.map(|r| r.model)),
-        }
-        assert!(server.requests().is_empty());
     }
 
     /// A secret source that refuses every name, as a sealed vault does.
