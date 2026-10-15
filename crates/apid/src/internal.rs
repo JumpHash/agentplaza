@@ -36,12 +36,29 @@ struct Gone {
     reason: String,
 }
 
-/// The egress proxy's question before it dials: may agent `cid` connect to `host`? The port is
-/// not part of the decision (the proxy gates ports itself), so it is not read here.
+/// The egress proxy's question before it dials: may agent `cid` connect to `host:port`, and should the
+/// proxy intercept that connection for an egress credential rule?
 #[derive(Deserialize)]
 struct EgressCheck {
     cid: u64,
     host: String,
+    #[serde(default = "crate::egress_inject::default_port")]
+    port: u16,
+}
+
+/// The egress proxy asks for the leaf certificate of an intercepted host.
+#[derive(Deserialize)]
+struct EgressCert {
+    cid: u64,
+    host: String,
+}
+
+/// The egress proxy asks which header to add to one request on an intercepted host.
+#[derive(Deserialize)]
+struct EgressInject {
+    cid: u64,
+    #[serde(flatten)]
+    ask: crate::egress_inject::Ask,
 }
 
 /// One egress decision and its outcome, reported by the hub's egress proxy.
@@ -113,7 +130,30 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 Err(e) => return Response::error(400, &e.to_string()),
             };
             authorized(app, req, &check.cid.to_string(), |cid| {
-                Ok(Response::json(200, &egress_check(app, cid, &check.host)))
+                Ok(Response::json(
+                    200,
+                    &egress_check(app, cid, &check.host, check.port),
+                ))
+            })
+        })
+        // The egress proxy's leaf certificate for an intercepted host (the hub signs it with the egress CA).
+        .post("/internal/egress/cert", |app, req, _p| {
+            let cert: EgressCert = match req.json() {
+                Ok(cert) => cert,
+                Err(e) => return Response::error(400, &e.to_string()),
+            };
+            authorized(app, req, &cert.cid.to_string(), |cid| {
+                Ok(crate::egress_inject::cert_reply(app, cid, &cert.host))
+            })
+        })
+        // The egress proxy's header for one request on an intercepted host: the secret is read here, never sent to the guest.
+        .post("/internal/egress/inject", |app, req, _p| {
+            let inject: EgressInject = match req.json() {
+                Ok(inject) => inject,
+                Err(e) => return Response::error(400, &e.to_string()),
+            };
+            authorized(app, req, &inject.cid.to_string(), |cid| {
+                Ok(crate::egress_inject::inject_reply(app, cid, &inject.ask))
             })
         })
         // An agent's decision (from its VM: `POST http://plaza.gateway/decisions`, which vsockd
@@ -225,7 +265,7 @@ pub(crate) fn egress_verdict(
 /// every host, so a forbidden attempt is recorded as a violation even when the blocklist would
 /// refuse it too. The laws only forbid here: a permit is not required (see the report on
 /// `Laws::refuse_op`).
-fn egress_check(app: &App, cid: u64, host: &str) -> Value {
+fn egress_check(app: &App, cid: u64, host: &str, port: u16) -> Value {
     let role = app
         .agents
         .get(cid)
@@ -244,7 +284,14 @@ fn egress_check(app: &App, cid: u64, host: &str) -> Value {
         .refuse_op(cid, &role, "egress.connect", resource, attrs, &Value::Null);
     let blocked = on_fetch_blocklist(&app.settings.get().fetch_block, host);
     let verdict = egress_verdict(blocked, refusal, host);
-    json!({ "allow": verdict.allow, "law": verdict.law, "reason": verdict.reason })
+    // Whether the proxy terminates this connection's TLS to add a credential (see egress_inject).
+    let intercept = crate::egress_inject::intercepts(app, cid, host, port);
+    json!({
+        "allow": verdict.allow,
+        "law": verdict.law,
+        "reason": verdict.reason,
+        "intercept": intercept,
+    })
 }
 
 /// One v3 guest line from agent `cid`; the reply for the guest, if any.

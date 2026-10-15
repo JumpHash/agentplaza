@@ -305,6 +305,7 @@ dependencies = [
  "jhrl",
  "libc",
  "postgres",
+ "rcgen",
  "secrecy",
  "serde",
  "serde_json",
