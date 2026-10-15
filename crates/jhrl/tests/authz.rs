@@ -96,78 +96,80 @@ fn approval() -> Value {
 }
 
 #[test]
-fn c004a_denies_irreversible_without_approval_and_not_with_one() {
-    let p = load(SRC);
-    let s = store_for(&p, "f1").expect("fixture f1");
-    let no = authorize(&p, &s, &request("tool.call", vec![]));
-    assert_eq!(
-        no.decision,
-        Decision::Deny {
-            by: vec!["C-004a".into()],
-            missing: vec![]
-        }
-    );
-    let yes = authorize(
-        &p,
-        &s,
-        &request("tool.call", vec![("owner_approval", approval())]),
-    );
-    assert_eq!(
-        yes.decision,
-        Decision::Allow {
-            by: vec!["P-001".into()]
-        }
-    );
-    let rows = run_authz(&p);
-    assert_eq!(rows.len(), 2);
-    assert!(rows.iter().all(|(_, pass, _)| *pass), "{rows:?}");
-}
-
-#[test]
-fn forbid_beats_permit() {
-    let p = load(SRC);
-    let s = store_for(&p, "f1").expect("fixture f1");
-    // Both C-004a (forbid) and P-001 (permit) apply here; the forbid wins and P-001 is not cited.
-    let o = authorize(&p, &s, &request("tool.call", vec![]));
-    assert_eq!(
-        o.decision,
-        Decision::Deny {
-            by: vec!["C-004a".into()],
-            missing: vec![]
-        }
-    );
-    assert!(
-        o.violations.is_empty(),
-        "C-004a is preventive, not a violation record"
-    );
-}
-
-#[test]
-fn default_deny_when_no_law_covers_the_operation() {
-    let p = load(SRC);
-    let s = store_for(&p, "f1").expect("fixture f1");
-    let o = authorize(&p, &s, &request("tool.delete", vec![]));
-    assert_eq!(
-        o.decision,
-        Decision::Deny {
-            by: vec![],
-            missing: vec![]
-        }
-    );
-}
-
-#[test]
-fn forbid_on_missing_attribute_denies_and_unknown_permit_does_not_apply() {
-    let p = load(FAIL_CLOSED);
-    let s = store_for(&p, "f1").expect("fixture f1");
-    // Tool t1 has no `classification`: F-001 is Unknown and applies (fail closed); P-002 is
-    // Unknown and does not apply, so it is not cited.
-    let o = authorize(&p, &s, &request("tool.call", vec![]));
-    assert_eq!(
-        o.decision,
-        Decision::Deny {
-            by: vec!["F-001".into()],
-            missing: vec!["resource.classification".into()]
-        }
-    );
+fn authorize_decisions_follow_the_laws() {
+    // c004a_denies_irreversible_without_approval_and_not_with_one: an irreversible call is denied
+    // without an approval and allowed with one.
+    {
+        let p = load(SRC);
+        let s = store_for(&p, "f1").expect("fixture f1");
+        let no = authorize(&p, &s, &request("tool.call", vec![]));
+        assert_eq!(
+            no.decision,
+            Decision::Deny {
+                by: vec!["C-004a".into()],
+                missing: vec![]
+            }
+        );
+        let yes = authorize(
+            &p,
+            &s,
+            &request("tool.call", vec![("owner_approval", approval())]),
+        );
+        assert_eq!(
+            yes.decision,
+            Decision::Allow {
+                by: vec!["P-001".into()]
+            }
+        );
+        let rows = run_authz(&p);
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|(_, pass, _)| *pass), "{rows:?}");
+    }
+    // forbid_beats_permit: a forbid wins over a permit that also applies, and the permit is not cited.
+    {
+        let p = load(SRC);
+        let s = store_for(&p, "f1").expect("fixture f1");
+        // Both C-004a (forbid) and P-001 (permit) apply here; the forbid wins and P-001 is not cited.
+        let o = authorize(&p, &s, &request("tool.call", vec![]));
+        assert_eq!(
+            o.decision,
+            Decision::Deny {
+                by: vec!["C-004a".into()],
+                missing: vec![]
+            }
+        );
+        assert!(
+            o.violations.is_empty(),
+            "C-004a is preventive, not a violation record"
+        );
+    }
+    // default_deny_when_no_law_covers_the_operation: an operation no law covers is denied.
+    {
+        let p = load(SRC);
+        let s = store_for(&p, "f1").expect("fixture f1");
+        let o = authorize(&p, &s, &request("tool.delete", vec![]));
+        assert_eq!(
+            o.decision,
+            Decision::Deny {
+                by: vec![],
+                missing: vec![]
+            }
+        );
+    }
+    // forbid_on_missing_attribute_denies_and_unknown_permit_does_not_apply: a forbid on a missing
+    // attribute denies, and a permit on it does not apply.
+    {
+        let p = load(FAIL_CLOSED);
+        let s = store_for(&p, "f1").expect("fixture f1");
+        // Tool t1 has no `classification`: F-001 is Unknown and applies (fail closed); P-002 is
+        // Unknown and does not apply, so it is not cited.
+        let o = authorize(&p, &s, &request("tool.call", vec![]));
+        assert_eq!(
+            o.decision,
+            Decision::Deny {
+                by: vec!["F-001".into()],
+                missing: vec!["resource.classification".into()]
+            }
+        );
+    }
 }

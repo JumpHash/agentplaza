@@ -48,36 +48,40 @@ fn law_c004a_parses_its_header_scopes_and_conditions() {
 }
 
 #[test]
-fn operation_signature_with_set_and_optional_context_fields() {
-    let it = items(
-        "operation tool.call(principal: Agent, resource: Tool, \
+fn operation_signatures_parse_principals_and_context() {
+    // operation_signature_with_set_and_optional_context_fields: a Set-typed context field and an
+    // optional context field are parsed with their types and flags.
+    {
+        let it = items(
+            "operation tool.call(principal: Agent, resource: Tool, \
          context: {flags: Set<String>, owner_approval: Approval optional})",
-    );
-    let [Item::Operation(op)] = it.as_slice() else {
-        panic!("expected one operation")
-    };
-    assert_eq!(op.name, "tool.call");
-    assert_eq!(op.principal, vec!["Agent".to_string()]);
-    assert_eq!(op.resource, "Tool");
-    assert_eq!(op.context.len(), 2);
-    let (f, fty, f_opt) = &op.context[0];
-    assert_eq!(f, "flags");
-    assert_eq!(fty.to_string(), "Set<String>");
-    assert!(!f_opt);
-    let (a, aty, a_opt) = &op.context[1];
-    assert_eq!(a, "owner_approval");
-    assert_eq!(aty.name(), Some("Approval"));
-    assert!(*a_opt);
-}
-
-#[test]
-fn operation_with_union_principal_and_record_context() {
-    let it = items("operation task.assign(principal: Agent | Human, resource: Task, context: {limits: {cap: Int}})");
-    let [Item::Operation(op)] = it.as_slice() else {
-        panic!("expected one operation")
-    };
-    assert_eq!(op.principal, vec!["Agent".to_string(), "Human".to_string()]);
-    assert!(matches!(&op.context[0].1, TypeExpr::Record(fs) if fs.len() == 1));
+        );
+        let [Item::Operation(op)] = it.as_slice() else {
+            panic!("expected one operation")
+        };
+        assert_eq!(op.name, "tool.call");
+        assert_eq!(op.principal, vec!["Agent".to_string()]);
+        assert_eq!(op.resource, "Tool");
+        assert_eq!(op.context.len(), 2);
+        let (f, fty, f_opt) = &op.context[0];
+        assert_eq!(f, "flags");
+        assert_eq!(fty.to_string(), "Set<String>");
+        assert!(!f_opt);
+        let (a, aty, a_opt) = &op.context[1];
+        assert_eq!(a, "owner_approval");
+        assert_eq!(aty.name(), Some("Approval"));
+        assert!(*a_opt);
+    }
+    // operation_with_union_principal_and_record_context: a union principal and a record-typed
+    // context field are parsed.
+    {
+        let it = items("operation task.assign(principal: Agent | Human, resource: Task, context: {limits: {cap: Int}})");
+        let [Item::Operation(op)] = it.as_slice() else {
+            panic!("expected one operation")
+        };
+        assert_eq!(op.principal, vec!["Agent".to_string(), "Human".to_string()]);
+        assert!(matches!(&op.context[0].1, TypeExpr::Record(fs) if fs.len() == 1));
+    }
 }
 
 #[test]
