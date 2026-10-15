@@ -519,6 +519,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "apz-metrics"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "apz-metrics-view"
+version = "0.1.0"
+dependencies = [
+ "apz-metrics",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "apz-ops"
 version = "0.1.0"
 dependencies = [
