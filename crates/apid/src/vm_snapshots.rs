@@ -1,11 +1,11 @@
 //! Live checkpoints, rollback and forks of an agent's whole VM — memory, disk and running processes,
 //! not only its files (those are the IDE's file checkpoints, `/v1/ide/workspaces/{id}/checkpoints`).
 //!
-//! GET    /v1/agents/{cid}/vm-checkpoints                 → [checkpoint]
+//! GET    /v1/agents/{cid}/vm-checkpoints                 → {checkpoints: [checkpoint]} (newest first)
 //! POST   /v1/agents/{cid}/vm-checkpoints  {label?}       → checkpoint
 //! POST   /v1/agents/{cid}/vm-checkpoints/{name}/restore  → {ok, safety: checkpoint}
 //! DELETE /v1/agents/{cid}/vm-checkpoints/{name}          → {ok}
-//! POST   /v1/agents/{cid}/fork            {n}            → {forks: [{cid, run}], checkpoint}
+//! POST   /v1/agents/{cid}/fork            {n}            → {forks: [{cid, run, name}], checkpoint}
 //!
 //! A checkpoint is noded's snapshot view (`noded::snapshots::SnapshotView`). Rolling back first takes
 //! a safety checkpoint (`before-restore`), so a rollback can itself be undone — CubeSandbox's rollback
