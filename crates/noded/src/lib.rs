@@ -20,6 +20,7 @@
 
 pub mod events;
 pub mod fleet;
+pub mod migrate;
 pub mod registry;
 pub mod snapshots;
 pub mod stats;
@@ -144,6 +145,8 @@ pub struct Node {
     fabric: Mutex<Option<(Instant, Vec<String>)>>,
     /// The workstation VMs this node makes for the hub (workstation.rs).
     workstations: workstation::Store,
+    /// The exports and imports of sleeping VMs in flight (migrate.rs).
+    migrations: migrate::Migrations,
 }
 
 /// `GET /v1/machine`.
@@ -210,6 +213,7 @@ impl Node {
             probed: probe_host(&apz_os::dirs::state()),
             fabric: Mutex::new(None),
             workstations: workstation::Store::open(guest),
+            migrations: migrate::Migrations::new(),
         }
     }
 
@@ -1795,6 +1799,40 @@ fn router() -> Router<Node> {
                 Registry::wake_vm,
             )
         })
+        // A sleeping VM moves between nodes (migrate.rs): export it here and read its files in
+        // chunks; import them on the target, which makes the VM asleep there. A finish is registered
+        // before the chunk route below, which would match it too: the first match wins.
+        .post("/v1/runs/{id}/vms/{index}/export", |node, _, params| {
+            export_vm(node, params.get("id"), params.get("index"))
+        })
+        .get("/v1/exports/{export}/{name}", |node, request, params| {
+            read_export(
+                node,
+                params.get("export"),
+                params.get("name"),
+                &request.query,
+            )
+        })
+        .delete("/v1/exports/{export}", |node, _, params| {
+            delete_export(node, params.get("export"))
+        })
+        .post("/v1/imports", |node, request, _| {
+            create_import(node, &request.body)
+        })
+        .post("/v1/imports/{import}/finish", |node, _, params| {
+            finish_import(node, params.get("import"))
+        })
+        .post("/v1/imports/{import}/{name}", |node, request, params| {
+            write_import(
+                node,
+                params.get("import"),
+                params.get("name"),
+                &request.body,
+            )
+        })
+        .delete("/v1/imports/{import}", |node, _, params| {
+            abort_import(node, params.get("import"))
+        })
         .get(
             "/v1/runs/{id}/vms/{index}/checkpoints",
             |node, _, params| checkpoint_list(node, params.get("id"), params.get("index")),
@@ -1888,6 +1926,79 @@ fn sleep_vm(node: &Node, id: &str, index: &str) -> Response {
         ),
         Err(err) => Response::error(err.status(), &err.to_string()),
     }
+}
+
+/// Serializes a transfer step's answer: `status` with its value, or the error's status and message.
+fn migrate_answer<T: Serialize>(status: u16, answer: Result<T, migrate::MigrateError>) -> Response {
+    match answer {
+        Ok(value) => Response::json(status, &value),
+        Err(err) => Response::error(err.status(), &err.to_string()),
+    }
+}
+
+/// `POST /v1/runs/{id}/vms/{index}/export` → 201 with `{"export", "files", "meta"}`: the files of the
+/// asleep VM, kept for an hour for chunked reads.
+fn export_vm(node: &Node, id: &str, index: &str) -> Response {
+    let vm = match vm_index(id, index) {
+        Ok(vm) => vm,
+        Err(response) => return response,
+    };
+    migrate_answer(
+        201,
+        migrate::export_vm(&node.migrations, node.registry(), id, vm),
+    )
+}
+
+/// `GET /v1/exports/{export}/{name}?offset=O&len=L` → 200 with `{"data": <base64>, "eof": bool}`.
+fn read_export(node: &Node, export: &str, name: &str, query: &str) -> Response {
+    migrate_answer(
+        200,
+        migrate::read_export(&node.migrations, export, name, query),
+    )
+}
+
+/// `DELETE /v1/exports/{export}` → 200 with `{"deleted": export}`.
+fn delete_export(node: &Node, export: &str) -> Response {
+    migrate_answer(
+        200,
+        migrate::delete_export(&node.migrations, export)
+            .map(|()| serde_json::json!({"deleted": export})),
+    )
+}
+
+/// `POST /v1/imports` → 201 with `{"import": id}`: the VM's shape and file list, refused for a CID
+/// a run of this node holds.
+fn create_import(node: &Node, body: &[u8]) -> Response {
+    migrate_answer(
+        201,
+        migrate::create_import(&node.migrations, node.registry(), body)
+            .map(|import| serde_json::json!({"import": import})),
+    )
+}
+
+/// `POST /v1/imports/{import}/{name}` → 200 with `{"import", "name", "written"}`.
+fn write_import(node: &Node, import: &str, name: &str, body: &[u8]) -> Response {
+    migrate_answer(
+        200,
+        migrate::write_import(&node.migrations, import, name, body),
+    )
+}
+
+/// `POST /v1/imports/{import}/finish` → 201 with `{"run", "cid"}`: the VM is asleep on this node.
+fn finish_import(node: &Node, import: &str) -> Response {
+    migrate_answer(
+        201,
+        migrate::finish_import(&node.migrations, node.registry(), import),
+    )
+}
+
+/// `DELETE /v1/imports/{import}` → 200 with `{"aborted": import}`.
+fn abort_import(node: &Node, import: &str) -> Response {
+    migrate_answer(
+        200,
+        migrate::abort_import(&node.migrations, import)
+            .map(|()| serde_json::json!({"aborted": import})),
+    )
 }
 
 /// `GET /v1/runs/{id}/vms/{index}/checkpoints` → 200 with `{"checkpoints": [<view>, ...]}`, newest first.

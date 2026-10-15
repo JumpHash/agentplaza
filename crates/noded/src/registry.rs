@@ -415,6 +415,19 @@ impl CidBook {
         held.retain(|(id, _)| id != run);
         held.len() != before
     }
+
+    /// Holds `cids` for `run` unless one of them is held already, and returns whether it did. The
+    /// check and the hold are one step under the book's lock, so two imports racing for one CID
+    /// cannot both take it.
+    fn hold_unless_busy(&self, run: &str, cids: Vec<u64>) -> bool {
+        let mut held = self.held();
+        let busy = busy(&held);
+        if cids.iter().any(|cid| busy.contains(cid)) {
+            return false;
+        }
+        put(&mut held, run, cids);
+        true
+    }
 }
 
 /// Every CID the runs in `held` hold.
@@ -828,6 +841,69 @@ fn replace_workspace(base: &std::path::Path, image: &std::path::Path) -> std::io
     }
     vmm::spawner::copy_sparse(base, &partial)?;
     std::fs::rename(&partial, image)
+}
+
+/// A VM an import brings to this node, its files already verified and staged (see `crate::migrate`).
+#[derive(Debug, Clone)]
+pub struct ImportedVm {
+    /// The guest CID the VM keeps (the hub's choice).
+    pub cid: u64,
+    /// The role the VM runs as, when it has one.
+    pub role: Option<String>,
+    /// vCPUs, as the source reported them.
+    pub vcpus: u32,
+    /// Guest memory in MiB, as the source reported it.
+    pub memory_mib: u32,
+    /// The usable guest memory at boot, when the VM has a balloon.
+    pub balloon_usable_mib: Option<u32>,
+    /// The VM's kernel command line.
+    pub cmdline: String,
+    /// A staged directory holding `memory.img` and `vmstate.json`: moved into the CID's sleep snapshot.
+    pub sleep_dir: PathBuf,
+    /// The staged `workspace.img`: moved to the VM's workspace image on this node.
+    pub workspace: PathBuf,
+}
+
+/// An asleep VM, as an export reads it (see [`Registry::asleep_vm`]).
+#[derive(Debug, Clone)]
+pub struct AsleepVm {
+    /// The VM's guest CID.
+    pub cid: u64,
+    /// The role the VM runs as, when it has one.
+    pub role: Option<String>,
+    /// The VM's cold spec: its command line, shape, balloon and workspace image.
+    pub spec: VmSpec,
+    /// The directory holding the VM's sleep snapshot.
+    pub sleep_dir: PathBuf,
+}
+
+/// Checks the shape an imported VM must have, as a create request would: a CID the guest range
+/// holds, a role, and the vCPUs and memory the spawner takes.
+pub fn check_import_shape(
+    cid: u64,
+    role: Option<&str>,
+    vcpus: u32,
+    memory_mib: u32,
+) -> Result<(), VmOpError> {
+    checked_base(cid, 1).map_err(VmOpError::Invalid)?;
+    if let Some(role) = role {
+        checked_role(role).map_err(VmOpError::Invalid)?;
+    }
+    spawner_vcpus(vcpus).map_err(VmOpError::Invalid)?;
+    spawner_memory_mib(memory_mib).map_err(VmOpError::Invalid)?;
+    Ok(())
+}
+
+/// Moves the file `from` to `to`, replacing it. A rename that cannot cross the file system is a
+/// sparse copy, then a removal of the original.
+fn move_file(from: &Path, to: &Path) -> std::io::Result<()> {
+    if fs::rename(from, to).is_ok() {
+        return Ok(());
+    }
+    let partial = PathBuf::from(format!("{}.partial", to.display()));
+    vmm::spawner::copy_sparse(from, &partial)?;
+    fs::rename(&partial, to)?;
+    fs::remove_file(from)
 }
 
 /// A VM's control handle, and what an operation on the VM needs, taken out of its slot so the
@@ -1694,6 +1770,175 @@ impl Registry {
         self.snapshots.as_ref().ok_or(VmOpError::NoSnapshots)
     }
 
+    /// The node's snapshot root, where a transfer stages the files it receives (see `crate::migrate`).
+    pub fn snapshot_root(&self) -> Result<&Path, VmOpError> {
+        Ok(self.snapshot_store()?.root())
+    }
+
+    /// Whether a live run of this node holds guest CID `cid`.
+    pub fn cid_in_use(&self, cid: u64) -> bool {
+        busy(&self.cids.held()).contains(&cid)
+    }
+
+    /// The asleep VM `vm` of run `run`, as an export reads it: its guest CID, role, cold spec and
+    /// the directory holding its sleep snapshot. The VM must be asleep.
+    pub fn asleep_vm(&self, run: &str, vm: u32) -> Result<AsleepVm, VmOpError> {
+        let store = self.snapshot_store()?;
+        let run = self.find(run).ok_or(VmOpError::UnknownRun)?;
+        let (cid, role, spec) = run.asleep_slot(vm)?;
+        Ok(AsleepVm {
+            sleep_dir: store.dir(cid, snapshots::SLEEP),
+            cid,
+            role,
+            spec,
+        })
+    }
+
+    /// Makes an imported VM this node's: its sleep snapshot and workspace image are moved into
+    /// place, its CID is held, and a run of its own holds it asleep - a `running` run whose one VM
+    /// sleeps, as a sleep leaves it, so `wake` restores it here. The files are already verified
+    /// (see `crate::migrate`); a failure here leaves the node as it was, with the CID released.
+    pub fn import_run(&self, vm: ImportedVm) -> Result<Arc<Run>, VmOpError> {
+        check_import_shape(vm.cid, vm.role.as_deref(), vm.vcpus, vm.memory_mib)?;
+        let vcpus = spawner_vcpus(vm.vcpus).map_err(VmOpError::Invalid)?;
+        let memory_mib = spawner_memory_mib(vm.memory_mib).map_err(VmOpError::Invalid)?;
+        let store = self.snapshot_store()?;
+        let id = self.reserve_run_id();
+        // The CID is the hub's choice, so it may sit outside the run range; the book holds it all
+        // the same, for as long as the run lives.
+        if !self.cids.hold_unless_busy(&id, vec![vm.cid]) {
+            return Err(VmOpError::CidInUse(vm.cid));
+        }
+        let workspace = match self.place_import(&id, &vm, store) {
+            Ok(workspace) => workspace,
+            Err(err) => {
+                self.cids.release(&id);
+                return Err(err);
+            }
+        };
+        let spec = VmSpec {
+            kernel: self.images.kernel.clone(),
+            cmdline: vm.cmdline.clone(),
+            vcpus,
+            memory_mib,
+            initrd: Some(self.images.initrd.clone()),
+            gic: None,
+            vsock: Some(VsockConfig {
+                guest_cid: vm.cid,
+                uds_path: self.uds_dir.join(format!("vm{}", vm.cid)),
+            }),
+            workspace: Some(workspace),
+            balloon: vm.balloon_usable_mib,
+            restore: None,
+        };
+        let run = self.insert(
+            id,
+            RunMeta {
+                vcpus: vm.vcpus,
+                memory_mib: vm.memory_mib,
+                beats: None,
+                role: vm.role.clone(),
+                keepalive: true,
+                balloon_usable_mib: vm.balloon_usable_mib,
+            },
+        );
+        {
+            let mut inner = run.lock();
+            // `insert` registered the run in `starting`; an imported run begins `running` with its
+            // one VM asleep, the state a sleep leaves a run in.
+            inner.state = RunState::Running;
+            inner.vms = vec![VmSlot::asleep(0, vm.cid, vm.role, spec)];
+            run.events.publish(Event::Run {
+                id: run.id.clone(),
+                state: RunState::Running.as_str(),
+            });
+            run.events.publish(Event::Vm {
+                run: run.id.clone(),
+                vm: 0,
+                state: VmState::Asleep.as_str(),
+            });
+        }
+        Ok(run)
+    }
+
+    /// Moves an imported VM's files into the node's places for guest CID `vm.cid` and returns the
+    /// workspace image's path: the sleep snapshot takes the CID's `sleep` directory, and the
+    /// workspace image the CID's persistent image (or the run's directory without a persist dir).
+    fn place_import(
+        &self,
+        id: &str,
+        vm: &ImportedVm,
+        store: &SnapshotStore,
+    ) -> Result<PathBuf, VmOpError> {
+        store.prepare(vm.cid).map_err(|err| {
+            VmOpError::Failed(format!("cannot create VM {}'s directory: {err}", vm.cid))
+        })?;
+        store
+            .install(vm.cid, &vm.sleep_dir, snapshots::SLEEP)
+            .map_err(|err| VmOpError::Failed(format!("cannot keep the sleep snapshot: {err}")))?;
+        let dest = match &self.persist_dir {
+            Some(persist) => {
+                let image = persistent_workspace_path(persist, vm.cid);
+                if let Some(dir) = image.parent() {
+                    snapshots::private_dir(dir).map_err(|err| {
+                        VmOpError::Failed(format!("cannot create {}: {err}", dir.display()))
+                    })?;
+                }
+                image
+            }
+            None => {
+                let dir = self.run_dir(id);
+                snapshots::private_dir(&dir).map_err(|err| {
+                    VmOpError::Failed(format!("cannot create {}: {err}", dir.display()))
+                })?;
+                // The run's copies are named by VM index, and this run's one VM is index 0.
+                dir.join("workspace-0.ext4")
+            }
+        };
+        if let Err(err) = move_file(&vm.workspace, &dest) {
+            // The sleep snapshot was kept for this VM; it goes with the workspace it cannot be paired with.
+            let _ = store.remove(vm.cid, snapshots::SLEEP);
+            return Err(VmOpError::Failed(format!(
+                "cannot place the workspace image: {err}"
+            )));
+        }
+        Ok(dest)
+    }
+
+    /// A running run whose one VM is in `state`, with no handle or spec: a stand-in for the
+    /// registry's tests of the operations that refuse a VM by its state.
+    #[cfg(test)]
+    pub(crate) fn stand_in_run(&self, cid: u64, state: VmState) -> Arc<Run> {
+        let id = self.reserve_run_id();
+        let run = self.insert(
+            id,
+            RunMeta {
+                vcpus: 1,
+                memory_mib: MIN_MEMORY_MIB,
+                beats: None,
+                role: None,
+                keepalive: true,
+                balloon_usable_mib: None,
+            },
+        );
+        {
+            let mut inner = run.lock();
+            inner.state = RunState::Running;
+            inner.vms = vec![VmSlot {
+                id: 0,
+                guest_cid: Some(cid),
+                role: None,
+                runtime: Arc::new(VmRuntime::new(0)),
+                handle: None,
+                spec: None,
+                state,
+                serial_seen: 0,
+                restored_from: None,
+            }];
+        }
+        run
+    }
+
     /// Removes the snapshots of every VM of `run`: what deleting the run does with them.
     pub fn drop_snapshots(&self, run: &Run) {
         let Some(store) = &self.snapshots else {
@@ -2067,6 +2312,8 @@ pub enum VmOpError {
     WrongState { vm: u32, state: VmState },
     /// The VM has no vsock CID or no workspace volume, which the snapshot operation needs.
     Unsupported(String),
+    /// An import named a guest CID a run of this node already holds.
+    CidInUse(u64),
 }
 
 impl VmOpError {
@@ -2085,6 +2332,7 @@ impl VmOpError {
             | VmOpError::NoSnapshots
             | VmOpError::WrongState { .. }
             | VmOpError::Unsupported(_) => 409,
+            VmOpError::CidInUse(_) => 409,
             VmOpError::Refused(_) | VmOpError::Failed(_) => 500,
         }
     }
@@ -2128,6 +2376,12 @@ impl std::fmt::Display for VmOpError {
                 state.as_str()
             ),
             VmOpError::Unsupported(reason) => write!(formatter, "{reason}"),
+            VmOpError::CidInUse(cid) => {
+                write!(
+                    formatter,
+                    "guest CID {cid} is already held by a run of this node"
+                )
+            }
         }
     }
 }
@@ -2191,6 +2445,24 @@ struct VmSlot {
     /// wake's sleep snapshot, or its restore's staged base): the base its next
     /// snapshot is written as a diff over. `None` for a VM booted cold.
     restored_from: Option<PathBuf>,
+}
+
+impl VmSlot {
+    /// A VM that is asleep on this node: stopped, its sleep snapshot kept under its CID's directory,
+    /// and no control handle (no process runs it). `spec` is the cold spec a wake restores from.
+    fn asleep(id: u32, cid: u64, role: Option<String>, spec: VmSpec) -> Self {
+        Self {
+            id,
+            guest_cid: Some(cid),
+            role,
+            runtime: Arc::new(VmRuntime::new(id)),
+            handle: None,
+            spec: Some(spec),
+            state: VmState::Asleep,
+            serial_seen: 0,
+            restored_from: None,
+        }
+    }
 }
 
 impl RunInner {
@@ -2556,6 +2828,34 @@ impl Run {
                 state: VmState::Running.as_str(),
             });
         }
+    }
+
+    /// The guest CID, role and cold spec of VM `vm`, which must be asleep: what an export reads. The
+    /// run must be running, as a sleep leaves it.
+    fn asleep_slot(&self, vm: u32) -> Result<(u64, Option<String>, VmSpec), VmOpError> {
+        let inner = self.lock();
+        if inner.state != RunState::Running {
+            return Err(VmOpError::RunEnded(inner.state));
+        }
+        let slot = inner
+            .vms
+            .iter()
+            .find(|slot| slot.id == vm)
+            .ok_or(VmOpError::UnknownVm(vm))?;
+        if slot.state != VmState::Asleep {
+            return Err(VmOpError::WrongState {
+                vm,
+                state: slot.state,
+            });
+        }
+        let cid = slot
+            .guest_cid
+            .ok_or_else(|| VmOpError::Unsupported(format!("VM {vm} has no vsock CID")))?;
+        let spec = slot
+            .spec
+            .clone()
+            .ok_or_else(|| VmOpError::Failed(format!("VM {vm} has no saved spec to export")))?;
+        Ok((cid, slot.role.clone(), spec))
     }
 
     /// Releases this run's guest CIDs: the run has ended, so its span is the
