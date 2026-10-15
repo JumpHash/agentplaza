@@ -65,13 +65,17 @@ These routes are implemented, with the SDK's own shapes (`NewSandbox`, `Sandbox`
 | `DELETE /e2b/sandboxes/{id}` | `204`. |
 | `POST /e2b/sandboxes/{id}/timeout` `{timeout}` | `204`: sets the end time. |
 | `POST /e2b/sandboxes/{id}/refreshes` `{duration}` | `204`: extends the end time. |
-| `GET /e2b/sandboxes/{id}/metrics` | `[]`. Metrics are not sampled. |
+| `GET /e2b/sandboxes/{id}/metrics` | `[SandboxMetric]`: one sample, now, from the daemon's `GET /metrics` (CPU busy since the last sample, memory, the home disk). `[]` while paused. |
+| `GET /e2b/sandboxes/metrics?sandbox_ids=a,b` | `{"sandboxes": {id: SandboxMetric}}` for the running ones (at most 100). |
+| `GET /e2b/v2/sandboxes/{id}/logs` `?cursor&limit&direction&level&search` | `{"logs": [SandboxLogEntry]}`: the daemon's log (each process's start, with its command line, and end, with its exit code), filtered and paged as asked. The daemon keeps its last 1000 entries. |
+| `GET /e2b/sandboxes/{id}/logs` `?start&limit` | `{"logs": [{timestamp, line}], "logEntries": [...]}`, the same entries. |
+| `PUT /e2b/sandboxes/{id}/network` | `204`. Replaces the sandbox's `allowOut`, `denyOut` and `allow_internet_access` (an omitted list is cleared; omitted access is on). Applies to the next connection: vsockd forgets the decisions it kept for the sandbox. |
 | `POST /e2b/sandboxes/{id}/pause` `{memory?}` | `204`. With `memory: false`, the VM stops with no memory image (a cold resume). |
 | `POST /e2b/sandboxes/{id}/resume` `{timeout?, memory?}` | `201 Sandbox`. With `memory: false`, the sandbox boots from its disk. |
 | `POST /e2b/sandboxes/{id}/connect` `{timeout}` | `201 Sandbox` when it was woken, `200` when it was already running. With `memory: false`, it boots from its disk. |
 | `POST /e2b/v2/sandboxes/{id}/connect` `{timeout?}` | As the v1 connect. The timeout is optional, 300 s by default. |
 | `POST /e2b/sandboxes/{id}/fork` `{timeout, count}` | Takes a checkpoint now, and starts `count` sandboxes (1 to 8) from it, each with its own access token. The reply has one entry per fork: `{"sandbox"}` or `{"error"}`. |
-| `POST /e2b/sandboxes/{id}/snapshots` `{name?}` | `201 SnapshotInfo`. |
+| `POST /e2b/sandboxes/{id}/snapshots` `{name?, memory?}` | `201 SnapshotInfo`. With `memory: false`, the disk only (see below). |
 | `GET /e2b/snapshots` | `[SnapshotInfo]`. |
 | `DELETE /e2b/templates/{id}` | `204`: deletes a snapshot. `404` when unknown. `{id}` is the snapshot's id (`<sandbox>:<checkpoint>`) or its unique name. |
 
@@ -80,14 +84,23 @@ Errors are E2B's `{code, message}`, with apid's machine-readable `error_code` be
 The lists take a `metadata` filter, as the SDK sends it (`metadata=k1%3Dv1%26k2%3Dv2`). Each key and value is percent-decoded
 again.
 
-**Not served:** `volumeMounts`, network config updates, logs, template builds and metric values.
+**Network rules.** `network.allowOut` and `network.denyOut` at create, and `PUT .../network` later, narrow or open a
+sandbox's egress. The proxy sees the host each connection names, so `allowOut` takes a name, a `*.` wildcard (any
+subdomain, not the apex), an IP or a CIDR block, and `denyOut` an IP or a CIDR block; `0.0.0.0/0` denies every host. An
+allowed entry wins over a denied one, as in E2B. Neither overrides the laws or the hub's blocklist of private ranges.
+
+**Refused, not ignored:** `volumeMounts` (the plaza's volumes are read-only and given by role), `network.rules`
+(credentials are added only by the owner's egress rules), `network.egressProxy` and `network.maskRequestHost`.
+**Not served:** template builds.
 
 The owner's console routes for the same records: `GET /v1/e2b/sandboxes` lists every sandbox, with its CID and run, and
 `DELETE /v1/e2b/sandboxes/{id}`, `POST .../{id}/pause` and `POST .../{id}/resume` end, pause or resume one.
 
 ## Snapshots and templates
 
-A snapshot is a checkpoint of a sandbox, with its memory. A snapshot with `memory: false` is refused.
+A snapshot is a checkpoint of a sandbox, with its memory. A snapshot with `memory: false` (the SDK's
+`mode="filesystem"`) flushes the guest and keeps its disk only (noded's disk-only checkpoint): a sandbox made from it
+boots cold with the files, without the source's processes.
 
 - A create whose `templateID` is a snapshot id, or a name that exactly one snapshot has, forks that checkpoint. The new
   sandbox has the source's environment variables, under the request's.
@@ -181,6 +194,13 @@ at vsockd's gateway.
 | pause in filesystem mode, then connect | cold boot ~670 ms. The file is on disk. |
 | kill with a snapshot kept, list_snapshots, create from that snapshot after the source was killed | pass |
 | delete_snapshot | `true`, then `false` |
+| get_metrics | one sample: 1 CPU, its busy share, memory and disk |
+| create_snapshot in filesystem mode, create from it | cold boot ~670 ms. The child reads the file. |
+| update_network: internet off, `allow_out` one host | that host connects, another gets 403 |
+| update_network: `deny_out` 0.0.0.0/0, then cleared | refused, then open again, at once |
+| logs (v2, backward, search) | the probe's command lines |
+
+47 of 47 steps pass.
 
 ## In the consoles
 

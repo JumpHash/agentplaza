@@ -271,7 +271,8 @@ vCPU at its next exit: a running vCPU is cancelled, and a halted one is woken. A
 
 - each vCPU's registers, by name;
 - each vCPU's local APIC (`WHvGetVirtualProcessorState`, InterruptControllerState2) and its XSAVE area;
-- the userspace I/O APIC, the UART and the vsock transport;
+- the userspace I/O APIC, the UART, the vsock transport, and the workspace and data volume transports (WHP VMs carry
+  both now; the block device builds on Windows);
 - a full memory image, with zero pages left out.
 
 Some registers are written best-effort on restore: TSC, TSC_AUX, the debug registers, and the activity and

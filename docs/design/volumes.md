@@ -2,7 +2,8 @@
 
 Status (2026-10-15): built on Linux x86_64 with KVM, tested end to end on that machine. The hub routes are in (apid and
 noded), and the web (Volumes), desktop (Volumes) and CLI (`agentplaza volumes`) surfaces cover them (see "Fifth
-pass" in `parity.md`). Hypervisor.framework and WHP refuse a VM with volumes.
+pass" in `parity.md`). WHP VMs carry volumes too (compile-checked, not run on Windows); Hypervisor.framework refuses a VM
+with volumes.
 
 A data volume is a read-only disk that several VMs can mount at once. Agents use it for shared reference data, such as
 a corpus or a model cache. Nothing in a VM can write to it.
@@ -59,7 +60,7 @@ Volumes reach agents by role.
 
 | item | why |
 |---|---|
-| Hypervisor.framework and WHP | Neither backend has a block device yet, so the VMM refuses a VM with volumes there. |
+| Hypervisor.framework | The backend has no virtio-mmio devices yet (no vsock and no block device), so the VMM refuses a VM with volumes there. WHP attaches them in the KVM x86_64 slots; it has not run on Windows. |
 | E2B `volumeMounts` | Not mapped to volumes. |
 
 ## Verified
