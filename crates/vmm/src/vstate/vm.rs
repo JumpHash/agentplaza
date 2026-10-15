@@ -378,6 +378,11 @@ impl KvmVm {
         action: &'static str,
     ) -> Result<Vec<VcpuResponse>, VmError> {
         let mut handles = self.vcpus_handles();
+        // An answer that came after an earlier request timed out would otherwise be read as this
+        // request's answer: drop whatever is already waiting before asking again.
+        for handle in handles.iter() {
+            while handle.response_receiver().try_recv().is_ok() {}
+        }
         for (vcpu, handle) in handles.iter_mut().enumerate() {
             handle
                 .send_event(event.clone())
