@@ -36,7 +36,7 @@ pub trait Hub: Sync {
     /// Queues `text` as the owner's chat on agent `cid`, thread `thread` (origin: the owner, over
     /// ACP); the work item's id.
     fn chat(&self, cid: u64, thread: &str, text: &str) -> Result<u64, String>;
-    /// Cancels work item `work` of agent `cid` if it is in progress or queued; false otherwise.
+    /// Cancels work item `work` of agent `cid` if it is the one in progress; false otherwise.
     fn cancel(&self, cid: u64, work: u64) -> bool;
     /// The transcript entries of agent `cid` for the given work items, oldest first.
     fn entries(&self, cid: u64, works: &[u64]) -> Vec<Entry>;
@@ -687,7 +687,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs the integrated acp modules"]
     fn set_mode_calls_the_hub_and_says_so() {
         let h = harness(None);
         let session = h.client.new_session("/work/app").expect("session/new");
@@ -705,7 +704,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs the integrated acp modules"]
     fn prompt_streams_the_work_until_it_ends() {
         let h = harness(None);
         let session = h.client.new_session("/work/app").expect("session/new");
