@@ -517,10 +517,10 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     );
   }
 
-  /** Turns an alert rule on or off. The hub treats an existing rule id sent with only `on` as a switch. */
+  /** Turns an alert rule on or off (`POST /v1/metrics/alerts/{id}/on`). */
   async function setRuleOn(id: string, enabled: boolean): Promise<void> {
     try {
-      await api.metricsPutRule({ id, on: enabled } as unknown as Rule);
+      await api.metricsRuleOn(id, enabled);
       if (!disposed) void load();
     } catch (err) {
       toast(errorText(err), 'error');
