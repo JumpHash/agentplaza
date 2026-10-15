@@ -4,7 +4,7 @@
 //! only. Every request carries the internal token, read from its file on each
 //! call, so an apid that restarted with a new token is picked up at once.
 
-use std::net::{SocketAddr, TcpStream};
+use std::net::{IpAddr, SocketAddr, TcpStream};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -39,6 +39,9 @@ pub struct EgressAnswer {
     pub allow: bool,
     pub reason: String,
     pub intercept: bool,
+    /// Blocks (address and prefix length) that no resolved address of the connection may lie in: a
+    /// sandbox's denyOut. Empty otherwise.
+    pub deny_cidrs: Vec<(IpAddr, u8)>,
 }
 
 /// The leaf certificate and key apid signed for one host. Holds a private key, so it has no `Debug`
@@ -143,25 +146,7 @@ impl Apid {
     pub fn check_egress(&self, cid: u32, host: &str, port: u16) -> Result<EgressAnswer, String> {
         let body = json!({ "cid": cid, "host": host, "port": port }).to_string();
         let reply = self.post("/internal/egress/check", &body, EGRESS_CHECK_TIMEOUT)?;
-        let allow = reply
-            .get("allow")
-            .and_then(serde_json::Value::as_bool)
-            .ok_or("apid's egress answer names no allow")?;
-        let reason = reply
-            .get("reason")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("refused")
-            .to_string();
-        // Absent means no interception: the tunnel stays opaque, as before rules existed.
-        let intercept = reply
-            .get("intercept")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false);
-        Ok(EgressAnswer {
-            allow,
-            reason,
-            intercept,
-        })
+        egress_answer_of(&reply)
     }
 
     /// The leaf certificate apid signs for `host` as the agent at `cid` (`POST /internal/egress/cert`).
@@ -277,6 +262,68 @@ impl Apid {
     }
 }
 
+/// The decision in apid's answer (`{allow, reason, intercept, deny_cidrs}`). A deny rule that does not
+/// read as a block makes the whole answer a refusal, so a rule apid meant cannot leave its block open.
+fn egress_answer_of(reply: &serde_json::Value) -> Result<EgressAnswer, String> {
+    let allow = reply
+        .get("allow")
+        .and_then(serde_json::Value::as_bool)
+        .ok_or("apid's egress answer names no allow")?;
+    let reason = reply
+        .get("reason")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("refused")
+        .to_string();
+    // Absent means no interception: the tunnel stays opaque, as before rules existed.
+    let intercept = reply
+        .get("intercept")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    // Absent means no deny blocks (only sandboxes have them).
+    let deny_cidrs: Option<Vec<(IpAddr, u8)>> = match reply.get("deny_cidrs") {
+        None | Some(serde_json::Value::Null) => Some(Vec::new()),
+        Some(serde_json::Value::Array(rules)) => rules
+            .iter()
+            .map(|rule| rule.as_str().and_then(cidr_of))
+            .collect(),
+        Some(_) => None,
+    };
+    Ok(match deny_cidrs {
+        Some(deny_cidrs) => EgressAnswer {
+            allow,
+            reason,
+            intercept,
+            deny_cidrs,
+        },
+        None => EgressAnswer {
+            allow: false,
+            reason: "refused: apid sent a bad deny rule".to_string(),
+            intercept: false,
+            deny_cidrs: Vec::new(),
+        },
+    })
+}
+
+/// A deny rule `addr/len` (`"8.8.8.0/24"`, `"2001:db8::/32"`), or `None` when it does not read as a
+/// block. An IPv4-mapped IPv6 block whose prefix is 96 bits or more is stored as the IPv4 block.
+fn cidr_of(text: &str) -> Option<(IpAddr, u8)> {
+    let (addr, len) = text.split_once('/')?;
+    let addr: IpAddr = addr.parse().ok()?;
+    let len: u8 = len.parse().ok()?;
+    match addr {
+        IpAddr::V4(_) => (len <= 32).then_some((addr, len)),
+        IpAddr::V6(v6) => {
+            if len > 128 {
+                return None;
+            }
+            match v6.to_ipv4_mapped() {
+                Some(v4) if len >= 96 => Some((IpAddr::V4(v4), len - 96)),
+                _ => Some((addr, len)),
+            }
+        }
+    }
+}
+
 /// The injection in apid's answer (`{header, value, rule}`), or `None` for the `{}` of no rule. The
 /// header must be a plain token and the value free of line breaks, so a bad answer cannot split the
 /// guest's request. Errors never repeat the value.
@@ -366,6 +413,42 @@ mod tests {
             "the paths are fixed"
         );
         assert!(!Apid::off().enabled() && Apid::off().token().is_err());
+    }
+
+    #[test]
+    fn a_deny_rule_is_an_address_block_and_a_bad_one_refuses_the_answer() {
+        let ip = |text: &str| text.parse::<IpAddr>().unwrap();
+        let answer = egress_answer_of(&json!({
+            "allow": true,
+            "deny_cidrs": ["8.8.8.0/24", "2001:db8::/32", "::ffff:10.0.0.0/104"]
+        }))
+        .unwrap();
+        assert!(answer.allow);
+        assert_eq!(
+            answer.deny_cidrs,
+            vec![
+                (ip("8.8.8.0"), 24),
+                (ip("2001:db8::"), 32),
+                (ip("10.0.0.0"), 8)
+            ]
+        );
+        for bad in [
+            json!({ "allow": true, "deny_cidrs": ["8.8.8.0/33"] }),
+            json!({ "allow": true, "deny_cidrs": ["8.8.8.0"] }),
+            json!({ "allow": true, "deny_cidrs": ["2001:db8::/129"] }),
+            json!({ "allow": true, "deny_cidrs": [7] }),
+            json!({ "allow": true, "deny_cidrs": "8.8.8.0/24" }),
+        ] {
+            let answer = egress_answer_of(&bad).unwrap();
+            assert!(
+                !answer.allow
+                    && answer.reason == "refused: apid sent a bad deny rule"
+                    && answer.deny_cidrs.is_empty(),
+                "{bad} must be refused"
+            );
+        }
+        let plain = egress_answer_of(&json!({ "allow": true })).unwrap();
+        assert!(plain.allow && plain.deny_cidrs.is_empty() && !plain.intercept);
     }
 
     #[test]
