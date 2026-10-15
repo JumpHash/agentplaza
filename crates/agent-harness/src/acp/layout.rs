@@ -223,6 +223,36 @@ fn open_folder(anchor: &Path, path: &Path) -> io::Result<Option<OwnedFd>> {
     Ok(Some(dir))
 }
 
+/// Creates the folders of `path` under `anchor`, which must exist and be root's (`anchor` itself is not
+/// created). Each component is made and then opened from the folder before it with `O_NOFOLLOW`, so a
+/// link planted in the path is never followed: a component that is a link or a file is an error, and
+/// nothing is created through a link. The new folders are root's; the walks give them their owners and
+/// modes afterwards.
+pub(crate) fn create_beneath(anchor: &Path, path: &Path) -> io::Result<()> {
+    let rest = path.strip_prefix(anchor).map_err(|_| {
+        io::Error::other(format!(
+            "{} is not under {}",
+            path.display(),
+            anchor.display()
+        ))
+    })?;
+    let mut dir = rfs::open(
+        anchor,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
+        Mode::empty(),
+    )?;
+    for name in rest.iter() {
+        if let Err(err) = rfs::mkdirat(&dir, name, Mode::from_raw_mode(0o755)) {
+            // An entry that already exists is fine: what it is gets checked by the open below.
+            if err != rustix::io::Errno::EXIST {
+                return Err(err.into());
+            }
+        }
+        dir = rfs::openat(&dir, name, dir_flags(), Mode::empty())?;
+    }
+    Ok(())
+}
+
 /// The names of the step's skipped folders: they are direct children of its path.
 fn skip_names(step: &Step) -> Vec<&OsStr> {
     step.skip
@@ -397,7 +427,7 @@ pub(crate) fn prepare_engine_dirs(
     bash::kill_engine_processes()?;
     bash::ensure_engine_user()?;
     let home = home_in(root, id);
-    fs::create_dir_all(install_cache(&home)).map_err(describe)?;
+    create_beneath(root, &install_cache(&home)).map_err(describe)?;
     for step in plan(root, id, version, job) {
         apply(root, &step).map_err(describe)?;
     }
@@ -418,7 +448,7 @@ pub(crate) fn install_in<T>(
     let anchor = dir
         .parent()
         .ok_or_else(|| format!("internal: {} has no parent folder", dir.display()))?;
-    fs::create_dir_all(dir).map_err(describe)?;
+    create_beneath(anchor, dir).map_err(describe)?;
     apply(anchor, &Step::engine(dir, None)).map_err(describe)?;
     let result = install();
     // Nothing the install started may outlive it: a process that left its group could still write
@@ -579,6 +609,27 @@ mod tests {
         }
     }
 
+    #[test]
+    fn create_beneath_makes_nested_folders_and_never_creates_through_a_link_or_a_file() {
+        let scratch = Scratch::new("beneath");
+        let anchor = scratch.0.join("anchor");
+        let outside = scratch.0.join("outside");
+        fs::create_dir_all(&anchor).expect("the anchor");
+        fs::create_dir_all(&outside).expect("a folder outside");
+        fs::write(anchor.join("file"), "kept").expect("a file");
+        std::os::unix::fs::symlink(&outside, anchor.join("link")).expect("a link out");
+
+        create_beneath(&anchor, &anchor.join("a/b/c")).expect("nested folders");
+        assert!(anchor.join("a/b/c").is_dir());
+        assert!(create_beneath(&anchor, &anchor.join("link/x")).is_err());
+        assert!(create_beneath(&anchor, &anchor.join("file/x")).is_err());
+        assert!(
+            !outside.join("x").exists(),
+            "nothing is created through the link"
+        );
+        assert_eq!(fs::read(anchor.join("file")).expect("the file"), b"kept");
+    }
+
     /// A scratch folder the root tests remove when they end, however they end.
     struct Scratch(PathBuf);
 
@@ -607,6 +658,27 @@ mod tests {
         assert!(
             bash::runs_as_root().expect("the uid"),
             "needs root: run scripts/test-harness-root.sh"
+        );
+    }
+
+    #[test]
+    #[ignore = "needs root: scripts/test-harness-root.sh"]
+    fn root_prepare_engine_dirs_refuses_a_link_where_the_engines_folder_goes() {
+        require_root();
+        let scratch = Scratch::new("beneath-root");
+        let root = scratch.0.join("ws");
+        let outside = scratch.0.join("outside");
+        let job = root.join("app");
+        fs::create_dir_all(&job).expect("the job");
+        fs::create_dir_all(&outside).expect("a folder outside");
+        std::os::unix::fs::symlink(&outside, root.join(".engines")).expect("a link out");
+
+        let result = prepare_engine_dirs(&Workspace::at(root.clone()), "goose", "1.52.0", &job);
+        assert!(result.is_err(), "a link where .engines goes is refused");
+        assert_eq!(
+            fs::read_dir(&outside).expect("the folder outside").count(),
+            0,
+            "nothing is created through the link"
         );
     }
 
@@ -703,6 +775,7 @@ mod tests {
         require_root();
         let scratch = Scratch::new("install");
         let workspace = Workspace::at(scratch.0.clone());
+        fs::create_dir_all(scratch.0.join(".engines")).expect("the engines folder");
         let dir = scratch.0.join(".engines/goose-1.52.0");
         let home = engine_home(&workspace, "goose");
         install_in(&dir, || {
