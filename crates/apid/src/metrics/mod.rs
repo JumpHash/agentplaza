@@ -101,7 +101,7 @@ impl Metrics {
 
     /// Records an event (lifecycle, compaction, scale …): stored, and counted into the histograms it carries.
     pub fn event(&self, e: Event) {
-        ingest::record_event(self, e);
+        ingest::record_event(self, e, "");
     }
 
     /// Scrapes the registry into the rollup, writes closed windows, and checks alert rules on what changed.

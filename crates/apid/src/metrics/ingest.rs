@@ -28,11 +28,12 @@ pub const EVENT_HISTS: &[(&str, &str, &[(&str, &str)])] = &[
     ("move", "life.move_ms", &[]),
 ];
 
-/// Stores an event and records its duration (and parts) into the lifecycle histograms, keyed by the node the
-/// entity is on (`node` label `run` when the entity is a run or VM). Compactions count into `ctx.compactions` and
-/// `ctx.freed_tokens` of the agent.
-pub fn record_event(m: &Metrics, e: Event) {
-    let _ = (m, e);
+/// Stores an event and records its duration (and parts) into the lifecycle histograms, keyed by `node` (the node
+/// the entity is on; empty when unknown, then the entity itself when it is a node, else `hub`), with a `run` label
+/// when the entity is a run or a VM (the part before `/`). Compactions count into `ctx.compactions` and
+/// `ctx.freed_tokens` of the agent (parts `before`/`after`).
+pub fn record_event(m: &Metrics, e: Event, node: &str) {
+    let _ = (m, e, node);
     todo!()
 }
 
