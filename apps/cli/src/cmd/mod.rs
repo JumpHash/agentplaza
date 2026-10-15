@@ -6,6 +6,8 @@ pub mod board;
 pub mod conversations;
 pub mod council;
 pub mod decide;
+pub mod e2b;
+pub mod egress;
 pub mod events;
 pub mod git;
 pub mod hub;

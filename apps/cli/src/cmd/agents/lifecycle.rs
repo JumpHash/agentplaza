@@ -272,10 +272,64 @@ pub fn fork(ctx: &Ctx, cid: u64, n: u64) -> Result<(), String> {
     Ok(())
 }
 
+/// The move request body: the node the agent's VM goes to.
+pub fn move_body(node: &str) -> Value {
+    json!({ "node": node })
+}
+
+/// The result of a move as one line: the nodes it went between, the megabytes moved and the seconds it
+/// took. A missing number reads as zero.
+pub fn move_line(cid: u64, moved: &Value) -> String {
+    let megabytes = moved["bytes"].as_f64().unwrap_or(0.0) / 1_000_000.0;
+    let seconds = moved["ms"].as_f64().unwrap_or(0.0) / 1000.0;
+    format!(
+        "moved agent {cid} from {} to {}: {megabytes:.1} MB in {seconds:.1} s",
+        ctx::text(moved, "from"),
+        ctx::text(moved, "to")
+    )
+}
+
+/// Moves an agent's VM to another node. The hub copies it over and reports what it moved.
+pub fn move_to(ctx: &Ctx, cid: u64, node: &str) -> Result<(), String> {
+    let v = ctx
+        .client
+        .post(&format!("/v1/agents/{cid}/move"), &move_body(node))?;
+    ctx.out(&v, |v| println!("{}", move_line(cid, v)));
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use clap::Parser;
+
+    #[test]
+    fn move_takes_the_agent_cid_and_the_node() {
+        match parse(&["move", "4", "n2"]).unwrap() {
+            super::super::Cmd::Move { cid, node } => assert_eq!((cid, node.as_str()), (4, "n2")),
+            other => panic!("not a move: {other:?}"),
+        }
+        assert!(parse(&["move", "4"]).is_err(), "a move needs a node");
+    }
+
+    #[test]
+    fn a_move_body_names_the_node() {
+        assert_eq!(move_body("n2"), json!({ "node": "n2" }));
+    }
+
+    #[test]
+    fn a_move_line_reads_the_nodes_megabytes_and_seconds() {
+        let moved =
+            json!({ "ok": true, "from": "n0", "to": "n2", "bytes": 12_345_678u64, "ms": 1_300u64 });
+        assert_eq!(
+            move_line(4, &moved),
+            "moved agent 4 from n0 to n2: 12.3 MB in 1.3 s"
+        );
+        assert_eq!(
+            move_line(4, &json!({})),
+            "moved agent 4 from  to : 0.0 MB in 0.0 s"
+        );
+    }
 
     /// The `agents` command alone, so its subcommands parse the way the CLI parses them.
     #[derive(Parser, Debug)]

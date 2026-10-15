@@ -179,6 +179,13 @@ pub enum Cmd {
         #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u64).range(1..=8))]
         n: u64,
     },
+    /// Move an agent's VM to another node. The hub copies it over and reports the bytes moved and the time taken.
+    Move {
+        /// The agent's cid.
+        cid: u64,
+        /// The node to move it to, by its id (see `nodes list`).
+        node: String,
+    },
     /// An agent's harness limits. Add `set`, `compress`, `extend` or `steer` to change them or its
     /// running work.
     Harness {
@@ -272,6 +279,7 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             yes,
         } => lifecycle::checkpoint_delete(ctx, cid, &checkpoint, yes),
         Cmd::Fork { cid, n } => lifecycle::fork(ctx, cid, n),
+        Cmd::Move { cid, node } => lifecycle::move_to(ctx, cid, &node),
         Cmd::Harness { cid, action } => harness::harness(ctx, cid, action),
         Cmd::Loops { cid, action } => harness::loops(ctx, cid, action),
         Cmd::Permissions { cid, action } => oversight::permissions(ctx, cid, action),
