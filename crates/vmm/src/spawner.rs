@@ -249,6 +249,16 @@ pub enum SnapshotKind {
     /// memory it was restored from (the caller places that copy; see
     /// [`crate::vstate::snapshot_memory`]). For a VM that was booted, not restored, the same as `Full`.
     Diff,
+    /// `Diff` without the fsyncs: for a snapshot that only has to outlive the restores made from it on
+    /// this host (a fork's), not a crash. Written and recorded exactly as `Diff` is.
+    DiffUnsynced,
+}
+
+impl SnapshotKind {
+    /// Whether the snapshot's files are fsynced before the snapshot returns.
+    pub fn is_durable(self) -> bool {
+        !matches!(self, SnapshotKind::DiffUnsynced)
+    }
 }
 
 /// A snapshot [`VmHandle::snapshot`] wrote.

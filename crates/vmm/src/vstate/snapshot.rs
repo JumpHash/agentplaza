@@ -242,8 +242,9 @@ pub fn meta_now(
 ))]
 /// Writes [`STATE_FILE`] into `dir` (created if missing, mode 0700): to a temporary name first, then
 /// renamed, so a crash never leaves a half-written state beside a complete memory file. The file is
-/// mode 0600: guest state is the agent's data.
-pub fn write_state(dir: &Path, snapshot: &VmSnapshot) -> Result<(), SnapshotError> {
+/// mode 0600: guest state is the agent's data. With `durable` false the file is not fsynced (see
+/// [`SnapshotKind::DiffUnsynced`]).
+pub fn write_state(dir: &Path, snapshot: &VmSnapshot, durable: bool) -> Result<(), SnapshotError> {
     create_private_dir(dir)?;
     let path = dir.join(STATE_FILE);
     let tmp = dir.join(format!("{STATE_FILE}.tmp"));
@@ -253,7 +254,7 @@ pub fn write_state(dir: &Path, snapshot: &VmSnapshot) -> Result<(), SnapshotErro
     })?;
     let mut file = private_file(&tmp)?;
     file.write_all(&bytes)
-        .and_then(|()| file.sync_all())
+        .and_then(|()| if durable { file.sync_all() } else { Ok(()) })
         .map_err(|err| SnapshotError::io(&tmp, err))?;
     fs::rename(&tmp, &path).map_err(|err| SnapshotError::io(&path, err))
 }

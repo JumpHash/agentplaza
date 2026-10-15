@@ -223,8 +223,9 @@ impl VmControl for InProcessControl {
     /// The `kind` the caller asks for does not change what is written: a restored VM's snapshot is
     /// always a diff (a full write would leave holes where its untouched pages are), and a booted
     /// VM's is always full (the same pages a diff of it would hold). The state file is written last,
-    /// so an interrupted snapshot leaves no state for a restore to read.
-    fn snapshot(&self, dir: &Path, _kind: SnapshotKind) -> Result<SnapshotInfo, SpawnError> {
+    /// so an interrupted snapshot leaves no state for a restore to read. Only the durability of the
+    /// `requested` kind is honored: a `DiffUnsynced` state file is not fsynced.
+    fn snapshot(&self, dir: &Path, requested: SnapshotKind) -> Result<SnapshotInfo, SpawnError> {
         let _busy = lock(&self.busy);
         let vm = self.live_vm()?;
         // The clock starts before the pause: `paused_ms` is how long the guest was stopped.
@@ -252,7 +253,8 @@ impl VmControl for InProcessControl {
             vcpus,
             devices,
         };
-        write_state(dir, &state).map_err(|err| step("write the state file", err))?;
+        write_state(dir, &state, requested.is_durable())
+            .map_err(|err| step("write the state file", err))?;
 
         Ok(SnapshotInfo {
             dir: dir.to_path_buf(),

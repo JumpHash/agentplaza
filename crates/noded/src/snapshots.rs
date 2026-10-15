@@ -297,7 +297,7 @@ fn label_of(name: &str) -> String {
 fn kind_name(kind: SnapshotKind) -> &'static str {
     match kind {
         SnapshotKind::Full => "full",
-        SnapshotKind::Diff => "diff",
+        SnapshotKind::Diff | SnapshotKind::DiffUnsynced => "diff",
     }
 }
 

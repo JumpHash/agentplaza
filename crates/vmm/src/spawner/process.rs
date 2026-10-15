@@ -648,6 +648,7 @@ pub fn snapshot_kind_word(kind: SnapshotKind) -> &'static str {
     match kind {
         SnapshotKind::Full => "full",
         SnapshotKind::Diff => "diff",
+        SnapshotKind::DiffUnsynced => "diff_unsynced",
     }
 }
 
@@ -656,6 +657,7 @@ pub fn parse_snapshot_kind(word: &str) -> Option<SnapshotKind> {
     match word {
         "full" => Some(SnapshotKind::Full),
         "diff" => Some(SnapshotKind::Diff),
+        "diff_unsynced" => Some(SnapshotKind::DiffUnsynced),
         _ => None,
     }
 }
@@ -1077,6 +1079,22 @@ mod tests {
         ] {
             assert!(parse_reply(bad).is_err(), "{bad:?} is not a reply");
         }
+    }
+
+    /// Every snapshot kind names itself on the wire and parses back to itself, `DiffUnsynced`
+    /// included, and a fork's request for it is not refused by the child.
+    #[test]
+    fn the_snapshot_kinds_round_trip_the_protocol() {
+        for kind in [
+            SnapshotKind::Full,
+            SnapshotKind::Diff,
+            SnapshotKind::DiffUnsynced,
+        ] {
+            assert_eq!(parse_snapshot_kind(snapshot_kind_word(kind)), Some(kind));
+        }
+        assert_eq!(parse_snapshot_kind("diff unsynced"), None);
+        assert!(!SnapshotKind::DiffUnsynced.is_durable());
+        assert!(SnapshotKind::Diff.is_durable());
     }
 
     /// The restore directory and the snapshot root reach the child's command line,

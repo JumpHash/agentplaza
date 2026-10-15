@@ -259,7 +259,7 @@ fn selected(entry: u64, kind: SnapshotKind) -> bool {
         SnapshotKind::Full => present || swapped,
         // A swapped page is always saved. A present page is saved only when it is anonymous: a
         // file page is still the base file's content, which the diff's reflinked copy already holds.
-        SnapshotKind::Diff => swapped || (present && !file_backed),
+        SnapshotKind::Diff | SnapshotKind::DiffUnsynced => swapped || (present && !file_backed),
     }
 }
 

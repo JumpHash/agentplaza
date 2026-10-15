@@ -1077,11 +1077,12 @@ fn thaw(state: VmState, handle: &VmHandle) -> VmState {
 
 /// Writes a snapshot of a VM into `dir` (created). A VM restored from a snapshot always writes a
 /// diff, over the memory it was restored from, so that memory is copied into `dir` first: `base` is
-/// the directory holding it.
+/// the directory holding it. `kind` is what the VM is asked for (see [`SnapshotKind::is_durable`]).
 fn write_snapshot(
     handle: &VmHandle,
     base: Option<&Path>,
     dir: &Path,
+    kind: SnapshotKind,
 ) -> Result<SnapshotInfo, VmOpError> {
     if let Some(base) = base {
         snapshots::private_dir(dir)
@@ -1097,7 +1098,7 @@ fn write_snapshot(
         })?;
     }
     handle
-        .snapshot(dir, SnapshotKind::Diff)
+        .snapshot(dir, kind)
         .map_err(|err| VmOpError::Failed(format!("the VM did not snapshot: {err}")))
 }
 
@@ -1925,7 +1926,12 @@ impl Registry {
         }
         let partial = store.dir(cid, snapshots::SLEEP_PARTIAL);
         let _ = fs::remove_dir_all(&partial);
-        let info = match write_snapshot(&handle, restored_from.as_deref(), &partial) {
+        let info = match write_snapshot(
+            &handle,
+            restored_from.as_deref(),
+            &partial,
+            SnapshotKind::Diff,
+        ) {
             Ok(info) => info,
             Err(err) => {
                 let _ = fs::remove_dir_all(&partial);
@@ -2094,7 +2100,7 @@ impl Registry {
         let cid = run.vm_cid(vm)?;
         let held = run.take_vm(vm, &[VmState::Running, VmState::Paused])?;
         let taken = if keep_memory {
-            Self::checkpoint_held(store, cid, &held, label)
+            Self::checkpoint_held(store, cid, &held, label, SnapshotKind::Diff)
         } else {
             Self::checkpoint_disk(store, cid, &held, label)
         };
@@ -2182,14 +2188,15 @@ impl Registry {
             return Err(VmOpError::UnknownCheckpoint(name.to_string()));
         }
         let held = run.take_vm(vm, &[VmState::Running, VmState::Paused])?;
-        let safety = match Self::checkpoint_held(store, cid, &held, "before-restore") {
-            Ok(view) => view,
-            Err(err) => {
-                let state = thaw(held.state, &held.handle);
-                run.return_vm_in(vm, held.handle, state);
-                return Err(err);
-            }
-        };
+        let safety =
+            match Self::checkpoint_held(store, cid, &held, "before-restore", SnapshotKind::Diff) {
+                Ok(view) => view,
+                Err(err) => {
+                    let state = thaw(held.state, &held.handle);
+                    run.return_vm_in(vm, held.handle, state);
+                    return Err(err);
+                }
+            };
         let Held {
             mut handle,
             spec,
@@ -2296,7 +2303,10 @@ impl Registry {
                 let held = source.take_vm(vm, &[VmState::Running, VmState::Paused])?;
                 let meta = source.meta(held.spec.balloon);
                 let has_workspace = held.spec.workspace.is_some();
-                let taken = Self::checkpoint_held(store, cid, &held, "fork");
+                // A fork's checkpoint only has to outlive the restores made from it on this host, so
+                // it is written without the fsyncs.
+                let taken =
+                    Self::checkpoint_held(store, cid, &held, "fork", SnapshotKind::DiffUnsynced);
                 let state = thaw(held.state, &held.handle);
                 source.return_vm_in(vm, held.handle, state);
                 let checkpoint = taken?;
@@ -2305,15 +2315,33 @@ impl Registry {
             }
         };
         let snapshot = store.dir(cid, &checkpoint.name);
+        // The copies boot concurrently: each boot has its own run id, CID, workspace and base. The
+        // results come back in index order, so the forks are returned in that order too.
+        let booted: Vec<Result<PreparedFork, VmOpError>> = std::thread::scope(|scope| {
+            let boots: Vec<_> = (0..n)
+                .map(|_| scope.spawn(|| self.boot_fork(store, &meta, &snapshot, has_workspace)))
+                .collect();
+            boots
+                .into_iter()
+                .map(|boot| {
+                    boot.join()
+                        .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+                })
+                .collect()
+        });
         let mut forks = Vec::with_capacity(n as usize);
-        for _ in 0..n {
-            match self.boot_fork(store, &meta, &snapshot, has_workspace) {
+        let mut failure = None;
+        for result in booted {
+            match result {
                 Ok(fork) => forks.push(fork),
                 Err(err) => {
-                    self.discard_forks(store, forks);
-                    return Err(err);
+                    failure.get_or_insert(err);
                 }
             }
+        }
+        if let Some(err) = failure {
+            self.discard_forks(store, forks);
+            return Err(err);
         }
         let made = forks
             .into_iter()
@@ -2533,19 +2561,20 @@ impl Registry {
     }
 
     /// Takes a checkpoint of a held VM: its memory (a diff, when it was restored) and a copy of its
-    /// workspace. The VM is left paused; the caller resumes it.
+    /// workspace. `kind` is the snapshot kind asked for. The VM is left paused; the caller resumes it.
     fn checkpoint_held(
         store: &SnapshotStore,
         cid: u64,
         held: &Held,
         label: &str,
+        kind: SnapshotKind,
     ) -> Result<SnapshotView, VmOpError> {
         store.prepare(cid).map_err(|err| {
             VmOpError::Failed(format!("cannot create the snapshot directory: {err}"))
         })?;
         let name = SnapshotStore::checkpoint_name(label, now_ms());
         let dir = store.dir(cid, &name);
-        let info = match write_snapshot(&held.handle, held.restored_from.as_deref(), &dir) {
+        let info = match write_snapshot(&held.handle, held.restored_from.as_deref(), &dir, kind) {
             Ok(info) => info,
             Err(err) => {
                 let _ = fs::remove_dir_all(&dir);
