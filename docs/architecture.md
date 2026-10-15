@@ -27,7 +27,12 @@ link protocol), `apz-uds` (Unix sockets on every platform), `apz-trust` (join
 tokens, node keys, pinned TLS, owner tokens), `apz-os` (platform differences),
 `apz-setup` (first-run checks), `jhrl` (the law language), `acpi-tables`.
 
-All daemons bind loopback only and reject a non-loopback `Host` header.
+All daemons bind loopback only and reject a non-loopback `Host` header. The node daemons' own HTTP APIs
+(`noded`, and `vsockd`'s except `GET /healthz`) also require the machine's internal token in `x-apz-internal`
+(`apz_http::auth`): `--internal-token-file` names it, the hub's `<state-dir>/internal.token` on a hub machine and
+apz-link's `node/internal-token` on a joined node. The file is read on each request, so the fresh token apid writes
+at each start is followed at once. apid, apz-link and dispatchd send it on every call to them. A daemon started
+without the flag (tests, development) keeps an open API and says so in its log.
 
 ## Consoles
 

@@ -25,6 +25,8 @@ use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpStream};
 use std::time::{Duration, Instant};
 
+use apz_http::auth::InternalToken;
+
 /// The most a status line and the headers may occupy, together.
 pub const MAX_HEAD: usize = 16 * 1024;
 
@@ -163,23 +165,48 @@ impl Answer {
     }
 }
 
-/// Sends one `GET {path}` and reads the whole answer.
-pub fn get(target: &Target, path: &str, timeout: Duration) -> Result<Answer, String> {
+/// Sends one `GET {path}` and reads the whole answer. `auth` is the node's
+/// internal token, sent when it names a token file that reads.
+pub fn get(
+    target: &Target,
+    path: &str,
+    auth: &InternalToken,
+    timeout: Duration,
+) -> Result<Answer, String> {
     let addr = target.addr();
-    let head = format!("GET {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n");
+    let token = token_line(auth);
+    let head = format!("GET {path} HTTP/1.1\r\nHost: {addr}\r\n{token}Connection: close\r\n\r\n");
     exchange(target, &head, &[], timeout)
 }
 
 /// Sends one `POST {path}` with `body` as its JSON payload, and reads the
-/// whole answer.
-pub fn post(target: &Target, path: &str, body: &[u8], timeout: Duration) -> Result<Answer, String> {
+/// whole answer. `auth` is sent as [`get`] sends it.
+pub fn post(
+    target: &Target,
+    path: &str,
+    auth: &InternalToken,
+    body: &[u8],
+    timeout: Duration,
+) -> Result<Answer, String> {
     let addr = target.addr();
+    let token = token_line(auth);
     let head = format!(
         "POST {path} HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\n\
-         Content-Length: {}\r\nConnection: close\r\n\r\n",
+         {token}Content-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
     );
     exchange(target, &head, body, timeout)
+}
+
+/// The internal-token header line a request carries (`x-apz-internal: <token>`),
+/// or nothing when `auth` names no token file or it does not read. The value is
+/// read as the file holds it now; a value with a line break is not sent, so a
+/// header cannot smuggle another into the request.
+fn token_line(auth: &InternalToken) -> String {
+    match auth.header() {
+        Some((name, value)) if !value.contains(['\r', '\n']) => format!("{name}: {value}\r\n"),
+        _ => String::new(),
+    }
 }
 
 /// Connects to the target, sends the request, and reads the whole answer.
@@ -502,7 +529,8 @@ mod tests {
             request
         });
 
-        let answer = get(&target, "/api/v0/tasks", TIMEOUT).expect("the answer is read");
+        let answer = get(&target, "/api/v0/tasks", &InternalToken::none(), TIMEOUT)
+            .expect("the answer is read");
         assert_eq!(answer.status(), 200);
         assert_eq!(answer.body(), br#"{"tasks":[]}"#);
         let request =
@@ -541,8 +569,33 @@ mod tests {
         let addr = listener.local_addr().expect("a bound address");
         drop(listener);
         let target = Target { addr };
-        let err =
-            get(&target, "/status", Duration::from_millis(500)).expect_err("nothing is listening");
+        let err = get(
+            &target,
+            "/status",
+            &InternalToken::none(),
+            Duration::from_millis(500),
+        )
+        .expect_err("nothing is listening");
         assert!(err.contains("cannot connect"), "{err}");
+    }
+
+    /// The node's internal token rides every request as `x-apz-internal`, read
+    /// from its file as the file holds it now; without a token file, no header.
+    #[test]
+    fn the_token_header_is_sent_only_when_a_token_file_reads() {
+        let dir = std::env::temp_dir().join(format!("dispatchd-token-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        let file = dir.join("internal.token");
+        std::fs::write(&file, "secret\n").expect("the token is written");
+        assert_eq!(
+            token_line(&InternalToken::file(&file)),
+            "x-apz-internal: secret\r\n"
+        );
+        assert_eq!(token_line(&InternalToken::none()), "");
+        assert_eq!(
+            token_line(&InternalToken::file(dir.join("missing.token"))),
+            ""
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

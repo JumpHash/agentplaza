@@ -22,12 +22,16 @@ usage: noded [--port PORT] [--kernel PATH] [--initrd PATH] [--uds-dir DIR]
              [--workspace IMAGE | --no-workspace] [--persist-dir DIR] [--agents MANIFEST]
              [--agents-cid-base N] [--agents-memory-mib N] [--agents-vcpus N]
              [--agents-balloon-mib N] [--no-snapshots]
+             [--internal-token-file PATH]
 
   --port PORT     port to listen on, on 127.0.0.1 (default 8899)
   --kernel PATH    guest kernel image (default guest/ARCH/vmlinux of the installed resources
                    when present, else /boot/vmlinuz-linux)
   --initrd PATH    guest initrd (default guest/ARCH/initrd.gz of the installed resources when
                    present, else target/guest/initrd.x86_64.gz)
+  --internal-token-file PATH
+                   the machine's internal token: the API answers only requests that carry
+                   it as x-apz-internal (default: none, the API is open)
   -V, --version    print the version and exit
   --uds-dir DIR    directory for the per-VM vsock Unix sockets and, with
                    --workspace, for the runs' image copies
@@ -290,6 +294,10 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
             "--kernel" => config.kernel = PathBuf::from(value("--kernel")?),
             "--initrd" => config.initrd = PathBuf::from(value("--initrd")?),
             "--uds-dir" => config.uds_dir = PathBuf::from(value("--uds-dir")?),
+            "--internal-token-file" => {
+                config.internal_token =
+                    apz_http::auth::InternalToken::file(value("--internal-token-file")?)
+            }
             "--workspace" => config.workspace = Some(PathBuf::from(value("--workspace")?)),
             "--no-workspace" => no_workspace = true,
             "--persist-dir" => config.persist_dir = Some(PathBuf::from(value("--persist-dir")?)),
@@ -471,6 +479,24 @@ mod tests {
         assert_eq!(config.kernel, PathBuf::from("/k"));
         assert_eq!(config.initrd, PathBuf::from("/i"));
         assert_eq!(config.run_cids, 1000..=1099);
+    }
+
+    #[test]
+    fn the_internal_token_file_flag_names_the_token() {
+        let config = parse_args(
+            ["--internal-token-file", "/run/plaza/internal.token"]
+                .map(String::from)
+                .to_vec(),
+        )
+        .expect("a well-formed flag");
+        assert_eq!(
+            config.internal_token,
+            apz_http::auth::InternalToken::file("/run/plaza/internal.token")
+        );
+        // Without the flag the API is open.
+        let open = parse_args(Vec::new()).expect("no arguments is the default");
+        assert_eq!(open.internal_token, apz_http::auth::InternalToken::none());
+        assert!(parse_args(vec!["--internal-token-file".to_string()]).is_err());
     }
 
     #[test]

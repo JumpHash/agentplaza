@@ -11,6 +11,7 @@
 //! task id is checked to be an id before it is put into a request path, so a
 //! malformed id from a malformed answer cannot reshape the request.
 
+use apz_http::auth::InternalToken;
 use serde::Deserialize;
 
 use crate::dispatch::Ledger;
@@ -21,13 +22,16 @@ use crate::views::{Agent, Outcome, Task};
 #[derive(Debug, Clone)]
 pub struct Noded {
     target: Target,
+    auth: InternalToken,
 }
 
 impl Noded {
-    /// A client for the node at `url` (`http://127.0.0.1:8899`).
-    pub fn new(url: &str) -> Result<Self, String> {
+    /// A client for the node at `url` (`http://127.0.0.1:8899`), sending `auth`
+    /// on every call.
+    pub fn new(url: &str, auth: InternalToken) -> Result<Self, String> {
         Ok(Self {
             target: Target::parse(url)?,
+            auth,
         })
     }
 
@@ -39,7 +43,7 @@ impl Noded {
 
 impl Ledger for Noded {
     fn tasks(&self) -> Result<Vec<Task>, String> {
-        let answer = http::get(&self.target, "/api/v0/tasks", TIMEOUT)?;
+        let answer = http::get(&self.target, "/api/v0/tasks", &self.auth, TIMEOUT)?;
         if answer.status() != 200 {
             return Err(refused("the ledger", &answer));
         }
@@ -49,7 +53,7 @@ impl Ledger for Noded {
     }
 
     fn agents(&self) -> Result<Vec<Agent>, String> {
-        let answer = http::get(&self.target, "/api/v0/hub", TIMEOUT)?;
+        let answer = http::get(&self.target, "/api/v0/hub", &self.auth, TIMEOUT)?;
         if answer.status() != 200 {
             return Err(refused("the fleet register", &answer));
         }
@@ -61,13 +65,25 @@ impl Ledger for Noded {
     fn claim(&self, id: &str, cid: u64) -> Result<(), String> {
         let path = format!("/api/v0/tasks/{}/claim", task_path(id)?);
         let body = serde_json::json!({ "agent_cid": cid }).to_string();
-        expect_ok(&self.target, &path, body.as_bytes(), "the claim")
+        expect_ok(
+            &self.target,
+            &self.auth,
+            &path,
+            body.as_bytes(),
+            "the claim",
+        )
     }
 
     fn finish(&self, id: &str, outcome: Outcome, note: &str) -> Result<(), String> {
         let path = format!("/api/v0/tasks/{}/finish", task_path(id)?);
         let body = serde_json::json!({ "outcome": outcome.as_str(), "note": note }).to_string();
-        expect_ok(&self.target, &path, body.as_bytes(), "the finish")
+        expect_ok(
+            &self.target,
+            &self.auth,
+            &path,
+            body.as_bytes(),
+            "the finish",
+        )
     }
 }
 
@@ -107,8 +123,14 @@ fn id_path<'a>(id: &'a str, what: &str) -> Result<&'a str, String> {
 }
 
 /// Sends one mutating request and insists on a 2xx answer.
-fn expect_ok(target: &Target, path: &str, body: &[u8], what: &str) -> Result<(), String> {
-    let answer = http::post(target, path, body, TIMEOUT)?;
+fn expect_ok(
+    target: &Target,
+    auth: &InternalToken,
+    path: &str,
+    body: &[u8],
+    what: &str,
+) -> Result<(), String> {
+    let answer = http::post(target, path, auth, body, TIMEOUT)?;
     if (200..300).contains(&answer.status()) {
         Ok(())
     } else {
@@ -182,8 +204,11 @@ mod tests {
                 serve_one(stream, &requests);
             }
         });
-        let noded =
-            Noded::new(&format!("http://127.0.0.1:{}", addr.port())).expect("a loopback URL");
+        let noded = Noded::new(
+            &format!("http://127.0.0.1:{}", addr.port()),
+            InternalToken::none(),
+        )
+        .expect("a loopback URL");
 
         let tasks = noded.tasks().expect("the ledger answers");
         assert_eq!(tasks.len(), 1);
@@ -277,8 +302,11 @@ mod tests {
                 .write_all(response.as_bytes())
                 .expect("the answer is written");
         });
-        let noded =
-            Noded::new(&format!("http://127.0.0.1:{}", addr.port())).expect("a loopback URL");
+        let noded = Noded::new(
+            &format!("http://127.0.0.1:{}", addr.port()),
+            InternalToken::none(),
+        )
+        .expect("a loopback URL");
         let err = noded.tasks().expect_err("the ledger refused");
         assert_eq!(err, "the ledger answered 404: no such endpoint");
         served.join().expect("the stub finishes");

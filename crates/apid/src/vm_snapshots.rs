@@ -452,14 +452,10 @@ fn noded_call_value(
         return crate::fleet::noded_for(app, cid, method, path, body);
     }
     let bytes = body.map(Value::to_string);
-    let reply = apz_http::client::send(
-        app.noded.port,
-        method,
-        path,
-        bytes.as_deref().map(str::as_bytes),
-        timeout,
-    )
-    .map_err(|e| format!("127.0.0.1:{} unreachable: {e}", app.noded.port))?;
+    let reply = app
+        .noded
+        .send(method, path, bytes.as_deref().map(str::as_bytes), timeout)
+        .map_err(|e| format!("127.0.0.1:{} unreachable: {e}", app.noded.port))?;
     let json = if reply.body.is_empty() {
         Value::Null
     } else {

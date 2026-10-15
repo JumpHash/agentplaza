@@ -48,7 +48,7 @@ pub struct Layout {
     pub roles: PathBuf,
     /// The directory the sockets of apid, vsockd and noded share.
     pub uds_dir: PathBuf,
-    /// The internal token vsockd presents to apz-link (`node/internal-token`).
+    /// The internal token vsockd and noded guard their HTTP APIs with, and apz-link sends (`node/internal-token`).
     pub token: PathBuf,
 }
 
@@ -113,6 +113,8 @@ pub fn plan(base: u64, count: u64, layout: &Layout) -> Vec<PlanProcess> {
                 &roles,
                 "--run-cids",
                 &run,
+                "--internal-token-file",
+                &token,
             ]),
             env: vmm,
         },
@@ -452,6 +454,10 @@ mod tests {
         assert_eq!(flag(&plan[2].args, "--run-cids"), Some("20-23"));
         assert_eq!(flag(&plan[2].args, "--agents"), Some("/share/roles.json"));
         assert_eq!(flag(&plan[2].args, "--port"), Some("8899"));
+        assert_eq!(
+            flag(&plan[2].args, "--internal-token-file"),
+            Some("/state/node/internal-token")
+        );
         let vmm = cfg!(target_os = "linux").then_some(("APZ_VMM_SPAWN", "process"));
         assert_eq!(plan[2].env, vmm);
         assert_eq!(plan[0].env, None);

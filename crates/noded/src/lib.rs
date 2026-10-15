@@ -116,6 +116,9 @@ pub struct Config {
     /// The desktop guest workstation VMs boot (`--workstation-kernel`, `--workstation-initrd`,
     /// `--workstation-image`), and where their directories live (`--workstation-dir`).
     pub workstation: workstation::Guest,
+    /// The machine's internal token; the HTTP API answers only requests that carry it
+    /// (`--internal-token-file`). None: open.
+    pub internal_token: apz_http::auth::InternalToken,
 }
 
 impl Default for Config {
@@ -138,6 +141,7 @@ impl Default for Config {
             agents_balloon_mib: DEFAULT_AGENTS_BALLOON_MIB,
             run_cids: registry::RUN_CID_BASE..=registry::RUN_CID_END,
             workstation: workstation::Guest::default(),
+            internal_token: apz_http::auth::InternalToken::none(),
         }
     }
 }
@@ -1655,10 +1659,15 @@ impl Server {
     /// Binds `config.port` on 127.0.0.1 and starts serving.
     pub fn start(config: Config) -> std::io::Result<Self> {
         let server = apz_http::Server::bind(config.port)?;
+        let internal_token = config.internal_token.clone();
+        if !internal_token.enabled() {
+            println!("noded: no --internal-token-file: the HTTP API takes no token");
+        }
         let node = Arc::new(Node::new(config));
         stats::spawn(Arc::clone(&node.stats))?;
         let (router, serving) = (router(), Arc::clone(&node));
-        let http = server.spawn(move |request| router.handle(&serving, request))?;
+        let http =
+            server.spawn(internal_token.guard(move |request| router.handle(&serving, request)))?;
         Ok(Self { http, node })
     }
 
@@ -2429,6 +2438,40 @@ fn delete_run(node: &Node, id: &str) -> Response {
             Response::json(200, &run.view(Detail::Full))
         }
         None => Response::error(404, &format!("no run with id {id}")),
+    }
+}
+
+#[cfg(test)]
+mod internal_token_tests {
+    use super::*;
+
+    #[test]
+    fn a_token_file_admits_only_requests_that_carry_its_token() {
+        let pid = std::process::id();
+        let path = std::env::temp_dir().join(format!("apz-noded-token-{pid}"));
+        std::fs::write(&path, "s3cret\n").expect("a token file");
+        let root = std::env::temp_dir().join(format!("apz-noded-token-state-{pid}"));
+        let server = Server::start(Config {
+            port: 0,
+            internal_token: apz_http::auth::InternalToken::file(&path),
+            uds_dir: root.join("vsock"),
+            workstation: workstation::Guest {
+                dir: root.join("workstations"),
+                ..workstation::Guest::default()
+            },
+            ..Config::default()
+        })
+        .expect("a server on a free port");
+        let (port, timeout) = (server.port(), Duration::from_secs(5));
+        let anonymous =
+            apz_http::client::send(port, "GET", "/v1/runs", None, timeout).expect("an answer");
+        assert_eq!(anonymous.status, 401);
+        let carried = [(apz_http::auth::HEADER, "s3cret")];
+        let admitted =
+            apz_http::client::send_with(port, "GET", "/v1/runs", &carried, None, timeout)
+                .expect("an answer");
+        assert_eq!(admitted.status, 200);
+        let _ = std::fs::remove_file(&path);
     }
 }
 
