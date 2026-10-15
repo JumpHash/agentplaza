@@ -14,6 +14,9 @@
 //! DELETE /e2b/templates/tags {name, tags}                           → 204
 //! DELETE /e2b/templates/{id}                                        → 204 (routed in `crate::e2b`)
 //!
+//! The owner's consoles: `GET /v1/e2b/templates` (every template with its builds) and
+//! `DELETE /v1/e2b/templates/{id}` (as the owner).
+//!
 //! A build runs in a sandbox of its own: of the plaza's base image (`fromImage` `e2bdev/base`; no
 //! other image is pulled) or of another built template (`fromTemplate`). Its steps run in order:
 //! `RUN` (`/bin/bash -l -c`, as the step's user or the current one), `COPY` (the uploaded archive,
@@ -2158,10 +2161,56 @@ pub(crate) fn delete(app: &App, id: &str, key: &str) -> Option<Result<Response, 
     Some(Ok(Response::new(204, apz_http::JSON, Vec::<u8>::new())))
 }
 
+/// The owner's view of the templates (the consoles' `GET /v1/e2b/templates`): every template, newest
+/// change first, with each build's status, tags, size and, for a failed one, why.
+pub(crate) fn owner_view(app: &App) -> Value {
+    let mut all = templates(app).list();
+    all.sort_by(|a, b| b.updated_ms.cmp(&a.updated_ms));
+    let rows: Vec<Value> = all
+        .iter()
+        .map(|t| {
+            let mut builds: Vec<&Build> = t.builds.iter().collect();
+            builds.sort_by(|a, b| b.created_ms.cmp(&a.created_ms));
+            json!({
+                "templateID": t.id,
+                "name": t.name,
+                "createdAt": e2b::rfc3339(t.created_ms),
+                "updatedAt": e2b::rfc3339(t.updated_ms),
+                "builds": builds
+                    .iter()
+                    .map(|b| {
+                        json!({
+                            "buildID": b.id,
+                            "status": b.status.as_str(),
+                            "createdAt": e2b::rfc3339(b.created_ms),
+                            "finishedAt": b.finished_ms.map(e2b::rfc3339),
+                            "cpuCount": b.vcpus,
+                            "memoryMB": b.memory_mib,
+                            "tags": b.tags.iter().map(|t| t.tag.clone()).collect::<Vec<String>>(),
+                            "reason": b.reason.as_ref().map(|r| json!({"message": r.message, "step": r.step})),
+                        })
+                    })
+                    .collect::<Vec<Value>>(),
+            })
+        })
+        .collect();
+    json!({ "templates": rows })
+}
+
 /// The template routes (listed in the module docs). They go before `crate::e2b`'s, whose
 /// `/e2b/templates/{id}` would otherwise take `tags` for an id.
 pub fn routes(router: Router<App>) -> Router<App> {
     router
+        // The owner's routes (the consoles): every template, and deleting one as the owner.
+        .get("/v1/e2b/templates", |app, _, _| {
+            Response::json(200, &owner_view(app))
+        })
+        .delete("/v1/e2b/templates/{id}", |app, _, p| {
+            match delete(app, p.get("id"), "owner") {
+                Some(result) => result.unwrap_or_else(e2b::refuse),
+                None => e2b::refuse(template_not_found(p.get("id"))),
+            }
+        })
         .post("/e2b/v3/templates", |app, req, _| {
             e2b::guard(app, req, |_| request_build(app, req))
         })
