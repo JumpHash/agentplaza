@@ -32,11 +32,13 @@ pub const BACKOFF_MAX_MS: u64 = 30_000;
 /// snapshotted in that wait and restored later, so its next attempt after a restore should land
 /// within one short interval rather than somewhere on the backoff schedule.
 pub const TEMPLATE_RETRY_MS: u64 = 25;
-/// The most a reconnect waits after a vsock transport reset. A restore makes the VMM send the
-/// guest a TRANSPORT_RESET, which fails the open connection with `ConnectionReset`; the hub is
-/// already there, so the next attempt should not wait out the backoff schedule.
+/// The most a quick reconnect waits. Quick attempts follow any drop after an adoption, a restore's
+/// transport reset included: a restore makes the VMM send the guest a TRANSPORT_RESET, which fails
+/// the open connection with `ConnectionReset`, and the hub is already there, so the next attempt
+/// should not wait out the backoff schedule.
 pub const RESTORE_RETRY_MS: u64 = 25;
-/// How many quick attempts follow a transport reset before the normal backoff takes over again.
+/// How many quick attempts follow a drop after an adoption (a restore's transport reset among
+/// them) before the normal backoff takes over again.
 pub const RESTORE_FAST_TRIES: u32 = 8;
 
 pub fn heartbeat_interval() -> Duration {

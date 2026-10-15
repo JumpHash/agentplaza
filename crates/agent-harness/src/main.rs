@@ -329,8 +329,11 @@ fn keepalive(config: &Config, out: &mut (impl Write + Send)) -> Result<(), Harne
                     failures.saturating_add(1)
                 };
                 welcomed |= adopted;
-                // A transport reset (a restore) opens a run of quick attempts; a hub hang-up does not.
-                if reset {
+                // A drop after the hub accepted this agent (a restore's transport reset among them) opens a
+                // short run of quick attempts: the hub is normally still there, so the agent is back within
+                // milliseconds. Only RESTORE_FAST_TRIES of them, so a daemon that is really gone costs each guest
+                // a handful of connects before the normal backoff.
+                if reset || adopted {
                     fast_left = keepalive::RESTORE_FAST_TRIES;
                 }
                 let after_restore = fast_left > 0;
