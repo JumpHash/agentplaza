@@ -45,7 +45,7 @@ pub mod vm;
 // The FDT generator and its descriptors are also the Hypervisor.framework
 // backend's entry point into this module (`create_fdt`, the `GicFdt` trait a
 // userspace interrupt controller implements, and the serial description).
-pub use fdt::{FdtError, GicFdt, SerialFdtInfo, VirtioMmioFdtInfo, create_fdt};
+pub use fdt::{FdtError, GicFdt, SerialFdtInfo, VirtioMmioFdtInfo, create_fdt, virtio_transports};
 
 use std::cmp::min;
 use std::fs::File;

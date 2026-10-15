@@ -137,11 +137,6 @@ pub struct VmSpec {
     pub gic: Option<GicVersion>,
     /// The VM's vsock device (see [`VsockConfig`]), `None` for a VM with no
     /// vsock device at all.
-    ///
-    /// Unsupported on Apple Silicon: a spec that sets it makes the boot fail
-    /// with an explicit error rather than boot a VM the host can never reach
-    /// (Hypervisor.framework has no vsock device, and this port has no
-    /// network device to fall back to).
     pub vsock: Option<VsockConfig>,
     /// The VM's writable workspace volume: the image its block device exposes
     /// to the guest, `None` for a VM with no block device at all.
@@ -151,9 +146,6 @@ pub struct VmSpec {
     /// spawner neither copies nor invents the path — a caller that has one base
     /// image lays the run's private copies out with [`materialize_workspaces`]
     /// and hands each VM its own.
-    ///
-    /// Unsupported on Apple Silicon: a spec that sets it makes the boot fail
-    /// with an explicit error rather than boot a VM whose device never appears.
     pub workspace: Option<PathBuf>,
     /// The memory the guest may use at boot, in MiB, when the VM carries a
     /// virtio-balloon: the VM is sized at [`VmSpec::memory_mib`] and the
@@ -167,13 +159,13 @@ pub struct VmSpec {
     /// same machine (vCPUs, memory, devices); `vsock` may name another CID and socket (the guest is
     /// told through a transport reset and re-reads its CID), and `workspace` is the caller's copy of
     /// the volume as it was when the snapshot was taken. `kernel`, `initrd` and `cmdline` are not used.
-    /// Linux/KVM only: other backends refuse it.
+    /// KVM, WHP and Hypervisor.framework each restore their own backend's snapshots.
     pub restore: Option<PathBuf>,
     /// Shared data volumes, attached read-only after the workspace (at most [`MAX_DATA_VOLUMES`]).
     /// Unlike a workspace, one image may back any number of VMs at once: the device refuses writes and
     /// the guest mounts it read-only at `/data/<name>`. The guest tells the volumes apart by the
-    /// device id (`VIRTIO_BLK_T_GET_ID`), which is the volume's name. Linux/KVM only: other backends
-    /// refuse a spec with volumes.
+    /// device id (`VIRTIO_BLK_T_GET_ID`), which is the volume's name. Every backend carries them (KVM, WHP and
+    /// Hypervisor.framework).
     pub volumes: Vec<DataVolume>,
 }
 

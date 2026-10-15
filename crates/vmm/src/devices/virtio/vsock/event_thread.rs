@@ -333,6 +333,13 @@ fn run<B>(
                 }
             }
         }
+        // Time-based backend work (a paused host listener's retry) runs once per pass, so it
+        // happens within one `EXIT_POLL_TIMEOUT_MS` even while no event arrives. The device lock
+        // is free here: each arm above took and released its own.
+        let mut dev = lock(&device);
+        if dev.is_activated() {
+            dev.backend_mut().tick();
+        }
     }
 }
 

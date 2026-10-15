@@ -1635,29 +1635,11 @@ mod aarch64 {
 
     /// The virtio-mmio transports the device tree describes, one node each.
     fn virtio_mmio_fdt(spec: &VmSpec) -> Vec<VirtioMmioFdtInfo> {
-        let mut virtio_mmio = Vec::new();
-        if spec.vsock.is_some() {
-            virtio_mmio.push(VirtioMmioFdtInfo {
-                addr: VSOCK_MMIO_START,
-                len: MMIO_LEN,
-                gsi: VSOCK_GSI,
-            });
-        }
-        if spec.workspace.is_some() {
-            virtio_mmio.push(VirtioMmioFdtInfo {
-                addr: WORKSPACE_MMIO_START,
-                len: MMIO_LEN,
-                gsi: WORKSPACE_GSI,
-            });
-        }
-        for (addr, gsi) in super::data_volume_slots(spec.volumes.len()) {
-            virtio_mmio.push(VirtioMmioFdtInfo {
-                addr,
-                len: MMIO_LEN,
-                gsi,
-            });
-        }
-        virtio_mmio
+        crate::arch::aarch64::virtio_transports(
+            spec.vsock.is_some(),
+            spec.workspace.is_some(),
+            spec.volumes.len(),
+        )
     }
 
     fn serial_fdt_info() -> SerialFdtInfo {

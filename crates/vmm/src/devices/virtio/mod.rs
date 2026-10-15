@@ -37,11 +37,10 @@
 //! (see `FACTS.md` next to this module for what was measured on a real host).
 
 // The balloon is Linux only (it releases pages with madvise(2)); the block
-// device builds on Linux and Windows (the WHP backend's workspace and data
-// volumes).
+// device builds everywhere the virtio devices do (the workspace and data
+// volumes of the KVM, WHP and Hypervisor.framework backends).
 #[cfg(target_os = "linux")]
 pub mod balloon;
-#[cfg(any(target_os = "linux", windows))]
 pub mod block;
 pub mod iov_deque;
 pub mod iovec;
@@ -133,11 +132,9 @@ pub enum VirtioError {
     VsockActivate(#[from] crate::devices::virtio::vsock::ActivateError),
     /// The block device: {0}
     #[error("block device: {0}")]
-    #[cfg(any(target_os = "linux", windows))]
     Block(#[from] crate::devices::virtio::block::VirtioBlockError),
     /// Failed to activate the block device: {0}
     #[error("failed to activate the block device: {0}")]
-    #[cfg(any(target_os = "linux", windows))]
     BlockActivate(#[from] crate::devices::virtio::block::ActivateError),
     /// The balloon device: {0}
     #[error("balloon device: {0}")]

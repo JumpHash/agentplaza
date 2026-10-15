@@ -288,6 +288,17 @@ impl Bus {
             dev.write(base, offset, data)
         })
     }
+
+    /// Writes `data` like [`Bus::write`], then waits on the barrier the device
+    /// returned, if any: what a vCPU does with a guest store, so a device that
+    /// needs the writing vCPU held until it has acted gets that. The device's
+    /// lock is released before the wait.
+    pub fn write_and_wait(&self, addr: u64, data: &[u8]) -> Result<(), BusError> {
+        if let Some(barrier) = self.write(addr, data)? {
+            barrier.wait();
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -570,6 +581,59 @@ mod tests {
         bus.write(0x20, &[0, 0, 0, 0]).unwrap_err();
         bus.read(0x06, &mut [0, 0, 0, 0]).unwrap_err();
         bus.write(0x06, &[0, 0, 0, 0]).unwrap_err();
+    }
+
+    /// A device whose writes hand back a barrier that the writing vCPU must reach.
+    struct BarrierDevice {
+        barrier: Arc<Barrier>,
+    }
+    impl BusDevice for BarrierDevice {
+        fn write(&mut self, _base: u64, _offset: u64, _data: &[u8]) -> Option<Arc<Barrier>> {
+            Some(Arc::clone(&self.barrier))
+        }
+    }
+
+    #[test]
+    #[allow(clippy::redundant_clone)]
+    fn write_and_wait_holds_the_writer_until_the_barrier_releases() {
+        let bus = Bus::new();
+        let barrier = Arc::new(Barrier::new(2));
+        let dev = Arc::new(Mutex::new(BarrierDevice {
+            barrier: Arc::clone(&barrier),
+        }));
+        // The bus only holds a weak reference, so the test keeps `dev` alive.
+        bus.insert(dev.clone(), 0x10, 0x10).unwrap();
+
+        let released = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let other = {
+            let barrier = Arc::clone(&barrier);
+            let released = Arc::clone(&released);
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                released.store(true, std::sync::atomic::Ordering::SeqCst);
+                barrier.wait();
+            })
+        };
+
+        bus.write_and_wait(0x10, &[1]).unwrap();
+        // The write only returns once the other thread has reached the barrier,
+        // which it does after setting `released`.
+        assert!(released.load(std::sync::atomic::Ordering::SeqCst));
+        other.join().unwrap();
+    }
+
+    #[test]
+    #[allow(clippy::redundant_clone)]
+    fn write_and_wait_without_a_barrier_returns_at_once() {
+        let bus = Bus::new();
+        let dummy = Arc::new(Mutex::new(DummyDevice));
+        bus.insert(dummy.clone(), 0x10, 0x10).unwrap();
+
+        bus.write_and_wait(0x10, &[1]).unwrap();
+        assert!(matches!(
+            bus.write_and_wait(0x30, &[1]),
+            Err(BusError::MissingAddressRange)
+        ));
     }
 
     #[test]
