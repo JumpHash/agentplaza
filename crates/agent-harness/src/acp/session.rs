@@ -52,9 +52,11 @@ pub struct Options<'w> {
     /// it or the catalogue refuses it.
     pub mode: Option<String>,
     /// A session to continue: `session/resume` when the engine advertises it, else `session/load`
-    /// when it advertises `loadSession`, else a new session (the caller then prefixes the prompt
-    /// with the previous summary).
+    /// when it advertises `loadSession`, else a new session.
     pub resume: Option<String>,
+    /// What the engine is told first when `resume` could not be honoured and a new session was
+    /// opened instead: the previous turn's summary, put before the prompt as its own text block.
+    pub context: Option<String>,
     /// When the turn must be over; then it is cancelled.
     pub deadline: Instant,
 }
