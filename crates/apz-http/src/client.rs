@@ -741,7 +741,9 @@ pub fn request_over<S: Read + Write + Duplex + 'static>(
             .iter()
             .map(|(name, value)| (name.as_str(), value.as_str())),
     );
-    let wire = request_bytes(method, path, tls.unwrap_or("localhost"), &headers, body)?;
+    // The stream names no host: the Host header is `localhost` whatever the TLS name (the SNI) is. A hub on the
+    // relaying node's own machine sees the connection come from loopback, and takes only a loopback Host there.
+    let wire = request_bytes(method, path, "localhost", &headers, body)?;
     match tls {
         None => exchange(stream, deadline, &wire),
         Some(name) => {
@@ -970,7 +972,10 @@ mod over_stream_tests {
             seen.starts_with("POST /v1/stations/join HTTP/1.1\r\n"),
             "{seen}"
         );
-        assert!(seen.contains("Host: hub\r\n"), "{seen}");
+        assert!(
+            seen.contains("Host: localhost\r\n"),
+            "the stream names no host: {seen}"
+        );
         assert!(seen.contains("Authorization: Bearer tok\r\n"), "{seen}");
     }
 

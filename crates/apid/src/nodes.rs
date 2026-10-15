@@ -632,6 +632,39 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .post("/v1/nodes/{id}/heartbeat", heartbeat_route)
 }
 
+/// `n0`, the hub's own machine, as a node record: never stored (it is always there), online while
+/// its noded answers. Its `machine` is its noded's view (`workstation_backends` among the facts)
+/// over the hub's own summary.
+pub(crate) fn local_node(app: &App) -> Node {
+    let now = apz_plaza::now_ms();
+    let noded = app.noded.get("/v1/machine");
+    let local_up = matches!(noded, Ok((200, _)));
+    let mut machine = local_summary();
+    if let (Ok((200, serde_json::Value::Object(facts))), serde_json::Value::Object(summary)) =
+        (noded, &mut machine)
+    {
+        for (key, value) in facts {
+            summary.entry(key).or_insert(value);
+        }
+    }
+    Node {
+        id: "n0".into(),
+        name: local_summary()["host"]
+            .as_str()
+            .unwrap_or("this hub")
+            .to_string(),
+        public_key: String::new(),
+        cid_base: 0,
+        cid_count: REMOTE_CID_BASE,
+        joined_ms: 0,
+        last_seen_ms: if local_up { now } else { 0 },
+        machine,
+        draining: false,
+        revoked: false,
+        address: "loopback".into(),
+    }
+}
+
 /// The plaza's machines: `n0`, the hub's own (never stored: it is always there, online while
 /// its noded answers), then every joined node.
 fn views(app: &App) -> Vec<NodeView> {

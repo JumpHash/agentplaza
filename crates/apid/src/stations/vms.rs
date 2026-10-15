@@ -458,10 +458,14 @@ pub fn adopt(app: &App, station: Station) -> Station {
 /// Makes a workstation VM on a node and issues its join code: noded boots it with the code, and the VM's daemon
 /// enrols as a workstation with it.
 pub fn create(app: &App, request: &CreateVm, actor: &str) -> Result<VmView, Failure> {
-    let node = app
-        .nodes
-        .get(&request.node)
-        .ok_or((404, format!("no node {}", request.node)))?;
+    // The hub's own machine is a node too, though the node store never keeps it.
+    let node = if request.node == fleet::LOCAL {
+        crate::nodes::local_node(app)
+    } else {
+        app.nodes
+            .get(&request.node)
+            .ok_or((404, format!("no node {}", request.node)))?
+    };
     if node.revoked {
         return Err((409, format!("node {} is revoked", node.id)));
     }
