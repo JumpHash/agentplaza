@@ -33,6 +33,7 @@ use std::time::Duration;
 
 use apz_station::vsock::{NodeConfig, config_address, link_address};
 use serde::{Deserialize, Serialize};
+use vmm::clonefile;
 use vmm::spawner::{self, VmHandle, VmSpec, VsockConfig};
 
 use crate::ws_qemu::{self, Available};
@@ -1122,7 +1123,7 @@ impl Store {
                 base_len.div_ceil(GIB)
             ));
         }
-        spawner::copy_sparse(base, disk).map_err(|e| format!("cannot copy the image: {e}"))?;
+        clonefile::clone_file(base, disk).map_err(|e| format!("cannot copy the image: {e}"))?;
         let file = fs::OpenOptions::new()
             .write(true)
             .open(disk)
@@ -1209,7 +1210,7 @@ fn view_of(slot: &mut Slot) -> View {
 
 /// Copies `from` to `tmp` and renames it over `to`, so a copy that fails leaves `to` as it was.
 fn replace_file(from: &Path, tmp: &Path, to: &Path) -> Result<(), String> {
-    spawner::copy_sparse(from, tmp).map_err(|e| format!("cannot copy {}: {e}", from.display()))?;
+    clonefile::clone_file(from, tmp).map_err(|e| format!("cannot copy {}: {e}", from.display()))?;
     fs::rename(tmp, to).map_err(|e| {
         let _ = fs::remove_file(tmp);
         format!("cannot replace {}: {e}", to.display())

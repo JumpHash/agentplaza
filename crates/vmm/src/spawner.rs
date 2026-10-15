@@ -1339,9 +1339,11 @@ fn write_fully_at(dst: &std::fs::File, mut data: &[u8], mut at: u64) -> std::io:
 /// hands each VM its path through [`VmSpec::workspace`]. The directory is
 /// created `0700` (see [`create_uds_dir`]): an agent's workspace is its private
 /// data, and under the default `/tmp` prefix a wider mode would let any local
-/// user read or rewrite it. [`copy_sparse`] keeps the base's holes as holes, so a copy costs the blocks
-/// its VM writes, not the image's length. The copies happen once per run, before
-/// its VMs boot.
+/// user read or rewrite it. [`crate::clonefile::clone_file`] makes each copy a reflink where the
+/// filesystem has them, so a copy costs nothing until its VM writes; elsewhere it
+/// is a [`copy_sparse`], which keeps the base's holes as holes, so a copy costs the
+/// blocks its VM writes, not the image's length. The copies happen once per run,
+/// before its VMs boot.
 pub fn materialize_workspaces(
     base: &Path,
     dir: &Path,
@@ -1354,7 +1356,7 @@ pub fn materialize_workspaces(
     (0..n)
         .map(|id| {
             let copy = dir.join(format!("workspace-{id}.ext4"));
-            copy_sparse(base, &copy).map_err(|source| WorkspaceError::Copy {
+            crate::clonefile::clone_file(base, &copy).map_err(|source| WorkspaceError::Copy {
                 base: base.to_path_buf(),
                 copy: copy.clone(),
                 source,

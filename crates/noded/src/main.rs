@@ -105,6 +105,16 @@ fn run(args: Vec<String>) -> Result<(), String> {
             config.uds_dir.display()
         )
     })?;
+    // The copies of workstation disks and snapshots land in the guest directory: say once whether
+    // they are reflinks (a copy is free until written) or sparse copies (a copy costs its data).
+    println!(
+        "noded: disk copies: {}",
+        if vmm::clonefile::reflink_supported(&config.workstation.dir) {
+            "reflink"
+        } else {
+            "sparse copy"
+        }
+    );
     let server = Server::start(config.clone()).map_err(|err| format!("cannot listen: {err}"))?;
     // The initial role fleet is the service's setup: it is booted before the
     // daemon is left to serve, and a node that cannot stand it up says so and
