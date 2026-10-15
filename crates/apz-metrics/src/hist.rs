@@ -200,11 +200,18 @@ impl HistSnapshot {
         self.max = self.max.max(other.max);
     }
 
-    /// The value at quantile `q` (0..=1), read from the bucket midpoint and clamped into `[min, max]`.
+    /// The value at quantile `q` (0..=1), read from the bucket midpoint and clamped into `[min, max]`; 0 is the
+    /// minimum and 1 the maximum exactly.
     /// `None` when empty.
     pub fn quantile(&self, q: f64) -> Option<f64> {
         if self.count == 0 {
             return None;
+        }
+        if q >= 1.0 {
+            return Some(self.max);
+        }
+        if q <= 0.0 {
+            return Some(self.min);
         }
         let rank = ((q.clamp(0.0, 1.0) * self.count as f64).ceil() as u64).max(1);
         let mut seen = 0;
