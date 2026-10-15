@@ -558,6 +558,7 @@ class Lab:
         agents: Path | None = None,
         agents_cid_base: int | None = None,
         hub_status: str | None = None,
+        noded_args: list[str] | None = None,
         hub_admin: str | None = None,
     ):
         self.ctx = ctx
@@ -605,6 +606,8 @@ class Lab:
         # the literal `HOST:PORT`, the sentinel `"self"` for this lab's own
         # vsockd status port, or `None` to leave the flag off.
         self.hub_status = hub_status
+        # Extra `noded` flags (e.g. `--snapshot-dir`), appended last.
+        self.noded_args = list(noded_args or [])
         # Where `noded` drives the hub's admin surface (`--hub-admin`): the
         # literal `HOST:PORT`, the sentinel `"self"` for this lab's own vsockd
         # admin port, or `None` to leave the flag off.
@@ -707,6 +710,7 @@ class Lab:
                 argv_noded += ["--hub-admin", f"127.0.0.1:{self.admin_bound}"]
             else:
                 argv_noded += ["--hub-admin", str(self.hub_admin)]
+        argv_noded += self.noded_args
         self.noded = self._spawn("noded", argv_noded, self.noded_log)
         line = self._await_line(self.noded_log, "listening on")
         match = re.search(r"127\.0\.0\.1:(\d+)", line)
